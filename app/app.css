@@ -1,0 +1,15 @@
+﻿@import '@nativescript/theme/css/core.css';
+@import '@nativescript/theme/css/default.css';
+
+Button.-primary {
+  font-size: 18;
+}
+
+.system-name-modal {
+  margin: 16;
+  padding: 16;
+  background-color: #f6f6f6;
+  border-color: #222222;
+  border-width: 1;
+  border-radius: 8;
+}

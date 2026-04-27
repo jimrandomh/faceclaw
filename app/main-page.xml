@@ -1,0 +1,46 @@
+<Page xmlns="http://schemas.nativescript.org/tns.xsd" navigatingTo="navigatingTo" loaded="loaded" unloaded="unloaded">
+    <ActionBar title="Faceclaw">
+        <ActionItem text="{{ buttonLabel }}" tap="{{ onTap }}" isEnabled="{{ canRun }}" android.position="popup" />
+        <ActionItem text="Configure devices" tap="{{ onConfigureTap }}" isEnabled="{{ canRun }}" android.position="popup" />
+        <ActionItem text="{{ showLogMenuLabel }}" tap="{{ onToggleLogTap }}" android.position="popup" />
+    </ActionBar>
+
+    <GridLayout rows="auto,*">
+        <StackLayout row="0" visibility="{{ displayPreviewVisibility }}">
+            <Image src="{{ displayPreview }}" stretch="fill" height="{{ displayPreviewHeight }}" />
+        </StackLayout>
+        <GridLayout row="1" rows="auto,auto,auto,*" class="p-20">
+            <StackLayout row="0" class="m-b-8" visibility="{{ evenAppConflictWarningVisibility }}">
+                <Label text="{{ evenAppConflictMessage }}" textWrap="true" />
+                <Button text="Open Even app settings" tap="{{ onOpenEvenAppSettingsTap }}" class="-primary" />
+            </StackLayout>
+            <StackLayout row="1">
+                <GridLayout rows="auto,auto,auto" columns="*,*,*" class="m-t-8">
+                    <Button row="0" col="1" text="Swipe up" tap="{{ onSyntheticUpTap }}" />
+                    <Button row="1" col="0" text="Double-click" tap="{{ onSyntheticLeftTap }}" />
+                    <Button row="1" col="2" text="Click" tap="{{ onSyntheticRightTap }}" />
+                    <Button row="2" col="1" text="Swipe down" tap="{{ onSyntheticDownTap }}" />
+                </GridLayout>
+            </StackLayout>
+            <Label row="2" text="{{ status }}" class="m-t-16" textWrap="true" />
+            <ScrollView id="logScrollView" row="3" class="m-t-16" visibility="{{ showLogVisibility }}">
+                <Label text="{{ log }}" textWrap="true" verticalAlignment="top" />
+            </ScrollView>
+        </GridLayout>
+        <StackLayout
+            row="0"
+            class="system-name-modal"
+            visibility="{{ textSettingEditorVisibility }}"
+            horizontalAlignment="stretch"
+            verticalAlignment="top">
+            <Label text="{{ activeTextSettingTitle }}" />
+            <TextField
+                id="settingsTextField"
+                text="{{ activeTextSettingValue }}"
+                textChange="{{ onTextSettingTextChange }}"
+                autocorrect="false"
+                autocapitalizationType="words"
+                returnKeyType="done" />
+        </StackLayout>
+    </GridLayout>
+</Page>

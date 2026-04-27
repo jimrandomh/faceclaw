@@ -1,0 +1,19 @@
+{
+  "name": "faceclaw",
+  "main": "app/app.ts",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "@nativescript/core": "~9.0.0",
+    "@nativescript/theme": "^3.1.0",
+    "g2-kit": "file:../g2-kit-unofficial",
+    "lodash": "^4.18.1",
+    "upng-js": "^2.1.0"
+  },
+  "devDependencies": {
+    "@nativescript/android": "9.0.2",
+    "@nativescript/types": "~9.0.0",
+    "@nativescript/webpack": "~5.0.25",
+    "typescript": "~5.4.0"
+  }
+}

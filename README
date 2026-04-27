@@ -1,0 +1,35 @@
+# Faceclaw - An unofficial user interface for the Even Realities G2 smart glasses
+
+This is an unofficial user interface for the Even Realities G2 smart glasses.
+It is entirely unofficial, and comes with no support or warranty from Even
+Realities or from anyone. If this damages your glasses somehow, this void your
+warranty.
+
+THIS IS AN UNFINISHED DEVELOPMENT PROTOTYPE; IF YOU DON'T HAVE ANY PROGRAMMING
+EXPERIENCE, OR YOU AREN'T COMFORTABLE EDITING, COMPILING, AND SIDELOADING AN
+ANDROID APPLICATION YOURSELF, OR YOU DON'T HAVE AN ANDROID DEVICE TO RUN IT
+ON, THIS IS NOT FOR YOU.
+
+In its current state, it's more of a demo/research project than something you
+could actually use, mainly because it's extremely slow: updating the display
+on the headset takes multiple seconds. This is because it's entirely designed
+around sending images to the headset, which is slow, rather than updating text
+containers that use the builtin font, which is fast but very limiting. Hopefully
+a future firmware update or reverse-engineering discovery will speed this up
+enough to be fully usable. In the mean time, you can use it as a dashboard
+(which doesn't require fast updates), and you can operate the UI via the phone
+screen, which shows the same UI but more quickly.
+
+The name Faceclaw implies plans to integrate this with OpenClaw. These plans
+have not yet been iplemented. If you want to use OpenClaw with Even Realities G2
+smart glasses today, consider using OcuClaw (which is an Even Hub app) instead.
+
+
+## Compiling and Installing
+
+To compile this, you will need an Android SDK environment, with SDK version 35
+installed and licenses accepted, and the ANDROID_HOME pointing to the install.
+You will need a JDK environment (v21), with the JAVA_HOME environment variable
+pointed at it. You will also need a reasonably up to date npm and nodejs
+installed.
+

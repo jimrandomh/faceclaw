@@ -1,0 +1,38 @@
+<Page xmlns="http://schemas.nativescript.org/tns.xsd" navigatingTo="navigatingTo">
+    <ActionBar title="Configure Devices" />
+
+    <GridLayout rows="auto,auto,auto,auto,auto,auto,auto,*" class="p-20">
+        <Label row="0" text="Configure the MAC addresses for the G2 headset arms and optional R1 ring. This page does not test a connection." textWrap="true" />
+
+        <StackLayout row="1" class="m-t-16">
+            <Label text="Right arm MAC" />
+            <TextField text="{{ rightAddress }}" textChange="{{ onRightAddressTextChange }}" autocorrect="false" autocapitalizationType="none" />
+        </StackLayout>
+
+        <StackLayout row="2" class="m-t-12">
+            <Label text="Left arm MAC" />
+            <TextField text="{{ leftAddress }}" textChange="{{ onLeftAddressTextChange }}" autocorrect="false" autocapitalizationType="none" />
+        </StackLayout>
+
+        <StackLayout row="3" class="m-t-12">
+            <Label text="R1 ring MAC (optional)" />
+            <TextField text="{{ ringAddress }}" textChange="{{ onRingAddressTextChange }}" autocorrect="false" autocapitalizationType="none" />
+        </StackLayout>
+
+        <GridLayout row="4" columns="*,*" class="m-t-16">
+            <Button col="0" text="Load paired devices" tap="{{ onLoadPairedTap }}" class="-primary" isEnabled="{{ canDiscover }}" />
+            <Button col="1" text="Scan nearby" tap="{{ onScanTap }}" class="-primary" isEnabled="{{ canDiscover }}" />
+        </GridLayout>
+
+        <Label row="5" text="{{ status }}" class="m-t-16" textWrap="true" />
+
+        <GridLayout row="6" columns="*,*" class="m-t-16">
+            <Button col="0" text="Save" tap="{{ onSaveTap }}" class="-primary" />
+            <Button col="1" text="Back" tap="{{ onBackTap }}" />
+        </GridLayout>
+
+        <ScrollView row="7" class="m-t-16">
+            <Label text="{{ discoveryLog }}" textWrap="true" verticalAlignment="top" />
+        </ScrollView>
+    </GridLayout>
+</Page>

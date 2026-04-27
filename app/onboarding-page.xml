@@ -1,0 +1,17 @@
+<Page xmlns="http://schemas.nativescript.org/tns.xsd" navigatingTo="navigatingTo" actionBarHidden="true">
+    <GridLayout rows="*,auto" class="p-20">
+        <ScrollView row="0">
+            <StackLayout>
+                <Image src="res://logo" stretch="aspectFit" height="140" horizontalAlignment="center" visibility="{{ logoVisibility }}" class="m-t-24" />
+                <Label text="{{ headline }}" class="h1 text-center m-t-24" textWrap="true" />
+                <Label text="{{ tagline }}" class="text-center m-t-8" textWrap="true" visibility="{{ taglineVisibility }}" />
+                <Label text="{{ body }}" class="m-t-24" textWrap="true" />
+            </StackLayout>
+        </ScrollView>
+
+        <GridLayout row="1" columns="*,*" class="m-t-20">
+            <Button col="0" text="{{ secondaryLabel }}" tap="{{ onSecondaryTap }}" visibility="{{ secondaryVisibility }}" />
+            <Button col="1" text="{{ primaryLabel }}" tap="{{ onPrimaryTap }}" class="-primary" />
+        </GridLayout>
+    </GridLayout>
+</Page>
