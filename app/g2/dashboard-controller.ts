@@ -1,5 +1,5 @@
-import { EventSourceType, EventSourceTypeName, OsEventTypeList, OsEventTypeName, } from "g2-kit/lite"; 
 import { ImageSource } from "@nativescript/core";
+import { EventSourceType, EventSourceTypeName, OsEventTypeList, OsEventTypeName } from "./events";
 import { loadDeviceAddresses } from "./device-addresses";
 import { ensureBlePermissions } from "./android-permissions";
 import { FaceclawCommunicatorBridge, type FrameMetrics, type RawInputEvent } from "../native/faceclaw-communicator";
@@ -15,6 +15,7 @@ import {
   getDashboardNightscoutSettings,
   getDashboardSystemCardName,
   receiveInput,
+  resetDashboardSleepTimerAndWake,
   setDashboardBatteryLevels,
   setDashboardActions,
   setDashboardNightscoutApiToken,
@@ -238,6 +239,7 @@ class DashboardController {
     this.log = "";
     this.lastInput = "waiting...";
     this.lastSys = "none yet";
+    resetDashboardSleepTimerAndWake();
     this.refreshEvenAppStatus();
     this.setPhase("connecting");
     this.setStatus("Connecting to the glasses...");

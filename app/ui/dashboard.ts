@@ -8,7 +8,7 @@ import { nightscoutBridge } from "../native/nightscout";
 import { readActiveNotificationIcons } from "../native/notification-icons";
 import { readPhoneBatteryState } from "../native/phone-battery";
 import { readSystemStatusIcons } from "../native/system-status-icons";
-import { OsEventTypeList, EventSourceType } from "g2-kit/lite";
+import { EventSourceType, OsEventTypeList } from "../g2/events";
 import {
   getDashboardPlugin,
   isBlankDashboardPlugin,
@@ -219,6 +219,17 @@ export function applyDashboardScreenTimeout(nowMs = Date.now()): boolean {
   return true;
 }
 
+export function resetDashboardSleepTimerAndWake(nowMs = Date.now()): boolean {
+  dashboardState.lastInputAtMs = nowMs;
+  if (dashboardState.screenOn) return false;
+
+  dashboardState.screenOn = true;
+  dashboardState.tiledWakePaintPending = dashboardState.wakeMode === "tiled";
+  dashboardLayers.clearToBase();
+  dashboardLayers.push(createRootMenuLayer());
+  return true;
+}
+
 export function setDashboardBatteryLevels(levels: Partial<DashboardBatteryLevels>): void {
   dashboardState.battery = {
     ...dashboardState.battery,
@@ -411,12 +422,12 @@ function createRootMenuLayer(): MenuLayer {
   return new RootMenuLayer(
     "Menu",
     [
-      {
+      /*{
         label: "Apps",
         onSelect: (ctx) => {
           ctx.stack.push(createAppsMenuLayer());
         },
-      },
+      },*/
       {
         label: "Settings",
         onSelect: (ctx) => {
@@ -720,7 +731,6 @@ class AboutLayer implements Layer {
   paint(): GrayImage {
     const image = new GrayImage(G2_LENS_WIDTH, G2_LENS_HEIGHT, 0);
     const logo = getDashboardLogo();
-    image.drawRect(12, 12, G2_LENS_WIDTH - 24, G2_LENS_HEIGHT - 24, 52);
     image.drawText(dashboardFont, 22, 16, "About Faceclaw", 220);
     if (logo) {
       image.bitBlt(logo, 22, 42);
@@ -729,17 +739,13 @@ class AboutLayer implements Layer {
     image.drawText(dashboardFont, 108, 64, "Dashboard prototype", 180);
 
     const aboutLines = [
-      "A lobster on top of a smiley face.",
-      "Perching on the faces of giants.",
-      "",
-      "The menu opens dashboard cards.",
-      "Settings configure card slots.",
-      "Double-click backs out of menus.",
+      "By James Babcock. Distributed under the GNU General Public License, version 3.",
+      "Version 0.1.0. Too much of an early janky development prototype to have",
+      "proper numbered releases."
     ];
     for (let index = 0; index < aboutLines.length; index++) {
       image.drawText(dashboardFont, 22, 128 + index * 14, aboutLines[index]!, 180);
     }
-    image.drawText(dashboardFont, 22, 252, "Double-click to go back", 110);
     return image;
   }
 

@@ -6,7 +6,6 @@
   "dependencies": {
     "@nativescript/core": "~9.0.0",
     "@nativescript/theme": "^3.1.0",
-    "g2-kit": "file:../g2-kit-unofficial",
     "lodash": "^4.18.1",
     "upng-js": "^2.1.0"
   },
