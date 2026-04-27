@@ -1,13 +1,14 @@
 import { GrayImage } from "../graphics/image";
 import { wrapText } from "../graphics/textwrap";
+import { type BdfFont } from "../graphics/bdffont";
 import { DashboardInputEvent, Layer, LayerContext, PaintBelow } from "./layers";
 
-const DEFAULT_MENU_X = 48;
-const DEFAULT_MENU_Y = 24;
-const DEFAULT_MENU_WIDTH = 480;
-const DEFAULT_MENU_HEIGHT = 240;
-const MENU_TITLE_HEIGHT = 24;
-const MENU_ROW_HEIGHT = 28;
+const DEFAULT_MENU_X = 8;
+const DEFAULT_MENU_Y = 8;
+const DEFAULT_MENU_WIDTH = 272;
+const DEFAULT_MENU_HEIGHT = 128;
+const MENU_TITLE_HEIGHT = 20;
+const MENU_ROW_HEIGHT = 20;
 
 export type MenuLayout = {
   x: number;
@@ -33,6 +34,43 @@ export type MenuItem = {
   render?: (args: MenuItemRenderArgs) => void;
 };
 
+export function drawToggleMenuItem(
+  image: GrayImage,
+  font: BdfFont,
+  x: number,
+  y: number,
+  width: number,
+  label: string,
+  enabled: boolean,
+  selected: boolean,
+): void {
+  const switchWidth = 34;
+  const switchHeight = 16;
+  const switchX = x + width - switchWidth - 2;
+  const switchY = y + 2;
+  image.drawText(font, x, y + 3, label, 200);
+  const offFill = selected ? 0 : 18;
+  image.fillRoundedRect(switchX, switchY, switchWidth, switchHeight, enabled ? 70 : offFill, 8);
+  image.drawRoundedRect(switchX, switchY, switchWidth, switchHeight, enabled ? 130 : 55, 8);
+  const knobSize = 12;
+  const knobX = enabled ? switchX + switchWidth - knobSize - 2 : switchX + 2;
+  image.fillRoundedRect(knobX, switchY + 2, knobSize, knobSize, enabled ? 230 : selected ? 170 : 90, 6);
+}
+
+export function drawRightValueMenuItem(
+  image: GrayImage,
+  font: BdfFont,
+  x: number,
+  y: number,
+  width: number,
+  label: string,
+  value: string,
+): void {
+  image.drawText(font, x, y + 3, label, 200);
+  const valueX = x + width - font.measureText(value) - 2;
+  image.drawText(font, valueX, y + 3, value, 220);
+}
+
 export class MenuLayer implements Layer {
   private selectedIndex = 0;
 
@@ -55,14 +93,14 @@ export class MenuLayer implements Layer {
     image.drawRoundedRect(x, y, width, height, 72);
     image.drawText(ctx.font, x + 18, y + 10, this.title, 220);
 
-    const bodyY = y + MENU_TITLE_HEIGHT + 12;
+    const bodyY = y + MENU_TITLE_HEIGHT + 8;
     for (let index = 0; index < this.items.length; index++) {
       const item = this.items[index]!;
       const y = bodyY + index * MENU_ROW_HEIGHT;
       const selected = index === this.selectedIndex;
       if (selected) {
-        image.fillRoundedRect(x + 12, y - 2, width - 24, MENU_ROW_HEIGHT - 4, 18);
-        image.drawRoundedRect(x + 12, y - 2, width - 24, MENU_ROW_HEIGHT - 4, 45);
+        image.fillRoundedRect(x + 12, y - 1, width - 24, MENU_ROW_HEIGHT - 3, 18);
+        image.drawRoundedRect(x + 12, y - 1, width - 24, MENU_ROW_HEIGHT - 3, 45);
       }
       if (item.render) {
         item.render({
@@ -70,13 +108,13 @@ export class MenuLayer implements Layer {
           x: x + 22,
           y,
           width: width - 44,
-          height: MENU_ROW_HEIGHT - 4,
+          height: MENU_ROW_HEIGHT - 3,
           selected,
           text: item.label,
           ctx,
         });
       } else {
-        image.drawText(ctx.font, x + 22, y + 4, item.label, selected ? 255 : 200);
+        image.drawText(ctx.font, x + 22, y + 3, item.label, selected ? 255 : 200);
       }
     }
 

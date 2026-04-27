@@ -33,3 +33,18 @@ You will need a JDK environment (v21), with the JAVA_HOME environment variable
 pointed at it. You will also need a reasonably up to date npm and nodejs
 installed.
 
+
+## Features
+
+ * Extreme slowness and accelerated battery drain, due to lack of compression
+   and additional factors in the G2 BLE image sending protocol
+ * Dual-language NativeScript architecture with Java for the multithreaded
+   Android API and bluetooth stack bits, Typescript for the bits you want to
+   hack on
+ * Dashboard with four configurable tiles, Nightscout integration, media player
+   integration, Android notification icons, and battery levels for the phone
+   and the G2 headset. (No battery indicator for the ring, currently.)
+ * Connection management with auto-reconnect, autodetection of conflict with
+   the official Even Realities app, and some amount of experience/iteration
+   on the issues that come with keeping it runnign all day
+ * On-phone screen mirroring and simulated ring input

@@ -75,7 +75,7 @@ public class FaceclawMediaNotificationListenerService extends NotificationListen
                 continue;
             }
             CharSequence title = extras.getCharSequence(Notification.EXTRA_TITLE);
-            if (expectedTitle.contentEquals(title)) {
+            if (title != null && expectedTitle.contentEquals(title)) {
                 return true;
             }
         }

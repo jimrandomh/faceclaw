@@ -1,6 +1,6 @@
 import { ApplicationSettings } from "@nativescript/core";
 
-export type DashboardSlotId = "top-right" | "bottom-left" | "bottom-right";
+export type DashboardSlotId = "bottom-left" | "bottom-right";
 export type DashboardPluginId = "blank" | "input-debug-log" | "music-controller" | "nightscout";
 
 export type DashboardSlotConfig = Record<DashboardSlotId, DashboardPluginId>;
@@ -12,20 +12,27 @@ export type SystemCardSettings = {
   showFaceclawLogo: boolean;
   showBatteryIndicators: boolean;
   showAndroidNotifications: boolean;
+  showSignalStrength: boolean;
 };
 export type SystemCardSettingKey = keyof SystemCardSettings;
+export type ScreenTimeoutSetting = "15s" | "30s" | "1m" | "never";
+export type WakeModeSetting = "tiled" | "synchronized";
 
 export const DEFAULT_SYSTEM_CARD_NAME = "Faceclaw";
+export const DEFAULT_SCREEN_TIMEOUT: ScreenTimeoutSetting = "30s";
+export const DEFAULT_WAKE_MODE: WakeModeSetting = "tiled";
 const SYSTEM_CARD_NAME_KEY = "dashboard.systemCardName";
+const SCREEN_TIMEOUT_KEY = "display.screenTimeout";
+const WAKE_MODE_KEY = "display.wakeMode";
 const SYSTEM_CARD_SETTING_KEYS: Record<SystemCardSettingKey, string> = {
   showFaceclawLogo: "dashboard.systemCard.showFaceclawLogo",
   showBatteryIndicators: "dashboard.systemCard.showBatteryIndicators",
   showAndroidNotifications: "dashboard.systemCard.showAndroidNotifications",
+  showSignalStrength: "dashboard.systemCard.showSignalStrength",
 };
 const NIGHTSCOUT_SITE_URL_KEY = "integrations.nightscout.siteUrl";
 const NIGHTSCOUT_API_TOKEN_KEY = "integrations.nightscout.apiToken";
 const SLOT_KEYS: Record<DashboardSlotId, string> = {
-  "top-right": "dashboard.slot.topRight",
   "bottom-left": "dashboard.slot.bottomLeft",
   "bottom-right": "dashboard.slot.bottomRight",
 };
@@ -38,8 +45,7 @@ const KNOWN_PLUGIN_IDS = new Set<DashboardPluginId>([
 ]);
 
 const DEFAULT_SLOT_CONFIG: DashboardSlotConfig = {
-  "top-right": "input-debug-log",
-  "bottom-left": "blank",
+  "bottom-left": "input-debug-log",
   "bottom-right": "blank",
 };
 
@@ -47,10 +53,11 @@ const DEFAULT_SYSTEM_CARD_SETTINGS: SystemCardSettings = {
   showFaceclawLogo: true,
   showBatteryIndicators: true,
   showAndroidNotifications: true,
+  showSignalStrength: true,
 };
 
 export function getDashboardSlotIds(): DashboardSlotId[] {
-  return ["top-right", "bottom-left", "bottom-right"];
+  return ["bottom-left", "bottom-right"];
 }
 
 export function getDefaultDashboardSlotConfig(): DashboardSlotConfig {
@@ -100,11 +107,74 @@ export function loadSystemCardSettings(): SystemCardSettings {
       SYSTEM_CARD_SETTING_KEYS.showAndroidNotifications,
       DEFAULT_SYSTEM_CARD_SETTINGS.showAndroidNotifications,
     ),
+    showSignalStrength: ApplicationSettings.getBoolean(
+      SYSTEM_CARD_SETTING_KEYS.showSignalStrength,
+      DEFAULT_SYSTEM_CARD_SETTINGS.showSignalStrength,
+    ),
   };
 }
 
 export function saveSystemCardSetting(key: SystemCardSettingKey, value: boolean): void {
   ApplicationSettings.setBoolean(SYSTEM_CARD_SETTING_KEYS[key], value);
+}
+
+export function loadScreenTimeoutSetting(): ScreenTimeoutSetting {
+  return normalizeScreenTimeoutSetting(ApplicationSettings.getString(SCREEN_TIMEOUT_KEY, DEFAULT_SCREEN_TIMEOUT));
+}
+
+export function saveScreenTimeoutSetting(value: ScreenTimeoutSetting): ScreenTimeoutSetting {
+  const normalized = normalizeScreenTimeoutSetting(value);
+  ApplicationSettings.setString(SCREEN_TIMEOUT_KEY, normalized);
+  return normalized;
+}
+
+export function loadWakeModeSetting(): WakeModeSetting {
+  return normalizeWakeModeSetting(ApplicationSettings.getString(WAKE_MODE_KEY, DEFAULT_WAKE_MODE));
+}
+
+export function saveWakeModeSetting(value: WakeModeSetting): WakeModeSetting {
+  const normalized = normalizeWakeModeSetting(value);
+  ApplicationSettings.setString(WAKE_MODE_KEY, normalized);
+  return normalized;
+}
+
+export function nextScreenTimeoutSetting(value: ScreenTimeoutSetting): ScreenTimeoutSetting {
+  switch (value) {
+    case "15s":
+      return "30s";
+    case "30s":
+      return "1m";
+    case "1m":
+      return "never";
+    case "never":
+    default:
+      return "15s";
+  }
+}
+
+export function screenTimeoutMs(value: ScreenTimeoutSetting): number | null {
+  switch (value) {
+    case "15s":
+      return 15_000;
+    case "30s":
+      return 30_000;
+    case "1m":
+      return 60_000;
+    case "never":
+      return null;
+  }
+}
+
+export function screenTimeoutLabel(value: ScreenTimeoutSetting): string {
+  return value === "never" ? "Never" : value;
+}
+
+export function nextWakeModeSetting(value: WakeModeSetting): WakeModeSetting {
+  return value === "tiled" ? "synchronized" : "tiled";
+}
+
+export function wakeModeLabel(value: WakeModeSetting): string {
+  return value === "tiled" ? "Tiled" : "Synchronized";
 }
 
 export function loadNightscoutSettings(): NightscoutSettings {
@@ -151,4 +221,26 @@ function normalizeNightscoutSiteUrl(siteUrl: string | null | undefined): string 
 
 function normalizeNightscoutApiToken(apiToken: string | null | undefined): string {
   return (apiToken ?? "").replace(/[\x00-\x1f]+/g, "").trim();
+}
+
+function normalizeScreenTimeoutSetting(value: string | null | undefined): ScreenTimeoutSetting {
+  switch (value) {
+    case "15s":
+    case "30s":
+    case "1m":
+    case "never":
+      return value;
+    default:
+      return DEFAULT_SCREEN_TIMEOUT;
+  }
+}
+
+function normalizeWakeModeSetting(value: string | null | undefined): WakeModeSetting {
+  switch (value) {
+    case "tiled":
+    case "synchronized":
+      return value;
+    default:
+      return DEFAULT_WAKE_MODE;
+  }
 }

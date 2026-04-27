@@ -35,12 +35,12 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private static final int DESCRIPTOR_TIMEOUT_MS = 5_000;
     private static final int WRITE_TIMEOUT_MS = 2_000;
     private static final int PRELUDE_TIMEOUT_MS = 2_000;
-    private static final int ACK_TIMEOUT_MS = 2_000;
+    private static final int ACK_TIMEOUT_MS = 3_500;
     private static final int HEARTBEAT_INTERVAL_MS = 5_000;
     private static final int BATTERY_REFRESH_INTERVAL_MS = 5 * 60_000;
     private static final int BATTERY_INPUT_QUIET_MS = 5_000;
-    private static final int WINDOW_SIZE = 1;
-    private static final int IMAGE_FRAGMENT_SIZE = 4000;
+    private static final int WINDOW_SIZE = 3;
+    private static final int IMAGE_FRAGMENT_SIZE = 1000;
     private static final int IMAGE_RETRY_DELAY_MS = 10_000;
     private static final boolean IMAGE_FRAGMENT_NO_ACK = false;
     private static final int WARMUP_FRAGMENT_TIMEOUT_MS = 3_000;
@@ -103,10 +103,13 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
 
     private String displayedFingerprint = "";
     private byte[][] displayedTileBmps = emptyTileSet();
+    private final Map<Integer, ImageUpdateStats> imageUpdateStats = new HashMap<>();
 
     private final Object desiredTilesLock = new Object();
     private String desiredFingerprint = "";
     private byte[][] desiredTileBmps = emptyTileSet();
+    private boolean desiredForceTiledCommit;
+    private int desiredPaintMs;
 
     private final ArrayDeque<OutboundMessage> pendingMessages = new ArrayDeque<>();
     private final ArrayDeque<OutboundMessage> inFlightMessages = new ArrayDeque<>();
@@ -178,6 +181,14 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
 
 
     public void submitDashboardImage(List<byte[]> tileBmps, String fingerprint) {
+        submitDashboardImage(tileBmps, fingerprint, false, -1);
+    }
+
+    public void submitDashboardImage(List<byte[]> tileBmps, String fingerprint, boolean forceTiledCommit) {
+        submitDashboardImage(tileBmps, fingerprint, forceTiledCommit, -1);
+    }
+
+    public void submitDashboardImage(List<byte[]> tileBmps, String fingerprint, boolean forceTiledCommit, int paintMs) {
         if (tileBmps == null || tileBmps.size() != DASHBOARD_TILES.length) {
             throw new IllegalArgumentException("exactly 4 tile bitmaps are required");
         }
@@ -188,6 +199,8 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 desiredTileBmps[i] = bmp == null ? new byte[0] : Arrays.copyOf(bmp, bmp.length);
             }
             desiredFingerprint = fingerprint == null ? "" : fingerprint;
+            desiredForceTiledCommit = forceTiledCommit;
+            desiredPaintMs = paintMs;
         }
         interruptibleSleep.interrupt();
     }
@@ -199,6 +212,29 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             byte[] tile3Bmp,
             String fingerprint
     ) {
+        submitDashboardImage4(tile0Bmp, tile1Bmp, tile2Bmp, tile3Bmp, fingerprint, false, -1);
+    }
+
+    public void submitDashboardImage4(
+            byte[] tile0Bmp,
+            byte[] tile1Bmp,
+            byte[] tile2Bmp,
+            byte[] tile3Bmp,
+            String fingerprint,
+            boolean forceTiledCommit
+    ) {
+        submitDashboardImage4(tile0Bmp, tile1Bmp, tile2Bmp, tile3Bmp, fingerprint, forceTiledCommit, -1);
+    }
+
+    public void submitDashboardImage4(
+            byte[] tile0Bmp,
+            byte[] tile1Bmp,
+            byte[] tile2Bmp,
+            byte[] tile3Bmp,
+            String fingerprint,
+            boolean forceTiledCommit,
+            int paintMs
+    ) {
         synchronized (desiredTilesLock) {
             desiredTileBmps = emptyTileSet();
             desiredTileBmps[0] = tile0Bmp == null ? new byte[0] : Arrays.copyOf(tile0Bmp, tile0Bmp.length);
@@ -206,6 +242,8 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             desiredTileBmps[2] = tile2Bmp == null ? new byte[0] : Arrays.copyOf(tile2Bmp, tile2Bmp.length);
             desiredTileBmps[3] = tile3Bmp == null ? new byte[0] : Arrays.copyOf(tile3Bmp, tile3Bmp.length);
             desiredFingerprint = fingerprint == null ? "" : fingerprint;
+            desiredForceTiledCommit = forceTiledCommit;
+            desiredPaintMs = paintMs;
         }
         interruptibleSleep.interrupt();
     }
@@ -542,6 +580,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     }
 
     private boolean writeMessageLocked(OutboundMessage message) {
+        long writeStartedAtMs = SystemClock.elapsedRealtime();
         if (!bleManager.writeFrames(
             rightAddress,
             BleProtocol.WRITE_CHAR_UUID,
@@ -551,6 +590,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         )) {
             return false;
         }
+        message.writeStartedAtMs = writeStartedAtMs;
         message.sentAtMs = SystemClock.elapsedRealtime();
         message.ackDeadlineAtMs = message.sentAtMs + message.ackTimeoutMs;
         if (message.magic != 0) {
@@ -657,6 +697,10 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             return;
         }
         if (message.imageMessageNumber == 1) {
+            ImageUpdateStats stats = imageUpdateStats.get(message.imageUpdateId);
+            if (stats != null && stats.firstWriteStartedAtMs <= 0) {
+                stats.firstWriteStartedAtMs = message.writeStartedAtMs > 0 ? message.writeStartedAtMs : message.sentAtMs;
+            }
             logImageUpdateLandmarkLocked("first bluetooth message sent", message, message.sentAtMs);
         }
         if (message.imageMessageNumber == message.imageMessageCount) {
@@ -668,7 +712,12 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         if (message.imageUpdateId <= 0 || message.imageMessageNumber != message.imageMessageCount) {
             return;
         }
-        logImageUpdateLandmarkLocked("last bluetooth message acked", message, SystemClock.elapsedRealtime());
+        long ackedAtMs = SystemClock.elapsedRealtime();
+        ImageUpdateStats stats = imageUpdateStats.remove(message.imageUpdateId);
+        if (stats != null && stats.firstWriteStartedAtMs > 0) {
+            emitFrameMetrics(stats.paintMs, (int) Math.max(0, ackedAtMs - stats.firstWriteStartedAtMs), stats.tileCount);
+        }
+        logImageUpdateLandmarkLocked("last bluetooth message acked", message, ackedAtMs);
     }
 
     private void logImageUpdateLandmarkLocked(String event, OutboundMessage message, long elapsedMs) {
@@ -759,8 +808,13 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         String fingerprint = getDesiredFingerprint();
         List<TileImagePlan> changedTiles = new ArrayList<>();
         byte[][] tileBmps;
+        boolean forceTiledCommit;
+        int paintMs;
         synchronized (desiredTilesLock) {
             tileBmps = desiredTileBmps;
+            forceTiledCommit = desiredForceTiledCommit;
+            desiredForceTiledCommit = false;
+            paintMs = desiredPaintMs;
         }
         for (int i = 0; i < DASHBOARD_TILES.length; i++) {
             BleProtocol.ImageTileOptions tile = DASHBOARD_TILES[i];
@@ -779,22 +833,27 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             return;
         }
 
-        boolean synchronizeCommits = changedTiles.size() > 1;
+        boolean synchronizedCommits = changedTiles.size() > 1;
+        if (forceTiledCommit) {
+            synchronizedCommits = false;
+        }
         boolean reserveLastByte = false;
         for (TileImagePlan plan : changedTiles) {
             plan.fragments = BleImageOptimizer.planImageFragments(plan.bmp, IMAGE_FRAGMENT_SIZE, reserveLastByte);
         }
 
         int updateId = nextImageUpdateId++;
+        imageUpdateStats.put(updateId, new ImageUpdateStats(paintMs, changedTiles.size()));
         int messageCount = 0;
         for (TileImagePlan plan : changedTiles) {
             messageCount += plan.fragments.size();
         }
         int messageNumber = 1;
-        if (!synchronizeCommits) {
-            TileImagePlan plan = changedTiles.get(0);
-            for (BleProtocol.ImageFragment fragment : plan.fragments) {
-                enqueueImageFragmentLocked(plan, fragment, fingerprint, updateId, messageNumber++, messageCount, nextTransportSeq++, true, true);
+        if (!synchronizedCommits) {
+            for (TileImagePlan plan : changedTiles) {
+                for (BleProtocol.ImageFragment fragment : plan.fragments) {
+                    enqueueImageFragmentLocked(plan, fragment, fingerprint, updateId, messageNumber++, messageCount, nextTransportSeq++, true, true);
+                }
             }
         } else {
             for (TileImagePlan plan : changedTiles) {
@@ -808,7 +867,8 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         }
 
         logLine("queue image update#" + updateId + " fingerprint=" + fingerprint
-                + " changedTiles=" + changedTiles.size() + " messages=" + messageCount);
+                + " changedTiles=" + changedTiles.size() + " messages=" + messageCount
+                + " synchronizedCommits=" + synchronizedCommits);
     }
 
     private void enqueueImageFragmentLocked(
@@ -958,6 +1018,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             displayedFingerprint = "";
             displayedTileBmps = emptyTileSet();
         } else if ("image".equals(message.kind)) {
+            imageUpdateStats.remove(message.imageUpdateId);
             clearMessagesOfKindLocked("image");
             displayedFingerprint = "";
             displayedTileBmps = emptyTileSet();
@@ -975,6 +1036,9 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             OutboundMessage message = pendingIterator.next();
             if (kind.equals(message.kind)) {
                 pendingIterator.remove();
+                if ("image".equals(kind)) {
+                    imageUpdateStats.remove(message.imageUpdateId);
+                }
                 releaseMagicLocked(message, "cleared pending " + kind);
             }
         }
@@ -983,6 +1047,9 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             OutboundMessage message = inFlightIterator.next();
             if (kind.equals(message.kind)) {
                 inFlightIterator.remove();
+                if ("image".equals(kind)) {
+                    imageUpdateStats.remove(message.imageUpdateId);
+                }
                 releaseMagicLocked(message, "cleared inflight " + kind);
             }
         }
@@ -1175,6 +1242,20 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 current.onBatteryState(headsetBattery, headsetCharging);
             } catch (Throwable t) {
                 Log.w(TAG, "listener onBatteryState failed", t);
+            }
+        });
+    }
+
+    private void emitFrameMetrics(int paintMs, int transmitMs, int tileCount) {
+        final FaceclawBleCommunicatorListener current = listener;
+        if (current == null) {
+            return;
+        }
+        mainHandler.post(() -> {
+            try {
+                current.onFrameMetrics(paintMs, transmitMs, tileCount);
+            } catch (Throwable t) {
+                Log.w(TAG, "listener onFrameMetrics failed", t);
             }
         });
     }
@@ -1379,6 +1460,17 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         }
     }
 
+    private static final class ImageUpdateStats {
+        final int paintMs;
+        final int tileCount;
+        long firstWriteStartedAtMs;
+
+        ImageUpdateStats(int paintMs, int tileCount) {
+            this.paintMs = Math.max(0, paintMs);
+            this.tileCount = tileCount;
+        }
+    }
+
     private static final class OutboundMessage {
         final String kind;
         final String label;
@@ -1394,6 +1486,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         int imageMessageNumber;
         int imageMessageCount;
         long sentAtMs;
+        long writeStartedAtMs;
         long ackDeadlineAtMs;
         byte[] ackPayload = new byte[0];
 

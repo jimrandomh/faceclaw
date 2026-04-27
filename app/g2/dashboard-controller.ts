@@ -1,15 +1,16 @@
-import { G2_LENS_HEIGHT, G2_LENS_WIDTH, GrayImage } from "../graphics/image";
 import { EventSourceType, EventSourceTypeName, OsEventTypeList, OsEventTypeName, } from "g2-kit/lite"; 
 import { ImageSource } from "@nativescript/core";
 import { loadDeviceAddresses } from "./device-addresses";
 import { ensureBlePermissions } from "./android-permissions";
-import { FaceclawCommunicatorBridge, type RawInputEvent } from "../native/faceclaw-communicator";
+import { FaceclawCommunicatorBridge, type FrameMetrics, type RawInputEvent } from "../native/faceclaw-communicator";
 import { startForegroundNotification, stopForegroundNotification, updateForegroundNotification } from "../native/foreground-service";
 import { mediaControllerBridge } from "../native/media-controller";
 import { nightscoutBridge } from "../native/nightscout";
 import { openEvenAppSettings, readEvenAppNotificationState } from "../native/even-app-conflict";
 import { grayImageToPreviewSource } from "../native/gray-image-preview";
 import {
+  applyDashboardScreenTimeout,
+  consumeDashboardTiledWakePaint,
   drawDashboard,
   getDashboardNightscoutSettings,
   getDashboardSystemCardName,
@@ -43,6 +44,7 @@ type LogLevel = "debug"|"info"|"warn"|"error";
 
 const CONTAINER_NAME = "dashboard";
 const DASHBOARD_INTERVAL_MS = 60_000;
+const SCREEN_TIMEOUT_CHECK_MS = 1_000;
 const EVEN_APP_DETECTED_MESSAGE =
   "The Even Realities app appears to be running. If Faceclaw has trouble connecting, open its app settings and force stop it.";
 
@@ -101,18 +103,18 @@ class DashboardController {
   private activeTextSettingEditorKind: TextSettingEditorKind | null = null;
   private evenNotificationActive = false;
   private evenAppConflictMessage = "";
-  private displayPreview: ImageSource | null = grayImageToPreviewSource(
-    new GrayImage(G2_LENS_WIDTH, G2_LENS_HEIGHT, 0),
-  );
+  private displayPreview: ImageSource | null = null;
   private readonly listeners = new Set<DashboardListener>();
 
   private communicator: FaceclawCommunicatorBridge | null = null;
   private dashboardTimer: ReturnType<typeof setInterval> | null = null;
+  private screenTimeoutTimer: ReturnType<typeof setInterval> | null = null;
   private offState: (() => void) | null = null;
   private offLog: (() => void) | null = null;
   private offRing: (() => void) | null = null;
   private offBattery: (() => void) | null = null;
   private offEvenAppConflict: (() => void) | null = null;
+  private offFrameMetrics: (() => void) | null = null;
   private offMedia: (() => void) | null = null;
   private offNightscout: (() => void) | null = null;
   private lastInput = "waiting...";
@@ -297,6 +299,11 @@ class DashboardController {
         this.appendLog(message);
         this.emit();
       });
+      this.offFrameMetrics = communicator.onFrameMetrics((metrics) => {
+        if (this.phase === "connected") {
+          this.setStatus(`Connected. Last frame: ${this.formatFrameMetrics(metrics)}.`);
+        }
+      });
       this.offMedia = mediaControllerBridge.onStateChange(() => {
         if (this.phase === "connected" && this.communicator) {
           void this.requestRender("interval").catch((error) => {
@@ -325,6 +332,14 @@ class DashboardController {
           this.appendLog(`dashboard update failed: ${message}`);
         });
       }, DASHBOARD_INTERVAL_MS);
+      this.screenTimeoutTimer = setInterval(() => {
+        if (this.phase !== "connected" || !this.communicator) return;
+        if (!applyDashboardScreenTimeout()) return;
+        void this.requestRender("interval").catch((error) => {
+          const message = this.formatError(error);
+          this.appendLog(`screen timeout render failed: ${message}`);
+        });
+      }, SCREEN_TIMEOUT_CHECK_MS);
     } catch (error) {
       const message = this.formatError(error);
       this.offState?.();
@@ -337,6 +352,8 @@ class DashboardController {
       this.offBattery = null;
       this.offEvenAppConflict?.();
       this.offEvenAppConflict = null;
+      this.offFrameMetrics?.();
+      this.offFrameMetrics = null;
       this.offMedia?.();
       this.offMedia = null;
       this.offNightscout?.();
@@ -372,6 +389,8 @@ class DashboardController {
     this.offBattery = null;
     this.offEvenAppConflict?.();
     this.offEvenAppConflict = null;
+    this.offFrameMetrics?.();
+    this.offFrameMetrics = null;
     this.offMedia?.();
     this.offMedia = null;
     this.offNightscout?.();
@@ -507,17 +526,18 @@ class DashboardController {
   }
 
   private async renderDashboard(reason: "initial" | "interval"): Promise<void> {
-    const now = new Date();
+    const paintStartedAtMs = Date.now();
     const image = drawDashboard();
-    this.setDisplayPreview(grayImageToPreviewSource(image));
-    if (!this.communicator) return;
+    const paintMs = Date.now() - paintStartedAtMs;
+    const forceTiledCommit = consumeDashboardTiledWakePaint();
     const fingerprint = image.fingerprint();
     const tiles = image.toEvenHubTiles().map((tile) => tile.bmp);
-    await this.communicator.submitDashboardImage(tiles, fingerprint);
+    if (this.communicator) {
+      await this.communicator.submitDashboardImage(tiles, fingerprint, forceTiledCommit, paintMs);
+    }
+    this.setDisplayPreview(grayImageToPreviewSource(image));
 
-    const renderedAt = formatForStatus(now);
     if (this.phase === "connected") {
-      this.setStatus(`Connected. Dashboard queued at ${renderedAt}.`);
       updateForegroundNotification(`Connected`);
     }
     this.appendLog(`${reason === "initial" ? "initial" : "scheduled"} dashboard image queued`);
@@ -559,9 +579,14 @@ class DashboardController {
   }
 
   private clearDashboardTimer(): void {
-    if (!this.dashboardTimer) return;
-    clearInterval(this.dashboardTimer);
-    this.dashboardTimer = null;
+    if (this.dashboardTimer) {
+      clearInterval(this.dashboardTimer);
+      this.dashboardTimer = null;
+    }
+    if (this.screenTimeoutTimer) {
+      clearInterval(this.screenTimeoutTimer);
+      this.screenTimeoutTimer = null;
+    }
   }
 
   private setPhase(phase: ConnectionPhase): void {
@@ -574,6 +599,10 @@ class DashboardController {
     if (this.status === status) return;
     this.status = status;
     this.emit();
+  }
+
+  private formatFrameMetrics(metrics: FrameMetrics): string {
+    return `paint=${Math.round(metrics.paintMs)}ms, transmit=${Math.round(metrics.transmitMs)}ms, tiles=${Math.round(metrics.tileCount)}`;
   }
 
   private appendLog(line: string): void {

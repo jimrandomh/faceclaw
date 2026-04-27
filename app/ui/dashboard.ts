@@ -1,11 +1,13 @@
-import { G2_LENS_HEIGHT, G2_LENS_WIDTH, GrayImage, imageFromAsciiArt } from "../graphics/image";
+import { G2_LENS_HEIGHT, G2_LENS_WIDTH, GrayImage } from "../graphics/image";
 import { loadEmbeddedTerminus12, loadEmbeddedTerminus16 } from "../graphics/bdffont";
+import { BATTERY_ICON_WIDTH, drawBattery } from "../graphics/battery";
 import { loadPngAsGrayImage } from "../graphics/imagefile";
 import { type RawInputEvent } from "../native/faceclaw-communicator";
 import { mediaControllerBridge } from "../native/media-controller";
 import { nightscoutBridge } from "../native/nightscout";
 import { readActiveNotificationIcons } from "../native/notification-icons";
 import { readPhoneBatteryState } from "../native/phone-battery";
+import { readSystemStatusIcons } from "../native/system-status-icons";
 import { OsEventTypeList, EventSourceType } from "g2-kit/lite";
 import {
   getDashboardPlugin,
@@ -20,19 +22,30 @@ import {
   isNightscoutSettingsConfigured,
   loadDashboardSlotConfig,
   loadNightscoutSettings,
+  loadScreenTimeoutSetting,
   loadSystemCardSettings,
   loadSystemCardName,
+  loadWakeModeSetting,
+  nextScreenTimeoutSetting,
+  nextWakeModeSetting,
   saveDashboardSlotPlugin,
   saveNightscoutApiToken,
   saveNightscoutSiteUrl,
+  saveScreenTimeoutSetting,
+  saveWakeModeSetting,
+  screenTimeoutLabel,
+  screenTimeoutMs,
   saveSystemCardSetting,
   saveSystemCardName,
+  wakeModeLabel,
   type DashboardSlotId,
   type NightscoutSettings,
+  type ScreenTimeoutSetting,
   type SystemCardSettingKey,
+  type WakeModeSetting,
 } from "./dashboard-settings";
 import { Layer, LayerActions, LayerStack, type DashboardInputEvent, type LayerContext } from "./layers";
-import { MenuLayer } from "./menu";
+import { drawRightValueMenuItem, drawToggleMenuItem, MenuLayer } from "./menu";
 
 type DashboardCardId = "system" | DashboardSlotId;
 export type DashboardBatteryLevels = {
@@ -44,10 +57,13 @@ export type DashboardBatteryLevels = {
 let dashboardState = {
   logLines: [] as string[],
   screenOn: true,
-  selectedCard: "system" as DashboardCardId,
+  lastInputAtMs: Date.now(),
   slotConfig: loadDashboardSlotConfig(),
   systemCardName: loadSystemCardName(),
   systemCardSettings: loadSystemCardSettings(),
+  screenTimeout: loadScreenTimeoutSetting(),
+  wakeMode: loadWakeModeSetting(),
+  tiledWakePaintPending: false,
   nightscoutSettings: loadNightscoutSettings(),
   battery: {
     headset: null,
@@ -71,37 +87,8 @@ const NOTIFICATION_ICON_SIZE = 24;
 const SYSTEM_CARD_ITEM_HEIGHT = 38;
 const SYSTEM_CARD_ITEM_GAP = 2;
 const BATTERY_ITEM_Y_OFFSET = 4;
-const EMPTY_BATTERY_ICON = imageFromAsciiArt(
-  [
-    " ##################  ",
-    " #................#  ",
-    " #................###",
-    " #................###",
-    " #................###",
-    " #................###",
-    " #................###",
-    " #................###",
-    " #................#  ",
-    " ##################  ",
-  ],
-  120,
-);
-const BATTERY_BOLT_ICON = imageFromAsciiArt(
-  [
-    "....#..",
-    "...##..",
-    "..##...",
-    ".######",
-    "...##..",
-    "..##...",
-    "..#....",
-  ],
-  255,
-);
-const BATTERY_FILL_X = 3;
-const BATTERY_FILL_Y = 2;
-const BATTERY_FILL_WIDTH = 14;
-const BATTERY_FILL_HEIGHT = 6;
+const TOP_LEFT_MENU_LAYOUT = { x: 8, y: 8, width: 272, height: 128 };
+const TOP_RIGHT_MENU_LAYOUT = { x: 296, y: 8, width: 272, height: 128 };
 
 function rawInputEventToInputEvent(event: RawInputEvent): DashboardInputEvent {
   if (event.kind === "sys-event") {
@@ -144,6 +131,7 @@ function eventSourceToString(eventSource: number): "ring" | "left-arm" | "right-
 
 export async function receiveInput(event: RawInputEvent): Promise<void> {
   const inputEvent = rawInputEventToInputEvent(event);
+  dashboardState.lastInputAtMs = Date.now();
   dashboardState.logLines.push(eventToString(inputEvent));
   await dashboardLayers.handleInput(inputEvent);
 }
@@ -174,6 +162,12 @@ export function setDashboardActions(actions: Partial<LayerActions>): void {
 
 export function drawDashboard(): GrayImage {
   return dashboardLayers.paint();
+}
+
+export function consumeDashboardTiledWakePaint(): boolean {
+  const value = dashboardState.tiledWakePaintPending;
+  dashboardState.tiledWakePaintPending = false;
+  return value;
 }
 
 export function setDashboardSystemCardName(name: string): string {
@@ -214,6 +208,15 @@ export function setDashboardSystemCardSetting(key: SystemCardSettingKey, value: 
     [key]: value,
   };
   saveSystemCardSetting(key, value);
+}
+
+export function applyDashboardScreenTimeout(nowMs = Date.now()): boolean {
+  const timeoutMs = screenTimeoutMs(dashboardState.screenTimeout);
+  if (timeoutMs === null || !dashboardState.screenOn) return false;
+  if (nowMs - dashboardState.lastInputAtMs < timeoutMs) return false;
+  dashboardState.screenOn = false;
+  dashboardLayers.clearToBase();
+  return true;
 }
 
 export function setDashboardBatteryLevels(levels: Partial<DashboardBatteryLevels>): void {
@@ -264,29 +267,6 @@ function drawBatteryFlowItem(image: GrayImage, x: number, y: number, item: Extra
   image.bitBlt(battery, x + ((itemWidth - battery.width) / 2) | 0, y + 16 + BATTERY_ITEM_Y_OFFSET);
 }
 
-function drawBattery(percentCharge: number, isCharging: boolean): GrayImage {
-  const icon = new GrayImage(EMPTY_BATTERY_ICON.width, EMPTY_BATTERY_ICON.height, 0);
-  icon.bitBlt(EMPTY_BATTERY_ICON, 0, 0);
-  const clamped = Math.max(0, Math.min(100, percentCharge));
-  const fillWidth = Math.round((BATTERY_FILL_WIDTH * clamped) / 100);
-  icon.fillRect(BATTERY_FILL_X, BATTERY_FILL_Y, fillWidth, BATTERY_FILL_HEIGHT, 190);
-  if (isCharging) {
-    overlayImage(icon, BATTERY_BOLT_ICON, 7, 1);
-  }
-  return icon;
-}
-
-function overlayImage(target: GrayImage, source: GrayImage, dx: number, dy: number): void {
-  for (let y = 0; y < source.height; y++) {
-    for (let x = 0; x < source.width; x++) {
-      const value = source.pixels[y * source.width + x] ?? 0;
-      if (value > 0) {
-        target.setPixel(dx + x, dy + y, value);
-      }
-    }
-  }
-}
-
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
@@ -315,10 +295,16 @@ function drawSystemCardFlowItems(image: GrayImage, bounds: DashboardPluginCardBo
   const top = bounds.y + 84;
   const right = bounds.x + bounds.width - 10;
   const bottom = bounds.y + bounds.height - 6;
-  const items = collectBatteryItems();
+  const items: SystemCardFlowItem[] = [];
   if (dashboardState.systemCardSettings.showAndroidNotifications) {
     const maxNotificationIcons = Math.max(0, ((right - left) / Math.max(1, NOTIFICATION_ICON_SIZE + SYSTEM_CARD_ITEM_GAP)) | 0) * 2;
     for (const icon of readActiveNotificationIcons(maxNotificationIcons)) {
+      items.push({ type: "notification", icon });
+    }
+  }
+  items.push(...collectBatteryItems());
+  if (dashboardState.systemCardSettings.showSignalStrength) {
+    for (const icon of readSystemStatusIcons()) {
       items.push({ type: "notification", icon });
     }
   }
@@ -351,7 +337,7 @@ function systemCardFlowItemWidth(item: SystemCardFlowItem): number {
   if (item.type === "notification") {
     return NOTIFICATION_ICON_SIZE;
   }
-  return Math.max(EMPTY_BATTERY_ICON.width, dashboardFont.measureText(item.label));
+  return Math.max(BATTERY_ICON_WIDTH, dashboardFont.measureText(item.label));
 }
 
 class DashboardLayer implements Layer {
@@ -366,7 +352,6 @@ class DashboardLayer implements Layer {
     const pluginState = getPluginState();
 
     const systemBounds = getCardBounds("system");
-    this.drawCardBorder(image, systemBounds, dashboardState.selectedCard === "system");
     if (logo && dashboardState.systemCardSettings.showFaceclawLogo) {
       image.bitBlt(logo, systemBounds.x + 10, systemBounds.y + 10);
     }
@@ -378,13 +363,10 @@ class DashboardLayer implements Layer {
     for (const slot of getDashboardSlotIds()) {
       const bounds = getCardBounds(slot);
       const pluginId = dashboardState.slotConfig[slot];
-      if (!isBlankDashboardPlugin(pluginId)) {
-        this.drawCardBorder(image, bounds, dashboardState.selectedCard === slot);
-      }
       getDashboardPlugin(pluginId).renderCard({
         image,
         bounds,
-        selected: dashboardState.selectedCard === slot,
+        selected: false,
         font: dashboardFont,
         state: pluginState,
       });
@@ -396,68 +378,83 @@ class DashboardLayer implements Layer {
   handleInput(event: DashboardInputEvent, ctx: { stack: LayerStack }): void {
     if (!dashboardState.screenOn) {
       if (event.type === "double-click") {
-        dashboardState.selectedCard = "system";
         dashboardState.screenOn = true;
+        dashboardState.tiledWakePaintPending = dashboardState.wakeMode === "tiled";
+        ctx.stack.push(createRootMenuLayer());
       }
-      return;
-    }
-
-    if (event.type === "scroll-up") {
-      cycleSelection(-1);
-      return;
-    }
-
-    if (event.type === "scroll-down") {
-      cycleSelection(1);
       return;
     }
 
     if (event.type === "click") {
-      if (dashboardState.selectedCard === "system") {
-        ctx.stack.push(createRootMenuLayer());
-      } else {
-        const pluginId = dashboardState.slotConfig[dashboardState.selectedCard];
-        if (pluginId === "nightscout" && !isNightscoutSettingsConfigured(dashboardState.nightscoutSettings)) {
-          ctx.stack.push(createNightscoutSettingsMenuLayer());
-          return;
-        }
-        const layer = getDashboardPlugin(pluginId).createFullscreenLayer?.(
-          getPluginState,
-        );
-        if (layer) {
-          ctx.stack.push(layer);
-        }
-      }
+      ctx.stack.push(createRootMenuLayer());
       return;
     }
 
     if (event.type === "double-click") {
-      dashboardState.selectedCard = "system";
       dashboardState.screenOn = false;
-    }
-  }
-
-  private drawCardBorder(image: GrayImage, bounds: DashboardPluginCardBounds, selected: boolean): void {
-    if (selected) {
-      image.drawRect(bounds.x, bounds.y, bounds.width, bounds.height, 60);
     }
   }
 }
 
+class RootMenuLayer extends MenuLayer {
+  async handleInput(event: DashboardInputEvent, ctx: LayerContext): Promise<void> {
+    if (event.type === "double-click") {
+      dashboardState.screenOn = false;
+      ctx.stack.clearToBase();
+      return;
+    }
+    await super.handleInput(event, ctx);
+  }
+}
+
 function createRootMenuLayer(): MenuLayer {
-  return new MenuLayer(
+  return new RootMenuLayer(
     "Menu",
     [
       {
-        label: "About",
+        label: "Apps",
         onSelect: (ctx) => {
-          ctx.stack.push(new AboutLayer());
+          ctx.stack.push(createAppsMenuLayer());
         },
       },
       {
         label: "Settings",
         onSelect: (ctx) => {
           ctx.stack.push(createSettingsMenuLayer());
+        },
+      },
+      ...getDashboardSlotIds().map((slot) => ({
+        label: pluginLabelForSlot(slot),
+        onSelect: (ctx: LayerContext) => {
+          openDashboardSlot(slot, ctx);
+        },
+        render: ({ image, x, y }: { image: GrayImage; x: number; y: number }) => {
+          image.drawText(dashboardFont, x, y + 3, pluginLabelForSlot(slot), 200);
+        },
+      })),
+      {
+        label: "System",
+        onSelect: (ctx) => {
+          ctx.stack.push(createSystemMenuLayer());
+        },
+      },
+    ],
+    TOP_LEFT_MENU_LAYOUT,
+  );
+}
+
+function createAppsMenuLayer(): MenuLayer {
+  return new MenuLayer("Apps", [], TOP_LEFT_MENU_LAYOUT);
+}
+
+function createSystemMenuLayer(): MenuLayer {
+  return new MenuLayer(
+    "System",
+    [
+      {
+        label: "About",
+        onSelect: (ctx) => {
+          ctx.stack.push(new AboutLayer());
         },
       },
       {
@@ -468,19 +465,35 @@ function createRootMenuLayer(): MenuLayer {
         },
       },
     ],
-    {
-      x: 16,
-      y: 24,
-      width: 252,
-      height: 180,
-    },
+    TOP_LEFT_MENU_LAYOUT,
   );
+}
+
+function openDashboardSlot(slot: DashboardSlotId, ctx: LayerContext): void {
+  const pluginId = dashboardState.slotConfig[slot];
+  if (isBlankDashboardPlugin(pluginId)) {
+    return;
+  }
+  if (pluginId === "nightscout" && !isNightscoutSettingsConfigured(dashboardState.nightscoutSettings)) {
+    ctx.stack.push(createNightscoutSettingsMenuLayer());
+    return;
+  }
+  const layer = getDashboardPlugin(pluginId).createFullscreenLayer?.(getPluginState);
+  if (layer) {
+    ctx.stack.push(layer);
+  }
 }
 
 function createSettingsMenuLayer(): MenuLayer {
   return new MenuLayer(
     "Settings",
     [
+      {
+        label: "Display",
+        onSelect: (ctx) => {
+          ctx.stack.push(createDisplaySettingsMenuLayer());
+        },
+      },
       {
         label: "Dashboard",
         onSelect: (ctx) => {
@@ -494,13 +507,44 @@ function createSettingsMenuLayer(): MenuLayer {
         },
       },
     ],
-    {
-      x: 16,
-      y: 24,
-      width: 252,
-      height: 180,
-    },
+    TOP_LEFT_MENU_LAYOUT,
   );
+}
+
+function createDisplaySettingsMenuLayer(): MenuLayer {
+  return new MenuLayer(
+    "Display",
+    [
+      {
+        label: "Screen timeout",
+        onSelect: () => {
+          setScreenTimeout(nextScreenTimeoutSetting(dashboardState.screenTimeout));
+        },
+        render: ({ image, x, y, width }) => {
+          drawRightValueMenuItem(image, dashboardFont, x, y, width, "Screen timeout", screenTimeoutLabel(dashboardState.screenTimeout));
+        },
+      },
+      {
+        label: "Wake mode",
+        onSelect: () => {
+          setWakeMode(nextWakeModeSetting(dashboardState.wakeMode));
+        },
+        render: ({ image, x, y, width }) => {
+          drawRightValueMenuItem(image, dashboardFont, x, y, width, "Wake mode", wakeModeLabel(dashboardState.wakeMode));
+        },
+      },
+    ],
+    TOP_LEFT_MENU_LAYOUT,
+  );
+}
+
+function setScreenTimeout(value: ScreenTimeoutSetting): void {
+  dashboardState.screenTimeout = saveScreenTimeoutSetting(value);
+  dashboardState.lastInputAtMs = Date.now();
+}
+
+function setWakeMode(value: WakeModeSetting): void {
+  dashboardState.wakeMode = saveWakeModeSetting(value);
 }
 
 function createDashboardSettingsMenuLayer(): MenuLayer {
@@ -519,16 +563,11 @@ function createDashboardSettingsMenuLayer(): MenuLayer {
           ctx.stack.push(createSlotPickerMenu(slot));
         },
         render: ({ image, x, y }) => {
-          image.drawText(dashboardFont, x, y + 4, `${slotMenuLabel(slot)}: ${pluginLabelForSlot(slot)}`, 200);
+          image.drawText(dashboardFont, x, y + 3, `${slotMenuLabel(slot)}: ${pluginLabelForSlot(slot)}`, 200);
         },
       })),
     ],
-    {
-      x: 16,
-      y: 24,
-      width: 252,
-      height: 180,
-    },
+    TOP_LEFT_MENU_LAYOUT,
   );
 }
 
@@ -543,19 +582,15 @@ function createSystemCardSettingsMenuLayer(): MenuLayer {
           ctx.stack.push(new EditSystemNameLayer());
         },
         render: ({ image, x, y }) => {
-          image.drawText(dashboardFont, x, y + 4, `Name: ${getDisplayedSystemCardName()}`, 200);
+          image.drawText(dashboardFont, x, y + 3, `Name: ${getDisplayedSystemCardName()}`, 200);
         },
       },
       createSystemCardToggleItem("Show Faceclaw Logo", "showFaceclawLogo"),
       createSystemCardToggleItem("Show Battery Indicators", "showBatteryIndicators"),
       createSystemCardToggleItem("Show Android Notifications", "showAndroidNotifications"),
+      createSystemCardToggleItem("Show Signal Strength", "showSignalStrength"),
     ],
-    {
-      x: 308,
-      y: 24,
-      width: 252,
-      height: 180,
-    },
+    TOP_RIGHT_MENU_LAYOUT,
     true,
   );
 }
@@ -567,23 +602,9 @@ function createSystemCardToggleItem(label: string, key: SystemCardSettingKey) {
       setDashboardSystemCardSetting(key, !dashboardState.systemCardSettings[key]);
     },
     render: ({ image, x, y, width, selected }: { image: GrayImage; x: number; y: number; width: number; selected: boolean }) => {
-      drawToggleMenuItem(image, x, y, width, label, dashboardState.systemCardSettings[key], selected);
+      drawToggleMenuItem(image, dashboardFont, x, y, width, label, dashboardState.systemCardSettings[key], selected);
     },
   };
-}
-
-function drawToggleMenuItem(image: GrayImage, x: number, y: number, width: number, label: string, enabled: boolean, selected: boolean): void {
-  const switchWidth = 34;
-  const switchHeight = 16;
-  const switchX = x + width - switchWidth - 2;
-  const switchY = y + 2;
-  image.drawText(dashboardFont, x, y + 4, label, 200);
-  const offFill = selected ? 0 : 18;
-  image.fillRoundedRect(switchX, switchY, switchWidth, switchHeight, enabled ? 70 : offFill, 8);
-  image.drawRoundedRect(switchX, switchY, switchWidth, switchHeight, enabled ? 130 : 55, 8);
-  const knobSize = 12;
-  const knobX = enabled ? switchX + switchWidth - knobSize - 2 : switchX + 2;
-  image.fillRoundedRect(knobX, switchY + 2, knobSize, knobSize, enabled ? 230 : selected ? 170 : 90, 6);
 }
 
 function createIntegrationsMenuLayer(): MenuLayer {
@@ -597,12 +618,7 @@ function createIntegrationsMenuLayer(): MenuLayer {
         },
       },
     ],
-    {
-      x: 16,
-      y: 24,
-      width: 252,
-      height: 180,
-    },
+    TOP_LEFT_MENU_LAYOUT,
   );
 }
 
@@ -617,7 +633,7 @@ function createNightscoutSettingsMenuLayer(): MenuLayer {
           ctx.stack.push(new EditTextSettingLayer("Edit Nightscout URL", () => dashboardState.nightscoutSettings.siteUrl || "(empty)"));
         },
         render: ({ image, x, y }) => {
-          image.drawText(dashboardFont, x, y + 4, `URL: ${truncateSetting(dashboardState.nightscoutSettings.siteUrl)}`, 200);
+          image.drawText(dashboardFont, x, y + 3, `URL: ${truncateSetting(dashboardState.nightscoutSettings.siteUrl)}`, 200);
         },
       },
       {
@@ -627,16 +643,11 @@ function createNightscoutSettingsMenuLayer(): MenuLayer {
           ctx.stack.push(new EditTextSettingLayer("Edit API token", () => maskToken(dashboardState.nightscoutSettings.apiToken)));
         },
         render: ({ image, x, y }) => {
-          image.drawText(dashboardFont, x, y + 4, `Token: ${maskToken(dashboardState.nightscoutSettings.apiToken)}`, 200);
+          image.drawText(dashboardFont, x, y + 3, `Token: ${maskToken(dashboardState.nightscoutSettings.apiToken)}`, 200);
         },
       },
     ],
-    {
-      x: 16,
-      y: 24,
-      width: 252,
-      height: 180,
-    },
+    TOP_LEFT_MENU_LAYOUT,
   );
 }
 
@@ -694,22 +705,14 @@ function createSlotPickerMenu(slot: DashboardSlotId): MenuLayer {
       onSelect: (ctx) => {
         dashboardState.slotConfig[slot] = plugin.id;
         saveDashboardSlotPlugin(slot, plugin.id);
-        if (dashboardState.selectedCard === slot && isBlankDashboardPlugin(plugin.id)) {
-          dashboardState.selectedCard = "system";
-        }
         ctx.stack.pop();
       },
       render: ({ image, x, y }) => {
         const selected = dashboardState.slotConfig[slot] === plugin.id ? " *" : "";
-        image.drawText(dashboardFont, x, y + 4, `${plugin.label}${selected}`, 200);
+        image.drawText(dashboardFont, x, y + 3, `${plugin.label}${selected}`, 200);
       },
     })),
-    {
-      x: 16,
-      y: 24,
-      width: 252,
-      height: 180,
-    },
+    TOP_LEFT_MENU_LAYOUT,
   );
 }
 
@@ -729,9 +732,9 @@ class AboutLayer implements Layer {
       "A lobster on top of a smiley face.",
       "Perching on the faces of giants.",
       "",
-      "System card opens menus.",
-      "Swipe cycles dashboard cards.",
-      "Plugin cards open fullscreen views.",
+      "The menu opens dashboard cards.",
+      "Settings configure card slots.",
+      "Double-click backs out of menus.",
     ];
     for (let index = 0; index < aboutLines.length; index++) {
       image.drawText(dashboardFont, 22, 128 + index * 14, aboutLines[index]!, 180);
@@ -759,8 +762,6 @@ function getPluginState(): DashboardPluginState {
 function getCardBounds(card: DashboardCardId): DashboardPluginCardBounds {
   switch (card) {
     case "system":
-      return { x: 0, y: 0, width: G2_LENS_WIDTH / 2 - 2, height: G2_LENS_HEIGHT / 2 - 2 };
-    case "top-right":
       return {
         x: G2_LENS_WIDTH / 2 + 2,
         y: 0,
@@ -784,24 +785,12 @@ function getCardBounds(card: DashboardCardId): DashboardPluginCardBounds {
   }
 }
 
-function cycleSelection(direction: -1 | 1): void {
-  const order: DashboardCardId[] = [
-    "system",
-    ...getDashboardSlotIds().filter((slot) => !isBlankDashboardPlugin(dashboardState.slotConfig[slot])),
-  ];
-  const index = order.indexOf(dashboardState.selectedCard);
-  const currentIndex = index >= 0 ? index : 0;
-  dashboardState.selectedCard = order[(currentIndex + direction + order.length) % order.length]!;
-}
-
 function slotMenuLabel(slot: DashboardSlotId): string {
   switch (slot) {
-    case "top-right":
-      return "Top-right slot";
     case "bottom-left":
-      return "Bottom-left slot";
+      return "Bottom-left";
     case "bottom-right":
-      return "Bottom-right slot";
+      return "Bottom-right";
   }
 }
 
@@ -820,4 +809,5 @@ function maskToken(token: string): string {
 }
 
 const dashboardLayers = new LayerStack(new DashboardLayer(), dashboardFont, dashboardActions);
+dashboardLayers.push(createRootMenuLayer());
 

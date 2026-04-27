@@ -19,6 +19,12 @@ export type HeadsetBatteryState = {
   chargingStatus: number;
 };
 
+export type FrameMetrics = {
+  paintMs: number;
+  transmitMs: number;
+  tileCount: number;
+};
+
 export type RawInputEvent =
   | {
       kind: "list-click";
@@ -51,6 +57,11 @@ function toJavaByteArray(bytes: Uint8Array): number[] {
   return out;
 }
 
+function nonNegativeNumber(value: number): number {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? Math.max(0, numeric) : 0;
+}
+
 export class FaceclawCommunicatorBridge {
   private readonly communicator: any;
   private readonly listenerProxy: any;
@@ -59,6 +70,7 @@ export class FaceclawCommunicatorBridge {
   private readonly ringListeners = new Set<(event: RawInputEvent) => void>();
   private readonly batteryListeners = new Set<(state: HeadsetBatteryState) => void>();
   private readonly evenAppConflictListeners = new Set<(message: string) => void>();
+  private readonly frameMetricsListeners = new Set<(metrics: FrameMetrics) => void>();
 
   constructor(addresses: { right: string; left: string; ring?: string }) {
     const context = Utils.android.getApplicationContext();
@@ -117,6 +129,16 @@ export class FaceclawCommunicatorBridge {
           listener(String(message));
         }
       },
+      onFrameMetrics: (paintMs: number, transmitMs: number, tileCount: number) => {
+        const metrics = {
+          paintMs: nonNegativeNumber(paintMs),
+          transmitMs: nonNegativeNumber(transmitMs),
+          tileCount: nonNegativeNumber(tileCount),
+        };
+        for (const listener of this.frameMetricsListeners) {
+          listener(metrics);
+        }
+      },
     });
     this.communicator.setListener(this.listenerProxy);
   }
@@ -146,11 +168,16 @@ export class FaceclawCommunicatorBridge {
     return () => this.evenAppConflictListeners.delete(listener);
   }
 
+  onFrameMetrics(listener: (metrics: FrameMetrics) => void): () => void {
+    this.frameMetricsListeners.add(listener);
+    return () => this.frameMetricsListeners.delete(listener);
+  }
+
   async start(): Promise<void> {
     this.communicator.start();
   }
 
-  async submitDashboardImage(tileBmps: Uint8Array[], fingerprint: string): Promise<void> {
+  async submitDashboardImage(tileBmps: Uint8Array[], fingerprint: string, forceTiledCommit = false, paintMs = -1): Promise<void> {
     if (tileBmps.length !== 4) {
       throw new Error(`expected 4 dashboard tiles, got ${tileBmps.length}`);
     }
@@ -160,6 +187,8 @@ export class FaceclawCommunicatorBridge {
       toJavaByteArray(tileBmps[2]!),
       toJavaByteArray(tileBmps[3]!),
       fingerprint,
+      forceTiledCommit,
+      Math.round(nonNegativeNumber(paintMs)),
     );
   }
 
