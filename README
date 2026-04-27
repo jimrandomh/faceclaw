@@ -48,3 +48,31 @@ installed.
    the official Even Realities app, and some amount of experience/iteration
    on the issues that come with keeping it runnign all day
  * On-phone screen mirroring and simulated ring input
+
+## Additional Caveats
+
+Some permissions are used, but may not reliably prompted for. Go to Android
+Settings > Apps > Faceclaw to ensure permissions are available or things may
+not work.
+
+Sometimes the official Even Realities app restarts itself in the background,
+and does things that make the already-bad image sending throughput even worse.
+If you're seeing paint times >3s, this is probably why. Other apps that use
+BLE (such as Dexcom) can also do things that interfere.
+
+The R1 ring communicates with the headset, and Faceclaw gets ring events
+indirectly via the headset. However if you click the Disconnect button on the
+headset in the Even Realities app, in addition to disconnecting the headset
+from the phone it will also disconnect the headset from the ring. You can
+work around this by force-stopping the Even Realities app instead, which will
+leave them connected, but this leads to the problems described above with the
+Even Realities app silently restarting and interfering. This can probably be
+fixed by sending the right messages to the ring and the headset to reconnect
+them to each other, but I don't know how to do that yet.
+
+Being a background app on a locked Android phone is fraught, and there may be
+issues, both with Android in general and with specific phone models, that lead
+to it getting paused, throttled to low CPU usage, etc. It's currently hard to
+disentangle this class of issue from other connectivity issues related to the
+slowness of image sending and conflict with the Even Realities app, but it's
+probably there.
