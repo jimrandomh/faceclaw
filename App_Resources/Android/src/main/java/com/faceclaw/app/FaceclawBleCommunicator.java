@@ -340,7 +340,6 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 }
 
                 long sleepMs = driveSession();
-                Log.i(TAG, "driveSession returned " + sleepMs + "ms");
                 if (sleepMs > 0) {
                     interruptibleSleep.sleep(sleepMs);
                 }
@@ -516,9 +515,8 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     } //}}}
 
     private long driveSession() {
-        Log.i(TAG, "driveSession called (pendingMessages.size=" + pendingMessages.size() + " inFlightMessages.size=" + inFlightMessages.size() + ")");
+        Log.d(TAG, "driveSession called (pendingMessages.size=" + pendingMessages.size() + " inFlightMessages.size=" + inFlightMessages.size() + ")");
         synchronized (lock) {
-            Log.i(TAG, "driveSession took lock");
             long now = SystemClock.elapsedRealtime();
 
             if (!inFlightMessages.isEmpty()) {

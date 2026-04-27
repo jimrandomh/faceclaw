@@ -111,7 +111,7 @@ public class BleProtocol {
         inner.add(encodeStringField(2, tile.name));
         inner.add(encodeVarintField(3, sessionId));
         inner.add(encodeVarintField(4, totalSize));
-        inner.add(encodeVarintField(5, 0));
+        inner.add(encodeVarintField(5, 0)); //compression
         inner.add(encodeVarintField(6, fragment.index));
         inner.add(encodeVarintField(7, fragment.size));
         inner.add(encodeBytesField(8, fragment.data));
