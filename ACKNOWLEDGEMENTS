@@ -2,3 +2,6 @@ Many thanks to g2-kit-unofficial: https://github.com/Commute773/g2-kit-unofficia
 and others who contributed to documenting the G2's bluetooth protocol. It has enabled me
 to keep my room clean, so to speak.
 
+Voice wake-word detection uses sherpa-onnx: https://github.com/k2-fsa/sherpa-onnx/
+and the sherpa-onnx KWS Zipformer GigaSpeech model published by the k2-fsa/sherpa
+community.

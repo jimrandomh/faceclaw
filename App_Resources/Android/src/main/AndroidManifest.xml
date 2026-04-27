@@ -19,8 +19,11 @@
 	<uses-permission android:name="android.permission.BLUETOOTH_CONNECT"/>
 	<uses-permission android:name="android.permission.BLUETOOTH_SCAN" android:usesPermissionFlags="neverForLocation"/>
 	<uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+	<uses-permission android:name="android.permission.RECORD_AUDIO"/>
+	<uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS"/>
 	<uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
 	<uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE"/>
+	<uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE"/>
 
 	<application
 		android:name="com.tns.NativeScriptApplication"
@@ -51,7 +54,7 @@
 			android:name="com.faceclaw.app.FaceclawForegroundService"
 			android:enabled="true"
 			android:exported="false"
-			android:foregroundServiceType="connectedDevice" />
+			android:foregroundServiceType="connectedDevice|microphone" />
 		<service
 			android:name="com.faceclaw.app.FaceclawMediaNotificationListenerService"
 			android:enabled="true"

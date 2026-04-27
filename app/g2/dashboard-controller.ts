@@ -1,19 +1,21 @@
 import { ImageSource } from "@nativescript/core";
 import { EventSourceType, EventSourceTypeName, OsEventTypeList, OsEventTypeName } from "./events";
 import { loadDeviceAddresses } from "./device-addresses";
-import { ensureBlePermissions } from "./android-permissions";
+import { ensureBlePermissions, ensureVoicePermissions } from "./android-permissions";
 import { FaceclawCommunicatorBridge, type FrameMetrics, type RawInputEvent } from "../native/faceclaw-communicator";
 import { startForegroundNotification, stopForegroundNotification, updateForegroundNotification } from "../native/foreground-service";
 import { mediaControllerBridge } from "../native/media-controller";
 import { nightscoutBridge } from "../native/nightscout";
 import { openEvenAppSettings, readEvenAppNotificationState } from "../native/even-app-conflict";
 import { grayImageToPreviewSource } from "../native/gray-image-preview";
+import { voiceControlBridge } from "../native/voice-control";
 import {
   applyDashboardScreenTimeout,
   consumeDashboardTiledWakePaint,
   drawDashboard,
   getDashboardNightscoutSettings,
   getDashboardSystemCardName,
+  isDashboardVoiceControlEnabled,
   receiveInput,
   resetDashboardSleepTimerAndWake,
   setDashboardBatteryLevels,
@@ -21,6 +23,7 @@ import {
   setDashboardNightscoutApiToken,
   setDashboardNightscoutSiteUrl,
   setDashboardSystemCardName,
+  setDashboardVoiceControlEnabled,
 } from "../ui/dashboard";
 
 type ConnectionPhase = "disconnected" | "connecting" | "connected" | "disconnecting";
@@ -118,6 +121,8 @@ class DashboardController {
   private offFrameMetrics: (() => void) | null = null;
   private offMedia: (() => void) | null = null;
   private offNightscout: (() => void) | null = null;
+  private offVoiceStatus: (() => void) | null = null;
+  private offVoiceWakeWord: (() => void) | null = null;
   private lastInput = "waiting...";
   private lastSys = "none yet";
   private renderInProgress = false;
@@ -132,6 +137,7 @@ class DashboardController {
       startNightscoutSiteUrlEdit: () => this.startNightscoutSiteUrlEdit(),
       startNightscoutApiTokenEdit: () => this.startNightscoutApiTokenEdit(),
       endTextSettingEdit: () => this.endTextSettingEdit(),
+      setVoiceControlEnabled: (enabled) => this.setVoiceControlEnabled(enabled),
     });
   }
 
@@ -322,11 +328,20 @@ class DashboardController {
           });
         }
       });
+      this.offVoiceStatus = voiceControlBridge.onStatus((state) => {
+        this.appendLog(state.status);
+      });
+      this.offVoiceWakeWord = voiceControlBridge.onWakeWord((keyword) => {
+        void this.handleWakeWord(keyword).catch((error) => {
+          this.appendLog(`wake-word handler failed: ${this.formatError(error)}`);
+        });
+      });
 
       await mediaControllerBridge.start();
       await nightscoutBridge.start();
       await communicator.start();
       await this.requestRender("initial");
+      this.startVoiceControlIfEnabled();
       this.dashboardTimer = setInterval(() => {
         void this.requestRender("interval").catch((error) => {
           const message = this.formatError(error);
@@ -360,8 +375,13 @@ class DashboardController {
       this.offMedia = null;
       this.offNightscout?.();
       this.offNightscout = null;
+      this.offVoiceStatus?.();
+      this.offVoiceStatus = null;
+      this.offVoiceWakeWord?.();
+      this.offVoiceWakeWord = null;
       await mediaControllerBridge.stop().catch(() => {});
       await nightscoutBridge.stop().catch(() => {});
+      voiceControlBridge.stop();
       if (communicator) {
         await communicator.close().catch(() => {});
       }
@@ -397,6 +417,10 @@ class DashboardController {
     this.offMedia = null;
     this.offNightscout?.();
     this.offNightscout = null;
+    this.offVoiceStatus?.();
+    this.offVoiceStatus = null;
+    this.offVoiceWakeWord?.();
+    this.offVoiceWakeWord = null;
 
     const communicator = this.communicator;
     this.communicator = null;
@@ -413,6 +437,7 @@ class DashboardController {
       }
       await mediaControllerBridge.stop().catch(() => {});
       await nightscoutBridge.stop().catch(() => {});
+      voiceControlBridge.stop();
       await communicator?.close().catch(() => {});
     } finally {
       stopForegroundNotification();
@@ -443,6 +468,30 @@ class DashboardController {
     this.editingSystemCardName = false;
     this.activeTextSettingEditorKind = "nightscout-api-token";
     this.emit();
+  }
+
+  private async setVoiceControlEnabled(enabled: boolean): Promise<void> {
+    if (enabled) {
+      try {
+        await ensureVoicePermissions();
+      } catch (error) {
+        this.appendLog(`voice control permission failed: ${this.formatError(error)}`);
+        return;
+      }
+    }
+
+    setDashboardVoiceControlEnabled(enabled);
+    this.appendLog(`Voice control ${enabled ? "enabled" : "disabled"}.`);
+    if (enabled) {
+      this.startVoiceControlIfEnabled();
+    } else {
+      voiceControlBridge.stop();
+    }
+    if (this.phase === "connected" && this.communicator) {
+      await this.requestRender("interval").catch((error) => {
+        this.appendLog(`voice setting render failed: ${this.formatError(error)}`);
+      });
+    }
   }
 
   private endTextSettingEdit(): void {
@@ -578,6 +627,29 @@ class DashboardController {
         await this.requestRender("interval");
       }
     }
+  }
+
+  private async handleWakeWord(keyword: string): Promise<void> {
+    const normalized = keyword.trim();
+    if (normalized.length === 0) return;
+    this.appendLog(`wake-word detected: ${normalized}`);
+    const changed = resetDashboardSleepTimerAndWake();
+    if (this.phase === "connected" && this.communicator) {
+      if (changed) {
+        await this.requestRender("initial");
+      }
+      return;
+    }
+    if (changed) {
+      const image = drawDashboard();
+      this.setDisplayPreview(grayImageToPreviewSource(image));
+    }
+  }
+
+  private startVoiceControlIfEnabled(): void {
+    if (!this.communicator) return;
+    if (!isDashboardVoiceControlEnabled()) return;
+    voiceControlBridge.start();
   }
 
   private clearDashboardTimer(): void {

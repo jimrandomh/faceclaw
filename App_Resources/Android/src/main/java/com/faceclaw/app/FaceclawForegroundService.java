@@ -6,6 +6,7 @@ import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.app.Service;
 import android.content.Intent;
+import android.content.pm.ServiceInfo;
 import android.os.Build;
 import android.os.IBinder;
 
@@ -41,7 +42,11 @@ public class FaceclawForegroundService extends Service {
                 text != null && !text.trim().isEmpty() ? text : "Keeping the dashboard connected"
         );
 
-        startForeground(NOTIFICATION_ID, notification);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            startForeground(NOTIFICATION_ID, notification, foregroundServiceType());
+        } else {
+            startForeground(NOTIFICATION_ID, notification);
+        }
 
         if (ACTION_UPDATE.equals(action)) {
             NotificationManager manager = getSystemService(NotificationManager.class);
@@ -94,5 +99,10 @@ public class FaceclawForegroundService extends Service {
                 .setOngoing(true)
                 .setOnlyAlertOnce(true)
                 .build();
+    }
+
+    private int foregroundServiceType() {
+        return ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
+                | ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE;
     }
 }

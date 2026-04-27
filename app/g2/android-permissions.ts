@@ -1,7 +1,9 @@
 import { Application, Utils } from "@nativescript/core";
 
 const PERMISSION_REQUEST_CODE = 4242;
+const VOICE_PERMISSION_REQUEST_CODE = 4243;
 const POST_NOTIFICATIONS_PERMISSION = "android.permission.POST_NOTIFICATIONS";
+const RECORD_AUDIO_PERMISSION = "android.permission.RECORD_AUDIO";
 
 function getActivity(): androidx.appcompat.app.AppCompatActivity {
   const activity = Application.android.foregroundActivity ?? Application.android.startActivity;
@@ -43,17 +45,21 @@ function getRequiredPermissions(): string[] {
   return permissions;
 }
 
-export async function ensureBlePermissions(): Promise<void> {
+function isPermissionGranted(permission: string): boolean {
+  const context = getContext();
+  return androidx.core.content.ContextCompat.checkSelfPermission(context, permission) ===
+    android.content.pm.PackageManager.PERMISSION_GRANTED;
+}
+
+async function ensurePermissions(
+  permissions: string[],
+  requestCode: number,
+  denialLabel: string,
+): Promise<void> {
   if (!global.isAndroid) return;
 
-  const context = getContext();
   const activity = getActivity();
-  const required = getRequiredPermissions();
-  const missing = required.filter(
-    (permission) =>
-      androidx.core.content.ContextCompat.checkSelfPermission(context, permission) !==
-      android.content.pm.PackageManager.PERMISSION_GRANTED,
-  );
+  const missing = permissions.filter((permission) => !isPermissionGranted(permission));
 
   if (missing.length === 0) return;
 
@@ -63,7 +69,7 @@ export async function ensureBlePermissions(): Promise<void> {
       permissions: string[];
       grantResults: number[];
     }) => {
-      if (args.requestCode !== PERMISSION_REQUEST_CODE) return;
+      if (args.requestCode !== requestCode) return;
       Application.android.off(Application.android.activityRequestPermissionsEvent, callback);
 
       const denied = missing.filter(
@@ -72,7 +78,7 @@ export async function ensureBlePermissions(): Promise<void> {
       );
 
       if (denied.length > 0) {
-        reject(new Error(`Bluetooth permissions denied: ${denied.join(", ")}`));
+        reject(new Error(`${denialLabel} permissions denied: ${denied.join(", ")}`));
         return;
       }
       resolve();
@@ -82,7 +88,15 @@ export async function ensureBlePermissions(): Promise<void> {
     androidx.core.app.ActivityCompat.requestPermissions(
       activity,
       toJavaStringArray(missing),
-      PERMISSION_REQUEST_CODE,
+      requestCode,
     );
   });
+}
+
+export async function ensureBlePermissions(): Promise<void> {
+  await ensurePermissions(getRequiredPermissions(), PERMISSION_REQUEST_CODE, "Bluetooth");
+}
+
+export async function ensureVoicePermissions(): Promise<void> {
+  await ensurePermissions([RECORD_AUDIO_PERMISSION], VOICE_PERMISSION_REQUEST_CODE, "Voice control");
 }

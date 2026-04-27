@@ -25,6 +25,7 @@ import {
   loadScreenTimeoutSetting,
   loadSystemCardSettings,
   loadSystemCardName,
+  loadVoiceControlEnabled,
   loadWakeModeSetting,
   nextScreenTimeoutSetting,
   nextWakeModeSetting,
@@ -37,6 +38,7 @@ import {
   screenTimeoutMs,
   saveSystemCardSetting,
   saveSystemCardName,
+  saveVoiceControlEnabled,
   wakeModeLabel,
   type DashboardSlotId,
   type NightscoutSettings,
@@ -63,6 +65,7 @@ let dashboardState = {
   systemCardSettings: loadSystemCardSettings(),
   screenTimeout: loadScreenTimeoutSetting(),
   wakeMode: loadWakeModeSetting(),
+  voiceControlEnabled: loadVoiceControlEnabled(),
   tiledWakePaintPending: false,
   nightscoutSettings: loadNightscoutSettings(),
   battery: {
@@ -80,6 +83,7 @@ const dashboardActions: LayerActions = {
   startNightscoutSiteUrlEdit: () => {},
   startNightscoutApiTokenEdit: () => {},
   endTextSettingEdit: () => {},
+  setVoiceControlEnabled: () => {},
 };
 const dashboardFont = loadEmbeddedTerminus12();
 const dashboardSystemFont = loadEmbeddedTerminus16();
@@ -208,6 +212,14 @@ export function setDashboardSystemCardSetting(key: SystemCardSettingKey, value: 
     [key]: value,
   };
   saveSystemCardSetting(key, value);
+}
+
+export function isDashboardVoiceControlEnabled(): boolean {
+  return dashboardState.voiceControlEnabled;
+}
+
+export function setDashboardVoiceControlEnabled(value: boolean): void {
+  dashboardState.voiceControlEnabled = saveVoiceControlEnabled(value);
 }
 
 export function applyDashboardScreenTimeout(nowMs = Date.now()): boolean {
@@ -512,6 +524,12 @@ function createSettingsMenuLayer(): MenuLayer {
         },
       },
       {
+        label: "Voice",
+        onSelect: (ctx) => {
+          ctx.stack.push(createVoiceSettingsMenuLayer());
+        },
+      },
+      {
         label: "Integrations",
         onSelect: (ctx) => {
           ctx.stack.push(createIntegrationsMenuLayer());
@@ -556,6 +574,24 @@ function setScreenTimeout(value: ScreenTimeoutSetting): void {
 
 function setWakeMode(value: WakeModeSetting): void {
   dashboardState.wakeMode = saveWakeModeSetting(value);
+}
+
+function createVoiceSettingsMenuLayer(): MenuLayer {
+  return new MenuLayer(
+    "Voice",
+    [
+      {
+        label: "Enable",
+        onSelect: async (ctx) => {
+          await ctx.actions.setVoiceControlEnabled(!dashboardState.voiceControlEnabled);
+        },
+        render: ({ image, x, y, width, selected }) => {
+          drawToggleMenuItem(image, dashboardFont, x, y, width, "Enable", dashboardState.voiceControlEnabled, selected);
+        },
+      },
+    ],
+    TOP_LEFT_MENU_LAYOUT,
+  );
 }
 
 function createDashboardSettingsMenuLayer(): MenuLayer {

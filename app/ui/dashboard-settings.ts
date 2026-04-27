@@ -21,9 +21,11 @@ export type WakeModeSetting = "tiled" | "synchronized";
 export const DEFAULT_SYSTEM_CARD_NAME = "Faceclaw";
 export const DEFAULT_SCREEN_TIMEOUT: ScreenTimeoutSetting = "30s";
 export const DEFAULT_WAKE_MODE: WakeModeSetting = "tiled";
+export const DEFAULT_VOICE_CONTROL_ENABLED = false;
 const SYSTEM_CARD_NAME_KEY = "dashboard.systemCardName";
 const SCREEN_TIMEOUT_KEY = "display.screenTimeout";
 const WAKE_MODE_KEY = "display.wakeMode";
+const VOICE_CONTROL_ENABLED_KEY = "voice.enabled";
 const SYSTEM_CARD_SETTING_KEYS: Record<SystemCardSettingKey, string> = {
   showFaceclawLogo: "dashboard.systemCard.showFaceclawLogo",
   showBatteryIndicators: "dashboard.systemCard.showBatteryIndicators",
@@ -136,6 +138,15 @@ export function saveWakeModeSetting(value: WakeModeSetting): WakeModeSetting {
   const normalized = normalizeWakeModeSetting(value);
   ApplicationSettings.setString(WAKE_MODE_KEY, normalized);
   return normalized;
+}
+
+export function loadVoiceControlEnabled(): boolean {
+  return ApplicationSettings.getBoolean(VOICE_CONTROL_ENABLED_KEY, DEFAULT_VOICE_CONTROL_ENABLED);
+}
+
+export function saveVoiceControlEnabled(value: boolean): boolean {
+  ApplicationSettings.setBoolean(VOICE_CONTROL_ENABLED_KEY, value);
+  return value;
 }
 
 export function nextScreenTimeoutSetting(value: ScreenTimeoutSetting): ScreenTimeoutSetting {

@@ -27,7 +27,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
 
     private static final int WRITE_TYPE = BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE;
     private static final int IMAGE_WRITE_TYPE = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT;
-    private static final int DESIRED_MTU = 247;
+    private static final int DESIRED_MTU = 512;
     private static final int CONNECTION_PRIORITY_HIGH = BluetoothGatt.CONNECTION_PRIORITY_HIGH;
 
     private static final int CONNECT_TIMEOUT_MS = 5_000;
@@ -40,7 +40,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private static final int BATTERY_REFRESH_INTERVAL_MS = 5 * 60_000;
     private static final int BATTERY_INPUT_QUIET_MS = 5_000;
     private static final int WINDOW_SIZE = 3;
-    private static final int IMAGE_FRAGMENT_SIZE = 1000;
+    private static final int IMAGE_FRAGMENT_SIZE = 3800;
     private static final int IMAGE_RETRY_DELAY_MS = 10_000;
     private static final boolean IMAGE_FRAGMENT_NO_ACK = false;
     private static final int WARMUP_FRAGMENT_TIMEOUT_MS = 3_000;
