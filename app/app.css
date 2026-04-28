@@ -1,6 +1,30 @@
 ﻿@import '@nativescript/theme/css/core.css';
 @import '@nativescript/theme/css/default.css';
 
+Page {
+  background-color: #ffffff;
+  color: #222222;
+}
+
+ActionBar {
+  background-color: #424242;
+  color: #ffffff;
+}
+
+ActionItem {
+  color: #ffffff;
+}
+
+TextField {
+  background-color: #ffffff;
+  color: #222222;
+}
+
+.system-name-modal TextField {
+  background-color: #ffffff;
+  color: #222222;
+}
+
 Button.-primary {
   font-size: 18;
 }
@@ -9,6 +33,7 @@ Button.-primary {
   margin: 16;
   padding: 16;
   background-color: #f6f6f6;
+  color: #222222;
   border-color: #222222;
   border-width: 1;
   border-radius: 8;

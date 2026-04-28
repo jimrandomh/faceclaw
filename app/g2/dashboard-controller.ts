@@ -16,6 +16,7 @@ import {
   getDashboardNightscoutSettings,
   getDashboardSystemCardName,
   isDashboardVoiceControlEnabled,
+  noteDashboardPhoneTextInput,
   receiveInput,
   resetDashboardSleepTimerAndWake,
   setDashboardBatteryLevels,
@@ -203,6 +204,7 @@ class DashboardController {
   }
 
   setActiveTextSettingValue(value: string): void {
+    noteDashboardPhoneTextInput();
     switch (this.activeTextSettingEditorKind) {
       case "dashboard-name":
         this.setSystemCardName(value);
@@ -252,12 +254,12 @@ class DashboardController {
     this.appendLog(
       `Using configured arms: R=${addresses.right} L=${addresses.left}${addresses.ring ? ` ring=${addresses.ring}` : ""}`,
     );
-    startForegroundNotification("Connecting to the glasses");
 
     let communicator: FaceclawCommunicatorBridge | null = null;
 
     try {
       await ensureBlePermissions();
+      startForegroundNotification("Connecting to the glasses");
       communicator = new FaceclawCommunicatorBridge({
         right: addresses.right,
         left: addresses.left,
@@ -352,6 +354,7 @@ class DashboardController {
       this.screenTimeoutTimer = setInterval(() => {
         if (this.phase !== "connected" || !this.communicator) return;
         if (!applyDashboardScreenTimeout()) return;
+        this.endTextSettingEdit();
         void this.requestRender("interval").catch((error) => {
           const message = this.formatError(error);
           this.appendLog(`screen timeout render failed: ${message}`);
@@ -649,6 +652,9 @@ class DashboardController {
   private startVoiceControlIfEnabled(): void {
     if (!this.communicator) return;
     if (!isDashboardVoiceControlEnabled()) return;
+    if (this.phase === "connected") {
+      updateForegroundNotification("Connected");
+    }
     voiceControlBridge.start();
   }
 

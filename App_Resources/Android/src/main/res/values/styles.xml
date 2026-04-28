@@ -32,11 +32,25 @@
 
     <!-- theme for action-bar -->
     <style name="NativeScriptToolbarStyleBase" parent="Widget.AppCompat.Toolbar">
-        <item name="android:background">@color/ns_primary</item>
-        <item name="theme">@style/ThemeOverlay.AppCompat.ActionBar</item>
-        <item name="popupTheme">@style/ThemeOverlay.AppCompat</item>
+        <item name="android:background">#424242</item>
+        <item name="theme">@style/NativeScriptToolbarTheme</item>
+        <item name="popupTheme">@style/NativeScriptToolbarPopupTheme</item>
     </style>
 
     <style name="NativeScriptToolbarStyle" parent="NativeScriptToolbarStyleBase">
+    </style>
+
+    <style name="NativeScriptToolbarTheme" parent="ThemeOverlay.AppCompat.Dark.ActionBar">
+        <item name="android:textColorPrimary">#FFFFFF</item>
+        <item name="android:textColorSecondary">#FFFFFF</item>
+        <item name="colorControlNormal">#FFFFFF</item>
+        <item name="actionMenuTextColor">#FFFFFF</item>
+    </style>
+
+    <style name="NativeScriptToolbarPopupTheme" parent="ThemeOverlay.AppCompat.Light">
+        <item name="android:colorBackground">#FFFFFF</item>
+        <item name="android:textColorPrimary">#222222</item>
+        <item name="android:textColorSecondary">#555555</item>
+        <item name="colorControlNormal">#222222</item>
     </style>
 </resources>

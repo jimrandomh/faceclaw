@@ -92,7 +92,6 @@ const SYSTEM_CARD_ITEM_HEIGHT = 38;
 const SYSTEM_CARD_ITEM_GAP = 2;
 const BATTERY_ITEM_Y_OFFSET = 4;
 const TOP_LEFT_MENU_LAYOUT = { x: 8, y: 8, width: 272, height: 128 };
-const TOP_RIGHT_MENU_LAYOUT = { x: 296, y: 8, width: 272, height: 128 };
 
 function rawInputEventToInputEvent(event: RawInputEvent): DashboardInputEvent {
   if (event.kind === "sys-event") {
@@ -137,6 +136,16 @@ export async function receiveInput(event: RawInputEvent): Promise<void> {
   const inputEvent = rawInputEventToInputEvent(event);
   dashboardState.lastInputAtMs = Date.now();
   dashboardState.logLines.push(eventToString(inputEvent));
+  if (!dashboardState.screenOn) {
+    if (inputEvent.type === "double-click") {
+      dashboardState.screenOn = true;
+      dashboardState.tiledWakePaintPending = dashboardState.wakeMode === "tiled";
+      if (dashboardLayers.isAtBase()) {
+        dashboardLayers.push(createRootMenuLayer());
+      }
+    }
+    return;
+  }
   await dashboardLayers.handleInput(inputEvent);
 }
 
@@ -165,6 +174,9 @@ export function setDashboardActions(actions: Partial<LayerActions>): void {
 }
 
 export function drawDashboard(): GrayImage {
+  if (!dashboardState.screenOn) {
+    return new GrayImage(G2_LENS_WIDTH, G2_LENS_HEIGHT, 0);
+  }
   return dashboardLayers.paint();
 }
 
@@ -227,8 +239,11 @@ export function applyDashboardScreenTimeout(nowMs = Date.now()): boolean {
   if (timeoutMs === null || !dashboardState.screenOn) return false;
   if (nowMs - dashboardState.lastInputAtMs < timeoutMs) return false;
   dashboardState.screenOn = false;
-  dashboardLayers.clearToBase();
   return true;
+}
+
+export function noteDashboardPhoneTextInput(nowMs = Date.now()): void {
+  dashboardState.lastInputAtMs = nowMs;
 }
 
 export function resetDashboardSleepTimerAndWake(nowMs = Date.now()): boolean {
@@ -399,15 +414,6 @@ class DashboardLayer implements Layer {
   }
 
   handleInput(event: DashboardInputEvent, ctx: { stack: LayerStack }): void {
-    if (!dashboardState.screenOn) {
-      if (event.type === "double-click") {
-        dashboardState.screenOn = true;
-        dashboardState.tiledWakePaintPending = dashboardState.wakeMode === "tiled";
-        ctx.stack.push(createRootMenuLayer());
-      }
-      return;
-    }
-
     if (event.type === "click") {
       ctx.stack.push(createRootMenuLayer());
       return;
@@ -415,6 +421,8 @@ class DashboardLayer implements Layer {
 
     if (event.type === "double-click") {
       dashboardState.screenOn = false;
+      ctx.stack.clearToBase();
+      void dashboardActions.endTextSettingEdit();
     }
   }
 }
@@ -424,6 +432,7 @@ class RootMenuLayer extends MenuLayer {
     if (event.type === "double-click") {
       dashboardState.screenOn = false;
       ctx.stack.clearToBase();
+      void ctx.actions.endTextSettingEdit();
       return;
     }
     await super.handleInput(event, ctx);
@@ -637,8 +646,7 @@ function createSystemCardSettingsMenuLayer(): MenuLayer {
       createSystemCardToggleItem("Show Android Notifications", "showAndroidNotifications"),
       createSystemCardToggleItem("Show Signal Strength", "showSignalStrength"),
     ],
-    TOP_RIGHT_MENU_LAYOUT,
-    true,
+    TOP_LEFT_MENU_LAYOUT,
   );
 }
 

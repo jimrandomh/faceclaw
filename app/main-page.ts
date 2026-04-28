@@ -1,6 +1,10 @@
-import { EventData, Observable, Page, ScrollView, TextField } from '@nativescript/core'
+import { Color, EventData, isAndroid, Observable, Page, ScrollView, TextField } from '@nativescript/core'
 import { MainViewModel } from './main-view-model'
 import { dashboardController } from './g2/dashboard-controller'
+
+const SETTINGS_TEXT_COLOR = new Color('#222222')
+const SETTINGS_BACKGROUND_COLOR = new Color('#ffffff')
+const SETTINGS_PLACEHOLDER_COLOR = new Color('#666666')
 
 export function navigatingTo(args: EventData) {
   const page = <Page>args.object
@@ -44,9 +48,30 @@ function scrollToBottom(scrollView: ScrollView): void {
   }, 0)
 }
 
+function applySettingsTextFieldContrast(textField: TextField): void {
+  textField.color = SETTINGS_TEXT_COLOR
+  textField.backgroundColor = SETTINGS_BACKGROUND_COLOR
+  textField.placeholderColor = SETTINGS_PLACEHOLDER_COLOR
+
+  if (!isAndroid) {
+    return
+  }
+
+  const nativeTextField = (textField as TextField & { nativeView?: android.widget.EditText }).nativeView
+  if (!nativeTextField) {
+    return
+  }
+
+  nativeTextField.setTextColor(android.graphics.Color.rgb(34, 34, 34))
+  nativeTextField.setHintTextColor(android.graphics.Color.rgb(102, 102, 102))
+}
+
 function focusSystemNameField(page: Page): void {
   setTimeout(() => {
     const textField = page.getViewById<TextField>('settingsTextField')
+    if (textField) {
+      applySettingsTextFieldContrast(textField)
+    }
     textField?.focus()
   }, 0)
 }
@@ -58,6 +83,10 @@ export function loaded(args: EventData) {
 
   const model = page.bindingContext as MainViewModel | null
   const scrollView = page.getViewById<ScrollView>('logScrollView')
+  const settingsTextField = page.getViewById<TextField>('settingsTextField')
+  if (settingsTextField) {
+    applySettingsTextFieldContrast(settingsTextField)
+  }
   if (!model || !scrollView) {
     return
   }

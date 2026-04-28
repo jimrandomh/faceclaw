@@ -1,14 +1,18 @@
 package com.faceclaw.app;
 
+import android.Manifest;
 import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.app.Service;
 import android.content.Intent;
+import android.content.pm.PackageManager;
 import android.content.pm.ServiceInfo;
 import android.os.Build;
 import android.os.IBinder;
+
+import androidx.core.content.ContextCompat;
 
 import com.tns.NativeScriptActivity;
 
@@ -102,7 +106,15 @@ public class FaceclawForegroundService extends Service {
     }
 
     private int foregroundServiceType() {
-        return ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
-                | ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE;
+        int type = ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE;
+        if (hasRecordAudioPermission()) {
+            type |= ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE;
+        }
+        return type;
+    }
+
+    private boolean hasRecordAudioPermission() {
+        return ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
+                == PackageManager.PERMISSION_GRANTED;
     }
 }

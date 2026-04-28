@@ -59,6 +59,10 @@ export class LayerStack {
     this.layers.splice(1);
   }
 
+  isAtBase(): boolean {
+    return this.layers.length === 1;
+  }
+
   setActions(actions: Partial<LayerActions>): void {
     Object.assign(this.ctx.actions, actions);
   }

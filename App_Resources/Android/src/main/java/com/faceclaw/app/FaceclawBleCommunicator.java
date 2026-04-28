@@ -854,13 +854,15 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         if (!synchronizedCommits) {
             for (TileImagePlan plan : changedTiles) {
                 for (BleProtocol.ImageFragment fragment : plan.fragments) {
-                    enqueueImageFragmentLocked(plan, fragment, fingerprint, updateId, messageNumber++, messageCount, nextTransportSeq++, true, true);
+                    boolean requestAck = fragment.index % 2 == 1;
+                    enqueueImageFragmentLocked(plan, fragment, fingerprint, updateId, messageNumber++, messageCount, nextTransportSeq++, requestAck, true);
                 }
             }
         } else {
             for (TileImagePlan plan : changedTiles) {
                 for (int i = 0; i < plan.fragments.size() - 1; i++) {
-                    enqueueImageFragmentLocked(plan, plan.fragments.get(i), fingerprint, updateId, messageNumber++, messageCount, nextTransportSeq++, true, false);
+                    boolean requestAck = i % 2 == 1;
+                    enqueueImageFragmentLocked(plan, plan.fragments.get(i), fingerprint, updateId, messageNumber++, messageCount, nextTransportSeq++, requestAck, false);
                 }
             }
             for (TileImagePlan plan : changedTiles) {
@@ -884,7 +886,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         boolean requestAck,
         boolean isLast
     ) {
-        int magic = IMAGE_FRAGMENT_NO_ACK ? 0 : nextMagic();
+        int magic = requestAck ? nextMagic() : 0;
         OutboundMessage message = new OutboundMessage(
             "image",
             "image " + plan.tile.name + "#" + fragment.index,
