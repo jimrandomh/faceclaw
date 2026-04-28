@@ -16,6 +16,7 @@ export type LayerActions = {
   startNightscoutApiTokenEdit: () => Promise<void> | void;
   endTextSettingEdit: () => Promise<void> | void;
   setVoiceControlEnabled: (enabled: boolean) => Promise<void> | void;
+  setStopwatchRenderActive: (active: boolean) => Promise<void> | void;
 };
 
 export type PaintBelow = () => GrayImage;

@@ -51,22 +51,12 @@ public class BleProtocol {
         int totalWithCrc = pb.length + 2;
         int totalFrags = Math.max(1, (int) Math.ceil(totalWithCrc / (double) chunkSize));
         List<byte[]> frames = new ArrayList<>(totalFrags);
-        int offset = 0;
+        byte[] payload = Arrays.copyOf(pb, totalWithCrc);
+        payload[pb.length] = crc[0];
+        payload[pb.length + 1] = crc[1];
         for (int i = 0; i < totalFrags; i++) {
-            boolean isLast = i == totalFrags - 1;
-            byte[] chunk;
-            if (isLast) {
-                int remaining = pb.length - offset;
-                chunk = new byte[remaining + 2];
-                System.arraycopy(pb, offset, chunk, 0, remaining);
-                System.arraycopy(crc, 0, chunk, remaining, 2);
-            } else {
-                chunk = Arrays.copyOfRange(pb, offset, offset + chunkSize);
-                offset += chunkSize;
-            }
-            if (isLast) {
-                offset = pb.length;
-            }
+            int offset = i * chunkSize;
+            byte[] chunk = Arrays.copyOfRange(payload, offset, Math.min(offset + chunkSize, payload.length));
             byte[] frame = new byte[8 + chunk.length];
             frame[0] = (byte) 0xaa;
             frame[1] = 0x21;

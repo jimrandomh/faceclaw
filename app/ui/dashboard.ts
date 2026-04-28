@@ -84,6 +84,7 @@ const dashboardActions: LayerActions = {
   startNightscoutApiTokenEdit: () => {},
   endTextSettingEdit: () => {},
   setVoiceControlEnabled: () => {},
+  setStopwatchRenderActive: () => {},
 };
 const dashboardFont = loadEmbeddedTerminus12();
 const dashboardSystemFont = loadEmbeddedTerminus16();
@@ -443,12 +444,12 @@ function createRootMenuLayer(): MenuLayer {
   return new RootMenuLayer(
     "Menu",
     [
-      /*{
+      {
         label: "Apps",
         onSelect: (ctx) => {
           ctx.stack.push(createAppsMenuLayer());
         },
-      },*/
+      },
       {
         label: "Settings",
         onSelect: (ctx) => {
@@ -476,7 +477,80 @@ function createRootMenuLayer(): MenuLayer {
 }
 
 function createAppsMenuLayer(): MenuLayer {
-  return new MenuLayer("Apps", [], TOP_LEFT_MENU_LAYOUT);
+  return new MenuLayer(
+    "Apps",
+    [
+      {
+        label: "Stopwatch",
+        onSelect: (ctx) => {
+          ctx.stack.push(new StopwatchLayer());
+          void ctx.actions.setStopwatchRenderActive(true);
+        },
+      },
+    ],
+    TOP_LEFT_MENU_LAYOUT,
+  );
+}
+
+class StopwatchLayer implements Layer {
+  private readonly startedAtMs = Date.now();
+  private pausedAtMs: number | null = null;
+  private pausedDurationMs = 0;
+
+  paint(ctx: LayerContext): GrayImage {
+    const image = new GrayImage(G2_LENS_WIDTH, G2_LENS_HEIGHT, 0);
+    const elapsedMs = this.elapsedMs();
+    const timeLabel = formatStopwatchElapsed(elapsedMs);
+    const stateLabel = this.pausedAtMs === null ? "Running" : "Paused";
+
+    image.drawRect(12, 12, G2_LENS_WIDTH - 24, G2_LENS_HEIGHT - 24, 52);
+    image.drawText(ctx.font, 24, 24, "Stopwatch", 180);
+    image.drawText(ctx.font, G2_LENS_WIDTH - 114, 24, stateLabel, this.pausedAtMs === null ? 200 : 120);
+
+    const timeX = Math.max(0, ((G2_LENS_WIDTH - dashboardSystemFont.measureText(timeLabel)) / 2) | 0);
+    image.drawText(dashboardSystemFont, timeX, 106, timeLabel, 245);
+    image.drawText(ctx.font, 126, 160, "Click: pause / resume", 150);
+    image.drawText(ctx.font, 126, 178, "Double-click: back", 120);
+    image.drawText(ctx.font, 126, 214, "Renders requested every 100ms", 110);
+    return image;
+  }
+
+  handleInput(event: DashboardInputEvent, ctx: LayerContext): void {
+    if (event.type === "double-click") {
+      void ctx.actions.setStopwatchRenderActive(false);
+      ctx.stack.pop();
+      return;
+    }
+    if (event.type === "click") {
+      if (this.pausedAtMs === null) {
+        this.pausedAtMs = Date.now();
+        void ctx.actions.setStopwatchRenderActive(false);
+      } else {
+        this.pausedDurationMs += Date.now() - this.pausedAtMs;
+        this.pausedAtMs = null;
+        void ctx.actions.setStopwatchRenderActive(true);
+      }
+    }
+  }
+
+  private elapsedMs(): number {
+    const now = this.pausedAtMs ?? Date.now();
+    return Math.max(0, now - this.startedAtMs - this.pausedDurationMs);
+  }
+}
+
+function formatStopwatchElapsed(elapsedMs: number): string {
+  const totalTenths = Math.floor(elapsedMs / 100);
+  const tenths = totalTenths % 10;
+  const totalSeconds = Math.floor(totalTenths / 10);
+  const seconds = totalSeconds % 60;
+  const totalMinutes = Math.floor(totalSeconds / 60);
+  const minutes = totalMinutes % 60;
+  const hours = Math.floor(totalMinutes / 60);
+  if (hours > 0) {
+    return `${hours}:${pad2(minutes)}:${pad2(seconds)}.${tenths}`;
+  }
+  return `${pad2(minutes)}:${pad2(seconds)}.${tenths}`;
 }
 
 function createSystemMenuLayer(): MenuLayer {

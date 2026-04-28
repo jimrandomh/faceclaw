@@ -38,7 +38,8 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private static final int WRITE_TIMEOUT_MS = 2_000;
     private static final int PRELUDE_TIMEOUT_MS = 2_000;
     private static final int ACK_TIMEOUT_MS = 3_500;
-    private static final int HEARTBEAT_INTERVAL_MS = 5_000;
+    private static final int HEARTBEAT_READY_MS = 3_000;
+    private static final int HEARTBEAT_URGENT_MS = 6_000;
     private static final int BATTERY_REFRESH_INTERVAL_MS = 5 * 60_000;
     private static final int BATTERY_INPUT_QUIET_MS = 5_000;
     private static final int WINDOW_SIZE = 5;
@@ -62,6 +63,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private final FaceclawBleManager bleManager;
     private final InterruptibleSleep interruptibleSleep = new InterruptibleSleep();
     private final Object lock = new Object();
+    private final Object nativeBridgeLock = new Object();
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final String rightAddress;
     private final String leftAddress;
@@ -118,7 +120,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
 
     public FaceclawBleCommunicator(Context context, String rightAddress, String leftAddress, String ringAddress) {
         this.appContext = context.getApplicationContext();
-        this.bleManager = new FaceclawBleManager(appContext);
+        this.bleManager = new FaceclawBleManager(appContext, false);
         this.bleManager.setListener(this);
         this.rightAddress = requireAddress("rightAddress", rightAddress);
         this.leftAddress = requireAddress("leftAddress", leftAddress);
@@ -194,15 +196,17 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         if (tileBmps == null || tileBmps.size() != DASHBOARD_TILES.length) {
             throw new IllegalArgumentException("exactly 4 tile bitmaps are required");
         }
-        synchronized (desiredTilesLock) {
-            desiredTileBmps = emptyTileSet();
-            for (int i = 0; i < DASHBOARD_TILES.length; i++) {
-                byte[] bmp = tileBmps.get(i);
-                desiredTileBmps[i] = bmp == null ? new byte[0] : Arrays.copyOf(bmp, bmp.length);
+        synchronized (nativeBridgeLock) {
+            synchronized (desiredTilesLock) {
+                desiredTileBmps = emptyTileSet();
+                for (int i = 0; i < DASHBOARD_TILES.length; i++) {
+                    byte[] bmp = tileBmps.get(i);
+                    desiredTileBmps[i] = bmp == null ? new byte[0] : Arrays.copyOf(bmp, bmp.length);
+                }
+                desiredFingerprint = fingerprint == null ? "" : fingerprint;
+                desiredForceTiledCommit = forceTiledCommit;
+                desiredPaintMs = paintMs;
             }
-            desiredFingerprint = fingerprint == null ? "" : fingerprint;
-            desiredForceTiledCommit = forceTiledCommit;
-            desiredPaintMs = paintMs;
         }
         interruptibleSleep.interrupt();
     }
@@ -237,15 +241,17 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             boolean forceTiledCommit,
             int paintMs
     ) {
-        synchronized (desiredTilesLock) {
-            desiredTileBmps = emptyTileSet();
-            desiredTileBmps[0] = tile0Bmp == null ? new byte[0] : Arrays.copyOf(tile0Bmp, tile0Bmp.length);
-            desiredTileBmps[1] = tile1Bmp == null ? new byte[0] : Arrays.copyOf(tile1Bmp, tile1Bmp.length);
-            desiredTileBmps[2] = tile2Bmp == null ? new byte[0] : Arrays.copyOf(tile2Bmp, tile2Bmp.length);
-            desiredTileBmps[3] = tile3Bmp == null ? new byte[0] : Arrays.copyOf(tile3Bmp, tile3Bmp.length);
-            desiredFingerprint = fingerprint == null ? "" : fingerprint;
-            desiredForceTiledCommit = forceTiledCommit;
-            desiredPaintMs = paintMs;
+        synchronized (nativeBridgeLock) {
+            synchronized (desiredTilesLock) {
+                desiredTileBmps = emptyTileSet();
+                desiredTileBmps[0] = tile0Bmp == null ? new byte[0] : Arrays.copyOf(tile0Bmp, tile0Bmp.length);
+                desiredTileBmps[1] = tile1Bmp == null ? new byte[0] : Arrays.copyOf(tile1Bmp, tile1Bmp.length);
+                desiredTileBmps[2] = tile2Bmp == null ? new byte[0] : Arrays.copyOf(tile2Bmp, tile2Bmp.length);
+                desiredTileBmps[3] = tile3Bmp == null ? new byte[0] : Arrays.copyOf(tile3Bmp, tile3Bmp.length);
+                desiredFingerprint = fingerprint == null ? "" : fingerprint;
+                desiredForceTiledCommit = forceTiledCommit;
+                desiredPaintMs = paintMs;
+            }
         }
         interruptibleSleep.interrupt();
     }
@@ -421,7 +427,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         try {
             connectArm(rightAddress, true);
             connectArm(leftAddress, false);
-            if (!interruptibleSleep.sleep(800)) {
+            if (!sleepDuringConnectSettling(800)) {
                 return;
             }
             sendPrelude();
@@ -449,6 +455,20 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             handleTransportFailure("connect failed");
         }
     } //}}}
+
+    private boolean sleepDuringConnectSettling(long delayMs) throws InterruptedException {
+        long deadline = SystemClock.elapsedRealtime() + delayMs;
+        synchronized (lock) {
+            while (running && !userDisconnectRequested) {
+                long remaining = deadline - SystemClock.elapsedRealtime();
+                if (remaining <= 0) {
+                    return true;
+                }
+                lock.wait(Math.min(remaining, 100));
+            }
+            return false;
+        }
+    }
 
     private void connectArm(String address, boolean enableRenderNotify) {
         if (!bleManager.connect(address, CONNECT_TIMEOUT_MS)) {
@@ -518,87 +538,139 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
 
     private long driveSession() {
         //Log.d(TAG, "driveSession called (pendingMessages.size=" + pendingMessages.size() + " inFlightMessages.size=" + inFlightMessages.size() + ")");
-        synchronized (lock) {
+        while (true) {
+            OutboundMessage messageToWrite = null;
             long now = SystemClock.elapsedRealtime();
 
-            if (!inFlightMessages.isEmpty()) {
-                OutboundMessage oldest = inFlightMessages.peekFirst();
-                if (oldest != null && oldest.ackDeadlineAtMs <= now) {
-                    Log.i(TAG, "message timed out: " + oldest.label);
-                    inFlightMessages.removeFirst();
-                    logLine("message timed out: " + oldest.label);
-                    releaseMagicLocked(oldest, "timeout");
-                    handleAckTimeoutLocked(oldest);
+            synchronized (lock) {
+                if (!inFlightMessages.isEmpty()) {
+                    OutboundMessage oldest = inFlightMessages.peekFirst();
+                    if (oldest != null && oldest.ackDeadlineAtMs <= now) {
+                        Log.i(TAG, "message timed out: " + oldest.label);
+                        inFlightMessages.removeFirst();
+                        logLine("message timed out: " + oldest.label);
+                        releaseMagicLocked(oldest, "timeout");
+                        handleAckTimeoutLocked(oldest);
+                        return 0;
+                    }
+                }
+
+                if (!shutdownRequested && !fixedLayoutCreated && pendingMessages.isEmpty() && inFlightMessages.isEmpty()) {
+                    Log.i(TAG, "enqueueing create layout");
+                    enqueueCreateLayoutLocked();
+                }
+                if (!shutdownRequested && fixedLayoutCreated && !warmedUp && pendingMessages.isEmpty() && inFlightMessages.isEmpty()) {
+                    Log.i(TAG, "enqueueing warmup");
+                    enqueueWarmupLocked();
+                }
+
+                boolean heartbeatEligible = !shutdownRequested && warmedUp && fixedLayoutCreated;
+                boolean heartbeatPending = heartbeatEligible && hasPendingOrInflightKindLocked("heartbeat");
+                long heartbeatElapsedMs = now - lastHeartbeatQueuedAtMs;
+                boolean heartbeatReady = heartbeatEligible && heartbeatElapsedMs >= HEARTBEAT_READY_MS;
+                boolean heartbeatUrgent = heartbeatEligible && heartbeatElapsedMs >= HEARTBEAT_URGENT_MS;
+                boolean heartbeatBlocksLeftWrites = heartbeatReady || heartbeatPending;
+
+                if (heartbeatReady && !heartbeatPending && inFlightMessages.isEmpty()) {
+                    Log.i(TAG, "Writing heartbeat");
+                    messageToWrite = createHeartbeatMessageLocked();
+                    prepareMessageWriteLocked(messageToWrite, now);
+                    lastHeartbeatQueuedAtMs = now;
+                } else if (heartbeatUrgent) {
+                    return IDLE_SLEEP_MS;
+                } else if (sessionReady && inFlightMessages.size() < WINDOW_SIZE && !pendingMessages.isEmpty()) {
+                    OutboundMessage pending = pendingMessages.peekFirst();
+                    if (heartbeatBlocksLeftWrites && pending != null && isLeftArmMessage(pending)) {
+                        return IDLE_SLEEP_MS;
+                    }
+                    messageToWrite = pendingMessages.removeFirst();
+                    Log.i(TAG, "sending pending message: " + messageToWrite.label);
+                    prepareMessageWriteLocked(messageToWrite, now);
+                } else if (!shutdownRequested && fixedLayoutCreated && warmedUp && pendingMessages.isEmpty() && inFlightMessages.isEmpty()
+                        && now >= imageRetryAfterMs
+                        && !getDesiredFingerprint().equals(displayedFingerprint)) {
+                    Log.i(TAG, "Enqueued image update");
+                    enqueueDesiredImageLocked();
                     return 0;
+                } else if (shouldPollBatteryLocked(now)) {
+                    Log.i(TAG, "Writing battery query");
+                    messageToWrite = createBatteryQueryMessageLocked();
+                    prepareMessageWriteLocked(messageToWrite, now);
+                    lastBatteryRefreshAtMs = now;
+                } else if (!pendingMessages.isEmpty() || !inFlightMessages.isEmpty()) {
+                    return IDLE_SLEEP_MS;
+                } else {
+                    return 250;
                 }
             }
 
-            if (!shutdownRequested && !fixedLayoutCreated && pendingMessages.isEmpty() && inFlightMessages.isEmpty()) {
-                Log.i(TAG, "enqueueing create layout");
-                enqueueStartupProbeLocked();
-            }
-            if (!shutdownRequested && fixedLayoutCreated && !warmedUp && pendingMessages.isEmpty() && inFlightMessages.isEmpty()) {
-                Log.i(TAG, "enqueueing warmup");
-                enqueueWarmupLocked();
-            }
-
-            // We always write a heartbeat if it's due, even if this goes in between image fragments
-            if (!shutdownRequested && !hasPendingOrInflightKindLocked("heartbeat") && now - lastHeartbeatQueuedAtMs >= HEARTBEAT_INTERVAL_MS && warmedUp && fixedLayoutCreated) {
-                Log.i(TAG, "Writing heartbeat");
-                writeHeartbeatLocked();
-                return 0;
-            }
-            
-            while (sessionReady && inFlightMessages.size() < WINDOW_SIZE && !pendingMessages.isEmpty()) {
-                OutboundMessage message = pendingMessages.removeFirst();
-                Log.i(TAG, "sending pending message: " + message.label);
-                if (!writeMessageLocked(message)) {
-                    pendingMessages.addFirst(message);
-                    handleTransportFailureLocked("write failed");
-                    return 0;
+            if (!writeMessageFrames(messageToWrite)) {
+                synchronized (lock) {
+                    if (removePreparedMessageLocked(messageToWrite) || messageToWrite.magic == 0) {
+                        handleTransportFailureLocked("write failed");
+                    }
                 }
-            }
-            if (!shutdownRequested && fixedLayoutCreated && warmedUp && pendingMessages.isEmpty() && inFlightMessages.isEmpty()
-                    && now >= imageRetryAfterMs
-                    && !getDesiredFingerprint().equals(displayedFingerprint)) {
-                Log.i(TAG, "Enqueued image update");
-                enqueueDesiredImageLocked();
                 return 0;
             }
 
-            if (shouldPollBatteryLocked(now)) {
-                Log.i(TAG, "Writing battery query");
-                writeBatteryQueryLocked(now);
-                return 0;
+            synchronized (lock) {
+                completeMessageWriteLocked(messageToWrite);
             }
-
-            if (!pendingMessages.isEmpty() || !inFlightMessages.isEmpty()) {
-                return IDLE_SLEEP_MS;
-            }
-            return 250;
         }
     }
 
-    private boolean writeMessageLocked(OutboundMessage message) {
-        long writeStartedAtMs = SystemClock.elapsedRealtime();
-        String writeAddress = "image".equals(message.kind) ? leftAddress : rightAddress;
-        if (!bleManager.writeFrames(
-            writeAddress,
-            BleProtocol.WRITE_CHAR_UUID,
-            message.frames,
-            WRITE_TYPE,
-            WRITE_TIMEOUT_MS
-        )) {
-            return false;
-        }
-        message.writeStartedAtMs = writeStartedAtMs;
-        message.sentAtMs = SystemClock.elapsedRealtime();
-        message.ackDeadlineAtMs = message.sentAtMs + message.ackTimeoutMs;
+    private void prepareMessageWriteLocked(OutboundMessage message, long now) {
+        message.writeStartedAtMs = now;
+        message.sentAtMs = now;
+        message.ackDeadlineAtMs = now + message.ackTimeoutMs + WRITE_TIMEOUT_MS;
         if (message.magic != 0) {
             inFlightMessages.addLast(message);
         }
+        if (message.imageUpdateId > 0 && message.imageMessageNumber == 1) {
+            ImageUpdateStats stats = imageUpdateStats.get(message.imageUpdateId);
+            if (stats != null && stats.firstWriteStartedAtMs <= 0) {
+                stats.firstWriteStartedAtMs = now;
+            }
+        }
+    }
+
+    private boolean writeMessageFrames(OutboundMessage message) {
+        String writeAddress = isLeftArmMessage(message) ? leftAddress : rightAddress;
+        synchronized (nativeBridgeLock) {
+            return bleManager.writeFrames(
+                writeAddress,
+                BleProtocol.WRITE_CHAR_UUID,
+                message.frames,
+                WRITE_TYPE,
+                WRITE_TIMEOUT_MS
+            );
+        }
+    }
+
+    private boolean isLeftArmMessage(OutboundMessage message) {
+        return message != null && ("image".equals(message.kind) || "warmup".equals(message.kind));
+    }
+
+    private void completeMessageWriteLocked(OutboundMessage message) {
+        long sentAtMs = SystemClock.elapsedRealtime();
+        message.sentAtMs = sentAtMs;
+        message.ackDeadlineAtMs = sentAtMs + message.ackTimeoutMs;
         logImageUpdateSendLandmarkLocked(message);
-        return true;
+    }
+
+    private boolean removePreparedMessageLocked(OutboundMessage message) {
+        if (message == null || message.magic == 0) {
+            return false;
+        }
+        Iterator<OutboundMessage> iterator = inFlightMessages.iterator();
+        while (iterator.hasNext()) {
+            if (iterator.next() == message) {
+                iterator.remove();
+                releaseMagicLocked(message, "write failed");
+                return true;
+            }
+        }
+        return false;
     }
 
     private void resolveAckLocked(int sid, int magic, byte[] pb) {
@@ -854,14 +926,16 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         if (!synchronizedCommits) {
             for (TileImagePlan plan : changedTiles) {
                 for (BleProtocol.ImageFragment fragment : plan.fragments) {
-                    boolean requestAck = fragment.index % 2 == 1;
+                    //boolean requestAck = fragment.index % 2 == 1;
+                    boolean requestAck = true;
                     enqueueImageFragmentLocked(plan, fragment, fingerprint, updateId, messageNumber++, messageCount, nextTransportSeq++, requestAck, true);
                 }
             }
         } else {
             for (TileImagePlan plan : changedTiles) {
                 for (int i = 0; i < plan.fragments.size() - 1; i++) {
-                    boolean requestAck = i % 2 == 1;
+                    //boolean requestAck = i % 2 == 1;
+                    boolean requestAck = true;
                     enqueueImageFragmentLocked(plan, plan.fragments.get(i), fingerprint, updateId, messageNumber++, messageCount, nextTransportSeq++, requestAck, false);
                 }
             }
@@ -907,9 +981,9 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         pendingMessages.addLast(message);
     }
 
-    private void writeHeartbeatLocked() {
+    private OutboundMessage createHeartbeatMessageLocked() {
         int magic = nextMagic();
-        OutboundMessage heartbeatMessage = new OutboundMessage(
+        return new OutboundMessage(
             "heartbeat",
             "heartbeat",
             BleProtocol.SID_EVENHUB,
@@ -920,8 +994,6 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             -1,
             null
         );
-        writeMessageLocked(heartbeatMessage);
-        lastHeartbeatQueuedAtMs = SystemClock.elapsedRealtime();
     }
 
     private boolean shouldPollBatteryLocked(long now) {
@@ -933,9 +1005,9 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 && (lastBatteryRefreshAtMs == 0 || now - lastBatteryRefreshAtMs >= BATTERY_REFRESH_INTERVAL_MS);
     }
 
-    private void writeBatteryQueryLocked(long now) {
+    private OutboundMessage createBatteryQueryMessageLocked() {
         int magic = nextMagic();
-        OutboundMessage batteryMessage = new OutboundMessage(
+        return new OutboundMessage(
             "battery",
             "battery",
             BleProtocol.SID_UI_SETTING,
@@ -951,9 +1023,6 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             -1,
             null
         );
-        if (writeMessageLocked(batteryMessage)) {
-            lastBatteryRefreshAtMs = now;
-        }
     }
 
     private boolean hasPendingOrInflightKindLocked(String kind) {
@@ -1027,6 +1096,9 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             displayedFingerprint = "";
             displayedTileBmps = emptyTileSet();
             imageRetryAfterMs = SystemClock.elapsedRealtime() + IMAGE_RETRY_DELAY_MS;
+        } else if ("heartbeat".equals(message.kind)) {
+            handleTransportFailureLocked("heartbeat ack timeout");
+            return;
         }
 
         if (consecutiveAckTimeouts > MAX_CONSECUTIVE_ACK_TIMEOUTS) {
@@ -1408,7 +1480,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             }
         }
 
-        int allocate() {
+        synchronized int allocate() {
             Integer magic = available.pollFirst();
             if (magic == null) {
                 throw new IllegalStateException("no BLE magic values available");
@@ -1417,7 +1489,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             return magic;
         }
 
-        void release(int sid, int magic, String label, String reason) {
+        synchronized void release(int sid, int magic, String label, String reason) {
             if (magic < MIN_MAGIC || magic > MAX_MAGIC) {
                 return;
             }
@@ -1429,7 +1501,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             available.addLast(magic);
         }
 
-        ReleaseRecord getReleaseRecord(int sid, int magic) {
+        synchronized ReleaseRecord getReleaseRecord(int sid, int magic) {
             return releaseRecords.get(key(sid, magic));
         }
 

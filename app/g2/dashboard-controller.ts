@@ -50,6 +50,9 @@ type LogLevel = "debug"|"info"|"warn"|"error";
 const CONTAINER_NAME = "dashboard";
 const DASHBOARD_INTERVAL_MS = 60_000;
 const SCREEN_TIMEOUT_CHECK_MS = 1_000;
+const STOPWATCH_RENDER_INTERVAL_MS = 100;
+const FOREGROUND_NOTIFICATION_MIN_UPDATE_MS = 30_000;
+const FRAME_TRANSMIT_BACKPRESSURE_TIMEOUT_MS = 6_000;
 const EVEN_APP_DETECTED_MESSAGE =
   "The Even Realities app appears to be running. If Faceclaw has trouble connecting, open its app settings and force stop it.";
 
@@ -114,6 +117,7 @@ class DashboardController {
   private communicator: FaceclawCommunicatorBridge | null = null;
   private dashboardTimer: ReturnType<typeof setInterval> | null = null;
   private screenTimeoutTimer: ReturnType<typeof setInterval> | null = null;
+  private stopwatchRenderTimer: ReturnType<typeof setInterval> | null = null;
   private offState: (() => void) | null = null;
   private offLog: (() => void) | null = null;
   private offRing: (() => void) | null = null;
@@ -129,6 +133,7 @@ class DashboardController {
   private renderInProgress = false;
   private renderQueued = false;
   private queuedRenderReason: "initial" | "interval" = "interval";
+  private lastForegroundNotificationUpdateAtMs = 0;
 
   constructor() {
     setDashboardActions({
@@ -139,6 +144,7 @@ class DashboardController {
       startNightscoutApiTokenEdit: () => this.startNightscoutApiTokenEdit(),
       endTextSettingEdit: () => this.endTextSettingEdit(),
       setVoiceControlEnabled: (enabled) => this.setVoiceControlEnabled(enabled),
+      setStopwatchRenderActive: (active) => this.setStopwatchRenderActive(active),
     });
   }
 
@@ -354,6 +360,7 @@ class DashboardController {
       this.screenTimeoutTimer = setInterval(() => {
         if (this.phase !== "connected" || !this.communicator) return;
         if (!applyDashboardScreenTimeout()) return;
+        this.setStopwatchRenderActive(false);
         this.endTextSettingEdit();
         void this.requestRender("interval").catch((error) => {
           const message = this.formatError(error);
@@ -586,14 +593,13 @@ class DashboardController {
     const forceTiledCommit = consumeDashboardTiledWakePaint();
     const fingerprint = image.fingerprint();
     const tiles = image.toEvenHubTiles().map((tile) => tile.bmp);
+    this.setDisplayPreview(grayImageToPreviewSource(image));
     if (this.communicator) {
       await this.communicator.submitDashboardImage(tiles, fingerprint, forceTiledCommit, paintMs);
+      await this.communicator.waitForNextFrameMetrics(FRAME_TRANSMIT_BACKPRESSURE_TIMEOUT_MS);
     }
-    this.setDisplayPreview(grayImageToPreviewSource(image));
 
-    if (this.phase === "connected") {
-      updateForegroundNotification(`Connected`);
-    }
+    this.updateConnectedForegroundNotification();
     this.appendLog(`${reason === "initial" ? "initial" : "scheduled"} dashboard image queued`);
   }
 
@@ -652,10 +658,24 @@ class DashboardController {
   private startVoiceControlIfEnabled(): void {
     if (!this.communicator) return;
     if (!isDashboardVoiceControlEnabled()) return;
-    if (this.phase === "connected") {
-      updateForegroundNotification("Connected");
-    }
+    this.updateConnectedForegroundNotification();
     voiceControlBridge.start();
+  }
+
+  private setStopwatchRenderActive(active: boolean): void {
+    if (!active || this.phase !== "connected" || !this.communicator) {
+      if (this.stopwatchRenderTimer) {
+        clearInterval(this.stopwatchRenderTimer);
+        this.stopwatchRenderTimer = null;
+      }
+      return;
+    }
+    if (this.stopwatchRenderTimer) return;
+    this.stopwatchRenderTimer = setInterval(() => {
+      void this.requestRender("interval").catch((error) => {
+        this.appendLog(`stopwatch render failed: ${this.formatError(error)}`);
+      });
+    }, STOPWATCH_RENDER_INTERVAL_MS);
   }
 
   private clearDashboardTimer(): void {
@@ -666,6 +686,10 @@ class DashboardController {
     if (this.screenTimeoutTimer) {
       clearInterval(this.screenTimeoutTimer);
       this.screenTimeoutTimer = null;
+    }
+    if (this.stopwatchRenderTimer) {
+      clearInterval(this.stopwatchRenderTimer);
+      this.stopwatchRenderTimer = null;
     }
   }
 
@@ -679,6 +703,14 @@ class DashboardController {
     if (this.status === status) return;
     this.status = status;
     this.emit();
+  }
+
+  private updateConnectedForegroundNotification(): void {
+    if (this.phase !== "connected") return;
+    const now = Date.now();
+    if (now - this.lastForegroundNotificationUpdateAtMs < FOREGROUND_NOTIFICATION_MIN_UPDATE_MS) return;
+    this.lastForegroundNotificationUpdateAtMs = now;
+    updateForegroundNotification("Connected");
   }
 
   private formatFrameMetrics(metrics: FrameMetrics): string {

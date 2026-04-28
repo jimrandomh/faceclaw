@@ -149,6 +149,7 @@ const PLUGIN_MAP = new Map<DashboardPluginId, DashboardPlugin>(
 const nightscoutLargeFont = loadEmbeddedTerminus24();
 const NIGHTSCOUT_STALE_MS = 15 * 60 * 1000;
 const NIGHTSCOUT_GRAPH_WINDOW_MS = 2 * 60 * 60 * 1000;
+const NIGHTSCOUT_GRAPH_TIME_QUANTUM_MS = 60 * 1000;
 
 export function listDashboardPlugins(): DashboardPlugin[] {
   return [...DASHBOARD_PLUGINS];
@@ -294,8 +295,12 @@ function drawNightscoutGraph(
     return;
   }
 
-  const windowStartMs = nowMs - NIGHTSCOUT_GRAPH_WINDOW_MS;
-  const visibleHistory = nightscout.history.filter((point) => point.timestampMs >= windowStartMs && point.timestampMs <= nowMs);
+  const graphNowMs = minuteBucketTimestampMs(nowMs);
+  const windowStartMs = graphNowMs - NIGHTSCOUT_GRAPH_WINDOW_MS;
+  const visibleHistory = nightscout.history.filter((point) => {
+    const pointTimestampMs = minuteBucketTimestampMs(point.timestampMs);
+    return pointTimestampMs >= windowStartMs && pointTimestampMs <= graphNowMs;
+  });
   if (visibleHistory.length === 0) {
     return;
   }
@@ -308,18 +313,14 @@ function drawNightscoutGraph(
   const paddedMax = max + range * 0.1;
 
   image.drawRect(bounds.x, bounds.y, bounds.width, bounds.height, 56);
-  drawNightscoutBasalOverlay(image, bounds, nightscout.basal, nowMs);
+  drawNightscoutBasalOverlay(image, bounds, nightscout.basal, graphNowMs);
   drawNightscoutReferenceLine(image, bounds, paddedMin, paddedMax, 60, 40);
   drawNightscoutReferenceLine(image, bounds, paddedMin, paddedMax, 100, 40);
   drawNightscoutReferenceLine(image, bounds, paddedMin, paddedMax, 180, 40);
 
   const plotted = visibleHistory.map((point) => ({
     point,
-    x:
-      bounds.x +
-      Math.round(
-        ((point.timestampMs - windowStartMs) / Math.max(1, NIGHTSCOUT_GRAPH_WINDOW_MS)) * Math.max(1, bounds.width - 1),
-      ),
+    x: timeToGraphX(bounds, windowStartMs, point.timestampMs),
     y:
       bounds.y +
       bounds.height -
@@ -343,8 +344,8 @@ function drawNightscoutGraph(
       image.fillRect(current.x - 1, current.y - 1, 2, 2, 220);
     }
   }
-  drawNightscoutCarbMarkers(image, bounds, font, nightscout.carbs, nowMs);
-  drawNightscoutBolusMarkers(image, bounds, font, nightscout.boluses, nowMs);
+  drawNightscoutCarbMarkers(image, bounds, font, nightscout.carbs, graphNowMs);
+  drawNightscoutBolusMarkers(image, bounds, font, nightscout.boluses, graphNowMs);
 }
 
 function drawNightscoutBasalOverlay(
@@ -353,9 +354,12 @@ function drawNightscoutBasalOverlay(
   basalEvents: NightscoutState["basal"],
   nowMs: number,
 ): void {
-  const windowStartMs = nowMs - NIGHTSCOUT_GRAPH_WINDOW_MS;
+  const graphNowMs = minuteBucketTimestampMs(nowMs);
+  const windowStartMs = graphNowMs - NIGHTSCOUT_GRAPH_WINDOW_MS;
   const visibleEvents = basalEvents.filter(
-    (event) => event.timestampMs + event.durationMinutes * 60_000 >= windowStartMs && event.timestampMs <= nowMs,
+    (event) =>
+      minuteBucketTimestampMs(event.timestampMs + event.durationMinutes * 60_000) >= windowStartMs &&
+      minuteBucketTimestampMs(event.timestampMs) <= graphNowMs,
   );
   if (visibleEvents.length === 0) {
     return;
@@ -367,8 +371,8 @@ function drawNightscoutBasalOverlay(
   const overlayHeight = Math.max(8, Math.min(18, Math.floor(bounds.height * 0.22)));
   const bottomY = bounds.y + bounds.height - 2;
   for (const event of visibleEvents) {
-    const startMs = Math.max(windowStartMs, event.timestampMs);
-    const endMs = Math.min(nowMs, event.timestampMs + event.durationMinutes * 60_000);
+    const startMs = Math.max(windowStartMs, minuteBucketTimestampMs(event.timestampMs));
+    const endMs = Math.min(graphNowMs, minuteBucketTimestampMs(event.timestampMs + event.durationMinutes * 60_000));
     if (endMs <= startMs) {
       continue;
     }
@@ -386,13 +390,15 @@ function drawNightscoutCarbMarkers(
   carbEvents: NightscoutState["carbs"],
   nowMs: number,
 ): void {
-  const windowStartMs = nowMs - NIGHTSCOUT_GRAPH_WINDOW_MS;
+  const graphNowMs = minuteBucketTimestampMs(nowMs);
+  const windowStartMs = graphNowMs - NIGHTSCOUT_GRAPH_WINDOW_MS;
   const baselineY = bounds.y + bounds.height - 2;
   for (const event of carbEvents) {
-    if (event.timestampMs < windowStartMs || event.timestampMs > nowMs) {
+    const eventTimestampMs = minuteBucketTimestampMs(event.timestampMs);
+    if (eventTimestampMs < windowStartMs || eventTimestampMs > graphNowMs) {
       continue;
     }
-    const x = timeToGraphX(bounds, windowStartMs, event.timestampMs);
+    const x = timeToGraphX(bounds, windowStartMs, eventTimestampMs);
     image.drawLine(x, baselineY, x, baselineY - 6, 150);
     drawTextCentered(image, font, x, Math.max(bounds.y + 2, baselineY - 18), `${Math.round(event.carbs)}`, 150, bounds);
   }
@@ -405,13 +411,15 @@ function drawNightscoutBolusMarkers(
   bolusEvents: NightscoutState["boluses"],
   nowMs: number,
 ): void {
-  const windowStartMs = nowMs - NIGHTSCOUT_GRAPH_WINDOW_MS;
+  const graphNowMs = minuteBucketTimestampMs(nowMs);
+  const windowStartMs = graphNowMs - NIGHTSCOUT_GRAPH_WINDOW_MS;
   const topY = bounds.y + 1;
   for (const event of bolusEvents) {
-    if (event.timestampMs < windowStartMs || event.timestampMs > nowMs) {
+    const eventTimestampMs = minuteBucketTimestampMs(event.timestampMs);
+    if (eventTimestampMs < windowStartMs || eventTimestampMs > graphNowMs) {
       continue;
     }
-    const x = timeToGraphX(bounds, windowStartMs, event.timestampMs);
+    const x = timeToGraphX(bounds, windowStartMs, eventTimestampMs);
     image.drawLine(x, topY, x, topY + 6, 144);
     if (event.insulin >= 1) {
       drawTextCentered(
@@ -446,10 +454,17 @@ function timeToGraphX(
   windowStartMs: number,
   timestampMs: number,
 ): number {
+  const graphTimestampMs = minuteBucketTimestampMs(timestampMs);
   return (
     bounds.x +
-    Math.round(((timestampMs - windowStartMs) / Math.max(1, NIGHTSCOUT_GRAPH_WINDOW_MS)) * Math.max(1, bounds.width - 1))
+    Math.round(
+      ((graphTimestampMs - windowStartMs) / Math.max(1, NIGHTSCOUT_GRAPH_WINDOW_MS)) * Math.max(1, bounds.width - 1),
+    )
   );
+}
+
+function minuteBucketTimestampMs(timestampMs: number): number {
+  return Math.floor(timestampMs / NIGHTSCOUT_GRAPH_TIME_QUANTUM_MS) * NIGHTSCOUT_GRAPH_TIME_QUANTUM_MS;
 }
 
 function drawNightscoutReferenceLine(

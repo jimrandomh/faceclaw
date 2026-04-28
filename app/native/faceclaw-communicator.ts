@@ -65,6 +65,8 @@ function nonNegativeNumber(value: number): number {
 export class FaceclawCommunicatorBridge {
   private readonly communicator: any;
   private readonly listenerProxy: any;
+  private javaCallQueue: Promise<void> = Promise.resolve();
+  private readonly frameMetricWaiters = new Set<(metrics: FrameMetrics) => void>();
   private readonly logListeners = new Set<(line: string) => void>();
   private readonly stateListeners = new Set<(state: CommunicatorState) => void>();
   private readonly ringListeners = new Set<(event: RawInputEvent) => void>();
@@ -84,18 +86,14 @@ export class FaceclawCommunicatorBridge {
     );
     this.listenerProxy = new com.faceclaw.app.FaceclawBleCommunicatorListener({
       onLog: (line: string) => {
-        for (const listener of this.logListeners) {
-          listener(String(line));
-        }
+        this.emitAsync(this.logListeners, String(line));
       },
       onStateChange: (phase: string, status: string) => {
         const state = {
           phase: String(phase) as CommunicatorPhase,
           status: String(status),
         };
-        for (const listener of this.stateListeners) {
-          listener(state);
-        }
+        this.emitAsync(this.stateListeners, state);
       },
       onRingEvent: (
         kind: string,
@@ -111,23 +109,17 @@ export class FaceclawCommunicatorBridge {
           eventSource: Number(eventSource),
           systemExitReasonCode: Number(systemExitReasonCode),
         };
-        for (const listener of this.ringListeners) {
-          listener(event);
-        }
+        this.emitAsync(this.ringListeners, event);
       },
       onBatteryState: (headsetBattery: number, headsetCharging: number) => {
         const state = {
           battery: Number(headsetBattery),
           chargingStatus: Number(headsetCharging),
         };
-        for (const listener of this.batteryListeners) {
-          listener(state);
-        }
+        this.emitAsync(this.batteryListeners, state);
       },
       onEvenAppConflict: (message: string) => {
-        for (const listener of this.evenAppConflictListeners) {
-          listener(String(message));
-        }
+        this.emitAsync(this.evenAppConflictListeners, String(message));
       },
       onFrameMetrics: (paintMs: number, transmitMs: number, tileCount: number) => {
         const metrics = {
@@ -135,12 +127,44 @@ export class FaceclawCommunicatorBridge {
           transmitMs: nonNegativeNumber(transmitMs),
           tileCount: nonNegativeNumber(tileCount),
         };
-        for (const listener of this.frameMetricsListeners) {
-          listener(metrics);
+        const waiters = Array.from(this.frameMetricWaiters);
+        this.frameMetricWaiters.clear();
+        for (const waiter of waiters) {
+          setTimeout(() => waiter(metrics), 0);
         }
+        this.emitAsync(this.frameMetricsListeners, metrics);
       },
     });
     this.communicator.setListener(this.listenerProxy);
+  }
+
+  private emitAsync<T>(listeners: Set<(value: T) => void>, value: T): void {
+    const snapshot = Array.from(listeners);
+    setTimeout(() => {
+      for (const listener of snapshot) {
+        listener(value);
+      }
+    }, 0);
+  }
+
+  private enqueueJavaCall<T>(operation: () => T): Promise<T> {
+    const run = () =>
+      new Promise<T>((resolve, reject) => {
+        setTimeout(() => {
+          try {
+            resolve(operation());
+          } catch (error) {
+            reject(error);
+          }
+        }, 0);
+      });
+
+    const result = this.javaCallQueue.then(run, run);
+    this.javaCallQueue = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result;
   }
 
   onLog(listener: (line: string) => void): () => void {
@@ -173,34 +197,57 @@ export class FaceclawCommunicatorBridge {
     return () => this.frameMetricsListeners.delete(listener);
   }
 
+  waitForNextFrameMetrics(timeoutMs: number): Promise<FrameMetrics | null> {
+    const delayMs = Math.max(1, Math.round(nonNegativeNumber(timeoutMs)));
+    return new Promise((resolve) => {
+      let settled = false;
+      let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+      const complete = (metrics: FrameMetrics | null) => {
+        if (settled) return;
+        settled = true;
+        if (timeoutHandle !== null) {
+          clearTimeout(timeoutHandle);
+        }
+        this.frameMetricWaiters.delete(onMetrics);
+        resolve(metrics);
+      };
+      const onMetrics = (metrics: FrameMetrics) => complete(metrics);
+      this.frameMetricWaiters.add(onMetrics);
+      timeoutHandle = setTimeout(() => complete(null), delayMs);
+    });
+  }
+
   async start(): Promise<void> {
-    this.communicator.start();
+    await this.enqueueJavaCall(() => this.communicator.start());
   }
 
   async submitDashboardImage(tileBmps: Uint8Array[], fingerprint: string, forceTiledCommit = false, paintMs = -1): Promise<void> {
     if (tileBmps.length !== 4) {
       throw new Error(`expected 4 dashboard tiles, got ${tileBmps.length}`);
     }
-    this.communicator.submitDashboardImage4(
-      toJavaByteArray(tileBmps[0]!),
-      toJavaByteArray(tileBmps[1]!),
-      toJavaByteArray(tileBmps[2]!),
-      toJavaByteArray(tileBmps[3]!),
-      fingerprint,
-      forceTiledCommit,
-      Math.round(nonNegativeNumber(paintMs)),
-    );
+    const tileSnapshots = tileBmps.map((tile) => new Uint8Array(tile));
+    await this.enqueueJavaCall(() => {
+      this.communicator.submitDashboardImage4(
+        toJavaByteArray(tileSnapshots[0]!),
+        toJavaByteArray(tileSnapshots[1]!),
+        toJavaByteArray(tileSnapshots[2]!),
+        toJavaByteArray(tileSnapshots[3]!),
+        fingerprint,
+        forceTiledCommit,
+        Math.round(nonNegativeNumber(paintMs)),
+      );
+    });
   }
 
   async disconnect(): Promise<void> {
-    this.communicator.disconnect();
+    await this.enqueueJavaCall(() => this.communicator.disconnect());
   }
 
   async sendShutdown(exitMode = 0): Promise<boolean> {
-    return Boolean(this.communicator.sendShutdown(exitMode));
+    return this.enqueueJavaCall(() => Boolean(this.communicator.sendShutdown(exitMode)));
   }
 
   async close(): Promise<void> {
-    this.communicator.close();
+    await this.enqueueJavaCall(() => this.communicator.close());
   }
 }
