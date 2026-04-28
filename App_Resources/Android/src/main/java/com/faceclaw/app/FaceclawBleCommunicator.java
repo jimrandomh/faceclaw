@@ -10,6 +10,8 @@ import android.os.SystemClock;
 import android.util.Log;
 
 import java.io.ByteArrayOutputStream;
+import java.io.PrintWriter;
+import java.io.StringWriter;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -515,7 +517,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     } //}}}
 
     private long driveSession() {
-        Log.d(TAG, "driveSession called (pendingMessages.size=" + pendingMessages.size() + " inFlightMessages.size=" + inFlightMessages.size() + ")");
+        //Log.d(TAG, "driveSession called (pendingMessages.size=" + pendingMessages.size() + " inFlightMessages.size=" + inFlightMessages.size() + ")");
         synchronized (lock) {
             long now = SystemClock.elapsedRealtime();
 
@@ -628,10 +630,10 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             startupProbePending = false;
             clearMessagesOfKindLocked("create-layout");
             fixedLayoutCreated = true;
-            warmedUp = true;
+            warmedUp = false;
             displayedFingerprint = "";
             displayedTileBmps = emptyTileSet();
-            logLine("existing dashboard layout accepted text probe");
+            logLine("existing dashboard layout accepted text probe; image warmup still required");
             return;
         }
         if ("warmup".equals(message.kind)) {
@@ -777,8 +779,9 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         }
         if (bmp == null || bmp.length == 0) {
             bmp = new byte[] {0};
-	    }
-	    BleProtocol.ImageTileOptions tile = DASHBOARD_TILES[0];
+        }
+        bmp = buildBlankWarmupBmp(bmp);
+        BleProtocol.ImageTileOptions tile = DASHBOARD_TILES[0];
         int sessionId = nextMapSessionId();
         List<BleProtocol.ImageFragment> fragments = BleImageOptimizer.planImageFragments(bmp, IMAGE_FRAGMENT_SIZE);
         for (BleProtocol.ImageFragment fragment : fragments) {
@@ -799,7 +802,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 bmp
             ));
         }
-        logLine("queue warmup");
+        logLine("queue blank warmup");
     }
 
     private void enqueueDesiredImageLocked() {
@@ -1361,7 +1364,16 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     }
 
     private static String safeMessage(Throwable t) {
-        String message = t == null ? "unknown" : t.getMessage();
+        if (t == null) {
+            return "unknown";
+        }
+        StringWriter writer = new StringWriter();
+        t.printStackTrace(new PrintWriter(writer));
+        String trace = writer.toString();
+        if (!trace.trim().isEmpty()) {
+            return trace;
+        }
+        String message = t.getMessage();
         return message == null || message.trim().isEmpty() ? String.valueOf(t) : message;
     }
     
@@ -1371,6 +1383,14 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         }
     }
 
+    /**
+     * Protobuf messages contain a 1-byte identifier that is used to identify
+     * which message is referred to in ACK messages. We keep track of which
+     * identifiers are in use for inflight messages, with some metadata about
+     * what the message was. We allocate identifiers with an LRU policy so that
+     * if we release a message's identifier because it timed out, we can still
+     * detect late ACKs if it hasn't been reused yet.
+     */
     private static final class BleMagicPool {
         static final int MIN_MAGIC = 100;
         static final int MAX_MAGIC = 255;
@@ -1525,5 +1545,26 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             return new byte[0];
         }
         return Arrays.copyOf(bmp, bmp.length);
+    }
+
+    private static byte[] buildBlankWarmupBmp(byte[] bmp) {
+        byte[] warmup = copyTileBmp(bmp);
+        int pixelOffset = readBmpPixelOffset(warmup);
+        if (pixelOffset <= 0 || pixelOffset >= warmup.length) {
+            Arrays.fill(warmup, (byte) 0);
+            return warmup;
+        }
+        Arrays.fill(warmup, pixelOffset, warmup.length, (byte) 0);
+        return warmup;
+    }
+
+    private static int readBmpPixelOffset(byte[] bmp) {
+        if (bmp == null || bmp.length < 14 || bmp[0] != 0x42 || bmp[1] != 0x4d) {
+            return -1;
+        }
+        return (bmp[10] & 0xff)
+                | ((bmp[11] & 0xff) << 8)
+                | ((bmp[12] & 0xff) << 16)
+                | ((bmp[13] & 0xff) << 24);
     }
 }
