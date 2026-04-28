@@ -41,7 +41,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private static final int HEARTBEAT_INTERVAL_MS = 5_000;
     private static final int BATTERY_REFRESH_INTERVAL_MS = 5 * 60_000;
     private static final int BATTERY_INPUT_QUIET_MS = 5_000;
-    private static final int WINDOW_SIZE = 3;
+    private static final int WINDOW_SIZE = 5;
     private static final int IMAGE_FRAGMENT_SIZE = 3800;
     private static final int IMAGE_RETRY_DELAY_MS = 10_000;
     private static final boolean IMAGE_FRAGMENT_NO_ACK = false;
@@ -581,8 +581,9 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
 
     private boolean writeMessageLocked(OutboundMessage message) {
         long writeStartedAtMs = SystemClock.elapsedRealtime();
+        String writeAddress = "image".equals(message.kind) ? leftAddress : rightAddress;
         if (!bleManager.writeFrames(
-            rightAddress,
+            writeAddress,
             BleProtocol.WRITE_CHAR_UUID,
             message.frames,
             WRITE_TYPE,
