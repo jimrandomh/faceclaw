@@ -7,8 +7,9 @@ import { startForegroundNotification, stopForegroundNotification, updateForegrou
 import { mediaControllerBridge } from "../native/media-controller";
 import { nightscoutBridge } from "../native/nightscout";
 import { openEvenAppSettings, readEvenAppNotificationState } from "../native/even-app-conflict";
-import { grayImageToPreviewSource } from "../native/gray-image-preview";
+import { grayImageToPreviewSource, grayImageToPreviewSourceWithBitmapFactory } from "../native/gray-image-preview";
 import { voiceControlBridge } from "../native/voice-control";
+import { type GrayImage } from "../graphics/image";
 import {
   applyDashboardScreenTimeout,
   consumeDashboardTiledWakePaint,
@@ -53,6 +54,7 @@ const SCREEN_TIMEOUT_CHECK_MS = 1_000;
 const STOPWATCH_RENDER_INTERVAL_MS = 100;
 const FOREGROUND_NOTIFICATION_MIN_UPDATE_MS = 30_000;
 const FRAME_TRANSMIT_BACKPRESSURE_TIMEOUT_MS = 6_000;
+const CONNECTED_PREVIEW_MIN_UPDATE_MS = 1_000;
 const EVEN_APP_DETECTED_MESSAGE =
   "The Even Realities app appears to be running. If Faceclaw has trouble connecting, open its app settings and force stop it.";
 
@@ -134,6 +136,8 @@ class DashboardController {
   private renderQueued = false;
   private queuedRenderReason: "initial" | "interval" = "interval";
   private lastForegroundNotificationUpdateAtMs = 0;
+  private lastConnectedPreviewUpdateAtMs = 0;
+  private connectedPreviewUpdateSeq = 0;
 
   constructor() {
     setDashboardActions({
@@ -202,7 +206,7 @@ class DashboardController {
       });
     } else {
       const image = drawDashboard();
-      this.setDisplayPreview(grayImageToPreviewSource(image));
+      this.updateDisplayPreviewFromImage(image);
     }
     if (savedName !== name) {
       this.emit();
@@ -551,7 +555,7 @@ class DashboardController {
       });
     } else {
       const image = drawDashboard();
-      this.setDisplayPreview(grayImageToPreviewSource(image));
+      this.updateDisplayPreviewFromImage(image);
     }
   }
 
@@ -563,7 +567,7 @@ class DashboardController {
       return;
     }
     const image = drawDashboard();
-    this.setDisplayPreview(grayImageToPreviewSource(image));
+    this.updateDisplayPreviewFromImage(image);
   }
 
   private async requestRender(reason: "initial" | "interval"): Promise<void> {
@@ -593,14 +597,22 @@ class DashboardController {
     const forceTiledCommit = consumeDashboardTiledWakePaint();
     const fingerprint = image.fingerprint();
     const tiles = image.toEvenHubTiles().map((tile) => tile.bmp);
-    this.setDisplayPreview(grayImageToPreviewSource(image));
+    const updatePreviewAfterTransmit = this.phase === "connected";
+    if (!updatePreviewAfterTransmit) {
+      this.updateDisplayPreviewFromImage(image);
+    }
     if (this.communicator) {
       await this.communicator.submitDashboardImage(tiles, fingerprint, forceTiledCommit, paintMs);
       await this.communicator.waitForNextFrameMetrics(FRAME_TRANSMIT_BACKPRESSURE_TIMEOUT_MS);
+      if (updatePreviewAfterTransmit) {
+        await this.updateConnectedDisplayPreviewFromImage(image);
+      }
     }
 
     this.updateConnectedForegroundNotification();
-    this.appendLog(`${reason === "initial" ? "initial" : "scheduled"} dashboard image queued`);
+    if (reason === "initial") {
+      this.appendLog("initial dashboard image queued");
+    }
   }
 
   private async handleInputEvent(event: RawInputEvent): Promise<void> {
@@ -651,7 +663,7 @@ class DashboardController {
     }
     if (changed) {
       const image = drawDashboard();
-      this.setDisplayPreview(grayImageToPreviewSource(image));
+      this.updateDisplayPreviewFromImage(image);
     }
   }
 
@@ -728,6 +740,32 @@ class DashboardController {
     if (this.displayPreview === preview) return;
     this.displayPreview = preview;
     this.emit();
+  }
+
+  private updateDisplayPreviewFromImage(image: GrayImage): void {
+    this.setDisplayPreview(grayImageToPreviewSource(image));
+  }
+
+  private async updateConnectedDisplayPreviewFromImage(image: GrayImage): Promise<void> {
+    if (!this.communicator) return;
+    const now = Date.now();
+    if (
+      this.lastConnectedPreviewUpdateAtMs > 0 &&
+      now - this.lastConnectedPreviewUpdateAtMs < CONNECTED_PREVIEW_MIN_UPDATE_MS
+    ) {
+      return;
+    }
+    this.lastConnectedPreviewUpdateAtMs = now;
+    const previewUpdateId = ++this.connectedPreviewUpdateSeq;
+    console.log(`[preview#${previewUpdateId}] create start`);
+    const preview = await grayImageToPreviewSourceWithBitmapFactory(
+      image,
+      (createColors, width, height) =>
+        this.communicator!.createPreviewBitmapWithColorFactory(createColors, width, height),
+    );
+    console.log(`[preview#${previewUpdateId}] create done; setDisplayPreview start`);
+    this.setDisplayPreview(preview);
+    console.log(`[preview#${previewUpdateId}] setDisplayPreview done`);
   }
 
   private formatError(error: unknown): string {

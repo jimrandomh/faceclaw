@@ -33,7 +33,7 @@ public class FaceclawBleManager {
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
 
     private final ConcurrentHashMap<String, BluetoothGatt> gattClients = new ConcurrentHashMap<>();
-    private final ConcurrentHashMap<String, Object> gattLocks = new ConcurrentHashMap<>();
+    private final Object bluetoothApiLock = new Object();
 
     private final ConcurrentHashMap<String, CountDownLatch> connectLatches = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, Boolean> connectResults = new ConcurrentHashMap<>();
@@ -103,99 +103,84 @@ public class FaceclawBleManager {
             if (gatt != null) {
                 gattClients.put(address, gatt);
             }
-        }
-        if (gatt == null) {
-            connectLatches.remove(address);
-            return false;
-        }
 
-        if (!awaitLatch(latch, timeoutMs)) {
-            connectLatches.remove(address);
-            connectResults.remove(address);
-            synchronized (gattLock) {
+            if (gatt == null) {
+                connectLatches.remove(address);
+                return false;
+            }
+
+            if (!awaitLatch(latch, timeoutMs)) {
+                connectLatches.remove(address);
+                connectResults.remove(address);
                 gattClients.remove(address, gatt);
                 gatt.disconnect();
                 gatt.close();
+                return false;
             }
-            return false;
-        }
 
-        Boolean connected = connectResults.remove(address);
-        connectLatches.remove(address);
-        boolean ok = Boolean.TRUE.equals(connected);
-        if (ok) {
-            synchronized (gattLock) {
-                BluetoothGatt current = gattClients.get(address);
-                if (current == gatt) {
-                    gatt.readPhy();
-                }
-            }
+            Boolean connected = connectResults.remove(address);
+            connectLatches.remove(address);
+            return Boolean.TRUE.equals(connected);
         }
-        return ok;
     }
 
     public boolean requestConnectionPriority(String address, int priority) {
-        synchronized (gattLock(address)) {
-            BluetoothGatt gatt = requireGatt(address);
-            return gatt.requestConnectionPriority(priority);
-        }
+        Log.w(TAG, "requestConnectionPriority skipped: no completion callback is available in this build");
+        return false;
     }
 
     public boolean requestMtu(String address, int mtu, int timeoutMs) {
-        CountDownLatch latch = new CountDownLatch(1);
-        mtuLatches.put(address, latch);
-        mtuStatuses.remove(address);
-
-        boolean started;
         synchronized (gattLock(address)) {
-            BluetoothGatt gatt = requireGatt(address);
-            started = gatt.requestMtu(mtu);
-        }
-        if (!started) {
-            mtuLatches.remove(address);
-            return false;
-        }
-        if (!awaitLatch(latch, timeoutMs)) {
-            mtuLatches.remove(address);
+            CountDownLatch latch = new CountDownLatch(1);
+            mtuLatches.put(address, latch);
             mtuStatuses.remove(address);
-            return false;
+
+            BluetoothGatt gatt = requireGatt(address);
+            boolean started = gatt.requestMtu(mtu);
+            if (!started) {
+                mtuLatches.remove(address);
+                return false;
+            }
+            if (!awaitLatch(latch, timeoutMs)) {
+                mtuLatches.remove(address);
+                mtuStatuses.remove(address);
+                return false;
+            }
+            Integer status = mtuStatuses.remove(address);
+            mtuLatches.remove(address);
+            return status != null && status == BluetoothGatt.GATT_SUCCESS;
         }
-        Integer status = mtuStatuses.remove(address);
-        mtuLatches.remove(address);
-        return status != null && status == BluetoothGatt.GATT_SUCCESS;
     }
 
     public boolean discoverServices(String address, int timeoutMs) {
-        CountDownLatch latch = new CountDownLatch(1);
-        servicesLatches.put(address, latch);
-        servicesStatuses.remove(address);
-
-        boolean started;
         synchronized (gattLock(address)) {
-            BluetoothGatt gatt = requireGatt(address);
-            started = gatt.discoverServices();
-        }
-        if (!started) {
-            servicesLatches.remove(address);
-            return false;
-        }
-        if (!awaitLatch(latch, timeoutMs)) {
-            servicesLatches.remove(address);
+            CountDownLatch latch = new CountDownLatch(1);
+            servicesLatches.put(address, latch);
             servicesStatuses.remove(address);
-            return false;
+
+            BluetoothGatt gatt = requireGatt(address);
+            boolean started = gatt.discoverServices();
+            if (!started) {
+                servicesLatches.remove(address);
+                return false;
+            }
+            if (!awaitLatch(latch, timeoutMs)) {
+                servicesLatches.remove(address);
+                servicesStatuses.remove(address);
+                return false;
+            }
+            Integer status = servicesStatuses.remove(address);
+            servicesLatches.remove(address);
+            return status != null && status == BluetoothGatt.GATT_SUCCESS;
         }
-        Integer status = servicesStatuses.remove(address);
-        servicesLatches.remove(address);
-        return status != null && status == BluetoothGatt.GATT_SUCCESS;
     }
 
     public boolean enableNotifications(String address, String characteristicUuid, boolean enable, int timeoutMs) {
-        CountDownLatch latch = new CountDownLatch(1);
-        descriptorLatches.put(address, latch);
-        descriptorStatuses.remove(address);
-
-        boolean started;
         synchronized (gattLock(address)) {
+            CountDownLatch latch = new CountDownLatch(1);
+            descriptorLatches.put(address, latch);
+            descriptorStatuses.remove(address);
+
             BluetoothGatt gatt = requireGatt(address);
             BluetoothGattCharacteristic characteristic = requireCharacteristic(gatt, characteristicUuid);
 
@@ -214,22 +199,21 @@ public class FaceclawBleManager {
             descriptor.setValue(enable
                     ? BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
                     : BluetoothGattDescriptor.DISABLE_NOTIFICATION_VALUE);
-            started = gatt.writeDescriptor(descriptor);
-        }
-
-        if (!started) {
+            boolean started = gatt.writeDescriptor(descriptor);
+            if (!started) {
+                descriptorLatches.remove(address);
+                descriptorStatuses.remove(address);
+                return false;
+            }
+            if (!awaitLatch(latch, timeoutMs)) {
+                descriptorLatches.remove(address);
+                descriptorStatuses.remove(address);
+                return false;
+            }
+            Integer status = descriptorStatuses.remove(address);
             descriptorLatches.remove(address);
-            descriptorStatuses.remove(address);
-            return false;
+            return status != null && status == BluetoothGatt.GATT_SUCCESS;
         }
-        if (!awaitLatch(latch, timeoutMs)) {
-            descriptorLatches.remove(address);
-            descriptorStatuses.remove(address);
-            return false;
-        }
-        Integer status = descriptorStatuses.remove(address);
-        descriptorLatches.remove(address);
-        return status != null && status == BluetoothGatt.GATT_SUCCESS;
     }
 
     public boolean writeFrames(
@@ -375,7 +359,9 @@ public class FaceclawBleManager {
     }
 
     private Object gattLock(String address) {
-        return gattLocks.computeIfAbsent(address, ignored -> new Object());
+        // Android's Bluetooth stack has process-wide command-pipeline constraints on some devices.
+        // Keep every BluetoothGatt API call serialized globally, even for different MAC addresses.
+        return bluetoothApiLock;
     }
 
     private void runOnMainAsync(Runnable runnable) {

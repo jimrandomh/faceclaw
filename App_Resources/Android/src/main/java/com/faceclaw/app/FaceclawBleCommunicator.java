@@ -4,6 +4,7 @@ import android.annotation.SuppressLint;
 import android.bluetooth.BluetoothGatt;
 import android.bluetooth.BluetoothGattCharacteristic;
 import android.content.Context;
+import android.graphics.Bitmap;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
@@ -22,6 +23,8 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.locks.ReentrantLock;
 
 @SuppressLint("MissingPermission")
 public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
@@ -30,7 +33,6 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private static final int WRITE_TYPE = BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE;
     private static final int IMAGE_WRITE_TYPE = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT;
     private static final int DESIRED_MTU = 512;
-    private static final int CONNECTION_PRIORITY_HIGH = BluetoothGatt.CONNECTION_PRIORITY_HIGH;
 
     private static final int CONNECT_TIMEOUT_MS = 5_000;
     private static final int SERVICES_TIMEOUT_MS = 5_000;
@@ -52,6 +54,10 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private static final int IDLE_SLEEP_MS = 100;
     private static final int RECONNECT_DELAY_MS = 5_000;
 
+    private interface NativeBridgeOperation<T> {
+        T run();
+    }
+
     private static final BleProtocol.ImageTileOptions[] DASHBOARD_TILES = new BleProtocol.ImageTileOptions[] {
         new BleProtocol.ImageTileOptions("img00", 10, 0, 0, 288, 144),
         new BleProtocol.ImageTileOptions("img10", 11, 288, 0, 288, 144),
@@ -63,7 +69,8 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private final FaceclawBleManager bleManager;
     private final InterruptibleSleep interruptibleSleep = new InterruptibleSleep();
     private final Object lock = new Object();
-    private final Object nativeBridgeLock = new Object();
+    private final ReentrantLock nativeBridgeLock = new ReentrantLock();
+    private final AtomicInteger nativeBridgeOperationSeq = new AtomicInteger();
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final String rightAddress;
     private final String leftAddress;
@@ -196,7 +203,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         if (tileBmps == null || tileBmps.size() != DASHBOARD_TILES.length) {
             throw new IllegalArgumentException("exactly 4 tile bitmaps are required");
         }
-        synchronized (nativeBridgeLock) {
+        withNativeBridgeLock("submitDashboardImage", () -> {
             synchronized (desiredTilesLock) {
                 desiredTileBmps = emptyTileSet();
                 for (int i = 0; i < DASHBOARD_TILES.length; i++) {
@@ -207,7 +214,8 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 desiredForceTiledCommit = forceTiledCommit;
                 desiredPaintMs = paintMs;
             }
-        }
+            return null;
+        });
         interruptibleSleep.interrupt();
     }
 
@@ -241,7 +249,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             boolean forceTiledCommit,
             int paintMs
     ) {
-        synchronized (nativeBridgeLock) {
+        withNativeBridgeLock("submitDashboardImage4", () -> {
             synchronized (desiredTilesLock) {
                 desiredTileBmps = emptyTileSet();
                 desiredTileBmps[0] = tile0Bmp == null ? new byte[0] : Arrays.copyOf(tile0Bmp, tile0Bmp.length);
@@ -252,8 +260,39 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 desiredForceTiledCommit = forceTiledCommit;
                 desiredPaintMs = paintMs;
             }
-        }
+            return null;
+        });
         interruptibleSleep.interrupt();
+    }
+
+    public Bitmap createPreviewBitmap(int[] colors, int width, int height) {
+        if (colors == null) {
+            throw new IllegalArgumentException("colors are required");
+        }
+        if (width <= 0 || height <= 0 || colors.length < width * height) {
+            throw new IllegalArgumentException("invalid preview bitmap dimensions");
+        }
+        return withNativeBridgeLock("createPreviewBitmap " + width + "x" + height, () ->
+                Bitmap.createBitmap(colors, width, height, Bitmap.Config.ARGB_8888));
+    }
+
+    public void acquireNativeBridgeLock(String operation) {
+        String label = operation == null || operation.isEmpty() ? "external" : operation;
+        String threadName = Thread.currentThread().getName();
+        long waitStartedAtMs = SystemClock.elapsedRealtime();
+        Log.i(TAG, "nativeBridge wait external " + label + " thread=" + threadName);
+        nativeBridgeLock.lock();
+        long enteredAtMs = SystemClock.elapsedRealtime();
+        Log.i(TAG, "nativeBridge enter external " + label
+                + " thread=" + threadName
+                + " waitedMs=" + (enteredAtMs - waitStartedAtMs));
+    }
+
+    public void releaseNativeBridgeLock(String operation) {
+        String label = operation == null || operation.isEmpty() ? "external" : operation;
+        String threadName = Thread.currentThread().getName();
+        Log.i(TAG, "nativeBridge exit external " + label + " thread=" + threadName);
+        nativeBridgeLock.unlock();
     }
 
     public boolean sendShutdown(int exitMode) {
@@ -474,7 +513,8 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         if (!bleManager.connect(address, CONNECT_TIMEOUT_MS)) {
             throw new IllegalStateException("connect failed: " + address);
         }
-        bleManager.requestConnectionPriority(address, CONNECTION_PRIORITY_HIGH);
+        // requestConnectionPriority has no callback in this Android compile target, so there is
+        // no reliable completion point to keep it in the global GATT operation pipeline.
         bleManager.requestMtu(address, DESIRED_MTU, CONNECT_TIMEOUT_MS);
         if (!bleManager.discoverServices(address, SERVICES_TIMEOUT_MS)) {
             throw new IllegalStateException("discoverServices failed: " + address);
@@ -636,15 +676,14 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
 
     private boolean writeMessageFrames(OutboundMessage message) {
         String writeAddress = isLeftArmMessage(message) ? leftAddress : rightAddress;
-        synchronized (nativeBridgeLock) {
-            return bleManager.writeFrames(
+        return withNativeBridgeLock("writeFrames " + message.label + " frames=" + message.frames.size(), () ->
+            bleManager.writeFrames(
                 writeAddress,
                 BleProtocol.WRITE_CHAR_UUID,
                 message.frames,
                 WRITE_TYPE,
                 WRITE_TIMEOUT_MS
-            );
-        }
+            ));
     }
 
     private boolean isLeftArmMessage(OutboundMessage message) {
@@ -1399,6 +1438,9 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
 
     private void logLine(String line) {
         Log.i(TAG, line);
+        if (!shouldForwardLogLineToJavascript(line)) {
+            return;
+        }
         final FaceclawBleCommunicatorListener current = listener;
         if (current == null) {
             return;
@@ -1410,6 +1452,49 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 Log.w(TAG, "listener onLog failed", t);
             }
         });
+    }
+
+    private boolean shouldForwardLogLineToJavascript(String line) {
+        if (line == null || line.isEmpty()) {
+            return false;
+        }
+        return line.startsWith("communicator start")
+                || line.startsWith("communicator stop")
+                || line.startsWith("connect failed")
+                || line.startsWith("session ready")
+                || line.startsWith("message timed out")
+                || line.startsWith("create layout timed out")
+                || line.startsWith("unexpected ACK")
+                || line.startsWith("late ACK")
+                || line.startsWith("duplicate ACK")
+                || line.startsWith("skip shutdown")
+                || line.startsWith("shutdown")
+                || line.startsWith("Even Realities")
+                || line.startsWith("communicator loop error");
+    }
+
+    private <T> T withNativeBridgeLock(String operation, NativeBridgeOperation<T> callback) {
+        int operationId = nativeBridgeOperationSeq.incrementAndGet();
+        String threadName = Thread.currentThread().getName();
+        long waitStartedAtMs = SystemClock.elapsedRealtime();
+        Log.i(TAG, "nativeBridge wait op#" + operationId + " " + operation + " thread=" + threadName);
+        nativeBridgeLock.lock();
+        try {
+            long enteredAtMs = SystemClock.elapsedRealtime();
+            Log.i(TAG, "nativeBridge enter op#" + operationId + " " + operation
+                    + " thread=" + threadName
+                    + " waitedMs=" + (enteredAtMs - waitStartedAtMs));
+            try {
+                return callback.run();
+            } finally {
+                long exitedAtMs = SystemClock.elapsedRealtime();
+                Log.i(TAG, "nativeBridge exit op#" + operationId + " " + operation
+                        + " thread=" + threadName
+                        + " heldMs=" + (exitedAtMs - enteredAtMs));
+            }
+        } finally {
+            nativeBridgeLock.unlock();
+        }
     }
 
     private static String timestamp(long elapsedMs) {

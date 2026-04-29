@@ -10,10 +10,7 @@ export function grayImageToPreviewSource(image: GrayImage): ImageSource | null {
     return null;
   }
 
-  const colors = Array.create("int", image.width * image.height) as number[];
-  for (let i = 0; i < image.pixels.length; i++) {
-    colors[i] = PREVIEW_COLOR_LUT[image.pixels[i] ?? 0]!;
-  }
+  const colors = grayImageToPreviewColors(image);
 
   const bitmap = android.graphics.Bitmap.createBitmap(
     colors,
@@ -22,6 +19,26 @@ export function grayImageToPreviewSource(image: GrayImage): ImageSource | null {
     android.graphics.Bitmap.Config.ARGB_8888,
   );
   return new ImageSource(bitmap);
+}
+
+export async function grayImageToPreviewSourceWithBitmapFactory(
+  image: GrayImage,
+  createBitmap: (createColors: () => number[], width: number, height: number) => Promise<any>,
+): Promise<ImageSource | null> {
+  if (!global.isAndroid) {
+    return null;
+  }
+
+  const bitmap = await createBitmap(() => grayImageToPreviewColors(image), image.width, image.height);
+  return new ImageSource(bitmap);
+}
+
+function grayImageToPreviewColors(image: GrayImage): number[] {
+  const colors = Array.create("int", image.width * image.height) as number[];
+  for (let i = 0; i < image.pixels.length; i++) {
+    colors[i] = PREVIEW_COLOR_LUT[image.pixels[i] ?? 0]!;
+  }
+  return colors;
 }
 
 function buildPreviewColorLookup(): number[] {
