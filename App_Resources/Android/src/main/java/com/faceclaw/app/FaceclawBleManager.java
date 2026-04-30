@@ -125,8 +125,10 @@ public class FaceclawBleManager {
     }
 
     public boolean requestConnectionPriority(String address, int priority) {
-        Log.w(TAG, "requestConnectionPriority skipped: no completion callback is available in this build");
-        return false;
+        synchronized (gattLock(address)) {
+            BluetoothGatt gatt = requireGatt(address);
+            return gatt.requestConnectionPriority(priority);
+        }
     }
 
     public boolean requestMtu(String address, int mtu, int timeoutMs) {
