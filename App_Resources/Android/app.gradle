@@ -1,6 +1,130 @@
+import org.apache.tools.ant.taskdefs.condition.Os
+
 // You can add your native dependencies here
 dependencies {
 //  implementation 'androidx.multidex:multidex:2.0.1'
+}
+
+def faceclawSherpaOnnxVersion = "1.12.34"
+def faceclawLibLc3Version = "1.1.3"
+def faceclawAbi = "arm64-v8a"
+def faceclawJniLibsDir = file("$projectDir/src/main/jniLibs/$faceclawAbi")
+def faceclawNativeBuildDir = file("$buildDir/faceclaw-native")
+
+def faceclawDownload = { String url, File destination ->
+  if (destination.exists() && destination.length() > 0) {
+    return
+  }
+  destination.parentFile.mkdirs()
+  println "Downloading $url"
+  destination.withOutputStream { output ->
+    new URL(url).withInputStream { input ->
+      output << input
+    }
+  }
+}
+
+def faceclawNdkHostTag = {
+  if (Os.isFamily(Os.FAMILY_MAC)) return "darwin-x86_64"
+  if (Os.isFamily(Os.FAMILY_WINDOWS)) return "windows-x86_64"
+  return "linux-x86_64"
+}
+
+def faceclawFindNdkRoot = {
+  def explicitNdk = System.getenv("ANDROID_NDK_HOME")
+  if (explicitNdk != null && file(explicitNdk).exists()) {
+    return file(explicitNdk)
+  }
+  def sdkRoot = System.getenv("ANDROID_HOME") ?: System.getenv("ANDROID_SDK_ROOT")
+  if (sdkRoot != null) {
+    def ndkDir = file("$sdkRoot/ndk")
+    if (ndkDir.exists()) {
+      def installed = ndkDir.listFiles()?.findAll { it.isDirectory() }?.sort { a, b -> b.name <=> a.name }
+      if (installed && !installed.isEmpty()) {
+        return installed[0]
+      }
+    }
+  }
+  try {
+    return android.ndkDirectory
+  } catch (Throwable ignored) {
+    return null
+  }
+}
+
+tasks.register("prepareFaceclawNativeLibs") {
+  outputs.files(
+    file("$faceclawJniLibsDir/libonnxruntime.so"),
+    file("$faceclawJniLibsDir/libsherpa-onnx-jni.so"),
+    file("$faceclawJniLibsDir/libfaceclaw_lc3.so")
+  )
+
+  doLast {
+    faceclawJniLibsDir.mkdirs()
+
+    def downloadsDir = file("$faceclawNativeBuildDir/downloads")
+    def sherpaArchive = file("$downloadsDir/sherpa-onnx-v${faceclawSherpaOnnxVersion}-android.tar.bz2")
+    faceclawDownload(
+      "https://github.com/k2-fsa/sherpa-onnx/releases/download/v${faceclawSherpaOnnxVersion}/sherpa-onnx-v${faceclawSherpaOnnxVersion}-android.tar.bz2",
+      sherpaArchive
+    )
+    copy {
+      from tarTree(resources.bzip2(sherpaArchive))
+      include "**/jniLibs/$faceclawAbi/libonnxruntime.so"
+      include "**/jniLibs/$faceclawAbi/libsherpa-onnx-jni.so"
+      eachFile { details -> details.path = details.name }
+      includeEmptyDirs = false
+      into faceclawJniLibsDir
+    }
+
+    def lc3Archive = file("$downloadsDir/liblc3-v${faceclawLibLc3Version}.tar.gz")
+    faceclawDownload(
+      "https://github.com/google/liblc3/archive/refs/tags/v${faceclawLibLc3Version}.tar.gz",
+      lc3Archive
+    )
+    def lc3ExtractDir = file("$faceclawNativeBuildDir/liblc3")
+    if (!file("$lc3ExtractDir/liblc3-${faceclawLibLc3Version}/src/lc3.c").exists()) {
+      delete lc3ExtractDir
+      copy {
+        from tarTree(resources.gzip(lc3Archive))
+        into lc3ExtractDir
+      }
+    }
+
+    def ndkRoot = faceclawFindNdkRoot()
+    if (ndkRoot == null || !ndkRoot.exists()) {
+      throw new GradleException("Android NDK is required to build libfaceclaw_lc3.so")
+    }
+    def clang = file("$ndkRoot/toolchains/llvm/prebuilt/${faceclawNdkHostTag()}/bin/aarch64-linux-android24-clang")
+    if (!clang.exists()) {
+      throw new GradleException("Could not find Android clang at $clang")
+    }
+
+    def lc3Root = file("$lc3ExtractDir/liblc3-${faceclawLibLc3Version}")
+    def lc3Sources = [
+      "attdet.c", "bits.c", "bwdet.c", "energy.c", "lc3.c", "ltpf.c",
+      "mdct.c", "plc.c", "sns.c", "spec.c", "tables.c", "tns.c"
+    ].collect { file("$lc3Root/src/$it").absolutePath }
+
+    exec {
+      commandLine([
+        clang.absolutePath,
+        "-shared",
+        "-fPIC",
+        "-O3",
+        "-DLC3_PLUS=0",
+        "-DLC3_PLUS_HR=0",
+        "-I${file("$lc3Root/include").absolutePath}",
+        file("$projectDir/src/main/native/faceclaw_lc3_decoder.c").absolutePath
+      ] + lc3Sources + [
+        "-lm",
+        "-Wl,-z,max-page-size=16384",
+        "-Wl,-z,common-page-size=16384",
+        "-o",
+        file("$faceclawJniLibsDir/libfaceclaw_lc3.so").absolutePath
+      ])
+    }
+  }
 }
 
 android {
@@ -29,4 +153,8 @@ android {
   aaptOptions {
     additionalParameters "--no-version-vectors"
   }
+}
+
+tasks.matching { it.name == "preBuild" }.configureEach {
+  dependsOn tasks.named("prepareFaceclawNativeLibs")
 }

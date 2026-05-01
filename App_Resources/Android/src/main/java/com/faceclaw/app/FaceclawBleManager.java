@@ -459,7 +459,6 @@ public class FaceclawBleManager {
 
         @Override
         public void onCharacteristicChanged(BluetoothGatt gatt, BluetoothGattCharacteristic characteristic, byte[] value) {
-            Log.i(TAG, "onCharacteristicChanged");
             dispatchNotification(gatt.getDevice().getAddress(), characteristic.getUuid().toString(), value);
         }
 
@@ -479,7 +478,6 @@ public class FaceclawBleManager {
     }
 
     private void dispatchNotification(String address, String characteristicUuid, byte[] data) {
-        Log.i(TAG, "dispatchNotification");
         FaceclawBleListener current = listener;
         if (current == null) {
             return;
