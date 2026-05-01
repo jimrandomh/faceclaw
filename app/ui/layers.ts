@@ -17,6 +17,9 @@ export type LayerActions = {
   endTextSettingEdit: () => Promise<void> | void;
   setVoiceControlEnabled: (enabled: boolean) => Promise<void> | void;
   setStopwatchRenderActive: (active: boolean) => Promise<void> | void;
+  setTranscribeRenderActive: (active: boolean) => Promise<void> | void;
+  startDedicatedVoiceInput: (mode: "wakeword" | "full") => Promise<void> | void;
+  stopDedicatedVoiceInput: () => Promise<void> | void;
 };
 
 export type PaintBelow = () => GrayImage;

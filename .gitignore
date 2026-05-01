@@ -20,6 +20,8 @@ yarn-error.log*
 tmp/
 typings/
 .gradle-cursor
+App_Resources/Android/src/main/jniLibs/**/*.so
+App_Resources/Android/src/main/assets/faceclaw-voice-asr/
 
 # Visual Studio Code
 .vscode/*

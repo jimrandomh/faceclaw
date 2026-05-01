@@ -52,6 +52,7 @@ const CONTAINER_NAME = "dashboard";
 const DASHBOARD_INTERVAL_MS = 60_000;
 const SCREEN_TIMEOUT_CHECK_MS = 1_000;
 const STOPWATCH_RENDER_INTERVAL_MS = 100;
+const TRANSCRIBE_RENDER_INTERVAL_MS = 250;
 const FOREGROUND_NOTIFICATION_MIN_UPDATE_MS = 30_000;
 const FRAME_TRANSMIT_BACKPRESSURE_TIMEOUT_MS = 6_000;
 const CONNECTED_PREVIEW_MIN_UPDATE_MS = 1_000;
@@ -120,6 +121,7 @@ class DashboardController {
   private dashboardTimer: ReturnType<typeof setInterval> | null = null;
   private screenTimeoutTimer: ReturnType<typeof setInterval> | null = null;
   private stopwatchRenderTimer: ReturnType<typeof setInterval> | null = null;
+  private transcribeRenderTimer: ReturnType<typeof setInterval> | null = null;
   private offState: (() => void) | null = null;
   private offLog: (() => void) | null = null;
   private offRing: (() => void) | null = null;
@@ -149,6 +151,9 @@ class DashboardController {
       endTextSettingEdit: () => this.endTextSettingEdit(),
       setVoiceControlEnabled: (enabled) => this.setVoiceControlEnabled(enabled),
       setStopwatchRenderActive: (active) => this.setStopwatchRenderActive(active),
+      setTranscribeRenderActive: (active) => this.setTranscribeRenderActive(active),
+      startDedicatedVoiceInput: (mode) => this.startDedicatedVoiceInput(mode),
+      stopDedicatedVoiceInput: () => this.stopDedicatedVoiceInput(),
     });
   }
 
@@ -393,6 +398,10 @@ class DashboardController {
       this.offVoiceStatus = null;
       this.offVoiceWakeWord?.();
       this.offVoiceWakeWord = null;
+      if (this.transcribeRenderTimer) {
+        clearInterval(this.transcribeRenderTimer);
+        this.transcribeRenderTimer = null;
+      }
       await mediaControllerBridge.stop().catch(() => {});
       await nightscoutBridge.stop().catch(() => {});
       voiceControlBridge.stop();
@@ -452,6 +461,10 @@ class DashboardController {
       await mediaControllerBridge.stop().catch(() => {});
       await nightscoutBridge.stop().catch(() => {});
       voiceControlBridge.stop();
+      if (this.transcribeRenderTimer) {
+        clearInterval(this.transcribeRenderTimer);
+        this.transcribeRenderTimer = null;
+      }
       await communicator?.close().catch(() => {});
     } finally {
       stopForegroundNotification();
@@ -673,7 +686,21 @@ class DashboardController {
     if (!this.communicator) return;
     if (!isDashboardVoiceControlEnabled()) return;
     this.updateConnectedForegroundNotification();
-    voiceControlBridge.start(this.communicator.getNativeCommunicator());
+    voiceControlBridge.start(this.communicator.getNativeCommunicator(), "wakeword");
+  }
+
+  private async startDedicatedVoiceInput(mode: "wakeword" | "full"): Promise<void> {
+    if (!this.communicator) {
+      throw new Error("Voice input needs an active G2 connection.");
+    }
+    await ensureVoicePermissions();
+    this.updateConnectedForegroundNotification();
+    voiceControlBridge.start(this.communicator.getNativeCommunicator(), mode);
+  }
+
+  private stopDedicatedVoiceInput(): void {
+    voiceControlBridge.stop();
+    this.startVoiceControlIfEnabled();
   }
 
   private setStopwatchRenderActive(active: boolean): void {
@@ -692,6 +719,22 @@ class DashboardController {
     }, STOPWATCH_RENDER_INTERVAL_MS);
   }
 
+  private setTranscribeRenderActive(active: boolean): void {
+    if (!active || this.phase !== "connected" || !this.communicator) {
+      if (this.transcribeRenderTimer) {
+        clearInterval(this.transcribeRenderTimer);
+        this.transcribeRenderTimer = null;
+      }
+      return;
+    }
+    if (this.transcribeRenderTimer) return;
+    this.transcribeRenderTimer = setInterval(() => {
+      void this.requestRender("interval").catch((error) => {
+        this.appendLog(`transcribe render failed: ${this.formatError(error)}`);
+      });
+    }, TRANSCRIBE_RENDER_INTERVAL_MS);
+  }
+
   private clearDashboardTimer(): void {
     if (this.dashboardTimer) {
       clearInterval(this.dashboardTimer);
@@ -704,6 +747,10 @@ class DashboardController {
     if (this.stopwatchRenderTimer) {
       clearInterval(this.stopwatchRenderTimer);
       this.stopwatchRenderTimer = null;
+    }
+    if (this.transcribeRenderTimer) {
+      clearInterval(this.transcribeRenderTimer);
+      this.transcribeRenderTimer = null;
     }
   }
 

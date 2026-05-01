@@ -7,8 +7,10 @@ dependencies {
 
 def faceclawSherpaOnnxVersion = "1.12.34"
 def faceclawLibLc3Version = "1.1.3"
+def faceclawAsrModelName = "sherpa-onnx-streaming-zipformer-en-2023-06-26"
 def faceclawAbi = "arm64-v8a"
 def faceclawJniLibsDir = file("$projectDir/src/main/jniLibs/$faceclawAbi")
+def faceclawAssetsDir = file("$projectDir/src/main/assets/faceclaw-voice-asr")
 def faceclawNativeBuildDir = file("$buildDir/faceclaw-native")
 
 def faceclawDownload = { String url, File destination ->
@@ -56,11 +58,16 @@ tasks.register("prepareFaceclawNativeLibs") {
   outputs.files(
     file("$faceclawJniLibsDir/libonnxruntime.so"),
     file("$faceclawJniLibsDir/libsherpa-onnx-jni.so"),
-    file("$faceclawJniLibsDir/libfaceclaw_lc3.so")
+    file("$faceclawJniLibsDir/libfaceclaw_lc3.so"),
+    file("$faceclawAssetsDir/$faceclawAsrModelName/encoder-epoch-99-avg-1-chunk-16-left-128.int8.onnx"),
+    file("$faceclawAssetsDir/$faceclawAsrModelName/decoder-epoch-99-avg-1-chunk-16-left-128.onnx"),
+    file("$faceclawAssetsDir/$faceclawAsrModelName/joiner-epoch-99-avg-1-chunk-16-left-128.int8.onnx"),
+    file("$faceclawAssetsDir/$faceclawAsrModelName/tokens.txt")
   )
 
   doLast {
     faceclawJniLibsDir.mkdirs()
+    faceclawAssetsDir.mkdirs()
 
     def downloadsDir = file("$faceclawNativeBuildDir/downloads")
     def sherpaArchive = file("$downloadsDir/sherpa-onnx-v${faceclawSherpaOnnxVersion}-android.tar.bz2")
@@ -75,6 +82,21 @@ tasks.register("prepareFaceclawNativeLibs") {
       eachFile { details -> details.path = details.name }
       includeEmptyDirs = false
       into faceclawJniLibsDir
+    }
+
+    def asrArchive = file("$downloadsDir/${faceclawAsrModelName}.tar.bz2")
+    faceclawDownload(
+      "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/${faceclawAsrModelName}.tar.bz2",
+      asrArchive
+    )
+    copy {
+      from tarTree(resources.bzip2(asrArchive))
+      include "$faceclawAsrModelName/encoder-epoch-99-avg-1-chunk-16-left-128.int8.onnx"
+      include "$faceclawAsrModelName/decoder-epoch-99-avg-1-chunk-16-left-128.onnx"
+      include "$faceclawAsrModelName/joiner-epoch-99-avg-1-chunk-16-left-128.int8.onnx"
+      include "$faceclawAsrModelName/tokens.txt"
+      includeEmptyDirs = false
+      into faceclawAssetsDir
     }
 
     def lc3Archive = file("$downloadsDir/liblc3-v${faceclawLibLc3Version}.tar.gz")

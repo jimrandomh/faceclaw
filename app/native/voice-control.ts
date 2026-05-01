@@ -6,13 +6,21 @@ export type VoiceControlState = {
   status: string;
 };
 
+export type VoiceInputMode = "off" | "wakeword" | "full";
+export type VoiceTranscriptEvent = {
+  text: string;
+  isFinal: boolean;
+};
+
 export class FaceclawVoiceControlBridge {
   private readonly statusListeners = new Set<(state: VoiceControlState) => void>();
   private readonly wakeWordListeners = new Set<(keyword: string) => void>();
+  private readonly transcriptListeners = new Set<(event: VoiceTranscriptEvent) => void>();
   private controller: any | null = null;
   private listenerProxy: any | null = null;
   private status = "Voice control stopped.";
   private started = false;
+  private mode: VoiceInputMode = "off";
 
   onStatus(listener: (state: VoiceControlState) => void): () => void {
     this.statusListeners.add(listener);
@@ -25,19 +33,34 @@ export class FaceclawVoiceControlBridge {
     return () => this.wakeWordListeners.delete(listener);
   }
 
-  start(communicator?: any): void {
-    if (this.started || !global.isAndroid) return;
+  onTranscript(listener: (event: VoiceTranscriptEvent) => void): () => void {
+    this.transcriptListeners.add(listener);
+    return () => this.transcriptListeners.delete(listener);
+  }
+
+  start(communicator?: any, mode: VoiceInputMode = "wakeword"): void {
+    if (mode === "off") {
+      this.stop();
+      return;
+    }
+    if (!global.isAndroid) return;
     this.ensureController();
     if (communicator) {
       this.controller?.setCommunicator(communicator);
     }
+    if (this.started && this.mode !== mode) {
+      this.controller?.stop();
+      this.started = false;
+    }
     this.started = true;
-    this.controller?.start();
+    this.mode = mode;
+    this.controller?.start(mode);
   }
 
   stop(): void {
     if (!this.started || !global.isAndroid) return;
     this.started = false;
+    this.mode = "off";
     this.controller?.stop();
     this.setStatus("Voice control stopped.");
   }
@@ -56,6 +79,12 @@ export class FaceclawVoiceControlBridge {
       onWakeWord: (keyword: string) => {
         for (const listener of this.wakeWordListeners) {
           listener(String(keyword));
+        }
+      },
+      onTranscript: (text: string, isFinal: boolean) => {
+        const event = { text: String(text), isFinal: Boolean(isFinal) };
+        for (const listener of this.transcriptListeners) {
+          listener(event);
         }
       },
     });
