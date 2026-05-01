@@ -25,9 +25,12 @@ export class FaceclawVoiceControlBridge {
     return () => this.wakeWordListeners.delete(listener);
   }
 
-  start(): void {
+  start(communicator?: any): void {
     if (this.started || !global.isAndroid) return;
     this.ensureController();
+    if (communicator) {
+      this.controller?.setCommunicator(communicator);
+    }
     this.started = true;
     this.controller?.start();
   }

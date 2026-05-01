@@ -5,3 +5,5 @@ to keep my room clean, so to speak.
 Voice wake-word detection uses sherpa-onnx: https://github.com/k2-fsa/sherpa-onnx/
 and the sherpa-onnx KWS Zipformer GigaSpeech model published by the k2-fsa/sherpa
 community.
+
+G2 microphone LC3 decoding uses Google's liblc3: https://github.com/google/liblc3

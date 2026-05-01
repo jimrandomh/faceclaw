@@ -1,24 +1,11 @@
 package com.faceclaw.app;
 
-import android.Manifest;
-import android.bluetooth.BluetoothAdapter;
-import android.bluetooth.BluetoothDevice;
-import android.bluetooth.BluetoothManager;
-import android.bluetooth.BluetoothProfile;
 import android.content.Context;
-import android.content.pm.PackageManager;
 import android.content.res.AssetManager;
-import android.media.AudioDeviceInfo;
-import android.media.AudioFormat;
-import android.media.AudioManager;
-import android.media.AudioRecord;
-import android.media.MediaRecorder;
-import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.util.Log;
-
-import androidx.core.content.ContextCompat;
 
 import com.k2fsa.sherpa.onnx.FeatureConfig;
 import com.k2fsa.sherpa.onnx.KeywordSpotter;
@@ -32,12 +19,16 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
-import java.util.Set;
+import java.util.ArrayDeque;
 
 public class FaceclawVoiceController {
     private static final String TAG = "FaceclawVoice";
     private static final int SAMPLE_RATE = 16000;
     private static final int FEATURE_DIM = 80;
+    private static final int MAX_AUDIO_QUEUE_PACKETS = 80;
+    private static final int EXPECTED_PACKET_INTERVAL_MS = 50;
+    private static final int LATE_PACKET_INTERVAL_MS = 90;
+    private static final int STATS_INTERVAL_MS = 5_000;
     private static final String ASSET_ROOT = "faceclaw-voice";
     private static final String MODEL_DIR = "sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01";
     private static final String[] MODEL_FILES = {
@@ -51,12 +42,23 @@ public class FaceclawVoiceController {
     private final Context appContext;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final Object lock = new Object();
+    private final Object audioQueueLock = new Object();
+    private final ArrayDeque<AudioPacket> audioQueue = new ArrayDeque<>();
     private volatile FaceclawVoiceControllerListener listener;
+    private volatile FaceclawBleCommunicator communicator;
     private Thread workerThread;
     private volatile boolean started;
-    private AudioRecord audioRecord;
     private KeywordSpotter keywordSpotter;
     private OnlineStream stream;
+    private FaceclawLc3Decoder lc3Decoder;
+    private long queuedPackets;
+    private long queueDroppedPackets;
+    private long decodedSamples;
+    private long latePackets;
+    private long wrongArmPackets;
+    private long lastPacketArrivalMs;
+    private long maxInterPacketMs;
+    private long lastStatsAtMs;
 
     public FaceclawVoiceController(Context context) {
         this.appContext = context.getApplicationContext();
@@ -66,18 +68,18 @@ public class FaceclawVoiceController {
         this.listener = listener;
     }
 
+    public void setCommunicator(FaceclawBleCommunicator communicator) {
+        this.communicator = communicator;
+    }
+
     public void start() {
         synchronized (lock) {
             if (started) {
                 emitStatus("Voice control is already listening.");
                 return;
             }
-            if (!hasRecordAudioPermission()) {
-                emitStatus("Voice control needs microphone permission.");
-                return;
-            }
-            if (!hasBluetoothHeadset()) {
-                emitStatus("Voice control needs a paired Bluetooth headset.");
+            if (communicator == null || !communicator.isSessionReady()) {
+                emitStatus("Voice control needs an active G2 connection.");
                 return;
             }
             started = true;
@@ -95,7 +97,10 @@ public class FaceclawVoiceController {
             started = false;
             threadToJoin = workerThread;
         }
-        stopAudio();
+        stopG2Audio();
+        synchronized (audioQueueLock) {
+            audioQueueLock.notifyAll();
+        }
         if (threadToJoin != null) {
             threadToJoin.interrupt();
         }
@@ -111,19 +116,21 @@ public class FaceclawVoiceController {
             File modelDir = installModelFiles();
             keywordSpotter = new KeywordSpotter(buildConfig(modelDir));
             stream = keywordSpotter.createStream();
-            if (!startAudio()) {
-                emitStatus("Voice control could not start microphone input.");
+            lc3Decoder = new FaceclawLc3Decoder();
+            if (!startG2Audio()) {
+                emitStatus("Voice control could not start G2 microphone input.");
                 return;
             }
 
-            emitStatus("Voice control listening for \"screen on\".");
-            processAudio();
+            emitStatus("Voice control listening for \"screen on\" from the G2 mic.");
+            processG2Audio();
         } catch (Throwable error) {
             Log.e(TAG, "Voice control failed", error);
             emitStatus("Voice control failed: " + error.getMessage());
         } finally {
+            stopG2Audio();
             releaseSherpa();
-            stopAudio();
+            releaseLc3();
             synchronized (lock) {
                 started = false;
                 workerThread = null;
@@ -183,53 +190,42 @@ public class FaceclawVoiceController {
         }
     }
 
-    private boolean startAudio() {
-        routeToBluetoothHeadset();
-        int minBufferBytes = AudioRecord.getMinBufferSize(
-                SAMPLE_RATE,
-                AudioFormat.CHANNEL_IN_MONO,
-                AudioFormat.ENCODING_PCM_16BIT
-        );
-        if (minBufferBytes <= 0) {
+    private boolean startG2Audio() {
+        FaceclawBleCommunicator currentCommunicator = communicator;
+        if (currentCommunicator == null) {
             return false;
         }
-        if (!hasRecordAudioPermission()) {
-            return false;
+        resetAudioStats();
+        synchronized (audioQueueLock) {
+            audioQueue.clear();
         }
-        audioRecord = new AudioRecord(
-                MediaRecorder.AudioSource.VOICE_RECOGNITION,
-                SAMPLE_RATE,
-                AudioFormat.CHANNEL_IN_MONO,
-                AudioFormat.ENCODING_PCM_16BIT,
-                minBufferBytes * 2
-        );
-        if (audioRecord.getState() != AudioRecord.STATE_INITIALIZED) {
-            audioRecord.release();
-            audioRecord = null;
-            return false;
-        }
-        audioRecord.startRecording();
-        return true;
+        return currentCommunicator.startG2AudioCapture(this::queueAudioPacket);
     }
 
-    private void processAudio() {
-        short[] buffer = new short[SAMPLE_RATE / 10];
+    private void processG2Audio() {
+        short[] pcm = new short[FaceclawLc3Decoder.SAMPLES_PER_PACKET];
         while (started && !Thread.currentThread().isInterrupted()) {
-            AudioRecord currentAudio = audioRecord;
             OnlineStream currentStream = stream;
             KeywordSpotter currentSpotter = keywordSpotter;
-            if (currentAudio == null || currentStream == null || currentSpotter == null) {
+            FaceclawLc3Decoder currentDecoder = lc3Decoder;
+            if (currentStream == null || currentSpotter == null || currentDecoder == null) {
                 return;
             }
 
-            int count = currentAudio.read(buffer, 0, buffer.length);
-            if (count <= 0) {
+            AudioPacket packet = takeAudioPacket();
+            if (packet == null) {
                 continue;
             }
 
+            int count = currentDecoder.decodePacket(packet.data, pcm);
+            if (count <= 0) {
+                maybeEmitAudioStats(false);
+                continue;
+            }
+            decodedSamples += count;
             float[] samples = new float[count];
             for (int i = 0; i < count; i++) {
-                samples[i] = buffer[i] / 32768.0f;
+                samples[i] = pcm[i] / 32768.0f;
             }
             currentStream.acceptWaveform(samples, SAMPLE_RATE);
 
@@ -242,27 +238,16 @@ public class FaceclawVoiceController {
                     emitWakeWord(keyword);
                 }
             }
+            maybeEmitAudioStats(false);
         }
     }
 
-    private void stopAudio() {
-        AudioRecord record = audioRecord;
-        audioRecord = null;
-        if (record != null) {
-            try {
-                record.stop();
-            } catch (IllegalStateException ignored) {
-            }
-            record.release();
+    private void stopG2Audio() {
+        FaceclawBleCommunicator currentCommunicator = communicator;
+        if (currentCommunicator != null) {
+            currentCommunicator.stopG2AudioCapture();
         }
-        AudioManager audioManager = (AudioManager) appContext.getSystemService(Context.AUDIO_SERVICE);
-        if (audioManager != null) {
-            if (Build.VERSION.SDK_INT >= 31) {
-                audioManager.clearCommunicationDevice();
-            }
-            audioManager.stopBluetoothSco();
-            audioManager.setBluetoothScoOn(false);
-        }
+        maybeEmitAudioStats(true);
     }
 
     private void releaseSherpa() {
@@ -276,51 +261,90 @@ public class FaceclawVoiceController {
         }
     }
 
-    private void routeToBluetoothHeadset() {
-        AudioManager audioManager = (AudioManager) appContext.getSystemService(Context.AUDIO_SERVICE);
-        if (audioManager == null) {
+    private void releaseLc3() {
+        if (lc3Decoder != null) {
+            lc3Decoder.close();
+            lc3Decoder = null;
+        }
+    }
+
+    private void queueAudioPacket(byte[] data, String arm, long arrivalMs) {
+        if (!started || data == null) {
             return;
         }
-        audioManager.setMode(AudioManager.MODE_IN_COMMUNICATION);
-        audioManager.startBluetoothSco();
-        audioManager.setBluetoothScoOn(true);
-        if (Build.VERSION.SDK_INT >= 31) {
-            for (AudioDeviceInfo device : audioManager.getAvailableCommunicationDevices()) {
-                if (device.getType() == AudioDeviceInfo.TYPE_BLUETOOTH_SCO
-                        || device.getType() == AudioDeviceInfo.TYPE_BLE_HEADSET) {
-                    audioManager.setCommunicationDevice(device);
-                    return;
+        if (!"L".equals(arm)) {
+            wrongArmPackets++;
+        }
+        synchronized (audioQueueLock) {
+            if (audioQueue.size() >= MAX_AUDIO_QUEUE_PACKETS) {
+                audioQueue.removeFirst();
+                queueDroppedPackets++;
+            }
+            audioQueue.addLast(new AudioPacket(data, arm, arrivalMs));
+            queuedPackets++;
+            if (lastPacketArrivalMs > 0) {
+                long delta = arrivalMs - lastPacketArrivalMs;
+                if (delta > maxInterPacketMs) {
+                    maxInterPacketMs = delta;
+                }
+                if (delta > LATE_PACKET_INTERVAL_MS) {
+                    latePackets++;
                 }
             }
+            lastPacketArrivalMs = arrivalMs;
+            audioQueueLock.notifyAll();
         }
     }
 
-    private boolean hasBluetoothHeadset() {
-        if (Build.VERSION.SDK_INT >= 31
-                && ContextCompat.checkSelfPermission(appContext, Manifest.permission.BLUETOOTH_CONNECT)
-                != PackageManager.PERMISSION_GRANTED) {
-            return false;
-        }
-        BluetoothManager manager = (BluetoothManager) appContext.getSystemService(Context.BLUETOOTH_SERVICE);
-        BluetoothAdapter adapter = manager == null ? null : manager.getAdapter();
-        if (adapter == null) {
-            return false;
-        }
-        try {
-            int state = adapter.getProfileConnectionState(BluetoothProfile.HEADSET);
-            if (state == BluetoothProfile.STATE_CONNECTED || state == BluetoothProfile.STATE_CONNECTING) {
-                return true;
+    private AudioPacket takeAudioPacket() {
+        synchronized (audioQueueLock) {
+            while (started && audioQueue.isEmpty()) {
+                try {
+                    audioQueueLock.wait(250);
+                    maybeEmitAudioStats(false);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    return null;
+                }
             }
-            Set<BluetoothDevice> bondedDevices = adapter.getBondedDevices();
-            return bondedDevices != null && !bondedDevices.isEmpty();
-        } catch (SecurityException ignored) {
-            return false;
+            return audioQueue.pollFirst();
         }
     }
 
-    private boolean hasRecordAudioPermission() {
-        return ContextCompat.checkSelfPermission(appContext, Manifest.permission.RECORD_AUDIO)
-                == PackageManager.PERMISSION_GRANTED;
+    private void resetAudioStats() {
+        queuedPackets = 0;
+        queueDroppedPackets = 0;
+        decodedSamples = 0;
+        latePackets = 0;
+        wrongArmPackets = 0;
+        lastPacketArrivalMs = 0;
+        maxInterPacketMs = 0;
+        lastStatsAtMs = SystemClock.elapsedRealtime();
+    }
+
+    private void maybeEmitAudioStats(boolean force) {
+        long now = SystemClock.elapsedRealtime();
+        if (!force && now - lastStatsAtMs < STATS_INTERVAL_MS) {
+            return;
+        }
+        lastStatsAtMs = now;
+        FaceclawLc3Decoder currentDecoder = lc3Decoder;
+        long real = currentDecoder == null ? 0 : currentDecoder.getRealPackets();
+        long duplicate = currentDecoder == null ? 0 : currentDecoder.getDuplicatePackets();
+        long missing = currentDecoder == null ? 0 : currentDecoder.getMissingPackets();
+        long decodeErrors = currentDecoder == null ? 0 : currentDecoder.getDecodeErrors();
+        String status = "G2 mic packets=" + queuedPackets
+                + " decoded=" + real
+                + " missing=" + missing
+                + " duplicate=" + duplicate
+                + " late=" + latePackets
+                + " maxGapMs=" + maxInterPacketMs
+                + " queueDrop=" + queueDroppedPackets
+                + " decodeErrors=" + decodeErrors
+                + " wrongArm=" + wrongArmPackets
+                + " audioSec=" + String.format(java.util.Locale.US, "%.1f", decodedSamples / (double) SAMPLE_RATE);
+        Log.i(TAG, status + " expectedIntervalMs=" + EXPECTED_PACKET_INTERVAL_MS);
+        emitStatus(status);
     }
 
     private void emitStatus(String status) {
@@ -337,5 +361,17 @@ public class FaceclawVoiceController {
             return;
         }
         mainHandler.post(() -> currentListener.onWakeWord(keyword));
+    }
+
+    private static final class AudioPacket {
+        final byte[] data;
+        final String arm;
+        final long arrivalMs;
+
+        AudioPacket(byte[] data, String arm, long arrivalMs) {
+            this.data = data;
+            this.arm = arm == null ? "?" : arm;
+            this.arrivalMs = arrivalMs;
+        }
     }
 }

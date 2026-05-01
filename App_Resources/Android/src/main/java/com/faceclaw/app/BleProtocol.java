@@ -33,6 +33,7 @@ public class BleProtocol {
     public static final int FLAG_REQUEST = 0x20;
     public static final int FLAG_NOTIFY = 0x01;
     public static final int FLAG_NOTIFY_ALT = 0x06;
+    public static final int CMD_AUDIO_CONTROL = 15;
 
     public static final int EVENT_CLICK = 0;
     public static final int EVENT_SCROLL_TOP = 1;
@@ -110,6 +111,10 @@ public class BleProtocol {
 
     public static byte[] buildHeartbeat(int magic) {
         return wrapEvenHub(12, magic, 14, encodeVarintField(1, 0));
+    }
+
+    public static byte[] buildAudioControl(int magic, boolean enable) {
+        return wrapEvenHub(CMD_AUDIO_CONTROL, magic, 18, encodeVarintField(1, enable ? 1 : 0));
     }
 
     public static byte[] buildShutdown(int magic, int exitMode) {

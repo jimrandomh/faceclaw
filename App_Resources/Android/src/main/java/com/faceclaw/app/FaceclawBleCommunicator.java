@@ -102,6 +102,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private long lastSessionReadyAtMs;
     private long lastEvenAppConflictAtMs;
     private int consecutiveAckTimeouts;
+    private int lastAudioControlAckMagic = 0;
 
     private final BleMagicPool magicPool = new BleMagicPool();
     private int nextTransportSeq = 0x40;
@@ -111,6 +112,8 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private long lastShutdownExitAtMs = 0;
     private int headsetBattery = -1;
     private int headsetCharging = -1;
+    private boolean audioCaptureActive;
+    private volatile FaceclawAudioPacketListener audioPacketListener;
 
     private String displayedFingerprint = "";
     private byte[][] displayedTileBmps = emptyTileSet();
@@ -158,6 +161,8 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         synchronized (lock) {
             userDisconnectRequested = true;
             running = false;
+            audioCaptureActive = false;
+            audioPacketListener = null;
             phase = "disconnecting";
             status = "Disconnecting...";
             lock.notifyAll();
@@ -188,6 +193,51 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
 
     public void close() {
         disconnect();
+    }
+
+    public boolean startG2AudioCapture(FaceclawAudioPacketListener listener) {
+        if (listener == null) {
+            throw new IllegalArgumentException("listener is required");
+        }
+        int magic;
+        synchronized (lock) {
+            if (!running || !sessionReady) {
+                logLine("skip G2 mic enable; session not ready");
+                return false;
+            }
+            audioPacketListener = listener;
+            magic = nextMagic();
+            pendingMessages.addFirst(createAudioControlMessageLocked(true, magic));
+            logLine("queue G2 mic enable");
+            lock.notifyAll();
+        }
+        interruptibleSleep.interrupt();
+        return waitForAudioControlAck(magic, "enable");
+    }
+
+    public void stopG2AudioCapture() {
+        int magic = 0;
+        synchronized (lock) {
+            audioPacketListener = null;
+            audioCaptureActive = false;
+            clearMessagesOfKindLocked("audio-control");
+            if (running && sessionReady) {
+                magic = nextMagic();
+                pendingMessages.addFirst(createAudioControlMessageLocked(false, magic));
+                logLine("queue G2 mic disable");
+                lock.notifyAll();
+            }
+        }
+        interruptibleSleep.interrupt();
+        if (magic != 0) {
+            waitForAudioControlAck(magic, "disable");
+        }
+    }
+
+    public boolean isSessionReady() {
+        synchronized (lock) {
+            return running && sessionReady;
+        }
     }
 
 
@@ -365,6 +415,33 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         }
     }
 
+    private boolean waitForAudioControlAck(int magic, String operation) {
+        long deadline = SystemClock.elapsedRealtime() + ACK_TIMEOUT_MS + WRITE_TIMEOUT_MS + 500;
+        synchronized (lock) {
+            while (running && sessionReady && lastAudioControlAckMagic != magic && hasPendingOrInflightMagicLocked(magic)) {
+                long remaining = deadline - SystemClock.elapsedRealtime();
+                if (remaining <= 0) {
+                    break;
+                }
+                try {
+                    lock.wait(Math.min(remaining, 100));
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+            }
+            boolean acked = lastAudioControlAckMagic == magic;
+            if (!acked) {
+                if ("enable".equals(operation)) {
+                    audioPacketListener = null;
+                    audioCaptureActive = false;
+                }
+                logLine("G2 mic " + operation + " ack timeout");
+            }
+            return acked;
+        }
+    }
+
 
     @Override
     public void run() {
@@ -404,6 +481,10 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             return;
         }
         String uuid = characteristicUuid.toLowerCase(Locale.US);
+        if (BleProtocol.RENDER_NOTIFY_UUID.equals(uuid)) {
+            handleRenderNotification(address, data);
+            return;
+        }
         if (!BleProtocol.NOTIFY_CHAR_UUID.equals(uuid)) {
             return;
         }
@@ -430,6 +511,24 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         }
     }
 
+    private void handleRenderNotification(String address, byte[] data) {
+        FaceclawAudioPacketListener listenerToCall;
+        long arrivalMs = SystemClock.elapsedRealtime();
+        synchronized (lock) {
+            lastIncomingAtMs = arrivalMs;
+            listenerToCall = audioCaptureActive ? audioPacketListener : null;
+        }
+        if (listenerToCall == null) {
+            return;
+        }
+        String arm = address.equalsIgnoreCase(leftAddress) ? "L" : address.equalsIgnoreCase(rightAddress) ? "R" : "?";
+        try {
+            listenerToCall.onAudioPacket(Arrays.copyOf(data, data.length), arm, arrivalMs);
+        } catch (Throwable t) {
+            logLine("G2 mic packet listener failed: " + safeMessage(t));
+        }
+    }
+
     @Override
     public void onConnectionStateChange(String address, boolean connected) {
         synchronized (lock) {
@@ -446,6 +545,8 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 fixedLayoutCreated = false;
                 warmedUp = false;
                 startupProbePending = false;
+                audioCaptureActive = false;
+                audioPacketListener = null;
                 clearAllMessagesLocked("connection lost");
                 displayedFingerprint = "";
                 displayedTileBmps = emptyTileSet();
@@ -465,7 +566,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         setState("connecting", "Connecting to the glasses...");
         try {
             connectArm(rightAddress, true);
-            connectArm(leftAddress, false);
+            connectArm(leftAddress, true);
             if (!sleepDuringConnectSettling(800)) {
                 return;
             }
@@ -486,6 +587,8 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 imageRetryAfterMs = 0;
                 lastHeartbeatQueuedAtMs = 0;
                 consecutiveAckTimeouts = 0;
+                lastAudioControlAckMagic = 0;
+                audioCaptureActive = false;
             }
             setState("connected", "Connected.");
             logLine("session ready");
@@ -785,6 +888,13 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         if ("heartbeat".equals(message.kind)) {
             return;
         }
+        if ("audio-control".equals(message.kind)) {
+            lastAudioControlAckMagic = message.magic;
+            audioCaptureActive = message.label != null && message.label.contains("enable");
+            logLine(audioCaptureActive ? "G2 mic enabled" : "G2 mic disabled");
+            lock.notifyAll();
+            return;
+        }
         if ("battery".equals(message.kind)) {
             BleProtocol.BatterySnapshot snapshot = BleProtocol.parseSettingsBattery(message.ackPayload);
             if (snapshot != null) {
@@ -1035,6 +1145,25 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         );
     }
 
+    private OutboundMessage createAudioControlMessageLocked(boolean enable, int magic) {
+        return new OutboundMessage(
+            "audio-control",
+            enable ? "G2 mic enable" : "G2 mic disable",
+            BleProtocol.SID_EVENHUB,
+            magic,
+            BleProtocol.framePb(
+                BleProtocol.buildAudioControl(magic, enable),
+                BleProtocol.SID_EVENHUB,
+                BleProtocol.FLAG_REQUEST,
+                nextTransportSeq++
+            ),
+            ACK_TIMEOUT_MS,
+            displayedFingerprint,
+            -1,
+            null
+        );
+    }
+
     private boolean shouldPollBatteryLocked(long now) {
         return !shutdownRequested
                 && sessionReady
@@ -1265,6 +1394,9 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         lastHeartbeatQueuedAtMs = 0;
         lastSessionReadyAtMs = 0;
         consecutiveAckTimeouts = 0;
+        lastAudioControlAckMagic = 0;
+        audioCaptureActive = false;
+        audioPacketListener = null;
         displayedFingerprint = "";
         displayedTileBmps = emptyTileSet();
     }

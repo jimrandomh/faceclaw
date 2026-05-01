@@ -100,3 +100,4 @@ export async function ensureBlePermissions(): Promise<void> {
 export async function ensureVoicePermissions(): Promise<void> {
   await ensurePermissions([RECORD_AUDIO_PERMISSION], VOICE_PERMISSION_REQUEST_CODE, "Voice control");
 }
+

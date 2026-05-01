@@ -107,6 +107,7 @@ public class FaceclawForegroundService extends Service {
 
     private int foregroundServiceType() {
         int type = ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE;
+        // TODO: Make this depend on which audio path (G2 vs phone) is selected
         if (hasRecordAudioPermission()) {
             type |= ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE;
         }

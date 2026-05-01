@@ -216,6 +216,10 @@ export class FaceclawCommunicatorBridge {
     return () => this.frameMetricsListeners.delete(listener);
   }
 
+  getNativeCommunicator(): any {
+    return this.communicator;
+  }
+
   waitForNextFrameMetrics(timeoutMs: number): Promise<FrameMetrics | null> {
     const delayMs = Math.max(1, Math.round(nonNegativeNumber(timeoutMs)));
     return new Promise((resolve) => {

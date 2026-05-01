@@ -487,6 +487,8 @@ class DashboardController {
   private async setVoiceControlEnabled(enabled: boolean): Promise<void> {
     if (enabled) {
       try {
+        // Treat Android mic permission as the consent gate for voice control,
+        // even when the current source is the G2 mic over BLE.
         await ensureVoicePermissions();
       } catch (error) {
         this.appendLog(`voice control permission failed: ${this.formatError(error)}`);
@@ -671,7 +673,7 @@ class DashboardController {
     if (!this.communicator) return;
     if (!isDashboardVoiceControlEnabled()) return;
     this.updateConnectedForegroundNotification();
-    voiceControlBridge.start();
+    voiceControlBridge.start(this.communicator.getNativeCommunicator());
   }
 
   private setStopwatchRenderActive(active: boolean): void {
