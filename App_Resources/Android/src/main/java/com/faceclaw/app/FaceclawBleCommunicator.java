@@ -617,7 +617,10 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             throw new IllegalStateException("connect failed: " + address);
         }
         // requestConnectionPriority has no callback in this Android compile target, so there is
-        // no reliable completion point to keep it in the global GATT operation pipeline.
+        // no reliable completion point to keep it in the global GATT operation pipeline. But it's
+        // important enough for performance that we call it anyways.
+        bleManager.requestConnectionPriority(address, BluetoothGatt.CONNECTION_PRIORITY_HIGH);
+
         bleManager.requestMtu(address, DESIRED_MTU, CONNECT_TIMEOUT_MS);
         if (!bleManager.discoverServices(address, SERVICES_TIMEOUT_MS)) {
             throw new IllegalStateException("discoverServices failed: " + address);
