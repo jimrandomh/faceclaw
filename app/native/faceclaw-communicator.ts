@@ -177,15 +177,6 @@ export class FaceclawCommunicatorBridge {
     return result;
   }
 
-  private withNativeBridgeLock<T>(operation: string, callback: () => T): T {
-    this.communicator.acquireNativeBridgeLock(operation);
-    try {
-      return callback();
-    } finally {
-      this.communicator.releaseNativeBridgeLock(operation);
-    }
-  }
-
   onLog(listener: (line: string) => void): () => void {
     this.logListeners.add(listener);
     return () => this.logListeners.delete(listener);
@@ -250,25 +241,21 @@ export class FaceclawCommunicatorBridge {
     }
     const tileSnapshots = tileBmps.map((tile) => new Uint8Array(tile));
     await this.enqueueJavaCall(() => {
-      this.withNativeBridgeLock("submitDashboardImage4 bridge arrays", () => {
-        this.communicator.submitDashboardImage4(
-          toJavaByteArray(tileSnapshots[0]!),
-          toJavaByteArray(tileSnapshots[1]!),
-          toJavaByteArray(tileSnapshots[2]!),
-          toJavaByteArray(tileSnapshots[3]!),
-          fingerprint,
-          forceTiledCommit,
-          Math.round(nonNegativeNumber(paintMs)),
-        );
-      });
+      this.communicator.submitDashboardImage4(
+        toJavaByteArray(tileSnapshots[0]!),
+        toJavaByteArray(tileSnapshots[1]!),
+        toJavaByteArray(tileSnapshots[2]!),
+        toJavaByteArray(tileSnapshots[3]!),
+        fingerprint,
+        forceTiledCommit,
+        Math.round(nonNegativeNumber(paintMs)),
+      );
     });
   }
 
   async createPreviewBitmap(colors: number[], width: number, height: number): Promise<any> {
     return this.enqueueJavaCall(() =>
-      this.withNativeBridgeLock("createPreviewBitmap bridge", () =>
-        this.communicator.createPreviewBitmap(colors, width, height),
-      ),
+      this.communicator.createPreviewBitmap(colors, width, height),
     );
   }
 
@@ -278,9 +265,7 @@ export class FaceclawCommunicatorBridge {
     height: number,
   ): Promise<any> {
     return this.enqueueJavaCall(() =>
-      this.withNativeBridgeLock("createPreviewBitmap bridge colors", () =>
-        this.communicator.createPreviewBitmap(createColors(), width, height),
-      ),
+      this.communicator.createPreviewBitmap(createColors(), width, height),
     );
   }
 

@@ -385,6 +385,7 @@ public class FaceclawBleManager {
     private final BluetoothGattCallback gattCallback = new BluetoothGattCallback() {
         @Override
         public void onConnectionStateChange(BluetoothGatt gatt, int status, int newState) {
+            Log.i(TAG, "onConnectionStateChange: status=" + status + " newState=" + newState);
             String address = gatt.getDevice().getAddress();
 
             if (newState == BluetoothProfile.STATE_CONNECTED && status == BluetoothGatt.GATT_SUCCESS) {
