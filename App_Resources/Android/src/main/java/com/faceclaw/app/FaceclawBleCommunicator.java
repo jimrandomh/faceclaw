@@ -277,7 +277,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             shutdownRequested = true;
             clearPendingMessagesLocked("shutdown requested");
             magic = magicPool.allocate();
-            pendingMessages.addFirst(new OutboundMessage(
+            OutboundMessage message = new OutboundMessage(
                 "shutdown",
                 "shutdown mode=" + exitMode,
                 BleProtocol.SID_EVENHUB,
@@ -292,7 +292,18 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 displayedFingerprint,
                 -1,
                 null
-            ));
+            );
+            message.onAck = () -> {
+                lastShutdownAckMagic = message.magic;
+                fixedLayoutCreated = false;
+                warmedUp = false;
+                displayedFingerprint = "";
+                displayedTileBmps = emptyTileSet();
+            };
+            message.onTimeout = () -> {
+                handleTransportFailure("shutdown ack timeout");
+            };
+            pendingMessages.addFirst(message);
             logLine("queue shutdown");
             lock.notifyAll();
         }
@@ -409,7 +420,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         if (!BleProtocol.NOTIFY_CHAR_UUID.equals(uuid)) {
             return;
         }
-        Log.i(TAG, "onNotification: address=" + address + " characteristicUuid=" + characteristicUuid + " data.length=" + data.length);
+        Log.d(TAG, "onNotification: address=" + address + " characteristicUuid=" + characteristicUuid + " data.length=" + data.length);
         BleProtocol.ParsedFrame frame = BleProtocol.parseFrame(data);
         G2Event event = null;
         synchronized (lock) {
@@ -576,28 +587,27 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private void sendPrelude() throws InterruptedException { //{{{
         synchronized (lock) {
             clearAllMessagesLocked("prelude");
-            long now = SystemClock.elapsedRealtime();
-            OutboundMessage prelude = new OutboundMessage(
-                "prelude",
-                BleProtocol.PRELUDE_ACK_SID,
-                BleProtocol.PRELUDE_ACK_MAGIC,
-                CollectionUtils.singletonList(Arrays.copyOf(BleProtocol.PRELUDE_F5872, BleProtocol.PRELUDE_F5872.length)),
-                WRITE_TIMEOUT_MS,
-                0,
-                now + PRELUDE_TIMEOUT_MS
-            );
-            prelude.sentAtMs = now;
+        }
+        long now = SystemClock.elapsedRealtime();
+        OutboundMessage prelude = new OutboundMessage(
+            "prelude",
+            BleProtocol.PRELUDE_ACK_SID,
+            BleProtocol.PRELUDE_ACK_MAGIC,
+            CollectionUtils.singletonList(Arrays.copyOf(BleProtocol.PRELUDE_F5872, BleProtocol.PRELUDE_F5872.length)),
+            WRITE_TIMEOUT_MS,
+            0,
+            now + PRELUDE_TIMEOUT_MS
+        );
+        prelude.onAck = () -> {
+        };
+        prelude.onTimeout = () -> {
+            handleTransportFailure("ack timeout");
+        };
+        prelude.sentAtMs = now;
+        synchronized (lock) {
             inFlightMessages.add(prelude);
         }
-        if (!bleManager.writeFrames(
-            rightAddress,
-            BleProtocol.WRITE_CHAR_UUID,
-            CollectionUtils.singletonList(Arrays.copyOf(BleProtocol.PRELUDE_F5872, BleProtocol.PRELUDE_F5872.length)),
-            WRITE_TYPE,
-            WRITE_TIMEOUT_MS
-        )) {
-            throw new IllegalStateException("prelude queue failed");
-        }
+        writeMessage(prelude);
 
         long deadline = SystemClock.elapsedRealtime() + PRELUDE_TIMEOUT_MS;
         while (running && !userDisconnectRequested && !inFlightMessages.isEmpty()) {
@@ -760,103 +770,22 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     }
 
     private void resolveAckLocked(int sid, int magic, byte[] pb) {
-        Log.i(TAG, "Received ack for sid=" + sid + " magic=" + magic);
         Iterator<OutboundMessage> iterator = inFlightMessages.iterator();
         while (iterator.hasNext()) {
             OutboundMessage message = iterator.next();
             if (message.sid == sid && message.magic == magic) {
-                Log.i(TAG, "Got ACK for " + message.label);
+                Log.i(TAG, "Got ACK for " + message.label + "(sid=" + message.sid + ", id=" + message.magic + ")");
                 iterator.remove();
                 message.ackPayload = pb == null ? new byte[0] : Arrays.copyOf(pb, pb.length);
                 magicPool.release(message.sid, message.magic, message.label, "ack");
-                onMessageAckLocked(message);
+                if (message.onAck != null) {
+                    message.onAck.run();
+                }
+                consecutiveAckTimeouts = 0;
                 return;
             }
         }
         recordUnexpectedAckLocked(sid, magic);
-    }
-
-    private void onMessageAckLocked(OutboundMessage message) {
-        consecutiveAckTimeouts = 0;
-        if ("create-layout".equals(message.kind)) {
-            startupProbePending = false;
-            clearMessagesOfKindLocked("startup-text-probe");
-            fixedLayoutCreated = true;
-            displayedFingerprint = "";
-            displayedTileBmps = emptyTileSet();
-            return;
-        }
-        if ("startup-text-probe".equals(message.kind)) {
-            startupProbePending = false;
-            clearMessagesOfKindLocked("create-layout");
-            fixedLayoutCreated = true;
-            warmedUp = false;
-            displayedFingerprint = "";
-            displayedTileBmps = emptyTileSet();
-            logLine("existing dashboard layout accepted text probe; image warmup still required");
-            return;
-        }
-        if ("warmup".equals(message.kind)) {
-            // The first tile warmup primes the image path but does not reliably
-            // guarantee that the tile is now visible on-screen, so it must not
-            // update the displayed-tile cache used by image dedupe.
-            warmedUp = true;
-            return;
-        }
-        if ("image".equals(message.kind)) {
-            imageRetryAfterMs = 0;
-            logImageUpdateAckLandmarkLocked(message);
-            if (message.tileIndex >= 0 && !hasPendingOrInflightTileLocked(message.tileIndex)) {
-                displayedTileBmps[message.tileIndex] = copyTileBmp(message.tileBmp);
-            }
-            boolean imageStillInFlight = false;
-            for (OutboundMessage inFlight : inFlightMessages) {
-                if ("image".equals(inFlight.kind)) {
-                    imageStillInFlight = true;
-                    break;
-                }
-            }
-            if (!imageStillInFlight) {
-                boolean imageStillQueued = false;
-                for (OutboundMessage queued : pendingMessages) {
-                    if ("image".equals(queued.kind)) {
-                        imageStillQueued = true;
-                        break;
-                    }
-                }
-                if (!imageStillQueued) {
-                    displayedFingerprint = message.fingerprint;
-                }
-            }
-            return;
-        }
-        if ("heartbeat".equals(message.kind)) {
-            return;
-        }
-        if ("audio-control".equals(message.kind)) {
-            lastAudioControlAckMagic = message.magic;
-            audioCaptureActive = message.label != null && message.label.contains("enable");
-            logLine(audioCaptureActive ? "G2 mic enabled" : "G2 mic disabled");
-            lock.notifyAll();
-            return;
-        }
-        if ("battery".equals(message.kind)) {
-            BleProtocol.BatterySnapshot snapshot = BleProtocol.parseSettingsBattery(message.ackPayload);
-            if (snapshot != null) {
-                headsetBattery = snapshot.battery;
-                headsetCharging = snapshot.charging;
-                emitBatteryState(headsetBattery, headsetCharging);
-            }
-            return;
-        }
-        if ("shutdown".equals(message.kind)) {
-            lastShutdownAckMagic = message.magic;
-            fixedLayoutCreated = false;
-            warmedUp = false;
-            displayedFingerprint = "";
-            displayedTileBmps = emptyTileSet();
-            return;
-        }
     }
 
     private void logImageUpdateSendLandmarkLocked(OutboundMessage message) {
@@ -896,7 +825,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
 
     private void enqueueCreateLayoutLocked() {
         int magic = magicPool.allocate();
-        pendingMessages.addLast(new OutboundMessage(
+        OutboundMessage message = new OutboundMessage(
             "create-layout",
             "create-layout",
             BleProtocol.SID_EVENHUB,
@@ -911,7 +840,25 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             getDesiredFingerprint(),
             -1,
             null
-        ));
+        );
+        message.onAck = () -> {
+            startupProbePending = false;
+            clearMessagesOfKindLocked("startup-text-probe");
+            fixedLayoutCreated = true;
+            displayedFingerprint = "";
+            displayedTileBmps = emptyTileSet();
+        };
+        message.onTimeout = () -> {
+            if (startupProbePending) {
+                logLine("create layout timed out while startup text probe is pending");
+                if (hasPendingOrInflightKindLocked("startup-text-probe")) {
+                    return;
+                }
+                startupProbePending = false;
+            }
+            handleTransportFailure("ack timeout");
+        };
+        pendingMessages.addLast(message);
         logLine("queue create layout");
     }
 
@@ -919,7 +866,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         enqueueCreateLayoutLocked();
 
         int magic = magicPool.allocate();
-        pendingMessages.addLast(new OutboundMessage(
+        OutboundMessage message = new OutboundMessage(
             "startup-text-probe",
             "startup text probe",
             BleProtocol.SID_EVENHUB,
@@ -934,7 +881,24 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             getDesiredFingerprint(),
             -1,
             null
-        ));
+        );
+        message.onAck = () -> {
+            startupProbePending = false;
+            clearMessagesOfKindLocked("create-layout");
+            fixedLayoutCreated = true;
+            warmedUp = false;
+            displayedFingerprint = "";
+            displayedTileBmps = emptyTileSet();
+            logLine("existing dashboard layout accepted text probe; image warmup still required");
+        };
+        message.onTimeout = () -> {
+            startupProbePending = false;
+            if (hasPendingOrInflightKindLocked("create-layout")) {
+                return;
+            }
+            handleTransportFailure("ack timeout");
+        };
+        pendingMessages.addLast(message);
         startupProbePending = true;
         logLine("queue startup text probe");
     }
@@ -953,7 +917,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         List<BleProtocol.ImageFragment> fragments = BleImageOptimizer.planImageFragments(bmp, IMAGE_FRAGMENT_SIZE);
         for (BleProtocol.ImageFragment fragment : fragments) {
             int magic = magicPool.allocate();
-            pendingMessages.addLast(new OutboundMessage(
+            OutboundMessage message = new OutboundMessage(
                 "warmup",
                 "warmup " + tile.name + "#" + fragment.index,
                 BleProtocol.SID_EVENHUB,
@@ -967,7 +931,20 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 getDesiredFingerprint(),
                 0,
                 bmp
-            ));
+            );
+            pendingMessages.addLast(message);
+            message.onAck = () -> {
+                // The first tile warmup primes the image path but does not reliably
+                // guarantee that the tile is now visible on-screen, so it must not
+                // update the displayed-tile cache used by image dedupe.
+                warmedUp = true;
+            };
+            message.onTimeout = () -> {
+                warmedUp = false;
+                clearMessagesOfKindLocked("warmup");
+                displayedFingerprint = "";
+                displayedTileBmps = emptyTileSet();
+            };
         }
         logLine("queue blank warmup");
     }
@@ -1072,12 +1049,45 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             plan.bmp
         );
         message.setImageUpdatePosition(updateId, messageNumber, messageCount);
+        message.onAck = () -> {
+            imageRetryAfterMs = 0;
+            logImageUpdateAckLandmarkLocked(message);
+            if (message.tileIndex >= 0 && !hasPendingOrInflightTileLocked(message.tileIndex)) {
+                displayedTileBmps[message.tileIndex] = copyTileBmp(message.tileBmp);
+            }
+            boolean imageStillInFlight = false;
+            for (OutboundMessage inFlight : inFlightMessages) {
+                if ("image".equals(inFlight.kind)) {
+                    imageStillInFlight = true;
+                    break;
+                }
+            }
+            if (!imageStillInFlight) {
+                boolean imageStillQueued = false;
+                for (OutboundMessage queued : pendingMessages) {
+                    if ("image".equals(queued.kind)) {
+                        imageStillQueued = true;
+                        break;
+                    }
+                }
+                if (!imageStillQueued) {
+                    displayedFingerprint = message.fingerprint;
+                }
+            }
+        };
+        message.onTimeout = () -> {
+            imageUpdateStats.remove(message.imageUpdateId);
+            clearMessagesOfKindLocked("image");
+            displayedFingerprint = "";
+            displayedTileBmps = emptyTileSet();
+            imageRetryAfterMs = SystemClock.elapsedRealtime() + IMAGE_RETRY_DELAY_MS;
+        };
         pendingMessages.addLast(message);
     }
 
     private OutboundMessage createHeartbeatMessageLocked() {
         int magic = magicPool.allocate();
-        return new OutboundMessage(
+        OutboundMessage message = new OutboundMessage(
             "heartbeat",
             "heartbeat",
             BleProtocol.SID_EVENHUB,
@@ -1088,10 +1098,16 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             -1,
             null
         );
+        message.onAck = () -> {
+        };
+        message.onTimeout = () -> {
+            handleTransportFailure("heartbeat ack timeout");
+        };
+        return message;
     }
 
     private OutboundMessage createAudioControlMessageLocked(boolean enable, int magic) {
-        return new OutboundMessage(
+        OutboundMessage message = new OutboundMessage(
             "audio-control",
             enable ? "G2 mic enable" : "G2 mic disable",
             BleProtocol.SID_EVENHUB,
@@ -1107,6 +1123,17 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             -1,
             null
         );
+        message.onAck = () -> {
+            lastAudioControlAckMagic = message.magic;
+            audioCaptureActive = message.label != null && message.label.contains("enable");
+            logLine(audioCaptureActive ? "G2 mic enabled" : "G2 mic disabled");
+            lock.notifyAll();
+            return;
+        };
+        message.onTimeout = () -> {
+            handleTransportFailure("audio control ack timeout");
+        };
+        return message;
     }
 
     private boolean shouldPollBatteryLocked(long now) {
@@ -1120,7 +1147,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
 
     private OutboundMessage createBatteryQueryMessageLocked() {
         int magic = magicPool.allocate();
-        return new OutboundMessage(
+        OutboundMessage message = new OutboundMessage(
             "battery",
             "battery",
             BleProtocol.SID_UI_SETTING,
@@ -1136,6 +1163,18 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             -1,
             null
         );
+        message.onAck = () -> {
+            BleProtocol.BatterySnapshot snapshot = BleProtocol.parseSettingsBattery(message.ackPayload);
+            if (snapshot != null) {
+                headsetBattery = snapshot.battery;
+                headsetCharging = snapshot.charging;
+                emitBatteryState(headsetBattery, headsetCharging);
+            }
+        };
+        message.onTimeout = () -> {
+            handleTransportFailure("battery ack timeout");
+        };
+        return message;
     }
 
     private boolean hasPendingOrInflightKindLocked(String kind) {
@@ -1177,41 +1216,9 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
 
     private void handleAckTimeoutLocked(OutboundMessage message) {
         consecutiveAckTimeouts += 1;
-        if ("create-layout".equals(message.kind) && startupProbePending) {
-            logLine("create layout timed out while startup text probe is pending");
-            if (hasPendingOrInflightKindLocked("startup-text-probe")) {
-                return;
-            }
-            startupProbePending = false;
-        }
-        if ("create-layout".equals(message.kind) || "prelude".equals(message.kind)) {
-            handleTransportFailure("ack timeout");
-            return;
-        }
 
-        if ("startup-text-probe".equals(message.kind)) {
-            startupProbePending = false;
-            if (hasPendingOrInflightKindLocked("create-layout")) {
-                return;
-            }
-            handleTransportFailure("ack timeout");
-            return;
-        }
-
-        if ("warmup".equals(message.kind)) {
-            warmedUp = false;
-            clearMessagesOfKindLocked("warmup");
-            displayedFingerprint = "";
-            displayedTileBmps = emptyTileSet();
-        } else if ("image".equals(message.kind)) {
-            imageUpdateStats.remove(message.imageUpdateId);
-            clearMessagesOfKindLocked("image");
-            displayedFingerprint = "";
-            displayedTileBmps = emptyTileSet();
-            imageRetryAfterMs = SystemClock.elapsedRealtime() + IMAGE_RETRY_DELAY_MS;
-        } else if ("heartbeat".equals(message.kind)) {
-            handleTransportFailure("heartbeat ack timeout");
-            return;
+        if (message.onTimeout != null) {
+            message.onTimeout.run();
         }
 
         if (consecutiveAckTimeouts > MAX_CONSECUTIVE_ACK_TIMEOUTS) {
@@ -1555,6 +1562,8 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         long writeStartedAtMs;
         long ackDeadlineAtMs;
         byte[] ackPayload = new byte[0];
+        Runnable onAck;
+        Runnable onTimeout;
 
         OutboundMessage(String kind, String label, int sid, int magic, List<byte[]> frames, int ackTimeoutMs, String fingerprint, int tileIndex, byte[] tileBmp) {
             this.kind = kind;
