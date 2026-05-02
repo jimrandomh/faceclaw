@@ -411,7 +411,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         }
         Log.i(TAG, "onNotification: address=" + address + " characteristicUuid=" + characteristicUuid + " data.length=" + data.length);
         BleProtocol.ParsedFrame frame = BleProtocol.parseFrame(data);
-        AsyncEvent event = null;
+        G2Event event = null;
         synchronized (lock) {
             lastIncomingAtMs = SystemClock.elapsedRealtime();
             if (frame.ok && frame.msgSeq >= 0 && frame.flag != BleProtocol.FLAG_NOTIFY && frame.flag != BleProtocol.FLAG_NOTIFY_ALT) {
@@ -419,9 +419,21 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 resolveAckLocked(frame.sid, frame.msgSeq, frame.pb);
             }
             if (frame.ok && address.equalsIgnoreCase(rightAddress) && (frame.flag == BleProtocol.FLAG_NOTIFY || frame.flag == BleProtocol.FLAG_NOTIFY_ALT)) {
-                event = decodeAsyncEventLocked(frame);
+                event = G2Event.decode(frame);
                 if (event != null) {
                     lastConnectionOrInputAtMs = lastIncomingAtMs;
+                    if (event.kind == "sys-event") {
+                        if (event.eventType == BleProtocol.EVENT_FOREGROUND_EXIT || event.eventType == BleProtocol.EVENT_ABNORMAL_EXIT || event.eventType == BleProtocol.EVENT_SYSTEM_EXIT) {
+                            if (shutdownRequested) {
+                                lastShutdownExitAtMs = SystemClock.elapsedRealtime();
+                            }
+                            fixedLayoutCreated = false;
+                            warmedUp = false;
+                            displayedFingerprint = "";
+                            displayedTileBmps = emptyTileSet();
+                            clearAllMessagesLocked("firmware exit event");
+                        }
+                    }
                 }
             }
             lock.notifyAll();
@@ -680,10 +692,10 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 }
             }
 
-            if (!writeMessageFrames(messageToWrite)) {
+            if (!writeMessage(messageToWrite)) {
                 synchronized (lock) {
                     if (removePreparedMessageLocked(messageToWrite) || messageToWrite.magic == 0) {
-                        handleTransportFailureLocked("write failed");
+                        handleTransportFailure("write failed");
                     }
                 }
                 return 0;
@@ -710,7 +722,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         }
     }
 
-    private boolean writeMessageFrames(OutboundMessage message) {
+    private boolean writeMessage(OutboundMessage message) {
         String writeAddress = isLeftArmMessage(message) ? leftAddress : rightAddress;
         return bleManager.writeFrames(
             writeAddress,
@@ -1173,7 +1185,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             startupProbePending = false;
         }
         if ("create-layout".equals(message.kind) || "prelude".equals(message.kind)) {
-            handleTransportFailureLocked("ack timeout");
+            handleTransportFailure("ack timeout");
             return;
         }
 
@@ -1182,7 +1194,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             if (hasPendingOrInflightKindLocked("create-layout")) {
                 return;
             }
-            handleTransportFailureLocked("ack timeout");
+            handleTransportFailure("ack timeout");
             return;
         }
 
@@ -1198,12 +1210,12 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             displayedTileBmps = emptyTileSet();
             imageRetryAfterMs = SystemClock.elapsedRealtime() + IMAGE_RETRY_DELAY_MS;
         } else if ("heartbeat".equals(message.kind)) {
-            handleTransportFailureLocked("heartbeat ack timeout");
+            handleTransportFailure("heartbeat ack timeout");
             return;
         }
 
         if (consecutiveAckTimeouts > MAX_CONSECUTIVE_ACK_TIMEOUTS) {
-            handleTransportFailureLocked("too many ack timeouts");
+            handleTransportFailure("too many ack timeouts");
         }
     }
 
@@ -1285,34 +1297,29 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     }
 
     private void handleTransportFailure(String reason) {
-        Log.i(TAG, "handleTransportFailure called");
-        synchronized (lock) {
-            handleTransportFailureLocked(reason);
-        }
-    }
-
-    private void handleTransportFailureLocked(String reason) {
         Log.e(TAG, "Transport failure: "+reason);
-        maybeEmitEvenAppConflictLocked(reason);
-        sessionReady = false;
-        fixedLayoutCreated = false;
-        warmedUp = false;
-        startupProbePending = false;
-        shutdownRequested = false;
-        imageRetryAfterMs = 0;
-        displayedFingerprint = "";
-        displayedTileBmps = emptyTileSet();
-        clearAllMessagesLocked("transport failure: " + reason);
-        reconnectAfterMs = SystemClock.elapsedRealtime() + RECONNECT_DELAY_MS;
-        if (!userDisconnectRequested) {
-            phase = "retrying";
-            status = reason == null || reason.isEmpty() ? "Reconnecting..." : "Reconnecting after " + reason;
+        synchronized (lock) {
+            maybeEmitEvenAppConflictLocked(reason);
+            sessionReady = false;
+            fixedLayoutCreated = false;
+            warmedUp = false;
+            startupProbePending = false;
+            shutdownRequested = false;
+            imageRetryAfterMs = 0;
+            displayedFingerprint = "";
+            displayedTileBmps = emptyTileSet();
+            clearAllMessagesLocked("transport failure: " + reason);
+            reconnectAfterMs = SystemClock.elapsedRealtime() + RECONNECT_DELAY_MS;
+            if (!userDisconnectRequested) {
+                phase = "retrying";
+                status = reason == null || reason.isEmpty() ? "Reconnecting..." : "Reconnecting after " + reason;
+            }
+            lock.notifyAll();
+            interruptibleSleep.interrupt();
+            bleManager.disconnect(rightAddress);
+            bleManager.disconnect(leftAddress);
+            emitState();
         }
-        lock.notifyAll();
-        interruptibleSleep.interrupt();
-        bleManager.disconnect(rightAddress);
-        bleManager.disconnect(leftAddress);
-        emitState();
     }
 
     private void resetSessionStateLocked() {
@@ -1346,55 +1353,6 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             }
         }
         return false;
-    }
-
-    private AsyncEvent decodeAsyncEventLocked(BleProtocol.ParsedFrame frame) {
-        byte[] pb = BleProtocol.stripTrailingCrc(frame.pb);
-        byte[] deviceEvent = BleProtocol.readFieldBytes(pb, 13);
-        if (deviceEvent == null) {
-            return null;
-        }
-
-        byte[] listEvent = BleProtocol.readFieldBytes(deviceEvent, 1);
-        if (listEvent != null) {
-            return new AsyncEvent(
-                "list-click",
-                BleProtocol.readStringFieldValue(listEvent, 2),
-                BleProtocol.readVarintFieldValue(listEvent, 5, BleProtocol.EVENT_CLICK),
-                0,
-                0
-            );
-        }
-
-        byte[] textEvent = BleProtocol.readFieldBytes(deviceEvent, 2);
-        if (textEvent != null) {
-            return new AsyncEvent(
-                "text-click",
-                BleProtocol.readStringFieldValue(textEvent, 2),
-                BleProtocol.readVarintFieldValue(textEvent, 3, BleProtocol.EVENT_CLICK),
-                0,
-                0
-            );
-        }
-
-        byte[] sysEvent = BleProtocol.readFieldBytes(deviceEvent, 3);
-        if (sysEvent != null) {
-            int eventType = BleProtocol.readVarintFieldValue(sysEvent, 1, BleProtocol.EVENT_CLICK);
-            int eventSource = BleProtocol.readVarintFieldValue(sysEvent, 2, 0);
-            int exitReason = BleProtocol.readVarintFieldValue(sysEvent, 4, 0);
-            if (eventType == BleProtocol.EVENT_FOREGROUND_EXIT || eventType == BleProtocol.EVENT_ABNORMAL_EXIT || eventType == BleProtocol.EVENT_SYSTEM_EXIT) {
-                if (shutdownRequested) {
-                    lastShutdownExitAtMs = SystemClock.elapsedRealtime();
-                }
-                fixedLayoutCreated = false;
-                warmedUp = false;
-                displayedFingerprint = "";
-                displayedTileBmps = emptyTileSet();
-                clearAllMessagesLocked("firmware exit event");
-            }
-            return new AsyncEvent("sys-event", "", eventType, eventSource, exitReason);
-        }
-        return null;
     }
 
     private void emitRingEvent(String kind, String containerName, int eventType, int eventSource, int systemExitReasonCode) {
@@ -1581,86 +1539,6 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private String getDesiredFingerprint() {
         synchronized (desiredTilesLock) {
             return desiredFingerprint;
-        }
-    }
-
-    /**
-     * Protobuf messages contain a 1-byte identifier that is used to identify
-     * which message is referred to in ACK messages. We keep track of which
-     * identifiers are in use for inflight messages, with some metadata about
-     * what the message was. We allocate identifiers with an LRU policy so that
-     * if we release a message's identifier because it timed out, we can still
-     * detect late ACKs if it hasn't been reused yet.
-     */
-    private static final class BleMagicPool {
-        static final int MIN_MAGIC = 100;
-        static final int MAX_MAGIC = 255;
-
-        private final ArrayDeque<Integer> available = new ArrayDeque<>();
-        private final boolean[] allocated = new boolean[256];
-        private final Map<String, ReleaseRecord> releaseRecords = new HashMap<>();
-
-        BleMagicPool() {
-            for (int magic = MIN_MAGIC; magic <= MAX_MAGIC; magic++) {
-                available.addLast(magic);
-            }
-        }
-
-        synchronized int allocate() {
-            Integer magic = available.pollFirst();
-            if (magic == null) {
-                throw new IllegalStateException("no BLE magic values available");
-            }
-            allocated[magic] = true;
-            return magic;
-        }
-
-        synchronized void release(int sid, int magic, String label, String reason) {
-            if (magic < MIN_MAGIC || magic > MAX_MAGIC) {
-                return;
-            }
-            releaseRecords.put(key(sid, magic), new ReleaseRecord(label, reason, SystemClock.elapsedRealtime()));
-            if (!allocated[magic]) {
-                return;
-            }
-            allocated[magic] = false;
-            available.addLast(magic);
-        }
-
-        synchronized ReleaseRecord getReleaseRecord(int sid, int magic) {
-            return releaseRecords.get(key(sid, magic));
-        }
-
-        private static String key(int sid, int magic) {
-            return sid + ":" + magic;
-        }
-
-        private static final class ReleaseRecord {
-            final String label;
-            final String reason;
-            final long releasedAtMs;
-
-            ReleaseRecord(String label, String reason, long releasedAtMs) {
-                this.label = label == null ? "" : label;
-                this.reason = reason == null ? "" : reason;
-                this.releasedAtMs = releasedAtMs;
-            }
-        }
-    }
-
-    private static final class AsyncEvent {
-        final String kind;
-        final String containerName;
-        final int eventType;
-        final int eventSource;
-        final int systemExitReasonCode;
-
-        AsyncEvent(String kind, String containerName, int eventType, int eventSource, int systemExitReasonCode) {
-            this.kind = kind;
-            this.containerName = containerName;
-            this.eventType = eventType;
-            this.eventSource = eventSource;
-            this.systemExitReasonCode = systemExitReasonCode;
         }
     }
 
