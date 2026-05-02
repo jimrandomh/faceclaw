@@ -122,7 +122,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
 
     public FaceclawBleCommunicator(Context context, String rightAddress, String leftAddress, String ringAddress) {
         this.appContext = context.getApplicationContext();
-        this.bleManager = new FaceclawBleManager(appContext, false);
+        this.bleManager = new FaceclawBleManager(appContext);
         this.bleManager.setListener(this);
         this.rightAddress = requireAddress("rightAddress", rightAddress);
         this.leftAddress = requireAddress("leftAddress", leftAddress);
@@ -198,7 +198,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 return false;
             }
             audioPacketListener = listener;
-            magic = nextMagic();
+            magic = magicPool.allocate();
             pendingMessages.addFirst(createAudioControlMessageLocked(true, magic));
             logLine("queue G2 mic enable");
             lock.notifyAll();
@@ -214,7 +214,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             audioCaptureActive = false;
             clearMessagesOfKindLocked("audio-control");
             if (running && sessionReady) {
-                magic = nextMagic();
+                magic = magicPool.allocate();
                 pendingMessages.addFirst(createAudioControlMessageLocked(false, magic));
                 logLine("queue G2 mic disable");
                 lock.notifyAll();
@@ -276,7 +276,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             }
             shutdownRequested = true;
             clearPendingMessagesLocked("shutdown requested");
-            magic = nextMagic();
+            magic = magicPool.allocate();
             pendingMessages.addFirst(new OutboundMessage(
                 "shutdown",
                 "shutdown mode=" + exitMode,
@@ -633,7 +633,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                         Log.i(TAG, "message timed out: " + oldest.label);
                         inFlightMessages.removeFirst();
                         logLine("message timed out: " + oldest.label);
-                        releaseMagicLocked(oldest, "timeout");
+                        magicPool.release(oldest.sid, oldest.magic, oldest.label, "timeout");
                         handleAckTimeoutLocked(oldest);
                         return 0;
                     }
@@ -752,7 +752,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         while (iterator.hasNext()) {
             if (iterator.next() == message) {
                 iterator.remove();
-                releaseMagicLocked(message, "write failed");
+                magicPool.release(message.sid, message.magic, message.label, "write failed");
                 return true;
             }
         }
@@ -768,7 +768,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 Log.i(TAG, "Got ACK for " + message.label);
                 iterator.remove();
                 message.ackPayload = pb == null ? new byte[0] : Arrays.copyOf(pb, pb.length);
-                releaseMagicLocked(message, "ack");
+                magicPool.release(message.sid, message.magic, message.label, "ack");
                 onMessageAckLocked(message);
                 return;
             }
@@ -895,7 +895,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     }
 
     private void enqueueCreateLayoutLocked() {
-        int magic = nextMagic();
+        int magic = magicPool.allocate();
         pendingMessages.addLast(new OutboundMessage(
             "create-layout",
             "create-layout",
@@ -918,7 +918,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private void enqueueStartupProbeLocked() {
         enqueueCreateLayoutLocked();
 
-        int magic = nextMagic();
+        int magic = magicPool.allocate();
         pendingMessages.addLast(new OutboundMessage(
             "startup-text-probe",
             "startup text probe",
@@ -952,7 +952,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         int sessionId = nextMapSessionId();
         List<BleProtocol.ImageFragment> fragments = BleImageOptimizer.planImageFragments(bmp, IMAGE_FRAGMENT_SIZE);
         for (BleProtocol.ImageFragment fragment : fragments) {
-            int magic = nextMagic();
+            int magic = magicPool.allocate();
             pendingMessages.addLast(new OutboundMessage(
                 "warmup",
                 "warmup " + tile.name + "#" + fragment.index,
@@ -1054,7 +1054,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         boolean requestAck,
         boolean isLast
     ) {
-        int magic = requestAck ? nextMagic() : 0;
+        int magic = requestAck ? magicPool.allocate() : 0;
         OutboundMessage message = new OutboundMessage(
             "image",
             "image " + plan.tile.name + "#" + fragment.index,
@@ -1076,7 +1076,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     }
 
     private OutboundMessage createHeartbeatMessageLocked() {
-        int magic = nextMagic();
+        int magic = magicPool.allocate();
         return new OutboundMessage(
             "heartbeat",
             "heartbeat",
@@ -1119,7 +1119,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     }
 
     private OutboundMessage createBatteryQueryMessageLocked() {
-        int magic = nextMagic();
+        int magic = magicPool.allocate();
         return new OutboundMessage(
             "battery",
             "battery",
@@ -1228,7 +1228,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 if ("image".equals(kind)) {
                     imageUpdateStats.remove(message.imageUpdateId);
                 }
-                releaseMagicLocked(message, "cleared pending " + kind);
+                magicPool.release(message.sid, message.magic, message.label, "cleared pending " + kind);
             }
         }
         Iterator<OutboundMessage> inFlightIterator = inFlightMessages.iterator();
@@ -1239,7 +1239,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 if ("image".equals(kind)) {
                     imageUpdateStats.remove(message.imageUpdateId);
                 }
-                releaseMagicLocked(message, "cleared inflight " + kind);
+                magicPool.release(message.sid, message.magic, message.label, "cleared inflight " + kind);
             }
         }
     }
@@ -1251,21 +1251,16 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
 
     private void clearPendingMessagesLocked(String reason) {
         while (!pendingMessages.isEmpty()) {
-            releaseMagicLocked(pendingMessages.removeFirst(), "cleared pending: " + reason);
+            var message = pendingMessages.removeFirst();
+            magicPool.release(message.sid, message.magic, message.label, "cleared pending: " + reason);
         }
     }
 
     private void clearInFlightMessagesLocked(String reason) {
         while (!inFlightMessages.isEmpty()) {
-            releaseMagicLocked(inFlightMessages.removeFirst(), "cleared inflight: " + reason);
+            var message = inFlightMessages.removeFirst();
+            magicPool.release(message.sid, message.magic, message.label, "cleared inflight: " + reason);
         }
-    }
-
-    private void releaseMagicLocked(OutboundMessage message, String reason) {
-        if (message == null || message.magic < BleMagicPool.MIN_MAGIC || message.magic > BleMagicPool.MAX_MAGIC) {
-            return;
-        }
-        magicPool.release(message.sid, message.magic, message.label, reason);
     }
 
     private void recordUnexpectedAckLocked(int sid, int magic) {
@@ -1461,9 +1456,6 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
 
     private void logLine(String line) {
         Log.i(TAG, line);
-        if (!shouldForwardLogLineToJavascript(line)) {
-            return;
-        }
         final FaceclawBleCommunicatorListener current = listener;
         if (current == null) {
             return;
@@ -1477,32 +1469,9 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         });
     }
 
-    private boolean shouldForwardLogLineToJavascript(String line) {
-        if (line == null || line.isEmpty()) {
-            return false;
-        }
-        return line.startsWith("communicator start")
-                || line.startsWith("communicator stop")
-                || line.startsWith("connect failed")
-                || line.startsWith("session ready")
-                || line.startsWith("message timed out")
-                || line.startsWith("create layout timed out")
-                || line.startsWith("unexpected ACK")
-                || line.startsWith("late ACK")
-                || line.startsWith("duplicate ACK")
-                || line.startsWith("skip shutdown")
-                || line.startsWith("shutdown")
-                || line.startsWith("Even Realities")
-                || line.startsWith("communicator loop error");
-    }
-
     private static String timestamp(long elapsedMs) {
         long wallMs = System.currentTimeMillis();
         return String.format(Locale.US, "%tF %tT.%tL elapsed=%dms", wallMs, wallMs, wallMs, elapsedMs);
-    }
-
-    private int nextMagic() {
-        return magicPool.allocate();
     }
 
     private int nextMapSessionId() {

@@ -29,7 +29,6 @@ public class FaceclawBleManager {
 
     private final Context context;
     private final BluetoothAdapter bluetoothAdapter;
-    private final boolean dispatchListenerOnMain;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
 
     private final ConcurrentHashMap<String, BluetoothGatt> gattClients = new ConcurrentHashMap<>();
@@ -53,12 +52,7 @@ public class FaceclawBleManager {
     private volatile FaceclawBleListener listener;
 
     public FaceclawBleManager(Context context) {
-        this(context, true);
-    }
-
-    public FaceclawBleManager(Context context, boolean dispatchListenerOnMain) {
         this.context = context.getApplicationContext();
-        this.dispatchListenerOnMain = dispatchListenerOnMain;
         BluetoothManager bluetoothManager = (BluetoothManager) this.context.getSystemService(Context.BLUETOOTH_SERVICE);
         if (bluetoothManager == null || bluetoothManager.getAdapter() == null) {
             throw new IllegalStateException("Bluetooth adapter unavailable");
@@ -366,22 +360,6 @@ public class FaceclawBleManager {
         return bluetoothApiLock;
     }
 
-    private void runOnMainAsync(Runnable runnable) {
-        if (Looper.myLooper() == Looper.getMainLooper()) {
-            runnable.run();
-        } else {
-            mainHandler.post(runnable);
-        }
-    }
-
-    private void dispatchListener(Runnable runnable) {
-        if (dispatchListenerOnMain) {
-            runOnMainAsync(runnable);
-        } else {
-            runnable.run();
-        }
-    }
-
     private final BluetoothGattCallback gattCallback = new BluetoothGattCallback() {
         @Override
         public void onConnectionStateChange(BluetoothGatt gatt, int status, int newState) {
@@ -472,18 +450,14 @@ public class FaceclawBleManager {
 
     private void dispatchConnectionState(String address, boolean connected) {
         FaceclawBleListener current = listener;
-        if (current == null) {
-            return;
-        }
-        dispatchListener(() -> current.onConnectionStateChange(address, connected));
+        if (current == null) return;
+        current.onConnectionStateChange(address, connected);
     }
 
     private void dispatchNotification(String address, String characteristicUuid, byte[] data) {
         FaceclawBleListener current = listener;
-        if (current == null) {
-            return;
-        }
+        if (current == null) return;
         byte[] copy = data != null ? data.clone() : new byte[0];
-        dispatchListener(() -> current.onNotification(address, characteristicUuid, copy));
+        current.onNotification(address, characteristicUuid, copy);
     }
 }
