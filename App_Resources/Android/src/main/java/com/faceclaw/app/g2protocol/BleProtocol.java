@@ -19,15 +19,9 @@ public class BleProtocol {
     public static final String NOTIFY_CHAR_UUID = "00002760-08c2-11e1-9073-0e8ac72e5402";
     public static final String RENDER_NOTIFY_UUID = "00002760-08c2-11e1-9073-0e8ac72e6402";
 
-    public static final byte[] PRELUDE_F5872 = new byte[] {
-        (byte) 0xaa, 0x21, (byte) 0x92, 0x13, 0x01, 0x01, 0x01, 0x20,
-        0x08, 0x02, 0x10, (byte) 0x9c, 0x01, 0x22, 0x0a, 0x1a,
-        0x08, 0x12, 0x06, 0x12, 0x04, 0x08, 0x00, 0x10, 0x00,
-        (byte) 0xa1, 0x42
-    };
-
     public static final int PRELUDE_ACK_SID = 0x01;
     public static final int PRELUDE_ACK_MAGIC = 156;
+    public static final int SID_APP_LAUNCH = 0x01;
     public static final int SID_EVENHUB = 0xe0;
     public static final int SID_UI_SETTING = 0x09;
     public static final int FLAG_REQUEST = 0x20;
@@ -46,6 +40,28 @@ public class BleProtocol {
 
     public static final UUID CCCD_UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb");
     
+    // App-launch message. Protobuf contents come from a capture (done in g2-kit-unofficial)
+    // so the actual meaning of most fields isn't known. The standard protobuf
+    // wire format still lets us identify field numbers, wire types, and lengths.
+    public static final byte[] PRELUDE_F5872 =
+        framePb(buildPreludeF5872Payload(), SID_APP_LAUNCH, FLAG_REQUEST, 0x92).getFirst();
+
+    private static byte[] buildPreludeF5872Payload() {
+        byte[] field4 = encodeMessageField(3,
+            encodeMessageField(2,
+                encodeMessageField(2, concat(CollectionUtils.listOf(
+                    encodeVarintField(1, 0),
+                    encodeVarintField(2, 0)
+                )))
+            )
+        );
+        return concat(CollectionUtils.listOf(
+            encodeVarintField(1, 2), // known app-launch type/Cmd
+            encodeVarintField(2, PRELUDE_ACK_MAGIC),
+            encodeMessageField(4, field4)
+        ));
+    }
+
     public static List<byte[]> framePb(byte[] pb, int sid, int flag, int seq) {
         int chunkSize = 232;
         byte[] crc = crcBytesLe(pb);

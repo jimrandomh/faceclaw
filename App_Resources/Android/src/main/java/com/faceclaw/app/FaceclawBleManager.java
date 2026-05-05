@@ -25,7 +25,7 @@ import java.util.concurrent.TimeUnit;
 @SuppressLint("MissingPermission")
 public class FaceclawBleManager {
     private static final String TAG = "FaceclawBle";
-    private static final int[] WRITE_RETRY_DELAYS_MS = new int[] {4, 8, 12, 20, 35, 100, 200};
+    private static final int[] WRITE_RETRY_DELAYS_MS = new int[] {1, 1, 1, 2, 4, 8, 12, 20, 35, 100, 200};
 
     private final Context context;
     private final BluetoothAdapter bluetoothAdapter;
@@ -88,11 +88,11 @@ public class FaceclawBleManager {
             }
 
             gatt = device.connectGatt(
-                    context,
-                    false,
-                    gattCallback,
-                    BluetoothDevice.TRANSPORT_LE,
-                    BluetoothDevice.PHY_LE_2M|BluetoothDevice.PHY_LE_1M
+                context,
+                false,
+                gattCallback,
+                BluetoothDevice.TRANSPORT_LE,
+                BluetoothDevice.PHY_LE_2M|BluetoothDevice.PHY_LE_1M
             );
             if (gatt != null) {
                 gattClients.put(address, gatt);

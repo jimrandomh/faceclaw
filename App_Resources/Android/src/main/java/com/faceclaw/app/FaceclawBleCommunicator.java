@@ -38,7 +38,9 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private static final int WRITE_TIMEOUT_MS = 2_000;
     private static final int PRELUDE_TIMEOUT_MS = 2_000;
     private static final int ACK_TIMEOUT_MS = 3_500;
-    private static final int HEARTBEAT_READY_MS = 3_000;
+    private static final int HEARTBEAT_TIMEOUT_MS = 1_500;
+    private static final int HEARTBEAT_FAILURE_DEADLINE_MS = 10_000;
+    private static final int HEARTBEAT_READY_MS = 4_000;
     private static final int HEARTBEAT_URGENT_MS = 6_000;
     private static final int BATTERY_REFRESH_INTERVAL_MS = 5 * 60_000;
     private static final int BATTERY_INPUT_QUIET_MS = 5_000;
@@ -87,7 +89,8 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private long reconnectAfterMs;
     private long lastAckAtMs;
     private long lastIncomingAtMs;
-    private long lastHeartbeatQueuedAtMs;
+    private long lastHeartbeatSentAtMs;
+    private long lastHeartbeatAckedAtMs;
     private long lastConnectionOrInputAtMs;
     private long lastBatteryRefreshAtMs;
     private long imageRetryAfterMs;
@@ -529,7 +532,8 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 lastSessionReadyAtMs = lastAckAtMs;
                 lastBatteryRefreshAtMs = 0;
                 imageRetryAfterMs = 0;
-                lastHeartbeatQueuedAtMs = 0;
+                lastHeartbeatSentAtMs = 0;
+                lastHeartbeatAckedAtMs = 0;
                 consecutiveAckTimeouts = 0;
                 lastAudioControlAckMagic = 0;
                 audioCaptureActive = false;
@@ -658,29 +662,12 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                     enqueueWarmupLocked();
                 }
 
-                boolean heartbeatEligible = !shutdownRequested && warmedUp && fixedLayoutCreated;
-                boolean heartbeatPending = heartbeatEligible && hasPendingOrInflightKindLocked("heartbeat");
-                long heartbeatElapsedMs = now - lastHeartbeatQueuedAtMs;
-                boolean heartbeatReady = heartbeatEligible && heartbeatElapsedMs >= HEARTBEAT_READY_MS;
-                boolean heartbeatUrgent = heartbeatEligible && heartbeatElapsedMs >= HEARTBEAT_URGENT_MS;
-                boolean heartbeatBlocksLeftWrites = heartbeatReady || heartbeatPending;
+                if (handleHeartbeat()) {
+                    return IDLE_SLEEP_MS;
+                }
 
-                if (heartbeatReady && !heartbeatPending && inFlightMessages.isEmpty()) {
-                    Log.i(TAG, "Writing heartbeat");
-                    messageToWrite = createHeartbeatMessageLocked();
-                    prepareMessageWriteLocked(messageToWrite, now);
-                    lastHeartbeatQueuedAtMs = now;
-                } else if (heartbeatUrgent) {
-                    return IDLE_SLEEP_MS;
-                } else if (heartbeatPending) {
-                    // Don't send other message types while a heartbeat is pending because that
-                    // can lead to inter-lens sync issues
-                    return IDLE_SLEEP_MS;
-                } else if (sessionReady && inFlightMessages.size() < WINDOW_SIZE && !pendingMessages.isEmpty()) {
+                if (sessionReady && inFlightMessages.size() < WINDOW_SIZE && !pendingMessages.isEmpty()) {
                     OutboundMessage pending = pendingMessages.peekFirst();
-                    if (heartbeatBlocksLeftWrites && pending != null && isLeftArmMessage(pending)) {
-                        return IDLE_SLEEP_MS;
-                    }
                     messageToWrite = pendingMessages.removeFirst();
                     Log.i(TAG, "sending pending message: " + messageToWrite.label);
                     prepareMessageWriteLocked(messageToWrite, now);
@@ -716,6 +703,60 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             }
         }
     }
+
+    private boolean handleHeartbeat() {
+        long now = SystemClock.elapsedRealtime();
+        boolean heartbeatEligible = !shutdownRequested && warmedUp && fixedLayoutCreated;
+        boolean heartbeatPending = heartbeatEligible && hasPendingOrInflightKindLocked("heartbeat");
+        long heartbeatElapsedMs = now - lastHeartbeatAckedAtMs;
+        boolean heartbeatReady = heartbeatEligible && heartbeatElapsedMs >= HEARTBEAT_READY_MS;
+        boolean heartbeatUrgent = heartbeatEligible && heartbeatElapsedMs >= HEARTBEAT_URGENT_MS;
+        boolean heartbeatBlocksLeftWrites = heartbeatReady || heartbeatPending;
+
+        if (heartbeatReady && !heartbeatPending && inFlightMessages.isEmpty()) {
+            Log.i(TAG, "Writing heartbeat");
+            OutboundMessage heartbeatMessage = createHeartbeatMessageLocked();
+            prepareMessageWriteLocked(heartbeatMessage, now);
+            lastHeartbeatSentAtMs = now;
+            writeMessage(heartbeatMessage);
+            return true;
+        } else if (heartbeatUrgent) {
+            return true;
+        } else if (heartbeatPending) {
+            // Don't send other message types while a heartbeat is pending because that
+            // can lead to inter-lens sync issues
+            return true;
+        }
+
+        return false;
+    }
+
+    private OutboundMessage createHeartbeatMessageLocked() {
+        int magic = magicPool.allocate();
+        OutboundMessage message = new OutboundMessage(
+            "heartbeat",
+            "heartbeat",
+            BleProtocol.SID_EVENHUB,
+            magic,
+            BleProtocol.framePb(BleProtocol.buildHeartbeat(magic), BleProtocol.SID_EVENHUB, BleProtocol.FLAG_REQUEST, nextTransportSeq++),
+            HEARTBEAT_TIMEOUT_MS,
+            displayedFingerprint,
+            -1,
+            null
+        );
+        message.onAck = () -> {
+            lastHeartbeatAckedAtMs = SystemClock.elapsedRealtime();
+        };
+        message.onTimeout = () -> {
+            // If a heartbeat fails to ack and we're over the heartbeat deadline, assume the connection is failed and reconnect.
+            // Otherwise ignore it, which will cause a retransmission attempt.
+            if (SystemClock.elapsedRealtime() - lastHeartbeatSentAtMs >= HEARTBEAT_FAILURE_DEADLINE_MS) {
+                handleTransportFailure("heartbeat ack timeout");
+            }
+        };
+        return message;
+    }
+
 
     private void prepareMessageWriteLocked(OutboundMessage message, long now) {
         message.writeStartedAtMs = now;
@@ -911,7 +952,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         if (bmp == null || bmp.length == 0) {
             bmp = new byte[] {0};
         }
-        bmp = buildBlankWarmupBmp(bmp);
+        bmp = BmpUtil.buildBlankWarmupBmp(bmp);
         BleProtocol.ImageTileOptions tile = DASHBOARD_TILES[0];
         int sessionId = nextMapSessionId();
         List<BleProtocol.ImageFragment> fragments = BleImageOptimizer.planImageFragments(bmp, IMAGE_FRAGMENT_SIZE);
@@ -1053,7 +1094,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             imageRetryAfterMs = 0;
             logImageUpdateAckLandmarkLocked(message);
             if (message.tileIndex >= 0 && !hasPendingOrInflightTileLocked(message.tileIndex)) {
-                displayedTileBmps[message.tileIndex] = copyTileBmp(message.tileBmp);
+                displayedTileBmps[message.tileIndex] = BmpUtil.copyTileBmp(message.tileBmp);
             }
             boolean imageStillInFlight = false;
             for (OutboundMessage inFlight : inFlightMessages) {
@@ -1083,27 +1124,6 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             imageRetryAfterMs = SystemClock.elapsedRealtime() + IMAGE_RETRY_DELAY_MS;
         };
         pendingMessages.addLast(message);
-    }
-
-    private OutboundMessage createHeartbeatMessageLocked() {
-        int magic = magicPool.allocate();
-        OutboundMessage message = new OutboundMessage(
-            "heartbeat",
-            "heartbeat",
-            BleProtocol.SID_EVENHUB,
-            magic,
-            BleProtocol.framePb(BleProtocol.buildHeartbeat(magic), BleProtocol.SID_EVENHUB, BleProtocol.FLAG_REQUEST, nextTransportSeq++),
-            ACK_TIMEOUT_MS,
-            displayedFingerprint,
-            -1,
-            null
-        );
-        message.onAck = () -> {
-        };
-        message.onTimeout = () -> {
-            handleTransportFailure("heartbeat ack timeout");
-        };
-        return message;
     }
 
     private OutboundMessage createAudioControlMessageLocked(boolean enable, int magic) {
@@ -1333,7 +1353,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         reconnectAfterMs = 0;
         lastAckAtMs = 0;
         lastIncomingAtMs = 0;
-        lastHeartbeatQueuedAtMs = 0;
+        lastHeartbeatSentAtMs = 0;
         lastSessionReadyAtMs = 0;
         consecutiveAckTimeouts = 0;
         lastAudioControlAckMagic = 0;
@@ -1528,7 +1548,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         TileImagePlan(int tileIndex, BleProtocol.ImageTileOptions tile, byte[] bmp, int sessionId) {
             this.tileIndex = tileIndex;
             this.tile = tile;
-            this.bmp = copyTileBmp(bmp);
+            this.bmp = BmpUtil.copyTileBmp(bmp);
             this.sessionId = sessionId;
         }
     }
@@ -1542,86 +1562,5 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             this.paintMs = Math.max(0, paintMs);
             this.tileCount = tileCount;
         }
-    }
-
-    private static final class OutboundMessage {
-        final String kind;
-        final String label;
-        final int sid;
-        final int magic;
-        final List<byte[]> frames;
-        final int ackTimeoutMs;
-        final String fingerprint;
-        final int tileIndex;
-        final byte[] tileBmp;
-
-        int imageUpdateId;
-        int imageMessageNumber;
-        int imageMessageCount;
-        long sentAtMs;
-        long writeStartedAtMs;
-        long ackDeadlineAtMs;
-        byte[] ackPayload = new byte[0];
-        Runnable onAck;
-        Runnable onTimeout;
-
-        OutboundMessage(String kind, String label, int sid, int magic, List<byte[]> frames, int ackTimeoutMs, String fingerprint, int tileIndex, byte[] tileBmp) {
-            this.kind = kind;
-            this.label = label;
-            this.sid = sid;
-            this.magic = magic;
-            this.frames = frames;
-            this.ackTimeoutMs = ackTimeoutMs;
-            this.fingerprint = fingerprint == null ? "" : fingerprint;
-            this.tileIndex = tileIndex;
-            this.tileBmp = copyTileBmp(tileBmp);
-        }
-
-        OutboundMessage(String label, int sid, int magic, List<byte[]> frames, int writeTimeoutMs, int ignored, long ackDeadlineAtMs) {
-            this.kind = "prelude";
-            this.label = label;
-            this.sid = sid;
-            this.magic = magic;
-            this.frames = frames;
-            this.ackTimeoutMs = writeTimeoutMs;
-            this.fingerprint = "";
-            this.tileIndex = -1;
-            this.tileBmp = new byte[0];
-            this.ackDeadlineAtMs = ackDeadlineAtMs;
-        }
-
-        void setImageUpdatePosition(int updateId, int messageNumber, int messageCount) {
-            this.imageUpdateId = updateId;
-            this.imageMessageNumber = messageNumber;
-            this.imageMessageCount = messageCount;
-        }
-    }
-
-    private static byte[] copyTileBmp(byte[] bmp) {
-        if (bmp == null || bmp.length == 0) {
-            return new byte[0];
-        }
-        return Arrays.copyOf(bmp, bmp.length);
-    }
-
-    private static byte[] buildBlankWarmupBmp(byte[] bmp) {
-        byte[] warmup = copyTileBmp(bmp);
-        int pixelOffset = readBmpPixelOffset(warmup);
-        if (pixelOffset <= 0 || pixelOffset >= warmup.length) {
-            Arrays.fill(warmup, (byte) 0);
-            return warmup;
-        }
-        Arrays.fill(warmup, pixelOffset, warmup.length, (byte) 0);
-        return warmup;
-    }
-
-    private static int readBmpPixelOffset(byte[] bmp) {
-        if (bmp == null || bmp.length < 14 || bmp[0] != 0x42 || bmp[1] != 0x4d) {
-            return -1;
-        }
-        return (bmp[10] & 0xff)
-                | ((bmp[11] & 0xff) << 8)
-                | ((bmp[12] & 0xff) << 16)
-                | ((bmp[13] & 0xff) << 24);
     }
 }
