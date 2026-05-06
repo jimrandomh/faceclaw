@@ -241,6 +241,7 @@ export class FaceclawCommunicatorBridge {
     }
     const tileSnapshots = tileBmps.map((tile) => new Uint8Array(tile));
     await this.enqueueJavaCall(() => {
+      console.log("submitDashboardImage calling Java function");
       this.communicator.submitDashboardImage4(
         toJavaByteArray(tileSnapshots[0]!),
         toJavaByteArray(tileSnapshots[1]!),

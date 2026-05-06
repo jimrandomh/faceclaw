@@ -606,6 +606,7 @@ class DashboardController {
   }
 
   private async renderDashboard(reason: "initial" | "interval"): Promise<void> {
+    console.log("renderDashboard", reason);
     const paintStartedAtMs = Date.now();
     const image = drawDashboard();
     const paintMs = Date.now() - paintStartedAtMs;
@@ -617,6 +618,7 @@ class DashboardController {
       this.updateDisplayPreviewFromImage(image);
     }
     if (this.communicator) {
+      console.log("submitDashboardImage");
       await this.communicator.submitDashboardImage(tiles, fingerprint, forceTiledCommit, paintMs);
       await this.communicator.waitForNextFrameMetrics(FRAME_TRANSMIT_BACKPRESSURE_TIMEOUT_MS);
       if (updatePreviewAfterTransmit) {
@@ -628,6 +630,7 @@ class DashboardController {
     if (reason === "initial") {
       this.appendLog("initial dashboard image queued");
     }
+    console.log("renderDashbaord finished");
   }
 
   private async handleInputEvent(event: RawInputEvent): Promise<void> {
@@ -780,9 +783,9 @@ class DashboardController {
 
   private appendLog(line: string): void {
     const stamped = `[${formatTimestamp(new Date())}] ${line}`;
-    this.log = this.log ? `${this.log}\n${stamped}` : stamped;
+    //this.log = this.log ? `${this.log}\n${stamped}` : stamped;
     console.log(stamped);
-    this.emit();
+    //this.emit();
   }
 
   private setDisplayPreview(preview: ImageSource | null): void {

@@ -20,8 +20,8 @@ public class MessageBuilder {
             BleProtocol.PRELUDE_ACK_MAGIC,
             CollectionUtils.singletonList(Arrays.copyOf(BleProtocol.PRELUDE_F5872, BleProtocol.PRELUDE_F5872.length)),
             ACK_TIMEOUT_MS,
-            0,
-            null
+            -1,
+            false
         );
     }
 
@@ -40,11 +40,11 @@ public class MessageBuilder {
             ),
             ACK_TIMEOUT_MS,
             -1,
-            null
+            false
         );
     }
 
-    public OutboundMessage imageWarmupFragment(BleProtocol.ImageTileOptions tile, int sessionId, BleProtocol.ImageFragment fragment, byte[] bmp) {
+    public OutboundMessage imageWarmupFragment(BleProtocol.ImageTileOptions tile, int sessionId, BleProtocol.ImageFragment fragment, byte[] bmp, boolean leftArm) {
         int magic = magicPool.allocate();
         return new OutboundMessage(
             "warmup",
@@ -57,12 +57,12 @@ public class MessageBuilder {
                 nextTransportSeq++
             ),
             WARMUP_FRAGMENT_TIMEOUT_MS,
-            0,
-            bmp
+            -1,
+            leftArm
         );
     }
 
-    public OutboundMessage imageFragment(BleProtocol.ImageFragment fragment, BleImageOptimizer.TileImagePlan plan, boolean requestAck) {
+    public OutboundMessage imageFragment(BleProtocol.ImageFragment fragment, BleImageOptimizer.TileImagePlan plan, boolean requestAck, boolean leftArm) {
         int magic = requestAck ? magicPool.allocate() : 0;
         return new OutboundMessage(
             "image",
@@ -76,7 +76,7 @@ public class MessageBuilder {
             ),
             ACK_TIMEOUT_MS,
             plan.tileIndex,
-            plan.bmp
+            leftArm
         );
     }
 
@@ -95,7 +95,7 @@ public class MessageBuilder {
             ),
             ACK_TIMEOUT_MS,
             -1,
-            null
+            false
         );
     }
 
@@ -114,7 +114,7 @@ public class MessageBuilder {
             ),
             ACK_TIMEOUT_MS,
             -1,
-            null
+            false
         );
     }
 
@@ -133,7 +133,7 @@ public class MessageBuilder {
             ),
             ACK_TIMEOUT_MS,
             -1,
-            null
+            false
         );
     }
 
@@ -147,7 +147,7 @@ public class MessageBuilder {
             BleProtocol.framePb(BleProtocol.buildHeartbeat(magic), BleProtocol.SID_EVENHUB, BleProtocol.FLAG_REQUEST, nextTransportSeq++),
             HEARTBEAT_TIMEOUT_MS,
             -1,
-            null
+            false
         );
     }
 
@@ -166,7 +166,7 @@ public class MessageBuilder {
             ),
             ACK_TIMEOUT_MS,
             -1,
-            null
+            false
         );
     }
 }

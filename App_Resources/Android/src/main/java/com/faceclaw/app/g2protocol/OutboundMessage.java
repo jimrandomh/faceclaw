@@ -9,7 +9,7 @@ public final class OutboundMessage {
     final List<byte[]> frames;
     final int ackTimeoutMs;
     final int tileIndex;
-    final byte[] tileBmp;
+    final boolean isLeftArmMessage;
 
     int imageUpdateId;
     int imageMessageNumber;
@@ -21,7 +21,7 @@ public final class OutboundMessage {
     Runnable onAck;
     Runnable onTimeout;
 
-    OutboundMessage(String kind, String label, int sid, int magic, List<byte[]> frames, int ackTimeoutMs, int tileIndex, byte[] tileBmp) {
+    OutboundMessage(String kind, String label, int sid, int magic, List<byte[]> frames, int ackTimeoutMs, int tileIndex, boolean isLeftArmMessage) {
         this.kind = kind;
         this.label = label;
         this.sid = sid;
@@ -29,7 +29,7 @@ public final class OutboundMessage {
         this.frames = frames;
         this.ackTimeoutMs = ackTimeoutMs;
         this.tileIndex = tileIndex;
-        this.tileBmp = BmpUtil.copyTileBmp(tileBmp);
+        this.isLeftArmMessage = isLeftArmMessage;
     }
 
     void setImageUpdatePosition(int updateId, int messageNumber, int messageCount) {

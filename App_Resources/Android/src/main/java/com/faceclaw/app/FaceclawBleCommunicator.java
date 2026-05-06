@@ -97,6 +97,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private int consecutiveAckTimeouts;
     private int lastAudioControlAckMagic = 0;
 
+    private ConnectionOptions connectionOptions = new ConnectionOptions();
     private final BleMagicPool magicPool = new BleMagicPool();
     private MessageBuilder messageBuilder = new MessageBuilder(magicPool);
     private int nextMapSessionId = 0;
@@ -156,13 +157,10 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             running = false;
             audioCaptureActive = false;
             audioPacketListener = null;
-            phase = "disconnecting";
-            status = "Disconnecting...";
-            lock.notifyAll();
             threadToJoin = workerThread;
         }
+        setStateDisplay("disconnecting", "Disconnecting...");
         interruptibleSleep.interrupt();
-        emitState();
         if (threadToJoin != null) {
             threadToJoin.interrupt();
             try {
@@ -173,15 +171,13 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         }
         synchronized (lock) {
             workerThread = null;
-            phase = "disconnected";
-            status = "Disconnected.";
             resetSessionStateLocked();
             clearAllMessagesLocked("disconnect");
         }
         bleManager.disconnect(rightAddress);
         bleManager.disconnect(leftAddress);
         bleManager.close();
-        emitState();
+        setStateDisplay("disconnected", "Disconnected.");
     }
 
     public void close() {
@@ -203,7 +199,6 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             magic = message.magic;
             pendingMessages.addFirst(message);
             logLine("queue G2 mic enable");
-            lock.notifyAll();
         }
         interruptibleSleep.interrupt();
         return waitForAudioControlAck(magic, "enable");
@@ -220,7 +215,6 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 magic = message.magic;
                 pendingMessages.addFirst(message);
                 logLine("queue G2 mic disable");
-                lock.notifyAll();
             }
         }
         interruptibleSleep.interrupt();
@@ -293,7 +287,6 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             };
             pendingMessages.addFirst(message);
             logLine("queue shutdown");
-            lock.notifyAll();
         }
         interruptibleSleep.interrupt();
 
@@ -435,7 +428,6 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                     }
                 }
             }
-            lock.notifyAll();
         }
         interruptibleSleep.interrupt();
         if (event != null) {
@@ -483,19 +475,18 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 displayedFingerprint = "";
                 displayedTileBmps = emptyTileSet();
                 reconnectAfterMs = SystemClock.elapsedRealtime() + RECONNECT_DELAY_MS;
-                phase = userDisconnectRequested ? "disconnecting" : "connecting";
-                status = userDisconnectRequested
-                        ? "Disconnecting..."
-                        : "Connection lost. Reconnecting...";
             }
-            lock.notifyAll();
         }
         interruptibleSleep.interrupt();
-        emitState();
+        if (connected) {
+            setStateDisplay("connected", "Connected.");
+        } else {
+            setStateDisplay("connecting", "Connecting to the glasses...");
+        }
     }
 
     private void connectLoopOnce() throws InterruptedException { //{{{
-        setState("connecting", "Connecting to the glasses...");
+        setStateDisplay("connecting", "Connecting to the glasses...");
         try {
             connectArm(rightAddress, true);
             connectArm(leftAddress, true);
@@ -523,7 +514,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 lastAudioControlAckMagic = 0;
                 audioCaptureActive = false;
             }
-            setState("connected", "Connected.");
+            setStateDisplay("connected", "Connected.");
             logLine("session ready");
         } catch (Throwable t) {
             logLine("connect failed: " + safeMessage(t));
@@ -585,9 +576,6 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             handleTransportFailure("ack timeout");
         };
         prelude.sentAtMs = now;
-        synchronized (lock) {
-            inFlightMessages.add(prelude);
-        }
         writeMessage(prelude);
 
         long deadline = SystemClock.elapsedRealtime() + PRELUDE_TIMEOUT_MS;
@@ -647,7 +635,6 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                     OutboundMessage pending = pendingMessages.peekFirst();
                     messageToWrite = pendingMessages.removeFirst();
                     Log.i(TAG, "sending pending message: " + messageToWrite.label);
-                    prepareMessageWriteLocked(messageToWrite, now);
                 } else if (!shutdownRequested && fixedLayoutCreated && warmedUp && pendingMessages.isEmpty() && inFlightMessages.isEmpty()
                         && now >= imageRetryAfterMs
                         && !getDesiredFingerprint().equals(displayedFingerprint)) {
@@ -657,7 +644,6 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 } else if (shouldPollBatteryLocked(now)) {
                     Log.i(TAG, "Writing battery query");
                     messageToWrite = createBatteryQueryMessageLocked();
-                    prepareMessageWriteLocked(messageToWrite, now);
                     lastBatteryRefreshAtMs = now;
                 } else if (!pendingMessages.isEmpty() || !inFlightMessages.isEmpty()) {
                     return IDLE_SLEEP_MS;
@@ -674,10 +660,6 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 }
                 return 0;
             }
-
-            synchronized (lock) {
-                completeMessageWriteLocked(messageToWrite);
-            }
         }
     }
 
@@ -692,8 +674,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
 
         if (heartbeatReady && !heartbeatPending && inFlightMessages.isEmpty()) {
             Log.i(TAG, "Writing heartbeat");
-            OutboundMessage heartbeatMessage = createHeartbeatMessageLocked();
-            prepareMessageWriteLocked(heartbeatMessage, now);
+            OutboundMessage heartbeatMessage = createHeartbeatMessage();
             lastHeartbeatSentAtMs = now;
             writeMessage(heartbeatMessage);
             return true;
@@ -708,15 +689,21 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         return false;
     }
 
-    private OutboundMessage createHeartbeatMessageLocked() {
+    private OutboundMessage createHeartbeatMessage() {
         OutboundMessage message = messageBuilder.heartbeat();
         message.onAck = () -> {
-            lastHeartbeatAckedAtMs = SystemClock.elapsedRealtime();
+            synchronized (lock) {
+                lastHeartbeatAckedAtMs = SystemClock.elapsedRealtime();
+            }
         };
         message.onTimeout = () -> {
             // If a heartbeat fails to ack and we're over the heartbeat deadline, assume the connection is failed and reconnect.
             // Otherwise ignore it, which will cause a retransmission attempt.
-            if (SystemClock.elapsedRealtime() - lastHeartbeatSentAtMs >= HEARTBEAT_FAILURE_DEADLINE_MS) {
+            boolean isPastDeadline;
+            synchronized (lock) {
+                isPastDeadline = SystemClock.elapsedRealtime() - lastHeartbeatSentAtMs >= HEARTBEAT_FAILURE_DEADLINE_MS;
+            }
+            if (isPastDeadline) {
                 handleTransportFailure("heartbeat ack timeout");
             }
         };
@@ -724,41 +711,42 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     }
 
 
-    private void prepareMessageWriteLocked(OutboundMessage message, long now) {
+    private boolean writeMessage(OutboundMessage message) {
+        long now = SystemClock.elapsedRealtime();
         message.writeStartedAtMs = now;
         message.sentAtMs = now;
         message.ackDeadlineAtMs = now + message.ackTimeoutMs + WRITE_TIMEOUT_MS;
         if (message.magic != 0) {
-            inFlightMessages.addLast(message);
-        }
-        if (message.imageUpdateId > 0 && message.imageMessageNumber == 1) {
-            BleImageOptimizer.ImageUpdateStats stats = imageUpdateStats.get(message.imageUpdateId);
-            if (stats != null && stats.firstWriteStartedAtMs <= 0) {
-                stats.firstWriteStartedAtMs = now;
+            synchronized (lock) {
+                inFlightMessages.addLast(message);
             }
         }
-    }
+        if (message.imageUpdateId > 0 && message.imageMessageNumber == 1) {
+            synchronized(lock) {
+                BleImageOptimizer.ImageUpdateStats stats = imageUpdateStats.get(message.imageUpdateId);
+                if (stats != null && stats.firstWriteStartedAtMs <= 0) {
+                    stats.firstWriteStartedAtMs = now;
+                }
+            }
+        }
 
-    private boolean writeMessage(OutboundMessage message) {
-        String writeAddress = isLeftArmMessage(message) ? leftAddress : rightAddress;
-        return bleManager.writeFrames(
+        String writeAddress = message.isLeftArmMessage ? leftAddress : rightAddress;
+        boolean result = bleManager.writeFrames(
             writeAddress,
             BleProtocol.WRITE_CHAR_UUID,
             message.frames,
             WRITE_TYPE,
             WRITE_TIMEOUT_MS
         );
-    }
 
-    private boolean isLeftArmMessage(OutboundMessage message) {
-        return message != null && ("image".equals(message.kind) || "warmup".equals(message.kind));
-    }
+        synchronized (lock) {
+            long sentAtMs = SystemClock.elapsedRealtime();
+            message.sentAtMs = sentAtMs;
+            message.ackDeadlineAtMs = sentAtMs + message.ackTimeoutMs;
+            logImageUpdateSendLandmarkLocked(message);
+        }
 
-    private void completeMessageWriteLocked(OutboundMessage message) {
-        long sentAtMs = SystemClock.elapsedRealtime();
-        message.sentAtMs = sentAtMs;
-        message.ackDeadlineAtMs = sentAtMs + message.ackTimeoutMs;
-        logImageUpdateSendLandmarkLocked(message);
+        return result;
     }
 
     private boolean removePreparedMessageLocked(OutboundMessage message) {
@@ -781,18 +769,22 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         while (iterator.hasNext()) {
             OutboundMessage message = iterator.next();
             if (message.sid == sid && message.magic == magic) {
-                Log.i(TAG, "Got ACK for " + message.label + "(sid=" + message.sid + ", id=" + message.magic + ")");
-                iterator.remove();
-                message.ackPayload = pb == null ? new byte[0] : Arrays.copyOf(pb, pb.length);
-                magicPool.release(message.sid, message.magic, message.label, "ack");
-                if (message.onAck != null) {
-                    message.onAck.run();
-                }
-                consecutiveAckTimeouts = 0;
+                resolveAckLocked(message, pb);
                 return;
             }
         }
         recordUnexpectedAckLocked(sid, magic);
+    }
+
+    private void resolveAckLocked(OutboundMessage message, byte[] pb) {
+        Log.i(TAG, "Got ACK for " + message.label + "(sid=" + message.sid + ", id=" + message.magic + ")");
+        inFlightMessages.remove(message);
+        message.ackPayload = pb == null ? new byte[0] : Arrays.copyOf(pb, pb.length);
+        magicPool.release(message.sid, message.magic, message.label, "ack");
+        if (message.onAck != null) {
+            message.onAck.run();
+        }
+        consecutiveAckTimeouts = 0;
     }
 
     private void logImageUpdateSendLandmarkLocked(OutboundMessage message) {
@@ -891,7 +883,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         int sessionId = nextMapSessionId();
         List<BleProtocol.ImageFragment> fragments = BleImageOptimizer.planImageFragments(bmp, IMAGE_FRAGMENT_SIZE);
         for (BleProtocol.ImageFragment fragment : fragments) {
-            OutboundMessage message = messageBuilder.imageWarmupFragment(tile, sessionId, fragment, bmp);
+            OutboundMessage message = messageBuilder.imageWarmupFragment(tile, sessionId, fragment, bmp, connectionOptions.sendImagesToLeft);
             pendingMessages.addLast(message);
             message.onAck = () -> {
                 // The first tile warmup primes the image path but does not reliably
@@ -992,13 +984,13 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         boolean requestAck,
         boolean isLast
     ) {
-        OutboundMessage message = messageBuilder.imageFragment(fragment, plan, requestAck);
+        OutboundMessage message = messageBuilder.imageFragment(fragment, plan, requestAck, connectionOptions.sendImagesToLeft);
         message.setImageUpdatePosition(updateId, messageNumber, messageCount);
         message.onAck = () -> {
             imageRetryAfterMs = 0;
             logImageUpdateAckLandmarkLocked(message);
             if (message.tileIndex >= 0 && !hasPendingOrInflightTileLocked(message.tileIndex)) {
-                displayedTileBmps[message.tileIndex] = BmpUtil.copyTileBmp(message.tileBmp);
+                displayedTileBmps[message.tileIndex] = BmpUtil.copyTileBmp(plan.bmp);
             }
             boolean imageStillInFlight = false;
             for (OutboundMessage inFlight : inFlightMessages) {
@@ -1203,16 +1195,13 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             displayedTileBmps = emptyTileSet();
             clearAllMessagesLocked("transport failure: " + reason);
             reconnectAfterMs = SystemClock.elapsedRealtime() + RECONNECT_DELAY_MS;
-            if (!userDisconnectRequested) {
-                phase = "retrying";
-                status = reason == null || reason.isEmpty() ? "Reconnecting..." : "Reconnecting after " + reason;
-            }
-            lock.notifyAll();
-            interruptibleSleep.interrupt();
             bleManager.disconnect(rightAddress);
             bleManager.disconnect(leftAddress);
-            emitState();
         }
+        if (!userDisconnectRequested) {
+            setStateDisplay("retrying", reason == null || reason.isEmpty() ? "Reconnecting..." : "Reconnecting after " + reason);
+        }
+        interruptibleSleep.interrupt();
     }
 
     private void resetSessionStateLocked() {
@@ -1324,7 +1313,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         });
     }
 
-    private void setState(String nextPhase, String nextStatus) {
+    private void setStateDisplay(String nextPhase, String nextStatus) {
         synchronized (lock) {
             phase = nextPhase;
             status = nextStatus;
@@ -1374,7 +1363,8 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
 
     private int nextMapSessionId() {
         int id = nextMapSessionId;
-        nextMapSessionId = (nextMapSessionId + 1) & 0xff;
+        int increment = connectionOptions.skipSessionIds ? 2 : 1;
+        nextMapSessionId = (nextMapSessionId + increment) & 0xff;
         return id;
     }
 
