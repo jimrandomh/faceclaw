@@ -38,7 +38,6 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private static final int WRITE_TIMEOUT_MS = 2_000;
     private static final int PRELUDE_TIMEOUT_MS = 2_000;
     private static final int ACK_TIMEOUT_MS = 3_500;
-    private static final int HEARTBEAT_TIMEOUT_MS = 1_500;
     private static final int HEARTBEAT_FAILURE_DEADLINE_MS = 10_000;
     private static final int HEARTBEAT_READY_MS = 4_000;
     private static final int HEARTBEAT_URGENT_MS = 6_000;
@@ -48,7 +47,6 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private static final int IMAGE_FRAGMENT_SIZE = 3800;
     private static final int IMAGE_RETRY_DELAY_MS = 10_000;
     private static final boolean IMAGE_FRAGMENT_NO_ACK = false;
-    private static final int WARMUP_FRAGMENT_TIMEOUT_MS = 3_000;
     private static final int MAX_CONSECUTIVE_ACK_TIMEOUTS = 8;
     private static final int EVEN_APP_WRITE_FAILURE_WINDOW_MS = 15_000;
     private static final int IDLE_SLEEP_MS = 100;
@@ -100,7 +98,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private int lastAudioControlAckMagic = 0;
 
     private final BleMagicPool magicPool = new BleMagicPool();
-    private int nextTransportSeq = 0x40;
+    private MessageBuilder messageBuilder = new MessageBuilder(magicPool);
     private int nextMapSessionId = 0;
     private int nextImageUpdateId = 1;
     private int lastShutdownAckMagic = 0;
@@ -112,7 +110,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
 
     private String displayedFingerprint = "";
     private byte[][] displayedTileBmps = emptyTileSet();
-    private final Map<Integer, ImageUpdateStats> imageUpdateStats = new HashMap<>();
+    private final Map<Integer, BleImageOptimizer.ImageUpdateStats> imageUpdateStats = new HashMap<>();
 
     private final Object desiredTilesLock = new Object();
     private String desiredFingerprint = "";
@@ -201,8 +199,9 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 return false;
             }
             audioPacketListener = listener;
-            magic = magicPool.allocate();
-            pendingMessages.addFirst(createAudioControlMessageLocked(true, magic));
+            OutboundMessage message = createAudioControlMessageLocked(true);
+            magic = message.magic;
+            pendingMessages.addFirst(message);
             logLine("queue G2 mic enable");
             lock.notifyAll();
         }
@@ -217,8 +216,9 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             audioCaptureActive = false;
             clearMessagesOfKindLocked("audio-control");
             if (running && sessionReady) {
-                magic = magicPool.allocate();
-                pendingMessages.addFirst(createAudioControlMessageLocked(false, magic));
+                OutboundMessage message = createAudioControlMessageLocked(false);
+                magic = message.magic;
+                pendingMessages.addFirst(message);
                 logLine("queue G2 mic disable");
                 lock.notifyAll();
             }
@@ -279,23 +279,8 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             }
             shutdownRequested = true;
             clearPendingMessagesLocked("shutdown requested");
-            magic = magicPool.allocate();
-            OutboundMessage message = new OutboundMessage(
-                "shutdown",
-                "shutdown mode=" + exitMode,
-                BleProtocol.SID_EVENHUB,
-                magic,
-                BleProtocol.framePb(
-                    BleProtocol.buildShutdown(magic, exitMode),
-                    BleProtocol.SID_EVENHUB,
-                    BleProtocol.FLAG_REQUEST,
-                    nextTransportSeq++
-                ),
-                ACK_TIMEOUT_MS,
-                displayedFingerprint,
-                -1,
-                null
-            );
+            OutboundMessage message = messageBuilder.shutdown(exitMode);
+            magic = message.magic;
             message.onAck = () -> {
                 lastShutdownAckMagic = message.magic;
                 fixedLayoutCreated = false;
@@ -593,15 +578,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             clearAllMessagesLocked("prelude");
         }
         long now = SystemClock.elapsedRealtime();
-        OutboundMessage prelude = new OutboundMessage(
-            "prelude",
-            BleProtocol.PRELUDE_ACK_SID,
-            BleProtocol.PRELUDE_ACK_MAGIC,
-            CollectionUtils.singletonList(Arrays.copyOf(BleProtocol.PRELUDE_F5872, BleProtocol.PRELUDE_F5872.length)),
-            WRITE_TIMEOUT_MS,
-            0,
-            now + PRELUDE_TIMEOUT_MS
-        );
+        OutboundMessage prelude = messageBuilder.prelude();
         prelude.onAck = () -> {
         };
         prelude.onTimeout = () -> {
@@ -732,18 +709,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     }
 
     private OutboundMessage createHeartbeatMessageLocked() {
-        int magic = magicPool.allocate();
-        OutboundMessage message = new OutboundMessage(
-            "heartbeat",
-            "heartbeat",
-            BleProtocol.SID_EVENHUB,
-            magic,
-            BleProtocol.framePb(BleProtocol.buildHeartbeat(magic), BleProtocol.SID_EVENHUB, BleProtocol.FLAG_REQUEST, nextTransportSeq++),
-            HEARTBEAT_TIMEOUT_MS,
-            displayedFingerprint,
-            -1,
-            null
-        );
+        OutboundMessage message = messageBuilder.heartbeat();
         message.onAck = () -> {
             lastHeartbeatAckedAtMs = SystemClock.elapsedRealtime();
         };
@@ -766,7 +732,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             inFlightMessages.addLast(message);
         }
         if (message.imageUpdateId > 0 && message.imageMessageNumber == 1) {
-            ImageUpdateStats stats = imageUpdateStats.get(message.imageUpdateId);
+            BleImageOptimizer.ImageUpdateStats stats = imageUpdateStats.get(message.imageUpdateId);
             if (stats != null && stats.firstWriteStartedAtMs <= 0) {
                 stats.firstWriteStartedAtMs = now;
             }
@@ -834,7 +800,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             return;
         }
         if (message.imageMessageNumber == 1) {
-            ImageUpdateStats stats = imageUpdateStats.get(message.imageUpdateId);
+            BleImageOptimizer.ImageUpdateStats stats = imageUpdateStats.get(message.imageUpdateId);
             if (stats != null && stats.firstWriteStartedAtMs <= 0) {
                 stats.firstWriteStartedAtMs = message.writeStartedAtMs > 0 ? message.writeStartedAtMs : message.sentAtMs;
             }
@@ -850,7 +816,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             return;
         }
         long ackedAtMs = SystemClock.elapsedRealtime();
-        ImageUpdateStats stats = imageUpdateStats.remove(message.imageUpdateId);
+        BleImageOptimizer.ImageUpdateStats stats = imageUpdateStats.remove(message.imageUpdateId);
         if (stats != null && stats.firstWriteStartedAtMs > 0) {
             emitFrameMetrics(stats.paintMs, (int) Math.max(0, ackedAtMs - stats.firstWriteStartedAtMs), stats.tileCount);
         }
@@ -865,23 +831,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     }
 
     private void enqueueCreateLayoutLocked() {
-        int magic = magicPool.allocate();
-        OutboundMessage message = new OutboundMessage(
-            "create-layout",
-            "create-layout",
-            BleProtocol.SID_EVENHUB,
-            magic,
-            BleProtocol.framePb(
-                BleProtocol.buildCreateMixedImagePage(magic, DASHBOARD_TILES),
-                BleProtocol.SID_EVENHUB,
-                BleProtocol.FLAG_REQUEST,
-                nextTransportSeq++
-            ),
-            ACK_TIMEOUT_MS,
-            getDesiredFingerprint(),
-            -1,
-            null
-        );
+        OutboundMessage message = messageBuilder.createLayout(DASHBOARD_TILES);
         message.onAck = () -> {
             startupProbePending = false;
             clearMessagesOfKindLocked("startup-text-probe");
@@ -906,23 +856,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private void enqueueStartupProbeLocked() {
         enqueueCreateLayoutLocked();
 
-        int magic = magicPool.allocate();
-        OutboundMessage message = new OutboundMessage(
-            "startup-text-probe",
-            "startup text probe",
-            BleProtocol.SID_EVENHUB,
-            magic,
-            BleProtocol.framePb(
-                BleProtocol.buildDashboardTextUpgrade(magic),
-                BleProtocol.SID_EVENHUB,
-                BleProtocol.FLAG_REQUEST,
-                nextTransportSeq++
-            ),
-            ACK_TIMEOUT_MS,
-            getDesiredFingerprint(),
-            -1,
-            null
-        );
+        OutboundMessage message = messageBuilder.startupTextProbe();
         message.onAck = () -> {
             startupProbePending = false;
             clearMessagesOfKindLocked("create-layout");
@@ -957,22 +891,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         int sessionId = nextMapSessionId();
         List<BleProtocol.ImageFragment> fragments = BleImageOptimizer.planImageFragments(bmp, IMAGE_FRAGMENT_SIZE);
         for (BleProtocol.ImageFragment fragment : fragments) {
-            int magic = magicPool.allocate();
-            OutboundMessage message = new OutboundMessage(
-                "warmup",
-                "warmup " + tile.name + "#" + fragment.index,
-                BleProtocol.SID_EVENHUB,
-                magic,
-                BleProtocol.framePb(
-                    BleProtocol.buildImageRawData(tile, sessionId, bmp.length, fragment, magic),
-                    BleProtocol.SID_EVENHUB, BleProtocol.FLAG_REQUEST,
-                    nextTransportSeq++
-                ),
-                WARMUP_FRAGMENT_TIMEOUT_MS,
-                getDesiredFingerprint(),
-                0,
-                bmp
-            );
+            OutboundMessage message = messageBuilder.imageWarmupFragment(tile, sessionId, fragment, bmp);
             pendingMessages.addLast(message);
             message.onAck = () -> {
                 // The first tile warmup primes the image path but does not reliably
@@ -992,7 +911,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
 
     private void enqueueDesiredImageLocked() {
         String fingerprint = getDesiredFingerprint();
-        List<TileImagePlan> changedTiles = new ArrayList<>();
+        List<BleImageOptimizer.TileImagePlan> changedTiles = new ArrayList<>();
         byte[][] tileBmps;
         boolean forceTiledCommit;
         int paintMs;
@@ -1012,7 +931,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             if (Arrays.equals(bmp, displayedBmp)) {
                 continue;
             }
-            changedTiles.add(new TileImagePlan(i, tile, bmp, nextMapSessionId()));
+            changedTiles.add(new BleImageOptimizer.TileImagePlan(i, tile, bmp, nextMapSessionId()));
         }
         if (changedTiles.isEmpty()) {
             displayedFingerprint = fingerprint;
@@ -1024,35 +943,37 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             synchronizedCommits = false;
         }
         boolean reserveLastByte = false;
-        for (TileImagePlan plan : changedTiles) {
+        for (BleImageOptimizer.TileImagePlan plan : changedTiles) {
             plan.fragments = BleImageOptimizer.planImageFragments(plan.bmp, IMAGE_FRAGMENT_SIZE, reserveLastByte);
         }
 
         int updateId = nextImageUpdateId++;
-        imageUpdateStats.put(updateId, new ImageUpdateStats(paintMs, changedTiles.size()));
+        imageUpdateStats.put(updateId, new BleImageOptimizer.ImageUpdateStats(paintMs, changedTiles.size()));
         int messageCount = 0;
-        for (TileImagePlan plan : changedTiles) {
+        for (BleImageOptimizer.TileImagePlan plan : changedTiles) {
             messageCount += plan.fragments.size();
         }
         int messageNumber = 1;
         if (!synchronizedCommits) {
-            for (TileImagePlan plan : changedTiles) {
-                for (BleProtocol.ImageFragment fragment : plan.fragments) {
-                    //boolean requestAck = fragment.index % 2 == 1;
+            for (BleImageOptimizer.TileImagePlan plan : changedTiles) {
+                for (int i = 0; i < plan.fragments.size() - 1; i++) {
+                    BleProtocol.ImageFragment fragment = plan.fragments.get(i);
                     boolean requestAck = true;
-                    enqueueImageFragmentLocked(plan, fragment, fingerprint, updateId, messageNumber++, messageCount, nextTransportSeq++, requestAck, true);
+                    boolean isLast = i == plan.fragments.size() - 1;
+                    enqueueImageFragmentLocked(plan, fragment, fingerprint, updateId, messageNumber++, messageCount, requestAck, isLast);
                 }
             }
         } else {
-            for (TileImagePlan plan : changedTiles) {
+            for (BleImageOptimizer.TileImagePlan plan : changedTiles) {
                 for (int i = 0; i < plan.fragments.size() - 1; i++) {
-                    //boolean requestAck = i % 2 == 1;
                     boolean requestAck = true;
-                    enqueueImageFragmentLocked(plan, plan.fragments.get(i), fingerprint, updateId, messageNumber++, messageCount, nextTransportSeq++, requestAck, false);
+                    boolean isLast = false;
+                    enqueueImageFragmentLocked(plan, plan.fragments.get(i), fingerprint, updateId, messageNumber++, messageCount, requestAck, isLast);
                 }
             }
-            for (TileImagePlan plan : changedTiles) {
-                enqueueImageFragmentLocked(plan, plan.fragments.get(plan.fragments.size() - 1), fingerprint, updateId, messageNumber++, messageCount, nextTransportSeq++, true, true);
+            for (BleImageOptimizer.TileImagePlan plan : changedTiles) {
+                boolean isLast = true;
+                enqueueImageFragmentLocked(plan, plan.fragments.get(plan.fragments.size() - 1), fingerprint, updateId, messageNumber++, messageCount, true, isLast);
             }
         }
 
@@ -1062,33 +983,16 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     }
 
     private void enqueueImageFragmentLocked(
-        TileImagePlan plan,
+        BleImageOptimizer.TileImagePlan plan,
         BleProtocol.ImageFragment fragment,
         String fingerprint,
         int updateId,
         int messageNumber,
         int messageCount,
-        int transportSeq,
         boolean requestAck,
         boolean isLast
     ) {
-        int magic = requestAck ? magicPool.allocate() : 0;
-        OutboundMessage message = new OutboundMessage(
-            "image",
-            "image " + plan.tile.name + "#" + fragment.index,
-            BleProtocol.SID_EVENHUB,
-            magic,
-            BleProtocol.framePb(
-                BleProtocol.buildImageRawData(plan.tile, plan.sessionId, plan.bmp.length, fragment, magic),
-                BleProtocol.SID_EVENHUB,
-                BleProtocol.FLAG_REQUEST, //isLast ? 0 : BleProtocol.FLAG_REQUEST,
-                transportSeq
-            ),
-            ACK_TIMEOUT_MS,
-            fingerprint,
-            plan.tileIndex,
-            plan.bmp
-        );
+        OutboundMessage message = messageBuilder.imageFragment(fragment, plan, requestAck);
         message.setImageUpdatePosition(updateId, messageNumber, messageCount);
         message.onAck = () -> {
             imageRetryAfterMs = 0;
@@ -1112,7 +1016,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                     }
                 }
                 if (!imageStillQueued) {
-                    displayedFingerprint = message.fingerprint;
+                    displayedFingerprint = fingerprint;
                 }
             }
         };
@@ -1126,29 +1030,12 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         pendingMessages.addLast(message);
     }
 
-    private OutboundMessage createAudioControlMessageLocked(boolean enable, int magic) {
-        OutboundMessage message = new OutboundMessage(
-            "audio-control",
-            enable ? "G2 mic enable" : "G2 mic disable",
-            BleProtocol.SID_EVENHUB,
-            magic,
-            BleProtocol.framePb(
-                BleProtocol.buildAudioControl(magic, enable),
-                BleProtocol.SID_EVENHUB,
-                BleProtocol.FLAG_REQUEST,
-                nextTransportSeq++
-            ),
-            ACK_TIMEOUT_MS,
-            displayedFingerprint,
-            -1,
-            null
-        );
+    private OutboundMessage createAudioControlMessageLocked(boolean enable) {
+        OutboundMessage message = messageBuilder.enableOrDisableMic(enable);
         message.onAck = () -> {
             lastAudioControlAckMagic = message.magic;
             audioCaptureActive = message.label != null && message.label.contains("enable");
             logLine(audioCaptureActive ? "G2 mic enabled" : "G2 mic disabled");
-            lock.notifyAll();
-            return;
         };
         message.onTimeout = () -> {
             handleTransportFailure("audio control ack timeout");
@@ -1166,23 +1053,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     }
 
     private OutboundMessage createBatteryQueryMessageLocked() {
-        int magic = magicPool.allocate();
-        OutboundMessage message = new OutboundMessage(
-            "battery",
-            "battery",
-            BleProtocol.SID_UI_SETTING,
-            magic,
-            BleProtocol.framePb(
-                BleProtocol.buildSettingsQuery(magic),
-                BleProtocol.SID_UI_SETTING,
-                BleProtocol.FLAG_REQUEST,
-                nextTransportSeq++
-            ),
-            ACK_TIMEOUT_MS,
-            displayedFingerprint,
-            -1,
-            null
-        );
+        OutboundMessage message = messageBuilder.batteryQuery();
         message.onAck = () -> {
             BleProtocol.BatterySnapshot snapshot = BleProtocol.parseSettingsBattery(message.ackPayload);
             if (snapshot != null) {
@@ -1192,7 +1063,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             }
         };
         message.onTimeout = () -> {
-            handleTransportFailure("battery ack timeout");
+            logLine("Battery query timed out");
         };
         return message;
     }
@@ -1535,32 +1406,6 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private String getDesiredFingerprint() {
         synchronized (desiredTilesLock) {
             return desiredFingerprint;
-        }
-    }
-
-    private static final class TileImagePlan {
-        final int tileIndex;
-        final BleProtocol.ImageTileOptions tile;
-        final byte[] bmp;
-        final int sessionId;
-        List<BleProtocol.ImageFragment> fragments = Collections.emptyList();
-
-        TileImagePlan(int tileIndex, BleProtocol.ImageTileOptions tile, byte[] bmp, int sessionId) {
-            this.tileIndex = tileIndex;
-            this.tile = tile;
-            this.bmp = BmpUtil.copyTileBmp(bmp);
-            this.sessionId = sessionId;
-        }
-    }
-
-    private static final class ImageUpdateStats {
-        final int paintMs;
-        final int tileCount;
-        long firstWriteStartedAtMs;
-
-        ImageUpdateStats(int paintMs, int tileCount) {
-            this.paintMs = Math.max(0, paintMs);
-            this.tileCount = tileCount;
         }
     }
 }

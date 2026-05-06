@@ -67,4 +67,30 @@ public final class BleImageOptimizer {
             end - start
         );
     }
+
+    public static final class TileImagePlan {
+        final int tileIndex;
+        final BleProtocol.ImageTileOptions tile;
+        final byte[] bmp;
+        final int sessionId;
+        List<BleProtocol.ImageFragment> fragments = Collections.emptyList();
+
+        TileImagePlan(int tileIndex, BleProtocol.ImageTileOptions tile, byte[] bmp, int sessionId) {
+            this.tileIndex = tileIndex;
+            this.tile = tile;
+            this.bmp = BmpUtil.copyTileBmp(bmp);
+            this.sessionId = sessionId;
+        }
+    }
+
+    public static final class ImageUpdateStats {
+        final int paintMs;
+        final int tileCount;
+        long firstWriteStartedAtMs;
+
+        ImageUpdateStats(int paintMs, int tileCount) {
+            this.paintMs = Math.max(0, paintMs);
+            this.tileCount = tileCount;
+        }
+    }
 }
