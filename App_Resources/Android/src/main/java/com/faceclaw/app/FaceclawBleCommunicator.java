@@ -43,14 +43,13 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private static final int HEARTBEAT_URGENT_MS = 6_000;
     private static final int BATTERY_REFRESH_INTERVAL_MS = 5 * 60_000;
     private static final int BATTERY_INPUT_QUIET_MS = 5_000;
-    private static final int WINDOW_SIZE = 5;
     private static final int IMAGE_FRAGMENT_SIZE = 3800;
-    private static final int IMAGE_RETRY_DELAY_MS = 10_000;
+    private static final int IMAGE_RETRY_DELAY_MS = 2_000;
     private static final boolean IMAGE_FRAGMENT_NO_ACK = false;
     private static final int MAX_CONSECUTIVE_ACK_TIMEOUTS = 8;
     private static final int EVEN_APP_WRITE_FAILURE_WINDOW_MS = 15_000;
     private static final int IDLE_SLEEP_MS = 100;
-    private static final int RECONNECT_DELAY_MS = 5_000;
+    private static final int RECONNECT_DELAY_MS = 2_000;
 
     private static final BleProtocol.ImageTileOptions[] DASHBOARD_TILES = new BleProtocol.ImageTileOptions[] {
         new BleProtocol.ImageTileOptions("img00", 10, 0, 0, 288, 144),
@@ -546,6 +545,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         bleManager.requestConnectionPriority(address, BluetoothGatt.CONNECTION_PRIORITY_HIGH);
 
         bleManager.requestMtu(address, DESIRED_MTU, CONNECT_TIMEOUT_MS);
+
         if (!bleManager.discoverServices(address, SERVICES_TIMEOUT_MS)) {
             throw new IllegalStateException("discoverServices failed: " + address);
         }
@@ -631,7 +631,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                     return IDLE_SLEEP_MS;
                 }
 
-                if (sessionReady && inFlightMessages.size() < WINDOW_SIZE && !pendingMessages.isEmpty()) {
+                if (sessionReady && inFlightMessages.size() < connectionOptions.WINDOW_SIZE && !pendingMessages.isEmpty()) {
                     OutboundMessage pending = pendingMessages.peekFirst();
                     messageToWrite = pendingMessages.removeFirst();
                     Log.i(TAG, "sending pending message: " + messageToWrite.label);

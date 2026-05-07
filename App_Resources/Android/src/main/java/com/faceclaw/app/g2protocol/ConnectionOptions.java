@@ -1,6 +1,7 @@
 package com.faceclaw.app;
 
 public class ConnectionOptions {
-    final boolean sendImagesToLeft = true;
-    final boolean skipSessionIds = true;
+    final boolean sendImagesToLeft = false;
+    final boolean skipSessionIds = false;
+    final int WINDOW_SIZE = 5;
 }

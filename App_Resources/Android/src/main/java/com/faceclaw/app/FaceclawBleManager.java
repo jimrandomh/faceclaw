@@ -222,20 +222,21 @@ public class FaceclawBleManager {
         if (frames == null || frames.isEmpty()) {
             return true;
         }
-        Log.i(TAG, "Called writeFrames with writeType=" + writeType + ", " + frames.size() + " frames totaling " + frames.stream().mapToInt(frame -> frame != null ? frame.length : 0).sum() + " bytes");
 
+        long startMs = System.currentTimeMillis();
         synchronized (gattLock(address)) {
             BluetoothGatt gatt = requireGatt(address);
             BluetoothGattCharacteristic characteristic = requireCharacteristic(gatt, characteristicUuid);
 
             for (int i = 0; i < frames.size(); i++) {
-                Log.i(TAG, "writeFrames starting frame " + i);
                 byte[] frame = frames.get(i);
                 if (!startWrite(gatt, characteristic, address, frame, writeType, timeoutMs)) {
                     return false;
                 }
             }
         }
+        int totalSize = frames.stream().mapToInt(frame -> frame != null ? frame.length : 0).sum();
+        Log.i(TAG, "writeFrames wrote " + frames.size() + " frames totaling " + totalSize + " bytes in " + (System.currentTimeMillis() - startMs) + "ms");
         return true;
     }
 
