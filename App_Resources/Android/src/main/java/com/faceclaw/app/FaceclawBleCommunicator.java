@@ -28,29 +28,6 @@ import java.util.Map;
 public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private static final String TAG = "FaceclawComm";
 
-    private static final int WRITE_TYPE = BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE;
-    private static final int IMAGE_WRITE_TYPE = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT;
-    private static final int DESIRED_MTU = 512;
-
-    private static final int CONNECT_TIMEOUT_MS = 5_000;
-    private static final int SERVICES_TIMEOUT_MS = 5_000;
-    private static final int DESCRIPTOR_TIMEOUT_MS = 5_000;
-    private static final int WRITE_TIMEOUT_MS = 2_000;
-    private static final int PRELUDE_TIMEOUT_MS = 2_000;
-    private static final int ACK_TIMEOUT_MS = 3_500;
-    private static final int HEARTBEAT_FAILURE_DEADLINE_MS = 10_000;
-    private static final int HEARTBEAT_READY_MS = 4_000;
-    private static final int HEARTBEAT_URGENT_MS = 6_000;
-    private static final int BATTERY_REFRESH_INTERVAL_MS = 5 * 60_000;
-    private static final int BATTERY_INPUT_QUIET_MS = 5_000;
-    private static final int IMAGE_FRAGMENT_SIZE = 3800;
-    private static final int IMAGE_RETRY_DELAY_MS = 2_000;
-    private static final boolean IMAGE_FRAGMENT_NO_ACK = false;
-    private static final int MAX_CONSECUTIVE_ACK_TIMEOUTS = 8;
-    private static final int EVEN_APP_WRITE_FAILURE_WINDOW_MS = 15_000;
-    private static final int IDLE_SLEEP_MS = 100;
-    private static final int RECONNECT_DELAY_MS = 2_000;
-
     private static final BleProtocol.ImageTileOptions[] DASHBOARD_TILES = new BleProtocol.ImageTileOptions[] {
         new BleProtocol.ImageTileOptions("img00", 10, 0, 0, 288, 144),
         new BleProtocol.ImageTileOptions("img10", 11, 288, 0, 288, 144),
@@ -289,7 +266,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         }
         interruptibleSleep.interrupt();
 
-        long ackDeadline = SystemClock.elapsedRealtime() + ACK_TIMEOUT_MS + 500;
+        long ackDeadline = SystemClock.elapsedRealtime() + ConnectionOptions.ACK_TIMEOUT_MS + 500;
         synchronized (lock) {
             while (running
                     && sessionReady
@@ -309,7 +286,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             }
             boolean acked = lastShutdownAckMagic == magic;
             if (acked) {
-                long exitDeadline = SystemClock.elapsedRealtime() + ACK_TIMEOUT_MS + 500;
+                long exitDeadline = SystemClock.elapsedRealtime() + ConnectionOptions.ACK_TIMEOUT_MS + 500;
                 while (running && sessionReady && lastShutdownExitAtMs < startedAtMs) {
                     long remaining = exitDeadline - SystemClock.elapsedRealtime();
                     if (remaining <= 0) {
@@ -328,7 +305,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     }
 
     private boolean waitForAudioControlAck(int magic, String operation) {
-        long deadline = SystemClock.elapsedRealtime() + ACK_TIMEOUT_MS + WRITE_TIMEOUT_MS + 500;
+        long deadline = SystemClock.elapsedRealtime() + ConnectionOptions.ACK_TIMEOUT_MS + ConnectionOptions.WRITE_TIMEOUT_MS + 500;
         synchronized (lock) {
             while (running && sessionReady && lastAudioControlAckMagic != magic && hasPendingOrInflightMagicLocked(magic)) {
                 long remaining = deadline - SystemClock.elapsedRealtime();
@@ -367,7 +344,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 if (!sessionReady) {
                     long now = SystemClock.elapsedRealtime();
                     if (now < reconnectAfterMs) {
-                        interruptibleSleep.sleep(Math.min(IDLE_SLEEP_MS, reconnectAfterMs - now));
+                        interruptibleSleep.sleep(Math.min(ConnectionOptions.IDLE_SLEEP_MS, reconnectAfterMs - now));
                         continue;
                     }
                     Log.w(TAG, "Attempting to connect");
@@ -473,7 +450,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 clearAllMessagesLocked("connection lost");
                 displayedFingerprint = "";
                 displayedTileBmps = emptyTileSet();
-                reconnectAfterMs = SystemClock.elapsedRealtime() + RECONNECT_DELAY_MS;
+                reconnectAfterMs = SystemClock.elapsedRealtime() + ConnectionOptions.RECONNECT_DELAY_MS;
             }
         }
         interruptibleSleep.interrupt();
@@ -536,7 +513,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     }
 
     private void connectArm(String address, boolean enableRenderNotify) {
-        if (!bleManager.connect(address, CONNECT_TIMEOUT_MS)) {
+        if (!bleManager.connect(address, ConnectionOptions.CONNECT_TIMEOUT_MS)) {
             throw new IllegalStateException("connect failed: " + address);
         }
         // requestConnectionPriority has no callback in this Android compile target, so there is
@@ -544,16 +521,16 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         // important enough for performance that we call it anyways.
         bleManager.requestConnectionPriority(address, BluetoothGatt.CONNECTION_PRIORITY_HIGH);
 
-        bleManager.requestMtu(address, DESIRED_MTU, CONNECT_TIMEOUT_MS);
+        bleManager.requestMtu(address, ConnectionOptions.DESIRED_MTU, ConnectionOptions.CONNECT_TIMEOUT_MS);
 
-        if (!bleManager.discoverServices(address, SERVICES_TIMEOUT_MS)) {
+        if (!bleManager.discoverServices(address, ConnectionOptions.SERVICES_TIMEOUT_MS)) {
             throw new IllegalStateException("discoverServices failed: " + address);
         }
-        if (!bleManager.enableNotifications(address, BleProtocol.NOTIFY_CHAR_UUID, true, DESCRIPTOR_TIMEOUT_MS)) {
+        if (!bleManager.enableNotifications(address, BleProtocol.NOTIFY_CHAR_UUID, true, ConnectionOptions.DESCRIPTOR_TIMEOUT_MS)) {
             throw new IllegalStateException("enableNotifications failed: " + address + " " + BleProtocol.NOTIFY_CHAR_UUID);
         }
         if (enableRenderNotify) {
-            bleManager.enableNotifications(address, BleProtocol.RENDER_NOTIFY_UUID, true, DESCRIPTOR_TIMEOUT_MS);
+            bleManager.enableNotifications(address, BleProtocol.RENDER_NOTIFY_UUID, true, ConnectionOptions.DESCRIPTOR_TIMEOUT_MS);
         }
         synchronized (lock) {
             if (address.equalsIgnoreCase(rightAddress)) {
@@ -578,7 +555,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         prelude.sentAtMs = now;
         writeMessage(prelude);
 
-        long deadline = SystemClock.elapsedRealtime() + PRELUDE_TIMEOUT_MS;
+        long deadline = SystemClock.elapsedRealtime() + ConnectionOptions.PRELUDE_TIMEOUT_MS;
         while (running && !userDisconnectRequested && !inFlightMessages.isEmpty()) {
             synchronized (lock) {
                 if (!running || userDisconnectRequested || inFlightMessages.isEmpty()) {
@@ -628,7 +605,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 }
 
                 if (handleHeartbeat()) {
-                    return IDLE_SLEEP_MS;
+                    return ConnectionOptions.IDLE_SLEEP_MS;
                 }
 
                 if (sessionReady && inFlightMessages.size() < connectionOptions.WINDOW_SIZE && !pendingMessages.isEmpty()) {
@@ -646,7 +623,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                     messageToWrite = createBatteryQueryMessageLocked();
                     lastBatteryRefreshAtMs = now;
                 } else if (!pendingMessages.isEmpty() || !inFlightMessages.isEmpty()) {
-                    return IDLE_SLEEP_MS;
+                    return ConnectionOptions.IDLE_SLEEP_MS;
                 } else {
                     return 250;
                 }
@@ -668,8 +645,8 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         boolean heartbeatEligible = !shutdownRequested && warmedUp && fixedLayoutCreated;
         boolean heartbeatPending = heartbeatEligible && hasPendingOrInflightKindLocked("heartbeat");
         long heartbeatElapsedMs = now - lastHeartbeatAckedAtMs;
-        boolean heartbeatReady = heartbeatEligible && heartbeatElapsedMs >= HEARTBEAT_READY_MS;
-        boolean heartbeatUrgent = heartbeatEligible && heartbeatElapsedMs >= HEARTBEAT_URGENT_MS;
+        boolean heartbeatReady = heartbeatEligible && heartbeatElapsedMs >= ConnectionOptions.HEARTBEAT_READY_MS;
+        boolean heartbeatUrgent = heartbeatEligible && heartbeatElapsedMs >= ConnectionOptions.HEARTBEAT_URGENT_MS;
         boolean heartbeatBlocksLeftWrites = heartbeatReady || heartbeatPending;
 
         if (heartbeatReady && !heartbeatPending && inFlightMessages.isEmpty()) {
@@ -701,7 +678,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             // Otherwise ignore it, which will cause a retransmission attempt.
             boolean isPastDeadline;
             synchronized (lock) {
-                isPastDeadline = SystemClock.elapsedRealtime() - lastHeartbeatSentAtMs >= HEARTBEAT_FAILURE_DEADLINE_MS;
+                isPastDeadline = SystemClock.elapsedRealtime() - lastHeartbeatSentAtMs >= ConnectionOptions.HEARTBEAT_FAILURE_DEADLINE_MS;
             }
             if (isPastDeadline) {
                 handleTransportFailure("heartbeat ack timeout");
@@ -715,7 +692,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         long now = SystemClock.elapsedRealtime();
         message.writeStartedAtMs = now;
         message.sentAtMs = now;
-        message.ackDeadlineAtMs = now + message.ackTimeoutMs + WRITE_TIMEOUT_MS;
+        message.ackDeadlineAtMs = now + message.ackTimeoutMs + ConnectionOptions.WRITE_TIMEOUT_MS;
         if (message.magic != 0) {
             synchronized (lock) {
                 inFlightMessages.addLast(message);
@@ -735,8 +712,8 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             writeAddress,
             BleProtocol.WRITE_CHAR_UUID,
             message.frames,
-            WRITE_TYPE,
-            WRITE_TIMEOUT_MS
+            ConnectionOptions.WRITE_TYPE,
+            ConnectionOptions.WRITE_TIMEOUT_MS
         );
 
         synchronized (lock) {
@@ -881,7 +858,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         bmp = BmpUtil.buildBlankWarmupBmp(bmp);
         BleProtocol.ImageTileOptions tile = DASHBOARD_TILES[0];
         int sessionId = nextMapSessionId();
-        List<BleProtocol.ImageFragment> fragments = BleImageOptimizer.planImageFragments(bmp, IMAGE_FRAGMENT_SIZE);
+        List<BleProtocol.ImageFragment> fragments = BleImageOptimizer.planImageFragments(bmp, ConnectionOptions.IMAGE_FRAGMENT_SIZE);
         for (BleProtocol.ImageFragment fragment : fragments) {
             OutboundMessage message = messageBuilder.imageWarmupFragment(tile, sessionId, fragment, bmp, connectionOptions.sendImagesToLeft);
             pendingMessages.addLast(message);
@@ -936,7 +913,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         }
         boolean reserveLastByte = false;
         for (BleImageOptimizer.TileImagePlan plan : changedTiles) {
-            plan.fragments = BleImageOptimizer.planImageFragments(plan.bmp, IMAGE_FRAGMENT_SIZE, reserveLastByte);
+            plan.fragments = BleImageOptimizer.planImageFragments(plan.bmp, ConnectionOptions.IMAGE_FRAGMENT_SIZE, reserveLastByte);
         }
 
         int updateId = nextImageUpdateId++;
@@ -1017,7 +994,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             clearMessagesOfKindLocked("image");
             displayedFingerprint = "";
             displayedTileBmps = emptyTileSet();
-            imageRetryAfterMs = SystemClock.elapsedRealtime() + IMAGE_RETRY_DELAY_MS;
+            imageRetryAfterMs = SystemClock.elapsedRealtime() + ConnectionOptions.IMAGE_RETRY_DELAY_MS;
         };
         pendingMessages.addLast(message);
     }
@@ -1040,8 +1017,8 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 && sessionReady
                 && pendingMessages.isEmpty()
                 && inFlightMessages.isEmpty()
-                && now - lastConnectionOrInputAtMs >= BATTERY_INPUT_QUIET_MS
-                && (lastBatteryRefreshAtMs == 0 || now - lastBatteryRefreshAtMs >= BATTERY_REFRESH_INTERVAL_MS);
+                && now - lastConnectionOrInputAtMs >= ConnectionOptions.BATTERY_INPUT_QUIET_MS
+                && (lastBatteryRefreshAtMs == 0 || now - lastBatteryRefreshAtMs >= ConnectionOptions.BATTERY_REFRESH_INTERVAL_MS);
     }
 
     private OutboundMessage createBatteryQueryMessageLocked() {
@@ -1104,7 +1081,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             message.onTimeout.run();
         }
 
-        if (consecutiveAckTimeouts > MAX_CONSECUTIVE_ACK_TIMEOUTS) {
+        if (consecutiveAckTimeouts > ConnectionOptions.MAX_CONSECUTIVE_ACK_TIMEOUTS) {
             handleTransportFailure("too many ack timeouts");
         }
     }
@@ -1194,7 +1171,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             displayedFingerprint = "";
             displayedTileBmps = emptyTileSet();
             clearAllMessagesLocked("transport failure: " + reason);
-            reconnectAfterMs = SystemClock.elapsedRealtime() + RECONNECT_DELAY_MS;
+            reconnectAfterMs = SystemClock.elapsedRealtime() + ConnectionOptions.RECONNECT_DELAY_MS;
             bleManager.disconnect(rightAddress);
             bleManager.disconnect(leftAddress);
         }
@@ -1285,7 +1262,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             return;
         }
         long now = SystemClock.elapsedRealtime();
-        if (lastSessionReadyAtMs <= 0 || now - lastSessionReadyAtMs > EVEN_APP_WRITE_FAILURE_WINDOW_MS) {
+        if (lastSessionReadyAtMs <= 0 || now - lastSessionReadyAtMs > ConnectionOptions.EVEN_APP_WRITE_FAILURE_WINDOW_MS) {
             return;
         }
         if (lastEvenAppConflictAtMs > 0 && now - lastEvenAppConflictAtMs < 60_000) {
