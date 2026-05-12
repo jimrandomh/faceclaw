@@ -25,5 +25,5 @@ public class ConnectionOptions {
 
     final boolean sendImagesToLeft = true;
     final boolean skipSessionIds = true;
-    final int WINDOW_SIZE = 3;
+    final int WINDOW_SIZE = 1;
 }

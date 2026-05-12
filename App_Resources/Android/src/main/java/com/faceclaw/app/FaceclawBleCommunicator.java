@@ -98,6 +98,8 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
 
     private final ArrayDeque<OutboundMessage> pendingMessages = new ArrayDeque<>();
     private final ArrayDeque<OutboundMessage> inFlightMessages = new ArrayDeque<>();
+    private OutboundMessage prewrittenMessage;
+    private List<byte[]> prewrittenFrames = Collections.emptyList();
 
     public FaceclawBleCommunicator(Context context, String rightAddress, String leftAddress, String ringAddress) {
         this.appContext = context.getApplicationContext();
@@ -581,6 +583,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         //Log.d(TAG, "driveSession called (pendingMessages.size=" + pendingMessages.size() + " inFlightMessages.size=" + inFlightMessages.size() + ")");
         while (true) {
             OutboundMessage messageToWrite = null;
+            OutboundMessage messageToPrewrite = null;
             long now = SystemClock.elapsedRealtime();
 
             synchronized (lock) {
@@ -594,40 +597,61 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                         handleAckTimeoutLocked(oldest);
                         return 0;
                     }
+                    if (sessionReady
+                            && prewrittenMessage == null
+                            && !pendingMessages.isEmpty()
+                            && canPrewriteCandidate(pendingMessages.peekFirst())
+                            && !shouldBlockPrewriteForHeartbeatLocked(now)) {
+                        messageToPrewrite = pendingMessages.peekFirst();
+                    }
                 }
 
-                if (!shutdownRequested && !fixedLayoutCreated && pendingMessages.isEmpty() && inFlightMessages.isEmpty()) {
+                if (messageToPrewrite == null
+                        && !shutdownRequested
+                        && !fixedLayoutCreated
+                        && pendingMessages.isEmpty()
+                        && inFlightMessages.isEmpty()) {
                     Log.i(TAG, "enqueueing create layout");
                     enqueueCreateLayoutLocked();
+                } else if (messageToPrewrite != null) {
+                    // Prewrite outside the lock; the logical message remains pending until
+                    // its final BLE frame is sent after the current protocol ACK.
                 }
-                if (!shutdownRequested && fixedLayoutCreated && !warmedUp && pendingMessages.isEmpty() && inFlightMessages.isEmpty()) {
+                if (messageToPrewrite == null && !shutdownRequested && fixedLayoutCreated && !warmedUp && pendingMessages.isEmpty() && inFlightMessages.isEmpty()) {
                     Log.i(TAG, "enqueueing warmup");
                     enqueueWarmupLocked();
                 }
 
-                if (handleHeartbeat()) {
+                if (messageToPrewrite == null && handleHeartbeat()) {
                     return ConnectionOptions.IDLE_SLEEP_MS;
                 }
 
-                if (sessionReady && inFlightMessages.size() < connectionOptions.WINDOW_SIZE && !pendingMessages.isEmpty()) {
+                if (messageToPrewrite == null && sessionReady && inFlightMessages.isEmpty() && !pendingMessages.isEmpty()) {
                     OutboundMessage pending = pendingMessages.peekFirst();
                     messageToWrite = pendingMessages.removeFirst();
                     Log.i(TAG, "sending pending message: " + messageToWrite.label);
-                } else if (!shutdownRequested && fixedLayoutCreated && warmedUp && pendingMessages.isEmpty() && inFlightMessages.isEmpty()
+                } else if (messageToPrewrite == null && !shutdownRequested && fixedLayoutCreated && warmedUp && pendingMessages.isEmpty() && inFlightMessages.isEmpty()
                         && now >= imageRetryAfterMs
                         && !getDesiredFingerprint().equals(displayedFingerprint)) {
                     Log.i(TAG, "Enqueued image update");
                     enqueueDesiredImageLocked();
                     return 0;
-                } else if (shouldPollBatteryLocked(now)) {
+                } else if (messageToPrewrite == null && shouldPollBatteryLocked(now)) {
                     Log.i(TAG, "Writing battery query");
                     messageToWrite = createBatteryQueryMessageLocked();
                     lastBatteryRefreshAtMs = now;
-                } else if (!pendingMessages.isEmpty() || !inFlightMessages.isEmpty()) {
+                } else if (messageToPrewrite == null && (!pendingMessages.isEmpty() || !inFlightMessages.isEmpty())) {
                     return ConnectionOptions.IDLE_SLEEP_MS;
-                } else {
+                } else if (messageToPrewrite == null) {
                     return 250;
                 }
+            }
+
+            if (messageToPrewrite != null) {
+                if (prewriteMessage(messageToPrewrite)) {
+                    return 0;
+                }
+                return ConnectionOptions.IDLE_SLEEP_MS;
             }
 
             if (!writeMessage(messageToWrite)) {
@@ -639,6 +663,24 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 return 0;
             }
         }
+    }
+
+    private boolean shouldBlockPrewriteForHeartbeatLocked(long now) {
+        if (shutdownRequested || !warmedUp || !fixedLayoutCreated) {
+            return false;
+        }
+        return hasPendingOrInflightKindLocked("heartbeat")
+                || now - lastHeartbeatAckedAtMs >= ConnectionOptions.HEARTBEAT_READY_MS;
+    }
+
+    private boolean canPrewriteCandidate(OutboundMessage message) {
+        if (message == null || !message.isLeftArmMessage) {
+            return false;
+        }
+        if (!"image".equals(message.kind) && !"warmup".equals(message.kind)) {
+            return false;
+        }
+        return message.message.length + 2 > 232;
     }
 
     private boolean handleHeartbeat() {
@@ -709,12 +751,24 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         }
 
         String writeAddress = message.isLeftArmMessage ? leftAddress : rightAddress;
-        List<byte[]> frames = BleProtocol.framePb(
-            message.message,
-            message.sid,
-            message.flag,
-            nextTransportSeq++
-        );
+        List<byte[]> frames;
+        if (prewrittenMessage != null && prewrittenMessage != message) {
+            if (!spoilPrewrittenMessage("before " + message.label)) {
+                return false;
+            }
+        }
+        if (prewrittenMessage == message) {
+            frames = Collections.singletonList(prewrittenFrames.get(prewrittenFrames.size() - 1));
+            prewrittenMessage = null;
+            prewrittenFrames = Collections.emptyList();
+        } else {
+            frames = BleProtocol.framePb(
+                message.message,
+                message.sid,
+                message.flag,
+                nextTransportSeq++
+            );
+        }
         boolean result = bleManager.writeFrames(
             writeAddress,
             BleProtocol.WRITE_CHAR_UUID,
@@ -731,6 +785,74 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         }
 
         return result;
+    }
+
+    private boolean prewriteMessage(OutboundMessage message) {
+        if (prewrittenMessage == message) {
+            return true;
+        }
+        if (prewrittenMessage != null && !spoilPrewrittenMessage("before prewrite " + message.label)) {
+            return false;
+        }
+        if (!canPrewriteCandidate(message)) {
+            return false;
+        }
+
+        List<byte[]> frames = BleProtocol.framePb(
+            message.message,
+            message.sid,
+            message.flag,
+            nextTransportSeq++
+        );
+        if (frames.size() <= 1) {
+            return false;
+        }
+
+        String writeAddress = message.isLeftArmMessage ? leftAddress : rightAddress;
+        List<byte[]> prefixFrames = frames.subList(0, frames.size() - 1);
+        boolean result = bleManager.writeFrames(
+            writeAddress,
+            BleProtocol.WRITE_CHAR_UUID,
+            prefixFrames,
+            ConnectionOptions.WRITE_TYPE,
+            ConnectionOptions.WRITE_TIMEOUT_MS
+        );
+        if (!result) {
+            return false;
+        }
+
+        prewrittenMessage = message;
+        prewrittenFrames = new ArrayList<>(frames);
+        logLine("prewrote " + message.label + " frames=" + prefixFrames.size() + "/" + frames.size());
+        return true;
+    }
+
+    private boolean spoilPrewrittenMessage(String reason) {
+        if (prewrittenMessage == null || prewrittenFrames.isEmpty()) {
+            prewrittenMessage = null;
+            prewrittenFrames = Collections.emptyList();
+            return true;
+        }
+        OutboundMessage message = prewrittenMessage;
+        byte[] finalFrame = Arrays.copyOf(
+            prewrittenFrames.get(prewrittenFrames.size() - 1),
+            prewrittenFrames.get(prewrittenFrames.size() - 1).length
+        );
+        if (finalFrame.length > 8) {
+            finalFrame[finalFrame.length - 1] ^= (byte) 0xff;
+        }
+        prewrittenMessage = null;
+        prewrittenFrames = Collections.emptyList();
+
+        String writeAddress = message.isLeftArmMessage ? leftAddress : rightAddress;
+        logLine("spoiling prewritten " + message.label + ": " + reason);
+        return bleManager.writeFrames(
+            writeAddress,
+            BleProtocol.WRITE_CHAR_UUID,
+            Collections.singletonList(finalFrame),
+            ConnectionOptions.WRITE_TYPE,
+            ConnectionOptions.WRITE_TIMEOUT_MS
+        );
     }
 
     private boolean removePreparedMessageLocked(OutboundMessage message) {
@@ -1099,6 +1221,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             OutboundMessage message = pendingIterator.next();
             if (kind.equals(message.kind)) {
                 pendingIterator.remove();
+                discardPrewriteIfMatchesLocked(message);
                 if ("image".equals(kind)) {
                     imageUpdateStats.remove(message.imageUpdateId);
                 }
@@ -1126,6 +1249,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private void clearPendingMessagesLocked(String reason) {
         while (!pendingMessages.isEmpty()) {
             var message = pendingMessages.removeFirst();
+            discardPrewriteIfMatchesLocked(message);
             magicPool.release(message.sid, message.magic, message.label, "cleared pending: " + reason);
         }
     }
@@ -1134,6 +1258,13 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         while (!inFlightMessages.isEmpty()) {
             var message = inFlightMessages.removeFirst();
             magicPool.release(message.sid, message.magic, message.label, "cleared inflight: " + reason);
+        }
+    }
+
+    private void discardPrewriteIfMatchesLocked(OutboundMessage message) {
+        if (message != null && message == prewrittenMessage) {
+            prewrittenMessage = null;
+            prewrittenFrames = Collections.emptyList();
         }
     }
 
