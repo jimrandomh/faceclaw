@@ -42,6 +42,12 @@ export class GrayImage {
     this.clear(fill);
   }
 
+  clone(): GrayImage {
+    const clone = new GrayImage(this.width, this.height, 0);
+    clone.pixels.set(this.pixels);
+    return clone;
+  }
+
   clear(value = 0): void {
     this.pixels.fill(clampByte(value));
   }

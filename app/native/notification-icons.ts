@@ -1,4 +1,5 @@
 import { GrayImage } from "../graphics/image";
+import { toUint8Array } from "../util/array-util";
 
 declare const com: any;
 
@@ -13,7 +14,7 @@ export function readActiveNotificationIcons(maxIcons: number): GrayImage[] {
 
   const now = Date.now();
   if (now - cachedAtMs < ICON_CACHE_MS) {
-    return cachedIcons.map(cloneGrayImage);
+    return cachedIcons.map(icon => icon.clone());
   }
 
   const bytes = toUint8Array(
@@ -33,20 +34,5 @@ export function readActiveNotificationIcons(maxIcons: number): GrayImage[] {
 
   cachedIcons = icons;
   cachedAtMs = now;
-  return icons.map(cloneGrayImage);
-}
-
-function toUint8Array(bytes: ArrayLike<number> | null | undefined): Uint8Array {
-  if (!bytes) return new Uint8Array(0);
-  const out = new Uint8Array(bytes.length);
-  for (let i = 0; i < bytes.length; i++) {
-    out[i] = bytes[i]! & 0xff;
-  }
-  return out;
-}
-
-function cloneGrayImage(image: GrayImage): GrayImage {
-  const clone = new GrayImage(image.width, image.height, 0);
-  clone.pixels.set(image.pixels);
-  return clone;
+  return icons.map(icon => icon.clone());
 }
