@@ -932,7 +932,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         int messageNumber = 1;
         if (!synchronizedCommits) {
             for (BleImageOptimizer.TileImagePlan plan : changedTiles) {
-                for (int i = 0; i < plan.fragments.size() - 1; i++) {
+                for (int i = 0; i < plan.fragments.size(); i++) {
                     BleProtocol.ImageFragment fragment = plan.fragments.get(i);
                     boolean requestAck = true;
                     boolean isLast = i == plan.fragments.size() - 1;
