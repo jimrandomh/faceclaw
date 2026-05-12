@@ -76,6 +76,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private ConnectionOptions connectionOptions = new ConnectionOptions();
     private final BleMagicPool magicPool = new BleMagicPool();
     private MessageBuilder messageBuilder = new MessageBuilder(magicPool);
+    private int nextTransportSeq = 0x40;
     private int nextMapSessionId = 0;
     private int nextImageUpdateId = 1;
     private int lastShutdownAckMagic = 0;
@@ -708,10 +709,16 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         }
 
         String writeAddress = message.isLeftArmMessage ? leftAddress : rightAddress;
+        List<byte[]> frames = BleProtocol.framePb(
+            message.message,
+            message.sid,
+            message.flag,
+            nextTransportSeq++
+        );
         boolean result = bleManager.writeFrames(
             writeAddress,
             BleProtocol.WRITE_CHAR_UUID,
-            message.frames,
+            frames,
             ConnectionOptions.WRITE_TYPE,
             ConnectionOptions.WRITE_TIMEOUT_MS
         );

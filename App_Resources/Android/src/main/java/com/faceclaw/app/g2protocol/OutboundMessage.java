@@ -1,12 +1,13 @@
 package com.faceclaw.app;
-import java.util.List;
+import java.util.Arrays;
 
 public final class OutboundMessage {
     final String kind;
     final String label;
     final int sid;
+    final int flag;
     final int magic;
-    final List<byte[]> frames;
+    final byte[] message;
     final int ackTimeoutMs;
     final int tileIndex;
     final boolean isLeftArmMessage;
@@ -21,12 +22,13 @@ public final class OutboundMessage {
     Runnable onAck;
     Runnable onTimeout;
 
-    OutboundMessage(String kind, String label, int sid, int magic, List<byte[]> frames, int ackTimeoutMs, int tileIndex, boolean isLeftArmMessage) {
+    OutboundMessage(String kind, String label, int sid, int flag, int magic, byte[] message, int ackTimeoutMs, int tileIndex, boolean isLeftArmMessage) {
         this.kind = kind;
         this.label = label;
         this.sid = sid;
+        this.flag = flag;
         this.magic = magic;
-        this.frames = frames;
+        this.message = message == null ? new byte[0] : Arrays.copyOf(message, message.length);
         this.ackTimeoutMs = ackTimeoutMs;
         this.tileIndex = tileIndex;
         this.isLeftArmMessage = isLeftArmMessage;

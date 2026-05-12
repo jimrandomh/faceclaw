@@ -43,8 +43,9 @@ public class BleProtocol {
     // App-launch message. Protobuf contents come from a capture (done in g2-kit-unofficial)
     // so the actual meaning of most fields isn't known. The standard protobuf
     // wire format still lets us identify field numbers, wire types, and lengths.
+    public static final byte[] PRELUDE_F5872_PAYLOAD = buildPreludeF5872Payload();
     public static final byte[] PRELUDE_F5872 =
-        framePb(buildPreludeF5872Payload(), SID_APP_LAUNCH, FLAG_REQUEST, 0x92).getFirst();
+        framePb(PRELUDE_F5872_PAYLOAD, SID_APP_LAUNCH, FLAG_REQUEST, 0x92).getFirst();
 
     private static byte[] buildPreludeF5872Payload() {
         byte[] field4 = encodeMessageField(3,

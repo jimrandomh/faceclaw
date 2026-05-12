@@ -1,5 +1,4 @@
 package com.faceclaw.app;
-import java.util.Arrays;
 
 public class MessageBuilder {
     private static final int ACK_TIMEOUT_MS = 3_500;
@@ -7,7 +6,6 @@ public class MessageBuilder {
     private static final int WARMUP_FRAGMENT_TIMEOUT_MS = 3_000;
 
     private BleMagicPool magicPool;
-    private int nextTransportSeq = 0x40;
 
     public MessageBuilder(BleMagicPool magicPool) {
         this.magicPool = magicPool;
@@ -17,8 +15,9 @@ public class MessageBuilder {
         return new OutboundMessage(
             "prelude", "prelude",
             BleProtocol.PRELUDE_ACK_SID,
+            BleProtocol.FLAG_REQUEST,
             BleProtocol.PRELUDE_ACK_MAGIC,
-            CollectionUtils.singletonList(Arrays.copyOf(BleProtocol.PRELUDE_F5872, BleProtocol.PRELUDE_F5872.length)),
+            BleProtocol.PRELUDE_F5872_PAYLOAD,
             ACK_TIMEOUT_MS,
             -1,
             false
@@ -31,13 +30,9 @@ public class MessageBuilder {
             "shutdown",
             "shutdown mode=" + exitMode,
             BleProtocol.SID_EVENHUB,
+            BleProtocol.FLAG_REQUEST,
             magic,
-            BleProtocol.framePb(
-                BleProtocol.buildShutdown(magic, exitMode),
-                BleProtocol.SID_EVENHUB,
-                BleProtocol.FLAG_REQUEST,
-                nextTransportSeq++
-            ),
+            BleProtocol.buildShutdown(magic, exitMode),
             ACK_TIMEOUT_MS,
             -1,
             false
@@ -50,12 +45,9 @@ public class MessageBuilder {
             "warmup",
             "warmup " + tile.name + "#" + fragment.index,
             BleProtocol.SID_EVENHUB,
+            BleProtocol.FLAG_REQUEST,
             magic,
-            BleProtocol.framePb(
-                BleProtocol.buildImageRawData(tile, sessionId, bmp.length, fragment, magic),
-                BleProtocol.SID_EVENHUB, BleProtocol.FLAG_REQUEST,
-                nextTransportSeq++
-            ),
+            BleProtocol.buildImageRawData(tile, sessionId, bmp.length, fragment, magic),
             WARMUP_FRAGMENT_TIMEOUT_MS,
             -1,
             leftArm
@@ -68,12 +60,9 @@ public class MessageBuilder {
             "image",
             "image " + plan.tile.name + "#" + fragment.index,
             BleProtocol.SID_EVENHUB,
+            BleProtocol.FLAG_REQUEST,
             magic,
-            BleProtocol.framePb(
-                BleProtocol.buildImageRawData(plan.tile, plan.sessionId, plan.bmp.length, fragment, magic),
-                BleProtocol.SID_EVENHUB, BleProtocol.FLAG_REQUEST,
-                nextTransportSeq++
-            ),
+            BleProtocol.buildImageRawData(plan.tile, plan.sessionId, plan.bmp.length, fragment, magic),
             ACK_TIMEOUT_MS,
             plan.tileIndex,
             leftArm
@@ -86,13 +75,9 @@ public class MessageBuilder {
             "audio-control",
             enable ? "G2 mic enable" : "G2 mic disable",
             BleProtocol.SID_EVENHUB,
+            BleProtocol.FLAG_REQUEST,
             magic,
-            BleProtocol.framePb(
-                BleProtocol.buildAudioControl(magic, enable),
-                BleProtocol.SID_EVENHUB,
-                BleProtocol.FLAG_REQUEST,
-                nextTransportSeq++
-            ),
+            BleProtocol.buildAudioControl(magic, enable),
             ACK_TIMEOUT_MS,
             -1,
             false
@@ -105,13 +90,9 @@ public class MessageBuilder {
             "create-layout",
             "create-layout",
             BleProtocol.SID_EVENHUB,
+            BleProtocol.FLAG_REQUEST,
             magic,
-            BleProtocol.framePb(
-                BleProtocol.buildCreateMixedImagePage(magic, tiles),
-                BleProtocol.SID_EVENHUB,
-                BleProtocol.FLAG_REQUEST,
-                nextTransportSeq++
-            ),
+            BleProtocol.buildCreateMixedImagePage(magic, tiles),
             ACK_TIMEOUT_MS,
             -1,
             false
@@ -124,13 +105,9 @@ public class MessageBuilder {
             "startup-text-probe",
             "startup text probe",
             BleProtocol.SID_EVENHUB,
+            BleProtocol.FLAG_REQUEST,
             magic,
-            BleProtocol.framePb(
-                BleProtocol.buildDashboardTextUpgrade(magic),
-                BleProtocol.SID_EVENHUB,
-                BleProtocol.FLAG_REQUEST,
-                nextTransportSeq++
-            ),
+            BleProtocol.buildDashboardTextUpgrade(magic),
             ACK_TIMEOUT_MS,
             -1,
             false
@@ -143,8 +120,9 @@ public class MessageBuilder {
             "heartbeat",
             "heartbeat",
             BleProtocol.SID_EVENHUB,
+            BleProtocol.FLAG_REQUEST,
             magic,
-            BleProtocol.framePb(BleProtocol.buildHeartbeat(magic), BleProtocol.SID_EVENHUB, BleProtocol.FLAG_REQUEST, nextTransportSeq++),
+            BleProtocol.buildHeartbeat(magic),
             HEARTBEAT_TIMEOUT_MS,
             -1,
             false
@@ -157,13 +135,9 @@ public class MessageBuilder {
             "battery",
             "battery",
             BleProtocol.SID_UI_SETTING,
+            BleProtocol.FLAG_REQUEST,
             magic,
-            BleProtocol.framePb(
-                BleProtocol.buildSettingsQuery(magic),
-                BleProtocol.SID_UI_SETTING,
-                BleProtocol.FLAG_REQUEST,
-                nextTransportSeq++
-            ),
+            BleProtocol.buildSettingsQuery(magic),
             ACK_TIMEOUT_MS,
             -1,
             false
