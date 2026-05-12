@@ -142,6 +142,10 @@ export function loadEmbeddedTerminus24(): BdfFont {
   return loadEmbeddedFont("fonts/terminus/ter-u24n.bdf");
 }
 
+export function loadEmbeddedTerminus32(): BdfFont {
+  return loadEmbeddedFont("fonts/terminus/ter-u32n.bdf");
+}
+
 function loadEmbeddedFont(path: string): BdfFont {
   const cached = cachedEmbeddedFonts.get(path);
   if (cached) {

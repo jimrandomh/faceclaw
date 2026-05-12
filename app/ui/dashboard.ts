@@ -1,5 +1,5 @@
 import { G2_LENS_HEIGHT, G2_LENS_WIDTH, GrayImage } from "../graphics/image";
-import { loadEmbeddedTerminus12, loadEmbeddedTerminus16 } from "../graphics/bdffont";
+import { loadEmbeddedTerminus12, loadEmbeddedTerminus16, loadEmbeddedTerminus32 } from "../graphics/bdffont";
 import { BATTERY_ICON_WIDTH, drawBattery } from "../graphics/battery";
 import { loadPngAsGrayImage } from "../graphics/imagefile";
 import { type RawInputEvent } from "../native/faceclaw-communicator";
@@ -92,6 +92,7 @@ const dashboardActions: LayerActions = {
 };
 const dashboardFont = loadEmbeddedTerminus12();
 const dashboardSystemFont = loadEmbeddedTerminus16();
+const stopwatchFont = loadEmbeddedTerminus32();
 const NOTIFICATION_ICON_SIZE = 24;
 const SYSTEM_CARD_ITEM_HEIGHT = 38;
 const SYSTEM_CARD_ITEM_GAP = 2;
@@ -460,15 +461,17 @@ function createRootMenuLayer(): MenuLayer {
           ctx.stack.push(createSettingsMenuLayer());
         },
       },
-      ...getDashboardSlotIds().map((slot) => ({
-        label: pluginLabelForSlot(slot),
-        onSelect: (ctx: LayerContext) => {
-          openDashboardSlot(slot, ctx);
-        },
-        render: ({ image, x, y }: { image: GrayImage; x: number; y: number }) => {
-          image.drawText(dashboardFont, x, y + 3, pluginLabelForSlot(slot), 200);
-        },
-      })),
+      ...getDashboardSlotIds()
+        .filter((slot) => !isBlankDashboardPlugin(dashboardState.slotConfig[slot]))
+        .map((slot) => ({
+          label: pluginLabelForSlot(slot),
+          onSelect: (ctx: LayerContext) => {
+            openDashboardSlot(slot, ctx);
+          },
+          render: ({ image, x, y }: { image: GrayImage; x: number; y: number }) => {
+            image.drawText(dashboardFont, x, y + 3, pluginLabelForSlot(slot), 200);
+          },
+        })),
       {
         label: "System",
         onSelect: (ctx) => {
@@ -515,12 +518,14 @@ class StopwatchLayer implements Layer {
     const timeLabel = formatStopwatchElapsed(elapsedMs);
     const stateLabel = this.pausedAtMs === null ? "Running" : "Paused";
 
-    image.drawRect(12, 12, G2_LENS_WIDTH - 24, G2_LENS_HEIGHT - 24, 52);
     image.drawText(ctx.font, 24, 24, "Stopwatch", 180);
     image.drawText(ctx.font, G2_LENS_WIDTH - 114, 24, stateLabel, this.pausedAtMs === null ? 200 : 120);
 
-    const timeX = Math.max(0, ((G2_LENS_WIDTH - dashboardSystemFont.measureText(timeLabel)) / 2) | 0);
-    image.drawText(dashboardSystemFont, timeX, 106, timeLabel, 245);
+    const quadrantWidth = G2_LENS_WIDTH / 2;
+    const quadrantHeight = G2_LENS_HEIGHT / 2;
+    const timeX = Math.max(0, Math.round((quadrantWidth - stopwatchFont.measureText(timeLabel)) / 2));
+    const timeY = Math.max(0, Math.round((quadrantHeight - stopwatchFont.lineHeight) / 2));
+    image.drawText(stopwatchFont, timeX, timeY, timeLabel, 245);
     image.drawText(ctx.font, 126, 160, "Click: pause / resume", 150);
     image.drawText(ctx.font, 126, 178, "Double-click: back", 120);
     image.drawText(ctx.font, 126, 214, "Renders requested every 100ms", 110);

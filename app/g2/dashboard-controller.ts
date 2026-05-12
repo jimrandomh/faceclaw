@@ -9,7 +9,7 @@ import { nightscoutBridge } from "../native/nightscout";
 import { openEvenAppSettings, readEvenAppNotificationState } from "../native/even-app-conflict";
 import { grayImageToPreviewSource, grayImageToPreviewSourceWithBitmapFactory } from "../native/gray-image-preview";
 import { voiceControlBridge } from "../native/voice-control";
-import { type GrayImage } from "../graphics/image";
+import { G2_LENS_HEIGHT, G2_LENS_WIDTH, GrayImage } from "../graphics/image";
 import {
   applyDashboardScreenTimeout,
   consumeDashboardTiledWakePaint,
@@ -58,6 +58,10 @@ const FRAME_TRANSMIT_BACKPRESSURE_TIMEOUT_MS = 6_000;
 const CONNECTED_PREVIEW_MIN_UPDATE_MS = 1_000;
 const EVEN_APP_DETECTED_MESSAGE =
   "The Even Realities app appears to be running. If Faceclaw has trouble connecting, open its app settings and force stop it.";
+
+function createInitialDisplayPreview(): ImageSource | null {
+  return grayImageToPreviewSource(new GrayImage(G2_LENS_WIDTH, G2_LENS_HEIGHT, 0));
+}
 
 function formatTimestamp(date: Date): string {
   return date.toISOString().slice(11, 23);
@@ -114,7 +118,7 @@ class DashboardController {
   private activeTextSettingEditorKind: TextSettingEditorKind | null = null;
   private evenNotificationActive = false;
   private evenAppConflictMessage = "";
-  private displayPreview: ImageSource | null = null;
+  private displayPreview: ImageSource | null = createInitialDisplayPreview();
   private readonly listeners = new Set<DashboardListener>();
 
   private communicator: FaceclawCommunicatorBridge | null = null;

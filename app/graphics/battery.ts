@@ -43,16 +43,16 @@ export function drawBattery(percentCharge: number, isCharging: boolean): GrayIma
   const fillWidth = Math.round((BATTERY_FILL_WIDTH * clamped) / 100);
   icon.fillRect(BATTERY_FILL_X, BATTERY_FILL_Y, fillWidth, BATTERY_FILL_HEIGHT, 190);
   if (isCharging) {
-    overlayImage(icon, BATTERY_BOLT_ICON, 7, 1);
+    overlayImage(icon, BATTERY_BOLT_ICON, 7, 1, clamped > 50 ? 0 : 255);
   }
   return icon;
 }
 
-function overlayImage(target: GrayImage, source: GrayImage, dx: number, dy: number): void {
+function overlayImage(target: GrayImage, source: GrayImage, dx: number, dy: number, value: number): void {
   for (let y = 0; y < source.height; y++) {
     for (let x = 0; x < source.width; x++) {
-      const value = source.pixels[y * source.width + x] ?? 0;
-      if (value > 0) {
+      const sourceValue = source.pixels[y * source.width + x] ?? 0;
+      if (sourceValue > 0) {
         target.setPixel(dx + x, dy + y, value);
       }
     }
