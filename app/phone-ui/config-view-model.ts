@@ -1,8 +1,8 @@
 import { Frame, Observable } from "@nativescript/core";
 
-import { ensureBlePermissions } from "./g2/android-permissions";
-import { isValidMacAddress, loadDeviceAddresses, normalizeMacAddress, saveDeviceAddresses } from "./g2/device-addresses";
-import { buildAddressSet, DeviceDiscoveryBridge } from "./native/device-discovery";
+import { ensureBlePermissions } from "../g2/android-permissions";
+import { isValidMacAddress, loadDeviceAddresses, normalizeMacAddress, saveDeviceAddresses } from "../g2/device-addresses";
+import { buildAddressSet, DeviceDiscoveryBridge } from "../native/device-discovery";
 
 type TextChangeArgs = { value?: string; object?: { text?: string } };
 
@@ -112,7 +112,7 @@ export class ConfigViewModel extends Observable {
 
   onBackTap(): void {
     Frame.topmost()?.navigate({
-      moduleName: "main-page",
+      moduleName: "phone-ui/main-page",
       clearHistory: true,
     });
   }

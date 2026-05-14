@@ -1,6 +1,6 @@
 import { Color, EventData, isAndroid, Observable, Page, ScrollView, TextField } from '@nativescript/core'
 import { MainViewModel } from './main-view-model'
-import { dashboardController } from './g2/dashboard-controller'
+import { dashboardController } from '../g2/dashboard-controller'
 
 const SETTINGS_TEXT_COLOR = new Color('#222222')
 const SETTINGS_BACKGROUND_COLOR = new Color('#ffffff')

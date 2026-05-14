@@ -69,7 +69,7 @@ export class OnboardingViewModel extends Observable {
     }
     setOnboardingCompleted(true);
     Frame.topmost()?.navigate({
-      moduleName: "config-page",
+      moduleName: "phone-ui/config-page",
       clearHistory: true,
     });
   }

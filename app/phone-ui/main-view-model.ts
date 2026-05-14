@@ -1,5 +1,5 @@
 import { Frame, ImageSource, Observable, Screen } from "@nativescript/core";
-import { dashboardController, type TextSettingEditorKind } from "./g2/dashboard-controller";
+import { dashboardController, type TextSettingEditorKind } from "../g2/dashboard-controller";
 
 export class MainViewModel extends Observable {
   private _status = "Disconnected.";
@@ -247,7 +247,7 @@ export class MainViewModel extends Observable {
 
   onConfigureTap(): void {
     if (!this.canRun) return;
-    Frame.topmost()?.navigate("config-page");
+    Frame.topmost()?.navigate("phone-ui/config-page");
   }
 
   onToggleLogTap(): void {

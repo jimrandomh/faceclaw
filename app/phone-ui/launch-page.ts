@@ -6,7 +6,7 @@ export function navigatingTo(args: EventData): void {
   const page = args.object as Page;
   page.on(Page.loadedEvent, () => {
     Frame.topmost()?.navigate({
-      moduleName: hasCompletedOnboarding() ? "main-page" : "onboarding-page",
+      moduleName: hasCompletedOnboarding() ? "phone-ui/main-page" : "phone-ui/onboarding-page",
       clearHistory: true,
       animated: false,
     });
