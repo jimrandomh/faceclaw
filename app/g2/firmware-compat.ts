@@ -13,7 +13,7 @@ const REQUIRED_FIRMWARE_EXTENSIONS = ["img640", "fbguard", "wearnotify"] as cons
 // The stock firmware release Faceclaw's custom image is built from. Stock at or
 // below this can be flashed with our patched image; a newer stock version is
 // unrecognized (its layout may differ from what our patch set targets).
-export const FLASHABLE_STOCK_VERSION = [2, 2, 6, 10];
+export const FLASHABLE_STOCK_VERSION = [2, 2, 9, 22];
 export const FLASHABLE_STOCK_VERSION_TEXT = FLASHABLE_STOCK_VERSION.join(".");
 
 function parseDottedVersion(version: string): number[] {
