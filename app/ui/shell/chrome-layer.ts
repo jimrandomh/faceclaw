@@ -1,5 +1,7 @@
 import { G2_LENS_HEIGHT, G2_LENS_WIDTH, GrayImage } from "../../graphics/image";
 import { getDefaultMediumFont, getDefaultSmallFont } from "../../graphics/ui-fonts";
+import { truncateText } from "../../graphics/textwrap";
+import { activeAmbientCards } from "./ambient-cards";
 import { BATTERY_ICON_WIDTH, drawBattery } from "../../graphics/battery";
 import { readActiveNotificationIcons } from "../../native/notification-icons";
 import { readPhoneBatteryState } from "../../native/phone-battery";
@@ -8,11 +10,13 @@ import { renderIcon, renderIconWithGlyph, type IconName } from "../../graphics/i
 import { batteryDisplayModeSetting, timeFormatSetting } from "../dashboard-settings";
 import { Layer } from "../layers";
 import { scrollToKeepSelectionVisible } from "../menu";
+import { lineStep } from "../metrics";
 import {
   MIN_WINDOW_HEIGHT,
   minWindowTop,
   SHELL_OPAQUE_BLACK,
   SIDEBAR_WIDTH,
+  sidebarStripVisible,
   TOP_BAR_HEIGHT,
   windowTop,
   type WindowHeightMode,
@@ -48,6 +52,25 @@ function sidebarVariant(windowCount: number): SidebarVariant {
 /** Left x of a sidebar column; columns pack rightward against the separator. */
 function columnLeft(variant: SidebarVariant, column: number): number {
   return SIDEBAR_WIDTH - (variant.columns - column) * variant.columnWidth;
+}
+
+/**
+ * Column and top y of a visible sidebar slot; `position` counts from the
+ * first visible (scrolled-to) icon. Slots fill the rightmost column top to
+ * bottom, then overflow leftward. The single source of slot geometry for
+ * both drawing and hit testing.
+ */
+function slotPosition(variant: SidebarVariant, listTop: number, position: number): { column: number; y: number } {
+  const rows = rowsPerColumn(variant);
+  return {
+    column: variant.columns - 1 - ((position / rows) | 0),
+    y: listTop + (position % rows) * (variant.iconSize + ICON_SPACING),
+  };
+}
+
+/** Top y of the sidebar's icon list (below the band's top bar). */
+function sidebarListTop(): number {
+  return minWindowTop() + TOP_BAR_HEIGHT + LIST_MARGIN;
 }
 
 /**
@@ -166,14 +189,39 @@ export class ShellChromeLayer implements Layer {
   paint(): GrayImage {
     const image = new GrayImage(G2_LENS_WIDTH, G2_LENS_HEIGHT, 0);
     const state = this.getState();
-    this.drawSidebar(image, state);
+    // Full-panel mode: the strip is an overlay, present only while the user
+    // is in it (the window underneath keeps its full width the rest of the time).
+    if (sidebarStripVisible(state.focus)) {
+      this.drawSidebar(image, state);
+    }
     this.drawTopBar(image, state);
+    drawAmbientCards(image);
     return image;
   }
 
   handleInput(): void {
     // Shell input is handled by the shell state machine before it reaches the
     // layer stack; the chrome itself never consumes events.
+  }
+
+  /**
+   * Which window's sidebar icon is under (x, y) on screen, if any — the same
+   * slot geometry drawSidebar uses, so a touch on the phone's mirror lands on
+   * the icon the mirror showed.
+   */
+  windowIndexAt(x: number, y: number, windowCount: number): number | null {
+    if (x < 0 || x >= SIDEBAR_WIDTH || windowCount === 0) return null;
+    const variant = sidebarVariant(windowCount);
+    const listTop = sidebarListTop();
+    const lastVisible = Math.min(windowCount, this.scrollRow + rowsPerColumn(variant) * variant.columns);
+    for (let index = this.scrollRow; index < lastVisible; index++) {
+      const { column, y: slotY } = slotPosition(variant, listTop, index - this.scrollRow);
+      const left = columnLeft(variant, column);
+      if (x >= left && x < left + variant.columnWidth && y >= slotY - 2 && y < slotY + variant.iconSize + 2) {
+        return index;
+      }
+    }
+    return null;
   }
 
   private drawSidebar(image: GrayImage, state: ShellChromeState): void {
@@ -194,20 +242,11 @@ export class ShellChromeLayer implements Layer {
     const iconMarginX = ((variant.columnWidth - iconSize) / 2) | 0;
     // Column index of the rightmost column (the one that fills first).
     const firstColumn = variant.columns - 1;
-    const listTop = bandTop + TOP_BAR_HEIGHT + LIST_MARGIN;
-    const itemStride = iconSize + ICON_SPACING;
-    const rows = rowsPerColumn(variant);
-    const visibleCount = rows * variant.columns;
+    const listTop = sidebarListTop();
+    const visibleCount = rowsPerColumn(variant) * variant.columns;
     this.scrollRow = scrollToKeepSelectionVisible(this.scrollRow, state.selectedIndex, visibleCount, count);
     const lastVisible = Math.min(count, this.scrollRow + visibleCount);
-    const slotOf = (index: number) => {
-      const position = index - this.scrollRow;
-      const columnsFromRight = (position / rows) | 0;
-      return {
-        column: firstColumn - columnsFromRight,
-        y: listTop + (position % rows) * itemStride,
-      };
-    };
+    const slotOf = (index: number) => slotPosition(variant, listTop, index - this.scrollRow);
 
     // The selection is a "diversion" of the sidebar/main separator line: the
     // line bulges right around the selected icon (rounded on the left, open
@@ -266,13 +305,16 @@ export class ShellChromeLayer implements Layer {
     // its height mode puts that (screen top for max height). It moves when
     // the foreground switches to a window of a different height.
     const barTop = windowTop(state.foregroundHeightMode);
-    image.fillRect(SIDEBAR_WIDTH, barTop, G2_LENS_WIDTH - SIDEBAR_WIDTH, TOP_BAR_HEIGHT, SHELL_OPAQUE_BLACK);
-    image.drawLine(SIDEBAR_WIDTH, barTop + TOP_BAR_HEIGHT - 1, G2_LENS_WIDTH - 1, barTop + TOP_BAR_HEIGHT - 1, BORDER_VALUE);
+    // The bar spans the app viewport; with the sidebar overlaid (full-panel
+    // mode, sidebar focused) it still starts past the strip.
+    const barLeft = sidebarStripVisible(state.focus) ? SIDEBAR_WIDTH : 0;
+    image.fillRect(barLeft, barTop, G2_LENS_WIDTH - barLeft, TOP_BAR_HEIGHT, SHELL_OPAQUE_BLACK);
+    image.drawLine(barLeft, barTop + TOP_BAR_HEIGHT - 1, G2_LENS_WIDTH - 1, barTop + TOP_BAR_HEIGHT - 1, BORDER_VALUE);
 
     const now = new Date();
     const clock = `${WEEKDAYS[now.getDay()]} ${now.getDate()} ${MONTHS[now.getMonth()]} ` +
       formatClockTime(now);
-    const clockX = SIDEBAR_WIDTH + 10;
+    const clockX = barLeft + 10;
     const textY = barTop + Math.max(0, ((TOP_BAR_HEIGHT - font.lineHeight) / 2) | 0);
     image.drawText(font, clockX, textY, clock, 210);
 
@@ -341,6 +383,50 @@ export class ShellChromeLayer implements Layer {
       x -= itemGap;
     }
     return x + itemGap;
+  }
+}
+
+// Ambient cards (encounter popups): compact and deliberately unobtrusive,
+// anchored to the bottom-right of the window band and stacking upward, clear
+// of the caption area's left-aligned text. Never interactive.
+const AMBIENT_CARD_WIDTH = 230;
+const AMBIENT_CARD_MARGIN = 6;
+const AMBIENT_CARD_GAP = 4;
+const AMBIENT_CARD_PADDING_X = 8;
+const AMBIENT_CARD_PADDING_Y = 4;
+const AMBIENT_MAX_LINES_PER_CARD = 3;
+
+/**
+ * Paint the active ambient cards bottom-up: the oldest card sits at the very
+ * bottom of the window band and newer ones stack above it. Cards that would
+ * cross into the top bar are dropped rather than clipped.
+ */
+function drawAmbientCards(image: GrayImage): void {
+  const cards = activeAmbientCards();
+  if (!cards.length) return;
+  const font = getDefaultSmallFont();
+  const bandTop = minWindowTop();
+  const bandBottom = bandTop + MIN_WINDOW_HEIGHT;
+  const x = G2_LENS_WIDTH - AMBIENT_CARD_WIDTH - AMBIENT_CARD_MARGIN;
+  const textWidth = AMBIENT_CARD_WIDTH - 2 * AMBIENT_CARD_PADDING_X;
+  let bottom = bandBottom - AMBIENT_CARD_MARGIN;
+  for (const card of cards) {
+    const lines = [card.title, ...card.lines].slice(0, 1 + AMBIENT_MAX_LINES_PER_CARD);
+    const height = 2 * AMBIENT_CARD_PADDING_Y + lines.length * lineStep(font);
+    const y = bottom - height;
+    if (y < bandTop + TOP_BAR_HEIGHT) break;
+    image.fillRoundedRect(x, y, AMBIENT_CARD_WIDTH, height, SHELL_OPAQUE_BLACK, 6);
+    image.drawRoundedRect(x, y, AMBIENT_CARD_WIDTH, height, 90, 6);
+    for (let index = 0; index < lines.length; index++) {
+      image.drawText(
+        font,
+        x + AMBIENT_CARD_PADDING_X,
+        y + AMBIENT_CARD_PADDING_Y + index * lineStep(font),
+        truncateText(font, lines[index]!, textWidth),
+        index === 0 ? 220 : 160,
+      );
+    }
+    bottom = y - AMBIENT_CARD_GAP;
   }
 }
 

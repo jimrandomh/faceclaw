@@ -1,7 +1,8 @@
 import { getDefaultSmallFont } from "../../graphics/ui-fonts";
 import { GrayImage } from "../../graphics/image";
 import { truncateText } from "../../graphics/textwrap";
-import { Layer, type DashboardInputEvent, type LayerContext, type PaintBelow } from "../../ui/layers";
+import { type InputEvent } from "../../ui/gestures";
+import { Layer, type LayerContext, type PaintBelow } from "../../ui/layers";
 import { drawSelectionHighlight } from "../../ui/menu";
 import { LIST_ROW_TEXT_INSET, lineStep, listRowHeight } from "../../ui/metrics";
 
@@ -79,7 +80,7 @@ export class EvenHubApiKeyDialogLayer implements Layer {
     return image;
   }
 
-  handleInput(event: DashboardInputEvent, ctx: LayerContext): void {
+  handleInput(event: InputEvent, ctx: LayerContext): void {
     switch (event.type) {
       case "scroll-up":
       case "scroll-down":

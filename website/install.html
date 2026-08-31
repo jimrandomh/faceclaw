@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Install — Faceclaw</title>
+<meta name="description" content="How to install Faceclaw on an Android phone and flash the custom firmware onto Even Realities G2 glasses.">
+<link rel="icon" href="images/favicon.png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="wrap">
+    <a class="brand" href="./"><img src="images/faceclaw-logo.png" alt="">Faceclaw</a>
+    <nav>
+      <a href="./#features">Features</a>
+      <a href="install.html" aria-current="page">Install</a>
+      <a href="privacy.html">Privacy</a>
+      <a href="https://github.com/jimrandomh/faceclaw">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+<section>
+  <div class="wrap prose">
+    <h1>Installing Faceclaw</h1>
+
+    <div class="callout">
+      <p><span class="eyebrow">Read this first</span></p>
+      <p>Faceclaw is unofficial and unsupported, and it replaces the firmware on your glasses. Installing it means running code that Even Realities did not write and will not help you with. The app can put the stock firmware back, but you are doing this at your own risk.</p>
+    </div>
+
+    <h2>What you need</h2>
+    <ul>
+      <li>A pair of Even Realities G2 glasses.</li>
+      <li>An Android phone. Faceclaw runs as a background app and talks to the glasses over Bluetooth LE.</li>
+      <li>Optionally, a Wear OS 3+ watch, if you want the watch remote instead of the R1 ring.</li>
+    </ul>
+    <p>There is no iOS version, and there will not be one — the app depends on Android APIs for background Bluetooth, notification access and media control.</p>
+
+    <h2>Install the app</h2>
+    <p>Faceclaw is not on the Play Store. Download the most recent APK from the <a href="https://github.com/jimrandomh/faceclaw/releases">releases page</a> and open it on your phone; Android will ask you to allow installing apps from that source.</p>
+
+    <h2>Install the firmware</h2>
+    <p>Faceclaw needs custom firmware on the glasses, and installs it for you. On first run, the onboarding flow will offer to download the stock firmware from Even Realities, apply the <a href="https://github.com/jimrandomh/g2flash">g2flash</a> patches locally, and flash the result. You confirm the flash on the glasses themselves.</p>
+    <p>Onboarding also offers a preview-only path, which connects to unmodified glasses so you can look around before committing. Faceclaw can restore the stock firmware later from the same screens.</p>
+
+    <h2>Grant permissions</h2>
+    <p>Android does not reliably prompt for everything Faceclaw uses. After installing, go to <strong>Settings &rarr; Apps &rarr; Faceclaw</strong> and check that permissions are granted — notification access and Bluetooth in particular — or parts of the app will silently do nothing.</p>
+    <p>Also exempt Faceclaw from battery optimization. Being a background app on a locked Android phone is fraught, and manufacturer-specific battery software may pause it or throttle it to low CPU usage.</p>
+
+    <h2>Optional extras</h2>
+    <ul>
+      <li><strong>Watch remote.</strong> The Wear OS app is a separate Gradle build in <code>wear/</code>, sideloaded over adb; it needs no Play Store, but the phone side requires Google Play services.</li>
+      <li><strong>API keys.</strong> The voice assistant needs a model provider key (Anthropic or OpenAI), cloud transcription needs a key for OpenAI Whisper, ElevenLabs or Soniox, and turn-by-turn directions need a Mapbox token. On-device transcription needs no key.</li>
+      <li><strong>Terminal mirroring.</strong> Install <a href="https://github.com/jimrandomh/g2mirror">g2mirror</a> on the machine whose terminal you want to see.</li>
+      <li><strong>External agent.</strong> To route assistant queries to your own long-running agent, install the <a href="https://github.com/jimrandomh/faceclaw-agent-bridge">faceclaw-agent-bridge</a> OpenClaw plugin; setup lives in that repository's README.</li>
+    </ul>
+
+    <h2>Building from source</h2>
+    <p>Faceclaw is a NativeScript app written in TypeScript and Java, and builds with an Android SDK 35 environment and a JDK 21. The <a href="https://github.com/jimrandomh/faceclaw#installation">README</a> has the current build and <code>adb</code> instructions; they are kept there rather than duplicated here, so they stay in step with the code.</p>
+  </div>
+</section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <div class="links">
+      <a href="https://github.com/jimrandomh/faceclaw">GitHub</a>
+      <a href="./">Home</a>
+      <a href="privacy.html">Privacy policy</a>
+    </div>
+    <p>Faceclaw is Free Software, licensed under the GPLv3. It is unofficial, and is not affiliated with Even Realities.</p>
+  </div>
+</footer>
+
+</body>
+</html>

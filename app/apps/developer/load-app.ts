@@ -3,8 +3,8 @@ import { getDefaultSmallFont } from "../../graphics/ui-fonts";
 import { wrapText } from "../../graphics/textwrap";
 import { type AppContext } from "../app-definition";
 import { isLoadableAppUrl, openEvenHubUrl } from "../evenhub";
-import { GESTURE_CLICK, GESTURE_DOUBLE_CLICK } from "../../ui/gestures";
-import { Layer, type DashboardInputEvent, type LayerContext } from "../../ui/layers";
+import { GESTURE_CLICK, GESTURE_DOUBLE_CLICK, type InputEvent } from "../../ui/gestures";
+import { Layer, type LayerContext } from "../../ui/layers";
 import { lineStep } from "../../ui/metrics";
 import { developerAppUrlSetting } from "../../ui/dashboard-settings";
 import { isQrScannerAvailable, scanQrCode } from "../../native/qr-scan";
@@ -76,7 +76,7 @@ export class LoadAppFromUrlLayer implements Layer {
     return image;
   }
 
-  handleInput(event: DashboardInputEvent, ctx: LayerContext): void {
+  handleInput(event: InputEvent, ctx: LayerContext): void {
     switch (event.type) {
       case "click":
         void this.launch(ctx);
@@ -153,7 +153,7 @@ export class LoadAppFromQrLayer implements Layer {
     return image;
   }
 
-  handleInput(event: DashboardInputEvent, ctx: LayerContext): void {
+  handleInput(event: InputEvent, ctx: LayerContext): void {
     switch (event.type) {
       case "click":
         if (!this.busy && isQrScannerAvailable()) {

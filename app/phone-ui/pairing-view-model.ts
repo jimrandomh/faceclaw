@@ -46,8 +46,8 @@ const NO_RESULTS_HINT_AFTER_MS = 10_000;
  * re-renders the pair/ring lists at a calm cadence, and saves the chosen
  * addresses plus the decoded identity when the user continues.
  *
- * Selection is always a deliberate tap (no auto-select on a single result),
- * mirroring SybilSight's pairing flow: a strong signal is a hint, not consent.
+ * Selection is always a deliberate tap (no auto-select on a single result):
+ * a strong signal is a hint, not consent.
  */
 export class PairingViewModel extends Observable {
   private readonly onboarding: boolean;
@@ -333,8 +333,8 @@ export class PairingViewModel extends Observable {
     this.dispose();
     if (this.onboarding) {
       setPreviewOnlyMode(false);
-      // Continue the onboarding chain: unpair the official app next.
-      Frame.topmost()?.navigate({ moduleName: "phone-ui/onboarding-unpair-page" });
+      // Continue the onboarding chain: check the glasses' firmware next.
+      Frame.topmost()?.navigate({ moduleName: "phone-ui/onboarding-firmware-check-page" });
       return;
     }
     Frame.topmost()?.navigate({ moduleName: "phone-ui/main-page", clearHistory: true });
@@ -348,7 +348,7 @@ export class PairingViewModel extends Observable {
       return;
     }
     frame?.navigate({
-      moduleName: this.onboarding ? "phone-ui/onboarding-page" : "phone-ui/main-page",
+      moduleName: this.onboarding ? "phone-ui/onboarding-unpair-page" : "phone-ui/main-page",
       clearHistory: true,
     });
   }

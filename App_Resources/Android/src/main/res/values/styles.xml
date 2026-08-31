@@ -25,6 +25,17 @@
         <item name="colorPrimary">@color/ns_primary</item>
         <item name="colorPrimaryDark">@color/ns_primaryDark</item>
         <item name="colorAccent">@color/ns_accent</item>
+
+        <!-- NativeScript builds the toolbar programmatically, so the
+             NativeScriptToolbarTheme overlay below (an inflation-time "theme"
+             item) never applies and the overflow icon falls back to the light
+             activity theme's dark textColorSecondary: black-on-dark. Tint the
+             overflow button itself instead; every page's bar is dark. -->
+        <item name="actionOverflowButtonStyle">@style/FaceclawOverflowButtonStyle</item>
+    </style>
+
+    <style name="FaceclawOverflowButtonStyle" parent="Widget.AppCompat.ActionButton.Overflow">
+        <item name="android:tint">#FFFFFF</item>
     </style>
 
     <style name="AppTheme" parent="AppThemeBase">

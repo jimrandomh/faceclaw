@@ -15,13 +15,18 @@ public final class PreviewBitmapUtil {
     private PreviewBitmapUtil() {}
 
     public static Bitmap fromGray(ByteBuffer gray, int width, int height, double brightenGamma) {
+        return fromGray(gray, width, height, brightenGamma, false);
+    }
+
+    /** As above; `green` renders green-on-black (matching the physical glasses) instead of grayscale. */
+    public static Bitmap fromGray(ByteBuffer gray, int width, int height, double brightenGamma, boolean green) {
         if (gray == null || width <= 0 || height <= 0 || gray.remaining() < width * height) {
             throw new IllegalArgumentException("invalid gray preview buffer");
         }
         int[] lut = new int[256];
         for (int g = 0; g < 256; g++) {
             int v = (int) Math.max(0, Math.min(255, Math.round(255 * Math.pow(g / 255.0, brightenGamma))));
-            lut[g] = 0xff000000 | (v << 16) | (v << 8) | v;
+            lut[g] = green ? (0xff000000 | (v << 8)) : (0xff000000 | (v << 16) | (v << 8) | v);
         }
         byte[] bytes = new byte[width * height];
         gray.get(bytes);

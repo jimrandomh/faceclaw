@@ -3,14 +3,14 @@ import { getDefaultSmallFont } from "../../graphics/ui-fonts";
 import { lineStep } from "../../ui/metrics";
 import { writeTextToDownloads } from "../../native/file-access";
 import { voiceControlBridge, type VoiceTranscriptEvent } from "../../native/voice-control";
-import { Layer, type DashboardInputEvent, type LayerContext } from "../../ui/layers";
+import { Layer, type LayerContext } from "../../ui/layers";
 
 /**
  * Live transcription view. Continuous mic capture is owned by the app wrapper
  * (createTranscribeAppWindow); this layer accumulates the transcript, shows
  * it, and saves it to Downloads on click.
  */
-import { GESTURE_CLICK, GESTURE_DOUBLE_CLICK } from "../../ui/gestures";
+import { GESTURE_CLICK, GESTURE_DOUBLE_CLICK, type InputEvent } from "../../ui/gestures";
 export class TranscribeLayer implements Layer {
   private status = "Listening...";
   // Finalized utterances, plus the live (replace-semantics) partial appended
@@ -56,7 +56,7 @@ export class TranscribeLayer implements Layer {
     return image;
   }
 
-  handleInput(event: DashboardInputEvent, ctx: LayerContext): void {
+  handleInput(event: InputEvent, ctx: LayerContext): void {
     if (event.type === "click") {
       this.saveTranscript();
       ctx.actions.requestRender();

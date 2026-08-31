@@ -35,11 +35,13 @@ import {
   assistantSkipConfirmationSetting,
   batteryDisplayModeSetting,
   brightnessSetting,
+  displayModeSetting,
   elevenLabsApiKeySetting,
   mapboxApiKeySetting,
+  mirrorTouchSetting,
   openAiApiKeySetting,
-  roamApiTokenSetting,
-  roamGraphNameSetting,
+  previewColorSetting,
+  ringConnectionModeSetting,
   sonioxApiKeySetting,
   enumSettingMenuItem,
   firmwareDebugFlagsSetting,
@@ -52,11 +54,17 @@ import {
   textSettingMenuItem,
   timeFormatSetting,
   toggleSettingMenuItem,
+  useMicControlSetting,
   verticalPositionSetting,
   voiceProviderSetting,
   screenTimeoutSetting,
   wakeWordActionSetting,
+  watchCanUnlockSetting,
+  watchCrownClockwiseNextSetting,
+  watchMirrorAssistantSetting,
+  watchRemoteEnabledSetting,
 } from "../dashboard-settings";
+import { wearBridge } from "../../native/wear-bridge";
 import { SettingsPanelLayer, type SettingsSection } from "./settings-panel";
 import { terminalFontPickerMenuItem, uiFontPickerMenuItem } from "../font-picker";
 
@@ -82,6 +90,8 @@ function settingsSections(): SettingsSection[] {
         // Where min-height windows (and the sidebar) sit vertically on the
         // screen; the dashboard controller repositions surfaces on change.
         enumSettingMenuItem(verticalPositionSetting),
+        // Band / tall / full-panel; the dashboard controller reflows windows.
+        enumSettingMenuItem(displayModeSetting),
         // Controls the top-bar battery indicators (icon vs percentage).
         enumSettingMenuItem(batteryDisplayModeSetting),
         // Controls the top-bar clock (24-hour vs 12-hour).
@@ -136,18 +146,36 @@ function settingsSections(): SettingsSection[] {
       ],
     },
     {
-      label: "Roam",
+      label: "Phone display",
+      // The phone app's mirror of the glasses screen and its controls
+      // (app/phone-ui/): all read live by the main page.
       items: [
-        textSettingMenuItem(roamGraphNameSetting),
-        textSettingMenuItem(roamApiTokenSetting),
+        enumSettingMenuItem(previewColorSetting),
+        toggleSettingMenuItem(mirrorTouchSetting),
       ],
+    },
+    {
+      label: "Watch",
+      // Wear OS remote (wear/); the status line above the items says whether
+      // a watch running the companion app is currently reachable.
+      items: [
+        toggleSettingMenuItem(watchRemoteEnabledSetting),
+        toggleSettingMenuItem(watchCrownClockwiseNextSetting),
+        toggleSettingMenuItem(watchCanUnlockSetting),
+        toggleSettingMenuItem(watchMirrorAssistantSetting),
+      ],
+      renderDetail: renderWatchStatus,
     },
     {
       label: "Developer",
       items: [
+        // Whether the phone opens its own BLE link to the R1 ring; the
+        // glasses relay ring gestures either way. Applied at connect time.
+        enumSettingMenuItem(ringConnectionModeSetting),
         toggleSettingMenuItem(saveVoiceRecordingsSetting),
         toggleSettingMenuItem(firmwareDebugFlagsSetting),
         toggleSettingMenuItem(suspendEvenHubWhenScreenOffSetting),
+        toggleSettingMenuItem(useMicControlSetting),
       ],
     },
     {
@@ -336,6 +364,25 @@ function readBundledDoc(fileName: string): string {
   } catch {
     return `(${fileName} is missing from this build)`;
   }
+}
+
+function renderWatchStatus(args: { image: GrayImage; x: number; y: number; width: number }): number {
+  const { image, x, y, width } = args;
+  const font = getDefaultSmallFont();
+  let status: string;
+  if (!wearBridge.isAvailable()) {
+    status = "Google Play services is unavailable on this phone, so no watch can connect.";
+  } else {
+    const connection = wearBridge.getWatchConnection();
+    status = connection.reachable
+      ? `Connected to ${connection.watchName || "a watch"}.`
+      : "No watch connected. Install the Faceclaw watch app (wear/ in the source tree) on a Wear OS watch paired with this phone.";
+  }
+  const lines = wrapText(font, status, width);
+  for (let i = 0; i < lines.length; i++) {
+    image.drawText(font, x, y + i * font.lineHeight, lines[i]!, 170);
+  }
+  return lines.length * font.lineHeight + 10;
 }
 
 function renderAbout(args: { image: GrayImage; x: number; y: number; width: number }): number {

@@ -22,10 +22,10 @@ import {
   type BitmapFace,
   type UiFontSelection,
 } from "../graphics/ui-fonts";
-import { GESTURE_DOUBLE_CLICK } from "./gestures";
+import { GESTURE_DOUBLE_CLICK, type InputEvent } from "./gestures";
 import { drawRightValueMenuItem, drawSelectionHighlight, openModalMenu, type MenuItem } from "./menu";
 import { LIST_ROW_TEXT_INSET, listRowHeight } from "./metrics";
-import type { DashboardInputEvent, Layer, LayerContext } from "./layers";
+import type { Layer, LayerContext } from "./layers";
 
 const SIZE_CHOICES = [12, 13, 14, 15, 16, 17, 18, 20, 22, 24, 26, 28] as const;
 const DEFAULT_TTF_SIZE = 16;
@@ -162,7 +162,7 @@ export class FontPickerLayer implements Layer {
     return String(this.draft.size);
   }
 
-  handleInput(event: DashboardInputEvent, ctx: LayerContext): void {
+  handleInput(event: InputEvent, ctx: LayerContext): void {
     switch (event.type) {
       case "scroll-up":
         this.selectedRow = (this.selectedRow + ROWS.length - 1) % ROWS.length;

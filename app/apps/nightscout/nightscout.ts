@@ -1,7 +1,8 @@
 import { getDefaultLargeFont, getDefaultSmallFont } from "../../graphics/ui-fonts";
 import { GrayImage, type UiFont } from "../../graphics/image";
 import { truncateText } from "../../graphics/textwrap";
-import { DashboardInputEvent, Layer, LayerContext } from "../../ui/layers";
+import { InputEvent } from "../../ui/gestures";
+import { Layer, LayerContext } from "../../ui/layers";
 import { nightscoutBridge, type NightscoutState } from "../../native/nightscout-bridge";
 import {
   isNightscoutSettingsConfigured,
@@ -361,7 +362,7 @@ export class NightscoutLayer implements Layer {
     return image;
   }
 
-  async handleInput(event: DashboardInputEvent, ctx: LayerContext): Promise<void> {
+  async handleInput(event: InputEvent, ctx: LayerContext): Promise<void> {
     // The menu lives on the window's long-press menu (see nightscoutMenuItems);
     // double-click at the app root is handled by the yield wrapper.
     if (event.type === "double-click") {

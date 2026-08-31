@@ -1,5 +1,27 @@
-import { Application, Frame, ImageSource, Observable, Screen } from "@nativescript/core";
-import { dashboardController } from "../g2/dashboard-controller";
+import {
+  Application,
+  Dialogs,
+  Frame,
+  ImageSource,
+  Observable,
+  Screen,
+  SwipeDirection,
+  type GestureEventData,
+  type SwipeGestureEventData,
+  type TouchGestureEventData,
+  type View,
+} from "@nativescript/core";
+import { dashboardController, type MirrorTouchKind } from "../g2/dashboard-controller";
+import {
+  brightnessSetting,
+  DISPLAY_MODE_VALUES,
+  displayModeLabel,
+  displayModeSetting,
+  mirrorTouchSetting,
+  onAnySettingChanged,
+  type BrightnessSetting,
+  type DisplayModeSetting,
+} from "../ui/dashboard-settings";
 import { isValidMacAddress, loadDeviceAddresses } from "../g2/device-addresses";
 import { isAutoReconnectSuppressed, resumeAutoReconnect } from "../g2/reconnect-policy";
 import { formatErrorMessage } from "../util/format-error";
@@ -8,6 +30,12 @@ import { G2_LENS_HEIGHT, G2_LENS_WIDTH } from "../graphics/image";
 const LENS_ASPECT_RATIO = G2_LENS_WIDTH / G2_LENS_HEIGHT;
 
 type LayoutOrientation = "portrait" | "landscape";
+
+type ControlsTab = "settings" | "watch" | "ring";
+
+// Survives navigation round-trips (a fresh view model is built per visit) but
+// not process restarts.
+let lastControlsTab: ControlsTab = "watch";
 
 export class MainViewModel extends Observable {
   private _status = "Disconnected.";
@@ -23,18 +51,41 @@ export class MainViewModel extends Observable {
   private _secondaryTextSettingTitle = "";
   private _secondaryTextSettingValue = "";
   private _secondaryTextSettingInputKind: "text" | "email" | "password" = "text";
+  private _activeTextEditorToggleLabel = "";
+  private _activeTextEditorToggleValue = false;
+  private _activeTextEditorToggleVisible = false;
   private _evenAppConflictMessage = "";
   private _evenAppConflictWarningVisible = false;
   private _firmwareWarningMessage = "";
   private _firmwareWarningVisible = false;
   private _screenRecordingActive = false;
   private _batteryOptimizationWarningVisible = false;
+  private _fontsMissingWarningVisible = false;
+  private _warningsModalVisible = false;
+  private _previewMode = false;
   private _phase: "disconnected" | "connecting" | "connected" | "charging" | "disconnecting" = "disconnected";
+
+  // A new view model is built on every navigation to the main page; these
+  // module-level subscriptions must die with it (see dispose) or each
+  // round-trip to another page leaks a listener that pins the dead model.
+  private readonly unsubscribers: Array<() => void> = [];
 
   constructor() {
     super();
-    dashboardController.subscribe((snapshot) => {
+    this.attach();
+  }
+
+  /**
+   * Subscribe to the controller and settings. Idempotent; the page calls it
+   * again from `loaded` because an app suspend fires unloaded/loaded (which
+   * dispose the model) without a navigation building a fresh one. Subscribing
+   * delivers the current snapshot, so a re-attached model catches up.
+   */
+  attach(): void {
+    if (this.unsubscribers.length > 0) return;
+    this.unsubscribers.push(dashboardController.subscribe((snapshot) => {
       this.status = snapshot.status;
+      this.previewMode = snapshot.previewMode;
       this.displayPreview = snapshot.displayPreview;
       this.displayPreviewMessage = snapshot.displayPreviewMessage;
       this.phase = snapshot.phase;
@@ -47,13 +98,27 @@ export class MainViewModel extends Observable {
       this.secondaryTextSettingTitle = snapshot.secondaryTextSettingTitle;
       this.secondaryTextSettingValue = snapshot.secondaryTextSettingValue;
       this.secondaryTextSettingInputKind = snapshot.secondaryTextSettingInputKind;
+      this.activeTextEditorToggleLabel = snapshot.activeTextEditorToggleLabel;
+      this.activeTextEditorToggleValue = snapshot.activeTextEditorToggleValue;
+      this.activeTextEditorToggleVisible = snapshot.activeTextEditorToggleVisible;
       this.evenAppConflictMessage = snapshot.evenAppConflictMessage;
       this.evenAppConflictWarningVisible = snapshot.evenAppConflictWarningVisible;
       this.firmwareWarningMessage = snapshot.firmwareWarningMessage;
       this.firmwareWarningVisible = snapshot.firmwareWarningVisible;
       this.screenRecordingActive = snapshot.screenRecordingActive;
       this.batteryOptimizationWarningVisible = snapshot.batteryOptimizationWarningVisible;
-    });
+      this.fontsMissingWarningVisible = snapshot.fontsMissingWarningVisible;
+      this.refreshPadFocusLine();
+    }));
+    // Brightness / display mode can change from the glasses' Settings app too.
+    this.unsubscribers.push(onAnySettingChanged(() => this.refreshDisplayControls()));
+  }
+
+  /** Detach from the controller and settings; the page calls this when it lets go of the model. */
+  dispose(): void {
+    for (const unsubscribe of this.unsubscribers.splice(0)) {
+      unsubscribe();
+    }
   }
 
   get status(): string {
@@ -64,7 +129,49 @@ export class MainViewModel extends Observable {
     if (this._status !== value) {
       this._status = value;
       this.notifyPropertyChange("status", value);
+      this.notifyPropertyChange("connectionStatusLabel", this.connectionStatusLabel);
     }
+  }
+
+  /**
+   * Short connection indicator for the action bar. The full status string
+   * (which can be a sentence, e.g. a failure reason) stays available by
+   * tapping the indicator.
+   */
+  get connectionStatusLabel(): string {
+    switch (this._phase) {
+      case "connected":
+        return "Connected";
+      case "charging":
+        return "Charging";
+      case "disconnecting":
+        return "Disconnecting";
+      case "connecting":
+        // The transport reports retry loops as "Reconnecting..." with the
+        // phase still "connecting"; keep that distinction visible.
+        return this._status.startsWith("Reconnecting") ? "Reconnecting" : "Connecting";
+      default:
+        if (this._status.startsWith("Failed")) return "Failed";
+        // The headless preview display is live; "Disconnected" would suggest
+        // the interactive mirror below it is broken.
+        return this._previewMode ? "Preview" : "Disconnected";
+    }
+  }
+
+  get previewMode(): boolean {
+    return this._previewMode;
+  }
+
+  set previewMode(value: boolean) {
+    if (this._previewMode !== value) {
+      this._previewMode = value;
+      this.notifyPropertyChange("previewMode", value);
+      this.notifyPropertyChange("connectionStatusLabel", this.connectionStatusLabel);
+    }
+  }
+
+  onConnectionStatusTap(): void {
+    void Dialogs.alert({ title: "Connection status", message: this._status, okButtonText: "OK" });
   }
 
   get displayPreview(): ImageSource | null {
@@ -122,9 +229,31 @@ export class MainViewModel extends Observable {
     // aspect; the width is derived from it, so a wider lens aspect can't
     // grow the preview past the side panel.
     const screenWidth = Screen.mainScreen.widthDIPs;
-    const sidePanelWidth = 260;
+    // Must match the landscape grid's fixed side-panel column in main-page.xml.
+    const sidePanelWidth = 360;
     const availableWidth = Math.max(240, Math.floor(screenWidth - sidePanelWidth - 56));
     return Math.floor(availableWidth / 2);
+  }
+
+  /** Near-full-width on phones, capped on tablets (the 32 clears the 16 margins). */
+  get warningsModalWidth(): number {
+    return Math.min(Screen.mainScreen.widthDIPs - 32, 480);
+  }
+
+  /**
+   * The simulated watch face (and the Back/Menu row under it) is capped at a
+   * 1.5:1 face aspect; on narrow phones the available width governs instead.
+   */
+  get watchFaceWidth(): number {
+    // Must match .touchpad height in app.css.
+    const faceHeight = 230;
+    const available =
+      this._layoutOrientation === "landscape"
+        ? // The landscape side panel column (see main-page.xml) minus its
+          // m-l-16 margin and the controls' own 8+8 margins.
+          360 - 32
+        : Screen.mainScreen.widthDIPs - 56; // p-20 padding + controls margins
+    return Math.min(available, Math.round(faceHeight * 1.5));
   }
 
   get portraitLayoutVisibility(): "visible" | "collapse" {
@@ -145,6 +274,8 @@ export class MainViewModel extends Observable {
     this.notifyPropertyChange("displayPreviewHeight", this.displayPreviewHeight);
     this.notifyPropertyChange("landscapeDisplayPreviewWidth", this.landscapeDisplayPreviewWidth);
     this.notifyPropertyChange("landscapeDisplayPreviewHeight", this.landscapeDisplayPreviewHeight);
+    this.notifyPropertyChange("warningsModalWidth", this.warningsModalWidth);
+    this.notifyPropertyChange("watchFaceWidth", this.watchFaceWidth);
   }
 
   get activeTextSettingId(): string | null {
@@ -157,6 +288,8 @@ export class MainViewModel extends Observable {
       this.notifyPropertyChange("activeTextSettingId", value);
       this.notifyPropertyChange("textSettingEditorVisibility", this.textSettingEditorVisibility);
       this.notifyPropertyChange("isTextSettingEditorActive", this.isTextSettingEditorActive);
+      // Keyboard-input mode: the tabbed controls make way for the editor.
+      this.notifyPropertyChange("controlsVisibility", this.controlsVisibility);
     }
   }
 
@@ -281,6 +414,43 @@ export class MainViewModel extends Observable {
     return this.hasSecondaryTextSetting ? "next" : "done";
   }
 
+  get activeTextEditorToggleLabel(): string {
+    return this._activeTextEditorToggleLabel;
+  }
+
+  set activeTextEditorToggleLabel(value: string) {
+    if (this._activeTextEditorToggleLabel !== value) {
+      this._activeTextEditorToggleLabel = value;
+      this.notifyPropertyChange("activeTextEditorToggleLabel", value);
+    }
+  }
+
+  get activeTextEditorToggleValue(): boolean {
+    return this._activeTextEditorToggleValue;
+  }
+
+  set activeTextEditorToggleValue(value: boolean) {
+    if (this._activeTextEditorToggleValue !== value) {
+      this._activeTextEditorToggleValue = value;
+      this.notifyPropertyChange("activeTextEditorToggleValue", value);
+    }
+  }
+
+  get activeTextEditorToggleVisible(): boolean {
+    return this._activeTextEditorToggleVisible;
+  }
+
+  set activeTextEditorToggleVisible(value: boolean) {
+    if (this._activeTextEditorToggleVisible !== value) {
+      this._activeTextEditorToggleVisible = value;
+      this.notifyPropertyChange("activeTextEditorToggleVisibility", this.activeTextEditorToggleVisibility);
+    }
+  }
+
+  get activeTextEditorToggleVisibility(): "visible" | "collapse" {
+    return this._activeTextEditorToggleVisible ? "visible" : "collapse";
+  }
+
   get isTextSettingEditorActive(): boolean {
     return this._activeTextSettingId !== null;
   }
@@ -309,6 +479,7 @@ export class MainViewModel extends Observable {
       this._evenAppConflictWarningVisible = value;
       this.notifyPropertyChange("evenAppConflictWarningVisible", value);
       this.notifyPropertyChange("evenAppConflictWarningVisibility", this.evenAppConflictWarningVisibility);
+      this.refreshWarningIndicator();
     }
   }
 
@@ -336,6 +507,7 @@ export class MainViewModel extends Observable {
       this._firmwareWarningVisible = value;
       this.notifyPropertyChange("firmwareWarningVisible", value);
       this.notifyPropertyChange("firmwareWarningVisibility", this.firmwareWarningVisibility);
+      this.refreshWarningIndicator();
     }
   }
 
@@ -392,6 +564,7 @@ export class MainViewModel extends Observable {
       this._batteryOptimizationWarningVisible = value;
       this.notifyPropertyChange("batteryOptimizationWarningVisible", value);
       this.notifyPropertyChange("batteryOptimizationWarningVisibility", this.batteryOptimizationWarningVisibility);
+      this.refreshWarningIndicator();
     }
   }
 
@@ -399,8 +572,88 @@ export class MainViewModel extends Observable {
     return this._batteryOptimizationWarningVisible ? "visible" : "collapse";
   }
 
+  get fontsMissingWarningVisible(): boolean {
+    return this._fontsMissingWarningVisible;
+  }
+
+  set fontsMissingWarningVisible(value: boolean) {
+    if (this._fontsMissingWarningVisible !== value) {
+      this._fontsMissingWarningVisible = value;
+      this.notifyPropertyChange("fontsMissingWarningVisible", value);
+      this.notifyPropertyChange("fontsMissingWarningVisibility", this.fontsMissingWarningVisibility);
+      this.refreshWarningIndicator();
+    }
+  }
+
+  get fontsMissingWarningVisibility(): "visible" | "collapse" {
+    return this._fontsMissingWarningVisible ? "visible" : "collapse";
+  }
+
+  /**
+   * Jump back into the onboarding firmware check, whose missing-fonts path
+   * downloads the stock firmware and extracts the G2 fonts without reflashing.
+   * The check probes the glasses itself, so drop the main connection first;
+   * like pairing, this is a detour rather than a Disconnect, so lift the
+   * auto-reconnect suppression right away.
+   */
+  async onPrepareFontsTap(): Promise<void> {
+    this.setWarningsModalVisible(false);
+    if (this.phase === "connected" || this.phase === "charging" || this.phase === "connecting") {
+      try {
+        await dashboardController.disconnect();
+      } catch {
+        // proceed anyway; the firmware check reports its own connection trouble
+      }
+      resumeAutoReconnect();
+    }
+    Frame.topmost()?.navigate({ moduleName: "phone-ui/onboarding-firmware-check-page" });
+  }
+
   onAllowBackgroundUsageTap(): void {
+    this.setWarningsModalVisible(false);
     dashboardController.requestBatteryOptimizationExemption();
+  }
+
+  // ---- the action bar's warning triangle and the modal behind it ----
+
+  get anyWarningVisible(): boolean {
+    return (
+      this._evenAppConflictWarningVisible ||
+      this._firmwareWarningVisible ||
+      this._batteryOptimizationWarningVisible ||
+      this._fontsMissingWarningVisible
+    );
+  }
+
+  get warningIconVisibility(): "visible" | "collapse" {
+    return this.anyWarningVisible ? "visible" : "collapse";
+  }
+
+  get warningsModalVisibility(): "visible" | "collapse" {
+    return this._warningsModalVisible ? "visible" : "collapse";
+  }
+
+  onWarningIconTap(): void {
+    this.setWarningsModalVisible(true);
+  }
+
+  onWarningsModalCloseTap(): void {
+    this.setWarningsModalVisible(false);
+  }
+
+  private setWarningsModalVisible(value: boolean): void {
+    if (this._warningsModalVisible !== value) {
+      this._warningsModalVisible = value;
+      this.notifyPropertyChange("warningsModalVisibility", this.warningsModalVisibility);
+    }
+  }
+
+  private refreshWarningIndicator(): void {
+    this.notifyPropertyChange("warningIconVisibility", this.warningIconVisibility);
+    // Don't leave the modal open showing nothing once the last warning clears.
+    if (!this.anyWarningVisible) {
+      this.setWarningsModalVisible(false);
+    }
   }
 
   get phase(): "disconnected" | "connecting" | "connected" | "charging" | "disconnecting" {
@@ -414,6 +667,7 @@ export class MainViewModel extends Observable {
       this.notifyPropertyChange("buttonLabel", this.buttonLabel);
       this.notifyPropertyChange("canRun", this.canRun);
       this.notifyPropertyChange("connectItemEnabled", this.connectItemEnabled);
+      this.notifyPropertyChange("connectionStatusLabel", this.connectionStatusLabel);
     }
   }
 
@@ -469,6 +723,10 @@ export class MainViewModel extends Observable {
    */
   async autoConnect(): Promise<void> {
     if (this.phase !== "disconnected") return;
+    // Preview-only users get the headless preview display instead of a
+    // connection; a no-op in every other state (including while suppressed:
+    // suppression is about not re-dialing glasses, and there are none).
+    await dashboardController.ensurePreviewDisplay();
     if (isAutoReconnectSuppressed()) return;
     const addresses = loadDeviceAddresses();
     if (!isValidMacAddress(addresses.right) || !isValidMacAddress(addresses.left)) return;
@@ -482,6 +740,18 @@ export class MainViewModel extends Observable {
   onConfigureTap(): void {
     if (!this.canRun) return;
     Frame.topmost()?.navigate("phone-ui/config-page");
+  }
+
+  onPermissionsTap(): void {
+    Frame.topmost()?.navigate({
+      moduleName: "phone-ui/permissions-page",
+      context: { onboarding: false },
+    });
+  }
+
+  /** Review saved caption sessions; works without a glasses connection. */
+  onConversationsTap(): void {
+    Frame.topmost()?.navigate("phone-ui/conversations-page");
   }
 
   /**
@@ -506,6 +776,7 @@ export class MainViewModel extends Observable {
   }
 
   async onInstallFirmwareTap(): Promise<void> {
+    this.setWarningsModalVisible(false);
     await this.openFlashPage("install");
   }
 
@@ -564,32 +835,268 @@ export class MainViewModel extends Observable {
     dashboardController.finishActiveTextSettingEdit();
   }
 
+  onTextSettingToggleChange(args: { value?: boolean; object?: { checked?: boolean } }): void {
+    dashboardController.setActiveTextEditorToggleValue(
+      args.object?.checked ?? args.value ?? false,
+    );
+  }
+
   onOpenEvenAppSettingsTap(): void {
+    this.setWarningsModalVisible(false);
     dashboardController.openEvenAppSettings();
   }
 
-  async onSyntheticUpTap(): Promise<void> {
-    await dashboardController.injectSyntheticRingInput("scroll-up");
-  }
-
-  async onSyntheticDownTap(): Promise<void> {
-    await dashboardController.injectSyntheticRingInput("scroll-down");
-  }
-
-  async onSyntheticLeftTap(): Promise<void> {
-    await dashboardController.injectSyntheticRingInput("double-click");
-  }
-
-  async onSyntheticRightTap(): Promise<void> {
+  async onRingPadTap(): Promise<void> {
     await dashboardController.injectSyntheticRingInput("click");
   }
 
-  async onSyntheticLongPressTap(): Promise<void> {
+  async onRingPadDoubleTap(): Promise<void> {
+    await dashboardController.injectSyntheticRingInput("double-click");
+  }
+
+  async onRingPadLongPress(): Promise<void> {
     await dashboardController.injectSyntheticRingInput("long-press");
+  }
+
+  /** The ring pad only has a vertical axis, so left/right swipes are ignored. */
+  async onRingPadSwipe(args: SwipeGestureEventData): Promise<void> {
+    if (args.direction === SwipeDirection.up) {
+      await dashboardController.injectSyntheticRingInput("scroll-up");
+    } else if (args.direction === SwipeDirection.down) {
+      await dashboardController.injectSyntheticRingInput("scroll-down");
+    }
   }
 
   async onSyntheticMicTap(): Promise<void> {
     await dashboardController.injectSyntheticRingInput("wakeword");
+  }
+
+  // ---- the phone's own controller: touchpad, d-pad, mirror touch ----
+  //
+  // Everything here is the watch scheme (origin "watch"): spatial swipes,
+  // tap = select, double-tap / two fingers = back, hold = menu. The ring row
+  // above stays on the ring's own scheme.
+
+  private padTwoFingerDown = false;
+
+  /** What the next gesture lands on, as the watch pad shows it. */
+  get padFocusLine(): string {
+    return dashboardController.glassesDisplayLabel();
+  }
+
+  private refreshPadFocusLine(): void {
+    this.notifyPropertyChange("padFocusLine", this.padFocusLine);
+  }
+
+  async onPadTap(): Promise<void> {
+    if (this.padTwoFingerDown) return;
+    await dashboardController.injectSyntheticRingInput("click", "watch");
+    this.refreshPadFocusLine();
+  }
+
+  async onPadDoubleTap(): Promise<void> {
+    await dashboardController.injectSyntheticRingInput("double-click", "watch");
+    this.refreshPadFocusLine();
+  }
+
+  async onPadLongPress(): Promise<void> {
+    await dashboardController.injectSyntheticRingInput("long-press", "watch");
+    this.refreshPadFocusLine();
+  }
+
+  async onPadSwipe(args: SwipeGestureEventData): Promise<void> {
+    await dashboardController.injectSyntheticRingInput(swipeKind(args.direction), "watch");
+    this.refreshPadFocusLine();
+  }
+
+  /** Two fingers down and up without moving: back (the watch's two-finger tap). */
+  async onPadTouch(args: TouchGestureEventData): Promise<void> {
+    const count = args.getPointerCount();
+    if (args.action === "down" || args.action === "move") {
+      if (count >= 2) this.padTwoFingerDown = true;
+      return;
+    }
+    if (args.action === "up" || args.action === "cancel") {
+      const twoFinger = this.padTwoFingerDown;
+      if (twoFinger) {
+        // Let the single-tap recognizer's delayed tap see the flag first.
+        setTimeout(() => {
+          this.padTwoFingerDown = false;
+        }, 400);
+        if (args.action === "up") {
+          await dashboardController.injectSyntheticRingInput("double-click", "watch");
+          this.refreshPadFocusLine();
+        }
+      }
+    }
+  }
+
+  // ---- touching the mirror itself ----
+
+  // Toggled from Settings > Phone display > Touch mirror; read per gesture,
+  // so no change notification is needed.
+  get mirrorTouchEnabled(): boolean {
+    return mirrorTouchSetting.get();
+  }
+
+  private mirrorFraction(args: GestureEventData & { getX?: () => number; getY?: () => number }): { nx: number; ny: number } | null {
+    const view = args.object as View | undefined;
+    const size = view?.getActualSize?.();
+    if (!view || !size || !size.width || !size.height || !args.getX || !args.getY) return null;
+    // NativeScript's gesture getX/getY are view-local DIPs (the view's own
+    // MotionEvent coordinates), so they divide straight into the view's size.
+    return { nx: args.getX() / size.width, ny: args.getY() / size.height };
+  }
+
+  private async mirrorGesture(kind: MirrorTouchKind, args: GestureEventData): Promise<void> {
+    if (!this.mirrorTouchEnabled) return;
+    const at = this.mirrorFraction(args) ?? { nx: 0.5, ny: 0.5 };
+    await dashboardController.handleMirrorTouch(kind, at.nx, at.ny);
+    this.refreshPadFocusLine();
+  }
+
+  onMirrorTap(args: GestureEventData): Promise<void> {
+    return this.mirrorGesture("tap", args);
+  }
+
+  onMirrorDoubleTap(args: GestureEventData): Promise<void> {
+    return this.mirrorGesture("double-tap", args);
+  }
+
+  onMirrorLongPress(args: GestureEventData): Promise<void> {
+    return this.mirrorGesture("long-press", args);
+  }
+
+  onMirrorSwipe(args: SwipeGestureEventData): Promise<void> {
+    return this.mirrorGesture(swipeKind(args.direction), args);
+  }
+
+  // ---- the tabbed controls area below the mirror ----
+  //
+  // Three tabs: Settings (screen size + brightness), Watch (the simulated
+  // watch face), Ring (simulated R1 inputs). The whole area collapses while a
+  // text setting is being edited so the editor gets the space instead.
+
+  private _controlsTab: ControlsTab = lastControlsTab;
+
+  get controlsVisibility(): "visible" | "collapse" {
+    return this.isTextSettingEditorActive ? "collapse" : "visible";
+  }
+
+  get settingsTabVisibility(): "visible" | "collapse" {
+    return this._controlsTab === "settings" ? "visible" : "collapse";
+  }
+
+  get watchTabVisibility(): "visible" | "collapse" {
+    return this._controlsTab === "watch" ? "visible" : "collapse";
+  }
+
+  get ringTabVisibility(): "visible" | "collapse" {
+    return this._controlsTab === "ring" ? "visible" : "collapse";
+  }
+
+  get settingsTabClass(): string {
+    return this._controlsTab === "settings" ? "tab-button tab-button-selected" : "tab-button";
+  }
+
+  get watchTabClass(): string {
+    return this._controlsTab === "watch" ? "tab-button tab-button-selected" : "tab-button";
+  }
+
+  get ringTabClass(): string {
+    return this._controlsTab === "ring" ? "tab-button tab-button-selected" : "tab-button";
+  }
+
+  onSettingsTabTap(): void {
+    this.setControlsTab("settings");
+  }
+
+  onWatchTabTap(): void {
+    this.setControlsTab("watch");
+  }
+
+  onRingTabTap(): void {
+    this.setControlsTab("ring");
+  }
+
+  private setControlsTab(tab: ControlsTab): void {
+    if (this._controlsTab === tab) return;
+    this._controlsTab = tab;
+    // Remembered across navigations (module-level) so the page comes back on
+    // the tab it left on; deliberately not persisted to disk.
+    lastControlsTab = tab;
+    this.notifyPropertyChange("settingsTabVisibility", this.settingsTabVisibility);
+    this.notifyPropertyChange("watchTabVisibility", this.watchTabVisibility);
+    this.notifyPropertyChange("ringTabVisibility", this.ringTabVisibility);
+    this.notifyPropertyChange("settingsTabClass", this.settingsTabClass);
+    this.notifyPropertyChange("watchTabClass", this.watchTabClass);
+    this.notifyPropertyChange("ringTabClass", this.ringTabClass);
+  }
+
+  // ---- display mode and brightness, on the Settings tab ----
+
+  get displayModeLabel(): string {
+    return displayModeLabel(displayModeSetting.get()) + " ▾";
+  }
+
+  async onDisplayModeTap(): Promise<void> {
+    const current = displayModeSetting.get();
+    const options = DISPLAY_MODE_VALUES.map((value) => displayModeLabel(value) + (value === current ? "  ✓" : ""));
+    const picked = await Dialogs.action({ title: "Display mode", cancelButtonText: "Cancel", actions: options });
+    const index = options.indexOf(picked);
+    if (index < 0) return;
+    const value = DISPLAY_MODE_VALUES[index] as DisplayModeSetting;
+    if (value !== current) displayModeSetting.set(value);
+    this.notifyPropertyChange("displayModeLabel", this.displayModeLabel);
+  }
+
+  get brightnessAuto(): boolean {
+    return brightnessSetting.get() === "auto";
+  }
+
+  get brightnessSliderEnabled(): boolean {
+    return !this.brightnessAuto;
+  }
+
+  /** The slider's position; while Auto, the last manual level (or 50). */
+  get brightnessPercent(): number {
+    const value = brightnessSetting.get();
+    if (value === "auto") return this.lastManualBrightness;
+    const numeric = parseInt(value, 10);
+    return Number.isFinite(numeric) ? numeric : 50;
+  }
+
+  private lastManualBrightness = 50;
+
+  onBrightnessChange(args: { value?: number; object?: { value?: number } }): void {
+    if (this.brightnessAuto) return;
+    const raw = typeof args.value === "number" ? args.value : Number(args.object?.value ?? NaN);
+    if (!Number.isFinite(raw)) return;
+    // The setting only has every tenth level; snap to the nearest.
+    const level = Math.min(100, Math.max(0, Math.round(raw / 10) * 10));
+    this.lastManualBrightness = level;
+    const value = String(level) as BrightnessSetting;
+    if (brightnessSetting.get() !== value) brightnessSetting.set(value);
+  }
+
+  onBrightnessAutoChange(args: { value?: boolean; object?: { checked?: boolean } }): void {
+    const on = typeof args.value === "boolean" ? args.value : Boolean(args.object?.checked);
+    if (on) {
+      if (brightnessSetting.get() !== "auto") {
+        this.lastManualBrightness = this.brightnessPercent;
+        brightnessSetting.set("auto");
+      }
+    } else if (brightnessSetting.get() === "auto") {
+      brightnessSetting.set(String(this.lastManualBrightness) as BrightnessSetting);
+    }
+    this.refreshDisplayControls();
+  }
+
+  private refreshDisplayControls(): void {
+    this.notifyPropertyChange("brightnessAuto", this.brightnessAuto);
+    this.notifyPropertyChange("brightnessSliderEnabled", this.brightnessSliderEnabled);
+    this.notifyPropertyChange("brightnessPercent", this.brightnessPercent);
+    this.notifyPropertyChange("displayModeLabel", this.displayModeLabel);
   }
 
   private readLayoutOrientation(): LayoutOrientation {
@@ -602,5 +1109,19 @@ export class MainViewModel extends Observable {
 
   private formatError(error: unknown): string {
     return formatErrorMessage(error, 240);
+  }
+}
+
+/** NativeScript swipe direction -> the watch-scheme directional gesture. */
+function swipeKind(direction: SwipeDirection): "swipe-up" | "swipe-down" | "swipe-left" | "swipe-right" {
+  switch (direction) {
+    case SwipeDirection.up:
+      return "swipe-up";
+    case SwipeDirection.down:
+      return "swipe-down";
+    case SwipeDirection.left:
+      return "swipe-left";
+    default:
+      return "swipe-right";
   }
 }

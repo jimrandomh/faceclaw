@@ -1,0 +1,75 @@
+<!--
+  The phone's controller for the glasses, as a three-tab area below the mirror:
+  Settings (screen size + brightness), Watch (the simulated watch face: same
+  scheme as the watch pad - tap = select, double-tap or two fingers = back,
+  hold = menu, swipes navigate), and Ring (a touchpad on the ring's own
+  scheme: vertical swipes scroll, tap/double-tap/hold = click/double-click/
+  long-press). The narrow mic button at the tab bar's right edge fires the
+  wakeword without changing the selected tab. Used by main-page.xml in both
+  orientations; binds to the page's MainViewModel, which collapses the whole
+  area while a text setting is being edited (keyboard-input mode).
+
+  The root is a rows="auto,*" grid so the active section can use the leftover
+  height (the Watch face centers in it); the three sections share the star
+  cell, only one visible at a time.
+-->
+<GridLayout xmlns="http://schemas.nativescript.org/tns.xsd" rows="auto,*" class="remote-controls">
+  <!-- rows="auto" everywhere below: a rows-less GridLayout's implicit row
+       acts as star, and this component sits in a bounded (star-row) parent,
+       where that would balloon the first grid to fill all remaining height. -->
+  <GridLayout row="0" rows="auto" columns="*,*,*,auto" class="controls-tab-bar">
+    <Button col="0" text="Settings" tap="{{ onSettingsTabTap }}" class="{{ settingsTabClass }}" />
+    <Button col="1" text="Watch" tap="{{ onWatchTabTap }}" class="{{ watchTabClass }}" />
+    <Button col="2" text="Ring" tap="{{ onRingTabTap }}" class="{{ ringTabClass }}" />
+    <!-- A Button can't hold an image, so this is a button-styled tile. The
+         explicit star row makes the cell fill the tile's height so the icon's
+         center alignment has room to work in. -->
+    <GridLayout col="3" rows="*" tap="{{ onSyntheticMicTap }}" class="tab-button tab-mic-button">
+      <Image src="res://ic_tab_mic" class="tab-mic-icon" verticalAlignment="center" horizontalAlignment="center" />
+    </GridLayout>
+  </GridLayout>
+
+  <!-- Settings tab -->
+  <StackLayout row="1" visibility="{{ settingsTabVisibility }}">
+    <GridLayout rows="auto" columns="auto,*" class="settings-row">
+      <Label col="0" text="Screen size" class="settings-row-label" verticalAlignment="center" />
+      <Button col="1" text="{{ displayModeLabel }}" tap="{{ onDisplayModeTap }}" class="mode-button" horizontalAlignment="left" />
+    </GridLayout>
+    <GridLayout rows="auto" columns="auto,*,auto" class="settings-row">
+      <Label col="0" text="☀" class="brightness-icon" verticalAlignment="center" />
+      <Slider col="1" width="100%" minValue="0" maxValue="100" value="{{ brightnessPercent }}" valueChange="{{ onBrightnessChange }}" isEnabled="{{ brightnessSliderEnabled }}" />
+      <StackLayout col="2" orientation="horizontal" verticalAlignment="center" class="auto-toggle">
+        <Label text="Auto" verticalAlignment="center" />
+        <Switch checked="{{ brightnessAuto }}" checkedChange="{{ onBrightnessAutoChange }}" />
+      </StackLayout>
+    </GridLayout>
+  </StackLayout>
+
+  <!-- Watch tab: centered in the leftover height, capped at the 1.5:1 face
+       aspect (watchFaceWidth = min(available, 1.5 x face height). -->
+  <StackLayout row="1" visibility="{{ watchTabVisibility }}" width="{{ watchFaceWidth }}" horizontalAlignment="center" verticalAlignment="center">
+    <GridLayout class="touchpad" tap="{{ onPadTap }}" doubleTap="{{ onPadDoubleTap }}" longPress="{{ onPadLongPress }}" swipe="{{ onPadSwipe }}" touch="{{ onPadTouch }}">
+      <Label text="{{ padFocusLine }}" class="pad-focus" horizontalAlignment="center" verticalAlignment="center" />
+      <Label text="▲▼ swipe   ● select   ●● back   ‒ menu" class="pad-legend" horizontalAlignment="center" verticalAlignment="bottom" />
+    </GridLayout>
+  </StackLayout>
+
+  <!-- Ring tab: a touchpad on the ring's own scheme. Vertical swipes only
+       (the ring has no horizontal axis) and no focus/status line; portrait
+       like the ring's pad itself. The auto rows hold the cosmetic markings the
+       physical ring has on its touch strip (they don't take touches); the star
+       rows are the seven equal gaps around them, edges included. -->
+  <GridLayout row="1" visibility="{{ ringTabVisibility }}" class="touchpad ring-touchpad"
+      rows="*,auto,*,auto,*,auto,*,auto,*,auto,*,auto,*"
+      horizontalAlignment="center" verticalAlignment="center"
+      tap="{{ onRingPadTap }}" doubleTap="{{ onRingPadDoubleTap }}"
+      longPress="{{ onRingPadLongPress }}" swipe="{{ onRingPadSwipe }}">
+    <Label row="1" class="ring-pad-marking" isUserInteractionEnabled="false" />
+    <Label row="3" class="ring-pad-marking" isUserInteractionEnabled="false" />
+    <Label row="5" class="ring-pad-marking" isUserInteractionEnabled="false" />
+    <Label row="7" class="ring-pad-marking" isUserInteractionEnabled="false" />
+    <Label row="9" class="ring-pad-marking" isUserInteractionEnabled="false" />
+    <Label row="11" class="ring-pad-marking" isUserInteractionEnabled="false" />
+  </GridLayout>
+
+</GridLayout>

@@ -15,7 +15,9 @@ import {
   statPath,
   type DirectoryEntry,
 } from "../../native/file-access";
-import { Layer, type DashboardInputEvent, type LayerContext } from "../../ui/layers";
+import { directionalFallback, isWatchInput, type InputEvent } from "../../ui/gestures";
+import { Layer, type LayerContext } from "../../ui/layers";
+import { shell } from "../../ui/shell/shell";
 
 const LIST_X = 20;
 
@@ -113,9 +115,17 @@ type IconMode = "row" | "item";
  * click drops into the row, scroll picks the item); list view is a flat list.
  * Click descends into a directory or picks a supported file; double-click
  * backs out one level (item selection, then parent directory, then Places,
- * then leaving the browser). Sized to its hosting stack.
+ * then leaving the browser). That is the ring's scheme; in icons view the
+ * watch (see handleIconsWatchInput) skips row mode and moves one cell at a
+ * time in four directions, exactly as in the launcher. Sized to its hosting
+ * stack.
  */
 export class FileBrowserLayer implements Layer {
+  // Watch swipes are spatial in icons view: up/down move between rows,
+  // left/right between columns. From the leftmost column, left keeps going
+  // out (parent directory, Places, then the sidebar). List view maps swipes
+  // through directionalFallback itself.
+  readonly acceptsDirectional = true;
   /** Current directory, or null at the Places level. */
   private location: string | null = null;
   /** The Places entry we descended through; going up from it returns to Places. */
@@ -202,11 +212,16 @@ export class FileBrowserLayer implements Layer {
       }
 
       if (selected) {
-        if (this.iconMode === "row") {
-          drawSelectionHighlight(image, 4, y + 1, width - 8, rowH - 2, focused, 6);
-        } else {
+        // Same preview rule as the launcher: while defocused with the watch
+        // as the last-used source, show the cell a click would land on (watch
+        // focus enters item mode directly; see onFocus) instead of a row band
+        // the watch scheme never shows.
+        const cellHighlight = this.iconMode === "item" || (!focused && shell.lastInputWasWatch());
+        if (cellHighlight) {
           this.selectedCol = clamp(this.selectedCol, 0, row.items.length - 1);
           drawSelectionHighlight(image, this.selectedCol * colW + 4, y + 1, colW - 8, rowH - 2, focused, 6);
+        } else {
+          drawSelectionHighlight(image, 4, y + 1, width - 8, rowH - 2, focused, 6);
         }
       }
 
@@ -231,15 +246,36 @@ export class FileBrowserLayer implements Layer {
     }
   }
 
-  async handleInput(event: DashboardInputEvent, ctx: LayerContext): Promise<void> {
+  async handleInput(event: InputEvent, ctx: LayerContext): Promise<void> {
     if (filesViewModeSetting.get() === "list") {
-      await this.handleListInput(event, ctx);
+      // The flat list has no spatial meaning for swipes; give them the
+      // standard scroll / select / back meanings (the layer opted into
+      // directional delivery for the icons view, so the stack won't).
+      await this.handleListInput(directionalFallback(event), ctx);
+    } else if (isWatchInput(event)) {
+      await this.handleIconsWatchInput(event, ctx);
     } else {
       await this.handleIconsInput(event, ctx);
     }
   }
 
-  private async handleListInput(event: DashboardInputEvent, ctx: LayerContext): Promise<void> {
+  /**
+   * Focus arriving from the watch goes straight to item selection, as in the
+   * launcher: the watch has left/right swipes, so it never needs row mode.
+   * Any other source keeps the two-level scheme and enters in row mode.
+   */
+  onFocus(lastInput: InputEvent | null): void {
+    if (filesViewModeSetting.get() !== "icons") return;
+    if (lastInput && isWatchInput(lastInput)) {
+      this.iconMode = "item";
+      const iconRows = buildIconRows(this.flatRows());
+      this.clampColToRow(iconRows[clamp(this.selectedRow, 0, Math.max(0, iconRows.length - 1))]);
+    } else {
+      this.iconMode = "row";
+    }
+  }
+
+  private async handleListInput(event: InputEvent, ctx: LayerContext): Promise<void> {
     const rows = this.flatRows();
     switch (event.type) {
       case "scroll-up":
@@ -261,7 +297,7 @@ export class FileBrowserLayer implements Layer {
     }
   }
 
-  private async handleIconsInput(event: DashboardInputEvent, ctx: LayerContext): Promise<void> {
+  private async handleIconsInput(event: InputEvent, ctx: LayerContext): Promise<void> {
     const rows = this.flatRows();
     const iconRows = buildIconRows(rows);
     this.selectedRow = clamp(this.selectedRow, 0, Math.max(0, iconRows.length - 1));
@@ -318,6 +354,88 @@ export class FileBrowserLayer implements Layer {
       default:
         return;
     }
+  }
+
+  /**
+   * The watch's scheme for the icons view — the launcher's: there is no row
+   * mode, the selection is always one cell (a special row counts as its
+   * single full-width item). Up/down (and the crown) move between rows
+   * keeping the column, right/left move within the row, and left from the
+   * leftmost column keeps going out — parent directory, Places, then the
+   * sidebar. Row mode is restored on the way out so a ring user finds the
+   * grid as they left it.
+   */
+  private async handleIconsWatchInput(event: InputEvent, ctx: LayerContext): Promise<void> {
+    const iconRows = buildIconRows(this.flatRows());
+    this.selectedRow = clamp(this.selectedRow, 0, Math.max(0, iconRows.length - 1));
+    const row = iconRows[this.selectedRow];
+    if (this.iconMode === "row") {
+      this.iconMode = "item";
+      this.clampColToRow(row);
+    }
+    switch (event.type) {
+      case "swipe-up":
+      case "swipe-down":
+      case "scroll-up":
+      case "scroll-down": {
+        const delta = event.type === "swipe-down" || event.type === "scroll-down" ? 1 : -1;
+        this.selectedRow = clamp(this.selectedRow + delta, 0, Math.max(0, iconRows.length - 1));
+        // Keep the column; a shorter row (or a special one) clamps it.
+        this.clampColToRow(iconRows[this.selectedRow]);
+        return;
+      }
+      case "swipe-right":
+        if (row?.kind === "grid") {
+          this.selectedCol = clamp(this.selectedCol + 1, 0, row.items.length - 1);
+        }
+        return;
+      case "swipe-left":
+        if (row?.kind === "grid" && this.selectedCol > 0) {
+          this.selectedCol--;
+        } else {
+          this.watchNavigateUp();
+        }
+        return;
+      case "click": {
+        if (!row) return;
+        if (row.kind === "special") {
+          await this.activateItem(row.item, ctx);
+        } else {
+          const item = row.items[clamp(this.selectedCol, 0, row.items.length - 1)];
+          if (item) await this.activateItem(item, ctx);
+        }
+        // Descending into a directory resets the selection for the ring (row
+        // mode at the top); the watch scheme stays in single-item selection.
+        this.iconMode = "item";
+        return;
+      }
+      case "double-click":
+        this.watchNavigateUp();
+        return;
+      default:
+        return;
+    }
+  }
+
+  private clampColToRow(row: IconRow | undefined): void {
+    if (row?.kind === "grid") {
+      this.selectedCol = clamp(this.selectedCol, 0, row.items.length - 1);
+    }
+  }
+
+  /**
+   * navigateUp for the watch scheme: inside the browser the selection stays
+   * in item mode (resetSelection/selectPath put it back in row mode for the
+   * ring); leaving from Places restores row mode on the way out.
+   */
+  private watchNavigateUp(): void {
+    if (this.location === null) {
+      this.iconMode = "row";
+      this.options.onLeave();
+      return;
+    }
+    this.navigateUp();
+    this.iconMode = "item";
   }
 
   /**

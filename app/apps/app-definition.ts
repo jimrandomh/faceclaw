@@ -106,6 +106,8 @@ export async function launchWorkerAppWindow(
      * windows are open).
      */
     matchExistingBy?: "appId" | "windowId";
+    /** Deliver watch swipes raw instead of the fallback (see WorkerWindowSpec). */
+    acceptsDirectional?: boolean;
   },
 ): Promise<void> {
   const existing = shell
@@ -125,6 +127,7 @@ export async function launchWorkerAppWindow(
     iconLetter: options.iconLetter,
     icon: options.icon,
     focus: true,
+    acceptsDirectional: options.acceptsDirectional,
   });
   ctx.appendLog(`launched ${options.windowId}`);
 }

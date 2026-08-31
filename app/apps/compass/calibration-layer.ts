@@ -6,7 +6,8 @@
 import { GrayImage } from "../../graphics/image";
 import { getDefaultMediumFont, getDefaultSmallFont } from "../../graphics/ui-fonts";
 import { wrapText } from "../../graphics/textwrap";
-import { type DashboardInputEvent, type Layer, type LayerContext } from "../../ui/layers";
+import { type InputEvent } from "../../ui/gestures";
+import { type Layer, type LayerContext } from "../../ui/layers";
 import { lineStep } from "../../ui/metrics";
 import { screenCenterInViewportX } from "../../ui/shell/geometry";
 import {
@@ -75,7 +76,7 @@ export class CompassCalibrationLayer implements Layer {
     return image;
   }
 
-  handleInput(event: DashboardInputEvent, ctx: LayerContext): void {
+  handleInput(event: InputEvent, ctx: LayerContext): void {
     if (event.type === "scroll-up") {
       this.adjust(1);
     } else if (event.type === "scroll-down") {

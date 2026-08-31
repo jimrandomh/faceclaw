@@ -253,7 +253,7 @@ export class OnboardingFlashViewModel extends Observable {
 
   private startCommunicator(addresses: { right: string; left: string }): void {
     this.disposePrompt();
-    const prompt = new FlashPromptCommunicator(addresses, this.glassesWarning);
+    const prompt = new FlashPromptCommunicator(addresses.right, this.glassesWarning);
     this.prompt = prompt;
 
     this.promptUnsubscribers.push(

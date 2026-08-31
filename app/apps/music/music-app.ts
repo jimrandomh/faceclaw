@@ -2,28 +2,14 @@ import { getDefaultMediumFont, getDefaultSmallFont } from "../../graphics/ui-fon
 import { GrayImage } from "../../graphics/image";
 import { wrapText, truncateText } from "../../graphics/textwrap";
 import { clamp } from "../../util/numeric-util";
-import {
-  GESTURE_CLICK,
-  GESTURE_DOUBLE_CLICK,
-  GESTURE_SCROLL_DOWN,
-  GESTURE_SCROLL_UP,
-} from "../../ui/gestures";
+import { directionalFallback, GESTURE_CLICK, GESTURE_DOUBLE_CLICK, GESTURE_SCROLL_DOWN, GESTURE_SCROLL_UP, type InputEvent, isDirectionalInput } from "../../ui/gestures";
 import { MenuLayer, drawSelectionHighlight, drawSubmenuIndicator } from "../../ui/menu";
 import { lineStep, tightRowHeight } from "../../ui/metrics";
-import {
-  mediaControllerBridge,
-  type MediaControllerState,
-  type MediaQueueItem,
-} from "../../native/media-controller";
+import { mediaControllerBridge, type MediaControllerState, type MediaQueueItem } from "../../native/media-controller";
 import { mediaBrowserBridge, type MediaBrowserApp } from "../../native/media-browser";
 import { MediaBrowseLayer } from "./media-browse";
-import { Layer, type DashboardInputEvent, type LayerContext, type PaintBelow } from "../../ui/layers";
-import {
-  createInProcessWindow,
-  YieldAtRootLayer,
-  type InProcessAppOptions,
-  type InProcessWindow,
-} from "../../ui/shell/in-process-window";
+import { Layer, type LayerContext, type PaintBelow } from "../../ui/layers";
+import { createInProcessWindow, YieldAtRootLayer, type InProcessAppOptions, type InProcessWindow } from "../../ui/shell/in-process-window";
 
 export const MUSIC_WINDOW_ID = "music";
 export const MUSIC_SURFACE_ID = "window:music";
@@ -59,6 +45,8 @@ type FocusColumn = "actions" | "playlist";
  * player's queue when it exposes one (scroll to a track, click to jump).
  */
 class MusicAppLayer implements Layer {
+  // Watch swipes skip tracks: right = next, left = previous.
+  readonly acceptsDirectional = true;
   private focusColumn: FocusColumn = "actions";
   private selectedActionIndex = 0;
   private selectedQueueIndex = 0;
@@ -208,13 +196,17 @@ class MusicAppLayer implements Layer {
     return image;
   }
 
-  async handleInput(event: DashboardInputEvent, ctx: LayerContext): Promise<void> {
+  async handleInput(event: InputEvent, ctx: LayerContext): Promise<void> {
     if (event.type === "double-click" && this.focusColumn === "playlist") {
       this.focusColumn = "actions";
       this.selectedActionIndex = PLAYLIST_ACTION_INDEX;
       return;
     }
     const media = mediaControllerBridge.snapshot();
+    if ((!media.accessEnabled || !media.available) && isDirectionalInput(event)) {
+      // Nothing to skip between yet: the setup prompts take select / back.
+      return this.handleInput(directionalFallback(event), ctx);
+    }
     if (!media.accessEnabled) {
       if (event.type === "click") {
         mediaControllerBridge.openNotificationAccessSettings();
@@ -233,6 +225,16 @@ class MusicAppLayer implements Layer {
     const actions = this.buildActions(media, queue);
     this.reconcileSelection(actions, queue);
     switch (event.type) {
+      case "swipe-right":
+        if (media.canSkipNext) await mediaControllerBridge.skipNext();
+        return;
+      case "swipe-left":
+        if (media.canSkipPrevious) await mediaControllerBridge.skipPrevious();
+        return;
+      case "swipe-up":
+        return this.handleInput({ type: "scroll-up", timestampMs: event.timestampMs }, ctx);
+      case "swipe-down":
+        return this.handleInput({ type: "scroll-down", timestampMs: event.timestampMs }, ctx);
       case "scroll-up":
         if (this.focusColumn === "playlist") {
           this.selectedQueueIndex = Math.max(0, this.selectedQueueIndex - 1);
@@ -419,7 +421,7 @@ class VolumeModalLayer implements Layer {
     return image;
   }
 
-  handleInput(event: DashboardInputEvent, ctx: LayerContext): void {
+  handleInput(event: InputEvent, ctx: LayerContext): void {
     if (event.type === "scroll-up") {
       this.adjust(2);
     } else if (event.type === "scroll-down") {
@@ -437,6 +439,7 @@ class VolumeModalLayer implements Layer {
 
 /** Let back leave the playlist column before the root wrapper yields to the shell. */
 class MusicRootLayer implements Layer {
+  readonly acceptsDirectional = true;
   private readonly yieldAtRoot: YieldAtRootLayer;
 
   constructor(private readonly music: MusicAppLayer) {
@@ -447,7 +450,7 @@ class MusicRootLayer implements Layer {
     return this.yieldAtRoot.paint(ctx, paintBelow);
   }
 
-  async handleInput(event: DashboardInputEvent, ctx: LayerContext): Promise<void> {
+  async handleInput(event: InputEvent, ctx: LayerContext): Promise<void> {
     if (event.type === "double-click" && this.music.isPlaylistFocused()) {
       await this.music.handleInput(event, ctx);
       return;

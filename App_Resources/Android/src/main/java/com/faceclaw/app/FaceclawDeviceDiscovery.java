@@ -37,9 +37,6 @@ import java.util.Set;
  * matching are decided in TypeScript (app/g2/even-advertisement.ts,
  * app/g2/pairing-candidates.ts) where they can be unit-tested; this filter
  * must stay a superset of the TS classifier's admission.
- *
- * Ported from the discovery path of SybilSight's Bluetooth SDK (G2.didDiscover
- * and R1's advertisement snapshot), reduced to what Android exposes.
  */
 @SuppressLint("MissingPermission")
 public class FaceclawDeviceDiscovery {
@@ -296,7 +293,7 @@ public class FaceclawDeviceDiscovery {
     /**
      * Android strips the 2-byte company identifier from each manufacturer
      * record and keys the SparseArray by it. Put the bytes back (little-endian)
-     * so TypeScript sees the same "ER"+… layout the iOS SDK and HCI captures
+     * so TypeScript sees the same "ER"+… layout the HCI captures
      * document. Prefers Even's own id; otherwise returns the first record so an
      * unexpected company id still reaches the diagnostics log.
      */

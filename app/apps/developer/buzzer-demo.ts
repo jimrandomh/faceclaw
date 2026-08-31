@@ -1,8 +1,8 @@
 import { getDefaultSmallFont } from "../../graphics/ui-fonts";
 import { GrayImage } from "../../graphics/image";
 import { clamp } from "../../util/numeric-util";
-import { Layer, type DashboardInputEvent, type LayerActions, type LayerContext } from "../../ui/layers";
-import { GESTURE_CLICK, GESTURE_DOUBLE_CLICK, GESTURE_SCROLL } from "../../ui/gestures";
+import { Layer, type LayerActions, type LayerContext } from "../../ui/layers";
+import { GESTURE_CLICK, GESTURE_DOUBLE_CLICK, GESTURE_SCROLL, type InputEvent } from "../../ui/gestures";
 import { drawSelectionHighlight, scrollToKeepSelectionVisible } from "../../ui/menu";
 import { tightRowHeight } from "../../ui/metrics";
 import {
@@ -61,7 +61,7 @@ export class BuzzerDemoLayer implements Layer {
     return image;
   }
 
-  async handleInput(event: DashboardInputEvent, ctx: LayerContext): Promise<void> {
+  async handleInput(event: InputEvent, ctx: LayerContext): Promise<void> {
     switch (event.type) {
       case "scroll-up":
         this.selectedIndex = Math.max(0, this.selectedIndex - 1);

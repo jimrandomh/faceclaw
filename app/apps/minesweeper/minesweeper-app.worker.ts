@@ -8,6 +8,8 @@
  * row, click switches to column-select, double-click pauses. Column-select:
  * scroll moves along the row, click reveals (or chords a satisfied number),
  * long-press toggles a flag, double-click returns to row-select.
+ * Watch swipes skip the two-layer scheme and move the cell cursor in four
+ * directions; a watch double-click pauses directly.
  * Paused/won/lost: click resumes or starts a new game, double-click yields
  * focus, long-press opens the window menu.
  */
@@ -18,15 +20,18 @@ import { prepareFrameDraws } from "../../graphics/glyph-wire";
 import { getFont } from "../../graphics/bdffont";
 import { getDefaultSmallFont } from "../../graphics/ui-fonts";
 import * as frameTimings from "../../native/frame-timings";
-import type { DashboardInputEvent } from "../../ui/layers";
+import { getActiveDisplay } from "../../native/active-display";
 import { buildSoundSequencePayload, type Step } from "../../ui/sound-effects";
 import { defaultWindowMenuItems, WindowMenu } from "../../ui/window-menu";
 import type { WorkerAppMessage, WorkerAppReply } from "../../ui/shell/worker-window";
 import {
+  directionalFallback,
   GESTURE_CLICK,
   GESTURE_DOUBLE_CLICK,
   GESTURE_LONG_PRESS,
   GESTURE_SCROLL,
+  isWatchInput,
+  type InputEvent,
 } from "../../ui/gestures";
 import { clamp } from "../../util/numeric-util";
 
@@ -128,6 +133,12 @@ function post(message: WorkerAppReply): void {
   global.postMessage(message);
 }
 
+// The host queues messages until this arrives: posts to a worker whose bundle
+// is still evaluating can be silently dropped (see WorkerAppHost). Top-level
+// evaluation is synchronous, so the handler below is installed before any
+// queued message can be delivered.
+post({ type: "worker-ready" });
+
 global.onmessage = (event: { data: WorkerAppMessage }) => {
   const message = event.data;
   switch (message.type) {
@@ -178,7 +189,7 @@ global.onmessage = (event: { data: WorkerAppMessage }) => {
       // Marks the main-thread -> worker hop, which is otherwise an
       // unexplained gap inside the shell's handle-input span.
       frameTimings.logFrame(message.frameId, `input received in ${message.windowId} worker`);
-      handleInput(window, message.event as DashboardInputEvent, message.frameId);
+      handleInput(window, message.event as InputEvent, message.frameId);
       break;
     }
     case "render": {
@@ -282,11 +293,12 @@ function windowMenu(window: MinesweeperWindow): WindowMenu {
   return window.menu;
 }
 
-function handleInput(window: MinesweeperWindow, event: DashboardInputEvent, frameId: number): void {
-  // An open window menu owns all input (it closes itself via pop).
+function handleInput(window: MinesweeperWindow, event: InputEvent, frameId: number): void {
+  // An open window menu owns all input (it closes itself via pop); menus are
+  // list UIs, so watch swipes take their standard fallback meanings there.
   if (window.menu?.isOpen()) {
     window.menu
-      .handleInput(event)
+      .handleInput(directionalFallback(event))
       .catch((error) => console.error(`minesweeper menu input failed: ${error}`))
       .then(() => renderAndSubmit(window, frameId));
     return;
@@ -299,9 +311,26 @@ function handleInput(window: MinesweeperWindow, event: DashboardInputEvent, fram
   }
 }
 
-function handlePlayingInput(window: MinesweeperWindow, event: DashboardInputEvent, frameId: number): void {
+function handlePlayingInput(window: MinesweeperWindow, event: InputEvent, frameId: number): void {
+  // The watch's swipes move the cell cursor in four directions; its scheme
+  // has no row-select layer (as in the launcher), so any watch input drops
+  // to cell selection first and its double-click pauses directly.
+  const watch = isWatchInput(event);
+  if (watch) window.selectMode = "column";
   const rowMode = window.selectMode === "row";
   switch (event.type) {
+    case "swipe-up":
+      window.cursorY = clamp(window.cursorY - 1, 0, ROWS - 1);
+      break;
+    case "swipe-down":
+      window.cursorY = clamp(window.cursorY + 1, 0, ROWS - 1);
+      break;
+    case "swipe-left":
+      window.cursorX = clamp(window.cursorX - 1, 0, COLS - 1);
+      break;
+    case "swipe-right":
+      window.cursorX = clamp(window.cursorX + 1, 0, COLS - 1);
+      break;
     case "scroll-up":
       if (rowMode) {
         window.cursorY = clamp(window.cursorY - 1, 0, ROWS - 1);
@@ -331,7 +360,7 @@ function handlePlayingInput(window: MinesweeperWindow, event: DashboardInputEven
       toggleFlag(window);
       break;
     case "double-click":
-      if (rowMode) {
+      if (rowMode || watch) {
         window.phase = "paused";
         syncClock(window);
         playSfx(window, SFX_PAUSE);
@@ -346,9 +375,9 @@ function handlePlayingInput(window: MinesweeperWindow, event: DashboardInputEven
   renderAndSubmit(window, frameId);
 }
 
-/** Input while paused, won, or lost. */
-function handleIdleInput(window: MinesweeperWindow, event: DashboardInputEvent, frameId: number): void {
-  switch (event.type) {
+/** Input while paused, won, or lost. Swipes take their standard fallback meanings. */
+function handleIdleInput(window: MinesweeperWindow, event: InputEvent, frameId: number): void {
+  switch (directionalFallback(event).type) {
     case "click":
       if (window.phase === "paused") {
         window.phase = "playing";
@@ -711,9 +740,9 @@ function renderAndSubmit(window: MinesweeperWindow, inputFrameId: number): void 
       frameTimings.finishFrame(frameId, "discarded: minesweeper content unchanged");
       return;
     }
-    const communicator = com.faceclaw.app.FaceclawBleCommunicator.getActive();
+    const communicator = getActiveDisplay();
     if (!communicator) {
-      frameTimings.finishFrame(frameId, "discarded: no active communicator");
+      frameTimings.finishFrame(frameId, "discarded: no active display");
       return;
     }
     const { image, draws } = frameTimings.span(frameId, "flatten", () => flattenPlanesWithDraws(planes));

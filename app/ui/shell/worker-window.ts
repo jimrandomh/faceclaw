@@ -24,6 +24,14 @@ export type WorkerAppMessage =
   | { type: "tool-call"; callId: string; windowId: string; name: string; args: unknown };
 
 export type WorkerAppReply =
+  | {
+      /**
+       * The worker's bundle has evaluated and its onmessage handler is
+       * installed. Messages posted to a still-loading worker can be silently
+       * dropped, so the host queues everything until this arrives.
+       */
+      type: "worker-ready";
+    }
   | { type: "yield-focus"; windowId: string }
   | {
       /** Foreground and focus one of the app's existing windows. */
@@ -117,6 +125,12 @@ export type WorkerWindowSpec = {
   focus?: boolean;
   /** Window height: the standard 288px band ("min", default) or full screen ("max"). */
   heightMode?: WindowHeightMode;
+  /**
+   * Deliver watch swipes to the worker as swipe-* events instead of the
+   * scroll / click / double-click fallback. The worker then owns the meaning
+   * of all four directions in every window state (see ShellWindow).
+   */
+  acceptsDirectional?: boolean;
 };
 
 export type WorkerAppHostOptions = {
@@ -160,12 +174,26 @@ export class WorkerAppHost {
   private readonly openWindows = new Set<string>();
   private readonly pendingToolCalls = new Map<string, PendingToolCall>();
   private nextCallSerial = 1;
+  /**
+   * Messages posted before the worker finishes evaluating its bundle can be
+   * silently dropped (notably the launch-time foreground/render pair, leaving
+   * a black window until the first input). Queue everything until the worker
+   * posts worker-ready, then flush in order.
+   */
+  private workerReady = false;
+  private readonly queuedMessages: WorkerAppMessage[] = [];
 
   constructor(private readonly options: WorkerAppHostOptions) {
     options.worker.onmessage = (event: MessageEvent) => {
       const message = event.data as WorkerAppReply | undefined;
       if (!message) return;
       switch (message.type) {
+        case "worker-ready":
+          this.workerReady = true;
+          for (const queued of this.queuedMessages.splice(0)) {
+            this.options.worker.postMessage(queued);
+          }
+          break;
         case "yield-focus":
           // Only the focused window's yield is meaningful.
           if (shell.foregroundWindow()?.windowId === message.windowId) {
@@ -283,6 +311,7 @@ export class WorkerAppHost {
       title: spec.title,
       surfaceId,
       closeable: true,
+      acceptsDirectional: spec.acceptsDirectional,
       heightMode,
       close: () => {
         this.openWindows.delete(spec.windowId);
@@ -371,6 +400,10 @@ export class WorkerAppHost {
   }
 
   private post(message: WorkerAppMessage): void {
+    if (!this.workerReady) {
+      this.queuedMessages.push(message);
+      return;
+    }
     this.options.worker.postMessage(message);
   }
 }

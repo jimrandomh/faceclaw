@@ -1,14 +1,46 @@
 import { G2_LENS_HEIGHT, G2_LENS_WIDTH } from "../../graphics/image";
-import { verticalPositionSetting } from "../dashboard-settings";
+import { displayModeSetting, type DisplayModeSetting, verticalPositionSetting } from "../dashboard-settings";
 
 /** Top bar: 24px notification icons plus a little padding. */
 export const TOP_BAR_HEIGHT = 28;
 /**
- * Sidebar width. Leaves the app viewport exactly 576px wide — the surface
- * width EvenHub apps expect. Icon column layout within the strip (one wide
- * column vs. two narrow ones) is the chrome layer's business.
+ * Width of the sidebar strip as painted. Leaves the app viewport exactly
+ * 576px wide — the surface width EvenHub apps expect — except in the
+ * full-panel display mode, where the strip overlays the app (see
+ * sidebarWidth). Icon column layout within the strip (one wide column vs.
+ * two narrow ones) is the chrome layer's business.
  */
 export const SIDEBAR_WIDTH = 64;
+
+/** The Display > Display mode setting (see dashboard-settings.ts). */
+export function displayMode(): DisplayModeSetting {
+  return displayModeSetting.get();
+}
+
+/**
+ * How much of the screen's width the sidebar takes away from app windows:
+ * the strip, or nothing in the full-panel mode (where the chrome paints the
+ * strip over the window while the sidebar has focus).
+ */
+export function sidebarWidth(): number {
+  return displayMode() === "640x480" ? 0 : SIDEBAR_WIDTH;
+}
+
+/**
+ * Whether the sidebar strip is on screen: always when it reserves width; in
+ * the full-panel mode (where it overlays the window) only while it has focus.
+ */
+export function sidebarStripVisible(focus: "sidebar" | "window"): boolean {
+  return sidebarWidth() > 0 || focus === "sidebar";
+}
+
+/**
+ * The height an app's requested mode actually gets: the band mode honours
+ * it, the taller modes give every window the whole screen.
+ */
+export function effectiveHeightMode(mode: WindowHeightMode): WindowHeightMode {
+  return displayMode() === "576x288" ? mode : "max";
+}
 
 /**
  * X of the display's true horizontal centre, in app-viewport coordinates. The
@@ -17,7 +49,7 @@ export const SIDEBAR_WIDTH = 64;
  * than use the viewport's own centre.
  */
 export function screenCenterInViewportX(): number {
-  return Math.round(G2_LENS_WIDTH / 2) - SIDEBAR_WIDTH;
+  return Math.round(G2_LENS_WIDTH / 2) - sidebarWidth();
 }
 
 /**
@@ -43,7 +75,7 @@ export const MIN_WINDOW_MAX_TOP = G2_LENS_HEIGHT - MIN_WINDOW_HEIGHT;
 
 /** Total height (top bar + content) of a window's band in the given mode. */
 export function windowBandHeight(mode: WindowHeightMode): number {
-  switch (mode) {
+  switch (effectiveHeightMode(mode)) {
     case "max":
       return G2_LENS_HEIGHT;
     case "medium":
@@ -89,7 +121,7 @@ export function windowTop(mode: WindowHeightMode): number {
 /** App-content viewport size for a height mode (independent of vertical position). */
 export function appViewportSize(mode: WindowHeightMode): { width: number; height: number } {
   return {
-    width: G2_LENS_WIDTH - SIDEBAR_WIDTH,
+    width: G2_LENS_WIDTH - sidebarWidth(),
     height: windowBandHeight(mode) - TOP_BAR_HEIGHT,
   };
 }
@@ -102,7 +134,7 @@ export function appViewportRect(mode: WindowHeightMode): {
   height: number;
 } {
   return {
-    x: SIDEBAR_WIDTH,
+    x: sidebarWidth(),
     y: windowTop(mode) + TOP_BAR_HEIGHT,
     ...appViewportSize(mode),
   };

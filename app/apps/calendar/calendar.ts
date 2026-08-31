@@ -4,9 +4,9 @@ import { wrapText, truncateText } from "../../graphics/textwrap";
 import { clamp } from "../../util/numeric-util";
 import { readUpcomingEvents, type CalendarEvent } from "../../native/calendar";
 import { timeFormatSetting } from "../../ui/dashboard-settings";
-import { GESTURE_CLICK } from "../../ui/gestures";
+import { GESTURE_CLICK, type InputEvent } from "../../ui/gestures";
 import { hasCalendarPermission } from "../../g2/android-permissions";
-import { type DashboardInputEvent, type Layer, type LayerContext } from "../../ui/layers";
+import { type Layer, type LayerContext } from "../../ui/layers";
 import { lineStep } from "../../ui/metrics";
 
 // Title position, shared with the other list apps (terminal, notifications).
@@ -85,7 +85,7 @@ export class CalendarLayer implements Layer {
     return image;
   }
 
-  handleInput(event: DashboardInputEvent): void {
+  handleInput(event: InputEvent): void {
     if (!hasCalendarPermission()) {
       // Any tap on the prompt re-triggers the phone-side permission request.
       if (event.type === "click") this.requestPermission();

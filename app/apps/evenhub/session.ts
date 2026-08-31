@@ -20,7 +20,8 @@
 import { ApplicationSettings } from "@nativescript/core";
 import { GrayImage } from "../../graphics/image";
 import { EvenHubFont } from "../../graphics/evenhub-font";
-import { type DashboardInputEvent, type Layer } from "../../ui/layers";
+import { type InputEvent, type InputSource } from "../../ui/gestures";
+import { type Layer } from "../../ui/layers";
 import {
   anthropicApiKeySetting,
   elevenLabsApiKeySetting,
@@ -425,7 +426,7 @@ export class EvenHubSession implements EvenHubMicClient, EvenHubImuClient, EvenH
    * fields elided the way protobuf JSON elides them; list selection moves
    * locally with events only for clicks and boundary scrolls.
    */
-  handleGesture(event: DashboardInputEvent): void {
+  handleGesture(event: InputEvent): void {
     if (!this.page) return;
     const capture = this.page ? eventCaptureContainer(this.page) : undefined;
     switch (event.type) {
@@ -1346,12 +1347,17 @@ function luminance(r: number, g: number, b: number): number {
   return Math.round(0.2126 * r + 0.7152 * g + 0.0722 * b);
 }
 
-/** ring/left-arm/right-arm -> PB EventSourceType. */
-function gestureSource(source: "ring" | "left-arm" | "right-arm"): number {
+/**
+ * ring/left-arm/right-arm -> PB EventSourceType. The watch is reported to
+ * EvenHub apps as the ring: they only know stock hardware, and the watch's
+ * ring-vocabulary gestures mean the same thing.
+ */
+function gestureSource(source: InputSource): number {
   switch (source) {
     case "right-arm":
       return 1;
     case "ring":
+    case "watch":
       return 2;
     case "left-arm":
       return 3;

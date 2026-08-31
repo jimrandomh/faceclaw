@@ -1,6 +1,5 @@
 // Left↔right pair grouping on the advertised serial, closest-first ordering,
-// the "Closest"/"Yours" disambiguators (ported from SybilSight's
-// PairingScanPresentation tests), and the row presentation.
+// the "Closest"/"Yours" disambiguators, and the row presentation.
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");

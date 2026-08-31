@@ -49,6 +49,14 @@ public class BleProtocol {
     // protobuf fields to stock implementations, so they are safely ignored.
     public static final int FACECLAW_WAKE_CONTROL_FIELD = 101;
     public static final int FACECLAW_WAKE_EVENT_FIELD = 102;
+    /**
+     * CFW mic_control (EVENCFW/16, caps tokens micctl/micmc/micraw): host
+     * writes an ['M','C',ver,op,...] record as settings field 103; each temple
+     * reports a 21-byte ['M','C',ver,...] status as field 104, both appended
+     * to settings read responses and as standalone commandId=3 pushes.
+     */
+    public static final int FACECLAW_MIC_CONTROL_FIELD = 103;
+    public static final int FACECLAW_MIC_STATUS_FIELD = 104;
     public static final int FACECLAW_WAKE_OP_ACQUIRE = 1;
     public static final int FACECLAW_WAKE_OP_RELEASE = 2;
     public static final int FACECLAW_WAKE_OP_CLAIM = 3;
@@ -403,6 +411,40 @@ public class BleProtocol {
             encodeVarintField(2, 0),
             encodeBytesField(FACECLAW_WAKE_CONTROL_FIELD, control)
         ));
+    }
+
+    /**
+     * Wrap an already-encoded ['M','C',ver,op,...] mic-control record as a
+     * settings write carrying CFW field 103. Magic zero makes it
+     * fire-and-forget like the wake lease: the firmware consumes the field
+     * before its stock nanopb decoder discards the unknown tag, and the
+     * "ack" is the field-104 status notify that follows.
+     */
+    public static byte[] buildFaceclawMicControl(byte[] record) {
+        return concat(CollectionUtils.listOf(
+            encodeVarintField(1, 1),
+            encodeVarintField(2, 0),
+            encodeBytesField(FACECLAW_MIC_CONTROL_FIELD, record)
+        ));
+    }
+
+    /**
+     * Extract the CFW mic status record (field 104) from a settings frame, or
+     * null when absent. The 21-byte body layout is decoded on the TS side;
+     * here we only validate the 'M','C',version prelude.
+     */
+    public static byte[] parseFaceclawMicStatus(byte[] pb) {
+        if (pb == null) {
+            return null;
+        }
+        byte[] body = readFieldBytes(stripTrailingCrc(pb), FACECLAW_MIC_STATUS_FIELD);
+        if (body == null
+                || body.length < 3
+                || body[0] != 'M'
+                || body[1] != 'C') {
+            return null;
+        }
+        return body;
     }
 
     /**

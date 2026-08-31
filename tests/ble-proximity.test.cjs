@@ -1,5 +1,3 @@
-// Ported from SybilSight's BLEProximityTests.
-//
 // These pin the parts the pairing screen depends on: that a stronger signal
 // always sorts first, that the absolute numbers stay inside a plausible band,
 // and that a missing signal degrades to "unknown" rather than to a fabricated

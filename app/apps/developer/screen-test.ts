@@ -1,6 +1,7 @@
 import { getDefaultSmallFont } from "../../graphics/ui-fonts";
 import { GrayImage } from "../../graphics/image";
-import { Layer, type DashboardInputEvent, type LayerContext } from "../../ui/layers";
+import { type InputEvent } from "../../ui/gestures";
+import { Layer, type LayerContext } from "../../ui/layers";
 import { drawListScrollbar } from "../../ui/menu";
 
 const COLOR_VALUE_COUNT = 256;
@@ -49,7 +50,7 @@ export class ScreenTestLayer implements Layer {
     return image;
   }
 
-  handleInput(event: DashboardInputEvent, ctx: LayerContext): void {
+  handleInput(event: InputEvent, ctx: LayerContext): void {
     switch (event.type) {
       case "scroll-up":
         this.scrollRow = Math.max(0, this.scrollRow - 1);

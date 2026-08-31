@@ -12,6 +12,12 @@ public class FaceclawLc3Decoder {
     public static final int COUNTER_OFFSET = 204;
     public static final int SAMPLES_PER_FRAME = 160;
     public static final int SAMPLES_PER_PACKET = FRAMES_PER_PACKET * SAMPLES_PER_FRAME;
+    // Trailer layout (firmware service_audio.c): after the 200 LC3 bytes the
+    // glasses DSP appends two signed 16-bit LE values computed on the raw
+    // stereo capture before the mono downmix — a signal-strength ratio and the
+    // asin-derived direction-of-arrival in degrees — then the packet counter.
+    public static final int SSR_OFFSET = 200;
+    public static final int ANGLE_OFFSET = 202;
 
     static {
         System.loadLibrary("faceclaw_lc3");
@@ -23,6 +29,8 @@ public class FaceclawLc3Decoder {
     private long duplicatePackets;
     private long missingPackets;
     private long decodeErrors;
+    private int lastSsr;
+    private int lastAngleDegrees;
 
     public FaceclawLc3Decoder() {
         nativeHandle = nativeCreate(FRAME_US, SAMPLE_RATE);
@@ -64,7 +72,19 @@ public class FaceclawLc3Decoder {
         }
         realPackets++;
         lastCounter = counter;
+        lastSsr = (short) ((packet[SSR_OFFSET] & 0xff) | (packet[SSR_OFFSET + 1] << 8));
+        lastAngleDegrees = (short) ((packet[ANGLE_OFFSET] & 0xff) | (packet[ANGLE_OFFSET + 1] << 8));
         return decoded;
+    }
+
+    /** Firmware signal-strength ratio from the most recent decoded packet. */
+    public synchronized int getLastSsr() {
+        return lastSsr;
+    }
+
+    /** Firmware direction-of-arrival (signed degrees) from the most recent decoded packet. */
+    public synchronized int getLastAngleDegrees() {
+        return lastAngleDegrees;
     }
 
     public synchronized long getRealPackets() {

@@ -1,20 +1,9 @@
 import { getDefaultSmallFont } from "../../graphics/ui-fonts";
 import { GrayImage } from "../../graphics/image";
 import { truncateText } from "../../graphics/textwrap";
-import {
-  canLoadFontFile,
-  fontFileDisplayName,
-  fontFileMetrics,
-  renderFontFileText,
-  renderFontFileWrapped,
-} from "../../native/font-files";
-import {
-  GESTURE_CLICK,
-  GESTURE_DOUBLE_CLICK,
-  GESTURE_SCROLL,
-  gestureHints,
-} from "../../ui/gestures";
-import { Layer, type DashboardInputEvent, type LayerContext } from "../../ui/layers";
+import { canLoadFontFile, fontFileDisplayName, fontFileMetrics, renderFontFileText, renderFontFileWrapped } from "../../native/font-files";
+import { GESTURE_CLICK, GESTURE_DOUBLE_CLICK, GESTURE_SCROLL, gestureHints, type InputEvent } from "../../ui/gestures";
+import { Layer, type LayerContext } from "../../ui/layers";
 
 const MARGIN_X = 18;
 const TITLE_Y = 8;
@@ -126,7 +115,7 @@ export class FontPreviewerLayer implements Layer {
     return out;
   }
 
-  handleInput(event: DashboardInputEvent, ctx: LayerContext): void {
+  handleInput(event: InputEvent, ctx: LayerContext): void {
     switch (event.type) {
       case "scroll-up":
         this.setSizeIndex(this.sizeIndex + 1);

@@ -267,6 +267,21 @@ public class MessageBuilder {
         );
     }
 
+    /** CFW mic_control write (settings field 103) targeted at one temple. */
+    public OutboundMessage faceclawMicControl(byte[] record, String label, boolean leftArm) {
+        return new OutboundMessage(
+            "mic-control",
+            "mic control " + label + (leftArm ? " L" : " R"),
+            BleProtocol.SID_UI_SETTING,
+            BleProtocol.FLAG_REQUEST,
+            0,
+            BleProtocol.buildFaceclawMicControl(record),
+            ACK_TIMEOUT_MS,
+            -1,
+            leftArm
+        );
+    }
+
     public OutboundMessage faceclawWearQuery(boolean leftArm) {
         return new OutboundMessage(
             "wear-query-control",

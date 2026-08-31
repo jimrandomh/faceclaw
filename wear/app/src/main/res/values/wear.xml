@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Advertised over the Wearable Data Layer; the phone app targets its
+     messages at nodes with this capability (FaceclawWearBridge). -->
+<resources>
+    <string-array name="android_wear_capabilities">
+        <item>faceclaw_watch</item>
+    </string-array>
+</resources>

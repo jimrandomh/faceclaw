@@ -14,6 +14,8 @@
  * Controls (ball ready): scroll sets launch power, click launches. In play:
  * click flips both flippers, scroll-up/down flips left/right individually,
  * long-press nudges the table (three quick nudges tilt), double-click pauses.
+ * Watch swipes: left/right work the matching flipper, up nudges (or raises
+ * launch power at the plunger), down lowers launch power.
  * Paused/game over: click resumes or starts a new game, double-click yields
  * focus, long-press opens the window menu.
  */
@@ -24,16 +26,18 @@ import { prepareFrameDraws } from "../../graphics/glyph-wire";
 import { getFont } from "../../graphics/bdffont";
 import { getDefaultSmallFont } from "../../graphics/ui-fonts";
 import * as frameTimings from "../../native/frame-timings";
+import { getActiveDisplay } from "../../native/active-display";
 import { getStringSetting, setStringSetting } from "../../native/settings-store";
-import type { DashboardInputEvent } from "../../ui/layers";
 import { buildSoundSequencePayload, type Step } from "../../ui/sound-effects";
 import { defaultWindowMenuItems, WindowMenu } from "../../ui/window-menu";
 import type { WorkerAppMessage, WorkerAppReply } from "../../ui/shell/worker-window";
 import {
+  directionalFallback,
   GESTURE_CLICK,
   GESTURE_DOUBLE_CLICK,
   GESTURE_LONG_PRESS,
   GESTURE_SCROLL,
+  type InputEvent,
 } from "../../ui/gestures";
 import { clamp } from "../../util/numeric-util";
 
@@ -284,6 +288,12 @@ function post(message: WorkerAppReply): void {
   global.postMessage(message);
 }
 
+// The host queues messages until this arrives: posts to a worker whose bundle
+// is still evaluating can be silently dropped (see WorkerAppHost). Top-level
+// evaluation is synchronous, so the handler below is installed before any
+// queued message can be delivered.
+post({ type: "worker-ready" });
+
 global.onmessage = (event: { data: WorkerAppMessage }) => {
   const message = event.data;
   switch (message.type) {
@@ -349,7 +359,7 @@ global.onmessage = (event: { data: WorkerAppMessage }) => {
       // Marks the main-thread -> worker hop, which is otherwise an
       // unexplained gap inside the shell's handle-input span.
       frameTimings.logFrame(message.frameId, `input received in ${message.windowId} worker`);
-      handleInput(window, message.event as DashboardInputEvent, message.frameId);
+      handleInput(window, message.event as InputEvent, message.frameId);
       break;
     }
     case "render": {
@@ -467,11 +477,12 @@ function windowMenu(window: PinballWindow): WindowMenu {
   return window.menu;
 }
 
-function handleInput(window: PinballWindow, event: DashboardInputEvent, frameId: number): void {
-  // An open window menu owns all input (it closes itself via pop).
+function handleInput(window: PinballWindow, event: InputEvent, frameId: number): void {
+  // An open window menu owns all input (it closes itself via pop); menus are
+  // list UIs, so watch swipes take their standard fallback meanings there.
   if (window.menu?.isOpen()) {
     window.menu
-      .handleInput(event)
+      .handleInput(directionalFallback(event))
       .catch((error) => console.error(`pinball menu input failed: ${error}`))
       .then(() => renderAndSubmit(window, frameId));
     return;
@@ -484,7 +495,7 @@ function handleInput(window: PinballWindow, event: DashboardInputEvent, frameId:
   }
 }
 
-function handlePlayingInput(window: PinballWindow, event: DashboardInputEvent, frameId: number): void {
+function handlePlayingInput(window: PinballWindow, event: InputEvent, frameId: number): void {
   const ready = window.ballState === "ready";
   switch (event.type) {
     case "scroll-up":
@@ -499,6 +510,26 @@ function handlePlayingInput(window: PinballWindow, event: DashboardInputEvent, f
         window.launchPower = clamp(window.launchPower - 1, 1, LAUNCH_SPEEDS.length);
       } else {
         flip(window, window.flippers[1]!);
+      }
+      break;
+    // Watch swipes: left/right work the matching flipper; up nudges the
+    // table (or raises launch power at the plunger), down lowers it.
+    case "swipe-left":
+      if (!ready) flip(window, window.flippers[0]!);
+      break;
+    case "swipe-right":
+      if (!ready) flip(window, window.flippers[1]!);
+      break;
+    case "swipe-up":
+      if (ready) {
+        window.launchPower = clamp(window.launchPower + 1, 1, LAUNCH_SPEEDS.length);
+      } else {
+        nudge(window);
+      }
+      break;
+    case "swipe-down":
+      if (ready) {
+        window.launchPower = clamp(window.launchPower - 1, 1, LAUNCH_SPEEDS.length);
       }
       break;
     case "click":
@@ -529,9 +560,9 @@ function handlePlayingInput(window: PinballWindow, event: DashboardInputEvent, f
   renderAndSubmit(window, frameId);
 }
 
-/** Input while paused or game over. */
-function handleIdleInput(window: PinballWindow, event: DashboardInputEvent, frameId: number): void {
-  switch (event.type) {
+/** Input while paused or game over. Swipes take their standard fallback meanings. */
+function handleIdleInput(window: PinballWindow, event: InputEvent, frameId: number): void {
+  switch (directionalFallback(event).type) {
     case "click":
       if (window.phase === "game-over") resetGame(window);
       window.phase = "playing";
@@ -1040,9 +1071,9 @@ function renderAndSubmit(window: PinballWindow, inputFrameId: number): void {
       frameTimings.finishFrame(frameId, "discarded: pinball content unchanged");
       return;
     }
-    const communicator = com.faceclaw.app.FaceclawBleCommunicator.getActive();
+    const communicator = getActiveDisplay();
     if (!communicator) {
-      frameTimings.finishFrame(frameId, "discarded: no active communicator");
+      frameTimings.finishFrame(frameId, "discarded: no active display");
       return;
     }
     const { image, draws } = frameTimings.span(frameId, "flatten", () => flattenPlanesWithDraws(planes));

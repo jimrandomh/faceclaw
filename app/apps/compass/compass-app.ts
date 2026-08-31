@@ -9,7 +9,8 @@ import {
   type CompassEvent,
 } from "../../native/compass";
 import { wrapText } from "../../graphics/textwrap";
-import { type DashboardInputEvent, type Layer, type LayerContext } from "../../ui/layers";
+import { type InputEvent } from "../../ui/gestures";
+import { type Layer, type LayerContext } from "../../ui/layers";
 import { lineStep } from "../../ui/metrics";
 import { screenCenterInViewportX } from "../../ui/shell/geometry";
 import {
@@ -205,7 +206,7 @@ class CompassLayer implements Layer {
   // A tap opens calibration from either state: it is the affordance the
   // "Uncalibrated" prompt advertises, and re-calibrating is a normal thing to
   // want once the glasses have been taken off and put back on.
-  handleInput(event: DashboardInputEvent, ctx: LayerContext): void {
+  handleInput(event: InputEvent, ctx: LayerContext): void {
     if (event.type === "click") this.openCalibration(ctx);
   }
 }

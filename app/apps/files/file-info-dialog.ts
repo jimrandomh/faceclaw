@@ -2,8 +2,8 @@ import { getDefaultSmallFont } from "../../graphics/ui-fonts";
 import { GrayImage } from "../../graphics/image";
 import { wrapText } from "../../graphics/textwrap";
 import type { DirectoryEntry } from "../../native/file-access";
-import { GESTURE_DOUBLE_CLICK } from "../../ui/gestures";
-import { Layer, type DashboardInputEvent, type LayerContext, type PaintBelow } from "../../ui/layers";
+import { GESTURE_DOUBLE_CLICK, type InputEvent } from "../../ui/gestures";
+import { Layer, type LayerContext, type PaintBelow } from "../../ui/layers";
 import { drawSelectionHighlight } from "../../ui/menu";
 import { LIST_ROW_TEXT_INSET, lineStep, listRowHeight } from "../../ui/metrics";
 
@@ -81,7 +81,7 @@ export class FileInfoDialogLayer implements Layer {
     return image;
   }
 
-  async handleInput(event: DashboardInputEvent, ctx: LayerContext): Promise<void> {
+  async handleInput(event: InputEvent, ctx: LayerContext): Promise<void> {
     switch (event.type) {
       case "scroll-up":
         if (this.actions.length) {

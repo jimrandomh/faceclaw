@@ -1,0 +1,20 @@
+# Changelog
+
+## 0.6.2 - 2026-08-30
+* Preview Only mode works
+* Voice input uses phone mic in preview mode
+* Simulated ring input on phone screen is swipe-style rather than separate buttons
+* Simulated watch input on phone screen is more minimalist
+* Fix an issue where you could be missing the EvenHub font after skipping onboarding
+* Terminal app has an activity indicator based on last-output-at tracking
+
+## 0.6.1 - 2026-08-30
+* Settings import/export scripts work on release builds
+* Fixed an issue where the onboarding flow failed to detect the existing glasses firmware version
+* Update launcher, files, and game UIs to work better with watch input
+* Calendar app shows the day-of-the-month in its icon
+* Move Roam settings out of the shared Settings app and into the Roam app itself
+
+## 0.6 - 2026-08-29
+- Start keeping a changelog and making signed binaries via GitHub Releases
+

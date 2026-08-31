@@ -5,6 +5,8 @@ const VOICE_PERMISSION_REQUEST_CODE = 4243;
 const CALENDAR_PERMISSION_REQUEST_CODE = 4244;
 const LOCATION_PERMISSION_REQUEST_CODE = 4245;
 const FINE_LOCATION_PERMISSION_REQUEST_CODE = 4246;
+const BLE_ONLY_PERMISSION_REQUEST_CODE = 4247;
+const POST_NOTIFICATIONS_PERMISSION_REQUEST_CODE = 4248;
 const POST_NOTIFICATIONS_PERMISSION = "android.permission.POST_NOTIFICATIONS";
 const RECORD_AUDIO_PERMISSION = "android.permission.RECORD_AUDIO";
 const READ_CALENDAR_PERMISSION = "android.permission.READ_CALENDAR";
@@ -31,23 +33,22 @@ function toJavaStringArray(values: string[]): string[] {
   return result;
 }
 
-function getRequiredPermissions(): string[] {
-  const sdk = android.os.Build.VERSION.SDK_INT;
-  const permissions: string[] = [];
-
-  if (sdk >= 31) {
-    permissions.push(
+/** The runtime permissions this Android version needs for BLE scan + connect. */
+function getBlePermissions(): string[] {
+  if (android.os.Build.VERSION.SDK_INT >= 31) {
+    return [
       android.Manifest.permission.BLUETOOTH_SCAN,
       android.Manifest.permission.BLUETOOTH_CONNECT,
-    );
-  } else {
-    permissions.push(android.Manifest.permission.ACCESS_FINE_LOCATION);
+    ];
   }
+  return [android.Manifest.permission.ACCESS_FINE_LOCATION];
+}
 
-  if (sdk >= 33) {
+function getRequiredPermissions(): string[] {
+  const permissions = getBlePermissions();
+  if (android.os.Build.VERSION.SDK_INT >= 33) {
     permissions.push(POST_NOTIFICATIONS_PERMISSION);
   }
-
   return permissions;
 }
 
@@ -105,6 +106,69 @@ export async function ensureBlePermissions(): Promise<void> {
 
 export async function ensureVoicePermissions(): Promise<void> {
   await ensurePermissions([RECORD_AUDIO_PERMISSION], VOICE_PERMISSION_REQUEST_CODE, "Voice control");
+}
+
+/** Whether the BLE scan/connect permissions have been granted (false off-Android). */
+export function hasBlePermissions(): boolean {
+  if (!global.isAndroid) return false;
+  return getBlePermissions().every((permission) => isPermissionGranted(permission));
+}
+
+/**
+ * Prompt for just the BLE permissions (without POST_NOTIFICATIONS, which the
+ * Permissions screen presents as its own card). Resolves true when granted.
+ */
+export async function requestBlePermissions(): Promise<boolean> {
+  if (!global.isAndroid) return false;
+  try {
+    await ensurePermissions(getBlePermissions(), BLE_ONLY_PERMISSION_REQUEST_CODE, "Bluetooth");
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Whether posting notifications is allowed. Before Android 13 (sdk 33) there
+ * is no runtime permission for this, so it reports as granted.
+ */
+export function hasPostNotificationsPermission(): boolean {
+  if (!global.isAndroid) return false;
+  if (android.os.Build.VERSION.SDK_INT < 33) return true;
+  return isPermissionGranted(POST_NOTIFICATIONS_PERMISSION);
+}
+
+/** Prompt for POST_NOTIFICATIONS. Resolves true when the permission is held afterward. */
+export async function requestPostNotificationsPermission(): Promise<boolean> {
+  if (!global.isAndroid) return false;
+  if (android.os.Build.VERSION.SDK_INT < 33) return true;
+  try {
+    await ensurePermissions(
+      [POST_NOTIFICATIONS_PERMISSION],
+      POST_NOTIFICATIONS_PERMISSION_REQUEST_CODE,
+      "Notification",
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Whether RECORD_AUDIO has been granted (false off-Android). */
+export function hasMicrophonePermission(): boolean {
+  if (!global.isAndroid) return false;
+  return isPermissionGranted(RECORD_AUDIO_PERMISSION);
+}
+
+/** Prompt for RECORD_AUDIO. Resolves true when granted, false on denial. */
+export async function requestMicrophonePermission(): Promise<boolean> {
+  if (!global.isAndroid) return false;
+  try {
+    await ensureVoicePermissions();
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /** Whether READ_CALENDAR has been granted (false off-Android). */

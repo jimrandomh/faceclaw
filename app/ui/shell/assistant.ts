@@ -1,10 +1,10 @@
 import { G2_LENS_WIDTH, GrayImage } from "../../graphics/image";
 import { type BdfFont } from "../../graphics/bdffont";
 import { getDefaultSmallFont } from "../../graphics/ui-fonts";
-import { GESTURE_DOUBLE_CLICK } from "../gestures";
+import { GESTURE_DOUBLE_CLICK, type InputEvent } from "../gestures";
 import { drawSelectionHighlight } from "../menu";
 import { listRowHeight } from "../metrics";
-import { Layer, type DashboardInputEvent, type LayerActions, type LayerContext } from "../layers";
+import { Layer, type LayerActions, type LayerContext } from "../layers";
 import { wrapText, truncateText } from "../../graphics/textwrap";
 import { MIN_WINDOW_HEIGHT, minWindowTop } from "./geometry";
 
@@ -134,7 +134,7 @@ export class AssistantLayer implements Layer {
     return image;
   }
 
-  handleInput(event: DashboardInputEvent, _ctx: LayerContext): void {
+  handleInput(event: InputEvent, _ctx: LayerContext): void {
     if (this.phase === "thinking") {
       if (event.type === "double-click") {
         this.callbacks.onCancel();

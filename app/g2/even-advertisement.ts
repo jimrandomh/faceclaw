@@ -1,10 +1,6 @@
 /**
  * Parsers for what Even Realities hardware puts in a BLE advertisement.
  *
- * Ported from SybilSight's SDK (`extractSN` / `extractMac` /
- * `extractG2AdvertisementFlag` in `G2.swift`, and `ringMacWireBytes` /
- * `ringNameAddressOctets` in `R1.swift`).
- *
  * ## G2 temple (confirmed by HCI capture)
  *
  * Manufacturer-specific AD record: `45 52` + SN(14, ASCII) + MAC(6, little-endian) + flag(1).

@@ -5,10 +5,10 @@ import { getDefaultSmallFont } from "../../graphics/ui-fonts";
 import { voiceControlBridge, type VoiceTranscriptEvent } from "../../native/voice-control";
 import { refineDictation, type AnthropicStreamHandle } from "../../native/anthropic";
 import { anthropicApiKeySetting } from "../dashboard-settings";
-import { GESTURE_CLICK, GESTURE_DOUBLE_CLICK, gestureHints } from "../gestures";
+import { GESTURE_CLICK, GESTURE_DOUBLE_CLICK, gestureHints, type InputEvent } from "../gestures";
 import { drawSelectionHighlight } from "../menu";
 import { listRowHeight } from "../metrics";
-import { Layer, type DashboardInputEvent, type LayerActions, type LayerContext } from "../layers";
+import { Layer, type LayerActions, type LayerContext } from "../layers";
 import { MIN_WINDOW_HEIGHT, minWindowTop } from "./geometry";
 
 const DIALOG_X = 40;
@@ -273,7 +273,7 @@ export class VoiceInputLayer implements Layer {
     return image;
   }
 
-  handleInput(event: DashboardInputEvent, _ctx: LayerContext): void {
+  handleInput(event: InputEvent, _ctx: LayerContext): void {
     switch (this.phase) {
       case "capturing":
         if (event.type === "double-click") {
@@ -300,7 +300,7 @@ export class VoiceInputLayer implements Layer {
     }
   }
 
-  private handleMenuInput(event: DashboardInputEvent): void {
+  private handleMenuInput(event: InputEvent): void {
     const rowCount = this.menuRows().length;
     switch (event.type) {
       case "scroll-up":

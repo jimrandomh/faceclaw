@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Faceclaw — an unofficial interface for the Even Realities G2</title>
+<meta name="description" content="Faceclaw is an unofficial Android user interface for the Even Realities G2 smart glasses: multitasking apps, a voice assistant, notifications, terminal mirroring and a Wear OS remote.">
+<meta property="og:title" content="Faceclaw">
+<meta property="og:description" content="An unofficial Android user interface for the Even Realities G2 smart glasses.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://faceclaw.org/">
+<meta property="og:image" content="https://faceclaw.org/screenshots/launcher.png">
+<link rel="icon" href="images/favicon.png">
+<link rel="apple-touch-icon" href="images/favicon.png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="wrap">
+    <a class="brand" href="./"><img src="images/faceclaw-logo.png" alt="">Faceclaw</a>
+    <nav>
+      <a href="#features">Features</a>
+      <a href="install.html">Install</a>
+      <a href="privacy.html">Privacy</a>
+      <a href="https://github.com/jimrandomh/faceclaw">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+
+<div class="wrap">
+  <div class="hero">
+    <img class="logo" src="images/faceclaw-logo.png" alt="Faceclaw logo: a lobster perched on a smiley face">
+    <h1>Faceclaw</h1>
+    <p class="tagline">An unofficial user interface for the Even Realities G2 smart glasses. Apps, a voice assistant, notifications and a watch remote — running from your Android phone.</p>
+    <div class="buttons">
+      <a class="btn primary" href="install.html">Install</a>
+      <a class="btn" href="https://github.com/jimrandomh/faceclaw">Source on GitHub</a>
+    </div>
+  </div>
+</div>
+
+<section>
+  <div class="wrap">
+    <div class="callout">
+      <p><span class="eyebrow">Unofficial</span></p>
+      <p>Faceclaw is not made by, endorsed by, or supported by Even Realities. It comes with no warranty from them or from anyone. It runs on Android, and it requires installing custom firmware on the glasses — the app can install and uninstall that firmware for you, downloading the stock firmware from Even and applying patches generated from <a href="https://github.com/jimrandomh/g2flash">g2flash</a>.</p>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2>What it looks like</h2>
+    <div class="shots">
+      <figure class="shot">
+        <img src="screenshots/launcher.png" alt="The Faceclaw app launcher on the glasses display">
+        <figcaption>The app launcher, with the app-switcher sidebar on the left.</figcaption>
+      </figure>
+      <figure class="shot">
+        <img src="screenshots/music-player.png" alt="The music player on the glasses display">
+        <figcaption>Media controls, working with most Android media players.</figcaption>
+      </figure>
+      <figure class="shot">
+        <img src="screenshots/settings-assistant.png" alt="Assistant settings on the glasses display">
+        <figcaption>Assistant settings, edited on the glasses themselves.</figcaption>
+      </figure>
+      <figure class="shot">
+        <img src="screenshots/settings-display.png" alt="Display settings on the glasses display">
+        <figcaption>Display settings, including height and vertical position.</figcaption>
+      </figure>
+    </div>
+  </div>
+</section>
+
+<section id="features">
+  <div class="wrap">
+    <h2>Features</h2>
+    <!-- BEGIN GENERATED: features -->
+    <ul class="features">
+      <li><strong>A voice assistant</strong> that wakes up when you say "Hey Even", transcribes text with an on-device model, OpenAI Whisper, ElevenLabs, or Soniox API, and responds to queries and commands using an onboard model (Qwen3 4B, slow) or with an Anthropic or OpenAI model (requires an API key), or using your own long-running OpenClaw agent.</li>
+      <li><strong>Multitasking</strong>, with an app-switcher sidebar and app launcher.</li>
+      <li><strong>Mostly-compatible with EvenHub apps.</strong></li>
+      <li><strong>A lock screen</strong>; glasses lock automatically when you take them off and unlock when you unlock your phone.</li>
+      <li><strong>The full display.</strong> Full-screen apps can use the full 640x480 display area, rather than the 576x288 that EvenHub apps can use.</li>
+      <li><strong>Integration with Android notifications</strong>: a top bar that shows the same icons your phone does, popups when notifications arrive, and menu items to dismiss or use Android-app-provided custom actions like mark as read or quick reply.</li>
+      <li><strong>Terminal mirroring.</strong> Mirror terminal apps such as Claude Code or Codex CLI with <a href="https://github.com/jimrandomh/g2mirror">g2mirror</a>, view them on the glasses, and send them inputs with the voice assistant.</li>
+      <li><strong>Media player controls</strong> including playlist and media library navigation, compatible with most Android media players.</li>
+      <li><strong>Turn-by-turn directions</strong> (requires a Mapbox API token).</li>
+      <li><strong>Nightscout</strong>, an app for viewing blood-glucose data (requires a cloud server and API token).</li>
+      <li><strong>Power management</strong>: the glasses go to sleep properly when the screen is off, and wake when you double-tap the ring or speak the wakeword, allowing battery life similar to the stock Even app.</li>
+      <li><strong>Connection management</strong> with auto-reconnect, and autodetection of conflict with the official Even Realities app.</li>
+      <li><strong>A Wear OS watch app</strong> that replaces (and outdoes) the R1 ring: tap, swipe, hold and crown gestures, side buttons, app launching and window switching, voice or keyboard queries to the assistant with the reply on your wrist, typing into apps, and glasses status/lock/display control.</li>
+      <li><strong>On-phone screen mirroring with touch control</strong>: tap what you see on the mirror (sidebar icons, launcher cells), or use the phone's own touchpad, d-pad and Back/Menu buttons — the same spatial scheme as the watch — plus a compact ring simulator. A display-mode picker (576×288 band, 576×480 tall, or the full 640×480 panel with an auto-hiding sidebar) and a brightness slider with an Auto toggle sit beside the mirror.</li>
+      <li><strong>Bluetooth pairing</strong> that scans for nearby glasses and identifies each pair before connecting: model, frame shape, and colour decoded from the advertised serial (with product photos), left and right arms matched to each other by that serial, an estimated distance so the pair in your hand sorts first, and the optional R1 ring.</li>
+      <li><strong>Dual-language NativeScript architecture</strong>, with Java for the multithreaded Android API and bluetooth stack bits, Typescript for the bits you want to hack on.</li>
+    </ul>
+<!-- END GENERATED: features -->
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2>Beyond the glasses</h2>
+    <div class="cards">
+      <div class="card">
+        <h3>Watch remote</h3>
+        <p>A Wear OS companion app turns the whole watch face into a touchpad that outdoes the R1 ring: swipes, crown scrolling, side buttons, app launching, and spoken or typed queries with the reply on your wrist.</p>
+      </div>
+      <div class="card">
+        <h3>EvenHub apps</h3>
+        <p>Faceclaw runs EvenHub apps through an emulation layer. Install them from the Hub, or sideload your own by opening an <code>.ehpk</code> file on your phone.</p>
+      </div>
+      <div class="card">
+        <h3>Your own agent</h3>
+        <p>Instead of calling an LLM API from the phone, the assistant can route queries to your own long-running <a href="https://github.com/jimrandomh/faceclaw-agent-bridge">OpenClaw agent</a>, which also gets access to the glasses' tools.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2>Contributing</h2>
+    <p class="prose">Be bold. Modify Faceclaw into the app that you want it to be for yourself, without worrying about whether other people will like your version — then, if you think your changes might be useful to others, open a pull request. Faceclaw is Free Software under the GPLv3. See the <a href="https://github.com/jimrandomh/faceclaw#contributing">contributing notes</a> for what to test before you send a change.</p>
+  </div>
+</section>
+
+</main>
+
+<footer>
+  <div class="wrap">
+    <div class="links">
+      <a href="https://github.com/jimrandomh/faceclaw">GitHub</a>
+      <a href="install.html">Install</a>
+      <a href="privacy.html">Privacy policy</a>
+      <a href="https://github.com/jimrandomh/g2flash">g2flash firmware patches</a>
+      <a href="https://github.com/jimrandomh/g2mirror">g2mirror</a>
+    </div>
+    <p>Faceclaw is Free Software, licensed under the GPLv3. It is unofficial, and is not affiliated with Even Realities.</p>
+  </div>
+</footer>
+
+</body>
+</html>

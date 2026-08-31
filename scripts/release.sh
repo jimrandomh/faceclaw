@@ -1,20 +1,24 @@
 #!/bin/bash
-# Build a signed release APK at dist/Faceclaw-<version>.apk, where <version>
-# comes from FACECLAW_VERSION in app/version.ts.
+# Build signed release APKs at dist/Faceclaw-<version>.apk (phone) and
+# dist/Faceclaw-Wear-<version>.apk (watch), where <version> comes from
+# FACECLAW_VERSION in app/version.ts. Both are signed with the same key:
+# the Wearable Data Layer only routes between apps with matching package
+# names and signing keys.
 #
 # Prompts for the keystore passphrase. Override the keystore location with
 # ANDROID_KEYSTORE=/path/to/store.jks.
 #
-# Note: the passphrase is passed to the nativescript CLI on its command line,
-# so it is briefly visible in `ps` on this machine while the build runs.
+# Note: the passphrase is passed to the nativescript CLI and Gradle on their
+# command lines, so it is briefly visible in `ps` on this machine while the
+# build runs.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
+source scripts/before_build.sh
 
-KEYSTORE="${ANDROID_KEYSTORE:-$HOME/repositories/AndroidKeystore/jimrandomh-android-keystore.jks}"
-if [ ! -f "$KEYSTORE" ]; then
-  echo "Keystore not found: $KEYSTORE (set ANDROID_KEYSTORE to override)" >&2
+if [ ! -f "$ANDROID_KEYSTORE" ]; then
+  echo "Keystore not found: $ANDROID_KEYSTORE (set ANDROID_KEYSTORE in build_paths.sh)" >&2
   exit 1
 fi
 
@@ -34,17 +38,17 @@ if [ -z "$VERSION" ]; then
   exit 1
 fi
 
-read -r -s -p "Keystore passphrase for $(basename "$KEYSTORE"): " STORE_PASS
+read -r -s -p "Keystore passphrase for $(basename "$ANDROID_KEYSTORE"): " STORE_PASS
 echo
 
 # Validate the passphrase up front and discover the signing-key alias.
-if ! LISTING="$(keytool -list -keystore "$KEYSTORE" -storepass "$STORE_PASS" 2>&1)"; then
+if ! LISTING="$(keytool -list -keystore "$ANDROID_KEYSTORE" -storepass "$STORE_PASS" 2>&1)"; then
   printf '%s\n' "$LISTING" >&2
   exit 1
 fi
 ALIAS="$(printf '%s\n' "$LISTING" | awk -F', ' '/PrivateKeyEntry/{print $1; exit}')"
 if [ -z "$ALIAS" ]; then
-  echo "No private-key entry found in $KEYSTORE:" >&2
+  echo "No private-key entry found in $ANDROID_KEYSTORE:" >&2
   printf '%s\n' "$LISTING" >&2
   exit 1
 fi
@@ -55,19 +59,37 @@ echo
 KEY_PASS="${KEY_PASS:-$STORE_PASS}"
 
 OUT="dist/Faceclaw-$VERSION.apk"
+WEAR_OUT="dist/Faceclaw-Wear-$VERSION.apk"
 mkdir -p dist
-rm -f "$OUT"
+rm -f "$OUT" "$WEAR_OUT"
 
+echo "=== Building Android app ==="
 npx nativescript build android --release \
-  --key-store-path "$KEYSTORE" \
+  --key-store-path "$ANDROID_KEYSTORE" \
   --key-store-password "$STORE_PASS" \
   --key-store-alias "$ALIAS" \
   --key-store-alias-password "$KEY_PASS" \
   --copy-to "$OUT"
 
+# Wear app: sign with the same key via AGP's injected signing properties, so
+# no signing config needs to live in the wear build files.
+echo "=== Building Wear app ==="
+(cd wear && ./gradlew :app:assembleRelease \
+  -Pandroid.injected.signing.store.file="$ANDROID_KEYSTORE" \
+  -Pandroid.injected.signing.store.password="$STORE_PASS" \
+  -Pandroid.injected.signing.key.alias="$ALIAS" \
+  -Pandroid.injected.signing.key.password="$KEY_PASS")
+cp wear/app/build/outputs/apk/release/app-release.apk "$WEAR_OUT"
+
 echo
 echo "Built $OUT"
+echo "Built $WEAR_OUT"
 if [ -n "${ANDROID_HOME:-}" ] && [ -d "$ANDROID_HOME/build-tools" ]; then
   APKSIGNER="$(printf '%s\n' "$ANDROID_HOME/build-tools"/*/apksigner | sort -V | tail -1)"
-  [ -x "$APKSIGNER" ] && "$APKSIGNER" verify --print-certs "$OUT" | head -5
+  if [ -x "$APKSIGNER" ]; then
+    for apk in "$OUT" "$WEAR_OUT"; do
+      echo "== $apk"
+      "$APKSIGNER" verify --print-certs "$apk" | head -5
+    done
+  fi
 fi

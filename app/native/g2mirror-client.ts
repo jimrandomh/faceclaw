@@ -25,6 +25,13 @@ export type G2MirrorSession = {
   cwdHint: string;
   /** Unix epoch ms of the terminal's last bell, or null if none observed. */
   lastBellAt: number | null;
+  /**
+   * Unix epoch ms (host clock) of the app's last output, or null if none
+   * observed. Fresh to within the wrapper's 2s activity reporting interval
+   * while we're connected; compare against other host timestamps, not the
+   * phone clock (see the worker's local-receive-time activity tracking).
+   */
+  lastOutputAt: number | null;
   /** Window title the app last set (xterm OSC 0/2), or null if none observed. */
   title: string | null;
 };
@@ -95,6 +102,7 @@ export class G2MirrorClient {
   private readonly sessionAttachedListeners = new Set<(command: string) => void>();
   private readonly sessionDetachedListeners = new Set<(reason: string) => void>();
   private readonly bellListeners = new Set<(socket: string, lastBellAtMs: number) => void>();
+  private readonly activityListeners = new Set<(socket: string, lastOutputAtMs: number) => void>();
   private readonly titleListeners = new Set<(socket: string, title: string) => void>();
   // Launch requests awaiting their reply, oldest first. The server answers
   // each `launch` with either `launched` or an `error` whose message starts
@@ -142,6 +150,16 @@ export class G2MirrorClient {
   onBell(listener: (socket: string, lastBellAtMs: number) => void): () => void {
     this.bellListeners.add(listener);
     return () => this.bellListeners.delete(listener);
+  }
+
+  /**
+   * Unsolicited output-activity notification for any monitored terminal
+   * (rate-limited by the wrapper to one per 2s per terminal, leading edge
+   * only — notifications stop as soon as the output does).
+   */
+  onActivity(listener: (socket: string, lastOutputAtMs: number) => void): () => void {
+    this.activityListeners.add(listener);
+    return () => this.activityListeners.delete(listener);
   }
 
   /** Unsolicited title change for any monitored terminal. */
@@ -350,6 +368,7 @@ export class G2MirrorClient {
             pid: Number(item?.pid) || 0,
             cwdHint: String(item?.cwd_hint ?? ""),
             lastBellAt: typeof item?.last_bell_at === "number" ? item.last_bell_at : null,
+            lastOutputAt: typeof item?.last_output_at === "number" ? item.last_output_at : null,
             title: typeof item?.title === "string" ? item.title : null,
           }))
           .filter((session: G2MirrorSession) => session.socket.length > 0);
@@ -364,6 +383,19 @@ export class G2MirrorClient {
         if (session) session.lastBellAt = lastBellAt;
         for (const listener of Array.from(this.bellListeners)) {
           listener(socket, lastBellAt);
+        }
+        return;
+      }
+      case "activity": {
+        const socket = String(message.socket ?? "");
+        const lastOutputAt = Number(message.last_output_at) || 0;
+        if (!socket || !lastOutputAt) return;
+        const session = this.sessions.find((s) => s.socket === socket);
+        if (session) session.lastOutputAt = lastOutputAt;
+        // No emitState: activity is frequent while an app is busy, and the
+        // terminal worker drives its own hub animation off the listener.
+        for (const listener of Array.from(this.activityListeners)) {
+          listener(socket, lastOutputAt);
         }
         return;
       }

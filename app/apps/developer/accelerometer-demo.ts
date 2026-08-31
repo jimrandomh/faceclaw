@@ -2,8 +2,8 @@ import { getDefaultMediumFont, getDefaultSmallFont } from "../../graphics/ui-fon
 import { GrayImage } from "../../graphics/image";
 import { clamp } from "../../util/numeric-util";
 import { addImuListener, imuSourceLabel, setImuReportEnabled, type ImuReading } from "../../native/imu";
-import { GESTURE_DOUBLE_CLICK } from "../../ui/gestures";
-import { Layer, type DashboardInputEvent, type LayerContext } from "../../ui/layers";
+import { GESTURE_DOUBLE_CLICK, type InputEvent } from "../../ui/gestures";
+import { Layer, type LayerContext } from "../../ui/layers";
 import { shell } from "../../ui/shell/shell";
 
 // IMU report pace. This is NOT a literal Hz — the firmware only accepts the
@@ -119,7 +119,7 @@ export class AccelerometerDemoLayer implements Layer {
     return image;
   }
 
-  async handleInput(event: DashboardInputEvent, ctx: LayerContext): Promise<void> {
+  async handleInput(event: InputEvent, ctx: LayerContext): Promise<void> {
     if (event.type === "double-click") {
       ctx.stack.pop();
     }

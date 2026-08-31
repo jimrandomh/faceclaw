@@ -2,8 +2,6 @@
  * Decodes an Even Realities serial number into the product family, frame shape,
  * and colourway the wearer can actually see.
  *
- * Ported from SybilSight's `GlassesHardwareIdentity.swift`.
- *
  * ## Why this exists
  *
  * A G2 arm advertises its 14-character serial inside the manufacturer data

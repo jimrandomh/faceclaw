@@ -11,6 +11,7 @@ const freecellApp: AppDefinition = {
       title: "Freecell",
       iconLetter: "F",
       icon: "spade",
+      acceptsDirectional: true,
     }),
 };
 

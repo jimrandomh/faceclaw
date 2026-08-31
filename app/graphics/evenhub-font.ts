@@ -6,7 +6,9 @@
  *    firmware into app-private storage while Faceclaw prepares custom firmware.
  *    They are not distributed with Faceclaw.
  *  - The final fallback is the G2's serialized Source Han Sans SC Light font,
- *    which Faceclaw can bundle under the SIL Open Font License.
+ *    which Faceclaw can bundle under the SIL Open Font License. It carries no
+ *    ASCII (it starts at U+00A4), so while the extracted fonts are missing a
+ *    bundled Roboto backstops Latin text (see TTF_FALLBACK_ASSET_PATH).
  *  - Text SIZING / KERNING / WRAPPING: @evenrealities/pretext, whose advance
  *    tables the bitmaps were validated against. Using pretext for measurement
  *    means our line breaks match exactly where EvenHub apps (which measure
@@ -22,10 +24,23 @@ import { getTextWidth } from "@evenrealities/pretext";
 import { EVENHUB_RUNTIME_FONT_FILENAME, isEvenHubFontAsset } from "../g2/firmware-fonts";
 import { toUint8Array } from "../util/array-util";
 import { GrayImage, grayToNibble, type FwTextFont, type PlacedFwText, type PlacedFwTextGlyph } from "./image";
+import { TtfFont } from "./ttf-font";
 
 declare const com: any;
 
 const CJK_ASSET_PATH = "fonts/source-han-sans/SourceHanSansSC-Light-20.lvgl.bin";
+
+/**
+ * Last-resort face used ONLY while the extracted firmware fonts are missing.
+ * The bundled CJK partition font starts at U+00A4 with no ASCII at all (on
+ * stock it sits behind the main firmware's Latin fonts), so without this an
+ * un-extracted install renders Latin text as nothing. Advances still come
+ * from pretext, so layout and wrapping are unchanged; only the ink is
+ * Roboto's. Once the real fonts are extracted this path is disabled and
+ * unknown codepoints go back to stock's silent skip.
+ */
+const TTF_FALLBACK_ASSET_PATH = "fonts/ttf/Roboto-Regular.ttf";
+const TTF_FALLBACK_SIZE_PX = 20;
 
 /** [boxW, boxH, ofsX, ofsY, bitmapOffset, bitmapLen] */
 type GlyphRecord = [number, number, number, number, number, number];
@@ -95,8 +110,12 @@ export class EvenHubFont implements FwTextFont {
   private readonly cjkPath: string;
   private readonly cjkBaseline: number;
   private readonly cjkGlyphs = new Map<number, CjkGlyph | null>();
+  /** Degraded mode: the extracted asset was missing, so Roboto backstops. */
+  private readonly useTtfFallback: boolean;
+  private ttfFallback: TtfFont | null | undefined;
 
-  private constructor(asset: FontAsset) {
+  private constructor(asset: FontAsset, useTtfFallback = false) {
+    this.useTtfFallback = useTtfFallback;
     this.lineHeight = asset.lineHeight;
     this.baseline = asset.baseline;
     this.bitmap = base64Decode(asset.bitmapBase64);
@@ -124,19 +143,30 @@ export class EvenHubFont implements FwTextFont {
           if (!isEvenHubFontAsset(parsed)) throw new Error("invalid font asset structure");
           asset = parsed;
         } catch (error) {
-          console.warn(`Could not load the extracted G2 fonts; using Source Han Sans only: ${error}`);
+          console.warn(`Could not load the extracted G2 fonts; using fallback faces: ${error}`);
         }
       } else {
         console.warn(
-          "The G2 fonts have not been extracted yet; using Source Han Sans only. " +
-            "Reinstall Faceclaw's custom firmware to prepare the exact fallback chain.",
+          "The G2 fonts have not been extracted yet; using fallback faces. " +
+            "The home screen's warning flag offers to prepare them.",
         );
       }
       EvenHubFont.cached = new EvenHubFont(
         asset ?? { lineHeight: 27, baseline: 22, glyphs: {}, bitmapBase64: "" },
+        asset === null,
       );
     }
     return EvenHubFont.cached;
+  }
+
+  /**
+   * Drop the cached instance so the next get() re-reads the extracted asset.
+   * Called after a successful firmware-font extraction: without this, a
+   * degraded instance built before the extraction would keep rendering with
+   * the fallback faces until the app restarts.
+   */
+  static invalidate(): void {
+    EvenHubFont.cached = null;
   }
 
   hasGlyph(codePoint: number): boolean {
@@ -262,7 +292,11 @@ export class EvenHubFont implements FwTextFont {
       } else {
         flushRun();
         const cjk = this.getCjkGlyph(cp);
-        if (cjk) this.drawGlyph(image, cjk.record, cjk.bitmap, penX, y + this.cjkBaseline, value);
+        if (cjk) {
+          this.drawGlyph(image, cjk.record, cjk.bitmap, penX, y + this.cjkBaseline, value);
+        } else if (this.useTtfFallback) {
+          this.drawTtfFallbackGlyph(image, cp, penX, baselineY, value);
+        }
       }
       penX += this.advanceOf(cp, cps[i + 1] ?? 0);
     }
@@ -334,6 +368,21 @@ export class EvenHubFont implements FwTextFont {
       this.drawText(image, x, y + i * this.lineHeight, lines[i]!, value);
     }
     return lines.length;
+  }
+
+  /** Degraded-mode ink: the codepoint's Roboto glyph, aligned on our baseline. */
+  private drawTtfFallbackGlyph(image: GrayImage, cp: number, penX: number, baselineY: number, value: number): void {
+    if (this.ttfFallback === undefined) {
+      this.ttfFallback = TtfFont.load(
+        knownFolders.currentApp().getFile(TTF_FALLBACK_ASSET_PATH).path,
+        TTF_FALLBACK_SIZE_PX,
+      );
+    }
+    const font = this.ttfFallback;
+    const glyph = font?.getGlyph(cp);
+    if (!font || !glyph || !glyph.coverage || glyph.bbxWidth <= 0) return;
+    // drawGlyph's y is the TTF line top (baseline at y + ascent).
+    image.drawGlyph(font, glyph, penX, baselineY - font.ascent, value);
   }
 
   private getCjkGlyph(codePoint: number): CjkGlyph | null {

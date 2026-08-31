@@ -33,6 +33,9 @@ function cleanupPage(page: Page): void {
   }
   state.model.off(Observable.propertyChangeEvent, state.propertyChangeHandler)
   Application.off(Application.orientationChangedEvent, state.orientationHandler)
+  // navigatingTo builds a fresh model each visit; drop the old one's
+  // controller/settings subscriptions or every navigation leaks a listener.
+  state.model.dispose()
   setPageState(page, undefined)
 }
 
@@ -57,6 +60,15 @@ function applySettingsTextFieldContrast(textField: TextField): void {
   nativeTextField.setSelectAllOnFocus(true)
 }
 
+/**
+ * Leaving keyboard-input mode: the glasses navigated away from the text
+ * setting, so the phone's keyboard has nothing to type into any more.
+ */
+function dismissTextEditorKeyboard(page: Page): void {
+  page.getViewById<TextField>('settingsTextField')?.dismissSoftInput()
+  page.getViewById<TextField>('secondarySettingsTextField')?.dismissSoftInput()
+}
+
 function focusTextEditor(page: Page): void {
   setTimeout(() => {
     const textField = page.getViewById<TextField>('settingsTextField')
@@ -77,6 +89,9 @@ export function loaded(args: EventData) {
   dashboardController.refreshEvenAppStatus()
 
   const model = page.bindingContext as MainViewModel | null
+  // Re-subscribe after a suspend/resume cycle (unloaded disposed the model);
+  // a no-op on the first load after construction.
+  model?.attach()
   // Automatically connect on reaching the main page (no-op if already
   // connected or if no glasses are configured).
   void model?.autoConnect()
@@ -103,6 +118,8 @@ export function loaded(args: EventData) {
       if (propertyArgs.propertyName === 'activeTextSettingId') {
         if (model.isTextSettingEditorActive) {
           focusTextEditor(page)
+        } else {
+          dismissTextEditorKeyboard(page)
         }
       }
     },

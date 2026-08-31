@@ -15,6 +15,29 @@ ActionItem {
   color: #ffffff;
 }
 
+/* The main page's custom titleView: title left, connection status and the
+ * warning triangle right-aligned beside the overflow menu. */
+.action-bar-title {
+  color: #ffffff;
+  font-size: 18;
+  font-weight: bold;
+  vertical-align: center;
+}
+
+.action-bar-status {
+  color: #ffffff;
+  font-size: 14;
+  margin-right: 12;
+  vertical-align: center;
+}
+
+/* The emoji brings its own yellow; the padding widens the tap target. */
+.action-bar-warning {
+  font-size: 18;
+  padding: 4 6;
+  vertical-align: center;
+}
+
 TextField {
   background-color: #ffffff;
   color: #222222;
@@ -50,6 +73,31 @@ Button.-primary {
   tint-color: #e6e6e6;
 }
 
+/* License / privacy-policy links in the onboarding disclaimer footer. The
+ * padding widens the tap target beyond the small text. */
+.footer-link {
+  color: #3b6fd6;
+  font-size: 15;
+  text-decoration: underline;
+  padding: 4 8;
+}
+
+.ns-dark .footer-link {
+  color: #8ab0ff;
+}
+
+.footer-link-separator {
+  color: #777777;
+  font-size: 15;
+  padding: 4 0;
+}
+
+/* Bundled project docs (phone-ui/document-page). LICENSE and PRIVACY are
+ * hard-wrapped plain text, so keep the size modest to limit rewrapping. */
+.document-text {
+  font-size: 13;
+}
+
 /*
  * Stands in for the lens preview when showing it would be misleading (silent
  * mode, or a disconnect explained by a flat battery). Sized by the view model
@@ -77,6 +125,147 @@ Button.-primary {
   border-radius: 8;
 }
 
+/* Modal behind the action bar's warning triangle: the problem-status warnings
+ * that used to sit inline on the main page, each with its fix-it button.
+ * The width is set from the view model (near-full-width on phones, capped on
+ * tablets); the padding lives on the content stack because a ScrollView does
+ * not apply its own padding to its content. */
+.warnings-modal {
+  margin: 16;
+  background-color: #f6f6f6;
+  color: #222222;
+  border-color: #222222;
+  border-width: 1;
+  border-radius: 8;
+}
+
+.warnings-modal-content {
+  padding: 16;
+}
+
+/* The modal stays light in dark mode; the .ns-dark pairing outguns the
+ * theme's dark-mode recolour of Label/.h2 so the title doesn't go
+ * white-on-light-gray. */
+.warnings-modal Label,
+.ns-dark .warnings-modal Label {
+  color: #222222;
+}
+
+.warnings-modal-item {
+  margin-bottom: 12;
+}
+
+/* The phone's controller for the glasses (phone-ui/remote-controls.xml). */
+.remote-controls {
+  margin: 0 8 0 8;
+}
+/* The Settings / Watch / Ring tab bar above the controls. */
+.controls-tab-bar {
+  margin-bottom: 8;
+}
+.tab-button {
+  font-size: 14;
+  padding: 8 0;
+  margin: 0 2;
+  border-radius: 6;
+  background-color: #e2e2e2;
+  color: #333333;
+}
+.tab-button-selected {
+  background-color: #424242;
+  color: #ffffff;
+}
+/* The wakeword button at the tab bar's right edge: icon-only, narrower than
+ * the tabs, and never in the selected state (it isn't a tab). It is a
+ * button-styled GridLayout (Buttons can't hold images), so it borrows the
+ * .tab-button look and adds the elevation MaterialButtons get for free. */
+.tab-mic-button {
+  width: 56;
+  /* The real MaterialButtons render 48dp tall inside a 60dp layout box (6dp
+   * insets top and bottom); the margins and explicit height reproduce that.
+   * The height also bounds the tile's measure, without which its star row
+   * would collapse to content and pin the icon to the top. */
+  height: 48;
+  margin: 6 2;
+  android-elevation: 2;
+}
+.tab-mic-icon {
+  height: 20;
+  tint-color: #333333;
+}
+.ns-dark .tab-mic-icon {
+  tint-color: #cccccc;
+}
+.ns-dark .tab-button {
+  background-color: #333333;
+  color: #cccccc;
+}
+.ns-dark .tab-button-selected {
+  background-color: #e2e2e2;
+  color: #222222;
+}
+/* Settings tab rows. */
+.settings-row {
+  margin-bottom: 8;
+}
+.settings-row-label {
+  font-size: 14;
+  margin-right: 10;
+}
+.mode-button {
+  font-size: 13;
+  padding: 6 10;
+  margin-right: 6;
+}
+.brightness-icon {
+  font-size: 16;
+  margin: 0 4 0 4;
+  color: #444444;
+}
+.auto-toggle Label {
+  font-size: 13;
+  margin-right: 2;
+}
+.touchpad {
+  height: 230;
+  background-color: #1f1f1f;
+  border-radius: 14;
+  border-width: 1;
+  border-color: #3a3a3a;
+  color: #f0f0f0;
+  margin-top: 2;
+}
+.pad-focus {
+  font-size: 20;
+  color: #ffffff;
+}
+.pad-legend {
+  font-size: 11;
+  color: #8a8a8a;
+  margin-bottom: 8;
+}
+.action-row {
+  margin-top: 6;
+}
+.action-button {
+  margin: 2;
+  font-size: 14;
+}
+/* Ring tab: the same touchpad, but portrait like the ring's own pad. */
+.ring-touchpad {
+  width: 150;
+  height: 250;
+}
+/* Cosmetic marks mirroring the six rectangles on the physical ring's touch
+   strip; barely lighter than the pad so they read as texture, not buttons. */
+.ring-pad-marking {
+  width: 18;
+  height: 5;
+  border-radius: 2;
+  background-color: #2a2a2a;
+  horizontal-align: center;
+  vertical-align: center;
+}
 /*
  * Pairing scan list (phone-ui/pairing-page). Rows are Repeater items: product
  * art (or a colourway swatch) on the left, decoded SKU + proximity + serial in
@@ -200,6 +389,29 @@ Button.pairing-link {
 }
 
 /*
+ * Permissions screen (phone-ui/permissions-page). Cards reuse the pairing-row
+ * / pairing-title / pairing-badge look above; these add the explanation body
+ * and the already-granted checkmark.
+ */
+.permissions-description {
+  font-size: 13;
+  color: #555555;
+  margin-top: 2;
+}
+
+.permissions-check {
+  font-size: 24;
+  color: #2e7d32;
+  margin-left: 10;
+}
+
+/* Continue with required permissions still missing: looks disabled but stays
+ * tappable (the tap raises an are-you-sure prompt instead of being ignored). */
+Button.permissions-primary-dimmed {
+  opacity: 0.45;
+}
+
+/*
  * Dark-mode pairing page. The cards keep their light-mode look above; here
  * they go dark-gray, and every text colour set above gets a light counterpart
  * so nothing renders dark-on-dark (the instructions) or dark-on-a-dark-card.
@@ -275,5 +487,176 @@ Button.pairing-link {
 }
 
 .ns-dark Button.pairing-link {
+  color: #7da7f5;
+}
+
+.ns-dark .permissions-description {
+  color: #b0b0b0;
+}
+
+.ns-dark .permissions-check {
+  color: #7bc47f;
+}
+
+/*
+ * Conversation review (phone-ui/conversations-page, conversation-page,
+ * speakers-page). Cards follow the pairing-row look; speaker/emotion chips
+ * get their background colour inline (per-speaker / per-emotion), so the
+ * classes only carry shape and dark text that reads on the pastel palette.
+ */
+.conversation-row {
+  background-color: #f4f4f4;
+  border-color: #dddddd;
+  border-width: 1;
+  border-radius: 10;
+  padding: 10;
+  margin-bottom: 8;
+}
+
+.conversation-title {
+  font-size: 16;
+  font-weight: bold;
+  color: #222222;
+}
+
+.conversation-meta {
+  font-size: 12;
+  color: #666666;
+}
+
+.conversation-empty {
+  color: #777777;
+  font-size: 14;
+  padding: 8 0;
+}
+
+.ask-answer {
+  font-size: 15;
+  color: #222222;
+  padding: 4 0;
+}
+
+.ns-dark .ask-answer {
+  color: #e6e6e6;
+}
+
+.conversation-status {
+  font-size: 13;
+  color: #2a5bc4;
+}
+
+.speaker-chip {
+  font-size: 12;
+  color: #222222;
+  border-radius: 10;
+  padding: 2 8;
+  margin: 0 6 4 0;
+}
+
+.speaker-chip-selected {
+  border-width: 2;
+  border-color: #222222;
+  font-weight: bold;
+}
+
+.speaker-tag {
+  font-size: 11;
+  color: #555555;
+  background-color: #e6e6e6;
+  border-radius: 8;
+  padding: 1 6;
+}
+
+.speaker-wearer-badge {
+  font-size: 11;
+  font-weight: bold;
+  color: #2a5bc4;
+  background-color: #dbe6fb;
+  border-radius: 8;
+  padding: 1 6;
+}
+
+.transcript-row {
+  border-radius: 8;
+  padding: 8;
+  margin-bottom: 4;
+}
+
+.transcript-row-playing {
+  background-color: #e6f0ff;
+}
+
+.transcript-translation {
+  font-size: 13;
+  font-style: italic;
+  color: #777777;
+}
+
+.transcript-time {
+  font-size: 11;
+  color: #888888;
+}
+
+.transcript-emotion {
+  font-size: 11;
+  color: #222222;
+  border-radius: 8;
+  padding: 1 6;
+}
+
+.transcript-play {
+  font-size: 16;
+  color: #2a5bc4;
+  margin-left: 6;
+}
+
+.ns-dark .conversation-row {
+  background-color: #2e2e2e;
+  border-color: #4a4a4a;
+}
+
+.ns-dark .conversation-title {
+  color: #f0f0f0;
+}
+
+.ns-dark .conversation-meta {
+  color: #a0a0a0;
+}
+
+.ns-dark .conversation-empty {
+  color: #999999;
+}
+
+.ns-dark .conversation-status {
+  color: #7da7f5;
+}
+
+.ns-dark .speaker-chip-selected {
+  border-color: #f0f0f0;
+}
+
+.ns-dark .speaker-tag {
+  color: #cccccc;
+  background-color: #3c3c3c;
+}
+
+.ns-dark .speaker-wearer-badge {
+  color: #a8c4f5;
+  background-color: #2a3b5e;
+}
+
+.ns-dark .transcript-row-playing {
+  background-color: #333c4c;
+}
+
+.ns-dark .transcript-translation {
+  color: #999999;
+}
+
+.ns-dark .transcript-time {
+  color: #909090;
+}
+
+.ns-dark .transcript-play {
   color: #7da7f5;
 }

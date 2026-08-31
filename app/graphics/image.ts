@@ -533,6 +533,20 @@ export class GrayImage {
     return baked;
   }
 
+  /**
+   * Place this image into target at (dx, dy): raster via bitBlt, deferred
+   * draws carried over as deferred draws (translated), so firmware-text runs
+   * and cached glyphs stay on their cheap wire paths instead of being baked
+   * to raster. The composed-in draws render above target's earlier raster,
+   * matching the usual draw-above-own-raster rule.
+   */
+  composeInto(target: GrayImage, dx: number, dy: number): void {
+    target.bitBlt(this, dx, dy);
+    for (const placed of this.drawList) {
+      target.drawList.push({ ...placed, x: placed.x + dx, y: placed.y + dy });
+    }
+  }
+
   /** Rasterize this image's deferred draws into target, translated by (dx, dy). */
   bakeDrawsInto(target: GrayImage, dx: number, dy: number): void {
     for (const placed of this.drawList) {

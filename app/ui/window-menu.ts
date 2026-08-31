@@ -1,11 +1,7 @@
 import { GrayImage } from "../graphics/image";
 import { singlePlane, type Plane } from "../graphics/plane";
-import {
-  noopLayerActions,
-  LayerStack,
-  type DashboardInputEvent,
-  type Layer,
-} from "./layers";
+import { type InputEvent } from "./gestures";
+import { type Layer, LayerStack, noopLayerActions } from "./layers";
 import { MenuLayer, type MenuItem, type MenuLayout } from "./menu";
 import type { WorkerAppReply } from "./shell/worker-window";
 
@@ -67,7 +63,7 @@ export class WindowMenu {
   }
 
   /** Route an input event to the menu; the menu closes by popping itself. */
-  async handleInput(event: DashboardInputEvent): Promise<void> {
+  async handleInput(event: InputEvent): Promise<void> {
     const stack = this.stack;
     if (!stack) return;
     await stack.handleInput(event);

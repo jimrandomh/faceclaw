@@ -17,6 +17,9 @@ export type FlashPromptState =
  * stock-firmware-compatible BLE path that shows the pre-flash confirmation on
  * the glasses and reports the user's Yes/No choice. Separate from
  * FaceclawCommunicatorBridge on purpose (different, minimal protocol subset).
+ *
+ * Talks to the right arm only: the lenses relay messages between themselves,
+ * and acks/events always come from the right arm.
  */
 export class FlashPromptCommunicator {
   private readonly communicator: any;
@@ -25,14 +28,13 @@ export class FlashPromptCommunicator {
   private readonly stateListeners = new Set<(state: FlashPromptState, detail: string) => void>();
   private readonly resultListeners = new Set<(approved: boolean) => void>();
 
-  constructor(addresses: { right: string; left: string }, warningText: string) {
+  constructor(rightAddress: string, warningText: string) {
     const context = Utils.android.getApplicationContext();
     if (!context) throw new Error("Android application context unavailable");
 
     this.communicator = new com.faceclaw.app.FaceclawFlashPromptCommunicator(
       context,
-      addresses.right,
-      addresses.left,
+      rightAddress,
       warningText,
     );
     this.listenerProxy = new com.faceclaw.app.FaceclawFlashPromptListener({

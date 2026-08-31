@@ -2,9 +2,9 @@ import { G2_LENS_HEIGHT, G2_LENS_WIDTH, GrayImage, type UiFont } from "../graphi
 import { wrapText } from "../graphics/textwrap";
 import { getDefaultSmallFont } from "../graphics/ui-fonts";
 import { clamp } from "../util/numeric-util";
-import { DashboardInputEvent, Layer, LayerContext, PaintBelow } from "./layers";
+import { Layer, LayerContext, PaintBelow } from "./layers";
 
-import { GESTURE_DOUBLE_CLICK } from "./gestures";
+import { GESTURE_DOUBLE_CLICK, InputEvent } from "./gestures";
 import { LIST_ROW_TEXT_INSET, lineStep, listRowHeight, menuTitleHeight } from "./metrics";
 const DEFAULT_MENU_X = 8;
 const DEFAULT_MENU_Y = 8;
@@ -280,7 +280,7 @@ export class MenuLayer implements Layer {
     return image;
   }
 
-  async handleInput(event: DashboardInputEvent, ctx: LayerContext): Promise<void> {
+  async handleInput(event: InputEvent, ctx: LayerContext): Promise<void> {
     if (!this.items.length) {
       if (event.type === "double-click") {
         ctx.stack.pop();
@@ -358,7 +358,7 @@ export class TextPageLayer implements Layer {
     return image;
   }
 
-  handleInput(event: DashboardInputEvent, ctx: LayerContext): void {
+  handleInput(event: InputEvent, ctx: LayerContext): void {
     if (event.type === "double-click") {
       ctx.stack.pop();
     }

@@ -7,7 +7,7 @@ import {
   hasExtractedEvenHubFonts,
   type FirmwareProgress,
 } from "../g2/firmware-builder";
-import { classifyOnboardingFirmware, FLASHABLE_STOCK_VERSION_TEXT } from "../g2/firmware-compat";
+import { classifyOnboardingFirmware, FLASHABLE_STOCK_VERSION_TEXT, type OnboardingFirmwareKind } from "../g2/firmware-compat";
 import { DeviceInfoProbe, DeviceInfoState } from "../native/device-info-probe";
 import { setOnboardingCompleted, setPreviewOnlyMode } from "./onboarding-state";
 import { formatErrorMessage } from "../util/format-error";
@@ -125,7 +125,11 @@ export class OnboardingFirmwareCheckViewModel extends Observable {
       frame.goBack();
       return;
     }
-    frame?.navigate({ moduleName: "phone-ui/onboarding-unpair-page", clearHistory: true });
+    frame?.navigate({
+      moduleName: "phone-ui/pairing-page",
+      context: { onboarding: true },
+      clearHistory: true,
+    });
   }
 
   /** Escape hatch when the check itself fails: flash as if stock firmware had been detected. */
@@ -189,8 +193,16 @@ export class OnboardingFirmwareCheckViewModel extends Observable {
     }
   }
 
-  private applyClassification(kind: string, version: string, capabilities: string): void {
+  private applyClassification(kind: OnboardingFirmwareKind, version: string, capabilities: string): void {
     this.busy = false;
+    // `kind` is classifyOnboardingFirmware's OnboardingFirmwareKind ("custom" |
+    // "flashable-stock" | "newer-stock" | "unknown") -- NOT CheckPhase's shorter
+    // "flashable"/"newer" (used below via setPhase for _phase/primaryLabel/etc).
+    // The two types share two of four names, so a typo'd case label here type-checks
+    // fine as long as `kind` stays plain `string`, but silently falls through to
+    // `default` (the hard "couldn't read a firmware version" error) for every real
+    // stock-firmware version, flashable or newer alike -- onboarding was unusable for
+    // any device that ever reached this switch with an actual reported version.
     switch (kind) {
       case "custom":
         if (!hasExtractedEvenHubFonts()) {
@@ -199,14 +211,14 @@ export class OnboardingFirmwareCheckViewModel extends Observable {
         }
         this.showCustomReady(version, capabilities, false);
         break;
-      case "flashable":
+      case "flashable-stock":
         this.setPhase("flashable");
         this.headline = "Ready to Install";
         this.status =
           `Your glasses run stock firmware ${version}. This is compatible — tap Install Firmware to flash ` +
           "Faceclaw's custom firmware.";
         break;
-      case "newer":
+      case "newer-stock":
         this.setPhase("newer");
         this.headline = "Unrecognized Firmware";
         this.status =

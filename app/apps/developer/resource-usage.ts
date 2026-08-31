@@ -1,8 +1,8 @@
 import { getDefaultSmallFont } from "../../graphics/ui-fonts";
 import { GrayImage } from "../../graphics/image";
 import { clamp } from "../../util/numeric-util";
-import { GESTURE_DOUBLE_CLICK } from "../../ui/gestures";
-import { Layer, type DashboardInputEvent, type LayerContext } from "../../ui/layers";
+import { GESTURE_DOUBLE_CLICK, type InputEvent } from "../../ui/gestures";
+import { Layer, type LayerContext } from "../../ui/layers";
 import { shell } from "../../ui/shell/shell";
 
 declare const com: any;
@@ -110,7 +110,7 @@ export class ResourceUsageLayer implements Layer {
     return image;
   }
 
-  handleInput(event: DashboardInputEvent, ctx: LayerContext): void {
+  handleInput(event: InputEvent, ctx: LayerContext): void {
     if (event.type === "double-click") {
       ctx.stack.pop();
     }

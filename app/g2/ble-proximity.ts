@@ -1,9 +1,7 @@
 /**
  * How far away an advertising device probably is, from its signal strength.
  *
- * Ported from SybilSight's `BLEProximity.swift` (itself from ProLink's
- * `PeripheralInfo.basicEstimatedDistance`), with the calibration table
- * narrowed to the two products this app pairs.
+ * The calibration table is narrowed to the two products this app pairs.
  *
  * ## The model
  *

@@ -6,7 +6,12 @@
  * the same signed-header scheme used by the firmware API.
  */
 import { Application } from "@nativescript/core";
-import { evenHubEmailSetting, evenHubPasswordSetting, hasEvenHubCredentials } from "./credentials";
+import {
+  getEvenHubToken,
+  hasEvenHubCredentials,
+  invalidateEvenHubToken,
+  saveEvenHubSession,
+} from "./credentials";
 import { fetchWithUserAgent } from "../../util/http";
 
 declare const android: any;
@@ -72,7 +77,6 @@ export class EvenHubAuthenticationError extends Error {
 }
 
 export class EvenHubApiClient {
-  private token = "";
   private loginPromise: Promise<string> | null = null;
 
   async listApps(page = 1, category = ""): Promise<EvenHubStorePage> {
@@ -147,9 +151,13 @@ export class EvenHubApiClient {
     return { bytes, extension: extension === "jpeg" ? "jpg" : extension };
   }
 
-  clearSession(): void {
-    this.token = "";
-    this.loginPromise = null;
+  async signIn(email: string, password: string, remember: boolean): Promise<void> {
+    if (!this.loginPromise) {
+      this.loginPromise = this.login(email, password, remember).finally(() => {
+        this.loginPromise = null;
+      });
+    }
+    await this.loginPromise;
   }
 
   private async authenticatedRequest(
@@ -158,38 +166,30 @@ export class EvenHubApiClient {
     options: { query?: Record<string, string | number>; body?: Record<string, unknown> } = {},
   ): Promise<unknown> {
     let token = await this.ensureLogin();
-    let response = await this.request(method, path, { ...options, token, commonVersion: 3 });
+    const response = await this.request(method, path, { ...options, token, commonVersion: 3 });
     if (response.httpStatus === 401) {
-      this.clearSession();
-      token = await this.ensureLogin();
-      response = await this.request(method, path, { ...options, token, commonVersion: 3 });
+      invalidateEvenHubToken();
     }
     return unwrap(response.envelope, response.httpStatus, path);
   }
 
   private ensureLogin(): Promise<string> {
-    if (this.token) return Promise.resolve(this.token);
-    if (!isEvenHubStoreConfigured()) {
-      return Promise.reject(new EvenHubAuthenticationError("Enter your Even account email and password."));
-    }
-    if (!this.loginPromise) {
-      this.loginPromise = this.login().finally(() => {
-        this.loginPromise = null;
-      });
-    }
-    return this.loginPromise;
+    const token = getEvenHubToken();
+    return token
+      ? Promise.resolve(token)
+      : Promise.reject(new EvenHubAuthenticationError("Enter your Even account email and password."));
   }
 
-  private async login(): Promise<string> {
+  private async login(email: string, password: string, remember: boolean): Promise<string> {
     try {
       const response = await this.request("POST", "/v2/g/login", {
         commonVersion: 1,
-        body: { email: evenHubEmailSetting.get().trim(), passwd: evenHubPasswordSetting.get() },
+        body: { email: email.trim(), passwd: password },
       });
       const data = asRecord(unwrap(response.envelope, response.httpStatus, "/v2/g/login"));
       const token = typeof data.token === "string" ? data.token : "";
       if (!token) throw new Error("Even login succeeded without returning a session token.");
-      this.token = token;
+      saveEvenHubSession(email, token, remember);
       return token;
     } catch (error) {
       if (error instanceof EvenHubAuthenticationError) throw error;

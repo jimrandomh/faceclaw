@@ -1,15 +1,14 @@
 /**
  * Product artwork for Even Realities hardware, keyed by the decoded serial.
  *
- * Ported from SybilSight's `SybilSightAssets.glassesAssetName(for:identity:)`.
  * Prefer the photo of the exact SKU the serial decoded to, and fall back to
  * the generic product shot. Every surface that draws "the user's glasses"
  * should route through this — once the pair is known, showing brown Frame B
  * for a grey Frame A pair is a small lie the wearer will notice immediately.
  *
- * The PNGs live under `app/images/glasses/` (copied from SybilSight's asset
- * catalog; six SKU crops at 600×196 on a shared bounding box so they render at
- * the same scale, plus the generic G2 and R1 product shots). NativeScript
+ * The PNGs live under `app/images/glasses/` (six SKU crops at 600×196 on a
+ * shared bounding box so they render at the same scale, plus the generic G2
+ * and R1 product shots). NativeScript
  * resolves `~/` to the app folder for `<Image src>`.
  *
  * This module is pure (no NativeScript imports) so it can run under node tests.

@@ -1,5 +1,3 @@
-// Ported from SybilSight's GlassesHardwareIdentityTests.
-//
 // The reference mapping is the Even Realities app 2.2.0 (`_parseGlassesSku`,
 // `evenSNName`, `matchModel`). `S211GBBC180304` and `S211GCBC300403` are
 // serials observed on real hardware, so they are the anchors here rather than

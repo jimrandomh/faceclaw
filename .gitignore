@@ -41,5 +41,5 @@ old
 faceclaw_settings.xml
 
 # Developer configs
-build.sh
-build_and_run.sh
+build_paths.sh
+

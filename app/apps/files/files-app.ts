@@ -64,6 +64,7 @@ export function createFilesAppWindow(options: FilesAppOptions): InProcessWindow 
     // itself is on top; a pushed viewer or dialog gets just the defaults.
     menuItems: () => (created && !created.stack.isAtBase() ? [] : browser.buildMenuItems()),
     actions: options.actions,
+    onFocus: (lastInput) => browser.onFocus(lastInput),
     baseLayer: browser,
     submitFrame: options.submitFrame,
     setSurfaceVisible: options.setSurfaceVisible,

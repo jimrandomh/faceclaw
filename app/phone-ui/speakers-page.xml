@@ -1,0 +1,27 @@
+<Page xmlns="http://schemas.nativescript.org/tns.xsd" navigatingTo="navigatingTo">
+    <ActionBar title="Speakers" />
+
+    <ScrollView class="p-8">
+        <StackLayout>
+            <Label text="{{ emptyMessage }}" class="conversation-empty" textWrap="true" visibility="{{ emptyVisibility }}" />
+            <Repeater items="{{ speakerRows }}">
+                <Repeater.itemsLayout>
+                    <StackLayout />
+                </Repeater.itemsLayout>
+                <Repeater.itemTemplate>
+                    <GridLayout columns="auto,*" class="conversation-row" tap="{{ onRowTap }}">
+                        <Label col="0" text="" width="18" height="18" borderRadius="9" backgroundColor="{{ swatchColor }}" verticalAlignment="center" />
+                        <StackLayout col="1" class="m-l-8">
+                            <StackLayout orientation="horizontal">
+                                <Label text="{{ name }}" class="conversation-title" />
+                                <Label text="{{ tag }}" class="speaker-tag m-l-6" visibility="{{ tagVisibility }}" />
+                                <Label text="my voice" class="speaker-wearer-badge m-l-6" visibility="{{ wearerVisibility }}" />
+                            </StackLayout>
+                            <Label text="{{ meta }}" class="conversation-meta" />
+                        </StackLayout>
+                    </GridLayout>
+                </Repeater.itemTemplate>
+            </Repeater>
+        </StackLayout>
+    </ScrollView>
+</Page>

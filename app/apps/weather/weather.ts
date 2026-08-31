@@ -3,8 +3,8 @@ import { GrayImage, type UiFont } from "../../graphics/image";
 import { wrapText, truncateText } from "../../graphics/textwrap";
 import { clamp } from "../../util/numeric-util";
 import { type ForecastPeriod, type WeatherState } from "../../native/weather";
-import { GESTURE_CLICK } from "../../ui/gestures";
-import { type DashboardInputEvent, type Layer, type LayerContext } from "../../ui/layers";
+import { GESTURE_CLICK, type InputEvent } from "../../ui/gestures";
+import { type Layer, type LayerContext } from "../../ui/layers";
 import { drawSelectionHighlight, scrollToKeepSelectionVisible } from "../../ui/menu";
 import { lineStep, tightRowHeight } from "../../ui/metrics";
 
@@ -70,7 +70,7 @@ export class WeatherLayer implements Layer {
     return image;
   }
 
-  handleInput(event: DashboardInputEvent): void {
+  handleInput(event: InputEvent): void {
     const weather = this.state();
     if (event.type === "click") {
       // Refresh on the forecast view lives in the long-press menu; a tap

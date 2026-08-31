@@ -15,7 +15,8 @@ import {
 } from "../native/notification-icons";
 import { isNotificationListenerEnabled } from "../native/notification-access";
 import { noteStaleDataUsed, renderPassAllowsStaleData } from "../util/render-freshness";
-import { type DashboardInputEvent, type Layer, type LayerContext, type PaintBelow } from "./layers";
+import { type InputEvent } from "./gestures";
+import { type Layer, type LayerContext, type PaintBelow } from "./layers";
 
 const PAGE_X = 12;
 const PAGE_Y = 12;
@@ -119,7 +120,7 @@ export class NotificationsListLayer implements Layer {
     return image;
   }
 
-  handleInput(event: DashboardInputEvent, ctx: LayerContext): void {
+  handleInput(event: InputEvent, ctx: LayerContext): void {
     const notifications = readActiveNotifications(MAX_NOTIFICATIONS);
     const selectedIndex = this.resolveSelectedIndex(notifications);
     if (event.type === "double-click") {
@@ -189,7 +190,7 @@ export class SingleNotificationLayer implements Layer {
     return image;
   }
 
-  handleInput(event: DashboardInputEvent, ctx: LayerContext): void {
+  handleInput(event: InputEvent, ctx: LayerContext): void {
     const notification = readActiveNotifications(MAX_NOTIFICATIONS).find((item) => item.key === this.notificationKey);
     if (!notification) {
       this.closeUnavailableNotification(ctx);

@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Privacy policy — Faceclaw</title>
+<meta name="description" content="The Faceclaw privacy policy: what third-party services the app can talk to, what they receive, and where their own policies live.">
+<link rel="icon" href="images/favicon.png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="wrap">
+    <a class="brand" href="./"><img src="images/faceclaw-logo.png" alt="">Faceclaw</a>
+    <nav>
+      <a href="./#features">Features</a>
+      <a href="install.html">Install</a>
+      <a href="privacy.html" aria-current="page">Privacy</a>
+      <a href="https://github.com/jimrandomh/faceclaw">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+<section>
+  <div class="wrap prose">
+    <!-- BEGIN GENERATED: privacy -->
+    <h1>Faceclaw Privacy Policy</h1>
+    <p>Faceclaw is a privacy-conscious app. The developers of Faceclaw don't collect or store user data. Faceclaw does integrate with some third-party services, which have their own privacy policies; this document describes what those services are, what they're used for and what data they collect, and links to their privacy policies.</p>
+    <h2>Audio</h2>
+    <p>Faceclaw allows users to transcribe audio (for use with the voice assistant, the Transcribe app, typing into Terminal, and other apps). The default setting is that this is done using an on-device model running on your phone. If an on-device model is selected, audio never leaves your device, and is not stored after it is processed.</p>
+    <p>Users can also provide their own API key for a third-party transcription service such as OpenAI Whisper, ElevenLabs, or Soniox, which may offer better accuracy. Faceclaw never transmits audio to any party other than a user-selected transcription service. If a third-party transcription service is selected, audio will be sent to that third party, is linked to the account with which that API key was created, and is subject to that party's privacy and retention policies:</p>
+    <ul class="links">
+      <li>OpenAI: <a href="https://openai.com/policies/row-privacy-policy/">https://openai.com/policies/row-privacy-policy/</a></li>
+      <li>ElevenLabs: <a href="https://elevenlabs.io/privacy-policy">https://elevenlabs.io/privacy-policy</a></li>
+      <li>Soniox: <a href="https://soniox.com/policies/privacy-policy">https://soniox.com/policies/privacy-policy</a></li>
+    </ul>
+    <p>Third party data retention and privacy policies may differ based on the API key provided. API keys are part of a relationship between the user and the API provider; Faceclaw does not manage accounts or process billing information.</p>
+    <h2>AI Assistant Transcripts</h2>
+    <p>Faceclaw has a builtin AI voice assistant. Using the voice assistant requires providing an API key for a model provider such as Anthropic or OpenAI. Prompts and responses are subject to that model provider's privacy policy:</p>
+    <ul class="links">
+      <li>OpenAI: <a href="https://openai.com/policies/row-privacy-policy/">https://openai.com/policies/row-privacy-policy/</a></li>
+      <li>Anthropic: <a href="https://www.anthropic.com/legal/privacy">https://www.anthropic.com/legal/privacy</a></li>
+    </ul>
+    <p>AI conversation histories and memory files may be stored on your phone. Faceclaw does not transmit voice-assistant prompts or responses to any party other than a user-selected AI model provider. The voice assistant is given tools with which it is able to access most things on the user's phone, including all content displayed on the glasses, location, notifications, and content accessible through the Terminal app.</p>
+    <p>The AI assistant can take actions on the user's behalf, including sharing any information it has access to. The user is responsible for any instructions they give it.</p>
+    <h2>Location</h2>
+    <p>Faceclaw has a builtin Navigate app, which provides turn-by-turn directions. Using the Navigate app requires providing an API key for Mapbox. While the Navigate app is active, the user's exact location and selected destination are transmitted to Mapbox, and are subject to Mapbox's privacy policy.</p>
+    <ul class="links">
+      <li>Mapbox: <a href="https://www.mapbox.com/legal/privacy">https://www.mapbox.com/legal/privacy</a></li>
+    </ul>
+    <p>The Weather app will retrieve the user's coarse location, and will use it to query a third-party weather information provider.</p>
+    <h2>EvenHub</h2>
+    <p>The EvenHub app store is subject to Even Realities' privacy policy: <a href="https://support.evenrealities.com/hc/en-us/articles/14127464826511-Privacy-Policy">https://support.evenrealities.com/hc/en-us/articles/14127464826511-Privacy-Policy</a>. Apps downloaded from the EvenHub app store come with their own privacy policies.</p>
+    <h2>Wear OS Watch</h2>
+    <p>The optional Faceclaw watch app (wear/) talks to the phone over Google Play services' Wearable Data Layer, the same channel the watch uses for notifications and other companion apps. Gestures, commands, the watch's own speech-recognition results, and the mirrored glasses status and assistant replies travel between your watch and your phone over their Bluetooth (or, when paired that way, Wi-Fi) link; Faceclaw does not send any of it to a server. Speech recognized on the watch uses the watch's system speech recognizer, which may send audio to Google under Google's privacy policy:</p>
+    <ul class="links">
+      <li>Google: <a href="https://policies.google.com/privacy">https://policies.google.com/privacy</a></li>
+    </ul>
+    <p>The phone does nothing watch-related on phones without Google Play services.</p>
+<!-- END GENERATED: privacy -->
+    <p class="meta">This page is generated from the <a href="https://github.com/jimrandomh/faceclaw/blob/main/PRIVACY">PRIVACY</a> file in the Faceclaw repository, which is the authoritative copy.</p>
+  </div>
+</section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <div class="links">
+      <a href="https://github.com/jimrandomh/faceclaw">GitHub</a>
+      <a href="./">Home</a>
+      <a href="install.html">Install</a>
+    </div>
+    <p>Faceclaw is Free Software, licensed under the GPLv3. It is unofficial, and is not affiliated with Even Realities.</p>
+  </div>
+</footer>
+
+</body>
+</html>

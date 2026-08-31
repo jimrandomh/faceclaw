@@ -1,0 +1,20 @@
+<Page xmlns="http://schemas.nativescript.org/tns.xsd" navigatingTo="navigatingTo" unloaded="unloaded">
+    <ActionBar title="Ask about conversations" />
+
+    <GridLayout rows="auto,auto,auto,*" class="p-8">
+        <TextField
+            row="0"
+            hint="e.g. What did Alice say about the budget last week?"
+            text="{{ question }}"
+            returnKeyType="go"
+            returnPress="{{ onAskTap }}" />
+        <Button row="1" text="{{ askLabel }}" tap="{{ onAskTap }}" isEnabled="{{ askEnabled }}" class="m-t-4" />
+        <Label row="2" text="{{ statusText }}" class="conversation-meta m-t-4" textWrap="true" visibility="{{ statusVisibility }}" />
+        <ScrollView row="3" class="m-t-8">
+            <StackLayout>
+                <Label text="{{ answer }}" class="ask-answer" textWrap="true" visibility="{{ answerVisibility }}" />
+                <Label text="{{ contextNote }}" class="conversation-meta m-t-8" textWrap="true" visibility="{{ noteVisibility }}" />
+            </StackLayout>
+        </ScrollView>
+    </GridLayout>
+</Page>

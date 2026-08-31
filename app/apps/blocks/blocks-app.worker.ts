@@ -4,7 +4,8 @@
  * foreground and the screen is on (losing either auto-pauses).
  *
  * Controls (in play): scroll moves the piece, click rotates, long-press hard
- * drops, double-click pauses. Paused: click resumes, double-click yields
+ * drops, double-click pauses. Watch swipes are spatial: left/right move,
+ * up rotates, down hard-drops. Paused: click resumes, double-click yields
  * focus, long-press opens the window menu.
  */
 import "@nativescript/core/globals";
@@ -14,15 +15,17 @@ import { prepareFrameDraws } from "../../graphics/glyph-wire";
 import { getFont } from "../../graphics/bdffont";
 import { getDefaultSmallFont } from "../../graphics/ui-fonts";
 import * as frameTimings from "../../native/frame-timings";
-import type { DashboardInputEvent } from "../../ui/layers";
+import { getActiveDisplay } from "../../native/active-display";
 import { buildSoundSequencePayload, type Step } from "../../ui/sound-effects";
 import { defaultWindowMenuItems, WindowMenu } from "../../ui/window-menu";
 import type { WorkerAppMessage, WorkerAppReply } from "../../ui/shell/worker-window";
 import {
+  directionalFallback,
   GESTURE_CLICK,
   GESTURE_DOUBLE_CLICK,
   GESTURE_LONG_PRESS,
   GESTURE_SCROLL,
+  type InputEvent,
 } from "../../ui/gestures";
 
 declare const global: any;
@@ -165,6 +168,12 @@ function post(message: WorkerAppReply): void {
   global.postMessage(message);
 }
 
+// The host queues messages until this arrives: posts to a worker whose bundle
+// is still evaluating can be silently dropped (see WorkerAppHost). Top-level
+// evaluation is synchronous, so the handler below is installed before any
+// queued message can be delivered.
+post({ type: "worker-ready" });
+
 global.onmessage = (event: { data: WorkerAppMessage }) => {
   const message = event.data;
   switch (message.type) {
@@ -213,7 +222,7 @@ global.onmessage = (event: { data: WorkerAppMessage }) => {
       // Marks the main-thread -> worker hop, which is otherwise an
       // unexplained gap inside the shell's handle-input span.
       frameTimings.logFrame(message.frameId, `input received in ${message.windowId} worker`);
-      handleInput(window, message.event as DashboardInputEvent, message.frameId);
+      handleInput(window, message.event as InputEvent, message.frameId);
       break;
     }
     case "render": {
@@ -302,11 +311,12 @@ function windowMenu(window: BlocksWindow): WindowMenu {
   return window.menu;
 }
 
-function handleInput(window: BlocksWindow, event: DashboardInputEvent, frameId: number): void {
-  // An open window menu owns all input (it closes itself via pop).
+function handleInput(window: BlocksWindow, event: InputEvent, frameId: number): void {
+  // An open window menu owns all input (it closes itself via pop); menus are
+  // list UIs, so watch swipes take their standard fallback meanings there.
   if (window.menu?.isOpen()) {
     window.menu
-      .handleInput(event)
+      .handleInput(directionalFallback(event))
       .catch((error) => console.error(`blocks menu input failed: ${error}`))
       .then(() => renderAndSubmit(window, frameId));
     return;
@@ -319,13 +329,23 @@ function handleInput(window: BlocksWindow, event: DashboardInputEvent, frameId: 
   }
 }
 
-function handlePlayingInput(window: BlocksWindow, event: DashboardInputEvent, frameId: number): void {
+function handlePlayingInput(window: BlocksWindow, event: InputEvent, frameId: number): void {
   switch (event.type) {
     case "scroll-up":
+    case "swipe-left":
       tryMove(window, -1, 0);
       break;
     case "scroll-down":
+    case "swipe-right":
       tryMove(window, 1, 0);
+      break;
+    // Watch swipes are spatial: left/right move the piece, up rotates it,
+    // down hard-drops (like long-press).
+    case "swipe-up":
+      tryRotate(window);
+      break;
+    case "swipe-down":
+      hardDrop(window);
       break;
     case "click":
       tryRotate(window);
@@ -345,9 +365,9 @@ function handlePlayingInput(window: BlocksWindow, event: DashboardInputEvent, fr
   renderAndSubmit(window, frameId);
 }
 
-/** Input while paused or game over. */
-function handleIdleInput(window: BlocksWindow, event: DashboardInputEvent, frameId: number): void {
-  switch (event.type) {
+/** Input while paused or game over. Swipes take their standard fallback meanings. */
+function handleIdleInput(window: BlocksWindow, event: InputEvent, frameId: number): void {
+  switch (directionalFallback(event).type) {
     case "click":
       if (window.phase === "game-over") resetGame(window);
       window.phase = "playing";
@@ -647,9 +667,9 @@ function renderAndSubmit(window: BlocksWindow, inputFrameId: number): void {
       frameTimings.finishFrame(frameId, "discarded: blocks content unchanged");
       return;
     }
-    const communicator = com.faceclaw.app.FaceclawBleCommunicator.getActive();
+    const communicator = getActiveDisplay();
     if (!communicator) {
-      frameTimings.finishFrame(frameId, "discarded: no active communicator");
+      frameTimings.finishFrame(frameId, "discarded: no active display");
       return;
     }
     const { image, draws } = frameTimings.span(frameId, "flatten", () => flattenPlanesWithDraws(planes));

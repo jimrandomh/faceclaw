@@ -1,7 +1,7 @@
 import { getDefaultSmallFont } from "../../graphics/ui-fonts";
 import { GrayImage, type UiFont } from "../../graphics/image";
 import { clamp } from "../../util/numeric-util";
-import { GESTURE_CLICK, GESTURE_DOUBLE_CLICK, GESTURE_SCROLL } from "../../ui/gestures";
+import { GESTURE_CLICK, GESTURE_DOUBLE_CLICK, GESTURE_SCROLL, type InputEvent } from "../../ui/gestures";
 import {
   MenuLayer,
   drawListScrollbar,
@@ -15,7 +15,7 @@ import {
   type MediaBrowseItem,
   type MediaBrowserApp,
 } from "../../native/media-browser";
-import { Layer, type DashboardInputEvent, type LayerContext } from "../../ui/layers";
+import { Layer, type LayerContext } from "../../ui/layers";
 
 /** Header: title line + path line (34px at the 12px bitmap default). */
 function headerHeight(font: UiFont): number {
@@ -152,7 +152,7 @@ export class MediaBrowseLayer implements Layer {
     return image;
   }
 
-  async handleInput(event: DashboardInputEvent, ctx: LayerContext): Promise<void> {
+  async handleInput(event: InputEvent, ctx: LayerContext): Promise<void> {
     if (this.phase === "failed") {
       if (event.type === "click") {
         this.phase = "idle";

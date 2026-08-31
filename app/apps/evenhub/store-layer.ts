@@ -2,26 +2,12 @@ import { getDefaultSmallFont } from "../../graphics/ui-fonts";
 import { GrayImage, type UiFont } from "../../graphics/image";
 import { truncateText, wrapText } from "../../graphics/textwrap";
 import { clamp } from "../../util/numeric-util";
-import { GESTURE_CLICK } from "../../ui/gestures";
-import { type DashboardInputEvent, type Layer, type LayerActions, type LayerContext } from "../../ui/layers";
-import {
-  drawListScrollbar,
-  drawSelectionHighlight,
-  scrollToKeepSelectionVisible,
-  type MenuItem,
-} from "../../ui/menu";
+import { GESTURE_CLICK, type InputEvent } from "../../ui/gestures";
+import { type Layer, type LayerActions, type LayerContext } from "../../ui/layers";
+import { drawListScrollbar, drawSelectionHighlight, scrollToKeepSelectionVisible, type MenuItem } from "../../ui/menu";
 import { shell } from "../../ui/shell/shell";
-import {
-  evenHubApi,
-  EvenHubAuthenticationError,
-  isEvenHubStoreConfigured,
-  type EvenHubStoreApp,
-} from "./even-api";
-import {
-  clearEvenHubPassword,
-  evenHubEmailSetting,
-  evenHubPasswordSetting,
-} from "./credentials";
+import { evenHubApi, EvenHubAuthenticationError, isEvenHubStoreConfigured, type EvenHubStoreApp } from "./even-api";
+import { clearEvenHubLoginForm, clearEvenHubSession, clearTransientEvenHubSession, evenHubLoginEmailSetting, evenHubLoginPasswordSetting, evenHubRememberMeSetting, resetEvenHubLoginForm } from "./credentials";
 import { EvenHubStoreDetailLayer } from "./store-detail-layer";
 import { lineStep } from "../../ui/metrics";
 
@@ -49,8 +35,11 @@ export class EvenHubStoreLayer implements Layer {
   private showingLogin = !isEvenHubStoreConfigured();
   private status = this.showingLogin ? "Sign in to browse public apps." : "";
   private credentialEditorOpen = false;
+  private closed = false;
 
-  constructor(private readonly options: EvenHubStoreLayerOptions) {}
+  constructor(private readonly options: EvenHubStoreLayerOptions) {
+    if (this.showingLogin) resetEvenHubLoginForm();
+  }
 
   paint(ctx: LayerContext): GrayImage {
     if (!this.started) {
@@ -115,7 +104,7 @@ export class EvenHubStoreLayer implements Layer {
     return image;
   }
 
-  async handleInput(event: DashboardInputEvent, ctx: LayerContext): Promise<void> {
+  async handleInput(event: InputEvent, ctx: LayerContext): Promise<void> {
     if (this.showingLogin) {
       if (event.type === "click" && !this.loading) {
         this.openCredentialEditor(ctx);
@@ -169,8 +158,7 @@ export class EvenHubStoreLayer implements Layer {
         label: "Log Out",
         onSelect: (ctx) => {
           ctx.stack.pop();
-          clearEvenHubPassword();
-          evenHubApi.clearSession();
+          clearEvenHubSession();
           this.enterLogin(ctx, "Signed out.");
         },
       },
@@ -183,9 +171,14 @@ export class EvenHubStoreLayer implements Layer {
     void actions.endTextSettingEdit();
   }
 
+  onWindowClosed(actions: Pick<LayerActions, "endTextSettingEdit">): void {
+    this.closed = true;
+    this.closeCredentialEditor(actions);
+    clearTransientEvenHubSession();
+  }
+
   private async reload(ctx: LayerContext): Promise<void> {
     if (this.loading) return;
-    evenHubApi.clearSession();
     this.apps = [];
     this.total = 0;
     this.nextPage = 1;
@@ -227,11 +220,13 @@ export class EvenHubStoreLayer implements Layer {
   }
 
   private enterLogin(ctx: LayerContext, status = "Sign in to browse public apps."): void {
+    const wasShowingLogin = this.showingLogin;
     this.showingLogin = true;
     this.loading = false;
     this.apps = [];
     this.total = 0;
     this.status = status;
+    if (!wasShowingLogin) resetEvenHubLoginForm();
     this.openCredentialEditor(ctx);
     ctx.actions.requestRender();
   }
@@ -240,22 +235,48 @@ export class EvenHubStoreLayer implements Layer {
     if (this.credentialEditorOpen) return;
     this.credentialEditorOpen = true;
     void ctx.actions.startTextSettingsEdit(
-      [evenHubEmailSetting, evenHubPasswordSetting],
+      [evenHubLoginEmailSetting, evenHubLoginPasswordSetting],
       "Sign in to EvenHub",
       () => {
         this.credentialEditorOpen = false;
         void this.submitCredentials(ctx);
       },
+      { setting: evenHubRememberMeSetting, label: "Remember me" },
     );
   }
 
   private async submitCredentials(ctx: LayerContext): Promise<void> {
-    if (!isEvenHubStoreConfigured()) {
+    const email = evenHubLoginEmailSetting.get();
+    const password = evenHubLoginPasswordSetting.get();
+    if (!email.trim() || !password) {
       this.enterLogin(ctx, "Email and password are required.");
       return;
     }
-    this.showingLogin = false;
-    await this.reload(ctx);
+    this.loading = true;
+    this.status = "Signing in...";
+    ctx.actions.requestRender();
+    try {
+      await evenHubApi.signIn(email, password, evenHubRememberMeSetting.get());
+      if (this.closed) {
+        clearTransientEvenHubSession();
+        return;
+      }
+      this.showingLogin = false;
+      clearEvenHubLoginForm();
+      this.loading = false;
+      await this.reload(ctx);
+    } catch (error) {
+      if (this.closed) return;
+      const message = cleanError(error);
+      this.options.appendLog(`evenhub store login failed: ${message}`);
+      this.status = `Login failed: ${message}`;
+      evenHubLoginPasswordSetting.set("");
+      this.openCredentialEditor(ctx);
+    } finally {
+      evenHubLoginPasswordSetting.set("");
+      this.loading = false;
+      if (!this.closed) ctx.actions.requestRender();
+    }
   }
 
 }

@@ -4,6 +4,8 @@
  * todo or follows a [[page]] link, double-click walks back through visited
  * pages then yields focus. Edits (check/uncheck, add todo, edit block) go
  * through the Roam backend API and are also exposed as assistant tools.
+ * The graph name and API token are configured here too, from the long-press
+ * menu, via the phone app's text editor.
  */
 import "@nativescript/core/globals";
 import { GrayImage } from "../../graphics/image";
@@ -12,12 +14,18 @@ import { prepareFrameDraws } from "../../graphics/glyph-wire";
 import { getDefaultSmallFont } from "../../graphics/ui-fonts";
 import { truncateText, wrapText } from "../../graphics/textwrap";
 import * as frameTimings from "../../native/frame-timings";
-import type { DashboardInputEvent } from "../../ui/layers";
+import { getActiveDisplay } from "../../native/active-display";
+import { onSettingsStoreChanged } from "../../native/settings-store";
 import type { MenuItem } from "../../ui/menu";
 import { defaultWindowMenuItems, WindowMenu } from "../../ui/window-menu";
 import type { WorkerAppMessage, WorkerAppReply } from "../../ui/shell/worker-window";
 import type { ToolResult, ToolSpec } from "../../assistant/tool-registry";
-import { GESTURE_CLICK } from "../../ui/gestures";
+import { GESTURE_CLICK, type InputEvent } from "../../ui/gestures";
+import {
+  roamApiTokenSetting,
+  roamGraphNameSetting,
+  type ConfigSettingString,
+} from "../../ui/dashboard-settings";
 import { DocumentView } from "../../ui/document/document-view";
 import { docNodePageLink, type DocNode } from "../../ui/document/document-model";
 import {
@@ -134,10 +142,24 @@ let loading = false;
 let errorMessage = "";
 let lastFetchMs = 0;
 let loadSerial = 0;
+/** Setting being edited on the "type on the phone" screen, when open. */
+let editingSetting: ConfigSettingString | null = null;
+
+// Live keystrokes from the phone editor (and edits from other isolates, e.g.
+// a settings import): repaint the edit screen / the not-configured hint.
+onSettingsStoreChanged((key) => {
+  if (key.startsWith("integrations.roam.")) render();
+});
 
 function post(message: WorkerAppReply): void {
   global.postMessage(message);
 }
+
+// The host queues messages until this arrives: posts to a worker whose bundle
+// is still evaluating can be silently dropped (see WorkerAppHost). Top-level
+// evaluation is synchronous, so the handler below is installed before any
+// queued message can be delivered.
+post({ type: "worker-ready" });
 
 global.onmessage = (event: { data: WorkerAppMessage }) => {
   const message = event.data;
@@ -161,6 +183,11 @@ global.onmessage = (event: { data: WorkerAppMessage }) => {
       void loadPage(todayRef(), { resetStack: true });
       break;
     case "close-window":
+      if (editingSetting) {
+        // Window closed mid-edit: shut the phone editor down.
+        editingSetting = null;
+        post({ type: "end-text-setting-edit" });
+      }
       window = null;
       break;
     case "input":
@@ -173,11 +200,15 @@ global.onmessage = (event: { data: WorkerAppMessage }) => {
       // Marks the main-thread -> worker hop, which is otherwise an
       // unexplained gap inside the shell's handle-input span.
       frameTimings.logFrame(message.frameId, `input received in ${message.windowId} worker`);
-      handleInput(window, message.event as DashboardInputEvent, message.frameId);
+      handleInput(window, message.event as InputEvent, message.frameId);
       break;
     case "text-input":
-      // Voice input / typed text becomes a new todo on the shown page.
-      if (message.text.trim()) {
+      if (editingSetting) {
+        // Voice input as an alternative to the phone keyboard.
+        editingSetting.set(message.text.trim());
+        render();
+      } else if (message.text.trim()) {
+        // Voice input / typed text becomes a new todo on the shown page.
         void addTodoFromText(message.text.trim());
       }
       break;
@@ -333,21 +364,57 @@ function menuItems(win: RoamWindow): MenuItem[] {
     });
   }
   items.push({
-    label: "Roam settings",
+    label: "Set graph name",
     onSelect: (ctx) => {
       ctx.stack.pop();
-      post({ type: "open-settings", section: "Roam" });
+      beginSettingEdit(roamGraphNameSetting);
+    },
+  });
+  items.push({
+    label: "Set API token",
+    onSelect: (ctx) => {
+      ctx.stack.pop();
+      beginSettingEdit(roamApiTokenSetting);
     },
   });
   return [...items, ...defaultWindowMenuItems(win.windowId, post)];
 }
 
-function handleInput(win: RoamWindow, event: DashboardInputEvent, frameId: number): void {
+/**
+ * Enter the setting-edit screen and ask the shell to open the phone app's
+ * text editor on the setting. The editor writes the setting live; click (or
+ * double-click) here finishes the edit.
+ */
+function beginSettingEdit(setting: ConfigSettingString): void {
+  editingSetting = setting;
+  post({ type: "start-text-setting-edit", settingId: setting.id });
+  render();
+}
+
+/** Leave the edit screen; if Roam just became usable, load the page. */
+function endSettingEdit(): void {
+  editingSetting = null;
+  post({ type: "end-text-setting-edit" });
+  if (isRoamConfigured() && (!currentPage || errorMessage)) {
+    void loadPage(currentRef ?? todayRef(), { resetStack: !currentRef });
+  }
+}
+
+function handleInput(win: RoamWindow, event: InputEvent, frameId: number): void {
   if (win.menu?.isOpen()) {
     win.menu
       .handleInput(event)
       .catch((error) => console.error(`roam menu input failed: ${error}`))
       .then(() => renderAndSubmit(win, frameId));
+    return;
+  }
+  if (editingSetting) {
+    if (event.type === "click" || event.type === "double-click") {
+      endSettingEdit();
+      renderAndSubmit(win, frameId);
+    } else {
+      frameTimings.finishFrame(frameId, "discarded: roam edit-screen ignored input");
+    }
     return;
   }
   if (event.type === "long-press") {
@@ -452,7 +519,7 @@ async function addTodoFromText(text: string): Promise<void> {
 
 async function handleRoamTool(name: string, args: any): Promise<ToolResult> {
   if (!isRoamConfigured()) {
-    return { ok: false, error: "Roam is not configured; set the graph name and API token in Settings > Roam." };
+    return { ok: false, error: "Roam is not configured; set the graph name and API token from the Roam app's long-press menu." };
   }
   switch (name) {
     case "read_page": {
@@ -514,7 +581,33 @@ async function handleRoamTool(name: string, args: any): Promise<ToolResult> {
 
 function paint(win: RoamWindow): Plane[] {
   if (win.menu?.isOpen()) return win.menu.paint();
+  if (editingSetting) return singlePlane(paintSettingEdit(win, editingSetting));
   return singlePlane(paintContent(win));
+}
+
+/** The "type on the phone" screen shown while a Roam setting is being edited. */
+function paintSettingEdit(win: RoamWindow, setting: ConfigSettingString): GrayImage {
+  const image = new GrayImage(win.viewportWidth, win.viewportHeight, 0);
+  const step = smallFont.lineHeight + 2;
+  image.drawText(smallFont, DOC_MARGIN + 2, 6, setting.glassesEditTitle, 225);
+  image.drawLine(DOC_MARGIN, HEADER_HEIGHT - 4, win.viewportWidth - DOC_MARGIN, HEADER_HEIGHT - 4, 40);
+  const messageY = HEADER_HEIGHT + 16;
+  const lines = wrapText(smallFont, "Type the value in the phone app, or use voice input.", win.viewportWidth - DOC_MARGIN * 2 - 24);
+  for (let index = 0; index < lines.length; index++) {
+    image.drawText(smallFont, DOC_MARGIN + 12, messageY + index * step, lines[index]!, 190);
+  }
+  // The live value, unmasked so the user can check what they typed.
+  const value = setting.get();
+  const valueY = messageY + (lines.length + 1) * step;
+  image.drawText(
+    smallFont,
+    DOC_MARGIN + 12,
+    valueY,
+    truncateText(smallFont, value || "(empty)", win.viewportWidth - DOC_MARGIN * 2 - 24),
+    value ? 225 : 130,
+  );
+  image.drawText(smallFont, DOC_MARGIN + 12, win.viewportHeight - smallFont.lineHeight - 12, `${GESTURE_CLICK} done`, 110);
+  return image;
 }
 
 function paintContent(win: RoamWindow): GrayImage {
@@ -535,7 +628,7 @@ function paintContent(win: RoamWindow): GrayImage {
   image.drawLine(DOC_MARGIN, HEADER_HEIGHT - 4, win.viewportWidth - DOC_MARGIN, HEADER_HEIGHT - 4, 40);
 
   if (!isRoamConfigured()) {
-    drawBodyMessage(image, win, "Set the Roam graph name and API token in Settings > Roam. Long-press for the menu, then pick Roam settings.");
+    drawBodyMessage(image, win, "Set the Roam graph name and API token: long-press for the menu, then pick Set graph name and Set API token.");
   } else if (errorMessage) {
     drawBodyMessage(image, win, `${errorMessage}\n\n${GESTURE_CLICK} retry`);
   } else if (currentPage && currentPage.children.length === 0 && !loading) {
@@ -572,9 +665,9 @@ function renderAndSubmit(win: RoamWindow, inputFrameId: number): void {
       frameTimings.finishFrame(frameId, "discarded: roam content unchanged");
       return;
     }
-    const communicator = com.faceclaw.app.FaceclawBleCommunicator.getActive();
+    const communicator = getActiveDisplay();
     if (!communicator) {
-      frameTimings.finishFrame(frameId, "discarded: no active communicator");
+      frameTimings.finishFrame(frameId, "discarded: no active display");
       return;
     }
     const { image, draws } = frameTimings.span(frameId, "flatten", () => flattenPlanesWithDraws(planes));

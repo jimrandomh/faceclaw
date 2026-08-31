@@ -10,20 +10,16 @@ import { prepareFrameDraws } from "../../graphics/glyph-wire";
 import { getFont } from "../../graphics/bdffont";
 import { getDefaultSmallFont } from "../../graphics/ui-fonts";
 import * as frameTimings from "../../native/frame-timings";
+import { getActiveDisplay } from "../../native/active-display";
 import {
   cancelTimerNotification,
   fireTimerNotification,
   scheduleTimerNotification,
 } from "../../native/timer-notifications";
-import type { DashboardInputEvent } from "../../ui/layers";
 import { defaultWindowMenuItems, WindowMenu } from "../../ui/window-menu";
 import type { WorkerAppMessage, WorkerAppReply } from "../../ui/shell/worker-window";
 import type { ToolResult, ToolSpec } from "../../assistant/tool-registry";
-import {
-  GESTURE_CLICK,
-  GESTURE_DOUBLE_CLICK,
-  GESTURE_SCROLL,
-} from "../../ui/gestures";
+import { GESTURE_CLICK, GESTURE_DOUBLE_CLICK, GESTURE_SCROLL, type InputEvent } from "../../ui/gestures";
 import { clamp } from "../../util/numeric-util";
 
 declare const global: any;
@@ -123,6 +119,12 @@ function post(message: WorkerAppReply): void {
   global.postMessage(message);
 }
 
+// The host queues messages until this arrives: posts to a worker whose bundle
+// is still evaluating can be silently dropped (see WorkerAppHost). Top-level
+// evaluation is synchronous, so the handler below is installed before any
+// queued message can be delivered.
+post({ type: "worker-ready" });
+
 global.onmessage = (event: { data: WorkerAppMessage }) => {
   const message = event.data;
   switch (message.type) {
@@ -165,7 +167,7 @@ global.onmessage = (event: { data: WorkerAppMessage }) => {
       // Marks the main-thread -> worker hop, which is otherwise an
       // unexplained gap inside the shell's handle-input span.
       frameTimings.logFrame(message.frameId, `input received in ${message.windowId} worker`);
-      handleInput(window, message.event as DashboardInputEvent, message.frameId);
+      handleInput(window, message.event as InputEvent, message.frameId);
       break;
     }
     case "render": {
@@ -302,7 +304,7 @@ function windowMenu(window: TimerWindow): WindowMenu {
   return window.menu;
 }
 
-function handleInput(window: TimerWindow, event: DashboardInputEvent, frameId: number): void {
+function handleInput(window: TimerWindow, event: InputEvent, frameId: number): void {
   // An open window menu owns all input (it closes itself via pop).
   if (window.menu?.isOpen()) {
     window.menu
@@ -338,7 +340,7 @@ function handleInput(window: TimerWindow, event: DashboardInputEvent, frameId: n
   }
 }
 
-function handleStopwatchInput(window: TimerWindow, event: DashboardInputEvent, frameId: number): void {
+function handleStopwatchInput(window: TimerWindow, event: InputEvent, frameId: number): void {
   if (event.type === "scroll-up" || event.type === "scroll-down") {
     const delta = event.type === "scroll-down" ? 1 : -1;
     window.stopwatchAction = clamp(window.stopwatchAction + delta, 0, 2);
@@ -368,7 +370,7 @@ function handleStopwatchInput(window: TimerWindow, event: DashboardInputEvent, f
   renderAndSubmit(window, frameId);
 }
 
-function handleTimersInput(window: TimerWindow, event: DashboardInputEvent, frameId: number): void {
+function handleTimersInput(window: TimerWindow, event: InputEvent, frameId: number): void {
   syncExpiredTimers();
   const itemCount = timers.length + 2; // Stopwatch navigation + New timer + timers.
   if (event.type === "scroll-up" || event.type === "scroll-down") {
@@ -395,7 +397,7 @@ function handleTimersInput(window: TimerWindow, event: DashboardInputEvent, fram
   renderAndSubmit(window, frameId);
 }
 
-function handleEditorInput(window: TimerWindow, event: DashboardInputEvent, frameId: number): void {
+function handleEditorInput(window: TimerWindow, event: InputEvent, frameId: number): void {
   if (event.type === "scroll-up" || event.type === "scroll-down") {
     const delta = event.type === "scroll-up" ? 1 : -1;
     if (window.editorField === 0) {
@@ -663,9 +665,9 @@ function renderAndSubmit(window: TimerWindow, inputFrameId: number): void {
       frameTimings.finishFrame(frameId, "discarded: timer content unchanged");
       return;
     }
-    const communicator = com.faceclaw.app.FaceclawBleCommunicator.getActive();
+    const communicator = getActiveDisplay();
     if (!communicator) {
-      frameTimings.finishFrame(frameId, "discarded: no active communicator");
+      frameTimings.finishFrame(frameId, "discarded: no active display");
       return;
     }
     const { image, draws } = frameTimings.span(frameId, "flatten", () => flattenPlanesWithDraws(planes));

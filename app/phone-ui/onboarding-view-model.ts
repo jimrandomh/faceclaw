@@ -39,7 +39,7 @@ const STEP_CONTENT: Record<OnboardingStep, StepContent> = {
     headline: "Custom Firmware Required",
     tagline: "",
     body:
-      "Faceclaw only runs on Even Realities G2 glasses that have Faceclaw's custom firmware installed. You have two choices:\n\n• Preview Only — explore Faceclaw's interface on your phone's screen without pairing any glasses. Nothing is written to a headset.\n\n• Flash Firmware — install the custom firmware on your glasses now, then use Faceclaw for real. Faceclaw first scans for nearby glasses so you can pick yours by model, colour, and serial, then connects, asks for confirmation on the lens, and downloads and prepares the firmware.\n\nFlashing replaces the official firmware. It may void your warranty and, like any firmware update, carries a risk of bricking the device. You can only be connected to one app at a time, so disconnect the official Even app before flashing (open it, go to Home, select your glasses, open Connection, and press Disconnect).",
+      "Faceclaw only runs on Even Realities G2 glasses that have Faceclaw's custom firmware installed. You have two choices:\n\n• Preview Only — explore Faceclaw's interface on your phone's screen without pairing any glasses. Nothing is written to a headset.\n\n• Flash Firmware — install the custom firmware on your glasses now, then use Faceclaw for real. Faceclaw scans for nearby glasses so you can pick yours by model, colour, and serial, then connects, asks for confirmation on the lens, and downloads and prepares the firmware.\n\nFlashing replaces the official firmware. It may void your warranty and, like any firmware update, carries a risk of bricking the device. The glasses can only be connected to one app at a time, so the next step will walk you through disconnecting the official Even app (and any other glasses apps) first.",
     primaryLabel: "Flash Firmware",
     secondaryLabel: "Preview Only",
     splash: false,
@@ -50,8 +50,9 @@ const STEP_CONTENT: Record<OnboardingStep, StepContent> = {
 export class OnboardingViewModel extends Observable {
   private _step: OnboardingStep = 1;
 
-  constructor() {
+  constructor(initialStep?: number) {
     super();
+    if (initialStep === 2 || initialStep === 3) this._step = initialStep;
     this.publish();
   }
 
@@ -61,15 +62,33 @@ export class OnboardingViewModel extends Observable {
       return;
     }
     if (this._step === 2) {
-      this.setStep(3);
+      // The Permissions screen sits between the disclaimer and the firmware
+      // step; it navigates forward to a fresh onboarding page at step 3.
+      Frame.topmost()?.navigate({
+        moduleName: "phone-ui/permissions-page",
+        context: { onboarding: true },
+      });
       return;
     }
-    // Step 3 primary: begin the flashing setup — scan for and pick the glasses
-    // (manual address entry is offered from that page), then unpair the
-    // official app, then check firmware and flash.
+    // Step 3 primary: begin the flashing setup — disconnect other glasses apps
+    // first (a connected app blocks our BLE access, including pairing), then
+    // scan for and pick the glasses (manual address entry is offered from that
+    // page), then check firmware and flash.
+    Frame.topmost()?.navigate({ moduleName: "phone-ui/onboarding-unpair-page" });
+  }
+
+  onLicenseTap(): void {
+    this.openDocument("LICENSE", "License (GPLv3)");
+  }
+
+  onPrivacyTap(): void {
+    this.openDocument("PRIVACY", "Privacy Policy");
+  }
+
+  private openDocument(fileName: string, title: string): void {
     Frame.topmost()?.navigate({
-      moduleName: "phone-ui/pairing-page",
-      context: { onboarding: true },
+      moduleName: "phone-ui/document-page",
+      context: { fileName, title },
     });
   }
 
@@ -134,6 +153,11 @@ export class OnboardingViewModel extends Observable {
     return this.showSecondary ? "visible" : "collapse";
   }
 
+  /** License and privacy-policy links, shown only under the disclaimer step. */
+  get footerVisibility(): "visible" | "collapse" {
+    return this._step === 2 ? "visible" : "collapse";
+  }
+
   private setStep(step: OnboardingStep): void {
     if (this._step === step) return;
     this._step = step;
@@ -150,5 +174,6 @@ export class OnboardingViewModel extends Observable {
     this.notifyPropertyChange("splashVisibility", this.splashVisibility);
     this.notifyPropertyChange("contentVisibility", this.contentVisibility);
     this.notifyPropertyChange("secondaryVisibility", this.secondaryVisibility);
+    this.notifyPropertyChange("footerVisibility", this.footerVisibility);
   }
 }

@@ -232,8 +232,8 @@ export class ConfigViewModel extends Observable {
       return;
     }
     if (this.onboarding) {
-      // Continue the onboarding chain: unpair the official app next.
-      Frame.topmost()?.navigate({ moduleName: "phone-ui/onboarding-unpair-page" });
+      // Continue the onboarding chain: check the glasses' firmware next.
+      Frame.topmost()?.navigate({ moduleName: "phone-ui/onboarding-firmware-check-page" });
     }
   }
 

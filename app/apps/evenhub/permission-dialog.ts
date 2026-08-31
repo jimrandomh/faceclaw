@@ -1,7 +1,8 @@
 import { getDefaultSmallFont } from "../../graphics/ui-fonts";
 import { GrayImage } from "../../graphics/image";
 import { truncateText } from "../../graphics/textwrap";
-import { Layer, type DashboardInputEvent, type LayerContext, type PaintBelow } from "../../ui/layers";
+import { type InputEvent } from "../../ui/gestures";
+import { Layer, type LayerContext, type PaintBelow } from "../../ui/layers";
 import { drawSelectionHighlight } from "../../ui/menu";
 import { permissionDetail, permissionLabel, type EvenHubPermission } from "./permissions";
 import { openPrivacyPolicyOnPhone } from "./privacy-policy";
@@ -89,7 +90,7 @@ export class EvenHubPermissionDialogLayer implements Layer {
     return image;
   }
 
-  handleInput(event: DashboardInputEvent, ctx: LayerContext): void {
+  handleInput(event: InputEvent, ctx: LayerContext): void {
     const actions = this.actions();
     switch (event.type) {
       case "scroll-up":

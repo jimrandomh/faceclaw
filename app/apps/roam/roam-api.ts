@@ -104,7 +104,7 @@ async function roamPost(endpoint: "q" | "pull" | "write", body: object): Promise
   const graph = roamGraphNameSetting.get();
   const token = roamApiTokenSetting.get();
   if (!graph || !token) {
-    throw new Error("Set the Roam graph name and API token in Settings > Roam.");
+    throw new Error("Set the Roam graph name and API token from the Roam app's long-press menu.");
   }
   const path = `/api/graph/${encodeURIComponent(graph)}/${endpoint}`;
   const payload = JSON.stringify(body);
@@ -166,8 +166,8 @@ async function fetchWithTimeout(url: string, payload: string, token: string): Pr
 }
 
 async function describeHttpError(response: Response): Promise<string> {
-  if (response.status === 401) return "Roam API rejected the token (check Settings > Roam).";
-  if (response.status === 404) return "Roam graph not found (check the graph name in Settings > Roam).";
+  if (response.status === 401) return "Roam API rejected the token (check Set API token in the menu).";
+  if (response.status === 404) return "Roam graph not found (check Set graph name in the menu).";
   if (response.status === 429) return "Roam API rate limit hit; try again shortly.";
   if (response.status === 503) return "Roam graph is not ready yet; try again shortly.";
   let detail = "";

@@ -2,11 +2,11 @@
     <GridLayout rows="*,auto" class="p-20">
         <ScrollView row="0">
             <StackLayout>
-                <Label text="Disconnect the Even App" class="h1 text-center m-t-24" textWrap="true" />
+                <Label text="Disconnect Other Apps" class="h1 text-center m-t-24" textWrap="true" />
                 <Label
-                    text="Faceclaw and the official Even Realities app can't both be connected to the glasses at once. Before continuing, open the Even app, go to Home, select your glasses, open the Connection submenu, and press Disconnect (or turn off the Even app's Bluetooth)."
+                    text="Faceclaw and the official Even Realities app can't both be connected to the glasses at once. Before continuing, open the Even app, go to Home, select your glasses, open the Connection submenu, and press Disconnect (or turn off the Even app's Bluetooth). If any other glasses app is installed (such as Mentra), disconnect it too."
                     class="body-text m-t-24" textWrap="true" />
-                <Button text="Open Even App Settings" tap="{{ onOpenEvenAppSettingsTap }}" class="-primary m-t-24" />
+                <Button text="Open Even App Settings" tap="{{ onOpenEvenAppSettingsTap }}" width="{{ settingsButtonWidth }}" horizontalAlignment="center" class="-primary m-t-24" />
             </StackLayout>
         </ScrollView>
 

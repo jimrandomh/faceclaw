@@ -1,7 +1,8 @@
 import { getDefaultSmallFont } from "../../graphics/ui-fonts";
 import { GrayImage } from "../../graphics/image";
 import { truncateText, wrapText } from "../../graphics/textwrap";
-import { type DashboardInputEvent, type Layer, type LayerContext } from "../../ui/layers";
+import { type InputEvent } from "../../ui/gestures";
+import { type Layer, type LayerContext } from "../../ui/layers";
 import { drawSelectionHighlight } from "../../ui/menu";
 import { TextViewerLayer } from "../files/text-viewer";
 import { evenHubApi, type EvenHubStoreApp } from "./even-api";
@@ -109,7 +110,7 @@ export class EvenHubStoreDetailLayer implements Layer {
     return image;
   }
 
-  async handleInput(event: DashboardInputEvent, ctx: LayerContext): Promise<void> {
+  async handleInput(event: InputEvent, ctx: LayerContext): Promise<void> {
     if (event.type === "double-click") {
       if (!this.working) ctx.stack.pop();
       return;

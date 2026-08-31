@@ -1,28 +1,13 @@
 import { G2_LENS_HEIGHT, G2_LENS_WIDTH, GrayImage } from "../graphics/image";
 import { type Plane } from "../graphics/plane";
 import { spanCurrent } from "../native/frame-timings";
-import { type ConfigSettingString } from "./dashboard-settings";
+import { type ConfigSettingBoolean, type ConfigSettingString } from "./dashboard-settings";
+import { directionalFallback, isDirectionalInput, type InputEvent } from "./gestures";
 
-export type DashboardInputEvent =
-  | { type: "click"; source: "ring" | "left-arm" | "right-arm" }
-  | { type: "double-click"; source: "ring" | "left-arm" | "right-arm" }
-  | { type: "scroll-up" }
-  | { type: "scroll-down" }
-  | { type: "long-press"; source: "ring" | "left-arm" | "right-arm" }
-  | { type: "long-press-release"; source: "ring" | "left-arm" | "right-arm" }
-  /**
-   * The stock display lifecycle woke while no EvenHub page was running. This
-   * is wake-only, unlike a normal double-click (which turns an on screen off).
-   */
-  | { type: "display-wake" }
-  /**
-   * The on-glasses "Hey Even" wakeword fired. Delivered on sid 0x07 by the
-   * stock firmware regardless of CFW; the CFW additionally suppresses the stock
-   * Even AI app so this is ours to handle. Its configured action may be applied
-   * while the screen is off, unlike ordinary input events.
-   */
-  | { type: "wakeword" }
-  | { type: "unknown"; kind: string; eventSource: number; eventType: number };
+export type TextSettingsEditToggle = {
+  setting: ConfigSettingBoolean;
+  label: string;
+};
 
 export type LayerActions = {
   /** Ask for a dashboard repaint+transmit, e.g. when async data arrives. */
@@ -34,6 +19,7 @@ export type LayerActions = {
     settings: readonly ConfigSettingString[],
     title: string,
     onFinish?: () => void,
+    toggle?: TextSettingsEditToggle,
   ) => Promise<void> | void;
   endTextSettingEdit: () => Promise<void> | void;
   /**
@@ -95,7 +81,18 @@ export interface LayerContext {
 export interface Layer {
   readonly paintOverBase?: boolean;
   paint(ctx: LayerContext, paintBelow: PaintBelow): GrayImage;
-  handleInput(event: DashboardInputEvent, ctx: LayerContext): Promise<void> | void;
+  handleInput(event: InputEvent, ctx: LayerContext): Promise<void> | void;
+  /**
+   * True when handleInput gives swipe-left / swipe-right a meaning of its own.
+   * Otherwise the stack hands the layer directionalFallback(event) instead.
+   */
+  readonly acceptsDirectional?: boolean;
+  /**
+   * A touch at (x, y) in this layer's own canvas coordinates, from the phone's
+   * mirror view. Return true if the layer acted on it (selected / opened what
+   * is there); false sends a plain select (click) instead.
+   */
+  hitTest?(x: number, y: number, ctx: LayerContext): Promise<boolean> | boolean;
   /** Called when the layer leaves the stack by any path (pop or clearToBase). */
   onRemoved?(): void;
   /**
@@ -167,6 +164,21 @@ export class LayerStack {
     }
   }
 
+  /**
+   * Pop layers down to and including the given one, wherever it sits in the
+   * stack (e.g. dismissing the assistant while a follow-up voice dialog is
+   * open above it). Returns false if the layer isn't stacked (the base layer
+   * can never be popped). Removal callbacks fire top-down.
+   */
+  popThrough(layer: Layer): boolean {
+    const index = this.layers.indexOf(layer);
+    if (index <= 0) return false;
+    for (const removed of this.layers.splice(index).reverse()) {
+      notifyRemoved(removed);
+    }
+    return true;
+  }
+
   isAtBase(): boolean {
     return this.layers.length === 1;
   }
@@ -194,8 +206,24 @@ export class LayerStack {
     return this.paintLayer(this.layers.length - 1);
   }
 
-  async handleInput(event: DashboardInputEvent): Promise<void> {
-    await this.layers[this.layers.length - 1]!.handleInput(event, this.ctx);
+  async handleInput(event: InputEvent): Promise<void> {
+    const top = this.layers[this.layers.length - 1]!;
+    const delivered = isDirectionalInput(event) && !top.acceptsDirectional ? directionalFallback(event) : event;
+    await top.handleInput(delivered, this.ctx);
+  }
+
+  /**
+   * Pass a mirror touch to the base layer when nothing is stacked on it.
+   * With a layer stacked (a menu, a dialog) the touch is consumed without
+   * acting: positions mean nothing to the overlay, and falling back to a
+   * blind synthetic click would activate whatever happens to be highlighted
+   * rather than what was tapped.
+   */
+  async hitTest(x: number, y: number): Promise<boolean> {
+    if (this.layers.length !== 1) return true;
+    const base = this.layers[0]!;
+    if (!base.hitTest) return false;
+    return await base.hitTest(x, y, this.ctx);
   }
 
   /** Hand text to the top layer; false if it doesn't take text input. */

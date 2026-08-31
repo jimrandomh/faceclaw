@@ -26,6 +26,10 @@ import java.util.concurrent.TimeUnit;
  * protobuf helpers (BleProtocol), but owns its own GATT connection and runs its
  * whole lifecycle on a single worker thread. It expects the main app to be
  * disconnected while it runs (onboarding, before flashing).
+ *
+ * Only the right arm is used: the lenses relay messages to each other, so
+ * anything sent to the right arm reaches both, and acks/events only ever come
+ * from the right arm anyway.
  */
 public class FaceclawFlashPromptCommunicator implements FaceclawBleListener {
     private static final String TAG = "FaceclawFlashPrompt";
@@ -43,7 +47,6 @@ public class FaceclawFlashPromptCommunicator implements FaceclawBleListener {
 
     private final Context context;
     private final String rightAddress;
-    private final String leftAddress;
     private final String warningText;
     private final FaceclawBleManager bleManager;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
@@ -58,7 +61,6 @@ public class FaceclawFlashPromptCommunicator implements FaceclawBleListener {
     private volatile boolean cancelled = false;
     private volatile boolean finished = false;
     private volatile boolean rightConnected = false;
-    private volatile boolean leftConnected = false;
     private volatile boolean rightLost = false;
     private volatile Boolean approved = null;
     private volatile ScheduledExecutorService heartbeatExecutor;
@@ -66,10 +68,9 @@ public class FaceclawFlashPromptCommunicator implements FaceclawBleListener {
     private int nextMagic = 100;
     private int nextSeq = 0x40;
 
-    public FaceclawFlashPromptCommunicator(Context context, String rightAddress, String leftAddress, String warningText) {
+    public FaceclawFlashPromptCommunicator(Context context, String rightAddress, String warningText) {
         this.context = context.getApplicationContext();
         this.rightAddress = rightAddress == null ? "" : rightAddress;
-        this.leftAddress = leftAddress == null ? "" : leftAddress;
         this.warningText = warningText == null ? "" : warningText;
         this.bleManager = new FaceclawBleManager(this.context);
         this.bleManager.setListener(this);
@@ -116,18 +117,8 @@ public class FaceclawFlashPromptCommunicator implements FaceclawBleListener {
             }
 
             emitState("connecting", "");
-            connectArm(rightAddress, "right");
+            connectArm(rightAddress);
             rightConnected = true;
-
-            boolean haveLeft = !leftAddress.trim().isEmpty() && !leftAddress.equalsIgnoreCase(rightAddress);
-            if (haveLeft) {
-                try {
-                    connectArm(leftAddress, "left");
-                    leftConnected = true;
-                } catch (Exception e) {
-                    emitLog("left arm connect failed (continuing on right only): " + e.getMessage());
-                }
-            }
             if (cancelled) {
                 teardown();
                 return;
@@ -135,14 +126,6 @@ public class FaceclawFlashPromptCommunicator implements FaceclawBleListener {
 
             emitState("connected", "");
             bringUpArm(rightAddress);
-            if (leftConnected) {
-                try {
-                    bringUpArm(leftAddress);
-                } catch (Exception e) {
-                    emitLog("left arm prompt failed (continuing on right only): " + e.getMessage());
-                    leftConnected = false;
-                }
-            }
 
             startHeartbeat();
             emitState("prompting", "");
@@ -158,7 +141,7 @@ public class FaceclawFlashPromptCommunicator implements FaceclawBleListener {
             if (approved != null) {
                 boolean result = Boolean.TRUE.equals(approved);
                 try {
-                    sendShutdownBoth();
+                    sendShutdown();
                 } catch (Exception ignored) {
                 }
                 emitResult(result);
@@ -182,7 +165,7 @@ public class FaceclawFlashPromptCommunicator implements FaceclawBleListener {
         }
     }
 
-    private void connectArm(String address, String labelForLog) {
+    private void connectArm(String address) {
         if (!bleManager.connect(address, ConnectionOptions.CONNECT_TIMEOUT_MS)) {
             throw new IllegalStateException("connect failed: " + address);
         }
@@ -194,7 +177,7 @@ public class FaceclawFlashPromptCommunicator implements FaceclawBleListener {
         if (!bleManager.enableNotifications(address, BleProtocol.NOTIFY_CHAR_UUID, true, ConnectionOptions.DESCRIPTOR_TIMEOUT_MS)) {
             throw new IllegalStateException("enableNotifications failed: " + address);
         }
-        emitLog("connected " + labelForLog + " arm");
+        emitLog("connected right arm");
     }
 
     private void bringUpArm(String address) throws InterruptedException {
@@ -301,9 +284,6 @@ public class FaceclawFlashPromptCommunicator implements FaceclawBleListener {
             if (rightConnected) {
                 writeFrame(rightAddress, BleProtocol.SID_EVENHUB, BleProtocol.FLAG_REQUEST, heartbeat);
             }
-            if (leftConnected) {
-                writeFrame(leftAddress, BleProtocol.SID_EVENHUB, BleProtocol.FLAG_REQUEST, heartbeat);
-            }
         } catch (Exception e) {
             Log.w(TAG, "heartbeat failed: " + e.getMessage());
         }
@@ -317,13 +297,10 @@ public class FaceclawFlashPromptCommunicator implements FaceclawBleListener {
         }
     }
 
-    private void sendShutdownBoth() {
+    private void sendShutdown() {
         byte[] shutdown = BleProtocol.buildShutdown(allocMagic(), 0);
         if (rightConnected) {
             writeFrame(rightAddress, BleProtocol.SID_EVENHUB, BleProtocol.FLAG_REQUEST, shutdown);
-        }
-        if (leftConnected) {
-            writeFrame(leftAddress, BleProtocol.SID_EVENHUB, BleProtocol.FLAG_REQUEST, shutdown);
         }
     }
 
@@ -335,7 +312,6 @@ public class FaceclawFlashPromptCommunicator implements FaceclawBleListener {
         } catch (Exception ignored) {
         }
         rightConnected = false;
-        leftConnected = false;
     }
 
     @Override
@@ -355,10 +331,7 @@ public class FaceclawFlashPromptCommunicator implements FaceclawBleListener {
             return;
         }
         if (frame.flag == BleProtocol.FLAG_NOTIFY || frame.flag == BleProtocol.FLAG_NOTIFY_ALT) {
-            // Async events (taps/selections) only ever come from the right arm.
-            if (address.equalsIgnoreCase(rightAddress)) {
-                handleEvent(frame);
-            }
+            handleEvent(frame);
             return;
         }
         if (frame.msgSeq >= 0) {
@@ -407,8 +380,6 @@ public class FaceclawFlashPromptCommunicator implements FaceclawBleListener {
                     selectionLatch.countDown();
                 }
             }
-        } else if (address.equalsIgnoreCase(leftAddress)) {
-            leftConnected = false;
         }
     }
 

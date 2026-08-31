@@ -4,7 +4,9 @@
  * makes the content area exactly the 576x288 surface EvenHub apps expect.
  */
 import { GrayImage } from "../../graphics/image";
-import { type DashboardInputEvent, type Layer, type LayerContext } from "../../ui/layers";
+import { EVENHUB_SCREEN_WIDTH } from "./compositor";
+import { type InputEvent } from "../../ui/gestures";
+import { type Layer, type LayerContext } from "../../ui/layers";
 import {
   createInProcessWindow,
   type InProcessAppOptions,
@@ -20,10 +22,19 @@ class EvenHubAppLayer implements Layer {
 
   paint(ctx: LayerContext): GrayImage {
     const size = ctx.stack.getBaseSize();
+    // EvenHub apps lay out for the stock 576-wide surface. In the full-panel
+    // display mode the window is 640 wide; paint at stock width and centre
+    // it rather than leaving all the slack on the right.
+    if (size.width > EVENHUB_SCREEN_WIDTH) {
+      const content = this.session.paint({ width: EVENHUB_SCREEN_WIDTH, height: size.height }, ctx.stack.isFocused());
+      const image = new GrayImage(size.width, size.height, 0);
+      content.composeInto(image, Math.floor((size.width - EVENHUB_SCREEN_WIDTH) / 2), 0);
+      return image;
+    }
     return this.session.paint(size, ctx.stack.isFocused());
   }
 
-  handleInput(event: DashboardInputEvent): void {
+  handleInput(event: InputEvent): void {
     // Everything goes to the app; long-press never reaches here (the window
     // menu intercepts it), which is the guaranteed way out since EvenHub
     // apps own double-click.

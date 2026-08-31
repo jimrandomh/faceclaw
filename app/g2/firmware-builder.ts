@@ -20,6 +20,7 @@ import {
 } from "./firmware-fonts";
 import { fetchWithUserAgent } from "../util/http";
 import { bytesToHex, hexToBytes as hexToBytesLenient } from "../util/hex-util";
+import { EvenHubFont } from "../graphics/evenhub-font";
 
 declare const com: any;
 
@@ -180,6 +181,10 @@ function persistEvenHubFonts(base: ArrayBuffer): void {
       },
     );
     if (writeError) throw writeError;
+    // A degraded EvenHubFont (built before this extraction existed) is cached
+    // per JS context; drop it so the next render picks up the real fonts
+    // without an app restart.
+    EvenHubFont.invalidate();
   } catch (error) {
     throw new FirmwareBuildError(
       `The firmware was verified, but its EvenHub fonts could not be extracted: ${(error as Error)?.message ?? error}`,

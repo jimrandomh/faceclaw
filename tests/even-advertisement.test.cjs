@@ -1,4 +1,4 @@
-// Advertisement parsers, checked against the layouts SybilSight confirmed by
+// Advertisement parsers, checked against layouts confirmed by
 // HCI capture (G2: "ER"+SN(14)+MAC(6,LE)+flag) and on-disk forensics (R1:
 // "ER"+MAC(6,wire)+ASCII serial suffix on ring firmware 2.2.7.x).
 const test = require("node:test");

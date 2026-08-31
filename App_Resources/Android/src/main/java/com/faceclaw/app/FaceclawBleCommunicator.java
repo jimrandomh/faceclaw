@@ -60,6 +60,9 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         new java.util.concurrent.CopyOnWriteArrayList<>();
     private final java.util.List<FaceclawCompassListener> compassListeners =
         new java.util.concurrent.CopyOnWriteArrayList<>();
+    private final java.util.List<FaceclawMicStatusListener> micStatusListeners =
+        new java.util.concurrent.CopyOnWriteArrayList<>();
+    private volatile String lastFirmwareCapabilities = "";
     private volatile Thread workerThread;
     private volatile boolean running;
     private volatile boolean userDisconnectRequested;
@@ -386,6 +389,19 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     public boolean isSessionReady() {
         synchronized (lock) {
             return running && sessionReady;
+        }
+    }
+
+    /**
+     * Whether the glasses mic is enabled right now. The enable lives in the
+     * current EvenHub session, so it dies with a transport drop, the charging
+     * case, or a suspend — silently, from the phone's point of view. Callers
+     * that track a capture across those events must check this rather than
+     * assume their earlier enable still holds.
+     */
+    public boolean isAudioCaptureActive() {
+        synchronized (lock) {
+            return running && sessionReady && !shutdownRequested && audioCaptureActive;
         }
     }
 
@@ -743,6 +759,98 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         }
     }
 
+    /** The CFW capability token string from the last firmware-info read ("" before one arrives). */
+    public String getFirmwareCapabilities() {
+        return lastFirmwareCapabilities;
+    }
+
+    public void addMicStatusListener(FaceclawMicStatusListener listener) {
+        if (listener != null) {
+            micStatusListeners.add(listener);
+        }
+    }
+
+    public void removeMicStatusListener(FaceclawMicStatusListener listener) {
+        if (listener != null) {
+            micStatusListeners.remove(listener);
+        }
+    }
+
+    private void emitMicStatus(byte[] body, String address) {
+        if (micStatusListeners.isEmpty()) {
+            return;
+        }
+        String arm = address.equalsIgnoreCase(leftAddress) ? "L"
+            : address.equalsIgnoreCase(rightAddress) ? "R" : "?";
+        byte[] copy = java.util.Arrays.copyOf(body, body.length);
+        mainHandler.post(() -> {
+            for (FaceclawMicStatusListener micListener : micStatusListeners) {
+                try {
+                    micListener.onMicStatus(copy, arm);
+                } catch (Throwable t) {
+                    Log.w(TAG, "mic status listener failed", t);
+                }
+            }
+        });
+    }
+
+    /**
+     * Queue a CFW mic_control record (['M','C',ver,op,...]) as a settings
+     * field-103 write to both temples, or to a single one. Fire-and-forget:
+     * the firmware answers with a field-104 status notify per temple, which
+     * arrives through addMicStatusListener.
+     */
+    public void sendFaceclawMicControl(byte[] record, String label, boolean rightTemple, boolean leftTemple) {
+        if (record == null || record.length < 4) {
+            return;
+        }
+        synchronized (lock) {
+            if (!running || !sessionReady) {
+                logLine("skip mic control (" + label + "); session not ready");
+                return;
+            }
+            if (rightTemple) {
+                pendingMessages.addLast(messageBuilder.faceclawMicControl(record, label, false));
+            }
+            if (leftTemple) {
+                pendingMessages.addLast(messageBuilder.faceclawMicControl(record, label, true));
+            }
+            logLine("queue mic control " + label);
+        }
+        interruptibleSleep.interrupt();
+    }
+
+    /**
+     * Forward render-characteristic audio packets to the listener WITHOUT
+     * sending the stock EvenHub audio-control enable. Used for the CFW
+     * mic_control streaming path, where capture is armed through settings
+     * field 103 and the temples emit 'SM' frames on the same characteristic
+     * that stock mono LC3 uses. Returns false when no session is up.
+     */
+    public boolean startG2AudioForwarding(FaceclawAudioPacketListener listener) {
+        if (listener == null) {
+            throw new IllegalArgumentException("listener is required");
+        }
+        synchronized (lock) {
+            if (!running || !sessionReady || shutdownRequested) {
+                logLine("skip G2 audio forwarding; session not ready");
+                return false;
+            }
+            audioPacketListener = listener;
+            audioCaptureActive = true;
+            logLine("G2 audio forwarding enabled");
+        }
+        return true;
+    }
+
+    public void stopG2AudioForwarding() {
+        synchronized (lock) {
+            audioPacketListener = null;
+            audioCaptureActive = false;
+            logLine("G2 audio forwarding disabled");
+        }
+    }
+
     public void addCompassListener(FaceclawCompassListener listener) {
         if (listener != null) {
             compassListeners.add(listener);
@@ -777,12 +885,17 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
      * foreground), including worker-app frames the TS side never sees.
      */
     public android.graphics.Bitmap getCompositePreviewBitmap(double brightenGamma) {
+        return getCompositePreviewBitmap(brightenGamma, false);
+    }
+
+    /** As above; `green` renders the preview green-on-black (Settings > Phone display > Preview color). */
+    public android.graphics.Bitmap getCompositePreviewBitmap(double brightenGamma, boolean green) {
         SurfaceCompositor.Composite composite = compositor.previewComposite();
         if (composite == null) {
             return null;
         }
         return PreviewBitmapUtil.fromGray(
-                java.nio.ByteBuffer.wrap(composite.gray), composite.width, composite.height, brightenGamma);
+                java.nio.ByteBuffer.wrap(composite.gray), composite.width, composite.height, brightenGamma, green);
     }
 
     /** Save the current composite as a 4-bit grayscale PNG; returns the path or "". */
@@ -1432,6 +1545,16 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                     0,
                     0
                 );
+            }
+            if (!faceclawWakeNotification
+                    && frame.ok
+                    && frame.sid == BleProtocol.SID_UI_SETTING) {
+                // CFW mic status (field 104) rides both standalone pushes and
+                // settings read acks, from each temple on its own link.
+                byte[] micStatus = BleProtocol.parseFaceclawMicStatus(frame.pb);
+                if (micStatus != null) {
+                    emitMicStatus(micStatus, address);
+                }
             }
             if (!faceclawWakeNotification
                     && decodedWearState < 0
@@ -2716,6 +2839,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             }
             BleProtocol.FirmwareInfo firmwareInfo = BleProtocol.parseSettingsFirmwareInfo(message.ackPayload);
             if (firmwareInfo != null) {
+                lastFirmwareCapabilities = firmwareInfo.capabilities == null ? "" : firmwareInfo.capabilities;
                 cfwCleanupSupported = hasCapability(firmwareInfo.capabilities, "cleanup11");
                 textureCacheSupported = hasCapability(firmwareInfo.capabilities, "texcache12")
                         && hasCapability(firmwareInfo.capabilities, "texstr14");

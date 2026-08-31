@@ -1,4 +1,4 @@
-import { GESTURE_DOUBLE_CLICK } from "./gestures";
+import { GESTURE_DOUBLE_CLICK, InputEvent } from "./gestures";
 import {
   getBooleanSetting,
   getStringSetting,
@@ -17,7 +17,7 @@ import {
 import { isLocalModelReady } from "../native/llama";
 import { drawRightValueMenuItem, drawToggleMenuItem, MenuItem, openModalMenu } from "./menu";
 import { LIST_ROW_TEXT_INSET, lineStep } from "./metrics";
-import { DashboardInputEvent, Layer, type LayerContext } from "./layers";
+import { Layer, type LayerContext } from "./layers";
 import { GrayImage } from "~/graphics/image";
 
 export type NightscoutSettings = {
@@ -223,6 +223,36 @@ export const timeFormatSetting = new ConfigSettingEnum<TimeFormat>({
   description: "Whether the top-bar clock shows 24-hour or 12-hour time.",
 });
 
+/**
+ * How much of the 640x480 panel the UI uses. "576x288" is the stock band
+ * (sidebar + a 288px-tall window at the vertical position); "576x480" keeps
+ * the sidebar and gives every window the full height; "640x480" is the whole
+ * panel, with the sidebar an overlay that shows only while it has focus.
+ */
+export const DISPLAY_MODE_VALUES = ["576x288", "576x480", "640x480"] as const;
+export type DisplayModeSetting = (typeof DISPLAY_MODE_VALUES)[number];
+
+const DISPLAY_MODE_LABELS: Record<DisplayModeSetting, string> = {
+  "576x288": "Band · 576×288",
+  "576x480": "Tall · 576×480",
+  "640x480": "Full panel · 640×480",
+};
+
+export function displayModeLabel(value: DisplayModeSetting): string {
+  return DISPLAY_MODE_LABELS[value] ?? value;
+}
+
+export const displayModeSetting = new ConfigSettingEnum<DisplayModeSetting>({
+  id: "display-mode",
+  label: "Display mode",
+  storageKey: "display.mode",
+  defaultValue: "576x288",
+  values: DISPLAY_MODE_VALUES,
+  formatValue: displayModeLabel,
+  description:
+    "Band: the stock 576×288 window beside the sidebar. Tall: the sidebar plus full-height windows. Full panel: the whole 640×480 display; the sidebar overlays the app only while you are in it. Open apps reopen in the new size.",
+});
+
 export const brightnessSetting = new ConfigSettingEnum<BrightnessSetting>({
   id: "brightness",
   label: "Brightness",
@@ -250,6 +280,69 @@ export const lockScreenEnabledSetting = new ConfigSettingBoolean({
   defaultValue: true,
   description:
     "Lock the glasses after they are taken off while the phone is locked. Unlocking the phone unlocks the glasses.",
+});
+
+// Phone display: the phone app's mirror of the glasses screen and the
+// controls around it on the main page.
+export type PreviewColor = "white" | "green";
+
+export const previewColorSetting = new ConfigSettingEnum<PreviewColor>({
+  id: "preview-color",
+  label: "Preview color",
+  storageKey: "phone.previewColor",
+  defaultValue: "white",
+  values: ["white", "green"],
+  formatValue: (value) => (value === "green" ? "Green" : "White"),
+  description:
+    "How the phone's mirror of the glasses display renders: white/grayscale (clearest), or green to match the physical glasses.",
+});
+
+export const mirrorTouchSetting = new ConfigSettingBoolean({
+  id: "mirror-touch",
+  label: "Touch mirror",
+  // Key predates this setting object (the toggle used to live on the phone's
+  // main screen); keeping it preserves the user's choice.
+  storageKey: "phone.mirrorTouch",
+  defaultValue: true,
+  description:
+    "Let touches on the phone's mirror act on the glasses UI: tap selects what it lands on, double-tap goes back, a hold opens the menu, swipes navigate.",
+});
+
+// Wear OS watch remote (app/g2/wear-remote.ts, wear/). All three are read on
+// every watch message, so a change applies immediately.
+export const watchRemoteEnabledSetting = new ConfigSettingBoolean({
+  id: "watch-remote-enabled",
+  label: "Watch remote control",
+  storageKey: "watch.remoteEnabled",
+  defaultValue: true,
+  description:
+    "Accept input from the Faceclaw Wear OS app: spatial swipes, taps, holds, crown, voice queries and app commands. The ring's scheme is unaffected. Turn off to ignore the watch.",
+});
+
+export const watchCanUnlockSetting = new ConfigSettingBoolean({
+  id: "watch-can-unlock",
+  label: "Watch can unlock glasses",
+  storageKey: "watch.canUnlock",
+  defaultValue: true,
+  description:
+    "Let the watch unlock the glasses' lock screen (which otherwise waits for the phone to be unlocked). Your watch is on your wrist; turn this off if you would rather it stay a phone-only unlock.",
+});
+
+export const watchCrownClockwiseNextSetting = new ConfigSettingBoolean({
+  id: "watch-crown-clockwise-next",
+  label: "Clockwise crown = next",
+  storageKey: "watch.crownClockwiseNext",
+  defaultValue: false,
+  description:
+    "Choose which crown direction moves to the next item. Off: clockwise moves to the previous item. On: clockwise moves to the next item.",
+});
+
+export const watchMirrorAssistantSetting = new ConfigSettingBoolean({
+  id: "watch-mirror-assistant",
+  label: "Mirror assistant to watch",
+  storageKey: "watch.mirrorAssistant",
+  defaultValue: true,
+  description: "Stream assistant replies and on-glasses alerts to the watch so they can be read from the wrist.",
 });
 
 export type VerticalPosition = "top" | "upper" | "middle" | "lower" | "bottom";
@@ -295,6 +388,28 @@ export const suspendEvenHubWhenScreenOffSetting = new ConfigSettingBoolean({
   storageKey: "developer.suspendEvenHubWhenScreenOff",
   defaultValue: true,
   description: "Suspend the EvenHub session while the display is off. This significantly improves battery life, but increases the latency of waking the screen.",
+});
+
+export const useMicControlSetting = new ConfigSettingBoolean({
+  id: "use-mic-control",
+  label: "Use microphone control",
+  storageKey: "developer.useMicControl",
+  defaultValue: true,
+  description:
+    "Use the custom firmware's per-temple mic-control channel (caps token micctl) for the Microphones app's array capture. When off, behave as if the firmware doesn't have the feature and use the standard single mixed stream.",
+});
+
+export type RingConnectionMode = "glasses" | "direct";
+
+export const ringConnectionModeSetting = new ConfigSettingEnum<RingConnectionMode>({
+  id: "ring-connection-mode",
+  label: "Ring connection",
+  storageKey: "developer.ringConnectionMode",
+  defaultValue: "glasses",
+  values: ["glasses", "direct"],
+  formatValue: (value) => (value === "direct" ? "Direct" : "Only via glasses"),
+  description:
+    "How R1 ring input reaches the phone. Only via glasses: the ring's own link to the glasses carries its gestures, and the phone never opens a Bluetooth connection to the ring. Direct: also connect to the ring from the phone (currently unreliable). Takes effect on the next connection to the glasses.",
 });
 
 export type VoiceProvider = "onboard" | "elevenlabs" | "whisper" | "soniox";
@@ -772,7 +887,7 @@ export class EditTextSettingLayer implements Layer {
     return image;
   }
 
-  handleInput(event: DashboardInputEvent, ctx: LayerContext): void {
+  handleInput(event: InputEvent, ctx: LayerContext): void {
     if (event.type === "double-click") {
       void ctx.actions.endTextSettingEdit();
       ctx.stack.pop();

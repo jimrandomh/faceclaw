@@ -15,6 +15,14 @@
     "../app/g2/ble-proximity.ts",
     "../app/g2/even-advertisement.ts",
     "../app/g2/glasses-artwork.ts",
-    "../app/g2/pairing-candidates.ts"
+    "../app/g2/glasses-display-state.ts",
+    "../app/g2/pairing-candidates.ts",
+    "../app/apps/calculator/math/*.ts",
+    "../app/apps/microphones/mic-protocol.ts",
+    "../app/apps/calculator/calculator-commands.ts",
+    "../app/apps/microphones/sentiment.ts",
+    "../app/apps/microphones/dsp.ts",
+    "../app/apps/microphones/radar-dots.ts",
+    "../app/apps/microphones/name-guess.ts"
   ]
 }

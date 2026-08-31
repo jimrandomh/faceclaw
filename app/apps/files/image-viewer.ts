@@ -3,8 +3,8 @@ import { getDefaultSmallFont } from "../../graphics/ui-fonts";
 import { truncateText } from "../../graphics/textwrap";
 import { GrayImage } from "../../graphics/image";
 import { loadImageFileAsGray } from "../../native/image-files";
-import { GESTURE_DOUBLE_CLICK } from "../../ui/gestures";
-import { Layer, type DashboardInputEvent, type LayerContext } from "../../ui/layers";
+import { GESTURE_DOUBLE_CLICK, type InputEvent } from "../../ui/gestures";
+import { Layer, type LayerContext } from "../../ui/layers";
 
 const MARGIN_X = 18;
 const TITLE_Y = 8;
@@ -50,7 +50,7 @@ export class ImageViewerLayer implements Layer {
     return out;
   }
 
-  handleInput(event: DashboardInputEvent, ctx: LayerContext): void {
+  handleInput(event: InputEvent, ctx: LayerContext): void {
     if (event.type === "double-click") {
       ctx.stack.pop();
     }

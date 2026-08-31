@@ -3,9 +3,8 @@
  * G2 pairs (a left and a right temple that advertise the same serial) and R1
  * rings, each ranked by how close it probably is.
  *
- * Ported from SybilSight's `PairingScanPresentation` / `PairingFlowState`
- * (nearest-device margin, previously-paired match, closest-first ordering)
- * and extended with the left↔right pair grouping that Faceclaw needs because
+ * Ranks by nearest-device margin, previously-paired match, and closest-first
+ * ordering, with the left↔right pair grouping that Faceclaw needs because
  * it connects to each arm by address rather than through a vendor SDK.
  *
  * This module is pure (no NativeScript imports) so it can run under node tests.

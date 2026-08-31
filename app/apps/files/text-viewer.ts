@@ -2,7 +2,8 @@ import { wrapText, truncateText } from "../../graphics/textwrap";
 import { getDefaultSmallFont } from "../../graphics/ui-fonts";
 import { TtfFont } from "../../graphics/ttf-font";
 import { GrayImage, type UiFont } from "../../graphics/image";
-import { Layer, type DashboardInputEvent, type LayerContext } from "../../ui/layers";
+import { type InputEvent } from "../../ui/gestures";
+import { Layer, type LayerContext } from "../../ui/layers";
 
 const MARGIN_X = 18;
 const TITLE_Y = 16;
@@ -58,7 +59,7 @@ export class TextViewerLayer implements Layer {
     return image;
   }
 
-  handleInput(event: DashboardInputEvent, ctx: LayerContext): void {
+  handleInput(event: InputEvent, ctx: LayerContext): void {
     switch (event.type) {
       case "scroll-down":
         this.scrollBy(this.pageStep());

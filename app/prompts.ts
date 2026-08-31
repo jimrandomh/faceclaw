@@ -52,3 +52,21 @@ export const REFINE_SYSTEM_PROMPT =
 export function buildRefineUserMessage(original: string, followup: string): string {
   return `Original dictation:\n${original}\n\nFollow-up dictation:\n${followup}`;
 }
+
+/**
+ * The Calculator app's spoken-problem rewrite. The model never computes
+ * anything: it is used strictly as a translator from English into notation,
+ * and the deterministic engine solves the rewritten expression — so a wrong
+ * reading shows up as a wrong-looking equation rather than as a plausible
+ * wrong number.
+ */
+export const CALCULATOR_REWRITE_SYSTEM_PROMPT =
+  "Rewrite the user's spoken request as ONE mathematical expression or equation, in plain " +
+  "ASCII notation (+ - * / ^ = ( ) sqrt() sin() log()). Use x, y, z for unknowns. " +
+  "Reply with the expression and NOTHING else — no words, no explanation, no answer, " +
+  'no "=" result appended. If it is not a calculation, reply exactly "none".';
+
+/** User message for the calculator rewrite flow. */
+export function buildCalculatorRewriteUserMessage(spoken: string): string {
+  return `Request: ${spoken}`;
+}

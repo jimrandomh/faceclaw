@@ -11,6 +11,7 @@ const pinballApp: AppDefinition = {
       title: "Pinball",
       iconLetter: "P",
       icon: "pinball",
+      acceptsDirectional: true,
     }),
 };
 

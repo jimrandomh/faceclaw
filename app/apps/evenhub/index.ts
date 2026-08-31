@@ -73,7 +73,7 @@ const evenhubApp: AppDefinition = {
         setSurfaceVisible: options.setSurfaceVisible,
         removeSurface: options.removeSurface,
         onClosed: () => {
-          store.closeCredentialEditor(options.actions);
+          store.onWindowClosed(options.actions);
           options.onClosed();
         },
       });

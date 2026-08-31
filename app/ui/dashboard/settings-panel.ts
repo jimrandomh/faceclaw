@@ -2,7 +2,8 @@ import { getDefaultSmallFont } from "../../graphics/ui-fonts";
 import { GrayImage, type UiFont } from "../../graphics/image";
 import { wrapText } from "../../graphics/textwrap";
 import { clamp } from "../../util/numeric-util";
-import { DashboardInputEvent, Layer, LayerContext, PaintBelow } from "../layers";
+import { InputEvent } from "../gestures";
+import { Layer, LayerContext, PaintBelow } from "../layers";
 import { drawSelectionHighlight, isMenuItemDisabled, MenuItem, MenuLayer, openModalMenu } from "../menu";
 import { LIST_ROW_TEXT_INSET, lineStep, listRowHeight } from "../metrics";
 import { shell } from "../shell/shell";
@@ -41,6 +42,9 @@ const NO_MENU = new MenuLayer(null, []);
  * column, out to the sidebar). Third-level menus open as centered modals.
  */
 export class SettingsPanelLayer implements Layer {
+  // Watch swipes map onto the two columns: right goes into a section's
+  // items, left comes back out (and out to the sidebar from the left column).
+  readonly acceptsDirectional = true;
   private leftIndex = 0;
   private rightIndex = 0;
   private focus: "left" | "right" = "left";
@@ -181,18 +185,21 @@ export class SettingsPanelLayer implements Layer {
     }
   }
 
-  async handleInput(event: DashboardInputEvent, ctx: LayerContext): Promise<void> {
+  async handleInput(event: InputEvent, ctx: LayerContext): Promise<void> {
     if (this.focus === "left") {
       switch (event.type) {
         case "scroll-up":
+        case "swipe-up":
           this.leftIndex = (this.leftIndex + this.sections.length - 1) % this.sections.length;
           this.resetRight();
           return;
         case "scroll-down":
+        case "swipe-down":
           this.leftIndex = (this.leftIndex + 1) % this.sections.length;
           this.resetRight();
           return;
         case "click":
+        case "swipe-right":
           // Only enter sections that have something interactive on the right.
           if (this.section().items.length) {
             this.focus = "right";
@@ -200,6 +207,7 @@ export class SettingsPanelLayer implements Layer {
           }
           return;
         case "double-click":
+        case "swipe-left":
           shell.yieldFocusToSidebar();
           return;
         default:
@@ -210,18 +218,22 @@ export class SettingsPanelLayer implements Layer {
     const items = this.section().items;
     switch (event.type) {
       case "scroll-up":
+      case "swipe-up":
         if (items.length) this.rightIndex = (this.rightIndex + items.length - 1) % items.length;
         return;
       case "scroll-down":
+      case "swipe-down":
         if (items.length) this.rightIndex = (this.rightIndex + 1) % items.length;
         return;
       case "click":
+      case "swipe-right":
         if (items.length) {
           const item = items[clamp(this.rightIndex, 0, items.length - 1)]!;
           if (!isMenuItemDisabled(item)) await item.onSelect(ctx, NO_MENU);
         }
         return;
       case "double-click":
+      case "swipe-left":
         this.focus = "left";
         return;
       default:
@@ -242,6 +254,8 @@ export class SettingsPanelLayer implements Layer {
  * layers (modal menus, the text editor) stack above it as before.
  */
 export class SettingsDescriptionOverlayLayer implements Layer {
+  readonly acceptsDirectional = true;
+
   constructor(private readonly panel: SettingsPanelLayer) {}
 
   paint(ctx: LayerContext, paintBelow: PaintBelow): GrayImage {
@@ -250,7 +264,7 @@ export class SettingsDescriptionOverlayLayer implements Layer {
     return image;
   }
 
-  handleInput(event: DashboardInputEvent, ctx: LayerContext): Promise<void> {
+  handleInput(event: InputEvent, ctx: LayerContext): Promise<void> {
     return this.panel.handleInput(event, ctx);
   }
 }

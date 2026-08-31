@@ -9,6 +9,8 @@
  * legal run that fits (supermoves via empty cells/columns). Double-click
  * sends the card at the cursor to its foundation, or cancels a pending
  * selection. Long-press opens the window menu (undo, new game, restart).
+ * Watch swipes move the cursor spatially: left/right within the row, up/down
+ * between the top row (cells + foundations) and the cascades.
  * Safe cards auto-play to the foundations after every move.
  */
 import "@nativescript/core/globals";
@@ -18,12 +20,12 @@ import { prepareFrameDraws } from "../../graphics/glyph-wire";
 import { getFont } from "../../graphics/bdffont";
 import { getDefaultSmallFont } from "../../graphics/ui-fonts";
 import * as frameTimings from "../../native/frame-timings";
-import type { DashboardInputEvent } from "../../ui/layers";
+import { getActiveDisplay } from "../../native/active-display";
 import { buildSoundSequencePayload, type Step } from "../../ui/sound-effects";
 import { defaultWindowMenuItems, WindowMenu } from "../../ui/window-menu";
 import type { MenuItem } from "../../ui/menu";
 import type { WorkerAppMessage, WorkerAppReply } from "../../ui/shell/worker-window";
-import { GESTURE_CLICK, GESTURE_DOUBLE_CLICK, GESTURE_LONG_PRESS } from "../../ui/gestures";
+import { directionalFallback, GESTURE_CLICK, GESTURE_DOUBLE_CLICK, GESTURE_LONG_PRESS, type InputEvent } from "../../ui/gestures";
 
 declare const global: any;
 declare const com: any;
@@ -127,6 +129,12 @@ function post(message: WorkerAppReply): void {
   global.postMessage(message);
 }
 
+// The host queues messages until this arrives: posts to a worker whose bundle
+// is still evaluating can be silently dropped (see WorkerAppHost). Top-level
+// evaluation is synchronous, so the handler below is installed before any
+// queued message can be delivered.
+post({ type: "worker-ready" });
+
 global.onmessage = (event: { data: WorkerAppMessage }) => {
   const message = event.data;
   switch (message.type) {
@@ -168,7 +176,7 @@ global.onmessage = (event: { data: WorkerAppMessage }) => {
       // Marks the main-thread -> worker hop, which is otherwise an
       // unexplained gap inside the shell's handle-input span.
       frameTimings.logFrame(message.frameId, `input received in ${message.windowId} worker`);
-      handleInput(window, message.event as DashboardInputEvent, message.frameId);
+      handleInput(window, message.event as InputEvent, message.frameId);
       break;
     }
     case "render": {
@@ -256,11 +264,12 @@ function windowMenu(window: FreecellWindow): WindowMenu {
   return window.menu;
 }
 
-function handleInput(window: FreecellWindow, event: DashboardInputEvent, frameId: number): void {
-  // An open window menu owns all input (it closes itself via pop).
+function handleInput(window: FreecellWindow, event: InputEvent, frameId: number): void {
+  // An open window menu owns all input (it closes itself via pop); menus are
+  // list UIs, so watch swipes take their standard fallback meanings there.
   if (window.menu?.isOpen()) {
     window.menu
-      .handleInput(event)
+      .handleInput(directionalFallback(event))
       .catch((error) => console.error(`freecell menu input failed: ${error}`))
       .then(() => renderAndSubmit(window, frameId));
     return;
@@ -273,13 +282,28 @@ function handleInput(window: FreecellWindow, event: DashboardInputEvent, frameId
   }
 }
 
-function handlePlayingInput(window: FreecellWindow, event: DashboardInputEvent, frameId: number): void {
+function handlePlayingInput(window: FreecellWindow, event: InputEvent, frameId: number): void {
   switch (event.type) {
     case "scroll-up":
       window.cursor = (window.cursor + LOC_COUNT - 1) % LOC_COUNT;
       break;
     case "scroll-down":
       window.cursor = (window.cursor + 1) % LOC_COUNT;
+      break;
+    // Watch swipes are spatial over the two rows of eight columns: up/down
+    // switch between the top row (free cells + foundations) and the cascades
+    // keeping the column, left/right move within the row.
+    case "swipe-up":
+      if (window.cursor >= LOC_CASCADE0) window.cursor -= LOC_CASCADE0;
+      break;
+    case "swipe-down":
+      if (window.cursor < LOC_CASCADE0) window.cursor += LOC_CASCADE0;
+      break;
+    case "swipe-left":
+      if (window.cursor % LOC_CASCADE0 > 0) window.cursor--;
+      break;
+    case "swipe-right":
+      if (window.cursor % LOC_CASCADE0 < LOC_CASCADE0 - 1) window.cursor++;
       break;
     case "click":
       if (window.selected === null) {
@@ -312,8 +336,8 @@ function handlePlayingInput(window: FreecellWindow, event: DashboardInputEvent, 
   renderAndSubmit(window, frameId);
 }
 
-function handleWonInput(window: FreecellWindow, event: DashboardInputEvent, frameId: number): void {
-  switch (event.type) {
+function handleWonInput(window: FreecellWindow, event: InputEvent, frameId: number): void {
+  switch (directionalFallback(event).type) {
     case "click":
       newGame(window, false);
       playSfx(window, SFX_NEW_GAME);
@@ -752,9 +776,9 @@ function renderAndSubmit(window: FreecellWindow, inputFrameId: number): void {
       frameTimings.finishFrame(frameId, "discarded: freecell content unchanged");
       return;
     }
-    const communicator = com.faceclaw.app.FaceclawBleCommunicator.getActive();
+    const communicator = getActiveDisplay();
     if (!communicator) {
-      frameTimings.finishFrame(frameId, "discarded: no active communicator");
+      frameTimings.finishFrame(frameId, "discarded: no active display");
       return;
     }
     const { image, draws } = frameTimings.span(frameId, "flatten", () => flattenPlanesWithDraws(planes));

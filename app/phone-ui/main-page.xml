@@ -1,8 +1,17 @@
-<Page xmlns="http://schemas.nativescript.org/tns.xsd" navigatingTo="navigatingTo" loaded="loaded" unloaded="unloaded">
-    <ActionBar title="Faceclaw">
+<Page xmlns="http://schemas.nativescript.org/tns.xsd" xmlns:rc="phone-ui" navigatingTo="navigatingTo" loaded="loaded" unloaded="unloaded">
+    <ActionBar>
+        <!-- Custom titleView: app title on the left; connection status and the
+             warning-triangle indicator right-aligned beside the overflow menu. -->
+        <GridLayout columns="auto,*,auto,auto" width="100%" verticalAlignment="center">
+            <Label col="0" text="Faceclaw" class="action-bar-title" />
+            <Label col="2" text="{{ connectionStatusLabel }}" tap="{{ onConnectionStatusTap }}" class="action-bar-status" />
+            <Label col="3" text="&#x26A0;&#xFE0F;" tap="{{ onWarningIconTap }}" visibility="{{ warningIconVisibility }}" class="action-bar-warning" />
+        </GridLayout>
         <ActionItem text="{{ buttonLabel }}" tap="{{ onTap }}" isEnabled="{{ connectItemEnabled }}" android.position="popup" />
         <ActionItem text="Pair glasses" tap="{{ onPairGlassesTap }}" isEnabled="{{ canRun }}" android.position="popup" />
         <ActionItem text="Configure devices" tap="{{ onConfigureTap }}" isEnabled="{{ canRun }}" android.position="popup" />
+        <ActionItem text="Permissions" tap="{{ onPermissionsTap }}" android.position="popup" />
+        <ActionItem text="Conversations" tap="{{ onConversationsTap }}" android.position="popup" />
         <ActionItem text="Take screenshot" tap="{{ onTakeScreenshotTap }}" android.position="popup" />
         <ActionItem text="Record screen" tap="{{ onRecordScreenTap }}" android.position="popup" />
         <ActionItem text="Uninstall custom firmware" tap="{{ onUninstallFirmwareTap }}" isEnabled="{{ canRun }}" android.position="popup" />
@@ -11,7 +20,8 @@
     <GridLayout>
         <GridLayout rows="auto,*" visibility="{{ portraitLayoutVisibility }}">
             <StackLayout row="0" visibility="{{ displayPreviewVisibility }}">
-                <Image src="{{ displayPreview }}" stretch="fill" height="{{ displayPreviewHeight }}" />
+                <Image src="{{ displayPreview }}" stretch="fill" height="{{ displayPreviewHeight }}"
+                    tap="{{ onMirrorTap }}" doubleTap="{{ onMirrorDoubleTap }}" longPress="{{ onMirrorLongPress }}" swipe="{{ onMirrorSwipe }}" />
             </StackLayout>
             <GridLayout
                 row="0"
@@ -20,55 +30,23 @@
                 visibility="{{ displayPreviewMessageVisibility }}">
                 <Label text="{{ displayPreviewMessage }}" textWrap="true" horizontalAlignment="center" verticalAlignment="center" />
             </GridLayout>
-            <GridLayout row="1" rows="auto,auto,auto" class="p-20">
-                <StackLayout row="0" class="m-b-8">
-                    <StackLayout visibility="{{ evenAppConflictWarningVisibility }}">
-                        <Label text="{{ evenAppConflictMessage }}" textWrap="true" />
-                        <Button text="Open Even app settings" tap="{{ onOpenEvenAppSettingsTap }}" class="-primary" />
-                    </StackLayout>
-                    <StackLayout visibility="{{ firmwareWarningVisibility }}">
-                        <Label text="{{ firmwareWarningMessage }}" textWrap="true" />
-                        <Button text="Install custom firmware" tap="{{ onInstallFirmwareTap }}" class="-primary" />
-                    </StackLayout>
-                    <StackLayout visibility="{{ batteryOptimizationWarningVisibility }}">
-                        <Label text="Android will slow Faceclaw to a crawl when the phone screen is off unless it is exempt from battery optimization." textWrap="true" />
-                        <Button text="Allow unrestricted background usage" tap="{{ onAllowBackgroundUsageTap }}" class="-primary" />
-                    </StackLayout>
-                </StackLayout>
-                <StackLayout row="1">
-                    <GridLayout rows="auto,auto,auto" columns="*,*,*" class="m-t-8">
-                        <Button row="0" col="1" text="Swipe up" tap="{{ onSyntheticUpTap }}" />
-                        <Button row="1" col="0" text="Double-click" tap="{{ onSyntheticLeftTap }}" />
-                        <Button row="1" col="1" text="Long press" tap="{{ onSyntheticLongPressTap }}" />
-                        <Button row="1" col="2" text="Click" tap="{{ onSyntheticRightTap }}" />
-                        <Button row="0" col="2" text="Microphone" tap="{{ onSyntheticMicTap }}" />
-                        <Button row="2" col="1" text="Swipe down" tap="{{ onSyntheticDownTap }}" />
-                    </GridLayout>
-                    <Button text="Stop recording" tap="{{ onStopRecordingTap }}" visibility="{{ stopRecordingButtonVisibility }}" />
-                </StackLayout>
-                <Label row="2" text="{{ status }}" class="m-t-16" textWrap="true" />
+            <!-- The controls get the whole star row so the active tab's
+                 content can center in the leftover height. -->
+            <GridLayout row="1" rows="*,auto" class="p-20">
+                <rc:remote-controls row="0" visibility="{{ controlsVisibility }}" />
+                <Button row="1" text="Stop recording" tap="{{ onStopRecordingTap }}" visibility="{{ stopRecordingButtonVisibility }}" />
             </GridLayout>
         </GridLayout>
 
-        <GridLayout rows="auto,*" class="p-20" visibility="{{ landscapeLayoutVisibility }}">
-            <StackLayout row="0" class="m-b-8">
-                <StackLayout visibility="{{ evenAppConflictWarningVisibility }}">
-                    <Label text="{{ evenAppConflictMessage }}" textWrap="true" />
-                    <Button text="Open Even app settings" tap="{{ onOpenEvenAppSettingsTap }}" class="-primary" />
-                </StackLayout>
-                <Label text="{{ firmwareWarningMessage }}" textWrap="true" visibility="{{ firmwareWarningVisibility }}" />
-                <StackLayout visibility="{{ batteryOptimizationWarningVisibility }}">
-                    <Label text="Android will slow Faceclaw to a crawl when the phone screen is off unless it is exempt from battery optimization." textWrap="true" />
-                    <Button text="Allow unrestricted background usage" tap="{{ onAllowBackgroundUsageTap }}" class="-primary" />
-                </StackLayout>
-            </StackLayout>
-            <GridLayout row="1" rows="auto,auto" columns="*,260">
+        <GridLayout class="p-20" visibility="{{ landscapeLayoutVisibility }}">
+            <GridLayout rows="auto" columns="*,360">
                 <StackLayout row="0" col="0" visibility="{{ displayPreviewVisibility }}" horizontalAlignment="left">
                     <Image
                         src="{{ displayPreview }}"
                         stretch="fill"
                         width="{{ landscapeDisplayPreviewWidth }}"
-                        height="{{ landscapeDisplayPreviewHeight }}" />
+                        height="{{ landscapeDisplayPreviewHeight }}"
+                        tap="{{ onMirrorTap }}" doubleTap="{{ onMirrorDoubleTap }}" longPress="{{ onMirrorLongPress }}" swipe="{{ onMirrorSwipe }}" />
                 </StackLayout>
                 <GridLayout
                     row="0"
@@ -81,26 +59,51 @@
                     <Label text="{{ displayPreviewMessage }}" textWrap="true" horizontalAlignment="center" verticalAlignment="center" />
                 </GridLayout>
                 <StackLayout row="0" col="1" class="m-l-16">
-                    <GridLayout rows="auto,auto,auto" columns="*,*,*">
-                        <Button row="0" col="1" text="Swipe up" tap="{{ onSyntheticUpTap }}" />
-                        <Button row="1" col="0" text="Double-click" tap="{{ onSyntheticLeftTap }}" />
-                        <Button row="1" col="1" text="Long press" tap="{{ onSyntheticLongPressTap }}" />
-                        <Button row="1" col="2" text="Click" tap="{{ onSyntheticRightTap }}" />
-                        <Button row="0" col="2" text="Microphone" tap="{{ onSyntheticMicTap }}" />
-                        <Button row="2" col="1" text="Swipe down" tap="{{ onSyntheticDownTap }}" />
-                    </GridLayout>
+                    <rc:remote-controls visibility="{{ controlsVisibility }}" />
                     <Button text="Stop recording" tap="{{ onStopRecordingTap }}" visibility="{{ stopRecordingButtonVisibility }}" />
                 </StackLayout>
-                <Label row="1" col="0" colSpan="2" text="{{ status }}" class="m-t-16" textWrap="true" />
             </GridLayout>
         </GridLayout>
+        <ScrollView
+            class="warnings-modal"
+            visibility="{{ warningsModalVisibility }}"
+            width="{{ warningsModalWidth }}"
+            horizontalAlignment="center"
+            verticalAlignment="center">
+            <StackLayout class="warnings-modal-content">
+                <Label text="Attention needed" class="h2" />
+                <StackLayout visibility="{{ evenAppConflictWarningVisibility }}" class="warnings-modal-item">
+                    <Label text="{{ evenAppConflictMessage }}" textWrap="true" />
+                    <Button text="Open Even app settings" tap="{{ onOpenEvenAppSettingsTap }}" class="-primary" />
+                </StackLayout>
+                <StackLayout visibility="{{ firmwareWarningVisibility }}" class="warnings-modal-item">
+                    <Label text="{{ firmwareWarningMessage }}" textWrap="true" />
+                    <Button text="Install custom firmware" tap="{{ onInstallFirmwareTap }}" class="-primary" />
+                </StackLayout>
+                <StackLayout visibility="{{ batteryOptimizationWarningVisibility }}" class="warnings-modal-item">
+                    <Label text="Android will slow Faceclaw to a crawl when the phone screen is off unless it is exempt from battery optimization." textWrap="true" />
+                    <Button text="Allow unrestricted background usage" tap="{{ onAllowBackgroundUsageTap }}" class="-primary" />
+                </StackLayout>
+                <StackLayout visibility="{{ fontsMissingWarningVisibility }}" class="warnings-modal-item">
+                    <Label text="The G2 fonts have not been extracted, so EvenHub apps will render with fallback fonts. Preparing them downloads the official firmware to extract its fonts; your glasses are not reflashed." textWrap="true" />
+                    <Button text="Prepare G2 fonts" tap="{{ onPrepareFontsTap }}" class="-primary" />
+                </StackLayout>
+                <Button text="Close" tap="{{ onWarningsModalCloseTap }}" />
+            </StackLayout>
+        </ScrollView>
+        <!-- Keyboard-input mode: anchored to the bottom of the (keyboard-
+             shrunk) page, so it sits in the space below the mirror and only
+             overlaps the mirror when the open keyboard leaves too little
+             room. The tabbed controls are collapsed while it is up. -->
         <StackLayout
             class="system-name-modal"
             visibility="{{ textSettingEditorVisibility }}"
             horizontalAlignment="stretch"
-            verticalAlignment="top">
+            verticalAlignment="bottom">
             <Label text="{{ activeTextEditorTitle }}" class="h2" />
-            <Label text="{{ activeTextSettingTitle }}" />
+            <!-- Per-field labels only matter with two fields; a single-field
+                 edit's field title is the same string as the editor title. -->
+            <Label text="{{ activeTextSettingTitle }}" visibility="{{ secondaryTextSettingVisibility }}" />
             <TextField
                 id="settingsTextField"
                 text="{{ activeTextSettingValue }}"
@@ -124,6 +127,16 @@
                     secure="{{ secondaryTextSettingSecure }}"
                     returnKeyType="done" />
             </StackLayout>
+            <GridLayout
+                columns="*,auto"
+                visibility="{{ activeTextEditorToggleVisibility }}"
+                class="m-t-8">
+                <Label col="0" text="{{ activeTextEditorToggleLabel }}" verticalAlignment="center" />
+                <Switch
+                    col="1"
+                    checked="{{ activeTextEditorToggleValue }}"
+                    checkedChange="{{ onTextSettingToggleChange }}" />
+            </GridLayout>
         </StackLayout>
     </GridLayout>
 </Page>
