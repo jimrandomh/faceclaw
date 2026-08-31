@@ -1,6 +1,7 @@
 import { getDefaultSmallFont } from "../../graphics/ui-fonts";
 import { GrayImage } from "../../graphics/image";
-import { Layer, type DashboardInputEvent, type LayerContext } from "../../ui/layers";
+import { Layer, type LayerContext } from "../../ui/layers";
+import { type InputEvent } from "../../ui/gestures";
 import { drawSelectionHighlight } from "../../ui/menu";
 import { tightRowHeight } from "../../ui/metrics";
 import {
@@ -170,7 +171,7 @@ export class BandwidthBenchmarkLayer implements Layer {
     return image;
   }
 
-  async handleInput(event: DashboardInputEvent, ctx: LayerContext): Promise<void> {
+  async handleInput(event: InputEvent, ctx: LayerContext): Promise<void> {
     if (this.phase === "arming" || this.phase === "running") {
       // A static screen during the run: only allow bailing out.
       if (event.type === "double-click") {
