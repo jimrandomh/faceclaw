@@ -20,8 +20,11 @@ import {
   type InProcessWindow,
 } from "../../ui/shell/in-process-window";
 import { shell } from "../../ui/shell/shell";
-import { calibrateHeading, isCompassCalibrated, normalizeHeading } from "./calibration";
+import { ensureLocationPermission, hasLocationPermission } from "../../g2/android-permissions";
+import { isCompassCalibrated, normalizeHeading } from "./calibration";
 import { CompassCalibrationLayer } from "./calibration-layer";
+import { getDeclinationAvailability, onDeclinationChanged, refreshDeclination } from "./declination";
+import { getNorthReference, resolveHeading, setNorthReference, type NorthReference } from "./heading";
 
 export const COMPASS_WINDOW_ID = "compass";
 export const COMPASS_SURFACE_ID = "window:compass";
@@ -98,13 +101,43 @@ class CompassLayer implements Layer {
   private removed = false;
   private timer: ReturnType<typeof setInterval> | null = null;
   private unsubscribe: (() => void) | null = null;
+  private unsubscribeDeclination: (() => void) | null = null;
+  private requestingPermission = false;
 
   constructor(private readonly requestRender: () => void) {}
 
   start(): void {
     this.unsubscribe = addCompassListener((event) => this.onCompassEvent(event));
+    this.unsubscribeDeclination = onDeclinationChanged(() => this.requestRender());
     this.timer = setInterval(() => this.reconcile(), RECONCILE_INTERVAL_MS);
     this.reconcile();
+    this.ensureDeclination();
+  }
+
+  /**
+   * True north needs the phone's location. Ask for it the way Weather does,
+   * on opening, but only while the wearer actually wants true north: a
+   * magnetic-mode compass has no business raising a permission prompt.
+   */
+  private ensureDeclination(): void {
+    if (getNorthReference() !== "true") return;
+    if (hasLocationPermission()) {
+      refreshDeclination();
+      return;
+    }
+    if (this.requestingPermission) return;
+    this.requestingPermission = true;
+    void ensureLocationPermission().then((granted) => {
+      this.requestingPermission = false;
+      if (granted) refreshDeclination();
+      this.requestRender();
+    });
+  }
+
+  toggleNorthReference(): void {
+    setNorthReference(getNorthReference() === "true" ? "magnetic" : "true");
+    this.ensureDeclination();
+    this.requestRender();
   }
 
   stop(): void {
@@ -114,6 +147,8 @@ class CompassLayer implements Layer {
     this.timer = null;
     this.unsubscribe?.();
     this.unsubscribe = null;
+    this.unsubscribeDeclination?.();
+    this.unsubscribeDeclination = null;
     if (this.enabled) setCompassEnabled(false);
     this.enabled = false;
   }
@@ -134,6 +169,8 @@ class CompassLayer implements Layer {
     this.enabled = visible;
     setCompassEnabled(visible);
     this.firmwareStatus = null;
+    // The stored fix may have aged out while the compass was hidden.
+    if (visible && hasLocationPermission()) refreshDeclination();
     this.requestRender();
   }
 
@@ -154,7 +191,8 @@ class CompassLayer implements Layer {
     if (this.firmwareStatus !== null) return this.firmwareStatus;
     if (!this.enabled) return "Compass paused";
     if (this.rawHeading === null) return "Waiting for compass data…";
-    return isCompassCalibrated() ? "Magnetic heading" : "Uncalibrated - Tap to calibrate";
+    if (!isCompassCalibrated()) return "Uncalibrated - Tap to calibrate";
+    return frameStatusText();
   }
 
   paint(ctx: LayerContext): GrayImage {
@@ -162,7 +200,7 @@ class CompassLayer implements Layer {
     const image = new GrayImage(width, height, 0);
     const small = getDefaultSmallFont();
     const large = getDefaultLargeFont();
-    const heading = this.rawHeading === null ? null : calibrateHeading(this.rawHeading);
+    const heading = this.rawHeading === null ? null : resolveHeading(this.rawHeading).displayDegrees;
     const headingText = heading === null ? "--°" : `${Math.round(heading)}° ${cardinalDirection(heading)}`;
     const statusLines = wrapText(small, this.statusText(), width - STACK_GAP * 2);
     const smallStep = lineStep(small);
@@ -231,6 +269,14 @@ export function createCompassAppWindow(options: InProcessAppOptions): InProcessW
           layer.openCalibration(ctx);
         },
       },
+      {
+        label: `North: ${northReferenceName(getNorthReference())}`,
+        description: "True north is what maps use. Magnetic north matches a handheld compass; it needs no location.",
+        onSelect: (ctx) => {
+          ctx.stack.pop();
+          layer.toggleNorthReference();
+        },
+      },
     ],
     baseLayer: new YieldAtRootLayer(layer),
     submitFrame: options.submitFrame,
@@ -244,6 +290,27 @@ export function createCompassAppWindow(options: InProcessAppOptions): InProcessW
   requestRender = app.requestRender;
   layer.start();
   return app;
+}
+
+export function northReferenceName(reference: NorthReference): string {
+  return reference === "true" ? "True" : "Magnetic";
+}
+
+/**
+ * Name the frame the readout is in. When the wearer wants true north but the
+ * phone can't supply declination, say that the reading is magnetic and why,
+ * rather than quietly showing a magnetic heading under a "true" label.
+ */
+function frameStatusText(): string {
+  if (getNorthReference() === "magnetic") return "Magnetic heading";
+  switch (getDeclinationAvailability()) {
+    case "available":
+      return "True heading";
+    case "no-permission":
+      return "Magnetic heading - location permission needed for true north";
+    case "no-fix":
+      return "Magnetic heading - waiting for location";
+  }
 }
 
 function cardinalDirection(heading: number): string {
@@ -272,7 +339,7 @@ function projectRose(cx: number, cy: number, scale: number, radius: number, angl
   };
 }
 
-/** Draw the tilted rose, with its brightest point aimed at magnetic north. */
+/** Draw the tilted rose, with its brightest point aimed at north. */
 function drawCompassRose(image: GrayImage, cx: number, cy: number, radius: number, heading: number | null): void {
   // Without a reading there is nothing to aim, so show the rose in its resting
   // orientation, dimmed, rather than an empty ring.

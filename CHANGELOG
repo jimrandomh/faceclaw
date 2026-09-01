@@ -2,6 +2,12 @@
 
 ## 0.6.4 - Future
 * Context menus are centered and include window title
+* Developer speed metrics include bytes/frame
+
+Compass app:
+* Increase sample rate and minimum-change for the compass app
+* Compass now handles the distincitn between true north and magnetic north
+* EvenHub compass readings now include calibrated magnetic, declination and true headings
 
 ## 0.6.3 - 2026-09-01
 * Update custom firmware base version from 2.2.6 to 2.2.9

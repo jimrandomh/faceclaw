@@ -79,7 +79,7 @@ brief:
 | `getConfiguredApiKeys(): Promise<ApiKeyService[]>` | Which keys the user configured (names only). |
 | `requestApiKeyAccess(services): Promise<Partial<Record<ApiKeyService, string>>>` | Prompt for and return key values. |
 | `playBuzzer(steps): Promise<void>` | Play a piezo tone sequence. |
-| `addCompassListener(fn): () => void` | Activate the magnetometer; receive heading samples. Uncalibrated (see note). |
+| `addCompassListener(fn): () => void` | Activate the magnetometer; receive heading samples (see note). |
 | `createLayout(layout): Promise<boolean>` | Build the initial page (extended layout: full 576×452, no count limit, `preserve`). |
 | `replaceLayout(layout): Promise<boolean>` | Replace the page; `preserve` containers inherit content by name. |
 | `setAssistantTools(tools): void` | Contribute voice-assistant tools (namespaced by package name). |
@@ -88,9 +88,21 @@ brief:
 
 ### Compass
 
-`addCompassListener` is **not pre-calibrated**: the magnetometer is inside the
-right arm, which rests on the head with a slight curl that differs between
-wearers and wears. Treat the heading as relative — let the user zero it.
+Each `CompassReading` carries several headings, all degrees clockwise in
+[0, 360):
+
+- `headingDegrees` — the raw glasses reading. **Not pre-calibrated**: the
+  magnetometer is inside the right arm, which rests on the head with a slight
+  curl that differs between wearers and wears, so this is relative.
+- `magneticHeadingDegrees` — raw reading corrected by the wearer's calibration
+  offset from the host's Compass app. `wearerCalibrated` says whether they have
+  calibrated; until then it equals `headingDegrees`.
+- `declinationDegrees` / `trueHeadingDegrees` — local declination from the
+  phone's location, and the magnetic heading with it applied. Absent when the
+  host has no location (no permission, or no fix yet).
+
+Prefer `trueHeadingDegrees` when present, then `magneticHeadingDegrees`. If
+`wearerCalibrated` is false, treat them as relative or let the user zero them.
 
 ### Extended layout
 

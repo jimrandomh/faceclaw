@@ -67,10 +67,34 @@ export interface WindowLifecycleEvent {
   type: WindowLifecycleEventType;
 }
 
-/** A magnetometer heading sample from {@link FaceclawExtensions.addCompassListener}. */
+/**
+ * A magnetometer heading sample from {@link FaceclawExtensions.addCompassListener}.
+ * All headings are degrees clockwise in [0, 360).
+ */
 export interface CompassReading {
-  /** Magnetic heading in degrees [0, 360). */
+  /**
+   * Raw magnetic heading as reported by the glasses, with no correction for
+   * how they sit on the wearer's head. Kept for apps that zero it themselves.
+   */
   headingDegrees: number;
+  /**
+   * Magnetic heading corrected by the wearer's calibration offset from the
+   * host's Compass app. Equal to `headingDegrees` until they calibrate.
+   */
+  magneticHeadingDegrees: number;
+  /**
+   * Whether the wearer has been through the host's compass calibration, i.e.
+   * whether `magneticHeadingDegrees` and `trueHeadingDegrees` can be trusted
+   * as absolute rather than relative.
+   */
+  wearerCalibrated: boolean;
+  /**
+   * Local magnetic declination (east positive), from the phone's location and
+   * the World Magnetic Model. Absent when the host has no location.
+   */
+  declinationDegrees?: number;
+  /** `magneticHeadingDegrees` plus declination. Absent when declination is. */
+  trueHeadingDegrees?: number;
 }
 
 // ---- Extended layout (a superset of the stock EvenHub page containers) ----
@@ -207,10 +231,12 @@ export interface FaceclawExtensions {
    * Returns an unsubscribe function; the sensor stays on while at least one
    * listener is registered and the app is the foreground window.
    *
-   * NOT pre-calibrated: the magnetometer sits inside the right arm, which rests
-   * against the wearer's head with a slight curl that differs between wearers
-   * (and between wears). Treat `headingDegrees` as relative — let the user zero
-   * it against a known direction rather than trusting it as true/magnetic north.
+   * The magnetometer sits inside the right arm, which rests against the
+   * wearer's head with a slight curl that differs between wearers (and between
+   * wears), so `headingDegrees` is relative. The host's Compass app lets the
+   * wearer calibrate that away and adds local declination: prefer
+   * `trueHeadingDegrees` when present, then `magneticHeadingDegrees`, and check
+   * `wearerCalibrated` before trusting either as absolute.
    */
   addCompassListener(listener: (reading: CompassReading) => void): () => void;
 

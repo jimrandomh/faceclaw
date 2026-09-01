@@ -56,7 +56,7 @@ import { type EvenHubManifest } from "./ehpk";
 import { permissionsIncludeMicrophone, permissionsInclude } from "./permissions";
 import { evenHubMicRouter, type EvenHubMicClient } from "./mic-router";
 import { evenHubImuRouter, type EvenHubImuClient } from "./imu-router";
-import { evenHubCompassRouter, type EvenHubCompassClient } from "./compass-router";
+import { evenHubCompassRouter, type EvenHubCompassClient, type EvenHubCompassReading } from "./compass-router";
 import { type ImuReading } from "../../native/imu";
 import { toolRegistry, type ToolResult, type ToolSpec } from "../../assistant/tool-registry";
 import { getCurrentLocation } from "../../native/location";
@@ -1010,8 +1010,8 @@ export class EvenHubSession implements EvenHubMicClient, EvenHubImuClient, EvenH
 
   // ----- compass (EvenHubCompassClient) -----
 
-  deliverCompass(headingDegrees: number): void {
-    this.pushExtEvent("compass", { headingDegrees });
+  deliverCompass(reading: EvenHubCompassReading): void {
+    this.pushExtEvent("compass", reading);
   }
 
   private setCompass(enable: boolean): void {

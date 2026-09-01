@@ -43,6 +43,8 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private static final long FACECLAW_WAKE_LEASE_RENEW_MS = 45_000;
     private static final long FACECLAW_WAKE_CONTROL_WAIT_MS = 1_500;
     private static final long CFW_CLEANUP_WAIT_MS = 4_000;
+    private static final int COMPASS_REPORT_INTERVAL_MS = 250;
+    private static final int COMPASS_MIN_CHANGE_DEGREES = 1;
 
     private final Context appContext;
     private final PowerManager powerManager;
@@ -2339,10 +2341,22 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         logLine("queue firmware debug flags " + (show ? "show" : "hide"));
     }
 
-    /** Send CFW image-handler mode 10: [10][1] start, [10][0] stop. */
+    /**
+     * Send CFW image-handler mode 10. Enable uses the configurable form
+     * [10][2][interval-ms LE16][minimum-change-degrees LE16]; disable remains [10][0].
+     */
     private void enqueueCompassControlLocked(boolean priority, boolean enable) {
         int sentState = enable ? 1 : 0;
-        byte[] payload = new byte[] { (byte) 10, (byte) sentState };
+        byte[] payload = enable
+            ? new byte[] {
+                (byte) 10,
+                (byte) 2,
+                (byte) (COMPASS_REPORT_INTERVAL_MS & 0xff),
+                (byte) ((COMPASS_REPORT_INTERVAL_MS >> 8) & 0xff),
+                (byte) (COMPASS_MIN_CHANGE_DEGREES & 0xff),
+                (byte) ((COMPASS_MIN_CHANGE_DEGREES >> 8) & 0xff),
+            }
+            : new byte[] { (byte) 10, (byte) 0 };
         OutboundMessage message = messageBuilder.imagePayload(
             "compass-control",
             DASHBOARD_TILE,
