@@ -1188,9 +1188,12 @@ export class MainViewModel extends Observable {
       const oldest = this.bleRateHistory[0]!;
       const elapsedSec = (atMs - oldest.atMs) / 1000;
       if (elapsedSec > 0) {
-        const byteRate = (sample.bytes - oldest.bytes) / elapsedSec;
-        const frameRate = (sample.frames - oldest.frames) / elapsedSec;
-        label += ` · ${formatByteRate(byteRate)}, ${frameRate.toFixed(1)} fps`;
+        const byteDelta = sample.bytes - oldest.bytes;
+        const frameDelta = sample.frames - oldest.frames;
+        label += ` · ${formatByteRate(byteDelta / elapsedSec)}, ${(frameDelta / elapsedSec).toFixed(1)} fps`;
+        if (frameDelta > 0) {
+          label += `, ${formatCount(byteDelta / frameDelta)} B/frame`;
+        }
       }
     } catch (error) {
       label = `BLE sent: ${this.formatError(error)}`;
