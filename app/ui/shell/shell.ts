@@ -171,13 +171,15 @@ const LONG_PRESS_ESCAPE_MENU_MS = 4000;
 class ShellOverlayMenuLayer extends MenuLayer {
   constructor(items: MenuItem[], private readonly onClosed: () => void) {
     // Aligned to the min-height window band (like the sidebar), wherever the
-    // vertical position setting currently puts it; past the sidebar strip
-    // where one reserves width (none in the full-panel mode).
-    super(null, items, {
-      x: sidebarWidth() + 8,
+    // vertical position setting currently puts it; centered over the
+    // application area, i.e. the part of the screen past the sidebar strip
+    // (the whole screen in the full-panel mode, where the strip overlays).
+    const width = 272;
+    super("System", items, {
+      x: sidebarWidth() + (((G2_LENS_WIDTH - sidebarWidth() - width) / 2) | 0),
       y: minWindowTop() + TOP_BAR_HEIGHT + 8,
-      width: 272,
-      minHeight: 0,
+      width,
+      minHeight: 150,
     });
   }
 

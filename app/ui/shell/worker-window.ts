@@ -13,7 +13,7 @@ import { shell, type ShellWindow } from "./shell";
  * worker→Java directly.
  */
 export type WorkerAppMessage =
-  | { type: "open-window"; windowId: string; surfaceId: string; viewport: { width: number; height: number } }
+  | { type: "open-window"; windowId: string; surfaceId: string; title: string; viewport: { width: number; height: number } }
   | { type: "close-window"; windowId: string }
   | { type: "input"; windowId: string; event: unknown; frameId: number; focused: boolean }
   | { type: "text-input"; windowId: string; text: string }
@@ -303,6 +303,7 @@ export class WorkerAppHost {
       type: "open-window",
       windowId: spec.windowId,
       surfaceId,
+      title: spec.title,
       viewport: appViewportSize(heightMode),
     });
     const window: ShellWindow = {

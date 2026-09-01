@@ -42,6 +42,7 @@ type TimerView = "stopwatch" | "timers" | "editor";
 type TimerWindow = {
   windowId: string;
   surfaceId: string;
+  title: string;
   viewportWidth: number;
   viewportHeight: number;
   foreground: boolean;
@@ -132,6 +133,7 @@ global.onmessage = (event: { data: WorkerAppMessage }) => {
       windows.set(message.windowId, {
         windowId: message.windowId,
         surfaceId: message.surfaceId,
+        title: message.title,
         viewportWidth: message.viewport.width,
         viewportHeight: message.viewport.height,
         foreground: false,
@@ -296,6 +298,7 @@ function refreshWindowsAfterToolChange(): void {
 function windowMenu(window: TimerWindow): WindowMenu {
   if (!window.menu) {
     window.menu = new WindowMenu({
+      title: () => window.title,
       size: { width: window.viewportWidth, height: window.viewportHeight },
       paintBase: () => paintContent(window),
       isFocused: () => window.focused,

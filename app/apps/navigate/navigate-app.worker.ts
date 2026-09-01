@@ -59,6 +59,7 @@ type MapMode = "follow" | "overview";
 type NavWindow = {
   windowId: string;
   surfaceId: string;
+  title: string;
   viewportWidth: number;
   viewportHeight: number;
   foreground: boolean;
@@ -162,6 +163,7 @@ global.onmessage = (event: { data: WorkerAppMessage }) => {
       window = {
         windowId: message.windowId,
         surfaceId: message.surfaceId,
+        title: message.title,
         viewportWidth: message.viewport.width,
         viewportHeight: message.viewport.height,
         foreground: false,
@@ -612,6 +614,7 @@ function describeRouteStatus(): string {
 function windowMenu(win: NavWindow): WindowMenu {
   if (!win.menu) {
     win.menu = new WindowMenu({
+      title: () => win.title,
       size: { width: win.viewportWidth, height: win.viewportHeight },
       paintBase: () => paintContent(win),
       isFocused: () => win.focused,

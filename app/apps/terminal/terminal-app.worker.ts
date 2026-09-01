@@ -88,6 +88,8 @@ const NEW_CONNECTION_DRAFT_KEY = "terminal.newConnectionDraft";
 type BaseWindow = {
   windowId: string;
   surfaceId: string;
+  /** Shell-side window title, echoed back in the open-window message. */
+  title: string;
   /** Content viewport from the shell's open-window message; grid = viewport / cell. */
   viewportWidth: number;
   viewportHeight: number;
@@ -304,7 +306,7 @@ global.onmessage = (event: { data: WorkerAppMessage }) => {
   const message = event.data;
   switch (message.type) {
     case "open-window":
-      openWindow(message.windowId, message.surfaceId, message.viewport);
+      openWindow(message.windowId, message.surfaceId, message.title, message.viewport);
       break;
     case "close-window":
       closeWindow(message.windowId);
@@ -430,11 +432,11 @@ function cancelPendingReconnects(): void {
   }
 }
 
-function openWindow(windowId: string, surfaceId: string, viewport: { width: number; height: number }): void {
+function openWindow(windowId: string, surfaceId: string, title: string, viewport: { width: number; height: number }): void {
   const pendingView = pendingViews.get(windowId);
   if (pendingView) {
     pendingViews.delete(windowId);
-    windows.set(windowId, createViewWindow(windowId, surfaceId, viewport, pendingView));
+    windows.set(windowId, createViewWindow(windowId, surfaceId, title, viewport, pendingView));
     renderHubWindows();
     return;
   }
@@ -443,6 +445,7 @@ function openWindow(windowId: string, surfaceId: string, viewport: { width: numb
     kind: "hub",
     windowId,
     surfaceId,
+    title,
     viewportWidth: viewport.width,
     viewportHeight: viewport.height,
     gridCols: Math.floor(viewport.width / hubCell.cellWidth),
@@ -753,6 +756,7 @@ function noteSessionActivity(connectionId: string, socket: string): void {
 function createViewWindow(
   windowId: string,
   surfaceId: string,
+  title: string,
   viewport: { width: number; height: number },
   view: PendingView,
 ): ViewWindow {
@@ -768,6 +772,7 @@ function createViewWindow(
     kind: "view",
     windowId,
     surfaceId,
+    title,
     viewportWidth: viewport.width,
     viewportHeight: viewport.height,
     gridCols,
@@ -900,6 +905,7 @@ function reconnectView(window: ViewWindow): void {
 function windowMenu(window: TerminalWindow): WindowMenu {
   if (!window.menu) {
     window.menu = new WindowMenu({
+      title: () => window.title,
       size: { width: window.viewportWidth, height: window.viewportHeight },
       paintBase: () => paintContent(window),
       isFocused: () => window.focused,

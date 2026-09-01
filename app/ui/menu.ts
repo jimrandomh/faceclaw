@@ -17,7 +17,8 @@ const MENU_HIGHLIGHT_SELECTED_BACKGROUND_FILL = 15;
 const MENU_HIGHLIGHT_SELECTED_BORDER_STROKE = 45;
 
 export type MenuLayout = {
-  x: number;
+  /** Left edge, or "center" to center horizontally on the painted surface. */
+  x: number | "center";
   y: number;
   width: number;
   /** Whether to draw the rounded outline around the menu. Default: true. */
@@ -200,7 +201,8 @@ export class MenuLayer implements Layer {
     const rowHeight = listRowHeight(font);
     const base = ctx.stack.getBaseSize();
     const image = this.layout.opaque ? new GrayImage(base.width, base.height, 0) : paintBelow();
-    const { x, y, width } = this.layout;
+    const { y, width } = this.layout;
+    const x = this.layout.x === "center" ? ((image.width - width) / 2) | 0 : this.layout.x;
     const chromeTop = (this.title ? menuTitleHeight(font) : 0) + MENU_BODY_PADDING;
     const minHeight = this.layout.minHeight ?? DEFAULT_MENU_MIN_HEIGHT;
     // Cap to the surface being painted on: a window's stack image may be much

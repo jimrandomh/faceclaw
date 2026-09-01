@@ -13,16 +13,18 @@ import type { WorkerAppReply } from "./shell/worker-window";
  * is held long enough, so an unresponsive app can always be closed.
  */
 
-/** Viewport-relative layout; visually matches the shell's escape menu position. */
-export const WINDOW_MENU_LAYOUT: MenuLayout = { x: 8, y: 8, width: 272, minHeight: 0 };
+/** Centered over the viewport; visually matches the shell's escape menu position. */
+export const WINDOW_MENU_LAYOUT: MenuLayout = { x: "center", y: 8, width: 272, minHeight: 150 };
 
 export class WindowMenuLayer extends MenuLayer {
-  constructor(items: MenuItem[]) {
-    super(null, items, WINDOW_MENU_LAYOUT);
+  constructor(title: string | null, items: MenuItem[]) {
+    super(title, items, WINDOW_MENU_LAYOUT);
   }
 }
 
 export type WindowMenuOptions = {
+  /** Menu title: the window's title, read at open time. */
+  title: () => string;
   /** Paint the window content the menu draws over (a fresh, mutable image). */
   paintBase: () => GrayImage;
   size: { width: number; height: number };
@@ -53,7 +55,7 @@ export class WindowMenu {
       handleInput: () => {},
     };
     const stack = new LayerStack(base, { ...noopLayerActions }, this.options.size, this.options.isFocused);
-    stack.push(new WindowMenuLayer(items));
+    stack.push(new WindowMenuLayer(this.options.title(), items));
     this.stack = stack;
   }
 

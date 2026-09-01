@@ -100,6 +100,7 @@ type Snapshot = {
 type FreecellWindow = {
   windowId: string;
   surfaceId: string;
+  title: string;
   viewportWidth: number;
   viewportHeight: number;
   foreground: boolean;
@@ -142,6 +143,7 @@ global.onmessage = (event: { data: WorkerAppMessage }) => {
       const window: FreecellWindow = {
         windowId: message.windowId,
         surfaceId: message.surfaceId,
+        title: message.title,
         viewportWidth: message.viewport.width,
         viewportHeight: message.viewport.height,
         foreground: false,
@@ -256,6 +258,7 @@ function openWindowMenu(window: FreecellWindow): void {
 function windowMenu(window: FreecellWindow): WindowMenu {
   if (!window.menu) {
     window.menu = new WindowMenu({
+      title: () => window.title,
       size: { width: window.viewportWidth, height: window.viewportHeight },
       paintBase: () => paintContent(window),
       isFocused: () => window.focused,

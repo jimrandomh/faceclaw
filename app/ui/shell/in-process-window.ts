@@ -162,7 +162,7 @@ export function createInProcessWindow(options: InProcessWindowOptions): InProces
         },
       });
     }
-    stack.push(new WindowMenuLayer(items));
+    stack.push(new WindowMenuLayer(options.title, items));
   };
 
   const window: ShellWindow = {

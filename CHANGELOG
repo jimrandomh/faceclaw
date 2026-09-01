@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.6.4 - Future
+* Context menus are centered and include window title
+
 ## 0.6.3 - 2026-09-01
 * Update custom firmware base version from 2.2.6 to 2.2.9
 * Add support for the short-then-long-press gesture
