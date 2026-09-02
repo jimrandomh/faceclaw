@@ -18,7 +18,6 @@ import androidx.wear.compose.navigation.rememberSwipeDismissableNavController
 import com.faceclaw.wear.AmbientMode
 import com.faceclaw.wear.Haptics
 import com.faceclaw.wear.PhoneLink
-import com.faceclaw.wear.Prefs
 import com.faceclaw.wear.Wake
 import com.faceclaw.wear.WatchPrefs
 import kotlinx.coroutines.flow.StateFlow
@@ -58,14 +57,13 @@ fun FaceclawWearApp(
     ambient: StateFlow<AmbientMode>,
     wakes: StateFlow<Wake?>,
 ) {
-    val prefs by prefsStore.prefs.collectAsStateWithLifecycle()
     val ambientMode by ambient.collectAsStateWithLifecycle()
     val navController = rememberSwipeDismissableNavController()
 
     MaterialTheme(colors = FaceclawColors) {
         CompositionLocalProvider(LocalAmbientMode provides ambientMode) {
             Box(modifier = Modifier.fillMaxSize()) {
-                Screens(navController, link, prefs, prefsStore, haptics, wakes)
+                Screens(navController, link, prefsStore, haptics, wakes)
                 if (ambientMode.active) AmbientScreen(link = link, ambient = ambientMode)
             }
         }
@@ -76,13 +74,16 @@ fun FaceclawWearApp(
 private fun Screens(
     navController: NavHostController,
     link: PhoneLink,
-    prefs: Prefs,
     prefsStore: WatchPrefs,
     haptics: Haptics,
     wakes: StateFlow<Wake?>,
 ) {
+    // Prefs are collected inside each destination rather than passed in as a
+    // value: the nav host keeps the content lambda it composed, so a value
+    // captured by the builder would stay stale until the screen is re-entered.
     SwipeDismissableNavHost(navController = navController, startDestination = Routes.REMOTE) {
         composable(Routes.REMOTE) {
+            val prefs by prefsStore.prefs.collectAsStateWithLifecycle()
             RemoteScreen(
                 link = link,
                 prefs = prefs,
@@ -103,6 +104,7 @@ private fun Screens(
             StatusScreen(link = link, haptics = haptics, onOpenSettings = { navController.navigate(Routes.SETTINGS) })
         }
         composable(Routes.SETTINGS) {
+            val prefs by prefsStore.prefs.collectAsStateWithLifecycle()
             SettingsScreen(prefs = prefs, store = prefsStore)
         }
     }

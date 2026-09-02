@@ -50,44 +50,6 @@ fun SettingsScreen(prefs: Prefs, store: WatchPrefs) {
                     modifier = Modifier.fillMaxWidth(),
                 )
             }
-            item {
-                ToggleChip(
-                    checked = prefs.naturalScroll,
-                    onCheckedChange = { on -> store.update { it.copy(naturalScroll = on) } },
-                    label = { Text("Natural swipe") },
-                    secondaryLabel = { Text(if (prefs.naturalScroll) "content follows finger" else "swipe up = scroll up (ring)") },
-                    toggleControl = { Switch(checked = prefs.naturalScroll) },
-                    modifier = Modifier.fillMaxWidth(),
-                )
-            }
-            item {
-                ToggleChip(
-                    checked = prefs.tapZones,
-                    onCheckedChange = { on -> store.update { it.copy(tapZones = on) } },
-                    label = { Text("Tap zones") },
-                    secondaryLabel = { Text("tap top/bottom to scroll") },
-                    toggleControl = { Switch(checked = prefs.tapZones) },
-                    modifier = Modifier.fillMaxWidth(),
-                )
-            }
-            item {
-                Chip(
-                    onClick = { store.update { it.copy(swipeLeft = it.swipeLeft.next()) } },
-                    label = { Text("Swipe left") },
-                    secondaryLabel = { Text(prefs.swipeLeft.label) },
-                    colors = ChipDefaults.secondaryChipColors(),
-                    modifier = Modifier.fillMaxWidth(),
-                )
-            }
-            item {
-                Chip(
-                    onClick = { store.update { it.copy(swipeRight = it.swipeRight.next()) } },
-                    label = { Text("Swipe right") },
-                    secondaryLabel = { Text(prefs.swipeRight.label) },
-                    colors = ChipDefaults.secondaryChipColors(),
-                    modifier = Modifier.fillMaxWidth(),
-                )
-            }
             item { ListHeader { Text("Tip taps") } }
             item {
                 ToggleChip(
@@ -115,27 +77,6 @@ fun SettingsScreen(prefs: Prefs, store: WatchPrefs) {
                     style = MaterialTheme.typography.caption3,
                     color = MaterialTheme.colors.onSurfaceVariant,
                     textAlign = TextAlign.Center,
-                )
-            }
-            item { ListHeader { Text("Wrist twist") } }
-            item {
-                ToggleChip(
-                    checked = prefs.wristTwist,
-                    onCheckedChange = { on -> store.update { it.copy(wristTwist = on) } },
-                    label = { Text("Twist twice = back") },
-                    secondaryLabel = { Text("two quick wrist flicks") },
-                    toggleControl = { Switch(checked = prefs.wristTwist) },
-                    modifier = Modifier.fillMaxWidth(),
-                )
-            }
-            item {
-                Chip(
-                    onClick = { store.update { it.copy(twistSensitivity = it.twistSensitivity.next()) } },
-                    label = { Text("Twist sensitivity") },
-                    secondaryLabel = { Text(prefs.twistSensitivity.label) },
-                    colors = ChipDefaults.secondaryChipColors(),
-                    modifier = Modifier.fillMaxWidth(),
-                    enabled = prefs.wristTwist,
                 )
             }
             item { ListHeader { Text("Crown") } }

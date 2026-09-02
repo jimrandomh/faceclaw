@@ -50,7 +50,6 @@ import androidx.wear.compose.material.ButtonDefaults
 import androidx.wear.compose.material.Icon
 import androidx.wear.compose.material.MaterialTheme
 import androidx.wear.compose.material.Text
-import com.faceclaw.wear.Command
 import com.faceclaw.wear.FingerTapDetector
 import com.faceclaw.wear.Gesture
 import com.faceclaw.wear.Haptics
@@ -58,9 +57,7 @@ import com.faceclaw.wear.OnBodyMonitor
 import com.faceclaw.wear.PhoneLink
 import com.faceclaw.wear.Prefs
 import com.faceclaw.wear.R
-import com.faceclaw.wear.SwipeAction
 import com.faceclaw.wear.Wake
-import com.faceclaw.wear.WristTwistDetector
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.StateFlow
 import java.util.Date
@@ -81,10 +78,10 @@ private const val SCREEN_ON_SECOND_TAP_WINDOW_MS = 600L
 /**
  * The touchpad. The whole screen is the pad: tap = select, double-tap =
  * back, hold = long press (released when the finger lifts), two-finger tap =
- * the hold menu ("right click"), swipes in four directions = spatial
+ * back as well, swipes in four directions = spatial
  * navigation (crown and two-finger vertical swipes = plain scrolling, a page
  * at a time for the latter). Fingertip pinch-taps from the motion sensors
- * select / go back, and two quick wrist twists go back. An upward swipe that
+ * select / go back. An upward swipe that
  * begins at the bottom edge reveals the otherwise-hidden action buttons.
  *
  * A tap that wakes the display never reaches the pad (the system eats it),
@@ -134,7 +131,7 @@ fun RemoteScreen(
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
     var crownAccumulator by remember { mutableStateOf(0f) }
-    // Pad height in px, for the tap zones; written by onSizeChanged, read by
+    // Pad height in px, for the edge-reveal zone; written by onSizeChanged, read by
     // the gesture callbacks (plain holder: the callbacks are remembered once).
     val padHeight = remember { floatArrayOf(1f) }
 
@@ -166,47 +163,15 @@ fun RemoteScreen(
         link.sendGesture(Gesture.DOUBLE_CLICK)
     }
 
-    /** Run a horizontal-swipe action; `left` says which way the finger went. */
-    fun perform(action: SwipeAction, left: Boolean) {
-        when (action) {
-            SwipeAction.NAVIGATE -> {
-                val gesture = if (left) Gesture.SWIPE_LEFT else Gesture.SWIPE_RIGHT
-                if (gestureAllowed(gesture)) { haptics.click(); link.sendGesture(gesture) }
-            }
-            SwipeAction.SIDEBAR -> if (!glassesScreenIsOff()) {
-                haptics.click()
-                link.sendCommand(Command.SIDEBAR, "source" to "gesture")
-            }
-            SwipeAction.DOUBLE_CLICK -> doubleClick()
-            SwipeAction.CLICK -> click()
-            SwipeAction.LONG_PRESS -> if (!glassesScreenIsOff()) { haptics.heavy(); link.sendGesture(Gesture.LONG_PRESS) }
-            SwipeAction.WAKEWORD -> if (!glassesScreenIsOff()) { haptics.click(); link.sendGesture(Gesture.WAKEWORD) }
-            SwipeAction.NONE -> Unit
-        }
-    }
-
-    /** Whether a vertical swipe means "up", honouring the natural-scroll preference. */
-    fun swipeIsUp(dy: Float): Boolean {
-        // Ring convention: swiping up means up. "Natural" flips it so the
-        // content follows the finger like a touch screen.
-        return if (currentPrefs.naturalScroll) dy > 0 else dy < 0
+    /** A horizontal swipe is spatial input; the glasses UI decides what it means. */
+    fun navigate(left: Boolean) {
+        val gesture = if (left) Gesture.SWIPE_LEFT else Gesture.SWIPE_RIGHT
+        if (gestureAllowed(gesture)) { haptics.click(); link.sendGesture(gesture) }
     }
 
     val callbacks = remember(link, haptics) {
         TouchpadCallbacks(
-            onTap = { position ->
-                if (currentPrefs.tapZones) {
-                    // Top third scrolls up, bottom third down, the middle clicks.
-                    val zone = position.y / padHeight[0].coerceAtLeast(1f)
-                    when {
-                        zone < 1f / 3f -> scroll(Gesture.SCROLL_UP, 1)
-                        zone > 2f / 3f -> scroll(Gesture.SCROLL_DOWN, 1)
-                        else -> click()
-                    }
-                } else {
-                    click()
-                }
-            },
+            onTap = { _ -> click() },
             onDoubleTap = { _ -> doubleClick() },
             onShortThenLongPress = {
                 if (!glassesScreenIsOff()) { haptics.heavy(); link.sendGesture(Gesture.SHORT_THEN_LONG_PRESS) }
@@ -215,9 +180,9 @@ fun RemoteScreen(
             onTwoFingerTap = { doubleClick() },
             onTwoFingerSwipe = { dx, dy ->
                 if (abs(dy) >= abs(dx)) {
-                    scroll(if (swipeIsUp(dy)) Gesture.SCROLL_UP else Gesture.SCROLL_DOWN, TWO_FINGER_SWIPE_STEPS)
+                    scroll(if (dy < 0) Gesture.SCROLL_UP else Gesture.SCROLL_DOWN, TWO_FINGER_SWIPE_STEPS)
                 } else {
-                    perform(if (dx < 0) currentPrefs.swipeLeft else currentPrefs.swipeRight, left = dx < 0)
+                    navigate(left = dx < 0)
                 }
             },
             onLongPressStart = {
@@ -252,10 +217,9 @@ fun RemoteScreen(
                         // whenever the display lagged the finger. Fast repeated
                         // swiping, the crown, or a two-finger page swipe cover
                         // long distances instead.
-                        val up = swipeIsUp(dy)
-                        scroll(if (up) Gesture.SWIPE_UP else Gesture.SWIPE_DOWN, 1)
+                        scroll(if (dy < 0) Gesture.SWIPE_UP else Gesture.SWIPE_DOWN, 1)
                     }
-                    else -> perform(if (dx < 0) currentPrefs.swipeLeft else currentPrefs.swipeRight, left = dx < 0)
+                    else -> navigate(left = dx < 0)
                 }
             },
         )
@@ -294,18 +258,6 @@ fun RemoteScreen(
         )
     }
     WhileStartedEffect(fingerTapDetector, enabled = !ambientActive, start = { fingerTapDetector?.start() }, stop = { fingerTapDetector?.stop() })
-    // Two quick wrist twists = back, from the gyroscope, only while the pad is up.
-    val wristTwistEnabled = prefs.wristTwist
-    val wristTwistDetector = remember(wristTwistEnabled, link, haptics) {
-        if (!wristTwistEnabled) null else WristTwistDetector(
-            context = view.context,
-            sensitivity = { currentPrefs.twistSensitivity },
-            quietUntil = { haptics.quietUntil() },
-            onBody = { onBody.onBody },
-            onDoubleTwist = { doubleClick() },
-        )
-    }
-    WhileStartedEffect(wristTwistDetector, enabled = !ambientActive, start = { wristTwistDetector?.start() }, stop = { wristTwistDetector?.stop() })
 
     // A refused or unanswered gesture gets a distinct buzz, so the wrist knows
     // without looking (the notice pill says why).

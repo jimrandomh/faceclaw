@@ -11,7 +11,7 @@ import android.util.Log
 
 /**
  * Whether the watch is on a wrist, from the low-latency off-body sensor.
- * The motion-sensor gestures (tip taps, wrist twists) only make sense on a
+ * The motion-sensor gestures (tip taps) only make sense on a
  * wrist: on a desk, a buzzing phone next to the watch reads as a fingertip
  * tap. Watches without the sensor are assumed worn.
  */

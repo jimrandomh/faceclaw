@@ -17,6 +17,7 @@ Watch app:
 * Ambient mode: the watch no longer blurs when idle
 * Fix flicker on waking the watch
 * Tapping the idle watch to wake it counts as a tap on the pad
+* Remove a number of unfinished prototype features
 
 ## 0.6.3 - 2026-09-01
 * Update custom firmware base version from 2.2.6 to 2.2.9
