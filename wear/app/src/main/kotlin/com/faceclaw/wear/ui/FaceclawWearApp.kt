@@ -1,17 +1,27 @@
 package com.faceclaw.wear.ui
 
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.getValue
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.navigation.NavHostController
 import androidx.wear.compose.material.Colors
 import androidx.wear.compose.material.MaterialTheme
 import androidx.wear.compose.navigation.SwipeDismissableNavHost
 import androidx.wear.compose.navigation.composable
 import androidx.wear.compose.navigation.rememberSwipeDismissableNavController
+import com.faceclaw.wear.AmbientMode
 import com.faceclaw.wear.Haptics
 import com.faceclaw.wear.PhoneLink
+import com.faceclaw.wear.Prefs
+import com.faceclaw.wear.Wake
 import com.faceclaw.wear.WatchPrefs
+import kotlinx.coroutines.flow.StateFlow
 
 object Routes {
     const val REMOTE = "remote"
@@ -30,36 +40,70 @@ private val FaceclawColors = Colors(
     onSecondary = Color(0xFF101010),
 )
 
-/** Root: the remote pad, with every other screen a swipe-back away. */
+/** The watch's ambient state, for screens that pause work while it is on. */
+val LocalAmbientMode = compositionLocalOf { AmbientMode() }
+
+/**
+ * Root: the remote pad, with every other screen a swipe-back away. In ambient
+ * [AmbientScreen] is laid over the lot. The screens stay composed underneath
+ * (the nav host animates any destination it composes, which on every wake
+ * was a visible flicker between two identical frames) and read
+ * [LocalAmbientMode] to pause their sensors.
+ */
 @Composable
-fun FaceclawWearApp(link: PhoneLink, prefsStore: WatchPrefs, haptics: Haptics) {
+fun FaceclawWearApp(
+    link: PhoneLink,
+    prefsStore: WatchPrefs,
+    haptics: Haptics,
+    ambient: StateFlow<AmbientMode>,
+    wakes: StateFlow<Wake?>,
+) {
     val prefs by prefsStore.prefs.collectAsStateWithLifecycle()
+    val ambientMode by ambient.collectAsStateWithLifecycle()
     val navController = rememberSwipeDismissableNavController()
 
     MaterialTheme(colors = FaceclawColors) {
-        SwipeDismissableNavHost(navController = navController, startDestination = Routes.REMOTE) {
-            composable(Routes.REMOTE) {
-                RemoteScreen(
-                    link = link,
-                    prefs = prefs,
-                    haptics = haptics,
-                    onOpenApps = { navController.navigate(Routes.APPS) },
-                    onOpenAssistant = { navController.navigate(Routes.ASSISTANT) },
-                    onOpenStatus = { navController.navigate(Routes.STATUS) },
-                )
+        CompositionLocalProvider(LocalAmbientMode provides ambientMode) {
+            Box(modifier = Modifier.fillMaxSize()) {
+                Screens(navController, link, prefs, prefsStore, haptics, wakes)
+                if (ambientMode.active) AmbientScreen(link = link, ambient = ambientMode)
             }
-            composable(Routes.APPS) {
-                AppsScreen(link = link, haptics = haptics, onDone = { navController.popBackStack() })
-            }
-            composable(Routes.ASSISTANT) {
-                AssistantScreen(link = link, haptics = haptics)
-            }
-            composable(Routes.STATUS) {
-                StatusScreen(link = link, haptics = haptics, onOpenSettings = { navController.navigate(Routes.SETTINGS) })
-            }
-            composable(Routes.SETTINGS) {
-                SettingsScreen(prefs = prefs, store = prefsStore)
-            }
+        }
+    }
+}
+
+@Composable
+private fun Screens(
+    navController: NavHostController,
+    link: PhoneLink,
+    prefs: Prefs,
+    prefsStore: WatchPrefs,
+    haptics: Haptics,
+    wakes: StateFlow<Wake?>,
+) {
+    SwipeDismissableNavHost(navController = navController, startDestination = Routes.REMOTE) {
+        composable(Routes.REMOTE) {
+            RemoteScreen(
+                link = link,
+                prefs = prefs,
+                haptics = haptics,
+                wakes = wakes,
+                onOpenApps = { navController.navigate(Routes.APPS) },
+                onOpenAssistant = { navController.navigate(Routes.ASSISTANT) },
+                onOpenStatus = { navController.navigate(Routes.STATUS) },
+            )
+        }
+        composable(Routes.APPS) {
+            AppsScreen(link = link, haptics = haptics, onDone = { navController.popBackStack() })
+        }
+        composable(Routes.ASSISTANT) {
+            AssistantScreen(link = link, haptics = haptics)
+        }
+        composable(Routes.STATUS) {
+            StatusScreen(link = link, haptics = haptics, onOpenSettings = { navController.navigate(Routes.SETTINGS) })
+        }
+        composable(Routes.SETTINGS) {
+            SettingsScreen(prefs = prefs, store = prefsStore)
         }
     }
 }

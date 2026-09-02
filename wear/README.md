@@ -51,8 +51,23 @@ down beginning in the button tray to hide them.
 
 The pad keeps the watch display awake while it is showing (Watch settings >
 "Keep screen on", default on). Wear OS otherwise dozes within seconds of the
-wrist dropping and freezes the app, so the remote would need a wake-up tap
-before every gesture.
+wrist dropping, so the remote would need a wake-up tap before every gesture.
+
+When the watch does doze (wrist down, or "Keep screen on" off), the app stays
+in front as an always-on face: the pad's clock and status line on black,
+redrawn once a minute. Wear OS would otherwise blur a snapshot of the app
+under the system clock and, after its app timeout, drop back to the watch
+face; being ambient-aware avoids both. Motion and crown input pause in ambient.
+
+**Waking with a tap.** The system consumes the touch that wakes the watch, so
+the pad treats each wake as a first tap it never saw:
+
+- With the Wear OS "Always-on screen" setting on, the dozing pad is the same
+  screen, so a tap on it is a tap: one tap wakes the watch and sends *select*
+  to the glasses; a double-tap wakes it and sends *back*.
+- With "Always-on screen" off the display was dark, so a lone tap just turns
+  it on; a double-tap turns it on and sends *back*.
+- A wrist raise (the wrist-tilt gesture sensor) or a crown turn is not a tap.
 
 Phone-side switches live in Faceclaw's Settings > Watch: turn watch control
 off entirely, reverse the crown direction, forbid unlocking from the watch,

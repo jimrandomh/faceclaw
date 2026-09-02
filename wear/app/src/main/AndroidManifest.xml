@@ -4,6 +4,8 @@
     <uses-feature android:name="android.hardware.type.watch" />
 
     <uses-permission android:name="android.permission.VIBRATE" />
+    <!-- Required by AmbientLifecycleObserver (always-on display support). -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
 
     <!-- Not standalone: the watch app is a remote for Faceclaw on the phone
          and does nothing useful without it. -->

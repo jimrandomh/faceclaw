@@ -3,15 +3,18 @@ package com.faceclaw.wear.ui
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import android.text.format.DateFormat
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -20,6 +23,16 @@ import androidx.wear.compose.material.Text
 import com.faceclaw.wear.LinkStatus
 import com.faceclaw.wear.Notice
 import com.faceclaw.wear.PhoneState
+import java.text.SimpleDateFormat
+import java.util.Locale
+
+/** Hours and minutes in the watch's 12/24-hour preference, for the pad's clock. */
+@Composable
+fun rememberClockFormatter(): SimpleDateFormat {
+    val context = LocalContext.current
+    val pattern = remember(context) { if (DateFormat.is24HourFormat(context)) "HH:mm" else "h:mm" }
+    return remember(pattern) { SimpleDateFormat(pattern, Locale.getDefault()) }
+}
 
 /** A transient pill at the bottom of the screen: ack failures and confirmations. */
 @Composable

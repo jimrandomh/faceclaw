@@ -1,6 +1,6 @@
 package com.faceclaw.wear.ui
 
-import android.text.format.DateFormat
+import android.os.SystemClock
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -30,9 +30,9 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.rotary.onRotaryScrollEvent
 import androidx.compose.ui.layout.onSizeChanged
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.platform.LocalViewConfiguration
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
@@ -59,17 +59,24 @@ import com.faceclaw.wear.PhoneLink
 import com.faceclaw.wear.Prefs
 import com.faceclaw.wear.R
 import com.faceclaw.wear.SwipeAction
+import com.faceclaw.wear.Wake
 import com.faceclaw.wear.WristTwistDetector
 import kotlinx.coroutines.delay
-import java.text.SimpleDateFormat
+import kotlinx.coroutines.flow.StateFlow
 import java.util.Date
-import java.util.Locale
 import kotlin.math.abs
 
 /** A two-finger swipe scrolls this many steps: a "page". */
 private const val TWO_FINGER_SWIPE_STEPS = 3
 private val EDGE_REVEAL_ZONE = 24.dp
 private val BUTTON_TRAY_HEIGHT = 62.dp
+/**
+ * After a wake from an off display, how long a press still counts as the
+ * second tap of the double-tap that woke it. Longer than the double-tap
+ * timeout because the window only gets input focus ~300 ms into such a wake
+ * and the press queues behind that.
+ */
+private const val SCREEN_ON_SECOND_TAP_WINDOW_MS = 600L
 
 /**
  * The touchpad. The whole screen is the pad: tap = select, double-tap =
@@ -79,6 +86,12 @@ private val BUTTON_TRAY_HEIGHT = 62.dp
  * at a time for the latter). Fingertip pinch-taps from the motion sensors
  * select / go back, and two quick wrist twists go back. An upward swipe that
  * begins at the bottom edge reveals the otherwise-hidden action buttons.
+ *
+ * A tap that wakes the display never reaches the pad (the system eats it),
+ * so each wake in [wakes] stands in for a first tap: a press inside the
+ * double-tap window makes the pair a double-tap, and a lone wake from ambient
+ * (where the pad was already showing) becomes a tap once the window closes.
+ * A lone wake from an off display just turned the screen on.
  */
 // rememberActiveFocusRequester (rotary focus) is still experimental in Wear Compose 1.4.
 @OptIn(ExperimentalWearFoundationApi::class)
@@ -87,6 +100,7 @@ fun RemoteScreen(
     link: PhoneLink,
     prefs: Prefs,
     haptics: Haptics,
+    wakes: StateFlow<Wake?>,
     onOpenApps: () -> Unit,
     onOpenAssistant: () -> Unit,
     onOpenStatus: () -> Unit,
@@ -94,6 +108,10 @@ fun RemoteScreen(
     val state by link.state.collectAsStateWithLifecycle()
     val linkStatus by link.link.collectAsStateWithLifecycle()
     val notice by link.notice.collectAsStateWithLifecycle()
+    val wake by wakes.collectAsStateWithLifecycle()
+    val ambientActive = LocalAmbientMode.current.active
+    val doubleTapTimeout = LocalViewConfiguration.current.doubleTapTimeoutMillis
+    val pendingTap = remember { PendingTap() }
     val currentPrefs by rememberUpdatedState(prefs)
     val currentState by rememberUpdatedState(state)
     val view = LocalView.current
@@ -243,9 +261,25 @@ fun RemoteScreen(
         )
     }
 
-    // Motion-sensor gestures only count on a wrist (see OnBodyMonitor).
+    // The wake-tap: arm the detector for a second press, and when none comes
+    // decide what the lone tap meant. A wake the tracker re-attributes to a
+    // wrist raise arrives as null and cancels all of it.
+    LaunchedEffect(wake) {
+        val current = wake
+        if (current == null) {
+            pendingTap.disarm()
+            return@LaunchedEffect
+        }
+        val window = if (current.fromScreenOff) SCREEN_ON_SECOND_TAP_WINDOW_MS else doubleTapTimeout
+        pendingTap.arm(current.uptimeMillis, window)
+        delay((current.uptimeMillis + window - SystemClock.uptimeMillis()).coerceAtLeast(0L))
+        if (pendingTap.expire() && !current.fromScreenOff) click()
+    }
+
+    // Motion-sensor gestures only count on a wrist (see OnBodyMonitor); none
+    // of the sensors run in ambient.
     val onBody = remember { OnBodyMonitor(view.context) }
-    WhileStartedEffect(onBody, start = onBody::start, stop = onBody::stop)
+    WhileStartedEffect(onBody, enabled = !ambientActive, start = onBody::start, stop = onBody::stop)
 
     // Fingertip (pinch) taps from the motion sensors, only while the pad is up.
     val fingerTapsEnabled = prefs.fingerTaps
@@ -259,7 +293,7 @@ fun RemoteScreen(
             onDoubleTap = { doubleClick() },
         )
     }
-    WhileStartedEffect(fingerTapDetector, start = { fingerTapDetector?.start() }, stop = { fingerTapDetector?.stop() })
+    WhileStartedEffect(fingerTapDetector, enabled = !ambientActive, start = { fingerTapDetector?.start() }, stop = { fingerTapDetector?.stop() })
     // Two quick wrist twists = back, from the gyroscope, only while the pad is up.
     val wristTwistEnabled = prefs.wristTwist
     val wristTwistDetector = remember(wristTwistEnabled, link, haptics) {
@@ -271,7 +305,7 @@ fun RemoteScreen(
             onDoubleTwist = { doubleClick() },
         )
     }
-    WhileStartedEffect(wristTwistDetector, start = { wristTwistDetector?.start() }, stop = { wristTwistDetector?.stop() })
+    WhileStartedEffect(wristTwistDetector, enabled = !ambientActive, start = { wristTwistDetector?.start() }, stop = { wristTwistDetector?.stop() })
 
     // A refused or unanswered gesture gets a distinct buzz, so the wrist knows
     // without looking (the notice pill says why).
@@ -284,6 +318,8 @@ fun RemoteScreen(
         modifier = Modifier
             .fillMaxSize()
             .onRotaryScrollEvent { event ->
+                // A crown turn can be what woke the display: not a tap, then.
+                pendingTap.disarm()
                 crownAccumulator += event.verticalScrollPixels
                 val threshold = currentPrefs.crownSensitivity.pixelsPerStep
                 var steps = 0
@@ -299,7 +335,7 @@ fun RemoteScreen(
             .focusRequester(focusRequester)
             .focusable()
             .onSizeChanged { padHeight[0] = it.height.toFloat() }
-            .pointerInput(callbacks) { detectTouchpadGestures(callbacks) },
+            .pointerInput(callbacks) { detectTouchpadGestures(callbacks, pendingTap) },
     ) {
         StraightTime(modifier = Modifier.align(Alignment.Center))
 
@@ -362,11 +398,14 @@ fun RemoteScreen(
  * leaving the composition. A plain DisposableEffect keeps sensors registered
  * while the activity sits stopped-but-cached (palmed screen, back on the watch
  * face), which at gyroscope/accelerometer rates is a real battery drain.
+ * [enabled] false holds it stopped regardless (ambient, where the activity
+ * stays started for the clock).
  */
 @Composable
-private fun WhileStartedEffect(key: Any?, start: () -> Unit, stop: () -> Unit) {
+private fun WhileStartedEffect(key: Any?, enabled: Boolean = true, start: () -> Unit, stop: () -> Unit) {
     val lifecycleOwner = LocalLifecycleOwner.current
-    DisposableEffect(lifecycleOwner, key) {
+    DisposableEffect(lifecycleOwner, key, enabled) {
+        if (!enabled) return@DisposableEffect onDispose { }
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
                 Lifecycle.Event.ON_START -> start()
@@ -382,14 +421,18 @@ private fun WhileStartedEffect(key: Any?, start: () -> Unit, stop: () -> Unit) {
     }
 }
 
-/** A large, straight clock fixed on the vertical centre of the touchpad. */
+/**
+ * A large, straight clock fixed on the vertical centre of the touchpad. The
+ * minute timer cannot run while the watch dozes, so the clock also resyncs
+ * on every ambient tick and on the way out of ambient: the first frame after
+ * a wake would otherwise show the minute the watch dozed off at.
+ */
 @Composable
 private fun StraightTime(modifier: Modifier = Modifier) {
-    val context = LocalContext.current
     var now by remember { mutableStateOf(System.currentTimeMillis()) }
-    val pattern = remember(context) { if (DateFormat.is24HourFormat(context)) "HH:mm" else "h:mm" }
-    val formatter = remember(pattern) { SimpleDateFormat(pattern, Locale.getDefault()) }
-    LaunchedEffect(Unit) {
+    val formatter = rememberClockFormatter()
+    val ambient = LocalAmbientMode.current
+    LaunchedEffect(ambient.tick, ambient.active) {
         while (true) {
             val current = System.currentTimeMillis()
             now = current

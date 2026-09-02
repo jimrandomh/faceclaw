@@ -2,9 +2,10 @@ package com.faceclaw.wear.ui
 
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
-import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.input.pointer.AwaitPointerEventScope
 import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.PointerInputChange
 import androidx.compose.ui.input.pointer.PointerInputScope
 import androidx.compose.ui.input.pointer.positionChanged
 import kotlin.math.abs
@@ -25,14 +26,50 @@ class TouchpadCallbacks(
 )
 
 /**
+ * A first tap the pad never saw: the touch that woke the display, which the
+ * system consumes. Armed by the pad on a wake; the next press inside the
+ * window is then the second tap of a pair (a double-tap, or tap-then-hold),
+ * and if no press comes the pad decides what a lone wake-tap meant. Main
+ * thread only.
+ */
+class PendingTap {
+    private var armedAt = -1L
+    private var windowMs = 0L
+
+    fun arm(uptimeMillis: Long, windowMs: Long) {
+        armedAt = uptimeMillis
+        this.windowMs = windowMs
+    }
+
+    fun disarm() {
+        armedAt = -1L
+    }
+
+    /** A press just landed: whether it pairs with the pending tap (which is spent either way). */
+    fun claim(downUptimeMillis: Long): Boolean {
+        val at = armedAt
+        armedAt = -1L
+        return at >= 0 && downUptimeMillis - at in 0..windowMs
+    }
+
+    /** The window closed: whether the tap was still pending (it is spent now). */
+    fun expire(): Boolean {
+        val pending = armedAt >= 0
+        armedAt = -1L
+        return pending
+    }
+}
+
+/**
  * One detector for everything the pad does, so a gesture is reported exactly
  * once: tap, double-tap (a second tap inside the double-tap timeout), a hold
  * (reported at the long-press timeout and again on release), tap-then-hold (a
  * second tap held past the long-press timeout), a swipe, and a two-finger tap
  * or swipe. Written as a single awaitEachGesture loop because the stock
- * detectors would each claim the same finger.
+ * detectors would each claim the same finger. A press that pairs with
+ * [pendingTap] skips straight to the second-tap handling.
  */
-suspend fun PointerInputScope.detectTouchpadGestures(callbacks: TouchpadCallbacks) {
+suspend fun PointerInputScope.detectTouchpadGestures(callbacks: TouchpadCallbacks, pendingTap: PendingTap) {
     val longPressTimeout = viewConfiguration.longPressTimeoutMillis
     val doubleTapTimeout = viewConfiguration.doubleTapTimeoutMillis
     val slop = viewConfiguration.touchSlop
@@ -41,6 +78,10 @@ suspend fun PointerInputScope.detectTouchpadGestures(callbacks: TouchpadCallback
         val down = awaitFirstDown()
         down.consume()
         val downTime = down.uptimeMillis
+        if (pendingTap.claim(downTime)) {
+            secondTap(callbacks, longPressTimeout, down.position, down)
+            return@awaitEachGesture
+        }
         var maxPointers = 1
         var moved = false
         var longPressed = false
@@ -98,33 +139,7 @@ suspend fun PointerInputScope.detectTouchpadGestures(callbacks: TouchpadCallback
                         if (second == null) {
                             callbacks.onTap(down.position)
                         } else {
-                            second.consume()
-                            // Released within the long-press timeout it's a
-                            // double-tap; held past it, the G2 tap-then-hold
-                            // gesture (reported once at the timeout, movement
-                            // tolerated, the rest of the hold swallowed).
-                            var held = false
-                            while (true) {
-                                val remaining2 = if (held) {
-                                    HOLD_POLL_MS
-                                } else {
-                                    longPressTimeout - (System.currentTimeMillis() - wallClockAt(second.uptimeMillis))
-                                }
-                                val event2 = withTimeoutOrNull(remaining2.coerceAtLeast(1L)) { awaitPointerEvent() }
-                                if (event2 == null) {
-                                    if (!held) {
-                                        held = true
-                                        callbacks.onShortThenLongPress()
-                                    }
-                                    continue
-                                }
-                                if (event2.changes.any { it.isConsumed }) break
-                                for (change in event2.changes) change.consume()
-                                if (event2.changes.none { it.pressed }) {
-                                    if (!held) callbacks.onDoubleTap(down.position)
-                                    break
-                                }
-                            }
+                            secondTap(callbacks, longPressTimeout, down.position, second)
                         }
                     }
                 }
@@ -132,6 +147,42 @@ suspend fun PointerInputScope.detectTouchpadGestures(callbacks: TouchpadCallback
             }
         } finally {
             if (longPressed && !longPressEnded) callbacks.onLongPressEnd()
+        }
+    }
+}
+
+/**
+ * The second press of a pair. Released within the long-press timeout it's a
+ * double-tap; held past it, the G2 tap-then-hold gesture (reported once at
+ * the timeout, movement tolerated, the rest of the hold swallowed).
+ */
+private suspend fun AwaitPointerEventScope.secondTap(
+    callbacks: TouchpadCallbacks,
+    longPressTimeout: Long,
+    first: Offset,
+    second: PointerInputChange,
+) {
+    second.consume()
+    var held = false
+    while (true) {
+        val remaining = if (held) {
+            HOLD_POLL_MS
+        } else {
+            longPressTimeout - (System.currentTimeMillis() - wallClockAt(second.uptimeMillis))
+        }
+        val event = withTimeoutOrNull(remaining.coerceAtLeast(1L)) { awaitPointerEvent() }
+        if (event == null) {
+            if (!held) {
+                held = true
+                callbacks.onShortThenLongPress()
+            }
+            continue
+        }
+        if (event.changes.any { it.isConsumed }) break
+        for (change in event.changes) change.consume()
+        if (event.changes.none { it.pressed }) {
+            if (!held) callbacks.onDoubleTap(first)
+            break
         }
     }
 }
