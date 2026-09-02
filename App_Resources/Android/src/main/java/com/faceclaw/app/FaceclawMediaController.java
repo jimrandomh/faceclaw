@@ -205,11 +205,11 @@ public class FaceclawMediaController {
      * Album art for the active session's current item, grayscale, scaled to
      * fit within maxSize x maxSize preserving aspect. Returns a gray packet
      * (see ImageFileLoader.bitmapToGrayPacket) or an empty array when no art
-     * is available. Cover art is continuous-tone, so it is tone-mapped by
-     * gamma and dithered onto the display's 16 levels rather than rounded
-     * per pixel.
+     * is available. gamma and dither are the photographic tone handling
+     * described on ImageFileLoader.bitmapToGrayPacket; the TS side passes
+     * its shared photo preset.
      */
-    public byte[] getAlbumArtGray(int maxSize, float gamma) {
+    public byte[] getAlbumArtGray(int maxSize, float gamma, boolean dither) {
         Bitmap art;
         synchronized (lock) {
             if (activeController == null) {
@@ -227,7 +227,7 @@ public class FaceclawMediaController {
                 art = metadata.getBitmap(MediaMetadata.METADATA_KEY_DISPLAY_ICON);
             }
         }
-        return ImageFileLoader.bitmapToGrayPacket(art, maxSize, maxSize, gamma, true);
+        return ImageFileLoader.bitmapToGrayPacket(art, maxSize, maxSize, gamma, dither);
     }
 
     /**

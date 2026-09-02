@@ -9,6 +9,9 @@ Compass app:
 * Compass now handles the distincitn between true north and magnetic north
 * EvenHub compass readings now include calibrated magnetic, declination and true headings
 
+Files app:
+* Viewing image files gamma-corrects and dithers them
+
 ## 0.6.3 - 2026-09-01
 * Update custom firmware base version from 2.2.6 to 2.2.9
 * Add support for the short-then-long-press gesture
