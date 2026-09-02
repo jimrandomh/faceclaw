@@ -27,9 +27,18 @@ import java.util.concurrent.TimeUnit;
  * whole lifecycle on a single worker thread. It expects the main app to be
  * disconnected while it runs (onboarding, before flashing).
  *
- * Only the right arm is used: the lenses relay messages to each other, so
- * anything sent to the right arm reaches both, and acks/events only ever come
- * from the right arm anyway.
+ * Both arms are connected and security-authenticated up front, even though the
+ * prompt itself only needs the right arm (the lenses relay messages to each
+ * other, and acks/events only ever come from the right arm): on an unbonded
+ * phone the auth exchange is what raises the OS pairing prompt, and doing both
+ * here means both prompts appear at the start rather than one popping up half
+ * way through flashing the second lens. While connected, each arm's battery
+ * level is read (they are independent batteries) so the caller can refuse to
+ * flash on a low charge.
+ *
+ * With `skipPrompt` the on-glasses confirmation is not shown: the flow is just
+ * connect + auth + battery read + result(approved). Used to re-check the
+ * battery after the user has already confirmed once.
  */
 public class FaceclawFlashPromptCommunicator implements FaceclawBleListener {
     private static final String TAG = "FaceclawFlashPrompt";
@@ -44,10 +53,13 @@ public class FaceclawFlashPromptCommunicator implements FaceclawBleListener {
     private static final int HEARTBEAT_INTERVAL_MS = 4_000;
     private static final int SELECTION_TIMEOUT_MS = 120_000;
     private static final int CREATE_ACK_TIMEOUT_MS = 3_000;
+    private static final int BATTERY_ACK_TIMEOUT_MS = 3_000;
 
     private final Context context;
     private final String rightAddress;
+    private final String leftAddress;
     private final String warningText;
+    private final boolean skipPrompt;
     private final FaceclawBleManager bleManager;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
 
@@ -61,6 +73,7 @@ public class FaceclawFlashPromptCommunicator implements FaceclawBleListener {
     private volatile boolean cancelled = false;
     private volatile boolean finished = false;
     private volatile boolean rightConnected = false;
+    private volatile boolean leftConnected = false;
     private volatile boolean rightLost = false;
     private volatile Boolean approved = null;
     private volatile ScheduledExecutorService heartbeatExecutor;
@@ -68,10 +81,13 @@ public class FaceclawFlashPromptCommunicator implements FaceclawBleListener {
     private int nextMagic = 100;
     private int nextSeq = 0x40;
 
-    public FaceclawFlashPromptCommunicator(Context context, String rightAddress, String warningText) {
+    public FaceclawFlashPromptCommunicator(
+            Context context, String rightAddress, String leftAddress, String warningText, boolean skipPrompt) {
         this.context = context.getApplicationContext();
         this.rightAddress = rightAddress == null ? "" : rightAddress;
+        this.leftAddress = leftAddress == null ? "" : leftAddress;
         this.warningText = warningText == null ? "" : warningText;
+        this.skipPrompt = skipPrompt;
         this.bleManager = new FaceclawBleManager(this.context);
         this.bleManager.setListener(this);
     }
@@ -117,43 +133,85 @@ public class FaceclawFlashPromptCommunicator implements FaceclawBleListener {
             }
 
             emitState("connecting", "");
-            connectArm(rightAddress);
+            connectArm(rightAddress, "right");
             rightConnected = true;
             if (cancelled) {
                 teardown();
                 return;
             }
+            if (!leftAddress.trim().isEmpty()) {
+                connectArm(leftAddress, "left");
+                leftConnected = true;
+                if (cancelled) {
+                    teardown();
+                    return;
+                }
+            }
 
             emitState("connected", "");
-            bringUpArm(rightAddress);
+            // Auth both arms now (pairing prompts, if any, happen here) before
+            // anything else, so both bonds exist by the time flashing starts.
+            authenticateArm(rightAddress, "right");
+            if (leftConnected) {
+                authenticateArm(leftAddress, "left");
+            }
+            if (cancelled) {
+                teardown();
+                return;
+            }
+            sendPrelude(rightAddress);
 
-            startHeartbeat();
-            emitState("prompting", "");
+            if (!skipPrompt) {
+                showPrompt(rightAddress);
+                startHeartbeat();
+                emitState("prompting", "");
 
-            boolean signalled = selectionLatch.await(SELECTION_TIMEOUT_MS, TimeUnit.MILLISECONDS);
-            stopHeartbeat();
+                selectionLatch.await(SELECTION_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+                stopHeartbeat();
 
+                if (cancelled) {
+                    emitState("cancelled", "");
+                    teardown();
+                    return;
+                }
+                if (approved == null) {
+                    if (rightLost) {
+                        emitState("disconnected", "Lost connection to the glasses.");
+                    } else {
+                        emitState("timeout", "No response from the glasses.");
+                    }
+                    teardown();
+                    return;
+                }
+                try {
+                    sendShutdown();
+                } catch (Exception ignored) {
+                }
+                if (!Boolean.TRUE.equals(approved)) {
+                    emitResult(false);
+                    emitState("result", "declined");
+                    teardown();
+                    return;
+                }
+            }
+
+            // Approved (or prompt skipped): read each arm's battery while the
+            // links are still up, then report the result.
+            emitState("battery", "");
+            readBatteries();
             if (cancelled) {
                 emitState("cancelled", "");
                 teardown();
                 return;
             }
-            if (approved != null) {
-                boolean result = Boolean.TRUE.equals(approved);
-                try {
-                    sendShutdown();
-                } catch (Exception ignored) {
-                }
-                emitResult(result);
-                emitState("result", result ? "approved" : "declined");
+            if (rightLost) {
+                emitState("disconnected", "Lost connection to the glasses.");
                 teardown();
                 return;
             }
-            if (rightLost) {
-                emitState("disconnected", "Lost connection to the glasses.");
-            } else {
-                emitState("timeout", "No response from the glasses.");
-            }
+            finished = true;
+            emitResult(true);
+            emitState("result", "approved");
             teardown();
         } catch (Exception e) {
             stopHeartbeat();
@@ -165,26 +223,28 @@ public class FaceclawFlashPromptCommunicator implements FaceclawBleListener {
         }
     }
 
-    private void connectArm(String address) {
+    private void connectArm(String address, String arm) {
         if (!bleManager.connect(address, ConnectionOptions.CONNECT_TIMEOUT_MS)) {
-            throw new IllegalStateException("connect failed: " + address);
+            throw new IllegalStateException("could not connect to the " + arm + " arm (" + address + ")");
         }
         bleManager.requestConnectionPriority(address, BluetoothGatt.CONNECTION_PRIORITY_HIGH);
         bleManager.requestMtu(address, ConnectionOptions.DESIRED_MTU, ConnectionOptions.CONNECT_TIMEOUT_MS);
         if (!bleManager.discoverServices(address, ConnectionOptions.SERVICES_TIMEOUT_MS)) {
-            throw new IllegalStateException("discoverServices failed: " + address);
+            throw new IllegalStateException("discoverServices failed: " + arm + " arm (" + address + ")");
         }
         if (!bleManager.enableNotifications(address, BleProtocol.NOTIFY_CHAR_UUID, true, ConnectionOptions.DESCRIPTOR_TIMEOUT_MS)) {
-            throw new IllegalStateException("enableNotifications failed: " + address);
+            throw new IllegalStateException("enableNotifications failed: " + arm + " arm (" + address + ")");
         }
-        emitLog("connected right arm");
+        emitLog("connected " + arm + " arm");
     }
 
-    private void bringUpArm(String address) throws InterruptedException {
-        // 1. Security-auth exchange on sid=0x80: firmware 2.2.9 will not run a
-        //    session (and closes the link after ~30 s) without it, and on an
-        //    unbonded phone this is what triggers SMP pairing, so it may sit
-        //    waiting on an OS pairing prompt.
+    /**
+     * Security-auth exchange on sid=0x80: firmware 2.2.9 will not run a
+     * session (and closes the link after ~30 s) without it, and on an
+     * unbonded phone this is what triggers SMP pairing, so it may sit
+     * waiting on an OS pairing prompt.
+     */
+    private void authenticateArm(String address, String arm) throws InterruptedException {
         int authMagic = allocMagic();
         byte[] authAck = writeAndAwaitAck(
             address,
@@ -195,10 +255,14 @@ public class FaceclawFlashPromptCommunicator implements FaceclawBleListener {
             ConnectionOptions.SECURITY_AUTH_TIMEOUT_MS);
         if (authAck == null || !BleProtocol.isAuthenticationSuccess(authAck, authMagic)) {
             throw new IllegalStateException(
-                "could not authenticate with the glasses (" + address
+                "could not authenticate with the " + arm + " arm (" + address
                     + ") — if Android shows a Bluetooth pairing request, accept it and try again");
         }
-        // 2. Mandatory session prelude on sid=0x01 (app-launch).
+        emitLog("security auth complete: " + arm + " arm");
+    }
+
+    /** Mandatory session prelude on sid=0x01 (app-launch). Right arm only; it relays. */
+    private void sendPrelude(String address) throws InterruptedException {
         if (writeAndAwaitAck(
                 address,
                 BleProtocol.PRELUDE_ACK_SID,
@@ -208,10 +272,13 @@ public class FaceclawFlashPromptCommunicator implements FaceclawBleListener {
                 ConnectionOptions.PRELUDE_TIMEOUT_MS) == null) {
             throw new IllegalStateException("session prelude not acked: " + address);
         }
-        // 3. Create the prompt page (warning text + No/Yes list) on sid=0xe0 Cmd=0.
-        //    Two attempts: on 2.2.9 the first request sent right after the
-        //    prelude can be dropped while the lens emits its own sid-0x80
-        //    notifications (observed with the device-info settings read).
+    }
+
+    private void showPrompt(String address) throws InterruptedException {
+        // Create the prompt page (warning text + No/Yes list) on sid=0xe0 Cmd=0.
+        // Two attempts: on 2.2.9 the first request sent right after the
+        // prelude can be dropped while the lens emits its own sid-0x80
+        // notifications (observed with the device-info settings read).
         byte[] pageAck = null;
         for (int attempt = 0; attempt < 2 && pageAck == null && !cancelled; attempt++) {
             int magic = allocMagic();
@@ -226,6 +293,42 @@ public class FaceclawFlashPromptCommunicator implements FaceclawBleListener {
             throw new IllegalStateException("prompt page not acked: " + address);
         }
         emitLog("prompt page shown on " + address);
+    }
+
+    /**
+     * Read each arm's battery via a sid-0x09 settings read on that arm's own
+     * link (the arms have independent batteries and each answers with its
+     * own). An arm that does not answer reports -1; the caller decides what
+     * to do with a partial reading.
+     */
+    private void readBatteries() throws InterruptedException {
+        int right = rightConnected ? readBattery(rightAddress, "right") : -1;
+        int left = leftConnected ? readBattery(leftAddress, "left") : -1;
+        emitLog("battery R=" + (right < 0 ? "?" : right + "%") + " L=" + (left < 0 ? "?" : left + "%"));
+        emitBattery(right, left);
+    }
+
+    private int readBattery(String address, String arm) throws InterruptedException {
+        for (int attempt = 0; attempt < 2 && !cancelled; attempt++) {
+            int magic = allocMagic();
+            byte[] ack = writeAndAwaitAck(
+                address,
+                BleProtocol.SID_UI_SETTING,
+                BleProtocol.FLAG_REQUEST,
+                magic,
+                BleProtocol.buildSettingsQuery(magic),
+                BATTERY_ACK_TIMEOUT_MS);
+            if (ack == null) {
+                emitLog("battery read attempt " + (attempt + 1) + " unacked: " + arm + " arm");
+                continue;
+            }
+            BleProtocol.BatterySnapshot snapshot = BleProtocol.parseSettingsBattery(ack);
+            if (snapshot != null) {
+                return snapshot.battery;
+            }
+            emitLog("battery read ack had no battery field: " + arm + " arm");
+        }
+        return -1;
     }
 
     /** Write and wait for the matching ack; returns the ack's protobuf (may be empty), or null on timeout/write failure. */
@@ -312,6 +415,7 @@ public class FaceclawFlashPromptCommunicator implements FaceclawBleListener {
         } catch (Exception ignored) {
         }
         rightConnected = false;
+        leftConnected = false;
     }
 
     @Override
@@ -371,6 +475,13 @@ public class FaceclawFlashPromptCommunicator implements FaceclawBleListener {
         if (connected) {
             return;
         }
+        if (address.equalsIgnoreCase(leftAddress)) {
+            // The prompt itself only needs the right arm; a dropped left link
+            // just means no left battery reading.
+            leftConnected = false;
+            emitLog("left arm disconnected");
+            return;
+        }
         if (address.equalsIgnoreCase(rightAddress)) {
             rightConnected = false;
             synchronized (lock) {
@@ -411,6 +522,15 @@ public class FaceclawFlashPromptCommunicator implements FaceclawBleListener {
             FaceclawFlashPromptListener current = listener;
             if (current != null) {
                 current.onState(state, safeDetail);
+            }
+        });
+    }
+
+    private void emitBattery(int rightPercent, int leftPercent) {
+        mainHandler.post(() -> {
+            FaceclawFlashPromptListener current = listener;
+            if (current != null) {
+                current.onBattery(rightPercent, leftPercent);
             }
         });
     }

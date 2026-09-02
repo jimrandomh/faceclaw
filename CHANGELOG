@@ -1,23 +1,20 @@
 # Changelog
 
-## 0.6.4 - Future
+## 0.6.4 - 2026-09-02
 * Context menus are centered and include window title
 * Long-press and short-then-long with a context menu open switches between context menus
 * Developer speed metrics include bytes/frame
-
-Compass app:
-* Increase sample rate and minimum-change for the compass app
-* Compass now handles the distincitn between true north and magnetic north
+* The custom firmware uninstaller flashes 2.2.9.22, not 2.2.6.10
+* Compass app: Increase sample rate from 1/s to ~3/s
+* Compass app: Handle the distinction between true north and magnetic north
 * EvenHub compass readings now include calibrated magnetic, declination and true headings
-
-Files app:
-* Viewing image files gamma-corrects and dithers them
-
-Watch app:
-* Ambient mode: the watch no longer blurs when idle
-* Fix flicker on waking the watch
-* Tapping the idle watch to wake it counts as a tap on the pad
-* Remove a number of unfinished prototype features
+* Files app: Viewing image files gamma-corrects and dithers them
+* Watch app: Uses ambient mode so the watch no longer blurs when idle
+* Watch app: Fix flicker on waking the watch
+* Watch app: Tapping the idle watch to wake it counts as a tap on the pad
+* Watch app: Remove a number of unfinished prototype features
+* Firmware flasher checks for glasses battery>30% before starting
+* Fix a problem in 0.6.3 where it would abort before starting a custom firmware install with a checksum error
 
 ## 0.6.3 - 2026-09-01
 * Update custom firmware base version from 2.2.6 to 2.2.9

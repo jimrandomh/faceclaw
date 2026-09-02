@@ -254,8 +254,15 @@ function buildCommon(version: 1 | 3): string {
   const fields: Record<string, string | number> = {
     platform: "16",
     package: "com.even.sg",
-    versionName: "2.2.6",
-    build: "114",
+    // versionName/build must be a real shipped pair of the official Android
+    // app (versionName/versionCode from its manifest): 2.2.8 = versionCode 122
+    // (captures/even-2.2.8-base.apk). Earlier this said 2.2.6 with build 114,
+    // but 114 was actually 2.2.4's versionCode (see notes/firmware-download.md).
+    // buildTime is not a literal in the app binary (computed at runtime), so
+    // it still carries the value from the 2.2.4 capture; the API has accepted
+    // the mismatch so far.
+    versionName: "2.2.8",
+    build: "122",
     brand: "Google",
     model: "Pixel 7a",
     osVersion: "16",
