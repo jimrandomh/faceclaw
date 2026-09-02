@@ -68,6 +68,13 @@ export class WindowMenu {
   async handleInput(event: InputEvent): Promise<void> {
     const stack = this.stack;
     if (!stack) return;
+    // The shell opened its system menu over this window; close ours so the
+    // two context menus never stack.
+    if (event.type === "system-menu-opened") {
+      stack.clearToBase();
+      this.stack = null;
+      return;
+    }
     await stack.handleInput(event);
     if (stack.isAtBase()) {
       this.stack = null;

@@ -185,6 +185,14 @@ export function createInProcessWindow(options: InProcessWindowOptions): InProces
     },
     drawIcon: options.drawIcon ?? windowIcon(options.icon, options.iconLetter),
     handleInput: async (event, frameId) => {
+      // The shell opened its system menu over this window; close our own
+      // context menu so the two never stack. Never forwarded to app layers.
+      if (event.type === "system-menu-opened") {
+        if (stack.popIfTop((layer) => layer instanceof WindowMenuLayer)) {
+          requestRender();
+        }
+        return;
+      }
       // The default long-press response: the window menu. Handled here (not
       // per-layer) so it works over submenus and app content alike.
       if (event.type === "long-press") {

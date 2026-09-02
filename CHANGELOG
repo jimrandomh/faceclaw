@@ -2,6 +2,7 @@
 
 ## 0.6.4 - Future
 * Context menus are centered and include window title
+* Long-press and short-then-long with a context menu open switches between context menus
 * Developer speed metrics include bytes/frame
 
 Compass app:

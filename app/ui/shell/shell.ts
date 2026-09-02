@@ -650,6 +650,15 @@ class Shell {
     // holding the press long enough opens the shell's own menu.
     if (event.type === "long-press") {
       this.startEscapeMenuTimer();
+      // A long-press while the system menu is open switches to the app's
+      // context menu: close the system menu and deliver the press to the
+      // window as usual (apps conventionally answer it with their menu).
+      if (
+        !this.activeVoiceLayer &&
+        this.stack.popIfTop((layer) => layer instanceof ShellOverlayMenuLayer)
+      ) {
+        this.config.requestShellRender();
+      }
       if (this.activeVoiceLayer || !this.stack.isAtBase()) {
         return { shell: true, window: false };
       }
@@ -1183,6 +1192,9 @@ class Shell {
       },
     });
     this.stack.push(new ShellOverlayMenuLayer(items, () => this.yieldFocusToSidebar()));
+    // Tell the window the system menu opened over it: an app with its own
+    // context menu up closes it, so the two context menus never stack.
+    void foreground.handleInput(makeInputEvent({ type: "system-menu-opened" }), 0);
     this.config.requestShellRender();
   }
 
@@ -1355,6 +1367,8 @@ export function inputEventToString(event: InputEvent): string {
       return `Display wake`;
     case "wakeword":
       return `Wakeword`;
+    case "system-menu-opened":
+      return `System menu opened`;
     default:
     case "unknown":
       return `Unknown event: ${event.kind} ${event.eventSource} ${event.eventType}`;

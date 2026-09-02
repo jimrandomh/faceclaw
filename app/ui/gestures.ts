@@ -28,6 +28,13 @@ export type InputEventPayload =
   /** G2 2.2.9 tap-then-hold gesture, reserved for the shell system menu. */
   | { type: "short-then-long-press"; source: InputSource }
   /**
+   * Not a gesture: a shell -> foreground-window notification that the shell
+   * opened its system context menu over the window. An app with its own
+   * context menu up closes it in response, so the two menus never stack.
+   * Everything else ignores it.
+   */
+  | { type: "system-menu-opened" }
+  /**
    * Spatial (four-way) input, which only a watch can produce: the ring's
    * scroll is a one-dimensional cursor, these are directions. Components with
    * a spatial meaning for them opt in with Layer.acceptsDirectional /
