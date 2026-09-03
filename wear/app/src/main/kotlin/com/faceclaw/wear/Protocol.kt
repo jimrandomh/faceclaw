@@ -34,7 +34,7 @@ enum class Gesture(val wire: String) {
     /** Finger down: the hold lasts until LONG_PRESS_RELEASE. */
     LONG_PRESS_START("long-press-start"),
     LONG_PRESS_RELEASE("long-press-release"),
-    /** Tap then hold: opens the glasses' system menu (G2 2.2.9 gesture). */
+    /** Tap then hold: opens the app's context menu on the glasses (G2 2.2.9 gesture). */
     SHORT_THEN_LONG_PRESS("short-then-long-press"),
     /** The spoken "Hey Even": opens the glasses' own voice dialog. */
     WAKEWORD("wakeword"),

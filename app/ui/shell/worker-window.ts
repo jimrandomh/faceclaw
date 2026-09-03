@@ -73,7 +73,7 @@ export type WorkerAppReply =
     }
   | {
       /**
-       * The window's answer to a long-press when it has no context menu of
+       * The window's answer to tap-then-hold when it has no context menu of
        * its own: open the shell's system menu in its place.
        */
       type: "open-system-menu";
@@ -81,13 +81,16 @@ export type WorkerAppReply =
     }
   | {
       /**
-       * Whether a long-press currently opens the window's own context menu
-       * (with something in it). Posted on change; the shell's system menu
-       * shows its "long-press: app menu" hint only while this is true.
+       * The window's current gesture bindings, posted on change. hasAppMenu:
+       * tap-then-hold opens a context menu with something in it (the system
+       * menu shows its app-menu hint only then). claimsLongPress: the app
+       * gives long-press a meaning of its own, so the shell forwards it
+       * rather than opening the system menu (see ShellWindow).
        */
-      type: "set-app-menu-available";
+      type: "set-window-gestures";
       windowId: string;
-      available: boolean;
+      hasAppMenu: boolean;
+      claimsLongPress: boolean;
     }
   | {
       /** Open or focus the Settings app, optionally jumping to a section. */
@@ -190,8 +193,8 @@ const TOOL_CALL_HOST_TIMEOUT_MS = 15_000;
 
 export class WorkerAppHost {
   private readonly openWindows = new Set<string>();
-  /** Windows that reported a context menu of their own (see set-app-menu-available). */
-  private readonly appMenuAvailable = new Set<string>();
+  /** Per-window gesture bindings, as last reported (see set-window-gestures). */
+  private readonly windowGestures = new Map<string, { hasAppMenu: boolean; claimsLongPress: boolean }>();
   private readonly pendingToolCalls = new Map<string, PendingToolCall>();
   private nextCallSerial = 1;
   /**
@@ -266,12 +269,11 @@ export class WorkerAppHost {
             shell.openSystemMenu(message.windowId);
           }
           break;
-        case "set-app-menu-available":
-          if (message.available) {
-            this.appMenuAvailable.add(message.windowId);
-          } else {
-            this.appMenuAvailable.delete(message.windowId);
-          }
+        case "set-window-gestures":
+          this.windowGestures.set(message.windowId, {
+            hasAppMenu: message.hasAppMenu,
+            claimsLongPress: message.claimsLongPress,
+          });
           break;
         case "open-settings":
           this.options.openSettings(message.section);
@@ -346,10 +348,11 @@ export class WorkerAppHost {
       closeable: true,
       acceptsDirectional: spec.acceptsDirectional,
       heightMode,
-      hasAppMenu: () => this.appMenuAvailable.has(spec.windowId),
+      hasAppMenu: () => this.windowGestures.get(spec.windowId)?.hasAppMenu ?? false,
+      claimsLongPress: () => this.windowGestures.get(spec.windowId)?.claimsLongPress ?? false,
       close: () => {
         this.openWindows.delete(spec.windowId);
-        this.appMenuAvailable.delete(spec.windowId);
+        this.windowGestures.delete(spec.windowId);
         // Withdraw this window's tools and fail any in-flight calls to it.
         toolRegistry.removeAppTools(spec.windowId);
         this.failPendingToolCallsFor(spec.windowId);

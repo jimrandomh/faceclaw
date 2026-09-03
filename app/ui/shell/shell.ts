@@ -5,7 +5,7 @@ import { EvenAIStatus, EventSourceType, OsEventTypeList, WatchGestureType } from
 import type { RawInputEvent } from "../../native/faceclaw-communicator";
 import {
   directionalFallback,
-  GESTURE_LONG_PRESS,
+  GESTURE_SHORT_THEN_LONG_PRESS,
   gestureHints,
   InputEvent,
   type InputEventPayload,
@@ -59,13 +59,14 @@ import {
  *
  * Input flow: every event enters via receiveInput. The shell consumes
  * everything while the sidebar or a shell overlay has focus and forwards the
- * rest to the focused window. Long-press goes to the foreground window (from
- * the sidebar it focuses the window first); by convention apps answer it with
+ * rest to the focused window. Long-press opens the shell-owned system menu
+ * (Focus app switcher, Voice input, Close window, Debug) without reaching the
+ * app, so the shell keeps working when a window's handler hangs; a window
+ * that claims long-press for a move of its own gets it forwarded instead, and
+ * holding the press past the escape threshold still opens the system menu.
+ * The 2.2.9 tap-then-hold gesture goes to the foreground window (from the
+ * sidebar it focuses the window first); by convention apps answer it with
  * their own context menu, or ask for the system menu when they have none.
- * The system menu (Focus app switcher, Voice input, Close window, Debug) is
- * shell-owned: the 2.2.9 tap-then-hold gesture opens it directly, and holding
- * a long-press past the escape threshold opens it too, so the shell keeps
- * working when a window's handler hangs.
  */
 
 export type ShellWindow = {
@@ -77,12 +78,18 @@ export type ShellWindow = {
   /** Whether the system menu offers Close window (the launcher is pinned). */
   closeable: boolean;
   /**
-   * True when a long-press currently opens the window's own context menu
+   * True when tap-then-hold currently opens the window's own context menu
    * (with at least one entry). While false, the system menu shows no
-   * "long-press: app menu" hint and a long-press over the open system menu
-   * leaves it open instead of switching menus.
+   * app-menu hint and a tap-then-hold over the open system menu leaves it
+   * open instead of switching menus.
    */
   hasAppMenu?: () => boolean;
+  /**
+   * True while the window gives long-press a meaning of its own (a game
+   * move). The shell then forwards long-presses to it instead of opening the
+   * system menu; holding the press past the escape threshold still opens it.
+   */
+  claimsLongPress?: () => boolean;
   /**
    * True when the window gives swipe-left / swipe-right (watch directional
    * input) a meaning; otherwise the shell forwards directionalFallback(event).
@@ -171,9 +178,10 @@ export type FocusKind = "sidebar" | "window";
 const noopActions: LayerActions = noopLayerActions;
 
 /**
- * Hold a long-press this much past the long-press event (which the firmware
- * itself only fires after a shorter hold) and the shell opens its own escape
- * menu — the recovery path when an app ignores or mishandles the gesture.
+ * For a window that claims long-press: hold the press this much past the
+ * long-press event (which the firmware itself only fires after a shorter
+ * hold) and the shell opens the system menu anyway — the recovery path when
+ * the app ignores or mishandles the gesture.
  */
 const LONG_PRESS_ESCAPE_MENU_MS = 4000;
 
@@ -652,28 +660,46 @@ class Shell {
       return { shell: false, window: false };
     }
 
-    // The 2.2.9 tap-then-hold gesture is a direct, shell-owned escape hatch.
-    // Unlike an ordinary long-press it never reaches the app or starts the
-    // fallback timer: it opens the same system menu that an extended hold
-    // would eventually open. Its later generic release is consumed while the
-    // shell overlay is active and therefore cannot leak into the app.
-    if (event.type === "short-then-long-press") {
-      this.openEscapeMenu();
-      return { shell: true, window: false };
+    // Long-press is the shell's own gesture: it opens the system menu
+    // directly, never reaching the app — over the app's own context menu
+    // too (the window closes that on system-menu-opened), while an already
+    // open system menu just stays. Its later generic release is consumed
+    // while the shell overlay is active and therefore cannot leak into the
+    // app. The exception is a window that claims long-press for a move of
+    // its own: it gets the press forwarded, with the escape timer running
+    // so that holding the press long enough still opens the system menu.
+    if (event.type === "long-press") {
+      if (this.activeVoiceLayer || !this.stack.isAtBase()) {
+        return { shell: true, window: false };
+      }
+      const window = this.foregroundWindow();
+      if (!window) {
+        return { shell: true, window: false };
+      }
+      if (!window.claimsLongPress?.()) {
+        this.openEscapeMenu();
+        return { shell: true, window: false };
+      }
+      this.startEscapeMenuTimer();
+      if (this.focus === "sidebar") {
+        this.focus = "window";
+        window.onFocus?.(this.lastInput);
+      }
+      // The window owns frameId from here (render or explicit finish).
+      await window.handleInput(event, frameId);
+      return { shell: true, window: true };
     }
 
-    // Long-press goes to the foreground window (from the sidebar it focuses
-    // the window first); apps conventionally answer it with their context
-    // menu, or ask for the system menu when they have none. The escape timer
-    // runs regardless of what the app does with it: holding the press long
-    // enough opens the shell's own menu.
-    if (event.type === "long-press") {
-      this.startEscapeMenuTimer();
+    // The 2.2.9 tap-then-hold gesture is the app's context-menu gesture: it
+    // goes to the foreground window (from the sidebar it focuses the window
+    // first), which answers with its own menu or asks for the system menu
+    // when it has none.
+    if (event.type === "short-then-long-press") {
       const window = this.foregroundWindow();
-      // A long-press while the system menu is open switches to the app's
-      // context menu: close the system menu and deliver the press to the
-      // window as usual. A window without a menu of its own would only ask
-      // for the system menu back, so for it the open menu stays.
+      // Over the open system menu it switches to the app's context menu:
+      // close the system menu and deliver the gesture to the window as
+      // usual. A window without a menu of its own would only ask for the
+      // system menu back, so for it the open menu stays.
       if (
         !this.activeVoiceLayer &&
         window?.hasAppMenu?.() &&
@@ -1184,7 +1210,7 @@ class Shell {
   }
 
   /**
-   * A window's answer to a long-press when it has no context menu of its
+   * A window's answer to tap-then-hold when it has no context menu of its
    * own: open the system menu in its place, so both gestures land on the
    * same menu. Ignored unless the window is still the foreground one.
    */
@@ -1197,9 +1223,9 @@ class Shell {
    * The system/escape menu: the entries every window shares (Focus app
    * switcher, Voice input, Close window) plus Debug. Shell-owned and
    * shell-drawn (never the app's), so an unresponsive app can always be
-   * closed. It opens for tap-then-hold, after an extended hold (over whatever
-   * the app did with the ordinary long-press, including opening its own
-   * menu), and on a window's request when it has no menu of its own.
+   * closed. It opens for long-press (over the app's own menu too), after an
+   * extended hold in a window that claims long-press, and on a window's
+   * request when tap-then-hold finds it has no menu of its own.
    */
   private openEscapeMenu(): void {
     if (!this.screenOn || this.activeVoiceLayer || !this.stack.isAtBase()) return;
@@ -1249,11 +1275,11 @@ class Shell {
         this.openToolDebugDialog();
       },
     });
-    // Gesture help: a long-press switches to the app's own context menu, when
-    // the app has one (otherwise it either does something app-specific or
-    // opens this very menu, neither worth a hint).
+    // Gesture help: tap-then-hold switches to the app's own context menu,
+    // when the app has one (otherwise it opens this very menu, not worth a
+    // hint).
     const footer = foreground.hasAppMenu?.()
-      ? gestureHints([[GESTURE_LONG_PRESS, "app menu"]])
+      ? gestureHints([[GESTURE_SHORT_THEN_LONG_PRESS, "app menu"]])
       : undefined;
     layer = new ShellOverlayMenuLayer(items, footer, () => this.yieldFocusToSidebar());
     layer.selectItem(initialSelection);

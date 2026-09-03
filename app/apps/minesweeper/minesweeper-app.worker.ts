@@ -101,7 +101,7 @@ type MinesweeperWindow = {
   foreground: boolean;
   /** Whether this window is the shell's input target (pushed with each message). */
   focused: boolean;
-  /** Long-press window menu; created on first open. */
+  /** Tap-then-hold window menu; created on first open. */
   menu: WindowMenu | null;
   phase: GamePhase;
   difficultyIndex: number;
@@ -252,7 +252,7 @@ function playSfx(window: MinesweeperWindow, steps: Step[]): void {
   }
 }
 
-/** The window's long-press menu (game actions); playing binds long-press to flagging instead. */
+/** The window's context menu (game actions), offered while paused or over; playing keeps long-press for flagging. */
 function windowMenuItems(window: MinesweeperWindow): MenuItem[] {
   const nextDifficulty = DIFFICULTIES[(window.difficultyIndex + 1) % DIFFICULTIES.length]!;
   return [
@@ -290,8 +290,8 @@ function windowMenu(window: MinesweeperWindow): WindowMenu {
       windowId: window.windowId,
       post,
       title: () => window.title,
-      items: () => windowMenuItems(window),
-      longPressOpensMenu: () => window.phase !== "playing",
+      items: () => (window.phase === "playing" ? [] : windowMenuItems(window)),
+      claimsLongPress: () => window.phase === "playing",
       size: { width: window.viewportWidth, height: window.viewportHeight },
       paintBase: () => paintContent(window),
       isFocused: () => window.focused,
@@ -366,6 +366,10 @@ function handlePlayingInput(window: MinesweeperWindow, event: InputEvent, frameI
       }
       toggleFlag(window);
       break;
+    case "short-then-long-press":
+      // No context menu mid-game, so this opens the system menu instead.
+      windowMenu(window).open();
+      break;
     case "double-click":
       if (rowMode || watch) {
         window.phase = "paused";
@@ -398,7 +402,7 @@ function handleIdleInput(window: MinesweeperWindow, event: InputEvent, frameId: 
       frameTimings.finishFrame(frameId, "discarded: minesweeper yielded focus");
       post({ type: "yield-focus", windowId: window.windowId });
       return;
-    case "long-press":
+    case "short-then-long-press":
       windowMenu(window).open();
       break;
     default:

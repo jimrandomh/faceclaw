@@ -447,13 +447,16 @@ export class EvenHubSession implements EvenHubMicClient, EvenHubImuClient, EvenH
         this.emitSysEvent(DOUBLE_CLICK_EVENT, gestureSource(event.source));
         break;
       case "long-press":
+      case "short-then-long-press":
       case "long-press-release": {
-        // SDK 0.0.14 exposes press and release as ordinary events. The window
-        // still opens its menu on the same gesture (that menu is where the
-        // app's contextual-menu items live, and it is the way out of an app
-        // that owns double-click), so an app hears the press as well as
-        // seeing the menu — it cannot be given exclusive use of the gesture.
-        const eventType = event.type === "long-press" ? LONG_PRESS_EVENT : LONG_PRESS_RELEASE_EVENT;
+        // SDK 0.0.14 exposes press and release as ordinary events. The app's
+        // press is the context-menu gesture (tap-then-hold; the shell keeps
+        // the plain long-press for its system menu): the window still opens
+        // its menu on it (that menu is where the app's contextual-menu items
+        // live, and it is the way out of an app that owns double-click), so
+        // an app hears the press as well as seeing the menu — it cannot be
+        // given exclusive use of the gesture.
+        const eventType = event.type === "long-press-release" ? LONG_PRESS_RELEASE_EVENT : LONG_PRESS_EVENT;
         if (capture?.kind === "list") {
           this.emitListEvent(capture, eventType);
         } else {

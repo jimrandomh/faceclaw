@@ -13,7 +13,8 @@ the phone it only tells you to install it.
 | --- | --- |
 | tap | select |
 | double-tap, or a two-finger tap | **back**, everywhere: closes menus, leaves a settings column, leaves a folder or the launcher grid, returns to the sidebar (and from the sidebar turns the display off, as the ring does) |
-| press and hold | the app's context menu (a long press, held until you lift your finger) |
+| press and hold | the system menu: Focus app switcher, Voice input, Close window (a long press, held until you lift your finger; games that use a long press as a move get it instead) |
+| tap, then press and hold | the app's context menu |
 | swipe ↑ ↓ ← → | **spatial navigation, with no mode to enter first**: the launcher highlights one app and the swipe moves it by a row or a column; the settings panel moves between its columns and down its lists; the sidebar moves up and down; Music skips to the previous / next track. Right goes *into* things (sidebar → window, section → items) and left comes back *out* (first column → sidebar). Anywhere without a spatial meaning, up/down scroll, right selects and left goes back. One step per swipe (long swipes used to repeat, which overshot lists whenever the display lagged); use repeated flicks, the crown, or a two-finger page swipe to cover distance. |
 | rotate the crown | previous / next (one step per detent-ish, sensitivity adjustable) — clockwise is previous by default; reverse it in the on-glasses Settings > Watch section |
 | two-finger swipe up / down | scroll a page (3 steps) |

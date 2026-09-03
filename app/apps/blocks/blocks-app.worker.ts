@@ -6,7 +6,7 @@
  * Controls (in play): scroll moves the piece, click rotates, long-press hard
  * drops, double-click pauses. Watch swipes are spatial: left/right move,
  * up rotates, down hard-drops. Paused: click resumes, double-click yields
- * focus, long-press opens the window menu.
+ * focus, tap-then-hold opens the window menu.
  */
 import "@nativescript/core/globals";
 import { GrayImage } from "../../graphics/image";
@@ -143,7 +143,7 @@ type BlocksWindow = {
   foreground: boolean;
   /** Whether this window is the shell's input target (pushed with each message). */
   focused: boolean;
-  /** Long-press window menu; created on first open. */
+  /** Tap-then-hold window menu; created on first open. */
   menu: WindowMenu | null;
   phase: GamePhase;
   /** Locked cells; 0 = empty, otherwise the piece's shade byte. */
@@ -288,7 +288,7 @@ function playSfx(window: BlocksWindow, steps: Step[]): void {
   }
 }
 
-/** The window's long-press menu (sound toggle); playing binds long-press to hard drop instead. */
+/** The window's context menu (sound toggle), offered while paused or over; playing keeps long-press for hard drop. */
 function windowMenuItems(window: BlocksWindow): MenuItem[] {
   return [
     {
@@ -308,8 +308,8 @@ function windowMenu(window: BlocksWindow): WindowMenu {
       windowId: window.windowId,
       post,
       title: () => window.title,
-      items: () => windowMenuItems(window),
-      longPressOpensMenu: () => window.phase !== "playing",
+      items: () => (window.phase === "playing" ? [] : windowMenuItems(window)),
+      claimsLongPress: () => window.phase === "playing",
       size: { width: window.viewportWidth, height: window.viewportHeight },
       paintBase: () => paintContent(window),
       isFocused: () => window.focused,
@@ -360,6 +360,10 @@ function handlePlayingInput(window: BlocksWindow, event: InputEvent, frameId: nu
     case "long-press":
       hardDrop(window);
       break;
+    case "short-then-long-press":
+      // No context menu mid-game, so this opens the system menu instead.
+      windowMenu(window).open();
+      break;
     case "double-click":
       window.phase = "paused";
       updateTickTimer(window);
@@ -385,7 +389,7 @@ function handleIdleInput(window: BlocksWindow, event: InputEvent, frameId: numbe
       frameTimings.finishFrame(frameId, "discarded: blocks yielded focus");
       post({ type: "yield-focus", windowId: window.windowId });
       return;
-    case "long-press":
+    case "short-then-long-press":
       windowMenu(window).open();
       break;
     default:

@@ -4,7 +4,7 @@
  * todo or follows a [[page]] link, double-click walks back through visited
  * pages then yields focus. Edits (check/uncheck, add todo, edit block) go
  * through the Roam backend API and are also exposed as assistant tools.
- * The graph name and API token are configured here too, from the long-press
+ * The graph name and API token are configured here too, from the context
  * menu, via the phone app's text editor.
  */
 import "@nativescript/core/globals";
@@ -423,7 +423,7 @@ function handleInput(win: RoamWindow, event: InputEvent, frameId: number): void 
     }
     return;
   }
-  if (event.type === "long-press") {
+  if (event.type === "short-then-long-press") {
     windowMenu(win).open();
     renderAndSubmit(win, frameId);
     return;
@@ -525,7 +525,7 @@ async function addTodoFromText(text: string): Promise<void> {
 
 async function handleRoamTool(name: string, args: any): Promise<ToolResult> {
   if (!isRoamConfigured()) {
-    return { ok: false, error: "Roam is not configured; set the graph name and API token from the Roam app's long-press menu." };
+    return { ok: false, error: "Roam is not configured; set the graph name and API token from the Roam app's context menu (tap, then hold)." };
   }
   switch (name) {
     case "read_page": {
@@ -634,7 +634,7 @@ function paintContent(win: RoamWindow): GrayImage {
   image.drawLine(DOC_MARGIN, HEADER_HEIGHT - 4, win.viewportWidth - DOC_MARGIN, HEADER_HEIGHT - 4, 40);
 
   if (!isRoamConfigured()) {
-    drawBodyMessage(image, win, "Set the Roam graph name and API token: long-press for the menu, then pick Set graph name and Set API token.");
+    drawBodyMessage(image, win, "Set the Roam graph name and API token: tap, then hold, for the menu; pick Set graph name and Set API token.");
   } else if (errorMessage) {
     drawBodyMessage(image, win, `${errorMessage}\n\n${GESTURE_CLICK} retry`);
   } else if (currentPage && currentPage.children.length === 0 && !loading) {

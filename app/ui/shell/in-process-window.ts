@@ -31,11 +31,11 @@ export type InProcessWindowOptions = {
   /** Window height: the standard 288px band ("min", default) or full screen ("max"). */
   heightMode?: WindowHeightMode;
   /**
-   * The window's long-press context menu: app-specific entries only (the
+   * The window's tap-then-hold context menu: app-specific entries only (the
    * shared Focus app switcher / Voice input / Close window entries live in
-   * the shell's system menu). Called at open time, so the items can reflect
-   * current app state. Omitted or empty means the window has no menu of its
-   * own, and a long-press opens the system menu instead.
+   * the shell's system menu, on long-press). Called at open time, so the
+   * items can reflect current app state. Omitted or empty means the window
+   * has no menu of its own, and tap-then-hold opens the system menu instead.
    */
   menuItems?: () => MenuItem[];
   /** Shared actions; requestRender is rebound to this window's render. */
@@ -132,7 +132,7 @@ export function createInProcessWindow(options: InProcessWindowOptions): InProces
 
   const appMenuItems = () => options.menuItems?.() ?? [];
 
-  // The window's long-press menu: the app's own entries, or the shell's
+  // The window's tap-then-hold menu: the app's own entries, or the shell's
   // system menu when it has none (so both gestures land on the same menu).
   const openWindowMenu = () => {
     if (stack.topMatches((layer) => layer instanceof WindowMenuLayer)) return;
@@ -173,10 +173,12 @@ export function createInProcessWindow(options: InProcessWindowOptions): InProces
         }
         return;
       }
-      // The default long-press response: the window menu (or the system
+      // The default tap-then-hold response: the window menu (or the system
       // menu in its place). Handled here (not per-layer) so it works over
-      // submenus and app content alike.
-      if (event.type === "long-press") {
+      // submenus and app content alike. A plain long-press never arrives:
+      // the shell keeps it for the system menu (no in-process window claims
+      // it).
+      if (event.type === "short-then-long-press") {
         openWindowMenu();
         await render(frameId);
         return;

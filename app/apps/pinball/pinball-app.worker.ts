@@ -249,7 +249,7 @@ type PinballWindow = {
   foreground: boolean;
   /** Whether this window is the shell's input target (pushed with each message). */
   focused: boolean;
-  /** Long-press window menu; created on first open. */
+  /** Tap-then-hold window menu; created on first open. */
   menu: WindowMenu | null;
   phase: GamePhase;
   /** "ready" = parked on the plunger awaiting launch; "live" = in play. */
@@ -446,7 +446,7 @@ function playSfx(window: PinballWindow, steps: Step[], minor = false): void {
   }
 }
 
-/** The window's long-press menu (game actions); playing binds long-press to the nudge instead. */
+/** The window's context menu (game actions), offered while paused or over; playing keeps long-press for the nudge. */
 function windowMenuItems(window: PinballWindow): MenuItem[] {
   return [
     {
@@ -474,8 +474,8 @@ function windowMenu(window: PinballWindow): WindowMenu {
       windowId: window.windowId,
       post,
       title: () => window.title,
-      items: () => windowMenuItems(window),
-      longPressOpensMenu: () => window.phase !== "playing",
+      items: () => (window.phase === "playing" ? [] : windowMenuItems(window)),
+      claimsLongPress: () => window.phase === "playing",
       size: { width: window.viewportWidth, height: window.viewportHeight },
       paintBase: () => paintContent(window),
       isFocused: () => window.focused,
@@ -554,6 +554,10 @@ function handlePlayingInput(window: PinballWindow, event: InputEvent, frameId: n
       }
       nudge(window);
       break;
+    case "short-then-long-press":
+      // No context menu mid-game, so this opens the system menu instead.
+      windowMenu(window).open();
+      break;
     case "double-click":
       window.phase = "paused";
       syncTickTimer(window);
@@ -580,7 +584,7 @@ function handleIdleInput(window: PinballWindow, event: InputEvent, frameId: numb
       frameTimings.finishFrame(frameId, "discarded: pinball yielded focus");
       post({ type: "yield-focus", windowId: window.windowId });
       return;
-    case "long-press":
+    case "short-then-long-press":
       windowMenu(window).open();
       break;
     default:

@@ -35,10 +35,11 @@ class EvenHubAppLayer implements Layer {
   }
 
   handleInput(event: InputEvent): void {
-    // Everything goes to the app; long-press never reaches here (the window
-    // menu intercepts it), which is the guaranteed way out since EvenHub
-    // apps own double-click. The press is still reported to the app as
-    // LONG_PRESS_EVENT — see the handleInput wrapper below.
+    // Everything goes to the app; the menu gestures never reach here (the
+    // shell keeps long-press for its system menu and the window's context
+    // menu intercepts tap-then-hold), which is the guaranteed way out since
+    // EvenHub apps own double-click. Tap-then-hold is still reported to the
+    // app as LONG_PRESS_EVENT — see the handleInput wrapper below.
     this.session.handleGesture(event);
   }
 }
@@ -62,7 +63,7 @@ export function createEvenHubWindow(
       fallbackIcon,
     ),
     heightMode: "medium",
-    // The window's long-press menu doubles as the OS contextual menu EvenHub
+    // The window's context menu doubles as the OS contextual menu EvenHub
     // apps register with `menuObject` (SDK 0.0.14): the app's own entries come
     // first, then the host entries. Evaluated at open time, so a rebuild that
     // changes or clears the menu is reflected on the next press.
@@ -101,13 +102,15 @@ export function createEvenHubWindow(
     windowId,
   });
 
-  // LONG_PRESS_EVENT / LONG_PRESS_RELEASE_EVENT (SDK 0.0.14). Wrapped at the
-  // window rather than handled in the base layer because the press opens the
-  // window menu and so never reaches a layer, and because the release lands on
-  // that menu once it is up.
+  // LONG_PRESS_EVENT / LONG_PRESS_RELEASE_EVENT (SDK 0.0.14): the app hears
+  // the context-menu gesture (tap-then-hold; a plain long-press is the
+  // shell's and never arrives) as its long-press. Wrapped at the window
+  // rather than handled in the base layer because the press opens the window
+  // menu and so never reaches a layer, and because the release lands on that
+  // menu once it is up.
   const baseHandleInput = created.window.handleInput;
   created.window.handleInput = async (event, frameId) => {
-    if (event.type === "long-press" || event.type === "long-press-release") {
+    if (event.type === "short-then-long-press" || event.type === "long-press-release") {
       session.handleGesture(event);
     }
     await baseHandleInput(event, frameId);

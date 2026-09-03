@@ -1,19 +1,19 @@
 import { GrayImage } from "../graphics/image";
 import { singlePlane, type Plane } from "../graphics/plane";
-import { GESTURE_SHORT_THEN_LONG_PRESS, gestureHints, type InputEvent } from "./gestures";
+import { GESTURE_LONG_PRESS, gestureHints, type InputEvent } from "./gestures";
 import { type Layer, LayerStack, noopLayerActions } from "./layers";
 import { MenuLayer, type MenuItem, type MenuLayout } from "./menu";
 import type { WorkerAppReply } from "./shell/worker-window";
 
 /**
- * The window long-press menu: an app's own context menu, holding its
- * app-specific actions. The shell's system menu (tap-then-hold, or a press
- * held past the escape threshold) carries the entries every window shares —
- * Focus app switcher, Voice input, Close window — so an app with nothing of
- * its own to offer has no menu of its own: a long-press then opens the system
- * menu in its place, so both gestures land on the same menu. The system menu
- * is also the safety net: shell-owned, so an unresponsive app can always be
- * closed.
+ * The window context menu, opened by tap-then-hold: an app's own menu,
+ * holding its app-specific actions. The shell's system menu (long-press)
+ * carries the entries every window shares — Focus app switcher, Voice input,
+ * Close window — so an app with nothing of its own to offer has no menu of
+ * its own: tap-then-hold then opens the system menu in its place, so both
+ * gestures land on the same menu. The system menu is also the safety net:
+ * shell-owned, so an unresponsive app can always be closed (a window that
+ * claims long-press for a move of its own reaches it by holding the press).
  */
 
 /** Centered over the viewport; visually matches the shell's system menu position. */
@@ -22,7 +22,7 @@ export const WINDOW_MENU_LAYOUT: MenuLayout = {
   y: 8,
   width: 272,
   minHeight: 150,
-  footer: gestureHints([[GESTURE_SHORT_THEN_LONG_PRESS, "system menu"]]),
+  footer: gestureHints([[GESTURE_LONG_PRESS, "system menu"]]),
 };
 
 export class WindowMenuLayer extends MenuLayer {
@@ -38,16 +38,17 @@ export type WindowMenuOptions = {
   title: () => string;
   /**
    * The app's menu entries, built at open time so they reflect current
-   * state. Empty means the window has no context menu: open() asks the shell
-   * for the system menu instead.
+   * state. Empty means the window has no context menu right now: open()
+   * asks the shell for the system menu instead.
    */
   items: () => MenuItem[];
   /**
-   * False while the app gives long-press a meaning of its own (a game move)
-   * instead of opening this menu. Default: always true. Only informs the
-   * shell's system-menu hint; what a long-press does stays the app's call.
+   * True while the app gives long-press a meaning of its own (a game move).
+   * The shell then forwards long-presses to the window instead of opening
+   * the system menu on them; holding the press past the escape threshold
+   * still reaches the system menu. Default: never.
    */
-  longPressOpensMenu?: () => boolean;
+  claimsLongPress?: () => boolean;
   /** Paint the window content the menu draws over (a fresh, mutable image). */
   paintBase: () => GrayImage;
   size: { width: number; height: number };
@@ -59,14 +60,15 @@ export type WindowMenuOptions = {
  * a persistent LayerStack. Wraps a short-lived stack so MenuLayer (and the
  * ctx.stack.pop() convention in item callbacks) works unchanged.
  *
- * Usage: answer a long-press with open(); route input to handleInput while
+ * Usage: answer tap-then-hold with open(); route input to handleInput while
  * isOpen(); paint every frame through paint(), which returns the window
- * content with the menu drawn over it and keeps the shell told whether the
- * window currently has a menu (the system menu's gesture hint depends on it).
+ * content with the menu drawn over it and keeps the shell told about the
+ * window's gesture bindings (whether it has a menu, whether it claims
+ * long-press).
  */
 export class WindowMenu {
   private stack: LayerStack | null = null;
-  private reportedAvailable: boolean | null = null;
+  private reported: { hasAppMenu: boolean; claimsLongPress: boolean } | null = null;
 
   constructor(private readonly options: WindowMenuOptions) {}
 
@@ -74,9 +76,9 @@ export class WindowMenu {
     return this.stack !== null;
   }
 
-  /** True when a long-press currently opens this menu with something in it. */
+  /** True when tap-then-hold currently opens this menu with something in it. */
   isAvailable(): boolean {
-    return (this.options.longPressOpensMenu?.() ?? true) && this.options.items().length > 0;
+    return this.options.items().length > 0;
   }
 
   /**
@@ -105,17 +107,23 @@ export class WindowMenu {
    * ordinary frame has more planes than the menu needs beneath it.
    */
   paint(content?: () => Plane[]): Plane[] {
-    this.syncAvailability();
+    this.syncGestures();
     if (this.stack) return this.stack.paint();
     return content ? content() : singlePlane(this.options.paintBase());
   }
 
-  /** Tell the shell when this window gains or loses its context menu. */
-  private syncAvailability(): void {
-    const available = this.isAvailable();
-    if (available === this.reportedAvailable) return;
-    this.reportedAvailable = available;
-    this.options.post({ type: "set-app-menu-available", windowId: this.options.windowId, available });
+  /** Tell the shell when this window's gesture bindings change. */
+  private syncGestures(): void {
+    const hasAppMenu = this.isAvailable();
+    const claimsLongPress = this.options.claimsLongPress?.() ?? false;
+    if (this.reported?.hasAppMenu === hasAppMenu && this.reported.claimsLongPress === claimsLongPress) return;
+    this.reported = { hasAppMenu, claimsLongPress };
+    this.options.post({
+      type: "set-window-gestures",
+      windowId: this.options.windowId,
+      hasAppMenu,
+      claimsLongPress,
+    });
   }
 
   /** Route an input event to the menu; the menu closes by popping itself. */

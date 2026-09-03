@@ -612,7 +612,7 @@ function describeRouteStatus(): string {
 // ---------------------------------------------------------------------------
 // Input
 
-/** The window's long-press menu: only Stop navigation, and only while a route is up. */
+/** The window's context menu: only Stop navigation, and only while a route is up. */
 function windowMenuItems(win: NavWindow): MenuItem[] {
   if (phase !== "navigating" && phase !== "arrived") return [];
   return [
@@ -650,7 +650,7 @@ function handleInput(win: NavWindow, event: InputEvent, frameId: number): void {
       .then(() => renderAndSubmit(win, frameId));
     return;
   }
-  if (event.type === "long-press") {
+  if (event.type === "short-then-long-press") {
     windowMenu(win).open();
     renderAndSubmit(win, frameId);
     return;
@@ -708,7 +708,7 @@ function paintIdle(image: GrayImage): void {
   image.drawText(mediumFont, 24, 16, "Navigate", 245);
   const busy = phase !== "idle";
   const hint = isMapboxConfigured()
-    ? "Ask the voice assistant to navigate somewhere, or pick Voice input from the system menu (tap, then hold) to say a destination."
+    ? "Ask the voice assistant to navigate somewhere, or pick Voice input from the system menu (long-press) to say a destination."
     : "Set a Mapbox token in Settings > API Keys to enable navigation.";
   image.drawTextWrapped({ font: smallFont, x: 24, y: 64, width: image.width - 48, text: hint, value: 170 });
   if (statusMessage) {

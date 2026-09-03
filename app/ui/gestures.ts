@@ -25,7 +25,7 @@ export type InputEventPayload =
   | { type: "scroll-down"; source?: InputSource }
   | { type: "long-press"; source: InputSource }
   | { type: "long-press-release"; source: InputSource }
-  /** G2 2.2.9 tap-then-hold gesture, reserved for the shell system menu. */
+  /** G2 2.2.9 tap-then-hold gesture: the app context-menu gesture (long-press is the system menu's). */
   | { type: "short-then-long-press"; source: InputSource }
   /**
    * Not a gesture: a shell -> foreground-window notification that the shell
@@ -114,8 +114,8 @@ export function directionalFallback(event: InputEvent): InputEvent {
  *   click        ● (U+00B7 middle dot)
  *   double-click ●● (twice)
  *   scroll       ▲▼ (U+25B2 / U+25BC)
- *   long-press   - (hyphen-minus)
- *   tap-then-hold ●- (click then long-press)
+ *   long-press   — (em dash)
+ *   tap-then-hold ●— (click then long-press)
  */
 export const GESTURE_CLICK = "\u25cf";
 export const GESTURE_DOUBLE_CLICK = GESTURE_CLICK+GESTURE_CLICK;

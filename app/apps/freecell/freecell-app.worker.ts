@@ -8,7 +8,7 @@
  * on a destination moves there; cascade-to-cascade moves take the longest
  * legal run that fits (supermoves via empty cells/columns). Double-click
  * sends the card at the cursor to its foundation, or cancels a pending
- * selection. Long-press opens the window menu (undo, new game, restart).
+ * selection. Tap-then-hold opens the window menu (undo, new game, restart).
  * Watch swipes move the cursor spatially: left/right within the row, up/down
  * between the top row (cells + foundations) and the cascades.
  * Safe cards auto-play to the foundations after every move.
@@ -106,7 +106,7 @@ type FreecellWindow = {
   foreground: boolean;
   /** Whether this window is the shell's input target (pushed with each message). */
   focused: boolean;
-  /** Long-press window menu; created on first open. */
+  /** Tap-then-hold window menu; created on first open. */
   menu: WindowMenu | null;
   phase: "playing" | "won";
   cascades: number[][];
@@ -214,7 +214,7 @@ function playSfx(window: FreecellWindow, steps: Step[]): void {
   }
 }
 
-/** The window's long-press menu (game actions). */
+/** The window's context menu (game actions). */
 function windowMenuItems(window: FreecellWindow): MenuItem[] {
   const items: MenuItem[] = [];
   if (window.undoStack.length > 0 && window.phase === "playing") {
@@ -332,7 +332,7 @@ function handlePlayingInput(window: FreecellWindow, event: InputEvent, frameId: 
         sendToFoundation(window, window.cursor);
       }
       break;
-    case "long-press":
+    case "short-then-long-press":
       windowMenu(window).open();
       break;
     default:
@@ -352,7 +352,7 @@ function handleWonInput(window: FreecellWindow, event: InputEvent, frameId: numb
       frameTimings.finishFrame(frameId, "discarded: freecell yielded focus");
       post({ type: "yield-focus", windowId: window.windowId });
       return;
-    case "long-press":
+    case "short-then-long-press":
       windowMenu(window).open();
       break;
     default:

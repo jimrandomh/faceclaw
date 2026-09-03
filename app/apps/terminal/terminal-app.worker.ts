@@ -901,7 +901,7 @@ function reconnectView(window: ViewWindow): void {
   scheduleRender(window);
 }
 
-/** The window's long-press menu, created lazily so window literals stay simple. */
+/** The window's context menu, created lazily so window literals stay simple. */
 function windowMenu(window: TerminalWindow): WindowMenu {
   if (!window.menu) {
     window.menu = new WindowMenu({
@@ -1000,7 +1000,7 @@ function handleInput(window: TerminalWindow, event: InputEvent, frameId: number)
       .then(() => renderAndSubmit(window, frameId));
     return;
   }
-  if (event.type === "long-press") {
+  if (event.type === "short-then-long-press") {
     windowMenu(window).open();
     renderAndSubmit(window, frameId);
     return;
