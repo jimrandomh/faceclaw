@@ -20,16 +20,23 @@ function activeCommunicator(): any {
   }
 }
 
-/** Request CFW mode 10 to start/stop the stock firmware compass. */
-export function setCompassEnabled(enabled: boolean): void {
+/**
+ * Request CFW mode 10 to start/stop the stock firmware compass on behalf of
+ * `owner`. The magnetometer is shared: it runs while any owner wants it and
+ * stops once the last one releases it, so apps can't switch each other off.
+ */
+export function setCompassEnabled(enabled: boolean, owner = "compass"): void {
   try {
-    activeCommunicator()?.setCompassEnabled(enabled);
+    activeCommunicator()?.setCompassEnabled(owner, enabled);
   } catch (error) {
     console.warn(`setCompassEnabled failed: ${error}`);
   }
 }
 
-/** Subscribe to stock compass heading/calibration notifications. */
+/**
+ * Subscribe to stock compass heading/calibration notifications. Events are
+ * delivered on the calling thread's Looper, so this works from app workers.
+ */
 export function addCompassListener(listener: (event: CompassEvent) => void): () => void {
   const active = activeCommunicator();
   if (!active) return () => {};

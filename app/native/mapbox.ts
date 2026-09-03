@@ -18,6 +18,23 @@ const DIRECTIONS_ROOT = "https://api.mapbox.com/directions/v5";
 const STATIC_ROOT = "https://api.mapbox.com/styles/v1";
 /** Classic dark style; readable after gray conversion. Swappable for a custom Studio style later. */
 const MAP_STYLE = "mapbox/dark-v11";
+/**
+ * Render-time style override: a black background inserted beneath the road
+ * stack so land, landuse, water, and building fills all come out black on the
+ * lens (dark-v11's own fills are dark gray, which the lens shows as a lit
+ * haze). Static Images allows one added layer per request; `before_layer`
+ * must name a layer in the style, so candidates are tried in order and a
+ * rejected one is skipped for the rest of the session, ending with the plain
+ * style (the worker's levelling pass then does what it can client-side).
+ */
+const STYLE_OVERRIDE_LAYER = JSON.stringify({
+  id: "faceclaw-blackout",
+  type: "background",
+  paint: { "background-color": "#000000" },
+});
+/** First road layer of dark-v11, then a layer common to every Streets-based style. */
+const STYLE_OVERRIDE_BEFORE_LAYERS = ["tunnel-path-trail", "building"];
+let styleOverrideIndex = 0;
 const FETCH_TIMEOUT_MS = 15_000;
 
 export type RouteProfile = "driving" | "walking" | "cycling";
@@ -188,18 +205,32 @@ export async function fetchStaticMapGray(options: {
       : `${round6(options.camera.longitude)},${round6(options.camera.latitude)},` +
         `${options.camera.zoom.toFixed(2)},${Math.round(normalizeBearing(options.camera.bearingDeg))}`;
   const size = `${Math.round(options.width)}x${Math.round(options.height)}`;
-  const params = queryString({
-    access_token: requireToken(),
-    logo: "false",
-    attribution: "false",
-  });
-  const url = `${STATIC_ROOT}/${MAP_STYLE}/static/${overlay}${camera}/${size}?${params}`;
+  let bytes: ArrayBuffer;
+  for (;;) {
+    const beforeLayer = STYLE_OVERRIDE_BEFORE_LAYERS[styleOverrideIndex];
+    const params: Record<string, string> = {
+      access_token: requireToken(),
+      logo: "false",
+      attribution: "false",
+    };
+    if (beforeLayer !== undefined) {
+      params.addlayer = STYLE_OVERRIDE_LAYER;
+      params.before_layer = beforeLayer;
+    }
+    const url = `${STATIC_ROOT}/${MAP_STYLE}/static/${overlay}${camera}/${size}?${queryString(params)}`;
 
-  const response = await fetchWithTimeout(url, "Mapbox static map");
-  if (!response.ok) {
+    const response = await fetchWithTimeout(url, "Mapbox static map");
+    if (response.ok) {
+      bytes = await response.arrayBuffer();
+      break;
+    }
+    if (beforeLayer !== undefined && isStyleOverrideRejection(response.status)) {
+      console.warn(`Mapbox rejected the map style override (before_layer=${beforeLayer}, HTTP ${response.status}); falling back`);
+      styleOverrideIndex++;
+      continue;
+    }
     throw new Error(`Mapbox static map failed (HTTP ${response.status}).`);
   }
-  const bytes = await response.arrayBuffer();
   if (!global.isAndroid) throw new Error("Map decoding is only available on Android.");
   const image = grayImageFromPacket(
     com.faceclaw.app.ImageFileLoader.loadGrayFromBytes(bytes, Math.round(options.width), Math.round(options.height)),
@@ -279,6 +310,15 @@ async function fetchWithTimeout(url: string, label: string): Promise<Response> {
   } finally {
     if (timeoutHandle) clearTimeout(timeoutHandle);
   }
+}
+
+/**
+ * A client error that plausibly blames the added layer (an unknown
+ * before_layer, or a style without it), as opposed to token or quota trouble
+ * that the plain request would hit just the same.
+ */
+function isStyleOverrideRejection(status: number): boolean {
+  return status >= 400 && status < 500 && status !== 401 && status !== 403 && status !== 429;
 }
 
 function normalizeBearing(bearingDeg: number): number {

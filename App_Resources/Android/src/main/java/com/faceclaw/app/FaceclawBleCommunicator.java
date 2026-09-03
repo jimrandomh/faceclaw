@@ -60,7 +60,18 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private volatile FaceclawBleCommunicatorListener listener;
     private final java.util.List<FaceclawImuListener> imuListeners =
         new java.util.concurrent.CopyOnWriteArrayList<>();
-    private final java.util.List<FaceclawCompassListener> compassListeners =
+    /** A compass subscriber plus the Looper it registered from (see addCompassListener). */
+    private static final class CompassSubscription {
+        final FaceclawCompassListener listener;
+        final Handler handler;
+
+        CompassSubscription(FaceclawCompassListener listener, Handler handler) {
+            this.listener = listener;
+            this.handler = handler;
+        }
+    }
+
+    private final java.util.List<CompassSubscription> compassSubscriptions =
         new java.util.concurrent.CopyOnWriteArrayList<>();
     private final java.util.List<FaceclawMicStatusListener> micStatusListeners =
         new java.util.concurrent.CopyOnWriteArrayList<>();
@@ -90,7 +101,13 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private int firmwareDebugFlagsLastSent = -1;
     // Desired CFW mode-10 compass state. It survives reconnects; lastSent is
     // reset with each session so an open Compass window is re-asserted.
-    private boolean compassEnabled;
+    /**
+     * Who currently wants the stock compass running (the Compass window, the
+     * Navigate worker, ...). The magnetometer is one shared resource, so it
+     * stays on while any owner holds it and is released when the last lets go;
+     * this keeps one app's release from silently switching off another's feed.
+     */
+    private final java.util.Set<String> compassOwners = new java.util.HashSet<>();
     private int compassControlLastSent = -1;
     // Whether the glasses-side compass may still be running: set when an enable
     // is enqueued, cleared only when a disable is acked. Drives the forced
@@ -481,12 +498,32 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
      * stock sid-0x08 navigation notifications and FaceclawCompassListeners.
      */
     public void setCompassEnabled(boolean enable) {
+        setCompassEnabled("compass", enable);
+    }
+
+    /**
+     * As above, on behalf of a named owner. The compass runs while at least
+     * one owner has enabled it; an owner disabling it only takes effect once
+     * no other owner still wants it.
+     */
+    public void setCompassEnabled(String owner, boolean enable) {
         synchronized (lock) {
-            compassEnabled = enable;
+            boolean before = !compassOwners.isEmpty();
+            if (enable) {
+                compassOwners.add(owner);
+            } else {
+                compassOwners.remove(owner);
+            }
+            boolean wanted = !compassOwners.isEmpty();
+            if (wanted == before && compassControlLastSent == (wanted ? 1 : 0)) {
+                logLine("compass " + (enable ? "enable" : "disable") + " by " + owner
+                    + "; state unchanged (owners=" + compassOwners + ")");
+                return;
+            }
             compassControlLastSent = -1;
             clearMessagesOfKindLocked("compass-control");
             if (running && sessionReady && !shutdownRequested && fixedLayoutCreated) {
-                enqueueCompassControlLocked(true, compassEnabled);
+                enqueueCompassControlLocked(true, wanted);
             } else {
                 logLine("defer compass " + (enable ? "enable" : "disable") + "; display path not ready");
             }
@@ -645,15 +682,28 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         }
     }
 
+    /**
+     * Subscribe to compass events. Callbacks are delivered on the Looper of
+     * the thread that registered (falling back to the main thread), so app
+     * worker isolates can listen without a cross-thread hop into their JS.
+     */
     public void addCompassListener(FaceclawCompassListener listener) {
-        if (listener != null) {
-            compassListeners.add(listener);
+        if (listener == null) {
+            return;
         }
+        Looper looper = Looper.myLooper();
+        Handler handler = looper != null ? new Handler(looper) : mainHandler;
+        compassSubscriptions.add(new CompassSubscription(listener, handler));
     }
 
     public void removeCompassListener(FaceclawCompassListener listener) {
-        if (listener != null) {
-            compassListeners.remove(listener);
+        if (listener == null) {
+            return;
+        }
+        for (CompassSubscription subscription : compassSubscriptions) {
+            if (subscription.listener == listener) {
+                compassSubscriptions.remove(subscription);
+            }
         }
     }
 
@@ -1897,10 +1947,11 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                     }
 
                     if (messageToPrewrite == null && !shutdownRequested && fixedLayoutCreated
-                            && (compassEnabled ? 1 : 0) != compassControlLastSent
+                            && (compassOwners.isEmpty() ? 0 : 1) != compassControlLastSent
                             && pendingMessages.isEmpty() && inFlightMessages.isEmpty()) {
-                        Log.i(TAG, "enqueueing compass " + (compassEnabled ? "enable" : "disable"));
-                        enqueueCompassControlLocked(false, compassEnabled);
+                        boolean wanted = !compassOwners.isEmpty();
+                        Log.i(TAG, "enqueueing compass " + (wanted ? "enable" : "disable"));
+                        enqueueCompassControlLocked(false, wanted);
                     }
 
                     // Up to WINDOW_SIZE messages may be in flight at once (full
@@ -3310,18 +3361,15 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     }
 
     private void emitCompassEvent(int command, int headingDegrees) {
-        if (compassListeners.isEmpty()) {
-            return;
-        }
-        mainHandler.post(() -> {
-            for (FaceclawCompassListener compassListener : compassListeners) {
+        for (CompassSubscription subscription : compassSubscriptions) {
+            subscription.handler.post(() -> {
                 try {
-                    compassListener.onCompassEvent(command, headingDegrees);
+                    subscription.listener.onCompassEvent(command, headingDegrees);
                 } catch (Throwable t) {
                     Log.w(TAG, "listener onCompassEvent failed", t);
                 }
-            }
-        });
+            });
+        }
     }
 
     private void emitSilentMode(boolean silent) {

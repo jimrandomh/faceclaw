@@ -30,6 +30,9 @@ import {
   type RouteProfile,
   type StaticMapCamera,
 } from "../../native/mapbox";
+import { addCompassListener, COMPASS_CHANGED, setCompassEnabled, type CompassEvent } from "../../native/compass";
+import { magneticDeclinationDegrees } from "../../native/geomagnetic";
+import { calibrateHeading, normalizeHeading } from "../compass/calibration";
 import { bearingDegrees, haversineMeters, RouteFollower, type RouteProgress } from "./route-follower";
 import { drawManeuverGlyph } from "./maneuver-icons";
 
@@ -49,6 +52,10 @@ const FIRST_FIX_TIMEOUT_MS = 10_000;
 const LOCATION_INTERVAL_MS = 1_000;
 /** Above this speed a GPS bearing is trustworthy for heading-up. */
 const BEARING_MIN_SPEED_MPS = 2.5;
+/** The head-direction chevron only redraws once the wearer has turned this far. */
+const HEADING_STEP_DEG = 4;
+/** Our claim on the shared glasses magnetometer (see setCompassEnabled). */
+const COMPASS_OWNER = "navigate";
 
 const largeFont = getFont("terminus32");
 const mediumFont = getFont("terminus24");
@@ -134,6 +141,17 @@ let mapLastFetchAtMs = 0;
 let mapLastFetchCenter: [number, number] | null = null;
 let mapNextRetryAtMs = 0;
 let mapLastError = "";
+/** Bearing the current map image was rendered with (its "up"), for follow mode. */
+let mapFetchedBearingDeg = 0;
+
+// Glasses compass: the same firmware feed and wearer calibration as the
+// Compass app, so the position chevron shows where the wearer is looking
+// relative to the map rather than always pointing up the direction of travel.
+let compassActive = false;
+let unsubscribeCompass: (() => void) | null = null;
+/** Wearer's true heading (degrees clockwise from north) as last drawn, or null before compass data arrives. */
+let headHeadingDeg: number | null = null;
+let declinationCache: { latitude: number; longitude: number; degrees: number | null } | null = null;
 
 let tickTimer: ReturnType<typeof setInterval> | null = null;
 let firstFixWaiters: Array<(fix: TrackedLocation) => void> = [];
@@ -177,6 +195,7 @@ global.onmessage = (event: { data: WorkerAppMessage }) => {
     case "close-window":
       stopNavigation("");
       window = null;
+      reconcileCompass();
       break;
     case "input":
       if (!window || window.windowId !== message.windowId) {
@@ -204,6 +223,7 @@ global.onmessage = (event: { data: WorkerAppMessage }) => {
       if (!window) break;
       window.foreground = message.foreground;
       window.focused = message.focused;
+      reconcileCompass();
       if (window.foreground) {
         maybeRefreshMap();
         render();
@@ -211,6 +231,7 @@ global.onmessage = (event: { data: WorkerAppMessage }) => {
       break;
     case "screen":
       screenOn = message.on;
+      reconcileCompass();
       if (screenOn && window?.foreground) {
         maybeRefreshMap();
         render();
@@ -397,6 +418,59 @@ function waitForFix(): Promise<TrackedLocation> {
   });
 }
 
+// ---------------------------------------------------------------------------
+// Head heading (glasses compass)
+
+/** Hold the magnetometer only while its reading is actually on screen. */
+function reconcileCompass(): void {
+  const wanted =
+    window !== null && window.foreground && screenOn && phase === "navigating" && mapMode === "follow";
+  if (wanted === compassActive) return;
+  compassActive = wanted;
+  if (wanted) {
+    unsubscribeCompass = addCompassListener(handleCompassEvent);
+    setCompassEnabled(true, COMPASS_OWNER);
+  } else {
+    setCompassEnabled(false, COMPASS_OWNER);
+    unsubscribeCompass?.();
+    unsubscribeCompass = null;
+    headHeadingDeg = null;
+  }
+}
+
+function handleCompassEvent(event: CompassEvent): void {
+  if (!compassActive || event.command !== COMPASS_CHANGED || event.headingDegrees < 0) return;
+  // Wearer-fit offset from the Compass app's calibration, then declination
+  // from our own GPS fix: the map is always true-north referenced.
+  const magnetic = calibrateHeading(event.headingDegrees);
+  const heading = normalizeHeading(magnetic + (currentDeclination() ?? 0));
+  if (headHeadingDeg !== null && angularDistance(heading, headHeadingDeg) < HEADING_STEP_DEG) return;
+  headHeadingDeg = heading;
+  render();
+}
+
+/** Declination at the last fix; it only varies over tens of kilometres, so cache per coarse position. */
+function currentDeclination(): number | null {
+  if (!lastFix) return null;
+  if (
+    !declinationCache ||
+    Math.abs(declinationCache.latitude - lastFix.latitude) > 0.5 ||
+    Math.abs(declinationCache.longitude - lastFix.longitude) > 0.5
+  ) {
+    declinationCache = {
+      latitude: lastFix.latitude,
+      longitude: lastFix.longitude,
+      degrees: magneticDeclinationDegrees(lastFix.latitude, lastFix.longitude),
+    };
+  }
+  return declinationCache.degrees;
+}
+
+function angularDistance(a: number, b: number): number {
+  const delta = Math.abs(normalizeHeading(a) - normalizeHeading(b));
+  return Math.min(delta, 360 - delta);
+}
+
 function ensureTickTimer(): void {
   const shouldRun = phase === "navigating";
   if (shouldRun && tickTimer === null) {
@@ -515,9 +589,10 @@ function maybeRefreshMap(): void {
     .then((image) => {
       mapInFlight = false;
       if (generation !== routeGeneration) return; // Route/mode changed mid-fetch.
-      boostContrast(image);
+      levelMap(image);
       mapImage = image;
       mapFetchedKey = view.key;
+      mapFetchedBearingDeg = view.camera.kind === "center" ? view.camera.bearingDeg : 0;
       mapLastFetchAtMs = Date.now();
       mapLastFetchCenter = view.camera.kind === "center" ? [view.camera.longitude, view.camera.latitude] : null;
       mapLastError = "";
@@ -542,11 +617,25 @@ function simplifyPath(path: Array<[number, number]>, maxPoints: number): Array<[
   return out;
 }
 
-/** Stretch the dark-style render so roads survive 4bpp quantization. */
-function boostContrast(image: GrayImage): void {
+/**
+ * Level the render for the lens. The dominant tone is the land fill: black
+ * when the style override took, dark gray otherwise. Either way it becomes
+ * the black point, and everything above it is stretched so roads survive
+ * 4bpp quantization.
+ */
+function levelMap(image: GrayImage): void {
+  const histogram = new Uint32Array(256);
+  for (let i = 0; i < image.pixels.length; i++) histogram[image.pixels[i]!]++;
+  let black = 0;
+  for (let value = 1; value < 256; value++) {
+    if (histogram[value]! > histogram[black]!) black = value;
+  }
+  // A bright dominant tone isn't a floor (a large plaza, a fetch that came
+  // back mostly label); flattening it would eat the roads.
+  if (black > 64) black = 0;
   for (let i = 0; i < image.pixels.length; i++) {
     const value = image.pixels[i]!;
-    image.pixels[i] = Math.max(0, Math.min(255, Math.round((value - 12) * 1.7)));
+    image.pixels[i] = value <= black ? 0 : Math.min(255, Math.round((value - black) * 1.7));
   }
 }
 
@@ -728,7 +817,12 @@ function paintNavigating(image: GrayImage, win: NavWindow): void {
   // Map pane (left).
   if (mapImage) {
     image.bitBlt(mapImage, 0, 0);
-    if (mapMode === "follow") drawChevron(image, MAP_SIZE / 2, MAP_SIZE / 2);
+    if (mapMode === "follow") {
+      // Head heading relative to the map's up (its render bearing); no
+      // compass reading yet means "up", i.e. the direction of travel.
+      const angle = headHeadingDeg === null ? 0 : headHeadingDeg - mapFetchedBearingDeg;
+      drawChevron(image, MAP_SIZE / 2, MAP_SIZE / 2, angle);
+    }
   } else {
     image.drawRect(0, 0, MAP_SIZE, MAP_SIZE, 60);
     const text = mapLastError ? "Map unavailable" : "Loading map...";
@@ -788,11 +882,21 @@ function paintNavigating(image: GrayImage, win: NavWindow): void {
   drawFooter(image, `${GESTURE_SCROLL} zoom   ${GESTURE_CLICK} ${modeHint}   ${GESTURE_DOUBLE_CLICK} back`, PANEL_X + 8);
 }
 
-/** Position chevron, fixed at the map center (heading-up: it always points up). */
-function drawChevron(image: GrayImage, cx: number, cy: number): void {
+/**
+ * Position chevron, fixed at the map center and rotated `angleDeg` clockwise
+ * from straight up (the map's render bearing) to the wearer's head heading.
+ */
+function drawChevron(image: GrayImage, cx: number, cy: number, angleDeg: number): void {
+  const radians = (angleDeg * Math.PI) / 180;
+  const cos = Math.cos(radians);
+  const sin = Math.sin(radians);
+  const triangle = (points: Array<[number, number]>, value: number): void => {
+    const [a, b, c] = points.map(([x, y]): [number, number] => [cx + x * cos - y * sin, cy + x * sin + y * cos]);
+    fillTriangle(image, a![0], a![1], b![0], b![1], c![0], c![1], value);
+  };
   // Black halo first so it reads over bright roads.
-  fillTriangle(image, cx, cy - 11, cx - 9, cy + 9, cx + 9, cy + 9, 0);
-  fillTriangle(image, cx, cy - 8, cx - 6, cy + 6, cx + 6, cy + 6, 255);
+  triangle([[0, -11], [-9, 9], [9, 9]], 0);
+  triangle([[0, -8], [-6, 6], [6, 6]], 255);
 }
 
 function fillTriangle(image: GrayImage, x0: number, y0: number, x1: number, y1: number, x2: number, y2: number, value: number): void {
@@ -876,6 +980,9 @@ function render(): void {
 }
 
 function renderAndSubmit(win: NavWindow, inputFrameId: number): void {
+  // Every state change funnels through here, so it doubles as the point where
+  // the compass claim tracks foreground/phase/mode.
+  reconcileCompass();
   if (!win.foreground && inputFrameId === 0) return;
   const frameId = inputFrameId > 0 ? inputFrameId : frameTimings.startFrame(`render:${win.windowId}`);
   try {
