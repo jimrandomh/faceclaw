@@ -6,6 +6,7 @@
 * Move some items from app context menus to the system context menu
 * Long-press now opens the system context menu and tap-then-hold the app context menu (games keep long-press as a move while playing)
 * Content beneath an open context menu is dimmed
+* Add a keyboard-input button to the phone home screen
 * Navigate app: Location indicator rotates based on the compass
 * Navigate app: Darken the map background color
 

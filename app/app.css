@@ -182,11 +182,12 @@ Button.-primary {
   background-color: #424242;
   color: #ffffff;
 }
-/* The wakeword button at the tab bar's right edge: icon-only, narrower than
- * the tabs, and never in the selected state (it isn't a tab). It is a
- * button-styled GridLayout (Buttons can't hold images), so it borrows the
- * .tab-button look and adds the elevation MaterialButtons get for free. */
-.tab-mic-button {
+/* The wakeword and keyboard buttons at the tab bar's right edge: icon-only,
+ * narrower than the tabs, and never in the selected state (they aren't tabs).
+ * Each is a button-styled GridLayout (Buttons can't hold images), so it
+ * borrows the .tab-button look and adds the elevation MaterialButtons get for
+ * free. */
+.tab-icon-button {
   width: 56;
   /* The real MaterialButtons render 48dp tall inside a 60dp layout box (6dp
    * insets top and bottom); the margins and explicit height reproduce that.
@@ -196,11 +197,11 @@ Button.-primary {
   margin: 6 2;
   android-elevation: 2;
 }
-.tab-mic-icon {
+.tab-icon {
   height: 20;
   tint-color: #333333;
 }
-.ns-dark .tab-mic-icon {
+.ns-dark .tab-icon {
   tint-color: #cccccc;
 }
 .ns-dark .tab-button {

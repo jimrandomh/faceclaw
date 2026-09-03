@@ -17,6 +17,7 @@ import {
 import { Layer, LayerActions, LayerContext, LayerStack, noopLayerActions } from "../layers";
 import { CONTEXT_MENU_DIM, MenuLayer, type MenuItem } from "../menu";
 import { VoiceInputLayer, type VoiceSendTarget } from "./voice-input";
+import { KeyboardInputLayer, type KeyboardInputSession } from "./keyboard-input";
 import { voiceActivity } from "./voice-activity";
 import { AssistantLayer } from "./assistant";
 import { AssistantSession, type AssistantBackendConfig } from "../../assistant/session";
@@ -153,6 +154,11 @@ export type ShellConfig = {
    * when RECORD_AUDIO isn't granted yet (the phone mic is the source there).
    */
   prepareVoiceCapture?: () => Promise<boolean>;
+  /**
+   * The keyboard dialog opened (with the session the phone types into) or
+   * closed (null) by any path; the phone UI shows/hides its typing panel.
+   */
+  onKeyboardInputChanged?: (session: KeyboardInputSession | null) => void;
   /** Screen on/off changed: the controller blanks/unblanks the compositor. */
   onScreenStateChanged: (on: boolean) => void;
   /** Window registered/removed or foreground changed (persists the open-app list). */
@@ -291,6 +297,7 @@ class Shell {
   // notification icons and the battery indicators.
   private readonly trayIcons = new Map<string, GrayImage>();
   private activeVoiceLayer: VoiceInputLayer | null = null;
+  private activeKeyboardLayer: KeyboardInputLayer | null = null;
   private assistantSession: AssistantSession | null = null;
   private assistantLayer: AssistantLayer | null = null;
   private readonly assistantActivityListeners = new Set<(event: AssistantActivityEvent) => void>();
@@ -548,10 +555,11 @@ class Shell {
     // An open voice dialog suspends the timeout: a long dictation or refine
     // has no button presses, but the screen must stay on for it. Sliding
     // lastInputAtMs forward also restarts the full timeout when it closes.
-    // An in-flight assistant turn suspends it for the same reason (a tool loop
-    // can run for a while with no input); once the turn ends and the
-    // Follow-up/Done menu is showing, the normal idle timeout resumes.
-    if (this.activeVoiceLayer || this.assistantSession?.isTurnActive()) {
+    // The keyboard dialog likewise: typing happens on the phone, not the
+    // ring. An in-flight assistant turn suspends it for the same reason (a
+    // tool loop can run for a while with no input); once the turn ends and
+    // the Follow-up/Done menu is showing, the normal idle timeout resumes.
+    if (this.activeVoiceLayer || this.activeKeyboardLayer || this.assistantSession?.isTurnActive()) {
       this.lastInputAtMs = nowMs;
       return false;
     }
@@ -644,7 +652,7 @@ class Shell {
 
       this.lastInputAtMs = Date.now();
       const wokeScreen = !this.screenOn && this.wake("sidebar");
-      if (action === "voice-input" && !this.activeVoiceLayer) {
+      if (action === "voice-input" && !this.activeVoiceLayer && !this.activeKeyboardLayer) {
         if (this.assistantLayer) {
           // The assistant overlay is up; a wakeword continues that conversation.
           this.startAssistantFollowUp(true);
@@ -796,6 +804,7 @@ class Shell {
     const foreground = this.foregroundWindow()?.windowId ?? "none";
     if (!this.screenOn) return `fg=${foreground} target=screen-off`;
     if (this.activeVoiceLayer) return `fg=${foreground} target=voice`;
+    if (this.activeKeyboardLayer) return `fg=${foreground} target=keyboard`;
     if (!this.stack.isAtBase()) return `fg=${foreground} target=shell-overlay`;
     return `fg=${foreground} target=${this.focus}`;
   }
@@ -904,7 +913,7 @@ class Shell {
       }
       // Re-checked after the await: another path may have opened a dialog
       // (or torn down the base state) while a permission prompt was up.
-      if (!ready || this.activeVoiceLayer) return;
+      if (!ready || this.activeVoiceLayer || this.activeKeyboardLayer) return;
       this.openVoiceDialogNow(options);
       this.config.requestShellRender();
     })();
@@ -1001,6 +1010,61 @@ class Shell {
     this.focus = "window";
     this.openVoiceDialog({ finishOnClick: true, defaultTarget: "app" });
     this.config.requestShellRender();
+  }
+
+  /**
+   * Open the keyboard dialog: the voice dialog's typed twin, driven by the
+   * phone's keyboard button (beside the mic button, whose wakeword this
+   * mirrors: it wakes a dark screen too). Over the assistant overlay the text
+   * continues that conversation; otherwise it goes to the usual destinations
+   * with Send to Assistant highlighted. Returns the session the phone types
+   * into (the already-open one if there is one), or null while a voice
+   * dialog is up.
+   */
+  startKeyboardInput(): KeyboardInputSession | null {
+    if (this.activeKeyboardLayer) return this.activeKeyboardLayer;
+    if (this.activeVoiceLayer) return null;
+    if (!this.screenOn) this.wake("sidebar");
+    const assistantLayer = this.assistantLayer;
+    const assistantSession = this.assistantSession;
+    let targets: VoiceSendTarget[];
+    let defaultIndex = 0;
+    if (assistantLayer && assistantSession) {
+      targets = [
+        {
+          id: "assistant",
+          label: "Send",
+          onSend: (text) => this.runAssistantTurn(assistantSession, assistantLayer, text),
+        },
+      ];
+    } else {
+      targets = this.buildVoiceSendTargets();
+      defaultIndex = Math.max(0, targets.findIndex((target) => target.id === "assistant"));
+    }
+    const layer = new KeyboardInputLayer({
+      actions: this.config.actions,
+      onClosed: () => {
+        if (this.activeKeyboardLayer === layer) {
+          this.activeKeyboardLayer = null;
+          this.config.onKeyboardInputChanged?.(null);
+          // The idle countdown restarts in full once keyboard input ends.
+          this.noteUserActivity();
+        }
+      },
+      dismiss: () => {
+        this.stack.popIfTop((top) => top === layer);
+        // A send or discard from the phone side arrives outside the input
+        // path, so nothing else asks for the repaint.
+        this.config.requestShellRender();
+      },
+      sendTargets: targets,
+      defaultTargetIndex: defaultIndex,
+    });
+    this.activeKeyboardLayer = layer;
+    this.stack.push(layer);
+    this.config.onKeyboardInputChanged?.(layer);
+    this.config.requestShellRender();
+    return layer;
   }
 
   isAssistantAvailable(): boolean {
@@ -1149,7 +1213,7 @@ class Shell {
   private startAssistantFollowUp(handsFree = false): void {
     const layer = this.assistantLayer;
     const session = this.assistantSession;
-    if (!layer || !session || this.activeVoiceLayer) return;
+    if (!layer || !session || this.activeVoiceLayer || this.activeKeyboardLayer) return;
     const voice = new VoiceInputLayer({
       actions: this.config.actions,
       onClosed: () => {

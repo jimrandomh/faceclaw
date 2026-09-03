@@ -4,10 +4,12 @@
   scheme as the watch pad - tap = select, double-tap or two fingers = back,
   hold = menu, swipes navigate), and Ring (a touchpad on the ring's own
   scheme: vertical swipes scroll, tap/double-tap/hold = click/double-click/
-  long-press). Tap-then-hold on either pad is the G2 system-menu gesture. The narrow mic button at the tab bar's right edge fires the
-  wakeword without changing the selected tab. Used by main-page.xml in both
-  orientations; binds to the page's MainViewModel, which collapses the whole
-  area while a text setting is being edited (keyboard-input mode).
+  long-press). Tap-then-hold on either pad is the G2 system-menu gesture. The
+  narrow mic and keyboard buttons at the tab bar's right edge fire the
+  wakeword / open the keyboard dialog without changing the selected tab. Used
+  by main-page.xml in both orientations; binds to the page's MainViewModel,
+  which collapses the whole area while a text setting is being edited or the
+  keyboard dialog is up (keyboard-input mode).
 
   The root is a rows="auto,*" grid so the active section can use the leftover
   height (the Watch face centers in it); the three sections share the star
@@ -17,15 +19,18 @@
   <!-- rows="auto" everywhere below: a rows-less GridLayout's implicit row
        acts as star, and this component sits in a bounded (star-row) parent,
        where that would balloon the first grid to fill all remaining height. -->
-  <GridLayout row="0" rows="auto" columns="*,*,*,auto" class="controls-tab-bar">
+  <GridLayout row="0" rows="auto" columns="*,*,*,auto,auto" class="controls-tab-bar">
     <Button col="0" text="Settings" tap="{{ onSettingsTabTap }}" class="{{ settingsTabClass }}" />
     <Button col="1" text="Watch" tap="{{ onWatchTabTap }}" class="{{ watchTabClass }}" />
     <Button col="2" text="Ring" tap="{{ onRingTabTap }}" class="{{ ringTabClass }}" />
-    <!-- A Button can't hold an image, so this is a button-styled tile. The
+    <!-- A Button can't hold an image, so these are button-styled tiles. The
          explicit star row makes the cell fill the tile's height so the icon's
          center alignment has room to work in. -->
-    <GridLayout col="3" rows="*" tap="{{ onSyntheticMicTap }}" class="tab-button tab-mic-button">
-      <Image src="res://ic_tab_mic" class="tab-mic-icon" verticalAlignment="center" horizontalAlignment="center" />
+    <GridLayout col="3" rows="*" tap="{{ onSyntheticMicTap }}" class="tab-button tab-icon-button">
+      <Image src="res://ic_tab_mic" class="tab-icon" verticalAlignment="center" horizontalAlignment="center" />
+    </GridLayout>
+    <GridLayout col="4" rows="*" tap="{{ onKeyboardTap }}" class="tab-button tab-icon-button">
+      <Image src="res://ic_tab_keyboard" class="tab-icon" verticalAlignment="center" horizontalAlignment="center" />
     </GridLayout>
   </GridLayout>
 

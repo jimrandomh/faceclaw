@@ -56,6 +56,9 @@ export class MainViewModel extends Observable {
   private _activeTextEditorToggleLabel = "";
   private _activeTextEditorToggleValue = false;
   private _activeTextEditorToggleVisible = false;
+  private _keyboardInputActive = false;
+  private _keyboardInputTargets: ReadonlyArray<{ id: string; label: string }> = [];
+  private _keyboardInputText = "";
   private _evenAppConflictMessage = "";
   private _evenAppConflictWarningVisible = false;
   private _firmwareWarningMessage = "";
@@ -103,6 +106,9 @@ export class MainViewModel extends Observable {
       this.activeTextEditorToggleLabel = snapshot.activeTextEditorToggleLabel;
       this.activeTextEditorToggleValue = snapshot.activeTextEditorToggleValue;
       this.activeTextEditorToggleVisible = snapshot.activeTextEditorToggleVisible;
+      // Targets before active: the panel's buttons are labelled when it appears.
+      this.keyboardInputTargets = snapshot.keyboardInputTargets;
+      this.keyboardInputActive = snapshot.keyboardInputActive;
       this.evenAppConflictMessage = snapshot.evenAppConflictMessage;
       this.evenAppConflictWarningVisible = snapshot.evenAppConflictWarningVisible;
       this.firmwareWarningMessage = snapshot.firmwareWarningMessage;
@@ -464,6 +470,100 @@ export class MainViewModel extends Observable {
 
   get textSettingEditorVisibility(): "visible" | "collapse" {
     return this.isTextSettingEditorActive ? "visible" : "collapse";
+  }
+
+  // ---- keyboard-input panel (the keyboard button beside the mic button) ----
+  //
+  // The dialog lives on the glasses (ui/shell/keyboard-input.ts); this panel
+  // is the phone's end of it: the text field the IME types into and a send
+  // button per destination. The field's text is the panel's own state, never
+  // echoed back from the controller (see setActiveTextSettingValue for why);
+  // it is cleared whenever a dialog opens or closes.
+
+  get keyboardInputActive(): boolean {
+    return this._keyboardInputActive;
+  }
+
+  set keyboardInputActive(value: boolean) {
+    if (this._keyboardInputActive === value) return;
+    this._keyboardInputActive = value;
+    this.keyboardInputText = "";
+    this.notifyPropertyChange("keyboardInputActive", value);
+    this.notifyPropertyChange("keyboardInputVisibility", this.keyboardInputVisibility);
+    this.notifyPropertyChange("controlsVisibility", this.controlsVisibility);
+  }
+
+  get keyboardInputVisibility(): "visible" | "collapse" {
+    return this._keyboardInputActive ? "visible" : "collapse";
+  }
+
+  get keyboardInputText(): string {
+    return this._keyboardInputText;
+  }
+
+  set keyboardInputText(value: string) {
+    if (this._keyboardInputText === value) return;
+    this._keyboardInputText = value;
+    this.notifyPropertyChange("keyboardInputText", value);
+  }
+
+  set keyboardInputTargets(value: ReadonlyArray<{ id: string; label: string }>) {
+    this._keyboardInputTargets = value;
+    this.notifyPropertyChange("keyboardInputPrimaryTargetLabel", this.keyboardInputPrimaryTargetLabel);
+    this.notifyPropertyChange("keyboardInputPrimaryTargetVisibility", this.keyboardInputPrimaryTargetVisibility);
+    this.notifyPropertyChange("keyboardInputSecondaryTargetLabel", this.keyboardInputSecondaryTargetLabel);
+    this.notifyPropertyChange("keyboardInputSecondaryTargetVisibility", this.keyboardInputSecondaryTargetVisibility);
+  }
+
+  // The glasses menu has at most two destinations (assistant, app), so the
+  // panel has a fixed pair of buttons rather than a repeater.
+  get keyboardInputPrimaryTargetLabel(): string {
+    return this._keyboardInputTargets[0]?.label ?? "";
+  }
+
+  get keyboardInputPrimaryTargetVisibility(): "visible" | "collapse" {
+    return this._keyboardInputTargets[0] ? "visible" : "collapse";
+  }
+
+  get keyboardInputSecondaryTargetLabel(): string {
+    return this._keyboardInputTargets[1]?.label ?? "";
+  }
+
+  get keyboardInputSecondaryTargetVisibility(): "visible" | "collapse" {
+    return this._keyboardInputTargets[1] ? "visible" : "collapse";
+  }
+
+  onKeyboardTap(): void {
+    dashboardController.startKeyboardInput();
+  }
+
+  onKeyboardInputTextChange(args: { value?: string; object?: { text?: string } }): void {
+    dashboardController.setKeyboardInputText(args.object?.text ?? args.value ?? "");
+  }
+
+  /** The IME's send key: the destination highlighted on the glasses. */
+  onKeyboardInputReturnPress(args: { object?: { text?: string } }): void {
+    // Commit the field's actual text at send-time, in case the final
+    // keystroke's textChange hadn't landed yet.
+    const text = args?.object?.text;
+    if (typeof text === "string") {
+      dashboardController.setKeyboardInputText(text);
+    }
+    dashboardController.sendKeyboardInput();
+  }
+
+  onKeyboardInputPrimarySendTap(): void {
+    const target = this._keyboardInputTargets[0];
+    if (target) dashboardController.sendKeyboardInput(target.id);
+  }
+
+  onKeyboardInputSecondarySendTap(): void {
+    const target = this._keyboardInputTargets[1];
+    if (target) dashboardController.sendKeyboardInput(target.id);
+  }
+
+  onKeyboardInputDiscardTap(): void {
+    dashboardController.discardKeyboardInput();
   }
 
   get evenAppConflictMessage(): string {
@@ -1016,7 +1116,7 @@ export class MainViewModel extends Observable {
   private _controlsTab: ControlsTab = lastControlsTab;
 
   get controlsVisibility(): "visible" | "collapse" {
-    return this.isTextSettingEditorActive ? "collapse" : "visible";
+    return this.isTextSettingEditorActive || this._keyboardInputActive ? "collapse" : "visible";
   }
 
   get settingsTabVisibility(): "visible" | "collapse" {

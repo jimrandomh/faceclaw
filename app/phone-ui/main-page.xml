@@ -146,5 +146,31 @@
                     checkedChange="{{ onTextSettingToggleChange }}" />
             </GridLayout>
         </StackLayout>
+        <!-- Keyboard-input panel (the keyboard button beside the mic button):
+             the phone's end of the keyboard dialog on the glasses
+             (ui/shell/keyboard-input.ts). Same placement and collapsing rules
+             as the setting editor above. The IME's send key goes to whichever
+             destination is highlighted on the glasses; the buttons pick one
+             directly. -->
+        <StackLayout
+            class="system-name-modal"
+            visibility="{{ keyboardInputVisibility }}"
+            horizontalAlignment="stretch"
+            verticalAlignment="bottom">
+            <Label text="Keyboard input" class="h2" />
+            <TextField
+                id="keyboardInputField"
+                text="{{ keyboardInputText }}"
+                hint="Type a message"
+                textChange="{{ onKeyboardInputTextChange }}"
+                returnPress="{{ onKeyboardInputReturnPress }}"
+                returnKeyType="send" />
+            <!-- Wraps onto a second line when the labels don't fit side by side. -->
+            <FlexboxLayout flexWrap="wrap" class="m-t-8">
+                <Button text="{{ keyboardInputPrimaryTargetLabel }}" tap="{{ onKeyboardInputPrimarySendTap }}" visibility="{{ keyboardInputPrimaryTargetVisibility }}" flexGrow="1" class="-primary" />
+                <Button text="{{ keyboardInputSecondaryTargetLabel }}" tap="{{ onKeyboardInputSecondarySendTap }}" visibility="{{ keyboardInputSecondaryTargetVisibility }}" flexGrow="1" />
+                <Button text="Discard" tap="{{ onKeyboardInputDiscardTap }}" flexGrow="1" />
+            </FlexboxLayout>
+        </StackLayout>
     </GridLayout>
 </Page>

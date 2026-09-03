@@ -64,6 +64,7 @@ import { type InProcessAppOptions, type InProcessWindow } from "../ui/shell/in-p
 import { loadPersistedOpenApps, savePersistedOpenApps } from "../ui/shell/open-apps-persistence";
 import { appViewportRect, SIDEBAR_WIDTH, sidebarStripVisible, type WindowHeightMode } from "../ui/shell/geometry";
 import { type LayerActions, type TextSettingsEditToggle } from "../ui/layers";
+import { type KeyboardInputSession } from "../ui/shell/keyboard-input";
 import { assistantAllowProactiveSetting, assistantBackendSetting, assistantBridgeHostSetting, assistantBridgePortSetting, assistantBridgeTokenSetting, brightnessSetting, brightnessSettingToLevel, displayModeSetting, elevenLabsApiKeySetting, getStringSettingById, openAiApiKeySetting, nightscoutApiTokenSetting, firmwareDebugFlagsSetting, lockScreenEnabledSetting, nightscoutSiteUrlSetting, onAnySettingChanged, previewColorSetting, ringConnectionModeSetting, saveVoiceRecordingsSetting, sonioxApiKeySetting, screenTimeoutSetting, screenTimeoutSettingToMs, suspendEvenHubWhenScreenOffSetting, verticalPositionSetting, voiceProviderSetting, wakeWordActionSetting, type ConfigSettingString } from "../ui/dashboard-settings";
 import { isIgnoringBatteryOptimizations, requestIgnoreBatteryOptimizations } from "../native/battery-optimization";
 import {
@@ -102,6 +103,13 @@ export type DashboardSnapshot = {
   activeTextEditorToggleLabel: string;
   activeTextEditorToggleValue: boolean;
   activeTextEditorToggleVisible: boolean;
+  /**
+   * The keyboard dialog is up on the glasses (opened by the phone's keyboard
+   * button): the phone shows its typing panel, with a send button per
+   * destination in the glasses menu's row order.
+   */
+  keyboardInputActive: boolean;
+  keyboardInputTargets: ReadonlyArray<{ id: string; label: string }>;
   evenAppConflictMessage: string;
   evenAppConflictWarningVisible: boolean;
   firmwareWarningMessage: string;
@@ -274,6 +282,9 @@ class DashboardController {
   // The window hosting the on-glasses text-setting editor (the Settings app
   // registers itself); edit flows from the phone UI reach it through this.
   private textEditorHost: TextEditorHost | null = null;
+  // The open keyboard dialog's session (see Shell.startKeyboardInput); the
+  // phone's typing panel feeds it.
+  private keyboardInput: KeyboardInputSession | null = null;
   // Other in-process singleton apps, keyed by windowId.
   private readonly inProcessApps = new Map<string, InProcessWindow>();
   private sharedActions!: Omit<LayerActions, "requestRender">;
@@ -333,6 +344,10 @@ class DashboardController {
       getScreenTimeoutMs: () => screenTimeoutSettingToMs(screenTimeoutSetting.get()),
       requestShellRender: () => this.requestShellRender(),
       prepareVoiceCapture: () => this.prepareVoiceCapture(),
+      onKeyboardInputChanged: (session) => {
+        this.keyboardInput = session;
+        this.emit();
+      },
       onWindowsChanged: () => {
         this.persistOpenApps();
         // The foreground title is mirrored on both remote-control faces.
@@ -909,6 +924,8 @@ class DashboardController {
       activeTextEditorToggleLabel: this.activeTextEditorToggle?.label ?? "",
       activeTextEditorToggleValue: this.activeTextEditorToggle?.setting.get() ?? false,
       activeTextEditorToggleVisible: this.activeTextEditorToggle !== null,
+      keyboardInputActive: this.keyboardInput !== null,
+      keyboardInputTargets: this.keyboardInput?.targets ?? [],
       evenAppConflictMessage: this.evenAppConflictMessage,
       evenAppConflictWarningVisible: this.evenAppConflictMessage.length > 0,
       firmwareWarningMessage: this.firmwareWarningMessage,
@@ -1043,6 +1060,39 @@ class DashboardController {
     // binding on every keystroke drops fast/pasted characters (observed: a
     // 51-char API key stored as its first 46 chars). Just refresh the preview.
     this.previewOrRenderAfterTextSettingChange();
+  }
+
+  /**
+   * The phone's keyboard button: open the keyboard dialog on the glasses
+   * (the typed twin of the mic button's wakeword). Needs a display to draw
+   * on and, like ring input, does nothing while the glasses are locked.
+   */
+  startKeyboardInput(): void {
+    if (this.phase !== "connected" && this.phase !== "charging" && !this.isPreviewDisplayActive()) return;
+    if (this.glassesLocked) {
+      this.appendLog("keyboard input ignored while the glasses are locked");
+      return;
+    }
+    shell.startKeyboardInput();
+  }
+
+  /** The phone's typing panel changed: mirror the text on the glasses. */
+  setKeyboardInputText(text: string): void {
+    shell.noteUserActivity();
+    this.keyboardInput?.setText(text);
+  }
+
+  /** Send to one destination, or (no id: the IME's send key) the one highlighted on the glasses. */
+  sendKeyboardInput(targetId?: string): void {
+    if (targetId) {
+      this.keyboardInput?.sendTo(targetId);
+    } else {
+      this.keyboardInput?.send();
+    }
+  }
+
+  discardKeyboardInput(): void {
+    this.keyboardInput?.discard();
   }
 
   setActiveTextEditorToggleValue(value: boolean): void {
