@@ -13,6 +13,8 @@ const DEFAULT_MENU_WIDTH = 272;
 // fixed quarter-screen-era look) up to the full screen, then scroll.
 const DEFAULT_MENU_MIN_HEIGHT = G2_LENS_HEIGHT / 2 - 2 * DEFAULT_MENU_Y;
 const MENU_BODY_PADDING = 8;
+/** Gap between the last item row and a footer hint line. */
+const MENU_FOOTER_GAP = 8;
 const MENU_HIGHLIGHT_SELECTED_BACKGROUND_FILL = 15;
 const MENU_HIGHLIGHT_SELECTED_BORDER_STROKE = 45;
 
@@ -27,6 +29,11 @@ export type MenuLayout = {
   minHeight?: number;
   /** Height cap before the menu starts scrolling. Default: the full screen. */
   maxHeight?: number;
+  /**
+   * Dim hint line pinned to the bottom edge inside the box, below the items
+   * (gesture help such as "●- system menu"). Takes a line off the item area.
+   */
+  footer?: string;
   /**
    * Paint as a standalone page: the layers below stay in the stack for back
    * navigation but are not composited underneath. Default: false — the menu
@@ -211,9 +218,13 @@ export class MenuLayer implements Layer {
       this.layout.maxHeight ?? image.height - y - DEFAULT_MENU_Y,
       image.height - y,
     );
-    const contentHeight = chromeTop + this.items.length * rowHeight + MENU_BODY_PADDING;
+    const footerHeight = this.layout.footer ? MENU_FOOTER_GAP + lineStep(font) : 0;
+    const contentHeight = chromeTop + this.items.length * rowHeight + footerHeight + MENU_BODY_PADDING;
     const height = clamp(contentHeight, Math.min(minHeight, maxHeight), maxHeight);
-    const visibleRowCount = Math.max(1, ((height - chromeTop - MENU_BODY_PADDING) / rowHeight) | 0);
+    const visibleRowCount = Math.max(
+      1,
+      ((height - chromeTop - footerHeight - MENU_BODY_PADDING) / rowHeight) | 0,
+    );
     this.scrollRow = scrollToKeepSelectionVisible(
       this.scrollRow,
       this.selectedIndex,
@@ -229,6 +240,9 @@ export class MenuLayer implements Layer {
     }
     if (this.title) {
       image.drawText(font, x + 12, y + 8, this.title, 220);
+    }
+    if (this.layout.footer) {
+      image.drawText(font, x + 22, y + height - MENU_BODY_PADDING - font.lineHeight, this.layout.footer, 110);
     }
 
     const bodyY = y + chromeTop;

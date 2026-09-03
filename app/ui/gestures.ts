@@ -115,13 +115,16 @@ export function directionalFallback(event: InputEvent): InputEvent {
  *   double-click ●● (twice)
  *   scroll       ▲▼ (U+25B2 / U+25BC)
  *   long-press   - (hyphen-minus)
+ *   tap-then-hold ●- (click then long-press)
  */
 export const GESTURE_CLICK = "\u25cf";
 export const GESTURE_DOUBLE_CLICK = GESTURE_CLICK+GESTURE_CLICK;
 export const GESTURE_SCROLL_UP = "▲";
 export const GESTURE_SCROLL_DOWN = "▼";
 export const GESTURE_SCROLL = "▲▼";
-export const GESTURE_LONG_PRESS = "-";
+export const GESTURE_LONG_PRESS = "—";
+/** The 2.2.9 tap-then-hold gesture (short-then-long-press): a click glyph then a hold. */
+export const GESTURE_SHORT_THEN_LONG_PRESS = GESTURE_CLICK + GESTURE_LONG_PRESS;
 
 /**
  * Join "glyph action" hint pairs into a single line, e.g.

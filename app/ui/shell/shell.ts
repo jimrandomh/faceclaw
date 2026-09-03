@@ -5,6 +5,8 @@ import { EvenAIStatus, EventSourceType, OsEventTypeList, WatchGestureType } from
 import type { RawInputEvent } from "../../native/faceclaw-communicator";
 import {
   directionalFallback,
+  GESTURE_LONG_PRESS,
+  gestureHints,
   InputEvent,
   type InputEventPayload,
   type InputSource,
@@ -59,10 +61,11 @@ import {
  * everything while the sidebar or a shell overlay has focus and forwards the
  * rest to the focused window. Long-press goes to the foreground window (from
  * the sidebar it focuses the window first); by convention apps answer it with
- * a window menu that ends in Voice input / Close window. Holding the press
- * past the escape threshold opens the shell's own escape menu, so the shell
- * keeps working when a window's handler hangs. The 2.2.9 tap-then-hold gesture
- * opens that shell menu immediately.
+ * their own context menu, or ask for the system menu when they have none.
+ * The system menu (Focus app switcher, Voice input, Close window, Debug) is
+ * shell-owned: the 2.2.9 tap-then-hold gesture opens it directly, and holding
+ * a long-press past the escape threshold opens it too, so the shell keeps
+ * working when a window's handler hangs.
  */
 
 export type ShellWindow = {
@@ -71,8 +74,15 @@ export type ShellWindow = {
   title: string;
   /** Compositor surface this window renders to; configured at connect / launch. */
   surfaceId: string;
-  /** Whether close menu entries (app menu default, shell escape menu) apply (the launcher is pinned). */
+  /** Whether the system menu offers Close window (the launcher is pinned). */
   closeable: boolean;
+  /**
+   * True when a long-press currently opens the window's own context menu
+   * (with at least one entry). While false, the system menu shows no
+   * "long-press: app menu" hint and a long-press over the open system menu
+   * leaves it open instead of switching menus.
+   */
+  hasAppMenu?: () => boolean;
   /**
    * True when the window gives swipe-left / swipe-right (watch directional
    * input) a meaning; otherwise the shell forwards directionalFallback(event).
@@ -167,9 +177,16 @@ const noopActions: LayerActions = noopLayerActions;
  */
 const LONG_PRESS_ESCAPE_MENU_MS = 4000;
 
-/** Shell-surface overlay menu (the escape menu); closing it returns focus to the sidebar. */
+/** Shell-surface overlay menu (the system menu); closing it returns focus to the sidebar. */
 class ShellOverlayMenuLayer extends MenuLayer {
-  constructor(items: MenuItem[], private readonly onClosed: () => void) {
+  /**
+   * Set before popping to keep focus on the window: an entry that acts on
+   * the window (Voice input aims its transcript at it) must not first hand
+   * focus to the sidebar.
+   */
+  keepWindowFocus = false;
+
+  constructor(items: MenuItem[], footer: string | undefined, private readonly onClosed: () => void) {
     // Aligned to the min-height window band (like the sidebar), wherever the
     // vertical position setting currently puts it; centered over the
     // application area, i.e. the part of the screen past the sidebar strip
@@ -180,11 +197,12 @@ class ShellOverlayMenuLayer extends MenuLayer {
       y: minWindowTop() + TOP_BAR_HEIGHT + 8,
       width,
       minHeight: 150,
+      footer,
     });
   }
 
   onRemoved(): void {
-    this.onClosed();
+    if (!this.keepWindowFocus) this.onClosed();
   }
 }
 
@@ -645,16 +663,20 @@ class Shell {
     }
 
     // Long-press goes to the foreground window (from the sidebar it focuses
-    // the window first); apps conventionally answer it with their window
-    // menu. The escape timer runs regardless of what the app does with it:
-    // holding the press long enough opens the shell's own menu.
+    // the window first); apps conventionally answer it with their context
+    // menu, or ask for the system menu when they have none. The escape timer
+    // runs regardless of what the app does with it: holding the press long
+    // enough opens the shell's own menu.
     if (event.type === "long-press") {
       this.startEscapeMenuTimer();
+      const window = this.foregroundWindow();
       // A long-press while the system menu is open switches to the app's
       // context menu: close the system menu and deliver the press to the
-      // window as usual (apps conventionally answer it with their menu).
+      // window as usual. A window without a menu of its own would only ask
+      // for the system menu back, so for it the open menu stays.
       if (
         !this.activeVoiceLayer &&
+        window?.hasAppMenu?.() &&
         this.stack.popIfTop((layer) => layer instanceof ShellOverlayMenuLayer)
       ) {
         this.config.requestShellRender();
@@ -662,7 +684,6 @@ class Shell {
       if (this.activeVoiceLayer || !this.stack.isAtBase()) {
         return { shell: true, window: false };
       }
-      const window = this.foregroundWindow();
       if (!window) {
         return { shell: true, window: false };
       }
@@ -931,9 +952,9 @@ class Shell {
 
   /**
    * Open the voice dialog aimed at the foreground window. Called when the
-   * user picks Voice input from a window's menu (in-process directly, worker
-   * apps via a start-voice-input message). The menu click already ended the
-   * press, so the dialog finishes on click instead of long-press-release.
+   * user picks Voice input from the system menu (or an app asks via a
+   * start-voice-input message). The menu click already ended the press, so
+   * the dialog finishes on click instead of long-press-release.
    */
   startVoiceInput(): void {
     if (!this.screenOn || this.activeVoiceLayer || !this.stack.isAtBase()) return;
@@ -1163,15 +1184,28 @@ class Shell {
   }
 
   /**
-   * The system/escape menu. Shell-owned and shell-drawn (never the app's), so
-   * an unresponsive app can always be closed. It opens after an extended hold
-   * or immediately for tap-then-hold, over whatever the app did with an earlier
-   * ordinary long-press, including opening its own menu.
+   * A window's answer to a long-press when it has no context menu of its
+   * own: open the system menu in its place, so both gestures land on the
+   * same menu. Ignored unless the window is still the foreground one.
+   */
+  openSystemMenu(windowId: string): void {
+    if (this.foregroundWindow()?.windowId !== windowId) return;
+    this.openEscapeMenu();
+  }
+
+  /**
+   * The system/escape menu: the entries every window shares (Focus app
+   * switcher, Voice input, Close window) plus Debug. Shell-owned and
+   * shell-drawn (never the app's), so an unresponsive app can always be
+   * closed. It opens for tap-then-hold, after an extended hold (over whatever
+   * the app did with the ordinary long-press, including opening its own
+   * menu), and on a window's request when it has no menu of its own.
    */
   private openEscapeMenu(): void {
     if (!this.screenOn || this.activeVoiceLayer || !this.stack.isAtBase()) return;
     const foreground = this.foregroundWindow();
     if (!foreground) return;
+    let layer: ShellOverlayMenuLayer;
     const items: MenuItem[] = [];
     if (foreground.closeable) {
       items.push({
@@ -1184,6 +1218,30 @@ class Shell {
         },
       });
     }
+    // Close window sits first but the menu opens on Focus app switcher, so a
+    // reflexive tap never closes the window.
+    const initialSelection = items.length;
+    items.push(
+      {
+        // Defocus the app (hand focus to the sidebar) without closing it: the
+        // reliable way out of an app that consumes double-click. Closing the
+        // menu is what yields focus, so popping is the whole action.
+        label: "Focus app switcher",
+        onSelect: (ctx) => {
+          ctx.stack.pop();
+        },
+      },
+      {
+        label: "Voice input",
+        onSelect: (ctx) => {
+          // The transcript is aimed at the foreground window, so keep focus
+          // there through the pop instead of yielding to the sidebar.
+          layer.keepWindowFocus = true;
+          ctx.stack.pop();
+          this.startVoiceInput();
+        },
+      },
+    );
     items.push({
       label: "Debug",
       onSelect: (ctx) => {
@@ -1191,7 +1249,15 @@ class Shell {
         this.openToolDebugDialog();
       },
     });
-    this.stack.push(new ShellOverlayMenuLayer(items, () => this.yieldFocusToSidebar()));
+    // Gesture help: a long-press switches to the app's own context menu, when
+    // the app has one (otherwise it either does something app-specific or
+    // opens this very menu, neither worth a hint).
+    const footer = foreground.hasAppMenu?.()
+      ? gestureHints([[GESTURE_LONG_PRESS, "app menu"]])
+      : undefined;
+    layer = new ShellOverlayMenuLayer(items, footer, () => this.yieldFocusToSidebar());
+    layer.selectItem(initialSelection);
+    this.stack.push(layer);
     // Tell the window the system menu opened over it: an app with its own
     // context menu up closes it, so the two context menus never stack.
     void foreground.handleInput(makeInputEvent({ type: "system-menu-opened" }), 0);

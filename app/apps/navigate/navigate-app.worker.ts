@@ -8,13 +8,14 @@
  */
 import "@nativescript/core/globals";
 import { GrayImage } from "../../graphics/image";
-import { flattenPlanesWithDraws, planesFingerprint, singlePlane, type Plane } from "../../graphics/plane";
+import { flattenPlanesWithDraws, planesFingerprint, type Plane } from "../../graphics/plane";
 import { prepareFrameDraws } from "../../graphics/glyph-wire";
 import { getFont } from "../../graphics/bdffont";
 import { getDefaultSmallFont } from "../../graphics/ui-fonts";
 import * as frameTimings from "../../native/frame-timings";
 import { getActiveDisplay } from "../../native/active-display";
-import { defaultWindowMenuItems, WindowMenu } from "../../ui/window-menu";
+import { type MenuItem } from "../../ui/menu";
+import { WindowMenu } from "../../ui/window-menu";
 import type { WorkerAppMessage, WorkerAppReply } from "../../ui/shell/worker-window";
 import type { ToolSpec, ToolResult } from "../../assistant/tool-registry";
 import { GESTURE_CLICK, GESTURE_DOUBLE_CLICK, GESTURE_SCROLL, type InputEvent } from "../../ui/gestures";
@@ -611,10 +612,28 @@ function describeRouteStatus(): string {
 // ---------------------------------------------------------------------------
 // Input
 
+/** The window's long-press menu: only Stop navigation, and only while a route is up. */
+function windowMenuItems(win: NavWindow): MenuItem[] {
+  if (phase !== "navigating" && phase !== "arrived") return [];
+  return [
+    {
+      label: "Stop navigation",
+      onSelect: (ctx) => {
+        ctx.stack.pop();
+        stopNavigation("Navigation stopped.");
+        render();
+      },
+    },
+  ];
+}
+
 function windowMenu(win: NavWindow): WindowMenu {
   if (!win.menu) {
     win.menu = new WindowMenu({
+      windowId: win.windowId,
+      post,
       title: () => win.title,
+      items: () => windowMenuItems(win),
       size: { width: win.viewportWidth, height: win.viewportHeight },
       paintBase: () => paintContent(win),
       isFocused: () => win.focused,
@@ -632,18 +651,7 @@ function handleInput(win: NavWindow, event: InputEvent, frameId: number): void {
     return;
   }
   if (event.type === "long-press") {
-    const items = [...defaultWindowMenuItems(win.windowId, post)];
-    if (phase === "navigating" || phase === "arrived") {
-      items.unshift({
-        label: "Stop navigation",
-        onSelect: (ctx: any) => {
-          ctx.stack.pop();
-          stopNavigation("Navigation stopped.");
-          render();
-        },
-      });
-    }
-    windowMenu(win).open(items);
+    windowMenu(win).open();
     renderAndSubmit(win, frameId);
     return;
   }
@@ -683,8 +691,7 @@ function handleInput(win: NavWindow, event: InputEvent, frameId: number): void {
 // Painting
 
 function paint(win: NavWindow): Plane[] {
-  if (win.menu?.isOpen()) return win.menu.paint();
-  return singlePlane(paintContent(win));
+  return windowMenu(win).paint();
 }
 
 function paintContent(win: NavWindow): GrayImage {
@@ -701,7 +708,7 @@ function paintIdle(image: GrayImage): void {
   image.drawText(mediumFont, 24, 16, "Navigate", 245);
   const busy = phase !== "idle";
   const hint = isMapboxConfigured()
-    ? "Ask the voice assistant to navigate somewhere, or use Voice input from the long-press menu to say a destination."
+    ? "Ask the voice assistant to navigate somewhere, or pick Voice input from the system menu (tap, then hold) to say a destination."
     : "Set a Mapbox token in Settings > API Keys to enable navigation.";
   image.drawTextWrapped({ font: smallFont, x: 24, y: 64, width: image.width - 48, text: hint, value: 170 });
   if (statusMessage) {

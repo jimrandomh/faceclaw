@@ -21,7 +21,7 @@
  */
 import "@nativescript/core/globals";
 import { GrayImage } from "../../graphics/image";
-import { flattenPlanesWithDraws, planesFingerprint, singlePlane, type Plane } from "../../graphics/plane";
+import { flattenPlanesWithDraws, planesFingerprint, type Plane } from "../../graphics/plane";
 import { prepareFrameDraws } from "../../graphics/glyph-wire";
 import { getFont } from "../../graphics/bdffont";
 import { getDefaultSmallFont } from "../../graphics/ui-fonts";
@@ -29,7 +29,8 @@ import * as frameTimings from "../../native/frame-timings";
 import { getActiveDisplay } from "../../native/active-display";
 import { getStringSetting, setStringSetting } from "../../native/settings-store";
 import { buildSoundSequencePayload, type Step } from "../../ui/sound-effects";
-import { defaultWindowMenuItems, WindowMenu } from "../../ui/window-menu";
+import { type MenuItem } from "../../ui/menu";
+import { WindowMenu } from "../../ui/window-menu";
 import type { WorkerAppMessage, WorkerAppReply } from "../../ui/shell/worker-window";
 import {
   directionalFallback,
@@ -445,9 +446,9 @@ function playSfx(window: PinballWindow, steps: Step[], minor = false): void {
   }
 }
 
-/** The window's long-press menu (game actions + default entries). */
-function openWindowMenu(window: PinballWindow): void {
-  windowMenu(window).open([
+/** The window's long-press menu (game actions); playing binds long-press to the nudge instead. */
+function windowMenuItems(window: PinballWindow): MenuItem[] {
+  return [
     {
       label: "New game",
       onSelect: (ctx) => {
@@ -464,14 +465,17 @@ function openWindowMenu(window: PinballWindow): void {
         if (window.soundOn) playSfx(window, SFX_RESUME);
       },
     },
-    ...defaultWindowMenuItems(window.windowId, post),
-  ]);
+  ];
 }
 
 function windowMenu(window: PinballWindow): WindowMenu {
   if (!window.menu) {
     window.menu = new WindowMenu({
+      windowId: window.windowId,
+      post,
       title: () => window.title,
+      items: () => windowMenuItems(window),
+      longPressOpensMenu: () => window.phase !== "playing",
       size: { width: window.viewportWidth, height: window.viewportHeight },
       paintBase: () => paintContent(window),
       isFocused: () => window.focused,
@@ -577,7 +581,7 @@ function handleIdleInput(window: PinballWindow, event: InputEvent, frameId: numb
       post({ type: "yield-focus", windowId: window.windowId });
       return;
     case "long-press":
-      openWindowMenu(window);
+      windowMenu(window).open();
       break;
     default:
       frameTimings.finishFrame(frameId, "discarded: pinball ignored input");
@@ -948,10 +952,7 @@ function drawFlipper(image: GrayImage, flipper: Flipper): void {
 }
 
 function paint(window: PinballWindow): Plane[] {
-  if (window.menu?.isOpen()) {
-    return window.menu.paint();
-  }
-  return singlePlane(paintContent(window));
+  return windowMenu(window).paint();
 }
 
 function paintContent(window: PinballWindow): GrayImage {

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.5 - Future
+* System and app context menus show gesture help for switching to the other context menu
+* Move some items from app context menus to the system context menu
+
 ## 0.6.4 - 2026-09-02
 * Context menus are centered and include window title
 * Long-press and short-then-long with a context menu open switches between context menus

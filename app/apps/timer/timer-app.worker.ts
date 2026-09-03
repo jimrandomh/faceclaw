@@ -5,7 +5,7 @@
  */
 import "@nativescript/core/globals";
 import { type UiFont, GrayImage } from "../../graphics/image";
-import { flattenPlanesWithDraws, planesFingerprint, singlePlane, type Plane } from "../../graphics/plane";
+import { flattenPlanesWithDraws, planesFingerprint, type Plane } from "../../graphics/plane";
 import { prepareFrameDraws } from "../../graphics/glyph-wire";
 import { getFont } from "../../graphics/bdffont";
 import { getDefaultSmallFont } from "../../graphics/ui-fonts";
@@ -16,7 +16,7 @@ import {
   fireTimerNotification,
   scheduleTimerNotification,
 } from "../../native/timer-notifications";
-import { defaultWindowMenuItems, WindowMenu } from "../../ui/window-menu";
+import { WindowMenu } from "../../ui/window-menu";
 import type { WorkerAppMessage, WorkerAppReply } from "../../ui/shell/worker-window";
 import type { ToolResult, ToolSpec } from "../../assistant/tool-registry";
 import { GESTURE_CLICK, GESTURE_DOUBLE_CLICK, GESTURE_SCROLL, type InputEvent } from "../../ui/gestures";
@@ -294,11 +294,17 @@ function refreshWindowsAfterToolChange(): void {
   }
 }
 
-/** The window's long-press menu (default entries only), created lazily. */
+/**
+ * The window's long-press menu, created lazily. The timer has no entries of
+ * its own, so a long-press opens the shell's system menu in its place.
+ */
 function windowMenu(window: TimerWindow): WindowMenu {
   if (!window.menu) {
     window.menu = new WindowMenu({
+      windowId: window.windowId,
+      post,
       title: () => window.title,
+      items: () => [],
       size: { width: window.viewportWidth, height: window.viewportHeight },
       paintBase: () => paintContent(window),
       isFocused: () => window.focused,
@@ -317,7 +323,7 @@ function handleInput(window: TimerWindow, event: InputEvent, frameId: number): v
     return;
   }
   if (event.type === "long-press") {
-    windowMenu(window).open(defaultWindowMenuItems(window.windowId, post));
+    windowMenu(window).open();
     renderAndSubmit(window, frameId);
     return;
   }
@@ -513,10 +519,7 @@ function updateRenderTimer(window: TimerWindow): void {
 }
 
 function paint(window: TimerWindow): Plane[] {
-  if (window.menu?.isOpen()) {
-    return window.menu.paint();
-  }
-  return singlePlane(paintContent(window));
+  return windowMenu(window).paint();
 }
 
 function paintContent(window: TimerWindow): GrayImage {

@@ -32,7 +32,7 @@
  */
 import "@nativescript/core/globals";
 import { GrayImage, type UiFont } from "../../graphics/image";
-import { flattenPlanesWithDraws, planesFingerprint, singlePlane, type Plane } from "../../graphics/plane";
+import { flattenPlanesWithDraws, planesFingerprint, type Plane } from "../../graphics/plane";
 import { prepareFrameDraws } from "../../graphics/glyph-wire";
 import { getDefaultSmallFont, getTerminalFontConfig } from "../../graphics/ui-fonts";
 import { truncateText } from "../../graphics/textwrap";
@@ -48,7 +48,7 @@ import { connectionDisplayName, loadConnections, parseConnectionString, saveConn
 import { TerminalEmulator } from "./terminal-emulator";
 import { drawListScrollbar, drawSelectionHighlight, scrollToKeepSelectionVisible, type MenuItem } from "../../ui/menu";
 import { lineStep, listRowHeight } from "../../ui/metrics";
-import { defaultWindowMenuItems, WindowMenu } from "../../ui/window-menu";
+import { WindowMenu } from "../../ui/window-menu";
 import { appViewportSize } from "../../ui/shell/geometry";
 import type { WorkerAppMessage, WorkerAppReply } from "../../ui/shell/worker-window";
 import type { ToolResult, ToolSpec } from "../../assistant/tool-registry";
@@ -905,7 +905,10 @@ function reconnectView(window: ViewWindow): void {
 function windowMenu(window: TerminalWindow): WindowMenu {
   if (!window.menu) {
     window.menu = new WindowMenu({
+      windowId: window.windowId,
+      post,
       title: () => window.title,
+      items: () => windowMenuItems(window),
       size: { width: window.viewportWidth, height: window.viewportHeight },
       paintBase: () => paintContent(window),
       isFocused: () => window.focused,
@@ -984,7 +987,6 @@ function windowMenuItems(window: TerminalWindow): MenuItem[] {
       },
     );
   }
-  items.push(...defaultWindowMenuItems(window.windowId, post));
   return items;
 }
 
@@ -999,7 +1001,7 @@ function handleInput(window: TerminalWindow, event: InputEvent, frameId: number)
     return;
   }
   if (event.type === "long-press") {
-    windowMenu(window).open(windowMenuItems(window));
+    windowMenu(window).open();
     renderAndSubmit(window, frameId);
     return;
   }
@@ -1457,10 +1459,7 @@ async function launchAndOpenView(control: ControlConnection, preset: string): Pr
 }
 
 function paint(window: TerminalWindow): Plane[] {
-  if (window.menu?.isOpen()) {
-    return window.menu.paint();
-  }
-  return singlePlane(paintContent(window));
+  return windowMenu(window).paint();
 }
 
 function paintContent(window: TerminalWindow): GrayImage {

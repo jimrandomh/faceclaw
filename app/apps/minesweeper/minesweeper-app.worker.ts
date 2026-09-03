@@ -15,14 +15,15 @@
  */
 import "@nativescript/core/globals";
 import { GrayImage } from "../../graphics/image";
-import { flattenPlanesWithDraws, planesFingerprint, singlePlane, type Plane } from "../../graphics/plane";
+import { flattenPlanesWithDraws, planesFingerprint, type Plane } from "../../graphics/plane";
 import { prepareFrameDraws } from "../../graphics/glyph-wire";
 import { getFont } from "../../graphics/bdffont";
 import { getDefaultSmallFont } from "../../graphics/ui-fonts";
 import * as frameTimings from "../../native/frame-timings";
 import { getActiveDisplay } from "../../native/active-display";
 import { buildSoundSequencePayload, type Step } from "../../ui/sound-effects";
-import { defaultWindowMenuItems, WindowMenu } from "../../ui/window-menu";
+import { type MenuItem } from "../../ui/menu";
+import { WindowMenu } from "../../ui/window-menu";
 import type { WorkerAppMessage, WorkerAppReply } from "../../ui/shell/worker-window";
 import {
   directionalFallback,
@@ -251,10 +252,10 @@ function playSfx(window: MinesweeperWindow, steps: Step[]): void {
   }
 }
 
-/** The window's long-press menu (game actions + default entries). */
-function openWindowMenu(window: MinesweeperWindow): void {
+/** The window's long-press menu (game actions); playing binds long-press to flagging instead. */
+function windowMenuItems(window: MinesweeperWindow): MenuItem[] {
   const nextDifficulty = DIFFICULTIES[(window.difficultyIndex + 1) % DIFFICULTIES.length]!;
-  windowMenu(window).open([
+  return [
     {
       label: "New game",
       onSelect: (ctx) => {
@@ -280,14 +281,17 @@ function openWindowMenu(window: MinesweeperWindow): void {
         if (window.soundOn) playSfx(window, SFX_RESUME);
       },
     },
-    ...defaultWindowMenuItems(window.windowId, post),
-  ]);
+  ];
 }
 
 function windowMenu(window: MinesweeperWindow): WindowMenu {
   if (!window.menu) {
     window.menu = new WindowMenu({
+      windowId: window.windowId,
+      post,
       title: () => window.title,
+      items: () => windowMenuItems(window),
+      longPressOpensMenu: () => window.phase !== "playing",
       size: { width: window.viewportWidth, height: window.viewportHeight },
       paintBase: () => paintContent(window),
       isFocused: () => window.focused,
@@ -395,7 +399,7 @@ function handleIdleInput(window: MinesweeperWindow, event: InputEvent, frameId: 
       post({ type: "yield-focus", windowId: window.windowId });
       return;
     case "long-press":
-      openWindowMenu(window);
+      windowMenu(window).open();
       break;
     default:
       frameTimings.finishFrame(frameId, "discarded: minesweeper ignored input");
@@ -591,10 +595,7 @@ function elapsedMs(window: MinesweeperWindow): number {
 }
 
 function paint(window: MinesweeperWindow): Plane[] {
-  if (window.menu?.isOpen()) {
-    return window.menu.paint();
-  }
-  return singlePlane(paintContent(window));
+  return windowMenu(window).paint();
 }
 
 function paintContent(window: MinesweeperWindow): GrayImage {

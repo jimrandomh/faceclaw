@@ -62,14 +62,32 @@ export type WorkerAppReply =
   | { type: "set-title"; windowId: string; title: string }
   | { type: "set-attention"; windowId: string; attention: boolean }
   | {
-      /** Window-menu pick: open the shell's voice dialog aimed at this window. */
+      /** Open the shell's voice dialog aimed at this window (a menu pick). */
       type: "start-voice-input";
       windowId: string;
     }
   | {
-      /** Window-menu pick: close this window (the shell owns the close path). */
+      /** Close this window (the shell owns the close path). */
       type: "close-window-request";
       windowId: string;
+    }
+  | {
+      /**
+       * The window's answer to a long-press when it has no context menu of
+       * its own: open the shell's system menu in its place.
+       */
+      type: "open-system-menu";
+      windowId: string;
+    }
+  | {
+      /**
+       * Whether a long-press currently opens the window's own context menu
+       * (with something in it). Posted on change; the shell's system menu
+       * shows its "long-press: app menu" hint only while this is true.
+       */
+      type: "set-app-menu-available";
+      windowId: string;
+      available: boolean;
     }
   | {
       /** Open or focus the Settings app, optionally jumping to a section. */
@@ -172,6 +190,8 @@ const TOOL_CALL_HOST_TIMEOUT_MS = 15_000;
 
 export class WorkerAppHost {
   private readonly openWindows = new Set<string>();
+  /** Windows that reported a context menu of their own (see set-app-menu-available). */
+  private readonly appMenuAvailable = new Set<string>();
   private readonly pendingToolCalls = new Map<string, PendingToolCall>();
   private nextCallSerial = 1;
   /**
@@ -239,6 +259,18 @@ export class WorkerAppHost {
           if (this.openWindows.has(message.windowId)) {
             shell.closeWindow(message.windowId);
             this.options.requestShellRender();
+          }
+          break;
+        case "open-system-menu":
+          if (this.openWindows.has(message.windowId)) {
+            shell.openSystemMenu(message.windowId);
+          }
+          break;
+        case "set-app-menu-available":
+          if (message.available) {
+            this.appMenuAvailable.add(message.windowId);
+          } else {
+            this.appMenuAvailable.delete(message.windowId);
           }
           break;
         case "open-settings":
@@ -314,8 +346,10 @@ export class WorkerAppHost {
       closeable: true,
       acceptsDirectional: spec.acceptsDirectional,
       heightMode,
+      hasAppMenu: () => this.appMenuAvailable.has(spec.windowId),
       close: () => {
         this.openWindows.delete(spec.windowId);
+        this.appMenuAvailable.delete(spec.windowId);
         // Withdraw this window's tools and fail any in-flight calls to it.
         toolRegistry.removeAppTools(spec.windowId);
         this.failPendingToolCallsFor(spec.windowId);

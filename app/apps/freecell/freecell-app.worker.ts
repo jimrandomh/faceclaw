@@ -22,7 +22,7 @@ import { getDefaultSmallFont } from "../../graphics/ui-fonts";
 import * as frameTimings from "../../native/frame-timings";
 import { getActiveDisplay } from "../../native/active-display";
 import { buildSoundSequencePayload, type Step } from "../../ui/sound-effects";
-import { defaultWindowMenuItems, WindowMenu } from "../../ui/window-menu";
+import { WindowMenu } from "../../ui/window-menu";
 import type { MenuItem } from "../../ui/menu";
 import type { WorkerAppMessage, WorkerAppReply } from "../../ui/shell/worker-window";
 import { directionalFallback, GESTURE_CLICK, GESTURE_DOUBLE_CLICK, GESTURE_LONG_PRESS, type InputEvent } from "../../ui/gestures";
@@ -214,8 +214,8 @@ function playSfx(window: FreecellWindow, steps: Step[]): void {
   }
 }
 
-/** The window's long-press menu (game actions + default entries). */
-function openWindowMenu(window: FreecellWindow): void {
+/** The window's long-press menu (game actions). */
+function windowMenuItems(window: FreecellWindow): MenuItem[] {
   const items: MenuItem[] = [];
   if (window.undoStack.length > 0 && window.phase === "playing") {
     items.push({
@@ -252,13 +252,16 @@ function openWindowMenu(window: FreecellWindow): void {
       },
     },
   );
-  windowMenu(window).open([...items, ...defaultWindowMenuItems(window.windowId, post)]);
+  return items;
 }
 
 function windowMenu(window: FreecellWindow): WindowMenu {
   if (!window.menu) {
     window.menu = new WindowMenu({
+      windowId: window.windowId,
+      post,
       title: () => window.title,
+      items: () => windowMenuItems(window),
       size: { width: window.viewportWidth, height: window.viewportHeight },
       paintBase: () => paintContent(window),
       isFocused: () => window.focused,
@@ -330,7 +333,7 @@ function handlePlayingInput(window: FreecellWindow, event: InputEvent, frameId: 
       }
       break;
     case "long-press":
-      openWindowMenu(window);
+      windowMenu(window).open();
       break;
     default:
       frameTimings.finishFrame(frameId, "discarded: freecell ignored input");
@@ -350,7 +353,7 @@ function handleWonInput(window: FreecellWindow, event: InputEvent, frameId: numb
       post({ type: "yield-focus", windowId: window.windowId });
       return;
     case "long-press":
-      openWindowMenu(window);
+      windowMenu(window).open();
       break;
     default:
       frameTimings.finishFrame(frameId, "discarded: freecell ignored input");
@@ -632,19 +635,18 @@ function layoutFor(window: FreecellWindow): Layout {
 }
 
 function paint(window: FreecellWindow): Plane[] {
-  if (window.menu?.isOpen()) {
-    return window.menu.paint();
-  }
-  const planes = singlePlane(paintContent(window));
-  if (window.phase === "won") {
-    // The win box goes on its own plane: card labels are deferred glyphs that
-    // render above their own image's raster, so an overlay drawn into the
-    // board image could not cover them.
-    const overlay = new GrayImage(window.viewportWidth, window.viewportHeight, 0);
-    paintWinOverlay(overlay, window);
-    planes.push({ image: overlay, x: 0, y: 0 });
-  }
-  return planes;
+  return windowMenu(window).paint(() => {
+    const planes = singlePlane(paintContent(window));
+    if (window.phase === "won") {
+      // The win box goes on its own plane: card labels are deferred glyphs
+      // that render above their own image's raster, so an overlay drawn into
+      // the board image could not cover them.
+      const overlay = new GrayImage(window.viewportWidth, window.viewportHeight, 0);
+      paintWinOverlay(overlay, window);
+      planes.push({ image: overlay, x: 0, y: 0 });
+    }
+    return planes;
+  });
 }
 
 function paintContent(window: FreecellWindow): GrayImage {

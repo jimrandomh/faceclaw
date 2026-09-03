@@ -31,9 +31,11 @@ export type InProcessWindowOptions = {
   /** Window height: the standard 288px band ("min", default) or full screen ("max"). */
   heightMode?: WindowHeightMode;
   /**
-   * App-specific entries for the window's long-press menu, listed ahead of
-   * the default Voice input / Close window entries. Called at open time, so
-   * the items can reflect current app state.
+   * The window's long-press context menu: app-specific entries only (the
+   * shared Focus app switcher / Voice input / Close window entries live in
+   * the shell's system menu). Called at open time, so the items can reflect
+   * current app state. Omitted or empty means the window has no menu of its
+   * own, and a long-press opens the system menu instead.
    */
   menuItems?: () => MenuItem[];
   /** Shared actions; requestRender is rebound to this window's render. */
@@ -128,39 +130,16 @@ export function createInProcessWindow(options: InProcessWindowOptions): InProces
     }
   }
 
-  // The window's long-press menu: app-specific items, then the defaults every
-  // window shares. In-process apps run on the main thread, so the default
-  // items act on the shell directly (workers post messages instead).
+  const appMenuItems = () => options.menuItems?.() ?? [];
+
+  // The window's long-press menu: the app's own entries, or the shell's
+  // system menu when it has none (so both gestures land on the same menu).
   const openWindowMenu = () => {
     if (stack.topMatches((layer) => layer instanceof WindowMenuLayer)) return;
-    // "Focus app switcher" first: long-press then tap defocuses the app
-    // (hands focus to the sidebar) without closing it — the reliable way out
-    // for apps that consume double-click.
-    const items: MenuItem[] = [
-      {
-        label: "Focus app switcher",
-        onSelect: (ctx) => {
-          ctx.stack.pop();
-          shell.yieldFocusToSidebar();
-        },
-      },
-      ...(options.menuItems?.() ?? []),
-    ];
-    items.push({
-      label: "Voice input",
-      onSelect: (ctx) => {
-        ctx.stack.pop();
-        shell.startVoiceInput();
-      },
-    });
-    if (options.closeable) {
-      items.push({
-        label: "Close window",
-        onSelect: (ctx) => {
-          ctx.stack.pop();
-          shell.closeWindow(options.windowId);
-        },
-      });
+    const items = appMenuItems();
+    if (!items.length) {
+      shell.openSystemMenu(options.windowId);
+      return;
     }
     stack.push(new WindowMenuLayer(options.title, items));
   };
@@ -175,6 +154,7 @@ export function createInProcessWindow(options: InProcessWindowOptions): InProces
     // directional or falls back to click / double-click.
     acceptsDirectional: true,
     heightMode,
+    hasAppMenu: () => appMenuItems().length > 0,
     close: () => {
       closed = true;
       // Fire onRemoved for any pushed layers so they release resources (e.g. a
@@ -193,8 +173,9 @@ export function createInProcessWindow(options: InProcessWindowOptions): InProces
         }
         return;
       }
-      // The default long-press response: the window menu. Handled here (not
-      // per-layer) so it works over submenus and app content alike.
+      // The default long-press response: the window menu (or the system
+      // menu in its place). Handled here (not per-layer) so it works over
+      // submenus and app content alike.
       if (event.type === "long-press") {
         openWindowMenu();
         await render(frameId);

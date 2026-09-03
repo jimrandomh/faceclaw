@@ -17,7 +17,7 @@ import * as frameTimings from "../../native/frame-timings";
 import { getActiveDisplay } from "../../native/active-display";
 import { onSettingsStoreChanged } from "../../native/settings-store";
 import type { MenuItem } from "../../ui/menu";
-import { defaultWindowMenuItems, WindowMenu } from "../../ui/window-menu";
+import { WindowMenu } from "../../ui/window-menu";
 import type { WorkerAppMessage, WorkerAppReply } from "../../ui/shell/worker-window";
 import type { ToolResult, ToolSpec } from "../../assistant/tool-registry";
 import { GESTURE_CLICK, type InputEvent } from "../../ui/gestures";
@@ -329,7 +329,10 @@ function maybeRefreshStalePage(): void {
 function windowMenu(win: RoamWindow): WindowMenu {
   if (!win.menu) {
     win.menu = new WindowMenu({
+      windowId: win.windowId,
+      post,
       title: () => win.title,
+      items: () => menuItems(win),
       size: { width: win.viewportWidth, height: win.viewportHeight },
       paintBase: () => paintContent(win),
       isFocused: () => win.focused,
@@ -380,7 +383,7 @@ function menuItems(win: RoamWindow): MenuItem[] {
       beginSettingEdit(roamApiTokenSetting);
     },
   });
-  return [...items, ...defaultWindowMenuItems(win.windowId, post)];
+  return items;
 }
 
 /**
@@ -421,7 +424,7 @@ function handleInput(win: RoamWindow, event: InputEvent, frameId: number): void 
     return;
   }
   if (event.type === "long-press") {
-    windowMenu(win).open(menuItems(win));
+    windowMenu(win).open();
     renderAndSubmit(win, frameId);
     return;
   }
@@ -583,9 +586,9 @@ async function handleRoamTool(name: string, args: any): Promise<ToolResult> {
 // Painting
 
 function paint(win: RoamWindow): Plane[] {
-  if (win.menu?.isOpen()) return win.menu.paint();
-  if (editingSetting) return singlePlane(paintSettingEdit(win, editingSetting));
-  return singlePlane(paintContent(win));
+  return windowMenu(win).paint(() =>
+    singlePlane(editingSetting ? paintSettingEdit(win, editingSetting) : paintContent(win)),
+  );
 }
 
 /** The "type on the phone" screen shown while a Roam setting is being edited. */
