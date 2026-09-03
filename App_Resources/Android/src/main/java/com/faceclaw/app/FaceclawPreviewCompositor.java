@@ -72,6 +72,11 @@ public final class FaceclawPreviewCompositor {
         compositor.removeSurface(id);
     }
 
+    /** Dim every surface below zOrder belowZOrder to factor256/256 (see SurfaceCompositor). */
+    public void setUnderlayDim(int belowZOrder, int factor256) {
+        compositor.setUnderlayDim(belowZOrder, factor256);
+    }
+
     public void setSurfaceVisible(String id, boolean visible) {
         compositor.setSurfaceVisible(id, visible);
     }

@@ -5,6 +5,7 @@
 * System and app context menus show gesture help for switching to the other context menu
 * Move some items from app context menus to the system context menu
 * Long-press now opens the system context menu and tap-then-hold the app context menu (games keep long-press as a move while playing)
+* Content beneath an open context menu is dimmed
 
 ## 0.6.4 - 2026-09-02
 * Context menus are centered and include window title

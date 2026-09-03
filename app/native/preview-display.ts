@@ -1,5 +1,5 @@
 import { ImageSource, Utils } from "@nativescript/core";
-import type { FaceclawCommunicatorBridge, SurfaceOptions } from "./faceclaw-communicator";
+import { dimFactor256, type FaceclawCommunicatorBridge, type SurfaceOptions } from "./faceclaw-communicator";
 
 declare const com: any;
 declare const java: any;
@@ -19,6 +19,7 @@ export type DisplayTarget = Pick<
   | "configureSurface"
   | "removeSurface"
   | "setSurfaceVisible"
+  | "setUnderlayDim"
   | "setScreenBlanked"
   | "submitSurfaceFrame"
   | "waitForFrameFinished"
@@ -94,6 +95,10 @@ export class PreviewDisplayTarget implements DisplayTarget {
 
   async setSurfaceVisible(id: string, visible: boolean): Promise<void> {
     this.compositor.setSurfaceVisible(id, Boolean(visible));
+  }
+
+  async setUnderlayDim(belowZOrder: number, factor: number): Promise<void> {
+    this.compositor.setUnderlayDim(Math.round(belowZOrder), dimFactor256(factor));
   }
 
   async setScreenBlanked(blanked: boolean): Promise<void> {

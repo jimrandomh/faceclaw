@@ -1,5 +1,5 @@
 import { G2_LENS_HEIGHT, G2_LENS_WIDTH, GrayImage } from "../graphics/image";
-import { type Plane } from "../graphics/plane";
+import { dimPlanes, type Plane } from "../graphics/plane";
 import { spanCurrent } from "../native/frame-timings";
 import { type ConfigSettingBoolean, type ConfigSettingString } from "./dashboard-settings";
 import { directionalFallback, isDirectionalInput, type InputEvent } from "./gestures";
@@ -80,6 +80,15 @@ export interface LayerContext {
 
 export interface Layer {
   readonly paintOverBase?: boolean;
+  /**
+   * Dim everything painted beneath this layer: a 0..1 brightness factor
+   * applied to the pixels and glyphs of every plane below it in the stack
+   * (only meaningful for layers that call paintBelow). false, the default,
+   * leaves the planes below as painted. For the shell's stack the factor also
+   * reaches the window surfaces beneath the shell surface (see
+   * LayerStack.baseDim).
+   */
+  readonly dimUnderneath?: false | number;
   paint(ctx: LayerContext, paintBelow: PaintBelow): GrayImage;
   handleInput(event: InputEvent, ctx: LayerContext): Promise<void> | void;
   /**
@@ -110,6 +119,7 @@ export class LayerStack {
   private baseWidth: number;
   private baseHeight: number;
   private readonly focusedFn: () => boolean;
+  private lastBaseDim: number | false = 1;
 
   constructor(
     baseLayer: Layer,
@@ -203,7 +213,19 @@ export class LayerStack {
    * PaintBelow). All planes share the stack's base size at offset (0, 0).
    */
   paint(): Plane[] {
-    return this.paintLayer(this.layers.length - 1);
+    this.lastBaseDim = false;
+    return this.paintLayer(this.layers.length - 1, 1);
+  }
+
+  /**
+   * The brightness factor the last paint applied to the base plane: 1 when
+   * nothing dims it, a smaller factor under a layer with dimUnderneath, and
+   * false when the base was not painted at all (a stacked layer replaced it).
+   * A stack whose base is transparent over something else (the shell chrome
+   * over the window surfaces) forwards this to what lies beneath.
+   */
+  baseDim(): number | false {
+    return this.lastBaseDim;
   }
 
   async handleInput(event: InputEvent): Promise<void> {
@@ -235,7 +257,8 @@ export class LayerStack {
   }
 
 
-  private paintLayer(index: number): Plane[] {
+  /** Paint layer `index`; `dimSoFar` is the factor the layers above apply to it. */
+  private paintLayer(index: number, dimSoFar: number): Plane[] {
     const layer = this.layers[index]!;
     let canvas: GrayImage | null = null;
     let belowRequested = false;
@@ -249,10 +272,15 @@ export class LayerStack {
       }),
     );
     const ownPlane: Plane = { image, x: 0, y: 0 };
-    if (index <= 0 || !belowRequested) {
+    if (index <= 0) {
+      this.lastBaseDim = dimSoFar;
       return [ownPlane];
     }
-    const below = layer.paintOverBase ? this.paintLayer(0) : this.paintLayer(index - 1);
-    return [...below, ownPlane];
+    if (!belowRequested) {
+      return [ownPlane];
+    }
+    const dim = layer.dimUnderneath || 1;
+    const below = this.paintLayer(layer.paintOverBase ? 0 : index - 1, dimSoFar * dim);
+    return [...(dim < 1 ? dimPlanes(below, dim) : below), ownPlane];
   }
 }

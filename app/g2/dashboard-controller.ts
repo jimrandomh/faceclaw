@@ -122,6 +122,8 @@ type DashboardListener = (snapshot: DashboardSnapshot) => void;
 // The shell chrome (sidebar + top bar + overlays) composites above all app
 // window surfaces with color-key transparency.
 const SHELL_SURFACE_ID = "shell";
+/** The shell chrome composites above every window surface (zOrder 0). */
+const SHELL_SURFACE_Z_ORDER = 1;
 const LOCK_SCREEN_SURFACE_ID = "lock-screen";
 const LOCK_SCREEN_MESSAGE = "Glasses locked; unlock the phone to unlock the glasses.";
 // Top-bar clock refresh; the phone-side preview polls the Java composite so
@@ -265,6 +267,8 @@ class DashboardController {
   /** Input frame that requested the next shell render; see requestShellRender. */
   private pendingShellRenderCauseFrameId = 0;
   private nextShellRenderWantsFreshData = false;
+  /** The under-shell dim last sent to the display (see Shell.underlayDim); 1 = none. */
+  private appliedUnderlayDim = 1;
   // One shared worker per app hosts all its windows; spawned on first launch.
   private readonly appHosts = new Map<string, WorkerAppHost>();
   // The window hosting the on-glasses text-setting editor (the Settings app
@@ -1084,9 +1088,13 @@ class DashboardController {
         y: 0,
         width: G2_LENS_WIDTH,
         height: G2_LENS_HEIGHT,
-        zOrder: 1,
+        zOrder: SHELL_SURFACE_Z_ORDER,
         transparency: "color-key",
       });
+      // A fresh (or reused) compositor starts undimmed; the shell render
+      // loop re-applies the current dim from here.
+      await target.setUnderlayDim(SHELL_SURFACE_Z_ORDER, 1);
+      this.appliedUnderlayDim = 1;
       const foregroundWindowId = shell.foregroundWindow()?.windowId;
       for (const window of shell.getWindows()) {
         await this.configureWindowSurface(
@@ -1364,9 +1372,13 @@ class DashboardController {
         y: 0,
         width: G2_LENS_WIDTH,
         height: G2_LENS_HEIGHT,
-        zOrder: 1,
+        zOrder: SHELL_SURFACE_Z_ORDER,
         transparency: "color-key",
       });
+      // A fresh (or reused) compositor starts undimmed; the shell render
+      // loop re-applies the current dim from here.
+      await communicator.setUnderlayDim(SHELL_SURFACE_Z_ORDER, 1);
+      this.appliedUnderlayDim = 1;
       await this.configureLockSurface(communicator);
       const foregroundWindowId = shell.foregroundWindow()?.windowId;
       for (const window of shell.getWindows()) {
@@ -2291,6 +2303,14 @@ class DashboardController {
     if (!display || this.phase === "charging") {
       frameTimings.finishFrame(frameId, "discarded: shell render with no display target");
       return;
+    }
+    // A shell overlay that dims what it covers (a context menu) must dim the
+    // window surfaces too, which live below the shell surface in the
+    // compositor: forward the factor before this frame composites.
+    const underlayDim = shell.underlayDim();
+    if (underlayDim !== this.appliedUnderlayDim) {
+      this.appliedUnderlayDim = underlayDim;
+      await display.setUnderlayDim(SHELL_SURFACE_Z_ORDER, underlayDim);
     }
     const fingerprint = frameTimings.span(frameId, "fingerprint", () => planesFingerprint(planes));
     const { image, draws } = frameTimings.span(frameId, "flatten", () => flattenPlanesWithDraws(planes));

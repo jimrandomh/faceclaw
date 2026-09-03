@@ -31,9 +31,11 @@ export type MenuLayout = {
   maxHeight?: number;
   /**
    * Dim hint line pinned to the bottom edge inside the box, below the items
-   * (gesture help such as "●- system menu"). Takes a line off the item area.
+   * (gesture help such as "●— system menu"). Takes a line off the item area.
    */
   footer?: string;
+  /** Brightness factor for everything beneath the menu (see Layer.dimUnderneath). Default: none. */
+  dimUnderneath?: number;
   /**
    * Paint as a standalone page: the layers below stay in the stack for back
    * navigation but are not composited underneath. Default: false — the menu
@@ -182,9 +184,16 @@ export function drawRightValueMenuItem(
   image.drawText(font, valueX, y + LIST_ROW_TEXT_INSET, value, 220);
 }
 
+/** How far context menus (window and system) dim the content beneath them. */
+export const CONTEXT_MENU_DIM = 0.25;
+
 export class MenuLayer implements Layer {
   private selectedIndex = 0;
   private scrollRow = 0;
+
+  get dimUnderneath(): false | number {
+    return this.layout.dimUnderneath ?? false;
+  }
 
   constructor(
     private readonly title: string | null,

@@ -809,6 +809,16 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     }
 
     /**
+     * Dim every surface below zOrder belowZOrder to factor256/256 (see
+     * SurfaceCompositor.setUnderlayDim). Takes effect with the next submitted
+     * frame: the shell always submits its own surface right after changing
+     * this, so no recomposite happens here.
+     */
+    public void setUnderlayDim(int belowZOrder, int factor256) {
+        compositor.setUnderlayDim(belowZOrder, factor256);
+    }
+
+    /**
      * Apply an update to one compositor surface and submit the recomposited
      * screen as the desired frame. The update covers the rect (rectX, rectY,
      * rectWidth, rectHeight) in surface-local coordinates; contentFingerprint

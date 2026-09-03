@@ -2,7 +2,7 @@ import { GrayImage } from "../graphics/image";
 import { singlePlane, type Plane } from "../graphics/plane";
 import { GESTURE_LONG_PRESS, gestureHints, type InputEvent } from "./gestures";
 import { type Layer, LayerStack, noopLayerActions } from "./layers";
-import { MenuLayer, type MenuItem, type MenuLayout } from "./menu";
+import { CONTEXT_MENU_DIM, MenuLayer, type MenuItem, type MenuLayout } from "./menu";
 import type { WorkerAppReply } from "./shell/worker-window";
 
 /**
@@ -23,6 +23,7 @@ export const WINDOW_MENU_LAYOUT: MenuLayout = {
   width: 272,
   minHeight: 150,
   footer: gestureHints([[GESTURE_LONG_PRESS, "system menu"]]),
+  dimUnderneath: CONTEXT_MENU_DIM,
 };
 
 export class WindowMenuLayer extends MenuLayer {

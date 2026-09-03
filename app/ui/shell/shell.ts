@@ -15,7 +15,7 @@ import {
   makeInputEvent,
 } from "../gestures";
 import { Layer, LayerActions, LayerContext, LayerStack, noopLayerActions } from "../layers";
-import { MenuLayer, type MenuItem } from "../menu";
+import { CONTEXT_MENU_DIM, MenuLayer, type MenuItem } from "../menu";
 import { VoiceInputLayer, type VoiceSendTarget } from "./voice-input";
 import { voiceActivity } from "./voice-activity";
 import { AssistantLayer } from "./assistant";
@@ -206,6 +206,7 @@ class ShellOverlayMenuLayer extends MenuLayer {
       width,
       minHeight: 150,
       footer,
+      dimUnderneath: CONTEXT_MENU_DIM,
     });
   }
 
@@ -601,6 +602,17 @@ class Shell {
       return singlePlane(new GrayImage(G2_LENS_WIDTH, G2_LENS_HEIGHT, 0));
     }
     return this.stack.paint();
+  }
+
+  /**
+   * The brightness factor a shell overlay (a context menu) currently applies
+   * to what lies beneath the shell surface, i.e. the window surfaces: 1 when
+   * nothing dims them. Read after paintSurface; the controller forwards it to
+   * the compositor, which cannot see the shell's layer stack.
+   */
+  underlayDim(): number {
+    const dim = this.stack.baseDim();
+    return this.screenOn && dim !== false ? dim : 1;
   }
 
   async receiveInput(event: InputEvent, frameId = 0): Promise<ShellInputOutcome> {
