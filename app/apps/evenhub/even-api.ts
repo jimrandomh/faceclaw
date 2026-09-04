@@ -20,6 +20,7 @@ const API_HOST = "https://api.evenrealities.com";
 const PUBLIC_CDN_HOST = "https://cdn-pub.evenhub.evenrealities.com";
 const SIGN_KEY = "a7964f42c39200cfa25c258b7a311b106e20232173667e543c34ced91d63b404";
 const REQUEST_TIMEOUT_MS = 30_000;
+const PAGE_SIZE = 40;
 
 export type EvenHubStoreApp = {
   id: number;
@@ -80,17 +81,31 @@ export class EvenHubApiClient {
   private loginPromise: Promise<string> | null = null;
 
   async listApps(page = 1, category = ""): Promise<EvenHubStorePage> {
-    const query: Record<string, string | number> = { page, page_size: 40 };
+    const query: Record<string, string | number> = { page, page_size: PAGE_SIZE };
     if (category) query.category = category;
     const data = await this.authenticatedRequest("GET", "/v2/evenhub/leaderboard", { query });
-    const root = asRecord(data);
-    const list = Array.isArray(root.list) ? root.list : [];
-    return {
-      apps: list.map(parseStoreApp).filter((app): app is EvenHubStoreApp => app !== null),
-      total: finiteNumber(root.total),
-      page: finiteNumber(root.page) || page,
-      pageSize: finiteNumber(root.page_size) || 40,
-    };
+    return parseStorePage(data, page);
+  }
+
+  /**
+   * Public apps ordered by first publication, newest first. The official app
+   * requests `/ranking?sort_by=first_published_at`; whether the endpoint pages
+   * is unverified, so callers must tolerate a repeated (or complete) list and
+   * a missing total.
+   */
+  async listNewApps(page = 1): Promise<EvenHubStorePage> {
+    const data = await this.authenticatedRequest("GET", "/v2/evenhub/ranking", {
+      query: { sort_by: "first_published_at", page, page_size: PAGE_SIZE },
+    });
+    return parseStorePage(data, page);
+  }
+
+  /** Full-text storefront search (`/search?q=`), with the same paging caveats as listNewApps. */
+  async searchApps(queryText: string, page = 1): Promise<EvenHubStorePage> {
+    const data = await this.authenticatedRequest("GET", "/v2/evenhub/search", {
+      query: { q: queryText, page, page_size: PAGE_SIZE },
+    });
+    return parseStorePage(data, page);
   }
 
   async getAppDetail(packageId: string): Promise<Record<string, unknown>> {
@@ -362,6 +377,25 @@ export function getPhoneOpenUdid(): string {
     : "";
   if (!openUdid) throw new Error("Android did not provide a device ID for EvenHub authentication.");
   return openUdid;
+}
+
+/**
+ * Parse a list response. The leaderboard returns `{list, total, page,
+ * page_size}`; the ranking/search endpoints were only recovered from the
+ * client's request paths, so accept a bare array or the other common
+ * wrapper keys too. A missing total comes back as 0 ("unknown").
+ */
+function parseStorePage(data: unknown, requestedPage: number): EvenHubStorePage {
+  const root = asRecord(data);
+  const list = Array.isArray(data)
+    ? data
+    : [root.list, root.apps, root.items, root.data, root.results].find(Array.isArray) ?? [];
+  return {
+    apps: list.map(parseStoreApp).filter((app): app is EvenHubStoreApp => app !== null),
+    total: finiteNumber(root.total),
+    page: finiteNumber(root.page) || requestedPage,
+    pageSize: finiteNumber(root.page_size) || PAGE_SIZE,
+  };
 }
 
 function parseStoreApp(value: unknown): EvenHubStoreApp | null {

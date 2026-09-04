@@ -74,6 +74,8 @@ import {
   uninstallEvenHubPackage,
 } from "../apps/evenhub/installed-apps";
 import { closeRunningPackage, launchInstalledPackage } from "../apps/evenhub/manager";
+import { openEvenHubStoreForPackage } from "../apps/evenhub";
+import { isInstalledPackagePresent } from "../apps/evenhub/updates";
 import { wearerVerificationOptions } from "../apps/microphones/speakers";
 import { micSession } from "../apps/microphones/mic-session";
 import { glassesDisplayLabel } from "./glasses-display-state";
@@ -2251,6 +2253,13 @@ class DashboardController {
     const installed = getInstalledEvenHubAppById(appId);
     if (installed) {
       const host = ALL_APPS.find((entry) => entry.appId === "evenhub")!;
+      if (!isInstalledPackagePresent(installed.packageId)) {
+        // The registry knows the app but its package is gone (a settings
+        // import after a reinstall): offer the store's Reinstall page.
+        this.appendLog(`evenhub: package missing for ${installed.packageId}; opening store page`);
+        await openEvenHubStoreForPackage(this.buildAppContext(host), installed);
+        return;
+      }
       await launchInstalledPackage(this.buildAppContext({ ...host, appId }), installed);
       return;
     }
