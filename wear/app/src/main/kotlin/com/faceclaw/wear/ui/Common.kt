@@ -85,7 +85,7 @@ fun padLine(state: PhoneState?, link: LinkStatus): StatusLine = when {
     }
     state.phase == "connecting" -> StatusLine("Connecting…", StatusTone.BUSY)
     state.phase == "disconnecting" -> StatusLine("Disconnecting…", StatusTone.BUSY)
-    else -> StatusLine("Glasses disconnected", StatusTone.OFF)
+    else -> StatusLine("Disconnected", StatusTone.OFF)
 }
 
 private fun chargingLine(battery: Int?): String =
