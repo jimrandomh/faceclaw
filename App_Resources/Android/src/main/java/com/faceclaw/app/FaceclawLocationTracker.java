@@ -9,6 +9,7 @@ import android.location.LocationManager;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.SystemClock;
 
 import androidx.core.content.ContextCompat;
 
@@ -25,6 +26,14 @@ public final class FaceclawLocationTracker implements LocationListener {
     private final Context context;
     private final LocationManager locationManager;
     private final Handler callbackHandler;
+
+    /**
+     * Only seed from the platform's cached fix when it is this fresh. An older
+     * one is likely wherever the phone was last used (for example the previous
+     * navigation's destination), and guidance built on it is wrong from the
+     * first frame: the route starts there and arrival fires immediately.
+     */
+    private static final long MAX_SEED_AGE_MS = 60L * 1000L;
 
     private FaceclawLocationTrackerListener listener;
     private boolean running;
@@ -83,11 +92,9 @@ public final class FaceclawLocationTracker implements LocationListener {
             locationManager.requestLocationUpdates(provider, Math.max(500L, intervalMs), 0f, this,
                     callbackHandler.getLooper());
             // Seed with the freshest cached fix so the UI has a position
-            // before the first live fix (GPS cold starts can take a while).
-            Location cached = locationManager.getLastKnownLocation(provider);
-            if (cached == null) {
-                cached = locationManager.getLastKnownLocation(LocationManager.NETWORK_PROVIDER);
-            }
+            // before the first live fix (GPS cold starts can take a while),
+            // but only if it's recent enough to still be where the user is.
+            Location cached = freshestCachedLocation(provider);
             if (cached != null) {
                 deliverLocation(cached);
             }
@@ -98,6 +105,32 @@ public final class FaceclawLocationTracker implements LocationListener {
             running = false;
             deliverError("Unable to start location updates.");
         }
+    }
+
+    private Location freshestCachedLocation(String primaryProvider) {
+        Location best = null;
+        for (String provider : new String[] {primaryProvider, LocationManager.NETWORK_PROVIDER,
+                LocationManager.GPS_PROVIDER}) {
+            Location candidate;
+            try {
+                candidate = locationManager.getLastKnownLocation(provider);
+            } catch (Throwable ignored) {
+                continue;
+            }
+            if (candidate == null || ageMs(candidate) > MAX_SEED_AGE_MS) {
+                continue;
+            }
+            if (best == null || candidate.getElapsedRealtimeNanos() > best.getElapsedRealtimeNanos()) {
+                best = candidate;
+            }
+        }
+        return best;
+    }
+
+    /** Age via the monotonic clock, so a wall-clock change can't make an old fix look fresh. */
+    private static long ageMs(Location location) {
+        long ageNanos = SystemClock.elapsedRealtimeNanos() - location.getElapsedRealtimeNanos();
+        return ageNanos / 1_000_000L;
     }
 
     private String chooseProvider() {

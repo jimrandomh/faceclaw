@@ -90,6 +90,13 @@ const MAP_RETRY_BACKOFF_MS = 5_000;
 const REROUTE_MIN_INTERVAL_MS = 20_000;
 const FIRST_FIX_TIMEOUT_MS = 10_000;
 const LOCATION_INTERVAL_MS = 1_000;
+/**
+ * A fix older than this is not where the user is now. The tracker seeds each
+ * start with the platform's cached fix, and after a previous trip that can be
+ * the old destination: routing from it, or feeding it to the follower, ends a
+ * fresh navigation with "Arrived" before a live fix ever comes in.
+ */
+const FIX_MAX_AGE_MS = 60_000;
 /** Above this speed a GPS bearing is trustworthy for heading-up. */
 const BEARING_MIN_SPEED_MPS = 2.5;
 /** The head-direction chevron only redraws once the wearer has turned this far. */
@@ -467,8 +474,16 @@ function stopNavigation(finalStatus: string): void {
   ensureTickTimer();
 }
 
+function isFreshFix(fix: TrackedLocation): boolean {
+  return Date.now() - fix.timestampMs < FIX_MAX_AGE_MS;
+}
+
 function handleFix(fix: TrackedLocation): void {
-  lastFix = fix;
+  if (!lastFix || fix.timestampMs >= lastFix.timestampMs) lastFix = fix;
+  // A stale fix (a cached seed from a previous outing) may position the map
+  // until something better arrives, but it must not stand in for the user's
+  // current location: it neither starts a route nor advances guidance.
+  if (!isFreshFix(fix)) return;
   if (fix.bearingDeg !== null && (fix.speedMps ?? 0) >= BEARING_MIN_SPEED_MPS) {
     lastBearingDeg = fix.bearingDeg;
   }
@@ -522,7 +537,7 @@ function stopTrackingIfIdle(): void {
 }
 
 function waitForFix(): Promise<TrackedLocation> {
-  if (lastFix && Date.now() - lastFix.timestampMs < 60_000) {
+  if (lastFix && isFreshFix(lastFix)) {
     return Promise.resolve(lastFix);
   }
   return new Promise<TrackedLocation>((resolve, reject) => {
