@@ -16,6 +16,10 @@ const DEFAULT_ASSIGNMENTS: Record<string, string> = {
   freecell: "Games",
   minesweeper: "Games",
   pinball: "Games",
+  calculator: "Prototypes",
+  microphones: "Prototypes",
+  nightscout: "Prototypes",
+  roam: "Prototypes",
 };
 
 export const FOLDER_NAME_MAX_LENGTH = 24;

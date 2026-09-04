@@ -11,6 +11,7 @@
 * Navigate app: Add saved home/work and recent address settings
 * Navigate app: Darken the map background color
 * Add a light sensor demo to the Developer app
+* Move Calculator, Microphones, Nightscout, and Roam apps to Prototpyes folder by default
 
 ## 0.6.4 - 2026-09-02
 * Context menus are centered and include window title
