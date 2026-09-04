@@ -721,6 +721,96 @@ export const nightscoutApiTokenSetting = new ConfigSettingString({
   description: "Access token for the Nightscout site's API.",
 });
 
+// ---------------------------------------------------------------------------
+// Navigate app: saved and recent destinations.
+
+const stripControlChars = (value: string | null | undefined): string =>
+  (value ?? "").replace(/[\x00-\x1f]+/g, "").trim();
+
+export const navigateHomeAddressSetting = new ConfigSettingString({
+  id: "navigate-home-address",
+  label: "Home address",
+  storageKey: "navigate.homeAddress",
+  defaultValue: "",
+  editorTitle: "Home address",
+  glassesEditTitle: "Set Home address",
+  normalize: stripControlChars,
+  formatValue: emptySettingDisplay,
+  description: "Address (or place name) the Navigate app's Home destination routes to.",
+});
+
+export const navigateWorkAddressSetting = new ConfigSettingString({
+  id: "navigate-work-address",
+  label: "Work address",
+  storageKey: "navigate.workAddress",
+  defaultValue: "",
+  editorTitle: "Work address",
+  glassesEditTitle: "Set Work address",
+  normalize: stripControlChars,
+  formatValue: emptySettingDisplay,
+  description: "Address (or place name) the Navigate app's Work destination routes to.",
+});
+
+export const navigateRememberRecentSetting = new ConfigSettingBoolean({
+  id: "navigate-remember-recent",
+  label: "Remember recent destinations",
+  storageKey: "navigate.rememberRecent",
+  defaultValue: true,
+  description:
+    "Keep a short list of places you have navigated to, offered as destinations on the Navigate app's start page. Turning this off clears the list.",
+});
+
+/**
+ * Custom named destinations beyond Home and Work, as a JSON array of
+ * {id, name, address}. Managed inside the Navigate app (its context menu),
+ * not listed in the Settings app.
+ */
+export const navigateSavedDestinationsSetting = new ConfigSettingString({
+  id: "navigate-saved-destinations",
+  label: "Saved destinations",
+  storageKey: "navigate.savedDestinations",
+  defaultValue: "[]",
+});
+
+/**
+ * Recently navigated-to places, as a JSON array of {name, place, longitude,
+ * latitude, atMs}, most recent first. Written by the Navigate app when
+ * navigateRememberRecentSetting is on.
+ */
+export const navigateRecentDestinationsSetting = new ConfigSettingString({
+  id: "navigate-recent-destinations",
+  label: "Recent destinations",
+  storageKey: "navigate.recentDestinations",
+  defaultValue: "[]",
+});
+
+/**
+ * Staging buffers for the Navigate app's add/edit-destination flow: the
+ * worker asks the shell to open the phone text editor on one of these, the
+ * user types (or dictates) the name/address, and the worker reads the draft
+ * when the user confirms on the glasses. Deliberately not listed in the
+ * Settings app.
+ */
+export const navigateDestinationNameDraftSetting = new ConfigSettingString({
+  id: "navigate-destination-name-draft",
+  label: "Destination name",
+  storageKey: "navigate.destinationNameDraft",
+  defaultValue: "",
+  editorTitle: "Destination name (e.g. Gym)",
+  glassesEditTitle: "Destination name",
+  normalize: stripControlChars,
+});
+
+export const navigateDestinationAddressDraftSetting = new ConfigSettingString({
+  id: "navigate-destination-address-draft",
+  label: "Destination address",
+  storageKey: "navigate.destinationAddressDraft",
+  defaultValue: "",
+  editorTitle: "Destination address or place name",
+  glassesEditTitle: "Destination address",
+  normalize: stripControlChars,
+});
+
 
 export function screenTimeoutSettingToMs(value: ScreenTimeoutSetting): number | null {
   switch (value) {

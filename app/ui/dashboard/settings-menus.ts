@@ -39,6 +39,9 @@ import {
   elevenLabsApiKeySetting,
   mapboxApiKeySetting,
   mirrorTouchSetting,
+  navigateHomeAddressSetting,
+  navigateRememberRecentSetting,
+  navigateWorkAddressSetting,
   openAiApiKeySetting,
   previewColorSetting,
   ringConnectionModeSetting,
@@ -65,6 +68,7 @@ import {
   watchMirrorAssistantSetting,
   watchRemoteEnabledSetting,
 } from "../dashboard-settings";
+import { clearRecentDestinations } from "../../apps/navigate/destinations";
 import { wearBridge } from "../../native/wear-bridge";
 import { SettingsPanelLayer, type SettingsSection } from "./settings-panel";
 import { terminalFontPickerMenuItem, uiFontPickerMenuItem } from "../font-picker";
@@ -144,6 +148,20 @@ function settingsSections(): SettingsSection[] {
         textSettingMenuItem(terminalLaunchPresetsSetting),
         toggleSettingMenuItem(terminalAutoReconnectSetting),
         toggleSettingMenuItem(terminalWakeOnBellSetting),
+      ],
+    },
+    {
+      label: "Navigate",
+      // Home/Work are plain addresses; other named destinations (and the
+      // recent list) are managed inside the Navigate app's context menu.
+      items: [
+        textSettingMenuItem(navigateHomeAddressSetting),
+        textSettingMenuItem(navigateWorkAddressSetting),
+        toggleSettingMenuItem(navigateRememberRecentSetting, {
+          onChange: (_ctx, enabled) => {
+            if (!enabled) clearRecentDestinations();
+          },
+        }),
       ],
     },
     {
