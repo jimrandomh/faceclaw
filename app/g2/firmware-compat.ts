@@ -89,6 +89,15 @@ export function hasMicControl(info: FirmwareInfo): boolean {
   return info.capabilities.trim().split(/\s+/).includes("micctl");
 }
 
+/**
+ * True when the firmware advertises the optional ambient-light extension:
+ * image-handler mode 16 (query / passive polling of the OPT3001 light sensor)
+ * with field-105 reports, used to drive a phone-side brightness policy.
+ */
+export function hasAmbientLightSensor(info: FirmwareInfo): boolean {
+  return info.capabilities.trim().split(/\s+/).includes("als16");
+}
+
 /** The higher of the two arms' reported versions, or "" if none reported. */
 export function reportedFirmwareVersion(info: FirmwareInfo): string {
   const versions = [info.leftVersion, info.rightVersion].map((v) => v.trim()).filter(Boolean);

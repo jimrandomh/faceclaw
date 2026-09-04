@@ -57,6 +57,12 @@ public class BleProtocol {
      */
     public static final int FACECLAW_MIC_CONTROL_FIELD = 103;
     public static final int FACECLAW_MIC_STATUS_FIELD = 104;
+    /**
+     * CFW als_sensor (EVENCFW/18, caps token als16): ambient-light reports on
+     * settings-channel field 105, 24-byte ['A','L',ver,reason,...] records from
+     * the master temple (decoded in app/native/ambient-light.ts).
+     */
+    public static final int FACECLAW_ALS_REPORT_FIELD = 105;
     public static final int FACECLAW_WAKE_OP_ACQUIRE = 1;
     public static final int FACECLAW_WAKE_OP_RELEASE = 2;
     public static final int FACECLAW_WAKE_OP_CLAIM = 3;
@@ -444,6 +450,26 @@ public class BleProtocol {
                 || body.length < 3
                 || body[0] != 'M'
                 || body[1] != 'C') {
+            return null;
+        }
+        return body;
+    }
+
+    /**
+     * Return the raw CFW ambient-light report from a sid-0x09 frame, or null
+     * when this is an ordinary settings frame. Only the 'A','L',version prelude
+     * is validated here; the fields are decoded on the TS side.
+     */
+    public static byte[] parseFaceclawAlsReport(byte[] pb) {
+        if (pb == null) {
+            return null;
+        }
+        byte[] body = readFieldBytes(stripTrailingCrc(pb), FACECLAW_ALS_REPORT_FIELD);
+        if (body == null
+                || body.length < 24
+                || body[0] != 'A'
+                || body[1] != 'L'
+                || (body[2] & 0xff) != 1) {
             return null;
         }
         return body;

@@ -73,6 +73,8 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
 
     private final java.util.List<CompassSubscription> compassSubscriptions =
         new java.util.concurrent.CopyOnWriteArrayList<>();
+    private final java.util.List<FaceclawAmbientLightListener> ambientLightListeners =
+        new java.util.concurrent.CopyOnWriteArrayList<>();
     private final java.util.List<FaceclawMicStatusListener> micStatusListeners =
         new java.util.concurrent.CopyOnWriteArrayList<>();
     private volatile String lastFirmwareCapabilities = "";
@@ -593,6 +595,91 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     /** The CFW capability token string from the last firmware-info read ("" before one arrives). */
     public String getFirmwareCapabilities() {
         return lastFirmwareCapabilities;
+    }
+
+    public void addAmbientLightListener(FaceclawAmbientLightListener listener) {
+        if (listener != null) {
+            ambientLightListeners.add(listener);
+        }
+    }
+
+    public void removeAmbientLightListener(FaceclawAmbientLightListener listener) {
+        if (listener != null) {
+            ambientLightListeners.remove(listener);
+        }
+    }
+
+    private void emitAmbientLight(byte[] body) {
+        if (ambientLightListeners.isEmpty()) {
+            return;
+        }
+        byte[] copy = java.util.Arrays.copyOf(body, body.length);
+        mainHandler.post(() -> {
+            for (FaceclawAmbientLightListener alsListener : ambientLightListeners) {
+                try {
+                    alsListener.onAmbientLight(copy);
+                } catch (Throwable t) {
+                    Log.w(TAG, "ambient light listener failed", t);
+                }
+            }
+        });
+    }
+
+    /** Request one CFW ambient-light report (image-handler mode 16 op 0). */
+    public void queryAmbientLight() {
+        synchronized (lock) {
+            enqueueAmbientLightControlLocked(new byte[] { (byte) 16, (byte) 0 }, "als query", false);
+        }
+        interruptibleSleep.interrupt();
+    }
+
+    /**
+     * Start or stop CFW passive light-sensor polling (image-handler mode 16
+     * ops 1/2). While polling, the firmware reads its OPT3001 every intervalMs
+     * (clamped 100..5000 by the firmware), never steps the panel brightness
+     * itself, and pushes a field-105 report when the reading moved by at least
+     * minDelta or heartbeatMs elapsed. bindToLease stops polling automatically
+     * when the Faceclaw framebuffer lease is released or lapses. Starting is
+     * idempotent and re-opens the sensor if the stock firmware closed it.
+     */
+    public void setAmbientLightPolling(boolean enable, int intervalMs, int minDelta,
+                                       int heartbeatMs, boolean bindToLease) {
+        byte[] payload = enable
+            ? new byte[] {
+                (byte) 16,
+                (byte) 1,
+                (byte) (bindToLease ? 1 : 0),
+                (byte) (intervalMs & 0xff),
+                (byte) ((intervalMs >> 8) & 0xff),
+                (byte) (minDelta & 0xff),
+                (byte) ((minDelta >> 8) & 0xff),
+                (byte) (heartbeatMs & 0xff),
+                (byte) ((heartbeatMs >> 8) & 0xff),
+            }
+            : new byte[] { (byte) 16, (byte) 2 };
+        synchronized (lock) {
+            clearMessagesOfKindLocked("als-control");
+            enqueueAmbientLightControlLocked(payload, "als polling " + (enable ? "start" : "stop"), true);
+        }
+        interruptibleSleep.interrupt();
+    }
+
+    private void enqueueAmbientLightControlLocked(byte[] payload, String label, boolean priority) {
+        if (!running || !sessionReady || shutdownRequested || !fixedLayoutCreated) {
+            logLine("skip " + label + "; display path not ready");
+            return;
+        }
+        OutboundMessage message = messageBuilder.imagePayload(
+            "als-control",
+            DASHBOARD_TILE,
+            nextMapSessionId(),
+            payload,
+            label,
+            connectionOptions.sendImagesToLeft);
+        message.onTimeout = () -> logLine(label + " ack timeout");
+        if (priority) pendingMessages.addFirst(message);
+        else pendingMessages.addLast(message);
+        logLine("queue " + label);
     }
 
     public void addMicStatusListener(FaceclawMicStatusListener listener) {
@@ -1408,6 +1495,15 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 byte[] micStatus = BleProtocol.parseFaceclawMicStatus(frame.pb);
                 if (micStatus != null) {
                     emitMicStatus(micStatus, address);
+                }
+            }
+            if (!faceclawWakeNotification
+                    && frame.ok
+                    && frame.sid == BleProtocol.SID_UI_SETTING) {
+                // CFW ambient-light report (field 105) from the master temple.
+                byte[] alsReport = BleProtocol.parseFaceclawAlsReport(frame.pb);
+                if (alsReport != null) {
+                    emitAmbientLight(alsReport);
                 }
             }
             if (!faceclawWakeNotification
