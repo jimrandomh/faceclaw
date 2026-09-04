@@ -25,7 +25,17 @@
 	<uses-permission android:name="android.permission.BLUETOOTH_CONNECT"/>
 	<uses-permission android:name="android.permission.BLUETOOTH_SCAN" android:usesPermissionFlags="neverForLocation"/>
 	<uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
-	<uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM"/>
+	<!-- Alarm clock reliability (Timers app): USE_EXACT_ALARM is granted
+	     outright on Android 13+ for alarm-clock apps and cannot be revoked
+	     by accident; SCHEDULE_EXACT_ALARM covers Android 12. The receiver
+	     re-arms alarms after reboots; the ringing service plays on the alarm
+	     stream and shows a full-screen alarm over the lock screen. -->
+	<uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" android:maxSdkVersion="32"/>
+	<uses-permission android:name="android.permission.USE_EXACT_ALARM"/>
+	<uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>
+	<uses-permission android:name="android.permission.VIBRATE"/>
+	<uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT"/>
+	<uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK"/>
 	<uses-permission android:name="android.permission.READ_CALENDAR"/>
 	<uses-permission android:name="android.permission.RECORD_AUDIO"/>
 	<uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS"/>
@@ -127,10 +137,40 @@
 				<data android:scheme="wear" android:host="*" android:pathPrefix="/" />
 			</intent-filter>
 		</service>
+		<!-- Timers app alarm clock: the AlarmManager target, the reboot /
+		     time-change rescheduler, the ringing foreground service, and the
+		     lock-screen ringing activity. All Java, so alarms ring with the
+		     JavaScript side asleep or gone. -->
 		<receiver
-			android:name="com.faceclaw.app.FaceclawTimerReceiver"
+			android:name="com.faceclaw.app.FaceclawAlarmReceiver"
 			android:enabled="true"
 			android:exported="false" />
+		<receiver
+			android:name="com.faceclaw.app.FaceclawAlarmRescheduleReceiver"
+			android:enabled="true"
+			android:exported="true">
+			<intent-filter>
+				<action android:name="android.intent.action.BOOT_COMPLETED" />
+				<action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+				<action android:name="android.intent.action.TIME_SET" />
+				<action android:name="android.intent.action.TIMEZONE_CHANGED" />
+				<action android:name="android.intent.action.QUICKBOOT_POWERON" />
+				<action android:name="com.htc.intent.action.QUICKBOOT_POWERON" />
+			</intent-filter>
+		</receiver>
+		<service
+			android:name="com.faceclaw.app.FaceclawAlarmService"
+			android:enabled="true"
+			android:exported="false"
+			android:foregroundServiceType="mediaPlayback" />
+		<activity
+			android:name="com.faceclaw.app.FaceclawAlarmActivity"
+			android:exported="false"
+			android:excludeFromRecents="true"
+			android:launchMode="singleInstance"
+			android:showWhenLocked="true"
+			android:turnScreenOn="true"
+			android:theme="@android:style/Theme.Material.NoActionBar" />
 		<!-- adb-only settings export/import (see FaceclawSettingsPortReceiver).
 		     DUMP is a development permission: the adb shell holds it, other
 		     apps cannot get it granted without adb, so this stays reachable

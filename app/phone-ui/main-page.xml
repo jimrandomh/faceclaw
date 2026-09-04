@@ -96,6 +96,10 @@
                     <Label text="The G2 fonts have not been extracted, so EvenHub apps will render with fallback fonts. Preparing them downloads the official firmware to extract its fonts; your glasses are not reflashed." textWrap="true" />
                     <Button text="Prepare G2 fonts" tap="{{ onPrepareFontsTap }}" class="-primary" />
                 </StackLayout>
+                <StackLayout visibility="{{ alarmReliabilityWarningVisibility }}" class="warnings-modal-item">
+                    <Label text="{{ alarmReliabilityMessage }}" textWrap="true" />
+                    <Button text="Open phone settings" tap="{{ onFixAlarmReliabilityTap }}" class="-primary" />
+                </StackLayout>
                 <Button text="Close" tap="{{ onWarningsModalCloseTap }}" />
             </StackLayout>
         </ScrollView>

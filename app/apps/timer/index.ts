@@ -16,14 +16,19 @@ const timerApp: AppDefinition = {
   boot: (ctx) => {
     timerEngine.boot({
       playBuzzer: (payload) => ctx.actions.playBuzzerSequence(payload),
-      onRing: () => {
+      onRing: (item) => {
         // Bring the ringing item on screen: focus the Timers window, then
         // wake the display if it is off (a setting, since a wearer may
-        // prefer the phone notification alone while the glasses sleep).
+        // prefer the phone alone while the glasses sleep). Only once it is
+        // actually showing does the phone start its acknowledgement clock;
+        // otherwise the phone adds its own sound within seconds.
         void ctx
           .launchApp("timer")
           .then(() => {
             if (timersWakeSetting.get() && !shell.isScreenOn()) shell.wake("window");
+            if (shell.isScreenOn() && shell.foregroundWindow()?.windowId === TIMER_WINDOW_ID) {
+              timerEngine.markDeliveredToGlasses(item);
+            }
           })
           .catch((error) => console.error(`timers ring launch failed: ${error}`));
       },

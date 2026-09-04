@@ -52,6 +52,8 @@ import { getDefaultMediumFont } from "../graphics/ui-fonts";
 import { wrapText } from "../graphics/textwrap";
 import { rawInputEventToInputEvent, shell, type ShellInputOutcome } from "../ui/shell/shell";
 import { registerSystemTools } from "../assistant/system-tools";
+import { updateGlassesPresence } from "./glasses-presence";
+import { timerEngine } from "../apps/timer/timer-engine";
 import { registerNavigateTools } from "../assistant/navigate-tools";
 import { registerRoamTools } from "../assistant/roam-tools";
 import { assistantBridge } from "../assistant/bridge-client";
@@ -116,6 +118,8 @@ export type DashboardSnapshot = {
   screenRecordingActive: boolean;
   batteryOptimizationWarningVisible: boolean;
   fontsMissingWarningVisible: boolean;
+  /** Why the phone may fail to ring for a set alarm; "" when nothing is wrong or armed. */
+  alarmReliabilityMessage: string;
   /**
    * True while the headless preview display is standing in for a glasses
    * connection (preview-only mode): the mirror is live and interactive, but
@@ -219,6 +223,7 @@ class DashboardController {
   private firmwareWarningMessage = "";
   private batteryOptimizationWarningVisible = false;
   private fontsMissingWarningVisible = false;
+  private alarmReliabilityMessage = "";
   // Sticky positive: the extracted-font file doesn't vanish mid-session, so a
   // successful check spares later refreshes the file read and JSON parse.
   private extractedFontsConfirmed = false;
@@ -361,6 +366,7 @@ class DashboardController {
     for (const app of ALL_APPS) {
       app.boot?.(this.buildAppContext(app));
     }
+    timerEngine.onChange(() => this.refreshAlarmReliabilityWarning());
     this.offAndroidNotification = onAndroidNotificationPosted((notificationKey) => {
       void this.handleAndroidNotificationPosted(notificationKey).catch((error) => {
         this.appendLog(`notification wake failed: ${this.formatError(error)}`);
@@ -562,6 +568,7 @@ class DashboardController {
 
   private handleWearState(wearing: boolean): void {
     this.glassesWorn = wearing;
+    updateGlassesPresence({ worn: wearing });
     this.appendLog(wearing ? "glasses wear state: ON_HEAD" : "glasses wear state: OFF_HEAD");
     this.wearRemote?.schedulePublish();
     if (!wearing && this.phoneLocked && lockScreenEnabledSetting.get()) {
@@ -930,6 +937,7 @@ class DashboardController {
       screenRecordingActive: this.screenRecordingActive,
       batteryOptimizationWarningVisible: this.batteryOptimizationWarningVisible,
       fontsMissingWarningVisible: this.fontsMissingWarningVisible,
+      alarmReliabilityMessage: this.alarmReliabilityMessage,
       previewMode: this.isPreviewDisplayActive(),
     };
   }
@@ -1021,9 +1029,35 @@ class DashboardController {
     }
   }
 
+  /**
+   * Mirror the Timers engine's phone self-check into the warnings modal. The
+   * engine re-checks on its own schedule and on every timer/alarm change;
+   * a page load forces a fresh check so a just-fixed setting clears at once.
+   */
+  refreshAlarmReliabilityWarning(force = false): void {
+    if (force) timerEngine.refreshReliability(true);
+    const message = timerEngine.phoneReliabilityMessage();
+    if (message !== this.alarmReliabilityMessage) {
+      this.alarmReliabilityMessage = message;
+      this.emit();
+    }
+  }
+
+  openAlarmReliabilityFix(): void {
+    timerEngine.openPhoneReliabilityFix();
+    // The system screen is asynchronous with no result; poll briefly so the
+    // warning clears once the setting is changed.
+    let checksLeft = 12;
+    const poll = setInterval(() => {
+      this.refreshAlarmReliabilityWarning(true);
+      if (!this.alarmReliabilityMessage || --checksLeft <= 0) clearInterval(poll);
+    }, 5_000);
+  }
+
   refreshEvenAppStatus(): void {
     this.refreshBatteryOptimizationStatus();
     this.refreshEvenHubFontStatus();
+    this.refreshAlarmReliabilityWarning(true);
     const state = readEvenAppNotificationState();
     const wasActive = this.evenNotificationActive;
     this.evenNotificationActive = state.evenNotificationActive;
@@ -1288,6 +1322,7 @@ class DashboardController {
           // the transport comes back, so do not make lock decisions from a
           // stale pre-disconnect value in the meantime.
           this.glassesWorn = null;
+          updateGlassesPresence({ worn: null });
           // The mic enable was session-scoped too: park any live capture so
           // the next session restarts it, instead of leaving a holder that
           // makes every later request think the mic is already running.
@@ -1329,6 +1364,7 @@ class DashboardController {
           headset: hasBatteryLevel ? state.battery : this.lastHeadsetBattery,
           headsetCharging: state.chargingStatus > 0,
         });
+        updateGlassesPresence({ charging: state.chargingStatus > 0 || this.phase === "charging" });
         if ((this.phase === "connected" || this.phase === "charging") && this.communicator) {
           // Repaint the top bar (battery indicators live in the shell chrome).
           this.requestShellRender();
@@ -2453,6 +2489,11 @@ class DashboardController {
   private setPhase(phase: ConnectionPhase): void {
     if (this.phase === phase) return;
     this.phase = phase;
+    // "charging" is a live BLE link with the glasses in their case.
+    updateGlassesPresence({
+      connected: phase === "connected" || phase === "charging",
+      charging: phase === "charging" || (shell.getBatteryLevels().headsetCharging ?? false),
+    });
     if (phase === "disconnected") {
       // Kept across "connecting": silent mode blocks app launches, so it can
       // itself cause the reconnect churn, and Java re-reports it either way.

@@ -66,6 +66,7 @@ export class MainViewModel extends Observable {
   private _screenRecordingActive = false;
   private _batteryOptimizationWarningVisible = false;
   private _fontsMissingWarningVisible = false;
+  private _alarmReliabilityMessage = "";
   private _warningsModalVisible = false;
   private _previewMode = false;
   private _phase: "disconnected" | "connecting" | "connected" | "charging" | "disconnecting" = "disconnected";
@@ -116,6 +117,7 @@ export class MainViewModel extends Observable {
       this.screenRecordingActive = snapshot.screenRecordingActive;
       this.batteryOptimizationWarningVisible = snapshot.batteryOptimizationWarningVisible;
       this.fontsMissingWarningVisible = snapshot.fontsMissingWarningVisible;
+      this.alarmReliabilityMessage = snapshot.alarmReliabilityMessage;
       this.refreshPadFocusLine();
     }));
     // Brightness / display mode can change from the glasses' Settings app too.
@@ -721,6 +723,28 @@ export class MainViewModel extends Observable {
     dashboardController.requestBatteryOptimizationExemption();
   }
 
+  get alarmReliabilityMessage(): string {
+    return this._alarmReliabilityMessage;
+  }
+
+  set alarmReliabilityMessage(value: string) {
+    if (this._alarmReliabilityMessage !== value) {
+      this._alarmReliabilityMessage = value;
+      this.notifyPropertyChange("alarmReliabilityMessage", value);
+      this.notifyPropertyChange("alarmReliabilityWarningVisibility", this.alarmReliabilityWarningVisibility);
+      this.refreshWarningIndicator();
+    }
+  }
+
+  get alarmReliabilityWarningVisibility(): "visible" | "collapse" {
+    return this._alarmReliabilityMessage ? "visible" : "collapse";
+  }
+
+  onFixAlarmReliabilityTap(): void {
+    this.setWarningsModalVisible(false);
+    dashboardController.openAlarmReliabilityFix();
+  }
+
   // ---- the action bar's warning triangle and the modal behind it ----
 
   get anyWarningVisible(): boolean {
@@ -728,7 +752,8 @@ export class MainViewModel extends Observable {
       this._evenAppConflictWarningVisible ||
       this._firmwareWarningVisible ||
       this._batteryOptimizationWarningVisible ||
-      this._fontsMissingWarningVisible
+      this._fontsMissingWarningVisible ||
+      this._alarmReliabilityMessage.length > 0
     );
   }
 

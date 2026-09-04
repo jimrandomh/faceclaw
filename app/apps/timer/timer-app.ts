@@ -36,6 +36,7 @@ import {
   drawSelectionHighlight,
   drawToggleMenuItem,
   scrollToKeepSelectionVisible,
+  TextPageLayer,
   type MenuItem,
 } from "../../ui/menu";
 import { LIST_ROW_TEXT_INSET, lineStep, listRowHeight } from "../../ui/metrics";
@@ -820,6 +821,19 @@ export class TimersLayer implements Layer {
           drawRightValueMenuItem(args.image, smallFont(), args.x, args.y, args.width, args.text, timersSnoozeSetting.displayValue()),
       },
       toggle("12-hour clock", () => twelveHour(), (value) => timeFormatSetting.set(value ? "12h" : "24h")),
+      {
+        label: "Phone alarm check",
+        onSelect: (ctx) => {
+          timerEngine.refreshReliability(true);
+          const issues = timerEngine.phoneReliabilityIssues();
+          const body =
+            issues.length === 0
+              ? "No problems found: the phone can ring for alarms when the glasses cannot."
+              : issues.map((issue) => `- ${issue.message}`).join("\n") +
+                "\n\nFix these from the warning triangle on the phone's home screen.";
+          ctx.stack.push(new TextPageLayer("Phone alarm check", body));
+        },
+      },
     ];
   }
 
@@ -1047,6 +1061,8 @@ export class TimersLayer implements Layer {
       status = next === null ? "Off" : `Rings in ${formatSpanWords(next - now)}`;
     }
     block.line(image, status, 150);
+    const warning = timerEngine.phoneReliabilityIssues()[0];
+    if (alarm.enabled && warning) block.line(image, `Phone: ${warning.message}`, 120);
     block.hints(image, [[GESTURE_CLICK, alarm.enabled ? "turn off" : "turn on"], [GESTURE_SHORT_THEN_LONG_PRESS, "edit"]]);
   }
 

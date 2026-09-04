@@ -1,26 +1,39 @@
 /**
  * The Timers app's clock engine: a main-thread singleton that owns the
  * timers / stopwatch / alarms state, persists it, schedules the durable
- * Android alarms behind every expiry, rings the glasses buzzer, and tells
+ * phone alarms behind every expiry, rings the glasses buzzer, and tells
  * listeners (the window, the tray icon, the assistant tools) when anything
  * changes. It is booted at shell start, so everything here works with the
  * window closed; the window is only a view on it.
  *
- * Two expiry paths run side by side, as before: a JS deadline for prompt
- * on-glasses ringing while the process is awake, and an AlarmManager alarm
- * (see FaceclawTimerNotifications.java) that posts the phone notification
- * at the right moment even if the process is asleep or dead. The Java side
- * deduplicates the two.
+ * Two expiry paths run side by side: a JS deadline for prompt on-glasses
+ * ringing while the process is awake, and an AlarmManager alarm-clock alarm
+ * (FaceclawAlarms.java) that rings on the phone at the right moment even if
+ * the process is asleep or dead. The phone shows the item silently first
+ * and adds its own sound when the glasses cannot carry it (not connected,
+ * not worn, charging, not shown within seconds, or not acknowledged within
+ * 30 s); this engine keeps the phone told about the glasses, reports
+ * delivery and acknowledgement, and replays what the wearer did on the
+ * phone (dismiss / snooze) into its own state.
  */
-import { ConfigSettingBoolean, ConfigSettingEnum } from "../../ui/dashboard-settings";
+import { ConfigSettingBoolean, ConfigSettingEnum, timeFormatSetting } from "../../ui/dashboard-settings";
 import { getStringSetting, setStringSetting } from "../../native/settings-store";
 import {
-  cancelTimerNotification,
-  fireTimerNotification,
-  scheduleTimerNotification,
-} from "../../native/timer-notifications";
+  acknowledgePhoneAlarm,
+  cancelPhoneAlarm,
+  checkPhoneAlarmReliability,
+  drainPhoneAlarmJournal,
+  onPhoneAlarmAction,
+  openPhoneAlarmReliabilityFix,
+  phoneAlarmDeliveredToGlasses,
+  ringPhoneAlarm,
+  schedulePhoneAlarm,
+  setPhoneAlarmGlassesStatus,
+  type AlarmReliabilityIssue,
+  type PhoneAlarmAction,
+} from "../../native/alarms";
+import { getGlassesPresence, glassesCanCarryAlert, onGlassesPresenceChanged } from "../../g2/glasses-presence";
 import { buildSoundSequencePayload, findSoundEffect, effectPhrases } from "../../ui/sound-effects";
-import { timeFormatSetting } from "../../ui/dashboard-settings";
 import {
   alarmNextRingMs,
   createAlarm,
@@ -55,6 +68,10 @@ const RING_MAX_MS = 2 * 60_000;
  * delayed by Doze or a clock jump can't leave a due item unnoticed for long.
  */
 const MAX_ARM_MS = 30_000;
+/** How often the phone is reminded of the glasses' status (it distrusts stale reports). */
+const GLASSES_STATUS_HEARTBEAT_MS = 60_000;
+/** How often the phone-side reliability self-check reruns while something is armed. */
+const RELIABILITY_CHECK_MS = 5 * 60_000;
 
 export const timersSoundSetting = new ConfigSettingBoolean({
   id: "timersSound",
@@ -100,6 +117,8 @@ export class TimerEngine {
   private deadlineTimer: ReturnType<typeof setTimeout> | null = null;
   private ringTimer: ReturnType<typeof setInterval> | null = null;
   private booted = false;
+  private reliabilityIssues: AlarmReliabilityIssue[] = [];
+  private reliabilityCheckedAtMs = 0;
 
   constructor(private readonly now: () => number = () => Date.now()) {
     this.state = emptyTimersState();
@@ -118,12 +137,117 @@ export class TimerEngine {
     // Loaded here rather than at module evaluation, so the settings store is
     // certainly up before the first read.
     this.state = parseTimersState(getStringSetting(STATE_KEY, ""));
+    // What the wearer did on the phone while this side was down comes first,
+    // so a dismissed alarm is not rung again by the check below.
+    for (const action of drainPhoneAlarmJournal()) this.applyPhoneAction(action);
+    onPhoneAlarmAction((action) => {
+      this.applyPhoneAction(action);
+      this.commit();
+    });
+    this.pushGlassesStatus();
+    onGlassesPresenceChanged(() => this.pushGlassesStatus());
+    setInterval(() => this.pushGlassesStatus(), GLASSES_STATUS_HEARTBEAT_MS);
     this.check();
     for (const timer of this.state.timers) {
       if (timer.endsAtMs !== null && timer.rungAtMs === null) this.schedulePhoneNotification(timer);
     }
     for (const alarm of this.state.alarms) this.schedulePhoneAlarm(alarm);
     this.save();
+    this.refreshReliability(true);
+    setInterval(() => this.refreshReliability(false), RELIABILITY_CHECK_MS);
+  }
+
+  /**
+   * The glasses are showing a ringing item (the window is up and the screen
+   * on). The phone's 30-second acknowledgement clock starts from here; without
+   * this, the phone adds its sound within seconds.
+   */
+  markDeliveredToGlasses(item: RingingItem): void {
+    if (!glassesCanCarryAlert()) return;
+    phoneAlarmDeliveredToGlasses(item.kind === "timer" ? item.timer.id : item.alarm.id);
+  }
+
+  private pushGlassesStatus(): void {
+    const presence = getGlassesPresence();
+    setPhoneAlarmGlassesStatus(presence.connected, presence.worn === true, presence.charging);
+  }
+
+  /**
+   * Replay a phone-side dismiss or snooze. The item may be ringing here too,
+   * may not have been noticed yet (the phone rang it while this side slept),
+   * or may already be gone; each case lands on the same end state.
+   */
+  private applyPhoneAction(action: PhoneAlarmAction): void {
+    const at = action.atMs || this.now();
+    const timer = this.findTimer(action.id);
+    if (timer) {
+      if (action.action === "dismiss") {
+        this.state.timers = this.state.timers.filter((candidate) => candidate.id !== timer.id);
+      } else {
+        const extra = Math.max(1, action.minutes) * 60_000;
+        timer.rungAtMs = null;
+        timer.pausedRemainingMs = null;
+        timer.durationMs = extra;
+        timer.endsAtMs = at + extra;
+      }
+      return;
+    }
+    const alarm = this.findAlarm(action.id);
+    if (!alarm) return;
+    alarm.ringingSinceMs = null;
+    alarm.lastFiredAtMs = Math.max(alarm.lastFiredAtMs ?? 0, at);
+    if (action.action === "dismiss") {
+      alarm.snoozedUntilMs = null;
+      if (alarm.days === 0) alarm.enabled = false;
+    } else {
+      alarm.snoozedUntilMs = at + Math.max(1, action.minutes) * 60_000;
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // Phone reliability
+
+  /** Conditions under which the phone may fail to ring, most serious first (cached). */
+  phoneReliabilityIssues(): AlarmReliabilityIssue[] {
+    return this.reliabilityIssues;
+  }
+
+  /**
+   * One-line warning for the UI, or "" when nothing is armed that could
+   * suffer (no enabled alarm, no running timer) or nothing is wrong.
+   */
+  phoneReliabilityMessage(): string {
+    if (this.reliabilityIssues.length === 0) return "";
+    const armed =
+      this.state.alarms.some((alarm) => alarm.enabled) ||
+      this.state.timers.some((timer) => timer.endsAtMs !== null && timer.rungAtMs === null);
+    if (!armed) return "";
+    return `The phone may not ring for alarms: ${this.reliabilityIssues[0]!.message}`;
+  }
+
+  /** Open the system screen for the most serious fixable issue, if any. */
+  openPhoneReliabilityFix(): void {
+    const issue = this.reliabilityIssues.find((candidate) => candidate.fixable);
+    if (issue) openPhoneAlarmReliabilityFix(issue.code);
+  }
+
+  /** Re-run the phone self-check (rate-limited unless forced) and notify on change. */
+  refreshReliability(force: boolean): void {
+    const now = this.now();
+    if (!force && now - this.reliabilityCheckedAtMs < 30_000) return;
+    this.reliabilityCheckedAtMs = now;
+    let issues: AlarmReliabilityIssue[];
+    try {
+      issues = checkPhoneAlarmReliability();
+    } catch (error) {
+      console.warn(`alarm reliability check failed: ${error}`);
+      return;
+    }
+    const changed =
+      issues.length !== this.reliabilityIssues.length ||
+      issues.some((issue, index) => issue.code !== this.reliabilityIssues[index]?.code);
+    this.reliabilityIssues = issues;
+    if (changed) this.notify();
   }
 
   onChange(listener: () => void): () => void {
@@ -174,7 +298,7 @@ export class TimerEngine {
     if (!timer || timer.endsAtMs === null || timer.rungAtMs !== null) return;
     timer.pausedRemainingMs = Math.max(0, timer.endsAtMs - this.now());
     timer.endsAtMs = null;
-    cancelTimerNotification(timer.id);
+    cancelPhoneAlarm(timer.id);
     this.commit();
   }
 
@@ -195,7 +319,7 @@ export class TimerEngine {
       timer.rungAtMs = null;
       timer.durationMs = deltaMs;
       timer.endsAtMs = this.now() + deltaMs;
-      cancelTimerNotification(timer.id);
+      cancelPhoneAlarm(timer.id);
       this.schedulePhoneNotification(timer);
     } else if (timer.pausedRemainingMs !== null) {
       timer.pausedRemainingMs += deltaMs;
@@ -215,7 +339,7 @@ export class TimerEngine {
     timer.rungAtMs = null;
     timer.pausedRemainingMs = null;
     timer.endsAtMs = this.now() + timer.durationMs;
-    cancelTimerNotification(timer.id);
+    cancelPhoneAlarm(timer.id);
     this.schedulePhoneNotification(timer);
     this.commit();
   }
@@ -232,7 +356,7 @@ export class TimerEngine {
   removeTimer(id: number): void {
     const index = this.state.timers.findIndex((timer) => timer.id === id);
     if (index < 0) return;
-    cancelTimerNotification(id);
+    acknowledgePhoneAlarm(id);
     this.state.timers.splice(index, 1);
     this.commit();
   }
@@ -330,7 +454,7 @@ export class TimerEngine {
   deleteAlarm(id: number): void {
     const index = this.state.alarms.findIndex((alarm) => alarm.id === id);
     if (index < 0) return;
-    cancelTimerNotification(id);
+    cancelPhoneAlarm(id);
     this.state.alarms.splice(index, 1);
     this.commit();
   }
@@ -340,6 +464,7 @@ export class TimerEngine {
     if (!alarm || alarm.ringingSinceMs === null) return;
     alarm.ringingSinceMs = null;
     alarm.snoozedUntilMs = this.now() + minutes * 60_000;
+    acknowledgePhoneAlarm(alarm.id);
     this.schedulePhoneAlarm(alarm);
     this.commit();
   }
@@ -351,6 +476,7 @@ export class TimerEngine {
     alarm.ringingSinceMs = null;
     alarm.snoozedUntilMs = null;
     if (alarm.days === 0) alarm.enabled = false;
+    acknowledgePhoneAlarm(alarm.id);
     this.schedulePhoneAlarm(alarm);
     this.commit();
   }
@@ -381,9 +507,13 @@ export class TimerEngine {
       timer.rungAtMs = timer.endsAtMs;
       timer.endsAtMs = null;
       changed = true;
+      // Late (found due after a restart): the phone rang or missed it on
+      // its own schedule; only a fresh expiry starts the phone flow here.
       const late = now - timer.rungAtMs > RING_GRACE_MS;
-      fireTimerNotification(timer.id, "Timer finished", timerNotificationText(timer));
-      if (!late) this.startRinging({ kind: "timer", timer });
+      if (!late) {
+        ringPhoneAlarm(timer.id, "Timer finished", timerNotificationText(timer), "timer", snoozeMinutes());
+        this.startRinging({ kind: "timer", timer });
+      }
     }
     for (const alarm of this.state.alarms) {
       if (alarm.ringingSinceMs !== null) continue;
@@ -394,13 +524,13 @@ export class TimerEngine {
       alarm.lastFiredAtMs = due;
       changed = true;
       const late = now - due > RING_GRACE_MS;
-      fireTimerNotification(alarm.id, "Alarm", alarmNotificationText(alarm));
       if (late) {
         // Missed by too much to ring now: fall through to the next occurrence.
         alarm.ringingSinceMs = null;
         if (alarm.days === 0) alarm.enabled = false;
         this.schedulePhoneAlarm(alarm);
       } else {
+        ringPhoneAlarm(alarm.id, "Alarm", alarmNotificationText(alarm), "alarm", snoozeMinutes());
         this.startRinging({ kind: "alarm", alarm });
       }
     }
@@ -492,17 +622,17 @@ export class TimerEngine {
 
   private schedulePhoneNotification(timer: CountdownTimer): void {
     if (timer.endsAtMs === null) return;
-    scheduleTimerNotification(timer.id, timer.endsAtMs, "Timer finished", timerNotificationText(timer));
+    schedulePhoneAlarm(timer.id, timer.endsAtMs, "Timer finished", timerNotificationText(timer), "timer", snoozeMinutes());
   }
 
   /** (Re)arm or cancel the phone alarm for an alarm's next occurrence. */
   private schedulePhoneAlarm(alarm: Alarm): void {
     const due = alarm.ringingSinceMs === null ? this.alarmDueMs(alarm, this.now()) : null;
     if (due === null) {
-      cancelTimerNotification(alarm.id);
+      cancelPhoneAlarm(alarm.id);
       return;
     }
-    scheduleTimerNotification(alarm.id, due, "Alarm", alarmNotificationText(alarm));
+    schedulePhoneAlarm(alarm.id, due, "Alarm", alarmNotificationText(alarm), "alarm", snoozeMinutes());
   }
 
   // -------------------------------------------------------------------------
@@ -512,6 +642,7 @@ export class TimerEngine {
     this.save();
     this.check();
     this.notify();
+    if (this.booted) this.refreshReliability(false);
   }
 
   private save(): void {
@@ -531,6 +662,10 @@ export class TimerEngine {
       }
     }
   }
+}
+
+function snoozeMinutes(): number {
+  return Number(timersSnoozeSetting.get()) || 10;
 }
 
 function timerNotificationText(timer: CountdownTimer): string {
