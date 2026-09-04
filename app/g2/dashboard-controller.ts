@@ -56,7 +56,6 @@ import { registerNavigateTools } from "../assistant/navigate-tools";
 import { registerRoamTools } from "../assistant/roam-tools";
 import { assistantBridge } from "../assistant/bridge-client";
 import { registerWindowTools } from "../assistant/window-tools";
-import { registerTimerTools } from "../assistant/timer-tools";
 import { WorkerAppHost } from "../ui/shell/worker-window";
 import { ALL_APPS } from "../apps/all-apps";
 import { type AppContext, type AppDefinition, type AppLaunchParams, type TextEditorHost } from "../apps/app-definition";
@@ -326,8 +325,6 @@ class DashboardController {
     registerNavigateTools((appId) => this.launchApp(appId));
     // roam.* tools launch the Roam app on demand likewise.
     registerRoamTools((appId) => this.launchApp(appId));
-    // timer.* tools launch the Timer app on demand likewise.
-    registerTimerTools((appId) => this.launchApp(appId));
     // apps.* tools mirror the launcher grid and sidebar (launch, focus, close).
     registerWindowTools({
       apps: LAUNCHABLE_APPS,

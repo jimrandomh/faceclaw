@@ -4,7 +4,7 @@ import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 
-/** Receives durable timer alarms even if the NativeScript worker is asleep. */
+/** Receives durable timer/alarm expiries even if the NativeScript side is asleep. */
 public class FaceclawTimerReceiver extends BroadcastReceiver {
     @Override
     public void onReceive(Context context, Intent intent) {
@@ -15,7 +15,8 @@ public class FaceclawTimerReceiver extends BroadcastReceiver {
         if (timerId == 0) {
             return;
         }
-        String durationLabel = intent.getStringExtra(FaceclawTimerNotifications.EXTRA_DURATION_LABEL);
-        FaceclawTimerNotifications.showExpiredOnce(context, timerId, durationLabel);
+        String title = intent.getStringExtra(FaceclawTimerNotifications.EXTRA_TITLE);
+        String text = intent.getStringExtra(FaceclawTimerNotifications.EXTRA_TEXT);
+        FaceclawTimerNotifications.showExpiredOnce(context, timerId, title, text);
     }
 }

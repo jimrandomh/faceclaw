@@ -12,12 +12,18 @@ import android.os.Build;
 
 import com.tns.NativeScriptActivity;
 
-/** Android alarm + notification bridge used by the on-glasses Timer app. */
+/**
+ * Android alarm + notification bridge used by the on-glasses Timers app, for
+ * countdown timers and alarms alike: one AlarmManager alarm per item posts a
+ * phone notification at the moment of expiry, even when the app process is
+ * asleep or gone.
+ */
 public final class FaceclawTimerNotifications {
     public static final String CHANNEL_ID = "faceclaw-timers";
     static final String ACTION_EXPIRE = "com.faceclaw.app.action.TIMER_EXPIRE";
     static final String EXTRA_TIMER_ID = "timerId";
-    static final String EXTRA_DURATION_LABEL = "durationLabel";
+    static final String EXTRA_TITLE = "title";
+    static final String EXTRA_TEXT = "text";
 
     private static final String TIMER_TAG_PREFIX = "faceclaw-timer:";
     private static final String PREFS_NAME = "faceclaw-timer-notifications";
@@ -26,10 +32,10 @@ public final class FaceclawTimerNotifications {
     private FaceclawTimerNotifications() {}
 
     /**
-     * Schedule an Android alarm as the durable path. The worker also keeps a
+     * Schedule an Android alarm as the durable path. The engine also keeps a
      * normal JS timeout for prompt delivery while the process is awake.
      */
-    public static void schedule(Context context, long timerId, long triggerAtMs, String durationLabel) {
+    public static void schedule(Context context, long timerId, long triggerAtMs, String title, String text) {
         Context appContext = context.getApplicationContext();
         preferences(appContext).edit().putBoolean(firedKey(timerId), false).apply();
 
@@ -37,7 +43,7 @@ public final class FaceclawTimerNotifications {
         if (manager == null) {
             return;
         }
-        PendingIntent pendingIntent = expiryPendingIntent(appContext, timerId, durationLabel);
+        PendingIntent pendingIntent = expiryPendingIntent(appContext, timerId, title, text);
         long triggerAt = Math.max(System.currentTimeMillis(), triggerAtMs);
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && !manager.canScheduleExactAlarms()) {
@@ -58,7 +64,7 @@ public final class FaceclawTimerNotifications {
         Context appContext = context.getApplicationContext();
         AlarmManager alarmManager = (AlarmManager) appContext.getSystemService(Context.ALARM_SERVICE);
         if (alarmManager != null) {
-            alarmManager.cancel(expiryPendingIntent(appContext, timerId, ""));
+            alarmManager.cancel(expiryPendingIntent(appContext, timerId, "", ""));
         }
         NotificationManager notificationManager =
                 (NotificationManager) appContext.getSystemService(Context.NOTIFICATION_SERVICE);
@@ -68,17 +74,17 @@ public final class FaceclawTimerNotifications {
         preferences(appContext).edit().remove(firedKey(timerId)).apply();
     }
 
-    /** Worker-timeout path. Cancels the backup alarm and posts at most once. */
-    public static void fireNow(Context context, long timerId, String durationLabel) {
+    /** Engine-timeout path. Cancels the backup alarm and posts at most once. */
+    public static void fireNow(Context context, long timerId, String title, String text) {
         Context appContext = context.getApplicationContext();
         AlarmManager alarmManager = (AlarmManager) appContext.getSystemService(Context.ALARM_SERVICE);
         if (alarmManager != null) {
-            alarmManager.cancel(expiryPendingIntent(appContext, timerId, durationLabel));
+            alarmManager.cancel(expiryPendingIntent(appContext, timerId, title, text));
         }
-        showExpiredOnce(appContext, timerId, durationLabel);
+        showExpiredOnce(appContext, timerId, title, text);
     }
 
-    static synchronized void showExpiredOnce(Context context, long timerId, String durationLabel) {
+    static synchronized void showExpiredOnce(Context context, long timerId, String title, String text) {
         SharedPreferences preferences = preferences(context);
         String firedKey = firedKey(timerId);
         if (preferences.getBoolean(firedKey, false)) {
@@ -103,10 +109,11 @@ public final class FaceclawTimerNotifications {
         Notification.Builder builder = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
                 ? new Notification.Builder(context, CHANNEL_ID)
                 : new Notification.Builder(context);
-        String label = durationLabel == null || durationLabel.trim().isEmpty() ? "Timer" : durationLabel + " timer";
+        String contentTitle = title == null || title.trim().isEmpty() ? "Timer finished" : title;
+        String contentText = text == null || text.trim().isEmpty() ? "Time's up" : text;
         Notification notification = builder
-                .setContentTitle("Timer finished")
-                .setContentText(label + " is up")
+                .setContentTitle(contentTitle)
+                .setContentText(contentText)
                 .setSmallIcon(context.getApplicationInfo().icon)
                 .setContentIntent(contentIntent)
                 .setCategory(Notification.CATEGORY_ALARM)
@@ -122,7 +129,7 @@ public final class FaceclawTimerNotifications {
         }
     }
 
-    /** Only Timer notifications from our own package should enter the mirror. */
+    /** Identifies this bridge's notifications among our own package's (see the listener service). */
     public static boolean isTimerNotification(android.service.notification.StatusBarNotification item) {
         if (item == null || item.getNotification() == null) {
             return false;
@@ -156,12 +163,14 @@ public final class FaceclawTimerNotifications {
     private static PendingIntent expiryPendingIntent(
             Context context,
             long timerId,
-            String durationLabel
+            String title,
+            String text
     ) {
         Intent intent = new Intent(context, FaceclawTimerReceiver.class);
         intent.setAction(ACTION_EXPIRE);
         intent.putExtra(EXTRA_TIMER_ID, timerId);
-        intent.putExtra(EXTRA_DURATION_LABEL, durationLabel == null ? "" : durationLabel);
+        intent.putExtra(EXTRA_TITLE, title == null ? "" : title);
+        intent.putExtra(EXTRA_TEXT, text == null ? "" : text);
         int flags = PendingIntent.FLAG_UPDATE_CURRENT;
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             flags |= PendingIntent.FLAG_IMMUTABLE;
