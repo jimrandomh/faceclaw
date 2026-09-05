@@ -27,7 +27,7 @@ import { drawRightValueMenuItem, drawSelectionHighlight, openModalMenu, type Men
 import { LIST_ROW_TEXT_INSET, listRowHeight } from "./metrics";
 import type { Layer, LayerContext } from "./layers";
 
-const SIZE_CHOICES = [12, 13, 14, 15, 16, 17, 18, 20, 22, 24, 26, 28] as const;
+const SIZE_CHOICES = [8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 20, 22, 24, 26, 28] as const;
 const DEFAULT_TTF_SIZE = 16;
 const PREVIEW_TEXT = "The quick brown fox jumps over 0123456789";
 
@@ -35,10 +35,10 @@ type FontPickerOptions = {
   title: string;
   /** Only offer faces where every style is monospace (terminal picker). */
   monospaceOnly: boolean;
-  /** When set, sizes where this returns false are disabled (and drafts are
+  /** When set, sizes where this returns false are hidden (and drafts are
    * clamped to an allowed size on face/weight changes). The UI-font picker
    * uses it to keep getDefaultSmallFont's line height within its guaranteed
-   * 12..21px range; the terminal picker has no such bound. */
+   * 8..21px range; the terminal picker has no such bound. */
   sizeAllowed?: (path: string, size: number) => boolean;
   /** Bitmap faces offered ahead of the installed TTF families. */
   bitmapFaces: readonly { face: BitmapFace; label: string }[];
@@ -217,10 +217,10 @@ export class FontPickerLayer implements Layer {
     openModalMenu(ctx, "Font Face", items, Math.max(0, currentIndex));
   }
 
-  /** Switch families, carrying the weight (nearest available) and size over. */
+  /** Switch families, preferring Light (nearest available) and carrying the size over. */
   private setFamily(family: FontFamily): void {
     const previous = this.draft;
-    const targetOrder = previous.kind === "ttf" ? previous.font.weightOrder : 400;
+    const targetOrder = 300;
     const size = previous.kind === "ttf" ? previous.size : DEFAULT_TTF_SIZE;
     let font = family.fonts[0]!;
     for (const candidate of family.fonts) {
@@ -262,15 +262,17 @@ export class FontPickerLayer implements Layer {
   private openSizeMenu(ctx: LayerContext): void {
     if (this.draft.kind !== "ttf") return;
     const draft = this.draft;
-    const items = SIZE_CHOICES.map((size): MenuItem => ({
+    const sizes = SIZE_CHOICES.filter((size) =>
+      this.options.sizeAllowed === undefined || this.options.sizeAllowed(draft.font.path, size),
+    );
+    const items = sizes.map((size): MenuItem => ({
       label: String(size),
-      disabled: () => this.options.sizeAllowed !== undefined && !this.options.sizeAllowed(draft.font.path, size),
       onSelect: (innerCtx) => {
         this.draft = { ...draft, size };
         innerCtx.stack.pop();
       },
     }));
-    openModalMenu(ctx, "Size", items, Math.max(0, SIZE_CHOICES.indexOf(draft.size as (typeof SIZE_CHOICES)[number])));
+    openModalMenu(ctx, "Size", items, Math.max(0, sizes.indexOf(draft.size as (typeof SIZE_CHOICES)[number])));
   }
 }
 
