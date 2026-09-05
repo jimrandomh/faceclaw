@@ -73,6 +73,11 @@ export class WindowMenu {
 
   constructor(private readonly options: WindowMenuOptions) {}
 
+  resize(size: { width: number; height: number }): void {
+    this.options.size = size;
+    this.stack?.setBaseSize(size);
+  }
+
   isOpen(): boolean {
     return this.stack !== null;
   }

@@ -308,6 +308,30 @@ global.onmessage = (event: { data: WorkerAppMessage }) => {
     case "open-window":
       openWindow(message.windowId, message.surfaceId, message.title, message.viewport);
       break;
+    case "resize-window": {
+      const window = windows.get(message.windowId);
+      if (!window || (window.viewportWidth === message.viewport.width && window.viewportHeight === message.viewport.height)) break;
+      window.viewportWidth = message.viewport.width;
+      window.viewportHeight = message.viewport.height;
+      window.menu?.resize(message.viewport);
+      window.lastSubmittedFingerprint = "";
+      if (window.kind === "view") {
+        window.gridCols = Math.floor(window.viewportWidth / window.cellWidth);
+        window.gridRows = Math.floor(window.viewportHeight / window.cellHeight);
+        if (window.reconnectTimer) clearTimeout(window.reconnectTimer);
+        window.reconnectTimer = null;
+        window.client.stop();
+        window.client.setViewport(window.gridCols, window.gridRows);
+        window.emulator.dispose();
+        window.emulator = new TerminalEmulator(window.gridCols, window.gridRows);
+        window.receivedData = false;
+        window.archive = [];
+        window.scrollTop = null;
+        reconnectView(window);
+      }
+      scheduleRender(window);
+      break;
+    }
     case "close-window":
       closeWindow(message.windowId);
       break;
@@ -1434,8 +1458,7 @@ function openViewWindow(control: ControlConnection, socket: string, label: strin
     icon: "terminal",
     iconGlyph: glyph || undefined,
     focus: true,
-    // Terminal views are the one full-height window kind: more rows matter
-    // more than a small on-screen footprint.
+    // Default to tall sessions; the app display setting can override this.
     heightMode: "max",
   });
 }

@@ -36,6 +36,10 @@ import {
   batteryDisplayModeSetting,
   brightnessSetting,
   displayModeSetting,
+  navigateDisplayModeSetting,
+  navigateVerticalPositionSetting,
+  terminalDisplayModeSetting,
+  terminalVerticalPositionSetting,
   elevenLabsApiKeySetting,
   mapboxApiKeySetting,
   mirrorTouchSetting,
@@ -144,6 +148,8 @@ function settingsSections(): SettingsSection[] {
       // Connections (g2mirror:// strings) are managed inside the Terminal
       // app's Manage Connections section, not here.
       items: [
+        enumSettingMenuItem(terminalDisplayModeSetting),
+        enumSettingMenuItem(terminalVerticalPositionSetting),
         terminalFontPickerMenuItem(),
         textSettingMenuItem(terminalLaunchPresetsSetting),
         toggleSettingMenuItem(terminalAutoReconnectSetting),
@@ -155,6 +161,8 @@ function settingsSections(): SettingsSection[] {
       // Home/Work are plain addresses; other named destinations (and the
       // recent list) are managed inside the Navigate app's context menu.
       items: [
+        enumSettingMenuItem(navigateDisplayModeSetting),
+        enumSettingMenuItem(navigateVerticalPositionSetting),
         textSettingMenuItem(navigateHomeAddressSetting),
         textSettingMenuItem(navigateWorkAddressSetting),
         toggleSettingMenuItem(navigateRememberRecentSetting, {

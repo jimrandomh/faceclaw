@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.6.6 - Future
+* Navigate and terminal app: App-specific screen size/position setting
+
 ## 0.6.5 - 2026-09-04
 * Changed context menu gestures: — for system, ●— for app context menu.
 * System and app context menus show gesture help for switching to the other context menu

@@ -32,6 +32,9 @@ import {
   navigateDestinationAddressDraftSetting,
   navigateDestinationNameDraftSetting,
   navigateRememberRecentSetting,
+  navigateDisplayModeSetting,
+  navigateVerticalPositionSetting,
+  enumSettingMenuItem,
   type ConfigSettingString,
 } from "../../ui/dashboard-settings";
 import {
@@ -273,6 +276,15 @@ global.onmessage = (event: { data: WorkerAppMessage }) => {
         lastSubmittedFingerprint: "",
       };
       post({ type: "set-tools", windowId: message.windowId, tools: NAVIGATE_TOOLS });
+      break;
+    case "resize-window":
+      if (!window || window.windowId !== message.windowId) break;
+      if (window.viewportWidth === message.viewport.width && window.viewportHeight === message.viewport.height) break;
+      window.viewportWidth = message.viewport.width;
+      window.viewportHeight = message.viewport.height;
+      window.menu?.resize(message.viewport);
+      window.lastSubmittedFingerprint = "";
+      render();
       break;
     case "close-window":
       if (editing) {
@@ -838,7 +850,7 @@ function describeRouteStatus(): string {
 
 /**
  * The window's context menu: Stop navigation while a route is up, then the
- * saved-destination settings (Home, Work, custom named places) and the
+ * display and saved-destination settings (Home, Work, custom named places), and the
  * recent-destinations preference.
  */
 function windowMenuItems(win: NavWindow): MenuItem[] {
@@ -853,6 +865,10 @@ function windowMenuItems(win: NavWindow): MenuItem[] {
       },
     });
   }
+  items.push(
+    enumSettingMenuItem(navigateDisplayModeSetting),
+    enumSettingMenuItem(navigateVerticalPositionSetting),
+  );
   items.push({
     label: "Saved destinations",
     onSelect: (ctx) => {

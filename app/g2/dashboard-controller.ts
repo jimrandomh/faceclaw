@@ -66,7 +66,7 @@ import { loadPersistedOpenApps, savePersistedOpenApps } from "../ui/shell/open-a
 import { appViewportRect, SIDEBAR_WIDTH, sidebarStripVisible, type WindowHeightMode } from "../ui/shell/geometry";
 import { type LayerActions, type TextSettingsEditToggle } from "../ui/layers";
 import { type KeyboardInputSession } from "../ui/shell/keyboard-input";
-import { assistantAllowProactiveSetting, assistantBackendSetting, assistantBridgeHostSetting, assistantBridgePortSetting, assistantBridgeTokenSetting, brightnessSetting, brightnessSettingToLevel, displayModeSetting, elevenLabsApiKeySetting, getStringSettingById, openAiApiKeySetting, nightscoutApiTokenSetting, firmwareDebugFlagsSetting, lockScreenEnabledSetting, nightscoutSiteUrlSetting, onAnySettingChanged, previewColorSetting, ringConnectionModeSetting, saveVoiceRecordingsSetting, sonioxApiKeySetting, screenTimeoutSetting, screenTimeoutSettingToMs, suspendEvenHubWhenScreenOffSetting, verticalPositionSetting, voiceProviderSetting, wakeWordActionSetting, type ConfigSettingString } from "../ui/dashboard-settings";
+import { assistantAllowProactiveSetting, assistantBackendSetting, assistantBridgeHostSetting, assistantBridgePortSetting, assistantBridgeTokenSetting, brightnessSetting, brightnessSettingToLevel, displayModeSetting, navigateDisplayModeSetting, navigateVerticalPositionSetting, terminalDisplayModeSetting, terminalVerticalPositionSetting, elevenLabsApiKeySetting, getStringSettingById, openAiApiKeySetting, nightscoutApiTokenSetting, firmwareDebugFlagsSetting, lockScreenEnabledSetting, nightscoutSiteUrlSetting, onAnySettingChanged, previewColorSetting, ringConnectionModeSetting, saveVoiceRecordingsSetting, sonioxApiKeySetting, screenTimeoutSetting, screenTimeoutSettingToMs, suspendEvenHubWhenScreenOffSetting, verticalPositionSetting, voiceProviderSetting, wakeWordActionSetting, type ConfigSettingString } from "../ui/dashboard-settings";
 import { isIgnoringBatteryOptimizations, requestIgnoreBatteryOptimizations } from "../native/battery-optimization";
 import {
   getInstalledEvenHubAppById,
@@ -384,6 +384,7 @@ class DashboardController {
       this.syncEvenHubScreenOffSetting();
       this.applyVerticalPositionIfChanged();
       this.applyDisplayModeIfChanged();
+      this.applyAppLayoutsIfChanged();
       this.syncAssistantBridgeIfChanged();
       this.syncLockScreenSettingIfChanged();
       // A Preview color change should show on the mirror at once, not at the
@@ -461,8 +462,8 @@ class DashboardController {
   /**
    * Display mode changed (Settings > Display, or the phone page's picker):
    * every window's viewport size changes. In-process windows re-measure in
-   * place; worker windows get their canvas once at open, so they are closed
-   * and launched again at the new size.
+   * place; workers that support resizing receive the new viewport. Other
+   * worker windows are closed and launched again at the new size.
    */
   private applyDisplayModeIfChanged(): void {
     const mode = displayModeSetting.get();
@@ -496,6 +497,31 @@ class DashboardController {
     })().catch((error) => {
       this.appendLog(`display mode change failed: ${this.formatError(error)}`);
     });
+  }
+
+  private lastAppLayouts = this.appLayouts();
+
+  private appLayouts(): Record<string, string> {
+    return {
+      navigate: `${navigateDisplayModeSetting.get()}:${navigateVerticalPositionSetting.get()}`,
+      terminal: `${terminalDisplayModeSetting.get()}:${terminalVerticalPositionSetting.get()}`,
+    };
+  }
+
+  private applyAppLayoutsIfChanged(): void {
+    const layouts = this.appLayouts();
+    const changed = Object.keys(layouts).filter((appId) => layouts[appId] !== this.lastAppLayouts[appId]);
+    if (!changed.length) return;
+    this.lastAppLayouts = layouts;
+    void (async () => {
+      for (const window of Array.from(shell.getWindows())) {
+        if (!changed.includes(window.appId)) continue;
+        await this.configureWindowSurface(window.surfaceId, window.windowId === shell.foregroundWindow()?.windowId, window.heightMode);
+        window.relayout?.();
+      }
+      shell.foregroundWindow()?.requestRender();
+      this.requestShellRender();
+    })().catch((error) => this.appendLog(`app layout change failed: ${this.formatError(error)}`));
   }
 
   private applyVerticalPositionIfChanged(): void {
@@ -1781,7 +1807,7 @@ class DashboardController {
     }
     const x = Math.round(Math.min(1, Math.max(0, nx)) * G2_LENS_WIDTH);
     const y = Math.round(Math.min(1, Math.max(0, ny)) * G2_LENS_HEIGHT);
-    const stripShown = sidebarStripVisible(shell.getFocus());
+    const stripShown = sidebarStripVisible(shell.getFocus(), shell.foregroundWindow()?.appId);
     this.appendLog(`mirror tap at ${x},${y}`);
     if (!shell.hasOverlay() && stripShown && x < SIDEBAR_WIDTH) {
       const target = shell.windowAtSidebarPoint(x, y);
@@ -1795,7 +1821,7 @@ class DashboardController {
     }
     const window = shell.foregroundWindow();
     if (window && !shell.hasOverlay()) {
-      const rect = appViewportRect(window.heightMode);
+      const rect = appViewportRect(window.heightMode, window.appId);
       const inside = x >= rect.x && x < rect.x + rect.width && y >= rect.y && y < rect.y + rect.height;
       if (shell.getFocus() !== "window") {
         shell.focusWindow(window.windowId);
@@ -2288,7 +2314,7 @@ class DashboardController {
   ): Promise<void> {
     if (!target) return;
     await target.configureSurface(surfaceId, {
-      ...appViewportRect(heightMode),
+      ...appViewportRect(heightMode, shell.getWindows().find((window) => window.surfaceId === surfaceId)?.appId),
       zOrder: 0,
       transparency: "opaque",
     });

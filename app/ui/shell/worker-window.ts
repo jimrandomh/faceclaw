@@ -14,6 +14,7 @@ import { shell, type ShellWindow } from "./shell";
  */
 export type WorkerAppMessage =
   | { type: "open-window"; windowId: string; surfaceId: string; title: string; viewport: { width: number; height: number } }
+  | { type: "resize-window"; windowId: string; viewport: { width: number; height: number } }
   | { type: "close-window"; windowId: string }
   | { type: "input"; windowId: string; event: unknown; frameId: number; focused: boolean }
   | { type: "text-input"; windowId: string; text: string }
@@ -338,7 +339,7 @@ export class WorkerAppHost {
       windowId: spec.windowId,
       surfaceId,
       title: spec.title,
-      viewport: appViewportSize(heightMode),
+      viewport: appViewportSize(heightMode, this.options.appId),
     });
     const window: ShellWindow = {
       appId: this.options.appId,
@@ -348,6 +349,10 @@ export class WorkerAppHost {
       closeable: true,
       acceptsDirectional: spec.acceptsDirectional,
       heightMode,
+      // These apps can resize their live content without losing route/session state.
+      relayout: this.options.appId === "navigate" || this.options.appId === "terminal"
+        ? () => this.post({ type: "resize-window", windowId: spec.windowId, viewport: appViewportSize(heightMode, this.options.appId) })
+        : undefined,
       hasAppMenu: () => this.windowGestures.get(spec.windowId)?.hasAppMenu ?? false,
       claimsLongPress: () => this.windowGestures.get(spec.windowId)?.claimsLongPress ?? false,
       close: () => {

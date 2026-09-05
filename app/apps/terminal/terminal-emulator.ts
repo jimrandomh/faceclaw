@@ -53,6 +53,10 @@ export class TerminalEmulator {
     this.term.write(data, onProcessed);
   }
 
+  dispose(): void {
+    this.term.dispose();
+  }
+
   /** Full reset; snapshots are defined as repainting from a cleared screen. */
   reset(): void {
     this.term.reset();

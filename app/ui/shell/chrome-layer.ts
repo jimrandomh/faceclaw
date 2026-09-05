@@ -69,8 +69,8 @@ function slotPosition(variant: SidebarVariant, listTop: number, position: number
 }
 
 /** Top y of the sidebar's icon list (below the band's top bar). */
-function sidebarListTop(): number {
-  return minWindowTop() + TOP_BAR_HEIGHT + LIST_MARGIN;
+function sidebarListTop(appId?: string): number {
+  return minWindowTop(appId) + TOP_BAR_HEIGHT + LIST_MARGIN;
 }
 
 /**
@@ -100,6 +100,7 @@ export type ShellChromeState = {
   focus: "sidebar" | "window";
   /** Height mode of the foreground window; decides where its top bar sits. */
   foregroundHeightMode: WindowHeightMode;
+  foregroundAppId?: string;
   battery: { headset: number | null; headsetCharging: boolean | null };
   /** App-provided tray images, drawn between notification icons and batteries. */
   trayIcons: GrayImage[];
@@ -191,7 +192,7 @@ export class ShellChromeLayer implements Layer {
     const state = this.getState();
     // Full-panel mode: the strip is an overlay, present only while the user
     // is in it (the window underneath keeps its full width the rest of the time).
-    if (sidebarStripVisible(state.focus)) {
+    if (sidebarStripVisible(state.focus, state.foregroundAppId)) {
       this.drawSidebar(image, state);
     }
     this.drawTopBar(image, state);
@@ -212,7 +213,7 @@ export class ShellChromeLayer implements Layer {
   windowIndexAt(x: number, y: number, windowCount: number): number | null {
     if (x < 0 || x >= SIDEBAR_WIDTH || windowCount === 0) return null;
     const variant = sidebarVariant(windowCount);
-    const listTop = sidebarListTop();
+    const listTop = sidebarListTop(this.getState().foregroundAppId);
     const lastVisible = Math.min(windowCount, this.scrollRow + rowsPerColumn(variant) * variant.columns);
     for (let index = this.scrollRow; index < lastVisible; index++) {
       const { column, y: slotY } = slotPosition(variant, listTop, index - this.scrollRow);
@@ -225,10 +226,9 @@ export class ShellChromeLayer implements Layer {
   }
 
   private drawSidebar(image: GrayImage, state: ShellChromeState): void {
-    // The sidebar always occupies the min-height window band at the preferred
-    // vertical position: it never moves when the foreground window's height
-    // changes, and it lines up exactly with a min-height window's chrome.
-    const bandTop = minWindowTop();
+    // Align the sidebar with the app's preferred band. Legacy tall terminal
+    // sessions keep the sidebar at the global band position.
+    const bandTop = minWindowTop(state.foregroundAppId);
     const bandBottom = bandTop + MIN_WINDOW_HEIGHT;
     image.fillRect(0, bandTop, SIDEBAR_WIDTH, MIN_WINDOW_HEIGHT, SHELL_OPAQUE_BLACK);
 
@@ -242,7 +242,7 @@ export class ShellChromeLayer implements Layer {
     const iconMarginX = ((variant.columnWidth - iconSize) / 2) | 0;
     // Column index of the rightmost column (the one that fills first).
     const firstColumn = variant.columns - 1;
-    const listTop = sidebarListTop();
+    const listTop = sidebarListTop(state.foregroundAppId);
     const visibleCount = rowsPerColumn(variant) * variant.columns;
     this.scrollRow = scrollToKeepSelectionVisible(this.scrollRow, state.selectedIndex, visibleCount, count);
     const lastVisible = Math.min(count, this.scrollRow + visibleCount);
@@ -304,10 +304,10 @@ export class ShellChromeLayer implements Layer {
     // The bar sits at the top edge of the foreground window's band, wherever
     // its height mode puts that (screen top for max height). It moves when
     // the foreground switches to a window of a different height.
-    const barTop = windowTop(state.foregroundHeightMode);
+    const barTop = windowTop(state.foregroundHeightMode, state.foregroundAppId);
     // The bar spans the app viewport; with the sidebar overlaid (full-panel
     // mode, sidebar focused) it still starts past the strip.
-    const barLeft = sidebarStripVisible(state.focus) ? SIDEBAR_WIDTH : 0;
+    const barLeft = sidebarStripVisible(state.focus, state.foregroundAppId) ? SIDEBAR_WIDTH : 0;
     image.fillRect(barLeft, barTop, G2_LENS_WIDTH - barLeft, TOP_BAR_HEIGHT, SHELL_OPAQUE_BLACK);
     image.drawLine(barLeft, barTop + TOP_BAR_HEIGHT - 1, G2_LENS_WIDTH - 1, barTop + TOP_BAR_HEIGHT - 1, BORDER_VALUE);
 

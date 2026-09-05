@@ -115,7 +115,7 @@ export type ShellWindow = {
   requestRender: () => void;
   /**
    * Re-measure against the current display mode (viewport size / band) and
-   * repaint. Windows without it (workers, whose canvas is fixed at open) are
+   * repaint. Windows without it (workers with a canvas fixed at open) are
    * closed and relaunched by the controller instead.
    */
   relayout?: () => void;
@@ -784,13 +784,14 @@ class Shell {
    * strip left of the icon columns when the one-column variant is active.
    */
   screenshotCropRect(): { x: number; y: number; width: number; height: number } {
+    const appId = this.foregroundWindow()?.appId;
     const heightMode = this.foregroundWindow()?.heightMode ?? "min";
-    const x = sidebarContentLeft(this.windows.length);
+    const x = sidebarWidth(appId) === 0 ? 0 : sidebarContentLeft(this.windows.length);
     return {
       x,
-      y: windowTop(heightMode),
+      y: windowTop(heightMode, appId),
       width: G2_LENS_WIDTH - x,
-      height: windowBandHeight(heightMode),
+      height: windowBandHeight(heightMode, appId),
     };
   }
 
@@ -1397,6 +1398,7 @@ class Shell {
       selectedIndex: this.selectedIndex,
       focus: this.focus,
       foregroundHeightMode: this.foregroundWindow()?.heightMode ?? "min",
+      foregroundAppId: this.foregroundWindow()?.appId,
       battery: this.battery,
       trayIcons: Array.from(this.trayIcons.keys())
         .sort()

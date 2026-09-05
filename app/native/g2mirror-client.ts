@@ -84,6 +84,7 @@ type TerminalDataKind = "snapshot" | "output";
 export class G2MirrorClient {
   private ws: any = null;
   private listenerProxy: any = null;
+  private connectionGeneration = 0;
   private phase: G2MirrorPhase = "idle";
   private status = "Not connected.";
   private sessions: G2MirrorSession[] = [];
@@ -168,14 +169,21 @@ export class G2MirrorClient {
     return () => this.titleListeners.delete(listener);
   }
 
+  /** Grid dimensions for the next connection's handshake. */
+  setViewport(cols: number, rows: number): void {
+    this.options.cols = cols;
+    this.options.rows = rows;
+  }
+
   start(): void {
     if (this.ws) return;
     this.stopped = false;
+    const generation = ++this.connectionGeneration;
     const url = `${this.options.secure ? "wss" : "ws"}://${this.options.host}:${this.options.port}`;
     this.setState("connecting", `Connecting to ${this.options.host}:${this.options.port}...`);
     this.listenerProxy = new com.faceclaw.app.FaceclawWebSocketListener({
       onOpen: () => {
-        if (this.stopped) return;
+        if (this.stopped || generation !== this.connectionGeneration) return;
         this.setState("connecting", "Authenticating...");
         this.send({
           type: "init",
@@ -187,15 +195,15 @@ export class G2MirrorClient {
         });
       },
       onTextMessage: (message: string) => {
-        if (this.stopped) return;
+        if (this.stopped || generation !== this.connectionGeneration) return;
         this.handleMessage(String(message));
       },
       onClosed: (code: number, reason: string) => {
-        if (this.stopped) return;
+        if (this.stopped || generation !== this.connectionGeneration) return;
         this.handleConnectionLost(`Connection closed (${Number(code)}${reason ? `: ${String(reason)}` : ""}).`);
       },
       onFailure: (message: string) => {
-        if (this.stopped) return;
+        if (this.stopped || generation !== this.connectionGeneration) return;
         this.handleConnectionLost(`Connection failed: ${shortenError(String(message))}`);
       },
     });
@@ -209,6 +217,7 @@ export class G2MirrorClient {
 
   stop(): void {
     this.stopped = true;
+    ++this.connectionGeneration;
     this.rejectAllPendingLaunches("client stopped");
     this.clearListRefreshTimer();
     if (this.ws) {

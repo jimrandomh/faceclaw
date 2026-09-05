@@ -363,8 +363,42 @@ export const verticalPositionSetting = new ConfigSettingEnum<VerticalPosition>({
   values: ["top", "upper", "middle", "lower", "bottom"],
   formatValue: (value) => VERTICAL_POSITION_LABELS[value] ?? value,
   description:
-    "Where standard (reduced-height) windows sit vertically within the display area, to position them within your field of view. Full-height windows such as terminal views always use the whole screen.",
+    "Where standard (reduced-height) windows sit vertically within the display area, to position them within your field of view. Full-height windows use the whole screen. Navigate and Terminal can override these display settings.",
 });
+
+/** Per-app layouts can inherit the display preferences or choose their own size. */
+export type AppDisplayMode = "default" | "global" | DisplayModeSetting;
+
+function appDisplayModeSetting(appId: string, defaultValue: AppDisplayMode): ConfigSettingEnum<AppDisplayMode> {
+  return new ConfigSettingEnum<AppDisplayMode>({
+    id: `${appId}-display-mode`,
+    label: "Display mode",
+    storageKey: `${appId}.displayMode`,
+    defaultValue,
+    values: appId === "terminal" ? ["default", "global", ...DISPLAY_MODE_VALUES] : ["global", ...DISPLAY_MODE_VALUES],
+    formatValue: (value) => value === "default" ? "Tall sessions (default)" : value === "global" ? "Use global" : displayModeLabel(value),
+    description: appId === "terminal"
+      ? "Screen size for Terminal. The default keeps session windows tall and the terminals list at the global size. Use global follows Display settings for all Terminal windows. Resizing an open session reconnects its view at the new size."
+      : "Screen size for Navigate. Choose Band to leave more of your field of view clear, or Use global to follow Display settings. Applies to the current route too.",
+  });
+}
+
+function appVerticalPositionSetting(appId: string): ConfigSettingEnum<"global" | VerticalPosition> {
+  return new ConfigSettingEnum<"global" | VerticalPosition>({
+    id: `${appId}-vertical-position`,
+    label: "Vertical position",
+    storageKey: `${appId}.verticalPosition`,
+    defaultValue: "global",
+    values: ["global", "top", "upper", "middle", "lower", "bottom"],
+    formatValue: (value) => value === "global" ? "Use global" : VERTICAL_POSITION_LABELS[value],
+    description: "Where reduced-height windows for this app sit in your field of view. Use global follows Display settings. Full-height windows fill the display vertically.",
+  });
+}
+
+export const navigateDisplayModeSetting = appDisplayModeSetting("navigate", "global");
+export const navigateVerticalPositionSetting = appVerticalPositionSetting("navigate");
+export const terminalDisplayModeSetting = appDisplayModeSetting("terminal", "default");
+export const terminalVerticalPositionSetting = appVerticalPositionSetting("terminal");
 
 export const voiceControlEnabledSetting = new ConfigSettingBoolean({
   id: "voice-control-enabled",
