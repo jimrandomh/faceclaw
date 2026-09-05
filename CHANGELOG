@@ -8,7 +8,7 @@
 * Content beneath an open context menu is dimmed
 * Add a keyboard-input button to the phone home screen
 * Add a light sensor demo to the Developer app
-* Move Calculator, Microphones, Nightscout, and Roam apps to Prototpyes folder by default
+* Move Calculator, Microphones, Nightscout, and Roam apps to Prototypes folder by default
 * Navigate app: Location indicator rotates based on the compass
 * Navigate app: Add saved home/work and recent address settings
 * Navigate app: Darken the map background color
