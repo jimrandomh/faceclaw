@@ -18,7 +18,7 @@ User-facing documentation lives at https://faceclaw.org/.
 ![Music player](website/screenshots/music-player.png)
 ![Assistant settings](website/screenshots/settings-assistant.png)
 ![Display settings](website/screenshots/settings-display.png)
-
+![Compass](website/screenshots/compass.png)
 
 ## Installation
 
