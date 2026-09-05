@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.6.5 - Future
+## 0.6.5 - 2026-09-04
 * Changed context menu gestures: — for system, ●— for app context menu.
 * System and app context menus show gesture help for switching to the other context menu
 * Move some items from app context menus to the system context menu
