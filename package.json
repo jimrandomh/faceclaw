@@ -4,6 +4,10 @@
   "version": "1.0.0",
   "private": false,
   "scripts": {
+    "build:ios": "scripts/ios.sh build ios --for-device",
+    "run:ios": "scripts/ios.sh run ios",
+    "prepare:ios": "scripts/ios.sh prepare ios",
+    "doctor:ios": "scripts/ios.sh doctor ios",
     "build": "./build.sh",
     "run": "./build_and_run.sh",
     "release": "scripts/release.sh",
@@ -23,6 +27,7 @@
   },
   "devDependencies": {
     "@nativescript/android": "9.0.4",
+    "@nativescript/ios": "9.0.3",
     "@nativescript/types": "~9.0.0",
     "@nativescript/webpack": "~5.0.25",
     "typescript": "~5.4.0"

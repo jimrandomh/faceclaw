@@ -1,0 +1,5 @@
+IPHONEOS_DEPLOYMENT_TARGET = 15.1;
+TARGETED_DEVICE_FAMILY = 1;
+CODE_SIGN_STYLE = Automatic;
+
+// Select the local signing team in Xcode or pass --teamId to the iOS scripts.

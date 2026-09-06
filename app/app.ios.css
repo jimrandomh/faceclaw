@@ -1,0 +1,12 @@
+Page {
+  background-color: #f5f5f2;
+  color: #202820;
+}
+
+Button {
+  background-color: #285c45;
+  color: #ffffff;
+  border-radius: 12;
+  padding: 16;
+  font-size: 17;
+}

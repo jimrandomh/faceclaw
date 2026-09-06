@@ -42,4 +42,4 @@ faceclaw_settings.xml
 
 # Developer configs
 build_paths.sh
-
+**/xcuserdata/
