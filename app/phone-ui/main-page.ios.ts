@@ -1,7 +1,10 @@
-import { Application, Button, Color, GridLayout, Image, Label, Page, StackLayout, type TouchGestureEventData } from '@nativescript/core'
+import { Application, Button, Color, Dialogs, GridLayout, Image, Label, Page, StackLayout, type TouchGestureEventData } from '@nativescript/core'
+import { createConfigureDevicesPage } from './config-page.ios'
 import { IosPreviewController } from '../g2/ios-preview-controller'
 import { PhoneGestureRecognizer } from './phone-gestures'
 import { onAnySettingChanged, previewColorSetting } from '../ui/dashboard-settings'
+import { loadDeviceAddresses } from '../g2/device-addresses'
+import { deviceAddressError } from '../g2/ios-peripheral-identity'
 
 export function createMainPage(): Page {
   const page = new Page()
@@ -13,10 +16,13 @@ export function createMainPage(): Page {
   header.columns = '*,auto'; header.padding = '12 20'
   const title = new Label()
   title.text = 'Faceclaw'; title.fontSize = 25; title.fontWeight = 'bold'
-  header.addChild(title)
+  const heading = new StackLayout(); heading.addChild(title); header.addChild(heading)
   const state = new Label()
-  state.text = 'Preview only'; state.fontSize = 14; state.verticalAlignment = 'middle'
-  GridLayout.setColumn(state, 1); header.addChild(state); root.addChild(header)
+  state.text = 'Preview only'; state.fontSize = 12; heading.addChild(state)
+  const devices = new Button()
+  devices.text = 'Devices'; devices.accessibilityLabel = 'Configure devices'; devices.fontSize = 14; devices.padding = '10 12'
+  devices.on('tap', () => { void openDevices() })
+  GridLayout.setColumn(devices, 1); header.addChild(devices); root.addChild(header)
   const body = new GridLayout()
   GridLayout.setRow(body, 1); root.addChild(body)
   const mirror = new Image()
@@ -52,7 +58,21 @@ export function createMainPage(): Page {
     mirror.imageSource = image; focus.text = selectedTab === 'ring' ? 'Ring' : label
   }, message => {
     errorLabel.text = message; errorLabel.visibility = 'visible'; selectTab('settings')
+  }, connection => {
+    state.text = connection.phase === 'connected' ? `Connected${connection.battery !== null ? ` · ${connection.battery}%` : ''}${connection.ring ? ' · R1' : ''}`
+      : ({ disconnected: 'Preview only', connecting: 'Connecting…', retrying: 'Reconnecting…', disconnecting: 'Disconnecting…', error: 'Connection failed · Devices for details' })[connection.phase] || connection.phase
   })
+  async function openDevices(): Promise<void> {
+    const connected = ['connected', 'connecting', 'retrying'].includes(controller.connectionState?.phase ?? '')
+    const choice = await Dialogs.action({ title: 'Devices', message: controller.connectionState?.status ?? 'Preview only', cancelButtonText: 'Cancel',
+      actions: ['Configure devices', connected ? 'Disconnect' : 'Connect', 'Connection details'] })
+    if (choice === 'Configure devices') {
+      await controller.disconnect()
+      page.showModal(createConfigureDevicesPage(), { fullscreen: true, closeCallback: () => {} })
+    } else if (choice === 'Connect') await controller.connect()
+    else if (choice === 'Disconnect') await controller.disconnect()
+    else if (choice === 'Connection details') await Dialogs.alert({ title: 'Connection details', message: controller.connectionDetails, okButtonText: 'OK' })
+  }
   const padInput = new PhoneGestureRecognizer(gesture => controller.gesture(gesture, selectedTab === 'ring' ? 'ring' : 'watch'))
   const mirrorInput = new PhoneGestureRecognizer((gesture, x, y) => {
     const size = mirror.getActualSize()
@@ -128,10 +148,16 @@ export function createMainPage(): Page {
   }
   const resume = () => controller.resume()
   let offSettings: (() => void) | null = null
+  let firstLoad = true
   page.on('loaded', () => {
     Application.on(Application.suspendEvent, pause); Application.on(Application.resumeEvent, resume)
     offSettings?.(); offSettings = onAnySettingChanged(() => { sizeButton.text = controller.displayModeLabel })
     selectTab(selectedTab); controller.resume()
+    if (firstLoad) {
+      firstLoad = false
+      // Match Android's reconnect-on-launch behavior once addresses are saved.
+      if (!deviceAddressError(loadDeviceAddresses())) void controller.connect()
+    }
   })
   page.on('unloaded', () => {
     pause(); offSettings?.(); offSettings = null

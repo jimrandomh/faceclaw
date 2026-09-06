@@ -1,4 +1,5 @@
 module FaceclawGraphics {
   header "FaceclawGraphics.h"
+  header "FaceclawBluetooth.h"
   export *
 }

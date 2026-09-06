@@ -18,6 +18,8 @@
   <string>1</string>
   <key>LSRequiresIPhoneOS</key>
   <true/>
+  <key>NSBluetoothAlwaysUsageDescription</key>
+  <string>Faceclaw uses Bluetooth to connect to your glasses and ring, display your apps, and receive gestures.</string>
   <key>UILaunchScreen</key>
   <dict/>
   <key>UISupportedInterfaceOrientations</key>

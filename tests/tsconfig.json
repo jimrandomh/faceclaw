@@ -11,6 +11,9 @@
     "outDir": "../.test-build"
   },
   "include": [
+    "../app/g2/ble-protocol.ts",
+    "../app/g2/ios-peripheral-identity.ts",
+    "../app/g2/glasses-session.ts",
     "../app/graphics/surface-compositor.ts",
     "../app/phone-ui/phone-gestures.ts",
     "../app/g2/glasses-hardware-identity.ts",

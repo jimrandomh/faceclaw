@@ -1,4 +1,8 @@
-import { Dialogs, type ImageSource } from '@nativescript/core'
+import { Dialogs, File, knownFolders, path, type ImageSource } from '@nativescript/core'
+import { iosBluetooth } from '../native/ios-bluetooth'
+import { GlassesSession, type SessionState } from './glasses-session'
+import { loadDeviceAddresses } from './device-addresses'
+import { deviceAddressError } from './ios-peripheral-identity'
 import { createLauncherWindow, LAUNCHER_SURFACE_ID } from '../apps/launcher/launcher-app'
 import { CalculatorLayer } from '../apps/calculator/calculator'
 import { MathCoordinator } from '../apps/calculator/math/coordinator'
@@ -10,7 +14,7 @@ import { makeInputEvent, type InputEventPayload } from '../ui/gestures'
 import { noopLayerActions, type LayerActions } from '../ui/layers'
 import { MenuLayer } from '../ui/menu'
 import { createInProcessWindow } from '../ui/shell/in-process-window'
-import { shell, type ShellWindow } from '../ui/shell/shell'
+import { shell, rawInputEventToInputEvent, type ShellWindow } from '../ui/shell/shell'
 import { appViewportRect, SIDEBAR_WIDTH, sidebarStripVisible } from '../ui/shell/geometry'
 import { DISPLAY_MODE_VALUES, displayModeLabel, displayModeSetting, onAnySettingChanged,
   previewColorSetting, timeFormatSetting, verticalPositionSetting } from '../ui/dashboard-settings'
@@ -27,6 +31,11 @@ export class IosPreviewController {
   private inputQueue: Promise<void> = Promise.resolve()
   private lastLayout = ''
   private prompting = false
+  private session: GlassesSession | null = null
+  private resumeConnection = false
+  private suspendedDisconnect: Promise<void> = Promise.resolve()
+  private logLines: string[] = []
+  private logTimer: ReturnType<typeof setTimeout> | null = null
   private readonly actions: LayerActions = {
     ...noopLayerActions,
     requestRender: () => this.requestShellRender(),
@@ -38,7 +47,8 @@ export class IosPreviewController {
   }
 
   constructor(private readonly onFrame: (image: ImageSource, focus: string) => void,
-    private readonly onError: (message: string) => void) {
+    private readonly onError: (message: string) => void,
+    private readonly onConnectionState: (state: SessionState) => void = () => {}) {
     this.compositor.configureSurface('shell', { x: 0, y: 0, width: 640, height: 480, zOrder: 1, transparency: 'color-key' })
     shell.configure({
       actions: this.actions,
@@ -78,8 +88,14 @@ export class IosPreviewController {
     shell.foregroundWindow()?.requestRender()
     this.requestShellRender()
     console.log('[ios-preview] Main screen active')
+    if (this.resumeConnection) {
+      this.resumeConnection = false
+      void this.suspendedDisconnect.then(() => { if (this.active) void this.connect() })
+    }
   }
   pause(): void {
+    this.resumeConnection = !!this.session && ['connected', 'connecting', 'retrying'].includes(this.session.state.phase)
+    if (this.session) this.suspendedDisconnect = this.session.stop()
     this.active = false
     this.offSettings?.(); this.offSettings = null
     if (this.clockTimer) clearInterval(this.clockTimer)
@@ -119,7 +135,9 @@ export class IosPreviewController {
           this.compositor.submitSurfaceFrame('shell', image.pixels, { x: 0, y: 0, width: 640, height: 480 })
           this.compositor.setUnderlayDim(1, shell.underlayDim())
         }
-        const image = previewPixels(this.compositor.composite(), 640, 480, previewColorSetting.get() === 'green')
+        const pixels = this.compositor.composite()
+        this.session?.setFrame(pixels)
+        const image = previewPixels(pixels, 640, 480, previewColorSetting.get() === 'green')
         this.onFrame(image, `${shell.foregroundWindow()?.title ?? 'Apps'} · ${shell.getFocus() === 'sidebar' ? 'App switcher' : 'App'}`)
       } catch (error) { this.fail(error) }
     }, 33)
@@ -203,6 +221,42 @@ export class IosPreviewController {
     displayModeSetting.set(values[(values.indexOf(displayModeSetting.get()) + 1) % values.length])
   }
   get displayModeLabel(): string { return displayModeLabel(displayModeSetting.get()) }
+  get connectionState(): SessionState | null { return this.session?.state ?? null }
+  get connectionDetails(): string {
+    const state = this.connectionState
+    return state ? `${state.status}\nL: ${state.leftVersion || 'unknown'}\nR: ${state.rightVersion || 'unknown'}\nBattery: ${state.battery ?? '?'}%\nRing: ${state.ring ? 'connected' : 'disconnected'}\nFrames acknowledged: ${state.frames}\n${state.capabilities}\n\n${this.logLines.slice(-12).join('\n')}` : 'Preview only. Configure devices, then connect.'
+  }
+  async connect(): Promise<void> {
+    if (!this.active) return
+    const addresses = loadDeviceAddresses(), error = deviceAddressError(addresses)
+    if (error) { this.onError(error); return }
+    if (!this.session) {
+      const { deflate } = require('pako') as { deflate: (data: Uint8Array) => Uint8Array }
+      this.session = new GlassesSession(iosBluetooth(), deflate, state => {
+        this.onConnectionState(state)
+        if (state.phase === 'connected') this.requestShellRender()
+      }, input => {
+        this.inputQueue = this.inputQueue.then(async () => {
+          if (!this.active) return
+          await shell.receiveInput(rawInputEventToInputEvent(input)); this.requestShellRender()
+          this.logBluetooth(`Input ${input.eventType} source ${input.eventSource}`)
+        }).catch(error => this.fail(error))
+      }, message => this.logBluetooth(message))
+    }
+    await this.session.start(addresses)
+  }
+  async disconnect(): Promise<void> { this.resumeConnection = false; await this.session?.stop() }
+  private logBluetooth(message: string): void {
+    const line = `${new Date().toISOString()} ${message}`
+    console.log(`[ios-ble] ${line}`); this.logLines.push(line)
+    if (this.logLines.length > 200) this.logLines.shift()
+    if (this.logTimer !== null) return
+    this.logTimer = setTimeout(() => {
+      this.logTimer = null
+      try { File.fromPath(path.join(knownFolders.documents().path, 'bluetooth.log')).writeTextSync(this.logLines.join('\n')) }
+      catch (error) { console.warn(`Bluetooth log: ${error}`) }
+    }, 500)
+  }
   async typeIntoApp(): Promise<void> {
     if (this.prompting || !shell.foregroundWindow()?.receiveTextInput) return
     this.prompting = true
