@@ -18,6 +18,7 @@ export class IosBluetooth {
   readonly devices = new Map<string, IosDevice>()
   private requestId = 0
   private scanTimer: ReturnType<typeof setTimeout> | null = null
+  private scanGeneration = 0
   state = 0
   scanning = false
   constructor() {
@@ -72,19 +73,25 @@ export class IosBluetooth {
     })
   }
   async startScan(durationMs = 12_000): Promise<void> {
+    this.stopScan()
+    const generation = this.scanGeneration
     await this.ensureReady()
-    this.stopScan(); this.scanning = true; this.native.scan(true)
+    if (generation !== this.scanGeneration) throw new Error('Bluetooth scan cancelled')
+    this.scanning = true; this.native.scan(true)
     this.scanTimer = setTimeout(() => this.stopScan(), durationMs)
     this.emit({ kind: 'scan-started' })
   }
   stopScan(): void {
+    ++this.scanGeneration
     if (this.scanTimer) clearTimeout(this.scanTimer)
     this.scanTimer = null; this.native.scan(false)
     const wasScanning = this.scanning; this.scanning = false
     if (wasScanning) this.emit({ kind: 'scan-stopped' })
   }
   async resolveDevices(addresses: { left: string; right: string; ring: string }): Promise<Record<string, string>> {
+    const generation = this.scanGeneration
     await this.ensureReady()
+    if (generation !== this.scanGeneration) throw new Error('Bluetooth connection cancelled')
     const result: Record<string, string> = {}
     for (const role of ['left', 'right', 'ring'] as const) {
       const address = addresses[role]
@@ -116,11 +123,11 @@ export class IosBluetooth {
     })
     return result
   }
-  private operation(identifier: string, call: (id: number) => void, timeoutMs = 10_000): Promise<ConnectionDetails> {
+  private operation(identifier: string, call: (id: number) => void, timeoutMs = 10_000, disconnectOnTimeout = true): Promise<ConnectionDetails> {
     const id = ++this.requestId
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
-        this.pending.delete(id); this.native.disconnect(identifier)
+        this.pending.delete(id); if (disconnectOnTimeout) this.native.disconnect(identifier)
         reject(new Error('Bluetooth operation timed out. Wake the device and try connecting again.'))
       }, timeoutMs)
       this.pending.set(id, { resolve, reject, timer })
@@ -129,7 +136,9 @@ export class IosBluetooth {
   }
   connect(identifier: string): Promise<ConnectionDetails> { return this.operation(identifier, id => this.native.connectRequestId(identifier, id), 20_000) }
   async subscribe(identifier: string, characteristic: string): Promise<void> {
-    await this.operation(identifier, id => this.native.subscribeCharacteristicRequestId(identifier, characteristic, id))
+    // R1 exposes two notification channels; one may never complete its CCCD
+    // request. Keep the link alive so the other channel can still be tried.
+    await this.operation(identifier, id => this.native.subscribeCharacteristicRequestId(identifier, characteristic, id), 30_000, false)
   }
   async write(identifier: string, characteristic: string, bytes: Uint8Array): Promise<void> {
     const copy = new Uint8Array(bytes)

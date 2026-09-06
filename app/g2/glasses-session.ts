@@ -35,6 +35,9 @@ export class GlassesSession {
   private sequence = 0x40
   private timer: number | null = null
   private retryTimer: number | null = null
+  private ringRetryTimer: number | null = null
+  private ringRetryCount = 0
+  private ringConnecting = false
   private retryCount = 0
   private wanted = false
   private addresses: SessionAddresses | null = null
@@ -47,6 +50,7 @@ export class GlassesSession {
   private charging = false
   private layoutCreated = false
   private off: () => void
+  private stopping: Promise<void> | null = null
   constructor(private readonly transport: SessionTransport,
     private readonly deflate: (data: Uint8Array) => Uint8Array,
     private readonly onState: (state: SessionState) => void,
@@ -105,23 +109,51 @@ export class GlassesSession {
       this.displayed = null; this.retryCount = 0
       this.update('connected', 'Glasses connected')
       this.schedule()
-      if (addresses.ring && ids.ring) {
-        try {
-          const ring = await this.transport.connect(ids.ring); this.check(generation)
-          const notifications = protocol.RING_NOTIFY.filter(uuid => ring.characteristics.includes(uuid))
-          if (!notifications.length) throw new Error('No R1 gesture notifications found')
-          for (const uuid of notifications) await this.transport.subscribe(ids.ring, uuid)
-          this.check(generation); this.state.ring = true; this.update('connected', 'Glasses and ring connected')
-        } catch (error) {
-          if (generation !== this.generation) return
-          this.transport.disconnect(ids.ring)
-          this.update('connected', `Glasses connected; ring unavailable: ${this.message(error)}`)
-        }
-      } else if (addresses.ring) this.update('connected', 'Glasses connected; configured ring was not found')
+      if (addresses.ring && ids.ring) await this.connectRing(generation)
+      else if (addresses.ring) this.update('connected', 'Glasses connected; configured ring was not found')
     } catch (error) {
       if (generation !== this.generation) return
-      this.fail(error, retry)
+      this.fail(error, retry || error instanceof AckTimeout)
     }
+  }
+  private async connectRing(generation: number): Promise<void> {
+    if (this.ringConnecting || generation !== this.generation || this.state.phase !== 'connected' || !this.ids.ring) return
+    this.ringConnecting = true
+    const identifier = this.ids.ring
+    try {
+      const ring = await this.transport.connect(identifier); this.check(generation)
+      this.log(`R1 services discovered: ${ring.characteristics.join(', ')}`)
+      const notifications = protocol.RING_NOTIFY.filter(uuid => ring.characteristics.includes(uuid))
+      if (!notifications.length) throw new Error('No R1 gesture notifications found')
+      let subscribed = 0
+      for (const uuid of notifications) {
+        this.log(`Subscribing R1 ${uuid}`)
+        try { await this.transport.subscribe(identifier, uuid); this.check(generation); subscribed++; this.log(`R1 subscribed ${uuid}`) }
+        catch (error) { this.check(generation); this.log(`R1 channel unavailable ${uuid}: ${this.message(error)}`) }
+      }
+      if (!subscribed) throw new Error('Neither R1 notification channel could be subscribed')
+      this.check(generation); this.state.ring = true; this.ringRetryCount = 0
+      this.update('connected', 'Glasses and ring connected')
+    } catch (error) {
+      if (generation !== this.generation) return
+      this.state.ring = false
+      this.transport.disconnect(identifier)
+      this.update('connected', `Glasses connected; ring unavailable: ${this.message(error)}`)
+    } finally {
+      if (generation === this.generation) {
+        this.ringConnecting = false
+        if (!this.state.ring) this.scheduleRingRetry()
+      }
+    }
+  }
+  private scheduleRingRetry(): void {
+    if (!this.wanted || this.state.phase !== 'connected' || !this.ids.ring || this.ringConnecting || this.ringRetryTimer !== null || this.ringRetryCount >= 5) return
+    const generation = this.generation, delay = Math.min(30_000, 2000 * 2 ** this.ringRetryCount++)
+    this.log(`Retrying ring in ${delay / 1000}s`)
+    this.ringRetryTimer = setTimeout(() => {
+      this.ringRetryTimer = null
+      if (generation === this.generation) void this.connectRing(generation)
+    }, delay)
   }
   private check(generation: number): void { if (generation !== this.generation) throw new Error('Connection cancelled') }
   private nextMagic(): number {
@@ -134,6 +166,7 @@ export class GlassesSession {
   private request(role: string, sid: number, build: (magic: number) => Uint8Array, label: string,
     timeout = 3500, flag = 0x20, fixedMagic?: number): Promise<protocol.ProtocolMessage> {
     const magic = fixedMagic ?? this.nextMagic(), payload = build(magic), key = `${sid}:${magic}`
+    this.log(`TX ${label} ${role} sid=${sid.toString(16)} magic=${magic}`)
     const generation = this.generation
     return new Promise((resolve, reject) => {
       const pending: PendingAck = { resolve, reject, timer: null, command: protocol.readInteger(payload, 1, -1), label }
@@ -169,7 +202,10 @@ export class GlassesSession {
     if (event.kind === 'disconnected') {
       if (event.identifier === this.ids.ring) {
         this.state.ring = false
-        if (this.state.phase === 'connected') this.update('connected', 'Glasses connected; ring disconnected')
+        if (this.state.phase === 'connected') {
+          this.update('connected', `Glasses connected; ring disconnected${event.message ? ': ' + event.message : ''}`)
+          this.scheduleRingRetry()
+        }
       } else if (['connected', 'connecting'].includes(this.state.phase)) this.fail(new Error(event.message || 'Glasses disconnected'), true)
       return
     }
@@ -178,10 +214,13 @@ export class GlassesSession {
       const data = hexToBytes(event.data)
       if (event.identifier === this.ids.ring) {
         if (!protocol.RING_NOTIFY.includes(event.characteristic ?? '')) return
-        const input = protocol.decodeRingInput(data); if (input) this.onInput(input); return
+        const input = protocol.decodeRingInput(data)
+        if (input) { this.log(`Direct R1 gesture ${input.eventType}`); this.onInput(input) }
+        return
       }
       if (event.characteristic !== protocol.G2_NOTIFY) return
       for (const message of this.receiver.receive(event.identifier!, data)) {
+        this.log(`RX ${event.identifier === this.ids.left ? 'L' : 'R'} sid=${message.sid.toString(16)} flag=${message.flag.toString(16)} cmd=${message.command} magic=${message.magic}`)
         if (![1, 6].includes(message.flag)) {
           // A master arm can relay the other arm's ACK; magic is allocated
           // across BOTH links, matching Android's communicator.
@@ -259,6 +298,8 @@ export class GlassesSession {
     ++this.generation
     if (this.timer !== null) clearTimeout(this.timer)
     if (this.retryTimer !== null) clearTimeout(this.retryTimer)
+    if (this.ringRetryTimer !== null) clearTimeout(this.ringRetryTimer)
+    this.ringRetryTimer = null; this.ringConnecting = false; this.ringRetryCount = 0
     this.timer = this.retryTimer = null; this.pumping = false
     const pending = [...this.pending.values()]; this.pending.clear()
     for (const request of pending) { if (request.timer) clearTimeout(request.timer); request.reject(new Error('Connection ended')) }
@@ -277,7 +318,12 @@ export class GlassesSession {
       this.retryTimer = setTimeout(() => { this.retryTimer = null; if (this.wanted && this.addresses) void this.start(this.addresses, true) }, delay)
     } else { this.wanted = false; this.update('error', message) }
   }
-  async stop(): Promise<void> {
+  stop(): Promise<void> {
+    if (this.stopping) return this.stopping
+    this.stopping = this.stopInternal().finally(() => { this.stopping = null })
+    return this.stopping
+  }
+  private async stopInternal(): Promise<void> {
     this.wanted = false
     const cleanup = this.layoutCreated && this.state.phase === 'connected'
     this.update('disconnecting', 'Disconnecting…'); this.reset()

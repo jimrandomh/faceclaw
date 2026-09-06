@@ -102,7 +102,8 @@ class FakeTransport {
     let body = new Uint8Array();
     if (message.sid === p.SID.auth) body = p.bytes(3, new Uint8Array());
     if (message.sid === p.SID.settings) body = p.concat(p.bytes(4, p.concat(string(5, '2.2.9.22'), string(6, '2.2.9.22'), p.integer(12, 90), p.integer(13, 0))), string(100, this.stock ? '' : 'EVENCFW/18 img640 fbguard wearnotify cleanup11'));
-    const payload = p.concat(p.integer(1, message.command), p.integer(2, overrides.magic ?? message.magic), body);
+    const responseCommand = message.sid === p.SID.launch ? 1 : message.sid === p.SID.hub && message.command === 0 ? 1 : message.sid === p.SID.hub && message.command === 3 ? 4 : message.command;
+    const payload = p.concat(p.integer(1, responseCommand), p.integer(2, overrides.magic ?? message.magic), body);
     const data = hex(p.concat(...p.frameMessage(payload, overrides.sid ?? message.sid, 0, 12)));
     // The right/master link also carries ACKs for image writes to L.
     this.emit({ kind: 'notification', identifier: overrides.identifier ?? 'R', characteristic: p.G2_NOTIFY, data });
@@ -148,6 +149,18 @@ test('stock firmware is rejected before framebuffer/layout/image commands', asyn
   assert.equal(h.session.state.phase, 'error'); assert.match(h.session.state.status, /modified firmware/);
   assert.ok(!transport.sent.some(s => s.message.sid === p.SID.hub));
 });
+test('one unavailable R1 notification channel does not discard the usable channel', async t => {
+  const transport = new FakeTransport();
+  const subscribe = transport.subscribe.bind(transport);
+  transport.subscribe = async (id, uuid) => {
+    if (uuid === p.RING_NOTIFY[0]) throw new Error('CCCD timed out');
+    return subscribe(id, uuid);
+  };
+  const h = harness(t, transport); await h.session.start({ ...addresses, ring: 'AA:BB:CC:DD:EE:03' });
+  assert.equal(h.session.state.ring, true);
+  assert.ok(transport.subscriptions.some(([id, uuid]) => id === 'ring' && uuid === p.RING_NOTIFY[1]));
+  assert.ok(!transport.closed.includes('ring'));
+});
 test('disconnect cancels in-flight authentication and ignores late acknowledgements', async t => {
   const h = harness(t); h.transport.hold = true;
   const start = h.session.start(addresses); await until(() => h.transport.held.length === 2);
@@ -168,4 +181,19 @@ test('wrong peer, service or magic cannot satisfy a pending request; timeout rej
   h.transport.ack(held.id, held.message, { sid: 9 });
   h.transport.ack(held.id, held.message, { magic: held.message.magic + 1 });
   await rejected;
+});
+
+test('ring disconnect retries independently and stop cancels further retries', async t => {
+  const h = harness(t); await h.session.start({ ...addresses, ring: 'AA:BB:CC:DD:EE:03' });
+  const armMessages = h.transport.sent.length;
+  h.transport.emit({ kind: 'disconnected', identifier: 'ring', message: 'Link lost' });
+  assert.equal(h.session.state.phase, 'connected'); assert.equal(h.session.state.ring, false);
+  assert.notEqual(h.session.ringRetryTimer, null);
+  await new Promise(resolve => setTimeout(resolve, 2100));
+  assert.equal(h.session.state.ring, true);
+  assert.equal(h.transport.sent.length, armMessages);
+  assert.equal(h.transport.subscriptions.filter(([id]) => id === 'ring').length, 4);
+  h.transport.emit({ kind: 'disconnected', identifier: 'ring' });
+  await h.session.stop();
+  assert.equal(h.session.ringRetryTimer, null);
 });
