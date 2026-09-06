@@ -1,4 +1,5 @@
 import { CLOUD_STT_SAMPLE_RATE, CloudSttClient, CloudSttOptions, toJavaBytes } from "./cloud-stt";
+import { TimedTranscript } from "./transcript-format";
 
 declare const com: any;
 
@@ -30,15 +31,18 @@ export class SonioxSttClient implements CloudSttClient {
   // PCM queued until the socket opens and the config message is sent.
   private readonly pendingPcm: Uint8Array[] = [];
   private pendingFinish = false;
+  private finishing = false;
   // Concatenation of all final tokens so far.
   private finalText = "";
+  private formatted = new TimedTranscript();
 
   constructor(private readonly options: SonioxSttOptions) {}
 
   start(): void {
-    if (this.ws) return;
+    if (this.closed || this.ws) return;
     this.listenerProxy = new com.faceclaw.app.FaceclawWebSocketListener({
       onOpen: () => {
+        if (this.closed) return;
         // The API key rides in the config message; there is no auth header.
         this.trySendText(
           JSON.stringify({
@@ -47,8 +51,10 @@ export class SonioxSttClient implements CloudSttClient {
             audio_format: "pcm_s16le",
             sample_rate: CLOUD_STT_SAMPLE_RATE,
             num_channels: 1,
+            enable_speaker_diarization: true,
           }),
         );
+        if (this.closed) return;
         this.open = true;
         for (const chunk of this.pendingPcm.splice(0)) {
           this.sendPcm(chunk);
@@ -58,21 +64,25 @@ export class SonioxSttClient implements CloudSttClient {
           this.finish();
         }
         this.options.onStatus("Listening (Soniox)...");
+        this.options.onReady?.();
       },
-      onTextMessage: (message: string) => this.handleMessage(String(message)),
+      onTextMessage: (message: string) => {
+        if (!this.closed) this.handleMessage(String(message));
+      },
       onClosed: () => {
         this.open = false;
+        if (!this.closed) this.options.onDisconnected?.("Soniox connection closed.");
       },
       onFailure: (message: string) => {
         if (this.closed) return;
-        this.options.onError(`Soniox connection failed: ${String(message)}`);
+        this.options.onDisconnected?.(`Soniox connection failed: ${String(message)}`);
       },
     });
     try {
       this.ws = new com.faceclaw.app.FaceclawWebSocket(WS_URL, this.listenerProxy, null, null);
       this.options.onStatus("Connecting to Soniox...");
     } catch (error) {
-      this.options.onError(`Soniox connection failed: ${String((error as Error)?.message ?? error)}`);
+      this.options.onDisconnected?.(`Soniox connection failed: ${String((error as Error)?.message ?? error)}`);
     }
   }
 
@@ -89,6 +99,7 @@ export class SonioxSttClient implements CloudSttClient {
   /** End of utterance: an empty text frame tells Soniox the audio is done. */
   finish(): void {
     if (this.closed) return;
+    this.finishing = true;
     if (this.open) {
       this.trySendText("");
     } else {
@@ -96,8 +107,13 @@ export class SonioxSttClient implements CloudSttClient {
     }
   }
 
+  commitSegment(): void {
+    if (!this.closed && this.open) this.trySendText(JSON.stringify({ type: "finalize" }));
+  }
+
   stop(): void {
     this.closed = true;
+    this.open = false;
     if (this.ws) {
       try {
         this.ws.close(1000, "bye");
@@ -107,21 +123,26 @@ export class SonioxSttClient implements CloudSttClient {
       this.ws = null;
     }
     this.listenerProxy = null;
+    this.pendingPcm.length = 0;
   }
 
   private sendPcm(pcm: Uint8Array): void {
     try {
-      this.ws?.sendBinary(toJavaBytes(pcm));
+      if (this.ws?.sendBinary(toJavaBytes(pcm)) === false) {
+        this.options.onDisconnected?.("Soniox audio send failed.");
+      }
     } catch (error) {
-      console.warn("soniox send failed", error);
+      this.options.onDisconnected?.(`Soniox send failed: ${String(error)}`);
     }
   }
 
   private trySendText(message: string): void {
     try {
-      this.ws?.sendText(message);
+      if (this.ws?.sendText(message) === false) {
+        this.options.onDisconnected?.("Soniox send failed.");
+      }
     } catch (error) {
-      console.warn("soniox send failed", error);
+      this.options.onDisconnected?.(`Soniox send failed: ${String(error)}`);
     }
   }
 
@@ -133,28 +154,42 @@ export class SonioxSttClient implements CloudSttClient {
       return;
     }
     if (message?.error_code != null) {
-      this.options.onError(`Soniox: ${String(message.error_message ?? message.error_code)}`);
+      const error = `Soniox: ${String(message.error_message ?? message.error_code)}`;
+      if (Number(message.error_code) === 429 || Number(message.error_code) >= 500) this.options.onDisconnected?.(error);
+      else this.options.onError(error);
       return;
     }
     const tokens = Array.isArray(message?.tokens) ? message.tokens : [];
     let nonFinal = "";
+    let preview: TimedTranscript | null = null;
     for (const token of tokens) {
       const tokenText = String(token?.text ?? "");
       // Markers emitted by endpoint detection / manual finalize; not speech.
-      if (tokenText === "<end>" || tokenText === "<fin>") continue;
+      if (tokenText === "<end>" || tokenText === "<fin>") {
+        if (token?.is_final && this.finalText) {
+          this.options.onTranscript({ text: this.finalText, transcribeText: this.formatted.text, isFinal: true, paragraphBreakAfter: true });
+          this.finalText = "";
+          this.formatted = new TimedTranscript();
+        }
+        continue;
+      }
       if (token?.is_final) {
         this.finalText += tokenText;
+        this.formatted.append({ ...token, text: tokenText });
       } else {
         nonFinal += tokenText;
+        preview ??= this.formatted.copy();
+        preview.append({ ...token, text: tokenText });
       }
     }
     if (message?.finished) {
-      this.options.onTranscript({ text: this.finalText, isFinal: true });
-      this.stop();
+      this.options.onTranscript({ text: this.finalText, transcribeText: this.formatted.text, isFinal: true });
+      if (this.finishing) this.stop();
+      else this.options.onDisconnected?.("Soniox session ended; restarting transcription.");
       return;
     }
     if (tokens.length > 0) {
-      this.options.onTranscript({ text: this.finalText + nonFinal, isFinal: false });
+      this.options.onTranscript({ text: this.finalText + nonFinal, transcribeText: (preview ?? this.formatted).text, isFinal: false });
     }
   }
 }

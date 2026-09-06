@@ -1,33 +1,35 @@
-import { GrayImage, type UiFont } from "../../graphics/image";
+import { GrayImage } from "../../graphics/image";
 import { getDefaultSmallFont } from "../../graphics/ui-fonts";
 import { lineStep } from "../../ui/metrics";
 import { writeTextToDownloads } from "../../native/file-access";
-import { voiceControlBridge, type VoiceTranscriptEvent } from "../../native/voice-control";
+import { voiceControlBridge } from "../../native/voice-control";
 import { Layer, type LayerContext } from "../../ui/layers";
+import { type InputEvent } from "../../ui/gestures";
+import { TranscriptModel, TranscriptScroll, wrapTranscribeText } from "./transcript-model";
 
 /**
  * Live transcription view. Continuous mic capture is owned by the app wrapper
  * (createTranscribeAppWindow); this layer accumulates the transcript, shows
- * it, and saves it to Downloads on click.
+ * it, and saves it to Downloads from the app menu.
  */
-import { GESTURE_CLICK, GESTURE_DOUBLE_CLICK, type InputEvent } from "../../ui/gestures";
 export class TranscribeLayer implements Layer {
   private status = "Listening...";
-  // Finalized utterances, plus the live (replace-semantics) partial appended
-  // when painting.
-  private finalizedText = "";
-  private liveText = "";
+  private readonly transcript = new TranscriptModel();
+  private readonly scroll = new TranscriptScroll();
   private saveNotice = "";
   private unsubscribeTranscript: (() => void) | null = null;
+  private unsubscribePause: (() => void) | null = null;
   private unsubscribeStatus: (() => void) | null = null;
 
   start(requestRender: () => void): void {
     this.unsubscribeTranscript = voiceControlBridge.onTranscript((event) => {
-      this.onTranscript(event);
+      this.transcript.accept(event);
       requestRender();
     });
+    this.unsubscribePause = voiceControlBridge.onSpeechPause(() => this.transcript.pause());
     this.unsubscribeStatus = voiceControlBridge.onStatus((state) => {
       this.status = state.status;
+      this.saveNotice = "";
       requestRender();
     });
   }
@@ -36,29 +38,34 @@ export class TranscribeLayer implements Layer {
     const font = getDefaultSmallFont();
     const { width, height } = ctx.stack.getBaseSize();
     const image = new GrayImage(width, height, 0);
-    const text = this.displayText() || "Listening...";
-    const wrapped = wrapTranscribeText(font, text, width - 64);
+    const text = this.transcript.text || "Listening...";
+    const wrapped = wrapTranscribeText((text) => font.measureText(text), text, width - 64);
 
     image.drawText(font, 24, 20, "Transcribe", 200);
     image.drawText(font, 24, 40, this.saveNotice || this.status, 110);
 
     const step = lineStep(font) + 2;
     const bodyTop = 62;
-    const footerY = height - font.lineHeight - 6;
-    const bodyLines = Math.max(1, Math.floor((footerY - bodyTop) / step));
-    const firstLine = Math.max(0, wrapped.length - bodyLines);
-    for (let index = firstLine; index < wrapped.length; index++) {
+    const bodyLines = Math.max(1, Math.floor((height - 6 - bodyTop - font.lineHeight) / step) + 1);
+    const firstLine = this.scroll.layout(wrapped.length, bodyLines);
+    for (let index = firstLine; index < Math.min(wrapped.length, firstLine + bodyLines); index++) {
       const y = bodyTop + (index - firstLine) * step;
       image.drawText(font, 32, y, wrapped[index]!, 230);
     }
 
-    image.drawText(font, 24, footerY, `${GESTURE_CLICK} save   ${GESTURE_DOUBLE_CLICK} back`, 110);
+    if (wrapped.length > bodyLines) {
+      const trackHeight = height - bodyTop - 6;
+      const thumbHeight = Math.max(8, Math.round(trackHeight * bodyLines / wrapped.length));
+      const thumbY = bodyTop + Math.round((trackHeight - thumbHeight) * firstLine / (wrapped.length - bodyLines));
+      image.fillRect(width - 14, bodyTop, 2, trackHeight, 45);
+      image.fillRect(width - 14, thumbY, 2, thumbHeight, 140);
+    }
     return image;
   }
 
   handleInput(event: InputEvent, ctx: LayerContext): void {
-    if (event.type === "click") {
-      this.saveTranscript();
+    if (event.type === "scroll-up" || event.type === "scroll-down") {
+      this.scroll.scroll(event.type === "scroll-up" ? -3 : 3);
       ctx.actions.requestRender();
       return;
     }
@@ -68,14 +75,16 @@ export class TranscribeLayer implements Layer {
   }
 
   onRemoved(): void {
+    this.unsubscribePause?.();
+    this.unsubscribePause = null;
     this.unsubscribeTranscript?.();
     this.unsubscribeTranscript = null;
     this.unsubscribeStatus?.();
     this.unsubscribeStatus = null;
   }
 
-  private saveTranscript(): void {
-    const text = this.displayText().trim();
+  saveTranscript(): void {
+    const text = this.transcript.text.trim();
     if (!text) {
       this.saveNotice = "Nothing to save yet.";
       return;
@@ -83,25 +92,6 @@ export class TranscribeLayer implements Layer {
     const filename = `transcript-${transcriptTimestamp()}.txt`;
     const path = writeTextToDownloads(filename, `${text}\n`);
     this.saveNotice = path ? `Saved ${filename}` : "Save failed (check file access).";
-  }
-
-  private displayText(): string {
-    if (!this.finalizedText) return this.liveText;
-    if (!this.liveText) return this.finalizedText;
-    return `${this.finalizedText} ${this.liveText}`;
-  }
-
-  private onTranscript(event: VoiceTranscriptEvent): void {
-    if (event.isFinal) {
-      const finalText = event.text.trim() || this.liveText.trim();
-      if (finalText) {
-        this.finalizedText = this.finalizedText ? `${this.finalizedText} ${finalText}` : finalText;
-      }
-      this.liveText = "";
-    } else {
-      // Replace semantics: the live partial is the whole current best transcript.
-      this.liveText = event.text.trim();
-    }
   }
 }
 
@@ -112,23 +102,4 @@ function transcriptTimestamp(): string {
     `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}` +
     `-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`
   );
-}
-
-function wrapTranscribeText(font: UiFont, text: string, maxWidth: number): string[] {
-  const words = text.split(/\s+/).filter(Boolean);
-  const lines: string[] = [];
-  let line = "";
-  for (const word of words) {
-    const candidate = line ? `${line} ${word}` : word;
-    if (line && font.measureText(candidate) > maxWidth) {
-      lines.push(line);
-      line = word;
-    } else {
-      line = candidate;
-    }
-  }
-  if (line) {
-    lines.push(line);
-  }
-  return lines.length ? lines : [""];
 }

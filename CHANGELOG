@@ -2,6 +2,7 @@
 
 ## 0.6.6 - Future
 * Navigate and terminal app: App-specific screen size/position setting
+* Transcribe app: Scrolling; automatic reconnection; insert newlines
 
 ## 0.6.5 - 2026-09-04
 * Changed context menu gestures: — for system, ●— for app context menu.
