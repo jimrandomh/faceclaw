@@ -144,6 +144,8 @@ export type ShellWindow = {
 };
 
 export type ShellConfig = {
+  /** Hosts without microphone support hide and reject voice entry points. */
+  voiceInputEnabled?: boolean;
   /** Actions handed to shell overlay layers; requestRender must re-render the shell surface. */
   actions: LayerActions;
   getScreenTimeoutMs: () => number | null;
@@ -901,7 +903,7 @@ class Shell {
     handsFree?: boolean;
     defaultTarget: "assistant" | "app";
   }): void {
-    if (this.voiceDialogPending) return;
+    if (this.config.voiceInputEnabled === false || this.voiceDialogPending) return;
     this.voiceDialogPending = true;
     void (async () => {
       let ready = true;
@@ -1005,6 +1007,7 @@ class Shell {
    * the dialog finishes on click instead of long-press-release.
    */
   startVoiceInput(): void {
+    if (this.config.voiceInputEnabled === false) return;
     if (!this.screenOn || this.activeVoiceLayer || !this.stack.isAtBase()) return;
     // The transcript is aimed at the window whose menu requested it; the menu
     // entry point defaults the highlight to Type Into App.
@@ -1334,7 +1337,7 @@ class Shell {
           ctx.stack.pop();
         },
       },
-      {
+      ...(this.config.voiceInputEnabled === false ? [] : [{
         label: "Voice input",
         onSelect: (ctx) => {
           // The transcript is aimed at the foreground window, so keep focus
@@ -1343,7 +1346,7 @@ class Shell {
           ctx.stack.pop();
           this.startVoiceInput();
         },
-      },
+      }]),
     );
     items.push({
       label: "Debug",

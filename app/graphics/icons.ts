@@ -1,12 +1,10 @@
 import { GrayImage } from "./image";
-
-declare const com: any;
-declare const global: any;
+import { rasterizeSvg } from "../native/svg-rasterizer";
 
 /**
  * Vector icons for window indicators (and anywhere else). SVGs are rendered
- * once to a correctly sized grayscale bitmap by the Java IconRenderer (a
- * small SVG subset: path/circle/rect/line/polyline) and cached here. To add
+ * once to a correctly sized grayscale bitmap by the platform rasterizer
+ * (Android IconRenderer or iOS SVGKit) and cached here. To add
  * an icon, drop its SVG source into ICON_SVGS — Lucide icons
  * (https://lucide.dev, stroked, 24px viewBox) work as-is; simple single-color
  * Noun Project glyphs also work.
@@ -171,18 +169,10 @@ function renderSvgCached(cacheName: string, svg: string, size: number): GrayImag
   if (cached !== undefined) return cached;
 
   let icon: GrayImage | null = null;
-  if (global.isAndroid) {
-    try {
-      const bytes = com.faceclaw.app.IconRenderer.renderSvgGray(svg, Math.round(size), ICON_STROKE_WIDTH);
-      if (bytes && bytes.length >= size * size) {
-        icon = new GrayImage(size, size, 0);
-        for (let i = 0; i < size * size; i++) {
-          icon.pixels[i] = bytes[i] & 0xff;
-        }
-      }
-    } catch (error) {
-      console.warn(`renderIcon(${cacheName}) failed: ${error}`);
-    }
+  try {
+    icon = rasterizeSvg(svg, Math.round(size), ICON_STROKE_WIDTH);
+  } catch (error) {
+    console.warn(`renderIcon(${cacheName}) failed: ${error}`);
   }
   cache.set(key, icon);
   return icon;

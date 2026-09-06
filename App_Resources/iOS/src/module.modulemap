@@ -1,0 +1,4 @@
+module FaceclawGraphics {
+  header "FaceclawGraphics.h"
+  export *
+}

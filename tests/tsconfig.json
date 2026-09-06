@@ -11,6 +11,8 @@
     "outDir": "../.test-build"
   },
   "include": [
+    "../app/graphics/surface-compositor.ts",
+    "../app/phone-ui/phone-gestures.ts",
     "../app/g2/glasses-hardware-identity.ts",
     "../app/g2/ble-proximity.ts",
     "../app/g2/even-advertisement.ts",
