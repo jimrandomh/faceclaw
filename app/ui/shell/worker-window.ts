@@ -10,7 +10,7 @@ import { shell, type ShellWindow } from "./shell";
  * Messages between the shell (main thread) and an app worker. One worker
  * hosts one app, which may have several windows; messages are routed by
  * windowId. Everything crossing this boundary is small JSON; pixels go
- * worker→Java directly.
+ * worker→Java directly on Android; iOS posts baked frames to the main host.
  */
 export type WorkerAppMessage =
   | { type: "open-window"; windowId: string; surfaceId: string; title: string; viewport: { width: number; height: number } }
@@ -25,6 +25,7 @@ export type WorkerAppMessage =
   | { type: "tool-call"; callId: string; windowId: string; name: string; args: unknown };
 
 export type WorkerAppReply =
+  | { type: "surface-frame"; surfaceId: string; width: number; height: number; pixels: string }
   | {
       /**
        * The worker's bundle has evaluated and its onmessage handler is
@@ -163,6 +164,8 @@ export type WorkerAppHostOptions = {
   setSurfaceVisible: (surfaceId: string, visible: boolean) => void;
   removeSurface: (surfaceId: string) => void;
   requestShellRender: () => void;
+  submitPixels?: (surfaceId: string, pixels: Uint8Array, width: number, height: number) => void;
+  startTextInput?: () => void;
   /** Open or focus the Settings app, optionally selecting a section. */
   openSettings: (section?: string) => void;
   /** Open the phone app's text editor on a string setting (by id). */
@@ -175,8 +178,8 @@ export type WorkerAppHostOptions = {
  * Owns the Worker for one app and adapts its windows to the shell's window
  * interface: forwards input and lifecycle over postMessage, relays worker
  * requests (yield-focus, new windows, attention flags) back to the shell,
- * and manages compositor surfaces for the app's windows. The worker submits
- * frames straight to the Java compositor, so no pixels cross this boundary.
+ * and manages compositor surfaces for the app's windows. Android workers send
+ * frames straight to Java; iOS workers use surface-frame replies.
  */
 /** A tool-call awaiting its worker reply; also its own leak-safety timeout. */
 type PendingToolCall = {
@@ -212,6 +215,14 @@ export class WorkerAppHost {
       const message = event.data as WorkerAppReply | undefined;
       if (!message) return;
       switch (message.type) {
+        case "surface-frame": {
+          if (!global.isIOS || !this.options.submitPixels || !this.openWindows.has(message.surfaceId.replace(/^window:/, ""))) break;
+          const { width, height } = message;
+          if (!Number.isInteger(width) || !Number.isInteger(height) || width < 1 || height < 1 || width > 640 || height > 480) break;
+          const data = NSData.alloc().initWithBase64EncodedStringOptions(message.pixels, 0 as NSDataBase64DecodingOptions);
+          if (data?.length === width * height) this.options.submitPixels(message.surfaceId, new Uint8Array(interop.bufferFromData(data)), width, height);
+          break;
+        }
         case "worker-ready":
           this.workerReady = true;
           for (const queued of this.queuedMessages.splice(0)) {
@@ -256,7 +267,8 @@ export class WorkerAppHost {
           // Menus only open on the focused window, but re-check foreground:
           // the reply crosses a thread boundary and focus may have moved.
           if (shell.foregroundWindow()?.windowId === message.windowId) {
-            shell.startVoiceInput();
+            if (this.options.startTextInput) this.options.startTextInput();
+            else shell.startVoiceInput();
           }
           break;
         case "close-window-request":

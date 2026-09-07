@@ -16,14 +16,14 @@ export interface SessionTransport {
   stopScan(): void
 }
 export type SessionState = { phase: 'disconnected' | 'connecting' | 'connected' | 'retrying' | 'disconnecting' | 'error';
-  status: string; battery: number | null; ring: boolean; frames: number; capabilities: string; leftVersion: string; rightVersion: string }
+  status: string; battery: number | null; charging: boolean | null; ring: boolean; frames: number; capabilities: string; leftVersion: string; rightVersion: string }
 type PendingAck = { resolve: (message: protocol.ProtocolMessage) => void; reject: (error: Error) => void;
   timer: number | null; command: number; label: string }
 class AckTimeout extends Error {}
 
 /** G2 session independent of the phone OS. Images go to L, control to R, as on Android. */
 export class GlassesSession {
-  state: SessionState = { phase: 'disconnected', status: 'Preview only', battery: null, ring: false,
+  state: SessionState = { phase: 'disconnected', status: 'Preview only', battery: null, charging: null, ring: false,
     frames: 0, capabilities: '', leftVersion: '', rightVersion: '' }
   private generation = 0
   private ids: Record<string, string> = {}
@@ -68,7 +68,7 @@ export class GlassesSession {
     this.addresses = { ...addresses }; this.wanted = true
     if (!retry) this.retryCount = 0
     const generation = ++this.generation
-    this.state = { ...this.state, capabilities: '', leftVersion: '', rightVersion: '', battery: null, ring: false }
+    this.state = { ...this.state, capabilities: '', leftVersion: '', rightVersion: '', battery: null, charging: null, ring: false }
     this.charging = false
     this.update('connecting', 'Finding configured devices…')
     try {
@@ -254,7 +254,7 @@ export class GlassesSession {
       if (right) this.state.rightVersion = right
       const battery = protocol.readInteger(values, 12, -1), charging = protocol.readInteger(values, 13, -1)
       if (battery >= 0 && battery <= 100) this.state.battery = battery
-      if (charging >= 0) this.charging = charging > 0
+      if (charging >= 0) this.state.charging = this.charging = charging > 0
     }
     this.onState({ ...this.state })
   }

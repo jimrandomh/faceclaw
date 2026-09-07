@@ -8,6 +8,15 @@ export type PhoneBatteryState = {
 };
 
 export function readPhoneBatteryState(): PhoneBatteryState {
+  if (global.isIOS) {
+    const device = UIDevice.currentDevice
+    const level = device.batteryLevel
+    const state = device.batteryState
+    return {
+      battery: level >= 0 ? Math.round(level * 100) : null,
+      charging: state === UIDeviceBatteryState.Unknown ? null : state === UIDeviceBatteryState.Charging || state === UIDeviceBatteryState.Full,
+    }
+  }
   if (!global.isAndroid) {
     return { battery: null, charging: null };
   }

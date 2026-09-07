@@ -4,23 +4,27 @@ import { GlassesSession, type SessionState } from './glasses-session'
 import { loadDeviceAddresses } from './device-addresses'
 import { deviceAddressError } from './ios-peripheral-identity'
 import { createLauncherWindow, LAUNCHER_SURFACE_ID } from '../apps/launcher/launcher-app'
-import { CalculatorLayer } from '../apps/calculator/calculator'
-import { MathCoordinator } from '../apps/calculator/math/coordinator'
+import { ALL_APPS } from '../apps/all-apps'
+import type { AppContext, AppDefinition, AppLaunchParams } from '../apps/app-definition'
+import { WorkerAppHost } from '../ui/shell/worker-window'
+import { createInProcessWindow, YieldAtRootLayer, type InProcessAppOptions, type InProcessWindow } from '../ui/shell/in-process-window'
+import { getStringSettingById } from '../ui/dashboard-settings'
+import { readPhoneBatteryState } from '../native/phone-battery'
+import { iosAppUnavailableReason } from '../apps/ios-availability'
 import { SurfaceCompositor } from '../graphics/surface-compositor'
 import { flattenPlanes, type Plane } from '../graphics/plane'
 import { G2_LENS_WIDTH, G2_LENS_HEIGHT } from '../graphics/image'
 import { previewPixels } from '../native/ios-graphics'
 import { makeInputEvent, type InputEventPayload } from '../ui/gestures'
 import { noopLayerActions, type LayerActions } from '../ui/layers'
-import { MenuLayer } from '../ui/menu'
-import { createInProcessWindow } from '../ui/shell/in-process-window'
+import { TextViewerLayer } from '../apps/files/text-viewer'
 import { shell, rawInputEventToInputEvent, type ShellWindow } from '../ui/shell/shell'
 import { appViewportRect, SIDEBAR_WIDTH, sidebarStripVisible } from '../ui/shell/geometry'
 import { DISPLAY_MODE_VALUES, displayModeLabel, displayModeSetting, onAnySettingChanged,
-  previewColorSetting, timeFormatSetting, verticalPositionSetting } from '../ui/dashboard-settings'
+  previewColorSetting } from '../ui/dashboard-settings'
 import type { PhoneGesture } from '../phone-ui/phone-gestures'
 
-/** Local display host: shared shell/windows, no device-service initialization. */
+/** iOS host for the shared app registry, shell, compositor and BLE session. */
 export class IosPreviewController {
   private readonly compositor = new SurfaceCompositor(G2_LENS_WIDTH, G2_LENS_HEIGHT)
   private renderTimer: ReturnType<typeof setTimeout> | null = null
@@ -31,6 +35,9 @@ export class IosPreviewController {
   private inputQueue: Promise<void> = Promise.resolve()
   private lastLayout = ''
   private prompting = false
+  private readonly appHosts = new Map<string, WorkerAppHost>()
+  private readonly inProcessApps = new Map<string, InProcessWindow>()
+  private readonly batteryObservers: any[] = []
   private session: GlassesSession | null = null
   private resumeConnection = false
   private suspendedDisconnect: Promise<void> = Promise.resolve()
@@ -39,6 +46,9 @@ export class IosPreviewController {
   private readonly actions: LayerActions = {
     ...noopLayerActions,
     requestRender: () => this.requestShellRender(),
+    disconnect: () => this.disconnect(),
+    startVoiceCapture: () => this.typeIntoApp(),
+    startContinuousVoiceCapture: () => this.onError("Voice capture is not available on iOS yet."),
     startTextSettingEdit: setting => this.editSetting(setting),
     startTextSettingsEdit: async (settings, _title, finished) => {
       for (const setting of settings) await this.editSetting(setting)
@@ -60,10 +70,9 @@ export class IosPreviewController {
     })
     const launcher = createLauncherWindow({
       actions: this.actions,
-      apps: () => [
-        { appId: 'calculator', label: 'Calculator', icon: 'calculator' },
-        { appId: 'display', label: 'Display', icon: 'settings' },
-      ],
+      apps: () => ALL_APPS.filter(app => app.showInLauncher !== false).map(app => ({
+        appId: app.appId, label: app.title, icon: app.icon, renderIcon: app.renderIcon,
+      })),
       launchApp: id => this.launchApp(id),
       uninstallApp: () => {},
       submitFrame: planes => this.submit(LAUNCHER_SURFACE_ID, planes),
@@ -73,17 +82,25 @@ export class IosPreviewController {
     shell.registerWindow(launcher)
     shell.wake('window')
     shell.focusWindow(launcher.windowId)
+    for (const app of ALL_APPS) if (app.appId !== 'launcher' && !iosAppUnavailableReason(app.appId)) app.boot?.(this.buildAppContext(app))
   }
 
   resume(): void {
     if (this.active) return
     this.active = true
+    UIDevice.currentDevice.batteryMonitoringEnabled = true
+    for (const name of [UIDeviceBatteryLevelDidChangeNotification, UIDeviceBatteryStateDidChangeNotification]) {
+      this.batteryObservers.push(NSNotificationCenter.defaultCenter.addObserverForNameObjectQueueUsingBlock(name, null, NSOperationQueue.mainQueue, () => this.requestShellRender()))
+    }
+    const phone = readPhoneBatteryState()
+    this.logBluetooth(`Phone battery ${phone.battery ?? "unknown"}% charging=${phone.charging}`)
     this.offSettings = onAnySettingChanged(() => {
       this.relayout()
       shell.foregroundWindow()?.requestRender()
       this.requestShellRender()
     })
     this.clockTimer = setInterval(() => this.requestShellRender(), 60_000)
+    for (const window of shell.getWindows()) window.setScreenOn?.(shell.isScreenOn())
     this.relayout()
     shell.foregroundWindow()?.requestRender()
     this.requestShellRender()
@@ -97,7 +114,10 @@ export class IosPreviewController {
     this.resumeConnection = !!this.session && ['connected', 'connecting', 'retrying'].includes(this.session.state.phase)
     if (this.session) this.suspendedDisconnect = this.session.stop()
     this.active = false
+    for (const window of shell.getWindows()) window.setScreenOn?.(false)
     this.offSettings?.(); this.offSettings = null
+    for (const observer of this.batteryObservers.splice(0)) NSNotificationCenter.defaultCenter.removeObserver(observer)
+    UIDevice.currentDevice.batteryMonitoringEnabled = false
     if (this.clockTimer) clearInterval(this.clockTimer)
     if (this.renderTimer) clearTimeout(this.renderTimer)
     this.clockTimer = this.renderTimer = null
@@ -109,7 +129,7 @@ export class IosPreviewController {
     this.compositor.setSurfaceVisible(window.surfaceId, shell.foregroundWindow()?.windowId === window.windowId)
   }
   private relayout(): void {
-    const layout = `${displayModeSetting.get()}:${verticalPositionSetting.get()}`
+    const layout = shell.getWindows().map(window => JSON.stringify(appViewportRect(window.heightMode, window.appId))).join(";")
     if (layout === this.lastLayout) return
     this.lastLayout = layout
     for (const window of shell.getWindows()) {
@@ -183,38 +203,71 @@ export class IosPreviewController {
     await shell.receiveInput(makeInputEvent({ type: 'click', source: 'watch' }))
     this.requestShellRender()
   }
-  launchApp(id: string): void {
-    const existing = shell.getWindows().find(window => window.appId === id)
-    if (existing) { shell.focusWindow(existing.windowId); existing.requestRender(); this.requestShellRender(); return }
-    const surfaceId = `window:${id}`
-    let render = () => {}
-    const actions = { ...this.actions, requestRender: () => render() }
-    const layer = id === 'calculator'
-      ? new CalculatorLayer(new MathCoordinator(), actions, () => this.typeIntoApp())
-      : new MenuLayer('Display', [
-        { label: 'Change screen size', onSelect: () => this.cycleDisplayMode() },
-        { label: 'Toggle green / grayscale preview', onSelect: () => { previewColorSetting.set(previewColorSetting.get() === 'green' ? 'white' : 'green') } },
-        { label: 'Toggle 12 / 24 hour clock', onSelect: () => { timeFormatSetting.set(timeFormatSetting.get() === '24h' ? '12h' : '24h') } },
-      ], { x: 8, y: 8, width: 320, minHeight: 160, opaque: true })
-    const app = createInProcessWindow({
-      appId: id, windowId: id, title: id === 'calculator' ? 'Calculator' : 'Display',
-      iconLetter: id === 'calculator' ? '=' : 'D', icon: id === 'calculator' ? 'calculator' : 'settings',
-      closeable: true, actions, baseLayer: layer,
-      receiveTextInput: id === 'calculator' ? text => { app.stack.receiveTextInput(text); app.requestRender() } : undefined,
-      submitFrame: planes => this.submit(surfaceId, planes),
-      setSurfaceVisible: visible => {
-        if (layer instanceof CalculatorLayer) layer.setForeground(visible)
-        this.compositor.setSurfaceVisible(surfaceId, visible); this.scheduleFrame()
-      },
+  async launchApp(id: string, params?: AppLaunchParams): Promise<void> {
+    const app = ALL_APPS.find(app => app.appId === id)
+    if (!app) return
+    try {
+      const reason = iosAppUnavailableReason(id)
+      if (reason) {
+        await this.launchInProcessApp(id, `window:${id}`, options => createInProcessWindow({
+          ...options, appId: id, windowId: id, title: app.title, icon: app.icon,
+          iconLetter: app.title[0], closeable: true,
+          baseLayer: new YieldAtRootLayer(new TextViewerLayer(reason, app.title)),
+        }))
+      } else await app.launch(this.buildAppContext(app), params)
+      console.log(`[ios-preview] Launched ${id}`)
+    } catch (error) { this.fail(error) }
+  }
+  private buildAppContext(app: AppDefinition): AppContext {
+    return {
+      appId: app.appId, apps: ALL_APPS, actions: this.actions,
+      launchApp: (id, params) => this.launchApp(id, params), uninstallApp: async () => {},
+      launchInProcessApp: (id, surface, create) => this.launchInProcessApp(id, surface, create),
+      ensureWorkerHost: create => this.ensureWorkerHost(app.appId, create),
+      submitWindowFrame: (id, planes) => this.submit(id, planes),
+      setWindowSurfaceVisible: (id, visible) => { this.compositor.setSurfaceVisible(id, visible); this.scheduleFrame() },
+      requestShellRender: () => this.requestShellRender(), appendLog: message => console.log(`[ios-app] ${message}`),
+      setTextEditorHost: () => {},
+    }
+  }
+  private async launchInProcessApp(windowId: string, surfaceId: string,
+    create: (options: InProcessAppOptions) => InProcessWindow): Promise<void> {
+    const existing = this.inProcessApps.get(windowId)
+    if (existing) { shell.focusWindow(windowId); existing.requestRender(); this.requestShellRender(); return }
+    const app = create({
+      actions: this.actions, submitFrame: planes => this.submit(surfaceId, planes),
+      setSurfaceVisible: visible => { this.compositor.setSurfaceVisible(surfaceId, visible); this.scheduleFrame() },
       removeSurface: () => { this.compositor.removeSurface(surfaceId); this.scheduleFrame() },
-      onClosed: () => { if (layer instanceof CalculatorLayer) layer.onRemoved() },
+      reconfigureSurface: () => { const window = shell.getWindows().find(w => w.windowId === windowId); if (window) this.configureWindow(window); this.requestShellRender() },
+      onClosed: () => { this.inProcessApps.delete(windowId) },
     })
-    render = app.requestRender
-    if (layer instanceof CalculatorLayer) layer.requestRender = render
+    this.inProcessApps.set(windowId, app)
     this.configureWindow(app.window)
-    shell.registerWindow(app.window)
-    shell.focusWindow(app.window.windowId)
+    shell.registerWindow(app.window); shell.focusWindow(windowId)
     app.requestRender(); this.requestShellRender()
+  }
+  private ensureWorkerHost(appId: string, create: () => Worker): WorkerAppHost {
+    const existing = this.appHosts.get(appId)
+    if (existing) return existing
+    const host = new WorkerAppHost({
+      appId, worker: create(),
+      configureSurface: async (id, visible, heightMode) => {
+        this.compositor.configureSurface(id, { ...appViewportRect(heightMode, appId), zOrder: 0, transparency: 'opaque' })
+        this.compositor.setSurfaceVisible(id, visible)
+      },
+      setSurfaceVisible: (id, visible) => { this.compositor.setSurfaceVisible(id, visible); this.scheduleFrame() },
+      removeSurface: id => { this.compositor.removeSurface(id); this.scheduleFrame() },
+      submitPixels: (id, pixels, width, height) => {
+        this.compositor.submitSurfaceFrame(id, pixels, { x: 0, y: 0, width, height }); this.scheduleFrame()
+      },
+      requestShellRender: () => this.requestShellRender(),
+      openSettings: section => { void this.launchApp('settings', { section }) },
+      startTextSettingEdit: id => { const setting = getStringSettingById(id); if (setting) void this.editSetting(setting) },
+      endTextSettingEdit: () => {},
+      startTextInput: () => { void this.typeIntoApp() },
+    })
+    this.appHosts.set(appId, host)
+    return host
   }
   cycleDisplayMode(): void {
     const values = DISPLAY_MODE_VALUES
@@ -233,8 +286,9 @@ export class IosPreviewController {
     if (!this.session) {
       const { deflate } = require('pako') as { deflate: (data: Uint8Array) => Uint8Array }
       this.session = new GlassesSession(iosBluetooth(), deflate, state => {
+        shell.setBatteryLevels({ headset: state.battery, headsetCharging: state.charging })
         this.onConnectionState(state)
-        if (state.phase === 'connected') this.requestShellRender()
+        this.requestShellRender()
       }, input => {
         this.inputQueue = this.inputQueue.then(async () => {
           if (!this.active) return
@@ -262,7 +316,7 @@ export class IosPreviewController {
     this.prompting = true
     try {
       const result = await Dialogs.prompt({ title: 'Type into ' + shell.foregroundWindow()?.title,
-        message: 'Enter an expression or follow-up.', okButtonText: 'Send', cancelButtonText: 'Cancel' })
+        message: 'Enter text to send to this app.', okButtonText: 'Send', cancelButtonText: 'Cancel' })
       if (result.result) shell.sendTextToForegroundWindow(result.text)
     } catch (error) { this.fail(error) }
     finally { this.prompting = false }

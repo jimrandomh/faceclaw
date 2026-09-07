@@ -585,8 +585,8 @@ export class FileBrowserLayer implements Layer {
       for (const path of getBookmarkedPaths()) {
         rows.push(this.bookmarkItem(path));
       }
-      rows.push(this.placeItem("Internal storage", externalStorageRootPath()));
-      rows.push(this.placeItem("/", "/"));
+      rows.push(this.placeItem(global.isIOS ? "Faceclaw documents" : "Internal storage", externalStorageRootPath()));
+      if (!global.isIOS) rows.push(this.placeItem("/", "/"));
       return rows;
     }
     this.loadEntries();

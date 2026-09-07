@@ -4,3 +4,5 @@ CODE_SIGN_STYLE = Automatic;
 
 // Select the local signing team in Xcode or pass --teamId to the iOS scripts.
 OTHER_LDFLAGS = $(inherited) -framework CoreBluetooth
+
+ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;

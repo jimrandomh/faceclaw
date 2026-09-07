@@ -83,7 +83,7 @@ export function createSettingsPanelLayer(): SettingsPanelLayer {
 }
 
 function settingsSections(): SettingsSection[] {
-  return [
+  const sections: SettingsSection[] = [
     {
       label: "Display",
       items: [
@@ -232,6 +232,18 @@ function settingsSections(): SettingsSection[] {
       ],
     },
   ];
+  if (!global.isIOS) return sections;
+  const deferred = new Set(["Voice", "Assistant", "Navigate", "Watch", "Developer"]);
+  return sections.map(section => {
+    if (deferred.has(section.label)) return { label: section.label, items: [{
+      label: "Not available on iOS yet", disabled: true, onSelect: () => {},
+      description: `${section.label} integration has not been ported to iOS.`,
+    }] };
+    if (section.label === "Display") return { ...section, items: section.items.filter(item =>
+      ![brightnessSetting.label, screenTimeoutSetting.label, lockScreenEnabledSetting.label].includes(item.label)) };
+    if (section.label === "Phone display") return { ...section, items: section.items.filter(item => item.label !== mirrorTouchSetting.label) };
+    return section;
+  });
 }
 
 const LOCAL_MODEL_GB = `${(LOCAL_MODEL.sizeBytes / 1e9).toFixed(1)}GB`;

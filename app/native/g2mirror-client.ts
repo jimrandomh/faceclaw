@@ -1,3 +1,4 @@
+import { openSocket } from "./socket";
 import { toUint8Array } from "../util/array-util";
 
 declare const com: any;
@@ -181,7 +182,7 @@ export class G2MirrorClient {
     const generation = ++this.connectionGeneration;
     const url = `${this.options.secure ? "wss" : "ws"}://${this.options.host}:${this.options.port}`;
     this.setState("connecting", `Connecting to ${this.options.host}:${this.options.port}...`);
-    this.listenerProxy = new com.faceclaw.app.FaceclawWebSocketListener({
+    this.listenerProxy = {
       onOpen: () => {
         if (this.stopped || generation !== this.connectionGeneration) return;
         this.setState("connecting", "Authenticating...");
@@ -206,9 +207,9 @@ export class G2MirrorClient {
         if (this.stopped || generation !== this.connectionGeneration) return;
         this.handleConnectionLost(`Connection failed: ${shortenError(String(message))}`);
       },
-    });
+    };
     try {
-      this.ws = new com.faceclaw.app.FaceclawWebSocket(url, this.listenerProxy, null, null);
+      this.ws = openSocket(url, this.listenerProxy);
     } catch (error) {
       this.ws = null;
       this.handleConnectionLost(`Connection failed: ${shortenError(String((error as Error)?.message ?? error))}`);
@@ -571,11 +572,19 @@ export class G2MirrorClient {
 
 function decodeBase64(data: string): Uint8Array {
   if (!data) return new Uint8Array(0);
+  if (global.isIOS) {
+    const decoded = NSData.alloc().initWithBase64EncodedStringOptions(data, 0 as NSDataBase64DecodingOptions);
+    return decoded ? new Uint8Array(interop.bufferFromData(decoded)).slice() : new Uint8Array();
+  }
   return toUint8Array(android.util.Base64.decode(data, android.util.Base64.DEFAULT));
 }
 
 function decodeBase64Utf8(data: string): string {
   if (!data) return "";
+  if (global.isIOS) {
+    const decoded = NSData.alloc().initWithBase64EncodedStringOptions(data, 0 as NSDataBase64DecodingOptions);
+    return decoded ? String(NSString.alloc().initWithDataEncoding(decoded, NSUTF8StringEncoding) ?? "") : "";
+  }
   const bytes = android.util.Base64.decode(data, android.util.Base64.DEFAULT);
   return String(new java.lang.String(bytes, "UTF-8"));
 }
@@ -587,6 +596,7 @@ function stripAnsi(text: string): string {
 }
 
 function encodeBase64Utf8(text: string): string {
+  if (global.isIOS) return NSString.stringWithString(text).dataUsingEncoding(NSUTF8StringEncoding).base64EncodedStringWithOptions(0 as NSDataBase64EncodingOptions);
   const bytes = new java.lang.String(text).getBytes("UTF-8");
   return String(android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP));
 }

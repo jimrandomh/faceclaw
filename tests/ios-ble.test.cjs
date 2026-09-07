@@ -133,6 +133,7 @@ test('session authenticates both arms, checks firmware and sends acknowledged di
   const h = harness(t); await h.session.start({ ...addresses, ring: 'AA:BB:CC:DD:EE:03' });
   assert.equal(h.session.state.phase, 'connected'); assert.equal(h.session.state.ring, true);
   assert.equal(h.session.state.battery, 90);
+  assert.equal(h.session.state.charging, false);
   assert.deepEqual(h.transport.sent.filter(s => s.message.sid === 128).map(s => s.id).sort(), ['L', 'R']);
   h.session.setFrame(new Uint8Array(640 * 480)); await until(() => h.session.state.frames === 1);
   const image = h.transport.sent.find(s => s.message.sid === 224 && s.message.command === 3);

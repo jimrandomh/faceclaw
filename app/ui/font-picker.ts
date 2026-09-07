@@ -278,6 +278,7 @@ export class FontPickerLayer implements Layer {
 
 /** Installed fonts grouped into families (styles sorted by weight). */
 function collectFamilies(monospaceOnly: boolean): FontFamily[] {
+  if (global.isIOS) return []; // Native TTF rendering has not been ported.
   const byLabel = new Map<string, FontFamily>();
   for (const font of listInstalledFonts()) {
     if (monospaceOnly && !font.monospace) continue;
@@ -326,7 +327,7 @@ export function terminalFontPickerMenuItem(): MenuItem {
 function fontPickerMenuItem(options: FontPickerOptions & { rowLabel: string; description: string }): MenuItem {
   return {
     label: options.rowLabel,
-    description: options.description,
+    description: global.isIOS ? "Choose a bundled bitmap font. Native TTF rendering is not available on iOS yet." : options.description,
     onSelect: (ctx) => {
       ctx.stack.push(new FontPickerLayer(options));
     },
@@ -338,7 +339,7 @@ function fontPickerMenuItem(options: FontPickerOptions & { rowLabel: string; des
         y,
         width,
         options.rowLabel,
-        fontSelectionLabel(options.get()),
+        global.isIOS && options.get().kind === "ttf" ? "Terminus (iOS)" : fontSelectionLabel(options.get()),
       );
     },
   };

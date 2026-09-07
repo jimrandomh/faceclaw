@@ -58,18 +58,24 @@ function debugTestsMenu(): MenuLayer {
       },
       {
         label: "Buzzer demo",
+        disabled: global.isIOS,
+        description: global.isIOS ? "Glasses sound playback is not available on iOS yet." : undefined,
         onSelect: (ctx) => {
           ctx.stack.push(new BuzzerDemoLayer());
         },
       },
       {
         label: "Accelerometer demo",
+        disabled: global.isIOS,
+        description: global.isIOS ? "Not available on iOS yet." : undefined,
         onSelect: (ctx) => {
           ctx.stack.push(new AccelerometerDemoLayer(DEVELOPER_WINDOW_ID, ctx.actions.requestRender));
         },
       },
       {
         label: "Light sensor",
+        disabled: global.isIOS,
+        description: global.isIOS ? "Not available on iOS yet." : undefined,
         onSelect: (ctx) => {
           ctx.stack.push(new LightSensorDemoLayer(DEVELOPER_WINDOW_ID, ctx.actions.requestRender));
         },
@@ -91,6 +97,8 @@ export function createDeveloperAppWindow(appContext: AppContext, options: InProc
     [
       {
         label: "Load app from URL",
+        disabled: global.isIOS,
+        description: global.isIOS ? "Not available on iOS yet." : undefined,
         onSelect: (ctx) => {
           const layer = new LoadAppFromUrlLayer(appContext);
           ctx.stack.push(layer);
@@ -99,6 +107,8 @@ export function createDeveloperAppWindow(appContext: AppContext, options: InProc
       },
       {
         label: "Load app from QR code",
+        disabled: global.isIOS,
+        description: global.isIOS ? "Not available on iOS yet." : undefined,
         onSelect: (ctx) => {
           const layer = new LoadAppFromQrLayer(appContext);
           ctx.stack.push(layer);
@@ -107,6 +117,8 @@ export function createDeveloperAppWindow(appContext: AppContext, options: InProc
       },
       {
         label: "Show resource usage",
+        disabled: global.isIOS,
+        description: global.isIOS ? "Not available on iOS yet." : undefined,
         onSelect: (ctx) => {
           ctx.stack.push(new ResourceUsageLayer(DEVELOPER_WINDOW_ID, ctx.actions.requestRender));
         },
