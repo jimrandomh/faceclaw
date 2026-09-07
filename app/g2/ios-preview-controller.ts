@@ -31,6 +31,8 @@ export class IosPreviewController {
   private clockTimer: ReturnType<typeof setInterval> | null = null
   private offSettings: (() => void) | null = null
   private active = false
+  private runtimeRunning = false
+  private clockMinute = -1
   private shellDirty = true
   private inputQueue: Promise<void> = Promise.resolve()
   private lastLayout = ''
@@ -39,8 +41,6 @@ export class IosPreviewController {
   private readonly inProcessApps = new Map<string, InProcessWindow>()
   private readonly batteryObservers: any[] = []
   private session: GlassesSession | null = null
-  private resumeConnection = false
-  private suspendedDisconnect: Promise<void> = Promise.resolve()
   private logLines: string[] = []
   private logTimer: ReturnType<typeof setTimeout> | null = null
   private readonly actions: LayerActions = {
@@ -88,6 +88,40 @@ export class IosPreviewController {
   resume(): void {
     if (this.active) return
     this.active = true
+    this.syncRuntime()
+    this.logBluetooth('Phone foreground')
+    if (this.session) this.onConnectionState({ ...this.session.state })
+    this.session?.wake()
+    this.relayout()
+    shell.foregroundWindow()?.requestRender()
+    this.requestShellRender()
+  }
+  pause(): void {
+    if (!this.active) return
+    this.active = false
+    // The phone preview is hidden; the glasses still own their screen and input.
+    this.syncRuntime()
+    this.logBluetooth(`Phone background; glasses ${this.session?.state.phase ?? 'disconnected'}`)
+    this.flushBluetoothLog()
+    this.session?.wake()
+  }
+  private get runtimeNeeded(): boolean {
+    return this.active || !!this.session && ['connected', 'connecting', 'retrying', 'disconnecting'].includes(this.session.state.phase)
+  }
+  private syncRuntime(): void {
+    const running = this.runtimeNeeded
+    if (running === this.runtimeRunning) return
+    this.runtimeRunning = running
+    for (const window of shell.getWindows()) window.setScreenOn?.(running && shell.isScreenOn())
+    if (!running) {
+      this.offSettings?.(); this.offSettings = null
+      for (const observer of this.batteryObservers.splice(0)) NSNotificationCenter.defaultCenter.removeObserver(observer)
+      UIDevice.currentDevice.batteryMonitoringEnabled = false
+      if (this.clockTimer !== null) clearInterval(this.clockTimer)
+      if (this.renderTimer !== null) clearTimeout(this.renderTimer)
+      this.clockTimer = this.renderTimer = null
+      return
+    }
     UIDevice.currentDevice.batteryMonitoringEnabled = true
     for (const name of [UIDeviceBatteryLevelDidChangeNotification, UIDeviceBatteryStateDidChangeNotification]) {
       this.batteryObservers.push(NSNotificationCenter.defaultCenter.addObserverForNameObjectQueueUsingBlock(name, null, NSOperationQueue.mainQueue, () => this.requestShellRender()))
@@ -99,28 +133,11 @@ export class IosPreviewController {
       shell.foregroundWindow()?.requestRender()
       this.requestShellRender()
     })
-    this.clockTimer = setInterval(() => this.requestShellRender(), 60_000)
-    for (const window of shell.getWindows()) window.setScreenOn?.(shell.isScreenOn())
-    this.relayout()
-    shell.foregroundWindow()?.requestRender()
-    this.requestShellRender()
-    console.log('[ios-preview] Main screen active')
-    if (this.resumeConnection) {
-      this.resumeConnection = false
-      void this.suspendedDisconnect.then(() => { if (this.active) void this.connect() })
-    }
+    this.clockTimer = setInterval(() => this.refreshClock(), 60_000)
   }
-  pause(): void {
-    this.resumeConnection = !!this.session && ['connected', 'connecting', 'retrying'].includes(this.session.state.phase)
-    if (this.session) this.suspendedDisconnect = this.session.stop()
-    this.active = false
-    for (const window of shell.getWindows()) window.setScreenOn?.(false)
-    this.offSettings?.(); this.offSettings = null
-    for (const observer of this.batteryObservers.splice(0)) NSNotificationCenter.defaultCenter.removeObserver(observer)
-    UIDevice.currentDevice.batteryMonitoringEnabled = false
-    if (this.clockTimer) clearInterval(this.clockTimer)
-    if (this.renderTimer) clearTimeout(this.renderTimer)
-    this.clockTimer = this.renderTimer = null
+  private refreshClock(): void {
+    const minute = Math.floor(Date.now() / 60_000)
+    if (minute !== this.clockMinute) { this.clockMinute = minute; this.requestShellRender() }
   }
   private configureWindow(window: ShellWindow): void {
     this.compositor.configureSurface(window.surfaceId, {
@@ -144,10 +161,11 @@ export class IosPreviewController {
   }
   private requestShellRender(): void { this.shellDirty = true; this.scheduleFrame() }
   private scheduleFrame(): void {
-    if (!this.active || this.renderTimer !== null) return
-    // Coalesce window/chrome updates into one preview, capped at 30 fps.
+    if (!this.runtimeNeeded || this.renderTimer !== null) return
+    // Coalesce window/chrome updates into one glasses frame, capped at 30 fps.
     this.renderTimer = setTimeout(() => {
       this.renderTimer = null
+      if (!this.runtimeNeeded) return
       try {
         if (this.shellDirty) {
           this.shellDirty = false
@@ -157,15 +175,18 @@ export class IosPreviewController {
         }
         const pixels = this.compositor.composite()
         this.session?.setFrame(pixels)
-        const image = previewPixels(pixels, 640, 480, previewColorSetting.get() === 'green')
-        this.onFrame(image, `${shell.foregroundWindow()?.title ?? 'Apps'} · ${shell.getFocus() === 'sidebar' ? 'App switcher' : 'App'}`)
+        if (this.active) {
+          const image = previewPixels(pixels, 640, 480, previewColorSetting.get() === 'green')
+          this.onFrame(image, `${shell.foregroundWindow()?.title ?? 'Apps'} · ${shell.getFocus() === 'sidebar' ? 'App switcher' : 'App'}`)
+        }
       } catch (error) { this.fail(error) }
     }, 33)
   }
   private fail(error: unknown): void {
     const message = error instanceof Error ? error.stack ?? error.message : String(error)
     console.error(`[ios-preview] ${message}`)
-    this.onError(error instanceof Error ? error.message : String(error))
+    this.logBluetooth(`App error: ${message}`)
+    if (this.active) this.onError(error instanceof Error ? error.message : String(error))
   }
   gesture(gesture: PhoneGesture, origin: 'watch' | 'ring' | 'mirror', nx = 0, ny = 0): void {
     this.inputQueue = this.inputQueue.then(async () => {
@@ -287,31 +308,38 @@ export class IosPreviewController {
       const { deflate } = require('pako') as { deflate: (data: Uint8Array) => Uint8Array }
       this.session = new GlassesSession(iosBluetooth(), deflate, state => {
         shell.setBatteryLevels({ headset: state.battery, headsetCharging: state.charging })
-        this.onConnectionState(state)
+        this.syncRuntime()
+        if (this.active) this.onConnectionState(state)
         this.requestShellRender()
       }, input => {
         this.inputQueue = this.inputQueue.then(async () => {
-          if (!this.active) return
+          if (this.session?.state.phase !== 'connected') return
           await shell.receiveInput(rawInputEventToInputEvent(input)); this.requestShellRender()
           this.logBluetooth(`Input ${input.eventType} source ${input.eventSource}`)
         }).catch(error => this.fail(error))
-      }, message => this.logBluetooth(message))
+      }, message => this.logBluetooth(message), () => this.refreshClock())
     }
     await this.session.start(addresses)
   }
-  async disconnect(): Promise<void> { this.resumeConnection = false; await this.session?.stop() }
+  async disconnect(): Promise<void> { await this.session?.stop() }
   private logBluetooth(message: string): void {
-    const line = `${new Date().toISOString()} ${message}`
+    const line = `${new Date().toISOString()} [${this.active ? 'foreground' : 'background'}${UIApplication.sharedApplication.protectedDataAvailable ? '' : ',protected-data-unavailable'}] ${message}`
     console.log(`[ios-ble] ${line}`); this.logLines.push(line)
-    if (this.logLines.length > 200) this.logLines.shift()
+    if (this.logLines.length > 1000) this.logLines.shift()
     if (this.logTimer !== null) return
     this.logTimer = setTimeout(() => {
       this.logTimer = null
-      try { File.fromPath(path.join(knownFolders.documents().path, 'bluetooth.log')).writeTextSync(this.logLines.join('\n')) }
-      catch (error) { console.warn(`Bluetooth log: ${error}`) }
+      this.flushBluetoothLog()
     }, 500)
   }
+  private flushBluetoothLog(): void {
+    if (this.logTimer !== null) clearTimeout(this.logTimer)
+    this.logTimer = null
+    try { File.fromPath(path.join(knownFolders.documents().path, 'bluetooth.log')).writeTextSync(this.logLines.join('\n')) }
+    catch (error) { console.warn(`Bluetooth log: ${error}`) }
+  }
   async typeIntoApp(): Promise<void> {
+    if (!this.active) { this.logBluetooth('Text input requires opening Faceclaw on the phone'); return }
     if (this.prompting || !shell.foregroundWindow()?.receiveTextInput) return
     this.prompting = true
     try {
@@ -322,6 +350,7 @@ export class IosPreviewController {
     finally { this.prompting = false }
   }
   private async editSetting(setting: { editorTitle: string; get(): string; set(value: string): void }): Promise<void> {
+    if (!this.active) { this.logBluetooth('Editing text settings requires opening Faceclaw on the phone'); return }
     const result = await Dialogs.prompt({ title: setting.editorTitle, defaultText: setting.get(), okButtonText: 'Save', cancelButtonText: 'Cancel' })
     if (result.result) setting.set(result.text)
   }

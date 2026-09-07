@@ -55,7 +55,8 @@ export class GlassesSession {
     private readonly deflate: (data: Uint8Array) => Uint8Array,
     private readonly onState: (state: SessionState) => void,
     private readonly onInput: (input: protocol.GlassesInput) => void,
-    private readonly log: (message: string) => void = () => {}) {
+    private readonly log: (message: string) => void = () => {},
+    private readonly onActivity: () => void = () => {}) {
     this.off = transport.onEvent(event => this.receive(event))
   }
   private update(phase: SessionState['phase'], status: string): void {
@@ -210,15 +211,15 @@ export class GlassesSession {
       return
     }
     if (event.kind !== 'notification' || !event.data) return
+    const ring = event.identifier === this.ids.ring
+    if (ring ? !protocol.RING_NOTIFY.includes(event.characteristic ?? '') : event.characteristic !== protocol.G2_NOTIFY) return
     try {
       const data = hexToBytes(event.data)
-      if (event.identifier === this.ids.ring) {
-        if (!protocol.RING_NOTIFY.includes(event.characteristic ?? '')) return
+      if (ring) {
         const input = protocol.decodeRingInput(data)
         if (input) { this.log(`Direct R1 gesture ${input.eventType}`); this.onInput(input) }
         return
       }
-      if (event.characteristic !== protocol.G2_NOTIFY) return
       for (const message of this.receiver.receive(event.identifier!, data)) {
         this.log(`RX ${event.identifier === this.ids.left ? 'L' : 'R'} sid=${message.sid.toString(16)} flag=${message.flag.toString(16)} cmd=${message.command} magic=${message.magic}`)
         if (![1, 6].includes(message.flag)) {
@@ -243,6 +244,11 @@ export class GlassesSession {
         }
       }
     } catch (error) { this.log(`Ignored malformed BLE notification: ${this.message(error)}`) }
+    finally {
+      // CoreBluetooth can wake a suspended iOS process for a notification.
+      // Service wall-clock deadlines now, without waiting for a suspended timer.
+      if (this.state.phase === 'connected') { this.onActivity(); this.wake() }
+    }
   }
   private applySettings(message: protocol.ProtocolMessage): void {
     const values = protocol.readBytes(message.payload, 4)
@@ -262,6 +268,10 @@ export class GlassesSession {
     if (this.state.phase !== 'connected') return
     this.latest = protocol.packGray4(gray, 640, 480); this.schedule(0)
   }
+  wake(): void {
+    if (this.timer !== null) { clearTimeout(this.timer); this.timer = null }
+    void this.pump()
+  }
   private schedule(delay = 1000): void {
     if (delay === 0 && this.timer !== null) { clearTimeout(this.timer); this.timer = null }
     if (this.timer !== null || this.pumping || this.state.phase !== 'connected') return
@@ -273,7 +283,9 @@ export class GlassesSession {
     try {
       const now = Date.now()
       if (now - this.lastHeartbeat >= 4000) {
+        const gap = now - this.lastHeartbeat
         await this.request('right', protocol.SID.hub, protocol.heartbeat, 'Heartbeat', 1500); this.lastHeartbeat = Date.now()
+        this.log(`Heartbeat acknowledged (gap ${gap}ms)`)
       }
       if (now - this.lastLease >= 45_000) { await this.lease(true); this.lastLease = Date.now() }
       if (now - this.lastSettings >= (this.charging ? 30_000 : 300_000)) {

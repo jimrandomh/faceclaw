@@ -20,6 +20,10 @@
   <true/>
   <key>NSBluetoothAlwaysUsageDescription</key>
   <string>Faceclaw uses Bluetooth to connect to your glasses and ring, display your apps, and receive gestures.</string>
+  <key>UIBackgroundModes</key>
+  <array>
+    <string>bluetooth-central</string>
+  </array>
   <key>NSLocalNetworkUsageDescription</key>
   <string>Faceclaw connects to the terminal servers you configure on your local network.</string>
   <key>UILaunchScreen</key>

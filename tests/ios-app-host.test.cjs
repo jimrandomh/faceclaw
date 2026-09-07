@@ -54,3 +54,68 @@ test('iOS worker frames preserve baked grayscale bytes through the message bound
   assert.equal(messages[0].width, 3); assert.equal(messages[0].height, 2);
   assert.deepEqual(Buffer.from(messages[0].pixels, 'base64'), Buffer.from(pixels));
 });
+
+test('background glasses input still composites frames; phone resume preserves the session; explicit stop stays stopped', async () => {
+  const tasks = new Map(), screenStates = [], inputs = [], frames = [], previews = [], states = [];
+  let nextTask = 0, starts = 0, stops = 0, session;
+  const window = { windowId: 'launcher', surfaceId: 'launcher', appId: 'launcher', title: 'Apps',
+    setScreenOn: on => screenStates.push(on), requestRender() {} };
+  const shell = { configure() {}, registerWindow() {}, wake() {}, focusWindow() {},
+    getWindows: () => [window], foregroundWindow: () => window, isScreenOn: () => true,
+    setBatteryLevels() {}, paintSurface() {}, underlayDim: () => 0, getFocus: () => 'app',
+    receiveInput: async input => { inputs.push(input); } };
+  class Session {
+    state = { phase: 'disconnected' };
+    constructor(_transport, _deflate, onState, onInput) { session = this; this.onState = onState; this.onInput = onInput; }
+    async start() { starts++; this.state = { phase: 'connected' }; this.onState(this.state); }
+    async stop() { stops++; this.state = { phase: 'disconnected' }; this.onState(this.state); }
+    setFrame(pixels) { if (this.state.phase === 'connected') frames.push(pixels); }
+    wake() {}
+  }
+  const settings = { onAnySettingChanged: () => () => {}, previewColorSetting: { get: () => 'white' } };
+  const modules = {
+    '@nativescript/core': { File: { fromPath: () => ({ writeTextSync() {} }) }, knownFolders: { documents: () => ({ path: '/tmp' }) }, path },
+    '../native/ios-bluetooth': { iosBluetooth: () => ({}) }, './glasses-session': { GlassesSession: Session },
+    './device-addresses': { loadDeviceAddresses: () => ({}) }, './ios-peripheral-identity': { deviceAddressError: () => null },
+    '../apps/launcher/launcher-app': { createLauncherWindow: () => window, LAUNCHER_SURFACE_ID: 'launcher' },
+    '../apps/all-apps': { ALL_APPS: [] }, '../ui/dashboard-settings': settings,
+    '../native/phone-battery': { readPhoneBatteryState: () => ({ battery: 80, charging: false }) },
+    '../graphics/surface-compositor': { SurfaceCompositor: class {
+      configureSurface() {} setSurfaceVisible() {} submitSurfaceFrame() {} setUnderlayDim() {}
+      composite() { return new Uint8Array([1, 2]); }
+    } },
+    '../graphics/plane': { flattenPlanes: () => ({ pixels: new Uint8Array([1, 2]), width: 2, height: 1 }) },
+    '../native/ios-graphics': { previewPixels: pixels => pixels },
+    '../ui/shell/shell': { shell, rawInputEventToInputEvent: input => input },
+    '../ui/shell/geometry': { appViewportRect: () => ({ x: 0, y: 0, width: 640, height: 480 }) },
+    pako: { deflate: x => x },
+  };
+  const api = load('app/g2/ios-preview-controller.ts', {
+    require: id => modules[id] ?? {}, console: { log() {}, warn() {}, error() {} },
+    setTimeout: fn => { tasks.set(++nextTask, fn); return nextTask; }, clearTimeout: id => tasks.delete(id),
+    setInterval: () => ++nextTask, clearInterval() {},
+    UIDevice: { currentDevice: {} }, UIApplication: { sharedApplication: { protectedDataAvailable: true } },
+    UIDeviceBatteryLevelDidChangeNotification: 'level', UIDeviceBatteryStateDidChangeNotification: 'state',
+    NSNotificationCenter: { defaultCenter: { addObserverForNameObjectQueueUsingBlock() {}, removeObserver() {} } },
+    NSOperationQueue: { mainQueue: {} },
+  });
+  const flush = () => { for (const [id, fn] of [...tasks]) { if (tasks.delete(id)) fn(); } };
+  const controller = new api.IosPreviewController(image => previews.push(image), assert.fail, state => states.push(state));
+  controller.resume(); await controller.connect(); flush();
+  const previewCount = previews.length, stateCount = states.length;
+  controller.pause(); controller.pause(); // NativeScript also unloads its root page on background entry.
+  assert.equal(stops, 0); assert.ok(screenStates.every(Boolean));
+  session.onInput({ eventType: 3, eventSource: 1 });
+  await controller.inputQueue; flush();
+  assert.equal(inputs.length, 1); assert.ok(frames.length >= 2);
+  assert.equal(previews.length, previewCount); assert.equal(states.length, stateCount);
+  controller.resume(); flush();
+  assert.equal(starts, 1); assert.ok(previews.length > previewCount);
+  controller.pause(); await controller.disconnect(); flush();
+  assert.equal(stops, 1); assert.equal(screenStates.at(-1), false);
+  const frameCount = frames.length;
+  session.onInput({ eventType: 3, eventSource: 1 }); await controller.inputQueue; flush();
+  assert.equal(inputs.length, 1); assert.equal(frames.length, frameCount);
+  controller.resume(); flush();
+  assert.equal(starts, 1); assert.equal(controller.connectionState.phase, 'disconnected');
+});

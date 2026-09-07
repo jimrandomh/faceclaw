@@ -198,3 +198,27 @@ test('ring disconnect retries independently and stop cancels further retries', a
   await h.session.stop();
   assert.equal(h.session.ringRetryTimer, null);
 });
+
+test('a BLE wake services overdue heartbeat and lease without waiting for a suspended poll timer', async t => {
+  const h = harness(t); await h.session.start(addresses);
+  clearTimeout(h.session.timer); h.session.timer = null;
+  h.session.lastHeartbeat = Date.now() - 12_000;
+  h.session.lastLease = Date.now() - 60_000;
+  const before = h.transport.sent.length;
+  const data = hex(p.concat(...p.frameMessage(p.integer(1, 6), p.SID.auth, 1, 22)));
+  h.transport.emit({ kind: 'notification', identifier: 'L', characteristic: p.G2_NOTIFY, data });
+  // pump starts in the notification callback, before any timers can fire.
+  assert.equal(h.session.pumping, true);
+  await until(() => !h.session.pumping);
+  const sent = h.transport.sent.slice(before);
+  assert.equal(sent.filter(s => s.message.sid === p.SID.hub && s.message.command === 12).length, 1);
+  assert.deepEqual(sent.filter(s => s.message.sid === p.SID.settings).map(s => s.id).sort(), ['L', 'R']);
+  assert.equal(h.session.state.phase, 'connected');
+  assert.deepEqual(h.transport.closed, []);
+  await h.session.stop();
+  const count = h.transport.sent.length;
+  h.session.wake();
+  h.transport.emit({ kind: 'notification', identifier: 'L', characteristic: p.G2_NOTIFY, data });
+  assert.equal(h.transport.sent.length, count);
+  assert.equal(h.session.state.phase, 'disconnected');
+});
