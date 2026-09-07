@@ -540,18 +540,11 @@ export class MainViewModel extends Observable {
   }
 
   onKeyboardInputTextChange(args: { value?: string; object?: { text?: string } }): void {
-    dashboardController.setKeyboardInputText(args.object?.text ?? args.value ?? "");
-  }
-
-  /** The IME's send key: the destination highlighted on the glasses. */
-  onKeyboardInputReturnPress(args: { object?: { text?: string } }): void {
-    // Commit the field's actual text at send-time, in case the final
-    // keystroke's textChange hadn't landed yet.
-    const text = args?.object?.text;
-    if (typeof text === "string") {
-      dashboardController.setKeyboardInputText(text);
-    }
-    dashboardController.sendKeyboardInput();
+    const text = args.object?.text ?? args.value ?? "";
+    // Track the draft so closing the dialog emits a clear even when the
+    // binding hasn't updated the model. Avoid echoing edits into the IME.
+    this._keyboardInputText = text;
+    dashboardController.setKeyboardInputText(text);
   }
 
   onKeyboardInputPrimarySendTap(): void {

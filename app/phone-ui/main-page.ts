@@ -1,4 +1,4 @@
-import { Application, Color, EventData, isAndroid, Observable, Page, TextField } from '@nativescript/core'
+import { Application, Color, EventData, isAndroid, Observable, Page, TextField, TextView } from '@nativescript/core'
 import { MainViewModel } from './main-view-model'
 import { dashboardController } from '../g2/dashboard-controller'
 
@@ -44,7 +44,7 @@ function cleanupPage(page: Page): void {
  * suits replacing an existing setting value; a message being composed keeps
  * its caret where the user taps.
  */
-function applySettingsTextFieldContrast(textField: TextField, selectAllOnFocus = true): void {
+function applySettingsTextFieldContrast(textField: TextField | TextView, selectAllOnFocus = true): void {
   textField.color = SETTINGS_TEXT_COLOR
   textField.backgroundColor = SETTINGS_BACKGROUND_COLOR
   textField.placeholderColor = SETTINGS_PLACEHOLDER_COLOR
@@ -53,7 +53,7 @@ function applySettingsTextFieldContrast(textField: TextField, selectAllOnFocus =
     return
   }
 
-  const nativeTextField = (textField as TextField & { nativeView?: android.widget.EditText }).nativeView
+  const nativeTextField = (textField as (TextField | TextView) & { nativeView?: android.widget.EditText }).nativeView
   if (!nativeTextField) {
     return
   }
@@ -90,13 +90,13 @@ function focusTextEditor(page: Page): void {
 
 /** The keyboard dialog closed on the glasses (sent, discarded, or screen off). */
 function dismissKeyboardInputKeyboard(page: Page): void {
-  page.getViewById<TextField>('keyboardInputField')?.dismissSoftInput()
+  page.getViewById<TextView>('keyboardInputField')?.dismissSoftInput()
 }
 
 /** The keyboard dialog opened: bring up the IME on its field right away. */
 function focusKeyboardInput(page: Page): void {
   setTimeout(() => {
-    const textField = page.getViewById<TextField>('keyboardInputField')
+    const textField = page.getViewById<TextView>('keyboardInputField')
     if (textField) {
       applySettingsTextFieldContrast(textField, false)
       textField.focus()

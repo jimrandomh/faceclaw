@@ -153,22 +153,20 @@
         <!-- Keyboard-input panel (the keyboard button beside the mic button):
              the phone's end of the keyboard dialog on the glasses
              (ui/shell/keyboard-input.ts). Same placement and collapsing rules
-             as the setting editor above. The IME's send key goes to whichever
-             destination is highlighted on the glasses; the buttons pick one
-             directly. -->
+             as the setting editor above. Enter inserts a newline; the send
+             buttons pick a destination directly. -->
         <StackLayout
             class="system-name-modal"
             visibility="{{ keyboardInputVisibility }}"
             horizontalAlignment="stretch"
             verticalAlignment="bottom">
             <Label text="Keyboard input" class="h2" />
-            <TextField
+            <TextView
                 id="keyboardInputField"
                 text="{{ keyboardInputText }}"
                 hint="Type a message"
                 textChange="{{ onKeyboardInputTextChange }}"
-                returnPress="{{ onKeyboardInputReturnPress }}"
-                returnKeyType="send" />
+                height="120" />
             <!-- Wraps onto a second line when the labels don't fit side by side. -->
             <FlexboxLayout flexWrap="wrap" class="m-t-8">
                 <Button text="{{ keyboardInputPrimaryTargetLabel }}" tap="{{ onKeyboardInputPrimarySendTap }}" visibility="{{ keyboardInputPrimaryTargetVisibility }}" flexGrow="1" class="-primary" />
