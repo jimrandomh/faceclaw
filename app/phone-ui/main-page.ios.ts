@@ -116,13 +116,14 @@ export function createMainPage(): Page {
   help.text = 'Tap preview icons to open apps.\nHold: system menu\nTap then hold: app menu'
   help.fontSize = 13; help.textWrap = true; help.margin = 6; settings.addChild(help)
   const footer = new GridLayout()
-  footer.columns = '*,*,*'; GridLayout.setRow(footer, 2); controls.addChild(footer)
+  footer.columns = '*,*,*,*'; GridLayout.setRow(footer, 2); controls.addChild(footer)
   const back = button('Back', () => controller.gesture('double-tap', 'watch'))
   const menu = button('Menu', () => {
     controller.gesture('long-press', 'watch'); controller.gesture('long-press-release', 'watch')
   })
   const keyboard = button('Keyboard', () => { void controller.typeIntoApp() })
-  for (const [index, view] of [back, menu, keyboard].entries()) {
+  const voice = button('Voice', () => controller.startVoiceInput())
+  for (const [index, view] of [back, menu, voice, keyboard].entries()) {
     view.padding = '16 8'; view.fontSize = 14
     GridLayout.setColumn(view, index); footer.addChild(view)
   }

@@ -21,6 +21,7 @@ const wrap = (command: number, magic: number, field: number, body: Uint8Array) =
 export const authentication = (magic: number) => wrap(4, magic, 3, concat(integer(1, 1), integer(2, 4)))
 export const prelude = () => wrap(2, 156, 4, bytes(3, bytes(2, bytes(2, concat(integer(1, 0), integer(2, 0))))))
 export const heartbeat = (magic: number) => wrap(12, magic, 14, integer(1, 0))
+export const audioControl = (magic: number, enabled: boolean) => wrap(15, magic, 18, integer(1, enabled ? 1 : 0))
 export const settingsQuery = (magic: number) => wrap(2, magic, 4, integer(1, 1))
 export const shutdown = (magic: number) => wrap(9, magic, 11, integer(1, 1))
 export const framebufferLease = (acquire: boolean) => concat(integer(1, 1), integer(2, 0), bytes(101, new Uint8Array([70, 67, 1, acquire ? 5 : 6, 0, 0])))

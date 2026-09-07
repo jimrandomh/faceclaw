@@ -222,3 +222,37 @@ test('a BLE wake services overdue heartbeat and lease without waiting for a susp
   assert.equal(h.transport.sent.length, count);
   assert.equal(h.session.state.phase, 'disconnected');
 });
+
+test('glasses mic uses Android wire control and only routes bound-arm audio during capture', async t => {
+  assert.equal(hex(p.audioControl(101, true)), '080f10659201020801');
+  assert.equal(hex(p.audioControl(101, false)), '080f10659201020800');
+  const h = harness(t), audio = [];
+  await h.session.start(addresses);
+  const send = id => h.transport.emit({ kind: 'notification', identifier: id, characteristic: p.G2_RENDER_NOTIFY, data: '010203' });
+  send('R'); assert.equal(audio.length, 0);
+  await h.session.setMicrophone(true, bytes => audio.push(hex(bytes)));
+  assert.ok(h.transport.subscriptions.some(([id, c]) => id === 'R' && c === p.G2_RENDER_NOTIFY));
+  assert.ok(h.transport.subscriptions.some(([id, c]) => id === 'L' && c === p.G2_RENDER_NOTIFY));
+  send('stranger'); send('ring'); send('L'); send('R');
+  assert.deepEqual(audio, ['010203', '010203']);
+  const disabling = h.session.setMicrophone(false);
+  send('R'); assert.equal(audio.length, 2); // Immediate, before the disable ACK.
+  await disabling;
+  assert.deepEqual(h.transport.sent.filter(s => s.message.command === 15).map(s =>
+    [s.id, p.readInteger(p.readBytes(s.message.payload, 18), 1)]), [['R', 1], ['R', 0]]);
+});
+test('release while microphone enable awaits ACK sends disable last and rejects further audio', async t => {
+  const h = harness(t); await h.session.start(addresses);
+  h.transport.hold = true;
+  let packets = 0;
+  const enabling = h.session.setMicrophone(true, () => packets++);
+  await until(() => h.transport.held.some(s => s.message.command === 15));
+  const disabling = h.session.setMicrophone(false);
+  h.transport.emit({ kind: 'notification', identifier: 'R', characteristic: p.G2_RENDER_NOTIFY, data: '01' });
+  assert.equal(packets, 0);
+  h.transport.hold = false;
+  for (const s of h.transport.held) h.transport.ack(s.id, s.message);
+  await Promise.all([enabling, disabling]);
+  const mic = h.transport.sent.filter(s => s.message.command === 15);
+  assert.equal(p.readInteger(p.readBytes(mic.at(-1).message.payload, 18), 1), 0);
+});

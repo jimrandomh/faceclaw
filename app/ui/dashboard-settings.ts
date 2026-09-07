@@ -59,9 +59,14 @@ export function onAnySettingChanged(listener: () => void): () => void {
 }
 
 onSettingsStoreChanged(() => {
-  for (const listener of Array.from(settingChangeListeners)) {
-    listener();
-  }
+  // Font/cache invalidation listeners may register after this relay. Let the
+  // entire store notification finish before observers synchronously repaint.
+  // Otherwise Save updates the label but paints the previous typeface once.
+  setTimeout(() => {
+    for (const listener of Array.from(settingChangeListeners)) {
+      listener();
+    }
+  }, 0);
 });
 
 export abstract class ConfigSetting<TValue, TId extends string = string> {

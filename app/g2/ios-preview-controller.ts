@@ -1,5 +1,6 @@
 import { Dialogs, File, knownFolders, path, type ImageSource } from '@nativescript/core'
 import { iosBluetooth } from '../native/ios-bluetooth'
+import { iosVoiceInput } from '../native/ios-voice-input'
 import { GlassesSession, type SessionState } from './glasses-session'
 import { loadDeviceAddresses } from './device-addresses'
 import { deviceAddressError } from './ios-peripheral-identity'
@@ -47,7 +48,8 @@ export class IosPreviewController {
     ...noopLayerActions,
     requestRender: () => this.requestShellRender(),
     disconnect: () => this.disconnect(),
-    startVoiceCapture: () => this.typeIntoApp(),
+    startVoiceCapture: () => this.startVoiceCapture(),
+    stopVoiceCapture: () => iosVoiceInput.stopPushToTalk(),
     startContinuousVoiceCapture: () => this.onError("Voice capture is not available on iOS yet."),
     startTextSettingEdit: setting => this.editSetting(setting),
     startTextSettingsEdit: async (settings, _title, finished) => {
@@ -62,7 +64,8 @@ export class IosPreviewController {
     this.compositor.configureSurface('shell', { x: 0, y: 0, width: 640, height: 480, zOrder: 1, transparency: 'color-key' })
     shell.configure({
       actions: this.actions,
-      voiceInputEnabled: false,
+      voiceInputEnabled: true,
+      prepareVoiceCapture: () => this.prepareVoiceCapture(),
       getScreenTimeoutMs: () => null,
       requestShellRender: () => this.requestShellRender(),
       onWindowsChanged: () => this.requestShellRender(),
@@ -285,7 +288,7 @@ export class IosPreviewController {
       openSettings: section => { void this.launchApp('settings', { section }) },
       startTextSettingEdit: id => { const setting = getStringSettingById(id); if (setting) void this.editSetting(setting) },
       endTextSettingEdit: () => {},
-      startTextInput: () => { void this.typeIntoApp() },
+      startTextInput: () => shell.startVoiceInput(),
     })
     this.appHosts.set(appId, host)
     return host
@@ -307,6 +310,7 @@ export class IosPreviewController {
     if (!this.session) {
       const { deflate } = require('pako') as { deflate: (data: Uint8Array) => Uint8Array }
       this.session = new GlassesSession(iosBluetooth(), deflate, state => {
+        if (state.phase !== 'connected') iosVoiceInput.handleSessionEnded()
         shell.setBatteryLevels({ headset: state.battery, headsetCharging: state.charging })
         this.syncRuntime()
         if (this.active) this.onConnectionState(state)
@@ -322,6 +326,20 @@ export class IosPreviewController {
     await this.session.start(addresses)
   }
   async disconnect(): Promise<void> { await this.session?.stop() }
+  startVoiceInput(): void { shell.startVoiceInput() }
+  private async prepareVoiceCapture(): Promise<boolean> {
+    if (this.session?.state.phase !== 'connected') {
+      if (this.active) this.onError('Connect the glasses to use their microphone.')
+      return false
+    }
+    const ready = await iosVoiceInput.prepare(this.active)
+    if (!ready && this.active) this.onError(iosVoiceInput.statusText)
+    return ready && this.session?.state.phase === 'connected'
+  }
+  private async startVoiceCapture(): Promise<void> {
+    if (!this.session || this.session.state.phase !== 'connected') return
+    await iosVoiceInput.startGlassesCapture(this.session, message => this.logBluetooth(message))
+  }
   private logBluetooth(message: string): void {
     const line = `${new Date().toISOString()} [${this.active ? 'foreground' : 'background'}${UIApplication.sharedApplication.protectedDataAvailable ? '' : ',protected-data-unavailable'}] ${message}`
     console.log(`[ios-ble] ${line}`); this.logLines.push(line)

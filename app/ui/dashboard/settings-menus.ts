@@ -233,8 +233,12 @@ function settingsSections(): SettingsSection[] {
     },
   ];
   if (!global.isIOS) return sections;
-  const deferred = new Set(["Voice", "Assistant", "Navigate", "Watch", "Developer"]);
+  const deferred = new Set(["Assistant", "Navigate", "Watch", "Developer"]);
   return sections.map(section => {
+    if (section.label === "Voice") return { label: "Voice", items: [{
+      label: "On-device dictation (Apple)", disabled: true, onSelect: () => {},
+      description: "Uses the glasses microphone and your iPhone's speech language. No API key needed. Open Voice from the phone or glasses menu, speak, then click to finish and send the text into an app.",
+    }] };
     if (deferred.has(section.label)) return { label: section.label, items: [{
       label: "Not available on iOS yet", disabled: true, onSelect: () => {},
       description: `${section.label} integration has not been ported to iOS.`,

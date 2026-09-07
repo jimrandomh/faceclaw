@@ -55,6 +55,21 @@ test('iOS worker frames preserve baked grayscale bytes through the message bound
   assert.deepEqual(Buffer.from(messages[0].pixels, 'base64'), Buffer.from(pixels));
 });
 
+test('settings-driven repaint runs after font cache invalidation, regardless of subscription order', () => {
+  const listeners = [], tasks = [], painted = [];
+  let cachedFont = 'Light';
+  const api = load('app/ui/dashboard-settings.ts', {
+    require: id => id.includes('settings-store') ? { onSettingsStoreChanged: fn => listeners.push(fn) }
+      : { Layer: class {}, ASSISTANT_MODEL_VALUES: [] },
+    setTimeout: fn => tasks.push(fn),
+  });
+  api.onAnySettingChanged(() => painted.push(cachedFont));
+  listeners.push(() => { cachedFont = 'Bold'; });
+  for (const listener of listeners) listener('display.uiFont2');
+  while (tasks.length) tasks.shift()();
+  assert.deepEqual(painted, ['Bold']);
+});
+
 test('background glasses input still composites frames; phone resume preserves the session; explicit stop stays stopped', async () => {
   const tasks = new Map(), screenStates = [], inputs = [], frames = [], previews = [], states = [];
   let nextTask = 0, starts = 0, stops = 0, session;
@@ -75,6 +90,7 @@ test('background glasses input still composites frames; phone resume preserves t
   const settings = { onAnySettingChanged: () => () => {}, previewColorSetting: { get: () => 'white' } };
   const modules = {
     '@nativescript/core': { File: { fromPath: () => ({ writeTextSync() {} }) }, knownFolders: { documents: () => ({ path: '/tmp' }) }, path },
+    '../native/ios-voice-input': { iosVoiceInput: { handleSessionEnded() {} } },
     '../native/ios-bluetooth': { iosBluetooth: () => ({}) }, './glasses-session': { GlassesSession: Session },
     './device-addresses': { loadDeviceAddresses: () => ({}) }, './ios-peripheral-identity': { deviceAddressError: () => null },
     '../apps/launcher/launcher-app': { createLauncherWindow: () => window, LAUNCHER_SURFACE_ID: 'launcher' },

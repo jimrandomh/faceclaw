@@ -116,9 +116,9 @@ export class VoiceInputLayer implements Layer {
       this.status = state.status;
       this.actions.requestRender();
     });
-    if (this.handsFree) {
-      // No button is held, so the mic has to stop itself. endCapture() is
-      // idempotent, and a click still ends the utterance early.
+    if (this.handsFree || global.isIOS) {
+      // Endpointing or the recognizer ending its session can finish capture.
+      // endCapture() is idempotent, including after a manual button release.
       this.unsubscribeSpeechEnd = voiceControlBridge.onSpeechEnd(() => {
         if (this.phase === "capturing") {
           this.endCapture();
@@ -186,7 +186,7 @@ export class VoiceInputLayer implements Layer {
   private menuRows(): Array<{ label: string; dim: boolean; onSelect: () => void }> {
     const text = this.displayText().trim();
     const hasText = text.length > 0;
-    const hasLlmKey = anthropicApiKeySetting.get().trim().length > 0;
+    const hasLlmKey = !global.isIOS && anthropicApiKeySetting.get().trim().length > 0;
     const rows: Array<{ label: string; dim: boolean; onSelect: () => void }> = [];
     for (const target of this.sendTargets) {
       rows.push({
@@ -199,7 +199,7 @@ export class VoiceInputLayer implements Layer {
       });
     }
     rows.push({
-      label: hasLlmKey ? "Continue" : "Continue (Needs LLM API key)",
+      label: global.isIOS ? "Continue (Not available on iOS)" : hasLlmKey ? "Continue" : "Continue (Needs LLM API key)",
       dim: !hasLlmKey,
       onSelect: () => {
         if (hasLlmKey) this.startContinuation();
@@ -379,6 +379,7 @@ export class VoiceInputLayer implements Layer {
       this.capturing = false;
       void this.actions.stopVoiceCapture();
     }
+    if (global.isIOS) voiceControlBridge.stop();
     this.onClosed();
   }
 

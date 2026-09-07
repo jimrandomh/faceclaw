@@ -4,14 +4,14 @@
  * app assets on first listing (so the directory is the single source of
  * truth), and user installs from the Files app ("Install" on a font file).
  *
- * Listing parses each file's name table for family/style (via the Java
- * FontFileRenderer) and probes monospace-ness by comparing advances, both
+ * Listing parses each file's name table for family/style (via the native
+ * font renderer) and probes monospace-ness by comparing advances, both
  * memoized per path for the session.
  */
 import { File, Folder, knownFolders, path as nsPath } from "@nativescript/core";
 import { canLoadFontFile, fontFileDisplayName, isFontFile } from "../native/font-files";
 
-declare const com: any;
+import { fontRenderer } from "../native/font-renderer";
 declare const java: any;
 declare const global: any;
 
@@ -62,7 +62,7 @@ let preinstalledEnsured = false;
  * before every listing.
  */
 export function ensurePreinstalledFonts(): void {
-  if (preinstalledEnsured || !global.isAndroid) return;
+  if (preinstalledEnsured || (!global.isAndroid && !global.isIOS)) return;
   const assetsDir = nsPath.join(knownFolders.currentApp().path, "fonts/ttf");
   for (const fileName of PREINSTALLED_FONT_FILES) {
     const target = installedFontPath(fileName);
@@ -83,7 +83,7 @@ export function ensurePreinstalledFonts(): void {
  * same-named file). Returns an error message for the UI, or null on success.
  */
 export function installFontFile(sourcePath: string): string | null {
-  if (!global.isAndroid) return "Not available on this platform.";
+  if ((!global.isAndroid && !global.isIOS)) return "Not available on this platform.";
   if (!isFontFile(sourcePath)) return "Not a font file.";
   if (!canLoadFontFile(sourcePath)) return "This file could not be loaded as a font.";
   const fileName = sourcePath.slice(sourcePath.lastIndexOf("/") + 1);
@@ -108,7 +108,7 @@ export function isFontInstalled(sourcePath: string): boolean {
  * then weight. Unloadable files are skipped.
  */
 export function listInstalledFonts(): InstalledFont[] {
-  if (!global.isAndroid) return [];
+  if ((!global.isAndroid && !global.isIOS)) return [];
   ensurePreinstalledFonts();
   const fonts: InstalledFont[] = [];
   try {
@@ -195,7 +195,7 @@ function styleWeightOrder(style: string): number {
 function isMonospaceFont(path: string): boolean {
   try {
     const measure = (text: string) =>
-      Number(com.faceclaw.app.FontFileRenderer.measureTextExact(path, text, 48));
+      Number(fontRenderer.measureTextExact(path, text, 48));
     const narrow = measure("i");
     if (!(narrow > 0)) return false;
     return (
@@ -217,6 +217,14 @@ function isMonospaceFont(path: string): boolean {
 // isolates on first launch (each resolving the default UI font), and readers
 // must never see a half-written font file.
 function copyFileBytes(source: string, target: string): void {
+  if (source === target) return;
+  if (global.isIOS) {
+    const data = NSData.dataWithContentsOfFile(source);
+    // Foundation's atomic write uses a sibling temporary file and rename.
+    // Multiple worker isolates can safely preinstall the same bundled face.
+    if (!data || !data.writeToFileAtomically(target, true)) throw new Error(`Copy to ${target} failed`);
+    return;
+  }
   const temp = `${target}.tmp-${Math.floor(Math.random() * 0x7fffffff).toString(36)}`;
   const input = new java.io.FileInputStream(source);
   try {

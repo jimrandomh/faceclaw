@@ -970,7 +970,7 @@ class Shell {
    */
   private buildVoiceSendTargets(): VoiceSendTarget[] {
     const targets: VoiceSendTarget[] = [];
-    if (this.isAssistantAvailable()) {
+    if (!global.isIOS && this.isAssistantAvailable()) {
       targets.push({
         id: "assistant",
         label: "Send to Assistant",

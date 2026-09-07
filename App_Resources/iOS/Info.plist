@@ -20,6 +20,8 @@
   <true/>
   <key>NSBluetoothAlwaysUsageDescription</key>
   <string>Faceclaw uses Bluetooth to connect to your glasses and ring, display your apps, and receive gestures.</string>
+  <key>NSSpeechRecognitionUsageDescription</key>
+  <string>Faceclaw turns audio from your glasses microphone into text for the app you choose. Dictation uses on-device recognition.</string>
   <key>UIBackgroundModes</key>
   <array>
     <string>bluetooth-central</string>

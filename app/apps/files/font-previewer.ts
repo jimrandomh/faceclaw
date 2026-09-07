@@ -27,7 +27,7 @@ const PARAGRAPH =
 
 /**
  * Font previewer for a font file on disk (TTF/OTF/TTC), rendered through the
- * Android text stack: a single-line pangram, a character-set sample, and a
+ * native text stack: a single-line pangram, a character-set sample, and a
  * wrapped paragraph, all at an adjustable pixel size. Scroll changes size,
  * click cycles the coverage gamma (for judging antialiasing on the lens),
  * double-click closes. Sized to its hosting stack (a Files document window,

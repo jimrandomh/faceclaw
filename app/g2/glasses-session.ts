@@ -51,6 +51,10 @@ export class GlassesSession {
   private layoutCreated = false
   private off: () => void
   private stopping: Promise<void> | null = null
+  private audioListener: ((packet: Uint8Array) => void) | null = null
+  private microphoneToken = 0
+  private microphoneWork: Promise<void> = Promise.resolve()
+  private microphoneEnabled = false
   constructor(private readonly transport: SessionTransport,
     private readonly deflate: (data: Uint8Array) => Uint8Array,
     private readonly onState: (state: SessionState) => void,
@@ -211,6 +215,13 @@ export class GlassesSession {
       return
     }
     if (event.kind !== 'notification' || !event.data) return
+    if (event.characteristic === protocol.G2_RENDER_NOTIFY && event.identifier !== this.ids.ring) {
+      if (this.audioListener && this.state.phase === 'connected') {
+        this.audioListener(hexToBytes(event.data))
+        this.onActivity(); this.wake()
+      }
+      return
+    }
     const ring = event.identifier === this.ids.ring
     if (ring ? !protocol.RING_NOTIFY.includes(event.characteristic ?? '') : event.characteristic !== protocol.G2_NOTIFY) return
     try {
@@ -268,6 +279,30 @@ export class GlassesSession {
     if (this.state.phase !== 'connected') return
     this.latest = protocol.packGray4(gray, 640, 480); this.schedule(0)
   }
+  /** Serialize mic enable/disable, including a release while enable awaits ACK. */
+  setMicrophone(enabled: boolean, listener?: (packet: Uint8Array) => void): Promise<void> {
+    const token = ++this.microphoneToken, generation = this.generation
+    this.audioListener = enabled ? listener ?? null : null
+    const current = () => generation === this.generation && token === this.microphoneToken
+    const work = this.microphoneWork.catch(() => {}).then(async () => {
+      if (!current()) return
+      if (this.state.phase !== 'connected') {
+        if (enabled) throw new Error('Connect the glasses before starting voice input.')
+        return
+      }
+      if (enabled) {
+        await Promise.all(['left', 'right'].map(role => this.transport.subscribe(this.ids[role], protocol.G2_RENDER_NOTIFY)))
+        if (!current()) return
+      }
+      await this.request('right', protocol.SID.hub, magic => protocol.audioControl(magic, enabled), enabled ? 'Microphone enable' : 'Microphone disable')
+      if (current()) { this.microphoneEnabled = enabled; this.log(`Glasses microphone ${enabled ? 'enabled' : 'disabled'}`) }
+    }).catch(error => {
+      if (current()) { this.audioListener = null; this.microphoneEnabled = false }
+      throw error
+    })
+    this.microphoneWork = work
+    return work
+  }
   wake(): void {
     if (this.timer !== null) { clearTimeout(this.timer); this.timer = null }
     void this.pump()
@@ -308,6 +343,7 @@ export class GlassesSession {
   }
   private reset(): void {
     ++this.generation
+    ++this.microphoneToken; this.audioListener = null; this.microphoneEnabled = false
     if (this.timer !== null) clearTimeout(this.timer)
     if (this.retryTimer !== null) clearTimeout(this.retryTimer)
     if (this.ringRetryTimer !== null) clearTimeout(this.ringRetryTimer)
@@ -337,6 +373,11 @@ export class GlassesSession {
   }
   private async stopInternal(): Promise<void> {
     this.wanted = false
+    // Stop mic capture before ending the display session. Late enable ACKs
+    // cannot leave a microphone streaming after an explicit Disconnect.
+    if (this.audioListener || this.microphoneEnabled) {
+      try { await this.setMicrophone(false) } catch (error) { this.log(`Microphone cleanup: ${this.message(error)}`) }
+    }
     const cleanup = this.layoutCreated && this.state.phase === 'connected'
     this.update('disconnecting', 'Disconnecting…'); this.reset()
     try {

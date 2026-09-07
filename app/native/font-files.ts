@@ -1,17 +1,16 @@
 /**
  * Font-file text rendering for the on-glasses font previewer, backed by the
- * Java FontFileRenderer (Android Typeface/Paint, so shaping, kerning, and
- * line breaking come from minikin/HarfBuzz). Rendered text arrives as
+ * native font renderer (Android Paint / iOS Core Text). Rendered text arrives as
  * antialiased 8bpp coverage, which the compositor quantizes to the display's
  * 16 shades.
  */
 import { GrayImage } from "../graphics/image";
 import { grayImageFromPacket } from "./image-files";
 
-declare const com: any;
+import { fontRenderer } from "./font-renderer";
 declare const global: any;
 
-/** Font file formats Android's Typeface can load. */
+/** Font file formats supported by the native renderers. */
 const FONT_FILE = /\.(ttf|otf|ttc)$/i;
 
 export function isFontFile(name: string): boolean {
@@ -37,9 +36,9 @@ export const DEFAULT_FONT_GAMMA = 1.0;
 
 /** Whether the font file parses as a loadable font. */
 export function canLoadFontFile(path: string): boolean {
-  if (!global.isAndroid) return false;
+  if (!global.isAndroid && !global.isIOS) return false;
   try {
-    return !!com.faceclaw.app.FontFileRenderer.canLoadFont(path);
+    return !!fontRenderer.canLoadFont(path);
   } catch {
     return false;
   }
@@ -50,9 +49,9 @@ export function canLoadFontFile(path: string): boolean {
  * unavailable (caller should fall back to the filename).
  */
 export function fontFileDisplayName(path: string): { family: string; style: string } | null {
-  if (!global.isAndroid) return null;
+  if (!global.isAndroid && !global.isIOS) return null;
   try {
-    const raw = String(com.faceclaw.app.FontFileRenderer.getFontName(path) ?? "");
+    const raw = String(fontRenderer.getFontName(path) ?? "");
     if (!raw) return null;
     const [family, style] = raw.split("\n");
     if (!family) return null;
@@ -64,9 +63,9 @@ export function fontFileDisplayName(path: string): { family: string; style: stri
 
 /** Line metrics at a pixel size; null when the font cannot be loaded. */
 export function fontFileMetrics(path: string, sizePx: number): FontFileMetrics | null {
-  if (!global.isAndroid) return null;
+  if (!global.isAndroid && !global.isIOS) return null;
   try {
-    const raw = String(com.faceclaw.app.FontFileRenderer.getFontMetrics(path, sizePx) ?? "");
+    const raw = String(fontRenderer.getFontMetrics(path, sizePx) ?? "");
     const parts = raw.split(" ").map((part) => parseInt(part, 10));
     if (parts.length !== 3 || parts.some((part) => !Number.isFinite(part))) return null;
     return { ascent: parts[0]!, descent: parts[1]!, lineGap: parts[2]! };
@@ -86,9 +85,9 @@ export function renderFontFileText(
   sizePx: number,
   gamma = DEFAULT_FONT_GAMMA,
 ): GrayImage | null {
-  if (!global.isAndroid) return null;
+  if (!global.isAndroid && !global.isIOS) return null;
   try {
-    return grayImageFromPacket(com.faceclaw.app.FontFileRenderer.renderText(path, text, sizePx, gamma));
+    return grayImageFromPacket(fontRenderer.renderText(path, text, sizePx, gamma));
   } catch (error) {
     console.warn(`renderFontFileText failed for ${path}: ${error}`);
     return null;
@@ -96,7 +95,7 @@ export function renderFontFileText(
 }
 
 /**
- * Render a paragraph wrapped to maxWidth (StaticLayout line breaking),
+ * Render a paragraph wrapped to maxWidth (native line breaking),
  * truncated with an ellipsis past maxLines.
  */
 export function renderFontFileWrapped(opts: {
@@ -107,10 +106,10 @@ export function renderFontFileWrapped(opts: {
   maxLines: number;
   gamma?: number;
 }): GrayImage | null {
-  if (!global.isAndroid) return null;
+  if (!global.isAndroid && !global.isIOS) return null;
   try {
     return grayImageFromPacket(
-      com.faceclaw.app.FontFileRenderer.renderWrapped(
+      fontRenderer.renderWrapped(
         opts.path,
         opts.text,
         opts.sizePx,
