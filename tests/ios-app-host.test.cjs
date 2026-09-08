@@ -135,3 +135,49 @@ test('background glasses input still composites frames; phone resume preserves t
   controller.resume(); flush();
   assert.equal(starts, 1); assert.equal(controller.connectionState.phase, 'disconnected');
 });
+
+test('iOS bandwidth footer toggles live, polls only in foreground and resets its rate window on resume', () => {
+  const views = [], intervals = new Map(), appEvents = new Map(), settingListeners = new Set();
+  let enabled = false, atMs = 0, totals = { messages: 0, bytes: 0, frames: 0 }, nextId = 0;
+  class View {
+    events = new Map(); children = [];
+    constructor() { views.push(this); }
+    on(event, fn) { this.events.set(event, fn); }
+    addChild(view) { this.children.push(view); }
+    getActualSize() { return { width: 0, height: 0 }; }
+    static setRow() {} static setColumn() {}
+  }
+  const core = { Application: { suspendEvent: 'suspend', resumeEvent: 'resume',
+    on: (key, fn) => appEvents.set(key, fn), off: key => appEvents.delete(key) },
+    Button: View, Color: class {}, Dialogs: {}, GridLayout: View, Image: View, Label: View, Page: View, StackLayout: View };
+  const modules = {
+    '@nativescript/core': core,
+    '../apps/all-apps': { ALL_APPS: [] },
+    '../g2/ios-preview-controller': { IosPreviewController: class { resume() {} pause() {} } },
+    './phone-gestures': { PhoneGestureRecognizer: class { cancel() {} } },
+    './ble-bandwidth-meter': require('../.test-build/app/phone-ui/ble-bandwidth-meter.js'),
+    '../native/ble-traffic': { sampleBleTraffic: () => totals },
+    '../ui/dashboard-settings': { showBleBandwidthSetting: { get: () => enabled },
+      onAnySettingChanged: fn => { settingListeners.add(fn); return () => settingListeners.delete(fn); } },
+    '../g2/device-addresses': { loadDeviceAddresses: () => ({}) },
+    '../g2/ios-peripheral-identity': { deviceAddressError: () => 'no test devices' },
+  };
+  const { createMainPage } = load('app/phone-ui/main-page.ios.ts', {
+    require: id => modules[id] ?? {}, Date: { now: () => atMs },
+    setInterval: fn => { const id = ++nextId; intervals.set(id, fn); return id; }, clearInterval: id => intervals.delete(id),
+    setTimeout: () => 1, clearTimeout() {},
+  });
+  const page = createMainPage(), footer = views.find(v => v.accessibilityIdentifier === 'ble-bandwidth-indicator');
+  page.events.get('loaded')(); assert.equal(intervals.size, 0); assert.equal(footer.visibility, 'collapse');
+  enabled = true; for (const fn of settingListeners) fn();
+  assert.equal(intervals.size, 1); assert.equal(footer.visibility, 'visible');
+  totals = { messages: 4, bytes: 2000, frames: 2 }; atMs = 1000; for (const fn of intervals.values()) fn();
+  assert.match(footer.text, /2.0 fps, 1,000 B\/frame/);
+  appEvents.get('suspend')(); assert.equal(intervals.size, 0);
+  const previousText = footer.text;
+  totals = { messages: 40, bytes: 20000, frames: 20 }; atMs = 20000;
+  for (const fn of settingListeners) fn(); assert.equal(footer.text, previousText); assert.equal(intervals.size, 0);
+  appEvents.get('resume')(); assert.equal(intervals.size, 1); assert.doesNotMatch(footer.text, /fps/);
+  enabled = false; for (const fn of settingListeners) fn(); assert.equal(footer.visibility, 'collapse'); assert.equal(intervals.size, 0);
+  page.events.get('unloaded')(); assert.equal(appEvents.size, 0); assert.equal(settingListeners.size, 0);
+});

@@ -233,8 +233,9 @@ function settingsSections(): SettingsSection[] {
     },
   ];
   if (!global.isIOS) return sections;
-  const deferred = new Set(["Assistant", "Navigate", "Watch", "Developer"]);
+  const deferred = new Set(["Assistant", "Navigate", "Watch"]);
   return sections.map(section => {
+    if (section.label === "Developer") return { ...section, items: [toggleSettingMenuItem(showBleBandwidthSetting)] };
     if (section.label === "Voice") return { label: "Voice", items: [{
       label: "On-device dictation (Apple)", disabled: true, onSelect: () => {},
       description: "Uses the glasses microphone and your iPhone's speech language. No API key needed. Open Voice from the phone or glasses menu, speak, then click to finish and send the text into an app.",

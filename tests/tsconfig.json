@@ -12,6 +12,7 @@
   },
   "include": [
     "../app/g2/ble-protocol.ts",
+    "../app/phone-ui/ble-bandwidth-meter.ts",
     "../app/apps/terminal/hub-header.ts",
     "../app/g2/ios-peripheral-identity.ts",
     "../app/g2/glasses-session.ts",

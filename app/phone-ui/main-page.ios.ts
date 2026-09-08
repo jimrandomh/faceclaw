@@ -3,7 +3,9 @@ import { createConfigureDevicesPage } from './config-page.ios'
 import { ALL_APPS } from '../apps/all-apps'
 import { IosPreviewController } from '../g2/ios-preview-controller'
 import { PhoneGestureRecognizer } from './phone-gestures'
-import { onAnySettingChanged, previewColorSetting } from '../ui/dashboard-settings'
+import { BleBandwidthMeter } from './ble-bandwidth-meter'
+import { sampleBleTraffic } from '../native/ble-traffic'
+import { onAnySettingChanged, previewColorSetting, showBleBandwidthSetting } from '../ui/dashboard-settings'
 import { loadDeviceAddresses } from '../g2/device-addresses'
 import { deviceAddressError } from '../g2/ios-peripheral-identity'
 
@@ -11,7 +13,7 @@ export function createMainPage(): Page {
   const page = new Page()
   page.actionBarHidden = true
   const root = new GridLayout()
-  root.rows = 'auto,*'
+  root.rows = 'auto,*,auto'
   page.content = root
   const header = new GridLayout()
   header.columns = '*,auto'; header.padding = '12 20'
@@ -127,20 +129,44 @@ export function createMainPage(): Page {
     view.padding = '16 8'; view.fontSize = 14
     GridLayout.setColumn(view, index); footer.addChild(view)
   }
+  const bandwidth = new Label()
+  bandwidth.accessibilityIdentifier = 'ble-bandwidth-indicator'
+  bandwidth.fontSize = 10; bandwidth.textWrap = true; bandwidth.padding = '2 8 4'
+  bandwidth.color = new Color('#68756c'); bandwidth.isUserInteractionEnabled = false
+  bandwidth.visibility = 'collapse'
+  GridLayout.setRow(bandwidth, 2); root.addChild(bandwidth)
+  const bandwidthMeter = new BleBandwidthMeter()
+  let bandwidthTimer: ReturnType<typeof setInterval> | null = null
+  let foreground = false
+  function stopBandwidth(): void {
+    if (bandwidthTimer !== null) clearInterval(bandwidthTimer)
+    bandwidthTimer = null; bandwidthMeter.reset()
+  }
+  function syncBandwidth(): void {
+    if (!foreground) { stopBandwidth(); return }
+    const enabled = showBleBandwidthSetting.get()
+    bandwidth.visibility = enabled ? 'visible' : 'collapse'
+    if (!enabled) { stopBandwidth(); return }
+    if (bandwidthTimer !== null) return
+    const refresh = () => { bandwidth.text = bandwidthMeter.sample(sampleBleTraffic(), Date.now()) }
+    refresh(); bandwidthTimer = setInterval(refresh, 1000)
+  }
   let lastLayout = ''
   function layout(): void {
     const size = root.getActualSize()
     if (size.width <= 0 || size.height <= 0) return
-    const key = `${size.width}:${size.height}:${selectedTab}`
+    const metricsHeight = bandwidth.visibility === 'visible' ? bandwidth.getActualSize().height : 0
+    const availableHeight = size.height - metricsHeight
+    const key = `${size.width}:${availableHeight}:${selectedTab}`
     if (key === lastLayout) return
     lastLayout = key; padInput.cancel(); mirrorInput.cancel()
     const landscape = size.width > size.height
     body.rows = landscape ? '*' : 'auto,*'; body.columns = landscape ? '*,320' : '*'
     GridLayout.setRow(controls, landscape ? 0 : 1); GridLayout.setColumn(controls, landscape ? 1 : 0)
-    const width = landscape ? Math.min(size.width - 320, (size.height - 64) * 4 / 3) : size.width
+    const width = landscape ? Math.min(size.width - 320, (availableHeight - 64) * 4 / 3) : size.width
     mirror.width = width; mirror.height = width * 3 / 4
     pad.width = selectedTab === 'ring' ? 150 : Math.min(360, (landscape ? 320 : size.width) - 32)
-    pad.height = Math.max(120, Math.min(250, size.height - (landscape ? 180 : width * 3 / 4 + 200)))
+    pad.height = Math.max(120, Math.min(250, availableHeight - (landscape ? 180 : width * 3 / 4 + 200)))
   }
   // iOS emits layoutChanged inside its layout pass. Defer mutations so
   // NativeScript does not clear our new layout request at the end of that pass.
@@ -150,17 +176,18 @@ export function createMainPage(): Page {
     layoutTimer = setTimeout(() => { layoutTimer = null; layout() }, 0)
   })
   const pause = () => {
+    foreground = false; stopBandwidth()
     if (layoutTimer !== null) clearTimeout(layoutTimer)
     layoutTimer = null
     padInput.cancel(); mirrorInput.cancel(); controller.pause()
   }
-  const resume = () => controller.resume()
+  const resume = () => { foreground = true; controller.resume(); syncBandwidth() }
   let offSettings: (() => void) | null = null
   let firstLoad = true
   page.on('loaded', () => {
     Application.on(Application.suspendEvent, pause); Application.on(Application.resumeEvent, resume)
-    offSettings?.(); offSettings = onAnySettingChanged(() => { sizeButton.text = controller.displayModeLabel })
-    selectTab(selectedTab); controller.resume()
+    offSettings?.(); offSettings = onAnySettingChanged(() => { sizeButton.text = controller.displayModeLabel; syncBandwidth() })
+    selectTab(selectedTab); resume()
     if (firstLoad) {
       firstLoad = false
       // Match Android's reconnect-on-launch behavior once addresses are saved.

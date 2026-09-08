@@ -1,3 +1,4 @@
+import { BleBandwidthMeter } from "./ble-bandwidth-meter";
 import {
   Application,
   Dialogs,
@@ -1268,7 +1269,7 @@ export class MainViewModel extends Observable {
   private _bleBandwidthLabel = "";
   private bleBandwidthTimer: ReturnType<typeof setInterval> | null = null;
   // Recent counter samples, one per poll tick, for the windowed rates.
-  private bleRateHistory: Array<{ atMs: number; bytes: number; frames: number }> = [];
+  private readonly bleBandwidthMeter = new BleBandwidthMeter();
 
   get bleBandwidthVisibility(): "visible" | "collapse" {
     return showBleBandwidthSetting.get() ? "visible" : "collapse";
@@ -1297,29 +1298,13 @@ export class MainViewModel extends Observable {
       this.bleBandwidthTimer = null;
     }
     // Don't let a later re-enable compute a rate across the disabled gap.
-    this.bleRateHistory = [];
+    this.bleBandwidthMeter.reset();
   }
 
   private refreshBleBandwidth(): void {
     let label: string;
     try {
-      const sample = sampleBleTraffic();
-      const atMs = Date.now();
-      this.bleRateHistory.push({ atMs, bytes: sample.bytes, frames: sample.frames });
-      while (this.bleRateHistory.length > 0 && this.bleRateHistory[0]!.atMs < atMs - BLE_RATE_WINDOW_MS) {
-        this.bleRateHistory.shift();
-      }
-      label = `BLE sent: ${formatCount(sample.messages)} messages, ${formatCount(sample.bytes)} bytes`;
-      const oldest = this.bleRateHistory[0]!;
-      const elapsedSec = (atMs - oldest.atMs) / 1000;
-      if (elapsedSec > 0) {
-        const byteDelta = sample.bytes - oldest.bytes;
-        const frameDelta = sample.frames - oldest.frames;
-        label += ` · ${formatByteRate(byteDelta / elapsedSec)}, ${(frameDelta / elapsedSec).toFixed(1)} fps`;
-        if (frameDelta > 0) {
-          label += `, ${formatCount(byteDelta / frameDelta)} B/frame`;
-        }
-      }
+      label = this.bleBandwidthMeter.sample(sampleBleTraffic(), Date.now());
     } catch (error) {
       label = `BLE sent: ${this.formatError(error)}`;
     }
@@ -1340,20 +1325,6 @@ export class MainViewModel extends Observable {
   private formatError(error: unknown): string {
     return formatErrorMessage(error, 240);
   }
-}
-
-/** 1234567 -> "1,234,567"; kept exact rather than rounded so growth is visible at a glance. */
-function formatCount(value: number): string {
-  return String(Math.round(value)).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
-}
-
-/** How far back the BLE bandwidth indicator's rates look. */
-const BLE_RATE_WINDOW_MS = 5000;
-
-function formatByteRate(bytesPerSec: number): string {
-  if (bytesPerSec >= 1e6) return (bytesPerSec / 1e6).toFixed(2) + " MB/s";
-  if (bytesPerSec >= 1e3) return (bytesPerSec / 1e3).toFixed(1) + " kB/s";
-  return Math.round(bytesPerSec) + " B/s";
 }
 
 /** NativeScript swipe direction -> the watch-scheme directional gesture. */

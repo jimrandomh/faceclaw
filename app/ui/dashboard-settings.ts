@@ -444,7 +444,7 @@ export const showBleBandwidthSetting = new ConfigSettingBoolean({
   storageKey: "developer.showBleBandwidth",
   defaultValue: false,
   description:
-    "Show a running total of Bluetooth messages and bytes sent, at the bottom of the phone app's main screen.",
+    "Show Bluetooth messages and bytes sent, throughput, acknowledged display fps, and bytes per frame at the bottom of the phone screen. Rates use a five-second window; bytes include control traffic and protocol framing.",
 });
 
 export type RingConnectionMode = "glasses" | "direct";

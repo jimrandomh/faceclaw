@@ -1,4 +1,6 @@
 import * as protocol from './ble-protocol'
+import { iosBleTraffic } from './ble-traffic-counters'
+import { buildBoundingBoxPayload } from './ble-image-optimizer'
 import { hexToBytes } from '../util/hex-util'
 import { deviceAddressError } from './ios-peripheral-identity'
 
@@ -20,6 +22,10 @@ export type SessionState = { phase: 'disconnected' | 'connecting' | 'connected' 
 type PendingAck = { resolve: (message: protocol.ProtocolMessage) => void; reject: (error: Error) => void;
   timer: number | null; command: number; label: string }
 class AckTimeout extends Error {}
+// Match Android ConnectionOptions.WINDOW_SIZE. This bounds complete image
+// messages queued for writing or awaiting ACK, not individual BLE packets.
+const DISPLAY_WINDOW_SIZE = 3
+type DisplayFrame = { packed: Uint8Array; payload: Uint8Array; offset: number; pending: number }
 
 /** G2 session independent of the phone OS. Images go to L, control to R, as on Android. */
 export class GlassesSession {
@@ -43,6 +49,12 @@ export class GlassesSession {
   private addresses: SessionAddresses | null = null
   private latest: Uint8Array | null = null
   private displayed: Uint8Array | null = null
+  private lastEnqueued: Uint8Array | null = null
+  // Match Android: advance only for emitted deltas, skipping 0 / 0xffff.
+  private nextImageFrameId = 1
+  private displayFrames: DisplayFrame[] = []
+  private displaySending: DisplayFrame | null = null
+  private displayInFlight = 0
   private pumping = false
   private lastHeartbeat = 0
   private lastLease = 0
@@ -192,8 +204,15 @@ export class GlassesSession {
     if (!identifier) return Promise.reject(new Error(`No ${role} device connected`))
     const frames = protocol.frameMessage(payload, sid, flag, this.sequence++, this.limits[role])
     const previous = this.writes.get(identifier) ?? Promise.resolve()
-    const work = previous.catch(() => {}).then(async () => {
-      for (const frame of frames) { this.check(generation); await this.transport.write(identifier, protocol.G2_WRITE, frame) }
+    // A failed write poisons this link's queue until reset: do not transmit
+    // later fragments after a hole in the image stream.
+    const work = previous.then(async () => {
+      for (const frame of frames) {
+        this.check(generation)
+        await this.transport.write(identifier, protocol.G2_WRITE, frame)
+        iosBleTraffic.recordWrite(frame.length)
+      }
+      iosBleTraffic.recordMessage()
     })
     // A whole message owns the write queue; heartbeat packets cannot split an image message.
     this.writes.set(identifier, work)
@@ -312,6 +331,49 @@ export class GlassesSession {
     if (this.timer !== null || this.pumping || this.state.phase !== 'connected') return
     this.timer = setTimeout(() => { this.timer = null; void this.pump() }, delay)
   }
+  private canSendDisplay(): boolean {
+    // Also bound completed frames retained behind a missing/out-of-order ACK.
+    return this.displayInFlight < DISPLAY_WINDOW_SIZE && !!(this.displaySending ||
+      (this.latest && !this.charging && this.displayFrames.length < DISPLAY_WINDOW_SIZE))
+  }
+  private fillDisplayWindow(generation: number): void {
+    while (this.canSendDisplay()) {
+      if (!this.displaySending) {
+        const packed = this.latest!; this.latest = null
+        // Compare with the last enqueued image, not the last ACKed one. In an
+        // A -> B -> A sequence, B may still be in flight when A is requested.
+        if (this.lastEnqueued && packed.every((value, i) => value === this.lastEnqueued![i])) continue
+        const delta = buildBoundingBoxPayload(this.lastEnqueued, packed, 640, 480, this.nextImageFrameId, this.deflate)
+        const payload = delta ?? protocol.concat(new Uint8Array([6]), this.deflate(protocol.rle4(packed)))
+        if (payload.length > 165888) throw new Error('Compressed frame exceeds the glasses image buffer')
+        if (delta) {
+          this.nextImageFrameId = this.nextImageFrameId >= 0xfffe ? 1 : this.nextImageFrameId + 1
+          this.log(`Display bbox ${delta[3] * 4}x${delta[4] * 2}+${delta[1] * 4}+${delta[2] * 2} fid=${delta[5] | (delta[6] << 8)} (${payload.length} bytes)`)
+        } else this.log(`Display full 640x480 (${payload.length} bytes)`)
+        this.displaySending = { packed, payload, offset: 0, pending: 0 }
+        this.displayFrames.push(this.displaySending); this.lastEnqueued = packed
+      }
+      const frame = this.displaySending, offset = frame.offset
+      frame.offset += 3800; frame.pending++; this.displayInFlight++
+      if (frame.offset >= frame.payload.length) this.displaySending = null
+      // send() serializes whole messages on L, but request() waits for each
+      // magic's ACK independently. Fill the other slots without awaiting it.
+      void this.request('left', protocol.SID.hub, magic => protocol.imageFragment(magic, frame.payload, offset), 'Display frame').then(() => {
+        if (generation !== this.generation) return
+        frame.pending--; this.displayInFlight--; this.lastHeartbeat = Date.now()
+        // Retire in submission order even if relayed ACKs arrive out of order.
+        // A frame counts only after every fragment has been acknowledged.
+        while (this.displayFrames.length) {
+          const completed = this.displayFrames[0]
+          if (completed.offset < completed.payload.length || completed.pending) break
+          this.displayFrames.shift(); this.displayed = completed.packed
+          this.state.frames++; iosBleTraffic.recordDisplayFrame(); this.onState({ ...this.state })
+          this.log(`Display frame ${this.state.frames} acknowledged (${completed.payload.length} bytes)`)
+        }
+        this.wake()
+      }).catch(error => { if (generation === this.generation) this.fail(error, true) })
+    }
+  }
   private async pump(): Promise<void> {
     if (this.pumping || this.state.phase !== 'connected') return
     this.pumping = true; const generation = this.generation
@@ -327,19 +389,10 @@ export class GlassesSession {
         const settings = await this.request('right', protocol.SID.settings, protocol.settingsQuery, 'Battery query')
         this.applySettings(settings); this.lastSettings = Date.now()
       }
-      const frame = this.latest; this.latest = null
-      if (frame && !this.charging && (!this.displayed || !frame.every((value, i) => value === this.displayed![i]))) {
-        const payload = protocol.concat(new Uint8Array([6]), this.deflate(protocol.rle4(frame)))
-        if (payload.length > 165888) throw new Error('Compressed frame exceeds the glasses image buffer')
-        for (let offset = 0; offset < payload.length; offset += 3800) {
-          await this.request('left', protocol.SID.hub, magic => protocol.imageFragment(magic, payload, offset), 'Display frame')
-          this.check(generation); this.lastHeartbeat = Date.now()
-        }
-        this.displayed = frame; this.state.frames++; this.onState({ ...this.state })
-        this.log(`Display frame ${this.state.frames} acknowledged (${payload.length} bytes)`)
-      } else if (frame && this.charging) this.latest = frame
+      this.check(generation)
+      this.fillDisplayWindow(generation)
     } catch (error) { if (generation === this.generation) this.fail(error, true) }
-    finally { if (generation === this.generation) { this.pumping = false; this.schedule(this.latest && !this.charging ? 0 : 1000) } }
+    finally { if (generation === this.generation) { this.pumping = false; this.schedule(this.canSendDisplay() ? 0 : 1000) } }
   }
   private reset(): void {
     ++this.generation
@@ -352,6 +405,7 @@ export class GlassesSession {
     const pending = [...this.pending.values()]; this.pending.clear()
     for (const request of pending) { if (request.timer) clearTimeout(request.timer); request.reject(new Error('Connection ended')) }
     this.receiver.clear(); this.writes.clear(); this.latest = this.displayed = null
+    this.lastEnqueued = null; this.displayFrames = []; this.displaySending = null; this.displayInFlight = 0
   }
   private closeLinks(): void {
     const ids = this.ids; this.ids = {}; this.limits = {}

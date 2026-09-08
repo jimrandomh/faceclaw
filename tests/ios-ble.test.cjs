@@ -256,3 +256,241 @@ test('release while microphone enable awaits ACK sends disable last and rejects 
   const mic = h.transport.sent.filter(s => s.message.command === 15);
   assert.equal(p.readInteger(p.readBytes(mic.at(-1).message.payload, 18), 1), 0);
 });
+
+test('iOS traffic counts framed writes and logical messages, and advances fps only after the complete image ACK', async t => {
+  const { iosBleTraffic } = require('../.test-build/app/g2/ble-traffic-counters.js');
+  const h = harness(t); await h.session.start(addresses);
+  const before = iosBleTraffic.sample();
+  let writtenBytes = 0;
+  const write = h.transport.write.bind(h.transport);
+  h.transport.write = async (...args) => { await write(...args); writtenBytes += args[2].length; };
+  // Force multiple EvenHub messages so first-message ACK is not mistaken for a frame.
+  h.session.deflate = () => new Uint8Array(8000).fill(1);
+  h.transport.hold = true;
+  h.session.setFrame(new Uint8Array(640 * 480).fill(255));
+  await until(() => iosBleTraffic.sample().messages > before.messages);
+  assert.equal(iosBleTraffic.sample().frames, before.frames);
+  assert.equal(iosBleTraffic.sample().bytes - before.bytes, writtenBytes);
+  h.transport.hold = false;
+  for (const held of h.transport.held) h.transport.ack(held.id, held.message);
+  await until(() => h.session.state.frames === 1);
+  const after = iosBleTraffic.sample();
+  assert.equal(after.messages - before.messages, 3);
+  assert.equal(after.frames - before.frames, 1);
+  assert.equal(after.bytes - before.bytes, writtenBytes);
+  assert.ok(writtenBytes > 8001); // Includes protobuf, fragmentation headers and CRCs.
+  h.session.setFrame(new Uint8Array(640 * 480).fill(255));
+  await h.session.pump();
+  assert.deepEqual(iosBleTraffic.sample(), after); // Deduplicated image is not an ACKed frame.
+  await h.session.stop();
+  assert.equal(iosBleTraffic.sample().frames, after.frames); // No reset on disconnect.
+});
+
+const imageMessages = transport => transport.sent.filter(s => s.message.sid === p.SID.hub && s.message.command === 3);
+const imageBody = sent => p.readBytes(sent.message.payload, 5);
+const ack = (transport, sent) => transport.ack(sent.id, sent.message);
+const tick = () => new Promise(resolve => setImmediate(resolve));
+
+test('display window sends three complete messages before any ACK and refills on an out-of-order ACK', async t => {
+  const h = harness(t); await h.session.start(addresses);
+  // Five protocol messages, each split into many negotiated-MTU BLE writes.
+  const compressed = Uint8Array.from({ length: 16000 }, (_, i) => i & 255);
+  h.session.deflate = () => compressed; h.transport.hold = true;
+  h.session.setFrame(new Uint8Array(640 * 480).fill(255));
+  await until(() => imageMessages(h.transport).length === 3);
+  await tick(); assert.equal(imageMessages(h.transport).length, 3);
+  assert.equal(h.session.state.frames, 0);
+  const first = imageMessages(h.transport);
+  ack(h.transport, first[1]); // Relayed ACKs need not arrive in submission order.
+  await until(() => imageMessages(h.transport).length === 4);
+  ack(h.transport, first[1]); // Duplicate ACK must not open another slot.
+  await tick(); assert.equal(imageMessages(h.transport).length, 4);
+  ack(h.transport, first[2]);
+  await until(() => imageMessages(h.transport).length === 5);
+  const sent = imageMessages(h.transport);
+  assert.deepEqual(sent.map(s => p.readInteger(imageBody(s), 6)), [0, 1, 2, 3, 4]);
+  assert.deepEqual(p.concat(...sent.map(s => p.readBytes(imageBody(s), 8))), p.concat(new Uint8Array([6]), compressed));
+  ack(h.transport, sent[4]); ack(h.transport, sent[3]);
+  await tick(); assert.equal(h.session.state.frames, 0); // First fragment still unacknowledged.
+  ack(h.transport, sent[0]);
+  await until(() => h.session.state.frames === 1);
+  assert.equal(h.session.displayInFlight, 0); assert.equal(h.session.displayFrames.length, 0);
+});
+
+test('display pipelines across frames, deduplicates against enqueued images and coalesces to the newest waiting frame', async t => {
+  const h = harness(t); await h.session.start(addresses); h.transport.hold = true;
+  const submit = async value => { h.session.setFrame(new Uint8Array(640 * 480).fill(value)); await h.session.pump(); await tick(); };
+  await submit(0); await until(() => imageMessages(h.transport).length === 1);
+  await submit(0); assert.equal(imageMessages(h.transport).length, 1); // Duplicate still in flight.
+  await submit(255); await submit(0); // A -> B -> A must transmit all three.
+  await until(() => imageMessages(h.transport).length === 3);
+  const sent = imageMessages(h.transport);
+  assert.deepEqual(p.readBytes(imageBody(sent[0]), 8), p.readBytes(imageBody(sent[2]), 8));
+  await submit(80); await submit(160); // Only the newest waiting frame survives.
+  assert.equal(imageMessages(h.transport).length, 3);
+  ack(h.transport, sent[2]); ack(h.transport, sent[1]); await tick();
+  assert.equal(h.session.state.frames, 0);
+  assert.equal(h.session.displayFrames.length, 3); // Bounded behind the missing oldest ACK.
+  assert.equal(imageMessages(h.transport).length, 3);
+  ack(h.transport, sent[0]);
+  await until(() => imageMessages(h.transport).length === 4);
+  assert.equal(h.session.state.frames, 3);
+  const newest = imageMessages(h.transport)[3];
+  assert.deepEqual(p.readBytes(imageBody(newest), 8), p.concat(new Uint8Array([6]), deflate(p.rle4(p.packGray4(new Uint8Array(640 * 480).fill(160), 640, 480)))));
+  ack(h.transport, newest); await until(() => h.session.state.frames === 4);
+  await submit(160); assert.equal(imageMessages(h.transport).length, 4);
+});
+
+test('ACK timeout starts after transport writes drain; a lost display ACK flushes the whole pipeline', async t => {
+  const h = harness(t); await h.session.start(addresses);
+  const request = h.session.request.bind(h.session);
+  h.session.request = (role, sid, build, label, ...rest) => request(role, sid, build, label, ...(label === 'Display frame' ? [40] : rest));
+  const write = h.transport.write.bind(h.transport);
+  let release;
+  const blocked = new Promise(resolve => { release = resolve; });
+  h.transport.write = async (...args) => { if (args[0] === 'L') await blocked; await write(...args); };
+  h.transport.hold = true; h.session.deflate = () => new Uint8Array(16000);
+  h.session.setFrame(new Uint8Array(640 * 480)); await h.session.pump();
+  await new Promise(resolve => setTimeout(resolve, 65));
+  assert.equal(h.session.state.phase, 'connected'); assert.equal(imageMessages(h.transport).length, 0);
+  release(); await until(() => imageMessages(h.transport).length === 3);
+  const stale = imageMessages(h.transport);
+  await until(() => h.session.state.phase === 'retrying');
+  assert.match(h.session.state.status, /Display frame was not acknowledged/);
+  assert.equal(h.session.displayInFlight, 0); assert.equal(h.session.displayFrames.length, 0);
+  assert.equal(h.session.lastEnqueued, null); assert.equal(h.session.pending.size, 0);
+  for (const sent of stale) ack(h.transport, sent);
+  await tick(); assert.equal(h.session.state.frames, 0); assert.equal(imageMessages(h.transport).length, 3);
+  // A new session must resend even the identical image; old ACKs cannot count it.
+  await h.session.stop(); h.transport.hold = false; await h.session.start(addresses);
+  h.session.deflate = deflate; h.transport.hold = true;
+  h.session.setFrame(new Uint8Array(640 * 480));
+  await until(() => imageMessages(h.transport).length === 4);
+  for (const sent of stale) ack(h.transport, sent);
+  await tick(); assert.equal(h.session.state.frames, 0);
+  ack(h.transport, imageMessages(h.transport)[3]); await until(() => h.session.state.frames === 1);
+});
+
+test('failed transport write prevents queued display messages from being written', async t => {
+  const h = harness(t); await h.session.start(addresses);
+  let attempts = 0;
+  const write = h.transport.write.bind(h.transport);
+  h.transport.write = async (...args) => {
+    if (args[0] === 'L') { attempts++; throw new Error('test write failed'); }
+    return write(...args);
+  };
+  h.session.deflate = () => new Uint8Array(16000);
+  h.session.setFrame(new Uint8Array(640 * 480));
+  await until(() => h.session.state.phase === 'retrying');
+  assert.equal(attempts, 1); assert.equal(h.session.pending.size, 0);
+  assert.equal(h.session.displayInFlight, 0); assert.equal(h.session.state.frames, 0);
+});
+
+test('disconnect cancels the display window and sends cleanup after the queued images stop', async t => {
+  const h = harness(t); await h.session.start(addresses);
+  h.transport.hold = true; h.session.deflate = () => new Uint8Array(16000);
+  h.session.setFrame(new Uint8Array(640 * 480));
+  await until(() => imageMessages(h.transport).length === 3);
+  const stale = imageMessages(h.transport);
+  h.transport.hold = false; await h.session.stop();
+  for (const sent of stale) ack(h.transport, sent);
+  await tick();
+  assert.equal(h.session.state.phase, 'disconnected'); assert.equal(h.session.state.frames, 0);
+  assert.equal(h.session.displayInFlight, 0); assert.equal(h.session.displayFrames.length, 0);
+  const images = imageMessages(h.transport);
+  assert.equal(images.length, 4); assert.deepEqual(p.readBytes(imageBody(images[3]), 8), new Uint8Array([11]));
+});
+
+test('a full display window leaves glasses input, microphone control and audio responsive', async t => {
+  const h = harness(t); await h.session.start(addresses);
+  h.transport.hold = true; h.session.deflate = () => new Uint8Array(16000);
+  h.session.setFrame(new Uint8Array(640 * 480));
+  await until(() => imageMessages(h.transport).length === 3);
+  const input = p.bytes(13, p.bytes(3, p.concat(p.integer(1, 9), p.integer(2, 3))));
+  h.transport.emit({ kind: 'notification', identifier: 'R', characteristic: p.G2_NOTIFY,
+    data: hex(p.concat(...p.frameMessage(input, p.SID.hub, 1, 22))) });
+  assert.equal(h.input.length, 1); assert.equal(h.input[0].eventSource, 3);
+  const audio = [], enabling = h.session.setMicrophone(true, packet => audio.push(hex(packet)));
+  await until(() => h.transport.sent.some(s => s.message.command === 15));
+  ack(h.transport, h.transport.sent.find(s => s.message.command === 15)); await enabling;
+  h.transport.emit({ kind: 'notification', identifier: 'L', characteristic: p.G2_RENDER_NOTIFY, data: '010203' });
+  assert.deepEqual(audio, ['010203']);
+  assert.equal(imageMessages(h.transport).length, 3); assert.equal(h.session.state.frames, 0);
+  assert.equal(h.session.displayInFlight, 3);
+});
+
+test('pipelined bounding boxes reconstruct moving and erased content against the last queued frame', async t => {
+  const { applyDisplayPayload } = require('./helpers/display-payload.cjs');
+  const h = harness(t); await h.session.start(addresses); h.transport.hold = true;
+  const base = new Uint8Array(640 * 480), a = base.slice(), b = base.slice();
+  a[11 * 640 + 13] = 255; b[11 * 640 + 101] = 160;
+  const frames = [base, a, b];
+  for (let i = 0; i < frames.length; i++) {
+    h.session.setFrame(frames[i]); await h.session.pump();
+    await until(() => imageMessages(h.transport).length === i + 1);
+  }
+  const messages = imageMessages(h.transport), payloads = messages.map(m => p.readBytes(imageBody(m), 8));
+  assert.deepEqual(payloads.map(b => b[0]), [6, 3, 3]);
+  assert.deepEqual(payloads.slice(1).map(b => b[5] | (b[6] << 8)), [1, 2]);
+  assert.equal(h.session.state.frames, 0); // All three updates precede any ACK.
+  let shadow = new Uint8Array(320 * 480);
+  for (let i = 0; i < payloads.length; i++) {
+    shadow = applyDisplayPayload(shadow, payloads[i]);
+    assert.deepEqual(shadow, p.packGray4(frames[i], 640, 480));
+  }
+  // A late ACK for the old full frame must not replace the delta comparison base.
+  ack(h.transport, messages[0]); await until(() => h.session.state.frames === 1);
+  h.session.setFrame(base); await h.session.pump();
+  await until(() => imageMessages(h.transport).length === 4);
+  const clear = p.readBytes(imageBody(imageMessages(h.transport)[3]), 8);
+  assert.equal(clear[0], 3); assert.equal(clear[1], 25); // Only B's dot needs clearing.
+  assert.deepEqual(applyDisplayPayload(shadow, clear), p.packGray4(base, 640, 480));
+  for (const message of imageMessages(h.transport).slice(1)) ack(h.transport, message);
+  await until(() => h.session.state.frames === 4);
+});
+
+test('delta ids skip reserved values and advance only on emitted deltas; reconnect reseeds with a full frame', async t => {
+  const h = harness(t); await h.session.start(addresses);
+  const submit = async gray => {
+    const before = h.session.state.frames; h.session.setFrame(gray);
+    await until(() => h.session.state.frames === before + 1);
+    return p.readBytes(imageBody(imageMessages(h.transport).at(-1)), 8);
+  };
+  const base = new Uint8Array(640 * 480), next = base.slice(); next[1234] = 255;
+  assert.equal((await submit(base))[0], 6);
+  h.session.nextImageFrameId = 0xfffe;
+  const delta = await submit(next); assert.equal(delta[5] | (delta[6] << 8), 0xfffe);
+  h.session.setFrame(next); await h.session.pump(); await tick();
+  assert.equal(h.session.nextImageFrameId, 1);
+  const full = await submit(new Uint8Array(640 * 480).fill(255)); assert.equal(full[0], 6);
+  assert.equal(h.session.nextImageFrameId, 1);
+  const clear = await submit(next); assert.equal(clear[0], 6); // Whole-screen bounding box.
+  const wrapped = await submit(base); assert.equal(wrapped[5] | (wrapped[6] << 8), 1);
+  await h.session.stop(); await h.session.start(addresses);
+  assert.equal((await submit(base))[0], 6); // Even the same pixels need a trusted full base.
+});
+
+test('a lost delta ACK invalidates the queued base and late delta ACKs cannot seed a new session', async t => {
+  const h = harness(t); await h.session.start(addresses);
+  const base = new Uint8Array(640 * 480); h.session.setFrame(base);
+  await until(() => h.session.state.frames === 1);
+  const request = h.session.request.bind(h.session);
+  h.session.request = (role, sid, build, label, ...rest) => request(role, sid, build, label, ...(label === 'Display frame' ? [50] : rest));
+  h.transport.hold = true;
+  const a = base.slice(), b = base.slice(); a[1234] = 255; b[4321] = 255;
+  h.session.setFrame(a); await h.session.pump();
+  h.session.setFrame(b); await h.session.pump();
+  await until(() => imageMessages(h.transport).length === 3);
+  const stale = imageMessages(h.transport).slice(1);
+  assert.deepEqual(stale.map(m => p.readBytes(imageBody(m), 8)[0]), [3, 3]);
+  ack(h.transport, stale[1]); // Even a later successful delta does not rescue a hole.
+  await until(() => h.session.state.phase === 'retrying');
+  assert.equal(h.session.lastEnqueued, null); assert.equal(h.session.state.frames, 1);
+  await h.session.stop(); h.transport.hold = false; await h.session.start(addresses);
+  h.transport.hold = true; h.session.setFrame(b); await h.session.pump();
+  await until(() => imageMessages(h.transport).length === 4);
+  const reseed = imageMessages(h.transport)[3]; assert.equal(p.readBytes(imageBody(reseed), 8)[0], 6);
+  for (const message of stale) ack(h.transport, message);
+  await tick(); assert.equal(h.session.state.frames, 1);
+  ack(h.transport, reseed); await until(() => h.session.state.frames === 2);
+});
