@@ -772,7 +772,23 @@ public class BleProtocol {
             byte[] compass = readFieldBytes(root, 10);
             if (compass == null) return null;
             int heading = readVarintFieldValue(compass, 1, -1);
-            return heading >= 0 ? new CompassEvent(command, heading) : null;
+            if (heading < 0 || heading >= 360) return null;
+            byte[] diagnostic = readFieldBytes(root, 100);
+            if (diagnostic != null && diagnostic.length == 12
+                    && diagnostic[0] == 'C' && diagnostic[1] == 'M' && diagnostic[2] == 1
+                    && diagnostic[7] == 0
+                    && ((diagnostic[3] & 0xff) <= 3 || diagnostic[3] == (byte) 255)
+                    && ((diagnostic[4] & 0xff) <= 2 || diagnostic[4] == (byte) 255)
+                    && (diagnostic[5] & 0xff) <= 3) {
+                long sampleTimeMs = 0;
+                for (int i = 0; i < 4; i++) sampleTimeMs |= (long) (diagnostic[8 + i] & 0xff) << (8 * i);
+                return new CompassEvent(command, heading,
+                    diagnostic[3] == (byte) 255 ? -1 : diagnostic[3] & 0xff,
+                    diagnostic[4] == (byte) 255 ? -1 : diagnostic[4] & 0xff,
+                    diagnostic[5] & 0xff, diagnostic[6] & 0xff, sampleTimeMs);
+            }
+            // Stock/older CFW and unknown extensions still supply usable headings.
+            return new CompassEvent(command, heading);
         }
         if (command == NAV_CMD_COMPASS_CALIBRATION_STARTED
                 || command == NAV_CMD_COMPASS_CALIBRATION_COMPLETE) {
@@ -1014,10 +1030,23 @@ public class BleProtocol {
     public static final class CompassEvent {
         public final int command;
         public final int headingDegrees;
+        /** -1 means unavailable; source: 0 unknown, 1 GRV, 2 GMRV, 3 RV. */
+        public final int magneticAccuracy, magneticAnomalies, orientationSource, diagnosticFlags;
+        public final long sampleTimeMs;
 
         CompassEvent(int command, int headingDegrees) {
+            this(command, headingDegrees, -1, -1, -1, -1, -1);
+        }
+
+        CompassEvent(int command, int headingDegrees, int magneticAccuracy, int magneticAnomalies,
+                int orientationSource, int diagnosticFlags, long sampleTimeMs) {
             this.command = command;
             this.headingDegrees = headingDegrees;
+            this.magneticAccuracy = magneticAccuracy;
+            this.magneticAnomalies = magneticAnomalies;
+            this.orientationSource = orientationSource;
+            this.diagnosticFlags = diagnosticFlags;
+            this.sampleTimeMs = sampleTimeMs;
         }
     }
 

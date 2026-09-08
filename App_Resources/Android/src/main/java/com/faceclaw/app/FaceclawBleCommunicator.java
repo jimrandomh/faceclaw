@@ -1567,7 +1567,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             emitWearState(decodedWearState > 0);
         }
         if (compassEvent != null) {
-            emitCompassEvent(compassEvent.command, compassEvent.headingDegrees);
+            emitCompassEvent(compassEvent);
         }
         if (event != null) {
             if (event.hasImu) {
@@ -3456,11 +3456,22 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         });
     }
 
-    private void emitCompassEvent(int command, int headingDegrees) {
+    private void emitCompassEvent(BleProtocol.CompassEvent event) {
+        if (event.diagnosticFlags >= 0) {
+            String[] sources = { "unknown", "GRV", "GMRV", "RV" };
+            Log.i("FaceclawCompass", "heading=" + event.headingDegrees
+                + " magneticAccuracy=" + event.magneticAccuracy
+                + " magneticAnomalies=" + event.magneticAnomalies
+                + " orientationSource=" + sources[event.orientationSource]
+                + " flags=0x" + Integer.toHexString(event.diagnosticFlags)
+                + " sampleTimeMs=" + event.sampleTimeMs);
+        }
         for (CompassSubscription subscription : compassSubscriptions) {
             subscription.handler.post(() -> {
                 try {
-                    subscription.listener.onCompassEvent(command, headingDegrees);
+                    subscription.listener.onCompassEvent(event.command, event.headingDegrees,
+                        event.magneticAccuracy, event.magneticAnomalies, event.orientationSource,
+                        event.diagnosticFlags, event.sampleTimeMs);
                 } catch (Throwable t) {
                     Log.w(TAG, "listener onCompassEvent failed", t);
                 }

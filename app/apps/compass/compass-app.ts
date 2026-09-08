@@ -7,6 +7,7 @@ import {
   addCompassListener,
   setCompassEnabled,
   type CompassEvent,
+  type CompassDiagnostics,
 } from "../../native/compass";
 import { wrapText } from "../../graphics/textwrap";
 import { type InputEvent } from "../../ui/gestures";
@@ -25,6 +26,7 @@ import { isCompassCalibrated, normalizeHeading } from "./calibration";
 import { CompassCalibrationLayer } from "./calibration-layer";
 import { getDeclinationAvailability, onDeclinationChanged, refreshDeclination } from "./declination";
 import { getNorthReference, resolveHeading, setNorthReference, type NorthReference } from "./heading";
+import { compassDebugLines, isCompassDebugEnabled, setCompassDebugEnabled } from "./debug";
 
 export const COMPASS_WINDOW_ID = "compass";
 export const COMPASS_SURFACE_ID = "window:compass";
@@ -95,6 +97,7 @@ const WALL_LIT = 62;
 
 class CompassLayer implements Layer {
   private rawHeading: number | null = null;
+  private diagnostics: CompassDiagnostics | null = null;
   /** A firmware calibration message, shown until the next heading arrives. */
   private firmwareStatus: string | null = null;
   private enabled = false;
@@ -141,6 +144,11 @@ class CompassLayer implements Layer {
     this.requestRender();
   }
 
+  toggleDebugInfo(): void {
+    setCompassDebugEnabled(!isCompassDebugEnabled());
+    this.requestRender();
+  }
+
   stop(): void {
     if (this.removed) return;
     this.removed = true;
@@ -168,6 +176,7 @@ class CompassLayer implements Layer {
     const visible = shell.isWindowVisible(COMPASS_WINDOW_ID);
     if (visible === this.enabled) return;
     this.enabled = visible;
+    this.diagnostics = null;
     setCompassEnabled(visible);
     this.firmwareStatus = null;
     // The stored fix may have aged out while the compass was hidden.
@@ -179,6 +188,7 @@ class CompassLayer implements Layer {
     if (this.removed) return;
     if (event.command === COMPASS_CHANGED && event.headingDegrees >= 0) {
       this.rawHeading = normalizeHeading(event.headingDegrees);
+      this.diagnostics = event.diagnostics ?? null;
       this.firmwareStatus = null;
     } else if (event.command === COMPASS_CALIBRATION_STARTED) {
       this.firmwareStatus = "Calibrating — move the glasses";
@@ -204,6 +214,17 @@ class CompassLayer implements Layer {
     const headingText = heading === null ? "--°" : `${Math.round(heading)}° ${cardinalDirection(heading)}`;
     const statusLines = wrapText(small, this.statusText(), width - STACK_GAP * 2);
     const smallStep = lineStep(small);
+    const debugLines = isCompassDebugEnabled() ? compassDebugLines(this.diagnostics) : [];
+    const debugWidth = Math.max(0, ...debugLines.map((line) => small.measureText(line)));
+    const debugGap = debugLines.length ? 12 : 0;
+    // Keep diagnostics beside the heading even in narrow windows. The rose
+    // stays centred on the optical axis; the combined readout fits the viewport.
+    const headingFont = large.measureText(headingText) + debugGap + debugWidth <= width - EDGE_PAD * 2
+      ? large : small;
+    const headingWidth = headingFont.measureText(headingText);
+    const readoutWidth = headingWidth + debugGap + debugWidth;
+    const debugHeight = debugLines.length ? (debugLines.length - 1) * smallStep + small.lineHeight : 0;
+    const readoutHeight = Math.max(headingFont.lineHeight, debugHeight);
 
     // One column centred on the display's true centre, so the rose sits where
     // the wearer is looking rather than 32px right of it.
@@ -211,7 +232,7 @@ class CompassLayer implements Layer {
 
     // The rose is sized and placed first — it hangs off the bottom edge — and
     // the readout then floats in whatever room is left above it.
-    const textHeight = large.lineHeight + 4 + statusLines.length * smallStep;
+    const textHeight = readoutHeight + 4 + statusLines.length * smallStep;
     const radius = Math.max(
       24,
       Math.min(
@@ -240,8 +261,14 @@ class CompassLayer implements Layer {
     }
     const image = this.background.image.clone();
     drawCompassRose(image, cx, cy, radius, heading);
-    image.drawText(large, Math.round(cx - large.measureText(headingText) / 2), y, headingText, heading === null ? 150 : 255);
-    y += large.lineHeight + 4;
+    const readoutX = Math.round(Math.max(EDGE_PAD, Math.min(width - EDGE_PAD - readoutWidth, cx - readoutWidth / 2)));
+    image.drawText(headingFont, readoutX, y + Math.floor((readoutHeight - headingFont.lineHeight) / 2),
+      headingText, heading === null ? 150 : 255);
+    for (let i = 0; i < debugLines.length; i++) {
+      image.drawText(small, readoutX + headingWidth + debugGap,
+        y + Math.floor((readoutHeight - debugHeight) / 2) + i * smallStep, debugLines[i]!, 175);
+    }
+    y += readoutHeight + 4;
     for (const line of statusLines) {
       image.drawText(small, Math.round(cx - small.measureText(line) / 2), y, line, 125);
       y += smallStep;
@@ -284,6 +311,14 @@ export function createCompassAppWindow(options: InProcessAppOptions): InProcessW
         onSelect: (ctx) => {
           ctx.stack.pop();
           layer.toggleNorthReference();
+        },
+      },
+      {
+        label: `Debug information: ${isCompassDebugEnabled() ? "On" : "Off"}`,
+        description: "Show magnetic accuracy (0–3), anomaly flags (0–2), and orientation source beside the heading.",
+        onSelect: (ctx) => {
+          ctx.stack.pop();
+          layer.toggleDebugInfo();
         },
       },
     ],
