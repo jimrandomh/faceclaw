@@ -18,6 +18,11 @@ const RECORD_FILE = 0xe4;
 const RECORD_DIR = 0xe5;
 const RECORD_FOOTER = 0xe3;
 
+/** Archive paths are relative to one package, never to the phone container. */
+export function safeEhpkPath(value: string): boolean {
+  return !!value && !/[\\\u0000:]/.test(value) && value.split('/').every(part => !!part && part !== '.' && part !== '..');
+}
+
 export type EhpkArchive = {
   /** Relative path (e.g. "app.json", "dist/index.html") to contents. */
   files: Map<string, Uint8Array>;
@@ -90,6 +95,7 @@ export function parseEhpk(data: Uint8Array): EhpkArchive {
       const uncompressedLength = view.getUint32(p + 8, true);
       const nameLength = view.getUint16(p + 14, true);
       const name = utf8Decode(unxor(data, p + 16, nameLength));
+      if (!safeEhpkPath(name)) throw new Error(`ehpk: invalid file path ${name}`);
       const blob = unxor(data, p + 16 + nameLength, compressedLength);
       const content = decompress(blob, new Uint8Array(uncompressedLength));
       if (content.length !== uncompressedLength) {
@@ -119,6 +125,7 @@ export function parseManifest(appJsonText: string): EvenHubManifest {
   const name = String(raw.name ?? packageId);
   const version = String(raw.version ?? "0");
   const entrypoint = String(raw.entrypoint ?? "index.html");
+  if (!safeEhpkPath(entrypoint)) throw new Error('Invalid EHPK entrypoint');
 
   const permissions = parsePermissions(raw.permissions);
   const privacyPolicyUrl = firstSafeHttpsUrl(

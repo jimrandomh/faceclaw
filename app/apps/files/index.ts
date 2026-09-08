@@ -64,6 +64,7 @@ const filesApp: AppDefinition = {
         openEhpkApp: (path) => {
           void openEvenHubPackage(ctx, path).catch((error) => {
             ctx.appendLog(`evenhub launch failed: ${error}`);
+            openTextDocumentWindow(ctx, 'Could not run app', String(error));
           });
         },
         installEhpkApp: async (path) => {

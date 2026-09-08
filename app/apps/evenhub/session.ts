@@ -334,6 +334,7 @@ export class EvenHubSession implements EvenHubMicClient, EvenHubImuClient, EvenH
   private windowHooks: EvenHubWindowHooks | null = null;
   private closed = false;
   private launchContextPushed = false;
+  private loadError = '';
   private systemExitSent = false;
   /** The one-shot launch FOREGROUND_ENTER has been delivered (page exists). */
   private launchEnterSent = false;
@@ -383,6 +384,11 @@ export class EvenHubSession implements EvenHubMicClient, EvenHubImuClient, EvenH
     this.webViewHandle = handle;
   }
 
+  webViewFailed(message: string): void {
+    if (this.closed) return;
+    this.loadError = message; this.log(`evenhub: ${message}`); this.windowHooks?.requestRender();
+  }
+
   /** The WebView finished loading the app: push the one-shot launch context. */
   webViewLoaded(): void {
     if (this.launchContextPushed) return;
@@ -416,11 +422,12 @@ export class EvenHubSession implements EvenHubMicClient, EvenHubImuClient, EvenH
     // Focus changes always trigger a repaint of the foreground window, so paint
     // is a reliable place to sample shell input-focus for lifecycle events.
     this.updateShellFocus(focused);
-    if (!this.pageCreated || !this.page) {
+    if (this.loadError || !this.pageCreated || !this.page) {
       const image = new GrayImage(size.width, size.height, 0);
       const font = EvenHubFont.get();
-      font.drawText(image, 16, 16, `Loading ${this.manifest.name}...`, 255);
-      font.drawText(image, 16, 16 + 2 * font.lineHeight, "(waiting for the app to build its page)", 120);
+      font.drawText(image, 16, 16, `${this.loadError ? 'Could not run' : 'Loading'} ${this.manifest.name}...`, 255);
+      font.drawTextWrapped(image, 16, 16 + 2 * font.lineHeight, Math.max(1, size.width - 32),
+        this.loadError || "(waiting for the app to build its page)", 120);
       return image;
     }
     return compositePage(this.page, size, focused);
@@ -604,6 +611,7 @@ export class EvenHubSession implements EvenHubMicClient, EvenHubImuClient, EvenH
    * flows (foreground + screen on + no assistant modal).
    */
   private audioControl(data: Record<string, unknown>): boolean {
+    if (global.isIOS) return false; // EvenHub PCM routing is not ported yet.
     if (!permissionsIncludeMicrophone(this.manifest.permissions)) {
       this.log("evenhub: audioControl denied (app declares no microphone permission)");
       return false;
@@ -634,6 +642,7 @@ export class EvenHubSession implements EvenHubMicClient, EvenHubImuClient, EvenH
 
   /** getAppLocation(): one-shot fix, or null on denial/error (SDK contract). */
   private async getAppLocation(): Promise<AppLocation | null> {
+    if (global.isIOS) return null;
     if (!this.declaresLocation()) return null;
     if (!(await ensureFineLocationPermission())) return null;
     try {
@@ -657,6 +666,7 @@ export class EvenHubSession implements EvenHubMicClient, EvenHubImuClient, EvenH
    * Navigate app's foreground-service-backed tracking.
    */
   private async startLocationUpdates(data: Record<string, unknown>): Promise<boolean> {
+    if (global.isIOS) return false;
     if (!this.declaresLocation()) return false;
     if (!(await ensureFineLocationPermission())) return false;
     if (this.closed) return false;
@@ -697,6 +707,7 @@ export class EvenHubSession implements EvenHubMicClient, EvenHubImuClient, EvenH
    * to the foreground app. reportFrq is one of 100..1000 (step 100).
    */
   private imuControl(data: Record<string, unknown>): boolean {
+    if (global.isIOS) return false;
     const enable = readEnableFlag(data);
     const freq = clampImuFreq(readOptionalNumber(data, "reportFrq") ?? readOptionalNumber(data, "reportFreq") ?? 100);
     // Payload field spelling isn't fully captured; log once per toggle.

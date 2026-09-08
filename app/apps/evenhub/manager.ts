@@ -66,16 +66,15 @@ export async function launchPackage(
 ): Promise<void> {
   const data = readBinaryFile(ehpkPath);
   if (!data) {
-    ctx.appendLog(`evenhub: could not read ${ehpkPath}`);
-    return;
+    throw new Error('Could not read the EHPK file.');
   }
   const archive = parseEhpk(data);
   const appJson = archive.files.get("app.json");
   if (!appJson) {
-    ctx.appendLog("evenhub: package has no app.json");
-    return;
+    throw new Error('The EHPK package has no app.json.');
   }
   const manifest = parseManifest(utf8Decode(appJson));
+  if (!archive.files.has(`dist/${manifest.entrypoint}`)) throw new Error('The EHPK entrypoint is missing from dist/.');
   const appId = options.appId ?? "evenhub";
   if (options.singleton) {
     const existing = Array.from(running.values()).find((app) => app.appId === appId);
@@ -88,16 +87,18 @@ export async function launchPackage(
 
   // Unpack fresh into app-private storage, keyed by package id.
   const safeId = manifest.packageId.replace(/[^A-Za-z0-9._-]/g, "_");
-  const baseDir = `${appFilesDirPath()}/evenhub-apps/${safeId}`;
+  if (!safeId || safeId === '.' || safeId === '..') throw new Error('Invalid EHPK package ID');
+  const baseDir = `${appFilesDirPath()}/evenhub-apps/${safeId}${global.isIOS ? `-${Date.now()}-${nextSerial}` : ''}`;
   deletePathRecursively(baseDir);
   for (const [name, content] of Array.from(archive.files)) {
     if (!writeBinaryFile(`${baseDir}/${name}`, content)) {
-      ctx.appendLog(`evenhub: failed to write ${name}`);
-      return;
+      deletePathRecursively(baseDir);
+      throw new Error(`Could not unpack ${name}.`);
     }
   }
 
-  await startApp(ctx, manifest, `${baseDir}/dist`, "", appId);
+  try { await startApp(ctx, manifest, `${baseDir}/dist`, "", appId, global.isIOS ? () => deletePathRecursively(baseDir) : undefined); }
+  catch (error) { deletePathRecursively(baseDir); throw error; }
 }
 
 /**
@@ -111,6 +112,7 @@ async function startApp(
   distDir: string,
   remoteUrl: string,
   appId: string,
+  cleanup?: () => void,
 ): Promise<void> {
   const windowId = `evenhub:app:${nextSerial++}`;
   const session = new EvenHubSession(manifest, distDir, ctx.appendLog, remoteUrl);
@@ -123,6 +125,7 @@ async function startApp(
         phoneShownWindowId = null;
       }
       webView.destroy();
+      cleanup?.();
       running.delete(windowId);
     },
   });
@@ -130,9 +133,11 @@ async function startApp(
   ensureBackHandler();
   ctx.appendLog(`evenhub: launching ${manifest.name} ${manifest.version} (${manifest.packageId})`);
 
-  await ctx.launchInProcessApp(windowId, `window:${windowId}`, (options) =>
-    createEvenHubWindow(windowId, appId, session, options, () => showOnPhone(windowId)),
-  );
+  try {
+    await ctx.launchInProcessApp(windowId, `window:${windowId}`, (options) =>
+      createEvenHubWindow(windowId, appId, session, options, () => showOnPhone(windowId)),
+    );
+  } catch (error) { session.close(); throw error; }
 }
 
 /**
@@ -210,6 +215,7 @@ export function closeRunningPackage(packageId: string): void {
 export function showOnPhone(windowId: string): void {
   const app = running.get(windowId);
   if (!app) return;
+  if (phoneShownWindowId && phoneShownWindowId !== windowId) hidePhone();
   app.webView.showOnPhone();
   phoneShownWindowId = windowId;
 }
