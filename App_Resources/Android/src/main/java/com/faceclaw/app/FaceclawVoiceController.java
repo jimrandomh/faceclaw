@@ -46,7 +46,6 @@ public class FaceclawVoiceController {
     // buffers aren't amplified into pure noise.
     private static final float TRANSCRIPT_NORMALIZE_TARGET_PEAK = 0.9f;
     private static final float TRANSCRIPT_NORMALIZE_MAX_GAIN = 30f;
-    private static final int TRANSCRIPT_LOG_PREVIEW_CHARS = 80;
     // Model directory shared with the TS-side download flow (asr-model.ts),
     // which fetches the Moonshine files here on demand; they are no longer
     // bundled in the APK.
@@ -64,6 +63,7 @@ public class FaceclawVoiceController {
 
     private enum VoiceInputMode {
         ONBOARD,  // on-phone Moonshine transcription
+        CLOUD_BACKUP, // Bridge STT with concurrent local fallback; PCM stays memory-only.
         CLOUD     // decode locally, emit PCM for a cloud recognizer on the TS side
     }
 
@@ -221,6 +221,8 @@ public class FaceclawVoiceController {
         }
     }
 
+    public boolean hasOnboardModel() { return findAsrModelDir() != null; }
+
     public void start(String requestedMode) {
         synchronized (lock) {
             if (started) {
@@ -300,6 +302,7 @@ public class FaceclawVoiceController {
     }
 
     private VoiceInputMode parseMode(String requestedMode) {
+        if ("cloud-backup".equals(requestedMode)) return VoiceInputMode.CLOUD_BACKUP;
         if ("cloud".equals(requestedMode)) {
             return VoiceInputMode.CLOUD;
         }
@@ -310,14 +313,20 @@ public class FaceclawVoiceController {
         try {
             deleteLegacyKwsFiles();
             VoiceInputMode currentMode = mode;
-            if (currentMode == VoiceInputMode.ONBOARD) {
+            if (currentMode != VoiceInputMode.CLOUD) {
                 File modelDir = findAsrModelDir();
                 if (modelDir == null) {
-                    emitStatus("Voice model not downloaded (see Settings > Voice).");
-                    return;
+                    if (currentMode == VoiceInputMode.ONBOARD) {
+                        emitStatus("Voice model not downloaded (see Settings > Voice).");
+                        return;
+                    }
+                    // CLOUD_BACKUP can capture audio and use bridge Whisper without
+                    // an optional local model. A fatal status would stop that capture.
+                    emitStatus("Using cloud transcription without on-device backup.");
+                } else {
+                    emitStatus("Loading transcription model...");
+                    recognizer = new OfflineRecognizer(buildRecognizerConfig(modelDir));
                 }
-                emitStatus("Loading transcription model...");
-                recognizer = new OfflineRecognizer(buildRecognizerConfig(modelDir));
                 resetTranscriptState();
                 lastTranscript = "";
             }
@@ -371,7 +380,7 @@ public class FaceclawVoiceController {
             runSpeakerVerification();
             // Button released / stop requested: emit one final full-utterance
             // transcript so the UI can freeze it.
-            if (currentMode == VoiceInputMode.ONBOARD) {
+            if (currentMode != VoiceInputMode.CLOUD && recognizer != null) {
                 decodeTranscript(true);
             }
         } catch (Throwable error) {
@@ -583,7 +592,7 @@ public class FaceclawVoiceController {
         if (hasFrameMeta) {
             emitFrameMeta(angleDegrees, ssr);
         }
-        if (mode != VoiceInputMode.CLOUD) {
+        if (mode != VoiceInputMode.CLOUD && recognizer != null) {
             float[] samples = new float[count];
             for (int i = 0; i < count; i++) {
                 samples[i] = pcm[i] / 32768.0f;
@@ -803,12 +812,10 @@ public class FaceclawVoiceController {
     private void logTranscriptDecode(boolean isFinal, int segmentSampleCount, String text) {
         double totalAudioSec =
                 (committedTranscriptSampleCount + transcriptSampleCount) / (double) SAMPLE_RATE;
-        String preview = text.length() <= TRANSCRIPT_LOG_PREVIEW_CHARS
-                ? text : text.substring(0, TRANSCRIPT_LOG_PREVIEW_CHARS) + "...";
         Log.i(TAG, "Moonshine decode final=" + isFinal
                 + " audioSec=" + String.format(java.util.Locale.US, "%.2f", totalAudioSec)
                 + " segmentAudioSec=" + String.format(java.util.Locale.US, "%.2f", segmentSampleCount / (double) SAMPLE_RATE)
-                + " textLen=" + text.length() + " text=\"" + preview + "\"");
+                + " textLen=" + text.length());
     }
 
     private static String joinTranscript(String prefix, String suffix) {

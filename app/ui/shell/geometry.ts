@@ -1,4 +1,5 @@
 import { G2_LENS_HEIGHT, G2_LENS_WIDTH } from "../../graphics/image";
+import { windowLayoutPolicy } from "../extension-settings";
 import {
   displayModeSetting,
   type DisplayModeSetting,
@@ -45,7 +46,7 @@ export function sidebarWidth(appId?: string): number {
  * the full-panel mode (where it overlays the window) only while it has focus.
  */
 export function sidebarStripVisible(focus: "sidebar" | "window", appId?: string): boolean {
-  return sidebarWidth(appId) > 0 || focus === "sidebar";
+  return focus === "sidebar" || (windowLayoutPolicy().sidebarMode !== "overlay" && sidebarWidth(appId) > 0);
 }
 
 /**
@@ -63,7 +64,7 @@ export function effectiveHeightMode(mode: WindowHeightMode, appId?: string): Win
  * than use the viewport's own centre.
  */
 export function screenCenterInViewportX(): number {
-  return Math.round(G2_LENS_WIDTH / 2) - sidebarWidth();
+  return Math.round(G2_LENS_WIDTH / 2) - appViewportRect("min").x;
 }
 
 /**
@@ -150,7 +151,7 @@ export function appViewportRect(mode: WindowHeightMode, appId?: string): {
   height: number;
 } {
   return {
-    x: sidebarWidth(appId),
+    x: windowLayoutPolicy().centered ? Math.round(sidebarWidth(appId) / 2) : sidebarWidth(appId),
     y: windowTop(mode, appId) + TOP_BAR_HEIGHT,
     ...appViewportSize(mode, appId),
   };

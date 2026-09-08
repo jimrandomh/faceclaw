@@ -348,7 +348,7 @@ export class CalculatorLayer implements Layer {
           return;
         }
         // The standard leave-the-app gesture.
-        shell.yieldFocusToSidebar();
+        shell.returnFromAppRoot();
         return;
       }
 

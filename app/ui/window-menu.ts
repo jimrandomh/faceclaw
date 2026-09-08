@@ -1,9 +1,31 @@
 import { GrayImage } from "../graphics/image";
 import { singlePlane, type Plane } from "../graphics/plane";
 import { GESTURE_LONG_PRESS, gestureHints, type InputEvent } from "./gestures";
-import { type Layer, LayerStack, noopLayerActions } from "./layers";
+import { type Layer, type LayerContext, LayerStack, noopLayerActions } from "./layers";
 import { CONTEXT_MENU_DIM, MenuLayer, type MenuItem, type MenuLayout } from "./menu";
 import type { WorkerAppReply } from "./shell/worker-window";
+import { appMenuPolicy, navigationPolicy, effectiveExtension } from "./extension-settings";
+
+export type AppMenuPresenter = (windowId: string, title: string, items: { label: string; enabled: boolean; onSelect: () => void }[], onClosed?: () => void) => boolean;
+let appMenuPresenter: AppMenuPresenter | undefined;
+export function configureAppMenuPresenter(presenter: AppMenuPresenter): void { appMenuPresenter = presenter; }
+export function presentAppMenu(windowId: string, title: string, items: MenuItem[], menu: MenuLayer, ctx: LayerContext, onClosed: () => void): boolean {
+  let selecting = false;
+  return appMenuPresenter?.(windowId, title, items.map(item => ({
+    label: item.label,
+    enabled: !(typeof item.disabled === "function" ? item.disabled() : item.disabled),
+    onSelect: () => {
+      selecting = true;
+      // Keep the backing menu until its callback settles: async app callbacks
+      // may pop that menu or replace it with another local layer.
+      void Promise.resolve().then(() => item.onSelect(ctx, menu))
+        .catch(error => console.error("App menu action failed", error))
+        .finally(() => { onClosed(); ctx.actions.requestRender(); });
+    },
+  })), () => { if (!selecting) onClosed(); }) ?? false;
+}
+
+let nextRemoteMenu = 0;
 
 /**
  * The window context menu, opened by tap-then-hold: an app's own menu,
@@ -28,8 +50,26 @@ export const WINDOW_MENU_LAYOUT: MenuLayout = {
 
 export class WindowMenuLayer extends MenuLayer {
   constructor(title: string | null, items: MenuItem[]) {
-    super(title, items, WINDOW_MENU_LAYOUT);
+    super(appMenuPolicy().title ?? title, items, {
+      ...WINDOW_MENU_LAYOUT,
+      footer: navigationPolicy().tapHold === "switcher" ? undefined : WINDOW_MENU_LAYOUT.footer,
+    });
   }
+}
+
+export function hasSharedAppActions(): boolean {
+  const policy = appMenuPolicy();
+  return policy.displayOffFirst || policy.systemActionsLast;
+}
+
+/** Compose existing app actions using the active APK's menu policy. */
+export function appActionItems(items: MenuItem[], displayOff: () => void, systemActions: () => void): MenuItem[] {
+  const policy = appMenuPolicy();
+  const leading: MenuItem[] = policy.displayOffFirst
+    ? [{ label: "Display off", onSelect: ctx => { ctx.stack.pop(); displayOff(); } }] : [];
+  const trailing: MenuItem[] = policy.systemActionsLast
+    ? [{ label: policy.systemTitle, onSelect: ctx => { ctx.stack.pop(); systemActions(); } }] : [];
+  return [...leading, ...items, ...trailing];
 }
 
 export type WindowMenuOptions = {
@@ -69,6 +109,7 @@ export type WindowMenuOptions = {
  */
 export class WindowMenu {
   private stack: LayerStack | null = null;
+  private remoteMenu: { id: number; items: MenuItem[]; menu: MenuLayer; ctx: LayerContext } | undefined;
   private reported: { hasAppMenu: boolean; claimsLongPress: boolean } | null = null;
 
   constructor(private readonly options: WindowMenuOptions) {}
@@ -84,7 +125,7 @@ export class WindowMenu {
 
   /** True when tap-then-hold currently opens this menu with something in it. */
   isAvailable(): boolean {
-    return this.options.items().length > 0;
+    return hasSharedAppActions() || this.options.items().length > 0;
   }
 
   /**
@@ -94,6 +135,9 @@ export class WindowMenu {
    */
   open(items: MenuItem[] = this.options.items()): void {
     if (this.stack) return;
+    items = appActionItems(items,
+      () => this.options.post({ type: "sleep-display", windowId: this.options.windowId }),
+      () => this.options.post({ type: "open-system-menu", windowId: this.options.windowId }));
     if (!items.length) {
       this.options.post({ type: "open-system-menu", windowId: this.options.windowId });
       return;
@@ -103,8 +147,14 @@ export class WindowMenu {
       handleInput: () => {},
     };
     const stack = new LayerStack(base, { ...noopLayerActions }, this.options.size, this.options.isFocused);
-    stack.push(new WindowMenuLayer(this.options.title(), items));
+    const menu = new WindowMenuLayer(this.options.title(), items);
+    stack.push(menu);
     this.stack = stack;
+    if (effectiveExtension("ui.app-menu")) {
+      const id = ++nextRemoteMenu;
+      this.remoteMenu = { id, items, menu, ctx: { stack, actions: { ...noopLayerActions } } };
+      this.options.post({ type: "present-app-menu", windowId: this.options.windowId, menuId: id, title: this.options.title(), items: items.map(item => ({ label: item.label, enabled: !(typeof item.disabled === "function" ? item.disabled() : item.disabled) })) });
+    }
   }
 
   /**
@@ -114,7 +164,7 @@ export class WindowMenu {
    */
   paint(content?: () => Plane[]): Plane[] {
     this.syncGestures();
-    if (this.stack) return this.stack.paint();
+    if (this.stack && !this.remoteMenu) return this.stack.paint();
     return content ? content() : singlePlane(this.options.paintBase());
   }
 
@@ -136,10 +186,28 @@ export class WindowMenu {
   async handleInput(event: InputEvent): Promise<void> {
     const stack = this.stack;
     if (!stack) return;
+    if (event.type === "app-menu-selection") {
+      const remote = this.remoteMenu;
+      if (!remote || remote.id !== event.menuId) return;
+      this.remoteMenu = undefined;
+      stack.clearToBase(); this.stack = null;
+      const item = remote.items[event.index];
+      if (item && !(typeof item.disabled === "function" ? item.disabled() : item.disabled)) await item.onSelect(remote.ctx, remote.menu);
+      return;
+    }
+    if (event.type === "app-menu-fallback") {
+      if (this.remoteMenu?.id === event.menuId) this.remoteMenu = undefined;
+      return;
+    }
+    if (event.type === "app-menu-closed") {
+      if (this.remoteMenu?.id !== event.menuId) return;
+      this.remoteMenu = undefined; stack.clearToBase(); this.stack = null; return;
+    }
     // The shell opened its system menu over this window; close ours so the
     // two context menus never stack.
     if (event.type === "system-menu-opened") {
       stack.clearToBase();
+      this.remoteMenu = undefined;
       this.stack = null;
       return;
     }

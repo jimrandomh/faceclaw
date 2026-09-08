@@ -1,3 +1,4 @@
+import { wrapText, truncateText } from "../../graphics/textwrap";
 import { GrayImage, type UiFont } from "../../graphics/image";
 import { getDefaultSmallFont } from "../../graphics/ui-fonts";
 import { lineStep } from "../../ui/metrics";
@@ -76,9 +77,9 @@ export class CaptionsLayer implements Layer {
   ): Array<{ prefix?: string; prefixValue: number; text: string; value: number; indent: number }> {
     const rows: Array<{ prefix?: string; prefixValue: number; text: string; value: number; indent: number }> = [];
     for (const line of lines) {
-      const prefix = `${line.speakerName}: `;
+      const prefix = truncateText(font, `${line.speakerName}: `, maxWidth / 2);
       const prefixWidth = font.measureText(prefix);
-      const wrapped = wrapWords(font, line.text, maxWidth - prefixWidth);
+      const wrapped = wrapText(font, line.text.replace(/\s+/g, " ").trim(), maxWidth - prefixWidth);
       wrapped.forEach((text, index) => {
         rows.push({
           prefix: index === 0 ? prefix : undefined,
@@ -89,7 +90,7 @@ export class CaptionsLayer implements Layer {
         });
       });
       if (line.translation) {
-        for (const text of wrapWords(font, `→ ${line.translation}`, maxWidth - prefixWidth)) {
+        for (const text of wrapText(font, `→ ${line.translation}`.replace(/\s+/g, " ").trim(), maxWidth - prefixWidth)) {
           rows.push({ prefixValue: 0, text, value: 140, indent: prefixWidth });
         }
       }
@@ -117,21 +118,4 @@ export class CaptionsLayer implements Layer {
     this.unsubscribe?.();
     this.unsubscribe = null;
   }
-}
-
-function wrapWords(font: UiFont, text: string, maxWidth: number): string[] {
-  const words = text.split(/\s+/).filter(Boolean);
-  const lines: string[] = [];
-  let line = "";
-  for (const word of words) {
-    const candidate = line ? `${line} ${word}` : word;
-    if (line && font.measureText(candidate) > maxWidth) {
-      lines.push(line);
-      line = word;
-    } else {
-      line = candidate;
-    }
-  }
-  if (line) lines.push(line);
-  return lines.length ? lines : [""];
 }

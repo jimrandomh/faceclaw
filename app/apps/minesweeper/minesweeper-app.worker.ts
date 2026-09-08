@@ -23,7 +23,7 @@ import * as frameTimings from "../../native/frame-timings";
 import { getActiveDisplay } from "../../native/active-display";
 import { buildSoundSequencePayload, type Step } from "../../ui/sound-effects";
 import { type MenuItem } from "../../ui/menu";
-import { WindowMenu } from "../../ui/window-menu";
+import { WindowMenu, hasSharedAppActions } from "../../ui/window-menu";
 import type { WorkerAppMessage, WorkerAppReply } from "../../ui/shell/worker-window";
 import {
   directionalFallback,
@@ -252,10 +252,18 @@ function playSfx(window: MinesweeperWindow, steps: Step[]): void {
   }
 }
 
-/** The window's context menu (game actions), offered while paused or over; playing keeps long-press for flagging. */
+/** Game actions are also reachable through the tap-then-hold menu. */
 function windowMenuItems(window: MinesweeperWindow): MenuItem[] {
   const nextDifficulty = DIFFICULTIES[(window.difficultyIndex + 1) % DIFFICULTIES.length]!;
   return [
+    ...(window.phase === "playing" ? [{
+      label: "Toggle flag",
+      disabled: window.selectMode !== "column",
+      onSelect: (ctx) => {
+        ctx.stack.pop();
+        if (window.phase === "playing" && window.selectMode === "column") toggleFlag(window);
+      },
+    } satisfies MenuItem] : []),
     {
       label: "New game",
       onSelect: (ctx) => {
@@ -290,7 +298,7 @@ function windowMenu(window: MinesweeperWindow): WindowMenu {
       windowId: window.windowId,
       post,
       title: () => window.title,
-      items: () => (window.phase === "playing" ? [] : windowMenuItems(window)),
+      items: () => (window.phase === "playing" && !hasSharedAppActions() ? [] : windowMenuItems(window)),
       claimsLongPress: () => window.phase === "playing",
       size: { width: window.viewportWidth, height: window.viewportHeight },
       paintBase: () => paintContent(window),
@@ -367,7 +375,6 @@ function handlePlayingInput(window: MinesweeperWindow, event: InputEvent, frameI
       toggleFlag(window);
       break;
     case "short-then-long-press":
-      // No context menu mid-game, so this opens the system menu instead.
       windowMenu(window).open();
       break;
     case "double-click":

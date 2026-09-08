@@ -1,6 +1,11 @@
+import { extensionPlatform } from "../../apps/external/extension-platform";
+import { ExtensionLayer } from "./extension-layer";
+import { voiceControlBridge } from "../../native/voice-control";
 import { G2_LENS_HEIGHT, G2_LENS_WIDTH, GrayImage } from "../../graphics/image";
 import { singlePlane, type Plane } from "../../graphics/plane";
 import { getDefaultSmallFont } from "../../graphics/ui-fonts";
+import { appMenuPolicy, navigationPolicy, onEffectiveExtensionsChanged, windowLayoutPolicy } from "../extension-settings";
+import { appActionItems, presentAppMenu } from "../window-menu";
 import { EvenAIStatus, EventSourceType, OsEventTypeList, WatchGestureType } from "../../g2/events";
 import type { RawInputEvent } from "../../native/faceclaw-communicator";
 import {
@@ -17,6 +22,7 @@ import {
 import { Layer, LayerActions, LayerContext, LayerStack, noopLayerActions } from "../layers";
 import { CONTEXT_MENU_DIM, MenuLayer, type MenuItem } from "../menu";
 import { VoiceInputLayer, type VoiceSendTarget } from "./voice-input";
+import { VoiceSearchLayer } from "./voice-search";
 import { KeyboardInputLayer, type KeyboardInputSession } from "./keyboard-input";
 import { voiceActivity } from "./voice-activity";
 import { AssistantLayer } from "./assistant";
@@ -44,6 +50,7 @@ import { ShellModalLayer } from "./modal-layer";
 import { ToolDebugMenuLayer } from "./tool-debug-layer";
 import { toolRegistry } from "../../assistant/tool-registry";
 import {
+  appViewportRect,
   minWindowTop,
   sidebarWidth,
   TOP_BAR_HEIGHT,
@@ -200,14 +207,15 @@ class ShellOverlayMenuLayer extends MenuLayer {
    */
   keepWindowFocus = false;
 
-  constructor(items: MenuItem[], footer: string | undefined, private readonly onClosed: () => void) {
+  constructor(items: MenuItem[], footer: string | undefined, private readonly onClosed: () => void, title = "System") {
     // Aligned to the min-height window band (like the sidebar), wherever the
     // vertical position setting currently puts it; centered over the
     // application area, i.e. the part of the screen past the sidebar strip
     // (the whole screen in the full-panel mode, where the strip overlays).
     const width = 272;
-    super("System", items, {
-      x: sidebarWidth() + (((G2_LENS_WIDTH - sidebarWidth() - width) / 2) | 0),
+    const viewport = appViewportRect("min");
+    super(title, items, {
+      x: viewport.x + (((viewport.width - width) / 2) | 0),
       y: minWindowTop() + TOP_BAR_HEIGHT + 8,
       width,
       minHeight: 150,
@@ -296,7 +304,7 @@ class Shell {
   // App-provided top-bar tray icons, keyed by owner id; drawn between the
   // notification icons and the battery indicators.
   private readonly trayIcons = new Map<string, GrayImage>();
-  private activeVoiceLayer: VoiceInputLayer | null = null;
+  private activeVoiceLayer: VoiceInputLayer | VoiceSearchLayer | null = null;
   private activeKeyboardLayer: KeyboardInputLayer | null = null;
   private assistantSession: AssistantSession | null = null;
   private assistantLayer: AssistantLayer | null = null;
@@ -345,6 +353,13 @@ class Shell {
     this.topBarSettingsSubscribed = true;
     this.lastBatteryDisplayMode = batteryDisplayModeSetting.get();
     this.lastTimeFormat = timeFormatSetting.get();
+    onEffectiveExtensionsChanged(() => {
+      for (const window of this.windows) {
+        window.relayout?.();
+        window.requestRender();
+      }
+      this.config.requestShellRender();
+    });
     onAnySettingChanged(() => {
       const batteryMode = batteryDisplayModeSetting.get();
       const timeFormat = timeFormatSetting.get();
@@ -594,7 +609,37 @@ class Shell {
     this.config.requestShellRender();
   }
 
-  /** Called by a window when the user backs out of its root (double-tap). */
+  canShowExtensionOverlay(): boolean {
+    return !this.activeVoiceLayer && !this.activeKeyboardLayer && this.stack.isAtBase();
+  }
+
+  /** Global APK surfaces cannot interrupt recording, review or another modal. */
+  showExtensionOverlay(layer: ExtensionLayer, pauseWindow = true): boolean {
+    if (!this.screenOn || this.activeVoiceLayer || this.activeKeyboardLayer || !this.stack.isAtBase()) return false;
+    if (pauseWindow) this.foregroundWindow()?.handleInput({ type: "system-menu-opened" } as InputEvent, 0);
+    this.stack.push(layer);
+    this.config.requestShellRender();
+    return true;
+  }
+
+  closeExtensionOverlay(layer: ExtensionLayer): void {
+    this.stack.removeLayer(layer);
+    this.config.requestShellRender();
+  }
+
+  /** Root back follows the selected navigation override. */
+  returnFromAppRoot(): void {
+    if (navigationPolicy().rootBack === "sleep") this.sleepAtAppRoot();
+    else this.yieldFocusToSidebar();
+  }
+
+  /** An explicit Display off action always sleeps, independent of root back. */
+  sleepAtAppRoot(): void {
+    this.sleep();
+    this.config.requestShellRender();
+  }
+
+  /** Explicitly focus the app switcher. */
   yieldFocusToSidebar(): void {
     if (this.focus === "sidebar") return;
     this.focus = "sidebar";
@@ -636,7 +681,7 @@ class Shell {
     // "wake". Keep that directionality if delivery is delayed or duplicated.
     if (event.type === "display-wake") {
       this.lastInputAtMs = Date.now();
-      const wokeScreen = !this.screenOn && this.wake("sidebar");
+      const wokeScreen = !this.screenOn && this.wake(navigationPolicy().wakeFocus);
       return { shell: wokeScreen, window: false };
     }
 
@@ -651,7 +696,7 @@ class Shell {
       }
 
       this.lastInputAtMs = Date.now();
-      const wokeScreen = !this.screenOn && this.wake("sidebar");
+      const wokeScreen = !this.screenOn && this.wake(navigationPolicy().wakeFocus);
       if (action === "voice-input" && !this.activeVoiceLayer && !this.activeKeyboardLayer) {
         if (this.assistantLayer) {
           // The assistant overlay is up; a wakeword continues that conversation.
@@ -673,14 +718,28 @@ class Shell {
     }
 
     if (!this.screenOn) {
-      if (event.type === "double-click") {
+      if (event.type === "short-then-long-press" && navigationPolicy().tapHold === "switcher") {
         this.wake("sidebar");
+        this.yieldFocusToSidebar();
+        this.config.requestShellRender();
+        return { shell: true, window: false };
+      }
+      if (event.type === "double-click") {
+        this.wake(navigationPolicy().wakeFocus);
         return { shell: true, window: false };
       }
       return { shell: false, window: false };
     }
 
-    // Long-press is the shell's own gesture: it opens the system menu
+    // A provider may reserve the physical double tap for display power.
+    // Handle it before app/back/sidebar routing so the same gesture cannot
+    // also expose the switcher. Directional watch back is translated later.
+    if (event.type === "double-click" && navigationPolicy().doubleTap === "sleep") {
+      this.sleep();
+      return { shell: true, window: false };
+    }
+
+    // By default long-press is the shell's own gesture: it opens the system menu
     // directly, never reaching the app — over the app's own context menu
     // too (the window closes that on system-menu-opened), while an already
     // open system menu just stays. Its later generic release is consumed
@@ -689,6 +748,16 @@ class Shell {
     // its own: it gets the press forwarded, with the escape timer running
     // so that holding the press long enough still opens the system menu.
     if (event.type === "long-press") {
+      if (navigationPolicy().hold === "app-menu") {
+        if (this.activeVoiceLayer || this.activeKeyboardLayer) return { shell: true, window: false };
+        if (this.stack.topMatches(layer => layer instanceof ShellOverlayMenuLayer)) return { shell: true, window: false };
+        const foreground = this.foregroundWindow();
+        if (!foreground) return { shell: true, window: false };
+        // A normal hold opens App actions; keeping it held retains the
+        // host-controlled escape even if the APK stops responding.
+        this.startEscapeMenuTimer();
+        return { shell: true, window: await this.openAppActions(frameId) };
+      }
       if (this.activeVoiceLayer || !this.stack.isAtBase()) {
         return { shell: true, window: false };
       }
@@ -715,6 +784,15 @@ class Shell {
     // first), which answers with its own menu or asks for the system menu
     // when it has none.
     if (event.type === "short-then-long-press") {
+      if (navigationPolicy().tapHold === "switcher") {
+        this.stack.clearToBase();
+        const foreground = this.foregroundWindow();
+        await foreground?.handleInput(makeInputEvent({ type: "system-menu-opened" }), frameId);
+        this.yieldFocusToSidebar();
+        foreground?.requestRender();
+        this.config.requestShellRender();
+        return { shell: true, window: Boolean(foreground) };
+      }
       const window = this.foregroundWindow();
       // Over the open system menu it switches to the app's context menu:
       // close the system menu and deliver the gesture to the window as
@@ -784,6 +862,9 @@ class Shell {
    * strip left of the icon columns when the one-column variant is active.
    */
   screenshotCropRect(): { x: number; y: number; width: number; height: number } {
+    if (this.focus === "sidebar" && windowLayoutPolicy().switcherHeight === "display") {
+      return { x: 0, y: 0, width: G2_LENS_WIDTH, height: G2_LENS_HEIGHT };
+    }
     const appId = this.foregroundWindow()?.appId;
     const heightMode = this.foregroundWindow()?.heightMode ?? "min";
     const x = sidebarWidth(appId) === 0 ? 0 : sidebarContentLeft(this.windows.length);
@@ -896,12 +977,30 @@ class Shell {
   // preview-mode permission prompt); a second tap must not queue another open.
   private voiceDialogPending = false;
 
+  /** Open a single reviewed destination in the full shell, including permission and mic lifecycle. */
+  openReviewedVoiceInput(
+    target: VoiceSendTarget,
+    canStart: () => boolean = () => true,
+    onUnavailable: () => void = () => {},
+    onClosed: () => void = () => {},
+  ): () => void {
+    let cancelled = false, owned: VoiceInputLayer | null = null;
+    this.openVoiceDialog({ finishOnClick: true, defaultTarget: "app", sendTargets: [target], canStart: () => !cancelled && canStart(), onUnavailable, onClosed, onCreated: layer => { owned = layer; } });
+    return () => { cancelled = true; if (owned) this.stack.removeLayer(owned); };
+  }
+
   private openVoiceDialog(options: {
     finishOnClick?: boolean;
     handsFree?: boolean;
     defaultTarget: "assistant" | "app";
+    sendTargets?: VoiceSendTarget[];
+    canStart?: () => boolean;
+    onUnavailable?: () => void;
+    onCreated?: (layer: VoiceInputLayer) => void;
+    onClosed?: () => void;
   }): void {
-    if (this.voiceDialogPending) return;
+    if (this.voiceDialogPending || this.activeVoiceLayer || this.activeKeyboardLayer) { options.onUnavailable?.(); return; }
+    if (options.canStart && !options.canStart()) { options.onUnavailable?.(); return; }
     this.voiceDialogPending = true;
     void (async () => {
       let ready = true;
@@ -914,7 +1013,9 @@ class Shell {
       }
       // Re-checked after the await: another path may have opened a dialog
       // (or torn down the base state) while a permission prompt was up.
-      if (!ready || this.activeVoiceLayer || this.activeKeyboardLayer) return;
+      if (!ready || this.activeVoiceLayer || this.activeKeyboardLayer || (options.canStart && !options.canStart())) {
+        options.onUnavailable?.(); return;
+      }
       this.openVoiceDialogNow(options);
       this.config.requestShellRender();
     })();
@@ -924,8 +1025,11 @@ class Shell {
     finishOnClick?: boolean;
     handsFree?: boolean;
     defaultTarget: "assistant" | "app";
+    sendTargets?: VoiceSendTarget[];
+    onCreated?: (layer: VoiceInputLayer) => void;
+    onClosed?: () => void;
   }): void {
-    const targets = this.buildVoiceSendTargets();
+    const targets = options.sendTargets ?? this.buildVoiceSendTargets();
     let defaultIndex = targets.findIndex((target) => target.id === options.defaultTarget);
     if (defaultIndex < 0) defaultIndex = 0;
     // Skip the menu only for a hands-free (wakeword) capture aimed at the
@@ -945,6 +1049,7 @@ class Shell {
           // The idle countdown restarts in full once voice input ends.
           this.noteUserActivity();
         }
+        options.onClosed?.();
       },
       dismiss: () => {
         this.stack.popIfTop((top) => top === layer);
@@ -958,6 +1063,7 @@ class Shell {
     this.activeVoiceLayer = layer;
     voiceActivity.setActive(true);
     this.stack.push(layer);
+    options.onCreated?.(layer);
     layer.startCapture();
   }
 
@@ -996,6 +1102,114 @@ class Shell {
   /** Deliver a text string to the foreground window (e.g. finalized voice input). */
   sendTextToForegroundWindow(text: string): void {
     this.foregroundWindow()?.receiveTextInput?.(text);
+  }
+
+  /** Voice search has its own confirmation action and cannot invoke a send target. */
+  private externalCaptureToken: object | null = null;
+  /** App-owned capture UI receives drafts only; this API never issues Send authority. */
+  startExternalAppCapture(
+    windowId: string,
+    onTranscript: (event: { text: string; isFinal: boolean }) => void,
+    onStatus: (status: string) => void,
+    onClosed: (reason: string) => void,
+    canStart: () => boolean,
+    ownTranscription?: { component: string; captureId: string },
+  ): { finish: () => void; cancel: () => void } {
+    const token = {};
+    let closed = false, started = false, finishing = false;
+    let transcriptSubscription: (() => void) | undefined, statusSubscription: (() => void) | undefined;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const available = () => !closed && this.externalCaptureToken === token && this.screenOn && this.foregroundWindow()?.windowId === windowId && canStart();
+    const close = (reason: string) => {
+      if (closed) return;
+      closed = true; transcriptSubscription?.(); statusSubscription?.(); if (timer) clearTimeout(timer);
+      if (this.externalCaptureToken === token) {
+        this.externalCaptureToken = null; this.voiceDialogPending = false; voiceControlBridge.setAppTranscriptionProvider();
+        if (started) { void Promise.resolve(this.config.actions.stopVoiceCapture()).catch(() => {}); voiceActivity.setActive(false); }
+        this.noteUserActivity();
+      }
+      onClosed(reason);
+    };
+    const controls = {
+      finish: () => {
+        if (!available() || !started || finishing) return;
+        finishing = true;
+        if (timer) clearTimeout(timer); timer = setTimeout(() => close("transcript-timeout"), 95000);
+        void Promise.resolve(this.config.actions.stopVoiceCapture()).catch(() => close("capture-unavailable"));
+      },
+      cancel: () => close("cancelled"),
+    };
+    if (this.voiceDialogPending || this.activeVoiceLayer || this.activeKeyboardLayer || voiceControlBridge.isCaptureHeld() || !this.screenOn || this.foregroundWindow()?.windowId !== windowId || !canStart()) {
+      close("capture-unavailable"); return controls;
+    }
+    this.externalCaptureToken = token; this.voiceDialogPending = true;
+    timer = setTimeout(() => close("capture-timeout"), 5 * 60000);
+    void (async () => {
+      let prepared = false;
+      try { prepared = (await this.config.prepareVoiceCapture?.()) ?? true; } catch { /* Permission/capture failure remains a cancelled draft. */ }
+      if (!prepared || !available() || this.activeVoiceLayer || this.activeKeyboardLayer || voiceControlBridge.isCaptureHeld()) { close("capture-unavailable"); return; }
+      transcriptSubscription = voiceControlBridge.onTranscript(event => {
+        if (!available()) { close("cancelled"); return; }
+        if (typeof event.text !== "string" || event.text.length > 8000) { close("transcript-too-large"); return; }
+        onTranscript({ text: event.text, isFinal: event.isFinal === true });
+        if (finishing && event.isFinal) close("complete");
+      });
+      let subscribing = true;
+      statusSubscription = voiceControlBridge.onStatus(state => { if (!subscribing && available()) onStatus(String(state.status).slice(0, 200)); });
+      subscribing = false; started = true; voiceActivity.setActive(true); voiceControlBridge.setAppTranscriptionProvider(ownTranscription);
+      try { await this.config.actions.startVoiceCapture(false); } catch { close("capture-unavailable"); }
+    })();
+    return controls;
+  }
+
+  startExternalAppSearch(windowId: string, label: string, onSearch: (query: string) => void, onClosed: () => void, canStart: () => boolean): () => void {
+    let cancelled = false;
+    let layer: VoiceSearchLayer | null = null;
+    const cancel = () => { cancelled = true; if (layer) this.stack.removeLayer(layer); else onClosed(); };
+    void (async () => {
+      await Promise.resolve();
+      if (cancelled || !canStart()) { onClosed(); return; }
+      let ready = false;
+      try { ready = (await this.config.prepareVoiceCapture?.()) ?? true; } catch { /* Permission refused. */ }
+      if (!ready || cancelled || !canStart() || !this.screenOn || this.foregroundWindow()?.windowId !== windowId || this.activeVoiceLayer || this.activeKeyboardLayer || !this.stack.isAtBase()) { onClosed(); return; }
+      layer = new VoiceSearchLayer({ actions: this.config.actions, label,
+        onSearch: query => { if (!cancelled && this.screenOn && this.foregroundWindow()?.windowId === windowId) onSearch(query); },
+        dismiss: () => { if (layer) this.stack.removeLayer(layer); },
+        onClosed: () => { if (this.activeVoiceLayer === layer) this.activeVoiceLayer = null; voiceActivity.setActive(false); this.noteUserActivity(); onClosed(); },
+      });
+      this.activeVoiceLayer = layer; voiceActivity.setActive(true); this.stack.push(layer); layer.startCapture(); this.config.requestShellRender();
+    })();
+    return cancel;
+  }
+
+  /** A capability-scoped app review. It has one explicit target and never auto-sends. */
+  startExternalAppReview(windowId: string, label: string, initialText: string, onSend: (text: string) => void, onClosed: () => void): () => void {
+    let cancelled = false;
+    let layer: VoiceInputLayer | null = null;
+    const cancel = () => {
+      cancelled = true;
+      if (layer) this.stack.removeLayer(layer);
+      else onClosed();
+    };
+    void (async () => {
+      await Promise.resolve(); // Install the cancellation handle before any synchronous refusal.
+      if (!initialText) {
+        let ready = false;
+        try { ready = (await this.config.prepareVoiceCapture?.()) ?? true; } catch { /* Permission refused. */ }
+        if (!ready) { onClosed(); return; }
+      }
+      if (cancelled || !this.screenOn || this.foregroundWindow()?.windowId !== windowId || this.activeVoiceLayer || this.activeKeyboardLayer || !this.stack.isAtBase()) { onClosed(); return; }
+      layer = new VoiceInputLayer({
+        actions: this.config.actions, initialText, finishOnClick: true, autoSend: false,
+        sendTargets: [{ id: "external-app", label: `Send via ${this.foregroundWindow()?.title ?? "app"}: ${label}`, onSend: (text) => { if (!cancelled && this.foregroundWindow()?.windowId === windowId) onSend(text); } }],
+        onClosed: () => { if (this.activeVoiceLayer === layer) this.activeVoiceLayer = null; voiceActivity.setActive(false); this.noteUserActivity(); onClosed(); },
+        dismiss: () => this.stack.removeLayer(layer),
+      });
+      this.activeVoiceLayer = layer; voiceActivity.setActive(true); this.stack.push(layer);
+      if (!initialText) layer.startCapture();
+      this.config.requestShellRender();
+    })();
+    return cancel;
   }
 
   /**
@@ -1121,6 +1335,10 @@ class Shell {
   }
 
   private resolveAssistantConfiguration(): AssistantBackendConfig | null {
+    const fallback = this.resolveBaseAssistantConfiguration(), provider = extensionPlatform()?.feature("assistant");
+    return provider ? { kind: "extension", component: provider.component, generation: provider.generation, fallback } : fallback;
+  }
+  private resolveBaseAssistantConfiguration(): AssistantBackendConfig | null {
     if (assistantBackendSetting.get() === "external") {
       const host = assistantBridgeHostSetting.get().trim();
       const token = assistantBridgeTokenSetting.get();
@@ -1296,6 +1514,28 @@ class Shell {
     this.openEscapeMenu();
   }
 
+  private async openAppActions(frameId = 0): Promise<boolean> {
+    if (!this.screenOn || this.stack.topMatches(layer => layer instanceof ShellOverlayMenuLayer)) return false;
+    const foreground = this.foregroundWindow();
+    if (!foreground) return false;
+    if (this.stack.isAtBase() && foreground.hasAppMenu?.()) {
+      this.focusWindow(foreground.windowId);
+      await foreground.handleInput(makeInputEvent({ type: "short-then-long-press", source: "ring" }), frameId);
+      return true;
+    }
+    let layer: ShellOverlayMenuLayer;
+    const items = appActionItems([], () => this.sleepAtAppRoot(), () => this.openEscapeMenu());
+    if (!items.length) { this.openEscapeMenu(); return false; }
+    layer = new ShellOverlayMenuLayer(items, undefined, () => this.focusWindow(foreground.windowId), appMenuPolicy().title ?? foreground.title);
+    layer.keepWindowFocus = true;
+    const menuStack = new LayerStack({ paint: () => new GrayImage(1, 1, 0), handleInput: () => {} }, this.config.actions);
+    menuStack.push(layer);
+    if (presentAppMenu(foreground.windowId, appMenuPolicy().title ?? foreground.title, items, layer, { stack: menuStack, actions: this.config.actions }, () => menuStack.removeLayer(layer))) return false;
+    this.stack.push(layer);
+    this.config.requestShellRender();
+    return false;
+  }
+
   /**
    * The system/escape menu: the entries every window shares (Focus app
    * switcher, Voice input, Close window) plus Debug. Shell-owned and
@@ -1305,12 +1545,16 @@ class Shell {
    * request when tap-then-hold finds it has no menu of its own.
    */
   private openEscapeMenu(): void {
-    if (!this.screenOn || this.activeVoiceLayer || !this.stack.isAtBase()) return;
+    if (!this.screenOn || this.activeVoiceLayer || this.activeKeyboardLayer) return;
+    if (!this.stack.isAtBase() && navigationPolicy().hold !== "app-menu") return;
+    if (this.stack.topMatches(layer => layer instanceof ShellOverlayMenuLayer)) return;
     const foreground = this.foregroundWindow();
     if (!foreground) return;
     let layer: ShellOverlayMenuLayer;
     const items: MenuItem[] = [];
-    if (foreground.closeable) {
+    const grouped = appMenuPolicy().systemActionsLast;
+    const hasOverlay = !this.stack.isAtBase();
+    if (foreground.closeable && !hasOverlay) {
       items.push({
         label: "Close window",
         onSelect: (ctx) => {
@@ -1329,7 +1573,7 @@ class Shell {
         // Defocus the app (hand focus to the sidebar) without closing it: the
         // reliable way out of an app that consumes double-click. Closing the
         // menu is what yields focus, so popping is the whole action.
-        label: "Focus app switcher",
+        label: grouped ? "Return to app" : "Focus app switcher",
         onSelect: (ctx) => {
           ctx.stack.pop();
         },
@@ -1345,7 +1589,9 @@ class Shell {
         },
       },
     );
-    items.push({
+    if (grouped) items.splice(initialSelection + 1, 0, { label: "Display off", onSelect: ctx => { ctx.stack.pop(); this.sleepAtAppRoot(); } });
+    if (hasOverlay) items.splice(items.findIndex(item => item.label === "Voice input"), 1);
+    if (!hasOverlay) items.push({
       label: "Debug",
       onSelect: (ctx) => {
         ctx.stack.pop();
@@ -1355,10 +1601,11 @@ class Shell {
     // Gesture help: tap-then-hold switches to the app's own context menu,
     // when the app has one (otherwise it opens this very menu, not worth a
     // hint).
-    const footer = foreground.hasAppMenu?.()
+    if (grouped && !hasOverlay && foreground.hasAppMenu?.()) items.push({ label: "App actions", onSelect: async ctx => { ctx.stack.pop(); await this.openAppActions(); } });
+    const footer = navigationPolicy().tapHold === "switcher" ? gestureHints([[GESTURE_SHORT_THEN_LONG_PRESS, "app switcher"]]) : foreground.hasAppMenu?.()
       ? gestureHints([[GESTURE_SHORT_THEN_LONG_PRESS, "app menu"]])
       : undefined;
-    layer = new ShellOverlayMenuLayer(items, footer, () => this.yieldFocusToSidebar());
+    layer = new ShellOverlayMenuLayer(items, footer, () => grouped ? this.focusWindow(foreground.windowId) : this.yieldFocusToSidebar(), grouped ? appMenuPolicy().systemTitle : undefined);
     layer.selectItem(initialSelection);
     this.stack.push(layer);
     // Tell the window the system menu opened over it: an app with its own
@@ -1539,6 +1786,10 @@ export function inputEventToString(event: InputEvent): string {
       return `Wakeword`;
     case "system-menu-opened":
       return `System menu opened`;
+    case "app-menu-selection":
+    case "app-menu-closed":
+    case "app-menu-fallback":
+      return `App menu response`;
     default:
     case "unknown":
       return `Unknown event: ${event.kind} ${event.eventSource} ${event.eventType}`;

@@ -1,3 +1,5 @@
+import { shell } from "./shell/shell";
+import { getExternalNotificationReply } from "../native/external-notifications";
 import { clamp } from "~/util/numeric-util";
 import { formatRelativeTime } from "~/util/date-util";
 import { getDefaultSmallFont } from "../graphics/ui-fonts";
@@ -76,7 +78,7 @@ export class NotificationsListLayer implements Layer {
     const image = new GrayImage(width, height, 0);
     const cardWidth = width - 2 * CARD_X;
     const cardTextWidth = cardWidth - CARD_TEXT_X - 14;
-    const notifications = readActiveNotifications(MAX_NOTIFICATIONS);
+    const notifications = readActiveNotifications(MAX_NOTIFICATIONS, true);
     const selectedIndex = this.resolveSelectedIndex(notifications);
     const layouts = notifications.map((notification, index) =>
       buildNotificationCardLayout(font, notification, index === selectedIndex, cardTextWidth),
@@ -121,7 +123,7 @@ export class NotificationsListLayer implements Layer {
   }
 
   handleInput(event: InputEvent, ctx: LayerContext): void {
-    const notifications = readActiveNotifications(MAX_NOTIFICATIONS);
+    const notifications = readActiveNotifications(MAX_NOTIFICATIONS, true);
     const selectedIndex = this.resolveSelectedIndex(notifications);
     if (event.type === "double-click") {
       // At the app's root this is intercepted by the yield wrapper; reached
@@ -167,6 +169,9 @@ export class NotificationsListLayer implements Layer {
  */
 export class SingleNotificationLayer implements Layer {
   private selectedMenuIndex = 0;
+  private actionError = "";
+  private removed = false;
+  onRemoved(): void { this.removed = true; }
 
   constructor(
     private readonly notificationKey: string,
@@ -177,7 +182,7 @@ export class SingleNotificationLayer implements Layer {
     const font = getDefaultSmallFont();
     const { width, height } = ctx.stack.getBaseSize();
     const image = new GrayImage(width, height, 0);
-    const notification = readActiveNotifications(MAX_NOTIFICATIONS).find((item) => item.key === this.notificationKey);
+    const notification = readActiveNotifications(MAX_NOTIFICATIONS, true).find((item) => item.key === this.notificationKey);
 
     if (!notification) {
       return this.closeUnavailableNotification(ctx, paintBelow);
@@ -187,11 +192,12 @@ export class SingleNotificationLayer implements Layer {
     this.selectedMenuIndex = clamp(this.selectedMenuIndex, 0, Math.max(0, menu.length - 1));
     drawDetailContent(image, font, notification, iconForNotification(notification.key), width, height);
     drawDetailMenu(image, font, menu, this.selectedMenuIndex, width);
+    if (this.actionError) image.drawText(font, 12, height - 20, this.actionError, 255);
     return image;
   }
 
   handleInput(event: InputEvent, ctx: LayerContext): void {
-    const notification = readActiveNotifications(MAX_NOTIFICATIONS).find((item) => item.key === this.notificationKey);
+    const notification = readActiveNotifications(MAX_NOTIFICATIONS, true).find((item) => item.key === this.notificationKey);
     if (!notification) {
       this.closeUnavailableNotification(ctx);
       return;
@@ -216,8 +222,25 @@ export class SingleNotificationLayer implements Layer {
     if (item.kind === "back") {
       this.close(ctx);
     } else if (item.kind === "action") {
+      if (notification.key.startsWith("apk:") && item.action.acceptsText) {
+        const reply = getExternalNotificationReply(notification.key, notification.postTime);
+        if (!reply) { this.actionError = "Reply unavailable or changed."; return; }
+        const foreground = shell.foregroundWindow()?.windowId;
+        const visible = () => !this.removed && shell.isScreenOn() && shell.foregroundWindow()?.windowId === foreground &&
+          readActiveNotifications(MAX_NOTIFICATIONS, true).some(current => current.key === notification.key && current.postTime === notification.postTime);
+        const current = () => visible() && reply.isCurrent();
+        shell.openReviewedVoiceInput({ id: "reply", label: "Send reply", captureTitle: "Reply", concealUnderlay: true, capturePrompt: "Speak your reply...", onSend: text => {
+          this.actionError = current() && reply.send(text, status => {
+            if (!visible()) return;
+            this.actionError = { sent: "Reply sent.", "draft-saved": "Draft saved in app. Open app to send.", unknown: "Send outcome unknown. Check app.", rejected: "Reply rejected or changed." }[status];
+            ctx.actions.requestRender();
+          }) ? "Reply submitted to app." : "Reply unavailable or changed.";
+          ctx.actions.requestRender();
+        } }, current, () => { this.actionError = "Reply unavailable or changed."; ctx.actions.requestRender(); });
+        return;
+      }
       invokeNotificationAction(this.notificationKey, item.action.index);
-      if (!readActiveNotifications(MAX_NOTIFICATIONS).some((item) => item.key === this.notificationKey)) {
+      if (!readActiveNotifications(MAX_NOTIFICATIONS, true).some((item) => item.key === this.notificationKey)) {
         this.closeUnavailableNotification(ctx);
       }
     } else if (item.kind === "dismiss") {
@@ -228,6 +251,7 @@ export class SingleNotificationLayer implements Layer {
 
   /** Leave the detail view, whatever hosts it. */
   private close(ctx: LayerContext): void {
+    this.removed = true;
     if (this.options.origin === "new-notification-modal") {
       this.options.closeModal?.(ctx);
     } else {

@@ -11,6 +11,7 @@
  * descriptions current; register() fires the tools-changed broadcast that
  * propagates the new specs to the assistant backends.
  */
+import { routeLauncherFolderTool } from "../apps/external/extension-providers";
 import { shell, type ShellWindow } from "../ui/shell/shell";
 import type { AppDefinition } from "../apps/app-definition";
 import {
@@ -182,12 +183,14 @@ function registerTools(options: WindowToolsOptions, registry: ToolRegistry): voi
   registry.registerSystemTool(
     {
       name: "apps.list_folders",
+      timeoutMs: 25000,
       description:
         "List the app launcher's folders and the apps inside each, plus the ungrouped top-level apps. Includes installed EvenHub apps, shown as app_id (\"display name\").",
       inputSchema: { type: "object", properties: {}, additionalProperties: false },
       proactive: true,
     },
     () => {
+      const extension = routeLauncherFolderTool("apps.list_folders", {}, appIds, FOLDER_NAME_MAX_LENGTH); if (extension) return extension;
       const lines: string[] = [];
       for (const [name, members] of getFolders()) {
         const known = members.filter((appId) => appIds.indexOf(appId) >= 0).sort();
@@ -203,6 +206,7 @@ function registerTools(options: WindowToolsOptions, registry: ToolRegistry): voi
   registry.registerSystemTool(
     {
       name: "apps.move_to_folder",
+      timeoutMs: 25000,
       description:
         "Group an app into a named launcher folder, creating the folder if it doesn't exist yet. The app appears inside the folder in the launcher grid instead of at the top level.",
       inputSchema: {
@@ -219,6 +223,7 @@ function registerTools(options: WindowToolsOptions, registry: ToolRegistry): voi
       },
     },
     (args) => {
+      const extension = routeLauncherFolderTool("apps.move_to_folder", args, appIds, FOLDER_NAME_MAX_LENGTH); if (extension) return extension;
       const appId = String(args?.app_id ?? "").trim();
       if (appIds.indexOf(appId) < 0) {
         return err(`Unknown app: ${appId}. Available apps: ${appIds.join(", ")}`);
@@ -236,6 +241,7 @@ function registerTools(options: WindowToolsOptions, registry: ToolRegistry): voi
   registry.registerSystemTool(
     {
       name: "apps.remove_from_folder",
+      timeoutMs: 25000,
       description:
         "Move an app out of its launcher folder back to the top-level grid. A folder disappears when its last app is removed.",
       inputSchema: {
@@ -248,6 +254,7 @@ function registerTools(options: WindowToolsOptions, registry: ToolRegistry): voi
       },
     },
     (args) => {
+      const extension = routeLauncherFolderTool("apps.remove_from_folder", args, appIds, FOLDER_NAME_MAX_LENGTH); if (extension) return extension;
       const appId = String(args?.app_id ?? "").trim();
       if (appIds.indexOf(appId) < 0) {
         return err(`Unknown app: ${appId}. Available apps: ${appIds.join(", ")}`);
@@ -262,6 +269,7 @@ function registerTools(options: WindowToolsOptions, registry: ToolRegistry): voi
   registry.registerSystemTool(
     {
       name: "apps.disband_folder",
+      timeoutMs: 25000,
       description:
         "Delete a launcher folder by moving all of its apps back to the top-level grid.",
       inputSchema: {
@@ -274,6 +282,7 @@ function registerTools(options: WindowToolsOptions, registry: ToolRegistry): voi
       },
     },
     (args) => {
+      const extension = routeLauncherFolderTool("apps.disband_folder", args, appIds, FOLDER_NAME_MAX_LENGTH); if (extension) return extension;
       const folder = resolveFolderName(String(args?.folder ?? ""));
       if (!folder) return err("folder must be a non-empty name");
       const moved = disbandFolder(folder);

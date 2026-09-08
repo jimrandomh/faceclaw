@@ -1,3 +1,4 @@
+import { typographyPolicy } from "./extension-settings";
 import { G2_LENS_HEIGHT, G2_LENS_WIDTH, GrayImage, type UiFont } from "../graphics/image";
 import { wrapText } from "../graphics/textwrap";
 import { getDefaultSmallFont } from "../graphics/ui-fonts";
@@ -80,10 +81,12 @@ export function drawSelectionHighlight(
   focused: boolean,
   radius = 6,
 ): void {
+  const style = typographyPolicy();
+  radius = style.cardRadius ?? radius;
   if (focused) {
     image.fillRoundedRect(x, y, width, height, MENU_HIGHLIGHT_SELECTED_BACKGROUND_FILL, radius);
   }
-  image.drawRoundedRect(x, y, width, height, MENU_HIGHLIGHT_SELECTED_BORDER_STROKE, radius);
+  image.drawRoundedRect(x, y, width, height, MENU_HIGHLIGHT_SELECTED_BORDER_STROKE, radius, style.selectionBorderWidth ?? 1);
 }
 
 /**
@@ -243,9 +246,9 @@ export class MenuLayer implements Layer {
 
     // Fill 1, not 0: identical after 4bpp quantization, but 0 is the
     // transparent color key when a menu paints on the shell surface.
-    image.fillRoundedRect(x, y, width, height, 1);
+    image.fillRoundedRect(x, y, width, height, 1, typographyPolicy().cardRadius ?? 8);
     if (this.layout.showBorder !== false) {
-      image.drawRoundedRect(x, y, width, height, 72);
+      image.drawRoundedRect(x, y, width, height, 72, typographyPolicy().cardRadius ?? 8, typographyPolicy().borderWidth ?? 1);
     }
     if (this.title) {
       image.drawText(font, x + 12, y + 8, this.title, 220);

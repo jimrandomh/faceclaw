@@ -337,6 +337,7 @@ export class GrayImage {
     height: number,
     value: number,
     radius = DEFAULT_CORNER_RADIUS,
+    strokeWidth = 1,
   ): void {
     const left = x | 0;
     const top = y | 0;
@@ -344,10 +345,11 @@ export class GrayImage {
     const rectHeight = height | 0;
     const bottom = top + rectHeight;
     const stroke = clampByte(value);
-    const innerLeft = left + 1;
-    const innerTop = top + 1;
-    const innerWidth = rectWidth - 2;
-    const innerHeight = rectHeight - 2;
+    const thickness = Math.max(1, strokeWidth | 0);
+    const innerLeft = left + thickness;
+    const innerTop = top + thickness;
+    const innerWidth = rectWidth - 2 * thickness;
+    const innerHeight = rectHeight - 2 * thickness;
 
     for (let row = top; row < bottom; row++) {
       if (row < 0 || row >= this.height) continue;
@@ -355,7 +357,7 @@ export class GrayImage {
       if (!outer) continue;
       const inner =
         innerWidth > 0 && innerHeight > 0
-          ? roundedRectRowSpan(row, innerLeft, innerTop, innerWidth, innerHeight, Math.max(0, radius - 1))
+          ? roundedRectRowSpan(row, innerLeft, innerTop, innerWidth, innerHeight, Math.max(0, radius - thickness))
           : undefined;
       const offset = row * this.width;
       const outerLeft = Math.max(0, outer.left);

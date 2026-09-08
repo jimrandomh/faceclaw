@@ -13,6 +13,7 @@ import type { UiFont } from "./image";
 import { TtfFont } from "./ttf-font";
 import { ensurePreinstalledFonts, getInstalledFont, installedFontPath } from "./installed-fonts";
 import { getStringSetting, onSettingsStoreChanged, setStringSetting } from "../native/settings-store";
+import { EXTENSIONS_EFFECTIVE_KEY, typographyPolicy } from "../ui/extension-settings";
 
 export type BitmapFace = "terminus" | "terminusv";
 
@@ -73,18 +74,17 @@ export function parseFontSelection(raw: string): UiFontSelection | null {
 }
 
 /** Default UI font when the user has never picked one. */
-const DEFAULT_UI_FONT: UiFontSelection = { kind: "ttf", file: "Roboto-Light.ttf", size: 14 };
+const DEFAULT_UI_FONT = { kind: "ttf", file: "Roboto-Light.ttf", size: 14 } satisfies UiFontSelection;
 
 export function getUiFontSelection(): UiFontSelection {
+  const override = typographyPolicy();
   const parsed = parseFontSelection(getStringSetting(UI_FONT_SELECTION_KEY, ""));
-  if (parsed) return parsed;
-  // A pre-picker-era explicit bitmap choice is honored; fresh states get the
-  // bundled default.
   const legacy = getStringSetting(LEGACY_UI_FONT_KEY, "");
-  if (legacy === "terminus" || legacy === "terminusv") {
-    return { kind: "bitmap", face: legacy };
-  }
-  return DEFAULT_UI_FONT;
+  const base: UiFontSelection = parsed ?? (legacy === "terminus" || legacy === "terminusv"
+    ? { kind: "bitmap", face: legacy } : DEFAULT_UI_FONT);
+  if (override.font) return { kind: "ttf", file: override.font, size: override.size ?? (base.kind === "ttf" ? base.size : DEFAULT_UI_FONT.size) };
+  if (override.size && base.kind === "ttf") return { ...base, size: override.size };
+  return base;
 }
 
 export function setUiFontSelection(selection: UiFontSelection): void {
@@ -122,7 +122,7 @@ function installInvalidation(): void {
   if (invalidationInstalled) return;
   invalidationInstalled = true;
   onSettingsStoreChanged((key) => {
-    if (key === UI_FONT_SELECTION_KEY || key === LEGACY_UI_FONT_KEY || key === TERMINAL_FONT_SELECTION_KEY) {
+    if (key === UI_FONT_SELECTION_KEY || key === LEGACY_UI_FONT_KEY || key === TERMINAL_FONT_SELECTION_KEY || key === EXTENSIONS_EFFECTIVE_KEY) {
       resolved.clear();
       cachedTerminalConfig = null;
     }
@@ -133,7 +133,7 @@ function installInvalidation(): void {
  * The selection's TTF at a size grown until lineHeight reaches minLineHeight
  * (never shrunk below the picked size), or null when the file can't load.
  */
-function resolveTtf(selection: UiFontSelection, minLineHeight = 0): TtfFont | null {
+function resolveTtf(selection: UiFontSelection, minLineHeight = 0, useUiStyle = false): TtfFont | null {
   if (selection.kind !== "ttf") return null;
   // The default selection can be resolved before the picker (whose listing
   // preinstalls bundled faces) has ever been opened, so make sure the
@@ -141,7 +141,7 @@ function resolveTtf(selection: UiFontSelection, minLineHeight = 0): TtfFont | nu
   ensurePreinstalledFonts();
   const path = installedFontPath(selection.file);
   for (let size = selection.size; size <= selection.size + MAX_SIZE_GROWTH; size++) {
-    const font = TtfFont.load(path, size);
+    const font = TtfFont.load(path, size, 1.0, useUiStyle ? typographyPolicy().raster ?? "antialiased" : "antialiased");
     if (!font) return null;
     if (font.lineHeight >= minLineHeight) return font;
   }
@@ -162,8 +162,8 @@ function resolveRole(role: "small" | "medium" | "large"): UiFont {
   if (selection.kind === "ttf" && uiFontSizeAllowed(installedFontPath(selection.file), selection.size)) {
     font =
       role === "small"
-        ? resolveTtf(selection)
-        : resolveTtf(selection, role === "medium" ? MEDIUM_MIN_LINE_HEIGHT : LARGE_MIN_LINE_HEIGHT);
+        ? resolveTtf(selection, 0, true)
+        : resolveTtf(selection, role === "medium" ? MEDIUM_MIN_LINE_HEIGHT : LARGE_MIN_LINE_HEIGHT, true);
   }
   if (!font) {
     font = bitmapForRole(selection.kind === "bitmap" ? selection.face : "terminus", role);

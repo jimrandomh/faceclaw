@@ -1,3 +1,4 @@
+import { ExtensionSttClient, extensionTranscriptionAvailable, type OwnTranscription } from "../apps/external/extension-providers";
 import { Utils } from "@nativescript/core";
 
 import { type CloudSttTranscriptEvent, type CloudSttOptions, CloudSttClient } from "./cloud-stt";
@@ -115,6 +116,10 @@ export class FaceclawVoiceControlBridge {
   // the bridge swallow it.
   private verificationActive = false;
   private verificationRejected = false;
+  private extensionOwnsTranscript = false;
+  private onboardBackup: VoiceTranscriptEvent | null = null;
+  private appTranscription: OwnTranscription | undefined;
+  setAppTranscriptionProvider(owner?: OwnTranscription): void { this.appTranscription = owner; }
 
   onStatus(listener: (state: VoiceControlState) => void): () => void {
     this.statusListeners.add(listener);
@@ -264,12 +269,13 @@ export class FaceclawVoiceControlBridge {
     this.speechPause.reset();
     // A previous push-to-talk commit may still be awaiting its final result.
     this.cloudClient?.stop();
+    this.extensionOwnsTranscript = false; this.onboardBackup = null;
     const cloudClient = this.createCloudClient(options);
     if (cloudClient) {
       this.cloudClient = cloudClient;
       cloudClient.start();
       this.started = true;
-      this.controller?.start("cloud");
+      this.controller?.start(this.extensionOwnsTranscript ? "cloud-backup" : "cloud");
       return;
     }
 
@@ -284,6 +290,14 @@ export class FaceclawVoiceControlBridge {
    * than failing the capture outright.
    */
   private createCloudClient(options: PushToTalkOptions): CloudSttClient | null {
+    if (this.appTranscription || extensionTranscriptionAvailable()) {
+      this.extensionOwnsTranscript = true;
+      return new ExtensionSttClient({ apiKey: "", onTranscript: event => this.emitTranscript(event.text, event.isFinal, event), onStatus: status => this.setStatus(status), onError: status => this.setStatus(status) }, () => {
+        this.extensionOwnsTranscript = false;
+        if (!this.controller?.hasOnboardModel()) { this.setStatus("Dictation unavailable: download the on-device voice model for fallback."); this.emitTranscript("", true); return; }
+        if (this.onboardBackup) this.emitTranscript(this.onboardBackup.text, this.onboardBackup.isFinal, this.onboardBackup);
+      }, this.appTranscription);
+    }
     if (options.provider === "onboard") return null;
     const sttOptions = {
       apiKey: "",
@@ -442,7 +456,8 @@ export class FaceclawVoiceControlBridge {
         this.setStatus(String(status));
       },
       onTranscript: (text: string, isFinal: boolean) => {
-        this.emitTranscript(String(text), Boolean(isFinal));
+        this.onboardBackup = { text: String(text), isFinal: Boolean(isFinal) };
+        if (!this.extensionOwnsTranscript) this.emitTranscript(String(text), Boolean(isFinal));
       },
       onPcm: (pcm: any) => {
         const bytes = toUint8Array(pcm);

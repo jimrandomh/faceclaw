@@ -1,3 +1,4 @@
+import { effectiveExtension } from "../../ui/extension-settings";
 import { getDefaultSmallFont } from "../../graphics/ui-fonts";
 import { truncateText, truncateLeft } from "../../graphics/textwrap";
 import { GrayImage, type UiFont } from "../../graphics/image";
@@ -32,7 +33,14 @@ const LABEL_GAP = 2;
 
 export type FilesViewMode = "icons" | "list";
 
-export const filesViewModeSetting = new ConfigSettingEnum<FilesViewMode>({
+class FilesViewSetting extends ConfigSettingEnum<FilesViewMode> {
+  get(): FilesViewMode {
+    const explicit = getStringSetting("files.viewMode", "");
+    const fallback = effectiveExtension("ui.launcher")?.configuration.filesDefaultView;
+    return !explicit && (fallback === "icons" || fallback === "list") ? fallback : super.get();
+  }
+}
+export const filesViewModeSetting = new FilesViewSetting({
   id: "files-view-mode",
   label: "View",
   storageKey: "files.viewMode",

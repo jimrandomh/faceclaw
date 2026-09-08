@@ -2,7 +2,9 @@
   "compilerOptions": {
     "module": "commonjs",
     "target": "ES2020",
-    "lib": ["ES2020"],
+    "lib": [
+      "ES2020"
+    ],
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
@@ -27,6 +29,8 @@
     "../app/apps/evenhub/containers.ts",
     "../app/apps/timer/timer-model.ts",
     "../app/apps/teleprompter/script-tracker.ts",
-    "../app/apps/nightscout/nightscout-alerts.ts"
+    "../app/apps/nightscout/nightscout-alerts.ts",
+    "../app/native/external-notifications.ts",
+    "../app/apps/external/extension-policy.ts"
   ]
 }

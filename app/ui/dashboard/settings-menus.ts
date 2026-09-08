@@ -1,3 +1,4 @@
+import { installedAppSettingsItems, behaviorSettingsItems } from "./app-settings-menus";
 import { knownFolders } from "@nativescript/core";
 import { getDefaultSmallFont } from "../../graphics/ui-fonts";
 import type { GrayImage } from "../../graphics/image";
@@ -84,6 +85,8 @@ export function createSettingsPanelLayer(): SettingsPanelLayer {
 
 function settingsSections(): SettingsSection[] {
   return [
+    { label: "Installed apps", get items() { return installedAppSettingsItems(); } },
+    { label: "Priorities", get items() { return behaviorSettingsItems(); } },
     {
       label: "Display",
       items: [

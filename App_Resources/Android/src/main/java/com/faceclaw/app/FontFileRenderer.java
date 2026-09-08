@@ -188,6 +188,20 @@ public final class FontFileRenderer {
      * Empty array when the font cannot be loaded or the render fails.
      */
     public static byte[] renderGlyphCell(String path, float sizePx, int codePoint, double gamma) {
+        return renderGlyphCellInternal(path, sizePx, codePoint, gamma, false, false);
+    }
+
+    /** UI-only native pixel edges; keep the same measured advances as the AA face. */
+    public static byte[] renderGlyphCellCrisp(String path, float sizePx, int codePoint) {
+        return renderGlyphCellInternal(path, sizePx, codePoint, 1.0, true, false);
+    }
+
+    /** Pixel-grid comparison mode; layout still uses the same measured advances. */
+    public static byte[] renderGlyphCellHinted(String path, float sizePx, int codePoint) {
+        return renderGlyphCellInternal(path, sizePx, codePoint, 1.0, true, true);
+    }
+
+    private static byte[] renderGlyphCellInternal(String path, float sizePx, int codePoint, double gamma, boolean crisp, boolean hinted) {
         Typeface typeface = loadTypeface(path);
         if (typeface == null || sizePx <= 0 || codePoint < 0 || codePoint > 0x10ffff) {
             return new byte[0];
@@ -196,6 +210,11 @@ public final class FontFileRenderer {
             Paint paint = glyphPaint(typeface, sizePx);
             String text = new String(Character.toChars(codePoint));
             float advance = paint.measureText(text);
+            if (crisp) paint.setAntiAlias(false);
+            if (hinted) {
+                paint.setSubpixelText(false);
+                paint.setHinting(Paint.HINTING_ON);
+            }
             int advanceFixed = Math.max(0, Math.min(0xffff, Math.round(advance * 64f)));
 
             android.graphics.Rect bounds = new android.graphics.Rect();

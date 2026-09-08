@@ -1,3 +1,4 @@
+import { truncateText, truncateLeft } from "../../graphics/textwrap";
 import { getDefaultSmallFont } from "../../graphics/ui-fonts";
 import { GrayImage, type UiFont } from "../../graphics/image";
 import { clamp } from "../../util/numeric-util";
@@ -75,7 +76,7 @@ export class MediaBrowseLayer implements Layer {
     }
     if (this.phase === "failed") {
       image.drawText(font, 24, headerHeight(font) + 8, "Could not connect:", 180);
-      image.drawText(font, 24, headerHeight(font) + 8 + lineStep(font), truncateRight(font, this.connectError, width - 48), 140);
+      image.drawText(font, 24, headerHeight(font) + 8 + lineStep(font), truncateText(font, this.connectError, width - 48), 140);
       image.drawText(font, 20, height - font.lineHeight - 4, `${GESTURE_CLICK} retry   ${GESTURE_DOUBLE_CLICK} back`, 110);
       return image;
     }
@@ -117,7 +118,7 @@ export class MediaBrowseLayer implements Layer {
         drawSelectionHighlight(image, highlightX, highlightY, highlightWidth, highlightHeight, ctx.stack.isFocused(), 4);
       }
       const value = selected ? 255 : 200;
-      const title = truncateRight(font, item.title || "(untitled)", rowWidth - 16);
+      const title = truncateText(font, item.title || "(untitled)", rowWidth - 16);
       image.drawText(font, LIST_X, y + 1, title, value);
       if (item.subtitle) {
         const titleWidth = font.measureText(title);
@@ -185,7 +186,7 @@ export class MediaBrowseLayer implements Layer {
         if (!item) return;
         if (item.browsable && item.playable) {
           ctx.stack.push(
-            new MenuLayer(truncateRight(getDefaultSmallFont(), item.title || "(untitled)", 230), [
+            new MenuLayer(truncateText(getDefaultSmallFont(), item.title || "(untitled)", 230), [
               {
                 label: "Play",
                 onSelect: (menuCtx) => {
@@ -286,22 +287,4 @@ export class MediaBrowseLayer implements Layer {
         ctx.actions.requestRender();
       });
   }
-}
-
-function truncateRight(font: UiFont, text: string, maxWidth: number): string {
-  if (font.measureText(text) <= maxWidth) return text;
-  let out = text;
-  while (out.length > 1 && font.measureText(`${out}...`) > maxWidth) {
-    out = out.slice(0, -1);
-  }
-  return `${out}...`;
-}
-
-function truncateLeft(font: UiFont, text: string, maxWidth: number): string {
-  if (font.measureText(text) <= maxWidth) return text;
-  let out = text;
-  while (out.length > 1 && font.measureText(`...${out}`) > maxWidth) {
-    out = out.slice(1);
-  }
-  return `...${out}`;
 }

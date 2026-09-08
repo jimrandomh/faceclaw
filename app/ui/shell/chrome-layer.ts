@@ -11,6 +11,7 @@ import { batteryDisplayModeSetting, timeFormatSetting } from "../dashboard-setti
 import { Layer } from "../layers";
 import { scrollToKeepSelectionVisible } from "../menu";
 import { lineStep } from "../metrics";
+import { showWindowTopBar, windowLayoutPolicy } from "../extension-settings";
 import {
   MIN_WINDOW_HEIGHT,
   minWindowTop,
@@ -38,15 +39,22 @@ const TWO_COLUMN: SidebarVariant = { columns: 2, columnWidth: 32, iconSize: 28 }
 const ICON_SPACING = 8;
 /** Icon list top/bottom margins within the sidebar band, below the top bar. */
 const LIST_MARGIN = 10;
-const LIST_HEIGHT = MIN_WINDOW_HEIGHT - TOP_BAR_HEIGHT - 2 * LIST_MARGIN;
-
-/** Icon rows that fit in one sidebar column. */
-function rowsPerColumn(variant: SidebarVariant): number {
-  return Math.max(1, ((LIST_HEIGHT + ICON_SPACING) / (variant.iconSize + ICON_SPACING)) | 0);
+function switcherBandHeight(appId?: string): number {
+  return windowLayoutPolicy().switcherHeight === "display" ? G2_LENS_HEIGHT : MIN_WINDOW_HEIGHT;
 }
 
-function sidebarVariant(windowCount: number): SidebarVariant {
-  return windowCount > rowsPerColumn(ONE_COLUMN) ? TWO_COLUMN : ONE_COLUMN;
+function switcherBandTop(appId?: string): number {
+  return windowLayoutPolicy().switcherHeight === "display" ? 0 : minWindowTop(appId);
+}
+
+/** Icon rows that fit in one sidebar column. */
+function rowsPerColumn(variant: SidebarVariant, appId?: string): number {
+  const listHeight = switcherBandHeight(appId) - TOP_BAR_HEIGHT - 2 * LIST_MARGIN;
+  return Math.max(1, ((listHeight + ICON_SPACING) / (variant.iconSize + ICON_SPACING)) | 0);
+}
+
+function sidebarVariant(windowCount: number, appId?: string): SidebarVariant {
+  return windowCount > rowsPerColumn(ONE_COLUMN, appId) ? TWO_COLUMN : ONE_COLUMN;
 }
 
 /** Left x of a sidebar column; columns pack rightward against the separator. */
@@ -60,8 +68,8 @@ function columnLeft(variant: SidebarVariant, column: number): number {
  * bottom, then overflow leftward. The single source of slot geometry for
  * both drawing and hit testing.
  */
-function slotPosition(variant: SidebarVariant, listTop: number, position: number): { column: number; y: number } {
-  const rows = rowsPerColumn(variant);
+function slotPosition(variant: SidebarVariant, listTop: number, position: number, appId?: string): { column: number; y: number } {
+  const rows = rowsPerColumn(variant, appId);
   return {
     column: variant.columns - 1 - ((position / rows) | 0),
     y: listTop + (position % rows) * (variant.iconSize + ICON_SPACING),
@@ -70,7 +78,7 @@ function slotPosition(variant: SidebarVariant, listTop: number, position: number
 
 /** Top y of the sidebar's icon list (below the band's top bar). */
 function sidebarListTop(appId?: string): number {
-  return minWindowTop(appId) + TOP_BAR_HEIGHT + LIST_MARGIN;
+  return switcherBandTop(appId) + TOP_BAR_HEIGHT + LIST_MARGIN;
 }
 
 /**
@@ -195,7 +203,7 @@ export class ShellChromeLayer implements Layer {
     if (sidebarStripVisible(state.focus, state.foregroundAppId)) {
       this.drawSidebar(image, state);
     }
-    this.drawTopBar(image, state);
+    if (state.focus === "sidebar" || showWindowTopBar(state.foregroundAppId)) this.drawTopBar(image, state);
     drawAmbientCards(image);
     return image;
   }
@@ -212,11 +220,12 @@ export class ShellChromeLayer implements Layer {
    */
   windowIndexAt(x: number, y: number, windowCount: number): number | null {
     if (x < 0 || x >= SIDEBAR_WIDTH || windowCount === 0) return null;
-    const variant = sidebarVariant(windowCount);
-    const listTop = sidebarListTop(this.getState().foregroundAppId);
-    const lastVisible = Math.min(windowCount, this.scrollRow + rowsPerColumn(variant) * variant.columns);
+    const appId = this.getState().foregroundAppId;
+    const variant = sidebarVariant(windowCount, appId);
+    const listTop = sidebarListTop(appId);
+    const lastVisible = Math.min(windowCount, this.scrollRow + rowsPerColumn(variant, appId) * variant.columns);
     for (let index = this.scrollRow; index < lastVisible; index++) {
-      const { column, y: slotY } = slotPosition(variant, listTop, index - this.scrollRow);
+      const { column, y: slotY } = slotPosition(variant, listTop, index - this.scrollRow, appId);
       const left = columnLeft(variant, column);
       if (x >= left && x < left + variant.columnWidth && y >= slotY - 2 && y < slotY + variant.iconSize + 2) {
         return index;
@@ -226,27 +235,28 @@ export class ShellChromeLayer implements Layer {
   }
 
   private drawSidebar(image: GrayImage, state: ShellChromeState): void {
-    // Align the sidebar with the app's preferred band. Legacy tall terminal
-    // sessions keep the sidebar at the global band position.
-    const bandTop = minWindowTop(state.foregroundAppId);
-    const bandBottom = bandTop + MIN_WINDOW_HEIGHT;
-    image.fillRect(0, bandTop, SIDEBAR_WIDTH, MIN_WINDOW_HEIGHT, SHELL_OPAQUE_BLACK);
+    // A full-height switcher spans the panel regardless of the app's band.
+    // Otherwise retain the host's compact sidebar placement.
+    const bandTop = switcherBandTop(state.foregroundAppId);
+    const bandHeight = switcherBandHeight(state.foregroundAppId);
+    const bandBottom = bandTop + bandHeight;
+    image.fillRect(0, bandTop, SIDEBAR_WIDTH, bandHeight, SHELL_OPAQUE_BLACK);
 
     // Scroll the icon list to keep the selection visible; chevrons mark
     // windows off-screen above/below. Icons fill the right column top to
     // bottom, then overflow into the left one, so a visible slot's column is
     // decided by its position within the scrolled window.
     const count = state.windows.length;
-    const variant = sidebarVariant(count);
+    const variant = sidebarVariant(count, state.foregroundAppId);
     const iconSize = variant.iconSize;
     const iconMarginX = ((variant.columnWidth - iconSize) / 2) | 0;
     // Column index of the rightmost column (the one that fills first).
     const firstColumn = variant.columns - 1;
     const listTop = sidebarListTop(state.foregroundAppId);
-    const visibleCount = rowsPerColumn(variant) * variant.columns;
+    const visibleCount = rowsPerColumn(variant, state.foregroundAppId) * variant.columns;
     this.scrollRow = scrollToKeepSelectionVisible(this.scrollRow, state.selectedIndex, visibleCount, count);
     const lastVisible = Math.min(count, this.scrollRow + visibleCount);
-    const slotOf = (index: number) => slotPosition(variant, listTop, index - this.scrollRow);
+    const slotOf = (index: number) => slotPosition(variant, listTop, index - this.scrollRow, state.foregroundAppId);
 
     // The selection is a "diversion" of the sidebar/main separator line: the
     // line bulges right around the selected icon (rounded on the left, open
@@ -258,11 +268,13 @@ export class ShellChromeLayer implements Layer {
     const selVisible = state.selectedIndex >= this.scrollRow && state.selectedIndex < lastVisible;
     const selSlot = selVisible ? slotOf(state.selectedIndex) : null;
     const selTabTop = selSlot && selSlot.column === firstColumn ? selSlot.y - 2 : null;
+    const thickness = windowLayoutPolicy().dividerWidth;
+    const divider = (top: number, bottom: number) => image.fillRect(sep - thickness + 1, top, thickness, bottom - top + 1, BORDER_VALUE);
     if (selTabTop !== null) {
-      image.drawLine(sep, bandTop, sep, selTabTop, BORDER_VALUE);
-      image.drawLine(sep, selTabTop + iconSize + 4, sep, bandBottom - 1, BORDER_VALUE);
+      divider(bandTop, selTabTop);
+      divider(selTabTop + iconSize + 4, bandBottom - 1);
     } else {
-      image.drawLine(sep, bandTop, sep, bandBottom - 1, BORDER_VALUE);
+      divider(bandTop, bandBottom - 1);
     }
 
     for (let index = this.scrollRow; index < lastVisible; index++) {
@@ -304,7 +316,8 @@ export class ShellChromeLayer implements Layer {
     // The bar sits at the top edge of the foreground window's band, wherever
     // its height mode puts that (screen top for max height). It moves when
     // the foreground switches to a window of a different height.
-    const barTop = windowTop(state.foregroundHeightMode, state.foregroundAppId);
+    const barTop = state.focus === "sidebar" && windowLayoutPolicy().switcherHeight === "display"
+      ? 0 : windowTop(state.foregroundHeightMode, state.foregroundAppId);
     // The bar spans the app viewport; with the sidebar overlaid (full-panel
     // mode, sidebar focused) it still starts past the strip.
     const barLeft = sidebarStripVisible(state.focus, state.foregroundAppId) ? SIDEBAR_WIDTH : 0;

@@ -261,6 +261,7 @@ android {
   // ndkVersion ""
 
   sourceSets.main {
+    java.srcDirs += ["$rootDir/../../android-sdk/sdk/src/main/java"]
     jniLibs.srcDirs += ["$projectDir/src/main/jniLibs"]
   }
 

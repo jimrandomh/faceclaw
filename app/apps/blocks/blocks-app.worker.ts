@@ -18,7 +18,7 @@ import * as frameTimings from "../../native/frame-timings";
 import { getActiveDisplay } from "../../native/active-display";
 import { buildSoundSequencePayload, type Step } from "../../ui/sound-effects";
 import { type MenuItem } from "../../ui/menu";
-import { WindowMenu } from "../../ui/window-menu";
+import { WindowMenu, hasSharedAppActions } from "../../ui/window-menu";
 import type { WorkerAppMessage, WorkerAppReply } from "../../ui/shell/worker-window";
 import {
   directionalFallback,
@@ -288,9 +288,16 @@ function playSfx(window: BlocksWindow, steps: Step[]): void {
   }
 }
 
-/** The window's context menu (sound toggle), offered while paused or over; playing keeps long-press for hard drop. */
+/** Game actions are also reachable through the tap-then-hold menu. */
 function windowMenuItems(window: BlocksWindow): MenuItem[] {
   return [
+    ...(window.phase === "playing" ? [{
+      label: "Hard drop",
+      onSelect: (ctx) => {
+        ctx.stack.pop();
+        if (window.phase === "playing") hardDrop(window);
+      },
+    } satisfies MenuItem] : []),
     {
       label: window.soundOn ? "Sound: on" : "Sound: off",
       onSelect: (ctx) => {
@@ -308,7 +315,7 @@ function windowMenu(window: BlocksWindow): WindowMenu {
       windowId: window.windowId,
       post,
       title: () => window.title,
-      items: () => (window.phase === "playing" ? [] : windowMenuItems(window)),
+      items: () => (window.phase === "playing" && !hasSharedAppActions() ? [] : windowMenuItems(window)),
       claimsLongPress: () => window.phase === "playing",
       size: { width: window.viewportWidth, height: window.viewportHeight },
       paintBase: () => paintContent(window),
@@ -361,7 +368,6 @@ function handlePlayingInput(window: BlocksWindow, event: InputEvent, frameId: nu
       hardDrop(window);
       break;
     case "short-then-long-press":
-      // No context menu mid-game, so this opens the system menu instead.
       windowMenu(window).open();
       break;
     case "double-click":
@@ -477,7 +483,7 @@ function hardDrop(window: BlocksWindow): void {
 
 /** One gravity step: descend, or lock and spawn the next piece. */
 function tick(window: BlocksWindow): void {
-  if (window.phase !== "playing") return;
+  if (window.phase !== "playing" || window.menu?.isOpen()) return;
   if (!tryMove(window, 0, 1)) lockPiece(window);
   renderAndSubmit(window, 0);
 }

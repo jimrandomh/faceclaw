@@ -26,6 +26,34 @@ Download faceclaw-<version>.apk from the GitHub releases section on the phone
 that will be paired with the glasses and install it. On first run, the app will
 walk you through pairing with the glasses and installing custom firmware.
 
+### Independently installed applications
+
+Compatible Android APKs can draw their own glasses screens while Faceclaw owns
+the shell and Bluetooth connection. Install an APK normally, then open
+Settings > Installed apps and select the application to open its phone settings.
+A three-second glasses notice directs you to the phone. Compatible applications
+open their setup page. This list includes only apps declaring an enabled, exported Faceclaw service with the supported protocol version, including apps awaiting approval. Ordinary Android apps are excluded.
+Use the application's Faceclaw permissions page to approve its capabilities. The application asks you to select one active Faceclaw host.
+Approved applications appear in the launcher. Applications with their own phone
+setup screen can open Faceclaw's approval and permission controls directly from
+there. For Signal, open **Signal for Faceclaw** in the phone launcher to see the
+selected host, pair the Signal bridge, and check connection status. Host selection
+and bridge pairing are separate steps.
+
+Settings > Priorities lists system behaviors first. Select a behavior to see the
+ordered applications, their availability, and the current owner. Moving an
+application to first place changes priority without granting permissions.
+
+New app approvals start with notifications, dictation/review, message text previews
+and declared-source suppression checked. Review or change these choices before
+approving. Existing settings are preserved when Faceclaw is updated.
+
+Developers can use Android Canvas, the optional Faceclaw UI helpers, or both.
+See [APK extensions and override behavior](docs/APK-EXTENSIONS.md) for global UI and service providers, per-feature priorities, shared typography, and rollback.
+
+See the [Android SDK and Kotlin example](android-sdk/README.md) for the service
+contract, drawing API, permissions, lifecycle, and verification fixtures.
+
 
 ## Compiling
 
@@ -186,4 +214,3 @@ mention them and link to that provider's privacy policy. For services that
 involve a user-provided API key, we assume that the user agreed to any terms
 associated with that service when they generated the key. For services that
 don't involve API keys, more caution may be required.
-

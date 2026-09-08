@@ -1,12 +1,10 @@
 /**
  * What wrapping and truncation need from a font. BdfFont and TtfFont both
- * satisfy it structurally: getGlyph feeds per-codepoint advances for wrap
- * measurement (integer and kerning-free, so slightly conservative for kerned
- * faces), measureText feeds truncation.
+ * satisfy it structurally. Wrapping and truncation use the same measured
+ * widths as rendering, including fractional advances and kerning.
  */
 export interface WrapFont {
   measureText(text: string): number;
-  getGlyph(codePoint: number): { dwidthX: number } | undefined;
 }
 
 export type WrapTextOptions = {
@@ -57,21 +55,31 @@ export function wrapText(font: WrapFont, text: string, targetWidth: number, opts
 }
 
 export function truncateText(font: WrapFont, text: string, maxWidth: number): string {
-  if (font.measureText(text) <= maxWidth) return text;
-  let out = text;
-  while (out.length > 1 && font.measureText(`${out}...`) > maxWidth) {
-    out = out.slice(0, -1);
-  }
-  return `${out}...`;
+  return truncateMeasured(font, text, maxWidth, false);
 }
 
 export function truncateLeft(font: WrapFont, text: string, maxWidth: number): string {
+  return truncateMeasured(font, text, maxWidth, true);
+}
+
+/** Keep complete codepoints and include the marker in the measured budget. */
+function truncateMeasured(font: WrapFont, text: string, maxWidth: number, fromLeft: boolean): string {
+  if (!(maxWidth > 0)) return "";
   if (font.measureText(text) <= maxWidth) return text;
-  let out = text;
-  while (out.length > 1 && font.measureText(`...${out}`) > maxWidth) {
-    out = out.slice(1);
+  let marker = "...";
+  while (marker && font.measureText(marker) > maxWidth) marker = marker.slice(1);
+  if (marker.length < 3) return marker;
+  const characters = Array.from(text);
+  const candidate = (count: number) => fromLeft
+    ? marker + characters.slice(characters.length - count).join("")
+    : characters.slice(0, count).join("") + marker;
+  let low = 0, high = characters.length - 1, best = 0;
+  while (low <= high) {
+    const mid = (low + high) >>> 1;
+    if (font.measureText(candidate(mid)) <= maxWidth) { best = mid; low = mid + 1; }
+    else high = mid - 1;
   }
-  return `...${out}`;
+  return candidate(best);
 }
 
 function wrapParagraph(font: WrapFont, paragraph: string, targetWidth: number, opts: WrapTextOptions): string[] {
@@ -79,7 +87,8 @@ function wrapParagraph(font: WrapFont, paragraph: string, targetWidth: number, o
     return [""];
   }
 
-  const widths = measureOffsets(font, paragraph);
+  const offsets = codePointOffsets(paragraph);
+  const spanWidth = (start: number, end: number) => font.measureText(paragraph.slice(start, end));
   const wrapOffsets = findWrapOpportunities(paragraph);
   if (wrapOffsets[wrapOffsets.length - 1] !== paragraph.length) {
     wrapOffsets.push(paragraph.length);
@@ -91,22 +100,21 @@ function wrapParagraph(font: WrapFont, paragraph: string, targetWidth: number, o
     let best = -1;
     for (const candidate of wrapOffsets) {
       if (candidate <= start) continue;
-      if (measureSpan(widths, candidate) - measureSpan(widths, start) <= targetWidth) {
+      if (spanWidth(start, trimEndOffset(paragraph, candidate)) <= targetWidth) {
         best = candidate;
         continue;
       }
       break;
     }
 
-    const splitOffset = furthestFittingOffset(widths, start, targetWidth);
-    if (opts.breakLongWords && splitOffset > start && (best < 0 || splitOffset > trimEndOffset(paragraph, best))) {
-      best = splitOffset;
-    }
-    if (best < 0) {
-      best = splitOffset;
+    // Whole words already fit in the common case. Only probe character
+    // boundaries for an overlong word or an explicit hard-wrap request.
+    if (best < 0 || opts.breakLongWords) {
+      const splitOffset = furthestMeasuredOffset(offsets, start, targetWidth, spanWidth);
+      if (best < 0 || splitOffset > trimEndOffset(paragraph, best)) best = splitOffset;
     }
     if (best <= start) {
-      best = nextOffset(widths, start);
+      best = nextOffset(offsets, start);
     }
 
     const lineEnd = trimEndOffset(paragraph, best);
@@ -118,43 +126,32 @@ function wrapParagraph(font: WrapFont, paragraph: string, targetWidth: number, o
   return lines.length ? lines : [""];
 }
 
-function measureOffsets(font: WrapFont, text: string): Map<number, number> {
-  const widths = new Map<number, number>();
-  let total = 0;
-  widths.set(0, 0);
-  for (let i = 0; i < text.length; ) {
-    const codePoint = text.codePointAt(i) ?? 32;
-    const char = String.fromCodePoint(codePoint);
-    i += char.length;
-    total += font.getGlyph(codePoint)?.dwidthX ?? 0;
-    widths.set(i, total);
+function codePointOffsets(text: string): number[] {
+  const offsets = [0];
+  let offset = 0;
+  for (const character of text) {
+    offset += character.length;
+    offsets.push(offset);
   }
-  return widths;
+  return offsets;
 }
 
-function furthestFittingOffset(widths: Map<number, number>, start: number, targetWidth: number): number {
-  const startWidth = measureSpan(widths, start);
+function furthestMeasuredOffset(boundaries: number[], start: number, targetWidth: number, measure: (start: number, end: number) => number): number {
+  const offsets = boundaries.filter(offset => offset > start);
+  let low = 0;
+  let high = offsets.length - 1;
   let best = start;
-  for (const offset of widths.keys()) {
-    if (offset <= start) continue;
-    if (measureSpan(widths, offset) - startWidth <= targetWidth) {
-      best = offset;
-      continue;
-    }
-    break;
+  while (low <= high) {
+    const mid = (low + high) >>> 1;
+    const end = offsets[mid]!;
+    if (measure(start, end) <= targetWidth) { best = end; low = mid + 1; }
+    else high = mid - 1;
   }
   return best;
 }
 
-function nextOffset(widths: Map<number, number>, start: number): number {
-  for (const offset of widths.keys()) {
-    if (offset > start) return offset;
-  }
-  return start;
-}
-
-function measureSpan(widths: Map<number, number>, offset: number): number {
-  return widths.get(offset) ?? 0;
+function nextOffset(offsets: number[], start: number): number {
+  return offsets.find(offset => offset > start) ?? start;
 }
 
 function skipLeadingWhitespace(text: string, offset: number): number {
@@ -184,12 +181,11 @@ function trimEndOffset(text: string, offset: number): number {
 }
 
 function previousOffset(text: string, offset: number): number {
-  let cursor = 0;
-  let previous = 0;
-  while (cursor < offset) {
-    previous = cursor;
-    const codePoint = text.codePointAt(cursor) ?? 0;
-    cursor += String.fromCodePoint(codePoint).length;
+  let previous = Math.max(0, offset - 1);
+  const low = text.charCodeAt(previous);
+  if (previous > 0 && low >= 0xdc00 && low <= 0xdfff) {
+    const high = text.charCodeAt(previous - 1);
+    if (high >= 0xd800 && high <= 0xdbff) previous--;
   }
   return previous;
 }

@@ -18,6 +18,10 @@ export type BaseInputEvent = {
 
 /** The per-type part of InputEvent; makeInputEvent adds the BaseInputEvent fields. */
 export type InputEventPayload =
+  /** Host-generated replies for a built-in worker menu rendered by an APK. */
+  | { type: "app-menu-selection"; menuId: number; index: number }
+  | { type: "app-menu-closed"; menuId: number }
+  | { type: "app-menu-fallback"; menuId: number }
   | { type: "click"; source: InputSource }
   | { type: "double-click"; source: InputSource }
   /** Ring scroll (or a watch crown turn, then tagged source "watch"). */

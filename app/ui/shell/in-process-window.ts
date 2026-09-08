@@ -5,7 +5,7 @@ import { beginRenderPass, endRenderPass } from "../../util/render-freshness";
 import { InputEvent } from "../gestures";
 import { Layer, LayerActions, LayerContext, LayerStack, PaintBelow } from "../layers";
 import { type MenuItem } from "../menu";
-import { WindowMenuLayer } from "../window-menu";
+import { presentAppMenu, WindowMenuLayer, appActionItems, hasSharedAppActions } from "../window-menu";
 import { windowIcon } from "./chrome-layer";
 import { type IconName } from "../../graphics/icons";
 import { appViewportSize, type WindowHeightMode } from "./geometry";
@@ -136,12 +136,14 @@ export function createInProcessWindow(options: InProcessWindowOptions): InProces
   // system menu when it has none (so both gestures land on the same menu).
   const openWindowMenu = () => {
     if (stack.topMatches((layer) => layer instanceof WindowMenuLayer)) return;
-    const items = appMenuItems();
+    const items = appActionItems(appMenuItems(), () => shell.sleepAtAppRoot(), () => shell.openSystemMenu(options.windowId));
     if (!items.length) {
       shell.openSystemMenu(options.windowId);
       return;
     }
-    stack.push(new WindowMenuLayer(options.title, items));
+    const menu = new WindowMenuLayer(options.title, items);
+    stack.push(menu);
+    presentAppMenu(options.windowId, options.title, items, menu, { stack, actions: { ...options.actions, requestRender } }, () => stack.removeLayer(menu));
   };
 
   const window: ShellWindow = {
@@ -154,7 +156,7 @@ export function createInProcessWindow(options: InProcessWindowOptions): InProces
     // directional or falls back to click / double-click.
     acceptsDirectional: true,
     heightMode,
-    hasAppMenu: () => appMenuItems().length > 0,
+    hasAppMenu: () => hasSharedAppActions() || appMenuItems().length > 0,
     close: () => {
       closed = true;
       // Fire onRemoved for any pushed layers so they release resources (e.g. a
@@ -246,7 +248,7 @@ export class YieldAtRootLayer implements Layer {
 
   async handleInput(event: InputEvent, ctx: LayerContext): Promise<void> {
     if (event.type === "double-click") {
-      shell.yieldFocusToSidebar();
+      shell.returnFromAppRoot();
       return;
     }
     await this.inner.handleInput(event, ctx);

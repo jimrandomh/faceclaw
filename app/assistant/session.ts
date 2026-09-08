@@ -1,3 +1,4 @@
+import { sendExtensionAssistant } from "../apps/external/extension-providers";
 import {
   ASSISTANT_SYSTEM_PROMPT_BASE,
   buildAssistantSystemPrompt,
@@ -30,7 +31,8 @@ import type {
 /** Which engine answers utterances, plus what it needs to do so. */
 export type AssistantBackendConfig =
   | { kind: "direct"; llm: ResolvedAssistantModel }
-  | { kind: "external"; bridge: AssistantBridgeConfig };
+  | { kind: "external"; bridge: AssistantBridgeConfig }
+  | { kind: "extension"; component: string; generation: number; fallback: AssistantBackendConfig | null };
 
 /** A new PTT after this much idle starts a fresh conversation. */
 const SESSION_IDLE_MS = 10 * 60 * 1000;
@@ -54,6 +56,7 @@ export class AssistantSession {
 
   matchesConfiguration(config: AssistantBackendConfig): boolean {
     if (this.config.kind !== config.kind) return false;
+    if (this.config.kind === "extension" && config.kind === "extension") return this.config.component === config.component && this.config.generation === config.generation;
     if (this.config.kind === "direct" && config.kind === "direct") {
       return (
         this.config.llm.provider === config.llm.provider &&
@@ -73,7 +76,7 @@ export class AssistantSession {
 
   /** Whether this session has been idle long enough to retire. */
   isExpired(nowMs = Date.now()): boolean {
-    return nowMs - this.lastActivityMs > SESSION_IDLE_MS;
+    return this.config.kind === "extension" || nowMs - this.lastActivityMs > SESSION_IDLE_MS;
   }
 
   isTurnActive(): boolean {
@@ -105,6 +108,15 @@ export class AssistantSession {
       },
     };
 
+    if (this.config.kind === "extension") {
+      const fallbackConfig = this.config.fallback;
+      this.turnHandle = sendExtensionAssistant(text, wrappedCallbacks, () => {
+        if (!fallbackConfig) { wrappedCallbacks.onError("Assistant unavailable; no host fallback is configured"); return { cancel() {} }; }
+        const fallback = new AssistantSession(fallbackConfig, this.registry); fallback.sendUtterance(text, ctx, wrappedCallbacks);
+        return { cancel() { fallback.cancel(); } };
+      });
+      return;
+    }
     if (this.config.kind === "external") {
       // History and the agent loop live on the agent's machine; the phone just
       // streams this turn. The overlay keeps its own display state.

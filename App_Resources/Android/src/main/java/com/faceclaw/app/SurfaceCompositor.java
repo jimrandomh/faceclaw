@@ -224,7 +224,9 @@ public final class SurfaceCompositor {
      * its brightness (256 = no dimming): how a shell overlay that dims what it
      * covers (the TS Layer.dimUnderneath) reaches the window surfaces beneath
      * the shell surface, which the shell's own layer stack cannot paint.
-     * Visible pixels stay at least 1 (the color-key black); glyph and
+     * A zero factor excludes underlay surfaces and their deferred draws from
+     * the composite. With a positive factor, visible pixels stay at least 1
+     * (the color-key black); glyph and
      * firmware-text draws keep their cached-draw form with a dimmed value;
      * image draws leave the composite's draw list (their pixels, already
      * baked into the surface, dim as raster). Takes effect when the next
@@ -417,7 +419,9 @@ public final class SurfaceCompositor {
                 .comparingInt((Surface s) -> s.zOrder)
                 .thenComparing(s -> s.id));
         for (Surface surface : ordered) {
-            if (surface.visible) {
+            // Preview, screenshots and recordings must hide the same underlays
+            // as the transmitted composite, before preview gamma brightens them.
+            if (surface.visible && dimForLocked(surface) != 0) {
                 blendLocked(gray, surface);
             }
         }
@@ -438,7 +442,9 @@ public final class SurfaceCompositor {
         fingerprint.append(screenWidth).append('x').append(screenHeight);
         List<ScreenDraw> draws = new ArrayList<>();
         for (Surface surface : ordered) {
-            if (!surface.visible) continue;
+            // Zero means fully hidden, including cached glyph/image identities.
+            // dimValue's positive-brightness floor must not reveal the old app.
+            if (!surface.visible || dimForLocked(surface) == 0) continue;
             blendLocked(gray, surface);
             int dim = dimForLocked(surface);
             for (ScreenDraw draw : surface.draws) {

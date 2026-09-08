@@ -83,6 +83,9 @@
 				android:resource="@xml/file_provider_paths" />
 		</provider>
 
+        <activity android:name="com.faceclaw.app.FaceclawAppSettingsActivity" android:exported="true" android:theme="@android:style/Theme.Material.Light.NoActionBar">
+            <intent-filter><action android:name="com.faceclaw.action.MANAGE_APPS" /><category android:name="android.intent.category.DEFAULT" /></intent-filter>
+        </activity>
 		<activity
 			android:name="com.tns.NativeScriptActivity"
 			android:label="@string/title_activity_kimera"

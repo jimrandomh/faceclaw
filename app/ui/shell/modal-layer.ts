@@ -40,7 +40,7 @@ export function modalRect(): { x: number; y: number; width: number; height: numb
 export class ShellModalLayer implements Layer {
   private readonly stack: LayerStack;
 
-  constructor(baseLayer: Layer, actions: LayerActions) {
+  constructor(private readonly baseLayer: Layer, actions: LayerActions) {
     this.stack = new LayerStack(baseLayer, actions, modalInterior());
   }
 
@@ -59,6 +59,8 @@ export class ShellModalLayer implements Layer {
     image.bitBlt(inner, rect.x + MODAL_PADDING, rect.y + MODAL_PADDING, { transparentZero: true });
     return image;
   }
+
+  onRemoved(): void { this.stack.clearToBase(); this.baseLayer.onRemoved?.(); }
 
   async handleInput(event: InputEvent, _ctx: LayerContext): Promise<void> {
     await this.stack.handleInput(event);

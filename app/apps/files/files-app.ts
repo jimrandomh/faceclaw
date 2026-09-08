@@ -48,7 +48,7 @@ export function createFilesAppWindow(options: FilesAppOptions): InProcessWindow 
     isSupportedFile: (name) => TEXT_FILE.test(name) || isDecodableImageFile(name) || EHPK_FILE.test(name) || isFontFile(name),
     // The browser handles double-click itself (up a level), so it is not
     // wrapped in YieldAtRootLayer; it yields explicitly from the top level.
-    onLeave: () => shell.yieldFocusToSidebar(),
+    onLeave: () => shell.returnFromAppRoot(),
     onFilePicked: (entry, ctx) => {
       ctx.stack.push(new FileInfoDialogLayer(entry, fileOpenActions(entry, options)));
     },

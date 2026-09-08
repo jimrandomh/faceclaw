@@ -3,6 +3,8 @@ package com.faceclaw.app;
 import android.app.Notification;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
+import android.app.RemoteInput;
+import android.content.Intent;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Color;
@@ -10,6 +12,7 @@ import android.graphics.drawable.BitmapDrawable;
 import android.graphics.drawable.Drawable;
 import android.graphics.drawable.Icon;
 import android.os.Bundle;
+import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
 import android.service.notification.NotificationListenerService;
@@ -35,6 +38,7 @@ public class FaceclawMediaNotificationListenerService extends NotificationListen
     private static volatile FaceclawMediaNotificationListenerService activeService;
     private static final Handler mainHandler = new Handler(Looper.getMainLooper());
     private static final Set<FaceclawNotificationListener> notificationListeners = new CopyOnWriteArraySet<>();
+    private static final Set<String> sentReplies = new HashSet<>();
     private static final Set<String> activeNotificationWakeKeys = new HashSet<>();
 
     @Override
@@ -47,6 +51,7 @@ public class FaceclawMediaNotificationListenerService extends NotificationListen
     public void onDestroy() {
         if (activeService == this) {
             activeService = null;
+            emitNotificationsChanged();
         }
         super.onDestroy();
     }
@@ -56,6 +61,7 @@ public class FaceclawMediaNotificationListenerService extends NotificationListen
         activeService = this;
         super.onListenerConnected();
         refreshActiveNotificationWakeKeys(this);
+        emitNotificationsChanged();
     }
 
     @Override
@@ -64,6 +70,22 @@ public class FaceclawMediaNotificationListenerService extends NotificationListen
             activeService = null;
         }
         super.onListenerDisconnected();
+        emitNotificationsChanged();
+    }
+
+    @Override
+    public void onNotificationRankingUpdate(NotificationListenerService.RankingMap rankingMap) {
+        super.onNotificationRankingUpdate(rankingMap);
+        emitNotificationsChanged();
+    }
+
+    private static void emitNotificationsChanged() {
+        for (FaceclawNotificationListener listener : notificationListeners) {
+            mainHandler.post(() -> {
+                try { listener.onNotificationsChanged(); }
+                catch (Throwable t) { Log.w(TAG, "notification snapshot listener failed", t); }
+            });
+        }
     }
 
     @Override
@@ -81,6 +103,14 @@ public class FaceclawMediaNotificationListenerService extends NotificationListen
     @Override
     public void onNotificationRemoved(StatusBarNotification statusBarNotification) {
         forgetActiveNotificationWakeKey(statusBarNotification);
+        if (statusBarNotification != null) {
+            for (FaceclawNotificationListener listener : notificationListeners) {
+                mainHandler.post(() -> {
+                    try { listener.onNotificationRemoved(statusBarNotification.getKey()); }
+                    catch (Throwable t) { Log.w(TAG, "notification removal listener failed", t); }
+                });
+            }
+        }
         super.onNotificationRemoved(statusBarNotification);
     }
 
@@ -255,20 +285,31 @@ public class FaceclawMediaNotificationListenerService extends NotificationListen
         return out.toString();
     }
 
+    public static synchronized boolean invokeNotificationActionAtVersion(String key, int actionIndex, long postTime) {
+        StatusBarNotification sbn = findActiveNotificationByKey(activeService, key);
+        if (sbn == null || sbn.getPostTime() != postTime) return false;
+        String receipt = key + ":" + postTime + ":action:" + actionIndex;
+        if (sentReplies.contains(receipt) || sentReplies.size() >= 4096) return false;
+        sentReplies.add(receipt);
+        return invokeActionSnapshot(sbn, actionIndex);
+    }
+
     public static boolean invokeNotificationAction(String key, int actionIndex) {
         FaceclawMediaNotificationListenerService service = activeService;
         StatusBarNotification statusBarNotification = findActiveNotificationByKey(service, key);
-        if (statusBarNotification == null || statusBarNotification.getNotification() == null) {
-            return false;
-        }
+        return invokeActionSnapshot(statusBarNotification, actionIndex);
+    }
+
+    private static boolean invokeActionSnapshot(StatusBarNotification statusBarNotification, int actionIndex) {
+        if (statusBarNotification == null || statusBarNotification.getNotification() == null) return false;
         Notification.Action[] actions = statusBarNotification.getNotification().actions;
         if (actions == null || actionIndex < 0 || actionIndex >= actions.length) {
             return false;
         }
+        RemoteInput[] inputs = actions[actionIndex].getRemoteInputs();
+        if (inputs != null) for (RemoteInput input : inputs) if (input.getAllowFreeFormInput()) return false;
         PendingIntent intent = actions[actionIndex].actionIntent;
-        if (intent == null) {
-            return false;
-        }
+        if (intent == null || !statusBarNotification.getPackageName().equals(intent.getCreatorPackage())) return false;
         try {
             intent.send();
             return true;
@@ -279,6 +320,35 @@ public class FaceclawMediaNotificationListenerService extends NotificationListen
             Log.w(TAG, "failed to invoke notification action", t);
             return false;
         }
+    }
+
+    /** Re-read the active notification at send time and reject stale or duplicate replies. */
+    public static synchronized boolean replyToNotification(String key, int actionIndex, long expectedPostTime, String text) {
+        if (text == null || text.trim().isEmpty() || text.length() > 20000) return false;
+        FaceclawMediaNotificationListenerService service = activeService;
+        StatusBarNotification sbn = findActiveNotificationByKey(service, key);
+        if (sbn == null || sbn.getPostTime() != expectedPostTime || !shouldShowNotificationInList(service, sbn)) return false;
+        Notification.Action[] actions = sbn.getNotification().actions;
+        if (actions == null || actionIndex < 0 || actionIndex >= actions.length) return false;
+        Notification.Action action = actions[actionIndex];
+        if (action == null || action.actionIntent == null || !sbn.getPackageName().equals(action.actionIntent.getCreatorPackage())) return false;
+        RemoteInput[] inputs = action.getRemoteInputs();
+        if (inputs == null) return false;
+        RemoteInput input = null;
+        for (RemoteInput candidate : inputs) if (candidate.getAllowFreeFormInput()) { input = candidate; break; }
+        if (input == null) return false;
+        String receipt = key + ":" + expectedPostTime + ":" + actionIndex;
+        if (sentReplies.contains(receipt) || sentReplies.size() >= 4096) return false;
+        // Mark before dispatch. An uncertain send must never be automatically replayed.
+        sentReplies.add(receipt);
+        try {
+            Bundle results = new Bundle(); results.putCharSequence(input.getResultKey(), text);
+            Intent fillIn = new Intent();
+            RemoteInput.addResultsToIntent(inputs, fillIn, results);
+            RemoteInput.setResultsSource(fillIn, RemoteInput.SOURCE_FREE_FORM_INPUT);
+            action.actionIntent.send(service, 0, fillIn);
+            return true;
+        } catch (Exception e) { return false; }
     }
 
     public static boolean dismissNotification(String key) {
@@ -296,6 +366,13 @@ public class FaceclawMediaNotificationListenerService extends NotificationListen
             Log.w(TAG, "failed to dismiss notification", t);
             return false;
         }
+    }
+
+    public static boolean dismissNotificationAtVersion(String key, long postTime) {
+        FaceclawMediaNotificationListenerService service = activeService;
+        StatusBarNotification current = findActiveNotificationByKey(service, key);
+        if (current == null || current.getPostTime() != postTime || !shouldShowNotificationInList(service, current)) return false;
+        return dismissNotification(key);
     }
 
     private static void emitNotificationPosted(String key) {
@@ -348,7 +425,13 @@ public class FaceclawMediaNotificationListenerService extends NotificationListen
             alreadyActive = activeNotificationWakeKeys.contains(key);
             activeNotificationWakeKeys.add(key);
         }
-        return !alreadyActive || !isPersistentNotification(statusBarNotification);
+        return !alreadyActive || !isPersistentNotification(statusBarNotification) || isMessageNotification(statusBarNotification.getNotification());
+    }
+
+    private static boolean isMessageNotification(Notification notification) {
+        if (notification == null) return false;
+        return Notification.CATEGORY_MESSAGE.equals(notification.category) ||
+                (notification.extras != null && notification.extras.containsKey(Notification.EXTRA_MESSAGES));
     }
 
     private static void forgetActiveNotificationWakeKey(StatusBarNotification statusBarNotification) {
@@ -388,6 +471,7 @@ public class FaceclawMediaNotificationListenerService extends NotificationListen
         if (statusBarNotification == null || statusBarNotification.getNotification() == null) {
             return false;
         }
+        if (android.os.Process.myUserHandle().equals(statusBarNotification.getUser()) && FaceclawExternalApps.get(service).isSourceSuppressed(statusBarNotification.getPackageName())) return false;
         // Our own notifications stay out of the mirror: the foreground-service
         // one is noise, and the Timers app rings on the glasses itself (its
         // phone notification is for the phone), so mirroring it would stack a
@@ -563,6 +647,13 @@ public class FaceclawMediaNotificationListenerService extends NotificationListen
         out.put("appName", getNotificationAppName(service, statusBarNotification));
         out.put("postTime", statusBarNotification.getPostTime());
         out.put("when", notification.when);
+        out.put("isGroupSummary", (notification.flags & Notification.FLAG_GROUP_SUMMARY) != 0);
+        out.put("isForegroundService", (notification.flags & Notification.FLAG_FOREGROUND_SERVICE) != 0);
+        out.put("isOngoing", (notification.flags & Notification.FLAG_ONGOING_EVENT) != 0);
+        out.put("userId", statusBarNotification.getUserId());
+        if (Build.VERSION.SDK_INT >= 26) putString(out, "conversationId", notification.getShortcutId());
+        out.put("messages", notificationMessages(notification));
+        putString(out, "groupKey", statusBarNotification.getGroupKey());
         putString(out, "category", notification.category);
         if (extras != null) {
             putCharSequence(out, "title", firstNonEmpty(
@@ -605,10 +696,34 @@ public class FaceclawMediaNotificationListenerService extends NotificationListen
                 actionJson.put("index", index);
                 actionJson.put("title", title);
                 actionJson.put("enabled", action.actionIntent != null);
+                boolean acceptsText = false;
+                RemoteInput[] inputs = action.getRemoteInputs();
+                if (inputs != null) for (RemoteInput input : inputs) if (input.getAllowFreeFormInput()) acceptsText = true;
+                actionJson.put("acceptsText", acceptsText);
                 actionsJson.put(actionJson);
             }
         }
         out.put("actions", actionsJson);
+        return out;
+    }
+
+    private static JSONArray notificationMessages(Notification notification) {
+        JSONArray out = new JSONArray();
+        if (notification.extras == null || Build.VERSION.SDK_INT < 30) return out;
+        try {
+            android.os.Parcelable[] bundles = notification.extras.getParcelableArray(Notification.EXTRA_MESSAGES);
+            if (bundles == null) return out;
+            java.util.List<Notification.MessagingStyle.Message> messages = Notification.MessagingStyle.Message.getMessagesFromBundleArray(bundles);
+            for (int i = Math.max(0, messages.size() - 50); i < messages.size(); i++) {
+                Notification.MessagingStyle.Message message = messages.get(i);
+                JSONObject item = new JSONObject();
+                putCharSequence(item, "text", message.getText());
+                putCharSequence(item, "sender", message.getSender());
+                item.put("timestamp", message.getTimestamp());
+                item.put("attachment", message.getDataMimeType() != null);
+                out.put(item);
+            }
+        } catch (Throwable ignored) { /* Malformed extras cannot break other notifications. */ }
         return out;
     }
 

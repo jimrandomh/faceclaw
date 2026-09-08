@@ -1,3 +1,4 @@
+import { extensionPlatform } from "../../apps/external/extension-platform";
 import { GrayImage } from "../../graphics/image";
 import { windowIcon } from "./chrome-layer";
 import { type IconActivity, type IconName } from "../../graphics/icons";
@@ -25,6 +26,7 @@ export type WorkerAppMessage =
   | { type: "tool-call"; callId: string; windowId: string; name: string; args: unknown };
 
 export type WorkerAppReply =
+  | { type: "present-app-menu"; windowId: string; menuId: number; title: string; items: { label: string; enabled: boolean }[] }
   | {
       /**
        * The worker's bundle has evaluated and its onmessage handler is
@@ -34,6 +36,7 @@ export type WorkerAppReply =
       type: "worker-ready";
     }
   | { type: "yield-focus"; windowId: string }
+  | { type: "sleep-display"; windowId: string }
   | {
       /** Foreground and focus one of the app's existing windows. */
       type: "focus-window";
@@ -215,6 +218,16 @@ export class WorkerAppHost {
       const message = event.data as WorkerAppReply | undefined;
       if (!message) return;
       switch (message.type) {
+        case "present-app-menu": {
+          if (!this.openWindows.has(message.windowId) || shell.foregroundWindow()?.windowId !== message.windowId) break;
+          let selected = false;
+          const send = (event: unknown) => this.post({ type: "input", windowId: message.windowId, frameId: 0, focused: shell.isWindowFocused(message.windowId), event });
+          const opened = shell.canShowExtensionOverlay() && extensionPlatform()?.openMenu(message.windowId, message.title, message.items.map((item, index) => ({
+            ...item, onSelect: () => { selected = true; send({ type: "app-menu-selection", menuId: message.menuId, index, timestampMs: Date.now() }); },
+          })), () => { setTimeout(() => { if (!selected) send({ type: "app-menu-closed", menuId: message.menuId, timestampMs: Date.now() }); }, 0); });
+          if (!opened) send({ type: "app-menu-fallback", menuId: message.menuId, timestampMs: Date.now() });
+          break;
+        }
         case "worker-ready":
           this.workerReady = true;
           for (const queued of this.queuedMessages.splice(0)) {
@@ -224,8 +237,11 @@ export class WorkerAppHost {
         case "yield-focus":
           // Only the focused window's yield is meaningful.
           if (shell.foregroundWindow()?.windowId === message.windowId) {
-            shell.yieldFocusToSidebar();
+            shell.returnFromAppRoot();
           }
+          break;
+        case "sleep-display":
+          if (shell.foregroundWindow()?.windowId === message.windowId) shell.sleepAtAppRoot();
           break;
         case "focus-window":
           if (this.openWindows.has(message.windowId)) {

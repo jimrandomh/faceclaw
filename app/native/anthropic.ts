@@ -1,3 +1,4 @@
+import { refineThroughExtension } from "../apps/external/extension-providers";
 import { buildRefineUserMessage, REFINE_SYSTEM_PROMPT } from "../prompts";
 import type {
   LlmContentBlock,
@@ -249,6 +250,12 @@ export type RefineDictationOptions = {
  * (appended content or a spoken edit instruction) into one edited text.
  */
 export function refineDictation(options: RefineDictationOptions): AnthropicStreamHandle {
+  const extension = refineThroughExtension(options); if (extension) return extension;
+  return refineHostDictation(options);
+}
+
+/** Explicit host fallback bypasses global extensions and keeps host credentials private. */
+export function refineHostDictation(options: RefineDictationOptions): AnthropicStreamHandle {
   return streamAnthropicMessage({
     apiKey: options.apiKey,
     model: DEFAULT_LLM_MODEL,

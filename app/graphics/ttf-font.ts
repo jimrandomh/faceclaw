@@ -37,7 +37,10 @@ declare const global: any;
  */
 const DEFAULT_TTF_GAMMA = 1.0;
 
+export type TtfRasterMode = "antialiased" | "crisp" | "hinted";
+
 const loadedFonts = new Map<string, TtfFont | null>();
+const rasterSuffix = (mode: TtfRasterMode) => mode === "antialiased" ? "" : `:${mode}`;
 
 export class TtfFont implements GlyphFont {
   readonly fingerprintId = allocateFontFingerprintId();
@@ -53,6 +56,7 @@ export class TtfFont implements GlyphFont {
     readonly path: string,
     readonly sizePx: number,
     readonly gamma: number,
+    readonly rasterMode: TtfRasterMode,
     ascent: number,
     descent: number,
   ) {
@@ -60,7 +64,7 @@ export class TtfFont implements GlyphFont {
     this.descent = descent;
     this.lineHeight = ascent + descent;
     const basename = path.slice(path.lastIndexOf("/") + 1).replace(/\.[^.]+$/, "");
-    this.atlasKey = `ttf:${basename}:${fnv32(path).toString(36)}@${sizePx}g${gamma}`;
+    this.atlasKey = `ttf:${basename}:${fnv32(path).toString(36)}@${sizePx}g${gamma}${rasterSuffix(rasterMode)}`;
   }
 
   /**
@@ -68,8 +72,8 @@ export class TtfFont implements GlyphFont {
    * file is missing/unloadable or off-Android — callers fall back to a BDF
    * face.
    */
-  static load(path: string, sizePx: number, gamma = DEFAULT_TTF_GAMMA): TtfFont | null {
-    const key = `${path}@${sizePx}g${gamma}`;
+  static load(path: string, sizePx: number, gamma = DEFAULT_TTF_GAMMA, rasterMode: TtfRasterMode = "antialiased"): TtfFont | null {
+    const key = `${path}@${sizePx}g${gamma}${rasterSuffix(rasterMode)}`;
     const cached = loadedFonts.get(key);
     if (cached !== undefined) return cached;
     let font: TtfFont | null = null;
@@ -80,7 +84,7 @@ export class TtfFont implements GlyphFont {
         if (parts.length === 3 && parts.every((part) => Number.isFinite(part))) {
           const [ascent, descent] = parts as [number, number, number];
           if (ascent + descent > 0 && ascent + descent <= 255) {
-            font = new TtfFont(path, sizePx, gamma, ascent, descent);
+            font = new TtfFont(path, sizePx, gamma, rasterMode, ascent, descent);
           }
         }
       } catch (error) {
@@ -203,7 +207,11 @@ export class TtfFont implements GlyphFont {
     let bytes: Uint8Array;
     try {
       bytes = toUint8Array(
-        com.faceclaw.app.FontFileRenderer.renderGlyphCell(this.path, this.sizePx, codePoint, this.gamma),
+        this.rasterMode === "hinted"
+          ? com.faceclaw.app.FontFileRenderer.renderGlyphCellHinted(this.path, this.sizePx, codePoint)
+          : this.rasterMode === "crisp"
+            ? com.faceclaw.app.FontFileRenderer.renderGlyphCellCrisp(this.path, this.sizePx, codePoint)
+            : com.faceclaw.app.FontFileRenderer.renderGlyphCell(this.path, this.sizePx, codePoint, this.gamma),
       );
     } catch (error) {
       console.warn(`renderGlyphCell failed for U+${codePoint.toString(16)}: ${error}`);

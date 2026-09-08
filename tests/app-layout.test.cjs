@@ -16,6 +16,7 @@ function geometry() {
     terminalDisplayModeSetting: 'default', terminalVerticalPositionSetting: 'global',
   }).map(([name, value]) => [name, { value, get() { return this.value; } }]));
   const context = { exports: {}, require: (name) => {
+    if (name === '../extension-settings') return { windowLayoutPolicy: () => ({ centered: false, sidebarMode: 'persistent' }) };
     if (name === '../../graphics/image') return { G2_LENS_WIDTH: 640, G2_LENS_HEIGHT: 480 };
     assert.equal(name, '../dashboard-settings');
     return settings;

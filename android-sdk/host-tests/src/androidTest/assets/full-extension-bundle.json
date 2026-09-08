@@ -1,0 +1,100 @@
+{
+  "declarations": [
+    {
+      "feature": "notification-content",
+      "enabled": true,
+      "configuration": {
+        "label": "T3 own notification inbox"
+      }
+    },
+    {
+      "feature": "ui.launcher",
+      "enabled": true,
+      "configuration": {
+        "label": "T3 vertical launcher",
+        "filesDefaultView": "list"
+      }
+    },
+    {
+      "feature": "ui.navigation",
+      "enabled": true,
+      "configuration": {
+        "rootBack": "sleep",
+        "doubleTap": "sleep",
+        "tapHold": "switcher",
+        "hold": "app-menu",
+        "wakeFocus": "window"
+      }
+    },
+    {
+      "feature": "ui.app-menu",
+      "enabled": true,
+      "configuration": {
+        "title": "App actions",
+        "displayOffFirst": true,
+        "systemActionsLast": true,
+        "systemTitle": "System actions"
+      }
+    },
+    {
+      "feature": "ui.window-layout",
+      "enabled": true,
+      "configuration": {
+        "centered": true,
+        "sidebarMode": "overlay",
+        "switcherHeight": "display",
+        "dividerWidth": 2,
+        "ownTopBar": false,
+        "ownHeightMode": "medium",
+        "inputDialogs": "viewport"
+      }
+    },
+    {
+      "feature": "ui.typography",
+      "enabled": true,
+      "configuration": {
+        "font": "Inter_18pt-Regular.ttf",
+        "size": 17,
+        "raster": "crisp",
+        "borderWidth": 2,
+        "selectionBorderWidth": 3,
+        "cardRadius": 8
+      }
+    },
+    {
+      "feature": "ui.notifications",
+      "enabled": true,
+      "configuration": {
+        "label": "T3 notification inbox and previews"
+      }
+    },
+    {
+      "feature": "assistant",
+      "enabled": true,
+      "configuration": {
+        "label": "T3 assistant"
+      }
+    },
+    {
+      "feature": "transcription",
+      "enabled": true,
+      "configuration": {
+        "label": "T3 bridge Whisper"
+      }
+    },
+    {
+      "feature": "refinement",
+      "enabled": true,
+      "configuration": {
+        "label": "T3 Luna refinement"
+      }
+    },
+    {
+      "feature": "device-tools",
+      "enabled": true,
+      "configuration": {
+        "label": "T3 assistant device tools"
+      }
+    }
+  ]
+}

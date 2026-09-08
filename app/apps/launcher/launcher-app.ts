@@ -1,3 +1,5 @@
+import { attachLauncherSurface } from "../../ui/shell/extension-launcher";
+import { effectiveExtension } from "../../ui/extension-settings";
 import { type BdfFont } from "../../graphics/bdffont";
 import { getDefaultSmallFont } from "../../graphics/ui-fonts";
 import { truncateText } from "../../graphics/textwrap";
@@ -384,7 +386,7 @@ class LauncherGridLayer implements Layer {
         } else if (this.currentFolder !== null) {
           this.exitFolder();
         } else {
-          shell.yieldFocusToSidebar();
+          shell.returnFromAppRoot();
         }
         return;
       default:
@@ -409,7 +411,7 @@ class LauncherGridLayer implements Layer {
     }
     const leave = () => {
       this.mode = "row";
-      shell.yieldFocusToSidebar();
+      shell.returnFromAppRoot();
     };
     switch (event.type) {
       case "swipe-up":
@@ -520,7 +522,7 @@ export function createLauncherWindow(options: LauncherOptions): ShellWindow {
     // Not wrapped in YieldAtRootLayer: the grid handles double-click itself to
     // back out of item selection before yielding to the sidebar.
     baseLayer: gridLayer,
-    submitFrame: options.submitFrame,
+    submitFrame: (planes, paintMs, frameId) => effectiveExtension("ui.launcher") ? Promise.resolve() : options.submitFrame(planes, paintMs, frameId),
     setSurfaceVisible: options.setSurfaceVisible,
   });
   // The assistant's folder tools change the grouping from outside the window;
@@ -535,6 +537,7 @@ export function createLauncherWindow(options: LauncherOptions): ShellWindow {
     lastState = state;
     created.requestRender();
   });
+  attachLauncherSurface(created.window);
   return created.window;
 }
 

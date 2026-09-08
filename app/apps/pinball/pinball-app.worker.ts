@@ -30,7 +30,7 @@ import { getActiveDisplay } from "../../native/active-display";
 import { getStringSetting, setStringSetting } from "../../native/settings-store";
 import { buildSoundSequencePayload, type Step } from "../../ui/sound-effects";
 import { type MenuItem } from "../../ui/menu";
-import { WindowMenu } from "../../ui/window-menu";
+import { WindowMenu, hasSharedAppActions } from "../../ui/window-menu";
 import type { WorkerAppMessage, WorkerAppReply } from "../../ui/shell/worker-window";
 import {
   directionalFallback,
@@ -446,9 +446,17 @@ function playSfx(window: PinballWindow, steps: Step[], minor = false): void {
   }
 }
 
-/** The window's context menu (game actions), offered while paused or over; playing keeps long-press for the nudge. */
+/** Game actions are also reachable through the tap-then-hold menu. */
 function windowMenuItems(window: PinballWindow): MenuItem[] {
   return [
+    ...(window.phase === "playing" ? [{
+      label: "Nudge",
+      disabled: window.ballState !== "live",
+      onSelect: (ctx) => {
+        ctx.stack.pop();
+        if (window.phase === "playing" && window.ballState === "live") nudge(window);
+      },
+    } satisfies MenuItem] : []),
     {
       label: "New game",
       onSelect: (ctx) => {
@@ -474,7 +482,7 @@ function windowMenu(window: PinballWindow): WindowMenu {
       windowId: window.windowId,
       post,
       title: () => window.title,
-      items: () => (window.phase === "playing" ? [] : windowMenuItems(window)),
+      items: () => (window.phase === "playing" && !hasSharedAppActions() ? [] : windowMenuItems(window)),
       claimsLongPress: () => window.phase === "playing",
       size: { width: window.viewportWidth, height: window.viewportHeight },
       paintBase: () => paintContent(window),
@@ -555,7 +563,6 @@ function handlePlayingInput(window: PinballWindow, event: InputEvent, frameId: n
       nudge(window);
       break;
     case "short-then-long-press":
-      // No context menu mid-game, so this opens the system menu instead.
       windowMenu(window).open();
       break;
     case "double-click":
@@ -690,6 +697,10 @@ function syncTickTimer(window: PinballWindow): void {
 
 /** One render tick: catch the fixed-step physics up to real time, repaint. */
 function tick(window: PinballWindow): void {
+  if (window.menu?.isOpen()) {
+    window.lastTickAtMs = Date.now();
+    return;
+  }
   if (window.phase !== "playing") {
     syncTickTimer(window);
     return;

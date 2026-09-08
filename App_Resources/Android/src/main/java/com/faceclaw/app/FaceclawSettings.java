@@ -44,6 +44,9 @@ public final class FaceclawSettings {
     private FaceclawSettings(Context context) {
         this.prefs = context.getApplicationContext()
                 .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+        // Effective overrides are derived from installed signer/grant state on each process start.
+        // Never trust a restored or imported cached snapshot before the native registry checks it.
+        this.prefs.edit().remove("apps.extensions.effective").commit();
     }
 
     /** Initialize (idempotent) and return the singleton. */

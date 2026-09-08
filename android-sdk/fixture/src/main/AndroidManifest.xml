@@ -1,0 +1,9 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+ <queries><package android:name="com.faceclaw.sdk.hosttest"/><package android:name="com.faceclaw.app"/><package android:name="com.deejanuz.faceclaw.t3"/></queries>
+ <application android:label="Faceclaw synthetic fixture" android:allowBackup="false">
+ <activity android:name=".SettingsActivity" android:exported="true"><intent-filter><action android:name="com.faceclaw.action.APP_SETTINGS"/><category android:name="android.intent.category.DEFAULT"/></intent-filter></activity>
+ <service android:name=".FixtureSetupService" android:exported="true"/>
+ <service android:name=".CanvasService" android:exported="true"><intent-filter><action android:name="com.faceclaw.action.APP_SERVICE"/></intent-filter><meta-data android:name="com.faceclaw.PROTOCOL_MAJOR" android:value="1"/><meta-data android:name="com.faceclaw.SUPPRESS_PACKAGE" android:value="com.faceclaw.sdk.fixture.source"/></service>
+ <service android:name=".AdversarialService" android:exported="true"><intent-filter><action android:name="com.faceclaw.action.APP_SERVICE"/></intent-filter><meta-data android:name="com.faceclaw.PROTOCOL_MAJOR" android:value="1"/></service>
+ </application>
+</manifest>

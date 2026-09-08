@@ -1,0 +1,17 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" xmlns:tools="http://schemas.android.com/tools">
+ <queries>
+  <intent><action android:name="com.faceclaw.action.MANAGE_APPS" /></intent>
+ </queries>
+ <application android:label="@string/app_name" android:icon="@drawable/ic_demo" android:allowBackup="false" android:fullBackupContent="false" android:dataExtractionRules="@xml/data_extraction_rules" android:theme="@android:style/Theme.Material.Light.NoActionBar">
+  <activity android:name=".SettingsActivity" android:exported="true">
+   <intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter>
+   <intent-filter><action android:name="com.faceclaw.action.APP_SETTINGS" /><category android:name="android.intent.category.DEFAULT" /></intent-filter>
+  </activity>
+  <!-- Independent host signers are allowed. The SDK checks real caller UID, pinned identity,
+       mutual consent and connection session on every message instead of a signature permission. -->
+  <service android:name=".DemoService" android:label="@string/app_name" android:exported="true" tools:ignore="ExportedService">
+   <intent-filter><action android:name="com.faceclaw.action.APP_SERVICE" /></intent-filter>
+   <meta-data android:name="com.faceclaw.PROTOCOL_MAJOR" android:value="1" />
+  </service>
+ </application>
+</manifest>

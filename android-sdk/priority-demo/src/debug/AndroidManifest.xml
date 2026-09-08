@@ -1,0 +1,6 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+ <queries>
+  <!-- Package visibility for the disposable emulator host; grants still require SDK consent. -->
+  <package android:name="com.faceclaw.sdk.hosttest" />
+ </queries>
+</manifest>

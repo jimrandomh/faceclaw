@@ -43,3 +43,8 @@ faceclaw_settings.xml
 # Developer configs
 build_paths.sh
 
+
+# Standalone Android SDK build outputs
+android-sdk/.gradle/
+android-sdk/**/build/
+android-sdk/local.properties

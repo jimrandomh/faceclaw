@@ -316,7 +316,7 @@ export class TimersLayer implements Layer {
         return;
       case "swipe-left":
         if (ringing) this.ringButton = 0;
-        else shell.yieldFocusToSidebar();
+        else shell.returnFromAppRoot();
         return;
       case "swipe-right":
         if (ringing) this.ringButton = 1;
@@ -326,7 +326,7 @@ export class TimersLayer implements Layer {
         this.activateRow(row);
         return;
       case "double-click":
-        shell.yieldFocusToSidebar();
+        shell.returnFromAppRoot();
         return;
       default:
         return;

@@ -139,8 +139,9 @@ test('host applies activity only to its own open windows and cleans up on close'
   const worker = { postMessage() {} };
   const shellWindows = new Map();
   const { WorkerAppHost } = load('app/ui/shell/worker-window.ts', {
+    '../../apps/external/extension-platform': { extensionPlatform: () => null },
     '../../graphics/image': { GrayImage: Image },
-    './chrome-layer': { windowIcon: (icon, letter, glyph, phase) => phase },
+    './chrome-layer': { windowIcon: (icon, letter, glyph, phase) => () => phase?.() ?? 'idle' },
     '../../assistant/tool-registry': { toolRegistry: { removeAppTools() {} } },
     './geometry': { appViewportSize: () => ({ width: 576, height: 260 }) },
     '../../native/frame-timings': {},
