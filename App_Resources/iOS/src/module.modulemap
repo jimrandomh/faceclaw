@@ -5,5 +5,6 @@ module FaceclawGraphics {
   header "FaceclawSocket.h"
   header "FaceclawLc3Decoder.h"
   header "FaceclawSpeech.h"
+  header "FaceclawConfigPort.h"
   export *
 }

@@ -1,5 +1,6 @@
 #import "FaceclawSpeech.h"
 #import "FaceclawLc3Decoder.h"
+#import "FaceclawSpeechTranscript.h"
 #import <Speech/Speech.h>
 #import <AVFoundation/AVFoundation.h>
 #import <math.h>
@@ -14,6 +15,7 @@
 @property(nonatomic) NSUInteger pendingPackets;
 @property(nonatomic) BOOL accepting;
 @property(nonatomic, copy) NSString *bestText;
+@property(nonatomic, strong) FaceclawSpeechTranscript *transcript;
 @end
 @implementation FaceclawSpeech
 - (instancetype)init {
@@ -49,6 +51,7 @@
     self.request.taskHint = SFSpeechRecognitionTaskHintDictation;
     if (@available(iOS 16.0, *)) self.request.addsPunctuation = YES;
     self.bestText = @""; self.accepting = YES;
+    self.transcript = [FaceclawSpeechTranscript new];
     NSUInteger generation = self.generation;
     __weak FaceclawSpeech *weakSelf = self;
     self.task = [self.recognizer recognitionTaskWithRequest:self.request resultHandler:^(SFSpeechRecognitionResult *result, NSError *error) {
@@ -56,7 +59,13 @@
             FaceclawSpeech *owner = weakSelf;
             if (!owner || owner.generation != generation) return;
             if (result) {
-                owner.bestText = result.bestTranscription.formattedString ?: @"";
+                SFSpeechRecognitionMetadata *metadata = result.speechRecognitionMetadata;
+                SFTranscriptionSegment *first = result.bestTranscription.segments.firstObject;
+                SFTranscriptionSegment *last = result.bestTranscription.segments.lastObject;
+                NSTimeInterval start = metadata ? metadata.speechStartTimestamp : first.timestamp;
+                NSTimeInterval duration = metadata ? metadata.speechDuration : last.timestamp + last.duration - start;
+                owner.bestText = [owner.transcript updateText:result.bestTranscription.formattedString ?: @""
+                                                       start:start duration:duration settled:metadata != nil || result.final final:result.final];
                 if (!result.final) [owner emit:@{@"kind":@"transcript", @"text":owner.bestText, @"final":@NO}];
             }
             if (result.final || error) {
@@ -131,6 +140,6 @@
     self.generation++;
     self.accepting = NO; self.pendingPackets = 0;
     [self.task cancel]; self.task = nil; self.request = nil; self.decoder = nil; self.recognizer = nil;
-    self.bestText = @"";
+    self.bestText = @""; self.transcript = nil;
 }
 @end

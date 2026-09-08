@@ -26,6 +26,18 @@
   <array>
     <string>bluetooth-central</string>
   </array>
+  <key>NSAppTransportSecurity</key>
+  <dict>
+    <key>NSAllowsLocalNetworking</key>
+    <true/>
+    <!-- iOS 17+ needs an explicit exception for the configured g2mirror IP.
+         This permits its ws:// endpoint; TLS certificate validation stays on. -->
+    <key>NSExceptionDomains</key>
+    <dict>
+      <key>100.68.94.67</key>
+      <dict><key>NSExceptionAllowsInsecureHTTPLoads</key><true/></dict>
+    </dict>
+  </dict>
   <key>NSLocalNetworkUsageDescription</key>
   <string>Faceclaw connects to the terminal servers you configure on your local network.</string>
   <key>UILaunchScreen</key>

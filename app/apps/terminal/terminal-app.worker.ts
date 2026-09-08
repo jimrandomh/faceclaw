@@ -35,6 +35,7 @@ import { GrayImage, type UiFont } from "../../graphics/image";
 import { flattenPlanesWithDraws, planesFingerprint, type Plane } from "../../graphics/plane";
 import { prepareFrameDraws } from "../../graphics/glyph-wire";
 import { getDefaultSmallFont, getTerminalFontConfig } from "../../graphics/ui-fonts";
+import { layoutHubHeader } from "./hub-header";
 import { truncateText } from "../../graphics/textwrap";
 import { TERMINAL_ICON_GLYPHS } from "../../graphics/icons";
 import * as frameTimings from "../../native/frame-timings";
@@ -1497,13 +1498,13 @@ function paintHub(window: HubWindow): GrayImage {
   const font = chromeFont();
   const step = lineStep(font);
   // No border box: the shell chrome (top bar + sidebar) already frames the app.
-  // Title and status share the top line.
+  // Long statuses get a wrapped block and move the list below it.
   const title = window.mode === "connections" ? "Terminal - Connections" : "Terminal";
   image.drawText(font, 18, 10, title, 220);
-  const statusX = 18 + font.measureText(title) + 16;
-  image.drawText(font, statusX, 10, truncateText(font, hubStatusLine(window), Math.max(0, window.viewportWidth - statusX - 12)), 170);
+  const header = layoutHubHeader(font, title, hubStatusLine(window), window.viewportWidth, step);
+  header.lines.forEach((line, index) => image.drawText(font, header.x, header.y + index * step, line, 170));
 
-  let listTop = 16 + step;
+  let listTop = header.listTop;
   if (window.mode === "sessions" && controls.size === 0) {
     image.drawText(font, 24, listTop, "Add a g2mirror:// connection to get started, see:", 150);
     image.drawText(font, 24, listTop + step, "https://github.com/jimrandomh/g2mirror", 190);

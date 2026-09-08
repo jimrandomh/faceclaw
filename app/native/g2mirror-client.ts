@@ -326,7 +326,9 @@ export class G2MirrorClient {
    */
   submitInput(text: string): void {
     if (this.phase !== "attached") return;
-    const textByteLength = new java.lang.String(text).getBytes("UTF-8").length;
+    const textByteLength = global.isIOS
+      ? NSString.stringWithString(text).lengthOfBytesUsingEncoding(NSUTF8StringEncoding)
+      : new java.lang.String(text).getBytes("UTF-8").length;
     this.send({
       type: "input",
       data: encodeBase64Utf8(`${text}\r`),
