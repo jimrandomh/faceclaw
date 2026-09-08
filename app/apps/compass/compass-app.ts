@@ -103,6 +103,7 @@ class CompassLayer implements Layer {
   private unsubscribe: (() => void) | null = null;
   private unsubscribeDeclination: (() => void) | null = null;
   private requestingPermission = false;
+  private background: { key: string; image: GrayImage } | null = null;
 
   constructor(private readonly requestRender: () => void) {}
 
@@ -197,7 +198,6 @@ class CompassLayer implements Layer {
 
   paint(ctx: LayerContext): GrayImage {
     const { width, height } = ctx.stack.getBaseSize();
-    const image = new GrayImage(width, height, 0);
     const small = getDefaultSmallFont();
     const large = getDefaultLargeFont();
     const heading = this.rawHeading === null ? null : resolveHeading(this.rawHeading).displayDegrees;
@@ -229,6 +229,17 @@ class CompassLayer implements Layer {
     const ringTop = cy - (radius * TILT_SQUASH) / (1 + TILT_PERSPECTIVE);
 
     let y = Math.max(TOP_PAD, Math.round((ringTop - TICK_HEIGHT - textHeight) / 2));
+    const fade = heading === null ? 0.45 : 1;
+    const clipY = y + textHeight + 6;
+    const backgroundKey = [width, height, cx, cy, radius, clipY, fade].join(",");
+    if (this.background?.key !== backgroundKey) {
+      this.background = {
+        key: backgroundKey,
+        image: createCompassBackground(width, height, cx, cy, radius, clipY, fade),
+      };
+    }
+    const image = this.background.image.clone();
+    drawCompassRose(image, cx, cy, radius, heading);
     image.drawText(large, Math.round(cx - large.measureText(headingText) / 2), y, headingText, heading === null ? 150 : 255);
     y += large.lineHeight + 4;
     for (const line of statusLines) {
@@ -236,8 +247,6 @@ class CompassLayer implements Layer {
       y += smallStep;
     }
 
-    drawPlaneGrid(image, cx, cy, radius, y + 6);
-    drawCompassRose(image, cx, cy, radius, heading);
     return image;
   }
 
@@ -339,15 +348,66 @@ function projectRose(cx: number, cy: number, scale: number, radius: number, angl
   };
 }
 
-/** Draw the tilted rose, with its brightest point aimed at north. */
+/**
+ * Bounds of every orientation of the rotating points. The longest tip sweeps
+ * a circle in the disc's plane; perspective projects it to an offset ellipse.
+ * Round outward so all rasterized triangle pixels fit inside the rectangle.
+ */
+function rotatingRoseBounds(cx: number, cy: number, radius: number): {
+  x: number; y: number; width: number; height: number;
+} {
+  const perspective = TILT_PERSPECTIVE * CARDINAL_TIP;
+  const halfWidth = radius * CARDINAL_TIP / Math.sqrt(1 - perspective * perspective);
+  const depth = radius * CARDINAL_TIP * TILT_SQUASH;
+  const x = Math.floor(cx - halfWidth);
+  const y = Math.floor(cy - depth / (1 + perspective));
+  return {
+    x,
+    y,
+    width: Math.ceil(cx + halfWidth) - x,
+    height: Math.ceil(cy + depth / (1 - perspective)) - y,
+  };
+}
+
+/**
+ * Keep the fixed pixels inside the rotating rose's dirty rectangle as one
+ * immutable texture. The wire planner can omit them from each raster delta
+ * and restore them with a cached image draw. Outside that rectangle the
+ * background stays raster, since heading updates do not change it.
+ *
+ * The texture uses transparent zero for the empty disc interior, so it can
+ * overlay the rotating points. Its only ink over the points is the fixed
+ * heading tick, which belongs on top of them.
+ */
+function createCompassBackground(
+  width: number, height: number, cx: number, cy: number, radius: number, clipY: number, fade: number,
+): GrayImage {
+  const image = new GrayImage(width, height, 0);
+  drawPlaneGrid(image, cx, cy, radius, clipY);
+  drawDiscWall(image, cx, cy, radius, fade);
+  drawTiltedRing(image, cx, cy, radius, 105 * fade);
+  drawHeadingTick(image, cx, cy, radius, 255 * fade);
+
+  const bounds = rotatingRoseBounds(cx, cy, radius);
+  const left = Math.max(0, bounds.x);
+  const top = Math.max(0, bounds.y);
+  const right = Math.min(width, bounds.x + bounds.width);
+  const bottom = Math.min(height, bounds.y + bounds.height);
+  if (right > left && bottom > top) {
+    const texture = new GrayImage(right - left, bottom - top, 0);
+    texture.bitBlt(image, 0, 0, { sx: left, sy: top, width: texture.width, height: texture.height });
+    image.fillRect(left, top, texture.width, texture.height, 0);
+    image.drawImage(texture, left, top);
+  }
+  return image;
+}
+
+/** Draw only the rotating points, with the brightest one aimed at north. */
 function drawCompassRose(image: GrayImage, cx: number, cy: number, radius: number, heading: number | null): void {
   // Without a reading there is nothing to aim, so show the rose in its resting
   // orientation, dimmed, rather than an empty ring.
   const fade = heading === null ? 0.45 : 1;
   const bearing = heading ?? 0;
-  drawDiscWall(image, cx, cy, radius, fade);
-  drawTiltedRing(image, cx, cy, radius, 105 * fade);
-  drawHeadingTick(image, cx, cy, radius, 255 * fade);
   // Short points first, so the long ones sit on top of them at the waist. Only
   // north is drawn at full brightness: the other seven are there to make the
   // rose read as a rose, and competing with north would defeat the point.
@@ -478,14 +538,15 @@ function drawTiltedRing(image: GrayImage, cx: number, cy: number, radius: number
   }
 }
 
-/** A fixed mark at the top of the ring: the heading the wearer is facing. */
+/** A fixed mark just inside the top rim: the heading the wearer is facing. */
 function drawHeadingTick(image: GrayImage, cx: number, cy: number, radius: number, value: number): void {
   const top = projectRose(cx, cy, radius, 1, 0);
+  const tickTop = top.y + 1;
   fillTriangle(
     image,
-    { x: cx, y: top.y - 1 },
-    { x: cx - TICK_HALF_WIDTH, y: top.y - TICK_HEIGHT },
-    { x: cx + TICK_HALF_WIDTH, y: top.y - TICK_HEIGHT },
+    { x: cx, y: tickTop + TICK_HEIGHT - 1 },
+    { x: cx - TICK_HALF_WIDTH, y: tickTop },
+    { x: cx + TICK_HALF_WIDTH, y: tickTop },
     value,
   );
 }

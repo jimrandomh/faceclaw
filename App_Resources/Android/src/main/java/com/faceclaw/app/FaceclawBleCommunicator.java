@@ -43,7 +43,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private static final long FACECLAW_WAKE_LEASE_RENEW_MS = 45_000;
     private static final long FACECLAW_WAKE_CONTROL_WAIT_MS = 1_500;
     private static final long CFW_CLEANUP_WAIT_MS = 4_000;
-    private static final int COMPASS_REPORT_INTERVAL_MS = 250;
+    private static final int COMPASS_REPORT_INTERVAL_MS = 100;
     private static final int COMPASS_MIN_CHANGE_DEGREES = 0;
 
     private final Context appContext;
