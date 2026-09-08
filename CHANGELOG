@@ -4,6 +4,7 @@
 * Navigate and terminal app: App-specific screen size/position setting
 * Transcribe app: Scrolling; automatic reconnection; insert newlines
 * Notifications: Add notification filters
+* Phone screen preview: Add rotation option; improve landscape layout
 
 ## 0.6.5 - 2026-09-04
 * Changed context menu gestures: — for system, ●— for app context menu.
