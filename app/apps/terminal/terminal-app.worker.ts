@@ -36,7 +36,7 @@ import { flattenPlanesWithDraws, planesFingerprint, type Plane } from "../../gra
 import { prepareFrameDraws } from "../../graphics/glyph-wire";
 import { getDefaultSmallFont, getTerminalFontConfig } from "../../graphics/ui-fonts";
 import { truncateText } from "../../graphics/textwrap";
-import { TERMINAL_ICON_GLYPHS } from "../../graphics/icons";
+import { TERMINAL_ICON_GLYPHS, type IconActivity } from "../../graphics/icons";
 import * as frameTimings from "../../native/frame-timings";
 import { getActiveDisplay } from "../../native/active-display";
 import { GESTURE_DOUBLE_CLICK, type InputEvent } from "../../ui/gestures";
@@ -285,7 +285,7 @@ const sessionRecency = new Map<string, number>();
 // continues, so 5s of slack keeps the indicator lit through the gaps.
 const sessionActivity = new Map<string, number>();
 const ACTIVITY_ACTIVE_MS = 5_000;
-// Alternation period of the hub's activity indicator.
+// Alternation period shared by hub rows and sidebar cursors.
 const HUB_ANIMATION_STEP_MS = 800;
 
 function recencyKey(connectionId: string, socket: string): string {
@@ -461,6 +461,7 @@ function openWindow(windowId: string, surfaceId: string, title: string, viewport
   if (pendingView) {
     pendingViews.delete(windowId);
     windows.set(windowId, createViewWindow(windowId, surfaceId, title, viewport, pendingView));
+    updateHubAnimation();
     renderHubWindows();
     return;
   }
@@ -490,6 +491,7 @@ function openWindow(windowId: string, surfaceId: string, title: string, viewport
   if (!controlsInitialized) {
     syncControlsFromSettings();
   }
+  updateHubAnimation();
 }
 
 function closeWindow(windowId: string): void {
@@ -510,6 +512,8 @@ function closeWindow(windowId: string): void {
     endAddConnection(window);
   }
   windows.delete(windowId);
+  windowIconActivity.delete(windowId);
+  updateHubAnimation();
   // Auto-reconnect only runs while at least one terminal window is open.
   if (windows.size === 0) {
     for (const control of controls.values()) {
@@ -720,42 +724,47 @@ function renderHubWindows(): void {
   }
 }
 
-// Hub activity animation: while a foregrounded hub lists at least one active
-// session, a timer re-renders it so the per-row indicator alternates. The
-// timer stops itself once every session's activity ages out (its final tick
-// renders the rows indicator-free) or the hub leaves the foreground.
+// One animation clock for foreground hub rows and every terminal sidebar icon.
+// Keep ticking while the sidebar can show activity, even with the hub closed.
 let hubAnimationPhase = 0;
 let hubAnimationTimer: ReturnType<typeof setInterval> | null = null;
+const windowIconActivity = new Map<string, IconActivity>();
 
 function isSessionActive(connectionId: string, socket: string): boolean {
   const at = sessionActivity.get(recencyKey(connectionId, socket));
   return at !== undefined && Date.now() - at < ACTIVITY_ACTIVE_MS;
 }
 
-function hubAnimationShouldRun(): boolean {
-  if (!screenOn) return false;
-  let hubVisible = false;
-  for (const window of windows.values()) {
-    if (window.kind === "hub" && window.foreground) hubVisible = true;
-  }
-  if (!hubVisible) return false;
+function isWindowSessionActive(window: TerminalWindow): boolean {
+  if (window.kind === "view") return isSessionActive(window.connectionId, window.socket);
   const now = Date.now();
-  for (const at of sessionActivity.values()) {
-    if (now - at < ACTIVITY_ACTIVE_MS) return true;
-  }
-  return false;
+  return [...sessionActivity.values()].some((at) => now - at < ACTIVITY_ACTIVE_MS);
 }
 
-/** Start or stop the animation timer to match the current state. */
+function hubAnimationShouldRun(): boolean {
+  return screenOn && [...windows.values()].some(isWindowSessionActive);
+}
+
+function syncWindowIconActivity(): void {
+  for (const window of windows.values()) {
+    const activity: IconActivity = screenOn && isWindowSessionActive(window)
+      ? (hubAnimationPhase === 0 ? "on" : "off") : "idle";
+    if ((windowIconActivity.get(window.windowId) ?? "idle") === activity) continue;
+    windowIconActivity.set(window.windowId, activity);
+    post({ type: "set-icon-activity", windowId: window.windowId, activity });
+  }
+}
+
+/** Start or stop animation and publish changed icons, including expiry/wake. */
 function updateHubAnimation(): void {
-  if (hubAnimationShouldRun()) {
+  const shouldRun = hubAnimationShouldRun();
+  if (shouldRun && !hubAnimationTimer) hubAnimationPhase = 0;
+  syncWindowIconActivity();
+  if (shouldRun) {
     if (hubAnimationTimer) return;
     hubAnimationTimer = setInterval(() => {
       hubAnimationPhase = (hubAnimationPhase + 1) % 2;
-      if (!hubAnimationShouldRun() && hubAnimationTimer) {
-        clearInterval(hubAnimationTimer);
-        hubAnimationTimer = null;
-      }
+      updateHubAnimation();
       // Render even on the stopping tick, to clear expired indicators.
       renderHubWindows();
     }, HUB_ANIMATION_STEP_MS);

@@ -1,6 +1,6 @@
 import { GrayImage } from "../../graphics/image";
 import { windowIcon } from "./chrome-layer";
-import { type IconName } from "../../graphics/icons";
+import { type IconActivity, type IconName } from "../../graphics/icons";
 import { toolRegistry, type ToolResult, type ToolSpec } from "../../assistant/tool-registry";
 import { appViewportSize, type WindowHeightMode } from "./geometry";
 import * as frameTimings from "../../native/frame-timings";
@@ -62,6 +62,8 @@ export type WorkerAppReply =
     }
   | { type: "set-title"; windowId: string; title: string }
   | { type: "set-attention"; windowId: string; attention: boolean }
+  /** App-driven animation phase for sidebar icons that support an activity cursor. */
+  | { type: "set-icon-activity"; windowId: string; activity: IconActivity }
   | {
       /** Open the shell's voice dialog aimed at this window (a menu pick). */
       type: "start-voice-input";
@@ -194,6 +196,7 @@ const TOOL_CALL_HOST_TIMEOUT_MS = 15_000;
 
 export class WorkerAppHost {
   private readonly openWindows = new Set<string>();
+  private readonly windowIconActivity = new Map<string, IconActivity>();
   /** Per-window gesture bindings, as last reported (see set-window-gestures). */
   private readonly windowGestures = new Map<string, { hasAppMenu: boolean; claimsLongPress: boolean }>();
   private readonly pendingToolCalls = new Map<string, PendingToolCall>();
@@ -268,6 +271,12 @@ export class WorkerAppHost {
         case "open-system-menu":
           if (this.openWindows.has(message.windowId)) {
             shell.openSystemMenu(message.windowId);
+          }
+          break;
+        case "set-icon-activity":
+          if (this.openWindows.has(message.windowId) && this.windowIconActivity.get(message.windowId) !== message.activity) {
+            this.windowIconActivity.set(message.windowId, message.activity);
+            this.options.requestShellRender();
           }
           break;
         case "set-window-gestures":
@@ -358,13 +367,14 @@ export class WorkerAppHost {
       close: () => {
         this.openWindows.delete(spec.windowId);
         this.windowGestures.delete(spec.windowId);
+        this.windowIconActivity.delete(spec.windowId);
         // Withdraw this window's tools and fail any in-flight calls to it.
         toolRegistry.removeAppTools(spec.windowId);
         this.failPendingToolCallsFor(spec.windowId);
         this.post({ type: "close-window", windowId: spec.windowId });
         this.options.removeSurface(surfaceId);
       },
-      drawIcon: windowIcon(spec.icon, spec.iconLetter, spec.iconGlyph),
+      drawIcon: windowIcon(spec.icon, spec.iconLetter, spec.iconGlyph, () => this.windowIconActivity.get(spec.windowId) ?? "idle"),
       handleInput: (event, frameId) => {
         frameTimings.logFrame(frameId, `input posted to the ${this.options.appId} worker`);
         this.post({
