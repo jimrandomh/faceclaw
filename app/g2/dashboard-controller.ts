@@ -12,7 +12,8 @@ import * as frameTimings from "../native/frame-timings";
 import { startForegroundNotification, stopForegroundNotification, updateForegroundNotification } from "../native/foreground-service";
 import { mediaControllerBridge } from "../native/media-controller";
 import { nightscoutBridge } from "../native/nightscout-bridge";
-import { onAndroidNotificationPosted } from "../native/notification-icons";
+import { ALL_NOTIFICATIONS, onAndroidNotificationPosted, readActiveNotifications } from "../native/notification-icons";
+import { shouldShowNotificationOnGlasses } from "../native/notification-sources";
 import { openEvenAppSettings, readEvenAppNotificationState } from "../native/even-app-conflict";
 import { grayImageToPreviewSource } from "../native/gray-image-preview";
 import { firmwareIncompatibilityMessage } from "./firmware-compat";
@@ -374,6 +375,7 @@ class DashboardController {
         this.appendLog(`notification wake failed: ${this.formatError(error)}`);
       });
     });
+    readActiveNotifications(ALL_NOTIFICATIONS);
     // Settings toggled from the glasses can change what the phone UI shows
     // (e.g. the text-setting editor), so re-emit the snapshot on any change.
     onAnySettingChanged(() => {
@@ -2464,7 +2466,8 @@ class DashboardController {
   }
 
   private async handleAndroidNotificationPosted(notificationKey: string): Promise<void> {
-    if (!notificationKey) {
+    const notification = readActiveNotifications(ALL_NOTIFICATIONS).find((item) => item.key === notificationKey);
+    if (!notification || !shouldShowNotificationOnGlasses(notification.packageName)) {
       this.requestShellRender();
       return;
     }
