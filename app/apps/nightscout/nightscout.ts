@@ -1,3 +1,4 @@
+import { evaluateNightscoutAlerts } from "./nightscout-alerts";
 import { getDefaultLargeFont, getDefaultSmallFont } from "../../graphics/ui-fonts";
 import { GrayImage, type UiFont } from "../../graphics/image";
 import { truncateText } from "../../graphics/textwrap";
@@ -6,6 +7,13 @@ import { Layer, LayerContext } from "../../ui/layers";
 import { nightscoutBridge, type NightscoutState } from "../../native/nightscout-bridge";
 import {
   isNightscoutSettingsConfigured,
+  loadNightscoutThresholds,
+  nightscoutMaxCannulaAgeSetting,
+  nightscoutCartridgeLowSetting,
+  nightscoutBatteryLowSetting,
+  nightscoutMaxLoopAgeSetting,
+  nightscoutAlwaysShowInTopBarSetting,
+  toggleSettingMenuItem,
   nightscoutApiTokenSetting,
   nightscoutSiteUrlSetting,
   textSettingMenuItem,
@@ -332,21 +340,43 @@ export class NightscoutLayer implements Layer {
 
     const statusX = 170;
     const statusWidth = width - 22 - statusX;
-    const statusLines: { text: string; shade: number; direction?: string }[] = [
+    const alerts = evaluateNightscoutAlerts(nightscout, loadNightscoutThresholds(), nowMs);
+    const statusLines: { text: string; shade: number; direction?: string; fields?: { text: string; warning?: boolean }[] }[] = [
       { text: `Delta ${formatDelta(nightscout.delta)}  Trend `, shade: 180, direction: nightscout.direction },
       {
         text: `IOB ${nightscout.iob === null ? "--" : nightscout.iob.toFixed(2)}  COB ${nightscout.cob === null ? "--" : formatWholeNumber(nightscout.cob)}  Updated ${formatTimestamp(latest.timestampMs)}`,
         shade: 160,
       },
       {
-        text: `CAGE ${formatAgeShortFromTimestamp(nightscout.cageTimestampMs, nowMs)}  Loop ${nightscout.openapsStatusShort}`,
-        shade: 160,
+        text: "", shade: 160,
+        fields: [
+          { text: `CAGE ${formatAgeShortFromTimestamp(nightscout.cageTimestampMs, nowMs)}`, warning: alerts.cannula },
+          { text: `Loop ${formatAgeShortFromTimestamp(nightscout.loopTimestampMs, nowMs)}`, warning: alerts.loop },
+        ],
       },
-      { text: `Pump ${nightscout.pumpStatus || "--"}`, shade: 150 },
+      {
+        text: "", shade: 150,
+        fields: [
+          { text: "Pump" },
+          { text: nightscout.reservoirUnits === null ? "--U" : `${Math.round(nightscout.reservoirUnits)}U`, warning: alerts.cartridge },
+          { text: nightscout.batteryVoltage === null ? "--V" : `${nightscout.batteryVoltage.toFixed(2)}V`, warning: alerts.battery },
+          { text: nightscout.pumpStatus || "--" },
+        ],
+      },
     ];
     let statusY = graphTop - 8 - statusLines.length * step;
     for (const line of statusLines) {
-      if (line.direction !== undefined) {
+      if (line.fields) {
+        let x = statusX;
+        for (const field of line.fields) {
+          const text = truncateText(font, field.text, Math.max(0, statusX + statusWidth - x));
+          const textWidth = font.measureText(text);
+          if (field.warning && textWidth > 0) image.fillRect(x - 2, statusY - 1, textWidth + 4, font.lineHeight + 2, 230);
+          image.drawText(font, x, statusY, text, field.warning ? 0 : line.shade);
+          x += textWidth + font.measureText("  ");
+          if (x >= statusX + statusWidth) break;
+        }
+      } else if (line.direction !== undefined) {
         image.drawText(font, statusX, statusY, line.text, line.shade);
         drawDirectionIndicator(image, font, statusX + font.measureText(line.text), statusY, line.direction, line.shade);
       } else {
@@ -390,6 +420,11 @@ export function nightscoutMenuItems(): MenuItem[] {
         openSettingsSubMenu(ctx, "Nightscout settings", [
           textSettingMenuItem(nightscoutSiteUrlSetting),
           textSettingMenuItem(nightscoutApiTokenSetting),
+          textSettingMenuItem(nightscoutMaxCannulaAgeSetting),
+          textSettingMenuItem(nightscoutCartridgeLowSetting),
+          textSettingMenuItem(nightscoutBatteryLowSetting),
+          textSettingMenuItem(nightscoutMaxLoopAgeSetting),
+          toggleSettingMenuItem(nightscoutAlwaysShowInTopBarSetting),
         ]);
       },
     },

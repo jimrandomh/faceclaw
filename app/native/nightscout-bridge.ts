@@ -1,4 +1,4 @@
-import { loadNightscoutSettings, nightscoutApiTokenSetting, nightscoutSiteUrlSetting } from "../ui/dashboard-settings";
+import { nightscoutApiTokenSetting, nightscoutSiteUrlSetting } from "../ui/dashboard-settings";
 import { fetchWithUserAgent } from "../util/http";
 
 export type NightscoutPoint = {
@@ -33,6 +33,10 @@ export type NightscoutState = {
   iob: number | null;
   cob: number | null;
   cageTimestampMs: number | null;
+  reservoirUnits: number | null;
+  batteryVoltage: number | null;
+  loopTimestampMs: number | null;
+  /** Pump communication age and operating state; measurements are separate. */
   pumpStatus: string;
   openapsStatusShort: string;
   carbs: NightscoutCarbEvent[];
@@ -121,6 +125,9 @@ const DEFAULT_NIGHTSCOUT_STATE: NightscoutState = {
   iob: null,
   cob: null,
   cageTimestampMs: null,
+  reservoirUnits: null,
+  batteryVoltage: null,
+  loopTimestampMs: null,
   pumpStatus: "",
   openapsStatusShort: "--",
   carbs: [],
@@ -259,6 +266,9 @@ export class NightscoutBridge {
         iob: Number.isFinite(iob) ? iob : null,
         cob,
         cageTimestampMs: latestSiteChange > 0 ? latestSiteChange : null,
+        reservoirUnits: firstFiniteNumber(latestDeviceStatus?.pump?.reservoir),
+        batteryVoltage: firstFiniteNumber(latestDeviceStatus?.pump?.battery?.voltage),
+        loopTimestampMs: loopTimestampMs > 0 ? loopTimestampMs : null,
         pumpStatus,
         openapsStatusShort: loopTimestampMs > 0 ? formatElapsedShort(nowMs - loopTimestampMs) : "--",
         carbs: parsedTreatments.carbs,
@@ -359,6 +369,8 @@ function parseTimestampMs(value: unknown): number {
 
 function firstFiniteNumber(...values: unknown[]): number | null {
   for (const value of values) {
+    if (typeof value !== "number" && typeof value !== "string") continue;
+    if (typeof value === "string" && !value.trim()) continue;
     const numeric = Number(value);
     if (Number.isFinite(numeric)) {
       return numeric;
@@ -371,8 +383,6 @@ function formatPumpStatus(status: NightscoutDeviceStatusResponse | undefined, no
   if (!status?.pump) {
     return "--";
   }
-  const reservoir = firstFiniteNumber(status.pump.reservoir);
-  const voltage = firstFiniteNumber(status.pump.battery?.voltage);
   const commTimestampMs = Math.max(
     parseTimestampMs(status.pump.status?.timestamp),
     parseTimestampMs(status.pump.clock),
@@ -380,12 +390,6 @@ function formatPumpStatus(status: NightscoutDeviceStatusResponse | undefined, no
   );
   const stateLabel = summarizePumpState(status);
   const parts: string[] = [];
-  if (reservoir !== null) {
-    parts.push(`${Math.round(reservoir)}U`);
-  }
-  if (voltage !== null) {
-    parts.push(`${voltage.toFixed(2)}v`);
-  }
   if (commTimestampMs > 0) {
     parts.push(`${formatElapsedShort(nowMs - commTimestampMs)} ago`);
   }

@@ -8,6 +8,8 @@ import {
   type InProcessAppOptions,
   type InProcessWindow,
 } from "../../ui/shell/in-process-window";
+import { evaluateNightscoutAlerts } from "./nightscout-alerts";
+import { loadNightscoutThresholds, nightscoutAlwaysShowInTopBarSetting, onAnySettingChanged } from "../../ui/dashboard-settings";
 import { shell } from "../../ui/shell/shell";
 
 export const NIGHTSCOUT_WINDOW_ID = "nightscout";
@@ -19,14 +21,34 @@ const TRAY_GRAPH_WIDTH = 48;
 const TRAY_STALE_MS = 15 * 60 * 1000;
 const TRAY_GRAPH_WINDOW_MS = 2 * 60 * 60 * 1000;
 
-/**
- * The Nightscout app: the full-screen glucose view (previously reached via
- * the dashboard card) in its own in-process window. While the app is running
- * it also publishes a top-bar tray icon: the latest blood-glucose value
- * (struck through when stale) plus a minimal 48px history graph.
- */
+const windowRenders = new Set<() => void>();
+let trayStarted = false;
+let trayTick: ReturnType<typeof setInterval> | null = null;
+
+function syncNightscout(): void {
+  const visible = windowRenders.size > 0 || nightscoutAlwaysShowInTopBarSetting.get();
+  shell.setTrayIcon(TRAY_ICON_ID, visible ? buildNightscoutTrayIcon(nightscoutBridge.snapshot()) : null);
+  for (const render of windowRenders) render();
+  // Age warnings and stale glucose must advance even during a stalled fetch.
+  if (visible && trayTick === null) trayTick = setInterval(syncNightscout, 60_000);
+  if (!visible && trayTick !== null) {
+    clearInterval(trayTick);
+    trayTick = null;
+  }
+}
+
+/** Shell-lifetime subscription so the tray can be enabled before any window opens. */
+export function startNightscoutTrayIcon(): void {
+  if (trayStarted) return;
+  trayStarted = true;
+  nightscoutBridge.onStateChange(syncNightscout);
+  onAnySettingChanged(syncNightscout);
+}
+
+/** Full-screen glucose view with a shared, optionally persistent tray readout. */
 export function createNightscoutAppWindow(options: InProcessAppOptions): InProcessWindow {
-  let unsubscribe: (() => void) | null = null;
+  startNightscoutTrayIcon();
+  const render = () => app.requestRender();
   const app = createInProcessWindow({
     appId: "nightscout",
     windowId: NIGHTSCOUT_WINDOW_ID,
@@ -41,28 +63,25 @@ export function createNightscoutAppWindow(options: InProcessAppOptions): InProce
     setSurfaceVisible: options.setSurfaceVisible,
     removeSurface: options.removeSurface,
     onClosed: () => {
-      unsubscribe?.();
-      unsubscribe = null;
-      shell.setTrayIcon(TRAY_ICON_ID, null);
+      windowRenders.delete(render);
+      syncNightscout();
       options.onClosed();
     },
   });
-  // onStateChange fires immediately with the current snapshot, so this also
-  // publishes the initial tray icon.
-  unsubscribe = nightscoutBridge.onStateChange((state) => {
-    shell.setTrayIcon(TRAY_ICON_ID, buildNightscoutTrayIcon(state));
-    app.requestRender();
-  });
+  windowRenders.add(render);
+  syncNightscout();
   return app;
 }
 
-/** BG value (struck through when stale) + minimal 2-hour line graph. */
+/** BG value, 2-hour graph, then a warning triangle when any threshold is breached. */
 function buildNightscoutTrayIcon(state: NightscoutState): GrayImage {
   const font = getDefaultSmallFont();
   const nowMs = Date.now();
   const label = state.latest ? `${state.latest.sgv}` : "--";
   const labelWidth = font.measureText(label);
-  const image = new GrayImage(labelWidth + 4 + TRAY_GRAPH_WIDTH, TRAY_HEIGHT, 0);
+  const warning = evaluateNightscoutAlerts(state, loadNightscoutThresholds(), nowMs).any;
+  const graphEnd = labelWidth + 4 + TRAY_GRAPH_WIDTH;
+  const image = new GrayImage(graphEnd + (warning ? 24 : 0), TRAY_HEIGHT, 0);
 
   const textY = Math.max(0, ((TRAY_HEIGHT - font.lineHeight) / 2) | 0);
   image.drawText(font, 0, textY, label, 220);
@@ -72,6 +91,14 @@ function buildNightscoutTrayIcon(state: NightscoutState): GrayImage {
   }
 
   drawTrayGraph(image, labelWidth + 4, state, nowMs);
+  if (warning) {
+    const x = graphEnd + 4;
+    image.drawLine(x + 9, 3, x, 20, 255);
+    image.drawLine(x, 20, x + 18, 20, 255);
+    image.drawLine(x + 18, 20, x + 9, 3, 255);
+    image.fillRect(x + 8, 9, 2, 6, 255);
+    image.fillRect(x + 8, 17, 2, 2, 255);
+  }
   return image;
 }
 
