@@ -475,6 +475,32 @@ public class BleProtocol {
         return body;
     }
 
+    /** Field 106: RB/version 1/flags/percentage, from CFW ringbat17. */
+    public static RingBatterySnapshot parseRingBattery(byte[] pb) {
+        if (pb == null) return null;
+        byte[] body = readFieldBytes(stripTrailingCrc(pb), 106);
+        if (body == null || body.length != 5 || body[0] != 'R' || body[1] != 'B'
+                || body[2] != 1) return null;
+        int flags = body[3] & 0xff;
+        int level = body[4] & 0xff;
+        if ((flags & ~7) != 0) return null;
+        if ((flags & 2) != 0) {
+            if ((flags & 1) == 0 || level > 100) return null;
+            return new RingBatterySnapshot(level, (flags & 4) != 0 ? 1 : 0);
+        }
+        if (level != 255 || (flags & 4) != 0) return null;
+        return new RingBatterySnapshot(-1, -1);
+    }
+
+    public static final class RingBatterySnapshot {
+        final int battery;
+        final int charging;
+        RingBatterySnapshot(int battery, int charging) {
+            this.battery = battery;
+            this.charging = charging;
+        }
+    }
+
     /**
      * Return the uint16 wake nonce from a CFW field-102 notification, or -1
      * when this is an ordinary settings frame.

@@ -38,6 +38,12 @@ export type InProcessWindowOptions = {
    * has no menu of its own, and tap-then-hold opens the system menu instead.
    */
   menuItems?: () => MenuItem[];
+  /** Dedicated chat gestures: click menu, hold microphone, tap-hold system menu. */
+  holdToTalk?: boolean;
+  isVoiceCapturing?: () => boolean;
+  onSystemMenuOpened?: () => void;
+  onAppMenuOpened?: () => void;
+  setScreenOn?: ShellWindow["setScreenOn"];
   /** Shared actions; requestRender is rebound to this window's render. */
   actions: LayerActions;
   /**
@@ -141,7 +147,8 @@ export function createInProcessWindow(options: InProcessWindowOptions): InProces
       shell.openSystemMenu(options.windowId);
       return;
     }
-    const menu = new WindowMenuLayer(options.title, items);
+    options.onAppMenuOpened?.();
+    const menu = new WindowMenuLayer(options.title, items, options.holdToTalk);
     stack.push(menu);
     presentAppMenu(options.windowId, options.title, items, menu, { stack, actions: { ...options.actions, requestRender } }, () => stack.removeLayer(menu));
   };
@@ -155,6 +162,9 @@ export function createInProcessWindow(options: InProcessWindowOptions): InProces
     // The window's own LayerStack decides per layer whether a swipe is
     // directional or falls back to click / double-click.
     acceptsDirectional: true,
+    holdToTalk: options.holdToTalk,
+    isVoiceCapturing: options.isVoiceCapturing,
+    setScreenOn: options.setScreenOn,
     heightMode,
     hasAppMenu: () => hasSharedAppActions() || appMenuItems().length > 0,
     close: () => {
@@ -170,6 +180,7 @@ export function createInProcessWindow(options: InProcessWindowOptions): InProces
       // The shell opened its system menu over this window; close our own
       // context menu so the two never stack. Never forwarded to app layers.
       if (event.type === "system-menu-opened") {
+        options.onSystemMenuOpened?.();
         if (stack.popIfTop((layer) => layer instanceof WindowMenuLayer)) {
           requestRender();
         }
@@ -180,7 +191,8 @@ export function createInProcessWindow(options: InProcessWindowOptions): InProces
       // submenus and app content alike. A plain long-press never arrives:
       // the shell keeps it for the system menu (no in-process window claims
       // it).
-      if (event.type === "short-then-long-press") {
+      if ((!options.holdToTalk && event.type === "short-then-long-press") ||
+          (options.holdToTalk && event.type === "click" && stack.isAtBase())) {
         openWindowMenu();
         await render(frameId);
         return;

@@ -130,3 +130,8 @@ export function classifyOnboardingFirmware(info: FirmwareInfo): {
   const comparison = compareVersions(parseDottedVersion(version), FLASHABLE_STOCK_VERSION);
   return { kind: comparison <= 0 ? "flashable-stock" : "newer-stock", version };
 }
+
+/** Cached R1 battery reports in settings field 106 and query mode 17. */
+export function hasRingBattery(info: FirmwareInfo): boolean {
+  return info.capabilities.trim().split(/\s+/).includes("ringbat17");
+}

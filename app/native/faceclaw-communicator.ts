@@ -22,6 +22,8 @@ export type CommunicatorState = {
 export type HeadsetBatteryState = {
   battery: number;
   chargingStatus: number;
+  ringBattery?: number;
+  ringChargingStatus?: number;
 };
 
 export type FrameMetrics = {
@@ -189,10 +191,12 @@ export class FaceclawCommunicatorBridge {
         frameTimings.logFrame(event.frameId, "input event received on JS side");
         this.emitAsync(this.ringListeners, event);
       },
-      onBatteryState: (headsetBattery: number, headsetCharging: number) => {
+      onBatteryState: (headsetBattery: number, headsetCharging: number, ringBattery: number, ringCharging: number) => {
         const state = {
           battery: Number(headsetBattery),
           chargingStatus: Number(headsetCharging),
+          ringBattery: Number(ringBattery),
+          ringChargingStatus: Number(ringCharging),
         };
         this.emitAsync(this.batteryListeners, state);
       },

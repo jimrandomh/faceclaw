@@ -27,7 +27,9 @@ import { KeyboardInputLayer, type KeyboardInputSession } from "./keyboard-input"
 import { voiceActivity } from "./voice-activity";
 import { AssistantLayer } from "./assistant";
 import { AssistantSession, type AssistantBackendConfig } from "../../assistant/session";
-import { resolveAssistantModel } from "../../assistant/models";
+import { resolveAssistantModel, type AssistantModel } from "../../assistant/models";
+import { AssistantConversations, type ReasoningLevel } from "../../assistant/conversations";
+import { getStringSetting, setStringSetting } from "../../native/settings-store";
 import type { AssistantContext } from "../../assistant/types";
 import { SingleNotificationLayer } from "../notifications";
 import {
@@ -39,6 +41,7 @@ import {
   assistantModelSetting,
   assistantSkipConfirmationSetting,
   batteryDisplayModeSetting,
+  brightnessSetting,
   onAnySettingChanged,
   openAiApiKeySetting,
   timeFormatSetting,
@@ -48,6 +51,7 @@ import { onAmbientCardsChanged } from "./ambient-cards";
 import { ShellChromeLayer, sidebarContentLeft, type ShellChromeState, type ShellChromeWindow } from "./chrome-layer";
 import { ShellModalLayer } from "./modal-layer";
 import { ToolDebugMenuLayer } from "./tool-debug-layer";
+import { BrightnessPickerLayer } from "./brightness-picker-layer";
 import { toolRegistry } from "../../assistant/tool-registry";
 import {
   appViewportRect,
@@ -68,7 +72,7 @@ import {
  * Input flow: every event enters via receiveInput. The shell consumes
  * everything while the sidebar or a shell overlay has focus and forwards the
  * rest to the focused window. Long-press opens the shell-owned system menu
- * (Focus app switcher, Voice input, Close window, Debug) without reaching the
+ * (Focus app switcher, Voice input, Brightness, Close window, Debug) without reaching the
  * app, so the shell keeps working when a window's handler hangs; a window
  * that claims long-press for a move of its own gets it forwarded instead, and
  * holding the press past the escape threshold still opens the system menu.
@@ -98,6 +102,10 @@ export type ShellWindow = {
    * system menu; holding the press past the escape threshold still opens it.
    */
   claimsLongPress?: () => boolean;
+  /** Chat uses hold-to-talk and tap-then-hold for the system menu, without an escape timer. */
+  holdToTalk?: boolean;
+  /** A window owns microphone capture outside the shell voice dialog. */
+  isVoiceCapturing?: () => boolean;
   /**
    * True when the window gives swipe-left / swipe-right (watch directional
    * input) a meaning; otherwise the shell forwards directionalFallback(event).
@@ -299,14 +307,36 @@ class Shell {
   private lastInputAtMs = Date.now();
   /** The most recent input event received, for windows gaining focus (see ShellWindow.onFocus). */
   private lastInput: InputEvent | null = null;
-  private battery: ShellChromeState["battery"] = { headset: null, headsetCharging: null };
+  private battery: ShellChromeState["battery"] = { headset: null, headsetCharging: null, ring: null, ringCharging: null };
   private attention = new Map<string, boolean>();
   // App-provided top-bar tray icons, keyed by owner id; drawn between the
   // notification icons and the battery indicators.
   private readonly trayIcons = new Map<string, GrayImage>();
   private activeVoiceLayer: VoiceInputLayer | VoiceSearchLayer | null = null;
   private activeKeyboardLayer: KeyboardInputLayer | null = null;
-  private assistantSession: AssistantSession | null = null;
+  private conversations: AssistantConversations | null = null;
+  private get assistantSession(): AssistantSession | null {
+    return this.conversations?.current().session ?? null;
+  }
+
+  getAssistantConversations(): AssistantConversations {
+    if (!this.conversations) {
+      this.conversations = new AssistantConversations(
+        (model, reasoning) => this.resolveAssistantConfiguration(model, reasoning),
+        () => assistantModelSetting.get(),
+        (value) => setStringSetting("assistant.conversations", value),
+        getStringSetting("assistant.conversations", ""),
+      );
+    }
+    return this.conversations;
+  }
+
+  async prepareChatVoiceCapture(): Promise<boolean> {
+    if (this.activeVoiceLayer || this.activeKeyboardLayer || this.voiceDialogPending) return false;
+    const ready = (await this.config.prepareVoiceCapture?.()) ?? true;
+    return ready && !this.activeVoiceLayer && !this.activeKeyboardLayer &&
+      this.stack.isAtBase() && this.isWindowFocused("ai-chat");
+  }
   private assistantLayer: AssistantLayer | null = null;
   private readonly assistantActivityListeners = new Set<(event: AssistantActivityEvent) => void>();
   private readonly alertListeners = new Set<(text: string) => void>();
@@ -574,7 +604,7 @@ class Shell {
     // ring. An in-flight assistant turn suspends it for the same reason (a
     // tool loop can run for a while with no input); once the turn ends and
     // the Follow-up/Done menu is showing, the normal idle timeout resumes.
-    if (this.activeVoiceLayer || this.activeKeyboardLayer || this.assistantSession?.isTurnActive()) {
+    if (this.activeVoiceLayer || this.activeKeyboardLayer || this.assistantSession?.isTurnActive() || this.foregroundWindow()?.isVoiceCapturing?.()) {
       this.lastInputAtMs = nowMs;
       return false;
     }
@@ -690,6 +720,7 @@ class Shell {
     // Even AI app never launches, so the firmware does not power the display
     // for us either -- actions that need it wake the screen themselves.
     if (event.type === "wakeword") {
+      if (this.foregroundWindow()?.isVoiceCapturing?.()) return { shell: true, window: false };
       const action = wakeWordActionSetting.get();
       if (action === "off") {
         return { shell: false, window: false };
@@ -765,11 +796,11 @@ class Shell {
       if (!window) {
         return { shell: true, window: false };
       }
-      if (!window.claimsLongPress?.()) {
+      if (!window.holdToTalk && !window.claimsLongPress?.()) {
         this.openEscapeMenu();
         return { shell: true, window: false };
       }
-      this.startEscapeMenuTimer();
+      if (!window.holdToTalk) this.startEscapeMenuTimer();
       if (this.focus === "sidebar") {
         this.focus = "window";
         window.onFocus?.(this.lastInput);
@@ -794,6 +825,10 @@ class Shell {
         return { shell: true, window: Boolean(foreground) };
       }
       const window = this.foregroundWindow();
+      if (window?.holdToTalk) {
+        this.openEscapeMenu();
+        return { shell: true, window: false };
+      }
       // Over the open system menu it switches to the app's context menu:
       // close the system menu and deliver the gesture to the window as
       // usual. A window without a menu of its own would only ask for the
@@ -1238,7 +1273,7 @@ class Shell {
    */
   startKeyboardInput(): KeyboardInputSession | null {
     if (this.activeKeyboardLayer) return this.activeKeyboardLayer;
-    if (this.activeVoiceLayer) return null;
+    if (this.activeVoiceLayer || this.foregroundWindow()?.isVoiceCapturing?.()) return null;
     if (!this.screenOn) this.wake("sidebar");
     const assistantLayer = this.assistantLayer;
     const assistantSession = this.assistantSession;
@@ -1283,7 +1318,8 @@ class Shell {
   }
 
   isAssistantAvailable(): boolean {
-    return this.resolveAssistantConfiguration() !== null;
+    const current = this.getAssistantConversations().current();
+    return this.resolveAssistantConfiguration(current.model, current.reasoning) !== null;
   }
 
   /** Observe assistant turns (see AssistantActivityEvent). */
@@ -1321,24 +1357,17 @@ class Shell {
   }
 
   private ensureAssistantSession(): AssistantSession | null {
-    const config = this.resolveAssistantConfiguration();
-    if (!config) return null;
-    if (
-      !this.assistantSession ||
-      this.assistantSession.isExpired() ||
-      !this.assistantSession.matchesConfiguration(config)
-    ) {
-      this.assistantSession?.cancel();
-      this.assistantSession = new AssistantSession(config);
-    }
-    return this.assistantSession;
+    return this.getAssistantConversations().ensureSession();
   }
 
-  private resolveAssistantConfiguration(): AssistantBackendConfig | null {
-    const fallback = this.resolveBaseAssistantConfiguration(), provider = extensionPlatform()?.feature("assistant");
+  private resolveAssistantConfiguration(
+    model: AssistantModel = this.conversations?.current().model ?? assistantModelSetting.get(),
+    reasoning: ReasoningLevel = this.conversations?.current().reasoning ?? "default",
+  ): AssistantBackendConfig | null {
+    const fallback = this.resolveBaseAssistantConfiguration(model, reasoning), provider = extensionPlatform()?.feature("assistant");
     return provider ? { kind: "extension", component: provider.component, generation: provider.generation, fallback } : fallback;
   }
-  private resolveBaseAssistantConfiguration(): AssistantBackendConfig | null {
+  private resolveBaseAssistantConfiguration(model: AssistantModel, reasoning: ReasoningLevel): AssistantBackendConfig | null {
     if (assistantBackendSetting.get() === "external") {
       const host = assistantBridgeHostSetting.get().trim();
       const token = assistantBridgeTokenSetting.get();
@@ -1346,10 +1375,11 @@ class Shell {
       const port = parseInt(assistantBridgePortSetting.get(), 10) || 8790;
       return { kind: "external", bridge: { host, port, token } };
     }
-    const llm = resolveAssistantModel(assistantModelSetting.get(), {
+    const llm = resolveAssistantModel(model, {
       anthropic: anthropicApiKeySetting.get(),
       openai: openAiApiKeySetting.get(),
     });
+    if (llm && reasoning !== "default" && llm.effort) llm.effort = reasoning;
     return llm ? { kind: "direct", llm } : null;
   }
 
@@ -1369,7 +1399,9 @@ class Shell {
    * Opens the assistant overlay if it isn't already up; a follow-up reuses the
    * existing session and overlay.
    */
-  sendToAssistant(text: string): void {
+  sendToAssistant(text: string, showOverlay = true): void {
+    text = text.trim();
+    if (!text) return;
     const session = this.ensureAssistantSession();
     if (!session) {
       this.showAlert(
@@ -1379,7 +1411,15 @@ class Shell {
       );
       return;
     }
+    if (session.isTurnActive()) {
+      this.showAlert("The assistant is still working on the previous request");
+      return;
+    }
     if (!this.screenOn) this.wake("sidebar");
+    if (!showOverlay || this.foregroundWindow()?.appId === "ai-chat") {
+      this.runAssistantTurn(session, null, text);
+      return;
+    }
     let layer = this.assistantLayer;
     if (!layer) {
       const created = new AssistantLayer(this.config.actions, {
@@ -1388,7 +1428,7 @@ class Shell {
         onClose: () => this.closeAssistantLayer(),
         onRemoved: () => {
           // Removed by any path (Done, or the screen sleeping mid-conversation):
-          // stop the turn and drop the reference so a later query starts clean.
+          // stop the turn and drop the overlay reference; keep shared history.
           this.assistantSession?.cancel();
           if (this.assistantLayer === created) this.assistantLayer = null;
           this.emitAssistantActivity({ phase: "closed", text: "" });
@@ -1402,23 +1442,24 @@ class Shell {
     this.config.requestShellRender();
   }
 
-  private runAssistantTurn(session: AssistantSession, layer: AssistantLayer, text: string): void {
-    layer.startTurn();
+  private runAssistantTurn(session: AssistantSession, layer: AssistantLayer | null, text: string): void {
+    if (session.isTurnActive()) return;
+    layer?.startTurn();
     let replySoFar = "";
     this.emitAssistantActivity({ phase: "thinking", text: "" });
     session.sendUtterance(text, this.buildAssistantContext(), {
       onTextDelta: (delta, textSoFar) => {
         replySoFar = textSoFar;
-        layer.onTextDelta(delta, textSoFar);
+        layer?.onTextDelta(delta, textSoFar);
         this.emitAssistantActivity({ phase: "streaming", text: textSoFar });
       },
-      onToolActivity: (label) => layer.onToolActivity(label),
+      onToolActivity: (label) => layer?.onToolActivity(label),
       onTurnDone: () => {
-        layer.onTurnDone();
+        layer?.onTurnDone();
         this.emitAssistantActivity({ phase: "done", text: replySoFar });
       },
       onError: (message) => {
-        layer.onError(message);
+        layer?.onError(message);
         this.emitAssistantActivity({ phase: "error", text: message });
       },
     });
@@ -1538,7 +1579,7 @@ class Shell {
 
   /**
    * The system/escape menu: the entries every window shares (Focus app
-   * switcher, Voice input, Close window) plus Debug. Shell-owned and
+   * switcher, Voice input, Brightness, Close window) plus Debug. Shell-owned and
    * shell-drawn (never the app's), so an unresponsive app can always be
    * closed. It opens for long-press (over the app's own menu too), after an
    * extended hold in a window that claims long-press, and on a window's
@@ -1591,6 +1632,16 @@ class Shell {
     );
     if (grouped) items.splice(initialSelection + 1, 0, { label: "Display off", onSelect: ctx => { ctx.stack.pop(); this.sleepAtAppRoot(); } });
     if (hasOverlay) items.splice(items.findIndex(item => item.label === "Voice input"), 1);
+    if (brightnessSetting.get() !== "auto") {
+      if (!hasOverlay) items.push({
+        label: "Brightness",
+        onSelect: (ctx) => {
+          ctx.stack.pop();
+          ctx.stack.push(new BrightnessPickerLayer(() => this.yieldFocusToSidebar()));
+          this.config.requestShellRender();
+        },
+      });
+    }
     if (!hasOverlay) items.push({
       label: "Debug",
       onSelect: (ctx) => {
@@ -1602,7 +1653,7 @@ class Shell {
     // when the app has one (otherwise it opens this very menu, not worth a
     // hint).
     if (grouped && !hasOverlay && foreground.hasAppMenu?.()) items.push({ label: "App actions", onSelect: async ctx => { ctx.stack.pop(); await this.openAppActions(); } });
-    const footer = navigationPolicy().tapHold === "switcher" ? gestureHints([[GESTURE_SHORT_THEN_LONG_PRESS, "app switcher"]]) : foreground.hasAppMenu?.()
+    const footer = navigationPolicy().tapHold === "switcher" ? gestureHints([[GESTURE_SHORT_THEN_LONG_PRESS, "app switcher"]]) : foreground.hasAppMenu?.() && !foreground.holdToTalk
       ? gestureHints([[GESTURE_SHORT_THEN_LONG_PRESS, "app menu"]])
       : undefined;
     layer = new ShellOverlayMenuLayer(items, footer, () => grouped ? this.focusWindow(foreground.windowId) : this.yieldFocusToSidebar(), grouped ? appMenuPolicy().systemTitle : undefined);

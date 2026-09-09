@@ -330,7 +330,7 @@ class DashboardController {
         toggle?: TextSettingsEditToggle,
       ) => this.startTextSettingsEdit(settings, title, onFinish, toggle),
       endTextSettingEdit: () => this.endTextSettingEdit(),
-      startVoiceCapture: () => this.startVoiceCapture(),
+      startVoiceCapture: (endpointing = false) => this.startVoiceCapture(endpointing),
       stopVoiceCapture: () => this.stopVoiceCapture(),
       startContinuousVoiceCapture: () => this.startContinuousVoiceCapture(),
       stopContinuousVoiceCapture: () => this.stopContinuousVoiceCapture(),
@@ -1450,9 +1450,14 @@ class DashboardController {
         // especially while the glasses remain reachable in their case.
         const hasBatteryLevel = Number.isInteger(state.battery) && state.battery >= 0 && state.battery <= 100;
         if (hasBatteryLevel) this.lastHeadsetBattery = state.battery;
+        const ringBattery = state.ringBattery;
+        const hasRingBattery = typeof ringBattery === "number" && Number.isInteger(ringBattery)
+          && ringBattery >= 0 && ringBattery <= 100;
         shell.setBatteryLevels({
           headset: hasBatteryLevel ? state.battery : this.lastHeadsetBattery,
           headsetCharging: state.chargingStatus > 0,
+          ring: hasRingBattery ? ringBattery : null,
+          ringCharging: hasRingBattery ? state.ringChargingStatus === 1 : null,
         });
         updateGlassesPresence({ charging: state.chargingStatus > 0 || this.phase === "charging" });
         if ((this.phase === "connected" || this.phase === "charging") && this.communicator) {
@@ -1934,11 +1939,14 @@ class DashboardController {
    * push-to-talk and the Transcribe app. Android mic permission is the consent
    * gate even though the audio source is the G2 mic over BLE.
    */
-  private startVoiceCapture(endpointing = false): void {
-    this.beginVoiceCapture("ptt", endpointing);
+  private pttCaptureGeneration = 0;
+
+  private startVoiceCapture(endpointing = false): Promise<void> {
+    return this.beginVoiceCapture("ptt", endpointing);
   }
 
   private stopVoiceCapture(): void {
+    ++this.pttCaptureGeneration;
     voiceControlBridge.stopPushToTalk();
   }
 
@@ -2004,7 +2012,8 @@ class DashboardController {
     return granted;
   }
 
-  private beginVoiceCapture(kind: "ptt" | "continuous", endpointing = false): void {
+  private async beginVoiceCapture(kind: "ptt" | "continuous", endpointing = false): Promise<void> {
+    const pttGeneration = kind === "ptt" ? ++this.pttCaptureGeneration : 0;
     // Preview mode captures from the phone mic (voiceCaptureOptions with a
     // null communicator); otherwise a live glasses session must be the source.
     const previewCapture = this.isPreviewDisplayActive();
@@ -2012,8 +2021,9 @@ class DashboardController {
       return;
     }
     const communicator = this.communicator;
-    void ensureVoicePermissions()
+    await ensureVoicePermissions()
       .then(() => {
+        if (kind === "ptt" && pttGeneration !== this.pttCaptureGeneration) return;
         if (previewCapture) {
           if (!this.isPreviewDisplayActive()) return;
         } else if (this.phase !== "connected" || this.communicator !== communicator) {
@@ -2664,6 +2674,9 @@ class DashboardController {
   private setPhase(phase: ConnectionPhase): void {
     if (this.phase === phase) return;
     this.phase = phase;
+    if (phase !== "connected" && phase !== "charging") {
+      shell.setBatteryLevels({ ring: null, ringCharging: null });
+    }
     // "charging" is a live BLE link with the glasses in their case.
     updateGlassesPresence({
       connected: phase === "connected" || phase === "charging",

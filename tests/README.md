@@ -22,3 +22,14 @@ Compass diagnostics have focused UI and wire-format checks:
 The protocol check also compiles the production Java parser, so it needs a
 JDK (`JAVA_HOME`, or `javac` and `java` on `PATH`). Its golden packet is shared
 with the firmware encoder test in `g2flash/tests/compass_diagnostics_test.c`.
+
+R1 battery field-106 decoding (valid zero, charging, unavailable/disconnected,
+legacy firmware, malformed messages) uses the same C/Java golden packet:
+
+    node --test tests/ring-battery-protocol.test.cjs
+
+Assistant conversation and APK navigation integration checks cover synchronous
+provider completion, cancellation, saved-history engine changes, and AI Chat
+hold-to-talk with and without an APK navigation override:
+
+    node --test tests/assistant-conversations-extension.test.cjs tests/extension-navigation.test.cjs tests/extension-menu.test.cjs

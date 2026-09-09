@@ -93,3 +93,15 @@ test('full-height switcher draws and hit-tests the panel, then restores compact 
  assert.equal(chrome.windowIndexAt(40, 42, 10), null);
  for (const icon of icons) assert.equal(chrome.windowIndexAt(icon.x + 4, icon.y + 4, 10), icon.index);
 });
+
+test('AI Chat hold-to-talk yields to selected APK navigation and restores host gestures when disabled', async () => {
+ const h = harness(); h.window.holdToTalk = true;
+ await h.send('short-then-long-press');
+ assert.equal(h.shell.getFocus(), 'sidebar'); assert.equal(h.delivered[0].type, 'system-menu-opened');
+ await h.send('long-press'); assert.equal(h.delivered.at(-1).type, 'short-then-long-press');
+ await h.send('long-press-release'); assert.equal(h.shell.escapeMenuTimer, null);
+ h.disable(); h.delivered.length = 0;
+ await h.send('long-press'); assert.equal(h.delivered[0].type, 'long-press'); assert.equal(h.shell.escapeMenuTimer, null);
+ let escapes = 0; h.shell.openEscapeMenu = () => escapes++;
+ await h.send('short-then-long-press'); assert.equal(escapes, 1); assert.equal(h.delivered.length, 1);
+});
