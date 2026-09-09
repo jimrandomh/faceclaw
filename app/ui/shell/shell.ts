@@ -40,7 +40,7 @@ import {
   assistantBridgeTokenSetting,
   assistantModelSetting,
   assistantSkipConfirmationSetting,
-  batteryDisplayModeSetting,
+  batteryIndicatorSettingsKey,
   brightnessSetting,
   onAnySettingChanged,
   openAiApiKeySetting,
@@ -297,6 +297,11 @@ class ShellAlertLayer implements Layer {
   }
 }
 
+/** Every setting the top bar paints from, as one comparable string. */
+function topBarSettingsKey(): string {
+  return `${batteryIndicatorSettingsKey()}|${timeFormatSetting.get()}`;
+}
+
 class Shell {
   private windows: ShellWindow[] = [];
   private selectedIndex = 0;
@@ -351,11 +356,10 @@ class Shell {
   private readonly chrome = new ShellChromeLayer(() => this.chromeState());
   private readonly stack = new LayerStack(this.chrome, this.actions);
 
-  // Top-bar settings we mirror into the chrome; a change to either repaints
-  // the shell surface so the top bar reflects it immediately.
+  // Top-bar settings we mirror into the chrome; a change to any of them
+  // repaints the shell surface so the top bar reflects it immediately.
   private topBarSettingsSubscribed = false;
-  private lastBatteryDisplayMode: string | null = null;
-  private lastTimeFormat: string | null = null;
+  private lastTopBarSettingsKey: string | null = null;
 
   configure(config: ShellConfig): void {
     this.config = config;
@@ -381,8 +385,7 @@ class Shell {
   private subscribeToTopBarSettings(): void {
     if (this.topBarSettingsSubscribed) return;
     this.topBarSettingsSubscribed = true;
-    this.lastBatteryDisplayMode = batteryDisplayModeSetting.get();
-    this.lastTimeFormat = timeFormatSetting.get();
+    this.lastTopBarSettingsKey = topBarSettingsKey();
     onEffectiveExtensionsChanged(() => {
       for (const window of this.windows) {
         window.relayout?.();
@@ -391,13 +394,9 @@ class Shell {
       this.config.requestShellRender();
     });
     onAnySettingChanged(() => {
-      const batteryMode = batteryDisplayModeSetting.get();
-      const timeFormat = timeFormatSetting.get();
-      if (batteryMode === this.lastBatteryDisplayMode && timeFormat === this.lastTimeFormat) {
-        return;
-      }
-      this.lastBatteryDisplayMode = batteryMode;
-      this.lastTimeFormat = timeFormat;
+      const key = topBarSettingsKey();
+      if (key === this.lastTopBarSettingsKey) return;
+      this.lastTopBarSettingsKey = key;
       this.config.requestShellRender();
     });
   }
