@@ -2375,6 +2375,12 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             message.onAck.run();
         }
         consecutiveAckTimeouts = 0;
+        // onAck may have just satisfied a waiter blocked on lock.wait() (e.g.
+        // awaitEvenHubSessionReady polling fixedLayoutCreated/displayedFingerprint
+        // after a create-layout or image ack). Without this, that waiter only
+        // notices on its own up-to-100ms poll tick, adding avoidable latency to
+        // every EvenHub wake. Always called with lock held (see call site).
+        lock.notifyAll();
     }
 
     private void logImageUpdateSendLandmarkLocked(OutboundMessage message) {
