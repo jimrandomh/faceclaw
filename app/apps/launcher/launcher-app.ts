@@ -1,5 +1,6 @@
 import { attachLauncherSurface } from "../../ui/shell/extension-launcher";
 import { effectiveExtension } from "../../ui/extension-settings";
+import { extensionPlatform } from "../external/extension-platform";
 import { type BdfFont } from "../../graphics/bdffont";
 import { getDefaultSmallFont } from "../../graphics/ui-fonts";
 import { truncateText } from "../../graphics/textwrap";
@@ -522,7 +523,16 @@ export function createLauncherWindow(options: LauncherOptions): ShellWindow {
     // Not wrapped in YieldAtRootLayer: the grid handles double-click itself to
     // back out of item selection before yielding to the sidebar.
     baseLayer: gridLayer,
-    submitFrame: (planes, paintMs, frameId) => effectiveExtension("ui.launcher") ? Promise.resolve() : options.submitFrame(planes, paintMs, frameId),
+    // Keep the host grid as the display/input owner until the provider has
+    // supplied a validated frame. Re-check at submit time so a pending host
+    // repaint cannot overwrite a provider that took over meanwhile.
+    submitFrame: (planes, paintMs, frameId) => {
+      const configured = effectiveExtension("ui.launcher");
+      const platform = extensionPlatform();
+      const selected = platform?.feature("ui.launcher");
+      const providerReady = !!configured && !!selected && configured.component === selected.component && configured.generation === selected.generation && platform.surfaceReady("ui.launcher");
+      return providerReady ? Promise.resolve() : options.submitFrame(planes, paintMs, frameId);
+    },
     setSurfaceVisible: options.setSurfaceVisible,
   });
   // The assistant's folder tools change the grouping from outside the window;

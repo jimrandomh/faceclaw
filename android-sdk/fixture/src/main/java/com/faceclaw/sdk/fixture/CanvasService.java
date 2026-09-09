@@ -7,10 +7,17 @@ import org.json.JSONObject;
 public class CanvasService extends FaceclawAppService {
  int width=32,height=16;
  @Override protected void onHostEvent(String type,JSONObject data) {
+  if(type.equals("test-compatibility-status")) postNotification("compatibility","synthetic","Compatibility",extensionsCompatibility(),0);
+  if(type.equals("test-callback-failure")) throw new IllegalStateException("PRIVATE-SYNTHETIC-CALLBACK-CONTENT");
   if(type.equals("test-publish-extensions")) publishExtensions(data.optJSONArray("declarations"));
   if(type.equals("extension-event")&&data.optString("type").equals("request")) {
-   JSONObject request=data.optJSONObject("data"); respondExtension(data.optString("feature"),data.optLong("generation"),request.optString("requestId"),Protocol.object("ok",true));
-   respondExtension(data.optString("feature"),data.optLong("generation"),request.optString("requestId"),Protocol.object("ok",true));
+   JSONObject request=data.optJSONObject("data"); if(request.optBoolean("fixtureHold")) return; respondExtension(data.optString("feature"),data.optLong("generation"),request.optString("requestId"),Protocol.object("ok",true,"deadlineAt",request.optLong("deadlineAt")));
+   respondExtension(data.optString("feature"),data.optLong("generation"),request.optString("requestId"),Protocol.object("ok",true,"deadlineAt",request.optLong("deadlineAt")));
+  }
+  if(type.equals("extension-event")&&data.optString("type").equals("cancel")) {
+   JSONObject request=data.optJSONObject("data");
+   postNotification("fixture-cancelled","synthetic","Cancelled","Synthetic cancellation received",0);
+   respondExtension(data.optString("feature"),data.optLong("generation"),request.optString("requestId"),Protocol.object("ok",true,"deadlineAt",request.optLong("deadlineAt")));
   }
   if(type.equals("extension-surface")&&data.optString("type").equals("visibility")) { Bitmap bitmap=Bitmap.createBitmap(32,16,Bitmap.Config.ARGB_8888); bitmap.eraseColor(Color.WHITE); bitmap.setPixel(0,0,Color.TRANSPARENT); bitmap.setPixel(1,0,Color.BLACK); submitExtensionBitmap(data.optString("feature"),bitmap); bitmap.recycle(); }
   if(type.equals("test-own-notifications")) requestOwnNotifications();

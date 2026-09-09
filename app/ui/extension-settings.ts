@@ -16,7 +16,7 @@ export type EffectiveExtension = {
   live: boolean;
   available: boolean;
   generation: number;
-  contenders?: { component: string; enabled: boolean; granted: boolean; connected: boolean }[];
+  contenders?: { component: string; enabled: boolean; granted: boolean; connected: boolean; reason?: string; requires?: string[] }[];
 };
 type ExtensionSnapshot = { version: number; generation: number; features: EffectiveExtension[] };
 let lastRaw: string | undefined;

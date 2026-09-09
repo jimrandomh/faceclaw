@@ -1,0 +1,11 @@
+# Exact upstream baseline only. CI fails on any other test name or count.
+# These are intentionally scoped to the five compass-style and three
+# touch/pinball failures currently carried by the upstream baseline.
+Circle is the default; the context menu switches, repaints and remembers the style
+switching styles preserves the numeric readout and status at every display size
+strip ticks are 5 degrees apart on the full-display 23 degree scale
+bearings scroll continuously through north with wrapped labels
+a strip waiting for sensor data shows the rails without invented bearings
+wire edges require explicit left/right temple provenance
+pinball responds on contact, holds independently, and releases before tap
+pinball clears held contacts on pause, focus loss, screen-off and menus

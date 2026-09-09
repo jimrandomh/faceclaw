@@ -26,12 +26,16 @@ The host publishes effective typography tokens through the SDK. `Ui.style()` sup
 
 The initial font-sharing contract supports the SDK's bundled Inter, Roboto, Roboto Mono, and Montserrat faces. Arbitrary host font paths are not shared. Bitmap fonts and custom installed faces therefore cannot promise pixel-identical text across APKs. Apps that do not use shared style helpers may retain their own styling.
 
-## Setup and rollback
+## Setup and release evidence
 
 Build/install the general host and T3 APK. In Settings > Installed apps, selecting an Android application opens its phone settings and shows a three-second handoff notice. Settings > Priorities lists behaviors, then their ordered applications and current owner. Permissions and priority remain in the host; T3 provides a direct link back to them. Complete mutual host approval, then grant and order the desired features. Pair the T3 APK with the existing computer bridge using a fresh pairing code. The extraction does not migrate the old fork's app data or credentials.
 
-Before extraction, all six source repositories were committed and tagged `checkpoint/pre-t3-apk-extraction-20260907`. The workspace's `output/t3-apk-extraction/rollback-manifest.json` records the exact commits and exclusions. The old `faceclaw-t3` checkout remains the behavior baseline. Do not retire it until the regression checklist, including physical glasses checks, is complete.
-
-See [the SDK contract](../android-sdk/README.md) for service setup and capability APIs. Build artifacts and local test evidence are kept outside source in the workspace's `output/t3-apk-extraction` directory.
+See [the SDK contract](../android-sdk/README.md) for service setup and
+capability APIs. External authors should follow the [APK development workflow](APK-DEVELOPMENT.md),
+which covers portable kit export, verified emulator installation, approval and
+grant boundaries, first-frame evidence, callback tracing, and the redacted
+phone diagnostics inspector. Keep generated audit artifacts under
+`android-sdk/build/apk-audit/` or a temporary directory; do not put credentials,
+notification payloads, audio, pairing codes, or request tokens in logs.
 
 The SDK's [Demo A and Demo B](../android-sdk/priority-demo/README.md) make priority and fallback behavior reproducible without T3 or a bridge. Their [validation record](../android-sdk/priority-demo/VALIDATION.md) separates completed automated and device checks from the remaining release acceptance items.

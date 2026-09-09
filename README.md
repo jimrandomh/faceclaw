@@ -49,10 +49,13 @@ and declared-source suppression checked. Review or change these choices before
 approving. Existing settings are preserved when Faceclaw is updated.
 
 Developers can use Android Canvas, the optional Faceclaw UI helpers, or both.
-See [APK extensions and override behavior](docs/APK-EXTENSIONS.md) for global UI and service providers, per-feature priorities, shared typography, and rollback.
+See [APK extensions and override behavior](docs/APK-EXTENSIONS.md) for global UI and service providers, per-feature priorities, and shared typography.
 
 See the [Android SDK and Kotlin example](android-sdk/README.md) for the service
 contract, drawing API, permissions, lifecycle, and verification fixtures.
+The [APK development workflow](docs/APK-DEVELOPMENT.md) covers the portable
+SDK kit, standalone starter build, host approval, callback tracing, and audit
+evidence.
 
 
 ## Compiling

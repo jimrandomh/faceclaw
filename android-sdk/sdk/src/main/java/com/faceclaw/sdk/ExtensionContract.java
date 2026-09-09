@@ -5,6 +5,16 @@ import java.util.*;
 
 /** Versioned, bounded extension messages. Keys never name host preferences or native objects. */
 public final class ExtensionContract {
+ /** Snapshot schema and wire protocol remain v1; extension behavior is negotiated separately. */
+ public static final int SEMANTICS=2;
+ public static final String SDK_VERSION="0.2.0";
+ public static int peerSemantics(JSONObject data) {
+  Object value=data.opt("extensionSemantics");
+  if(!(value instanceof Number)) return 0;
+  double number=((Number)value).doubleValue();
+  return Double.isFinite(number)&&number>=0&&number<=Integer.MAX_VALUE&&number==Math.floor(number)?(int)number:0;
+ }
+ public static boolean compatible(int semantics) { return semantics==SEMANTICS; }
  public static final int VERSION=1, MAX_FEATURES=11, MAX_CONFIG=8192;
  public static final List<String> FEATURES=Collections.unmodifiableList(Arrays.asList("ui.launcher","ui.navigation","ui.app-menu","ui.window-layout","ui.typography","ui.notifications","assistant","transcription","refinement","device-tools","notification-content"));
  public static boolean known(String feature) { return FEATURES.contains(feature); }

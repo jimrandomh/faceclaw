@@ -6,19 +6,55 @@ New app approvals default notifications, dictation/review, message text previews
 
 ## Build and consume
 
-Requires Android SDK 35 and JDK 17 or newer for Gradle. The Java API targets Java 11, Android 24+, AGP 8.9.2. Build from this directory:
+Requires Android SDK 35 and JDK 21 for the release audit. The Java API targets
+Java 11, Android 24+, AGP 8.9.2. Build from this directory:
 
 ```sh
 ./gradlew :sdk:assembleDebug :sdk:testDebugUnitTest :sdk:lintDebug
 ```
 
-An Android application may include this build in `settings.gradle.kts`:
+For Faceclaw repository development, an Android application may include this
+build in `settings.gradle.kts`:
 
 ```kotlin
-includeBuild("../faceclaw-app-platform/android-sdk")
+includeBuild("/path/to/faceclaw/android-sdk")
 ```
 
-Then depend on `implementation("com.faceclaw:sdk:0.1.0")`. This is a source-coupled preview: build host and clients from the same SDK checkout. The `0.1.0` coordinate and `extensions: 1` capability do not distinguish preview revisions; version/capability negotiation must be settled before independently distributed releases. Public artifact publication is a separate release task. Faceclaw's NativeScript build compiles the same SDK Java sources through `App_Resources/Android/app.gradle`.
+Then depend on `implementation("com.faceclaw:sdk:0.2.0")`. The release coordinate
+is versioned and can be consumed from the portable Maven repository produced by
+`scripts/export-portable-kit.sh`; consumers do not need this source checkout.
+Faceclaw's NativeScript build compiles the same SDK Java sources through
+`App_Resources/Android/app.gradle`.
+
+### Portable developer kit
+
+Build a local, versioned kit containing the release AAR, POM, sources, SHA-256
+manifest, Gradle wrapper, and standalone starter:
+
+```sh
+scripts/export-portable-kit.sh /tmp/faceclaw-sdk-0.2.0
+cp -a /tmp/faceclaw-sdk-0.2.0 /tmp/faceclaw-sdk-0.2.0-copy
+cd /tmp/faceclaw-sdk-0.2.0-copy/starter
+./gradlew :app:assembleDebug :app:lintDebug
+```
+
+The export refuses to overwrite an existing destination. The starter resolves
+only `sdk-repository/` and uses `com.faceclaw:sdk:0.2.0`; it has no sibling
+workspace assumptions. Keep `PORTABLE-KIT.json` and `SHA256SUMS.json` with any
+kit shared for review.
+
+The generated contract artifacts under `generated/` are derived from
+`ExtensionContract.java`:
+
+```sh
+scripts/generate-extension-contract.py --check
+python3 scripts/test-generator.py
+```
+
+The JSON Schema, TypeScript declaration, and reference table describe closed
+configuration keys, including `ui.navigation.doubleTap`. Java remains the
+runtime authority for scalar bounds, dependencies, cycles, owner limits, and
+semantic compatibility.
 
 Declare one service extending `com.faceclaw.sdk.FaceclawAppService`:
 
@@ -47,7 +83,7 @@ The SDK exposes the selected host package, its verified installed status and its
 
 ## Authoring
 
-The [Kotlin Canvas example](examples/CanvasAppService.kt) shows a complete service mixing Android drawing with Faceclaw helpers, handling viewport/visibility changes and ring clicks. Copy it into an Android app that depends on this SDK and declare its service as above. It uses the SDK's normal host approval flow.
+The [Kotlin Canvas example](examples/CanvasAppService.kt) shows a complete service mixing Android drawing with Faceclaw helpers, handling viewport/visibility changes and ring clicks. Copy it into an Android app that depends on this SDK and declare its service as above. It uses the SDK's normal host approval flow. Kotlin consumers should set their Kotlin JVM target to 11 to match the SDK's Java API target.
 
 Override `onHostConnected()`, `onHostDisconnected()`, and `onHostEvent(String, JSONObject)`. Callbacks run on the main looper. `submitBitmap(Bitmap)` copies the bitmap synchronously and must also run on the main looper; recycling after return is safe. Handle `render` and visible `visibility` events to submit the first frame after opening. Pause animations when hidden/asleep, but keep approved background message receiving independent of the visible window.
 
@@ -116,7 +152,19 @@ The `upstream` and `t3` instrumentation flavors target already-installed, debug-
 
 The [independent priority demos](priority-demo/README.md) provide two installable SDK applications, an emulator test runner, and a [phone/glasses checklist](priority-demo/DEVICE-CHECKLIST.md). They exercise declaration changes, competing owners, offline revocation, dependencies and stale replies without T3 or a backend.
 
-Hosts advertising `extensions: 1` accept `publishExtensions(JSONArray)` declarations. Each item has `{feature, enabled, configuration, requires?}`. Declaration publishes an app-owned candidate; it does **not** grant permission, change another app's toggle, set priority, or write a host preference. The host's **Global customizations and providers** screen grants each feature separately and lets the user move contenders to the top of that feature's priority list. New contenders append below existing choices. Eight installed app owners may publish declarations at once.
+Hosts advertising extension semantics `2` accept `publishExtensions(JSONArray)`
+declarations. Each item has `{feature, enabled, configuration, requires?}`.
+Declaration publishes an app-owned candidate; it does **not** grant permission,
+change another app's toggle, set priority, or write a host preference. Ordinary
+windows continue to use protocol version `1`. A new host permits legacy
+protocol-1 windows, but rejects extension publication from an old-semantics
+client until it updates. A saved declaration without the SDK 0.2.0 revision
+marker remains preserved and is reported as incompatible. An old host can keep
+ordinary windows while reporting `host-update-required`; it must not be treated
+as extension-capable. The host's **Global customizations and providers** screen
+grants each feature separately and lets the user move contenders to the top of
+that feature's priority list. New contenders append below existing choices.
+Eight installed app owners may publish declarations at once.
 
 The known features are `ui.launcher`, `ui.navigation`, `ui.app-menu`, `ui.window-layout`, `ui.typography`, `ui.notifications`, `assistant`, `transcription`, `refinement`, `device-tools`, and `notification-content`. Bundles may partly win. `requires` lists other features that must also be won by the same app; missing/cyclic declarations are rejected. An enabled, approved loser becomes active when the winner is disabled, revoked, or removed. An ordinary live-service outage keeps the selected winner and falls back to host behavior. Persistent navigation/layout/type configuration remains effective while its signed app is installed and approved, unless it depends on an unavailable live feature. No override edits underlying host settings.
 

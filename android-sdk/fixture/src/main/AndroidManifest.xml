@@ -5,5 +5,7 @@
  <service android:name=".FixtureSetupService" android:exported="true"/>
  <service android:name=".CanvasService" android:exported="true"><intent-filter><action android:name="com.faceclaw.action.APP_SERVICE"/></intent-filter><meta-data android:name="com.faceclaw.PROTOCOL_MAJOR" android:value="1"/><meta-data android:name="com.faceclaw.SUPPRESS_PACKAGE" android:value="com.faceclaw.sdk.fixture.source"/></service>
  <service android:name=".AdversarialService" android:exported="true"><intent-filter><action android:name="com.faceclaw.action.APP_SERVICE"/></intent-filter><meta-data android:name="com.faceclaw.PROTOCOL_MAJOR" android:value="1"/></service>
+ <service android:name=".LegacyService" android:exported="true"><intent-filter><action android:name="com.faceclaw.action.APP_SERVICE"/></intent-filter><meta-data android:name="com.faceclaw.PROTOCOL_MAJOR" android:value="1"/></service>
+ <service android:name=".FutureService" android:exported="true"><intent-filter><action android:name="com.faceclaw.action.APP_SERVICE"/></intent-filter><meta-data android:name="com.faceclaw.PROTOCOL_MAJOR" android:value="1"/></service>
  </application>
 </manifest>

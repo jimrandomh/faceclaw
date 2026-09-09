@@ -1,4 +1,5 @@
 import { installedAndroidApps, openAndroidAppSettings, prioritizeExtension, type InstalledAndroidApp } from '../../apps/external/platform';
+import { extensionPlatform } from '../../apps/external/extension-platform';
 import { extensionBehaviors, type EffectiveExtension } from '../extension-settings';
 import { GrayImage } from '../../graphics/image';
 import { getDefaultSmallFont } from '../../graphics/ui-fonts';
@@ -48,10 +49,15 @@ export function installedAppSettingsItems(): MenuItem[] {
   return apps().map(app => ({ label: app.name, description: app.packageName, onSelect: ctx => openSettings(ctx, app.packageName) }));
 }
 export function contenderStatus(behavior: EffectiveExtension, item: NonNullable<EffectiveExtension['contenders']>[number]): string {
+  if (item.reason === 'dependency-owner') return `Needs same app for ${(item.requires ?? []).map(id => labels[id] || id).join(', ')}`;
+  if (item.reason === 'dependency-unavailable') return `Waiting for ${(item.requires ?? []).map(id => labels[id] || id).join(', ')}`;
+  if (item.reason === 'incompatible') return 'App update needed';
   if (!item.enabled) return 'Off in app';
   if (!item.granted) return 'Permission needed';
   if (behavior.live && !item.connected) return 'Disconnected';
+  if (behavior.component === item.component && extensionPlatform()?.surfaceFailed(behavior.feature)) return 'No frame; Faceclaw fallback';
   if (behavior.available && behavior.component === item.component) return 'In use';
+  if (behavior.component === item.component && !behavior.available) return 'Selected; unavailable';
   return 'Lower priority';
 }
 function openOrder(ctx: LayerContext, feature: string): void {
@@ -66,13 +72,16 @@ function openOrder(ctx: LayerContext, feature: string): void {
       { label: 'App settings', onSelect: c => openSettings(c, item.component.split('/')[0]) },
     ]),
   }));
+  if (extensionPlatform()?.surfaceFailed(feature)) rows.push({ label: 'Retry app renderer', onSelect: c => { extensionPlatform()?.retrySurface(feature); c.stack.pop(); c.actions.requestRender(); } });
   rows.push({ label: 'Faceclaw default · fallback', disabled: true, onSelect() {} });
   openModalMenu(ctx, labels[feature] || feature, rows);
 }
 export function behaviorSettingsItems(): MenuItem[] {
   const items = extensionBehaviors().filter(item => item.feature !== 'notification-content').map(item => ({
     label: labels[item.feature] || item.feature,
-    description: item.available && item.component ? `In use: ${appName(item.component)}. Select to view or change app priority.` : 'Faceclaw default is active. Select to inspect app priority.',
+    description: item.available && item.component && !extensionPlatform()?.surfaceFailed(item.feature)
+      ? `In use: ${appName(item.component)}. Select to view or change app priority.`
+      : `Faceclaw default is active.${item.component ? ` Selected: ${appName(item.component)}.` : ""} Select to inspect app priority or retry an unavailable renderer.`,
     onSelect: (ctx: LayerContext) => openOrder(ctx, item.feature),
   }));
   return items.length ? items : [{ label: 'No app overrides', disabled: true, onSelect() {} }];

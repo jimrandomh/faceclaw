@@ -12,6 +12,19 @@ public final class ExtensionPolicy {
  }
  public static Candidate winner(String feature,List<Candidate> candidates,Map<String,List<String>> orders) { return resolve(feature,candidates,orders,new HashSet<>()); }
  public static boolean available(String feature,List<Candidate> candidates,Map<String,List<String>> orders) { return available(feature,candidates,orders,new HashSet<>()); }
+ /** Stable diagnostic codes; no user content or preference values. */
+ public static String reason(Candidate candidate,List<Candidate> candidates,Map<String,List<String>> orders) {
+  if(!candidate.enabled) return "disabled";
+  if(!candidate.granted) return "grant-required";
+  for(String dependency:candidate.requires) {
+   Candidate required=winner(dependency,candidates,orders);
+   if(required==null||!required.component.equals(candidate.component)) return "dependency-owner";
+   if(!available(dependency,candidates,orders)) return "dependency-unavailable";
+  }
+  if(ExtensionContract.live(candidate.feature)&&!candidate.available) return "disconnected";
+  Candidate selected=winner(candidate.feature,candidates,orders);
+  return selected!=null&&selected.component.equals(candidate.component)?"active":"lower-priority";
+ }
  private static boolean available(String feature,List<Candidate> candidates,Map<String,List<String>> orders,Set<String> visiting) {
   if(!visiting.add(feature)) return false;
   try {

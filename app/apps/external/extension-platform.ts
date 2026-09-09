@@ -7,6 +7,8 @@ import { shouldShowNotificationOnGlasses } from "../../native/notification-sourc
 import { initializeSharedHostStyle } from "../../native/shared-style";
 import { boundedToken, record, ExtensionToolCalls, NotificationLeases } from "./extension-policy";
 
+import { SurfaceHealth } from "./surface-health";
+
 declare const java: any;
 export type ExtensionFeature = { feature: string; component: string; configuration: Record<string, unknown>; live: boolean; available: boolean; generation: number };
 export type ExtensionHooks = {
@@ -17,7 +19,7 @@ export type ExtensionHooks = {
   showSurface?: (feature: string, component: string, target?: string) => boolean;
   closeSurface?: (feature: string, restoreSleep?: boolean) => void;
   notificationReplyReturn?: () => (() => void);
-  onFrame?: (component: string, feature: string, generation: number, width: number, height: number, pixels: Uint8Array) => void;
+  onFrame?: (component: string, feature: string, generation: number, width: number, height: number, pixels: Uint8Array) => boolean | void;
 };
 type Pending = { component: string; feature: string; generation: number; own?: boolean; resolve: (data: any) => void; reject: (error: Error) => void; progress?: (data: any) => void };
 export type ProviderRequest = { requestId: string; promise: Promise<any>; cancel: () => void; event: (data: unknown) => boolean };
@@ -27,6 +29,26 @@ const newId = (): string => String(java.util.UUID.randomUUID().toString());
 
 /** APK code stays in its UID. This adapter alone resolves sensitive host actions. */
 export class ExtensionPlatform {
+  private readonly surfaceListeners = new Set<() => void>();
+  private readonly surfaceHealth = new SurfaceHealth(feature => {
+    const selected = this.feature(feature);
+    if (selected) this.native.closeExtensionSurface(selected.component, feature);
+    this.lastGesture.delete(feature);
+    this.hooks.closeSurface?.(feature);
+  }, () => { for (const listener of this.surfaceListeners) listener(); });
+  onSurfaceHealthChanged(listener: () => void): void { this.surfaceListeners.add(listener); }
+  surfaceReady(feature: string): boolean { return this.surfaceHealth.ready(feature); }
+  surfaceFailed(feature: string): boolean { return this.surfaceHealth.failed(feature); }
+  retrySurface(feature: string): void {
+    // Retry is an explicit renderer action. Never close a healthy surface (or
+    // its host overlay) when a stale status action is delivered.
+    if (!this.surfaceHealth.failed(feature)) return;
+    // closeSurface preserves a timed-out state for quarantine; remove that
+    // state only after the native stream and any host overlay have been shut
+    // down. The next open then gets a fresh first-frame deadline.
+    this.closeSurface(feature); this.hooks.closeSurface?.(feature); this.surfaceHealth.close(feature);
+    for (const listener of this.surfaceListeners) listener();
+  }
   private generation = 0;
   private features: ExtensionFeature[] = [];
   private readonly reviews = new Map<string, { cancel: () => void; current: () => boolean }>();
@@ -56,7 +78,7 @@ export class ExtensionPlatform {
     const winner = this.feature(feature);
     return !!winner && winner.component === component && (generation === undefined || winner.generation === generation);
   }
-  handlesNotifications(): boolean { return !!this.feature("ui.notifications") && !this.isLocked(); }
+  handlesNotifications(): boolean { return !!this.feature("ui.notifications") && !this.surfaceFailed("ui.notifications") && !this.isLocked(); }
   private refresh(): void {
     let snapshot: any;
     try { snapshot = JSON.parse(String(this.native.extensionsJson())); } catch { snapshot = {}; }
@@ -81,6 +103,7 @@ export class ExtensionPlatform {
     if (changed.has("device-tools")) this.toolNotifications.clear();
     if (changed.has("ui.app-menu")) this.closeMenu();
     for (const feature of changed) {
+      this.surfaceHealth.close(feature);
       this.lastGesture.delete(feature);
       if (["ui.launcher", "ui.app-menu", "ui.notifications"].includes(feature)) this.hooks.closeSurface?.(feature);
     }
@@ -129,15 +152,19 @@ export class ExtensionPlatform {
   }
   openSurface(feature: string, width: number, height: number): boolean {
     const selected = this.feature(feature);
-    if (!selected || this.isLocked() || !this.native.openExtensionSurface(selected.component, feature, width, height)) return false;
+    if (!selected || this.isLocked()) return false;
+    if (!this.surfaceHealth.open(feature, `${selected.component}:${selected.generation}:${width}:${height}`)) return false;
+    if (!this.native.openExtensionSurface(selected.component, feature, width, height)) { this.surfaceHealth.close(feature); return false; }
     // A newly opened provider surface must receive a catalog even if host state is unchanged.
     this.publishState(true);
     return true;
   }
   setSurfaceVisibility(feature: string, visible: boolean, screenOn: boolean): void {
+    this.surfaceHealth.visible(feature, visible && screenOn && !this.isLocked());
     const selected = this.feature(feature); if (selected) this.native.setExtensionSurfaceVisibility(selected.component, feature, visible, screenOn && !this.isLocked());
   }
   closeSurface(feature: string): void {
+    this.surfaceHealth.close(feature, true);
     if (feature === "ui.app-menu") this.closeMenu();
     const selected = this.feature(feature); if (selected) this.native.closeExtensionSurface(selected.component, feature); this.lastGesture.delete(feature);
   }
@@ -150,19 +177,24 @@ export class ExtensionPlatform {
     if (["click", "double-click", "pointer-click", "long-press", "short-then-long-press", "back", "swipe-left"].includes(String(input.type))) this.lastGesture.set("ui.notifications", Date.now());
   }
   surfaceInput(feature: string, input: unknown): void {
-    const selected = this.feature(feature); if (!selected || this.isLocked() || !shell.isScreenOn() || !record(input)) return;
+    const selected = this.feature(feature); if (!selected || !this.surfaceReady(feature) || this.isLocked() || !shell.isScreenOn() || !record(input)) return;
     if (["click", "double-click", "scroll-up", "scroll-down", "back", "long-press", "short-then-long-press"].includes(String(input.type))) this.lastGesture.set(feature, Date.now());
     this.native.sendExtension(selected.component, feature, "input", JSON.stringify({ event: "input", input }));
   }
   surfacePointer(feature: string, x: number, y: number, width: number, height: number): boolean {
     const selected = this.feature(feature);
-    if (!selected || this.isLocked() || !shell.isScreenOn() || ![x, y, width, height].every(Number.isSafeInteger) || width < 1 || height < 1 || width > 640 || height > 480 || x < 0 || y < 0 || x >= width || y >= height) return false;
+    if (!selected || !this.surfaceReady(feature) || this.isLocked() || !shell.isScreenOn() || ![x, y, width, height].every(Number.isSafeInteger) || width < 1 || height < 1 || width > 640 || height > 480 || x < 0 || y < 0 || x >= width || y >= height) return false;
     if (!this.native.sendExtensionPointer(selected.component, feature, x, y, width, height)) return false;
     this.lastGesture.set(feature, Date.now()); return true;
   }
   onFrame(component: string, feature: string, generation: number, width: number, height: number, pixels: Uint8Array): void {
     if (!this.controls(component, feature) || this.isLocked() || !shell.isScreenOn()) return;
-    this.hooks.onFrame?.(component, feature, generation, width, height, pixels);
+    // Native validates the stream generation, owner/session and immutable
+    // pixels before this callback. The host still owns the final visibility
+    // check because focus can change between native delivery and composition.
+    if (!this.surfaceHealth.active(feature) || this.surfaceHealth.failed(feature)) return;
+    if (this.hooks.onFrame?.(component, feature, generation, width, height, pixels) === false) return;
+    this.surfaceHealth.frame(feature);
   }
   lockChanged(): void {
     if (this.isLocked()) {
@@ -192,13 +224,13 @@ export class ExtensionPlatform {
     return { battery: shell.getBatteryLevels(), ...(this.hooks.hostState?.() ?? {}), screenOn: shell.isScreenOn(), ...(canRead && JSON.stringify(this.notificationAppCatalog()).length <= 20000 ? { notificationApps: this.notificationAppCatalog() } : {}) };
   }
   openNotificationInbox(): boolean {
-    const selected = this.feature("ui.notifications"); if (!selected || this.isLocked()) return false;
+    const selected = this.feature("ui.notifications"); if (!selected || this.surfaceFailed("ui.notifications") || this.isLocked()) return false;
     this.notificationsChanged(); if (this.hooks.showSurface?.("ui.notifications", selected.component, "inbox") !== true) return false; this.event(selected.component, "ui.notifications", { event: "notification-inbox" }); return true;
   }
   private closeMenu(): void { const menu = this.menu; this.menu = null; menu?.onClosed?.(); }
   openMenu(windowId: string, title: string, items: { label: string; enabled?: boolean; onSelect: () => void }[], onClosed?: () => void): boolean {
     const selected = this.feature("ui.app-menu");
-    if (!selected || this.isLocked() || !shell.isScreenOn() || shell.foregroundWindow()?.windowId !== windowId || items.length > 64) return false;
+    if (!selected || this.surfaceFailed("ui.app-menu") || this.isLocked() || !shell.isScreenOn() || shell.foregroundWindow()?.windowId !== windowId || items.length > 64) return false;
     const entries = new Map<string, { label: string; enabled?: boolean; onSelect: () => void }>();
     for (const item of items) entries.set(newId(), item);
     this.closeMenu(); this.hooks.closeSurface?.("ui.app-menu");
@@ -231,7 +263,7 @@ export class ExtensionPlatform {
       for (let index = 0; index < total; index++) this.event(selected.component, "ui.notifications", { event: "notification-snapshot-fragment", snapshotId, index, total, json: snapshot.slice(index * size, (index + 1) * size) });
     }
     const item = arrival && leased.find(entry => entry.source.key === arrival);
-    if (item && shouldShowNotificationOnGlasses(item.source.packageName) && !this.isProtected()) {
+    if (item && !this.surfaceFailed("ui.notifications") && shouldShowNotificationOnGlasses(item.source.packageName) && !this.isProtected()) {
       const wokeScreen = !shell.isScreenOn();
       if (this.hooks.showSurface?.("ui.notifications", selected.component, item.id) !== true) return;
       this.event(selected.component, "ui.notifications", { event: "notification-arrived", key: item.id, postTime: item.source.postTime, wokeScreen });

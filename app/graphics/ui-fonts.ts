@@ -76,12 +76,16 @@ export function parseFontSelection(raw: string): UiFontSelection | null {
 /** Default UI font when the user has never picked one. */
 const DEFAULT_UI_FONT = { kind: "ttf", file: "Roboto-Light.ttf", size: 14 } satisfies UiFontSelection;
 
-export function getUiFontSelection(): UiFontSelection {
-  const override = typographyPolicy();
+/** Saved user baseline. Editors must never seed drafts from an APK override. */
+export function getBaseUiFontSelection(): UiFontSelection {
   const parsed = parseFontSelection(getStringSetting(UI_FONT_SELECTION_KEY, ""));
   const legacy = getStringSetting(LEGACY_UI_FONT_KEY, "");
-  const base: UiFontSelection = parsed ?? (legacy === "terminus" || legacy === "terminusv"
+  return parsed ?? (legacy === "terminus" || legacy === "terminusv"
     ? { kind: "bitmap", face: legacy } : DEFAULT_UI_FONT);
+}
+
+export function getUiFontSelection(): UiFontSelection {
+  const base = getBaseUiFontSelection(), override = typographyPolicy();
   if (override.font) return { kind: "ttf", file: override.font, size: override.size ?? (base.kind === "ttf" ? base.size : DEFAULT_UI_FONT.size) };
   if (override.size && base.kind === "ttf") return { ...base, size: override.size };
   return base;

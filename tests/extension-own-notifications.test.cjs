@@ -1,5 +1,6 @@
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm'),ts=require('typescript');
 const {NotificationLeases}=require('../.test-build/app/apps/external/extension-policy.js');
+const {SurfaceHealth}=require('../.test-build/app/apps/external/surface-health.js');
 function harness(registry = {}) {
  let catalog=[{packageName:'app.native',name:'Native'}];
  let allowed=true,locked=false,screenOn=true,foreground='apk:owner',seq=0;
@@ -15,7 +16,7 @@ function harness(registry = {}) {
  };
  vm.runInNewContext(ts.transpileModule(fs.readFileSync('app/apps/external/extension-platform.ts','utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2020}}).outputText,{module,exports:module.exports,require:name=>imports[name]||{},java:{util:{UUID:{randomUUID:()=>({toString:()=>`id-${++seq}`})}}}});
  const platform=Object.create(module.exports.ExtensionPlatform.prototype);
- Object.assign(platform,{generation:3,ownNotifications:new Map(),conversationIds:new Map(),notificationRevision:0,notificationAppsAt:0,notificationApps:[],isLocked:()=>locked,native:{isExtensionGranted:()=>allowed,send:(owner,type,json)=>sent.push({owner,type,data:JSON.parse(json)})}});
+ Object.assign(platform,{generation:3,ownNotifications:new Map(),conversationIds:new Map(),notificationRevision:0,notificationAppsAt:0,notificationApps:[],isLocked:()=>locked,surfaceHealth:new SurfaceHealth(()=>{},()=>{}),native:{isExtensionGranted:()=>allowed,openExtensionSurface:()=>true,send:(owner,type,json)=>sent.push({owner,type,data:JSON.parse(json)})}});
  return {catalog:v=>{catalog=v;platform.notificationAppsAt=0;},platform,sent,dismissed,opened,allowed:v=>allowed=v,locked:v=>locked=v,screen:v=>screenOn=v,foreground:v=>foreground=v,sources:v=>sources=v,snapshot:()=>JSON.parse(sent.map(x=>x.data.json).join(''))};
 }
 test('own inbox needs explicit content grant and sanitizes foreign capabilities',()=>{
@@ -48,7 +49,7 @@ test('launcher uninstall requires fresh winning-surface input and current uninst
 });
 
 test('pointer bounds and native visible-viewport acceptance gate fresh action authority',()=>{
- const h=harness();h.platform.feature=()=>({component:'owner'});h.platform.lastGesture=new Map();let sent=0,accept=true;h.platform.native.sendExtensionPointer=()=>{sent++;return accept;};
+ const h=harness();h.platform.feature=()=>({component:'owner'});h.platform.surfaceHealth.open('ui.launcher','owner:3:32:16');h.platform.surfaceHealth.frame('ui.launcher');h.platform.lastGesture=new Map();let sent=0,accept=true;h.platform.native.sendExtensionPointer=()=>{sent++;return accept;};
  for(const [x,y,w,height] of [[-1,0,32,16],[32,0,32,16],[0,16,32,16],[0.5,0,32,16],[NaN,0,32,16],[0,0,641,16]]) assert.equal(h.platform.surfacePointer('ui.launcher',x,y,w,height),false);
  assert.equal(sent,0);assert.equal(h.platform.lastGesture.size,0);accept=false;assert.equal(h.platform.surfacePointer('ui.launcher',1,1,32,16),false);assert.equal(h.platform.lastGesture.size,0);
  accept=true;assert.equal(h.platform.surfacePointer('ui.launcher',1,1,32,16),true);assert.ok(h.platform.lastGesture.get('ui.launcher')>0);

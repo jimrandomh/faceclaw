@@ -6,6 +6,7 @@ import com.faceclaw.sdk.*;
 import org.json.JSONObject;
 /** Deliberately bypasses the SDK to exercise the host's trust boundary with malformed frames. */
 public class AdversarialService extends Service {
+ protected int extensionSemantics() { return ExtensionContract.SEMANTICS; }
  Messenger host; String session; long generation,sequence,extensionGeneration,extensionSequence; SharedMemory mutableFrame;
  private void sendColoredFrame(boolean extension,int color,boolean shared) throws Exception {
   Message frame=Protocol.message(extension?Protocol.EXTENSION_FRAME:Protocol.FRAME,session,"frame",null);
@@ -22,7 +23,7 @@ public class AdversarialService extends Service {
    if((m.what==Protocol.ACK||m.what==Protocol.EXTENSION_ACK)&&mutableFrame!=null) {
     java.nio.ByteBuffer mapping=mutableFrame.mapReadWrite();while(mapping.hasRemaining())mapping.put((byte)200);SharedMemory.unmap(mapping);mutableFrame.close();mutableFrame=null;
    }
-   if(m.what==Protocol.HELLO) { host=m.replyTo; session=b.getString("session"); host.send(Protocol.message(Protocol.READY,session,"ready",Protocol.object("version",1))); }
+   if(m.what==Protocol.HELLO) { host=m.replyTo; session=b.getString("session"); host.send(Protocol.message(Protocol.READY,session,"ready",Protocol.object("version",1,"extensionSemantics",extensionSemantics()))); }
    if(m.what==Protocol.EVENT) {
     String type=b.getString("type"); JSONObject data=Protocol.json(b);
     if(type.equals("open")||type.equals("resize")) generation=data.getLong("generation");

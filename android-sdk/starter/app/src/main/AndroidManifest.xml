@@ -1,0 +1,31 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <queries><intent><action android:name="com.faceclaw.action.MANAGE_APPS" /></intent></queries>
+    <application
+        android:allowBackup="false"
+        android:theme="@android:style/Theme.Material.Light.NoActionBar"
+        android:label="Faceclaw APK starter"
+        android:supportsRtl="true">
+        <activity
+            android:name=".SettingsActivity"
+            android:exported="true"
+            android:label="Faceclaw APK starter settings">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="com.faceclaw.action.APP_SETTINGS" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
+        <service
+            android:name=".PreviewService"
+            android:exported="true"
+            android:label="Faceclaw APK starter preview">
+            <intent-filter>
+                <action android:name="com.faceclaw.action.APP_SERVICE" />
+            </intent-filter>
+            <meta-data android:name="com.faceclaw.PROTOCOL_MAJOR" android:value="1" />
+        </service>
+    </application>
+</manifest>

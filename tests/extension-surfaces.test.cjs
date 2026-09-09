@@ -28,7 +28,7 @@ function harness({ awake = true, protectedFlow = false } = {}) {
   const context = { shell, ExtensionLayer: Surface, setTimeout: fn => { timers.set(++timerId, fn); return timerId; }, clearTimeout: id => timers.delete(id) };
   vm.createContext(context);
   vm.runInContext(ts.transpileModule(`class Harness { ${methods.join('\n')} }; globalThis.Harness = Harness;`, { compilerOptions: { target: ts.ScriptTarget.ES2020 } }).outputText, context);
-  const controller = new context.Harness(); Object.assign(controller, { extensionSurfaces: new Map(), glassesLocked: false, phase: 'connected', ensureEvenHubSessionActive() {}, requestShellRender() {}, externalApps: { extensions: { surfaceInput() {}, openSurface() {}, setSurfaceVisibility() {}, closeSurface() {} } } });
+  const controller = new context.Harness(); Object.assign(controller, { extensionSurfaces: new Map(), glassesLocked: false, phase: 'connected', ensureEvenHubSessionActive() {}, requestShellRender() {}, externalApps: { extensions: { surfaceInput() {}, openSurface() { return true; }, setSurfaceVisibility() {}, closeSurface() {} } } });
   return { controller, layer: () => layer, timers, awake: () => awake, wakes: () => wakes, sleeps: () => sleeps, foreground: id => foreground = id, protect: value => protectedFlow = value, expire() { const current = [...timers.values()]; timers.clear(); current.forEach(fn => fn()); } };
 }
 test('arrival previews preserve the original sleep origin across replacement', () => {

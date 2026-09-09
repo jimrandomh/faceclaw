@@ -81,6 +81,102 @@ public class BoundaryTest extends Instrumentation {
  private void grantExtension(String component,String feature,boolean granted) {
   runOnMainSync(()->{ context.getSharedPreferences("faceclaw-external-apps",0).edit().putBoolean(component+":extension:"+feature,granted).commit(); manager.refresh(); });
  }
+ public void testExtensionSemanticsRejectStringAndFractionalCoercion() throws Exception {
+  for(Object value:new Object[]{"2",2.5,-1,2147483648L}) assertFalse(ExtensionContract.compatible(ExtensionContract.peerSemantics(Protocol.object("extensionSemantics",value))));
+  assertTrue("Exact integer revision accepted",ExtensionContract.compatible(ExtensionContract.peerSemantics(Protocol.object("extensionSemantics",2))));
+ }
+ public void testNewSdkNegotiatesWithLegacyCurrentAndFutureHosts() throws Exception {
+  for(int semantics:new int[]{0,ExtensionContract.SEMANTICS,3}) {
+   CountDownLatch ready=new CountDownLatch(1),bound=new CountDownLatch(1),rendered=new CountDownLatch(1),published=new CountDownLatch(1),status=new CountDownLatch(1);
+   AtomicReference<android.os.Messenger> remote=new AtomicReference<>(); AtomicReference<Throwable> error=new AtomicReference<>(); AtomicReference<String> compatibility=new AtomicReference<>();
+   String session=java.util.UUID.randomUUID().toString();
+   android.os.Messenger inbox=new android.os.Messenger(new android.os.Handler(android.os.Looper.getMainLooper(),message->{
+    try {
+     if(message.what==Protocol.READY) { assertEquals(ExtensionContract.SEMANTICS,Protocol.json(message.getData()).getInt("extensionSemantics"));ready.countDown(); }
+     if(message.what==Protocol.EVENT) {
+      String type=message.getData().getString("type"); org.json.JSONObject data=Protocol.json(message.getData());
+      if(type.equals("publish-extensions")) published.countDown();
+      if(type.equals("notification")&&data.optString("id").equals("compatibility")) { compatibility.set(data.optString("text"));status.countDown(); }
+     }
+     if(message.what==Protocol.FRAME) {
+      android.os.Bundle data=message.getData(); assertEquals(32,data.getInt("width")); assertEquals(16,data.getInt("height"));
+      if(android.os.Build.VERSION.SDK_INT>=27&&data.containsKey("memory")) { android.os.SharedMemory memory=data.getParcelable("memory");assertEquals(512,memory.getSize());memory.close(); }
+      android.os.Message ack=Protocol.message(Protocol.ACK,session,"ack",null); ack.getData().putLong("sequence",data.getLong("sequence"));remote.get().send(ack);rendered.countDown();
+     }
+    } catch(Throwable failure) { error.set(failure); }
+    return true;
+   }));
+   ServiceConnection connection=new ServiceConnection() {
+    public void onServiceConnected(ComponentName name,android.os.IBinder binder) { remote.set(new android.os.Messenger(binder));bound.countDown(); }
+    public void onServiceDisconnected(ComponentName name) {}
+   };
+   assertTrue("Bind SDK fixture",context.bindService(new Intent().setComponent(new ComponentName(PKG,PKG+".CanvasService")),connection,Context.BIND_AUTO_CREATE));
+   try {
+    assertTrue("SDK service bound",bound.await(5,TimeUnit.SECONDS));
+    org.json.JSONObject hello=Protocol.object("version",Protocol.VERSION);if(semantics!=0)hello.put("extensionSemantics",semantics);
+    android.os.Message greeting=Protocol.message(Protocol.HELLO,session,"hello",hello);greeting.replyTo=inbox;remote.get().send(greeting);
+    assertTrue("Ordinary handshake remains compatible",ready.await(5,TimeUnit.SECONDS));
+    remote.get().send(Protocol.message(Protocol.EVENT,session,"open",Protocol.object("width",32,"height",16,"generation",1)));
+    remote.get().send(Protocol.message(Protocol.EVENT,session,"visibility",Protocol.object("visible",true,"screenOn",true)));
+    assertTrue("Ordinary window works for every host revision",rendered.await(5,TimeUnit.SECONDS));
+    remote.get().send(Protocol.message(Protocol.EVENT,session,"test-publish-extensions",new org.json.JSONObject(declarations("ui.typography","{}"))));
+    remote.get().send(Protocol.message(Protocol.EVENT,session,"test-compatibility-status",new org.json.JSONObject()));
+    assertTrue("SDK compatibility status returned",status.await(5,TimeUnit.SECONDS));settle();
+    assertEquals(semantics==ExtensionContract.SEMANTICS?"compatible":semantics==0?"host-update-required":"sdk-update-required",compatibility.get());
+    assertEquals(semantics==ExtensionContract.SEMANTICS?0L:1L,published.getCount());
+    if(error.get()!=null)throw new AssertionError(error.get());
+   } finally { context.unbindService(connection);settle(); }
+  }
+ }
+ public void testLegacyAndFutureClientsRetainWindowsButCannotPublishExtensions() throws Exception {
+  for(String service:new String[]{"LegacyService","FutureService"}) {
+   connected=new CountDownLatch(1); String component=approve(service); open(component);
+   int before=frames.get(); send(component,"fixture",Protocol.object("attack","valid").toString()); settle();
+   assertTrue("Ordinary v1 window still renders",frames.get()>before);
+   send(component,"fixture",Protocol.object("attack","publish-launcher").toString()); settle();
+   grantExtension(component,"ui.launcher",true);
+   assertFalse(manager.isExtensionGranted(component,"ui.launcher"));
+   assertEquals("",auditOwner("ui.launcher"));
+   org.json.JSONObject report=new org.json.JSONObject(manager.diagnosticsJson());
+   boolean found=false;
+   for(int n=0;n<report.getJSONArray("apps").length();n++) {
+    org.json.JSONObject app=report.getJSONArray("apps").getJSONObject(n);
+    if(component.equals(app.getString("component"))) { found=true;assertFalse(app.getBoolean("extensionCompatible"));assertTrue("Diagnostic records rejected semantics",app.getJSONObject("diagnostics").getInt("extension-incompatible")>0); }
+   }
+   assertTrue("Peer present in diagnostics",found);
+  }
+ }
+ public void testUnversionedSavedDeclarationsNeedRepublishWithoutErasingGrants() throws Exception {
+  String component=approve("CanvasService"); send(component,"test-publish-extensions",declarations("ui.typography","{\"size\":17}")); settle(); grantExtension(component,"ui.typography",true);
+  assertEquals(component,auditOwner("ui.typography"));
+  checkedMain(()->{
+   android.content.SharedPreferences prefs=context.getSharedPreferences("faceclaw-external-apps",0);
+   org.json.JSONObject saved=new org.json.JSONObject(prefs.getString(component+":extensions","{}")); saved.remove("semantics");
+   prefs.edit().putString(component+":extensions",saved.toString()).commit(); manager.refresh();
+  });
+  assertEquals("",auditOwner("ui.typography"));
+  assertTrue("Explicit grant retained",context.getSharedPreferences("faceclaw-external-apps",0).getBoolean(component+":extension:ui.typography",false));
+  send(component,"test-publish-extensions",declarations("ui.typography","{\"size\":17}")); settle();
+  assertEquals(component,auditOwner("ui.typography"));
+ }
+ public void testCallbackDiagnosticsContainNoExceptionOrRequestPayloadAndServiceRecovers() throws Exception {
+  String component=approve("CanvasService"); open(component); settle();
+  send(component,"test-callback-failure","{}"); settle();
+  String report=manager.diagnosticsJson();
+  assertTrue("Failure is observable",report.contains("callback-failed"));
+  assertFalse(report.contains("PRIVATE-SYNTHETIC-CALLBACK-CONTENT"));
+  assertFalse(report.contains("configuration")); assertFalse(report.contains("requestId"));
+  int before=frames.get(); send(component,"render","{}"); settle();
+  assertTrue("Subsequent callback remains usable",frames.get()>before); assertTrue("Window remains connected",manager.isConnected(component));
+ }
+ public void testRequestDeadlineCancelsRemoteProviderAndRejectsLateResult() throws Exception {
+  String component=approve("CanvasService"); send(component,"test-publish-extensions",declarations("ui.launcher","{}")); settle(); grantExtension(component,"ui.launcher",true);
+  runOnMainSync(()->{ context.getSharedPreferences("faceclaw-external-apps",0).edit().putBoolean(component+":notifications",true).commit(); manager.refresh(); });
+  checkedMain(()->assertTrue("Request starts",manager.sendExtension(component,"ui.launcher","request","{\"requestId\":\"deadline-synthetic\",\"fixtureHold\":true}")));
+  Thread.sleep(20500); waitForIdleSync(); settle();
+  assertEquals(1,extensionTimeouts.get()); assertEquals(1,notifications.get()); assertEquals(0,extensionResults.get());
+  String report=manager.diagnosticsJson(); assertTrue("Deadline is inspectable",report.contains("request-timeout"));assertFalse(report.contains("deadline-synthetic"));
+ }
  public void testSettingsTargetRequiresSamePackageUidExportAndNoPermission() throws Exception {
   android.content.pm.ServiceInfo service=new android.content.pm.ServiceInfo();
   service.packageName=PKG; service.applicationInfo=new android.content.pm.ApplicationInfo(); service.applicationInfo.uid=12345;
@@ -160,6 +256,8 @@ public class BoundaryTest extends Instrumentation {
   grantExtension(c,"assistant",true);
   runOnMainSync(()->assertTrue("Granted request dispatched",manager.sendExtension(c,"assistant","request","{\"requestId\":\"request-1\"}")));
   settle(); assertEquals(1,extensionResults.get());
+  long deadline=new org.json.JSONObject(extensionResultPayload).getJSONObject("data").getLong("deadlineAt");
+  assertTrue("Host supplies bounded future deadline",deadline>System.currentTimeMillis()&&deadline<=System.currentTimeMillis()+600000);
   grantExtension(c,"assistant",false); assertFalse(manager.sendExtension(c,"assistant","request","{\"requestId\":\"request-2\"}"));
  }
  public void testAttemptedProviderDispatchCannotAuthorizeFallback() throws Exception {
@@ -267,7 +365,9 @@ public class BoundaryTest extends Instrumentation {
   try {
    assertTrue("Cold phone settings must initialize approved app connections",connected.await(5,TimeUnit.SECONDS));
    assertTrue("Saved mutual host selection reconnects",manager.isConnected(component));
-   assertEquals(before,new java.util.HashMap<>(prefs.getAll()));
+   java.util.Map<String,Object> expected=new java.util.HashMap<>(before);
+   expected.put(component+":extension-peer-semantics",ExtensionContract.SEMANTICS);
+   assertEquals(expected,new java.util.HashMap<>(prefs.getAll()));
   } finally { runOnMainSync(activity::finish); }
  }
  public void testTransportTimingAndCoalescing() throws Exception {

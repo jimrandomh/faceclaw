@@ -6,7 +6,7 @@ import { appViewportRect, type WindowHeightMode } from "./geometry";
 /** Receives only private raster snapshots already checked by the native adapter. */
 export class ExtensionLayer implements Layer {
   readonly acceptsDirectional = true;
-  get dimUnderneath(): false | number { return this.opaque ? 0 : false; }
+  get dimUnderneath(): false | number { return this.opaque && this.frame ? 0 : false; }
   opaque: boolean;
   private frame: GrayImage | undefined;
   get readyForDisplay(): boolean { return this.frame !== undefined; }
@@ -30,7 +30,7 @@ export class ExtensionLayer implements Layer {
     if (this.alignTop) rect.y = 0;
     const size = `${rect.width}:${rect.height}`;
     if (size !== this.size) { this.size = size; this.frame = undefined; this.resized(rect.width, rect.height); }
-    if (this.opaque) image.fillRect(rect.x, rect.y, rect.width, rect.height, 1);
+    if (this.opaque && this.frame) image.fillRect(rect.x, rect.y, rect.width, rect.height, 1);
     if (this.frame?.width === rect.width && this.frame.height === rect.height) {
       image.bitBlt(this.frame, rect.x, rect.y, { transparentZero: !this.opaque });
     }

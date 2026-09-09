@@ -401,14 +401,15 @@ class DashboardController {
         notificationReplyReturn: () => this.notificationReplyReturn(),
         onFrame: (component, feature, _generation, width, height, pixels) => {
           if (feature === "ui.launcher") {
-            if (shell.foregroundWindow()?.appId !== "launcher" || !this.display || this.glassesLocked) return;
+            if (shell.foregroundWindow()?.appId !== "launcher" || !this.display || this.glassesLocked) return false;
             const frameId = frameTimings.startFrame("render:extension-launcher", 0);
             void this.display.submitSurfaceFrame("window:launcher", pixels, { x: 0, y: 0, width, height }, `extension:${Date.now()}`, 0, frameId).then(() => this.schedulePreviewUpdate());
-            return;
+            return true;
           }
           const state = this.extensionSurfaces.get(feature);
-          if (!state || state.component !== component) return;
+          if (!state || state.component !== component) return false;
           state.layer.setFrame(pixels, width, height); this.requestShellRender();
+          return true;
         },
       },
     });
@@ -600,6 +601,13 @@ class DashboardController {
   }
 
   private handleScreenStateChanged(on: boolean): void {
+    // Extension overlays do not have a ShellWindow callback for screen state.
+    // Keep native visibility and the first-frame budget aligned with the real
+    // display state, so sleep pauses recovery instead of spending the deadline
+    // while the wearer cannot see or touch the surface.
+    for (const [feature] of this.extensionSurfaces) {
+      this.externalApps?.extensions.setSurfaceVisibility(feature, true, on);
+    }
     if (on) {
       this.cancelEvenHubSuspendTimer();
       void this.ensureEvenHubSessionActive().catch((error) => {
@@ -2546,7 +2554,13 @@ class DashboardController {
       }
       this.externalApps.extensions.surfaceInput(feature, event);
     }, (width, height) => {
-      this.externalApps.extensions.openSurface(feature, width, height);
+      if (!this.externalApps.extensions.openSurface(feature, width, height)) {
+        // The winning provider can disappear between showSurface and the
+        // layer's first paint. Do not leave an overlay with no health state to
+        // time out; return immediately to the host surface and sleep origin.
+        this.closeExtensionSurface(feature);
+        return;
+      }
       this.externalApps.extensions.setSurfaceVisibility(feature, true, shell.isScreenOn());
     }, () => {
       const state = this.extensionSurfaces.get(feature);

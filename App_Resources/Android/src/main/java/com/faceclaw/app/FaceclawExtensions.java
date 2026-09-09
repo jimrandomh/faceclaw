@@ -7,7 +7,7 @@ import java.util.*;
 
 /** Host-private, signer-bound declarations, grants and user-owned feature order. */
 final class FaceclawExtensions {
- interface Owners { Map<String,String> approved(); boolean connected(String component); }
+ interface Owners { Map<String,String> approved(); boolean connected(String component); boolean compatible(String component); }
  private final SharedPreferences prefs; private final Owners owners;
  private long generation=1;
  private Map<String,JSONArray> cachedDeclarations;
@@ -26,7 +26,7 @@ final class FaceclawExtensions {
    String pin=owners.approved().get(component); if(pin==null) return false;
    Map<String,JSONArray> existing=declarations(); if(!existing.containsKey(component)&&existing.size()>=8) return false;
    JSONArray valid=ExtensionContract.declarations(declarations);
-   String value=Protocol.object("pin",pin,"declarations",valid).toString();
+   String value=Protocol.object("pin",pin,"semantics",ExtensionContract.SEMANTICS,"declarations",valid).toString();
    if(value.equals(prefs.getString(component+":extensions",""))) return true;
    SharedPreferences.Editor edit=prefs.edit().putString(component+":extensions",value);
    Map<String,List<String>> existingOrders=orders();
@@ -56,7 +56,7 @@ final class FaceclawExtensions {
    JSONObject item=owner.getValue().optJSONObject(i); String feature=item.optString("feature");
    List<String> requires=new ArrayList<>(); JSONArray array=item.optJSONArray("requires");
    for(int n=0;n<array.length();n++) requires.add(array.optString(n));
-   result.add(new ExtensionPolicy.Candidate(owner.getKey(),feature,item.optBoolean("enabled"),prefs.getBoolean(owner.getKey()+":extension:"+feature,false),owners.connected(owner.getKey()),requires));
+   result.add(new ExtensionPolicy.Candidate(owner.getKey(),feature,item.optBoolean("enabled"),prefs.getBoolean(owner.getKey()+":extension:"+feature,false)&&compatible(owner.getKey()),owners.connected(owner.getKey()),requires));
   }
   cachedCandidates=result; return result;
  }
@@ -93,6 +93,17 @@ final class FaceclawExtensions {
   for(int i=0;i<values.length();i++) if(feature.equals(values.optJSONObject(i).optString("feature"))) return values.optJSONObject(i);
   return null;
  }
+ boolean compatible(String component) {
+  try {
+   JSONObject saved=new JSONObject(prefs.getString(component+":extensions","{}"));
+   return ExtensionContract.compatible(saved.optInt("semantics"))&&owners.compatible(component);
+  } catch(Exception ignored) { return false; }
+ }
+ String reason(String component,String feature) {
+  if(!compatible(component)) return "incompatible";
+  for(ExtensionPolicy.Candidate candidate:candidates()) if(candidate.component.equals(component)&&candidate.feature.equals(feature)) return ExtensionPolicy.reason(candidate,candidates(),orders());
+  return "undeclared";
+ }
  boolean granted(String component,String feature) { return declaration(component,feature)!=null&&prefs.getBoolean(component+":extension:"+feature,false); }
  ExtensionPolicy.Candidate winner(String feature) { return ExtensionPolicy.winner(feature,candidates(),orders()); }
  boolean controls(String component,String feature) { ExtensionPolicy.Candidate winner=winner(feature); return winner!=null&&winner.component.equals(component)&&winner.available&&ExtensionPolicy.available(feature,candidates(),orders()); }
@@ -114,7 +125,8 @@ final class FaceclawExtensions {
    ExtensionPolicy.Candidate winner=ExtensionPolicy.winner(feature,candidates,orders); JSONArray contenders=new JSONArray();
    for(String component:orderedComponents(feature)) {
     JSONObject item=declaration(component,feature);
-    contenders.put(Protocol.object("component",component,"enabled",item.optBoolean("enabled"),"granted",granted(component,feature),"connected",owners.connected(component)));
+    ExtensionPolicy.Candidate candidate=candidates.stream().filter(c -> c.feature.equals(feature)&&c.component.equals(component)).findFirst().get();
+    contenders.put(Protocol.object("reason",reason(component,feature),"requires",new JSONArray(candidate.requires),"component",component,"enabled",item.optBoolean("enabled"),"granted",granted(component,feature),"connected",owners.connected(component)));
    }
    boolean live=ExtensionContract.live(feature), available=ExtensionPolicy.available(feature,candidates,orders);
    features.put(Protocol.object("feature",feature,"component",winner==null?"":winner.component,"configuration",winner==null?new JSONObject():declaration(winner.component,feature).optJSONObject("configuration"),"live",live,"available",available,"generation",featureGenerations.get(feature),"contenders",contenders));

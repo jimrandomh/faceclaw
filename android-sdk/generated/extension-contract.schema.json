@@ -1,0 +1,660 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://faceclaw.dev/schemas/extension-contract-1.json",
+  "title": "Faceclaw APK extension declarations",
+  "description": "Generated from sdk/src/main/java/com/faceclaw/sdk/ExtensionContract.java.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "declarations": {
+      "type": "array",
+      "maxItems": 11,
+      "uniqueItems": true,
+      "items": {
+        "oneOf": [
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "feature": {
+                "const": "ui.launcher"
+              },
+              "enabled": {
+                "type": "boolean"
+              },
+              "configuration": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "label": {
+                    "type": "string",
+                    "maxLength": 100,
+                    "pattern": "^[^\\x00-\\x1f\\x7f]*$"
+                  },
+                  "filesDefaultView": {
+                    "type": "string",
+                    "enum": [
+                      "icons",
+                      "list"
+                    ]
+                  }
+                }
+              },
+              "requires": {
+                "type": "array",
+                "uniqueItems": true,
+                "maxItems": 11,
+                "items": {
+                  "enum": [
+                    "ui.launcher",
+                    "ui.navigation",
+                    "ui.app-menu",
+                    "ui.window-layout",
+                    "ui.typography",
+                    "ui.notifications",
+                    "assistant",
+                    "transcription",
+                    "refinement",
+                    "device-tools",
+                    "notification-content"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "feature",
+              "enabled",
+              "configuration"
+            ]
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "feature": {
+                "const": "ui.navigation"
+              },
+              "enabled": {
+                "type": "boolean"
+              },
+              "configuration": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "rootBack": {
+                    "type": "string",
+                    "enum": [
+                      "sleep",
+                      "switcher"
+                    ]
+                  },
+                  "doubleTap": {
+                    "type": "string",
+                    "enum": [
+                      "back",
+                      "sleep"
+                    ]
+                  },
+                  "tapHold": {
+                    "type": "string",
+                    "enum": [
+                      "switcher",
+                      "app-menu"
+                    ]
+                  },
+                  "hold": {
+                    "type": "string",
+                    "enum": [
+                      "app-menu",
+                      "system-menu"
+                    ]
+                  },
+                  "wakeFocus": {
+                    "type": "string",
+                    "enum": [
+                      "window",
+                      "sidebar"
+                    ]
+                  }
+                }
+              },
+              "requires": {
+                "type": "array",
+                "uniqueItems": true,
+                "maxItems": 11,
+                "items": {
+                  "enum": [
+                    "ui.launcher",
+                    "ui.navigation",
+                    "ui.app-menu",
+                    "ui.window-layout",
+                    "ui.typography",
+                    "ui.notifications",
+                    "assistant",
+                    "transcription",
+                    "refinement",
+                    "device-tools",
+                    "notification-content"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "feature",
+              "enabled",
+              "configuration"
+            ]
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "feature": {
+                "const": "ui.app-menu"
+              },
+              "enabled": {
+                "type": "boolean"
+              },
+              "configuration": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "title": {
+                    "type": "string",
+                    "maxLength": 100,
+                    "pattern": "^[^\\x00-\\x1f\\x7f]*$"
+                  },
+                  "systemTitle": {
+                    "type": "string",
+                    "maxLength": 100,
+                    "pattern": "^[^\\x00-\\x1f\\x7f]*$"
+                  },
+                  "displayOffFirst": {
+                    "type": "boolean"
+                  },
+                  "systemActionsLast": {
+                    "type": "boolean"
+                  }
+                }
+              },
+              "requires": {
+                "type": "array",
+                "uniqueItems": true,
+                "maxItems": 11,
+                "items": {
+                  "enum": [
+                    "ui.launcher",
+                    "ui.navigation",
+                    "ui.app-menu",
+                    "ui.window-layout",
+                    "ui.typography",
+                    "ui.notifications",
+                    "assistant",
+                    "transcription",
+                    "refinement",
+                    "device-tools",
+                    "notification-content"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "feature",
+              "enabled",
+              "configuration"
+            ]
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "feature": {
+                "const": "ui.window-layout"
+              },
+              "enabled": {
+                "type": "boolean"
+              },
+              "configuration": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "centered": {
+                    "type": "boolean"
+                  },
+                  "sidebarMode": {
+                    "type": "string",
+                    "enum": [
+                      "overlay",
+                      "persistent"
+                    ]
+                  },
+                  "switcherHeight": {
+                    "type": "string",
+                    "enum": [
+                      "display",
+                      "minimum"
+                    ]
+                  },
+                  "dividerWidth": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 4
+                  },
+                  "ownTopBar": {
+                    "type": "boolean"
+                  },
+                  "ownHeightMode": {
+                    "type": "string",
+                    "enum": [
+                      "min",
+                      "medium",
+                      "max"
+                    ]
+                  },
+                  "inputDialogs": {
+                    "type": "string",
+                    "enum": [
+                      "compact",
+                      "viewport"
+                    ]
+                  }
+                }
+              },
+              "requires": {
+                "type": "array",
+                "uniqueItems": true,
+                "maxItems": 11,
+                "items": {
+                  "enum": [
+                    "ui.launcher",
+                    "ui.navigation",
+                    "ui.app-menu",
+                    "ui.window-layout",
+                    "ui.typography",
+                    "ui.notifications",
+                    "assistant",
+                    "transcription",
+                    "refinement",
+                    "device-tools",
+                    "notification-content"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "feature",
+              "enabled",
+              "configuration"
+            ]
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "feature": {
+                "const": "ui.typography"
+              },
+              "enabled": {
+                "type": "boolean"
+              },
+              "configuration": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "font": {
+                    "type": "string",
+                    "pattern": "^(?:Inter_18pt|Roboto|RobotoMono|Montserrat)-(?:Regular|Light|Bold)\\.ttf$"
+                  },
+                  "size": {
+                    "type": "integer",
+                    "minimum": 8,
+                    "maximum": 20
+                  },
+                  "raster": {
+                    "type": "string",
+                    "enum": [
+                      "antialiased",
+                      "crisp",
+                      "hinted"
+                    ]
+                  },
+                  "borderWidth": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 4
+                  },
+                  "selectionBorderWidth": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 5
+                  },
+                  "cardRadius": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 24
+                  }
+                }
+              },
+              "requires": {
+                "type": "array",
+                "uniqueItems": true,
+                "maxItems": 11,
+                "items": {
+                  "enum": [
+                    "ui.launcher",
+                    "ui.navigation",
+                    "ui.app-menu",
+                    "ui.window-layout",
+                    "ui.typography",
+                    "ui.notifications",
+                    "assistant",
+                    "transcription",
+                    "refinement",
+                    "device-tools",
+                    "notification-content"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "feature",
+              "enabled",
+              "configuration"
+            ]
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "feature": {
+                "const": "ui.notifications"
+              },
+              "enabled": {
+                "type": "boolean"
+              },
+              "configuration": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "label": {
+                    "type": "string",
+                    "maxLength": 100,
+                    "pattern": "^[^\\x00-\\x1f\\x7f]*$"
+                  }
+                }
+              },
+              "requires": {
+                "type": "array",
+                "uniqueItems": true,
+                "maxItems": 11,
+                "items": {
+                  "enum": [
+                    "ui.launcher",
+                    "ui.navigation",
+                    "ui.app-menu",
+                    "ui.window-layout",
+                    "ui.typography",
+                    "ui.notifications",
+                    "assistant",
+                    "transcription",
+                    "refinement",
+                    "device-tools",
+                    "notification-content"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "feature",
+              "enabled",
+              "configuration"
+            ]
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "feature": {
+                "const": "assistant"
+              },
+              "enabled": {
+                "type": "boolean"
+              },
+              "configuration": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "label": {
+                    "type": "string",
+                    "maxLength": 100,
+                    "pattern": "^[^\\x00-\\x1f\\x7f]*$"
+                  }
+                }
+              },
+              "requires": {
+                "type": "array",
+                "uniqueItems": true,
+                "maxItems": 11,
+                "items": {
+                  "enum": [
+                    "ui.launcher",
+                    "ui.navigation",
+                    "ui.app-menu",
+                    "ui.window-layout",
+                    "ui.typography",
+                    "ui.notifications",
+                    "assistant",
+                    "transcription",
+                    "refinement",
+                    "device-tools",
+                    "notification-content"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "feature",
+              "enabled",
+              "configuration"
+            ]
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "feature": {
+                "const": "transcription"
+              },
+              "enabled": {
+                "type": "boolean"
+              },
+              "configuration": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "label": {
+                    "type": "string",
+                    "maxLength": 100,
+                    "pattern": "^[^\\x00-\\x1f\\x7f]*$"
+                  }
+                }
+              },
+              "requires": {
+                "type": "array",
+                "uniqueItems": true,
+                "maxItems": 11,
+                "items": {
+                  "enum": [
+                    "ui.launcher",
+                    "ui.navigation",
+                    "ui.app-menu",
+                    "ui.window-layout",
+                    "ui.typography",
+                    "ui.notifications",
+                    "assistant",
+                    "transcription",
+                    "refinement",
+                    "device-tools",
+                    "notification-content"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "feature",
+              "enabled",
+              "configuration"
+            ]
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "feature": {
+                "const": "refinement"
+              },
+              "enabled": {
+                "type": "boolean"
+              },
+              "configuration": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "label": {
+                    "type": "string",
+                    "maxLength": 100,
+                    "pattern": "^[^\\x00-\\x1f\\x7f]*$"
+                  }
+                }
+              },
+              "requires": {
+                "type": "array",
+                "uniqueItems": true,
+                "maxItems": 11,
+                "items": {
+                  "enum": [
+                    "ui.launcher",
+                    "ui.navigation",
+                    "ui.app-menu",
+                    "ui.window-layout",
+                    "ui.typography",
+                    "ui.notifications",
+                    "assistant",
+                    "transcription",
+                    "refinement",
+                    "device-tools",
+                    "notification-content"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "feature",
+              "enabled",
+              "configuration"
+            ]
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "feature": {
+                "const": "device-tools"
+              },
+              "enabled": {
+                "type": "boolean"
+              },
+              "configuration": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "label": {
+                    "type": "string",
+                    "maxLength": 100,
+                    "pattern": "^[^\\x00-\\x1f\\x7f]*$"
+                  }
+                }
+              },
+              "requires": {
+                "type": "array",
+                "uniqueItems": true,
+                "maxItems": 11,
+                "items": {
+                  "enum": [
+                    "ui.launcher",
+                    "ui.navigation",
+                    "ui.app-menu",
+                    "ui.window-layout",
+                    "ui.typography",
+                    "ui.notifications",
+                    "assistant",
+                    "transcription",
+                    "refinement",
+                    "device-tools",
+                    "notification-content"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "feature",
+              "enabled",
+              "configuration"
+            ]
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "feature": {
+                "const": "notification-content"
+              },
+              "enabled": {
+                "type": "boolean"
+              },
+              "configuration": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "label": {
+                    "type": "string",
+                    "maxLength": 100,
+                    "pattern": "^[^\\x00-\\x1f\\x7f]*$"
+                  }
+                }
+              },
+              "requires": {
+                "type": "array",
+                "uniqueItems": true,
+                "maxItems": 11,
+                "items": {
+                  "enum": [
+                    "ui.launcher",
+                    "ui.navigation",
+                    "ui.app-menu",
+                    "ui.window-layout",
+                    "ui.typography",
+                    "ui.notifications",
+                    "assistant",
+                    "transcription",
+                    "refinement",
+                    "device-tools",
+                    "notification-content"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "feature",
+              "enabled",
+              "configuration"
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "required": [
+    "declarations"
+  ]
+}

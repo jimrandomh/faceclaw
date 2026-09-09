@@ -17,11 +17,13 @@ import {
   uiFontSizeAllowed,
   getTerminalFontSelection,
   getUiFontSelection,
+  getBaseUiFontSelection,
   setTerminalFontSelection,
   setUiFontSelection,
   type BitmapFace,
   type UiFontSelection,
 } from "../graphics/ui-fonts";
+import { effectiveExtension } from "./extension-settings";
 import { GESTURE_DOUBLE_CLICK, type InputEvent } from "./gestures";
 import { drawRightValueMenuItem, drawSelectionHighlight, openModalMenu, type MenuItem } from "./menu";
 import { LIST_ROW_TEXT_INSET, listRowHeight } from "./metrics";
@@ -43,6 +45,7 @@ type FontPickerOptions = {
   /** Bitmap faces offered ahead of the installed TTF families. */
   bitmapFaces: readonly { face: BitmapFace; label: string }[];
   get(): UiFontSelection;
+  effective?(): UiFontSelection;
   set(selection: UiFontSelection): void;
 };
 
@@ -297,14 +300,15 @@ export function uiFontPickerMenuItem(): MenuItem {
     rowLabel: "Font",
     description:
       "Typeface for UI text on the glasses: a bitmap Terminus variant or any installed TTF face at a chosen weight and size. Install more fonts from the Files app.",
-    title: "UI font",
+    title: "Saved UI font",
     monospaceOnly: false,
     sizeAllowed: uiFontSizeAllowed,
     bitmapFaces: [
       { face: "terminus", label: "Terminus" },
       { face: "terminusv", label: "TerminusV" },
     ],
-    get: getUiFontSelection,
+    get: getBaseUiFontSelection,
+    effective: getUiFontSelection,
     set: setUiFontSelection,
   });
 }
@@ -326,7 +330,9 @@ export function terminalFontPickerMenuItem(): MenuItem {
 function fontPickerMenuItem(options: FontPickerOptions & { rowLabel: string; description: string }): MenuItem {
   return {
     label: options.rowLabel,
-    description: options.description,
+    description: options.effective
+      ? `${options.description} Saved: ${fontSelectionLabel(options.get())}. Active: ${fontSelectionLabel(options.effective())}. Owner: ${effectiveExtension("ui.typography")?.component.split("/")[0] ?? "Faceclaw"}. Editing changes the saved font; the active app override continues until disabled.`
+      : options.description,
     onSelect: (ctx) => {
       ctx.stack.push(new FontPickerLayer(options));
     },
@@ -338,7 +344,7 @@ function fontPickerMenuItem(options: FontPickerOptions & { rowLabel: string; des
         y,
         width,
         options.rowLabel,
-        fontSelectionLabel(options.get()),
+        fontSelectionLabel(options.effective?.() ?? options.get()),
       );
     },
   };

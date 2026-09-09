@@ -15,9 +15,13 @@ function harness() {
  const stack=new layers.LayerStack(base,layers.noopLayerActions,{width:4,height:2});shell.stack=stack;shell.screenOn=true;
  return {shell,stack,source,ExtensionLayer,overlay:dimUnderneath=>({dimUnderneath,paint:(_ctx,below)=>below(),handleInput(){}})};
 }
-test('opaque extension preserves zero through the real layer stack and shell underlay, then restores one',()=>{
+test('pending opaque extension preserves host pixels, then conceals the underlay only after a frame',()=>{
  const h=harness(),overlay=new h.ExtensionLayer(()=>{},()=>{},()=>{},'medium',true);
- h.stack.push(overlay);const painted=h.shell.paintSurface();assert.equal(h.stack.baseDim(),0);assert.equal(h.shell.underlayDim(),0);
+ h.stack.push(overlay);const pending=h.shell.paintSurface();
+ assert.equal(h.stack.baseDim(),1);assert.equal(h.shell.underlayDim(),1);
+ assert.ok(Array.from(pending[0].image.pixels).every(value=>value===220));
+ overlay.setFrame(new Uint8Array(8).fill(1),4,2);
+ const painted=h.shell.paintSurface();assert.equal(h.stack.baseDim(),0);assert.equal(h.shell.underlayDim(),0);
  assert.ok(Array.from(painted[0].image.pixels).every(value=>value===1));assert.ok(Array.from(h.source.pixels).every(value=>value===220));
  h.stack.removeLayer(overlay);h.shell.paintSurface();assert.equal(h.stack.baseDim(),1);assert.equal(h.shell.underlayDim(),1);
 });

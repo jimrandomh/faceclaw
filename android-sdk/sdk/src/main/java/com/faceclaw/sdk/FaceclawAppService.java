@@ -19,6 +19,8 @@ public abstract class FaceclawAppService extends Service {
  private android.content.SharedPreferences approvals;
  private String hostIdentity="", session="", pendingToken="", pendingPin="", pendingSession="";
  private long pendingUntil, sequence, inFlight, generation;
+ private int hostSemantics,pendingSemantics;
+ private String lastDiagnostic="none";
  private int width,height; private boolean visible,screenOn=true;
  private byte[] latestPixels;
  private IBinder.DeathRecipient death;
@@ -29,7 +31,20 @@ public abstract class FaceclawAppService extends Service {
  private JSONObject extensionSnapshot=new JSONObject(),sharedStyle=new JSONObject();
  public final JSONObject sharedStyle() { try { return new JSONObject(sharedStyle.toString()); } catch(Exception ignored) { return new JSONObject(); } }
  public final JSONObject extensions() { try { return new JSONObject(extensionSnapshot.toString()); } catch(Exception ignored) { return new JSONObject(); } }
+ /** No payloads, credentials, notification text or exception messages. */
+ public final String lastDiagnostic() { return lastDiagnostic; }
+ public final String extensionsCompatibility() {
+  return host==null?"disconnected":ExtensionContract.compatible(hostSemantics)?"compatible":hostSemantics>ExtensionContract.SEMANTICS?"sdk-update-required":"host-update-required";
+ }
+ private void diagnostic(String code) {
+  lastDiagnostic=code; android.util.Log.w("FaceclawSDK",code);
+  send("sdk-diagnostic",Protocol.object("code",code));
+ }
+ private void callback(Runnable callback) {
+  try { callback.run(); } catch(RuntimeException failure) { diagnostic("callback-failed"); }
+ }
  public final boolean publishExtensions(org.json.JSONArray declarations) {
+  if(!ExtensionContract.compatible(hostSemantics)) { diagnostic("extension-incompatible"); return false; }
   try { return send("publish-extensions",Protocol.object("declarations",ExtensionContract.declarations(declarations))); } catch(Exception ignored) { return false; }
  }
  public final boolean respondExtension(String feature,long generation,String requestId,JSONObject data) {
@@ -96,24 +111,27 @@ public abstract class FaceclawAppService extends Service {
   catch(Exception ignored) { return ""; }
  }
  private void receive(Message m) {
+  boolean authenticated=false;
   try {
    String identity=PackageIdentity.forUid(this,m.sendingUid);
    Bundle b=m.getData(); String suppliedSession=b.getString("session","");
    if(m.what==Protocol.HELLO) {
-    if(m.replyTo==null || Protocol.json(b).optInt("version")!=Protocol.VERSION || suppliedSession.length()<20 || suppliedSession.length()>80) return;
+    JSONObject hello=Protocol.json(b);
+    if(m.replyTo==null || hello.optInt("version")!=Protocol.VERSION || suppliedSession.length()<20 || suppliedSession.length()>80) return;
     String pin=approvals.getString("identity","");
     if(!identity.equals(pin)) {
      // An unselected host cannot displace a selected connection without a user gesture.
      if(SystemClock.elapsedRealtime()<pendingUntil && !identity.equals(pendingPin)) return;
-     pendingPin=identity; pendingSession=suppliedSession; pendingHost=m.replyTo;
+     pendingPin=identity; pendingSession=suppliedSession; pendingHost=m.replyTo; pendingSemantics=ExtensionContract.peerSemantics(hello);
      pendingToken=UUID.randomUUID().toString(); pendingUntil=SystemClock.elapsedRealtime()+120000;
      Intent intent=new Intent(this,HostApprovalActivity.class).putExtra("token",pendingToken).setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
      PendingIntent consent=PendingIntent.getActivity(this,0,intent,PendingIntent.FLAG_UPDATE_CURRENT|PendingIntent.FLAG_IMMUTABLE);
      Message reply=Protocol.message(Protocol.CONSENT,suppliedSession,"consent",null); reply.getData().putParcelable("consent",consent); m.replyTo.send(reply); return;
     }
-    connect(m.replyTo,identity,suppliedSession); return;
+    connect(m.replyTo,identity,suppliedSession,ExtensionContract.peerSemantics(hello)); return;
    }
    if(host==null || !identity.equals(hostIdentity) || !session.equals(suppliedSession)) return;
+   authenticated=true;
    if(m.what==Protocol.EXTENSION_ACK) {
     String feature=b.getString("feature",""); ExtensionSurface surface=extensionSurfaces.get(feature);
     if(surface!=null&&surface.generation==b.getLong("generation")&&surface.inFlight==b.getLong("sequence")) { surface.inFlight=0; flushExtensionFrame(feature,surface); } return;
@@ -121,6 +139,7 @@ public abstract class FaceclawAppService extends Service {
    if(m.what==Protocol.ACK) { if(b.getLong("sequence")==inFlight) { inFlight=0; flushFrame(); } return; }
    if(m.what!=Protocol.EVENT) return;
    String type=b.getString("type",""); JSONObject data=Protocol.json(b);
+   if((type.equals("extension-surface")||type.equals("extension-event")||type.equals("extensions"))&&!ExtensionContract.compatible(hostSemantics)) return;
    if(type.equals("shared-style")) { sharedStyle=ExtensionContract.configuration("ui.typography",data); Ui.applySharedStyle(this,sharedStyle); }
    if(type.equals("extensions")) {
     JSONObject next=new JSONObject(data.toString());
@@ -128,7 +147,7 @@ public abstract class FaceclawAppService extends Service {
     for(java.util.Map.Entry<String,ExtensionSurface> entry:extensionSurfaces.entrySet())if(!sameFeature(extensionSnapshot,next,entry.getKey()))closed.put(entry.getKey(),entry.getValue());
     for(String feature:closed.keySet())extensionSurfaces.remove(feature);
     extensionSnapshot=next;
-    for(java.util.Map.Entry<String,ExtensionSurface> entry:closed.entrySet())onHostEvent("extension-surface",Protocol.object("feature",entry.getKey(),"type","close","generation",entry.getValue().generation));
+    for(java.util.Map.Entry<String,ExtensionSurface> entry:closed.entrySet())callback(()->onHostEvent("extension-surface",Protocol.object("feature",entry.getKey(),"type","close","generation",entry.getValue().generation)));
    }
    if(type.equals("extension-surface")) extensionSurface(data);
    if(type.equals("revoke")) { disconnect(); return; }
@@ -146,8 +165,8 @@ public abstract class FaceclawAppService extends Service {
     if(!notificationReplyAllowed || !Boolean.TRUE.equals(data.opt("confirmed")) || !(data.opt("id") instanceof String) || !(data.opt("target") instanceof String) || !(data.opt("replyToken") instanceof String) || !(data.opt("text") instanceof String) || data.getString("text").trim().isEmpty() || data.getString("text").length()>8000 ||
       !notificationReplies.consume(data.optString("id"),data.optString("target"),data.optString("replyToken"),System.currentTimeMillis())) return;
    }
-   onHostEvent(type,data);
-  } catch(Exception ignored) { /* Malformed or unauthorized IPC never reaches app callbacks. */ }
+   callback(()->onHostEvent(type,data));
+  } catch(Exception ignored) { if(authenticated) diagnostic("ipc-rejected"); }
  }
  String pendingIdentity(String token) {
   return token!=null && token.equals(pendingToken) && SystemClock.elapsedRealtime()<pendingUntil?pendingPin:null;
@@ -168,28 +187,28 @@ public abstract class FaceclawAppService extends Service {
    String pin=pendingPin,s=pendingSession; Messenger remote=pendingHost;
    pendingUntil=0; pendingToken=""; pendingHost=null;
    approvals.edit().putString("identity",pin).commit();
-   connect(remote,pin,s);
+   connect(remote,pin,s,pendingSemantics);
   } catch(Exception ignored) {}
  }
- private void connect(Messenger remote,String identity,String newSession) throws RemoteException {
+ private void connect(Messenger remote,String identity,String newSession,int semantics) throws RemoteException {
   if(host!=null && !hostIdentity.equals(identity)) {
    try { host.send(Protocol.message(Protocol.EVENT,session,"host-switched",null)); } catch(Exception ignored) {}
   }
-  disconnect(); host=remote; hostIdentity=identity; session=newSession; sequence=0;
+  disconnect(); hostSemantics=semantics; host=remote; hostIdentity=identity; session=newSession; sequence=0;
   final String connectedSession=session;
   death=()->handler.post(()->{ if(session.equals(connectedSession)) disconnect(); });
   host.getBinder().linkToDeath(death,0);
-  host.send(Protocol.message(Protocol.READY,session,"ready",Protocol.object("version",Protocol.VERSION)));
-  onHostConnected();
+  host.send(Protocol.message(Protocol.READY,session,"ready",Protocol.object("version",Protocol.VERSION,"extensionSemantics",ExtensionContract.SEMANTICS,"sdkVersion",ExtensionContract.SDK_VERSION)));
+  callback(this::onHostConnected);
  }
  private void disconnect() {
-  extensionSurfaces.clear(); extensionSnapshot=new JSONObject(); sharedStyle=new JSONObject(); Ui.resetSharedStyle();
+  hostSemantics=0; extensionSurfaces.clear(); extensionSnapshot=new JSONObject(); sharedStyle=new JSONObject(); Ui.resetSharedStyle();
   notificationReplyAllowed=false; notificationReplies.clear();
   if(host!=null) {
    try { host.send(Protocol.message(Protocol.EVENT,session,"disconnected",null)); } catch(Exception ignored) {}
    if(death!=null) host.getBinder().unlinkToDeath(death,0);
    host=null; hostIdentity=""; session=""; width=height=0; visible=false; inFlight=0; latestPixels=null;
-   onHostDisconnected();
+   callback(this::onHostDisconnected);
   }
  }
  /** Coalesces to one pending frame plus one IPC frame, preventing animation queue growth. */
@@ -222,6 +241,7 @@ public abstract class FaceclawAppService extends Service {
   } catch(Exception ignored) { disconnect(); }
  }
  private boolean send(String type,JSONObject data) {
+  if((type.startsWith("extension-")||type.equals("publish-extensions")||type.startsWith("own-notification"))&&!ExtensionContract.compatible(hostSemantics)) return false;
   if(data.toString().length()>Protocol.MAX_JSON) return false;
   final Messenger destination=host; final String sendingSession=session;
   if(destination==null) return false;

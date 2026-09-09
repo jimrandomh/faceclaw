@@ -33,4 +33,13 @@ public class ExtensionPolicyTest {
   List<ExtensionPolicy.Candidate> candidates=Arrays.asList(candidate("a","assistant",true,true,true,"refinement"),candidate("a","refinement",true,true,true,"assistant"));
   assertNull(ExtensionPolicy.winner("assistant",candidates,Collections.emptyMap()));
  }
+ @Test public void diagnosticsDistinguishBlockedDependenciesFromPriorityAndConnection() {
+  ExtensionPolicy.Candidate style=candidate("a","ui.typography",true,true,false,"ui.launcher"), launcher=candidate("a","ui.launcher",true,true,false);
+  List<ExtensionPolicy.Candidate> candidates=Arrays.asList(style,launcher);
+  assertEquals("dependency-unavailable",ExtensionPolicy.reason(style,candidates,Collections.emptyMap()));
+  assertEquals("disconnected",ExtensionPolicy.reason(launcher,candidates,Collections.emptyMap()));
+  candidates=Arrays.asList(style,launcher,candidate("b","ui.launcher",true,true,true));
+  assertEquals("dependency-owner",ExtensionPolicy.reason(style,candidates,Collections.singletonMap("ui.launcher",Arrays.asList("b","a"))));
+  assertEquals("active",ExtensionPolicy.reason(candidate("a","ui.typography",true,true,false),Arrays.asList(candidate("a","ui.typography",true,true,false)),Collections.emptyMap()));
+ }
 }

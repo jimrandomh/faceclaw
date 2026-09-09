@@ -1,0 +1,124 @@
+name: APK platform audit
+
+on:
+  pull_request:
+    paths:
+      - 'android-sdk/**'
+      - 'App_Resources/Android/src/main/java/com/faceclaw/app/**'
+      - 'app/**'
+      - 'tests/**'
+      - 'scripts/audit-apk-platform.sh'
+      - 'docs/APK-*.md'
+      - '.github/workflows/apk-platform.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'android-sdk/**'
+      - 'App_Resources/Android/src/main/java/com/faceclaw/app/**'
+      - 'app/**'
+      - 'tests/**'
+      - 'scripts/audit-apk-platform.sh'
+      - 'docs/APK-*.md'
+      - '.github/workflows/apk-platform.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - uses: android-actions/setup-android@v3
+      - name: Install Android SDK 35
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager 'platform-tools' 'platforms;android-35' 'build-tools;35.0.0'
+      - name: Install host dependencies
+        run: npm ci
+      - name: Run repeatable APK platform audit
+        run: scripts/audit-apk-platform.sh --allow-known-upstream-failures
+      - name: Upload self-contained audit evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: apk-platform-audit
+          path: android-sdk/build/apk-audit/
+          if-no-files-found: warn
+
+  host-apk-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - uses: android-actions/setup-android@v3
+      - name: Install Android build dependencies
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager 'platform-tools' 'platforms;android-35' 'build-tools;35.0.0' 'ndk;27.0.12077973' 'cmake;3.22.1'
+      - name: Install host dependencies
+        run: npm ci
+      - name: Build host APK
+        run: npx nativescript build android --no-hmr
+      - name: Upload host APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: faceclaw-host-apk
+          path: platforms/android/app/build/outputs/apk/**/*.apk
+          if-no-files-found: error
+
+  emulator-boundary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - uses: android-actions/setup-android@v3
+      - name: Install Android SDK 35
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager 'platform-tools' 'platforms;android-35' 'build-tools;35.0.0'
+      - name: Install host dependencies
+        run: npm ci
+      - name: Run synthetic host and priority boundary suite
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          target: default
+          arch: x86_64
+          profile: pixel_2
+          emulator-options: -no-window -no-audio -no-boot-anim
+          disable-animations: true
+          script: python3 android-sdk/priority-demo/scripts/test_priority.py --serial emulator-5554 --output android-sdk/build/priority-audit
+      - name: Upload emulator evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: apk-platform-emulator-evidence
+          path: android-sdk/build/priority-audit/
+          if-no-files-found: warn
