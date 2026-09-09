@@ -25,7 +25,9 @@ export type NightscoutSettings = {
   siteUrl: string;
   apiToken: string;
 };
-export type BatteryDisplayMode = "icon" | "percentage";
+export type BatteryDisplayMode = "icon" | "percentage" | "stacked" | "stacked-percentage";
+/** When a top-bar battery indicator is shown: always, only below 50%, or never. */
+export type BatteryIndicatorVisibility = "always" | "low" | "never";
 export type TimeFormat = "24h" | "12h";
 export type ScreenTimeoutSetting = "15s" | "30s" | "1m" | "3m" | "never";
 // "auto" lets the glasses' ambient-light sensor drive brightness; the numeric
@@ -206,13 +208,62 @@ export class ConfigSettingString<TId extends string = string> extends ConfigSett
 
 export const batteryDisplayModeSetting = new ConfigSettingEnum<BatteryDisplayMode>({
   id: "batteryDisplayMode",
-  label: "Battery display",
+  label: "Style",
   storageKey: "dashboard.systemCard.batteryDisplayMode",
-  defaultValue: "icon",
-  values: ["icon", "percentage"],
+  defaultValue: "stacked",
+  values: ["icon", "percentage", "stacked", "stacked-percentage"],
   formatValue: batteryDisplayModeLabel,
-  description: "How the top bar shows the phone and glasses battery levels: a small gauge icon or an exact percentage.",
+  description: "How the top bar shows battery levels: a gauge icon or exact percentage beside the label, or a compact gauge or percentage with the label stacked above it.",
 });
+
+/** Below this charge level a "Below 50%" indicator becomes visible. */
+export const BATTERY_LOW_VISIBILITY_THRESHOLD = 50;
+
+function batteryVisibilitySetting(
+  id: string,
+  device: string,
+  storageKey: string,
+): ConfigSettingEnum<BatteryIndicatorVisibility> {
+  return new ConfigSettingEnum<BatteryIndicatorVisibility>({
+    id,
+    label: device,
+    storageKey,
+    defaultValue: "always",
+    values: ["always", "low", "never"],
+    formatValue: batteryIndicatorVisibilityLabel,
+    description: `When the top bar shows the ${device} battery: always, only once it drops below ${BATTERY_LOW_VISIBILITY_THRESHOLD}%, or never.`,
+  });
+}
+
+export const phoneBatteryVisibilitySetting = batteryVisibilitySetting(
+  "phoneBatteryVisibility", "Phone", "display.battery.phoneVisibility",
+);
+export const glassesBatteryVisibilitySetting = batteryVisibilitySetting(
+  "glassesBatteryVisibility", "G2", "display.battery.glassesVisibility",
+);
+export const ringBatteryVisibilitySetting = batteryVisibilitySetting(
+  "ringBatteryVisibility", "R1", "display.battery.ringVisibility",
+);
+
+/** Whether an indicator with this visibility setting shows at the given charge. */
+export function batteryIndicatorVisible(visibility: BatteryIndicatorVisibility, percent: number): boolean {
+  if (visibility === "never") return false;
+  if (visibility === "always") return true;
+  return percent < BATTERY_LOW_VISIBILITY_THRESHOLD;
+}
+
+/**
+ * One string summarizing every setting the top-bar battery block reads, so
+ * the shell can cheaply tell whether a settings change needs a repaint.
+ */
+export function batteryIndicatorSettingsKey(): string {
+  return [
+    batteryDisplayModeSetting.get(),
+    phoneBatteryVisibilitySetting.get(),
+    glassesBatteryVisibilitySetting.get(),
+    ringBatteryVisibilitySetting.get(),
+  ].join("|");
+}
 
 export const timeFormatSetting = new ConfigSettingEnum<TimeFormat>({
   id: "timeFormat",
@@ -929,7 +980,16 @@ export function screenTimeoutLabel(value: ScreenTimeoutSetting): string {
 }
 
 export function batteryDisplayModeLabel(value: BatteryDisplayMode): string {
-  return value === "icon" ? "Icon" : "Percentage";
+  if (value === "percentage") return "Percentage";
+  if (value === "stacked") return "Stacked";
+  if (value === "stacked-percentage") return "Stacked percentage";
+  return "Icon";
+}
+
+export function batteryIndicatorVisibilityLabel(value: BatteryIndicatorVisibility): string {
+  if (value === "never") return "Never";
+  if (value === "low") return `Below ${BATTERY_LOW_VISIBILITY_THRESHOLD}%`;
+  return "Always";
 }
 
 export function timeFormatLabel(value: TimeFormat): string {
