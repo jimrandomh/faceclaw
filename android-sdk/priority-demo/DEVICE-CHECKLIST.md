@@ -41,4 +41,4 @@ Record observed owner/availability, per-feature epoch and a screenshot or short 
 - [ ] Record any unresolved device/OEM/background, renderer timeout or Bluetooth performance issues.
 - [ ] Attach this completed record and emulator results to the proposed upstream changes.
 
-The repository still has three independently reproduced upstream touch/pinball test failures. Keep that baseline visible in the PR checks; it is not part of this demo implementation's pass claim.
+The integrated repository has eight reproduced upstream failures: five compass-style cases and three touch/pinball cases. Keep that baseline visible in the PR checks; it is not part of this demo implementation's pass claim.

@@ -35,9 +35,16 @@ priority-demo/build/outputs/apk/beta/debug/priority-demo-beta-debug.apk
 
 Install these APKs on the explicitly selected test device with `adb -s SERIAL install -r APK`. The host and SDK must contain the matching feature-generation lifecycle fixes. For T3 comparison, rebuild the standalone T3 application against this SDK as well. Do not replace an installed app with a different signing identity or uninstall the host to work around an installation failure.
 
-Compatibility is source-based during this preview: use the host and `:sdk` from the same checkout, including the per-feature authority-epoch changes described in [the SDK contract](../README.md#global-customizations-and-providers). The demo depends directly on `project(":sdk")`. The local SDK coordinate `com.faceclaw:sdk:0.1.0`, protocol major `1`, and advertised `extensions: 1` do not distinguish older preview builds from this lifecycle revision.
+The demos depend on `project(":sdk")` and currently build against SDK 0.2.0.
+Global extensions require exact `extensionSemantics: 2` negotiation between
+host and client. Protocol major 1 continues to support ordinary app windows;
+it does not establish compatibility for global extensions.
 
-Upgrade this pre-release host and its extension clients together. Older bundled SDKs clear every extension surface when a snapshot arrives and cannot provide the new preservation behavior. Client capability/version compatibility needs to be finalized before publishing the extension SDK for independent consumers.
+Upgrade the host and its extension clients together. Rebuild existing clients
+against SDK 0.2.0 and republish their declarations. The host preserves saved
+grants and priority while marking older declarations incompatible. For
+independent consumers, use the versioned portable kit described in the
+[SDK guide](../README.md#portable-developer-kit).
 
 Open each demo from the phone launcher. **Faceclaw permissions and priority** opens the host manager. Approve the app, select that Faceclaw host through the SDK consent dialog, then grant the desired features and set their priority. Declaration toggles never change host grants or the host's underlying preferences.
 
