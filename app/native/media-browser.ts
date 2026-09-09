@@ -1,4 +1,6 @@
 import { Utils } from "@nativescript/core";
+import { ignoredMediaPackages, isMediaAppEnabled, MEDIA_APPS_KEY, rememberMediaApps } from "./media-apps";
+import { onSettingsStoreChanged } from "./settings-store";
 
 declare const com: any;
 
@@ -34,11 +36,12 @@ export class FaceclawMediaBrowserBridge {
   private readonly pendingConnects = new Map<number, PendingRequest<string>>();
   private readonly pendingBrowses = new Map<number, PendingRequest<MediaBrowseItem[]>>();
   private appsCache: MediaBrowserApp[] | null = null;
+  private connectedPackage = "";
 
   /** Installed apps exposing a media browser service; cached after the first call. */
   listBrowsableApps(refresh = false): MediaBrowserApp[] {
     if (!global.isAndroid) return [];
-    if (this.appsCache && !refresh) return this.appsCache;
+    if (this.appsCache && !refresh) return this.enabledApps();
     this.ensureBrowser();
     if (!this.browser) return [];
     try {
@@ -52,11 +55,17 @@ export class FaceclawMediaBrowserBridge {
         serviceClass: String(app.serviceClass ?? ""),
         appName: String(app.appName ?? ""),
       }));
+      rememberMediaApps(this.appsCache);
     } catch (error) {
       console.warn(`media browser app list parse failed: ${error}`);
       this.appsCache = [];
     }
-    return this.appsCache;
+    return this.enabledApps();
+  }
+
+  private enabledApps(): MediaBrowserApp[] {
+    const ignored = new Set(ignoredMediaPackages());
+    return (this.appsCache ?? []).filter((app) => !ignored.has(app.packageName));
   }
 
   /**
@@ -65,9 +74,11 @@ export class FaceclawMediaBrowserBridge {
    */
   connect(app: MediaBrowserApp): Promise<string> {
     if (!global.isAndroid) return Promise.reject(new Error("Android only"));
+    if (!isMediaAppEnabled(app.packageName)) return Promise.reject(new Error("App is ignored in Music settings"));
     this.ensureBrowser();
     if (!this.browser) return Promise.reject(new Error("Media browser unavailable"));
     const requestId = this.nextRequestId++;
+    this.connectedPackage = app.packageName;
     return new Promise<string>((resolve, reject) => {
       this.pendingConnects.set(requestId, { resolve, reject });
       this.browser.connect(requestId, app.packageName, app.serviceClass);
@@ -77,6 +88,10 @@ export class FaceclawMediaBrowserBridge {
   /** Fetch one level of the connected service's content tree. */
   browse(parentId: string): Promise<MediaBrowseItem[]> {
     if (!global.isAndroid) return Promise.reject(new Error("Android only"));
+    if (this.connectedPackage && !isMediaAppEnabled(this.connectedPackage)) {
+      this.disconnect();
+      return Promise.reject(new Error("App is ignored in Music settings"));
+    }
     this.ensureBrowser();
     if (!this.browser) return Promise.reject(new Error("Media browser unavailable"));
     const requestId = this.nextRequestId++;
@@ -89,6 +104,7 @@ export class FaceclawMediaBrowserBridge {
   /** Start playback of a browsed item through the connected player's session. */
   playFromMediaId(mediaId: string): void {
     if (!global.isAndroid) return;
+    if (!this.connectedPackage || !isMediaAppEnabled(this.connectedPackage)) return;
     this.browser?.playFromMediaId(mediaId);
   }
 
@@ -96,6 +112,7 @@ export class FaceclawMediaBrowserBridge {
   disconnect(): void {
     if (!global.isAndroid) return;
     this.rejectAllPending("Disconnected");
+    this.connectedPackage = "";
     this.browser?.disconnect();
   }
 
@@ -115,6 +132,11 @@ export class FaceclawMediaBrowserBridge {
       throw new Error("Android application context unavailable");
     }
     this.browser = new com.faceclaw.app.FaceclawMediaBrowser(context);
+    onSettingsStoreChanged((key) => {
+      if (key === MEDIA_APPS_KEY && this.connectedPackage && !isMediaAppEnabled(this.connectedPackage)) {
+        this.disconnect();
+      }
+    });
     this.listenerProxy = new com.faceclaw.app.FaceclawMediaBrowserListener({
       onConnectResult: (requestId: number, connected: boolean, rootId: string, error: string) => {
         const pending = this.pendingConnects.get(Number(requestId));

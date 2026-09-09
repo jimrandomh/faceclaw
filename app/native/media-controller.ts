@@ -1,6 +1,8 @@
 import { Utils } from "@nativescript/core";
 import { GrayImage } from "../graphics/image";
 import { grayImageFromPacket, PHOTO_TONE } from "./image-files";
+import { ignoredMediaPackages, MEDIA_APPS_KEY, rememberMediaApps } from "./media-apps";
+import { onSettingsStoreChanged } from "./settings-store";
 
 declare const com: any;
 
@@ -173,7 +175,22 @@ export class FaceclawMediaControllerBridge {
       throw new Error("Android application context unavailable");
     }
     this.controller = new com.faceclaw.app.FaceclawMediaController(context);
+    // Install defaults and saved overrides before starting session discovery.
+    this.controller.setIgnoredPackagesJson(JSON.stringify(ignoredMediaPackages()));
+    onSettingsStoreChanged((key) => {
+      if (key === MEDIA_APPS_KEY) {
+        this.controller.setIgnoredPackagesJson(JSON.stringify(ignoredMediaPackages()));
+      }
+    });
     this.listenerProxy = new com.faceclaw.app.FaceclawMediaControllerListener({
+      onSessionAppsChanged: (appsJson: string) => {
+        try {
+          const apps = JSON.parse(String(appsJson));
+          rememberMediaApps(apps);
+        } catch (error) {
+          console.warn(`media session apps parse failed: ${error}`);
+        }
+      },
       onStateChange: (
         playbackState: string,
         packageName: string,

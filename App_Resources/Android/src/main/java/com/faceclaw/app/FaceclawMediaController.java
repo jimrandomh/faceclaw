@@ -23,6 +23,8 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.util.List;
+import java.util.HashSet;
+import java.util.Set;
 
 public class FaceclawMediaController {
     private final Context appContext;
@@ -71,6 +73,7 @@ public class FaceclawMediaController {
     private volatile FaceclawMediaControllerListener listener;
     private MediaController activeController;
     private boolean started;
+    private Set<String> ignoredPackages = new HashSet<>();
 
     public FaceclawMediaController(Context context) {
         this.appContext = context.getApplicationContext();
@@ -109,6 +112,23 @@ public class FaceclawMediaController {
                     return;
                 }
             }
+            refreshActiveControllerLocked(null);
+        }
+    }
+
+    /** Apply the complete preference set and immediately choose an allowed session. */
+    public void setIgnoredPackagesJson(String packagesJson) {
+        Set<String> packages = new HashSet<>();
+        try {
+            JSONArray array = new JSONArray(packagesJson);
+            for (int i = 0; i < array.length(); i++) packages.add(array.getString(i));
+        } catch (Exception e) {
+            Log.w("FaceclawMedia", "invalid ignored packages", e);
+            return;
+        }
+        synchronized (lock) {
+            if (ignoredPackages.equals(packages)) return;
+            ignoredPackages = packages;
             refreshActiveControllerLocked(null);
         }
     }
@@ -289,6 +309,7 @@ public class FaceclawMediaController {
                 controllers = null;
             }
         }
+        emitSessionAppsLocked(controllers);
         setActiveControllerLocked(chooseController(controllers));
         emitStateLocked();
     }
@@ -297,14 +318,37 @@ public class FaceclawMediaController {
         if (controllers == null || controllers.isEmpty()) {
             return null;
         }
-        MediaController first = controllers.get(0);
+        MediaController first = null;
         for (MediaController controller : controllers) {
+            if (ignoredPackages.contains(controller.getPackageName())) continue;
+            if (first == null) first = controller;
             PlaybackState playbackState = controller.getPlaybackState();
             if (playbackState != null && playbackState.getState() == PlaybackState.STATE_PLAYING) {
                 return controller;
             }
         }
         return first;
+    }
+
+    private void emitSessionAppsLocked(List<MediaController> controllers) {
+        FaceclawMediaControllerListener currentListener = listener;
+        if (currentListener == null || controllers == null) return;
+        JSONArray apps = new JSONArray();
+        Set<String> seen = new HashSet<>();
+        for (MediaController controller : controllers) {
+            String packageName = safe(controller.getPackageName());
+            if (packageName.isEmpty() || !seen.add(packageName)) continue;
+            try {
+                JSONObject app = new JSONObject();
+                app.put("packageName", packageName);
+                app.put("appName", getApplicationLabel(packageName));
+                apps.put(app);
+            } catch (Exception e) {
+                Log.w("FaceclawMedia", "session app serialization failed", e);
+            }
+        }
+        String json = apps.toString();
+        mainHandler.post(() -> currentListener.onSessionAppsChanged(json));
     }
 
     private void setActiveControllerLocked(MediaController controller) {
