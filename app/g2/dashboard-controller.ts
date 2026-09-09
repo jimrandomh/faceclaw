@@ -319,7 +319,7 @@ class DashboardController {
         toggle?: TextSettingsEditToggle,
       ) => this.startTextSettingsEdit(settings, title, onFinish, toggle),
       endTextSettingEdit: () => this.endTextSettingEdit(),
-      startVoiceCapture: () => this.startVoiceCapture(),
+      startVoiceCapture: (endpointing = false) => this.startVoiceCapture(endpointing),
       stopVoiceCapture: () => this.stopVoiceCapture(),
       startContinuousVoiceCapture: () => this.startContinuousVoiceCapture(),
       stopContinuousVoiceCapture: () => this.stopContinuousVoiceCapture(),
@@ -1874,11 +1874,14 @@ class DashboardController {
    * push-to-talk and the Transcribe app. Android mic permission is the consent
    * gate even though the audio source is the G2 mic over BLE.
    */
-  private startVoiceCapture(endpointing = false): void {
-    this.beginVoiceCapture("ptt", endpointing);
+  private pttCaptureGeneration = 0;
+
+  private startVoiceCapture(endpointing = false): Promise<void> {
+    return this.beginVoiceCapture("ptt", endpointing);
   }
 
   private stopVoiceCapture(): void {
+    ++this.pttCaptureGeneration;
     voiceControlBridge.stopPushToTalk();
   }
 
@@ -1944,7 +1947,8 @@ class DashboardController {
     return granted;
   }
 
-  private beginVoiceCapture(kind: "ptt" | "continuous", endpointing = false): void {
+  private async beginVoiceCapture(kind: "ptt" | "continuous", endpointing = false): Promise<void> {
+    const pttGeneration = kind === "ptt" ? ++this.pttCaptureGeneration : 0;
     // Preview mode captures from the phone mic (voiceCaptureOptions with a
     // null communicator); otherwise a live glasses session must be the source.
     const previewCapture = this.isPreviewDisplayActive();
@@ -1952,8 +1956,9 @@ class DashboardController {
       return;
     }
     const communicator = this.communicator;
-    void ensureVoicePermissions()
+    await ensureVoicePermissions()
       .then(() => {
+        if (kind === "ptt" && pttGeneration !== this.pttCaptureGeneration) return;
         if (previewCapture) {
           if (!this.isPreviewDisplayActive()) return;
         } else if (this.phase !== "connected" || this.communicator !== communicator) {
