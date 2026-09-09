@@ -39,6 +39,7 @@ public abstract class HostEvent {
                 case "input": return new Input(data);
                 case "capabilities": return new Capabilities(data);
                 case "extensions": return new Extensions(data);
+                case "extensions-rejected": return new ExtensionsRejected(data);
                 case "extension-surface": return new Surface(data);
                 case "extension-event": return new Provider(data);
                 case "shared-style": return new Style(data);
@@ -108,16 +109,83 @@ public abstract class HostEvent {
             extensionCompatibility = optionalString(data, "extensionCompatibility");
         }
     }
+    /** Stable diagnostic reason. Future codes remain UNKNOWN and never imply authority. */
+    public enum ContenderReason {
+        ACTIVE("active"), LOWER_PRIORITY("lower-priority"), DISABLED("disabled"),
+        GRANT_REQUIRED("grant-required"), DEPENDENCY_OWNER("dependency-owner"),
+        DEPENDENCY_UNAVAILABLE("dependency-unavailable"), DISCONNECTED("disconnected"),
+        INCOMPATIBLE("incompatible"), UNDECLARED("undeclared"), UNKNOWN("");
+
+        public final String code;
+        ContenderReason(String code) { this.code = code; }
+        static ContenderReason decode(String code) {
+            for (ContenderReason reason : values()) if (reason.code.equals(code)) return reason;
+            return UNKNOWN;
+        }
+    }
+
+    /** Immutable candidate in the host's priority order; declarations do not grant ownership. */
+    public static final class Contender {
+        public final String component, reasonCode;
+        public final boolean enabled, granted, connected;
+        /** One-based priority in this feature, including disabled or ungranted candidates. */
+        public final int priority;
+        public final ContenderReason reason;
+        public final List<String> requires;
+
+        private Contender(JSONObject data, int priority) {
+            component = string(data, "component");
+            enabled = bool(data, "enabled"); granted = bool(data, "granted");
+            connected = bool(data, "connected"); this.priority = priority;
+            reasonCode = optionalString(data, "reason"); reason = ContenderReason.decode(reasonCode);
+            JSONArray values = data.has("requires") ? data.optJSONArray("requires") : new JSONArray();
+            if (values == null || values.length() > ExtensionContract.MAX_FEATURES) throw new IllegalArgumentException();
+            List<String> dependencies = new ArrayList<>();
+            for (int index = 0; index < values.length(); index++) {
+                Object value = values.opt(index);
+                if (!(value instanceof String)) throw new IllegalArgumentException();
+                dependencies.add((String) value);
+            }
+            requires = Collections.unmodifiableList(dependencies);
+        }
+        @Override public String toString() { return "HostEvent.Contender(" + reason + ")"; }
+    }
+
+    /** Publication failed; the previously accepted declaration remains unchanged. */
+    public static final class ExtensionsRejected extends HostEvent {
+        public final String reason;
+        private ExtensionsRejected(JSONObject data) {
+            super("extensions-rejected", data); reason = string(data, "reason");
+        }
+    }
+
     public static final class Feature {
         public final String feature, component;
         public final long generation;
         public final boolean available, live;
+        public final List<Contender> contenders;
         private final String configuration;
         private Feature(JSONObject data) {
             feature = string(data, "feature"); component = string(data, "component");
             generation = number(data, "generation", 0, Long.MAX_VALUE);
             available = bool(data, "available"); live = bool(data, "live");
             configuration = object(data, "configuration").toString();
+            JSONArray values = data.has("contenders") ? data.optJSONArray("contenders") : new JSONArray();
+            if (values == null) throw new IllegalArgumentException();
+            List<Contender> parsed = new ArrayList<>();
+            java.util.Set<String> components = new java.util.HashSet<>();
+            for (int index = 0; index < values.length(); index++) {
+                JSONObject value = values.optJSONObject(index);
+                if (value == null) throw new IllegalArgumentException();
+                Contender contender = new Contender(value, index + 1);
+                if (!components.add(contender.component)) throw new IllegalArgumentException();
+                parsed.add(contender);
+            }
+            contenders = Collections.unmodifiableList(parsed);
+        }
+        public Contender contender(String component) {
+            for (Contender contender : contenders) if (contender.component.equals(component)) return contender;
+            return null;
         }
         public JSONObject configuration() {
             try { return new JSONObject(configuration); }

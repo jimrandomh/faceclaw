@@ -2,24 +2,8 @@ name: APK platform audit
 
 on:
   pull_request:
-    paths:
-      - 'android-sdk/**'
-      - 'App_Resources/Android/src/main/java/com/faceclaw/app/**'
-      - 'app/**'
-      - 'tests/**'
-      - 'scripts/audit-apk-platform.sh'
-      - 'docs/APK-*.md'
-      - '.github/workflows/apk-platform.yml'
   push:
     branches: [main]
-    paths:
-      - 'android-sdk/**'
-      - 'App_Resources/Android/src/main/java/com/faceclaw/app/**'
-      - 'app/**'
-      - 'tests/**'
-      - 'scripts/audit-apk-platform.sh'
-      - 'docs/APK-*.md'
-      - '.github/workflows/apk-platform.yml'
   workflow_dispatch:
 
 permissions:

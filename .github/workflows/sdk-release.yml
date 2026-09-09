@@ -36,31 +36,13 @@ jobs:
         env:
           SDK_AUDIT: ${{ runner.temp }}/sdk-audit
         run: |
-          python3 - <<'PY'
-          import hashlib, json, os, pathlib, shutil, subprocess, tarfile
-          audit = pathlib.Path(os.environ['SDK_AUDIT'])
-          kit = audit / 'portable-kit'
-          metadata = json.loads((kit / 'PORTABLE-KIT.json').read_text())
-          if metadata['sourceDirty']:
-              raise SystemExit('Release candidate requires clean source')
-          dist = pathlib.Path('dist')
-          dist.mkdir()
-          version = metadata['coordinate'].rsplit(':', 1)[1]
-          with tarfile.open(dist / f'faceclaw-sdk-{version}.tar.gz', 'w:gz') as archive:
-              archive.add(kit, arcname=f'faceclaw-sdk-{version}')
-          subprocess.run(['git', 'archive', '--format=tar.gz', f'--output={dist}/faceclaw-source.tar.gz', metadata['sourceRevision']], check=True)
-          apks = list(pathlib.Path('platforms/android/app/build/outputs/apk').rglob('*.apk'))
-          if len(apks) != 1:
-              raise SystemExit('Expected one host APK')
-          shutil.copy2(apks[0], dist / 'faceclaw-host-debug.apk')
-          shutil.copy2(kit / 'PORTABLE-KIT.json', dist / 'PORTABLE-KIT.json')
-          shutil.copy2(audit / 'audit.json', dist / 'audit.json')
-          (dist / 'SHA256SUMS.txt').write_text(''.join(f'{hashlib.sha256(p.read_bytes()).hexdigest()}  {p.name}\n' for p in sorted(dist.iterdir())))
-          PY
+          mapfile -t apks < <(find platforms/android/app/build/outputs/apk -name '*.apk')
+          if [ "${#apks[@]}" -ne 1 ]; then echo 'Expected one host APK' >&2; exit 1; fi
+          python3 android-sdk/scripts/package-sdk-candidate.py --audit "$SDK_AUDIT" --host-apk "${apks[0]}" --output dist/sdk-candidate
       - uses: actions/upload-artifact@v4
         with:
           name: faceclaw-sdk-candidate
-          path: dist/
+          path: dist/sdk-candidate/
           if-no-files-found: error
       - uses: actions/upload-artifact@v4
         if: always()

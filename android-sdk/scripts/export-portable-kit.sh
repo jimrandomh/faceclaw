@@ -33,7 +33,7 @@ rsync -a --include='*/' --include='*.java' --exclude='*' "$sdk_root/priority-dem
 cp "$sdk_root/scripts/PORTABLE-README.md" "$destination/README.md"
 cp "$sdk_root/scripts/inspect-apk-diagnostics.py" "$sdk_root/scripts/verify-portable-kit.py" "$destination/tools/"
 cp "$sdk_root/scripts/create-app.py" "$sdk_root/scripts/doctor.py" "$sdk_root/scripts/check-doc-links.py" "$destination/tools/"
-cp "$sdk_root/../docs/APK-DEVELOPMENT.md" "$sdk_root/../docs/APK-RECIPES.md" "$sdk_root/../docs/APK-ACCEPTANCE.md" "$destination/docs/"
+cp "$sdk_root/../docs/APK-DEVELOPMENT.md" "$sdk_root/../docs/APK-RECIPES.md" "$sdk_root/../docs/APK-ACCEPTANCE.md" "$sdk_root/../docs/APK-DISTRIBUTION.md" "$destination/docs/"
 cp "$sdk_root/generated"/* "$destination/generated/"
 cp "$sdk_root/sdk/src/main/assets/faceclaw/fonts/OFL-"*.txt "$destination/licenses/fonts/"
 python3 - "$destination" "$sdk_root/.." <<'PY'

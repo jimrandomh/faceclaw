@@ -106,4 +106,32 @@ public class HostEventTest {
         assertTrue(reply.confirmed); assertFalse(reply.toString().contains("PRIVATE"));
         assertTrue(event("notification-reply", "{id:'n',target:'x',replyToken:'x',text:'x',confirmed:'true'}") instanceof HostEvent.Unknown);
     }
+
+    @Test public void typedContendersPreservePriorityDependenciesAndUnknownReasons() throws Exception {
+        JSONObject source = new JSONObject("{generation:10,features:[{feature:'ui.typography',component:'a/.Service',generation:7,available:true,live:false,configuration:{size:16},contenders:[{component:'a/.Service',enabled:true,granted:true,connected:false,reason:'active',requires:[]},{component:'b/.Service',enabled:true,granted:false,connected:true,reason:'dependency-owner',requires:['ui.launcher']},{component:'c/.Service',enabled:false,granted:false,connected:false,reason:'future-reason',requires:[]}]}]}");
+        HostEvent.Extensions event = (HostEvent.Extensions) HostEvent.decode("extensions", source);
+        HostEvent.Feature feature = event.feature("ui.typography");
+        assertEquals(3, feature.contenders.size());
+        HostEvent.Contender first = feature.contender("a/.Service");
+        assertEquals(1, first.priority); assertEquals(HostEvent.ContenderReason.ACTIVE, first.reason);
+        assertFalse(first.connected); // Static ownership survives process loss.
+        HostEvent.Contender second = feature.contender("b/.Service");
+        assertEquals(2, second.priority); assertFalse(second.granted);
+        assertEquals(java.util.Collections.singletonList("ui.launcher"), second.requires);
+        assertEquals(HostEvent.ContenderReason.UNKNOWN, feature.contender("c/.Service").reason);
+        assertEquals("future-reason", feature.contender("c/.Service").reasonCode);
+        source.getJSONArray("features").getJSONObject(0).getJSONArray("contenders").getJSONObject(0).put("component", "changed");
+        assertEquals("a/.Service", first.component);
+        assertFalse(first.toString().contains("a/.Service"));
+        try { feature.contenders.clear(); fail("Mutable contenders"); } catch (UnsupportedOperationException expected) {}
+        try { second.requires.clear(); fail("Mutable dependencies"); } catch (UnsupportedOperationException expected) {}
+        assertTrue(snapshot(1, 1, true).feature("assistant").contenders.isEmpty());
+    }
+    @Test public void malformedContendersDoNotBecomeTypedAuthority() throws Exception {
+        for (String value : new String[]{"null", "{}", "[{component:'a',enabled:'true',granted:true,connected:true}]", "[{component:'a',enabled:true,granted:true,connected:true,requires:[42]}]"}) {
+            assertTrue(event("extensions", "{generation:1,features:[{feature:'assistant',component:'a',generation:1,available:true,live:true,configuration:{},contenders:" + value + "}]}") instanceof HostEvent.Unknown);
+        }
+        HostEvent.ExtensionsRejected rejected = (HostEvent.ExtensionsRejected) event("extensions-rejected", "{reason:'snapshot-capacity'}");
+        assertEquals("snapshot-capacity", rejected.reason);
+    }
 }

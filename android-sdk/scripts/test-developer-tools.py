@@ -163,6 +163,60 @@ class DeveloperToolsTest(unittest.TestCase):
         self.assertFalse(any(check["ok"] for check in checks))
         self.assertIn("JDK 21", checks[0]["fix"])
 
+    def test_audit_stops_before_builds_when_doctor_fails(self):
+        repo = HERE.parents[1]
+        environment = dict(__import__('os').environ, JAVA_HOME=str(self.root / "missing-java"),
+                           ANDROID_HOME=str(self.root / "missing-sdk"), APK_AUDIT_OUTPUT=str(self.root / "audit"))
+        result = subprocess.run(["bash", str(repo / "scripts/audit-apk-platform.sh")], env=environment, capture_output=True, text=True)
+        self.assertEqual(2, result.returncode)
+        audit = json.loads((self.root / "audit/audit.json").read_text())
+        self.assertEqual(["toolchain-doctor"], [c["name"] for c in audit["commands"]])
+        self.assertEqual(1, audit["failures"])
+        self.assertIn("no host tests or builds", result.stderr)
+        self.assertIn('export JAVA_HOME=', result.stdout)
+
+    def test_candidate_packages_exact_source_and_refuses_changed_or_dirty_source(self):
+        packer = module("package-sdk-candidate")
+        repo = self.root / "repository"
+        scripts = repo / "android-sdk/scripts"
+        scripts.mkdir(parents=True)
+        shutil.copy2(HERE / "verify-portable-kit.py", scripts / "verify-portable-kit.py")
+        (repo / ".gitignore").write_text("dist/\n")
+        (repo / "example.txt").write_text("audited source")
+        def git(*args):
+            return subprocess.check_output(["git", "-C", str(repo), *args], stderr=subprocess.DEVNULL).decode().strip()
+        git("init"); git("add", ".")
+        git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "fixture")
+        kit, manifest = self.kit()
+        audit = self.root / "package-audit"
+        audit.mkdir(); shutil.move(str(kit), audit / "portable-kit"); kit = audit / "portable-kit"
+        host = self.root / "host.apk"; host.write_bytes(b"synthetic host")
+        def stamp():
+            metadata = {"coordinate": "com.faceclaw:sdk:0.3.0", "sourceRevision": git("rev-parse", "HEAD"),
+                        "sourceDirty": bool(git("status", "--porcelain")), "sourceTreeSha256": packer.source_state(repo)[1]}
+            (kit / "PORTABLE-KIT.json").write_text(json.dumps(metadata))
+            entries = [{"path": p.name, "sha256": hashlib.sha256(p.read_bytes()).hexdigest(), "bytes": p.stat().st_size}
+                       for p in sorted(kit.iterdir()) if p.name not in {"SHA256SUMS.json", "SHA256SUMS.txt"}]
+            self.write_manifest(kit, {"schema": 1, "coordinate": metadata["coordinate"], "files": entries})
+            (audit / "audit.json").write_text(json.dumps({"revision": metadata["sourceRevision"], "failures": 0}))
+        stamp()
+        output = repo / "dist/clean"
+        packer.package(repo, audit, host, output)
+        self.assertFalse(json.loads((output / "CANDIDATE.json").read_text())["localReviewOnly"])
+        for line in (output / "SHA256SUMS.txt").read_text().splitlines():
+            digest, name = line.split("  ")
+            self.assertEqual(digest, hashlib.sha256((output / name).read_bytes()).hexdigest())
+        with self.assertRaises(ValueError): packer.package(repo, audit, host, output)
+        (repo / "example.txt").write_text("changed source")
+        with self.assertRaisesRegex(ValueError, "source changed"): packer.package(repo, audit, host, repo / "dist/changed", True)
+        stamp()
+        with self.assertRaisesRegex(ValueError, "clean source required"): packer.package(repo, audit, host, repo / "dist/dirty")
+        dirty = packer.package(repo, audit, host, repo / "dist/local", True)
+        self.assertTrue(json.loads((dirty / "CANDIDATE.json").read_text())["localReviewOnly"])
+        import tarfile
+        with tarfile.open(dirty / "faceclaw-source.tar.gz") as archive:
+            self.assertEqual(b"changed source", archive.extractfile("example.txt").read())
+
     def test_doc_links_detect_missing_files_and_accept_fragments(self):
         checker = module("check-doc-links")
         (self.root / "README.md").write_text("[ok](other.md#part) [missing](absent.md) [web](https://example.invalid/) [here](#here)")

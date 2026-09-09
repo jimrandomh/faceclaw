@@ -29,6 +29,12 @@ SDK_COORDINATE = "com.faceclaw:sdk:0.3.0"
 
 EXAMPLES = (
     {
+        "name": "conflict-status-java",
+        "source": "ConflictStatusAppService.java",
+        "language": "java",
+        "class_name": "ConflictStatusAppService",
+    },
+    {
         "name": "canvas-kotlin",
         "source": "CanvasAppService.kt",
         "language": "kotlin",

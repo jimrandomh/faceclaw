@@ -10,6 +10,8 @@ final class FaceclawExtensions {
  interface Owners { Map<String,String> approved(); boolean connected(String component); boolean compatible(String component); }
  private final SharedPreferences prefs; private final Owners owners;
  private long generation=1;
+ private String publicationRejection="";
+ String publicationRejection() { return publicationRejection; }
  private Map<String,JSONArray> cachedDeclarations;
  private List<ExtensionPolicy.Candidate> cachedCandidates;
  private Map<String,List<String>> cachedOrders;
@@ -22,10 +24,13 @@ final class FaceclawExtensions {
  long generation(String feature) { snapshot(); return featureGenerations.getOrDefault(feature,0L); }
  void changed() { cachedSnapshot=null; cachedDeclarations=null; cachedCandidates=null; cachedOrders=null; }
  boolean publish(String component,JSONArray declarations) {
+  publicationRejection="invalid-declaration";
   try {
    String pin=owners.approved().get(component); if(pin==null) return false;
-   Map<String,JSONArray> existing=declarations(); if(!existing.containsKey(component)&&existing.size()>=8) return false;
+   Map<String,JSONArray> existing=new TreeMap<>(declarations());
    JSONArray valid=ExtensionContract.declarations(declarations);
+   existing.put(component,valid);
+   if(!ExtensionSnapshotBudget.fits(existing)) { publicationRejection="snapshot-capacity"; return false; }
    String value=Protocol.object("pin",pin,"semantics",ExtensionContract.SEMANTICS,"declarations",valid).toString();
    if(value.equals(prefs.getString(component+":extensions",""))) return true;
    SharedPreferences.Editor edit=prefs.edit().putString(component+":extensions",value);
@@ -65,7 +70,7 @@ final class FaceclawExtensions {
   Map<String,List<String>> result=new HashMap<>();
   for(String feature:ExtensionContract.FEATURES) {
    List<String> order=new ArrayList<>();
-   try { JSONArray saved=new JSONArray(prefs.getString("extension-order:"+feature,"[]")); for(int i=0;i<Math.min(saved.length(),64);i++) order.add(saved.getString(i)); } catch(Exception ignored) {}
+   try { JSONArray saved=new JSONArray(prefs.getString("extension-order:"+feature,"[]")); for(int i=0;i<saved.length();i++) order.add(saved.getString(i)); } catch(Exception ignored) {}
    result.put(feature,order);
   }
   cachedOrders=result; return result;

@@ -18,7 +18,9 @@ real action. Callbacks remain on the main looper.
 | `Input` | `inputType`, `source`, optional pointer `x`/`y`, `isClick()`. |
 | `Capabilities` | Explicit boolean grants/support and negotiated limits; missing grants are false. |
 | `Extensions` | Full snapshot `revision`, immutable `features`, lookup by feature ID. |
-| `Feature` | Selected `component`, feature `generation`, `available`, `live`, copied configuration. |
+| `Feature` | Selected `component`, feature `generation`, `available`, `live`, copied configuration, immutable ordered `contenders`, `contender(component)`. |
+| `Contender` | `component`, one-based `priority`, `enabled`, `granted`, `connected`, immutable `requires`, `reason` enum and original `reasonCode`. |
+| `ExtensionsRejected` | Publication `reason`; previously accepted declarations remain intact. |
 | `Surface` | Feature, phase, surface generation, optional dimensions and feature epoch on open/resize. |
 | `Provider` | Feature, feature generation, phase, request ID, optional deadline, common request/result fields. |
 | `Style` | Font, raster and optional numeric typography tokens. |
@@ -110,3 +112,24 @@ backend work. Recheck account/project authorization in the application.
 contain draft text. Only the separately documented message-review flow can
 confirm a message, and the app must still match the request, target and current
 account. A typed result does not combine these purposes.
+
+## Explain conflicting settings
+
+Use `Feature.contender(component)` to find your service, using its full Android
+component name. `contenders` preserves the host's priority order, including
+ungranted and disabled candidates. Position alone is not ownership. Use the
+feature's selected component and availability together with each contender's
+`ContenderReason`: `ACTIVE`, `LOWER_PRIORITY`, `DISABLED`, `GRANT_REQUIRED`,
+`DEPENDENCY_OWNER`, `DEPENDENCY_UNAVAILABLE`, `DISCONNECTED`, `INCOMPATIBLE`,
+`UNDECLARED`, or `UNKNOWN`. `requires` identifies the dependencies to explain.
+
+Older snapshots without contenders decode to an empty list; that does not mean
+permission was granted. Future reason codes decode to `UNKNOWN` and preserve
+`reasonCode` for deliberate future handling. Malformed boolean/list shapes do
+not become typed authority. Lists are immutable and diagnostic strings omit
+component identities. A disconnected static contender may still be active.
+
+The complete [conflict status example](examples/ConflictStatusAppService.java)
+publishes a typography candidate and explains its typed state without parsing
+callback JSON. The standalone example build includes this service. Feature
+permission and priority remain host-owned; an example cannot grant itself access.

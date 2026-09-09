@@ -7,5 +7,14 @@
  <service android:name=".AdversarialService" android:exported="true"><intent-filter><action android:name="com.faceclaw.action.APP_SERVICE"/></intent-filter><meta-data android:name="com.faceclaw.PROTOCOL_MAJOR" android:value="1"/></service>
  <service android:name=".LegacyService" android:exported="true"><intent-filter><action android:name="com.faceclaw.action.APP_SERVICE"/></intent-filter><meta-data android:name="com.faceclaw.PROTOCOL_MAJOR" android:value="1"/></service>
  <service android:name=".FutureService" android:exported="true"><intent-filter><action android:name="com.faceclaw.action.APP_SERVICE"/></intent-filter><meta-data android:name="com.faceclaw.PROTOCOL_MAJOR" android:value="1"/></service>
+ <service android:name=".CapacityServices$App1" android:exported="true"><intent-filter><action android:name="com.faceclaw.action.APP_SERVICE"/></intent-filter><meta-data android:name="com.faceclaw.PROTOCOL_MAJOR" android:value="1"/></service>
+ <service android:name=".CapacityServices$App2" android:exported="true"><intent-filter><action android:name="com.faceclaw.action.APP_SERVICE"/></intent-filter><meta-data android:name="com.faceclaw.PROTOCOL_MAJOR" android:value="1"/></service>
+ <service android:name=".CapacityServices$App3" android:exported="true"><intent-filter><action android:name="com.faceclaw.action.APP_SERVICE"/></intent-filter><meta-data android:name="com.faceclaw.PROTOCOL_MAJOR" android:value="1"/></service>
+ <service android:name=".CapacityServices$App4" android:exported="true"><intent-filter><action android:name="com.faceclaw.action.APP_SERVICE"/></intent-filter><meta-data android:name="com.faceclaw.PROTOCOL_MAJOR" android:value="1"/></service>
+ <service android:name=".CapacityServices$App5" android:exported="true"><intent-filter><action android:name="com.faceclaw.action.APP_SERVICE"/></intent-filter><meta-data android:name="com.faceclaw.PROTOCOL_MAJOR" android:value="1"/></service>
+ <service android:name=".CapacityServices$App6" android:exported="true"><intent-filter><action android:name="com.faceclaw.action.APP_SERVICE"/></intent-filter><meta-data android:name="com.faceclaw.PROTOCOL_MAJOR" android:value="1"/></service>
+ <service android:name=".CapacityServices$App7" android:exported="true"><intent-filter><action android:name="com.faceclaw.action.APP_SERVICE"/></intent-filter><meta-data android:name="com.faceclaw.PROTOCOL_MAJOR" android:value="1"/></service>
+ <service android:name=".CapacityServices$App8" android:exported="true"><intent-filter><action android:name="com.faceclaw.action.APP_SERVICE"/></intent-filter><meta-data android:name="com.faceclaw.PROTOCOL_MAJOR" android:value="1"/></service>
+ <service android:name=".CapacityServices$App9" android:exported="true"><intent-filter><action android:name="com.faceclaw.action.APP_SERVICE"/></intent-filter><meta-data android:name="com.faceclaw.PROTOCOL_MAJOR" android:value="1"/></service>
  </application>
 </manifest>

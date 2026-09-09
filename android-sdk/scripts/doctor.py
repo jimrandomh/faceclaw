@@ -43,6 +43,17 @@ def inspect(environment):
     return checks
 
 
+def setup_commands():
+    return [
+        '# Set these to your installed JDK 21 and Android SDK directories:',
+        'export JAVA_HOME="/absolute/path/to/jdk-21"',
+        'export ANDROID_HOME="/absolute/path/to/android-sdk"',
+        'export PATH="$JAVA_HOME/bin:$ANDROID_HOME/platform-tools:$ANDROID_HOME/cmdline-tools/latest/bin:$PATH"',
+        'sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"',
+        'python3 tools/doctor.py  # generated app; in the host use android-sdk/scripts/doctor.py',
+    ]
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--kit", type=Path)
@@ -53,7 +64,7 @@ def main():
         result = subprocess.run([sys.executable, str(Path(__file__).with_name("verify-portable-kit.py")), str(args.kit)], capture_output=True)
         checks.append({"check": "kit integrity", "ok": result.returncode == 0, "fix": "Use an untouched SDK kit and verify it before scaffolding."})
     if args.json:
-        print(json.dumps({"schema": 1, "ok": all(c["ok"] for c in checks), "checks": checks}, indent=2))
+        print(json.dumps({"schema": 1, "ok": all(c["ok"] for c in checks), "checks": checks, "setupCommands": setup_commands() if not all(c["ok"] for c in checks) else []}, indent=2))
     else:
         for check in checks:
             print(f"{'OK' if check['ok'] else 'FAIL'} {check['check']}" + ("" if check["ok"] else f": {check['fix']}"))

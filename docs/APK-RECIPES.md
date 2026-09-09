@@ -4,7 +4,7 @@ Start from the SDK release candidate kit supplied with the compatible host APK.
 The kit is self-contained for Faceclaw dependencies; JDK/Android/Gradle build
 dependencies are still required. Download the **faceclaw-sdk-candidate** artifact
 from a successful **SDK release candidate** workflow run, or use a locally
-exported kit. SDK 0.3.0 is a candidate until a maintainer publishes a release.
+exported kit through the [repository-local distribution commands](APK-DISTRIBUTION.md). SDK 0.3.0 is a candidate until a maintainer publishes a release.
 
 From an unpacked, untouched kit:
 
@@ -52,7 +52,7 @@ prioritize itself. A useful request:
 > Add a phone toggle for a typography candidate using Roboto-Regular.ttf at
 > size 16. Preserve the app's local toggle separately from Faceclaw's grants.
 > Publish on connection and when the toggle changes. Explain the selected
-> owner from HostEvent.Extensions, and do not write host preferences. Add
+> owner, typed contenders, priority and dependency reasons from HostEvent.Extensions, and do not write host preferences. Add
 > tests for losing typography ownership and removing the declaration.
 
 One owner wins a whole feature. If A provides typography size and B provides a

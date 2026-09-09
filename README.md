@@ -56,7 +56,9 @@ contract, drawing API, permissions, lifecycle, and verification fixtures.
 Start with the [independent app recipes](docs/APK-RECIPES.md) and SDK 0.3.0
 [typed events](android-sdk/EVENTS.md). The [APK development workflow](docs/APK-DEVELOPMENT.md) covers the portable
 SDK kit, standalone starter build, host approval, callback tracing, and audit
-evidence.
+evidence. SDK export and candidate packaging stay in this repository; see
+[local distribution](docs/APK-DISTRIBUTION.md). For the upstream PR, use the
+[reviewer map](docs/APK-PR-REVIEW.md).
 
 
 ## Compiling

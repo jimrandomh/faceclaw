@@ -11,6 +11,9 @@ a unique app. New apps should use [typed events](EVENTS.md). See the
 [release and compatibility policy](CHANGELOG.md) and the
 [current acceptance ledger](../docs/APK-ACCEPTANCE.md).
 
+See [repository-local distribution](../docs/APK-DISTRIBUTION.md) for exporting
+and packaging an audited kit without publishing it.
+
 ## Build and consume
 
 Requires Android SDK 35 and JDK 21 for the release audit. The Java API targets
@@ -60,7 +63,7 @@ python3 scripts/test-generator.py
 
 The JSON Schema, TypeScript declaration, and reference table describe closed
 configuration keys, including `ui.navigation.doubleTap`. Java remains the
-runtime authority for scalar bounds, dependencies, cycles, owner limits, and
+runtime authority for scalar bounds, dependencies, cycles, snapshot size, and
 semantic compatibility.
 
 Declare one service extending `com.faceclaw.sdk.FaceclawAppService`:
@@ -171,7 +174,15 @@ ordinary windows while reporting `host-update-required`; it must not be treated
 as extension-capable. The host's **Global customizations and providers** screen
 grants each feature separately and lets the user move contenders to the top of
 that feature's priority list. New contenders append below existing choices.
-Eight installed app owners may publish declarations at once.
+There is no fixed app connection or declaration-owner count. Per-app frame,
+queue, request and grant limits still apply. The host admits declarations only
+when the complete settings snapshot, reserving space for any winner or connection
+state, fits the 65,536-character control-message limit. A rejected publication
+leaves the previous declaration intact and sends `extensions-rejected` with
+`reason: "snapshot-capacity"` (or `"invalid-declaration"` for other rejected
+publications). Handle typed `HostEvent.ExtensionsRejected`; reduce or withdraw
+unused declarations rather than retrying unchanged input. Android process and
+battery costs still grow with connected services.
 
 The known features are `ui.launcher`, `ui.navigation`, `ui.app-menu`, `ui.window-layout`, `ui.typography`, `ui.notifications`, `assistant`, `transcription`, `refinement`, `device-tools`, and `notification-content`. Bundles may partly win. `requires` lists other features that must also be won by the same app; missing/cyclic declarations are rejected. An enabled, approved loser becomes active when the winner is disabled, revoked, or removed. An ordinary live-service outage keeps the selected winner and falls back to host behavior. Persistent navigation/layout/type configuration remains effective while its signed app is installed and approved, unless it depends on an unavailable live feature. No override edits underlying host settings.
 

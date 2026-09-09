@@ -15,7 +15,7 @@ android {
 dependencies { implementation(project(":sdk")) }
 
 val copyHostSources by tasks.registering(Sync::class) {
- from(rootProject.file("../App_Resources/Android/src/main/java")) { include("com/faceclaw/app/FaceclawExternalApps.java", "com/faceclaw/app/FaceclawExtensions.java", "com/faceclaw/app/FaceclawSettings.java", "com/faceclaw/app/FaceclawSettingsListener.java", "com/faceclaw/app/FaceclawExternalAppListener.java", "com/faceclaw/app/FaceclawAppSettingsActivity.java") }
+ from(rootProject.file("../App_Resources/Android/src/main/java")) { include("com/faceclaw/app/FaceclawExternalApps.java", "com/faceclaw/app/FaceclawExtensions.java", "com/faceclaw/app/ExtensionSnapshotBudget.java", "com/faceclaw/app/FaceclawSettings.java", "com/faceclaw/app/FaceclawSettingsListener.java", "com/faceclaw/app/FaceclawExternalAppListener.java", "com/faceclaw/app/FaceclawAppSettingsActivity.java") }
  into(layout.buildDirectory.dir("generated/host"))
 }
 tasks.named("preBuild") { dependsOn(copyHostSources) }

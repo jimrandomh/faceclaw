@@ -110,9 +110,10 @@ From the repository root, run the repeatable audit entrypoint:
 scripts/audit-apk-platform.sh
 ```
 
-It records the revision, Java/Node/Gradle/Android toolchain doctor, host typecheck
+It stops before tests/builds when the toolchain doctor fails and prints setup
+commands while retaining audit evidence. On a valid toolchain it records the revision, Java/Node/Gradle/Android toolchain doctor, host typecheck
 and tests, generator checks, SDK unit/assemble/lint tasks, portable Maven
-export, kit link checks, two uniquely scaffolded app builds/tests, a starter build from a copy outside the checkout, and both unmodified
+export, kit link checks, two uniquely scaffolded app builds/tests, a starter build from a copy outside the checkout, and the unmodified
 Java and Kotlin examples built against the kit. APKs, source hashes, and lint
 reports are retained with the evidence. The result is a
 self-contained report under `android-sdk/build/apk-audit/<UTC timestamp>/`.

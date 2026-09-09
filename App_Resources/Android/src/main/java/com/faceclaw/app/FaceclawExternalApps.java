@@ -59,7 +59,7 @@ public final class FaceclawExternalApps {
  }
  public void refresh() {
   Set<String> present=new HashSet<>();
-  for(ResolveInfo r:discover()) if(approved(r.serviceInfo)) { String k=key(r.serviceInfo); present.add(k); if(!connections.containsKey(k)&&connections.size()<8) bind(r.serviceInfo); }
+  for(ResolveInfo r:discover()) if(approved(r.serviceInfo)) { String k=key(r.serviceInfo); present.add(k); if(!connections.containsKey(k)) bind(r.serviceInfo); }
   for(String k:new ArrayList<>(connections.keySet())) if(!present.contains(k)) disconnect(k,false);
   emit("","changed",new JSONObject()); extensionsChanged();
  }
@@ -190,7 +190,14 @@ public final class FaceclawExternalApps {
     if(type.equals("sdk-diagnostic")) { diagnostic(this,data.optString("code")); return; }
     if(type.equals("publish-extensions")) {
      if(!extensionCompatible) { diagnostic(this,"extension-incompatible"); return; }
-     long before=extensions.generation(); if(extensions.publish(component,data.getJSONArray("declarations"))&&before!=extensions.generation()) extensionsChanged(); return;
+     long before=extensions.generation();
+     if(extensions.publish(component,data.getJSONArray("declarations"))) {
+      if(before!=extensions.generation()) extensionsChanged();
+     } else {
+      diagnostic(this,"extension-publication-rejected");
+      send(component,"extensions-rejected",Protocol.object("reason",extensions.publicationRejection()).toString());
+     }
+     return;
     }
     if(type.equals("extension-result")||type.equals("extension-progress")||type.equals("extension-action")) { if(!extensionCompatible) return; receiveExtensionControl(this,type,data); return; }
     if(type.equals("window-menu-state")) { if(open&&data.opt("available") instanceof Boolean) emit(component,type,Protocol.object("available",data.getBoolean("available"))); return; }
@@ -601,7 +608,7 @@ public final class FaceclawExternalApps {
   }
  }
  private static void diagnostic(Connection connection,String code) {
-  if(!Arrays.asList("callback-failed","ipc-rejected","extension-incompatible","request-timeout","action-ledger-full").contains(code)) return;
+  if(!Arrays.asList("callback-failed","ipc-rejected","extension-incompatible","request-timeout","action-ledger-full","extension-publication-rejected").contains(code)) return;
   connection.diagnostics.put(code,Math.min(1000000,connection.diagnostics.getOrDefault(code,0)+1));
  }
  /** Local host UI only. Allowlisted structural state, never control payloads or request identifiers. */

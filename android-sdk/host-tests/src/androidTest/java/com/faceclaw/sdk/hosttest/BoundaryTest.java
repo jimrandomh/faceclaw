@@ -1,5 +1,6 @@
 package com.faceclaw.sdk.hosttest;
 import android.app.Instrumentation;
+import org.json.JSONObject;
 import android.os.Bundle;
 import android.content.*;
 import com.faceclaw.app.*;
@@ -80,6 +81,28 @@ public class BoundaryTest extends Instrumentation {
  private String declarations(String feature,String configuration) { return "{\"declarations\":[{\"feature\":\""+feature+"\",\"enabled\":true,\"configuration\":"+configuration+"}]}"; }
  private void grantExtension(String component,String feature,boolean granted) {
   runOnMainSync(()->{ context.getSharedPreferences("faceclaw-external-apps",0).edit().putBoolean(component+":extension:"+feature,granted).commit(); manager.refresh(); });
+ }
+ public void testMoreThanEightApprovedServicesConnectAndPublish() throws Exception {
+  java.util.List<String> components=new java.util.ArrayList<>();
+  String identity=PackageIdentity.forPackage(context,PKG);
+  for(int i=1;i<=9;i++) components.add(PKG+"/"+PKG+".CapacityServices$App"+i);
+  runOnMainSync(()->{
+   android.content.SharedPreferences.Editor edit=context.getSharedPreferences("faceclaw-external-apps",0).edit();
+   for(String component:components) edit.putString(component+":pin",identity);
+   edit.commit(); manager.refresh();
+  });
+  long until=System.currentTimeMillis()+10000;
+  while(System.currentTimeMillis()<until&&!components.stream().allMatch(manager::isConnected)) settle();
+  assertTrue("All nine approved services connect",components.stream().allMatch(manager::isConnected));
+  for(String component:components) send(component,"test-publish-extensions",declarations("ui.typography","{\"size\":16}"));
+  until=System.currentTimeMillis()+5000;
+  while(System.currentTimeMillis()<until&&new JSONObject(manager.extensionsJson()).getJSONArray("features").toString().split("CapacityServices",-1).length<10) settle();
+  HostEvent.Extensions snapshot=(HostEvent.Extensions)HostEvent.decode("extensions",new JSONObject(manager.extensionsJson()));
+  assertEquals(9,snapshot.feature("ui.typography").contenders.size());
+  for(String component:components) grantExtension(component,"ui.typography",true);
+  snapshot=(HostEvent.Extensions)HostEvent.decode("extensions",new JSONObject(manager.extensionsJson()));
+  assertTrue("Nine grants fit snapshot",snapshot.feature("ui.typography").available);
+  com.faceclaw.app.SnapshotBudgetChecks.run(context);
  }
  public void testExtensionSemanticsRejectStringAndFractionalCoercion() throws Exception {
   for(Object value:new Object[]{"2",2.5,-1,2147483648L}) assertFalse(ExtensionContract.compatible(ExtensionContract.peerSemantics(Protocol.object("extensionSemantics",value))));

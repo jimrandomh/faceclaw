@@ -2,6 +2,15 @@
 
 ## 0.3.0 candidate
 
+- Add immutable typed contenders, priority, grants, dependencies and conflict reasons,
+  with compatibility for older snapshots and unknown future reason codes.
+- Remove fixed eight-app host connection/declaration limits; retain bounded IPC
+  and reserve worst-case snapshot capacity before accepting declarations.
+- Add the runnable conflict-status example and repository-local SDK candidate
+  packaging with matching source, integrity checks and explicit local-review mode.
+- Fail audit preflight before builds when the required toolchain is missing.
+- Run APK CI on every PR and main push, including manifest/build-only changes.
+
 - Add immutable typed host events and preserve the legacy JSON callback.
 - Add `WindowState`, single-use `ProviderRequests`, and typed provider results.
 - Move the starter and Java/Kotlin examples to typed callbacks. Ship consumer

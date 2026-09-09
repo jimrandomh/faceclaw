@@ -50,11 +50,43 @@ required() {
   fi
 }
 
+write_summary() {
+python3 - "$output_dir" "$failures" "$allow_known" "$known_baseline_accepted" <<'PY'
+import json
+import pathlib
+import sys
+
+out = pathlib.Path(sys.argv[1])
+records = [json.loads(line) for line in (out / "commands.jsonl").read_text(encoding="utf-8").splitlines() if line]
+summary = {
+    "schema": 1,
+    "revision": (out / "revision.txt").read_text(encoding="utf-8").splitlines()[0].split(": ", 1)[-1],
+    "allowKnownUpstreamFailures": bool(int(sys.argv[3])),
+    "knownUpstreamBaselineAccepted": bool(int(sys.argv[4])),
+    "failures": int(sys.argv[2]),
+    "commands": records,
+}
+(out / "audit.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
+lines = [f"# APK platform audit ({summary['revision']})", "", f"Result: {'PASS' if not summary['failures'] else 'FAIL'}", "", "| Command | Status | Evidence |", "| --- | ---: | --- |"]
+for record in records:
+    lines.append(f"| `{record['name']}` | {record['status']} | `{record['log']}` |")
+if summary["knownUpstreamBaselineAccepted"]:
+    lines += ["", "Eight exact upstream test failures were accepted. Raw host tests failed; no unexpected host failures occurred."]
+lines += ["", "The audit records the exact revision, tool probes, command argv, exit status, and command logs in this directory.", "The emulator priority demo is a separate, synthetic-host evidence job and is never installed on a physical glasses host.", ""]
+(out / "summary.md").write_text("\n".join(lines), encoding="utf-8")
+PY
+
+}
+
 printf 'APK platform audit output: %s\n' "$output_dir"
 printf 'revision: ' > "$output_dir/revision.txt"
 git -C "$repo_root" rev-parse HEAD >> "$output_dir/revision.txt"
 git -C "$repo_root" status --short >> "$output_dir/revision.txt"
-required toolchain-doctor python3 "$repo_root/android-sdk/scripts/doctor.py" --json || true
+if ! required toolchain-doctor python3 "$repo_root/android-sdk/scripts/doctor.py" --json; then
+  write_summary
+  printf 'Toolchain preflight failed; no host tests or builds were started. Run python3 android-sdk/scripts/doctor.py for setup commands. Evidence: %s\n' "$output_dir" >&2
+  exit 2
+fi
 run_command tool-java java -version || failures=$((failures + 1))
 run_command tool-node node --version || failures=$((failures + 1))
 run_command tool-gradle env AUDIT_REPO_ROOT="$repo_root" bash -c 'cd "$AUDIT_REPO_ROOT/android-sdk" && ./gradlew --version' || failures=$((failures + 1))
@@ -122,30 +154,7 @@ else
   printf 'Skipping standalone build because portable export failed.\n' >> "$output_dir/summary.md"
 fi
 
-python3 - "$output_dir" "$failures" "$allow_known" "$known_baseline_accepted" <<'PY'
-import json
-import pathlib
-import sys
-
-out = pathlib.Path(sys.argv[1])
-records = [json.loads(line) for line in (out / "commands.jsonl").read_text(encoding="utf-8").splitlines() if line]
-summary = {
-    "schema": 1,
-    "revision": (out / "revision.txt").read_text(encoding="utf-8").splitlines()[0].split(": ", 1)[-1],
-    "allowKnownUpstreamFailures": bool(int(sys.argv[3])),
-    "knownUpstreamBaselineAccepted": bool(int(sys.argv[4])),
-    "failures": int(sys.argv[2]),
-    "commands": records,
-}
-(out / "audit.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
-lines = [f"# APK platform audit ({summary['revision']})", "", f"Result: {'PASS' if not summary['failures'] else 'FAIL'}", "", "| Command | Status | Evidence |", "| --- | ---: | --- |"]
-for record in records:
-    lines.append(f"| `{record['name']}` | {record['status']} | `{record['log']}` |")
-if summary["knownUpstreamBaselineAccepted"]:
-    lines += ["", "Eight exact upstream test failures were accepted. Raw host tests failed; no unexpected host failures occurred."]
-lines += ["", "The audit records the exact revision, tool probes, command argv, exit status, and command logs in this directory.", "The emulator priority demo is a separate, synthetic-host evidence job and is never installed on a physical glasses host.", ""]
-(out / "summary.md").write_text("\n".join(lines), encoding="utf-8")
-PY
+write_summary
 
 if [[ "$failures" -ne 0 ]]; then
   printf 'APK platform audit FAILED (%s command/check failures). Evidence: %s\n' "$failures" "$output_dir" >&2

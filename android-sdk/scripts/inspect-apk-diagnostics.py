@@ -13,7 +13,7 @@ KNOWN_FEATURES = {
     "ui.typography", "ui.notifications", "assistant", "transcription",
     "refinement", "device-tools", "notification-content",
 }
-KNOWN_REASONS = {"callback-failed", "ipc-rejected", "extension-incompatible", "request-timeout", "action-ledger-full"}
+KNOWN_REASONS = {"callback-failed", "ipc-rejected", "extension-incompatible", "request-timeout", "action-ledger-full", "extension-publication-rejected"}
 KNOWN_CONTENDER_REASONS = {
     "incompatible", "undeclared", "disabled", "grant-required", "dependency-owner",
     "dependency-unavailable", "disconnected", "active", "lower-priority",
@@ -52,8 +52,8 @@ def validate(data: dict) -> None:
     integer(data.get("generation"), "generation")
     apps = data.get("apps")
     features = data.get("features")
-    if not isinstance(apps, list) or len(apps) > 128:
-        fail("apps: expected at most 128 entries")
+    if not isinstance(apps, list):
+        fail("apps: expected array")
     if not isinstance(features, list) or len(features) > 11:
         fail("features: expected at most 11 entries")
     app_components = set()
@@ -114,8 +114,8 @@ def validate(data: dict) -> None:
             fail(f"{where}.available: expected boolean")
         integer(feature.get("generation"), f"{where}.generation")
         contenders = feature.get("contenders")
-        if not isinstance(contenders, list) or len(contenders) > 128:
-            fail(f"{where}.contenders: expected at most 128 entries")
+        if not isinstance(contenders, list):
+            fail(f"{where}.contenders: expected array")
         for contender_index, contender in enumerate(contenders):
             contender_where = f"{where}.contenders[{contender_index}]"
             if not isinstance(contender, dict):
