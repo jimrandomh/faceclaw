@@ -6,6 +6,7 @@
 * Notifications: Add notification filters
 * Phone screen preview: Add rotation option; improve landscape layout
 * Add "AI Chat" app (conversational-style use of the voice assistant with hold-to-talk)
+* Add rightness control to the system context menu
 
 ## 0.6.5 - 2026-09-04
 * Changed context menu gestures: — for system, ●— for app context menu.

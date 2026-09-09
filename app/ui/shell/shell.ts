@@ -35,6 +35,7 @@ import {
   assistantModelSetting,
   assistantSkipConfirmationSetting,
   batteryDisplayModeSetting,
+  brightnessSetting,
   onAnySettingChanged,
   openAiApiKeySetting,
   timeFormatSetting,
@@ -44,6 +45,7 @@ import { onAmbientCardsChanged } from "./ambient-cards";
 import { ShellChromeLayer, sidebarContentLeft, type ShellChromeState, type ShellChromeWindow } from "./chrome-layer";
 import { ShellModalLayer } from "./modal-layer";
 import { ToolDebugMenuLayer } from "./tool-debug-layer";
+import { BrightnessPickerLayer } from "./brightness-picker-layer";
 import { toolRegistry } from "../../assistant/tool-registry";
 import {
   minWindowTop,
@@ -63,7 +65,7 @@ import {
  * Input flow: every event enters via receiveInput. The shell consumes
  * everything while the sidebar or a shell overlay has focus and forwards the
  * rest to the focused window. Long-press opens the shell-owned system menu
- * (Focus app switcher, Voice input, Close window, Debug) without reaching the
+ * (Focus app switcher, Voice input, Brightness, Close window, Debug) without reaching the
  * app, so the shell keeps working when a window's handler hangs; a window
  * that claims long-press for a move of its own gets it forwarded instead, and
  * holding the press past the escape threshold still opens the system menu.
@@ -1337,7 +1339,7 @@ class Shell {
 
   /**
    * The system/escape menu: the entries every window shares (Focus app
-   * switcher, Voice input, Close window) plus Debug. Shell-owned and
+   * switcher, Voice input, Brightness, Close window) plus Debug. Shell-owned and
    * shell-drawn (never the app's), so an unresponsive app can always be
    * closed. It opens for long-press (over the app's own menu too), after an
    * extended hold in a window that claims long-press, and on a window's
@@ -1384,6 +1386,16 @@ class Shell {
         },
       },
     );
+    if (brightnessSetting.get() !== "auto") {
+      items.push({
+        label: "Brightness",
+        onSelect: (ctx) => {
+          ctx.stack.pop();
+          ctx.stack.push(new BrightnessPickerLayer(() => this.yieldFocusToSidebar()));
+          this.config.requestShellRender();
+        },
+      });
+    }
     items.push({
       label: "Debug",
       onSelect: (ctx) => {
