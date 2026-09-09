@@ -7,7 +7,7 @@ import java.util.*;
 public final class ExtensionContract {
  /** Snapshot schema and wire protocol remain v1; extension behavior is negotiated separately. */
  public static final int SEMANTICS=2;
- public static final String SDK_VERSION="0.2.0";
+ public static final String SDK_VERSION="0.3.0";
  public static int peerSemantics(JSONObject data) {
   Object value=data.opt("extensionSemantics");
   if(!(value instanceof Number)) return 0;

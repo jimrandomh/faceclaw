@@ -6,40 +6,26 @@ import android.graphics.Color
 import android.graphics.Paint
 import com.faceclaw.sdk.FaceclawAppService
 import com.faceclaw.sdk.Ui
-import org.json.JSONObject
+import com.faceclaw.sdk.HostEvent
+import com.faceclaw.sdk.WindowState
 
 /** Copy into an Android app and declare the SDK service contract from the README. */
 class CanvasAppService : FaceclawAppService() {
-    private var width = 0
-    private var height = 0
-    private var visible = false
-    private var screenOn = true
+    private val window = WindowState()
     private var clicks = 0
 
-    override fun onHostEvent(type: String, data: JSONObject) {
-        when (type) {
-            "open", "resize" -> {
-                width = data.getInt("width")
-                height = data.getInt("height")
-            }
-            "visibility" -> {
-                visible = data.getBoolean("visible")
-                screenOn = data.getBoolean("screenOn")
-            }
-            "input" -> if (data.optString("type") == "click") clicks++
-            "close" -> visible = false
-        }
+    override fun onHostEvent(event: HostEvent) {
+        window.accept(event)
+        if (event is HostEvent.Input && window.canDraw() && event.isClick()) clicks++
         draw()
     }
 
-    override fun onHostDisconnected() {
-        visible = false
-        width = 0
-        height = 0
-    }
+    override fun onHostDisconnected() { window.disconnect() }
 
     private fun draw() {
-        if (!visible || !screenOn || width <= 0 || height <= 0) return
+        if (!window.canDraw()) return
+        val width = window.width()
+        val height = window.height()
         val frame = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
         try {
             val canvas = Canvas(frame)

@@ -3,16 +3,14 @@ package com.faceclaw.starter;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import com.faceclaw.sdk.FaceclawAppService;
-import org.json.JSONObject;
+import com.faceclaw.sdk.HostEvent;
+import com.faceclaw.sdk.WindowState;
 
 /** Small, benign preview window demonstrating the SDK lifecycle. */
 public final class PreviewService extends FaceclawAppService {
     private static final String PREFS = "starter-settings";
     private static PreviewService active;
-    private int width;
-    private int height;
-    private boolean visible;
-    private boolean screenOn;
+    private final WindowState window = new WindowState();
     private int clicks;
 
     @Override public void onCreate() {
@@ -24,25 +22,14 @@ public final class PreviewService extends FaceclawAppService {
         getSharedPreferences(PREFS, MODE_PRIVATE).edit().putString("hostPackage", selectedHostPackage()).apply();
     }
 
-    @Override protected void onHostEvent(String type, JSONObject data) {
-        if ("open".equals(type) || "resize".equals(type)) {
-            width = data.optInt("width", 0);
-            height = data.optInt("height", 0);
-        } else if ("visibility".equals(type)) {
-            visible = data.optBoolean("visible", false);
-            screenOn = data.optBoolean("screenOn", false);
-        } else if ("input".equals(type) && "click".equals(data.optString("type", ""))) {
-            clicks++;
-        } else if ("close".equals(type)) {
-            visible = false;
-        }
+    @Override protected void onHostEvent(HostEvent event) {
+        window.accept(event);
+        if (event instanceof HostEvent.Input && window.canDraw() && ((HostEvent.Input) event).isClick()) clicks++;
         drawPreview();
     }
 
     @Override protected void onHostDisconnected() {
-        visible = false;
-        width = 0;
-        height = 0;
+        window.disconnect();
     }
 
     @Override public void onDestroy() {
@@ -67,7 +54,8 @@ public final class PreviewService extends FaceclawAppService {
     }
 
     private void drawPreview() {
-        if (!visible || !screenOn || width <= 0 || height <= 0) return;
+        if (!window.canDraw()) return;
+        int width = window.width(), height = window.height();
         Bitmap frame = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
         try {
             PreviewDrawing.draw(new Canvas(frame), width, height, clicks,

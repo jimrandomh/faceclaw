@@ -3,7 +3,7 @@ plugins {
     id("maven-publish")
 }
 group = "com.faceclaw"
-version = "0.2.0"
+version = "0.3.0"
 android {
  namespace = "com.faceclaw.sdk"
  compileSdk = 35
@@ -12,7 +12,10 @@ android {
  testOptions { unitTests.isReturnDefaultValues = true }
  publishing { singleVariant("release") { withSourcesJar() } }
 }
-dependencies { testImplementation("junit:junit:4.13.2") }
+dependencies {
+ testImplementation("junit:junit:4.13.2")
+ testImplementation("org.json:json:20240303")
+}
 
 val portableRepositoryDir = providers.gradleProperty("portableRepositoryDir")
     .map { file(it) }

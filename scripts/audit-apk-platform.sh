@@ -54,6 +54,7 @@ printf 'APK platform audit output: %s\n' "$output_dir"
 printf 'revision: ' > "$output_dir/revision.txt"
 git -C "$repo_root" rev-parse HEAD >> "$output_dir/revision.txt"
 git -C "$repo_root" status --short >> "$output_dir/revision.txt"
+required toolchain-doctor python3 "$repo_root/android-sdk/scripts/doctor.py" --json || true
 run_command tool-java java -version || failures=$((failures + 1))
 run_command tool-node node --version || failures=$((failures + 1))
 run_command tool-gradle env AUDIT_REPO_ROOT="$repo_root" bash -c 'cd "$AUDIT_REPO_ROOT/android-sdk" && ./gradlew --version' || failures=$((failures + 1))
@@ -106,9 +107,11 @@ required sdk-gradle env AUDIT_SDK_DIR="$sdk_dir" bash -c 'cd "$AUDIT_SDK_DIR" &&
 kit="$output_dir/portable-kit"
 if required portable-export "$sdk_dir/scripts/export-portable-kit.sh" "$kit"; then
   required portable-checksum python3 "$sdk_dir/scripts/verify-portable-kit.py" "$kit" || true
+  required portable-doc-links python3 "$sdk_dir/scripts/check-doc-links.py" "$kit" || true
+  required scaffold-consumer-build python3 "$sdk_dir/scripts/test-scaffolds.py" "$kit" "$output_dir/scaffolds" || true
   standalone_copy="$(mktemp -d "${TMPDIR:-/tmp}/faceclaw-apk-standalone.XXXXXX")"
   cp -a "$kit" "$standalone_copy/kit"
-  if required starter-standalone-build env AUDIT_STANDALONE="$standalone_copy" bash -c 'cd "$AUDIT_STANDALONE/kit/starter" && ./gradlew :app:assembleDebug :app:lintDebug'; then
+  if required starter-standalone-build env AUDIT_STANDALONE="$standalone_copy" bash -c 'cd "$AUDIT_STANDALONE/kit/starter" && ./gradlew :app:testDebugUnitTest :app:assembleDebug :app:lintDebug'; then
     mkdir -p "$output_dir/artifacts"
     cp "$standalone_copy/kit/starter/app/build/outputs/apk/debug/app-debug.apk" "$output_dir/artifacts/starter-debug.apk"
     cp "$standalone_copy/kit/starter/app/build/reports/lint-results-debug.html" "$output_dir/artifacts/starter-lint.html"

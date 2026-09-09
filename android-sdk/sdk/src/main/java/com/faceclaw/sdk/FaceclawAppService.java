@@ -51,6 +51,12 @@ public abstract class FaceclawAppService extends Service {
   if(!ExtensionContract.known(feature)||!ExtensionContract.token(requestId)||data==null||data.toString().length()>Protocol.MAX_JSON/2) return false;
   return send("extension-result",Protocol.object("feature",feature,"generation",generation,"requestId",requestId,"data",data));
  }
+ /** Transport submission only. Match/cancel/consume the request in the app before calling. */
+ public final boolean respondExtension(HostEvent.Provider request,ProviderResult result) {
+  if(request==null||result==null||!request.isRequest()||request.isExpired(System.currentTimeMillis())||
+    !java.util.Arrays.asList("assistant","refinement","transcription").contains(request.feature)) return false;
+  return respondExtension(request.feature,request.generation,request.requestId,result.data());
+ }
  public final boolean reportExtensionProgress(String feature,long generation,String requestId,JSONObject data) {
   if(!ExtensionContract.known(feature)||!ExtensionContract.token(requestId)||data==null||data.toString().length()>Protocol.MAX_JSON/2) return false;
   return send("extension-progress",Protocol.object("feature",feature,"generation",generation,"requestId",requestId,"data",data));
@@ -95,7 +101,10 @@ public abstract class FaceclawAppService extends Service {
  @Override public void onDestroy() { disconnect(); if(active==this) active=null; super.onDestroy(); }
  protected void onHostConnected() {}
  protected void onHostDisconnected() {}
- protected abstract void onHostEvent(String type,JSONObject data);
+ /** Typed callback after the existing identity, session, grant and frame checks. */
+ protected void onHostEvent(HostEvent event) { onHostEvent(event.type,event.data()); }
+ /** Legacy callback. Override the typed overload for new apps; old subclasses remain compatible. */
+ protected void onHostEvent(String type,JSONObject data) {}
  public final String selectedHostPackage() {
   String pin=approvals.getString("identity","");
   return pin.isEmpty()?"":PackageIdentity.packageName(pin);
@@ -147,7 +156,7 @@ public abstract class FaceclawAppService extends Service {
     for(java.util.Map.Entry<String,ExtensionSurface> entry:extensionSurfaces.entrySet())if(!sameFeature(extensionSnapshot,next,entry.getKey()))closed.put(entry.getKey(),entry.getValue());
     for(String feature:closed.keySet())extensionSurfaces.remove(feature);
     extensionSnapshot=next;
-    for(java.util.Map.Entry<String,ExtensionSurface> entry:closed.entrySet())callback(()->onHostEvent("extension-surface",Protocol.object("feature",entry.getKey(),"type","close","generation",entry.getValue().generation)));
+    for(java.util.Map.Entry<String,ExtensionSurface> entry:closed.entrySet())callback(()->onHostEvent(HostEvent.decode("extension-surface",Protocol.object("feature",entry.getKey(),"type","close","generation",entry.getValue().generation))));
    }
    if(type.equals("extension-surface")) extensionSurface(data);
    if(type.equals("revoke")) { disconnect(); return; }
@@ -165,7 +174,7 @@ public abstract class FaceclawAppService extends Service {
     if(!notificationReplyAllowed || !Boolean.TRUE.equals(data.opt("confirmed")) || !(data.opt("id") instanceof String) || !(data.opt("target") instanceof String) || !(data.opt("replyToken") instanceof String) || !(data.opt("text") instanceof String) || data.getString("text").trim().isEmpty() || data.getString("text").length()>8000 ||
       !notificationReplies.consume(data.optString("id"),data.optString("target"),data.optString("replyToken"),System.currentTimeMillis())) return;
    }
-   callback(()->onHostEvent(type,data));
+   callback(()->onHostEvent(HostEvent.decode(type,data)));
   } catch(Exception ignored) { if(authenticated) diagnostic("ipc-rejected"); }
  }
  String pendingIdentity(String token) {

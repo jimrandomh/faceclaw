@@ -7,7 +7,7 @@ import com.faceclaw.sdk.FaceclawAppService;
 import com.faceclaw.sdk.Ui;
 import com.faceclaw.sdk.WindowAnimator;
 import com.faceclaw.sdk.WindowMotion;
-import org.json.JSONObject;
+import com.faceclaw.sdk.HostEvent;
 
 /** Optional shared card motion. Copy into a normal, host-approved SDK app. */
 public final class AnimatedCardAppService extends FaceclawAppService {
@@ -17,15 +17,19 @@ public final class AnimatedCardAppService extends FaceclawAppService {
     private final WindowAnimator animator = new WindowAnimator(this::draw);
     private WindowMotion.Rect compact() { return new WindowMotion.Rect(16,16,Math.max(1,width-32),44); }
     private WindowMotion.Rect expanded() { return new WindowMotion.Rect(0,0,Math.max(1,width-5),Math.max(2,height-5)); }
-    @Override public void onHostEvent(String type, JSONObject data) {
-        if (type.equals("open") || type.equals("resize")) {
-            cancelVisuals(); width=data.optInt("width"); height=data.optInt("height");
-        } else if (type.equals("visibility")) {
-            visible=data.optBoolean("visible"); screenOn=data.optBoolean("screenOn"); if(!visible || !screenOn)cancelVisuals();
+    @Override public void onHostEvent(HostEvent event) {
+        String type = event.type;
+        if (event instanceof HostEvent.Window) {
+            HostEvent.Window window = (HostEvent.Window) event;
+            cancelVisuals(); width=window.width; height=window.height;
+            if(window.isOpen()) { visible=false; screenOn=false; }
+        } else if (event instanceof HostEvent.Visibility) {
+            HostEvent.Visibility state = (HostEvent.Visibility) event;
+            visible=state.visible; screenOn=state.screenOn; if(!visible || !screenOn)cancelVisuals();
         } else if(type.equals("shared-style")) {cancelVisuals();}
         else if(type.equals("close")) {visible=false;cancelVisuals();}
-        else if(type.equals("input") && visible && screenOn && width>32 && height>48) {
-            String input=data.optString("type");
+        else if(event instanceof HostEvent.Input && visible && screenOn && width>32 && height>48) {
+            String input=((HostEvent.Input) event).inputType;
             if(input.equals("click") || input.equals("double-click")) {
                 boolean opening=input.equals("click") && !opened;
                 if(opening==opened)return;

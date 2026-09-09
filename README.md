@@ -53,7 +53,8 @@ See [APK extensions and override behavior](docs/APK-EXTENSIONS.md) for global UI
 
 See the [Android SDK and Kotlin example](android-sdk/README.md) for the service
 contract, drawing API, permissions, lifecycle, and verification fixtures.
-The [APK development workflow](docs/APK-DEVELOPMENT.md) covers the portable
+Start with the [independent app recipes](docs/APK-RECIPES.md) and SDK 0.3.0
+[typed events](android-sdk/EVENTS.md). The [APK development workflow](docs/APK-DEVELOPMENT.md) covers the portable
 SDK kit, standalone starter build, host approval, callback tracing, and audit
 evidence.
 

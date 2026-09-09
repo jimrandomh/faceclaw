@@ -2,6 +2,15 @@
 
 ## Architecture map
 
+Use SDK 0.3.0 typed `HostEvent` callbacks for new work. Read the shipped
+`sdk/EVENTS.md` and `docs/APK-RECIPES.md` in a generated project (one directory
+above this template in an untouched kit). Use the generated contract reference
+for supported fields. Do not infer APIs from another SDK version.
+
+Generate each new app with `tools/create-app.py --package ... --name ...` from
+the kit. Do not reuse `com.faceclaw.starter` or rename only the application ID.
+Preserve a generated app's package/signing identity during ordinary changes.
+
 - `app/src/main/AndroidManifest.xml` declares the exported application service,
   launcher/settings Activity, and normal protocol-major-1 metadata.
 - `PreviewService` is the external APK process. It owns its UID, service state,
@@ -21,6 +30,11 @@ and `screenOn` before allocating a frame. Submit the first frame after the
 window is visible, and stop allocating while hidden, asleep, closed, or
 disconnected. `submitBitmap` copies synchronously on the main looper; recycle
 the app-owned bitmap after it returns. Do not assume a fixed glasses size.
+
+`WindowState` is the lifecycle reducer shared with consumer tests. Feed typed
+events to it before rendering and clear it on disconnect. Unknown event types
+are ignored. Advanced notification/tool/audio payloads retain their documented
+JSON escape hatch; never interpret an unknown event as approval.
 
 Callbacks run on the main looper. Keep animation and UI state in the service,
 and redraw after state changes. Use `onHostDisconnected` to clear viewport and
@@ -47,7 +61,7 @@ glasses transport decisions.
 From an exported kit, record the revision and tool versions, then run:
 
 ```sh
-./gradlew :app:assembleDebug :app:lintDebug
+./gradlew :app:testDebugUnitTest :app:assembleDebug :app:lintDebug
 ```
 
 The repository audit entrypoint additionally runs SDK unit tests, generated
@@ -55,3 +69,10 @@ contract checks, and a clean starter build in a temporary copy. Emulator
 boundary and priority demos are separate evidence jobs. Never use the demo
 installer against a real glasses host or treat an emulator first frame as
 physical-glasses readiness.
+
+For backend providers, use `ProviderRequests` to reject late, cancelled,
+expired or duplicate completion. Feed extension snapshots and cancellations
+even while hidden, clear requests on disconnect, and cancel the app's network
+tasks separately. Run a synthetic replay covering ownership changes before
+connecting real credentials. Report the exact commands/results and any device
+cases that remain untested. Use the kit's doctor for missing Java/Android tools.

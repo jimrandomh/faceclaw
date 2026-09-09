@@ -169,6 +169,14 @@ public class BoundaryTest extends Instrumentation {
   int before=frames.get(); send(component,"render","{}"); settle();
   assertTrue("Subsequent callback remains usable",frames.get()>before); assertTrue("Window remains connected",manager.isConnected(component));
  }
+ public void testTypedLifecycleAndLegacyCallbackShareAuthenticatedConnection() throws Exception {
+  String component=approve("CanvasService");
+  runOnMainSync(()->{ context.getSharedPreferences("faceclaw-external-apps",0).edit().putBoolean(component+":notifications",true).commit(); manager.refresh(); });
+  open(component); settle();
+  assertTrue("Legacy rendering callback still runs",frames.get()>0);
+  send(component,"test-typed-callback","{}"); settle();
+  assertEquals(1,notifications.get());
+ }
  public void testRequestDeadlineCancelsRemoteProviderAndRejectsLateResult() throws Exception {
   String component=approve("CanvasService"); send(component,"test-publish-extensions",declarations("ui.launcher","{}")); settle(); grantExtension(component,"ui.launcher",true);
   runOnMainSync(()->{ context.getSharedPreferences("faceclaw-external-apps",0).edit().putBoolean(component+":notifications",true).commit(); manager.refresh(); });

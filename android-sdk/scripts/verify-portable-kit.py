@@ -16,7 +16,7 @@ def main() -> int:
     root = pathlib.Path(sys.argv[1]).resolve()
     try:
         manifest = json.loads((root / "SHA256SUMS.json").read_text(encoding="utf-8"))
-        if not isinstance(manifest, dict) or type(manifest.get("schema")) is not int or manifest.get("schema") != 1 or manifest.get("coordinate") != "com.faceclaw:sdk:0.2.0":
+        if not isinstance(manifest, dict) or type(manifest.get("schema")) is not int or manifest.get("schema") != 1 or manifest.get("coordinate") != "com.faceclaw:sdk:0.3.0":
             raise ValueError("unsupported SHA manifest")
         entries = manifest.get("files")
         if not isinstance(entries, list) or not entries:

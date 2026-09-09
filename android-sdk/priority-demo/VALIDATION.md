@@ -1,4 +1,8 @@
-# Priority demo validation
+# Historical priority demo validation
+
+This report is preserved for the tested September 8 revisions. SDK negotiation
+and renderer recovery were implemented afterward. Use the [current acceptance
+ledger](../../docs/APK-ACCEPTANCE.md) for current gates.
 
 Recorded September 8, 2026. These results support a draft upstream review. They do not close all release acceptance items in [DEVICE-CHECKLIST.md](DEVICE-CHECKLIST.md).
 

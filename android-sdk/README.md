@@ -4,6 +4,13 @@ Install applications as ordinary Android APKs. Faceclaw discovers an exported ap
 
 New app approvals default notifications, dictation/review, message text previews and declared-source suppression to enabled. The approval dialog shows these choices before the user confirms. Defaults are written with the initial approval, not applied as runtime fallbacks: upgrades and reapproval of an existing record preserve explicit choices and legacy missing-key behavior. Discovery and phone setup Intents never grant capabilities. Revoking approval clears its settings; a later fresh approval uses the new defaults. Source suppression still requires a declared source and a connected approved app.
 
+## Start a new app
+
+Use the [standalone recipes](../docs/APK-RECIPES.md) to verify a kit and generate
+a unique app. New apps should use [typed events](EVENTS.md). See the
+[release and compatibility policy](CHANGELOG.md) and the
+[current acceptance ledger](../docs/APK-ACCEPTANCE.md).
+
 ## Build and consume
 
 Requires Android SDK 35 and JDK 21 for the release audit. The Java API targets
@@ -20,7 +27,7 @@ build in `settings.gradle.kts`:
 includeBuild("/path/to/faceclaw/android-sdk")
 ```
 
-Then depend on `implementation("com.faceclaw:sdk:0.2.0")`. The release coordinate
+Then depend on `implementation("com.faceclaw:sdk:0.3.0")`. The release coordinate
 is versioned and can be consumed from the portable Maven repository produced by
 `scripts/export-portable-kit.sh`; consumers do not need this source checkout.
 Faceclaw's NativeScript build compiles the same SDK Java sources through
@@ -32,14 +39,14 @@ Build a local, versioned kit containing the release AAR, POM, sources, SHA-256
 manifest, Gradle wrapper, and standalone starter:
 
 ```sh
-scripts/export-portable-kit.sh /tmp/faceclaw-sdk-0.2.0
-cp -a /tmp/faceclaw-sdk-0.2.0 /tmp/faceclaw-sdk-0.2.0-copy
-cd /tmp/faceclaw-sdk-0.2.0-copy/starter
+scripts/export-portable-kit.sh /tmp/faceclaw-sdk-0.3.0
+cp -a /tmp/faceclaw-sdk-0.3.0 /tmp/faceclaw-sdk-0.3.0-copy
+cd /tmp/faceclaw-sdk-0.3.0-copy/starter
 ./gradlew :app:assembleDebug :app:lintDebug
 ```
 
 The export refuses to overwrite an existing destination. The starter resolves
-only `sdk-repository/` and uses `com.faceclaw:sdk:0.2.0`; it has no sibling
+only `sdk-repository/` and uses `com.faceclaw:sdk:0.3.0`; it has no sibling
 workspace assumptions. Keep `PORTABLE-KIT.json` and `SHA256SUMS.json` with any
 kit shared for review.
 
@@ -85,7 +92,7 @@ The SDK exposes the selected host package, its verified installed status and its
 
 The [Kotlin Canvas example](examples/CanvasAppService.kt) shows a complete service mixing Android drawing with Faceclaw helpers, handling viewport/visibility changes and ring clicks. Copy it into an Android app that depends on this SDK and declare its service as above. It uses the SDK's normal host approval flow. Kotlin consumers should set their Kotlin JVM target to 11 to match the SDK's Java API target.
 
-Override `onHostConnected()`, `onHostDisconnected()`, and `onHostEvent(String, JSONObject)`. Callbacks run on the main looper. `submitBitmap(Bitmap)` copies the bitmap synchronously and must also run on the main looper; recycling after return is safe. Handle `render` and visible `visibility` events to submit the first frame after opening. Pause animations when hidden/asleep, but keep approved background message receiving independent of the visible window.
+Override `onHostConnected()`, `onHostDisconnected()`, and `onHostEvent(HostEvent)`. The legacy `onHostEvent(String, JSONObject)` overload remains compatible. Callbacks run on the main looper. `submitBitmap(Bitmap)` copies the bitmap synchronously and must also run on the main looper; recycling after return is safe. Handle `render` and visible `visibility` events to submit the first frame after opening. Pause animations when hidden/asleep, but keep approved background message receiving independent of the visible window.
 
 Use ordinary Canvas drawing, optional `Ui.text`, `Ui.card`, `Ui.wrap`, and `Ui.layers` helpers, or mix them. `Ui.layers` composites ordered ARGB bitmaps using standard Canvas source-over alpha against black; submission converts the final result to grayscale. Pixel 1 represents opaque black and 255 white. This version sends pixels for both styles; it has no remote glyph-cache commands. The host owns its shell, viewport, BLE link, sleep policy, reserved gestures, and final incremental display updates.
 
@@ -158,7 +165,7 @@ Declaration publishes an app-owned candidate; it does **not** grant permission,
 change another app's toggle, set priority, or write a host preference. Ordinary
 windows continue to use protocol version `1`. A new host permits legacy
 protocol-1 windows, but rejects extension publication from an old-semantics
-client until it updates. A saved declaration without the SDK 0.2.0 revision
+client until it updates. A saved declaration without the extension-semantics-2 revision
 marker remains preserved and is reported as incompatible. An old host can keep
 ordinary windows while reporting `host-update-required`; it must not be treated
 as extension-capable. The host's **Global customizations and providers** screen
@@ -172,14 +179,16 @@ Each feature's `generation` is its authority epoch. It changes when that feature
 
 Configurations have closed typed schemas. Unknown fields, values and feature IDs are rejected:
 
-| Feature | Optional configuration |
-| --- | --- |
-| `ui.launcher` | `label`; `filesDefaultView`: `icons` or `list` (only when Files has no explicit saved preference) |
-| `ui.navigation` | `rootBack`: `sleep`/`switcher`; `tapHold`: `switcher`/`app-menu`; `hold`: `app-menu`/`system-menu`; `wakeFocus`: `window`/`sidebar` |
-| `ui.window-layout` | `centered`, `ownTopBar`: boolean; `sidebarMode`: `overlay`/`persistent`; `switcherHeight`: `display`/`minimum`; `dividerWidth`: 1–4; `ownHeightMode`: `min`/`medium`/`max` (own APK window only); `inputDialogs`: `compact`/`viewport` |
-| `ui.typography` | Bundled `font` filename; integer `size` 8–20; `raster`: `antialiased`/`crisp`/`hinted`; `borderWidth` 1–4; `selectionBorderWidth` 1–5; `cardRadius` 0–24 |
-| `ui.app-menu` | `title`, `systemTitle` (100 characters); `displayOffFirst`, `systemActionsLast`: boolean |
-| Other features | Optional `label` (100 characters) |
+Use the [generated configuration reference](generated/extension-contract.md),
+[JSON Schema](generated/extension-contract.schema.json), and
+[TypeScript declarations](generated/extension-contract.d.ts). These files come
+from the Java contract and include `ui.navigation.doubleTap`. Avoid maintaining
+a second handwritten field table. All fields are optional within the selected
+feature; unknown fields and invalid values are rejected.
+
+One owner wins each whole feature. A lower-priority provider's fields do not
+fill gaps in the winner. Missing fields use the applicable host baseline.
+Different features can have different winners.
 
 `extensions()` returns the last `extensions` event snapshot: `{version,generation,features:[{feature,component,configuration,live,available,generation,contenders}]}`. Contenders include `enabled`, `granted` and `connected`. Display superseded state from this snapshot; do not mistake a saved toggle for effective control. Signing/UID changes, restored-backup grants, host switching and approval revocation invalidate authority. Generation changes invalidate outstanding requests and surface streams. External APKs never receive host Java objects, arbitrary settings setters, BLE handles, foreign `PendingIntent`s, or another app's reply token.
 

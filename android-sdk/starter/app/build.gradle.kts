@@ -16,4 +16,8 @@ android {
     }
 }
 
-dependencies { implementation("com.faceclaw:sdk:0.2.0") }
+dependencies {
+    implementation("com.faceclaw:sdk:0.3.0")
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.json:json:20240303")
+}

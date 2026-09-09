@@ -80,7 +80,7 @@ export function behaviorSettingsItems(): MenuItem[] {
   const items = extensionBehaviors().filter(item => item.feature !== 'notification-content').map(item => ({
     label: labels[item.feature] || item.feature,
     description: item.available && item.component && !extensionPlatform()?.surfaceFailed(item.feature)
-      ? `In use: ${appName(item.component)}. Select to view or change app priority.`
+      ? `In use: ${appName(item.component)}. One app controls this whole behavior; settings from other apps are not merged. Select to change priority.`
       : `Faceclaw default is active.${item.component ? ` Selected: ${appName(item.component)}.` : ""} Select to inspect app priority or retry an unavailable renderer.`,
     onSelect: (ctx: LayerContext) => openOrder(ctx, item.feature),
   }));

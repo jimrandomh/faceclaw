@@ -24,7 +24,7 @@ from typing import Any
 
 AGP_VERSION = "8.9.2"
 KOTLIN_VERSION = "2.1.20"
-SDK_COORDINATE = "com.faceclaw:sdk:0.2.0"
+SDK_COORDINATE = "com.faceclaw:sdk:0.3.0"
 
 
 EXAMPLES = (
@@ -67,10 +67,10 @@ def kit_path(value: str) -> pathlib.Path:
         raise ValueError(f"portable kit is not a directory: {path}")
     manifest_path = path / "PORTABLE-KIT.json"
     repository = path / "sdk-repository"
-    artifact = repository / "com" / "faceclaw" / "sdk" / "0.2.0" / "sdk-0.2.0.aar"
-    pom = repository / "com" / "faceclaw" / "sdk" / "0.2.0" / "sdk-0.2.0.pom"
+    artifact = repository / "com" / "faceclaw" / "sdk" / "0.3.0" / "sdk-0.3.0.aar"
+    pom = repository / "com" / "faceclaw" / "sdk" / "0.3.0" / "sdk-0.3.0.pom"
     if not manifest_path.is_file() or not repository.is_dir() or not artifact.is_file() or not pom.is_file():
-        raise ValueError("portable kit must contain PORTABLE-KIT.json and sdk-repository/com/faceclaw/sdk/0.2.0")
+        raise ValueError("portable kit must contain PORTABLE-KIT.json and sdk-repository/com/faceclaw/sdk/0.3.0")
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
@@ -269,8 +269,8 @@ def main() -> int:
         output / "kit-artifact-hashes.json",
         {
             "coordinate": SDK_COORDINATE,
-            "aar": {"path": "sdk-repository/com/faceclaw/sdk/0.2.0/sdk-0.2.0.aar", "sha256": sha256(kit / "sdk-repository/com/faceclaw/sdk/0.2.0/sdk-0.2.0.aar")},
-            "pom": {"path": "sdk-repository/com/faceclaw/sdk/0.2.0/sdk-0.2.0.pom", "sha256": sha256(kit / "sdk-repository/com/faceclaw/sdk/0.2.0/sdk-0.2.0.pom")},
+            "aar": {"path": "sdk-repository/com/faceclaw/sdk/0.3.0/sdk-0.3.0.aar", "sha256": sha256(kit / "sdk-repository/com/faceclaw/sdk/0.3.0/sdk-0.3.0.aar")},
+            "pom": {"path": "sdk-repository/com/faceclaw/sdk/0.3.0/sdk-0.3.0.pom", "sha256": sha256(kit / "sdk-repository/com/faceclaw/sdk/0.3.0/sdk-0.3.0.pom")},
         },
     )
 

@@ -1,5 +1,9 @@
 # Independent priority demos
 
+For current release gates, see the [acceptance ledger](../../docs/APK-ACCEPTANCE.md).
+The dated validation report is historical. Demo source in a portable kit is
+reference material; build/install commands below require the host repository.
+
 Two ordinary SDK applications for testing settings composition, feature priority, lifecycle changes and host fallback without T3, a desktop bridge, credentials or an account. Both can be installed at the same time and run under separate Android UIDs. Normal host approval and individual feature grants are required.
 
 | Variant | Android package | Distinct profile |
@@ -35,13 +39,13 @@ priority-demo/build/outputs/apk/beta/debug/priority-demo-beta-debug.apk
 
 Install these APKs on the explicitly selected test device with `adb -s SERIAL install -r APK`. The host and SDK must contain the matching feature-generation lifecycle fixes. For T3 comparison, rebuild the standalone T3 application against this SDK as well. Do not replace an installed app with a different signing identity or uninstall the host to work around an installation failure.
 
-The demos depend on `project(":sdk")` and currently build against SDK 0.2.0.
+The demos depend on `project(":sdk")` and currently build against SDK 0.3.0.
 Global extensions require exact `extensionSemantics: 2` negotiation between
 host and client. Protocol major 1 continues to support ordinary app windows;
 it does not establish compatibility for global extensions.
 
 Upgrade the host and its extension clients together. Rebuild existing clients
-against SDK 0.2.0 and republish their declarations. The host preserves saved
+against SDK 0.3.0 and republish their declarations. The host preserves saved
 grants and priority while marking older declarations incompatible. For
 independent consumers, use the versioned portable kit described in the
 [SDK guide](../README.md#portable-developer-kit).

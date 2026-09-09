@@ -144,7 +144,7 @@ def report(data: dict) -> str:
     ]
     for app in data["apps"]:
         status = "connected" if app["connected"] else "disconnected"
-        compatibility = "compatible" if app["extensionCompatible"] else ("app-update-needed" if app["sdkVersion"] != "0.2.0" else "app-incompatible")
+        compatibility = "compatible" if app["extensionCompatible"] else ("app-update-needed" if app["sdkVersion"] != "0.3.0" else "app-incompatible")
         reasons = ", ".join(f"{key}={count}" for key, count in sorted(app["diagnostics"].items())) or "none"
         lines.append(f"app {redacted(app['component'])}: {status}, {compatibility}, pending={app['pendingRequests']}, actions={app['actionsUsed']}, reasons={reasons}")
         for surface in app["surfaces"]:

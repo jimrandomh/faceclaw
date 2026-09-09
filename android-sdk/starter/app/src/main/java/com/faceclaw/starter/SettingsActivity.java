@@ -26,7 +26,7 @@ public final class SettingsActivity extends Activity {
         layout.setPadding(dp(16), dp(20), dp(16), dp(16));
 
         TextView heading = new TextView(this);
-        heading.setText("Faceclaw APK starter");
+        heading.setText(getApplicationInfo().loadLabel(getPackageManager()));
         heading.setTextSize(22);
         layout.addView(heading);
 

@@ -6,6 +6,14 @@ import org.json.JSONObject;
 /** Test APK only: pins its synthetic host without a user setup prompt. Never ship this subclass. */
 public class CanvasService extends FaceclawAppService {
  int width=32,height=16;
+ private boolean typedWindow,typedVisibility;
+ @Override protected void onHostEvent(HostEvent event) {
+  if(event instanceof HostEvent.Window) typedWindow=true;
+  if(event instanceof HostEvent.Visibility) typedVisibility=true;
+  if(event.type.equals("test-typed-callback")&&typedWindow&&typedVisibility)
+   postNotification("typed-callback","synthetic","Typed callback","Synthetic typed lifecycle received",0);
+  super.onHostEvent(event); // Exercise legacy-overload compatibility on the same authenticated stream.
+ }
  @Override protected void onHostEvent(String type,JSONObject data) {
   if(type.equals("test-compatibility-status")) postNotification("compatibility","synthetic","Compatibility",extensionsCompatibility(),0);
   if(type.equals("test-callback-failure")) throw new IllegalStateException("PRIVATE-SYNTHETIC-CALLBACK-CONTENT");
