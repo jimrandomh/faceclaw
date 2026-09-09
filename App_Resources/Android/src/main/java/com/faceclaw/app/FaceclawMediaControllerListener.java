@@ -1,6 +1,9 @@
 package com.faceclaw.app;
 
 public interface FaceclawMediaControllerListener {
+    /** All observed session owners, before filtering or choosing the active player. */
+    void onSessionAppsChanged(String appsJson);
+
     void onStateChange(
             String playbackState,
             String packageName,

@@ -1,3 +1,4 @@
+import { normalizeNightscoutThreshold, type NightscoutThresholds } from "../apps/nightscout/nightscout-alerts";
 import { GESTURE_DOUBLE_CLICK, InputEvent } from "./gestures";
 import {
   getBooleanSetting,
@@ -290,6 +291,17 @@ export const lockScreenEnabledSetting = new ConfigSettingBoolean({
 // Phone display: the phone app's mirror of the glasses screen and the
 // controls around it on the main page.
 export type PreviewColor = "white" | "green";
+export type PhoneRotation = "auto" | "portrait" | "landscape";
+
+export const phoneRotationSetting = new ConfigSettingEnum<PhoneRotation>({
+  id: "phone-rotation",
+  label: "Rotation",
+  storageKey: "phone.rotation",
+  defaultValue: "auto",
+  values: ["auto", "portrait", "landscape"],
+  formatValue: (value) => ({ auto: "Auto-Rotate", portrait: "Always Portrait", landscape: "Always Landscape" })[value],
+  description: "Automatically rotate with the phone, or keep the phone app in portrait or landscape. Auto-Rotate follows the phone's system rotation preference.",
+});
 
 export const previewColorSetting = new ConfigSettingEnum<PreviewColor>({
   id: "preview-color",
@@ -759,6 +771,48 @@ export const nightscoutApiTokenSetting = new ConfigSettingString({
   formatValue: maskToken,
   description: "Access token for the Nightscout site's API.",
 });
+
+function nightscoutThresholdSetting(id: string, label: string, unit: string, description: string): ConfigSettingString {
+  return new ConfigSettingString({
+    id: `nightscout-${id}`,
+    label,
+    storageKey: `integrations.nightscout.${id}`,
+    defaultValue: "0",
+    editorTitle: `${label} (${unit}; 0 = off)`,
+    normalize: normalizeNightscoutThreshold,
+    formatValue: (value) => Number(value) > 0 ? `${value} ${unit}` : "Off",
+    description: `${description} Enter 0 to disable.`,
+  });
+}
+
+export const nightscoutMaxCannulaAgeSetting = nightscoutThresholdSetting(
+  "max-cannula-age-hours", "Max cannula age", "h", "Warn when time since the last site change exceeds this many hours.",
+);
+export const nightscoutCartridgeLowSetting = nightscoutThresholdSetting(
+  "cartridge-low-units", "Cartridge low threshold", "U", "Warn when the pump reservoir falls below this many units.",
+);
+export const nightscoutBatteryLowSetting = nightscoutThresholdSetting(
+  "battery-low-voltage", "Battery voltage threshold", "V", "Warn when pump battery voltage falls below this value.",
+);
+export const nightscoutMaxLoopAgeSetting = nightscoutThresholdSetting(
+  "max-loop-age-minutes", "Max time since last loop", "min", "Warn when time since the last loop exceeds this many minutes.",
+);
+export const nightscoutAlwaysShowInTopBarSetting = new ConfigSettingBoolean({
+  id: "nightscout-always-show-in-top-bar",
+  label: "Always show in top bar",
+  storageKey: "integrations.nightscout.alwaysShowInTopBar",
+  defaultValue: false,
+  description: "Keep the Nightscout glucose graph and warnings in the top bar even when all Nightscout windows are closed.",
+});
+
+export function loadNightscoutThresholds(): NightscoutThresholds {
+  return {
+    maxCannulaAgeHours: Number(nightscoutMaxCannulaAgeSetting.get()),
+    cartridgeLowUnits: Number(nightscoutCartridgeLowSetting.get()),
+    batteryLowVoltage: Number(nightscoutBatteryLowSetting.get()),
+    maxLoopAgeMinutes: Number(nightscoutMaxLoopAgeSetting.get()),
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Navigate app: saved and recent destinations.

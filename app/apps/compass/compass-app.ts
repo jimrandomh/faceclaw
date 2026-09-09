@@ -7,6 +7,7 @@ import {
   addCompassListener,
   setCompassEnabled,
   type CompassEvent,
+  type CompassDiagnostics,
 } from "../../native/compass";
 import { wrapText } from "../../graphics/textwrap";
 import { type InputEvent } from "../../ui/gestures";
@@ -25,6 +26,7 @@ import { isCompassCalibrated, normalizeHeading } from "./calibration";
 import { CompassCalibrationLayer } from "./calibration-layer";
 import { getDeclinationAvailability, onDeclinationChanged, refreshDeclination } from "./declination";
 import { getNorthReference, resolveHeading, setNorthReference, type NorthReference } from "./heading";
+import { compassDebugLines, isCompassDebugEnabled, setCompassDebugEnabled } from "./debug";
 
 export const COMPASS_WINDOW_ID = "compass";
 export const COMPASS_SURFACE_ID = "window:compass";
@@ -95,6 +97,7 @@ const WALL_LIT = 62;
 
 class CompassLayer implements Layer {
   private rawHeading: number | null = null;
+  private diagnostics: CompassDiagnostics | null = null;
   /** A firmware calibration message, shown until the next heading arrives. */
   private firmwareStatus: string | null = null;
   private enabled = false;
@@ -103,6 +106,7 @@ class CompassLayer implements Layer {
   private unsubscribe: (() => void) | null = null;
   private unsubscribeDeclination: (() => void) | null = null;
   private requestingPermission = false;
+  private background: { key: string; image: GrayImage } | null = null;
 
   constructor(private readonly requestRender: () => void) {}
 
@@ -140,6 +144,11 @@ class CompassLayer implements Layer {
     this.requestRender();
   }
 
+  toggleDebugInfo(): void {
+    setCompassDebugEnabled(!isCompassDebugEnabled());
+    this.requestRender();
+  }
+
   stop(): void {
     if (this.removed) return;
     this.removed = true;
@@ -167,6 +176,7 @@ class CompassLayer implements Layer {
     const visible = shell.isWindowVisible(COMPASS_WINDOW_ID);
     if (visible === this.enabled) return;
     this.enabled = visible;
+    this.diagnostics = null;
     setCompassEnabled(visible);
     this.firmwareStatus = null;
     // The stored fix may have aged out while the compass was hidden.
@@ -178,6 +188,7 @@ class CompassLayer implements Layer {
     if (this.removed) return;
     if (event.command === COMPASS_CHANGED && event.headingDegrees >= 0) {
       this.rawHeading = normalizeHeading(event.headingDegrees);
+      this.diagnostics = event.diagnostics ?? null;
       this.firmwareStatus = null;
     } else if (event.command === COMPASS_CALIBRATION_STARTED) {
       this.firmwareStatus = "Calibrating — move the glasses";
@@ -197,13 +208,23 @@ class CompassLayer implements Layer {
 
   paint(ctx: LayerContext): GrayImage {
     const { width, height } = ctx.stack.getBaseSize();
-    const image = new GrayImage(width, height, 0);
     const small = getDefaultSmallFont();
     const large = getDefaultLargeFont();
     const heading = this.rawHeading === null ? null : resolveHeading(this.rawHeading).displayDegrees;
     const headingText = heading === null ? "--°" : `${Math.round(heading)}° ${cardinalDirection(heading)}`;
     const statusLines = wrapText(small, this.statusText(), width - STACK_GAP * 2);
     const smallStep = lineStep(small);
+    const debugLines = isCompassDebugEnabled() ? compassDebugLines(this.diagnostics) : [];
+    const debugWidth = Math.max(0, ...debugLines.map((line) => small.measureText(line)));
+    const debugGap = debugLines.length ? 12 : 0;
+    // Keep diagnostics beside the heading even in narrow windows. The rose
+    // stays centred on the optical axis; the combined readout fits the viewport.
+    const headingFont = large.measureText(headingText) + debugGap + debugWidth <= width - EDGE_PAD * 2
+      ? large : small;
+    const headingWidth = headingFont.measureText(headingText);
+    const readoutWidth = headingWidth + debugGap + debugWidth;
+    const debugHeight = debugLines.length ? (debugLines.length - 1) * smallStep + small.lineHeight : 0;
+    const readoutHeight = Math.max(headingFont.lineHeight, debugHeight);
 
     // One column centred on the display's true centre, so the rose sits where
     // the wearer is looking rather than 32px right of it.
@@ -211,7 +232,7 @@ class CompassLayer implements Layer {
 
     // The rose is sized and placed first — it hangs off the bottom edge — and
     // the readout then floats in whatever room is left above it.
-    const textHeight = large.lineHeight + 4 + statusLines.length * smallStep;
+    const textHeight = readoutHeight + 4 + statusLines.length * smallStep;
     const radius = Math.max(
       24,
       Math.min(
@@ -229,15 +250,30 @@ class CompassLayer implements Layer {
     const ringTop = cy - (radius * TILT_SQUASH) / (1 + TILT_PERSPECTIVE);
 
     let y = Math.max(TOP_PAD, Math.round((ringTop - TICK_HEIGHT - textHeight) / 2));
-    image.drawText(large, Math.round(cx - large.measureText(headingText) / 2), y, headingText, heading === null ? 150 : 255);
-    y += large.lineHeight + 4;
+    const fade = heading === null ? 0.45 : 1;
+    const clipY = y + textHeight + 6;
+    const backgroundKey = [width, height, cx, cy, radius, clipY, fade].join(",");
+    if (this.background?.key !== backgroundKey) {
+      this.background = {
+        key: backgroundKey,
+        image: createCompassBackground(width, height, cx, cy, radius, clipY, fade),
+      };
+    }
+    const image = this.background.image.clone();
+    drawCompassRose(image, cx, cy, radius, heading);
+    const readoutX = Math.round(Math.max(EDGE_PAD, Math.min(width - EDGE_PAD - readoutWidth, cx - readoutWidth / 2)));
+    image.drawText(headingFont, readoutX, y + Math.floor((readoutHeight - headingFont.lineHeight) / 2),
+      headingText, heading === null ? 150 : 255);
+    for (let i = 0; i < debugLines.length; i++) {
+      image.drawText(small, readoutX + headingWidth + debugGap,
+        y + Math.floor((readoutHeight - debugHeight) / 2) + i * smallStep, debugLines[i]!, 175);
+    }
+    y += readoutHeight + 4;
     for (const line of statusLines) {
       image.drawText(small, Math.round(cx - small.measureText(line) / 2), y, line, 125);
       y += smallStep;
     }
 
-    drawPlaneGrid(image, cx, cy, radius, y + 6);
-    drawCompassRose(image, cx, cy, radius, heading);
     return image;
   }
 
@@ -275,6 +311,14 @@ export function createCompassAppWindow(options: InProcessAppOptions): InProcessW
         onSelect: (ctx) => {
           ctx.stack.pop();
           layer.toggleNorthReference();
+        },
+      },
+      {
+        label: `Debug information: ${isCompassDebugEnabled() ? "On" : "Off"}`,
+        description: "Show magnetic accuracy (0–3), anomaly flags (0–2), and orientation source beside the heading.",
+        onSelect: (ctx) => {
+          ctx.stack.pop();
+          layer.toggleDebugInfo();
         },
       },
     ],
@@ -339,15 +383,66 @@ function projectRose(cx: number, cy: number, scale: number, radius: number, angl
   };
 }
 
-/** Draw the tilted rose, with its brightest point aimed at north. */
+/**
+ * Bounds of every orientation of the rotating points. The longest tip sweeps
+ * a circle in the disc's plane; perspective projects it to an offset ellipse.
+ * Round outward so all rasterized triangle pixels fit inside the rectangle.
+ */
+function rotatingRoseBounds(cx: number, cy: number, radius: number): {
+  x: number; y: number; width: number; height: number;
+} {
+  const perspective = TILT_PERSPECTIVE * CARDINAL_TIP;
+  const halfWidth = radius * CARDINAL_TIP / Math.sqrt(1 - perspective * perspective);
+  const depth = radius * CARDINAL_TIP * TILT_SQUASH;
+  const x = Math.floor(cx - halfWidth);
+  const y = Math.floor(cy - depth / (1 + perspective));
+  return {
+    x,
+    y,
+    width: Math.ceil(cx + halfWidth) - x,
+    height: Math.ceil(cy + depth / (1 - perspective)) - y,
+  };
+}
+
+/**
+ * Keep the fixed pixels inside the rotating rose's dirty rectangle as one
+ * immutable texture. The wire planner can omit them from each raster delta
+ * and restore them with a cached image draw. Outside that rectangle the
+ * background stays raster, since heading updates do not change it.
+ *
+ * The texture uses transparent zero for the empty disc interior, so it can
+ * overlay the rotating points. Its only ink over the points is the fixed
+ * heading tick, which belongs on top of them.
+ */
+function createCompassBackground(
+  width: number, height: number, cx: number, cy: number, radius: number, clipY: number, fade: number,
+): GrayImage {
+  const image = new GrayImage(width, height, 0);
+  drawPlaneGrid(image, cx, cy, radius, clipY);
+  drawDiscWall(image, cx, cy, radius, fade);
+  drawTiltedRing(image, cx, cy, radius, 105 * fade);
+  drawHeadingTick(image, cx, cy, radius, 255 * fade);
+
+  const bounds = rotatingRoseBounds(cx, cy, radius);
+  const left = Math.max(0, bounds.x);
+  const top = Math.max(0, bounds.y);
+  const right = Math.min(width, bounds.x + bounds.width);
+  const bottom = Math.min(height, bounds.y + bounds.height);
+  if (right > left && bottom > top) {
+    const texture = new GrayImage(right - left, bottom - top, 0);
+    texture.bitBlt(image, 0, 0, { sx: left, sy: top, width: texture.width, height: texture.height });
+    image.fillRect(left, top, texture.width, texture.height, 0);
+    image.drawImage(texture, left, top);
+  }
+  return image;
+}
+
+/** Draw only the rotating points, with the brightest one aimed at north. */
 function drawCompassRose(image: GrayImage, cx: number, cy: number, radius: number, heading: number | null): void {
   // Without a reading there is nothing to aim, so show the rose in its resting
   // orientation, dimmed, rather than an empty ring.
   const fade = heading === null ? 0.45 : 1;
   const bearing = heading ?? 0;
-  drawDiscWall(image, cx, cy, radius, fade);
-  drawTiltedRing(image, cx, cy, radius, 105 * fade);
-  drawHeadingTick(image, cx, cy, radius, 255 * fade);
   // Short points first, so the long ones sit on top of them at the waist. Only
   // north is drawn at full brightness: the other seven are there to make the
   // rose read as a rose, and competing with north would defeat the point.
@@ -478,14 +573,15 @@ function drawTiltedRing(image: GrayImage, cx: number, cy: number, radius: number
   }
 }
 
-/** A fixed mark at the top of the ring: the heading the wearer is facing. */
+/** A fixed mark just inside the top rim: the heading the wearer is facing. */
 function drawHeadingTick(image: GrayImage, cx: number, cy: number, radius: number, value: number): void {
   const top = projectRose(cx, cy, radius, 1, 0);
+  const tickTop = top.y + 1;
   fillTriangle(
     image,
-    { x: cx, y: top.y - 1 },
-    { x: cx - TICK_HALF_WIDTH, y: top.y - TICK_HEIGHT },
-    { x: cx + TICK_HALF_WIDTH, y: top.y - TICK_HEIGHT },
+    { x: cx, y: tickTop + TICK_HEIGHT - 1 },
+    { x: cx - TICK_HALF_WIDTH, y: tickTop },
+    { x: cx + TICK_HALF_WIDTH, y: tickTop },
     value,
   );
 }

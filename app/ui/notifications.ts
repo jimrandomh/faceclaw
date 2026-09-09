@@ -6,6 +6,7 @@ import { GrayImage, type UiFont } from "../graphics/image";
 import { wrapText } from "../graphics/textwrap";
 import { lineStep, listRowHeight } from "./metrics";
 import {
+  ALL_NOTIFICATIONS,
   dismissNotification,
   invokeNotificationAction,
   readActiveNotifications,
@@ -13,10 +14,12 @@ import {
   type AndroidNotification,
   type AndroidNotificationAction,
 } from "../native/notification-icons";
+import { setNotificationSourceEnabled } from "../native/notification-sources";
 import { isNotificationListenerEnabled } from "../native/notification-access";
 import { noteStaleDataUsed, renderPassAllowsStaleData } from "../util/render-freshness";
 import { type InputEvent } from "./gestures";
 import { type Layer, type LayerContext, type PaintBelow } from "./layers";
+import { MenuLayer } from "./menu";
 
 const PAGE_X = 12;
 const PAGE_Y = 12;
@@ -52,7 +55,8 @@ type CardLayout = {
 type DetailMenuItem =
   | { kind: "back"; label: string }
   | { kind: "action"; label: string; action: AndroidNotificationAction }
-  | { kind: "dismiss"; label: string };
+  | { kind: "dismiss"; label: string }
+  | { kind: "disable-source"; label: string };
 
 export type SingleNotificationLayerOrigin = "notifications-list" | "new-notification-modal";
 
@@ -167,6 +171,7 @@ export class NotificationsListLayer implements Layer {
  */
 export class SingleNotificationLayer implements Layer {
   private selectedMenuIndex = 0;
+  private confirmation: { source: AndroidNotification; menu: MenuLayer } | null = null;
 
   constructor(
     private readonly notificationKey: string,
@@ -174,29 +179,36 @@ export class SingleNotificationLayer implements Layer {
   ) {}
 
   paint(ctx: LayerContext, paintBelow: PaintBelow): GrayImage {
+    if (this.confirmation) return this.paintConfirmation(ctx);
     const font = getDefaultSmallFont();
     const { width, height } = ctx.stack.getBaseSize();
     const image = new GrayImage(width, height, 0);
-    const notification = readActiveNotifications(MAX_NOTIFICATIONS).find((item) => item.key === this.notificationKey);
+    const notification = readActiveNotifications(ALL_NOTIFICATIONS).find((item) => item.key === this.notificationKey);
 
     if (!notification) {
       return this.closeUnavailableNotification(ctx, paintBelow);
     }
 
-    const menu = buildDetailMenu(notification);
+    const menu = buildDetailMenu(notification, this.options.origin);
     this.selectedMenuIndex = clamp(this.selectedMenuIndex, 0, Math.max(0, menu.length - 1));
     drawDetailContent(image, font, notification, iconForNotification(notification.key), width, height);
     drawDetailMenu(image, font, menu, this.selectedMenuIndex, width);
     return image;
   }
 
-  handleInput(event: InputEvent, ctx: LayerContext): void {
-    const notification = readActiveNotifications(MAX_NOTIFICATIONS).find((item) => item.key === this.notificationKey);
+  async handleInput(event: InputEvent, ctx: LayerContext): Promise<void> {
+    if (this.confirmation) {
+      if (event.type === "double-click") this.close(ctx);
+      else await this.confirmation.menu.handleInput(event, ctx);
+      return;
+    }
+    const notification = readActiveNotifications(ALL_NOTIFICATIONS).find((item) => item.key === this.notificationKey);
     if (!notification) {
       this.closeUnavailableNotification(ctx);
       return;
     }
-    const menu = buildDetailMenu(notification);
+    const menu = buildDetailMenu(notification, this.options.origin);
+    this.selectedMenuIndex = clamp(this.selectedMenuIndex, 0, menu.length - 1);
 
     if (event.type === "double-click") {
       this.close(ctx);
@@ -217,13 +229,45 @@ export class SingleNotificationLayer implements Layer {
       this.close(ctx);
     } else if (item.kind === "action") {
       invokeNotificationAction(this.notificationKey, item.action.index);
-      if (!readActiveNotifications(MAX_NOTIFICATIONS).some((item) => item.key === this.notificationKey)) {
+      if (!readActiveNotifications(ALL_NOTIFICATIONS).some((item) => item.key === this.notificationKey)) {
         this.closeUnavailableNotification(ctx);
       }
     } else if (item.kind === "dismiss") {
       dismissNotification(this.notificationKey);
       this.closeUnavailableNotification(ctx);
+    } else if (item.kind === "disable-source") {
+      // Keep the modal alive for confirmation even after Android removes the notification.
+      this.confirmation = {
+        source: notification,
+        menu: new MenuLayer(null, [
+          { label: "Cancel", onSelect: () => this.close(ctx) },
+          { label: "Turn off popups", onSelect: () => {
+            setNotificationSourceEnabled(notification, false);
+            this.close(ctx);
+          } },
+        ], { x: 12, y: 0, width: ctx.stack.getBaseSize().width - 24, minHeight: 0, showBorder: false }),
+      };
+      dismissNotification(this.notificationKey);
     }
+  }
+
+  private paintConfirmation(ctx: LayerContext): GrayImage {
+    const { source, menu } = this.confirmation!;
+    const font = getDefaultSmallFont();
+    const { width, height } = ctx.stack.getBaseSize();
+    const image = new GrayImage(width, height, 0);
+    // Put actions first so they remain reachable even with a large UI font.
+    menu.paint(ctx, () => image);
+    const top = 24 + 2 * listRowHeight(font);
+    const prompt = `Turn off notification popups from ${source.appName || source.packageName}? You can turn them back on in the Notifications app's Notification filter.`;
+    const lines = wrapText(font, prompt, width - 48);
+    const maxLines = Math.max(1, Math.floor((height - top - 12) / lineStep(font)));
+    for (let index = 0; index < Math.min(lines.length, maxLines); index++) {
+      const text = index === maxLines - 1 && lines.length > maxLines
+        ? truncateText(font, lines[index] + "...", width - 48) : lines[index]!;
+      image.drawText(font, 24, top + index * lineStep(font), text, 210);
+    }
+    return image;
   }
 
   /** Leave the detail view, whatever hosts it. */
@@ -365,20 +409,35 @@ function drawDetailContent(
 function drawDetailMenu(image: GrayImage, font: UiFont, menu: DetailMenuItem[], selectedIndex: number, width: number): void {
   const menuX = width - DETAIL_MENU_WIDTH - 24;
   const menuY = 24;
-  const rowH = listRowHeight(font);
+  const rows = menu.map((item) => {
+    const lines = item.kind === "disable-source"
+      ? wrapText(font, item.label, DETAIL_MENU_WIDTH - 16)
+      : [truncateText(font, item.label, DETAIL_MENU_WIDTH - 16)];
+    return { lines, height: lines.length * lineStep(font) + 8 };
+  });
+  const selectedBottom = rows.slice(0, selectedIndex + 1).reduce((sum, row) => sum + row.height, 0);
+  const scrollY = Math.max(0, selectedBottom - (image.height - menuY - 12));
+  let y = menuY - scrollY;
   for (let index = 0; index < menu.length; index++) {
-    const y = menuY + index * (rowH + 2);
+    const row = rows[index]!;
+    if (y < menuY) {
+      y += row.height;
+      continue;
+    }
+    if (y + row.height > image.height - 12) break;
     const selected = index === selectedIndex;
     if (selected) {
-      image.fillRoundedRect(menuX - 8, y - 2, DETAIL_MENU_WIDTH, rowH - 1, 18, 6);
-      image.drawRoundedRect(menuX - 8, y - 2, DETAIL_MENU_WIDTH, rowH - 1, 60, 6);
+      image.fillRoundedRect(menuX - 8, y - 2, DETAIL_MENU_WIDTH, row.height - 3, 18, 6);
+      image.drawRoundedRect(menuX - 8, y - 2, DETAIL_MENU_WIDTH, row.height - 3, 60, 6);
     }
-    const label = truncateText(font, menu[index]!.label, DETAIL_MENU_WIDTH - 12);
-    image.drawText(font, menuX, y + 2, label, selected ? 255 : 185);
+    for (let line = 0; line < row.lines.length; line++) {
+      image.drawText(font, menuX, y + 2 + line * lineStep(font), row.lines[line]!, selected ? 255 : 185);
+    }
+    y += row.height;
   }
 }
 
-function buildDetailMenu(notification: AndroidNotification): DetailMenuItem[] {
+function buildDetailMenu(notification: AndroidNotification, origin: SingleNotificationLayerOrigin): DetailMenuItem[] {
   return [
     { kind: "back", label: "Back" },
     ...notification.actions.map((action): DetailMenuItem => ({
@@ -387,6 +446,8 @@ function buildDetailMenu(notification: AndroidNotification): DetailMenuItem[] {
       action,
     })),
     { kind: "dismiss", label: "Dismiss" },
+    ...(origin === "new-notification-modal" && notification.packageName
+      ? [{ kind: "disable-source" as const, label: "Don't show on glasses again" }] : []),
   ];
 }
 

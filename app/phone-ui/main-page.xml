@@ -38,30 +38,31 @@
             </GridLayout>
         </GridLayout>
 
-        <GridLayout class="p-20" visibility="{{ landscapeLayoutVisibility }}">
-            <GridLayout rows="auto" columns="*,360">
-                <StackLayout row="0" col="0" visibility="{{ displayPreviewVisibility }}" horizontalAlignment="left">
-                    <Image
-                        src="{{ displayPreview }}"
-                        stretch="fill"
+        <GridLayout class="landscape-layout" visibility="{{ landscapeLayoutVisibility }}">
+            <GridLayout rows="*" columns="*,345">
+                <GridLayout col="0" layoutChanged="{{ onLandscapePreviewLayoutChanged }}">
+                    <StackLayout visibility="{{ displayPreviewVisibility }}" horizontalAlignment="left" verticalAlignment="center">
+                        <Image
+                            src="{{ displayPreview }}"
+                            stretch="fill"
+                            width="{{ landscapeDisplayPreviewWidth }}"
+                            height="{{ landscapeDisplayPreviewHeight }}"
+                            tap="{{ onMirrorTap }}" doubleTap="{{ onMirrorDoubleTap }}" longPress="{{ onMirrorLongPress }}" swipe="{{ onMirrorSwipe }}" />
+                    </StackLayout>
+                    <GridLayout
+                        class="display-preview-message"
+                        horizontalAlignment="left"
+                        verticalAlignment="center"
                         width="{{ landscapeDisplayPreviewWidth }}"
                         height="{{ landscapeDisplayPreviewHeight }}"
-                        tap="{{ onMirrorTap }}" doubleTap="{{ onMirrorDoubleTap }}" longPress="{{ onMirrorLongPress }}" swipe="{{ onMirrorSwipe }}" />
-                </StackLayout>
-                <GridLayout
-                    row="0"
-                    col="0"
-                    class="display-preview-message"
-                    horizontalAlignment="left"
-                    width="{{ landscapeDisplayPreviewWidth }}"
-                    height="{{ landscapeDisplayPreviewHeight }}"
-                    visibility="{{ displayPreviewMessageVisibility }}">
-                    <Label text="{{ displayPreviewMessage }}" textWrap="true" horizontalAlignment="center" verticalAlignment="center" />
+                        visibility="{{ displayPreviewMessageVisibility }}">
+                        <Label text="{{ displayPreviewMessage }}" textWrap="true" horizontalAlignment="center" verticalAlignment="center" />
+                    </GridLayout>
                 </GridLayout>
-                <StackLayout row="0" col="1" class="m-l-16">
-                    <rc:remote-controls visibility="{{ controlsVisibility }}" />
-                    <Button text="Stop recording" tap="{{ onStopRecordingTap }}" visibility="{{ stopRecordingButtonVisibility }}" />
-                </StackLayout>
+                <GridLayout col="1" rows="*,auto">
+                    <rc:remote-controls row="0" visibility="{{ controlsVisibility }}" />
+                    <Button row="1" text="Stop recording" tap="{{ onStopRecordingTap }}" visibility="{{ stopRecordingButtonVisibility }}" />
+                </GridLayout>
             </GridLayout>
         </GridLayout>
         <!-- Developer BLE-bandwidth indicator: overlays the bottom edge of the
@@ -153,22 +154,20 @@
         <!-- Keyboard-input panel (the keyboard button beside the mic button):
              the phone's end of the keyboard dialog on the glasses
              (ui/shell/keyboard-input.ts). Same placement and collapsing rules
-             as the setting editor above. The IME's send key goes to whichever
-             destination is highlighted on the glasses; the buttons pick one
-             directly. -->
+             as the setting editor above. Enter inserts a newline; the send
+             buttons pick a destination directly. -->
         <StackLayout
             class="system-name-modal"
             visibility="{{ keyboardInputVisibility }}"
             horizontalAlignment="stretch"
             verticalAlignment="bottom">
             <Label text="Keyboard input" class="h2" />
-            <TextField
+            <TextView
                 id="keyboardInputField"
                 text="{{ keyboardInputText }}"
                 hint="Type a message"
                 textChange="{{ onKeyboardInputTextChange }}"
-                returnPress="{{ onKeyboardInputReturnPress }}"
-                returnKeyType="send" />
+                height="120" />
             <!-- Wraps onto a second line when the labels don't fit side by side. -->
             <FlexboxLayout flexWrap="wrap" class="m-t-8">
                 <Button text="{{ keyboardInputPrimaryTargetLabel }}" tap="{{ onKeyboardInputPrimarySendTap }}" visibility="{{ keyboardInputPrimaryTargetVisibility }}" flexGrow="1" class="-primary" />

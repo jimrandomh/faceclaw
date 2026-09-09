@@ -48,6 +48,7 @@ import {
   navigateWorkAddressSetting,
   openAiApiKeySetting,
   previewColorSetting,
+  phoneRotationSetting,
   ringConnectionModeSetting,
   sonioxApiKeySetting,
   enumSettingMenuItem,
@@ -177,6 +178,7 @@ function settingsSections(): SettingsSection[] {
       // The phone app's mirror of the glasses screen and its controls
       // (app/phone-ui/): all read live by the main page.
       items: [
+        enumSettingMenuItem(phoneRotationSetting),
         enumSettingMenuItem(previewColorSetting),
         toggleSettingMenuItem(mirrorTouchSetting),
       ],

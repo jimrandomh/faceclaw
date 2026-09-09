@@ -5,10 +5,23 @@ export const COMPASS_CHANGED = 15;
 export const COMPASS_CALIBRATION_STARTED = 16;
 export const COMPASS_CALIBRATION_COMPLETE = 17;
 
+export type CompassDiagnostics = {
+  /** 0 uncalibrated .. 3 well calibrated; -1 unavailable. */
+  magneticAccuracy: number;
+  /** 0 none, 1 small/temperature, 2 large; -1 unavailable. */
+  magneticAnomalies: number;
+  /** 0 unknown, 1 GRV (relative), 2 GMRV, 3 RV. */
+  orientationSource: number;
+  flags: number;
+  sampleTimeMs: number;
+};
+
 export type CompassEvent = {
   command: number;
   /** Magnetic heading in degrees, or -1 for calibration-only events. */
   headingDegrees: number;
+  /** Absent with stock/older CFW or an unrecognized diagnostic extension. */
+  diagnostics?: CompassDiagnostics;
 };
 
 function activeCommunicator(): any {
@@ -41,8 +54,16 @@ export function addCompassListener(listener: (event: CompassEvent) => void): () 
   const active = activeCommunicator();
   if (!active) return () => {};
   const proxy = new com.faceclaw.app.FaceclawCompassListener({
-    onCompassEvent: (command: number, headingDegrees: number) => {
-      listener({ command: Number(command), headingDegrees: Number(headingDegrees) });
+    onCompassEvent: (command: number, headingDegrees: number, magneticAccuracy: number,
+      magneticAnomalies: number, orientationSource: number, diagnosticFlags: number, sampleTimeMs: number) => {
+      listener({
+        command: Number(command), headingDegrees: Number(headingDegrees),
+        diagnostics: diagnosticFlags >= 0 ? {
+          magneticAccuracy: Number(magneticAccuracy), magneticAnomalies: Number(magneticAnomalies),
+          orientationSource: Number(orientationSource), flags: Number(diagnosticFlags),
+          sampleTimeMs: Number(sampleTimeMs),
+        } : undefined,
+      });
     },
   });
   active.addCompassListener(proxy);

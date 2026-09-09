@@ -87,9 +87,11 @@ export const ICON_SVGS = {
 } as const;
 
 export type IconName = keyof typeof ICON_SVGS;
+/** Idle prompt, or the visible/hidden phases of an activity cursor. */
+export type IconActivity = "idle" | "on" | "off";
 
-// The "_" element of the terminal icon, swapped out for a session glyph in
-// renderIconWithGlyph.
+// Prompt and session-marker elements replaced by renderIconWithGlyph.
+const TERMINAL_PROMPT = '<path d="m7 11 2-2-2-2"/>';
 const TERMINAL_UNDERSCORE = '<path d="M11 13h4"/>';
 
 /**
@@ -155,12 +157,23 @@ export function renderSvgIcon(cacheName: string, svg: string, size: number): Gra
 /**
  * Render an icon with a glyph character substituted in — currently only the
  * terminal icon, whose "_" becomes the glyph (">3" instead of ">_"). Falls
- * back to the plain icon for other names or unsupported characters.
+ * back to the plain marker for unsupported characters. Active terminal icons
+ * replace the prompt with a blinking cursor, leaving the marker in place.
  */
-export function renderIconWithGlyph(name: IconName, glyph: string, size: number): GrayImage | null {
-  const shape = name === "terminal" ? TERMINAL_GLYPH_SHAPES[glyph] : undefined;
-  if (!shape) return renderIcon(name, size);
-  return renderSvgCached(`${name}[${glyph}]`, ICON_SVGS.terminal.replace(TERMINAL_UNDERSCORE, shape), size);
+export function renderIconWithGlyph(name: IconName, glyph: string, size: number, activity: IconActivity = "idle"): GrayImage | null {
+  if (name !== "terminal") return renderIcon(name, size);
+  const shape = TERMINAL_GLYPH_SHAPES[glyph];
+  if (!shape && activity === "idle") return renderIcon(name, size);
+  let svg: string = ICON_SVGS.terminal;
+  if (shape) svg = svg.replace(TERMINAL_UNDERSCORE, shape);
+  if (activity !== "idle") {
+    // IconRenderer strokes all elements at width 2; the narrow rectangle
+    // therefore becomes a solid cursor without needing per-element fills.
+    svg = svg.replace(TERMINAL_PROMPT, activity === "on"
+      ? '<rect x="7.5" y="8" width="1" height="6"/>'
+      : "");
+  }
+  return renderSvgCached(`${name}[${shape ? glyph : ""}]:${activity}`, svg, size);
 }
 
 function renderSvgCached(cacheName: string, svg: string, size: number): GrayImage | null {
