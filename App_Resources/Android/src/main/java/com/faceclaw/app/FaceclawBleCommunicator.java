@@ -162,6 +162,8 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private long lastShutdownExitAtMs = 0;
     private int headsetBattery = -1;
     private int headsetCharging = -1;
+    private int ringBattery = -1;
+    private int ringCharging = -1;
     // Silent mode: 1 = on, 0 = off, -1 = not yet known. See updateSilentModeLocked.
     private int silentMode = -1;
     private int wearState = -1;
@@ -1490,6 +1492,17 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             if (!faceclawWakeNotification
                     && frame.ok
                     && frame.sid == BleProtocol.SID_UI_SETTING) {
+                // Mode-17 query notifications; settings READs are handled by
+                // createBatteryQueryMessageLocked so headset/ring update together.
+                if (address.equalsIgnoreCase(rightAddress)
+                        && (frame.flag == BleProtocol.FLAG_NOTIFY || frame.flag == BleProtocol.FLAG_NOTIFY_ALT)) {
+                    BleProtocol.RingBatterySnapshot ring = BleProtocol.parseRingBattery(frame.pb);
+                    if (ring != null) {
+                        ringBattery = ring.battery;
+                        ringCharging = ring.charging;
+                        emitBatteryState(headsetBattery, headsetCharging);
+                    }
+                }
                 // CFW mic status (field 104) rides both standalone pushes and
                 // settings read acks, from each temple on its own link.
                 byte[] micStatus = BleProtocol.parseFaceclawMicStatus(frame.pb);
@@ -2777,6 +2790,10 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private OutboundMessage createBatteryQueryMessageLocked() {
         OutboundMessage message = messageBuilder.batteryQuery();
         message.onAck = () -> {
+            BleProtocol.RingBatterySnapshot ring = BleProtocol.parseRingBattery(message.ackPayload);
+            // Old firmware and missing/malformed extensions must clear any prior reading.
+            ringBattery = ring == null ? -1 : ring.battery;
+            ringCharging = ring == null ? -1 : ring.charging;
             BleProtocol.BatterySnapshot snapshot = BleProtocol.parseSettingsBattery(message.ackPayload);
             if (snapshot != null) {
                 headsetBattery = snapshot.battery;
@@ -3361,6 +3378,8 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     }
 
     private void resetSessionStateLocked() {
+        ringBattery = -1;
+        ringCharging = -1;
         sessionReady = false;
         shutdownRequested = false;
         fixedLayoutCreated = false;
@@ -3528,13 +3547,15 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     }
 
     private void emitBatteryState(int headsetBattery, int headsetCharging) {
+        final int reportedRingBattery = ringBattery;
+        final int reportedRingCharging = ringCharging;
         final FaceclawBleCommunicatorListener current = listener;
         if (current == null) {
             return;
         }
         mainHandler.post(() -> {
             try {
-                current.onBatteryState(headsetBattery, headsetCharging);
+                current.onBatteryState(headsetBattery, headsetCharging, reportedRingBattery, reportedRingCharging);
             } catch (Throwable t) {
                 Log.w(TAG, "listener onBatteryState failed", t);
             }

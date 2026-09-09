@@ -1390,9 +1390,14 @@ class DashboardController {
         // especially while the glasses remain reachable in their case.
         const hasBatteryLevel = Number.isInteger(state.battery) && state.battery >= 0 && state.battery <= 100;
         if (hasBatteryLevel) this.lastHeadsetBattery = state.battery;
+        const ringBattery = state.ringBattery;
+        const hasRingBattery = typeof ringBattery === "number" && Number.isInteger(ringBattery)
+          && ringBattery >= 0 && ringBattery <= 100;
         shell.setBatteryLevels({
           headset: hasBatteryLevel ? state.battery : this.lastHeadsetBattery,
           headsetCharging: state.chargingStatus > 0,
+          ring: hasRingBattery ? ringBattery : null,
+          ringCharging: hasRingBattery ? state.ringChargingStatus === 1 : null,
         });
         updateGlassesPresence({ charging: state.chargingStatus > 0 || this.phase === "charging" });
         if ((this.phase === "connected" || this.phase === "charging") && this.communicator) {
@@ -2532,6 +2537,9 @@ class DashboardController {
   private setPhase(phase: ConnectionPhase): void {
     if (this.phase === phase) return;
     this.phase = phase;
+    if (phase !== "connected" && phase !== "charging") {
+      shell.setBatteryLevels({ ring: null, ringCharging: null });
+    }
     // "charging" is a live BLE link with the glasses in their case.
     updateGlassesPresence({
       connected: phase === "connected" || phase === "charging",

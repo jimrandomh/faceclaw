@@ -101,7 +101,7 @@ export type ShellChromeState = {
   /** Height mode of the foreground window; decides where its top bar sits. */
   foregroundHeightMode: WindowHeightMode;
   foregroundAppId?: string;
-  battery: { headset: number | null; headsetCharging: boolean | null };
+  battery: { headset: number | null; headsetCharging: boolean | null; ring: number | null; ringCharging: boolean | null };
   /** App-provided tray images, drawn between notification icons and batteries. */
   trayIcons: GrayImage[];
 };
@@ -336,7 +336,7 @@ export class ShellChromeLayer implements Layer {
   }
 
   /**
-   * Labelled battery indicators for the phone and the G2, right-aligned in
+   * Labelled battery indicators for the phone, G2, and R1, right-aligned in
    * the top bar, following the dashboard card's icon/percentage setting.
    * Returns the left edge of the battery block.
    */
@@ -351,6 +351,10 @@ export class ShellChromeLayer implements Layer {
     }
     if (state.battery.headset !== null && Number.isFinite(state.battery.headset)) {
       items.push({ label: "G2", percent: state.battery.headset, charging: Boolean(state.battery.headsetCharging) });
+    }
+    if (state.battery.ring !== null && Number.isInteger(state.battery.ring)
+        && state.battery.ring >= 0 && state.battery.ring <= 100) {
+      items.push({ label: "R1", percent: state.battery.ring, charging: Boolean(state.battery.ringCharging) });
     }
     if (!items.length) return G2_LENS_WIDTH;
 

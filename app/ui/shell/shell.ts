@@ -299,7 +299,7 @@ class Shell {
   private lastInputAtMs = Date.now();
   /** The most recent input event received, for windows gaining focus (see ShellWindow.onFocus). */
   private lastInput: InputEvent | null = null;
-  private battery: ShellChromeState["battery"] = { headset: null, headsetCharging: null };
+  private battery: ShellChromeState["battery"] = { headset: null, headsetCharging: null, ring: null, ringCharging: null };
   private attention = new Map<string, boolean>();
   // App-provided top-bar tray icons, keyed by owner id; drawn between the
   // notification icons and the battery indicators.
