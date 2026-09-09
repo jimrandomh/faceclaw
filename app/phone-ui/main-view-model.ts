@@ -44,6 +44,9 @@ export class MainViewModel extends Observable {
   private _displayPreview: ImageSource | null = null;
   private _displayPreviewMessage = "";
   private _layoutOrientation: LayoutOrientation = this.readLayoutOrientation();
+  private _landscapePreviewWidth = 0;
+  private _landscapePreviewHeight = 0;
+  private _controlsContentHeight = 250;
   private _activeTextSettingId: string | null = null;
   private _activeTextEditorTitle = "";
   private _activeTextSettingTitle = "";
@@ -236,18 +239,25 @@ export class MainViewModel extends Observable {
   }
 
   get landscapeDisplayPreviewWidth(): number {
-    return Math.floor(this.landscapeDisplayPreviewHeight * LENS_ASPECT_RATIO);
+    return this._landscapePreviewWidth;
   }
 
   get landscapeDisplayPreviewHeight(): number {
-    // Height keeps the vertical footprint the preview had at the old 2:1
-    // aspect; the width is derived from it, so a wider lens aspect can't
-    // grow the preview past the side panel.
-    const screenWidth = Screen.mainScreen.widthDIPs;
-    // Must match the landscape grid's fixed side-panel column in main-page.xml.
-    const sidePanelWidth = 360;
-    const availableWidth = Math.max(240, Math.floor(screenWidth - sidePanelWidth - 56));
-    return Math.floor(availableWidth / 2);
+    return this._landscapePreviewHeight;
+  }
+
+  onLandscapePreviewLayoutChanged(args: { object: View }): void {
+    // Measure the actual content cell: excludes the action bar, system bars,
+    // and controls, and updates for rotation, split-screen, and the keyboard.
+    const { width, height } = args.object.getActualSize();
+    if (width <= 0 || height <= 0) return;
+    const previewHeight = Math.min(height, width / LENS_ASPECT_RATIO);
+    const previewWidth = previewHeight * LENS_ASPECT_RATIO;
+    if (previewWidth === this._landscapePreviewWidth && previewHeight === this._landscapePreviewHeight) return;
+    this._landscapePreviewWidth = previewWidth;
+    this._landscapePreviewHeight = previewHeight;
+    this.notifyPropertyChange("landscapeDisplayPreviewWidth", previewWidth);
+    this.notifyPropertyChange("landscapeDisplayPreviewHeight", previewHeight);
   }
 
   /** Near-full-width on phones, capped on tablets (the 32 clears the 16 margins). */
@@ -264,11 +274,25 @@ export class MainViewModel extends Observable {
     const faceHeight = 230;
     const available =
       this._layoutOrientation === "landscape"
-        ? // The landscape side panel column (see main-page.xml) minus its
-          // m-l-16 margin and the controls' own 8+8 margins.
-          360 - 32
+        ? 345 // Matches the unpadded landscape controls column in main-page.xml.
         : Screen.mainScreen.widthDIPs - 56; // p-20 padding + controls margins
     return Math.min(available, Math.round(faceHeight * 1.5));
+  }
+
+  get watchFaceHeight(): number {
+    return Math.min(230, Math.max(0, this._controlsContentHeight - 2));
+  }
+
+  get ringTouchpadHeight(): number {
+    return Math.min(250, Math.max(0, this._controlsContentHeight - 2));
+  }
+
+  onControlsContentLayoutChanged(args: { object: View }): void {
+    const { height } = args.object.getActualSize();
+    if (height <= 0 || height === this._controlsContentHeight) return;
+    this._controlsContentHeight = height;
+    this.notifyPropertyChange("watchFaceHeight", this.watchFaceHeight);
+    this.notifyPropertyChange("ringTouchpadHeight", this.ringTouchpadHeight);
   }
 
   get portraitLayoutVisibility(): "visible" | "collapse" {
@@ -540,18 +564,11 @@ export class MainViewModel extends Observable {
   }
 
   onKeyboardInputTextChange(args: { value?: string; object?: { text?: string } }): void {
-    dashboardController.setKeyboardInputText(args.object?.text ?? args.value ?? "");
-  }
-
-  /** The IME's send key: the destination highlighted on the glasses. */
-  onKeyboardInputReturnPress(args: { object?: { text?: string } }): void {
-    // Commit the field's actual text at send-time, in case the final
-    // keystroke's textChange hadn't landed yet.
-    const text = args?.object?.text;
-    if (typeof text === "string") {
-      dashboardController.setKeyboardInputText(text);
-    }
-    dashboardController.sendKeyboardInput();
+    const text = args.object?.text ?? args.value ?? "";
+    // Track the draft so closing the dialog emits a clear even when the
+    // binding hasn't updated the model. Avoid echoing edits into the IME.
+    this._keyboardInputText = text;
+    dashboardController.setKeyboardInputText(text);
   }
 
   onKeyboardInputPrimarySendTap(): void {

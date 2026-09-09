@@ -286,6 +286,17 @@ export const lockScreenEnabledSetting = new ConfigSettingBoolean({
 // Phone display: the phone app's mirror of the glasses screen and the
 // controls around it on the main page.
 export type PreviewColor = "white" | "green";
+export type PhoneRotation = "auto" | "portrait" | "landscape";
+
+export const phoneRotationSetting = new ConfigSettingEnum<PhoneRotation>({
+  id: "phone-rotation",
+  label: "Rotation",
+  storageKey: "phone.rotation",
+  defaultValue: "auto",
+  values: ["auto", "portrait", "landscape"],
+  formatValue: (value) => ({ auto: "Auto-Rotate", portrait: "Always Portrait", landscape: "Always Landscape" })[value],
+  description: "Automatically rotate with the phone, or keep the phone app in portrait or landscape. Auto-Rotate follows the phone's system rotation preference.",
+});
 
 export const previewColorSetting = new ConfigSettingEnum<PreviewColor>({
   id: "preview-color",

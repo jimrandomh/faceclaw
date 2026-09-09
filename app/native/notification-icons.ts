@@ -5,10 +5,13 @@ export type { AndroidNotification, AndroidNotificationAction } from "./notificat
 import { GrayImage } from "../graphics/image";
 import { logCurrent, spanCurrent } from "./frame-timings";
 import { toUint8Array } from "../util/array-util";
+import { rememberNotificationSources } from "./notification-sources";
 
 declare const com: any;
 
 const ICON_SIZE = 24;
+/** Ask the native listener for every active source, including those below the list's display limit. */
+export const ALL_NOTIFICATIONS = 0x7fffffff;
 // Backstop TTL only: the icon caches are invalidated eagerly whenever a
 // notification is posted or dismissed (see invalidateIconCaches callers), so
 // the tray is kept fresh by invalidation, not by expiry. A short TTL just
@@ -145,7 +148,10 @@ export function readActiveNotifications(maxNotifications = 50, includeExternal =
     );
     const parsed = JSON.parse(json);
     const native: AndroidNotification[] = Array.isArray(parsed) ? parsed.map(normalizeNotification).filter((item): item is AndroidNotification => Boolean(item)) : [];
-    return [...extra, ...native].sort((a, b) => b.postTime - a.postTime).slice(0, maxNotifications);
+    const notifications = [...extra, ...native].sort((a, b) => b.postTime - a.postTime);
+    // Remember APK sources for the same popup filter without exposing their content to tools.
+    rememberNotificationSources(notifications);
+    return notifications.slice(0, maxNotifications);
   } catch {
     return extra.slice(0, maxNotifications);
   }

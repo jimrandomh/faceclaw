@@ -5,13 +5,15 @@ const vm = require('node:vm');
 const ts = require('typescript');
 
 function harness() {
-  let snapshot = { generation: 20, features: [] }, sequence = 0, granted = true;
+  let snapshot = { generation: 20, features: [] }, sequence = 0, granted = true, popupAllowed = true;
+  let sources = [];
   const sent = [], closed = [], module = { exports: {} };
   const imports = {
     '../../ui/shell/shell': { shell: { isScreenOn: () => true, getBatteryLevels: () => ({}), getWindows: () => [], foregroundWindow: () => undefined } },
     '../../assistant/tool-registry': { toolRegistry: { onToolsChanged() {}, listTools: () => [] } },
-    '../../native/notification-icons': { readActiveNotifications: () => [], onAndroidNotificationPosted() {}, onAndroidNotificationRemoved() {}, onAndroidNotificationsChanged() {} },
+    '../../native/notification-icons': { readActiveNotifications: () => sources, onAndroidNotificationPosted() {}, onAndroidNotificationRemoved() {}, onAndroidNotificationsChanged() {} },
     '../../native/external-notifications': {},
+    '../../native/notification-sources': { shouldShowNotificationOnGlasses: () => popupAllowed },
     '../../native/notification-apps': { readNotificationApps: () => [] },
     '../../native/shared-style': { initializeSharedHostStyle() {} },
     './extension-policy': require('../.test-build/app/apps/external/extension-policy.js'),
@@ -25,7 +27,7 @@ function harness() {
     sendAppProvider: (owner, feature, type, json) => { sent.push({ owner, feature, type, data: JSON.parse(json) }); return true; } };
   const platform = new module.exports.ExtensionPlatform(native, { closeSurface: feature => closed.push(feature) }, () => false);
   const state = (feature, component = 'A', generation = 7) => ({ feature, component, generation, available: true, configuration: {} });
-  return { platform, state, sent, closed, grant: value => granted = value,
+  return { platform, state, sent, closed, sources: value => sources = value, popup: value => popupAllowed = value, grant: value => granted = value,
     update: features => { snapshot = { generation: snapshot.generation + 1, features }; platform.onNativeEvent('', 'extensions-changed', {}); },
     result: (request, owner, feature, generation) => platform.onNativeEvent(owner, 'extension-event', { type: 'result', requestId: request.requestId, feature, generation, data: { text: 'synthetic result' } }) };
 }
@@ -69,4 +71,23 @@ test('own transcription remains grant-bound when its app does not own the global
   h.grant(false);h.update([transcription]);await rejected;
   h.grant(true);h.result(request,'B','transcription',7);
   assert.equal(h.platform.pending.size,0);
+});
+
+
+test('host popup filters apply to native and APK arrivals without removing inbox snapshots', () => {
+  for (const key of ['native-message', 'apk:message']) {
+    const h = harness();
+    h.update([h.state('ui.notifications')]);
+    const shown = [];
+    h.platform.hooks.showSurface = (...args) => { shown.push(args); return true; };
+    h.sources([{ key, postTime: 4, packageName: 'fixture.app', appName: 'Fixture', actions: [] }]);
+    h.popup(false); h.sent.length = 0;
+    h.platform.notificationsChanged(key);
+    assert.equal(shown.length, 0);
+    assert.ok(h.sent.some(item => item.data.event === 'notification-snapshot-fragment'));
+    assert.ok(!h.sent.some(item => item.data.event === 'notification-arrived'));
+    h.popup(true); h.platform.notificationsChanged(key);
+    assert.equal(shown.length, 1);
+    assert.ok(h.sent.some(item => item.data.event === 'notification-arrived'));
+  }
 });

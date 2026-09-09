@@ -240,7 +240,7 @@ public class FaceclawMediaNotificationListenerService extends NotificationListen
 
     public static String getActiveNotificationsJson(int maxNotifications) {
         FaceclawMediaNotificationListenerService service = activeService;
-        int limit = Math.max(0, Math.min(100, maxNotifications));
+        int limit = Math.max(0, maxNotifications);
         if (service == null || limit == 0) {
             return "[]";
         }

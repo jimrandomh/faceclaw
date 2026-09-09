@@ -201,6 +201,27 @@ Button.-primary {
   height: 20;
   tint-color: #333333;
 }
+/* Landscape uses the full page height and a shared left edge for tabs/pad. */
+.landscape-layout .remote-controls {
+  margin: 0;
+}
+.landscape-layout .controls-tab-bar {
+  margin-bottom: 2;
+}
+.landscape-layout .tab-button {
+  margin-left: 1;
+  margin-right: 1;
+  min-width: 0;
+}
+.landscape-layout .tab-button[col="0"] {
+  margin-left: 0;
+}
+.landscape-layout .tab-icon-button {
+  width: 48;
+}
+.landscape-layout .tab-icon-button[col="4"] {
+  margin-right: 0;
+}
 .ns-dark .tab-icon {
   tint-color: #cccccc;
 }

@@ -17,6 +17,7 @@ function setup() {
  for (const node of ts.createSourceFile('source', fs.readFileSync('app/ui/notifications.ts', 'utf8'), ts.ScriptTarget.Latest).statements)
   if (ts.isImportDeclaration(node)) imports[node.moduleSpecifier.text] = {};
  imports['../native/external-notifications'] = store;
+ imports['~/util/numeric-util'] = load('app/util/numeric-util.ts');
  imports['./notification-routing'] = { routeNotificationOpen: () => false };
  imports['./shell/shell'] = { shell: { foregroundWindow: () => ({ windowId: focused }), isScreenOn: () => on, openReviewedVoiceInput: (...args) => reviews.push(args) } };
  imports['../native/notification-icons'] = { readActiveNotifications: (_max, includeExternal) => includeExternal ? store.externalNotifications() : [], replyToNotification: () => assert.fail('APK text reached RemoteInput'), invokeNotificationAction: () => assert.fail('APK reply reached native action') };

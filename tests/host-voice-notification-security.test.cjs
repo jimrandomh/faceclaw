@@ -83,6 +83,7 @@ test('native snapshot changes invalidate icons and notify all observers without 
   let proxy; let detached = 0; let active = true; let changed = 0; let posted = 0;
   class GrayImage { constructor(w, h) { this.pixels = new Uint8Array(w * h); } clone() { return this; } }
   const api = load('app/native/notification-icons.ts', {
+    './notification-sources': { rememberNotificationSources() {} },
     '../graphics/icons': { renderIcon: () => null },
     './external-notifications': { externalNotifications: () => [], invokeExternalNotification: () => false, dismissExternalNotification: () => false },
     '../graphics/image': { GrayImage }, './frame-timings': { logCurrent() {}, spanCurrent: (_label, run) => run() },
@@ -114,6 +115,7 @@ test('phone removal invalidates cached icons and reaches every removal observer'
   let proxy; let active = true; let fetches = 0; const removed = [];
   class GrayImage { constructor(w, h) { this.pixels = new Uint8Array(w * h); } clone() { return this; } }
   const api = load('app/native/notification-icons.ts', {
+    './notification-sources': { rememberNotificationSources() {} },
     '../graphics/icons': { renderIcon: () => null },
     './external-notifications': { externalNotifications: () => [], invokeExternalNotification: () => false, dismissExternalNotification: () => false },
     '../graphics/image': { GrayImage }, './frame-timings': { logCurrent() {}, spanCurrent: (label, run) => run() },

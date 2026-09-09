@@ -3,6 +3,7 @@ import { toolRegistry, type ToolResult } from "../../assistant/tool-registry";
 import { readActiveNotifications, onAndroidNotificationPosted, onAndroidNotificationsChanged, onAndroidNotificationRemoved, dismissNotification, invokeNotificationActionAtVersion, replyToNotification, type AndroidNotification } from "../../native/notification-icons";
 import { getExternalNotificationReply, invokeExternalNotification } from "../../native/external-notifications";
 import { readNotificationApps } from "../../native/notification-apps";
+import { shouldShowNotificationOnGlasses } from "../../native/notification-sources";
 import { initializeSharedHostStyle } from "../../native/shared-style";
 import { boundedToken, record, ExtensionToolCalls, NotificationLeases } from "./extension-policy";
 
@@ -230,7 +231,7 @@ export class ExtensionPlatform {
       for (let index = 0; index < total; index++) this.event(selected.component, "ui.notifications", { event: "notification-snapshot-fragment", snapshotId, index, total, json: snapshot.slice(index * size, (index + 1) * size) });
     }
     const item = arrival && leased.find(entry => entry.source.key === arrival);
-    if (item && !this.isProtected()) {
+    if (item && shouldShowNotificationOnGlasses(item.source.packageName) && !this.isProtected()) {
       const wokeScreen = !shell.isScreenOn();
       if (this.hooks.showSurface?.("ui.notifications", selected.component, item.id) !== true) return;
       this.event(selected.component, "ui.notifications", { event: "notification-arrived", key: item.id, postTime: item.source.postTime, wokeScreen });
