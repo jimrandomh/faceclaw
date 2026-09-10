@@ -14,7 +14,11 @@ import {
 } from "../g2/firmware-builder";
 import { buildAddressSet, DeviceDiscoveryBridge } from "../native/device-discovery";
 import { FirmwareFlasher, FlashProgress, FlashState } from "../native/firmware-flasher";
-import { FlashPromptCommunicator, FlashPromptState } from "../native/flash-prompt-communicator";
+import {
+  FlashPromptBattery,
+  FlashPromptCommunicator,
+  FlashPromptState,
+} from "../native/flash-prompt-communicator";
 import { resumeAutoReconnect, suppressAutoReconnect } from "../g2/reconnect-policy";
 import { setOnboardingCompleted, setPreviewOnlyMode } from "./onboarding-state";
 import { formatErrorMessage } from "../util/format-error";
@@ -22,6 +26,10 @@ import { formatErrorMessage } from "../util/format-error";
 type FlashPhase = "intro" | "prompt" | "building" | "ready" | "flashing" | "flashed" | "error";
 
 export type FlashMode = "install" | "uninstall";
+
+// Flashing a lens takes minutes and the glasses reboot afterwards; refuse to
+// start when either arm is below this so a flat battery can't interrupt it.
+const MIN_FLASH_BATTERY_PERCENT = 30;
 
 export class OnboardingFlashViewModel extends Observable {
   private readonly mode: FlashMode;
@@ -40,6 +48,7 @@ export class OnboardingFlashViewModel extends Observable {
 
   private prompt: FlashPromptCommunicator | null = null;
   private promptUnsubscribers: Array<() => void> = [];
+  private promptBattery: FlashPromptBattery | null = null;
   private flasher: FirmwareFlasher | null = null;
   private flasherUnsubscribers: Array<() => void> = [];
   private retryAction: () => void = () => this.beginPrompt();
@@ -55,10 +64,10 @@ export class OnboardingFlashViewModel extends Observable {
     this._headline = this.mode === "uninstall" ? "Uninstall Custom Firmware" : "Flash Custom Firmware";
     this._status =
       this.mode === "uninstall"
-        ? "This connects to your glasses, asks for confirmation on the lens, then downloads and reflashes the " +
-          "official firmware — removing Faceclaw's custom features."
-        : "This connects to your glasses, asks for confirmation on the lens, then downloads, verifies, and flashes " +
-          "Faceclaw's custom firmware.";
+        ? "This connects to your glasses, asks for confirmation on the lens, checks the battery, then downloads " +
+          "and reflashes the official firmware — removing Faceclaw's custom features."
+        : "This connects to your glasses, asks for confirmation on the lens, checks the battery, then downloads, " +
+          "verifies, and flashes Faceclaw's custom firmware.";
   }
 
   // Kept short to fit the glasses' ~50-column text grid.
@@ -219,15 +228,24 @@ export class OnboardingFlashViewModel extends Observable {
 
   // --- prompt flow -----------------------------------------------------------
 
-  private async beginPrompt(): Promise<void> {
+  /**
+   * Connect to both arms, authenticate (this is where any Android pairing
+   * prompts appear), show the Yes/No confirmation on the lens, then read the
+   * battery. With `skipPrompt` (retrying after a low-battery refusal, when
+   * the user has already confirmed) the on-glasses confirmation is skipped
+   * and only the battery is re-checked.
+   */
+  private async beginPrompt(options?: { skipPrompt?: boolean }): Promise<void> {
+    const skipPrompt = Boolean(options?.skipPrompt);
     if (!global.isAndroid) {
-      this.toError("Flashing is only available on Android.", () => this.beginPrompt());
+      this.toError("Flashing is only available on Android.", () => this.beginPrompt(options));
       return;
     }
     this.setPhase("prompt");
-    this.headline = "Confirm On Your Glasses";
+    this.headline = skipPrompt ? "Checking Battery" : "Confirm On Your Glasses";
     this.log = "";
     this.busy = true;
+    this.promptBattery = null;
     this.status = "Preparing to connect. Make sure your glasses are on and the Even app is disconnected.";
 
     try {
@@ -237,40 +255,50 @@ export class OnboardingFlashViewModel extends Observable {
         this.busy = false;
         this.toError(
           "Couldn't find both glasses arms. Make sure the glasses are powered on and the Even app is disconnected, then retry.",
-          () => this.beginPrompt(),
+          () => this.beginPrompt(options),
         );
         return;
       }
       this.addresses = addresses;
 
-      this.status = "Connecting to your glasses. Watch the lens for a Yes/No prompt.";
-      this.startCommunicator(addresses);
+      this.status = skipPrompt
+        ? "Connecting to your glasses to re-check the battery..."
+        : "Connecting to your glasses. Watch the lens for a Yes/No prompt.";
+      this.startCommunicator(addresses, skipPrompt);
     } catch (error) {
       this.busy = false;
-      this.toError(this.formatError(error), () => this.beginPrompt());
+      this.toError(this.formatError(error), () => this.beginPrompt(options));
     }
   }
 
-  private startCommunicator(addresses: { right: string; left: string }): void {
+  private startCommunicator(addresses: { right: string; left: string }, skipPrompt: boolean): void {
     this.disposePrompt();
-    const prompt = new FlashPromptCommunicator(addresses.right, this.glassesWarning);
+    const prompt = new FlashPromptCommunicator(addresses, this.glassesWarning, { skipPrompt });
     this.prompt = prompt;
 
     this.promptUnsubscribers.push(
       prompt.onLog((line) => this.appendLog(line)),
-      prompt.onStateChange((state, detail) => this.handlePromptState(state, detail)),
-      prompt.onResult((approved) => this.handlePromptResult(approved)),
+      prompt.onStateChange((state, detail) => this.handlePromptState(state, detail, skipPrompt)),
+      prompt.onBattery((battery) => {
+        this.promptBattery = battery;
+      }),
+      prompt.onResult((approved) => this.handlePromptResult(approved, skipPrompt)),
     );
     prompt.start();
   }
 
-  private handlePromptState(state: FlashPromptState, detail: string): void {
+  private handlePromptState(state: FlashPromptState, detail: string, skipPrompt: boolean): void {
     switch (state) {
       case "connecting":
         this.status = "Connecting to your glasses...";
         break;
       case "connected":
-        this.status = "Connected. Showing the confirmation on the lens...";
+        this.status =
+          "Connected. Pairing with both lenses — if Android asks to pair, accept it (once per lens)." +
+          (skipPrompt ? "" : " Then watch the lens for the confirmation.");
+        break;
+      case "battery":
+        this.status = "Checking the glasses' battery level...";
         break;
       case "prompting":
         this.status =
@@ -289,23 +317,55 @@ export class OnboardingFlashViewModel extends Observable {
         break;
       case "disconnected":
         this.busy = false;
-        this.toError(detail || "Lost connection to the glasses.", () => this.beginPrompt());
+        this.toError(detail || "Lost connection to the glasses.", () => this.beginPrompt({ skipPrompt }));
         break;
       case "error":
         this.busy = false;
-        this.toError(detail || "Connection failed.", () => this.beginPrompt());
+        this.toError(detail || "Connection failed.", () => this.beginPrompt({ skipPrompt }));
         break;
     }
   }
 
-  private handlePromptResult(approved: boolean): void {
+  private handlePromptResult(approved: boolean, skipPrompt: boolean): void {
     this.disposePrompt();
     if (!approved) {
       this.busy = false;
       this.toError("You declined on the glasses. No firmware was written.", () => this.beginPrompt());
       return;
     }
+    const lowBattery = this.describeLowBattery(this.promptBattery);
+    if (lowBattery) {
+      this.busy = false;
+      // The user already confirmed on the lens; a retry only re-checks the battery.
+      this.toError(lowBattery, () => this.beginPrompt({ skipPrompt: true }), "Charge Your Glasses");
+      return;
+    }
+    if (!this.promptBattery || (this.promptBattery.right === null && this.promptBattery.left === null)) {
+      this.appendLog("battery level unknown; proceeding");
+    }
+    this.appendLog(skipPrompt ? "battery ok; confirmed earlier on the lens" : "confirmed on the lens; battery ok");
     void this.buildFirmware();
+  }
+
+  /** A "charge first" message when either arm is below the flashing threshold, else null. */
+  private describeLowBattery(battery: FlashPromptBattery | null): string | null {
+    if (!battery) {
+      return null;
+    }
+    const readings = [
+      { arm: "right", percent: battery.right },
+      { arm: "left", percent: battery.left },
+    ].filter((r): r is { arm: string; percent: number } => r.percent !== null);
+    const low = readings.filter((r) => r.percent < MIN_FLASH_BATTERY_PERCENT);
+    if (low.length === 0) {
+      return null;
+    }
+    const levels = readings.map((r) => `${r.arm} ${r.percent}%`).join(", ");
+    return (
+      `The glasses' battery is too low to flash safely (${levels}). ` +
+      `Charge both lenses to at least ${MIN_FLASH_BATTERY_PERCENT}%, then tap Retry to check again. ` +
+      "You won't need to confirm on the lens a second time."
+    );
   }
 
   private cancelPrompt(): void {
@@ -502,11 +562,11 @@ export class OnboardingFlashViewModel extends Observable {
     });
   }
 
-  private toError(message: string, retry: () => void): void {
+  private toError(message: string, retry: () => void, headline = "Something Went Wrong"): void {
     this.retryAction = retry;
     this.status = message;
     this.setPhase("error");
-    this.headline = "Something Went Wrong";
+    this.headline = headline;
   }
 
   private setPhase(phase: FlashPhase): void {

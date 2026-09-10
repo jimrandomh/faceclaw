@@ -1,4 +1,5 @@
 import { type AppDefinition } from "./app-definition";
+import aiChatApp from "./ai-chat";
 import launcherApp from "./launcher";
 import timerApp from "./timer";
 import calculatorApp from "./calculator";
@@ -7,6 +8,7 @@ import filesApp from "./files";
 import musicApp from "./music";
 import nightscoutApp from "./nightscout";
 import transcribeApp from "./transcribe";
+import teleprompterApp from "./teleprompter";
 import microphonesApp from "./microphones";
 import notificationsApp from "./notifications";
 import calendarApp from "./calendar";
@@ -29,6 +31,7 @@ import settingsApp from "./settings";
  */
 export const ALL_APPS: readonly AppDefinition[] = [
   launcherApp,
+  aiChatApp,
   timerApp,
   calculatorApp,
   terminalApp,
@@ -36,6 +39,7 @@ export const ALL_APPS: readonly AppDefinition[] = [
   musicApp,
   nightscoutApp,
   transcribeApp,
+  teleprompterApp,
   microphonesApp,
   notificationsApp,
   calendarApp,

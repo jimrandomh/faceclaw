@@ -31,11 +31,19 @@ export type InProcessWindowOptions = {
   /** Window height: the standard 288px band ("min", default) or full screen ("max"). */
   heightMode?: WindowHeightMode;
   /**
-   * App-specific entries for the window's long-press menu, listed ahead of
-   * the default Voice input / Close window entries. Called at open time, so
-   * the items can reflect current app state.
+   * The window's tap-then-hold context menu: app-specific entries only (the
+   * shared Focus app switcher / Voice input / Close window entries live in
+   * the shell's system menu, on long-press). Called at open time, so the
+   * items can reflect current app state. Omitted or empty means the window
+   * has no menu of its own, and tap-then-hold opens the system menu instead.
    */
   menuItems?: () => MenuItem[];
+  /** Dedicated chat gestures: click menu, hold microphone, tap-hold system menu. */
+  holdToTalk?: boolean;
+  isVoiceCapturing?: () => boolean;
+  onSystemMenuOpened?: () => void;
+  onAppMenuOpened?: () => void;
+  setScreenOn?: ShellWindow["setScreenOn"];
   /** Shared actions; requestRender is rebound to this window's render. */
   actions: LayerActions;
   /**
@@ -128,41 +136,19 @@ export function createInProcessWindow(options: InProcessWindowOptions): InProces
     }
   }
 
-  // The window's long-press menu: app-specific items, then the defaults every
-  // window shares. In-process apps run on the main thread, so the default
-  // items act on the shell directly (workers post messages instead).
+  const appMenuItems = () => options.menuItems?.() ?? [];
+
+  // The window's tap-then-hold menu: the app's own entries, or the shell's
+  // system menu when it has none (so both gestures land on the same menu).
   const openWindowMenu = () => {
     if (stack.topMatches((layer) => layer instanceof WindowMenuLayer)) return;
-    // "Focus app switcher" first: long-press then tap defocuses the app
-    // (hands focus to the sidebar) without closing it — the reliable way out
-    // for apps that consume double-click.
-    const items: MenuItem[] = [
-      {
-        label: "Focus app switcher",
-        onSelect: (ctx) => {
-          ctx.stack.pop();
-          shell.yieldFocusToSidebar();
-        },
-      },
-      ...(options.menuItems?.() ?? []),
-    ];
-    items.push({
-      label: "Voice input",
-      onSelect: (ctx) => {
-        ctx.stack.pop();
-        shell.startVoiceInput();
-      },
-    });
-    if (options.closeable) {
-      items.push({
-        label: "Close window",
-        onSelect: (ctx) => {
-          ctx.stack.pop();
-          shell.closeWindow(options.windowId);
-        },
-      });
+    const items = appMenuItems();
+    if (!items.length) {
+      shell.openSystemMenu(options.windowId);
+      return;
     }
-    stack.push(new WindowMenuLayer(items));
+    options.onAppMenuOpened?.();
+    stack.push(new WindowMenuLayer(options.title, items, options.holdToTalk));
   };
 
   const window: ShellWindow = {
@@ -174,7 +160,11 @@ export function createInProcessWindow(options: InProcessWindowOptions): InProces
     // The window's own LayerStack decides per layer whether a swipe is
     // directional or falls back to click / double-click.
     acceptsDirectional: true,
+    holdToTalk: options.holdToTalk,
+    isVoiceCapturing: options.isVoiceCapturing,
+    setScreenOn: options.setScreenOn,
     heightMode,
+    hasAppMenu: () => appMenuItems().length > 0,
     close: () => {
       closed = true;
       // Fire onRemoved for any pushed layers so they release resources (e.g. a
@@ -185,9 +175,22 @@ export function createInProcessWindow(options: InProcessWindowOptions): InProces
     },
     drawIcon: options.drawIcon ?? windowIcon(options.icon, options.iconLetter),
     handleInput: async (event, frameId) => {
-      // The default long-press response: the window menu. Handled here (not
-      // per-layer) so it works over submenus and app content alike.
-      if (event.type === "long-press") {
+      // The shell opened its system menu over this window; close our own
+      // context menu so the two never stack. Never forwarded to app layers.
+      if (event.type === "system-menu-opened") {
+        options.onSystemMenuOpened?.();
+        if (stack.popIfTop((layer) => layer instanceof WindowMenuLayer)) {
+          requestRender();
+        }
+        return;
+      }
+      // The default tap-then-hold response: the window menu (or the system
+      // menu in its place). Handled here (not per-layer) so it works over
+      // submenus and app content alike. A plain long-press never arrives:
+      // the shell keeps it for the system menu (no in-process window claims
+      // it).
+      if ((!options.holdToTalk && event.type === "short-then-long-press") ||
+          (options.holdToTalk && event.type === "click" && stack.isAtBase())) {
         openWindowMenu();
         await render(frameId);
         return;

@@ -30,28 +30,34 @@ export class OpenAiRealtimeSttClient implements CloudSttClient {
   // Base64 audio (or the commit sentinel) queued until the socket opens.
   private readonly pendingChunks: string[] = [];
   private readonly upsampler = new PcmUpsampler();
-  private latestText = "";
+  private readonly items = new Map<string, { text: string; final: boolean; paragraphBreakAfter: boolean }>();
+  private readonly commits: boolean[] = [];
   private committed = false;
 
   constructor(private readonly options: OpenAiSttOptions) {}
 
   start(): void {
-    if (this.ws) return;
+    if (this.closed || this.ws) return;
     this.listenerProxy = new com.faceclaw.app.FaceclawWebSocketListener({
       onOpen: () => {
+        if (this.closed) return;
         this.open = true;
         this.trySend(JSON.stringify(sessionConfig()));
         for (const chunk of this.pendingChunks.splice(0)) {
           this.sendChunk(chunk);
         }
+        if (!this.closed) this.options.onReady?.();
       },
-      onTextMessage: (message: string) => this.handleMessage(String(message)),
+      onTextMessage: (message: string) => {
+        if (!this.closed) this.handleMessage(String(message));
+      },
       onClosed: () => {
         this.open = false;
+        if (!this.closed) this.options.onDisconnected?.("OpenAI connection closed.");
       },
       onFailure: (message: string) => {
         if (this.closed) return;
-        this.options.onError(`OpenAI connection failed: ${String(message)}`);
+        this.options.onDisconnected?.(`OpenAI connection failed: ${String(message)}`);
       },
     });
     try {
@@ -63,7 +69,7 @@ export class OpenAiRealtimeSttClient implements CloudSttClient {
       );
       this.options.onStatus("Connecting to OpenAI...");
     } catch (error) {
-      this.options.onError(`OpenAI connection failed: ${String((error as Error)?.message ?? error)}`);
+      this.options.onDisconnected?.(`OpenAI connection failed: ${String((error as Error)?.message ?? error)}`);
     }
   }
 
@@ -80,9 +86,19 @@ export class OpenAiRealtimeSttClient implements CloudSttClient {
     }
   }
 
+  commitSegment(): void {
+    this.commit(true);
+  }
+
   /** End of utterance: commit the buffer for a final transcript. */
   finish(): void {
+    this.committed = true;
+    this.commit(false);
+  }
+
+  private commit(paragraphBreakAfter: boolean): void {
     if (this.closed) return;
+    this.commits.push(paragraphBreakAfter);
     if (this.open) {
       this.sendChunk("__commit__");
     } else {
@@ -92,6 +108,7 @@ export class OpenAiRealtimeSttClient implements CloudSttClient {
 
   stop(): void {
     this.closed = true;
+    this.open = false;
     if (this.ws) {
       try {
         this.ws.close(1000, "bye");
@@ -101,11 +118,11 @@ export class OpenAiRealtimeSttClient implements CloudSttClient {
       this.ws = null;
     }
     this.listenerProxy = null;
+    this.pendingChunks.length = 0;
   }
 
   private sendChunk(base64OrCommit: string): void {
     if (base64OrCommit === "__commit__") {
-      this.committed = true;
       this.trySend(JSON.stringify({ type: "input_audio_buffer.commit" }));
       return;
     }
@@ -114,9 +131,11 @@ export class OpenAiRealtimeSttClient implements CloudSttClient {
 
   private trySend(message: string): void {
     try {
-      this.ws?.sendText(message);
+      if (this.ws?.sendText(message) === false) {
+        this.options.onDisconnected?.("OpenAI send failed.");
+      }
     } catch (error) {
-      console.warn("openai send failed", error);
+      this.options.onDisconnected?.(`OpenAI send failed: ${String(error)}`);
     }
   }
 
@@ -132,23 +151,62 @@ export class OpenAiRealtimeSttClient implements CloudSttClient {
       case "session.updated":
         this.options.onStatus("Listening (OpenAI)...");
         return;
-      case "conversation.item.input_audio_transcription.delta":
-        this.latestText += String(message.delta ?? "");
-        this.options.onTranscript({ text: this.latestText, isFinal: false });
+      case "input_audio_buffer.committed": {
+        this.item(String(message.item_id)).paragraphBreakAfter = this.commits.shift() ?? false;
         return;
-      case "conversation.item.input_audio_transcription.completed":
-        this.latestText = String(message.transcript ?? this.latestText);
-        this.options.onTranscript({ text: this.latestText, isFinal: true });
-        // The utterance is done; nothing further is coming after the commit.
-        if (this.committed) this.stop();
+      }
+      case "conversation.item.input_audio_transcription.delta": {
+        this.item(String(message.item_id)).text += String(message.delta ?? "");
+        this.emitItems();
         return;
+      }
+      case "conversation.item.input_audio_transcription.completed": {
+        const item = this.item(String(message.item_id));
+        item.text = String(message.transcript ?? item.text);
+        item.final = true;
+        this.emitItems();
+        if (this.committed && !this.items.size && !this.commits.length) this.stop();
+        return;
+      }
       case "error":
+        if (message.error?.code === "rate_limit_exceeded" || message.error?.type === "server_error") {
+          this.options.onDisconnected?.(`OpenAI: ${String(message.error?.message)}`);
+          return;
+        }
         this.options.onError(`OpenAI: ${String(message.error?.message ?? "unknown error")}`);
         return;
       default:
         return;
     }
   }
+
+  private item(id: string): { text: string; final: boolean; paragraphBreakAfter: boolean } {
+    let item = this.items.get(id);
+    if (!item) {
+      item = { text: "", final: false, paragraphBreakAfter: false };
+      this.items.set(id, item);
+    }
+    return item;
+  }
+
+  private emitItems(): void {
+    // Committed notifications precede transcription events, so Map insertion
+    // order is audio order even when completion events arrive out of order.
+    for (const [id, item] of this.items) {
+      if (!item.final) break;
+      this.items.delete(id);
+      this.options.onTranscript({ text: item.text, isFinal: true, paragraphBreakAfter: item.paragraphBreakAfter });
+    }
+    if (this.items.size) {
+      const items = [...this.items.values()];
+      const text = items.map((item) => item.text.trim()).filter(Boolean).join(" ");
+      const transcribeText = items.map((item, index) =>
+        (index && items[index - 1]!.paragraphBreakAfter ? "\n" : index ? " " : "") + item.text.trim(),
+      ).join("");
+      this.options.onTranscript({ text, transcribeText, isFinal: false });
+    }
+  }
+
 }
 
 function sessionConfig(): object {

@@ -169,7 +169,7 @@ class LauncherGridLayer implements Layer {
   }
 
   /**
-   * App-specific entries for the window's long-press menu. Only item mode
+   * App-specific entries for the window's context menu. Only item mode
    * pins the selection to a single cell, and only apps can move to folders,
    * so anywhere else the menu falls back to just the defaults.
    */

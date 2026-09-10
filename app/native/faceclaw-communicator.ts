@@ -22,6 +22,8 @@ export type CommunicatorState = {
 export type HeadsetBatteryState = {
   battery: number;
   chargingStatus: number;
+  ringBattery?: number;
+  ringChargingStatus?: number;
 };
 
 export type FrameMetrics = {
@@ -120,6 +122,11 @@ function nonNegativeNumber(value: number): number {
   return Number.isFinite(numeric) ? Math.max(0, numeric) : 0;
 }
 
+/** A 0..1 brightness factor as the compositor's 0..256 fixed-point form. */
+export function dimFactor256(factor: number): number {
+  return Math.round(Math.max(0, Math.min(1, factor)) * 256);
+}
+
 export class FaceclawCommunicatorBridge {
   private readonly communicator: any;
   private readonly listenerProxy: any;
@@ -184,10 +191,12 @@ export class FaceclawCommunicatorBridge {
         frameTimings.logFrame(event.frameId, "input event received on JS side");
         this.emitAsync(this.ringListeners, event);
       },
-      onBatteryState: (headsetBattery: number, headsetCharging: number) => {
+      onBatteryState: (headsetBattery: number, headsetCharging: number, ringBattery: number, ringCharging: number) => {
         const state = {
           battery: Number(headsetBattery),
           chargingStatus: Number(headsetCharging),
+          ringBattery: Number(ringBattery),
+          ringChargingStatus: Number(ringCharging),
         };
         this.emitAsync(this.batteryListeners, state);
       },
@@ -521,6 +530,18 @@ export class FaceclawCommunicatorBridge {
   async removeSurface(id: string): Promise<void> {
     await this.enqueueJavaCall(() => {
       this.communicator.removeSurface(id);
+    });
+  }
+
+  /**
+   * Dim every compositor surface whose zOrder is below `belowZOrder` to
+   * `factor` (0..1; 1 = no dimming) of its brightness; takes effect at the
+   * next composite. How a shell overlay's Layer.dimUnderneath reaches the
+   * window surfaces beneath the shell surface.
+   */
+  async setUnderlayDim(belowZOrder: number, factor: number): Promise<void> {
+    await this.enqueueJavaCall(() => {
+      this.communicator.setUnderlayDim(Math.round(belowZOrder), dimFactor256(factor));
     });
   }
 

@@ -2,7 +2,7 @@
  * Font-derived layout metrics for list-style UIs, so row spacing, selection
  * highlights, and text line steps track the user's font size instead of
  * assuming the 12px bitmap default. The font picker guarantees
- * getDefaultSmallFont's lineHeight is 12..21px (and getDefaultMediumFont's
+ * getDefaultSmallFont's lineHeight is 8..21px (and getDefaultMediumFont's
  * 16..29px — see ui-fonts.ts), so layouts driven by these helpers have
  * bounded growth.
  *

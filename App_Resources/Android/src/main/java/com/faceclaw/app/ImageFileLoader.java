@@ -8,7 +8,9 @@ import android.util.Log;
  * Decodes image files (and bitmaps generally) to the grayscale packet format
  * used across the TS bridge: [widthLo, widthHi, heightLo, heightHi,
  * pixels...] with one byte per pixel, row-major, or an empty array on
- * failure. FaceclawMediaController's album art shares bitmapToGrayPacket.
+ * failure. FaceclawMediaController's album art shares bitmapToGrayPacket;
+ * the TS side (app/native/image-files.ts) owns the shared photo-tone preset
+ * passed as (gamma, dither).
  */
 public final class ImageFileLoader {
     private static final String TAG = "ImageFileLoader";
@@ -17,9 +19,21 @@ public final class ImageFileLoader {
 
     /**
      * Decode an image file and downscale it to fit within maxWidth x
-     * maxHeight, preserving aspect ratio and never upscaling.
+     * maxHeight, preserving aspect ratio and never upscaling. Flat
+     * conversion (no tone curve, per-pixel rounding): right for UI raster
+     * such as icons.
      */
     public static byte[] loadGray(String path, int maxWidth, int maxHeight) {
+        return loadGray(path, maxWidth, maxHeight, 1f, false);
+    }
+
+    /**
+     * As above, with the photographic tone handling described on
+     * bitmapToGrayPacket(Bitmap, int, int, float, boolean): use for
+     * continuous-tone images (photos) viewed on the glasses.
+     */
+    public static byte[] loadGray(
+            String path, int maxWidth, int maxHeight, float gamma, boolean dither) {
         if (path == null || maxWidth <= 0 || maxHeight <= 0) {
             return new byte[0];
         }
@@ -43,7 +57,7 @@ public final class ImageFileLoader {
             if (bitmap == null) {
                 return new byte[0];
             }
-            return bitmapToGrayPacket(bitmap, maxWidth, maxHeight);
+            return bitmapToGrayPacket(bitmap, maxWidth, maxHeight, gamma, dither);
         } catch (Exception | OutOfMemoryError e) {
             Log.w(TAG, "image decode failed: " + path, e);
             return new byte[0];
@@ -56,6 +70,12 @@ public final class ImageFileLoader {
      * ByteBuffer because NativeScript marshals a JS ArrayBuffer to one.
      */
     public static byte[] loadGrayFromBytes(java.nio.ByteBuffer buffer, int maxWidth, int maxHeight) {
+        return loadGrayFromBytes(buffer, maxWidth, maxHeight, 1f, false);
+    }
+
+    /** As above, with photographic tone handling (see bitmapToGrayPacket). */
+    public static byte[] loadGrayFromBytes(
+            java.nio.ByteBuffer buffer, int maxWidth, int maxHeight, float gamma, boolean dither) {
         if (buffer == null || maxWidth <= 0 || maxHeight <= 0) {
             return new byte[0];
         }
@@ -71,7 +91,7 @@ public final class ImageFileLoader {
             if (bitmap == null) {
                 return new byte[0];
             }
-            return bitmapToGrayPacket(bitmap, maxWidth, maxHeight);
+            return bitmapToGrayPacket(bitmap, maxWidth, maxHeight, gamma, dither);
         } catch (Exception | OutOfMemoryError e) {
             Log.w(TAG, "byte-array image decode failed", e);
             return new byte[0];

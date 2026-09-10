@@ -38,32 +38,41 @@
             </GridLayout>
         </GridLayout>
 
-        <GridLayout class="p-20" visibility="{{ landscapeLayoutVisibility }}">
-            <GridLayout rows="auto" columns="*,360">
-                <StackLayout row="0" col="0" visibility="{{ displayPreviewVisibility }}" horizontalAlignment="left">
-                    <Image
-                        src="{{ displayPreview }}"
-                        stretch="fill"
+        <GridLayout class="landscape-layout" visibility="{{ landscapeLayoutVisibility }}">
+            <GridLayout rows="*" columns="*,345">
+                <GridLayout col="0" layoutChanged="{{ onLandscapePreviewLayoutChanged }}">
+                    <StackLayout visibility="{{ displayPreviewVisibility }}" horizontalAlignment="left" verticalAlignment="center">
+                        <Image
+                            src="{{ displayPreview }}"
+                            stretch="fill"
+                            width="{{ landscapeDisplayPreviewWidth }}"
+                            height="{{ landscapeDisplayPreviewHeight }}"
+                            tap="{{ onMirrorTap }}" doubleTap="{{ onMirrorDoubleTap }}" longPress="{{ onMirrorLongPress }}" swipe="{{ onMirrorSwipe }}" />
+                    </StackLayout>
+                    <GridLayout
+                        class="display-preview-message"
+                        horizontalAlignment="left"
+                        verticalAlignment="center"
                         width="{{ landscapeDisplayPreviewWidth }}"
                         height="{{ landscapeDisplayPreviewHeight }}"
-                        tap="{{ onMirrorTap }}" doubleTap="{{ onMirrorDoubleTap }}" longPress="{{ onMirrorLongPress }}" swipe="{{ onMirrorSwipe }}" />
-                </StackLayout>
-                <GridLayout
-                    row="0"
-                    col="0"
-                    class="display-preview-message"
-                    horizontalAlignment="left"
-                    width="{{ landscapeDisplayPreviewWidth }}"
-                    height="{{ landscapeDisplayPreviewHeight }}"
-                    visibility="{{ displayPreviewMessageVisibility }}">
-                    <Label text="{{ displayPreviewMessage }}" textWrap="true" horizontalAlignment="center" verticalAlignment="center" />
+                        visibility="{{ displayPreviewMessageVisibility }}">
+                        <Label text="{{ displayPreviewMessage }}" textWrap="true" horizontalAlignment="center" verticalAlignment="center" />
+                    </GridLayout>
                 </GridLayout>
-                <StackLayout row="0" col="1" class="m-l-16">
-                    <rc:remote-controls visibility="{{ controlsVisibility }}" />
-                    <Button text="Stop recording" tap="{{ onStopRecordingTap }}" visibility="{{ stopRecordingButtonVisibility }}" />
-                </StackLayout>
+                <GridLayout col="1" rows="*,auto">
+                    <rc:remote-controls row="0" visibility="{{ controlsVisibility }}" />
+                    <Button row="1" text="Stop recording" tap="{{ onStopRecordingTap }}" visibility="{{ stopRecordingButtonVisibility }}" />
+                </GridLayout>
             </GridLayout>
         </GridLayout>
+        <!-- Developer BLE-bandwidth indicator: overlays the bottom edge of the
+             page in both orientations, on every tab. -->
+        <Label
+            text="{{ bleBandwidthLabel }}"
+            visibility="{{ bleBandwidthVisibility }}"
+            class="ble-bandwidth-indicator"
+            horizontalAlignment="center"
+            verticalAlignment="bottom" />
         <ScrollView
             class="warnings-modal"
             visibility="{{ warningsModalVisibility }}"
@@ -87,6 +96,10 @@
                 <StackLayout visibility="{{ fontsMissingWarningVisibility }}" class="warnings-modal-item">
                     <Label text="The G2 fonts have not been extracted, so EvenHub apps will render with fallback fonts. Preparing them downloads the official firmware to extract its fonts; your glasses are not reflashed." textWrap="true" />
                     <Button text="Prepare G2 fonts" tap="{{ onPrepareFontsTap }}" class="-primary" />
+                </StackLayout>
+                <StackLayout visibility="{{ alarmReliabilityWarningVisibility }}" class="warnings-modal-item">
+                    <Label text="{{ alarmReliabilityMessage }}" textWrap="true" />
+                    <Button text="Open phone settings" tap="{{ onFixAlarmReliabilityTap }}" class="-primary" />
                 </StackLayout>
                 <Button text="Close" tap="{{ onWarningsModalCloseTap }}" />
             </StackLayout>
@@ -137,6 +150,30 @@
                     checked="{{ activeTextEditorToggleValue }}"
                     checkedChange="{{ onTextSettingToggleChange }}" />
             </GridLayout>
+        </StackLayout>
+        <!-- Keyboard-input panel (the keyboard button beside the mic button):
+             the phone's end of the keyboard dialog on the glasses
+             (ui/shell/keyboard-input.ts). Same placement and collapsing rules
+             as the setting editor above. Enter inserts a newline; the send
+             buttons pick a destination directly. -->
+        <StackLayout
+            class="system-name-modal"
+            visibility="{{ keyboardInputVisibility }}"
+            horizontalAlignment="stretch"
+            verticalAlignment="bottom">
+            <Label text="Keyboard input" class="h2" />
+            <TextView
+                id="keyboardInputField"
+                text="{{ keyboardInputText }}"
+                hint="Type a message"
+                textChange="{{ onKeyboardInputTextChange }}"
+                height="120" />
+            <!-- Wraps onto a second line when the labels don't fit side by side. -->
+            <FlexboxLayout flexWrap="wrap" class="m-t-8">
+                <Button text="{{ keyboardInputPrimaryTargetLabel }}" tap="{{ onKeyboardInputPrimarySendTap }}" visibility="{{ keyboardInputPrimaryTargetVisibility }}" flexGrow="1" class="-primary" />
+                <Button text="{{ keyboardInputSecondaryTargetLabel }}" tap="{{ onKeyboardInputSecondarySendTap }}" visibility="{{ keyboardInputSecondaryTargetVisibility }}" flexGrow="1" />
+                <Button text="Discard" tap="{{ onKeyboardInputDiscardTap }}" flexGrow="1" />
+            </FlexboxLayout>
         </StackLayout>
     </GridLayout>
 </Page>

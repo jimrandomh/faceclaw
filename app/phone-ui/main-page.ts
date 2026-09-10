@@ -1,4 +1,4 @@
-import { Application, Color, EventData, isAndroid, Observable, Page, TextField } from '@nativescript/core'
+import { Application, Color, EventData, isAndroid, Observable, Page, TextField, TextView } from '@nativescript/core'
 import { MainViewModel } from './main-view-model'
 import { dashboardController } from '../g2/dashboard-controller'
 
@@ -39,7 +39,12 @@ function cleanupPage(page: Page): void {
   setPageState(page, undefined)
 }
 
-function applySettingsTextFieldContrast(textField: TextField): void {
+/**
+ * Readable colours for the light editor panels in both themes. selectAllOnFocus
+ * suits replacing an existing setting value; a message being composed keeps
+ * its caret where the user taps.
+ */
+function applySettingsTextFieldContrast(textField: TextField | TextView, selectAllOnFocus = true): void {
   textField.color = SETTINGS_TEXT_COLOR
   textField.backgroundColor = SETTINGS_BACKGROUND_COLOR
   textField.placeholderColor = SETTINGS_PLACEHOLDER_COLOR
@@ -48,7 +53,7 @@ function applySettingsTextFieldContrast(textField: TextField): void {
     return
   }
 
-  const nativeTextField = (textField as TextField & { nativeView?: android.widget.EditText }).nativeView
+  const nativeTextField = (textField as (TextField | TextView) & { nativeView?: android.widget.EditText }).nativeView
   if (!nativeTextField) {
     return
   }
@@ -57,7 +62,7 @@ function applySettingsTextFieldContrast(textField: TextField): void {
   nativeTextField.setHintTextColor(android.graphics.Color.rgb(102, 102, 102))
   // Editing an existing value usually means replacing it: select all on focus
   // so typing starts fresh but the current value stays visible.
-  nativeTextField.setSelectAllOnFocus(true)
+  nativeTextField.setSelectAllOnFocus(selectAllOnFocus)
 }
 
 /**
@@ -80,6 +85,22 @@ function focusTextEditor(page: Page): void {
       applySettingsTextFieldContrast(secondaryTextField)
     }
     textField?.focus()
+  }, 0)
+}
+
+/** The keyboard dialog closed on the glasses (sent, discarded, or screen off). */
+function dismissKeyboardInputKeyboard(page: Page): void {
+  page.getViewById<TextView>('keyboardInputField')?.dismissSoftInput()
+}
+
+/** The keyboard dialog opened: bring up the IME on its field right away. */
+function focusKeyboardInput(page: Page): void {
+  setTimeout(() => {
+    const textField = page.getViewById<TextView>('keyboardInputField')
+    if (textField) {
+      applySettingsTextFieldContrast(textField, false)
+      textField.focus()
+    }
   }, 0)
 }
 
@@ -121,6 +142,12 @@ export function loaded(args: EventData) {
         } else {
           dismissTextEditorKeyboard(page)
         }
+      } else if (propertyArgs.propertyName === 'keyboardInputActive') {
+        if (model.keyboardInputActive) {
+          focusKeyboardInput(page)
+        } else {
+          dismissKeyboardInputKeyboard(page)
+        }
       }
     },
   }
@@ -130,6 +157,9 @@ export function loaded(args: EventData) {
   setPageState(page, state)
   if (model.isTextSettingEditorActive) {
     focusTextEditor(page)
+  }
+  if (model.keyboardInputActive) {
+    focusKeyboardInput(page)
   }
 }
 

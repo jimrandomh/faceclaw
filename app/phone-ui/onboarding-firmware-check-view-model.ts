@@ -7,12 +7,12 @@ import {
   hasExtractedEvenHubFonts,
   type FirmwareProgress,
 } from "../g2/firmware-builder";
-import { classifyOnboardingFirmware, FLASHABLE_STOCK_VERSION_TEXT, type OnboardingFirmwareKind } from "../g2/firmware-compat";
+import { BASE_STOCK_VERSION_TEXT, classifyOnboardingFirmware, type OnboardingFirmwareKind } from "../g2/firmware-compat";
 import { DeviceInfoProbe, DeviceInfoState } from "../native/device-info-probe";
 import { setOnboardingCompleted, setPreviewOnlyMode } from "./onboarding-state";
 import { formatErrorMessage } from "../util/format-error";
 
-type CheckPhase = "checking" | "fonts" | "custom" | "flashable" | "newer" | "error";
+type CheckPhase = "checking" | "fonts" | "custom" | "flashable" | "newer-validated" | "newer" | "error";
 
 export class OnboardingFirmwareCheckViewModel extends Observable {
   private _phase: CheckPhase = "checking";
@@ -72,6 +72,7 @@ export class OnboardingFirmwareCheckViewModel extends Observable {
       case "custom":
         return "Finish";
       case "flashable":
+      case "newer-validated":
         return "Install Firmware";
       case "newer":
         return "Proceed Anyway";
@@ -107,6 +108,7 @@ export class OnboardingFirmwareCheckViewModel extends Observable {
         this.finish();
         return;
       case "flashable":
+      case "newer-validated":
       case "newer":
         this.goToFlashing();
         return;
@@ -196,8 +198,8 @@ export class OnboardingFirmwareCheckViewModel extends Observable {
   private applyClassification(kind: OnboardingFirmwareKind, version: string, capabilities: string): void {
     this.busy = false;
     // `kind` is classifyOnboardingFirmware's OnboardingFirmwareKind ("custom" |
-    // "flashable-stock" | "newer-stock" | "unknown") -- NOT CheckPhase's shorter
-    // "flashable"/"newer" (used below via setPhase for _phase/primaryLabel/etc).
+    // "flashable-stock" | "newer-stock-unvalidated" | "newer-stock-validated" | "unknown") -- NOT CheckPhase's shorter
+    // "flashable"/"newer-validated"/"newer" (used below via setPhase for _phase/primaryLabel/etc).
     // The two types share two of four names, so a typo'd case label here type-checks
     // fine as long as `kind` stays plain `string`, but silently falls through to
     // `default` (the hard "couldn't read a firmware version" error) for every real
@@ -218,11 +220,22 @@ export class OnboardingFirmwareCheckViewModel extends Observable {
           `Your glasses run stock firmware ${version}. This is compatible — tap Install Firmware to flash ` +
           "Faceclaw's custom firmware.";
         break;
-      case "newer-stock":
+      case "newer-stock-validated":
+        this.setPhase("newer-validated");
+        this.headline = "Newer Firmware";
+        this.status =
+          `Your glasses run stock firmware ${version}, which is compatible. This version is newer than the ` +
+          `${BASE_STOCK_VERSION_TEXT} release Faceclaw's custom image is built from. Applying custom ` +
+          `firmware will downgrade the firmware version, which may cause compatibility issues when using it ` +
+          `with the stock phone app. If you reconnect the stock phone app, it will offer an OTA update to ` +
+          `${version}; if you apply that update it will fully uninstall the custom firmware.`;
+        break;
+
+      case "newer-stock-unvalidated":
         this.setPhase("newer");
         this.headline = "Unrecognized Firmware";
         this.status =
-          `Your glasses run stock firmware ${version}, which is newer than the ${FLASHABLE_STOCK_VERSION_TEXT} ` +
+          `Your glasses run stock firmware ${version}, which is newer than the ${BASE_STOCK_VERSION_TEXT} ` +
           "release Faceclaw's custom image is built from. Flashing may not work correctly and carries extra risk. " +
           "You can proceed anyway, or go back.";
         break;

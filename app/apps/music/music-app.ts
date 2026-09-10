@@ -8,6 +8,7 @@ import { lineStep, tightRowHeight } from "../../ui/metrics";
 import { mediaControllerBridge, type MediaControllerState, type MediaQueueItem } from "../../native/media-controller";
 import { mediaBrowserBridge, type MediaBrowserApp } from "../../native/media-browser";
 import { MediaBrowseLayer } from "./media-browse";
+import { MusicSettingsLayer } from "./music-settings";
 import { Layer, type LayerContext, type PaintBelow } from "../../ui/layers";
 import { createInProcessWindow, YieldAtRootLayer, type InProcessAppOptions, type InProcessWindow } from "../../ui/shell/in-process-window";
 
@@ -480,6 +481,13 @@ export function createMusicAppWindow(options: InProcessAppOptions): InProcessWin
     iconLetter: "M",
     icon: "music",
     closeable: true,
+    menuItems: () => [{
+      label: "Music settings",
+      onSelect: (ctx) => {
+        ctx.stack.pop();
+        ctx.stack.push(new MusicSettingsLayer());
+      },
+    }],
     actions: options.actions,
     baseLayer: new MusicRootLayer(musicLayer),
     submitFrame: options.submitFrame,

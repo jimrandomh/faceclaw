@@ -38,14 +38,17 @@ import {
 import { EvenHubApiKeyDialogLayer } from "./api-key-dialog";
 import {
   asRecord,
+  declaredMenuItems,
   eventCaptureContainer,
   parsePage,
   readNumber,
   readOptionalNumber,
   readString,
+  readTextBrightness,
   type EvenHubImageContainer,
   type EvenHubListContainer,
   type EvenHubContainer,
+  type EvenHubMenuItem,
   type EvenHubPage,
 } from "./containers";
 import { compositePage } from "./compositor";
@@ -53,7 +56,7 @@ import { type EvenHubManifest } from "./ehpk";
 import { permissionsIncludeMicrophone, permissionsInclude } from "./permissions";
 import { evenHubMicRouter, type EvenHubMicClient } from "./mic-router";
 import { evenHubImuRouter, type EvenHubImuClient } from "./imu-router";
-import { evenHubCompassRouter, type EvenHubCompassClient } from "./compass-router";
+import { evenHubCompassRouter, type EvenHubCompassClient, type EvenHubCompassReading } from "./compass-router";
 import { type ImuReading } from "../../native/imu";
 import { toolRegistry, type ToolResult, type ToolSpec } from "../../assistant/tool-registry";
 import { getCurrentLocation } from "../../native/location";
@@ -73,6 +76,9 @@ const FOREGROUND_ENTER_EVENT = 4;
 const FOREGROUND_EXIT_EVENT = 5;
 const SYSTEM_EXIT_EVENT = 7;
 const IMU_DATA_REPORT_EVENT = 8;
+/** SDK 0.0.14: the press gesture, delivered like any other list/text/sys event. */
+const LONG_PRESS_EVENT = 9;
+const LONG_PRESS_RELEASE_EVENT = 10;
 
 /**
  * Injected into every served HTML document at document start (before any app
@@ -440,6 +446,24 @@ export class EvenHubSession implements EvenHubMicClient, EvenHubImuClient, EvenH
       case "double-click":
         this.emitSysEvent(DOUBLE_CLICK_EVENT, gestureSource(event.source));
         break;
+      case "long-press":
+      case "short-then-long-press":
+      case "long-press-release": {
+        // SDK 0.0.14 exposes press and release as ordinary events. The app's
+        // press is the context-menu gesture (tap-then-hold; the shell keeps
+        // the plain long-press for its system menu): the window still opens
+        // its menu on it (that menu is where the app's contextual-menu items
+        // live, and it is the way out of an app that owns double-click), so
+        // an app hears the press as well as seeing the menu — it cannot be
+        // given exclusive use of the gesture.
+        const eventType = event.type === "long-press-release" ? LONG_PRESS_RELEASE_EVENT : LONG_PRESS_EVENT;
+        if (capture?.kind === "list") {
+          this.emitListEvent(capture, eventType);
+        } else {
+          this.emitSysEvent(eventType, gestureSource(event.source));
+        }
+        break;
+      }
       case "scroll-up":
       case "scroll-down": {
         const eventType = event.type === "scroll-up" ? SCROLL_TOP_EVENT : SCROLL_BOTTOM_EVENT;
@@ -453,6 +477,20 @@ export class EvenHubSession implements EvenHubMicClient, EvenHubImuClient, EvenH
       default:
         break;
     }
+  }
+
+  /**
+   * The contextual-menu entries the running page registered (SDK 0.0.14
+   * `menuObject`), for the window to merge into its own menu. Empty when the
+   * app declared none.
+   */
+  contextMenuItems(): EvenHubMenuItem[] {
+    return this.page?.menuItems ?? [];
+  }
+
+  /** The user picked one of the app's contextual-menu entries. */
+  selectContextMenuItem(itemID: number): void {
+    this.pushMessage("evenHubEvent", { type: "menuItemClickEvent", jsonData: { itemID } });
   }
 
   private scrollList(list: EvenHubListContainer, eventType: number): void {
@@ -542,10 +580,21 @@ export class EvenHubSession implements EvenHubMicClient, EvenHubImuClient, EvenH
     return this.screenOn;
   }
 
-  /** A decoded mic frame from the router: hand it to the app as an audioEvent. */
+  /**
+   * A decoded mic frame from the router: hand it to the app as an audioEvent.
+   *
+   * SDK 0.0.14 added per-frame `direction` and `speakerRole`. Neither is
+   * available here — the router hands over plain PCM with no beamforming tag,
+   * and speakerRole is an app-level diarization result the stock host computes
+   * — so both are sent as the fallbacks the SDK documents for a phone mic and
+   * for older hosts.
+   */
   deliverAudioPcm(pcm: Uint8Array): void {
     const audioPcm = Array.from(pcm);
-    this.pushMessage("evenHubEvent", { type: "audioEvent", jsonData: { audioPcm } });
+    this.pushMessage("evenHubEvent", {
+      type: "audioEvent",
+      jsonData: { audioPcm, direction: null, speakerRole: "unknown" },
+    });
   }
 
   /**
@@ -757,7 +806,7 @@ export class EvenHubSession implements EvenHubMicClient, EvenHubImuClient, EvenH
       return 1;
     }
     const page = parsePage(data);
-    this.warnOnInvalidPage(page);
+    this.warnOnInvalidPage(page, data);
     this.page = page;
     this.pageCreated = true;
     // The launch focus arrived before the page existed; deliver the ENTER now.
@@ -772,14 +821,21 @@ export class EvenHubSession implements EvenHubMicClient, EvenHubImuClient, EvenH
   private rebuildPage(data: Record<string, unknown>): boolean {
     // Also serves as create for apps that fall back to rebuild-on-error.
     const page = parsePage(data);
-    this.warnOnInvalidPage(page);
+    this.warnOnInvalidPage(page, data);
     this.page = page;
     this.pageCreated = true;
     this.windowHooks?.requestRender();
     return true;
   }
 
-  private warnOnInvalidPage(page: EvenHubPage): void {
+  private warnOnInvalidPage(page: EvenHubPage, data: Record<string, unknown>): void {
+    const declaredMenuCount = declaredMenuItems(data).length;
+    if (declaredMenuCount > page.menuItems.length) {
+      this.log(
+        `evenhub: dropped ${declaredMenuCount - page.menuItems.length} of ${declaredMenuCount} contextual menu ` +
+          "items (max 10, itemID must be non-zero and unique, itemName at most 32 UTF-8 bytes)",
+      );
+    }
     // Stock rejects these outright; we accept-and-log until rejection is
     // proven necessary for compatibility.
     const captures = page.containers.filter((c) => c.kind !== "image" && c.isEventCapture).length;
@@ -813,6 +869,10 @@ export class EvenHubSession implements EvenHubMicClient, EvenHubImuClient, EvenH
     } else {
       container.content = content;
     }
+    // SDK 0.0.14: textColor on an incremental update sets the container's
+    // brightness; omitting it keeps whatever level the container has.
+    const brightness = readTextBrightness(data);
+    if (brightness !== undefined) container.textColor = brightness;
     this.windowHooks?.requestRender();
     return true;
   }
@@ -953,8 +1013,8 @@ export class EvenHubSession implements EvenHubMicClient, EvenHubImuClient, EvenH
 
   // ----- compass (EvenHubCompassClient) -----
 
-  deliverCompass(headingDegrees: number): void {
-    this.pushExtEvent("compass", { headingDegrees });
+  deliverCompass(reading: EvenHubCompassReading): void {
+    this.pushExtEvent("compass", reading);
   }
 
   private setCompass(enable: boolean): void {

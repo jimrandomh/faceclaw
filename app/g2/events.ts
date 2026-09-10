@@ -69,6 +69,8 @@ export const OsEventTypeList = {
   IMU_DATA_REPORT: 8,
   RING_LONG_PRESS_EVENT: 9,
   RING_LONG_PRESS_RELEASE_EVENT: 10,
+  /** CFW extension: the 2.2.9 tap-then-hold Menu gesture. */
+  SHORT_THEN_LONG_PRESS_EVENT: 11,
 } as const;
 
 export const OsEventTypeName: Record<number, string> = {
@@ -83,4 +85,5 @@ export const OsEventTypeName: Record<number, string> = {
   8: "IMU_DATA_REPORT",
   9: "RING_LONG_PRESS_EVENT",
   10: "RING_LONG_PRESS_RELEASE_EVENT",
+  11: "SHORT_THEN_LONG_PRESS_EVENT",
 };

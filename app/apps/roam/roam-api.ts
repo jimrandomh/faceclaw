@@ -104,7 +104,7 @@ async function roamPost(endpoint: "q" | "pull" | "write", body: object): Promise
   const graph = roamGraphNameSetting.get();
   const token = roamApiTokenSetting.get();
   if (!graph || !token) {
-    throw new Error("Set the Roam graph name and API token from the Roam app's long-press menu.");
+    throw new Error("Set the Roam graph name and API token from the Roam app's context menu (tap, then hold).");
   }
   const path = `/api/graph/${encodeURIComponent(graph)}/${endpoint}`;
   const payload = JSON.stringify(body);

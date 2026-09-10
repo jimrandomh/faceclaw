@@ -18,6 +18,8 @@ const ICON_STROKE_WIDTH = 2;
 // Lucide icons (MIT/ISC licensed). Kept verbatim so they can be diffed
 // against upstream if an icon needs updating.
 export const ICON_SVGS = {
+  "message-circle":
+    '<svg viewBox="0 0 24 24" fill="none"><path d="M21 11.5a8.4 8.4 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.4 8.4 0 0 1-3.8-.9L3 21l1.9-5.7a8.4 8.4 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.4 8.4 0 0 1 3.8-.9h.5a8.5 8.5 0 0 1 8 8z"/></svg>',
   "layout-grid":
     '<svg viewBox="0 0 24 24" fill="none"><rect width="7" height="7" x="3" y="3" rx="1"/><rect width="7" height="7" x="14" y="3" rx="1"/><rect width="7" height="7" x="14" y="14" rx="1"/><rect width="7" height="7" x="3" y="14" rx="1"/></svg>',
   timer:
@@ -36,6 +38,8 @@ export const ICON_SVGS = {
     '<svg viewBox="0 0 24 24" fill="none"><path d="M12 18v4"/><path d="M2 14.499a5.5 5.5 0 0 0 9.591 3.675.6.6 0 0 1 .818.001A5.5 5.5 0 0 0 22 14.5c0-2.29-1.5-4-3-5.5l-5.492-5.312a2 2 0 0 0-3-.02L5 8.999c-1.5 1.5-3 3.2-3 5.5"/></svg>',
   terminal:
     '<svg viewBox="0 0 24 24" fill="none"><path d="m7 11 2-2-2-2"/><path d="M11 13h4"/><rect width="18" height="18" x="3" y="3" rx="2" ry="2"/></svg>',
+  "scroll-text":
+    '<svg viewBox="0 0 24 24" fill="none"><path d="M15 12h-5"/><path d="M15 8h-5"/><path d="M19 17V5a2 2 0 0 0-2-2H4"/><path d="M8 21h12a2 2 0 0 0 2-2v-1a1 1 0 0 0-1-1H11a1 1 0 0 0-1 1v1a2 2 0 1 1-4 0V5a2 2 0 1 0-4 0v2a1 1 0 0 0 1 1h3"/></svg>',
   "file-text":
     '<svg viewBox="0 0 24 24" fill="none"><path d="M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z"/><path d="M14 2v5a1 1 0 0 0 1 1h5"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/></svg>',
   file:
@@ -87,9 +91,11 @@ export const ICON_SVGS = {
 } as const;
 
 export type IconName = keyof typeof ICON_SVGS;
+/** Idle prompt, or the visible/hidden phases of an activity cursor. */
+export type IconActivity = "idle" | "on" | "off";
 
-// The "_" element of the terminal icon, swapped out for a session glyph in
-// renderIconWithGlyph.
+// Prompt and session-marker elements replaced by renderIconWithGlyph.
+const TERMINAL_PROMPT = '<path d="m7 11 2-2-2-2"/>';
 const TERMINAL_UNDERSCORE = '<path d="M11 13h4"/>';
 
 /**
@@ -155,12 +161,23 @@ export function renderSvgIcon(cacheName: string, svg: string, size: number): Gra
 /**
  * Render an icon with a glyph character substituted in — currently only the
  * terminal icon, whose "_" becomes the glyph (">3" instead of ">_"). Falls
- * back to the plain icon for other names or unsupported characters.
+ * back to the plain marker for unsupported characters. Active terminal icons
+ * replace the prompt with a blinking cursor, leaving the marker in place.
  */
-export function renderIconWithGlyph(name: IconName, glyph: string, size: number): GrayImage | null {
-  const shape = name === "terminal" ? TERMINAL_GLYPH_SHAPES[glyph] : undefined;
-  if (!shape) return renderIcon(name, size);
-  return renderSvgCached(`${name}[${glyph}]`, ICON_SVGS.terminal.replace(TERMINAL_UNDERSCORE, shape), size);
+export function renderIconWithGlyph(name: IconName, glyph: string, size: number, activity: IconActivity = "idle"): GrayImage | null {
+  if (name !== "terminal") return renderIcon(name, size);
+  const shape = TERMINAL_GLYPH_SHAPES[glyph];
+  if (!shape && activity === "idle") return renderIcon(name, size);
+  let svg: string = ICON_SVGS.terminal;
+  if (shape) svg = svg.replace(TERMINAL_UNDERSCORE, shape);
+  if (activity !== "idle") {
+    // IconRenderer strokes all elements at width 2; the narrow rectangle
+    // therefore becomes a solid cursor without needing per-element fills.
+    svg = svg.replace(TERMINAL_PROMPT, activity === "on"
+      ? '<rect x="7.5" y="8" width="1" height="6"/>'
+      : "");
+  }
+  return renderSvgCached(`${name}[${shape ? glyph : ""}]:${activity}`, svg, size);
 }
 
 function renderSvgCached(cacheName: string, svg: string, size: number): GrayImage | null {

@@ -13,13 +13,12 @@ the phone it only tells you to install it.
 | --- | --- |
 | tap | select |
 | double-tap, or a two-finger tap | **back**, everywhere: closes menus, leaves a settings column, leaves a folder or the launcher grid, returns to the sidebar (and from the sidebar turns the display off, as the ring does) |
-| press and hold | the app's context menu (a long press, held until you lift your finger) |
-| swipe ↑ ↓ ← → | **spatial navigation, with no mode to enter first**: the launcher highlights one app and the swipe moves it by a row or a column; the settings panel moves between its columns and down its lists; the sidebar moves up and down; Music skips to the previous / next track. Right goes *into* things (sidebar → window, section → items) and left comes back *out* (first column → sidebar). Anywhere without a spatial meaning, up/down scroll, right selects and left goes back. One step per swipe (long swipes used to repeat, which overshot lists whenever the display lagged); use repeated flicks, the crown, or a two-finger page swipe to cover distance. "Natural swipe" flips the vertical sense; left/right can be remapped in settings. |
+| press and hold | the system menu: Focus app switcher, Voice input, Close window (a long press, held until you lift your finger; games that use a long press as a move get it instead) |
+| tap, then press and hold | the app's context menu |
+| swipe ↑ ↓ ← → | **spatial navigation, with no mode to enter first**: the launcher highlights one app and the swipe moves it by a row or a column; the settings panel moves between its columns and down its lists; the sidebar moves up and down; Music skips to the previous / next track. Right goes *into* things (sidebar → window, section → items) and left comes back *out* (first column → sidebar). Anywhere without a spatial meaning, up/down scroll, right selects and left goes back. One step per swipe (long swipes used to repeat, which overshot lists whenever the display lagged); use repeated flicks, the crown, or a two-finger page swipe to cover distance. |
 | rotate the crown | previous / next (one step per detent-ish, sensitivity adjustable) — clockwise is previous by default; reverse it in the on-glasses Settings > Watch section |
 | two-finger swipe up / down | scroll a page (3 steps) |
-| **twist the wrist twice** (two brisk flicks, either direction) | back — from the gyroscope; on by default, sensitivity adjustable |
-| **tip taps** — tap your index finger against your thumb | select; two quick taps = back. From the accelerometer; **off by default** (experimental): on a wrist, ordinary hand movement produced phantom selects in testing. Turn on in Watch settings; needs ~¼ s of stillness before a tap counts, and both motion gestures are ignored while the watch is off the wrist or buzzing. |
-| **Tap zones** mode | tap the top / bottom third to scroll, the middle to select — for when swiping is awkward |
+| **tip taps** — tap your index finger against your thumb | select; two quick taps = back. From the accelerometer; **off by default** (experimental): on a wrist, ordinary hand movement produced phantom selects in testing. Turn on in Watch settings; needs ~¼ s of stillness before a tap counts, and taps are ignored while the watch is off the wrist or buzzing. |
 
 The R1 ring's scheme is untouched: the ring only has up/down, tap, double-tap
 and hold, so on the glasses it still works in the stock two-step way (pick a
@@ -46,13 +45,27 @@ down beginning in the button tray to hide them.
   full launcher, including installed EvenHub apps.
 - **Status** — connection and battery, display on/off, lock/unlock, connect /
   disconnect, and whether Faceclaw is running on the phone; watch settings
-  (haptics, keep screen on, swipe direction, tap zones, horizontal swipe
-  actions, tip taps and their sensitivity, crown sensitivity).
+  (haptics, keep screen on, tip taps and their sensitivity, crown sensitivity).
 
 The pad keeps the watch display awake while it is showing (Watch settings >
 "Keep screen on", default on). Wear OS otherwise dozes within seconds of the
-wrist dropping and freezes the app, so the remote would need a wake-up tap
-before every gesture.
+wrist dropping, so the remote would need a wake-up tap before every gesture.
+
+When the watch does doze (wrist down, or "Keep screen on" off), the app stays
+in front as an always-on face: the pad's clock and status line on black,
+redrawn once a minute. Wear OS would otherwise blur a snapshot of the app
+under the system clock and, after its app timeout, drop back to the watch
+face; being ambient-aware avoids both. Motion and crown input pause in ambient.
+
+**Waking with a tap.** The system consumes the touch that wakes the watch, so
+the pad treats each wake as a first tap it never saw:
+
+- With the Wear OS "Always-on screen" setting on, the dozing pad is the same
+  screen, so a tap on it is a tap: one tap wakes the watch and sends *select*
+  to the glasses; a double-tap wakes it and sends *back*.
+- With "Always-on screen" off the display was dark, so a lone tap just turns
+  it on; a double-tap turns it on and sends *back*.
+- A wrist raise (the wrist-tilt gesture sensor) or a crown turn is not a tap.
 
 Phone-side switches live in Faceclaw's Settings > Watch: turn watch control
 off entirely, reverse the crown direction, forbid unlocking from the watch,

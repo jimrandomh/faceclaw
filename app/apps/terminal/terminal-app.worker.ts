@@ -32,11 +32,11 @@
  */
 import "@nativescript/core/globals";
 import { GrayImage, type UiFont } from "../../graphics/image";
-import { flattenPlanesWithDraws, planesFingerprint, singlePlane, type Plane } from "../../graphics/plane";
+import { flattenPlanesWithDraws, planesFingerprint, type Plane } from "../../graphics/plane";
 import { prepareFrameDraws } from "../../graphics/glyph-wire";
 import { getDefaultSmallFont, getTerminalFontConfig } from "../../graphics/ui-fonts";
 import { truncateText } from "../../graphics/textwrap";
-import { TERMINAL_ICON_GLYPHS } from "../../graphics/icons";
+import { TERMINAL_ICON_GLYPHS, type IconActivity } from "../../graphics/icons";
 import * as frameTimings from "../../native/frame-timings";
 import { getActiveDisplay } from "../../native/active-display";
 import { GESTURE_DOUBLE_CLICK, type InputEvent } from "../../ui/gestures";
@@ -48,7 +48,7 @@ import { connectionDisplayName, loadConnections, parseConnectionString, saveConn
 import { TerminalEmulator } from "./terminal-emulator";
 import { drawListScrollbar, drawSelectionHighlight, scrollToKeepSelectionVisible, type MenuItem } from "../../ui/menu";
 import { lineStep, listRowHeight } from "../../ui/metrics";
-import { defaultWindowMenuItems, WindowMenu } from "../../ui/window-menu";
+import { WindowMenu } from "../../ui/window-menu";
 import { appViewportSize } from "../../ui/shell/geometry";
 import type { WorkerAppMessage, WorkerAppReply } from "../../ui/shell/worker-window";
 import type { ToolResult, ToolSpec } from "../../assistant/tool-registry";
@@ -88,6 +88,8 @@ const NEW_CONNECTION_DRAFT_KEY = "terminal.newConnectionDraft";
 type BaseWindow = {
   windowId: string;
   surfaceId: string;
+  /** Shell-side window title, echoed back in the open-window message. */
+  title: string;
   /** Content viewport from the shell's open-window message; grid = viewport / cell. */
   viewportWidth: number;
   viewportHeight: number;
@@ -283,7 +285,7 @@ const sessionRecency = new Map<string, number>();
 // continues, so 5s of slack keeps the indicator lit through the gaps.
 const sessionActivity = new Map<string, number>();
 const ACTIVITY_ACTIVE_MS = 5_000;
-// Alternation period of the hub's activity indicator.
+// Alternation period shared by hub rows and sidebar cursors.
 const HUB_ANIMATION_STEP_MS = 800;
 
 function recencyKey(connectionId: string, socket: string): string {
@@ -304,8 +306,32 @@ global.onmessage = (event: { data: WorkerAppMessage }) => {
   const message = event.data;
   switch (message.type) {
     case "open-window":
-      openWindow(message.windowId, message.surfaceId, message.viewport);
+      openWindow(message.windowId, message.surfaceId, message.title, message.viewport);
       break;
+    case "resize-window": {
+      const window = windows.get(message.windowId);
+      if (!window || (window.viewportWidth === message.viewport.width && window.viewportHeight === message.viewport.height)) break;
+      window.viewportWidth = message.viewport.width;
+      window.viewportHeight = message.viewport.height;
+      window.menu?.resize(message.viewport);
+      window.lastSubmittedFingerprint = "";
+      if (window.kind === "view") {
+        window.gridCols = Math.floor(window.viewportWidth / window.cellWidth);
+        window.gridRows = Math.floor(window.viewportHeight / window.cellHeight);
+        if (window.reconnectTimer) clearTimeout(window.reconnectTimer);
+        window.reconnectTimer = null;
+        window.client.stop();
+        window.client.setViewport(window.gridCols, window.gridRows);
+        window.emulator.dispose();
+        window.emulator = new TerminalEmulator(window.gridCols, window.gridRows);
+        window.receivedData = false;
+        window.archive = [];
+        window.scrollTop = null;
+        reconnectView(window);
+      }
+      scheduleRender(window);
+      break;
+    }
     case "close-window":
       closeWindow(message.windowId);
       break;
@@ -430,11 +456,12 @@ function cancelPendingReconnects(): void {
   }
 }
 
-function openWindow(windowId: string, surfaceId: string, viewport: { width: number; height: number }): void {
+function openWindow(windowId: string, surfaceId: string, title: string, viewport: { width: number; height: number }): void {
   const pendingView = pendingViews.get(windowId);
   if (pendingView) {
     pendingViews.delete(windowId);
-    windows.set(windowId, createViewWindow(windowId, surfaceId, viewport, pendingView));
+    windows.set(windowId, createViewWindow(windowId, surfaceId, title, viewport, pendingView));
+    updateHubAnimation();
     renderHubWindows();
     return;
   }
@@ -443,6 +470,7 @@ function openWindow(windowId: string, surfaceId: string, viewport: { width: numb
     kind: "hub",
     windowId,
     surfaceId,
+    title,
     viewportWidth: viewport.width,
     viewportHeight: viewport.height,
     gridCols: Math.floor(viewport.width / hubCell.cellWidth),
@@ -463,6 +491,7 @@ function openWindow(windowId: string, surfaceId: string, viewport: { width: numb
   if (!controlsInitialized) {
     syncControlsFromSettings();
   }
+  updateHubAnimation();
 }
 
 function closeWindow(windowId: string): void {
@@ -483,6 +512,8 @@ function closeWindow(windowId: string): void {
     endAddConnection(window);
   }
   windows.delete(windowId);
+  windowIconActivity.delete(windowId);
+  updateHubAnimation();
   // Auto-reconnect only runs while at least one terminal window is open.
   if (windows.size === 0) {
     for (const control of controls.values()) {
@@ -693,42 +724,47 @@ function renderHubWindows(): void {
   }
 }
 
-// Hub activity animation: while a foregrounded hub lists at least one active
-// session, a timer re-renders it so the per-row indicator alternates. The
-// timer stops itself once every session's activity ages out (its final tick
-// renders the rows indicator-free) or the hub leaves the foreground.
+// One animation clock for foreground hub rows and every terminal sidebar icon.
+// Keep ticking while the sidebar can show activity, even with the hub closed.
 let hubAnimationPhase = 0;
 let hubAnimationTimer: ReturnType<typeof setInterval> | null = null;
+const windowIconActivity = new Map<string, IconActivity>();
 
 function isSessionActive(connectionId: string, socket: string): boolean {
   const at = sessionActivity.get(recencyKey(connectionId, socket));
   return at !== undefined && Date.now() - at < ACTIVITY_ACTIVE_MS;
 }
 
-function hubAnimationShouldRun(): boolean {
-  if (!screenOn) return false;
-  let hubVisible = false;
-  for (const window of windows.values()) {
-    if (window.kind === "hub" && window.foreground) hubVisible = true;
-  }
-  if (!hubVisible) return false;
+function isWindowSessionActive(window: TerminalWindow): boolean {
+  if (window.kind === "view") return isSessionActive(window.connectionId, window.socket);
   const now = Date.now();
-  for (const at of sessionActivity.values()) {
-    if (now - at < ACTIVITY_ACTIVE_MS) return true;
-  }
-  return false;
+  return [...sessionActivity.values()].some((at) => now - at < ACTIVITY_ACTIVE_MS);
 }
 
-/** Start or stop the animation timer to match the current state. */
+function hubAnimationShouldRun(): boolean {
+  return screenOn && [...windows.values()].some(isWindowSessionActive);
+}
+
+function syncWindowIconActivity(): void {
+  for (const window of windows.values()) {
+    const activity: IconActivity = screenOn && isWindowSessionActive(window)
+      ? (hubAnimationPhase === 0 ? "on" : "off") : "idle";
+    if ((windowIconActivity.get(window.windowId) ?? "idle") === activity) continue;
+    windowIconActivity.set(window.windowId, activity);
+    post({ type: "set-icon-activity", windowId: window.windowId, activity });
+  }
+}
+
+/** Start or stop animation and publish changed icons, including expiry/wake. */
 function updateHubAnimation(): void {
-  if (hubAnimationShouldRun()) {
+  const shouldRun = hubAnimationShouldRun();
+  if (shouldRun && !hubAnimationTimer) hubAnimationPhase = 0;
+  syncWindowIconActivity();
+  if (shouldRun) {
     if (hubAnimationTimer) return;
     hubAnimationTimer = setInterval(() => {
       hubAnimationPhase = (hubAnimationPhase + 1) % 2;
-      if (!hubAnimationShouldRun() && hubAnimationTimer) {
-        clearInterval(hubAnimationTimer);
-        hubAnimationTimer = null;
-      }
+      updateHubAnimation();
       // Render even on the stopping tick, to clear expired indicators.
       renderHubWindows();
     }, HUB_ANIMATION_STEP_MS);
@@ -753,6 +789,7 @@ function noteSessionActivity(connectionId: string, socket: string): void {
 function createViewWindow(
   windowId: string,
   surfaceId: string,
+  title: string,
   viewport: { width: number; height: number },
   view: PendingView,
 ): ViewWindow {
@@ -768,6 +805,7 @@ function createViewWindow(
     kind: "view",
     windowId,
     surfaceId,
+    title,
     viewportWidth: viewport.width,
     viewportHeight: viewport.height,
     gridCols,
@@ -896,10 +934,14 @@ function reconnectView(window: ViewWindow): void {
   scheduleRender(window);
 }
 
-/** The window's long-press menu, created lazily so window literals stay simple. */
+/** The window's context menu, created lazily so window literals stay simple. */
 function windowMenu(window: TerminalWindow): WindowMenu {
   if (!window.menu) {
     window.menu = new WindowMenu({
+      windowId: window.windowId,
+      post,
+      title: () => window.title,
+      items: () => windowMenuItems(window),
       size: { width: window.viewportWidth, height: window.viewportHeight },
       paintBase: () => paintContent(window),
       isFocused: () => window.focused,
@@ -978,7 +1020,6 @@ function windowMenuItems(window: TerminalWindow): MenuItem[] {
       },
     );
   }
-  items.push(...defaultWindowMenuItems(window.windowId, post));
   return items;
 }
 
@@ -992,8 +1033,8 @@ function handleInput(window: TerminalWindow, event: InputEvent, frameId: number)
       .then(() => renderAndSubmit(window, frameId));
     return;
   }
-  if (event.type === "long-press") {
-    windowMenu(window).open(windowMenuItems(window));
+  if (event.type === "short-then-long-press") {
+    windowMenu(window).open();
     renderAndSubmit(window, frameId);
     return;
   }
@@ -1426,8 +1467,7 @@ function openViewWindow(control: ControlConnection, socket: string, label: strin
     icon: "terminal",
     iconGlyph: glyph || undefined,
     focus: true,
-    // Terminal views are the one full-height window kind: more rows matter
-    // more than a small on-screen footprint.
+    // Default to tall sessions; the app display setting can override this.
     heightMode: "max",
   });
 }
@@ -1451,10 +1491,7 @@ async function launchAndOpenView(control: ControlConnection, preset: string): Pr
 }
 
 function paint(window: TerminalWindow): Plane[] {
-  if (window.menu?.isOpen()) {
-    return window.menu.paint();
-  }
-  return singlePlane(paintContent(window));
+  return windowMenu(window).paint();
 }
 
 function paintContent(window: TerminalWindow): GrayImage {

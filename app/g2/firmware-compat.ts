@@ -13,8 +13,10 @@ const REQUIRED_FIRMWARE_EXTENSIONS = ["img640", "fbguard", "wearnotify"] as cons
 // The stock firmware release Faceclaw's custom image is built from. Stock at or
 // below this can be flashed with our patched image; a newer stock version is
 // unrecognized (its layout may differ from what our patch set targets).
-export const FLASHABLE_STOCK_VERSION = [2, 2, 9, 22];
-export const FLASHABLE_STOCK_VERSION_TEXT = FLASHABLE_STOCK_VERSION.join(".");
+export const BASE_STOCK_VERSION = [2, 2, 9, 22];
+export const BASE_STOCK_VERSION_TEXT = BASE_STOCK_VERSION.join(".");
+export const VALIDATED_STOCK_VERSION = [2, 2, 10, 10];
+export const VALIDATED_STOCK_VERSION_TEXT = VALIDATED_STOCK_VERSION.join(".");
 
 function parseDottedVersion(version: string): number[] {
   return version
@@ -89,6 +91,15 @@ export function hasMicControl(info: FirmwareInfo): boolean {
   return info.capabilities.trim().split(/\s+/).includes("micctl");
 }
 
+/**
+ * True when the firmware advertises the optional ambient-light extension:
+ * image-handler mode 16 (query / passive polling of the OPT3001 light sensor)
+ * with field-105 reports, used to drive a phone-side brightness policy.
+ */
+export function hasAmbientLightSensor(info: FirmwareInfo): boolean {
+  return info.capabilities.trim().split(/\s+/).includes("als16");
+}
+
 /** The higher of the two arms' reported versions, or "" if none reported. */
 export function reportedFirmwareVersion(info: FirmwareInfo): string {
   const versions = [info.leftVersion, info.rightVersion].map((v) => v.trim()).filter(Boolean);
@@ -102,10 +113,12 @@ export function reportedFirmwareVersion(info: FirmwareInfo): string {
  * How the pre-flash firmware check should treat the connected glasses:
  * - "custom": Faceclaw's firmware is already installed — nothing to flash.
  * - "flashable-stock": stock firmware at or below the version we build from.
- * - "newer-stock": stock firmware newer than we recognize — flash only on override.
+ * - "newer-stock-validated": stock firmware newer than the version we build
+ *   from, on which the downgrade has been tested successfully
+ * - "newer-stock-unvalidated": stock firmware newer than we recognize — flash only on override.
  * - "unknown": no version could be read (treated as a probe/connection failure).
  */
-export type OnboardingFirmwareKind = "custom" | "flashable-stock" | "newer-stock" | "unknown";
+export type OnboardingFirmwareKind = "custom" | "flashable-stock" | "newer-stock-validated" | "newer-stock-unvalidated" | "unknown";
 
 export function classifyOnboardingFirmware(info: FirmwareInfo): {
   kind: OnboardingFirmwareKind;
@@ -118,6 +131,16 @@ export function classifyOnboardingFirmware(info: FirmwareInfo): {
   if (!version) {
     return { kind: "unknown", version: "" };
   }
-  const comparison = compareVersions(parseDottedVersion(version), FLASHABLE_STOCK_VERSION);
-  return { kind: comparison <= 0 ? "flashable-stock" : "newer-stock", version };
+  if (compareVersions(parseDottedVersion(version), BASE_STOCK_VERSION) <= 0) {
+    return { kind: "flashable-stock", version };
+  } else if (compareVersions(parseDottedVersion(version), VALIDATED_STOCK_VERSION) <= 0) {
+    return { kind: "newer-stock-validated", version };
+  } else {
+    return { kind: "newer-stock-unvalidated", version };
+  }
+}
+
+/** Cached R1 battery reports in settings field 106 and query mode 17. */
+export function hasRingBattery(info: FirmwareInfo): boolean {
+  return info.capabilities.trim().split(/\s+/).includes("ringbat17");
 }

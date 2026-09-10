@@ -6,18 +6,19 @@
  * Controls (in play): scroll moves the piece, click rotates, long-press hard
  * drops, double-click pauses. Watch swipes are spatial: left/right move,
  * up rotates, down hard-drops. Paused: click resumes, double-click yields
- * focus, long-press opens the window menu.
+ * focus, tap-then-hold opens the window menu.
  */
 import "@nativescript/core/globals";
 import { GrayImage } from "../../graphics/image";
-import { flattenPlanesWithDraws, planesFingerprint, singlePlane, type Plane } from "../../graphics/plane";
+import { flattenPlanesWithDraws, planesFingerprint, type Plane } from "../../graphics/plane";
 import { prepareFrameDraws } from "../../graphics/glyph-wire";
 import { getFont } from "../../graphics/bdffont";
 import { getDefaultSmallFont } from "../../graphics/ui-fonts";
 import * as frameTimings from "../../native/frame-timings";
 import { getActiveDisplay } from "../../native/active-display";
 import { buildSoundSequencePayload, type Step } from "../../ui/sound-effects";
-import { defaultWindowMenuItems, WindowMenu } from "../../ui/window-menu";
+import { type MenuItem } from "../../ui/menu";
+import { WindowMenu } from "../../ui/window-menu";
 import type { WorkerAppMessage, WorkerAppReply } from "../../ui/shell/worker-window";
 import {
   directionalFallback,
@@ -136,12 +137,13 @@ type GamePhase = "playing" | "paused" | "game-over";
 type BlocksWindow = {
   windowId: string;
   surfaceId: string;
+  title: string;
   viewportWidth: number;
   viewportHeight: number;
   foreground: boolean;
   /** Whether this window is the shell's input target (pushed with each message). */
   focused: boolean;
-  /** Long-press window menu; created on first open. */
+  /** Tap-then-hold window menu; created on first open. */
   menu: WindowMenu | null;
   phase: GamePhase;
   /** Locked cells; 0 = empty, otherwise the piece's shade byte. */
@@ -181,6 +183,7 @@ global.onmessage = (event: { data: WorkerAppMessage }) => {
       const window: BlocksWindow = {
         windowId: message.windowId,
         surfaceId: message.surfaceId,
+        title: message.title,
         viewportWidth: message.viewport.width,
         viewportHeight: message.viewport.height,
         foreground: false,
@@ -285,9 +288,9 @@ function playSfx(window: BlocksWindow, steps: Step[]): void {
   }
 }
 
-/** The window's long-press menu (sound toggle + default entries). */
-function openWindowMenu(window: BlocksWindow): void {
-  windowMenu(window).open([
+/** The window's context menu (sound toggle), offered while paused or over; playing keeps long-press for hard drop. */
+function windowMenuItems(window: BlocksWindow): MenuItem[] {
+  return [
     {
       label: window.soundOn ? "Sound: on" : "Sound: off",
       onSelect: (ctx) => {
@@ -296,13 +299,17 @@ function openWindowMenu(window: BlocksWindow): void {
         if (window.soundOn) playSfx(window, SFX_RESUME);
       },
     },
-    ...defaultWindowMenuItems(window.windowId, post),
-  ]);
+  ];
 }
 
 function windowMenu(window: BlocksWindow): WindowMenu {
   if (!window.menu) {
     window.menu = new WindowMenu({
+      windowId: window.windowId,
+      post,
+      title: () => window.title,
+      items: () => (window.phase === "playing" ? [] : windowMenuItems(window)),
+      claimsLongPress: () => window.phase === "playing",
       size: { width: window.viewportWidth, height: window.viewportHeight },
       paintBase: () => paintContent(window),
       isFocused: () => window.focused,
@@ -353,6 +360,10 @@ function handlePlayingInput(window: BlocksWindow, event: InputEvent, frameId: nu
     case "long-press":
       hardDrop(window);
       break;
+    case "short-then-long-press":
+      // No context menu mid-game, so this opens the system menu instead.
+      windowMenu(window).open();
+      break;
     case "double-click":
       window.phase = "paused";
       updateTickTimer(window);
@@ -378,8 +389,8 @@ function handleIdleInput(window: BlocksWindow, event: InputEvent, frameId: numbe
       frameTimings.finishFrame(frameId, "discarded: blocks yielded focus");
       post({ type: "yield-focus", windowId: window.windowId });
       return;
-    case "long-press":
-      openWindowMenu(window);
+    case "short-then-long-press":
+      windowMenu(window).open();
       break;
     default:
       frameTimings.finishFrame(frameId, "discarded: blocks ignored input");
@@ -554,10 +565,7 @@ function updateTickTimer(window: BlocksWindow): void {
 }
 
 function paint(window: BlocksWindow): Plane[] {
-  if (window.menu?.isOpen()) {
-    return window.menu.paint();
-  }
-  return singlePlane(paintContent(window));
+  return windowMenu(window).paint();
 }
 
 function paintContent(window: BlocksWindow): GrayImage {

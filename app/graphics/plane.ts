@@ -30,6 +30,11 @@ export function singlePlane(image: GrayImage): Plane[] {
   return [{ image, x: 0, y: 0 }];
 }
 
+/** The planes with their brightness scaled by `factor` (see GrayImage.dimmed). */
+export function dimPlanes(planes: readonly Plane[], factor: number): Plane[] {
+  return planes.map((plane) => ({ ...plane, image: plane.image.dimmed(factor) }));
+}
+
 /**
  * Flatten planes into one image: for each plane in order, blend its raster
  * (0 = transparent) and then its glyphs on top. A later plane's raster covers

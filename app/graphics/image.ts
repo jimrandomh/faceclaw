@@ -521,6 +521,37 @@ export class GrayImage {
   }
 
   /**
+   * A copy of this image with its brightness scaled by `factor` (0..1):
+   * raster and glyph / firmware-text draws alike, keeping the draws deferred
+   * so they stay on the cached-glyph wire path. Transparent (0) pixels stay
+   * transparent and anything visible stays at least 1 (black), so the
+   * color-key convention survives. Image draws (icons) are baked into the
+   * raster first: their sources are immutable, content-addressed cache
+   * entries, and a dimmed variant of each would only pollute that cache.
+   */
+  dimmed(factor: number): GrayImage {
+    const scale = Math.max(0, Math.min(1, factor));
+    const copy = new GrayImage(this.width, this.height, 0);
+    copy.pixels.set(this.pixels);
+    for (const placed of this.drawList) {
+      if (placed.kind === "image") {
+        copy.bitBlt(placed.source, placed.x, placed.y, { transparentZero: true });
+      }
+    }
+    const pixels = copy.pixels;
+    for (let i = 0; i < pixels.length; i++) {
+      const value = pixels[i]!;
+      if (value !== 0) pixels[i] = dimValue(value, scale);
+    }
+    for (const placed of this.drawList) {
+      if (placed.kind !== "image") {
+        copy.drawList.push({ ...placed, value: dimValue(placed.value, scale) });
+      }
+    }
+    return copy;
+  }
+
+  /**
    * This image with its deferred draws rasterized into the pixel buffer.
    * Returns this image unchanged when there are none, otherwise a baked copy
    * with an empty draw list.
@@ -610,6 +641,11 @@ function rasterizeGlyph(
       }
     }
   }
+}
+
+/** Scale a visible (non-zero) brightness, never below 1 (the color-key black). */
+function dimValue(value: number, scale: number): number {
+  return Math.max(1, Math.round(value * scale));
 }
 
 function clampByte(value: number): number {

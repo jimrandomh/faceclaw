@@ -8,13 +8,12 @@ import { TextViewerLayer } from "../files/text-viewer";
 import { evenHubApi, type EvenHubStoreApp } from "./even-api";
 import {
   getInstalledEvenHubApp,
-  installEvenHubPackageBytes,
   installedEvenHubAppId,
-  readEvenHubPackageManifestBytes,
   setInstalledEvenHubIcon,
-  type EvenHubInstallIcon,
+  type InstalledEvenHubApp,
 } from "./installed-apps";
-import { EvenHubPermissionDialogLayer } from "./permission-dialog";
+import { cleanError, installStoreApp } from "./store-install";
+import { describeUpdate } from "./updates";
 import { lineStep, listRowHeight } from "../../ui/metrics";
 
 const X = 18;
@@ -22,6 +21,8 @@ const X = 18;
 export type EvenHubStoreDetailOptions = {
   launchApp: (appId: string) => Promise<void> | void;
   appendLog: (message: string) => void;
+  /** A package was installed, updated, or reinstalled from this page. */
+  onInstalled?: (app: InstalledEvenHubApp) => void;
 };
 
 /** Storefront metadata and the Install/Launch action for one public app. */
@@ -46,7 +47,7 @@ export class EvenHubStoreDetailLayer implements Layer {
     const actionRowH = listRowHeight(font) + 4;
 
     const installed = getInstalledEvenHubApp(this.app.packageId);
-    const actions = ["About", "What's New", this.working ? "Installing..." : installed ? "Launch" : "Install"];
+    const actions = ["About", "What's New", this.working ? "Installing..." : this.primaryActionLabel(installed)];
 
     // Detail lines as (text, shade, extra gap below); built per candidate
     // width so the layout choice below can measure before drawing.
@@ -70,7 +71,13 @@ export class EvenHubStoreDetailLayer implements Layer {
         lines.push({ text: truncateText(font, line, textWidth), value: 125, gapAfter: 0 });
       }
       if (installed && !this.status) {
-        lines.push({ text: `Installed version ${installed.version}`, value: 155, gapAfter: 0 });
+        const standing = describeUpdate(installed, this.app);
+        const note = standing.packageMissing
+          ? "  ·  package missing, reinstall"
+          : standing.updateAvailable
+            ? "  ·  update available"
+            : "";
+        lines.push({ text: truncateText(font, `Installed version ${installed.version}${note}`, textWidth), value: 155, gapAfter: 0 });
       }
       if (this.status) {
         lines.push({ text: truncateText(font, this.status, textWidth), value: 180, gapAfter: 0 });
@@ -138,77 +145,39 @@ export class EvenHubStoreDetailLayer implements Layer {
     }
 
     const installed = getInstalledEvenHubApp(this.app.packageId);
-    if (installed) {
+    if (installed && this.primaryActionLabel(installed) === "Launch") {
       await this.options.launchApp(installedEvenHubAppId(installed.packageId));
       return;
     }
 
-    await this.prepareInstall(ctx);
+    await this.install(ctx);
   }
 
-  private async prepareInstall(ctx: LayerContext): Promise<void> {
+  /** Install for a new app; Update / Reinstall when the installed copy is stale or gone. */
+  private primaryActionLabel(installed: InstalledEvenHubApp | null): string {
+    if (!installed) return "Install";
+    const standing = describeUpdate(installed, this.app);
+    if (standing.packageMissing) return "Reinstall";
+    return standing.updateAvailable ? "Update" : "Launch";
+  }
+
+  private async install(ctx: LayerContext): Promise<void> {
     this.working = true;
-    this.status = `Downloading ${this.app.name}...`;
     ctx.actions.requestRender();
     try {
-      const [download, icon] = await Promise.all([
-        evenHubApi.downloadApp(this.app.packageId),
-        this.app.iconPath
-          ? evenHubApi.downloadPublicAsset(this.app.iconPath).catch((error) => {
-              this.options.appendLog(`evenhub store: icon unavailable for ${this.app.packageId}: ${cleanError(error)}`);
-              return undefined;
-            })
-          : Promise.resolve(undefined),
-      ]);
-      const manifest = readEvenHubPackageManifestBytes(download.bytes);
-      if (!manifest) throw new Error("The downloaded EHPK manifest could not be read.");
-      const privacyPolicyUrl = download.privacyPolicyUrl || manifest.privacyPolicyUrl;
-      this.working = false;
-      this.status = "";
-      ctx.actions.requestRender();
-      if (manifest.permissions.length > 0 || privacyPolicyUrl) {
-        ctx.stack.push(
-          new EvenHubPermissionDialogLayer(
-            manifest.name,
-            manifest.permissions,
-            privacyPolicyUrl,
-            () => {
-              void this.installAndLaunch(ctx, download.bytes, icon);
-            },
-            () => {
-              this.status = "Installation canceled.";
-              ctx.actions.requestRender();
-            },
-          ),
-        );
+      const result = await installStoreApp(ctx, this.app, {
+        appendLog: this.options.appendLog,
+        onStatus: (status) => {
+          this.status = status;
+          ctx.actions.requestRender();
+        },
+      });
+      if (!result) {
+        this.status = "Installation canceled.";
         return;
       }
-      await this.installAndLaunch(ctx, download.bytes, icon);
-    } catch (error) {
-      this.working = false;
-      this.status = cleanError(error);
-      this.options.appendLog(`evenhub store: ${this.status}`);
-      ctx.actions.requestRender();
-    }
-  }
-
-  private async installAndLaunch(
-    ctx: LayerContext,
-    bytes: Uint8Array,
-    icon: EvenHubInstallIcon | undefined,
-  ): Promise<void> {
-    this.working = true;
-    this.status = "Installing...";
-    ctx.actions.requestRender();
-    try {
-      const result = installEvenHubPackageBytes(bytes, {
-        expectedPackageId: this.app.packageId,
-        icon,
-      });
-      this.options.appendLog(
-        `evenhub store: installed ${result.packageId} ${result.version} (${bytes.length} bytes)`,
-      );
       this.status = "Installed";
+      this.options.onInstalled?.(result);
       ctx.actions.requestRender();
       await this.options.launchApp(installedEvenHubAppId(result.packageId));
     } catch (error) {
@@ -257,8 +226,4 @@ function formatBytes(value: number): string {
   if (value < 1024) return `${value} B`;
   if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
   return `${(value / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-function cleanError(error: unknown): string {
-  return String((error as Error)?.message ?? error).replace(/[\x00-\x1f]+/g, " ").replace(/\s+/g, " ").trim();
 }

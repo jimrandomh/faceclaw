@@ -1,6 +1,6 @@
 import { GrayImage } from "../../graphics/image";
 import { windowIcon } from "./chrome-layer";
-import { type IconName } from "../../graphics/icons";
+import { type IconActivity, type IconName } from "../../graphics/icons";
 import { toolRegistry, type ToolResult, type ToolSpec } from "../../assistant/tool-registry";
 import { appViewportSize, type WindowHeightMode } from "./geometry";
 import * as frameTimings from "../../native/frame-timings";
@@ -13,7 +13,8 @@ import { shell, type ShellWindow } from "./shell";
  * worker→Java directly.
  */
 export type WorkerAppMessage =
-  | { type: "open-window"; windowId: string; surfaceId: string; viewport: { width: number; height: number } }
+  | { type: "open-window"; windowId: string; surfaceId: string; title: string; viewport: { width: number; height: number } }
+  | { type: "resize-window"; windowId: string; viewport: { width: number; height: number } }
   | { type: "close-window"; windowId: string }
   | { type: "input"; windowId: string; event: unknown; frameId: number; focused: boolean }
   | { type: "text-input"; windowId: string; text: string }
@@ -61,15 +62,38 @@ export type WorkerAppReply =
     }
   | { type: "set-title"; windowId: string; title: string }
   | { type: "set-attention"; windowId: string; attention: boolean }
+  /** App-driven animation phase for sidebar icons that support an activity cursor. */
+  | { type: "set-icon-activity"; windowId: string; activity: IconActivity }
   | {
-      /** Window-menu pick: open the shell's voice dialog aimed at this window. */
+      /** Open the shell's voice dialog aimed at this window (a menu pick). */
       type: "start-voice-input";
       windowId: string;
     }
   | {
-      /** Window-menu pick: close this window (the shell owns the close path). */
+      /** Close this window (the shell owns the close path). */
       type: "close-window-request";
       windowId: string;
+    }
+  | {
+      /**
+       * The window's answer to tap-then-hold when it has no context menu of
+       * its own: open the shell's system menu in its place.
+       */
+      type: "open-system-menu";
+      windowId: string;
+    }
+  | {
+      /**
+       * The window's current gesture bindings, posted on change. hasAppMenu:
+       * tap-then-hold opens a context menu with something in it (the system
+       * menu shows its app-menu hint only then). claimsLongPress: the app
+       * gives long-press a meaning of its own, so the shell forwards it
+       * rather than opening the system menu (see ShellWindow).
+       */
+      type: "set-window-gestures";
+      windowId: string;
+      hasAppMenu: boolean;
+      claimsLongPress: boolean;
     }
   | {
       /** Open or focus the Settings app, optionally jumping to a section. */
@@ -172,6 +196,9 @@ const TOOL_CALL_HOST_TIMEOUT_MS = 15_000;
 
 export class WorkerAppHost {
   private readonly openWindows = new Set<string>();
+  private readonly windowIconActivity = new Map<string, IconActivity>();
+  /** Per-window gesture bindings, as last reported (see set-window-gestures). */
+  private readonly windowGestures = new Map<string, { hasAppMenu: boolean; claimsLongPress: boolean }>();
   private readonly pendingToolCalls = new Map<string, PendingToolCall>();
   private nextCallSerial = 1;
   /**
@@ -241,6 +268,23 @@ export class WorkerAppHost {
             this.options.requestShellRender();
           }
           break;
+        case "open-system-menu":
+          if (this.openWindows.has(message.windowId)) {
+            shell.openSystemMenu(message.windowId);
+          }
+          break;
+        case "set-icon-activity":
+          if (this.openWindows.has(message.windowId) && this.windowIconActivity.get(message.windowId) !== message.activity) {
+            this.windowIconActivity.set(message.windowId, message.activity);
+            this.options.requestShellRender();
+          }
+          break;
+        case "set-window-gestures":
+          this.windowGestures.set(message.windowId, {
+            hasAppMenu: message.hasAppMenu,
+            claimsLongPress: message.claimsLongPress,
+          });
+          break;
         case "open-settings":
           this.options.openSettings(message.section);
           break;
@@ -303,7 +347,8 @@ export class WorkerAppHost {
       type: "open-window",
       windowId: spec.windowId,
       surfaceId,
-      viewport: appViewportSize(heightMode),
+      title: spec.title,
+      viewport: appViewportSize(heightMode, this.options.appId),
     });
     const window: ShellWindow = {
       appId: this.options.appId,
@@ -313,15 +358,23 @@ export class WorkerAppHost {
       closeable: true,
       acceptsDirectional: spec.acceptsDirectional,
       heightMode,
+      // These apps can resize their live content without losing route/session state.
+      relayout: this.options.appId === "navigate" || this.options.appId === "terminal"
+        ? () => this.post({ type: "resize-window", windowId: spec.windowId, viewport: appViewportSize(heightMode, this.options.appId) })
+        : undefined,
+      hasAppMenu: () => this.windowGestures.get(spec.windowId)?.hasAppMenu ?? false,
+      claimsLongPress: () => this.windowGestures.get(spec.windowId)?.claimsLongPress ?? false,
       close: () => {
         this.openWindows.delete(spec.windowId);
+        this.windowGestures.delete(spec.windowId);
+        this.windowIconActivity.delete(spec.windowId);
         // Withdraw this window's tools and fail any in-flight calls to it.
         toolRegistry.removeAppTools(spec.windowId);
         this.failPendingToolCallsFor(spec.windowId);
         this.post({ type: "close-window", windowId: spec.windowId });
         this.options.removeSurface(surfaceId);
       },
-      drawIcon: windowIcon(spec.icon, spec.iconLetter, spec.iconGlyph),
+      drawIcon: windowIcon(spec.icon, spec.iconLetter, spec.iconGlyph, () => this.windowIconActivity.get(spec.windowId) ?? "idle"),
       handleInput: (event, frameId) => {
         frameTimings.logFrame(frameId, `input posted to the ${this.options.appId} worker`);
         this.post({

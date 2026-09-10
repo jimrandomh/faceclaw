@@ -1,5 +1,5 @@
 /**
- * Calculator window wiring: the in-process window, its long-press menu (mode
+ * Calculator window wiring: the in-process window, its context menu (mode
  * follow-ups, clear, settings), the assistant tools, and the voice/text
  * plumbing into the layer.
  *

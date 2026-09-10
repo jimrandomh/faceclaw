@@ -19,9 +19,11 @@ import {
   displayModeSetting,
   mirrorTouchSetting,
   onAnySettingChanged,
+  showBleBandwidthSetting,
   type BrightnessSetting,
   type DisplayModeSetting,
 } from "../ui/dashboard-settings";
+import { sampleBleTraffic } from "../native/ble-traffic";
 import { isValidMacAddress, loadDeviceAddresses } from "../g2/device-addresses";
 import { isAutoReconnectSuppressed, resumeAutoReconnect } from "../g2/reconnect-policy";
 import { formatErrorMessage } from "../util/format-error";
@@ -42,6 +44,9 @@ export class MainViewModel extends Observable {
   private _displayPreview: ImageSource | null = null;
   private _displayPreviewMessage = "";
   private _layoutOrientation: LayoutOrientation = this.readLayoutOrientation();
+  private _landscapePreviewWidth = 0;
+  private _landscapePreviewHeight = 0;
+  private _controlsContentHeight = 250;
   private _activeTextSettingId: string | null = null;
   private _activeTextEditorTitle = "";
   private _activeTextSettingTitle = "";
@@ -54,6 +59,9 @@ export class MainViewModel extends Observable {
   private _activeTextEditorToggleLabel = "";
   private _activeTextEditorToggleValue = false;
   private _activeTextEditorToggleVisible = false;
+  private _keyboardInputActive = false;
+  private _keyboardInputTargets: ReadonlyArray<{ id: string; label: string }> = [];
+  private _keyboardInputText = "";
   private _evenAppConflictMessage = "";
   private _evenAppConflictWarningVisible = false;
   private _firmwareWarningMessage = "";
@@ -61,6 +69,7 @@ export class MainViewModel extends Observable {
   private _screenRecordingActive = false;
   private _batteryOptimizationWarningVisible = false;
   private _fontsMissingWarningVisible = false;
+  private _alarmReliabilityMessage = "";
   private _warningsModalVisible = false;
   private _previewMode = false;
   private _phase: "disconnected" | "connecting" | "connected" | "charging" | "disconnecting" = "disconnected";
@@ -101,6 +110,9 @@ export class MainViewModel extends Observable {
       this.activeTextEditorToggleLabel = snapshot.activeTextEditorToggleLabel;
       this.activeTextEditorToggleValue = snapshot.activeTextEditorToggleValue;
       this.activeTextEditorToggleVisible = snapshot.activeTextEditorToggleVisible;
+      // Targets before active: the panel's buttons are labelled when it appears.
+      this.keyboardInputTargets = snapshot.keyboardInputTargets;
+      this.keyboardInputActive = snapshot.keyboardInputActive;
       this.evenAppConflictMessage = snapshot.evenAppConflictMessage;
       this.evenAppConflictWarningVisible = snapshot.evenAppConflictWarningVisible;
       this.firmwareWarningMessage = snapshot.firmwareWarningMessage;
@@ -108,10 +120,16 @@ export class MainViewModel extends Observable {
       this.screenRecordingActive = snapshot.screenRecordingActive;
       this.batteryOptimizationWarningVisible = snapshot.batteryOptimizationWarningVisible;
       this.fontsMissingWarningVisible = snapshot.fontsMissingWarningVisible;
+      this.alarmReliabilityMessage = snapshot.alarmReliabilityMessage;
       this.refreshPadFocusLine();
     }));
     // Brightness / display mode can change from the glasses' Settings app too.
-    this.unsubscribers.push(onAnySettingChanged(() => this.refreshDisplayControls()));
+    this.unsubscribers.push(onAnySettingChanged(() => {
+      this.refreshDisplayControls();
+      this.syncBleBandwidthPolling();
+    }));
+    this.syncBleBandwidthPolling();
+    this.unsubscribers.push(() => this.stopBleBandwidthPolling());
   }
 
   /** Detach from the controller and settings; the page calls this when it lets go of the model. */
@@ -221,18 +239,25 @@ export class MainViewModel extends Observable {
   }
 
   get landscapeDisplayPreviewWidth(): number {
-    return Math.floor(this.landscapeDisplayPreviewHeight * LENS_ASPECT_RATIO);
+    return this._landscapePreviewWidth;
   }
 
   get landscapeDisplayPreviewHeight(): number {
-    // Height keeps the vertical footprint the preview had at the old 2:1
-    // aspect; the width is derived from it, so a wider lens aspect can't
-    // grow the preview past the side panel.
-    const screenWidth = Screen.mainScreen.widthDIPs;
-    // Must match the landscape grid's fixed side-panel column in main-page.xml.
-    const sidePanelWidth = 360;
-    const availableWidth = Math.max(240, Math.floor(screenWidth - sidePanelWidth - 56));
-    return Math.floor(availableWidth / 2);
+    return this._landscapePreviewHeight;
+  }
+
+  onLandscapePreviewLayoutChanged(args: { object: View }): void {
+    // Measure the actual content cell: excludes the action bar, system bars,
+    // and controls, and updates for rotation, split-screen, and the keyboard.
+    const { width, height } = args.object.getActualSize();
+    if (width <= 0 || height <= 0) return;
+    const previewHeight = Math.min(height, width / LENS_ASPECT_RATIO);
+    const previewWidth = previewHeight * LENS_ASPECT_RATIO;
+    if (previewWidth === this._landscapePreviewWidth && previewHeight === this._landscapePreviewHeight) return;
+    this._landscapePreviewWidth = previewWidth;
+    this._landscapePreviewHeight = previewHeight;
+    this.notifyPropertyChange("landscapeDisplayPreviewWidth", previewWidth);
+    this.notifyPropertyChange("landscapeDisplayPreviewHeight", previewHeight);
   }
 
   /** Near-full-width on phones, capped on tablets (the 32 clears the 16 margins). */
@@ -249,11 +274,25 @@ export class MainViewModel extends Observable {
     const faceHeight = 230;
     const available =
       this._layoutOrientation === "landscape"
-        ? // The landscape side panel column (see main-page.xml) minus its
-          // m-l-16 margin and the controls' own 8+8 margins.
-          360 - 32
+        ? 345 // Matches the unpadded landscape controls column in main-page.xml.
         : Screen.mainScreen.widthDIPs - 56; // p-20 padding + controls margins
     return Math.min(available, Math.round(faceHeight * 1.5));
+  }
+
+  get watchFaceHeight(): number {
+    return Math.min(230, Math.max(0, this._controlsContentHeight - 2));
+  }
+
+  get ringTouchpadHeight(): number {
+    return Math.min(250, Math.max(0, this._controlsContentHeight - 2));
+  }
+
+  onControlsContentLayoutChanged(args: { object: View }): void {
+    const { height } = args.object.getActualSize();
+    if (height <= 0 || height === this._controlsContentHeight) return;
+    this._controlsContentHeight = height;
+    this.notifyPropertyChange("watchFaceHeight", this.watchFaceHeight);
+    this.notifyPropertyChange("ringTouchpadHeight", this.ringTouchpadHeight);
   }
 
   get portraitLayoutVisibility(): "visible" | "collapse" {
@@ -459,6 +498,93 @@ export class MainViewModel extends Observable {
     return this.isTextSettingEditorActive ? "visible" : "collapse";
   }
 
+  // ---- keyboard-input panel (the keyboard button beside the mic button) ----
+  //
+  // The dialog lives on the glasses (ui/shell/keyboard-input.ts); this panel
+  // is the phone's end of it: the text field the IME types into and a send
+  // button per destination. The field's text is the panel's own state, never
+  // echoed back from the controller (see setActiveTextSettingValue for why);
+  // it is cleared whenever a dialog opens or closes.
+
+  get keyboardInputActive(): boolean {
+    return this._keyboardInputActive;
+  }
+
+  set keyboardInputActive(value: boolean) {
+    if (this._keyboardInputActive === value) return;
+    this._keyboardInputActive = value;
+    this.keyboardInputText = "";
+    this.notifyPropertyChange("keyboardInputActive", value);
+    this.notifyPropertyChange("keyboardInputVisibility", this.keyboardInputVisibility);
+    this.notifyPropertyChange("controlsVisibility", this.controlsVisibility);
+  }
+
+  get keyboardInputVisibility(): "visible" | "collapse" {
+    return this._keyboardInputActive ? "visible" : "collapse";
+  }
+
+  get keyboardInputText(): string {
+    return this._keyboardInputText;
+  }
+
+  set keyboardInputText(value: string) {
+    if (this._keyboardInputText === value) return;
+    this._keyboardInputText = value;
+    this.notifyPropertyChange("keyboardInputText", value);
+  }
+
+  set keyboardInputTargets(value: ReadonlyArray<{ id: string; label: string }>) {
+    this._keyboardInputTargets = value;
+    this.notifyPropertyChange("keyboardInputPrimaryTargetLabel", this.keyboardInputPrimaryTargetLabel);
+    this.notifyPropertyChange("keyboardInputPrimaryTargetVisibility", this.keyboardInputPrimaryTargetVisibility);
+    this.notifyPropertyChange("keyboardInputSecondaryTargetLabel", this.keyboardInputSecondaryTargetLabel);
+    this.notifyPropertyChange("keyboardInputSecondaryTargetVisibility", this.keyboardInputSecondaryTargetVisibility);
+  }
+
+  // The glasses menu has at most two destinations (assistant, app), so the
+  // panel has a fixed pair of buttons rather than a repeater.
+  get keyboardInputPrimaryTargetLabel(): string {
+    return this._keyboardInputTargets[0]?.label ?? "";
+  }
+
+  get keyboardInputPrimaryTargetVisibility(): "visible" | "collapse" {
+    return this._keyboardInputTargets[0] ? "visible" : "collapse";
+  }
+
+  get keyboardInputSecondaryTargetLabel(): string {
+    return this._keyboardInputTargets[1]?.label ?? "";
+  }
+
+  get keyboardInputSecondaryTargetVisibility(): "visible" | "collapse" {
+    return this._keyboardInputTargets[1] ? "visible" : "collapse";
+  }
+
+  onKeyboardTap(): void {
+    dashboardController.startKeyboardInput();
+  }
+
+  onKeyboardInputTextChange(args: { value?: string; object?: { text?: string } }): void {
+    const text = args.object?.text ?? args.value ?? "";
+    // Track the draft so closing the dialog emits a clear even when the
+    // binding hasn't updated the model. Avoid echoing edits into the IME.
+    this._keyboardInputText = text;
+    dashboardController.setKeyboardInputText(text);
+  }
+
+  onKeyboardInputPrimarySendTap(): void {
+    const target = this._keyboardInputTargets[0];
+    if (target) dashboardController.sendKeyboardInput(target.id);
+  }
+
+  onKeyboardInputSecondarySendTap(): void {
+    const target = this._keyboardInputTargets[1];
+    if (target) dashboardController.sendKeyboardInput(target.id);
+  }
+
+  onKeyboardInputDiscardTap(): void {
+    dashboardController.discardKeyboardInput();
+  }
+
   get evenAppConflictMessage(): string {
     return this._evenAppConflictMessage;
   }
@@ -614,6 +740,28 @@ export class MainViewModel extends Observable {
     dashboardController.requestBatteryOptimizationExemption();
   }
 
+  get alarmReliabilityMessage(): string {
+    return this._alarmReliabilityMessage;
+  }
+
+  set alarmReliabilityMessage(value: string) {
+    if (this._alarmReliabilityMessage !== value) {
+      this._alarmReliabilityMessage = value;
+      this.notifyPropertyChange("alarmReliabilityMessage", value);
+      this.notifyPropertyChange("alarmReliabilityWarningVisibility", this.alarmReliabilityWarningVisibility);
+      this.refreshWarningIndicator();
+    }
+  }
+
+  get alarmReliabilityWarningVisibility(): "visible" | "collapse" {
+    return this._alarmReliabilityMessage ? "visible" : "collapse";
+  }
+
+  onFixAlarmReliabilityTap(): void {
+    this.setWarningsModalVisible(false);
+    dashboardController.openAlarmReliabilityFix();
+  }
+
   // ---- the action bar's warning triangle and the modal behind it ----
 
   get anyWarningVisible(): boolean {
@@ -621,7 +769,8 @@ export class MainViewModel extends Observable {
       this._evenAppConflictWarningVisible ||
       this._firmwareWarningVisible ||
       this._batteryOptimizationWarningVisible ||
-      this._fontsMissingWarningVisible
+      this._fontsMissingWarningVisible ||
+      this._alarmReliabilityMessage.length > 0
     );
   }
 
@@ -846,16 +995,36 @@ export class MainViewModel extends Observable {
     dashboardController.openEvenAppSettings();
   }
 
+  // Tap-then-hold on the simulated pads: NativeScript reports doubleTap on
+  // the second finger-down and still runs the long-press recognizer on that
+  // same press, so the sequence arrives as doubleTap followed by longPress.
+  // Each pad therefore defers its double-click until the finger-up (the touch
+  // handler) and converts the deferred pair into the G2 tap-then-hold gesture
+  // when a longPress lands first.
+
+  private ringPadDoubleTapPending = false;
+
   async onRingPadTap(): Promise<void> {
     await dashboardController.injectSyntheticRingInput("click");
   }
 
   async onRingPadDoubleTap(): Promise<void> {
-    await dashboardController.injectSyntheticRingInput("double-click");
+    this.ringPadDoubleTapPending = true;
   }
 
   async onRingPadLongPress(): Promise<void> {
-    await dashboardController.injectSyntheticRingInput("long-press");
+    const kind = this.ringPadDoubleTapPending ? "short-then-long-press" : "long-press";
+    this.ringPadDoubleTapPending = false;
+    await dashboardController.injectSyntheticRingInput(kind);
+  }
+
+  async onRingPadTouch(args: TouchGestureEventData): Promise<void> {
+    if (args.action !== "up" && args.action !== "cancel") return;
+    const pending = this.ringPadDoubleTapPending;
+    this.ringPadDoubleTapPending = false;
+    if (args.action === "up" && pending) {
+      await dashboardController.injectSyntheticRingInput("double-click");
+    }
   }
 
   /** The ring pad only has a vertical axis, so left/right swipes are ignored. */
@@ -878,6 +1047,9 @@ export class MainViewModel extends Observable {
   // above stays on the ring's own scheme.
 
   private padTwoFingerDown = false;
+  // See the ring pad above: defers the double-click so a longPress can turn
+  // the pair into tap-then-hold.
+  private padDoubleTapPending = false;
 
   /** What the next gesture lands on, as the watch pad shows it. */
   get padFocusLine(): string {
@@ -895,12 +1067,13 @@ export class MainViewModel extends Observable {
   }
 
   async onPadDoubleTap(): Promise<void> {
-    await dashboardController.injectSyntheticRingInput("double-click", "watch");
-    this.refreshPadFocusLine();
+    this.padDoubleTapPending = true;
   }
 
   async onPadLongPress(): Promise<void> {
-    await dashboardController.injectSyntheticRingInput("long-press", "watch");
+    const kind = this.padDoubleTapPending ? "short-then-long-press" : "long-press";
+    this.padDoubleTapPending = false;
+    await dashboardController.injectSyntheticRingInput(kind, "watch");
     this.refreshPadFocusLine();
   }
 
@@ -917,6 +1090,8 @@ export class MainViewModel extends Observable {
       return;
     }
     if (args.action === "up" || args.action === "cancel") {
+      const pendingDouble = this.padDoubleTapPending;
+      this.padDoubleTapPending = false;
       const twoFinger = this.padTwoFingerDown;
       if (twoFinger) {
         // Let the single-tap recognizer's delayed tap see the flag first.
@@ -927,6 +1102,9 @@ export class MainViewModel extends Observable {
           await dashboardController.injectSyntheticRingInput("double-click", "watch");
           this.refreshPadFocusLine();
         }
+      } else if (args.action === "up" && pendingDouble) {
+        await dashboardController.injectSyntheticRingInput("double-click", "watch");
+        this.refreshPadFocusLine();
       }
     }
   }
@@ -980,7 +1158,7 @@ export class MainViewModel extends Observable {
   private _controlsTab: ControlsTab = lastControlsTab;
 
   get controlsVisibility(): "visible" | "collapse" {
-    return this.isTextSettingEditorActive ? "collapse" : "visible";
+    return this.isTextSettingEditorActive || this._keyboardInputActive ? "collapse" : "visible";
   }
 
   get settingsTabVisibility(): "visible" | "collapse" {
@@ -1099,6 +1277,75 @@ export class MainViewModel extends Observable {
     this.notifyPropertyChange("displayModeLabel", this.displayModeLabel);
   }
 
+  // ---- BLE bandwidth indicator (Settings > Developer > Show BLE bandwidth usage) ----
+  //
+  // A running total of outbound BLE messages/bytes, overlaid at the bottom of
+  // the page on every tab. Polled from the Java-side counters while enabled.
+
+  private _bleBandwidthLabel = "";
+  private bleBandwidthTimer: ReturnType<typeof setInterval> | null = null;
+  // Recent counter samples, one per poll tick, for the windowed rates.
+  private bleRateHistory: Array<{ atMs: number; bytes: number; frames: number }> = [];
+
+  get bleBandwidthVisibility(): "visible" | "collapse" {
+    return showBleBandwidthSetting.get() ? "visible" : "collapse";
+  }
+
+  get bleBandwidthLabel(): string {
+    return this._bleBandwidthLabel;
+  }
+
+  /** Start or stop the poll to match the setting; safe to call repeatedly. */
+  private syncBleBandwidthPolling(): void {
+    const enabled = showBleBandwidthSetting.get();
+    if (enabled && this.bleBandwidthTimer === null) {
+      this.refreshBleBandwidth();
+      this.bleBandwidthTimer = setInterval(() => this.refreshBleBandwidth(), 1000);
+      this.notifyPropertyChange("bleBandwidthVisibility", this.bleBandwidthVisibility);
+    } else if (!enabled && this.bleBandwidthTimer !== null) {
+      this.stopBleBandwidthPolling();
+      this.notifyPropertyChange("bleBandwidthVisibility", this.bleBandwidthVisibility);
+    }
+  }
+
+  private stopBleBandwidthPolling(): void {
+    if (this.bleBandwidthTimer !== null) {
+      clearInterval(this.bleBandwidthTimer);
+      this.bleBandwidthTimer = null;
+    }
+    // Don't let a later re-enable compute a rate across the disabled gap.
+    this.bleRateHistory = [];
+  }
+
+  private refreshBleBandwidth(): void {
+    let label: string;
+    try {
+      const sample = sampleBleTraffic();
+      const atMs = Date.now();
+      this.bleRateHistory.push({ atMs, bytes: sample.bytes, frames: sample.frames });
+      while (this.bleRateHistory.length > 0 && this.bleRateHistory[0]!.atMs < atMs - BLE_RATE_WINDOW_MS) {
+        this.bleRateHistory.shift();
+      }
+      label = `BLE sent: ${formatCount(sample.messages)} messages, ${formatCount(sample.bytes)} bytes`;
+      const oldest = this.bleRateHistory[0]!;
+      const elapsedSec = (atMs - oldest.atMs) / 1000;
+      if (elapsedSec > 0) {
+        const byteDelta = sample.bytes - oldest.bytes;
+        const frameDelta = sample.frames - oldest.frames;
+        label += ` · ${formatByteRate(byteDelta / elapsedSec)}, ${(frameDelta / elapsedSec).toFixed(1)} fps`;
+        if (frameDelta > 0) {
+          label += `, ${formatCount(byteDelta / frameDelta)} B/frame`;
+        }
+      }
+    } catch (error) {
+      label = `BLE sent: ${this.formatError(error)}`;
+    }
+    if (label !== this._bleBandwidthLabel) {
+      this._bleBandwidthLabel = label;
+      this.notifyPropertyChange("bleBandwidthLabel", label);
+    }
+  }
+
   private readLayoutOrientation(): LayoutOrientation {
     const applicationOrientation = Application.orientation();
     if (applicationOrientation === "landscape" || applicationOrientation === "portrait") {
@@ -1110,6 +1357,20 @@ export class MainViewModel extends Observable {
   private formatError(error: unknown): string {
     return formatErrorMessage(error, 240);
   }
+}
+
+/** 1234567 -> "1,234,567"; kept exact rather than rounded so growth is visible at a glance. */
+function formatCount(value: number): string {
+  return String(Math.round(value)).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+}
+
+/** How far back the BLE bandwidth indicator's rates look. */
+const BLE_RATE_WINDOW_MS = 5000;
+
+function formatByteRate(bytesPerSec: number): string {
+  if (bytesPerSec >= 1e6) return (bytesPerSec / 1e6).toFixed(2) + " MB/s";
+  if (bytesPerSec >= 1e3) return (bytesPerSec / 1e3).toFixed(1) + " kB/s";
+  return Math.round(bytesPerSec) + " B/s";
 }
 
 /** NativeScript swipe direction -> the watch-scheme directional gesture. */

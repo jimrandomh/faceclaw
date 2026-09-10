@@ -1,4 +1,4 @@
-import { encodeBase64 } from "./cloud-stt";
+import { type CloudSttOptions, type CloudSttTranscriptEvent, encodeBase64 } from "./cloud-stt";
 
 declare const com: any;
 
@@ -18,17 +18,8 @@ const WS_URL = "wss://api.elevenlabs.io/v1/speech-to-text/realtime";
 const MODEL_ID = "scribe_v2_realtime";
 const SAMPLE_RATE = 16000;
 
-export type ElevenLabsTranscriptEvent = {
-  text: string;
-  isFinal: boolean;
-};
-
-export type ElevenLabsSttOptions = {
-  apiKey: string;
-  onTranscript: (event: ElevenLabsTranscriptEvent) => void;
-  onStatus: (status: string) => void;
-  onError: (message: string) => void;
-};
+export type ElevenLabsTranscriptEvent = CloudSttTranscriptEvent;
+export type ElevenLabsSttOptions = CloudSttOptions;
 
 export class ElevenLabsSttClient {
   private ws: any = null;
@@ -38,26 +29,32 @@ export class ElevenLabsSttClient {
   // PCM that arrived before the socket finished opening; flushed on open.
   private readonly pendingChunks: string[] = [];
   private latestText = "";
+  private readonly commits: boolean[] = [];
 
   constructor(private readonly options: ElevenLabsSttOptions) {}
 
   start(): void {
-    if (this.ws) return;
+    if (this.closed || this.ws) return;
     const url = `${WS_URL}?model_id=${MODEL_ID}&audio_format=pcm_${SAMPLE_RATE}&commit_strategy=manual`;
     this.listenerProxy = new com.faceclaw.app.FaceclawWebSocketListener({
       onOpen: () => {
+        if (this.closed) return;
         this.open = true;
         for (const chunk of this.pendingChunks.splice(0)) {
           this.sendChunk(chunk);
         }
+        if (!this.closed) this.options.onReady?.();
       },
-      onTextMessage: (message: string) => this.handleMessage(String(message)),
+      onTextMessage: (message: string) => {
+        if (!this.closed) this.handleMessage(String(message));
+      },
       onClosed: () => {
         this.open = false;
+        if (!this.closed) this.options.onDisconnected?.("ElevenLabs connection closed.");
       },
       onFailure: (message: string) => {
         if (this.closed) return;
-        this.options.onError(`ElevenLabs connection failed: ${String(message)}`);
+        this.options.onDisconnected?.(`ElevenLabs connection failed: ${String(message)}`);
       },
     });
     try {
@@ -67,7 +64,7 @@ export class ElevenLabsSttClient {
       this.ws = new com.faceclaw.app.FaceclawWebSocket(url, this.listenerProxy, "xi-api-key", key);
       this.options.onStatus("Connecting to ElevenLabs...");
     } catch (error) {
-      this.options.onError(`ElevenLabs connection failed: ${String((error as Error)?.message ?? error)}`);
+      this.options.onDisconnected?.(`ElevenLabs connection failed: ${String((error as Error)?.message ?? error)}`);
     }
   }
 
@@ -82,24 +79,25 @@ export class ElevenLabsSttClient {
     }
   }
 
+  commitSegment(): void {
+    this.commit(true);
+  }
+
   /** End of utterance: flush and commit for a final transcript. */
   finish(): void {
+    this.commit(false);
+  }
+
+  private commit(paragraphBreakAfter: boolean): void {
     if (this.closed) return;
-    const commitMessage = JSON.stringify({
-      message_type: "input_audio_chunk",
-      audio_base_64: "",
-      commit: true,
-      sample_rate: SAMPLE_RATE,
-    });
-    if (this.open) {
-      this.trySend(commitMessage);
-    } else {
-      this.pendingChunks.push("__commit__");
-    }
+    this.commits.push(paragraphBreakAfter);
+    if (this.open) this.sendChunk("__commit__");
+    else this.pendingChunks.push("__commit__");
   }
 
   stop(): void {
     this.closed = true;
+    this.open = false;
     if (this.ws) {
       try {
         this.ws.close(1000, "bye");
@@ -109,28 +107,26 @@ export class ElevenLabsSttClient {
       this.ws = null;
     }
     this.listenerProxy = null;
+    this.pendingChunks.length = 0;
   }
 
   private sendChunk(base64OrCommit: string): void {
-    if (base64OrCommit === "__commit__") {
-      this.finish();
-      return;
-    }
-    this.trySend(
-      JSON.stringify({
-        message_type: "input_audio_chunk",
-        audio_base_64: base64OrCommit,
-        commit: false,
-        sample_rate: SAMPLE_RATE,
-      }),
-    );
+    const commit = base64OrCommit === "__commit__";
+    this.trySend(JSON.stringify({
+      message_type: "input_audio_chunk",
+      audio_base_64: commit ? "" : base64OrCommit,
+      commit,
+      sample_rate: SAMPLE_RATE,
+    }));
   }
 
   private trySend(message: string): void {
     try {
-      this.ws?.sendText(message);
+      if (this.ws?.sendText(message) === false) {
+        this.options.onDisconnected?.("ElevenLabs send failed.");
+      }
     } catch (error) {
-      console.warn("elevenlabs send failed", error);
+      this.options.onDisconnected?.(`ElevenLabs send failed: ${String(error)}`);
     }
   }
 
@@ -150,14 +146,19 @@ export class ElevenLabsSttClient {
         this.options.onTranscript({ text: this.latestText, isFinal: false });
         return;
       case "committed_transcript":
-      case "committed_transcript_with_timestamps":
         this.latestText = String(message.text ?? this.latestText);
-        this.options.onTranscript({ text: this.latestText, isFinal: true });
+        this.options.onTranscript({ text: this.latestText, isFinal: true, paragraphBreakAfter: this.commits.shift() ?? false });
+        this.latestText = "";
+        return;
+      case "committed_transcript_with_timestamps":
+        // The timestamp event follows the plain commit; do not append twice.
+        return;
+      case "rate_limited":
+        this.options.onDisconnected?.("ElevenLabs rate limited.");
         return;
       case "error":
       case "auth_error":
       case "quota_exceeded":
-      case "rate_limited":
       case "input_error":
         this.options.onError(`ElevenLabs: ${String(message.error ?? message.message_type)}`);
         return;

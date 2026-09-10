@@ -26,9 +26,23 @@ export const EVENHUB_SCREEN_HEIGHT = 288;
 const TEXT_WHITE = 255;
 const LIST_ROW_PADDING = 4;
 
+/**
+ * SDK 0.0.14 textColor levels 0..4 as grey values. Level 4 is the default and
+ * the only one apps got before 0.0.14, so it must stay exactly TEXT_WHITE.
+ * Level 0 is the firmware's "fully dim" step, which over the black page
+ * background means the text is effectively not shown.
+ */
+const TEXT_BRIGHTNESS_GREYS = [0, 64, 128, 191, 255];
+
+function textGrey(level: number | undefined): number {
+  return level === undefined ? TEXT_WHITE : (TEXT_BRIGHTNESS_GREYS[level] ?? TEXT_WHITE);
+}
+
 /** Chars the font lacks are skipped silently on stock (no tofu); EvenHubFont
  * skips unknown glyphs, matching that. */
 function paintTextContainer(image: GrayImage, container: EvenHubTextContainer): void {
+  // Only the text dims: textColor is a text-brightness level, and stock draws
+  // the container's border at full brightness regardless.
   paintBorder(image, container);
   const inset = container.borderWidth + container.paddingLength;
   EvenHubFont.get().drawTextWrapped(
@@ -37,7 +51,7 @@ function paintTextContainer(image: GrayImage, container: EvenHubTextContainer): 
     container.y + inset,
     Math.max(1, container.width - 2 * inset),
     container.content,
-    TEXT_WHITE,
+    textGrey(container.textColor),
   );
 }
 

@@ -1,6 +1,8 @@
 import { Utils } from "@nativescript/core";
 
-import { CloudSttClient } from "./cloud-stt";
+import { type CloudSttTranscriptEvent, type CloudSttOptions, CloudSttClient } from "./cloud-stt";
+import { ReconnectingSttClient } from "./reconnecting-stt";
+import { SpeechPauseDetector } from "./speech-pause";
 import { ElevenLabsSttClient } from "./elevenlabs-stt";
 import { OpenAiRealtimeSttClient } from "./openai-stt";
 import { SonioxSttClient } from "./soniox-stt";
@@ -14,7 +16,7 @@ export type VoiceControlState = {
 
 export type VoiceProviderKind = "onboard" | "elevenlabs" | "whisper" | "soniox";
 
-export type VoiceTranscriptEvent = {
+export type VoiceTranscriptEvent = CloudSttTranscriptEvent & {
   /**
    * Complete best transcript of the current utterance. REPLACE semantics —
    * render as-is, replacing any previous partial. Not a delta.
@@ -80,6 +82,8 @@ export type FrameMetaListener = (meta: MicFrameMeta) => void;
 export class FaceclawVoiceControlBridge {
   private readonly statusListeners = new Set<(state: VoiceControlState) => void>();
   private readonly transcriptListeners = new Set<(event: VoiceTranscriptEvent) => void>();
+  private readonly speechPauseListeners = new Set<() => void>();
+  private readonly speechPause = new SpeechPauseDetector();
   private readonly speechEndListeners = new Set<() => void>();
   private controller: any | null = null;
   private listenerProxy: any | null = null;
@@ -130,6 +134,12 @@ export class FaceclawVoiceControlBridge {
   onSpeechEnd(listener: () => void): () => void {
     this.speechEndListeners.add(listener);
     return () => this.speechEndListeners.delete(listener);
+  }
+
+  /** Pauses in on-device recognition, for Transcribe's presentation only. */
+  onSpeechPause(listener: () => void): () => void {
+    this.speechPauseListeners.add(listener);
+    return () => this.speechPauseListeners.delete(listener);
   }
 
   /** Begin push-to-talk capture (momentary; released with stopPushToTalk). */
@@ -251,6 +261,9 @@ export class FaceclawVoiceControlBridge {
       this.controller?.clearSpeakerVerification();
     }
 
+    this.speechPause.reset();
+    // A previous push-to-talk commit may still be awaiting its final result.
+    this.cloudClient?.stop();
     const cloudClient = this.createCloudClient(options);
     if (cloudClient) {
       this.cloudClient = cloudClient;
@@ -274,18 +287,20 @@ export class FaceclawVoiceControlBridge {
     if (options.provider === "onboard") return null;
     const sttOptions = {
       apiKey: "",
-      onTranscript: (event: { text: string; isFinal: boolean }) =>
-        this.emitTranscript(event.text, event.isFinal),
+      onTranscript: (event: CloudSttTranscriptEvent) =>
+        this.emitTranscript(event.text, event.isFinal, event),
       onStatus: (status: string) => this.setStatus(status),
       onError: (message: string) => this.setStatus(message),
     };
+    const reconnecting = (create: (options: CloudSttOptions) => CloudSttClient, apiKey: string) =>
+      new ReconnectingSttClient(create, { ...sttOptions, apiKey }, () => this.captureHolders.has("continuous"));
     if (options.provider === "elevenlabs") {
       const apiKey = options.elevenLabsApiKey.trim();
       if (!apiKey) {
         this.setStatus("No ElevenLabs key set; using on-device voice.");
         return null;
       }
-      return new ElevenLabsSttClient({ ...sttOptions, apiKey });
+      return reconnecting((config) => new ElevenLabsSttClient(config), apiKey);
     }
     if (options.provider === "soniox") {
       const apiKey = options.sonioxApiKey.trim();
@@ -293,14 +308,14 @@ export class FaceclawVoiceControlBridge {
         this.setStatus("No Soniox key set; using on-device voice.");
         return null;
       }
-      return new SonioxSttClient({ ...sttOptions, apiKey });
+      return reconnecting((config) => new SonioxSttClient(config), apiKey);
     }
     const apiKey = options.openAiApiKey.trim();
     if (!apiKey) {
       this.setStatus("No OpenAI key set; using on-device voice.");
       return null;
     }
-    return new OpenAiRealtimeSttClient({ ...sttOptions, apiKey });
+    return reconnecting((config) => new OpenAiRealtimeSttClient(config), apiKey);
   }
 
   private releaseCapture(holder: CaptureHolder, commit: boolean): void {
@@ -432,6 +447,9 @@ export class FaceclawVoiceControlBridge {
       onPcm: (pcm: any) => {
         const bytes = toUint8Array(pcm);
         this.cloudClient?.acceptPcm(bytes);
+        if (!this.cloudClient && this.captureHolders.has("continuous") && this.speechPause.accept(bytes)) {
+          for (const listener of this.speechPauseListeners) listener();
+        }
         if (this.rawPcmListeners.size > 0) {
           this.rawPcmListeners.forEach((listener) => listener(bytes));
         }
@@ -459,15 +477,16 @@ export class FaceclawVoiceControlBridge {
     this.controller.setListener(this.listenerProxy);
   }
 
-  private emitTranscript(text: string, isFinal: boolean): void {
+  private emitTranscript(text: string, isFinal: boolean, metadata?: CloudSttTranscriptEvent): void {
     // "My voice only": a rejected session's final transcript is emptied so
     // nothing downstream (assistant, dictation) acts on another speaker's
     // words. The verification verdict is posted before the final, and cloud
     // finals arrive over the network later still, so the flag is settled.
     if (isFinal && this.verificationActive && this.verificationRejected) {
       text = "";
+      metadata = undefined;
     }
-    const event = { text, isFinal };
+    const event = { ...metadata, text, isFinal };
     for (const listener of this.transcriptListeners) {
       listener(event);
     }

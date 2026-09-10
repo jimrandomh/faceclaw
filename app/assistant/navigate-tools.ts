@@ -23,7 +23,7 @@ export function registerNavigateTools(
     {
       name: "nav.start_navigation",
       description:
-        "Start turn-by-turn navigation on the glasses to a destination given as free text (place name, business, or address near the user). Opens the Navigate app. Returns the resolved destination, distance, and ETA; if the wrong place was resolved, call again with a more specific query.",
+        "Start turn-by-turn navigation on the glasses to a destination given as free text (place name, business, or address near the user), or the name of one of the user's saved destinations such as 'home' or 'work'. Opens the Navigate app. Returns the resolved destination, distance, and ETA; if the wrong place was resolved, call again with a more specific query.",
       inputSchema: {
         type: "object",
         properties: {

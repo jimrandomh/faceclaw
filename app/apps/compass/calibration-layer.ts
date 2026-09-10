@@ -1,7 +1,11 @@
 /**
  * The compass calibration screen: a crosshair the wearer aims at a landmark
- * of known heading, plus raw/offset/calibrated readouts. Swipe adjusts the
- * offset by 1°, double-tap returns to the compass.
+ * of known heading, plus raw/offset/declination/calibrated readouts. Swipe
+ * adjusts the offset by 1°, double-tap returns to the compass.
+ *
+ * The landmark's heading must be in the frame the compass is showing: aiming
+ * at a true heading in true mode leaves the wearer-fit offset free of
+ * declination, which is what lets the calibration survive travel.
  */
 import { GrayImage } from "../../graphics/image";
 import { getDefaultMediumFont, getDefaultSmallFont } from "../../graphics/ui-fonts";
@@ -10,18 +14,16 @@ import { type InputEvent } from "../../ui/gestures";
 import { type Layer, type LayerContext } from "../../ui/layers";
 import { lineStep } from "../../ui/metrics";
 import { screenCenterInViewportX } from "../../ui/shell/geometry";
-import {
-  formatOffset,
-  getCompassOffset,
-  markCompassCalibrated,
-  normalizeHeading,
-  setCompassOffset,
-} from "./calibration";
+import { formatOffset, getCompassOffset, markCompassCalibrated, setCompassOffset } from "./calibration";
+import { resolveHeading, type NorthReference } from "./heading";
 
-const INSTRUCTIONS =
+const INSTRUCTIONS_PREAMBLE =
   "This compass uses the magnetometer in the right arm of the glasses; depending how it rests on your head, "
-  + "it may be slightly off. To calibrate, look at a distant object or down a street where you know the true "
-  + "compass heading, then adjust the calibration offset below";
+  + "it may be slightly off. To calibrate, look at a distant object or down a street where you know the ";
+const INSTRUCTIONS_BY_FRAME: Record<NorthReference, string> = {
+  true: "true compass heading (as shown on a map), then adjust the calibration offset below",
+  magnetic: "magnetic compass heading (as read by another compass), then adjust the calibration offset below",
+};
 
 /** Margins around the instruction paragraph. */
 const TEXT_PADDING_X = 16;
@@ -40,7 +42,12 @@ export class CompassCalibrationLayer implements Layer {
     const medium = getDefaultMediumFont();
     const smallStep = lineStep(small);
 
-    const lines = wrapText(small, INSTRUCTIONS, width - TEXT_PADDING_X * 2);
+    const raw = this.getRawHeading();
+    const resolved = raw === null ? null : resolveHeading(raw);
+    // Before the first reading there is no frame to name yet; the true-mode
+    // wording is the default and the readout will correct it once data arrives.
+    const frame = resolved?.frame ?? "true";
+    const lines = wrapText(small, INSTRUCTIONS_PREAMBLE + INSTRUCTIONS_BY_FRAME[frame], width - TEXT_PADDING_X * 2);
     for (let i = 0; i < lines.length; i++) {
       image.drawText(small, TEXT_PADDING_X, TEXT_PADDING_TOP + i * smallStep, lines[i]!, 190);
     }
@@ -49,13 +56,20 @@ export class CompassCalibrationLayer implements Layer {
     // Readouts along the bottom: dim label over a bright value, in thirds.
     const valueTop = height - medium.lineHeight;
     const labelTop = valueTop - small.lineHeight;
-    const raw = this.getRawHeading();
-    const offset = getCompassOffset();
     const columns: Array<[string, string]> = [
       ["Raw", raw === null ? "--°" : `${Math.round(raw)}°`],
-      ["Offset", formatOffset(offset)],
-      ["Calibrated", raw === null ? "--°" : `${Math.round(normalizeHeading(raw + offset))}°`],
+      ["Offset", formatOffset(getCompassOffset())],
     ];
+    // Declination is only part of the sum in true mode, so only show it then;
+    // in magnetic mode it would be a number that changes nothing on screen.
+    if (frame === "true") {
+      const declination = resolved?.declinationDegrees ?? null;
+      columns.push(["Declination", declination === null ? "--°" : formatOffset(Math.round(declination))]);
+    }
+    columns.push([
+      frame === "true" ? "True" : "Magnetic",
+      resolved === null ? "--°" : `${Math.round(resolved.displayDegrees)}°`,
+    ]);
     const columnWidth = width / columns.length;
     for (let i = 0; i < columns.length; i++) {
       const [label, value] = columns[i]!;

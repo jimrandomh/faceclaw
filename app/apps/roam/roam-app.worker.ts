@@ -4,7 +4,7 @@
  * todo or follows a [[page]] link, double-click walks back through visited
  * pages then yields focus. Edits (check/uncheck, add todo, edit block) go
  * through the Roam backend API and are also exposed as assistant tools.
- * The graph name and API token are configured here too, from the long-press
+ * The graph name and API token are configured here too, from the context
  * menu, via the phone app's text editor.
  */
 import "@nativescript/core/globals";
@@ -17,7 +17,7 @@ import * as frameTimings from "../../native/frame-timings";
 import { getActiveDisplay } from "../../native/active-display";
 import { onSettingsStoreChanged } from "../../native/settings-store";
 import type { MenuItem } from "../../ui/menu";
-import { defaultWindowMenuItems, WindowMenu } from "../../ui/window-menu";
+import { WindowMenu } from "../../ui/window-menu";
 import type { WorkerAppMessage, WorkerAppReply } from "../../ui/shell/worker-window";
 import type { ToolResult, ToolSpec } from "../../assistant/tool-registry";
 import { GESTURE_CLICK, type InputEvent } from "../../ui/gestures";
@@ -64,6 +64,7 @@ const smallFont = getDefaultSmallFont();
 type RoamWindow = {
   windowId: string;
   surfaceId: string;
+  title: string;
   viewportWidth: number;
   viewportHeight: number;
   foreground: boolean;
@@ -168,6 +169,7 @@ global.onmessage = (event: { data: WorkerAppMessage }) => {
       window = {
         windowId: message.windowId,
         surfaceId: message.surfaceId,
+        title: message.title,
         viewportWidth: message.viewport.width,
         viewportHeight: message.viewport.height,
         foreground: false,
@@ -327,6 +329,10 @@ function maybeRefreshStalePage(): void {
 function windowMenu(win: RoamWindow): WindowMenu {
   if (!win.menu) {
     win.menu = new WindowMenu({
+      windowId: win.windowId,
+      post,
+      title: () => win.title,
+      items: () => menuItems(win),
       size: { width: win.viewportWidth, height: win.viewportHeight },
       paintBase: () => paintContent(win),
       isFocused: () => win.focused,
@@ -377,7 +383,7 @@ function menuItems(win: RoamWindow): MenuItem[] {
       beginSettingEdit(roamApiTokenSetting);
     },
   });
-  return [...items, ...defaultWindowMenuItems(win.windowId, post)];
+  return items;
 }
 
 /**
@@ -417,8 +423,8 @@ function handleInput(win: RoamWindow, event: InputEvent, frameId: number): void 
     }
     return;
   }
-  if (event.type === "long-press") {
-    windowMenu(win).open(menuItems(win));
+  if (event.type === "short-then-long-press") {
+    windowMenu(win).open();
     renderAndSubmit(win, frameId);
     return;
   }
@@ -519,7 +525,7 @@ async function addTodoFromText(text: string): Promise<void> {
 
 async function handleRoamTool(name: string, args: any): Promise<ToolResult> {
   if (!isRoamConfigured()) {
-    return { ok: false, error: "Roam is not configured; set the graph name and API token from the Roam app's long-press menu." };
+    return { ok: false, error: "Roam is not configured; set the graph name and API token from the Roam app's context menu (tap, then hold)." };
   }
   switch (name) {
     case "read_page": {
@@ -580,9 +586,9 @@ async function handleRoamTool(name: string, args: any): Promise<ToolResult> {
 // Painting
 
 function paint(win: RoamWindow): Plane[] {
-  if (win.menu?.isOpen()) return win.menu.paint();
-  if (editingSetting) return singlePlane(paintSettingEdit(win, editingSetting));
-  return singlePlane(paintContent(win));
+  return windowMenu(win).paint(() =>
+    singlePlane(editingSetting ? paintSettingEdit(win, editingSetting) : paintContent(win)),
+  );
 }
 
 /** The "type on the phone" screen shown while a Roam setting is being edited. */
@@ -628,7 +634,7 @@ function paintContent(win: RoamWindow): GrayImage {
   image.drawLine(DOC_MARGIN, HEADER_HEIGHT - 4, win.viewportWidth - DOC_MARGIN, HEADER_HEIGHT - 4, 40);
 
   if (!isRoamConfigured()) {
-    drawBodyMessage(image, win, "Set the Roam graph name and API token: long-press for the menu, then pick Set graph name and Set API token.");
+    drawBodyMessage(image, win, "Set the Roam graph name and API token: tap, then hold, for the menu; pick Set graph name and Set API token.");
   } else if (errorMessage) {
     drawBodyMessage(image, win, `${errorMessage}\n\n${GESTURE_CLICK} retry`);
   } else if (currentPage && currentPage.children.length === 0 && !loading) {

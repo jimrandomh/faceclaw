@@ -35,18 +35,30 @@ import {
   assistantSkipConfirmationSetting,
   batteryDisplayModeSetting,
   brightnessSetting,
+  glassesBatteryVisibilitySetting,
+  phoneBatteryVisibilitySetting,
+  ringBatteryVisibilitySetting,
   displayModeSetting,
+  navigateDisplayModeSetting,
+  navigateVerticalPositionSetting,
+  terminalDisplayModeSetting,
+  terminalVerticalPositionSetting,
   elevenLabsApiKeySetting,
   mapboxApiKeySetting,
   mirrorTouchSetting,
+  navigateHomeAddressSetting,
+  navigateRememberRecentSetting,
+  navigateWorkAddressSetting,
   openAiApiKeySetting,
   previewColorSetting,
+  phoneRotationSetting,
   ringConnectionModeSetting,
   sonioxApiKeySetting,
   enumSettingMenuItem,
   firmwareDebugFlagsSetting,
   lockScreenEnabledSetting,
   saveVoiceRecordingsSetting,
+  showBleBandwidthSetting,
   suspendEvenHubWhenScreenOffSetting,
   terminalAutoReconnectSetting,
   terminalLaunchPresetsSetting,
@@ -64,8 +76,9 @@ import {
   watchMirrorAssistantSetting,
   watchRemoteEnabledSetting,
 } from "../dashboard-settings";
+import { clearRecentDestinations } from "../../apps/navigate/destinations";
 import { wearBridge } from "../../native/wear-bridge";
-import { SettingsPanelLayer, type SettingsSection } from "./settings-panel";
+import { openSettingsSubMenu, SettingsPanelLayer, type SettingsSection } from "./settings-panel";
 import { terminalFontPickerMenuItem, uiFontPickerMenuItem } from "../font-picker";
 
 /** The Settings app's master-detail panel (sections on the left, contents on the right). */
@@ -92,8 +105,8 @@ function settingsSections(): SettingsSection[] {
         enumSettingMenuItem(verticalPositionSetting),
         // Band / tall / full-panel; the dashboard controller reflows windows.
         enumSettingMenuItem(displayModeSetting),
-        // Controls the top-bar battery indicators (icon vs percentage).
-        enumSettingMenuItem(batteryDisplayModeSetting),
+        // Submenu: top-bar battery indicator style plus per-device visibility.
+        batteryIndicatorsMenuItem(),
         // Controls the top-bar clock (24-hour vs 12-hour).
         enumSettingMenuItem(timeFormatSetting),
         // Opens the modal font picker (face, weight, size) for UI text.
@@ -139,6 +152,8 @@ function settingsSections(): SettingsSection[] {
       // Connections (g2mirror:// strings) are managed inside the Terminal
       // app's Manage Connections section, not here.
       items: [
+        enumSettingMenuItem(terminalDisplayModeSetting),
+        enumSettingMenuItem(terminalVerticalPositionSetting),
         terminalFontPickerMenuItem(),
         textSettingMenuItem(terminalLaunchPresetsSetting),
         toggleSettingMenuItem(terminalAutoReconnectSetting),
@@ -146,10 +161,27 @@ function settingsSections(): SettingsSection[] {
       ],
     },
     {
+      label: "Navigate",
+      // Home/Work are plain addresses; other named destinations (and the
+      // recent list) are managed inside the Navigate app's context menu.
+      items: [
+        enumSettingMenuItem(navigateDisplayModeSetting),
+        enumSettingMenuItem(navigateVerticalPositionSetting),
+        textSettingMenuItem(navigateHomeAddressSetting),
+        textSettingMenuItem(navigateWorkAddressSetting),
+        toggleSettingMenuItem(navigateRememberRecentSetting, {
+          onChange: (_ctx, enabled) => {
+            if (!enabled) clearRecentDestinations();
+          },
+        }),
+      ],
+    },
+    {
       label: "Phone display",
       // The phone app's mirror of the glasses screen and its controls
       // (app/phone-ui/): all read live by the main page.
       items: [
+        enumSettingMenuItem(phoneRotationSetting),
         enumSettingMenuItem(previewColorSetting),
         toggleSettingMenuItem(mirrorTouchSetting),
       ],
@@ -176,6 +208,7 @@ function settingsSections(): SettingsSection[] {
         toggleSettingMenuItem(firmwareDebugFlagsSetting),
         toggleSettingMenuItem(suspendEvenHubWhenScreenOffSetting),
         toggleSettingMenuItem(useMicControlSetting),
+        toggleSettingMenuItem(showBleBandwidthSetting),
       ],
     },
     {
@@ -204,6 +237,38 @@ function settingsSections(): SettingsSection[] {
       ],
     },
   ];
+}
+
+/**
+ * The Display section's "Battery indicators" row: opens a modal submenu with
+ * the style (icon / percentage / stacked) and, per device, when its
+ * indicator is visible. The row itself shows the current style.
+ */
+function batteryIndicatorsMenuItem(): MenuItem {
+  return {
+    label: "Battery indicators",
+    description:
+      "Top-bar battery indicators for the phone, glasses, and ring: their style, and whether each shows always, only when low, or never.",
+    onSelect: (ctx) => {
+      openSettingsSubMenu(ctx, "Battery indicators", [
+        enumSettingMenuItem(batteryDisplayModeSetting),
+        enumSettingMenuItem(phoneBatteryVisibilitySetting),
+        enumSettingMenuItem(glassesBatteryVisibilitySetting),
+        enumSettingMenuItem(ringBatteryVisibilitySetting),
+      ]);
+    },
+    render: ({ image, x, y, width }) => {
+      drawRightValueMenuItem(
+        image,
+        getDefaultSmallFont(),
+        x,
+        y,
+        width,
+        "Battery indicators",
+        batteryDisplayModeSetting.displayValue(),
+      );
+    },
+  };
 }
 
 const LOCAL_MODEL_GB = `${(LOCAL_MODEL.sizeBytes / 1e9).toFixed(1)}GB`;

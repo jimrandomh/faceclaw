@@ -44,6 +44,7 @@ export type WearRemoteInputKind =
   | "long-press"
   | "long-press-start"
   | "long-press-release"
+  | "short-then-long-press"
   | "wakeword"
   | "swipe-left"
   | "swipe-right"
@@ -58,6 +59,7 @@ const INPUT_KINDS: readonly WearRemoteInputKind[] = [
   "long-press",
   "long-press-start",
   "long-press-release",
+  "short-then-long-press",
   "wakeword",
   "swipe-left",
   "swipe-right",

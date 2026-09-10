@@ -161,6 +161,9 @@ public final class SurfaceCompositor {
     private int screenWidth;
     private int screenHeight;
     private boolean blanked;
+    /** See setUnderlayDim: surfaces with zOrder below this are dimmed by underlayDim/256. */
+    private int underlayDimBelowZOrder = Integer.MIN_VALUE;
+    private int underlayDim = 256;
     private final Map<String, Surface> surfaces = new HashMap<>();
     private long nextCompositeSeq = 1;
 
@@ -214,6 +217,33 @@ public final class SurfaceCompositor {
         synchronized (lock) {
             surfaces.remove(id);
         }
+    }
+
+    /**
+     * Dim every surface whose zOrder is below belowZOrder to factor256/256 of
+     * its brightness (256 = no dimming): how a shell overlay that dims what it
+     * covers (the TS Layer.dimUnderneath) reaches the window surfaces beneath
+     * the shell surface, which the shell's own layer stack cannot paint.
+     * Visible pixels stay at least 1 (the color-key black); glyph and
+     * firmware-text draws keep their cached-draw form with a dimmed value;
+     * image draws leave the composite's draw list (their pixels, already
+     * baked into the surface, dim as raster). Takes effect when the next
+     * frame composites.
+     */
+    public void setUnderlayDim(int belowZOrder, int factor256) {
+        synchronized (lock) {
+            underlayDimBelowZOrder = belowZOrder;
+            underlayDim = Math.max(0, Math.min(256, factor256));
+        }
+    }
+
+    /** The dim factor (256 = none) that applies to a surface. */
+    private int dimForLocked(Surface surface) {
+        return surface.zOrder < underlayDimBelowZOrder ? underlayDim : 256;
+    }
+
+    private static int dimValue(int value, int dim) {
+        return Math.max(1, (value * dim + 128) >> 8);
     }
 
     /**
@@ -410,9 +440,12 @@ public final class SurfaceCompositor {
         for (Surface surface : ordered) {
             if (!surface.visible) continue;
             blendLocked(gray, surface);
+            int dim = dimForLocked(surface);
             for (ScreenDraw draw : surface.draws) {
+                if (dim < 256 && draw.kind == ScreenDraw.KIND_IMAGE) continue;
+                int value = dim < 256 ? dimValue(draw.value, dim) : draw.value;
                 draws.add(new ScreenDraw(draw.kind, draw.fontId, draw.encoding, draw.imageId,
-                        draw.x + surface.x, draw.y + surface.y, draw.value,
+                        draw.x + surface.x, draw.y + surface.y, value,
                         draw.fwCps, draw.fwDx, draw.fwInk));
             }
             fingerprint.append('|').append(surface.id)
@@ -421,6 +454,9 @@ public final class SurfaceCompositor {
                     .append('#').append(surface.zOrder)
                     .append(':').append(surface.transparency)
                     .append(':').append(surface.fingerprint);
+            if (dim < 256) {
+                fingerprint.append(":dim").append(dim);
+            }
         }
         return new Composite(gray, screenWidth, screenHeight, fingerprint.toString(), nextCompositeSeq++,
                 draws.toArray(new ScreenDraw[0]));
@@ -437,10 +473,22 @@ public final class SurfaceCompositor {
         if (copyWidth <= 0 || copyHeight <= 0) {
             return;
         }
+        int dim = dimForLocked(surface);
         for (int row = 0; row < copyHeight; row++) {
             int srcOffset = (srcY + row) * surface.width + srcX;
             int dstOffset = (dstY + row) * screenWidth + dstX;
-            if (surface.transparency == TRANSPARENCY_OPAQUE) {
+            if (dim < 256) {
+                // Dimmed: opaque or color-keyed, 0 stays 0 (black / transparent)
+                // and everything visible scales, never below 1.
+                for (int col = 0; col < copyWidth; col++) {
+                    int value = surface.pixels[srcOffset + col] & 0xff;
+                    if (value != 0) {
+                        gray[dstOffset + col] = (byte) dimValue(value, dim);
+                    } else if (surface.transparency == TRANSPARENCY_OPAQUE) {
+                        gray[dstOffset + col] = 0;
+                    }
+                }
+            } else if (surface.transparency == TRANSPARENCY_OPAQUE) {
                 System.arraycopy(surface.pixels, srcOffset, gray, dstOffset, copyWidth);
             } else {
                 for (int col = 0; col < copyWidth; col++) {

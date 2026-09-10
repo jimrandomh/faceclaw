@@ -57,7 +57,7 @@ async function callAppTool(
   args: unknown,
 ): Promise<ToolResult> {
   if (roamGraphNameSetting.get().length === 0 || roamApiTokenSetting.get().length === 0) {
-    return err("Roam is not configured; the user must set the graph name and API token from the Roam app's long-press menu.");
+    return err("Roam is not configured; the user must set the graph name and API token from the Roam app's context menu (tap, then hold).");
   }
   return callAppToolWithLaunch(registry, launchApp, "roam", unprefixedName, args);
 }

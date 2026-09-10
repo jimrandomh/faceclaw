@@ -25,6 +25,15 @@ export type InputEventPayload =
   | { type: "scroll-down"; source?: InputSource }
   | { type: "long-press"; source: InputSource }
   | { type: "long-press-release"; source: InputSource }
+  /** G2 2.2.9 tap-then-hold gesture: the app context-menu gesture (long-press is the system menu's). */
+  | { type: "short-then-long-press"; source: InputSource }
+  /**
+   * Not a gesture: a shell -> foreground-window notification that the shell
+   * opened its system context menu over the window. An app with its own
+   * context menu up closes it in response, so the two menus never stack.
+   * Everything else ignores it.
+   */
+  | { type: "system-menu-opened" }
   /**
    * Spatial (four-way) input, which only a watch can produce: the ring's
    * scroll is a one-dimensional cursor, these are directions. Components with
@@ -105,14 +114,17 @@ export function directionalFallback(event: InputEvent): InputEvent {
  *   click        ● (U+00B7 middle dot)
  *   double-click ●● (twice)
  *   scroll       ▲▼ (U+25B2 / U+25BC)
- *   long-press   - (hyphen-minus)
+ *   long-press   — (em dash)
+ *   tap-then-hold ●— (click then long-press)
  */
 export const GESTURE_CLICK = "\u25cf";
 export const GESTURE_DOUBLE_CLICK = GESTURE_CLICK+GESTURE_CLICK;
 export const GESTURE_SCROLL_UP = "▲";
 export const GESTURE_SCROLL_DOWN = "▼";
 export const GESTURE_SCROLL = "▲▼";
-export const GESTURE_LONG_PRESS = "-";
+export const GESTURE_LONG_PRESS = "—";
+/** The 2.2.9 tap-then-hold gesture (short-then-long-press): a click glyph then a hold. */
+export const GESTURE_SHORT_THEN_LONG_PRESS = GESTURE_CLICK + GESTURE_LONG_PRESS;
 
 /**
  * Join "glyph action" hint pairs into a single line, e.g.

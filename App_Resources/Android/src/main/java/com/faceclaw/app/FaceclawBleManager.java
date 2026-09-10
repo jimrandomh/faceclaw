@@ -21,6 +21,7 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 
 @SuppressLint("MissingPermission")
 public class FaceclawBleManager {
@@ -50,6 +51,23 @@ public class FaceclawBleManager {
     private final ConcurrentHashMap<String, Integer> writeStatuses = new ConcurrentHashMap<>();
 
     private volatile FaceclawBleListener listener;
+
+    // Process-wide outbound-traffic totals, sampled by the phone UI's BLE
+    // bandwidth indicator. Static so counts from every manager instance and
+    // isolate land in the same totals.
+    private static final AtomicLong outboundMessages = new AtomicLong();
+    private static final AtomicLong outboundBytes = new AtomicLong();
+    private static final AtomicLong displayFramesSent = new AtomicLong();
+
+    /** Called by the communicator when a display frame's last message is acked. */
+    public static void recordDisplayFrameSent() {
+        displayFramesSent.incrementAndGet();
+    }
+
+    /** Running totals of outbound BLE traffic since process start: [messages, bytes, display frames]. */
+    public static long[] sampleOutboundTraffic() {
+        return new long[] { outboundMessages.get(), outboundBytes.get(), displayFramesSent.get() };
+    }
 
     public FaceclawBleManager(Context context) {
         this.context = context.getApplicationContext();
@@ -250,8 +268,10 @@ public class FaceclawBleManager {
                 if (!startWrite(gatt, characteristic, address, frame, writeType, timeoutMs)) {
                     return false;
                 }
+                outboundBytes.addAndGet(frame != null ? frame.length : 0);
             }
         }
+        outboundMessages.incrementAndGet();
         int totalSize = frames.stream().mapToInt(frame -> frame != null ? frame.length : 0).sum();
         Log.i(TAG, "writeFrames wrote " + frames.size() + " frames totaling " + totalSize + " bytes in " + (System.currentTimeMillis() - startMs) + "ms");
         return true;

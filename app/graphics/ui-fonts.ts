@@ -34,10 +34,10 @@ const MAX_SIZE_GROWTH = 48;
 /**
  * Guaranteed line-height range of getDefaultSmallFont, which UI layouts may
  * rely on (getDefaultMediumFont's range follows: 16..29). The font picker
- * disables sizes outside it, and resolution falls back to the bitmap face if
+ * hides sizes outside it, and resolution falls back to the bitmap face if
  * a stored selection somehow lands outside (e.g. the font file changed).
  */
-export const SMALL_FONT_MIN_LINE_HEIGHT = 12;
+export const SMALL_FONT_MIN_LINE_HEIGHT = 8;
 export const SMALL_FONT_MAX_LINE_HEIGHT = 21;
 
 /** Whether a small-font selection at this path+size satisfies the UI bound. */

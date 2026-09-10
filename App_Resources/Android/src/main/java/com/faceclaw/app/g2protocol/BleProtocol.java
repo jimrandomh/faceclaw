@@ -57,6 +57,12 @@ public class BleProtocol {
      */
     public static final int FACECLAW_MIC_CONTROL_FIELD = 103;
     public static final int FACECLAW_MIC_STATUS_FIELD = 104;
+    /**
+     * CFW als_sensor (EVENCFW/18, caps token als16): ambient-light reports on
+     * settings-channel field 105, 24-byte ['A','L',ver,reason,...] records from
+     * the master temple (decoded in app/native/ambient-light.ts).
+     */
+    public static final int FACECLAW_ALS_REPORT_FIELD = 105;
     public static final int FACECLAW_WAKE_OP_ACQUIRE = 1;
     public static final int FACECLAW_WAKE_OP_RELEASE = 2;
     public static final int FACECLAW_WAKE_OP_CLAIM = 3;
@@ -104,6 +110,8 @@ public class BleProtocol {
     public static final int EVENT_IMU_DATA_REPORT = 8;
     public static final int EVENT_RING_LONG_PRESS = 9;
     public static final int EVENT_RING_LONG_PRESS_RELEASE = 10;
+    // CFW extension: G2 2.2.9 tap-then-hold gesture forwarded to the phone.
+    public static final int EVENT_SHORT_THEN_LONG_PRESS = 11;
 
     public static final int EVENT_SOURCE_GLASSES_R = 1;
     public static final int EVENT_SOURCE_RING = 2;
@@ -448,6 +456,52 @@ public class BleProtocol {
     }
 
     /**
+     * Return the raw CFW ambient-light report from a sid-0x09 frame, or null
+     * when this is an ordinary settings frame. Only the 'A','L',version prelude
+     * is validated here; the fields are decoded on the TS side.
+     */
+    public static byte[] parseFaceclawAlsReport(byte[] pb) {
+        if (pb == null) {
+            return null;
+        }
+        byte[] body = readFieldBytes(stripTrailingCrc(pb), FACECLAW_ALS_REPORT_FIELD);
+        if (body == null
+                || body.length < 24
+                || body[0] != 'A'
+                || body[1] != 'L'
+                || (body[2] & 0xff) != 1) {
+            return null;
+        }
+        return body;
+    }
+
+    /** Field 106: RB/version 1/flags/percentage, from CFW ringbat17. */
+    public static RingBatterySnapshot parseRingBattery(byte[] pb) {
+        if (pb == null) return null;
+        byte[] body = readFieldBytes(stripTrailingCrc(pb), 106);
+        if (body == null || body.length != 5 || body[0] != 'R' || body[1] != 'B'
+                || body[2] != 1) return null;
+        int flags = body[3] & 0xff;
+        int level = body[4] & 0xff;
+        if ((flags & ~7) != 0) return null;
+        if ((flags & 2) != 0) {
+            if ((flags & 1) == 0 || level > 100) return null;
+            return new RingBatterySnapshot(level, (flags & 4) != 0 ? 1 : 0);
+        }
+        if (level != 255 || (flags & 4) != 0) return null;
+        return new RingBatterySnapshot(-1, -1);
+    }
+
+    public static final class RingBatterySnapshot {
+        final int battery;
+        final int charging;
+        RingBatterySnapshot(int battery, int charging) {
+            this.battery = battery;
+            this.charging = charging;
+        }
+    }
+
+    /**
      * Return the uint16 wake nonce from a CFW field-102 notification, or -1
      * when this is an ordinary settings frame.
      */
@@ -744,7 +798,23 @@ public class BleProtocol {
             byte[] compass = readFieldBytes(root, 10);
             if (compass == null) return null;
             int heading = readVarintFieldValue(compass, 1, -1);
-            return heading >= 0 ? new CompassEvent(command, heading) : null;
+            if (heading < 0 || heading >= 360) return null;
+            byte[] diagnostic = readFieldBytes(root, 100);
+            if (diagnostic != null && diagnostic.length == 12
+                    && diagnostic[0] == 'C' && diagnostic[1] == 'M' && diagnostic[2] == 1
+                    && diagnostic[7] == 0
+                    && ((diagnostic[3] & 0xff) <= 3 || diagnostic[3] == (byte) 255)
+                    && ((diagnostic[4] & 0xff) <= 2 || diagnostic[4] == (byte) 255)
+                    && (diagnostic[5] & 0xff) <= 3) {
+                long sampleTimeMs = 0;
+                for (int i = 0; i < 4; i++) sampleTimeMs |= (long) (diagnostic[8 + i] & 0xff) << (8 * i);
+                return new CompassEvent(command, heading,
+                    diagnostic[3] == (byte) 255 ? -1 : diagnostic[3] & 0xff,
+                    diagnostic[4] == (byte) 255 ? -1 : diagnostic[4] & 0xff,
+                    diagnostic[5] & 0xff, diagnostic[6] & 0xff, sampleTimeMs);
+            }
+            // Stock/older CFW and unknown extensions still supply usable headings.
+            return new CompassEvent(command, heading);
         }
         if (command == NAV_CMD_COMPASS_CALIBRATION_STARTED
                 || command == NAV_CMD_COMPASS_CALIBRATION_COMPLETE) {
@@ -986,10 +1056,23 @@ public class BleProtocol {
     public static final class CompassEvent {
         public final int command;
         public final int headingDegrees;
+        /** -1 means unavailable; source: 0 unknown, 1 GRV, 2 GMRV, 3 RV. */
+        public final int magneticAccuracy, magneticAnomalies, orientationSource, diagnosticFlags;
+        public final long sampleTimeMs;
 
         CompassEvent(int command, int headingDegrees) {
+            this(command, headingDegrees, -1, -1, -1, -1, -1);
+        }
+
+        CompassEvent(int command, int headingDegrees, int magneticAccuracy, int magneticAnomalies,
+                int orientationSource, int diagnosticFlags, long sampleTimeMs) {
             this.command = command;
             this.headingDegrees = headingDegrees;
+            this.magneticAccuracy = magneticAccuracy;
+            this.magneticAnomalies = magneticAnomalies;
+            this.orientationSource = orientationSource;
+            this.diagnosticFlags = diagnosticFlags;
+            this.sampleTimeMs = sampleTimeMs;
         }
     }
 

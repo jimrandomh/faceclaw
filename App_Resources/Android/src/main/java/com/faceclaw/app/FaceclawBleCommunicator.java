@@ -43,6 +43,8 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private static final long FACECLAW_WAKE_LEASE_RENEW_MS = 45_000;
     private static final long FACECLAW_WAKE_CONTROL_WAIT_MS = 1_500;
     private static final long CFW_CLEANUP_WAIT_MS = 4_000;
+    private static final int COMPASS_REPORT_INTERVAL_MS = 100;
+    private static final int COMPASS_MIN_CHANGE_DEGREES = 0;
 
     private final Context appContext;
     private final PowerManager powerManager;
@@ -58,7 +60,20 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private volatile FaceclawBleCommunicatorListener listener;
     private final java.util.List<FaceclawImuListener> imuListeners =
         new java.util.concurrent.CopyOnWriteArrayList<>();
-    private final java.util.List<FaceclawCompassListener> compassListeners =
+    /** A compass subscriber plus the Looper it registered from (see addCompassListener). */
+    private static final class CompassSubscription {
+        final FaceclawCompassListener listener;
+        final Handler handler;
+
+        CompassSubscription(FaceclawCompassListener listener, Handler handler) {
+            this.listener = listener;
+            this.handler = handler;
+        }
+    }
+
+    private final java.util.List<CompassSubscription> compassSubscriptions =
+        new java.util.concurrent.CopyOnWriteArrayList<>();
+    private final java.util.List<FaceclawAmbientLightListener> ambientLightListeners =
         new java.util.concurrent.CopyOnWriteArrayList<>();
     private final java.util.List<FaceclawMicStatusListener> micStatusListeners =
         new java.util.concurrent.CopyOnWriteArrayList<>();
@@ -88,7 +103,13 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private int firmwareDebugFlagsLastSent = -1;
     // Desired CFW mode-10 compass state. It survives reconnects; lastSent is
     // reset with each session so an open Compass window is re-asserted.
-    private boolean compassEnabled;
+    /**
+     * Who currently wants the stock compass running (the Compass window, the
+     * Navigate worker, ...). The magnetometer is one shared resource, so it
+     * stays on while any owner holds it and is released when the last lets go;
+     * this keeps one app's release from silently switching off another's feed.
+     */
+    private final java.util.Set<String> compassOwners = new java.util.HashSet<>();
     private int compassControlLastSent = -1;
     // Whether the glasses-side compass may still be running: set when an enable
     // is enqueued, cleared only when a disable is acked. Drives the forced
@@ -141,6 +162,8 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private long lastShutdownExitAtMs = 0;
     private int headsetBattery = -1;
     private int headsetCharging = -1;
+    private int ringBattery = -1;
+    private int ringCharging = -1;
     // Silent mode: 1 = on, 0 = off, -1 = not yet known. See updateSilentModeLocked.
     private int silentMode = -1;
     private int wearState = -1;
@@ -508,12 +531,32 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
      * stock sid-0x08 navigation notifications and FaceclawCompassListeners.
      */
     public void setCompassEnabled(boolean enable) {
+        setCompassEnabled("compass", enable);
+    }
+
+    /**
+     * As above, on behalf of a named owner. The compass runs while at least
+     * one owner has enabled it; an owner disabling it only takes effect once
+     * no other owner still wants it.
+     */
+    public void setCompassEnabled(String owner, boolean enable) {
         synchronized (lock) {
-            compassEnabled = enable;
+            boolean before = !compassOwners.isEmpty();
+            if (enable) {
+                compassOwners.add(owner);
+            } else {
+                compassOwners.remove(owner);
+            }
+            boolean wanted = !compassOwners.isEmpty();
+            if (wanted == before && compassControlLastSent == (wanted ? 1 : 0)) {
+                logLine("compass " + (enable ? "enable" : "disable") + " by " + owner
+                    + "; state unchanged (owners=" + compassOwners + ")");
+                return;
+            }
             compassControlLastSent = -1;
             clearMessagesOfKindLocked("compass-control");
             if (running && sessionReady && !shutdownRequested && fixedLayoutCreated) {
-                enqueueCompassControlLocked(true, compassEnabled);
+                enqueueCompassControlLocked(true, wanted);
             } else {
                 logLine("defer compass " + (enable ? "enable" : "disable") + "; display path not ready");
             }
@@ -764,6 +807,91 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         return lastFirmwareCapabilities;
     }
 
+    public void addAmbientLightListener(FaceclawAmbientLightListener listener) {
+        if (listener != null) {
+            ambientLightListeners.add(listener);
+        }
+    }
+
+    public void removeAmbientLightListener(FaceclawAmbientLightListener listener) {
+        if (listener != null) {
+            ambientLightListeners.remove(listener);
+        }
+    }
+
+    private void emitAmbientLight(byte[] body) {
+        if (ambientLightListeners.isEmpty()) {
+            return;
+        }
+        byte[] copy = java.util.Arrays.copyOf(body, body.length);
+        mainHandler.post(() -> {
+            for (FaceclawAmbientLightListener alsListener : ambientLightListeners) {
+                try {
+                    alsListener.onAmbientLight(copy);
+                } catch (Throwable t) {
+                    Log.w(TAG, "ambient light listener failed", t);
+                }
+            }
+        });
+    }
+
+    /** Request one CFW ambient-light report (image-handler mode 16 op 0). */
+    public void queryAmbientLight() {
+        synchronized (lock) {
+            enqueueAmbientLightControlLocked(new byte[] { (byte) 16, (byte) 0 }, "als query", false);
+        }
+        interruptibleSleep.interrupt();
+    }
+
+    /**
+     * Start or stop CFW passive light-sensor polling (image-handler mode 16
+     * ops 1/2). While polling, the firmware reads its OPT3001 every intervalMs
+     * (clamped 100..5000 by the firmware), never steps the panel brightness
+     * itself, and pushes a field-105 report when the reading moved by at least
+     * minDelta or heartbeatMs elapsed. bindToLease stops polling automatically
+     * when the Faceclaw framebuffer lease is released or lapses. Starting is
+     * idempotent and re-opens the sensor if the stock firmware closed it.
+     */
+    public void setAmbientLightPolling(boolean enable, int intervalMs, int minDelta,
+                                       int heartbeatMs, boolean bindToLease) {
+        byte[] payload = enable
+            ? new byte[] {
+                (byte) 16,
+                (byte) 1,
+                (byte) (bindToLease ? 1 : 0),
+                (byte) (intervalMs & 0xff),
+                (byte) ((intervalMs >> 8) & 0xff),
+                (byte) (minDelta & 0xff),
+                (byte) ((minDelta >> 8) & 0xff),
+                (byte) (heartbeatMs & 0xff),
+                (byte) ((heartbeatMs >> 8) & 0xff),
+            }
+            : new byte[] { (byte) 16, (byte) 2 };
+        synchronized (lock) {
+            clearMessagesOfKindLocked("als-control");
+            enqueueAmbientLightControlLocked(payload, "als polling " + (enable ? "start" : "stop"), true);
+        }
+        interruptibleSleep.interrupt();
+    }
+
+    private void enqueueAmbientLightControlLocked(byte[] payload, String label, boolean priority) {
+        if (!running || !sessionReady || shutdownRequested || !fixedLayoutCreated) {
+            logLine("skip " + label + "; display path not ready");
+            return;
+        }
+        OutboundMessage message = messageBuilder.imagePayload(
+            "als-control",
+            DASHBOARD_TILE,
+            nextMapSessionId(),
+            payload,
+            label,
+            connectionOptions.sendImagesToLeft);
+        message.onTimeout = () -> logLine(label + " ack timeout");
+        if (priority) pendingMessages.addFirst(message);
+        else pendingMessages.addLast(message);
+        logLine("queue " + label);
+    }
+
     public void addMicStatusListener(FaceclawMicStatusListener listener) {
         if (listener != null) {
             micStatusListeners.add(listener);
@@ -851,15 +979,28 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         }
     }
 
+    /**
+     * Subscribe to compass events. Callbacks are delivered on the Looper of
+     * the thread that registered (falling back to the main thread), so app
+     * worker isolates can listen without a cross-thread hop into their JS.
+     */
     public void addCompassListener(FaceclawCompassListener listener) {
-        if (listener != null) {
-            compassListeners.add(listener);
+        if (listener == null) {
+            return;
         }
+        Looper looper = Looper.myLooper();
+        Handler handler = looper != null ? new Handler(looper) : mainHandler;
+        compassSubscriptions.add(new CompassSubscription(listener, handler));
     }
 
     public void removeCompassListener(FaceclawCompassListener listener) {
-        if (listener != null) {
-            compassListeners.remove(listener);
+        if (listener == null) {
+            return;
+        }
+        for (CompassSubscription subscription : compassSubscriptions) {
+            if (subscription.listener == listener) {
+                compassSubscriptions.remove(subscription);
+            }
         }
     }
 
@@ -1012,6 +1153,16 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
 
     public void removeSurface(String id) {
         compositor.removeSurface(id);
+    }
+
+    /**
+     * Dim every surface below zOrder belowZOrder to factor256/256 (see
+     * SurfaceCompositor.setUnderlayDim). Takes effect with the next submitted
+     * frame: the shell always submits its own surface right after changing
+     * this, so no recomposite happens here.
+     */
+    public void setUnderlayDim(int belowZOrder, int factor256) {
+        compositor.setUnderlayDim(belowZOrder, factor256);
     }
 
     /**
@@ -1549,11 +1700,31 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             if (!faceclawWakeNotification
                     && frame.ok
                     && frame.sid == BleProtocol.SID_UI_SETTING) {
+                // Mode-17 query notifications; settings READs are handled by
+                // createBatteryQueryMessageLocked so headset/ring update together.
+                if (address.equalsIgnoreCase(rightAddress)
+                        && (frame.flag == BleProtocol.FLAG_NOTIFY || frame.flag == BleProtocol.FLAG_NOTIFY_ALT)) {
+                    BleProtocol.RingBatterySnapshot ring = BleProtocol.parseRingBattery(frame.pb);
+                    if (ring != null) {
+                        ringBattery = ring.battery;
+                        ringCharging = ring.charging;
+                        emitBatteryState(headsetBattery, headsetCharging);
+                    }
+                }
                 // CFW mic status (field 104) rides both standalone pushes and
                 // settings read acks, from each temple on its own link.
                 byte[] micStatus = BleProtocol.parseFaceclawMicStatus(frame.pb);
                 if (micStatus != null) {
                     emitMicStatus(micStatus, address);
+                }
+            }
+            if (!faceclawWakeNotification
+                    && frame.ok
+                    && frame.sid == BleProtocol.SID_UI_SETTING) {
+                // CFW ambient-light report (field 105) from the master temple.
+                byte[] alsReport = BleProtocol.parseFaceclawAlsReport(frame.pb);
+                if (alsReport != null) {
+                    emitAmbientLight(alsReport);
                 }
             }
             if (!faceclawWakeNotification
@@ -1617,7 +1788,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             emitWearState(decodedWearState > 0);
         }
         if (compassEvent != null) {
-            emitCompassEvent(compassEvent.command, compassEvent.headingDegrees);
+            emitCompassEvent(compassEvent);
         }
         if (event != null) {
             if (event.hasImu) {
@@ -2093,10 +2264,11 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                     }
 
                     if (messageToPrewrite == null && !shutdownRequested && fixedLayoutCreated
-                            && (compassEnabled ? 1 : 0) != compassControlLastSent
+                            && (compassOwners.isEmpty() ? 0 : 1) != compassControlLastSent
                             && pendingMessages.isEmpty() && inFlightMessages.isEmpty()) {
-                        Log.i(TAG, "enqueueing compass " + (compassEnabled ? "enable" : "disable"));
-                        enqueueCompassControlLocked(false, compassEnabled);
+                        boolean wanted = !compassOwners.isEmpty();
+                        Log.i(TAG, "enqueueing compass " + (wanted ? "enable" : "disable"));
+                        enqueueCompassControlLocked(false, wanted);
                     }
 
                     if (benchmarkActive) {
@@ -2435,6 +2607,12 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             message.onAck.run();
         }
         consecutiveAckTimeouts = 0;
+        // onAck may have just satisfied a waiter blocked on lock.wait() (e.g.
+        // awaitEvenHubSessionReady polling fixedLayoutCreated/displayedFingerprint
+        // after a create-layout or image ack). Without this, that waiter only
+        // notices on its own up-to-100ms poll tick, adding avoidable latency to
+        // every EvenHub wake. Always called with lock held (see call site).
+        lock.notifyAll();
     }
 
     private void logImageUpdateSendLandmarkLocked(OutboundMessage message) {
@@ -2462,6 +2640,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             return;
         }
         long ackedAtMs = SystemClock.elapsedRealtime();
+        FaceclawBleManager.recordDisplayFrameSent();
         BleImageOptimizer.ImageUpdateStats stats = imageUpdateStats.remove(message.imageUpdateId);
         if (stats != null && stats.firstWriteStartedAtMs > 0) {
             emitFrameMetrics(stats.paintMs, (int) Math.max(0, ackedAtMs - stats.firstWriteStartedAtMs), stats.tileCount);
@@ -2557,10 +2736,22 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         logLine("queue firmware debug flags " + (show ? "show" : "hide"));
     }
 
-    /** Send CFW image-handler mode 10: [10][1] start, [10][0] stop. */
+    /**
+     * Send CFW image-handler mode 10. Enable uses the configurable form
+     * [10][2][interval-ms LE16][minimum-change-degrees LE16]; disable remains [10][0].
+     */
     private void enqueueCompassControlLocked(boolean priority, boolean enable) {
         int sentState = enable ? 1 : 0;
-        byte[] payload = new byte[] { (byte) 10, (byte) sentState };
+        byte[] payload = enable
+            ? new byte[] {
+                (byte) 10,
+                (byte) 2,
+                (byte) (COMPASS_REPORT_INTERVAL_MS & 0xff),
+                (byte) ((COMPASS_REPORT_INTERVAL_MS >> 8) & 0xff),
+                (byte) (COMPASS_MIN_CHANGE_DEGREES & 0xff),
+                (byte) ((COMPASS_MIN_CHANGE_DEGREES >> 8) & 0xff),
+            }
+            : new byte[] { (byte) 10, (byte) 0 };
         OutboundMessage message = messageBuilder.imagePayload(
             "compass-control",
             DASHBOARD_TILE,
@@ -2824,6 +3015,10 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private OutboundMessage createBatteryQueryMessageLocked() {
         OutboundMessage message = messageBuilder.batteryQuery();
         message.onAck = () -> {
+            BleProtocol.RingBatterySnapshot ring = BleProtocol.parseRingBattery(message.ackPayload);
+            // Old firmware and missing/malformed extensions must clear any prior reading.
+            ringBattery = ring == null ? -1 : ring.battery;
+            ringCharging = ring == null ? -1 : ring.charging;
             BleProtocol.BatterySnapshot snapshot = BleProtocol.parseSettingsBattery(message.ackPayload);
             if (snapshot != null) {
                 headsetBattery = snapshot.battery;
@@ -3409,6 +3604,8 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     }
 
     private void resetSessionStateLocked() {
+        ringBattery = -1;
+        ringCharging = -1;
         sessionReady = false;
         shutdownRequested = false;
         fixedLayoutCreated = false;
@@ -3504,19 +3701,27 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         });
     }
 
-    private void emitCompassEvent(int command, int headingDegrees) {
-        if (compassListeners.isEmpty()) {
-            return;
+    private void emitCompassEvent(BleProtocol.CompassEvent event) {
+        if (event.diagnosticFlags >= 0) {
+            String[] sources = { "unknown", "GRV", "GMRV", "RV" };
+            Log.i("FaceclawCompass", "heading=" + event.headingDegrees
+                + " magneticAccuracy=" + event.magneticAccuracy
+                + " magneticAnomalies=" + event.magneticAnomalies
+                + " orientationSource=" + sources[event.orientationSource]
+                + " flags=0x" + Integer.toHexString(event.diagnosticFlags)
+                + " sampleTimeMs=" + event.sampleTimeMs);
         }
-        mainHandler.post(() -> {
-            for (FaceclawCompassListener compassListener : compassListeners) {
+        for (CompassSubscription subscription : compassSubscriptions) {
+            subscription.handler.post(() -> {
                 try {
-                    compassListener.onCompassEvent(command, headingDegrees);
+                    subscription.listener.onCompassEvent(event.command, event.headingDegrees,
+                        event.magneticAccuracy, event.magneticAnomalies, event.orientationSource,
+                        event.diagnosticFlags, event.sampleTimeMs);
                 } catch (Throwable t) {
                     Log.w(TAG, "listener onCompassEvent failed", t);
                 }
-            }
-        });
+            });
+        }
     }
 
     private void emitSilentMode(boolean silent) {
@@ -3568,13 +3773,15 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     }
 
     private void emitBatteryState(int headsetBattery, int headsetCharging) {
+        final int reportedRingBattery = ringBattery;
+        final int reportedRingCharging = ringCharging;
         final FaceclawBleCommunicatorListener current = listener;
         if (current == null) {
             return;
         }
         mainHandler.post(() -> {
             try {
-                current.onBatteryState(headsetBattery, headsetCharging);
+                current.onBatteryState(headsetBattery, headsetCharging, reportedRingBattery, reportedRingCharging);
             } catch (Throwable t) {
                 Log.w(TAG, "listener onBatteryState failed", t);
             }

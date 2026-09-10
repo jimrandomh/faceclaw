@@ -35,9 +35,11 @@ class EvenHubAppLayer implements Layer {
   }
 
   handleInput(event: InputEvent): void {
-    // Everything goes to the app; long-press never reaches here (the window
-    // menu intercepts it), which is the guaranteed way out since EvenHub
-    // apps own double-click.
+    // Everything goes to the app; the menu gestures never reach here (the
+    // shell keeps long-press for its system menu and the window's context
+    // menu intercepts tap-then-hold), which is the guaranteed way out since
+    // EvenHub apps own double-click. Tap-then-hold is still reported to the
+    // app as LONG_PRESS_EVENT — see the handleInput wrapper below.
     this.session.handleGesture(event);
   }
 }
@@ -61,9 +63,22 @@ export function createEvenHubWindow(
       fallbackIcon,
     ),
     heightMode: "medium",
-    // Glasses-first: the app runs without the phone showing it; this reveals
-    // its phone UI (config pages, etc.) over the dashboard on demand.
-    menuItems: () => [{ label: "Show phone UI", onSelect: (ctx) => { ctx.stack.pop(); onShowPhone(); } }],
+    // The window's context menu doubles as the OS contextual menu EvenHub
+    // apps register with `menuObject` (SDK 0.0.14): the app's own entries come
+    // first, then the host entries. Evaluated at open time, so a rebuild that
+    // changes or clears the menu is reflected on the next press.
+    menuItems: () => [
+      ...session.contextMenuItems().map((item) => ({
+        label: item.itemName,
+        onSelect: (ctx: LayerContext) => {
+          ctx.stack.pop();
+          session.selectContextMenuItem(item.itemID);
+        },
+      })),
+      // Glasses-first: the app runs without the phone showing it; this reveals
+      // its phone UI (config pages, etc.) over the dashboard on demand.
+      { label: "Show phone UI", onSelect: (ctx: LayerContext) => { ctx.stack.pop(); onShowPhone(); } },
+    ],
     actions: options.actions,
     baseLayer: new EvenHubAppLayer(session),
     submitFrame: options.submitFrame,
@@ -86,6 +101,20 @@ export function createEvenHubWindow(
     setTallCanvas: (tall) => created.setHeightMode(tall ? "max" : "medium"),
     windowId,
   });
+
+  // LONG_PRESS_EVENT / LONG_PRESS_RELEASE_EVENT (SDK 0.0.14): the app hears
+  // the context-menu gesture (tap-then-hold; a plain long-press is the
+  // shell's and never arrives) as its long-press. Wrapped at the window
+  // rather than handled in the base layer because the press opens the window
+  // menu and so never reaches a layer, and because the release lands on that
+  // menu once it is up.
+  const baseHandleInput = created.window.handleInput;
+  created.window.handleInput = async (event, frameId) => {
+    if (event.type === "short-then-long-press" || event.type === "long-press-release") {
+      session.handleGesture(event);
+    }
+    await baseHandleInput(event, frameId);
+  };
 
   // FOREGROUND_ENTER/EXIT for the app on shell focus changes.
   const baseSetForeground = created.window.setForeground;

@@ -2,7 +2,7 @@ import { type BdfFont } from "../../graphics/bdffont";
 import { getDefaultSmallFont } from "../../graphics/ui-fonts";
 import { truncateText } from "../../graphics/textwrap";
 import { GrayImage } from "../../graphics/image";
-import { loadImageFileAsGray } from "../../native/image-files";
+import { loadImageFileAsGray, PHOTO_TONE } from "../../native/image-files";
 import { GESTURE_DOUBLE_CLICK, type InputEvent } from "../../ui/gestures";
 import { Layer, type LayerContext } from "../../ui/layers";
 
@@ -13,8 +13,9 @@ const BODY_MARGIN = 2;
 
 /**
  * Image viewer for a file on disk: title line, then the image decoded to
- * grayscale and downscaled to fit the remaining area (never upscaled).
- * Double-click closes it. Sized to its hosting stack (a Files document
+ * grayscale with the shared photo tone (sRGB gamma, dithered onto the 16
+ * display levels) and downscaled to fit the remaining area (never
+ * upscaled). Double-click closes it. Sized to its hosting stack (a Files document
  * window, or pushed over the file browser for view-in-place).
  */
 export class ImageViewerLayer implements Layer {
@@ -35,7 +36,7 @@ export class ImageViewerLayer implements Layer {
     const bodyHeight = height - BODY_TOP - BODY_MARGIN;
     if (!this.loadAttempted) {
       this.loadAttempted = true;
-      this.image = loadImageFileAsGray(this.path, width - 2 * BODY_MARGIN, bodyHeight);
+      this.image = loadImageFileAsGray(this.path, width - 2 * BODY_MARGIN, bodyHeight, PHOTO_TONE);
     }
     if (!this.image) {
       out.drawText(font, MARGIN_X, BODY_TOP + 16, "(could not load image)", 160);

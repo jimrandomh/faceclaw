@@ -1,3 +1,4 @@
+import { normalizeNightscoutThreshold, type NightscoutThresholds } from "../apps/nightscout/nightscout-alerts";
 import { GESTURE_DOUBLE_CLICK, InputEvent } from "./gestures";
 import {
   getBooleanSetting,
@@ -24,7 +25,9 @@ export type NightscoutSettings = {
   siteUrl: string;
   apiToken: string;
 };
-export type BatteryDisplayMode = "icon" | "percentage";
+export type BatteryDisplayMode = "icon" | "percentage" | "stacked" | "stacked-percentage";
+/** When a top-bar battery indicator is shown: always, only below 50%, or never. */
+export type BatteryIndicatorVisibility = "always" | "low" | "never";
 export type TimeFormat = "24h" | "12h";
 export type ScreenTimeoutSetting = "15s" | "30s" | "1m" | "3m" | "never";
 // "auto" lets the glasses' ambient-light sensor drive brightness; the numeric
@@ -205,13 +208,62 @@ export class ConfigSettingString<TId extends string = string> extends ConfigSett
 
 export const batteryDisplayModeSetting = new ConfigSettingEnum<BatteryDisplayMode>({
   id: "batteryDisplayMode",
-  label: "Battery display",
+  label: "Style",
   storageKey: "dashboard.systemCard.batteryDisplayMode",
-  defaultValue: "icon",
-  values: ["icon", "percentage"],
+  defaultValue: "stacked",
+  values: ["icon", "percentage", "stacked", "stacked-percentage"],
   formatValue: batteryDisplayModeLabel,
-  description: "How the top bar shows the phone and glasses battery levels: a small gauge icon or an exact percentage.",
+  description: "How the top bar shows battery levels: a gauge icon or exact percentage beside the label, or a compact gauge or percentage with the label stacked above it.",
 });
+
+/** Below this charge level a "Below 50%" indicator becomes visible. */
+export const BATTERY_LOW_VISIBILITY_THRESHOLD = 50;
+
+function batteryVisibilitySetting(
+  id: string,
+  device: string,
+  storageKey: string,
+): ConfigSettingEnum<BatteryIndicatorVisibility> {
+  return new ConfigSettingEnum<BatteryIndicatorVisibility>({
+    id,
+    label: device,
+    storageKey,
+    defaultValue: "always",
+    values: ["always", "low", "never"],
+    formatValue: batteryIndicatorVisibilityLabel,
+    description: `When the top bar shows the ${device} battery: always, only once it drops below ${BATTERY_LOW_VISIBILITY_THRESHOLD}%, or never.`,
+  });
+}
+
+export const phoneBatteryVisibilitySetting = batteryVisibilitySetting(
+  "phoneBatteryVisibility", "Phone", "display.battery.phoneVisibility",
+);
+export const glassesBatteryVisibilitySetting = batteryVisibilitySetting(
+  "glassesBatteryVisibility", "G2", "display.battery.glassesVisibility",
+);
+export const ringBatteryVisibilitySetting = batteryVisibilitySetting(
+  "ringBatteryVisibility", "R1", "display.battery.ringVisibility",
+);
+
+/** Whether an indicator with this visibility setting shows at the given charge. */
+export function batteryIndicatorVisible(visibility: BatteryIndicatorVisibility, percent: number): boolean {
+  if (visibility === "never") return false;
+  if (visibility === "always") return true;
+  return percent < BATTERY_LOW_VISIBILITY_THRESHOLD;
+}
+
+/**
+ * One string summarizing every setting the top-bar battery block reads, so
+ * the shell can cheaply tell whether a settings change needs a repaint.
+ */
+export function batteryIndicatorSettingsKey(): string {
+  return [
+    batteryDisplayModeSetting.get(),
+    phoneBatteryVisibilitySetting.get(),
+    glassesBatteryVisibilitySetting.get(),
+    ringBatteryVisibilitySetting.get(),
+  ].join("|");
+}
 
 export const timeFormatSetting = new ConfigSettingEnum<TimeFormat>({
   id: "timeFormat",
@@ -285,6 +337,17 @@ export const lockScreenEnabledSetting = new ConfigSettingBoolean({
 // Phone display: the phone app's mirror of the glasses screen and the
 // controls around it on the main page.
 export type PreviewColor = "white" | "green";
+export type PhoneRotation = "auto" | "portrait" | "landscape";
+
+export const phoneRotationSetting = new ConfigSettingEnum<PhoneRotation>({
+  id: "phone-rotation",
+  label: "Rotation",
+  storageKey: "phone.rotation",
+  defaultValue: "auto",
+  values: ["auto", "portrait", "landscape"],
+  formatValue: (value) => ({ auto: "Auto-Rotate", portrait: "Always Portrait", landscape: "Always Landscape" })[value],
+  description: "Automatically rotate with the phone, or keep the phone app in portrait or landscape. Auto-Rotate follows the phone's system rotation preference.",
+});
 
 export const previewColorSetting = new ConfigSettingEnum<PreviewColor>({
   id: "preview-color",
@@ -363,8 +426,42 @@ export const verticalPositionSetting = new ConfigSettingEnum<VerticalPosition>({
   values: ["top", "upper", "middle", "lower", "bottom"],
   formatValue: (value) => VERTICAL_POSITION_LABELS[value] ?? value,
   description:
-    "Where standard (reduced-height) windows sit vertically within the display area, to position them within your field of view. Full-height windows such as terminal views always use the whole screen.",
+    "Where standard (reduced-height) windows sit vertically within the display area, to position them within your field of view. Full-height windows use the whole screen. Navigate and Terminal can override these display settings.",
 });
+
+/** Per-app layouts can inherit the display preferences or choose their own size. */
+export type AppDisplayMode = "default" | "global" | DisplayModeSetting;
+
+function appDisplayModeSetting(appId: string, defaultValue: AppDisplayMode): ConfigSettingEnum<AppDisplayMode> {
+  return new ConfigSettingEnum<AppDisplayMode>({
+    id: `${appId}-display-mode`,
+    label: "Display mode",
+    storageKey: `${appId}.displayMode`,
+    defaultValue,
+    values: appId === "terminal" ? ["default", "global", ...DISPLAY_MODE_VALUES] : ["global", ...DISPLAY_MODE_VALUES],
+    formatValue: (value) => value === "default" ? "Tall sessions (default)" : value === "global" ? "Use global" : displayModeLabel(value),
+    description: appId === "terminal"
+      ? "Screen size for Terminal. The default keeps session windows tall and the terminals list at the global size. Use global follows Display settings for all Terminal windows. Resizing an open session reconnects its view at the new size."
+      : "Screen size for Navigate. Choose Band to leave more of your field of view clear, or Use global to follow Display settings. Applies to the current route too.",
+  });
+}
+
+function appVerticalPositionSetting(appId: string): ConfigSettingEnum<"global" | VerticalPosition> {
+  return new ConfigSettingEnum<"global" | VerticalPosition>({
+    id: `${appId}-vertical-position`,
+    label: "Vertical position",
+    storageKey: `${appId}.verticalPosition`,
+    defaultValue: "global",
+    values: ["global", "top", "upper", "middle", "lower", "bottom"],
+    formatValue: (value) => value === "global" ? "Use global" : VERTICAL_POSITION_LABELS[value],
+    description: "Where reduced-height windows for this app sit in your field of view. Use global follows Display settings. Full-height windows fill the display vertically.",
+  });
+}
+
+export const navigateDisplayModeSetting = appDisplayModeSetting("navigate", "global");
+export const navigateVerticalPositionSetting = appVerticalPositionSetting("navigate");
+export const terminalDisplayModeSetting = appDisplayModeSetting("terminal", "default");
+export const terminalVerticalPositionSetting = appVerticalPositionSetting("terminal");
 
 export const voiceControlEnabledSetting = new ConfigSettingBoolean({
   id: "voice-control-enabled",
@@ -397,6 +494,15 @@ export const useMicControlSetting = new ConfigSettingBoolean({
   defaultValue: true,
   description:
     "Use the custom firmware's per-temple mic-control channel (caps token micctl) for the Microphones app's array capture. When off, behave as if the firmware doesn't have the feature and use the standard single mixed stream.",
+});
+
+export const showBleBandwidthSetting = new ConfigSettingBoolean({
+  id: "show-ble-bandwidth",
+  label: "Show BLE bandwidth usage",
+  storageKey: "developer.showBleBandwidth",
+  defaultValue: false,
+  description:
+    "Show a running total of Bluetooth messages and bytes sent, at the bottom of the phone app's main screen.",
 });
 
 export type RingConnectionMode = "glasses" | "direct";
@@ -712,6 +818,138 @@ export const nightscoutApiTokenSetting = new ConfigSettingString({
   description: "Access token for the Nightscout site's API.",
 });
 
+function nightscoutThresholdSetting(id: string, label: string, unit: string, description: string): ConfigSettingString {
+  return new ConfigSettingString({
+    id: `nightscout-${id}`,
+    label,
+    storageKey: `integrations.nightscout.${id}`,
+    defaultValue: "0",
+    editorTitle: `${label} (${unit}; 0 = off)`,
+    normalize: normalizeNightscoutThreshold,
+    formatValue: (value) => Number(value) > 0 ? `${value} ${unit}` : "Off",
+    description: `${description} Enter 0 to disable.`,
+  });
+}
+
+export const nightscoutMaxCannulaAgeSetting = nightscoutThresholdSetting(
+  "max-cannula-age-hours", "Max cannula age", "h", "Warn when time since the last site change exceeds this many hours.",
+);
+export const nightscoutCartridgeLowSetting = nightscoutThresholdSetting(
+  "cartridge-low-units", "Cartridge low threshold", "U", "Warn when the pump reservoir falls below this many units.",
+);
+export const nightscoutBatteryLowSetting = nightscoutThresholdSetting(
+  "battery-low-voltage", "Battery voltage threshold", "V", "Warn when pump battery voltage falls below this value.",
+);
+export const nightscoutMaxLoopAgeSetting = nightscoutThresholdSetting(
+  "max-loop-age-minutes", "Max time since last loop", "min", "Warn when time since the last loop exceeds this many minutes.",
+);
+export const nightscoutAlwaysShowInTopBarSetting = new ConfigSettingBoolean({
+  id: "nightscout-always-show-in-top-bar",
+  label: "Always show in top bar",
+  storageKey: "integrations.nightscout.alwaysShowInTopBar",
+  defaultValue: false,
+  description: "Keep the Nightscout glucose graph and warnings in the top bar even when all Nightscout windows are closed.",
+});
+
+export function loadNightscoutThresholds(): NightscoutThresholds {
+  return {
+    maxCannulaAgeHours: Number(nightscoutMaxCannulaAgeSetting.get()),
+    cartridgeLowUnits: Number(nightscoutCartridgeLowSetting.get()),
+    batteryLowVoltage: Number(nightscoutBatteryLowSetting.get()),
+    maxLoopAgeMinutes: Number(nightscoutMaxLoopAgeSetting.get()),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Navigate app: saved and recent destinations.
+
+const stripControlChars = (value: string | null | undefined): string =>
+  (value ?? "").replace(/[\x00-\x1f]+/g, "").trim();
+
+export const navigateHomeAddressSetting = new ConfigSettingString({
+  id: "navigate-home-address",
+  label: "Home address",
+  storageKey: "navigate.homeAddress",
+  defaultValue: "",
+  editorTitle: "Home address",
+  glassesEditTitle: "Set Home address",
+  normalize: stripControlChars,
+  formatValue: emptySettingDisplay,
+  description: "Address (or place name) the Navigate app's Home destination routes to.",
+});
+
+export const navigateWorkAddressSetting = new ConfigSettingString({
+  id: "navigate-work-address",
+  label: "Work address",
+  storageKey: "navigate.workAddress",
+  defaultValue: "",
+  editorTitle: "Work address",
+  glassesEditTitle: "Set Work address",
+  normalize: stripControlChars,
+  formatValue: emptySettingDisplay,
+  description: "Address (or place name) the Navigate app's Work destination routes to.",
+});
+
+export const navigateRememberRecentSetting = new ConfigSettingBoolean({
+  id: "navigate-remember-recent",
+  label: "Remember recent destinations",
+  storageKey: "navigate.rememberRecent",
+  defaultValue: true,
+  description:
+    "Keep a short list of places you have navigated to, offered as destinations on the Navigate app's start page. Turning this off clears the list.",
+});
+
+/**
+ * Custom named destinations beyond Home and Work, as a JSON array of
+ * {id, name, address}. Managed inside the Navigate app (its context menu),
+ * not listed in the Settings app.
+ */
+export const navigateSavedDestinationsSetting = new ConfigSettingString({
+  id: "navigate-saved-destinations",
+  label: "Saved destinations",
+  storageKey: "navigate.savedDestinations",
+  defaultValue: "[]",
+});
+
+/**
+ * Recently navigated-to places, as a JSON array of {name, place, longitude,
+ * latitude, atMs}, most recent first. Written by the Navigate app when
+ * navigateRememberRecentSetting is on.
+ */
+export const navigateRecentDestinationsSetting = new ConfigSettingString({
+  id: "navigate-recent-destinations",
+  label: "Recent destinations",
+  storageKey: "navigate.recentDestinations",
+  defaultValue: "[]",
+});
+
+/**
+ * Staging buffers for the Navigate app's add/edit-destination flow: the
+ * worker asks the shell to open the phone text editor on one of these, the
+ * user types (or dictates) the name/address, and the worker reads the draft
+ * when the user confirms on the glasses. Deliberately not listed in the
+ * Settings app.
+ */
+export const navigateDestinationNameDraftSetting = new ConfigSettingString({
+  id: "navigate-destination-name-draft",
+  label: "Destination name",
+  storageKey: "navigate.destinationNameDraft",
+  defaultValue: "",
+  editorTitle: "Destination name (e.g. Gym)",
+  glassesEditTitle: "Destination name",
+  normalize: stripControlChars,
+});
+
+export const navigateDestinationAddressDraftSetting = new ConfigSettingString({
+  id: "navigate-destination-address-draft",
+  label: "Destination address",
+  storageKey: "navigate.destinationAddressDraft",
+  defaultValue: "",
+  editorTitle: "Destination address or place name",
+  glassesEditTitle: "Destination address",
+  normalize: stripControlChars,
+});
+
 
 export function screenTimeoutSettingToMs(value: ScreenTimeoutSetting): number | null {
   switch (value) {
@@ -742,7 +980,16 @@ export function screenTimeoutLabel(value: ScreenTimeoutSetting): string {
 }
 
 export function batteryDisplayModeLabel(value: BatteryDisplayMode): string {
-  return value === "icon" ? "Icon" : "Percentage";
+  if (value === "percentage") return "Percentage";
+  if (value === "stacked") return "Stacked";
+  if (value === "stacked-percentage") return "Stacked percentage";
+  return "Icon";
+}
+
+export function batteryIndicatorVisibilityLabel(value: BatteryIndicatorVisibility): string {
+  if (value === "never") return "Never";
+  if (value === "low") return `Below ${BATTERY_LOW_VISIBILITY_THRESHOLD}%`;
+  return "Always";
 }
 
 export function timeFormatLabel(value: TimeFormat): string {

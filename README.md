@@ -18,7 +18,7 @@ User-facing documentation lives at https://faceclaw.org/.
 ![Music player](website/screenshots/music-player.png)
 ![Assistant settings](website/screenshots/settings-assistant.png)
 ![Display settings](website/screenshots/settings-display.png)
-
+![Compass](website/screenshots/compass.png)
 
 ## Installation
 
@@ -81,23 +81,14 @@ import it into the new version.
  * **Power management**: the glasses go to sleep properly when the screen is
    off, and wake when you double-tap the ring or speak the wakeword, allowing
    battery life similar to the stock Even app.
- * **Connection management** with auto-reconnect, and autodetection of
-   conflict with the official Even Realities app.
- * **A Wear OS watch app** that replaces (and outdoes) the R1 ring: tap,
+ * **A Wear OS watch app** that complements (or replaces) the R1 ring: tap,
    swipe, hold and crown gestures, side buttons, app launching and window
    switching, voice or keyboard queries to the assistant with the reply on
    your wrist, typing into apps, and glasses status/lock/display control.
- * **On-phone screen mirroring with touch control**: tap what you see on the
-   mirror (sidebar icons, launcher cells), or use the phone's own touchpad,
-   d-pad and Back/Menu buttons — the same spatial scheme as the watch — plus a
-   compact ring simulator. A display-mode picker (576×288 band, 576×480 tall,
-   or the full 640×480 panel with an auto-hiding sidebar) and a brightness
-   slider with an Auto toggle sit beside the mirror.
- * **Bluetooth pairing** that scans for nearby glasses and identifies each
-   pair before connecting: model, frame shape, and colour decoded from the
-   advertised serial (with product photos), left and right arms matched to
-   each other by that serial, an estimated distance so the pair in your hand
-   sorts first, and the optional R1 ring.
+ * **On-phone screen mirroring**: Shows the glasses screen contents and
+   provides a phone-screen touch area equivalent to the R1 ring or the Wear OS
+   watch app. This can also be used to try out the app without pairing or
+   flashing a real pair of glasses.
  * **Dual-language NativeScript architecture**, with Java for the
    multithreaded Android API and bluetooth stack bits, Typescript for the bits
    you want to hack on.
