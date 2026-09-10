@@ -192,6 +192,9 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private int benchmarkMessageSize;
     private int benchmarkWindowSize;
     private int benchmarkDurationMs;
+    private int benchmarkLinkMode;
+    private boolean benchmarkLinkPending;
+    private long benchmarkReadyAtMs;
     private long benchmarkStartAtMs;     // first benchmark write; 0 until then
     private long benchmarkDeadlineAtMs;  // start + duration; MAX_VALUE until first write
     private long benchmarkLastAckAtMs;
@@ -620,6 +623,12 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
      * traffic already queued ahead of the run doesn't count against it.
      */
     public boolean startBandwidthBenchmark(int messageSize, int windowSize, int durationMs) {
+        return startBandwidthBenchmarkWithLinkMode(messageSize, windowSize, durationMs, 0);
+    }
+
+    // 0: current link; 1: re-request HIGH; 2: request 2M; 3: both.
+    public boolean startBandwidthBenchmarkWithLinkMode(int messageSize, int windowSize,
+                                                       int durationMs, int linkMode) {
         synchronized (lock) {
             if (benchmarkActive || !running || !sessionReady || !fixedLayoutCreated
                     || shutdownRequested || chargingMode) {
@@ -633,6 +642,9 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             benchmarkMessageSize = payload.length;
             benchmarkWindowSize = Math.max(1, Math.min(windowSize, BENCHMARK_MAX_WINDOW));
             benchmarkDurationMs = Math.max(1_000, durationMs);
+            benchmarkLinkMode = linkMode & 3;
+            benchmarkLinkPending = true;
+            benchmarkReadyAtMs = Long.MAX_VALUE;
             benchmarkStartAtMs = 0;
             benchmarkDeadlineAtMs = Long.MAX_VALUE;
             benchmarkLastAckAtMs = 0;
@@ -645,7 +657,8 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             benchmarkAborted = false;
             benchmarkActive = true;
             logLine("bandwidth benchmark start: size=" + benchmarkMessageSize
-                + "B window=" + benchmarkWindowSize + " duration=" + benchmarkDurationMs + "ms");
+                + "B window=" + benchmarkWindowSize + " duration=" + benchmarkDurationMs
+                + "ms linkMode=" + benchmarkLinkMode);
         }
         interruptibleSleep.interrupt();
         return true;
@@ -679,6 +692,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 status.put("state", state);
                 status.put("messageSize", benchmarkMessageSize);
                 status.put("windowSize", benchmarkWindowSize);
+                status.put("linkMode", benchmarkLinkMode);
                 status.put("elapsedMs", elapsed);
                 status.put("messagesSent", benchmarkMessagesSent);
                 status.put("messagesAcked", benchmarkMessagesAcked);
@@ -713,6 +727,9 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private void maintainBenchmarkLocked(long now) {
         if (!sessionReady || !fixedLayoutCreated || shutdownRequested) {
             finishBenchmarkLocked(true, "session no longer ready");
+            return;
+        }
+        if (benchmarkLinkPending || now < benchmarkReadyAtMs) {
             return;
         }
         if (benchmarkAborted || now >= benchmarkDeadlineAtMs) {
@@ -2175,6 +2192,33 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private long driveSession() {
         //Log.d(TAG, "driveSession called (pendingMessages.size=" + pendingMessages.size() + " inFlightMessages.size=" + inFlightMessages.size() + ")");
         while (true) {
+            // Run on the sender thread, outside `lock`: Bluetooth API calls can
+            // wait on the global GATT lock, and callbacks need the session lock.
+            // Keep negotiation outside the timed stream. A fixed settling period
+            // is only an experiment boundary; HCI must confirm actual parameters.
+            int linkMode = -1;
+            String[] benchmarkAddresses = null;
+            synchronized (lock) {
+                if (benchmarkActive && benchmarkLinkPending) {
+                    benchmarkLinkPending = false;
+                    linkMode = benchmarkLinkMode;
+                    benchmarkAddresses = new String[] {leftAddress, rightAddress};
+                }
+            }
+            if (benchmarkAddresses != null) {
+                for (String address : benchmarkAddresses) {
+                    try {
+                        bleManager.prepareBenchmarkLink(address, linkMode);
+                    } catch (RuntimeException error) {
+                        logLine("benchmark link request failed: " + safeMessage(error));
+                    }
+                }
+                synchronized (lock) {
+                    // Cancellation/new-run races leave the new run pending; its
+                    // own preparation will replace this deadline before sending.
+                    benchmarkReadyAtMs = SystemClock.elapsedRealtime() + 1_000;
+                }
+            }
             OutboundMessage messageToWrite = null;
             OutboundMessage messageToPrewrite = null;
             long now = SystemClock.elapsedRealtime();

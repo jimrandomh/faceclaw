@@ -160,6 +160,23 @@ public class FaceclawBleManager {
         }
     }
 
+    /** One-shot benchmark preferences; success is established by callbacks/HCI, not submission. */
+    public void prepareBenchmarkLink(String address, int mode) {
+        synchronized (gattLock(address)) {
+            BluetoothGatt gatt = requireGatt(address);
+            if ((mode & 1) != 0) {
+                boolean accepted = gatt.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH);
+                Log.i(TAG, "benchmark HIGH address=" + address + " submitted=" + accepted);
+            }
+            if ((mode & 2) != 0) {
+                Log.i(TAG, "benchmark request 2M address=" + address);
+                gatt.setPreferredPhy(BluetoothDevice.PHY_LE_2M_MASK,
+                    BluetoothDevice.PHY_LE_2M_MASK, BluetoothDevice.PHY_OPTION_NO_PREFERRED);
+            }
+            gatt.readPhy();
+        }
+    }
+
     public boolean requestMtu(String address, int mtu, int timeoutMs) {
         synchronized (gattLock(address)) {
             CountDownLatch latch = new CountDownLatch(1);
@@ -451,7 +468,14 @@ public class FaceclawBleManager {
 
         @Override
         public void onPhyRead(BluetoothGatt gatt, int txPhy, int rxPhy, int status) {
-            Log.i(TAG, "onPhyRead: txPhy=" + txPhy + " rxPhy=" + rxPhy + " status=" + status);
+            Log.i(TAG, "onPhyRead: address=" + gatt.getDevice().getAddress()
+                + " txPhy=" + txPhy + " rxPhy=" + rxPhy + " status=" + status);
+        }
+
+        @Override
+        public void onPhyUpdate(BluetoothGatt gatt, int txPhy, int rxPhy, int status) {
+            Log.i(TAG, "onPhyUpdate: address=" + gatt.getDevice().getAddress()
+                + " txPhy=" + txPhy + " rxPhy=" + rxPhy + " status=" + status);
         }
 
         @Override

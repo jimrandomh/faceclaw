@@ -14,6 +14,7 @@ export type BandwidthBenchmarkStatus = {
   state: "idle" | "starting" | "running" | "done";
   messageSize: number;
   windowSize: number;
+  linkMode: number;
   elapsedMs: number;
   messagesSent: number;
   messagesAcked: number;
@@ -33,12 +34,14 @@ function activeCommunicator(): any {
 }
 
 /** Start a run. False if not connected or a run is already active. */
-export function startBandwidthBenchmark(messageSize: number, windowSize: number, durationMs: number): boolean {
+export function startBandwidthBenchmark(messageSize: number, windowSize: number, durationMs: number, linkMode = 0): boolean {
   const active = activeCommunicator();
   if (!active) return false;
   try {
     return Boolean(
-      active.startBandwidthBenchmark(Math.round(messageSize), Math.round(windowSize), Math.round(durationMs)),
+      active.startBandwidthBenchmarkWithLinkMode(
+        Math.round(messageSize), Math.round(windowSize), Math.round(durationMs), Math.round(linkMode),
+      ),
     );
   } catch (error) {
     console.warn(`startBandwidthBenchmark failed: ${error}`);

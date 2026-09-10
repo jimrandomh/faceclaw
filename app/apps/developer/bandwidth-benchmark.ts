@@ -13,6 +13,7 @@ import {
 
 const MESSAGE_SIZES = [250, 500, 1000, 2000, 3800];
 const WINDOW_SIZES = [1, 2, 3, 4, 6];
+const LINK_MODES = ["Current", "Request HIGH", "Request 2M", "HIGH + 2M"];
 const DURATION_MS = 15_000;
 // After painting the "running" screen, wait for that frame to reach the
 // glasses before the benchmark blocks normal image sends — otherwise the
@@ -37,9 +38,10 @@ type Phase = "config" | "arming" | "running" | "done";
  */
 export class BandwidthBenchmarkLayer implements Layer {
   private phase: Phase = "config";
-  private selectedRow = 0; // 0 = message size, 1 = window size, 2 = start
+  private selectedRow = 0; // size, window, link preference, start
   private sizeIndex = 2;
   private windowIndex = 2;
+  private linkModeIndex = 0;
   private result: BandwidthBenchmarkStatus | null = null;
   private error: string | null = null;
   private armTimer: ReturnType<typeof setTimeout> | null = null;
@@ -77,6 +79,7 @@ export class BandwidthBenchmarkLayer implements Layer {
         MESSAGE_SIZES[this.sizeIndex]!,
         WINDOW_SIZES[this.windowIndex]!,
         DURATION_MS,
+        this.linkModeIndex,
       );
       if (!started) {
         this.phase = "config";
@@ -123,7 +126,7 @@ export class BandwidthBenchmarkLayer implements Layer {
         font,
         LIST_X,
         HEADER_HEIGHT + 30,
-        `${MESSAGE_SIZES[this.sizeIndex]} B messages, window ${WINDOW_SIZES[this.windowIndex]}`,
+        `${MESSAGE_SIZES[this.sizeIndex]} B, window ${WINDOW_SIZES[this.windowIndex]}, ${LINK_MODES[this.linkModeIndex]}`,
         150,
       );
       image.drawText(font, LIST_X, HEADER_HEIGHT + 52, "Display updates pause until the run finishes.", 110);
@@ -134,6 +137,7 @@ export class BandwidthBenchmarkLayer implements Layer {
     const rows: Array<[string, string]> = [
       ["Message size", `${MESSAGE_SIZES[this.sizeIndex]} B`],
       ["Window size", `${WINDOW_SIZES[this.windowIndex]}`],
+      ["Link request", LINK_MODES[this.linkModeIndex]!],
       [this.phase === "done" ? "Run again" : "Start", ""],
     ];
     for (let index = 0; index < rows.length; index++) {
@@ -161,6 +165,7 @@ export class BandwidthBenchmarkLayer implements Layer {
         `Throughput: ${(payloadRate / 1024).toFixed(2)} KB/s payload (${(wireRate / 1024).toFixed(2)} KB/s wire)`,
         `Messages: ${r.messagesAcked}/${r.messagesSent} acked, ${r.timeouts} timeouts`,
         `Elapsed: ${seconds.toFixed(1)} s` + (r.aborted ? "  (aborted early)" : ""),
+        `Link request: ${LINK_MODES[r.linkMode] ?? "Current"}`,
       ];
       for (const line of lines) {
         image.drawText(font, LIST_X, y, line, 190);
@@ -184,13 +189,15 @@ export class BandwidthBenchmarkLayer implements Layer {
         this.selectedRow = Math.max(0, this.selectedRow - 1);
         return;
       case "scroll-down":
-        this.selectedRow = Math.min(2, this.selectedRow + 1);
+        this.selectedRow = Math.min(3, this.selectedRow + 1);
         return;
       case "click":
         if (this.selectedRow === 0) {
           this.sizeIndex = (this.sizeIndex + 1) % MESSAGE_SIZES.length;
         } else if (this.selectedRow === 1) {
           this.windowIndex = (this.windowIndex + 1) % WINDOW_SIZES.length;
+        } else if (this.selectedRow === 2) {
+          this.linkModeIndex = (this.linkModeIndex + 1) % LINK_MODES.length;
         } else {
           this.startRun();
         }
