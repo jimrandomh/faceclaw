@@ -12,8 +12,8 @@ import java.util.concurrent.TimeUnit;
 
 /**
  * Connects to the glasses (stock-firmware compatible), reads the device-info /
- * settings response, and reports the firmware versions plus the CFW capability
- * string (empty on stock firmware). Used by onboarding to decide whether to
+ * settings response, and reports the firmware versions plus the firmware-
+ * extension string (empty on stock firmware). Used by onboarding to decide whether to
  * flash. Reuses FaceclawBleManager + BleProtocol; owns its own connection and
  * runs on a single worker thread. Shows nothing on the lens.
  */
@@ -119,9 +119,9 @@ public class FaceclawDeviceInfoProbe implements FaceclawBleListener {
             BleProtocol.FirmwareInfo info = BleProtocol.parseSettingsFirmwareInfo(ack);
             String left = info == null ? "" : info.leftVersion;
             String right = info == null ? "" : info.rightVersion;
-            String caps = info == null ? "" : info.capabilities;
-            emitLog("device-info: L=" + left + " R=" + right + " caps=[" + caps + "]");
-            emitResult(left, right, caps);
+            String extension = info == null ? "" : info.extension;
+            emitLog("device-info: L=" + left + " R=" + right + " ext=[" + extension + "]");
+            emitResult(left, right, extension);
         } catch (Exception e) {
             String message = cancelled ? "Cancelled." : (e.getMessage() == null ? e.toString() : e.getMessage());
             emitError(message);
@@ -161,7 +161,7 @@ public class FaceclawDeviceInfoProbe implements FaceclawBleListener {
 
         emitState("querying", label);
         // Session prelude, then a settings/device-info read (both arms'
-        // versions and the CFW capability string ride back in one response).
+        // versions and the firmware-extension string ride back in one response).
         if (writeAndAwaitAck(address, BleProtocol.PRELUDE_ACK_SID, BleProtocol.FLAG_REQUEST,
                 BleProtocol.PRELUDE_ACK_MAGIC, BleProtocol.PRELUDE_F5872_PAYLOAD,
                 ConnectionOptions.PRELUDE_TIMEOUT_MS) == null) {
@@ -329,11 +329,11 @@ public class FaceclawDeviceInfoProbe implements FaceclawBleListener {
         });
     }
 
-    private void emitResult(String left, String right, String caps) {
+    private void emitResult(String left, String right, String extension) {
         mainHandler.post(() -> {
             FaceclawDeviceInfoProbeListener current = listener;
             if (current != null) {
-                current.onResult(left, right, caps);
+                current.onResult(left, right, extension);
             }
         });
     }

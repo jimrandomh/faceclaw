@@ -493,7 +493,7 @@ export const useMicControlSetting = new ConfigSettingBoolean({
   storageKey: "developer.useMicControl",
   defaultValue: true,
   description:
-    "Use the custom firmware's per-temple mic-control channel (caps token micctl) for the Microphones app's array capture. When off, behave as if the firmware doesn't have the feature and use the standard single mixed stream.",
+    "Use the custom firmware's per-temple mic-control channel for the Microphones app's array capture. When off, use the standard single mixed stream.",
 });
 
 export const showBleBandwidthSetting = new ConfigSettingBoolean({

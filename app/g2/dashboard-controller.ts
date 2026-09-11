@@ -16,7 +16,7 @@ import { ALL_NOTIFICATIONS, onAndroidNotificationPosted, readActiveNotifications
 import { shouldShowNotificationOnGlasses } from "../native/notification-sources";
 import { openEvenAppSettings, readEvenAppNotificationState } from "../native/even-app-conflict";
 import { grayImageToPreviewSource } from "../native/gray-image-preview";
-import { firmwareIncompatibilityMessage } from "./firmware-compat";
+import { firmwareIncompatibilityMessage, hasCompatibleFirmware } from "./firmware-compat";
 import { hasExtractedEvenHubFonts } from "./firmware-builder";
 import { resumeAutoReconnect, suppressAutoReconnect } from "./reconnect-policy";
 import { WearRemote, type WearRemoteInputKind } from "./wear-remote";
@@ -253,9 +253,9 @@ class DashboardController {
   private evenHubSuspendTimer: ReturnType<typeof setTimeout> | null = null;
   private evenHubSessionSuspended = false;
   private evenHubResumePromise: Promise<boolean> | null = null;
-  private faceclawWakeLeaseSupported = false;
+  /** Faceclaw's firmware at the required revision reported in; its extensions can be used. */
+  private customFirmwareConfirmed = false;
   private faceclawWakeLeaseState: boolean | null = null;
-  private wearNotifySupported = false;
   private glassesWorn: boolean | null = null;
   private phoneLocked = false;
   private glassesLocked = false;
@@ -631,7 +631,7 @@ class DashboardController {
     const communicator = this.communicator;
     if (
       !lockScreenEnabledSetting.get() ||
-      !this.wearNotifySupported ||
+      !this.customFirmwareConfirmed ||
       this.phase !== "connected" ||
       !communicator
     ) {
@@ -736,7 +736,7 @@ class DashboardController {
     // foreground app when Faceclaw handles the glasses wakeword. Without the
     // latter, Even AI displaces EvenHub before our first wake frame can ACK.
     return (
-      this.faceclawWakeLeaseSupported &&
+      this.customFirmwareConfirmed &&
       (suspendEvenHubWhenScreenOffSetting.get() || wakeWordActionSetting.get() !== "off")
     );
   }
@@ -816,7 +816,7 @@ class DashboardController {
       }
 
       void (async () => {
-        if (this.faceclawWakeLeaseSupported) {
+        if (this.customFirmwareConfirmed) {
           // Refresh immediately before teardown so the first suspended wake
           // cannot race an old lease's expiry.
           const leaseReady = await this.syncFaceclawWakeLease(communicator, true);
@@ -1291,9 +1291,8 @@ class DashboardController {
     );
 
     let communicator: FaceclawCommunicatorBridge | null = null;
-    this.faceclawWakeLeaseSupported = false;
+    this.customFirmwareConfirmed = false;
     this.faceclawWakeLeaseState = null;
-    this.wearNotifySupported = false;
     this.lockSurfaceConfigured = false;
     this.evenHubResumePromise = null;
     this.connectRunning = true;
@@ -1441,26 +1440,18 @@ class DashboardController {
       this.offFirmwareInfo = communicator.onFirmwareInfo((info) => {
         this.appendLog(
           `firmware: L=${info.leftVersion || "?"} R=${info.rightVersion || "?"}` +
-            (info.capabilities ? ` caps="${info.capabilities}"` : " (no CFW capability string)"),
+            (info.extension ? ` ext="${info.extension}"` : " (no firmware extension string)"),
         );
         const warning = firmwareIncompatibilityMessage(info) ?? "";
-        const wakeLeaseSupported = info.capabilities
-          .trim()
-          .split(/\s+/)
-          .includes("wakelease");
-        const wearNotifySupported = info.capabilities
-          .trim()
-          .split(/\s+/)
-          .includes("wearnotify");
-        if (wakeLeaseSupported !== this.faceclawWakeLeaseSupported) {
-          this.faceclawWakeLeaseSupported = wakeLeaseSupported;
+        // The firmware contract is all-or-nothing: a compatible revision has
+        // every extension (wake lease, wear notifications, ...) we use.
+        const customFirmwareConfirmed = !warning && hasCompatibleFirmware(info);
+        if (customFirmwareConfirmed !== this.customFirmwareConfirmed) {
+          this.customFirmwareConfirmed = customFirmwareConfirmed;
           this.faceclawWakeLeaseState = null;
           void this.syncFaceclawWakeLease().catch((error) => {
             this.appendLog(`wake takeover lease sync failed: ${this.formatError(error)}`);
           });
-        }
-        if (wearNotifySupported !== this.wearNotifySupported) {
-          this.wearNotifySupported = wearNotifySupported;
           this.ensureWearStateTracking();
         }
         if (warning !== this.firmwareWarningMessage) {
@@ -1558,8 +1549,7 @@ class DashboardController {
       }
       this.communicator = null;
       this.lockSurfaceConfigured = false;
-      this.wearNotifySupported = false;
-      this.faceclawWakeLeaseSupported = false;
+      this.customFirmwareConfirmed = false;
       this.faceclawWakeLeaseState = null;
       this.evenHubResumePromise = null;
       this.clearDashboardTimer();
@@ -1751,9 +1741,8 @@ class DashboardController {
       await communicator?.close().catch(() => {});
     } finally {
       stopForegroundNotification();
-      this.faceclawWakeLeaseSupported = false;
+      this.customFirmwareConfirmed = false;
       this.faceclawWakeLeaseState = null;
-      this.wearNotifySupported = false;
       this.setPhase("disconnected");
       this.setStatus("Disconnected.");
       this.appendLog("Disconnected from the glasses.");

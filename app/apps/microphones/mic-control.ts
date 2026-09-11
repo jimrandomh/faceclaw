@@ -20,8 +20,9 @@ declare const com: any;
  * Host-side controller for the CFW mic_control array: sends the same config
  * to both temples (each temple is its own endpoint and its own 2-mic array),
  * tracks per-temple field-104 status, and keeps the 90 s streaming lease
- * renewed while capture is armed. Degrades cleanly on firmware without the
- * feature: micControlSupported() is false and apply() refuses to arm.
+ * renewed while capture is armed. The feature is part of the required
+ * firmware revision, so the only gate is the developer setting:
+ * micControlSupported() is false and apply() refuses to arm when it is off.
  */
 
 const CONFIG_SETTING_KEY = "microphones.array-config";
@@ -38,26 +39,13 @@ function activeCommunicator(): any {
   }
 }
 
-/** True when the connected glasses advertise the CFW mic_control feature. */
-export function micControlAdvertised(): boolean {
-  const communicator = activeCommunicator();
-  if (!communicator) return false;
-  try {
-    const caps = String(communicator.getFirmwareCapabilities() ?? "");
-    return caps.trim().split(/\s+/).includes("micctl");
-  } catch {
-    return false;
-  }
-}
-
 /**
- * True when the connected glasses advertise the CFW mic_control feature AND
- * the "Use microphone control" developer setting is on. With the setting off
- * (the default), Faceclaw behaves exactly as it would on firmware without the
- * micctl caps token.
+ * True when the "Use microphone control" developer setting is on. With the
+ * setting off, Faceclaw behaves exactly as it would on firmware without the
+ * mic-control channel (one mixed stream).
  */
 export function micControlSupported(): boolean {
-  return useMicControlSetting.get() && micControlAdvertised();
+  return useMicControlSetting.get();
 }
 
 export function loadMicConfig(): MicConfig {

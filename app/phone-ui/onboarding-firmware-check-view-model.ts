@@ -7,7 +7,14 @@ import {
   hasExtractedEvenHubFonts,
   type FirmwareProgress,
 } from "../g2/firmware-builder";
-import { BASE_STOCK_VERSION_TEXT, classifyOnboardingFirmware, type OnboardingFirmwareKind } from "../g2/firmware-compat";
+import {
+  BASE_STOCK_VERSION_TEXT,
+  REQUIRED_FACECLAW_FIRMWARE_VERSION,
+  classifyOnboardingFirmware,
+  describeFirmwareExtension,
+  type FirmwareExtension,
+  type OnboardingFirmwareKind,
+} from "../g2/firmware-compat";
 import { DeviceInfoProbe, DeviceInfoState } from "../native/device-info-probe";
 import { setOnboardingCompleted, setPreviewOnlyMode } from "./onboarding-state";
 import { formatErrorMessage } from "../util/format-error";
@@ -145,7 +152,7 @@ export class OnboardingFirmwareCheckViewModel extends Observable {
     if (this._phase !== "error") return;
     // Same path as a real "custom" classification, so the phone-side G2 fonts
     // still get extracted when they're missing.
-    this.applyClassification("custom", "", "");
+    this.applyClassification("custom", "", { kind: "none" });
   }
 
   // --- probe flow ------------------------------------------------------------
@@ -176,8 +183,8 @@ export class OnboardingFirmwareCheckViewModel extends Observable {
       const info = await probe.run();
       this.probeInstance = null;
 
-      const { kind, version } = classifyOnboardingFirmware(info);
-      this.applyClassification(kind, version, info.capabilities.trim());
+      const { kind, version, extension } = classifyOnboardingFirmware(info);
+      this.applyClassification(kind, version, extension);
     } catch (error) {
       this.probeInstance = null;
       this.toError(this.formatError(error));
@@ -195,10 +202,11 @@ export class OnboardingFirmwareCheckViewModel extends Observable {
     }
   }
 
-  private applyClassification(kind: OnboardingFirmwareKind, version: string, capabilities: string): void {
+  private applyClassification(kind: OnboardingFirmwareKind, version: string, extension: FirmwareExtension): void {
     this.busy = false;
     // `kind` is classifyOnboardingFirmware's OnboardingFirmwareKind ("custom" |
-    // "flashable-stock" | "newer-stock-unvalidated" | "newer-stock-validated" | "unknown") -- NOT CheckPhase's shorter
+    // "older-faceclaw" | "other-custom" | "flashable-stock" | "newer-stock-unvalidated" |
+    // "newer-stock-validated" | "unknown") -- NOT CheckPhase's shorter
     // "flashable"/"newer-validated"/"newer" (used below via setPhase for _phase/primaryLabel/etc).
     // The two types share two of four names, so a typo'd case label here type-checks
     // fine as long as `kind` stays plain `string`, but silently falls through to
@@ -208,10 +216,26 @@ export class OnboardingFirmwareCheckViewModel extends Observable {
     switch (kind) {
       case "custom":
         if (!hasExtractedEvenHubFonts()) {
-          void this.extractFontsForCustomFirmware(version, capabilities);
+          void this.extractFontsForCustomFirmware(version, extension);
           break;
         }
-        this.showCustomReady(version, capabilities, false);
+        this.showCustomReady(version, extension, false);
+        break;
+      case "older-faceclaw":
+        this.setPhase("flashable");
+        this.headline = "Firmware Update Available";
+        this.status =
+          `Your glasses run ${describeFirmwareExtension(extension)}${version ? `, based on stock ${version}` : ""}. ` +
+          `This version of Faceclaw needs revision ${REQUIRED_FACECLAW_FIRMWARE_VERSION}. ` +
+          "Tap Install Firmware to update it.";
+        break;
+      case "other-custom":
+        this.setPhase("flashable");
+        this.headline = "Other Custom Firmware";
+        this.status =
+          `Your glasses run ${describeFirmwareExtension(extension)}${version ? `, based on stock ${version}` : ""}. ` +
+          `Faceclaw needs its own custom firmware (revision ${REQUIRED_FACECLAW_FIRMWARE_VERSION}). ` +
+          "Tap Install Firmware to replace the current firmware with it.";
         break;
       case "flashable-stock":
         this.setPhase("flashable");
@@ -249,7 +273,7 @@ export class OnboardingFirmwareCheckViewModel extends Observable {
     }
   }
 
-  private async extractFontsForCustomFirmware(version: string, capabilities: string): Promise<void> {
+  private async extractFontsForCustomFirmware(version: string, extension: FirmwareExtension): Promise<void> {
     this.setPhase("fonts");
     this.headline = "Preparing G2 Fonts";
     this.busy = true;
@@ -258,7 +282,7 @@ export class OnboardingFirmwareCheckViewModel extends Observable {
       "Downloading the official firmware to extract them; your glasses will not be reflashed.";
     try {
       await downloadAndExtractEvenHubFonts((progress) => this.reportFontProgress(progress));
-      this.showCustomReady(version, capabilities, true);
+      this.showCustomReady(version, extension, true);
     } catch (error) {
       this.toError(
         `Custom firmware is installed, but the G2 fonts could not be prepared: ${this.formatError(error)}`,
@@ -283,13 +307,16 @@ export class OnboardingFirmwareCheckViewModel extends Observable {
     }
   }
 
-  private showCustomReady(version: string, capabilities: string, extractedFonts: boolean): void {
+  private showCustomReady(version: string, extension: FirmwareExtension, extractedFonts: boolean): void {
     this.busy = false;
     this.setPhase("custom");
     this.headline = extractedFonts ? "Fonts Ready" : "Custom Firmware Detected";
+    const details = [
+      extension.kind === "faceclaw" ? `revision ${extension.version}` : "",
+      version ? `based on stock ${version}` : "",
+    ].filter(Boolean);
     this.status =
-      `Your glasses already run Faceclaw's custom firmware${version ? ` (version ${version})` : ""}` +
-      `${capabilities ? `, extensions: ${capabilities}` : ""}. ` +
+      `Your glasses already run Faceclaw's custom firmware${details.length ? ` (${details.join(", ")})` : ""}. ` +
       (extractedFonts
         ? "The phone-side G2 fonts were extracted successfully. No flashing was needed — you're all set."
         : "The phone-side G2 fonts are present. No flashing needed — you're all set.");
