@@ -1,7 +1,6 @@
 # Changelog
 
 ## 0.6.6 - Future
-* Expand Pinball with target banks, escalating jackpots, scoring multipliers, skill shots, ball saves, drain bonuses, and an objective panel
 * Change Bluetooth radio settings: Increases throughput from 4-12KiB/s to 41KiB/s
 * Navigate and terminal app: App-specific screen size/position setting
 * Transcribe app: Scrolling; automatic reconnection; insert newlines
@@ -12,6 +11,8 @@
 * Messaging in the flasher distinguishes between downgrading from stock firmwares  where that's been validated and veresions where it hasn't, and considers 2.2.10 validated
 * Add R1 battery indicator to the top bar
 * Change the styling and add more customization options for battery indicators
+* Expand Pinball game
+* Add Flappy game
 
 ## 0.6.5 - 2026-09-04
 * Changed context menu gestures: — for system, ●— for app context menu.

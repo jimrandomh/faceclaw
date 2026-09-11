@@ -16,6 +16,7 @@ const DEFAULT_ASSIGNMENTS: Record<string, string> = {
   freecell: "Games",
   minesweeper: "Games",
   pinball: "Games",
+  flappy: "Games",
   calculator: "Prototypes",
   microphones: "Prototypes",
   nightscout: "Prototypes",
