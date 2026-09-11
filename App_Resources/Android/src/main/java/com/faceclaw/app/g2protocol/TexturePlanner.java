@@ -118,15 +118,14 @@ public final class TexturePlanner {
     /**
      * Plan a cached-draw update. previous is the delta base (the frame the
      * shadow currently holds), or null/mismatched for a full-frame keyframe.
-     * allowImages requires the teximg13 capability; allowFwText requires
-     * font15. Returns null when the plain paths should run instead (no
-     * replayable draws, or identical frames).
+     * Returns null when the plain paths should run instead (no replayable
+     * draws, or identical frames).
      */
     public static Result plan(
             byte[] previous, byte[] next, int width, int height,
             SurfaceCompositor.ScreenDraw[] draws,
             TextureCacheState cache, int fidStart,
-            boolean allowMultiRect, int maxRects, boolean allowImages, boolean allowFwText) {
+            boolean allowMultiRect, int maxRects) {
         if (next == null || draws == null || draws.length == 0 || width <= 0 || height <= 0) {
             return null;
         }
@@ -171,14 +170,12 @@ public final class TexturePlanner {
         List<FwPunch> fwPunches = new ArrayList<>();
         int fwGlyphCount = 0;
         int fwBaked = 0;
-        if (allowFwText) {
-            for (SurfaceCompositor.ScreenDraw draw : draws) {
-                if (draw.kind != SurfaceCompositor.ScreenDraw.KIND_FWTEXT) continue;
-                fwBaked += planFwRun(draw, rects, next, stride, width, height, fwSubs, fwPunches);
-            }
-            fwGlyphCount = fwPunches.size();
-            bakedCandidates += fwBaked;
+        for (SurfaceCompositor.ScreenDraw draw : draws) {
+            if (draw.kind != SurfaceCompositor.ScreenDraw.KIND_FWTEXT) continue;
+            fwBaked += planFwRun(draw, rects, next, stride, width, height, fwSubs, fwPunches);
         }
+        fwGlyphCount = fwPunches.size();
+        bakedCandidates += fwBaked;
         for (SurfaceCompositor.ScreenDraw draw : draws) {
             if (draw.kind == SurfaceCompositor.ScreenDraw.KIND_GLYPH) {
                 GlyphAtlas.Glyph atlas = GlyphAtlas.get(draw.fontId, draw.encoding);
@@ -204,7 +201,6 @@ public final class TexturePlanner {
                 }
                 selected.add(new Selected(draw, atlas, null, gx, top));
             } else {
-                if (!allowImages) continue; // firmware lacks teximg13: stays baked
                 ImageAtlas.Entry atlas = ImageAtlas.get(draw.imageId);
                 if (atlas == null) continue;
                 if (!intersectsAny(rects, draw.x, draw.y, atlas.width, atlas.height)) {

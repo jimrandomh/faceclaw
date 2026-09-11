@@ -11,5 +11,5 @@ public interface FaceclawBleCommunicatorListener {
     void onEvenAppConflict(String message);
     void onFrameMetrics(int paintMs, int transmitMs, int tileCount);
     void onFrameFinished(int frameId, String outcome);
-    void onFirmwareInfo(String leftVersion, String rightVersion, String capabilities);
+    void onFirmwareInfo(String leftVersion, String rightVersion, String extension);
 }

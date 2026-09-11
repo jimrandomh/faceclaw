@@ -1,7 +1,6 @@
 /**
- * Wire codec for the CFW mic_control feature (g2flash `microphone-configurations`
- * branch, EVENCFW/16, caps tokens micctl/micmc/micraw). Mirrors the contract
- * header in g2flash patches/mic_control.c:
+ * Wire codec for the CFW mic_control feature. Mirrors the contract header in
+ * g2flash patches/mic_control.c:
  *
  *   field 103 (write)  ['M','C', ver, op, <9 config bytes for CONFIGURE>]
  *   field 104 (read)   21-byte ['M','C', ver, active, src, chanMask, codec,

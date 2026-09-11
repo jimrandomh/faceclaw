@@ -113,8 +113,7 @@ export class LightSensorDemoLayer implements Layer {
     if (!report) {
       const message = this.enabled ? "Waiting for a report…" : "Paused (page not visible).";
       image.drawText(small, 22, 44, message, 190);
-      image.drawText(small, 22, 66, "Needs custom firmware with the als16", 120);
-      image.drawText(small, 22, 82, "extension (EVENCFW/18 or newer).", 120);
+      image.drawText(small, 22, 66, "Needs Faceclaw's custom firmware.", 120);
       image.drawText(small, 20, height - 16, `${GESTURE_DOUBLE_CLICK} back`, 110);
       return image;
     }

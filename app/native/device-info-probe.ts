@@ -1,19 +1,17 @@
 import { Utils } from "@nativescript/core";
 
+import { type FirmwareInfo } from "../g2/firmware-compat";
+
 declare const com: any;
 
-export type DeviceInfo = {
-  leftVersion: string;
-  rightVersion: string;
-  capabilities: string;
-};
+export type DeviceInfo = FirmwareInfo;
 
 export type DeviceInfoState = "connecting" | "authenticating" | "querying";
 
 /**
  * TS wrapper around the native FaceclawDeviceInfoProbe — a one-shot,
  * stock-compatible connect + firmware/device-info read. `run()` resolves with
- * the firmware versions and CFW capability string, or rejects on failure.
+ * the firmware versions and the firmware-extension string, or rejects on failure.
  */
 export class DeviceInfoProbe {
   private readonly probe: any;
@@ -34,11 +32,11 @@ export class DeviceInfoProbe {
       onLog: (line: string) => this.emit(this.logListeners, String(line)),
       onState: (state: string, detail: string) =>
         this.emit(this.stateListeners, String(state) as DeviceInfoState, String(detail ?? "")),
-      onResult: (leftVersion: string, rightVersion: string, capabilities: string) =>
+      onResult: (leftVersion: string, rightVersion: string, extension: string) =>
         this.settle(null, {
           leftVersion: String(leftVersion),
           rightVersion: String(rightVersion),
-          capabilities: String(capabilities),
+          extension: String(extension),
         }),
       onError: (message: string) => this.settle(new Error(String(message)), null),
     });

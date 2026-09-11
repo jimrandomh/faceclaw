@@ -50,16 +50,15 @@ public class BleProtocol {
     public static final int FACECLAW_WAKE_CONTROL_FIELD = 101;
     public static final int FACECLAW_WAKE_EVENT_FIELD = 102;
     /**
-     * CFW mic_control (EVENCFW/16, caps tokens micctl/micmc/micraw): host
-     * writes an ['M','C',ver,op,...] record as settings field 103; each temple
+     * CFW mic_control: host writes an ['M','C',ver,op,...] record as settings
+     * field 103; each temple
      * reports a 21-byte ['M','C',ver,...] status as field 104, both appended
      * to settings read responses and as standalone commandId=3 pushes.
      */
     public static final int FACECLAW_MIC_CONTROL_FIELD = 103;
     public static final int FACECLAW_MIC_STATUS_FIELD = 104;
     /**
-     * CFW als_sensor (EVENCFW/18, caps token als16): ambient-light reports on
-     * settings-channel field 105, 24-byte ['A','L',ver,reason,...] records from
+     * CFW als_sensor: ambient-light reports on settings-channel field 105, 24-byte ['A','L',ver,reason,...] records from
      * the master temple (decoded in app/native/ambient-light.ts).
      */
     public static final int FACECLAW_ALS_REPORT_FIELD = 105;
@@ -475,7 +474,7 @@ public class BleProtocol {
         return body;
     }
 
-    /** Field 106: RB/version 1/flags/percentage, from CFW ringbat17. */
+    /** Field 106: RB/version 1/flags/percentage, from the CFW ring-battery cache. */
     public static RingBatterySnapshot parseRingBattery(byte[] pb) {
         if (pb == null) return null;
         byte[] body = readFieldBytes(stripTrailingCrc(pb), 106);
@@ -585,11 +584,14 @@ public class BleProtocol {
     }
 
     /**
-     * Firmware versions and the CFW capability advertisement from a settings
+     * Firmware versions and the firmware-extension string from a settings
      * READ ack. Versions are fields 5/6 of the deviceReceiveRequestFromApp
-     * submessage (field 4); the custom firmware additionally appends top-level
-     * field 100, a string like "EVENCFW/6 img576 img640 ... directfb fbguard", which
-     * stock firmware never sends. Returns null when the ack carries none of it.
+     * submessage (field 4); Faceclaw's custom firmware additionally appends
+     * top-level field 100 with its revision ("Faceclaw/<n>"; older builds sent
+     * "EVENCFW/<ver> <tokens>"), which stock firmware never sends. Returns null
+     * when the ack carries none of it. Compatibility is judged on the TS side
+     * (app/g2/firmware-compat.ts); Java only needs to know whether the firmware
+     * is ours at all.
      */
     public static FirmwareInfo parseSettingsFirmwareInfo(byte[] pb) {
         byte[] root = stripTrailingCrc(pb);
@@ -599,11 +601,11 @@ public class BleProtocol {
         }
         String leftVersion = readStringFieldValue(request, 5);
         String rightVersion = readStringFieldValue(request, 6);
-        String capabilities = readStringFieldValue(root, 100);
-        if (leftVersion.isEmpty() && rightVersion.isEmpty() && capabilities.isEmpty()) {
+        String extension = readStringFieldValue(root, 100);
+        if (leftVersion.isEmpty() && rightVersion.isEmpty() && extension.isEmpty()) {
             return null;
         }
-        return new FirmwareInfo(leftVersion, rightVersion, capabilities);
+        return new FirmwareInfo(leftVersion, rightVersion, extension);
     }
 
     public static byte[] wrapEvenHub(int cmd, int magic, int innerFieldNumber, byte[] inner) {
@@ -1120,14 +1122,28 @@ public class BleProtocol {
     }
 
     public static final class FirmwareInfo {
+        /** Prefix of the firmware-extension string on Faceclaw's custom firmware. */
+        public static final String FACECLAW_EXTENSION_PREFIX = "Faceclaw/";
+
         final String leftVersion;
         final String rightVersion;
-        final String capabilities;
+        /** Raw field-100 string ("" on stock firmware). */
+        final String extension;
 
-        FirmwareInfo(String leftVersion, String rightVersion, String capabilities) {
+        FirmwareInfo(String leftVersion, String rightVersion, String extension) {
             this.leftVersion = leftVersion;
             this.rightVersion = rightVersion;
-            this.capabilities = capabilities;
+            this.extension = extension == null ? "" : extension;
+        }
+
+        /**
+         * True when the glasses run Faceclaw's custom firmware (any revision).
+         * Whether the revision is the one this app needs is decided on the TS
+         * side, which disconnects on a mismatch; this only guards the private
+         * modes against stock or third-party firmware in the meantime.
+         */
+        public boolean isFaceclawFirmware() {
+            return extension.trim().startsWith(FACECLAW_EXTENSION_PREFIX);
         }
     }
 }

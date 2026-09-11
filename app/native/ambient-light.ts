@@ -1,6 +1,6 @@
 /**
  * Ambient light sensor access through the custom firmware (CFW image-handler
- * mode 16, capability token "als16"; see g2flash/patches/als_sensor.c).
+ * mode 16; see g2flash/patches/als_sensor.c).
  *
  * The stock firmware only reads its OPT3001 light sensor while auto-brightness
  * is on, and then steps the panel brightness itself (visible flicker). The CFW

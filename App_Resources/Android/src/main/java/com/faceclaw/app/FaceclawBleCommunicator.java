@@ -77,7 +77,6 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         new java.util.concurrent.CopyOnWriteArrayList<>();
     private final java.util.List<FaceclawMicStatusListener> micStatusListeners =
         new java.util.concurrent.CopyOnWriteArrayList<>();
-    private volatile String lastFirmwareCapabilities = "";
     private volatile Thread workerThread;
     private volatile boolean running;
     private volatile boolean userDisconnectRequested;
@@ -130,7 +129,14 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private int faceclawFramebufferControlGeneration;
     private int faceclawFramebufferControlSentCount;
     private int faceclawWakePendingNonce = -1;
-    private boolean cfwCleanupSupported;
+    /**
+     * The last firmware-info read said the glasses run Faceclaw's custom
+     * firmware. Gates the private modes (cleanup, texture cache, ...) so stock
+     * or third-party firmware never sees them; the TS side checks the actual
+     * revision and disconnects on a mismatch, so no per-feature gating is
+     * needed here.
+     */
+    private boolean customFirmwareDetected;
     private boolean cfwCleanupDelivered;
     private int lastCfwCleanupAckMagic;
 
@@ -260,9 +266,6 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     // firmware frees the cache with the fb lease, and after any resync the
     // cheap safe assumption is an empty cache (glyphs re-upload lazily).
     private final TextureCacheState textureCache = new TextureCacheState();
-    private boolean textureCacheSupported;
-    private boolean textureImagesSupported;
-    private boolean fwTextSupported;
 
     private final ArrayDeque<OutboundMessage> pendingMessages = new ArrayDeque<>();
     private final ArrayDeque<OutboundMessage> inFlightMessages = new ArrayDeque<>();
@@ -819,11 +822,6 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         }
     }
 
-    /** The CFW capability token string from the last firmware-info read ("" before one arrives). */
-    public String getFirmwareCapabilities() {
-        return lastFirmwareCapabilities;
-    }
-
     public void addAmbientLightListener(FaceclawAmbientLightListener listener) {
         if (listener != null) {
             ambientLightListeners.add(listener);
@@ -1327,7 +1325,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             if (cfwCleanupDelivered) {
                 return true;
             }
-            if (!cfwCleanupSupported || !running || !sessionReady
+            if (!customFirmwareDetected || !running || !sessionReady
                     || shutdownRequested || !fixedLayoutCreated) {
                 logLine("skip CFW cleanup; mode 11 unavailable or image path not ready");
                 return false;
@@ -1960,7 +1958,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             logLine("session ready");
             synchronized (lock) {
                 // Query settings promptly on the first session so firmware
-                // version/capabilities (and battery) arrive without waiting for
+                // version/extension (and battery) arrive without waiting for
                 // the input-quiet battery poll. The settings response doubles as
                 // the firmware-compatibility check surfaced during onboarding.
                 if (!firmwareInfoQueried) {
@@ -2849,7 +2847,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         // ink out of the baked deltas. Uploads (mode 12) ride ahead of the
         // image message on the ordered transport. Falls through to the plain
         // paths whenever the planner has nothing to draw.
-        if (textureCacheSupported && connectionOptions.TEXTURE_CACHE_FRAMES
+        if (customFirmwareDetected && connectionOptions.TEXTURE_CACHE_FRAMES
                 && draws != null && draws.length > 0 && packed.length > 0) {
             byte[] deltaBase = (connectionOptions.INCREMENTAL_FRAMES && lastEnqueuedPacked.length > 0
                     && lastEnqueuedWidth == width && lastEnqueuedHeight == height)
@@ -2858,8 +2856,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             TexturePlanner.Result tex = TexturePlanner.plan(
                     deltaBase, packed, width, height, draws, textureCache,
                     nextImageFrameId,
-                    connectionOptions.MULTI_RECT_FRAMES, ConnectionOptions.MULTI_RECT_MAX_RECTS,
-                    textureImagesSupported, fwTextSupported);
+                    connectionOptions.MULTI_RECT_FRAMES, ConnectionOptions.MULTI_RECT_MAX_RECTS);
             if (tex != null) {
                 nextImageFrameId = tex.nextFid;
                 for (byte[] upload : tex.uploads) {
@@ -3078,12 +3075,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             }
             BleProtocol.FirmwareInfo firmwareInfo = BleProtocol.parseSettingsFirmwareInfo(message.ackPayload);
             if (firmwareInfo != null) {
-                lastFirmwareCapabilities = firmwareInfo.capabilities == null ? "" : firmwareInfo.capabilities;
-                cfwCleanupSupported = hasCapability(firmwareInfo.capabilities, "cleanup11");
-                textureCacheSupported = hasCapability(firmwareInfo.capabilities, "texcache12")
-                        && hasCapability(firmwareInfo.capabilities, "texstr14");
-                textureImagesSupported = hasCapability(firmwareInfo.capabilities, "teximg13");
-                fwTextSupported = hasCapability(firmwareInfo.capabilities, "font15");
+                customFirmwareDetected = firmwareInfo.isFaceclawFirmware();
                 emitFirmwareInfo(firmwareInfo);
             }
         };
@@ -3685,14 +3677,6 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         // the very cause of the session teardown that got us here.
     }
 
-    private static boolean hasCapability(String capabilities, String token) {
-        if (capabilities == null || token == null || token.isEmpty()) return false;
-        for (String capability : capabilities.trim().split("\\s+")) {
-            if (token.equals(capability)) return true;
-        }
-        return false;
-    }
-
     private void emitRingEvent(String kind, String containerName, int eventType, int eventSource, int systemExitReasonCode, int frameId) {
         final FaceclawBleCommunicatorListener current = listener;
         if (current == null) {
@@ -3839,7 +3823,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         }
         mainHandler.post(() -> {
             try {
-                current.onFirmwareInfo(info.leftVersion, info.rightVersion, info.capabilities);
+                current.onFirmwareInfo(info.leftVersion, info.rightVersion, info.extension);
             } catch (Throwable t) {
                 Log.w(TAG, "listener onFirmwareInfo failed", t);
             }
