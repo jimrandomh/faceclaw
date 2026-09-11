@@ -178,7 +178,7 @@ function dayKeyOf(timestampMs: number): string {
   return `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
 }
 
-function dayHeaderLabel(timestampMs: number): string {
+export function dayHeaderLabel(timestampMs: number): string {
   const date = new Date(timestampMs);
   const now = new Date();
   const midnight = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
@@ -189,7 +189,7 @@ function dayHeaderLabel(timestampMs: number): string {
   return base;
 }
 
-function formatEventTime(timestampMs: number): string {
+export function formatEventTime(timestampMs: number): string {
   const date = new Date(timestampMs);
   const minutes = String(date.getMinutes()).padStart(2, "0");
   const hour24 = date.getHours();

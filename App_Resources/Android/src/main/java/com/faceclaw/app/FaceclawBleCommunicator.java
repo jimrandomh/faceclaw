@@ -1686,17 +1686,44 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                     );
                     faceclawWakeNotification = true;
                     lastConnectionOrInputAtMs = lastIncomingAtMs;
+                    // The event type says which gesture woke the glasses: TS
+                    // gives a head-up the Glanceboard and a double tap the
+                    // regular UI. The claim handshake is the same for both.
+                    boolean headUp = BleProtocol.parseFaceclawWakeEventCode(frame.pb)
+                        == BleProtocol.FACECLAW_WAKE_EVENT_HEAD_UP;
                     event = new G2Event(
                         "display-wake",
                         "",
-                        BleProtocol.EVENT_DOUBLE_CLICK,
+                        headUp ? BleProtocol.EVENT_HEAD_UP : BleProtocol.EVENT_DOUBLE_CLICK,
                         0,
                         0
                     );
-                    logLine("claimed deferred dashboard wake nonce=" + wakeNonce);
+                    logLine("claimed deferred dashboard wake nonce=" + wakeNonce
+                        + (headUp ? " (head-up)" : ""));
                 }
             }
             if (!faceclawWakeNotification
+                    && shutdownRequested
+                    && frame.ok
+                    && frame.sid == BleProtocol.SID_UI_SETTING
+                    && address.equalsIgnoreCase(rightAddress)) {
+                // CFW idle-gesture forwarding (firmware revision 2+): with no
+                // EvenHub page the stock display thread drops taps, long
+                // presses and releases; the CFW reports them on the settings
+                // sid while our wake lease is held. Deliver them as the
+                // sys-events a live page would have produced, so TS treats a
+                // sleep-time tap or hold exactly like one during soft sleep
+                // (the Glanceboard).
+                BleProtocol.FaceclawGestureEvent gesture = BleProtocol.parseFaceclawGestureEvent(frame.pb);
+                if (gesture != null) {
+                    lastConnectionOrInputAtMs = lastIncomingAtMs;
+                    event = new G2Event("sys-event", "", gesture.eventType, gesture.eventSource, 0);
+                    logLine("idle gesture forwarded by CFW: type=" + gesture.eventType
+                        + " source=" + gesture.eventSource);
+                }
+            }
+            if (!faceclawWakeNotification
+                    && event == null
                     && shutdownRequested
                     && address.equalsIgnoreCase(rightAddress)
                     && BleProtocol.isDisplayWakeStateChange(frame)) {
@@ -1770,6 +1797,15 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                     && address.equalsIgnoreCase(rightAddress)
                     && (frame.flag == BleProtocol.FLAG_NOTIFY || frame.flag == BleProtocol.FLAG_NOTIFY_ALT)) {
                 event = G2Event.decode(frame);
+                if (event != null
+                        && "sys-event".equals(event.kind)
+                        && event.eventType == BleProtocol.EVENT_HEAD_UP) {
+                    // CFW forwards the IMU head-up while our page is on screen
+                    // (soft sleep). Surface it as the same wake-only input the
+                    // deferred head-up wake produces from a dark display.
+                    event = new G2Event("display-wake", "", BleProtocol.EVENT_HEAD_UP, event.eventSource, 0);
+                    logLine("head-up forwarded by CFW while page on screen");
+                }
                 if (event != null) {
                     // Pure IMU samples arrive continuously; don't let them count
                     // as user input (which would starve battery polling).

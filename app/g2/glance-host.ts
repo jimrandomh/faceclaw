@@ -15,7 +15,7 @@ import { type DisplayTarget } from "../native/preview-display";
 import { minWindowTop } from "../ui/shell/geometry";
 import { beginRenderPass, endRenderPass } from "../util/render-freshness";
 import { type GlanceBoardInstance, type GlanceboardProvider } from "../apps/app-definition";
-import { GLANCE_HIDDEN, reduceGlance, type GlanceEvent, type GlanceState } from "./glance-state";
+import { GLANCE_HIDDEN, glanceEventForGesture, reduceGlance, type GlanceEvent, type GlanceState } from "./glance-state";
 
 export const GLANCE_SURFACE_ID = "glance";
 /** Above the shell (1) and every window (0); below the lock screen (1000). */
@@ -66,12 +66,28 @@ export class GlanceHost {
   }
 
   /**
+   * The glance event a sleep-time gesture means under the board's settings,
+   * or null when the shell should see the input as usual: nothing while the
+   * board is disabled, no hold when "Show on long press" is off, no press
+   * from a head-tilt when "Show on head tilt" is off (it then wakes the
+   * regular UI). A release always passes so a hold in progress can end.
+   */
+  eventForGesture(gesture: "head-tilt" | string): GlanceEvent | null {
+    const provider = this.options.getProvider();
+    if (!provider?.isEnabled()) return null;
+    if (gesture === "long-press" && !provider.showOnLongPress()) return null;
+    if (gesture === "head-tilt" && !provider.showOnHeadTilt()) return null;
+    return glanceEventForGesture(gesture, this.isVisible());
+  }
+
+  /**
    * Apply a glance event from sleep-time input. The frame is owned from here:
    * a show submits it with the board's first frame, anything else finishes it.
    */
   async handleEvent(event: GlanceEvent, frameId: number): Promise<void> {
     const before = this.state;
-    this.state = reduceGlance(before, event, Date.now());
+    const timeoutMs = this.options.getProvider()?.tapTimeoutMs();
+    this.state = reduceGlance(before, event, Date.now(), timeoutMs);
     this.armHideTimer();
     if (this.state.visible === before.visible) {
       frameTimings.finishFrame(frameId, this.state.visible ? "glanceboard stays up" : "glance event while hidden");

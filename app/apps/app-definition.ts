@@ -46,6 +46,12 @@ export type GlanceboardProvider = {
   size: { width: number; height: number };
   /** Whether sleep-time gestures should show the board at all (user setting). */
   isEnabled: () => boolean;
+  /** How long a tap or head-tilt keeps the board up. */
+  tapTimeoutMs: () => number;
+  /** Whether a long-press holds the board up until released. */
+  showOnLongPress: () => boolean;
+  /** Whether the head-tilt wake goes to the board rather than the regular UI. */
+  showOnHeadTilt: () => boolean;
   /** A fresh board; requestRender asks the host to repaint it. */
   createBoard: (requestRender: () => void) => GlanceBoardInstance;
 };

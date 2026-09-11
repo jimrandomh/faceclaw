@@ -1,7 +1,12 @@
 import { type AppDefinition } from "../app-definition";
 import { GlanceBoard } from "./board";
 import { createGlanceboardAppWindow, GLANCEBOARD_SURFACE_ID, GLANCEBOARD_WINDOW_ID } from "./glanceboard-app";
-import { glanceboardEnabledSetting } from "./glanceboard-settings";
+import {
+  glanceboardEnabledSetting,
+  glanceShowOnHeadTiltSetting,
+  glanceShowOnLongPressSetting,
+  glanceTapTimeoutMs,
+} from "./glanceboard-settings";
 import { QUADRANT_LAYOUT } from "./layout";
 
 const glanceboardApp: AppDefinition = {
@@ -12,6 +17,9 @@ const glanceboardApp: AppDefinition = {
   glanceboard: {
     size: { width: QUADRANT_LAYOUT.width, height: QUADRANT_LAYOUT.height },
     isEnabled: () => glanceboardEnabledSetting.get(),
+    tapTimeoutMs: glanceTapTimeoutMs,
+    showOnLongPress: () => glanceShowOnLongPressSetting.get(),
+    showOnHeadTilt: () => glanceShowOnHeadTiltSetting.get(),
     createBoard: (requestRender) => new GlanceBoard(requestRender, QUADRANT_LAYOUT),
   },
 };

@@ -1,23 +1,30 @@
 import { GrayImage } from "../../graphics/image";
 import { onAnySettingChanged } from "../../ui/dashboard-settings";
-import { glanceSlotSettings, type GlanceSlotChoice } from "./glanceboard-settings";
-import { QUADRANT_LAYOUT, type GlanceLayout } from "./layout";
+import { glanceShowLinesSetting, glanceSlotSettings } from "./glanceboard-settings";
+import { QUADRANT_LAYOUT, resolveGlanceRegions, slotDividers, type GlanceLayout, type GlanceRegion } from "./layout";
 import { type GlanceWidget } from "./widget";
-import { findGlanceWidget } from "./widgets";
+import { findGlanceWidget, glanceWidgetSpans } from "./widgets";
 
-/** Brightness of the hairlines between slots. */
-const DIVIDER_VALUE = 40;
+/** Brightness of the hairlines between regions: the dimmest shade that survives 4bpp quantization. */
+const DIVIDER_VALUE = 20;
 
-type Slot = { choice: GlanceSlotChoice; widget: GlanceWidget | null };
+type LiveRegion = { region: GlanceRegion; key: string; widget: GlanceWidget | null };
+
+/** Identity of a region for diffing: which widget, in which slots. */
+function regionKey(region: GlanceRegion): string {
+  return `${region.choice}@${region.slots.join(",")}`;
+}
 
 /**
  * A board: the layout's slots filled with the widgets the settings choose,
- * painted as one image. Widgets are created and started when the board
- * starts and stopped when it stops; a slot setting changed meanwhile swaps
- * just that slot's widget.
+ * painted as one image. A widget chosen for two vertically adjacent slots
+ * (when it supports that) gets one double-height region with no divider
+ * between the slots. Widgets are created and started when the board starts
+ * and stopped when it stops; a settings change meanwhile restarts only the
+ * regions that changed.
  */
 export class GlanceBoard {
-  private slots: Slot[] = [];
+  private regions: LiveRegion[] = [];
   private started = false;
   private unsubscribeSettings: (() => void) | null = null;
 
@@ -37,7 +44,7 @@ export class GlanceBoard {
   start(): void {
     if (this.started) return;
     this.started = true;
-    this.slots = glanceSlotSettings(this.layout).map((setting) => this.createSlot(setting.get()));
+    this.applySlotSettings();
     this.unsubscribeSettings = onAnySettingChanged(() => this.applySlotSettings());
   }
 
@@ -46,53 +53,65 @@ export class GlanceBoard {
     this.started = false;
     this.unsubscribeSettings?.();
     this.unsubscribeSettings = null;
-    for (const slot of this.slots) slot.widget?.stop();
-    this.slots = [];
+    for (const live of this.regions) live.widget?.stop();
+    this.regions = [];
   }
 
-  private createSlot(choice: GlanceSlotChoice): Slot {
-    const widget = choice === "none" ? null : (findGlanceWidget(choice)?.create() ?? null);
-    widget?.start(this.requestRender);
-    return { choice, widget };
+  private currentRegions(): GlanceRegion[] {
+    const choices = glanceSlotSettings(this.layout).map((setting) => setting.get());
+    return resolveGlanceRegions(this.layout, choices, glanceWidgetSpans);
   }
 
+  /** Rebuild the live regions from the settings, keeping widgets whose region is unchanged. */
   private applySlotSettings(): void {
     if (!this.started) return;
+    const previous = new Map(this.regions.map((live) => [live.key, live]));
+    const next: LiveRegion[] = [];
     let changed = false;
-    glanceSlotSettings(this.layout).forEach((setting, index) => {
-      const choice = setting.get();
-      const slot = this.slots[index];
-      if (!slot || slot.choice === choice) return;
-      slot.widget?.stop();
-      this.slots[index] = this.createSlot(choice);
+    for (const region of this.currentRegions()) {
+      const key = regionKey(region);
+      const kept = previous.get(key);
+      if (kept) {
+        previous.delete(key);
+        next.push(kept);
+        continue;
+      }
+      const widget = findGlanceWidget(region.choice)?.create() ?? null;
+      widget?.start(this.requestRender);
+      next.push({ region, key, widget });
       changed = true;
-    });
+    }
+    for (const removed of previous.values()) {
+      removed.widget?.stop();
+      changed = true;
+    }
+    this.regions = next;
     if (changed) this.requestRender();
   }
 
-  /** Paint the whole board (layout-sized). Widgets each get a fresh slot canvas. */
+  /** Paint the whole board (layout-sized). Widgets each get a fresh canvas of their region's size. */
   paint(): GrayImage {
     const image = new GrayImage(this.layout.width, this.layout.height, 0);
-    this.layout.slots.forEach((slot, index) => {
-      const widget = this.slots[index]?.widget;
-      if (!widget) return;
-      const canvas = new GrayImage(slot.rect.width, slot.rect.height, 0);
+    for (const live of this.regions) {
+      if (!live.widget) continue;
+      const { rect } = live.region;
+      const canvas = new GrayImage(rect.width, rect.height, 0);
       try {
-        widget.paint(canvas);
+        live.widget.paint(canvas);
       } catch (error) {
-        console.warn(`glanceboard widget ${this.slots[index]?.choice} paint failed`, error);
+        console.warn(`glanceboard widget ${live.region.choice} paint failed`, error);
       }
-      canvas.composeInto(image, slot.rect.x, slot.rect.y);
-    });
-    drawDividers(image, this.layout);
+      canvas.composeInto(image, rect.x, rect.y);
+    }
+    if (glanceShowLinesSetting.get()) {
+      drawDividers(image, this.layout, this.regions.map((live) => live.region));
+    }
     return image;
   }
 }
 
-/** Hairlines along every slot edge that is not the board's own edge. */
-function drawDividers(image: GrayImage, layout: GlanceLayout): void {
-  for (const { rect } of layout.slots) {
-    if (rect.x > 0) image.drawLine(rect.x, rect.y, rect.x, rect.y + rect.height - 1, DIVIDER_VALUE);
-    if (rect.y > 0) image.drawLine(rect.x, rect.y, rect.x + rect.width - 1, rect.y, DIVIDER_VALUE);
+function drawDividers(image: GrayImage, layout: GlanceLayout, regions: readonly GlanceRegion[]): void {
+  for (const line of slotDividers(layout, regions)) {
+    image.drawLine(line.x0, line.y0, line.x1, line.y1, DIVIDER_VALUE);
   }
 }

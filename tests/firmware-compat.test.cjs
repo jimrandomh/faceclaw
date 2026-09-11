@@ -34,7 +34,7 @@ test("the required revision and newer revisions are compatible", () => {
 test("older Faceclaw revisions and legacy EVENCFW builds need a reflash", () => {
   const older = info(`Faceclaw/${REQUIRED - 1}`);
   assert.equal(compat.hasCompatibleFirmware(older), false);
-  assert.match(compat.firmwareIncompatibilityMessage(older), /revision 0/);
+  assert.match(compat.firmwareIncompatibilityMessage(older), new RegExp(`revision ${REQUIRED - 1}`));
   assert.match(compat.firmwareIncompatibilityMessage(older), new RegExp(`requires revision ${REQUIRED}`));
   assert.equal(compat.classifyOnboardingFirmware(older).kind, "older-faceclaw");
 

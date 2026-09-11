@@ -18,6 +18,7 @@
     "../app/g2/glasses-artwork.ts",
     "../app/g2/glasses-display-state.ts",
     "../app/g2/glance-state.ts",
+    "../app/apps/glanceboard/layout.ts",
     "../app/g2/pairing-candidates.ts",
     "../app/apps/calculator/math/*.ts",
     "../app/apps/microphones/mic-protocol.ts",

@@ -44,7 +44,7 @@ const MIRROR_TOUCH_GESTURES: Record<Exclude<MirrorTouchKind, "tap">, WearRemoteI
 };
 import { findSoundEffect, playSoundEffect } from "../ui/sound-effects";
 import { GlanceHost } from "./glance-host";
-import { glanceEventForGesture, type GlanceEvent } from "./glance-state";
+import { type GlanceEvent } from "./glance-state";
 import { isWelcomeSoundPending, setWelcomeSoundPending } from "../phone-ui/onboarding-state";
 import { beginRenderPass, endRenderPass } from "../util/render-freshness";
 import { voiceControlBridge } from "../native/voice-control";
@@ -2188,11 +2188,10 @@ class DashboardController {
    * regular UI's wake.
    */
   private glanceEventFor(inputEvent: InputEvent, event: RawInputEvent): GlanceEvent | null {
-    if (!this.glance.isEnabled()) return null;
     if (inputEvent.type === "display-wake") {
-      return event.eventType === OsEventTypeList.HEAD_UP_EVENT ? { type: "press" } : null;
+      return event.eventType === OsEventTypeList.HEAD_UP_EVENT ? this.glance.eventForGesture("head-tilt") : null;
     }
-    return glanceEventForGesture(inputEvent.type, this.glance.isVisible());
+    return this.glance.eventForGesture(inputEvent.type);
   }
 
   /** Launch or focus an in-process singleton app (notifications, debug tests). */

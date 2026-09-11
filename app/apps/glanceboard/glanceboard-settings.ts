@@ -1,14 +1,17 @@
 import { ConfigSettingBoolean, ConfigSettingEnum } from "../../ui/dashboard-settings";
-import { QUADRANT_LAYOUT, type GlanceLayout } from "./layout";
+import { QUADRANT_LAYOUT, slotsVerticallyAdjacent, type GlanceLayout } from "./layout";
 import { type GlanceWidgetId } from "./widget";
+import { glanceWidgetSpans } from "./widgets";
 
 export type GlanceSlotChoice = GlanceWidgetId | "none";
 
-const SLOT_CHOICES: readonly GlanceSlotChoice[] = ["none", "system-card", "nightscout", "compass", "music"];
+const SLOT_CHOICES: readonly GlanceSlotChoice[] = ["none", "system-card", "calendar", "terminal", "nightscout", "compass", "music"];
 
 const SLOT_CHOICE_LABELS: Record<GlanceSlotChoice, string> = {
   none: "Empty",
   "system-card": "System card",
+  calendar: "Calendar",
+  terminal: "Terminal",
   nightscout: "Nightscout",
   compass: "Compass",
   music: "Music",
@@ -22,15 +25,60 @@ const DEFAULT_QUADRANT_CHOICES: readonly GlanceSlotChoice[] = ["system-card", "m
 
 /**
  * Whether sleep-time gestures show the board at all. Off restores the plain
- * behaviour: a tap or hold while asleep does nothing, double-tap wakes.
+ * behaviour: a tap, hold or head-tilt while asleep does nothing (a head-tilt
+ * wakes the regular UI), double-tap wakes.
  */
 export const glanceboardEnabledSetting = new ConfigSettingBoolean({
   id: "glanceboard-enabled",
-  label: "Show on tap while asleep",
+  label: "Enable Glanceboard",
   storageKey: "glanceboard.enabled",
   defaultValue: true,
   description:
-    "While the display is asleep, a single tap shows the Glanceboard for a few seconds and a long-press holds it up until released. Double-tap still wakes the regular UI.",
+    "While the display is asleep, a tap, a long-press or a head-tilt shows the Glanceboard instead of the regular UI. Double-tap still wakes the regular UI.",
+});
+
+export type GlanceTapDuration = "3s" | "5s" | "7s" | "10s";
+
+/** How long a tap (or head-tilt) keeps the board up; each further tap restarts it. */
+export const glanceTapDurationSetting = new ConfigSettingEnum<GlanceTapDuration>({
+  id: "glanceboard-tap-duration",
+  label: "Show on tap",
+  storageKey: "glanceboard.tapDuration",
+  defaultValue: "5s",
+  values: ["3s", "5s", "7s", "10s"],
+  formatValue: (value) => value.replace("s", " s"),
+  description: "How long a single tap (or a head-tilt) keeps the Glanceboard on screen.",
+});
+
+export function glanceTapTimeoutMs(): number {
+  return Number.parseInt(glanceTapDurationSetting.get(), 10) * 1000;
+}
+
+/** A long-press holds the board up until the press is released. */
+export const glanceShowOnLongPressSetting = new ConfigSettingBoolean({
+  id: "glanceboard-show-on-long-press",
+  label: "Show on long press",
+  storageKey: "glanceboard.showOnLongPress",
+  defaultValue: true,
+  description: "Holding a long-press while asleep shows the Glanceboard until the press is released.",
+});
+
+/** The head-tilt wake shows the board (for the tap duration) instead of the regular UI. */
+export const glanceShowOnHeadTiltSetting = new ConfigSettingBoolean({
+  id: "glanceboard-show-on-head-tilt",
+  label: "Show on head tilt",
+  storageKey: "glanceboard.showOnHeadTilt",
+  defaultValue: true,
+  description: "Tilting your head up while asleep shows the Glanceboard instead of waking the regular UI.",
+});
+
+/** Hairlines between the board's slots. */
+export const glanceShowLinesSetting = new ConfigSettingBoolean({
+  id: "glanceboard-show-lines",
+  label: "Show lines",
+  storageKey: "glanceboard.showLines",
+  defaultValue: true,
+  description: "Draw the separator lines between the Glanceboard's slots.",
 });
 
 /**
@@ -50,4 +98,24 @@ export function glanceSlotSettings(layout: GlanceLayout = QUADRANT_LAYOUT): Conf
         description: `Which widget fills the ${slot.label.toLowerCase()} slot of the Glanceboard.`,
       }),
   );
+}
+
+/**
+ * A slot was just set to `choice`: each widget appears on the board once, so
+ * clear every other slot holding the same choice, except a vertically
+ * adjacent one when the widget can span two slots (it then renders at
+ * double height). Returns the indices cleared.
+ */
+export function clearConflictingSlots(layout: GlanceLayout, changedIndex: number, choice: GlanceSlotChoice): number[] {
+  if (choice === "none") return [];
+  const settings = glanceSlotSettings(layout);
+  const spans = glanceWidgetSpans(choice);
+  const cleared: number[] = [];
+  settings.forEach((setting, index) => {
+    if (index === changedIndex || setting.get() !== choice) return;
+    if (spans && slotsVerticallyAdjacent(layout, changedIndex, index)) return;
+    setting.set("none");
+    cleared.push(index);
+  });
+  return cleared;
 }

@@ -27,11 +27,17 @@ export interface GlanceWidget {
   paint(image: GrayImage): void;
 }
 
-export type GlanceWidgetId = "system-card" | "nightscout" | "compass" | "music";
+export type GlanceWidgetId = "system-card" | "nightscout" | "compass" | "music" | "calendar" | "terminal";
 
 export type GlanceWidgetDefinition = {
   id: GlanceWidgetId;
   /** Picker label in the Glanceboard app. */
   label: string;
+  /**
+   * The widget can fill two vertically adjacent slots as one double-height
+   * region (chosen for both left or both right quadrants). Its paint then
+   * gets the taller canvas; the divider between the slots is not drawn.
+   */
+  tall?: boolean;
   create: () => GlanceWidget;
 };

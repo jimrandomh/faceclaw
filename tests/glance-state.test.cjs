@@ -57,3 +57,10 @@ test("gesture mapping: taps and head-tilt press, long-press holds, double-tap di
   assert.equal(glanceEventForGesture("scroll-up", true), null);
   assert.equal(glanceEventForGesture("short-then-long-press", true), null);
 });
+
+test("the press timeout is the host's when supplied", () => {
+  const shown = reduceGlance(GLANCE_HIDDEN, { type: "press" }, T0, 10_000);
+  assert.equal(shown.hideAtMs, T0 + 10_000);
+  assert.equal(reduceGlance(shown, { type: "timeout" }, T0 + GLANCE_TIMEOUT_MS), shown);
+  assert.deepEqual(reduceGlance(shown, { type: "timeout" }, T0 + 10_000), GLANCE_HIDDEN);
+});

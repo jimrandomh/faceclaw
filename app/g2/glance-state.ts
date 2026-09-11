@@ -10,7 +10,7 @@
  * by tests/glance-state.test.cjs.
  */
 
-/** How long a press keeps the board up; each further press restarts it. */
+/** Fallback press timeout when the host supplies none; each further press restarts it. */
 export const GLANCE_TIMEOUT_MS = 3000;
 
 export type GlanceState = {
@@ -35,12 +35,17 @@ export type GlanceEvent =
 
 export const GLANCE_HIDDEN: GlanceState = Object.freeze({ visible: false, holding: false, hideAtMs: null });
 
-export function reduceGlance(state: GlanceState, event: GlanceEvent, nowMs: number): GlanceState {
+export function reduceGlance(
+  state: GlanceState,
+  event: GlanceEvent,
+  nowMs: number,
+  timeoutMs: number = GLANCE_TIMEOUT_MS,
+): GlanceState {
   switch (event.type) {
     case "press":
       // A tap during a hold changes nothing: the hold decides when it ends.
       if (state.holding) return state;
-      return { visible: true, holding: false, hideAtMs: nowMs + GLANCE_TIMEOUT_MS };
+      return { visible: true, holding: false, hideAtMs: nowMs + timeoutMs };
     case "hold":
       return { visible: true, holding: true, hideAtMs: null };
     case "release":
