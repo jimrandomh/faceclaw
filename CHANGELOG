@@ -1,6 +1,7 @@
 # Changelog
 
 ## 0.6.6 - Future
+* Change Bluetooth radio settings: Increases throughput from 4-12KiB/s to 41KiB/s
 * Navigate and terminal app: App-specific screen size/position setting
 * Transcribe app: Scrolling; automatic reconnection; insert newlines
 * Notifications: Add notification filters
