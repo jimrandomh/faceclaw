@@ -32,6 +32,31 @@ export type AppDefinition = {
   showInLauncher?: boolean;
   /** Present on the app that handles text shared via the Android share intent. */
   openSharedText?: (ctx: AppContext, title: string, text: string) => void;
+  /**
+   * Present on the app that supplies the Glanceboard: the sleep-time display
+   * the controller shows on a tap or hold while the shell is asleep (see
+   * app/g2/glance-host.ts). At most one app provides it.
+   */
+  glanceboard?: GlanceboardProvider;
+};
+
+/** A board the glance host can show while the shell sleeps. */
+export type GlanceboardProvider = {
+  /** Board pixel size; the host centres it in the standard 576x288 band. */
+  size: { width: number; height: number };
+  /** Whether sleep-time gestures should show the board at all (user setting). */
+  isEnabled: () => boolean;
+  /** A fresh board; requestRender asks the host to repaint it. */
+  createBoard: (requestRender: () => void) => GlanceBoardInstance;
+};
+
+export type GlanceBoardInstance = {
+  /** The board is about to show: start widgets (subscriptions, hardware). */
+  start: () => void;
+  /** The board was hidden: stop everything start began. */
+  stop: () => void;
+  /** Paint the board at its size. */
+  paint: () => GrayImage;
 };
 
 export type AppLaunchParams = {

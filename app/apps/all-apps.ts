@@ -22,6 +22,7 @@ import freecellApp from "./freecell";
 import pinballApp from "./pinball";
 import developerApp from "./developer";
 import evenhubApp from "./evenhub";
+import glanceboardApp from "./glanceboard";
 import settingsApp from "./settings";
 
 /**
@@ -53,5 +54,6 @@ export const ALL_APPS: readonly AppDefinition[] = [
   pinballApp,
   developerApp,
   evenhubApp,
+  glanceboardApp,
   settingsApp,
 ];

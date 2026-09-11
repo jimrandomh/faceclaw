@@ -26,6 +26,14 @@ const font = (size) => BdfFont.parse(fs.readFileSync(
 const small = font(12);
 const large = font(24);
 let viewportWidth = 576;
+const calibration = { isCompassCalibrated: () => true, normalizeHeading: (n) => ((n % 360) + 360) % 360 };
+// The rose renderer's private helpers are re-exported for referenceFrame.
+const rose = load('app/apps/compass/compass-rose.ts', {
+  '../../graphics/image': graphics,
+  './calibration': calibration,
+}, `
+export { rotatingRoseBounds, drawPlaneGrid, drawDiscWall, drawTiltedRing, drawHeadingTick };
+`);
 const compass = load('app/apps/compass/compass-app.ts', {
   '../../graphics/ui-fonts': { getDefaultSmallFont: () => small, getDefaultLargeFont: () => large },
   '../../graphics/image': graphics,
@@ -36,20 +44,26 @@ const compass = load('app/apps/compass/compass-app.ts', {
   '../../ui/shell/in-process-window': {},
   '../../ui/shell/shell': {},
   '../../g2/android-permissions': {},
-  './calibration': { isCompassCalibrated: () => true, normalizeHeading: (n) => ((n % 360) + 360) % 360 },
+  './calibration': calibration,
   './calibration-layer': {},
+  './compass-rose': rose,
+  './debug': { compassDebugLines: () => [], isCompassDebugEnabled: () => false, setCompassDebugEnabled: () => {} },
   './declination': {},
   './heading': { getNorthReference: () => 'magnetic', resolveHeading: (n) => ({ displayDegrees: n }) },
 }, `
-export { CompassLayer, rotatingRoseBounds, createCompassBackground, drawCompassRose };
+export { CompassLayer };
+const rose_1 = require('./compass-rose');
+export const rotatingRoseBounds = rose_1.rotatingRoseBounds;
+export const createCompassBackground = rose_1.createCompassBackground;
+export const drawCompassRose = rose_1.drawCompassRose;
 export function referenceFrame(width, height, cx, cy, radius, clipY, heading) {
   const image = new GrayImage(width, height, 0);
   const fade = heading === null ? 0.45 : 1;
-  drawPlaneGrid(image, cx, cy, radius, clipY);
-  drawDiscWall(image, cx, cy, radius, fade);
-  drawTiltedRing(image, cx, cy, radius, 105 * fade);
-  drawCompassRose(image, cx, cy, radius, heading);
-  drawHeadingTick(image, cx, cy, radius, 255 * fade);
+  rose_1.drawPlaneGrid(image, cx, cy, radius, clipY);
+  rose_1.drawDiscWall(image, cx, cy, radius, fade);
+  rose_1.drawTiltedRing(image, cx, cy, radius, 105 * fade);
+  rose_1.drawCompassRose(image, cx, cy, radius, heading);
+  rose_1.drawHeadingTick(image, cx, cy, radius, 255 * fade);
   return image;
 }
 `);

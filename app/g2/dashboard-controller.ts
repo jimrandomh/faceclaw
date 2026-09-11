@@ -43,6 +43,8 @@ const MIRROR_TOUCH_GESTURES: Record<Exclude<MirrorTouchKind, "tap">, WearRemoteI
   "swipe-right": "swipe-right",
 };
 import { findSoundEffect, playSoundEffect } from "../ui/sound-effects";
+import { GlanceHost } from "./glance-host";
+import { glanceEventForGesture, type GlanceEvent } from "./glance-state";
 import { isWelcomeSoundPending, setWelcomeSoundPending } from "../phone-ui/onboarding-state";
 import { beginRenderPass, endRenderPass } from "../util/render-freshness";
 import { voiceControlBridge } from "../native/voice-control";
@@ -52,6 +54,7 @@ import { prepareFrameDraws } from "../graphics/glyph-wire";
 import { getDefaultMediumFont } from "../graphics/ui-fonts";
 import { wrapText } from "../graphics/textwrap";
 import { rawInputEventToInputEvent, shell, type ShellInputOutcome } from "../ui/shell/shell";
+import { type InputEvent } from "../ui/gestures";
 import { registerSystemTools } from "../assistant/system-tools";
 import { updateGlassesPresence } from "./glasses-presence";
 import { timerEngine } from "../apps/timer/timer-engine";
@@ -252,6 +255,26 @@ class DashboardController {
   private screenTimeoutTimer: ReturnType<typeof setInterval> | null = null;
   private evenHubSuspendTimer: ReturnType<typeof setTimeout> | null = null;
   private evenHubSessionSuspended = false;
+  /**
+   * The Glanceboard: the alternate sleep-time display, on its own surface
+   * above the shell. Fed sleep-time input from handleInputEvent; it uses the
+   * same wake barrier as the shell and hands the compositor back to the
+   * screen-off path when it hides.
+   */
+  private readonly glance = new GlanceHost({
+    getDisplay: () => this.display,
+    getProvider: () => ALL_APPS.find((app) => app.glanceboard)?.glanceboard ?? null,
+    canShow: () => (this.phase === "connected" || this.isPreviewDisplayActive()) && !this.glassesLocked,
+    ensureSessionActive: (frameId) => this.ensureEvenHubSessionActive(frameId),
+    onHiddenWhileAsleep: () => {
+      if (!shell.isScreenOn()) this.handleScreenStateChanged(false);
+    },
+    onVisibilityChanged: () => {
+      this.schedulePreviewUpdate();
+      this.emit();
+    },
+    appendLog: (message) => this.appendLog(message),
+  });
   private evenHubResumePromise: Promise<boolean> | null = null;
   /** Faceclaw's firmware at the required revision reported in; its extensions can be used. */
   private customFirmwareConfirmed = false;
@@ -359,6 +382,8 @@ class DashboardController {
         this.emit();
       },
       onScreenStateChanged: (on) => {
+        // Any wake of the regular UI replaces a showing Glanceboard.
+        if (on) this.glance.dismiss();
         this.handleScreenStateChanged(on);
         if (on) this.requestShellRender();
         this.emit();
@@ -788,6 +813,7 @@ class DashboardController {
     if (
       !suspendEvenHubWhenScreenOffSetting.get() ||
       shell.isScreenOn() ||
+      this.glance.isVisible() ||
       this.phase !== "connected" ||
       !this.communicator ||
       this.evenHubSessionSuspended
@@ -801,9 +827,11 @@ class DashboardController {
       if (
         !suspendEvenHubWhenScreenOffSetting.get() ||
         shell.isScreenOn() ||
+        this.glance.isVisible() ||
         this.phase !== "connected" ||
         this.communicator !== communicator
       ) {
+        // A showing Glanceboard re-arms this when it hides.
         return;
       }
 
@@ -829,6 +857,7 @@ class DashboardController {
         if (
           !suspendEvenHubWhenScreenOffSetting.get() ||
           shell.isScreenOn() ||
+          this.glance.isVisible() ||
           this.phase !== "connected" ||
           this.communicator !== communicator
         ) {
@@ -1250,6 +1279,7 @@ class DashboardController {
     const target = this.previewTarget;
     if (!target) return;
     this.previewTarget = null;
+    this.glance.reset();
     target.release();
     this.clearDashboardTimer();
     this.appendLog("Preview-only display released.");
@@ -1294,6 +1324,7 @@ class DashboardController {
     this.customFirmwareConfirmed = false;
     this.faceclawWakeLeaseState = null;
     this.lockSurfaceConfigured = false;
+    this.glance.reset();
     this.evenHubResumePromise = null;
     this.connectRunning = true;
 
@@ -1549,6 +1580,7 @@ class DashboardController {
       }
       this.communicator = null;
       this.lockSurfaceConfigured = false;
+      this.glance.reset();
       this.customFirmwareConfirmed = false;
       this.faceclawWakeLeaseState = null;
       this.evenHubResumePromise = null;
@@ -1683,6 +1715,7 @@ class DashboardController {
     const communicator = this.communicator;
     this.communicator = null;
     this.lockSurfaceConfigured = false;
+    this.glance.reset();
     this.evenHubSessionSuspended = false;
     this.evenHubResumePromise = null;
 
@@ -1756,14 +1789,14 @@ class DashboardController {
    * finger-down/finger-up (the watch) hold for as long as the user does.
    */
   async injectSyntheticRingInput(kind: WearRemoteInputKind, origin: SyntheticInputOrigin = "ring"): Promise<void> {
-    // Match the ring while the display is dark: only a double-click wakes it,
-    // and that wake is handled by Shell.receiveInput. This check also protects
-    // against a watch acting on a stale state snapshot.
+    // Match the ring while the display is dark: a double-click wakes it
+    // (handled by Shell.receiveInput) and a tap or hold shows the
+    // Glanceboard; scrolls and the menu gesture mean nothing. This check also
+    // protects against a watch acting on a stale state snapshot.
     if (
       origin === "watch" &&
       !shell.isScreenOn() &&
-      kind !== "double-click" &&
-      kind !== "long-press-release"
+      (kind === "scroll-up" || kind === "scroll-down" || kind === "short-then-long-press")
     ) {
       this.appendLog(`${kind} (watch scheme) ignored while display is off`);
       return;
@@ -1794,7 +1827,12 @@ class DashboardController {
       return;
     }
     if (!shell.isScreenOn()) {
+      // Asleep, the mirror offers the sleep gestures: double-tap wakes, a
+      // tap shows the Glanceboard for its timeout. The mirror's hold has no
+      // real release (the synthetic long-press releases at once, which would
+      // only flash the board), so it counts as a tap here too.
       if (kind === "double-tap") await this.injectSyntheticRingInput("double-click", "watch");
+      else if (kind === "tap" || kind === "long-press") await this.injectSyntheticRingInput("click", "watch");
       return;
     }
     if (kind !== "tap") {
@@ -2056,6 +2094,20 @@ class DashboardController {
         }
         return;
       }
+      if (!shell.isScreenOn()) {
+        // Sleep-time gestures belong to the Glanceboard: a tap or a hold
+        // shows it (the shell would ignore them), and a double-tap while it
+        // is up dismisses it and falls through to the normal wake below.
+        const glanceEvent = this.glanceEventFor(inputEvent, event);
+        if (glanceEvent?.type === "dismiss") {
+          this.glance.dismiss();
+        } else if (glanceEvent) {
+          frameTimings.annotateFrame(frameId, `glanceboard ${glanceEvent.type}`);
+          await this.glance.handleEvent(glanceEvent, frameId);
+          frameOwned = true;
+          return;
+        }
+      }
       const wakewordShouldWake =
         event.kind === "even-ai" &&
         event.eventType === EvenAIStatus.EVEN_AI_WAKE_UP &&
@@ -2127,6 +2179,20 @@ class DashboardController {
         frameTimings.finishFrame(frameId, "discarded: input did not trigger a render");
       }
     }
+  }
+
+  /**
+   * The Glanceboard event a sleep-time input means, or null when the shell
+   * should see the input as usual. A display-wake carries the head-tilt
+   * gesture (HEAD_UP_EVENT) as a press; the double-tap display-wake stays the
+   * regular UI's wake.
+   */
+  private glanceEventFor(inputEvent: InputEvent, event: RawInputEvent): GlanceEvent | null {
+    if (!this.glance.isEnabled()) return null;
+    if (inputEvent.type === "display-wake") {
+      return event.eventType === OsEventTypeList.HEAD_UP_EVENT ? { type: "press" } : null;
+    }
+    return glanceEventForGesture(inputEvent.type, this.glance.isVisible());
   }
 
   /** Launch or focus an in-process singleton app (notifications, debug tests). */
