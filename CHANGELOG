@@ -1,13 +1,14 @@
 # Changelog
 
 ## 0.6.6 - Future
+* Expand Pinball with target banks, escalating jackpots, scoring multipliers, skill shots, ball saves, drain bonuses, and an objective panel
 * Change Bluetooth radio settings: Increases throughput from 4-12KiB/s to 41KiB/s
 * Navigate and terminal app: App-specific screen size/position setting
 * Transcribe app: Scrolling; automatic reconnection; insert newlines
 * Notifications: Add notification filters
 * Phone screen preview: Add rotation option; improve landscape layout
 * Add "AI Chat" app (conversational-style use of the voice assistant with hold-to-talk)
-* Add rightness control to the system context menu
+* Add brightness control to the system context menu
 * Messaging in the flasher distinguishes between downgrading from stock firmwares  where that's been validated and veresions where it hasn't, and considers 2.2.10 validated
 * Add R1 battery indicator to the top bar
 * Change the styling and add more customization options for battery indicators
@@ -68,4 +69,3 @@
 
 ## 0.6 - 2026-08-29
 - Start keeping a changelog and making signed binaries via GitHub Releases
-
