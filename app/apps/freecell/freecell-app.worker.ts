@@ -1,7 +1,7 @@
 /**
  * Freecell solitaire app worker. One singleton window holds a standard
  * 52-card Freecell game: 8 cascades, 4 free cells, 4 foundations. Red suits
- * render dim and black suits bright, since the display has no color.
+ * have a bright marker beside their label, since the display has no color.
  *
  * Controls: scroll moves a cursor through the 16 locations (free cells,
  * foundations, then cascades, wrapping). Click selects a source, then click
@@ -18,7 +18,8 @@ import { GrayImage } from "../../graphics/image";
 import { flattenPlanesWithDraws, planesFingerprint, singlePlane, type Plane } from "../../graphics/plane";
 import { prepareFrameDraws } from "../../graphics/glyph-wire";
 import { getFont } from "../../graphics/bdffont";
-import { getDefaultSmallFont } from "../../graphics/ui-fonts";
+import { ensurePreinstalledFonts, installedFontPath } from "../../graphics/installed-fonts";
+import { TtfFont } from "../../graphics/ttf-font";
 import * as frameTimings from "../../native/frame-timings";
 import { getActiveDisplay } from "../../native/active-display";
 import { buildSoundSequencePayload, type Step } from "../../ui/sound-effects";
@@ -30,10 +31,13 @@ import { directionalFallback, GESTURE_CLICK, GESTURE_DOUBLE_CLICK, GESTURE_LONG_
 declare const global: any;
 declare const com: any;
 
-const largeFont = getFont("terminus32");
-const mediumFont = getFont("terminus24");
-const labelFont = getFont("terminus16");
-const smallFont = getDefaultSmallFont();
+ensurePreinstalledFonts();
+const fontPath = installedFontPath("Roboto-Regular.ttf");
+const largeFont = TtfFont.load(fontPath, 28) ?? getFont("terminus32");
+const mediumFont = TtfFont.load(fontPath, 18) ?? getFont("terminus24");
+const labelFont = TtfFont.load(fontPath, 14) ?? getFont("terminus16");
+const suitFont = TtfFont.load(fontPath, 10) ?? getFont("terminus16");
+const smallFont = TtfFont.load(fontPath, 12) ?? getFont("terminus12");
 
 /** Cards are 0..51: suit = card % 4 (♠♥♣♦, alternating colors), rank 1..13. */
 const SUIT_CHARS = ["♠", "♥", "♣", "♦"] as const;
@@ -51,10 +55,6 @@ function isRed(card: number): boolean {
 function cardLabel(card: number): string {
   return RANK_CHARS[rankOf(card)]! + SUIT_CHARS[suitOf(card)]!;
 }
-
-/** Red suits render dimmer than black so card color survives grayscale. */
-const BLACK_SHADE = 255;
-const RED_SHADE = 150;
 
 const CARD_W = 60;
 const CARD_H = 36;
@@ -710,13 +710,27 @@ function paintCard(
   selected: boolean,
   fullyVisible: boolean,
 ): void {
-  const shade = isRed(card) ? RED_SHADE : BLACK_SHADE;
-  image.fillRoundedRect(x, y, CARD_W, CARD_H, selected ? 60 : 25, 4);
+  image.fillRoundedRect(x, y, CARD_W, CARD_H, 0, 4);
   image.drawRoundedRect(x, y, CARD_W, CARD_H, selected ? 255 : 160, 4);
   if (selected) image.drawRoundedRect(x + 1, y + 1, CARD_W - 2, CARD_H - 2, 255, 3);
-  image.drawText(labelFont, x + 5, y + 2, cardLabel(card), shade);
+  const rankText: string = RANK_CHARS[rankOf(card)]!
+  const suitText: string = SUIT_CHARS[suitOf(card)]!;
+  const labelText = rankText + suitText;
+  image.drawText(labelFont, x + 5, y, rankText, 255);
+  image.drawText(suitFont, x + 5 + labelFont.measureText(rankText), y + 3, suitText, 150);
+  if (isRed(card)) {
+    // Keep the marker within the top strip, clear of even a two-digit rank.
+    const markerX = x + 28;
+    image.fillRect(markerX, y + 1, Math.max(0, x + CARD_W - 4 - markerX), 13, 10);
+  }
   if (fullyVisible) {
-    image.drawText(mediumFont, x + CARD_W - 18, y + CARD_H - 29, SUIT_CHARS[suitOf(card)]!, shade);
+    image.drawText(
+      mediumFont,
+      x + CARD_W - 4 - Math.ceil(mediumFont.measureText(suitText)),
+      y + CARD_H - mediumFont.lineHeight - 2,
+      suitText,
+      100,
+    );
   }
 }
 
