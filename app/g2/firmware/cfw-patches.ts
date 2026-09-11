@@ -19,8 +19,26 @@ export type FirmwarePatchSet = {
 export const CFW_PATCH_SET: FirmwarePatchSet = {
   "base": "g2_2.2.9.22.bin",
   "baseSha256": "a03fbea9f68a9de6bc271daabb9f3a41c59053d1086622c76a4e990f829cc561",
-  "outputSha256": "12e1669fe091a94016ecc31b3940eaffb9ac1fbcb1e7807003c1f68e7f85ead3",
+  "outputSha256": "c471d8bc63d61528dd7fc12154b17f6657d79a88aa0034e2b9f89eed38f3cea6",
   "patches": [
+    {
+      "offset": 1363762,
+      "old": "7c20",
+      "new": "7d20",
+      "desc": "Set Local Feature: enable LE 2M bit 8"
+    },
+    {
+      "offset": 4410298,
+      "old": "0c001800",
+      "new": "06000600",
+      "desc": "fast connection interval min=max=7.5 ms; latency remains 0"
+    },
+    {
+      "offset": 1053266,
+      "old": "0500",
+      "new": "a325",
+      "desc": "_connectParamReq_impl: force requested mode to fast (0xa3); disables idle slow requests"
+    },
     {
       "offset": 1124178,
       "old": "5ff43432",
@@ -174,19 +192,19 @@ export const CFW_PATCH_SET: FirmwarePatchSet = {
     {
       "offset": 779238,
       "old": "85c355a2",
-      "new": "1a7d445b",
+      "new": "a15746f8",
       "desc": "[5] ota/s200_firmware_ota.bin preamble crc32"
     },
     {
       "offset": 156,
       "old": "ed292ee4",
-      "new": "a7b82e22",
+      "new": "3a0c8944",
       "desc": "[5] ota/s200_firmware_ota.bin component crc32c (TOC)"
     },
     {
       "offset": 779118,
       "old": "ed292ee4",
-      "new": "a7b82e22",
+      "new": "3a0c8944",
       "desc": "[5] ota/s200_firmware_ota.bin component crc32c (subheader)"
     }
   ]
