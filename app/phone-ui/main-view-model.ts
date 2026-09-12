@@ -1001,8 +1001,15 @@ export class MainViewModel extends Observable {
   // Each pad therefore defers its double-click until the finger-up (the touch
   // handler) and converts the deferred pair into the G2 tap-then-hold gesture
   // when a longPress lands first.
+  //
+  // A hold is two events, like the hardware's: longPress sends the press
+  // (long-press-start, which the controller delivers as a plain long-press)
+  // and the finger-up sends the release, so a hold really holds (the
+  // Glanceboard stays up until the finger lifts). The firmware sends the
+  // same release after a tap-then-hold, so that pair gets one too.
 
   private ringPadDoubleTapPending = false;
+  private ringPadHeld = false;
 
   async onRingPadTap(): Promise<void> {
     await dashboardController.injectSyntheticRingInput("click");
@@ -1013,8 +1020,9 @@ export class MainViewModel extends Observable {
   }
 
   async onRingPadLongPress(): Promise<void> {
-    const kind = this.ringPadDoubleTapPending ? "short-then-long-press" : "long-press";
+    const kind = this.ringPadDoubleTapPending ? "short-then-long-press" : "long-press-start";
     this.ringPadDoubleTapPending = false;
+    this.ringPadHeld = true;
     await dashboardController.injectSyntheticRingInput(kind);
   }
 
@@ -1022,6 +1030,11 @@ export class MainViewModel extends Observable {
     if (args.action !== "up" && args.action !== "cancel") return;
     const pending = this.ringPadDoubleTapPending;
     this.ringPadDoubleTapPending = false;
+    if (this.ringPadHeld) {
+      this.ringPadHeld = false;
+      await dashboardController.injectSyntheticRingInput("long-press-release");
+      return;
+    }
     if (args.action === "up" && pending) {
       await dashboardController.injectSyntheticRingInput("double-click");
     }
@@ -1048,8 +1061,9 @@ export class MainViewModel extends Observable {
 
   private padTwoFingerDown = false;
   // See the ring pad above: defers the double-click so a longPress can turn
-  // the pair into tap-then-hold.
+  // the pair into tap-then-hold, and pairs every hold with a release.
   private padDoubleTapPending = false;
+  private padHeld = false;
 
   /** What the next gesture lands on, as the watch pad shows it. */
   get padFocusLine(): string {
@@ -1071,8 +1085,10 @@ export class MainViewModel extends Observable {
   }
 
   async onPadLongPress(): Promise<void> {
-    const kind = this.padDoubleTapPending ? "short-then-long-press" : "long-press";
+    if (this.padTwoFingerDown) return;
+    const kind = this.padDoubleTapPending ? "short-then-long-press" : "long-press-start";
     this.padDoubleTapPending = false;
+    this.padHeld = true;
     await dashboardController.injectSyntheticRingInput(kind, "watch");
     this.refreshPadFocusLine();
   }
@@ -1092,6 +1108,12 @@ export class MainViewModel extends Observable {
     if (args.action === "up" || args.action === "cancel") {
       const pendingDouble = this.padDoubleTapPending;
       this.padDoubleTapPending = false;
+      if (this.padHeld) {
+        this.padHeld = false;
+        await dashboardController.injectSyntheticRingInput("long-press-release", "watch");
+        this.refreshPadFocusLine();
+        return;
+      }
       const twoFinger = this.padTwoFingerDown;
       if (twoFinger) {
         // Let the single-tap recognizer's delayed tap see the flag first.

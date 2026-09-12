@@ -143,8 +143,16 @@ fun RemoteScreen(
 
     fun glassesScreenIsOff(): Boolean = currentState?.connected == true && currentState?.screenOn == false
 
+    // A dark display still takes a double-click (wake), and a tap or a hold
+    // (the phone's Glanceboard: a tap shows it for a few seconds, a hold
+    // until released). Scrolls, swipes and the menu gesture mean nothing
+    // there, so they are dropped here without a buzz.
     fun gestureAllowed(gesture: Gesture): Boolean =
-        !glassesScreenIsOff() || gesture == Gesture.DOUBLE_CLICK
+        !glassesScreenIsOff() ||
+            gesture == Gesture.DOUBLE_CLICK ||
+            gesture == Gesture.CLICK ||
+            gesture == Gesture.LONG_PRESS_START ||
+            gesture == Gesture.LONG_PRESS_RELEASE
 
     fun scroll(gesture: Gesture, steps: Int) {
         if (!gestureAllowed(gesture)) return
@@ -186,7 +194,7 @@ fun RemoteScreen(
                 }
             },
             onLongPressStart = {
-                longPressSent = !glassesScreenIsOff()
+                longPressSent = gestureAllowed(Gesture.LONG_PRESS_START)
                 if (longPressSent) {
                     haptics.heavy()
                     link.sendGesture(Gesture.LONG_PRESS_START)
