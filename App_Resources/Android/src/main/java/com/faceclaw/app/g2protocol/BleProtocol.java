@@ -23,8 +23,27 @@ public class BleProtocol {
     public static final String OTA_DATA_WRITE_UUID = "00002760-08c2-11e1-9073-0e8ac72e0001";
     public static final String OTA_DATA_NOTIFY_UUID = "00002760-08c2-11e1-9073-0e8ac72e0002";
     public static final String RENDER_NOTIFY_UUID = "00002760-08c2-11e1-9073-0e8ac72e6402";
+    // R1 ring, vendor service bae80001-4f05-4503-8e65-3af1f7329d1f. The service
+    // holds two write/notify pairs: bae80010 (write) + bae80011 (notify), and
+    // bae80012 (write) + bae80013 (notify). The health-data protocol
+    // (RingProtocol) rides the SECOND pair.
     public static final String R1_PHONE_NOTIFY_CHAR_UUID = "bae80011-4f05-4503-8e65-3af1f7329d1f";
     public static final String R1_NOTIFY_CHAR_UUID = "bae80013-4f05-4503-8e65-3af1f7329d1f";
+    /**
+     * Where health-data requests and page ACKs are written. Properties are
+     * 0x04 (write without response), so writes use ConnectionOptions.WRITE_TYPE
+     * (WRITE_TYPE_NO_RESPONSE) — which is also what the reference capture shows
+     * (ATT opcode 0x52 Write Command, never 0x12 Write Request).
+     *
+     * Resolved from the phone's own cached GATT database, not guessed: the
+     * bugreport taken alongside the capture contains a [gatt_cache_c73eb8f9c7c5]
+     * block (keyed by the ring's MAC C7:3E:B8:F9:C7:C5) listing
+     *   Characteristic: declaration_handle=0x0014, value_handle=0x0015,
+     *                   uuid=bae80012-4f05-4503-8e65-3af1f7329d1f, prop=0x04
+     * and 0x0015 is exactly the ATT handle every protocol write in the capture
+     * targets. See knowledge/staging/faceclaw-ring-protocol-implement-return.md.
+     */
+    public static final String R1_WRITE_CHAR_UUID = "bae80012-4f05-4503-8e65-3af1f7329d1f";
 
     public static final int PRELUDE_ACK_SID = 0x01;
     public static final int PRELUDE_ACK_MAGIC = 156;
