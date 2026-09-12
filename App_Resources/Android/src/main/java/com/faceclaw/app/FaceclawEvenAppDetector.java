@@ -3,6 +3,7 @@ package com.faceclaw.app;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
+import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.provider.Settings;
 import android.util.Log;
@@ -47,19 +48,26 @@ public final class FaceclawEvenAppDetector {
         return hasNotfication;
     }
 
-    public static void openEvenAppSettings(Context context) {
+    /** Returns "opened", "not-installed", or "failed" for the phone UI. */
+    public static String openEvenAppSettings(Context context) {
         if (context == null) {
-            return;
+            return "failed";
         }
         Context appContext = context.getApplicationContext();
-        Intent intent = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
-        intent.setData(Uri.parse("package:" + EVEN_PACKAGE_NAME));
-        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
         try {
+            // Settings may launch successfully and then immediately close for a
+            // missing package, so check before starting the activity.
+            appContext.getPackageManager().getApplicationInfo(EVEN_PACKAGE_NAME, 0);
+            Intent intent = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
+            intent.setData(Uri.parse("package:" + EVEN_PACKAGE_NAME));
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
             appContext.startActivity(intent);
-        } catch (Throwable t) {
+            return "opened";
+        } catch (PackageManager.NameNotFoundException e) {
+            return "not-installed";
+        } catch (Exception t) {
             Log.w(TAG, "failed to open Even app settings", t);
-            openNotificationAccessSettings(appContext);
+            return "failed";
         }
     }
 

@@ -4,9 +4,12 @@
             <StackLayout>
                 <Label text="Disconnect Other Apps" class="h1 text-center m-t-24" textWrap="true" />
                 <Label
-                    text="Faceclaw and the official Even Realities app can't both be connected to the glasses at once. Before continuing, open the Even app, go to Home, select your glasses, open the Connection submenu, and press Disconnect (or turn off the Even app's Bluetooth). If any other glasses app is installed (such as Mentra), disconnect it too."
+                    text="Your glasses can only be connected to one app or phone at a time. If they're connected to another app (such as Even Realities or MentraOS) or another phone, disconnect them there before continuing. If nothing else is connected, you can continue."
                     class="body-text m-t-24" textWrap="true" />
-                <Button text="Open Even App Settings" tap="{{ onOpenEvenAppSettingsTap }}" width="{{ settingsButtonWidth }}" horizontalAlignment="center" class="-primary m-t-24" />
+                <Label
+                    text="If you use the Even Realities app, go to Home, select your glasses, open the Connection submenu, and press Disconnect (or turn off the Even app's Bluetooth)."
+                    class="body-text m-t-16" textWrap="true" />
+                <Button text="Open Even App Settings" tap="{{ onOpenEvenAppSettingsTap }}" visibility="{{ settingsButtonVisibility }}" width="{{ settingsButtonWidth }}" horizontalAlignment="center" class="-primary m-t-24" />
             </StackLayout>
         </ScrollView>
 
