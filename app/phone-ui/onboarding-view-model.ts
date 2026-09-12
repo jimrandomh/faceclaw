@@ -28,7 +28,7 @@ const STEP_CONTENT: Record<OnboardingStep, StepContent> = {
   2: {
     headline: "Before You Continue",
     tagline: "",
-    body: "This software provides a custom user interface and functionality for the Even Realities G2 smart glasses. It is not created or supported by Even Realities. If this software somehow breaks your headset, this is not Even's fault and is not covered by the hardware's warranty. If this software doesn't break my headset, using this software may void the hardware's warranty anyways, at the sole discretion of Even Realities. This software is beta; don't rely on it for anything critically important.",
+    body: "This software provides a custom user interface and functionality for the Even Realities G2 smart glasses. It is not created or supported by Even Realities. If this software somehow breaks your headset, this is not Even's fault and is not covered by the hardware's warranty. If this software doesn't break you headset, using this software may void the hardware's warranty anyways, at the sole discretion of Even Realities. This software is beta; don't rely on it for anything critically important.",
     primaryLabel: "Agree",
     secondaryLabel: "Back",
     splash: false,
