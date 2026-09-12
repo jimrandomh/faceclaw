@@ -53,7 +53,7 @@ export class OnboardingFlashViewModel extends Observable {
   private flasherUnsubscribers: Array<() => void> = [];
   private retryAction: () => void = () => this.beginPrompt();
 
-  constructor(options?: { mode?: FlashMode; fromOnboarding?: boolean }) {
+  constructor(options?: { mode?: FlashMode; fromOnboarding?: boolean; autoStart?: boolean }) {
     super();
     // The flash flow needs the glasses to itself: from here on the main
     // page must not auto-reconnect, until an install succeeds (below) or
@@ -68,6 +68,12 @@ export class OnboardingFlashViewModel extends Observable {
           "and reflashes the official firmware — removing Faceclaw's custom features."
         : "This connects to your glasses, asks for confirmation on the lens, checks the battery, then downloads, " +
           "verifies, and flashes Faceclaw's custom firmware.";
+    if (options?.autoStart) {
+      // Entered from a page that already explained what's about to happen
+      // (the onboarding firmware check), so the intro/"Connect & Confirm"
+      // step would be redundant: go straight to connecting.
+      void this.beginPrompt();
+    }
   }
 
   // Kept short to fit the glasses' ~50-column text grid.

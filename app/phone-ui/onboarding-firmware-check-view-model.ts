@@ -328,7 +328,9 @@ export class OnboardingFirmwareCheckViewModel extends Observable {
     this.disposeProbe();
     Frame.topmost()?.navigate({
       moduleName: "phone-ui/onboarding-flash-page",
-      context: { mode: "install", fromOnboarding: true },
+      // This page already described the install; skip the flash page's
+      // intro/"Connect & Confirm" step and connect immediately.
+      context: { mode: "install", fromOnboarding: true, autoStart: true },
     });
   }
 
