@@ -80,7 +80,7 @@ export class OnboardingFlashViewModel extends Observable {
   private get glassesWarning(): string {
     return this.mode === "uninstall"
       ? "Reinstalling the official firmware removes Faceclaw's custom features. Continue?"
-      : "Flashing custom firmware will void your warranty and carries some risk of bricking the glasses. Continue?";
+      : "Flashing custom firmware will void your warranty. Continue?";
   }
 
   private get noun(): string {

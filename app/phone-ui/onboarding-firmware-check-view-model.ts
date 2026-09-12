@@ -249,13 +249,12 @@ export class OnboardingFirmwareCheckViewModel extends Observable {
         break;
       case "newer-stock-validated":
         this.setPhase("newer-validated");
-        this.headline = "Newer Firmware";
+        this.headline = "Ready to Install";
         this.status =
           `Your glasses run stock firmware ${version}, which is compatible. This version is newer than the ` +
-          `${BASE_STOCK_VERSION_TEXT} release Faceclaw's custom image is built from. Applying custom ` +
-          `firmware will downgrade the firmware version, which may cause compatibility issues when using it ` +
-          `with the stock phone app. If you reconnect the stock phone app, it will offer an OTA update to ` +
-          `${version}; if you apply that update it will fully uninstall the custom firmware.`;
+          `${BASE_STOCK_VERSION_TEXT} release Faceclaw's custom image is built from. You may not be able to ` +
+          `use the official Even app without upgrading back to ${version} first (the official Even app will ` +
+          `perform that upgrade for you if you re-pair it).`;
         break;
 
       case "newer-stock-unvalidated":
