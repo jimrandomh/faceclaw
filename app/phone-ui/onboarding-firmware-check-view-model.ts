@@ -178,7 +178,7 @@ export class OnboardingFirmwareCheckViewModel extends Observable {
       this.disposeProbe();
       const probe = new DeviceInfoProbe(stored.right, stored.left);
       this.probeInstance = probe;
-      probe.onStateChange((state) => this.reportProbeState(state));
+      probe.onStateChange((state, detail) => this.reportProbeState(state, detail));
 
       const info = await probe.run();
       this.probeInstance = null;
@@ -191,12 +191,15 @@ export class OnboardingFirmwareCheckViewModel extends Observable {
     }
   }
 
-  private reportProbeState(state: DeviceInfoState): void {
+  private reportProbeState(state: DeviceInfoState, detail: string): void {
+    // The probe brings up the right lens, then the left, and pairs with each
+    // in turn (they are separate Bluetooth devices with separate bonds).
+    const lens = detail === "left" || detail === "right" ? `the ${detail} lens` : "your glasses";
     if (state === "connecting") {
-      this.status = "Connecting to your glasses...";
+      this.status = `Connecting to ${lens}...`;
     } else if (state === "authenticating") {
       // First-time connections pair here; the OS may show a Bluetooth dialog.
-      this.status = "Authenticating with your glasses... If Android asks to pair, tap Pair.";
+      this.status = `Pairing with ${lens}... Each lens pairs separately; if Android asks to pair, tap Pair.`;
     } else if (state === "querying") {
       this.status = "Reading the firmware version...";
     }

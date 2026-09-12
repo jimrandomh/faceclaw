@@ -99,6 +99,29 @@ public class FaceclawBleManager {
         }
     }
 
+    /**
+     * Android's bond state for this address (BluetoothDevice.BOND_NONE /
+     * BOND_BONDING / BOND_BONDED), or -1 when it cannot be determined.
+     * BOND_BONDING covers the whole OS pairing flow, including a pairing
+     * dialog that is still waiting for the user.
+     */
+    public int getBondState(String address) {
+        if (address == null || address.trim().isEmpty()) {
+            return -1;
+        }
+        try {
+            BluetoothDevice device = bluetoothAdapter.getRemoteDevice(address);
+            return device == null ? -1 : device.getBondState();
+        } catch (Throwable t) {
+            return -1;
+        }
+    }
+
+    /** Whether a GATT client for this address is open, i.e. no disconnect callback has arrived for it. */
+    public boolean isConnected(String address) {
+        return address != null && gattClients.containsKey(address);
+    }
+
     public boolean connect(String address, int timeoutMs) {
         if (address == null || address.trim().isEmpty()) {
             throw new IllegalArgumentException("address is required");
