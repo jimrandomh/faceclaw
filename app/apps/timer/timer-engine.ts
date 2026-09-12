@@ -266,6 +266,11 @@ export class TimerEngine {
     );
   }
 
+  /** Every countdown timer (running, paused or rung), unsorted. */
+  timers(): readonly CountdownTimer[] {
+    return this.state.timers;
+  }
+
   ringingItems(): RingingItem[] {
     const items: RingingItem[] = [];
     for (const timer of this.state.timers) {

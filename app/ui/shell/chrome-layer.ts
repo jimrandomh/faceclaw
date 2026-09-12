@@ -13,9 +13,9 @@ import {
   glassesBatteryVisibilitySetting,
   phoneBatteryVisibilitySetting,
   ringBatteryVisibilitySetting,
-  timeFormatSetting,
   type BatteryIndicatorVisibility,
 } from "../dashboard-settings";
+import { formatClockDate, formatClockTime } from "../clock-format";
 import { getFont } from "../../graphics/bdffont";
 import { Layer } from "../layers";
 import { scrollToKeepSelectionVisible } from "../menu";
@@ -92,8 +92,6 @@ export function sidebarContentLeft(windowCount: number): number {
 }
 const NOTIFICATION_ICON_SIZE = 24;
 const BORDER_VALUE = 40;
-const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
 export type ShellChromeWindow = {
   windowId: string;
@@ -321,8 +319,7 @@ export class ShellChromeLayer implements Layer {
     image.drawLine(barLeft, barTop + TOP_BAR_HEIGHT - 1, G2_LENS_WIDTH - 1, barTop + TOP_BAR_HEIGHT - 1, BORDER_VALUE);
 
     const now = new Date();
-    const clock = `${WEEKDAYS[now.getDay()]} ${now.getDate()} ${MONTHS[now.getMonth()]} ` +
-      formatClockTime(now);
+    const clock = `${formatClockDate(now)} ${formatClockTime(now)}`;
     const clockX = barLeft + 10;
     const textY = barTop + Math.max(0, ((TOP_BAR_HEIGHT - font.lineHeight) / 2) | 0);
     image.drawText(font, clockX, textY, clock, 210);
@@ -605,17 +602,6 @@ function tabLeftInset(yy: number, top: number, bottom: number, radius: number): 
     return 0;
   }
   return Math.max(0, Math.round(radius - Math.sqrt(Math.max(0, radius * radius - dy * dy))));
-}
-
-/** Format the top-bar clock time, honoring the 12/24-hour setting. */
-function formatClockTime(now: Date): string {
-  const minutes = String(now.getMinutes()).padStart(2, "0");
-  const hour24 = now.getHours();
-  if (timeFormatSetting.get() === "12h") {
-    const hour12 = ((hour24 + 11) % 12) + 1;
-    return `${hour12}:${minutes} ${hour24 < 12 ? "AM" : "PM"}`;
-  }
-  return `${hour24}:${minutes}`;
 }
 
 /** Small triangle marker for sidebar overflow; direction -1 = up, 1 = down. */

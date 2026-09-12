@@ -71,6 +71,19 @@ public class BleProtocol {
     public static final int FACECLAW_WEAR_OP_QUERY = 7;
     public static final int CFW_IMAGE_MODE_CLEANUP = 11;
     private static final int FACECLAW_WAKE_EVENT = 1;
+    // Field-102 deferred wake from the IMU head-up (Faceclaw firmware revision
+    // 3+); same nonce handshake as the double-tap wake event 1.
+    public static final int FACECLAW_WAKE_EVENT_HEAD_UP = 5;
+    // Field-102 idle-gesture events (Faceclaw firmware revision 2+): gestures the
+    // stock display thread drops while no app is on screen, forwarded while the
+    // wake lease is held. Their last two bytes are the raw touch source and 0.
+    public static final int FACECLAW_GESTURE_EVENT_TAP = 2;
+    public static final int FACECLAW_GESTURE_EVENT_LONG_PRESS = 3;
+    public static final int FACECLAW_GESTURE_EVENT_LONG_PRESS_RELEASE = 4;
+    // The display thread's raw touch sources, as the firmware reports them.
+    private static final int FACECLAW_RAW_SOURCE_LEFT_TEMPLE = 0;
+    private static final int FACECLAW_RAW_SOURCE_RIGHT_TEMPLE = 1;
+    private static final int FACECLAW_RAW_SOURCE_RING = 4;
     private static final int FACECLAW_WAKE_PROTOCOL_VERSION = 1;
     // UI_FOREGROUND_EVEN_AI_ID: the stock "Even AI" assistant app. It is a
     // FOREGROUND app, whereas EvenHub (and therefore faceclaw) is the
@@ -111,6 +124,9 @@ public class BleProtocol {
     public static final int EVENT_RING_LONG_PRESS_RELEASE = 10;
     // CFW extension: G2 2.2.9 tap-then-hold gesture forwarded to the phone.
     public static final int EVENT_SHORT_THEN_LONG_PRESS = 11;
+    // CFW extension (firmware revision 3+): the IMU head-up, forwarded as a
+    // sys-event while an EvenHub page is on screen (soft sleep).
+    public static final int EVENT_HEAD_UP = 12;
 
     public static final int EVENT_SOURCE_GLASSES_R = 1;
     public static final int EVENT_SOURCE_RING = 2;
@@ -501,23 +517,100 @@ public class BleProtocol {
     }
 
     /**
-     * Return the uint16 wake nonce from a CFW field-102 notification, or -1
-     * when this is an ordinary settings frame.
+     * Return the uint16 wake nonce from a CFW field-102 deferred-wake
+     * notification (double tap or head-up), or -1 when this is an ordinary
+     * settings frame (idle-gesture events included).
      */
     public static int parseFaceclawWakeEvent(byte[] pb) {
+        byte[] event = faceclawWakeEventBytes(pb);
+        return event == null ? -1 : (event[4] & 0xff) | ((event[5] & 0xff) << 8);
+    }
+
+    /**
+     * Which gesture a CFW deferred-wake notification reports: 1 (double tap)
+     * or FACECLAW_WAKE_EVENT_HEAD_UP; -1 when the frame is not a wake event.
+     */
+    public static int parseFaceclawWakeEventCode(byte[] pb) {
+        byte[] event = faceclawWakeEventBytes(pb);
+        return event == null ? -1 : (event[3] & 0xff);
+    }
+
+    private static byte[] faceclawWakeEventBytes(byte[] pb) {
         if (pb == null) {
-            return -1;
+            return null;
         }
         byte[] event = readFieldBytes(stripTrailingCrc(pb), FACECLAW_WAKE_EVENT_FIELD);
         if (event == null
                 || event.length != 6
                 || event[0] != 'F'
                 || event[1] != 'C'
-                || (event[2] & 0xff) != FACECLAW_WAKE_PROTOCOL_VERSION
-                || (event[3] & 0xff) != FACECLAW_WAKE_EVENT) {
-            return -1;
+                || (event[2] & 0xff) != FACECLAW_WAKE_PROTOCOL_VERSION) {
+            return null;
         }
-        return (event[4] & 0xff) | ((event[5] & 0xff) << 8);
+        int code = event[3] & 0xff;
+        return code == FACECLAW_WAKE_EVENT || code == FACECLAW_WAKE_EVENT_HEAD_UP ? event : null;
+    }
+
+    /** An idle gesture from a CFW field-102 notification, in EvenHub sys-event terms. */
+    public static final class FaceclawGestureEvent {
+        public final int eventType;
+        public final int eventSource;
+
+        FaceclawGestureEvent(int eventType, int eventSource) {
+            this.eventType = eventType;
+            this.eventSource = eventSource;
+        }
+    }
+
+    /**
+     * Decode a CFW field-102 idle-gesture event (tap, long press, release
+     * while no app is on screen) into the EvenHub sys-event type and source
+     * the same gesture would carry from a live page, or null when the frame
+     * is not one (ordinary settings frames and the double-tap wake event
+     * included).
+     */
+    public static FaceclawGestureEvent parseFaceclawGestureEvent(byte[] pb) {
+        if (pb == null) {
+            return null;
+        }
+        byte[] event = readFieldBytes(stripTrailingCrc(pb), FACECLAW_WAKE_EVENT_FIELD);
+        if (event == null
+                || event.length != 6
+                || event[0] != 'F'
+                || event[1] != 'C'
+                || (event[2] & 0xff) != FACECLAW_WAKE_PROTOCOL_VERSION) {
+            return null;
+        }
+        int eventType;
+        switch (event[3] & 0xff) {
+            case FACECLAW_GESTURE_EVENT_TAP:
+                eventType = EVENT_CLICK;
+                break;
+            case FACECLAW_GESTURE_EVENT_LONG_PRESS:
+                eventType = EVENT_RING_LONG_PRESS;
+                break;
+            case FACECLAW_GESTURE_EVENT_LONG_PRESS_RELEASE:
+                eventType = EVENT_RING_LONG_PRESS_RELEASE;
+                break;
+            default:
+                return null;
+        }
+        int eventSource;
+        switch (event[4] & 0xff) {
+            case FACECLAW_RAW_SOURCE_LEFT_TEMPLE:
+                eventSource = EVENT_SOURCE_GLASSES_L;
+                break;
+            case FACECLAW_RAW_SOURCE_RIGHT_TEMPLE:
+                eventSource = EVENT_SOURCE_GLASSES_R;
+                break;
+            case FACECLAW_RAW_SOURCE_RING:
+                eventSource = EVENT_SOURCE_RING;
+                break;
+            default:
+                eventSource = 0;
+                break;
+        }
+        return new FaceclawGestureEvent(eventType, eventSource);
     }
 
     /**

@@ -24,11 +24,11 @@ import { openSettingsSubMenu } from "../../ui/dashboard/settings-panel";
 import { lineStep } from "../../ui/metrics";
 
 const nightscoutLargeFont = getDefaultLargeFont();
-const NIGHTSCOUT_STALE_MS = 15 * 60 * 1000;
+export const NIGHTSCOUT_STALE_MS = 15 * 60 * 1000;
 const NIGHTSCOUT_GRAPH_WINDOW_MS = 2 * 60 * 60 * 1000;
 const NIGHTSCOUT_GRAPH_TIME_QUANTUM_MS = 60 * 1000;
 
-function drawDirectionIndicator(
+export function drawDirectionIndicator(
   image: GrayImage,
   font: UiFont,
   x: number,
@@ -85,7 +85,7 @@ function truncateLine(text: string, maxChars: number): string {
   return `${text.slice(0, Math.max(0, maxChars - 3))}...`;
 }
 
-function formatDelta(delta: number | null): string {
+export function formatDelta(delta: number | null): string {
   if (delta === null) return "--";
   return `${delta >= 0 ? "+" : ""}${Math.round(delta)}`;
 }
@@ -98,7 +98,7 @@ function formatBolusLabel(value: number): string {
   return Number.isInteger(value) ? `${value}` : value.toFixed(1);
 }
 
-function drawNightscoutGraph(
+export function drawNightscoutGraph(
   image: GrayImage,
   bounds: { x: number; y: number; width: number; height: number },
   nightscout: NightscoutState,
@@ -431,10 +431,10 @@ export function nightscoutMenuItems(): MenuItem[] {
   ];
 }
 
-function isNightscoutPointStale(point: NightscoutState["latest"], nowMs: number): boolean {
+export function isNightscoutPointStale(point: NightscoutState["latest"], nowMs: number): boolean {
   return point !== null && nowMs - point.timestampMs > NIGHTSCOUT_STALE_MS;
 }
 
-function drawNightscoutValueStrikeThrough(image: GrayImage, x: number, y: number, width: number): void {
+export function drawNightscoutValueStrikeThrough(image: GrayImage, x: number, y: number, width: number): void {
   image.drawLine(x, y, x + width, y, 180);
 }

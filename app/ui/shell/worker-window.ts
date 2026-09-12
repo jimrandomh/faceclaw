@@ -5,6 +5,7 @@ import { toolRegistry, type ToolResult, type ToolSpec } from "../../assistant/to
 import { appViewportSize, type WindowHeightMode } from "./geometry";
 import * as frameTimings from "../../native/frame-timings";
 import { shell, type ShellWindow } from "./shell";
+import { publishWorkerState } from "./worker-state";
 
 /**
  * Messages between the shell (main thread) and an app worker. One worker
@@ -134,6 +135,15 @@ export type WorkerAppReply =
       type: "tool-result";
       callId: string;
       result: ToolResult;
+    }
+  | {
+      /**
+       * Publish a small piece of app state for main-thread consumers outside
+       * the app's windows (see app/ui/shell/worker-state.ts). JSON only.
+       */
+      type: "publish-state";
+      key: string;
+      state: unknown;
     };
 
 export type WorkerWindowSpec = {
@@ -305,6 +315,9 @@ export class WorkerAppHost {
         }
         case "set-title":
           // Titles are informational for now (sidebar shows icons only).
+          break;
+        case "publish-state":
+          publishWorkerState(message.key, message.state);
           break;
         case "set-tools":
           // Only a window we actually have open may contribute tools.

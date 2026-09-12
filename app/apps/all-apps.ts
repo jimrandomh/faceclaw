@@ -23,6 +23,7 @@ import pinballApp from "./pinball";
 import flappyApp from "./flappy";
 import developerApp from "./developer";
 import evenhubApp from "./evenhub";
+import glanceboardApp from "./glanceboard";
 import settingsApp from "./settings";
 
 /**
@@ -55,5 +56,6 @@ export const ALL_APPS: readonly AppDefinition[] = [
   flappyApp,
   developerApp,
   evenhubApp,
+  glanceboardApp,
   settingsApp,
 ];
