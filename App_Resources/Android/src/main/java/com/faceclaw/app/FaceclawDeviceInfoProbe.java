@@ -92,16 +92,35 @@ public class FaceclawDeviceInfoProbe implements FaceclawBleListener {
                 return;
             }
 
-            byte[] ack = probeArm(rightAddress, "right");
+            // Pair both arms before asking for versions, even when the right
+            // lens answers immediately and no left-lens fallback is needed.
+            boolean rightAuthenticated = connectAndAuthenticateArm(rightAddress, "right");
+            boolean leftReady = false;
+            boolean leftAuthenticated = false;
+            if (!cancelled && !leftAddress.trim().isEmpty()
+                    && !leftAddress.equalsIgnoreCase(rightAddress)) {
+                try {
+                    leftAuthenticated = connectAndAuthenticateArm(leftAddress, "left");
+                    leftReady = !cancelled;
+                } catch (Exception e) {
+                    emitLog("left-lens connection/auth failed: "
+                        + (e.getMessage() == null ? e.toString() : e.getMessage()));
+                }
+            }
+            if (cancelled) {
+                emitError("Cancelled.");
+                return;
+            }
+
+            byte[] ack = queryArm(rightAddress, "right", rightAuthenticated);
             // The right lens is the documented control endpoint, but a silent
             // right lens has been observed on stock 2.2.9 even after a
             // successful security auth — run the same probe against the left
             // lens rather than giving up, and log which lens answered.
-            if (ack == null && !cancelled && !leftAddress.trim().isEmpty()
-                    && !leftAddress.equalsIgnoreCase(rightAddress)) {
+            if (ack == null && !cancelled && leftReady) {
                 emitLog("right lens did not answer the settings query; probing the left lens");
                 try {
-                    ack = probeArm(leftAddress, "left");
+                    ack = queryArm(leftAddress, "left", leftAuthenticated);
                 } catch (Exception e) {
                     emitLog("left-lens probe failed: " + (e.getMessage() == null ? e.toString() : e.getMessage()));
                 }
@@ -133,18 +152,11 @@ public class FaceclawDeviceInfoProbe implements FaceclawBleListener {
         }
     }
 
-    /**
-     * Connect + authenticate + prelude + settings read on one lens. Returns the
-     * settings ack protobuf, an unsolicited settings push that carried firmware
-     * versions, or null when the lens never answered the read. Throws on
-     * connect or prelude failure; the caller wraps the fallback lens's attempt
-     * so its failure cannot mask the primary lens's outcome.
-     */
-    private byte[] probeArm(String address, String label) throws InterruptedException {
+    private boolean connectAndAuthenticateArm(String address, String label) throws InterruptedException {
         emitState("connecting", label);
         connectArm(address);
         if (cancelled) {
-            return null;
+            return false;
         }
 
         // Firmware 2.2.9 answers no queries until the security-auth exchange
@@ -154,7 +166,17 @@ public class FaceclawDeviceInfoProbe implements FaceclawBleListener {
         // against the custom firmware, whose response to the exchange is not
         // yet hardware-verified, so an unconfirmed auth falls through.
         emitState("authenticating", label);
-        boolean authenticated = authenticate(address);
+        return authenticate(address);
+    }
+
+    /**
+     * Prelude + settings read on an already connected/authenticated lens.
+     * Returns the settings ack protobuf, an unsolicited settings push that
+     * carried firmware versions, or null when the lens never answered the read.
+     * Throws on prelude failure; the caller wraps the fallback lens's attempt
+     * so its failure cannot mask the primary lens's outcome.
+     */
+    private byte[] queryArm(String address, String label, boolean authenticated) throws InterruptedException {
         if (cancelled) {
             return null;
         }
