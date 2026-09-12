@@ -61,6 +61,8 @@ import it into the new version.
    slow) or with an Anthropic or OpenAI model (requires an API key), or using
    your own long-running OpenClaw agent.
  * **Multitasking**, with an app-switcher sidebar and app launcher.
+ * **Glanceboard**, a dashboard with widgets that you can quickly view with a
+   tap or tap-and-hold from the screen-off state.
  * **Mostly-compatible with EvenHub apps.**
  * **A lock screen**; glasses lock automatically when you take them off and
    unlock when you unlock your phone.
@@ -161,7 +163,8 @@ it getting paused, throttled to low CPU usage, etc.
 Be bold. Modify Faceclaw into the app that you want it to be for yourself,
 without worrying about whether other people will like your version. Then if you
 think your changes might be useful to others, make a pull request at 
-https://github.com/jimrandomh/faceclaw.
+https://github.com/jimrandomh/faceclaw. Consider joining the Discord server
+to talk to other developer: https://discord.gg/XVFDFSwek3
 
 The Typescript and Java code in this repository runs on your phone, not on the
 glasses themselves, and (with the narrow exception of the firmware-updating

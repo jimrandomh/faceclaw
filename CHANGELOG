@@ -1,19 +1,49 @@
 # Changelog
 
-## 0.6.6 - Future
-* Change Bluetooth radio settings: Increases throughput from 4-12KiB/s to 41KiB/s
-* Navigate and terminal app: App-specific screen size/position setting
+## 0.7.0 - 2026-09-12
+
+### Major Features
+
+* Add Glanceboard
+
+The Glanceboard is a customizable dashboard, which opens when you single-tap
+or long-press-and-hold while the screen is off, then closes automatically. The
+idea is that this is where you put things that you want to keep accessible
+while you're not actively using the glasses. The glanceboard has four slots
+for widgets, and has a system card widget (time, notifications, etc) and
+widgets for music, calendar, terminals, and more.
+
+* Add "AI Chat" app
+
+This is a conversational-style way to use the voice assistant that was already
+built in. Rather than say the wake word each time, while in the AI Chat app,
+you press-and-hold the ring to start speaking and release to send.
+
+* Significantly increase speed
+
+This version reconfigures the glasses' Bluetooth radio link, increasing
+transfer speed by 3-10x. This makes the user interface a lot snappier overall,
+and will enable better animations and graphics in future versions. There is a
+new Flappy game, to demonstrate that we can now reasonably handle 30fps
+full-screen animation. This does increase battery usage, but not by very much;
+based on the specs of the bluetooth chip used, this is estiamted to consume an
+extra 5% battery per day.
+
+### Smaller Features and Bug Fixes
+
+* After starting in Preview mode, connecting glasses walks you through the custom firmware flashing process in the same way as regular onboarding
+* Messaging in the flasher distinguishes between downgrading from stock firmwares where that's been validated and veresions where it hasn't, and considers 2.2.10 validated
+* Navigate and Terminal apps have their own config setting for screen-size
 * Transcribe app: Scrolling; automatic reconnection; insert newlines
 * Notifications: Add notification filters
 * Phone screen preview: Add rotation option; improve landscape layout
-* Add "AI Chat" app (conversational-style use of the voice assistant with hold-to-talk)
 * Add brightness control to the system context menu
-* Messaging in the flasher distinguishes between downgrading from stock firmwares  where that's been validated and veresions where it hasn't, and considers 2.2.10 validated
-* Add R1 battery indicator to the top bar
-* Change the styling and add more customization options for battery indicators
-* Expand Pinball game
-* Add Flappy game
-* Add Glanceboard app
+* Add R1 ring battery to the top bar
+* Battery indicators have new styling and more customization options
+* Add magnetometer calibration debug info to the Compass app
+* Nightscout app has alert thresholds for canula age, cartridge volume, pump battery, time since last loop, shown in the top bar
+* Terminal app: Icons in the app-switcher sidebar show terminal activity
+* Speed up wake wake from sleep (https://github.com/jimrandomh/faceclaw/pull/24)
 
 ## 0.6.5 - 2026-09-04
 * Changed context menu gestures: — for system, ●— for app context menu.
