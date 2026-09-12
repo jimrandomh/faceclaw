@@ -35,9 +35,9 @@ const PREVIEW_MIN_LINE_VALUE = 20;
 const PREVIEW_LINE_VALUE = 100;
 
 const INTRO =
-  "Small widgets shown while the display is asleep, without waking the regular UI. " +
-  "A tap or a head-tilt shows the board for a few seconds and a long-press holds it " +
-  "up until released; a double-tap wakes the regular UI instead.";
+  "Your Glanceboard is a display for things you want to look at quickly. Starting " +
+  "from the screen being off, you can show the glanceboard with a tap or " +
+  "long-press-and-hold. It will close automatically.";
 
 /** Full-page list layout shared by the sub-screens. */
 function pageMenuLayout(width: number) {
