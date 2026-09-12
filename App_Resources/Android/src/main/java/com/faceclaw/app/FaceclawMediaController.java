@@ -5,6 +5,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
+import android.database.ContentObserver;
 import android.graphics.Bitmap;
 import android.media.AudioManager;
 import android.media.MediaDescription;
@@ -27,6 +28,8 @@ import java.util.HashSet;
 import java.util.Set;
 
 public class FaceclawMediaController {
+    private static final String ENABLED_NOTIFICATION_LISTENERS = "enabled_notification_listeners";
+
     private final Context appContext;
     private final Object lock = new Object();
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
@@ -70,9 +73,27 @@ public class FaceclawMediaController {
         }
     };
 
+    /**
+     * Fires when the user grants or revokes notification-listener access in
+     * system settings. Session access depends on that grant, so the sessions
+     * listener is (re)registered and the state re-emitted whenever it changes;
+     * otherwise a grant made after start() would never be noticed.
+     */
+    private final ContentObserver notificationAccessObserver = new ContentObserver(mainHandler) {
+        @Override
+        public void onChange(boolean selfChange) {
+            synchronized (lock) {
+                if (!started) return;
+                syncSessionsListenerLocked();
+                refreshActiveControllerLocked(null);
+            }
+        }
+    };
+
     private volatile FaceclawMediaControllerListener listener;
     private MediaController activeController;
     private boolean started;
+    private boolean sessionsListenerRegistered;
     private Set<String> ignoredPackages = new HashSet<>();
 
     public FaceclawMediaController(Context context) {
@@ -96,23 +117,45 @@ public class FaceclawMediaController {
                 return;
             }
             started = true;
-            if (!isNotificationAccessEnabled()) {
-                emitStateLocked();
-                return;
+            try {
+                appContext.getContentResolver().registerContentObserver(
+                        Settings.Secure.getUriFor(ENABLED_NOTIFICATION_LISTENERS),
+                        false,
+                        notificationAccessObserver
+                );
+            } catch (Exception e) {
+                Log.w("FaceclawMedia", "notification access observer registration failed", e);
             }
-            if (sessionManager != null) {
-                try {
-                    sessionManager.addOnActiveSessionsChangedListener(
-                            sessionsChangedListener,
-                            listenerComponent,
-                            mainHandler
-                    );
-                } catch (SecurityException ignored) {
-                    emitStateLocked();
-                    return;
-                }
-            }
+            syncSessionsListenerLocked();
             refreshActiveControllerLocked(null);
+        }
+    }
+
+    /**
+     * Keep the active-sessions listener registered exactly while notification
+     * access is granted. Registration throws SecurityException without the
+     * grant, so this is retried from the settings observer rather than only
+     * attempted once at start().
+     */
+    private void syncSessionsListenerLocked() {
+        if (sessionManager == null) return;
+        boolean accessEnabled = started && isNotificationAccessEnabled();
+        if (accessEnabled && !sessionsListenerRegistered) {
+            try {
+                sessionManager.addOnActiveSessionsChangedListener(
+                        sessionsChangedListener,
+                        listenerComponent,
+                        mainHandler
+                );
+                sessionsListenerRegistered = true;
+            } catch (SecurityException ignored) {
+            }
+        } else if (!accessEnabled && sessionsListenerRegistered) {
+            try {
+                sessionManager.removeOnActiveSessionsChangedListener(sessionsChangedListener);
+            } catch (SecurityException ignored) {
+            }
+            sessionsListenerRegistered = false;
         }
     }
 
@@ -139,12 +182,11 @@ public class FaceclawMediaController {
                 return;
             }
             started = false;
-            if (sessionManager != null) {
-                try {
-                    sessionManager.removeOnActiveSessionsChangedListener(sessionsChangedListener);
-                } catch (SecurityException ignored) {
-                }
+            try {
+                appContext.getContentResolver().unregisterContentObserver(notificationAccessObserver);
+            } catch (Exception ignored) {
             }
+            syncSessionsListenerLocked();
             setActiveControllerLocked(null);
             emitStateLocked();
         }
@@ -377,7 +419,7 @@ public class FaceclawMediaController {
     private boolean isNotificationAccessEnabled() {
         String enabledListeners = Settings.Secure.getString(
                 appContext.getContentResolver(),
-                "enabled_notification_listeners"
+                ENABLED_NOTIFICATION_LISTENERS
         );
         if (enabledListeners == null || enabledListeners.isEmpty()) {
             return false;
