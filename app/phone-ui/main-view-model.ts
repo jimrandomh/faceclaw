@@ -26,6 +26,7 @@ import {
 import { sampleBleTraffic } from "../native/ble-traffic";
 import { isValidMacAddress, loadDeviceAddresses } from "../g2/device-addresses";
 import { isAutoReconnectSuppressed, resumeAutoReconnect } from "../g2/reconnect-policy";
+import { isPreviewOnlyMode } from "./onboarding-state";
 import { formatErrorMessage } from "../util/format-error";
 import { G2_LENS_HEIGHT, G2_LENS_WIDTH } from "../graphics/image";
 
@@ -886,11 +887,6 @@ export class MainViewModel extends Observable {
     }
   }
 
-  onConfigureTap(): void {
-    if (!this.canRun) return;
-    Frame.topmost()?.navigate("phone-ui/config-page");
-  }
-
   onPermissionsTap(): void {
     Frame.topmost()?.navigate({
       moduleName: "phone-ui/permissions-page",
@@ -904,15 +900,34 @@ export class MainViewModel extends Observable {
   }
 
   /**
+   * Preview-only users have no glasses paired, so the Connect and Uninstall
+   * menu items have nothing to act on; hide them until pairing completes.
+   * The view model is rebuilt on every visit to the main page, so this picks
+   * up the mode change when pairing/flashing returns here.
+   */
+  get glassesMenuItemsVisibility(): "visible" | "collapse" {
+    return isPreviewOnlyMode() ? "collapse" : "visible";
+  }
+
+  /**
    * Live scan that names each nearby pair by model, colour, and serial and
    * checks both arms belong together. A connected arm stops advertising, so
    * drop the current link first. disconnect() enters the manual-disconnected
    * state; pairing is a detour, not a Disconnect, so lift the suppression
    * right away — nothing dials the glasses until the main page's autoConnect
    * runs again on the way back.
+   *
+   * In preview-only mode there are no glasses yet, so pairing is really the
+   * rest of onboarding: re-enter that chain at its "Disconnect Other Apps"
+   * step, which leads to the scan, the firmware check, and flashing. The
+   * chain's Back buttons pop history, so its first page returns here.
    */
   async onPairGlassesTap(): Promise<void> {
     if (!this.canRun) return;
+    if (isPreviewOnlyMode()) {
+      Frame.topmost()?.navigate({ moduleName: "phone-ui/onboarding-unpair-page" });
+      return;
+    }
     if (this.phase === "connected" || this.phase === "charging" || this.phase === "connecting") {
       try {
         await dashboardController.disconnect();

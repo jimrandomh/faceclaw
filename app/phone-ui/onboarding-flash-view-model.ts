@@ -336,7 +336,7 @@ export class OnboardingFlashViewModel extends Observable {
     this.disposePrompt();
     if (!approved) {
       this.busy = false;
-      this.toError("You declined on the glasses. No firmware was written.", () => this.beginPrompt());
+      this.toError("You declined on the glasses. Firmware was not installed.", () => this.beginPrompt());
       return;
     }
     const lowBattery = this.describeLowBattery(this.promptBattery);
