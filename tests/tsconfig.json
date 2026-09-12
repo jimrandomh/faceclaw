@@ -30,6 +30,15 @@
     "../app/apps/evenhub/containers.ts",
     "../app/apps/timer/timer-model.ts",
     "../app/apps/teleprompter/script-tracker.ts",
-    "../app/apps/nightscout/nightscout-alerts.ts"
+    "../app/apps/nightscout/nightscout-alerts.ts",
+    "../app/health/health-types.ts",
+    "../app/health/health-derive.ts",
+    "../app/health/health-store.ts",
+    "../app/health/health-ingest.ts",
+    "../app/health/health-fixtures.ts",
+    "../app/health/sleep-stages.ts",
+    "../app/health/health-chart.ts",
+    "../app/health/health-glance.ts",
+    "../app/health/health-phone-chart.ts"
   ]
 }

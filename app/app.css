@@ -698,3 +698,681 @@ Button.permissions-primary-dimmed {
 .ns-dark .transcript-play {
   color: #7da7f5;
 }
+
+
+
+/*
+ * The cover screen (phone-ui/cover-glance.xml): what the phone shows while the
+ * Fold is shut. It reuses .home-card and .home-section-title wholesale — the
+ * cover screen is the same product, laid out for a glance, not a second visual
+ * language — and adds only what a one-screenful layout needs.
+ */
+.cover-glance {
+  padding: 12 12 16 12;
+}
+
+.cover-glance-card {
+  vertical-align: center;
+  margin-top: 0;
+}
+
+.cover-glance-app {
+  font-size: 20;
+  font-weight: bold;
+  color: #222222;
+}
+
+.cover-glance-text {
+  font-size: 15;
+  color: #444444;
+  margin-top: 6;
+}
+
+.cover-glance-hint {
+  font-size: 12;
+  color: #888888;
+  text-align: center;
+  margin-top: 12;
+}
+
+.ns-dark .cover-glance-app {
+  color: #f0f0f0;
+}
+
+.ns-dark .cover-glance-text {
+  color: #cfcfcf;
+}
+
+.ns-dark .cover-glance-hint {
+  color: #909090;
+}
+
+/*
+ * Ghost's companion (phone-ui/ghost-companion.xml). The pilot's own palette is
+ * deliberately NOT ported: it was a black OLED mockup with phosphor-green
+ * accents standing in for a whole OS shell, and this screen lives inside the
+ * Faceclaw app, whose light/dark surfaces every other page already uses. What
+ * carries over is the structure — header, tab bar, one pane, docked compose —
+ * and the monospace treatment of the raw views, which is load-bearing.
+ */
+.ghost-app {
+  background-color: #ffffff;
+}
+
+/* The one header row every companion view shares — phone-ui/exocortex-header
+ * .xml. One line, and it replaces BOTH the app-switch bar and the per-app
+ * wordmark/status header that used to stack above the content. */
+.exocortex-header {
+  padding: 5 14;
+  background-color: #f4f4f4;
+  border-bottom-width: 1;
+  border-bottom-color: #dddddd;
+}
+
+/* The tap target back to the hub, so it is coloured like the link it is. */
+.exocortex-header-home {
+  font-family: monospace;
+  font-size: 12;
+  letter-spacing: 0.12;
+  color: #3b6fd6;
+}
+
+.exocortex-header-sep {
+  font-size: 12;
+  color: #aaaaaa;
+  margin-left: 6;
+  margin-right: 6;
+}
+
+/* The star column: the app name takes the slack and truncates before it
+ * pushes the connection status off the row. */
+.exocortex-header-app {
+  font-size: 13;
+  font-weight: bold;
+  color: #222222;
+}
+
+.exocortex-header-status {
+  font-size: 12;
+  color: #666666;
+}
+
+/* The two segments that came down from the ActionBar when main-page lost it
+ * (round 3). Both are collapsed-width by default in the grid, so they cost
+ * nothing horizontally until they are drawn — and nothing vertically ever,
+ * since the row was already there. The padding is the tap target: these are
+ * Labels, so without it the hit box is the glyph. */
+
+/* The emoji brings its own yellow. Collapsed unless a warning is live. */
+.exocortex-header-warning {
+  font-size: 14;
+  padding: 2 4;
+  margin-left: 6;
+}
+
+/* Coloured like the link it is, matching the "Exocortex" tap target at the
+ * other end of the row. */
+.exocortex-header-settings {
+  font-size: 15;
+  color: #3b6fd6;
+  padding: 2 4;
+  margin-left: 8;
+}
+
+.ghost-tab-bar {
+  padding: 2 8 3 8;
+}
+
+/* SHORTER, still four real buttons (Chris, round 2: "shrink the four pane-nav
+ * buttons - still functional, just shorter"). An Android Button carries a
+ * 48dp minimum height from the platform theme, so the explicit height is what
+ * actually shrinks it; padding alone would not. */
+.ghost-tab {
+  font-size: 12;
+  height: 30;
+  padding: 3 0;
+  margin: 0 2;
+  border-radius: 6;
+  background-color: #e2e2e2;
+  color: #333333;
+}
+
+.ghost-tab-active {
+  background-color: #424242;
+  color: #ffffff;
+}
+
+/* The explicit background is LOAD-BEARING, not decoration. Rich view used to
+ * survive the live-theme-switch bug (the app reads the system theme once at
+ * launch and never re-subscribes, so a mid-session switch leaves foreground
+ * and background disagreeing — Terminal and Doc go white-on-white) purely
+ * because every turn was a card carrying its own background colour. Removing
+ * those cards to fix the turn-grouping bug would have removed that immunity
+ * with them. Painting the pane body instead keeps background and text driven
+ * by the SAME .ns-dark state, at the container rather than per row. */
+.ghost-pane-body {
+  padding: 8 16 16 16;
+  background-color: #ffffff;
+}
+
+.ghost-empty {
+  font-size: 14;
+  color: #666666;
+  padding: 24 0;
+  text-align: center;
+}
+
+/* Rich view renders one logical TURN as a continuous block: consecutive prose
+ * runs together at one weight, and tool activity collapses to small muted
+ * marker lines BETWEEN the prose. Deliberately NOT a card per row — round 4
+ * gave every transcript entry the same bordered box with a bold 16pt
+ * headline, so a one-line `Read foo.ts` marker outweighed the reply it sat
+ * inside. Same convention cc-web's own rich view already proves
+ * (apps/claude-code-web/src/public/style.css, `.rich-tool-lines`): "muted so
+ * prose stays primary." */
+.ghost-seg {
+  padding-left: 2;
+  padding-right: 2;
+}
+
+/* The separator lives at the END of a logical turn, not between its own
+ * segments — that is what makes one reply read as one block. */
+.ghost-seg-end {
+  padding-bottom: 14;
+  margin-bottom: 14;
+  border-bottom-width: 1;
+  border-bottom-color: #e2e2e2;
+}
+
+/* The segment the LENS has under its cursor. The phone and the glasses are
+ * two views of one session, so the phone says where the wearer is rather than
+ * keeping a cursor of its own. A left rule rather than a box, so marking it
+ * cannot reintroduce the per-segment card this pass removed. */
+.ghost-seg-current {
+  border-left-width: 3;
+  border-left-color: #3b6fd6;
+  padding-left: 9;
+}
+
+.ghost-seg-who {
+  font-size: 11;
+  text-transform: uppercase;
+  letter-spacing: 0.08;
+  color: #666666;
+  margin-bottom: 3;
+}
+
+/* Prose is the content. One weight, no headline split — splitHeadlineBody()
+ * is the glasses digest's convention and does not belong on a full reply. */
+.ghost-seg-prose {
+  font-size: 16;
+  color: #222222;
+  margin-top: 2;
+  margin-bottom: 2;
+}
+
+/* Tool markers: small, monospace, muted, and almost no vertical space. */
+.ghost-seg-tool {
+  font-family: monospace;
+  font-size: 11;
+  color: #8a8a8a;
+  margin-top: 3;
+  margin-bottom: 3;
+}
+
+/* Surfaced AskUserQuestion turns — a side channel, tinted so they do not read
+ * as something Ghost said mid-sentence. Must stay AFTER .ghost-seg-prose:
+ * both classes are applied to the same Label. */
+.ghost-seg-question {
+  border-left-width: 3;
+  border-left-color: #a371f7;
+  padding-left: 10;
+}
+
+.ghost-seg-answer {
+  border-left-width: 3;
+  border-left-color: #3fb950;
+  padding-left: 10;
+}
+
+/* Not a live terminal — the undigested feed. Monospace because the alignment
+ * is the point: this pane exists for the moment Rich view looks wrong. */
+.ghost-terminal {
+  font-family: monospace;
+  font-size: 12;
+  color: #222222;
+  padding: 12 16;
+}
+
+.ghost-doc-bar {
+  padding: 10 16;
+  background-color: #f4f4f4;
+  border-bottom-width: 1;
+  border-bottom-color: #dddddd;
+}
+
+.ghost-doc-path {
+  font-size: 13;
+  color: #666666;
+}
+
+.ghost-doc-close {
+  font-size: 16;
+  color: #666666;
+  padding: 0 8;
+  background-color: transparent;
+}
+
+/* The container the rendered markdown blocks sit in. `color` and `font-size`
+ * are inheritable in NativeScript, so every .doc-md Label below picks its body
+ * text up from here and only overrides what it actually changes. The explicit
+ * background is the same load-bearing one .ghost-pane-body carries: without it
+ * this pane goes white-on-white after a live theme switch. */
+.ghost-doc-body {
+  font-size: 15;
+  color: #222222;
+  background-color: #ffffff;
+  padding: 14 16 24 16;
+}
+
+/* ── Doc viewer: rendered markdown (2026-09-03) ─────────────────────────────
+ * One Label per parsed block (phone-ui/markdown-render.ts). Block-level
+ * treatment lives here; the inline runs (bold / italic / code / link) are
+ * spans built in ghost-companion-view-model.ts, because a Span's weight and
+ * family cannot be reached from CSS. */
+.doc-md {
+  margin-bottom: 8;
+}
+
+.doc-md-h1 {
+  font-size: 21;
+  margin-top: 14;
+  margin-bottom: 6;
+}
+
+.doc-md-h2 {
+  font-size: 18;
+  margin-top: 14;
+  margin-bottom: 6;
+}
+
+.doc-md-h3 {
+  font-size: 16;
+  margin-top: 12;
+  margin-bottom: 4;
+}
+
+.doc-md-h4 {
+  font-size: 15;
+  margin-top: 12;
+  margin-bottom: 4;
+}
+
+.doc-md-li {
+  margin-bottom: 4;
+}
+
+/* Nesting depth, clamped at three by the parser so a deep list cannot indent
+ * itself off the side of a phone. */
+.doc-md-li-d0 {
+  margin-left: 4;
+}
+
+.doc-md-li-d1 {
+  margin-left: 20;
+}
+
+.doc-md-li-d2 {
+  margin-left: 36;
+}
+
+.doc-md-li-d3 {
+  margin-left: 52;
+}
+
+.doc-md-code {
+  font-family: monospace;
+  font-size: 13;
+  color: #333333;
+  background-color: #f2f2f2;
+  border-radius: 6;
+  padding: 8 10;
+}
+
+.doc-md-quote {
+  border-left-width: 3;
+  border-left-color: #c8c8c8;
+  padding-left: 10;
+  color: #555555;
+}
+
+/* An empty Label doing the job of an <hr>: the block carries no text, so its
+ * height and colour are the whole rule. */
+.doc-md-rule {
+  height: 1;
+  margin: 12 0;
+  background-color: #dddddd;
+}
+
+.ghost-setting {
+  padding: 10 12;
+  margin-bottom: 8;
+  border-radius: 10;
+  border-width: 1;
+  border-color: #dddddd;
+  background-color: #f4f4f4;
+}
+
+.ghost-setting-label {
+  font-size: 15;
+  font-weight: bold;
+  color: #222222;
+}
+
+.ghost-setting-desc {
+  font-size: 12;
+  color: #666666;
+  margin-top: 2;
+}
+
+.ghost-setting-field {
+  font-size: 14;
+  color: #222222;
+  background-color: #ffffff;
+  margin-top: 6;
+}
+
+/* The one thing this screen does that the lens cannot, so it is docked rather
+ * than reached for. */
+.ghost-compose {
+  padding: 8 12 12 12;
+  border-top-width: 1;
+  border-top-color: #dddddd;
+  background-color: #f4f4f4;
+}
+
+/* 48, not the 88 it was. CHECKED, not assumed: NativeScript core has a
+ * minHeightProperty but NO max-height, so letting this auto-size would grow
+ * the docked bar without a ceiling as you type and push the panes off screen.
+ * A fixed height scrolls internally instead, which is the right behaviour for
+ * a bar docked under the content it is about. */
+.ghost-compose-input {
+  height: 48;
+  font-size: 15;
+  color: #222222;
+  background-color: #ffffff;
+  border-radius: 8;
+  padding: 8;
+}
+
+.ghost-send {
+  margin-left: 8;
+}
+
+.ghost-compose-status {
+  font-size: 12;
+  color: #a04040;
+  margin-top: 4;
+}
+
+.ns-dark .ghost-app {
+  background-color: #1c1c1c;
+}
+
+.ns-dark .exocortex-header,
+.ns-dark .ghost-doc-bar,
+.ns-dark .ghost-compose {
+  border-bottom-color: #4a4a4a;
+  border-top-color: #4a4a4a;
+}
+
+.ns-dark .exocortex-header,
+.ns-dark .ghost-doc-bar,
+.ns-dark .ghost-compose {
+  background-color: #2e2e2e;
+}
+
+.ns-dark .exocortex-header-app,
+.ns-dark .ghost-seg-prose,
+.ns-dark .ghost-terminal,
+.ns-dark .ghost-doc-body,
+.ns-dark .ghost-setting-label {
+  color: #f0f0f0;
+}
+
+.ns-dark .exocortex-header-status,
+.ns-dark .ghost-empty,
+.ns-dark .ghost-seg-who,
+.ns-dark .ghost-doc-path,
+.ns-dark .ghost-setting-desc {
+  color: #a0a0a0;
+}
+
+.ns-dark .exocortex-header-sep {
+  color: #6a6a6a;
+}
+
+.ns-dark .ghost-seg-tool {
+  color: #909090;
+}
+
+/* See .ghost-pane-body's own comment: this pairing is what keeps Rich view
+ * readable now that it no longer boxes every segment. */
+.ns-dark .ghost-pane-body {
+  background-color: #1e1e1e;
+}
+
+.ns-dark .ghost-seg-end {
+  border-bottom-color: #3d3d3d;
+}
+
+.ns-dark .exocortex-header-home,
+.ns-dark .exocortex-header-settings {
+  color: #8ab0ff;
+}
+
+.ns-dark .ghost-setting {
+  background-color: #2e2e2e;
+  border-color: #4a4a4a;
+}
+
+.ns-dark .ghost-seg-current {
+  border-left-color: #8ab0ff;
+}
+
+.ns-dark .ghost-setting-field,
+.ns-dark .ghost-compose-input {
+  color: #f0f0f0;
+  background-color: #1c1c1c;
+}
+
+.ns-dark .ghost-tab {
+  background-color: #3a3a3a;
+  color: #e0e0e0;
+}
+
+.ns-dark .ghost-tab-active {
+  background-color: #8ab0ff;
+  color: #101010;
+}
+
+.ns-dark .ghost-compose-status {
+  color: #ff9a8a;
+}
+
+/* Exocortex's own phone settings screens (Settings, Notification sources,
+ * Apps on the glasses). Card rows rather than the flat `.settings-row` used
+ * by the mirror page's controls: these are a list you read down, and a
+ * comfortable thumb target matters more here than density. */
+.exo-row {
+  background-color: #f4f4f4;
+  border-color: #dddddd;
+  border-width: 1;
+  border-radius: 10;
+  padding: 12 14;
+  margin-bottom: 8;
+}
+
+.settings-value {
+  font-size: 14;
+  color: #3b6fd6;
+  margin-left: 12;
+}
+
+.app-order-button {
+  font-size: 18;
+  width: 40;
+  padding: 0;
+  margin: 0 0 0 4;
+  background-color: transparent;
+  color: #3b6fd6;
+}
+
+.ns-dark .exo-row {
+  background-color: #2e2e2e;
+  border-color: #4a4a4a;
+}
+
+.ns-dark .settings-value,
+.ns-dark .app-order-button {
+  color: #8ab0ff;
+}
+
+/* Doc viewer's rendered markdown, dark. Only what actually differs: the body
+ * text colour already comes from .ns-dark .ghost-doc-body above. */
+.ns-dark .ghost-doc-body {
+  background-color: #1c1c1c;
+}
+
+.ns-dark .doc-md-code {
+  color: #d8d8d8;
+  background-color: #262626;
+}
+
+.ns-dark .doc-md-quote {
+  border-left-color: #4a4a4a;
+  color: #b0b0b0;
+}
+
+.ns-dark .doc-md-rule {
+  background-color: #3a3a3a;
+}
+
+/* The app list's own container paints its own background (2026-09-03). The
+ * real cause of "the ghost app rendered on the app grid's background" was the
+ * broken visibility binding fixed in main-page.xml, not a transparent view —
+ * but the two bodies share one grid cell, so whichever is up must own its
+ * backdrop rather than depending on the other being gone. Belt as well as
+ * braces: the same class of bug (a view not painting its own background) is
+ * what the live-theme-switch failure was made of too. */
+.exocortex-home-body {
+  background-color: #ffffff;
+}
+
+.ns-dark .exocortex-home-body {
+  background-color: #1c1c1c;
+}
+
+/* ------------------------------------------------------------------------
+ * HEALTH (phone-ui/health-page.xml)
+ *
+ * The chart is a grayscale bitmap produced by the same GrayImage renderer the
+ * glasses use, so it arrives as light-on-black whatever the phone theme is.
+ * Rather than fight that, the chart gets an explicit dark plate in BOTH
+ * themes - it reads as an instrument panel inset into the page, which is the
+ * one place a fixed dark surface is defensible in a light-themed app. The
+ * chrome around it (chips, stat rows) follows the theme normally.
+ */
+
+.health-chart {
+  background-color: #101010;
+  border-radius: 10;
+  margin: 10 0 6 0;
+}
+
+.health-chip {
+  font-size: 13;
+  color: #444444;
+  background-color: #f0f0f0;
+  border-color: #dddddd;
+  border-width: 1;
+  border-radius: 14;
+  padding: 6 12;
+  margin: 2 6 2 0;
+}
+
+.health-chip-on {
+  color: #ffffff;
+  background-color: #222222;
+  border-color: #222222;
+}
+
+.health-chip-scroll {
+  margin-top: 4;
+}
+
+.health-stat-row {
+  padding: 7 2;
+}
+
+.health-stat-label {
+  font-size: 13;
+  color: #666666;
+}
+
+.health-stat-value {
+  font-size: 15;
+  font-weight: bold;
+  color: #222222;
+}
+
+.health-stat-panel {
+  margin-left: 16;
+}
+
+.health-badge {
+  font-size: 11;
+  color: #8a6d00;
+  background-color: #fff3cd;
+  border-color: #ffe08a;
+  border-width: 1;
+  border-radius: 8;
+  padding: 3 8;
+}
+
+/* Not debug leftover - see health-page.xml's header. */
+.health-layout-meta {
+  font-size: 11;
+  color: #999999;
+  margin-top: 14;
+}
+
+.ns-dark .health-chip {
+  color: #cccccc;
+  background-color: #2a2a2a;
+  border-color: #3a3a3a;
+}
+
+.ns-dark .health-chip-on {
+  color: #111111;
+  background-color: #e8e8e8;
+  border-color: #e8e8e8;
+}
+
+.ns-dark .health-stat-label {
+  color: #999999;
+}
+
+.ns-dark .health-stat-value {
+  color: #f0f0f0;
+}
+
+.ns-dark .health-badge {
+  color: #ffd97a;
+  background-color: #3a3320;
+  border-color: #5a4c1f;
+}
+
+.ns-dark .health-layout-meta {
+  color: #777777;
+}
