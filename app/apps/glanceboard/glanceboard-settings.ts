@@ -21,7 +21,11 @@ export function glanceSlotChoiceLabel(choice: GlanceSlotChoice): string {
   return SLOT_CHOICE_LABELS[choice] ?? choice;
 }
 
-const DEFAULT_QUADRANT_CHOICES: readonly GlanceSlotChoice[] = ["system-card", "music", "compass", "nightscout"];
+/**
+ * Slot order follows QUADRANT_LAYOUT: top left, top right, bottom left, bottom
+ * right. Calendar in both right slots merges into one double-height region.
+ */
+const DEFAULT_QUADRANT_CHOICES: readonly GlanceSlotChoice[] = ["system-card", "calendar", "music", "calendar"];
 
 /**
  * Whether sleep-time gestures show the board at all. Off restores the plain
@@ -32,7 +36,7 @@ export const glanceboardEnabledSetting = new ConfigSettingBoolean({
   id: "glanceboard-enabled",
   label: "Enable Glanceboard",
   storageKey: "glanceboard.enabled",
-  defaultValue: true,
+  defaultValue: false,
   description:
     "While the display is asleep, a tap, a long-press or a head-tilt shows the Glanceboard instead of the regular UI. Double-tap still wakes the regular UI.",
 });
