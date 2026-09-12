@@ -13,7 +13,9 @@ import { TranscriptModel, TranscriptScroll, wrapTranscribeText } from "./transcr
  * it, and saves it to Downloads from the app menu.
  */
 export class TranscribeLayer implements Layer {
-  private status = "Listening...";
+  private status = "Starting microphone...";
+  private listening = false;
+  private detail = "";
   private readonly transcript = new TranscriptModel();
   private readonly scroll = new TranscriptScroll();
   private saveNotice = "";
@@ -29,6 +31,8 @@ export class TranscribeLayer implements Layer {
     this.unsubscribePause = voiceControlBridge.onSpeechPause(() => this.transcript.pause());
     this.unsubscribeStatus = voiceControlBridge.onStatus((state) => {
       this.status = state.status;
+      this.listening = state.listening;
+      this.detail = state.detail;
       this.saveNotice = "";
       requestRender();
     });
@@ -38,7 +42,7 @@ export class TranscribeLayer implements Layer {
     const font = getDefaultSmallFont();
     const { width, height } = ctx.stack.getBaseSize();
     const image = new GrayImage(width, height, 0);
-    const text = this.transcript.text || "Listening...";
+    const text = this.transcript.text || (this.listening ? "Listening..." : this.detail);
     const wrapped = wrapTranscribeText((text) => font.measureText(text), text, width - 64);
 
     image.drawText(font, 24, 20, "Transcribe", 200);

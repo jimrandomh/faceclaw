@@ -1988,6 +1988,9 @@ class DashboardController {
       return;
     }
     const communicator = this.communicator;
+    // The system prompt appears on the phone; tell the glasses dialog so it
+    // sends the user there rather than claiming to listen.
+    if (!hasMicrophonePermission()) voiceControlBridge.reportPermissionPrompt();
     await ensureVoicePermissions()
       .then(() => {
         if (kind === "ptt" && pttGeneration !== this.pttCaptureGeneration) return;
@@ -2005,6 +2008,7 @@ class DashboardController {
       })
       .catch((error) => {
         this.appendLog(`voice permission failed: ${this.formatError(error)}`);
+        if (!hasMicrophonePermission()) voiceControlBridge.reportPermissionDenied();
       });
   }
 

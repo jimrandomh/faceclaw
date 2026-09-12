@@ -64,7 +64,11 @@ export type VoiceInputLayerOptions = {
  */
 export class VoiceInputLayer implements Layer {
   private phase: VoicePhase = "capturing";
-  private status = "Listening...";
+  private status = "Starting microphone...";
+  /** Mirrors the bridge: only true while audio is actually being transcribed. */
+  private listening = false;
+  /** Bridge guidance shown in place of the empty transcript (e.g. "check your phone"). */
+  private detail = "";
   // The active utterance. displayText() is what the dialog shows and what
   // Send delivers; the refine flow also writes the merged result here.
   private finalizedText = "";
@@ -114,6 +118,8 @@ export class VoiceInputLayer implements Layer {
       // The refine stage owns the status line ("Refining...", error text).
       if (this.phase === "refining") return;
       this.status = state.status;
+      this.listening = state.listening;
+      this.detail = state.detail;
       this.actions.requestRender();
     });
     if (this.handsFree) {
@@ -156,7 +162,9 @@ export class VoiceInputLayer implements Layer {
       this.pendingAutoSend = true;
       this.status = "Sending...";
       this.autoSendTimer = setTimeout(() => this.performAutoSend(), FOLLOWUP_FINALIZE_TIMEOUT_MS);
-    } else if (this.status.startsWith("Listening")) {
+    } else if (this.status.endsWith("...")) {
+      // A progress status ("Starting microphone...", "Listening...") gives
+      // way to the menu prompt; an error (ending in ".") stays visible.
       this.status = "Send, continue, or discard?";
     }
     this.actions.requestRender();
@@ -213,7 +221,7 @@ export class VoiceInputLayer implements Layer {
     const image = paintBelow();
     const inMenu = this.phase === "menu";
     paintInputDialog(image, {
-      title: this.capturing ? "Voice ●" : "Voice",
+      title: this.capturing && this.listening ? "Voice ●" : "Voice",
       status: this.status,
       text: this.displayText() || this.placeholderText(),
       rows: inMenu ? this.menuRows() : [],
@@ -391,7 +399,9 @@ export class VoiceInputLayer implements Layer {
   private placeholderText(): string {
     switch (this.phase) {
       case "capturing":
-        return "Listening...";
+        // Only claim to listen when the mic is actually running; otherwise
+        // the bridge's guidance (permission prompt on the phone, etc.), if any.
+        return this.listening ? "Listening..." : this.detail;
       case "continuing":
         return "Say more, or describe an edit...";
       case "refining":
