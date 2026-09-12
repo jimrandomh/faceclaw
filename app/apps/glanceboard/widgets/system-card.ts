@@ -15,6 +15,10 @@ import {
 } from "../../../ui/dashboard-settings";
 import { shell } from "../../../ui/shell/shell";
 import { noteStaleDataUsed, renderPassAllowsStaleData } from "../../../util/render-freshness";
+import { truncateText } from "../../../graphics/textwrap";
+import { timerEngine } from "../../timer/timer-engine";
+import { formatCountdown, sortTimers, timerDisplayName, timerPhase, timerRemainingMs } from "../../timer/timer-model";
+import { lineStep } from "../../../ui/metrics";
 import { type GlanceWidget } from "../widget";
 
 const PAD = 8;
@@ -26,32 +30,55 @@ const BATTERY_LABEL_VALUE = 150;
 type BatteryItem = { label: string; percent: number; charging: boolean };
 
 /**
- * Date and time, the phone's notification icons, and the phone/G2/R1
- * battery indicators: the top bar's contents, laid out for a card. Battery
- * style and per-device visibility follow Settings > Display > Battery
- * indicators, so the card agrees with the bar.
+ * Date and time, the phone's notification icons, the phone/G2/R1 battery
+ * indicators, and the Timers app's countdowns: the top bar's contents plus
+ * timers, laid out for a card. Battery style and per-device visibility
+ * follow Settings > Display > Battery indicators, so the card agrees with
+ * the bar. Countdowns tick once a second only while one is running.
  */
 export class SystemCardWidget implements GlanceWidget {
   private requestRender: (() => void) | null = null;
   private minuteTimer: ReturnType<typeof setTimeout> | null = null;
+  private secondTimer: ReturnType<typeof setInterval> | null = null;
   private unsubscribeNotifications: (() => void) | null = null;
   private unsubscribeSettings: (() => void) | null = null;
+  private unsubscribeTimers: (() => void) | null = null;
 
   start(requestRender: () => void): void {
     this.requestRender = requestRender;
     this.scheduleMinuteTick();
     this.unsubscribeNotifications = onAndroidNotificationPosted(() => this.requestRender?.());
     this.unsubscribeSettings = onAnySettingChanged(() => this.requestRender?.());
+    this.unsubscribeTimers = timerEngine.onChange(() => {
+      this.syncSecondTick();
+      this.requestRender?.();
+    });
+    this.syncSecondTick();
   }
 
   stop(): void {
     this.requestRender = null;
     if (this.minuteTimer !== null) clearTimeout(this.minuteTimer);
     this.minuteTimer = null;
+    if (this.secondTimer !== null) clearInterval(this.secondTimer);
+    this.secondTimer = null;
     this.unsubscribeNotifications?.();
     this.unsubscribeNotifications = null;
     this.unsubscribeSettings?.();
     this.unsubscribeSettings = null;
+    this.unsubscribeTimers?.();
+    this.unsubscribeTimers = null;
+  }
+
+  /** Countdowns change every second; run that clock only while one is running. */
+  private syncSecondTick(): void {
+    const running = timerEngine.timers().some((timer) => timerPhase(timer) === "running");
+    if (running && this.secondTimer === null) {
+      this.secondTimer = setInterval(() => this.requestRender?.(), 1_000);
+    } else if (!running && this.secondTimer !== null) {
+      clearInterval(this.secondTimer);
+      this.secondTimer = null;
+    }
   }
 
   /** Repaint on the minute boundary, so the clock never shows a stale minute. */
@@ -82,9 +109,12 @@ export class SystemCardWidget implements GlanceWidget {
     image.drawText(timeFont, PAD, y, timeText, 230);
     y += timeFont.lineHeight + 2;
     image.drawText(medium, PAD, y, formatClockDate(now), 170);
+    y += medium.lineHeight + 4;
 
-    // Notification icons along the bottom, as many as fit.
+    // Notification icons along the bottom, as many as fit; the Timers app's
+    // countdowns take the band between the date and the icons.
     const iconY = image.height - PAD - NOTIFICATION_ICON_SIZE;
+    drawTimers(image, small, PAD, y, textWidth, iconY - 4, now.getTime());
     const maxIcons = Math.max(0, ((image.width - 2 * PAD + NOTIFICATION_ICON_GAP) / (NOTIFICATION_ICON_SIZE + NOTIFICATION_ICON_GAP)) | 0);
     if (maxIcons > 0) {
       const { icons, stale } = readActiveNotificationIcons(maxIcons, renderPassAllowsStaleData());
@@ -170,4 +200,31 @@ function drawBatteryValue(
   }
   const icon = drawBattery(item.percent, item.charging);
   image.bitBlt(icon, x, lineTop + Math.max(0, ((font.lineHeight - gaugeHeight) / 2) | 0), { transparentZero: true });
+}
+
+/**
+ * The Timers app's countdowns, soonest first: remaining time (or "Done" once
+ * rung, inverted so it is noticed; "paused" for a paused one) and the
+ * timer's name, one per line while they fit between `top` and `bottom`.
+ */
+function drawTimers(image: GrayImage, font: UiFont, x: number, top: number, width: number, bottom: number, nowMs: number): void {
+  const timers = sortTimers(timerEngine.timers(), nowMs);
+  const step = lineStep(font);
+  let y = top;
+  for (const timer of timers) {
+    if (y + font.lineHeight > bottom) break;
+    const phase = timerPhase(timer);
+    const clock = phase === "rung" ? "Done" : formatCountdown(timerRemainingMs(timer, nowMs));
+    const clockWidth = font.measureText(clock);
+    if (phase === "rung") {
+      image.fillRect(x - 2, y - 1, clockWidth + 4, font.lineHeight + 2, 230);
+      image.drawText(font, x, y, clock, 1);
+    } else {
+      image.drawText(font, x, y, clock, phase === "paused" ? 120 : 200);
+    }
+    const nameX = x + clockWidth + 8;
+    const name = phase === "paused" ? `${timerDisplayName(timer)} (paused)` : timerDisplayName(timer);
+    image.drawText(font, nameX, y, truncateText(font, name, Math.max(0, x + width - nameX)), 160);
+    y += step;
+  }
 }

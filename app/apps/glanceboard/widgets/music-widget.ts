@@ -1,4 +1,5 @@
-import { type GrayImage } from "../../../graphics/image";
+import { GrayImage } from "../../../graphics/image";
+import { renderIcon } from "../../../graphics/icons";
 import { getDefaultMediumFont, getDefaultSmallFont } from "../../../graphics/ui-fonts";
 import { truncateText } from "../../../graphics/textwrap";
 import { mediaControllerBridge, type MediaControllerState } from "../../../native/media-controller";
@@ -7,6 +8,33 @@ import { type GlanceWidget } from "../widget";
 
 const PAD = 8;
 const ART_SIZE = 96;
+/** The idle note: the Music app's icon, at this size and the dimmest shade. */
+const IDLE_NOTE_SIZE = 64;
+const IDLE_NOTE_VALUE = 20;
+let idleNote: GrayImage | null | undefined;
+
+/**
+ * The music icon reduced to a single dim shade: every pixel the renderer
+ * lit at least half becomes IDLE_NOTE_VALUE, the rest stay transparent
+ * (scaling the antialiased original down would quantize its edges away).
+ * Built once and kept, so drawImage's content-addressed cache holds.
+ */
+function idleNoteImage(): GrayImage | null {
+  if (idleNote !== undefined) return idleNote;
+  const icon = renderIcon("music", IDLE_NOTE_SIZE);
+  if (!icon) {
+    idleNote = null;
+    return null;
+  }
+  const note = new GrayImage(icon.width, icon.height, 0);
+  for (let y = 0; y < icon.height; y++) {
+    for (let x = 0; x < icon.width; x++) {
+      if (icon.getPixel(x, y) >= 128) note.setPixel(x, y, IDLE_NOTE_VALUE);
+    }
+  }
+  idleNote = note;
+  return note;
+}
 const ART_X = PAD;
 const PROGRESS_BAR_HEIGHT = 5;
 
@@ -52,9 +80,15 @@ export class MusicWidget implements GlanceWidget {
     const media = mediaControllerBridge.snapshot();
     this.media = media;
     if (!media.available || (!media.title && !media.artist)) {
-      image.drawText(small, PAD, PAD, "Music", 150);
-      const text = media.accessEnabled ? "Nothing playing" : "Notification access needed";
-      image.drawText(small, PAD, PAD + small.lineHeight + 6, text, 140);
+      if (!media.accessEnabled) {
+        // Actionable, so it stays as text.
+        image.drawText(small, PAD, PAD, "Music", 150);
+        image.drawText(small, PAD, PAD + small.lineHeight + 6, "Notification access needed", 140);
+        return;
+      }
+      // Nothing playing: a dim note, centred, and nothing else.
+      const note = idleNoteImage();
+      if (note) image.drawImage(note, ((image.width - note.width) / 2) | 0, ((image.height - note.height) / 2) | 0);
       return;
     }
 
