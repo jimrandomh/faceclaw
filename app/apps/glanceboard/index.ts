@@ -5,6 +5,7 @@ import {
   glanceboardEnabledSetting,
   glanceShowOnHeadTiltSetting,
   glanceShowOnLongPressSetting,
+  glanceShowOnTap,
   glanceTapTimeoutMs,
 } from "./glanceboard-settings";
 import { QUADRANT_LAYOUT } from "./layout";
@@ -17,6 +18,7 @@ const glanceboardApp: AppDefinition = {
   glanceboard: {
     size: { width: QUADRANT_LAYOUT.width, height: QUADRANT_LAYOUT.height },
     isEnabled: () => glanceboardEnabledSetting.get(),
+    showOnTap: glanceShowOnTap,
     tapTimeoutMs: glanceTapTimeoutMs,
     showOnLongPress: () => glanceShowOnLongPressSetting.get(),
     showOnHeadTilt: () => glanceShowOnHeadTiltSetting.get(),

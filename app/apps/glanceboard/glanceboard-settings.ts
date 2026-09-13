@@ -41,21 +41,35 @@ export const glanceboardEnabledSetting = new ConfigSettingBoolean({
     "While the display is asleep, a tap, a long-press or a head-tilt shows the Glanceboard instead of the regular UI. Double-tap still wakes the regular UI.",
 });
 
-export type GlanceTapDuration = "3s" | "5s" | "7s" | "10s";
+export type GlanceTapDuration = "off" | "3s" | "5s" | "7s" | "10s";
 
-/** How long a tap (or head-tilt) keeps the board up; each further tap restarts it. */
+const DEFAULT_TAP_DURATION: GlanceTapDuration = "5s";
+
+/**
+ * How long a tap (or head-tilt) keeps the board up; each further tap restarts
+ * it. "off" means a single tap does not show the board at all; a head-tilt
+ * then uses the default duration.
+ */
 export const glanceTapDurationSetting = new ConfigSettingEnum<GlanceTapDuration>({
   id: "glanceboard-tap-duration",
   label: "Show on tap",
   storageKey: "glanceboard.tapDuration",
-  defaultValue: "5s",
-  values: ["3s", "5s", "7s", "10s"],
-  formatValue: (value) => value.replace("s", " s"),
-  description: "How long a single tap (or a head-tilt) keeps the Glanceboard on screen.",
+  defaultValue: DEFAULT_TAP_DURATION,
+  values: ["off", "3s", "5s", "7s", "10s"],
+  formatValue: (value) => (value === "off" ? "Disabled" : value.replace("s", " s")),
+  description:
+    "How long a single tap (or a head-tilt) keeps the Glanceboard on screen. Disabled: a single tap does not show the Glanceboard.",
 });
 
+/** Whether a single tap while asleep shows the board. */
+export function glanceShowOnTap(): boolean {
+  return glanceTapDurationSetting.get() !== "off";
+}
+
 export function glanceTapTimeoutMs(): number {
-  return Number.parseInt(glanceTapDurationSetting.get(), 10) * 1000;
+  const duration = glanceTapDurationSetting.get();
+  const seconds = duration === "off" ? DEFAULT_TAP_DURATION : duration;
+  return Number.parseInt(seconds, 10) * 1000;
 }
 
 /** A long-press holds the board up until the press is released. */
