@@ -11,8 +11,8 @@ Capabilities (`res/values/wear.xml` on each side): the phone advertises
 `faceclaw_phone`, the watch `faceclaw_watch`. Each side finds the other with
 `CapabilityClient.getCapability(…, FILTER_REACHABLE)`.
 
-Every watch → phone message carries `seq` (monotonic per watch process) and is
-answered on `/faceclaw/ack`.
+Every watch → phone message except `/faceclaw/battery` carries `seq`
+(monotonic per watch process) and is answered on `/faceclaw/ack`.
 
 ## Watch → phone (MessageClient)
 
@@ -23,9 +23,10 @@ answered on `/faceclaw/ack`.
 | `/faceclaw/assistant` | `{text}` | Send a query to the assistant (`shell.sendToAssistant`) — the reply shows on the glasses and streams back to the watch as events. |
 | `/faceclaw/text` | `{text}` | Type text into the foreground window (`receiveTextInput`, e.g. the terminal). Refused when the window doesn't take text. |
 | `/faceclaw/state/request` | `{}` | Re-publish the state item even if unchanged. |
+| `/faceclaw/battery` | `{battery, charging}` | The watch's own battery (`battery` 0–100 or null, `charging` bool) for the glasses' top-bar and Glanceboard "Watch" indicator. Sent in answer to `/faceclaw/battery/request` by `PhoneListenerService` (which Play services starts even while the watch app is closed) and, while the app is open, whenever the level or charging state changes. Carries no `seq` and is never acked. |
 
-All of the above except `state/request` are refused with `ok:false` when the
-phone's "Watch remote control" setting is off.
+All of the above except `state/request` and `battery` are refused with
+`ok:false` when the phone's "Watch remote control" setting is off.
 
 ## Phone → watch
 
@@ -33,6 +34,11 @@ phone's "Watch remote control" setting is off.
 `{seq, ok, jsReady, message}`. `jsReady:false` means Play services started the
 app process for the message but the JS dashboard isn't up (the user has not
 opened Faceclaw since boot); the watch shows "Open Faceclaw on the phone".
+
+`/faceclaw/battery/request` (MessageClient, to every reachable watch): `{}`.
+Please send `/faceclaw/battery` now. The phone sends it when a watch becomes
+reachable, when the glasses connect with the level still unknown, and every
+5 minutes after that; the indicator disappears when no watch is reachable.
 
 `/faceclaw/event` (MessageClient, to every reachable watch):
 - `{type:"assistant", phase, text}` — `phase` ∈ `thinking`, `streaming` (text so

@@ -15,6 +15,10 @@ object Protocol {
     const val PATH_ASSISTANT = "/faceclaw/assistant"
     const val PATH_TEXT = "/faceclaw/text"
     const val PATH_STATE_REQUEST = "/faceclaw/state/request"
+    /** Watch -> phone: our own battery ({battery, charging}); no seq, never acked. */
+    const val PATH_BATTERY = "/faceclaw/battery"
+    /** Phone -> watch: please send PATH_BATTERY now (answered by PhoneListenerService). */
+    const val PATH_BATTERY_REQUEST = "/faceclaw/battery/request"
     const val PATH_ACK = "/faceclaw/ack"
     const val PATH_EVENT = "/faceclaw/event"
     const val PATH_STATE = "/faceclaw/state"

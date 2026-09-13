@@ -1,8 +1,12 @@
 package com.faceclaw.wear
 
+import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.net.Uri
 import android.util.Log
+import androidx.core.content.ContextCompat
 import com.google.android.gms.common.api.ApiException
 import com.google.android.gms.wearable.CapabilityClient
 import com.google.android.gms.wearable.CapabilityInfo
@@ -83,6 +87,15 @@ class PhoneLink(context: Context) :
     private val pendingAcks = ConcurrentHashMap<Long, Job>()
     private var noticeJob: Job? = null
     private var started = false
+    /** The battery state last reported to the phone (pushes only on change). */
+    private var lastBatteryReported: WatchBatteryState? = null
+    // While the app is open, charge and charging changes reach the phone at
+    // once; closed, the phone polls PhoneListenerService instead.
+    private val batteryReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            if (intent.action == Intent.ACTION_BATTERY_CHANGED) reportBattery(force = false)
+        }
+    }
 
     private val _state = MutableStateFlow<PhoneState?>(null)
     val state: StateFlow<PhoneState?> = _state.asStateFlow()
@@ -105,12 +118,28 @@ class PhoneLink(context: Context) :
         messageClient.addListener(this)
         dataClient.addListener(this)
         capabilityClient.addListener(this, Protocol.CAPABILITY_PHONE)
+        try {
+            ContextCompat.registerReceiver(
+                appContext,
+                batteryReceiver,
+                IntentFilter(Intent.ACTION_BATTERY_CHANGED),
+                ContextCompat.RECEIVER_NOT_EXPORTED,
+            )
+        } catch (error: Exception) {
+            Log.w(TAG, "battery receiver registration failed", error)
+        }
         refresh()
     }
 
     fun stop() {
         if (!started) return
         started = false
+        try {
+            appContext.unregisterReceiver(batteryReceiver)
+        } catch (error: Exception) {
+            Log.w(TAG, "battery receiver unregistration failed", error)
+        }
+        lastBatteryReported = null
         messageClient.removeListener(this)
         dataClient.removeListener(this)
         capabilityClient.removeListener(this, Protocol.CAPABILITY_PHONE)
@@ -121,8 +150,24 @@ class PhoneLink(context: Context) :
         scope.launch {
             findPhone()
             loadStateItem()
-            if (_link.value.phoneAppInstalled) requestState()
+            if (_link.value.phoneAppInstalled) {
+                requestState()
+                reportBattery(force = true)
+            }
         }
+    }
+
+    /**
+     * Send our battery to the phone (for the glasses' Watch indicator).
+     * Skipped when unchanged since the last report unless `force`.
+     */
+    private fun reportBattery(force: Boolean) {
+        val nodeId = _link.value.phoneNodeId ?: return
+        if (!_link.value.phoneAppInstalled) return
+        val state = WatchBattery.read(appContext)
+        if (!force && state == lastBatteryReported) return
+        lastBatteryReported = state
+        WatchBattery.report(appContext, nodeId, state)
     }
 
     // ---- outbound -----------------------------------------------------

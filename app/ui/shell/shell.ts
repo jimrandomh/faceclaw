@@ -304,7 +304,9 @@ class Shell {
   private lastInputAtMs = Date.now();
   /** The most recent input event received, for windows gaining focus (see ShellWindow.onFocus). */
   private lastInput: InputEvent | null = null;
-  private battery: ShellChromeState["battery"] = { headset: null, headsetCharging: null, ring: null, ringCharging: null };
+  private battery: ShellChromeState["battery"] = {
+    headset: null, headsetCharging: null, ring: null, ringCharging: null, watch: null, watchCharging: null,
+  };
   private attention = new Map<string, boolean>();
   // App-provided top-bar tray icons, keyed by owner id; drawn between the
   // notification icons and the battery indicators.
@@ -495,7 +497,7 @@ class Shell {
     return this.screenOn;
   }
 
-  /** Current headset battery levels (for the assistant's get_state tool). */
+  /** Current G2, R1, and Wear OS watch battery levels (top bar, Glanceboard, assistant). */
   getBatteryLevels(): ShellChromeState["battery"] {
     return this.battery;
   }

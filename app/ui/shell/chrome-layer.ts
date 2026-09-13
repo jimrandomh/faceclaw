@@ -13,6 +13,7 @@ import {
   glassesBatteryVisibilitySetting,
   phoneBatteryVisibilitySetting,
   ringBatteryVisibilitySetting,
+  watchBatteryVisibilitySetting,
   type BatteryIndicatorVisibility,
 } from "../dashboard-settings";
 import { formatClockDate, formatClockTime } from "../clock-format";
@@ -108,7 +109,15 @@ export type ShellChromeState = {
   /** Height mode of the foreground window; decides where its top bar sits. */
   foregroundHeightMode: WindowHeightMode;
   foregroundAppId?: string;
-  battery: { headset: number | null; headsetCharging: boolean | null; ring: number | null; ringCharging: boolean | null };
+  battery: {
+    headset: number | null;
+    headsetCharging: boolean | null;
+    ring: number | null;
+    ringCharging: boolean | null;
+    /** The Wear OS watch (app/g2/wear-remote.ts); null when no watch is reachable. */
+    watch: number | null;
+    watchCharging: boolean | null;
+  };
   /** App-provided tray images, drawn between notification icons and batteries. */
   trayIcons: GrayImage[];
 };
@@ -342,9 +351,10 @@ export class ShellChromeLayer implements Layer {
   }
 
   /**
-   * Labelled battery indicators for the phone, G2, and R1, right-aligned in
-   * the top bar. The Settings > Display > Battery indicators submenu picks
-   * the style (label beside a gauge icon or percentage, or stacked above
+   * Labelled battery indicators for the phone, Wear OS watch, G2, and R1,
+   * right-aligned in the top bar. The watch one exists only while a watch
+   * running the Faceclaw watch app is reachable (no placeholder otherwise).
+   * The Settings > Display > Battery indicators submenu picks the style (label beside a gauge icon or percentage, or stacked above
    * either) and, per device, whether the indicator shows always, only below
    * 50%, or never. Returns the left edge of the battery block.
    */
@@ -354,6 +364,10 @@ export class ShellChromeLayer implements Layer {
     const phone = readPhoneBatteryState();
     if (phone.battery !== null && Number.isFinite(phone.battery)) {
       pushBatteryItem(items, phoneBatteryVisibilitySetting.get(), "Phone", phone.battery, Boolean(phone.charging));
+    }
+    if (state.battery.watch !== null && Number.isFinite(state.battery.watch)) {
+      pushBatteryItem(items, watchBatteryVisibilitySetting.get(), "Watch", state.battery.watch,
+        Boolean(state.battery.watchCharging));
     }
     if (state.battery.headset !== null && Number.isFinite(state.battery.headset)) {
       pushBatteryItem(items, glassesBatteryVisibilitySetting.get(), "G2", state.battery.headset,

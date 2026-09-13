@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.1 - Unreleased
+
+* Add Wear OS watch battery indicator to the top bar and Glanceboard
+
 ## 0.7.0 - 2026-09-12
 
 ### Major Features

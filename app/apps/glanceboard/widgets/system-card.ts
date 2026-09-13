@@ -11,6 +11,7 @@ import {
   onAnySettingChanged,
   phoneBatteryVisibilitySetting,
   ringBatteryVisibilitySetting,
+  watchBatteryVisibilitySetting,
   type BatteryIndicatorVisibility,
 } from "../../../ui/dashboard-settings";
 import { shell } from "../../../ui/shell/shell";
@@ -30,9 +31,10 @@ const BATTERY_LABEL_VALUE = 150;
 type BatteryItem = { label: string; percent: number; charging: boolean };
 
 /**
- * Date and time, the phone's notification icons, the phone/G2/R1 battery
- * indicators, and the Timers app's countdowns: the top bar's contents plus
- * timers, laid out for a card. Battery style and per-device visibility
+ * Date and time, the phone's notification icons, the phone/watch/G2/R1
+ * battery indicators (the Wear OS watch's only while one is reachable), and
+ * the Timers app's countdowns: the top bar's contents plus timers, laid out
+ * for a card. Battery style and per-device visibility
  * follow Settings > Display > Battery indicators, so the card agrees with
  * the bar. Countdowns tick once a second only while one is running.
  */
@@ -137,6 +139,7 @@ function collectBatteryItems(): BatteryItem[] {
   const phone = readPhoneBatteryState();
   push(phoneBatteryVisibilitySetting.get(), "Phone", phone.battery, phone.charging);
   const levels = shell.getBatteryLevels();
+  push(watchBatteryVisibilitySetting.get(), "Watch", levels.watch, levels.watchCharging);
   push(glassesBatteryVisibilitySetting.get(), "G2", levels.headset, levels.headsetCharging);
   if (levels.ring !== null && Number.isInteger(levels.ring) && levels.ring >= 0 && levels.ring <= 100) {
     push(ringBatteryVisibilitySetting.get(), "R1", levels.ring, levels.ringCharging);

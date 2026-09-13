@@ -24,6 +24,10 @@ export const WEAR_PATHS = {
   text: "/faceclaw/text",
   /** Watch -> phone: please re-publish the state item. */
   stateRequest: "/faceclaw/state/request",
+  /** Watch -> phone: the watch's own battery ({battery, charging}); never acked. */
+  battery: "/faceclaw/battery",
+  /** Phone -> watch: please report the watch battery (answered even while the watch app is closed). */
+  batteryRequest: "/faceclaw/battery/request",
   /** Phone -> watch: reply to any of the above. */
   ack: "/faceclaw/ack",
   /** Phone -> watch: assistant activity, alerts, voice-dialog transcripts. */
@@ -157,7 +161,12 @@ class WearBridge {
 
   /** Send an event to every reachable watch. */
   sendEvent(payload: Record<string, unknown>): void {
-    this.getJava()?.sendToWatch(WEAR_PATHS.event, JSON.stringify(payload));
+    this.sendToWatch(WEAR_PATHS.event, payload);
+  }
+
+  /** Send a message on any phone -> watch path to every reachable watch. */
+  sendToWatch(path: string, payload: Record<string, unknown>): void {
+    this.getJava()?.sendToWatch(path, JSON.stringify(payload));
   }
 
   /** Acknowledge a watch message; `seq` echoes the watch's sequence number. */

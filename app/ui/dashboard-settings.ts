@@ -244,6 +244,10 @@ export const glassesBatteryVisibilitySetting = batteryVisibilitySetting(
 export const ringBatteryVisibilitySetting = batteryVisibilitySetting(
   "ringBatteryVisibility", "R1", "display.battery.ringVisibility",
 );
+/** The Wear OS watch; the indicator only exists while a watch is reachable. */
+export const watchBatteryVisibilitySetting = batteryVisibilitySetting(
+  "watchBatteryVisibility", "Watch", "display.battery.watchVisibility",
+);
 
 /** Whether an indicator with this visibility setting shows at the given charge. */
 export function batteryIndicatorVisible(visibility: BatteryIndicatorVisibility, percent: number): boolean {
@@ -262,6 +266,7 @@ export function batteryIndicatorSettingsKey(): string {
     phoneBatteryVisibilitySetting.get(),
     glassesBatteryVisibilitySetting.get(),
     ringBatteryVisibilitySetting.get(),
+    watchBatteryVisibilitySetting.get(),
   ].join("|");
 }
 

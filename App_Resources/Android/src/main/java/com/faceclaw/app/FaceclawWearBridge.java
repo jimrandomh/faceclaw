@@ -60,6 +60,10 @@ public final class FaceclawWearBridge {
     public static final String PATH_PREFIX = "/faceclaw";
     public static final String PATH_STATE = "/faceclaw/state";
     public static final String PATH_STATE_REQUEST = "/faceclaw/state/request";
+    /** Watch -> phone: the watch's own battery; carries no seq and is never acked. */
+    public static final String PATH_WATCH_BATTERY = "/faceclaw/battery";
+    /** Phone -> watch: answered with PATH_WATCH_BATTERY even while the watch app is closed. */
+    public static final String PATH_WATCH_BATTERY_REQUEST = "/faceclaw/battery/request";
     public static final String PATH_ACK = "/faceclaw/ack";
     public static final String PATH_EVENT = "/faceclaw/event";
 
@@ -284,6 +288,10 @@ public final class FaceclawWearBridge {
 
         boolean delivered = dispatchMessage(path, json, nodeId);
         if (delivered) return;
+        // A battery report answers a poll the dashboard sent; with no
+        // dashboard to receive it, it is simply dropped (the dashboard polls
+        // again when it starts), and the watch does not expect an ack.
+        if (PATH_WATCH_BATTERY.equals(path)) return;
 
         // No JS listener yet: tell the watch so it can explain why nothing is
         // happening. Only state requests are kept for replay (see class doc);
