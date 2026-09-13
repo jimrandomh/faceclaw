@@ -11,6 +11,10 @@
  * selection. Tap-then-hold opens the window menu (undo, new game, restart).
  * Watch swipes move the cursor spatially: left/right within the row, up/down
  * between the top row (cells + foundations) and the cascades.
+ * The cursor skips locations that can't take part in the move being built:
+ * with nothing selected, empty spots and the foundations (never a source);
+ * with a source selected, filled free cells and foundations that can't
+ * accept the card (see isCursorEligible).
  * Safe cards auto-play to the foundations after every move.
  */
 import "@nativescript/core/globals";
@@ -23,6 +27,7 @@ import { TtfFont } from "../../graphics/ttf-font";
 import * as frameTimings from "../../native/frame-timings";
 import { getActiveDisplay } from "../../native/active-display";
 import { buildSoundSequencePayload, type Step } from "../../ui/sound-effects";
+import { loadSoundEnabled, saveSoundEnabled } from "../../ui/sound-setting";
 import { WindowMenu } from "../../ui/window-menu";
 import type { MenuItem } from "../../ui/menu";
 import type { WorkerAppMessage, WorkerAppReply } from "../../ui/shell/worker-window";
@@ -158,7 +163,7 @@ global.onmessage = (event: { data: WorkerAppMessage }) => {
         moves: 0,
         cursor: LOC_CASCADE0,
         selected: null,
-        soundOn: true,
+        soundOn: loadSoundEnabled("freecell"),
         lastSubmittedFingerprint: "",
       };
       newGame(window, false);
@@ -248,6 +253,7 @@ function windowMenuItems(window: FreecellWindow): MenuItem[] {
       onSelect: (ctx) => {
         ctx.stack.pop();
         window.soundOn = !window.soundOn;
+        saveSoundEnabled("freecell", window.soundOn);
         if (window.soundOn) playSfx(window, SFX_NEW_GAME);
       },
     },
@@ -291,25 +297,25 @@ function handleInput(window: FreecellWindow, event: InputEvent, frameId: number)
 function handlePlayingInput(window: FreecellWindow, event: InputEvent, frameId: number): void {
   switch (event.type) {
     case "scroll-up":
-      window.cursor = (window.cursor + LOC_COUNT - 1) % LOC_COUNT;
+      moveCursor(window, -1);
       break;
     case "scroll-down":
-      window.cursor = (window.cursor + 1) % LOC_COUNT;
+      moveCursor(window, 1);
       break;
     // Watch swipes are spatial over the two rows of eight columns: up/down
     // switch between the top row (free cells + foundations) and the cascades
-    // keeping the column, left/right move within the row.
+    // landing on the nearest usable column, left/right move within the row.
     case "swipe-up":
-      if (window.cursor >= LOC_CASCADE0) window.cursor -= LOC_CASCADE0;
+      if (window.cursor >= LOC_CASCADE0) moveCursorToRow(window, LOC_CELL0);
       break;
     case "swipe-down":
-      if (window.cursor < LOC_CASCADE0) window.cursor += LOC_CASCADE0;
+      if (window.cursor < LOC_CASCADE0) moveCursorToRow(window, LOC_CASCADE0);
       break;
     case "swipe-left":
-      if (window.cursor % LOC_CASCADE0 > 0) window.cursor--;
+      moveCursorInRow(window, -1);
       break;
     case "swipe-right":
-      if (window.cursor % LOC_CASCADE0 < LOC_CASCADE0 - 1) window.cursor++;
+      moveCursorInRow(window, 1);
       break;
     case "click":
       if (window.selected === null) {
@@ -408,6 +414,72 @@ function locationHasCard(window: FreecellWindow, location: number): boolean {
   if (location < LOC_FOUNDATION0) return window.cells[location] !== null;
   if (location < LOC_CASCADE0) return window.foundations[location - LOC_FOUNDATION0] !== null;
   return window.cascades[location - LOC_CASCADE0]!.length > 0;
+}
+
+function isFoundation(location: number): boolean {
+  return location >= LOC_FOUNDATION0 && location < LOC_CASCADE0;
+}
+
+/**
+ * Whether the cursor should stop at a location, given the move being built.
+ * Picking a source: it must hold a card, and foundations are never a source.
+ * Picking a destination: an empty free cell, a foundation that accepts the
+ * selected card, any cascade (a full legality check would hide the
+ * cascades the player wants to compare), or the source itself (clicking it
+ * again cancels the selection).
+ */
+function isCursorEligible(window: FreecellWindow, location: number): boolean {
+  if (window.selected === null) {
+    return !isFoundation(location) && locationHasCard(window, location);
+  }
+  if (location === window.selected) return true;
+  if (location < LOC_FOUNDATION0) return window.cells[location] === null;
+  if (isFoundation(location)) {
+    const card = topCardAt(window, window.selected);
+    return card !== null && foundationCanAccept(window.foundations[location - LOC_FOUNDATION0]!, card);
+  }
+  return true;
+}
+
+/** Step the cursor through the location list (wrapping), skipping ineligible spots. */
+function moveCursor(window: FreecellWindow, step: 1 | -1): void {
+  let location = window.cursor;
+  for (let i = 0; i < LOC_COUNT; i++) {
+    location = (location + step + LOC_COUNT) % LOC_COUNT;
+    if (isCursorEligible(window, location)) {
+      window.cursor = location;
+      return;
+    }
+  }
+}
+
+/** Step the cursor within its row (no wrapping), skipping ineligible spots. */
+function moveCursorInRow(window: FreecellWindow, step: 1 | -1): void {
+  const rowStart = window.cursor < LOC_CASCADE0 ? LOC_CELL0 : LOC_CASCADE0;
+  for (let location = window.cursor + step; location >= rowStart && location < rowStart + 8; location += step) {
+    if (isCursorEligible(window, location)) {
+      window.cursor = location;
+      return;
+    }
+  }
+}
+
+/**
+ * Jump to the other row, keeping the column when it is eligible and
+ * otherwise taking the nearest eligible column; stays put when the row has
+ * none.
+ */
+function moveCursorToRow(window: FreecellWindow, rowStart: number): void {
+  const column = window.cursor % 8;
+  for (let distance = 0; distance < 8; distance++) {
+    for (const candidate of [column - distance, column + distance]) {
+      if (candidate < 0 || candidate >= 8) continue;
+      if (isCursorEligible(window, rowStart + candidate)) {
+        window.cursor = rowStart + candidate;
+        return;
+      }
+    }
+  }
 }
 
 /** True if `card` can go on `onto` in a cascade (descending, alternating color). */

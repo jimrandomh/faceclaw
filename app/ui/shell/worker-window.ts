@@ -21,6 +21,12 @@ export type WorkerAppMessage =
   | { type: "text-input"; windowId: string; text: string }
   | { type: "render"; windowId: string; focused: boolean }
   | { type: "foreground"; windowId: string; foreground: boolean; focused: boolean }
+  /**
+   * Input focus arrived at or left the window, counting shell overlays and
+   * screen-off (see ShellWindow.setInputFocus). Sent on change only; the
+   * per-message `focused` flags above stay the source of truth for painting.
+   */
+  | { type: "input-focus"; windowId: string; focused: boolean }
   | { type: "screen"; on: boolean }
   /** Assistant tool invocation aimed at a window; reply with tool-result. */
   | { type: "tool-call"; callId: string; windowId: string; name: string; args: unknown };
@@ -420,6 +426,9 @@ export class WorkerAppHost {
         // Screen state is per-app, but sending per-window keeps the protocol
         // uniform; the worker treats it globally.
         this.post({ type: "screen", on });
+      },
+      setInputFocus: (focused) => {
+        this.post({ type: "input-focus", windowId: spec.windowId, focused });
       },
     };
     shell.registerWindow(window);

@@ -149,6 +149,13 @@ export type ShellWindow = {
   onFocus?: (lastInput: InputEvent | null) => void;
   /** Screen turned on/off; hidden or screen-off windows should stop painting. */
   setScreenOn?: (on: boolean) => void;
+  /**
+   * Input focus arrived at or left this window: it is (no longer) where
+   * ordinary input goes. Unlike setForeground / onFocus, this also tracks
+   * shell overlays (the system menu, a notification modal, the voice dialog)
+   * and screen-off, so a game can pause on any of them. Sent on change only.
+   */
+  setInputFocus?: (focused: boolean) => void;
 };
 
 export type ShellConfig = {
@@ -300,6 +307,8 @@ class Shell {
   /** Window ids in most-recently-visible-first order; closing the visible window returns to the next entry. */
   private mruWindowIds: string[] = [];
   private focus: FocusKind = "sidebar";
+  /** The window last told it holds input focus (see syncInputFocus). */
+  private inputFocusedWindowId: string | null = null;
   private screenOn = true;
   private lastInputAtMs = Date.now();
   /** The most recent input event received, for windows gaining focus (see ShellWindow.onFocus). */
@@ -356,7 +365,15 @@ class Shell {
   private lastTopBarSettingsKey: string | null = null;
 
   configure(config: ShellConfig): void {
-    this.config = config;
+    // Nearly every state change ends in a shell render request, so it is
+    // the natural point to tell windows about input-focus changes too.
+    this.config = {
+      ...config,
+      requestShellRender: () => {
+        this.syncInputFocus();
+        config.requestShellRender();
+      },
+    };
     this.stack.setActions(config.actions);
     this.subscribeToTopBarSettings();
     this.subscribeToAmbientCards();
@@ -537,6 +554,34 @@ class Shell {
     return !!window && this.focus === "window" && this.foregroundWindow() === window;
   }
 
+  /**
+   * The window ordinary input reaches right now: the foreground window with
+   * focus in-window, the screen on, and no shell overlay (system menu,
+   * notification modal, voice dialog, alert) above it.
+   */
+  private inputTargetWindow(): ShellWindow | undefined {
+    if (!this.screenOn || this.focus !== "window" || !this.stack.isAtBase() || this.activeVoiceLayer) {
+      return undefined;
+    }
+    return this.foregroundWindow();
+  }
+
+  /**
+   * Tell windows when they gain or lose input focus (ShellWindow.setInputFocus).
+   * Called from every shell render request and the input/wake/sleep paths,
+   * which between them follow every focus-affecting state change; it diffs
+   * against the last notification, so calling it often is cheap.
+   */
+  private syncInputFocus(): void {
+    const target = this.inputTargetWindow();
+    const targetId = target?.windowId ?? null;
+    if (targetId === this.inputFocusedWindowId) return;
+    const previous = this.windows.find((w) => w.windowId === this.inputFocusedWindowId);
+    this.inputFocusedWindowId = targetId;
+    previous?.setInputFocus?.(false);
+    target?.setInputFocus?.(true);
+  }
+
   /** Turn the screen on (if off) and set focus. Returns whether it was off. */
   wake(focus: FocusKind, nowMs = Date.now()): boolean {
     this.lastInputAtMs = nowMs;
@@ -544,7 +589,10 @@ class Shell {
     const alreadyFocused = this.isFocusTarget(gaining);
     this.focus = focus;
     if (gaining && !alreadyFocused) gaining.onFocus?.(this.lastInput);
-    if (this.screenOn) return false;
+    if (this.screenOn) {
+      this.syncInputFocus();
+      return false;
+    }
     this.screenOn = true;
     this.config.onScreenStateChanged(true);
     for (const window of this.windows) {
@@ -553,6 +601,7 @@ class Shell {
     // Refresh the foreground window; the compositor restored its retained
     // frame, but its content may be stale (e.g. a running stopwatch).
     this.foregroundWindow()?.requestRender();
+    this.syncInputFocus();
     return true;
   }
 
@@ -565,6 +614,7 @@ class Shell {
     for (const window of this.windows) {
       window.setScreenOn?.(false);
     }
+    this.syncInputFocus();
     this.config.onScreenStateChanged(false);
   }
 
@@ -577,6 +627,7 @@ class Shell {
     this.setSelectedIndex(index);
     this.focus = "window";
     if (!alreadyFocused) target?.onFocus?.(this.lastInput);
+    this.syncInputFocus();
   }
 
   /** Idle timeout: sleep if the configured timeout elapsed. Returns whether it slept. */
@@ -655,6 +706,16 @@ class Shell {
   }
 
   async receiveInput(event: InputEvent, frameId = 0): Promise<ShellInputOutcome> {
+    try {
+      return await this.routeInput(event, frameId);
+    } finally {
+      // Whatever the input did (opened an overlay, moved focus, slept the
+      // screen), windows learn about the resulting input-focus change.
+      this.syncInputFocus();
+    }
+  }
+
+  private async routeInput(event: InputEvent, frameId: number): Promise<ShellInputOutcome> {
     const previous = this.lastInput;
     this.lastInput = event;
     // A visible window may paint a source-dependent indicator (see

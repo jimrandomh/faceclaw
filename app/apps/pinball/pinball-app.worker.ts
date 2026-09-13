@@ -13,11 +13,12 @@
  *
  * Controls (ball ready): scroll sets launch power, click launches. In play:
  * click flips both flippers, scroll-up/down flips left/right individually,
- * long-press nudges the table (three quick nudges tilt), double-click pauses.
- * Watch swipes: left/right work the matching flipper, up nudges (or raises
- * launch power at the plunger), down lowers launch power.
+ * double-click pauses. Watch swipes: left/right work the matching flipper,
+ * up/down raise and lower launch power at the plunger.
  * Paused/game over: click resumes or starts a new game, double-click yields
- * focus, long-press opens the window menu.
+ * focus, long-press opens the window menu. Losing input focus mid-game (a
+ * shell overlay such as the system menu or a notification, focus to the
+ * sidebar) pauses, as does backgrounding or screen-off.
  */
 import "@nativescript/core/globals";
 import { GrayImage } from "../../graphics/image";
@@ -29,6 +30,7 @@ import * as frameTimings from "../../native/frame-timings";
 import { getActiveDisplay } from "../../native/active-display";
 import { getStringSetting, setStringSetting } from "../../native/settings-store";
 import { buildSoundSequencePayload, type Step } from "../../ui/sound-effects";
+import { loadSoundEnabled, saveSoundEnabled } from "../../ui/sound-setting";
 import { type MenuItem } from "../../ui/menu";
 import { WindowMenu } from "../../ui/window-menu";
 import type { WorkerAppMessage, WorkerAppReply } from "../../ui/shell/worker-window";
@@ -36,7 +38,6 @@ import {
   directionalFallback,
   GESTURE_CLICK,
   GESTURE_DOUBLE_CLICK,
-  GESTURE_LONG_PRESS,
   GESTURE_SCROLL,
   type InputEvent,
 } from "../../ui/gestures";
@@ -77,11 +78,6 @@ const RENDER_TICK_MS = 50;
 const LAUNCH_SPEEDS = [320, 380, 440, 500, 560] as const;
 const BUMPER_KICK = 340;
 const SLING_KICK = 300;
-const NUDGE_KICK_UP = 70;
-const NUDGE_KICK_SIDE = 45;
-/** Nudges add 1 heat each and decay slowly; reaching 3 tilts the ball away. */
-const TILT_LIMIT = 3;
-const TILT_HEAT_DECAY_PER_S = 0.4;
 
 const SCORE_BUMPER = 100;
 const SCORE_SLING = 25;
@@ -208,7 +204,6 @@ const SFX_DRAIN: Step[] = [
   { freq: 370, duty: 45, ms: 100 },
   { freq: 247, duty: 50, ms: 200 },
 ];
-const SFX_TILT: Step[] = [{ freq: 110, duty: 60, ms: 300 }];
 const SFX_GAME_OVER: Step[] = [
   { freq: 494, duty: 45, ms: 150 },
   { freq: 440, duty: 45, ms: 150 },
@@ -269,10 +264,6 @@ type PinballWindow = {
   /** Debounce: a sensor re-arms only after the ball leaves its zone. */
   rolloverInside: boolean[];
   bumperFlashUntilMs: number[];
-  tiltHeat: number;
-  tilted: boolean;
-  /** Alternates nudge direction so mashing doesn't push one way forever. */
-  nudgeSign: 1 | -1;
   /** Transient center-table message ("BALL LOST", "+500", ...). */
   toast: string;
   toastUntilMs: number;
@@ -331,15 +322,12 @@ global.onmessage = (event: { data: WorkerAppMessage }) => {
         rolloverLit: ROLLOVERS.map(() => false),
         rolloverInside: ROLLOVERS.map(() => false),
         bumperFlashUntilMs: BUMPERS.map(() => 0),
-        tiltHeat: 0,
-        tilted: false,
-        nudgeSign: 1,
         toast: "",
         toastUntilMs: 0,
         tickTimer: null,
         lastTickAtMs: 0,
         lastMinorSfxAtMs: 0,
-        soundOn: true,
+        soundOn: loadSoundEnabled("pinball"),
         lastSubmittedFingerprint: "",
       };
       windows.set(message.windowId, window);
@@ -383,6 +371,19 @@ global.onmessage = (event: { data: WorkerAppMessage }) => {
       if (!window.foreground && window.phase === "playing") window.phase = "paused";
       syncTickTimer(window);
       if (window.foreground) renderAndSubmit(window, 0);
+      break;
+    }
+    case "input-focus": {
+      const window = windows.get(message.windowId);
+      if (!window) break;
+      // Anything that takes input away (the system menu, a notification
+      // modal, the voice dialog, focus back to the sidebar) pauses: the
+      // ball must not drain under a menu the player can't flip through.
+      if (!message.focused && window.phase === "playing") {
+        window.phase = "paused";
+        syncTickTimer(window);
+        if (window.foreground) renderAndSubmit(window, 0);
+      }
       break;
     }
     case "screen":
@@ -446,7 +447,7 @@ function playSfx(window: PinballWindow, steps: Step[], minor = false): void {
   }
 }
 
-/** The window's context menu (game actions), offered while paused or over; playing keeps long-press for the nudge. */
+/** The window's context menu (game actions), offered while paused or over. */
 function windowMenuItems(window: PinballWindow): MenuItem[] {
   return [
     {
@@ -462,6 +463,7 @@ function windowMenuItems(window: PinballWindow): MenuItem[] {
       onSelect: (ctx) => {
         ctx.stack.pop();
         window.soundOn = !window.soundOn;
+        saveSoundEnabled("pinball", window.soundOn);
         if (window.soundOn) playSfx(window, SFX_RESUME);
       },
     },
@@ -475,7 +477,6 @@ function windowMenu(window: PinballWindow): WindowMenu {
       post,
       title: () => window.title,
       items: () => (window.phase === "playing" ? [] : windowMenuItems(window)),
-      claimsLongPress: () => window.phase === "playing",
       size: { width: window.viewportWidth, height: window.viewportHeight },
       paintBase: () => paintContent(window),
       isFocused: () => window.focused,
@@ -519,8 +520,8 @@ function handlePlayingInput(window: PinballWindow, event: InputEvent, frameId: n
         flip(window, window.flippers[1]!);
       }
       break;
-    // Watch swipes: left/right work the matching flipper; up nudges the
-    // table (or raises launch power at the plunger), down lowers it.
+    // Watch swipes: left/right work the matching flipper; up/down set the
+    // launch power at the plunger.
     case "swipe-left":
       if (!ready) flip(window, window.flippers[0]!);
       break;
@@ -530,8 +531,6 @@ function handlePlayingInput(window: PinballWindow, event: InputEvent, frameId: n
     case "swipe-up":
       if (ready) {
         window.launchPower = clamp(window.launchPower + 1, 1, LAUNCH_SPEEDS.length);
-      } else {
-        nudge(window);
       }
       break;
     case "swipe-down":
@@ -546,13 +545,6 @@ function handlePlayingInput(window: PinballWindow, event: InputEvent, frameId: n
         flip(window, window.flippers[0]!);
         flip(window, window.flippers[1]!);
       }
-      break;
-    case "long-press":
-      if (ready) {
-        frameTimings.finishFrame(frameId, "discarded: pinball ignored input");
-        return;
-      }
-      nudge(window);
       break;
     case "short-then-long-press":
       // No context menu mid-game, so this opens the system menu instead.
@@ -606,8 +598,6 @@ function resetGame(window: PinballWindow): void {
   window.score = 0;
   window.rolloverLit = ROLLOVERS.map(() => false);
   window.rolloverInside = ROLLOVERS.map(() => false);
-  window.tiltHeat = 0;
-  window.tilted = false;
   window.toast = "";
   window.toastUntilMs = 0;
   for (const flipper of window.flippers) {
@@ -628,7 +618,6 @@ function launchBall(window: PinballWindow): void {
 }
 
 function flip(window: PinballWindow, flipper: Flipper): void {
-  if (window.tilted) return;
   if (flipper.state === "hold") {
     flipper.holdUntilMs = Date.now() + FLIPPER_HOLD_MS;
     return;
@@ -637,25 +626,8 @@ function flip(window: PinballWindow, flipper: Flipper): void {
   playSfx(window, SFX_FLIPPER, true);
 }
 
-function nudge(window: PinballWindow): void {
-  if (window.tilted) return;
-  window.ballVy -= NUDGE_KICK_UP;
-  window.ballVx += window.nudgeSign * NUDGE_KICK_SIDE;
-  window.nudgeSign = window.nudgeSign === 1 ? -1 : 1;
-  window.tiltHeat += 1;
-  if (window.tiltHeat >= TILT_LIMIT) {
-    window.tilted = true;
-    showToast(window, "TILT");
-    // A tilt drops the flippers dead until the ball drains.
-    for (const flipper of window.flippers) {
-      if (flipper.state !== "rest") flipper.state = "falling";
-    }
-    playSfx(window, SFX_TILT);
-  }
-}
-
 function addScore(window: PinballWindow, points: number): void {
-  if (!window.tilted) window.score += points;
+  window.score += points;
 }
 
 function showToast(window: PinballWindow, text: string, ms = 1100): void {
@@ -710,7 +682,6 @@ function tick(window: PinballWindow): void {
 function stepPhysics(window: PinballWindow): void {
   const dt = PHYSICS_DT;
   stepFlippers(window, dt);
-  window.tiltHeat = Math.max(0, window.tiltHeat - TILT_HEAT_DECAY_PER_S * dt);
   if (window.ballState !== "live") return;
 
   window.ballVy += GRAVITY * dt;
@@ -894,8 +865,6 @@ function ballDrained(window: PinballWindow): void {
   window.ballVx = 0;
   window.ballVy = 0;
   window.trail = [];
-  window.tilted = false;
-  window.tiltHeat = 0;
   window.ballsLeft--;
   if (window.ballsLeft <= 0) {
     window.phase = "game-over";
@@ -1007,9 +976,6 @@ function paintContent(window: PinballWindow): GrayImage {
   if (window.toastUntilMs > now && window.toast) {
     drawCenteredIn(image, mediumFont, LEFT, LANE_X - LEFT, 150, window.toast, 245);
   }
-  if (window.tilted) {
-    drawCenteredIn(image, mediumFont, LEFT, LANE_X - LEFT, 60, "TILT", 245);
-  }
   if (window.phase === "paused") {
     paintDialog(image, "PAUSED", [`${GESTURE_CLICK} resume`, `${GESTURE_DOUBLE_CLICK} leave`]);
   } else if (window.phase === "game-over") {
@@ -1050,7 +1016,7 @@ function paintPanel(image: GrayImage, window: PinballWindow): void {
     image.drawText(smallFont, PANEL_X, 236, `${GESTURE_DOUBLE_CLICK} pause`, 115);
   } else {
     image.drawText(smallFont, PANEL_X, 216, `${GESTURE_CLICK} flip   ${GESTURE_SCROLL} L/R flip`, 115);
-    image.drawText(smallFont, PANEL_X, 236, `${GESTURE_LONG_PRESS} nudge   ${GESTURE_DOUBLE_CLICK} pause`, 115);
+    image.drawText(smallFont, PANEL_X, 236, `${GESTURE_DOUBLE_CLICK} pause`, 115);
   }
 }
 

@@ -38,13 +38,14 @@ module.exports = function worker() {
     '../../native/active-display': {},
     '../../native/settings-store': { getStringSetting: () => highScore, setStringSetting: (_, value) => { highScore = value; } },
     '../../ui/sound-effects': {},
+    '../../ui/sound-setting': { loadSoundEnabled: () => true, saveSoundEnabled: () => {} },
     '../../ui/window-menu': { WindowMenu: class { open() {} } },
     '../../ui/gestures': { directionalFallback: (event) => event, GESTURE_CLICK: '●', GESTURE_DOUBLE_CLICK: '●●', GESTURE_SCROLL: '↕', GESTURE_LONG_PRESS: '—' },
     '../../util/numeric-util': { clamp: (v, lo, hi) => Math.max(lo, Math.min(hi, v)) },
   }, `
     renderAndSubmit = () => {};
     playSfx = () => {};
-    exports.api = { windows, launchBall, ballDrained, stepPhysics, tick, flip, nudge,
+    exports.api = { windows, launchBall, ballDrained, stepPhysics, tick, flip,
       checkTargets, checkRollovers, collideBumpers, resetGame, paintContent, TARGETS, ROLLOVERS };
   `, { global, Date: { now: () => now }, setInterval: () => 1, clearInterval: noop }).api;
   const message = (data) => global.onmessage({ data });

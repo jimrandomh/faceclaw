@@ -78,22 +78,6 @@ test('ball saver preserves objectives once, then a drain pays multiplied bonus a
   assert.equal(h.w.ballSaveRemaining, 8);
 });
 
-test('tilt disables awards, objective progress, saver and drain bonus', () => {
-  const h = worker();
-  h.launchBall(h.w); target(h, 0);
-  h.nudge(h.w); h.nudge(h.w); h.nudge(h.w);
-  assert.equal(h.w.tilted, true);
-  lane(h, 0); target(h, 1);
-  h.w.ballX = 121; h.w.ballY = 110; h.collideBumpers(h.w);
-  assert.equal(h.w.score, 150);
-  assert.equal(h.w.targetsDown[1], false);
-  assert.ok(h.w.rolloverLit.every((value) => !value));
-  h.ballDrained(h.w);
-  assert.equal(h.w.ballsLeft, 2);
-  assert.equal(h.w.lastBonus, 0);
-  assert.equal(h.w.score, 150);
-});
-
 test('pause, background, screen-off and menus preserve gameplay timers', () => {
   for (const suspend of [
     (h) => h.input('double-click'),

@@ -17,10 +17,12 @@
  * fall back to raster (the planner needs a non-negative origin), which is
  * small and rare.
  *
- * Controls (watch swipe-up is the primary flap): swipe-up, click, or
- * scroll-up flaps; double-click pauses; tap-then-hold opens the window
- * menu. Ready / paused / game over: click or swipe-up starts or resumes,
- * double-click yields focus.
+ * Controls (a watch swipe in either direction is the primary flap):
+ * swipe-up, swipe-down, click, or scroll-up flaps; double-click pauses;
+ * tap-then-hold opens the window menu. Ready / paused / game over: click or
+ * a swipe starts or resumes, double-click yields focus. Losing input focus
+ * mid-flight (a shell overlay such as the system menu or a notification,
+ * focus to the sidebar) pauses, as does backgrounding or screen-off.
  */
 import "@nativescript/core/globals";
 import { GrayImage } from "../../graphics/image";
@@ -32,6 +34,7 @@ import * as frameTimings from "../../native/frame-timings";
 import { getActiveDisplay } from "../../native/active-display";
 import { getStringSetting, setStringSetting } from "../../native/settings-store";
 import { buildSoundSequencePayload, type Step } from "../../ui/sound-effects";
+import { loadSoundEnabled, saveSoundEnabled } from "../../ui/sound-setting";
 import { type MenuItem } from "../../ui/menu";
 import { WindowMenu } from "../../ui/window-menu";
 import type { WorkerAppMessage, WorkerAppReply } from "../../ui/shell/worker-window";
@@ -198,7 +201,7 @@ global.onmessage = (event: { data: WorkerAppMessage }) => {
         tickTimer: null,
         lastTickAtMs: 0,
         lastMinorSfxAtMs: 0,
-        soundOn: true,
+        soundOn: loadSoundEnabled("flappy"),
         lastSubmittedFingerprint: "",
       };
       resetGame(window);
@@ -250,6 +253,19 @@ global.onmessage = (event: { data: WorkerAppMessage }) => {
       if (!window.foreground && window.phase === "playing") window.phase = "paused";
       syncTickTimer(window);
       if (window.foreground) renderAndSubmit(window, 0);
+      break;
+    }
+    case "input-focus": {
+      const window = windows.get(message.windowId);
+      if (!window) break;
+      // Anything that takes input away (the system menu, a notification
+      // modal, the voice dialog, focus back to the sidebar) pauses the
+      // flight; a death tumble is allowed to finish.
+      if (!message.focused && window.phase === "playing") {
+        window.phase = "paused";
+        syncTickTimer(window);
+        if (window.foreground) renderAndSubmit(window, 0);
+      }
       break;
     }
     case "screen":
@@ -328,6 +344,7 @@ function windowMenuItems(window: FlappyWindow): MenuItem[] {
       onSelect: (ctx) => {
         ctx.stack.pop();
         window.soundOn = !window.soundOn;
+        saveSoundEnabled("flappy", window.soundOn);
         if (window.soundOn) playSfx(window, SFX_RESUME);
       },
     },
@@ -391,7 +408,10 @@ function handleInput(window: FlappyWindow, event: InputEvent, frameId: number): 
 /** Input while ready or flying: the flap gestures, plus pause. */
 function handleFlightInput(window: FlappyWindow, event: InputEvent, frameId: number): void {
   switch (event.type) {
+    // Either swipe direction flaps: on the watch the flap is a reflex, and
+    // which way the thumb went shouldn't matter.
     case "swipe-up":
+    case "swipe-down":
     case "click":
     case "scroll-up":
       flap(window);
@@ -678,7 +698,7 @@ function paintHud(image: GrayImage, window: FlappyWindow): void {
       if (window.highScore > 0) {
         drawCenteredIn(image, smallFont, 0, width, 44, `best ${window.highScore}`, 150);
       }
-      drawCenteredIn(image, smallFont, 0, width, groundTop(window) - 26, `swipe up / ${GESTURE_CLICK} flap`, 150);
+      drawCenteredIn(image, smallFont, 0, width, groundTop(window) - 26, `swipe / ${GESTURE_CLICK} flap`, 150);
       break;
     case "paused":
       paintDialog(image, window, "PAUSED", [`${GESTURE_CLICK} resume`, `${GESTURE_DOUBLE_CLICK} leave`]);
