@@ -123,6 +123,26 @@ public class FaceclawBleManager {
     }
 
     public boolean connect(String address, int timeoutMs) {
+        return connect(address, timeoutMs, false);
+    }
+
+    /**
+     * EXPERIMENTAL (2026-09-11): the ring specifically needs autoConnect=true.
+     * Even's own vendor app connects the ring with Android's autoConnect flag
+     * set (confirmed via its own BLE debug log, "connect() - device: ...,
+     * auto: true"), while every other faceclaw connection (both glasses arms)
+     * uses autoConnect=false. Direct connect (false) is faster to establish
+     * but Android supervises it less patiently; a live test tonight showed
+     * the ring-only direct connection dying almost exactly 5 seconds in,
+     * repeatedly, with nothing else competing for it - consistent with a
+     * companion device Android's stack expects to be babied via autoConnect,
+     * not direct-connected like the glasses. autoConnect=true can take much
+     * longer to actually complete (Android manages it as a background
+     * reconnect, not an immediate attempt), so this needs its own longer
+     * timeout - do not reuse CONNECT_TIMEOUT_MS/awaitLatch's short window for
+     * it, that would just trade one spurious failure for another.
+     */
+    public boolean connect(String address, int timeoutMs, boolean autoConnect) {
         if (address == null || address.trim().isEmpty()) {
             throw new IllegalArgumentException("address is required");
         }
@@ -147,7 +167,7 @@ public class FaceclawBleManager {
 
             gatt = device.connectGatt(
                 context,
-                false,
+                autoConnect,
                 gattCallback,
                 BluetoothDevice.TRANSPORT_LE,
                 BluetoothDevice.PHY_LE_2M|BluetoothDevice.PHY_LE_1M

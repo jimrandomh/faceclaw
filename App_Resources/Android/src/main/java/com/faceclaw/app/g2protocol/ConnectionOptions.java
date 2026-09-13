@@ -10,6 +10,11 @@ public class ConnectionOptions {
     public static final int DESCRIPTOR_TIMEOUT_MS = 5_000;
     public static final int RING_DESIRED_MTU = 247;
     public static final int RING_RECONNECT_DELAY_MS = 2_000;
+    // The ring connects with autoConnect=true (see FaceclawBleManager.connect's
+    // 3-arg overload) - Android manages that as a background reconnect rather
+    // than an immediate attempt, so it needs far more room than the glasses'
+    // direct-connect CONNECT_TIMEOUT_MS. Untuned guess, not measured.
+    public static final int RING_CONNECT_TIMEOUT_MS = 20_000;
     public static final int WRITE_TIMEOUT_MS = 2_000;
     public static final int PRELUDE_TIMEOUT_MS = 2_000;
     // Application security-auth exchange (sid 0x80). The success notification

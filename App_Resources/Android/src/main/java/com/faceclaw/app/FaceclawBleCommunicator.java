@@ -27,6 +27,7 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.TimeZone;
 
 @SuppressLint("MissingPermission")
 public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
@@ -45,6 +46,13 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private static final long CFW_CLEANUP_WAIT_MS = 4_000;
     private static final int COMPASS_REPORT_INTERVAL_MS = 100;
     private static final int COMPASS_MIN_CHANGE_DEGREES = 0;
+
+    /**
+     * Cap on decoded ring health pages held in memory. A full backlog sync is
+     * ~40 pages, so this holds several syncs; oldest is dropped first. This is a
+     * holding area for a later health feature, not storage.
+     */
+    private static final int RING_HEALTH_MAX_RECORDS = 256;
 
     private final Context appContext;
     private final PowerManager powerManager;
@@ -92,6 +100,74 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private boolean leftConnected;
     private boolean ringConnected;
     private boolean ringNotificationsReady;
+    // R1 health-data protocol (RingProtocol). The reassembler and the outbound
+    // queue are both guarded by `lock`. Page ACKs are queued rather than written
+    // inline because notifications arrive on the GATT callback thread and
+    // bleManager.writeFrames() blocks waiting for onCharacteristicWrite, which
+    // that same thread has to deliver — writing there would deadlock until the
+    // write timeout. The worker loop drains the queue instead.
+    private final RingProtocol.Reassembler ringReassembler = new RingProtocol.Reassembler();
+    private final ArrayDeque<byte[]> ringOutbound = new ArrayDeque<>();
+    private final List<RingProtocol.HealthRecord> ringHealthRecords = new ArrayList<>();
+    /**
+     * Total records ever appended to {@link #ringHealthRecords}, including every
+     * one already consumed or evicted. Never reset.
+     *
+     * <p>This is the identity behind the ingest watermark. Record N is the Nth
+     * ever decoded this session, so a consumer that has durably stored
+     * everything below some N can ask for exactly that much to be dropped
+     * without racing the pages still arriving above it - see
+     * {@link #takeRingHealthBatch()} and
+     * {@link #clearRingHealthRecordsBelow(long)}. A plain "clear the list"
+     * could not do that: a page landing between the read and the clear would be
+     * thrown away having never been ingested. Guarded by {@code lock}.
+     */
+    private long ringHealthTotalAdded;
+    /**
+     * The phone-side sequence counter. One counter shared by BOTH ring channels
+     * (measured: 78 phone-to-ring writes in the reference capture step by
+     * exactly +1 regardless of channel, restarting at 1 on a new connection).
+     */
+    private int ringSeq;
+    private int ringNonce;
+    /**
+     * Response-driven health-pull state (2026-09-11). Set from
+     * {@link #handleRingHealthNotification} (GATT callback thread), waited on
+     * from {@link #requestRingHealth} (worker thread), both guarded by
+     * {@code lock}. Replaces a blind fixed-sleep loop - see that method's
+     * own doc for why: a real successful Even sync (extracted from
+     * {@code /tmp/btsnoop_fresh.log} on bazzite-desktop, 2026-09-11) is
+     * response-paced, not sleep-paced, and ACKs each DATA page immediately
+     * rather than after the whole run.
+     */
+    private boolean ringHealthRspSeen;
+    /** Bumped once per decoded health DATA page (any type) so a waiter can
+     * detect "a page just arrived" without polling ringHealthRecords. */
+    private int ringHealthPageCounter;
+    /**
+     * elapsedRealtime() of the last time {@link #requestRingHealth()} was
+     * attempted, or 0 if never. Health data updates hourly at the source
+     * (heart rate/HRV/SpO2) or slower, but a ring reconnect can happen far
+     * more often than that (BLE drops, Doze, app restarts - this evening's
+     * own live testing saw reconnects every few seconds under load). Pulling
+     * on every reconnect would be pure waste even ignoring the risk below;
+     * given the race condition documented on requestRingHealth() - a request
+     * that loses its race may silently discard real backlog rather than just
+     * delay it - it is actively worse than waste, so this is throttled.
+     */
+    private long ringHealthLastRequestedAtMs;
+    /**
+     * Set by {@link #requestRingHealthNow()} from whatever thread the UI is on;
+     * cleared by the worker loop, which is the only thread allowed to run the
+     * pull. Guarded by {@code lock}.
+     */
+    private boolean ringHealthPullRequested;
+    /**
+     * Aborted-pull retries spent since the last pull that COMPLETED its
+     * sequence. Guarded by {@code lock}. See
+     * {@link #RING_HEALTH_ABORTED_RETRY_LIMIT}.
+     */
+    private int ringHealthAbortedRetries;
     private boolean sessionReady;
     private boolean fixedLayoutCreated;
     private boolean shutdownRequested;
@@ -1629,6 +1705,19 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                     continue;
                 }
 
+                // Page ACKs queued from the GATT callback thread are written
+                // here, on the only thread allowed to block on a GATT write.
+                flushRingOutbound();
+
+                // An on-demand pull asked for from the UI thread runs here for
+                // the same reason: requestRingHealth() blocks on GATT writes and
+                // on its own RSP/DATA waits, which only this thread may do.
+                runRequestedRingHealthPull();
+                // An aborted pull is unfinished business, not a speculative
+                // repeat - see RING_HEALTH_ABORTED_RETRY_LIMIT. Cheap: returns
+                // immediately unless a pull actually failed to complete.
+                resumeAbortedRingHealthPull();
+
                 long sleepMs = driveSession();
                 if (sleepMs > 0) {
                     interruptibleSleep.sleep(sleepMs);
@@ -1860,6 +1949,9 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     }
 
     private void handleDirectRingNotification(String characteristicUuid, byte[] data) {
+        if (handleRingHealthNotification(characteristicUuid, data)) {
+            return;
+        }
         FaceclawRingEventDecoder.DirectRingEvent decoded = FaceclawRingEventDecoder.decode(data);
         if (decoded == null) {
             Log.d(TAG, "direct ring notify ignored: characteristicUuid=" + characteristicUuid + " raw=" + hex(data));
@@ -1876,6 +1968,133 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         int frameId = FrameTimings.getInstance().startFrame("input:ring:" + decoded.label);
         FrameTimings.getInstance().log(frameId, "input event decoded from direct ring notification");
         emitRingEvent(event.kind, event.containerName, event.eventType, event.eventSource, event.systemExitReasonCode, frameId);
+        interruptibleSleep.interrupt();
+    }
+
+    /**
+     * The R1 health-data protocol branch. Returns true when the value belonged
+     * to that protocol and must not fall through to the gesture decoder.
+     *
+     * <p>Runs on the GATT callback thread, so it only ever queues writes.
+     *
+     * <p>Restricted to R1_NOTIFY_CHAR_UUID because that is the notify
+     * characteristic (ATT handle 0x0017) the reference capture shows this
+     * protocol on; gesture traffic on the other notify characteristic is left
+     * strictly alone rather than being offered to the reassembler.
+     */
+    private boolean handleRingHealthNotification(String characteristicUuid, byte[] data) {
+        if (!BleProtocol.R1_NOTIFY_CHAR_UUID.equals(characteristicUuid)) {
+            return false;
+        }
+
+        RingProtocol.Intake intake;
+        synchronized (lock) {
+            intake = ringReassembler.accept(data);
+        }
+        if (!intake.consumed) {
+            return false;
+        }
+
+        long arrivalMs = SystemClock.elapsedRealtime();
+        synchronized (lock) {
+            lastIncomingAtMs = arrivalMs;
+        }
+        if (intake.note != null) {
+            logLine("ring frame: " + intake.note);
+        }
+        RingProtocol.Frame frame = intake.frame;
+        if (frame == null) {
+            // Genuinely silent by default: the reassembler consumed these
+            // bytes (e.g. as a fragment awaiting its continuation) without
+            // yet producing a complete frame, and intake.note was null too.
+            // This exact blind spot cost real debugging time on 2026-09-10 -
+            // DATA appeared to simply never arrive, when the actual cause
+            // (once found, by temporarily logging every raw notification
+            // unconditionally) was a real handshake gap, not a dropped
+            // frame here. If DATA ever looks like it's going missing again
+            // with nothing logged at all, re-add that raw hex dump here
+            // rather than assuming nothing arrived on the wire.
+            logLine("ring frame: consumed, no complete frame yet, len=" + data.length);
+            return true;
+        }
+        if (!frame.crcOk) {
+            // Never act on a frame whose CRC failed: the payload offsets below
+            // are only meaningful for an intact frame.
+            logLine("ring frame CRC mismatch " + frame.describe());
+            return true;
+        }
+
+        // Route on the CHAN byte, not on the shape of the payload.
+        if (frame.chan != RingProtocol.CHAN_HEALTH) {
+            Log.d(TAG, "ring device frame " + frame.describe());
+            return true;
+        }
+
+        if (frame.kind == RingProtocol.KIND_RSP) {
+            Log.d(TAG, "ring health rsp " + frame.describe());
+            synchronized (lock) {
+                ringHealthRspSeen = true;
+                lock.notifyAll();
+            }
+            return true;
+        }
+        if (frame.kind != RingProtocol.KIND_DATA) {
+            Log.d(TAG, "ring health frame " + frame.describe());
+            return true;
+        }
+
+        RingProtocol.HealthRecord record = null;
+        try {
+            record = RingProtocol.decode(frame, System.currentTimeMillis());
+        } catch (Throwable t) {
+            logLine("ring health decode error " + frame.describe() + ": " + safeMessage(t));
+        }
+        if (record == null) {
+            logLine("ring health page undecoded " + frame.describe());
+        } else {
+            synchronized (lock) {
+                if (ringHealthRecords.size() >= RING_HEALTH_MAX_RECORDS) {
+                    // This was silent. An eviction here drops a record that
+                    // nothing has ingested yet - real data lost inside the
+                    // phone, with no trace anywhere. Say so. With the consume
+                    // path in place the buffer should never reach this size;
+                    // if this line ever appears, the consumer has stopped.
+                    logLine("ring health: buffer FULL at " + RING_HEALTH_MAX_RECORDS
+                        + " - dropping the oldest UNINGESTED record");
+                    ringHealthRecords.remove(0);
+                }
+                ringHealthRecords.add(record);
+                ringHealthTotalAdded++;
+            }
+            logLine("ring health " + record.summary());
+        }
+
+        // Acknowledge the page regardless of whether we could decode it: the
+        // ACK is what keeps the ring sending, and a decode gap must not stall
+        // the rest of the transfer.
+        queueRingPageAck(frame);
+        return true;
+    }
+
+    private void queueRingPageAck(RingProtocol.Frame page) {
+        byte[] ack;
+        synchronized (lock) {
+            if (!ringNotificationsReady) {
+                return;
+            }
+            ack = RingProtocol.buildPageAck(
+                nextRingSeqLocked(),
+                nextRingNonceLocked(),
+                page.cmdHi,
+                page.cmdLo,
+                page.seq
+            );
+            ringOutbound.add(ack);
+            ringHealthPageCounter++;
+            lock.notifyAll();
+        }
+        // The worker loop does the actual write; wake it so the ACK is not held
+        // for a whole idle tick.
         interruptibleSleep.interrupt();
     }
 
@@ -1907,6 +2126,10 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 ringNotificationsReady = false;
                 if (!connected) {
                     ringReconnectAfterMs = SystemClock.elapsedRealtime() + ConnectionOptions.RING_RECONNECT_DELAY_MS;
+                    // Half-received fragments and unsent ACKs do not survive the
+                    // link; the sequence counter restarts on the next connect.
+                    ringReassembler.reset();
+                    ringOutbound.clear();
                 }
                 logLine(connected ? "direct ring BLE connected" : "direct ring BLE disconnected");
                 return;
@@ -2092,17 +2315,43 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
 
     private void connectRing() {
         logLine("connecting direct ring " + ringAddress);
-        if (!bleManager.connect(ringAddress, ConnectionOptions.CONNECT_TIMEOUT_MS)) {
+        // autoConnect=true (see FaceclawBleManager.connect's 3-arg overload) -
+        // matches what Even's own app does for this device specifically.
+        // Direct connect (false, the default used for the glasses) was
+        // measured tonight dying ~5s into an otherwise-idle ring connection,
+        // repeatedly, with nothing else competing for it.
+        if (!bleManager.connect(ringAddress, ConnectionOptions.RING_CONNECT_TIMEOUT_MS, true)) {
             throw new IllegalStateException("connect failed: " + ringAddress);
         }
 
-        bleManager.requestConnectionPriority(ringAddress, BluetoothGatt.CONNECTION_PRIORITY_HIGH);
+        // Deliberately NOT requesting CONNECTION_PRIORITY_HIGH here (2026-09-11).
+        // Even's own app never requests any priority for the ring at all - it
+        // logs no requestConnectionPriority/onConnectionUpdated call anywhere -
+        // and just runs on whatever Android's default (BALANCED) parameters are.
+        // HIGH negotiated interval=12 (15ms) / timeout=500 (5000ms) here, and a
+        // live test tonight found the ring-only connection reliably dying at
+        // 5.5-5.7s, matching that 5000ms supervision timeout almost exactly,
+        // on every attempt, with nothing else competing for the ring. If the
+        // ring's firmware occasionally needs more than 5s of headroom after a
+        // burst of writes, HIGH priority's short timeout would kill the link
+        // while Even's default (longer) one wouldn't - untested but the timing
+        // match is exact, not approximate. Leaving default priority for the
+        // ring only; the glasses' own HIGH-priority request above is untouched.
         bleManager.requestMtu(ringAddress, ConnectionOptions.RING_DESIRED_MTU, ConnectionOptions.CONNECT_TIMEOUT_MS);
 
         if (!bleManager.discoverServices(ringAddress, ConnectionOptions.SERVICES_TIMEOUT_MS)) {
             throw new IllegalStateException("discoverServices failed: " + ringAddress);
         }
 
+        // Even's app subscribes only to the health-data notify CCCD (ATT
+        // handle 24) and never touches the phone-notify one (handle 19). That
+        // difference was briefly suspected on 2026-09-11 of causing the ring's
+        // total silence and this call was dropped to match - it changed
+        // nothing, and the real cause turned out to be the malformed 00:08
+        // frame (see sendRingHandshake). Restored, because the phone-notify
+        // channel is plausibly what carries ring-as-remote gesture events,
+        // which are a daily-driver feature; matching Even byte-for-byte here
+        // buys nothing and risks breaking them.
         boolean phoneNotify = enableRingNotification(BleProtocol.R1_PHONE_NOTIFY_CHAR_UUID);
         boolean dataNotify = enableRingNotification(BleProtocol.R1_NOTIFY_CHAR_UUID);
         if (!phoneNotify && !dataNotify) {
@@ -2113,8 +2362,776 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             ringConnected = true;
             ringNotificationsReady = true;
             ringReconnectAfterMs = 0;
+            // The ring's sequence counter restarts with the connection.
+            ringSeq = 0;
+            ringNonce = 0;
+            ringReassembler.reset();
+            ringOutbound.clear();
         }
         logLine("direct ring ready phoneNotify=" + phoneNotify + " dataNotify=" + dataNotify);
+
+        if (dataNotify) {
+            // The handshake mirrors what Even's own app repeats on every one
+            // of its sync bursts (confirmed in the reference capture), so
+            // sending it on every reconnect matches known-working behavior.
+            // The actual health pull is throttled separately below - see
+            // ringHealthLastRequestedAtMs and requestRingHealth()'s own
+            // race-condition warning for why.
+            sendRingHandshake();
+            long now = SystemClock.elapsedRealtime();
+            boolean dueForHealthPull;
+            synchronized (lock) {
+                dueForHealthPull = ringHealthPullDueLocked(now);
+                if (dueForHealthPull) {
+                    ringHealthLastRequestedAtMs = now;
+                }
+            }
+            if (dueForHealthPull) {
+                runRingHealthPull();
+            } else {
+                logLine("ring health: pull skipped, last one was "
+                    + ((now - ringHealthLastRequestedAtMs) / 1000) + "s ago");
+            }
+        }
+    }
+
+    /**
+     * Floor between health pulls, independent of how often the ring
+     * reconnects. Heart rate/HRV/SpO2 update hourly at the source and steps
+     * every 10 minutes (confirmed from the real export,
+     * {@code knowledge/inbox/Even_health_data/}); 30 minutes is comfortably
+     * inside that cadence while keeping reconnect churn from turning into
+     * repeated pull attempts against the race condition documented on
+     * {@link #requestRingHealth()}. Not tuned against any real constraint
+     * from the ring itself - just a sane default.
+     *
+     * <p><b>Reduced 30min -> 5min on 2026-09-12, and its JOB CHANGED.</b> The
+     * 30-minute figure was always meant as a CADENCE - how often to collect -
+     * but it was implemented here as a floor, which is a different thing. The
+     * result was that a connected, stable ring pulled <em>never</em>: nothing
+     * drives a pull on a timer, only {@code onRingReady()} on reconnect, so the
+     * floor was the only clock in the system and it gated a pull that had
+     * nothing to trigger it.
+     *
+     * <p>The cadence now lives where it belongs, on a wall-clock-aligned tick
+     * (:01 and :31) in {@code health-live.ts}. What remains here is purely an
+     * ANTI-SPAM floor: stop a burst of reconnects turning into a burst of
+     * requests against the race documented on {@link #requestRingHealth()}.
+     * That job needs 5 minutes, not 30.
+     */
+    private static final long RING_HEALTH_MIN_PULL_INTERVAL_MS = 5L * 60L * 1000L;
+
+    /**
+     * Floor for a pull the user actually asked for by opening the health app,
+     * as opposed to the automatic one above.
+     *
+     * <p>Deliberately much shorter than the automatic interval but <b>not
+     * zero</b>. The 30-minute figure is conservative because an automatic pull
+     * is speculative — nobody is waiting for it, so there is no reason to spend
+     * a request. Opening the health app is the opposite: it is an explicit ask,
+     * and the response-driven {@link #requestRingHealth()} now waits for each
+     * type's DATA and ACKs its pages before advancing, which is what made the
+     * backlog-discard race survivable in the first place. A floor still has to
+     * exist, because the discard risk documented on {@code requestRingHealth()}
+     * is real and open/close/open would otherwise hammer the ring.
+     */
+    private static final long RING_HEALTH_ON_DEMAND_MIN_INTERVAL_MS = 60L * 1000L;
+
+    /**
+     * How many times a pull that ABORTED may be resumed inside the anti-spam
+     * floor before it goes back to waiting that floor out.
+     *
+     * <p>The floor exists to stop SPECULATIVE repeat pulls, because a request
+     * that loses its race can permanently consume backlog - see
+     * {@link #requestRingHealth()}. Resuming a pull that never got a single
+     * answer is a different thing: nothing was ever in flight to be lost.
+     *
+     * <p>Measured 2026-09-12: the 09:33 pull got {@code no RSP} for 0x1, 0x4
+     * and 0x2 and then died on {@code write error: IllegalStateException: Not
+     * connected}. Every attempt after it was refused by the 30-minute floor, so
+     * the rest of that night's data was simply never requested again - the
+     * night's second sleep block went with it. The floor was protecting against
+     * the wrong thing.
+     *
+     * <p>Bounded and non-looping on purpose: the budget is spent whether or not
+     * the retries help, and a pull that completes resets it. Worst case is two
+     * extra attempts, then silence until the floor expires.
+     *
+     * <p>⚠ UNTESTED, and worth knowing before trusting this: whether an aborted
+     * pull's data is still on the ring at all, or was discarded when the ring
+     * RSP'd (it did not RSP here, which is the reason to think it survives).
+     * Nobody knows. The retry costs little if the data is gone.
+     */
+    private static final int RING_HEALTH_ABORTED_RETRY_LIMIT = 2;
+
+    /**
+     * Gap before an aborted pull may be resumed. Short, but not zero - a link
+     * that just failed a write needs time to come back, and a tight loop
+     * against a dead connection helps nobody.
+     */
+    private static final long RING_HEALTH_ABORTED_RETRY_GAP_MS = 60L * 1000L;
+
+    /**
+     * Ask for a health pull as soon as the worker thread can run one. Safe to
+     * call from any thread; returns immediately without blocking.
+     *
+     * <p>Called when the health app opens, so a glance shows something current
+     * rather than whatever the last automatic pull happened to catch. Subject
+     * to {@link #RING_HEALTH_ON_DEMAND_MIN_INTERVAL_MS}; a request inside that
+     * window is dropped rather than queued, because a stale duplicate pull has
+     * no value and every pull carries the discard risk.
+     */
+    public void requestRingHealthNow() {
+        synchronized (lock) {
+            ringHealthPullRequested = true;
+        }
+        interruptibleSleep.interrupt();
+    }
+
+    /**
+     * Whether an automatic pull may run now. Caller must hold {@code lock}.
+     *
+     * <p>Two ways to be due: the ordinary 30-minute floor has expired, or the
+     * last pull ABORTED and still has retry budget. The second is not a
+     * speculative repeat - see {@link #RING_HEALTH_ABORTED_RETRY_LIMIT}.
+     */
+    private boolean ringHealthPullDueLocked(long now) {
+        if (ringHealthLastRequestedAtMs == 0) {
+            return true;
+        }
+        long since = now - ringHealthLastRequestedAtMs;
+        if (since >= RING_HEALTH_MIN_PULL_INTERVAL_MS) {
+            return true;
+        }
+        return ringHealthAbortedRetries > 0 && since >= RING_HEALTH_ABORTED_RETRY_GAP_MS;
+    }
+
+    /**
+     * Run a pull and account for whether it finished. The ONLY place
+     * {@link #requestRingHealth()} may be called from, so that every path
+     * shares one definition of "aborted".
+     */
+    private void runRingHealthPull() {
+        boolean completed = requestRingHealth();
+        synchronized (lock) {
+            if (completed) {
+                ringHealthAbortedRetries = 0;
+            } else if (ringHealthAbortedRetries < RING_HEALTH_ABORTED_RETRY_LIMIT) {
+                ringHealthAbortedRetries++;
+                logLine("ring health: aborted pull may resume in "
+                    + (RING_HEALTH_ABORTED_RETRY_GAP_MS / 1000L) + "s (retry "
+                    + ringHealthAbortedRetries + "/" + RING_HEALTH_ABORTED_RETRY_LIMIT + ")");
+            } else {
+                ringHealthAbortedRetries = 0;
+                logLine("ring health: aborted pull retry budget spent, back to the "
+                    + (RING_HEALTH_MIN_PULL_INTERVAL_MS / 60000L) + "-minute anti-spam floor");
+            }
+        }
+    }
+
+    /**
+     * Worker-thread tick that resumes a pull which ABORTED.
+     *
+     * <p>Distinct from {@link #runRequestedRingHealthPull()}: nobody asked for
+     * this one. It exists because the automatic pull otherwise only fires from
+     * the ring-ready path, so an abort that is not followed by a reconnect
+     * would never be retried at all.
+     */
+    private void resumeAbortedRingHealthPull() {
+        long now = SystemClock.elapsedRealtime();
+        synchronized (lock) {
+            if (ringHealthAbortedRetries == 0) {
+                return;
+            }
+            if (!ringConnected || !ringNotificationsReady) {
+                return;
+            }
+            if (now - ringHealthLastRequestedAtMs < RING_HEALTH_ABORTED_RETRY_GAP_MS) {
+                return;
+            }
+            ringHealthLastRequestedAtMs = now;
+        }
+        logLine("ring health: resuming an aborted pull");
+        runRingHealthPull();
+    }
+
+    /** Worker-thread side of {@link #requestRingHealthNow()}. */
+    private void runRequestedRingHealthPull() {
+        long now = SystemClock.elapsedRealtime();
+        synchronized (lock) {
+            if (!ringHealthPullRequested) {
+                return;
+            }
+            ringHealthPullRequested = false;
+            if (!ringConnected || !ringNotificationsReady) {
+                logLine("ring health: on-demand pull skipped, ring not ready");
+                return;
+            }
+            if (ringHealthLastRequestedAtMs != 0
+                    && now - ringHealthLastRequestedAtMs < RING_HEALTH_ON_DEMAND_MIN_INTERVAL_MS) {
+                logLine("ring health: on-demand pull skipped, last one was "
+                    + ((now - ringHealthLastRequestedAtMs) / 1000) + "s ago");
+                return;
+            }
+            ringHealthLastRequestedAtMs = now;
+        }
+        logLine("ring health: on-demand pull requested");
+        runRingHealthPull();
+    }
+
+    /**
+     * Device-channel prelude the ring requires before it will answer any
+     * channel-0x02 (health) request. <b>Confirmed live, 2026-09-10: without
+     * this, the ring never responds at all to a bare health REQ - not even
+     * an RSP.</b> With it, RSPs start flowing immediately. The direct-ring
+     * path has no other handshake or auth step, so this is the whole gate.
+     *
+     * <p>These five frames were found by byte-for-byte comparison against a
+     * real Even-app sync (pkt 8814-9153 in the capture behind
+     * {@code knowledge/staging/faceclaw-ring-protocol-decode-return.md}),
+     * replayed here in the same order, right after the ring connects.
+     * <b>Which of the five is actually load-bearing is unknown</b> - all
+     * five go out together because that combination is the only one proven
+     * to work; nobody has yet tried removing any of them. Three of them
+     * (00:08, 06:02, 00:0A) carry payload bytes with no known meaning beyond
+     * "the ring accepted them from Even's app" - opaque constants, copied
+     * verbatim, not derived. Do not change them without new evidence.
+     *
+     * <p>The other two (00:0E clock-set, 00:05 day-anchor) need a live
+     * value: both carry the current Unix time offset by the local UTC offset,
+     * which in EDT is +14400s (4h) - and +14400s is what a real Even write
+     * carries. Verified 2026-09-11 against six separate real Even clock-set
+     * writes. As of 2026-09-12 the offset is COMPUTED from the device time
+     * zone rather than hardcoded, which is identical in EDT and stays correct
+     * across a DST change; see the comment in {@code sendRingHandshake()}.
+     *
+     * <p><b>Skew trap - read before "correcting" this number.</b> Earlier on
+     * 2026-09-11 this was changed to +28800s (8h) and that was wrong. The
+     * mistake: btsnoop packet timestamps on this phone run exactly 4 hours
+     * BEHIND the Android system clock (the system clock itself is correct -
+     * {@code adb shell date} agrees with real time). Measuring Even's sent
+     * value against the btsnoop timestamp therefore double-counts the 4h and
+     * makes a correct +14400 look like +28800. The skew is verified
+     * sub-second by lining btsnoop up against logcat on the same connect:
+     * logcat "direct ring BLE connected" 05:58:24.616 vs btsnoop MTU Req
+     * 01:58:24.618; "ring ready" .983 vs CCCD Write Rsp .981; "handshake
+     * sent" 25.085 vs first Write Command 25.071. Same milliseconds, hour
+     * off by four. <b>Always convert btsnoop timestamps to real local time
+     * (+4h) before comparing them to anything.</b>
+     *
+     * <p>A stale, yesterday's timestamp here was separately tested and ruled
+     * out as the reason DATA wasn't following RSP - but nothing says a stale
+     * value is harmless either, so this always sends the true current time.
+     */
+    /**
+     * Round 2 (2026-09-11, ~00:55 EDT): compared this handshake against a
+     * fresh HCI-snoop capture of Even's own app completing a real successful
+     * sync minutes earlier. Two real findings from that comparison:
+     * - The 00:0A payload (the "app identity?" blob) is byte-for-byte
+     *   identical between that capture and one from two nights before - a
+     *   true fixed constant, not a rotating per-session token. Rules out the
+     *   "stale identity token" theory tried first.
+     * - Even's real sequence also sends battery (00:01), firmware version
+     *   (00:02), and device id (00:0B) - none of which round 1 ever sent -
+     *   interleaved with the health requests, not just once upfront. Notably
+     *   the firmware-version query lands immediately before Even's own first
+     *   successful health request in the real trace. `06:02`, which round 1
+     *   did send, never appears anywhere in that real successful sync -
+     *   dropped here since there's now real evidence it isn't needed and it
+     *   was never more than a guess to begin with.
+     * This round adds 00:01/00:02/00:0B up front rather than interleaved
+     * (interleaving would need restructuring requestRingHealth() too - a
+     * bigger change deferred until this simpler version is shown to help or
+     * not).
+     */
+    private void sendRingHandshake() {
+        // +14400s was hardcoded here because every capture behind this work was
+        // taken in EDT, where 14400s happens to be the magnitude of the UTC
+        // offset - so the constant was right by coincidence of season, not by
+        // derivation, and would have gone an hour wrong at the next DST change.
+        // This computes it instead: identical in EDT, correct year-round.
+        //
+        // ⚠ MIND THE SIGN. The ring's clock runs AHEAD of real time by the
+        // magnitude of a west-of-UTC offset, so the quantity wanted here is
+        // NEGATIVE `TimeZone.getOffset()`, which is itself negative west of UTC
+        // (-14400000ms in EDT). Getting this backwards sets the ring's clock 8h
+        // wrong rather than 0h wrong. Measured 2026-09-12: the un-negated form
+        // logged -14400 and the ring then returned step buckets dated 8h out.
+        //
+        // Note this is the OPPOSITE of the "ring stores naive local time"
+        // hypothesis, which predicts `epoch + utc_offset` = epoch - 14400. The
+        // measured, working value is epoch + 14400. The hypothesis is therefore
+        // NOT confirmed by this code; what is preserved here is the behaviour
+        // verified against six real Even clock-set writes.
+        //
+        // ⚠ PAIRED with `ringClockOffsetMs()` in `app/health/health-live.ts`,
+        // which subtracts the same quantity on the way back out. These two must
+        // move together; both now compute the value rather than hardcoding EDT.
+        long nowMs = System.currentTimeMillis();
+        long clockOffsetSeconds = -TimeZone.getDefault().getOffset(nowMs) / 1000L;
+        long liveClockSeconds = (nowMs / 1000L) + clockOffsetSeconds;
+        // Asserted at every handshake: in EDT this must read 14400. The clock write
+        // is the part of this protocol that took two sessions to get working, so a
+        // changed value here is the one way a working pull silently breaks.
+        Log.i(TAG, "ring handshake clock offset seconds = " + clockOffsetSeconds
+                + " (tz " + TimeZone.getDefault().getID() + ")");
+        byte[] clock = le32(liveClockSeconds);
+
+        int seq1, nonce1, seq2, nonce2, seq3, nonce3, seq4, nonce4, seq5, nonce5, seq6, nonce6, seq7, nonce7;
+        synchronized (lock) {
+            seq1 = nextRingSeqLocked();
+            nonce1 = nextRingNonceLocked();
+            seq2 = nextRingSeqLocked();
+            nonce2 = nextRingNonceLocked();
+            seq3 = nextRingSeqLocked();
+            nonce3 = nextRingNonceLocked();
+            seq4 = nextRingSeqLocked();
+            nonce4 = nextRingNonceLocked();
+            seq5 = nextRingSeqLocked();
+            nonce5 = nextRingNonceLocked();
+            seq6 = nextRingSeqLocked();
+            nonce6 = nextRingNonceLocked();
+            seq7 = nextRingSeqLocked();
+            nonce7 = nextRingNonceLocked();
+        }
+
+        byte[][] frames = {
+            RingProtocol.buildFrame(RingProtocol.CHAN_DEVICE, RingProtocol.KIND_REQ, 0x00, 0x08, seq1,
+                // NO nonce prefix on this one frame - payload is exactly the
+                // three bytes 3f 01 01. Every other request on both channels
+                // starts with the 2-byte nonce; 00:08 does not, and the ring
+                // silently drops the whole frame if you add one, then ignores
+                // everything that follows on the connection.
+                //
+                // Measured 2026-09-11 across all four btsnoop captures, 46
+                // real 00:08 writes, zero exceptions:
+                //   payload 3f0101       (3 bytes) -> 3 writes, ALL answered (12-21 notifications each)
+                //   payload 01003f0101   (5 bytes) -> 43 writes, ALL silent (zero notifications)
+                // The 5-byte form is the more common one in the captures only
+                // because it is ours, failing and retrying all night. Do not
+                // "fix" this back to the nonce form by pattern-matching the
+                // other frames or by counting which variant appears more.
+                //
+                // This also explains 2026-09-10: the handshake worked when it
+                // was raw bytes replayed from the capture, and stopped working
+                // the moment it was rebuilt "properly" through buildFrame(),
+                // which is what introduced the nonce prefix.
+                new byte[] {0x3f, 0x01, 0x01}),
+            RingProtocol.buildFrame(RingProtocol.CHAN_DEVICE, RingProtocol.KIND_DATA, 0x00, 0x0e, seq2,
+                concatBytes(le16(nonce2), clock, new byte[] {0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00})),
+            RingProtocol.buildFrame(RingProtocol.CHAN_DEVICE, RingProtocol.KIND_DATA, 0x00, 0x05, seq3,
+                concatBytes(le16(nonce3), new byte[] {0x10, (byte) 0xff}, clock)),
+            // Battery, firmware version, device id - all bare nonce-only REQs,
+            // same shape as the health requests. New this round.
+            RingProtocol.buildFrame(RingProtocol.CHAN_DEVICE, RingProtocol.KIND_REQ, 0x00, 0x01, seq4,
+                le16(nonce4)),
+            RingProtocol.buildFrame(RingProtocol.CHAN_DEVICE, RingProtocol.KIND_REQ, 0x00, 0x02, seq5,
+                le16(nonce5)),
+            RingProtocol.buildFrame(RingProtocol.CHAN_DEVICE, RingProtocol.KIND_REQ, 0x00, 0x0b, seq6,
+                le16(nonce6)),
+            RingProtocol.buildFrame(RingProtocol.CHAN_DEVICE, RingProtocol.KIND_REQ, 0x00, 0x0a, seq7,
+                concatBytes(le16(nonce7), parseHex("f8f53d235ac4ceaa073885cc"))),
+        };
+        for (byte[] frame : frames) {
+            if (!writeRingFrame(frame, "handshake")) {
+                return;
+            }
+        }
+        logLine("ring health: sent device-channel handshake (" + frames.length + " frames)");
+    }
+
+    private static byte[] parseHex(String hex) {
+        byte[] out = new byte[hex.length() / 2];
+        for (int i = 0; i < out.length; i++) {
+            out[i] = (byte) Integer.parseInt(hex.substring(i * 2, i * 2 + 2), 16);
+        }
+        return out;
+    }
+
+    private static byte[] le16(int value) {
+        return new byte[] {(byte) value, (byte) (value >>> 8)};
+    }
+
+    private static byte[] le32(long value) {
+        return new byte[] {(byte) value, (byte) (value >>> 8), (byte) (value >>> 16), (byte) (value >>> 24)};
+    }
+
+    private static byte[] concatBytes(byte[]... parts) {
+        int len = 0;
+        for (byte[] part : parts) {
+            len += part.length;
+        }
+        byte[] out = new byte[len];
+        int offset = 0;
+        for (byte[] part : parts) {
+            System.arraycopy(part, 0, out, offset, part.length);
+            offset += part.length;
+        }
+        return out;
+    }
+
+    /**
+     * Timeout waiting for a health REQ's own RSP. In the reference capture
+     * (a real successful Even sync, extracted from
+     * {@code /tmp/btsnoop_fresh.log} on bazzite-desktop, 2026-09-11) RSPs
+     * land within ~150ms; this only needs to bound the pathological "ring
+     * stopped answering entirely" case.
+     */
+    private static final long RING_HEALTH_RSP_TIMEOUT_MS = 3000L;
+
+    /**
+     * How long to keep waiting after the most recent DATA page for a health
+     * type before deciding its transfer is over (or that there was never
+     * going to be one). Chosen from the same reference capture: consecutive
+     * pages for one type land well under a second apart, so 1.5s covers
+     * that with real margin while still moving on quickly when a type
+     * genuinely has nothing new.
+     */
+    private static final long RING_HEALTH_DATA_IDLE_MS = 1500L;
+
+    /**
+     * Device-channel commands Even's real app fires in the gaps between
+     * health requests - identity (0x0a), battery (0x01), firmware version
+     * (0x02), device id (0x0b) - found by extracting the literal wire order
+     * of a real successful sync (same capture as above; two independent
+     * syncs in it agree). Rotated one-per-health-type here rather than
+     * replicated exactly (Even's real cadence isn't perfectly regular
+     * either - compare the two syncs in the capture), since which of these,
+     * if any, is actually load-bearing for the ring answering has never
+     * been isolated. This is matching cadence, not a confirmed protocol
+     * requirement.
+     */
+    private static final int[] RING_DEVICE_PING_CMD_LO = {0x0a, 0x01, 0x02, 0x0b};
+
+    /**
+     * Pull the five health record types. Each request is a bare 17-byte frame
+     * carrying only a nonce; the ring answers with an RSP on the same
+     * sequence number, then - sometimes - pushes one or more DATA pages,
+     * which arrive through {@link #handleRingHealthNotification}.
+     *
+     * <p><b>Response-driven, not sleep-driven (rewritten 2026-09-11).</b>
+     * The original version fired all five REQs on a blind fixed sleep and
+     * only flushed queued page ACKs after the whole loop finished - a real
+     * successful Even sync (see the constants above) does the opposite: it
+     * waits for each REQ's own RSP, waits for DATA to go idle, ACKs
+     * immediately, then interleaves one device-channel command before the
+     * next health type. This version does the same, using the existing
+     * lock.wait()/notifyAll() idiom already used elsewhere in this class
+     * (e.g. the shutdown-ack wait above) rather than a new mechanism.
+     *
+     * <p><b>Race condition, confirmed live 2026-09-10 - this is what the
+     * rewrite above addresses, not a reason to remove this warning.</b> The
+     * ring appears to hold only one health type's response in flight at a
+     * time. Sending the next health REQ before the previous type's DATA
+     * page(s) have actually arrived silently drops the earlier type's DATA:
+     * you still get its RSP, you never get its DATA, and nothing in the
+     * protocol signals an error. Evidence: five REQs fired back-to-back (the
+     * old blind-sleep version, badly timed) got five RSPs and zero DATA
+     * pages over more than a minute of waiting.
+     *
+     * <p><b>Worse: a lost race may PERMANENTLY discard that backlog, not
+     * just delay it.</b> On 2026-09-10, real HRV/SpO2/sleep backlog that
+     * should have existed (unreported since that morning, confirmed against
+     * the hourly export cadence in {@code knowledge/inbox/Even_health_data})
+     * did not come back on a later, more carefully spaced retry. The working
+     * theory - not proven, but treat it as true until disproven, because the
+     * downside of being wrong is silent data loss with nothing to catch it
+     * - is that the ring advances its own "last delivered" watermark for a
+     * type as soon as it RSPs a REQ for it, whether or not the DATA page
+     * actually made it out. <b>Do not send a speculative or test health REQ
+     * for a type unless you intend to actually receive and persist its
+     * DATA</b> - re-requesting will not recover what an earlier, raced
+     * request already consumed. The rewrite below waiting for DATA to go
+     * idle before advancing reduces how often this can happen but does not
+     * prove it can no longer happen (e.g. if the ring's real per-type
+     * timeout is shorter than RING_HEALTH_DATA_IDLE_MS for some type).
+     *
+     * <p>A separate, completely ordinary case looks identical from the wire
+     * alone: an RSP with no DATA can also just mean the ring genuinely has
+     * nothing new for that metric since the last successful pull. There is
+     * currently no way to tell "raced and silently discarded" apart from
+     * "genuinely nothing new" other than knowing independently whether fresh
+     * data should exist (e.g. from the export's own sampling cadence).
+     *
+     * <p>Runs on the worker thread (from connectRing), which is the only
+     * thread allowed to call the blocking write path - the wait loops below
+     * block that same thread, which is why {@link #flushRingOutbound} is
+     * called explicitly after each type rather than relying on the main
+     * loop's own call to it.
+     */
+    private boolean requestRingHealth() {
+        int[] commands = RingProtocol.HEALTH_COMMANDS;
+        int rspCount = 0;
+        for (int i = 0; i < commands.length; i++) {
+            int command = commands[i];
+            byte[] frame;
+            synchronized (lock) {
+                ringHealthRspSeen = false;
+                frame = RingProtocol.buildHealthRequest(command, nextRingSeqLocked(), nextRingNonceLocked());
+            }
+            if (!writeRingFrame(frame, "health request 0x" + Integer.toHexString(command))) {
+                // ABORTED: the sequence stopped partway. Distinct from "the
+                // ring had nothing for a type", which is an ordinary outcome
+                // and leaves the loop running - see the return below.
+                logLine("ring health: pull ABORTED on write at 0x" + Integer.toHexString(command)
+                    + " (" + i + " of " + commands.length + " types attempted, "
+                    + rspCount + " answered)");
+                return false;
+            }
+
+            if (awaitRingHealthRsp(RING_HEALTH_RSP_TIMEOUT_MS)) {
+                rspCount++;
+                awaitRingHealthDataIdle(RING_HEALTH_DATA_IDLE_MS);
+            } else {
+                logLine("ring health: no RSP for command 0x" + Integer.toHexString(command) + ", moving on");
+            }
+            // Write out any ACK(s) queued by DATA pages that just landed,
+            // right now rather than after the whole loop - this is the fix
+            // for the bug the doc above describes.
+            flushRingOutbound();
+
+            if (i < commands.length - 1) {
+                sendRingDevicePing(RING_DEVICE_PING_CMD_LO[i % RING_DEVICE_PING_CMD_LO.length]);
+            }
+        }
+
+        // Two more ways to have not really completed, both distinguishable from
+        // "completed but empty":
+        //
+        //   - the link dropped while the loop was running, so the later types
+        //     were written into nothing;
+        //   - the ring answered NONE of the five. A type with no backlog still
+        //     RSPs (measured: five REQs, five RSPs, zero DATA), so zero RSPs
+        //     across the whole sequence means the ring was not answering at
+        //     all, not that there was nothing to send.
+        //
+        // An RSP with no DATA remains ambiguous per type and is NOT treated as
+        // a failure here - that is the ordinary "nothing new" case.
+        boolean stillConnected;
+        synchronized (lock) {
+            stillConnected = ringConnected;
+        }
+        if (!stillConnected || rspCount == 0) {
+            logLine("ring health: pull ABORTED - ran all " + commands.length + " types but "
+                + (stillConnected ? "the ring answered none of them" : "the link dropped"));
+            return false;
+        }
+        logLine("ring health: requested " + commands.length + " record types, "
+            + rspCount + " answered");
+        return true;
+    }
+
+    /** Block (worker thread) until the health RSP flag is set or the timeout
+     * elapses. Not correlated to a specific command/seq - like the rest of
+     * this protocol's request path, it trusts the ring answers in order. */
+    private boolean awaitRingHealthRsp(long timeoutMs) {
+        long deadline = SystemClock.elapsedRealtime() + timeoutMs;
+        synchronized (lock) {
+            while (running && ringConnected && !ringHealthRspSeen) {
+                long remaining = deadline - SystemClock.elapsedRealtime();
+                if (remaining <= 0) {
+                    return false;
+                }
+                try {
+                    lock.wait(Math.min(remaining, 100));
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    return ringHealthRspSeen;
+                }
+            }
+            return ringHealthRspSeen;
+        }
+    }
+
+    /** Block (worker thread) until DATA pages go idle for {@code idleMs},
+     * extending the window on every new page so a real multi-page backlog
+     * transfer isn't cut short. Not filtered by health type - correct given
+     * the ring only has one type in flight at a time (see the class doc
+     * above), so any page arriving here belongs to the type just requested. */
+    private void awaitRingHealthDataIdle(long idleMs) {
+        long idleDeadline = SystemClock.elapsedRealtime() + idleMs;
+        synchronized (lock) {
+            int lastSeenCounter = ringHealthPageCounter;
+            while (running && ringConnected) {
+                long remaining = idleDeadline - SystemClock.elapsedRealtime();
+                if (remaining <= 0) {
+                    return;
+                }
+                if (ringHealthPageCounter != lastSeenCounter) {
+                    lastSeenCounter = ringHealthPageCounter;
+                    idleDeadline = SystemClock.elapsedRealtime() + idleMs;
+                    remaining = idleMs;
+                }
+                try {
+                    lock.wait(Math.min(remaining, 100));
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    return;
+                }
+            }
+        }
+    }
+
+    /**
+     * Fire one bare device-channel REQ in the gap between health types,
+     * matching (without waiting on a response) the cadence a real Even sync
+     * uses. See {@link #RING_DEVICE_PING_CMD_LO} for provenance and caveats.
+     */
+    private void sendRingDevicePing(int cmdLo) {
+        byte[] frame;
+        synchronized (lock) {
+            int seq = nextRingSeqLocked();
+            int nonce = nextRingNonceLocked();
+            if (cmdLo == 0x0a) {
+                // The only one of these four that isn't a bare nonce - it
+                // carries the same opaque constant blob as the handshake's
+                // own 0x0a frame (confirmed byte-identical across two
+                // different nights, see sendRingHandshake()'s comments).
+                frame = RingProtocol.buildFrame(RingProtocol.CHAN_DEVICE, RingProtocol.KIND_REQ, 0x00, 0x0a, seq,
+                    concatBytes(le16(nonce), parseHex("f8f53d235ac4ceaa073885cc")));
+            } else {
+                frame = RingProtocol.buildRequest(RingProtocol.CHAN_DEVICE, 0x00, cmdLo, seq, nonce);
+            }
+        }
+        writeRingFrame(frame, "device ping 0x" + Integer.toHexString(cmdLo));
+    }
+
+    /** Write one already-built ring frame. Worker-thread only (blocking). */
+    private boolean writeRingFrame(byte[] frame, String what) {
+        try {
+            boolean ok = bleManager.writeFrames(
+                ringAddress,
+                BleProtocol.R1_WRITE_CHAR_UUID,
+                Collections.singletonList(frame),
+                ConnectionOptions.WRITE_TYPE,
+                ConnectionOptions.WRITE_TIMEOUT_MS
+            );
+            if (!ok) {
+                logLine("ring " + what + " write failed");
+            }
+            return ok;
+        } catch (Throwable t) {
+            logLine("ring " + what + " write error: " + safeMessage(t));
+            return false;
+        }
+    }
+
+    /**
+     * Drain queued ring frames (page ACKs). Worker-thread only. Returns true
+     * when anything was written.
+     */
+    private boolean flushRingOutbound() {
+        boolean wroteAny = false;
+        while (true) {
+            byte[] frame;
+            synchronized (lock) {
+                if (!ringNotificationsReady || ringOutbound.isEmpty()) {
+                    return wroteAny;
+                }
+                frame = ringOutbound.poll();
+            }
+            if (frame == null) {
+                return wroteAny;
+            }
+            wroteAny |= writeRingFrame(frame, "page ack");
+        }
+    }
+
+    private int nextRingSeqLocked() {
+        ringSeq = (ringSeq + 1) & 0xff;
+        if (ringSeq == 0) {
+            ringSeq = 1;
+        }
+        return ringSeq;
+    }
+
+    private int nextRingNonceLocked() {
+        ringNonce = (ringNonce + 1) & 0xffff;
+        return ringNonce;
+    }
+
+    /**
+     * A snapshot of the health buffer together with the watermark identifying
+     * it.
+     *
+     * <p>The two have to come out under ONE lock. Reading the list and the
+     * count separately would let a page land in between, and the consumer would
+     * then clear a record nothing had ingested - the exact failure the
+     * watermark exists to prevent.
+     */
+    public static final class RingHealthBatch {
+        private final List<RingProtocol.HealthRecord> records;
+        private final long watermark;
+
+        RingHealthBatch(List<RingProtocol.HealthRecord> records, long watermark) {
+            this.records = records;
+            this.watermark = watermark;
+        }
+
+        public List<RingProtocol.HealthRecord> getRecords() {
+            return records;
+        }
+
+        /** Total-ever-added at the instant of the snapshot. */
+        public long getWatermark() {
+            return watermark;
+        }
+    }
+
+    /**
+     * Snapshot of everything the ring has pushed and not yet been consumed,
+     * with the watermark needed to hand it back as consumed.
+     */
+    public RingHealthBatch takeRingHealthBatch() {
+        synchronized (lock) {
+            return new RingHealthBatch(new ArrayList<>(ringHealthRecords), ringHealthTotalAdded);
+        }
+    }
+
+    /**
+     * Drop every held record whose identity is below {@code watermark} - that
+     * is, everything the caller has durably stored.
+     *
+     * <p>"Cut and paste instead of copy paste. If you didn't receive the pull
+     * then it should not delete yet." Call this ONLY after the store write has
+     * succeeded; a caller that dies before calling it simply sees the same
+     * records again, which is a no-op at the store.
+     *
+     * <p>Records that arrived after the snapshot sit above the watermark and
+     * are left alone, so a page landing during an ingest is never lost. If the
+     * buffer evicted its oldest in the meantime (see
+     * {@link #RING_HEALTH_MAX_RECORDS}) the arithmetic accounts for it via
+     * {@code ringHealthTotalAdded} rather than clearing the wrong end.
+     *
+     * @return how many records were actually removed.
+     */
+    public int clearRingHealthRecordsBelow(long watermark) {
+        synchronized (lock) {
+            long firstHeldIndex = ringHealthTotalAdded - ringHealthRecords.size();
+            long toRemove = watermark - firstHeldIndex;
+            if (toRemove <= 0) {
+                return 0;
+            }
+            if (toRemove > ringHealthRecords.size()) {
+                toRemove = ringHealthRecords.size();
+            }
+            ringHealthRecords.subList(0, (int) toRemove).clear();
+            return (int) toRemove;
+        }
+    }
+
+    /**
+     * Snapshot of everything the ring has pushed this session, WITHOUT
+     * consuming it.
+     *
+     * <p>Kept for callers that only want to look. The ingest path must use
+     * {@link #takeRingHealthBatch()} instead - a pure copy is what let the
+     * buffer grow unbounded and every tick re-process the whole session.
+     */
+    public List<RingProtocol.HealthRecord> getRingHealthRecords() {
+        synchronized (lock) {
+            return new ArrayList<>(ringHealthRecords);
+        }
     }
 
     private boolean enableRingNotification(String characteristicUuid) {
