@@ -32,10 +32,8 @@ import java.util.Map;
 public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private static final String TAG = "FaceclawComm";
 
-    // The EvenHub image container is a memory carrier only. Its 576x288 geometry
-    // gives the firmware separate 165888-byte display and reconstruction
-    // allocations: CFW reuses the former for its 640x480 packed-4bpp shadow and
-    // leaves the latter wholly available for compressed incoming messages.
+    // Local metadata for custom-command bookkeeping, not an EvenHub container.
+    // Submitted frames supply pixel geometry; the stock layout only captures input.
     private static final BleProtocol.ImageTileOptions DASHBOARD_TILE =
         new BleProtocol.ImageTileOptions("img00", 10, 0, 0, 576, 288);
 
@@ -782,8 +780,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             "bandwidth no-op " + benchmarkPayload.length + "B",
             connectionOptions.sendImagesToLeft);
         final int payloadBytes = benchmarkPayload.length;
-        // Protobuf-wrapped message bytes; the `aa 21` envelope adds a few more
-        // per MTU-sized BLE frame, which this figure does not include.
+        // Logical custom-message bytes; excludes length tag and packet framing.
         final int wireBytes = message.message.length;
         message.onSent = () -> {
             benchmarkMessagesSent++;
@@ -1657,6 +1654,23 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         if (!BleProtocol.NOTIFY_CHAR_UUID.equals(uuid)) {
             return;
         }
+        if (data.length >= 7 && (data[6] & 255) == CfwTransport.SID) {
+            CfwTransport.Ack ack = CfwTransport.parseAck(data);
+            if (ack == null) return;
+            synchronized (lock) {
+                lastIncomingAtMs = SystemClock.elapsedRealtime();
+                for (OutboundMessage message : inFlightMessages) {
+                    String ingress = message.isLeftArmMessage ? leftAddress : rightAddress;
+                    if (address.equalsIgnoreCase(ingress) && message.acceptCfwAck(ack)) {
+                        lastAckAtMs = lastIncomingAtMs;
+                        resolveAckLocked(message, data);
+                        break;
+                    }
+                }
+            }
+            interruptibleSleep.interrupt();
+            return;
+        }
         Log.d(TAG, "onNotification: address=" + address + " characteristicUuid=" + characteristicUuid + " data.length=" + data.length);
         BleProtocol.ParsedFrame frame = BleProtocol.parseFrame(data);
         int decodedWearState = BleProtocol.parseWearState(frame);
@@ -2455,7 +2469,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     }
 
     private boolean canPrewriteCandidate(OutboundMessage message) {
-        if (message == null || !message.isLeftArmMessage) {
+        if (message == null || message.sid == CfwTransport.SID || !message.isLeftArmMessage) {
             return false;
         }
         if (!"image".equals(message.kind)) {
@@ -2550,6 +2564,9 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             frames = Collections.singletonList(prewrittenFrames.get(prewrittenFrames.size() - 1));
             prewrittenMessage = null;
             prewrittenFrames = Collections.emptyList();
+        } else if (message.sid == CfwTransport.SID) {
+            frames = CfwTransport.frame(message.message, message.magic, CfwTransport.BOTH,
+                    bleManager.getNegotiatedMtu(writeAddress));
         } else {
             frames = BleProtocol.framePb(
                 message.message,
@@ -2748,10 +2765,10 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     }
 
     private void enqueueCreateLayoutLocked() {
-        // New session/container: re-assert the firmware-debug-flags overlay once
+        // New session: re-assert the firmware-debug-flags overlay once
         // the layout is ready (the mode-7 send is gated on this having reset).
         firmwareDebugFlagsLastSent = -1;
-        OutboundMessage message = messageBuilder.createLayout(DASHBOARD_TILE);
+        OutboundMessage message = messageBuilder.createLayout();
         message.onAck = () -> {
             startupProbePending = false;
             clearMessagesOfKindLocked("startup-text-probe");
@@ -2796,10 +2813,9 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     }
 
     /**
-     * Send the CFW mode-7 diagnostic-flag control op to the dashboard container:
+     * Send the CFW mode-7 diagnostic-flag control op through the private stream:
      * [7][2] to show the on-glasses debug-flag overlay, [7][1] to hide it. Uses the
-     * arbitrary-payload image path (no bmp/dedup/frame-timing interaction) and does
-     * nothing on stock firmware (which ignores unknown image modes).
+     * arbitrary-payload custom path (no bmp/dedup/frame-timing interaction).
      */
     private void enqueueFirmwareDebugFlagsLocked() {
         boolean show = firmwareDebugFlagsEnabled;
@@ -2900,7 +2916,6 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 }
                 BleImageOptimizer.TileImagePlan plan = new BleImageOptimizer.TileImagePlan(
                         0, DASHBOARD_TILE, packed, width, height, nextMapSessionId(), tex.payload);
-                plan.fragments = BleImageOptimizer.planImageFragments(plan.payload, ConnectionOptions.IMAGE_FRAGMENT_SIZE);
                 FrameTimings.getInstance().spanEnd(frameId, "texture-plan");
                 String texLog = "texture update " + (tex.fullFrame ? "full" : ("rects=" + tex.rectCount))
                         + " glyphs=" + tex.drawnGlyphs + " runs=" + tex.runCount
@@ -2963,7 +2978,6 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         BleImageOptimizer.TileImagePlan plan = incrementalPayload != null
             ? new BleImageOptimizer.TileImagePlan(0, DASHBOARD_TILE, packed, width, height, nextMapSessionId(), incrementalPayload)
             : new BleImageOptimizer.TileImagePlan(0, DASHBOARD_TILE, packed, width, height, nextMapSessionId());
-        plan.fragments = BleImageOptimizer.planImageFragments(plan.payload, ConnectionOptions.IMAGE_FRAGMENT_SIZE);
         FrameTimings.getInstance().spanEnd(frameId, "compress-and-plan");
         if (incrementalLog != null) {
             FrameTimings.getInstance().log(frameId, incrementalLog);
@@ -2971,15 +2985,26 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         finishEnqueueDesiredImageLocked(plan, fingerprint, paintMs, frameId);
     }
 
-    /** Shared tail of enqueueDesiredImageLocked: enqueue fragments, advance the delta base, log. */
+    /** Queue complete private commands, advance the delta base, and retain frame/ACK bookkeeping. */
     private void finishEnqueueDesiredImageLocked(
             BleImageOptimizer.TileImagePlan plan, String fingerprint, int paintMs, int frameId) {
         int updateId = nextImageUpdateId++;
-        int messageCount = plan.fragments.size();
+        List<byte[]> commands = new ArrayList<>();
+        if (plan.payload.length <= CfwTransport.MAX_MESSAGE) {
+            commands.add(plan.payload);
+        } else {
+            // A noisy full frame can exceed the stream record limit. Repaint it
+            // with independently decodable bands, never fragments of zlib data.
+            commands.addAll(BleImageOptimizer.encodeFullFrameBands(
+                    plan.packed, plan.width, plan.height, nextImageFrameId));
+            for (int i = 0; i < commands.size(); i++) {
+                nextImageFrameId = nextImageFrameId >= 0xfffe ? 1 : nextImageFrameId + 1;
+            }
+        }
+        int messageCount = commands.size();
         imageUpdateStats.put(updateId, new BleImageOptimizer.ImageUpdateStats(paintMs, 1, frameId));
-        for (int i = 0; i < plan.fragments.size(); i++) {
-            BleProtocol.ImageFragment fragment = plan.fragments.get(i);
-            enqueueImageFragmentLocked(plan, fragment, fingerprint, updateId, i + 1, messageCount, true);
+        for (int i = 0; i < commands.size(); i++) {
+            enqueueCustomImageLocked(plan, commands.get(i), fingerprint, updateId, i + 1, messageCount);
         }
         // This frame is now the base for the next delta (it will be the firmware
         // shadow once applied), even though it hasn't been acked yet — that is what
@@ -3019,16 +3044,16 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         logLine("queue " + message.label);
     }
 
-    private void enqueueImageFragmentLocked(
+    private void enqueueCustomImageLocked(
         BleImageOptimizer.TileImagePlan plan,
-        BleProtocol.ImageFragment fragment,
+        byte[] payload,
         String fingerprint,
         int updateId,
         int messageNumber,
-        int messageCount,
-        boolean requestAck
+        int messageCount
     ) {
-        OutboundMessage message = messageBuilder.imageFragment(fragment, plan, requestAck, connectionOptions.sendImagesToLeft);
+        OutboundMessage message = messageBuilder.customMessage("image", payload,
+                "image " + plan.tile.name + "#" + messageNumber, plan.tileIndex, connectionOptions.sendImagesToLeft);
         message.setImageUpdatePosition(updateId, messageNumber, messageCount);
         message.onAck = () -> {
             imageRetryAfterMs = 0;

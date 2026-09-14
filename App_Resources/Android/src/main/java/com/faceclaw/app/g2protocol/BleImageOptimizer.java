@@ -286,6 +286,22 @@ public final class BleImageOptimizer {
         return out;
     }
 
+    /** A full repaint in independently decodable commands below the uint16 record limit. */
+    static List<byte[]> encodeFullFrameBands(byte[] packed, int width, int height, int firstFid) {
+        if (width <= 0 || width > 640 || (width & 3) != 0 || height <= 0 || height > 480
+                || (height & 1) != 0 || packed.length != width * height / 2) {
+            throw new IllegalArgumentException("unsupported custom framebuffer dimensions");
+        }
+        List<byte[]> commands = new ArrayList<>();
+        int fid = firstFid;
+        for (int top = 0; top < height; top += 64) {
+            commands.add(encodeMode3Rect(packed, width / 2, 0, top, width,
+                    Math.min(64, height - top), fid));
+            fid = fid >= 0xfffe ? 1 : fid + 1;
+        }
+        return commands;
+    }
+
     /**
      * A CFW mode-8 multi-segment payload (`[8][count]` then per-rect
      * `[len16][mode-3 submsg]`) carrying several tight rectangle deltas instead of

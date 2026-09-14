@@ -42,6 +42,7 @@ public class FaceclawBleManager {
     private final ConcurrentHashMap<String, Integer> servicesStatuses = new ConcurrentHashMap<>();
 
     private final ConcurrentHashMap<String, CountDownLatch> mtuLatches = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, Integer> negotiatedMtus = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, Integer> mtuStatuses = new ConcurrentHashMap<>();
 
     private final ConcurrentHashMap<String, CountDownLatch> descriptorLatches = new ConcurrentHashMap<>();
@@ -165,6 +166,7 @@ public class FaceclawBleManager {
                 connectLatches.remove(address);
                 connectResults.remove(address);
                 gattClients.remove(address, gatt);
+                negotiatedMtus.remove(address);
                 gatt.disconnect();
                 gatt.close();
                 return false;
@@ -198,6 +200,11 @@ public class FaceclawBleManager {
             }
             gatt.readPhy();
         }
+    }
+
+    public int getNegotiatedMtu(String address) {
+        Integer mtu = negotiatedMtus.get(address);
+        return mtu == null ? 23 : mtu;
     }
 
     public boolean requestMtu(String address, int mtu, int timeoutMs) {
@@ -390,6 +397,7 @@ public class FaceclawBleManager {
         Object gattLock = gattLock(address);
         synchronized (gattLock) {
             BluetoothGatt gatt = gattClients.remove(address);
+            negotiatedMtus.remove(address);
             if (gatt == null) {
                 return;
             }
@@ -463,6 +471,7 @@ public class FaceclawBleManager {
                 Object gattLock = gattLock(address);
                 synchronized (gattLock) {
                     gattClients.remove(address, gatt);
+                    negotiatedMtus.remove(address);
                     gatt.close();
                 }
                 dispatchConnectionState(address, false);
@@ -482,6 +491,7 @@ public class FaceclawBleManager {
         @Override
         public void onMtuChanged(BluetoothGatt gatt, int mtu, int status) {
             String address = gatt.getDevice().getAddress();
+            if (status == BluetoothGatt.GATT_SUCCESS) negotiatedMtus.put(address, mtu);
             mtuStatuses.put(address, status);
             CountDownLatch latch = mtuLatches.remove(address);
             if (latch != null) {

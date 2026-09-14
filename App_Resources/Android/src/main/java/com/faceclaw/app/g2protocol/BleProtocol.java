@@ -185,13 +185,11 @@ public class BleProtocol {
     }
 
 
-    public static byte[] buildCreateMixedImagePage(int magic, ImageTileOptions[] tiles) {
+    /** Retain the text container for forwarded inputs, without an image container. */
+    public static byte[] buildCreateInputPage(int magic) {
         List<byte[]> innerParts = new ArrayList<>();
-        innerParts.add(encodeVarintField(1, 1 + tiles.length));
+        innerParts.add(encodeVarintField(1, 1));
         innerParts.add(encodeMessageField(3, encodeTextObject("dashboard", 1, 0, 0, 576, 288, " ", true)));
-        for (ImageTileOptions tile : tiles) {
-            innerParts.add(encodeMessageField(4, encodeImageObject(tile)));
-        }
         innerParts.add(encodeVarintField(5, 10000));
         byte[] inner = concat(innerParts);
         return wrapEvenHub(0, magic, 3, inner);

@@ -12,6 +12,9 @@ public final class OutboundMessage {
     final int tileIndex;
     final boolean isLeftArmMessage;
 
+    int cfwAckLenses;
+    final int cfwChecksum;
+
     int imageUpdateId;
     int imageMessageNumber;
     int imageMessageCount;
@@ -30,9 +33,19 @@ public final class OutboundMessage {
         this.flag = flag;
         this.magic = magic;
         this.message = message == null ? new byte[0] : Arrays.copyOf(message, message.length);
+        this.cfwChecksum = sid == CfwTransport.SID ? CfwTransport.crc(this.message) : 0;
         this.ackTimeoutMs = ackTimeoutMs;
         this.tileIndex = tileIndex;
         this.isLeftArmMessage = isLeftArmMessage;
+    }
+
+    /** Record only a matching processing ACK; completion requires both lenses. */
+    boolean acceptCfwAck(CfwTransport.Ack ack) {
+        if (ack == null || sid != CfwTransport.SID || magic != ack.streamId
+                || ack.messageId != 0 || message.length != ack.size || cfwChecksum != ack.checksum
+                || (ack.lens != 1 && ack.lens != 2)) return false;
+        cfwAckLenses |= ack.lens;
+        return cfwAckLenses == CfwTransport.BOTH;
     }
 
     void setImageUpdatePosition(int updateId, int messageNumber, int messageCount) {
