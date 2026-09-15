@@ -1,6 +1,6 @@
 /**
  * Shared shape for the cloud speech-to-text providers (ElevenLabs, Whisper,
- * Soniox).
+ * Soniox, self-hosted).
  * The voice bridge holds one of these while a cloud provider owns the
  * transcript; the Java controller then only decodes LC3 to PCM and hands it
  * over via acceptPcm.

@@ -30,6 +30,7 @@
     "../app/apps/evenhub/containers.ts",
     "../app/apps/timer/timer-model.ts",
     "../app/apps/teleprompter/script-tracker.ts",
-    "../app/apps/nightscout/nightscout-alerts.ts"
+    "../app/apps/nightscout/nightscout-alerts.ts",
+    "../app/native/realtime-stt-protocol.ts"
   ]
 }

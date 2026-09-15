@@ -523,13 +523,14 @@ export const ringConnectionModeSetting = new ConfigSettingEnum<RingConnectionMod
     "How R1 ring input reaches the phone. Only via glasses: the ring's own link to the glasses carries its gestures, and the phone never opens a Bluetooth connection to the ring. Direct: also connect to the ring from the phone (currently unreliable). Takes effect on the next connection to the glasses.",
 });
 
-export type VoiceProvider = "onboard" | "elevenlabs" | "whisper" | "soniox";
+export type VoiceProvider = "onboard" | "elevenlabs" | "whisper" | "soniox" | "selfhosted";
 
 const voiceProviderLabels: Record<VoiceProvider, string> = {
   onboard: "On-device",
   elevenlabs: "ElevenLabs",
   whisper: "Whisper",
   soniox: "Soniox",
+  selfhosted: "Self-hosted",
 };
 
 export const voiceProviderSetting = new ConfigSettingEnum<VoiceProvider>({
@@ -537,15 +538,58 @@ export const voiceProviderSetting = new ConfigSettingEnum<VoiceProvider>({
   label: "Transcription Provider",
   storageKey: "voice.provider",
   defaultValue: "onboard",
-  values: ["onboard", "elevenlabs", "whisper", "soniox"],
+  values: ["onboard", "elevenlabs", "whisper", "soniox", "selfhosted"],
   formatValue: (value) => voiceProviderLabels[value] ?? value,
   isDisabled: (value) => {
     if (value === "elevenlabs") return elevenLabsApiKeySetting.get().trim().length === 0;
     if (value === "whisper") return openAiApiKeySetting.get().trim().length === 0;
     if (value === "soniox") return sonioxApiKeySetting.get().trim().length === 0;
+    if (value === "selfhosted") return selfHostedHostSetting.get().trim().length === 0;
     return false;
   },
-  description: "Speech-to-text engine for voice input. ElevenLabs, Whisper, and Soniox are cloud services that need an API key, with significantly better accuracy than on-device transcription. On-device transcription needs the voice model downloaded (below).",
+  description: "Speech-to-text engine for voice input. ElevenLabs, Whisper, and Soniox are cloud services that need an API key, with significantly better accuracy than on-device transcription. Self-hosted uses a speech-to-text server on your own machine (settings below). On-device transcription needs the voice model downloaded (below).",
+});
+
+export const selfHostedHostSetting = new ConfigSettingString({
+  id: "self-hosted-stt-host",
+  label: "STT server host",
+  storageKey: "voice.selfHostedHost",
+  defaultValue: "",
+  editorTitle: "Speech-to-text server host (tailscale IP)",
+  glassesEditTitle: "Edit STT server host",
+  description:
+    "Hostname or IP address (e.g. a Tailscale address) of a machine running an OpenAI Realtime-compatible transcription server such as Speaches. Prefix with wss:// for TLS.",
+});
+
+export const selfHostedPortSetting = new ConfigSettingString({
+  id: "self-hosted-stt-port",
+  label: "STT server port",
+  storageKey: "voice.selfHostedPort",
+  defaultValue: "8000",
+  editorTitle: "Speech-to-text server port",
+  glassesEditTitle: "Edit STT server port",
+  description: "TCP port of the transcription server. Speaches listens on 8000 by default.",
+});
+
+export const selfHostedModelSetting = new ConfigSettingString({
+  id: "self-hosted-stt-model",
+  label: "STT server model",
+  storageKey: "voice.selfHostedModel",
+  defaultValue: "Systran/faster-distil-whisper-small.en",
+  editorTitle: "Speech-to-text server model",
+  glassesEditTitle: "Edit STT server model",
+  description: "Transcription model id on the server. For Speaches, download it first (POST /v1/models/<id>).",
+});
+
+export const selfHostedApiKeySetting = new ConfigSettingString({
+  id: "self-hosted-stt-api-key",
+  label: "STT server key",
+  storageKey: "voice.selfHostedApiKey",
+  defaultValue: "",
+  editorTitle: "Speech-to-text server API key",
+  glassesEditTitle: "Edit STT server key",
+  formatValue: (value) => (value ? `${value.slice(0, 6)}...` : "(not set)"),
+  description: "Optional. Only needed if the server is configured with an API key.",
 });
 
 const wakeWordActionLabels: Record<WakeWordAction, string> = {

@@ -5,6 +5,7 @@ import { ReconnectingSttClient } from "./reconnecting-stt";
 import { SpeechPauseDetector } from "./speech-pause";
 import { ElevenLabsSttClient } from "./elevenlabs-stt";
 import { OpenAiRealtimeSttClient } from "./openai-stt";
+import { compatSessionUpdate, selfHostedRealtimeUrl } from "./realtime-stt-protocol";
 import { SonioxSttClient } from "./soniox-stt";
 import { toUint8Array } from "../util/array-util";
 
@@ -26,7 +27,7 @@ export type VoiceControlState = {
   detail: string;
 };
 
-export type VoiceProviderKind = "onboard" | "elevenlabs" | "whisper" | "soniox";
+export type VoiceProviderKind = "onboard" | "elevenlabs" | "whisper" | "soniox" | "selfhosted";
 
 export type VoiceTranscriptEvent = CloudSttTranscriptEvent & {
   /**
@@ -50,6 +51,8 @@ export type PushToTalkOptions = {
   elevenLabsApiKey: string;
   openAiApiKey: string;
   sonioxApiKey: string;
+  /** Server for the "selfhosted" provider; the API key may be blank. */
+  selfHosted?: { host: string; port: string; model: string; apiKey: string };
   saveRecording: boolean;
   /**
    * Watch the mic and fire onSpeechEnd when the speaker stops. For hands-free
@@ -320,7 +323,8 @@ export class FaceclawVoiceControlBridge {
   /**
    * The cloud provider for this session, or null to transcribe on-device.
    * A cloud provider whose API key is missing falls back to on-device rather
-   * than failing the capture outright.
+   * than failing the capture outright. For the self-hosted provider the key
+   * is optional; a blank host (or an unusable port or model) falls back.
    */
   private createCloudClient(options: PushToTalkOptions): CloudSttClient | null {
     if (options.provider === "onboard") return null;
@@ -348,6 +352,22 @@ export class FaceclawVoiceControlBridge {
         return null;
       }
       return reconnecting((config) => new SonioxSttClient(config), apiKey);
+    }
+    if (options.provider === "selfhosted") {
+      const server = options.selfHosted;
+      const url = server ? selfHostedRealtimeUrl(server) : null;
+      if (!server || !url) {
+        this.setStatus("No self-hosted server set; using on-device voice.");
+        return null;
+      }
+      const apiKey = server.apiKey.trim();
+      const sessionUpdate = compatSessionUpdate(server.model.trim());
+      return reconnecting((config) => new OpenAiRealtimeSttClient(config, {
+        url,
+        authHeader: apiKey ? ["Authorization", `Bearer ${apiKey}`] : null,
+        sessionUpdate,
+        label: "self-hosted",
+      }), apiKey);
     }
     const apiKey = options.openAiApiKey.trim();
     if (!apiKey) {

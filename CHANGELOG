@@ -5,6 +5,7 @@
 * Add Wear OS watch battery indicator to the top bar and Glanceboard
 * Glanceboard tap setting includes a Disable option
 * Refinements to builtin games
+* Add a Self-hosted speech-to-text provider, for an OpenAI Realtime-compatible server (such as Speaches) on your own machine
 
 ## 0.7.0 - 2026-09-12
 

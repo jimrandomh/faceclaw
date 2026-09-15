@@ -1,4 +1,11 @@
 import { CLOUD_STT_SAMPLE_RATE, CloudSttClient, CloudSttOptions, encodeBase64 } from "./cloud-stt";
+import {
+  classifyRealtimeError,
+  OPENAI_REALTIME_MODEL,
+  OPENAI_REALTIME_URL,
+  openAiSessionUpdate,
+  REALTIME_SAMPLE_RATE,
+} from "./realtime-stt-protocol";
 
 declare const com: any;
 
@@ -14,13 +21,34 @@ declare const com: any;
  * pass through a 2:3 linear-interpolation upsampler), and transcripts arrive
  * as DELTAS, which are accumulated into the full text our replace-semantics
  * listeners expect.
+ *
+ * The same client serves self-hosted servers that speak this protocol (e.g.
+ * Speaches), through a different RealtimeSttEndpoint. Those may segment
+ * audio themselves (server VAD commits), send no deltas, and reject a commit
+ * on a near-empty buffer; all three are handled below.
  */
 
-const WS_URL = "wss://api.openai.com/v1/realtime?intent=transcription";
-const MODEL_ID = "gpt-realtime-whisper";
-const TARGET_SAMPLE_RATE = 24000;
-
 export type OpenAiSttOptions = CloudSttOptions;
+
+export type RealtimeSttEndpoint = {
+  url: string;
+  /** Header name and value, or null to connect without one. */
+  authHeader: [string, string] | null;
+  sessionUpdate: object;
+  /** Provider name in status and error text. */
+  label: string;
+  /** The server's VAD segments the audio; pause commits are left to it. */
+  serverVad?: boolean;
+};
+
+function openAiEndpoint(apiKey: string): RealtimeSttEndpoint {
+  return {
+    url: OPENAI_REALTIME_URL,
+    authHeader: ["Authorization", `Bearer ${apiKey}`],
+    sessionUpdate: openAiSessionUpdate(OPENAI_REALTIME_MODEL),
+    label: "OpenAI",
+  };
+}
 
 export class OpenAiRealtimeSttClient implements CloudSttClient {
   private ws: any = null;
@@ -32,17 +60,23 @@ export class OpenAiRealtimeSttClient implements CloudSttClient {
   private readonly upsampler = new PcmUpsampler();
   private readonly items = new Map<string, { text: string; final: boolean; paragraphBreakAfter: boolean }>();
   private readonly commits: boolean[] = [];
+  // Items the server VAD ended (speech_stopped precedes their committed event).
+  private readonly serverCommittedIds = new Set<string>();
   private committed = false;
 
-  constructor(private readonly options: OpenAiSttOptions) {}
+  constructor(
+    private readonly options: OpenAiSttOptions,
+    private readonly endpoint: RealtimeSttEndpoint = openAiEndpoint(options.apiKey),
+  ) {}
 
   start(): void {
     if (this.closed || this.ws) return;
+    const label = this.endpoint.label;
     this.listenerProxy = new com.faceclaw.app.FaceclawWebSocketListener({
       onOpen: () => {
         if (this.closed) return;
         this.open = true;
-        this.trySend(JSON.stringify(sessionConfig()));
+        this.trySend(JSON.stringify(this.endpoint.sessionUpdate));
         for (const chunk of this.pendingChunks.splice(0)) {
           this.sendChunk(chunk);
         }
@@ -53,23 +87,23 @@ export class OpenAiRealtimeSttClient implements CloudSttClient {
       },
       onClosed: () => {
         this.open = false;
-        if (!this.closed) this.options.onDisconnected?.("OpenAI connection closed.");
+        if (!this.closed) this.options.onDisconnected?.(`${label} connection closed.`);
       },
       onFailure: (message: string) => {
         if (this.closed) return;
-        this.options.onDisconnected?.(`OpenAI connection failed: ${String(message)}`);
+        this.options.onDisconnected?.(`${label} connection failed: ${String(message)}`);
       },
     });
     try {
       this.ws = new com.faceclaw.app.FaceclawWebSocket(
-        WS_URL,
+        this.endpoint.url,
         this.listenerProxy,
-        "Authorization",
-        `Bearer ${this.options.apiKey}`,
+        this.endpoint.authHeader?.[0] ?? null,
+        this.endpoint.authHeader?.[1] ?? null,
       );
-      this.options.onStatus("Connecting to OpenAI...");
+      this.options.onStatus(`Connecting to ${label}...`);
     } catch (error) {
-      this.options.onDisconnected?.(`OpenAI connection failed: ${String((error as Error)?.message ?? error)}`);
+      this.options.onDisconnected?.(`${label} connection failed: ${String((error as Error)?.message ?? error)}`);
     }
   }
 
@@ -87,6 +121,9 @@ export class OpenAiRealtimeSttClient implements CloudSttClient {
   }
 
   commitSegment(): void {
+    // With server VAD the server commits at pauses; a client commit racing it
+    // would land on the fresh, near-empty buffer.
+    if (this.endpoint.serverVad) return;
     this.commit(true);
   }
 
@@ -132,10 +169,10 @@ export class OpenAiRealtimeSttClient implements CloudSttClient {
   private trySend(message: string): void {
     try {
       if (this.ws?.sendText(message) === false) {
-        this.options.onDisconnected?.("OpenAI send failed.");
+        this.options.onDisconnected?.(`${this.endpoint.label} send failed.`);
       }
     } catch (error) {
-      this.options.onDisconnected?.(`OpenAI send failed: ${String(error)}`);
+      this.options.onDisconnected?.(`${this.endpoint.label} send failed: ${String(error)}`);
     }
   }
 
@@ -146,13 +183,22 @@ export class OpenAiRealtimeSttClient implements CloudSttClient {
     } catch {
       return;
     }
+    const label = this.endpoint.label;
     switch (message?.type) {
       case "session.created":
       case "session.updated":
-        this.options.onStatus("Listening (OpenAI)...");
+        this.options.onStatus(`Listening (${label})...`);
+        return;
+      case "input_audio_buffer.speech_stopped":
+        this.serverCommittedIds.add(String(message.item_id));
         return;
       case "input_audio_buffer.committed": {
-        this.item(String(message.item_id)).paragraphBreakAfter = this.commits.shift() ?? false;
+        const id = String(message.item_id);
+        // A server VAD commit must not consume a client commit's entry, or
+        // every later paragraph break shifts onto the wrong item.
+        this.item(id).paragraphBreakAfter = this.serverCommittedIds.delete(id)
+          ? this.endpoint.serverVad === true
+          : this.commits.shift() ?? false;
         return;
       }
       case "conversation.item.input_audio_transcription.delta": {
@@ -165,19 +211,39 @@ export class OpenAiRealtimeSttClient implements CloudSttClient {
         item.text = String(message.transcript ?? item.text);
         item.final = true;
         this.emitItems();
-        if (this.committed && !this.items.size && !this.commits.length) this.stop();
+        this.maybeFinishStop();
+        return;
+      }
+      case "conversation.item.input_audio_transcription.failed": {
+        // Finalize with whatever arrived, so later items aren't blocked behind it.
+        this.item(String(message.item_id)).final = true;
+        this.emitItems();
+        this.maybeFinishStop();
         return;
       }
       case "error":
-        if (message.error?.code === "rate_limit_exceeded" || message.error?.type === "server_error") {
-          this.options.onDisconnected?.(`OpenAI: ${String(message.error?.message)}`);
-          return;
+        switch (classifyRealtimeError(message.error)) {
+          case "ignore":
+            return;
+          case "commit-rejected":
+            // Nothing was committed (e.g. a very quick push-to-talk tap).
+            this.commits.shift();
+            this.maybeFinishStop();
+            return;
+          case "disconnect":
+            this.options.onDisconnected?.(`${label}: ${String(message.error?.message)}`);
+            return;
+          default:
+            this.options.onError(`${label}: ${String(message.error?.message ?? "unknown error")}`);
+            return;
         }
-        this.options.onError(`OpenAI: ${String(message.error?.message ?? "unknown error")}`);
-        return;
       default:
         return;
     }
+  }
+
+  private maybeFinishStop(): void {
+    if (this.committed && !this.items.size && !this.commits.length) this.stop();
   }
 
   private item(id: string): { text: string; final: boolean; paragraphBreakAfter: boolean } {
@@ -209,23 +275,6 @@ export class OpenAiRealtimeSttClient implements CloudSttClient {
 
 }
 
-function sessionConfig(): object {
-  return {
-    type: "session.update",
-    session: {
-      type: "transcription",
-      audio: {
-        input: {
-          format: { type: "audio/pcm", rate: TARGET_SAMPLE_RATE },
-          transcription: { model: MODEL_ID },
-          // Push-to-talk owns the utterance boundary; no server VAD.
-          turn_detection: null,
-        },
-      },
-    },
-  };
-}
-
 /**
  * Streaming 16 kHz -> 24 kHz PCM16LE upsampler (linear interpolation, exact
  * 2:3 ratio). Keeps the last sample and fractional phase across chunks so
@@ -241,7 +290,7 @@ class PcmUpsampler {
 
   process(bytes: Uint8Array): Uint8Array {
     const sampleCount = bytes.length >> 1;
-    const step = CLOUD_STT_SAMPLE_RATE / TARGET_SAMPLE_RATE;
+    const step = CLOUD_STT_SAMPLE_RATE / REALTIME_SAMPLE_RATE;
     // Phase starts each input interval at < 1 and advances by 2/3, so the
     // inner loop emits at most 2 outputs per input sample.
     const out = new Uint8Array(sampleCount * 2 * 2);

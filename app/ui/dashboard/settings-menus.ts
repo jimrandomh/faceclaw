@@ -59,6 +59,10 @@ import {
   firmwareDebugFlagsSetting,
   lockScreenEnabledSetting,
   saveVoiceRecordingsSetting,
+  selfHostedApiKeySetting,
+  selfHostedHostSetting,
+  selfHostedModelSetting,
+  selfHostedPortSetting,
   showBleBandwidthSetting,
   suspendEvenHubWhenScreenOffSetting,
   terminalAutoReconnectSetting,
@@ -119,6 +123,11 @@ function settingsSections(): SettingsSection[] {
       items: [
         enumSettingMenuItem(wakeWordActionSetting),
         enumSettingMenuItem(voiceProviderSetting),
+        // Server for the Self-hosted provider (e.g. Speaches over Tailscale).
+        textSettingMenuItem(selfHostedHostSetting),
+        textSettingMenuItem(selfHostedPortSetting),
+        textSettingMenuItem(selfHostedModelSetting),
+        textSettingMenuItem(selfHostedApiKeySetting),
         asrModelMenuItem(),
       ],
     },
