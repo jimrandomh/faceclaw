@@ -510,7 +510,7 @@ class DashboardController {
           window.relayout();
           await this.configureWindowSurface(
             window.surfaceId,
-            window.windowId === foregroundWindowId,
+            this.isForegroundWindow(window.windowId),
             window.heightMode,
           );
         } else if (window.closeable) {
@@ -548,7 +548,7 @@ class DashboardController {
     void (async () => {
       for (const window of Array.from(shell.getWindows())) {
         if (!changed.includes(window.appId)) continue;
-        await this.configureWindowSurface(window.surfaceId, window.windowId === shell.foregroundWindow()?.windowId, window.heightMode);
+        await this.configureWindowSurface(window.surfaceId, this.isForegroundWindow(window.windowId), window.heightMode);
         window.relayout?.();
       }
       shell.foregroundWindow()?.requestRender();
@@ -560,12 +560,11 @@ class DashboardController {
     const position = verticalPositionSetting.get();
     if (position === this.lastVerticalPosition) return;
     this.lastVerticalPosition = position;
-    const foregroundWindowId = shell.foregroundWindow()?.windowId;
     void (async () => {
       for (const window of shell.getWindows()) {
         await this.configureWindowSurface(
           window.surfaceId,
-          window.windowId === foregroundWindowId,
+          this.isForegroundWindow(window.windowId),
           window.heightMode,
         );
       }
@@ -1249,11 +1248,10 @@ class DashboardController {
       // loop re-applies the current dim from here.
       await target.setUnderlayDim(SHELL_SURFACE_Z_ORDER, 1);
       this.appliedUnderlayDim = 1;
-      const foregroundWindowId = shell.foregroundWindow()?.windowId;
       for (const window of shell.getWindows()) {
         await this.configureWindowSurface(
           window.surfaceId,
-          window.windowId === foregroundWindowId,
+          this.isForegroundWindow(window.windowId),
           window.heightMode,
           target,
         );
@@ -1538,11 +1536,10 @@ class DashboardController {
       await communicator.setUnderlayDim(SHELL_SURFACE_Z_ORDER, 1);
       this.appliedUnderlayDim = 1;
       await this.configureLockSurface(communicator);
-      const foregroundWindowId = shell.foregroundWindow()?.windowId;
       for (const window of shell.getWindows()) {
         await this.configureWindowSurface(
           window.surfaceId,
-          window.windowId === foregroundWindowId,
+          this.isForegroundWindow(window.windowId),
           window.heightMode,
         );
       }
@@ -2276,8 +2273,7 @@ class DashboardController {
       reconfigureSurface: (heightMode) => {
         // Resize the surface rect to the new band; a foreground window stays
         // visible. The shell re-renders so the chrome (top bar) follows.
-        const visible = shell.foregroundWindow()?.windowId === windowId;
-        void this.configureWindowSurface(surfaceId, visible, heightMode);
+        void this.configureWindowSurface(surfaceId, this.isForegroundWindow(windowId), heightMode);
         this.requestShellRender();
       },
       onClosed: () => {
@@ -2430,10 +2426,21 @@ class DashboardController {
     }
   }
 
-  /** Create/refresh a window surface on the compositor, if a display target exists. */
+  /**
+   * Create/refresh a window surface on the compositor, if a display target exists.
+   *
+   * `visible` may be a function, asked only after the surface is configured,
+   * right when the visibility call is queued. Callers that loop over windows
+   * or resize one in place must pass one (isForegroundWindow): the configure
+   * call yields, the foreground can change meanwhile, and a visibility decided
+   * before the await then lands AFTER the focus change's own calls, since the
+   * bridge runs Java calls in order. At startup, restoreOpenApps focuses
+   * windows while connect() registers surfaces, so a foreground read before
+   * that loop left the old window visible and the new foreground hidden.
+   */
   private async configureWindowSurface(
     surfaceId: string,
-    visible: boolean,
+    visible: boolean | (() => boolean),
     heightMode: WindowHeightMode = "min",
     // ensurePreviewDisplay passes its not-yet-published target explicitly.
     target: DisplayTarget | null = this.display,
@@ -2444,7 +2451,12 @@ class DashboardController {
       zOrder: 0,
       transparency: "opaque",
     });
-    await target.setSurfaceVisible(surfaceId, visible);
+    await target.setSurfaceVisible(surfaceId, typeof visible === "function" ? visible() : visible);
+  }
+
+  /** A late answer to "is this window in front?", for configureWindowSurface. */
+  private isForegroundWindow(windowId: string): () => boolean {
+    return () => shell.foregroundWindow()?.windowId === windowId;
   }
 
   private removeWindowSurface(surfaceId: string): void {
