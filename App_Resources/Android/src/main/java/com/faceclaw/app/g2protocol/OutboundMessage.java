@@ -6,13 +6,14 @@ public final class OutboundMessage {
     final String label;
     final int sid;
     final int flag;
-    final int magic;
+    int magic;
     final byte[] message;
     final int ackTimeoutMs;
     final int tileIndex;
     final boolean isLeftArmMessage;
 
-    int cfwAckLenses;
+    int cfwAckLenses, cfwRetries;
+    boolean cfwRetryPending;
     final int cfwChecksum;
 
     int imageUpdateId;
@@ -39,13 +40,27 @@ public final class OutboundMessage {
         this.isLeftArmMessage = isLeftArmMessage;
     }
 
-    /** Record only a matching processing ACK; completion requires both lenses. */
+    /** NACK names this attempt's stream/message sequence, even without a decoded size. */
     boolean acceptCfwAck(CfwTransport.Ack ack) {
         if (ack == null || sid != CfwTransport.SID || magic != ack.streamId
-                || ack.messageId != 0 || message.length != ack.size || cfwChecksum != ack.checksum
-                || (ack.lens != 1 && ack.lens != 2)) return false;
+                || ack.messageId != 0 || (ack.lens != 1 && ack.lens != 2)) return false;
+        if (ack.nack) {
+            cfwRetryPending = true;
+            return false;
+        }
+        if (message.length != ack.size || cfwChecksum != ack.checksum) return false;
         cfwAckLenses |= ack.lens;
-        return cfwAckLenses == CfwTransport.BOTH;
+        return !cfwRetryPending && cfwAckLenses == CfwTransport.BOTH;
+    }
+
+    /** Replace an attempt atomically under the communicator lock. */
+    void prepareCfwReplay(int streamId) {
+        magic = streamId;
+        ++cfwRetries;
+        cfwAckLenses = 0;
+        cfwRetryPending = false;
+        ackDeadlineAtMs = 0;
+        ackPayload = new byte[0];
     }
 
     void setImageUpdatePosition(int updateId, int messageNumber, int messageCount) {

@@ -83,7 +83,7 @@ public class MessageBuilder {
             throw new IllegalArgumentException("CFW message exceeds uint16 length");
         int streamId = magicPool.allocate();
         return new OutboundMessage(kind, label, CfwTransport.SID, 0, streamId, payload,
-                ACK_TIMEOUT_MS, tileIndex, leftArm);
+                CfwMessageWindow.ACK_TIMEOUT_MS, tileIndex, leftArm);
     }
 
     public OutboundMessage cfwCleanup(

@@ -266,6 +266,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private final TextureCacheState textureCache = new TextureCacheState();
 
     private final ArrayDeque<OutboundMessage> pendingMessages = new ArrayDeque<>();
+    private final CfwTransport[] cfwTransports = { new CfwTransport(), new CfwTransport() };
     private final ArrayDeque<OutboundMessage> inFlightMessages = new ArrayDeque<>();
     private OutboundMessage prewrittenMessage;
     private List<byte[]> prewrittenFrames = Collections.emptyList();
@@ -1661,12 +1662,19 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 lastIncomingAtMs = SystemClock.elapsedRealtime();
                 for (OutboundMessage message : inFlightMessages) {
                     String ingress = message.isLeftArmMessage ? leftAddress : rightAddress;
-                    if (address.equalsIgnoreCase(ingress) && message.acceptCfwAck(ack)) {
-                        lastAckAtMs = lastIncomingAtMs;
-                        resolveAckLocked(message, data);
+                    if (message.sid == CfwTransport.SID && address.equalsIgnoreCase(ingress) && message.magic == ack.streamId) {
+                        message.acceptCfwAck(ack);
+                        Log.i(TAG, "CFW " + (ack.nack ? "NACK" : "ACK") + " id=" + ack.streamId
+                                + " ordinal=" + ack.messageId + " lens=" + ack.lens + " txseq=" + (data[2] & 255)
+                                + " size=" + ack.size + " crc=" + ack.checksum
+                                + " expected=" + message.message.length + "/" + message.cfwChecksum
+                                + " ackedLenses=" + message.cfwAckLenses
+                                + " ageMs=" + (lastIncomingAtMs - message.sentAtMs));
+                        message.ackPayload = Arrays.copyOf(data, data.length);
                         break;
                     }
                 }
+                drainCfwAcknowledgementsLocked();
             }
             interruptibleSleep.interrupt();
             return;
@@ -1989,6 +1997,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 audioCaptureActive = false;
                 faceclawWakePendingNonce = -1;
                 cfwCleanupDelivered = false;
+                for (CfwTransport transport : cfwTransports) transport.reset();
                 lastCfwCleanupAckMagic = 0;
                 lastFaceclawWakeLeaseQueuedAtMs = 0;
                 lastFaceclawFramebufferLeaseQueuedAtMs = 0;
@@ -2274,6 +2283,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             maybeFinishNoChangeDesiredFrame();
 
             synchronized (lock) {
+                drainCfwAcknowledgementsLocked();
                 if (cfwCleanupDelivered) {
                     /* Successful mode 11 must be the last Faceclaw write. Drop
                      * anything a late external producer attempted to enqueue
@@ -2301,11 +2311,36 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 }
                 if (!inFlightMessages.isEmpty()) {
                     OutboundMessage oldest = inFlightMessages.peekFirst();
+                    List<OutboundMessage> replay = CfwMessageWindow.replayWindow(inFlightMessages, now);
+                    if (!replay.isEmpty()) {
+                        logLine("CFW recovery: replay " + replay.size()
+                                + " unresolved message(s) from id=" + replay.get(0).magic);
+                        for (OutboundMessage candidate : replay) {
+                            if (candidate.cfwRetries >= CfwMessageWindow.MAX_RETRIES) {
+                                handleTransportFailure("CFW recovery retry limit");
+                                return 0;
+                            }
+                            logLine("CFW replay id=" + candidate.magic + " label=" + candidate.label
+                                    + " cause=" + (candidate.cfwRetryPending ? "NACK"
+                                        : candidate.cfwAckLenses == CfwTransport.BOTH ? "ordered tail" : "missing ACK")
+                                    + " ackedLenses=" + candidate.cfwAckLenses
+                                    + " ageMs=" + (now - candidate.sentAtMs));
+                            inFlightMessages.remove(candidate);
+                            magicPool.release(candidate.sid, candidate.magic, candidate.label, "CFW replay");
+                            candidate.prepareCfwReplay(magicPool.allocate());
+                        }
+                        for (int i = replay.size() - 1; i >= 0; --i) pendingMessages.addFirst(replay.get(i));
+                        return 0;
+                    }
                     if (oldest != null && oldest.ackDeadlineAtMs <= now) {
                         Log.i(TAG, "message timed out: " + oldest.label);
                         inFlightMessages.removeFirst();
-                        logLine("message timed out: " + oldest.label);
+                        logLine("message timed out: " + oldest.label + " sid=" + oldest.sid
+                                + " id=" + oldest.magic + " ackedLenses=" + oldest.cfwAckLenses
+                                + " ageMs=" + (now - oldest.sentAtMs));
                         magicPool.release(oldest.sid, oldest.magic, oldest.label, "timeout");
+                        if (oldest.sid == CfwTransport.SID)
+                            cfwTransports[oldest.isLeftArmMessage ? 0 : 1].reset();
                         handleAckTimeoutLocked(oldest);
                         return 0;
                     }
@@ -2565,7 +2600,9 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             prewrittenMessage = null;
             prewrittenFrames = Collections.emptyList();
         } else if (message.sid == CfwTransport.SID) {
-            frames = CfwTransport.frame(message.message, message.magic, CfwTransport.BOTH,
+            if (message.cfwRetries > 0) cfwTransports[message.isLeftArmMessage ? 0 : 1].reset();
+            frames = cfwTransports[message.isLeftArmMessage ? 0 : 1].encode(
+                    message.message, message.magic, CfwTransport.BOTH,
                     bleManager.getNegotiatedMtu(writeAddress));
         } else {
             frames = BleProtocol.framePb(
@@ -2594,6 +2631,8 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             }
         }
 
+        if (!result && message.sid == CfwTransport.SID)
+            cfwTransports[message.isLeftArmMessage ? 0 : 1].reset();
         return result;
     }
 
@@ -2680,6 +2719,18 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         return false;
     }
 
+
+    /** Also drain on the worker: a clear/timeout may have removed a blocking
+     * head since the last notification. Fully ACKed controls must never reach
+     * the generic timeout path just because no further BLE reply arrived. */
+    private void drainCfwAcknowledgementsLocked() {
+        while (true) {
+            OutboundMessage first = CfwMessageWindow.acknowledgedHead(inFlightMessages);
+            if (first == null) return;
+            lastAckAtMs = SystemClock.elapsedRealtime();
+            resolveAckLocked(first, first.ackPayload);
+        }
+    }
 
     private void resolveAckLocked(int sid, int magic, byte[] pb) {
         Iterator<OutboundMessage> iterator = inFlightMessages.iterator();
@@ -2994,7 +3045,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             commands.add(plan.payload);
         } else {
             // A noisy full frame can exceed the stream record limit. Repaint it
-            // with independently decodable bands, never fragments of zlib data.
+            // with independently decodable RLE bands below the decoded-message limit.
             commands.addAll(BleImageOptimizer.encodeFullFrameBands(
                     plan.packed, plan.width, plan.height, nextImageFrameId));
             for (int i = 0; i < commands.size(); i++) {
@@ -3730,6 +3781,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         lastFaceclawWakeLeaseQueuedAtMs = 0;
         faceclawWakeControlSentCount = 0;
         cfwCleanupDelivered = false;
+        for (CfwTransport transport : cfwTransports) transport.reset();
         lastCfwCleanupAckMagic = 0;
         wearState = -1;
         displayedFingerprint = "";
