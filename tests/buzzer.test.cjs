@@ -30,10 +30,14 @@ test('iOS game worker forwards an immutable byte payload through its host and ig
 test('Android game bridge retains direct native playback and skips a missing communicator', () => {
   let active = null;
   const played = [];
+  // Stands in for the reused Java direct buffer: the payload reaches Java as a
+  // copy, never as the caller's own ArrayBuffer.
+  const directBuffer = { JavaDirectBuffer: class { load(bytes) { return { bytes: bytes.slice() }; } } };
   const bridge = loader({ global: { isIOS: false },
-    com: { faceclaw: { app: { FaceclawBleCommunicator: { getActive: () => active } } } } })('app/native/worker-buzzer.ts');
+    com: { faceclaw: { app: { FaceclawBleCommunicator: { getActive: () => active } } } } },
+    { './java-direct-buffer': directBuffer })('app/native/worker-buzzer.ts');
   bridge.playWorkerBuzzerSequence(payload);
-  active = { playBuzzerSequence: buffer => played.push(new Uint8Array(buffer)) };
+  active = { playBuzzerSequence: buffer => played.push(buffer.bytes) };
   const backing = new Uint8Array(payload.length + 2); backing.set(payload, 1);
   bridge.playWorkerBuzzerSequence(backing.subarray(1, -1)); backing.fill(0);
   assert.deepEqual(played, [payload]);
