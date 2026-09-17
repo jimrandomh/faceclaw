@@ -11,6 +11,7 @@
     "outDir": "../.test-build"
   },
   "include": [
+    "../app/native/java-direct-buffer.ts",
     "../app/g2/firmware-compat.ts",
     "../app/g2/glasses-hardware-identity.ts",
     "../app/g2/ble-proximity.ts",

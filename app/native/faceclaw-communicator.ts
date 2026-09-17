@@ -1,5 +1,6 @@
 import { ImageSource, Utils } from "@nativescript/core";
 import * as frameTimings from "./frame-timings";
+import { JavaDirectBuffer } from "./java-direct-buffer";
 
 declare const com: any;
 
@@ -131,6 +132,12 @@ export class FaceclawCommunicatorBridge {
   private javaCallQueue: Promise<void> = Promise.resolve();
   /** Calls waiting on javaCallQueue; 0 means enqueueJavaCall's fast path is safe. */
   private queuedJavaCalls = 0;
+  // Reused Java-side buffers for byte payloads; passing a JS ArrayBuffer to
+  // Java leaks it (see java-direct-buffer.ts). Loaded inside the queued call,
+  // immediately before the synchronous Java call that consumes them.
+  private readonly framePixelsBuffer = new JavaDirectBuffer(640 * 480);
+  private readonly frameDrawsBuffer = new JavaDirectBuffer();
+  private readonly buzzerBuffer = new JavaDirectBuffer();
   private readonly frameMetricWaiters = new Set<(metrics: FrameMetrics) => void>();
   // Recent frame-finished outcomes from the Java side, so waitForFrameFinished
   // does not race against finishes that land before the wait starts.
@@ -580,15 +587,17 @@ export class FaceclawCommunicatorBridge {
      */
     glyphs: ArrayBuffer | null = null,
   ): Promise<void> {
-    // Snapshot because the Java call is deferred; the buffer is passed as an
-    // ArrayBuffer, which NativeScript marshals to a ByteBuffer without the
-    // ~150ms per-element copy a byte[] parameter would need.
+    // Snapshot because the Java call is deferred. The bytes reach Java as a
+    // ByteBuffer (no ~150ms per-element copy, as a byte[] parameter would
+    // need), but through a reused Java direct buffer rather than by passing
+    // the ArrayBuffer itself, which NativeScript never frees
+    // (java-direct-buffer.ts).
     const snapshot = new Uint8Array(pixels8bpp);
     // inlineWhenIdle: this is the frame path, the Java side of it measures
     // ~5ms (composite + pack), and the caller awaits it either way.
     await this.enqueueJavaCall(() => {
       this.communicator.submitSurfaceFrame(
-        snapshot.buffer,
+        this.framePixelsBuffer.load(snapshot),
         surfaceId,
         Math.round(rect.x),
         Math.round(rect.y),
@@ -597,7 +606,7 @@ export class FaceclawCommunicatorBridge {
         fingerprint,
         Math.round(nonNegativeNumber(paintMs)),
         Math.round(nonNegativeNumber(frameId)),
-        glyphs,
+        this.frameDrawsBuffer.loadOptional(glyphs),
       );
     }, true);
   }
@@ -659,7 +668,7 @@ export class FaceclawCommunicatorBridge {
   async playBuzzerSequence(payload: Uint8Array): Promise<void> {
     const snapshot = new Uint8Array(payload);
     await this.enqueueJavaCall(() => {
-      this.communicator.playBuzzerSequence(snapshot.buffer);
+      this.communicator.playBuzzerSequence(this.buzzerBuffer.load(snapshot));
     });
   }
 

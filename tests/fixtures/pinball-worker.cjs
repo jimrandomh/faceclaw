@@ -36,6 +36,7 @@ module.exports = function worker() {
     '../../graphics/ui-fonts': { getDefaultSmallFont: () => smallFont },
     '../../native/frame-timings': { finishFrame: noop, logFrame: noop },
     '../../native/active-display': {},
+    '../../native/java-direct-buffer': { JavaDirectBuffer: class { load(bytes) { return bytes; } loadOptional(buffer) { return buffer ?? null; } } },
     '../../native/settings-store': { getStringSetting: () => highScore, setStringSetting: (_, value) => { highScore = value; } },
     '../../ui/sound-effects': {},
     '../../ui/sound-setting': { loadSoundEnabled: () => true, saveSoundEnabled: () => {} },

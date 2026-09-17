@@ -62,8 +62,13 @@ import { toolRegistry, type ToolResult, type ToolSpec } from "../../assistant/to
 import { getCurrentLocation } from "../../native/location";
 import { LocationTracker, type TrackedLocation } from "../../native/location-tracker";
 import { ensureFineLocationPermission } from "../../g2/android-permissions";
+import { JavaDirectBuffer } from "../../native/java-direct-buffer";
 
 const UPNG = require("upng-js");
+
+// Reused Java-side buffer for tone payloads: passing a JS ArrayBuffer to Java
+// leaks it (native/java-direct-buffer.ts).
+const buzzerBuffer = new JavaDirectBuffer();
 
 declare const com: any;
 
@@ -1161,7 +1166,7 @@ export class EvenHubSession implements EvenHubMicClient, EvenHubImuClient, EvenH
       const chunk = steps.slice(i, i + CFW_SEQ_MAX);
       const payload = buildSoundSequencePayload(chunk);
       try {
-        communicator.playBuzzerSequence(payload.buffer);
+        communicator.playBuzzerSequence(buzzerBuffer.load(payload));
       } catch (error) {
         this.log(`evenhub: playBuzzer failed: ${error}`);
         return;

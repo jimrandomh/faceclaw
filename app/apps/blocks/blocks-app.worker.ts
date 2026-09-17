@@ -18,6 +18,7 @@ import { getFont } from "../../graphics/bdffont";
 import { getDefaultSmallFont } from "../../graphics/ui-fonts";
 import * as frameTimings from "../../native/frame-timings";
 import { getActiveDisplay } from "../../native/active-display";
+import { JavaDirectBuffer } from "../../native/java-direct-buffer";
 import { buildSoundSequencePayload, type Step } from "../../ui/sound-effects";
 import { loadSoundEnabled, saveSoundEnabled } from "../../ui/sound-setting";
 import { type MenuItem } from "../../ui/menu";
@@ -31,6 +32,12 @@ import {
   GESTURE_SCROLL,
   type InputEvent,
 } from "../../ui/gestures";
+
+// Reused Java-side buffers for this worker's frames and tones: passing a
+// JS ArrayBuffer to Java leaks it (native/java-direct-buffer.ts).
+const framePixelsBuffer = new JavaDirectBuffer(640 * 480);
+const frameDrawsBuffer = new JavaDirectBuffer();
+const buzzerBuffer = new JavaDirectBuffer();
 
 declare const global: any;
 declare const com: any;
@@ -304,7 +311,7 @@ function playSfx(window: BlocksWindow, steps: Step[]): void {
   try {
     const communicator = com.faceclaw.app.FaceclawBleCommunicator.getActive();
     if (!communicator) return;
-    communicator.playBuzzerSequence(buildSoundSequencePayload(steps).buffer);
+    communicator.playBuzzerSequence(buzzerBuffer.load(buildSoundSequencePayload(steps)));
   } catch (error) {
     console.warn(`blocks sfx failed: ${error}`);
   }
@@ -706,7 +713,7 @@ function renderAndSubmit(window: BlocksWindow, inputFrameId: number): void {
     const { image, draws } = frameTimings.span(frameId, "flatten", () => flattenPlanesWithDraws(planes));
     const buffer = frameTimings.span(frameId, "to8bpp", () => image.to8bppBuffer());
     communicator.submitSurfaceFrame(
-      buffer.buffer,
+      framePixelsBuffer.load(buffer),
       window.surfaceId,
       0,
       0,
@@ -715,7 +722,9 @@ function renderAndSubmit(window: BlocksWindow, inputFrameId: number): void {
       fingerprint,
       paintMs,
       frameId,
-      frameTimings.span(frameId, "prepareFrameDraws", () => prepareFrameDraws(draws)),
+      frameDrawsBuffer.loadOptional(
+        frameTimings.span(frameId, "prepareFrameDraws", () => prepareFrameDraws(draws)),
+      ),
     );
     window.lastSubmittedFingerprint = fingerprint;
   } catch (error) {

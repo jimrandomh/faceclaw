@@ -26,12 +26,19 @@ import { ensurePreinstalledFonts, installedFontPath } from "../../graphics/insta
 import { TtfFont } from "../../graphics/ttf-font";
 import * as frameTimings from "../../native/frame-timings";
 import { getActiveDisplay } from "../../native/active-display";
+import { JavaDirectBuffer } from "../../native/java-direct-buffer";
 import { buildSoundSequencePayload, type Step } from "../../ui/sound-effects";
 import { loadSoundEnabled, saveSoundEnabled } from "../../ui/sound-setting";
 import { WindowMenu } from "../../ui/window-menu";
 import type { MenuItem } from "../../ui/menu";
 import type { WorkerAppMessage, WorkerAppReply } from "../../ui/shell/worker-window";
 import { directionalFallback, GESTURE_CLICK, GESTURE_DOUBLE_CLICK, GESTURE_LONG_PRESS, type InputEvent } from "../../ui/gestures";
+
+// Reused Java-side buffers for this worker's frames and tones: passing a
+// JS ArrayBuffer to Java leaks it (native/java-direct-buffer.ts).
+const framePixelsBuffer = new JavaDirectBuffer(640 * 480);
+const frameDrawsBuffer = new JavaDirectBuffer();
+const buzzerBuffer = new JavaDirectBuffer();
 
 declare const global: any;
 declare const com: any;
@@ -213,7 +220,7 @@ function playSfx(window: FreecellWindow, steps: Step[]): void {
   try {
     const communicator = com.faceclaw.app.FaceclawBleCommunicator.getActive();
     if (!communicator) return;
-    communicator.playBuzzerSequence(buildSoundSequencePayload(steps).buffer);
+    communicator.playBuzzerSequence(buzzerBuffer.load(buildSoundSequencePayload(steps)));
   } catch (error) {
     console.warn(`freecell sfx failed: ${error}`);
   }
@@ -875,7 +882,7 @@ function renderAndSubmit(window: FreecellWindow, inputFrameId: number): void {
     const { image, draws } = frameTimings.span(frameId, "flatten", () => flattenPlanesWithDraws(planes));
     const buffer = frameTimings.span(frameId, "to8bpp", () => image.to8bppBuffer());
     communicator.submitSurfaceFrame(
-      buffer.buffer,
+      framePixelsBuffer.load(buffer),
       window.surfaceId,
       0,
       0,
@@ -884,7 +891,9 @@ function renderAndSubmit(window: FreecellWindow, inputFrameId: number): void {
       fingerprint,
       paintMs,
       frameId,
-      frameTimings.span(frameId, "prepareFrameDraws", () => prepareFrameDraws(draws)),
+      frameDrawsBuffer.loadOptional(
+        frameTimings.span(frameId, "prepareFrameDraws", () => prepareFrameDraws(draws)),
+      ),
     );
     window.lastSubmittedFingerprint = fingerprint;
   } catch (error) {
