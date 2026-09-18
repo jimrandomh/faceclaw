@@ -1,7 +1,7 @@
 import { GrayImage } from "../../graphics/image";
 import { onAnySettingChanged } from "../../ui/dashboard-settings";
-import { glanceShowLinesSetting, glanceSlotSettings } from "./glanceboard-settings";
-import { QUADRANT_LAYOUT, resolveGlanceRegions, slotDividers, type GlanceLayout, type GlanceRegion } from "./layout";
+import { glanceLayout, glanceShowLinesSetting, glanceSlotSettings } from "./glanceboard-settings";
+import { resolveGlanceRegions, slotDividers, type GlanceLayout, type GlanceRegion } from "./layout";
 import { type GlanceWidget } from "./widget";
 import { findGlanceWidget, glanceWidgetSpans } from "./widgets";
 
@@ -27,11 +27,18 @@ export class GlanceBoard {
   private regions: LiveRegion[] = [];
   private started = false;
   private unsubscribeSettings: (() => void) | null = null;
+  private currentLayout: GlanceLayout;
 
   constructor(
     private readonly requestRender: () => void,
-    readonly layout: GlanceLayout = QUADRANT_LAYOUT,
-  ) {}
+    private readonly fixedLayout?: GlanceLayout,
+  ) {
+    this.currentLayout = fixedLayout ?? glanceLayout();
+  }
+
+  get layout(): GlanceLayout {
+    return this.currentLayout;
+  }
 
   get width(): number {
     return this.layout.width;
@@ -65,9 +72,12 @@ export class GlanceBoard {
   /** Rebuild the live regions from the settings, keeping widgets whose region is unchanged. */
   private applySlotSettings(): void {
     if (!this.started) return;
+    const layout = this.fixedLayout ?? glanceLayout();
+    const layoutChanged = layout !== this.currentLayout;
+    this.currentLayout = layout;
     const previous = new Map(this.regions.map((live) => [live.key, live]));
     const next: LiveRegion[] = [];
-    let changed = false;
+    let changed = layoutChanged;
     for (const region of this.currentRegions()) {
       const key = regionKey(region);
       const kept = previous.get(key);

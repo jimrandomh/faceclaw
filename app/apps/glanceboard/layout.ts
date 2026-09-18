@@ -29,6 +29,20 @@ export const QUADRANT_LAYOUT: GlanceLayout = {
   ],
 };
 
+/** Six 288x144 slots: the same first two rows, plus a third at the bottom. */
+export const SIX_SLOT_LAYOUT: GlanceLayout = {
+  id: "six-slots",
+  width: GLANCEBOARD_WIDTH,
+  height: 432,
+  slots: [
+    ...QUADRANT_LAYOUT.slots.slice(0, 2),
+    { label: "Middle left", rect: { x: 0, y: 144, width: 288, height: 144 } },
+    { label: "Middle right", rect: { x: 288, y: 144, width: 288, height: 144 } },
+    { label: "Bottom left", rect: { x: 0, y: 288, width: 288, height: 144 } },
+    { label: "Bottom right", rect: { x: 288, y: 288, width: 288, height: 144 } },
+  ],
+};
+
 /** Whether two slots stack vertically with matching width (one region if merged). */
 export function slotsVerticallyAdjacent(layout: GlanceLayout, a: number, b: number): boolean {
   const first = layout.slots[a]?.rect;

@@ -1,5 +1,5 @@
 import { ConfigSettingBoolean, ConfigSettingEnum } from "../../ui/dashboard-settings";
-import { QUADRANT_LAYOUT, slotsVerticallyAdjacent, type GlanceLayout } from "./layout";
+import { QUADRANT_LAYOUT, SIX_SLOT_LAYOUT, slotsVerticallyAdjacent, type GlanceLayout } from "./layout";
 import { type GlanceWidgetId } from "./widget";
 import { glanceWidgetSpans } from "./widgets";
 
@@ -27,6 +27,19 @@ export function glanceSlotChoiceLabel(choice: GlanceSlotChoice): string {
  * right. Calendar in both right slots merges into one double-height region.
  */
 const DEFAULT_QUADRANT_CHOICES: readonly GlanceSlotChoice[] = ["system-card", "calendar", "music", "calendar"];
+
+export const glanceLayoutSetting = new ConfigSettingEnum<"2x2" | "2x3">({
+  id: "glanceboard-layout",
+  label: "Layout",
+  storageKey: "glanceboard.layout",
+  defaultValue: "2x2",
+  values: ["2x2", "2x3"],
+  description: "Choose two columns with two or three rows of widgets.",
+});
+
+export function glanceLayout(): GlanceLayout {
+  return glanceLayoutSetting.get() === "2x3" ? SIX_SLOT_LAYOUT : QUADRANT_LAYOUT;
+}
 
 /**
  * Whether sleep-time gestures show the board at all. Off restores the plain
@@ -79,7 +92,7 @@ export const glanceShowOnLongPressSetting = new ConfigSettingBoolean({
   label: "Show on long press",
   storageKey: "glanceboard.showOnLongPress",
   defaultValue: true,
-  description: "Holding a long-press while asleep shows the Glanceboard until the press is released.",
+  description: "A long-press or short-then-long-press while asleep shows the Glanceboard until the press is released.",
 });
 
 /** The head-tilt wake shows the board (for the tap duration) instead of the regular UI. */
@@ -101,17 +114,19 @@ export const glanceShowLinesSetting = new ConfigSettingBoolean({
 });
 
 /**
- * One picker per layout slot, keyed by layout id and slot index so a future
- * layout gets its own stored choices rather than inheriting the quadrants'.
+ * Both grid sizes share the original storage keys so changing row count
+ * preserves the first four choices and remembers the hidden bottom row.
  */
-export function glanceSlotSettings(layout: GlanceLayout = QUADRANT_LAYOUT): ConfigSettingEnum<GlanceSlotChoice>[] {
+export function glanceSlotSettings(layout: GlanceLayout = glanceLayout()): ConfigSettingEnum<GlanceSlotChoice>[] {
+  const grid = layout === QUADRANT_LAYOUT || layout === SIX_SLOT_LAYOUT;
+  const storageId = grid ? QUADRANT_LAYOUT.id : layout.id;
   return layout.slots.map(
     (slot, index) =>
       new ConfigSettingEnum<GlanceSlotChoice>({
         id: `glanceboard-${layout.id}-slot-${index}`,
         label: slot.label,
-        storageKey: `glanceboard.${layout.id}.slot.${index}`,
-        defaultValue: (layout === QUADRANT_LAYOUT ? DEFAULT_QUADRANT_CHOICES[index] : undefined) ?? "none",
+        storageKey: `glanceboard.${storageId}.slot.${index}`,
+        defaultValue: (grid ? DEFAULT_QUADRANT_CHOICES[index] : undefined) ?? "none",
         values: SLOT_CHOICES,
         formatValue: glanceSlotChoiceLabel,
         description: `Which widget fills the ${slot.label.toLowerCase()} slot of the Glanceboard.`,
@@ -130,9 +145,13 @@ export function clearConflictingSlots(layout: GlanceLayout, changedIndex: number
   const settings = glanceSlotSettings(layout);
   const spans = glanceWidgetSpans(choice);
   const cleared: number[] = [];
+  let keptPartner = false;
   settings.forEach((setting, index) => {
     if (index === changedIndex || setting.get() !== choice) return;
-    if (spans && slotsVerticallyAdjacent(layout, changedIndex, index)) return;
+    if (spans && !keptPartner && slotsVerticallyAdjacent(layout, changedIndex, index)) {
+      keptPartner = true;
+      return;
+    }
     setting.set("none");
     cleared.push(index);
   });

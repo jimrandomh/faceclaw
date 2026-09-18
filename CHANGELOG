@@ -5,6 +5,9 @@
 * Add Wear OS watch battery indicator to the top bar and Glanceboard
 * Glanceboard tap setting includes a Disable option
 * Refinements to builtin games
+* Optimize bluetooth message transport
+* Short-the-long gesture from screen off activates the glanceboard
+* Glanceboard has a 2x3 layout option
 
 ## 0.7.0 - 2026-09-12
 

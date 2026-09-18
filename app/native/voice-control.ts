@@ -26,7 +26,12 @@ export type VoiceControlState = {
   detail: string;
 };
 
-export type VoiceProviderKind = "onboard" | "elevenlabs" | "whisper" | "soniox";
+// "whisper" (no "onboard-" prefix) is the OpenAI CLOUD provider (gpt-realtime-whisper,
+// see openai-stt.ts) -- an unfortunate pre-existing name collision with the model
+// family, not with "onboard-whisper" below, which is the on-device sherpa-onnx
+// Whisper backend added alongside "onboard" (Moonshine). Kept as-is rather than
+// renamed, since it's a persisted settings value on real installs already.
+export type VoiceProviderKind = "onboard" | "onboard-whisper" | "elevenlabs" | "whisper" | "soniox";
 
 export type VoiceTranscriptEvent = CloudSttTranscriptEvent & {
   /**
@@ -103,6 +108,9 @@ export class FaceclawVoiceControlBridge {
   private listening = false;
   private detail = "";
   private started = false;
+  private nativeCaptureFinished: Promise<void> = Promise.resolve();
+  private nextNativeCaptureId = 1;
+  private readonly nativeCaptureResolvers = new Map<number, () => void>();
   // The mic is a single shared stream; these are the reasons it is running.
   // The first holder starts capture (choosing the provider); the mic stops
   // when the last one releases. Transcript events broadcast to every
@@ -184,8 +192,13 @@ export class FaceclawVoiceControlBridge {
   }
 
   /** End push-to-talk: for cloud, commit for a final result if it was the last holder. */
-  stopPushToTalk(): void {
+  stopPushToTalk(): Promise<void> | void {
+    // Shared continuous capture keeps running; cloud providers finalize via
+    // their own callbacks. Only a stopped native recognizer must be awaited.
+    const finished = !this.cloudClient && this.captureHolders.has("ptt") && this.captureHolders.size === 1
+      ? this.nativeCaptureFinished : undefined;
     this.releaseCapture("ptt", true);
+    return finished;
   }
 
   /** Begin continuous capture (Transcribe): the mic stays on until released. */
@@ -314,7 +327,12 @@ export class FaceclawVoiceControlBridge {
 
     this.cloudClient = null;
     this.started = true;
-    this.controller?.start("onboard");
+    // Which on-device model to load; a no-op setter for every provider except
+    // "onboard-whisper" (FaceclawVoiceController defaults to Moonshine).
+    this.controller?.setOnboardModelKind(options.provider === "onboard-whisper" ? "whisper" : "moonshine");
+    const captureId = this.nextNativeCaptureId++;
+    this.nativeCaptureFinished = new Promise((resolve) => { this.nativeCaptureResolvers.set(captureId, resolve); });
+    this.controller?.start("onboard", captureId);
   }
 
   /**
@@ -323,7 +341,7 @@ export class FaceclawVoiceControlBridge {
    * than failing the capture outright.
    */
   private createCloudClient(options: PushToTalkOptions): CloudSttClient | null {
-    if (options.provider === "onboard") return null;
+    if (options.provider === "onboard" || options.provider === "onboard-whisper") return null;
     const sttOptions = {
       apiKey: "",
       onTranscript: (event: CloudSttTranscriptEvent) =>
@@ -482,6 +500,10 @@ export class FaceclawVoiceControlBridge {
       },
       onTranscript: (text: string, isFinal: boolean) => {
         this.emitTranscript(String(text), Boolean(isFinal));
+      },
+      onStopped: (captureId: number) => {
+        this.nativeCaptureResolvers.get(captureId)?.();
+        this.nativeCaptureResolvers.delete(captureId);
       },
       onPcm: (pcm: any) => {
         const bytes = toUint8Array(pcm);

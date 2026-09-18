@@ -730,7 +730,10 @@ class MicSession {
       },
     });
     engine.setListener(this.captionListenerProxy);
-    engine.setAsrModelDir(isAsrModelReady() ? moonshineModelDir() : null);
+    // Live captions are a separate sherpa-onnx pipeline (FaceclawCaptionEngine)
+    // that only ever uses Moonshine; unaffected by the two-model on-device
+    // Whisper addition in native/voice-control.ts's push-to-talk path.
+    engine.setAsrModelDir(isAsrModelReady("moonshine") ? moonshineModelDir() : null);
     engine.setSpeakerModelPath(micModelPath("speaker-embedding"));
     engine.start();
     this.captionEngine = engine;

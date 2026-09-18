@@ -328,17 +328,20 @@ function voiceSpeakersMenu(): MenuLayer {
         () => startMicModelDownload("speaker-embedding"),
       ),
       modelItem(
+        // Live captions always use Moonshine (see the matching note in
+        // mic-session.ts); the second on-device model (Whisper) is a
+        // push-to-talk dictation option only, managed in Settings > Voice.
         "Caption ASR model",
-        isAsrModelReady,
+        () => isAsrModelReady("moonshine"),
         () => {
-          const state = asrModelState();
+          const state = asrModelState("moonshine");
           if (state.status === "ready") return "ready";
           if (state.status === "downloading") {
             return `${Math.round((state.bytesDownloaded / state.totalBytes) * 100)}%`;
           }
           return "download (141 MB)";
         },
-        startAsrModelDownload,
+        () => startAsrModelDownload("moonshine"),
       ),
       modelItem(
         "Re-diarization model",

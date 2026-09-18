@@ -523,12 +523,19 @@ export const ringConnectionModeSetting = new ConfigSettingEnum<RingConnectionMod
     "How R1 ring input reaches the phone. Only via glasses: the ring's own link to the glasses carries its gestures, and the phone never opens a Bluetooth connection to the ring. Direct: also connect to the ring from the phone (currently unreliable). Takes effect on the next connection to the glasses.",
 });
 
-export type VoiceProvider = "onboard" | "elevenlabs" | "whisper" | "soniox";
+// "whisper" (no "onboard-" prefix) is OpenAI's CLOUD realtime model
+// (gpt-realtime-whisper); "onboard-whisper" is the on-device sherpa-onnx
+// Whisper backend. Same underlying model family, two different places it
+// runs -- see the same note in native/voice-control.ts. The "whisper" value
+// keeps its name (it's a persisted setting on real installs) but its label
+// below now says "OpenAI" to tell the two apart in the picker.
+export type VoiceProvider = "onboard" | "onboard-whisper" | "elevenlabs" | "whisper" | "soniox";
 
 const voiceProviderLabels: Record<VoiceProvider, string> = {
-  onboard: "On-device",
+  onboard: "On-device (Moonshine)",
+  "onboard-whisper": "On-device (Whisper)",
   elevenlabs: "ElevenLabs",
-  whisper: "Whisper",
+  whisper: "OpenAI (Whisper)",
   soniox: "Soniox",
 };
 
@@ -537,7 +544,7 @@ export const voiceProviderSetting = new ConfigSettingEnum<VoiceProvider>({
   label: "Transcription Provider",
   storageKey: "voice.provider",
   defaultValue: "onboard",
-  values: ["onboard", "elevenlabs", "whisper", "soniox"],
+  values: ["onboard", "onboard-whisper", "elevenlabs", "whisper", "soniox"],
   formatValue: (value) => voiceProviderLabels[value] ?? value,
   isDisabled: (value) => {
     if (value === "elevenlabs") return elevenLabsApiKeySetting.get().trim().length === 0;
@@ -545,7 +552,7 @@ export const voiceProviderSetting = new ConfigSettingEnum<VoiceProvider>({
     if (value === "soniox") return sonioxApiKeySetting.get().trim().length === 0;
     return false;
   },
-  description: "Speech-to-text engine for voice input. ElevenLabs, Whisper, and Soniox are cloud services that need an API key, with significantly better accuracy than on-device transcription. On-device transcription needs the voice model downloaded (below).",
+  description: "Speech-to-text engine for voice input. ElevenLabs, OpenAI, and Soniox are cloud services that need an API key, with significantly better accuracy than on-device transcription. The two On-device options need their voice model downloaded (below) and never leave the phone.",
 });
 
 const wakeWordActionLabels: Record<WakeWordAction, string> = {

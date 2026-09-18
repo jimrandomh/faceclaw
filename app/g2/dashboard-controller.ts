@@ -1912,9 +1912,9 @@ class DashboardController {
     return this.beginVoiceCapture("ptt", endpointing);
   }
 
-  private stopVoiceCapture(): void {
+  private stopVoiceCapture(): Promise<void> | void {
     ++this.pttCaptureGeneration;
-    voiceControlBridge.stopPushToTalk();
+    return voiceControlBridge.stopPushToTalk();
   }
 
   private startContinuousVoiceCapture(): void {

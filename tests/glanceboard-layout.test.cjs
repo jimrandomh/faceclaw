@@ -57,3 +57,25 @@ test("dividers: left edges of the right column, top edges of the bottom row, min
     { x0: 288, y0: 144, x1: 575, y1: 144 },
   ]);
 });
+
+test("2x3 adds a bottom row without moving or resizing the first four slots", () => {
+  const { SIX_SLOT_LAYOUT } = require("../.test-build/app/apps/glanceboard/layout.js");
+  assert.equal(SIX_SLOT_LAYOUT.width, 576);
+  assert.equal(SIX_SLOT_LAYOUT.height, 432);
+  assert.deepEqual(SIX_SLOT_LAYOUT.slots.slice(0, 4).map((slot) => slot.rect), QUADRANT_LAYOUT.slots.map((slot) => slot.rect));
+  assert.deepEqual(SIX_SLOT_LAYOUT.slots.slice(4).map((slot) => slot.rect), [
+    { x: 0, y: 288, width: 288, height: 144 },
+    { x: 288, y: 288, width: 288, height: 144 },
+  ]);
+  const regions = resolveGlanceRegions(SIX_SLOT_LAYOUT, ["none", "none", "terminal", "none", "terminal", "music"], spans);
+  assert.deepEqual(regions, [
+    { choice: "terminal", rect: { x: 0, y: 144, width: 288, height: 288 }, slots: [2, 4] },
+    { choice: "music", rect: { x: 288, y: 288, width: 288, height: 144 }, slots: [5] },
+  ]);
+  const { slotDividers } = require("../.test-build/app/apps/glanceboard/layout.js");
+  const bottomDividers = slotDividers(SIX_SLOT_LAYOUT, regions).filter((line) => line.y0 === 288);
+  assert.deepEqual(bottomDividers, [
+    { x0: 288, y0: 288, x1: 288, y1: 431 },
+    { x0: 288, y0: 288, x1: 575, y1: 288 },
+  ]);
+});

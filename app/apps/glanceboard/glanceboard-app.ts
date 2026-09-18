@@ -1,7 +1,7 @@
 import { GrayImage } from "../../graphics/image";
 import { truncateText, wrapText } from "../../graphics/textwrap";
 import { getDefaultSmallFont } from "../../graphics/ui-fonts";
-import { enumSettingMenuItem, toggleSettingMenuItem } from "../../ui/dashboard-settings";
+import { enumSettingMenuItem, onAnySettingChanged, toggleSettingMenuItem } from "../../ui/dashboard-settings";
 import { type InputEvent } from "../../ui/gestures";
 import { type Layer, type LayerContext, type PaintBelow } from "../../ui/layers";
 import { drawSelectionHighlight, MenuLayer, openModalMenu, type MenuItem } from "../../ui/menu";
@@ -12,6 +12,8 @@ import { GlanceBoard } from "./board";
 import {
   clearConflictingSlots,
   glanceboardEnabledSetting,
+  glanceLayout,
+  glanceLayoutSetting,
   glanceShowLinesSetting,
   glanceShowOnHeadTiltSetting,
   glanceShowOnLongPressSetting,
@@ -20,7 +22,7 @@ import {
   glanceTapDurationSetting,
   type GlanceSlotChoice,
 } from "./glanceboard-settings";
-import { QUADRANT_LAYOUT, resolveGlanceRegions, slotDividers } from "./layout";
+import { resolveGlanceRegions, slotDividers } from "./layout";
 import { glanceWidgetSpans } from "./widgets";
 
 export const GLANCEBOARD_WINDOW_ID = "glanceboard";
@@ -49,24 +51,33 @@ function pageMenuLayout(width: number) {
  * and the menu (enable toggle, live preview, slot contents, settings). Right
  * half: a scaled preview of the board's slots with their dividers and the
  * name of the widget in each. "Select Contents" moves focus into that
- * preview, where scroll picks a quadrant and a tap opens the picker for it;
+ * preview, where scroll picks a slot and a tap opens the picker for it;
  * a double-tap returns focus to the menu.
  */
 class GlanceboardHomeLayer implements Layer {
   private menu: MenuLayer | null = null;
   private menuTop = 0;
+  private menuHeight = 0;
   private focus: "menu" | "preview" = "menu";
   private selectedSlot = 0;
 
+  constructor(private readonly setPreviewVisible: (visible: boolean) => void) {}
+
   private currentMenu(ctx: LayerContext, menuTop: number): MenuLayer {
-    if (!this.menu || this.menuTop !== menuTop) {
-      const { width, height } = ctx.stack.getBaseSize();
+    const { width, height } = ctx.stack.getBaseSize();
+    if (!this.menu || this.menuTop !== menuTop || this.menuHeight !== height) {
       const half = (width / 2) | 0;
       const items: MenuItem[] = [
         toggleSettingMenuItem(glanceboardEnabledSetting),
         {
           label: "Preview",
-          onSelect: (menuCtx) => menuCtx.stack.push(new GlancePreviewLayer(() => menuCtx.actions.requestRender())),
+          onSelect: (menuCtx) => {
+            menuCtx.stack.push(new GlancePreviewLayer(
+              () => menuCtx.actions.requestRender(),
+              () => this.setPreviewVisible(false),
+            ));
+            this.setPreviewVisible(true);
+          },
         },
         {
           label: "Select Contents",
@@ -80,6 +91,7 @@ class GlanceboardHomeLayer implements Layer {
         },
       ];
       this.menuTop = menuTop;
+      this.menuHeight = height;
       this.menu = new MenuLayer(null, items, {
         x: 8, y: menuTop, width: half - 16,
         showBorder: false, minHeight: 0, maxHeight: height - menuTop,
@@ -92,9 +104,10 @@ class GlanceboardHomeLayer implements Layer {
   private previewRect(width: number, height: number): { x: number; y: number; width: number; height: number } {
     const half = (width / 2) | 0;
     const availableWidth = width - half - 2 * PREVIEW_MARGIN;
-    const scale = Math.min(availableWidth / QUADRANT_LAYOUT.width, (height - 2 * PREVIEW_MARGIN) / QUADRANT_LAYOUT.height);
-    const previewWidth = Math.round(QUADRANT_LAYOUT.width * scale);
-    const previewHeight = Math.round(QUADRANT_LAYOUT.height * scale);
+    const layout = glanceLayout();
+    const scale = Math.min(availableWidth / layout.width, (height - 2 * PREVIEW_MARGIN) / layout.height);
+    const previewWidth = Math.round(layout.width * scale);
+    const previewHeight = Math.round(layout.height * scale);
     return {
       x: half + PREVIEW_MARGIN + (((availableWidth - previewWidth) / 2) | 0),
       y: ((height - previewHeight) / 2) | 0,
@@ -123,6 +136,7 @@ class GlanceboardHomeLayer implements Layer {
     const menuCtx: LayerContext = { ...ctx, stack: Object.assign(Object.create(ctx.stack), { isFocused: () => menuFocused }) };
     menu.paint(menuCtx, () => image);
 
+    this.selectedSlot = Math.min(this.selectedSlot, glanceLayout().slots.length - 1);
     const preview = this.previewRect(width, height);
     drawSlotPreview(image, preview, {
       selectedSlot: this.selectedSlot,
@@ -133,7 +147,8 @@ class GlanceboardHomeLayer implements Layer {
 
   async handleInput(event: InputEvent, ctx: LayerContext): Promise<void> {
     if (this.focus === "preview") {
-      const slotCount = QUADRANT_LAYOUT.slots.length;
+      const slotCount = glanceLayout().slots.length;
+      this.selectedSlot = Math.min(this.selectedSlot, slotCount - 1);
       switch (event.type) {
         case "scroll-up":
           this.selectedSlot = (this.selectedSlot + slotCount - 1) % slotCount;
@@ -166,7 +181,7 @@ class GlanceboardHomeLayer implements Layer {
  * The board's slots scaled into `rect`: dividers (full brightness, or the
  * dimmest dotted line when "Show lines" is off), the widget name centred in
  * each region (a merged double-height region has one name and no line
- * across it), and the selected quadrant highlighted.
+ * across it), and the selected slot highlighted.
  */
 function drawSlotPreview(
   image: GrayImage,
@@ -174,7 +189,7 @@ function drawSlotPreview(
   options: { selectedSlot: number; selectionFocused: boolean },
 ): void {
   const font = getDefaultSmallFont();
-  const layout = QUADRANT_LAYOUT;
+  const layout = glanceLayout();
   const settings = glanceSlotSettings(layout);
   const choices = settings.map((setting) => setting.get());
   const regions = resolveGlanceRegions(layout, choices, glanceWidgetSpans);
@@ -232,14 +247,15 @@ function drawDottedLine(image: GrayImage, x0: number, y0: number, x1: number, y1
 
 /** The picker for one slot: every widget, the current one marked; choosing applies the one-per-board rule. */
 function openSlotPicker(ctx: LayerContext, slotIndex: number): void {
-  const setting = glanceSlotSettings(QUADRANT_LAYOUT)[slotIndex];
+  const layout = glanceLayout();
+  const setting = glanceSlotSettings(layout)[slotIndex];
   if (!setting) return;
   const current = setting.get();
   const items: MenuItem[] = setting.values.map((value) => ({
     label: setting.displayValue(value),
     onSelect: (menuCtx) => {
       setting.set(value);
-      clearConflictingSlots(QUADRANT_LAYOUT, slotIndex, value);
+      clearConflictingSlots(layout, slotIndex, value);
       menuCtx.stack.pop();
     },
     render: ({ image, x, y }) => {
@@ -249,7 +265,7 @@ function openSlotPicker(ctx: LayerContext, slotIndex: number): void {
   openModalMenu(ctx, setting.label, items, Math.max(0, setting.values.indexOf(current)));
 }
 
-/** Settings: which sleep gestures show the board, for how long, and the slot lines. */
+/** Settings: layout, sleep gestures, duration, and slot lines. */
 class GlanceSettingsLayer implements Layer {
   private menu: MenuLayer | null = null;
 
@@ -257,6 +273,7 @@ class GlanceSettingsLayer implements Layer {
     if (!this.menu) {
       const { width } = ctx.stack.getBaseSize();
       const items: MenuItem[] = [
+        enumSettingMenuItem(glanceLayoutSetting),
         enumSettingMenuItem(glanceTapDurationSetting),
         toggleSettingMenuItem(glanceShowOnLongPressSetting),
         toggleSettingMenuItem(glanceShowOnHeadTiltSetting),
@@ -280,7 +297,7 @@ class GlanceSettingsLayer implements Layer {
 class GlancePreviewLayer implements Layer {
   private readonly board: GlanceBoard;
 
-  constructor(requestRender: () => void) {
+  constructor(requestRender: () => void, private readonly onClose: () => void) {
     this.board = new GlanceBoard(requestRender);
     this.board.start();
   }
@@ -302,27 +319,40 @@ class GlancePreviewLayer implements Layer {
 
   onRemoved(): void {
     this.board.stop();
+    this.onClose();
   }
 }
 
 export function createGlanceboardAppWindow(options: InProcessAppOptions): InProcessWindow {
-  return createInProcessWindow({
+  let previewVisible = false;
+  const heightMode = () => previewVisible && glanceLayoutSetting.get() === "2x3" ? "max" as const : "medium" as const;
+  let unsubscribeSettings: (() => void) | undefined;
+  const app = createInProcessWindow({
     appId: "glanceboard",
     windowId: GLANCEBOARD_WINDOW_ID,
     title: "Glanceboard",
     iconLetter: "Gb",
     icon: "eye",
     closeable: true,
-    // 576x288: the board's own size, so the preview is pixel-exact.
-    heightMode: "medium",
+    // Settings and the contents picker stay in the default 576x288 viewport;
+    // only the live six-slot preview needs the taller window.
+    heightMode: heightMode(),
     actions: options.actions,
     // Not wrapped in YieldAtRootLayer: the home page routes double-click
     // itself (preview focus -> menu focus, menu focus -> sidebar).
-    baseLayer: new GlanceboardHomeLayer(),
+    baseLayer: new GlanceboardHomeLayer((visible) => {
+      previewVisible = visible;
+      app.setHeightMode(heightMode());
+    }),
     submitFrame: options.submitFrame,
     setSurfaceVisible: options.setSurfaceVisible,
     removeSurface: options.removeSurface,
     reconfigureSurface: options.reconfigureSurface,
-    onClosed: options.onClosed,
+    onClosed: () => {
+      unsubscribeSettings?.();
+      options.onClosed();
+    },
   });
+  unsubscribeSettings = onAnySettingChanged(() => app.setHeightMode(heightMode()));
+  return app;
 }
