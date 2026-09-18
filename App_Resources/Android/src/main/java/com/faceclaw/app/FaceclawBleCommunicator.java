@@ -2885,10 +2885,13 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
      * <p>Runs on the worker thread (from connectRing), which is the only
      * thread allowed to call the blocking write path - the wait loops below
      * block that same thread, which is why {@link #flushRingOutbound} is
-     * called explicitly after each type rather than relying on the main
-     * loop's own call to it.
+     * called inside the response and DATA waits rather than relying on the
+     * main loop's own call to it.
      */
     private boolean requestRingHealth() {
+        // A previous attempt may have left an ACK queued after a failed write.
+        // Never start another type's request ahead of that acknowledgement.
+        if (flushRingOutbound() < 0) return false;
         int[] commands = RingProtocol.HEALTH_COMMANDS;
         int rspCount = 0;
         for (int i = 0; i < commands.length; i++) {
@@ -2910,14 +2913,14 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
 
             if (awaitRingHealthRsp(RING_HEALTH_RSP_TIMEOUT_MS)) {
                 rspCount++;
-                awaitRingHealthDataIdle(RING_HEALTH_DATA_IDLE_MS);
+                if (!awaitRingHealthDataIdle(RING_HEALTH_DATA_IDLE_MS)) {
+                    logLine("ring health: pull ABORTED while acknowledging DATA");
+                    return false;
+                }
             } else {
-                logLine("ring health: no RSP for command 0x" + Integer.toHexString(command) + ", moving on");
+                logLine("ring health: pull ABORTED waiting for RSP at 0x" + Integer.toHexString(command));
+                return false;
             }
-            // Write out any ACK(s) queued by DATA pages that just landed,
-            // right now rather than after the whole loop - this is the fix
-            // for the bug the doc above describes.
-            flushRingOutbound();
 
             if (i < commands.length - 1) {
                 sendRingDevicePing(RING_DEVICE_PING_CMD_LO[i % RING_DEVICE_PING_CMD_LO.length]);
@@ -2955,8 +2958,14 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
      * this protocol's request path, it trusts the ring answers in order. */
     private boolean awaitRingHealthRsp(long timeoutMs) {
         long deadline = SystemClock.elapsedRealtime() + timeoutMs;
-        synchronized (lock) {
-            while (running && ringConnected && !ringHealthRspSeen) {
+        while (true) {
+            // A DATA notification may precede its RSP. Writes must happen
+            // outside lock so GATT callbacks can continue delivering pages.
+            if (flushRingOutbound() < 0) return false;
+            synchronized (lock) {
+                if (!running || !ringConnected) return false;
+                if (ringHealthRspSeen) return true;
+                if (!ringOutbound.isEmpty()) continue;
                 long remaining = deadline - SystemClock.elapsedRealtime();
                 if (remaining <= 0) {
                     return false;
@@ -2965,10 +2974,9 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                     lock.wait(Math.min(remaining, 100));
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
-                    return ringHealthRspSeen;
+                    return false;
                 }
             }
-            return ringHealthRspSeen;
         }
     }
 
@@ -2977,25 +2985,30 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
      * transfer isn't cut short. Not filtered by health type - correct given
      * the ring only has one type in flight at a time (see the class doc
      * above), so any page arriving here belongs to the type just requested. */
-    private void awaitRingHealthDataIdle(long idleMs) {
+    private boolean awaitRingHealthDataIdle(long idleMs) {
         long idleDeadline = SystemClock.elapsedRealtime() + idleMs;
-        synchronized (lock) {
-            int lastSeenCounter = ringHealthPageCounter;
-            while (running && ringConnected) {
-                long remaining = idleDeadline - SystemClock.elapsedRealtime();
-                if (remaining <= 0) {
-                    return;
-                }
-                if (ringHealthPageCounter != lastSeenCounter) {
+        int lastSeenCounter = -1;
+        while (true) {
+            // The next page can depend on this ACK. Waiting for idle first
+            // mistakes an ACK-paced transfer for a completed transfer.
+            int acknowledged = flushRingOutbound();
+            if (acknowledged < 0) return false;
+            synchronized (lock) {
+                if (!running || !ringConnected) return false;
+                if (acknowledged > 0 || ringHealthPageCounter != lastSeenCounter) {
                     lastSeenCounter = ringHealthPageCounter;
+                    // Start the next-page window AFTER the blocking ACK write.
                     idleDeadline = SystemClock.elapsedRealtime() + idleMs;
-                    remaining = idleMs;
                 }
+                // A callback may have queued a page between flush and lock.
+                if (!ringOutbound.isEmpty()) continue;
+                long remaining = idleDeadline - SystemClock.elapsedRealtime();
+                if (remaining <= 0) return true;
                 try {
                     lock.wait(Math.min(remaining, 100));
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
-                    return;
+                    return false;
                 }
             }
         }
@@ -3046,23 +3059,25 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     }
 
     /**
-     * Drain queued ring frames (page ACKs). Worker-thread only. Returns true
-     * when anything was written.
+     * Drain queued ring frames (page ACKs). Worker-thread only. Returns the
+     * number written, or -1 if the link is unavailable or a write failed.
      */
-    private boolean flushRingOutbound() {
-        boolean wroteAny = false;
+    private int flushRingOutbound() {
+        int acknowledged = 0;
         while (true) {
             byte[] frame;
             synchronized (lock) {
-                if (!ringNotificationsReady || ringOutbound.isEmpty()) {
-                    return wroteAny;
-                }
-                frame = ringOutbound.poll();
+                if (!ringNotificationsReady) return -1;
+                if (ringOutbound.isEmpty()) return acknowledged;
+                frame = ringOutbound.peek();
             }
-            if (frame == null) {
-                return wroteAny;
+            if (!writeRingFrame(frame, "page ack")) return -1;
+            synchronized (lock) {
+                // Keep failed writes queued for retry. A disconnect can clear
+                // the queue during the write, so remove this exact frame only.
+                ringOutbound.remove(frame);
+                acknowledged++;
             }
-            wroteAny |= writeRingFrame(frame, "page ack");
         }
     }
 

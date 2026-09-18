@@ -42,27 +42,13 @@ class FileBackend implements HealthStorageBackend {
   }
 
   append(name: string, text: string): void {
-    try {
-      // `File.fromPath` creates the file when it is missing, and
-      // `appendTextSync` is the durable single-call append - deliberately not
-      // read-modify-write, which would put every record already on disk at
-      // risk on every new one.
-      File.fromPath(pathFor(name)).appendTextSync(text, (error) => {
-        console.warn(`health store append failed (${name})`, error);
-      });
-    } catch (error) {
-      console.warn(`health store append threw (${name})`, error);
-    }
+    // NativeScript reports IO failures through callbacks as well as throws.
+    // Propagate both so the caller retains the unconsumed ring batch.
+    checkedFileOperation((onError) => File.fromPath(pathFor(name)).appendTextSync(text, onError));
   }
 
   write(name: string, text: string): void {
-    try {
-      File.fromPath(pathFor(name)).writeTextSync(text, (error) => {
-        console.warn(`health store write failed (${name})`, error);
-      });
-    } catch (error) {
-      console.warn(`health store write threw (${name})`, error);
-    }
+    checkedFileOperation((onError) => File.fromPath(pathFor(name)).writeTextSync(text, onError));
   }
 
   list(): string[] {
@@ -75,6 +61,15 @@ class FileBackend implements HealthStorageBackend {
       return [];
     }
   }
+}
+
+/** Convert a synchronous NativeScript error callback into a thrown failure. */
+export function checkedFileOperation(operation: (onError: (error: any) => void) => void): void {
+  let failure: Error | undefined;
+  operation((error) => {
+    failure = error instanceof Error ? error : new Error(error?.message ?? String(error));
+  });
+  if (failure) throw failure;
 }
 
 let store: HealthStore | null = null;

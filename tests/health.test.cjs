@@ -148,6 +148,69 @@ test("a single unreadable line does not cost the rest of the file", () => {
 // ---------------------------------------------------------------------------
 // Ingest: the rules that decline to guess
 
+test("failed sample corrections stay retryable, including a partially stored batch", () => {
+  const backend = memoryBackend();
+  const store = new HealthStore(backend);
+  const first = new Date(2026, 7, 31).getTime();
+  const second = new Date(2026, 8, 1).getTime();
+  const original = sample("heartRate", second, 50, 80, 60);
+  store.ingestSamples([original]);
+  const append = backend.append;
+  backend.append = (name, text) => {
+    if (name === "samples-2026-09.jsonl") throw new Error("disk full");
+    append(name, text);
+  };
+  const batch = [sample("heartRate", first, 50, 90, 70), sample("heartRate", second, 50, 100, 80)];
+  assert.throws(() => store.ingestSamples(batch), /disk full/);
+  assert.equal(store.samplesInRange(second, second + DAY_MS)[0].avg, 60);
+  backend.append = append;
+  assert.equal(store.ingestSamples(batch), 1, "only the failed shard should need retry");
+  const reloaded = new HealthStore(backend);
+  assert.equal(reloaded.samplesInRange(first, second + DAY_MS).length, 2);
+  assert.equal(reloaded.samplesInRange(second, second + DAY_MS)[0].avg, 80);
+});
+
+test("failed sleep appends and corrections do not poison deduplication", () => {
+  const backend = memoryBackend();
+  const store = new HealthStore(backend);
+  const session = buildFixtures({ days: 1, nowMs: Date.now() }).sleep[0];
+  assert.ok(session);
+  const append = backend.append;
+  backend.append = () => { throw new Error("disk full"); };
+  assert.throws(() => store.ingestSleep([session]), /disk full/);
+  assert.equal(store.sleepSessions().length, 0);
+  backend.append = append;
+  assert.equal(store.ingestSleep([session]), 1);
+  const correction = { ...session, totalSec: session.totalSec + 60 };
+  backend.append = () => { throw new Error("disk full"); };
+  assert.throws(() => store.ingestSleep([correction]), /disk full/);
+  assert.equal(store.sleepSessions()[0].totalSec, session.totalSec);
+  backend.append = append;
+  assert.equal(store.ingestSleep([correction]), 1);
+  assert.equal(new HealthStore(backend).sleepSessions()[0].totalSec, correction.totalSec);
+});
+
+test("retry after a partial append preserves the first sample and sleep record", () => {
+  const backend = memoryBackend();
+  const store = new HealthStore(backend);
+  const start = startOfLocalDay(Date.now());
+  const row = sample("heartRate", start, 50, 90, 70);
+  const session = buildFixtures({ days: 1, nowMs: Date.now() }).sleep[0];
+  const append = backend.append;
+  backend.append = (name, text) => {
+    append(name, text.slice(0, 12));
+    throw new Error("partial append");
+  };
+  assert.throws(() => store.ingestSamples([row]), /partial append/);
+  assert.throws(() => store.ingestSleep([session]), /partial append/);
+  backend.append = append;
+  assert.equal(store.ingestSamples([row]), 1);
+  assert.equal(store.ingestSleep([session]), 1);
+  const recovered = new HealthStore(backend);
+  assert.equal(recovered.samplesInRange(start, start + DAY_MS)[0].avg, 70);
+  assert.equal(recovered.sleepSessions()[0].totalSec, session.totalSec);
+});
+
 test("an unanchored hourly page is dropped, not dated", () => {
   const result = convertRecords([
     {

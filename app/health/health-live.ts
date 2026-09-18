@@ -467,7 +467,9 @@ export function syncLiveRecords(): LiveSyncResult {
   const store = healthStore();
   const samplesWritten = store.ingestSamples(samples);
   const sleepWritten = store.ingestSleep(sleep);
-  if (samplesWritten > 0 || sleepWritten > 0) markLiveData();
+  // Also mark on a retry whose samples were already appended before a later
+  // write failed. Otherwise opening Health could seed fixtures over real data.
+  markLiveData();
 
   // ONLY here. Both store writes have returned, so the records are durable.
   // If either threw, or the process died above this line, nothing is cleared

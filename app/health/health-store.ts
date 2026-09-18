@@ -121,8 +121,17 @@ export class HealthStore {
   private readonly shards = new Map<string, Map<string, HealthSample>>();
   private sleep: SleepSession[] | null = null;
   private rollups: RollupFile | null = null;
+  private rollupsDirty = false;
 
   constructor(private readonly backend: HealthStorageBackend) {}
+
+  /** Forget cached data after the backing files have been purged. */
+  resetCache(): void {
+    this.shards.clear();
+    this.sleep = null;
+    this.rollups = null;
+    this.rollupsDirty = false;
+  }
 
   // -------------------------------------------------------------------------
   // Writing
@@ -154,26 +163,36 @@ export class HealthStore {
    * If the shard grows again, the value is changing and the question is why.
    */
   ingestSamples(samples: readonly HealthSample[]): number {
-    const byShard = new Map<string, HealthSample[]>();
+    const byShard = new Map<string, Map<string, HealthSample>>();
     for (const sample of samples) {
       if (!Number.isFinite(sample.startMs) || sample.spanMs <= 0) continue;
       const name = shardName(sample.startMs);
       const shard = this.loadShard(name);
       const key = sampleKey(sample);
-      const existing = shard.get(key);
+      const pending = byShard.get(name) ?? new Map<string, HealthSample>();
+      const existing = pending.get(key) ?? shard.get(key);
       if (existing && sameSample(existing, sample)) continue;
-      shard.set(key, sample);
-      const pending = byShard.get(name);
-      if (pending) pending.push(sample);
-      else byShard.set(name, [sample]);
+      pending.set(key, sample);
+      byShard.set(name, pending);
     }
     let written = 0;
-    for (const [name, list] of byShard) {
+    for (const [name, pending] of byShard) {
+      const list = [...pending.values()];
       const text = list.map((sample) => `${JSON.stringify(toLine(sample))}\n`).join("");
-      this.backend.append(name, text);
+      // A failed append can leave an incomplete final line. Start each batch
+      // on a fresh line so retrying cannot concatenate a valid record onto it.
+      this.backend.append(name, `\n${text}`);
+      this.rollupsDirty = true;
+      // Only durable values participate in deduplication. If another shard
+      // fails, a retry skips this successful append and retries the rest.
+      const shard = this.loadShard(name);
+      for (const [key, sample] of pending) shard.set(key, sample);
       written += list.length;
     }
-    if (written > 0) this.updateRollupsFor(samples);
+    if (this.rollupsDirty) {
+      this.updateRollupsFor(samples);
+      this.rollupsDirty = false;
+    }
     return written;
   }
 
@@ -184,7 +203,7 @@ export class HealthStore {
    * later sync replaces rather than duplicates.
    */
   ingestSleep(sessions: readonly SleepSession[]): number {
-    const held = this.loadSleep();
+    const held = this.loadSleep().slice();
     const fresh: SleepSession[] = [];
     for (const session of sessions) {
       const index = held.findIndex(
@@ -200,7 +219,8 @@ export class HealthStore {
       fresh.push(session);
     }
     if (fresh.length > 0) {
-      this.backend.append(SLEEP_FILE, fresh.map((s) => `${JSON.stringify(s)}\n`).join(""));
+      this.backend.append(SLEEP_FILE, "\n" + fresh.map((s) => `${JSON.stringify(s)}\n`).join(""));
+      this.sleep = held;
     }
     return fresh.length;
   }

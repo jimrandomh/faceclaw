@@ -20,7 +20,7 @@
 import { File, knownFolders } from "@nativescript/core";
 
 import { buildFixtures, FIXTURE_VERSION } from "./health-fixtures";
-import { healthStore } from "./health-store-files";
+import { checkedFileOperation, healthStore } from "./health-store-files";
 
 const MARKER_FILE = "fixture-marker.json";
 
@@ -63,11 +63,10 @@ export function hasLiveData(): boolean {
 
 /** Record that real data has been stored. Called by the live ingest path. */
 export function markLiveData(): void {
-  try {
-    File.fromPath(livePath()).writeTextSync(JSON.stringify({ firstAtMs: Date.now() }));
-  } catch (error) {
-    console.warn("health live marker write failed", error);
-  }
+  if (hasLiveData()) return;
+  checkedFileOperation((onError) =>
+    File.fromPath(livePath()).writeTextSync(JSON.stringify({ firstAtMs: Date.now() }), onError),
+  );
 }
 
 /**
@@ -89,12 +88,17 @@ export function purgeFixtureData(): void {
         (name.startsWith("samples-") && name.endsWith(".jsonl")) ||
         name === "sleep.jsonl" ||
         name === "rollups.json";
-      if (isStoreFile) File.fromPath(entity.path).removeSync();
+      if (isStoreFile) {
+        checkedFileOperation((onError) => File.fromPath(entity.path).removeSync(onError));
+      }
     }
-  } catch (error) {
-    console.warn("health fixture purge failed", error);
+    // Keep the badge until every fixture file is gone. A failed purge must
+    // stop live ingest so it cannot mix real records with remaining fixtures.
+    clearFixtureMarker();
+  } finally {
+    // Also invalidate after a partial purge; cached rows no longer match disk.
+    healthStore().resetCache();
   }
-  clearFixtureMarker();
 }
 
 /**
@@ -116,10 +120,14 @@ export function seedFixtures(days = 45): boolean {
   try {
     const store = healthStore();
     const { samples, sleep } = buildFixtures({ days, nowMs: Date.now() });
+    // Label before the first append so a failed seed remains identifiable and
+    // can be purged before real data is ingested.
+    const marker: Marker = { version: FIXTURE_VERSION, seededAtMs: Date.now(), days };
+    checkedFileOperation((onError) =>
+      File.fromPath(markerPath()).writeTextSync(JSON.stringify(marker), onError),
+    );
     store.ingestSamples(samples);
     store.ingestSleep(sleep);
-    const marker: Marker = { version: FIXTURE_VERSION, seededAtMs: Date.now(), days };
-    File.fromPath(markerPath()).writeTextSync(JSON.stringify(marker));
     return true;
   } catch (error) {
     console.warn("health fixture seed failed", error);
@@ -129,9 +137,7 @@ export function seedFixtures(days = 45): boolean {
 
 /** Drop the marker. Call before the first real ingest. */
 export function clearFixtureMarker(): void {
-  try {
-    if (File.exists(markerPath())) File.fromPath(markerPath()).removeSync();
-  } catch (error) {
-    console.warn("health fixture marker clear failed", error);
+  if (File.exists(markerPath())) {
+    checkedFileOperation((onError) => File.fromPath(markerPath()).removeSync(onError));
   }
 }
