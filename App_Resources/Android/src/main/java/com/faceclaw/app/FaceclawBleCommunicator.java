@@ -87,6 +87,9 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private final java.util.List<FaceclawMicStatusListener> micStatusListeners =
         new java.util.concurrent.CopyOnWriteArrayList<>();
     private volatile Thread workerThread;
+    // Ring connect/write/health waits must never park the glasses sender.
+    // FaceclawBleManager serializes GATT operations per device address.
+    private volatile Thread ringWorkerThread;
     private volatile boolean running;
     private volatile boolean userDisconnectRequested;
     // Set when a connect attempt failed while an arm's Android bond is gone:
@@ -106,7 +109,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     // inline because notifications arrive on the GATT callback thread and
     // bleManager.writeFrames() blocks waiting for onCharacteristicWrite, which
     // that same thread has to deliver — writing there would deadlock until the
-    // write timeout. The worker loop drains the queue instead.
+    // write timeout. The ring worker drains the queue instead.
     private final RingProtocol.Reassembler ringReassembler = new RingProtocol.Reassembler();
     private final ArrayDeque<byte[]> ringOutbound = new ArrayDeque<>();
     private final List<RingProtocol.HealthRecord> ringHealthRecords = new ArrayList<>();
@@ -159,7 +162,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private long ringHealthLastRequestedAtMs;
     /**
      * Set by {@link #requestRingHealthNow()} from whatever thread the UI is on;
-     * cleared by the worker loop, which is the only thread allowed to run the
+     * cleared by the ring worker, which is the only thread allowed to run the
      * pull. Guarded by {@code lock}.
      */
     private boolean ringHealthPullRequested;
@@ -389,6 +392,10 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             activeInstance = this;
             workerThread = new Thread(this, "FaceclawBleCommunicator");
             workerThread.start();
+            if (hasRingAddress()) {
+                ringWorkerThread = new Thread(this::runRingWorker, "FaceclawRing");
+                ringWorkerThread.start();
+            }
         }
     }
 
@@ -401,15 +408,19 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             releaseFaceclawFramebufferLease();
         }
         Thread threadToJoin;
+        Thread ringThreadToJoin;
         synchronized (lock) {
             userDisconnectRequested = true;
             running = false;
             audioCaptureActive = false;
             audioPacketListener = null;
             threadToJoin = workerThread;
+            ringThreadToJoin = ringWorkerThread;
+            lock.notifyAll();
         }
         setStateDisplay("disconnecting", "Disconnecting...");
         interruptibleSleep.interrupt();
+        if (ringThreadToJoin != null) ringThreadToJoin.interrupt();
         if (threadToJoin != null) {
             threadToJoin.interrupt();
             try {
@@ -418,8 +429,16 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 Thread.currentThread().interrupt();
             }
         }
+        if (ringThreadToJoin != null) {
+            try {
+                ringThreadToJoin.join(5_000);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }
         synchronized (lock) {
             workerThread = null;
+            ringWorkerThread = null;
             resetSessionStateLocked();
             clearAllMessagesLocked("disconnect");
             // Unknown until the next connection's first push or settings poll.
@@ -1705,24 +1724,6 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                     continue;
                 }
 
-                if (shouldAttemptRingConnect()) {
-                    tryConnectRing("retry");
-                    continue;
-                }
-
-                // Page ACKs queued from the GATT callback thread are written
-                // here, on the only thread allowed to block on a GATT write.
-                flushRingOutbound();
-
-                // An on-demand pull asked for from the UI thread runs here for
-                // the same reason: requestRingHealth() blocks on GATT writes and
-                // on its own RSP/DATA waits, which only this thread may do.
-                runRequestedRingHealthPull();
-                // An aborted pull is unfinished business, not a speculative
-                // repeat - see RING_HEALTH_ABORTED_RETRY_LIMIT. Cheap: returns
-                // immediately unless a pull actually failed to complete.
-                resumeAbortedRingHealthPull();
-
                 long sleepMs = driveSession();
                 if (sleepMs > 0) {
                     interruptibleSleep.sleep(sleepMs);
@@ -1733,6 +1734,35 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             }
         }
         logLine("communicator stop");
+    }
+
+    /** Sole owner of blocking ring operations; callbacks only enqueue ACKs. */
+    private void runRingWorker() {
+        while (running && !Thread.currentThread().isInterrupted()) {
+            try {
+                if (shouldAttemptRingConnect()) tryConnectRing("ring worker");
+                if (!running) break;
+                flushRingOutbound();
+                runRequestedRingHealthPull();
+                resumeAbortedRingHealthPull();
+                synchronized (lock) {
+                    if (running) lock.wait(100);
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
+            } catch (Throwable t) {
+                logLine("ring worker error: " + safeMessage(t));
+                // A ring failure must not tear down the glasses session.
+                synchronized (lock) {
+                    ringConnected = false;
+                    ringNotificationsReady = false;
+                    ringReconnectAfterMs = SystemClock.elapsedRealtime() + ConnectionOptions.RING_RECONNECT_DELAY_MS;
+                }
+                bleManager.disconnect(ringAddress);
+            }
+        }
+        logLine("ring worker stop");
     }
 
     @Override public void onNotification(String address, String characteristicUuid, byte[] data) {
@@ -2140,9 +2170,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             ringHealthPageCounter++;
             lock.notifyAll();
         }
-        // The worker loop does the actual write; wake it so the ACK is not held
-        // for a whole idle tick.
-        interruptibleSleep.interrupt();
+        // lock.notifyAll() wakes the ring worker, independently of the glasses.
     }
 
     private boolean journalRingFrame(RingProtocol.Frame frame) {
@@ -2201,6 +2229,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                     emitBatteryState(headsetBattery, headsetCharging);
                 }
                 logLine(connected ? "direct ring BLE connected" : "direct ring BLE disconnected");
+                lock.notifyAll();
                 return;
             }
             if (address.equalsIgnoreCase(rightAddress)) {
@@ -2297,7 +2326,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                     logLine("queue settings query for firmware info");
                 }
             }
-            tryConnectRing("initial");
+            synchronized (lock) { lock.notifyAll(); }
         } catch (Throwable t) {
             logLine("connect failed: " + safeMessage(t));
             String unpairedArm = firstUnpairedArm();
@@ -2361,9 +2390,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             return running
                 && sessionReady
                 && !ringNotificationsReady
-                && now >= ringReconnectAfterMs
-                && pendingMessages.isEmpty()
-                && inFlightMessages.isEmpty();
+                && now >= ringReconnectAfterMs;
         }
     }
 
@@ -2554,6 +2581,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     public void requestRingHealthNow() {
         synchronized (lock) {
             ringHealthPullRequested = true;
+            lock.notifyAll();
         }
         interruptibleSleep.interrupt();
     }
@@ -2650,100 +2678,25 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     }
 
     /**
-     * Device-channel prelude the ring requires before it will answer any
-     * channel-0x02 (health) request. <b>Confirmed live, 2026-09-10: without
-     * this, the ring never responds at all to a bare health REQ - not even
-     * an RSP.</b> With it, RSPs start flowing immediately. The direct-ring
-     * path has no other handshake or auth step, so this is the whole gate.
+     * Device-channel initialization. 00:0e enables health recording; 00:05 sets
+     * the clock (signed timezone minutes plus Unix seconds).
      *
-     * <p>These five frames were found by byte-for-byte comparison against a
-     * real Even-app sync (pkt 8814-9153 in the capture behind
-     * {@code knowledge/staging/faceclaw-ring-protocol-decode-return.md}),
-     * replayed here in the same order, right after the ring connects.
-     * <b>Which of the five is actually load-bearing is unknown</b> - all
-     * five go out together because that combination is the only one proven
-     * to work; nobody has yet tried removing any of them. Three of them
-     * (00:08, 06:02, 00:0A) carry payload bytes with no known meaning beyond
-     * "the ring accepted them from Even's app" - opaque constants, copied
-     * verbatim, not derived. Do not change them without new evidence.
+     * The inherited extra timezone shift is WRONG: on this PDT ring, fresh HR
+     * timestamps track receipt time + 7h. Firmware expects UTC seconds and
+     * applies the timezone separately. Do not simply deploy a seven-hour
+     * rewind: stock firmware can format its health database on a backward
+     * jump >= 1h. Existing pages also contain mixed clock domains and invalid
+     * daily anchors, so their dates cannot be repaired by one subtraction.
      *
-     * <p>The other two (00:0E clock-set, 00:05 day-anchor) need a live
-     * value: both carry the current Unix time offset by the local UTC offset,
-     * which in EDT is +14400s (4h) - and +14400s is what a real Even write
-     * carries. Verified 2026-09-11 against six separate real Even clock-set
-     * writes. As of 2026-09-12 the offset is COMPUTED from the device time
-     * zone rather than hardcoded, which is identical in EDT and stays correct
-     * across a DST change; see the comment in {@code sendRingHandshake()}.
-     *
-     * <p><b>Skew trap - read before "correcting" this number.</b> Earlier on
-     * 2026-09-11 this was changed to +28800s (8h) and that was wrong. The
-     * mistake: btsnoop packet timestamps on this phone run exactly 4 hours
-     * BEHIND the Android system clock (the system clock itself is correct -
-     * {@code adb shell date} agrees with real time). Measuring Even's sent
-     * value against the btsnoop timestamp therefore double-counts the 4h and
-     * makes a correct +14400 look like +28800. The skew is verified
-     * sub-second by lining btsnoop up against logcat on the same connect:
-     * logcat "direct ring BLE connected" 05:58:24.616 vs btsnoop MTU Req
-     * 01:58:24.618; "ring ready" .983 vs CCCD Write Rsp .981; "handshake
-     * sent" 25.085 vs first Write Command 25.071. Same milliseconds, hour
-     * off by four. <b>Always convert btsnoop timestamps to real local time
-     * (+4h) before comparing them to anything.</b>
-     *
-     * <p>A stale, yesterday's timestamp here was separately tested and ruled
-     * out as the reason DATA wasn't following RSP - but nothing says a stale
-     * value is harmless either, so this always sends the true current time.
-     */
-    /**
-     * Round 2 (2026-09-11, ~00:55 EDT): compared this handshake against a
-     * fresh HCI-snoop capture of Even's own app completing a real successful
-     * sync minutes earlier. Two real findings from that comparison:
-     * - The 00:0A payload (the "app identity?" blob) is byte-for-byte
-     *   identical between that capture and one from two nights before - a
-     *   true fixed constant, not a rotating per-session token. Rules out the
-     *   "stale identity token" theory tried first.
-     * - Even's real sequence also sends battery (00:01), firmware version
-     *   (00:02), and device id (00:0B) - none of which round 1 ever sent -
-     *   interleaved with the health requests, not just once upfront. Notably
-     *   the firmware-version query lands immediately before Even's own first
-     *   successful health request in the real trace. `06:02`, which round 1
-     *   did send, never appears anywhere in that real successful sync -
-     *   dropped here since there's now real evidence it isn't needed and it
-     *   was never more than a guess to begin with.
-     * This round adds 00:01/00:02/00:0B up front rather than interleaved
-     * (interleaving would need restructuring requestRingHealth() too - a
-     * bigger change deferred until this simpler version is shown to help or
-     * not).
+     * TODO: controlled UTC migration after preserving ring history. Retain the
+     * existing wire behavior until that migration is authorized and validated.
+     * See notes/ring-health-live-validation.md for evidence and the next test.
      */
     private void sendRingHandshake() {
-        // +14400s was hardcoded here because every capture behind this work was
-        // taken in EDT, where 14400s happens to be the magnitude of the UTC
-        // offset - so the constant was right by coincidence of season, not by
-        // derivation, and would have gone an hour wrong at the next DST change.
-        // This computes it instead: identical in EDT, correct year-round.
-        //
-        // ⚠ MIND THE SIGN. The ring's clock runs AHEAD of real time by the
-        // magnitude of a west-of-UTC offset, so the quantity wanted here is
-        // NEGATIVE `TimeZone.getOffset()`, which is itself negative west of UTC
-        // (-14400000ms in EDT). Getting this backwards sets the ring's clock 8h
-        // wrong rather than 0h wrong. Measured 2026-09-12: the un-negated form
-        // logged -14400 and the ring then returned step buckets dated 8h out.
-        //
-        // Note this is the OPPOSITE of the "ring stores naive local time"
-        // hypothesis, which predicts `epoch + utc_offset` = epoch - 14400. The
-        // measured, working value is epoch + 14400. The hypothesis is therefore
-        // NOT confirmed by this code; what is preserved here is the behaviour
-        // verified against six real Even clock-set writes.
-        //
-        // ⚠ PAIRED with `ringClockOffsetMs()` in `app/health/health-live.ts`,
-        // which subtracts the same quantity on the way back out. These two must
-        // move together; both now compute the value rather than hardcoding EDT.
         long nowMs = System.currentTimeMillis();
         long clockOffsetSeconds = -TimeZone.getDefault().getOffset(nowMs) / 1000L;
         long liveClockSeconds = (nowMs / 1000L) + clockOffsetSeconds;
-        // Asserted at every handshake: in EDT this must read 14400. The clock write
-        // is the part of this protocol that took two sessions to get working, so a
-        // changed value here is the one way a working pull silently breaks.
-        Log.i(TAG, "ring handshake clock offset seconds = " + clockOffsetSeconds
+        Log.i(TAG, "ring handshake legacy clock offset seconds = " + clockOffsetSeconds
                 + " (tz " + TimeZone.getDefault().getID() + ")");
         byte[] clock = le32(liveClockSeconds);
 
@@ -2924,11 +2877,11 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
      * "genuinely nothing new" other than knowing independently whether fresh
      * data should exist (e.g. from the export's own sampling cadence).
      *
-     * <p>Runs on the worker thread (from connectRing), which is the only
+     * <p>Runs on the ring worker (from connectRing), which is the only
      * thread allowed to call the blocking write path - the wait loops below
      * block that same thread, which is why {@link #flushRingOutbound} is
      * called inside the response and DATA waits rather than relying on the
-     * main loop's own call to it.
+     * ring loop's own call to it.
      */
     private boolean requestRingHealth() {
         // A previous attempt may have left an ACK queued after a failed write.

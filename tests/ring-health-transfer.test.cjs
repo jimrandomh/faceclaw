@@ -1,4 +1,5 @@
 const test = require("node:test");
+const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
@@ -11,12 +12,19 @@ test("ring health drains ACK-paced pages before advancing and aborts on write fa
     "../App_Resources/Android/src/main/java/com/faceclaw/app/FaceclawBleCommunicator.java"), "utf8");
   // Compile the actual worker methods with a fake GATT transport. This keeps
   // Android out of the JVM test without copying the transfer implementation.
-  const methods = ["requestRingHealth", "awaitRingHealthRsp", "awaitRingHealthDataIdle", "flushRingOutbound"]
+  const methods = ["requestRingHealth", "awaitRingHealthRsp", "awaitRingHealthDataIdle", "flushRingOutbound", "runRingWorker"]
     .map((name) => {
       const match = source.match(new RegExp(`    private (?:boolean|int|void) ${name}\\([^]*?^    }`, "m"));
       if (!match) throw new Error(`Missing production method: ${name}`);
       return match[0];
     }).join("\n");
+  for (const signature of ["@Override public void run()", "private void connectLoopOnce()"]) {
+    const start = source.indexOf(signature);
+    assert.ok(start >= 0);
+    const body = source.slice(start, source.indexOf("\n    }", start));
+    assert.doesNotMatch(body, /tryConnectRing\(|requestRingHealth\(|flushRingOutbound\(|runRequestedRingHealthPull\(/,
+      "the glasses sender must not call blocking ring operations");
+  }
   const fixture = fs.readFileSync(path.join(__dirname, "fixtures/RingHealthTransferTest.java"), "utf8");
   const harness = path.join(directory, "RingHealthTransferTest.java");
   fs.writeFileSync(harness, fixture.replace("// TRANSFER_METHODS", methods));

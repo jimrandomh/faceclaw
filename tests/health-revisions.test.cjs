@@ -22,6 +22,7 @@ const assert = require("node:assert/strict");
 const { buildFixtures } = require("../.test-build/app/health/health-fixtures.js");
 const {
   dailySummary,
+  dailyHypnogram,
   sleepNights,
   sleepSummary,
   stageSeconds,
@@ -103,6 +104,32 @@ test("two sessions on one day are summed, not deduped to the longest", () => {
     Math.abs(nights[0].lightSec - (3600 + 1800) * 0.6) < 1e-6,
     "stage totals add across both sessions",
   );
+  const summary = dailySummary([], [night(3600, 300), night(1800, 60)], today).sleep;
+  assert.equal(summary.totalSec, 5400);
+  assert.equal(summary.wakeSec, 360);
+  assert.equal(summary.efficiencyPercent, 5400 / 5760 * 100);
+  assert.equal(dailySummary([], [], today).sleep, null);
+});
+
+test("split-night detail includes both blocks and leaves the gap unknown", () => {
+  const today = startOfLocalDay(Date.now());
+  const block = (hour, stageId) => ({
+    dayStartMs: today, startMs: today + hour * 3600000,
+    endMs: today + (hour + 1) * 3600000,
+    totalSec: 3600, wakeSec: 0, remSec: 0, lightSec: 3600, deepSec: 0,
+    segments: [{ stageId, halfMinutes: 120 }], timeResolved: true,
+  });
+  const first = block(1, 1), second = block(3, 2);
+  const bands = dailyHypnogram([second, first, { ...block(1, 3), dayStartMs: today - DAY_MS }], today);
+  assert.equal(bands.length, 3);
+  assert.deepEqual(bands[1], { stage: null, seconds: 3600 });
+  assert.equal(bands[0].seconds, 3600);
+  assert.equal(bands[2].seconds, 3600);
+  assert.notEqual(bands[0].stage, bands[2].stage);
+  assert.equal(dailySummary([], [first, second], today).sleep.totalSec, 7200,
+    "an unrecorded gap is not counted as sleep");
+  assert.deepEqual(dailyHypnogram([{ ...first, segments: [] }], today),
+    [{ stage: null, seconds: 3600 }]);
 });
 
 test("a stage's lane duration comes from the named totals", () => {

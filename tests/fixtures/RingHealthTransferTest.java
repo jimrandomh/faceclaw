@@ -6,13 +6,14 @@ import java.util.List;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.CountDownLatch;
 
 public final class RingHealthTransferTest implements AutoCloseable {
     private final Object lock = new Object();
     private final ArrayDeque<byte[]> ringOutbound = new ArrayDeque<>();
     private final ScheduledExecutorService callbacks = Executors.newSingleThreadScheduledExecutor();
     private final List<String> writes = new ArrayList<>();
-    private boolean running = true;
+    private volatile boolean running = true;
     private boolean ringConnected = true;
     private boolean ringNotificationsReady = true;
     private boolean ringHealthRspSeen;
@@ -21,6 +22,20 @@ public final class RingHealthTransferTest implements AutoCloseable {
     private boolean failAck;
     private boolean answer = true;
     private boolean delayRsp;
+    private boolean pullRequested = true;
+    private final CountDownLatch requestStarted = new CountDownLatch(1);
+    private final String ringAddress = "ring";
+    private long ringReconnectAfterMs;
+    private static class ConnectionOptions { static final int RING_RECONNECT_DELAY_MS = 1000; }
+    private static class BleManager { void disconnect(String address) {} }
+    private final BleManager bleManager = new BleManager();
+    private static String safeMessage(Throwable t) { return t.getMessage(); }
+    private boolean shouldAttemptRingConnect() { return false; }
+    private void tryConnectRing(String reason) { throw new AssertionError("unexpected connect"); }
+    private void runRequestedRingHealthPull() {
+        if (pullRequested) { pullRequested = false; requestRingHealth(); }
+    }
+    private void resumeAbortedRingHealthPull() {}
     private static final long RING_HEALTH_RSP_TIMEOUT_MS = 500;
     private static final long RING_HEALTH_DATA_IDLE_MS = 100;
     private static final int[] RING_DEVICE_PING_CMD_LO = {10, 1, 2, 11};
@@ -53,6 +68,7 @@ public final class RingHealthTransferTest implements AutoCloseable {
             try { Thread.sleep(130); } catch (InterruptedException e) { throw new AssertionError(e); }
             if (pageId % 10 == 1) callbacks.schedule(() -> page(pageId + 1), 5, TimeUnit.MILLISECONDS);
         } else {
+            requestStarted.countDown();
             int command = RingProtocol.parse(frame).cmdHi;
             writes.add("req:" + command);
             if (answer) {
@@ -73,7 +89,21 @@ public final class RingHealthTransferTest implements AutoCloseable {
 
     @Override public void close() { callbacks.shutdownNow(); }
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Exception {
+        try (RingHealthTransferTest transfer = new RingHealthTransferTest()) {
+            transfer.answer = false;
+            Thread worker = new Thread(transfer::runRingWorker);
+            worker.start();
+            if (!transfer.requestStarted.await(1, TimeUnit.SECONDS)) throw new AssertionError("no request");
+            // The glasses sender can still take the session lock while the
+            // ring is waiting on its RSP. Shutdown must cancel that wait too.
+            long start = SystemClock.elapsedRealtime();
+            synchronized (transfer.lock) { transfer.running = false; transfer.lock.notifyAll(); }
+            worker.interrupt();
+            worker.join(300);
+            if (worker.isAlive()) throw new AssertionError("ring worker did not stop");
+            if (SystemClock.elapsedRealtime() - start >= 300) throw new AssertionError("session lock blocked");
+        }
         try (RingHealthTransferTest transfer = new RingHealthTransferTest()) {
             transfer.delayRsp = true;
             if (!transfer.requestRingHealth()) throw new AssertionError("pull failed");

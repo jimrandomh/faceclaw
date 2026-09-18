@@ -28,7 +28,7 @@ import {
   type InProcessAppOptions,
   type InProcessWindow,
 } from "../../ui/shell/in-process-window";
-import { dailySummary, hypnogram, rollupSeries, type DailySummary } from "../../health/health-derive";
+import { dailySummary, dailyHypnogram, rollupSeries, type DailySummary } from "../../health/health-derive";
 import {
   drawGlancePage,
   GLANCE_PAGES,
@@ -114,8 +114,7 @@ class HealthLayer implements Layer {
         });
       }
       this.hourly = hourly;
-      const night = sessions.find((session) => session.dayStartMs === today);
-      this.stageBands = night ? hypnogram(night) : [];
+      this.stageBands = dailyHypnogram(sessions, today);
       this.fixture = isFixtureData();
     } catch (error) {
       console.warn("health glance reload failed", error);

@@ -165,9 +165,7 @@ export function dailySummary(
   const inDay = samples.filter(
     (sample) => sample.startMs >= dayStartMs && sample.startMs < dayEndMs,
   );
-  const night = sleepSessions
-    .filter((session) => session.dayStartMs === dayStartMs)
-    .sort((a, b) => b.totalSec - a.totalSec)[0];
+  const nights = sleepSessions.filter((session) => session.dayStartMs === dayStartMs);
   return {
     dayStartMs,
     steps: Math.round(sumOf(inDay, "steps")),
@@ -175,7 +173,7 @@ export function dailySummary(
     heartRate: summarise(inDay, "heartRate"),
     spo2: summarise(inDay, "spo2"),
     hrv: summarise(inDay, "hrv"),
-    sleep: night ? sleepSummary(night) : null,
+    sleep: combinedSleepSummary(nights),
   };
 }
 
@@ -250,6 +248,21 @@ export function sleepSummary(session: SleepSession): SleepSummary {
   };
 }
 
+/** Every recorded block attributed to the day contributes to its headline. */
+export function combinedSleepSummary(sessions: readonly SleepSession[]): SleepSummary | null {
+  if (sessions.length === 0) return null;
+  const combined: SleepSession = {
+    ...sessions[0], totalSec: 0, wakeSec: 0, remSec: 0, lightSec: 0, deepSec: 0,
+    timeResolved: sessions.every((session) => session.timeResolved),
+  };
+  for (const session of sessions) {
+    for (const field of ["totalSec", "wakeSec", "remSec", "lightSec", "deepSec"] as const) {
+      combined[field] += Math.max(0, session[field]);
+    }
+  }
+  return sleepSummary(combined);
+}
+
 /**
  * One stage's seconds, from the summary's own bands.
  *
@@ -272,11 +285,7 @@ export function stageSeconds(stage: SleepStageName, summary: SleepSummary): numb
  * night with no record comes back as `hasData: false` at its real position
  * rather than shifting every later night one column left.
  *
- * Two sessions attributed to the same day are SUMMED rather than the longest
- * winning. That differs from `dailySummary`, which picks the longest because it
- * is answering "how did you sleep last night" with one headline number; here
- * the column is the day's total time in each stage, and dropping a nap would
- * make the bar disagree with the sleep total shown beside it.
+ * Sessions attributed to the same day are summed, as in `dailySummary`.
  */
 export function sleepNights(
   sessions: readonly SleepSession[],
@@ -334,6 +343,28 @@ export function hypnogram(session: SleepSession): { stage: SleepStageName | null
     stage: stageNameForId(segment.stageId),
     seconds: segment.halfMinutes * 30,
   }));
+}
+
+/** Chronological blocks, with unrecorded intervals left as unknown gaps. */
+export function dailyHypnogram(sessions: readonly SleepSession[], dayStartMs: number): ReturnType<typeof hypnogram> {
+  const result: ReturnType<typeof hypnogram> = [];
+  let previousEnd: number | null = null;
+  for (const session of sessions.filter((s) => s.dayStartMs === dayStartMs)
+    .sort((a, b) => a.startMs - b.startMs)) {
+    if (previousEnd !== null && session.timeResolved && session.startMs > previousEnd) {
+      result.push({ stage: null, seconds: (session.startMs - previousEnd) / 1000 });
+    }
+    const bands = hypnogram(session);
+    result.push(...bands);
+    // A session without stage data still occupies its recorded interval.
+    const covered = bands.reduce((total, band) => total + band.seconds, 0);
+    const duration = session.timeResolved
+      ? Math.max(0, (session.endMs - session.startMs) / 1000)
+      : session.totalSec + session.wakeSec;
+    if (duration > covered) result.push({ stage: null, seconds: duration - covered });
+    previousEnd = session.timeResolved ? Math.max(previousEnd ?? 0, session.endMs) : null;
+  }
+  return result;
 }
 
 /**

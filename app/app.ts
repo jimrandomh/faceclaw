@@ -8,15 +8,11 @@ import { Application } from '@nativescript/core'
 import { registerShareIntentHandler } from './native/share-intents'
 import { installNativeUserAgent } from './util/http'
 import { registerPhoneRotation } from './native/phone-rotation'
-
-installNativeUserAgent()
-registerShareIntentHandler()
-registerPhoneRotation()
-
 import { startLiveHealthSync, startAlignedRingPull } from './health/health-live'
 
 installNativeUserAgent()
 registerShareIntentHandler()
+registerPhoneRotation()
 
 // Ring health records live only in the communicator's memory until something
 // stores them. Both health surfaces store on open, but a pull that lands while

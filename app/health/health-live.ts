@@ -77,66 +77,22 @@ function activeCommunicator(): any {
 }
 
 /**
- * The ring timestamps in a frame 4 hours ahead of real time, and that is our
- * own doing: the handshake sets its clock to `now + 14400s`, because that is
- * what a real Even write carries (verified against six of them). Even's app
- * evidently subtracts the same offset on the way back out. We were not, so
- * every hourly sample landed 4 hours in the future.
- *
- * MEASURED, not theorised. Stored samples read 09:00/10:00/11:00 local while
- * the actual time was 07:15; minus four hours gives 05:00/06:00/07:00, which
- * is exactly right for a ring that had just reported the current hour.
- *
- * ⚠ This value is PAIRED with the offset in `sendRingHandshake()`. They must
- * move together.
- *
- * Both were hardcoded to 14400. As of 2026-09-12 both COMPUTE it: 14400 was
- * only ever right because every capture behind this work was taken in EDT,
- * where 14400s is the magnitude of the UTC offset. Computing it is identical
- * today and survives DST.
- *
- * ⚠ MIND THE SIGN. The quantity is "how far AHEAD of real time the ring's clock
- * runs", which is the magnitude of a west-of-UTC offset — positive 14400 in
- * EDT. `getTimezoneOffset()` is already minutes WEST of UTC (+240 in EDT), so
- * it is used as-is, NOT negated. Java's `TimeZone.getOffset()` uses the
- * opposite convention and is negated there; the two agree on +14400.
- *
- * Worth recording because the first cut of this change got the sign backwards
- * on both sides at once — consistently, so they stayed "paired", and still
- * wrong by 8 hours. Only the handshake's own assertion log caught it.
- *
- * Note this direction is the OPPOSITE of the "ring stores naive local time"
- * hypothesis (which predicts `epoch + utc_offset`, i.e. 4h behind). Measured
- * behaviour is 4h ahead. The hypothesis is unconfirmed; the measurement rules.
+ * Legacy compensation for the incorrect extra timezone shift sent by the
+ * handshake. This is not a ring protocol requirement. Fresh HR timestamps on
+ * the PDT test ring run seven hours ahead, but older values and daily anchors
+ * do not share that shift. Keep this paired with the existing handshake until
+ * a controlled UTC migration; do not apply it retrospectively to raw history.
+ * See notes/ring-health-live-validation.md.
  */
 function ringClockOffsetMs(atMs: number): number {
   return new Date(atMs).getTimezoneOffset() * 60 * 1000;
 }
 
 /**
- * Sleep timestamps need TWICE the correction the hourly samples need.
- *
- * ⚠ EMPIRICAL, AND THE MECHANISM IS UNEXPLAINED. Do not read a story into the
- * factor of 2. The last time this file invented a tidy explanation for a ring
- * clock quirk ("the ring stores naive local time") it was falsified the next
- * day, which is why the hourly comment above ends with "the measurement rules".
- * The same applies here, more so: nothing about a sleep record is known to
- * differ from an hourly one in how it is stamped, and yet the correction does.
- *
- * The evidence, 2026-09-12, the first real sleep record off the hardware:
- * `start_ts` decodes raw to 10:21:01 EDT. Chris confirmed the true window two
- * independent ways - he slept "straight through from around 1:30 AM to 9:30 AM",
- * and separately reported seeing only the first block with "another 4 or so
- * hours after that". Under -4h the block is 06:21 -> 09:25, which puts the
- * missing time BEFORE it and contradicts what the device showed. Under -8h it
- * is 02:21 -> 05:25, leaving 05:25 -> 09:30 (4h05m) missing AFTER it, which is
- * what he saw.
- *
- * Expressed as twice `ringClockOffsetMs` rather than a fresh 28800 so the
- * November DST change moves the hourly correction and this one together. Like
- * the hourly path it is evaluated at the RAW instant, so within ~8h of a DST
- * switch it can pick the wrong side by an hour - the same caveat, deliberately
- * kept identical rather than special-cased here.
+ * Inherited sleep-specific heuristic, still unvalidated on this ring (no sleep
+ * DATA page received yet). Firmware describes UTC timestamps, not a double
+ * timezone offset. Remove alongside the controlled clock migration, then
+ * validate against a recorded night; it is not evidence of correct placement.
  */
 function sleepClockOffsetMs(atMs: number): number {
   return 2 * ringClockOffsetMs(atMs);
