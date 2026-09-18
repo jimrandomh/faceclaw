@@ -26,7 +26,12 @@ export type VoiceControlState = {
   detail: string;
 };
 
-export type VoiceProviderKind = "onboard" | "elevenlabs" | "whisper" | "soniox";
+// "whisper" (no "onboard-" prefix) is the OpenAI CLOUD provider (gpt-realtime-whisper,
+// see openai-stt.ts) -- an unfortunate pre-existing name collision with the model
+// family, not with "onboard-whisper" below, which is the on-device sherpa-onnx
+// Whisper backend added alongside "onboard" (Moonshine). Kept as-is rather than
+// renamed, since it's a persisted settings value on real installs already.
+export type VoiceProviderKind = "onboard" | "onboard-whisper" | "elevenlabs" | "whisper" | "soniox";
 
 export type VoiceTranscriptEvent = CloudSttTranscriptEvent & {
   /**
@@ -314,6 +319,9 @@ export class FaceclawVoiceControlBridge {
 
     this.cloudClient = null;
     this.started = true;
+    // Which on-device model to load; a no-op setter for every provider except
+    // "onboard-whisper" (FaceclawVoiceController defaults to Moonshine).
+    this.controller?.setOnboardModelKind(options.provider === "onboard-whisper" ? "whisper" : "moonshine");
     this.controller?.start("onboard");
   }
 
@@ -323,7 +331,7 @@ export class FaceclawVoiceControlBridge {
    * than failing the capture outright.
    */
   private createCloudClient(options: PushToTalkOptions): CloudSttClient | null {
-    if (options.provider === "onboard") return null;
+    if (options.provider === "onboard" || options.provider === "onboard-whisper") return null;
     const sttOptions = {
       apiKey: "",
       onTranscript: (event: CloudSttTranscriptEvent) =>

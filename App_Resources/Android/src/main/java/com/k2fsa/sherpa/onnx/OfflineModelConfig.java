@@ -162,7 +162,7 @@ public class OfflineModelConfig {
     public static class Builder {
         private OfflineTransducerModelConfig transducer = new OfflineTransducerModelConfig();
         private OfflineParaformerModelConfig paraformer = new OfflineParaformerModelConfig();
-        private OfflineWhisperModelConfig whisper = new OfflineWhisperModelConfig();
+        private OfflineWhisperModelConfig whisper = OfflineWhisperModelConfig.builder().build();
         private OfflineFireRedAsrModelConfig fireRedAsr = new OfflineFireRedAsrModelConfig();
         private OfflineMoonshineModelConfig moonshine = OfflineMoonshineModelConfig.builder().build();
         private OfflineNemoEncDecCtcModelConfig nemo = new OfflineNemoEncDecCtcModelConfig();
@@ -188,6 +188,11 @@ public class OfflineModelConfig {
 
         public Builder setMoonshine(OfflineMoonshineModelConfig moonshine) {
             this.moonshine = moonshine;
+            return this;
+        }
+
+        public Builder setWhisper(OfflineWhisperModelConfig whisper) {
+            this.whisper = whisper;
             return this;
         }
 
@@ -226,16 +231,6 @@ class OfflineTransducerModelConfig {
 class OfflineParaformerModelConfig {
     private final String model = "";
     private final QnnConfig qnnConfig = new QnnConfig();
-}
-
-class OfflineWhisperModelConfig {
-    private final String encoder = "";
-    private final String decoder = "";
-    private final String language = "en";
-    private final String task = "transcribe";
-    private final int tailPaddings = 1000;
-    private final boolean enableTokenTimestamps = false;
-    private final boolean enableSegmentTimestamps = false;
 }
 
 class OfflineFireRedAsrModelConfig {
