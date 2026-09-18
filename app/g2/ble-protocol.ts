@@ -1,4 +1,5 @@
 /** G2 wire protocol, ported from g2protocol/BleProtocol.java. No platform APIs. */
+import { OsEventTypeList } from './events'
 export const G2_WRITE = '00002760-08c2-11e1-9073-0e8ac72e5401'
 export const G2_NOTIFY = '00002760-08c2-11e1-9073-0e8ac72e5402'
 export const G2_RENDER_NOTIFY = '00002760-08c2-11e1-9073-0e8ac72e6402'
@@ -125,13 +126,14 @@ export function readString(data: Uint8Array, number: number): string { return Ar
 export function authenticationSucceeded(message: ProtocolMessage, magic: number): boolean {
   return message.sid === SID.auth && message.command === 4 && message.magic === magic && readBytes(message.payload, 3)?.length === 0
 }
-export type GlassesInput = { kind: 'sys-event' | 'list-click' | 'text-click'; eventType: number; eventSource: number; systemExitReasonCode: number; containerName: string; frameId: number }
+export type GlassesInput = { kind: 'sys-event' | 'list-click' | 'text-click' | 'display-wake'; eventType: number; eventSource: number; systemExitReasonCode: number; containerName: string; frameId: number }
 export function decodeGlassesInput(message: ProtocolMessage): GlassesInput | null {
   if (message.sid !== SID.hub || ![1, 6].includes(message.flag)) return null
   const events = readBytes(message.payload, 13); if (!events) return null
   for (const [field, kind, typeField] of [[1, 'list-click', 5], [2, 'text-click', 3], [3, 'sys-event', 1]] as const) {
     const event = readBytes(events, field)
-    if (event) return { kind, eventType: readInteger(event, typeField), eventSource: field === 3 ? readInteger(event, 2) : 0,
+    if (event) return { kind: kind === 'sys-event' && readInteger(event, typeField) === OsEventTypeList.HEAD_UP_EVENT ? 'display-wake' : kind,
+      eventType: readInteger(event, typeField), eventSource: field === 3 ? readInteger(event, 2) : 0,
       systemExitReasonCode: field === 3 ? readInteger(event, 4) : 0, containerName: field === 3 ? '' : readString(event, 2), frameId: 0 }
   }
   return null

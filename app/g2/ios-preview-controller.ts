@@ -2,6 +2,8 @@ import { Dialogs, File, knownFolders, path, type ImageSource } from '@nativescri
 import { iosBluetooth } from '../native/ios-bluetooth'
 import { iosVoiceInput } from '../native/ios-voice-input'
 import { GlassesSession, type SessionState } from './glasses-session'
+import { GlanceHost, type GlanceDisplay } from './glance-host'
+import { OsEventTypeList } from './events'
 import { loadDeviceAddresses } from './device-addresses'
 import { deviceAddressError } from './ios-peripheral-identity'
 import { createLauncherWindow, LAUNCHER_SURFACE_ID } from '../apps/launcher/launcher-app'
@@ -16,7 +18,7 @@ import { SurfaceCompositor } from '../graphics/surface-compositor'
 import { flattenPlanes, type Plane } from '../graphics/plane'
 import { G2_LENS_WIDTH, G2_LENS_HEIGHT } from '../graphics/image'
 import { previewPixels } from '../native/ios-graphics'
-import { makeInputEvent, type InputEventPayload } from '../ui/gestures'
+import { makeInputEvent, type InputEvent, type InputEventPayload } from '../ui/gestures'
 import { noopLayerActions, type LayerActions } from '../ui/layers'
 import { TextViewerLayer } from '../apps/files/text-viewer'
 import { shell, rawInputEventToInputEvent, type ShellWindow } from '../ui/shell/shell'
@@ -28,6 +30,36 @@ import type { PhoneGesture } from '../phone-ui/phone-gestures'
 /** iOS host for the shared app registry, shell, compositor and BLE session. */
 export class IosPreviewController {
   private readonly compositor = new SurfaceCompositor(G2_LENS_WIDTH, G2_LENS_HEIGHT)
+  private readonly glanceDisplay: GlanceDisplay = {
+    configureSurface: async (id, options) => {
+      this.compositor.configureSurface(id, options)
+    },
+    setSurfaceVisible: async (id, visible) => {
+      this.compositor.setSurfaceVisible(id, visible); this.scheduleFrame()
+    },
+    setScreenBlanked: async blanked => {
+      this.compositor.setScreenBlanked(blanked); this.scheduleFrame()
+    },
+    submitSurfaceFrame: async (id, pixels, rect) => {
+      this.compositor.submitSurfaceFrame(id, pixels, rect); this.scheduleFrame()
+    },
+  }
+  private readonly glance = new GlanceHost({
+    getDisplay: () => this.glanceDisplay,
+    getProvider: () => ALL_APPS.find(app => app.glanceboard)?.glanceboard ?? null,
+    canShow: () => this.runtimeNeeded,
+    // iOS retains the EvenHub session while the shell sleeps. The board's
+    // opaque first frame is ready before we unblank the compositor.
+    ensureSessionActive: async () => {
+      this.compositor.setScreenBlanked(false); this.scheduleFrame(); return true
+    },
+    onHiddenWhileAsleep: () => {
+      if (!shell.isScreenOn()) this.compositor.setScreenBlanked(true)
+      this.scheduleFrame()
+    },
+    onVisibilityChanged: () => this.scheduleFrame(),
+    appendLog: message => this.logBluetooth(message),
+  })
   private renderTimer: ReturnType<typeof setTimeout> | null = null
   private clockTimer: ReturnType<typeof setInterval> | null = null
   private offSettings: (() => void) | null = null
@@ -69,7 +101,10 @@ export class IosPreviewController {
       getScreenTimeoutMs: () => null,
       requestShellRender: () => this.requestShellRender(),
       onWindowsChanged: () => this.requestShellRender(),
-      onScreenStateChanged: on => { this.compositor.setScreenBlanked(!on); this.requestShellRender() },
+      onScreenStateChanged: on => {
+        if (on) this.glance.dismiss()
+        this.compositor.setScreenBlanked(!on); this.requestShellRender()
+      },
     })
     const launcher = createLauncherWindow({
       actions: this.actions,
@@ -117,6 +152,8 @@ export class IosPreviewController {
     this.runtimeRunning = running
     for (const window of shell.getWindows()) window.setScreenOn?.(running && shell.isScreenOn())
     if (!running) {
+      this.glance.dismiss()
+      this.compositor.setScreenBlanked(!shell.isScreenOn())
       this.offSettings?.(); this.offSettings = null
       for (const observer of this.batteryObservers.splice(0)) NSNotificationCenter.defaultCenter.removeObserver(observer)
       UIDevice.currentDevice.batteryMonitoringEnabled = false
@@ -180,7 +217,8 @@ export class IosPreviewController {
         this.session?.setFrame(pixels)
         if (this.active) {
           const image = previewPixels(pixels, 640, 480, previewColorSetting.get() === 'green')
-          this.onFrame(image, `${shell.foregroundWindow()?.title ?? 'Apps'} · ${shell.getFocus() === 'sidebar' ? 'App switcher' : 'App'}`)
+          this.onFrame(image, this.glance.isVisible() ? 'Glanceboard'
+            : `${shell.foregroundWindow()?.title ?? 'Apps'} · ${shell.getFocus() === 'sidebar' ? 'App switcher' : 'App'}`)
         }
       } catch (error) { this.fail(error) }
     }, 33)
@@ -203,11 +241,22 @@ export class IosPreviewController {
           type = type === 'swipe-up' ? 'scroll-up' : 'scroll-down'
         }
         const event = makeInputEvent({ type, source: origin === 'ring' ? 'ring' : 'watch' } as InputEventPayload)
-        await shell.receiveInput(event)
-        this.requestShellRender()
+        await this.receiveInput(event)
       }
       console.log(`[ios-preview] ${origin} ${gesture}: ${shell.describeInputTarget()}`)
     }).catch(error => this.fail(error))
+  }
+  private async receiveInput(event: InputEvent, headTilt = false): Promise<void> {
+    if (!shell.isScreenOn()) {
+      const glanceEvent = this.glance.eventForGesture(headTilt ? 'head-tilt' : event.type)
+      if (glanceEvent?.type === 'dismiss') this.glance.dismiss()
+      else if (glanceEvent) {
+        await this.glance.handleEvent(glanceEvent, 0)
+        return
+      }
+    }
+    await shell.receiveInput(event)
+    this.requestShellRender()
   }
   private async mirrorTap(nx: number, ny: number): Promise<void> {
     const x = Math.max(0, Math.min(639, Math.floor(nx * 640)))
@@ -317,7 +366,8 @@ export class IosPreviewController {
       }, input => {
         this.inputQueue = this.inputQueue.then(async () => {
           if (this.session?.state.phase !== 'connected') return
-          await shell.receiveInput(rawInputEventToInputEvent(input)); this.requestShellRender()
+          await this.receiveInput(rawInputEventToInputEvent(input),
+            input.kind === 'display-wake' && input.eventType === OsEventTypeList.HEAD_UP_EVENT)
           this.logBluetooth(`Input ${input.eventType} source ${input.eventSource}`)
         }).catch(error => this.fail(error))
       }, message => this.logBluetooth(message), () => this.refreshClock())

@@ -87,6 +87,11 @@ test('ring and arm input decoders preserve gesture and source', () => {
   const payload = p.bytes(13, p.bytes(3, p.concat(p.integer(1, 9), p.integer(2, 3))));
   assert.equal(p.decodeGlassesInput({ sid: 224, flag: 1, payload }).eventSource, 3);
   assert.equal(p.decodeGlassesInput({ sid: 224, flag: 32, payload }), null);
+  const headUp = p.bytes(13, p.bytes(3, p.concat(p.integer(1, 12), p.integer(2, 1))));
+  const wake = p.decodeGlassesInput({ sid: 224, flag: 1, payload: headUp });
+  assert.equal(wake.kind, 'display-wake');
+  assert.equal(wake.eventType, 12);
+  assert.equal(wake.eventSource, 1);
 });
 
 class FakeTransport {

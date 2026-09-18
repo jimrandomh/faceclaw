@@ -92,12 +92,13 @@ test('background glasses input still composites frames; phone resume preserves t
     '@nativescript/core': { File: { fromPath: () => ({ writeTextSync() {} }) }, knownFolders: { documents: () => ({ path: '/tmp' }) }, path },
     '../native/ios-voice-input': { iosVoiceInput: { handleSessionEnded() {} } },
     '../native/ios-bluetooth': { iosBluetooth: () => ({}) }, './glasses-session': { GlassesSession: Session },
+    './glance-host': { GlanceHost: class { dismiss() {} isVisible() { return false; } } },
     './device-addresses': { loadDeviceAddresses: () => ({}) }, './ios-peripheral-identity': { deviceAddressError: () => null },
     '../apps/launcher/launcher-app': { createLauncherWindow: () => window, LAUNCHER_SURFACE_ID: 'launcher' },
     '../apps/all-apps': { ALL_APPS: [] }, '../ui/dashboard-settings': settings,
     '../native/phone-battery': { readPhoneBatteryState: () => ({ battery: 80, charging: false }) },
     '../graphics/surface-compositor': { SurfaceCompositor: class {
-      configureSurface() {} setSurfaceVisible() {} submitSurfaceFrame() {} setUnderlayDim() {}
+      configureSurface() {} setSurfaceVisible() {} submitSurfaceFrame() {} setUnderlayDim() {} setScreenBlanked() {}
       composite() { return new Uint8Array([1, 2]); }
     } },
     '../graphics/plane': { flattenPlanes: () => ({ pixels: new Uint8Array([1, 2]), width: 2, height: 1 }) },
