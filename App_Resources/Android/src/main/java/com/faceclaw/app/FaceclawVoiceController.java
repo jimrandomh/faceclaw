@@ -266,20 +266,26 @@ public class FaceclawVoiceController {
     }
 
     public void start(String requestedMode) {
+        start(requestedMode, 0);
+    }
+
+    public void start(String requestedMode, int captureId) {
         synchronized (lock) {
             if (started) {
                 emitStatus("Voice control is already listening.");
+                emitStopped(captureId);
                 return;
             }
             if (!usePhoneMic && (communicator == null || !communicator.isSessionReady())) {
                 emitStatus("Voice control needs an active G2 connection.");
+                emitStopped(captureId);
                 return;
             }
             mode = parseMode(requestedMode);
             activePhoneMic = usePhoneMic;
             started = true;
             audioStarted = false;
-            workerThread = new Thread(this::runLoop, "FaceclawVoiceController");
+            workerThread = new Thread(() -> runLoop(captureId), "FaceclawVoiceController");
             workerThread.start();
         }
     }
@@ -350,7 +356,7 @@ public class FaceclawVoiceController {
         return VoiceInputMode.ONBOARD;
     }
 
-    private void runLoop() {
+    private void runLoop(int captureId) {
         try {
             deleteLegacyKwsFiles();
             VoiceInputMode currentMode = mode;
@@ -432,6 +438,7 @@ public class FaceclawVoiceController {
                 audioStarted = false;
                 workerThread = null;
             }
+            emitStopped(captureId);
         }
     }
 
@@ -1012,6 +1019,13 @@ public class FaceclawVoiceController {
             return;
         }
         mainHandler.post(currentListener::onSpeechEnd);
+    }
+
+    private void emitStopped(int captureId) {
+        FaceclawVoiceControllerListener currentListener = listener;
+        if (currentListener != null) {
+            mainHandler.post(() -> currentListener.onStopped(captureId));
+        }
     }
 
     /**

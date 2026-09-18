@@ -125,7 +125,7 @@ test('synchronous provider errors do not leave a permanently active turn', () =>
   assert.equal(session.status, 'failed');
 });
 
-function draftEnv({ prepare = async () => true, start = async () => {}, initialStatus = 'Ready' } = {}) {
+function draftEnv({ prepare = async () => true, start = async () => {}, stop = () => {}, initialStatus = 'Ready' } = {}) {
   const transcripts = new Set(), statuses = new Set(), timers = new Map();
   const sent = [];
   let starts = 0, stops = 0, mic = false, timerId = 0;
@@ -139,7 +139,7 @@ function draftEnv({ prepare = async () => true, start = async () => {}, initialS
     setTimeout(cb) { timers.set(++timerId, cb); return timerId; },
     clearTimeout(id) { timers.delete(id); },
   });
-  const draft = new VoiceDraft({ startVoiceCapture: async () => { starts++; await start(); }, stopVoiceCapture: () => { stops++; } }, prepare, () => {}, (text) => sent.push(text));
+  const draft = new VoiceDraft({ startVoiceCapture: async () => { starts++; await start(); }, stopVoiceCapture: () => { stops++; return stop(); } }, prepare, () => {}, (text) => sent.push(text));
   return { draft, sent, starts: () => starts, stops: () => stops, mic: () => mic,
     transcript(text, isFinal = false) { for (const cb of [...transcripts]) cb({ text, isFinal }); },
     status(status) { for (const cb of [...statuses]) cb({ status }); },
@@ -172,6 +172,34 @@ test('release before permission resolves never starts a microphone', async () =>
   assert.equal(env.starts(), 0);
   assert.equal(env.draft.active, false);
   assert.deepEqual(env.sent, []);
+});
+
+test('chat waits past its fallback deadline for native recognition', async () => {
+  let complete;
+  const stopped = new Promise(resolve => { complete = resolve; });
+  const env = draftEnv({ stop: () => stopped });
+  await env.draft.start();
+  env.transcript('first segment');
+  env.draft.release(); env.timeout();
+  assert.deepEqual(env.sent, []);
+  assert.equal(env.draft.phase, 'finishing');
+  env.transcript('first segment and the rest', true);
+  complete(); await stopped; env.timeout();
+  assert.deepEqual(env.sent, ['first segment and the rest']);
+});
+
+test('a cancelled chat capture cannot finish a newer capture when native stop resolves', async () => {
+  let complete;
+  const stopped = new Promise(resolve => { complete = resolve; });
+  const env = draftEnv({ stop: () => stopped });
+  await env.draft.start();
+  env.draft.release(); env.draft.cancel();
+  await env.draft.start();
+  env.transcript('new speech');
+  complete(); await stopped; env.timeout();
+  assert.deepEqual(env.sent, []);
+  assert.equal(env.draft.phase, 'listening');
+  env.draft.cancel();
 });
 
 test('release during async mic startup stops capture after it starts', async () => {

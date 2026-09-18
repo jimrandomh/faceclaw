@@ -89,11 +89,22 @@ export class VoiceDraft {
   }
 
   private stopAndFinalize(): void {
-    // Install fallback first: stop may synchronously deliver the final.
-    this.timer = setTimeout(() => this.finish(), 1500);
+    const generation = this.generation;
+    const afterStop = () => {
+      if (generation !== this.generation || !this.isFinishing()) return;
+      this.timer = setTimeout(() => this.finish(), 1500);
+    };
     if (this.started) {
       this.started = false;
-      void Promise.resolve(this.actions.stopVoiceCapture()).catch((error) => this.cancel(String(error)));
+      // Native recognition can take longer than the synchronous stop join.
+      // Its final callback may finish the draft before this promise resolves.
+      const stopped = this.actions.stopVoiceCapture();
+      if (!stopped) { afterStop(); return; }
+      void stopped.then(afterStop, (error) => {
+        if (generation === this.generation) this.cancel(String(error));
+      });
+    } else {
+      afterStop();
     }
   }
 

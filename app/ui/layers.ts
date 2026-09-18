@@ -28,7 +28,7 @@ export type LayerActions = {
    * (hands-free); otherwise it runs until stopVoiceCapture.
    */
   startVoiceCapture: (endpointing?: boolean) => Promise<void> | void;
-  /** Stop push-to-talk; for a cloud provider this also commits for a final result. */
+  /** Stop push-to-talk; awaits native recognition, or commits a cloud provider for a final result. */
   stopVoiceCapture: () => Promise<void> | void;
   /** Start continuous capture (Transcribe); shares the mic with push-to-talk. */
   startContinuousVoiceCapture: () => Promise<void> | void;

@@ -5,8 +5,7 @@ import { anthropicApiKeySetting } from "../dashboard-settings";
 import { GESTURE_CLICK, GESTURE_DOUBLE_CLICK, gestureHints, type InputEvent } from "../gestures";
 import { Layer, type LayerActions, type LayerContext } from "../layers";
 import { paintInputDialog } from "./input-dialog";
-// After the mic stops, the provider's final transcript can trail in (cloud
-// commit round-trip); wait this long for it before refining with what we have.
+// After native recognition finishes, a cloud final can still trail in.
 const FOLLOWUP_FINALIZE_TIMEOUT_MS = 1200;
 
 /**
@@ -80,6 +79,10 @@ export class VoiceInputLayer implements Layer {
   private capturing = false;
   /** Continuation stopped; waiting for the trailing final transcript. */
   private followupFinalizeTimer: ReturnType<typeof setTimeout> | null = null;
+  private pendingFollowup = false;
+  private stoppingCapture = false;
+  private stopGeneration = 0;
+  private acceptingTranscript = true;
   private refineHandle: AnthropicStreamHandle | null = null;
   private menuIndex = 0;
   /** Auto-send (wakeword skip-confirmation) is waiting to fire. */
@@ -155,19 +158,46 @@ export class VoiceInputLayer implements Layer {
     }
     this.capturing = false;
     this.phase = "menu";
-    void this.actions.stopVoiceCapture();
     if (this.autoSend && this.sendTargets.length) {
       // Skip-confirmation (wakeword): send to the default target as soon as the
       // transcript finalizes, or after a short wait for the trailing final.
       this.pendingAutoSend = true;
       this.status = "Sending...";
-      this.autoSendTimer = setTimeout(() => this.performAutoSend(), FOLLOWUP_FINALIZE_TIMEOUT_MS);
     } else if (this.status.endsWith("...")) {
       // A progress status ("Starting microphone...", "Listening...") gives
       // way to the menu prompt; an error (ending in ".") stays visible.
       this.status = "Send, continue, or discard?";
     }
+    this.stopCapture(() => {
+      if (this.pendingAutoSend) {
+        this.autoSendTimer = setTimeout(() => this.performAutoSend(), FOLLOWUP_FINALIZE_TIMEOUT_MS);
+      }
+    });
     this.actions.requestRender();
+  }
+
+  /** Native stop can outlast its synchronous join while Whisper is decoding. */
+  private stopCapture(onStopped: () => void): void {
+    const generation = ++this.stopGeneration;
+    this.stoppingCapture = true;
+    const afterStop = () => {
+      if (generation !== this.stopGeneration) return;
+      this.stoppingCapture = false;
+      onStopped();
+      this.actions.requestRender();
+    };
+    const stopped = this.actions.stopVoiceCapture();
+    if (!stopped) {
+      afterStop();
+      return;
+    }
+    void stopped.then(afterStop, (error) => {
+      if (generation !== this.stopGeneration) return;
+      this.stoppingCapture = false;
+      this.pendingAutoSend = false;
+      this.acceptingTranscript = false;
+      this.backToMenu(this.phase === "continuing" ? this.baseText : this.displayText(), String(error));
+    });
   }
 
   /** Fire the queued skip-confirmation send (or fall back to the menu). */
@@ -193,7 +223,7 @@ export class VoiceInputLayer implements Layer {
   /** The menu rows: one per send target, then Continue, then Discard. */
   private menuRows(): Array<{ label: string; dim: boolean; onSelect: () => void }> {
     const text = this.displayText().trim();
-    const hasText = text.length > 0;
+    const hasText = text.length > 0 && !this.stoppingCapture;
     const hasLlmKey = anthropicApiKeySetting.get().trim().length > 0;
     const rows: Array<{ label: string; dim: boolean; onSelect: () => void }> = [];
     for (const target of this.sendTargets) {
@@ -201,6 +231,7 @@ export class VoiceInputLayer implements Layer {
         label: target.label,
         dim: !hasText,
         onSelect: () => {
+          if (this.stoppingCapture) return;
           this.dismiss();
           if (hasText) target.onSend(text);
         },
@@ -208,9 +239,9 @@ export class VoiceInputLayer implements Layer {
     }
     rows.push({
       label: hasLlmKey ? "Continue" : "Continue (Needs LLM API key)",
-      dim: !hasLlmKey,
+      dim: !hasLlmKey || this.stoppingCapture,
       onSelect: () => {
-        if (hasLlmKey) this.startContinuation();
+        if (hasLlmKey && !this.stoppingCapture) this.startContinuation();
       },
     });
     rows.push({ label: "Discard", dim: false, onSelect: () => this.dismiss() });
@@ -222,7 +253,7 @@ export class VoiceInputLayer implements Layer {
     const inMenu = this.phase === "menu";
     paintInputDialog(image, {
       title: this.capturing && this.listening ? "Voice ●" : "Voice",
-      status: this.status,
+      status: this.stoppingCapture ? "Finishing transcription..." : this.status,
       text: this.displayText() || this.placeholderText(),
       rows: inMenu ? this.menuRows() : [],
       selectedRow: this.menuIndex,
@@ -284,6 +315,7 @@ export class VoiceInputLayer implements Layer {
 
   /** Continue selected: keep the message aside and record a follow-up. */
   private startContinuation(): void {
+    this.acceptingTranscript = true;
     this.baseText = this.displayText().trim();
     this.finalizedText = "";
     this.liveText = "";
@@ -298,15 +330,18 @@ export class VoiceInputLayer implements Layer {
   private endContinuationCapture(): void {
     if (!this.capturing) return;
     this.capturing = false;
-    void this.actions.stopVoiceCapture();
-    this.status = "Refining...";
+    this.pendingFollowup = true;
+    this.status = "Finishing transcription...";
+    this.stopCapture(() => {
+      if (this.pendingFollowup) {
+        this.followupFinalizeTimer = setTimeout(() => this.beginRefine(), FOLLOWUP_FINALIZE_TIMEOUT_MS);
+      }
+    });
     this.actions.requestRender();
-    // The provider's committed transcript arrives shortly after stop; refine
-    // when it does, or after a timeout with whatever partials we have.
-    this.followupFinalizeTimer = setTimeout(() => this.beginRefine(), FOLLOWUP_FINALIZE_TIMEOUT_MS);
   }
 
   private beginRefine(): void {
+    this.pendingFollowup = false;
     if (this.followupFinalizeTimer !== null) {
       clearTimeout(this.followupFinalizeTimer);
       this.followupFinalizeTimer = null;
@@ -343,9 +378,10 @@ export class VoiceInputLayer implements Layer {
 
   /** Abort a continuation (mic or LLM stage) and restore the prior message. */
   private cancelContinuation(status: string): void {
+    this.acceptingTranscript = false;
     if (this.capturing) {
       this.capturing = false;
-      void this.actions.stopVoiceCapture();
+      this.stopCapture(() => {});
     }
     this.refineHandle?.cancel();
     this.refineHandle = null;
@@ -353,6 +389,7 @@ export class VoiceInputLayer implements Layer {
   }
 
   private backToMenu(text: string, status: string): void {
+    this.pendingFollowup = false;
     if (this.followupFinalizeTimer !== null) {
       clearTimeout(this.followupFinalizeTimer);
       this.followupFinalizeTimer = null;
@@ -366,6 +403,9 @@ export class VoiceInputLayer implements Layer {
   }
 
   onRemoved(): void {
+    ++this.stopGeneration;
+    this.acceptingTranscript = false;
+    this.pendingFollowup = false;
     this.unsubscribeTranscript?.();
     this.unsubscribeTranscript = null;
     this.unsubscribeStatus?.();
@@ -428,14 +468,14 @@ export class VoiceInputLayer implements Layer {
   private onTranscript(event: VoiceTranscriptEvent): void {
     // The refine stream owns the text buffers once it starts; a transcript
     // that trails in after that point is stale.
-    if (this.phase === "refining") return;
+    if (!this.acceptingTranscript || this.phase === "refining") return;
     if (event.isFinal) {
       const finalText = event.text.trim() || this.liveText.trim();
       if (finalText) {
         this.finalizedText = this.finalizedText ? `${this.finalizedText} ${finalText}` : finalText;
       }
       this.liveText = "";
-      if (this.phase === "continuing" && this.followupFinalizeTimer !== null) {
+      if (this.phase === "continuing" && this.pendingFollowup) {
         // The follow-up finalized; no need to keep waiting.
         this.beginRefine();
         return;
