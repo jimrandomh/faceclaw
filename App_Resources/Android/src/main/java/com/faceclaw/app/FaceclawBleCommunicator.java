@@ -27,6 +27,7 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Random;
 
 @SuppressLint("MissingPermission")
 public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
@@ -192,7 +193,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     // getBandwidthBenchmarkStatus() and survive until the next run starts.
     private boolean benchmarkActive;
     private boolean benchmarkAborted;
-    private byte[] benchmarkPayload = new byte[0];
+    private final Random benchmarkRandom = new Random();
     private int benchmarkMessageSize;
     private int benchmarkWindowSize;
     private int benchmarkDurationMs;
@@ -637,11 +638,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 logLine("skip bandwidth benchmark; already running or image path not ready");
                 return false;
             }
-            byte[] payload = new byte[Math.max(2, Math.min(messageSize, ConnectionOptions.IMAGE_FRAGMENT_SIZE))];
-            payload[0] = 7;             // CFW diagnostic-control mode...
-            payload[1] = (byte) 0x7f;   // ...with an unused sub-op: acked, no effect
-            benchmarkPayload = payload;
-            benchmarkMessageSize = payload.length;
+            benchmarkMessageSize = Math.max(2, Math.min(messageSize, ConnectionOptions.IMAGE_FRAGMENT_SIZE));
             benchmarkWindowSize = Math.max(1, Math.min(windowSize, BENCHMARK_MAX_WINDOW));
             benchmarkDurationMs = Math.max(1_000, durationMs);
             benchmarkLinkMode = linkMode & 3;
@@ -773,14 +770,20 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     }
 
     private void enqueueBenchmarkMessageLocked() {
+        // Fresh bytes per message: the transport's persistent compression history
+        // would compress even a random payload if we reused it across the run.
+        byte[] payload = new byte[benchmarkMessageSize];
+        benchmarkRandom.nextBytes(payload);
+        payload[0] = 7;             // CFW diagnostic-control mode...
+        payload[1] = (byte) 0x7f;   // ...with an unused sub-op: acked, no effect
         OutboundMessage message = messageBuilder.imagePayload(
             "bandwidth",
             DASHBOARD_TILE,
             nextMapSessionId(),
-            benchmarkPayload,
-            "bandwidth no-op " + benchmarkPayload.length + "B",
+            payload,
+            "bandwidth no-op " + payload.length + "B",
             connectionOptions.sendImagesToLeft);
-        final int payloadBytes = benchmarkPayload.length;
+        final int payloadBytes = payload.length;
         // Logical custom-message bytes; excludes length tag and packet framing.
         final int wireBytes = message.message.length;
         message.onSent = () -> {
@@ -1656,22 +1659,25 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             return;
         }
         if (data.length >= 7 && (data[6] & 255) == CfwTransport.SID) {
-            CfwTransport.Ack ack = CfwTransport.parseAck(data);
-            if (ack == null) return;
+            CfwTransport.Ack[] acks = CfwTransport.parseAcks(data);
+            if (acks == null) return;
             synchronized (lock) {
                 lastIncomingAtMs = SystemClock.elapsedRealtime();
-                for (OutboundMessage message : inFlightMessages) {
-                    String ingress = message.isLeftArmMessage ? leftAddress : rightAddress;
-                    if (message.sid == CfwTransport.SID && address.equalsIgnoreCase(ingress) && message.magic == ack.streamId) {
-                        message.acceptCfwAck(ack);
-                        Log.i(TAG, "CFW " + (ack.nack ? "NACK" : "ACK") + " id=" + ack.streamId
-                                + " ordinal=" + ack.messageId + " lens=" + ack.lens + " txseq=" + (data[2] & 255)
-                                + " size=" + ack.size + " crc=" + ack.checksum
-                                + " expected=" + message.message.length + "/" + message.cfwChecksum
-                                + " ackedLenses=" + message.cfwAckLenses
-                                + " ageMs=" + (lastIncomingAtMs - message.sentAtMs));
-                        message.ackPayload = Arrays.copyOf(data, data.length);
-                        break;
+                for (CfwTransport.Ack ack : acks) {
+                    for (OutboundMessage message : inFlightMessages) {
+                        String ingress = message.isLeftArmMessage ? leftAddress : rightAddress;
+                        if (message.sid == CfwTransport.SID && address.equalsIgnoreCase(ingress) && message.magic == ack.streamId) {
+                            message.acceptCfwAck(ack);
+                            Log.i(TAG, "CFW " + (ack.nack ? "NACK" : "ACK") + " id=" + ack.streamId
+                                    + " ordinal=" + ack.messageId + " lens=" + ack.lens + " txseq=" + (data[2] & 255)
+                                    + " redundant=" + (ack != acks[0])
+                                    + " size=" + ack.size + " crc=" + ack.checksum
+                                    + " expected=" + message.message.length + "/" + message.cfwChecksum
+                                    + " ackedLenses=" + message.cfwAckLenses
+                                    + " ageMs=" + (lastIncomingAtMs - message.sentAtMs));
+                            message.ackPayload = Arrays.copyOf(data, data.length);
+                            break;
+                        }
                     }
                 }
                 drainCfwAcknowledgementsLocked();

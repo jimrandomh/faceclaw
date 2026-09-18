@@ -109,12 +109,25 @@ public final class CfwTransport {
         return (data[offset] & 255) | ((data[offset + 1] & 255) << 8);
     }
     public static Ack parseAck(byte[] packet) {
-        if (packet == null || packet.length != 19 || (packet[0] & 255) != 0xaa
-                || packet[1] != 0x12 || packet[3] != 11 || packet[4] != 1 || packet[5] != 1
+        Ack[] acks = parseAcks(packet);
+        return acks == null ? null : acks[0];
+    }
+    /** Primary ACK followed by up to three explicit preceding successes from
+     * the same processing lens. Validate the entire packet before applying any. */
+    public static Ack[] parseAcks(byte[] packet) {
+        if (packet == null || packet.length < 19 || packet.length > 40
+                || (packet.length - 19) % 7 != 0 || (packet[0] & 255) != 0xaa
+                || packet[1] != 0x12 || (packet[3] & 255) != packet.length - 8 || packet[4] != 1 || packet[5] != 1
                 || (packet[6] & 255) != SID || packet[7] != 0 || (packet[8] != 1 && packet[8] != 3)
                 || (packet[12] != 1 && packet[12] != 2)
-                || crc(packet, 8, 9) != u16(packet, 17)) return null;
-        return new Ack(packet[8] == 3, packet[9] & 255, u16(packet, 10), packet[12], u16(packet, 13), u16(packet, 15));
+                || (packet[8] == 3 && packet.length != 19)
+                || crc(packet, 8, packet.length - 10) != u16(packet, packet.length - 2)) return null;
+        Ack[] acks = new Ack[1 + (packet.length - 19) / 7];
+        acks[0] = new Ack(packet[8] == 3, packet[9] & 255, u16(packet, 10), packet[12], u16(packet, 13), u16(packet, 15));
+        for (int i = 1, offset = 17; i < acks.length; i++, offset += 7)
+            acks[i] = new Ack(false, packet[offset] & 255, u16(packet, offset + 1),
+                    packet[12], u16(packet, offset + 3), u16(packet, offset + 5));
+        return acks;
     }
     public static final class Ack {
         public final boolean nack;
