@@ -7,7 +7,7 @@ import java.util.List;
 
 /**
  * Plans a screen update that ships text and icons as on-glasses cached draws
- * instead of pixels (CFW modes 12/13/14; see g2flash/patches/zlib_glue.c and
+ * instead of pixels (CFW modes 18/19/20; see g2flash/patches/zlib_glue.c and
  * texture_cache.c).
  *
  * Approach: dirty rects come from comparing the fully composited old and new
@@ -19,8 +19,8 @@ import java.util.List;
  * occlusion/clipping, and draw-on-draw overlap). A draw that passes and is
  * (or can be made) resident in the texture cache is replayed on-glasses: its
  * written pixels are punched to 0 in the delta rect content — which is what
- * makes text and icons nearly free to compress — and re-emitted as a mode-14
- * string or mode-13 image sub-message in the same atomic mode-8 batch, so
+ * makes text and icons nearly free to compress — and re-emitted as a mode-20
+ * string or mode-19 image sub-message in the same atomic mode-8 batch, so
  * the shadow after apply equals the full composite exactly. Everything else
  * stays baked.
  *
@@ -30,7 +30,7 @@ import java.util.List;
 public final class TexturePlanner {
     private TexturePlanner() {}
 
-    /** Cap on mode-14 string sub-messages (mode-8 count is a u8). */
+    /** Cap on mode-20 string sub-messages (mode-8 count is a u8). */
     private static final int MAX_GLYPH_RUNS = 180;
     /**
      * Soft cap on cached-glyph selection per update, before run grouping.
@@ -38,21 +38,21 @@ public final class TexturePlanner {
      * screens draw everything; the run budget is the real bound.
      */
     private static final int MAX_SELECTED_GLYPHS = 4600;
-    /** Cap on mode-13 image sub-messages per update. */
+    /** Cap on mode-19 image sub-messages per update. */
     private static final int MAX_IMAGE_DRAWS = 60;
     /** Cap on mode-15 builtin-font string sub-messages per update. */
     private static final int MAX_FWTEXT_RUNS = 80;
-    /** Mode-12 payload size that fits one BLE image message comfortably. */
+    /** Mode-18 payload size that fits one BLE image message comfortably. */
     private static final int UPLOAD_PAYLOAD_MAX = 3600;
     /** Max x-adjust control bytes between two glyphs before starting a new run. */
     private static final int MAX_ADJUST_BYTES = 4;
-    /** Options: identity LUT (top 15) + transparent, for mode-13 image draws. */
+    /** Options: identity LUT (top 15) + transparent, for mode-19 image draws. */
     private static final int IMAGE_DRAW_OPTIONS = 0x1f;
 
     public static final class Result {
         /** Complete image payload: a mode-8 batch of rect deltas + cached draws. */
         public final byte[] payload;
-        /** Mode-12 upload payloads to enqueue BEFORE the image message. */
+        /** Mode-18 upload payloads to enqueue BEFORE the image message. */
         public final List<byte[]> uploads;
         /** Next mode-3 frame id (deltas consumed some). */
         public final int nextFid;
@@ -118,15 +118,14 @@ public final class TexturePlanner {
     /**
      * Plan a cached-draw update. previous is the delta base (the frame the
      * shadow currently holds), or null/mismatched for a full-frame keyframe.
-     * allowImages requires the teximg13 capability; allowFwText requires
-     * font15. Returns null when the plain paths should run instead (no
-     * replayable draws, or identical frames).
+     * Returns null when the plain paths should run instead (no replayable
+     * draws, or identical frames).
      */
     public static Result plan(
             byte[] previous, byte[] next, int width, int height,
             SurfaceCompositor.ScreenDraw[] draws,
             TextureCacheState cache, int fidStart,
-            boolean allowMultiRect, int maxRects, boolean allowImages, boolean allowFwText) {
+            boolean allowMultiRect, int maxRects) {
         if (next == null || draws == null || draws.length == 0 || width <= 0 || height <= 0) {
             return null;
         }
@@ -171,14 +170,12 @@ public final class TexturePlanner {
         List<FwPunch> fwPunches = new ArrayList<>();
         int fwGlyphCount = 0;
         int fwBaked = 0;
-        if (allowFwText) {
-            for (SurfaceCompositor.ScreenDraw draw : draws) {
-                if (draw.kind != SurfaceCompositor.ScreenDraw.KIND_FWTEXT) continue;
-                fwBaked += planFwRun(draw, rects, next, stride, width, height, fwSubs, fwPunches);
-            }
-            fwGlyphCount = fwPunches.size();
-            bakedCandidates += fwBaked;
+        for (SurfaceCompositor.ScreenDraw draw : draws) {
+            if (draw.kind != SurfaceCompositor.ScreenDraw.KIND_FWTEXT) continue;
+            fwBaked += planFwRun(draw, rects, next, stride, width, height, fwSubs, fwPunches);
         }
+        fwGlyphCount = fwPunches.size();
+        bakedCandidates += fwBaked;
         for (SurfaceCompositor.ScreenDraw draw : draws) {
             if (draw.kind == SurfaceCompositor.ScreenDraw.KIND_GLYPH) {
                 GlyphAtlas.Glyph atlas = GlyphAtlas.get(draw.fontId, draw.encoding);
@@ -204,7 +201,6 @@ public final class TexturePlanner {
                 }
                 selected.add(new Selected(draw, atlas, null, gx, top));
             } else {
-                if (!allowImages) continue; // firmware lacks teximg13: stays baked
                 ImageAtlas.Entry atlas = ImageAtlas.get(draw.imageId);
                 if (atlas == null) continue;
                 if (!intersectsAny(rects, draw.x, draw.y, atlas.width, atlas.height)) {
@@ -239,7 +235,7 @@ public final class TexturePlanner {
                 : ensureResident(cache, selected);
         bakedCandidates += selected.size() - drawable.size();
 
-        // Group glyphs into mode-14 runs; leftover-budget glyphs bake.
+        // Group glyphs into mode-20 runs; leftover-budget glyphs bake.
         List<Selected> glyphDrawable = new ArrayList<>();
         List<Selected> imageDrawable = new ArrayList<>();
         for (Selected sel : drawable) {
@@ -509,7 +505,7 @@ public final class TexturePlanner {
 
     /**
      * Whether every in-panel nonzero pixel of the cached image equals the
-     * packed new frame — the mode-13 transparent draw writes exactly those.
+     * packed new frame — the mode-19 transparent draw writes exactly those.
      */
     private static boolean imageMatchesComposite(byte[] packed, int stride, int width, int height,
             ImageAtlas.Entry atlas, int left, int top) {
@@ -596,24 +592,26 @@ public final class TexturePlanner {
         return Collections.emptyList(); // unreachable
     }
 
-    /** Mode-13 cached-image draw: [13][offset u16][x u16][y u16][options u8]. */
+    /** Mode-19 cached-image draw: [19][offset u32][x u16][y u16][options u8]. */
     private static byte[] encodeImageDraw(TextureCacheState cache, Selected sel) {
         int offset = cache.ensureImage(sel.draw.imageId, sel.imageAtlas); // resident: returns the offset
-        byte[] sub = new byte[8];
-        sub[0] = 13;
+        byte[] sub = new byte[10];
+        sub[0] = 19;
         sub[1] = (byte) (offset & 0xff);
         sub[2] = (byte) ((offset >> 8) & 0xff);
-        sub[3] = (byte) (sel.draw.x & 0xff);
-        sub[4] = (byte) ((sel.draw.x >> 8) & 0xff);
-        sub[5] = (byte) (sel.draw.y & 0xff);
-        sub[6] = (byte) ((sel.draw.y >> 8) & 0xff);
-        sub[7] = (byte) IMAGE_DRAW_OPTIONS;
+        sub[3] = (byte) ((offset >> 16) & 0xff);
+        sub[4] = (byte) ((offset >> 24) & 0xff);
+        sub[5] = (byte) (sel.draw.x & 0xff);
+        sub[6] = (byte) ((sel.draw.x >> 8) & 0xff);
+        sub[7] = (byte) (sel.draw.y & 0xff);
+        sub[8] = (byte) ((sel.draw.y >> 8) & 0xff);
+        sub[9] = (byte) IMAGE_DRAW_OPTIONS;
         return sub;
     }
 
     /**
-     * Group selected glyphs into mode-14 string sub-messages:
-     *   [14][fontTable u16][x u16][y u16][options u8][strlen u8][string]
+     * Group selected glyphs into mode-20 string sub-messages:
+     *   [20][fontTable u32][x u16][y u16][options u8][strlen u8][string]
      * One run per (font, line y, top color) span; within a run, control bytes
      * 1..31 adjust x by -10..+20 to hit each glyph's exact position, and each
      * glyph advances x by its cached width. Order across runs is free: every
@@ -664,17 +662,19 @@ public final class TexturePlanner {
             }
             if (!runGlyphs.isEmpty()) {
                 byte[] stringBytes = string.toByteArray();
-                byte[] run = new byte[9 + stringBytes.length];
-                run[0] = 14;
+                byte[] run = new byte[11 + stringBytes.length];
+                run[0] = 20;
                 run[1] = (byte) (fontTable & 0xff);
                 run[2] = (byte) ((fontTable >> 8) & 0xff);
-                run[3] = (byte) (first.gx & 0xff);
-                run[4] = (byte) ((first.gx >> 8) & 0xff);
-                run[5] = (byte) (first.draw.y & 0xff);
-                run[6] = (byte) ((first.draw.y >> 8) & 0xff);
-                run[7] = (byte) (first.top | 0x10); // top color + transparent
-                run[8] = (byte) stringBytes.length;
-                System.arraycopy(stringBytes, 0, run, 9, stringBytes.length);
+                run[3] = (byte) ((fontTable >> 16) & 0xff);
+                run[4] = (byte) ((fontTable >> 24) & 0xff);
+                run[5] = (byte) (first.gx & 0xff);
+                run[6] = (byte) ((first.gx >> 8) & 0xff);
+                run[7] = (byte) (first.draw.y & 0xff);
+                run[8] = (byte) ((first.draw.y >> 8) & 0xff);
+                run[9] = (byte) (first.top | 0x10); // top color + transparent
+                run[10] = (byte) stringBytes.length;
+                System.arraycopy(stringBytes, 0, run, 11, stringBytes.length);
                 outRuns.add(run);
                 drawn.addAll(runGlyphs);
                 i = j;

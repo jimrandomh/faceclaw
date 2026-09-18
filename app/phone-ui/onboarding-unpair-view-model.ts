@@ -3,6 +3,10 @@ import { Frame, Observable, Screen } from "@nativescript/core";
 import { openEvenAppSettings } from "../native/even-app-conflict";
 
 export class OnboardingUnpairViewModel extends Observable {
+  get settingsButtonVisibility(): "visible" | "collapsed" {
+    return global.isAndroid ? "visible" : "collapsed";
+  }
+
   onOpenEvenAppSettingsTap(): void {
     openEvenAppSettings();
   }

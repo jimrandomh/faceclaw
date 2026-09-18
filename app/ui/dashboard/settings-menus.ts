@@ -13,12 +13,13 @@ import {
   startLocalModelDownload,
 } from "../../native/llama";
 import {
-  ASR_MODEL,
+  ASR_MODELS,
   asrModelState,
   cancelAsrModelDownload,
   deleteAsrModel,
   onAsrModelStateChanged,
   startAsrModelDownload,
+  type AsrModelId,
 } from "../../native/asr-model";
 import { TextViewerLayer } from "../../apps/files/text-viewer";
 import type { LayerContext } from "../layers";
@@ -35,6 +36,10 @@ import {
   assistantSkipConfirmationSetting,
   batteryDisplayModeSetting,
   brightnessSetting,
+  glassesBatteryVisibilitySetting,
+  phoneBatteryVisibilitySetting,
+  ringBatteryVisibilitySetting,
+  watchBatteryVisibilitySetting,
   displayModeSetting,
   navigateDisplayModeSetting,
   navigateVerticalPositionSetting,
@@ -75,7 +80,7 @@ import {
 } from "../dashboard-settings";
 import { clearRecentDestinations } from "../../apps/navigate/destinations";
 import { wearBridge } from "../../native/wear-bridge";
-import { SettingsPanelLayer, type SettingsSection } from "./settings-panel";
+import { openSettingsSubMenu, SettingsPanelLayer, type SettingsSection } from "./settings-panel";
 import { terminalFontPickerMenuItem, uiFontPickerMenuItem } from "../font-picker";
 
 /** The Settings app's master-detail panel (sections on the left, contents on the right). */
@@ -102,8 +107,8 @@ function settingsSections(): SettingsSection[] {
         enumSettingMenuItem(verticalPositionSetting),
         // Band / tall / full-panel; the dashboard controller reflows windows.
         enumSettingMenuItem(displayModeSetting),
-        // Controls the top-bar battery indicators (icon vs percentage).
-        enumSettingMenuItem(batteryDisplayModeSetting),
+        // Submenu: top-bar battery indicator style plus per-device visibility.
+        batteryIndicatorsMenuItem(),
         // Controls the top-bar clock (24-hour vs 12-hour).
         enumSettingMenuItem(timeFormatSetting),
         // Opens the modal font picker (face, weight, size) for UI text.
@@ -115,7 +120,8 @@ function settingsSections(): SettingsSection[] {
       items: [
         enumSettingMenuItem(wakeWordActionSetting),
         enumSettingMenuItem(voiceProviderSetting),
-        asrModelMenuItem(),
+        asrModelMenuItem("moonshine"),
+        asrModelMenuItem("whisper-base-en"),
       ],
     },
     {
@@ -253,6 +259,39 @@ function settingsSections(): SettingsSection[] {
   });
 }
 
+/**
+ * The Display section's "Battery indicators" row: opens a modal submenu with
+ * the style (icon / percentage / stacked) and, per device, when its
+ * indicator is visible. The row itself shows the current style.
+ */
+function batteryIndicatorsMenuItem(): MenuItem {
+  return {
+    label: "Battery indicators",
+    description:
+      "Top-bar battery indicators for the phone, Wear OS watch, glasses, and ring: their style, and whether each shows always, only when low, or never.",
+    onSelect: (ctx) => {
+      openSettingsSubMenu(ctx, "Battery indicators", [
+        enumSettingMenuItem(batteryDisplayModeSetting),
+        enumSettingMenuItem(phoneBatteryVisibilitySetting),
+        enumSettingMenuItem(watchBatteryVisibilitySetting),
+        enumSettingMenuItem(glassesBatteryVisibilitySetting),
+        enumSettingMenuItem(ringBatteryVisibilitySetting),
+      ]);
+    },
+    render: ({ image, x, y, width }) => {
+      drawRightValueMenuItem(
+        image,
+        getDefaultSmallFont(),
+        x,
+        y,
+        width,
+        "Battery indicators",
+        batteryDisplayModeSetting.displayValue(),
+      );
+    },
+  };
+}
+
 const LOCAL_MODEL_GB = `${(LOCAL_MODEL.sizeBytes / 1e9).toFixed(1)}GB`;
 
 // While a download is running, re-render on progress updates so the row's
@@ -324,48 +363,52 @@ function localModelMenuItem(): MenuItem {
   };
 }
 
-const ASR_MODEL_MB = `${Math.round(ASR_MODEL.totalBytes / 1e6)}MB`;
+function asrModelMb(id: AsrModelId): string {
+  return `${Math.round(ASR_MODELS[id].totalBytes / 1e6)}MB`;
+}
 
-let asrModelRenderUnsub: (() => void) | null = null;
+const asrModelRenderUnsub: Partial<Record<AsrModelId, () => void>> = {};
 
-function watchAsrModelDownload(ctx: LayerContext): void {
-  asrModelRenderUnsub?.();
-  asrModelRenderUnsub = onAsrModelStateChanged((state) => {
+function watchAsrModelDownload(id: AsrModelId, ctx: LayerContext): void {
+  asrModelRenderUnsub[id]?.();
+  asrModelRenderUnsub[id] = onAsrModelStateChanged(id, (state) => {
     ctx.actions.requestRender();
     if (state.status !== "downloading") {
-      asrModelRenderUnsub?.();
-      asrModelRenderUnsub = null;
+      asrModelRenderUnsub[id]?.();
+      asrModelRenderUnsub[id] = undefined;
     }
   });
 }
 
-function asrModelStatusText(): string {
-  const state = asrModelState();
+function asrModelStatusText(id: AsrModelId): string {
+  const state = asrModelState(id);
   if (state.status === "ready") return "downloaded";
   if (state.status === "downloading") {
     const pct = state.totalBytes > 0 ? Math.floor((state.bytesDownloaded / state.totalBytes) * 100) : 0;
-    return `${pct}% of ${ASR_MODEL_MB}`;
+    return `${pct}% of ${asrModelMb(id)}`;
   }
   return "not downloaded";
 }
 
-/** Download/cancel/delete management for the on-device transcription model. */
-function asrModelMenuItem(): MenuItem {
+/** Download/cancel/delete management for one on-device transcription model. */
+function asrModelMenuItem(id: AsrModelId): MenuItem {
+  const def = ASR_MODELS[id];
+  const rowLabel = `On-device model: ${def.label}`;
   return {
-    label: "On-device voice model",
+    label: rowLabel,
     description:
-      `${ASR_MODEL.label} (${ASR_MODEL_MB} download). ` +
+      `${def.label} (${asrModelMb(id)} download). ` +
       "Transcribes voice input on the phone itself, with no API key or cloud service. " +
-      "Required for the On-device transcription provider; the cloud providers work without it. " +
+      "Required for its matching Transcription Provider option; the other providers work without it. " +
       "An interrupted download resumes where it left off.",
     onSelect: (ctx) => {
-      const state = asrModelState();
+      const state = asrModelState(id);
       const action: MenuItem =
         state.status === "downloading"
           ? {
               label: "Cancel download",
               onSelect: (innerCtx) => {
-                cancelAsrModelDownload();
+                cancelAsrModelDownload(id);
                 innerCtx.stack.pop();
               },
             }
@@ -373,22 +416,22 @@ function asrModelMenuItem(): MenuItem {
             ? {
                 label: "Delete model",
                 onSelect: (innerCtx) => {
-                  deleteAsrModel();
+                  deleteAsrModel(id);
                   innerCtx.stack.pop();
                 },
               }
             : {
-                label: `Download (${ASR_MODEL_MB})`,
+                label: `Download (${asrModelMb(id)})`,
                 onSelect: (innerCtx) => {
-                  startAsrModelDownload();
-                  watchAsrModelDownload(innerCtx);
+                  startAsrModelDownload(id);
+                  watchAsrModelDownload(id, innerCtx);
                   innerCtx.stack.pop();
                 },
               };
-      openModalMenu(ctx, "On-device voice model", [action], 0);
+      openModalMenu(ctx, rowLabel, [action], 0);
     },
     render: ({ image, x, y, width }) => {
-      drawRightValueMenuItem(image, getDefaultSmallFont(), x, y, width, "On-device voice model", asrModelStatusText());
+      drawRightValueMenuItem(image, getDefaultSmallFont(), x, y, width, rowLabel, asrModelStatusText(id));
     },
   };
 }

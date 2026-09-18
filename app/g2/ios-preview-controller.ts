@@ -308,8 +308,7 @@ export class IosPreviewController {
     const addresses = loadDeviceAddresses(), error = deviceAddressError(addresses)
     if (error) { this.onError(error); return }
     if (!this.session) {
-      const { deflate } = require('pako') as { deflate: (data: Uint8Array) => Uint8Array }
-      this.session = new GlassesSession(iosBluetooth(), deflate, state => {
+      this.session = new GlassesSession(iosBluetooth(), state => {
         if (state.phase !== 'connected') iosVoiceInput.handleSessionEnded()
         shell.setBatteryLevels({ headset: state.battery, headsetCharging: state.charging })
         this.syncRuntime()

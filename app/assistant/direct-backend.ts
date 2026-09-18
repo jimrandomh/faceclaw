@@ -50,6 +50,7 @@ export class DirectAssistantBackend {
     const startMs = Date.now();
     let cancelled = false;
     let streamHandle: LlmStreamHandle | null = null;
+    let priorText = "";
 
     const finishError = (message: string) => {
       if (cancelled) return;
@@ -78,7 +79,7 @@ export class DirectAssistantBackend {
         tools: options.buildTools(),
         onTextDelta: (delta, textSoFar) => {
           if (cancelled) return;
-          options.callbacks.onTextDelta(delta, textSoFar);
+          options.callbacks.onTextDelta(delta, priorText + textSoFar);
         },
         onDone: (result) => {
           streamHandle = null;
@@ -87,6 +88,9 @@ export class DirectAssistantBackend {
             finishError("The assistant declined this request");
             return;
           }
+          const fullText = priorText + result.text;
+          options.callbacks.onTextDelta("", fullText);
+          priorText = fullText ? `${fullText}\n\n` : "";
           // Record what the model produced this iteration.
           const assistantContent: LlmContentBlock[] = result.content.length
             ? result.content

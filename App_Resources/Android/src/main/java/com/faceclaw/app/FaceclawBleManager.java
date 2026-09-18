@@ -42,6 +42,7 @@ public class FaceclawBleManager {
     private final ConcurrentHashMap<String, Integer> servicesStatuses = new ConcurrentHashMap<>();
 
     private final ConcurrentHashMap<String, CountDownLatch> mtuLatches = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, Integer> negotiatedMtus = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, Integer> mtuStatuses = new ConcurrentHashMap<>();
 
     private final ConcurrentHashMap<String, CountDownLatch> descriptorLatches = new ConcurrentHashMap<>();
@@ -99,6 +100,29 @@ public class FaceclawBleManager {
         }
     }
 
+    /**
+     * Android's bond state for this address (BluetoothDevice.BOND_NONE /
+     * BOND_BONDING / BOND_BONDED), or -1 when it cannot be determined.
+     * BOND_BONDING covers the whole OS pairing flow, including a pairing
+     * dialog that is still waiting for the user.
+     */
+    public int getBondState(String address) {
+        if (address == null || address.trim().isEmpty()) {
+            return -1;
+        }
+        try {
+            BluetoothDevice device = bluetoothAdapter.getRemoteDevice(address);
+            return device == null ? -1 : device.getBondState();
+        } catch (Throwable t) {
+            return -1;
+        }
+    }
+
+    /** Whether a GATT client for this address is open, i.e. no disconnect callback has arrived for it. */
+    public boolean isConnected(String address) {
+        return address != null && gattClients.containsKey(address);
+    }
+
     public boolean connect(String address, int timeoutMs) {
         if (address == null || address.trim().isEmpty()) {
             throw new IllegalArgumentException("address is required");
@@ -142,6 +166,7 @@ public class FaceclawBleManager {
                 connectLatches.remove(address);
                 connectResults.remove(address);
                 gattClients.remove(address, gatt);
+                negotiatedMtus.remove(address);
                 gatt.disconnect();
                 gatt.close();
                 return false;
@@ -158,6 +183,28 @@ public class FaceclawBleManager {
             BluetoothGatt gatt = requireGatt(address);
             return gatt.requestConnectionPriority(priority);
         }
+    }
+
+    /** One-shot benchmark preferences; success is established by callbacks/HCI, not submission. */
+    public void prepareBenchmarkLink(String address, int mode) {
+        synchronized (gattLock(address)) {
+            BluetoothGatt gatt = requireGatt(address);
+            if ((mode & 1) != 0) {
+                boolean accepted = gatt.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH);
+                Log.i(TAG, "benchmark HIGH address=" + address + " submitted=" + accepted);
+            }
+            if ((mode & 2) != 0) {
+                Log.i(TAG, "benchmark request 2M address=" + address);
+                gatt.setPreferredPhy(BluetoothDevice.PHY_LE_2M_MASK,
+                    BluetoothDevice.PHY_LE_2M_MASK, BluetoothDevice.PHY_OPTION_NO_PREFERRED);
+            }
+            gatt.readPhy();
+        }
+    }
+
+    public int getNegotiatedMtu(String address) {
+        Integer mtu = negotiatedMtus.get(address);
+        return mtu == null ? 23 : mtu;
     }
 
     public boolean requestMtu(String address, int mtu, int timeoutMs) {
@@ -350,6 +397,7 @@ public class FaceclawBleManager {
         Object gattLock = gattLock(address);
         synchronized (gattLock) {
             BluetoothGatt gatt = gattClients.remove(address);
+            negotiatedMtus.remove(address);
             if (gatt == null) {
                 return;
             }
@@ -423,6 +471,7 @@ public class FaceclawBleManager {
                 Object gattLock = gattLock(address);
                 synchronized (gattLock) {
                     gattClients.remove(address, gatt);
+                    negotiatedMtus.remove(address);
                     gatt.close();
                 }
                 dispatchConnectionState(address, false);
@@ -442,6 +491,7 @@ public class FaceclawBleManager {
         @Override
         public void onMtuChanged(BluetoothGatt gatt, int mtu, int status) {
             String address = gatt.getDevice().getAddress();
+            if (status == BluetoothGatt.GATT_SUCCESS) negotiatedMtus.put(address, mtu);
             mtuStatuses.put(address, status);
             CountDownLatch latch = mtuLatches.remove(address);
             if (latch != null) {
@@ -451,7 +501,14 @@ public class FaceclawBleManager {
 
         @Override
         public void onPhyRead(BluetoothGatt gatt, int txPhy, int rxPhy, int status) {
-            Log.i(TAG, "onPhyRead: txPhy=" + txPhy + " rxPhy=" + rxPhy + " status=" + status);
+            Log.i(TAG, "onPhyRead: address=" + gatt.getDevice().getAddress()
+                + " txPhy=" + txPhy + " rxPhy=" + rxPhy + " status=" + status);
+        }
+
+        @Override
+        public void onPhyUpdate(BluetoothGatt gatt, int txPhy, int rxPhy, int status) {
+            Log.i(TAG, "onPhyUpdate: address=" + gatt.getDevice().getAddress()
+                + " txPhy=" + txPhy + " rxPhy=" + rxPhy + " status=" + status);
         }
 
         @Override

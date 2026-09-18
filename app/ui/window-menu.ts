@@ -1,6 +1,6 @@
 import { GrayImage } from "../graphics/image";
 import { singlePlane, type Plane } from "../graphics/plane";
-import { GESTURE_LONG_PRESS, gestureHints, type InputEvent } from "./gestures";
+import { GESTURE_LONG_PRESS, GESTURE_SHORT_THEN_LONG_PRESS, gestureHints, type InputEvent } from "./gestures";
 import { type Layer, LayerStack, noopLayerActions } from "./layers";
 import { CONTEXT_MENU_DIM, MenuLayer, type MenuItem, type MenuLayout } from "./menu";
 import type { WorkerAppReply } from "./shell/worker-window";
@@ -27,8 +27,10 @@ export const WINDOW_MENU_LAYOUT: MenuLayout = {
 };
 
 export class WindowMenuLayer extends MenuLayer {
-  constructor(title: string | null, items: MenuItem[]) {
-    super(title, items, WINDOW_MENU_LAYOUT);
+  constructor(title: string | null, items: MenuItem[], holdToTalk = false) {
+    super(title, items, holdToTalk
+      ? { ...WINDOW_MENU_LAYOUT, footer: gestureHints([[GESTURE_SHORT_THEN_LONG_PRESS, "system menu"]]) }
+      : WINDOW_MENU_LAYOUT);
   }
 }
 

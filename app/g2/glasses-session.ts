@@ -1,6 +1,8 @@
 import * as protocol from './ble-protocol'
 import { iosBleTraffic } from './ble-traffic-counters'
-import { buildBoundingBoxPayload } from './ble-image-optimizer'
+import { buildBoundingBoxPayload, buildFullFrameBands } from './ble-image-optimizer'
+import { CfwTransport, CFW_MAX_MESSAGE, parseCfwAcks } from './cfw-transport'
+import { hasCompatibleFirmware, firmwareIncompatibilityMessage, REQUIRED_FACECLAW_FIRMWARE_VERSION } from './firmware-compat'
 import { hexToBytes } from '../util/hex-util'
 import { deviceAddressError } from './ios-peripheral-identity'
 
@@ -25,7 +27,9 @@ class AckTimeout extends Error {}
 // Match Android ConnectionOptions.WINDOW_SIZE. This bounds complete image
 // messages queued for writing or awaiting ACK, not individual BLE packets.
 const DISPLAY_WINDOW_SIZE = 3
-type DisplayFrame = { packed: Uint8Array; payload: Uint8Array; offset: number; pending: number }
+type CfwPending = { payload: Uint8Array; checksum: number; role: string; magic: number; ackLenses: number; retries: number;
+  retryPending: boolean; deadline: number; resolve: () => void; reject: (error: Error) => void }
+type DisplayFrame = { packed: Uint8Array; commands: Uint8Array[]; offset: number; pending: number }
 
 /** G2 session independent of the phone OS. Images go to L, control to R, as on Android. */
 export class GlassesSession {
@@ -34,6 +38,9 @@ export class GlassesSession {
   private generation = 0
   private ids: Record<string, string> = {}
   private limits: Record<string, number> = {}
+  private cfwPending: CfwPending[] = []
+  private cfwTransports = new Map<string, CfwTransport>()
+  private cfwTimer: number | null = null
   private pending = new Map<string, PendingAck>()
   private receiver = new protocol.MessageReceiver()
   private writes = new Map<string, Promise<void>>()
@@ -68,7 +75,6 @@ export class GlassesSession {
   private microphoneWork: Promise<void> = Promise.resolve()
   private microphoneEnabled = false
   constructor(private readonly transport: SessionTransport,
-    private readonly deflate: (data: Uint8Array) => Uint8Array,
     private readonly onState: (state: SessionState) => void,
     private readonly onInput: (input: protocol.GlassesInput) => void,
     private readonly log: (message: string) => void = () => {},
@@ -114,9 +120,9 @@ export class GlassesSession {
       this.update('connecting', 'Checking glasses firmware…')
       const settings = await this.request('right', protocol.SID.settings, protocol.settingsQuery, 'Settings query')
       this.applySettings(settings)
-      const caps = this.state.capabilities.split(/\s+/)
-      if (!['img640', 'fbguard', 'wearnotify'].every(cap => caps.includes(cap)))
-        throw new Error('The glasses do not report compatible Faceclaw firmware (img640, fbguard, wearnotify). Bluetooth is working, but this display requires the modified firmware. Flashing remains available on Android.')
+      const firmware = { leftVersion: this.state.leftVersion, rightVersion: this.state.rightVersion, extension: this.state.capabilities }
+      if (!hasCompatibleFirmware(firmware))
+        throw new Error((firmwareIncompatibilityMessage(firmware) || `The glasses must report Faceclaw firmware revision ${REQUIRED_FACECLAW_FIRMWARE_VERSION} or newer.`) + ' Flashing remains available on Android.')
       this.update('connecting', 'Starting glasses display…')
       await this.request('right', protocol.SID.launch, () => protocol.prelude(), 'App launch', 3500, 0x20, 156)
       await this.lease(true)
@@ -176,7 +182,7 @@ export class GlassesSession {
   private nextMagic(): number {
     for (let i = 0; i < 156; i++) {
       const magic = this.magic; this.magic = this.magic === 255 ? 100 : this.magic + 1
-      if (magic !== 156 && ![...this.pending.keys()].some(key => key.endsWith(`:${magic}`))) return magic
+      if (magic !== 156 && !this.cfwPending.some(item => item.magic === magic) && ![...this.pending.keys()].some(key => key.endsWith(`:${magic}`))) return magic
     }
     throw new Error('All message identifiers are in use')
   }
@@ -200,15 +206,20 @@ export class GlassesSession {
     })
   }
   private send(role: string, sid: number, flag: number, payload: Uint8Array): Promise<void> {
+    return this.writePackets(role, () => protocol.frameMessage(payload, sid, flag, this.sequence++, this.limits[role]))
+  }
+  private writePackets(role: string, build: () => Uint8Array[], current = () => true): Promise<void> {
     const identifier = this.ids[role], generation = this.generation
     if (!identifier) return Promise.reject(new Error(`No ${role} device connected`))
-    const frames = protocol.frameMessage(payload, sid, flag, this.sequence++, this.limits[role])
     const previous = this.writes.get(identifier) ?? Promise.resolve()
     // A failed write poisons this link's queue until reset: do not transmit
     // later fragments after a hole in the image stream.
     const work = previous.then(async () => {
-      for (const frame of frames) {
+      this.check(generation)
+      if (!current()) return
+      for (const frame of build()) {
         this.check(generation)
+        if (!current()) return
         await this.transport.write(identifier, protocol.G2_WRITE, frame)
         iosBleTraffic.recordWrite(frame.length)
       }
@@ -220,6 +231,75 @@ export class GlassesSession {
   }
   private lease(acquire: boolean): Promise<void[]> {
     return Promise.all(['right', 'left'].map(role => this.send(role, protocol.SID.settings, 0x20, protocol.framebufferLease(acquire))))
+  }
+  private requestCfw(role: string, payload: Uint8Array): Promise<void> {
+    if (payload.length > CFW_MAX_MESSAGE) return Promise.reject(new Error('CFW message too large'))
+    return new Promise((resolve, reject) => {
+      const item: CfwPending = { role, payload, checksum: protocol.crc16(payload), magic: this.nextMagic(), ackLenses: 0, retries: 0,
+        retryPending: false, deadline: 0, resolve, reject }
+      this.cfwPending.push(item)
+      this.sendCfw(item)
+    })
+  }
+  private sendCfw(item: CfwPending): void {
+    const generation = this.generation, magic = item.magic
+    const current = () => generation === this.generation && item.magic === magic && this.cfwPending.includes(item)
+    void this.writePackets(item.role, () => {
+      let transport = this.cfwTransports.get(item.role)
+      if (!transport) { transport = new CfwTransport(); this.cfwTransports.set(item.role, transport) }
+      if (item.retries) transport.reset()
+      return transport.encode(item.payload, magic, 3, this.limits[item.role])
+    }, current).then(() => {
+      if (!current()) return
+      item.deadline = Date.now() + 500
+      this.scheduleCfwRecovery()
+    }).catch(error => { if (current()) this.fail(error, true) })
+  }
+  private receiveCfw(identifier: string, packet: Uint8Array): void {
+    const acks = parseCfwAcks(packet)
+    if (!acks) return
+    for (const ack of acks) {
+      // The ingress temple relays the other lens's result on the SAME link.
+      const item = this.cfwPending.find(p => this.ids[p.role] === identifier && p.magic === ack.streamId)
+      if (!item || ack.messageId !== 0) continue
+      if (ack.nack) item.retryPending = true
+      else if (ack.size === item.payload.length && ack.checksum === item.checksum) item.ackLenses |= ack.lens
+      this.log(`CFW ${ack.nack ? 'NACK' : 'ACK'} stream=${ack.streamId} lens=${ack.lens} size=${ack.size} crc=${ack.checksum} confirmed=${item.ackLenses}`)
+    }
+    while (this.cfwPending.length) {
+      const head = this.cfwPending[0]
+      if (head.retryPending || head.ackLenses !== 3) break
+      this.cfwPending.shift(); head.resolve()
+    }
+    this.scheduleCfwRecovery()
+  }
+  private scheduleCfwRecovery(): void {
+    if (this.cfwTimer !== null) clearTimeout(this.cfwTimer)
+    this.cfwTimer = null
+    let deadline = Infinity
+    for (const item of this.cfwPending) {
+      if (item.retryPending) deadline = 0
+      else if (item.ackLenses !== 3 && item.deadline) deadline = Math.min(deadline, item.deadline)
+    }
+    if (deadline === Infinity) return
+    this.cfwTimer = setTimeout(() => {
+      this.cfwTimer = null
+      this.recoverCfw()
+    }, Math.max(0, deadline - Date.now()))
+  }
+  private recoverCfw(): void {
+    if (!this.cfwPending.some(p => p.retryPending || (p.ackLenses !== 3 && p.deadline > 0 && p.deadline <= Date.now()))) {
+      this.scheduleCfwRecovery(); return
+    }
+    if (this.cfwPending.some(p => p.retries >= 3)) { this.fail(new Error('CFW recovery retry limit'), true); return }
+    this.log(`CFW recovery: replay ${this.cfwPending.length} unresolved messages`)
+    // Go back to the oldest unresolved command, including any ACKed tail.
+    // Fresh stream IDs reject stale ACKs; each replay resets compression history.
+    for (const item of this.cfwPending) {
+      item.magic = this.nextMagic(); item.retries++; item.ackLenses = 0
+      item.deadline = 0; item.retryPending = false
+    }
+    for (const item of this.cfwPending) this.sendCfw(item)
   }
   private receive(event: TransportEvent): void {
     if (!Object.values(this.ids).includes(event.identifier ?? '')) return
@@ -252,6 +332,10 @@ export class GlassesSession {
       }
       for (const message of this.receiver.receive(event.identifier!, data)) {
         this.log(`RX ${event.identifier === this.ids.left ? 'L' : 'R'} sid=${message.sid.toString(16)} flag=${message.flag.toString(16)} cmd=${message.command} magic=${message.magic}`)
+        if (message.sid === protocol.SID.cfw) {
+          this.receiveCfw(event.identifier!, message.packet!)
+          continue
+        }
         if (![1, 6].includes(message.flag)) {
           // A master arm can relay the other arm's ACK; magic is allocated
           // across BOTH links, matching Android's communicator.
@@ -343,32 +427,32 @@ export class GlassesSession {
         // Compare with the last enqueued image, not the last ACKed one. In an
         // A -> B -> A sequence, B may still be in flight when A is requested.
         if (this.lastEnqueued && packed.every((value, i) => value === this.lastEnqueued![i])) continue
-        const delta = buildBoundingBoxPayload(this.lastEnqueued, packed, 640, 480, this.nextImageFrameId, this.deflate)
-        const payload = delta ?? protocol.concat(new Uint8Array([6]), this.deflate(protocol.rle4(packed)))
-        if (payload.length > 165888) throw new Error('Compressed frame exceeds the glasses image buffer')
-        if (delta) {
+        const delta = buildBoundingBoxPayload(this.lastEnqueued, packed, 640, 480, this.nextImageFrameId)
+        const payload = delta ?? protocol.concat(new Uint8Array([6]), protocol.rle4(packed))
+        if (delta) this.nextImageFrameId = this.nextImageFrameId >= 0xfffe ? 1 : this.nextImageFrameId + 1
+        const commands = payload.length <= CFW_MAX_MESSAGE ? [payload] : buildFullFrameBands(packed, 640, 480, this.nextImageFrameId)
+        if (payload.length > CFW_MAX_MESSAGE) for (const _ of commands)
           this.nextImageFrameId = this.nextImageFrameId >= 0xfffe ? 1 : this.nextImageFrameId + 1
-          this.log(`Display bbox ${delta[3] * 4}x${delta[4] * 2}+${delta[1] * 4}+${delta[2] * 2} fid=${delta[5] | (delta[6] << 8)} (${payload.length} bytes)`)
-        } else this.log(`Display full 640x480 (${payload.length} bytes)`)
-        this.displaySending = { packed, payload, offset: 0, pending: 0 }
+        this.log(`Display ${delta ? 'bbox' : 'full'} (${commands.length} CFW commands)`)
+        this.displaySending = { packed, commands, offset: 0, pending: 0 }
         this.displayFrames.push(this.displaySending); this.lastEnqueued = packed
       }
-      const frame = this.displaySending, offset = frame.offset
-      frame.offset += 3800; frame.pending++; this.displayInFlight++
-      if (frame.offset >= frame.payload.length) this.displaySending = null
-      // send() serializes whole messages on L, but request() waits for each
-      // magic's ACK independently. Fill the other slots without awaiting it.
-      void this.request('left', protocol.SID.hub, magic => protocol.imageFragment(magic, frame.payload, offset), 'Display frame').then(() => {
+      const frame = this.displaySending, payload = frame.commands[frame.offset++]
+      frame.pending++; this.displayInFlight++
+      if (frame.offset >= frame.commands.length) this.displaySending = null
+      // Writes serialize on L while up to three complete commands await their
+      // two-lens ACKs. Retire commands in submission order.
+      void this.requestCfw('left', payload).then(() => {
         if (generation !== this.generation) return
         frame.pending--; this.displayInFlight--; this.lastHeartbeat = Date.now()
         // Retire in submission order even if relayed ACKs arrive out of order.
-        // A frame counts only after every fragment has been acknowledged.
+        // A frame counts only after every command has been acknowledged.
         while (this.displayFrames.length) {
           const completed = this.displayFrames[0]
-          if (completed.offset < completed.payload.length || completed.pending) break
+          if (completed.offset < completed.commands.length || completed.pending) break
           this.displayFrames.shift(); this.displayed = completed.packed
           this.state.frames++; iosBleTraffic.recordDisplayFrame(); this.onState({ ...this.state })
-          this.log(`Display frame ${this.state.frames} acknowledged (${completed.payload.length} bytes)`)
+          this.log(`Display frame ${this.state.frames} acknowledged (${completed.commands.length} commands)`)
         }
         this.wake()
       }).catch(error => { if (generation === this.generation) this.fail(error, true) })
@@ -404,6 +488,11 @@ export class GlassesSession {
     this.timer = this.retryTimer = null; this.pumping = false
     const pending = [...this.pending.values()]; this.pending.clear()
     for (const request of pending) { if (request.timer) clearTimeout(request.timer); request.reject(new Error('Connection ended')) }
+    if (this.cfwTimer !== null) clearTimeout(this.cfwTimer)
+    this.cfwTimer = null
+    const custom = this.cfwPending; this.cfwPending = []
+    for (const item of custom) item.reject(new Error('Connection ended'))
+    this.cfwTransports.clear()
     this.receiver.clear(); this.writes.clear(); this.latest = this.displayed = null
     this.lastEnqueued = null; this.displayFrames = []; this.displaySending = null; this.displayInFlight = 0
   }
@@ -436,12 +525,7 @@ export class GlassesSession {
     this.update('disconnecting', 'Disconnecting…'); this.reset()
     try {
       if (cleanup) {
-        if (this.state.capabilities.split(/\s+/).includes('cleanup11'))
-          await this.request('left', protocol.SID.hub, magic => protocol.imageFragment(magic, new Uint8Array([11]), 0), 'Display cleanup', 1200)
-        else {
-          await this.request('right', protocol.SID.hub, protocol.shutdown, 'Close display', 1200)
-          await this.lease(false)
-        }
+        await this.requestCfw('left', new Uint8Array([11]))
       }
     } catch (error) { this.log(`Disconnect cleanup: ${this.message(error)}`) }
     finally { this.reset(); this.closeLinks(); this.update('disconnected', 'Preview only') }

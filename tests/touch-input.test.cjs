@@ -51,6 +51,7 @@ function worker() {
     '../../native/active-display': {},
     '../../native/settings-store': { getStringSetting: () => '0', setStringSetting: noop },
     '../../ui/sound-effects': {}, '../../ui/window-menu': {},
+    '../../ui/sound-setting': { loadSoundEnabled: () => true, saveSoundEnabled: noop },
     '../../ui/gestures': { directionalFallback: (event) => event },
     '../../util/numeric-util': { clamp: (v, lo, hi) => Math.max(lo, Math.min(hi, v)) },
   };

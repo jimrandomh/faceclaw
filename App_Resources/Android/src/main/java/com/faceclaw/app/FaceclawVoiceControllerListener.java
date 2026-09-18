@@ -10,6 +10,9 @@ public interface FaceclawVoiceControllerListener {
      */
     void onTranscript(String text, boolean isFinal);
 
+    /** Capture has finished, after the final transcript or a startup/recognition error. */
+    void onStopped(int captureId);
+
     /**
      * Decoded microphone audio: 16 kHz mono signed 16-bit little-endian PCM.
      * Emitted in every mode so raw-PCM consumers (levels, recording, captions)

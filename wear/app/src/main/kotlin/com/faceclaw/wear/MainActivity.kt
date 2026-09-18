@@ -139,16 +139,13 @@ class MainActivity : ComponentActivity() {
                 if (event.repeatCount == 0) {
                     cancelStemHold()
                     stemHoldSent = false
-                    stemOneIgnored = glassesScreenIsOff()
-                    if (stemOneIgnored) return true
+                    // A dark display takes the stem too: a press shows the
+                    // phone's Glanceboard, a hold keeps it up until release.
+                    stemOneIgnored = false
                     val runnable = Runnable {
-                        if (glassesScreenIsOff()) {
-                            stemOneIgnored = true
-                        } else {
-                            stemHoldSent = true
-                            haptics.heavy()
-                            link.sendGesture(Gesture.LONG_PRESS_START)
-                        }
+                        stemHoldSent = true
+                        haptics.heavy()
+                        link.sendGesture(Gesture.LONG_PRESS_START)
                     }
                     stemHoldRunnable = runnable
                     stemHandler.postDelayed(runnable, STEM_HOLD_MS)
@@ -184,7 +181,7 @@ class MainActivity : ComponentActivity() {
                 stemHoldSent = false
                 haptics.click()
                 link.sendGesture(Gesture.LONG_PRESS_RELEASE)
-            } else if (!glassesScreenIsOff()) {
+            } else {
                 haptics.click()
                 link.sendGesture(Gesture.CLICK)
             }

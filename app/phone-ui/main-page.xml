@@ -7,14 +7,13 @@
             <Label col="2" text="{{ connectionStatusLabel }}" tap="{{ onConnectionStatusTap }}" class="action-bar-status" />
             <Label col="3" text="&#x26A0;&#xFE0F;" tap="{{ onWarningIconTap }}" visibility="{{ warningIconVisibility }}" class="action-bar-warning" />
         </GridLayout>
-        <ActionItem text="{{ buttonLabel }}" tap="{{ onTap }}" isEnabled="{{ connectItemEnabled }}" android.position="popup" />
+        <ActionItem text="{{ buttonLabel }}" tap="{{ onTap }}" isEnabled="{{ connectItemEnabled }}" visibility="{{ glassesMenuItemsVisibility }}" android.position="popup" />
         <ActionItem text="Pair glasses" tap="{{ onPairGlassesTap }}" isEnabled="{{ canRun }}" android.position="popup" />
-        <ActionItem text="Configure devices" tap="{{ onConfigureTap }}" isEnabled="{{ canRun }}" android.position="popup" />
         <ActionItem text="Permissions" tap="{{ onPermissionsTap }}" android.position="popup" />
         <ActionItem text="Conversations" tap="{{ onConversationsTap }}" android.position="popup" />
         <ActionItem text="Take screenshot" tap="{{ onTakeScreenshotTap }}" android.position="popup" />
         <ActionItem text="Record screen" tap="{{ onRecordScreenTap }}" android.position="popup" />
-        <ActionItem text="Uninstall custom firmware" tap="{{ onUninstallFirmwareTap }}" isEnabled="{{ canRun }}" android.position="popup" />
+        <ActionItem text="Uninstall custom firmware" tap="{{ onUninstallFirmwareTap }}" isEnabled="{{ canRun }}" visibility="{{ glassesMenuItemsVisibility }}" android.position="popup" />
     </ActionBar>
 
     <GridLayout>

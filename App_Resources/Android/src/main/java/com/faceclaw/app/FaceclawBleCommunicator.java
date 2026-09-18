@@ -27,15 +27,14 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Random;
 
 @SuppressLint("MissingPermission")
 public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private static final String TAG = "FaceclawComm";
 
-    // The EvenHub image container is a memory carrier only. Its 576x288 geometry
-    // gives the firmware separate 165888-byte display and reconstruction
-    // allocations: CFW reuses the former for its 640x480 packed-4bpp shadow and
-    // leaves the latter wholly available for compressed incoming messages.
+    // Local metadata for custom-command bookkeeping, not an EvenHub container.
+    // Submitted frames supply pixel geometry; the stock layout only captures input.
     private static final BleProtocol.ImageTileOptions DASHBOARD_TILE =
         new BleProtocol.ImageTileOptions("img00", 10, 0, 0, 576, 288);
 
@@ -77,7 +76,6 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         new java.util.concurrent.CopyOnWriteArrayList<>();
     private final java.util.List<FaceclawMicStatusListener> micStatusListeners =
         new java.util.concurrent.CopyOnWriteArrayList<>();
-    private volatile String lastFirmwareCapabilities = "";
     private volatile Thread workerThread;
     private volatile boolean running;
     private volatile boolean userDisconnectRequested;
@@ -130,7 +128,14 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private int faceclawFramebufferControlGeneration;
     private int faceclawFramebufferControlSentCount;
     private int faceclawWakePendingNonce = -1;
-    private boolean cfwCleanupSupported;
+    /**
+     * The last firmware-info read said the glasses run Faceclaw's custom
+     * firmware. Gates the private modes (cleanup, texture cache, ...) so stock
+     * or third-party firmware never sees them; the TS side checks the actual
+     * revision and disconnects on a mismatch, so no per-feature gating is
+     * needed here.
+     */
+    private boolean customFirmwareDetected;
     private boolean cfwCleanupDelivered;
     private int lastCfwCleanupAckMagic;
 
@@ -162,6 +167,8 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private long lastShutdownExitAtMs = 0;
     private int headsetBattery = -1;
     private int headsetCharging = -1;
+    private int ringBattery = -1;
+    private int ringCharging = -1;
     // Silent mode: 1 = on, 0 = off, -1 = not yet known. See updateSilentModeLocked.
     private int silentMode = -1;
     private int wearState = -1;
@@ -175,6 +182,38 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private boolean chargingMode;
     private volatile FaceclawAudioPacketListener audioPacketListener;
     private PowerManager.WakeLock g2ScreenWakeLock;
+
+    // BLE bandwidth benchmark (Developer app). Streams no-op image payloads
+    // (CFW mode 7 with an unused sub-op: parsed, acked, and discarded — stock
+    // firmware likewise ignores unknown image modes) for a fixed duration with
+    // a selectable message size and pipeline window, then reports throughput.
+    // While active, desired-frame sends are held back and heartbeats are
+    // satisfied by the benchmark's own acks, so the stream is the only image
+    // traffic. All state below is guarded by `lock`; results are read with
+    // getBandwidthBenchmarkStatus() and survive until the next run starts.
+    private boolean benchmarkActive;
+    private boolean benchmarkAborted;
+    private final Random benchmarkRandom = new Random();
+    private int benchmarkMessageSize;
+    private int benchmarkWindowSize;
+    private int benchmarkDurationMs;
+    private int benchmarkLinkMode;
+    private boolean benchmarkLinkPending;
+    private long benchmarkReadyAtMs;
+    private long benchmarkStartAtMs;     // first benchmark write; 0 until then
+    private long benchmarkDeadlineAtMs;  // start + duration; MAX_VALUE until first write
+    private long benchmarkLastAckAtMs;
+    private long benchmarkEndAtMs;       // 0 while running; set when the run drains
+    private int benchmarkMessagesSent;
+    private int benchmarkMessagesAcked;
+    private int benchmarkTimeouts;
+    private long benchmarkPayloadBytesAcked;
+    private long benchmarkWireBytesAcked;
+    // A timed-out benchmark message aborts the run, but its already-in-flight
+    // peers still time out one by one; keep the window comfortably below
+    // MAX_CONSECUTIVE_ACK_TIMEOUTS so a dead run can't escalate into a
+    // transport-failure reconnect all by itself.
+    private static final int BENCHMARK_MAX_WINDOW = 6;
 
     private final BroadcastReceiver phoneLockReceiver = new BroadcastReceiver() {
         @Override public void onReceive(Context context, Intent intent) {
@@ -226,11 +265,9 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     // firmware frees the cache with the fb lease, and after any resync the
     // cheap safe assumption is an empty cache (glyphs re-upload lazily).
     private final TextureCacheState textureCache = new TextureCacheState();
-    private boolean textureCacheSupported;
-    private boolean textureImagesSupported;
-    private boolean fwTextSupported;
 
     private final ArrayDeque<OutboundMessage> pendingMessages = new ArrayDeque<>();
+    private final CfwTransport[] cfwTransports = { new CfwTransport(), new CfwTransport() };
     private final ArrayDeque<OutboundMessage> inFlightMessages = new ArrayDeque<>();
     private OutboundMessage prewrittenMessage;
     private List<byte[]> prewrittenFrames = Collections.emptyList();
@@ -580,6 +617,200 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         interruptibleSleep.interrupt();
     }
 
+    /**
+     * Start the BLE bandwidth benchmark: stream messageSize-byte no-op image
+     * payloads for durationMs, keeping up to windowSize messages awaiting ack
+     * at once, then leave the results for getBandwidthBenchmarkStatus().
+     * Returns false when a run is already active or the image path is not
+     * ready. The duration clock starts at the first benchmark write, so
+     * traffic already queued ahead of the run doesn't count against it.
+     */
+    public boolean startBandwidthBenchmark(int messageSize, int windowSize, int durationMs) {
+        return startBandwidthBenchmarkWithLinkMode(messageSize, windowSize, durationMs, 0);
+    }
+
+    // 0: current link; 1: re-request HIGH; 2: request 2M; 3: both.
+    public boolean startBandwidthBenchmarkWithLinkMode(int messageSize, int windowSize,
+                                                       int durationMs, int linkMode) {
+        synchronized (lock) {
+            if (benchmarkActive || !running || !sessionReady || !fixedLayoutCreated
+                    || shutdownRequested || chargingMode) {
+                logLine("skip bandwidth benchmark; already running or image path not ready");
+                return false;
+            }
+            benchmarkMessageSize = Math.max(2, Math.min(messageSize, ConnectionOptions.IMAGE_FRAGMENT_SIZE));
+            benchmarkWindowSize = Math.max(1, Math.min(windowSize, BENCHMARK_MAX_WINDOW));
+            benchmarkDurationMs = Math.max(1_000, durationMs);
+            benchmarkLinkMode = linkMode & 3;
+            benchmarkLinkPending = true;
+            benchmarkReadyAtMs = Long.MAX_VALUE;
+            benchmarkStartAtMs = 0;
+            benchmarkDeadlineAtMs = Long.MAX_VALUE;
+            benchmarkLastAckAtMs = 0;
+            benchmarkEndAtMs = 0;
+            benchmarkMessagesSent = 0;
+            benchmarkMessagesAcked = 0;
+            benchmarkTimeouts = 0;
+            benchmarkPayloadBytesAcked = 0;
+            benchmarkWireBytesAcked = 0;
+            benchmarkAborted = false;
+            benchmarkActive = true;
+            logLine("bandwidth benchmark start: size=" + benchmarkMessageSize
+                + "B window=" + benchmarkWindowSize + " duration=" + benchmarkDurationMs
+                + "ms linkMode=" + benchmarkLinkMode);
+        }
+        interruptibleSleep.interrupt();
+        return true;
+    }
+
+    /**
+     * Cancel an in-progress benchmark (benchmark page closed). Queued no-op
+     * messages are dropped; in-flight ones drain through their normal acks.
+     */
+    public void cancelBandwidthBenchmark() {
+        synchronized (lock) {
+            if (!benchmarkActive) {
+                return;
+            }
+            clearMessagesOfKindLocked("bandwidth");
+            finishBenchmarkLocked(true, "cancelled");
+        }
+        interruptibleSleep.interrupt();
+    }
+
+    /** Status/results of the current or most recent benchmark run, as JSON. */
+    public String getBandwidthBenchmarkStatus() {
+        synchronized (lock) {
+            String state = benchmarkActive
+                ? (benchmarkStartAtMs == 0 ? "starting" : "running")
+                : (benchmarkEndAtMs != 0 ? "done" : "idle");
+            long end = benchmarkActive ? SystemClock.elapsedRealtime() : benchmarkEndAtMs;
+            long elapsed = benchmarkStartAtMs == 0 ? 0 : Math.max(0, end - benchmarkStartAtMs);
+            try {
+                org.json.JSONObject status = new org.json.JSONObject();
+                status.put("state", state);
+                status.put("messageSize", benchmarkMessageSize);
+                status.put("windowSize", benchmarkWindowSize);
+                status.put("linkMode", benchmarkLinkMode);
+                status.put("elapsedMs", elapsed);
+                status.put("messagesSent", benchmarkMessagesSent);
+                status.put("messagesAcked", benchmarkMessagesAcked);
+                status.put("timeouts", benchmarkTimeouts);
+                status.put("payloadBytesAcked", benchmarkPayloadBytesAcked);
+                status.put("wireBytesAcked", benchmarkWireBytesAcked);
+                status.put("aborted", benchmarkAborted);
+                return status.toString();
+            } catch (org.json.JSONException e) {
+                return "{\"state\":\"idle\"}";
+            }
+        }
+    }
+
+    /** Pending + in-flight benchmark no-op messages. */
+    private int benchmarkOutstandingLocked() {
+        int count = 0;
+        for (OutboundMessage message : pendingMessages) {
+            if ("bandwidth".equals(message.kind)) count++;
+        }
+        for (OutboundMessage message : inFlightMessages) {
+            if ("bandwidth".equals(message.kind)) count++;
+        }
+        return count;
+    }
+
+    /**
+     * Keep the benchmark stream fed: top the pending queue up so the send
+     * window never starves, stop enqueueing once the run expires (or a message
+     * times out), and finish the run when the last outstanding message drains.
+     */
+    private void maintainBenchmarkLocked(long now) {
+        if (!sessionReady || !fixedLayoutCreated || shutdownRequested) {
+            finishBenchmarkLocked(true, "session no longer ready");
+            return;
+        }
+        if (benchmarkLinkPending || now < benchmarkReadyAtMs) {
+            return;
+        }
+        if (benchmarkAborted || now >= benchmarkDeadlineAtMs) {
+            // The run is over: drop queued-but-unsent no-ops (sending them
+            // would stretch the run past its deadline) and finish once the
+            // in-flight tail has acked or timed out.
+            Iterator<OutboundMessage> pendingIterator = pendingMessages.iterator();
+            while (pendingIterator.hasNext()) {
+                OutboundMessage queued = pendingIterator.next();
+                if ("bandwidth".equals(queued.kind)) {
+                    pendingIterator.remove();
+                    magicPool.release(queued.sid, queued.magic, queued.label, "benchmark over");
+                }
+            }
+            if (benchmarkOutstandingLocked() == 0) {
+                finishBenchmarkLocked(false, "complete");
+            }
+            return;
+        }
+        // One more than the window so a fresh message is always ready to write
+        // the moment an ack frees a slot.
+        for (int outstanding = benchmarkOutstandingLocked(); outstanding <= benchmarkWindowSize; outstanding++) {
+            enqueueBenchmarkMessageLocked();
+        }
+    }
+
+    private void finishBenchmarkLocked(boolean aborted, String reason) {
+        if (!benchmarkActive) {
+            return;
+        }
+        benchmarkActive = false;
+        benchmarkAborted |= aborted;
+        // Prefer the last ack as the end time so drain lag after the deadline
+        // doesn't dilute the throughput figure.
+        benchmarkEndAtMs = benchmarkLastAckAtMs != 0 ? benchmarkLastAckAtMs : SystemClock.elapsedRealtime();
+        logLine("bandwidth benchmark " + (benchmarkAborted ? "aborted" : "finished") + " (" + reason + "): "
+            + benchmarkMessagesAcked + "/" + benchmarkMessagesSent + " acked, "
+            + benchmarkPayloadBytesAcked + "B payload, " + benchmarkTimeouts + " timeouts");
+    }
+
+    private void enqueueBenchmarkMessageLocked() {
+        // Fresh bytes per message: the transport's persistent compression history
+        // would compress even a random payload if we reused it across the run.
+        byte[] payload = new byte[benchmarkMessageSize];
+        benchmarkRandom.nextBytes(payload);
+        payload[0] = 7;             // CFW diagnostic-control mode...
+        payload[1] = (byte) 0x7f;   // ...with an unused sub-op: acked, no effect
+        OutboundMessage message = messageBuilder.imagePayload(
+            "bandwidth",
+            DASHBOARD_TILE,
+            nextMapSessionId(),
+            payload,
+            "bandwidth no-op " + payload.length + "B",
+            connectionOptions.sendImagesToLeft);
+        final int payloadBytes = payload.length;
+        // Logical custom-message bytes; excludes length tag and packet framing.
+        final int wireBytes = message.message.length;
+        message.onSent = () -> {
+            benchmarkMessagesSent++;
+            if (benchmarkStartAtMs == 0) {
+                benchmarkStartAtMs = SystemClock.elapsedRealtime();
+                benchmarkDeadlineAtMs = benchmarkStartAtMs + benchmarkDurationMs;
+            }
+        };
+        message.onAck = () -> {
+            long ackedAtMs = SystemClock.elapsedRealtime();
+            benchmarkMessagesAcked++;
+            benchmarkPayloadBytesAcked += payloadBytes;
+            benchmarkWireBytesAcked += wireBytes;
+            benchmarkLastAckAtMs = ackedAtMs;
+            // No-op payloads ride the image path, so the firmware resets its
+            // heartbeat timer on them just like real image messages.
+            lastHeartbeatAckedAtMs = ackedAtMs;
+        };
+        message.onTimeout = () -> {
+            benchmarkTimeouts++;
+            benchmarkAborted = true;
+            logLine("bandwidth benchmark ack timeout");
+        };
+        pendingMessages.addLast(message);
+    }
+
     public void addImuListener(FaceclawImuListener listener) {
         if (listener != null) {
             imuListeners.add(listener);
@@ -590,11 +821,6 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         if (listener != null) {
             imuListeners.remove(listener);
         }
-    }
-
-    /** The CFW capability token string from the last firmware-info read ("" before one arrives). */
-    public String getFirmwareCapabilities() {
-        return lastFirmwareCapabilities;
     }
 
     public void addAmbientLightListener(FaceclawAmbientLightListener listener) {
@@ -1100,7 +1326,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             if (cfwCleanupDelivered) {
                 return true;
             }
-            if (!cfwCleanupSupported || !running || !sessionReady
+            if (!customFirmwareDetected || !running || !sessionReady
                     || shutdownRequested || !fixedLayoutCreated) {
                 logLine("skip CFW cleanup; mode 11 unavailable or image path not ready");
                 return false;
@@ -1432,6 +1658,33 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         if (!BleProtocol.NOTIFY_CHAR_UUID.equals(uuid)) {
             return;
         }
+        if (data.length >= 7 && (data[6] & 255) == CfwTransport.SID) {
+            CfwTransport.Ack[] acks = CfwTransport.parseAcks(data);
+            if (acks == null) return;
+            synchronized (lock) {
+                lastIncomingAtMs = SystemClock.elapsedRealtime();
+                for (CfwTransport.Ack ack : acks) {
+                    for (OutboundMessage message : inFlightMessages) {
+                        String ingress = message.isLeftArmMessage ? leftAddress : rightAddress;
+                        if (message.sid == CfwTransport.SID && address.equalsIgnoreCase(ingress) && message.magic == ack.streamId) {
+                            message.acceptCfwAck(ack);
+                            Log.i(TAG, "CFW " + (ack.nack ? "NACK" : "ACK") + " id=" + ack.streamId
+                                    + " ordinal=" + ack.messageId + " lens=" + ack.lens + " txseq=" + (data[2] & 255)
+                                    + " redundant=" + (ack != acks[0])
+                                    + " size=" + ack.size + " crc=" + ack.checksum
+                                    + " expected=" + message.message.length + "/" + message.cfwChecksum
+                                    + " ackedLenses=" + message.cfwAckLenses
+                                    + " ageMs=" + (lastIncomingAtMs - message.sentAtMs));
+                            message.ackPayload = Arrays.copyOf(data, data.length);
+                            break;
+                        }
+                    }
+                }
+                drainCfwAcknowledgementsLocked();
+            }
+            interruptibleSleep.interrupt();
+            return;
+        }
         Log.d(TAG, "onNotification: address=" + address + " characteristicUuid=" + characteristicUuid + " data.length=" + data.length);
         BleProtocol.ParsedFrame frame = BleProtocol.parseFrame(data);
         int decodedWearState = BleProtocol.parseWearState(frame);
@@ -1461,17 +1714,44 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                     );
                     faceclawWakeNotification = true;
                     lastConnectionOrInputAtMs = lastIncomingAtMs;
+                    // The event type says which gesture woke the glasses: TS
+                    // gives a head-up the Glanceboard and a double tap the
+                    // regular UI. The claim handshake is the same for both.
+                    boolean headUp = BleProtocol.parseFaceclawWakeEventCode(frame.pb)
+                        == BleProtocol.FACECLAW_WAKE_EVENT_HEAD_UP;
                     event = new G2Event(
                         "display-wake",
                         "",
-                        BleProtocol.EVENT_DOUBLE_CLICK,
+                        headUp ? BleProtocol.EVENT_HEAD_UP : BleProtocol.EVENT_DOUBLE_CLICK,
                         0,
                         0
                     );
-                    logLine("claimed deferred dashboard wake nonce=" + wakeNonce);
+                    logLine("claimed deferred dashboard wake nonce=" + wakeNonce
+                        + (headUp ? " (head-up)" : ""));
                 }
             }
             if (!faceclawWakeNotification
+                    && shutdownRequested
+                    && frame.ok
+                    && frame.sid == BleProtocol.SID_UI_SETTING
+                    && address.equalsIgnoreCase(rightAddress)) {
+                // CFW idle-gesture forwarding (firmware revision 2+): with no
+                // EvenHub page the stock display thread drops taps, long
+                // presses and releases; the CFW reports them on the settings
+                // sid while our wake lease is held. Deliver them as the
+                // sys-events a live page would have produced, so TS treats a
+                // sleep-time tap or hold exactly like one during soft sleep
+                // (the Glanceboard).
+                BleProtocol.FaceclawGestureEvent gesture = BleProtocol.parseFaceclawGestureEvent(frame.pb);
+                if (gesture != null) {
+                    lastConnectionOrInputAtMs = lastIncomingAtMs;
+                    event = new G2Event("sys-event", "", gesture.eventType, gesture.eventSource, 0);
+                    logLine("idle gesture forwarded by CFW: type=" + gesture.eventType
+                        + " source=" + gesture.eventSource);
+                }
+            }
+            if (!faceclawWakeNotification
+                    && event == null
                     && shutdownRequested
                     && address.equalsIgnoreCase(rightAddress)
                     && BleProtocol.isDisplayWakeStateChange(frame)) {
@@ -1490,6 +1770,17 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             if (!faceclawWakeNotification
                     && frame.ok
                     && frame.sid == BleProtocol.SID_UI_SETTING) {
+                // Mode-17 query notifications; settings READs are handled by
+                // createBatteryQueryMessageLocked so headset/ring update together.
+                if (address.equalsIgnoreCase(rightAddress)
+                        && (frame.flag == BleProtocol.FLAG_NOTIFY || frame.flag == BleProtocol.FLAG_NOTIFY_ALT)) {
+                    BleProtocol.RingBatterySnapshot ring = BleProtocol.parseRingBattery(frame.pb);
+                    if (ring != null) {
+                        ringBattery = ring.battery;
+                        ringCharging = ring.charging;
+                        emitBatteryState(headsetBattery, headsetCharging);
+                    }
+                }
                 // CFW mic status (field 104) rides both standalone pushes and
                 // settings read acks, from each temple on its own link.
                 byte[] micStatus = BleProtocol.parseFaceclawMicStatus(frame.pb);
@@ -1534,6 +1825,15 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                     && address.equalsIgnoreCase(rightAddress)
                     && (frame.flag == BleProtocol.FLAG_NOTIFY || frame.flag == BleProtocol.FLAG_NOTIFY_ALT)) {
                 event = G2Event.decode(frame);
+                if (event != null
+                        && "sys-event".equals(event.kind)
+                        && event.eventType == BleProtocol.EVENT_HEAD_UP) {
+                    // CFW forwards the IMU head-up while our page is on screen
+                    // (soft sleep). Surface it as the same wake-only input the
+                    // deferred head-up wake produces from a dark display.
+                    event = new G2Event("display-wake", "", BleProtocol.EVENT_HEAD_UP, event.eventSource, 0);
+                    logLine("head-up forwarded by CFW while page on screen");
+                }
                 if (event != null) {
                     // Pure IMU samples arrive continuously; don't let them count
                     // as user input (which would starve battery polling).
@@ -1703,6 +2003,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 audioCaptureActive = false;
                 faceclawWakePendingNonce = -1;
                 cfwCleanupDelivered = false;
+                for (CfwTransport transport : cfwTransports) transport.reset();
                 lastCfwCleanupAckMagic = 0;
                 lastFaceclawWakeLeaseQueuedAtMs = 0;
                 lastFaceclawFramebufferLeaseQueuedAtMs = 0;
@@ -1722,7 +2023,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             logLine("session ready");
             synchronized (lock) {
                 // Query settings promptly on the first session so firmware
-                // version/capabilities (and battery) arrive without waiting for
+                // version/extension (and battery) arrive without waiting for
                 // the input-quiet battery poll. The settings response doubles as
                 // the firmware-compatibility check surfaced during onboarding.
                 if (!firmwareInfoQueried) {
@@ -1954,6 +2255,33 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private long driveSession() {
         //Log.d(TAG, "driveSession called (pendingMessages.size=" + pendingMessages.size() + " inFlightMessages.size=" + inFlightMessages.size() + ")");
         while (true) {
+            // Run on the sender thread, outside `lock`: Bluetooth API calls can
+            // wait on the global GATT lock, and callbacks need the session lock.
+            // Keep negotiation outside the timed stream. A fixed settling period
+            // is only an experiment boundary; HCI must confirm actual parameters.
+            int linkMode = -1;
+            String[] benchmarkAddresses = null;
+            synchronized (lock) {
+                if (benchmarkActive && benchmarkLinkPending) {
+                    benchmarkLinkPending = false;
+                    linkMode = benchmarkLinkMode;
+                    benchmarkAddresses = new String[] {leftAddress, rightAddress};
+                }
+            }
+            if (benchmarkAddresses != null) {
+                for (String address : benchmarkAddresses) {
+                    try {
+                        bleManager.prepareBenchmarkLink(address, linkMode);
+                    } catch (RuntimeException error) {
+                        logLine("benchmark link request failed: " + safeMessage(error));
+                    }
+                }
+                synchronized (lock) {
+                    // Cancellation/new-run races leave the new run pending; its
+                    // own preparation will replace this deadline before sending.
+                    benchmarkReadyAtMs = SystemClock.elapsedRealtime() + 1_000;
+                }
+            }
             OutboundMessage messageToWrite = null;
             OutboundMessage messageToPrewrite = null;
             long now = SystemClock.elapsedRealtime();
@@ -1961,6 +2289,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             maybeFinishNoChangeDesiredFrame();
 
             synchronized (lock) {
+                drainCfwAcknowledgementsLocked();
                 if (cfwCleanupDelivered) {
                     /* Successful mode 11 must be the last Faceclaw write. Drop
                      * anything a late external producer attempted to enqueue
@@ -1988,11 +2317,36 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 }
                 if (!inFlightMessages.isEmpty()) {
                     OutboundMessage oldest = inFlightMessages.peekFirst();
+                    List<OutboundMessage> replay = CfwMessageWindow.replayWindow(inFlightMessages, now);
+                    if (!replay.isEmpty()) {
+                        logLine("CFW recovery: replay " + replay.size()
+                                + " unresolved message(s) from id=" + replay.get(0).magic);
+                        for (OutboundMessage candidate : replay) {
+                            if (candidate.cfwRetries >= CfwMessageWindow.MAX_RETRIES) {
+                                handleTransportFailure("CFW recovery retry limit");
+                                return 0;
+                            }
+                            logLine("CFW replay id=" + candidate.magic + " label=" + candidate.label
+                                    + " cause=" + (candidate.cfwRetryPending ? "NACK"
+                                        : candidate.cfwAckLenses == CfwTransport.BOTH ? "ordered tail" : "missing ACK")
+                                    + " ackedLenses=" + candidate.cfwAckLenses
+                                    + " ageMs=" + (now - candidate.sentAtMs));
+                            inFlightMessages.remove(candidate);
+                            magicPool.release(candidate.sid, candidate.magic, candidate.label, "CFW replay");
+                            candidate.prepareCfwReplay(magicPool.allocate());
+                        }
+                        for (int i = replay.size() - 1; i >= 0; --i) pendingMessages.addFirst(replay.get(i));
+                        return 0;
+                    }
                     if (oldest != null && oldest.ackDeadlineAtMs <= now) {
                         Log.i(TAG, "message timed out: " + oldest.label);
                         inFlightMessages.removeFirst();
-                        logLine("message timed out: " + oldest.label);
+                        logLine("message timed out: " + oldest.label + " sid=" + oldest.sid
+                                + " id=" + oldest.magic + " ackedLenses=" + oldest.cfwAckLenses
+                                + " ageMs=" + (now - oldest.sentAtMs));
                         magicPool.release(oldest.sid, oldest.magic, oldest.label, "timeout");
+                        if (oldest.sid == CfwTransport.SID)
+                            cfwTransports[oldest.isLeftArmMessage ? 0 : 1].reset();
                         handleAckTimeoutLocked(oldest);
                         return 0;
                     }
@@ -2050,9 +2404,15 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                         enqueueCompassControlLocked(false, wanted);
                     }
 
+                    if (benchmarkActive) {
+                        maintainBenchmarkLocked(now);
+                    }
+
                     // Up to WINDOW_SIZE messages may be in flight at once (full
-                    // pipelining); a slot frees when an ack arrives.
-                    boolean windowHasRoom = inFlightMessages.size() < Math.max(1, connectionOptions.WINDOW_SIZE);
+                    // pipelining); a slot frees when an ack arrives. An active
+                    // bandwidth benchmark measures its own selected window instead.
+                    boolean windowHasRoom = inFlightMessages.size()
+                            < Math.max(1, benchmarkActive ? benchmarkWindowSize : connectionOptions.WINDOW_SIZE);
                     // A frame ready to send right now: don't inject a fresh
                     // heartbeat in front of it (the image's own ack resets the
                     // firmware heartbeat timer, so the heartbeat is redundant).
@@ -2063,11 +2423,15 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                     // window unprotected and a heartbeat that came due there
                     // cost the frame a full ack round trip (measured 124ms on
                     // frame#232 of the 2026-08-20 02:27 capture).
+                    // A benchmark run counts as image traffic here for the same
+                    // reason: its acks reset the firmware heartbeat timer, so a
+                    // fresh heartbeat in front of it is redundant.
                     boolean imageWaiting = !shutdownRequested && fixedLayoutCreated
                             && !hasPendingOrInflightKindLocked("heartbeat")
-                            && now >= imageRetryAfterMs
-                            && (hasPendingImageLocked()
-                                || !getDesiredFingerprint().equals(lastEnqueuedFingerprint));
+                            && (benchmarkActive
+                                || (now >= imageRetryAfterMs
+                                    && (hasPendingImageLocked()
+                                        || !getDesiredFingerprint().equals(lastEnqueuedFingerprint))));
                     noteImageStallLocked(now, windowHasRoom);
                     if (messageToPrewrite == null && handleHeartbeat(imageWaiting)) {
                         return ConnectionOptions.IDLE_SLEEP_MS;
@@ -2076,7 +2440,8 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                     if (messageToPrewrite == null && sessionReady && windowHasRoom && !pendingMessages.isEmpty()) {
                         messageToWrite = pendingMessages.removeFirst();
                         Log.i(TAG, "sending pending message: " + messageToWrite.label);
-                    } else if (messageToPrewrite == null && !shutdownRequested && fixedLayoutCreated
+                    } else if (messageToPrewrite == null && !shutdownRequested && !benchmarkActive
+                            && fixedLayoutCreated
                             && windowHasRoom && !hasPendingImageLocked()
                             && now >= imageRetryAfterMs
                             && !getDesiredFingerprint().equals(lastEnqueuedFingerprint)) {
@@ -2145,7 +2510,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     }
 
     private boolean canPrewriteCandidate(OutboundMessage message) {
-        if (message == null || !message.isLeftArmMessage) {
+        if (message == null || message.sid == CfwTransport.SID || !message.isLeftArmMessage) {
             return false;
         }
         if (!"image".equals(message.kind)) {
@@ -2240,6 +2605,11 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             frames = Collections.singletonList(prewrittenFrames.get(prewrittenFrames.size() - 1));
             prewrittenMessage = null;
             prewrittenFrames = Collections.emptyList();
+        } else if (message.sid == CfwTransport.SID) {
+            if (message.cfwRetries > 0) cfwTransports[message.isLeftArmMessage ? 0 : 1].reset();
+            frames = cfwTransports[message.isLeftArmMessage ? 0 : 1].encode(
+                    message.message, message.magic, CfwTransport.BOTH,
+                    bleManager.getNegotiatedMtu(writeAddress));
         } else {
             frames = BleProtocol.framePb(
                 message.message,
@@ -2267,6 +2637,8 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             }
         }
 
+        if (!result && message.sid == CfwTransport.SID)
+            cfwTransports[message.isLeftArmMessage ? 0 : 1].reset();
         return result;
     }
 
@@ -2354,6 +2726,18 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     }
 
 
+    /** Also drain on the worker: a clear/timeout may have removed a blocking
+     * head since the last notification. Fully ACKed controls must never reach
+     * the generic timeout path just because no further BLE reply arrived. */
+    private void drainCfwAcknowledgementsLocked() {
+        while (true) {
+            OutboundMessage first = CfwMessageWindow.acknowledgedHead(inFlightMessages);
+            if (first == null) return;
+            lastAckAtMs = SystemClock.elapsedRealtime();
+            resolveAckLocked(first, first.ackPayload);
+        }
+    }
+
     private void resolveAckLocked(int sid, int magic, byte[] pb) {
         Iterator<OutboundMessage> iterator = inFlightMessages.iterator();
         while (iterator.hasNext()) {
@@ -2375,6 +2759,12 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             message.onAck.run();
         }
         consecutiveAckTimeouts = 0;
+        // onAck may have just satisfied a waiter blocked on lock.wait() (e.g.
+        // awaitEvenHubSessionReady polling fixedLayoutCreated/displayedFingerprint
+        // after a create-layout or image ack). Without this, that waiter only
+        // notices on its own up-to-100ms poll tick, adding avoidable latency to
+        // every EvenHub wake. Always called with lock held (see call site).
+        lock.notifyAll();
     }
 
     private void logImageUpdateSendLandmarkLocked(OutboundMessage message) {
@@ -2432,10 +2822,10 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     }
 
     private void enqueueCreateLayoutLocked() {
-        // New session/container: re-assert the firmware-debug-flags overlay once
+        // New session: re-assert the firmware-debug-flags overlay once
         // the layout is ready (the mode-7 send is gated on this having reset).
         firmwareDebugFlagsLastSent = -1;
-        OutboundMessage message = messageBuilder.createLayout(DASHBOARD_TILE);
+        OutboundMessage message = messageBuilder.createLayout();
         message.onAck = () -> {
             startupProbePending = false;
             clearMessagesOfKindLocked("startup-text-probe");
@@ -2480,10 +2870,9 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     }
 
     /**
-     * Send the CFW mode-7 diagnostic-flag control op to the dashboard container:
+     * Send the CFW mode-7 diagnostic-flag control op through the private stream:
      * [7][2] to show the on-glasses debug-flag overlay, [7][1] to hide it. Uses the
-     * arbitrary-payload image path (no bmp/dedup/frame-timing interaction) and does
-     * nothing on stock firmware (which ignores unknown image modes).
+     * arbitrary-payload custom path (no bmp/dedup/frame-timing interaction).
      */
     private void enqueueFirmwareDebugFlagsLocked() {
         boolean show = firmwareDebugFlagsEnabled;
@@ -2567,7 +2956,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         // ink out of the baked deltas. Uploads (mode 12) ride ahead of the
         // image message on the ordered transport. Falls through to the plain
         // paths whenever the planner has nothing to draw.
-        if (textureCacheSupported && connectionOptions.TEXTURE_CACHE_FRAMES
+        if (customFirmwareDetected && connectionOptions.TEXTURE_CACHE_FRAMES
                 && draws != null && draws.length > 0 && packed.length > 0) {
             byte[] deltaBase = (connectionOptions.INCREMENTAL_FRAMES && lastEnqueuedPacked.length > 0
                     && lastEnqueuedWidth == width && lastEnqueuedHeight == height)
@@ -2576,8 +2965,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             TexturePlanner.Result tex = TexturePlanner.plan(
                     deltaBase, packed, width, height, draws, textureCache,
                     nextImageFrameId,
-                    connectionOptions.MULTI_RECT_FRAMES, ConnectionOptions.MULTI_RECT_MAX_RECTS,
-                    textureImagesSupported, fwTextSupported);
+                    connectionOptions.MULTI_RECT_FRAMES, ConnectionOptions.MULTI_RECT_MAX_RECTS);
             if (tex != null) {
                 nextImageFrameId = tex.nextFid;
                 for (byte[] upload : tex.uploads) {
@@ -2585,7 +2973,6 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 }
                 BleImageOptimizer.TileImagePlan plan = new BleImageOptimizer.TileImagePlan(
                         0, DASHBOARD_TILE, packed, width, height, nextMapSessionId(), tex.payload);
-                plan.fragments = BleImageOptimizer.planImageFragments(plan.payload, ConnectionOptions.IMAGE_FRAGMENT_SIZE);
                 FrameTimings.getInstance().spanEnd(frameId, "texture-plan");
                 String texLog = "texture update " + (tex.fullFrame ? "full" : ("rects=" + tex.rectCount))
                         + " glyphs=" + tex.drawnGlyphs + " runs=" + tex.runCount
@@ -2648,7 +3035,6 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         BleImageOptimizer.TileImagePlan plan = incrementalPayload != null
             ? new BleImageOptimizer.TileImagePlan(0, DASHBOARD_TILE, packed, width, height, nextMapSessionId(), incrementalPayload)
             : new BleImageOptimizer.TileImagePlan(0, DASHBOARD_TILE, packed, width, height, nextMapSessionId());
-        plan.fragments = BleImageOptimizer.planImageFragments(plan.payload, ConnectionOptions.IMAGE_FRAGMENT_SIZE);
         FrameTimings.getInstance().spanEnd(frameId, "compress-and-plan");
         if (incrementalLog != null) {
             FrameTimings.getInstance().log(frameId, incrementalLog);
@@ -2656,15 +3042,26 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         finishEnqueueDesiredImageLocked(plan, fingerprint, paintMs, frameId);
     }
 
-    /** Shared tail of enqueueDesiredImageLocked: enqueue fragments, advance the delta base, log. */
+    /** Queue complete private commands, advance the delta base, and retain frame/ACK bookkeeping. */
     private void finishEnqueueDesiredImageLocked(
             BleImageOptimizer.TileImagePlan plan, String fingerprint, int paintMs, int frameId) {
         int updateId = nextImageUpdateId++;
-        int messageCount = plan.fragments.size();
+        List<byte[]> commands = new ArrayList<>();
+        if (plan.payload.length <= CfwTransport.MAX_MESSAGE) {
+            commands.add(plan.payload);
+        } else {
+            // A noisy full frame can exceed the stream record limit. Repaint it
+            // with independently decodable RLE bands below the decoded-message limit.
+            commands.addAll(BleImageOptimizer.encodeFullFrameBands(
+                    plan.packed, plan.width, plan.height, nextImageFrameId));
+            for (int i = 0; i < commands.size(); i++) {
+                nextImageFrameId = nextImageFrameId >= 0xfffe ? 1 : nextImageFrameId + 1;
+            }
+        }
+        int messageCount = commands.size();
         imageUpdateStats.put(updateId, new BleImageOptimizer.ImageUpdateStats(paintMs, 1, frameId));
-        for (int i = 0; i < plan.fragments.size(); i++) {
-            BleProtocol.ImageFragment fragment = plan.fragments.get(i);
-            enqueueImageFragmentLocked(plan, fragment, fingerprint, updateId, i + 1, messageCount, true);
+        for (int i = 0; i < commands.size(); i++) {
+            enqueueCustomImageLocked(plan, commands.get(i), fingerprint, updateId, i + 1, messageCount);
         }
         // This frame is now the base for the next delta (it will be the firmware
         // shadow once applied), even though it hasn't been acked yet — that is what
@@ -2704,16 +3101,16 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         logLine("queue " + message.label);
     }
 
-    private void enqueueImageFragmentLocked(
+    private void enqueueCustomImageLocked(
         BleImageOptimizer.TileImagePlan plan,
-        BleProtocol.ImageFragment fragment,
+        byte[] payload,
         String fingerprint,
         int updateId,
         int messageNumber,
-        int messageCount,
-        boolean requestAck
+        int messageCount
     ) {
-        OutboundMessage message = messageBuilder.imageFragment(fragment, plan, requestAck, connectionOptions.sendImagesToLeft);
+        OutboundMessage message = messageBuilder.customMessage("image", payload,
+                "image " + plan.tile.name + "#" + messageNumber, plan.tileIndex, connectionOptions.sendImagesToLeft);
         message.setImageUpdatePosition(updateId, messageNumber, messageCount);
         message.onAck = () -> {
             imageRetryAfterMs = 0;
@@ -2777,6 +3174,10 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private OutboundMessage createBatteryQueryMessageLocked() {
         OutboundMessage message = messageBuilder.batteryQuery();
         message.onAck = () -> {
+            BleProtocol.RingBatterySnapshot ring = BleProtocol.parseRingBattery(message.ackPayload);
+            // Old firmware and missing/malformed extensions must clear any prior reading.
+            ringBattery = ring == null ? -1 : ring.battery;
+            ringCharging = ring == null ? -1 : ring.charging;
             BleProtocol.BatterySnapshot snapshot = BleProtocol.parseSettingsBattery(message.ackPayload);
             if (snapshot != null) {
                 headsetBattery = snapshot.battery;
@@ -2792,12 +3193,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             }
             BleProtocol.FirmwareInfo firmwareInfo = BleProtocol.parseSettingsFirmwareInfo(message.ackPayload);
             if (firmwareInfo != null) {
-                lastFirmwareCapabilities = firmwareInfo.capabilities == null ? "" : firmwareInfo.capabilities;
-                cfwCleanupSupported = hasCapability(firmwareInfo.capabilities, "cleanup11");
-                textureCacheSupported = hasCapability(firmwareInfo.capabilities, "texcache12")
-                        && hasCapability(firmwareInfo.capabilities, "texstr14");
-                textureImagesSupported = hasCapability(firmwareInfo.capabilities, "teximg13");
-                fwTextSupported = hasCapability(firmwareInfo.capabilities, "font15");
+                customFirmwareDetected = firmwareInfo.isFaceclawFirmware();
                 emitFirmwareInfo(firmwareInfo);
             }
         };
@@ -3339,6 +3735,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         Log.e(TAG, "Transport failure: "+reason);
         synchronized (lock) {
             maybeEmitEvenAppConflictLocked(reason);
+            finishBenchmarkLocked(true, "transport failure");
             sessionReady = false;
             fixedLayoutCreated = false;
             startupProbePending = false;
@@ -3361,6 +3758,8 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     }
 
     private void resetSessionStateLocked() {
+        ringBattery = -1;
+        ringCharging = -1;
         sessionReady = false;
         shutdownRequested = false;
         fixedLayoutCreated = false;
@@ -3388,20 +3787,13 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         lastFaceclawWakeLeaseQueuedAtMs = 0;
         faceclawWakeControlSentCount = 0;
         cfwCleanupDelivered = false;
+        for (CfwTransport transport : cfwTransports) transport.reset();
         lastCfwCleanupAckMagic = 0;
         wearState = -1;
         displayedFingerprint = "";
         // Deliberately not clearing silentMode: it is a property of the glasses,
         // not of our session, and silent mode blocks app launches, so it can be
         // the very cause of the session teardown that got us here.
-    }
-
-    private static boolean hasCapability(String capabilities, String token) {
-        if (capabilities == null || token == null || token.isEmpty()) return false;
-        for (String capability : capabilities.trim().split("\\s+")) {
-            if (token.equals(capability)) return true;
-        }
-        return false;
     }
 
     private void emitRingEvent(String kind, String containerName, int eventType, int eventSource, int systemExitReasonCode, int frameId) {
@@ -3528,13 +3920,15 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     }
 
     private void emitBatteryState(int headsetBattery, int headsetCharging) {
+        final int reportedRingBattery = ringBattery;
+        final int reportedRingCharging = ringCharging;
         final FaceclawBleCommunicatorListener current = listener;
         if (current == null) {
             return;
         }
         mainHandler.post(() -> {
             try {
-                current.onBatteryState(headsetBattery, headsetCharging);
+                current.onBatteryState(headsetBattery, headsetCharging, reportedRingBattery, reportedRingCharging);
             } catch (Throwable t) {
                 Log.w(TAG, "listener onBatteryState failed", t);
             }
@@ -3548,7 +3942,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         }
         mainHandler.post(() -> {
             try {
-                current.onFirmwareInfo(info.leftVersion, info.rightVersion, info.capabilities);
+                current.onFirmwareInfo(info.leftVersion, info.rightVersion, info.extension);
             } catch (Throwable t) {
                 Log.w(TAG, "listener onFirmwareInfo failed", t);
             }

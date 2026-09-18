@@ -22,6 +22,8 @@ export type CommunicatorState = {
 export type HeadsetBatteryState = {
   battery: number;
   chargingStatus: number;
+  ringBattery?: number;
+  ringChargingStatus?: number;
 };
 
 export type FrameMetrics = {
@@ -30,11 +32,9 @@ export type FrameMetrics = {
   tileCount: number;
 };
 
-export type FirmwareInfo = {
-  leftVersion: string;
-  rightVersion: string;
-  capabilities: string;
-};
+import { type FirmwareInfo } from "../g2/firmware-compat";
+
+export type { FirmwareInfo };
 
 /**
  * Compositor surface configuration. Position/size are in screen pixels;
@@ -189,10 +189,12 @@ export class FaceclawCommunicatorBridge {
         frameTimings.logFrame(event.frameId, "input event received on JS side");
         this.emitAsync(this.ringListeners, event);
       },
-      onBatteryState: (headsetBattery: number, headsetCharging: number) => {
+      onBatteryState: (headsetBattery: number, headsetCharging: number, ringBattery: number, ringCharging: number) => {
         const state = {
           battery: Number(headsetBattery),
           chargingStatus: Number(headsetCharging),
+          ringBattery: Number(ringBattery),
+          ringChargingStatus: Number(ringCharging),
         };
         this.emitAsync(this.batteryListeners, state);
       },
@@ -226,11 +228,11 @@ export class FaceclawCommunicatorBridge {
       onFrameFinished: (frameId: number, outcome: string) => {
         this.recordFrameFinished(Number(frameId), String(outcome));
       },
-      onFirmwareInfo: (leftVersion: string, rightVersion: string, capabilities: string) => {
-        const info = {
+      onFirmwareInfo: (leftVersion: string, rightVersion: string, extension: string) => {
+        const info: FirmwareInfo = {
           leftVersion: String(leftVersion),
           rightVersion: String(rightVersion),
-          capabilities: String(capabilities),
+          extension: String(extension),
         };
         this.emitAsync(this.firmwareInfoListeners, info);
       },

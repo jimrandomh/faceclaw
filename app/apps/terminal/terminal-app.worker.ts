@@ -38,6 +38,11 @@ import { getDefaultSmallFont, getTerminalFontConfig } from "../../graphics/ui-fo
 import { layoutHubHeader } from "./hub-header";
 import { truncateText } from "../../graphics/textwrap";
 import { TERMINAL_ICON_GLYPHS, type IconActivity } from "../../graphics/icons";
+import {
+  drawSessionRow,
+  TERMINAL_SESSIONS_STATE_KEY,
+  type TerminalSessionsSnapshot,
+} from "./session-list";
 import * as frameTimings from "../../native/frame-timings";
 import { getActiveDisplay } from "../../native/active-display";
 import { GESTURE_DOUBLE_CLICK, type InputEvent } from "../../ui/gestures";
@@ -723,6 +728,48 @@ function renderHubWindows(): void {
   for (const window of windows.values()) {
     if (window.kind === "hub") scheduleRender(window);
   }
+  // Every change the hub repaints for is one the published list may reflect.
+  publishSessionsSnapshot();
+}
+
+let lastPublishedSnapshot = "";
+
+/**
+ * Publish the session list for main-thread consumers (the Glanceboard's
+ * Terminal widget): connected hosts with their sessions most-recently-updated
+ * first, each with its activity deadline (local clock, so the consumer can
+ * expire and animate it itself) and the glyph of its open view window. Posted
+ * only when the JSON actually changed.
+ */
+function publishSessionsSnapshot(): void {
+  const connected = connectedControls();
+  const snapshot: TerminalSessionsSnapshot = {
+    hosts: connected.map((control) => {
+      const connectionId = control.config.id;
+      const sessions = (control.state?.sessions ?? [])
+        .slice()
+        .sort(
+          (a, b) =>
+            (sessionRecency.get(recencyKey(connectionId, b.socket)) ?? 0) -
+            (sessionRecency.get(recencyKey(connectionId, a.socket)) ?? 0),
+        );
+      return {
+        name: connectionDisplayName(control.config),
+        sessions: sessions.map((session) => ({
+          key: recencyKey(connectionId, session.socket),
+          label: sessionLabel(session),
+          activeUntilMs: (sessionActivity.get(recencyKey(connectionId, session.socket)) ?? -ACTIVITY_ACTIVE_MS) + ACTIVITY_ACTIVE_MS,
+          openGlyph: viewGlyphForSocket(connectionId, session.socket),
+        })),
+      };
+    }),
+    status: sessionsStatusLine(),
+    configured: controls.size > 0,
+  };
+  const encoded = JSON.stringify(snapshot);
+  if (encoded === lastPublishedSnapshot) return;
+  lastPublishedSnapshot = encoded;
+  post({ type: "publish-state", key: TERMINAL_SESSIONS_STATE_KEY, state: snapshot });
 }
 
 // One animation clock for foreground hub rows and every terminal sidebar icon.
@@ -1118,6 +1165,8 @@ type HubItem = {
   heading?: boolean;
   /** Session with recent output: an animated indicator marks the row. */
   active?: boolean;
+  /** Glyph of the view window showing this session (the number column). */
+  openGlyph?: string | null;
   onSelect?: () => void;
 };
 
@@ -1183,10 +1232,10 @@ function hubSessionItems(window: HubWindow): HubItem[] {
     }
     const sessions = orderedSessions(window, control);
     for (const session of sessions) {
-      const openWindowId = viewWindowIdForSocket(control.config.id, session.socket);
       items.push({
-        label: openWindowId ? `${sessionLabel(session)}  [open]` : sessionLabel(session),
+        label: sessionLabel(session),
         active: isSessionActive(control.config.id, session.socket),
+        openGlyph: viewGlyphForSocket(control.config.id, session.socket),
         onSelect: () => {
           const windowId = viewWindowIdForSocket(control.config.id, session.socket);
           if (windowId) {
@@ -1421,6 +1470,19 @@ function handleHubInput(window: HubWindow, event: InputEvent, frameId: number): 
  * Includes views that were requested but whose surface hasn't opened yet, so
  * a quick double-select can't spawn two windows for one session.
  */
+/** Sidebar glyph of the (open or opening) view window on a session, or null. */
+function viewGlyphForSocket(connectionId: string, socket: string): string | null {
+  for (const window of windows.values()) {
+    if (window.kind === "view" && window.connectionId === connectionId && window.socket === socket) {
+      return window.glyph || null;
+    }
+  }
+  for (const pending of pendingViews.values()) {
+    if (pending.connectionId === connectionId && pending.socket === socket) return pending.glyph || null;
+  }
+  return null;
+}
+
 function viewWindowIdForSocket(connectionId: string, socket: string): string | null {
   for (const window of windows.values()) {
     if (window.kind === "view" && window.connectionId === connectionId && window.socket === socket) {
@@ -1539,20 +1601,18 @@ function paintHub(window: HubWindow): GrayImage {
       // an outline-only selection signals the sidebar owns input.
       drawSelectionHighlight(image, 20, y - 2, window.viewportWidth - 40, hubRowH - 1, window.focused, 8);
     }
-    image.drawText(chromeFont(), 32, y + 2, item.label, selected ? 255 : 200);
-    if (item.active) {
-      // Activity indicator in the gutter left of the label, alternating
-      // filled/outline each animation step (drawn shapes, not a font glyph,
-      // so the two states render distinctly in every UI font).
-      const size = 6;
-      const iy = y + 2 + Math.max(0, ((font.lineHeight - size) / 2) | 0);
-      const value = selected ? 255 : 200;
-      if (hubAnimationPhase === 0) {
-        image.fillRect(22, iy, size, size, value);
-      } else {
-        image.drawRect(22, iy, size, size, value);
-      }
-    }
+    // Activity gutter, open-window number column, then the label, truncated
+    // to the row (shared with the Glanceboard's Terminal widget).
+    drawSessionRow(image, chromeFont(), {
+      x: 22,
+      y: y + 2,
+      width: window.viewportWidth - 22 - 26,
+      label: item.label,
+      openGlyph: item.openGlyph ?? null,
+      active: Boolean(item.active),
+      phase: hubAnimationPhase,
+      value: selected ? 255 : 200,
+    });
   }
   if (items.length > visibleRowCount) {
     drawListScrollbar(
@@ -1595,6 +1655,11 @@ function hubStatusLine(window: HubWindow): string {
   if (window.mode === "connections") {
     return "Select a connection to connect, disconnect, or remove.";
   }
+  return sessionsStatusLine();
+}
+
+/** The sessions view's status line (also published with the session snapshot). */
+function sessionsStatusLine(): string {
   if (controls.size === 0) {
     return "No connections configured.";
   }
@@ -1830,7 +1895,8 @@ function toolListSessions(): ToolResult {
       lines.push(`${connectionDisplayName(control.config)}:`);
     }
     for (const session of sessions) {
-      const open = viewWindowIdForSocket(control.config.id, session.socket) ? " [open]" : "";
+      const glyph = viewGlyphForSocket(control.config.id, session.socket);
+      const open = glyph ? ` [open in window ${glyph}]` : viewWindowIdForSocket(control.config.id, session.socket) ? " [open]" : "";
       lines.push(`- ${sessionLabel(session)}${open}`);
     }
     if (!sessions.length && multiHost) {

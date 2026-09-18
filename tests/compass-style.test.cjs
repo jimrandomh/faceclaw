@@ -61,6 +61,10 @@ function compass({ style, width = 576, height = 260 } = {}) {
     '../../g2/android-permissions': { hasLocationPermission: () => false },
     './calibration': { isCompassCalibrated: () => true, normalizeHeading: (n) => ((n % 360) + 360) % 360 },
     './calibration-layer': {},
+    './compass-rose': load('app/apps/compass/compass-rose.ts', {
+      '../../graphics/image': { ...graphics, GrayImage: RecordingImage },
+      './calibration': { normalizeHeading: (n) => ((n % 360) + 360) % 360 },
+    }),
     './declination': { onDeclinationChanged: () => () => {} },
     './heading': { getNorthReference: () => 'magnetic', resolveHeading: (n) => ({ displayDegrees: n }) },
   };

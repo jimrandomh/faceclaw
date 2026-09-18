@@ -7,12 +7,19 @@ import {
   hasExtractedEvenHubFonts,
   type FirmwareProgress,
 } from "../g2/firmware-builder";
-import { classifyOnboardingFirmware, FLASHABLE_STOCK_VERSION_TEXT, type OnboardingFirmwareKind } from "../g2/firmware-compat";
+import {
+  BASE_STOCK_VERSION_TEXT,
+  REQUIRED_FACECLAW_FIRMWARE_VERSION,
+  classifyOnboardingFirmware,
+  describeFirmwareExtension,
+  type FirmwareExtension,
+  type OnboardingFirmwareKind,
+} from "../g2/firmware-compat";
 import { DeviceInfoProbe, DeviceInfoState } from "../native/device-info-probe";
 import { setOnboardingCompleted, setPreviewOnlyMode } from "./onboarding-state";
 import { formatErrorMessage } from "../util/format-error";
 
-type CheckPhase = "checking" | "fonts" | "custom" | "flashable" | "newer" | "error";
+type CheckPhase = "checking" | "fonts" | "custom" | "flashable" | "newer-validated" | "newer" | "error";
 
 export class OnboardingFirmwareCheckViewModel extends Observable {
   private _phase: CheckPhase = "checking";
@@ -72,6 +79,7 @@ export class OnboardingFirmwareCheckViewModel extends Observable {
       case "custom":
         return "Finish";
       case "flashable":
+      case "newer-validated":
         return "Install Firmware";
       case "newer":
         return "Proceed Anyway";
@@ -107,6 +115,7 @@ export class OnboardingFirmwareCheckViewModel extends Observable {
         this.finish();
         return;
       case "flashable":
+      case "newer-validated":
       case "newer":
         this.goToFlashing();
         return;
@@ -143,7 +152,7 @@ export class OnboardingFirmwareCheckViewModel extends Observable {
     if (this._phase !== "error") return;
     // Same path as a real "custom" classification, so the phone-side G2 fonts
     // still get extracted when they're missing.
-    this.applyClassification("custom", "", "");
+    this.applyClassification("custom", "", { kind: "none" });
   }
 
   // --- probe flow ------------------------------------------------------------
@@ -169,35 +178,39 @@ export class OnboardingFirmwareCheckViewModel extends Observable {
       this.disposeProbe();
       const probe = new DeviceInfoProbe(stored.right, stored.left);
       this.probeInstance = probe;
-      probe.onStateChange((state) => this.reportProbeState(state));
+      probe.onStateChange((state, detail) => this.reportProbeState(state, detail));
 
       const info = await probe.run();
       this.probeInstance = null;
 
-      const { kind, version } = classifyOnboardingFirmware(info);
-      this.applyClassification(kind, version, info.capabilities.trim());
+      const { kind, version, extension } = classifyOnboardingFirmware(info);
+      this.applyClassification(kind, version, extension);
     } catch (error) {
       this.probeInstance = null;
       this.toError(this.formatError(error));
     }
   }
 
-  private reportProbeState(state: DeviceInfoState): void {
+  private reportProbeState(state: DeviceInfoState, detail: string): void {
+    // The probe brings up the right lens, then the left, and pairs with each
+    // in turn (they are separate Bluetooth devices with separate bonds).
+    const lens = detail === "left" || detail === "right" ? `the ${detail} lens` : "your glasses";
     if (state === "connecting") {
-      this.status = "Connecting to your glasses...";
+      this.status = `Connecting to ${lens}...`;
     } else if (state === "authenticating") {
       // First-time connections pair here; the OS may show a Bluetooth dialog.
-      this.status = "Authenticating with your glasses... If Android asks to pair, tap Pair.";
+      this.status = `Pairing with ${lens}... Each lens pairs separately; if Android asks to pair, tap Pair.`;
     } else if (state === "querying") {
       this.status = "Reading the firmware version...";
     }
   }
 
-  private applyClassification(kind: OnboardingFirmwareKind, version: string, capabilities: string): void {
+  private applyClassification(kind: OnboardingFirmwareKind, version: string, extension: FirmwareExtension): void {
     this.busy = false;
     // `kind` is classifyOnboardingFirmware's OnboardingFirmwareKind ("custom" |
-    // "flashable-stock" | "newer-stock" | "unknown") -- NOT CheckPhase's shorter
-    // "flashable"/"newer" (used below via setPhase for _phase/primaryLabel/etc).
+    // "older-faceclaw" | "other-custom" | "flashable-stock" | "newer-stock-unvalidated" |
+    // "newer-stock-validated" | "unknown") -- NOT CheckPhase's shorter
+    // "flashable"/"newer-validated"/"newer" (used below via setPhase for _phase/primaryLabel/etc).
     // The two types share two of four names, so a typo'd case label here type-checks
     // fine as long as `kind` stays plain `string`, but silently falls through to
     // `default` (the hard "couldn't read a firmware version" error) for every real
@@ -206,10 +219,26 @@ export class OnboardingFirmwareCheckViewModel extends Observable {
     switch (kind) {
       case "custom":
         if (!hasExtractedEvenHubFonts()) {
-          void this.extractFontsForCustomFirmware(version, capabilities);
+          void this.extractFontsForCustomFirmware(version, extension);
           break;
         }
-        this.showCustomReady(version, capabilities, false);
+        this.showCustomReady(version, extension, false);
+        break;
+      case "older-faceclaw":
+        this.setPhase("flashable");
+        this.headline = "Firmware Update Available";
+        this.status =
+          `Your glasses run ${describeFirmwareExtension(extension)}${version ? `, based on stock ${version}` : ""}. ` +
+          `This version of Faceclaw needs revision ${REQUIRED_FACECLAW_FIRMWARE_VERSION}. ` +
+          "Tap Install Firmware to update it.";
+        break;
+      case "other-custom":
+        this.setPhase("flashable");
+        this.headline = "Other Custom Firmware";
+        this.status =
+          `Your glasses run ${describeFirmwareExtension(extension)}${version ? `, based on stock ${version}` : ""}. ` +
+          `Faceclaw needs its own custom firmware (revision ${REQUIRED_FACECLAW_FIRMWARE_VERSION}). ` +
+          "Tap Install Firmware to replace the current firmware with it.";
         break;
       case "flashable-stock":
         this.setPhase("flashable");
@@ -218,11 +247,21 @@ export class OnboardingFirmwareCheckViewModel extends Observable {
           `Your glasses run stock firmware ${version}. This is compatible — tap Install Firmware to flash ` +
           "Faceclaw's custom firmware.";
         break;
-      case "newer-stock":
+      case "newer-stock-validated":
+        this.setPhase("newer-validated");
+        this.headline = "Ready to Install";
+        this.status =
+          `Your glasses run stock firmware ${version}, which is compatible. This version is newer than the ` +
+          `${BASE_STOCK_VERSION_TEXT} release Faceclaw's custom image is built from. You may not be able to ` +
+          `use the official Even app without upgrading back to ${version} first (the official Even app will ` +
+          `perform that upgrade for you if you re-pair it).`;
+        break;
+
+      case "newer-stock-unvalidated":
         this.setPhase("newer");
         this.headline = "Unrecognized Firmware";
         this.status =
-          `Your glasses run stock firmware ${version}, which is newer than the ${FLASHABLE_STOCK_VERSION_TEXT} ` +
+          `Your glasses run stock firmware ${version}, which is newer than the ${BASE_STOCK_VERSION_TEXT} ` +
           "release Faceclaw's custom image is built from. Flashing may not work correctly and carries extra risk. " +
           "You can proceed anyway, or go back.";
         break;
@@ -236,7 +275,7 @@ export class OnboardingFirmwareCheckViewModel extends Observable {
     }
   }
 
-  private async extractFontsForCustomFirmware(version: string, capabilities: string): Promise<void> {
+  private async extractFontsForCustomFirmware(version: string, extension: FirmwareExtension): Promise<void> {
     this.setPhase("fonts");
     this.headline = "Preparing G2 Fonts";
     this.busy = true;
@@ -245,7 +284,7 @@ export class OnboardingFirmwareCheckViewModel extends Observable {
       "Downloading the official firmware to extract them; your glasses will not be reflashed.";
     try {
       await downloadAndExtractEvenHubFonts((progress) => this.reportFontProgress(progress));
-      this.showCustomReady(version, capabilities, true);
+      this.showCustomReady(version, extension, true);
     } catch (error) {
       this.toError(
         `Custom firmware is installed, but the G2 fonts could not be prepared: ${this.formatError(error)}`,
@@ -270,13 +309,16 @@ export class OnboardingFirmwareCheckViewModel extends Observable {
     }
   }
 
-  private showCustomReady(version: string, capabilities: string, extractedFonts: boolean): void {
+  private showCustomReady(version: string, extension: FirmwareExtension, extractedFonts: boolean): void {
     this.busy = false;
     this.setPhase("custom");
     this.headline = extractedFonts ? "Fonts Ready" : "Custom Firmware Detected";
+    const details = [
+      extension.kind === "faceclaw" ? `revision ${extension.version}` : "",
+      version ? `based on stock ${version}` : "",
+    ].filter(Boolean);
     this.status =
-      `Your glasses already run Faceclaw's custom firmware${version ? ` (version ${version})` : ""}` +
-      `${capabilities ? `, extensions: ${capabilities}` : ""}. ` +
+      `Your glasses already run Faceclaw's custom firmware${details.length ? ` (${details.join(", ")})` : ""}. ` +
       (extractedFonts
         ? "The phone-side G2 fonts were extracted successfully. No flashing was needed — you're all set."
         : "The phone-side G2 fonts are present. No flashing needed — you're all set.");
@@ -288,7 +330,9 @@ export class OnboardingFirmwareCheckViewModel extends Observable {
     this.disposeProbe();
     Frame.topmost()?.navigate({
       moduleName: "phone-ui/onboarding-flash-page",
-      context: { mode: "install", fromOnboarding: true },
+      // This page already described the install; skip the flash page's
+      // intro/"Connect & Confirm" step and connect immediately.
+      context: { mode: "install", fromOnboarding: true, autoStart: true },
     });
   }
 

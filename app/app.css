@@ -52,7 +52,8 @@ TextField {
   color: #f0f0f0;
 }
 
-.system-name-modal TextField {
+.system-name-modal TextField,
+.system-name-modal TextView {
   background-color: #ffffff;
   color: #222222;
 }
@@ -130,6 +131,14 @@ Button.-primary {
   border-color: #222222;
   border-width: 1;
   border-radius: 8;
+}
+
+/* The modal stays light in dark mode (setting editor and keyboard-input
+ * panel); the .ns-dark pairing outguns the theme's dark-mode recolour of
+ * Label/.h2 so the title doesn't go white-on-light-gray. */
+.system-name-modal Label,
+.ns-dark .system-name-modal Label {
+  color: #222222;
 }
 
 /* Modal behind the action bar's warning triangle: the problem-status warnings

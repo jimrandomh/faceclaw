@@ -68,7 +68,7 @@ class MusicAppLayer implements Layer {
     if (!media.accessEnabled) {
       const lines = wrapText(
         font,
-        "Notification access is required before Android exposes media sessions. Click to open settings.",
+        "Notification access is required to control Android media sessions. Tap to open settings.",
         width - 48,
       );
       for (let index = 0; index < lines.length; index++) {

@@ -2,6 +2,7 @@ import { MenuLayer, drawSubmenuIndicator, type MenuItem } from "../../ui/menu";
 import { ScreenTestLayer } from "./screen-test";
 import { BuzzerDemoLayer } from "./buzzer-demo";
 import { AccelerometerDemoLayer } from "./accelerometer-demo";
+import { BandwidthBenchmarkLayer } from "./bandwidth-benchmark";
 import { LightSensorDemoLayer } from "./light-sensor-demo";
 import { ResourceUsageLayer } from "./resource-usage";
 import { LoadAppFromQrLayer, LoadAppFromUrlLayer } from "./load-app";
@@ -78,6 +79,12 @@ function debugTestsMenu(): MenuLayer {
         description: global.isIOS ? "Not available on iOS yet." : undefined,
         onSelect: (ctx) => {
           ctx.stack.push(new LightSensorDemoLayer(DEVELOPER_WINDOW_ID, ctx.actions.requestRender));
+        },
+      },
+      {
+        label: "BLE bandwidth",
+        onSelect: (ctx) => {
+          ctx.stack.push(new BandwidthBenchmarkLayer(ctx.actions.requestRender));
         },
       },
     ],

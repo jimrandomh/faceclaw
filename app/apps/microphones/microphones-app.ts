@@ -23,7 +23,7 @@ import { isAsrModelReady, startAsrModelDownload, asrModelState } from "../../nat
 import { CaptionsLayer } from "./captions-layer";
 import { LevelsLayer } from "./levels-layer";
 import { RadarLayer } from "./radar-layer";
-import { loadMicConfig, micArrayController, micControlAdvertised, micControlSupported, saveMicConfig } from "./mic-control";
+import { loadMicConfig, micArrayController, micControlSupported, saveMicConfig } from "./mic-control";
 import { isMicModelReady, micModelState, startMicModelDownload } from "./mic-models";
 import { micChannelLabel, type MicChannelKey, type MicConfig } from "./mic-protocol";
 import { micSession } from "./mic-session";
@@ -166,7 +166,7 @@ function micSetupMenu(): MenuLayer {
       {
         label: "Array status",
         description:
-          "Per-temple mic-control status. Requires the mic-control custom firmware (caps token micctl) and the Use microphone control developer setting.",
+          "Per-temple mic-control status. Requires the Use microphone control developer setting.",
         onSelect: (ctx) => {
           micArrayController.query();
           const { left, right } = micArrayController.getStatuses();
@@ -186,9 +186,7 @@ function micSetupMenu(): MenuLayer {
               "Array status",
               micControlSupported()
                 ? `${describe("Left", left)}\n${describe("Right", right)}\n${consistency}`
-                : micControlAdvertised()
-                  ? "Mic-control is available but disabled. Turn on Settings > Developer > Use microphone control to control the four mics individually."
-                  : "The connected firmware does not advertise mic-control. Flash the microphone-configurations CFW build to control the four mics individually; on stock firmware the glasses stream one mixed channel with a firmware-computed direction of arrival.",
+                : "Mic-control is disabled. Turn on Settings > Developer > Use microphone control to control the four mics individually; while it is off the glasses stream one mixed channel with a firmware-computed direction of arrival.",
             ),
           );
         },
@@ -330,17 +328,20 @@ function voiceSpeakersMenu(): MenuLayer {
         () => startMicModelDownload("speaker-embedding"),
       ),
       modelItem(
+        // Live captions always use Moonshine (see the matching note in
+        // mic-session.ts); the second on-device model (Whisper) is a
+        // push-to-talk dictation option only, managed in Settings > Voice.
         "Caption ASR model",
-        isAsrModelReady,
+        () => isAsrModelReady("moonshine"),
         () => {
-          const state = asrModelState();
+          const state = asrModelState("moonshine");
           if (state.status === "ready") return "ready";
           if (state.status === "downloading") {
             return `${Math.round((state.bytesDownloaded / state.totalBytes) * 100)}%`;
           }
           return "download (141 MB)";
         },
-        startAsrModelDownload,
+        () => startAsrModelDownload("moonshine"),
       ),
       modelItem(
         "Re-diarization model",

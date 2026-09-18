@@ -71,6 +71,12 @@ export const OsEventTypeList = {
   RING_LONG_PRESS_RELEASE_EVENT: 10,
   /** CFW extension: the 2.2.9 tap-then-hold Menu gesture. */
   SHORT_THEN_LONG_PRESS_EVENT: 11,
+  /**
+   * CFW extension (head-tilt wake branch): the IMU head-up gesture, forwarded
+   * while the display sleeps. Reaches the phone as a display-wake carrying
+   * this eventType; the glance host treats it as a press.
+   */
+  HEAD_UP_EVENT: 12,
 } as const;
 
 export const OsEventTypeName: Record<number, string> = {
@@ -86,4 +92,5 @@ export const OsEventTypeName: Record<number, string> = {
   9: "RING_LONG_PRESS_EVENT",
   10: "RING_LONG_PRESS_RELEASE_EVENT",
   11: "SHORT_THEN_LONG_PRESS_EVENT",
+  12: "HEAD_UP_EVENT",
 };

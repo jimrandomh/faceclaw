@@ -107,7 +107,11 @@ class Image {
 
 test('cursor replaces only the prompt; marker and frame persist across cached blink phases', () => {
   const renders = [];
-  const icons = load('app/graphics/icons.ts', { './image': { GrayImage: Image } }, {
+  const icons = load('app/graphics/icons.ts', { './image': { GrayImage: Image },
+    '../native/svg-rasterizer': { rasterizeSvg(svg, size, stroke) {
+      renders.push(svg); assert.equal(stroke, 2); const image = new Image(size, size); image.pixels.fill(255); return image;
+    } },
+  }, {
     global: { isAndroid: true },
     com: { faceclaw: { app: { IconRenderer: { renderSvgGray(svg, size, stroke) {
       renders.push(svg); assert.equal(stroke, 2); return new Uint8Array(size * size).fill(255);

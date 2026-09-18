@@ -22,7 +22,12 @@ public class FaceclawForegroundService extends Service {
     public static final String ACTION_STOP = "com.faceclaw.app.action.STOP";
     public static final String EXTRA_TEXT = "text";
 
-    private static final String CHANNEL_ID = "faceclaw-dashboard";
+    // Channel id was bumped from "faceclaw-dashboard" when the badge setting
+    // changed: Android freezes a channel's showBadge flag at creation, so the
+    // old channel (which let Samsung's launcher count the pinned notification
+    // as a red "1" badge) is deleted on upgrade rather than reused.
+    private static final String LEGACY_CHANNEL_ID = "faceclaw-dashboard";
+    private static final String CHANNEL_ID = "faceclaw-connection";
     private static final int NOTIFICATION_ID = 4201;
 
     @Override
@@ -43,7 +48,7 @@ public class FaceclawForegroundService extends Service {
 
         ensureNotificationChannel();
         Notification notification = buildNotification(
-                text != null && !text.trim().isEmpty() ? text : "Keeping the dashboard connected"
+                text != null && !text.trim().isEmpty() ? text : "Connected to glasses"
         );
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -69,14 +74,18 @@ public class FaceclawForegroundService extends Service {
 
         NotificationChannel channel = new NotificationChannel(
                 CHANNEL_ID,
-                "Faceclaw dashboard",
+                "Glasses connection",
                 NotificationManager.IMPORTANCE_LOW
         );
-        channel.setDescription("Keeps the Faceclaw dashboard connected to the glasses.");
+        channel.setDescription("Keeps Faceclaw connected to the glasses.");
+        // The pinned status notification must not count toward the launcher
+        // icon's notification badge.
+        channel.setShowBadge(false);
 
         NotificationManager manager = getSystemService(NotificationManager.class);
         if (manager != null) {
             manager.createNotificationChannel(channel);
+            manager.deleteNotificationChannel(LEGACY_CHANNEL_ID);
         }
     }
 
@@ -96,7 +105,7 @@ public class FaceclawForegroundService extends Service {
                 : new Notification.Builder(this);
 
         return builder
-                .setContentTitle("faceclaw dashboard")
+                .setContentTitle("Faceclaw")
                 .setContentText(text)
                 .setSmallIcon(getApplicationInfo().icon)
                 .setContentIntent(contentIntent)

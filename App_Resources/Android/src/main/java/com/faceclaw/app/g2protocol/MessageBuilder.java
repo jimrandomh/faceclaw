@@ -72,35 +72,18 @@ public class MessageBuilder {
         String label,
         boolean leftArm
     ) {
-        BleProtocol.ImageFragment fragment =
-            new BleProtocol.ImageFragment(0, payload, payload.length);
-        int magic = magicPool.allocate();
-        return new OutboundMessage(
-            kind,
-            label,
-            BleProtocol.SID_EVENHUB,
-            BleProtocol.FLAG_REQUEST,
-            magic,
-            BleProtocol.buildImageRawData(tile, sessionId, payload.length, fragment, magic),
-            ACK_TIMEOUT_MS,
-            -1,
-            leftArm
-        );
+        // Keep these arguments for source compatibility with existing callers;
+        // the private command no longer carries a tile, session, or image header.
+        return customMessage(kind, payload, label, -1, leftArm);
     }
 
-    public OutboundMessage imageFragment(BleProtocol.ImageFragment fragment, BleImageOptimizer.TileImagePlan plan, boolean requestAck, boolean leftArm) {
-        int magic = requestAck ? magicPool.allocate() : 0;
-        return new OutboundMessage(
-            "image",
-            "image " + plan.tile.name + "#" + fragment.index,
-            BleProtocol.SID_EVENHUB,
-            BleProtocol.FLAG_REQUEST,
-            magic,
-            BleProtocol.buildImageRawData(plan.tile, plan.sessionId, plan.payload.length, fragment, magic),
-            ACK_TIMEOUT_MS,
-            plan.tileIndex,
-            leftArm
-        );
+    public OutboundMessage customMessage(String kind, byte[] payload, String label,
+                                          int tileIndex, boolean leftArm) {
+        if (payload == null || payload.length > CfwTransport.MAX_MESSAGE)
+            throw new IllegalArgumentException("CFW message exceeds uint16 length");
+        int streamId = magicPool.allocate();
+        return new OutboundMessage(kind, label, CfwTransport.SID, 0, streamId, payload,
+                CfwMessageWindow.ACK_TIMEOUT_MS, tileIndex, leftArm);
     }
 
     public OutboundMessage cfwCleanup(
@@ -179,7 +162,7 @@ public class MessageBuilder {
         );
     }
 
-    public OutboundMessage createLayout(BleProtocol.ImageTileOptions... tiles) {
+    public OutboundMessage createLayout() {
         int magic = magicPool.allocate();
         return new OutboundMessage(
             "create-layout",
@@ -187,7 +170,7 @@ public class MessageBuilder {
             BleProtocol.SID_EVENHUB,
             BleProtocol.FLAG_REQUEST,
             magic,
-            BleProtocol.buildCreateMixedImagePage(magic, tiles),
+            BleProtocol.buildCreateInputPage(magic),
             ACK_TIMEOUT_MS,
             -1,
             false

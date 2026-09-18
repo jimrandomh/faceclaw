@@ -16,7 +16,7 @@ import { ALL_NOTIFICATIONS, onAndroidNotificationPosted, readActiveNotifications
 import { shouldShowNotificationOnGlasses } from "../native/notification-sources";
 import { openEvenAppSettings, readEvenAppNotificationState } from "../native/even-app-conflict";
 import { grayImageToPreviewSource } from "../native/gray-image-preview";
-import { firmwareIncompatibilityMessage } from "./firmware-compat";
+import { firmwareIncompatibilityMessage, hasCompatibleFirmware } from "./firmware-compat";
 import { hasExtractedEvenHubFonts } from "./firmware-builder";
 import { resumeAutoReconnect, suppressAutoReconnect } from "./reconnect-policy";
 import { WearRemote, type WearRemoteInputKind } from "./wear-remote";
@@ -43,6 +43,8 @@ const MIRROR_TOUCH_GESTURES: Record<Exclude<MirrorTouchKind, "tap">, WearRemoteI
   "swipe-right": "swipe-right",
 };
 import { findSoundEffect, playSoundEffect } from "../ui/sound-effects";
+import { GlanceHost } from "./glance-host";
+import { type GlanceEvent } from "./glance-state";
 import { isWelcomeSoundPending, setWelcomeSoundPending } from "../phone-ui/onboarding-state";
 import { beginRenderPass, endRenderPass } from "../util/render-freshness";
 import { voiceControlBridge } from "../native/voice-control";
@@ -52,6 +54,7 @@ import { prepareFrameDraws } from "../graphics/glyph-wire";
 import { getDefaultMediumFont } from "../graphics/ui-fonts";
 import { wrapText } from "../graphics/textwrap";
 import { rawInputEventToInputEvent, shell, type ShellInputOutcome } from "../ui/shell/shell";
+import { type InputEvent } from "../ui/gestures";
 import { registerSystemTools } from "../assistant/system-tools";
 import { updateGlassesPresence } from "./glasses-presence";
 import { timerEngine } from "../apps/timer/timer-engine";
@@ -252,10 +255,30 @@ class DashboardController {
   private screenTimeoutTimer: ReturnType<typeof setInterval> | null = null;
   private evenHubSuspendTimer: ReturnType<typeof setTimeout> | null = null;
   private evenHubSessionSuspended = false;
+  /**
+   * The Glanceboard: the alternate sleep-time display, on its own surface
+   * above the shell. Fed sleep-time input from handleInputEvent; it uses the
+   * same wake barrier as the shell and hands the compositor back to the
+   * screen-off path when it hides.
+   */
+  private readonly glance = new GlanceHost({
+    getDisplay: () => this.display,
+    getProvider: () => ALL_APPS.find((app) => app.glanceboard)?.glanceboard ?? null,
+    canShow: () => (this.phase === "connected" || this.isPreviewDisplayActive()) && !this.glassesLocked,
+    ensureSessionActive: (frameId) => this.ensureEvenHubSessionActive(frameId),
+    onHiddenWhileAsleep: () => {
+      if (!shell.isScreenOn()) this.handleScreenStateChanged(false);
+    },
+    onVisibilityChanged: () => {
+      this.schedulePreviewUpdate();
+      this.emit();
+    },
+    appendLog: (message) => this.appendLog(message),
+  });
   private evenHubResumePromise: Promise<boolean> | null = null;
-  private faceclawWakeLeaseSupported = false;
+  /** Faceclaw's firmware at the required revision reported in; its extensions can be used. */
+  private customFirmwareConfirmed = false;
   private faceclawWakeLeaseState: boolean | null = null;
-  private wearNotifySupported = false;
   private glassesWorn: boolean | null = null;
   private phoneLocked = false;
   private glassesLocked = false;
@@ -319,7 +342,7 @@ class DashboardController {
         toggle?: TextSettingsEditToggle,
       ) => this.startTextSettingsEdit(settings, title, onFinish, toggle),
       endTextSettingEdit: () => this.endTextSettingEdit(),
-      startVoiceCapture: () => this.startVoiceCapture(),
+      startVoiceCapture: (endpointing = false) => this.startVoiceCapture(endpointing),
       stopVoiceCapture: () => this.stopVoiceCapture(),
       startContinuousVoiceCapture: () => this.startContinuousVoiceCapture(),
       stopContinuousVoiceCapture: () => this.stopContinuousVoiceCapture(),
@@ -359,6 +382,8 @@ class DashboardController {
         this.emit();
       },
       onScreenStateChanged: (on) => {
+        // Any wake of the regular UI replaces a showing Glanceboard.
+        if (on) this.glance.dismiss();
         this.handleScreenStateChanged(on);
         if (on) this.requestShellRender();
         this.emit();
@@ -631,7 +656,7 @@ class DashboardController {
     const communicator = this.communicator;
     if (
       !lockScreenEnabledSetting.get() ||
-      !this.wearNotifySupported ||
+      !this.customFirmwareConfirmed ||
       this.phase !== "connected" ||
       !communicator
     ) {
@@ -736,7 +761,7 @@ class DashboardController {
     // foreground app when Faceclaw handles the glasses wakeword. Without the
     // latter, Even AI displaces EvenHub before our first wake frame can ACK.
     return (
-      this.faceclawWakeLeaseSupported &&
+      this.customFirmwareConfirmed &&
       (suspendEvenHubWhenScreenOffSetting.get() || wakeWordActionSetting.get() !== "off")
     );
   }
@@ -788,6 +813,7 @@ class DashboardController {
     if (
       !suspendEvenHubWhenScreenOffSetting.get() ||
       shell.isScreenOn() ||
+      this.glance.isVisible() ||
       this.phase !== "connected" ||
       !this.communicator ||
       this.evenHubSessionSuspended
@@ -801,9 +827,11 @@ class DashboardController {
       if (
         !suspendEvenHubWhenScreenOffSetting.get() ||
         shell.isScreenOn() ||
+        this.glance.isVisible() ||
         this.phase !== "connected" ||
         this.communicator !== communicator
       ) {
+        // A showing Glanceboard re-arms this when it hides.
         return;
       }
 
@@ -816,7 +844,7 @@ class DashboardController {
       }
 
       void (async () => {
-        if (this.faceclawWakeLeaseSupported) {
+        if (this.customFirmwareConfirmed) {
           // Refresh immediately before teardown so the first suspended wake
           // cannot race an old lease's expiry.
           const leaseReady = await this.syncFaceclawWakeLease(communicator, true);
@@ -829,6 +857,7 @@ class DashboardController {
         if (
           !suspendEvenHubWhenScreenOffSetting.get() ||
           shell.isScreenOn() ||
+          this.glance.isVisible() ||
           this.phase !== "connected" ||
           this.communicator !== communicator
         ) {
@@ -1250,6 +1279,7 @@ class DashboardController {
     const target = this.previewTarget;
     if (!target) return;
     this.previewTarget = null;
+    this.glance.reset();
     target.release();
     this.clearDashboardTimer();
     this.appendLog("Preview-only display released.");
@@ -1291,10 +1321,10 @@ class DashboardController {
     );
 
     let communicator: FaceclawCommunicatorBridge | null = null;
-    this.faceclawWakeLeaseSupported = false;
+    this.customFirmwareConfirmed = false;
     this.faceclawWakeLeaseState = null;
-    this.wearNotifySupported = false;
     this.lockSurfaceConfigured = false;
+    this.glance.reset();
     this.evenHubResumePromise = null;
     this.connectRunning = true;
 
@@ -1390,9 +1420,14 @@ class DashboardController {
         // especially while the glasses remain reachable in their case.
         const hasBatteryLevel = Number.isInteger(state.battery) && state.battery >= 0 && state.battery <= 100;
         if (hasBatteryLevel) this.lastHeadsetBattery = state.battery;
+        const ringBattery = state.ringBattery;
+        const hasRingBattery = typeof ringBattery === "number" && Number.isInteger(ringBattery)
+          && ringBattery >= 0 && ringBattery <= 100;
         shell.setBatteryLevels({
           headset: hasBatteryLevel ? state.battery : this.lastHeadsetBattery,
           headsetCharging: state.chargingStatus > 0,
+          ring: hasRingBattery ? ringBattery : null,
+          ringCharging: hasRingBattery ? state.ringChargingStatus === 1 : null,
         });
         updateGlassesPresence({ charging: state.chargingStatus > 0 || this.phase === "charging" });
         if ((this.phase === "connected" || this.phase === "charging") && this.communicator) {
@@ -1436,26 +1471,18 @@ class DashboardController {
       this.offFirmwareInfo = communicator.onFirmwareInfo((info) => {
         this.appendLog(
           `firmware: L=${info.leftVersion || "?"} R=${info.rightVersion || "?"}` +
-            (info.capabilities ? ` caps="${info.capabilities}"` : " (no CFW capability string)"),
+            (info.extension ? ` ext="${info.extension}"` : " (no firmware extension string)"),
         );
         const warning = firmwareIncompatibilityMessage(info) ?? "";
-        const wakeLeaseSupported = info.capabilities
-          .trim()
-          .split(/\s+/)
-          .includes("wakelease");
-        const wearNotifySupported = info.capabilities
-          .trim()
-          .split(/\s+/)
-          .includes("wearnotify");
-        if (wakeLeaseSupported !== this.faceclawWakeLeaseSupported) {
-          this.faceclawWakeLeaseSupported = wakeLeaseSupported;
+        // The firmware contract is all-or-nothing: a compatible revision has
+        // every extension (wake lease, wear notifications, ...) we use.
+        const customFirmwareConfirmed = !warning && hasCompatibleFirmware(info);
+        if (customFirmwareConfirmed !== this.customFirmwareConfirmed) {
+          this.customFirmwareConfirmed = customFirmwareConfirmed;
           this.faceclawWakeLeaseState = null;
           void this.syncFaceclawWakeLease().catch((error) => {
             this.appendLog(`wake takeover lease sync failed: ${this.formatError(error)}`);
           });
-        }
-        if (wearNotifySupported !== this.wearNotifySupported) {
-          this.wearNotifySupported = wearNotifySupported;
           this.ensureWearStateTracking();
         }
         if (warning !== this.firmwareWarningMessage) {
@@ -1553,8 +1580,8 @@ class DashboardController {
       }
       this.communicator = null;
       this.lockSurfaceConfigured = false;
-      this.wearNotifySupported = false;
-      this.faceclawWakeLeaseSupported = false;
+      this.glance.reset();
+      this.customFirmwareConfirmed = false;
       this.faceclawWakeLeaseState = null;
       this.evenHubResumePromise = null;
       this.clearDashboardTimer();
@@ -1688,6 +1715,7 @@ class DashboardController {
     const communicator = this.communicator;
     this.communicator = null;
     this.lockSurfaceConfigured = false;
+    this.glance.reset();
     this.evenHubSessionSuspended = false;
     this.evenHubResumePromise = null;
 
@@ -1746,9 +1774,8 @@ class DashboardController {
       await communicator?.close().catch(() => {});
     } finally {
       stopForegroundNotification();
-      this.faceclawWakeLeaseSupported = false;
+      this.customFirmwareConfirmed = false;
       this.faceclawWakeLeaseState = null;
-      this.wearNotifySupported = false;
       this.setPhase("disconnected");
       this.setStatus("Disconnected.");
       this.appendLog("Disconnected from the glasses.");
@@ -1762,14 +1789,14 @@ class DashboardController {
    * finger-down/finger-up (the watch) hold for as long as the user does.
    */
   async injectSyntheticRingInput(kind: WearRemoteInputKind, origin: SyntheticInputOrigin = "ring"): Promise<void> {
-    // Match the ring while the display is dark: only a double-click wakes it,
-    // and that wake is handled by Shell.receiveInput. This check also protects
-    // against a watch acting on a stale state snapshot.
+    // Match the ring while the display is dark: a double-click wakes it
+    // (handled by Shell.receiveInput) and a tap or hold shows the
+    // Glanceboard; scrolls and the menu gesture mean nothing. This check also
+    // protects against a watch acting on a stale state snapshot.
     if (
       origin === "watch" &&
       !shell.isScreenOn() &&
-      kind !== "double-click" &&
-      kind !== "long-press-release"
+      (kind === "scroll-up" || kind === "scroll-down" || kind === "short-then-long-press")
     ) {
       this.appendLog(`${kind} (watch scheme) ignored while display is off`);
       return;
@@ -1800,7 +1827,12 @@ class DashboardController {
       return;
     }
     if (!shell.isScreenOn()) {
+      // Asleep, the mirror offers the sleep gestures: double-tap wakes, a
+      // tap shows the Glanceboard for its timeout. The mirror's hold has no
+      // real release (the synthetic long-press releases at once, which would
+      // only flash the board), so it counts as a tap here too.
       if (kind === "double-tap") await this.injectSyntheticRingInput("double-click", "watch");
+      else if (kind === "tap" || kind === "long-press") await this.injectSyntheticRingInput("click", "watch");
       return;
     }
     if (kind !== "tap") {
@@ -1874,12 +1906,15 @@ class DashboardController {
    * push-to-talk and the Transcribe app. Android mic permission is the consent
    * gate even though the audio source is the G2 mic over BLE.
    */
-  private startVoiceCapture(endpointing = false): void {
-    this.beginVoiceCapture("ptt", endpointing);
+  private pttCaptureGeneration = 0;
+
+  private startVoiceCapture(endpointing = false): Promise<void> {
+    return this.beginVoiceCapture("ptt", endpointing);
   }
 
-  private stopVoiceCapture(): void {
-    voiceControlBridge.stopPushToTalk();
+  private stopVoiceCapture(): Promise<void> | void {
+    ++this.pttCaptureGeneration;
+    return voiceControlBridge.stopPushToTalk();
   }
 
   private startContinuousVoiceCapture(): void {
@@ -1944,7 +1979,8 @@ class DashboardController {
     return granted;
   }
 
-  private beginVoiceCapture(kind: "ptt" | "continuous", endpointing = false): void {
+  private async beginVoiceCapture(kind: "ptt" | "continuous", endpointing = false): Promise<void> {
+    const pttGeneration = kind === "ptt" ? ++this.pttCaptureGeneration : 0;
     // Preview mode captures from the phone mic (voiceCaptureOptions with a
     // null communicator); otherwise a live glasses session must be the source.
     const previewCapture = this.isPreviewDisplayActive();
@@ -1952,8 +1988,12 @@ class DashboardController {
       return;
     }
     const communicator = this.communicator;
-    void ensureVoicePermissions()
+    // The system prompt appears on the phone; tell the glasses dialog so it
+    // sends the user there rather than claiming to listen.
+    if (!hasMicrophonePermission()) voiceControlBridge.reportPermissionPrompt();
+    await ensureVoicePermissions()
       .then(() => {
+        if (kind === "ptt" && pttGeneration !== this.pttCaptureGeneration) return;
         if (previewCapture) {
           if (!this.isPreviewDisplayActive()) return;
         } else if (this.phase !== "connected" || this.communicator !== communicator) {
@@ -1968,6 +2008,7 @@ class DashboardController {
       })
       .catch((error) => {
         this.appendLog(`voice permission failed: ${this.formatError(error)}`);
+        if (!hasMicrophonePermission()) voiceControlBridge.reportPermissionDenied();
       });
   }
 
@@ -2057,6 +2098,20 @@ class DashboardController {
         }
         return;
       }
+      if (!shell.isScreenOn()) {
+        // Sleep-time gestures belong to the Glanceboard: a tap or a hold
+        // shows it (the shell would ignore them), and a double-tap while it
+        // is up dismisses it and falls through to the normal wake below.
+        const glanceEvent = this.glanceEventFor(inputEvent, event);
+        if (glanceEvent?.type === "dismiss") {
+          this.glance.dismiss();
+        } else if (glanceEvent) {
+          frameTimings.annotateFrame(frameId, `glanceboard ${glanceEvent.type}`);
+          await this.glance.handleEvent(glanceEvent, frameId);
+          frameOwned = true;
+          return;
+        }
+      }
       const wakewordShouldWake =
         event.kind === "even-ai" &&
         event.eventType === EvenAIStatus.EVEN_AI_WAKE_UP &&
@@ -2128,6 +2183,19 @@ class DashboardController {
         frameTimings.finishFrame(frameId, "discarded: input did not trigger a render");
       }
     }
+  }
+
+  /**
+   * The Glanceboard event a sleep-time input means, or null when the shell
+   * should see the input as usual. A display-wake carries the head-tilt
+   * gesture (HEAD_UP_EVENT) as a press; the double-tap display-wake stays the
+   * regular UI's wake.
+   */
+  private glanceEventFor(inputEvent: InputEvent, event: RawInputEvent): GlanceEvent | null {
+    if (inputEvent.type === "display-wake") {
+      return event.eventType === OsEventTypeList.HEAD_UP_EVENT ? this.glance.eventForGesture("head-tilt") : null;
+    }
+    return this.glance.eventForGesture(inputEvent.type);
   }
 
   /** Launch or focus an in-process singleton app (notifications, debug tests). */
@@ -2527,6 +2595,9 @@ class DashboardController {
   private setPhase(phase: ConnectionPhase): void {
     if (this.phase === phase) return;
     this.phase = phase;
+    if (phase !== "connected" && phase !== "charging") {
+      shell.setBatteryLevels({ ring: null, ringCharging: null });
+    }
     // "charging" is a live BLE link with the glasses in their case.
     updateGlassesPresence({
       connected: phase === "connected" || phase === "charging",

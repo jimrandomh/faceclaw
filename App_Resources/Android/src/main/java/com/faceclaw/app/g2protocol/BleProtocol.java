@@ -50,16 +50,15 @@ public class BleProtocol {
     public static final int FACECLAW_WAKE_CONTROL_FIELD = 101;
     public static final int FACECLAW_WAKE_EVENT_FIELD = 102;
     /**
-     * CFW mic_control (EVENCFW/16, caps tokens micctl/micmc/micraw): host
-     * writes an ['M','C',ver,op,...] record as settings field 103; each temple
+     * CFW mic_control: host writes an ['M','C',ver,op,...] record as settings
+     * field 103; each temple
      * reports a 21-byte ['M','C',ver,...] status as field 104, both appended
      * to settings read responses and as standalone commandId=3 pushes.
      */
     public static final int FACECLAW_MIC_CONTROL_FIELD = 103;
     public static final int FACECLAW_MIC_STATUS_FIELD = 104;
     /**
-     * CFW als_sensor (EVENCFW/18, caps token als16): ambient-light reports on
-     * settings-channel field 105, 24-byte ['A','L',ver,reason,...] records from
+     * CFW als_sensor: ambient-light reports on settings-channel field 105, 24-byte ['A','L',ver,reason,...] records from
      * the master temple (decoded in app/native/ambient-light.ts).
      */
     public static final int FACECLAW_ALS_REPORT_FIELD = 105;
@@ -72,6 +71,19 @@ public class BleProtocol {
     public static final int FACECLAW_WEAR_OP_QUERY = 7;
     public static final int CFW_IMAGE_MODE_CLEANUP = 11;
     private static final int FACECLAW_WAKE_EVENT = 1;
+    // Field-102 deferred wake from the IMU head-up (Faceclaw firmware revision
+    // 3+); same nonce handshake as the double-tap wake event 1.
+    public static final int FACECLAW_WAKE_EVENT_HEAD_UP = 5;
+    // Field-102 idle-gesture events (Faceclaw firmware revision 2+): gestures the
+    // stock display thread drops while no app is on screen, forwarded while the
+    // wake lease is held. Their last two bytes are the raw touch source and 0.
+    public static final int FACECLAW_GESTURE_EVENT_TAP = 2;
+    public static final int FACECLAW_GESTURE_EVENT_LONG_PRESS = 3;
+    public static final int FACECLAW_GESTURE_EVENT_LONG_PRESS_RELEASE = 4;
+    // The display thread's raw touch sources, as the firmware reports them.
+    private static final int FACECLAW_RAW_SOURCE_LEFT_TEMPLE = 0;
+    private static final int FACECLAW_RAW_SOURCE_RIGHT_TEMPLE = 1;
+    private static final int FACECLAW_RAW_SOURCE_RING = 4;
     private static final int FACECLAW_WAKE_PROTOCOL_VERSION = 1;
     // UI_FOREGROUND_EVEN_AI_ID: the stock "Even AI" assistant app. It is a
     // FOREGROUND app, whereas EvenHub (and therefore faceclaw) is the
@@ -112,6 +124,9 @@ public class BleProtocol {
     public static final int EVENT_RING_LONG_PRESS_RELEASE = 10;
     // CFW extension: G2 2.2.9 tap-then-hold gesture forwarded to the phone.
     public static final int EVENT_SHORT_THEN_LONG_PRESS = 11;
+    // CFW extension (firmware revision 3+): the IMU head-up, forwarded as a
+    // sys-event while an EvenHub page is on screen (soft sleep).
+    public static final int EVENT_HEAD_UP = 12;
 
     public static final int EVENT_SOURCE_GLASSES_R = 1;
     public static final int EVENT_SOURCE_RING = 2;
@@ -170,13 +185,11 @@ public class BleProtocol {
     }
 
 
-    public static byte[] buildCreateMixedImagePage(int magic, ImageTileOptions[] tiles) {
+    /** Retain the text container for forwarded inputs, without an image container. */
+    public static byte[] buildCreateInputPage(int magic) {
         List<byte[]> innerParts = new ArrayList<>();
-        innerParts.add(encodeVarintField(1, 1 + tiles.length));
+        innerParts.add(encodeVarintField(1, 1));
         innerParts.add(encodeMessageField(3, encodeTextObject("dashboard", 1, 0, 0, 576, 288, " ", true)));
-        for (ImageTileOptions tile : tiles) {
-            innerParts.add(encodeMessageField(4, encodeImageObject(tile)));
-        }
         innerParts.add(encodeVarintField(5, 10000));
         byte[] inner = concat(innerParts);
         return wrapEvenHub(0, magic, 3, inner);
@@ -475,24 +488,127 @@ public class BleProtocol {
         return body;
     }
 
+    /** Field 106: RB/version 1/flags/percentage, from the CFW ring-battery cache. */
+    public static RingBatterySnapshot parseRingBattery(byte[] pb) {
+        if (pb == null) return null;
+        byte[] body = readFieldBytes(stripTrailingCrc(pb), 106);
+        if (body == null || body.length != 5 || body[0] != 'R' || body[1] != 'B'
+                || body[2] != 1) return null;
+        int flags = body[3] & 0xff;
+        int level = body[4] & 0xff;
+        if ((flags & ~7) != 0) return null;
+        if ((flags & 2) != 0) {
+            if ((flags & 1) == 0 || level > 100) return null;
+            return new RingBatterySnapshot(level, (flags & 4) != 0 ? 1 : 0);
+        }
+        if (level != 255 || (flags & 4) != 0) return null;
+        return new RingBatterySnapshot(-1, -1);
+    }
+
+    public static final class RingBatterySnapshot {
+        final int battery;
+        final int charging;
+        RingBatterySnapshot(int battery, int charging) {
+            this.battery = battery;
+            this.charging = charging;
+        }
+    }
+
     /**
-     * Return the uint16 wake nonce from a CFW field-102 notification, or -1
-     * when this is an ordinary settings frame.
+     * Return the uint16 wake nonce from a CFW field-102 deferred-wake
+     * notification (double tap or head-up), or -1 when this is an ordinary
+     * settings frame (idle-gesture events included).
      */
     public static int parseFaceclawWakeEvent(byte[] pb) {
+        byte[] event = faceclawWakeEventBytes(pb);
+        return event == null ? -1 : (event[4] & 0xff) | ((event[5] & 0xff) << 8);
+    }
+
+    /**
+     * Which gesture a CFW deferred-wake notification reports: 1 (double tap)
+     * or FACECLAW_WAKE_EVENT_HEAD_UP; -1 when the frame is not a wake event.
+     */
+    public static int parseFaceclawWakeEventCode(byte[] pb) {
+        byte[] event = faceclawWakeEventBytes(pb);
+        return event == null ? -1 : (event[3] & 0xff);
+    }
+
+    private static byte[] faceclawWakeEventBytes(byte[] pb) {
         if (pb == null) {
-            return -1;
+            return null;
         }
         byte[] event = readFieldBytes(stripTrailingCrc(pb), FACECLAW_WAKE_EVENT_FIELD);
         if (event == null
                 || event.length != 6
                 || event[0] != 'F'
                 || event[1] != 'C'
-                || (event[2] & 0xff) != FACECLAW_WAKE_PROTOCOL_VERSION
-                || (event[3] & 0xff) != FACECLAW_WAKE_EVENT) {
-            return -1;
+                || (event[2] & 0xff) != FACECLAW_WAKE_PROTOCOL_VERSION) {
+            return null;
         }
-        return (event[4] & 0xff) | ((event[5] & 0xff) << 8);
+        int code = event[3] & 0xff;
+        return code == FACECLAW_WAKE_EVENT || code == FACECLAW_WAKE_EVENT_HEAD_UP ? event : null;
+    }
+
+    /** An idle gesture from a CFW field-102 notification, in EvenHub sys-event terms. */
+    public static final class FaceclawGestureEvent {
+        public final int eventType;
+        public final int eventSource;
+
+        FaceclawGestureEvent(int eventType, int eventSource) {
+            this.eventType = eventType;
+            this.eventSource = eventSource;
+        }
+    }
+
+    /**
+     * Decode a CFW field-102 idle-gesture event (tap, long press, release
+     * while no app is on screen) into the EvenHub sys-event type and source
+     * the same gesture would carry from a live page, or null when the frame
+     * is not one (ordinary settings frames and the double-tap wake event
+     * included).
+     */
+    public static FaceclawGestureEvent parseFaceclawGestureEvent(byte[] pb) {
+        if (pb == null) {
+            return null;
+        }
+        byte[] event = readFieldBytes(stripTrailingCrc(pb), FACECLAW_WAKE_EVENT_FIELD);
+        if (event == null
+                || event.length != 6
+                || event[0] != 'F'
+                || event[1] != 'C'
+                || (event[2] & 0xff) != FACECLAW_WAKE_PROTOCOL_VERSION) {
+            return null;
+        }
+        int eventType;
+        switch (event[3] & 0xff) {
+            case FACECLAW_GESTURE_EVENT_TAP:
+                eventType = EVENT_CLICK;
+                break;
+            case FACECLAW_GESTURE_EVENT_LONG_PRESS:
+                eventType = EVENT_RING_LONG_PRESS;
+                break;
+            case FACECLAW_GESTURE_EVENT_LONG_PRESS_RELEASE:
+                eventType = EVENT_RING_LONG_PRESS_RELEASE;
+                break;
+            default:
+                return null;
+        }
+        int eventSource;
+        switch (event[4] & 0xff) {
+            case FACECLAW_RAW_SOURCE_LEFT_TEMPLE:
+                eventSource = EVENT_SOURCE_GLASSES_L;
+                break;
+            case FACECLAW_RAW_SOURCE_RIGHT_TEMPLE:
+                eventSource = EVENT_SOURCE_GLASSES_R;
+                break;
+            case FACECLAW_RAW_SOURCE_RING:
+                eventSource = EVENT_SOURCE_RING;
+                break;
+            default:
+                eventSource = 0;
+                break;
+        }
+        return new FaceclawGestureEvent(eventType, eventSource);
     }
 
     /**
@@ -559,11 +675,14 @@ public class BleProtocol {
     }
 
     /**
-     * Firmware versions and the CFW capability advertisement from a settings
+     * Firmware versions and the firmware-extension string from a settings
      * READ ack. Versions are fields 5/6 of the deviceReceiveRequestFromApp
-     * submessage (field 4); the custom firmware additionally appends top-level
-     * field 100, a string like "EVENCFW/6 img576 img640 ... directfb fbguard", which
-     * stock firmware never sends. Returns null when the ack carries none of it.
+     * submessage (field 4); Faceclaw's custom firmware additionally appends
+     * top-level field 100 with its revision ("Faceclaw/<n>"; older builds sent
+     * "EVENCFW/<ver> <tokens>"), which stock firmware never sends. Returns null
+     * when the ack carries none of it. Compatibility is judged on the TS side
+     * (app/g2/firmware-compat.ts); Java only needs to know whether the firmware
+     * is ours at all.
      */
     public static FirmwareInfo parseSettingsFirmwareInfo(byte[] pb) {
         byte[] root = stripTrailingCrc(pb);
@@ -573,11 +692,11 @@ public class BleProtocol {
         }
         String leftVersion = readStringFieldValue(request, 5);
         String rightVersion = readStringFieldValue(request, 6);
-        String capabilities = readStringFieldValue(root, 100);
-        if (leftVersion.isEmpty() && rightVersion.isEmpty() && capabilities.isEmpty()) {
+        String extension = readStringFieldValue(root, 100);
+        if (leftVersion.isEmpty() && rightVersion.isEmpty() && extension.isEmpty()) {
             return null;
         }
-        return new FirmwareInfo(leftVersion, rightVersion, capabilities);
+        return new FirmwareInfo(leftVersion, rightVersion, extension);
     }
 
     public static byte[] wrapEvenHub(int cmd, int magic, int innerFieldNumber, byte[] inner) {
@@ -1094,14 +1213,28 @@ public class BleProtocol {
     }
 
     public static final class FirmwareInfo {
+        /** Prefix of the firmware-extension string on Faceclaw's custom firmware. */
+        public static final String FACECLAW_EXTENSION_PREFIX = "Faceclaw/";
+
         final String leftVersion;
         final String rightVersion;
-        final String capabilities;
+        /** Raw field-100 string ("" on stock firmware). */
+        final String extension;
 
-        FirmwareInfo(String leftVersion, String rightVersion, String capabilities) {
+        FirmwareInfo(String leftVersion, String rightVersion, String extension) {
             this.leftVersion = leftVersion;
             this.rightVersion = rightVersion;
-            this.capabilities = capabilities;
+            this.extension = extension == null ? "" : extension;
+        }
+
+        /**
+         * True when the glasses run Faceclaw's custom firmware (any revision).
+         * Whether the revision is the one this app needs is decided on the TS
+         * side, which disconnects on a mismatch; this only guards the private
+         * modes against stock or third-party firmware in the meantime.
+         */
+        public boolean isFaceclawFirmware() {
+            return extension.trim().startsWith(FACECLAW_EXTENSION_PREFIX);
         }
     }
 }

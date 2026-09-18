@@ -2,10 +2,10 @@ import { concat, rle4 } from './ble-protocol'
 
 /** Android BleImageOptimizer's mode-3 changed rectangle. Coordinates are in
  * units of 4 columns / 2 rows; pixels are top-down packed 4bpp, high nibble first.
- * null means identical, incomparable, or a full-screen box: use dedup/mode 6.
+ * null means identical, incomparable, or a full-screen box: use dedup/mode 6. Compression belongs to the CFW transport.
  */
 export function buildBoundingBoxPayload(previous: Uint8Array | null, next: Uint8Array,
-  width: number, height: number, frameId: number, deflate: (data: Uint8Array) => Uint8Array): Uint8Array | null {
+  width: number, height: number, frameId: number): Uint8Array | null {
   if (!Number.isInteger(width) || !Number.isInteger(height) || width <= 0 || height <= 0 ||
     width % 4 || height % 2 || width / 4 > 255 || height / 2 > 255 ||
     !previous || previous.length !== width * height / 2 || next.length !== previous.length) return null
@@ -30,5 +30,20 @@ export function buildBoundingBoxPayload(previous: Uint8Array | null, next: Uint8
     region.set(next.subarray(start, start + regionStride), y * regionStride)
   }
   return concat(new Uint8Array([3, left / 4, top / 2, boxWidth / 4, boxHeight / 2,
-    frameId & 255, (frameId >>> 8) & 255]), deflate(rle4(region)))
+    frameId & 255, (frameId >>> 8) & 255]), rle4(region))
+}
+
+/** Full repaint as independent 64-row mode-3 bands when RLE exceeds uint16. */
+export function buildFullFrameBands(packed: Uint8Array, width: number, height: number, firstId: number): Uint8Array[] {
+  if (width <= 0 || width > 640 || width % 4 || height <= 0 || height > 480 || height % 2 || packed.length !== width * height / 2)
+    throw new Error('Invalid framebuffer dimensions')
+  const bands: Uint8Array[] = []
+  let id = firstId
+  for (let top = 0; top < height; top += 64) {
+    const rows = Math.min(64, height - top)
+    bands.push(concat(new Uint8Array([3, 0, top / 2, width / 4, rows / 2, id & 255, id >>> 8]),
+      rle4(packed.subarray(top * width / 2, (top + rows) * width / 2))))
+    id = id >= 0xfffe ? 1 : id + 1
+  }
+  return bands
 }

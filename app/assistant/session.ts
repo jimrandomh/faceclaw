@@ -15,25 +15,19 @@ import type {
   AssistantTurnHandle,
 } from "./types";
 
-/**
- * One assistant conversation. Owns the message history and turn state and
- * drives either the on-phone provider loop (direct) or the external agent
- * bridge. The UI talks only to this surface, so AssistantLayer is
- * backend-agnostic.
- *
- * Sessions are cheap and idle-expire (see isExpired): the shell starts a fresh
- * one for a new wakeword and reuses the current one for a follow-up. In
- * external mode the conversation history lives on the agent's machine (one
- * long-lived session there), so expiry here only affects the overlay UI.
- */
+/** One shared conversation, independent of the voice overlay or chat window. */
+export type AssistantTranscriptEntry = { role: "user" | "assistant"; text: string };
+export type AssistantSessionHistory = {
+  messages: LlmMessage[];
+  transcript: AssistantTranscriptEntry[];
+  /** Model identity for safe replay after Auto resolves differently on restart. */
+  engine?: string;
+};
 
 /** Which engine answers utterances, plus what it needs to do so. */
 export type AssistantBackendConfig =
   | { kind: "direct"; llm: ResolvedAssistantModel }
   | { kind: "external"; bridge: AssistantBridgeConfig };
-
-/** A new PTT after this much idle starts a fresh conversation. */
-const SESSION_IDLE_MS = 10 * 60 * 1000;
 
 /** Trim history from the head once it grows past this many messages. */
 const MAX_HISTORY_MESSAGES = 40;
@@ -42,38 +36,61 @@ export class AssistantSession {
   private readonly directBackend = new DirectAssistantBackend();
   private readonly messages: LlmMessage[] = [];
   private turnHandle: AssistantTurnHandle | null = null;
-  private lastActivityMs = Date.now();
+  readonly transcript: AssistantTranscriptEntry[] = [];
+  status = "";
+  private readonly listeners = new Set<() => void>();
+  private turnGeneration = 0;
   // API-safe tool name -> canonical registry name. Provider APIs restrict tool
   // names, so dotted registry names are sanitized and mapped back on calls.
   private readonly toolNameMap = new Map<string, string>();
 
   constructor(
-    private readonly config: AssistantBackendConfig,
+    private config: AssistantBackendConfig,
     private readonly registry: ToolRegistry = toolRegistry,
-  ) {}
-
-  matchesConfiguration(config: AssistantBackendConfig): boolean {
-    if (this.config.kind !== config.kind) return false;
-    if (this.config.kind === "direct" && config.kind === "direct") {
-      return (
-        this.config.llm.provider === config.llm.provider &&
-        this.config.llm.model === config.llm.model &&
-        this.config.llm.apiKey === config.llm.apiKey
-      );
+    history?: AssistantSessionHistory,
+  ) {
+    if (history) {
+      this.messages.push(...history.messages);
+      this.transcript.push(...history.transcript);
+      if (history.engine !== this.engine()) this.rebuildTextHistory();
     }
-    if (this.config.kind === "external" && config.kind === "external") {
-      return (
-        this.config.bridge.host === config.bridge.host &&
-        this.config.bridge.port === config.bridge.port &&
-        this.config.bridge.token === config.bridge.token
-      );
-    }
-    return false;
   }
 
-  /** Whether this session has been idle long enough to retire. */
-  isExpired(nowMs = Date.now()): boolean {
-    return nowMs - this.lastActivityMs > SESSION_IDLE_MS;
+  onChanged(listener: () => void): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+
+  private changed(): void {
+    for (const listener of this.listeners) {
+      try { listener(); } catch (error) { console.warn("assistant history listener failed", error); }
+    }
+  }
+
+  history(): AssistantSessionHistory {
+    return { messages: this.messages, transcript: this.transcript, engine: this.engine() };
+  }
+
+  configure(config: AssistantBackendConfig): void {
+    if (this.isTurnActive()) return;
+    // Opaque reasoning/tool provider items are only replayable on their
+    // original model. Preserve visible conversation when switching engines.
+    if (this.config.kind !== config.kind ||
+        (this.config.kind === "direct" && config.kind === "direct" &&
+         (this.config.llm.model !== config.llm.model || this.config.llm.provider !== config.llm.provider))) {
+      this.rebuildTextHistory();
+    }
+    this.config = config;
+  }
+
+  private engine(): string {
+    return this.config.kind === "direct" ? `${this.config.llm.provider}:${this.config.llm.model}` : "external";
+  }
+
+  private rebuildTextHistory(): void {
+    this.messages.splice(0, this.messages.length, ...this.transcript
+      .filter((entry) => entry.text.trim())
+      .map((entry) => ({ role: entry.role, content: entry.text })));
   }
 
   isTurnActive(): boolean {
@@ -86,20 +103,44 @@ export class AssistantSession {
       callbacks.onError("The assistant is still working on the previous request");
       return;
     }
-    this.lastActivityMs = Date.now();
+    text = text.trim();
+    if (!text) return;
+    const generation = ++this.turnGeneration;
+    const reply: AssistantTranscriptEntry = { role: "assistant", text: "" };
+    this.transcript.push({ role: "user", text }, reply);
+    this.status = "Thinking...";
+    // Install a sentinel before calling providers: some failures are synchronous.
+    this.turnHandle = { cancel: () => {} };
+    this.changed();
 
     const finish = () => {
+      ++this.turnGeneration;
       this.turnHandle = null;
-      this.lastActivityMs = Date.now();
+      this.changed();
     };
     const wrappedCallbacks: AssistantTurnCallbacks = {
-      onTextDelta: callbacks.onTextDelta,
-      onToolActivity: callbacks.onToolActivity,
+      onTextDelta: (delta, full) => {
+        if (generation !== this.turnGeneration) return;
+        reply.text = full;
+        this.status = "Thinking...";
+        this.changed();
+        callbacks.onTextDelta(delta, full);
+      },
+      onToolActivity: (label) => {
+        if (generation !== this.turnGeneration) return;
+        this.status = `→ ${label}`;
+        this.changed();
+        callbacks.onToolActivity(label);
+      },
       onTurnDone: (result) => {
+        if (generation !== this.turnGeneration) return;
+        this.status = "";
         finish();
         callbacks.onTurnDone(result);
       },
       onError: (message) => {
+        if (generation !== this.turnGeneration) return;
+        this.status = message;
         finish();
         callbacks.onError(message);
       },
@@ -108,7 +149,8 @@ export class AssistantSession {
     if (this.config.kind === "external") {
       // History and the agent loop live on the agent's machine; the phone just
       // streams this turn. The overlay keeps its own display state.
-      this.turnHandle = assistantBridge.sendUtterance(text, ctx, wrappedCallbacks);
+      const handle = assistantBridge.sendUtterance(text, ctx, wrappedCallbacks);
+      if (generation === this.turnGeneration && this.turnHandle) this.turnHandle = handle;
       return;
     }
 
@@ -123,24 +165,48 @@ export class AssistantSession {
       content: isLocal ? `${text}\n\n(${describeAssistantContext(ctx)})` : text,
     });
     this.trimHistory();
-    this.turnHandle = this.directBackend.runTurn({
+    // Work on a turn-local array: cancelled tools may finish later, and must
+    // never append orphan results into a subsequent turn's context.
+    const turnMessages = this.messages.slice();
+    const handle = this.directBackend.runTurn({
       provider: llm.provider,
       apiKey: llm.apiKey,
       model: llm.model,
       effort: llm.effort,
       system: isLocal ? ASSISTANT_SYSTEM_PROMPT_BASE : buildAssistantSystemPrompt(ctx),
-      messages: this.messages,
+      messages: turnMessages,
       buildTools: () => this.buildToolDefinitions(),
       registry: this.registry,
       resolveToolName: (apiName) => this.toolNameMap.get(apiName) ?? apiName,
-      callbacks: wrappedCallbacks,
+      callbacks: {
+        ...wrappedCallbacks,
+        onTurnDone: (result) => {
+          if (generation !== this.turnGeneration) return;
+          this.messages.splice(0, this.messages.length, ...turnMessages);
+          wrappedCallbacks.onTurnDone(result);
+        },
+        onError: (message) => {
+          if (generation !== this.turnGeneration) return;
+          // Retain the visible partial answer, without incomplete tool pairs.
+          if (reply.text) this.messages.push({ role: "assistant", content: reply.text });
+          wrappedCallbacks.onError(message);
+        },
+      },
     });
+    if (generation === this.turnGeneration && this.turnHandle) this.turnHandle = handle;
   }
 
   cancel(): void {
-    this.turnHandle?.cancel();
+    if (!this.turnHandle) return;
+    ++this.turnGeneration;
+    this.turnHandle.cancel();
     this.turnHandle = null;
-    this.lastActivityMs = Date.now();
+    const reply = this.transcript[this.transcript.length - 1];
+    if (reply?.role === "assistant" && reply.text) {
+      this.messages.push({ role: "assistant", content: reply.text });
+    }
+    this.status = "Cancelled";
+    this.changed();
   }
 
   private buildToolDefinitions(): LlmToolDefinition[] {

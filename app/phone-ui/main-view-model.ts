@@ -27,6 +27,7 @@ import {
 import { sampleBleTraffic } from "../native/ble-traffic";
 import { isValidMacAddress, loadDeviceAddresses } from "../g2/device-addresses";
 import { isAutoReconnectSuppressed, resumeAutoReconnect } from "../g2/reconnect-policy";
+import { isPreviewOnlyMode } from "./onboarding-state";
 import { formatErrorMessage } from "../util/format-error";
 import { G2_LENS_HEIGHT, G2_LENS_WIDTH } from "../graphics/image";
 
@@ -887,11 +888,6 @@ export class MainViewModel extends Observable {
     }
   }
 
-  onConfigureTap(): void {
-    if (!this.canRun) return;
-    Frame.topmost()?.navigate("phone-ui/config-page");
-  }
-
   onPermissionsTap(): void {
     Frame.topmost()?.navigate({
       moduleName: "phone-ui/permissions-page",
@@ -905,15 +901,34 @@ export class MainViewModel extends Observable {
   }
 
   /**
+   * Preview-only users have no glasses paired, so the Connect and Uninstall
+   * menu items have nothing to act on; hide them until pairing completes.
+   * The view model is rebuilt on every visit to the main page, so this picks
+   * up the mode change when pairing/flashing returns here.
+   */
+  get glassesMenuItemsVisibility(): "visible" | "collapse" {
+    return isPreviewOnlyMode() ? "collapse" : "visible";
+  }
+
+  /**
    * Live scan that names each nearby pair by model, colour, and serial and
    * checks both arms belong together. A connected arm stops advertising, so
    * drop the current link first. disconnect() enters the manual-disconnected
    * state; pairing is a detour, not a Disconnect, so lift the suppression
    * right away — nothing dials the glasses until the main page's autoConnect
    * runs again on the way back.
+   *
+   * In preview-only mode there are no glasses yet, so pairing is really the
+   * rest of onboarding: re-enter that chain at its "Disconnect Other Apps"
+   * step, which leads to the scan, the firmware check, and flashing. The
+   * chain's Back buttons pop history, so its first page returns here.
    */
   async onPairGlassesTap(): Promise<void> {
     if (!this.canRun) return;
+    if (isPreviewOnlyMode()) {
+      Frame.topmost()?.navigate({ moduleName: "phone-ui/onboarding-unpair-page" });
+      return;
+    }
     if (this.phase === "connected" || this.phase === "charging" || this.phase === "connecting") {
       try {
         await dashboardController.disconnect();
@@ -1002,8 +1017,15 @@ export class MainViewModel extends Observable {
   // Each pad therefore defers its double-click until the finger-up (the touch
   // handler) and converts the deferred pair into the G2 tap-then-hold gesture
   // when a longPress lands first.
+  //
+  // A hold is two events, like the hardware's: longPress sends the press
+  // (long-press-start, which the controller delivers as a plain long-press)
+  // and the finger-up sends the release, so a hold really holds (the
+  // Glanceboard stays up until the finger lifts). The firmware sends the
+  // same release after a tap-then-hold, so that pair gets one too.
 
   private ringPadDoubleTapPending = false;
+  private ringPadHeld = false;
 
   async onRingPadTap(): Promise<void> {
     await dashboardController.injectSyntheticRingInput("click");
@@ -1014,8 +1036,9 @@ export class MainViewModel extends Observable {
   }
 
   async onRingPadLongPress(): Promise<void> {
-    const kind = this.ringPadDoubleTapPending ? "short-then-long-press" : "long-press";
+    const kind = this.ringPadDoubleTapPending ? "short-then-long-press" : "long-press-start";
     this.ringPadDoubleTapPending = false;
+    this.ringPadHeld = true;
     await dashboardController.injectSyntheticRingInput(kind);
   }
 
@@ -1023,6 +1046,11 @@ export class MainViewModel extends Observable {
     if (args.action !== "up" && args.action !== "cancel") return;
     const pending = this.ringPadDoubleTapPending;
     this.ringPadDoubleTapPending = false;
+    if (this.ringPadHeld) {
+      this.ringPadHeld = false;
+      await dashboardController.injectSyntheticRingInput("long-press-release");
+      return;
+    }
     if (args.action === "up" && pending) {
       await dashboardController.injectSyntheticRingInput("double-click");
     }
@@ -1049,8 +1077,9 @@ export class MainViewModel extends Observable {
 
   private padTwoFingerDown = false;
   // See the ring pad above: defers the double-click so a longPress can turn
-  // the pair into tap-then-hold.
+  // the pair into tap-then-hold, and pairs every hold with a release.
   private padDoubleTapPending = false;
+  private padHeld = false;
 
   /** What the next gesture lands on, as the watch pad shows it. */
   get padFocusLine(): string {
@@ -1072,8 +1101,10 @@ export class MainViewModel extends Observable {
   }
 
   async onPadLongPress(): Promise<void> {
-    const kind = this.padDoubleTapPending ? "short-then-long-press" : "long-press";
+    if (this.padTwoFingerDown) return;
+    const kind = this.padDoubleTapPending ? "short-then-long-press" : "long-press-start";
     this.padDoubleTapPending = false;
+    this.padHeld = true;
     await dashboardController.injectSyntheticRingInput(kind, "watch");
     this.refreshPadFocusLine();
   }
@@ -1093,6 +1124,12 @@ export class MainViewModel extends Observable {
     if (args.action === "up" || args.action === "cancel") {
       const pendingDouble = this.padDoubleTapPending;
       this.padDoubleTapPending = false;
+      if (this.padHeld) {
+        this.padHeld = false;
+        await dashboardController.injectSyntheticRingInput("long-press-release", "watch");
+        this.refreshPadFocusLine();
+        return;
+      }
       const twoFinger = this.padTwoFingerDown;
       if (twoFinger) {
         // Let the single-tap recognizer's delayed tap see the flag first.

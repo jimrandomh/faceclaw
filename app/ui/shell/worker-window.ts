@@ -5,6 +5,7 @@ import { toolRegistry, type ToolResult, type ToolSpec } from "../../assistant/to
 import { appViewportSize, type WindowHeightMode } from "./geometry";
 import * as frameTimings from "../../native/frame-timings";
 import { shell, type ShellWindow } from "./shell";
+import { publishWorkerState } from "./worker-state";
 
 /**
  * Messages between the shell (main thread) and an app worker. One worker
@@ -20,6 +21,12 @@ export type WorkerAppMessage =
   | { type: "text-input"; windowId: string; text: string }
   | { type: "render"; windowId: string; focused: boolean }
   | { type: "foreground"; windowId: string; foreground: boolean; focused: boolean }
+  /**
+   * Input focus arrived at or left the window, counting shell overlays and
+   * screen-off (see ShellWindow.setInputFocus). Sent on change only; the
+   * per-message `focused` flags above stay the source of truth for painting.
+   */
+  | { type: "input-focus"; windowId: string; focused: boolean }
   | { type: "screen"; on: boolean }
   /** Assistant tool invocation aimed at a window; reply with tool-result. */
   | { type: "tool-call"; callId: string; windowId: string; name: string; args: unknown };
@@ -135,6 +142,15 @@ export type WorkerAppReply =
       type: "tool-result";
       callId: string;
       result: ToolResult;
+    }
+  | {
+      /**
+       * Publish a small piece of app state for main-thread consumers outside
+       * the app's windows (see app/ui/shell/worker-state.ts). JSON only.
+       */
+      type: "publish-state";
+      key: string;
+      state: unknown;
     };
 
 export type WorkerWindowSpec = {
@@ -318,6 +334,9 @@ export class WorkerAppHost {
         case "set-title":
           // Titles are informational for now (sidebar shows icons only).
           break;
+        case "publish-state":
+          publishWorkerState(message.key, message.state);
+          break;
         case "set-tools":
           // Only a window we actually have open may contribute tools.
           if (this.openWindows.has(message.windowId)) {
@@ -419,6 +438,9 @@ export class WorkerAppHost {
         // Screen state is per-app, but sending per-window keeps the protocol
         // uniform; the worker treats it globally.
         this.post({ type: "screen", on });
+      },
+      setInputFocus: (focused) => {
+        this.post({ type: "input-focus", windowId: spec.windowId, focused });
       },
     };
     shell.registerWindow(window);

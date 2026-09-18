@@ -11,10 +11,27 @@ import { toUint8Array } from "../util/array-util";
 declare const com: any;
 
 export type VoiceControlState = {
+  /** One-line state of the capture: progress, "Listening...", or an error. */
   status: string;
+  /**
+   * Whether audio is actually being captured and transcribed right now. False
+   * while the mic is starting, while the phone is showing the permission
+   * prompt, and after an error, so a dialog must not claim to be listening.
+   */
+  listening: boolean;
+  /**
+   * Longer guidance to show in place of the (still empty) transcript, e.g.
+   * what the user has to do on the phone. Empty when there is nothing to say.
+   */
+  detail: string;
 };
 
-export type VoiceProviderKind = "onboard" | "elevenlabs" | "whisper" | "soniox";
+// "whisper" (no "onboard-" prefix) is the OpenAI CLOUD provider (gpt-realtime-whisper,
+// see openai-stt.ts) -- an unfortunate pre-existing name collision with the model
+// family, not with "onboard-whisper" below, which is the on-device sherpa-onnx
+// Whisper backend added alongside "onboard" (Moonshine). Kept as-is rather than
+// renamed, since it's a persisted settings value on real installs already.
+export type VoiceProviderKind = "onboard" | "onboard-whisper" | "elevenlabs" | "whisper" | "soniox";
 
 export type VoiceTranscriptEvent = CloudSttTranscriptEvent & {
   /**
@@ -88,7 +105,12 @@ export class FaceclawVoiceControlBridge {
   private controller: any | null = null;
   private listenerProxy: any | null = null;
   private status = "Voice control stopped.";
+  private listening = false;
+  private detail = "";
   private started = false;
+  private nativeCaptureFinished: Promise<void> = Promise.resolve();
+  private nextNativeCaptureId = 1;
+  private readonly nativeCaptureResolvers = new Map<number, () => void>();
   // The mic is a single shared stream; these are the reasons it is running.
   // The first holder starts capture (choosing the provider); the mic stops
   // when the last one releases. Transcript events broadcast to every
@@ -118,7 +140,7 @@ export class FaceclawVoiceControlBridge {
 
   onStatus(listener: (state: VoiceControlState) => void): () => void {
     this.statusListeners.add(listener);
-    listener({ status: this.status });
+    listener(this.state());
     return () => this.statusListeners.delete(listener);
   }
 
@@ -142,14 +164,41 @@ export class FaceclawVoiceControlBridge {
     return () => this.speechPauseListeners.delete(listener);
   }
 
+  /**
+   * The capture is blocked on the phone's system microphone-permission
+   * prompt. Reported by the controller before it asks Android, so the dialog
+   * on the glasses can send the user to the phone instead of claiming to
+   * listen; the next status (from the capture start, or reportPermissionDenied)
+   * replaces it.
+   */
+  reportPermissionPrompt(): void {
+    this.setStatus(
+      "Waiting for microphone permission...",
+      "Allow microphone access in the prompt on your phone.",
+    );
+  }
+
+  /** The user declined the microphone permission (or the prompt could not be shown). */
+  reportPermissionDenied(): void {
+    this.setStatus(
+      "Microphone access denied.",
+      "Enable the microphone for Faceclaw in the phone's app settings, then try again.",
+    );
+  }
+
   /** Begin push-to-talk capture (momentary; released with stopPushToTalk). */
   startPushToTalk(options: PushToTalkOptions): void {
     this.acquireCapture("ptt", options);
   }
 
   /** End push-to-talk: for cloud, commit for a final result if it was the last holder. */
-  stopPushToTalk(): void {
+  stopPushToTalk(): Promise<void> | void {
+    // Shared continuous capture keeps running; cloud providers finalize via
+    // their own callbacks. Only a stopped native recognizer must be awaited.
+    const finished = !this.cloudClient && this.captureHolders.has("ptt") && this.captureHolders.size === 1
+      ? this.nativeCaptureFinished : undefined;
     this.releaseCapture("ptt", true);
+    return finished;
   }
 
   /** Begin continuous capture (Transcribe): the mic stays on until released. */
@@ -262,6 +311,9 @@ export class FaceclawVoiceControlBridge {
     }
 
     this.speechPause.reset();
+    // Replaces whatever the last capture left behind ("Listening...", an
+    // error, the permission prompt) until the controller reports progress.
+    this.setStatus("Starting microphone...");
     // A previous push-to-talk commit may still be awaiting its final result.
     this.cloudClient?.stop();
     const cloudClient = this.createCloudClient(options);
@@ -275,7 +327,12 @@ export class FaceclawVoiceControlBridge {
 
     this.cloudClient = null;
     this.started = true;
-    this.controller?.start("onboard");
+    // Which on-device model to load; a no-op setter for every provider except
+    // "onboard-whisper" (FaceclawVoiceController defaults to Moonshine).
+    this.controller?.setOnboardModelKind(options.provider === "onboard-whisper" ? "whisper" : "moonshine");
+    const captureId = this.nextNativeCaptureId++;
+    this.nativeCaptureFinished = new Promise((resolve) => { this.nativeCaptureResolvers.set(captureId, resolve); });
+    this.controller?.start("onboard", captureId);
   }
 
   /**
@@ -284,7 +341,7 @@ export class FaceclawVoiceControlBridge {
    * than failing the capture outright.
    */
   private createCloudClient(options: PushToTalkOptions): CloudSttClient | null {
-    if (options.provider === "onboard") return null;
+    if (options.provider === "onboard" || options.provider === "onboard-whisper") return null;
     const sttOptions = {
       apiKey: "",
       onTranscript: (event: CloudSttTranscriptEvent) =>
@@ -444,6 +501,10 @@ export class FaceclawVoiceControlBridge {
       onTranscript: (text: string, isFinal: boolean) => {
         this.emitTranscript(String(text), Boolean(isFinal));
       },
+      onStopped: (captureId: number) => {
+        this.nativeCaptureResolvers.get(captureId)?.();
+        this.nativeCaptureResolvers.delete(captureId);
+      },
       onPcm: (pcm: any) => {
         const bytes = toUint8Array(pcm);
         this.cloudClient?.acceptPcm(bytes);
@@ -492,11 +553,20 @@ export class FaceclawVoiceControlBridge {
     }
   }
 
-  private setStatus(status: string): void {
+  private setStatus(status: string, detail = ""): void {
     this.status = status;
+    this.detail = detail;
+    // Every "audio is flowing" report — from the Java controller and from the
+    // cloud providers — is phrased "Listening..." / "Listening (X)...".
+    this.listening = status.startsWith("Listening");
+    const state = this.state();
     for (const listener of this.statusListeners) {
-      listener({ status });
+      listener(state);
     }
+  }
+
+  private state(): VoiceControlState {
+    return { status: this.status, listening: this.listening, detail: this.detail };
   }
 }
 

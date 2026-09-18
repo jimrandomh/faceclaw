@@ -23,14 +23,14 @@ export class IosVoiceControlBridge {
   private log: (message: string) => void = () => {}
 
   onStatus(listener: (state: VoiceControlState) => void): () => void {
-    this.statuses.add(listener); listener({ status: this.status }); return () => { this.statuses.delete(listener) }
+    this.statuses.add(listener); listener({ status: this.status, listening: this.capturing, detail: '' }); return () => { this.statuses.delete(listener) }
   }
   onTranscript(listener: (event: VoiceTranscriptEvent) => void): () => void {
     this.transcripts.add(listener); return () => { this.transcripts.delete(listener) }
   }
   onSpeechEnd(listener: () => void): () => void { this.ends.add(listener); return () => { this.ends.delete(listener) } }
   onSpeechPause(_listener: () => void): () => void { return () => {} }
-  private setStatus(status: string): void { this.status = status; for (const fn of [...this.statuses]) fn({ status }) }
+  private setStatus(status: string): void { this.status = status; for (const fn of [...this.statuses]) fn({ status, listening: this.capturing, detail: '' }) }
   private ensureNative(): any {
     if (!this.native) {
       this.native = FaceclawSpeech.new()

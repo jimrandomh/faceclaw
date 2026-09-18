@@ -42,9 +42,14 @@ function compass(width = 576, height = 260) {
   RecordingImage.prototype.clone = function () {
     const image = baseClone.call(this); Object.setPrototypeOf(image, RecordingImage.prototype); image.texts = []; return image;
   };
+  const calibration = { isCompassCalibrated: () => true, normalizeHeading: (v) => v };
+  const rose = load('app/apps/compass/compass-rose.ts', {
+    '../../graphics/image': { GrayImage: RecordingImage }, './calibration': calibration,
+  });
   const app = load('app/apps/compass/compass-app.ts', {
     '../../graphics/ui-fonts': { getDefaultSmallFont: () => small, getDefaultLargeFont: () => large },
     '../../graphics/image': { GrayImage: RecordingImage }, '../../graphics/textwrap': textwrap,
+    './compass-rose': rose,
     '../../native/compass': { COMPASS_CHANGED: 15, COMPASS_CALIBRATION_STARTED: 16, COMPASS_CALIBRATION_COMPLETE: 17,
       addCompassListener: (fn) => { listener = fn; return () => {}; }, setCompassEnabled() {} },
     '../../ui/metrics': { lineStep: (font) => font.lineHeight + 2 },
@@ -55,7 +60,7 @@ function compass(width = 576, height = 260) {
     },
     '../../ui/shell/shell': { shell: { isWindowVisible: () => true } },
     '../../g2/android-permissions': { hasLocationPermission: () => false },
-    './calibration': { isCompassCalibrated: () => true, normalizeHeading: (v) => v },
+    './calibration': calibration,
     './calibration-layer': {}, './declination': { onDeclinationChanged: () => () => {} },
     './heading': { getNorthReference: () => 'magnetic', resolveHeading: (v) => ({ displayDegrees: v }) },
     './debug': debug,

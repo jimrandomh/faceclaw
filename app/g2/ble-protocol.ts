@@ -3,7 +3,7 @@ export const G2_WRITE = '00002760-08c2-11e1-9073-0e8ac72e5401'
 export const G2_NOTIFY = '00002760-08c2-11e1-9073-0e8ac72e5402'
 export const G2_RENDER_NOTIFY = '00002760-08c2-11e1-9073-0e8ac72e6402'
 export const RING_NOTIFY = ['bae80011-4f05-4503-8e65-3af1f7329d1f', 'bae80013-4f05-4503-8e65-3af1f7329d1f']
-export const SID = { auth: 0x80, launch: 1, hub: 0xe0, settings: 9 } as const
+export const SID = { auth: 0x80, launch: 1, hub: 0xe0, settings: 9, cfw: 0xf0 } as const
 export function concat(...parts: Uint8Array[]): Uint8Array {
   const output = new Uint8Array(parts.reduce((n, p) => n + p.length, 0))
   let offset = 0; for (const part of parts) { output.set(part, offset); offset += part.length }; return output
@@ -28,13 +28,7 @@ export const framebufferLease = (acquire: boolean) => concat(integer(1, 1), inte
 export function createLayout(magic: number): Uint8Array {
   const geometry = concat(integer(1, 0), integer(2, 0), integer(3, 576), integer(4, 288))
   const text = concat(geometry, integer(9, 1), string(10, 'dashboard'), integer(11, 1), string(12, ' '))
-  const image = concat(geometry, integer(5, 10), string(6, 'img00'))
-  return wrap(0, magic, 3, concat(integer(1, 2), bytes(3, text), bytes(4, image), integer(5, 10000)))
-}
-export function imageFragment(magic: number, payload: Uint8Array, offset: number, size = 3800): Uint8Array {
-  const fragment = payload.subarray(offset, offset + size)
-  return wrap(3, magic, 5, concat(integer(1, 10), string(2, 'img00'), integer(3, 10), integer(4, payload.length),
-    integer(5, 0), integer(6, Math.floor(offset / size)), integer(7, fragment.length), bytes(8, fragment)))
+  return wrap(0, magic, 3, concat(integer(1, 1), bytes(3, text), integer(5, 10000)))
 }
 export function crc16(data: Uint8Array): number {
   let crc = 0xffff
@@ -55,7 +49,7 @@ export function frameMessage(payload: Uint8Array, sid: number, flag: number, seq
     return concat(new Uint8Array([0xaa, 0x21, sequence & 255, chunk.length, count, i + 1, sid, flag]), chunk)
   })
 }
-export type ProtocolMessage = { sid: number; flag: number; payload: Uint8Array; command: number; magic: number }
+export type ProtocolMessage = { sid: number; flag: number; payload: Uint8Array; command: number; magic: number; packet?: Uint8Array }
 /** Handles split/coalesced envelopes and reassembles each link/sequence separately. */
 export class MessageReceiver {
   private streams = new Map<string, Uint8Array>()
@@ -70,7 +64,12 @@ export class MessageReceiver {
       const length = stream[3], count = stream[4], index = stream[5]
       if (stream.length < length + 8) break
       const sid = stream[6], flag = stream[7], key = `${link}:${stream[2]}:${sid}:${flag}`
+      const packet = stream.slice(0, length + 8)
       const chunk = stream.slice(8, 8 + length); stream = stream.subarray(length + 8)
+      if (sid === SID.cfw) {
+        output.push({ sid, flag, payload: chunk, command: -1, magic: -1, packet })
+        continue
+      }
       if (!count || !index || index > count) { this.messages.delete(key); continue }
       if (index === 1) this.messages.set(key, { chunks: [], total: count, seen: now, size: 0 })
       const message = this.messages.get(key)

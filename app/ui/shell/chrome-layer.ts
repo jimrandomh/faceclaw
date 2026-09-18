@@ -7,7 +7,17 @@ import { readActiveNotificationIcons } from "../../native/notification-icons";
 import { readPhoneBatteryState } from "../../native/phone-battery";
 import { noteStaleDataUsed, renderPassAllowsStaleData } from "../../util/render-freshness";
 import { renderIcon, renderIconWithGlyph, type IconActivity, type IconName } from "../../graphics/icons";
-import { batteryDisplayModeSetting, timeFormatSetting } from "../dashboard-settings";
+import {
+  batteryDisplayModeSetting,
+  batteryIndicatorVisible,
+  glassesBatteryVisibilitySetting,
+  phoneBatteryVisibilitySetting,
+  ringBatteryVisibilitySetting,
+  watchBatteryVisibilitySetting,
+  type BatteryIndicatorVisibility,
+} from "../dashboard-settings";
+import { formatClockDate, formatClockTime } from "../clock-format";
+import { getFont } from "../../graphics/bdffont";
 import { Layer } from "../layers";
 import { scrollToKeepSelectionVisible } from "../menu";
 import { lineStep } from "../metrics";
@@ -83,8 +93,6 @@ export function sidebarContentLeft(windowCount: number): number {
 }
 const NOTIFICATION_ICON_SIZE = 24;
 const BORDER_VALUE = 40;
-const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
 export type ShellChromeWindow = {
   windowId: string;
@@ -101,7 +109,15 @@ export type ShellChromeState = {
   /** Height mode of the foreground window; decides where its top bar sits. */
   foregroundHeightMode: WindowHeightMode;
   foregroundAppId?: string;
-  battery: { headset: number | null; headsetCharging: boolean | null };
+  battery: {
+    headset: number | null;
+    headsetCharging: boolean | null;
+    ring: number | null;
+    ringCharging: boolean | null;
+    /** The Wear OS watch (app/g2/wear-remote.ts); null when no watch is reachable. */
+    watch: number | null;
+    watchCharging: boolean | null;
+  };
   /** App-provided tray images, drawn between notification icons and batteries. */
   trayIcons: GrayImage[];
 };
@@ -312,8 +328,7 @@ export class ShellChromeLayer implements Layer {
     image.drawLine(barLeft, barTop + TOP_BAR_HEIGHT - 1, G2_LENS_WIDTH - 1, barTop + TOP_BAR_HEIGHT - 1, BORDER_VALUE);
 
     const now = new Date();
-    const clock = `${WEEKDAYS[now.getDay()]} ${now.getDate()} ${MONTHS[now.getMonth()]} ` +
-      formatClockTime(now);
+    const clock = `${formatClockDate(now)} ${formatClockTime(now)}`;
     const clockX = barLeft + 10;
     const textY = barTop + Math.max(0, ((TOP_BAR_HEIGHT - font.lineHeight) / 2) | 0);
     image.drawText(font, clockX, textY, clock, 210);
@@ -336,35 +351,51 @@ export class ShellChromeLayer implements Layer {
   }
 
   /**
-   * Labelled battery indicators for the phone and the G2, right-aligned in
-   * the top bar, following the dashboard card's icon/percentage setting.
-   * Returns the left edge of the battery block.
+   * Labelled battery indicators for the phone, Wear OS watch, G2, and R1,
+   * right-aligned in the top bar. The watch one exists only while a watch
+   * running the Faceclaw watch app is reachable (no placeholder otherwise).
+   * The Settings > Display > Battery indicators submenu picks the style (label beside a gauge icon or percentage, or stacked above
+   * either) and, per device, whether the indicator shows always, only below
+   * 50%, or never. Returns the left edge of the battery block.
    */
   private drawTopBarBatteries(image: GrayImage, state: ShellChromeState, barTop: number): number {
-    const font = getDefaultSmallFont();
-    const percentageMode = batteryDisplayModeSetting.get() === "percentage";
-    type BatteryItem = { label: string; percent: number; charging: boolean };
+    const mode = batteryDisplayModeSetting.get();
     const items: BatteryItem[] = [];
     const phone = readPhoneBatteryState();
     if (phone.battery !== null && Number.isFinite(phone.battery)) {
-      items.push({ label: "Phone", percent: phone.battery, charging: Boolean(phone.charging) });
+      pushBatteryItem(items, phoneBatteryVisibilitySetting.get(), "Phone", phone.battery, Boolean(phone.charging));
+    }
+    if (state.battery.watch !== null && Number.isFinite(state.battery.watch)) {
+      pushBatteryItem(items, watchBatteryVisibilitySetting.get(), "Watch", state.battery.watch,
+        Boolean(state.battery.watchCharging));
     }
     if (state.battery.headset !== null && Number.isFinite(state.battery.headset)) {
-      items.push({ label: "G2", percent: state.battery.headset, charging: Boolean(state.battery.headsetCharging) });
+      pushBatteryItem(items, glassesBatteryVisibilitySetting.get(), "G2", state.battery.headset,
+        Boolean(state.battery.headsetCharging));
+    }
+    if (state.battery.ring !== null && Number.isInteger(state.battery.ring)
+        && state.battery.ring >= 0 && state.battery.ring <= 100) {
+      pushBatteryItem(items, ringBatteryVisibilitySetting.get(), "R1", state.battery.ring,
+        Boolean(state.battery.ringCharging));
     }
     if (!items.length) return G2_LENS_WIDTH;
+    if (mode === "stacked" || mode === "stacked-percentage") {
+      return drawStackedBatteries(image, items, barTop, mode === "stacked-percentage");
+    }
 
+    const font = getDefaultSmallFont();
+    const percentageMode = mode === "percentage";
     const labelGap = 5;
     const itemGap = 12;
     const textY = barTop + Math.max(0, ((TOP_BAR_HEIGHT - font.lineHeight) / 2) | 0);
-    let x = G2_LENS_WIDTH - 8;
+    let x = G2_LENS_WIDTH - BATTERY_BLOCK_RIGHT_MARGIN;
     for (let index = items.length - 1; index >= 0; index--) {
       const item = items[index]!;
-      const percentText = `${Math.max(0, Math.min(100, Math.round(item.percent)))}%`;
+      const percentText = `${item.percent}%`;
       const valueWidth = percentageMode ? font.measureText(percentText) : BATTERY_ICON_WIDTH;
       const labelWidth = font.measureText(item.label);
       x -= labelWidth + labelGap + valueWidth;
-      image.drawText(font, x, textY, item.label, 150);
+      image.drawText(font, x, textY, item.label, BATTERY_LABEL_VALUE);
       const valueX = x + labelWidth + labelGap;
       if (percentageMode) {
         if (item.charging) {
@@ -384,6 +415,74 @@ export class ShellChromeLayer implements Layer {
     }
     return x + itemGap;
   }
+}
+
+type BatteryItem = { label: string; percent: number; charging: boolean };
+
+const BATTERY_BLOCK_RIGHT_MARGIN = 8;
+const BATTERY_LABEL_VALUE = 150;
+
+/** Append an indicator if its visibility setting shows it at this charge. */
+function pushBatteryItem(
+  items: BatteryItem[],
+  visibility: BatteryIndicatorVisibility,
+  label: string,
+  percent: number,
+  charging: boolean,
+): void {
+  const clamped = Math.max(0, Math.min(100, Math.round(percent)));
+  if (!batteryIndicatorVisible(visibility, clamped)) return;
+  items.push({ label, percent: clamped, charging });
+}
+
+// Stacked style geometry, in rows below the bar's top edge. The bar has 27
+// usable rows above its bottom border line, too few for the user-sized UI
+// font (line height up to 21px) over a 10px gauge, so both stacked lines use
+// a fixed 12px bitmap face instead: TerminusV, proportional, with 8px
+// capitals and digits on a 10px ascent. Ink then spans rows 3..22: label
+// capitals at 3..10, a 2px gap, and the gauge at 13..22 (or the percentage
+// digits at 13..20, whose charging highlight box covers 12..21), leaving 3
+// rows above and 4 below (before the border) so the pair reads as one
+// centered unit.
+const STACKED_LABEL_BASELINE = 11;
+const STACKED_ICON_TOP = 13;
+const STACKED_PERCENT_BASELINE = 21;
+const STACKED_ITEM_GAP = 10;
+
+/**
+ * Stacked styles: each label centered above its gauge icon (or percentage
+ * text), right-aligned in the bar. Returns the left edge of the battery
+ * block.
+ */
+function drawStackedBatteries(image: GrayImage, items: BatteryItem[], barTop: number, percentage: boolean): number {
+  const font = getFont("terminusv12");
+  const labelTop = barTop + STACKED_LABEL_BASELINE - font.ascent;
+  const percentTop = barTop + STACKED_PERCENT_BASELINE - font.ascent;
+  let x = G2_LENS_WIDTH - BATTERY_BLOCK_RIGHT_MARGIN;
+  for (let index = items.length - 1; index >= 0; index--) {
+    const item = items[index]!;
+    const percentText = `${item.percent}%`;
+    const labelWidth = font.measureText(item.label);
+    const valueWidth = percentage ? font.measureText(percentText) : BATTERY_ICON_WIDTH;
+    const itemWidth = Math.max(labelWidth, valueWidth);
+    x -= itemWidth;
+    image.drawText(font, x + (((itemWidth - labelWidth) / 2) | 0), labelTop, item.label, BATTERY_LABEL_VALUE);
+    const valueX = x + (((itemWidth - valueWidth) / 2) | 0);
+    if (!percentage) {
+      const icon = drawBattery(item.percent, item.charging);
+      image.bitBlt(icon, valueX, barTop + STACKED_ICON_TOP, { transparentZero: true });
+    } else if (item.charging) {
+      // Inverted text marks charging, as in the side-by-side percentage style;
+      // the box hugs the digits' 8px ink rather than the full 12px line.
+      const inkTop = barTop + STACKED_PERCENT_BASELINE - 8;
+      image.fillRect(valueX - 2, inkTop - 1, valueWidth + 4, 10, 255);
+      image.drawText(font, valueX, percentTop, percentText, 1);
+    } else {
+      image.drawText(font, valueX, percentTop, percentText, 200);
+    }
+    x -= STACKED_ITEM_GAP;
+  }
+  return x + STACKED_ITEM_GAP;
 }
 
 // Ambient cards (encounter popups): compact and deliberately unobtrusive,
@@ -517,17 +616,6 @@ function tabLeftInset(yy: number, top: number, bottom: number, radius: number): 
     return 0;
   }
   return Math.max(0, Math.round(radius - Math.sqrt(Math.max(0, radius * radius - dy * dy))));
-}
-
-/** Format the top-bar clock time, honoring the 12/24-hour setting. */
-function formatClockTime(now: Date): string {
-  const minutes = String(now.getMinutes()).padStart(2, "0");
-  const hour24 = now.getHours();
-  if (timeFormatSetting.get() === "12h") {
-    const hour12 = ((hour24 + 11) % 12) + 1;
-    return `${hour12}:${minutes} ${hour24 < 12 ? "AM" : "PM"}`;
-  }
-  return `${hour24}:${minutes}`;
 }
 
 /** Small triangle marker for sidebar overflow; direction -1 = up, 1 = down. */

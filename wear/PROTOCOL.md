@@ -11,21 +11,22 @@ Capabilities (`res/values/wear.xml` on each side): the phone advertises
 `faceclaw_phone`, the watch `faceclaw_watch`. Each side finds the other with
 `CapabilityClient.getCapability(…, FILTER_REACHABLE)`.
 
-Every watch → phone message carries `seq` (monotonic per watch process) and is
-answered on `/faceclaw/ack`.
+Every watch → phone message except `/faceclaw/battery` carries `seq`
+(monotonic per watch process) and is answered on `/faceclaw/ack`.
 
 ## Watch → phone (MessageClient)
 
 | Path | Payload | Effect |
 | --- | --- | --- |
-| `/faceclaw/input` | `{gesture, steps?}` | A ring gesture through the same path as the phone UI's test buttons. `gesture` ∈ `click`, `double-click`, `scroll-up`, `scroll-down`, `long-press` (complete short hold), `long-press-start`, `long-press-release`, `short-then-long-press` (tap then hold: the app's context menu; a plain `long-press` is the glasses' system menu), `wakeword` ("Hey Even"), `swipe-up`, `swipe-down`, `swipe-left`, `swipe-right` (spatial input only a watch can produce: delivered to the glasses UI as `swipe-*` events for components that navigate spatially — launcher grid, settings columns, sidebar, Music — with a scroll / click / double-click fallback elsewhere). `steps` (1–12) repeats a scroll. Refused while the glasses are disconnected. The lock screen is honoured exactly as for the ring. While the display is off, only a double-click is accepted and it wakes the display. |
+| `/faceclaw/input` | `{gesture, steps?}` | A ring gesture through the same path as the phone UI's test buttons. `gesture` ∈ `click`, `double-click`, `scroll-up`, `scroll-down`, `long-press` (complete short hold), `long-press-start`, `long-press-release`, `short-then-long-press` (tap then hold: the app's context menu; a plain `long-press` is the glasses' system menu), `wakeword` ("Hey Even"), `swipe-up`, `swipe-down`, `swipe-left`, `swipe-right` (spatial input only a watch can produce: delivered to the glasses UI as `swipe-*` events for components that navigate spatially — launcher grid, settings columns, sidebar, Music — with a scroll / click / double-click fallback elsewhere). `steps` (1–12) repeats a scroll. Refused while the glasses are disconnected. The lock screen is honoured exactly as for the ring. While the display is off, a double-click wakes the display, a `click` shows the phone's Glanceboard for a few seconds, and `long-press-start`/`long-press-release` hold it up; everything else is ignored. |
 | `/faceclaw/command` | `{command, …}` | `launch-app {appId}`, `focus-window {windowId}`, `close-window {windowId}`, `sidebar`, `wake`, `sleep`, `lock`, `unlock`, `connect`, `disconnect`, `close-assistant`, `display-mode {value}` (`value` ∈ `576x288`, `576x480`, `640x480`; sets the phone's Display > Display mode). Everything but connect/disconnect needs a connection; everything but lock/unlock is refused while locked; `unlock` also needs the phone's "Watch can unlock glasses" setting. |
 | `/faceclaw/assistant` | `{text}` | Send a query to the assistant (`shell.sendToAssistant`) — the reply shows on the glasses and streams back to the watch as events. |
 | `/faceclaw/text` | `{text}` | Type text into the foreground window (`receiveTextInput`, e.g. the terminal). Refused when the window doesn't take text. |
 | `/faceclaw/state/request` | `{}` | Re-publish the state item even if unchanged. |
+| `/faceclaw/battery` | `{battery, charging}` | The watch's own battery (`battery` 0–100 or null, `charging` bool) for the glasses' top-bar and Glanceboard "Watch" indicator. Sent in answer to `/faceclaw/battery/request` by `PhoneListenerService` (which Play services starts even while the watch app is closed) and, while the app is open, whenever the level or charging state changes. Carries no `seq` and is never acked. |
 
-All of the above except `state/request` are refused with `ok:false` when the
-phone's "Watch remote control" setting is off.
+All of the above except `state/request` and `battery` are refused with
+`ok:false` when the phone's "Watch remote control" setting is off.
 
 ## Phone → watch
 
@@ -33,6 +34,11 @@ phone's "Watch remote control" setting is off.
 `{seq, ok, jsReady, message}`. `jsReady:false` means Play services started the
 app process for the message but the JS dashboard isn't up (the user has not
 opened Faceclaw since boot); the watch shows "Open Faceclaw on the phone".
+
+`/faceclaw/battery/request` (MessageClient, to every reachable watch): `{}`.
+Please send `/faceclaw/battery` now. The phone sends it when a watch becomes
+reachable, when the glasses connect with the level still unknown, and every
+5 minutes after that; the indicator disappears when no watch is reachable.
 
 `/faceclaw/event` (MessageClient, to every reachable watch):
 - `{type:"assistant", phase, text}` — `phase` ∈ `thinking`, `streaming` (text so

@@ -81,7 +81,7 @@ test('background glasses input still composites frames; phone resume preserves t
     receiveInput: async input => { inputs.push(input); } };
   class Session {
     state = { phase: 'disconnected' };
-    constructor(_transport, _deflate, onState, onInput) { session = this; this.onState = onState; this.onInput = onInput; }
+    constructor(_transport, onState, onInput) { session = this; this.onState = onState; this.onInput = onInput; }
     async start() { starts++; this.state = { phase: 'connected' }; this.onState(this.state); }
     async stop() { stops++; this.state = { phase: 'disconnected' }; this.onState(this.state); }
     setFrame(pixels) { if (this.state.phase === 'connected') frames.push(pixels); }

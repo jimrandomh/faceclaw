@@ -171,9 +171,9 @@ export class PairingViewModel extends Observable {
 
   get instructions(): string {
     return (
-      "Take the glasses out of their case (or open the lid) and keep them next to the phone. " +
-      "Each arm advertises its serial; a pair is ready when both arms report the same one. " +
-      "An arm connected to the official Even app stops advertising — disconnect it there first."
+      "Select your G2 glasses and R1 ring below. Wear the glasses or take them out of the case, " +
+      "and keep the glasses and phone nearby. If your glasses are not detected, make sure no other " +
+      "apps are connected."
     );
   }
 

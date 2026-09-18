@@ -1,5 +1,4 @@
 const assert = require('node:assert/strict');
-const { inflateSync } = require('node:zlib');
 
 // Independent firmware-format decoder for reconstruction tests (not app code).
 function applyDisplayPayload(base, payload, width = 640, height = 480) {
@@ -7,7 +6,7 @@ function applyDisplayPayload(base, payload, width = 640, height = 480) {
   const [left, top, w, h] = mode === 3
     ? [payload[1] * 4, payload[2] * 2, payload[3] * 4, payload[4] * 2] : [0, 0, width, height];
   assert.ok(w > 0 && h > 0 && left + w <= width && top + h <= height);
-  const tokens = inflateSync(payload.subarray(mode === 3 ? 7 : 1));
+  const tokens = payload.subarray(mode === 3 ? 7 : 1);
   const pixels = [];
   for (let i = 0; i < tokens.length;) {
     const token = tokens[i++], color = token & 15;

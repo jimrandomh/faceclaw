@@ -23,7 +23,7 @@ import { resumeAutoReconnect, suppressAutoReconnect } from "../g2/reconnect-poli
 import { setOnboardingCompleted, setPreviewOnlyMode } from "./onboarding-state";
 import { formatErrorMessage } from "../util/format-error";
 
-type FlashPhase = "intro" | "prompt" | "building" | "ready" | "flashing" | "flashed" | "error";
+type FlashPhase = "intro" | "prompt" | "building" | "flashing" | "flashed" | "error";
 
 export type FlashMode = "install" | "uninstall";
 
@@ -53,7 +53,7 @@ export class OnboardingFlashViewModel extends Observable {
   private flasherUnsubscribers: Array<() => void> = [];
   private retryAction: () => void = () => this.beginPrompt();
 
-  constructor(options?: { mode?: FlashMode; fromOnboarding?: boolean }) {
+  constructor(options?: { mode?: FlashMode; fromOnboarding?: boolean; autoStart?: boolean }) {
     super();
     // The flash flow needs the glasses to itself: from here on the main
     // page must not auto-reconnect, until an install succeeds (below) or
@@ -68,13 +68,19 @@ export class OnboardingFlashViewModel extends Observable {
           "and reflashes the official firmware — removing Faceclaw's custom features."
         : "This connects to your glasses, asks for confirmation on the lens, checks the battery, then downloads, " +
           "verifies, and flashes Faceclaw's custom firmware.";
+    if (options?.autoStart) {
+      // Entered from a page that already explained what's about to happen
+      // (the onboarding firmware check), so the intro/"Connect & Confirm"
+      // step would be redundant: go straight to connecting.
+      void this.beginPrompt();
+    }
   }
 
   // Kept short to fit the glasses' ~50-column text grid.
   private get glassesWarning(): string {
     return this.mode === "uninstall"
       ? "Reinstalling the official firmware removes Faceclaw's custom features. Continue?"
-      : "Flashing custom firmware will void your warranty and carries some risk of bricking the glasses. Continue?";
+      : "Flashing custom firmware will void your warranty. Continue?";
   }
 
   private get noun(): string {
@@ -161,8 +167,6 @@ export class OnboardingFlashViewModel extends Observable {
     switch (this._phase) {
       case "intro":
         return "Connect & Confirm";
-      case "ready":
-        return "Flash Now";
       case "flashed":
         return "Finish";
       case "error":
@@ -176,8 +180,6 @@ export class OnboardingFlashViewModel extends Observable {
     switch (this._phase) {
       case "prompt":
         return "Cancel";
-      case "ready":
-        return "Not Now";
       default:
         return "Back";
     }
@@ -200,9 +202,6 @@ export class OnboardingFlashViewModel extends Observable {
     switch (this._phase) {
       case "intro":
         void this.beginPrompt();
-        return;
-      case "ready":
-        this.startFlashing();
         return;
       case "flashed":
         this.finish();
@@ -330,7 +329,7 @@ export class OnboardingFlashViewModel extends Observable {
     this.disposePrompt();
     if (!approved) {
       this.busy = false;
-      this.toError("You declined on the glasses. No firmware was written.", () => this.beginPrompt());
+      this.toError("You declined on the glasses. Firmware was not installed.", () => this.beginPrompt());
       return;
     }
     const lowBattery = this.describeLowBattery(this.promptBattery);
@@ -392,15 +391,9 @@ export class OnboardingFlashViewModel extends Observable {
       const build = this.mode === "uninstall" ? buildStockFirmware : buildCustomFirmware;
       const result = await build((progress) => this.reportBuildProgress(progress));
       this.firmwarePath = result.path;
-      this.busy = false;
-      this.setPhase("ready");
-      this.headline = "Firmware Ready";
-      this.status =
-        `The ${this.noun} is prepared and verified (${result.bytes.toLocaleString()} bytes).\n\n` +
-        "Tap Flash Now to write it to your glasses. Keep both lenses powered on and nearby — " +
-        "each lens takes a few minutes, and the glasses will reboot when each lens finishes. " +
-        "Do not close the app during flashing.";
-      this.appendLog(`saved to ${result.path}`);
+      this.appendLog(`${this.noun} prepared and verified (${result.bytes.toLocaleString()} bytes), saved to ${result.path}`);
+      // The user already said Yes on the lens; no second confirmation here.
+      this.startFlashing();
     } catch (error) {
       this.busy = false;
       const message =
@@ -445,7 +438,9 @@ export class OnboardingFlashViewModel extends Observable {
     this.headline = "Flashing Firmware";
     this.busy = true;
     this.progress = 0;
-    this.status = "Starting. Do not close the app or power off the glasses.";
+    this.status =
+      "Starting. Keep both lenses powered on and nearby — each lens takes a few minutes, " +
+      "and the glasses will reboot when each lens finishes. Do not close the app during flashing.";
 
     this.disposeFlasher();
     const flasher = new FirmwareFlasher(this.addresses, this.firmwarePath);

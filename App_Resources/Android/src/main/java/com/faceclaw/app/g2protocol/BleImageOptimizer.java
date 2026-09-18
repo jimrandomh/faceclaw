@@ -1,11 +1,9 @@
 package com.faceclaw.app;
 
-import java.io.ByteArrayOutputStream;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
-import java.util.zip.Deflater;
 import android.util.Log;
 
 public final class BleImageOptimizer {
@@ -79,7 +77,7 @@ public final class BleImageOptimizer {
         public final byte[] packed;
         public final int width;
         public final int height;
-        final byte[] payload;  // bytes actually streamed: mode-6 zlib(rle(4bpp))
+        final byte[] payload;  // bytes actually streamed: mode-6 rle(4bpp)
         final int sessionId;
         List<BleProtocol.ImageFragment> fragments = Collections.emptyList();
 
@@ -113,7 +111,7 @@ public final class BleImageOptimizer {
      * Build a mode-3 bounding-box incremental payload, or null when a full
      * update should be sent instead (frames not comparable, or the changed
      * region spans the whole screen). Wire format:
-     *   [3][left/4][top/2][width/4][height/2][fid_lo][fid_hi][zlib(rle(headerless 4bpp region))]
+     *   [3][left/4][top/2][width/4][height/2][fid_lo][fid_hi][rle(headerless 4bpp region)]
      * The region is top-down rows of the NEW frame, stride width/2 bytes. The
      * box is aligned so left/width are multiples of 4 pixels and top/height
      * multiples of 2 rows, letting each coordinate fit one byte and avoiding
@@ -260,7 +258,7 @@ public final class BleImageOptimizer {
 
     /**
      * Encode one CFW mode-3 rectangle delta:
-     *   [3][left/4][top/2][width/4][height/2][fid_lo][fid_hi][zlib(rle(box pixels))]
+     *   [3][left/4][top/2][width/4][height/2][fid_lo][fid_hi][rle(box pixels)]
      * left/width must be multiples of 4 (=> left>>1, width>>1 are whole bytes), top/
      * height multiples of 2. The box pixels are top-down rows of `next` (4bpp packed,
      * width>>1 bytes/row), run-length encoded before deflate. Shared by the single-bbox
@@ -273,7 +271,7 @@ public final class BleImageOptimizer {
         for (int y = 0; y < boxHeight; y++) {
             System.arraycopy(next, (top + y) * stride + (left >> 1), region, y * regionStride, regionStride);
         }
-        byte[] compressed = deflate(rleEncode(region));
+        byte[] compressed = rleEncode(region);
         byte[] out = new byte[7 + compressed.length];
         out[0] = 3;
         out[1] = (byte) (left / 4);
@@ -284,6 +282,22 @@ public final class BleImageOptimizer {
         out[6] = (byte) ((fid >> 8) & 0xff);   // fid_hi
         System.arraycopy(compressed, 0, out, 7, compressed.length);
         return out;
+    }
+
+    /** A full repaint in independently decodable commands below the uint16 record limit. */
+    static List<byte[]> encodeFullFrameBands(byte[] packed, int width, int height, int firstFid) {
+        if (width <= 0 || width > 640 || (width & 3) != 0 || height <= 0 || height > 480
+                || (height & 1) != 0 || packed.length != width * height / 2) {
+            throw new IllegalArgumentException("unsupported custom framebuffer dimensions");
+        }
+        List<byte[]> commands = new ArrayList<>();
+        int fid = firstFid;
+        for (int top = 0; top < height; top += 64) {
+            commands.add(encodeMode3Rect(packed, width / 2, 0, top, width,
+                    Math.min(64, height - top), fid));
+            fid = fid >= 0xfffe ? 1 : fid + 1;
+        }
+        return commands;
     }
 
     /**
@@ -310,8 +324,7 @@ public final class BleImageOptimizer {
     }
 
     // Break-even tuning for the rect splitter. Splitting adds ~15 fixed bytes per
-    // rect (seglen + mode-3 header + fid + zlib framing) and loses cross-rect
-    // dictionary sharing, so only split across gaps big enough to pay for that.
+    // rect (seglen + mode-3 header + fid), so only split across gaps big enough to pay for that.
     // Gaps are in the changed-mask's native units: whole 4bpp bytes (2px) for
     // columns, rows for the vertical bands. Kept above the 4px/2px box alignment so
     // aligned rects never overlap.
@@ -461,8 +474,8 @@ public final class BleImageOptimizer {
     }
 
     /**
-     * RLE- then zlib-compress headerless 4bpp pixels for CFW load_image_z mode 6.
-     * Wire format: [6][zlib(rle(4bpp pixels))]. Always use mode 6: the logical
+     * Run-length encode headerless 4bpp pixels for CFW load_image_z mode 6.
+     * Wire format: [6][rle(4bpp pixels)]. Always use mode 6: the logical
      * image can be larger than its EvenHub carrier, so a raw BMP fallback would
      * carry dimensions the legacy container loader cannot accept.
      */
@@ -470,7 +483,7 @@ public final class BleImageOptimizer {
         if (packed == null || packed.length == 0) {
             return packed;
         }
-        byte[] z = deflate(rleEncode(packed));
+        byte[] z = rleEncode(packed);
         byte[] out = new byte[z.length + 1];
         out[0] = 6;
         System.arraycopy(z, 0, out, 1, z.length);
@@ -479,7 +492,7 @@ public final class BleImageOptimizer {
 
     /**
      * Run-length encode packed 4bpp pixels for CFW modes 3 and 6, whose payload is
-     * zlib(rle(pixels)) rather than zlib(pixels). Runs are over the pixel NIBBLES of
+     * RLE tokens; deflate belongs to the transport. Runs are over the pixel NIBBLES of
      * {@code pix} in wire order (high nibble = left pixel), including the pad nibble
      * that ends each row at odd widths — i.e. {@code pix} read as 2*length nibbles.
      * One token is:
@@ -525,35 +538,6 @@ public final class BleImageOptimizer {
     private static int nibbleAt(byte[] pix, int i) {
         int b = pix[i >> 1] & 0xff;
         return (i & 1) != 0 ? (b & 0x0f) : (b >> 4);
-    }
-
-    // Level 6: BEST_COMPRESSION cost 18-109ms per frame on the BLE worker,
-    // but BEST_SPEED inflated typical payloads from ~2.7KB past the 3800-byte
-    // fragment boundary, adding a whole extra ack round trip (~350ms). The
-    // default level keeps payloads under one fragment at about half the CPU.
-    // One long-lived Deflater per thread: constructing one allocates and
-    // initializes a native zlib stream, which is measurable at per-frame rates.
-    private static final ThreadLocal<Deflater> DEFLATER =
-        new ThreadLocal<Deflater>() {
-            @Override protected Deflater initialValue() {
-                return new Deflater(Deflater.DEFAULT_COMPRESSION);
-            }
-        };
-
-    private static byte[] deflate(byte[] data) {
-        Deflater deflater = DEFLATER.get();
-        try {
-            deflater.setInput(data);
-            deflater.finish();
-            ByteArrayOutputStream out = new ByteArrayOutputStream(Math.max(64, data.length / 3));
-            byte[] buf = new byte[4096];
-            while (!deflater.finished()) {
-                out.write(buf, 0, deflater.deflate(buf));
-            }
-            return out.toByteArray();
-        } finally {
-            deflater.reset();
-        }
     }
 
     public static final class ImageUpdateStats {

@@ -28,12 +28,14 @@ import { WindowMenu, WindowMenuLayer } from "../../ui/window-menu";
 import type { LayerContext } from "../../ui/layers";
 import { truncateText, wrapText } from "../../graphics/textwrap";
 import { onSettingsStoreChanged } from "../../native/settings-store";
+import { openUrlOnPhone } from "../../native/open-url";
 import {
   navigateDestinationAddressDraftSetting,
   navigateDestinationNameDraftSetting,
   navigateRememberRecentSetting,
   navigateDisplayModeSetting,
   navigateVerticalPositionSetting,
+  mapboxApiKeySetting,
   enumSettingMenuItem,
   type ConfigSettingString,
 } from "../../ui/dashboard-settings";
@@ -68,6 +70,7 @@ import {
   fetchStaticMapGray,
   geocodeForward,
   isMapboxConfigured,
+  MAPBOX_TOKEN_SETTING_KEY,
   type GeocodeCandidate,
   type Route,
   type RouteProfile,
@@ -190,10 +193,14 @@ type NavTarget =
   | { kind: "query"; query: string; label?: string }
   | { kind: "place"; name: string; place: string; longitude: number; latitude: number };
 
-/** An entry on the idle page's destination list. */
+/**
+ * An entry on the idle page's list: a destination, or (while no Mapbox
+ * token is set) one of the setup actions offered in its place.
+ */
 type IdleEntry =
   | { kind: "saved"; destination: SavedDestination }
-  | { kind: "recent"; destination: RecentDestination };
+  | { kind: "recent"; destination: RecentDestination }
+  | { kind: "action"; label: string; detail: string; run: () => void };
 
 /** Idle-page list selection (index into idleEntries()). */
 let idleSelection = 0;
@@ -208,6 +215,8 @@ type DestinationEdit = {
   setting: ConfigSettingString;
   title: string;
   onDone: (value: string) => void;
+  /** Runs on double-click (cancel); edits of a live setting restore it here. */
+  onCancel?: () => void;
 };
 let editing: DestinationEdit | null = null;
 
@@ -251,7 +260,9 @@ function post(message: WorkerAppReply): void {
 // Destinations edited on the phone (the text editor, or the Settings app's
 // Home/Work rows) repaint the idle list / the edit screen live.
 onSettingsStoreChanged((key) => {
-  if (key.startsWith("navigate.")) render();
+  // The token key repaints too: the phone editor writes it live during
+  // Edit token, and the idle page changes shape once one is set.
+  if (key.startsWith("navigate.") || key === MAPBOX_TOKEN_SETTING_KEY) render();
 });
 
 // The host queues messages until this arrives: posts to a worker whose bundle
@@ -374,7 +385,7 @@ function startNavigation(query: string, requestedProfile: RouteProfile): Promise
 async function startNavigationTo(target: NavTarget, requestedProfile: RouteProfile): Promise<string> {
   const query = target.kind === "query" ? target.query : target.name;
   if (!isMapboxConfigured()) {
-    statusMessage = "Set a Mapbox token in Settings > API Keys.";
+    statusMessage = "Navigation needs a Mapbox token. This is free (up to a usage limit); open Mapbox in a browser on your phone or pick Edit token below.";
     phase = "idle";
     render();
     throw new Error(statusMessage);
@@ -1036,8 +1047,13 @@ function closeMenusAnd(ctx: LayerContext, action: () => void): void {
  * Open the phone text editor on a staging setting. The editor writes the
  * draft live (repainted via the settings listener); click here confirms.
  */
-function beginEdit(setting: ConfigSettingString, title: string, onDone: (value: string) => void): void {
-  editing = { setting, title, onDone };
+function beginEdit(
+  setting: ConfigSettingString,
+  title: string,
+  onDone: (value: string) => void,
+  onCancel?: () => void,
+): void {
+  editing = { setting, title, onDone, onCancel };
   post({ type: "start-text-setting-edit", settingId: setting.id });
   render();
 }
@@ -1047,6 +1063,7 @@ function finishEdit(confirmed: boolean): void {
   editing = null;
   post({ type: "end-text-setting-edit" });
   if (current && confirmed) current.onDone(current.setting.get());
+  else if (current) current.onCancel?.();
   // onDone may have started the next step; only fully leave when it didn't.
   if (!editing) {
     navigateDestinationNameDraftSetting.set("");
@@ -1075,10 +1092,52 @@ function beginAddDestination(): void {
   });
 }
 
+/**
+ * Edit the Mapbox token in place: the phone editor writes the real setting
+ * live, so cancelling puts back whatever was there before.
+ */
+function beginTokenEdit(): void {
+  const previous = mapboxApiKeySetting.get();
+  beginEdit(
+    mapboxApiKeySetting,
+    mapboxApiKeySetting.glassesEditTitle,
+    () => {
+      statusMessage = "";
+    },
+    () => mapboxApiKeySetting.set(previous),
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Idle page destination list
 
+/** Where a user gets a token: Mapbox's access-tokens page (sign-up/login first when needed). */
+const MAPBOX_TOKENS_URL = "https://account.mapbox.com/access-tokens/";
+
+/** Offered in place of the destination list until a Mapbox token is set. */
+function tokenSetupEntries(): IdleEntry[] {
+  return [
+    {
+      kind: "action",
+      label: "Open mapbox.com",
+      detail: "Get a free token in the phone browser",
+      run: () => {
+        statusMessage = openUrlOnPhone(MAPBOX_TOKENS_URL)
+          ? "Opened mapbox.com on your phone. Copy your public token (pk...) and pick Edit token."
+          : "Could not open a browser on the phone. Visit account.mapbox.com/access-tokens to get a token.";
+      },
+    },
+    {
+      kind: "action",
+      label: "Edit token",
+      detail: "Type or paste it in the phone app",
+      run: () => beginTokenEdit(),
+    },
+  ];
+}
+
 function idleEntries(): IdleEntry[] {
+  if (!isMapboxConfigured()) return tokenSetupEntries();
   const entries: IdleEntry[] = loadSavedDestinations()
     .filter((destination) => destination.address)
     .map((destination): IdleEntry => ({ kind: "saved", destination }));
@@ -1094,6 +1153,10 @@ function clampIdleSelection(): void {
 }
 
 function navigateToIdleEntry(entry: IdleEntry): void {
+  if (entry.kind === "action") {
+    entry.run();
+    return;
+  }
   const target: NavTarget =
     entry.kind === "saved"
       ? { kind: "query", query: entry.destination.address, label: entry.destination.name }
@@ -1233,8 +1296,9 @@ function paintIdle(image: GrayImage, win: NavWindow): void {
   image.drawText(mediumFont, 24, 16, "Navigate", 245);
   const busy = phase !== "idle";
   const entries = busy ? [] : idleEntries();
-  const hint = !isMapboxConfigured()
-    ? "Set a Mapbox token in Settings > API Keys to enable navigation."
+  const configured = isMapboxConfigured();
+  const hint = !configured
+    ? "Navigation needs a Mapbox public token (free at mapbox.com). Get one, then enter it here or in Settings > API Keys."
     : entries.length
       ? "Pick a destination below, or say one via Voice input (system menu, long-press)."
       : "Ask the voice assistant to navigate somewhere, or pick Voice input from the system menu (long-press) to say a destination. Save Home, Work and other places from the app menu.";
@@ -1255,7 +1319,7 @@ function paintIdle(image: GrayImage, win: NavWindow): void {
     paintIdleList(image, win, entries, y);
     drawFooter(
       image,
-      `${GESTURE_SCROLL} select   ${GESTURE_CLICK} go   ${GESTURE_SHORT_THEN_LONG_PRESS} app menu   ${GESTURE_DOUBLE_CLICK} back`,
+      `${GESTURE_SCROLL} select   ${GESTURE_CLICK} ${configured ? "go" : "choose"}   ${GESTURE_SHORT_THEN_LONG_PRESS} app menu   ${GESTURE_DOUBLE_CLICK} back`,
     );
   } else {
     drawFooter(image, `${GESTURE_SHORT_THEN_LONG_PRESS} app menu   ${GESTURE_DOUBLE_CLICK} back`);
@@ -1281,7 +1345,18 @@ function paintIdleList(image: GrayImage, win: NavWindow, entries: IdleEntry[], t
     if (selected) drawSelectionHighlight(image, rowX, y, rowWidth, rowHeight - 2, win.focused);
     const textX = rowX + 6;
     const textY = y + LIST_ROW_TEXT_INSET;
-    if (entry.kind === "saved") {
+    if (entry.kind === "action") {
+      const label = truncateText(smallFont, entry.label, labelWidth);
+      image.drawText(smallFont, textX, textY, label, selected ? 245 : 210);
+      const detailX = textX + labelWidth + 8;
+      image.drawText(
+        smallFont,
+        detailX,
+        textY,
+        truncateText(smallFont, entry.detail, rowX + rowWidth - 6 - detailX),
+        selected ? 170 : 130,
+      );
+    } else if (entry.kind === "saved") {
       const label = truncateText(smallFont, entry.destination.name, labelWidth);
       image.drawText(smallFont, textX, textY, label, selected ? 245 : 210);
       const detailX = textX + labelWidth + 8;
