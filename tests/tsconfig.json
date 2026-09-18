@@ -39,6 +39,7 @@
     "../app/health/sleep-stages.ts",
     "../app/health/health-chart.ts",
     "../app/health/health-glance.ts",
+    "../app/health/health-card.ts",
     "../app/health/health-phone-chart.ts"
   ]
 }

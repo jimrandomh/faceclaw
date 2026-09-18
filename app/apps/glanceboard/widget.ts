@@ -27,7 +27,7 @@ export interface GlanceWidget {
   paint(image: GrayImage): void;
 }
 
-export type GlanceWidgetId = "system-card" | "nightscout" | "compass" | "music" | "calendar" | "terminal";
+export type GlanceWidgetId = "system-card" | "nightscout" | "compass" | "music" | "calendar" | "terminal" | "health";
 
 export type GlanceWidgetDefinition = {
   id: GlanceWidgetId;

@@ -103,6 +103,7 @@ const {
   formatDuration,
 } = require(path.join(BUILD, "health/health-derive.js"));
 const { drawGlancePage, GLANCE_PAGES } = require(path.join(BUILD, "health/health-glance.js"));
+const { drawHealthCard } = require(path.join(BUILD, "health/health-card.js"));
 const { convertRecords } = require(path.join(BUILD, "health/health-ingest.js"));
 const { HealthStore } = require(path.join(BUILD, "health/health-store.js"));
 const { renderPhoneChart } = require(path.join(BUILD, "health/health-phone-chart.js"));
@@ -369,6 +370,18 @@ for (const layout of PHONE_LAYOUTS) {
 }
 
 // --- report ----------------------------------------------------------------
+for (const [name, data] of [
+  ["live", { kind: "live", summary: dailySummary(fixtures.samples, fixtures.sleep, TODAY), hasSteps: true, hasCalories: true }],
+  ["partial", { kind: "live", summary: dailySummary([], [], TODAY), hasSteps: true, hasCalories: false }],
+  ["sample", { kind: "fixture" }],
+  ["empty", { kind: "empty" }],
+  ["error", { kind: "error" }],
+]) {
+  const card = new GrayImage(288, 144, 0);
+  drawHealthCard(card, data, small, getFont(big ? "terminus24" : "terminus16"));
+  writePng(`glanceboard-health-${name}`, card);
+}
+
 console.log(`font: small lineHeight ${small.lineHeight}, large lineHeight ${large.lineHeight}`);
 console.log(`wrote ${written.length} PNGs to ${OUT}\n`);
 for (const entry of written) {

@@ -95,7 +95,7 @@ export function rollupSeries(
   return points;
 }
 
-function nextBucketStart(startMs: number, granularity: Granularity): number {
+export function nextBucketStart(startMs: number, granularity: Granularity): number {
   const date = new Date(startMs);
   if (granularity === "hour") date.setHours(date.getHours() + 1, 0, 0, 0);
   else date.setDate(date.getDate() + 1);
