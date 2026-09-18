@@ -7,31 +7,31 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Phone-side model of the CFW's flat 64 KiB texture cache (zlib_glue mode 12).
+ * Phone-side model of the CFW's flat 256 KiB texture cache (zlib_glue mode 18).
  * The firmware holds only bytes; every structural decision — where font
  * tables and glyph images live, what is resident, when to start over — is
- * made here. Layout per font: a 96-entry uint16 offset table (chars 32..127)
+ * made here. Layout per font: a 96-entry uint32 offset table (chars 32..127)
  * whose entries are written lazily as each glyph is uploaded; glyph images
  * are the GlyphAtlas cached bytes ([w][h][4bpp RLE]).
  *
  * Allocation is a bump pointer with reset-on-full: the realistic working set
  * (a few fonts' tables plus ~hundreds of glyphs at tens of bytes each) is far
- * below 64 KiB, so eviction sophistication buys nothing. After a reset the
+ * below 256 KiB, so eviction sophistication buys nothing. After a reset the
  * firmware cache still holds stale bytes; that is safe because a draw only
  * ever references (font table entry, glyph image) pairs uploaded in the
- * current generation — stale table entries are never named in a mode-14
+ * current generation — stale table entries are never named in a mode-20
  * string.
  *
- * Upload entries accumulate as complete [offset u16][len u16][data] records
- * and drain into one or more standalone mode-12 payloads, each independently
+ * Upload entries accumulate as complete [offset u32][len u16][data] records
+ * and drain into one or more standalone mode-18 payloads, each independently
  * valid, enqueued ahead of the image message that references them (the
  * transport is FIFO, so no ack round-trip is needed before use).
  *
  * Not thread-safe by itself: the communicator calls it under its own lock.
  */
 public final class TextureCacheState {
-    public static final int CACHE_SIZE = 65536;
-    private static final int FONT_TABLE_BYTES = 96 * 2;
+    public static final int CACHE_SIZE = 262144;
+    private static final int FONT_TABLE_BYTES = 96 * 4;
 
     private int allocEnd = 0;
     private final Map<Integer, Integer> fontTableOffsets = new HashMap<>();
@@ -64,7 +64,7 @@ public final class TextureCacheState {
     /**
      * Bytes currently allocated out of CACHE_SIZE, for logging/tuning (a
      * sudden drop in the frame log means a reset-on-full re-upload cycle —
-     * the signal that the 64 KiB budget is being outgrown).
+     * the signal that the 256 KiB budget is being outgrown).
      */
     public int usedBytes() {
         return allocEnd;
@@ -78,9 +78,9 @@ public final class TextureCacheState {
 
     /**
      * Ensure a glyph image (and its font table slot) is resident, queuing the
-     * mode-12 upload entries for anything newly placed. Returns the glyph's
+     * mode-18 upload entries for anything newly placed. Returns the glyph's
      * image offset, or -1 when the cache is full (caller resets and retries)
-     * or the encoding is outside the mode-14 table (32..127).
+     * or the encoding is outside the mode-20 table (32..127).
      */
     public int ensureGlyph(int fontId, int encoding, GlyphAtlas.Glyph glyph) {
         if (glyph == null || encoding < 32 || encoding > 127) return -1;
@@ -104,13 +104,14 @@ public final class TextureCacheState {
         glyphOffsets.put(key, offset);
 
         addEntry(offset, glyph.cachedBytes);
-        addEntry(table + 2 * (encoding - 32),
-                new byte[]{(byte) (offset & 0xff), (byte) ((offset >> 8) & 0xff)});
+        addEntry(table + 4 * (encoding - 32),
+                new byte[]{(byte) offset, (byte) (offset >> 8),
+                           (byte) (offset >> 16), (byte) (offset >> 24)});
         return offset;
     }
 
     /**
-     * Ensure an ImageAtlas entry is resident (mode-13 draws reference it by
+     * Ensure an ImageAtlas entry is resident (mode-19 draws reference it by
      * raw cache offset; no table involved). Returns the image offset, or -1
      * when the cache is full (caller resets and retries).
      */
@@ -127,12 +128,14 @@ public final class TextureCacheState {
     }
 
     private void addEntry(int offset, byte[] data) {
-        byte[] entry = new byte[4 + data.length];
+        byte[] entry = new byte[6 + data.length];
         entry[0] = (byte) (offset & 0xff);
         entry[1] = (byte) ((offset >> 8) & 0xff);
-        entry[2] = (byte) (data.length & 0xff);
-        entry[3] = (byte) ((data.length >> 8) & 0xff);
-        System.arraycopy(data, 0, entry, 4, data.length);
+        entry[2] = (byte) ((offset >> 16) & 0xff);
+        entry[3] = (byte) ((offset >> 24) & 0xff);
+        entry[4] = (byte) (data.length & 0xff);
+        entry[5] = (byte) ((data.length >> 8) & 0xff);
+        System.arraycopy(data, 0, entry, 6, data.length);
         pendingEntries.add(entry);
         pendingBytes += entry.length;
     }
@@ -147,7 +150,7 @@ public final class TextureCacheState {
     }
 
     /**
-     * Drain the queued entries into complete mode-12 payloads ([12][entries]),
+     * Drain the queued entries into complete mode-18 payloads ([18][entries]),
      * each at most maxPayloadBytes so a payload fits one BLE image message
      * without fragmentation. A single entry larger than the cap still gets its
      * own payload (the transport can fragment it).
@@ -162,7 +165,7 @@ public final class TextureCacheState {
             }
             if (current == null) {
                 current = new ByteArrayOutputStream(Math.min(maxPayloadBytes, 4 + entry.length));
-                current.write(12);
+                current.write(18);
             }
             current.write(entry, 0, entry.length);
         }
