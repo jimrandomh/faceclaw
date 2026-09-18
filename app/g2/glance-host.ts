@@ -77,7 +77,7 @@ export class GlanceHost {
     const provider = this.options.getProvider();
     if (!provider?.isEnabled()) return null;
     if (gesture === "click" && !provider.showOnTap()) return null;
-    if (gesture === "long-press" && !provider.showOnLongPress()) return null;
+    if ((gesture === "long-press" || gesture === "short-then-long-press") && !provider.showOnLongPress()) return null;
     if (gesture === "head-tilt" && !provider.showOnHeadTilt()) return null;
     return glanceEventForGesture(gesture, this.isVisible());
   }

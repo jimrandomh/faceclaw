@@ -78,7 +78,7 @@ export const glanceShowOnLongPressSetting = new ConfigSettingBoolean({
   label: "Show on long press",
   storageKey: "glanceboard.showOnLongPress",
   defaultValue: true,
-  description: "Holding a long-press while asleep shows the Glanceboard until the press is released.",
+  description: "A long-press or short-then-long-press while asleep shows the Glanceboard until the press is released.",
 });
 
 /** The head-tilt wake shows the board (for the tap duration) instead of the regular UI. */

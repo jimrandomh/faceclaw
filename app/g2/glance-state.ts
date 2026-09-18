@@ -2,7 +2,7 @@
  * The Glanceboard's visibility rules, as a pure reducer so they can be tested
  * without the display plumbing. The board is an alternate sleep-time display:
  * while the shell is asleep a press (single tap, or a head-tilt wake) shows it
- * for a short while, a hold (long-press) shows it until the press is released,
+ * for a short while, a hold (long-press or short-then-long-press) shows it until release,
  * and a double-tap dismisses it in favour of the regular UI. GlanceHost feeds
  * these events in and applies the resulting visibility to the compositor.
  *
@@ -49,8 +49,7 @@ export function reduceGlance(
     case "hold":
       return { visible: true, holding: true, hideAtMs: null };
     case "release":
-      // Releases also follow presses the board was never holding for (a
-      // tap-then-hold, a release delivered late); those mean nothing here.
+      // Releases delivered late or after a disabled hold gesture mean nothing here.
       return state.holding ? GLANCE_HIDDEN : state;
     case "timeout":
       if (!state.visible || state.holding || state.hideAtMs === null || nowMs < state.hideAtMs) return state;
@@ -67,7 +66,7 @@ export function reduceGlance(
  * already handles or ignores while asleep.
  */
 export function glanceEventForGesture(
-  gesture: "click" | "double-click" | "long-press" | "long-press-release" | "head-tilt" | string,
+  gesture: "click" | "double-click" | "long-press" | "short-then-long-press" | "long-press-release" | "head-tilt" | string,
   boardVisible: boolean,
 ): GlanceEvent | null {
   switch (gesture) {
@@ -75,6 +74,7 @@ export function glanceEventForGesture(
     case "head-tilt":
       return { type: "press" };
     case "long-press":
+    case "short-then-long-press":
       return { type: "hold" };
     case "long-press-release":
       return { type: "release" };

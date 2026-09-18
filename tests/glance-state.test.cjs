@@ -47,15 +47,16 @@ test("dismiss hides from any state", () => {
   assert.deepEqual(reduceGlance(shown, { type: "dismiss" }, T0), GLANCE_HIDDEN);
 });
 
-test("gesture mapping: taps and head-tilt press, long-press holds, double-tap dismisses only a visible board", () => {
+test("gesture mapping: taps and head-tilt press, both long-press gestures hold, double-tap dismisses only a visible board", () => {
   assert.deepEqual(glanceEventForGesture("click", false), { type: "press" });
   assert.deepEqual(glanceEventForGesture("head-tilt", false), { type: "press" });
   assert.deepEqual(glanceEventForGesture("long-press", false), { type: "hold" });
+  assert.deepEqual(glanceEventForGesture("short-then-long-press", false), { type: "hold" });
+  assert.deepEqual(glanceEventForGesture("short-then-long-press", true), { type: "hold" });
   assert.deepEqual(glanceEventForGesture("long-press-release", true), { type: "release" });
   assert.equal(glanceEventForGesture("double-click", false), null);
   assert.deepEqual(glanceEventForGesture("double-click", true), { type: "dismiss" });
   assert.equal(glanceEventForGesture("scroll-up", true), null);
-  assert.equal(glanceEventForGesture("short-then-long-press", true), null);
 });
 
 test("the press timeout is the host's when supplied", () => {

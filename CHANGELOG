@@ -6,6 +6,7 @@
 * Glanceboard tap setting includes a Disable option
 * Refinements to builtin games
 * Optimize bluetooth message transport
+* Short-the-long gesture from screen off activates the glanceboard
 
 ## 0.7.0 - 2026-09-12
 
