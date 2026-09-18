@@ -32,6 +32,8 @@ public final class RingProtocolSelfTest {
         testHourlyDecode();
         testStepsDecode();
         testSleepDecodeAndIdentities();
+        testDailyWireLayouts();
+        testDeviceStatus();
 
         System.out.println();
         System.out.println(failures == 0
@@ -344,12 +346,70 @@ public final class RingProtocolSelfTest {
     }
 
     // ------------------------------------------------------------------
-    // Synthetic body builders (mirror the spec layout, used only by the tests)
+    private static void testDailyWireLayouts() {
+        section("footer-free daily layouts and timezone anchors");
+        long anchor = 1789700400L;
+        byte[] hr = hourlyBody(2, anchor, anchor + 3600, 70, 1,
+            new int[][] {{0, 70, 80, 60}, {1, 72, 82, 62}});
+        expect("two-hour HR frame is 37 bytes", dataFrame(1, hr).raw.length == 37);
+        for (int timezone : new int[] {-420, -240, 0, 330, 840}) {
+            putLe(hr, 3, timezone, 2);
+            RingProtocol.HourlyRecord decoded = RingProtocol.decodeHourly(dataFrame(1, hr), 0);
+            expect("anchor works at timezone " + timezone,
+                decoded != null && decoded.anchorUnixSeconds == anchor && decoded.groups.length == 2);
+        }
+        byte[] spo2 = hourlyBody(1, anchor, anchor, 98, 1, new int[][] {{0, 98, 99, 97}});
+        expect("one-hour SpO2 frame is 33 bytes", dataFrame(2, spo2).raw.length == 33);
+        expect("SpO2 decodes without footer", RingProtocol.decodeHourly(dataFrame(2, spo2), 0).groups[0].avg == 98);
+        byte[] hrv = hourlyBody(1, anchor, anchor, 51, 2, new int[][] {{3, 51, 300, 40}});
+        RingProtocol.HourlyRecord variability = RingProtocol.decodeHourly(dataFrame(4, hrv), 0);
+        expect("one-hour HRV retains two-byte values", variability.valueWidth == 2
+            && variability.groups[0].hourIndex == 3 && variability.groups[0].max == 300);
+
+        // Offline daily pages omit the five-byte latest-reading prefix.
+        byte[] offline = new byte[9 + 8];
+        System.arraycopy(hr, 0, offline, 0, 9);
+        System.arraycopy(hr, 14, offline, 9, 8);
+        RingProtocol.HourlyRecord past = RingProtocol.decodeHourly(dataFrame(1, offline), 0);
+        expect("daily page without latest sample decodes", past != null
+            && past.current == -1 && past.groups[1].avg == 72);
+        putLe(offline, 5, 0, 4);
+        expect("zero day remains unresolved", RingProtocol.anchorUnixSeconds(offline) == RingProtocol.UNKNOWN_TIME);
+
+        int[][] buckets = new int[8][4];
+        for (int i = 0; i < buckets.length; i++) buckets[i] = new int[] {i, i * 10, 1, 2};
+        byte[] activity = stepsBody(anchor, buckets);
+        expect("eight-bucket activity frame is 80 bytes", dataFrame(5, activity).raw.length == 80);
+        expect("activity decodes without footer", RingProtocol.decodeSteps(dataFrame(5, activity), 0).buckets.length == 8);
+        expect("trailing garbage rejected", RingProtocol.decodeSteps(dataFrame(5,
+            Arrays.copyOf(activity, activity.length + 4)), 0) == null);
+    }
+
+    private static void testDeviceStatus() {
+        section("direct device status battery");
+        byte[] payload = {0x11, 0x22, 82, 2, 1, 0, 0, 0, 0};
+        for (int charge = 0; charge <= 3; charge++) {
+            payload[3] = (byte) charge;
+            RingProtocol.Frame frame = RingProtocol.parse(RingProtocol.buildFrame(
+                RingProtocol.CHAN_DEVICE, RingProtocol.KIND_RSP, 0, 1, 1, payload));
+            RingProtocol.DeviceStatus status = RingProtocol.decodeDeviceStatus(frame);
+            expect("battery and charge enum " + charge, status != null && status.battery == 82
+                && status.charging == (charge == 0 ? -1 : charge == 2 ? 0 : 1));
+        }
+        payload[2] = (byte) 255;
+        expect("invalid battery rejected", RingProtocol.decodeDeviceStatus(RingProtocol.parse(
+            RingProtocol.buildFrame(1, 3, 0, 1, 1, payload))) == null);
+        expect("wrong channel rejected", RingProtocol.decodeDeviceStatus(dataFrame(1, payload)) == null);
+        expect("short response rejected", RingProtocol.decodeDeviceStatus(RingProtocol.parse(
+            RingProtocol.buildFrame(1, 3, 0, 1, 1, new byte[2]))) == null);
+    }
+
+    // Synthetic body builders matching the recovered R1 serializers.
     // ------------------------------------------------------------------
 
     private static byte[] hourlyBody(int count, long anchor, long tag, int current,
                                      int width, int[][] groups) {
-        byte[] body = new byte[13 + width + count * (1 + 3 * width) + 4];
+        byte[] body = new byte[13 + width + count * (1 + 3 * width)];
         body[0] = 0x11;
         body[1] = 0x22;
         body[2] = (byte) count;
@@ -366,12 +426,11 @@ public final class RingProtocolSelfTest {
             putLe(body, offset, g[3], width);
             offset += width;
         }
-        putFooter(body);
         return body;
     }
 
     private static byte[] stepsBody(long anchor, int[][] buckets) {
-        byte[] body = new byte[9 + buckets.length * 7 + 4];
+        byte[] body = new byte[9 + buckets.length * 7];
         body[0] = 0x33;
         body[1] = 0x44;
         body[2] = (byte) buckets.length;
@@ -384,13 +443,12 @@ public final class RingProtocolSelfTest {
             putLe(body, offset + 5, b[3], 2);
             offset += 7;
         }
-        putFooter(body);
         return body;
     }
 
     private static byte[] sleepBody(int recordState, long start, long end, int total, int wake,
                                     int rem, int light, int deep, int[][] segments) {
-        byte[] body = new byte[34 + segments.length * 3 + 4];
+        byte[] body = new byte[34 + segments.length * 3];
         body[0] = 0x55;
         body[1] = 0x66;
         body[2] = (byte) recordState;
@@ -414,7 +472,6 @@ public final class RingProtocolSelfTest {
             putLe(body, offset + 1, s[1], 2);
             offset += 3;
         }
-        putFooter(body);
         return body;
     }
 
@@ -425,14 +482,6 @@ public final class RingProtocolSelfTest {
         body[3] = 0x10;
         body[4] = (byte) 0xFF;
         putLe(body, 5, anchor, 4);
-    }
-
-    private static void putFooter(byte[] body) {
-        int offset = body.length - 4;
-        body[offset] = (byte) 0x94;
-        body[offset + 1] = 0x33;
-        body[offset + 2] = 0x01;
-        body[offset + 3] = 0x00;
     }
 
     private static void putLe(byte[] out, int offset, long value, int width) {

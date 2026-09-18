@@ -92,13 +92,6 @@ public final class RingProtocol {
         CMD_HI_STEPS,
     };
 
-    /** Constant terminator on every record body of every type. Meaning unknown. */
-    private static final byte[] RECORD_FOOTER = {(byte) 0x94, 0x33, 0x01, 0x00};
-
-    /** ANCHOR field marker: 0x10 0xFF then a u32 LE Unix timestamp. */
-    private static final int ANCHOR_MARK_HI = 0x10;
-    private static final int ANCHOR_MARK_LO = 0xFF;
-
     /** Returned by anchor/timestamp accessors when the value is not known. */
     public static final long UNKNOWN_TIME = -1L;
 
@@ -489,34 +482,31 @@ public final class RingProtocol {
     /**
      * Heart rate / SpO2 / HRV: an hourly {@code [index][avg][max][min]} series.
      *
-     * <p>The value width W is not guessed — it is resolved from the body length
-     * by {@code len == W + COUNT * (1 + 3W)}, which has a unique solution for
-     * every frame in the reference capture (W=1 for HR and SpO2, W=2 for HRV).
+     * <p>Layout follows openR1 r1_health_encode_daily_u8/u16 in r1_health.c:
+     * count, signed timezone minutes, day start, optional latest timestamp/value,
+     * then count groups. There is no footer. HR/SpO2 values are one byte; HRV
+     * values are two. Subtracting a supposed four-byte footer misdecoded a
+     * one-group HRV page as one-byte values and rejected real HR/SpO2 pages.
      */
     public static HourlyRecord decodeHourly(Frame frame, long receivedAtMs) {
         byte[] pay = frame.payload;
-        if (pay.length < 13 + RECORD_FOOTER.length) {
+        if (pay.length < 9) {
             return null;
         }
         int count = pay[2] & 0xff;
         long anchor = anchorUnixSeconds(pay);
-        long tag = readUInt32Le(pay, 9);
-
-        int bodyLen = pay.length - 13 - RECORD_FOOTER.length;
-        int width;
-        if (bodyLen == 1 + count * 4) {
-            width = 1;
-        } else if (bodyLen == 2 + count * 7) {
-            width = 2;
-        } else {
-            return null;
-        }
-
-        int current = readUIntLe(pay, 13, width);
-        int offset = 13 + width;
+        int width = frame.cmdHi == CMD_HI_HRV ? 2 : 1;
+        int groupBytes = count * (1 + 3 * width);
+        int prefixLength = pay.length - groupBytes;
+        boolean hasLatest = prefixLength == 13 + width;
+        if (count > 24 || (!hasLatest && prefixLength != 9)) return null;
+        long tag = hasLatest ? readUInt32Le(pay, 9) : UNKNOWN_TIME;
+        int current = hasLatest ? readUIntLe(pay, 13, width) : -1;
+        int offset = prefixLength;
         HourlyGroup[] groups = new HourlyGroup[count];
         for (int i = 0; i < count; i++) {
             int hourIndex = pay[offset] & 0xff;
+            if (hourIndex >= 24) return null;
             offset++;
             int avg = readUIntLe(pay, offset, width);
             offset += width;
@@ -538,11 +528,11 @@ public final class RingProtocol {
      */
     public static StepsRecord decodeSteps(Frame frame, long receivedAtMs) {
         byte[] pay = frame.payload;
-        if (pay.length < 9 + RECORD_FOOTER.length) {
+        if (pay.length < 9) {
             return null;
         }
         int count = pay[2] & 0xff;
-        if (pay.length != 9 + count * 7 + RECORD_FOOTER.length) {
+        if (count > 144 || pay.length != 9 + count * 7) {
             return null;
         }
         long anchor = anchorUnixSeconds(pay);
@@ -550,6 +540,7 @@ public final class RingProtocol {
         StepsBucket[] buckets = new StepsBucket[count];
         for (int i = 0; i < count; i++) {
             int index = pay[offset] & 0xff;
+            if (index >= 144) return null;
             int steps = readUInt16Le(pay, offset + 1);
             int v2 = readUInt16Le(pay, offset + 3);
             int v3 = readUInt16Le(pay, offset + 5);
@@ -574,12 +565,13 @@ public final class RingProtocol {
         int recordState = pay[2] & 0xff;
         byte[] unknownA = safeRange(pay, 3, 9);
         long unknownTag = pay.length >= 13 ? readUInt32Le(pay, 9) : UNKNOWN_TIME;
-        if (recordState != 1 || pay.length < 34 + RECORD_FOOTER.length) {
+        if (recordState != 1) {
             // RECSTATE 2 is the empty / end-of-list marker.
             return new SleepRecord(
                 receivedAtMs, recordState, unknownA, unknownTag,
                 0, 0, 0, 0, 0, 0, 0, new SleepSegment[0]);
         }
+        if (pay.length < 34) return null;
 
         long startTs = readUInt32Le(pay, 14);
         long endTs = readUInt32Le(pay, 18);
@@ -588,8 +580,8 @@ public final class RingProtocol {
         int remTime = readUInt16Le(pay, 26);
         int lightTime = readUInt16Le(pay, 28);
         int deepTime = readUInt16Le(pay, 30);
-        int segmentCount = pay[32] & 0xff;
-        if (pay.length != 34 + segmentCount * 3 + RECORD_FOOTER.length) {
+        int segmentCount = readUInt16Le(pay, 32);
+        if (pay.length != 34 + segmentCount * 3) {
             return null;
         }
         SleepSegment[] segments = new SleepSegment[segmentCount];
@@ -607,7 +599,7 @@ public final class RingProtocol {
 
     /**
      * The record's day anchor as Unix epoch seconds, or {@link #UNKNOWN_TIME}
-     * when the anchor field is the six-zero-byte "backlog page" form.
+     * when the day timestamp is zero or the timezone offset is invalid.
      *
      * <p><b>UNSOLVED:</b> a backlog page's true base is not understood as a
      * general rule. One capture's backlog base landed at 2026-09-08 23:48:49
@@ -620,10 +612,32 @@ public final class RingProtocol {
         if (payload == null || payload.length < 9) {
             return UNKNOWN_TIME;
         }
-        if ((payload[3] & 0xff) == ANCHOR_MARK_HI && (payload[4] & 0xff) == ANCHOR_MARK_LO) {
-            return readUInt32Le(payload, 5);
+        // These two bytes are an int16 timezone offset, not magic. 10 ff is
+        // -240 minutes (EDT); Pacific time, UTC and eastern zones differ.
+        int timezoneMinutes = (short) readUInt16Le(payload, 3);
+        long anchor = readUInt32Le(payload, 5);
+        return timezoneMinutes >= -840 && timezoneMinutes <= 840 && anchor != 0
+            ? anchor : UNKNOWN_TIME;
+    }
+
+    /** Device-channel 00:01 response, matching openR1 get_device_status(). */
+    public static DeviceStatus decodeDeviceStatus(Frame frame) {
+        if (frame == null || !frame.crcOk || frame.chan != CHAN_DEVICE
+                || frame.kind != KIND_RSP || frame.cmdHi != 0 || frame.cmdLo != 1
+                || frame.payload.length != 9) return null;
+        int battery = frame.payload[2] & 0xff;
+        int charge = frame.payload[3] & 0xff;
+        if (battery > 100 || charge > 3) return null;
+        return new DeviceStatus(battery, charge == 0 ? -1 : charge == 2 ? 0 : 1);
+    }
+
+    public static final class DeviceStatus {
+        public final int battery;
+        public final int charging;
+        DeviceStatus(int battery, int charging) {
+            this.battery = battery;
+            this.charging = charging;
         }
-        return UNKNOWN_TIME;
     }
 
     // ------------------------------------------------------------------
@@ -664,7 +678,7 @@ public final class RingProtocol {
         public final long tagRaw;
         /** The metric's latest value. */
         public final int current;
-        /** 1 byte for HR/SpO2, 2 for HRV; resolved from the body length. */
+        /** 1 byte for HR/SpO2, 2 for HRV, as defined by the metric serializer. */
         public final int valueWidth;
         public final HourlyGroup[] groups;
 

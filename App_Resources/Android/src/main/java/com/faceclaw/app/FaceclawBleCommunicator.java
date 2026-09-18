@@ -15,6 +15,8 @@ import android.os.SystemClock;
 import android.util.Log;
 
 import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.FileOutputStream;
 import java.io.PrintWriter;
 import java.io.StringWriter;
 import java.nio.charset.StandardCharsets;
@@ -245,6 +247,8 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private int headsetCharging = -1;
     private int ringBattery = -1;
     private int ringCharging = -1;
+    private int directRingBattery = -1;
+    private int directRingCharging = -1;
     // Silent mode: 1 = on, 0 = off, -1 = not yet known. See updateSilentModeLocked.
     private int silentMode = -1;
     private int wearState = -1;
@@ -2052,8 +2056,23 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             return true;
         }
 
+        // Keep the original bytes before acknowledging them. Ring firmware
+        // variants can have layouts we cannot decode yet, and the ring may
+        // never deliver an acknowledged page again. This private journal also
+        // lets us diagnose a new device without repeatedly draining its data.
+        if (!journalRingFrame(frame)) return true;
+
         // Route on the CHAN byte, not on the shape of the payload.
         if (frame.chan != RingProtocol.CHAN_HEALTH) {
+            RingProtocol.DeviceStatus status = RingProtocol.decodeDeviceStatus(frame);
+            if (status != null) {
+                synchronized (lock) {
+                    directRingBattery = status.battery;
+                    directRingCharging = status.charging;
+                    emitBatteryState(headsetBattery, headsetCharging);
+                }
+                logLine("direct ring battery " + status.battery + "% charging=" + status.charging);
+            }
             Log.d(TAG, "ring device frame " + frame.describe());
             return true;
         }
@@ -2126,6 +2145,25 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         interruptibleSleep.interrupt();
     }
 
+    private boolean journalRingFrame(RingProtocol.Frame frame) {
+        File folder = new File(appContext.getFilesDir(), "health");
+        try {
+            if (!folder.isDirectory() && !folder.mkdirs()) {
+                throw new java.io.IOException("cannot create health folder");
+            }
+            String line = "\n{\"receivedAtMs\":" + System.currentTimeMillis()
+                + ",\"raw\":\"" + hex(frame.raw) + "\"}\n";
+            try (FileOutputStream out = new FileOutputStream(new File(folder, "ring-frames.jsonl"), true)) {
+                out.write(line.getBytes(StandardCharsets.UTF_8));
+                out.getFD().sync();
+            }
+            return true;
+        } catch (Exception error) {
+            logLine("ring frame persistence failed; page not acknowledged: " + safeMessage(error));
+            return false;
+        }
+    }
+
     private void handleRenderNotification(String address, byte[] data) {
         FaceclawAudioPacketListener listenerToCall;
         long arrivalMs = SystemClock.elapsedRealtime();
@@ -2158,6 +2196,9 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                     // link; the sequence counter restarts on the next connect.
                     ringReassembler.reset();
                     ringOutbound.clear();
+                    directRingBattery = -1;
+                    directRingCharging = -1;
+                    emitBatteryState(headsetBattery, headsetCharging);
                 }
                 logLine(connected ? "direct ring BLE connected" : "direct ring BLE disconnected");
                 return;
@@ -2749,7 +2790,8 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             RingProtocol.buildFrame(RingProtocol.CHAN_DEVICE, RingProtocol.KIND_DATA, 0x00, 0x0e, seq2,
                 concatBytes(le16(nonce2), clock, new byte[] {0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00})),
             RingProtocol.buildFrame(RingProtocol.CHAN_DEVICE, RingProtocol.KIND_DATA, 0x00, 0x05, seq3,
-                concatBytes(le16(nonce3), new byte[] {0x10, (byte) 0xff}, clock)),
+                concatBytes(le16(nonce3),
+                    le16(TimeZone.getDefault().getOffset(nowMs) / 60000), clock)),
             // Battery, firmware version, device id - all bare nonce-only REQs,
             // same shape as the health requests. New this round.
             RingProtocol.buildFrame(RingProtocol.CHAN_DEVICE, RingProtocol.KIND_REQ, 0x00, 0x01, seq4,
@@ -4792,6 +4834,8 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private void resetSessionStateLocked() {
         ringBattery = -1;
         ringCharging = -1;
+        directRingBattery = -1;
+        directRingCharging = -1;
         sessionReady = false;
         shutdownRequested = false;
         fixedLayoutCreated = false;
@@ -4952,8 +4996,11 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     }
 
     private void emitBatteryState(int headsetBattery, int headsetCharging) {
-        final int reportedRingBattery = ringBattery;
-        final int reportedRingCharging = ringCharging;
+        // A missing glasses-side report must not erase a verified direct
+        // reading. Fall back to the glasses cache when the direct link drops.
+        final boolean useDirect = ringConnected && directRingBattery >= 0;
+        final int reportedRingBattery = useDirect ? directRingBattery : ringBattery;
+        final int reportedRingCharging = useDirect ? directRingCharging : ringCharging;
         final FaceclawBleCommunicatorListener current = listener;
         if (current == null) {
             return;
