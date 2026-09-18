@@ -121,14 +121,37 @@ export function drawGlancePage(
   switch (page.kind) {
     case "overview":
       drawOverview(image, size, fonts, data);
-      return;
+      break;
     case "metric":
       drawMetricDetail(image, size, fonts, page.metric, data);
-      return;
+      break;
     case "sleep":
       drawSleepDetail(image, size, fonts, data);
-      return;
+      break;
   }
+  if (data.fixture) drawSampleDataModal(image, size, fonts);
+}
+
+/** Keep example measurements unmistakable on every page until live data lands. */
+function drawSampleDataModal(image: GrayImage, size: GlanceSize, fonts: GlanceFonts): void {
+  const title = "Sample data";
+  const lines = ["These are example measurements.", "No ring measurements saved yet."];
+  const { small, large } = fonts;
+  const width = Math.min(size.width - 20,
+    Math.max(large.measureText(title), ...lines.map((line) => small.measureText(line))) + 40);
+  const height = large.lineHeight + 2 * lineStep(small) + 40;
+  const x = Math.round((size.width - width) / 2);
+  const y = Math.round((size.height - height) / 2);
+  // Bake before masking so deferred chart labels cannot appear above the box.
+  image.bakeDeferredDrawsInPlace();
+  for (let i = 0; i < image.pixels.length; i++) image.pixels[i] = Math.round(image.pixels[i]! * 0.18);
+  image.fillRoundedRect(x, y, width, height, INK.background, 8);
+  image.drawRoundedRect(x, y, width, height, INK.title, 8);
+  image.drawText(large, Math.round((size.width - large.measureText(title)) / 2), y + 14, title, INK.title);
+  lines.forEach((line, index) => {
+    image.drawText(small, Math.round((size.width - small.measureText(line)) / 2),
+      y + 24 + large.lineHeight + index * lineStep(small), line, INK.title);
+  });
 }
 
 // ===========================================================================
@@ -150,7 +173,7 @@ function drawHeader(
 }
 
 /**
- * The scroll hint, and the sample-data badge when the data is generated.
+ * The scroll hint.
  *
  * The hint is not decoration: the drill-down has no on-screen affordance
  * otherwise - a page that opens on a scroll looks identical to a page that does
@@ -161,12 +184,10 @@ function drawFooter(
   size: GlanceSize,
   fonts: GlanceFonts,
   hint: string,
-  fixture: boolean,
 ): void {
   const { small } = fonts;
   const y = size.height - small.lineHeight - 2;
   image.drawText(small, MARGIN, y, hint, INK.faint);
-  if (fixture) drawTextRight(image, small, size.width - MARGIN, y, "Sample data", INK.faint);
 }
 
 // ===========================================================================
@@ -204,7 +225,7 @@ function drawOverview(
 
   if (!summary) {
     image.drawText(small, MARGIN, headerBottom + step, "Waiting for ring data...", INK.dim);
-    drawFooter(image, size, fonts, "", data.fixture);
+    drawFooter(image, size, fonts, "");
     return;
   }
 
@@ -243,7 +264,7 @@ function drawOverview(
   }
 
   void large;
-  drawFooter(image, size, fonts, `${GESTURE_SCROLL} detail`, data.fixture);
+  drawFooter(image, size, fonts, `${GESTURE_SCROLL} detail`);
 }
 
 type ColumnLayout = {
@@ -403,7 +424,7 @@ function drawMetricDetail(
     );
   }
 
-  drawFooter(image, size, fonts, `${GESTURE_SCROLL} ${pageHint(metric)}`, data.fixture);
+  drawFooter(image, size, fonts, `${GESTURE_SCROLL} ${pageHint(metric)}`);
 }
 
 function summaryFor(metric: SampleMetric, summary: DailySummary | null): MetricSummary {
@@ -466,7 +487,7 @@ function drawSleepDetail(
 
   if (!sleep) {
     image.drawText(small, MARGIN, y, "No sleep record", INK.dim);
-    drawFooter(image, size, fonts, `${GESTURE_SCROLL} Calories · Summary`, data.fixture);
+    drawFooter(image, size, fonts, `${GESTURE_SCROLL} Calories · Summary`);
     return;
   }
 
@@ -503,5 +524,5 @@ function drawSleepDetail(
   }
 
   image.drawText(small, MARGIN, y, hypnogramCaptionShort(), INK.faint);
-  drawFooter(image, size, fonts, `${GESTURE_SCROLL} Calories · Summary`, data.fixture);
+  drawFooter(image, size, fonts, `${GESTURE_SCROLL} Calories · Summary`);
 }
