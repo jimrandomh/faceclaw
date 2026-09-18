@@ -31,10 +31,10 @@ and the shared SVG rasterizer.
 
 Validation: TypeScript checking and signed physical-device iOS build pass.
 The simulator build launches and renders the main screen and shared launcher.
-The final signed app is installed on the development iPhone, but iOS rejects
-automatic launch with a signing/entitlement/developer-trust error. Local code
-signature verification passes; the current provisioning profile includes the
-iPhone and expires September 25. On-phone trust/launch needs checking.
+The final signed app is installed on the development iPhone. The user renewed
+developer-certificate trust after iOS initially blocked launch. A subsequent
+NativeScript deployment launched successfully, connected to the glasses, and
+received both-lens ACKs for a display frame.
 The transport parity test compiles Android's production Java encoder and
 compares complete packets, including persistent history, reset, MTU limits,
 and raw fallback for incompressible maximum-size records. Session tests cover
@@ -45,7 +45,22 @@ The full suite has 420 passing tests and 21 failures. All 21 reproduce on a
 clean archive of main at 1727474: compass, pinball/touch, and terminal test
 harness/behavior checks. There are no additional failing tests from this merge.
 
-Hardware acceptance still requires current-firmware glasses: connect, scroll
-and animate the display, check both lenses, exercise mic and ring input, lock
-the phone, and disconnect/reconnect. Automated tests do not establish on-lens
-or radio reliability.
+Further hardware acceptance: scroll and animate the display, visually check
+both lenses, exercise mic and ring input, lock the phone, and disconnect/reconnect.
+The initial successful frame does not establish sustained radio reliability.
+
+## Development deployment and stale LiveSync code
+
+Installing the IPA with `devicectl` alone left an old September 8 JavaScript
+bundle in `Library/Application Support/LiveSync/app` in the app's data container.
+NativeScript debug startup used that bundle instead of the newly installed
+one, causing the obsolete `img640, fbguard, wearnotify` firmware rejection.
+Refreshing through NativeScript fixed the issue without clearing app settings:
+
+```sh
+npm run run:ios -- --device 00008150-000C383921A3C01C --no-hmr --no-watch
+```
+
+Use this deployment path when updating an existing development installation.
+The refreshed on-device `bundle.mjs` was copied back and verified against the
+prepared bundle; it contains the shared revision-13 check and SID `0xf0`.
