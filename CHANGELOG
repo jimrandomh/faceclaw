@@ -2,7 +2,7 @@
 
 ## 0.7.1 - Unreleased
 
-### Features
+### Minor Features
 
 * Mark stock firmware 2.3 as validated for installing custom firmware over
 * Add on-device Whisper as a voice transcription option
@@ -13,7 +13,25 @@
 * Glanceboard: Tap setting includes a Disable option
 * Glanceboard: Add a 2x3 layout option
 
-### Technical
+### iOS Developer Beta
+
+This release contains a developer beta of an iOS port. Most of the
+functionality present in the Android version is working, but it is
+considerably buggier, missing some functionality entirely, and generally not
+quite ready for non-developer users. To use it at this stage, you will have to
+compile it from source code yourself; it is not present in the App Store and
+does not have a Testflight.
+
+Current status:
+* Custom firmware flashing: Tested end to end and working
+* Voice input: Working. On-device transcription with Siri dictation only; cloud transcription providers are not yet supported.
+* AI agent integration: Working. Cloud providers only; on-device LLM is not yet supported.
+* Notifications: Working, with rough edges. Notifications appear on the glasses, but they don't have distinguishing icons and the only action you can take on a notification is dismissing it.
+* Music player integration: Not yet implemented at all
+* Calendar: Not yet implemented at all
+* EvenHub: Partially working. Hub apps install and run, sometimes. They freeze when the app is in the background or the phone is locked.
+
+### Protocol
 
 * Custom bluetooth messages now use a new SID, rather than modifying the stock image-update message type
 * Compression is done at the transport layer, rather than individual image data buffers
