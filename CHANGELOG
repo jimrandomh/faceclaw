@@ -2,13 +2,23 @@
 
 ## 0.7.1 - Unreleased
 
+### Features
+
+* Mark stock firmware 2.3 as validated for installing custom firmware over
+* Add on-device Whisper as a voice transcription option
 * Add Wear OS watch battery indicator to the top bar and Glanceboard
-* Glanceboard tap setting includes a Disable option
 * Refinements to builtin games
-* Optimize bluetooth message transport
 * Short-the-long gesture from screen off activates the glanceboard
-* Glanceboard has a 2x3 layout option
-* Compass no longer discards calibration when off
+* Compass: No longer discards calibration when off
+* Glanceboard: Tap setting includes a Disable option
+* Glanceboard: Add a 2x3 layout option
+
+### Technical
+
+* Custom bluetooth messages now use a new SID, rather than modifying the stock image-update message type
+* Compression is done at the transport layer, rather than individual image data buffers
+* Expand the texture cache to 256kb
+* Convert a large chunk of the codebase from Android-specific Java to cross-platform Kotlin for iOS porting
 
 ## 0.7.0 - 2026-09-12
 
