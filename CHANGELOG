@@ -8,6 +8,7 @@
 * Optimize bluetooth message transport
 * Short-the-long gesture from screen off activates the glanceboard
 * Glanceboard has a 2x3 layout option
+* Compass no longer discards calibration when off
 
 ## 0.7.0 - 2026-09-12
 

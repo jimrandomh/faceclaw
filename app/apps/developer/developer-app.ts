@@ -6,6 +6,7 @@ import { BandwidthBenchmarkLayer } from "./bandwidth-benchmark";
 import { LightSensorDemoLayer } from "./light-sensor-demo";
 import { ResourceUsageLayer } from "./resource-usage";
 import { LoadAppFromQrLayer, LoadAppFromUrlLayer } from "./load-app";
+import { unicodeTestMenu } from "./unicode-test";
 import { type AppContext } from "../app-definition";
 import { getDefaultSmallFont } from "../../graphics/ui-fonts";
 import { appViewportSize } from "../../ui/shell/geometry";
@@ -81,6 +82,9 @@ function debugTestsMenu(): MenuLayer {
           ctx.stack.push(new BandwidthBenchmarkLayer(ctx.actions.requestRender));
         },
       },
+      submenuItem("Unicode test", (ctx) => {
+        ctx.stack.push(unicodeTestMenu(MENU_LAYOUT));
+      }),
     ],
     MENU_LAYOUT,
   );
