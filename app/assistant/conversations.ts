@@ -1,5 +1,5 @@
 import { AssistantSession, type AssistantBackendConfig, type AssistantSessionHistory } from "./session";
-import { ASSISTANT_MODEL_VALUES, type AssistantModel } from "./models";
+import { ASSISTANT_MODEL_VALUES, supportedAssistantModel, type AssistantModel } from "./models";
 
 export type ReasoningLevel = "default" | "low" | "medium" | "high";
 export type Conversation = {
@@ -31,7 +31,7 @@ export class AssistantConversations {
           typeof record.id === "string" && ASSISTANT_MODEL_VALUES.includes(record.model) &&
           ["default", "low", "medium", "high"].includes(record.reasoning) &&
           Array.isArray(record.history?.messages) && Array.isArray(record.history?.transcript),
-        ).map((record) => ({ ...record, session: null }));
+        ).map((record) => ({ ...record, model: supportedAssistantModel(record.model), session: null }));
         this.selectedId = data.selectedId;
       }
     } catch { /* First launch or invalid saved state. */ }

@@ -1067,7 +1067,7 @@ class Shell {
    */
   private buildVoiceSendTargets(): VoiceSendTarget[] {
     const targets: VoiceSendTarget[] = [];
-    if (!global.isIOS && this.isAssistantAvailable()) {
+    if (this.isAssistantAvailable()) {
       targets.push({
         id: "assistant",
         label: "Send to Assistant",
@@ -1254,7 +1254,7 @@ class Shell {
       this.showAlert(
         assistantBackendSetting.get() === "external"
           ? "Configure the agent bridge host and token in Settings."
-          : "Set an API key or download the on-phone model in Settings.",
+          : global.isIOS ? "Set an OpenAI or Anthropic API key in Settings." : "Set an API key or download the on-phone model in Settings.",
       );
       return;
     }

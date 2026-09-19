@@ -130,14 +130,16 @@ function settingsSections(): SettingsSection[] {
         // On-phone LLM loop vs the user's own agent via the bridge plugin.
         enumSettingMenuItem(assistantBackendSetting),
         enumSettingMenuItem(assistantModelSetting),
-        localModelMenuItem(),
+        ...(!global.isIOS ? [localModelMenuItem()] : []),
         // When on, a wakeword utterance goes straight to the assistant with no
         // Send/Type menu step.
         toggleSettingMenuItem(assistantSkipConfirmationSetting),
+        ...(!global.isIOS ? [
         textSettingMenuItem(assistantBridgeHostSetting),
         textSettingMenuItem(assistantBridgePortSetting),
         textSettingMenuItem(assistantBridgeTokenSetting),
         toggleSettingMenuItem(assistantAllowProactiveSetting),
+        ] : []),
       ],
     },
     {

@@ -10,7 +10,7 @@ import {
 import { getDefaultSmallFont } from "~/graphics/ui-fonts";
 import { wrapText } from "~/graphics/textwrap";
 import {
-  ASSISTANT_MODEL_VALUES,
+  ASSISTANT_MODEL_CHOICES,
   assistantModelLabel,
   assistantModelProvider,
   type AssistantModel,
@@ -595,7 +595,7 @@ export const assistantSkipConfirmationSetting = new ConfigSettingBoolean({
 export type AssistantBackendKind = "direct" | "external";
 
 const assistantBackendLabels: Record<AssistantBackendKind, string> = {
-  direct: "On-phone",
+  direct: global.isIOS ? "Cloud API" : "On-phone",
   external: "My own agent (bridge)",
 };
 
@@ -604,10 +604,10 @@ export const assistantBackendSetting = new ConfigSettingEnum<AssistantBackendKin
   label: "Assistant backend",
   storageKey: "assistant.backend",
   defaultValue: "direct",
-  values: ["direct", "external"],
+  values: global.isIOS ? ["direct"] : ["direct", "external"],
   formatValue: (value) => assistantBackendLabels[value] ?? value,
   description:
-    "Who answers assistant queries: an LLM called from the phone (a cloud API with your key, or the downloaded on-phone model), or your own long-running agent (e.g. OpenClaw) reached through the faceclaw-agent-bridge plugin.",
+    global.isIOS ? "Cloud models called with your OpenAI or Anthropic API key." : "Who answers assistant queries: an LLM called from the phone (a cloud API with your key, or the downloaded on-phone model), or your own long-running agent (e.g. OpenClaw) reached through the faceclaw-agent-bridge plugin.",
 });
 
 export const assistantBridgeHostSetting = new ConfigSettingString({
@@ -700,7 +700,7 @@ export const assistantModelSetting = new ConfigSettingEnum<AssistantModel>({
   label: "Assistant model",
   storageKey: "assistant.model",
   defaultValue: "auto",
-  values: ASSISTANT_MODEL_VALUES,
+  values: ASSISTANT_MODEL_CHOICES,
   formatValue: assistantModelLabel,
   isDisabled: (value) => {
     const provider = assistantModelProvider(value);
@@ -710,7 +710,7 @@ export const assistantModelSetting = new ConfigSettingEnum<AssistantModel>({
     return false;
   },
   description:
-    "Model used by the voice assistant. Auto prefers Terra when an OpenAI key is set, then Sonnet when an Anthropic key is set, then the downloaded on-phone model.",
+    global.isIOS ? "Model used by the voice assistant. Auto prefers Terra with an OpenAI key, then Sonnet with an Anthropic key." : "Model used by the voice assistant. Auto prefers Terra when an OpenAI key is set, then Sonnet when an Anthropic key is set, then the downloaded on-phone model.",
 });
 
 export const mapboxApiKeySetting = new ConfigSettingString({

@@ -68,6 +68,10 @@ function fixture() {
       paint: () => { boardStats.paints++; return new images.GrayImage(100, 80, 200); } }),
   };
   const modules = {
+    '../assistant/system-tools': { registerSystemTools() {} },
+    '../assistant/window-tools': { registerWindowTools() {} },
+    '../assistant/navigate-tools': { registerNavigateTools() {} },
+    '../assistant/roam-tools': { registerRoamTools() {} },
     "../native/ios-navigation-sensors": {},
     "../native/compass.ios": { bindCompassSession() {}, receiveCompassEvent() {} },
     '@nativescript/core': { File: { fromPath: () => ({ writeTextSync() {} }) },

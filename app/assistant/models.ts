@@ -13,6 +13,13 @@ export const ASSISTANT_MODEL_VALUES = [
 ] as const;
 
 export type AssistantModel = (typeof ASSISTANT_MODEL_VALUES)[number];
+/** Keep saved model IDs portable, while offering only supported choices. */
+export const ASSISTANT_MODEL_CHOICES: readonly AssistantModel[] =
+  global.isIOS ? ASSISTANT_MODEL_VALUES.filter(value => value !== "qwen") : ASSISTANT_MODEL_VALUES;
+export function supportedAssistantModel(value: AssistantModel): AssistantModel {
+  return global.isIOS && value === "qwen" ? "auto" : value;
+}
+
 export type AssistantProvider = "anthropic" | "openai" | "local";
 
 export type AssistantApiKeys = {

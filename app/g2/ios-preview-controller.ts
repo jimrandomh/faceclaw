@@ -1,3 +1,7 @@
+import { registerSystemTools } from '../assistant/system-tools'
+import { registerWindowTools } from '../assistant/window-tools'
+import { registerNavigateTools } from '../assistant/navigate-tools'
+import { registerRoamTools } from '../assistant/roam-tools'
 import { IosNavigationSensors } from '../native/ios-navigation-sensors'
 import { Utils } from '@nativescript/core'
 import { bindCompassSession, receiveCompassEvent } from '../native/compass.ios'
@@ -124,6 +128,11 @@ export class IosPreviewController {
     shell.registerWindow(launcher)
     shell.wake('window')
     shell.focusWindow(launcher.windowId)
+    registerSystemTools()
+    registerWindowTools({ apps: ALL_APPS.filter(app => !iosAppUnavailableReason(app.appId)),
+      launchApp: id => this.launchApp(id), requestShellRender: () => this.requestShellRender() })
+    registerNavigateTools(id => this.launchApp(id))
+    registerRoamTools(id => this.launchApp(id))
     for (const app of ALL_APPS) if (app.appId !== 'launcher' && !iosAppUnavailableReason(app.appId)) app.boot?.(this.buildAppContext(app))
   }
 

@@ -5,6 +5,7 @@ module FaceclawGraphics {
   header "FaceclawSocket.h"
   header "FaceclawLc3Decoder.h"
   header "FaceclawSpeech.h"
+  header "FaceclawSseRequest.h"
   header "FaceclawLocation.h"
   header "FaceclawConfigPort.h"
   header "FaceclawEvenHubWebView.h"

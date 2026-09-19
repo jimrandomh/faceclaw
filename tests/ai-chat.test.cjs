@@ -46,7 +46,7 @@ function conversations(saved = '') {
   const env = sessions();
   const { AssistantConversations } = load('app/assistant/conversations.ts', {
     './session': { AssistantSession: env.AssistantSession },
-    './models': { ASSISTANT_MODEL_VALUES: ['auto', 'terra', 'sonnet'] },
+    './models': { supportedAssistantModel: value => value, ASSISTANT_MODEL_VALUES: ['auto', 'terra', 'sonnet'] },
   });
   let stored = '';
   const store = new AssistantConversations((model, effort) => config(model, effort), () => 'terra', (value) => { stored = value; }, saved);

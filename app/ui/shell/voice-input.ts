@@ -224,7 +224,7 @@ export class VoiceInputLayer implements Layer {
   private menuRows(): Array<{ label: string; dim: boolean; onSelect: () => void }> {
     const text = this.displayText().trim();
     const hasText = text.length > 0 && !this.stoppingCapture;
-    const hasLlmKey = !global.isIOS && anthropicApiKeySetting.get().trim().length > 0;
+    const hasLlmKey = anthropicApiKeySetting.get().trim().length > 0;
     const rows: Array<{ label: string; dim: boolean; onSelect: () => void }> = [];
     for (const target of this.sendTargets) {
       rows.push({
@@ -238,7 +238,7 @@ export class VoiceInputLayer implements Layer {
       });
     }
     rows.push({
-      label: global.isIOS ? "Continue (Not available on iOS)" : hasLlmKey ? "Continue" : "Continue (Needs LLM API key)",
+      label: hasLlmKey ? "Continue" : "Continue (Needs LLM API key)",
       dim: !hasLlmKey || this.stoppingCapture,
       onSelect: () => {
         if (hasLlmKey && !this.stoppingCapture) this.startContinuation();

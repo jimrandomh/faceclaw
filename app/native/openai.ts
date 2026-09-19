@@ -5,11 +5,11 @@ import type {
   LlmStreamOptions,
 } from "../assistant/llm-protocol";
 
-declare const com: any;
+import { openSseRequest, type SseListener } from "./sse";
 
 /**
  * Minimal streaming client for the OpenAI Responses API. NativeScript cannot
- * use the Node SDK, so this shares the okhttp/SSE bridge used by Anthropic.
+ * use the Node SDK, so this shares the native streaming transport used by Anthropic.
  */
 
 const OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses";
@@ -31,11 +31,13 @@ export function streamOpenAiResponse(options: LlmStreamOptions): LlmStreamHandle
   const fail = (message: string) => {
     if (settled) return;
     settled = true;
+    request?.cancel();
     options.onError(message);
   };
   const done = () => {
     if (settled) return;
     settled = true;
+    request?.cancel();
     const content = finalizeOutputs(outputs);
     const hasToolUse = content.some((block) => block.type === "tool_use");
     options.onDone({
@@ -45,13 +47,9 @@ export function streamOpenAiResponse(options: LlmStreamOptions): LlmStreamHandle
     });
   };
 
-  if (!global.isAndroid) {
-    setTimeout(() => fail("OpenAI API is only wired up on Android"), 0);
-    return { cancel: () => {} };
-  }
   if (!apiKey) {
     setTimeout(() => fail("No OpenAI API key set"), 0);
-    return { cancel: () => {} };
+    return { cancel: () => { settled = true; } };
   }
 
   const body: any = {
@@ -73,7 +71,7 @@ export function streamOpenAiResponse(options: LlmStreamOptions): LlmStreamHandle
   }
   if (options.effort) body.reasoning = { effort: options.effort };
 
-  const listener = new com.faceclaw.app.FaceclawSseListener({
+  const listener: SseListener = {
     onLine: (line: string) => {
       if (settled) return;
       const event = parseSseDataLine(String(line));
@@ -164,26 +162,19 @@ export function streamOpenAiResponse(options: LlmStreamOptions): LlmStreamHandle
       fail(describeHttpError(Number(code), String(errorBody)));
     },
     onComplete: () => {
-      done();
+      // A transport EOF alone must not execute an unfinished tool call.
+      fail("OpenAI stream ended before the response completed");
     },
     onFailure: (message: string) => {
       fail(`OpenAI connection failed: ${String(message)}`);
     },
-  });
+  };
 
-  const headers = Array.create("java.lang.String", 2) as string[];
-  headers[0] = "Authorization";
-  headers[1] = `Bearer ${apiKey}`;
   try {
-    request = new com.faceclaw.app.FaceclawSseRequest(
-      OPENAI_RESPONSES_URL,
-      JSON.stringify(body),
-      headers,
-      listener,
-    );
+    request = openSseRequest(OPENAI_RESPONSES_URL, JSON.stringify(body), { Authorization: `Bearer ${apiKey}` }, listener);
   } catch (error) {
     setTimeout(() => fail(`OpenAI request failed: ${String((error as Error)?.message ?? error)}`), 0);
-    return { cancel: () => {} };
+    return { cancel: () => { settled = true; } };
   }
 
   return {

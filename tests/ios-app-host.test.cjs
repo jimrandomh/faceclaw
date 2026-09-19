@@ -58,9 +58,9 @@ test('iOS worker frames preserve baked grayscale bytes through the message bound
 test('settings-driven repaint runs after font cache invalidation, regardless of subscription order', () => {
   const listeners = [], tasks = [], painted = [];
   let cachedFont = 'Light';
-  const api = load('app/ui/dashboard-settings.ts', {
+  const api = load('app/ui/dashboard-settings.ts', { global: { isIOS: true },
     require: id => id.includes('settings-store') ? { onSettingsStoreChanged: fn => listeners.push(fn) }
-      : { Layer: class {}, ASSISTANT_MODEL_VALUES: [] },
+      : { Layer: class {}, ASSISTANT_MODEL_CHOICES: [] },
     setTimeout: fn => tasks.push(fn),
   });
   api.onAnySettingChanged(() => painted.push(cachedFont));
@@ -89,6 +89,10 @@ test('background glasses input still composites frames; phone resume preserves t
   }
   const settings = { onAnySettingChanged: () => () => {}, previewColorSetting: { get: () => 'white' } };
   const modules = {
+    '../assistant/system-tools': { registerSystemTools() {} },
+    '../assistant/window-tools': { registerWindowTools() {} },
+    '../assistant/navigate-tools': { registerNavigateTools() {} },
+    '../assistant/roam-tools': { registerRoamTools() {} },
     "../native/ios-navigation-sensors": {},
     '../native/compass.ios': { bindCompassSession() {}, receiveCompassEvent() {} },
     '@nativescript/core': { File: { fromPath: () => ({ writeTextSync() {} }) }, knownFolders: { documents: () => ({ path: '/tmp' }) }, path },
@@ -158,6 +162,10 @@ test('iOS bandwidth footer toggles live, polls only in foreground and resets its
     on: (key, fn) => appEvents.set(key, fn), off: key => appEvents.delete(key) },
     Button: View, Color: class {}, Dialogs: {}, GridLayout: View, Image: View, Label: View, Page: View, StackLayout: View };
   const modules = {
+    '../assistant/system-tools': { registerSystemTools() {} },
+    '../assistant/window-tools': { registerWindowTools() {} },
+    '../assistant/navigate-tools': { registerNavigateTools() {} },
+    '../assistant/roam-tools': { registerRoamTools() {} },
     "../native/ios-navigation-sensors": {},
     '../native/compass.ios': { bindCompassSession() {}, receiveCompassEvent() {} },
     '@nativescript/core': core,
