@@ -6,7 +6,7 @@ interface KotlinBridgeListener {
 }
 
 /**
- * First step toward commonMain: only portable Kotlin, with no Android/JVM APIs.
+ * Portable Kotlin at the same commonMain source path used by ios-port.
  * Calls and callbacks are synchronous on the caller's thread. The listener is
  * used only during roundTrip and is never retained.
  */
