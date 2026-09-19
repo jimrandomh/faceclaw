@@ -30,7 +30,7 @@
  * click presses the selected one, and (inverting the usual back/exit
  * convention, because rapid clicking IS the game) double-click presses it
  * twice; long-press pauses, or closes an open modal. Paused: click resumes,
- * double-click yields focus, long-press opens the window menu (which also
+ * double-click yields focus, tap-then-hold opens the window menu (which also
  * has a 10x speed toggle for testing).
  *
  * Economy constants follow the original where practical (demand formula,
@@ -40,22 +40,29 @@
  */
 import "@nativescript/core/globals";
 import { GrayImage } from "../../graphics/image";
-import { getDefaultSmallFont, getFont } from "../../graphics/bdffont";
+import { getFont } from "../../graphics/bdffont";
+import { getDefaultSmallFont } from "../../graphics/ui-fonts";
+import { flattenPlanesWithDraws, planesFingerprint, type Plane } from "../../graphics/plane";
+import { prepareFrameDraws } from "../../graphics/glyph-wire";
 import * as frameTimings from "../../native/frame-timings";
-import type { DashboardInputEvent } from "../../ui/layers";
+import { getActiveDisplay } from "../../native/active-display";
+import { playWorkerBuzzerSequence } from "../../native/worker-buzzer";
+import { loadSoundEnabled, saveSoundEnabled } from "../../ui/sound-setting";
+import type { MenuItem } from "../../ui/menu";
 import { buildSoundSequencePayload, type Step } from "../../ui/sound-effects";
-import { defaultWindowMenuItems, WindowMenu } from "../../ui/window-menu";
+import { WindowMenu } from "../../ui/window-menu";
 import type { WorkerAppMessage, WorkerAppReply } from "../../ui/shell/worker-window";
 import {
   GESTURE_CLICK,
   GESTURE_DOUBLE_CLICK,
   GESTURE_LONG_PRESS,
   GESTURE_SCROLL,
+  GESTURE_SHORT_THEN_LONG_PRESS,
+  type InputEvent,
   gestureHints,
 } from "../../ui/gestures";
 
 declare const global: any;
-declare const com: any;
 
 const mediumFont = getFont("terminus24");
 const smallFont = getDefaultSmallFont();
@@ -318,6 +325,9 @@ function post(message: WorkerAppReply): void {
   global.postMessage(message);
 }
 
+// The host queues launch messages until the worker has finished loading.
+post({ type: "worker-ready" });
+
 global.onmessage = (event: { data: WorkerAppMessage }) => {
   const message = event.data;
   switch (message.type) {
@@ -332,7 +342,7 @@ global.onmessage = (event: { data: WorkerAppMessage }) => {
         menu: null,
         speed: 1,
         tickTimer: null,
-        soundOn: true,
+        soundOn: loadSoundEnabled("paperclips"),
         lastSubmittedFingerprint: "",
       } as PaperclipsWindow;
       resetGame(window);
@@ -353,7 +363,7 @@ global.onmessage = (event: { data: WorkerAppMessage }) => {
       }
       window.focused = message.focused;
       inferForeground(window, message.focused);
-      handleInput(window, message.event as DashboardInputEvent, message.frameId);
+      handleInput(window, message.event as InputEvent, message.frameId);
       break;
     }
     case "render": {
@@ -373,6 +383,17 @@ global.onmessage = (event: { data: WorkerAppMessage }) => {
       if (!window.foreground && window.phase === "playing") window.phase = "paused";
       syncTick(window);
       if (window.foreground) renderAndSubmit(window, 0);
+      break;
+    }
+    case "input-focus": {
+      const window = windows.get(message.windowId);
+      if (!window) break;
+      window.focused = message.focused;
+      if (!message.focused && window.phase === "playing") {
+        window.phase = "paused";
+        syncTick(window);
+        if (window.foreground) renderAndSubmit(window, 0);
+      }
       break;
     }
     case "screen":
@@ -405,17 +426,15 @@ function inferForeground(window: PaperclipsWindow, focused: boolean): void {
 function playSfx(window: PaperclipsWindow, steps: Step[]): void {
   if (!window.soundOn || steps.length === 0) return;
   try {
-    const communicator = com.faceclaw.app.FaceclawBleCommunicator.getActive();
-    if (!communicator) return;
-    communicator.playBuzzerSequence(buildSoundSequencePayload(steps).buffer);
+    playWorkerBuzzerSequence(buildSoundSequencePayload(steps));
   } catch (error) {
     console.warn(`paperclips sfx failed: ${error}`);
   }
 }
 
-/** The window's long-press menu (game actions + default entries). */
-function openWindowMenu(window: PaperclipsWindow): void {
-  windowMenu(window).open([
+/** Game actions for the tap-then-hold context menu. */
+function windowMenuItems(window: PaperclipsWindow): MenuItem[] {
+  return [
     {
       label: "Resume",
       onSelect: (ctx) => {
@@ -446,16 +465,21 @@ function openWindowMenu(window: PaperclipsWindow): void {
       onSelect: (ctx) => {
         ctx.stack.pop();
         window.soundOn = !window.soundOn;
+        saveSoundEnabled("paperclips", window.soundOn);
         if (window.soundOn) playSfx(window, SFX_RESUME);
       },
     },
-    ...defaultWindowMenuItems(window.windowId, post),
-  ]);
+  ];
 }
 
 function windowMenu(window: PaperclipsWindow): WindowMenu {
   if (!window.menu) {
     window.menu = new WindowMenu({
+      windowId: window.windowId,
+      post,
+      title: () => "Paperclips",
+      items: () => windowMenuItems(window),
+      claimsLongPress: () => window.phase === "playing",
       size: { width: window.viewportWidth, height: window.viewportHeight },
       paintBase: () => paintContent(window),
       isFocused: () => window.focused,
@@ -464,13 +488,21 @@ function windowMenu(window: PaperclipsWindow): WindowMenu {
   return window.menu;
 }
 
-function handleInput(window: PaperclipsWindow, event: DashboardInputEvent, frameId: number): void {
+function handleInput(window: PaperclipsWindow, event: InputEvent, frameId: number): void {
   // An open window menu owns all input (it closes itself via pop).
   if (window.menu?.isOpen()) {
     window.menu
       .handleInput(event)
       .catch((error) => console.error(`paperclips menu input failed: ${error}`))
       .then(() => renderAndSubmit(window, frameId));
+    return;
+  }
+
+  if (event.type === "short-then-long-press") {
+    if (window.phase === "playing") window.phase = "paused";
+    syncTick(window);
+    windowMenu(window).open();
+    renderAndSubmit(window, frameId);
     return;
   }
 
@@ -491,7 +523,7 @@ function handleInput(window: PaperclipsWindow, event: DashboardInputEvent, frame
   }
 }
 
-function handlePlayingInput(window: PaperclipsWindow, event: DashboardInputEvent, frameId: number): void {
+function handlePlayingInput(window: PaperclipsWindow, event: InputEvent, frameId: number): void {
   switch (event.type) {
     case "scroll-up":
       moveSelection(window, -1);
@@ -521,7 +553,7 @@ function handlePlayingInput(window: PaperclipsWindow, event: DashboardInputEvent
 }
 
 /** Input while a modal is open: same chip gestures, long-press closes it. */
-function handleModalInput(window: PaperclipsWindow, event: DashboardInputEvent, frameId: number): void {
+function handleModalInput(window: PaperclipsWindow, event: InputEvent, frameId: number): void {
   switch (event.type) {
     case "scroll-up":
       moveModalSelection(window, -1);
@@ -547,16 +579,13 @@ function handleModalInput(window: PaperclipsWindow, event: DashboardInputEvent, 
 }
 
 /** A milestone overlay: any click dismisses it and play continues. */
-function handleMilestoneInput(window: PaperclipsWindow, event: DashboardInputEvent, frameId: number): void {
+function handleMilestoneInput(window: PaperclipsWindow, event: InputEvent, frameId: number): void {
   switch (event.type) {
     case "click":
     case "double-click":
       window.phase = "playing";
       window.overlay = null;
       syncTick(window);
-      break;
-    case "long-press":
-      openWindowMenu(window);
       break;
     default:
       frameTimings.finishFrame(frameId, "discarded: paperclips ignored input");
@@ -565,7 +594,7 @@ function handleMilestoneInput(window: PaperclipsWindow, event: DashboardInputEve
   renderAndSubmit(window, frameId);
 }
 
-function handlePausedInput(window: PaperclipsWindow, event: DashboardInputEvent, frameId: number): void {
+function handlePausedInput(window: PaperclipsWindow, event: InputEvent, frameId: number): void {
   switch (event.type) {
     case "click":
       window.phase = "playing";
@@ -576,9 +605,6 @@ function handlePausedInput(window: PaperclipsWindow, event: DashboardInputEvent,
       frameTimings.finishFrame(frameId, "discarded: paperclips yielded focus");
       post({ type: "yield-focus", windowId: window.windowId });
       return;
-    case "long-press":
-      openWindowMenu(window);
-      break;
     default:
       frameTimings.finishFrame(frameId, "discarded: paperclips ignored input");
       return;
@@ -2269,27 +2295,28 @@ function formatLarge(value: number): string {
   return formatInt(value);
 }
 
-function paint(window: PaperclipsWindow): GrayImage {
-  if (window.menu?.isOpen()) {
-    return window.menu.paint();
-  }
-  return paintContent(window);
+function paint(window: PaperclipsWindow): Plane[] {
+  return windowMenu(window).paint();
 }
 
 function paintContent(window: PaperclipsWindow): GrayImage {
   resolveSelection(window);
-  const image = new GrayImage(window.viewportWidth, window.viewportHeight, 0);
+  let image = new GrayImage(window.viewportWidth, window.viewportHeight, 0);
   drawCentered(image, smallFont, 0, window.viewportWidth, 2, window.message, 170);
   if (window.speed !== 1) {
     image.drawText(smallFont, window.viewportWidth - 34, 2, `${window.speed}x`, 250);
   }
   paintLeftColumn(image, window);
   paintRightColumn(image, window);
+  // Text is deferred now: bake lower content before an opaque overlay so
+  // its background covers the underlying labels as well as their pixels.
+  if (window.modal !== null) image = image.withDrawsBaked();
   if (window.modal === "invest") {
     paintInvestModal(image, window);
   } else if (window.modal === "tournament") {
     paintTournamentModal(image, window);
   }
+  if (window.phase !== "playing") image = image.withDrawsBaked();
   if (window.phase === "milestone") {
     paintMilestoneOverlay(image, window);
   } else if (window.phase === "paused") {
@@ -2748,7 +2775,7 @@ function paintPausedOverlay(image: GrayImage, window: PaperclipsWindow): void {
     gestureHints([
       [GESTURE_CLICK, "resume"],
       [GESTURE_DOUBLE_CLICK, "leave"],
-      [GESTURE_LONG_PRESS, "menu"],
+      [GESTURE_SHORT_THEN_LONG_PRESS, "menu"],
     ]),
     150,
   );
@@ -2770,21 +2797,22 @@ function renderAndSubmit(window: PaperclipsWindow, inputFrameId: number): void {
   const frameId = inputFrameId > 0 ? inputFrameId : frameTimings.startFrame(`render:${window.windowId}`);
   try {
     const paintStartedAtMs = Date.now();
-    const image = frameTimings.span(frameId, "paint", () =>
+    const planes = frameTimings.span(frameId, "paint", () =>
       frameTimings.runWithFrame(frameId, () => paint(window)),
     );
     const paintMs = Date.now() - paintStartedAtMs;
-    const fingerprint = image.fingerprint();
+    const fingerprint = planesFingerprint(planes);
     if (fingerprint === window.lastSubmittedFingerprint) {
       frameTimings.finishFrame(frameId, "discarded: paperclips content unchanged");
       return;
     }
-    const communicator = com.faceclaw.app.FaceclawBleCommunicator.getActive();
+    const communicator = getActiveDisplay();
     if (!communicator) {
-      frameTimings.finishFrame(frameId, "discarded: no active communicator");
+      frameTimings.finishFrame(frameId, "discarded: no active display");
       return;
     }
-    const buffer = image.to8bppBuffer();
+    const { image, draws } = frameTimings.span(frameId, "flatten", () => flattenPlanesWithDraws(planes));
+    const buffer = frameTimings.span(frameId, "to8bpp", () => image.to8bppBuffer());
     communicator.submitSurfaceFrame(
       buffer.buffer,
       window.surfaceId,
@@ -2795,6 +2823,7 @@ function renderAndSubmit(window: PaperclipsWindow, inputFrameId: number): void {
       fingerprint,
       paintMs,
       frameId,
+      frameTimings.span(frameId, "prepareFrameDraws", () => prepareFrameDraws(draws)),
     );
     window.lastSubmittedFingerprint = fingerprint;
   } catch (error) {
