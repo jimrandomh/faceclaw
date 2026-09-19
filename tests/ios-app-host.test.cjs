@@ -281,6 +281,8 @@ test('iOS bandwidth footer toggles live, polls only in foreground and resets its
       onAnySettingChanged: fn => { settingListeners.add(fn); return () => settingListeners.delete(fn); } },
     '../g2/device-addresses': { loadDeviceAddresses: () => ({}) },
     '../g2/ios-peripheral-identity': { deviceAddressError: () => 'no test devices' },
+    './onboarding-state': { isPreviewOnlyMode: () => false },
+    '../g2/reconnect-policy': { isAutoReconnectSuppressed: () => false },
   };
   const { createMainPage } = load('app/phone-ui/main-page.ios.ts', {
     require: id => modules[id] ?? {}, Date: { now: () => atMs },

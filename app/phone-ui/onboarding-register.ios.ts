@@ -1,0 +1,19 @@
+require('@nativescript/core/bundle-entry-points');
+// iOS reuses Android's NativeScript XML forms and view models.
+global.registerModule('phone-ui/onboarding-page', () => require('./onboarding-page'));
+global.registerModule('phone-ui/onboarding-page.xml', () => require('./onboarding-page.xml'));
+global.registerModule('phone-ui/onboarding-unpair-page', () => require('./onboarding-unpair-page'));
+global.registerModule('phone-ui/onboarding-unpair-page.xml', () => require('./onboarding-unpair-page.xml'));
+global.registerModule('phone-ui/pairing-page', () => require('./pairing-page'));
+global.registerModule('phone-ui/pairing-page.xml', () => require('./pairing-page.xml'));
+global.registerModule('phone-ui/config-page', () => require('./config-page'));
+global.registerModule('phone-ui/config-page.xml', () => require('./config-page.xml'));
+global.registerModule('phone-ui/permissions-page', () => require('./permissions-page'));
+global.registerModule('phone-ui/permissions-page.xml', () => require('./permissions-page.xml'));
+global.registerModule('phone-ui/onboarding-firmware-check-page', () => require('./onboarding-firmware-check-page'));
+global.registerModule('phone-ui/onboarding-firmware-check-page.xml', () => require('./onboarding-firmware-check-page.xml'));
+global.registerModule('phone-ui/onboarding-flash-page', () => require('./onboarding-flash-page'));
+global.registerModule('phone-ui/onboarding-flash-page.xml', () => require('./onboarding-flash-page.xml'));
+global.registerModule('phone-ui/document-page', () => require('./document-page'));
+global.registerModule('phone-ui/document-page.xml', () => require('./document-page.xml'));
+global.registerModule('phone-ui/main-page', () => require('./main-page.ios'));

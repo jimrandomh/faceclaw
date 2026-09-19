@@ -130,7 +130,7 @@ export class GlassesSession {
       this.applySettings(settings)
       const firmware = { leftVersion: this.state.leftVersion, rightVersion: this.state.rightVersion, extension: this.state.capabilities }
       if (!hasCompatibleFirmware(firmware))
-        throw new Error((firmwareIncompatibilityMessage(firmware) || `The glasses must report Faceclaw firmware revision ${REQUIRED_FACECLAW_FIRMWARE_VERSION} or newer.`) + ' Flashing remains available on Android.')
+        throw new Error((firmwareIncompatibilityMessage(firmware) || `The glasses must report Faceclaw firmware revision ${REQUIRED_FACECLAW_FIRMWARE_VERSION} or newer.`) + ' Use Devices → Check firmware to install it.')
       this.update('connecting', 'Starting glasses display…')
       await this.request('right', protocol.SID.launch, () => protocol.prelude(), 'App launch', 3500, 0x20, 156)
       await this.lease(true)

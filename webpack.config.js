@@ -5,9 +5,9 @@ module.exports = (env) => {
 	webpack.init(env);
 
 	if (env.ios) {
-		// The initial iOS UI is constructed in code. Skip automatic registration
-		// of every XML page (and its Android-only service/worker dependencies).
-		// Explicit imports can still share any platform-independent app code.
+		// iOS explicitly registers its shared onboarding XML pages in
+		// onboarding-register.ios.ts. Skip Android's remaining pages and
+		// their Android-only service/worker dependencies.
 		webpack.chainWebpack((config) => {
 			const entry = config.entry('bundle');
 			entry.values().forEach((value) => {

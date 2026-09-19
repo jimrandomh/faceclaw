@@ -1,5 +1,6 @@
-import { Application, Button, Color, Dialogs, GridLayout, Image, Label, Page, StackLayout, type TouchGestureEventData } from '@nativescript/core'
-import { createConfigureDevicesPage } from './config-page.ios'
+import { Application, Button, Color, Dialogs, Frame, GridLayout, Image, Label, Page, StackLayout, type TouchGestureEventData } from '@nativescript/core'
+import { isPreviewOnlyMode } from './onboarding-state'
+import { isAutoReconnectSuppressed, resumeAutoReconnect, suppressAutoReconnect } from '../g2/reconnect-policy'
 import { launcherEntries } from '../apps/launcher'
 import { ALL_APPS } from '../apps/all-apps'
 import { IosPreviewController } from '../g2/ios-preview-controller'
@@ -69,12 +70,21 @@ export function createMainPage(): Page {
   async function openDevices(): Promise<void> {
     const connected = ['connected', 'connecting', 'retrying'].includes(controller.connectionState?.phase ?? '')
     const choice = await Dialogs.action({ title: 'Devices', message: controller.connectionState?.status ?? 'Preview only', cancelButtonText: 'Cancel',
-      actions: ['Configure devices', connected ? 'Disconnect' : 'Connect', 'Connection details'] })
-    if (choice === 'Configure devices') {
+      actions: ['Pair glasses', 'Configure devices', connected ? 'Disconnect' : 'Connect', 'Check firmware', 'Install custom firmware', 'Uninstall custom firmware', 'Connection details'] })
+    if (['Pair glasses', 'Configure devices', 'Check firmware', 'Install custom firmware', 'Uninstall custom firmware'].includes(choice)) {
+      suppressAutoReconnect()
       await controller.disconnect()
-      page.showModal(createConfigureDevicesPage(), { fullscreen: true, closeCallback: () => {} })
-    } else if (choice === 'Connect') await controller.connect()
-    else if (choice === 'Disconnect') await controller.disconnect()
+      if (choice === 'Pair glasses') {
+        Frame.topmost()?.navigate({ moduleName: 'phone-ui/onboarding-unpair-page' })
+      } else if (choice === 'Configure devices') {
+        Frame.topmost()?.navigate({ moduleName: 'phone-ui/config-page', context: { onboarding: isPreviewOnlyMode() } })
+      } else if (choice === 'Check firmware') {
+        Frame.topmost()?.navigate({ moduleName: 'phone-ui/onboarding-firmware-check-page' })
+      } else {
+        Frame.topmost()?.navigate({ moduleName: 'phone-ui/onboarding-flash-page', context: { mode: choice === 'Uninstall custom firmware' ? 'uninstall' : 'install', fromOnboarding: false } })
+      }
+    } else if (choice === 'Connect') { resumeAutoReconnect(); await controller.connect() }
+    else if (choice === 'Disconnect') { suppressAutoReconnect(); await controller.disconnect() }
     else if (choice === 'Connection details') await Dialogs.alert({ title: 'Connection details', message: controller.connectionDetails, okButtonText: 'OK' })
   }
   const padInput = new PhoneGestureRecognizer(gesture => controller.gesture(gesture, selectedTab === 'ring' ? 'ring' : 'watch'))
@@ -184,16 +194,11 @@ export function createMainPage(): Page {
   }
   const resume = () => { foreground = true; controller.resume(); syncBandwidth() }
   let offSettings: (() => void) | null = null
-  let firstLoad = true
   page.on('loaded', () => {
     Application.on(Application.suspendEvent, pause); Application.on(Application.resumeEvent, resume)
     offSettings?.(); offSettings = onAnySettingChanged(() => { sizeButton.text = controller.displayModeLabel; syncBandwidth() })
     selectTab(selectedTab); resume()
-    if (firstLoad) {
-      firstLoad = false
-      // Match Android's reconnect-on-launch behavior once addresses are saved.
-      if (!deviceAddressError(loadDeviceAddresses())) void controller.connect()
-    }
+    if (!isPreviewOnlyMode() && !isAutoReconnectSuppressed() && !deviceAddressError(loadDeviceAddresses())) void controller.connect()
   })
   page.on('unloaded', () => {
     pause(); offSettings?.(); offSettings = null
@@ -201,3 +206,5 @@ export function createMainPage(): Page {
   })
   return page
 }
+
+export const createPage = createMainPage

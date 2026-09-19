@@ -1,6 +1,8 @@
+import { resumeAutoReconnect } from "../g2/reconnect-policy";
+import { finishOnboardingNavigation } from "./onboarding-navigation";
 import { Frame, Observable } from "@nativescript/core";
 
-import { ensureBlePermissions } from "../g2/android-permissions";
+import { ensureBlePermissions } from "../native/ble-permissions";
 import { isValidMacAddress, loadDeviceAddresses } from "../g2/device-addresses";
 import {
   downloadAndExtractEvenHubFonts,
@@ -26,6 +28,8 @@ export class OnboardingFirmwareCheckViewModel extends Observable {
   private _headline = "Checking Firmware";
   private _status = "";
   private _busy = true;
+
+  private generation = 0;
 
   private probeInstance: DeviceInfoProbe | null = null;
 
@@ -158,7 +162,8 @@ export class OnboardingFirmwareCheckViewModel extends Observable {
   // --- probe flow ------------------------------------------------------------
 
   private async check(): Promise<void> {
-    if (!global.isAndroid) {
+    const generation = ++this.generation;
+    if (!global.isAndroid && !global.isIOS) {
       this.toError("Firmware checking is only available on Android.");
       return;
     }
@@ -169,6 +174,7 @@ export class OnboardingFirmwareCheckViewModel extends Observable {
 
     try {
       await ensureBlePermissions();
+      if (generation !== this.generation) return;
       const stored = loadDeviceAddresses();
       if (!isValidMacAddress(stored.right)) {
         this.toError("No glasses address is configured. Go back and set the device addresses.");
@@ -181,11 +187,13 @@ export class OnboardingFirmwareCheckViewModel extends Observable {
       probe.onStateChange((state, detail) => this.reportProbeState(state, detail));
 
       const info = await probe.run();
+      if (generation !== this.generation) return;
       this.probeInstance = null;
 
       const { kind, version, extension } = classifyOnboardingFirmware(info);
       this.applyClassification(kind, version, extension);
     } catch (error) {
+      if (generation !== this.generation) return;
       this.probeInstance = null;
       this.toError(this.formatError(error));
     }
@@ -199,7 +207,7 @@ export class OnboardingFirmwareCheckViewModel extends Observable {
       this.status = `Connecting to ${lens}...`;
     } else if (state === "authenticating") {
       // First-time connections pair here; the OS may show a Bluetooth dialog.
-      this.status = `Pairing with ${lens}... Each lens pairs separately; if Android asks to pair, tap Pair.`;
+      this.status = `Pairing with ${lens}... Each lens pairs separately; if your phone asks to pair, tap Pair.`;
     } else if (state === "querying") {
       this.status = "Reading the firmware version...";
     }
@@ -276,6 +284,7 @@ export class OnboardingFirmwareCheckViewModel extends Observable {
   }
 
   private async extractFontsForCustomFirmware(version: string, extension: FirmwareExtension): Promise<void> {
+    const generation = this.generation;
     this.setPhase("fonts");
     this.headline = "Preparing G2 Fonts";
     this.busy = true;
@@ -283,9 +292,13 @@ export class OnboardingFirmwareCheckViewModel extends Observable {
       "Custom firmware is already installed, but its phone-side fonts are missing. " +
       "Downloading the official firmware to extract them; your glasses will not be reflashed.";
     try {
-      await downloadAndExtractEvenHubFonts((progress) => this.reportFontProgress(progress));
+      await downloadAndExtractEvenHubFonts((progress) => {
+        if (generation === this.generation) this.reportFontProgress(progress);
+      });
+      if (generation !== this.generation) return;
       this.showCustomReady(version, extension, true);
     } catch (error) {
+      if (generation !== this.generation) return;
       this.toError(
         `Custom firmware is installed, but the G2 fonts could not be prepared: ${this.formatError(error)}`,
         "Couldn't Prepare Fonts",
@@ -337,13 +350,11 @@ export class OnboardingFirmwareCheckViewModel extends Observable {
   }
 
   private finish(): void {
+    resumeAutoReconnect();
     setPreviewOnlyMode(false);
     setOnboardingCompleted(true);
     this.disposeProbe();
-    Frame.topmost()?.navigate({
-      moduleName: "phone-ui/main-page",
-      clearHistory: true,
-    });
+    finishOnboardingNavigation();
   }
 
   private toError(message: string, headline = "Couldn't Check Firmware"): void {
@@ -365,6 +376,8 @@ export class OnboardingFirmwareCheckViewModel extends Observable {
     this.notifyPropertyChange("secondaryVisibility", this.secondaryVisibility);
     this.notifyPropertyChange("errorActionsVisibility", this.errorActionsVisibility);
   }
+
+  dispose(): void { ++this.generation; this.disposeProbe(); }
 
   private disposeProbe(): void {
     if (this.probeInstance) {

@@ -1,6 +1,7 @@
+import { finishOnboardingNavigation } from "./onboarding-navigation";
 import { Application, EventData, Frame, Observable, View } from "@nativescript/core";
 
-import { ensureBlePermissions } from "../g2/android-permissions";
+import { ensureBlePermissions } from "../native/ble-permissions";
 import { loadDeviceAddresses, loadPairedGlassesIdentity, saveDeviceAddresses, savePairedGlassesIdentity } from "../g2/device-addresses";
 import { formatErrorMessage } from "../util/format-error";
 import {
@@ -82,6 +83,7 @@ export class PairingViewModel extends Observable {
   // --- lifecycle -------------------------------------------------------------
 
   private resumeScanAfterSuspend = false;
+  private scanGeneration = 0;
 
   private readonly onAppSuspend = (): void => {
     if (this._scanning) {
@@ -106,12 +108,19 @@ export class PairingViewModel extends Observable {
 
   async start(): Promise<void> {
     if (this._scanning) return;
-    if (!global.isAndroid) {
+    // A saved selection can be revisited from the firmware check page.
+    Application.off(Application.suspendEvent, this.onAppSuspend);
+    Application.off(Application.resumeEvent, this.onAppResume);
+    Application.on(Application.suspendEvent, this.onAppSuspend);
+    Application.on(Application.resumeEvent, this.onAppResume);
+    const generation = ++this.scanGeneration;
+    if (!global.isAndroid && !global.isIOS) {
       this.status = "Pairing is only available on Android.";
       return;
     }
     try {
       await ensureBlePermissions();
+      if (generation !== this.scanGeneration) return;
     } catch (error) {
       this.status = this.formatError(error);
       return;
@@ -150,6 +159,7 @@ export class PairingViewModel extends Observable {
   }
 
   stop(): void {
+    ++this.scanGeneration;
     if (this.refreshTimer) {
       clearInterval(this.refreshTimer);
       this.refreshTimer = null;
@@ -337,7 +347,7 @@ export class PairingViewModel extends Observable {
       Frame.topmost()?.navigate({ moduleName: "phone-ui/onboarding-firmware-check-page" });
       return;
     }
-    Frame.topmost()?.navigate({ moduleName: "phone-ui/main-page", clearHistory: true });
+    finishOnboardingNavigation();
   }
 
   onSecondaryTap(): void {

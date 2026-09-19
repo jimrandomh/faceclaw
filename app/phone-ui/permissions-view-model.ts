@@ -1,3 +1,4 @@
+import { iosBluetooth } from "../native/ios-bluetooth";
 import { Application, Dialogs, EventData, Frame, Observable, View } from "@nativescript/core";
 
 import {
@@ -30,7 +31,7 @@ type PermissionDefinition = {
  * their request() opens a system screen, so the granted state can only be
  * re-checked when the app resumes (the page refreshes on Application.resume).
  */
-const PERMISSIONS: PermissionDefinition[] = [
+const ANDROID_PERMISSIONS: PermissionDefinition[] = [
   {
     id: "nearby-devices",
     title: "Nearby Devices",
@@ -91,6 +92,13 @@ const PERMISSIONS: PermissionDefinition[] = [
   },
 ];
 
+const PERMISSIONS: PermissionDefinition[] = global.isIOS ? [{
+  id: "nearby-devices", title: "Nearby Devices",
+  description: "Needed to communicate with your smart glasses over Bluetooth.", optional: false,
+  isGranted: () => iosBluetooth().state === 5,
+  request: () => iosBluetooth().ensureReady(),
+}] : ANDROID_PERMISSIONS;
+
 /** One Repeater card: the permission's copy plus the display-only fields the XML binds. */
 export type PermissionCardItem = {
   id: string;
@@ -144,8 +152,9 @@ export class PermissionsViewModel extends Observable {
   }
 
   get instructions(): string {
+    if (global.isIOS) return "Faceclaw uses Bluetooth to communicate with your smart glasses. Tap the card to allow access; a checkmark means Bluetooth is ready.";
     return this.onboarding
-      ? "Faceclaw uses these Android permissions. Tap a card to grant one; a checkmark means it is already granted. " +
+      ? `Faceclaw uses these ${global.isIOS ? "iOS" : "Android"} permissions. Tap a card to grant one; a checkmark means it is already granted. ` +
           "Optional permissions can also be granted later, from the Permissions item in the main-screen menu."
       : "Tap a card to grant a permission; a checkmark means it is already granted.";
   }
@@ -216,7 +225,8 @@ export class PermissionsViewModel extends Observable {
     this.requesting = true;
     try {
       await definition.request();
-    } catch {
+    } catch (error) {
+      if (global.isIOS) await Dialogs.alert({ title: "Bluetooth Unavailable", message: String((error as Error).message ?? error), okButtonText: "OK" });
       // A denial simply leaves the card unchecked; the user can tap again.
     } finally {
       this.requesting = false;

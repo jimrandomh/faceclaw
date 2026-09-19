@@ -16,21 +16,21 @@
 
         <StackLayout row="2" class="m-t-16">
             <Label text="Right arm MAC" />
-            <TextField text="{{ rightAddress }}" textChange="{{ onRightAddressTextChange }}" autocorrect="false" autocapitalizationType="none" />
+            <TextField accessibilityLabel="Right arm MAC" text="{{ rightAddress }}" textChange="{{ onRightAddressTextChange }}" autocorrect="false" autocapitalizationType="none" />
         </StackLayout>
 
         <StackLayout row="3" class="m-t-12">
             <Label text="Left arm MAC" />
-            <TextField text="{{ leftAddress }}" textChange="{{ onLeftAddressTextChange }}" autocorrect="false" autocapitalizationType="none" />
+            <TextField accessibilityLabel="Left arm MAC" text="{{ leftAddress }}" textChange="{{ onLeftAddressTextChange }}" autocorrect="false" autocapitalizationType="none" />
         </StackLayout>
 
         <StackLayout row="4" class="m-t-12">
             <Label text="R1 ring MAC (optional)" />
-            <TextField text="{{ ringAddress }}" textChange="{{ onRingAddressTextChange }}" autocorrect="false" autocapitalizationType="none" />
+            <TextField accessibilityLabel="R1 ring MAC" text="{{ ringAddress }}" textChange="{{ onRingAddressTextChange }}" autocorrect="false" autocapitalizationType="none" />
         </StackLayout>
 
         <GridLayout row="5" columns="*,*" class="m-t-16">
-            <Button col="0" text="Load paired devices" tap="{{ onLoadPairedTap }}" class="-primary" isEnabled="{{ canDiscover }}" />
+            <Button col="0" text="Load paired devices" visibility="{{ pairedDevicesVisibility }}" tap="{{ onLoadPairedTap }}" class="-primary" isEnabled="{{ canDiscover }}" />
             <Button col="1" text="Scan for glasses" tap="{{ onScanTap }}" class="-primary" isEnabled="{{ canDiscover }}" />
         </GridLayout>
 

@@ -23,7 +23,7 @@ import { fetchWithUserAgent } from "../util/http";
 import { bytesToHex, hexToBytes as hexToBytesLenient } from "../util/hex-util";
 import { EvenHubFont } from "../graphics/evenhub-font";
 
-declare const com: any;
+import { firmwareSha256, writeFirmwareFile } from "../native/firmware-files";
 
 // The CDN names firmware files by MD5. This must be the image whose SHA-256 is
 // CFW_PATCH_SET.baseSha256 — keep it in sync with FW_URL in g2flash/build_cfw.sh
@@ -281,12 +281,12 @@ function tightBuffer(bytes: Uint8Array): ArrayBuffer {
   return bytes.slice().buffer;
 }
 
-/** SHA-256 hex digest of an ArrayBuffer, via Android's MessageDigest. */
+/** SHA-256 hex digest using the platform's native crypto implementation. */
 function sha256Hex(buffer: ArrayBuffer): string {
-  return String(com.faceclaw.app.FaceclawFirmwareUtil.sha256Hex(buffer));
+  return firmwareSha256(buffer);
 }
 
-/** Write an ArrayBuffer's bytes to `path`, via a native FileChannel write. */
+/** Persist the verified image using the platform's native file API. */
 function writeFile(path: string, buffer: ArrayBuffer): void {
-  com.faceclaw.app.FaceclawFirmwareUtil.writeFile(path, buffer);
+  writeFirmwareFile(path, buffer);
 }

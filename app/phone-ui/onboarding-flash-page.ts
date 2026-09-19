@@ -14,3 +14,9 @@ export function navigatingTo(args: NavigatedData): void {
     });
   }
 }
+
+export function navigatingFrom(args: NavigatedData): void {
+  const page = args.object as Page;
+  (page.bindingContext as OnboardingFlashViewModel | undefined)?.dispose();
+  page.bindingContext = null;
+}

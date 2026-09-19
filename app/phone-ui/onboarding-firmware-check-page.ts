@@ -8,3 +8,9 @@ export function navigatingTo(args: EventData): void {
     page.bindingContext = new OnboardingFirmwareCheckViewModel();
   }
 }
+
+export function navigatingFrom(args: EventData): void {
+  const page = args.object as Page;
+  (page.bindingContext as OnboardingFirmwareCheckViewModel | undefined)?.dispose();
+  page.bindingContext = null;
+}
