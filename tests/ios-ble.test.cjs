@@ -117,7 +117,7 @@ class FakeTransport {
     }
     let body = new Uint8Array();
     if (message.sid === p.SID.auth) body = p.bytes(3, new Uint8Array());
-    if (message.sid === p.SID.settings) body = p.concat(p.bytes(4, p.concat(string(5, '2.2.9.22'), string(6, '2.2.9.22'), p.integer(12, 90), p.integer(13, 0))), string(100, this.stock ? '' : `Faceclaw/${REQUIRED_FACECLAW_FIRMWARE_VERSION}`));
+    if (message.sid === p.SID.settings) body = p.concat(p.bytes(4, p.concat(string(5, '2.2.9.22'), string(6, '2.2.9.22'), p.integer(12, 90), p.integer(13, 0))), string(100, this.stock ? '' : `Faceclaw/${this.firmware ?? REQUIRED_FACECLAW_FIRMWARE_VERSION}`));
     const responseCommand = message.sid === p.SID.launch ? 1 : message.sid === p.SID.hub && message.command === 0 ? 1 : message.sid === p.SID.hub && message.command === 3 ? 4 : message.command;
     const payload = p.concat(p.integer(1, responseCommand), p.integer(2, overrides.magic ?? message.magic), body);
     const data = hex(p.concat(...p.frameMessage(payload, overrides.sid ?? message.sid, 0, 12)));
@@ -126,6 +126,7 @@ class FakeTransport {
   }
   async write(id, characteristic, frame) {
     assert.equal(characteristic, p.G2_WRITE); assert.ok(frame.length <= 185);
+    if (frame[0] === 65 && frame[1] === 78) { (this.ancs ??= []).push({ id, frame: new Uint8Array(frame) }); return; }
     let messages;
     if (frame[6] === p.SID.cfw) {
       assert.equal(p.crc16(frame.subarray(8, -2)), frame[frame.length - 2] | frame[frame.length - 1] << 8);
@@ -549,4 +550,29 @@ test('wear notifications validate the event and peer and work during initial con
   assert.deepEqual(h.wear, [false, true]);
   await h.session.stop(); emit('R', payload(0));
   assert.deepEqual(h.wear, [false, true]);
+});
+
+
+test('ANCS packets are scoped to the right link and cleared on disconnect and authorization revocation', async t => {
+  const transport = new FakeTransport(); transport.firmware = 16;
+  const h = harness(t, transport); await h.session.start(addresses);
+  await until(() => transport.ancs?.length);
+  const token = Array.from(transport.ancs[0].frame.subarray(4,8));
+  assert.equal(transport.ancs[0].id, 'R');
+  const frame = new Uint8Array([65,78,1,0,...token,0,0,3,1]);
+  const emit = id => transport.emit({kind:'notification',identifier:id,characteristic:p.G2_NOTIFY,data:hex(frame)});
+  emit('L'); assert.equal(h.session.notifications.state, 'starting');
+  emit('R'); assert.equal(h.session.notifications.state, 'ready');
+  transport.emit({kind:'ancs-authorization',identifier:'R',authorized:false});
+  assert.equal(h.session.notifications.state,'disconnected');
+  emit('R'); assert.equal(h.session.notifications.state,'disconnected');
+  await h.session.stop(); assert.deepEqual(h.session.notifications.read(),[]);
+});
+
+test('firmware 15 requires an upgrade before starting notification relay', async t => {
+  const transport = new FakeTransport(); transport.firmware = 15;
+  const h = harness(t, transport); await h.session.start(addresses);
+  assert.equal(h.session.notifications.state, 'disconnected');
+  assert.match(h.session.notifications.statusMessage, /firmware 16 or newer/);
+  assert.equal(transport.ancs?.length ?? 0, 0);
 });

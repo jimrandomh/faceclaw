@@ -76,6 +76,8 @@ function fixture() {
     '../assistant/navigate-tools': { registerNavigateTools() {} },
     '../assistant/roam-tools': { registerRoamTools() {} },
     "../native/ios-navigation-sensors": {},
+    '../native/notification-icons.ios': { bindIosNotifications() {}, iosNotificationsChanged() {}, onIosNotificationPopup: () => () => {}, readActiveNotifications: () => [] },
+    '../native/notification-sources': { shouldShowNotificationOnGlasses: () => true },
     "../native/compass.ios": { bindCompassSession() {}, receiveCompassEvent() {} },
     '@nativescript/core': { File: { fromPath: () => ({ writeTextSync() {} }) },
       knownFolders: { documents: () => ({ path: '/tmp' }) }, path },

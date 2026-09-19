@@ -77,6 +77,9 @@
         @"connectable": advertisement[CBAdvertisementDataIsConnectable] ?: @YES}];
 }
 - (void)connect:(NSString *)identifier requestId:(NSInteger)requestId {
+    [self connect:identifier requiresANCS:NO requestId:requestId];
+}
+- (void)connect:(NSString *)identifier requiresANCS:(BOOL)requiresANCS requestId:(NSInteger)requestId {
     if (self.central.state != CBManagerStatePoweredOn) { [self complete:@(requestId) error:@"Bluetooth is not ready" details:nil]; return; }
     FCBPeripheral *peer = self.peers[identifier.uppercaseString];
     if (!peer) {
@@ -89,7 +92,11 @@
         [self complete:@(requestId) error:@"Peripheral is already connecting or connected" details:nil]; return;
     }
     [peer.characteristics removeAllObjects]; peer.connectRequest = @(requestId);
-    [self.central connectPeripheral:peer.peripheral options:nil];
+    [self.central connectPeripheral:peer.peripheral options:requiresANCS ? @{CBConnectPeripheralOptionRequiresANCS: @YES} : nil];
+}
+- (void)centralManager:(CBCentralManager *)central didUpdateANCSAuthorizationForPeripheral:(CBPeripheral *)peripheral {
+    [self emit:@{@"kind": @"ancs-authorization", @"identifier": peripheral.identifier.UUIDString,
+        @"authorized": @(peripheral.ancsAuthorized)}];
 }
 - (void)centralManager:(CBCentralManager *)central didConnectPeripheral:(CBPeripheral *)peripheral {
     [peripheral discoverServices:nil];

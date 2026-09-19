@@ -134,7 +134,7 @@ export class IosBluetooth {
       try { call(id) } catch (error) { clearTimeout(timer); this.pending.delete(id); reject(error) }
     })
   }
-  connect(identifier: string): Promise<ConnectionDetails> { return this.operation(identifier, id => this.native.connectRequestId(identifier, id), 20_000) }
+  connect(identifier: string, requiresANCS = false): Promise<ConnectionDetails> { return this.operation(identifier, id => this.native.connectRequiresANCSRequestId(identifier, requiresANCS, id), 20_000) }
   async subscribe(identifier: string, characteristic: string): Promise<void> {
     // R1 exposes two notification channels; one may never complete its CCCD
     // request. Keep the link alive so the other channel can still be tried.

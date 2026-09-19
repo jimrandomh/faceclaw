@@ -11,6 +11,7 @@
     "outDir": "../.test-build"
   },
   "include": [
+    "../app/g2/ancs-client.ts",
     "../app/g2/ble-protocol.ts",
     "../app/graphics/lvgl-font.ts",
     "../app/phone-ui/ble-bandwidth-meter.ts",

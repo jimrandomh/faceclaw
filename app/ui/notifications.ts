@@ -15,7 +15,7 @@ import {
   type AndroidNotificationAction,
 } from "../native/notification-icons";
 import { setNotificationSourceEnabled } from "../native/notification-sources";
-import { isNotificationListenerEnabled } from "../native/notification-access";
+import { notificationEmptyMessage } from "../native/notification-access";
 import { noteStaleDataUsed, renderPassAllowsStaleData } from "../util/render-freshness";
 import { type InputEvent } from "./gestures";
 import { type Layer, type LayerContext, type PaintBelow } from "./layers";
@@ -88,9 +88,7 @@ export class NotificationsListLayer implements Layer {
 
     if (!notifications.length) {
       image.drawText(font, TITLE_X, TITLE_Y, "Notifications", 220);
-      const message = isNotificationListenerEnabled()
-        ? "No current Android notifications."
-        : "Grant permission on your phone to view notifications on the glasses.";
+      const message = notificationEmptyMessage();
       const messageLines = wrapText(font, message, width - 48);
       for (let index = 0; index < messageLines.length; index++) {
         image.drawText(font, 24, 72 + index * lineStep(font), messageLines[index]!, 190);
@@ -445,7 +443,7 @@ function buildDetailMenu(notification: AndroidNotification, origin: SingleNotifi
       label: action.enabled ? action.title : `${action.title} (unavailable)`,
       action,
     })),
-    { kind: "dismiss", label: "Dismiss" },
+    { kind: "dismiss", label: notification.dismissLabel || "Dismiss" },
     ...(origin === "new-notification-modal" && notification.packageName
       ? [{ kind: "disable-source" as const, label: "Don't show on glasses again" }] : []),
   ];

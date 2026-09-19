@@ -7,6 +7,7 @@
 - (void)initializeBluetooth;
 - (void)scan:(BOOL)enabled;
 - (void)connect:(NSString *)identifier requestId:(NSInteger)requestId;
+- (void)connect:(NSString *)identifier requiresANCS:(BOOL)requiresANCS requestId:(NSInteger)requestId;
 - (void)subscribe:(NSString *)identifier characteristic:(NSString *)uuid requestId:(NSInteger)requestId;
 - (void)write:(NSString *)identifier characteristic:(NSString *)uuid data:(NSData *)data requestId:(NSInteger)requestId;
 - (void)disconnect:(NSString *)identifier;

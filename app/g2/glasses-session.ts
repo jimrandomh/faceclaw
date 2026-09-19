@@ -1,3 +1,4 @@
+import { AncsClient, ANCS_FIRMWARE_VERSION } from './ancs-client'
 import { type CompassEvent } from '../native/compass-types'
 import * as protocol from './ble-protocol'
 import { iosBleTraffic } from './ble-traffic-counters'
@@ -11,11 +12,11 @@ import { decodeWearState, enableWearDetection, queryWearState } from './wear-pro
 declare function setTimeout(callback: () => void, ms: number): number
 declare function clearTimeout(id: number): void
 export type SessionAddresses = { left: string; right: string; ring: string }
-export type TransportEvent = { kind: string; identifier?: string; characteristic?: string; data?: string; message?: string; state?: number }
+export type TransportEvent = { kind: string; identifier?: string; characteristic?: string; data?: string; message?: string; state?: number; authorized?: boolean }
 export interface SessionTransport {
   onEvent(listener: (event: TransportEvent) => void): () => void
   resolveDevices(addresses: SessionAddresses): Promise<Record<string, string>>
-  connect(identifier: string): Promise<{ characteristics: string[]; maxWrite: number }>
+  connect(identifier: string, requiresANCS?: boolean): Promise<{ characteristics: string[]; maxWrite: number }>
   subscribe(identifier: string, characteristic: string): Promise<void>
   write(identifier: string, characteristic: string, bytes: Uint8Array): Promise<void>
   disconnect(identifier: string): void
@@ -37,6 +38,7 @@ type DisplayFrame = { packed: Uint8Array; commands: Uint8Array[]; offset: number
 export class GlassesSession {
   state: SessionState = { phase: 'disconnected', status: 'Preview only', battery: null, charging: null, ring: false,
     frames: 0, capabilities: '', leftVersion: '', rightVersion: '' }
+  readonly notifications: AncsClient
   private generation = 0
   private ids: Record<string, string> = {}
   private limits: Record<string, number> = {}
@@ -86,7 +88,9 @@ export class GlassesSession {
     private readonly log: (message: string) => void = () => {},
     private readonly onActivity: () => void = () => {},
     private readonly onCompass: (event: CompassEvent) => void = () => {},
-    private readonly onWearState: (wearing: boolean) => void = () => {}) {
+    private readonly onWearState: (wearing: boolean) => void = () => {},
+    onNotificationsChanged: (key?: string, popup?: boolean) => void = () => {}) {
+    this.notifications = new AncsClient(packet => this.writePackets('right', () => [packet]), onNotificationsChanged, message => this.log('ANCS: ' + message))
     this.off = transport.onEvent(event => this.receive(event))
   }
   private update(phase: SessionState['phase'], status: string): void {
@@ -107,7 +111,7 @@ export class GlassesSession {
       this.ids = ids
       for (const role of ['right', 'left']) {
         this.update('connecting', `Connecting ${role} arm…`)
-        const details = await this.transport.connect(ids[role]); this.check(generation)
+        const details = await this.transport.connect(ids[role], role === 'right'); this.check(generation)
         this.limits[role] = details.maxWrite
         if (!details.characteristics.includes(protocol.G2_WRITE) || !details.characteristics.includes(protocol.G2_NOTIFY)) throw new Error(`${role} arm is missing G2 communication characteristics.`)
         await this.transport.subscribe(ids[role], protocol.G2_NOTIFY); this.check(generation)
@@ -140,6 +144,9 @@ export class GlassesSession {
       this.lastHeartbeat = this.lastLease = this.lastSettings = Date.now()
       this.displayed = null; this.retryCount = 0
       this.update('connected', 'Glasses connected')
+      if (/^Faceclaw\/(\d+)/.test(this.state.capabilities) && Number(this.state.capabilities.split('/')[1]) >= ANCS_FIRMWARE_VERSION)
+        this.notifications.start((Date.now() ^ Math.floor(Math.random()*0xffffffff)) >>> 0)
+      else this.notifications.stop(`Update glasses to Faceclaw firmware ${ANCS_FIRMWARE_VERSION} or newer for iPhone notifications.`)
       await this.syncCompass(); this.check(generation)
       this.schedule()
       if (addresses.ring && ids.ring) await this.connectRing(generation)
@@ -313,6 +320,17 @@ export class GlassesSession {
   }
   private receive(event: TransportEvent): void {
     if (!Object.values(this.ids).includes(event.identifier ?? '')) return
+    if (event.kind === 'ancs-authorization' && event.identifier === this.ids.right) {
+      if (event.authorized === false) {
+        const active = this.notifications.state !== 'disconnected'
+        const command = this.notifications.stopCommand()
+        this.notifications.stop('Enable Share System Notifications in iPhone Settings → Bluetooth → right lens.')
+        if (active && this.state.phase === 'connected') void this.writePackets('right', () => [command]).catch(() => {})
+      } else if (this.state.phase === 'connected' && /^Faceclaw\/(\d+)/.test(this.state.capabilities) && Number(this.state.capabilities.split('/')[1]) >= ANCS_FIRMWARE_VERSION) {
+        this.notifications.start((Date.now() ^ Math.floor(Math.random()*0xffffffff)) >>> 0)
+      }
+      return
+    }
     if (event.kind === 'disconnected') {
       if (event.identifier === this.ids.ring) {
         this.state.ring = false
@@ -340,6 +358,7 @@ export class GlassesSession {
         if (input) { this.log(`Direct R1 gesture ${input.eventType}`); this.onInput(input) }
         return
       }
+      if (event.identifier === this.ids.right && this.notifications.receive(data)) return
       for (const message of this.receiver.receive(event.identifier!, data)) {
         this.log(`RX ${event.identifier === this.ids.left ? 'L' : 'R'} sid=${message.sid.toString(16)} flag=${message.flag.toString(16)} cmd=${message.command} magic=${message.magic}`)
         if (message.sid === protocol.SID.cfw) {
@@ -523,6 +542,7 @@ export class GlassesSession {
     finally { if (generation === this.generation) { this.pumping = false; this.schedule(this.canSendDisplay() ? 0 : 1000) } }
   }
   private reset(): void {
+    this.notifications.stop()
     ++this.generation
     this.compassSent = null; this.compassWork = Promise.resolve()
     ++this.microphoneToken; this.audioListener = null; this.microphoneEnabled = false
@@ -567,6 +587,9 @@ export class GlassesSession {
     // cannot leave a microphone streaming after an explicit Disconnect.
     if (this.audioListener || this.microphoneEnabled) {
       try { await this.setMicrophone(false) } catch (error) { this.log(`Microphone cleanup: ${this.message(error)}`) }
+    }
+    if (this.notifications.state !== 'disconnected') {
+      try { await this.writePackets('right', () => [this.notifications.stopCommand()]) } catch {}
     }
     const cleanup = this.layoutCreated && this.state.phase === 'connected'
     this.update('disconnecting', 'Disconnecting…'); this.reset()

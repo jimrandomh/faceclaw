@@ -1,3 +1,6 @@
+import { bindIosNotifications, iosNotificationsChanged, onIosNotificationPopup } from '../native/notification-icons.ios'
+import { shouldShowNotificationOnGlasses } from '../native/notification-sources'
+import { readActiveNotifications } from '../native/notification-icons.ios'
 import { launcherEntries } from '../apps/launcher'
 import { getInstalledEvenHubAppById, installedEvenHubPackageId, uninstallEvenHubPackage } from '../apps/evenhub/installed-apps'
 import { isInstalledPackagePresent } from '../apps/evenhub/updates'
@@ -146,6 +149,13 @@ export class IosPreviewController {
     shell.registerWindow(launcher)
     shell.wake('window')
     shell.focusWindow(launcher.windowId)
+    onIosNotificationPopup(key => {
+      const notification = readActiveNotifications(128).find(n => n.key === key)
+      if (this.glassesLocked || !notification || !shouldShowNotificationOnGlasses(notification.packageName)) return
+      const woke = !shell.isScreenOn() && shell.wake('sidebar')
+      shell.openNotificationModal(key, woke)
+      this.requestShellRender()
+    })
     registerSystemTools()
     registerWindowTools({ apps: ALL_APPS.filter(app => !iosAppUnavailableReason(app.appId)),
       launchApp: id => this.launchApp(id), requestShellRender: () => this.requestShellRender() })
@@ -498,7 +508,10 @@ export class IosPreviewController {
       }, message => this.logBluetooth(message), () => {
         if (!UIApplication.sharedApplication.protectedDataAvailable) this.handlePhoneLockState(true)
         this.refreshClock()
-      }, receiveCompassEvent, wearing => this.handleWearState(wearing))
+      }, receiveCompassEvent, wearing => this.handleWearState(wearing), (key, popup) => {
+        iosNotificationsChanged(key, popup); this.requestShellRender()
+      })
+      bindIosNotifications(this.session.notifications)
       bindCompassSession(this.session)
     }
     await this.session.start(addresses)
