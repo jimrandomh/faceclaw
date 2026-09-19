@@ -154,3 +154,30 @@ test('bridge exposes numeric measurements and treats absent values as unknown', 
   await bridge.refreshNow();
   assert.equal(bridge.snapshot().reservoirUnits, 0);
 });
+
+test('polling starts once and stops even while the initial HTTP request is pending', async () => {
+  let resolveHttp, calls = 0, nextTimer = 0;
+  const pending = new Promise(resolve => { resolveHttp = resolve; });
+  const timers = new Map();
+  const module = load('app/native/nightscout-bridge.ts', {
+    '../ui/dashboard-settings': { nightscoutSiteUrlSetting: { get: () => 'https://example.test' }, nightscoutApiTokenSetting: { get: () => 'test' } },
+    '../util/http': { async fetchWithUserAgent() {
+      calls++;
+      await pending;
+      return { ok: true, json: async () => [] };
+    } },
+  }, { Date, console, setInterval(fn) { const id = ++nextTimer; timers.set(id, fn); return id; }, clearInterval(id) { timers.delete(id); } });
+  const bridge = new module.NightscoutBridge();
+  const first = bridge.start(), second = bridge.start();
+  assert.equal(timers.size, 1);
+  assert.equal(calls, 5);
+  const stopping = bridge.stop();
+  assert.equal(timers.size, 0);
+  resolveHttp();
+  await Promise.all([first, second, stopping]);
+  assert.equal(timers.size, 0, 'finishing the first refresh must not restart polling');
+  await bridge.start();
+  assert.equal(timers.size, 1);
+  assert.equal(calls, 10);
+  await bridge.stop();
+});

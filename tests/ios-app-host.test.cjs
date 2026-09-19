@@ -72,7 +72,7 @@ test('settings-driven repaint runs after font cache invalidation, regardless of 
 
 test('background glasses input still composites frames; phone resume preserves the session; explicit stop stays stopped', async () => {
   const tasks = new Map(), screenStates = [], inputs = [], frames = [], previews = [], states = [];
-  let nextTask = 0, starts = 0, stops = 0, session;
+  let nextTask = 0, starts = 0, stops = 0, pollStarts = 0, pollStops = 0, session;
   const window = { windowId: 'launcher', surfaceId: 'launcher', appId: 'launcher', title: 'Apps',
     setScreenOn: on => screenStates.push(on), requestRender() {} };
   const shell = { configure() {}, registerWindow() {}, wake() {}, focusWindow() {},
@@ -92,6 +92,7 @@ test('background glasses input still composites frames; phone resume preserves t
     '@nativescript/core': { File: { fromPath: () => ({ writeTextSync() {} }) }, knownFolders: { documents: () => ({ path: '/tmp' }) }, path },
     '../native/ios-voice-input': { iosVoiceInput: { handleSessionEnded() {} } },
     '../native/ios-bluetooth': { iosBluetooth: () => ({}) }, './glasses-session': { GlassesSession: Session },
+    '../native/nightscout-bridge': { nightscoutBridge: { async start() { pollStarts++; }, async stop() { pollStops++; } } },
     './glance-host': { GlanceHost: class { dismiss() {} isVisible() { return false; } } },
     './device-addresses': { loadDeviceAddresses: () => ({}) }, './ios-peripheral-identity': { deviceAddressError: () => null },
     '../apps/launcher/launcher-app': { createLauncherWindow: () => window, LAUNCHER_SURFACE_ID: 'launcher' },
@@ -122,6 +123,7 @@ test('background glasses input still composites frames; phone resume preserves t
   const previewCount = previews.length, stateCount = states.length;
   controller.pause(); controller.pause(); // NativeScript also unloads its root page on background entry.
   assert.equal(stops, 0); assert.ok(screenStates.every(Boolean));
+  assert.equal(pollStarts, 1); assert.equal(pollStops, 0, 'connected glasses keep Nightscout polling in background');
   session.onInput({ eventType: 3, eventSource: 1 });
   await controller.inputQueue; flush();
   assert.equal(inputs.length, 1); assert.ok(frames.length >= 2);
@@ -130,11 +132,13 @@ test('background glasses input still composites frames; phone resume preserves t
   assert.equal(starts, 1); assert.ok(previews.length > previewCount);
   controller.pause(); await controller.disconnect(); flush();
   assert.equal(stops, 1); assert.equal(screenStates.at(-1), false);
+  assert.equal(pollStops, 1);
   const frameCount = frames.length;
   session.onInput({ eventType: 3, eventSource: 1 }); await controller.inputQueue; flush();
   assert.equal(inputs.length, 1); assert.equal(frames.length, frameCount);
   controller.resume(); flush();
   assert.equal(starts, 1); assert.equal(controller.connectionState.phase, 'disconnected');
+  assert.equal(pollStarts, 2, 'resuming the phone restarts Nightscout polling');
 });
 
 test('iOS bandwidth footer toggles live, polls only in foreground and resets its rate window on resume', () => {
@@ -181,4 +185,58 @@ test('iOS bandwidth footer toggles live, polls only in foreground and resets its
   appEvents.get('resume')(); assert.equal(intervals.size, 1); assert.doesNotMatch(footer.text, /fps/);
   enabled = false; for (const fn of settingListeners) fn(); assert.equal(footer.visibility, 'collapse'); assert.equal(intervals.size, 0);
   page.events.get('unloaded')(); assert.equal(appEvents.size, 0); assert.equal(settingListeners.size, 0);
+});
+
+test('iOS configures an in-process surface before submitting constructor-triggered frames', async () => {
+  const submitted = [], surfaces = new Set();
+  const shell = { getWindows: () => [], configure() {}, registerWindow() {}, focusWindow() {}, foregroundWindow: () => null };
+  const api = load('app/g2/ios-preview-controller.ts', {
+    require: name => ({
+      '../ui/shell/shell': { shell },
+      '../ui/shell/geometry': { appViewportRect: () => ({ x: 0, y: 0, width: 2, height: 1 }) },
+      '../graphics/plane': { flattenPlanes: planes => planes[0] },
+    })[name] ?? {},
+    console,
+  });
+  // Exercise the real launch method with a strict compositor boundary. App
+  // construction paints synchronously, as Nightscout's tray subscription does.
+  const controller = Object.create(api.IosPreviewController.prototype);
+  controller.inProcessApps = new Map();
+  controller.requestShellRender = () => {};
+  controller.scheduleFrame = () => {};
+  controller.compositor = {
+    configureSurface(id) { surfaces.add(id); }, setSurfaceVisible() {},
+    removeSurface(id) { surfaces.delete(id); },
+    submitSurfaceFrame(id, pixels) { assert.ok(surfaces.has(id), `unconfigured ${id}`); submitted.push([...pixels]); },
+  };
+  let plumbing, early;
+  const fresh = [{ pixels: new Uint8Array([30, 40]), width: 2, height: 1 }];
+  await controller.launchInProcessApp('nightscout', 'window:nightscout', options => {
+    plumbing = options;
+    early = options.submitFrame([{ pixels: new Uint8Array([10, 20]), width: 2, height: 1 }]);
+    return { window: { windowId: 'nightscout', surfaceId: 'window:nightscout', appId: 'nightscout' },
+      requestRender: () => options.submitFrame(fresh) };
+  });
+  await early;
+  assert.deepEqual(submitted, [[30, 40]]);
+  plumbing.removeSurface();
+  await plumbing.submitFrame(fresh);
+  assert.deepEqual(submitted, [[30, 40]], 'late callbacks cannot submit to a removed surface');
+});
+
+test('iOS compositor rejects missing and removed surfaces before crossing into Kotlin', () => {
+  let nativeSubmissions = 0;
+  const native = { configureIdXYWidthHeightZOrderTransparent() {}, removeId() {}, submitIdDataXYWidthHeight() { nativeSubmissions++; } };
+  const api = load('app/graphics/surface-compositor.ios.ts', {
+    require: () => ({ toData: data => data }),
+    FaceclawKitIosSurfaceCompositor: { alloc: () => ({ initWithWidthHeight: () => native }) },
+  });
+  const c = new api.SurfaceCompositor(2, 1), pixels = new Uint8Array([1, 2]);
+  const rect = { x: 0, y: 0, width: 2, height: 1 };
+  assert.throws(() => c.submitSurfaceFrame('nightscout', pixels, rect), /Unknown surface/);
+  c.configureSurface('nightscout', { ...rect, zOrder: 0, transparency: 'opaque' });
+  c.submitSurfaceFrame('nightscout', pixels, rect);
+  c.removeSurface('nightscout');
+  assert.throws(() => c.submitSurfaceFrame('nightscout', pixels, rect), /Unknown surface/);
+  assert.equal(nativeSubmissions, 1);
 });

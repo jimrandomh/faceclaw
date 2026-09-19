@@ -1,6 +1,7 @@
 import { Dialogs, File, knownFolders, path, type ImageSource } from '@nativescript/core'
 import { iosBluetooth } from '../native/ios-bluetooth'
 import { iosVoiceInput } from '../native/ios-voice-input'
+import { nightscoutBridge } from '../native/nightscout-bridge'
 import { GlassesSession, type SessionState } from './glasses-session'
 import { GlanceHost, type GlanceDisplay } from './glance-host'
 import { OsEventTypeList } from './events'
@@ -11,7 +12,7 @@ import { ALL_APPS } from '../apps/all-apps'
 import type { AppContext, AppDefinition, AppLaunchParams } from '../apps/app-definition'
 import { WorkerAppHost } from '../ui/shell/worker-window'
 import { createInProcessWindow, YieldAtRootLayer, type InProcessAppOptions, type InProcessWindow } from '../ui/shell/in-process-window'
-import { getStringSettingById } from '../ui/dashboard-settings'
+import { getStringSettingById, nightscoutSiteUrlSetting, nightscoutApiTokenSetting } from '../ui/dashboard-settings'
 import { readPhoneBatteryState } from '../native/phone-battery'
 import { iosAppUnavailableReason } from '../apps/ios-availability'
 import { SurfaceCompositor } from '../graphics/surface-compositor'
@@ -152,6 +153,7 @@ export class IosPreviewController {
     this.runtimeRunning = running
     for (const window of shell.getWindows()) window.setScreenOn?.(running && shell.isScreenOn())
     if (!running) {
+      void nightscoutBridge.stop().catch(error => this.fail(error))
       this.glance.dismiss()
       this.compositor.setScreenBlanked(!shell.isScreenOn())
       this.offSettings?.(); this.offSettings = null
@@ -163,6 +165,7 @@ export class IosPreviewController {
       return
     }
     UIDevice.currentDevice.batteryMonitoringEnabled = true
+    void nightscoutBridge.start().catch(error => this.fail(error))
     for (const name of [UIDeviceBatteryLevelDidChangeNotification, UIDeviceBatteryStateDidChangeNotification]) {
       this.batteryObservers.push(NSNotificationCenter.defaultCenter.addObserverForNameObjectQueueUsingBlock(name, null, NSOperationQueue.mainQueue, () => this.requestShellRender()))
     }
@@ -307,15 +310,20 @@ export class IosPreviewController {
     create: (options: InProcessAppOptions) => InProcessWindow): Promise<void> {
     const existing = this.inProcessApps.get(windowId)
     if (existing) { shell.focusWindow(windowId); existing.requestRender(); this.requestShellRender(); return }
+    // Apps can request a render while their factory runs (Nightscout's tray
+    // subscription does). The surface only exists once the factory returns.
+    // The explicit render below supplies a fresh frame after configuration.
+    let surfaceReady = false
     const app = create({
-      actions: this.actions, submitFrame: planes => this.submit(surfaceId, planes),
+      actions: this.actions, submitFrame: planes => surfaceReady ? this.submit(surfaceId, planes) : Promise.resolve(),
       setSurfaceVisible: visible => { this.compositor.setSurfaceVisible(surfaceId, visible); this.scheduleFrame() },
-      removeSurface: () => { this.compositor.removeSurface(surfaceId); this.scheduleFrame() },
+      removeSurface: () => { surfaceReady = false; this.compositor.removeSurface(surfaceId); this.scheduleFrame() },
       reconfigureSurface: () => { const window = shell.getWindows().find(w => w.windowId === windowId); if (window) this.configureWindow(window); this.requestShellRender() },
       onClosed: () => { this.inProcessApps.delete(windowId) },
     })
     this.inProcessApps.set(windowId, app)
     this.configureWindow(app.window)
+    surfaceReady = true
     shell.registerWindow(app.window); shell.focusWindow(windowId)
     app.requestRender(); this.requestShellRender()
   }
@@ -419,6 +427,9 @@ export class IosPreviewController {
   private async editSetting(setting: { editorTitle: string; get(): string; set(value: string): void }): Promise<void> {
     if (!this.active) { this.logBluetooth('Editing text settings requires opening Faceclaw on the phone'); return }
     const result = await Dialogs.prompt({ title: setting.editorTitle, defaultText: setting.get(), okButtonText: 'Save', cancelButtonText: 'Cancel' })
-    if (result.result) setting.set(result.text)
+    if (result.result) {
+      setting.set(result.text)
+      if (setting === nightscoutSiteUrlSetting || setting === nightscoutApiTokenSetting) await nightscoutBridge.refreshNow()
+    }
   }
 }
