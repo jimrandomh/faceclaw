@@ -96,9 +96,9 @@
     NSMutableData *gray = [NSMutableData dataWithLength:size * size];
     const uint8_t *src = rgba.bytes;
     uint8_t *dst = gray.mutableBytes;
-    for (NSInteger i = 0; i < size * size; i++) {
-        dst[i] = (uint8_t)round(0.2126 * src[i * 4] + 0.7152 * src[i * 4 + 1] + 0.0722 * src[i * 4 + 2]);
-    }
+    // Icons are monochrome coverage masks, matching Android IconRenderer.
+    // Source black/currentColor shapes must remain visible on black lenses.
+    for (NSInteger i = 0; i < size * size; i++) dst[i] = src[i * 4 + 3];
     CGContextRelease(context);
     CGColorSpaceRelease(space);
     return gray;

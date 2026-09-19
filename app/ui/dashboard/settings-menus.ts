@@ -127,18 +127,17 @@ function settingsSections(): SettingsSection[] {
     {
       label: "Assistant",
       items: [
-        // On-phone LLM loop vs the user's own agent via the bridge plugin.
+        // iOS offers cloud APIs; Android also supports local models and the bridge.
         enumSettingMenuItem(assistantBackendSetting),
         enumSettingMenuItem(assistantModelSetting),
-        ...(!global.isIOS ? [localModelMenuItem()] : []),
-        // When on, a wakeword utterance goes straight to the assistant with no
-        // Send/Type menu step.
-        toggleSettingMenuItem(assistantSkipConfirmationSetting),
+        // iOS has no local LLM, wakeword event delivery, or agent bridge yet.
         ...(!global.isIOS ? [
-        textSettingMenuItem(assistantBridgeHostSetting),
-        textSettingMenuItem(assistantBridgePortSetting),
-        textSettingMenuItem(assistantBridgeTokenSetting),
-        toggleSettingMenuItem(assistantAllowProactiveSetting),
+          localModelMenuItem(),
+          toggleSettingMenuItem(assistantSkipConfirmationSetting),
+          textSettingMenuItem(assistantBridgeHostSetting),
+          textSettingMenuItem(assistantBridgePortSetting),
+          textSettingMenuItem(assistantBridgeTokenSetting),
+          toggleSettingMenuItem(assistantAllowProactiveSetting),
         ] : []),
       ],
     },
@@ -243,7 +242,7 @@ function settingsSections(): SettingsSection[] {
     },
   ];
   if (!global.isIOS) return sections;
-  const deferred = new Set(["Assistant", "Navigate", "Watch"]);
+  const deferred = new Set(["Navigate", "Watch"]);
   return sections.map(section => {
     if (section.label === "Developer") return { ...section, items: [toggleSettingMenuItem(showBleBandwidthSetting)] };
     if (section.label === "Voice") return { label: "Voice", items: [{
