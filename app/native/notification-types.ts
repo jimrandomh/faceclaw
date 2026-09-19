@@ -5,4 +5,6 @@ export type AndroidNotification = {
   bigText: string; subText: string; infoText: string; summaryText: string;
   category: string; lines: string[]; postTime: number; when: number;
   actions: AndroidNotificationAction[]; dismissLabel?: string;
+  /** Full message size reported by iOS, even when the fetched text is bounded. */
+  messageSize?: number;
 };

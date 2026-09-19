@@ -145,7 +145,7 @@ export class GlassesSession {
       this.displayed = null; this.retryCount = 0
       this.update('connected', 'Glasses connected')
       if (/^Faceclaw\/(\d+)/.test(this.state.capabilities) && Number(this.state.capabilities.split('/')[1]) >= ANCS_FIRMWARE_VERSION)
-        this.notifications.start((Date.now() ^ Math.floor(Math.random()*0xffffffff)) >>> 0)
+        this.notifications.start((Date.now() ^ Math.floor(Math.random()*0xffffffff)) >>> 0, this.limits.right)
       else this.notifications.stop(`Update glasses to Faceclaw firmware ${ANCS_FIRMWARE_VERSION} or newer for iPhone notifications.`)
       await this.syncCompass(); this.check(generation)
       this.schedule()
@@ -327,7 +327,7 @@ export class GlassesSession {
         this.notifications.stop('Enable Share System Notifications in iPhone Settings → Bluetooth → right lens.')
         if (active && this.state.phase === 'connected') void this.writePackets('right', () => [command]).catch(() => {})
       } else if (this.state.phase === 'connected' && /^Faceclaw\/(\d+)/.test(this.state.capabilities) && Number(this.state.capabilities.split('/')[1]) >= ANCS_FIRMWARE_VERSION) {
-        this.notifications.start((Date.now() ^ Math.floor(Math.random()*0xffffffff)) >>> 0)
+        this.notifications.start((Date.now() ^ Math.floor(Math.random()*0xffffffff)) >>> 0, this.limits.right)
       }
       return
     }

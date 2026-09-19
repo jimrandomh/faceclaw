@@ -576,3 +576,36 @@ test('firmware 15 requires an upgrade before starting notification relay', async
   assert.match(h.session.notifications.statusMessage, /firmware 16 or newer/);
   assert.equal(transport.ancs?.length ?? 0, 0);
 });
+
+test('ANCS app-name lookup uses the right-link write limit, including after reauthorization', async t => {
+  const transport = new FakeTransport(); transport.firmware = 16;
+  const h = harness(t, transport); await h.session.start(addresses);
+  await until(() => transport.ancs?.length);
+  const id = 'net.superblock.Pushover';
+  const attr = (key, value) => { const bytes = [...Buffer.from(value)]; return [key, bytes.length & 255, bytes.length >> 8, ...bytes]; };
+  for (let attempt = 0; attempt < 2; attempt++) {
+    if (attempt) {
+      transport.emit({kind:'ancs-authorization',identifier:'R',authorized:false});
+      const count = transport.ancs.length;
+      transport.emit({kind:'ancs-authorization',identifier:'R',authorized:true});
+      await until(() => transport.ancs.slice(count).some(p => p.frame[3] === 0));
+    }
+    const start = transport.ancs.filter(p => p.frame[3] === 0).at(-1);
+    const token = [...start.frame.subarray(4,8)];
+    let sequence = 0;
+    const feed = (kind, bytes) => transport.emit({kind:'notification',identifier:'R',characteristic:p.G2_NOTIFY,
+      data:hex(new Uint8Array([65,78,1,kind,...token,sequence++,0,3,...bytes]))});
+    const count = transport.ancs.length;
+    feed(0,[1]);feed(1,[0,0,1,1,7,0,0,0]);
+    await until(() => transport.ancs.length === count+1);
+    feed(3,[]);feed(2,[0,7,0,0,0,...attr(0,id),...attr(1,'Title'),...attr(3,'Message')]);
+    await until(() => transport.ancs.length === count+2);
+    feed(3,[]);feed(2,[0,7,0,0,0,...attr(2,''),...attr(4,'7'),...attr(5,''),...attr(6,''),...attr(7,'')]);
+    await until(() => transport.ancs.length === count+3);
+    const request = transport.ancs.at(-1);
+    assert.equal(request.id,'R');
+    assert.deepEqual([...request.frame.subarray(8)],[1,...Buffer.from(id),0,0]);
+    feed(3,[]);feed(2,[1,...Buffer.from(id),0,...attr(0,'Pushover Notifications')]);
+    assert.equal(h.session.notifications.read()[0].appName,'Pushover Notifications');
+  }
+});
