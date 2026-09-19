@@ -116,7 +116,7 @@ function prepareFwTextRun(placed: PlacedFwText): boolean {
       bytes.set(entry.data.nibbles, offset + 10);
       offset += 10 + entry.data.nibbles.length;
     }
-    com.faceclaw.app.FwGlyphAtlas.register(buffer);
+    com.faceclaw.app.FwGlyphAtlas.register(new com.faceclaw.app.AndroidByteReader(buffer));
   }
   return true;
 }
@@ -130,7 +130,7 @@ function imageId(placed: PlacedImage): number | null {
   let id: number | null = null;
   if (source.width > 0 && source.width <= 255 && source.height > 0 && source.height <= 255) {
     const key = `img:${source.width}x${source.height}:${source.contentHash32().toString(16)}`;
-    id = com.faceclaw.app.ImageAtlas.ensure(key, source.width, source.height, source.pixels.buffer);
+    id = com.faceclaw.app.ImageAtlas.ensure(key, source.width, source.height, new com.faceclaw.app.AndroidByteReader(source.pixels.buffer));
     if (!(typeof id === "number") || id <= 0) id = null;
   }
   imageIds.set(source, id);
@@ -184,9 +184,9 @@ export function prepareFrameDraws(draws: readonly DeferredDraw[]): ArrayBuffer |
   }
   if (registration) {
     const plainBuffer = buildRegistrationBuffer(registration);
-    if (plainBuffer) com.faceclaw.app.GlyphAtlas.register(plainBuffer);
+    if (plainBuffer) com.faceclaw.app.GlyphAtlas.register(new com.faceclaw.app.AndroidByteReader(plainBuffer));
     const aaBuffer = buildAaRegistrationBuffer(registration);
-    if (aaBuffer) com.faceclaw.app.GlyphAtlas.registerAa(aaBuffer);
+    if (aaBuffer) com.faceclaw.app.GlyphAtlas.registerAa(new com.faceclaw.app.AndroidByteReader(aaBuffer));
   }
   if (bytes === 0) return null;
 

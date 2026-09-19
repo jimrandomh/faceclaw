@@ -255,10 +255,6 @@ def faceclawVersionCode = {
   return parts[0] * 10000 + parts[1] * 100 + parts[2]
 }()
 
-// ios-port packages commonMain in an AAR. Keeping this conditional lets the
-// source relocation merge there without compiling the shared classes twice.
-def faceclawDependencies = new groovy.json.JsonSlurper().parse(file("$rootDir/../../package.json")).dependencies ?: [:]
-
 android {
   compileSdkVersion 35
   buildToolsVersion "35"
@@ -266,11 +262,7 @@ android {
 
   sourceSets.main {
     jniLibs.srcDirs += ["$projectDir/src/main/jniLibs"]
-    // Keep portable Kotlin at the same path as ios-port's KMP commonMain.
-    // main compiles it directly with the existing Android Kotlin plugin.
-    if (!faceclawDependencies.containsKey("@faceclaw/kotlin")) {
-      java.srcDirs += ["$rootDir/../../native/kotlin/shared/src/commonMain/kotlin"]
-    }
+    // Shared Kotlin is packaged by the local @faceclaw/kotlin plugin.
   }
 
   defaultConfig {
@@ -301,12 +293,21 @@ android {
 // project. Remove the former copy before Kotlin compilation after this move.
 def removeLegacyKotlinBridgeSource = tasks.register("removeLegacyKotlinBridgeSource", Delete) {
   delete file("$projectDir/src/main/java/com/faceclaw/shared/KotlinBridge.kt")
+  // Explicit, reviewed source moves: never infer deletions from class names.
+  def migrations = new groovy.json.JsonSlurper().parse(file("$rootDir/../../native/kotlin/migrated-java-sources.json"))
+  migrations.each { migration ->
+    if (!file("$rootDir/../../native/kotlin/${migration.kotlin}").isFile()) {
+      throw new GradleException("Missing Kotlin replacement: ${migration.kotlin}")
+    }
+    delete file("$projectDir/src/main/java/${migration.java}")
+  }
 }
 tasks.matching { it.name.startsWith("compile") && it.name.endsWith("Kotlin") }.configureEach {
   dependsOn removeLegacyKotlinBridgeSource
 }
 
 tasks.matching { it.name == "preBuild" }.configureEach {
+  dependsOn removeLegacyKotlinBridgeSource
   dependsOn tasks.named("prepareFaceclawNativeLibs")
   dependsOn tasks.named("prepareFaceclawLlama")
 }

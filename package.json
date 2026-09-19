@@ -8,10 +8,13 @@
     "run": "./build_and_run.sh",
     "release": "scripts/release.sh",
     "clean": "rm -rf platforms",
-    "test": "tsc -p tests/tsconfig.json && node --test tests/*.test.cjs"
+    "test": "tsc -p tests/tsconfig.json && node --test tests/*.test.cjs",
+    "test:kotlin": "bash scripts/test-kotlin.sh",
+    "test:kotlin:ios": "bash scripts/test-kotlin.sh iosSimulatorArm64Test compileKotlinIosArm64"
   },
   "dependencies": {
     "@evenrealities/pretext": "^0.1.4",
+    "@faceclaw/kotlin": "file:native/kotlin/plugin",
     "@nativescript/core": "~9.0.0",
     "@nativescript/theme": "^3.1.0",
     "@xterm/headless": "^6.0.0",
@@ -22,7 +25,7 @@
     "upng-js": "^2.1.0"
   },
   "devDependencies": {
-    "@nativescript/android": "9.0.4",
+    "@nativescript/android": "9.1.1",
     "@nativescript/types": "~9.0.0",
     "@nativescript/webpack": "~5.0.25",
     "typescript": "~5.4.0"

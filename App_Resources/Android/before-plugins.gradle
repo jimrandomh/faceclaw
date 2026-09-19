@@ -10,7 +10,7 @@ project.ext {
   // androidXTransition = "1.4.1"
   // androidXViewPager = "1.0.0"
 
-  // NativeScript 9 already applies kotlin-android. Pin its current compiler
+  // NativeScript 9 already applies kotlin-android. Match the shared KMP compiler
   // for our .kt sources; no separate Kotlin installation is required.
-  kotlinVersion = "2.2.20"
+  kotlinVersion = "2.4.20"
 }

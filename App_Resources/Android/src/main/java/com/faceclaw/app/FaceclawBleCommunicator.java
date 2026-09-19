@@ -154,7 +154,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private int lastAudioControlAckMagic = 0;
 
     private ConnectionOptions connectionOptions = new ConnectionOptions();
-    private final BleMagicPool magicPool = new BleMagicPool();
+    private final BleMagicPool magicPool = new BleMagicPool(AndroidProtocolPlatform.INSTANCE);
     private MessageBuilder messageBuilder = new MessageBuilder(magicPool);
     private int nextTransportSeq = 0x40;
     private int nextMapSessionId = 0;
@@ -267,7 +267,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private final TextureCacheState textureCache = new TextureCacheState();
 
     private final ArrayDeque<OutboundMessage> pendingMessages = new ArrayDeque<>();
-    private final CfwTransport[] cfwTransports = { new CfwTransport(), new CfwTransport() };
+    private final CfwTransport[] cfwTransports = { new CfwTransport(AndroidProtocolPlatform.INSTANCE), new CfwTransport(AndroidProtocolPlatform.INSTANCE) };
     private final ArrayDeque<OutboundMessage> inFlightMessages = new ArrayDeque<>();
     private OutboundMessage prewrittenMessage;
     private List<byte[]> prewrittenFrames = Collections.emptyList();
@@ -360,6 +360,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             activeInstance = null;
         }
         disconnect();
+        for (CfwTransport transport : cfwTransports) transport.close();
         if (phoneLockReceiverRegistered) {
             phoneLockReceiverRegistered = false;
             appContext.unregisterReceiver(phoneLockReceiver);
@@ -1231,7 +1232,8 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 + (glyphs == null ? " (no glyph draws)" : ""));
         FrameTimings.getInstance().spanStart(frameId, "composite");
         SurfaceCompositor.Composite composite = compositor.applyAndComposite(
-                surfaceId, pixels8bpp, rectX, rectY, rectWidth, rectHeight, contentFingerprint, glyphs);
+                surfaceId, new AndroidByteReader(pixels8bpp), rectX, rectY, rectWidth, rectHeight, contentFingerprint,
+                glyphs == null ? null : new AndroidByteReader(glyphs));
         FrameTimings.getInstance().spanEnd(frameId, "composite");
         // Pack the composited 8bpp buffer down to the headerless 4bpp frame
         // format the wire planners consume; BMP framing is added later only for
@@ -2622,7 +2624,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             writeAddress,
             BleProtocol.WRITE_CHAR_UUID,
             frames,
-            ConnectionOptions.WRITE_TYPE,
+            AndroidProtocolPlatform.writeType(ConnectionOptions.WRITE_MODE),
             ConnectionOptions.WRITE_TIMEOUT_MS
         );
 
@@ -2669,7 +2671,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             writeAddress,
             BleProtocol.WRITE_CHAR_UUID,
             prefixFrames,
-            ConnectionOptions.WRITE_TYPE,
+            AndroidProtocolPlatform.writeType(ConnectionOptions.WRITE_MODE),
             ConnectionOptions.WRITE_TIMEOUT_MS
         );
         if (!result) {
@@ -2705,7 +2707,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             writeAddress,
             BleProtocol.WRITE_CHAR_UUID,
             Collections.singletonList(finalFrame),
-            ConnectionOptions.WRITE_TYPE,
+            AndroidProtocolPlatform.writeType(ConnectionOptions.WRITE_MODE),
             ConnectionOptions.WRITE_TIMEOUT_MS
         );
     }
@@ -3433,7 +3435,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         if (operation == BleProtocol.FACECLAW_WAKE_OP_ACQUIRE) {
             lastFaceclawWakeLeaseQueuedAtMs = SystemClock.elapsedRealtime();
         }
-        Runnable onSent = () -> {
+        MessageCallback onSent = () -> {
             if (faceclawWakeControlGeneration == generation) {
                 faceclawWakeControlSentCount += 1;
             }
@@ -3489,7 +3491,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         if (operation == BleProtocol.FACECLAW_FB_OP_ACQUIRE) {
             lastFaceclawFramebufferLeaseQueuedAtMs = SystemClock.elapsedRealtime();
         }
-        Runnable onSent = () -> {
+        MessageCallback onSent = () -> {
             if (faceclawFramebufferControlGeneration == generation) {
                 faceclawFramebufferControlSentCount += 1;
             }

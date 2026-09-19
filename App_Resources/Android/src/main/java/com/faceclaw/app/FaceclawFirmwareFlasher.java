@@ -301,7 +301,7 @@ public class FaceclawFirmwareFlasher implements FaceclawBleListener {
     private boolean writeOta(String address, String writeChar, int sid, byte[] payload, int seq) {
         List<byte[]> frames = BleProtocol.framePb(payload, sid, FLAG_OTA, seq);
         return bleManager.writeFrames(
-            address, writeChar, frames, ConnectionOptions.WRITE_TYPE, ConnectionOptions.WRITE_TIMEOUT_MS);
+            address, writeChar, frames, AndroidProtocolPlatform.writeType(ConnectionOptions.WRITE_MODE), ConnectionOptions.WRITE_TIMEOUT_MS);
     }
 
     private int waitAck(int wantOp, int timeoutMs) throws TimeoutException {

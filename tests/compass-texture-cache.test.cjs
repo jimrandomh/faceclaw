@@ -151,7 +151,7 @@ test('the background registers once and uses a nine-byte image reference on late
   const registered = [];
   const { prepareFrameDraws } = load('app/graphics/glyph-wire.ts', {}, '', {
     global: { isAndroid: true },
-    com: { faceclaw: { app: { ImageAtlas: { ensure: (...args) => {
+    com: { faceclaw: { app: { AndroidByteReader: class { constructor(buffer) { this.buffer = buffer; } }, ImageAtlas: { ensure: (...args) => {
       registered.push(args);
       return 1;
     } } } } },

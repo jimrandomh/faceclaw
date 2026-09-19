@@ -1,3 +1,4 @@
+import { runKotlinProtocolSmokeTest } from './kotlin-protocol-smoke';
 import { isAndroid } from "@nativescript/core";
 
 // Handwritten declarations for this small native surface. NativeScript builds
@@ -18,6 +19,7 @@ export function runKotlinBridgeSmokeTest(): void {
   if (!isAndroid) return;
 
   try {
+    runKotlinProtocolSmokeTest();
     const bridge = new com.faceclaw.shared.KotlinBridge();
     const greeting = bridge.greet("Faceclaw");
     const message = "Faceclaw \u2194 Kotlin \ud83d\udc53";

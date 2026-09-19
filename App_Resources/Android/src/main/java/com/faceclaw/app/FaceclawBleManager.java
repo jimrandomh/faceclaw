@@ -268,7 +268,7 @@ public class FaceclawBleManager {
                 return false;
             }
 
-            BluetoothGattDescriptor descriptor = characteristic.getDescriptor(BleProtocol.CCCD_UUID);
+            BluetoothGattDescriptor descriptor = characteristic.getDescriptor(java.util.UUID.fromString(BleProtocol.CCCD_UUID));
             if (descriptor == null) {
                 descriptorLatches.remove(address);
                 return true;

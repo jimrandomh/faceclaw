@@ -1,5 +1,5 @@
 # NativeScript
-hooks/
+hooks/*
 node_modules/
 platforms/
 
@@ -15,6 +15,18 @@ yarn-error.log*
 
 # npm test compile output (tests/tsconfig.json outDir)
 .test-build/
+tests/kotlin/.gradle/
+tests/kotlin/.kotlin/
+tests/kotlin/build/
+native/kotlin/.gradle/
+native/kotlin/.kotlin/
+native/kotlin/build/
+native/kotlin/shared/build/
+native/kotlin/plugin/platforms/android/*.aar
+native/kotlin/plugin/platforms/ios/
+!hooks/before-prepare/
+hooks/before-prepare/*
+!hooks/before-prepare/faceclaw-kotlin.js
 
 # General
 .DS_Store
@@ -42,4 +54,3 @@ faceclaw_settings.xml
 
 # Developer configs
 build_paths.sh
-
