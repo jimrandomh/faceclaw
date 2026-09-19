@@ -59,3 +59,7 @@ native/kotlin/plugin/platforms/ios/
 !native/kotlin/plugin/platforms/
 !native/kotlin/plugin/platforms/android/
 !native/kotlin/plugin/platforms/android/include.gradle
+
+tests/kotlin/.gradle/
+tests/kotlin/.kotlin/
+tests/kotlin/build/

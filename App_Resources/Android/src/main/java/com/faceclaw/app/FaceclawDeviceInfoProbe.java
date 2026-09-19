@@ -362,7 +362,7 @@ public class FaceclawDeviceInfoProbe implements FaceclawBleListener {
         boolean written;
         try {
             written = bleManager.writeFrames(
-                address, BleProtocol.WRITE_CHAR_UUID, frames, ConnectionOptions.WRITE_TYPE, ConnectionOptions.WRITE_TIMEOUT_MS);
+                address, BleProtocol.WRITE_CHAR_UUID, frames, AndroidProtocolPlatform.writeType(ConnectionOptions.WRITE_MODE), ConnectionOptions.WRITE_TIMEOUT_MS);
         } catch (IllegalStateException e) {
             // "Not connected" — the link went away underneath us.
             written = false;
@@ -475,7 +475,7 @@ public class FaceclawDeviceInfoProbe implements FaceclawBleListener {
             address, sid, flag, magic, seq, payload.length));
         List<byte[]> frames = BleProtocol.framePb(payload, sid, flag, seq);
         boolean written = bleManager.writeFrames(
-            address, BleProtocol.WRITE_CHAR_UUID, frames, ConnectionOptions.WRITE_TYPE, ConnectionOptions.WRITE_TIMEOUT_MS);
+            address, BleProtocol.WRITE_CHAR_UUID, frames, AndroidProtocolPlatform.writeType(ConnectionOptions.WRITE_MODE), ConnectionOptions.WRITE_TIMEOUT_MS);
         if (!written) {
             emitLog("tx write FAILED sid=0x" + Integer.toHexString(sid));
             synchronized (lock) {

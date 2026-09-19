@@ -9,28 +9,22 @@ const { crc16, concat, MessageReceiver } = require('../.test-build/app/g2/ble-pr
 const hex = value => Buffer.from(value).toString('hex');
 
 test('iOS transport matches Android packets including persistent compression, reset, raw fallback and ATT limits', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'faceclaw-cfw-java-'));
-  const java = name => process.env.JAVA_HOME ? path.join(process.env.JAVA_HOME, 'bin', name) : name;
   const random = new Uint8Array(65535); let seed = 42;
   for (let i = 0; i < random.length; i++) { seed ^= seed << 13; seed ^= seed >>> 17; seed ^= seed << 5; random[i] = seed & 255; }
   const cases = [[100, 3, 185, new Uint8Array([6, 0, 0, 255, 255])],
     [101, 3, 185, new Uint8Array([6, 0, 0, 255, 255])], [102, 1, 20, new Uint8Array(500).fill(42)],
     'reset', [255, 3, 514, random], [103, 3, 240, new Uint8Array([11])]];
-  try {
-    execFileSync(java('javac'), ['-d', dir,
-      path.join(__dirname, '../App_Resources/Android/src/main/java/com/faceclaw/app/g2protocol/CfwTransport.java'),
-      path.join(__dirname, 'fixtures/CfwTransportVectors.java')]);
-    const expected = execFileSync(java('java'), ['-cp', dir, 'com.faceclaw.app.CfwTransportVectors',
-      ...cases.map(c => c === 'reset' ? c : `${c[0]}:${c[1]}:${c[2]}:${hex(c[3])}`)],
-      { maxBuffer: 1024 * 1024 }).toString().trim().split('\n');
+  // Captured from the original Java encoder before migration; production now uses Kotlin.
+  const expected = require('./fixtures/cfw-java-golden.json');
+  const hash = value => require('node:crypto').createHash('sha256').update(value).digest('hex');
     const transport = new CfwTransport(); let index = 0;
     for (const c of cases) {
       if (c === 'reset') { transport.reset(); continue; }
       const [id, lenses, maxWrite, payload] = c, packets = transport.encode(payload, id, lenses, maxWrite);
       assert.ok(packets.every(p => p.length <= maxWrite));
-      assert.equal(packets.map(hex).join(' '), expected[index++]);
+      assert.equal(hash(packets.map(hex).join(' ')), expected[index++]);
     }
-  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+
 });
 
 function ackPacket(records, lens = 1, nack = false) {

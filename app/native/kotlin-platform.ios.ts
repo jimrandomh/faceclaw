@@ -1,3 +1,4 @@
+import { runKotlinProtocolSmokeTest } from './kotlin-protocol-smoke.ios';
 import type { KotlinBridge } from './kotlin-platform';
 
 // Handwritten declarations matching FaceclawKit's Objective-C header.
@@ -26,6 +27,7 @@ class KotlinCallback extends NSObject implements FaceclawKitKotlinBridgeListener
 }
 
 export function createKotlinBridge(): KotlinBridge {
+  runKotlinProtocolSmokeTest();
   const bridge = FaceclawKitKotlinBridge.alloc().init();
   return {
     platform: () => bridge.platform(),

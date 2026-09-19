@@ -105,7 +105,8 @@ public final class FaceclawPreviewCompositor {
             java.nio.ByteBuffer glyphs
     ) {
         compositor.applyAndComposite(
-                surfaceId, pixels8bpp, rectX, rectY, rectWidth, rectHeight, contentFingerprint, glyphs);
+                surfaceId, new AndroidByteReader(pixels8bpp), rectX, rectY, rectWidth, rectHeight, contentFingerprint,
+                glyphs == null ? null : new AndroidByteReader(glyphs));
         FrameTimings.getInstance().finishFrame(frameId, "composited (preview-only, no glasses)");
         Runnable listener = frameListener;
         if (listener != null) {

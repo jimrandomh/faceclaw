@@ -362,7 +362,7 @@ public class FaceclawFlashPromptCommunicator implements FaceclawBleListener {
             address,
             BleProtocol.WRITE_CHAR_UUID,
             frames,
-            ConnectionOptions.WRITE_TYPE,
+            AndroidProtocolPlatform.writeType(ConnectionOptions.WRITE_MODE),
             ConnectionOptions.WRITE_TIMEOUT_MS);
     }
 
