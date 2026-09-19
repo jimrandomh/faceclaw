@@ -1,17 +1,6 @@
 # Changelog
 
-## 0.7.1 - Unreleased
-
-### Minor Features
-
-* Mark stock firmware 2.3 as validated for installing custom firmware over
-* Add on-device Whisper as a voice transcription option
-* Add Wear OS watch battery indicator to the top bar and Glanceboard
-* Refinements to builtin games
-* Short-the-long gesture from screen off activates the glanceboard
-* Compass: No longer discards calibration when off
-* Glanceboard: Tap setting includes a Disable option
-* Glanceboard: Add a 2x3 layout option
+## 0.7.1 - 2026-09-19
 
 ### iOS Developer Beta
 
@@ -31,7 +20,18 @@ Current status:
 * Calendar: Not yet implemented at all
 * EvenHub: Partially working. Hub apps install and run, sometimes. They freeze when the app is in the background or the phone is locked.
 
-### Protocol
+### Minor Features
+
+* Mark stock firmware 2.3 as validated for installing custom firmware over
+* Add on-device Whisper as a voice transcription option
+* Add Wear OS watch battery indicator to the top bar and Glanceboard
+* Refinements to builtin games
+* Short-the-long gesture from screen off activates the glanceboard
+* Compass: No longer discards calibration when off
+* Glanceboard: Tap setting includes a Disable option
+* Glanceboard: Add a 2x3 layout option
+
+### Bluetooth Protocol Changes
 
 * Custom bluetooth messages now use a new SID, rather than modifying the stock image-update message type
 * Compression is done at the transport layer, rather than individual image data buffers
