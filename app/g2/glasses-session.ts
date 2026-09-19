@@ -6,6 +6,7 @@ import { CfwTransport, CFW_MAX_MESSAGE, parseCfwAcks } from './cfw-transport'
 import { hasCompatibleFirmware, firmwareIncompatibilityMessage, REQUIRED_FACECLAW_FIRMWARE_VERSION } from './firmware-compat'
 import { hexToBytes } from '../util/hex-util'
 import { deviceAddressError } from './ios-peripheral-identity'
+import { decodeWearState, enableWearDetection, queryWearState } from './wear-protocol'
 
 declare function setTimeout(callback: () => void, ms: number): number
 declare function clearTimeout(id: number): void
@@ -84,7 +85,8 @@ export class GlassesSession {
     private readonly onInput: (input: protocol.GlassesInput) => void,
     private readonly log: (message: string) => void = () => {},
     private readonly onActivity: () => void = () => {},
-    private readonly onCompass: (event: CompassEvent) => void = () => {}) {
+    private readonly onCompass: (event: CompassEvent) => void = () => {},
+    private readonly onWearState: (wearing: boolean) => void = () => {}) {
     this.off = transport.onEvent(event => this.receive(event))
   }
   private update(phase: SessionState['phase'], status: string): void {
@@ -134,6 +136,7 @@ export class GlassesSession {
       await this.lease(true)
       await this.request('right', protocol.SID.hub, protocol.createLayout, 'Create display layout')
       this.check(generation); this.layoutCreated = true
+      await this.enableWearDetectionAndRequestState(); this.check(generation)
       this.lastHeartbeat = this.lastLease = this.lastSettings = Date.now()
       this.displayed = null; this.retryCount = 0
       this.update('connected', 'Glasses connected')
@@ -353,6 +356,8 @@ export class GlassesSession {
           }
         }
         if (message.sid === protocol.SID.settings) this.applySettings(message)
+        const wearing = decodeWearState(message)
+        if (wearing !== null) this.onWearState(wearing)
         if (event.identifier === this.ids.right) {
           if (this.state.phase === 'connected') {
             const compass = protocol.decodeCompassInput(message)
@@ -388,6 +393,16 @@ export class GlassesSession {
       if (charging >= 0) this.state.charging = this.charging = charging > 0
     }
     this.onState({ ...this.state })
+  }
+  async enableWearDetectionAndRequestState(): Promise<void> {
+    const generation = this.generation
+    // Like Android, a missing enable ACK must not suppress the current-state query.
+    try { await this.request('right', protocol.SID.settings, enableWearDetection, 'Enable wear detection') }
+    catch (error) { if (!(error instanceof AckTimeout)) throw error; this.log(this.message(error)) }
+    this.check(generation)
+    await this.send('right', protocol.SID.settings, 0x20, queryWearState())
+    this.check(generation)
+    await this.send('left', protocol.SID.settings, 0x20, queryWearState())
   }
   setFrame(gray: Uint8Array): void {
     if (this.state.phase !== 'connected') return

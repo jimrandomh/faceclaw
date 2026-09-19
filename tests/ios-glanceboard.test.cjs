@@ -23,10 +23,12 @@ const planes = load('app/graphics/plane.ts', { './image': images });
 const timings = load('app/native/frame-timings.ts', {});
 
 function fixture() {
+  const observers = new Map(), phoneState = { protectedDataAvailable: true };
+  let settingsChanged;
   let now = 1000, nextTask = 0, screenOn = true, shellOptions, session;
   const tasks = new Map(), sent = [], previews = [], received = [], errors = [];
   const boardStats = { starts: 0, stops: 0, paints: 0 };
-  const settings = { enabled: true, tap: true, hold: true, tilt: true, duration: 3000 };
+  const settings = { lock: true, enabled: true, tap: true, hold: true, tilt: true, duration: 3000 };
   const clock = { Date: class extends Date { static now() { return now; } },
     setTimeout: (fn, ms) => { tasks.set(++nextTask, { fn, at: now + ms }); return nextTask; },
     clearTimeout: id => tasks.delete(id), setInterval: () => ++nextTask, clearInterval() {} };
@@ -54,7 +56,8 @@ function fixture() {
   };
   class Session {
     state = { phase: 'disconnected' };
-    constructor(_transport, onState, onInput) { session = this; this.onState = onState; this.onInput = onInput; }
+    constructor(_transport, onState, onInput, _log, _activity, _compass, onWear) { session = this; this.onState = onState; this.onInput = onInput; this.onWear = onWear; }
+    async enableWearDetectionAndRequestState() {}
     async start() { this.state = { phase: 'connected' }; this.onState(this.state); }
     async stop() { this.state = { phase: 'disconnected' }; this.onState(this.state); }
     setFrame(pixels) { if (this.state.phase === 'connected') sent.push(pixels); }
@@ -81,13 +84,14 @@ function fixture() {
     './glasses-session': { GlassesSession: Session },
     '../native/nightscout-bridge': { nightscoutBridge: { async start() {}, async stop() {} } },
     './glance-host': { GlanceHost }, './events': events,
+    './lock-screen': { LOCK_SCREEN_SURFACE_ID: 'lock-screen', createLockScreenImage: () => new images.GrayImage(640, 480, 123) },
     './device-addresses': { loadDeviceAddresses: () => ({}) }, './ios-peripheral-identity': { deviceAddressError: () => null },
     '../apps/launcher': { launcherEntries: () => [] },
     '../apps/evenhub/installed-apps': {}, '../apps/evenhub/manager': {}, '../apps/evenhub/updates': {}, '../apps/evenhub': {},
     '../apps/launcher/launcher-app': { createLauncherWindow: () => window, LAUNCHER_SURFACE_ID: 'launcher' },
     '../apps/all-apps': { ALL_APPS: [{ appId: 'glanceboard', glanceboard: provider }] },
     '../ui/shell/worker-window': {}, '../ui/shell/in-process-window': {},
-    '../ui/dashboard-settings': { onAnySettingChanged: () => () => {}, previewColorSetting: { get: () => 'white' } },
+    '../ui/dashboard-settings': { lockScreenEnabledSetting: { get: () => settings.lock }, onAnySettingChanged: fn => { settingsChanged = fn; return () => {}; }, previewColorSetting: { get: () => 'white' } },
     '../native/phone-battery': { readPhoneBatteryState: () => ({ battery: 80, charging: false }) },
     '../apps/ios-availability': { iosAppUnavailableReason: () => null },
     '../graphics/surface-compositor': { SurfaceCompositor }, '../graphics/plane': planes, '../graphics/image': images,
@@ -103,9 +107,10 @@ function fixture() {
   };
   const { IosPreviewController } = load('app/g2/ios-preview-controller.ts', modules, {
     ...clock, console: { log() {}, warn() {}, error: text => errors.push(text) },
-    UIDevice: { currentDevice: {} }, UIApplication: { sharedApplication: { protectedDataAvailable: true } },
+    UIDevice: { currentDevice: {} }, UIApplication: { sharedApplication: phoneState },
+    UIApplicationProtectedDataWillBecomeUnavailable: 'lock', UIApplicationProtectedDataDidBecomeAvailable: 'unlock',
     UIDeviceBatteryLevelDidChangeNotification: 'level', UIDeviceBatteryStateDidChangeNotification: 'state',
-    NSNotificationCenter: { defaultCenter: { addObserverForNameObjectQueueUsingBlock() {}, removeObserver() {} } },
+    NSNotificationCenter: { defaultCenter: { addObserverForNameObjectQueueUsingBlock(name, _object, _queue, fn) { observers.set(name, fn); return name; }, removeObserver(name) { observers.delete(name); } } },
     NSOperationQueue: { mainQueue: {} },
   });
   const controller = new IosPreviewController((pixels, title) => previews.push({ pixels, title }), message => errors.push(message));
@@ -124,7 +129,7 @@ function fixture() {
     await render();
   }
   async function phone(type, origin = 'ring') { controller.gesture(type, origin); await render(); }
-  return { controller, shell, settings, sent, previews, received, boardStats, hardware, phone, advance, render };
+  return { controller, shell, settings, phoneState, observers, wear: wearing => session.onWear(wearing), settingsChanged: () => settingsChanged(), sent, previews, received, boardStats, hardware, phone, advance, render };
 }
 const assertBlank = pixels => assert.ok(pixels.every(p => p === 0));
 const assertBoard = pixels => {
@@ -196,4 +201,71 @@ test('phone preview gestures use Glanceboard; losing runtime cleans up holds and
   f.controller.pause(); await f.render(); assert.equal(f.controller.glance.isVisible(), false);
   f.controller.resume(); await f.render(); assertBlank(f.previews.at(-1).pixels);
   assert.equal(f.boardStats.starts, f.boardStats.stops);
+});
+
+
+test('iOS lock hides apps and Glanceboard, blocks input, and stays locked when put back on', async () => {
+  const f = fixture(); await f.controller.connect(); f.shell.sleep(); await f.hardware(0);
+  f.controller.pause();
+  // The notification precedes the property change: do not immediately undo it.
+  f.observers.get('lock')(); f.wear(false); await f.render();
+  assert.equal(f.controller.glassesLocked, true);
+  assert.equal(f.controller.glance.isVisible(), false);
+  await f.hardware(3); // wake the lock screen
+  assert.ok(f.sent.at(-1).every(p => p === 123));
+  for (const type of [0, 1, 2, 9, 11]) await f.hardware(type);
+  f.wear(true); await f.render();
+  assert.equal(f.received.length, 0);
+  assert.ok(f.sent.at(-1).every(p => p === 123));
+  await f.hardware(3); assertBlank(f.sent.at(-1));
+  await f.hardware(12, 1); assert.ok(f.sent.at(-1).every(p => p === 123));
+  f.observers.get('unlock')(); await f.render();
+  assert.equal(f.controller.glassesLocked, false);
+  assert.equal(f.sent.at(-1)[0], 75);
+  await f.hardware(0); assert.equal(f.received.length, 1);
+});
+
+test('iOS removal before phone lock, setting changes, and observer lifetime', async () => {
+  const f = fixture(); await f.controller.connect(); f.wear(false); await f.render();
+  assert.equal(f.controller.glassesLocked, false);
+  f.observers.get('lock')(); await f.render();
+  assert.equal(f.controller.glassesLocked, true);
+  f.settings.lock = false; f.settingsChanged(); await f.render();
+  assert.equal(f.controller.glassesLocked, false);
+  f.settings.lock = true; f.settingsChanged(); await f.render();
+  assert.equal(f.controller.glassesLocked, true);
+  f.controller.pause(); assert.ok(f.observers.has('unlock'));
+  await f.controller.disconnect(); assert.equal(f.observers.has('unlock'), false);
+  f.controller.resume(); await f.render();
+  assert.equal(f.controller.glassesLocked, false);
+  assert.equal(f.observers.size, 4);
+});
+
+test('iOS wear notifications catch protected-data changes missed while suspended', async () => {
+  const f = fixture(); await f.controller.connect(); f.controller.pause();
+  f.phoneState.protectedDataAvailable = false; f.wear(false); await f.render();
+  assert.equal(f.controller.glassesLocked, true);
+  f.controller.resume(); await f.render();
+  assert.equal(f.controller.glassesLocked, true);
+  f.controller.pause(); f.phoneState.protectedDataAvailable = true;
+  f.controller.resume(); await f.render();
+  assert.equal(f.controller.glassesLocked, false);
+});
+
+
+test('iOS locked phone controls cannot dispatch mirror, voice, or keyboard input', async () => {
+  const f = fixture(); await f.controller.connect(); f.wear(false);
+  f.observers.get('lock')(); await f.render();
+  await f.phone('tap', 'mirror'); await f.phone('long-press', 'watch');
+  f.controller.startVoiceInput();
+  assert.equal(await f.controller.prepareVoiceCapture(), false);
+  await f.controller.startVoiceCapture(); await f.controller.typeIntoApp();
+  assert.equal(f.received.length, 0);
+  assert.equal(f.controller.glassesLocked, true);
+  // Locked state also survives transport recovery until a phone unlock.
+  f.controller.session.onState({ phase: 'retrying' });
+  f.controller.session.onState({ phase: 'connecting' });
+  f.controller.session.onState({ phase: 'connected' });
+  await f.render();
+  assert.ok(f.sent.at(-1).every(p => p === 123));
 });

@@ -91,9 +91,9 @@ export class IosVoiceControlBridge {
     this.clearAudioTimer(); this.releaseMicrophone(); this.native?.cancel()
     this.finishCompletion()
   }
-  handleSessionEnded(): void {
+  handleSessionEnded(message = 'Glasses disconnected. Start voice input again after reconnecting.'): void {
     if (!this.capturing && !this.finalizing) return
-    this.stop(); this.setStatus('Glasses disconnected. Start voice input again after reconnecting.'); this.emitEnd()
+    this.stop(); this.setStatus(message); this.emitEnd()
   }
   private clearAudioTimer(): void { if (this.audioTimer !== null) clearTimeout(this.audioTimer); this.audioTimer = null }
   private releaseMicrophone(): void {

@@ -51,8 +51,7 @@ import { voiceControlBridge } from "../native/voice-control";
 import { G2_LENS_HEIGHT, G2_LENS_WIDTH, GrayImage } from "../graphics/image";
 import { flattenPlanesWithDraws, planesFingerprint, type Plane } from "../graphics/plane";
 import { prepareFrameDraws } from "../graphics/glyph-wire";
-import { getDefaultMediumFont } from "../graphics/ui-fonts";
-import { wrapText } from "../graphics/textwrap";
+import { createLockScreenImage, LOCK_SCREEN_SURFACE_ID } from "./lock-screen";
 import { rawInputEventToInputEvent, shell, type ShellInputOutcome } from "../ui/shell/shell";
 import { type InputEvent } from "../ui/gestures";
 import { registerSystemTools } from "../assistant/system-tools";
@@ -141,8 +140,6 @@ type DashboardListener = (snapshot: DashboardSnapshot) => void;
 const SHELL_SURFACE_ID = "shell";
 /** The shell chrome composites above every window surface (zOrder 0). */
 const SHELL_SURFACE_Z_ORDER = 1;
-const LOCK_SCREEN_SURFACE_ID = "lock-screen";
-const LOCK_SCREEN_MESSAGE = "Glasses locked; unlock the phone to unlock the glasses.";
 // Top-bar clock refresh; the phone-side preview polls the Java composite so
 // it reflects every app (including worker apps the TS side never renders).
 const SHELL_REFRESH_INTERVAL_MS = 60_000;
@@ -170,24 +167,6 @@ const LAUNCHABLE_APPS = ALL_APPS.filter((app) => app.showInLauncher !== false);
 
 function createInitialDisplayPreview(): ImageSource | null {
   return grayImageToPreviewSource(new GrayImage(G2_LENS_WIDTH, G2_LENS_HEIGHT, 0));
-}
-
-function createLockScreenImage(): GrayImage {
-  const image = new GrayImage(G2_LENS_WIDTH, G2_LENS_HEIGHT, 0);
-  const font = getDefaultMediumFont();
-  const boxWidth = 480;
-  const boxHeight = 150;
-  const boxX = Math.round((G2_LENS_WIDTH - boxWidth) / 2);
-  const boxY = Math.round((G2_LENS_HEIGHT - boxHeight) / 2);
-  image.drawRoundedRect(boxX, boxY, boxWidth, boxHeight, 150, 12);
-  const lines = wrapText(font, LOCK_SCREEN_MESSAGE, boxWidth - 64);
-  const textHeight = lines.length * font.lineHeight;
-  const firstY = boxY + Math.round((boxHeight - textHeight) / 2);
-  lines.forEach((line, index) => {
-    const x = Math.round((G2_LENS_WIDTH - font.measureText(line)) / 2);
-    image.drawText(font, x, firstY + index * font.lineHeight, line, 230);
-  });
-  return image;
 }
 
 function formatTimestamp(date: Date): string {

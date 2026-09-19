@@ -16,6 +16,7 @@ import { iosVoiceInput } from '../native/ios-voice-input'
 import { nightscoutBridge } from '../native/nightscout-bridge'
 import { GlassesSession, type SessionState } from './glasses-session'
 import { GlanceHost, type GlanceDisplay } from './glance-host'
+import { createLockScreenImage, LOCK_SCREEN_SURFACE_ID } from './lock-screen'
 import { OsEventTypeList } from './events'
 import { loadDeviceAddresses } from './device-addresses'
 import { deviceAddressError } from './ios-peripheral-identity'
@@ -37,7 +38,7 @@ import { TextViewerLayer } from '../apps/files/text-viewer'
 import { shell, rawInputEventToInputEvent, type ShellWindow } from '../ui/shell/shell'
 import { appViewportRect, SIDEBAR_WIDTH, sidebarStripVisible } from '../ui/shell/geometry'
 import { DISPLAY_MODE_VALUES, displayModeLabel, displayModeSetting, onAnySettingChanged,
-  previewColorSetting } from '../ui/dashboard-settings'
+  previewColorSetting, lockScreenEnabledSetting } from '../ui/dashboard-settings'
 import type { PhoneGesture } from '../phone-ui/phone-gestures'
 
 /** iOS host for the shared app registry, shell, compositor and BLE session. */
@@ -60,7 +61,7 @@ export class IosPreviewController {
   private readonly glance = new GlanceHost({
     getDisplay: () => this.glanceDisplay,
     getProvider: () => ALL_APPS.find(app => app.glanceboard)?.glanceboard ?? null,
-    canShow: () => this.runtimeNeeded,
+    canShow: () => this.runtimeNeeded && !this.glassesLocked,
     // iOS retains the EvenHub session while the shell sleeps. The board's
     // opaque first frame is ready before we unblank the compositor.
     ensureSessionActive: async () => {
@@ -86,6 +87,11 @@ export class IosPreviewController {
   private readonly appHosts = new Map<string, WorkerAppHost>()
   private readonly inProcessApps = new Map<string, InProcessWindow>()
   private readonly batteryObservers: any[] = []
+  private readonly lockObservers: any[] = []
+  private phoneLocked = false
+  private glassesWorn: boolean | null = null
+  private glassesLocked = false
+  private lockEnabled = lockScreenEnabledSetting.get()
   private session: GlassesSession | null = null
   private logLines: string[] = []
   private logTimer: ReturnType<typeof setTimeout> | null = null
@@ -112,6 +118,10 @@ export class IosPreviewController {
     private readonly onError: (message: string) => void,
     private readonly onConnectionState: (state: SessionState) => void = () => {}) {
     this.compositor.configureSurface('shell', { x: 0, y: 0, width: 640, height: 480, zOrder: 1, transparency: 'color-key' })
+    this.compositor.configureSurface(LOCK_SCREEN_SURFACE_ID, {
+      x: 0, y: 0, width: G2_LENS_WIDTH, height: G2_LENS_HEIGHT, zOrder: 1000, transparency: 'opaque',
+    })
+    this.compositor.setSurfaceVisible(LOCK_SCREEN_SURFACE_ID, false)
     shell.configure({
       actions: this.actions,
       voiceInputEnabled: true,
@@ -148,6 +158,7 @@ export class IosPreviewController {
     if (this.active) return
     this.active = true
     this.syncRuntime()
+    this.handlePhoneLockState(!UIApplication.sharedApplication.protectedDataAvailable)
     this.logBluetooth('Phone foreground')
     if (this.session) this.onConnectionState({ ...this.session.state })
     this.session?.wake()
@@ -178,6 +189,7 @@ export class IosPreviewController {
       this.compositor.setScreenBlanked(!shell.isScreenOn())
       this.offSettings?.(); this.offSettings = null
       for (const observer of this.batteryObservers.splice(0)) NSNotificationCenter.defaultCenter.removeObserver(observer)
+      for (const observer of this.lockObservers.splice(0)) NSNotificationCenter.defaultCenter.removeObserver(observer)
       UIDevice.currentDevice.batteryMonitoringEnabled = false
       if (this.clockTimer !== null) clearInterval(this.clockTimer)
       if (this.renderTimer !== null) clearTimeout(this.renderTimer)
@@ -185,6 +197,16 @@ export class IosPreviewController {
       return
     }
     UIDevice.currentDevice.batteryMonitoringEnabled = true
+    // Keep these observers alive while BLE owns the runtime, including background.
+    for (const [name, locked] of [
+      [UIApplicationProtectedDataWillBecomeUnavailable, true],
+      [UIApplicationProtectedDataDidBecomeAvailable, false],
+    ] as const) {
+      this.lockObservers.push(NSNotificationCenter.defaultCenter.addObserverForNameObjectQueueUsingBlock(
+        name, null, NSOperationQueue.mainQueue, () => this.handlePhoneLockState(locked)))
+    }
+    this.handlePhoneLockState(!UIApplication.sharedApplication.protectedDataAvailable)
+    this.syncLockSetting()
     void nightscoutBridge.start().catch(error => this.fail(error))
     for (const name of [UIDeviceBatteryLevelDidChangeNotification, UIDeviceBatteryStateDidChangeNotification]) {
       this.batteryObservers.push(NSNotificationCenter.defaultCenter.addObserverForNameObjectQueueUsingBlock(name, null, NSOperationQueue.mainQueue, () => this.requestShellRender()))
@@ -192,11 +214,52 @@ export class IosPreviewController {
     const phone = readPhoneBatteryState()
     this.logBluetooth(`Phone battery ${phone.battery ?? "unknown"}% charging=${phone.charging}`)
     this.offSettings = onAnySettingChanged(() => {
+      this.syncLockSetting()
       this.relayout()
       shell.foregroundWindow()?.requestRender()
       this.requestShellRender()
     })
     this.clockTimer = setInterval(() => this.refreshClock(), 60_000)
+  }
+  private syncLockSetting(): void {
+    const enabled = lockScreenEnabledSetting.get()
+    if (enabled === this.lockEnabled) return
+    this.lockEnabled = enabled
+    if (!enabled) this.setGlassesLocked(false)
+    else {
+      if (this.phoneLocked && this.glassesWorn === false) this.setGlassesLocked(true)
+      if (this.session?.state.phase === 'connected')
+        void this.session.enableWearDetectionAndRequestState().catch(error => this.fail(error))
+    }
+  }
+  private handlePhoneLockState(locked: boolean): void {
+    this.phoneLocked = locked
+    if (!locked) this.setGlassesLocked(false)
+    else if (this.lockEnabled && this.glassesWorn === false) this.setGlassesLocked(true)
+  }
+  private handleWearState(wearing: boolean): void {
+    // Sample false to catch a notification missed during suspension. Do not
+    // sample true here: WillBecomeUnavailable precedes the property transition.
+    if (!UIApplication.sharedApplication.protectedDataAvailable) this.handlePhoneLockState(true)
+    this.glassesWorn = wearing
+    this.logBluetooth(`Glasses wear state: ${wearing ? 'ON_HEAD' : 'OFF_HEAD'}`)
+    if (!wearing && this.phoneLocked && this.lockEnabled) this.setGlassesLocked(true)
+  }
+  private setGlassesLocked(locked: boolean): void {
+    if (locked === this.glassesLocked) return
+    if (locked) {
+      const image = createLockScreenImage()
+      this.compositor.submitSurfaceFrame(LOCK_SCREEN_SURFACE_ID, image.to8bppBuffer(),
+        { x: 0, y: 0, width: image.width, height: image.height })
+    }
+    this.glassesLocked = locked
+    if (locked) {
+      this.glance.dismiss()
+      iosVoiceInput.handleSessionEnded('Glasses locked. Unlock your phone to start voice input again.')
+    }
+    this.compositor.setSurfaceVisible(LOCK_SCREEN_SURFACE_ID, locked)
+    this.logBluetooth(`Glasses ${locked ? 'locked' : 'unlocked'}`)
+    this.requestShellRender()
   }
   private refreshClock(): void {
     const minute = Math.floor(Date.now() / 60_000)
@@ -240,7 +303,7 @@ export class IosPreviewController {
         this.session?.setFrame(pixels)
         if (this.active) {
           const image = previewPixels(pixels, 640, 480, previewColorSetting.get() === 'green')
-          this.onFrame(image, this.glance.isVisible() ? 'Glanceboard'
+          this.onFrame(image, this.glassesLocked ? 'Glasses locked' : this.glance.isVisible() ? 'Glanceboard'
             : `${shell.foregroundWindow()?.title ?? 'Apps'} · ${shell.getFocus() === 'sidebar' ? 'App switcher' : 'App'}`)
         }
       } catch (error) { this.fail(error) }
@@ -255,7 +318,7 @@ export class IosPreviewController {
   gesture(gesture: PhoneGesture, origin: 'watch' | 'ring' | 'mirror', nx = 0, ny = 0): void {
     this.inputQueue = this.inputQueue.then(async () => {
       if (!this.active) return
-      if (gesture === 'tap' && origin === 'mirror' && shell.isScreenOn()) {
+      if (gesture === 'tap' && origin === 'mirror' && shell.isScreenOn() && !this.glassesLocked) {
         await this.mirrorTap(nx, ny)
       } else {
         let type: string = ({ tap: 'click', 'double-tap': 'double-click' } as Record<string, string>)[gesture] ?? gesture
@@ -270,6 +333,16 @@ export class IosPreviewController {
     }).catch(error => this.fail(error))
   }
   private async receiveInput(event: InputEvent, headTilt = false): Promise<void> {
+    if (this.glassesLocked) {
+      // Preserve the locked display's sleep/wake controls without dispatching
+      // gestures to apps, shell menus, voice input or the Glanceboard.
+      if (event.type === 'double-click' && (event.source === 'ring' || event.source === 'watch')) {
+        if (shell.isScreenOn()) shell.sleep()
+        else shell.wake('sidebar')
+      } else if (event.type === 'display-wake' && !shell.isScreenOn()) shell.wake('sidebar')
+      this.requestShellRender()
+      return
+    }
     if (!shell.isScreenOn()) {
       const glanceEvent = this.glance.eventForGesture(headTilt ? 'head-tilt' : event.type)
       if (glanceEvent?.type === 'dismiss') this.glance.dismiss()
@@ -409,6 +482,7 @@ export class IosPreviewController {
     if (error) { this.onError(error); return }
     if (!this.session) {
       this.session = new GlassesSession(iosBluetooth(), state => {
+        if (state.phase !== 'connected' && state.phase !== 'connecting') this.glassesWorn = null
         if (state.phase !== 'connected') iosVoiceInput.handleSessionEnded()
         shell.setBatteryLevels({ headset: state.battery, headsetCharging: state.charging })
         this.syncRuntime()
@@ -421,24 +495,28 @@ export class IosPreviewController {
             input.kind === 'display-wake' && input.eventType === OsEventTypeList.HEAD_UP_EVENT)
           this.logBluetooth(`Input ${input.eventType} source ${input.eventSource}`)
         }).catch(error => this.fail(error))
-      }, message => this.logBluetooth(message), () => this.refreshClock(), receiveCompassEvent)
+      }, message => this.logBluetooth(message), () => {
+        if (!UIApplication.sharedApplication.protectedDataAvailable) this.handlePhoneLockState(true)
+        this.refreshClock()
+      }, receiveCompassEvent, wearing => this.handleWearState(wearing))
       bindCompassSession(this.session)
     }
     await this.session.start(addresses)
   }
   async disconnect(): Promise<void> { await this.session?.stop() }
-  startVoiceInput(): void { shell.startVoiceInput() }
+  startVoiceInput(): void { if (!this.glassesLocked) shell.startVoiceInput() }
   private async prepareVoiceCapture(): Promise<boolean> {
+    if (this.glassesLocked) return false
     if (this.session?.state.phase !== 'connected') {
       if (this.active) this.onError('Connect the glasses to use their microphone.')
       return false
     }
     const ready = await iosVoiceInput.prepare(this.active)
     if (!ready && this.active) this.onError(iosVoiceInput.statusText)
-    return ready && this.session?.state.phase === 'connected'
+    return ready && !this.glassesLocked && this.session?.state.phase === 'connected'
   }
   private async startVoiceCapture(endpointing = false): Promise<void> {
-    if (!this.session || this.session.state.phase !== 'connected') return
+    if (this.glassesLocked || !this.session || this.session.state.phase !== 'connected') return
     await iosVoiceInput.startGlassesCapture(this.session, message => this.logBluetooth(message), endpointing)
   }
   private logBluetooth(message: string): void {
@@ -458,13 +536,14 @@ export class IosPreviewController {
     catch (error) { console.warn(`Bluetooth log: ${error}`) }
   }
   async typeIntoApp(): Promise<void> {
+    if (this.glassesLocked) return
     if (!this.active) { this.logBluetooth('Text input requires opening Faceclaw on the phone'); return }
     if (this.prompting || !shell.foregroundWindow()?.receiveTextInput) return
     this.prompting = true
     try {
       const result = await Dialogs.prompt({ title: 'Type into ' + shell.foregroundWindow()?.title,
         message: 'Enter text to send to this app.', okButtonText: 'Send', cancelButtonText: 'Cancel' })
-      if (result.result) shell.sendTextToForegroundWindow(result.text)
+      if (result.result && !this.glassesLocked) shell.sendTextToForegroundWindow(result.text)
     } catch (error) { this.fail(error) }
     finally { this.prompting = false }
   }

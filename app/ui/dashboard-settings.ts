@@ -341,7 +341,8 @@ export const lockScreenEnabledSetting = new ConfigSettingBoolean({
   storageKey: "display.lockScreenEnabled",
   defaultValue: true,
   description:
-    "Lock the glasses after they are taken off while the phone is locked. Unlocking the phone unlocks the glasses.",
+    "Lock the glasses after they are taken off while the phone is locked. Unlocking the phone unlocks the glasses." +
+    (global.isIOS ? " On iPhone, this requires a device passcode and follows iOS data-protection notifications, which may be delayed after the screen locks." : ""),
 });
 
 // Phone display: the phone app's mirror of the glasses screen and the

@@ -80,6 +80,7 @@ for (const isIOS of [true, false]) {
         uiFontPickerMenuItem: () => ({ label: 'Font' }), terminalFontPickerMenuItem: () => ({ label: 'Terminal font' }) };
     } });
     const sections = menus.createSettingsPanelLayer().sections;
+    assert.ok(sections.find(section => section.label === 'Display').items.some(item => item.label === settings.lockScreenEnabledSetting.label));
     const assistant = sections.find(section => section.label === 'Assistant');
     assert.equal(assistant.items.some(item => item.disabled === true), false);
     const ctx = { stack: { pop() {} }, actions: { requestRender() {} } };
@@ -186,7 +187,7 @@ test('background glasses input still composites frames; phone resume preserves t
     setFrame(pixels) { if (this.state.phase === 'connected') frames.push(pixels); }
     wake() {}
   }
-  const settings = { onAnySettingChanged: () => () => {}, previewColorSetting: { get: () => 'white' } };
+  const settings = { lockScreenEnabledSetting: { get: () => true }, onAnySettingChanged: () => () => {}, previewColorSetting: { get: () => 'white' } };
   const modules = {
     '../assistant/system-tools': { registerSystemTools() {} },
     '../assistant/window-tools': { registerWindowTools() {} },
@@ -219,6 +220,7 @@ test('background glasses input still composites frames; phone resume preserves t
     setTimeout: fn => { tasks.set(++nextTask, fn); return nextTask; }, clearTimeout: id => tasks.delete(id),
     setInterval: () => ++nextTask, clearInterval() {},
     UIDevice: { currentDevice: {} }, UIApplication: { sharedApplication: { protectedDataAvailable: true } },
+    UIApplicationProtectedDataWillBecomeUnavailable: 'lock', UIApplicationProtectedDataDidBecomeAvailable: 'unlock',
     UIDeviceBatteryLevelDidChangeNotification: 'level', UIDeviceBatteryStateDidChangeNotification: 'state',
     NSNotificationCenter: { defaultCenter: { addObserverForNameObjectQueueUsingBlock() {}, removeObserver() {} } },
     NSOperationQueue: { mainQueue: {} },

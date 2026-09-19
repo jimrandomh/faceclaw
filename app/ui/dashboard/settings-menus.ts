@@ -254,7 +254,7 @@ function settingsSections(): SettingsSection[] {
       description: `${section.label} integration has not been ported to iOS.`,
     }] };
     if (section.label === "Display") return { ...section, items: section.items.filter(item =>
-      ![brightnessSetting.label, screenTimeoutSetting.label, lockScreenEnabledSetting.label].includes(item.label)) };
+      ![brightnessSetting.label, screenTimeoutSetting.label].includes(item.label)) };
     if (section.label === "Phone display") return { ...section, items: section.items.filter(item => item.label !== mirrorTouchSetting.label) };
     return section;
   });

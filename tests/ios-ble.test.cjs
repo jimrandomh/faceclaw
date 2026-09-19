@@ -159,10 +159,10 @@ async function until(predicate) {
   assert.fail('Timed out waiting for test state');
 }
 function harness(t, transport = new FakeTransport()) {
-  const states = [], input = [], compass = [];
-  const session = new GlassesSession(transport, state => states.push(state), event => input.push(event), undefined, undefined, event => compass.push(event));
+  const states = [], input = [], compass = [], wear = [];
+  const session = new GlassesSession(transport, state => states.push(state), event => input.push(event), undefined, undefined, event => compass.push(event), wearing => wear.push(wearing));
   t.after(async () => { transport.hold = false; await session.stop(); });
-  return { transport, session, states, input, compass };
+  return { transport, session, states, input, compass, wear };
 }
 test('session authenticates both arms, checks firmware and sends acknowledged display data to L', async t => {
   const h = harness(t); await h.session.start({ ...addresses, ring: 'AA:BB:CC:DD:EE:03' });
@@ -510,4 +510,43 @@ test('compass notifications only come from the right arm and preserve diagnostic
   assert.deepEqual(h.compass, [{ command: 15, headingDegrees: 359, diagnostics: {
     magneticAccuracy: 3, magneticAnomalies: 2, orientationSource: 3, flags: 140, sampleTimeMs: 0xfedcba98,
   } }, { command: 16, headingDegrees: -1 }, { command: 17, headingDegrees: -1 }]);
+});
+
+
+test('wear detection matches Android wire format and queries both arms on every connection', async t => {
+  const wear = require('../.test-build/app/g2/wear-protocol.js');
+  assert.equal(hex(wear.enableWearDetection(42)), '0801102a1a042a020801');
+  assert.equal(hex(wear.queryWearState()), '08011000aa0606464301070000');
+  const h = harness(t); await h.session.start(addresses);
+  const queries = () => h.transport.sent.filter(({ message }) => hex(message.payload) === hex(wear.queryWearState()));
+  assert.deepEqual(queries().map(q => q.id).sort(), ['L', 'R']);
+  const enable = h.transport.sent.find(({ message }) => {
+    const body = p.readBytes(message.payload, 3);
+    return message.sid === p.SID.settings && message.command === 1 && body && p.readBytes(body, 5);
+  });
+  assert.equal(enable.id, 'R'); assert.equal(enable.message.flag, 0x20);
+  await h.session.stop(); await h.session.start(addresses);
+  assert.equal(queries().length, 4);
+});
+
+test('wear notifications validate the event and peer and work during initial connection', async t => {
+  const h = harness(t);
+  const payload = state => p.concat(p.integer(1, 3), p.bytes(5, p.concat(p.integer(1, 1), p.integer(2, state))));
+  const emit = (id, data, sid = 0x10) => h.transport.emit({ kind: 'notification', identifier: id,
+    characteristic: p.G2_NOTIFY, data: hex(p.concat(...p.frameMessage(data, sid, 1, 12))) });
+  const originalWrite = h.transport.write.bind(h.transport);
+  h.transport.write = async (...args) => {
+    await originalWrite(...args);
+    if (h.transport.sent.at(-1)?.message.magic === 0) emit(args[0], payload(0));
+  };
+  await h.session.start(addresses);
+  assert.ok(h.wear.length >= 2); assert.ok(h.wear.every(value => value === false));
+  h.wear.length = 0;
+  emit('stranger', payload(0)); emit('ring', payload(0)); emit('R', payload(2));
+  emit('R', payload(0), p.SID.hub); emit('R', p.integer(1, 3));
+  assert.deepEqual(h.wear, []);
+  emit('L', payload(0)); emit('R', payload(1));
+  assert.deepEqual(h.wear, [false, true]);
+  await h.session.stop(); emit('R', payload(0));
+  assert.deepEqual(h.wear, [false, true]);
 });
