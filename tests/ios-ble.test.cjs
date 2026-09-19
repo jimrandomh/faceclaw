@@ -470,6 +470,57 @@ test('delta ids skip reserved values and advance only on emitted deltas; reconne
 });
 
 const compassMessages = transport => transport.sent.filter(s => s.message.sid === p.SID.cfw && s.message.payload[0] === 10);
+const buzzerMessages = transport => transport.sent.filter(s => s.message.sid === p.SID.cfw && s.message.payload[0] === 5);
+const buzzerPayload = () => new Uint8Array([5, 4, 2, 0xb8, 0x0b, 25, 80, 0, 1, 0, 0, 20, 0]);
+test('buzzer snapshots the complete Android payload and waits for both lens ACKs without counting a frame', async t => {
+  const h = harness(t);
+  await h.session.playBuzzerSequence(buzzerPayload());
+  assert.equal(h.transport.sent.length, 0);
+  await h.session.start(addresses);
+  await h.session.playBuzzerSequence(new Uint8Array());
+  assert.equal(buzzerMessages(h.transport).length, 0);
+  h.transport.hold = true;
+  const payload = buzzerPayload(), expected = payload.slice();
+  let complete = false;
+  const playing = h.session.playBuzzerSequence(payload).then(() => { complete = true; });
+  payload.fill(0);
+  await until(() => buzzerMessages(h.transport).length === 1);
+  const sent = buzzerMessages(h.transport)[0];
+  assert.equal(sent.id, 'L'); assert.deepEqual(sent.message.payload, expected);
+  h.transport.ack(sent.id, sent.message, { lenses: [1] }); await tick();
+  assert.equal(complete, false);
+  h.transport.ack(sent.id, sent.message, { lenses: [2] }); await playing;
+  assert.equal(h.session.state.frames, 0);
+});
+
+test('buzzer shares display compression and ACK recovery while the frame window is full', async t => {
+  const h = harness(t); await h.session.start(addresses); h.transport.hold = true;
+  h.session.setFrame(noisy()); await until(() => imageMessages(h.transport).length === 3);
+  const playing = h.session.playBuzzerSequence(buzzerPayload());
+  await until(() => buzzerMessages(h.transport).length === 1);
+  const sent = buzzerMessages(h.transport)[0];
+  h.transport.ack(sent.id, sent.message, { nack: true });
+  await until(() => buzzerMessages(h.transport).length === 2);
+  const replay = buzzerMessages(h.transport)[1];
+  assert.notEqual(replay.message.magic, sent.message.magic);
+  assert.deepEqual(replay.message.payload, buzzerPayload());
+  h.transport.hold = false; // Subsequent bands of the large frame can finish too.
+  for (const item of h.transport.sent.filter(s => s.message.sid === p.SID.cfw).slice(-4)) ack(h.transport, item);
+  await playing;
+  assert.equal(h.session.state.phase, 'connected');
+  await until(() => h.session.state.frames === 1);
+});
+
+test('disconnect cancels queued buzzer work and does not play it on reconnect', async t => {
+  const h = harness(t); await h.session.start(addresses); h.transport.hold = true;
+  const playing = h.session.playBuzzerSequence(buzzerPayload());
+  await until(() => buzzerMessages(h.transport).length === 1);
+  h.transport.emit({ kind: 'disconnected', identifier: 'R' }); await playing;
+  await h.session.playBuzzerSequence(buzzerPayload());
+  h.transport.hold = false; await h.session.start(addresses, true);
+  assert.equal(buzzerMessages(h.transport).length, 1);
+});
+
 test('compass desired state survives connecting and reconnecting; explicit stop disables it first', async t => {
   const h = harness(t);
   h.session.setCompassEnabled(true);

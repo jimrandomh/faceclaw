@@ -65,8 +65,6 @@ import { ensureFineLocationPermission } from "../../native/location-permissions"
 
 const UPNG = require("upng-js");
 
-declare const com: any;
-
 /** OsEventTypeList values (PB ordinals). */
 const CLICK_EVENT = 0;
 const SCROLL_TOP_EVENT = 1;
@@ -371,6 +369,7 @@ export class EvenHubSession implements EvenHubMicClient, EvenHubImuClient, EvenH
     distDir: string,
     log: (message: string) => void,
     remoteUrl = "",
+    private readonly sendBuzzerSequence: (payload: Uint8Array) => Promise<void> | void = () => {},
   ) {
     this.manifest = manifest;
     this.distDir = distDir;
@@ -1164,13 +1163,11 @@ export class EvenHubSession implements EvenHubMicClient, EvenHubImuClient, EvenH
   private async playBuzzer(rawSteps: unknown[]): Promise<void> {
     const steps = normalizeBuzzerSteps(rawSteps);
     if (steps.length === 0) return;
-    const communicator = activeCommunicator();
-    if (!communicator) return;
     for (let i = 0; i < steps.length; i += CFW_SEQ_MAX) {
       const chunk = steps.slice(i, i + CFW_SEQ_MAX);
       const payload = buildSoundSequencePayload(chunk);
       try {
-        communicator.playBuzzerSequence(payload.buffer);
+        await this.sendBuzzerSequence(payload);
       } catch (error) {
         this.log(`evenhub: playBuzzer failed: ${error}`);
         return;
@@ -1272,15 +1269,6 @@ function readEnableFlag(data: Record<string, unknown>): boolean {
 function clampImuFreq(freq: number): number {
   const snapped = Math.round(freq / 100) * 100;
   return Math.min(1000, Math.max(100, snapped));
-}
-
-function activeCommunicator(): any {
-  if (!global.isAndroid) return null;
-  try {
-    return com.faceclaw.app.FaceclawBleCommunicator.getActive();
-  } catch {
-    return null;
-  }
 }
 
 /**

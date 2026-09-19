@@ -98,7 +98,7 @@ test('local package runtimes unpack independently and clean up after closing or 
   assert.equal(files.size, 0);
 });
 
-function sessionHarness(overrides = {}) {
+function sessionHarness(overrides = {}, playBuzzer = () => {}) {
   const settings = new Map(), logs = [], renders = [];
   const load = loader({ global: { isIOS: true }, setTimeout, clearTimeout, Promise }, {
     '@nativescript/core': { ApplicationSettings: { getString: (k, d) => settings.get(k) ?? d, setString: (k, v) => settings.set(k, v) } },
@@ -110,7 +110,7 @@ function sessionHarness(overrides = {}) {
     '../../native/location': {}, '../../native/location-tracker': {}, '../../native/location-permissions': {}, ...overrides,
   });
   const api = load('app/apps/evenhub/session.ts');
-  const session = new api.EvenHubSession({ name: 'Probe', packageId: 'test.probe', permissions: [] }, '/test/dist', line => logs.push(line));
+  const session = new api.EvenHubSession({ name: 'Probe', packageId: 'test.probe', permissions: [] }, '/test/dist', line => logs.push(line), '', playBuzzer);
   session.attachWindow({ requestRender: () => renders.push(1), windowId: 'probe', closeWindow() {} });
   const web = vm.createContext({ Promise, Map, Date, console });
   web.window = web;
@@ -219,4 +219,18 @@ test('store login and catalog requests use platform signing with the shared wire
   assert.equal(requests[1].headers.token, 'fixture-token');
   assert.equal(requests[1].headers.sign, 'fixture-signature');
   assert.equal(signatures[0], api.signingParts('POST', '/v2/g/login', requests[0].headers.common, '', '', requests[0].body));
+});
+
+
+test('EvenHub buzzer RPC uses the host action on iOS and chunks and paces long sequences', async () => {
+  const sounds = loader()('app/ui/sound-effects.ts'), played = [];
+  const h = sessionHarness({ '../../ui/sound-effects': sounds }, bytes => played.push([...bytes]));
+  const steps = Array.from({ length: 49 }, () => ({ freq: 3000, ms: 1, duty: 25 }));
+  await h.session.dispatchExtension('playBuzzer', [steps]);
+  assert.equal(played.length, 2);
+  assert.deepEqual(played[0], [...sounds.buildSoundSequencePayload(steps.slice(0, 48))]);
+  assert.deepEqual(played[1], [...sounds.buildSoundSequencePayload(steps.slice(48))]);
+  await h.session.dispatchExtension('playBuzzer', [[null, { freq: 'bad', ms: 10 }]]);
+  assert.equal(played.length, 2);
+  h.session.close();
 });

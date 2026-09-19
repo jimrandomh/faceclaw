@@ -43,6 +43,8 @@ import { appViewportRect, SIDEBAR_WIDTH, sidebarStripVisible } from '../ui/shell
 import { DISPLAY_MODE_VALUES, displayModeLabel, displayModeSetting, onAnySettingChanged,
   previewColorSetting, lockScreenEnabledSetting } from '../ui/dashboard-settings'
 import type { PhoneGesture } from '../phone-ui/phone-gestures'
+import { isWelcomeSoundPending, setWelcomeSoundPending } from '../phone-ui/onboarding-state'
+import { findSoundEffect, playSoundEffect } from '../ui/sound-effects'
 
 /** iOS host for the shared app registry, shell, compositor and BLE session. */
 export class IosPreviewController {
@@ -96,10 +98,12 @@ export class IosPreviewController {
   private glassesLocked = false
   private lockEnabled = lockScreenEnabledSetting.get()
   private session: GlassesSession | null = null
+  private acknowledgedFrames = 0
   private logLines: string[] = []
   private logTimer: ReturnType<typeof setTimeout> | null = null
   private readonly actions: LayerActions = {
     ...noopLayerActions,
+    playBuzzerSequence: payload => this.session?.playBuzzerSequence(payload),
     requestRender: () => this.requestShellRender(),
     disconnect: () => this.disconnect(),
     startVoiceCapture: endpointing => this.startVoiceCapture(endpointing),
@@ -457,6 +461,7 @@ export class IosPreviewController {
       ? new IosNavigationSensors(event => worker.postMessage({ type: 'navigation-sensors', event })) : undefined
     const host = new WorkerAppHost({
       appId, worker, navigationSensors,
+      playBuzzerSequence: payload => this.actions.playBuzzerSequence(payload),
       openUrl: url => { void Utils.openUrl(url) },
       configureSurface: async (id, visible, heightMode) => {
         this.compositor.configureSurface(id, { ...appViewportRect(heightMode, appId), zOrder: 0, transparency: 'opaque' })
@@ -492,6 +497,7 @@ export class IosPreviewController {
     if (error) { this.onError(error); return }
     if (!this.session) {
       this.session = new GlassesSession(iosBluetooth(), state => {
+        this.maybePlayWelcomeSound(state)
         if (state.phase !== 'connected' && state.phase !== 'connecting') this.glassesWorn = null
         if (state.phase !== 'connected') iosVoiceInput.handleSessionEnded()
         shell.setBatteryLevels({ headset: state.battery, headsetCharging: state.charging })
@@ -517,6 +523,17 @@ export class IosPreviewController {
     await this.session.start(addresses)
   }
   async disconnect(): Promise<void> { await this.session?.stop() }
+  private maybePlayWelcomeSound(state: SessionState): void {
+    const firstNewFrame = state.frames > this.acknowledgedFrames
+    this.acknowledgedFrames = state.frames
+    // Match Android: wait for an acknowledged frame before consuming the jingle.
+    if (!firstNewFrame || state.phase !== 'connected' || !isWelcomeSoundPending()) return
+    setWelcomeSoundPending(false)
+    const effect = findSoundEffect('questcomplete')
+    if (effect) void playSoundEffect(effect, payload => this.actions.playBuzzerSequence(payload),
+      ms => new Promise(resolve => setTimeout(resolve, ms)))
+      .catch(error => this.logBluetooth(`Welcome sound failed: ${error}`))
+  }
   startVoiceInput(): void { if (!this.glassesLocked) shell.startVoiceInput() }
   private async prepareVoiceCapture(): Promise<boolean> {
     if (this.glassesLocked) return false

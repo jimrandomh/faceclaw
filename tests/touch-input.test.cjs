@@ -49,6 +49,7 @@ function worker() {
     '../../graphics/ui-fonts': { getDefaultSmallFont: noop },
     '../../native/frame-timings': { finishFrame: noop, logFrame: noop },
     '../../native/active-display': {},
+    '../../native/worker-buzzer': { playWorkerBuzzerSequence() {} },
     '../../native/settings-store': { getStringSetting: () => '0', setStringSetting: noop },
     '../../ui/sound-effects': {}, '../../ui/window-menu': {},
     '../../ui/sound-setting': { loadSoundEnabled: () => true, saveSoundEnabled: noop },

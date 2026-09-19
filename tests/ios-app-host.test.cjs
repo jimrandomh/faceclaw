@@ -171,7 +171,7 @@ test('settings-driven repaint runs after font cache invalidation, regardless of 
 });
 
 test('background glasses input still composites frames; phone resume preserves the session; explicit stop stays stopped', async () => {
-  const tasks = new Map(), screenStates = [], inputs = [], frames = [], previews = [], states = [];
+  const tasks = new Map(), screenStates = [], inputs = [], frames = [], previews = [], states = [], sounds = [];
   let nextTask = 0, starts = 0, stops = 0, pollStarts = 0, pollStops = 0, session;
   const window = { windowId: 'launcher', surfaceId: 'launcher', appId: 'launcher', title: 'Apps',
     setScreenOn: on => screenStates.push(on), requestRender() {} };
@@ -185,6 +185,7 @@ test('background glasses input still composites frames; phone resume preserves t
     async start() { starts++; this.state = { phase: 'connected' }; this.onState(this.state); }
     async stop() { stops++; this.state = { phase: 'disconnected' }; this.onState(this.state); }
     setFrame(pixels) { if (this.state.phase === 'connected') frames.push(pixels); }
+    playBuzzerSequence(payload) { sounds.push([...payload]); }
     wake() {}
   }
   const settings = { lockScreenEnabledSetting: { get: () => true }, onAnySettingChanged: () => () => {}, previewColorSetting: { get: () => 'white' } };
@@ -229,7 +230,11 @@ test('background glasses input still composites frames; phone resume preserves t
   });
   const flush = () => { for (const [id, fn] of [...tasks]) { if (tasks.delete(id)) fn(); } };
   const controller = new api.IosPreviewController(image => previews.push(image), assert.fail, state => states.push(state));
+  await controller.actions.playBuzzerSequence(new Uint8Array([5, 4, 0]));
+  assert.equal(sounds.length, 0);
   controller.resume(); await controller.connect(); flush();
+  await controller.actions.playBuzzerSequence(new Uint8Array([5, 4, 0]));
+  assert.deepEqual(sounds, [[5, 4, 0]]);
   const previewCount = previews.length, stateCount = states.length;
   controller.pause(); controller.pause(); // NativeScript also unloads its root page on background entry.
   assert.equal(stops, 0); assert.ok(screenStates.every(Boolean));
@@ -360,4 +365,32 @@ test('iOS compositor rejects missing and removed surfaces before crossing into K
   c.removeSurface('nightscout');
   assert.throws(() => c.submitSurfaceFrame('nightscout', pixels, rect), /Unknown surface/);
   assert.equal(nativeSubmissions, 1);
+});
+
+
+test('iOS welcome sound waits for a new acknowledged frame and is consumed once', async () => {
+  let pending = true;
+  const played = [], sounds = load('app/ui/sound-effects.ts', {});
+  const { IosPreviewController } = load('app/g2/ios-preview-controller.ts', {
+    require: id => ({
+      '../phone-ui/onboarding-state': { isWelcomeSoundPending: () => pending, setWelcomeSoundPending: value => { pending = value; } },
+      '../ui/sound-effects': sounds,
+    })[id] ?? {},
+    setTimeout: fn => { fn(); return 1; },
+  });
+  const host = Object.create(IosPreviewController.prototype);
+  host.acknowledgedFrames = 0;
+  host.actions = { playBuzzerSequence: bytes => played.push([...bytes]) };
+  host.logBluetooth = assert.fail;
+  host.maybePlayWelcomeSound({ phase: 'connecting', frames: 0 });
+  host.maybePlayWelcomeSound({ phase: 'connected', frames: 0 });
+  assert.equal(pending, true); assert.equal(played.length, 0);
+  host.maybePlayWelcomeSound({ phase: 'connected', frames: 1 });
+  assert.equal(pending, false);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.ok(played.length > 0);
+  const count = played.length;
+  host.maybePlayWelcomeSound({ phase: 'connected', frames: 1 });
+  host.maybePlayWelcomeSound({ phase: 'connected', frames: 2 });
+  assert.equal(played.length, count);
 });

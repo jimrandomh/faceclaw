@@ -427,6 +427,13 @@ export class GlassesSession {
     if (this.state.phase !== 'connected') return
     this.latest = protocol.packGray4(gray, 640, 480); this.schedule(0)
   }
+  /** Same mode-5 kind-4 sequencer payload and acknowledged image path as Android. */
+  async playBuzzerSequence(payload: Uint8Array): Promise<void> {
+    if (this.state.phase !== 'connected' || !this.layoutCreated || payload.length < 3) return
+    const generation = this.generation
+    try { await this.requestCfw('left', new Uint8Array(payload)) }
+    catch (error) { if (generation === this.generation) this.fail(error, true) }
+  }
   /** Serialize mic enable/disable, including a release while enable awaits ACK. */
   setMicrophone(enabled: boolean, listener?: (packet: Uint8Array) => void): Promise<void> {
     const token = ++this.microphoneToken, generation = this.generation

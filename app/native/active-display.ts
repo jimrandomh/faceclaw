@@ -7,9 +7,8 @@ declare const com: any;
  * through Java statics because those are shared across isolates, unlike any
  * JS-side state.
  *
- * Frame submission only. Glasses-hardware calls (e.g. playBuzzerSequence)
- * should keep using FaceclawBleCommunicator.getActive() directly, so they
- * skip cleanly when nothing is connected.
+ * Frame submission only. Buzzer effects use worker-buzzer, which routes to
+ * the platform BLE session and skips playback when disconnected.
  */
 export function getActiveDisplay(): any {
   return (

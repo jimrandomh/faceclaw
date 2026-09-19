@@ -92,6 +92,8 @@ function fixture() {
     '../apps/evenhub/installed-apps': {}, '../apps/evenhub/manager': {}, '../apps/evenhub/updates': {}, '../apps/evenhub': {},
     '../apps/launcher/launcher-app': { createLauncherWindow: () => window, LAUNCHER_SURFACE_ID: 'launcher' },
     '../apps/all-apps': { ALL_APPS: [{ appId: 'glanceboard', glanceboard: provider }] },
+    '../phone-ui/onboarding-state': { isWelcomeSoundPending: () => false },
+    '../ui/sound-effects': {},
     '../ui/shell/worker-window': {}, '../ui/shell/in-process-window': {},
     '../ui/dashboard-settings': { lockScreenEnabledSetting: { get: () => settings.lock }, onAnySettingChanged: fn => { settingsChanged = fn; return () => {}; }, previewColorSetting: { get: () => 'white' } },
     '../native/phone-battery': { readPhoneBatteryState: () => ({ battery: 80, charging: false }) },

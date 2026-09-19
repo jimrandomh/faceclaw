@@ -34,6 +34,7 @@ export type WorkerAppMessage =
   | { type: "tool-call"; callId: string; windowId: string; name: string; args: unknown };
 
 export type WorkerAppReply =
+  | { type: "buzzer-sequence"; payload: number[] }
   | { type: "navigation-sensors"; request: NavigationSensorRequest }
   | { type: "open-url"; url: string }
   | { type: "surface-frame"; surfaceId: string; width: number; height: number; pixels: string }
@@ -183,6 +184,7 @@ export type WorkerAppHostOptions = {
   worker: Worker;
   navigationSensors?: { handle(request: NavigationSensorRequest): void; stop(): void };
   openUrl?: (url: string) => void;
+  playBuzzerSequence?: (payload: Uint8Array) => Promise<void> | void;
   /** Create/refresh a window surface on the compositor (no-op when disconnected). */
   configureSurface: (surfaceId: string, visible: boolean, heightMode: WindowHeightMode) => Promise<void>;
   setSurfaceVisible: (surfaceId: string, visible: boolean) => void;
@@ -240,6 +242,12 @@ export class WorkerAppHost {
       const message = event.data as WorkerAppReply | undefined;
       if (!message) return;
       switch (message.type) {
+        case "buzzer-sequence":
+          if (this.openWindows.size) {
+            void Promise.resolve(this.options.playBuzzerSequence?.(new Uint8Array(message.payload)))
+              .catch(error => console.warn(`${this.options.appId} buzzer failed: ${error}`));
+          }
+          break;
         case "navigation-sensors":
           if (this.openWindows.size) this.options.navigationSensors?.handle(message.request);
           break;

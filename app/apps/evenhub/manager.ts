@@ -103,7 +103,8 @@ async function startApp(
   cleanup?: () => void,
 ): Promise<void> {
   const windowId = `evenhub:app:${nextSerial++}`;
-  const session = new EvenHubSession(manifest, distDir, ctx.appendLog, remoteUrl);
+  const session = new EvenHubSession(manifest, distDir, ctx.appendLog, remoteUrl,
+    payload => ctx.actions.playBuzzerSequence(payload));
   const webView = createEvenHubWebView(session);
   session.attachWebView({
     evaluateJs: webView.evaluateJs,

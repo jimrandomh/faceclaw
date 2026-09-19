@@ -31,6 +31,7 @@ import { prepareFrameDraws } from "../../graphics/glyph-wire";
 import { getFont } from "../../graphics/bdffont";
 import { getDefaultSmallFont } from "../../graphics/ui-fonts";
 import * as frameTimings from "../../native/frame-timings";
+import { playWorkerBuzzerSequence } from "../../native/worker-buzzer";
 import { getActiveDisplay } from "../../native/active-display";
 import { getStringSetting, setStringSetting } from "../../native/settings-store";
 import { buildSoundSequencePayload, type Step } from "../../ui/sound-effects";
@@ -64,7 +65,6 @@ import {
 } from "./flappy-sprites";
 
 declare const global: any;
-declare const com: any;
 
 const largeFont = getFont("terminus32");
 const mediumFont = getFont("terminus24");
@@ -311,7 +311,7 @@ function saveHighScore(window: FlappyWindow): void {
 
 /**
  * Fire a buzzer effect. Non-blocking: the firmware's sequencer plays the
- * steps on its own timer, and the Java call is safe from the worker thread.
+ * steps on its own timer; the platform bridge routes it from the worker.
  * Minor (frequent) effects are dropped when they'd arrive within the
  * rate-limit gap; newsworthy ones always play.
  */
@@ -321,9 +321,7 @@ function playSfx(window: FlappyWindow, steps: Step[], minor = false): void {
   if (minor && now - window.lastMinorSfxAtMs < MINOR_SFX_MIN_GAP_MS) return;
   if (minor) window.lastMinorSfxAtMs = now;
   try {
-    const communicator = com.faceclaw.app.FaceclawBleCommunicator.getActive();
-    if (!communicator) return;
-    communicator.playBuzzerSequence(buildSoundSequencePayload(steps).buffer);
+    playWorkerBuzzerSequence(buildSoundSequencePayload(steps));
   } catch (error) {
     console.warn(`flappy sfx failed: ${error}`);
   }
