@@ -68,6 +68,7 @@ function fixture() {
       paint: () => { boardStats.paints++; return new images.GrayImage(100, 80, 200); } }),
   };
   const modules = {
+    "../native/ios-navigation-sensors": {},
     "../native/compass.ios": { bindCompassSession() {}, receiveCompassEvent() {} },
     '@nativescript/core': { File: { fromPath: () => ({ writeTextSync() {} }) },
       knownFolders: { documents: () => ({ path: '/tmp' }) }, path },

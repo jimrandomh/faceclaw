@@ -6,11 +6,9 @@
  */
 import { GrayImage } from "../graphics/image";
 import { getStringSetting } from "./settings-store";
-import { grayImageFromPacket } from "./image-files";
+import { decodeImageBytes } from "./image-bytes";
 import { fetchWithUserAgent } from "../util/http";
 
-declare const com: any;
-declare const global: any;
 
 export const MAPBOX_TOKEN_SETTING_KEY = "maps.mapboxApiKey";
 const SEARCH_ROOT = "https://api.mapbox.com/search/searchbox/v1";
@@ -231,10 +229,7 @@ export async function fetchStaticMapGray(options: {
     }
     throw new Error(`Mapbox static map failed (HTTP ${response.status}).`);
   }
-  if (!global.isAndroid) throw new Error("Map decoding is only available on Android.");
-  const image = grayImageFromPacket(
-    com.faceclaw.app.ImageFileLoader.loadGrayFromBytes(bytes, Math.round(options.width), Math.round(options.height)),
-  );
+  const image = decodeImageBytes(bytes, Math.round(options.width), Math.round(options.height));
   if (!image) throw new Error("Failed to decode the Mapbox map image.");
   return image;
 }

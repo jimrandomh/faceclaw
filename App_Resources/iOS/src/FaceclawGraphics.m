@@ -1,7 +1,34 @@
 #import "FaceclawGraphics.h"
 #import <SVGKit/SVGKit.h>
+#import <ImageIO/ImageIO.h>
 
 @implementation FaceclawGraphics
++ (NSData *)decodeImage:(NSData *)data width:(NSInteger)width height:(NSInteger)height {
+    if (!data.length || width <= 0 || height <= 0 || width > 2048 || height > 2048) return nil;
+    CGImageSourceRef source = CGImageSourceCreateWithData((__bridge CFDataRef)data, NULL);
+    if (!source) return nil;
+    NSDictionary *options = @{(id)kCGImageSourceCreateThumbnailFromImageAlways: @YES,
+        (id)kCGImageSourceCreateThumbnailWithTransform: @YES,
+        (id)kCGImageSourceThumbnailMaxPixelSize: @(MAX(width, height))};
+    CGImageRef image = CGImageSourceCreateThumbnailAtIndex(source, 0, (__bridge CFDictionaryRef)options);
+    CFRelease(source);
+    if (!image) return nil;
+    NSMutableData *rgba = [NSMutableData dataWithLength:width * height * 4];
+    CGColorSpaceRef space = CGColorSpaceCreateDeviceRGB();
+    CGContextRef context = CGBitmapContextCreate(rgba.mutableBytes, width, height, 8, width * 4, space,
+        kCGBitmapByteOrder32Big | (CGBitmapInfo)kCGImageAlphaPremultipliedLast);
+    CGColorSpaceRelease(space);
+    if (!context) { CGImageRelease(image); return nil; }
+    // ImageIO applies image orientation; the bitmap's row order is top-to-bottom.
+    CGContextDrawImage(context, CGRectMake(0, 0, width, height), image);
+    NSMutableData *gray = [NSMutableData dataWithLength:width * height];
+    const uint8_t *src = rgba.bytes;
+    uint8_t *dst = gray.mutableBytes;
+    for (NSInteger i = 0; i < width * height; i++)
+        dst[i] = (uint8_t)round(0.2126 * src[i * 4] + 0.7152 * src[i * 4 + 1] + 0.0722 * src[i * 4 + 2]);
+    CGContextRelease(context); CGImageRelease(image);
+    return gray;
+}
 + (UIImage *)preview:(NSData *)gray width:(NSInteger)width height:(NSInteger)height green:(BOOL)green {
     if (width <= 0 || height <= 0 || gray.length != width * height) return nil;
     NSMutableData *rgba = [NSMutableData dataWithLength:width * height * 4];

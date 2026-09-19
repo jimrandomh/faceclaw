@@ -1,3 +1,4 @@
+import { type NavigationSensorRequest, type NavigationSensorEvent } from "../../apps/navigate/navigation-sensors-messages";
 import { GrayImage } from "../../graphics/image";
 import { windowIcon } from "./chrome-layer";
 import { type IconActivity, type IconName } from "../../graphics/icons";
@@ -14,6 +15,7 @@ import { publishWorkerState } from "./worker-state";
  * worker→Java directly on Android; iOS posts baked frames to the main host.
  */
 export type WorkerAppMessage =
+  | { type: "navigation-sensors"; event: NavigationSensorEvent }
   | { type: "open-window"; windowId: string; surfaceId: string; title: string; viewport: { width: number; height: number } }
   | { type: "resize-window"; windowId: string; viewport: { width: number; height: number } }
   | { type: "close-window"; windowId: string }
@@ -32,6 +34,8 @@ export type WorkerAppMessage =
   | { type: "tool-call"; callId: string; windowId: string; name: string; args: unknown };
 
 export type WorkerAppReply =
+  | { type: "navigation-sensors"; request: NavigationSensorRequest }
+  | { type: "open-url"; url: string }
   | { type: "surface-frame"; surfaceId: string; width: number; height: number; pixels: string }
   | {
       /**
@@ -177,6 +181,8 @@ export type WorkerWindowSpec = {
 export type WorkerAppHostOptions = {
   appId: string;
   worker: Worker;
+  navigationSensors?: { handle(request: NavigationSensorRequest): void; stop(): void };
+  openUrl?: (url: string) => void;
   /** Create/refresh a window surface on the compositor (no-op when disconnected). */
   configureSurface: (surfaceId: string, visible: boolean, heightMode: WindowHeightMode) => Promise<void>;
   setSurfaceVisible: (surfaceId: string, visible: boolean) => void;
@@ -234,6 +240,12 @@ export class WorkerAppHost {
       const message = event.data as WorkerAppReply | undefined;
       if (!message) return;
       switch (message.type) {
+        case "navigation-sensors":
+          if (this.openWindows.size) this.options.navigationSensors?.handle(message.request);
+          break;
+        case "open-url":
+          if (this.openWindows.size && /^https?:\/\//i.test(message.url)) this.options.openUrl?.(message.url);
+          break;
         case "surface-frame": {
           if (!global.isIOS || !this.options.submitPixels || !this.openWindows.has(message.surfaceId.replace(/^window:/, ""))) break;
           const { width, height } = message;
@@ -361,6 +373,7 @@ export class WorkerAppHost {
       }
     };
     options.worker.onerror = (error) => {
+      options.navigationSensors?.stop();
       console.error(`worker app ${options.appId} error: ${JSON.stringify(error)}`);
     };
   }
@@ -397,6 +410,7 @@ export class WorkerAppHost {
       claimsLongPress: () => this.windowGestures.get(spec.windowId)?.claimsLongPress ?? false,
       close: () => {
         this.openWindows.delete(spec.windowId);
+        if (!this.openWindows.size) this.options.navigationSensors?.stop();
         this.windowGestures.delete(spec.windowId);
         this.windowIconActivity.delete(spec.windowId);
         // Withdraw this window's tools and fail any in-flight calls to it.

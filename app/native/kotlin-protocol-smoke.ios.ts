@@ -1,3 +1,4 @@
+import { decodeImageBytes } from './image-bytes.ios'
 import * as protocol from '../g2/ble-protocol.ios'
 import { CfwTransport, parseCfwAcks } from '../g2/cfw-transport.ios'
 import { SurfaceCompositor } from '../graphics/surface-compositor.ios'
@@ -36,5 +37,9 @@ export function runKotlinProtocolSmokeTest(): void {
     payload: new Uint8Array([8, 15, 16, 0, 82, 3, 8, 231, 2, 162, 6, 12, 67, 77, 1, 3, 2, 3, 140, 0, 152, 186, 220, 254]) })
   if (compass?.headingDegrees !== 359 || compass.diagnostics?.sampleTimeMs !== 0xfedcba98)
     throw new Error('Kotlin compass notification mismatch')
+  const png = NSData.alloc().initWithBase64EncodedStringOptions('iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAEklEQVR4nGP4z8DAAMIM/4EAAB/uBfsL2WiLAAAAAElFTkSuQmCC', 0 as NSDataBase64DecodingOptions)
+  const decoded = decodeImageBytes(interop.bufferFromData(png), 2, 2)
+  assert(!!decoded && Array.from(decoded.pixels).join(',') === '54,182,18,255', 'native map image orientation and grayscale')
+  assert(decodeImageBytes(new ArrayBuffer(0), 2, 2) === null, 'invalid map image')
   console.log('FACECLAW_KOTLIN_PROTOCOL_PASS iOS')
 }

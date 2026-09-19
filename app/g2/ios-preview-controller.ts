@@ -1,3 +1,5 @@
+import { IosNavigationSensors } from '../native/ios-navigation-sensors'
+import { Utils } from '@nativescript/core'
 import { bindCompassSession, receiveCompassEvent } from '../native/compass.ios'
 import { Dialogs, File, knownFolders, path, type ImageSource } from '@nativescript/core'
 import { iosBluetooth } from '../native/ios-bluetooth'
@@ -331,8 +333,12 @@ export class IosPreviewController {
   private ensureWorkerHost(appId: string, create: () => Worker): WorkerAppHost {
     const existing = this.appHosts.get(appId)
     if (existing) return existing
+    const worker = create()
+    const navigationSensors = appId === 'navigate'
+      ? new IosNavigationSensors(event => worker.postMessage({ type: 'navigation-sensors', event })) : undefined
     const host = new WorkerAppHost({
-      appId, worker: create(),
+      appId, worker, navigationSensors,
+      openUrl: url => { void Utils.openUrl(url) },
       configureSurface: async (id, visible, heightMode) => {
         this.compositor.configureSurface(id, { ...appViewportRect(heightMode, appId), zOrder: 0, transparency: 'opaque' })
         this.compositor.setSurfaceVisible(id, visible)

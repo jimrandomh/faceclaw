@@ -1,4 +1,4 @@
-import { ensureLocationPermission, hasLocationPermission } from "../../g2/android-permissions";
+import { ensureLocationPermission, hasLocationPermission } from "../../native/location-permissions";
 import { weatherBridge } from "../../native/weather";
 import { WeatherLayer } from "./weather";
 import {
@@ -13,12 +13,13 @@ export const WEATHER_SURFACE_ID = "window:weather";
 
 /** Local current conditions and forecast from the National Weather Service. */
 export function createWeatherAppWindow(options: InProcessAppOptions): InProcessWindow {
+  let closed = false;
   let requestingPermission = false;
   let unsubscribe: (() => void) | null = null;
   let app: InProcessWindow;
 
   const requestUpdate = () => {
-    if (requestingPermission) return;
+    if (closed || requestingPermission) return;
     if (hasLocationPermission()) {
       weatherBridge.start();
       return;
@@ -26,9 +27,10 @@ export function createWeatherAppWindow(options: InProcessAppOptions): InProcessW
     requestingPermission = true;
     void ensureLocationPermission().then((granted) => {
       requestingPermission = false;
+      if (closed) return;
       if (granted) weatherBridge.start();
       app.requestRender();
-    });
+    }).catch((error) => { requestingPermission = false; console.warn(`Weather permission: ${error}`); });
   };
 
   app = createInProcessWindow({
@@ -52,7 +54,9 @@ export function createWeatherAppWindow(options: InProcessAppOptions): InProcessW
     submitFrame: options.submitFrame,
     setSurfaceVisible: options.setSurfaceVisible,
     removeSurface: options.removeSurface,
+    reconfigureSurface: options.reconfigureSurface,
     onClosed: () => {
+      closed = true;
       unsubscribe?.();
       unsubscribe = null;
       weatherBridge.stop();

@@ -23,10 +23,13 @@
   <key>NSSpeechRecognitionUsageDescription</key>
   <string>Faceclaw turns audio from your glasses microphone into text for the app you choose. Dictation uses on-device recognition.</string>
   <key>NSLocationWhenInUseUsageDescription</key>
-  <string>Faceclaw uses your location to correct the glasses compass from magnetic north to true north.</string>
+  <string>Faceclaw uses your location for local weather, turn-by-turn navigation, and true north on the glasses compass.</string>
+  <key>NSLocationTemporaryUsageDescriptionDictionary</key>
+  <dict><key>Navigation</key><string>Precise location lets Faceclaw follow your route and show upcoming turns on your glasses.</string></dict>
   <key>UIBackgroundModes</key>
   <array>
     <string>bluetooth-central</string>
+    <string>location</string>
   </array>
   <key>NSAppTransportSecurity</key>
   <dict>

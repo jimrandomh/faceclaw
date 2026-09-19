@@ -64,7 +64,7 @@ import {
   GESTURE_SHORT_THEN_LONG_PRESS,
   type InputEvent,
 } from "../../ui/gestures";
-import { LocationTracker, type TrackedLocation } from "../../native/location-tracker";
+import { LocationTracker, type TrackedLocation } from "./navigation-sensors";
 import {
   fetchRoute,
   fetchStaticMapGray,
@@ -76,8 +76,8 @@ import {
   type RouteProfile,
   type StaticMapCamera,
 } from "../../native/mapbox";
-import { addCompassListener, COMPASS_CHANGED, setCompassEnabled, type CompassEvent } from "../../native/compass";
-import { magneticDeclinationDegrees } from "../../native/geomagnetic";
+import { addCompassListener, COMPASS_CHANGED, setCompassEnabled, type CompassEvent } from "./navigation-sensors";
+import { magneticDeclinationDegrees, handleNavigationSensorEvent } from "./navigation-sensors";
 import { calibrateHeading, normalizeHeading } from "../compass/calibration";
 import { bearingDegrees, haversineMeters, RouteFollower, type RouteProgress } from "./route-follower";
 import { drawManeuverGlyph } from "./maneuver-icons";
@@ -184,6 +184,8 @@ let lastRerouteAtMs = 0;
 let rerouteInFlight = false;
 /** Bumped on every new route/mode so stale map fetches can be discarded. */
 let routeGeneration = 0;
+/** Invalidates GPS/geocoding/routing work when the route is replaced or closed. */
+let navigationGeneration = 0;
 
 /**
  * Where to go: free text to geocode (optionally shown under a saved
@@ -239,7 +241,6 @@ let compassActive = false;
 let unsubscribeCompass: (() => void) | null = null;
 /** Wearer's true heading (degrees clockwise from north) as last drawn, or null before compass data arrives. */
 let headHeadingDeg: number | null = null;
-let declinationCache: { latitude: number; longitude: number; degrees: number | null } | null = null;
 
 let tickTimer: ReturnType<typeof setInterval> | null = null;
 let firstFixWaiters: Array<(fix: TrackedLocation) => void> = [];
@@ -274,6 +275,9 @@ post({ type: "worker-ready" });
 global.onmessage = (event: { data: WorkerAppMessage }) => {
   const message = event.data;
   switch (message.type) {
+    case "navigation-sensors":
+      handleNavigationSensorEvent(message.event);
+      break;
     case "open-window":
       window = {
         windowId: message.windowId,
@@ -390,6 +394,8 @@ async function startNavigationTo(target: NavTarget, requestedProfile: RouteProfi
     render();
     throw new Error(statusMessage);
   }
+  const generation = ++navigationGeneration;
+  const checkCurrent = () => { if (generation !== navigationGeneration) throw new Error("Navigation cancelled."); };
   const hadActiveRoute = phase === "navigating" && follower !== null;
   const previous = {
     destination,
@@ -404,6 +410,7 @@ async function startNavigationTo(target: NavTarget, requestedProfile: RouteProfi
     render();
     ensureTracking();
     const fix = await waitForFix();
+    checkCurrent();
 
     phase = "routing";
     let picked: GeocodeCandidate;
@@ -420,6 +427,7 @@ async function startNavigationTo(target: NavTarget, requestedProfile: RouteProfi
       statusMessage = `Finding ${query}...`;
       render();
       candidates = await geocodeForward(query, fix, 5);
+      checkCurrent();
       if (!candidates.length) {
         throw new Error(`No places found matching "${query}".`);
       }
@@ -432,6 +440,7 @@ async function startNavigationTo(target: NavTarget, requestedProfile: RouteProfi
     statusMessage = `Routing to ${destinationName}...`;
     render();
     const route = await fetchRoute(fix, destination, profile);
+    checkCurrent();
     adoptRoute(route);
     // Saved destinations already have a row of their own on the idle page;
     // everything else (voice, assistant, a re-picked recent) goes on the
@@ -447,6 +456,7 @@ async function startNavigationTo(target: NavTarget, requestedProfile: RouteProfi
     if (window) post({ type: "focus-window", windowId: window.windowId });
     return startSummary(picked, candidates, route);
   } catch (error) {
+    if (generation !== navigationGeneration) throw error;
     const message = String((error as Error)?.message ?? error);
     statusMessage = message;
     // A failed new destination shouldn't kill guidance that was already
@@ -484,6 +494,7 @@ function adoptRoute(route: Route): void {
 }
 
 function stopNavigation(finalStatus: string): void {
+  ++navigationGeneration;
   phase = "idle";
   statusMessage = finalStatus;
   follower = null;
@@ -533,14 +544,16 @@ function handleFix(fix: TrackedLocation): void {
 async function maybeReroute(fix: TrackedLocation): Promise<void> {
   if (rerouteInFlight || !destination) return;
   if (Date.now() - lastRerouteAtMs < REROUTE_MIN_INTERVAL_MS) return;
+  const generation = navigationGeneration;
   rerouteInFlight = true;
   lastRerouteAtMs = Date.now();
   statusMessage = "Rerouting...";
   render();
   try {
     const route = await fetchRoute(fix, destination, profile);
-    if (phase === "navigating") adoptRoute(route);
+    if (generation === navigationGeneration && phase === "navigating") adoptRoute(route);
   } catch (error) {
+    if (generation !== navigationGeneration) return;
     statusMessage = `Reroute failed: ${String((error as Error)?.message ?? error)}`;
     render();
   } finally {
@@ -601,7 +614,9 @@ function handleCompassEvent(event: CompassEvent): void {
   // Wearer-fit offset from the Compass app's calibration, then declination
   // from our own GPS fix: the map is always true-north referenced.
   const magnetic = calibrateHeading(event.headingDegrees);
-  const heading = normalizeHeading(magnetic + (currentDeclination() ?? 0));
+  const correction = currentDeclination();
+  if (correction === null) return; // Keep the travel-direction arrow until true north is known.
+  const heading = normalizeHeading(magnetic + correction);
   if (headHeadingDeg !== null && angularDistance(heading, headHeadingDeg) < HEADING_STEP_DEG) return;
   headHeadingDeg = heading;
   render();
@@ -609,19 +624,7 @@ function handleCompassEvent(event: CompassEvent): void {
 
 /** Declination at the last fix; it only varies over tens of kilometres, so cache per coarse position. */
 function currentDeclination(): number | null {
-  if (!lastFix) return null;
-  if (
-    !declinationCache ||
-    Math.abs(declinationCache.latitude - lastFix.latitude) > 0.5 ||
-    Math.abs(declinationCache.longitude - lastFix.longitude) > 0.5
-  ) {
-    declinationCache = {
-      latitude: lastFix.latitude,
-      longitude: lastFix.longitude,
-      degrees: magneticDeclinationDegrees(lastFix.latitude, lastFix.longitude),
-    };
-  }
-  return declinationCache.degrees;
+  return lastFix ? magneticDeclinationDegrees(lastFix.latitude, lastFix.longitude) : null;
 }
 
 function angularDistance(a: number, b: number): number {
@@ -1123,7 +1126,7 @@ function tokenSetupEntries(): IdleEntry[] {
       detail: "Get a free token in the phone browser",
       run: () => {
         statusMessage = openUrlOnPhone(MAPBOX_TOKENS_URL)
-          ? "Opened mapbox.com on your phone. Copy your public token (pk...) and pick Edit token."
+          ? "Opening mapbox.com on your phone. Copy your public token (pk...) and pick Edit token."
           : "Could not open a browser on the phone. Visit account.mapbox.com/access-tokens to get a token.";
       },
     },

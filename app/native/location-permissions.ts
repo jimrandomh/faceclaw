@@ -1,1 +1,1 @@
-export { ensureLocationPermission, hasLocationPermission } from '../g2/android-permissions'
+export { ensureLocationPermission, ensureFineLocationPermission, hasLocationPermission } from '../g2/android-permissions'
