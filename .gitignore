@@ -1,5 +1,8 @@
 # NativeScript
-hooks/
+hooks/*
+!hooks/before-prepare/
+hooks/before-prepare/*
+!hooks/before-prepare/faceclaw-kotlin.js
 node_modules/
 platforms/
 
@@ -44,3 +47,15 @@ faceclaw_settings.ios.json
 # Developer configs
 build_paths.sh
 **/xcuserdata/
+
+# Kotlin build outputs and staged NativeScript artifacts
+native/kotlin/.gradle/
+native/kotlin/.kotlin/
+native/kotlin/build/
+native/kotlin/shared/build/
+native/kotlin/local.properties
+native/kotlin/plugin/platforms/android/*.aar
+native/kotlin/plugin/platforms/ios/
+!native/kotlin/plugin/platforms/
+!native/kotlin/plugin/platforms/android/
+!native/kotlin/plugin/platforms/android/include.gradle

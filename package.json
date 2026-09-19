@@ -4,6 +4,9 @@
   "version": "1.0.0",
   "private": false,
   "scripts": {
+    "native:android": "node scripts/kotlin-build.cjs android",
+    "native:ios": "node scripts/kotlin-build.cjs ios",
+    "test:kotlin": "cd native/kotlin && ./gradlew :shared:testAndroidHostTest :shared:iosSimulatorArm64Test",
     "build:ios": "scripts/ios.sh build ios --for-device",
     "run:ios": "scripts/ios.sh run ios",
     "prepare:ios": "scripts/ios.sh prepare ios",
@@ -16,6 +19,7 @@
   },
   "dependencies": {
     "@evenrealities/pretext": "^0.1.4",
+    "@faceclaw/kotlin": "file:native/kotlin/plugin",
     "@nativescript/core": "~9.0.0",
     "@nativescript/theme": "^3.1.0",
     "@xterm/headless": "^6.0.0",
@@ -26,7 +30,7 @@
     "upng-js": "^2.1.0"
   },
   "devDependencies": {
-    "@nativescript/android": "9.0.4",
+    "@nativescript/android": "9.1.1",
     "@nativescript/ios": "9.0.3",
     "@nativescript/types": "~9.0.0",
     "@nativescript/webpack": "~5.0.25",

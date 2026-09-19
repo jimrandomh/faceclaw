@@ -2,6 +2,11 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+# Kotlin/Native also needs the JDK; share the existing local build environment.
+if [[ -f build_paths.sh ]]; then
+  source ./build_paths.sh
+fi
+
 # Prefer Homebrew Ruby over the older macOS system Ruby when available.
 for ruby_bin in /opt/homebrew/opt/ruby/bin /usr/local/opt/ruby/bin; do
   if [[ -x "$ruby_bin/ruby" ]]; then
