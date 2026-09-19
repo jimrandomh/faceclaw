@@ -61,7 +61,7 @@ import { type ImuReading } from "../../native/imu";
 import { toolRegistry, type ToolResult, type ToolSpec } from "../../assistant/tool-registry";
 import { getCurrentLocation } from "../../native/location";
 import { LocationTracker, type TrackedLocation } from "../../native/location-tracker";
-import { ensureFineLocationPermission } from "../../g2/android-permissions";
+import { ensureFineLocationPermission } from "../../native/location-permissions";
 
 const UPNG = require("upng-js");
 
@@ -642,7 +642,6 @@ export class EvenHubSession implements EvenHubMicClient, EvenHubImuClient, EvenH
 
   /** getAppLocation(): one-shot fix, or null on denial/error (SDK contract). */
   private async getAppLocation(): Promise<AppLocation | null> {
-    if (global.isIOS) return null;
     if (!this.declaresLocation()) return null;
     if (!(await ensureFineLocationPermission())) return null;
     try {
@@ -666,7 +665,6 @@ export class EvenHubSession implements EvenHubMicClient, EvenHubImuClient, EvenH
    * Navigate app's foreground-service-backed tracking.
    */
   private async startLocationUpdates(data: Record<string, unknown>): Promise<boolean> {
-    if (global.isIOS) return false;
     if (!this.declaresLocation()) return false;
     if (!(await ensureFineLocationPermission())) return false;
     if (this.closed) return false;

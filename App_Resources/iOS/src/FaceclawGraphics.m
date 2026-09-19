@@ -3,6 +3,29 @@
 #import <ImageIO/ImageIO.h>
 
 @implementation FaceclawGraphics
++ (NSData *)decodeImageFile:(NSString *)path maxWidth:(NSInteger)maxWidth maxHeight:(NSInteger)maxHeight {
+    if (maxWidth <= 0 || maxHeight <= 0 || maxWidth > 2048 || maxHeight > 2048) return nil;
+    NSURL *url = [NSURL fileURLWithPath:path];
+    CGImageSourceRef source = CGImageSourceCreateWithURL((__bridge CFURLRef)url, NULL);
+    if (!source) return nil;
+    NSDictionary *properties = CFBridgingRelease(CGImageSourceCopyPropertiesAtIndex(source, 0, NULL));
+    CFRelease(source);
+    double width = [properties[(id)kCGImagePropertyPixelWidth] doubleValue];
+    double height = [properties[(id)kCGImagePropertyPixelHeight] doubleValue];
+    if (width <= 0 || height <= 0) return nil;
+    NSInteger orientation = [properties[(id)kCGImagePropertyOrientation] integerValue];
+    if (orientation >= 5 && orientation <= 8) { double swap = width; width = height; height = swap; }
+    double scale = MIN(1.0, MIN(maxWidth / width, maxHeight / height));
+    NSInteger w = MAX(1, lround(width * scale)), h = MAX(1, lround(height * scale));
+    NSData *bytes = [NSData dataWithContentsOfURL:url options:NSDataReadingMappedIfSafe error:nil];
+    NSData *gray = [self decodeImage:bytes width:w height:h];
+    if (!gray) return nil;
+    // Same dimensions + pixels packet used by the shared image adapter.
+    uint8_t dimensions[] = { w & 255, (w >> 8) & 255, h & 255, (h >> 8) & 255 };
+    NSMutableData *packet = [NSMutableData dataWithBytes:dimensions length:4];
+    [packet appendData:gray];
+    return packet;
+}
 + (NSData *)decodeImage:(NSData *)data width:(NSInteger)width height:(NSInteger)height {
     if (!data.length || width <= 0 || height <= 0 || width > 2048 || height > 2048) return nil;
     CGImageSourceRef source = CGImageSourceCreateWithData((__bridge CFDataRef)data, NULL);

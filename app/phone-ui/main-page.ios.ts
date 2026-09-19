@@ -1,5 +1,6 @@
 import { Application, Button, Color, Dialogs, GridLayout, Image, Label, Page, StackLayout, type TouchGestureEventData } from '@nativescript/core'
 import { createConfigureDevicesPage } from './config-page.ios'
+import { launcherEntries } from '../apps/launcher'
 import { ALL_APPS } from '../apps/all-apps'
 import { IosPreviewController } from '../g2/ios-preview-controller'
 import { PhoneGestureRecognizer } from './phone-gestures'
@@ -107,9 +108,9 @@ export function createMainPage(): Page {
   }
   const sizeButton = button(controller.displayModeLabel, () => controller.cycleDisplayMode())
   settings.addChild(button('Open app', () => { void (async () => {
-    const apps = ALL_APPS.filter(app => app.showInLauncher !== false).slice().sort((a, b) => a.title.localeCompare(b.title))
-    const title = await Dialogs.action({ title: 'Open app', cancelButtonText: 'Cancel', actions: apps.map(app => app.title) })
-    const app = apps.find(app => app.title === title)
+    const apps = launcherEntries(ALL_APPS).sort((a, b) => a.label.localeCompare(b.label))
+    const title = await Dialogs.action({ title: 'Open app', cancelButtonText: 'Cancel', actions: apps.map(app => app.label) })
+    const app = apps.find(app => app.label === title)
     if (app) { await controller.launchApp(app.appId); selectTab('watch') }
   })() }))
   settings.addChild(sizeButton)

@@ -210,7 +210,7 @@ function fileOpenActions(entry: DirectoryEntry, options: FilesAppOptions): FileI
         },
       },
     ];
-    return global.isIOS ? actions.slice(0, 1) : actions;
+    return actions;
   }
   if (isDecodableImageFile(entry.name)) {
     return [

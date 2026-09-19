@@ -21,7 +21,6 @@ window.__faceclawEvenHub = { postMessage: function(name, args, id) {
 `
 
 export function createEvenHubWebView(session: EvenHubSession): EvenHubWebView {
-  if (session.remoteUrl) throw new Error('On iOS, open a local .ehpk package from Files.')
   const host = FaceclawEvenHubWebView.new()
   host.packageIdentifier = session.manifest.packageId
   host.eventHandler = (json: string) => {
@@ -35,8 +34,11 @@ export function createEvenHubWebView(session: EvenHubSession): EvenHubWebView {
     } catch (error) { console.warn(`EvenHub bridge: ${error}`) }
   }
   // Defer loading until manager.ts has attached the session/window handles.
-  const loading = setTimeout(() => host.startEntrypointScript(session.distDir, session.manifest.entrypoint,
-    IOS_EVENHUB_TRANSPORT_SCRIPT + EVENHUB_BRIDGE_INJECT_SCRIPT + buildFaceclawExtensionsScript(`Faceclaw/${FACECLAW_VERSION}`)), 0)
+  const script = IOS_EVENHUB_TRANSPORT_SCRIPT + EVENHUB_BRIDGE_INJECT_SCRIPT + buildFaceclawExtensionsScript(`Faceclaw/${FACECLAW_VERSION}`)
+  const loading = setTimeout(() => {
+    if (session.remoteUrl) host.startURLScript(session.remoteUrl, script)
+    else host.startEntrypointScript(session.distDir, session.manifest.entrypoint, script)
+  }, 0)
   return { native: host, evaluateJs: js => host.evaluate(js),
     destroy: () => { clearTimeout(loading); host.destroy() },
     showOnPhone: () => host.showOnPhone(), hideOnPhone: () => host.hideOnPhone() }

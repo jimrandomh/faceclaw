@@ -10,6 +10,38 @@ function load(file, context) {
   vm.runInNewContext(ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 } }).outputText, sandbox);
   return sandbox.exports;
 }
+
+test('iOS installed apps launch, recover missing packages, and close before uninstall', async () => {
+  const calls = [], app = { packageId: 'test.app', name: 'Test' };
+  let present = true;
+  const modules = {
+    '../apps/all-apps': { ALL_APPS: [{ appId: 'evenhub' }] },
+    '../apps/evenhub/installed-apps': { getInstalledEvenHubAppById: id => id === 'installed' ? app : null,
+      installedEvenHubPackageId: id => id === 'installed' ? app.packageId : null,
+      uninstallEvenHubPackage: id => calls.push(['uninstall', id]) },
+    '../apps/evenhub/updates': { isInstalledPackagePresent: () => present },
+    '../apps/evenhub': { openEvenHubStoreForPackage: (_ctx, value) => calls.push(['reinstall', value.packageId]) },
+    '../apps/evenhub/manager': { launchInstalledPackage: (ctx, value) => calls.push(['launch', ctx.appId, value.packageId]),
+      closeRunningPackage: id => calls.push(['close', id]) },
+  };
+  const { IosPreviewController } = load('app/g2/ios-preview-controller.ts', { require: id => modules[id] ?? {} });
+  const host = Object.create(IosPreviewController.prototype);
+  host.buildAppContext = app => app; host.fail = assert.fail; host.requestShellRender = () => {};
+  await host.launchApp('installed'); present = false; await host.launchApp('installed');
+  await host.uninstallApp('installed');
+  assert.deepEqual(calls, [['launch', 'installed', 'test.app'], ['reinstall', 'test.app'], ['close', 'test.app'], ['uninstall', 'test.app']]);
+});
+
+test('iOS settings prompts honor password input and report cancellation', async () => {
+  const prompts = [], writes = [];
+  const { IosPreviewController } = load('app/g2/ios-preview-controller.ts', { require: id => id === '@nativescript/core' ? {
+    Dialogs: { prompt: async options => { prompts.push(options); return { result: false, text: 'discarded' }; } },
+  } : {} });
+  const host = Object.create(IosPreviewController.prototype); host.active = true;
+  const accepted = await host.editSetting({ editorTitle: 'Password', inputKind: 'password', get: () => '', set: value => writes.push(value) });
+  assert.equal(prompts[0].inputType, 'password');
+  assert.equal(accepted, false); assert.deepEqual(writes, []);
+});
 test('iOS phone battery distinguishes unknown, charging, full and unplugged readings', () => {
   const device = { batteryLevel: -1, batteryState: 0 };
   const api = load('app/native/phone-battery.ts', { require: () => ({}), global: { isIOS: true },
@@ -102,6 +134,7 @@ test('background glasses input still composites frames; phone resume preserves t
     './glance-host': { GlanceHost: class { dismiss() {} isVisible() { return false; } } },
     './device-addresses': { loadDeviceAddresses: () => ({}) }, './ios-peripheral-identity': { deviceAddressError: () => null },
     '../apps/launcher/launcher-app': { createLauncherWindow: () => window, LAUNCHER_SURFACE_ID: 'launcher' },
+    '../apps/launcher': { launcherEntries: () => [] },
     '../apps/all-apps': { ALL_APPS: [] }, '../ui/dashboard-settings': settings,
     '../native/phone-battery': { readPhoneBatteryState: () => ({ battery: 80, charging: false }) },
     '../graphics/surface-compositor': { SurfaceCompositor: class {
@@ -169,6 +202,7 @@ test('iOS bandwidth footer toggles live, polls only in foreground and resets its
     "../native/ios-navigation-sensors": {},
     '../native/compass.ios': { bindCompassSession() {}, receiveCompassEvent() {} },
     '@nativescript/core': core,
+    '../apps/launcher': { launcherEntries: () => [] },
     '../apps/all-apps': { ALL_APPS: [] },
     '../g2/ios-preview-controller': { IosPreviewController: class { resume() {} pause() {} } },
     './phone-gestures': { PhoneGestureRecognizer: class { cancel() {} } },

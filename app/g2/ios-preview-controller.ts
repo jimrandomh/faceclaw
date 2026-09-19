@@ -1,3 +1,8 @@
+import { launcherEntries } from '../apps/launcher'
+import { getInstalledEvenHubAppById, installedEvenHubPackageId, uninstallEvenHubPackage } from '../apps/evenhub/installed-apps'
+import { isInstalledPackagePresent } from '../apps/evenhub/updates'
+import { openEvenHubStoreForPackage } from '../apps/evenhub'
+import { launchInstalledPackage, closeRunningPackage } from '../apps/evenhub/manager'
 import { registerSystemTools } from '../assistant/system-tools'
 import { registerWindowTools } from '../assistant/window-tools'
 import { registerNavigateTools } from '../assistant/navigate-tools'
@@ -91,9 +96,14 @@ export class IosPreviewController {
     startVoiceCapture: () => this.startVoiceCapture(),
     stopVoiceCapture: () => iosVoiceInput.stopPushToTalk(),
     startContinuousVoiceCapture: () => this.onError("Voice capture is not available on iOS yet."),
-    startTextSettingEdit: setting => this.editSetting(setting),
-    startTextSettingsEdit: async (settings, _title, finished) => {
-      for (const setting of settings) await this.editSetting(setting)
+    startTextSettingEdit: async setting => { await this.editSetting(setting) },
+    startTextSettingsEdit: async (settings, title, finished, toggle, cancelled) => {
+      for (const setting of settings) if (!await this.editSetting(setting)) { cancelled?.(); return }
+      if (toggle) {
+        const choice = await Dialogs.action({ title, cancelButtonText: 'Cancel', actions: [toggle.label, 'This session only'] })
+        if (choice === 'Cancel') { cancelled?.(); return }
+        toggle.setting.set(choice === toggle.label)
+      }
       finished?.()
     },
   }
@@ -116,11 +126,9 @@ export class IosPreviewController {
     })
     const launcher = createLauncherWindow({
       actions: this.actions,
-      apps: () => ALL_APPS.filter(app => app.showInLauncher !== false).map(app => ({
-        appId: app.appId, label: app.title, icon: app.icon, renderIcon: app.renderIcon,
-      })),
+      apps: () => launcherEntries(ALL_APPS),
       launchApp: id => this.launchApp(id),
-      uninstallApp: () => {},
+      uninstallApp: id => this.uninstallApp(id),
       submitFrame: planes => this.submit(LAUNCHER_SURFACE_ID, planes),
       setSurfaceVisible: visible => { this.compositor.setSurfaceVisible(LAUNCHER_SURFACE_ID, visible); this.scheduleFrame() },
     })
@@ -293,7 +301,19 @@ export class IosPreviewController {
   }
   async launchApp(id: string, params?: AppLaunchParams): Promise<void> {
     const app = ALL_APPS.find(app => app.appId === id)
-    if (!app) return
+    if (!app) {
+      const installed = getInstalledEvenHubAppById(id)
+      const host = ALL_APPS.find(app => app.appId === 'evenhub')
+      if (installed && host) {
+        try {
+          if (isInstalledPackagePresent(installed.packageId))
+            await launchInstalledPackage(this.buildAppContext({ ...host, appId: id }), installed)
+          else await openEvenHubStoreForPackage(this.buildAppContext(host), installed)
+        }
+        catch (error) { this.fail(error) }
+      }
+      return
+    }
     try {
       const reason = iosAppUnavailableReason(id)
       if (reason) {
@@ -306,10 +326,17 @@ export class IosPreviewController {
       console.log(`[ios-preview] Launched ${id}`)
     } catch (error) { this.fail(error) }
   }
+  private async uninstallApp(id: string): Promise<void> {
+    const packageId = installedEvenHubPackageId(id)
+    if (!packageId) return
+    closeRunningPackage(packageId)
+    uninstallEvenHubPackage(packageId)
+    this.requestShellRender()
+  }
   private buildAppContext(app: AppDefinition): AppContext {
     return {
       appId: app.appId, apps: ALL_APPS, actions: this.actions,
-      launchApp: (id, params) => this.launchApp(id, params), uninstallApp: async () => {},
+      launchApp: (id, params) => this.launchApp(id, params), uninstallApp: id => this.uninstallApp(id),
       launchInProcessApp: (id, surface, create) => this.launchInProcessApp(id, surface, create),
       ensureWorkerHost: create => this.ensureWorkerHost(app.appId, create),
       submitWindowFrame: (id, planes) => this.submit(id, planes),
@@ -441,12 +468,13 @@ export class IosPreviewController {
     } catch (error) { this.fail(error) }
     finally { this.prompting = false }
   }
-  private async editSetting(setting: { editorTitle: string; get(): string; set(value: string): void }): Promise<void> {
-    if (!this.active) { this.logBluetooth('Editing text settings requires opening Faceclaw on the phone'); return }
-    const result = await Dialogs.prompt({ title: setting.editorTitle, defaultText: setting.get(), okButtonText: 'Save', cancelButtonText: 'Cancel' })
+  private async editSetting(setting: { editorTitle: string; inputKind?: string; get(): string; set(value: string): void }): Promise<boolean> {
+    if (!this.active) { this.logBluetooth('Editing text settings requires opening Faceclaw on the phone'); return false }
+    const result = await Dialogs.prompt({ title: setting.editorTitle, defaultText: setting.get(), inputType: setting.inputKind, okButtonText: 'Save', cancelButtonText: 'Cancel' })
     if (result.result) {
       setting.set(result.text)
       if (setting === nightscoutSiteUrlSetting || setting === nightscoutApiTokenSetting) await nightscoutBridge.refreshNow()
     }
+    return result.result
   }
 }

@@ -44,7 +44,7 @@
     </dict>
   </dict>
   <key>NSLocalNetworkUsageDescription</key>
-  <string>Faceclaw connects to the terminal servers you configure on your local network.</string>
+  <string>Faceclaw connects to the terminal servers and developer app URLs you configure on your local network.</string>
   <key>UILaunchScreen</key>
   <dict/>
   <key>UISupportedInterfaceOrientations</key>

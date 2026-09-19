@@ -133,24 +133,36 @@ export class EvenHubStoreDetailLayer implements Layer {
     }
     if (event.type !== "click") return;
 
-    await this.ensureDetail(ctx);
+    // Never hold the serialized input queue across network work or a dialog
+    // that needs a subsequent input to resolve.
+    void this.activate(ctx);
+  }
 
-    if (this.selectedIndex === 0) {
-      ctx.stack.push(new TextViewerLayer(this.app.description || "No description supplied.", "About"));
-      return;
-    }
-    if (this.selectedIndex === 1) {
-      ctx.stack.push(new TextViewerLayer(this.app.changelog || "No release notes supplied.", "What's New"));
-      return;
-    }
+  private async activate(ctx: LayerContext): Promise<void> {
+    this.working = true;
+    try {
+      await this.ensureDetail(ctx);
 
-    const installed = getInstalledEvenHubApp(this.app.packageId);
-    if (installed && this.primaryActionLabel(installed) === "Launch") {
-      await this.options.launchApp(installedEvenHubAppId(installed.packageId));
-      return;
-    }
+      if (this.selectedIndex === 0) {
+        ctx.stack.push(new TextViewerLayer(this.app.description || "No description supplied.", "About"));
+        return;
+      }
+      if (this.selectedIndex === 1) {
+        ctx.stack.push(new TextViewerLayer(this.app.changelog || "No release notes supplied.", "What's New"));
+        return;
+      }
 
-    await this.install(ctx);
+      const installed = getInstalledEvenHubApp(this.app.packageId);
+      if (installed && this.primaryActionLabel(installed) === "Launch") {
+        await this.options.launchApp(installedEvenHubAppId(installed.packageId));
+        return;
+      }
+
+      await this.install(ctx);
+    } catch (error) {
+      this.status = cleanError(error);
+      this.options.appendLog(`evenhub store: ${this.status}`);
+    } finally { this.working = false; ctx.actions.requestRender(); }
   }
 
   /** Install for a new app; Update / Reinstall when the installed copy is stale or gone. */

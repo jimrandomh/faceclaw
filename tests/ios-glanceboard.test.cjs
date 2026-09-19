@@ -82,6 +82,8 @@ function fixture() {
     '../native/nightscout-bridge': { nightscoutBridge: { async start() {}, async stop() {} } },
     './glance-host': { GlanceHost }, './events': events,
     './device-addresses': { loadDeviceAddresses: () => ({}) }, './ios-peripheral-identity': { deviceAddressError: () => null },
+    '../apps/launcher': { launcherEntries: () => [] },
+    '../apps/evenhub/installed-apps': {}, '../apps/evenhub/manager': {}, '../apps/evenhub/updates': {}, '../apps/evenhub': {},
     '../apps/launcher/launcher-app': { createLauncherWindow: () => window, LAUNCHER_SURFACE_ID: 'launcher' },
     '../apps/all-apps': { ALL_APPS: [{ appId: 'glanceboard', glanceboard: provider }] },
     '../ui/shell/worker-window': {}, '../ui/shell/in-process-window': {},

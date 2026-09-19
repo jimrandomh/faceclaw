@@ -20,6 +20,7 @@ export type LayerActions = {
     title: string,
     onFinish?: () => void,
     toggle?: TextSettingsEditToggle,
+    onCancel?: () => void,
   ) => Promise<void> | void;
   endTextSettingEdit: () => Promise<void> | void;
   /**

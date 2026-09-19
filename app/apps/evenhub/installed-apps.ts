@@ -13,10 +13,10 @@ import {
   writeBinaryFile,
 } from "../../native/file-access";
 import { getStringSetting, setStringSetting } from "../../native/settings-store";
-import { loadImageFileAsGray } from "../../native/image-files";
+import { loadIconImage } from "../../native/icon-image";
 import { renderSvgIcon } from "../../graphics/icons";
 import { type GrayImage } from "../../graphics/image";
-import { parseEhpk, parseManifest, utf8Decode, type EhpkArchive, type EvenHubManifest } from "./ehpk";
+import { openEhpk, parseManifest, utf8Decode, type EhpkIndex, type EvenHubManifest } from "./ehpk";
 
 const STORAGE_KEY = "evenhub.installedApps.v1";
 const APP_ID_PREFIX = "evenhub-installed:";
@@ -209,7 +209,7 @@ export function renderInstalledEvenHubIcon(
     const svg = readTextFile(path);
     if (svg) image = renderSvgIcon(cacheKey, svg, size);
   } else {
-    image = loadImageFileAsGray(path, size, size);
+    image = loadIconImage(path, size, size);
   }
   renderedIconCache.set(cacheKey, image);
   return image;
@@ -220,8 +220,8 @@ export function getInstalledEvenHubFingerprint(): string {
   return getStringSetting(STORAGE_KEY, "");
 }
 
-function inspectEhpk(bytes: Uint8Array): { archive: EhpkArchive; manifest: EvenHubManifest } {
-  const archive = parseEhpk(bytes);
+function inspectEhpk(bytes: Uint8Array): { archive: EhpkIndex; manifest: EvenHubManifest } {
+  const archive = openEhpk(bytes);
   const appJson = archive.files.get("app.json");
   if (!appJson) throw new Error("The EHPK package has no app.json manifest.");
   return { archive, manifest: parseManifest(utf8Decode(appJson)) };
@@ -242,7 +242,7 @@ function saveInstalledApps(apps: InstalledEvenHubApp[]): void {
   );
 }
 
-function findEmbeddedIcon(archive: EhpkArchive, manifest: EvenHubManifest): EvenHubInstallIcon | null {
+function findEmbeddedIcon(archive: EhpkIndex, manifest: EvenHubManifest): EvenHubInstallIcon | null {
   const candidates: string[] = [];
   for (const key of ["icon", "icon_path", "iconPath", "app_icon", "appIcon"]) {
     const value = manifest.raw[key];
@@ -270,11 +270,11 @@ function findEmbeddedIcon(archive: EhpkArchive, manifest: EvenHubManifest): Even
       if (content && extension) return { bytes: content, extension };
     }
   }
-  const fallback = Array.from(archive.files.entries()).find(([path]) =>
+  const fallback = Array.from(archive.files.keys()).find((path) =>
     /(?:^|\/)(?:app-?)?(?:icon|favicon)\.(?:svg|png|webp|jpe?g)$/i.test(path),
   );
-  const extension = fallback ? iconExtension(fallback[0]) : null;
-  return fallback && extension ? { bytes: fallback[1], extension } : null;
+  const extension = fallback ? iconExtension(fallback) : null;
+  return fallback && extension ? { bytes: archive.files.get(fallback)!, extension } : null;
 }
 
 function normalizeInstallIcon(icon: EvenHubInstallIcon | undefined): EvenHubInstallIcon | null {

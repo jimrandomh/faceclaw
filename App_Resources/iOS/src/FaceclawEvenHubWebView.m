@@ -9,6 +9,7 @@
 @property(nonatomic) UIButton *back;
 @property(nonatomic) NSTimer *timer;
 @property(nonatomic) NSString *directory;
+@property(nonatomic) NSURL *remoteURL;
 @property(nonatomic) BOOL ticking;
 @property(nonatomic) BOOL destroyed;
 @end
@@ -21,6 +22,20 @@
 }
 - (void)start:(NSString *)directory entrypoint:(NSString *)entrypoint script:(NSString *)script {
     _directory = directory.stringByStandardizingPath.stringByResolvingSymlinksInPath;
+    NSURLComponents *url = [NSURLComponents new];
+    url.scheme = @"faceclaw-ehpk"; url.host = @"app"; url.path = [@"/" stringByAppendingString:entrypoint];
+    [self startRequest:url.URL script:script];
+}
+- (void)startURL:(NSString *)url script:(NSString *)script {
+    NSURL *target = [NSURL URLWithString:url];
+    if (!target.host.length || ![@[@"http", @"https"] containsObject:target.scheme.lowercaseString] || target.user || target.password) {
+        [self emit:@{@"kind": @"error", @"message": @"Invalid app URL."}]; return;
+    }
+    _remoteURL = target;
+    [self startRequest:target script:script];
+}
+- (void)startRequest:(NSURL *)url script:(NSString *)script {
+    if (_destroyed) return;
     WKWebViewConfiguration *config = [WKWebViewConfiguration new];
     // Isolate browser storage by package, retaining it across closing/reopening.
     // SDK storage also persists independently through the shared TS session.
@@ -81,9 +96,7 @@
         }];
     }];
     [NSRunLoop.mainRunLoop addTimer:_timer forMode:NSRunLoopCommonModes];
-    NSURLComponents *url = [NSURLComponents new];
-    url.scheme = @"faceclaw-ehpk"; url.host = @"app"; url.path = [@"/" stringByAppendingString:entrypoint];
-    [_webView loadRequest:[NSURLRequest requestWithURL:url.URL]];
+    [_webView loadRequest:[NSURLRequest requestWithURL:url]];
 }
 - (void)evaluate:(NSString *)script {
     if (!_destroyed) [_webView evaluateJavaScript:script completionHandler:nil];
@@ -104,16 +117,25 @@
     [_webView.configuration.userContentController removeAllUserScripts];
     [_host removeFromSuperview]; _host = nil; _back = nil; _webView = nil; _eventHandler = nil;
 }
+- (BOOL)allowsURL:(NSURL *)url {
+    if (!_remoteURL) return [url.scheme isEqual:@"faceclaw-ehpk"] && [url.host isEqual:@"app"];
+    NSNumber *port = url.port ?: @([url.scheme.lowercaseString isEqual:@"https"] ? 443 : 80);
+    NSNumber *remotePort = _remoteURL.port ?: @([_remoteURL.scheme.lowercaseString isEqual:@"https"] ? 443 : 80);
+    return [url.scheme.lowercaseString isEqual:_remoteURL.scheme.lowercaseString] &&
+        [url.host.lowercaseString isEqual:_remoteURL.host.lowercaseString] && [port isEqual:remotePort];
+}
 - (void)userContentController:(WKUserContentController *)controller didReceiveScriptMessage:(WKScriptMessage *)message {
     // Subframes and navigated third-party documents never receive host access.
     NSURL *url = message.frameInfo.request.URL;
-    if (!message.frameInfo.isMainFrame || ![url.scheme isEqual:@"faceclaw-ehpk"] || ![url.host isEqual:@"app"]) return;
+    if (!message.frameInfo.isMainFrame || ![self allowsURL:url]) return;
     if ([message.body isKindOfClass:NSDictionary.class]) [self emit:message.body];
 }
 - (void)webView:(WKWebView *)webView decidePolicyForNavigationAction:(WKNavigationAction *)action decisionHandler:(void (^)(WKNavigationActionPolicy))decisionHandler {
     NSURL *url = action.request.URL;
-    BOOL local = [url.scheme isEqual:@"faceclaw-ehpk"] && [url.host isEqual:@"app"];
-    decisionHandler(local && action.targetFrame.isMainFrame ? WKNavigationActionPolicyAllow : WKNavigationActionPolicyCancel);
+    BOOL allowed = [self allowsURL:url] && action.targetFrame.isMainFrame;
+    if (!allowed && action.targetFrame.isMainFrame)
+        [self emit:@{@"kind": @"error", @"message": @"Navigation outside the app origin is blocked. Open the destination as a separate app URL."}];
+    decisionHandler(allowed ? WKNavigationActionPolicyAllow : WKNavigationActionPolicyCancel);
 }
 - (void)webView:(WKWebView *)webView didFinishNavigation:(WKNavigation *)navigation {
     [self emit:@{@"kind": @"loaded"}];
@@ -131,7 +153,7 @@
     NSURL *url = task.request.URL;
     NSString *relative = [url.path stringByTrimmingCharactersInSet:[NSCharacterSet characterSetWithCharactersInString:@"/"]];
     NSString *file = [[_directory stringByAppendingPathComponent:relative] stringByStandardizingPath].stringByResolvingSymlinksInPath;
-    BOOL allowed = !_destroyed && [url.host isEqual:@"app"] &&
+    BOOL allowed = !_destroyed && _directory.length && !_remoteURL && [url.host isEqual:@"app"] &&
         [file hasPrefix:[_directory stringByAppendingString:@"/"]];
     NSData *data = allowed ? [NSData dataWithContentsOfFile:file options:NSDataReadingMappedIfSafe error:nil] : nil;
     NSString *ext = file.pathExtension.lowercaseString;

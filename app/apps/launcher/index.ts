@@ -7,6 +7,28 @@ import {
   renderInstalledEvenHubIcon,
 } from "../evenhub/installed-apps";
 
+/** Shared built-in and installed-app listing for both phone hosts. */
+export function launcherEntries(apps: readonly AppDefinition[]) {
+  return [
+    ...apps
+      .filter((app) => app.showInLauncher !== false)
+      .map((app) => ({
+        appId: app.appId,
+        label: app.title,
+        icon: app.icon,
+        renderIcon: app.renderIcon,
+      })),
+    ...getInstalledEvenHubApps().map((app) => ({
+      appId: installedEvenHubAppId(app.packageId),
+      label: app.name,
+      icon: "package" as const,
+      renderIcon: (size: number) => renderInstalledEvenHubIcon(app.packageId, size, app),
+      iconKey: `${app.installedAt}:${app.iconFile ?? ""}`,
+      uninstallable: true,
+    })),
+  ];
+}
+
 const launcherApp: AppDefinition = {
   appId: "launcher",
   title: "Apps",
@@ -22,24 +44,7 @@ const launcherApp: AppDefinition = {
           ...ctx.actions,
           requestRender: () => shell.foregroundWindow()?.requestRender(),
         },
-        apps: () => [
-          ...ctx.apps
-            .filter((app) => app.showInLauncher !== false)
-            .map((app) => ({
-              appId: app.appId,
-              label: app.title,
-              icon: app.icon,
-              renderIcon: app.renderIcon,
-            })),
-          ...getInstalledEvenHubApps().map((app) => ({
-            appId: installedEvenHubAppId(app.packageId),
-            label: app.name,
-            icon: "package" as const,
-            renderIcon: (size: number) => renderInstalledEvenHubIcon(app.packageId, size, app),
-            iconKey: `${app.installedAt}:${app.iconFile ?? ""}`,
-            uninstallable: true,
-          })),
-        ],
+        apps: () => launcherEntries(ctx.apps),
         launchApp: (appId) => ctx.launchApp(appId),
         uninstallApp: (appId) => ctx.uninstallApp(appId),
         submitFrame: (planes, paintMs, frameId) => ctx.submitWindowFrame(LAUNCHER_SURFACE_ID, planes, paintMs, frameId),

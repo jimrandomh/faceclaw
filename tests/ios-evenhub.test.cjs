@@ -52,7 +52,7 @@ test('EHPK entrypoints and extraction paths cannot escape their package director
 });
 
 test('Files on iOS exposes Run app for EHPKs and passes the selected local path', () => {
-  let browserOptions, actions, opened;
+  let browserOptions, actions, opened, installed;
   const load = loader({ global: { isIOS: true } }, {
     '../../native/file-access': {}, '../../native/font-files': { isFontFile: () => false },
     '../../graphics/installed-fonts': {}, '../../native/image-files': { isDecodableImageFile: () => false },
@@ -62,12 +62,13 @@ test('Files on iOS exposes Run app for EHPKs and passes the selected local path'
     './font-previewer': {}, './image-viewer': {}, './text-viewer': {},
     '../../ui/shell/in-process-window': { createInProcessWindow: () => ({}) }, '../../ui/shell/shell': {},
   });
-  load('app/apps/files/files-app.ts').createFilesAppWindow({ openEhpkApp: path => { opened = path; } });
+  load('app/apps/files/files-app.ts').createFilesAppWindow({ openEhpkApp: path => { opened = path; }, installEhpkApp: path => { installed = path; } });
   assert.equal(browserOptions.isSupportedFile('test.EHPK'), true);
   const ctx = { stack: { push() {}, pop() {} } };
   browserOptions.onFilePicked({ name: 'test.ehpk', path: '/Documents/test.ehpk' }, ctx);
-  assert.deepEqual(Array.from(actions, a => a.label), ['Run app']);
+  assert.deepEqual(Array.from(actions, a => a.label), ['Run app', 'Install']);
   actions[0].onSelect(ctx); assert.equal(opened, '/Documents/test.ehpk');
+  actions[1].onSelect(ctx); assert.equal(installed, '/Documents/test.ehpk');
 });
 
 test('local package runtimes unpack independently and clean up after closing or a failed launch', async () => {
@@ -82,7 +83,7 @@ test('local package runtimes unpack independently and clean up after closing or 
       deletePathRecursively: path => { for (const key of files.keys()) if (key.startsWith(path + '/')) files.delete(key); } },
     './session': { EvenHubSession: Session }, './evenhub-window': { createEvenHubWindow: () => ({}) },
     './webview': { createEvenHubWebView: () => ({ evaluateJs() {}, destroy() {} }) },
-    '../../ui/shell/shell': {}, './installed-apps': {},
+    '../../ui/shell/shell': {}, './installed-apps': { readEvenHubPackageManifest: () => ({ packageId: 'test.app' }) },
   });
   const manager = load('app/apps/evenhub/manager.ts'), ctx = { appendLog() {}, launchInProcessApp: async () => {} };
   await manager.launchPackage(ctx, '/test.ehpk'); await manager.launchPackage(ctx, '/test.ehpk');
@@ -97,7 +98,7 @@ test('local package runtimes unpack independently and clean up after closing or 
   assert.equal(files.size, 0);
 });
 
-function sessionHarness() {
+function sessionHarness(overrides = {}) {
   const settings = new Map(), logs = [], renders = [];
   const load = loader({ global: { isIOS: true }, setTimeout, clearTimeout, Promise }, {
     '@nativescript/core': { ApplicationSettings: { getString: (k, d) => settings.get(k) ?? d, setString: (k, v) => settings.set(k, v) } },
@@ -106,7 +107,7 @@ function sessionHarness() {
     '../../ui/dashboard-settings': {}, '../../ui/sound-effects': {}, './api-key-dialog': {},
     './mic-router': { evenHubMicRouter: {} }, './imu-router': { evenHubImuRouter: {} },
     './compass-router': { evenHubCompassRouter: {} }, '../../assistant/tool-registry': {},
-    '../../native/location': {}, '../../native/location-tracker': {}, '../../g2/android-permissions': {},
+    '../../native/location': {}, '../../native/location-tracker': {}, '../../native/location-permissions': {}, ...overrides,
   });
   const api = load('app/apps/evenhub/session.ts');
   const session = new api.EvenHubSession({ name: 'Probe', packageId: 'test.probe', permissions: [] }, '/test/dist', line => logs.push(line));
@@ -142,7 +143,7 @@ test('injected EvenHub RPC creates, updates and composites an image page with no
 
 test('iOS webview adapter defers loading until handles attach and destroys a not-yet-loaded app', () => {
   const timers = new Map(), calls = [];
-  const native = { startEntrypointScript: (...args) => calls.push(args), destroy: () => calls.push('destroy') };
+  const native = { startEntrypointScript: (...args) => calls.push(args), startURLScript: (...args) => calls.push(args), destroy: () => calls.push('destroy') };
   const load = loader({ FaceclawEvenHubWebView: { new: () => native },
     setTimeout: fn => { timers.set(1, fn); return 1; }, clearTimeout: id => timers.delete(id) }, {
     './session': { EVENHUB_BRIDGE_INJECT_SCRIPT: 'BRIDGE', buildFaceclawExtensionsScript: () => 'EXT' }, '../../version': { FACECLAW_VERSION: 'test' },
@@ -152,5 +153,70 @@ test('iOS webview adapter defers loading until handles attach and destroys a not
   const host = createEvenHubWebView(session); assert.equal(calls.length, 0);
   timers.get(1)(); assert.equal(calls[0][0], '/app/dist'); assert.match(calls[0][2], /postMessage/); assert.match(calls[0][2], /BRIDGEEXT$/);
   host.destroy(); assert.equal(timers.size, 0); assert.equal(calls.at(-1), 'destroy');
-  assert.throws(() => createEvenHubWebView({ ...session, remoteUrl: 'https://example.test' }), /local/);
+  const remote = createEvenHubWebView({ ...session, remoteUrl: 'https://example.test' });
+  timers.get(1)(); assert.equal(calls.at(-1)[0], 'https://example.test');
+  remote.destroy();
+});
+
+test('EvenHub location uses the platform boundary and closes its subscription', async () => {
+  let permission = true, callback, starts = 0, stops = 0;
+  const fix = { latitude: 12, longitude: 34, accuracyMeters: 5, timestampMs: 1234 };
+  const h = sessionHarness({
+    '../../native/location-permissions': { ensureFineLocationPermission: async () => permission },
+    '../../native/location': { getCurrentLocation: async () => fix },
+    '../../native/location-tracker': { LocationTracker: class {
+      constructor(value) { callback = value; } start() { starts++; } stop() { stops++; }
+    } },
+  });
+  assert.equal(await h.call('getAppLocation'), null); // No manifest permission.
+  h.session.manifest.permissions.push({ name: 'location' });
+  assert.deepEqual(JSON.parse(JSON.stringify(await h.call('getAppLocation'))), {
+    latitude: 12, longitude: 34, accuracy: 5, timestamp: 1234,
+  });
+  permission = false;
+  assert.equal(await h.call('startAppLocationUpdates'), false);
+  permission = true;
+  assert.equal(await h.call('startAppLocationUpdates'), true);
+  assert.equal(starts, 1);
+  const events = [];
+  h.web._listenEvenAppMessage = value => events.push(typeof value === 'string' ? JSON.parse(value) : value);
+  callback.onLocation(fix);
+  assert.equal(events.at(-1).method, 'appLocationChanged');
+  h.session.close();
+  assert.equal(stops, 1);
+});
+
+test('iOS store terminal identity persists and signing crosses the native boundary', () => {
+  const settings = new Map();
+  const api = loader({ NSUUID: { UUID: () => ({ UUIDString: '12345678-1234-5678-90AB-123456789ABC' }) },
+    FaceclawCrypto: { hmacSha256Message: (key, body) => require('node:crypto').createHmac('sha256', key).update(body).digest('base64') },
+  }, { '../../native/settings-store': {
+    getStringSetting: (key, fallback) => settings.get(key) ?? fallback,
+    setStringSetting: (key, value) => settings.set(key, value),
+  } })('app/apps/evenhub/even-platform.ios.ts');
+  assert.equal(api.getPhoneOpenUdid(), '1234567812345678');
+  assert.equal(api.getPhoneOpenUdid(), '1234567812345678');
+  assert.equal(settings.size, 1);
+  assert.equal(api.hmacSha256Base64('key', 'The quick brown fox jumps over the lazy dog'), '97yD9DBThCSxMpjmqm+xQ+9NWaFJRhdZl0edvC0aPNg=');
+});
+
+test('store login and catalog requests use platform signing with the shared wire format', async () => {
+  const requests = [], signatures = [];
+  let token = '';
+  const api = loader({ setTimeout, clearTimeout }, {
+    './even-platform': { getPhoneOpenUdid: () => 'fixture-terminal', hmacSha256Base64: (_key, value) => { signatures.push(value); return 'fixture-signature'; } },
+    './credentials': { getEvenHubToken: () => token, hasEvenHubCredentials: () => !!token,
+      saveEvenHubSession: (_email, value) => { token = value; }, invalidateEvenHubToken() {} },
+    '../../util/http': { fetchWithUserAgent: async (url, init) => {
+      requests.push({ url, ...init });
+      return { status: 200, json: async () => ({ code: 0, data: url.endsWith('/login') ? { token: 'fixture-token' } : { list: [], total: 0 } }) };
+    } },
+  })('app/apps/evenhub/even-api.ts');
+  await api.evenHubApi.signIn('test@example.invalid', 'fixture-password', false);
+  await api.evenHubApi.listApps();
+  assert.equal(requests.length, 2);
+  assert.match(requests[0].headers.common, /openUdid=fixture-terminal/);
+  assert.equal(requests[1].headers.token, 'fixture-token');
+  assert.equal(requests[1].headers.sign, 'fixture-signature');
+  assert.equal(signatures[0], api.signingParts('POST', '/v2/g/login', requests[0].headers.common, '', '', requests[0].body));
 });

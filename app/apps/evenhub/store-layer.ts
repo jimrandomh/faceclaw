@@ -674,6 +674,7 @@ export class EvenHubStoreLayer implements Layer {
         void this.submitCredentials(ctx);
       },
       { setting: evenHubRememberMeSetting, label: "Remember me" },
+      () => { this.phoneEditor = "none"; clearEvenHubLoginForm(); },
     );
   }
 
@@ -684,7 +685,7 @@ export class EvenHubStoreLayer implements Layer {
       this.phoneEditor = "none";
       if (this.closed) return;
       void this.runSearch(ctx, evenHubSearchQuerySetting.get());
-    });
+    }, undefined, () => { this.phoneEditor = "none"; });
   }
 
   /** Close the phone editor if one is open (optionally only a given kind). */

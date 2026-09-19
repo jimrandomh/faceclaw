@@ -15,16 +15,16 @@ import { type AppContext } from "../app-definition";
 import {
   appFilesDirPath,
   deletePathRecursively,
-  readBinaryFile,
-  writeBinaryFile,
 } from "../../native/file-access";
-import { parseEhpk, parseManifest, utf8Decode, type EvenHubManifest } from "./ehpk";
+import { type EvenHubManifest } from "./ehpk";
+import { unpackRuntime } from "./unpack-runtime";
 import { type EvenHubPermission } from "./permissions";
 import { EvenHubSession } from "./session";
 import { createEvenHubWindow } from "./evenhub-window";
 import { createEvenHubWebView, type EvenHubWebView } from "./webview";
 import { shell } from "../../ui/shell/shell";
 import {
+  readEvenHubPackageManifest,
   installedEvenHubAppId,
   installedEvenHubPackagePath,
   type InstalledEvenHubApp,
@@ -64,17 +64,6 @@ export async function launchPackage(
   ehpkPath: string,
   options: { appId?: string; singleton?: boolean } = {},
 ): Promise<void> {
-  const data = readBinaryFile(ehpkPath);
-  if (!data) {
-    throw new Error('Could not read the EHPK file.');
-  }
-  const archive = parseEhpk(data);
-  const appJson = archive.files.get("app.json");
-  if (!appJson) {
-    throw new Error('The EHPK package has no app.json.');
-  }
-  const manifest = parseManifest(utf8Decode(appJson));
-  if (!archive.files.has(`dist/${manifest.entrypoint}`)) throw new Error('The EHPK entrypoint is missing from dist/.');
   const appId = options.appId ?? "evenhub";
   if (options.singleton) {
     const existing = Array.from(running.values()).find((app) => app.appId === appId);
@@ -85,20 +74,19 @@ export async function launchPackage(
     }
   }
 
-  // Unpack fresh into app-private storage, keyed by package id.
+  const manifest = readEvenHubPackageManifest(ehpkPath);
+  if (!manifest) throw new Error('Could not read the EHPK manifest.');
+  // Unpack off the iOS UI thread; reserve a unique directory before awaiting.
   const safeId = manifest.packageId.replace(/[^A-Za-z0-9._-]/g, "_");
   if (!safeId || safeId === '.' || safeId === '..') throw new Error('Invalid EHPK package ID');
-  const baseDir = `${appFilesDirPath()}/evenhub-apps/${safeId}${global.isIOS ? `-${Date.now()}-${nextSerial}` : ''}`;
-  deletePathRecursively(baseDir);
-  for (const [name, content] of Array.from(archive.files)) {
-    if (!writeBinaryFile(`${baseDir}/${name}`, content)) {
-      deletePathRecursively(baseDir);
-      throw new Error(`Could not unpack ${name}.`);
-    }
-  }
-
-  try { await startApp(ctx, manifest, `${baseDir}/dist`, "", appId, global.isIOS ? () => deletePathRecursively(baseDir) : undefined); }
-  catch (error) { deletePathRecursively(baseDir); throw error; }
+  const baseDir = `${appFilesDirPath()}/evenhub-apps/${safeId}${global.isIOS ? `-${Date.now()}-${nextSerial++}` : ''}`;
+  const started = Date.now();
+  ctx.appendLog(`evenhub: unpacking ${manifest.name}`);
+  try {
+    const loadedManifest = await unpackRuntime(ehpkPath, baseDir);
+    ctx.appendLog(`evenhub: unpacked ${loadedManifest.name} in ${Date.now() - started} ms`);
+    await startApp(ctx, loadedManifest, `${baseDir}/dist`, "", appId, global.isIOS ? () => deletePathRecursively(baseDir) : undefined);
+  } catch (error) { deletePathRecursively(baseDir); throw error; }
 }
 
 /**

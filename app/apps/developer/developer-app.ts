@@ -108,8 +108,6 @@ export function createDeveloperAppWindow(appContext: AppContext, options: InProc
     [
       {
         label: "Load app from URL",
-        disabled: global.isIOS,
-        description: global.isIOS ? "Not available on iOS yet." : undefined,
         onSelect: (ctx) => {
           const layer = new LoadAppFromUrlLayer(appContext);
           ctx.stack.push(layer);
