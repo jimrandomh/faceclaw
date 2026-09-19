@@ -128,7 +128,7 @@ class IosProtocol {
         BleProtocol.readStringFieldValue(data.byteArray(), field)
 
     fun glassesInput(data: NSData, sid: Int, flag: Int): G2Event? =
-        if (sid == BleProtocol.SID_EVENHUB && flag in intArrayOf(1, 6))
+        if (sid in intArrayOf(BleProtocol.SID_EVENHUB, BleProtocol.SID_EVEN_AI) && flag in intArrayOf(1, 6))
             G2Event.decodePayload(sid, data.byteArray())
         else null
 

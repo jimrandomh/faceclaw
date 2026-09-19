@@ -48,6 +48,22 @@ internal actual fun inflateRecords(records: List<ByteArray>): List<ByteArray> = 
 
 class IosProtocolTest {
     @Test
+    fun wakewordPacketsReachTheSharedEventDecoder() {
+        val api = IosProtocol()
+        val ctrl = BleProtocol.encodeVarintField(1, 1) // EVEN_AI_WAKE_UP
+        val payload = (BleProtocol.encodeVarintField(1, BleProtocol.EVEN_AI_CMD_CTRL) +
+            BleProtocol.encodeBytesField(3, ctrl)).data()
+        for (flag in listOf(1, 6)) {
+            val event = assertNotNull(api.glassesInput(payload, BleProtocol.SID_EVEN_AI, flag))
+            assertEquals("even-ai", event.kind)
+            assertEquals(1, event.eventType)
+        }
+        assertNull(api.glassesInput(payload, BleProtocol.SID_EVEN_AI, 2))
+        assertNull(api.glassesInput(payload, 0xff, 1))
+        assertNull(api.glassesInput(byteArrayOf().data(), BleProtocol.SID_EVEN_AI, 1))
+    }
+
+    @Test
     fun platformClockAndWriteModes() {
         val before = IosProtocolPlatform.elapsedRealtimeMs()
         assertTrue(before > 0)

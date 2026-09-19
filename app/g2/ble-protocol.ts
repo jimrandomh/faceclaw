@@ -127,7 +127,7 @@ export function readString(data: Uint8Array, number: number): string { return Ar
 export function authenticationSucceeded(message: ProtocolMessage, magic: number): boolean {
   return message.sid === SID.auth && message.command === 4 && message.magic === magic && readBytes(message.payload, 3)?.length === 0
 }
-export type GlassesInput = { kind: 'sys-event' | 'list-click' | 'text-click' | 'display-wake'; eventType: number; eventSource: number; systemExitReasonCode: number; containerName: string; frameId: number }
+export type GlassesInput = { kind: 'sys-event' | 'list-click' | 'text-click' | 'display-wake' | 'even-ai'; eventType: number; eventSource: number; systemExitReasonCode: number; containerName: string; frameId: number }
 export function decodeGlassesInput(message: ProtocolMessage): GlassesInput | null {
   if (message.sid !== SID.hub || ![1, 6].includes(message.flag)) return null
   const events = readBytes(message.payload, 13); if (!events) return null

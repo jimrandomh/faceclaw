@@ -1,6 +1,7 @@
 #import "FaceclawSpeech.h"
 #import "FaceclawLc3Decoder.h"
 #import "FaceclawSpeechTranscript.h"
+#import <FaceclawKit/FaceclawKit.h>
 #import <Speech/Speech.h>
 #import <AVFoundation/AVFoundation.h>
 #import <math.h>
@@ -16,6 +17,7 @@
 @property(nonatomic) BOOL accepting;
 @property(nonatomic, copy) NSString *bestText;
 @property(nonatomic, strong) FaceclawSpeechTranscript *transcript;
+@property(nonatomic, strong) FaceclawKitVoiceEndpointDetector *endpointDetector;
 @end
 @implementation FaceclawSpeech
 - (instancetype)init {
@@ -33,7 +35,7 @@
     NSData *json = [NSJSONSerialization dataWithJSONObject:event options:0 error:nil];
     if (json) self.eventHandler([[NSString alloc] initWithData:json encoding:NSUTF8StringEncoding]);
 }
-- (NSString *)start {
+- (NSString *)startWithEndpointing:(BOOL)endpointing {
     [self cancel];
     if (SFSpeechRecognizer.authorizationStatus != SFSpeechRecognizerAuthorizationStatusAuthorized)
         return @"Allow Speech Recognition for Faceclaw in iPhone Settings.";
@@ -52,6 +54,7 @@
     if (@available(iOS 16.0, *)) self.request.addsPunctuation = YES;
     self.bestText = @""; self.accepting = YES;
     self.transcript = [FaceclawSpeechTranscript new];
+    self.endpointDetector = endpointing ? [FaceclawKitVoiceEndpointDetector new] : nil;
     NSUInteger generation = self.generation;
     __weak FaceclawSpeech *weakSelf = self;
     self.task = [self.recognizer recognitionTaskWithRequest:self.request resultHandler:^(SFSpeechRecognitionResult *result, NSError *error) {
@@ -89,11 +92,13 @@
     NSUInteger generation = self.generation;
     FaceclawLc3Decoder *decoder = self.decoder;
     SFSpeechAudioBufferRecognitionRequest *request = self.request;
+    FaceclawKitVoiceEndpointDetector *endpointDetector = self.endpointDetector;
     NSData *copy = [packet copy];
     dispatch_async(self.audioQueue, ^{ @autoreleasepool {
         if (self.generation != generation) return;
         NSData *pcm = [decoder decodePacket:copy];
         double rms = 0;
+        BOOL speechEnded = NO;
         if (pcm.length) {
             AVAudioFormat *format = [[AVAudioFormat alloc] initWithCommonFormat:AVAudioPCMFormatFloat32 sampleRate:16000 channels:1 interleaved:NO];
             AVAudioPCMBuffer *buffer = [[AVAudioPCMBuffer alloc] initWithPCMFormat:format frameCapacity:(AVAudioFrameCount)(pcm.length / 2)];
@@ -105,11 +110,13 @@
             }
             rms = sqrt(rms / buffer.frameLength);
             if (self.generation == generation) [request appendAudioPCMBuffer:buffer];
+            speechEnded = [endpointDetector acceptLevelRms:rms * 32768.0 sampleCount:(int32_t)buffer.frameLength];
         }
         NSUInteger packets = decoder.packets, errors = decoder.errors, missing = decoder.missing;
         dispatch_async(dispatch_get_main_queue(), ^{
             if (self.generation != generation) return;
             self.pendingPackets--;
+            if (speechEnded && self.accepting) [self finish];
             if (pcm.length && packets % 20 == 0) [self emit:@{@"kind":@"audio", @"packets":@(packets), @"seconds":@(packets * 0.05), @"rms":@(rms), @"missing":@(missing), @"errors":@(errors)}];
             if (errors > 10 && !packets) [self complete:@"Could not decode glasses audio. Reconnect the glasses and retry."];
         });
@@ -140,6 +147,6 @@
     self.generation++;
     self.accepting = NO; self.pendingPackets = 0;
     [self.task cancel]; self.task = nil; self.request = nil; self.decoder = nil; self.recognizer = nil;
-    self.bestText = @""; self.transcript = nil;
+    self.bestText = @""; self.transcript = nil; self.endpointDetector = nil;
 }
 @end

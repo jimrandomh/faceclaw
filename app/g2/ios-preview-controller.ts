@@ -93,7 +93,7 @@ export class IosPreviewController {
     ...noopLayerActions,
     requestRender: () => this.requestShellRender(),
     disconnect: () => this.disconnect(),
-    startVoiceCapture: () => this.startVoiceCapture(),
+    startVoiceCapture: endpointing => this.startVoiceCapture(endpointing),
     stopVoiceCapture: () => iosVoiceInput.stopPushToTalk(),
     startContinuousVoiceCapture: () => this.onError("Voice capture is not available on iOS yet."),
     startTextSettingEdit: async setting => { await this.editSetting(setting) },
@@ -437,9 +437,9 @@ export class IosPreviewController {
     if (!ready && this.active) this.onError(iosVoiceInput.statusText)
     return ready && this.session?.state.phase === 'connected'
   }
-  private async startVoiceCapture(): Promise<void> {
+  private async startVoiceCapture(endpointing = false): Promise<void> {
     if (!this.session || this.session.state.phase !== 'connected') return
-    await iosVoiceInput.startGlassesCapture(this.session, message => this.logBluetooth(message))
+    await iosVoiceInput.startGlassesCapture(this.session, message => this.logBluetooth(message), endpointing)
   }
   private logBluetooth(message: string): void {
     const line = `${new Date().toISOString()} [${this.active ? 'foreground' : 'background'}${UIApplication.sharedApplication.protectedDataAvailable ? '' : ',protected-data-unavailable'}] ${message}`

@@ -5,7 +5,7 @@
 + (NSInteger)authorizationStatus;
 + (void)requestAuthorization:(void (^)(NSInteger status))completion;
 /** Returns an actionable error, or an empty string when capture starts. */
-- (NSString *)start;
+- (NSString *)startWithEndpointing:(BOOL)endpointing;
 - (void)acceptPacket:(NSData *)packet;
 - (void)finish;
 - (void)cancel;

@@ -130,7 +130,7 @@ public class FaceclawVoiceController {
     private String lastTranscript = "";
     private volatile boolean saveRecordings;
     private volatile boolean endpointing;
-    private final EndpointDetector endpointDetector = new EndpointDetector();
+    private final VoiceEndpointDetector endpointDetector = new VoiceEndpointDetector();
     private java.io.ByteArrayOutputStream recordingPcm;
     // Speaker verification against the enrolled wearer voice-print ("my voice
     // only" command gating). Configured before start(); the utterance PCM is
@@ -1025,111 +1025,6 @@ public class FaceclawVoiceController {
         FaceclawVoiceControllerListener currentListener = listener;
         if (currentListener != null) {
             mainHandler.post(() -> currentListener.onStopped(captureId));
-        }
-    }
-
-    /**
-     * Decides when a hands-free utterance is over, so "Hey Even" capture can
-     * stop without a button release.
-     *
-     * Runs on the decoded 16 kHz PCM, so it works the same in every input mode
-     * (the cloud path never sees the samples on this side, and the onboard
-     * recognizer's own endpointing only covers ONBOARD).
-     *
-     * Timing is measured on the sample clock rather than the wall clock: BLE
-     * delivers mic packets in bursts, so elapsed real time badly overestimates
-     * how much audio has actually been heard.
-     *
-     * The threshold is relative to a noise floor measured over the first
-     * {@link #CALIBRATE_MS} of the session, which is roughly the interval where
-     * the user is reacting to the dialog appearing and not yet speaking.
-     */
-    private static final class EndpointDetector {
-        /** Audio used to estimate the room's noise floor. */
-        private static final int CALIBRATE_MS = 300;
-        /** Speech must exceed this multiple of the noise floor to count as onset. */
-        private static final double ONSET_FACTOR = 3.0;
-        /** Below this multiple of the noise floor counts as silence again. */
-        private static final double RELEASE_FACTOR = 1.8;
-        /** Absolute floor, so a silent room can't make the threshold ~0. */
-        private static final double MIN_RMS = 220.0;
-        /** Trailing silence that ends an utterance. */
-        private static final int SILENCE_MS = 900;
-        /** If the user never speaks, give up rather than record forever. */
-        private static final int LEAD_IN_MS = 6000;
-        /** Hard cap on a single utterance. */
-        private static final int MAX_UTTERANCE_MS = 30000;
-
-        private long totalSamples;
-        private double noiseAccum;
-        private int noisePackets;
-        private double threshold;
-        private boolean speechStarted;
-        private long silenceSamples;
-        private boolean fired;
-
-        void reset() {
-            totalSamples = 0;
-            noiseAccum = 0;
-            noisePackets = 0;
-            threshold = 0;
-            speechStarted = false;
-            silenceSamples = 0;
-            fired = false;
-        }
-
-        /** Returns true exactly once, on the packet that ends the utterance. */
-        boolean accept(short[] pcm, int count) {
-            if (fired || count <= 0) {
-                return false;
-            }
-            totalSamples += count;
-            long elapsedMs = totalSamples * 1000L / SAMPLE_RATE;
-
-            double sumSquares = 0;
-            for (int i = 0; i < count; i++) {
-                double s = pcm[i];
-                sumSquares += s * s;
-            }
-            double rms = Math.sqrt(sumSquares / count);
-
-            if (elapsedMs <= CALIBRATE_MS) {
-                noiseAccum += rms;
-                noisePackets++;
-                return false;
-            }
-            if (threshold == 0) {
-                double noiseFloor = noisePackets > 0 ? noiseAccum / noisePackets : 0;
-                threshold = Math.max(noiseFloor, MIN_RMS);
-            }
-
-            if (!speechStarted) {
-                if (rms >= threshold * ONSET_FACTOR) {
-                    speechStarted = true;
-                    silenceSamples = 0;
-                } else if (elapsedMs >= LEAD_IN_MS) {
-                    // Never heard anything; close the dialog rather than hang.
-                    fired = true;
-                    return true;
-                }
-                return false;
-            }
-
-            if (rms < threshold * RELEASE_FACTOR) {
-                silenceSamples += count;
-                if (silenceSamples * 1000L / SAMPLE_RATE >= SILENCE_MS) {
-                    fired = true;
-                    return true;
-                }
-            } else {
-                silenceSamples = 0;
-            }
-
-            if (elapsedMs >= MAX_UTTERANCE_MS) {
-                fired = true;
-                return true;
-            }
-            return false;
         }
     }
 

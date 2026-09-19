@@ -13,27 +13,29 @@ function load(file, deps, globals = {}) {
   return exports;
 }
 
-function dialog({ autoSend = false, deferred = true, synchronousFinal } = {}) {
+function dialog({ autoSend = false, deferred = true, synchronousFinal, isIOS = false, handsFree = false } = {}) {
   const listeners = new Set(), timers = new Map(), sent = [], refinements = [];
-  let complete, timerId = 0, starts = 0, frame;
+  let complete, timerId = 0, starts = 0, frame, speechEnd, endpointing;
   let completion = new Promise(resolve => { complete = resolve; });
   const { VoiceInputLayer } = load('app/ui/shell/voice-input.ts', {
     '../../native/voice-control': { voiceControlBridge: {
       onTranscript(cb) { listeners.add(cb); return () => listeners.delete(cb); },
       onStatus() { return () => {}; },
+      onSpeechEnd(cb) { speechEnd = cb; return () => { speechEnd = null; }; },
+      stop() {},
     } },
     '../../native/anthropic': { refineDictation(options) { refinements.push(options); return { cancel() {} }; } },
     '../dashboard-settings': { anthropicApiKeySetting: { get: () => 'key' } },
     '../gestures': { gestureHints: () => '' },
     './input-dialog': { paintInputDialog(_image, options) { frame = options; } },
   }, {
-    global: { isIOS: false },
+    global: { isIOS },
     setTimeout(cb) { const id = ++timerId; timers.set(id, cb); return id; },
     clearTimeout(id) { timers.delete(id); },
   });
   const transcript = (text, isFinal = false) => { for (const cb of [...listeners]) cb({ text, isFinal }); };
-  const layer = new VoiceInputLayer({ autoSend, onClosed() {}, dismiss: () => layer.onRemoved(),
-    actions: { requestRender() {}, startVoiceCapture() { starts++; }, stopVoiceCapture() {
+  const layer = new VoiceInputLayer({ autoSend, handsFree, onClosed() {}, dismiss: () => layer.onRemoved(),
+    actions: { requestRender() {}, startVoiceCapture(value) { starts++; endpointing = value; }, stopVoiceCapture() {
       if (synchronousFinal) transcript(synchronousFinal, true);
       return deferred ? completion : undefined;
     } },
@@ -41,6 +43,7 @@ function dialog({ autoSend = false, deferred = true, synchronousFinal } = {}) {
   });
   layer.startCapture();
   return { layer, sent, refinements, transcript, starts: () => starts,
+    endpoint: () => speechEnd?.(), endpointing: () => endpointing,
     input: type => layer.handleInput({ type }, {}),
     frame() { layer.paint({}, () => ({})); return frame; },
     timeout() { for (const [id, cb] of [...timers]) { timers.delete(id); cb(); } },
@@ -48,6 +51,26 @@ function dialog({ autoSend = false, deferred = true, synchronousFinal } = {}) {
     nextCapture() { completion = new Promise(resolve => { complete = resolve; }); },
     timers: () => timers.size,
   };
+}
+
+for (const autoSend of [true, false]) {
+  test(`iOS wakeword silence completion ${autoSend ? 'auto-sends' : 'asks for confirmation'} only after final recognition`, async () => {
+    const env = dialog({ isIOS: true, handsFree: true, autoSend });
+    assert.equal(env.endpointing(), true);
+    env.transcript('Set a timer');
+    env.endpoint(); env.timeout();
+    env.input('click'); // Cannot send a partial while native recognition drains.
+    assert.deepEqual(env.sent, []);
+    env.transcript('Set a timer for five minutes.', true);
+    await env.complete(); env.timeout();
+    if (!autoSend) {
+      assert.deepEqual(env.sent, []);
+      env.input('click');
+    }
+    assert.deepEqual(env.sent, ['Set a timer for five minutes.']);
+    env.endpoint(); env.timeout();
+    assert.equal(env.sent.length, 1);
+  });
 }
 
 for (const partial of ['', 'Set a timer']) {

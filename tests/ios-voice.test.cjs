@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 const ts = require('typescript');
 function harness() {
-  const native = { start: () => '', cancel() { this.cancels++; }, cancels: 0, finish() { this.finished = true; }, acceptPacket: p => audio.push(p) };
+  const native = { startWithEndpointing(endpointing) { this.endpointing = endpointing; return ''; }, cancel() { this.cancels++; }, cancels: 0, finish() { this.finished = true; }, acceptPacket: p => audio.push(p) };
   const audio = [], timers = new Map(), commands = [], text = [];
   let authorization = 3, permissionRequests = 0, release;
   const sandbox = { exports: {}, FaceclawSpeech: { new: () => native, authorizationStatus: () => authorization,
@@ -60,4 +60,24 @@ test('missing microphone data ends the session and disables the mic with an acti
   const h = harness(); const start = h.bridge.startGlassesCapture(h.session, () => {}); h.release(); await start;
   for (const fn of h.timers.values()) fn();
   assert.deepEqual(h.commands, [true, false]); assert.match(h.bridge.statusText, /No microphone audio/);
+});
+
+test('hands-free endpointing releases the microphone and waits for the final transcript before completing', async () => {
+  const h = harness(); let ends = 0, completed = false;
+  h.bridge.onSpeechEnd(() => ends++);
+  const start = h.bridge.startGlassesCapture(h.session, () => {}, true); h.release(); await start;
+  assert.equal(h.native.endpointing, true);
+  h.event({ kind: 'transcript', text: 'Set a timer', final: false });
+  h.event({ kind: 'finishing' });
+  const completion = h.bridge.stopPushToTalk().then(() => { completed = true; });
+  await Promise.resolve();
+  assert.equal(completed, false); assert.equal(ends, 1);
+  assert.deepEqual(h.commands, [true, false]);
+  h.event({ kind: 'transcript', text: 'Set a timer for five minutes.', final: true });
+  h.event({ kind: 'ended' }); await completion;
+  assert.equal(completed, true);
+  assert.equal(h.text.at(-1).text, 'Set a timer for five minutes.');
+  const manual = h.bridge.startGlassesCapture(h.session, () => {}); h.release(); await manual;
+  assert.equal(h.native.endpointing, false);
+  const cancelled = h.bridge.stopPushToTalk(); h.bridge.stop(); await cancelled;
 });

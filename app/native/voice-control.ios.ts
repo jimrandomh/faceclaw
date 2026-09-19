@@ -18,6 +18,8 @@ export class IosVoiceControlBridge {
   private session: IosMicrophoneSession | null = null
   private capturing = false
   private finalizing = false
+  private completion: Promise<void> = Promise.resolve()
+  private resolveCompletion: (() => void) | null = null
   private audioTimer: ReturnType<typeof setTimeout> | null = null
   private packets = 0
   private log: (message: string) => void = () => {}
@@ -48,12 +50,13 @@ export class IosVoiceControlBridge {
     return true
   }
   get statusText(): string { return this.status }
-  async startGlassesCapture(session: IosMicrophoneSession, log: (message: string) => void): Promise<void> {
+  async startGlassesCapture(session: IosMicrophoneSession, log: (message: string) => void, endpointing = false): Promise<void> {
     this.stop()
     const generation = ++this.generation
     this.log = log; this.session = session; this.packets = 0; this.capturing = true
-    const error = String(this.ensureNative().start() ?? '')
-    if (error) { this.capturing = false; this.session = null; this.setStatus(error); this.emitEnd(); return }
+    this.completion = new Promise(resolve => { this.resolveCompletion = resolve })
+    const error = String(this.ensureNative().startWithEndpointing(endpointing) ?? '')
+    if (error) { this.stop(); this.setStatus(error); this.emitEnd(); return }
     try {
       await session.setMicrophone(true, packet => {
         if (generation !== this.generation || !this.capturing) return
@@ -74,16 +77,19 @@ export class IosVoiceControlBridge {
       this.stop(); this.setStatus(error instanceof Error ? error.message : String(error)); this.emitEnd()
     }
   }
-  stopPushToTalk(): void {
-    if (!this.capturing) return
+  stopPushToTalk(): Promise<void> {
+    const completion = this.completion
+    if (!this.capturing) return completion
     this.capturing = false; this.finalizing = true
     this.clearAudioTimer(); this.releaseMicrophone()
     this.setStatus('Recognizing…'); this.native?.finish()
+    return completion
   }
   stop(): void {
     ++this.generation
     this.capturing = this.finalizing = false
     this.clearAudioTimer(); this.releaseMicrophone(); this.native?.cancel()
+    this.finishCompletion()
   }
   handleSessionEnded(): void {
     if (!this.capturing && !this.finalizing) return
@@ -95,6 +101,9 @@ export class IosVoiceControlBridge {
     if (session) void session.setMicrophone(false).catch(error => this.log(`Voice microphone cleanup: ${error}`))
   }
   private emitEnd(): void { for (const fn of [...this.ends]) fn() }
+  private finishCompletion(): void {
+    const resolve = this.resolveCompletion; this.resolveCompletion = null; resolve?.()
+  }
   private receive(event: { kind: string; text?: string; final?: boolean; message?: string; seconds?: number; packets?: number; rms?: number; missing?: number; errors?: number }): void {
     if (!this.capturing && !this.finalizing) return
     if (event.kind === 'transcript') {
@@ -109,6 +118,7 @@ export class IosVoiceControlBridge {
     } else if (event.kind === 'ended') {
       this.capturing = this.finalizing = false
       this.clearAudioTimer(); this.releaseMicrophone()
+      this.finishCompletion()
       this.setStatus(event.message ?? 'Ready to send'); this.emitEnd()
     }
   }

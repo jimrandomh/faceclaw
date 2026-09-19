@@ -228,7 +228,7 @@ test('empty capture, rejection and closing never submit stale speech', async () 
   }
 });
 
-function shellEnv() {
+function shellEnv({ wakeAction = 'voice-input', skipConfirmation = false } = {}) {
   const gestures = load('app/ui/gestures.ts', {});
   class Image { constructor(width = 576, height = 260) { this.width = width; this.height = height; } }
   const images = { GrayImage: Image, G2_LENS_WIDTH: 640, G2_LENS_HEIGHT: 480 };
@@ -244,11 +244,17 @@ function shellEnv() {
     paint(_ctx, below) { return below(); }
     handleInput(event, ctx) { if (event.type === 'double-click') ctx.stack.pop(); }
   }
-  const settings = { wakeWordActionSetting: { get: () => 'voice-input' }, brightnessSetting: { get: () => 'auto' } };
-  const { shell } = load('app/ui/shell/shell.ts', {
-    '../../graphics/image': images, '../../graphics/plane': {}, '../../graphics/ui-fonts': {}, '../../g2/events': {},
+  const voiceDialogs = [];
+  const settings = { wakeWordActionSetting: { get: () => wakeAction }, brightnessSetting: { get: () => 'auto' },
+    assistantSkipConfirmationSetting: { get: () => skipConfirmation } };
+  const { shell, rawInputEventToInputEvent } = load('app/ui/shell/shell.ts', {
+    '../../graphics/image': images, '../../graphics/plane': {}, '../../graphics/ui-fonts': {}, '../../g2/events': load('app/g2/events.ts', {}),
     '../gestures': gestures, '../layers': layers, '../menu': { MenuLayer: Menu },
-    './voice-input': {}, './keyboard-input': {}, './voice-activity': {}, './assistant': {},
+    './voice-input': { VoiceInputLayer: class {
+      constructor(options) { this.options = options; voiceDialogs.push(options); }
+      startCapture() {}
+      onRemoved() { this.options.onClosed(); }
+    } }, './keyboard-input': {}, './voice-activity': { voiceActivity: { setActive() {} } }, './assistant': {},
     '../../assistant/conversations': {}, '../../assistant/models': {}, '../../native/settings-store': {},
     '../notifications': {}, '../dashboard-settings': settings, './ambient-cards': {},
     './chrome-layer': { ShellChromeLayer: class {} }, './modal-layer': {}, './tool-debug-layer': {},
@@ -280,8 +286,31 @@ function shellEnv() {
   });
   shell.registerWindow(app.window);
   shell.focusWindow('ai-chat');
-  return { shell, app, input, menus, microphone: () => microphone, event: (type) => gestures.makeInputEvent({ type }) };
+  return { shell, app, input, menus, voiceDialogs, rawInputEventToInputEvent, microphone: () => microphone, event: (type) => gestures.makeInputEvent({ type }) };
 }
+
+test('wakeword wakes the shared shell, respects its action, and opens only one hands-free assistant dialog', async () => {
+  for (const wakeAction of ['off', 'turn-screen-on', 'voice-input']) {
+    const env = shellEnv({ wakeAction, skipConfirmation: true });
+    env.shell.isAssistantAvailable = () => true;
+    env.shell.sleep();
+    const event = env.rawInputEventToInputEvent({ kind: 'even-ai', eventType: 1, eventSource: 0 });
+    assert.equal(event.type, 'wakeword');
+    await env.shell.receiveInput(event);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(env.shell.isScreenOn(), wakeAction !== 'off');
+    assert.equal(env.voiceDialogs.length, wakeAction === 'voice-input' ? 1 : 0);
+    if (wakeAction === 'voice-input') {
+      const options = env.voiceDialogs[0];
+      assert.equal(options.handsFree, true);
+      assert.equal(options.autoSend, true);
+      assert.equal(options.sendTargets[options.defaultTargetIndex].id, 'assistant');
+      await env.shell.receiveInput(event);
+      assert.equal(env.voiceDialogs.length, 1);
+    }
+    env.shell.stack.clearToBase();
+  }
+});
 
 test('chat holds bypass the escape timer; release, menus and double tap follow the requested routing', async () => {
   const env = shellEnv();

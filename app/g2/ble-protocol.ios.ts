@@ -52,7 +52,7 @@ export const readString = (data: Uint8Array, field: number): string => protocol.
 export function authenticationSucceeded(message: ProtocolMessage, magic: number): boolean {
   return message.sid === SID.auth && message.command === 4 && message.magic === magic && readBytes(message.payload, 3)?.length === 0
 }
-export type GlassesInput = { kind: 'sys-event' | 'list-click' | 'text-click' | 'display-wake'; eventType: number; eventSource: number; systemExitReasonCode: number; containerName: string; frameId: number }
+export type GlassesInput = { kind: 'sys-event' | 'list-click' | 'text-click' | 'display-wake' | 'even-ai'; eventType: number; eventSource: number; systemExitReasonCode: number; containerName: string; frameId: number }
 function input(event: any): GlassesInput | null {
   return event ? { kind: event.kind === 'sys-event' && event.eventType === OsEventTypeList.HEAD_UP_EVENT ? 'display-wake' : event.kind,
     eventType: event.eventType, eventSource: event.eventSource, systemExitReasonCode: event.systemExitReasonCode,

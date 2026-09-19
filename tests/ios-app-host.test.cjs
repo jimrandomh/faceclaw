@@ -42,6 +42,73 @@ test('iOS settings prompts honor password input and report cancellation', async 
   assert.equal(prompts[0].inputType, 'password');
   assert.equal(accepted, false); assert.deepEqual(writes, []);
 });
+
+test('iOS host forwards hands-free capture mode to the voice bridge', async () => {
+  const captures = [];
+  const { IosPreviewController } = load('app/g2/ios-preview-controller.ts', { require: id => id === '../native/ios-voice-input'
+    ? { iosVoiceInput: { startGlassesCapture: (_session, _log, endpointing) => captures.push(endpointing) } } : {} });
+  const host = Object.create(IosPreviewController.prototype);
+  host.session = { state: { phase: 'connected' } };
+  await host.startVoiceCapture(true);
+  await host.startVoiceCapture();
+  assert.deepEqual(captures, [true, false]);
+});
+
+for (const isIOS of [true, false]) {
+  test(`${isIOS ? 'iOS' : 'Android'} Assistant settings expose supported controls and usable model choices`, () => {
+    const store = new Map();
+    let picker;
+    const models = load('app/assistant/models.ts', { global: { isIOS }, require: () => ({
+      LOCAL_MODEL: { label: 'Qwen', id: 'qwen' }, isLocalModelReady: () => false,
+    }) });
+    const settings = load('app/ui/dashboard-settings.ts', { global: { isIOS }, require: id => {
+      if (id.includes('settings-store')) return {
+        onSettingsStoreChanged() {},
+        getStringSetting: (key, fallback) => store.get(key) ?? fallback,
+        setStringSetting: (key, value) => store.set(key, value),
+        getBooleanSetting: (key, fallback) => store.get(key) ?? fallback,
+        setBooleanSetting: (key, value) => store.set(key, value),
+      };
+      if (id === '~/assistant/models') return models;
+      return { Layer: class {}, isLocalModelReady: () => false,
+        openModalMenu: (_ctx, _title, items) => { picker = items; } };
+    } });
+    const menus = load('app/ui/dashboard/settings-menus.ts', { global: { isIOS }, require: id => {
+      if (id === '../dashboard-settings') return settings;
+      if (id === './settings-panel') return { SettingsPanelLayer: class { constructor(sections) { this.sections = sections; } } };
+      return { LOCAL_MODEL: { sizeBytes: 1000 }, ASR_MODELS: { moonshine: {}, 'whisper-base-en': {} },
+        uiFontPickerMenuItem: () => ({ label: 'Font' }), terminalFontPickerMenuItem: () => ({ label: 'Terminal font' }) };
+    } });
+    const sections = menus.createSettingsPanelLayer().sections;
+    const assistant = sections.find(section => section.label === 'Assistant');
+    assert.equal(assistant.items.some(item => item.disabled === true), false);
+    const ctx = { stack: { pop() {} }, actions: { requestRender() {} } };
+    const row = setting => assistant.items.find(item => item.label === setting.label);
+    row(settings.assistantBackendSetting).onSelect(ctx);
+    assert.deepEqual(Array.from(picker, item => item.label), isIOS ? ['Cloud API'] : ['On-phone', 'My own agent (bridge)']);
+    assert.equal(assistant.items.some(item => item.label === 'On-phone model'), !isIOS);
+    assert.equal(!!row(settings.assistantBridgeHostSetting), !isIOS);
+    assert.equal(!!row(settings.assistantAllowProactiveSetting), !isIOS);
+    row(settings.assistantModelSetting).onSelect(ctx);
+    assert.equal(picker.some(item => item.label.includes('Qwen')), !isIOS);
+    const terra = picker.find(item => item.label === 'Terra');
+    assert.equal(terra.disabled(), true);
+    const keys = sections.find(section => section.label === 'API Keys').items;
+    assert.ok(keys.some(item => item.label === settings.openAiApiKeySetting.label));
+    assert.ok(keys.some(item => item.label === settings.anthropicApiKeySetting.label));
+    settings.openAiApiKeySetting.set('fixture-key');
+    assert.equal(terra.disabled(), false);
+    terra.onSelect(ctx);
+    assert.equal(settings.assistantModelSetting.get(), 'terra');
+    assert.equal(models.resolveAssistantModel(settings.assistantModelSetting.get(), {
+      openai: settings.openAiApiKeySetting.get(), anthropic: '',
+    }).provider, 'openai');
+    row(settings.assistantSkipConfirmationSetting).onSelect(ctx);
+    assert.equal(settings.assistantSkipConfirmationSetting.get(), true);
+    assert.ok(sections.find(section => section.label === 'Voice').items.some(item => item.label === settings.wakeWordActionSetting.label));
+  });
+}
+
 test('iOS phone battery distinguishes unknown, charging, full and unplugged readings', () => {
   const device = { batteryLevel: -1, batteryState: 0 };
   const api = load('app/native/phone-battery.ts', { require: () => ({}), global: { isIOS: true },

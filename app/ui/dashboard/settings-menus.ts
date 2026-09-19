@@ -130,10 +130,10 @@ function settingsSections(): SettingsSection[] {
         // iOS offers cloud APIs; Android also supports local models and the bridge.
         enumSettingMenuItem(assistantBackendSetting),
         enumSettingMenuItem(assistantModelSetting),
-        // iOS has no local LLM, wakeword event delivery, or agent bridge yet.
+        ...(!global.isIOS ? [localModelMenuItem()] : []),
+        toggleSettingMenuItem(assistantSkipConfirmationSetting),
+        // iOS has no local LLM or agent bridge yet.
         ...(!global.isIOS ? [
-          localModelMenuItem(),
-          toggleSettingMenuItem(assistantSkipConfirmationSetting),
           textSettingMenuItem(assistantBridgeHostSetting),
           textSettingMenuItem(assistantBridgePortSetting),
           textSettingMenuItem(assistantBridgeTokenSetting),
@@ -245,9 +245,9 @@ function settingsSections(): SettingsSection[] {
   const deferred = new Set(["Navigate", "Watch"]);
   return sections.map(section => {
     if (section.label === "Developer") return { ...section, items: [toggleSettingMenuItem(showBleBandwidthSetting)] };
-    if (section.label === "Voice") return { label: "Voice", items: [{
+    if (section.label === "Voice") return { label: "Voice", items: [enumSettingMenuItem(wakeWordActionSetting), {
       label: "On-device dictation (Apple)", disabled: true, onSelect: () => {},
-      description: "Uses the glasses microphone and your iPhone's speech language. No API key needed. Open Voice from the phone or glasses menu, speak, then click to finish and send the text into an app.",
+      description: "Uses the glasses microphone and your iPhone's speech language. No transcription API key needed. Say Hey Even for hands-free input, or open Voice from the menu and click when finished.",
     }] };
     if (deferred.has(section.label)) return { label: section.label, items: [{
       label: "Not available on iOS yet", disabled: true, onSelect: () => {},
