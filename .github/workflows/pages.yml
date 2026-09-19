@@ -1,0 +1,40 @@
+name: Deploy website
+
+# Publishes website/ to GitHub Pages. Requires the repository's
+# Settings > Pages > Source to be set to "GitHub Actions".
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'website/**'
+      - 'PRIVACY'
+      - 'scripts/sync-site.mjs'
+      - '.github/workflows/pages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check generated blocks are up to date
+        run: node scripts/sync-site.mjs --check
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: website
+      - id: deployment
+        uses: actions/deploy-pages@v4

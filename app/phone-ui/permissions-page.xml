@@ -1,0 +1,37 @@
+<Page xmlns="http://schemas.nativescript.org/tns.xsd" navigatingTo="navigatingTo" loaded="loaded" unloaded="unloaded" actionBarHidden="{{ actionBarHidden }}">
+    <ActionBar title="Permissions" />
+
+    <GridLayout rows="auto,*,auto" class="p-16">
+        <StackLayout row="0">
+            <Label text="Permissions" class="h1 text-center" textWrap="true" visibility="{{ headlineVisibility }}" />
+            <Label text="{{ instructions }}" class="m-t-8 pairing-instructions" textWrap="true" />
+        </StackLayout>
+
+        <ScrollView row="1" class="m-t-12">
+            <StackLayout>
+                <Repeater items="{{ cards }}">
+                    <Repeater.itemsLayout>
+                        <StackLayout />
+                    </Repeater.itemsLayout>
+                    <Repeater.itemTemplate>
+                        <GridLayout columns="*,auto" rows="auto" class="pairing-row" tap="{{ onCardTap }}">
+                            <StackLayout col="0">
+                                <GridLayout columns="auto,auto">
+                                    <Label col="0" text="{{ title }}" class="pairing-title" />
+                                    <Label col="1" text="Optional" class="pairing-badge" marginLeft="14" visibility="{{ optionalVisibility }}" />
+                                </GridLayout>
+                                <Label text="{{ description }}" class="permissions-description" textWrap="true" />
+                            </StackLayout>
+                            <Label col="1" text="✓" class="permissions-check" verticalAlignment="center" visibility="{{ checkVisibility }}" />
+                        </GridLayout>
+                    </Repeater.itemTemplate>
+                </Repeater>
+            </StackLayout>
+        </ScrollView>
+
+        <GridLayout row="2" columns="*,*" class="m-t-12">
+            <Button col="0" text="Back" tap="{{ onSecondaryTap }}" visibility="{{ secondaryVisibility }}" />
+            <Button col="1" text="{{ primaryLabel }}" tap="{{ onPrimaryTap }}" class="{{ primaryClass }}" />
+        </GridLayout>
+    </GridLayout>
+</Page>

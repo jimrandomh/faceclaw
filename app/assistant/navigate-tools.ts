@@ -4,12 +4,11 @@
  * the app closed — so these always-available wrappers launch the app first,
  * wait for its tools to register, and forward the call.
  */
-import { ensureFineLocationPermission } from "../g2/android-permissions";
+import { ensureFineLocationPermission } from "../native/location-permissions";
 import { toolRegistry, type ToolRegistry, type ToolResult } from "./tool-registry";
+import { callAppToolWithLaunch } from "./launch-on-call";
 
 const APP_TOOL_PREFIX = "app.navigate.";
-const TOOL_APPEAR_TIMEOUT_MS = 5_000;
-const TOOL_APPEAR_POLL_MS = 150;
 
 let registered = false;
 
@@ -24,7 +23,7 @@ export function registerNavigateTools(
     {
       name: "nav.start_navigation",
       description:
-        "Start turn-by-turn navigation on the glasses to a destination given as free text (place name, business, or address near the user). Opens the Navigate app. Returns the resolved destination, distance, and ETA; if the wrong place was resolved, call again with a more specific query.",
+        "Start turn-by-turn navigation on the glasses to a destination given as free text (place name, business, or address near the user), or the name of one of the user's saved destinations such as 'home' or 'work'. Opens the Navigate app. Returns the resolved destination, distance, and ETA; if the wrong place was resolved, call again with a more specific query.",
       inputSchema: {
         type: "object",
         properties: {
@@ -47,7 +46,7 @@ export function registerNavigateTools(
       if (!destination) return err("nav.start_navigation requires a destination");
       // Fire the permission prompt early; the phone shows it while we work.
       void ensureFineLocationPermission().catch(() => {});
-      const forwarded = await callAppTool(launchApp, registry, "start_route", {
+      const forwarded = await callAppToolWithLaunch(registry, launchApp, "navigate", "start_route", {
         query: destination,
         profile: args?.profile,
       });
@@ -84,31 +83,6 @@ export function registerNavigateTools(
       return registry.callTool(`${APP_TOOL_PREFIX}route_status`, {});
     },
   );
-}
-
-/** Launch the Navigate app if needed, wait for its tool, and forward the call. */
-async function callAppTool(
-  launchApp: (appId: string) => Promise<void>,
-  registry: ToolRegistry,
-  unprefixedName: string,
-  args: unknown,
-): Promise<ToolResult> {
-  const fullName = `${APP_TOOL_PREFIX}${unprefixedName}`;
-  if (!registry.listTools().some((tool) => tool.name === fullName)) {
-    await launchApp("navigate");
-    const deadline = Date.now() + TOOL_APPEAR_TIMEOUT_MS;
-    while (!registry.listTools().some((tool) => tool.name === fullName)) {
-      if (Date.now() > deadline) {
-        return err("The Navigate app did not start in time.");
-      }
-      await sleep(TOOL_APPEAR_POLL_MS);
-    }
-  }
-  return registry.callTool(fullName, args);
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function ok(content: string): ToolResult {

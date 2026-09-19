@@ -1,4 +1,5 @@
 import { toolRegistry, type ToolRegistry } from "./tool-registry";
+import { FACECLAW_VERSION } from "../version";
 
 /**
  * Minimal MCP (Model Context Protocol) server surface over the assistant
@@ -51,7 +52,7 @@ export class AssistantMcpServer {
               ? msg.params.protocolVersion
               : MCP_PROTOCOL_VERSION,
           capabilities: { tools: { listChanged: true } },
-          serverInfo: { name: "faceclaw", version: "0.3.0" },
+          serverInfo: { name: "faceclaw", version: FACECLAW_VERSION },
         });
         return;
       case "notifications/initialized":

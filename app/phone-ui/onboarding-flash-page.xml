@@ -1,11 +1,11 @@
-<Page xmlns="http://schemas.nativescript.org/tns.xsd" navigatingTo="navigatingTo" actionBarHidden="true">
+<Page xmlns="http://schemas.nativescript.org/tns.xsd" navigatingTo="navigatingTo" navigatingFrom="navigatingFrom" enableSwipeBackNavigation="false" actionBarHidden="true">
     <GridLayout rows="*,auto" class="p-20">
         <ScrollView row="0">
             <StackLayout>
                 <Label text="{{ headline }}" class="h1 text-center m-t-24" textWrap="true" />
                 <ActivityIndicator busy="{{ busy }}" visibility="{{ busyVisibility }}" class="m-t-16" />
                 <Progress value="{{ progress }}" maxValue="100" visibility="{{ progressVisibility }}" class="m-t-16" />
-                <Label text="{{ status }}" class="m-t-16 text-center" textWrap="true" />
+                <Label text="{{ status }}" class="body-text m-t-16 text-center" textWrap="true" />
                 <Label text="{{ log }}" class="m-t-24" textWrap="true" fontSize="12" visibility="{{ logVisibility }}" />
             </StackLayout>
         </ScrollView>

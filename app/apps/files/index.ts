@@ -1,6 +1,13 @@
 import { type AppContext, type AppDefinition } from "../app-definition";
+import { openEvenHubPackage } from "../evenhub";
+import {
+  installEvenHubPackageFile,
+  installedEvenHubAppId,
+} from "../evenhub/installed-apps";
+import { closeRunningPackage } from "../evenhub/manager";
 import {
   createFilesAppWindow,
+  createFontDocumentWindow,
   createImageDocumentWindow,
   createTextDocumentWindow,
   FILES_SURFACE_ID,
@@ -33,6 +40,17 @@ function openImageDocumentWindow(ctx: AppContext, title: string, path: string): 
     });
 }
 
+function openFontDocumentWindow(ctx: AppContext, title: string, path: string): void {
+  const windowId = `files:doc:${nextDocumentSerial++}`;
+  void ctx
+    .launchInProcessApp(windowId, `window:${windowId}`, (options) =>
+      createFontDocumentWindow(windowId, title, path, options),
+    )
+    .catch((error) => {
+      ctx.appendLog(`font preview window failed: ${error}`);
+    });
+}
+
 const filesApp: AppDefinition = {
   appId: "files",
   title: "Files",
@@ -43,6 +61,23 @@ const filesApp: AppDefinition = {
         ...options,
         openDocumentWindow: (title, text) => openTextDocumentWindow(ctx, title, text),
         openImageWindow: (title, path) => openImageDocumentWindow(ctx, title, path),
+        openEhpkApp: (path) => {
+          void openEvenHubPackage(ctx, path).catch((error) => {
+            ctx.appendLog(`evenhub launch failed: ${error}`);
+            openTextDocumentWindow(ctx, 'Could not run app', String(error));
+          });
+        },
+        installEhpkApp: async (path) => {
+          try {
+            const installed = installEvenHubPackageFile(path);
+            ctx.appendLog(`evenhub: installed ${installed.packageId} ${installed.version}`);
+            closeRunningPackage(installed.packageId);
+            await ctx.launchApp(installedEvenHubAppId(installed.packageId));
+          } catch (error) {
+            ctx.appendLog(`evenhub install failed: ${error}`);
+          }
+        },
+        openFontWindow: (title, path) => openFontDocumentWindow(ctx, title, path),
       }),
     ),
   // A document arriving via Android's Share intent opens as its own window.

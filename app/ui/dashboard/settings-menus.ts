@@ -1,10 +1,29 @@
 import { knownFolders } from "@nativescript/core";
-import { getDefaultSmallFont } from "../../graphics/bdffont";
+import { getDefaultSmallFont } from "../../graphics/ui-fonts";
 import type { GrayImage } from "../../graphics/image";
 import { getDashboardLogo } from "../../graphics/logo";
 import { wrapText } from "../../graphics/textwrap";
+import { FACECLAW_VERSION } from "../../version";
+import {
+  cancelLocalModelDownload,
+  deleteLocalModel,
+  LOCAL_MODEL,
+  localModelState,
+  onLocalModelStateChanged,
+  startLocalModelDownload,
+} from "../../native/llama";
+import {
+  ASR_MODELS,
+  asrModelState,
+  cancelAsrModelDownload,
+  deleteAsrModel,
+  onAsrModelStateChanged,
+  startAsrModelDownload,
+  type AsrModelId,
+} from "../../native/asr-model";
 import { TextViewerLayer } from "../../apps/files/text-viewer";
-import type { MenuItem } from "../menu";
+import type { LayerContext } from "../layers";
+import { drawRightValueMenuItem, openModalMenu, type MenuItem } from "../menu";
 import { shell } from "../shell/shell";
 import {
   anthropicApiKeySetting,
@@ -17,32 +36,52 @@ import {
   assistantSkipConfirmationSetting,
   batteryDisplayModeSetting,
   brightnessSetting,
+  glassesBatteryVisibilitySetting,
+  phoneBatteryVisibilitySetting,
+  ringBatteryVisibilitySetting,
+  watchBatteryVisibilitySetting,
+  displayModeSetting,
+  navigateDisplayModeSetting,
+  navigateVerticalPositionSetting,
+  terminalDisplayModeSetting,
+  terminalVerticalPositionSetting,
   elevenLabsApiKeySetting,
   mapboxApiKeySetting,
+  mirrorTouchSetting,
+  navigateHomeAddressSetting,
+  navigateRememberRecentSetting,
+  navigateWorkAddressSetting,
   openAiApiKeySetting,
-  roamApiTokenSetting,
-  roamGraphNameSetting,
+  previewColorSetting,
+  phoneRotationSetting,
+  ringConnectionModeSetting,
   sonioxApiKeySetting,
   enumSettingMenuItem,
   firmwareDebugFlagsSetting,
   lockScreenEnabledSetting,
   saveVoiceRecordingsSetting,
+  showBleBandwidthSetting,
   suspendEvenHubWhenScreenOffSetting,
-  terminalAuthTokenSetting,
-  terminalHostSetting,
+  terminalAutoReconnectSetting,
   terminalLaunchPresetsSetting,
-  terminalPortSetting,
   terminalWakeOnBellSetting,
   textSettingMenuItem,
   timeFormatSetting,
   toggleSettingMenuItem,
-  uiFontSetting,
+  useMicControlSetting,
   verticalPositionSetting,
   voiceProviderSetting,
   screenTimeoutSetting,
   wakeWordActionSetting,
+  watchCanUnlockSetting,
+  watchCrownClockwiseNextSetting,
+  watchMirrorAssistantSetting,
+  watchRemoteEnabledSetting,
 } from "../dashboard-settings";
-import { SettingsPanelLayer, type SettingsSection } from "./settings-panel";
+import { clearRecentDestinations } from "../../apps/navigate/destinations";
+import { wearBridge } from "../../native/wear-bridge";
+import { openSettingsSubMenu, SettingsPanelLayer, type SettingsSection } from "./settings-panel";
+import { terminalFontPickerMenuItem, uiFontPickerMenuItem } from "../font-picker";
 
 /** The Settings app's master-detail panel (sections on the left, contents on the right). */
 export function createSettingsPanelLayer(): SettingsPanelLayer {
@@ -50,7 +89,7 @@ export function createSettingsPanelLayer(): SettingsPanelLayer {
 }
 
 function settingsSections(): SettingsSection[] {
-  return [
+  const sections: SettingsSection[] = [
     {
       label: "Display",
       items: [
@@ -66,12 +105,14 @@ function settingsSections(): SettingsSection[] {
         // Where min-height windows (and the sidebar) sit vertically on the
         // screen; the dashboard controller repositions surfaces on change.
         enumSettingMenuItem(verticalPositionSetting),
-        // Controls the top-bar battery indicators (icon vs percentage).
-        enumSettingMenuItem(batteryDisplayModeSetting),
+        // Band / tall / full-panel; the dashboard controller reflows windows.
+        enumSettingMenuItem(displayModeSetting),
+        // Submenu: top-bar battery indicator style plus per-device visibility.
+        batteryIndicatorsMenuItem(),
         // Controls the top-bar clock (24-hour vs 12-hour).
         enumSettingMenuItem(timeFormatSetting),
-        // Selects the UI body typeface (Terminus vs proportional TerminusV).
-        enumSettingMenuItem(uiFontSetting),
+        // Opens the modal font picker (face, weight, size) for UI text.
+        uiFontPickerMenuItem(),
       ],
     },
     {
@@ -79,21 +120,25 @@ function settingsSections(): SettingsSection[] {
       items: [
         enumSettingMenuItem(wakeWordActionSetting),
         enumSettingMenuItem(voiceProviderSetting),
+        asrModelMenuItem("moonshine"),
+        asrModelMenuItem("whisper-base-en"),
       ],
     },
     {
       label: "Assistant",
       items: [
-        // On-phone LLM loop vs the user's own agent via the bridge plugin.
+        // iOS offers cloud APIs; Android also supports local models and the bridge.
         enumSettingMenuItem(assistantBackendSetting),
         enumSettingMenuItem(assistantModelSetting),
-        // When on, a wakeword utterance goes straight to the assistant with no
-        // Send/Type menu step.
+        ...(!global.isIOS ? [localModelMenuItem()] : []),
         toggleSettingMenuItem(assistantSkipConfirmationSetting),
-        textSettingMenuItem(assistantBridgeHostSetting),
-        textSettingMenuItem(assistantBridgePortSetting),
-        textSettingMenuItem(assistantBridgeTokenSetting),
-        toggleSettingMenuItem(assistantAllowProactiveSetting),
+        // iOS has no local LLM or agent bridge yet.
+        ...(!global.isIOS ? [
+          textSettingMenuItem(assistantBridgeHostSetting),
+          textSettingMenuItem(assistantBridgePortSetting),
+          textSettingMenuItem(assistantBridgeTokenSetting),
+          toggleSettingMenuItem(assistantAllowProactiveSetting),
+        ] : []),
       ],
     },
     {
@@ -108,27 +153,66 @@ function settingsSections(): SettingsSection[] {
     },
     {
       label: "Terminal",
+      // Connections (g2mirror:// strings) are managed inside the Terminal
+      // app's Manage Connections section, not here.
       items: [
-        textSettingMenuItem(terminalHostSetting),
-        textSettingMenuItem(terminalPortSetting),
-        textSettingMenuItem(terminalAuthTokenSetting),
+        enumSettingMenuItem(terminalDisplayModeSetting),
+        enumSettingMenuItem(terminalVerticalPositionSetting),
+        terminalFontPickerMenuItem(),
         textSettingMenuItem(terminalLaunchPresetsSetting),
+        toggleSettingMenuItem(terminalAutoReconnectSetting),
         toggleSettingMenuItem(terminalWakeOnBellSetting),
       ],
     },
     {
-      label: "Roam",
+      label: "Navigate",
+      // Home/Work are plain addresses; other named destinations (and the
+      // recent list) are managed inside the Navigate app's context menu.
       items: [
-        textSettingMenuItem(roamGraphNameSetting),
-        textSettingMenuItem(roamApiTokenSetting),
+        enumSettingMenuItem(navigateDisplayModeSetting),
+        enumSettingMenuItem(navigateVerticalPositionSetting),
+        textSettingMenuItem(navigateHomeAddressSetting),
+        textSettingMenuItem(navigateWorkAddressSetting),
+        toggleSettingMenuItem(navigateRememberRecentSetting, {
+          onChange: (_ctx, enabled) => {
+            if (!enabled) clearRecentDestinations();
+          },
+        }),
       ],
+    },
+    {
+      label: "Phone display",
+      // The phone app's mirror of the glasses screen and its controls
+      // (app/phone-ui/): all read live by the main page.
+      items: [
+        enumSettingMenuItem(phoneRotationSetting),
+        enumSettingMenuItem(previewColorSetting),
+        toggleSettingMenuItem(mirrorTouchSetting),
+      ],
+    },
+    {
+      label: "Watch",
+      // Wear OS remote (wear/); the status line above the items says whether
+      // a watch running the companion app is currently reachable.
+      items: [
+        toggleSettingMenuItem(watchRemoteEnabledSetting),
+        toggleSettingMenuItem(watchCrownClockwiseNextSetting),
+        toggleSettingMenuItem(watchCanUnlockSetting),
+        toggleSettingMenuItem(watchMirrorAssistantSetting),
+      ],
+      renderDetail: renderWatchStatus,
     },
     {
       label: "Developer",
       items: [
+        // Whether the phone opens its own BLE link to the R1 ring; the
+        // glasses relay ring gestures either way. Applied at connect time.
+        enumSettingMenuItem(ringConnectionModeSetting),
         toggleSettingMenuItem(saveVoiceRecordingsSetting),
         toggleSettingMenuItem(firmwareDebugFlagsSetting),
         toggleSettingMenuItem(suspendEvenHubWhenScreenOffSetting),
+        toggleSettingMenuItem(useMicControlSetting),
+        toggleSettingMenuItem(showBleBandwidthSetting),
       ],
     },
     {
@@ -157,6 +241,200 @@ function settingsSections(): SettingsSection[] {
       ],
     },
   ];
+  if (!global.isIOS) return sections;
+  const deferred = new Set(["Navigate", "Watch"]);
+  return sections.map(section => {
+    if (section.label === "Developer") return { ...section, items: [toggleSettingMenuItem(showBleBandwidthSetting)] };
+    if (section.label === "Voice") return { label: "Voice", items: [enumSettingMenuItem(wakeWordActionSetting), {
+      label: "On-device dictation (Apple)", disabled: true, onSelect: () => {},
+      description: "Uses the glasses microphone and your iPhone's speech language. No transcription API key needed. Say Hey Even for hands-free input, or open Voice from the menu and click when finished.",
+    }] };
+    if (deferred.has(section.label)) return { label: section.label, items: [{
+      label: "Not available on iOS yet", disabled: true, onSelect: () => {},
+      description: `${section.label} integration has not been ported to iOS.`,
+    }] };
+    if (section.label === "Display") return { ...section, items: section.items.filter(item =>
+      ![brightnessSetting.label, screenTimeoutSetting.label].includes(item.label)) };
+    if (section.label === "Phone display") return { ...section, items: section.items.filter(item => item.label !== mirrorTouchSetting.label) };
+    return section;
+  });
+}
+
+/**
+ * The Display section's "Battery indicators" row: opens a modal submenu with
+ * the style (icon / percentage / stacked) and, per device, when its
+ * indicator is visible. The row itself shows the current style.
+ */
+function batteryIndicatorsMenuItem(): MenuItem {
+  return {
+    label: "Battery indicators",
+    description:
+      "Top-bar battery indicators for the phone, Wear OS watch, glasses, and ring: their style, and whether each shows always, only when low, or never.",
+    onSelect: (ctx) => {
+      openSettingsSubMenu(ctx, "Battery indicators", [
+        enumSettingMenuItem(batteryDisplayModeSetting),
+        enumSettingMenuItem(phoneBatteryVisibilitySetting),
+        enumSettingMenuItem(watchBatteryVisibilitySetting),
+        enumSettingMenuItem(glassesBatteryVisibilitySetting),
+        enumSettingMenuItem(ringBatteryVisibilitySetting),
+      ]);
+    },
+    render: ({ image, x, y, width }) => {
+      drawRightValueMenuItem(
+        image,
+        getDefaultSmallFont(),
+        x,
+        y,
+        width,
+        "Battery indicators",
+        batteryDisplayModeSetting.displayValue(),
+      );
+    },
+  };
+}
+
+const LOCAL_MODEL_GB = `${(LOCAL_MODEL.sizeBytes / 1e9).toFixed(1)}GB`;
+
+// While a download is running, re-render on progress updates so the row's
+// percentage stays live; the watch tears itself down when the download ends.
+let localModelRenderUnsub: (() => void) | null = null;
+
+function watchLocalModelDownload(ctx: LayerContext): void {
+  localModelRenderUnsub?.();
+  localModelRenderUnsub = onLocalModelStateChanged((state) => {
+    ctx.actions.requestRender();
+    if (state.status !== "downloading") {
+      localModelRenderUnsub?.();
+      localModelRenderUnsub = null;
+    }
+  });
+}
+
+function localModelStatusText(): string {
+  const state = localModelState();
+  if (state.status === "ready") return "downloaded";
+  if (state.status === "downloading") {
+    const pct = state.totalBytes > 0 ? Math.floor((state.bytesDownloaded / state.totalBytes) * 100) : 0;
+    return `${pct}% of ${LOCAL_MODEL_GB}`;
+  }
+  return "not downloaded";
+}
+
+/** Download/cancel/delete management for the on-phone assistant model. */
+function localModelMenuItem(): MenuItem {
+  return {
+    label: "On-phone model",
+    description:
+      `${LOCAL_MODEL.label} (${LOCAL_MODEL_GB} download over Wi-Fi recommended). ` +
+      "Answers assistant queries on the phone itself, with no API key or cloud service. " +
+      "Slower and simpler than the cloud models, but free and private. " +
+      "Used automatically when no API key is set. An interrupted download resumes where it left off.",
+    onSelect: (ctx) => {
+      const state = localModelState();
+      const action: MenuItem =
+        state.status === "downloading"
+          ? {
+              label: "Cancel download",
+              onSelect: (innerCtx) => {
+                cancelLocalModelDownload();
+                innerCtx.stack.pop();
+              },
+            }
+          : state.status === "ready"
+            ? {
+                label: "Delete model",
+                onSelect: (innerCtx) => {
+                  deleteLocalModel();
+                  innerCtx.stack.pop();
+                },
+              }
+            : {
+                label: `Download (${LOCAL_MODEL_GB})`,
+                onSelect: (innerCtx) => {
+                  startLocalModelDownload();
+                  watchLocalModelDownload(innerCtx);
+                  innerCtx.stack.pop();
+                },
+              };
+      openModalMenu(ctx, "On-phone model", [action], 0);
+    },
+    render: ({ image, x, y, width }) => {
+      drawRightValueMenuItem(image, getDefaultSmallFont(), x, y, width, "On-phone model", localModelStatusText());
+    },
+  };
+}
+
+function asrModelMb(id: AsrModelId): string {
+  return `${Math.round(ASR_MODELS[id].totalBytes / 1e6)}MB`;
+}
+
+const asrModelRenderUnsub: Partial<Record<AsrModelId, () => void>> = {};
+
+function watchAsrModelDownload(id: AsrModelId, ctx: LayerContext): void {
+  asrModelRenderUnsub[id]?.();
+  asrModelRenderUnsub[id] = onAsrModelStateChanged(id, (state) => {
+    ctx.actions.requestRender();
+    if (state.status !== "downloading") {
+      asrModelRenderUnsub[id]?.();
+      asrModelRenderUnsub[id] = undefined;
+    }
+  });
+}
+
+function asrModelStatusText(id: AsrModelId): string {
+  const state = asrModelState(id);
+  if (state.status === "ready") return "downloaded";
+  if (state.status === "downloading") {
+    const pct = state.totalBytes > 0 ? Math.floor((state.bytesDownloaded / state.totalBytes) * 100) : 0;
+    return `${pct}% of ${asrModelMb(id)}`;
+  }
+  return "not downloaded";
+}
+
+/** Download/cancel/delete management for one on-device transcription model. */
+function asrModelMenuItem(id: AsrModelId): MenuItem {
+  const def = ASR_MODELS[id];
+  const rowLabel = `On-device model: ${def.label}`;
+  return {
+    label: rowLabel,
+    description:
+      `${def.label} (${asrModelMb(id)} download). ` +
+      "Transcribes voice input on the phone itself, with no API key or cloud service. " +
+      "Required for its matching Transcription Provider option; the other providers work without it. " +
+      "An interrupted download resumes where it left off.",
+    onSelect: (ctx) => {
+      const state = asrModelState(id);
+      const action: MenuItem =
+        state.status === "downloading"
+          ? {
+              label: "Cancel download",
+              onSelect: (innerCtx) => {
+                cancelAsrModelDownload(id);
+                innerCtx.stack.pop();
+              },
+            }
+          : state.status === "ready"
+            ? {
+                label: "Delete model",
+                onSelect: (innerCtx) => {
+                  deleteAsrModel(id);
+                  innerCtx.stack.pop();
+                },
+              }
+            : {
+                label: `Download (${asrModelMb(id)})`,
+                onSelect: (innerCtx) => {
+                  startAsrModelDownload(id);
+                  watchAsrModelDownload(id, innerCtx);
+                  innerCtx.stack.pop();
+                },
+              };
+      openModalMenu(ctx, rowLabel, [action], 0);
+    },
+    render: ({ image, x, y, width }) => {
+      drawRightValueMenuItem(image, getDefaultSmallFont(), x, y, width, rowLabel, asrModelStatusText(id));
+    },
+  };
 }
 
 /** A row that opens one of the project docs (copied into the bundle under
@@ -179,6 +457,25 @@ function readBundledDoc(fileName: string): string {
   }
 }
 
+function renderWatchStatus(args: { image: GrayImage; x: number; y: number; width: number }): number {
+  const { image, x, y, width } = args;
+  const font = getDefaultSmallFont();
+  let status: string;
+  if (!wearBridge.isAvailable()) {
+    status = "Google Play services is unavailable on this phone, so no watch can connect.";
+  } else {
+    const connection = wearBridge.getWatchConnection();
+    status = connection.reachable
+      ? `Connected to ${connection.watchName || "a watch"}.`
+      : "No watch connected. Install the Faceclaw watch app (wear/ in the source tree) on a Wear OS watch paired with this phone.";
+  }
+  const lines = wrapText(font, status, width);
+  for (let i = 0; i < lines.length; i++) {
+    image.drawText(font, x, y + i * font.lineHeight, lines[i]!, 170);
+  }
+  return lines.length * font.lineHeight + 10;
+}
+
 function renderAbout(args: { image: GrayImage; x: number; y: number; width: number }): number {
   const { image, x, y, width } = args;
   const font = getDefaultSmallFont();
@@ -188,8 +485,8 @@ function renderAbout(args: { image: GrayImage; x: number; y: number; width: numb
   }
   const textX = logo ? x + logo.width + 12 : x;
   image.drawText(font, textX, y + 8, "Faceclaw", 220);
-  image.drawText(font, textX, y + 24, "v0.3.0", 170);
-  const blurb = "By James Babcock. Distributed under the GNU General Public License, version 3.";
+  image.drawText(font, textX, y + 24, `v${FACECLAW_VERSION}`, 170);
+  const blurb = "By James Babcock and other contributors. Distributed under the GNU General Public License, version 3.";
   const blurbY = y + Math.max(64, logo ? logo.height + 12 : 0);
   const blurbLines = wrapText(font, blurb, width);
   for (let i = 0; i < blurbLines.length; i++) {

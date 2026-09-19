@@ -1,17 +1,16 @@
-import { getDefaultSmallFont } from "../../graphics/bdffont";
+import { getDefaultSmallFont } from "../../graphics/ui-fonts";
 import { GrayImage } from "../../graphics/image";
 import { wrapText } from "../../graphics/textwrap";
 import type { DirectoryEntry } from "../../native/file-access";
-import { GESTURE_DOUBLE_CLICK } from "../../ui/gestures";
-import { Layer, type DashboardInputEvent, type LayerContext, type PaintBelow } from "../../ui/layers";
+import { GESTURE_DOUBLE_CLICK, type InputEvent } from "../../ui/gestures";
+import { Layer, type LayerContext, type PaintBelow } from "../../ui/layers";
 import { drawSelectionHighlight } from "../../ui/menu";
+import { LIST_ROW_TEXT_INSET, lineStep, listRowHeight } from "../../ui/metrics";
 
 const DIALOG_X = 8;
 const DIALOG_Y = 8;
 const DIALOG_WIDTH = 272;
 const PADDING = 10;
-const INFO_LINE_STEP = 14;
-const ACTION_ROW_HEIGHT = 20;
 const MAX_NAME_LINES = 3;
 
 export type FileInfoAction = {
@@ -38,14 +37,16 @@ export class FileInfoDialogLayer implements Layer {
     const { height: viewportHeight } = ctx.stack.getBaseSize();
     const image = paintBelow();
 
+    const step = lineStep(font);
+    const rowH = listRowHeight(font);
     const textWidth = DIALOG_WIDTH - 2 * PADDING - 4;
     const nameLines = wrapText(font, this.entry.name, textWidth, { breakLongWords: true }).slice(0, MAX_NAME_LINES);
     const infoLines = [
       `Size: ${formatSize(this.entry.sizeBytes)}`,
       `Modified: ${formatDate(this.entry.modifiedMs)}`,
     ];
-    const bodyTop = PADDING + (nameLines.length + infoLines.length) * INFO_LINE_STEP + 6;
-    const bodyHeight = this.actions.length ? this.actions.length * ACTION_ROW_HEIGHT : INFO_LINE_STEP;
+    const bodyTop = PADDING + (nameLines.length + infoLines.length) * step + 6;
+    const bodyHeight = this.actions.length ? this.actions.length * rowH : step;
     const height = Math.min(bodyTop + bodyHeight + PADDING, viewportHeight - 2 * DIALOG_Y);
 
     // Fill 1, not 0: identical after 4bpp quantization, but 0 is the
@@ -56,11 +57,11 @@ export class FileInfoDialogLayer implements Layer {
     let y = DIALOG_Y + PADDING;
     for (const line of nameLines) {
       image.drawText(font, DIALOG_X + PADDING + 2, y, line, 230);
-      y += INFO_LINE_STEP;
+      y += step;
     }
     for (const line of infoLines) {
       image.drawText(font, DIALOG_X + PADDING + 2, y, line, 150);
-      y += INFO_LINE_STEP;
+      y += step;
     }
     y += 6;
 
@@ -70,17 +71,17 @@ export class FileInfoDialogLayer implements Layer {
     }
     const focused = ctx.stack.isFocused();
     for (let index = 0; index < this.actions.length; index++) {
-      const rowY = y + index * ACTION_ROW_HEIGHT;
+      const rowY = y + index * rowH;
       const selected = index === this.selectedIndex;
       if (selected) {
-        drawSelectionHighlight(image, DIALOG_X + 12, rowY, DIALOG_WIDTH - 24, ACTION_ROW_HEIGHT - 1, focused, 8);
+        drawSelectionHighlight(image, DIALOG_X + 12, rowY, DIALOG_WIDTH - 24, rowH - 1, focused, 8);
       }
-      image.drawText(font, DIALOG_X + 22, rowY + 3, this.actions[index]!.label, selected ? 255 : 200);
+      image.drawText(font, DIALOG_X + 22, rowY + LIST_ROW_TEXT_INSET, this.actions[index]!.label, selected ? 255 : 200);
     }
     return image;
   }
 
-  async handleInput(event: DashboardInputEvent, ctx: LayerContext): Promise<void> {
+  async handleInput(event: InputEvent, ctx: LayerContext): Promise<void> {
     switch (event.type) {
       case "scroll-up":
         if (this.actions.length) {

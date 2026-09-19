@@ -1,0 +1,56 @@
+<Page xmlns="http://schemas.nativescript.org/tns.xsd" navigatingTo="navigatingTo">
+    <ActionBar title="Conversations">
+        <ActionItem text="Ask AI" tap="{{ onAskTap }}" android.position="actionBar" />
+        <ActionItem text="Speakers" tap="{{ onSpeakersTap }}" android.position="actionBar" />
+    </ActionBar>
+
+    <GridLayout rows="auto,auto,*" class="p-8">
+        <SearchBar
+            row="0"
+            hint="Search (e.g. lunch past 2 days, angry)"
+            text="{{ searchText }}"
+            submit="{{ onSearchSubmit }}"
+            clear="{{ onSearchClear }}" />
+
+        <ScrollView row="1" orientation="horizontal" class="m-t-8" visibility="{{ filterChipsVisibility }}">
+            <StackLayout orientation="horizontal">
+                <Repeater items="{{ speakerChips }}">
+                    <Repeater.itemsLayout>
+                        <StackLayout orientation="horizontal" />
+                    </Repeater.itemsLayout>
+                    <Repeater.itemTemplate>
+                        <Label text="{{ name }}" class="{{ chipClass }}" backgroundColor="{{ chipBackground }}" tap="{{ onChipTap }}" />
+                    </Repeater.itemTemplate>
+                </Repeater>
+            </StackLayout>
+        </ScrollView>
+
+        <ScrollView row="2" class="m-t-8">
+            <StackLayout>
+                <Label text="{{ emptyMessage }}" class="conversation-empty" textWrap="true" visibility="{{ emptyVisibility }}" />
+                <Repeater items="{{ sessionRows }}">
+                    <Repeater.itemsLayout>
+                        <StackLayout />
+                    </Repeater.itemsLayout>
+                    <Repeater.itemTemplate>
+                        <StackLayout class="conversation-row" tap="{{ onRowTap }}">
+                            <GridLayout columns="*,auto">
+                                <Label col="0" text="{{ title }}" class="conversation-title" textWrap="true" />
+                                <Label col="1" text="" width="12" height="12" borderRadius="6" backgroundColor="{{ sentimentColor }}" verticalAlignment="center" />
+                            </GridLayout>
+                            <Label text="{{ meta }}" class="conversation-meta" />
+                            <Repeater items="{{ speakerChips }}" visibility="{{ chipsVisibility }}" class="m-t-4">
+                                <Repeater.itemsLayout>
+                                    <WrapLayout />
+                                </Repeater.itemsLayout>
+                                <Repeater.itemTemplate>
+                                    <Label text="{{ name }}" class="speaker-chip" backgroundColor="{{ chipBackground }}" />
+                                </Repeater.itemTemplate>
+                            </Repeater>
+                        </StackLayout>
+                    </Repeater.itemTemplate>
+                </Repeater>
+            </StackLayout>
+        </ScrollView>
+    </GridLayout>
+</Page>

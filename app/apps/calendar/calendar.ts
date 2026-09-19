@@ -1,21 +1,26 @@
-import { getDefaultSmallFont, type BdfFont } from "../../graphics/bdffont";
-import { GrayImage } from "../../graphics/image";
+import { getDefaultSmallFont } from "../../graphics/ui-fonts";
+import { GrayImage, type UiFont } from "../../graphics/image";
 import { wrapText, truncateText } from "../../graphics/textwrap";
 import { clamp } from "../../util/numeric-util";
 import { readUpcomingEvents, type CalendarEvent } from "../../native/calendar";
 import { timeFormatSetting } from "../../ui/dashboard-settings";
-import { GESTURE_CLICK, GESTURE_DOUBLE_CLICK } from "../../ui/gestures";
+import { GESTURE_CLICK, type InputEvent } from "../../ui/gestures";
 import { hasCalendarPermission } from "../../g2/android-permissions";
-import { type DashboardInputEvent, type Layer, type LayerContext } from "../../ui/layers";
+import { type Layer, type LayerContext } from "../../ui/layers";
+import { lineStep } from "../../ui/metrics";
 
-const PAGE_X = 12;
-const PAGE_Y = 12;
+// Title position, shared with the other list apps (terminal, notifications).
+const TITLE_X = 18;
+const TITLE_Y = 10;
 const LIST_TOP = 38;
 const ROW_X = 16;
-const LINE_HEIGHT = 14;
-const DAY_HEADER_HEIGHT = 16;
 const ROW_GAP = 4;
 const MAX_EVENTS = 50;
+
+/** Height of the day header band above a row that starts a new day. */
+function dayHeaderHeight(font: UiFont): number {
+  return font.lineHeight + 4;
+}
 
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -43,26 +48,31 @@ export class CalendarLayer implements Layer {
     const font = getDefaultSmallFont();
     const { width, height } = ctx.stack.getBaseSize();
     const image = new GrayImage(width, height, 0);
-    image.drawText(font, PAGE_X + 12, PAGE_Y + 9, "Calendar", 220);
 
     if (!hasCalendarPermission()) {
+      image.drawText(font, TITLE_X, TITLE_Y, "Calendar", 220);
       this.paintPermissionPrompt(image, font, width, height);
       return image;
     }
 
     const events = readUpcomingEvents(MAX_EVENTS);
     if (!events.length) {
+      image.drawText(font, TITLE_X, TITLE_Y, "Calendar", 220);
       image.drawText(font, 24, 72, "No upcoming events.", 190);
-      image.drawText(font, 24, height - 36, `${GESTURE_DOUBLE_CLICK} back`, 110);
       return image;
     }
 
-    const rows = buildEventRows(events);
+    const rows = buildEventRows(font, events);
     this.selectedIndex = clamp(this.selectedIndex, 0, rows.length - 1);
-    image.drawText(font, width - 96, PAGE_Y + 9, `${this.selectedIndex + 1}/${rows.length}`, 150);
 
     const listBottom = height;
     const scrollY = scrollForSelected(rows, this.selectedIndex, listBottom - LIST_TOP);
+    // The title scrolls away with the list; row text is deferred glyphs
+    // (composited above raster fills), so a fixed title would show through
+    // rows scrolled over it.
+    if (TITLE_Y - scrollY + font.lineHeight > 0) {
+      image.drawText(font, TITLE_X, TITLE_Y - scrollY, "Calendar", 220);
+    }
     let cursorY = LIST_TOP - scrollY;
     for (let index = 0; index < rows.length; index++) {
       const row = rows[index]!;
@@ -75,13 +85,13 @@ export class CalendarLayer implements Layer {
     return image;
   }
 
-  handleInput(event: DashboardInputEvent): void {
+  handleInput(event: InputEvent): void {
     if (!hasCalendarPermission()) {
       // Any tap on the prompt re-triggers the phone-side permission request.
       if (event.type === "click") this.requestPermission();
       return;
     }
-    const rows = buildEventRows(readUpcomingEvents(MAX_EVENTS));
+    const rows = buildEventRows(getDefaultSmallFont(), readUpcomingEvents(MAX_EVENTS));
     if (!rows.length) return;
     if (event.type === "scroll-up") {
       this.selectedIndex = Math.max(0, this.selectedIndex - 1);
@@ -90,17 +100,17 @@ export class CalendarLayer implements Layer {
     }
   }
 
-  private paintPermissionPrompt(image: GrayImage, font: BdfFont, width: number, height: number): void {
+  private paintPermissionPrompt(image: GrayImage, font: UiFont, width: number, height: number): void {
     const message = "Grant calendar permission on your phone to see your events on the glasses.";
     const lines = wrapText(font, message, width - 48);
     for (let index = 0; index < lines.length; index++) {
-      image.drawText(font, 24, 72 + index * LINE_HEIGHT, lines[index]!, 190);
+      image.drawText(font, 24, 72 + index * lineStep(font), lines[index]!, 190);
     }
-    image.drawText(font, 24, height - 36, `${GESTURE_CLICK} request   ${GESTURE_DOUBLE_CLICK} back`, 110);
+    image.drawText(font, 24, height - 36, `${GESTURE_CLICK} request`, 110);
   }
 }
 
-function buildEventRows(events: CalendarEvent[]): EventRow[] {
+function buildEventRows(font: UiFont, events: CalendarEvent[]): EventRow[] {
   const rows: EventRow[] = [];
   let previousDayKey = "";
   for (const event of events) {
@@ -119,7 +129,7 @@ function buildEventRows(events: CalendarEvent[]): EventRow[] {
       event,
       dayHeader,
       lines,
-      height: (dayHeader ? DAY_HEADER_HEIGHT : 0) + 6 + lines.length * LINE_HEIGHT,
+      height: (dayHeader ? dayHeaderHeight(font) : 0) + 6 + lines.length * lineStep(font),
     });
   }
   return rows;
@@ -127,7 +137,7 @@ function buildEventRows(events: CalendarEvent[]): EventRow[] {
 
 function drawEventRow(
   image: GrayImage,
-  font: BdfFont,
+  font: UiFont,
   row: EventRow,
   x: number,
   y: number,
@@ -137,9 +147,9 @@ function drawEventRow(
   let cursorY = y;
   if (row.dayHeader) {
     image.drawText(font, x, cursorY + 2, row.dayHeader, 150);
-    cursorY += DAY_HEADER_HEIGHT;
+    cursorY += dayHeaderHeight(font);
   }
-  const bodyHeight = row.lines.length * LINE_HEIGHT + 4;
+  const bodyHeight = row.lines.length * lineStep(font) + 4;
   if (selected) {
     image.fillRoundedRect(x - 6, cursorY, width - 2 * (x - 6), bodyHeight, 15, 6);
     image.drawRoundedRect(x - 6, cursorY, width - 2 * (x - 6), bodyHeight, 90, 6);
@@ -147,7 +157,7 @@ function drawEventRow(
   const maxTextWidth = width - 2 * x;
   for (let index = 0; index < row.lines.length; index++) {
     const value = index === 0 ? (selected ? 235 : 205) : 160;
-    image.drawText(font, x, cursorY + 3 + index * LINE_HEIGHT, truncateText(font, row.lines[index]!, maxTextWidth), value);
+    image.drawText(font, x, cursorY + 3 + index * lineStep(font), truncateText(font, row.lines[index]!, maxTextWidth), value);
   }
 }
 
@@ -168,7 +178,7 @@ function dayKeyOf(timestampMs: number): string {
   return `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
 }
 
-function dayHeaderLabel(timestampMs: number): string {
+export function dayHeaderLabel(timestampMs: number): string {
   const date = new Date(timestampMs);
   const now = new Date();
   const midnight = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
@@ -179,7 +189,7 @@ function dayHeaderLabel(timestampMs: number): string {
   return base;
 }
 
-function formatEventTime(timestampMs: number): string {
+export function formatEventTime(timestampMs: number): string {
   const date = new Date(timestampMs);
   const minutes = String(date.getMinutes()).padStart(2, "0");
   const hour24 = date.getHours();

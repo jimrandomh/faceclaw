@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Wearable Data Layer capability advertised to the watch, so the Faceclaw
+     watch app can find the phone that has Faceclaw installed. The watch app
+     advertises "faceclaw_watch" in return (see wear/). -->
+<resources>
+    <string-array name="android_wear_capabilities">
+        <item>faceclaw_phone</item>
+    </string-array>
+</resources>

@@ -1,29 +1,11 @@
-import { G2_LENS_WIDTH, GrayImage } from "../../graphics/image";
-import { wrapText, truncateText } from "../../graphics/textwrap";
-import { getDefaultSmallFont, type BdfFont } from "../../graphics/bdffont";
+import { type GrayImage } from "../../graphics/image";
 import { voiceControlBridge, type VoiceTranscriptEvent } from "../../native/voice-control";
 import { refineDictation, type AnthropicStreamHandle } from "../../native/anthropic";
 import { anthropicApiKeySetting } from "../dashboard-settings";
-import { GESTURE_CLICK, GESTURE_DOUBLE_CLICK, gestureHints } from "../gestures";
-import { drawSelectionHighlight } from "../menu";
-import { Layer, type DashboardInputEvent, type LayerActions, type LayerContext } from "../layers";
-import { MIN_WINDOW_HEIGHT, minWindowTop } from "./geometry";
-
-const DIALOG_X = 40;
-const DIALOG_W = G2_LENS_WIDTH - 80;
-// The dialog fits inside the min-height window band (like the other shell
-// overlays), wherever the vertical position setting puts it.
-const DIALOG_MARGIN_Y = 24;
-const DIALOG_H = MIN_WINDOW_HEIGHT - 2 * DIALOG_MARGIN_Y;
-const TEXT_MAX_WIDTH = DIALOG_W - 32;
-
-/** Dialog top edge; band-relative, so computed per paint. */
-function dialogY(): number {
-  return minWindowTop() + DIALOG_MARGIN_Y;
-}
-const MENU_ROW_H = 20;
-// After the mic stops, the provider's final transcript can trail in (cloud
-// commit round-trip); wait this long for it before refining with what we have.
+import { GESTURE_CLICK, GESTURE_DOUBLE_CLICK, gestureHints, type InputEvent } from "../gestures";
+import { Layer, type LayerActions, type LayerContext } from "../layers";
+import { paintInputDialog } from "./input-dialog";
+// After native recognition finishes, a cloud final can still trail in.
 const FOLLOWUP_FINALIZE_TIMEOUT_MS = 1200;
 
 /**
@@ -81,7 +63,11 @@ export type VoiceInputLayerOptions = {
  */
 export class VoiceInputLayer implements Layer {
   private phase: VoicePhase = "capturing";
-  private status = "Listening...";
+  private status = "Starting microphone...";
+  /** Mirrors the bridge: only true while audio is actually being transcribed. */
+  private listening = false;
+  /** Bridge guidance shown in place of the empty transcript (e.g. "check your phone"). */
+  private detail = "";
   // The active utterance. displayText() is what the dialog shows and what
   // Send delivers; the refine flow also writes the merged result here.
   private finalizedText = "";
@@ -93,6 +79,10 @@ export class VoiceInputLayer implements Layer {
   private capturing = false;
   /** Continuation stopped; waiting for the trailing final transcript. */
   private followupFinalizeTimer: ReturnType<typeof setTimeout> | null = null;
+  private pendingFollowup = false;
+  private stoppingCapture = false;
+  private stopGeneration = 0;
+  private acceptingTranscript = true;
   private refineHandle: AnthropicStreamHandle | null = null;
   private menuIndex = 0;
   /** Auto-send (wakeword skip-confirmation) is waiting to fire. */
@@ -131,11 +121,13 @@ export class VoiceInputLayer implements Layer {
       // The refine stage owns the status line ("Refining...", error text).
       if (this.phase === "refining") return;
       this.status = state.status;
+      this.listening = state.listening;
+      this.detail = state.detail;
       this.actions.requestRender();
     });
-    if (this.handsFree) {
-      // No button is held, so the mic has to stop itself. endCapture() is
-      // idempotent, and a click still ends the utterance early.
+    if (this.handsFree || global.isIOS) {
+      // Endpointing or the recognizer ending its session can finish capture.
+      // endCapture() is idempotent, including after a manual button release.
       this.unsubscribeSpeechEnd = voiceControlBridge.onSpeechEnd(() => {
         if (this.phase === "capturing") {
           this.endCapture();
@@ -166,17 +158,46 @@ export class VoiceInputLayer implements Layer {
     }
     this.capturing = false;
     this.phase = "menu";
-    void this.actions.stopVoiceCapture();
     if (this.autoSend && this.sendTargets.length) {
       // Skip-confirmation (wakeword): send to the default target as soon as the
       // transcript finalizes, or after a short wait for the trailing final.
       this.pendingAutoSend = true;
       this.status = "Sending...";
-      this.autoSendTimer = setTimeout(() => this.performAutoSend(), FOLLOWUP_FINALIZE_TIMEOUT_MS);
-    } else if (this.status.startsWith("Listening")) {
+    } else if (this.status.endsWith("...")) {
+      // A progress status ("Starting microphone...", "Listening...") gives
+      // way to the menu prompt; an error (ending in ".") stays visible.
       this.status = "Send, continue, or discard?";
     }
+    this.stopCapture(() => {
+      if (this.pendingAutoSend) {
+        this.autoSendTimer = setTimeout(() => this.performAutoSend(), FOLLOWUP_FINALIZE_TIMEOUT_MS);
+      }
+    });
     this.actions.requestRender();
+  }
+
+  /** Native stop can outlast its synchronous join while Whisper is decoding. */
+  private stopCapture(onStopped: () => void): void {
+    const generation = ++this.stopGeneration;
+    this.stoppingCapture = true;
+    const afterStop = () => {
+      if (generation !== this.stopGeneration) return;
+      this.stoppingCapture = false;
+      onStopped();
+      this.actions.requestRender();
+    };
+    const stopped = this.actions.stopVoiceCapture();
+    if (!stopped) {
+      afterStop();
+      return;
+    }
+    void stopped.then(afterStop, (error) => {
+      if (generation !== this.stopGeneration) return;
+      this.stoppingCapture = false;
+      this.pendingAutoSend = false;
+      this.acceptingTranscript = false;
+      this.backToMenu(this.phase === "continuing" ? this.baseText : this.displayText(), String(error));
+    });
   }
 
   /** Fire the queued skip-confirmation send (or fall back to the menu). */
@@ -202,7 +223,7 @@ export class VoiceInputLayer implements Layer {
   /** The menu rows: one per send target, then Continue, then Discard. */
   private menuRows(): Array<{ label: string; dim: boolean; onSelect: () => void }> {
     const text = this.displayText().trim();
-    const hasText = text.length > 0;
+    const hasText = text.length > 0 && !this.stoppingCapture;
     const hasLlmKey = anthropicApiKeySetting.get().trim().length > 0;
     const rows: Array<{ label: string; dim: boolean; onSelect: () => void }> = [];
     for (const target of this.sendTargets) {
@@ -210,6 +231,7 @@ export class VoiceInputLayer implements Layer {
         label: target.label,
         dim: !hasText,
         onSelect: () => {
+          if (this.stoppingCapture) return;
           this.dismiss();
           if (hasText) target.onSend(text);
         },
@@ -217,9 +239,9 @@ export class VoiceInputLayer implements Layer {
     }
     rows.push({
       label: hasLlmKey ? "Continue" : "Continue (Needs LLM API key)",
-      dim: !hasLlmKey,
+      dim: !hasLlmKey || this.stoppingCapture,
       onSelect: () => {
-        if (hasLlmKey) this.startContinuation();
+        if (hasLlmKey && !this.stoppingCapture) this.startContinuation();
       },
     });
     rows.push({ label: "Discard", dim: false, onSelect: () => this.dismiss() });
@@ -227,51 +249,20 @@ export class VoiceInputLayer implements Layer {
   }
 
   paint(_ctx: LayerContext, paintBelow: () => GrayImage): GrayImage {
-    const font = getDefaultSmallFont();
     const image = paintBelow();
-    const top = dialogY();
-
-    // Solid dialog box over the underlying UI. Fill 1, not 0: identical after
-    // 4bpp quantization, but 0 is transparent on the color-key shell surface.
-    image.fillRoundedRect(DIALOG_X, top, DIALOG_W, DIALOG_H, 1, 10);
-    image.drawRoundedRect(DIALOG_X, top, DIALOG_W, DIALOG_H, 90, 10);
-
-    const left = DIALOG_X + 16;
-    image.drawText(font, left, top + 12, this.capturing ? "Voice ●" : "Voice", 220);
-    image.drawText(font, left, top + 30, truncateText(font, this.status, TEXT_MAX_WIDTH), 130);
-
     const inMenu = this.phase === "menu";
-    const rows = inMenu ? this.menuRows() : [];
-    // Reserve space for the actual number of rows this menu has.
-    const textBottom = inMenu ? top + DIALOG_H - rows.length * MENU_ROW_H - 8 : top + DIALOG_H - 8;
-    const textTop = top + 56;
-    const maxLines = Math.max(1, ((textBottom - textTop) / 16) | 0);
-
-    const text = this.displayText() || this.placeholderText();
-    const wrapped = wrapText(font, text, TEXT_MAX_WIDTH);
-    const firstLine = Math.max(0, wrapped.length - maxLines);
-    for (let index = firstLine; index < wrapped.length; index++) {
-      image.drawText(font, left, textTop + (index - firstLine) * 16, wrapped[index]!, 235);
-    }
-
-    if (inMenu) {
-      const menuTop = top + DIALOG_H - rows.length * MENU_ROW_H - 2;
-      for (let i = 0; i < rows.length; i++) {
-        const rowY = menuTop + i * MENU_ROW_H;
-        const selected = i === this.menuIndex;
-        if (selected) {
-          drawSelectionHighlight(image, left - 4, rowY - 2, DIALOG_W - 24, MENU_ROW_H - 2, true, 6);
-        }
-        const row = rows[i]!;
-        image.drawText(font, left + 4, rowY + 2, row.label, row.dim ? 90 : selected ? 255 : 200);
-      }
-    } else {
-      image.drawText(font, left, top + DIALOG_H - 14, this.hintText(), 110);
-    }
+    paintInputDialog(image, {
+      title: this.capturing && this.listening ? "Voice ●" : "Voice",
+      status: this.stoppingCapture ? "Finishing transcription..." : this.status,
+      text: this.displayText() || this.placeholderText(),
+      rows: inMenu ? this.menuRows() : [],
+      selectedRow: this.menuIndex,
+      hint: inMenu ? undefined : this.hintText(),
+    });
     return image;
   }
 
-  handleInput(event: DashboardInputEvent, _ctx: LayerContext): void {
+  handleInput(event: InputEvent, _ctx: LayerContext): void {
     switch (this.phase) {
       case "capturing":
         if (event.type === "double-click") {
@@ -298,7 +289,7 @@ export class VoiceInputLayer implements Layer {
     }
   }
 
-  private handleMenuInput(event: DashboardInputEvent): void {
+  private handleMenuInput(event: InputEvent): void {
     const rowCount = this.menuRows().length;
     switch (event.type) {
       case "scroll-up":
@@ -324,6 +315,7 @@ export class VoiceInputLayer implements Layer {
 
   /** Continue selected: keep the message aside and record a follow-up. */
   private startContinuation(): void {
+    this.acceptingTranscript = true;
     this.baseText = this.displayText().trim();
     this.finalizedText = "";
     this.liveText = "";
@@ -338,15 +330,18 @@ export class VoiceInputLayer implements Layer {
   private endContinuationCapture(): void {
     if (!this.capturing) return;
     this.capturing = false;
-    void this.actions.stopVoiceCapture();
-    this.status = "Refining...";
+    this.pendingFollowup = true;
+    this.status = "Finishing transcription...";
+    this.stopCapture(() => {
+      if (this.pendingFollowup) {
+        this.followupFinalizeTimer = setTimeout(() => this.beginRefine(), FOLLOWUP_FINALIZE_TIMEOUT_MS);
+      }
+    });
     this.actions.requestRender();
-    // The provider's committed transcript arrives shortly after stop; refine
-    // when it does, or after a timeout with whatever partials we have.
-    this.followupFinalizeTimer = setTimeout(() => this.beginRefine(), FOLLOWUP_FINALIZE_TIMEOUT_MS);
   }
 
   private beginRefine(): void {
+    this.pendingFollowup = false;
     if (this.followupFinalizeTimer !== null) {
       clearTimeout(this.followupFinalizeTimer);
       this.followupFinalizeTimer = null;
@@ -383,9 +378,10 @@ export class VoiceInputLayer implements Layer {
 
   /** Abort a continuation (mic or LLM stage) and restore the prior message. */
   private cancelContinuation(status: string): void {
+    this.acceptingTranscript = false;
     if (this.capturing) {
       this.capturing = false;
-      void this.actions.stopVoiceCapture();
+      this.stopCapture(() => {});
     }
     this.refineHandle?.cancel();
     this.refineHandle = null;
@@ -393,6 +389,7 @@ export class VoiceInputLayer implements Layer {
   }
 
   private backToMenu(text: string, status: string): void {
+    this.pendingFollowup = false;
     if (this.followupFinalizeTimer !== null) {
       clearTimeout(this.followupFinalizeTimer);
       this.followupFinalizeTimer = null;
@@ -406,6 +403,9 @@ export class VoiceInputLayer implements Layer {
   }
 
   onRemoved(): void {
+    ++this.stopGeneration;
+    this.acceptingTranscript = false;
+    this.pendingFollowup = false;
     this.unsubscribeTranscript?.();
     this.unsubscribeTranscript = null;
     this.unsubscribeStatus?.();
@@ -427,6 +427,7 @@ export class VoiceInputLayer implements Layer {
       this.capturing = false;
       void this.actions.stopVoiceCapture();
     }
+    if (global.isIOS) voiceControlBridge.stop();
     this.onClosed();
   }
 
@@ -439,7 +440,9 @@ export class VoiceInputLayer implements Layer {
   private placeholderText(): string {
     switch (this.phase) {
       case "capturing":
-        return "Listening...";
+        // Only claim to listen when the mic is actually running; otherwise
+        // the bridge's guidance (permission prompt on the phone, etc.), if any.
+        return this.listening ? "Listening..." : this.detail;
       case "continuing":
         return "Say more, or describe an edit...";
       case "refining":
@@ -466,14 +469,14 @@ export class VoiceInputLayer implements Layer {
   private onTranscript(event: VoiceTranscriptEvent): void {
     // The refine stream owns the text buffers once it starts; a transcript
     // that trails in after that point is stale.
-    if (this.phase === "refining") return;
+    if (!this.acceptingTranscript || this.phase === "refining") return;
     if (event.isFinal) {
       const finalText = event.text.trim() || this.liveText.trim();
       if (finalText) {
         this.finalizedText = this.finalizedText ? `${this.finalizedText} ${finalText}` : finalText;
       }
       this.liveText = "";
-      if (this.phase === "continuing" && this.followupFinalizeTimer !== null) {
+      if (this.phase === "continuing" && this.pendingFollowup) {
         // The follow-up finalized; no need to keep waiting.
         this.beginRefine();
         return;

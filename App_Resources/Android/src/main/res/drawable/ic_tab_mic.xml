@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Microphone icon for the main page's tab-bar wakeword button.
+     Converted from ~/Downloads/noun-microphone-1368757.svg (Noun Project
+     icon #1368757); base fill is overridden by tint-color in app.css. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="1200"
+    android:viewportHeight="1200">
+    <path
+        android:fillColor="#FF333333"
+        android:fillType="evenOdd"
+        android:pathData="m821.23 215.45v382.24c0 289.57-442.47 291.89-442.47 0v-382.24c0-287.26 442.47-287.26 442.47 0z" />
+    <path
+        android:fillColor="#FF333333"
+        android:fillType="evenOdd"
+        android:pathData="m543.24 963.71c-294.21-27.801-328.96-298.84-328.96-546.72 0-41.699 88.031-41.699 97.297-4.6328 2.3164 199.23 4.6328 454.05 287.26 454.05 284.94 0 287.26-254.83 287.26-454.05 6.9492-39.383 99.613-37.066 99.613 4.6328 0 247.88-34.75 518.92-333.59 546.72v139h152.89c67.18 0 69.5 97.297 0 97.297h-414.67c-64.863 0-62.547-97.297 0-97.297h152.89v-139z" />
+</vector>

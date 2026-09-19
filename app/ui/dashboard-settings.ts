@@ -1,4 +1,5 @@
-import { GESTURE_DOUBLE_CLICK } from "./gestures";
+import { normalizeNightscoutThreshold, type NightscoutThresholds } from "../apps/nightscout/nightscout-alerts";
+import { GESTURE_DOUBLE_CLICK, InputEvent } from "./gestures";
 import {
   getBooleanSetting,
   getStringSetting,
@@ -6,28 +7,27 @@ import {
   setBooleanSetting,
   setStringSetting,
 } from "~/native/settings-store";
-import {
-  getDefaultSmallFont,
-  UI_FONT_SETTING_KEY,
-  UI_FONT_VALUES,
-  type UiFontChoice,
-} from "~/graphics/bdffont";
+import { getDefaultSmallFont } from "~/graphics/ui-fonts";
 import { wrapText } from "~/graphics/textwrap";
 import {
-  ASSISTANT_MODEL_VALUES,
+  ASSISTANT_MODEL_CHOICES,
   assistantModelLabel,
   assistantModelProvider,
   type AssistantModel,
 } from "~/assistant/models";
+import { isLocalModelReady } from "../native/llama";
 import { drawRightValueMenuItem, drawToggleMenuItem, MenuItem, openModalMenu } from "./menu";
-import { DashboardInputEvent, Layer, type LayerContext } from "./layers";
+import { LIST_ROW_TEXT_INSET, lineStep } from "./metrics";
+import { Layer, type LayerContext } from "./layers";
 import { GrayImage } from "~/graphics/image";
 
 export type NightscoutSettings = {
   siteUrl: string;
   apiToken: string;
 };
-export type BatteryDisplayMode = "icon" | "percentage";
+export type BatteryDisplayMode = "icon" | "percentage" | "stacked" | "stacked-percentage";
+/** When a top-bar battery indicator is shown: always, only below 50%, or never. */
+export type BatteryIndicatorVisibility = "always" | "low" | "never";
 export type TimeFormat = "24h" | "12h";
 export type ScreenTimeoutSetting = "15s" | "30s" | "1m" | "3m" | "never";
 // "auto" lets the glasses' ambient-light sensor drive brightness; the numeric
@@ -62,9 +62,14 @@ export function onAnySettingChanged(listener: () => void): () => void {
 }
 
 onSettingsStoreChanged(() => {
-  for (const listener of Array.from(settingChangeListeners)) {
-    listener();
-  }
+  // Font/cache invalidation listeners may register after this relay. Let the
+  // entire store notification finish before observers synchronously repaint.
+  // Otherwise Save updates the label but paints the previous typeface once.
+  setTimeout(() => {
+    for (const listener of Array.from(settingChangeListeners)) {
+      listener();
+    }
+  }, 0);
 });
 
 export abstract class ConfigSetting<TValue, TId extends string = string> {
@@ -166,19 +171,32 @@ export class ConfigSettingEnum<TValue extends string, TId extends string = strin
 type ConfigSettingStringOptions<TId extends string> = ConfigSettingOptions<string, TId> & {
   editorTitle?: string;
   glassesEditTitle?: string;
+  inputKind?: "text" | "email" | "password";
   normalize?: (value: string | null | undefined) => string;
 };
+
+// Every string setting by id, so isolates that can only pass an id over a
+// message channel (e.g. a worker app requesting the phone text editor) can be
+// resolved back to the setting instance on the main thread.
+const stringSettingsById = new Map<string, ConfigSettingString>();
+
+export function getStringSettingById(id: string): ConfigSettingString | null {
+  return stringSettingsById.get(id) ?? null;
+}
 
 export class ConfigSettingString<TId extends string = string> extends ConfigSetting<string, TId> {
   readonly editorTitle: string;
   readonly glassesEditTitle: string;
+  readonly inputKind: "text" | "email" | "password";
   private readonly normalizer: (value: string | null | undefined) => string;
 
   constructor(options: ConfigSettingStringOptions<TId>) {
     super(options);
     this.editorTitle = options.editorTitle ?? options.label;
     this.glassesEditTitle = options.glassesEditTitle ?? `Edit ${options.label}`;
+    this.inputKind = options.inputKind ?? "text";
     this.normalizer = options.normalize ?? ((value) => value ?? "");
+    stringSettingsById.set(this.id, this);
   }
 
   get(): string {
@@ -195,23 +213,67 @@ export class ConfigSettingString<TId extends string = string> extends ConfigSett
 
 export const batteryDisplayModeSetting = new ConfigSettingEnum<BatteryDisplayMode>({
   id: "batteryDisplayMode",
-  label: "Battery display",
+  label: "Style",
   storageKey: "dashboard.systemCard.batteryDisplayMode",
-  defaultValue: "icon",
-  values: ["icon", "percentage"],
+  defaultValue: "stacked",
+  values: ["icon", "percentage", "stacked", "stacked-percentage"],
   formatValue: batteryDisplayModeLabel,
-  description: "How the top bar shows the phone and glasses battery levels: a small gauge icon or an exact percentage.",
+  description: "How the top bar shows battery levels: a gauge icon or exact percentage beside the label, or a compact gauge or percentage with the label stacked above it.",
 });
 
-export const uiFontSetting = new ConfigSettingEnum<UiFontChoice>({
-  id: "uiFont",
-  label: "Font",
-  storageKey: UI_FONT_SETTING_KEY,
-  defaultValue: "terminus",
-  values: UI_FONT_VALUES,
-  formatValue: uiFontLabel,
-  description: "Typeface for UI text on the glasses. Terminus is fixed-width; TerminusV is a proportional variant that fits more text per line.",
-});
+/** Below this charge level a "Below 50%" indicator becomes visible. */
+export const BATTERY_LOW_VISIBILITY_THRESHOLD = 50;
+
+function batteryVisibilitySetting(
+  id: string,
+  device: string,
+  storageKey: string,
+): ConfigSettingEnum<BatteryIndicatorVisibility> {
+  return new ConfigSettingEnum<BatteryIndicatorVisibility>({
+    id,
+    label: device,
+    storageKey,
+    defaultValue: "always",
+    values: ["always", "low", "never"],
+    formatValue: batteryIndicatorVisibilityLabel,
+    description: `When the top bar shows the ${device} battery: always, only once it drops below ${BATTERY_LOW_VISIBILITY_THRESHOLD}%, or never.`,
+  });
+}
+
+export const phoneBatteryVisibilitySetting = batteryVisibilitySetting(
+  "phoneBatteryVisibility", "Phone", "display.battery.phoneVisibility",
+);
+export const glassesBatteryVisibilitySetting = batteryVisibilitySetting(
+  "glassesBatteryVisibility", "G2", "display.battery.glassesVisibility",
+);
+export const ringBatteryVisibilitySetting = batteryVisibilitySetting(
+  "ringBatteryVisibility", "R1", "display.battery.ringVisibility",
+);
+/** The Wear OS watch; the indicator only exists while a watch is reachable. */
+export const watchBatteryVisibilitySetting = batteryVisibilitySetting(
+  "watchBatteryVisibility", "Watch", "display.battery.watchVisibility",
+);
+
+/** Whether an indicator with this visibility setting shows at the given charge. */
+export function batteryIndicatorVisible(visibility: BatteryIndicatorVisibility, percent: number): boolean {
+  if (visibility === "never") return false;
+  if (visibility === "always") return true;
+  return percent < BATTERY_LOW_VISIBILITY_THRESHOLD;
+}
+
+/**
+ * One string summarizing every setting the top-bar battery block reads, so
+ * the shell can cheaply tell whether a settings change needs a repaint.
+ */
+export function batteryIndicatorSettingsKey(): string {
+  return [
+    batteryDisplayModeSetting.get(),
+    phoneBatteryVisibilitySetting.get(),
+    glassesBatteryVisibilitySetting.get(),
+    ringBatteryVisibilitySetting.get(),
+    watchBatteryVisibilitySetting.get(),
+  ].join("|");
+}
 
 export const timeFormatSetting = new ConfigSettingEnum<TimeFormat>({
   id: "timeFormat",
@@ -221,6 +283,36 @@ export const timeFormatSetting = new ConfigSettingEnum<TimeFormat>({
   values: ["24h", "12h"],
   formatValue: timeFormatLabel,
   description: "Whether the top-bar clock shows 24-hour or 12-hour time.",
+});
+
+/**
+ * How much of the 640x480 panel the UI uses. "576x288" is the stock band
+ * (sidebar + a 288px-tall window at the vertical position); "576x480" keeps
+ * the sidebar and gives every window the full height; "640x480" is the whole
+ * panel, with the sidebar an overlay that shows only while it has focus.
+ */
+export const DISPLAY_MODE_VALUES = ["576x288", "576x480", "640x480"] as const;
+export type DisplayModeSetting = (typeof DISPLAY_MODE_VALUES)[number];
+
+const DISPLAY_MODE_LABELS: Record<DisplayModeSetting, string> = {
+  "576x288": "Band · 576×288",
+  "576x480": "Tall · 576×480",
+  "640x480": "Full panel · 640×480",
+};
+
+export function displayModeLabel(value: DisplayModeSetting): string {
+  return DISPLAY_MODE_LABELS[value] ?? value;
+}
+
+export const displayModeSetting = new ConfigSettingEnum<DisplayModeSetting>({
+  id: "display-mode",
+  label: "Display mode",
+  storageKey: "display.mode",
+  defaultValue: "576x288",
+  values: DISPLAY_MODE_VALUES,
+  formatValue: displayModeLabel,
+  description:
+    "Band: the stock 576×288 window beside the sidebar. Tall: the sidebar plus full-height windows. Full panel: the whole 640×480 display; the sidebar overlays the app only while you are in it. Open apps reopen in the new size.",
 });
 
 export const brightnessSetting = new ConfigSettingEnum<BrightnessSetting>({
@@ -249,7 +341,82 @@ export const lockScreenEnabledSetting = new ConfigSettingBoolean({
   storageKey: "display.lockScreenEnabled",
   defaultValue: true,
   description:
-    "Lock the glasses after they are taken off while the phone is locked. Unlocking the phone unlocks the glasses.",
+    "Lock the glasses after they are taken off while the phone is locked. Unlocking the phone unlocks the glasses." +
+    (global.isIOS ? " On iPhone, this requires a device passcode and follows iOS data-protection notifications, which may be delayed after the screen locks." : ""),
+});
+
+// Phone display: the phone app's mirror of the glasses screen and the
+// controls around it on the main page.
+export type PreviewColor = "white" | "green";
+export type PhoneRotation = "auto" | "portrait" | "landscape";
+
+export const phoneRotationSetting = new ConfigSettingEnum<PhoneRotation>({
+  id: "phone-rotation",
+  label: "Rotation",
+  storageKey: "phone.rotation",
+  defaultValue: "auto",
+  values: ["auto", "portrait", "landscape"],
+  formatValue: (value) => ({ auto: "Auto-Rotate", portrait: "Always Portrait", landscape: "Always Landscape" })[value],
+  description: "Automatically rotate with the phone, or keep the phone app in portrait or landscape. Auto-Rotate follows the phone's system rotation preference.",
+});
+
+export const previewColorSetting = new ConfigSettingEnum<PreviewColor>({
+  id: "preview-color",
+  label: "Preview color",
+  storageKey: "phone.previewColor",
+  defaultValue: "white",
+  values: ["white", "green"],
+  formatValue: (value) => (value === "green" ? "Green" : "White"),
+  description:
+    "How the phone's mirror of the glasses display renders: white/grayscale (clearest), or green to match the physical glasses.",
+});
+
+export const mirrorTouchSetting = new ConfigSettingBoolean({
+  id: "mirror-touch",
+  label: "Touch mirror",
+  // Key predates this setting object (the toggle used to live on the phone's
+  // main screen); keeping it preserves the user's choice.
+  storageKey: "phone.mirrorTouch",
+  defaultValue: true,
+  description:
+    "Let touches on the phone's mirror act on the glasses UI: tap selects what it lands on, double-tap goes back, a hold opens the menu, swipes navigate.",
+});
+
+// Wear OS watch remote (app/g2/wear-remote.ts, wear/). All three are read on
+// every watch message, so a change applies immediately.
+export const watchRemoteEnabledSetting = new ConfigSettingBoolean({
+  id: "watch-remote-enabled",
+  label: "Watch remote control",
+  storageKey: "watch.remoteEnabled",
+  defaultValue: true,
+  description:
+    "Accept input from the Faceclaw Wear OS app: spatial swipes, taps, holds, crown, voice queries and app commands. The ring's scheme is unaffected. Turn off to ignore the watch.",
+});
+
+export const watchCanUnlockSetting = new ConfigSettingBoolean({
+  id: "watch-can-unlock",
+  label: "Watch can unlock glasses",
+  storageKey: "watch.canUnlock",
+  defaultValue: true,
+  description:
+    "Let the watch unlock the glasses' lock screen (which otherwise waits for the phone to be unlocked). Your watch is on your wrist; turn this off if you would rather it stay a phone-only unlock.",
+});
+
+export const watchCrownClockwiseNextSetting = new ConfigSettingBoolean({
+  id: "watch-crown-clockwise-next",
+  label: "Clockwise crown = next",
+  storageKey: "watch.crownClockwiseNext",
+  defaultValue: false,
+  description:
+    "Choose which crown direction moves to the next item. Off: clockwise moves to the previous item. On: clockwise moves to the next item.",
+});
+
+export const watchMirrorAssistantSetting = new ConfigSettingBoolean({
+  id: "watch-mirror-assistant",
+  label: "Mirror assistant to watch",
+  storageKey: "watch.mirrorAssistant",
+  defaultValue: true,
+  description: "Stream assistant replies and on-glasses alerts to the watch so they can be read from the wrist.",
 });
 
 export type VerticalPosition = "top" | "upper" | "middle" | "lower" | "bottom";
@@ -270,8 +437,42 @@ export const verticalPositionSetting = new ConfigSettingEnum<VerticalPosition>({
   values: ["top", "upper", "middle", "lower", "bottom"],
   formatValue: (value) => VERTICAL_POSITION_LABELS[value] ?? value,
   description:
-    "Where standard (reduced-height) windows sit vertically within the display area, to position them within your field of view. Full-height windows such as terminal views always use the whole screen.",
+    "Where standard (reduced-height) windows sit vertically within the display area, to position them within your field of view. Full-height windows use the whole screen. Navigate and Terminal can override these display settings.",
 });
+
+/** Per-app layouts can inherit the display preferences or choose their own size. */
+export type AppDisplayMode = "default" | "global" | DisplayModeSetting;
+
+function appDisplayModeSetting(appId: string, defaultValue: AppDisplayMode): ConfigSettingEnum<AppDisplayMode> {
+  return new ConfigSettingEnum<AppDisplayMode>({
+    id: `${appId}-display-mode`,
+    label: "Display mode",
+    storageKey: `${appId}.displayMode`,
+    defaultValue,
+    values: appId === "terminal" ? ["default", "global", ...DISPLAY_MODE_VALUES] : ["global", ...DISPLAY_MODE_VALUES],
+    formatValue: (value) => value === "default" ? "Tall sessions (default)" : value === "global" ? "Use global" : displayModeLabel(value),
+    description: appId === "terminal"
+      ? "Screen size for Terminal. The default keeps session windows tall and the terminals list at the global size. Use global follows Display settings for all Terminal windows. Resizing an open session reconnects its view at the new size."
+      : "Screen size for Navigate. Choose Band to leave more of your field of view clear, or Use global to follow Display settings. Applies to the current route too.",
+  });
+}
+
+function appVerticalPositionSetting(appId: string): ConfigSettingEnum<"global" | VerticalPosition> {
+  return new ConfigSettingEnum<"global" | VerticalPosition>({
+    id: `${appId}-vertical-position`,
+    label: "Vertical position",
+    storageKey: `${appId}.verticalPosition`,
+    defaultValue: "global",
+    values: ["global", "top", "upper", "middle", "lower", "bottom"],
+    formatValue: (value) => value === "global" ? "Use global" : VERTICAL_POSITION_LABELS[value],
+    description: "Where reduced-height windows for this app sit in your field of view. Use global follows Display settings. Full-height windows fill the display vertically.",
+  });
+}
+
+export const navigateDisplayModeSetting = appDisplayModeSetting("navigate", "global");
+export const navigateVerticalPositionSetting = appVerticalPositionSetting("navigate");
+export const terminalDisplayModeSetting = appDisplayModeSetting("terminal", "default");
+export const terminalVerticalPositionSetting = appVerticalPositionSetting("terminal");
 
 export const voiceControlEnabledSetting = new ConfigSettingBoolean({
   id: "voice-control-enabled",
@@ -297,12 +498,50 @@ export const suspendEvenHubWhenScreenOffSetting = new ConfigSettingBoolean({
   description: "Suspend the EvenHub session while the display is off. This significantly improves battery life, but increases the latency of waking the screen.",
 });
 
-export type VoiceProvider = "onboard" | "elevenlabs" | "whisper" | "soniox";
+export const useMicControlSetting = new ConfigSettingBoolean({
+  id: "use-mic-control",
+  label: "Use microphone control",
+  storageKey: "developer.useMicControl",
+  defaultValue: true,
+  description:
+    "Use the custom firmware's per-temple mic-control channel for the Microphones app's array capture. When off, use the standard single mixed stream.",
+});
+
+export const showBleBandwidthSetting = new ConfigSettingBoolean({
+  id: "show-ble-bandwidth",
+  label: "Show BLE bandwidth usage",
+  storageKey: "developer.showBleBandwidth",
+  defaultValue: false,
+  description:
+    "Show Bluetooth messages and bytes sent, throughput, acknowledged display fps, and bytes per frame at the bottom of the phone screen. Rates use a five-second window; bytes include control traffic and protocol framing.",
+});
+
+export type RingConnectionMode = "glasses" | "direct";
+
+export const ringConnectionModeSetting = new ConfigSettingEnum<RingConnectionMode>({
+  id: "ring-connection-mode",
+  label: "Ring connection",
+  storageKey: "developer.ringConnectionMode",
+  defaultValue: "glasses",
+  values: ["glasses", "direct"],
+  formatValue: (value) => (value === "direct" ? "Direct" : "Only via glasses"),
+  description:
+    "How R1 ring input reaches the phone. Only via glasses: the ring's own link to the glasses carries its gestures, and the phone never opens a Bluetooth connection to the ring. Direct: also connect to the ring from the phone (currently unreliable). Takes effect on the next connection to the glasses.",
+});
+
+// "whisper" (no "onboard-" prefix) is OpenAI's CLOUD realtime model
+// (gpt-realtime-whisper); "onboard-whisper" is the on-device sherpa-onnx
+// Whisper backend. Same underlying model family, two different places it
+// runs -- see the same note in native/voice-control.ts. The "whisper" value
+// keeps its name (it's a persisted setting on real installs) but its label
+// below now says "OpenAI" to tell the two apart in the picker.
+export type VoiceProvider = "onboard" | "onboard-whisper" | "elevenlabs" | "whisper" | "soniox";
 
 const voiceProviderLabels: Record<VoiceProvider, string> = {
-  onboard: "On-device",
+  onboard: "On-device (Moonshine)",
+  "onboard-whisper": "On-device (Whisper)",
   elevenlabs: "ElevenLabs",
-  whisper: "Whisper",
+  whisper: "OpenAI (Whisper)",
   soniox: "Soniox",
 };
 
@@ -311,7 +550,7 @@ export const voiceProviderSetting = new ConfigSettingEnum<VoiceProvider>({
   label: "Transcription Provider",
   storageKey: "voice.provider",
   defaultValue: "onboard",
-  values: ["onboard", "elevenlabs", "whisper", "soniox"],
+  values: ["onboard", "onboard-whisper", "elevenlabs", "whisper", "soniox"],
   formatValue: (value) => voiceProviderLabels[value] ?? value,
   isDisabled: (value) => {
     if (value === "elevenlabs") return elevenLabsApiKeySetting.get().trim().length === 0;
@@ -319,12 +558,12 @@ export const voiceProviderSetting = new ConfigSettingEnum<VoiceProvider>({
     if (value === "soniox") return sonioxApiKeySetting.get().trim().length === 0;
     return false;
   },
-  description: "Speech-to-text engine for voice input. ElevenLabs, Whisper, and Soniox are cloud services that need an API key, with significantly better accuracy than on-device transcription.",
+  description: "Speech-to-text engine for voice input. ElevenLabs, OpenAI, and Soniox are cloud services that need an API key, with significantly better accuracy than on-device transcription. The two On-device options need their voice model downloaded (below) and never leave the phone.",
 });
 
 const wakeWordActionLabels: Record<WakeWordAction, string> = {
   "voice-input": "Voice Input",
-  off: "Off",
+  off: "Ignore",
   "turn-screen-on": "Turn Screen On",
 };
 
@@ -357,7 +596,7 @@ export const assistantSkipConfirmationSetting = new ConfigSettingBoolean({
 export type AssistantBackendKind = "direct" | "external";
 
 const assistantBackendLabels: Record<AssistantBackendKind, string> = {
-  direct: "On-phone (API key)",
+  direct: global.isIOS ? "Cloud API" : "On-phone",
   external: "My own agent (bridge)",
 };
 
@@ -366,10 +605,10 @@ export const assistantBackendSetting = new ConfigSettingEnum<AssistantBackendKin
   label: "Assistant backend",
   storageKey: "assistant.backend",
   defaultValue: "direct",
-  values: ["direct", "external"],
+  values: global.isIOS ? ["direct"] : ["direct", "external"],
   formatValue: (value) => assistantBackendLabels[value] ?? value,
   description:
-    "Who answers assistant queries: an LLM called directly from the phone (needs an API key), or your own long-running agent (e.g. OpenClaw) reached through the faceclaw-agent-bridge plugin.",
+    global.isIOS ? "Cloud models called with your OpenAI or Anthropic API key. Add your key in Settings > API Keys." : "Who answers assistant queries: an LLM called from the phone (a cloud API with your key, or the downloaded on-phone model), or your own long-running agent (e.g. OpenClaw) reached through the faceclaw-agent-bridge plugin.",
 });
 
 export const assistantBridgeHostSetting = new ConfigSettingString({
@@ -462,15 +701,17 @@ export const assistantModelSetting = new ConfigSettingEnum<AssistantModel>({
   label: "Assistant model",
   storageKey: "assistant.model",
   defaultValue: "auto",
-  values: ASSISTANT_MODEL_VALUES,
+  values: ASSISTANT_MODEL_CHOICES,
   formatValue: assistantModelLabel,
   isDisabled: (value) => {
     const provider = assistantModelProvider(value);
     if (provider === "anthropic") return anthropicApiKeySetting.get().trim().length === 0;
     if (provider === "openai") return openAiApiKeySetting.get().trim().length === 0;
+    if (provider === "local") return !isLocalModelReady();
     return false;
   },
-  description: "Model used by the voice assistant. Auto prefers Terra when an OpenAI key is set, then Sonnet when an Anthropic key is set.",
+  description:
+    global.isIOS ? "Model used by the voice assistant. Auto prefers Terra with an OpenAI key, then Sonnet with an Anthropic key." : "Model used by the voice assistant. Auto prefers Terra when an OpenAI key is set, then Sonnet when an Anthropic key is set, then the downloaded on-phone model.",
 });
 
 export const mapboxApiKeySetting = new ConfigSettingString({
@@ -484,34 +725,38 @@ export const mapboxApiKeySetting = new ConfigSettingString({
   description: "Mapbox public token (pk. prefix), used by the Navigate app for maps, geocoding, and directions.",
 });
 
-export const terminalHostSetting = new ConfigSettingString({
-  id: "terminal-host",
-  label: "Host",
-  storageKey: "terminal.host",
+/**
+ * Staging buffer for the Terminal app's "Add connection" flow: the worker
+ * asks the shell to open the phone text editor on this setting, the user
+ * types the g2mirror:// connection string there, and the worker reads (and
+ * clears) the draft when the user confirms on the glasses. Deliberately not
+ * listed in the Settings app; connections are managed inside the Terminal app.
+ */
+export const terminalNewConnectionSetting = new ConfigSettingString({
+  id: "terminal-new-connection",
+  label: "New connection",
+  storageKey: "terminal.newConnectionDraft",
   defaultValue: "",
-  editorTitle: "g2mirror host (tailscale IP)",
-  glassesEditTitle: "Edit terminal host",
-  description: "Hostname or IP address (e.g. a Tailscale address) of the machine running g2mirror, for the Terminal app.",
+  editorTitle: "g2mirror connection string (g2mirror://token@host)",
+  glassesEditTitle: "Add connection",
+  normalize: (value) => (value ?? "").replace(/[\x00-\x1f]+/g, "").trim(),
 });
 
-export const terminalPortSetting = new ConfigSettingString({
-  id: "terminal-port",
-  label: "Port",
-  storageKey: "terminal.port",
-  defaultValue: "8737",
-  editorTitle: "g2mirror port",
-  glassesEditTitle: "Edit terminal port",
-  description: "TCP port the g2mirror server listens on. The default is 8737.",
-});
-
-export const terminalAuthTokenSetting = new ConfigSettingString({
-  id: "terminal-auth-token",
-  label: "Auth token",
-  storageKey: "terminal.authToken",
+/**
+ * Staging buffer for the Developer app's "Load app from URL" flow: the app
+ * opens the phone text editor on this setting, the user types (or scans, or
+ * dictates) the URL, and the app reads it back when the load is confirmed on
+ * the glasses. Kept across launches so a reload after an edit-and-rebuild only
+ * takes a click. Deliberately not listed in the Settings app.
+ */
+export const developerAppUrlSetting = new ConfigSettingString({
+  id: "developer-app-url",
+  label: "App URL",
+  storageKey: "developer.appUrl",
   defaultValue: "",
-  editorTitle: "g2mirror auth token",
-  glassesEditTitle: "Edit terminal auth token",
-  description: "Shared secret that must match the g2mirror server's configured auth token.",
+  editorTitle: "EvenHub app URL (http:// or https://)",
+  glassesEditTitle: "Load app from URL",
+  normalize: (value) => (value ?? "").replace(/[\x00-\x1f]+/g, "").trim(),
 });
 
 export const terminalLaunchPresetsSetting = new ConfigSettingString({
@@ -523,6 +768,15 @@ export const terminalLaunchPresetsSetting = new ConfigSettingString({
   glassesEditTitle: "Edit launch presets",
   description:
     "Comma-separated names of g2mirror launch presets that can be started from the glasses. Presets are defined in the server's config; the wire protocol has no way to list them, so name them here. The default server config defines \"shell\".",
+});
+
+export const terminalAutoReconnectSetting = new ConfigSettingBoolean({
+  id: "terminal-auto-reconnect",
+  label: "Auto-reconnect",
+  storageKey: "terminal.autoReconnect",
+  defaultValue: true,
+  description:
+    "While at least one Terminal window is open, automatically reconnect to the g2mirror server when the connection drops, retrying with backoff until it succeeds.",
 });
 
 export const terminalWakeOnBellSetting = new ConfigSettingBoolean({
@@ -582,6 +836,138 @@ export const nightscoutApiTokenSetting = new ConfigSettingString({
   description: "Access token for the Nightscout site's API.",
 });
 
+function nightscoutThresholdSetting(id: string, label: string, unit: string, description: string): ConfigSettingString {
+  return new ConfigSettingString({
+    id: `nightscout-${id}`,
+    label,
+    storageKey: `integrations.nightscout.${id}`,
+    defaultValue: "0",
+    editorTitle: `${label} (${unit}; 0 = off)`,
+    normalize: normalizeNightscoutThreshold,
+    formatValue: (value) => Number(value) > 0 ? `${value} ${unit}` : "Off",
+    description: `${description} Enter 0 to disable.`,
+  });
+}
+
+export const nightscoutMaxCannulaAgeSetting = nightscoutThresholdSetting(
+  "max-cannula-age-hours", "Max cannula age", "h", "Warn when time since the last site change exceeds this many hours.",
+);
+export const nightscoutCartridgeLowSetting = nightscoutThresholdSetting(
+  "cartridge-low-units", "Cartridge low threshold", "U", "Warn when the pump reservoir falls below this many units.",
+);
+export const nightscoutBatteryLowSetting = nightscoutThresholdSetting(
+  "battery-low-voltage", "Battery voltage threshold", "V", "Warn when pump battery voltage falls below this value.",
+);
+export const nightscoutMaxLoopAgeSetting = nightscoutThresholdSetting(
+  "max-loop-age-minutes", "Max time since last loop", "min", "Warn when time since the last loop exceeds this many minutes.",
+);
+export const nightscoutAlwaysShowInTopBarSetting = new ConfigSettingBoolean({
+  id: "nightscout-always-show-in-top-bar",
+  label: "Always show in top bar",
+  storageKey: "integrations.nightscout.alwaysShowInTopBar",
+  defaultValue: false,
+  description: "Keep the Nightscout glucose graph and warnings in the top bar even when all Nightscout windows are closed.",
+});
+
+export function loadNightscoutThresholds(): NightscoutThresholds {
+  return {
+    maxCannulaAgeHours: Number(nightscoutMaxCannulaAgeSetting.get()),
+    cartridgeLowUnits: Number(nightscoutCartridgeLowSetting.get()),
+    batteryLowVoltage: Number(nightscoutBatteryLowSetting.get()),
+    maxLoopAgeMinutes: Number(nightscoutMaxLoopAgeSetting.get()),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Navigate app: saved and recent destinations.
+
+const stripControlChars = (value: string | null | undefined): string =>
+  (value ?? "").replace(/[\x00-\x1f]+/g, "").trim();
+
+export const navigateHomeAddressSetting = new ConfigSettingString({
+  id: "navigate-home-address",
+  label: "Home address",
+  storageKey: "navigate.homeAddress",
+  defaultValue: "",
+  editorTitle: "Home address",
+  glassesEditTitle: "Set Home address",
+  normalize: stripControlChars,
+  formatValue: emptySettingDisplay,
+  description: "Address (or place name) the Navigate app's Home destination routes to.",
+});
+
+export const navigateWorkAddressSetting = new ConfigSettingString({
+  id: "navigate-work-address",
+  label: "Work address",
+  storageKey: "navigate.workAddress",
+  defaultValue: "",
+  editorTitle: "Work address",
+  glassesEditTitle: "Set Work address",
+  normalize: stripControlChars,
+  formatValue: emptySettingDisplay,
+  description: "Address (or place name) the Navigate app's Work destination routes to.",
+});
+
+export const navigateRememberRecentSetting = new ConfigSettingBoolean({
+  id: "navigate-remember-recent",
+  label: "Remember recent destinations",
+  storageKey: "navigate.rememberRecent",
+  defaultValue: true,
+  description:
+    "Keep a short list of places you have navigated to, offered as destinations on the Navigate app's start page. Turning this off clears the list.",
+});
+
+/**
+ * Custom named destinations beyond Home and Work, as a JSON array of
+ * {id, name, address}. Managed inside the Navigate app (its context menu),
+ * not listed in the Settings app.
+ */
+export const navigateSavedDestinationsSetting = new ConfigSettingString({
+  id: "navigate-saved-destinations",
+  label: "Saved destinations",
+  storageKey: "navigate.savedDestinations",
+  defaultValue: "[]",
+});
+
+/**
+ * Recently navigated-to places, as a JSON array of {name, place, longitude,
+ * latitude, atMs}, most recent first. Written by the Navigate app when
+ * navigateRememberRecentSetting is on.
+ */
+export const navigateRecentDestinationsSetting = new ConfigSettingString({
+  id: "navigate-recent-destinations",
+  label: "Recent destinations",
+  storageKey: "navigate.recentDestinations",
+  defaultValue: "[]",
+});
+
+/**
+ * Staging buffers for the Navigate app's add/edit-destination flow: the
+ * worker asks the shell to open the phone text editor on one of these, the
+ * user types (or dictates) the name/address, and the worker reads the draft
+ * when the user confirms on the glasses. Deliberately not listed in the
+ * Settings app.
+ */
+export const navigateDestinationNameDraftSetting = new ConfigSettingString({
+  id: "navigate-destination-name-draft",
+  label: "Destination name",
+  storageKey: "navigate.destinationNameDraft",
+  defaultValue: "",
+  editorTitle: "Destination name (e.g. Gym)",
+  glassesEditTitle: "Destination name",
+  normalize: stripControlChars,
+});
+
+export const navigateDestinationAddressDraftSetting = new ConfigSettingString({
+  id: "navigate-destination-address-draft",
+  label: "Destination address",
+  storageKey: "navigate.destinationAddressDraft",
+  defaultValue: "",
+  editorTitle: "Destination address or place name",
+  glassesEditTitle: "Destination address",
+  normalize: stripControlChars,
+});
+
 
 export function screenTimeoutSettingToMs(value: ScreenTimeoutSetting): number | null {
   switch (value) {
@@ -612,15 +998,20 @@ export function screenTimeoutLabel(value: ScreenTimeoutSetting): string {
 }
 
 export function batteryDisplayModeLabel(value: BatteryDisplayMode): string {
-  return value === "icon" ? "Icon" : "Percentage";
+  if (value === "percentage") return "Percentage";
+  if (value === "stacked") return "Stacked";
+  if (value === "stacked-percentage") return "Stacked percentage";
+  return "Icon";
+}
+
+export function batteryIndicatorVisibilityLabel(value: BatteryIndicatorVisibility): string {
+  if (value === "never") return "Never";
+  if (value === "low") return `Below ${BATTERY_LOW_VISIBILITY_THRESHOLD}%`;
+  return "Always";
 }
 
 export function timeFormatLabel(value: TimeFormat): string {
   return value === "12h" ? "12-hour" : "24-hour";
-}
-
-export function uiFontLabel(value: UiFontChoice): string {
-  return value === "terminusv" ? "TerminusV" : "Terminus";
 }
 
 export function loadNightscoutSettings(): NightscoutSettings {
@@ -685,7 +1076,7 @@ export function enumSettingMenuItem<TValue extends string, TId extends string = 
           image.drawText(
             getDefaultSmallFont(),
             x,
-            y + 3,
+            y + LIST_ROW_TEXT_INSET,
             `${setting.displayValue(value)}${selected}`,
             disabled ? 70 : 200,
           );
@@ -727,10 +1118,10 @@ export function textSettingMenuItem<TId extends string = string>(
       void ctx.actions.startTextSettingEdit(setting);
       ctx.stack.push(new EditTextSettingLayer(setting));
     },
-    render: ({ image, x, y }) => {
+    render: ({ image, x, y, width }) => {
       // displayValue honors the setting's formatValue, so secrets (API keys,
       // tokens) can mask themselves instead of rendering in the clear.
-      image.drawText(getDefaultSmallFont(), x, y + 3, `${setting.label}: ${truncateSetting(setting.displayValue())}`, 200);
+      drawRightValueMenuItem(image, getDefaultSmallFont(), x, y, width, setting.label, truncateSetting(setting.displayValue()));
     }
   };
 }
@@ -749,17 +1140,19 @@ export class EditTextSettingLayer implements Layer {
     // viewport in the settings app).
     const { width, height } = ctx.stack.getBaseSize();
     const image = new GrayImage(width, height, 0);
+    const step = lineStep(font);
     image.drawText(font, 22, 16, this.setting.glassesEditTitle, 220);
+    const messageTop = 24 + 2 * font.lineHeight;
     const message = wrapText(font, "Look at the phone app to type a value.", width - 48);
     for (let index = 0; index < message.length; index++) {
-      image.drawText(font, 22, 52 + index * 14, message[index]!, 200);
+      image.drawText(font, 22, messageTop + index * step, message[index]!, 200);
     }
-    image.drawText(font, 22, 110, truncateSetting(this.setting.get(), 52), 220);
-    image.drawText(font, 22, height - 36, `${GESTURE_DOUBLE_CLICK} back`, 110);
+    image.drawText(font, 22, messageTop + (message.length + 2) * step, truncateSetting(this.setting.get(), 52), 220);
+    image.drawText(font, 22, height - 24 - font.lineHeight, `${GESTURE_DOUBLE_CLICK} back`, 110);
     return image;
   }
 
-  handleInput(event: DashboardInputEvent, ctx: LayerContext): void {
+  handleInput(event: InputEvent, ctx: LayerContext): void {
     if (event.type === "double-click") {
       void ctx.actions.endTextSettingEdit();
       ctx.stack.pop();

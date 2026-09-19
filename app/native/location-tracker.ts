@@ -9,22 +9,8 @@ import { Utils } from "@nativescript/core";
 declare const com: any;
 declare const global: any;
 
-export type TrackedLocation = {
-  latitude: number;
-  longitude: number;
-  /** Meters, or null when the fix doesn't report accuracy. */
-  accuracyMeters: number | null;
-  /** Degrees clockwise from true north, or null (common when stationary). */
-  bearingDeg: number | null;
-  /** Meters per second, or null. */
-  speedMps: number | null;
-  timestampMs: number;
-};
-
-export type LocationTrackerCallbacks = {
-  onLocation: (location: TrackedLocation) => void;
-  onError: (message: string) => void;
-};
+import { type LocationTrackerCallbacks } from "./location-types";
+export { type LocationTrackerCallbacks, type TrackedLocation } from "./location-types";
 
 export class LocationTracker {
   private tracker: any = null;

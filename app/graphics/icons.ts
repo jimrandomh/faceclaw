@@ -1,12 +1,10 @@
 import { GrayImage } from "./image";
-
-declare const com: any;
-declare const global: any;
+import { rasterizeSvg } from "../native/svg-rasterizer";
 
 /**
  * Vector icons for window indicators (and anywhere else). SVGs are rendered
- * once to a correctly sized grayscale bitmap by the Java IconRenderer (a
- * small SVG subset: path/circle/rect/line/polyline) and cached here. To add
+ * once to a correctly sized grayscale bitmap by the platform rasterizer
+ * (Android IconRenderer or iOS SVGKit) and cached here. To add
  * an icon, drop its SVG source into ICON_SVGS — Lucide icons
  * (https://lucide.dev, stroked, 24px viewBox) work as-is; simple single-color
  * Noun Project glyphs also work.
@@ -18,10 +16,16 @@ const ICON_STROKE_WIDTH = 2;
 // Lucide icons (MIT/ISC licensed). Kept verbatim so they can be diffed
 // against upstream if an icon needs updating.
 export const ICON_SVGS = {
+  "message-circle":
+    '<svg viewBox="0 0 24 24" fill="none"><path d="M21 11.5a8.4 8.4 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.4 8.4 0 0 1-3.8-.9L3 21l1.9-5.7a8.4 8.4 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.4 8.4 0 0 1 3.8-.9h.5a8.5 8.5 0 0 1 8 8z"/></svg>',
+  eye:
+    '<svg viewBox="0 0 24 24" fill="none"><path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0"/><circle cx="12" cy="12" r="3"/></svg>',
   "layout-grid":
     '<svg viewBox="0 0 24 24" fill="none"><rect width="7" height="7" x="3" y="3" rx="1"/><rect width="7" height="7" x="14" y="3" rx="1"/><rect width="7" height="7" x="14" y="14" rx="1"/><rect width="7" height="7" x="3" y="14" rx="1"/></svg>',
   timer:
     '<svg viewBox="0 0 24 24" fill="none"><line x1="10" x2="14" y1="2" y2="2"/><line x1="12" x2="15" y1="14" y2="11"/><circle cx="12" cy="14" r="8"/></svg>',
+  calculator:
+    '<svg viewBox="0 0 24 24" fill="none"><rect width="16" height="20" x="4" y="2" rx="2"/><line x1="8" x2="16" y1="6" y2="6"/><line x1="16" x2="16" y1="14" y2="18"/><path d="M16 10h.01"/><path d="M12 10h.01"/><path d="M8 10h.01"/><path d="M12 14h.01"/><path d="M8 14h.01"/><path d="M12 18h.01"/><path d="M8 18h.01"/></svg>',
   // Not a Lucide icon: an L-tetromino built from four squares, for Blocks.
   "l-piece":
     '<svg viewBox="0 0 24 24" fill="none"><rect width="6" height="6" x="5" y="1.5" rx="1"/><rect width="6" height="6" x="5" y="9" rx="1"/><rect width="6" height="6" x="5" y="16.5" rx="1"/><rect width="6" height="6" x="12.5" y="16.5" rx="1"/></svg>',
@@ -30,12 +34,16 @@ export const ICON_SVGS = {
   // Not a Lucide icon: a ball above two angled flippers, for Pinball.
   pinball:
     '<svg viewBox="0 0 24 24" fill="none"><circle cx="12" cy="6" r="3"/><path d="M4 14l7 5"/><path d="M20 14l-7 5"/><circle cx="4" cy="14" r="1"/><circle cx="20" cy="14" r="1"/></svg>',
+  bird:
+    '<svg viewBox="0 0 24 24" fill="none"><path d="M16 7h.01"/><path d="M3.4 18H12a8 8 0 0 0 8-8V7a4 4 0 0 0-7.28-2.3L2 20"/><path d="m20 7 2 .5-2 .5"/><path d="M10 18v3"/><path d="M14 17.75V21"/><path d="M7 18a6 6 0 0 0 3.84-10.61"/></svg>',
   spade:
     '<svg viewBox="0 0 24 24" fill="none"><path d="M12 18v4"/><path d="M2 14.499a5.5 5.5 0 0 0 9.591 3.675.6.6 0 0 1 .818.001A5.5 5.5 0 0 0 22 14.5c0-2.29-1.5-4-3-5.5l-5.492-5.312a2 2 0 0 0-3-.02L5 8.999c-1.5 1.5-3 3.2-3 5.5"/></svg>',
   paperclip:
     '<svg viewBox="0 0 24 24" fill="none"><path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>',
   terminal:
     '<svg viewBox="0 0 24 24" fill="none"><path d="m7 11 2-2-2-2"/><path d="M11 13h4"/><rect width="18" height="18" x="3" y="3" rx="2" ry="2"/></svg>',
+  "scroll-text":
+    '<svg viewBox="0 0 24 24" fill="none"><path d="M15 12h-5"/><path d="M15 8h-5"/><path d="M19 17V5a2 2 0 0 0-2-2H4"/><path d="M8 21h12a2 2 0 0 0 2-2v-1a1 1 0 0 0-1-1H11a1 1 0 0 0-1 1v1a2 2 0 1 1-4 0V5a2 2 0 1 0-4 0v2a1 1 0 0 0 1 1h3"/></svg>',
   "file-text":
     '<svg viewBox="0 0 24 24" fill="none"><path d="M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z"/><path d="M14 2v5a1 1 0 0 0 1 1h5"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/></svg>',
   file:
@@ -50,10 +58,14 @@ export const ICON_SVGS = {
     '<svg viewBox="0 0 24 24" fill="none"><rect width="18" height="18" x="3" y="3" rx="2" ry="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/></svg>',
   film:
     '<svg viewBox="0 0 24 24" fill="none"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M7 3v18"/><path d="M3 7.5h4"/><path d="M3 12h18"/><path d="M3 16.5h4"/><path d="M17 3v18"/><path d="M21 7.5h-4"/><path d="M21 16.5h-4"/></svg>',
+  type:
+    '<svg viewBox="0 0 24 24" fill="none"><path d="M12 4v16"/><path d="M4 7V5a1 1 0 0 1 1-1h14a1 1 0 0 1 1 1v2"/><path d="M9 20h6"/></svg>',
   "hard-drive":
     '<svg viewBox="0 0 24 24" fill="none"><line x1="22" x2="2" y1="12" y2="12"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/><line x1="6" x2="6.01" y1="16" y2="16"/><line x1="10" x2="10.01" y1="16" y2="16"/></svg>',
   music:
     '<svg viewBox="0 0 24 24" fill="none"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>',
+  package:
+    '<svg viewBox="0 0 24 24" fill="none"><path d="m7.5 4.27 9 5.15"/><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/></svg>',
   activity:
     '<svg viewBox="0 0 24 24" fill="none"><path d="M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2"/></svg>',
   bell:
@@ -64,6 +76,8 @@ export const ICON_SVGS = {
     '<svg viewBox="0 0 24 24" fill="none"><path d="M12 2v2"/><path d="m4.93 4.93 1.42 1.42"/><path d="M20 12h2"/><path d="m19.07 4.93-1.42 1.42"/><path d="M15.947 12.65a4 4 0 0 0-5.925-4.128"/><path d="M13 22H7a5 5 0 1 1 4.9-6H13a3 3 0 0 1 0 6Z"/></svg>',
   "flask-conical":
     '<svg viewBox="0 0 24 24" fill="none"><path d="M14 2v6a2 2 0 0 0 .245.96l5.51 10.08A2 2 0 0 1 18 22H6a2 2 0 0 1-1.755-2.96l5.51-10.08A2 2 0 0 0 10 8V2"/><path d="M6.453 15h11.094"/><path d="M8.5 2h7"/></svg>',
+  wrench:
+    '<svg viewBox="0 0 24 24" fill="none"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>',
   settings:
     '<svg viewBox="0 0 24 24" fill="none"><path d="M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915"/><circle cx="12" cy="12" r="3"/></svg>',
   mic:
@@ -81,9 +95,11 @@ export const ICON_SVGS = {
 } as const;
 
 export type IconName = keyof typeof ICON_SVGS;
+/** Idle prompt, or the visible/hidden phases of an activity cursor. */
+export type IconActivity = "idle" | "on" | "off";
 
-// The "_" element of the terminal icon, swapped out for a session glyph in
-// renderIconWithGlyph.
+// Prompt and session-marker elements replaced by renderIconWithGlyph.
+const TERMINAL_PROMPT = '<path d="m7 11 2-2-2-2"/>';
 const TERMINAL_UNDERSCORE = '<path d="M11 13h4"/>';
 
 /**
@@ -141,15 +157,31 @@ export function renderIcon(name: IconName, size: number): GrayImage | null {
   return renderSvgCached(name, ICON_SVGS[name], size);
 }
 
+/** Render an app-provided SVG using the same small renderer and cache. */
+export function renderSvgIcon(cacheName: string, svg: string, size: number): GrayImage | null {
+  return renderSvgCached(`custom:${cacheName}`, svg, size);
+}
+
 /**
  * Render an icon with a glyph character substituted in — currently only the
  * terminal icon, whose "_" becomes the glyph (">3" instead of ">_"). Falls
- * back to the plain icon for other names or unsupported characters.
+ * back to the plain marker for unsupported characters. Active terminal icons
+ * replace the prompt with a blinking cursor, leaving the marker in place.
  */
-export function renderIconWithGlyph(name: IconName, glyph: string, size: number): GrayImage | null {
-  const shape = name === "terminal" ? TERMINAL_GLYPH_SHAPES[glyph] : undefined;
-  if (!shape) return renderIcon(name, size);
-  return renderSvgCached(`${name}[${glyph}]`, ICON_SVGS.terminal.replace(TERMINAL_UNDERSCORE, shape), size);
+export function renderIconWithGlyph(name: IconName, glyph: string, size: number, activity: IconActivity = "idle"): GrayImage | null {
+  if (name !== "terminal") return renderIcon(name, size);
+  const shape = TERMINAL_GLYPH_SHAPES[glyph];
+  if (!shape && activity === "idle") return renderIcon(name, size);
+  let svg: string = ICON_SVGS.terminal;
+  if (shape) svg = svg.replace(TERMINAL_UNDERSCORE, shape);
+  if (activity !== "idle") {
+    // IconRenderer strokes all elements at width 2; the narrow rectangle
+    // therefore becomes a solid cursor without needing per-element fills.
+    svg = svg.replace(TERMINAL_PROMPT, activity === "on"
+      ? '<rect x="7.5" y="8" width="1" height="6"/>'
+      : "");
+  }
+  return renderSvgCached(`${name}[${shape ? glyph : ""}]:${activity}`, svg, size);
 }
 
 function renderSvgCached(cacheName: string, svg: string, size: number): GrayImage | null {
@@ -158,18 +190,10 @@ function renderSvgCached(cacheName: string, svg: string, size: number): GrayImag
   if (cached !== undefined) return cached;
 
   let icon: GrayImage | null = null;
-  if (global.isAndroid) {
-    try {
-      const bytes = com.faceclaw.app.IconRenderer.renderSvgGray(svg, Math.round(size), ICON_STROKE_WIDTH);
-      if (bytes && bytes.length >= size * size) {
-        icon = new GrayImage(size, size, 0);
-        for (let i = 0; i < size * size; i++) {
-          icon.pixels[i] = bytes[i] & 0xff;
-        }
-      }
-    } catch (error) {
-      console.warn(`renderIcon(${cacheName}) failed: ${error}`);
-    }
+  try {
+    icon = rasterizeSvg(svg, Math.round(size), ICON_STROKE_WIDTH);
+  } catch (error) {
+    console.warn(`renderIcon(${cacheName}) failed: ${error}`);
   }
   cache.set(key, icon);
   return icon;

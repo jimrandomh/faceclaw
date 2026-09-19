@@ -1,6 +1,8 @@
 import { Utils } from "@nativescript/core";
 
-import { CloudSttClient } from "./cloud-stt";
+import { type CloudSttTranscriptEvent, type CloudSttOptions, CloudSttClient } from "./cloud-stt";
+import { ReconnectingSttClient } from "./reconnecting-stt";
+import { SpeechPauseDetector } from "./speech-pause";
 import { ElevenLabsSttClient } from "./elevenlabs-stt";
 import { OpenAiRealtimeSttClient } from "./openai-stt";
 import { SonioxSttClient } from "./soniox-stt";
@@ -9,12 +11,29 @@ import { toUint8Array } from "../util/array-util";
 declare const com: any;
 
 export type VoiceControlState = {
+  /** One-line state of the capture: progress, "Listening...", or an error. */
   status: string;
+  /**
+   * Whether audio is actually being captured and transcribed right now. False
+   * while the mic is starting, while the phone is showing the permission
+   * prompt, and after an error, so a dialog must not claim to be listening.
+   */
+  listening: boolean;
+  /**
+   * Longer guidance to show in place of the (still empty) transcript, e.g.
+   * what the user has to do on the phone. Empty when there is nothing to say.
+   */
+  detail: string;
 };
 
-export type VoiceProviderKind = "onboard" | "elevenlabs" | "whisper" | "soniox";
+// "whisper" (no "onboard-" prefix) is the OpenAI CLOUD provider (gpt-realtime-whisper,
+// see openai-stt.ts) -- an unfortunate pre-existing name collision with the model
+// family, not with "onboard-whisper" below, which is the on-device sherpa-onnx
+// Whisper backend added alongside "onboard" (Moonshine). Kept as-is rather than
+// renamed, since it's a persisted settings value on real installs already.
+export type VoiceProviderKind = "onboard" | "onboard-whisper" | "elevenlabs" | "whisper" | "soniox";
 
-export type VoiceTranscriptEvent = {
+export type VoiceTranscriptEvent = CloudSttTranscriptEvent & {
   /**
    * Complete best transcript of the current utterance. REPLACE semantics —
    * render as-is, replacing any previous partial. Not a delta.
@@ -24,7 +43,14 @@ export type VoiceTranscriptEvent = {
 };
 
 export type PushToTalkOptions = {
+  /** Native G2 communicator, or null in preview-only mode (see usePhoneMic). */
   communicator: any;
+  /**
+   * Capture from the phone's own microphone instead of the G2 over BLE.
+   * Preview-only mode, where no glasses are connected; everything downstream
+   * (providers, endpointing, verification) works the same on either source.
+   */
+  usePhoneMic?: boolean;
   provider: VoiceProviderKind;
   elevenLabsApiKey: string;
   openAiApiKey: string;
@@ -36,37 +62,86 @@ export type PushToTalkOptions = {
    * Ignored when the mic is already running for another holder.
    */
   endpointing?: boolean;
+  /**
+   * "My voice only": verify the captured utterance against the enrolled
+   * wearer voice-print, and suppress the final transcript when someone else
+   * spoke. wearerEmbedding is the L2-normalized profile centroid.
+   */
+  speakerVerification?: {
+    speakerModelPath: string;
+    wearerEmbedding: Float32Array;
+    threshold: number;
+  };
+  /** Spectral noise suppression on the decoded stream (Microphones config). */
+  noiseSuppression?: boolean;
+  /**
+   * Sonic Radar beam gating: only listen to the configured wedge (device
+   * frame). Null/absent leaves the mic omnidirectional.
+   */
+  beamFilter?: { centerDeg: number; halfWidthDeg: number } | null;
 };
 
 /** Who currently wants the mic running. */
 type CaptureHolder = "ptt" | "continuous";
 
+export type RawPcmListener = (pcm: Uint8Array) => void;
+
+/**
+ * Per-packet DSP metadata the glasses firmware appends to each 50 ms audio
+ * packet: direction-of-arrival in signed degrees (0 = straight ahead,
+ * positive to the wearer's right) and a signal-strength ratio used as a
+ * confidence/energy proxy. Computed on the raw stereo capture before the
+ * firmware's mono downmix, so it survives even though only mono PCM arrives.
+ */
+export type MicFrameMeta = { angleDegrees: number; ssr: number };
+export type FrameMetaListener = (meta: MicFrameMeta) => void;
+
 export class FaceclawVoiceControlBridge {
   private readonly statusListeners = new Set<(state: VoiceControlState) => void>();
-  private readonly wakeWordListeners = new Set<(keyword: string) => void>();
   private readonly transcriptListeners = new Set<(event: VoiceTranscriptEvent) => void>();
+  private readonly speechPauseListeners = new Set<() => void>();
+  private readonly speechPause = new SpeechPauseDetector();
   private readonly speechEndListeners = new Set<() => void>();
   private controller: any | null = null;
   private listenerProxy: any | null = null;
   private status = "Voice control stopped.";
+  private listening = false;
+  private detail = "";
   private started = false;
+  private nativeCaptureFinished: Promise<void> = Promise.resolve();
+  private nextNativeCaptureId = 1;
+  private readonly nativeCaptureResolvers = new Map<number, () => void>();
   // The mic is a single shared stream; these are the reasons it is running.
   // The first holder starts capture (choosing the provider); the mic stops
   // when the last one releases. Transcript events broadcast to every
   // listener, so push-to-talk and the Transcribe window both receive text.
   private readonly captureHolders = new Set<CaptureHolder>();
+  // Holders whose stream died with the glasses session (transport drop,
+  // charging case, EvenHub suspend). They still want the mic, so the next
+  // session restarts it for them; see handleSessionEnded/resumeCapture.
+  private readonly suspendedHolders = new Set<CaptureHolder>();
+  private suspendedRaw = false;
+  // Endpointing of the live capture, replayed when it is resumed.
+  private captureEndpointing = false;
   // Non-null while a cloud provider owns the transcript; Java only decodes PCM.
   private cloudClient: CloudSttClient | null = null;
+  // Raw-PCM tap (EvenHub mic apps): when active, the controller runs in the
+  // decode-only "cloud" mode and every decoded PCM frame is broadcast to these
+  // listeners. STT capture preempts it — a live assistant/transcribe session
+  // owns the single G2 mic and the raw tap is stopped for its duration.
+  private readonly rawPcmListeners = new Set<RawPcmListener>();
+  private readonly frameMetaListeners = new Set<FrameMetaListener>();
+  private rawActive = false;
+  // Set when the current capture session runs "my voice only" verification;
+  // a non-wearer verdict arrives just before the final transcript and makes
+  // the bridge swallow it.
+  private verificationActive = false;
+  private verificationRejected = false;
 
   onStatus(listener: (state: VoiceControlState) => void): () => void {
     this.statusListeners.add(listener);
-    listener({ status: this.status });
+    listener(this.state());
     return () => this.statusListeners.delete(listener);
-  }
-
-  onWakeWord(listener: (keyword: string) => void): () => void {
-    this.wakeWordListeners.add(listener);
-    return () => this.wakeWordListeners.delete(listener);
   }
 
   onTranscript(listener: (event: VoiceTranscriptEvent) => void): () => void {
@@ -83,14 +158,47 @@ export class FaceclawVoiceControlBridge {
     return () => this.speechEndListeners.delete(listener);
   }
 
+  /** Pauses in on-device recognition, for Transcribe's presentation only. */
+  onSpeechPause(listener: () => void): () => void {
+    this.speechPauseListeners.add(listener);
+    return () => this.speechPauseListeners.delete(listener);
+  }
+
+  /**
+   * The capture is blocked on the phone's system microphone-permission
+   * prompt. Reported by the controller before it asks Android, so the dialog
+   * on the glasses can send the user to the phone instead of claiming to
+   * listen; the next status (from the capture start, or reportPermissionDenied)
+   * replaces it.
+   */
+  reportPermissionPrompt(): void {
+    this.setStatus(
+      "Waiting for microphone permission...",
+      "Allow microphone access in the prompt on your phone.",
+    );
+  }
+
+  /** The user declined the microphone permission (or the prompt could not be shown). */
+  reportPermissionDenied(): void {
+    this.setStatus(
+      "Microphone access denied.",
+      "Enable the microphone for Faceclaw in the phone's app settings, then try again.",
+    );
+  }
+
   /** Begin push-to-talk capture (momentary; released with stopPushToTalk). */
   startPushToTalk(options: PushToTalkOptions): void {
     this.acquireCapture("ptt", options);
   }
 
   /** End push-to-talk: for cloud, commit for a final result if it was the last holder. */
-  stopPushToTalk(): void {
+  stopPushToTalk(): Promise<void> | void {
+    // Shared continuous capture keeps running; cloud providers finalize via
+    // their own callbacks. Only a stopped native recognizer must be awaited.
+    const finished = !this.cloudClient && this.captureHolders.has("ptt") && this.captureHolders.size === 1
+      ? this.nativeCaptureFinished : undefined;
     this.releaseCapture("ptt", true);
+    return finished;
   }
 
   /** Begin continuous capture (Transcribe): the mic stays on until released. */
@@ -102,20 +210,112 @@ export class FaceclawVoiceControlBridge {
     this.releaseCapture("continuous", false);
   }
 
+  /** Subscribe to decoded raw mic PCM (16 kHz mono S16LE). */
+  onRawPcm(listener: RawPcmListener): () => void {
+    this.rawPcmListeners.add(listener);
+    return () => this.rawPcmListeners.delete(listener);
+  }
+
+  /** Subscribe to per-packet firmware DSP metadata (DOA angle + SSR). */
+  onFrameMeta(listener: FrameMetaListener): () => void {
+    this.frameMetaListeners.add(listener);
+    return () => this.frameMetaListeners.delete(listener);
+  }
+
+  /**
+   * Start the decode-only raw-PCM tap for an EvenHub mic app. Fails (returns
+   * false) if an STT capture already owns the mic; the caller re-tries when its
+   * eligibility is re-evaluated. Idempotent while already running.
+   */
+  startRawCapture(options: { communicator: any }): boolean {
+    if (!global.isAndroid) return false;
+    if (this.rawActive && this.micIsLive()) return true;
+    // An STT holder owns the mic even while its stream waits on a new glasses
+    // session; the tap re-tries when the app's eligibility is re-evaluated.
+    if (this.captureHolders.size > 0 || this.suspendedHolders.size > 0) return false;
+    // A tap left over from a dead session is not something to share.
+    if (this.started || this.rawActive) this.teardownCapture();
+    this.suspendedRaw = false;
+    this.ensureController();
+    this.controller?.setCommunicator(options.communicator);
+    // The raw tap is strictly the G2 stream; clear any phone-mic flag a
+    // preview-mode capture may have left on the shared controller.
+    this.controller?.setUsePhoneMic(false);
+    this.controller?.setSaveRecordings(false);
+    this.controller?.setEndpointing(false);
+    // Raw means raw: the Microphones session (and EvenHub apps) get the
+    // unprocessed stream and run their own beam/suppression processing.
+    this.controller?.setNoiseSuppression(false);
+    this.controller?.setBeamFilter(false, 0, 180);
+    this.controller?.clearSpeakerVerification();
+    this.cloudClient = null;
+    this.rawActive = true;
+    this.started = true;
+    // "cloud" mode decodes LC3 to PCM and emits it via onPcm without loading
+    // any recognizer; with no cloudClient the frames reach only the raw tap.
+    this.controller?.start("cloud");
+    return true;
+  }
+
+  stopRawCapture(): void {
+    this.suspendedRaw = false;
+    if (!this.rawActive) return;
+    this.rawActive = false;
+    this.started = false;
+    if (global.isAndroid) this.controller?.stop();
+  }
+
   private acquireCapture(holder: CaptureHolder, options: PushToTalkOptions): void {
     if (!global.isAndroid) return;
-    const wasIdle = this.captureHolders.size === 0;
+    // STT preempts the raw-PCM tap: a live transcription session owns the mic,
+    // and an EvenHub app gets no audio for its duration.
+    if (this.rawActive) this.stopRawCapture();
+    // Whether the mic is already running is a question about the stream, not
+    // about this set: a holder whose capture died with the glasses session
+    // (or whose mic enable was refused) is still in it. Trusting the set here
+    // let one stale holder silently swallow every later request for the
+    // process's lifetime.
+    const micLive = this.micIsLive();
+    this.suspendedHolders.delete(holder);
     this.captureHolders.add(holder);
-    if (!wasIdle) {
+    if (micLive) {
       // Mic already running; the new holder just shares the existing stream
       // (transcripts are already broadcast to its listeners).
       return;
     }
+    // Any leftover capture is dead; drop it before starting the new one.
+    if (this.started) this.teardownCapture();
     this.ensureController();
     this.controller?.setCommunicator(options.communicator);
+    this.controller?.setUsePhoneMic(Boolean(options.usePhoneMic));
     this.controller?.setSaveRecordings(options.saveRecording);
     this.controller?.setEndpointing(Boolean(options.endpointing));
+    this.captureEndpointing = Boolean(options.endpointing);
+    this.controller?.setNoiseSuppression(Boolean(options.noiseSuppression));
+    if (options.beamFilter) {
+      this.controller?.setBeamFilter(true, Math.round(options.beamFilter.centerDeg), Math.round(options.beamFilter.halfWidthDeg));
+    } else {
+      this.controller?.setBeamFilter(false, 0, 180);
+    }
+    this.verificationRejected = false;
+    if (options.speakerVerification) {
+      this.verificationActive = true;
+      this.controller?.setSpeakerVerification(
+        options.speakerVerification.speakerModelPath,
+        toJavaFloats(options.speakerVerification.wearerEmbedding),
+        options.speakerVerification.threshold,
+      );
+    } else {
+      this.verificationActive = false;
+      this.controller?.clearSpeakerVerification();
+    }
 
+    this.speechPause.reset();
+    // Replaces whatever the last capture left behind ("Listening...", an
+    // error, the permission prompt) until the controller reports progress.
+    this.setStatus("Starting microphone...");
+    // A previous push-to-talk commit may still be awaiting its final result.
+    this.cloudClient?.stop();
     const cloudClient = this.createCloudClient(options);
     if (cloudClient) {
       this.cloudClient = cloudClient;
@@ -127,7 +327,12 @@ export class FaceclawVoiceControlBridge {
 
     this.cloudClient = null;
     this.started = true;
-    this.controller?.start("onboard");
+    // Which on-device model to load; a no-op setter for every provider except
+    // "onboard-whisper" (FaceclawVoiceController defaults to Moonshine).
+    this.controller?.setOnboardModelKind(options.provider === "onboard-whisper" ? "whisper" : "moonshine");
+    const captureId = this.nextNativeCaptureId++;
+    this.nativeCaptureFinished = new Promise((resolve) => { this.nativeCaptureResolvers.set(captureId, resolve); });
+    this.controller?.start("onboard", captureId);
   }
 
   /**
@@ -136,21 +341,23 @@ export class FaceclawVoiceControlBridge {
    * than failing the capture outright.
    */
   private createCloudClient(options: PushToTalkOptions): CloudSttClient | null {
-    if (options.provider === "onboard") return null;
+    if (options.provider === "onboard" || options.provider === "onboard-whisper") return null;
     const sttOptions = {
       apiKey: "",
-      onTranscript: (event: { text: string; isFinal: boolean }) =>
-        this.emitTranscript(event.text, event.isFinal),
+      onTranscript: (event: CloudSttTranscriptEvent) =>
+        this.emitTranscript(event.text, event.isFinal, event),
       onStatus: (status: string) => this.setStatus(status),
       onError: (message: string) => this.setStatus(message),
     };
+    const reconnecting = (create: (options: CloudSttOptions) => CloudSttClient, apiKey: string) =>
+      new ReconnectingSttClient(create, { ...sttOptions, apiKey }, () => this.captureHolders.has("continuous"));
     if (options.provider === "elevenlabs") {
       const apiKey = options.elevenLabsApiKey.trim();
       if (!apiKey) {
         this.setStatus("No ElevenLabs key set; using on-device voice.");
         return null;
       }
-      return new ElevenLabsSttClient({ ...sttOptions, apiKey });
+      return reconnecting((config) => new ElevenLabsSttClient(config), apiKey);
     }
     if (options.provider === "soniox") {
       const apiKey = options.sonioxApiKey.trim();
@@ -158,17 +365,20 @@ export class FaceclawVoiceControlBridge {
         this.setStatus("No Soniox key set; using on-device voice.");
         return null;
       }
-      return new SonioxSttClient({ ...sttOptions, apiKey });
+      return reconnecting((config) => new SonioxSttClient(config), apiKey);
     }
     const apiKey = options.openAiApiKey.trim();
     if (!apiKey) {
       this.setStatus("No OpenAI key set; using on-device voice.");
       return null;
     }
-    return new OpenAiRealtimeSttClient({ ...sttOptions, apiKey });
+    return reconnecting((config) => new OpenAiRealtimeSttClient(config), apiKey);
   }
 
   private releaseCapture(holder: CaptureHolder, commit: boolean): void {
+    // A holder that gives up while its capture is parked must not be resumed
+    // by the next session.
+    this.suspendedHolders.delete(holder);
     if (!this.captureHolders.delete(holder)) {
       // Never held; still finish a dangling cloud commit if one is pending.
       if (commit) this.cloudClient?.finish();
@@ -196,13 +406,82 @@ export class FaceclawVoiceControlBridge {
 
   stop(): void {
     this.captureHolders.clear();
+    this.suspendedHolders.clear();
+    this.suspendedRaw = false;
+    this.teardownCapture();
+    this.setStatus("Voice control stopped.");
+  }
+
+  /**
+   * The glasses session ended under a live capture (transport drop, charging
+   * case, EvenHub suspend). Its mic enable did not survive, so drop the local
+   * capture state — leaving it in place would make the holder set claim a
+   * stream that no longer exists — and remember who was holding so
+   * resumeCapture() can bring the mic back on the next session.
+   */
+  handleSessionEnded(): void {
+    if (this.captureHolders.size === 0 && !this.started && !this.rawActive) return;
+    for (const holder of this.captureHolders) {
+      this.suspendedHolders.add(holder);
+    }
+    this.captureHolders.clear();
+    this.suspendedRaw = this.rawActive;
+    this.teardownCapture();
+    if (this.suspendedHolders.size > 0) {
+      this.setStatus("Waiting for the glasses...");
+    }
+  }
+
+  /** Whether a capture is parked waiting for a session to come back. */
+  hasSuspendedCapture(): boolean {
+    return this.suspendedHolders.size > 0 || this.suspendedRaw;
+  }
+
+  /** Whether anyone holds the mic, including across a session outage. */
+  isCaptureHeld(): boolean {
+    return this.captureHolders.size > 0 || this.suspendedHolders.size > 0;
+  }
+
+  /**
+   * A fresh glasses session is ready (its display path warmed up, so a mic
+   * enable will be accepted): restart the mic for every holder that was
+   * capturing when the last session ended. Mic permission was granted for the
+   * original capture and cannot be revoked without restarting the process, so
+   * this does not ask again.
+   */
+  resumeCapture(options: Omit<PushToTalkOptions, "endpointing">): void {
+    const holders = Array.from(this.suspendedHolders);
+    const resumeRaw = this.suspendedRaw;
+    this.suspendedHolders.clear();
+    this.suspendedRaw = false;
+    for (const holder of holders) {
+      this.acquireCapture(holder, { ...options, endpointing: this.captureEndpointing });
+    }
+    if (resumeRaw && !holders.length) {
+      this.startRawCapture({ communicator: options.communicator });
+    }
+  }
+
+  /**
+   * Whether the glasses mic is actually streaming. The holder set and
+   * `started` are phone-side bookkeeping; the enable itself lives in the
+   * glasses session, so the controller (via the communicator) is the only
+   * authority on whether audio is still flowing.
+   */
+  private micIsLive(): boolean {
+    if (!global.isAndroid || !this.started) return false;
+    return Boolean(this.controller?.isCapturing());
+  }
+
+  /** Stop the native capture and any cloud client; leaves holders alone. */
+  private teardownCapture(): void {
+    this.rawActive = false;
     if (global.isAndroid) {
       this.controller?.stop();
     }
     this.started = false;
     this.cloudClient?.stop();
     this.cloudClient = null;
-    this.setStatus("Voice control stopped.");
   }
 
   private ensureController(): void {
@@ -214,41 +493,89 @@ export class FaceclawVoiceControlBridge {
     this.controller = new com.faceclaw.app.FaceclawVoiceController(context);
     this.listenerProxy = new com.faceclaw.app.FaceclawVoiceControllerListener({
       onStatus: (status: string) => {
+        // The raw tap runs silently; its "Listening (cloud)..." chatter must
+        // not surface on the glasses voice status.
+        if (this.rawActive) return;
         this.setStatus(String(status));
-      },
-      onWakeWord: (keyword: string) => {
-        for (const listener of this.wakeWordListeners) {
-          listener(String(keyword));
-        }
       },
       onTranscript: (text: string, isFinal: boolean) => {
         this.emitTranscript(String(text), Boolean(isFinal));
       },
+      onStopped: (captureId: number) => {
+        this.nativeCaptureResolvers.get(captureId)?.();
+        this.nativeCaptureResolvers.delete(captureId);
+      },
       onPcm: (pcm: any) => {
-        this.cloudClient?.acceptPcm(toUint8Array(pcm));
+        const bytes = toUint8Array(pcm);
+        this.cloudClient?.acceptPcm(bytes);
+        if (!this.cloudClient && this.captureHolders.has("continuous") && this.speechPause.accept(bytes)) {
+          for (const listener of this.speechPauseListeners) listener();
+        }
+        if (this.rawPcmListeners.size > 0) {
+          this.rawPcmListeners.forEach((listener) => listener(bytes));
+        }
+      },
+      onFrameMeta: (angleDegrees: number, ssr: number) => {
+        if (this.frameMetaListeners.size === 0) return;
+        const meta = { angleDegrees: Number(angleDegrees), ssr: Number(ssr) };
+        this.frameMetaListeners.forEach((listener) => listener(meta));
       },
       onSpeechEnd: () => {
         for (const listener of this.speechEndListeners) {
           listener();
         }
       },
+      onSpeakerVerified: (isWearer: boolean, similarity: number) => {
+        if (!this.verificationActive) return;
+        this.verificationRejected = !isWearer;
+        if (!isWearer) {
+          this.setStatus(
+            `Ignored — not your enrolled voice (match ${Math.round(Number(similarity) * 100)}%).`,
+          );
+        }
+      },
     });
     this.controller.setListener(this.listenerProxy);
   }
 
-  private emitTranscript(text: string, isFinal: boolean): void {
-    const event = { text, isFinal };
+  private emitTranscript(text: string, isFinal: boolean, metadata?: CloudSttTranscriptEvent): void {
+    // "My voice only": a rejected session's final transcript is emptied so
+    // nothing downstream (assistant, dictation) acts on another speaker's
+    // words. The verification verdict is posted before the final, and cloud
+    // finals arrive over the network later still, so the flag is settled.
+    if (isFinal && this.verificationActive && this.verificationRejected) {
+      text = "";
+      metadata = undefined;
+    }
+    const event = { ...metadata, text, isFinal };
     for (const listener of this.transcriptListeners) {
       listener(event);
     }
   }
 
-  private setStatus(status: string): void {
+  private setStatus(status: string, detail = ""): void {
     this.status = status;
+    this.detail = detail;
+    // Every "audio is flowing" report — from the Java controller and from the
+    // cloud providers — is phrased "Listening..." / "Listening (X)...".
+    this.listening = status.startsWith("Listening");
+    const state = this.state();
     for (const listener of this.statusListeners) {
-      listener({ status });
+      listener(state);
     }
   }
+
+  private state(): VoiceControlState {
+    return { status: this.status, listening: this.listening, detail: this.detail };
+  }
+}
+
+function toJavaFloats(values: Float32Array): any {
+  const javaFloats = Array.create("float", values.length);
+  for (let i = 0; i < values.length; i++) {
+    javaFloats[i] = values[i]!;
+  }
+  return javaFloats;
 }
 
 export const voiceControlBridge = new FaceclawVoiceControlBridge();

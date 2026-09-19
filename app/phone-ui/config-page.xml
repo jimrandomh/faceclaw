@@ -1,37 +1,47 @@
 <Page xmlns="http://schemas.nativescript.org/tns.xsd" navigatingTo="navigatingTo">
     <ActionBar title="Configure Devices" />
 
-    <GridLayout rows="auto,auto,auto,auto,auto,auto,auto,*" class="p-20">
-        <Label row="0" text="Configure the MAC addresses for the G2 headset arms and optional R1 ring. This page does not test a connection." textWrap="true" />
+    <GridLayout rows="auto,auto,auto,auto,auto,auto,auto,auto,*" class="p-20">
+        <Label row="0" text="Configure the MAC addresses for the G2 headset arms and optional R1 ring. This page does not test a connection." class="body-text" textWrap="true" />
 
-        <StackLayout row="1" class="m-t-16">
+        <GridLayout row="1" columns="96,*" class="pairing-row m-t-12" visibility="{{ identityVisibility }}">
+            <Image col="0" src="{{ identityImagePath }}" stretch="aspectFit" width="90" height="34" />
+            <StackLayout col="1" class="m-l-8">
+                <Label text="{{ identityTitle }}" class="pairing-title" />
+                <Label text="{{ identityVariant }}" class="pairing-variant" visibility="{{ identityVariantVisibility }}" />
+                <Label text="{{ identitySerial }}" class="pairing-serial" />
+                <Label text="{{ identityDetail }}" class="pairing-arms" textWrap="true" />
+            </StackLayout>
+        </GridLayout>
+
+        <StackLayout row="2" class="m-t-16">
             <Label text="Right arm MAC" />
-            <TextField text="{{ rightAddress }}" textChange="{{ onRightAddressTextChange }}" autocorrect="false" autocapitalizationType="none" />
-        </StackLayout>
-
-        <StackLayout row="2" class="m-t-12">
-            <Label text="Left arm MAC" />
-            <TextField text="{{ leftAddress }}" textChange="{{ onLeftAddressTextChange }}" autocorrect="false" autocapitalizationType="none" />
+            <TextField accessibilityLabel="Right arm MAC" text="{{ rightAddress }}" textChange="{{ onRightAddressTextChange }}" autocorrect="false" autocapitalizationType="none" />
         </StackLayout>
 
         <StackLayout row="3" class="m-t-12">
-            <Label text="R1 ring MAC (optional)" />
-            <TextField text="{{ ringAddress }}" textChange="{{ onRingAddressTextChange }}" autocorrect="false" autocapitalizationType="none" />
+            <Label text="Left arm MAC" />
+            <TextField accessibilityLabel="Left arm MAC" text="{{ leftAddress }}" textChange="{{ onLeftAddressTextChange }}" autocorrect="false" autocapitalizationType="none" />
         </StackLayout>
 
-        <GridLayout row="4" columns="*,*" class="m-t-16">
-            <Button col="0" text="Load paired devices" tap="{{ onLoadPairedTap }}" class="-primary" isEnabled="{{ canDiscover }}" />
-            <Button col="1" text="Scan nearby" tap="{{ onScanTap }}" class="-primary" isEnabled="{{ canDiscover }}" />
+        <StackLayout row="4" class="m-t-12">
+            <Label text="R1 ring MAC (optional)" />
+            <TextField accessibilityLabel="R1 ring MAC" text="{{ ringAddress }}" textChange="{{ onRingAddressTextChange }}" autocorrect="false" autocapitalizationType="none" />
+        </StackLayout>
+
+        <GridLayout row="5" columns="*,*" class="m-t-16">
+            <Button col="0" text="Load paired devices" visibility="{{ pairedDevicesVisibility }}" tap="{{ onLoadPairedTap }}" class="-primary" isEnabled="{{ canDiscover }}" />
+            <Button col="1" text="Scan for glasses" tap="{{ onScanTap }}" class="-primary" isEnabled="{{ canDiscover }}" />
         </GridLayout>
 
-        <Label row="5" text="{{ status }}" class="m-t-16" textWrap="true" />
+        <Label row="6" text="{{ status }}" class="body-text m-t-16" textWrap="true" />
 
-        <GridLayout row="6" columns="*,*" class="m-t-16">
-            <Button col="0" text="{{ saveLabel }}" tap="{{ onSaveTap }}" class="-primary" />
-            <Button col="1" text="Back" tap="{{ onBackTap }}" />
+        <GridLayout row="7" columns="*,*" class="m-t-16">
+            <Button col="0" text="Back" tap="{{ onBackTap }}" />
+            <Button col="1" text="{{ saveLabel }}" tap="{{ onSaveTap }}" class="-primary" />
         </GridLayout>
 
-        <ScrollView row="7" class="m-t-16">
+        <ScrollView row="8" class="m-t-16">
             <Label text="{{ discoveryLog }}" textWrap="true" verticalAlignment="top" />
         </ScrollView>
     </GridLayout>

@@ -11,6 +11,7 @@ export type CommunicatorPhase =
   | "connected"
   | "charging"
   | "retrying"
+  | "unpaired"
   | "disconnecting";
 
 export type CommunicatorState = {
@@ -21,6 +22,8 @@ export type CommunicatorState = {
 export type HeadsetBatteryState = {
   battery: number;
   chargingStatus: number;
+  ringBattery?: number;
+  ringChargingStatus?: number;
 };
 
 export type FrameMetrics = {
@@ -29,11 +32,9 @@ export type FrameMetrics = {
   tileCount: number;
 };
 
-export type FirmwareInfo = {
-  leftVersion: string;
-  rightVersion: string;
-  capabilities: string;
-};
+import { type FirmwareInfo } from "../g2/firmware-compat";
+
+export type { FirmwareInfo };
 
 /**
  * Compositor surface configuration. Position/size are in screen pixels;
@@ -91,6 +92,18 @@ export type RawInputEvent =
     }
   | {
       /**
+       * Synthetic directional gesture from the Wear OS remote; `eventType` is
+       * a WatchGestureType (app/g2/events.ts). Never produced by Java.
+       */
+      kind: "watch-gesture";
+      containerName: string;
+      eventType: number;
+      eventSource: number;
+      systemExitReasonCode: number;
+      frameId: number;
+    }
+  | {
+      /**
        * Stock display-lifecycle wake observed after a ring or arm double tap
        * while Faceclaw's EvenHub page is suspended.
        */
@@ -107,10 +120,17 @@ function nonNegativeNumber(value: number): number {
   return Number.isFinite(numeric) ? Math.max(0, numeric) : 0;
 }
 
+/** A 0..1 brightness factor as the compositor's 0..256 fixed-point form. */
+export function dimFactor256(factor: number): number {
+  return Math.round(Math.max(0, Math.min(1, factor)) * 256);
+}
+
 export class FaceclawCommunicatorBridge {
   private readonly communicator: any;
   private readonly listenerProxy: any;
   private javaCallQueue: Promise<void> = Promise.resolve();
+  /** Calls waiting on javaCallQueue; 0 means enqueueJavaCall's fast path is safe. */
+  private queuedJavaCalls = 0;
   private readonly frameMetricWaiters = new Set<(metrics: FrameMetrics) => void>();
   // Recent frame-finished outcomes from the Java side, so waitForFrameFinished
   // does not race against finishes that land before the wait starts.
@@ -169,10 +189,12 @@ export class FaceclawCommunicatorBridge {
         frameTimings.logFrame(event.frameId, "input event received on JS side");
         this.emitAsync(this.ringListeners, event);
       },
-      onBatteryState: (headsetBattery: number, headsetCharging: number) => {
+      onBatteryState: (headsetBattery: number, headsetCharging: number, ringBattery: number, ringCharging: number) => {
         const state = {
           battery: Number(headsetBattery),
           chargingStatus: Number(headsetCharging),
+          ringBattery: Number(ringBattery),
+          ringChargingStatus: Number(ringCharging),
         };
         this.emitAsync(this.batteryListeners, state);
       },
@@ -206,11 +228,11 @@ export class FaceclawCommunicatorBridge {
       onFrameFinished: (frameId: number, outcome: string) => {
         this.recordFrameFinished(Number(frameId), String(outcome));
       },
-      onFirmwareInfo: (leftVersion: string, rightVersion: string, capabilities: string) => {
-        const info = {
+      onFirmwareInfo: (leftVersion: string, rightVersion: string, extension: string) => {
+        const info: FirmwareInfo = {
           leftVersion: String(leftVersion),
           rightVersion: String(rightVersion),
-          capabilities: String(capabilities),
+          extension: String(extension),
         };
         this.emitAsync(this.firmwareInfoListeners, info);
       },
@@ -227,10 +249,30 @@ export class FaceclawCommunicatorBridge {
     }, 0);
   }
 
-  private enqueueJavaCall<T>(operation: () => T): Promise<T> {
+  /**
+   * Run a Java call, ordered against every other call made through here.
+   *
+   * inlineWhenIdle runs the call on the spot when nothing is queued ahead of
+   * it. Ordering still holds — the fast path only fires when no earlier call
+   * is waiting — and it skips a task-queue hop that measured ~18ms on device
+   * (the gap between "span submit start" and the Java side's own log line in
+   * the frame timings), which is pure latency on a call the caller is already
+   * awaiting. Off by default: a call that might block for a while should keep
+   * yielding to the main looper first.
+   */
+  private enqueueJavaCall<T>(operation: () => T, inlineWhenIdle = false): Promise<T> {
+    if (inlineWhenIdle && this.queuedJavaCalls === 0) {
+      try {
+        return Promise.resolve(operation());
+      } catch (error) {
+        return Promise.reject(error);
+      }
+    }
+    this.queuedJavaCalls++;
     const run = () =>
       new Promise<T>((resolve, reject) => {
         setTimeout(() => {
+          this.queuedJavaCalls--;
           try {
             resolve(operation());
           } catch (error) {
@@ -421,10 +463,14 @@ export class FaceclawCommunicatorBridge {
     });
   }
 
-  /** Phone-UI preview of the current composited screen, or null if none yet. */
-  getCompositePreview(): ImageSource | null {
+  /**
+   * Phone-UI preview of the current composited screen, or null if none yet.
+   * `green` tints it green-on-black (the Preview color setting) instead of
+   * grayscale.
+   */
+  getCompositePreview(green = false): ImageSource | null {
     if (!global.isAndroid) return null;
-    const bitmap = this.communicator.getCompositePreviewBitmap(PREVIEW_BRIGHTEN_GAMMA);
+    const bitmap = this.communicator.getCompositePreviewBitmap(PREVIEW_BRIGHTEN_GAMMA, green);
     return bitmap ? new ImageSource(bitmap) : null;
   }
 
@@ -485,6 +531,18 @@ export class FaceclawCommunicatorBridge {
     });
   }
 
+  /**
+   * Dim every compositor surface whose zOrder is below `belowZOrder` to
+   * `factor` (0..1; 1 = no dimming) of its brightness; takes effect at the
+   * next composite. How a shell overlay's Layer.dimUnderneath reaches the
+   * window surfaces beneath the shell surface.
+   */
+  async setUnderlayDim(belowZOrder: number, factor: number): Promise<void> {
+    await this.enqueueJavaCall(() => {
+      this.communicator.setUnderlayDim(Math.round(belowZOrder), dimFactor256(factor));
+    });
+  }
+
   /** Show or hide a compositor surface; takes effect at the next composite. */
   async setSurfaceVisible(id: string, visible: boolean): Promise<void> {
     await this.enqueueJavaCall(() => {
@@ -515,11 +573,19 @@ export class FaceclawCommunicatorBridge {
     fingerprint: string,
     paintMs = -1,
     frameId = 0,
+    /**
+     * The frame's glyph draws in surface coordinates (see
+     * graphics/glyph-wire.ts prepareFrameGlyphs); lets the texture-cache
+     * pipeline ship text as on-glasses cached draws instead of pixels.
+     */
+    glyphs: ArrayBuffer | null = null,
   ): Promise<void> {
     // Snapshot because the Java call is deferred; the buffer is passed as an
     // ArrayBuffer, which NativeScript marshals to a ByteBuffer without the
     // ~150ms per-element copy a byte[] parameter would need.
     const snapshot = new Uint8Array(pixels8bpp);
+    // inlineWhenIdle: this is the frame path, the Java side of it measures
+    // ~5ms (composite + pack), and the caller awaits it either way.
     await this.enqueueJavaCall(() => {
       this.communicator.submitSurfaceFrame(
         snapshot.buffer,
@@ -531,8 +597,9 @@ export class FaceclawCommunicatorBridge {
         fingerprint,
         Math.round(nonNegativeNumber(paintMs)),
         Math.round(nonNegativeNumber(frameId)),
+        glyphs,
       );
-    });
+    }, true);
   }
 
   async disconnect(): Promise<void> {
@@ -541,6 +608,15 @@ export class FaceclawCommunicatorBridge {
 
   async sendShutdown(exitMode = 0): Promise<boolean> {
     return this.enqueueJavaCall(() => Boolean(this.communicator.sendShutdown(exitMode)));
+  }
+
+  /**
+   * Ask CFW mode 11 to release all custom-session state. On success this must
+   * remain the final Faceclaw message before close(); false requests the legacy
+   * shutdown/release fallback for older firmware.
+   */
+  async sendCfwCleanup(): Promise<boolean> {
+    return this.enqueueJavaCall(() => Boolean(this.communicator.sendCfwCleanup()));
   }
 
   /**
@@ -570,7 +646,7 @@ export class FaceclawCommunicatorBridge {
   }
 
   /**
-   * Resolve only once the recreated layout, image warmup, and retained frame
+   * Resolve only once the recreated layout and retained frame
    * are visible. CFW's deferred-dashboard READY is emitted from this barrier.
    */
   async awaitEvenHubSessionReady(timeoutMs: number): Promise<boolean> {

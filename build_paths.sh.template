@@ -1,0 +1,9 @@
+# Copy this file to build_paths.sh and add any paths or other prelude needed
+# before build. Other build scripts will `source` it.
+
+#export JAVA_HOME=
+#export ANDROID_HOME=
+#export PATH=
+#export ANDROID_KEYSTORE=
+#export DEVICE_ID=
+

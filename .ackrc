@@ -1,4 +1,6 @@
 --ignore-file=match:.mjs
+--ignore-file=match:frame-timings*
 --ignore-dir=tempPlugin
 --ignore-dir=build
---ignore-dir=platforms/android/build-tools
+--ignore-dir=old
+--ignore-dir=platforms

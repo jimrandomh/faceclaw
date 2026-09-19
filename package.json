@@ -4,19 +4,35 @@
   "version": "1.0.0",
   "private": false,
   "scripts": {
-    "build": "nativescript build android"
+    "native:android": "node scripts/kotlin-build.cjs android",
+    "native:ios": "node scripts/kotlin-build.cjs ios",
+    "test:kotlin": "bash scripts/test-kotlin.sh",
+    "build:ios": "scripts/ios.sh build ios --for-device",
+    "run:ios": "scripts/ios.sh run ios",
+    "prepare:ios": "scripts/ios.sh prepare ios",
+    "doctor:ios": "scripts/ios.sh doctor ios",
+    "build": "./build.sh",
+    "run": "./build_and_run.sh",
+    "release": "scripts/release.sh",
+    "clean": "rm -rf platforms",
+    "test": "tsc -p tests/tsconfig.json && node --test tests/*.test.cjs",
+    "test:kotlin:ios": "bash scripts/test-kotlin.sh iosSimulatorArm64Test compileKotlinIosArm64"
   },
   "dependencies": {
+    "@evenrealities/pretext": "^0.1.4",
+    "@faceclaw/kotlin": "file:native/kotlin/plugin",
     "@nativescript/core": "~9.0.0",
     "@nativescript/theme": "^3.1.0",
     "@xterm/headless": "^6.0.0",
+    "fzstd": "^0.1.1",
     "lodash": "^4.18.1",
     "lz4js": "^0.2.0",
     "pako": "^2.1.0",
     "upng-js": "^2.1.0"
   },
   "devDependencies": {
-    "@nativescript/android": "9.0.4",
+    "@nativescript/android": "9.1.1",
+    "@nativescript/ios": "9.0.3",
     "@nativescript/types": "~9.0.0",
     "@nativescript/webpack": "~5.0.25",
     "typescript": "~5.4.0"

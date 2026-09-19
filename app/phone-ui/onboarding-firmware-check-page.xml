@@ -1,16 +1,23 @@
-<Page xmlns="http://schemas.nativescript.org/tns.xsd" navigatingTo="navigatingTo" actionBarHidden="true">
+<Page xmlns="http://schemas.nativescript.org/tns.xsd" navigatingTo="navigatingTo" navigatingFrom="navigatingFrom" actionBarHidden="true">
     <GridLayout rows="*,auto" class="p-20">
         <ScrollView row="0">
             <StackLayout>
                 <Label text="{{ headline }}" class="h1 text-center m-t-24" textWrap="true" />
                 <ActivityIndicator busy="{{ busy }}" visibility="{{ busyVisibility }}" class="m-t-16" />
-                <Label text="{{ status }}" class="m-t-16 text-center" textWrap="true" />
+                <Label text="{{ status }}" class="body-text m-t-16 text-center" textWrap="true" />
             </StackLayout>
         </ScrollView>
 
-        <GridLayout row="1" columns="*,*" class="m-t-20">
-            <Button col="0" text="{{ secondaryLabel }}" tap="{{ onSecondaryTap }}" visibility="{{ secondaryVisibility }}" />
-            <Button col="1" text="{{ primaryLabel }}" tap="{{ onPrimaryTap }}" visibility="{{ primaryVisibility }}" class="-primary" />
-        </GridLayout>
+        <StackLayout row="1" class="m-t-20">
+            <!-- Error-only escape hatches: flash anyway, or trust that the custom firmware is present. -->
+            <GridLayout columns="*,*" visibility="{{ errorActionsVisibility }}">
+                <Button col="0" text="Install" tap="{{ onInstallTap }}" />
+                <Button col="1" text="Skip" tap="{{ onSkipTap }}" />
+            </GridLayout>
+            <GridLayout columns="*,*">
+                <Button col="0" text="{{ secondaryLabel }}" tap="{{ onSecondaryTap }}" visibility="{{ secondaryVisibility }}" />
+                <Button col="1" text="{{ primaryLabel }}" tap="{{ onPrimaryTap }}" visibility="{{ primaryVisibility }}" class="-primary" />
+            </GridLayout>
+        </StackLayout>
     </GridLayout>
 </Page>

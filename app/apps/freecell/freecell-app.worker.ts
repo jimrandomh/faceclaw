@@ -1,34 +1,48 @@
 /**
  * Freecell solitaire app worker. One singleton window holds a standard
  * 52-card Freecell game: 8 cascades, 4 free cells, 4 foundations. Red suits
- * render dim and black suits bright, since the display has no color.
+ * have a bright marker beside their label, since the display has no color.
  *
  * Controls: scroll moves a cursor through the 16 locations (free cells,
  * foundations, then cascades, wrapping). Click selects a source, then click
  * on a destination moves there; cascade-to-cascade moves take the longest
  * legal run that fits (supermoves via empty cells/columns). Double-click
  * sends the card at the cursor to its foundation, or cancels a pending
- * selection. Long-press opens the window menu (undo, new game, restart).
+ * selection. Tap-then-hold opens the window menu (undo, new game, restart).
+ * Watch swipes move the cursor spatially: left/right within the row, up/down
+ * between the top row (cells + foundations) and the cascades.
+ * The cursor skips locations that can't take part in the move being built:
+ * with nothing selected, empty spots and the foundations (never a source);
+ * with a source selected, filled free cells and foundations that can't
+ * accept the card (see isCursorEligible).
  * Safe cards auto-play to the foundations after every move.
  */
 import "@nativescript/core/globals";
 import { GrayImage } from "../../graphics/image";
-import { getDefaultSmallFont, getFont } from "../../graphics/bdffont";
+import { flattenPlanesWithDraws, planesFingerprint, singlePlane, type Plane } from "../../graphics/plane";
+import { prepareFrameDraws } from "../../graphics/glyph-wire";
+import { getFont } from "../../graphics/bdffont";
+import { ensurePreinstalledFonts, installedFontPath } from "../../graphics/installed-fonts";
+import { TtfFont } from "../../graphics/ttf-font";
 import * as frameTimings from "../../native/frame-timings";
-import type { DashboardInputEvent } from "../../ui/layers";
+import { playWorkerBuzzerSequence } from "../../native/worker-buzzer";
+import { getActiveDisplay } from "../../native/active-display";
 import { buildSoundSequencePayload, type Step } from "../../ui/sound-effects";
-import { defaultWindowMenuItems, WindowMenu } from "../../ui/window-menu";
+import { loadSoundEnabled, saveSoundEnabled } from "../../ui/sound-setting";
+import { WindowMenu } from "../../ui/window-menu";
 import type { MenuItem } from "../../ui/menu";
 import type { WorkerAppMessage, WorkerAppReply } from "../../ui/shell/worker-window";
-import { GESTURE_CLICK, GESTURE_DOUBLE_CLICK, GESTURE_LONG_PRESS } from "../../ui/gestures";
+import { directionalFallback, GESTURE_CLICK, GESTURE_DOUBLE_CLICK, GESTURE_LONG_PRESS, type InputEvent } from "../../ui/gestures";
 
 declare const global: any;
-declare const com: any;
 
-const largeFont = getFont("terminus32");
-const mediumFont = getFont("terminus24");
-const labelFont = getFont("terminus16");
-const smallFont = getDefaultSmallFont();
+ensurePreinstalledFonts();
+const fontPath = installedFontPath("Roboto-Regular.ttf");
+const largeFont = TtfFont.load(fontPath, 28) ?? getFont("terminus32");
+const mediumFont = TtfFont.load(fontPath, 18) ?? getFont("terminus24");
+const labelFont = TtfFont.load(fontPath, 14) ?? getFont("terminus16");
+const suitFont = TtfFont.load(fontPath, 10) ?? getFont("terminus16");
+const smallFont = TtfFont.load(fontPath, 12) ?? getFont("terminus12");
 
 /** Cards are 0..51: suit = card % 4 (♠♥♣♦, alternating colors), rank 1..13. */
 const SUIT_CHARS = ["♠", "♥", "♣", "♦"] as const;
@@ -46,10 +60,6 @@ function isRed(card: number): boolean {
 function cardLabel(card: number): string {
   return RANK_CHARS[rankOf(card)]! + SUIT_CHARS[suitOf(card)]!;
 }
-
-/** Red suits render dimmer than black so card color survives grayscale. */
-const BLACK_SHADE = 255;
-const RED_SHADE = 150;
 
 const CARD_W = 60;
 const CARD_H = 36;
@@ -95,12 +105,13 @@ type Snapshot = {
 type FreecellWindow = {
   windowId: string;
   surfaceId: string;
+  title: string;
   viewportWidth: number;
   viewportHeight: number;
   foreground: boolean;
   /** Whether this window is the shell's input target (pushed with each message). */
   focused: boolean;
-  /** Long-press window menu; created on first open. */
+  /** Tap-then-hold window menu; created on first open. */
   menu: WindowMenu | null;
   phase: "playing" | "won";
   cascades: number[][];
@@ -124,6 +135,12 @@ function post(message: WorkerAppReply): void {
   global.postMessage(message);
 }
 
+// The host queues messages until this arrives: posts to a worker whose bundle
+// is still evaluating can be silently dropped (see WorkerAppHost). Top-level
+// evaluation is synchronous, so the handler below is installed before any
+// queued message can be delivered.
+post({ type: "worker-ready" });
+
 global.onmessage = (event: { data: WorkerAppMessage }) => {
   const message = event.data;
   switch (message.type) {
@@ -131,6 +148,7 @@ global.onmessage = (event: { data: WorkerAppMessage }) => {
       const window: FreecellWindow = {
         windowId: message.windowId,
         surfaceId: message.surfaceId,
+        title: message.title,
         viewportWidth: message.viewport.width,
         viewportHeight: message.viewport.height,
         foreground: false,
@@ -145,7 +163,7 @@ global.onmessage = (event: { data: WorkerAppMessage }) => {
         moves: 0,
         cursor: LOC_CASCADE0,
         selected: null,
-        soundOn: true,
+        soundOn: loadSoundEnabled("freecell"),
         lastSubmittedFingerprint: "",
       };
       newGame(window, false);
@@ -162,7 +180,10 @@ global.onmessage = (event: { data: WorkerAppMessage }) => {
         break;
       }
       window.focused = message.focused;
-      handleInput(window, message.event as DashboardInputEvent, message.frameId);
+      // Marks the main-thread -> worker hop, which is otherwise an
+      // unexplained gap inside the shell's handle-input span.
+      frameTimings.logFrame(message.frameId, `input received in ${message.windowId} worker`);
+      handleInput(window, message.event as InputEvent, message.frameId);
       break;
     }
     case "render": {
@@ -185,21 +206,19 @@ global.onmessage = (event: { data: WorkerAppMessage }) => {
 
 /**
  * Fire a buzzer effect. Non-blocking: the firmware's sequencer plays the
- * steps on its own timer, and the Java call is safe from the worker thread.
+ * steps on its own timer; the platform bridge routes it from the worker.
  */
 function playSfx(window: FreecellWindow, steps: Step[]): void {
   if (!window.soundOn || steps.length === 0) return;
   try {
-    const communicator = com.faceclaw.app.FaceclawBleCommunicator.getActive();
-    if (!communicator) return;
-    communicator.playBuzzerSequence(buildSoundSequencePayload(steps).buffer);
+    playWorkerBuzzerSequence(buildSoundSequencePayload(steps));
   } catch (error) {
     console.warn(`freecell sfx failed: ${error}`);
   }
 }
 
-/** The window's long-press menu (game actions + default entries). */
-function openWindowMenu(window: FreecellWindow): void {
+/** The window's context menu (game actions). */
+function windowMenuItems(window: FreecellWindow): MenuItem[] {
   const items: MenuItem[] = [];
   if (window.undoStack.length > 0 && window.phase === "playing") {
     items.push({
@@ -232,16 +251,21 @@ function openWindowMenu(window: FreecellWindow): void {
       onSelect: (ctx) => {
         ctx.stack.pop();
         window.soundOn = !window.soundOn;
+        saveSoundEnabled("freecell", window.soundOn);
         if (window.soundOn) playSfx(window, SFX_NEW_GAME);
       },
     },
   );
-  windowMenu(window).open([...items, ...defaultWindowMenuItems(window.windowId, post)]);
+  return items;
 }
 
 function windowMenu(window: FreecellWindow): WindowMenu {
   if (!window.menu) {
     window.menu = new WindowMenu({
+      windowId: window.windowId,
+      post,
+      title: () => window.title,
+      items: () => windowMenuItems(window),
       size: { width: window.viewportWidth, height: window.viewportHeight },
       paintBase: () => paintContent(window),
       isFocused: () => window.focused,
@@ -250,11 +274,12 @@ function windowMenu(window: FreecellWindow): WindowMenu {
   return window.menu;
 }
 
-function handleInput(window: FreecellWindow, event: DashboardInputEvent, frameId: number): void {
-  // An open window menu owns all input (it closes itself via pop).
+function handleInput(window: FreecellWindow, event: InputEvent, frameId: number): void {
+  // An open window menu owns all input (it closes itself via pop); menus are
+  // list UIs, so watch swipes take their standard fallback meanings there.
   if (window.menu?.isOpen()) {
     window.menu
-      .handleInput(event)
+      .handleInput(directionalFallback(event))
       .catch((error) => console.error(`freecell menu input failed: ${error}`))
       .then(() => renderAndSubmit(window, frameId));
     return;
@@ -267,13 +292,28 @@ function handleInput(window: FreecellWindow, event: DashboardInputEvent, frameId
   }
 }
 
-function handlePlayingInput(window: FreecellWindow, event: DashboardInputEvent, frameId: number): void {
+function handlePlayingInput(window: FreecellWindow, event: InputEvent, frameId: number): void {
   switch (event.type) {
     case "scroll-up":
-      window.cursor = (window.cursor + LOC_COUNT - 1) % LOC_COUNT;
+      moveCursor(window, -1);
       break;
     case "scroll-down":
-      window.cursor = (window.cursor + 1) % LOC_COUNT;
+      moveCursor(window, 1);
+      break;
+    // Watch swipes are spatial over the two rows of eight columns: up/down
+    // switch between the top row (free cells + foundations) and the cascades
+    // landing on the nearest usable column, left/right move within the row.
+    case "swipe-up":
+      if (window.cursor >= LOC_CASCADE0) moveCursorToRow(window, LOC_CELL0);
+      break;
+    case "swipe-down":
+      if (window.cursor < LOC_CASCADE0) moveCursorToRow(window, LOC_CASCADE0);
+      break;
+    case "swipe-left":
+      moveCursorInRow(window, -1);
+      break;
+    case "swipe-right":
+      moveCursorInRow(window, 1);
       break;
     case "click":
       if (window.selected === null) {
@@ -296,8 +336,8 @@ function handlePlayingInput(window: FreecellWindow, event: DashboardInputEvent, 
         sendToFoundation(window, window.cursor);
       }
       break;
-    case "long-press":
-      openWindowMenu(window);
+    case "short-then-long-press":
+      windowMenu(window).open();
       break;
     default:
       frameTimings.finishFrame(frameId, "discarded: freecell ignored input");
@@ -306,8 +346,8 @@ function handlePlayingInput(window: FreecellWindow, event: DashboardInputEvent, 
   renderAndSubmit(window, frameId);
 }
 
-function handleWonInput(window: FreecellWindow, event: DashboardInputEvent, frameId: number): void {
-  switch (event.type) {
+function handleWonInput(window: FreecellWindow, event: InputEvent, frameId: number): void {
+  switch (directionalFallback(event).type) {
     case "click":
       newGame(window, false);
       playSfx(window, SFX_NEW_GAME);
@@ -316,8 +356,8 @@ function handleWonInput(window: FreecellWindow, event: DashboardInputEvent, fram
       frameTimings.finishFrame(frameId, "discarded: freecell yielded focus");
       post({ type: "yield-focus", windowId: window.windowId });
       return;
-    case "long-press":
-      openWindowMenu(window);
+    case "short-then-long-press":
+      windowMenu(window).open();
       break;
     default:
       frameTimings.finishFrame(frameId, "discarded: freecell ignored input");
@@ -372,6 +412,72 @@ function locationHasCard(window: FreecellWindow, location: number): boolean {
   if (location < LOC_FOUNDATION0) return window.cells[location] !== null;
   if (location < LOC_CASCADE0) return window.foundations[location - LOC_FOUNDATION0] !== null;
   return window.cascades[location - LOC_CASCADE0]!.length > 0;
+}
+
+function isFoundation(location: number): boolean {
+  return location >= LOC_FOUNDATION0 && location < LOC_CASCADE0;
+}
+
+/**
+ * Whether the cursor should stop at a location, given the move being built.
+ * Picking a source: it must hold a card, and foundations are never a source.
+ * Picking a destination: an empty free cell, a foundation that accepts the
+ * selected card, any cascade (a full legality check would hide the
+ * cascades the player wants to compare), or the source itself (clicking it
+ * again cancels the selection).
+ */
+function isCursorEligible(window: FreecellWindow, location: number): boolean {
+  if (window.selected === null) {
+    return !isFoundation(location) && locationHasCard(window, location);
+  }
+  if (location === window.selected) return true;
+  if (location < LOC_FOUNDATION0) return window.cells[location] === null;
+  if (isFoundation(location)) {
+    const card = topCardAt(window, window.selected);
+    return card !== null && foundationCanAccept(window.foundations[location - LOC_FOUNDATION0]!, card);
+  }
+  return true;
+}
+
+/** Step the cursor through the location list (wrapping), skipping ineligible spots. */
+function moveCursor(window: FreecellWindow, step: 1 | -1): void {
+  let location = window.cursor;
+  for (let i = 0; i < LOC_COUNT; i++) {
+    location = (location + step + LOC_COUNT) % LOC_COUNT;
+    if (isCursorEligible(window, location)) {
+      window.cursor = location;
+      return;
+    }
+  }
+}
+
+/** Step the cursor within its row (no wrapping), skipping ineligible spots. */
+function moveCursorInRow(window: FreecellWindow, step: 1 | -1): void {
+  const rowStart = window.cursor < LOC_CASCADE0 ? LOC_CELL0 : LOC_CASCADE0;
+  for (let location = window.cursor + step; location >= rowStart && location < rowStart + 8; location += step) {
+    if (isCursorEligible(window, location)) {
+      window.cursor = location;
+      return;
+    }
+  }
+}
+
+/**
+ * Jump to the other row, keeping the column when it is eligible and
+ * otherwise taking the nearest eligible column; stays put when the row has
+ * none.
+ */
+function moveCursorToRow(window: FreecellWindow, rowStart: number): void {
+  const column = window.cursor % 8;
+  for (let distance = 0; distance < 8; distance++) {
+    for (const candidate of [column - distance, column + distance]) {
+      if (candidate < 0 || candidate >= 8) continue;
+      if (isCursorEligible(window, rowStart + candidate)) {
+        window.cursor = rowStart + candidate;
+        return;
+      }
+    }
+  }
 }
 
 /** True if `card` can go on `onto` in a cascade (descending, alternating color). */
@@ -598,11 +704,19 @@ function layoutFor(window: FreecellWindow): Layout {
   };
 }
 
-function paint(window: FreecellWindow): GrayImage {
-  if (window.menu?.isOpen()) {
-    return window.menu.paint();
-  }
-  return paintContent(window);
+function paint(window: FreecellWindow): Plane[] {
+  return windowMenu(window).paint(() => {
+    const planes = singlePlane(paintContent(window));
+    if (window.phase === "won") {
+      // The win box goes on its own plane: card labels are deferred glyphs
+      // that render above their own image's raster, so an overlay drawn into
+      // the board image could not cover them.
+      const overlay = new GrayImage(window.viewportWidth, window.viewportHeight, 0);
+      paintWinOverlay(overlay, window);
+      planes.push({ image: overlay, x: 0, y: 0 });
+    }
+    return planes;
+  });
 }
 
 function paintContent(window: FreecellWindow): GrayImage {
@@ -635,7 +749,7 @@ function paintContent(window: FreecellWindow): GrayImage {
     paintCascade(image, window, layout, i);
   }
   paintCursor(image, window, layout);
-  if (window.phase === "won") paintWinOverlay(image, window);
+  // The win overlay is painted onto its own plane by paint(), not here.
   return image;
 }
 
@@ -666,13 +780,27 @@ function paintCard(
   selected: boolean,
   fullyVisible: boolean,
 ): void {
-  const shade = isRed(card) ? RED_SHADE : BLACK_SHADE;
-  image.fillRoundedRect(x, y, CARD_W, CARD_H, selected ? 60 : 25, 4);
+  image.fillRoundedRect(x, y, CARD_W, CARD_H, 0, 4);
   image.drawRoundedRect(x, y, CARD_W, CARD_H, selected ? 255 : 160, 4);
   if (selected) image.drawRoundedRect(x + 1, y + 1, CARD_W - 2, CARD_H - 2, 255, 3);
-  image.drawText(labelFont, x + 5, y + 2, cardLabel(card), shade);
+  const rankText: string = RANK_CHARS[rankOf(card)]!
+  const suitText: string = SUIT_CHARS[suitOf(card)]!;
+  const labelText = rankText + suitText;
+  image.drawText(labelFont, x + 5, y, rankText, 255);
+  image.drawText(suitFont, x + 5 + labelFont.measureText(rankText), y + 3, suitText, 150);
+  if (isRed(card)) {
+    // Keep the marker within the top strip, clear of even a two-digit rank.
+    const markerX = x + 28;
+    image.fillRect(markerX, y + 1, Math.max(0, x + CARD_W - 4 - markerX), 13, 10);
+  }
   if (fullyVisible) {
-    image.drawText(mediumFont, x + CARD_W - 18, y + CARD_H - 29, SUIT_CHARS[suitOf(card)]!, shade);
+    image.drawText(
+      mediumFont,
+      x + CARD_W - 4 - Math.ceil(mediumFont.measureText(suitText)),
+      y + CARD_H - mediumFont.lineHeight - 2,
+      suitText,
+      100,
+    );
   }
 }
 
@@ -702,7 +830,9 @@ function paintWinOverlay(image: GrayImage, window: FreecellWindow): void {
   const height = 120;
   const x = Math.round((window.viewportWidth - width) / 2);
   const y = Math.round((window.viewportHeight - height) / 2);
-  image.fillRoundedRect(x, y, width, height, 0, 8);
+  // Fill 1, not 0: identical after 4bpp quantization, but 0 is transparent
+  // when this overlay composites as its own plane over the board.
+  image.fillRoundedRect(x, y, width, height, 1, 8);
   image.drawRoundedRect(x, y, width, height, 200, 8);
   drawCenteredIn(image, largeFont, x, width, y + 14, "You win!", 255);
   drawCenteredIn(image, smallFont, x, width, y + 56, `${window.moves} moves`, 170);
@@ -726,21 +856,22 @@ function renderAndSubmit(window: FreecellWindow, inputFrameId: number): void {
   const frameId = inputFrameId > 0 ? inputFrameId : frameTimings.startFrame(`render:${window.windowId}`);
   try {
     const paintStartedAtMs = Date.now();
-    const image = frameTimings.span(frameId, "paint", () =>
+    const planes = frameTimings.span(frameId, "paint", () =>
       frameTimings.runWithFrame(frameId, () => paint(window)),
     );
     const paintMs = Date.now() - paintStartedAtMs;
-    const fingerprint = image.fingerprint();
+    const fingerprint = planesFingerprint(planes);
     if (fingerprint === window.lastSubmittedFingerprint) {
       frameTimings.finishFrame(frameId, "discarded: freecell content unchanged");
       return;
     }
-    const communicator = com.faceclaw.app.FaceclawBleCommunicator.getActive();
+    const communicator = getActiveDisplay();
     if (!communicator) {
-      frameTimings.finishFrame(frameId, "discarded: no active communicator");
+      frameTimings.finishFrame(frameId, "discarded: no active display");
       return;
     }
-    const buffer = image.to8bppBuffer();
+    const { image, draws } = frameTimings.span(frameId, "flatten", () => flattenPlanesWithDraws(planes));
+    const buffer = frameTimings.span(frameId, "to8bpp", () => image.to8bppBuffer());
     communicator.submitSurfaceFrame(
       buffer.buffer,
       window.surfaceId,
@@ -751,6 +882,7 @@ function renderAndSubmit(window: FreecellWindow, inputFrameId: number): void {
       fingerprint,
       paintMs,
       frameId,
+      frameTimings.span(frameId, "prepareFrameDraws", () => prepareFrameDraws(draws)),
     );
     window.lastSubmittedFingerprint = fingerprint;
   } catch (error) {

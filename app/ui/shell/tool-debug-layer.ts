@@ -1,11 +1,13 @@
 import { G2_LENS_WIDTH, GrayImage } from "../../graphics/image";
-import { getDefaultSmallFont } from "../../graphics/bdffont";
+import { getDefaultSmallFont } from "../../graphics/ui-fonts";
 import { wrapText } from "../../graphics/textwrap";
 import { clamp } from "../../util/numeric-util";
 import type { ToolDebugEntry } from "../../assistant/tool-registry";
-import { DashboardInputEvent, Layer, LayerContext, PaintBelow } from "../layers";
+import { InputEvent } from "../gestures";
+import { Layer, LayerContext, PaintBelow } from "../layers";
 import { MenuLayer, drawListScrollbar, type MenuItem } from "../menu";
-import { MIN_WINDOW_HEIGHT, minWindowTop, SIDEBAR_WIDTH, TOP_BAR_HEIGHT } from "./geometry";
+import { MIN_WINDOW_HEIGHT, minWindowTop, sidebarWidth, TOP_BAR_HEIGHT } from "./geometry";
+import { lineStep } from "../metrics";
 
 /**
  * Shell-overlay debug dialog (escape menu > Debug): lists the voice assistant
@@ -14,24 +16,30 @@ import { MIN_WINDOW_HEIGHT, minWindowTop, SIDEBAR_WIDTH, TOP_BAR_HEIGHT } from "
  * page with its full name, gating state, and description.
  */
 
-const DIALOG_X = SIDEBAR_WIDTH + 8;
 const DIALOG_WIDTH = 420;
-const DETAIL_WIDTH = G2_LENS_WIDTH - DIALOG_X - 8;
 // Shell overlays align to the min-height window band; the detail box fills
 // the band below the top bar with an 8px margin on each side.
 const DETAIL_HEIGHT = MIN_WINDOW_HEIGHT - TOP_BAR_HEIGHT - 16;
+
+/** Dialog left edge: past the sidebar strip where one reserves width. */
+function dialogX(): number {
+  return sidebarWidth() + 8;
+}
+
+function detailWidth(): number {
+  return G2_LENS_WIDTH - dialogX() - 8;
+}
 
 /** Dialog top edge, aligned to the min-height band's content area. */
 function dialogY(): number {
   return minWindowTop() + TOP_BAR_HEIGHT + 8;
 }
 const DETAIL_PADDING = 14;
-const DETAIL_LINE_HEIGHT = 14;
 
 export class ToolDebugMenuLayer extends MenuLayer {
   constructor(appId: string | null, entries: ToolDebugEntry[], private readonly onClosed: () => void) {
     super(appId ? `Assistant tools: ${appId}` : "Assistant tools", buildItems(appId, entries), {
-      x: DIALOG_X,
+      x: dialogX(),
       y: dialogY(),
       width: DIALOG_WIDTH,
       minHeight: 0,
@@ -78,26 +86,29 @@ class ToolDetailLayer implements Layer {
   paint(_ctx: LayerContext, paintBelow: PaintBelow): GrayImage {
     const image = paintBelow();
     const font = getDefaultSmallFont();
+    const left = dialogX();
+    const width = detailWidth();
     const top = dialogY();
-    image.fillRoundedRect(DIALOG_X, top, DETAIL_WIDTH, DETAIL_HEIGHT, 1, 10);
-    image.drawRoundedRect(DIALOG_X, top, DETAIL_WIDTH, DETAIL_HEIGHT, 72, 10);
+    image.fillRoundedRect(left, top, width, DETAIL_HEIGHT, 1, 10);
+    image.drawRoundedRect(left, top, width, DETAIL_HEIGHT, 72, 10);
 
-    const textX = DIALOG_X + DETAIL_PADDING;
-    const textWidth = DETAIL_WIDTH - 2 * DETAIL_PADDING - 8;
+    const textX = left + DETAIL_PADDING;
+    const textWidth = width - 2 * DETAIL_PADDING - 8;
     const lines = this.buildLines(textWidth);
-    const visibleRowCount = Math.max(1, ((DETAIL_HEIGHT - 2 * DETAIL_PADDING) / DETAIL_LINE_HEIGHT) | 0);
+    const detailLineH = lineStep(font);
+    const visibleRowCount = Math.max(1, ((DETAIL_HEIGHT - 2 * DETAIL_PADDING) / detailLineH) | 0);
     this.scrollRow = clamp(this.scrollRow, 0, Math.max(0, lines.length - visibleRowCount));
 
     const lastVisibleRow = Math.min(lines.length, this.scrollRow + visibleRowCount);
     for (let index = this.scrollRow; index < lastVisibleRow; index++) {
       const line = lines[index]!;
-      const y = top + DETAIL_PADDING + (index - this.scrollRow) * DETAIL_LINE_HEIGHT;
+      const y = top + DETAIL_PADDING + (index - this.scrollRow) * detailLineH;
       image.drawText(font, textX, y, line.text, line.value);
     }
     if (lines.length > visibleRowCount) {
       drawListScrollbar(
         image,
-        DIALOG_X + DETAIL_WIDTH - 7,
+        left + width - 7,
         top + DETAIL_PADDING,
         DETAIL_HEIGHT - 2 * DETAIL_PADDING,
         this.scrollRow,
@@ -129,7 +140,7 @@ class ToolDetailLayer implements Layer {
     return lines;
   }
 
-  handleInput(event: DashboardInputEvent, ctx: LayerContext): void {
+  handleInput(event: InputEvent, ctx: LayerContext): void {
     switch (event.type) {
       case "scroll-up":
         this.scrollRow = Math.max(0, this.scrollRow - 1);

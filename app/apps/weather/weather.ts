@@ -1,11 +1,12 @@
-import { getDefaultLargeFont, getDefaultMediumFont, getDefaultSmallFont, type BdfFont } from "../../graphics/bdffont";
-import { GrayImage } from "../../graphics/image";
+import { getDefaultLargeFont, getDefaultMediumFont, getDefaultSmallFont } from "../../graphics/ui-fonts";
+import { GrayImage, type UiFont } from "../../graphics/image";
 import { wrapText, truncateText } from "../../graphics/textwrap";
 import { clamp } from "../../util/numeric-util";
 import { type ForecastPeriod, type WeatherState } from "../../native/weather";
-import { GESTURE_CLICK, GESTURE_DOUBLE_CLICK, GESTURE_SCROLL } from "../../ui/gestures";
-import { type DashboardInputEvent, type Layer, type LayerContext } from "../../ui/layers";
+import { GESTURE_CLICK, type InputEvent } from "../../ui/gestures";
+import { type Layer, type LayerContext } from "../../ui/layers";
 import { drawSelectionHighlight, scrollToKeepSelectionVisible } from "../../ui/menu";
+import { lineStep, tightRowHeight } from "../../ui/metrics";
 
 const PAGE_X = 18;
 const HEADER_Y = 8;
@@ -13,12 +14,10 @@ const CURRENT_TOP = 34;
 const CURRENT_TEXT_X = 112;
 const FORECAST_HEADER_Y = 105;
 const FORECAST_TOP = 124;
-const FORECAST_ROW_HEIGHT = 23;
-const FOOTER_HEIGHT = 18;
-const FORECAST_NAME_WIDTH = 92;
-const FORECAST_TEMP_X = 126;
-const FORECAST_PRECIP_X = 184;
-const FORECAST_SUMMARY_X = 244;
+/** Forecast rows hold a 20px icon; grow with the font past that. */
+const FORECAST_MIN_ROW_HEIGHT = 23;
+/** Gap between forecast columns. */
+const FORECAST_COL_GAP = 14;
 
 /** Weather's current-conditions summary and scrollable 12-hour forecast. */
 export class WeatherLayer implements Layer {
@@ -53,23 +52,16 @@ export class WeatherLayer implements Layer {
         width,
         height,
         "Allow approximate location on your phone to get local weather.",
-        `${GESTURE_CLICK} request   ${GESTURE_DOUBLE_CLICK} back`,
+        `${GESTURE_CLICK} request`,
       );
       return image;
     }
     if (weather.phase === "locating" || weather.phase === "loading") {
-      this.drawMessage(image, font, width, height, weather.status, `${GESTURE_DOUBLE_CLICK} back`);
+      this.drawMessage(image, font, width, height, weather.status);
       return image;
     }
     if (weather.phase === "error") {
-      this.drawMessage(
-        image,
-        font,
-        width,
-        height,
-        weather.status,
-        `${GESTURE_CLICK} retry   ${GESTURE_DOUBLE_CLICK} back`,
-      );
+      this.drawMessage(image, font, width, height, weather.status, `${GESTURE_CLICK} retry`);
       return image;
     }
 
@@ -78,10 +70,14 @@ export class WeatherLayer implements Layer {
     return image;
   }
 
-  handleInput(event: DashboardInputEvent): void {
+  handleInput(event: InputEvent): void {
     const weather = this.state();
     if (event.type === "click") {
-      this.requestUpdate();
+      // Refresh on the forecast view lives in the long-press menu; a tap
+      // only acts on the permission prompt and the error screen.
+      if (weather.phase === "permission-required" || weather.phase === "error") {
+        this.requestUpdate();
+      }
       return;
     }
     if (!weather.forecast.length || weather.phase !== "ready") return;
@@ -100,23 +96,29 @@ export class WeatherLayer implements Layer {
     const small = getDefaultSmallFont();
     const temperature = current.temperatureF === null ? "--°" : `${Math.round(current.temperatureF)}°F`;
     image.drawText(large, PAGE_X, CURRENT_TOP + 8, temperature, 245);
+    // Description / details / source stack compactly from just below the
+    // header line, so at large font sizes they stay clear of the forecast
+    // table instead of running into it.
+    let cy = 30;
     image.drawText(
       medium,
       CURRENT_TEXT_X,
-      CURRENT_TOP + 5,
+      cy,
       truncateText(medium, current.description || "Current conditions", width - CURRENT_TEXT_X - PAGE_X),
       220,
     );
+    cy += medium.lineHeight + 2;
 
     const details: string[] = [];
     if (current.humidityPercent !== null) details.push(`Humidity ${Math.round(current.humidityPercent)}%`);
     if (current.windSpeedMph !== null) {
       details.push(`Wind ${current.windDirection ? `${current.windDirection} ` : ""}${Math.round(current.windSpeedMph)} mph`);
     }
-    image.drawText(small, CURRENT_TEXT_X, CURRENT_TOP + 35, details.join("   ") || "Current forecast", 170);
+    image.drawText(small, CURRENT_TEXT_X, cy, details.join("   ") || "Current forecast", 170);
+    cy += lineStep(small);
     const source = current.observed ? "Observed" : "Forecast";
     const age = current.timestampMs ? formatAge(Date.now() - current.timestampMs) : "";
-    image.drawText(small, CURRENT_TEXT_X, CURRENT_TOP + 54, `${source}${age ? ` ${age}` : ""}`, 105);
+    image.drawText(small, CURRENT_TEXT_X, cy, `${source}${age ? ` ${age}` : ""}`, 105);
     image.drawLine(PAGE_X, FORECAST_HEADER_Y - 7, width - PAGE_X, FORECAST_HEADER_Y - 7, 40);
   }
 
@@ -133,52 +135,58 @@ export class WeatherLayer implements Layer {
       return;
     }
     this.selectedIndex = clamp(this.selectedIndex, 0, forecast.length - 1);
-    const visibleRows = Math.max(1, Math.floor((height - FOOTER_HEIGHT - FORECAST_TOP) / FORECAST_ROW_HEIGHT));
+    const rowH = Math.max(FORECAST_MIN_ROW_HEIGHT, tightRowHeight(font) + 3);
+    // The last row only needs its text line (not a full row pitch of
+    // clearance below), which usually fits one more row before the bottom.
+    const visibleRows = Math.max(1, 1 + Math.floor((height - FORECAST_TOP - (font.lineHeight + 4)) / rowH));
     this.scrollRow = scrollToKeepSelectionVisible(this.scrollRow, this.selectedIndex, visibleRows, forecast.length);
 
+    // Columns are sized to the widest period name so names ("Wednesday
+    // Night") never truncate; the summary column absorbs what's left.
+    const nameWidth = Math.max(
+      font.measureText("Upcoming"),
+      ...forecast.map((period) => font.measureText(period.name)),
+    );
+    const tempX = PAGE_X + nameWidth + FORECAST_COL_GAP;
+    const precipX = tempX + Math.max(font.measureText("Temp"), font.measureText("100°F")) + FORECAST_COL_GAP;
+    const summaryX = precipX + Math.max(font.measureText("Rain"), font.measureText("100%")) + FORECAST_COL_GAP;
+
     image.drawText(font, PAGE_X, FORECAST_HEADER_Y, "Upcoming", 150);
-    image.drawText(font, FORECAST_TEMP_X, FORECAST_HEADER_Y, "Temp", 105);
-    image.drawText(font, FORECAST_PRECIP_X, FORECAST_HEADER_Y, "Rain", 105);
-    image.drawText(font, width - PAGE_X - font.measureText(`${this.selectedIndex + 1}/${forecast.length}`), FORECAST_HEADER_Y, `${this.selectedIndex + 1}/${forecast.length}`, 105);
+    image.drawText(font, tempX, FORECAST_HEADER_Y, "Temp", 105);
+    image.drawText(font, precipX, FORECAST_HEADER_Y, "Rain", 105);
 
     const last = Math.min(forecast.length, this.scrollRow + visibleRows);
     for (let index = this.scrollRow; index < last; index++) {
       const period = forecast[index]!;
-      const y = FORECAST_TOP + (index - this.scrollRow) * FORECAST_ROW_HEIGHT;
+      const y = FORECAST_TOP + (index - this.scrollRow) * rowH;
       const selected = index === this.selectedIndex;
       if (selected) {
-        drawSelectionHighlight(image, PAGE_X - 7, y - 2, width - 2 * (PAGE_X - 7), FORECAST_ROW_HEIGHT - 2, ctx.stack.isFocused(), 5);
+        drawSelectionHighlight(image, PAGE_X - 7, y - 2, width - 2 * (PAGE_X - 7), rowH - 2, ctx.stack.isFocused(), 5);
       }
       const shade = selected ? 245 : 190;
-      image.drawText(font, PAGE_X, y + 2, truncateText(font, period.name, FORECAST_NAME_WIDTH), shade);
-      image.drawText(font, FORECAST_TEMP_X, y + 2, period.temperatureF === null ? "--" : `${Math.round(period.temperatureF)}°F`, shade);
-      image.drawText(font, FORECAST_PRECIP_X, y + 2, period.precipitationPercent === null ? "--" : `${Math.round(period.precipitationPercent)}%`, selected ? 220 : 155);
-      image.drawText(font, FORECAST_SUMMARY_X, y + 2, truncateText(font, period.shortForecast, width - FORECAST_SUMMARY_X - PAGE_X), selected ? 220 : 165);
+      image.drawText(font, PAGE_X, y + 2, period.name, shade);
+      image.drawText(font, tempX, y + 2, period.temperatureF === null ? "--" : `${Math.round(period.temperatureF)}°F`, shade);
+      image.drawText(font, precipX, y + 2, period.precipitationPercent === null ? "--" : `${Math.round(period.precipitationPercent)}%`, selected ? 220 : 155);
+      image.drawText(font, summaryX, y + 2, truncateText(font, period.shortForecast, width - summaryX - PAGE_X), selected ? 220 : 165);
     }
-
-    image.drawText(
-      font,
-      PAGE_X,
-      height - 15,
-      `${GESTURE_SCROLL} forecast   ${GESTURE_CLICK} refresh   ${GESTURE_DOUBLE_CLICK} back`,
-      105,
-    );
   }
 
   private drawMessage(
     image: GrayImage,
-    font: BdfFont,
+    font: UiFont,
     width: number,
     height: number,
     message: string,
-    footer: string,
+    footer?: string,
   ): void {
     const lines = wrapText(font, message, width - 2 * (PAGE_X + 6));
     const top = Math.max(52, Math.round((height - lines.length * 15) / 2) - 8);
     for (let index = 0; index < lines.length; index++) {
       image.drawText(font, PAGE_X + 6, top + index * 15, lines[index]!, 185);
     }
-    image.drawText(font, PAGE_X, height - 20, footer, 110);
+    if (footer) {
+      image.drawText(font, PAGE_X, height - 20, footer, 110);
+    }
   }
 }
 

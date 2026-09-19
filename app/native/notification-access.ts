@@ -31,3 +31,8 @@ export function requestNotificationListenerAccess(): void {
   if (!context) return;
   com.faceclaw.app.FaceclawEvenAppDetector.openNotificationAccessSettings(context);
 }
+
+export function notificationEmptyMessage(): string {
+  return isNotificationListenerEnabled() ? "No current Android notifications."
+    : "Grant permission on your phone to view notifications on the glasses.";
+}

@@ -1,4 +1,5 @@
 import { streamAnthropicMessage } from "../native/anthropic";
+import { streamLocalQwen } from "../native/llama";
 import { streamOpenAiResponse } from "../native/openai";
 import type {
   LlmContentBlock,
@@ -20,6 +21,8 @@ import type { AssistantTurnCallbacks, AssistantTurnHandle } from "./types";
 
 /** Safety caps so a tool-thrashing model can't loop or run forever. */
 const MAX_ITERATIONS = 8;
+/** The on-phone model is slower per step and unreliable on long tool chains. */
+const MAX_ITERATIONS_LOCAL = 4;
 const MAX_TURN_MS = 2 * 60 * 1000;
 
 export type DirectTurnOptions = {
@@ -47,16 +50,21 @@ export class DirectAssistantBackend {
     const startMs = Date.now();
     let cancelled = false;
     let streamHandle: LlmStreamHandle | null = null;
+    let priorText = "";
+    let deadline: ReturnType<typeof setTimeout> | null = null;
+    const clearDeadline = () => { if (deadline !== null) clearTimeout(deadline); deadline = null; };
 
     const finishError = (message: string) => {
       if (cancelled) return;
       cancelled = true;
+      clearDeadline(); streamHandle?.cancel(); streamHandle = null;
       options.callbacks.onError(message);
     };
 
+    const maxIterations = options.provider === "local" ? MAX_ITERATIONS_LOCAL : MAX_ITERATIONS;
     const runIteration = (iteration: number): void => {
       if (cancelled) return;
-      if (iteration >= MAX_ITERATIONS) {
+      if (iteration >= maxIterations) {
         finishError("Assistant stopped: too many tool steps");
         return;
       }
@@ -74,7 +82,7 @@ export class DirectAssistantBackend {
         tools: options.buildTools(),
         onTextDelta: (delta, textSoFar) => {
           if (cancelled) return;
-          options.callbacks.onTextDelta(delta, textSoFar);
+          options.callbacks.onTextDelta(delta, priorText + textSoFar);
         },
         onDone: (result) => {
           streamHandle = null;
@@ -83,6 +91,9 @@ export class DirectAssistantBackend {
             finishError("The assistant declined this request");
             return;
           }
+          const fullText = priorText + result.text;
+          options.callbacks.onTextDelta("", fullText);
+          priorText = fullText ? `${fullText}\n\n` : "";
           // Record what the model produced this iteration.
           const assistantContent: LlmContentBlock[] = result.content.length
             ? result.content
@@ -94,10 +105,11 @@ export class DirectAssistantBackend {
               block.type === "tool_use",
           );
           if (result.stopReason !== "tool_use" || toolUses.length === 0) {
+            clearDeadline();
             options.callbacks.onTurnDone({ stopReason: result.stopReason });
             return;
           }
-          void this.runToolCalls(toolUses, options)
+          void this.runToolCalls(toolUses, options, () => cancelled)
             .then((toolResults) => {
               // Always record the results, even if cancelled mid-flight: an
               // assistant tool_use with no matching tool_result would make the
@@ -115,16 +127,21 @@ export class DirectAssistantBackend {
           finishError(message);
         },
       };
-      streamHandle = options.provider === "openai"
-        ? streamOpenAiResponse(streamOptions)
-        : streamAnthropicMessage(streamOptions);
+      streamHandle =
+        options.provider === "openai"
+          ? streamOpenAiResponse(streamOptions)
+          : options.provider === "local"
+            ? streamLocalQwen(streamOptions)
+            : streamAnthropicMessage(streamOptions);
     };
 
+    deadline = setTimeout(() => finishError("Assistant stopped: turn took too long"), MAX_TURN_MS);
     runIteration(0);
 
     return {
       cancel: () => {
         cancelled = true;
+        clearDeadline();
         streamHandle?.cancel();
         streamHandle = null;
       },
@@ -134,9 +151,14 @@ export class DirectAssistantBackend {
   private async runToolCalls(
     toolUses: Array<Extract<LlmContentBlock, { type: "tool_use" }>>,
     options: DirectTurnOptions,
+    isCancelled: () => boolean,
   ): Promise<LlmContentBlock[]> {
     const results: LlmContentBlock[] = [];
     for (const toolUse of toolUses) {
+      if (isCancelled()) {
+        results.push({ type: "tool_result", tool_use_id: toolUse.id, content: "Cancelled", is_error: true });
+        continue;
+      }
       const canonicalName = options.resolveToolName(toolUse.name);
       options.callbacks.onToolActivity(canonicalName);
       const result = await options.registry.callTool(canonicalName, toolUse.input);

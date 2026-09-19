@@ -1,0 +1,90 @@
+<Page xmlns="http://schemas.nativescript.org/tns.xsd" navigatingTo="navigatingTo" navigatingFrom="navigatingFrom" actionBarHidden="{{ actionBarHidden }}">
+    <ActionBar title="Pair Glasses" />
+
+    <GridLayout rows="auto,auto,*,auto" class="p-16">
+        <StackLayout row="0">
+            <Label text="{{ headline }}" class="h1 text-center" textWrap="true" />
+            <Label text="{{ instructions }}" class="m-t-8 pairing-instructions" textWrap="true" />
+        </StackLayout>
+
+        <GridLayout row="1" columns="auto,*" class="m-t-12 pairing-status-row">
+            <ActivityIndicator col="0" busy="{{ scanning }}" visibility="{{ scanningVisibility }}" width="22" height="22" />
+            <Label col="1" text="{{ status }}" textWrap="true" class="pairing-status" />
+        </GridLayout>
+
+        <ScrollView row="2" class="m-t-12">
+            <StackLayout>
+                <Label text="Glasses" class="h2 pairing-section" />
+                <Label text="{{ emptyGlassesMessage }}" class="pairing-empty" textWrap="true" visibility="{{ emptyGlassesVisibility }}" />
+                <Repeater items="{{ glassesRows }}">
+                    <Repeater.itemsLayout>
+                        <StackLayout />
+                    </Repeater.itemsLayout>
+                    <Repeater.itemTemplate>
+                        <GridLayout columns="84,*,auto" rows="auto" class="{{ rowClass }}" tap="{{ onRowTap }}">
+                            <GridLayout col="0" rows="auto,auto" class="pairing-art">
+                                <Image row="0" src="{{ imagePath }}" stretch="aspectFit" width="80" height="30" />
+                                <GridLayout row="1" columns="auto,auto" horizontalAlignment="center" class="m-t-4" visibility="{{ swatchVisibility }}">
+                                    <Label col="0" text="" width="12" height="12" borderRadius="6" backgroundColor="{{ swatchHex }}" />
+                                    <Label col="1" text="{{ colorwayLabel }}" class="pairing-swatch-label m-l-4" />
+                                </GridLayout>
+                            </GridLayout>
+                            <StackLayout col="1" class="m-l-8">
+                                <GridLayout columns="auto,auto">
+                                    <Label col="0" text="{{ modelTitle }}" class="pairing-title" />
+                                    <Label col="1" text="{{ badge }}" class="pairing-badge m-l-6" visibility="{{ badgeVisibility }}" />
+                                </GridLayout>
+                                <Label text="{{ variantSummary }}" class="pairing-variant" visibility="{{ variantVisibility }}" />
+                                <Label text="{{ proximityLine }}" class="{{ proximityClass }}" />
+                                <Label text="{{ deviceName }}" class="pairing-serial" />
+                                <Label text="{{ armsSummary }}" class="pairing-arms" textWrap="true" visibility="{{ armsVisibility }}" />
+                                <Label text="{{ warning }}" class="pairing-warning" textWrap="true" visibility="{{ warningVisibility }}" />
+                            </StackLayout>
+                            <Label col="2" text="{{ chevron }}" class="pairing-chevron" verticalAlignment="center" />
+                        </GridLayout>
+                    </Repeater.itemTemplate>
+                </Repeater>
+
+                <Label text="Ring (optional)" class="h2 pairing-section m-t-16" />
+                <Label text="{{ emptyRingMessage }}" class="pairing-empty" textWrap="true" visibility="{{ emptyRingVisibility }}" />
+                <Repeater items="{{ ringRows }}">
+                    <Repeater.itemsLayout>
+                        <StackLayout />
+                    </Repeater.itemsLayout>
+                    <Repeater.itemTemplate>
+                        <GridLayout columns="84,*,auto" rows="auto" class="{{ rowClass }}" tap="{{ onRowTap }}">
+                            <Image col="0" src="{{ imagePath }}" stretch="aspectFit" width="56" height="30" class="pairing-art" />
+                            <StackLayout col="1" class="m-l-8">
+                                <GridLayout columns="auto,auto">
+                                    <Label col="0" text="{{ modelTitle }}" class="pairing-title" />
+                                    <Label col="1" text="{{ badge }}" class="pairing-badge m-l-6" visibility="{{ badgeVisibility }}" />
+                                </GridLayout>
+                                <Label text="{{ proximityLine }}" class="{{ proximityClass }}" />
+                                <Label text="{{ deviceName }}" class="pairing-serial" />
+                                <Label text="{{ armsSummary }}" class="pairing-arms" textWrap="true" visibility="{{ armsVisibility }}" />
+                                <Label text="{{ warning }}" class="pairing-warning" textWrap="true" visibility="{{ warningVisibility }}" />
+                            </StackLayout>
+                            <Label col="2" text="{{ chevron }}" class="pairing-chevron" verticalAlignment="center" />
+                        </GridLayout>
+                    </Repeater.itemTemplate>
+                </Repeater>
+
+                <StackLayout class="pairing-selection m-t-16" visibility="{{ selectionVisibility }}">
+                    <Label text="Selected" class="h2 pairing-section" />
+                    <Label text="{{ selectionSummary }}" textWrap="true" />
+                </StackLayout>
+            </StackLayout>
+        </ScrollView>
+
+        <StackLayout row="3" class="m-t-12">
+            <GridLayout columns="*,*">
+                <Button col="0" text="{{ secondaryLabel }}" tap="{{ onSecondaryTap }}" />
+                <Button col="1" text="{{ primaryLabel }}" tap="{{ onPrimaryTap }}" class="-primary" isEnabled="{{ primaryEnabled }}" />
+            </GridLayout>
+            <GridLayout columns="*,*" class="m-t-4">
+                <Button col="0" text="{{ scanToggleLabel }}" tap="{{ onScanToggleTap }}" class="pairing-link" />
+                <Button col="1" text="Enter addresses manually" tap="{{ onManualTap }}" class="pairing-link" />
+            </GridLayout>
+        </StackLayout>
+    </GridLayout>
+</Page>

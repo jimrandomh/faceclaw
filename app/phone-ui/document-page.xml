@@ -1,0 +1,9 @@
+<Page xmlns="http://schemas.nativescript.org/tns.xsd" navigatingTo="navigatingTo">
+    <ActionBar title="{{ title }}">
+        <NavigationButton android.systemIcon="ic_menu_back" tap="{{ onBackTap }}" />
+    </ActionBar>
+
+    <ScrollView>
+        <Label text="{{ text }}" textWrap="true" class="document-text p-16" />
+    </ScrollView>
+</Page>

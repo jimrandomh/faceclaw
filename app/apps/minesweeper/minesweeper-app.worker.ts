@@ -8,27 +8,42 @@
  * row, click switches to column-select, double-click pauses. Column-select:
  * scroll moves along the row, click reveals (or chords a satisfied number),
  * long-press toggles a flag, double-click returns to row-select.
+ * Watch swipes skip the two-layer scheme and move the cell cursor in four
+ * directions; a watch double-click pauses directly. Tap-then-hold opens the
+ * window menu in any phase, pausing a live game first.
  * Paused/won/lost: click resumes or starts a new game, double-click yields
- * focus, long-press opens the window menu.
+ * focus. Losing input focus mid-game (a shell overlay such as the system
+ * menu or a notification, focus to the sidebar) pauses, as does
+ * backgrounding or screen-off. The difficulty setting persists across
+ * launches.
  */
 import "@nativescript/core/globals";
 import { GrayImage } from "../../graphics/image";
-import { getDefaultSmallFont, getFont } from "../../graphics/bdffont";
+import { flattenPlanesWithDraws, planesFingerprint, type Plane } from "../../graphics/plane";
+import { prepareFrameDraws } from "../../graphics/glyph-wire";
+import { getFont } from "../../graphics/bdffont";
+import { getDefaultSmallFont } from "../../graphics/ui-fonts";
+import { getStringSetting, setStringSetting } from "../../native/settings-store";
 import * as frameTimings from "../../native/frame-timings";
-import type { DashboardInputEvent } from "../../ui/layers";
+import { playWorkerBuzzerSequence } from "../../native/worker-buzzer";
+import { getActiveDisplay } from "../../native/active-display";
 import { buildSoundSequencePayload, type Step } from "../../ui/sound-effects";
-import { defaultWindowMenuItems, WindowMenu } from "../../ui/window-menu";
+import { loadSoundEnabled, saveSoundEnabled } from "../../ui/sound-setting";
+import { type MenuItem } from "../../ui/menu";
+import { WindowMenu } from "../../ui/window-menu";
 import type { WorkerAppMessage, WorkerAppReply } from "../../ui/shell/worker-window";
 import {
+  directionalFallback,
   GESTURE_CLICK,
   GESTURE_DOUBLE_CLICK,
   GESTURE_LONG_PRESS,
   GESTURE_SCROLL,
+  isWatchInput,
+  type InputEvent,
 } from "../../ui/gestures";
 import { clamp } from "../../util/numeric-util";
 
 declare const global: any;
-declare const com: any;
 
 const largeFont = getFont("terminus32");
 const mediumFont = getFont("terminus24");
@@ -46,6 +61,8 @@ const DIFFICULTIES = [
   { name: "Medium", mines: 20 },
   { name: "Hard", mines: 26 },
 ] as const;
+/** Persisted difficulty, stored by name so a reordering can't misfile it. */
+const DIFFICULTY_KEY = "minesweeper.difficulty";
 
 /** Number glyph shades by adjacent-mine count; higher counts read brighter. */
 const COUNT_SHADES = [0, 140, 170, 200, 220, 235, 245, 250, 250];
@@ -86,12 +103,13 @@ type GamePhase = "playing" | "paused" | "won" | "lost";
 type MinesweeperWindow = {
   windowId: string;
   surfaceId: string;
+  title: string;
   viewportWidth: number;
   viewportHeight: number;
   foreground: boolean;
   /** Whether this window is the shell's input target (pushed with each message). */
   focused: boolean;
-  /** Long-press window menu; created on first open. */
+  /** Tap-then-hold window menu; created on first open. */
   menu: WindowMenu | null;
   phase: GamePhase;
   difficultyIndex: number;
@@ -125,6 +143,12 @@ function post(message: WorkerAppReply): void {
   global.postMessage(message);
 }
 
+// The host queues messages until this arrives: posts to a worker whose bundle
+// is still evaluating can be silently dropped (see WorkerAppHost). Top-level
+// evaluation is synchronous, so the handler below is installed before any
+// queued message can be delivered.
+post({ type: "worker-ready" });
+
 global.onmessage = (event: { data: WorkerAppMessage }) => {
   const message = event.data;
   switch (message.type) {
@@ -132,13 +156,14 @@ global.onmessage = (event: { data: WorkerAppMessage }) => {
       const window: MinesweeperWindow = {
         windowId: message.windowId,
         surfaceId: message.surfaceId,
+        title: message.title,
         viewportWidth: message.viewport.width,
         viewportHeight: message.viewport.height,
         foreground: false,
         focused: false,
         menu: null,
         phase: "playing",
-        difficultyIndex: 0,
+        difficultyIndex: loadDifficultyIndex(),
         mines: new Uint8Array(COLS * ROWS),
         counts: new Uint8Array(COLS * ROWS),
         cellState: new Uint8Array(COLS * ROWS),
@@ -152,7 +177,7 @@ global.onmessage = (event: { data: WorkerAppMessage }) => {
         elapsedMs: 0,
         runningSinceMs: null,
         tickTimer: null,
-        soundOn: true,
+        soundOn: loadSoundEnabled("minesweeper"),
         lastSubmittedFingerprint: "",
       };
       windows.set(message.windowId, window);
@@ -172,7 +197,10 @@ global.onmessage = (event: { data: WorkerAppMessage }) => {
       }
       window.focused = message.focused;
       inferForeground(window, message.focused);
-      handleInput(window, message.event as DashboardInputEvent, message.frameId);
+      // Marks the main-thread -> worker hop, which is otherwise an
+      // unexplained gap inside the shell's handle-input span.
+      frameTimings.logFrame(message.frameId, `input received in ${message.windowId} worker`);
+      handleInput(window, message.event as InputEvent, message.frameId);
       break;
     }
     case "render": {
@@ -193,6 +221,19 @@ global.onmessage = (event: { data: WorkerAppMessage }) => {
       if (!window.foreground && window.phase === "playing") window.phase = "paused";
       syncClock(window);
       if (window.foreground) renderAndSubmit(window, 0);
+      break;
+    }
+    case "input-focus": {
+      const window = windows.get(message.windowId);
+      if (!window) break;
+      // Anything that takes input away (the system menu, a notification
+      // modal, the voice dialog, focus back to the sidebar) pauses, so the
+      // clock stops and the board is hidden while the player can't act.
+      if (!message.focused && window.phase === "playing") {
+        window.phase = "paused";
+        syncClock(window);
+        if (window.foreground) renderAndSubmit(window, 0);
+      }
       break;
     }
     case "screen":
@@ -217,25 +258,41 @@ function inferForeground(window: MinesweeperWindow, focused: boolean): void {
   syncClock(window);
 }
 
+function loadDifficultyIndex(): number {
+  try {
+    const name = getStringSetting(DIFFICULTY_KEY, "");
+    const index = DIFFICULTIES.findIndex((difficulty) => difficulty.name === name);
+    return index >= 0 ? index : 0;
+  } catch {
+    return 0;
+  }
+}
+
+function saveDifficultyIndex(window: MinesweeperWindow): void {
+  try {
+    setStringSetting(DIFFICULTY_KEY, DIFFICULTIES[window.difficultyIndex]!.name);
+  } catch (error) {
+    console.warn(`minesweeper difficulty save failed: ${error}`);
+  }
+}
+
 /**
  * Fire a buzzer effect. Non-blocking: the firmware's sequencer plays the
- * steps on its own timer, and the Java call is safe from the worker thread.
+ * steps on its own timer; the platform bridge routes it from the worker.
  */
 function playSfx(window: MinesweeperWindow, steps: Step[]): void {
   if (!window.soundOn || steps.length === 0) return;
   try {
-    const communicator = com.faceclaw.app.FaceclawBleCommunicator.getActive();
-    if (!communicator) return;
-    communicator.playBuzzerSequence(buildSoundSequencePayload(steps).buffer);
+    playWorkerBuzzerSequence(buildSoundSequencePayload(steps));
   } catch (error) {
     console.warn(`minesweeper sfx failed: ${error}`);
   }
 }
 
-/** The window's long-press menu (game actions + default entries). */
-function openWindowMenu(window: MinesweeperWindow): void {
+/** The window's context menu (game actions). Tap-then-hold reaches it in any phase; playing keeps long-press for flagging. */
+function windowMenuItems(window: MinesweeperWindow): MenuItem[] {
   const nextDifficulty = DIFFICULTIES[(window.difficultyIndex + 1) % DIFFICULTIES.length]!;
-  windowMenu(window).open([
+  return [
     {
       label: "New game",
       onSelect: (ctx) => {
@@ -249,6 +306,7 @@ function openWindowMenu(window: MinesweeperWindow): void {
       onSelect: (ctx) => {
         ctx.stack.pop();
         window.difficultyIndex = (window.difficultyIndex + 1) % DIFFICULTIES.length;
+        saveDifficultyIndex(window);
         resetGame(window);
         playSfx(window, SFX_RESUME);
       },
@@ -258,16 +316,21 @@ function openWindowMenu(window: MinesweeperWindow): void {
       onSelect: (ctx) => {
         ctx.stack.pop();
         window.soundOn = !window.soundOn;
+        saveSoundEnabled("minesweeper", window.soundOn);
         if (window.soundOn) playSfx(window, SFX_RESUME);
       },
     },
-    ...defaultWindowMenuItems(window.windowId, post),
-  ]);
+  ];
 }
 
 function windowMenu(window: MinesweeperWindow): WindowMenu {
   if (!window.menu) {
     window.menu = new WindowMenu({
+      windowId: window.windowId,
+      post,
+      title: () => window.title,
+      items: () => windowMenuItems(window),
+      claimsLongPress: () => window.phase === "playing",
       size: { width: window.viewportWidth, height: window.viewportHeight },
       paintBase: () => paintContent(window),
       isFocused: () => window.focused,
@@ -276,11 +339,12 @@ function windowMenu(window: MinesweeperWindow): WindowMenu {
   return window.menu;
 }
 
-function handleInput(window: MinesweeperWindow, event: DashboardInputEvent, frameId: number): void {
-  // An open window menu owns all input (it closes itself via pop).
+function handleInput(window: MinesweeperWindow, event: InputEvent, frameId: number): void {
+  // An open window menu owns all input (it closes itself via pop); menus are
+  // list UIs, so watch swipes take their standard fallback meanings there.
   if (window.menu?.isOpen()) {
     window.menu
-      .handleInput(event)
+      .handleInput(directionalFallback(event))
       .catch((error) => console.error(`minesweeper menu input failed: ${error}`))
       .then(() => renderAndSubmit(window, frameId));
     return;
@@ -293,9 +357,26 @@ function handleInput(window: MinesweeperWindow, event: DashboardInputEvent, fram
   }
 }
 
-function handlePlayingInput(window: MinesweeperWindow, event: DashboardInputEvent, frameId: number): void {
+function handlePlayingInput(window: MinesweeperWindow, event: InputEvent, frameId: number): void {
+  // The watch's swipes move the cell cursor in four directions; its scheme
+  // has no row-select layer (as in the launcher), so any watch input drops
+  // to cell selection first and its double-click pauses directly.
+  const watch = isWatchInput(event);
+  if (watch) window.selectMode = "column";
   const rowMode = window.selectMode === "row";
   switch (event.type) {
+    case "swipe-up":
+      window.cursorY = clamp(window.cursorY - 1, 0, ROWS - 1);
+      break;
+    case "swipe-down":
+      window.cursorY = clamp(window.cursorY + 1, 0, ROWS - 1);
+      break;
+    case "swipe-left":
+      window.cursorX = clamp(window.cursorX - 1, 0, COLS - 1);
+      break;
+    case "swipe-right":
+      window.cursorX = clamp(window.cursorX + 1, 0, COLS - 1);
+      break;
     case "scroll-up":
       if (rowMode) {
         window.cursorY = clamp(window.cursorY - 1, 0, ROWS - 1);
@@ -324,8 +405,16 @@ function handlePlayingInput(window: MinesweeperWindow, event: DashboardInputEven
       }
       toggleFlag(window);
       break;
+    case "short-then-long-press":
+      // The menu's actions (new game, difficulty) all discard the board, and
+      // the clock must not run under it, so pause first; the board is hidden
+      // while paused, so the menu can't be used to study it off the clock.
+      window.phase = "paused";
+      syncClock(window);
+      windowMenu(window).open();
+      break;
     case "double-click":
-      if (rowMode) {
+      if (rowMode || watch) {
         window.phase = "paused";
         syncClock(window);
         playSfx(window, SFX_PAUSE);
@@ -340,9 +429,9 @@ function handlePlayingInput(window: MinesweeperWindow, event: DashboardInputEven
   renderAndSubmit(window, frameId);
 }
 
-/** Input while paused, won, or lost. */
-function handleIdleInput(window: MinesweeperWindow, event: DashboardInputEvent, frameId: number): void {
-  switch (event.type) {
+/** Input while paused, won, or lost. Swipes take their standard fallback meanings. */
+function handleIdleInput(window: MinesweeperWindow, event: InputEvent, frameId: number): void {
+  switch (directionalFallback(event).type) {
     case "click":
       if (window.phase === "paused") {
         window.phase = "playing";
@@ -356,8 +445,8 @@ function handleIdleInput(window: MinesweeperWindow, event: DashboardInputEvent, 
       frameTimings.finishFrame(frameId, "discarded: minesweeper yielded focus");
       post({ type: "yield-focus", windowId: window.windowId });
       return;
-    case "long-press":
-      openWindowMenu(window);
+    case "short-then-long-press":
+      windowMenu(window).open();
       break;
     default:
       frameTimings.finishFrame(frameId, "discarded: minesweeper ignored input");
@@ -552,11 +641,8 @@ function elapsedMs(window: MinesweeperWindow): number {
   return window.elapsedMs + runningMs;
 }
 
-function paint(window: MinesweeperWindow): GrayImage {
-  if (window.menu?.isOpen()) {
-    return window.menu.paint();
-  }
-  return paintContent(window);
+function paint(window: MinesweeperWindow): Plane[] {
+  return windowMenu(window).paint();
 }
 
 function paintContent(window: MinesweeperWindow): GrayImage {
@@ -696,21 +782,22 @@ function renderAndSubmit(window: MinesweeperWindow, inputFrameId: number): void 
   const frameId = inputFrameId > 0 ? inputFrameId : frameTimings.startFrame(`render:${window.windowId}`);
   try {
     const paintStartedAtMs = Date.now();
-    const image = frameTimings.span(frameId, "paint", () =>
+    const planes = frameTimings.span(frameId, "paint", () =>
       frameTimings.runWithFrame(frameId, () => paint(window)),
     );
     const paintMs = Date.now() - paintStartedAtMs;
-    const fingerprint = image.fingerprint();
+    const fingerprint = planesFingerprint(planes);
     if (fingerprint === window.lastSubmittedFingerprint) {
       frameTimings.finishFrame(frameId, "discarded: minesweeper content unchanged");
       return;
     }
-    const communicator = com.faceclaw.app.FaceclawBleCommunicator.getActive();
+    const communicator = getActiveDisplay();
     if (!communicator) {
-      frameTimings.finishFrame(frameId, "discarded: no active communicator");
+      frameTimings.finishFrame(frameId, "discarded: no active display");
       return;
     }
-    const buffer = image.to8bppBuffer();
+    const { image, draws } = frameTimings.span(frameId, "flatten", () => flattenPlanesWithDraws(planes));
+    const buffer = frameTimings.span(frameId, "to8bpp", () => image.to8bppBuffer());
     communicator.submitSurfaceFrame(
       buffer.buffer,
       window.surfaceId,
@@ -721,6 +808,7 @@ function renderAndSubmit(window: MinesweeperWindow, inputFrameId: number): void 
       fingerprint,
       paintMs,
       frameId,
+      frameTimings.span(frameId, "prepareFrameDraws", () => prepareFrameDraws(draws)),
     );
     window.lastSubmittedFingerprint = fingerprint;
   } catch (error) {

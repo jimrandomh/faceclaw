@@ -1,44 +1,33 @@
-import { getDefaultMediumFont, getDefaultSmallFont } from "../../graphics/bdffont";
+import { getDefaultMediumFont, getDefaultSmallFont } from "../../graphics/ui-fonts";
 import { GrayImage } from "../../graphics/image";
 import { wrapText, truncateText } from "../../graphics/textwrap";
 import { clamp } from "../../util/numeric-util";
-import {
-  GESTURE_CLICK,
-  GESTURE_DOUBLE_CLICK,
-  GESTURE_SCROLL,
-  GESTURE_SCROLL_DOWN,
-  GESTURE_SCROLL_UP,
-} from "../../ui/gestures";
+import { directionalFallback, GESTURE_CLICK, GESTURE_DOUBLE_CLICK, GESTURE_SCROLL_DOWN, GESTURE_SCROLL_UP, type InputEvent, isDirectionalInput } from "../../ui/gestures";
 import { MenuLayer, drawSelectionHighlight, drawSubmenuIndicator } from "../../ui/menu";
-import {
-  mediaControllerBridge,
-  type MediaControllerState,
-  type MediaQueueItem,
-} from "../../native/media-controller";
+import { lineStep, tightRowHeight } from "../../ui/metrics";
+import { mediaControllerBridge, type MediaControllerState, type MediaQueueItem } from "../../native/media-controller";
 import { mediaBrowserBridge, type MediaBrowserApp } from "../../native/media-browser";
 import { MediaBrowseLayer } from "./media-browse";
-import { Layer, type DashboardInputEvent, type LayerContext, type PaintBelow } from "../../ui/layers";
-import {
-  createInProcessWindow,
-  YieldAtRootLayer,
-  type InProcessAppOptions,
-  type InProcessWindow,
-} from "../../ui/shell/in-process-window";
+import { MusicSettingsLayer } from "./music-settings";
+import { Layer, type LayerContext, type PaintBelow } from "../../ui/layers";
+import { createInProcessWindow, YieldAtRootLayer, type InProcessAppOptions, type InProcessWindow } from "../../ui/shell/in-process-window";
 
 export const MUSIC_WINDOW_ID = "music";
 export const MUSIC_SURFACE_ID = "window:music";
 
-const ART_SIZE = 96;
-const ART_X = 22;
+const ART_SIZE = 112;
+const ART_X = 8; // left margin matches the top margin
 const ART_Y = 8;
 const META_X = ART_X + ART_SIZE + 14;
-const LIST_TOP = 120;
-const ROW_HEIGHT = 16;
+const PROGRESS_TIME_Y = ART_Y + 100;
+const PROGRESS_BAR_Y = ART_Y + 116;
+const LIST_TOP = 136;
+/** Gap between the menus' last row band and the viewport bottom. */
+const LIST_BOTTOM_MARGIN = 4;
 const ACTION_X = 22;
 const ACTION_WIDTH = 154;
 const COLUMN_DIVIDER_X = 190;
 const QUEUE_X = 204;
-const FOOTER_HEIGHT = 20;
 const PLAYLIST_ACTION_INDEX = 1;
 
 type MusicAction =
@@ -57,6 +46,8 @@ type FocusColumn = "actions" | "playlist";
  * player's queue when it exposes one (scroll to a track, click to jump).
  */
 class MusicAppLayer implements Layer {
+  // Watch swipes skip tracks: right = next, left = previous.
+  readonly acceptsDirectional = true;
   private focusColumn: FocusColumn = "actions";
   private selectedActionIndex = 0;
   private selectedQueueIndex = 0;
@@ -77,25 +68,24 @@ class MusicAppLayer implements Layer {
     if (!media.accessEnabled) {
       const lines = wrapText(
         font,
-        "Notification access is required before Android exposes media sessions. Click to open settings.",
+        "Notification access is required to control Android media sessions. Tap to open settings.",
         width - 48,
       );
       for (let index = 0; index < lines.length; index++) {
-        image.drawText(font, 24, 16 + index * 14, lines[index]!, 180);
+        image.drawText(font, 24, 16 + index * lineStep(font), lines[index]!, 180);
       }
-      image.drawText(font, 20, height - 16, `${GESTURE_CLICK} open settings   ${GESTURE_DOUBLE_CLICK} back`, 110);
+      image.drawText(font, 20, height - 16, `${GESTURE_CLICK} open settings`, 110);
       return image;
     }
 
     if (!media.available) {
       image.drawText(font, 24, 16, "No active media session.", 180);
       if (mediaBrowserBridge.listBrowsableApps().length) {
-        image.drawText(font, 24, 34, "Click to browse a music app's library,", 150);
-        image.drawText(font, 24, 48, "or start playback on the phone.", 150);
-        image.drawText(font, 20, height - 16, `${GESTURE_CLICK} browse   ${GESTURE_DOUBLE_CLICK} back`, 110);
+        image.drawText(font, 24, 22 + lineStep(font), "Click to browse a music app's library,", 150);
+        image.drawText(font, 24, 22 + 2 * lineStep(font), "or start playback on the phone.", 150);
+        image.drawText(font, 20, height - 16, `${GESTURE_CLICK} browse`, 110);
       } else {
-        image.drawText(font, 24, 34, "Start playback in another app on the phone.", 150);
-        image.drawText(font, 20, height - 16, `${GESTURE_DOUBLE_CLICK} back`, 110);
+        image.drawText(font, 24, 22 + lineStep(font), "Start playback in another app on the phone.", 150);
       }
       return image;
     }
@@ -103,22 +93,39 @@ class MusicAppLayer implements Layer {
     this.drawArt(image, media);
 
     const metaWidth = width - META_X - 24;
-    const titleLines = wrapText(font, media.title || "Unknown title", metaWidth).slice(0, 2);
+    const metaStep = lineStep(font) + 1;
+    const metaTop = ART_Y + 2;
+    // Line budget above the progress-bar time line: the layout is five slots
+    // (title, second title line, artist, album, player app); when the font is
+    // too large for all five, the title gets one truncated line instead of
+    // wrapping to two, and the rest shift up a slot.
+    const maxLines = Math.floor((PROGRESS_TIME_Y - metaTop - 4 - font.lineHeight) / metaStep) + 1;
+    const titleSlots = maxLines >= 5 ? 2 : 1;
+    const title = media.title || "Unknown title";
+    const titleLines =
+      titleSlots === 2 ? wrapText(font, title, metaWidth).slice(0, 2) : [truncateText(font, title, metaWidth)];
     for (let index = 0; index < titleLines.length; index++) {
-      image.drawText(font, META_X, ART_Y + 2 + index * 15, titleLines[index]!, 230);
+      image.drawText(font, META_X, metaTop + index * metaStep, titleLines[index]!, 230);
     }
-    image.drawText(font, META_X, ART_Y + 36, media.artist || "Unknown artist", 180);
+    image.drawText(font, META_X, metaTop + 4 + titleSlots * metaStep, media.artist || "Unknown artist", 180);
     if (media.album) {
-      image.drawText(font, META_X, ART_Y + 52, truncateText(font, media.album, metaWidth), 150);
+      image.drawText(font, META_X, metaTop + 4 + (titleSlots + 1) * metaStep, truncateText(font, media.album, metaWidth), 150);
     }
-    image.drawText(font, META_X, ART_Y + 68, truncateText(font, media.appName || media.packageName, metaWidth), 110);
+    image.drawText(
+      font,
+      META_X,
+      metaTop + 4 + (titleSlots + 2) * metaStep,
+      truncateText(font, media.appName || media.packageName, metaWidth),
+      110,
+    );
     this.drawProgress(image, media, metaWidth);
 
     const queue = mediaControllerBridge.getQueue();
     const actions = this.buildActions(media, queue);
     this.reconcileSelection(actions, queue);
-    const listHeight = height - LIST_TOP - FOOTER_HEIGHT;
-    const visibleRows = Math.max(1, (listHeight / ROW_HEIGHT) | 0);
+    const listHeight = height - LIST_TOP - LIST_BOTTOM_MARGIN;
+    const rowH = tightRowHeight(font);
+    const visibleRows = Math.max(1, (listHeight / rowH) | 0);
     if (this.selectedQueueIndex < this.queueScrollRow) {
       this.queueScrollRow = this.selectedQueueIndex;
     } else if (this.selectedQueueIndex >= this.queueScrollRow + visibleRows) {
@@ -128,12 +135,12 @@ class MusicAppLayer implements Layer {
 
     for (let index = 0; index < actions.length; index++) {
       const action = actions[index]!;
-      const y = LIST_TOP + index * ROW_HEIGHT;
+      const y = LIST_TOP + index * rowH;
       const selected = index === this.selectedActionIndex;
       const highlightX = ACTION_X - 6;
       const highlightY = y - 1;
       const highlightWidth = ACTION_WIDTH + 8;
-      const highlightHeight = ROW_HEIGHT - 1;
+      const highlightHeight = rowH - 1;
       if (selected) {
         drawSelectionHighlight(
           image,
@@ -152,7 +159,7 @@ class MusicAppLayer implements Layer {
       }
     }
 
-    image.drawLine(COLUMN_DIVIDER_X, LIST_TOP - 3, COLUMN_DIVIDER_X, height - FOOTER_HEIGHT - 3, 45);
+    image.drawLine(COLUMN_DIVIDER_X, LIST_TOP - 3, COLUMN_DIVIDER_X, height - LIST_BOTTOM_MARGIN - 3, 45);
     if (!queue.length) {
       image.drawText(font, QUEUE_X, LIST_TOP + 1, "Playlist unavailable", 90);
     } else {
@@ -160,7 +167,7 @@ class MusicAppLayer implements Layer {
       const lastVisible = Math.min(queue.length, this.queueScrollRow + visibleRows);
       for (let index = this.queueScrollRow; index < lastVisible; index++) {
         const item = queue[index]!;
-        const y = LIST_TOP + (index - this.queueScrollRow) * ROW_HEIGHT;
+        const y = LIST_TOP + (index - this.queueScrollRow) * rowH;
         const selected = index === this.selectedQueueIndex;
         if (selected) {
           drawSelectionHighlight(
@@ -168,7 +175,7 @@ class MusicAppLayer implements Layer {
             QUEUE_X - 6,
             y - 1,
             queueWidth + 8,
-            ROW_HEIGHT - 1,
+            rowH - 1,
             ctx.stack.isFocused() && this.focusColumn === "playlist",
             4,
           );
@@ -177,7 +184,7 @@ class MusicAppLayer implements Layer {
         image.drawText(font, QUEUE_X, y + 1, truncateText(font, label, queueWidth - 4), selected ? 255 : 200);
       }
       if (queue.length > visibleRows) {
-        const trackHeight = visibleRows * ROW_HEIGHT - 4;
+        const trackHeight = visibleRows * rowH - 4;
         const trackX = width - 12;
         image.fillRect(trackX, LIST_TOP, 3, trackHeight, 30);
         const thumbHeight = Math.max(8, (trackHeight * visibleRows / queue.length) | 0);
@@ -187,24 +194,20 @@ class MusicAppLayer implements Layer {
       }
     }
 
-    const backTarget = this.focusColumn === "playlist" ? "actions" : "back";
-    image.drawText(
-      font,
-      20,
-      height - 16,
-      `${GESTURE_SCROLL} select   ${GESTURE_CLICK} activate   ${GESTURE_DOUBLE_CLICK} ${backTarget}`,
-      110,
-    );
     return image;
   }
 
-  async handleInput(event: DashboardInputEvent, ctx: LayerContext): Promise<void> {
+  async handleInput(event: InputEvent, ctx: LayerContext): Promise<void> {
     if (event.type === "double-click" && this.focusColumn === "playlist") {
       this.focusColumn = "actions";
       this.selectedActionIndex = PLAYLIST_ACTION_INDEX;
       return;
     }
     const media = mediaControllerBridge.snapshot();
+    if ((!media.accessEnabled || !media.available) && isDirectionalInput(event)) {
+      // Nothing to skip between yet: the setup prompts take select / back.
+      return this.handleInput(directionalFallback(event), ctx);
+    }
     if (!media.accessEnabled) {
       if (event.type === "click") {
         mediaControllerBridge.openNotificationAccessSettings();
@@ -223,6 +226,16 @@ class MusicAppLayer implements Layer {
     const actions = this.buildActions(media, queue);
     this.reconcileSelection(actions, queue);
     switch (event.type) {
+      case "swipe-right":
+        if (media.canSkipNext) await mediaControllerBridge.skipNext();
+        return;
+      case "swipe-left":
+        if (media.canSkipPrevious) await mediaControllerBridge.skipPrevious();
+        return;
+      case "swipe-up":
+        return this.handleInput({ type: "scroll-up", timestampMs: event.timestampMs }, ctx);
+      case "swipe-down":
+        return this.handleInput({ type: "scroll-down", timestampMs: event.timestampMs }, ctx);
       case "scroll-up":
         if (this.focusColumn === "playlist") {
           this.selectedQueueIndex = Math.max(0, this.selectedQueueIndex - 1);
@@ -331,13 +344,12 @@ class MusicAppLayer implements Layer {
   private drawProgress(image: GrayImage, media: MediaControllerState, width: number): void {
     if (media.durationMs <= 0 || media.positionMs < 0) return;
     const font = getDefaultSmallFont();
-    const y = ART_Y + 84;
     const elapsed = formatMediaTime(media.positionMs);
     const duration = formatMediaTime(media.durationMs);
-    image.drawText(font, META_X, y, elapsed, 140);
-    image.drawText(font, META_X + width - font.measureText(duration), y, duration, 140);
+    image.drawText(font, META_X, PROGRESS_TIME_Y, elapsed, 140);
+    image.drawText(font, META_X + width - font.measureText(duration), PROGRESS_TIME_Y, duration, 140);
 
-    const barY = ART_Y + 100;
+    const barY = PROGRESS_BAR_Y;
     image.drawRect(META_X, barY, width, 5, 55);
     const progress = clamp(media.positionMs / media.durationMs, 0, 1);
     image.fillRect(META_X + 1, barY + 1, Math.round((width - 2) * progress), 3, 170);
@@ -345,7 +357,10 @@ class MusicAppLayer implements Layer {
 
   private drawArt(image: GrayImage, media: MediaControllerState): void {
     const key = `${media.packageName}|${media.title}|${media.album}`;
-    if (key !== this.artKey) {
+    // Retry while null: players (e.g. Spotify) often publish metadata before
+    // the art bitmap is downloaded, then re-emit the same strings with the
+    // bitmap attached. The no-art fetch path is a cheap near-no-op.
+    if (key !== this.artKey || this.art === null) {
       this.artKey = key;
       this.art = mediaControllerBridge.getAlbumArt(ART_SIZE);
     }
@@ -358,7 +373,13 @@ class MusicAppLayer implements Layer {
     } else {
       image.drawRect(ART_X, ART_Y, ART_SIZE, ART_SIZE, 60);
       const font = getDefaultSmallFont();
-      image.drawText(font, ART_X + 22, ART_Y + ART_SIZE / 2 - 7, "no art", 90);
+      image.drawText(
+        font,
+        ART_X + Math.round((ART_SIZE - font.measureText("no art")) / 2),
+        ART_Y + Math.round((ART_SIZE - font.lineHeight) / 2),
+        "no art",
+        90,
+      );
     }
   }
 }
@@ -401,7 +422,7 @@ class VolumeModalLayer implements Layer {
     return image;
   }
 
-  handleInput(event: DashboardInputEvent, ctx: LayerContext): void {
+  handleInput(event: InputEvent, ctx: LayerContext): void {
     if (event.type === "scroll-up") {
       this.adjust(2);
     } else if (event.type === "scroll-down") {
@@ -419,6 +440,7 @@ class VolumeModalLayer implements Layer {
 
 /** Let back leave the playlist column before the root wrapper yields to the shell. */
 class MusicRootLayer implements Layer {
+  readonly acceptsDirectional = true;
   private readonly yieldAtRoot: YieldAtRootLayer;
 
   constructor(private readonly music: MusicAppLayer) {
@@ -429,7 +451,7 @@ class MusicRootLayer implements Layer {
     return this.yieldAtRoot.paint(ctx, paintBelow);
   }
 
-  async handleInput(event: DashboardInputEvent, ctx: LayerContext): Promise<void> {
+  async handleInput(event: InputEvent, ctx: LayerContext): Promise<void> {
     if (event.type === "double-click" && this.music.isPlaylistFocused()) {
       await this.music.handleInput(event, ctx);
       return;
@@ -459,6 +481,13 @@ export function createMusicAppWindow(options: InProcessAppOptions): InProcessWin
     iconLetter: "M",
     icon: "music",
     closeable: true,
+    menuItems: () => [{
+      label: "Music settings",
+      onSelect: (ctx) => {
+        ctx.stack.pop();
+        ctx.stack.push(new MusicSettingsLayer());
+      },
+    }],
     actions: options.actions,
     baseLayer: new MusicRootLayer(musicLayer),
     submitFrame: options.submitFrame,

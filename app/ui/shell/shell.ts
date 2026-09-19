@@ -1,13 +1,29 @@
 import { G2_LENS_HEIGHT, G2_LENS_WIDTH, GrayImage } from "../../graphics/image";
-import { getDefaultSmallFont } from "../../graphics/bdffont";
-import { EvenAIStatus, EventSourceType, OsEventTypeList } from "../../g2/events";
+import { singlePlane, type Plane } from "../../graphics/plane";
+import { getDefaultSmallFont } from "../../graphics/ui-fonts";
+import { EvenAIStatus, EventSourceType, OsEventTypeList, WatchGestureType } from "../../g2/events";
 import type { RawInputEvent } from "../../native/faceclaw-communicator";
-import { DashboardInputEvent, Layer, LayerActions, LayerContext, LayerStack, noopLayerActions } from "../layers";
-import { MenuLayer, type MenuItem } from "../menu";
+import {
+  directionalFallback,
+  GESTURE_SHORT_THEN_LONG_PRESS,
+  gestureHints,
+  InputEvent,
+  type InputEventPayload,
+  type InputSource,
+  isDirectionalInput,
+  isWatchInput,
+  makeInputEvent,
+} from "../gestures";
+import { Layer, LayerActions, LayerContext, LayerStack, noopLayerActions } from "../layers";
+import { CONTEXT_MENU_DIM, MenuLayer, type MenuItem } from "../menu";
 import { VoiceInputLayer, type VoiceSendTarget } from "./voice-input";
+import { KeyboardInputLayer, type KeyboardInputSession } from "./keyboard-input";
+import { voiceActivity } from "./voice-activity";
 import { AssistantLayer } from "./assistant";
 import { AssistantSession, type AssistantBackendConfig } from "../../assistant/session";
-import { resolveAssistantModel } from "../../assistant/models";
+import { resolveAssistantModel, type AssistantModel } from "../../assistant/models";
+import { AssistantConversations, type ReasoningLevel } from "../../assistant/conversations";
+import { getStringSetting, setStringSetting } from "../../native/settings-store";
 import type { AssistantContext } from "../../assistant/types";
 import { SingleNotificationLayer } from "../notifications";
 import {
@@ -18,22 +34,24 @@ import {
   assistantBridgeTokenSetting,
   assistantModelSetting,
   assistantSkipConfirmationSetting,
-  batteryDisplayModeSetting,
+  batteryIndicatorSettingsKey,
+  brightnessSetting,
   onAnySettingChanged,
   openAiApiKeySetting,
   timeFormatSetting,
   wakeWordActionSetting,
 } from "../dashboard-settings";
-import { ShellChromeLayer, sidebarLeftColumnUsed, type ShellChromeState, type ShellChromeWindow } from "./chrome-layer";
+import { onAmbientCardsChanged } from "./ambient-cards";
+import { ShellChromeLayer, sidebarContentLeft, type ShellChromeState, type ShellChromeWindow } from "./chrome-layer";
 import { ShellModalLayer } from "./modal-layer";
 import { ToolDebugMenuLayer } from "./tool-debug-layer";
+import { BrightnessPickerLayer } from "./brightness-picker-layer";
 import { toolRegistry } from "../../assistant/tool-registry";
 import {
-  MIN_WINDOW_HEIGHT,
   minWindowTop,
-  SIDEBAR_COLUMN_WIDTH,
-  SIDEBAR_WIDTH,
+  sidebarWidth,
   TOP_BAR_HEIGHT,
+  windowBandHeight,
   windowTop,
   type WindowHeightMode,
 } from "./geometry";
@@ -46,11 +64,14 @@ import {
  *
  * Input flow: every event enters via receiveInput. The shell consumes
  * everything while the sidebar or a shell overlay has focus and forwards the
- * rest to the focused window. Long-press goes to the foreground window (from
- * the sidebar it focuses the window first); by convention apps answer it with
- * a window menu that ends in Voice input / Close window. Holding the press
- * past the escape threshold opens the shell's own escape menu, so the shell
- * keeps working when a window's handler hangs.
+ * rest to the focused window. Long-press opens the shell-owned system menu
+ * (Focus app switcher, Voice input, Brightness, Close window, Debug) without reaching the
+ * app, so the shell keeps working when a window's handler hangs; a window
+ * that claims long-press for a move of its own gets it forwarded instead, and
+ * holding the press past the escape threshold still opens the system menu.
+ * The 2.2.9 tap-then-hold gesture goes to the foreground window (from the
+ * sidebar it focuses the window first); by convention apps answer it with
+ * their own context menu, or ask for the system menu when they have none.
  */
 
 export type ShellWindow = {
@@ -59,8 +80,30 @@ export type ShellWindow = {
   title: string;
   /** Compositor surface this window renders to; configured at connect / launch. */
   surfaceId: string;
-  /** Whether close menu entries (app menu default, shell escape menu) apply (the launcher is pinned). */
+  /** Whether the system menu offers Close window (the launcher is pinned). */
   closeable: boolean;
+  /**
+   * True when tap-then-hold currently opens the window's own context menu
+   * (with at least one entry). While false, the system menu shows no
+   * app-menu hint and a tap-then-hold over the open system menu leaves it
+   * open instead of switching menus.
+   */
+  hasAppMenu?: () => boolean;
+  /**
+   * True while the window gives long-press a meaning of its own (a game
+   * move). The shell then forwards long-presses to it instead of opening the
+   * system menu; holding the press past the escape threshold still opens it.
+   */
+  claimsLongPress?: () => boolean;
+  /** Chat uses hold-to-talk and tap-then-hold for the system menu, without an escape timer. */
+  holdToTalk?: boolean;
+  /** A window owns microphone capture outside the shell voice dialog. */
+  isVoiceCapturing?: () => boolean;
+  /**
+   * True when the window gives swipe-left / swipe-right (watch directional
+   * input) a meaning; otherwise the shell forwards directionalFallback(event).
+   */
+  acceptsDirectional?: boolean;
   /**
    * Window height: the standard 288px band ("min") or the full screen
    * ("max", terminal views). Decides the surface rect and where the shell
@@ -75,9 +118,20 @@ export type ShellWindow = {
    * tracking) passes to the window: it must eventually reach a frame submit
    * or a finishFrame call.
    */
-  handleInput: (event: DashboardInputEvent, frameId: number) => Promise<void> | void;
+  handleInput: (event: InputEvent, frameId: number) => Promise<void> | void;
   /** Repaint and resubmit this window's surface. */
   requestRender: () => void;
+  /**
+   * Re-measure against the current display mode (viewport size / band) and
+   * repaint. Windows without it (workers with a canvas fixed at open) are
+   * closed and relaunched by the controller instead.
+   */
+  relayout?: () => void;
+  /**
+   * A touch from the phone's mirror at (x, y) in app-viewport coordinates.
+   * True if the window acted on it; otherwise the controller sends a select.
+   */
+  hitTest?: (x: number, y: number) => Promise<boolean> | boolean;
   /**
    * Deliver a text string to the window (e.g. finalized voice input). Optional:
    * only windows that consume typed text (the terminal) implement it.
@@ -85,15 +139,43 @@ export type ShellWindow = {
   receiveTextInput?: (text: string) => void;
   /** Foreground state changed: this window's surface is (not) the visible one. */
   setForeground?: (foreground: boolean) => void;
+  /**
+   * Input focus moved into this window. `lastInput` is the most recent input
+   * event the shell received — for a focus that a click or swipe caused, the
+   * event that caused it. A programmatic focus (a worker's focus-window
+   * request, a wake path) can deliver an older event: check timestampMs
+   * before treating it as current.
+   */
+  onFocus?: (lastInput: InputEvent | null) => void;
   /** Screen turned on/off; hidden or screen-off windows should stop painting. */
   setScreenOn?: (on: boolean) => void;
+  /**
+   * Input focus arrived at or left this window: it is (no longer) where
+   * ordinary input goes. Unlike setForeground / onFocus, this also tracks
+   * shell overlays (the system menu, a notification modal, the voice dialog)
+   * and screen-off, so a game can pause on any of them. Sent on change only.
+   */
+  setInputFocus?: (focused: boolean) => void;
 };
 
 export type ShellConfig = {
+  /** Hosts without microphone support hide and reject voice entry points. */
+  voiceInputEnabled?: boolean;
   /** Actions handed to shell overlay layers; requestRender must re-render the shell surface. */
   actions: LayerActions;
   getScreenTimeoutMs: () => number | null;
   requestShellRender: () => void;
+  /**
+   * Asked before the voice dialog opens; resolving false swallows the open.
+   * Preview-only mode uses it to turn the tap into a mic-permission prompt
+   * when RECORD_AUDIO isn't granted yet (the phone mic is the source there).
+   */
+  prepareVoiceCapture?: () => Promise<boolean>;
+  /**
+   * The keyboard dialog opened (with the session the phone types into) or
+   * closed (null) by any path; the phone UI shows/hides its typing panel.
+   */
+  onKeyboardInputChanged?: (session: KeyboardInputSession | null) => void;
   /** Screen on/off changed: the controller blanks/unblanks the compositor. */
   onScreenStateChanged: (on: boolean) => void;
   /** Window registered/removed or foreground changed (persists the open-app list). */
@@ -103,32 +185,56 @@ export type ShellConfig = {
 /** Which surfaces need re-rendering after an input event. */
 export type ShellInputOutcome = { shell: boolean; window: boolean };
 
-type FocusKind = "sidebar" | "window";
+/**
+ * Assistant overlay activity, for mirrors outside the glasses (the watch).
+ * "streaming" carries the reply so far (replace semantics); "done" the final
+ * reply; "error" the message; "closed" fires when the overlay leaves the
+ * stack by any path.
+ */
+export type AssistantActivityEvent = {
+  phase: "thinking" | "streaming" | "done" | "error" | "closed";
+  text: string;
+};
+
+export type FocusKind = "sidebar" | "window";
 
 const noopActions: LayerActions = noopLayerActions;
 
 /**
- * Hold a long-press this much past the long-press event (which the firmware
- * itself only fires after a shorter hold) and the shell opens its own escape
- * menu — the recovery path when an app ignores or mishandles the gesture.
+ * For a window that claims long-press: hold the press this much past the
+ * long-press event (which the firmware itself only fires after a shorter
+ * hold) and the shell opens the system menu anyway — the recovery path when
+ * the app ignores or mishandles the gesture.
  */
 const LONG_PRESS_ESCAPE_MENU_MS = 4000;
 
-/** Shell-surface overlay menu (the escape menu); closing it returns focus to the sidebar. */
+/** Shell-surface overlay menu (the system menu); closing it returns focus to the sidebar. */
 class ShellOverlayMenuLayer extends MenuLayer {
-  constructor(items: MenuItem[], private readonly onClosed: () => void) {
+  /**
+   * Set before popping to keep focus on the window: an entry that acts on
+   * the window (Voice input aims its transcript at it) must not first hand
+   * focus to the sidebar.
+   */
+  keepWindowFocus = false;
+
+  constructor(items: MenuItem[], footer: string | undefined, private readonly onClosed: () => void) {
     // Aligned to the min-height window band (like the sidebar), wherever the
-    // vertical position setting currently puts it.
-    super(null, items, {
-      x: SIDEBAR_WIDTH + 8,
+    // vertical position setting currently puts it; centered over the
+    // application area, i.e. the part of the screen past the sidebar strip
+    // (the whole screen in the full-panel mode, where the strip overlays).
+    const width = 272;
+    super("System", items, {
+      x: sidebarWidth() + (((G2_LENS_WIDTH - sidebarWidth() - width) / 2) | 0),
       y: minWindowTop() + TOP_BAR_HEIGHT + 8,
-      width: 272,
-      minHeight: 0,
+      width,
+      minHeight: 150,
+      footer,
+      dimUnderneath: CONTEXT_MENU_DIM,
     });
   }
 
   onRemoved(): void {
-    this.onClosed();
+    if (!this.keepWindowFocus) this.onClosed();
   }
 }
 
@@ -165,7 +271,7 @@ class ShellAlertLayer implements Layer {
     image.drawTextWrapped({
       font,
       x: ALERT_X + 16,
-      y: alertY + 34,
+      y: alertY + 18 + font.lineHeight + 4,
       width: ALERT_W - 32,
       text: this.text,
       value: 235,
@@ -173,7 +279,7 @@ class ShellAlertLayer implements Layer {
     return image;
   }
 
-  handleInput(event: DashboardInputEvent, _ctx: LayerContext): void {
+  handleInput(event: InputEvent, _ctx: LayerContext): void {
     if (event.type === "click" || event.type === "double-click") {
       this.clearTimer();
       this.onDismiss();
@@ -192,22 +298,58 @@ class ShellAlertLayer implements Layer {
   }
 }
 
+/** Every setting the top bar paints from, as one comparable string. */
+function topBarSettingsKey(): string {
+  return `${batteryIndicatorSettingsKey()}|${timeFormatSetting.get()}`;
+}
+
 class Shell {
   private windows: ShellWindow[] = [];
   private selectedIndex = 0;
   /** Window ids in most-recently-visible-first order; closing the visible window returns to the next entry. */
   private mruWindowIds: string[] = [];
   private focus: FocusKind = "sidebar";
+  /** The window last told it holds input focus (see syncInputFocus). */
+  private inputFocusedWindowId: string | null = null;
   private screenOn = true;
   private lastInputAtMs = Date.now();
-  private battery: ShellChromeState["battery"] = { headset: null, headsetCharging: null };
+  /** The most recent input event received, for windows gaining focus (see ShellWindow.onFocus). */
+  private lastInput: InputEvent | null = null;
+  private battery: ShellChromeState["battery"] = {
+    headset: null, headsetCharging: null, ring: null, ringCharging: null, watch: null, watchCharging: null,
+  };
   private attention = new Map<string, boolean>();
   // App-provided top-bar tray icons, keyed by owner id; drawn between the
   // notification icons and the battery indicators.
   private readonly trayIcons = new Map<string, GrayImage>();
   private activeVoiceLayer: VoiceInputLayer | null = null;
-  private assistantSession: AssistantSession | null = null;
+  private activeKeyboardLayer: KeyboardInputLayer | null = null;
+  private conversations: AssistantConversations | null = null;
+  private get assistantSession(): AssistantSession | null {
+    return this.conversations?.current().session ?? null;
+  }
+
+  getAssistantConversations(): AssistantConversations {
+    if (!this.conversations) {
+      this.conversations = new AssistantConversations(
+        (model, reasoning) => this.resolveAssistantConfiguration(model, reasoning),
+        () => assistantModelSetting.get(),
+        (value) => setStringSetting("assistant.conversations", value),
+        getStringSetting("assistant.conversations", ""),
+      );
+    }
+    return this.conversations;
+  }
+
+  async prepareChatVoiceCapture(): Promise<boolean> {
+    if (this.activeVoiceLayer || this.activeKeyboardLayer || this.voiceDialogPending) return false;
+    const ready = (await this.config.prepareVoiceCapture?.()) ?? true;
+    return ready && !this.activeVoiceLayer && !this.activeKeyboardLayer &&
+      this.stack.isAtBase() && this.isWindowFocused("ai-chat");
+  }
   private assistantLayer: AssistantLayer | null = null;
+  private readonly assistantActivityListeners = new Set<(event: AssistantActivityEvent) => void>();
+  private readonly alertListeners = new Set<(text: string) => void>();
   private escapeMenuTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly actions: LayerActions = { ...noopActions };
   private config: ShellConfig = {
@@ -216,36 +358,51 @@ class Shell {
     requestShellRender: () => {},
     onScreenStateChanged: () => {},
   };
-  private readonly stack = new LayerStack(
-    new ShellChromeLayer(() => this.chromeState()),
-    this.actions,
-  );
+  private readonly chrome = new ShellChromeLayer(() => this.chromeState());
+  private readonly stack = new LayerStack(this.chrome, this.actions);
 
-  // Top-bar settings we mirror into the chrome; a change to either repaints
-  // the shell surface so the top bar reflects it immediately.
+  // Top-bar settings we mirror into the chrome; a change to any of them
+  // repaints the shell surface so the top bar reflects it immediately.
   private topBarSettingsSubscribed = false;
-  private lastBatteryDisplayMode: string | null = null;
-  private lastTimeFormat: string | null = null;
+  private lastTopBarSettingsKey: string | null = null;
 
   configure(config: ShellConfig): void {
-    this.config = config;
+    // Nearly every state change ends in a shell render request, so it is
+    // the natural point to tell windows about input-focus changes too.
+    this.config = {
+      ...config,
+      requestShellRender: () => {
+        this.syncInputFocus();
+        config.requestShellRender();
+      },
+    };
     this.stack.setActions(config.actions);
     this.subscribeToTopBarSettings();
+    this.subscribeToAmbientCards();
+  }
+
+  // Ambient (encounter) cards live in the chrome paint; a posted or expired
+  // card repaints the shell surface so it appears and disappears on time.
+  private ambientCardsSubscribed = false;
+
+  private subscribeToAmbientCards(): void {
+    if (this.ambientCardsSubscribed) return;
+    this.ambientCardsSubscribed = true;
+    onAmbientCardsChanged(() => {
+      if (this.screenOn) {
+        this.config.requestShellRender();
+      }
+    });
   }
 
   private subscribeToTopBarSettings(): void {
     if (this.topBarSettingsSubscribed) return;
     this.topBarSettingsSubscribed = true;
-    this.lastBatteryDisplayMode = batteryDisplayModeSetting.get();
-    this.lastTimeFormat = timeFormatSetting.get();
+    this.lastTopBarSettingsKey = topBarSettingsKey();
     onAnySettingChanged(() => {
-      const batteryMode = batteryDisplayModeSetting.get();
-      const timeFormat = timeFormatSetting.get();
-      if (batteryMode === this.lastBatteryDisplayMode && timeFormat === this.lastTimeFormat) {
-        return;
-      }
-      this.lastBatteryDisplayMode = batteryMode;
-      this.lastTimeFormat = timeFormat;
+      const key = topBarSettingsKey();
+      if (key === this.lastTopBarSettingsKey) return;
+      this.lastTopBarSettingsKey = key;
       this.config.requestShellRender();
     });
   }
@@ -359,7 +516,7 @@ class Shell {
     return this.screenOn;
   }
 
-  /** Current headset battery levels (for the assistant's get_state tool). */
+  /** Current G2, R1, and Wear OS watch battery levels (top bar, Glanceboard, assistant). */
   getBatteryLevels(): ShellChromeState["battery"] {
     return this.battery;
   }
@@ -378,11 +535,66 @@ class Shell {
     this.lastInputAtMs = nowMs;
   }
 
+  /** Where input currently goes: the sidebar strip or the foreground window. */
+  getFocus(): FocusKind {
+    return this.focus;
+  }
+
+  /** True while a shell overlay (menu, dialog, voice input) is above the chrome. */
+  hasOverlay(): boolean {
+    return !this.stack.isAtBase();
+  }
+
+  /** The window whose sidebar icon is at screen (x, y), for mirror touches. */
+  windowAtSidebarPoint(x: number, y: number): ShellWindow | null {
+    const index = this.chrome.windowIndexAt(x, y, this.windows.length);
+    return index === null ? null : this.windows[index] ?? null;
+  }
+
+  /** Whether input focus currently targets this window (regardless of screen state). */
+  private isFocusTarget(window: ShellWindow | undefined): boolean {
+    return !!window && this.focus === "window" && this.foregroundWindow() === window;
+  }
+
+  /**
+   * The window ordinary input reaches right now: the foreground window with
+   * focus in-window, the screen on, and no shell overlay (system menu,
+   * notification modal, voice dialog, alert) above it.
+   */
+  private inputTargetWindow(): ShellWindow | undefined {
+    if (!this.screenOn || this.focus !== "window" || !this.stack.isAtBase() || this.activeVoiceLayer) {
+      return undefined;
+    }
+    return this.foregroundWindow();
+  }
+
+  /**
+   * Tell windows when they gain or lose input focus (ShellWindow.setInputFocus).
+   * Called from every shell render request and the input/wake/sleep paths,
+   * which between them follow every focus-affecting state change; it diffs
+   * against the last notification, so calling it often is cheap.
+   */
+  private syncInputFocus(): void {
+    const target = this.inputTargetWindow();
+    const targetId = target?.windowId ?? null;
+    if (targetId === this.inputFocusedWindowId) return;
+    const previous = this.windows.find((w) => w.windowId === this.inputFocusedWindowId);
+    this.inputFocusedWindowId = targetId;
+    previous?.setInputFocus?.(false);
+    target?.setInputFocus?.(true);
+  }
+
   /** Turn the screen on (if off) and set focus. Returns whether it was off. */
   wake(focus: FocusKind, nowMs = Date.now()): boolean {
     this.lastInputAtMs = nowMs;
+    const gaining = focus === "window" ? this.foregroundWindow() : undefined;
+    const alreadyFocused = this.isFocusTarget(gaining);
     this.focus = focus;
-    if (this.screenOn) return false;
+    if (gaining && !alreadyFocused) gaining.onFocus?.(this.lastInput);
+    if (this.screenOn) {
+      this.syncInputFocus();
+      return false;
+    }
     this.screenOn = true;
     this.config.onScreenStateChanged(true);
     for (const window of this.windows) {
@@ -391,6 +603,7 @@ class Shell {
     // Refresh the foreground window; the compositor restored its retained
     // frame, but its content may be stale (e.g. a running stopwatch).
     this.foregroundWindow()?.requestRender();
+    this.syncInputFocus();
     return true;
   }
 
@@ -403,6 +616,7 @@ class Shell {
     for (const window of this.windows) {
       window.setScreenOn?.(false);
     }
+    this.syncInputFocus();
     this.config.onScreenStateChanged(false);
   }
 
@@ -410,8 +624,12 @@ class Shell {
   focusWindow(windowId: string): void {
     const index = this.windows.findIndex((w) => w.windowId === windowId);
     if (index < 0) return;
+    const target = this.windows[index];
+    const alreadyFocused = this.isFocusTarget(target);
     this.setSelectedIndex(index);
     this.focus = "window";
+    if (!alreadyFocused) target?.onFocus?.(this.lastInput);
+    this.syncInputFocus();
   }
 
   /** Idle timeout: sleep if the configured timeout elapsed. Returns whether it slept. */
@@ -421,10 +639,11 @@ class Shell {
     // An open voice dialog suspends the timeout: a long dictation or refine
     // has no button presses, but the screen must stay on for it. Sliding
     // lastInputAtMs forward also restarts the full timeout when it closes.
-    // An in-flight assistant turn suspends it for the same reason (a tool loop
-    // can run for a while with no input); once the turn ends and the
-    // Follow-up/Done menu is showing, the normal idle timeout resumes.
-    if (this.activeVoiceLayer || this.assistantSession?.isTurnActive()) {
+    // The keyboard dialog likewise: typing happens on the phone, not the
+    // ring. An in-flight assistant turn suspends it for the same reason (a
+    // tool loop can run for a while with no input); once the turn ends and
+    // the Follow-up/Done menu is showing, the normal idle timeout resumes.
+    if (this.activeVoiceLayer || this.activeKeyboardLayer || this.assistantSession?.isTurnActive() || this.foregroundWindow()?.isVoiceCapturing?.()) {
       this.lastInputAtMs = nowMs;
       return false;
     }
@@ -470,14 +689,43 @@ class Shell {
   }
 
   /** Paint the shell surface: transparent chrome, or all-transparent when asleep. */
-  paintSurface(): GrayImage {
+  paintSurface(): Plane[] {
     if (!this.screenOn) {
-      return new GrayImage(G2_LENS_WIDTH, G2_LENS_HEIGHT, 0);
+      return singlePlane(new GrayImage(G2_LENS_WIDTH, G2_LENS_HEIGHT, 0));
     }
     return this.stack.paint();
   }
 
-  async receiveInput(event: DashboardInputEvent, frameId = 0): Promise<ShellInputOutcome> {
+  /**
+   * The brightness factor a shell overlay (a context menu) currently applies
+   * to what lies beneath the shell surface, i.e. the window surfaces: 1 when
+   * nothing dims them. Read after paintSurface; the controller forwards it to
+   * the compositor, which cannot see the shell's layer stack.
+   */
+  underlayDim(): number {
+    const dim = this.stack.baseDim();
+    return this.screenOn && dim !== false ? dim : 1;
+  }
+
+  async receiveInput(event: InputEvent, frameId = 0): Promise<ShellInputOutcome> {
+    try {
+      return await this.routeInput(event, frameId);
+    } finally {
+      // Whatever the input did (opened an overlay, moved focus, slept the
+      // screen), windows learn about the resulting input-focus change.
+      this.syncInputFocus();
+    }
+  }
+
+  private async routeInput(event: InputEvent, frameId: number): Promise<ShellInputOutcome> {
+    const previous = this.lastInput;
+    this.lastInput = event;
+    // A visible window may paint a source-dependent indicator (see
+    // lastInputEvent); when the source class flips (watch <-> ring/arms),
+    // repaint it so the indicator follows the device now in use.
+    if (this.screenOn && previous && isWatchInput(previous) !== isWatchInput(event)) {
+      this.foregroundWindow()?.requestRender();
+    }
     // The stock lifecycle has already interpreted the physical double tap as
     // "wake". Keep that directionality if delivery is delayed or duplicated.
     if (event.type === "display-wake") {
@@ -491,6 +739,7 @@ class Shell {
     // Even AI app never launches, so the firmware does not power the display
     // for us either -- actions that need it wake the screen themselves.
     if (event.type === "wakeword") {
+      if (this.foregroundWindow()?.isVoiceCapturing?.()) return { shell: true, window: false };
       const action = wakeWordActionSetting.get();
       if (action === "off") {
         return { shell: false, window: false };
@@ -498,7 +747,7 @@ class Shell {
 
       this.lastInputAtMs = Date.now();
       const wokeScreen = !this.screenOn && this.wake("sidebar");
-      if (action === "voice-input" && !this.activeVoiceLayer) {
+      if (action === "voice-input" && !this.activeVoiceLayer && !this.activeKeyboardLayer) {
         if (this.assistantLayer) {
           // The assistant overlay is up; a wakeword continues that conversation.
           this.startAssistantFollowUp(true);
@@ -526,12 +775,15 @@ class Shell {
       return { shell: false, window: false };
     }
 
-    // Long-press goes to the foreground window (from the sidebar it focuses
-    // the window first); apps conventionally answer it with their window
-    // menu. The escape timer runs regardless of what the app does with it:
-    // holding the press long enough opens the shell's own menu.
+    // Long-press is the shell's own gesture: it opens the system menu
+    // directly, never reaching the app — over the app's own context menu
+    // too (the window closes that on system-menu-opened), while an already
+    // open system menu just stays. Its later generic release is consumed
+    // while the shell overlay is active and therefore cannot leak into the
+    // app. The exception is a window that claims long-press for a move of
+    // its own: it gets the press forwarded, with the escape timer running
+    // so that holding the press long enough still opens the system menu.
     if (event.type === "long-press") {
-      this.startEscapeMenuTimer();
       if (this.activeVoiceLayer || !this.stack.isAtBase()) {
         return { shell: true, window: false };
       }
@@ -539,8 +791,50 @@ class Shell {
       if (!window) {
         return { shell: true, window: false };
       }
+      if (!window.holdToTalk && !window.claimsLongPress?.()) {
+        this.openEscapeMenu();
+        return { shell: true, window: false };
+      }
+      if (!window.holdToTalk) this.startEscapeMenuTimer();
       if (this.focus === "sidebar") {
         this.focus = "window";
+        window.onFocus?.(this.lastInput);
+      }
+      // The window owns frameId from here (render or explicit finish).
+      await window.handleInput(event, frameId);
+      return { shell: true, window: true };
+    }
+
+    // The 2.2.9 tap-then-hold gesture is the app's context-menu gesture: it
+    // goes to the foreground window (from the sidebar it focuses the window
+    // first), which answers with its own menu or asks for the system menu
+    // when it has none.
+    if (event.type === "short-then-long-press") {
+      const window = this.foregroundWindow();
+      if (window?.holdToTalk) {
+        this.openEscapeMenu();
+        return { shell: true, window: false };
+      }
+      // Over the open system menu it switches to the app's context menu:
+      // close the system menu and deliver the gesture to the window as
+      // usual. A window without a menu of its own would only ask for the
+      // system menu back, so for it the open menu stays.
+      if (
+        !this.activeVoiceLayer &&
+        window?.hasAppMenu?.() &&
+        this.stack.popIfTop((layer) => layer instanceof ShellOverlayMenuLayer)
+      ) {
+        this.config.requestShellRender();
+      }
+      if (this.activeVoiceLayer || !this.stack.isAtBase()) {
+        return { shell: true, window: false };
+      }
+      if (!window) {
+        return { shell: true, window: false };
+      }
+      if (this.focus === "sidebar") {
+        this.focus = "window";
+        window.onFocus?.(this.lastInput);
       }
       // The window owns frameId from here (render or explicit finish).
       await window.handleInput(event, frameId);
@@ -571,7 +865,8 @@ class Shell {
     const window = this.foregroundWindow();
     if (window) {
       // The window owns frameId from here (render or explicit finish).
-      await window.handleInput(event, frameId);
+      const delivered = isDirectionalInput(event) && !window.acceptsDirectional ? directionalFallback(event) : event;
+      await window.handleInput(delivered, frameId);
       return { shell: false, window: true };
     }
     return { shell: false, window: false };
@@ -584,18 +879,50 @@ class Shell {
   /**
    * Screen rect actually occupied by content, for cropping screenshots: the
    * foreground window's band (full screen for a max-height window, the
-   * vertical-position-dependent 288px band otherwise), minus the sidebar's
-   * left column when no icons have overflowed into it.
+   * vertical-position-dependent 288px band otherwise), minus the sidebar
+   * strip left of the icon columns when the one-column variant is active.
    */
   screenshotCropRect(): { x: number; y: number; width: number; height: number } {
+    const appId = this.foregroundWindow()?.appId;
     const heightMode = this.foregroundWindow()?.heightMode ?? "min";
-    const x = sidebarLeftColumnUsed(this.windows.length) ? 0 : SIDEBAR_COLUMN_WIDTH;
+    const x = sidebarWidth(appId) === 0 ? 0 : sidebarContentLeft(this.windows.length);
     return {
       x,
-      y: windowTop(heightMode),
+      y: windowTop(heightMode, appId),
       width: G2_LENS_WIDTH - x,
-      height: heightMode === "max" ? G2_LENS_HEIGHT : MIN_WINDOW_HEIGHT,
+      height: windowBandHeight(heightMode, appId),
     };
+  }
+
+  /**
+   * Compact description of where input is currently going, for the frame
+   * timing export: "which app was drawing" is usually the first thing you need
+   * to interpret an input-to-display latency, and it is not recoverable from
+   * the input event itself.
+   */
+  describeInputTarget(): string {
+    const foreground = this.foregroundWindow()?.windowId ?? "none";
+    if (!this.screenOn) return `fg=${foreground} target=screen-off`;
+    if (this.activeVoiceLayer) return `fg=${foreground} target=voice`;
+    if (this.activeKeyboardLayer) return `fg=${foreground} target=keyboard`;
+    if (!this.stack.isAtBase()) return `fg=${foreground} target=shell-overlay`;
+    return `fg=${foreground} target=${this.focus}`;
+  }
+
+  /**
+   * The most recent input event received, from any source. Windows whose
+   * appearance depends on the input device in use (e.g. the launcher's
+   * defocused selection preview) can read it at paint time; the shell
+   * repaints the foreground window whenever the source class changes, so
+   * such paints stay current even while the window is not focused.
+   */
+  lastInputEvent(): InputEvent | null {
+    return this.lastInput;
+  }
+
+  /** Whether the most recent input came from the watch (see lastInputEvent). */
+  lastInputWasWatch(): boolean {
+    return this.lastInput !== null && isWatchInput(this.lastInput);
   }
 
   /** Whether a window is the current input target (foreground + focus in-window). */
@@ -612,20 +939,29 @@ class Shell {
     return this.screenOn && this.foregroundWindow()?.windowId === windowId;
   }
 
-  private handleSidebarInput(event: DashboardInputEvent): ShellInputOutcome {
+  private handleSidebarInput(event: InputEvent): ShellInputOutcome {
     switch (event.type) {
       case "double-click":
+        // A double-tap at the root (the app switcher selected) turns the
+        // display off — from the ring and the watch scheme alike; watch-scheme
+        // gestures wake it again (or a ring double-tap does).
         this.sleep();
         return { shell: true, window: false };
       case "scroll-up":
+      case "swipe-up":
         this.moveSelection(-1);
         return { shell: true, window: false };
       case "scroll-down":
+      case "swipe-down":
         this.moveSelection(1);
         return { shell: true, window: false };
       case "click":
+      case "swipe-right":
+        // Right: into the selected window (spatially, the window is to the
+        // sidebar's right). Left has nowhere further to go and is ignored.
         if (this.windows.length) {
           this.focus = "window";
+          this.foregroundWindow()?.onFocus?.(this.lastInput);
           // Repaint the window now so its selection highlight reflects focus
           // this frame, not one frame late.
           this.foregroundWindow()?.requestRender();
@@ -655,7 +991,35 @@ class Shell {
     this.config.onWindowsChanged?.();
   }
 
+  // True while a voice-dialog open waits on prepareVoiceCapture (e.g. the
+  // preview-mode permission prompt); a second tap must not queue another open.
+  private voiceDialogPending = false;
+
   private openVoiceDialog(options: {
+    finishOnClick?: boolean;
+    handsFree?: boolean;
+    defaultTarget: "assistant" | "app";
+  }): void {
+    if (this.config.voiceInputEnabled === false || this.voiceDialogPending) return;
+    this.voiceDialogPending = true;
+    void (async () => {
+      let ready = true;
+      try {
+        ready = (await this.config.prepareVoiceCapture?.()) ?? true;
+      } catch {
+        ready = false;
+      } finally {
+        this.voiceDialogPending = false;
+      }
+      // Re-checked after the await: another path may have opened a dialog
+      // (or torn down the base state) while a permission prompt was up.
+      if (!ready || this.activeVoiceLayer || this.activeKeyboardLayer) return;
+      this.openVoiceDialogNow(options);
+      this.config.requestShellRender();
+    })();
+  }
+
+  private openVoiceDialogNow(options: {
     finishOnClick?: boolean;
     handsFree?: boolean;
     defaultTarget: "assistant" | "app";
@@ -676,6 +1040,7 @@ class Shell {
       onClosed: () => {
         if (this.activeVoiceLayer === layer) {
           this.activeVoiceLayer = null;
+          voiceActivity.setActive(false);
           // The idle countdown restarts in full once voice input ends.
           this.noteUserActivity();
         }
@@ -690,6 +1055,7 @@ class Shell {
       autoSend,
     });
     this.activeVoiceLayer = layer;
+    voiceActivity.setActive(true);
     this.stack.push(layer);
     layer.startCapture();
   }
@@ -733,11 +1099,12 @@ class Shell {
 
   /**
    * Open the voice dialog aimed at the foreground window. Called when the
-   * user picks Voice input from a window's menu (in-process directly, worker
-   * apps via a start-voice-input message). The menu click already ended the
-   * press, so the dialog finishes on click instead of long-press-release.
+   * user picks Voice input from the system menu (or an app asks via a
+   * start-voice-input message). The menu click already ended the press, so
+   * the dialog finishes on click instead of long-press-release.
    */
   startVoiceInput(): void {
+    if (this.config.voiceInputEnabled === false) return;
     if (!this.screenOn || this.activeVoiceLayer || !this.stack.isAtBase()) return;
     // The transcript is aimed at the window whose menu requested it; the menu
     // entry point defaults the highlight to Type Into App.
@@ -746,25 +1113,108 @@ class Shell {
     this.config.requestShellRender();
   }
 
-  private isAssistantAvailable(): boolean {
-    return this.resolveAssistantConfiguration() !== null;
+  /**
+   * Open the keyboard dialog: the voice dialog's typed twin, driven by the
+   * phone's keyboard button (beside the mic button, whose wakeword this
+   * mirrors: it wakes a dark screen too). Over the assistant overlay the text
+   * continues that conversation; otherwise it goes to the usual destinations
+   * with Send to Assistant highlighted. Returns the session the phone types
+   * into (the already-open one if there is one), or null while a voice
+   * dialog is up.
+   */
+  startKeyboardInput(): KeyboardInputSession | null {
+    if (this.activeKeyboardLayer) return this.activeKeyboardLayer;
+    if (this.activeVoiceLayer || this.foregroundWindow()?.isVoiceCapturing?.()) return null;
+    if (!this.screenOn) this.wake("sidebar");
+    const assistantLayer = this.assistantLayer;
+    const assistantSession = this.assistantSession;
+    let targets: VoiceSendTarget[];
+    let defaultIndex = 0;
+    if (assistantLayer && assistantSession) {
+      targets = [
+        {
+          id: "assistant",
+          label: "Send",
+          onSend: (text) => this.runAssistantTurn(assistantSession, assistantLayer, text),
+        },
+      ];
+    } else {
+      targets = this.buildVoiceSendTargets();
+      defaultIndex = Math.max(0, targets.findIndex((target) => target.id === "assistant"));
+    }
+    const layer = new KeyboardInputLayer({
+      actions: this.config.actions,
+      onClosed: () => {
+        if (this.activeKeyboardLayer === layer) {
+          this.activeKeyboardLayer = null;
+          this.config.onKeyboardInputChanged?.(null);
+          // The idle countdown restarts in full once keyboard input ends.
+          this.noteUserActivity();
+        }
+      },
+      dismiss: () => {
+        this.stack.popIfTop((top) => top === layer);
+        // A send or discard from the phone side arrives outside the input
+        // path, so nothing else asks for the repaint.
+        this.config.requestShellRender();
+      },
+      sendTargets: targets,
+      defaultTargetIndex: defaultIndex,
+    });
+    this.activeKeyboardLayer = layer;
+    this.stack.push(layer);
+    this.config.onKeyboardInputChanged?.(layer);
+    this.config.requestShellRender();
+    return layer;
+  }
+
+  isAssistantAvailable(): boolean {
+    const current = this.getAssistantConversations().current();
+    return this.resolveAssistantConfiguration(current.model, current.reasoning) !== null;
+  }
+
+  /** Observe assistant turns (see AssistantActivityEvent). */
+  onAssistantActivity(listener: (event: AssistantActivityEvent) => void): () => void {
+    this.assistantActivityListeners.add(listener);
+    return () => {
+      this.assistantActivityListeners.delete(listener);
+    };
+  }
+
+  /** Observe showAlert popups (mirrored to the watch). */
+  onAlertShown(listener: (text: string) => void): () => void {
+    this.alertListeners.add(listener);
+    return () => {
+      this.alertListeners.delete(listener);
+    };
+  }
+
+  private emitAssistantActivity(event: AssistantActivityEvent): void {
+    for (const listener of Array.from(this.assistantActivityListeners)) {
+      try {
+        listener(event);
+      } catch (error) {
+        console.warn("assistant activity listener failed", error);
+      }
+    }
+  }
+
+  /**
+   * Dismiss the assistant overlay (cancelling any in-flight turn), as Done
+   * would. Returns whether an overlay was actually open to close.
+   */
+  closeAssistant(): boolean {
+    return this.closeAssistantLayer();
   }
 
   private ensureAssistantSession(): AssistantSession | null {
-    const config = this.resolveAssistantConfiguration();
-    if (!config) return null;
-    if (
-      !this.assistantSession ||
-      this.assistantSession.isExpired() ||
-      !this.assistantSession.matchesConfiguration(config)
-    ) {
-      this.assistantSession?.cancel();
-      this.assistantSession = new AssistantSession(config);
-    }
-    return this.assistantSession;
+    return this.getAssistantConversations().ensureSession();
   }
 
-  private resolveAssistantConfiguration(): AssistantBackendConfig | null {
+  private resolveAssistantConfiguration(
+    model: AssistantModel = this.conversations?.current().model ?? assistantModelSetting.get(),
+    reasoning: ReasoningLevel = this.conversations?.current().reasoning ?? "default",
+  ): AssistantBackendConfig | null {
     if (assistantBackendSetting.get() === "external") {
       const host = assistantBridgeHostSetting.get().trim();
       const token = assistantBridgeTokenSetting.get();
@@ -772,10 +1222,11 @@ class Shell {
       const port = parseInt(assistantBridgePortSetting.get(), 10) || 8790;
       return { kind: "external", bridge: { host, port, token } };
     }
-    const llm = resolveAssistantModel(assistantModelSetting.get(), {
+    const llm = resolveAssistantModel(model, {
       anthropic: anthropicApiKeySetting.get(),
       openai: openAiApiKeySetting.get(),
     });
+    if (llm && reasoning !== "default" && llm.effort) llm.effort = reasoning;
     return llm ? { kind: "direct", llm } : null;
   }
 
@@ -795,17 +1246,27 @@ class Shell {
    * Opens the assistant overlay if it isn't already up; a follow-up reuses the
    * existing session and overlay.
    */
-  sendToAssistant(text: string): void {
+  sendToAssistant(text: string, showOverlay = true): void {
+    text = text.trim();
+    if (!text) return;
     const session = this.ensureAssistantSession();
     if (!session) {
       this.showAlert(
         assistantBackendSetting.get() === "external"
           ? "Configure the agent bridge host and token in Settings."
-          : "Set an API key for the selected assistant model in Settings.",
+          : global.isIOS ? "Set an OpenAI or Anthropic API key in Settings." : "Set an API key or download the on-phone model in Settings.",
       );
       return;
     }
+    if (session.isTurnActive()) {
+      this.showAlert("The assistant is still working on the previous request");
+      return;
+    }
     if (!this.screenOn) this.wake("sidebar");
+    if (!showOverlay || this.foregroundWindow()?.appId === "ai-chat") {
+      this.runAssistantTurn(session, null, text);
+      return;
+    }
     let layer = this.assistantLayer;
     if (!layer) {
       const created = new AssistantLayer(this.config.actions, {
@@ -814,9 +1275,10 @@ class Shell {
         onClose: () => this.closeAssistantLayer(),
         onRemoved: () => {
           // Removed by any path (Done, or the screen sleeping mid-conversation):
-          // stop the turn and drop the reference so a later query starts clean.
+          // stop the turn and drop the overlay reference; keep shared history.
           this.assistantSession?.cancel();
           if (this.assistantLayer === created) this.assistantLayer = null;
+          this.emitAssistantActivity({ phase: "closed", text: "" });
         },
       });
       layer = created;
@@ -827,13 +1289,26 @@ class Shell {
     this.config.requestShellRender();
   }
 
-  private runAssistantTurn(session: AssistantSession, layer: AssistantLayer, text: string): void {
-    layer.startTurn();
+  private runAssistantTurn(session: AssistantSession, layer: AssistantLayer | null, text: string): void {
+    if (session.isTurnActive()) return;
+    layer?.startTurn();
+    let replySoFar = "";
+    this.emitAssistantActivity({ phase: "thinking", text: "" });
     session.sendUtterance(text, this.buildAssistantContext(), {
-      onTextDelta: (delta, textSoFar) => layer.onTextDelta(delta, textSoFar),
-      onToolActivity: (label) => layer.onToolActivity(label),
-      onTurnDone: () => layer.onTurnDone(),
-      onError: (message) => layer.onError(message),
+      onTextDelta: (delta, textSoFar) => {
+        replySoFar = textSoFar;
+        layer?.onTextDelta(delta, textSoFar);
+        this.emitAssistantActivity({ phase: "streaming", text: textSoFar });
+      },
+      onToolActivity: (label) => layer?.onToolActivity(label),
+      onTurnDone: () => {
+        layer?.onTurnDone();
+        this.emitAssistantActivity({ phase: "done", text: replySoFar });
+      },
+      onError: (message) => {
+        layer?.onError(message);
+        this.emitAssistantActivity({ phase: "error", text: message });
+      },
     });
   }
 
@@ -845,12 +1320,13 @@ class Shell {
   private startAssistantFollowUp(handsFree = false): void {
     const layer = this.assistantLayer;
     const session = this.assistantSession;
-    if (!layer || !session || this.activeVoiceLayer) return;
+    if (!layer || !session || this.activeVoiceLayer || this.activeKeyboardLayer) return;
     const voice = new VoiceInputLayer({
       actions: this.config.actions,
       onClosed: () => {
         if (this.activeVoiceLayer === voice) {
           this.activeVoiceLayer = null;
+          voiceActivity.setActive(false);
           this.noteUserActivity();
         }
       },
@@ -865,23 +1341,34 @@ class Shell {
       autoSend: handsFree && assistantSkipConfirmationSetting.get(),
     });
     this.activeVoiceLayer = voice;
+    voiceActivity.setActive(true);
     this.stack.push(voice);
     voice.startCapture();
     this.config.requestShellRender();
   }
 
-  private closeAssistantLayer(): void {
+  private closeAssistantLayer(): boolean {
     // Popping fires the layer's onRemoved, which cancels the turn and clears
-    // this.assistantLayer.
+    // this.assistantLayer. popThrough also closes anything stacked above the
+    // overlay (a follow-up voice dialog, an alert), so a close command works
+    // no matter what the conversation is showing.
     const layer = this.assistantLayer;
-    if (layer) this.stack.popIfTop((top) => top === layer);
+    const closed = layer ? this.stack.popThrough(layer) : false;
     this.noteUserActivity();
     this.config.requestShellRender();
+    return closed;
   }
 
   /** Show a brief text popup on the lenses (assistant show_alert / notices). */
   showAlert(text: string): void {
     if (!this.screenOn) this.wake("sidebar");
+    for (const listener of Array.from(this.alertListeners)) {
+      try {
+        listener(text);
+      } catch (error) {
+        console.warn("alert listener failed", error);
+      }
+    }
     const layer = new ShellAlertLayer(text, () => {
       this.stack.popIfTop((top) => top === layer);
       this.config.requestShellRender();
@@ -906,14 +1393,28 @@ class Shell {
   }
 
   /**
-   * The held-long-press safeguard menu. Shell-owned and shell-drawn (never
-   * the app's), so an unresponsive app can always be closed. It opens over
-   * whatever the app did with the long-press, including its own menu.
+   * A window's answer to tap-then-hold when it has no context menu of its
+   * own: open the system menu in its place, so both gestures land on the
+   * same menu. Ignored unless the window is still the foreground one.
+   */
+  openSystemMenu(windowId: string): void {
+    if (this.foregroundWindow()?.windowId !== windowId) return;
+    this.openEscapeMenu();
+  }
+
+  /**
+   * The system/escape menu: the entries every window shares (Focus app
+   * switcher, Voice input, Brightness, Close window) plus Debug. Shell-owned and
+   * shell-drawn (never the app's), so an unresponsive app can always be
+   * closed. It opens for long-press (over the app's own menu too), after an
+   * extended hold in a window that claims long-press, and on a window's
+   * request when tap-then-hold finds it has no menu of its own.
    */
   private openEscapeMenu(): void {
     if (!this.screenOn || this.activeVoiceLayer || !this.stack.isAtBase()) return;
     const foreground = this.foregroundWindow();
     if (!foreground) return;
+    let layer: ShellOverlayMenuLayer;
     const items: MenuItem[] = [];
     if (foreground.closeable) {
       items.push({
@@ -926,6 +1427,40 @@ class Shell {
         },
       });
     }
+    // Close window sits first but the menu opens on Focus app switcher, so a
+    // reflexive tap never closes the window.
+    const initialSelection = items.length;
+    items.push(
+      {
+        // Defocus the app (hand focus to the sidebar) without closing it: the
+        // reliable way out of an app that consumes double-click. Closing the
+        // menu is what yields focus, so popping is the whole action.
+        label: "Focus app switcher",
+        onSelect: (ctx) => {
+          ctx.stack.pop();
+        },
+      },
+      ...(this.config.voiceInputEnabled === false ? [] : [{
+        label: "Voice input",
+        onSelect: (ctx) => {
+          // The transcript is aimed at the foreground window, so keep focus
+          // there through the pop instead of yielding to the sidebar.
+          layer.keepWindowFocus = true;
+          ctx.stack.pop();
+          this.startVoiceInput();
+        },
+      }]),
+    );
+    if (brightnessSetting.get() !== "auto") {
+      items.push({
+        label: "Brightness",
+        onSelect: (ctx) => {
+          ctx.stack.pop();
+          ctx.stack.push(new BrightnessPickerLayer(() => this.yieldFocusToSidebar()));
+          this.config.requestShellRender();
+        },
+      });
+    }
     items.push({
       label: "Debug",
       onSelect: (ctx) => {
@@ -933,7 +1468,18 @@ class Shell {
         this.openToolDebugDialog();
       },
     });
-    this.stack.push(new ShellOverlayMenuLayer(items, () => this.yieldFocusToSidebar()));
+    // Gesture help: tap-then-hold switches to the app's own context menu,
+    // when the app has one (otherwise it opens this very menu, not worth a
+    // hint).
+    const footer = foreground.hasAppMenu?.()
+      ? (foreground.holdToTalk ? undefined : gestureHints([[GESTURE_SHORT_THEN_LONG_PRESS, "app menu"]]))
+      : undefined;
+    layer = new ShellOverlayMenuLayer(items, footer, () => this.yieldFocusToSidebar());
+    layer.selectItem(initialSelection);
+    this.stack.push(layer);
+    // Tell the window the system menu opened over it: an app with its own
+    // context menu up closes it, so the two context menus never stack.
+    void foreground.handleInput(makeInputEvent({ type: "system-menu-opened" }), 0);
     this.config.requestShellRender();
   }
 
@@ -968,6 +1514,7 @@ class Shell {
       selectedIndex: this.selectedIndex,
       focus: this.focus,
       foregroundHeightMode: this.foregroundWindow()?.heightMode ?? "min",
+      foregroundAppId: this.foregroundWindow()?.appId,
       battery: this.battery,
       trayIcons: Array.from(this.trayIcons.keys())
         .sort()
@@ -992,7 +1539,11 @@ function formatAssistantTime(date: Date): string {
   return `${day}, ${hours}:${minutes} ${meridiem}`;
 }
 
-export function rawInputEventToInputEvent(event: RawInputEvent): DashboardInputEvent {
+export function rawInputEventToInputEvent(event: RawInputEvent): InputEvent {
+  return makeInputEvent(rawInputEventToPayload(event));
+}
+
+function rawInputEventToPayload(event: RawInputEvent): InputEventPayload {
   if (event.kind === "sys-event") {
     if (event.eventType === OsEventTypeList.CLICK_EVENT) {
       return {
@@ -1005,16 +1556,30 @@ export function rawInputEventToInputEvent(event: RawInputEvent): DashboardInputE
         source: eventSourceToString(event.eventSource),
       };
     } else if (event.eventType === OsEventTypeList.SCROLL_BOTTOM_EVENT) {
-      return { type: "scroll-down" };
+      return scrollEvent("scroll-down", event.eventSource);
     } else if (event.eventType === OsEventTypeList.SCROLL_TOP_EVENT) {
-      return { type: "scroll-up" };
+      return scrollEvent("scroll-up", event.eventSource);
     } else if (event.eventType === OsEventTypeList.RING_LONG_PRESS_EVENT) {
       // CFW-forwarded long-press (replaces the firmware's force-quit dialog).
-      // The CFW gates this to the ring, so eventSource may be 0 (unknown);
-      // eventSourceToString falls back to "ring".
+      // Current CFW supplies the physical source for ring and temple presses;
+      // eventSourceToString's ring fallback keeps older CFW builds compatible.
       return { type: "long-press", source: eventSourceToString(event.eventSource) };
     } else if (event.eventType === OsEventTypeList.RING_LONG_PRESS_RELEASE_EVENT) {
       return { type: "long-press-release", source: eventSourceToString(event.eventSource) };
+    } else if (event.eventType === OsEventTypeList.SHORT_THEN_LONG_PRESS_EVENT) {
+      return { type: "short-then-long-press", source: eventSourceToString(event.eventSource) };
+    }
+  } else if (event.kind === "watch-gesture") {
+    // Synthetic, from the Wear OS remote (app/g2/wear-remote.ts); the glasses
+    // firmware never produces these.
+    if (event.eventType === WatchGestureType.SWIPE_LEFT) {
+      return { type: "swipe-left", source: "watch" };
+    } else if (event.eventType === WatchGestureType.SWIPE_RIGHT) {
+      return { type: "swipe-right", source: "watch" };
+    } else if (event.eventType === WatchGestureType.SWIPE_UP) {
+      return { type: "swipe-up", source: "watch" };
+    } else if (event.eventType === WatchGestureType.SWIPE_DOWN) {
+      return { type: "swipe-down", source: "watch" };
     }
   } else if (event.kind === "even-ai") {
     // sid 0x07 EvenAIDataPackage; eventType carries eEvenAIStatus. Only the
@@ -1029,9 +1594,9 @@ export function rawInputEventToInputEvent(event: RawInputEvent): DashboardInputE
     return { type: "display-wake" };
   } else if (event.kind === "text-click") {
     if (event.eventType === OsEventTypeList.SCROLL_BOTTOM_EVENT) {
-      return { type: "scroll-down" };
+      return scrollEvent("scroll-down", event.eventSource);
     } else if (event.eventType === OsEventTypeList.SCROLL_TOP_EVENT) {
-      return { type: "scroll-up" };
+      return scrollEvent("scroll-up", event.eventSource);
     }
   }
   return {
@@ -1042,18 +1607,25 @@ export function rawInputEventToInputEvent(event: RawInputEvent): DashboardInputE
   };
 }
 
-function eventSourceToString(eventSource: number): "ring" | "left-arm" | "right-arm" {
+/** Scroll events only carry a source when it is the watch (the stock ones never needed one). */
+function scrollEvent(type: "scroll-up" | "scroll-down", eventSource: number): InputEventPayload {
+  return eventSource === EventSourceType.TOUCH_EVENT_FROM_WATCH ? { type, source: "watch" } : { type };
+}
+
+function eventSourceToString(eventSource: number): InputSource {
   if (eventSource === EventSourceType.TOUCH_EVENT_FROM_RING) {
     return "ring";
   } else if (eventSource === EventSourceType.TOUCH_EVENT_FROM_GLASSES_L) {
     return "left-arm";
   } else if (eventSource === EventSourceType.TOUCH_EVENT_FROM_GLASSES_R) {
     return "right-arm";
+  } else if (eventSource === EventSourceType.TOUCH_EVENT_FROM_WATCH) {
+    return "watch";
   }
   return "ring";
 }
 
-export function inputEventToString(event: DashboardInputEvent): string {
+export function inputEventToString(event: InputEvent): string {
   switch (event.type) {
     case "click":
       return `Click from ${event.source}`;
@@ -1067,10 +1639,22 @@ export function inputEventToString(event: DashboardInputEvent): string {
       return `Long press from ${event.source}`;
     case "long-press-release":
       return `Long press release from ${event.source}`;
+    case "short-then-long-press":
+      return `Short then long press from ${event.source}`;
+    case "swipe-left":
+      return `Swipe left from ${event.source}`;
+    case "swipe-right":
+      return `Swipe right from ${event.source}`;
+    case "swipe-up":
+      return `Swipe up from ${event.source}`;
+    case "swipe-down":
+      return `Swipe down from ${event.source}`;
     case "display-wake":
       return `Display wake`;
     case "wakeword":
       return `Wakeword`;
+    case "system-menu-opened":
+      return `System menu opened`;
     default:
     case "unknown":
       return `Unknown event: ${event.kind} ${event.eventSource} ${event.eventType}`;

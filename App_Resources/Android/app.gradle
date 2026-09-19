@@ -5,14 +5,26 @@ dependencies {
 //  implementation 'androidx.multidex:multidex:2.0.1'
   // WebSocket transport for the g2mirror terminal-mirroring client.
   implementation 'com.squareup.okhttp3:okhttp:4.12.0'
+  // WebViewCompat.addDocumentStartJavaScript, for injecting the EvenHub bridge
+  // shim into remotely hosted apps (developer "Load app from URL").
+  implementation 'androidx.webkit:webkit:1.12.1'
+  // Play Services' ML Kit code scanner, for the developer "Load app from QR
+  // code" entry. Scanner UI and camera live in Play Services, so Faceclaw
+  // needs no camera permission and no third-party scanner app.
+  implementation 'com.google.android.gms:play-services-code-scanner:16.1.0'
+  // Wearable Data Layer (MessageClient / DataClient / CapabilityClient) for
+  // the Wear OS watch remote; see FaceclawWearBridge and wear/.
+  implementation 'com.google.android.gms:play-services-wearable:19.0.0'
+  // On-device language identification and translation for the Microphones
+  // app's captions (translation models download on demand, per language).
+  implementation 'com.google.mlkit:language-id:17.0.6'
+  implementation 'com.google.mlkit:translate:17.0.3'
 }
 
 def faceclawSherpaOnnxVersion = "1.13.0"
 def faceclawLibLc3Version = "1.1.3"
-def faceclawAsrModelName = "sherpa-onnx-moonshine-base-en-quantized-2026-02-27"
 def faceclawAbi = "arm64-v8a"
 def faceclawJniLibsDir = file("$projectDir/src/main/jniLibs/$faceclawAbi")
-def faceclawAssetsDir = file("$projectDir/src/main/assets/faceclaw-voice-asr")
 def faceclawNativeBuildDir = file("$buildDir/faceclaw-native")
 
 def faceclawDownload = { String url, File destination ->
@@ -60,15 +72,11 @@ tasks.register("prepareFaceclawNativeLibs") {
   outputs.files(
     file("$faceclawJniLibsDir/libonnxruntime.so"),
     file("$faceclawJniLibsDir/libsherpa-onnx-jni.so"),
-    file("$faceclawJniLibsDir/libfaceclaw_lc3.so"),
-    file("$faceclawAssetsDir/$faceclawAsrModelName/encoder_model.ort"),
-    file("$faceclawAssetsDir/$faceclawAsrModelName/decoder_model_merged.ort"),
-    file("$faceclawAssetsDir/$faceclawAsrModelName/tokens.txt")
+    file("$faceclawJniLibsDir/libfaceclaw_lc3.so")
   )
 
   doLast {
     faceclawJniLibsDir.mkdirs()
-    faceclawAssetsDir.mkdirs()
 
     def downloadsDir = file("$faceclawNativeBuildDir/downloads")
     def sherpaArchive = file("$downloadsDir/sherpa-onnx-v${faceclawSherpaOnnxVersion}-android.tar.bz2")
@@ -83,20 +91,6 @@ tasks.register("prepareFaceclawNativeLibs") {
       eachFile { details -> details.path = details.name }
       includeEmptyDirs = false
       into faceclawJniLibsDir
-    }
-
-    def asrArchive = file("$downloadsDir/${faceclawAsrModelName}.tar.bz2")
-    faceclawDownload(
-      "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/${faceclawAsrModelName}.tar.bz2",
-      asrArchive
-    )
-    copy {
-      from tarTree(resources.bzip2(asrArchive))
-      include "$faceclawAsrModelName/encoder_model.ort"
-      include "$faceclawAsrModelName/decoder_model_merged.ort"
-      include "$faceclawAsrModelName/tokens.txt"
-      includeEmptyDirs = false
-      into faceclawAssetsDir
     }
 
     def lc3Archive = file("$downloadsDir/liblc3-v${faceclawLibLc3Version}.tar.gz")
@@ -149,6 +143,118 @@ tasks.register("prepareFaceclawNativeLibs") {
   }
 }
 
+// On-phone assistant model: build llama.cpp (pinned release) + our JNI shim
+// into libfaceclaw_llama.so. CPU-only, arm64, armv8.2 dotprod+fp16 baseline
+// (Tensor G2 floor; no i8mm). The first build compiles llama.cpp (~2-4 min);
+// afterwards the cached .so short-circuits everything.
+def faceclawLlamaCppTag = "b10333"
+
+def faceclawFindSdkCmakeDir = {
+  def sdkRoot = System.getenv("ANDROID_HOME") ?: System.getenv("ANDROID_SDK_ROOT")
+  if (sdkRoot == null) return null
+  def cmakeRoot = file("$sdkRoot/cmake")
+  if (!cmakeRoot.exists()) return null
+  def installed = cmakeRoot.listFiles()?.findAll { it.isDirectory() }?.sort { a, b -> b.name <=> a.name }
+  return (installed && !installed.isEmpty()) ? installed[0] : null
+}
+
+tasks.register("prepareFaceclawLlama") {
+  def llamaSo = file("$faceclawJniLibsDir/libfaceclaw_llama.so")
+  inputs.files(
+    file("$projectDir/src/main/native/llama/faceclaw_llama.cpp"),
+    file("$projectDir/src/main/native/llama/CMakeLists.txt")
+  )
+  outputs.files(llamaSo)
+
+  doLast {
+    def llamaBuildDir = file("$faceclawNativeBuildDir/llama-build")
+    def builtSo = file("$llamaBuildDir/libfaceclaw_llama.so")
+
+    def downloadsDir = file("$faceclawNativeBuildDir/downloads")
+    def llamaArchive = file("$downloadsDir/llama.cpp-${faceclawLlamaCppTag}.tar.gz")
+    faceclawDownload(
+      "https://github.com/ggml-org/llama.cpp/archive/refs/tags/${faceclawLlamaCppTag}.tar.gz",
+      llamaArchive
+    )
+    def llamaSourceDir = file("$faceclawNativeBuildDir/llama.cpp-${faceclawLlamaCppTag}")
+    if (!file("$llamaSourceDir/CMakeLists.txt").exists()) {
+      copy {
+        from tarTree(resources.gzip(llamaArchive))
+        into faceclawNativeBuildDir
+      }
+    }
+
+    def ndkRoot = faceclawFindNdkRoot()
+    if (ndkRoot == null || !ndkRoot.exists()) {
+      throw new GradleException("Android NDK is required to build libfaceclaw_llama.so")
+    }
+    def cmakeDir = faceclawFindSdkCmakeDir()
+    if (cmakeDir == null) {
+      throw new GradleException("Android SDK cmake package is required to build libfaceclaw_llama.so")
+    }
+    def cmake = file("$cmakeDir/bin/cmake")
+    def ninja = file("$cmakeDir/bin/ninja")
+    def march = "-march=armv8.2-a+dotprod+fp16"
+
+    // Configure once; afterwards the ninja no-op build keeps this cheap while
+    // still picking up JNI source edits.
+    if (!file("$llamaBuildDir/build.ninja").exists()) {
+      exec {
+        commandLine([
+          cmake.absolutePath,
+          "-S", file("$projectDir/src/main/native/llama").absolutePath,
+          "-B", llamaBuildDir.absolutePath,
+          "-G", "Ninja",
+          "-DCMAKE_MAKE_PROGRAM=${ninja.absolutePath}",
+          "-DCMAKE_TOOLCHAIN_FILE=${file("$ndkRoot/build/cmake/android.toolchain.cmake").absolutePath}",
+          "-DANDROID_ABI=arm64-v8a",
+          "-DANDROID_PLATFORM=android-24",
+          "-DCMAKE_BUILD_TYPE=Release",
+          "-DLLAMA_CPP_SOURCE_DIR=${llamaSourceDir.absolutePath}",
+          "-DCMAKE_C_FLAGS=$march",
+          "-DCMAKE_CXX_FLAGS=$march",
+        ])
+      }
+    }
+    exec {
+      commandLine([cmake.absolutePath, "--build", llamaBuildDir.absolutePath, "-j", "8"])
+    }
+
+    faceclawJniLibsDir.mkdirs()
+    copy {
+      from builtSo
+      into faceclawJniLibsDir
+    }
+    // The static-linked lib carries llama.cpp's full debug info (~50MB);
+    // strip it so the APK only pays for the code (~8MB).
+    def ndkRootForStrip = faceclawFindNdkRoot()
+    if (ndkRootForStrip != null) {
+      def llvmStrip = file("$ndkRootForStrip/toolchains/llvm/prebuilt/${faceclawNdkHostTag()}/bin/llvm-strip")
+      if (llvmStrip.exists()) {
+        exec {
+          commandLine([llvmStrip.absolutePath, "--strip-unneeded", llamaSo.absolutePath])
+        }
+      }
+    }
+  }
+}
+
+// versionName tracks FACECLAW_VERSION in app/version.ts, the single source of
+// truth for the Faceclaw version. The gradle root project is platforms/android,
+// so the repo root is two levels up from rootDir.
+def faceclawVersionName = "0.0"
+def faceclawVersionFile = file("$rootDir/../../app/version.ts")
+if (faceclawVersionFile.exists()) {
+  def faceclawVersionMatch = (faceclawVersionFile.text =~ /FACECLAW_VERSION = "([^"]+)"/)
+  if (faceclawVersionMatch.find()) {
+    faceclawVersionName = faceclawVersionMatch.group(1)
+  }
+}
+def faceclawVersionCode = {
+  def parts = (faceclawVersionName.tokenize('.') + ["0", "0"]).take(3)*.toInteger()
+  return parts[0] * 10000 + parts[1] * 100 + parts[2]
+}()
+
 android {
   compileSdkVersion 35
   buildToolsVersion "35"
@@ -156,18 +262,24 @@ android {
 
   sourceSets.main {
     jniLibs.srcDirs += ["$projectDir/src/main/jniLibs"]
+    // Shared Kotlin is packaged by the local @faceclaw/kotlin plugin.
   }
 
   defaultConfig {
     minSdkVersion 24
     targetSdkVersion 35
     ndk {
+      // The NativeScript platform build.gradle has already added all four
+      // ABIs by the time app.gradle is applied, and abiFilters is additive,
+      // so the set must be cleared for this filter to take effect. Only
+      // arm64 devices are supported (all our own JNI libs are arm64-only).
+      abiFilters.clear()
       abiFilters "arm64-v8a"
     }
 
-    // Version Information
-    versionCode 1
-    versionName "1.0.0"
+    // Version Information (derived from app/version.ts above)
+    versionCode faceclawVersionCode
+    versionName faceclawVersionName
     
     generatedDensities = []
   }
@@ -177,6 +289,25 @@ android {
   }
 }
 
+// NativeScript can retain deleted App_Resources sources in its generated
+// project. Remove the former copy before Kotlin compilation after this move.
+def removeLegacyKotlinBridgeSource = tasks.register("removeLegacyKotlinBridgeSource", Delete) {
+  delete file("$projectDir/src/main/java/com/faceclaw/shared/KotlinBridge.kt")
+  // Explicit, reviewed source moves: never infer deletions from class names.
+  def migrations = new groovy.json.JsonSlurper().parse(file("$rootDir/../../native/kotlin/migrated-java-sources.json"))
+  migrations.each { migration ->
+    if (!file("$rootDir/../../native/kotlin/${migration.kotlin}").isFile()) {
+      throw new GradleException("Missing Kotlin replacement: ${migration.kotlin}")
+    }
+    delete file("$projectDir/src/main/java/${migration.java}")
+  }
+}
+tasks.matching { it.name.startsWith("compile") && it.name.endsWith("Kotlin") }.configureEach {
+  dependsOn removeLegacyKotlinBridgeSource
+}
+
 tasks.matching { it.name == "preBuild" }.configureEach {
+  dependsOn removeLegacyKotlinBridgeSource
   dependsOn tasks.named("prepareFaceclawNativeLibs")
+  dependsOn tasks.named("prepareFaceclawLlama")
 }

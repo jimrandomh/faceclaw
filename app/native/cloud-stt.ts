@@ -9,6 +9,9 @@
 export type CloudSttTranscriptEvent = {
   text: string;
   isFinal: boolean;
+  /** Optional presentation for Transcribe only; dictation uses plain text. */
+  transcribeText?: string;
+  paragraphBreakAfter?: boolean;
 };
 
 export type CloudSttOptions = {
@@ -16,6 +19,8 @@ export type CloudSttOptions = {
   onTranscript: (event: CloudSttTranscriptEvent) => void;
   onStatus: (status: string) => void;
   onError: (message: string) => void;
+  onReady?: () => void;
+  onDisconnected?: (message: string) => void;
 };
 
 export interface CloudSttClient {
@@ -25,6 +30,8 @@ export interface CloudSttClient {
   acceptPcm(pcm: Uint8Array): void;
   /** End of utterance: produce a final transcript. */
   finish(): void;
+  /** Commit a pause boundary while keeping the audio session open. */
+  commitSegment?(): void;
   /** Abandon the session without finalizing. */
   stop(): void;
 }

@@ -5,6 +5,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
+import android.database.ContentObserver;
 import android.graphics.Bitmap;
 import android.media.AudioManager;
 import android.media.MediaDescription;
@@ -23,8 +24,12 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.util.List;
+import java.util.HashSet;
+import java.util.Set;
 
 public class FaceclawMediaController {
+    private static final String ENABLED_NOTIFICATION_LISTENERS = "enabled_notification_listeners";
+
     private final Context appContext;
     private final Object lock = new Object();
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
@@ -68,9 +73,28 @@ public class FaceclawMediaController {
         }
     };
 
+    /**
+     * Fires when the user grants or revokes notification-listener access in
+     * system settings. Session access depends on that grant, so the sessions
+     * listener is (re)registered and the state re-emitted whenever it changes;
+     * otherwise a grant made after start() would never be noticed.
+     */
+    private final ContentObserver notificationAccessObserver = new ContentObserver(mainHandler) {
+        @Override
+        public void onChange(boolean selfChange) {
+            synchronized (lock) {
+                if (!started) return;
+                syncSessionsListenerLocked();
+                refreshActiveControllerLocked(null);
+            }
+        }
+    };
+
     private volatile FaceclawMediaControllerListener listener;
     private MediaController activeController;
     private boolean started;
+    private boolean sessionsListenerRegistered;
+    private Set<String> ignoredPackages = new HashSet<>();
 
     public FaceclawMediaController(Context context) {
         this.appContext = context.getApplicationContext();
@@ -93,22 +117,61 @@ public class FaceclawMediaController {
                 return;
             }
             started = true;
-            if (!isNotificationAccessEnabled()) {
-                emitStateLocked();
-                return;
+            try {
+                appContext.getContentResolver().registerContentObserver(
+                        Settings.Secure.getUriFor(ENABLED_NOTIFICATION_LISTENERS),
+                        false,
+                        notificationAccessObserver
+                );
+            } catch (Exception e) {
+                Log.w("FaceclawMedia", "notification access observer registration failed", e);
             }
-            if (sessionManager != null) {
-                try {
-                    sessionManager.addOnActiveSessionsChangedListener(
-                            sessionsChangedListener,
-                            listenerComponent,
-                            mainHandler
-                    );
-                } catch (SecurityException ignored) {
-                    emitStateLocked();
-                    return;
-                }
+            syncSessionsListenerLocked();
+            refreshActiveControllerLocked(null);
+        }
+    }
+
+    /**
+     * Keep the active-sessions listener registered exactly while notification
+     * access is granted. Registration throws SecurityException without the
+     * grant, so this is retried from the settings observer rather than only
+     * attempted once at start().
+     */
+    private void syncSessionsListenerLocked() {
+        if (sessionManager == null) return;
+        boolean accessEnabled = started && isNotificationAccessEnabled();
+        if (accessEnabled && !sessionsListenerRegistered) {
+            try {
+                sessionManager.addOnActiveSessionsChangedListener(
+                        sessionsChangedListener,
+                        listenerComponent,
+                        mainHandler
+                );
+                sessionsListenerRegistered = true;
+            } catch (SecurityException ignored) {
             }
+        } else if (!accessEnabled && sessionsListenerRegistered) {
+            try {
+                sessionManager.removeOnActiveSessionsChangedListener(sessionsChangedListener);
+            } catch (SecurityException ignored) {
+            }
+            sessionsListenerRegistered = false;
+        }
+    }
+
+    /** Apply the complete preference set and immediately choose an allowed session. */
+    public void setIgnoredPackagesJson(String packagesJson) {
+        Set<String> packages = new HashSet<>();
+        try {
+            JSONArray array = new JSONArray(packagesJson);
+            for (int i = 0; i < array.length(); i++) packages.add(array.getString(i));
+        } catch (Exception e) {
+            Log.w("FaceclawMedia", "invalid ignored packages", e);
+            return;
+        }
+        synchronized (lock) {
+            if (ignoredPackages.equals(packages)) return;
+            ignoredPackages = packages;
             refreshActiveControllerLocked(null);
         }
     }
@@ -119,12 +182,11 @@ public class FaceclawMediaController {
                 return;
             }
             started = false;
-            if (sessionManager != null) {
-                try {
-                    sessionManager.removeOnActiveSessionsChangedListener(sessionsChangedListener);
-                } catch (SecurityException ignored) {
-                }
+            try {
+                appContext.getContentResolver().unregisterContentObserver(notificationAccessObserver);
+            } catch (Exception ignored) {
             }
+            syncSessionsListenerLocked();
             setActiveControllerLocked(null);
             emitStateLocked();
         }
@@ -205,9 +267,11 @@ public class FaceclawMediaController {
      * Album art for the active session's current item, grayscale, scaled to
      * fit within maxSize x maxSize preserving aspect. Returns a gray packet
      * (see ImageFileLoader.bitmapToGrayPacket) or an empty array when no art
-     * is available.
+     * is available. gamma and dither are the photographic tone handling
+     * described on ImageFileLoader.bitmapToGrayPacket; the TS side passes
+     * its shared photo preset.
      */
-    public byte[] getAlbumArtGray(int maxSize) {
+    public byte[] getAlbumArtGray(int maxSize, float gamma, boolean dither) {
         Bitmap art;
         synchronized (lock) {
             if (activeController == null) {
@@ -225,7 +289,7 @@ public class FaceclawMediaController {
                 art = metadata.getBitmap(MediaMetadata.METADATA_KEY_DISPLAY_ICON);
             }
         }
-        return ImageFileLoader.bitmapToGrayPacket(art, maxSize, maxSize);
+        return ImageFileLoader.bitmapToGrayPacket(art, maxSize, maxSize, gamma, dither);
     }
 
     /**
@@ -287,6 +351,7 @@ public class FaceclawMediaController {
                 controllers = null;
             }
         }
+        emitSessionAppsLocked(controllers);
         setActiveControllerLocked(chooseController(controllers));
         emitStateLocked();
     }
@@ -295,14 +360,37 @@ public class FaceclawMediaController {
         if (controllers == null || controllers.isEmpty()) {
             return null;
         }
-        MediaController first = controllers.get(0);
+        MediaController first = null;
         for (MediaController controller : controllers) {
+            if (ignoredPackages.contains(controller.getPackageName())) continue;
+            if (first == null) first = controller;
             PlaybackState playbackState = controller.getPlaybackState();
             if (playbackState != null && playbackState.getState() == PlaybackState.STATE_PLAYING) {
                 return controller;
             }
         }
         return first;
+    }
+
+    private void emitSessionAppsLocked(List<MediaController> controllers) {
+        FaceclawMediaControllerListener currentListener = listener;
+        if (currentListener == null || controllers == null) return;
+        JSONArray apps = new JSONArray();
+        Set<String> seen = new HashSet<>();
+        for (MediaController controller : controllers) {
+            String packageName = safe(controller.getPackageName());
+            if (packageName.isEmpty() || !seen.add(packageName)) continue;
+            try {
+                JSONObject app = new JSONObject();
+                app.put("packageName", packageName);
+                app.put("appName", getApplicationLabel(packageName));
+                apps.put(app);
+            } catch (Exception e) {
+                Log.w("FaceclawMedia", "session app serialization failed", e);
+            }
+        }
+        String json = apps.toString();
+        mainHandler.post(() -> currentListener.onSessionAppsChanged(json));
     }
 
     private void setActiveControllerLocked(MediaController controller) {
@@ -331,7 +419,7 @@ public class FaceclawMediaController {
     private boolean isNotificationAccessEnabled() {
         String enabledListeners = Settings.Secure.getString(
                 appContext.getContentResolver(),
-                "enabled_notification_listeners"
+                ENABLED_NOTIFICATION_LISTENERS
         );
         if (enabledListeners == null || enabledListeners.isEmpty()) {
             return false;

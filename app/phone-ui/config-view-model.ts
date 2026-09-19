@@ -1,8 +1,19 @@
+import { finishOnboardingNavigation } from "./onboarding-navigation";
 import { Frame, Observable } from "@nativescript/core";
 
-import { ensureBlePermissions } from "../g2/android-permissions";
-import { isValidMacAddress, loadDeviceAddresses, normalizeMacAddress, saveDeviceAddresses } from "../g2/device-addresses";
+import { ensureBlePermissions } from "../native/ble-permissions";
+import {
+  isValidMacAddress,
+  loadDeviceAddresses,
+  loadPairedGlassesIdentityForAddresses,
+  normalizeMacAddress,
+  saveDeviceAddresses,
+  type PairedGlassesIdentity,
+} from "../g2/device-addresses";
+import { glassesImagePath } from "../g2/glasses-artwork";
+import { GlassesHardwareIdentity } from "../g2/glasses-hardware-identity";
 import { buildAddressSet, DeviceDiscoveryBridge } from "../native/device-discovery";
+import { formatErrorMessage } from "../util/format-error";
 
 type TextChangeArgs = { value?: string; object?: { text?: string } };
 
@@ -15,6 +26,7 @@ export class ConfigViewModel extends Observable {
   private _status = "";
   private _discoveryLog = "";
   private _discovering = false;
+  private pairedIdentity: PairedGlassesIdentity | null = null;
 
   constructor(options?: { onboarding?: boolean }) {
     super();
@@ -23,9 +35,72 @@ export class ConfigViewModel extends Observable {
     this.rightAddress = stored.right;
     this.leftAddress = stored.left;
     this.ringAddress = stored.ring;
+    this.refreshIdentity();
     this.status = this.onboarding
-      ? "Load the addresses from the glasses you paired with the official Even app, or scan / enter them, then Continue."
-      : "Edit addresses manually, or load them from paired devices or a scan.";
+      ? "Scan for glasses to pick yours by model and serial, load the addresses of devices paired with this phone, or enter them by hand, then Continue."
+      : "Edit addresses manually, scan for glasses, or load them from paired devices.";
+    if (global.isIOS) this.status = this.onboarding
+      ? "Scan for glasses to pick yours by model and serial, or enter the addresses by hand, then Continue."
+      : "Edit addresses manually or scan for glasses.";
+  }
+
+  // --- paired identity card --------------------------------------------------
+
+  /** The identity saved by the pairing scan, shown only while it still describes the entered addresses. */
+  private refreshIdentity(): void {
+    this.pairedIdentity = loadPairedGlassesIdentityForAddresses({
+      right: this._rightAddress,
+      left: this._leftAddress,
+      ring: this._ringAddress,
+    });
+    for (const property of [
+      "identityVisibility",
+      "identityImagePath",
+      "identityTitle",
+      "identityVariant",
+      "identityVariantVisibility",
+      "identitySerial",
+      "identityDetail",
+    ] as const) {
+      this.notifyPropertyChange(property, this[property]);
+    }
+  }
+
+  private get decodedIdentity(): GlassesHardwareIdentity | null {
+    return GlassesHardwareIdentity.decode(this.pairedIdentity?.serial);
+  }
+
+  get identityVisibility(): "visible" | "collapse" {
+    return this.pairedIdentity ? "visible" : "collapse";
+  }
+
+  get identityImagePath(): string {
+    return glassesImagePath(this.decodedIdentity);
+  }
+
+  get identityTitle(): string {
+    return this.decodedIdentity?.productName ?? "Even Realities G2";
+  }
+
+  get identityVariant(): string {
+    return this.decodedIdentity?.variantSummary ?? "";
+  }
+
+  get identityVariantVisibility(): "visible" | "collapse" {
+    return this.identityVariant ? "visible" : "collapse";
+  }
+
+  get identitySerial(): string {
+    return this.pairedIdentity ? `Serial ${this.pairedIdentity.serial}` : "";
+  }
+
+  get identityDetail(): string {
+    const identity = this.pairedIdentity;
+    if (!identity) return "";
+    const parts = [`Left ${identity.leftName || identity.leftAddress}`, `Right ${identity.rightName || identity.rightAddress}`];
+    if (identity.ringName) parts.push(`Ring ${identity.ringName}`);
+    if (identity.pairedAtMs) parts.push(`paired ${new Date(identity.pairedAtMs).toLocaleDateString()}`);
+    return parts.join(" · ");
   }
 
   get saveLabel(): string {
@@ -100,22 +175,46 @@ export class ConfigViewModel extends Observable {
 
   onRightAddressTextChange(args: TextChangeArgs): void {
     this.rightAddress = args.object?.text ?? args.value ?? "";
+    this.refreshIdentity();
   }
 
   onLeftAddressTextChange(args: TextChangeArgs): void {
     this.leftAddress = args.object?.text ?? args.value ?? "";
+    this.refreshIdentity();
   }
 
   onRingAddressTextChange(args: TextChangeArgs): void {
     this.ringAddress = args.object?.text ?? args.value ?? "";
   }
 
+  get pairedDevicesVisibility(): "visible" | "collapse" { return global.isIOS ? "collapse" : "visible"; }
+
   async onLoadPairedTap(): Promise<void> {
     await this.populateFromDiscovery(async () => this.discovery.getBondedCandidates(), "Loaded paired devices.");
   }
 
+  /** The live scan page identifies pairs by serial, model, and distance; hand off to it. */
   async onScanTap(): Promise<void> {
-    await this.populateFromDiscovery(async () => this.discovery.scanCandidates(6000), "Scanned nearby devices.");
+    if (!this.onboarding && global.isAndroid) {
+      // A connected arm stops advertising, so drop the link before scanning.
+      // Required lazily: a module-scope import would instantiate the dashboard
+      // controller singleton during onboarding, which this page is part of.
+      // Outside onboarding the main page has already loaded it.
+      const { dashboardController } = require("../g2/dashboard-controller") as typeof import("../g2/dashboard-controller");
+      const { resumeAutoReconnect } = require("../g2/reconnect-policy") as typeof import("../g2/reconnect-policy");
+      try {
+        await dashboardController.disconnect();
+      } catch {
+        // proceed anyway; the pairing page reports what it hears
+      }
+      // disconnect() enters the manual-disconnected state; pairing is a
+      // detour, so let the main page reconnect afterwards.
+      resumeAutoReconnect();
+    }
+    Frame.topmost()?.navigate({
+      moduleName: "phone-ui/pairing-page",
+      context: { onboarding: this.onboarding },
+    });
   }
 
   onBackTap(): void {
@@ -128,10 +227,7 @@ export class ConfigViewModel extends Observable {
       frame?.navigate({ moduleName: "phone-ui/onboarding-page", clearHistory: true });
       return;
     }
-    Frame.topmost()?.navigate({
-      moduleName: "phone-ui/main-page",
-      clearHistory: true,
-    });
+    finishOnboardingNavigation();
   }
 
   onSaveTap(): void {
@@ -139,8 +235,8 @@ export class ConfigViewModel extends Observable {
       return;
     }
     if (this.onboarding) {
-      // Continue the onboarding chain: unpair the official app next.
-      Frame.topmost()?.navigate({ moduleName: "phone-ui/onboarding-unpair-page" });
+      // Continue the onboarding chain: check the glasses' firmware next.
+      Frame.topmost()?.navigate({ moduleName: "phone-ui/onboarding-firmware-check-page" });
     }
   }
 
@@ -161,6 +257,10 @@ export class ConfigViewModel extends Observable {
       this.status = "Ring MAC address is invalid.";
       return false;
     }
+    if (right === left || ring === right || ring === left) {
+      this.status = "Each device must have a different MAC address.";
+      return false;
+    }
 
     saveDeviceAddresses({ right, left, ring });
     this.rightAddress = right;
@@ -174,7 +274,7 @@ export class ConfigViewModel extends Observable {
     load: () => Promise<Parameters<typeof buildAddressSet>[0]>,
     successMessage: string,
   ): Promise<void> {
-    if (!global.isAndroid) {
+    if (!global.isAndroid && !global.isIOS) {
       this.status = "Discovery is only available on Android.";
       return;
     }
@@ -186,6 +286,7 @@ export class ConfigViewModel extends Observable {
       if (selection.right) this.rightAddress = selection.right;
       if (selection.left) this.leftAddress = selection.left;
       if (selection.ring) this.ringAddress = selection.ring;
+      this.refreshIdentity();
       this.discoveryLog = selection.summary;
       this.status = successMessage;
     } catch (error) {
@@ -196,7 +297,6 @@ export class ConfigViewModel extends Observable {
   }
 
   private formatError(error: unknown): string {
-    const raw = (error as Error)?.message ?? String(error);
-    return raw.replace(/[\x00-\x1f]+/g, " ").replace(/\s+/g, " ").trim();
+    return formatErrorMessage(error);
   }
 }

@@ -8,24 +8,77 @@
  */
 import "@nativescript/core/globals";
 import { GrayImage } from "../../graphics/image";
-import { getDefaultSmallFont, getFont } from "../../graphics/bdffont";
+import { flattenPlanesWithDraws, planesFingerprint, type Plane } from "../../graphics/plane";
+import { prepareFrameDraws } from "../../graphics/glyph-wire";
+import { getFont } from "../../graphics/bdffont";
+import { getDefaultSmallFont } from "../../graphics/ui-fonts";
 import * as frameTimings from "../../native/frame-timings";
-import type { DashboardInputEvent } from "../../ui/layers";
-import { defaultWindowMenuItems, WindowMenu } from "../../ui/window-menu";
+import { getActiveDisplay } from "../../native/active-display";
+import {
+  drawListScrollbar,
+  drawRightValueMenuItem,
+  drawSelectionHighlight,
+  drawSubmenuIndicator,
+  drawToggleMenuItem,
+  scrollToKeepSelectionVisible,
+  type MenuItem,
+} from "../../ui/menu";
+import { LIST_ROW_TEXT_INSET, listRowHeight } from "../../ui/metrics";
+import { WindowMenu, WindowMenuLayer } from "../../ui/window-menu";
+import type { LayerContext } from "../../ui/layers";
+import { truncateText, wrapText } from "../../graphics/textwrap";
+import { onSettingsStoreChanged } from "../../native/settings-store";
+import { openUrlOnPhone } from "../../native/open-url";
+import {
+  navigateDestinationAddressDraftSetting,
+  navigateDestinationNameDraftSetting,
+  navigateRememberRecentSetting,
+  navigateDisplayModeSetting,
+  navigateVerticalPositionSetting,
+  mapboxApiKeySetting,
+  enumSettingMenuItem,
+  type ConfigSettingString,
+} from "../../ui/dashboard-settings";
+import {
+  addCustomDestination,
+  clearRecentDestinations,
+  findSavedDestinationByName,
+  HOME_DESTINATION_ID,
+  loadRecentDestinations,
+  loadSavedDestinations,
+  removeCustomDestination,
+  rememberRecentDestination,
+  removeRecentDestination,
+  setDestinationAddress,
+  updateCustomDestination,
+  WORK_DESTINATION_ID,
+  type RecentDestination,
+  type SavedDestination,
+} from "./destinations";
 import type { WorkerAppMessage, WorkerAppReply } from "../../ui/shell/worker-window";
 import type { ToolSpec, ToolResult } from "../../assistant/tool-registry";
-import { GESTURE_CLICK, GESTURE_DOUBLE_CLICK, GESTURE_SCROLL } from "../../ui/gestures";
-import { LocationTracker, type TrackedLocation } from "../../native/location-tracker";
+import {
+  GESTURE_CLICK,
+  GESTURE_DOUBLE_CLICK,
+  GESTURE_SCROLL,
+  GESTURE_SHORT_THEN_LONG_PRESS,
+  type InputEvent,
+} from "../../ui/gestures";
+import { LocationTracker, type TrackedLocation } from "./navigation-sensors";
 import {
   fetchRoute,
   fetchStaticMapGray,
   geocodeForward,
   isMapboxConfigured,
+  MAPBOX_TOKEN_SETTING_KEY,
   type GeocodeCandidate,
   type Route,
   type RouteProfile,
   type StaticMapCamera,
 } from "../../native/mapbox";
+import { addCompassListener, COMPASS_CHANGED, setCompassEnabled, type CompassEvent } from "./navigation-sensors";
+import { magneticDeclinationDegrees, handleNavigationSensorEvent } from "./navigation-sensors";
+import { calibrateHeading, normalizeHeading } from "../compass/calibration";
 import { bearingDegrees, haversineMeters, RouteFollower, type RouteProgress } from "./route-follower";
 import { drawManeuverGlyph } from "./maneuver-icons";
 
@@ -43,8 +96,19 @@ const MAP_RETRY_BACKOFF_MS = 5_000;
 const REROUTE_MIN_INTERVAL_MS = 20_000;
 const FIRST_FIX_TIMEOUT_MS = 10_000;
 const LOCATION_INTERVAL_MS = 1_000;
+/**
+ * A fix older than this is not where the user is now. The tracker seeds each
+ * start with the platform's cached fix, and after a previous trip that can be
+ * the old destination: routing from it, or feeding it to the follower, ends a
+ * fresh navigation with "Arrived" before a live fix ever comes in.
+ */
+const FIX_MAX_AGE_MS = 60_000;
 /** Above this speed a GPS bearing is trustworthy for heading-up. */
 const BEARING_MIN_SPEED_MPS = 2.5;
+/** The head-direction chevron only redraws once the wearer has turned this far. */
+const HEADING_STEP_DEG = 4;
+/** Our claim on the shared glasses magnetometer (see setCompassEnabled). */
+const COMPASS_OWNER = "navigate";
 
 const largeFont = getFont("terminus32");
 const mediumFont = getFont("terminus24");
@@ -56,6 +120,7 @@ type MapMode = "follow" | "overview";
 type NavWindow = {
   windowId: string;
   surfaceId: string;
+  title: string;
   viewportWidth: number;
   viewportHeight: number;
   foreground: boolean;
@@ -68,7 +133,7 @@ const NAVIGATE_TOOLS: ToolSpec[] = [
   {
     name: "start_route",
     description:
-      "Start turn-by-turn navigation to a destination. Give the destination as free text (a place name, business, or address); it is resolved near the user's current location. Returns the resolved destination, distance, and estimated time. If the wrong place was picked, call again with a more specific query.",
+      "Start turn-by-turn navigation to a destination. Give the destination as free text (a place name, business, or address); it is resolved near the user's current location. The name of one of the user's saved destinations (e.g. 'home', 'work') is used directly. Returns the resolved destination, distance, and estimated time. If the wrong place was picked, call again with a more specific query.",
     inputSchema: {
       type: "object",
       properties: {
@@ -119,6 +184,43 @@ let lastRerouteAtMs = 0;
 let rerouteInFlight = false;
 /** Bumped on every new route/mode so stale map fetches can be discarded. */
 let routeGeneration = 0;
+/** Invalidates GPS/geocoding/routing work when the route is replaced or closed. */
+let navigationGeneration = 0;
+
+/**
+ * Where to go: free text to geocode (optionally shown under a saved
+ * destination's label), or an already-resolved place (a recent destination).
+ */
+type NavTarget =
+  | { kind: "query"; query: string; label?: string }
+  | { kind: "place"; name: string; place: string; longitude: number; latitude: number };
+
+/**
+ * An entry on the idle page's list: a destination, or (while no Mapbox
+ * token is set) one of the setup actions offered in its place.
+ */
+type IdleEntry =
+  | { kind: "saved"; destination: SavedDestination }
+  | { kind: "recent"; destination: RecentDestination }
+  | { kind: "action"; label: string; detail: string; run: () => void };
+
+/** Idle-page list selection (index into idleEntries()). */
+let idleSelection = 0;
+let idleScrollRow = 0;
+
+/**
+ * In-progress destination edit: the phone text editor is open on `setting`
+ * (a staging draft); click confirms with the typed value, double-click
+ * cancels. `onDone` may start another edit (name, then address).
+ */
+type DestinationEdit = {
+  setting: ConfigSettingString;
+  title: string;
+  onDone: (value: string) => void;
+  /** Runs on double-click (cancel); edits of a live setting restore it here. */
+  onCancel?: () => void;
+};
+let editing: DestinationEdit | null = null;
 
 let mapMode: MapMode = "follow";
 let zoomOffset = 0;
@@ -129,6 +231,16 @@ let mapLastFetchAtMs = 0;
 let mapLastFetchCenter: [number, number] | null = null;
 let mapNextRetryAtMs = 0;
 let mapLastError = "";
+/** Bearing the current map image was rendered with (its "up"), for follow mode. */
+let mapFetchedBearingDeg = 0;
+
+// Glasses compass: the same firmware feed and wearer calibration as the
+// Compass app, so the position chevron shows where the wearer is looking
+// relative to the map rather than always pointing up the direction of travel.
+let compassActive = false;
+let unsubscribeCompass: (() => void) | null = null;
+/** Wearer's true heading (degrees clockwise from north) as last drawn, or null before compass data arrives. */
+let headHeadingDeg: number | null = null;
 
 let tickTimer: ReturnType<typeof setInterval> | null = null;
 let firstFixWaiters: Array<(fix: TrackedLocation) => void> = [];
@@ -146,13 +258,31 @@ function post(message: WorkerAppReply): void {
   global.postMessage(message);
 }
 
+// Destinations edited on the phone (the text editor, or the Settings app's
+// Home/Work rows) repaint the idle list / the edit screen live.
+onSettingsStoreChanged((key) => {
+  // The token key repaints too: the phone editor writes it live during
+  // Edit token, and the idle page changes shape once one is set.
+  if (key.startsWith("navigate.") || key === MAPBOX_TOKEN_SETTING_KEY) render();
+});
+
+// The host queues messages until this arrives: posts to a worker whose bundle
+// is still evaluating can be silently dropped (see WorkerAppHost). Top-level
+// evaluation is synchronous, so the handler below is installed before any
+// queued message can be delivered.
+post({ type: "worker-ready" });
+
 global.onmessage = (event: { data: WorkerAppMessage }) => {
   const message = event.data;
   switch (message.type) {
+    case "navigation-sensors":
+      handleNavigationSensorEvent(message.event);
+      break;
     case "open-window":
       window = {
         windowId: message.windowId,
         surfaceId: message.surfaceId,
+        title: message.title,
         viewportWidth: message.viewport.width,
         viewportHeight: message.viewport.height,
         foreground: false,
@@ -162,9 +292,24 @@ global.onmessage = (event: { data: WorkerAppMessage }) => {
       };
       post({ type: "set-tools", windowId: message.windowId, tools: NAVIGATE_TOOLS });
       break;
+    case "resize-window":
+      if (!window || window.windowId !== message.windowId) break;
+      if (window.viewportWidth === message.viewport.width && window.viewportHeight === message.viewport.height) break;
+      window.viewportWidth = message.viewport.width;
+      window.viewportHeight = message.viewport.height;
+      window.menu?.resize(message.viewport);
+      window.lastSubmittedFingerprint = "";
+      render();
+      break;
     case "close-window":
+      if (editing) {
+        // Window closed mid-edit: shut the phone editor down.
+        editing = null;
+        post({ type: "end-text-setting-edit" });
+      }
       stopNavigation("");
       window = null;
+      reconcileCompass();
       break;
     case "input":
       if (!window || window.windowId !== message.windowId) {
@@ -172,11 +317,18 @@ global.onmessage = (event: { data: WorkerAppMessage }) => {
         break;
       }
       window.focused = message.focused;
-      handleInput(window, message.event as DashboardInputEvent, message.frameId);
+      // Marks the main-thread -> worker hop, which is otherwise an
+      // unexplained gap inside the shell's handle-input span.
+      frameTimings.logFrame(message.frameId, `input received in ${message.windowId} worker`);
+      handleInput(window, message.event as InputEvent, message.frameId);
       break;
     case "text-input":
-      // Voice input / typed text sets a destination directly.
-      if (message.text.trim()) {
+      if (editing) {
+        // Voice input as an alternative to the phone keyboard.
+        editing.setting.set(message.text.trim());
+        render();
+      } else if (message.text.trim()) {
+        // Voice input / typed text sets a destination directly.
         void startNavigation(message.text.trim(), profile).catch(() => {});
       }
       break;
@@ -189,6 +341,7 @@ global.onmessage = (event: { data: WorkerAppMessage }) => {
       if (!window) break;
       window.foreground = message.foreground;
       window.focused = message.focused;
+      reconcileCompass();
       if (window.foreground) {
         maybeRefreshMap();
         render();
@@ -196,6 +349,7 @@ global.onmessage = (event: { data: WorkerAppMessage }) => {
       break;
     case "screen":
       screenOn = message.on;
+      reconcileCompass();
       if (screenOn && window?.foreground) {
         maybeRefreshMap();
         render();
@@ -220,13 +374,28 @@ global.onmessage = (event: { data: WorkerAppMessage }) => {
 // ---------------------------------------------------------------------------
 // Navigation state machine
 
-async function startNavigation(query: string, requestedProfile: RouteProfile): Promise<string> {
+/**
+ * Navigate to free text: a saved destination's name ("home") routes to its
+ * address under that label; anything else is geocoded as typed.
+ */
+function startNavigation(query: string, requestedProfile: RouteProfile): Promise<string> {
+  const saved = findSavedDestinationByName(query);
+  return startNavigationTo(
+    saved ? { kind: "query", query: saved.address, label: saved.name } : { kind: "query", query },
+    requestedProfile,
+  );
+}
+
+async function startNavigationTo(target: NavTarget, requestedProfile: RouteProfile): Promise<string> {
+  const query = target.kind === "query" ? target.query : target.name;
   if (!isMapboxConfigured()) {
-    statusMessage = "Set a Mapbox token in Settings > API Keys.";
+    statusMessage = "Navigation needs a Mapbox token. This is free (up to a usage limit); open Mapbox in a browser on your phone or pick Edit token below.";
     phase = "idle";
     render();
     throw new Error(statusMessage);
   }
+  const generation = ++navigationGeneration;
+  const checkCurrent = () => { if (generation !== navigationGeneration) throw new Error("Navigation cancelled."); };
   const hadActiveRoute = phase === "navigating" && follower !== null;
   const previous = {
     destination,
@@ -241,26 +410,53 @@ async function startNavigation(query: string, requestedProfile: RouteProfile): P
     render();
     ensureTracking();
     const fix = await waitForFix();
+    checkCurrent();
 
     phase = "routing";
-    statusMessage = `Finding ${query}...`;
-    render();
-    const candidates = await geocodeForward(query, fix, 5);
-    if (!candidates.length) {
-      throw new Error(`No places found matching "${query}".`);
+    let picked: GeocodeCandidate;
+    let candidates: GeocodeCandidate[] = [];
+    if (target.kind === "place") {
+      picked = {
+        name: target.name,
+        placeFormatted: target.place,
+        longitude: target.longitude,
+        latitude: target.latitude,
+        distanceMeters: null,
+      };
+    } else {
+      statusMessage = `Finding ${query}...`;
+      render();
+      candidates = await geocodeForward(query, fix, 5);
+      checkCurrent();
+      if (!candidates.length) {
+        throw new Error(`No places found matching "${query}".`);
+      }
+      picked = candidates[0]!;
     }
-    const picked = candidates[0]!;
     destination = { longitude: picked.longitude, latitude: picked.latitude };
-    destinationName = picked.name;
+    destinationName = target.kind === "query" && target.label ? target.label : picked.name;
     destinationPlace = picked.placeFormatted;
 
-    statusMessage = `Routing to ${picked.name}...`;
+    statusMessage = `Routing to ${destinationName}...`;
     render();
     const route = await fetchRoute(fix, destination, profile);
+    checkCurrent();
     adoptRoute(route);
+    // Saved destinations already have a row of their own on the idle page;
+    // everything else (voice, assistant, a re-picked recent) goes on the
+    // recent list, most recent first.
+    if (!(target.kind === "query" && target.label)) {
+      rememberRecentDestination({
+        name: picked.name,
+        place: picked.placeFormatted,
+        longitude: picked.longitude,
+        latitude: picked.latitude,
+      });
+    }
     if (window) post({ type: "focus-window", windowId: window.windowId });
     return startSummary(picked, candidates, route);
   } catch (error) {
+    if (generation !== navigationGeneration) throw error;
     const message = String((error as Error)?.message ?? error);
     statusMessage = message;
     // A failed new destination shouldn't kill guidance that was already
@@ -298,6 +494,7 @@ function adoptRoute(route: Route): void {
 }
 
 function stopNavigation(finalStatus: string): void {
+  ++navigationGeneration;
   phase = "idle";
   statusMessage = finalStatus;
   follower = null;
@@ -311,8 +508,16 @@ function stopNavigation(finalStatus: string): void {
   ensureTickTimer();
 }
 
+function isFreshFix(fix: TrackedLocation): boolean {
+  return Date.now() - fix.timestampMs < FIX_MAX_AGE_MS;
+}
+
 function handleFix(fix: TrackedLocation): void {
-  lastFix = fix;
+  if (!lastFix || fix.timestampMs >= lastFix.timestampMs) lastFix = fix;
+  // A stale fix (a cached seed from a previous outing) may position the map
+  // until something better arrives, but it must not stand in for the user's
+  // current location: it neither starts a route nor advances guidance.
+  if (!isFreshFix(fix)) return;
   if (fix.bearingDeg !== null && (fix.speedMps ?? 0) >= BEARING_MIN_SPEED_MPS) {
     lastBearingDeg = fix.bearingDeg;
   }
@@ -339,14 +544,16 @@ function handleFix(fix: TrackedLocation): void {
 async function maybeReroute(fix: TrackedLocation): Promise<void> {
   if (rerouteInFlight || !destination) return;
   if (Date.now() - lastRerouteAtMs < REROUTE_MIN_INTERVAL_MS) return;
+  const generation = navigationGeneration;
   rerouteInFlight = true;
   lastRerouteAtMs = Date.now();
   statusMessage = "Rerouting...";
   render();
   try {
     const route = await fetchRoute(fix, destination, profile);
-    if (phase === "navigating") adoptRoute(route);
+    if (generation === navigationGeneration && phase === "navigating") adoptRoute(route);
   } catch (error) {
+    if (generation !== navigationGeneration) return;
     statusMessage = `Reroute failed: ${String((error as Error)?.message ?? error)}`;
     render();
   } finally {
@@ -366,7 +573,7 @@ function stopTrackingIfIdle(): void {
 }
 
 function waitForFix(): Promise<TrackedLocation> {
-  if (lastFix && Date.now() - lastFix.timestampMs < 60_000) {
+  if (lastFix && isFreshFix(lastFix)) {
     return Promise.resolve(lastFix);
   }
   return new Promise<TrackedLocation>((resolve, reject) => {
@@ -380,6 +587,49 @@ function waitForFix(): Promise<TrackedLocation> {
     };
     firstFixWaiters.push(onFix);
   });
+}
+
+// ---------------------------------------------------------------------------
+// Head heading (glasses compass)
+
+/** Hold the magnetometer only while its reading is actually on screen. */
+function reconcileCompass(): void {
+  const wanted =
+    window !== null && window.foreground && screenOn && phase === "navigating" && mapMode === "follow";
+  if (wanted === compassActive) return;
+  compassActive = wanted;
+  if (wanted) {
+    unsubscribeCompass = addCompassListener(handleCompassEvent);
+    setCompassEnabled(true, COMPASS_OWNER);
+  } else {
+    setCompassEnabled(false, COMPASS_OWNER);
+    unsubscribeCompass?.();
+    unsubscribeCompass = null;
+    headHeadingDeg = null;
+  }
+}
+
+function handleCompassEvent(event: CompassEvent): void {
+  if (!compassActive || event.command !== COMPASS_CHANGED || event.headingDegrees < 0) return;
+  // Wearer-fit offset from the Compass app's calibration, then declination
+  // from our own GPS fix: the map is always true-north referenced.
+  const magnetic = calibrateHeading(event.headingDegrees);
+  const correction = currentDeclination();
+  if (correction === null) return; // Keep the travel-direction arrow until true north is known.
+  const heading = normalizeHeading(magnetic + correction);
+  if (headHeadingDeg !== null && angularDistance(heading, headHeadingDeg) < HEADING_STEP_DEG) return;
+  headHeadingDeg = heading;
+  render();
+}
+
+/** Declination at the last fix; it only varies over tens of kilometres, so cache per coarse position. */
+function currentDeclination(): number | null {
+  return lastFix ? magneticDeclinationDegrees(lastFix.latitude, lastFix.longitude) : null;
+}
+
+function angularDistance(a: number, b: number): number {
+  const delta = Math.abs(normalizeHeading(a) - normalizeHeading(b));
+  return Math.min(delta, 360 - delta);
 }
 
 function ensureTickTimer(): void {
@@ -500,9 +750,10 @@ function maybeRefreshMap(): void {
     .then((image) => {
       mapInFlight = false;
       if (generation !== routeGeneration) return; // Route/mode changed mid-fetch.
-      boostContrast(image);
+      levelMap(image);
       mapImage = image;
       mapFetchedKey = view.key;
+      mapFetchedBearingDeg = view.camera.kind === "center" ? view.camera.bearingDeg : 0;
       mapLastFetchAtMs = Date.now();
       mapLastFetchCenter = view.camera.kind === "center" ? [view.camera.longitude, view.camera.latitude] : null;
       mapLastError = "";
@@ -527,11 +778,25 @@ function simplifyPath(path: Array<[number, number]>, maxPoints: number): Array<[
   return out;
 }
 
-/** Stretch the dark-style render so roads survive 4bpp quantization. */
-function boostContrast(image: GrayImage): void {
+/**
+ * Level the render for the lens. The dominant tone is the land fill: black
+ * when the style override took, dark gray otherwise. Either way it becomes
+ * the black point, and everything above it is stretched so roads survive
+ * 4bpp quantization.
+ */
+function levelMap(image: GrayImage): void {
+  const histogram = new Uint32Array(256);
+  for (let i = 0; i < image.pixels.length; i++) histogram[image.pixels[i]!]++;
+  let black = 0;
+  for (let value = 1; value < 256; value++) {
+    if (histogram[value]! > histogram[black]!) black = value;
+  }
+  // A bright dominant tone isn't a floor (a large plaza, a fetch that came
+  // back mostly label); flattening it would eat the roads.
+  if (black > 64) black = 0;
   for (let i = 0; i < image.pixels.length; i++) {
     const value = image.pixels[i]!;
-    image.pixels[i] = Math.max(0, Math.min(255, Math.round((value - 12) * 1.7)));
+    image.pixels[i] = value <= black ? 0 : Math.min(255, Math.round((value - black) * 1.7));
   }
 }
 
@@ -597,9 +862,324 @@ function describeRouteStatus(): string {
 // ---------------------------------------------------------------------------
 // Input
 
+/**
+ * The window's context menu: Stop navigation while a route is up, then the
+ * display and saved-destination settings (Home, Work, custom named places), and the
+ * recent-destinations preference.
+ */
+function windowMenuItems(win: NavWindow): MenuItem[] {
+  const items: MenuItem[] = [];
+  if (phase === "navigating" || phase === "arrived") {
+    items.push({
+      label: "Stop navigation",
+      onSelect: (ctx) => {
+        ctx.stack.pop();
+        stopNavigation("Navigation stopped.");
+        render();
+      },
+    });
+  }
+  items.push(
+    enumSettingMenuItem(navigateDisplayModeSetting),
+    enumSettingMenuItem(navigateVerticalPositionSetting),
+  );
+  items.push({
+    label: "Saved destinations",
+    onSelect: (ctx) => {
+      ctx.stack.push(new WindowMenuLayer("Saved destinations", savedDestinationMenuItems()));
+    },
+    render: ({ image, x, y, width, height, text }) => {
+      image.drawText(smallFont, x, y + LIST_ROW_TEXT_INSET, text, 200);
+      drawSubmenuIndicator(image, smallFont, x - 10, y, width + 20, height, 150);
+    },
+  });
+  items.push({
+    label: navigateRememberRecentSetting.label,
+    onSelect: () => {
+      const enabled = navigateRememberRecentSetting.toggle();
+      if (!enabled) clearRecentDestinations();
+      clampIdleSelection();
+    },
+    render: ({ image, x, y, width, selected }) => {
+      drawToggleMenuItem(
+        image,
+        smallFont,
+        x,
+        y,
+        width,
+        navigateRememberRecentSetting.label,
+        navigateRememberRecentSetting.get(),
+        selected,
+      );
+    },
+  });
+  const selectedEntry = phase === "idle" ? idleEntries()[idleSelection] : undefined;
+  if (selectedEntry?.kind === "recent") {
+    const recent = selectedEntry.destination;
+    items.push({
+      label: `Forget ${truncateText(smallFont, recent.name, 160)}`,
+      onSelect: (ctx) => {
+        ctx.stack.pop();
+        removeRecentDestination(recent);
+        clampIdleSelection();
+      },
+    });
+  }
+  if (loadRecentDestinations().length) {
+    items.push({
+      label: "Clear recent destinations",
+      onSelect: (ctx) => {
+        ctx.stack.pop();
+        clearRecentDestinations();
+        clampIdleSelection();
+      },
+    });
+  }
+  return items;
+}
+
+/** Home, Work, each custom destination (its own action submenu), and Add. */
+function savedDestinationMenuItems(): MenuItem[] {
+  const items: MenuItem[] = [];
+  const saved = loadSavedDestinations();
+  const home = saved.find((d) => d.id === HOME_DESTINATION_ID);
+  const work = saved.find((d) => d.id === WORK_DESTINATION_ID);
+  items.push(addressMenuItem("Home", HOME_DESTINATION_ID, home?.address ?? ""));
+  items.push(addressMenuItem("Work", WORK_DESTINATION_ID, work?.address ?? ""));
+  for (const destination of saved) {
+    if (destination.builtin) continue;
+    items.push({
+      label: destination.name,
+      onSelect: (ctx) => {
+        ctx.stack.push(new WindowMenuLayer(destination.name, customDestinationMenuItems(destination)));
+      },
+      render: ({ image, x, y, width, height }) => {
+        drawAddressRow(image, x, y, width, destination.name, destination.address, true);
+        drawSubmenuIndicator(image, smallFont, x - 10, y, width + 20, height, 150);
+      },
+    });
+  }
+  items.push({
+    label: "Add destination...",
+    onSelect: (ctx) => {
+      closeMenusAnd(ctx, () => beginAddDestination());
+    },
+  });
+  return items;
+}
+
+/** A Home/Work row: shows the address, opens the address editor. */
+function addressMenuItem(label: string, id: string, address: string): MenuItem {
+  return {
+    label,
+    onSelect: (ctx) => {
+      closeMenusAnd(ctx, () => beginAddressEdit(id, label, address));
+    },
+    render: ({ image, x, y, width }) => {
+      drawAddressRow(image, x, y, width, label, address, false);
+    },
+  };
+}
+
+function customDestinationMenuItems(destination: SavedDestination): MenuItem[] {
+  return [
+    {
+      label: "Navigate there",
+      disabled: !destination.address,
+      onSelect: (ctx) => {
+        closeMenusAnd(ctx, () => {
+          void startNavigationTo({ kind: "query", query: destination.address, label: destination.name }, profile).catch(
+            () => {},
+          );
+        });
+      },
+    },
+    {
+      label: "Set address",
+      onSelect: (ctx) => {
+        closeMenusAnd(ctx, () => beginAddressEdit(destination.id, destination.name, destination.address));
+      },
+    },
+    {
+      label: "Rename",
+      onSelect: (ctx) => {
+        closeMenusAnd(ctx, () => {
+          navigateDestinationNameDraftSetting.set(destination.name);
+          beginEdit(navigateDestinationNameDraftSetting, `Rename ${destination.name}`, (name) => {
+            if (name) updateCustomDestination(destination.id, { name });
+          });
+        });
+      },
+    },
+    {
+      label: "Remove",
+      onSelect: (ctx) => {
+        closeMenusAnd(ctx, () => {
+          removeCustomDestination(destination.id);
+          clampIdleSelection();
+        });
+      },
+    },
+  ];
+}
+
+function drawAddressRow(
+  image: GrayImage,
+  x: number,
+  y: number,
+  width: number,
+  label: string,
+  address: string,
+  hasSubmenu: boolean,
+): void {
+  const valueWidth = Math.max(40, width - smallFont.measureText(label) - (hasSubmenu ? 28 : 12));
+  const value = truncateText(smallFont, address || "(not set)", valueWidth);
+  drawRightValueMenuItem(image, smallFont, x, y, width - (hasSubmenu ? 16 : 0), label, value);
+}
+
+/** Close the whole menu stack, then run an action that takes over the window. */
+function closeMenusAnd(ctx: LayerContext, action: () => void): void {
+  ctx.stack.clearToBase();
+  action();
+}
+
+// ---------------------------------------------------------------------------
+// Destination editing (phone text editor + voice input)
+
+/**
+ * Open the phone text editor on a staging setting. The editor writes the
+ * draft live (repainted via the settings listener); click here confirms.
+ */
+function beginEdit(
+  setting: ConfigSettingString,
+  title: string,
+  onDone: (value: string) => void,
+  onCancel?: () => void,
+): void {
+  editing = { setting, title, onDone, onCancel };
+  post({ type: "start-text-setting-edit", settingId: setting.id });
+  render();
+}
+
+function finishEdit(confirmed: boolean): void {
+  const current = editing;
+  editing = null;
+  post({ type: "end-text-setting-edit" });
+  if (current && confirmed) current.onDone(current.setting.get());
+  else if (current) current.onCancel?.();
+  // onDone may have started the next step; only fully leave when it didn't.
+  if (!editing) {
+    navigateDestinationNameDraftSetting.set("");
+    navigateDestinationAddressDraftSetting.set("");
+    clampIdleSelection();
+    render();
+  }
+}
+
+function beginAddressEdit(id: string, name: string, current: string): void {
+  navigateDestinationAddressDraftSetting.set(current);
+  beginEdit(navigateDestinationAddressDraftSetting, `${name} address`, (address) => {
+    if (address) setDestinationAddress(id, address);
+  });
+}
+
+/** Two-step add: a name, then its address. An empty answer cancels. */
+function beginAddDestination(): void {
+  navigateDestinationNameDraftSetting.set("");
+  beginEdit(navigateDestinationNameDraftSetting, "New destination name", (name) => {
+    if (!name) return;
+    navigateDestinationAddressDraftSetting.set("");
+    beginEdit(navigateDestinationAddressDraftSetting, `${name} address`, (address) => {
+      if (address) addCustomDestination(name, address);
+    });
+  });
+}
+
+/**
+ * Edit the Mapbox token in place: the phone editor writes the real setting
+ * live, so cancelling puts back whatever was there before.
+ */
+function beginTokenEdit(): void {
+  const previous = mapboxApiKeySetting.get();
+  beginEdit(
+    mapboxApiKeySetting,
+    mapboxApiKeySetting.glassesEditTitle,
+    () => {
+      statusMessage = "";
+    },
+    () => mapboxApiKeySetting.set(previous),
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Idle page destination list
+
+/** Where a user gets a token: Mapbox's access-tokens page (sign-up/login first when needed). */
+const MAPBOX_TOKENS_URL = "https://account.mapbox.com/access-tokens/";
+
+/** Offered in place of the destination list until a Mapbox token is set. */
+function tokenSetupEntries(): IdleEntry[] {
+  return [
+    {
+      kind: "action",
+      label: "Open mapbox.com",
+      detail: "Get a free token in the phone browser",
+      run: () => {
+        statusMessage = openUrlOnPhone(MAPBOX_TOKENS_URL)
+          ? "Opening mapbox.com on your phone. Copy your public token (pk...) and pick Edit token."
+          : "Could not open a browser on the phone. Visit account.mapbox.com/access-tokens to get a token.";
+      },
+    },
+    {
+      kind: "action",
+      label: "Edit token",
+      detail: "Type or paste it in the phone app",
+      run: () => beginTokenEdit(),
+    },
+  ];
+}
+
+function idleEntries(): IdleEntry[] {
+  if (!isMapboxConfigured()) return tokenSetupEntries();
+  const entries: IdleEntry[] = loadSavedDestinations()
+    .filter((destination) => destination.address)
+    .map((destination): IdleEntry => ({ kind: "saved", destination }));
+  for (const destination of loadRecentDestinations()) {
+    entries.push({ kind: "recent", destination });
+  }
+  return entries;
+}
+
+function clampIdleSelection(): void {
+  const count = idleEntries().length;
+  idleSelection = Math.max(0, Math.min(idleSelection, count - 1));
+}
+
+function navigateToIdleEntry(entry: IdleEntry): void {
+  if (entry.kind === "action") {
+    entry.run();
+    return;
+  }
+  const target: NavTarget =
+    entry.kind === "saved"
+      ? { kind: "query", query: entry.destination.address, label: entry.destination.name }
+      : {
+          kind: "place",
+          name: entry.destination.name,
+          place: entry.destination.place,
+          longitude: entry.destination.longitude,
+          latitude: entry.destination.latitude,
+        };
+  void startNavigationTo(target, profile).catch(() => {});
+}
+
 function windowMenu(win: NavWindow): WindowMenu {
   if (!win.menu) {
     win.menu = new WindowMenu({
+      windowId: win.windowId,
+      post,
+      title: () => win.title,
+      items: () => windowMenuItems(win),
       size: { width: win.viewportWidth, height: win.viewportHeight },
       paintBase: () => paintContent(win),
       isFocused: () => win.focused,
@@ -608,7 +1188,7 @@ function windowMenu(win: NavWindow): WindowMenu {
   return win.menu;
 }
 
-function handleInput(win: NavWindow, event: DashboardInputEvent, frameId: number): void {
+function handleInput(win: NavWindow, event: InputEvent, frameId: number): void {
   if (win.menu?.isOpen()) {
     win.menu
       .handleInput(event)
@@ -616,19 +1196,20 @@ function handleInput(win: NavWindow, event: DashboardInputEvent, frameId: number
       .then(() => renderAndSubmit(win, frameId));
     return;
   }
-  if (event.type === "long-press") {
-    const items = [...defaultWindowMenuItems(win.windowId, post)];
-    if (phase === "navigating" || phase === "arrived") {
-      items.unshift({
-        label: "Stop navigation",
-        onSelect: (ctx: any) => {
-          ctx.stack.pop();
-          stopNavigation("Navigation stopped.");
-          render();
-        },
-      });
+  if (editing) {
+    if (event.type === "click") {
+      finishEdit(true);
+    } else if (event.type === "double-click") {
+      finishEdit(false);
+    } else {
+      frameTimings.finishFrame(frameId, "discarded: navigate edit ignored input");
+      return;
     }
-    windowMenu(win).open(items);
+    renderAndSubmit(win, frameId);
+    return;
+  }
+  if (event.type === "short-then-long-press") {
+    windowMenu(win).open();
     renderAndSubmit(win, frameId);
     return;
   }
@@ -644,6 +1225,13 @@ function handleInput(win: NavWindow, event: DashboardInputEvent, frameId: number
       maybeRefreshMap();
     } else if (phase === "arrived") {
       stopNavigation("");
+    } else if (phase === "idle") {
+      const entry = idleEntries()[idleSelection];
+      if (!entry) {
+        frameTimings.finishFrame(frameId, "discarded: navigate ignored click");
+        return;
+      }
+      navigateToIdleEntry(entry);
     } else {
       frameTimings.finishFrame(frameId, "discarded: navigate ignored click");
       return;
@@ -656,6 +1244,10 @@ function handleInput(win: NavWindow, event: DashboardInputEvent, frameId: number
       zoomOffset = Math.max(-3, Math.min(2, zoomOffset + (event.type === "scroll-up" ? 0.5 : -0.5)));
       maybeRefreshMap();
       renderAndSubmit(win, frameId);
+    } else if (phase === "idle" && idleEntries().length > 1) {
+      const count = idleEntries().length;
+      idleSelection = Math.max(0, Math.min(count - 1, idleSelection + (event.type === "scroll-down" ? 1 : -1)));
+      renderAndSubmit(win, frameId);
     } else {
       frameTimings.finishFrame(frameId, "discarded: navigate ignored scroll");
     }
@@ -667,46 +1259,146 @@ function handleInput(win: NavWindow, event: DashboardInputEvent, frameId: number
 // ---------------------------------------------------------------------------
 // Painting
 
-function paint(win: NavWindow): GrayImage {
-  if (win.menu?.isOpen()) return win.menu.paint();
-  return paintContent(win);
+function paint(win: NavWindow): Plane[] {
+  return windowMenu(win).paint();
 }
 
 function paintContent(win: NavWindow): GrayImage {
   const image = new GrayImage(win.viewportWidth, win.viewportHeight, 0);
-  if (phase === "idle" || phase === "acquiring" || phase === "routing") {
-    paintIdle(image);
+  if (editing) {
+    paintEdit(image, editing);
+  } else if (phase === "idle" || phase === "acquiring" || phase === "routing") {
+    paintIdle(image, win);
   } else {
     paintNavigating(image, win);
   }
   return image;
 }
 
-function paintIdle(image: GrayImage): void {
+/** The "type on the phone" screen for a destination name/address edit. */
+function paintEdit(image: GrayImage, edit: DestinationEdit): void {
+  const step = smallFont.lineHeight + 2;
+  image.drawText(mediumFont, 24, 16, edit.title, 245);
+  const messageY = 64;
+  const lines = wrapText(smallFont, "Type the value in the phone app, or use voice input.", image.width - 48);
+  for (let index = 0; index < lines.length; index++) {
+    image.drawText(smallFont, 24, messageY + index * step, lines[index]!, 190);
+  }
+  const value = edit.setting.get();
+  image.drawText(
+    smallFont,
+    24,
+    messageY + (lines.length + 1) * step,
+    truncateText(smallFont, value || "(empty)", image.width - 48),
+    value ? 225 : 130,
+  );
+  drawFooter(image, `${GESTURE_CLICK} done   ${GESTURE_DOUBLE_CLICK} cancel`);
+}
+
+function paintIdle(image: GrayImage, win: NavWindow): void {
   image.drawText(mediumFont, 24, 16, "Navigate", 245);
   const busy = phase !== "idle";
-  const hint = isMapboxConfigured()
-    ? "Ask the voice assistant to navigate somewhere, or use Voice input from the long-press menu to say a destination."
-    : "Set a Mapbox token in Settings > API Keys to enable navigation.";
-  image.drawTextWrapped({ font: smallFont, x: 24, y: 64, width: image.width - 48, text: hint, value: 170 });
-  if (statusMessage) {
-    image.drawTextWrapped({
-      font: smallFont,
-      x: 24,
-      y: 130,
-      width: image.width - 48,
-      text: statusMessage,
-      value: busy ? 220 : 190,
-    });
+  const entries = busy ? [] : idleEntries();
+  const configured = isMapboxConfigured();
+  const hint = !configured
+    ? "Navigation needs a Mapbox public token (free at mapbox.com). Get one, then enter it here or in Settings > API Keys."
+    : entries.length
+      ? "Pick a destination below, or say one via Voice input (system menu, long-press)."
+      : "Ask the voice assistant to navigate somewhere, or pick Voice input from the system menu (long-press) to say a destination. Save Home, Work and other places from the app menu.";
+  const hintLines = wrapText(smallFont, hint, image.width - 48);
+  const hintStep = smallFont.lineHeight + 2;
+  for (let index = 0; index < hintLines.length; index++) {
+    image.drawText(smallFont, 24, 52 + index * hintStep, hintLines[index]!, 170);
   }
-  drawFooter(image, `${GESTURE_DOUBLE_CLICK} back`);
+  let y = 52 + hintLines.length * hintStep + 6;
+  if (statusMessage) {
+    const statusLines = wrapText(smallFont, statusMessage, image.width - 48);
+    for (let index = 0; index < statusLines.length; index++) {
+      image.drawText(smallFont, 24, y + index * hintStep, statusLines[index]!, busy ? 220 : 190);
+    }
+    y += statusLines.length * hintStep + 6;
+  }
+  if (entries.length) {
+    paintIdleList(image, win, entries, y);
+    drawFooter(
+      image,
+      `${GESTURE_SCROLL} select   ${GESTURE_CLICK} ${configured ? "go" : "choose"}   ${GESTURE_SHORT_THEN_LONG_PRESS} app menu   ${GESTURE_DOUBLE_CLICK} back`,
+    );
+  } else {
+    drawFooter(image, `${GESTURE_SHORT_THEN_LONG_PRESS} app menu   ${GESTURE_DOUBLE_CLICK} back`);
+  }
+}
+
+/** Saved destinations (name + address) then recent places, one selectable row each. */
+function paintIdleList(image: GrayImage, win: NavWindow, entries: IdleEntry[], top: number): void {
+  const rowHeight = listRowHeight(smallFont);
+  const listBottom = image.height - 30;
+  const visibleRows = Math.max(1, Math.floor((listBottom - top) / rowHeight));
+  idleSelection = Math.max(0, Math.min(idleSelection, entries.length - 1));
+  idleScrollRow = scrollToKeepSelectionVisible(idleScrollRow, idleSelection, visibleRows, entries.length);
+  const rowX = 20;
+  const rowWidth = image.width - 40 - (entries.length > visibleRows ? 10 : 0);
+  const labelWidth = Math.floor(rowWidth * 0.4);
+  for (let row = 0; row < visibleRows; row++) {
+    const index = idleScrollRow + row;
+    const entry = entries[index];
+    if (!entry) break;
+    const y = top + row * rowHeight;
+    const selected = index === idleSelection;
+    if (selected) drawSelectionHighlight(image, rowX, y, rowWidth, rowHeight - 2, win.focused);
+    const textX = rowX + 6;
+    const textY = y + LIST_ROW_TEXT_INSET;
+    if (entry.kind === "action") {
+      const label = truncateText(smallFont, entry.label, labelWidth);
+      image.drawText(smallFont, textX, textY, label, selected ? 245 : 210);
+      const detailX = textX + labelWidth + 8;
+      image.drawText(
+        smallFont,
+        detailX,
+        textY,
+        truncateText(smallFont, entry.detail, rowX + rowWidth - 6 - detailX),
+        selected ? 170 : 130,
+      );
+    } else if (entry.kind === "saved") {
+      const label = truncateText(smallFont, entry.destination.name, labelWidth);
+      image.drawText(smallFont, textX, textY, label, selected ? 245 : 210);
+      const detailX = textX + labelWidth + 8;
+      image.drawText(
+        smallFont,
+        detailX,
+        textY,
+        truncateText(smallFont, entry.destination.address, rowX + rowWidth - 6 - detailX),
+        selected ? 170 : 130,
+      );
+    } else {
+      const label = truncateText(smallFont, entry.destination.name, labelWidth);
+      image.drawText(smallFont, textX, textY, label, selected ? 245 : 210);
+      const detailX = textX + labelWidth + 8;
+      const detail = entry.destination.place ? `${entry.destination.place}  (recent)` : "(recent)";
+      image.drawText(
+        smallFont,
+        detailX,
+        textY,
+        truncateText(smallFont, detail, rowX + rowWidth - 6 - detailX),
+        selected ? 170 : 130,
+      );
+    }
+  }
+  if (entries.length > visibleRows) {
+    drawListScrollbar(image, rowX + rowWidth + 4, top, visibleRows * rowHeight - 2, idleScrollRow, visibleRows, entries.length);
+  }
 }
 
 function paintNavigating(image: GrayImage, win: NavWindow): void {
   // Map pane (left).
   if (mapImage) {
     image.bitBlt(mapImage, 0, 0);
-    if (mapMode === "follow") drawChevron(image, MAP_SIZE / 2, MAP_SIZE / 2);
+    if (mapMode === "follow") {
+      // Head heading relative to the map's up (its render bearing); no
+      // compass reading yet means "up", i.e. the direction of travel.
+      const angle = headHeadingDeg === null ? 0 : headHeadingDeg - mapFetchedBearingDeg;
+      drawChevron(image, MAP_SIZE / 2, MAP_SIZE / 2, angle);
+    }
   } else {
     image.drawRect(0, 0, MAP_SIZE, MAP_SIZE, 60);
     const text = mapLastError ? "Map unavailable" : "Loading map...";
@@ -766,11 +1458,21 @@ function paintNavigating(image: GrayImage, win: NavWindow): void {
   drawFooter(image, `${GESTURE_SCROLL} zoom   ${GESTURE_CLICK} ${modeHint}   ${GESTURE_DOUBLE_CLICK} back`, PANEL_X + 8);
 }
 
-/** Position chevron, fixed at the map center (heading-up: it always points up). */
-function drawChevron(image: GrayImage, cx: number, cy: number): void {
+/**
+ * Position chevron, fixed at the map center and rotated `angleDeg` clockwise
+ * from straight up (the map's render bearing) to the wearer's head heading.
+ */
+function drawChevron(image: GrayImage, cx: number, cy: number, angleDeg: number): void {
+  const radians = (angleDeg * Math.PI) / 180;
+  const cos = Math.cos(radians);
+  const sin = Math.sin(radians);
+  const triangle = (points: Array<[number, number]>, value: number): void => {
+    const [a, b, c] = points.map(([x, y]): [number, number] => [cx + x * cos - y * sin, cy + x * sin + y * cos]);
+    fillTriangle(image, a![0], a![1], b![0], b![1], c![0], c![1], value);
+  };
   // Black halo first so it reads over bright roads.
-  fillTriangle(image, cx, cy - 11, cx - 9, cy + 9, cx + 9, cy + 9, 0);
-  fillTriangle(image, cx, cy - 8, cx - 6, cy + 6, cx + 6, cy + 6, 255);
+  triangle([[0, -11], [-9, 9], [9, 9]], 0);
+  triangle([[0, -8], [-6, 6], [6, 6]], 255);
 }
 
 function fillTriangle(image: GrayImage, x0: number, y0: number, x1: number, y1: number, x2: number, y2: number, value: number): void {
@@ -854,25 +1556,29 @@ function render(): void {
 }
 
 function renderAndSubmit(win: NavWindow, inputFrameId: number): void {
+  // Every state change funnels through here, so it doubles as the point where
+  // the compass claim tracks foreground/phase/mode.
+  reconcileCompass();
   if (!win.foreground && inputFrameId === 0) return;
   const frameId = inputFrameId > 0 ? inputFrameId : frameTimings.startFrame(`render:${win.windowId}`);
   try {
     const paintStartedAtMs = Date.now();
-    const image = frameTimings.span(frameId, "paint", () =>
+    const planes = frameTimings.span(frameId, "paint", () =>
       frameTimings.runWithFrame(frameId, () => paint(win)),
     );
     const paintMs = Date.now() - paintStartedAtMs;
-    const fingerprint = image.fingerprint();
+    const fingerprint = planesFingerprint(planes);
     if (fingerprint === win.lastSubmittedFingerprint) {
       frameTimings.finishFrame(frameId, "discarded: navigate content unchanged");
       return;
     }
-    const communicator = com.faceclaw.app.FaceclawBleCommunicator.getActive();
+    const communicator = getActiveDisplay();
     if (!communicator) {
-      frameTimings.finishFrame(frameId, "discarded: no active communicator");
+      frameTimings.finishFrame(frameId, "discarded: no active display");
       return;
     }
-    const buffer = image.to8bppBuffer();
+    const { image, draws } = frameTimings.span(frameId, "flatten", () => flattenPlanesWithDraws(planes));
+    const buffer = frameTimings.span(frameId, "to8bpp", () => image.to8bppBuffer());
     communicator.submitSurfaceFrame(
       buffer.buffer,
       win.surfaceId,
@@ -883,6 +1589,7 @@ function renderAndSubmit(win: NavWindow, inputFrameId: number): void {
       fingerprint,
       paintMs,
       frameId,
+      frameTimings.span(frameId, "prepareFrameDraws", () => prepareFrameDraws(draws)),
     );
     win.lastSubmittedFingerprint = fingerprint;
   } catch (error) {

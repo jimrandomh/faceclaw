@@ -112,6 +112,7 @@ public class FaceclawWebSocket {
                 if (sharedClient == null) {
                     sharedClient = new OkHttpClient.Builder()
                         .pingInterval(20, TimeUnit.SECONDS)
+                        .addInterceptor(FaceclawHttp.userAgentInterceptor())
                         .build();
                 }
                 client = sharedClient;

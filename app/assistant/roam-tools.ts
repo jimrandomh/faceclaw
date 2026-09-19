@@ -6,10 +6,7 @@
  */
 import { roamApiTokenSetting, roamGraphNameSetting } from "../ui/dashboard-settings";
 import { toolRegistry, type ToolRegistry, type ToolResult } from "./tool-registry";
-
-const APP_TOOL_PREFIX = "app.roam.";
-const TOOL_APPEAR_TIMEOUT_MS = 5_000;
-const TOOL_APPEAR_POLL_MS = 150;
+import { callAppToolWithLaunch } from "./launch-on-call";
 
 let registered = false;
 
@@ -52,7 +49,7 @@ export function registerRoamTools(
   );
 }
 
-/** Launch the Roam app if needed, wait for its tool, and forward the call. */
+/** Check Roam configuration, then launch-on-call forward to the Roam app. */
 async function callAppTool(
   launchApp: (appId: string) => Promise<void>,
   registry: ToolRegistry,
@@ -60,24 +57,9 @@ async function callAppTool(
   args: unknown,
 ): Promise<ToolResult> {
   if (roamGraphNameSetting.get().length === 0 || roamApiTokenSetting.get().length === 0) {
-    return err("Roam is not configured; the user must set the graph name and API token in Settings > Roam.");
+    return err("Roam is not configured; the user must set the graph name and API token from the Roam app's context menu (tap, then hold).");
   }
-  const fullName = `${APP_TOOL_PREFIX}${unprefixedName}`;
-  if (!registry.listTools().some((tool) => tool.name === fullName)) {
-    await launchApp("roam");
-    const deadline = Date.now() + TOOL_APPEAR_TIMEOUT_MS;
-    while (!registry.listTools().some((tool) => tool.name === fullName)) {
-      if (Date.now() > deadline) {
-        return err("The Roam app did not start in time.");
-      }
-      await sleep(TOOL_APPEAR_POLL_MS);
-    }
-  }
-  return registry.callTool(fullName, args);
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+  return callAppToolWithLaunch(registry, launchApp, "roam", unprefixedName, args);
 }
 
 function err(error: string): ToolResult {

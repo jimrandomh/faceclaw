@@ -3,6 +3,12 @@ export const EventSourceType = {
   TOUCH_EVENT_FROM_GLASSES_R: 1,
   TOUCH_EVENT_FROM_RING: 2,
   TOUCH_EVENT_FROM_GLASSES_L: 3,
+  /**
+   * Synthetic: the Wear OS remote (app/g2/wear-remote.ts). Not a firmware
+   * value. Lets the UI give watch input its own, richer scheme (direct
+   * spatial selection) while ring input keeps the stock one.
+   */
+  TOUCH_EVENT_FROM_WATCH: 4,
 } as const;
 
 export const EventSourceTypeName: Record<number, string> = {
@@ -10,6 +16,7 @@ export const EventSourceTypeName: Record<number, string> = {
   1: "TOUCH_EVENT_FROM_GLASSES_R",
   2: "TOUCH_EVENT_FROM_RING",
   3: "TOUCH_EVENT_FROM_GLASSES_L",
+  4: "TOUCH_EVENT_FROM_WATCH",
 };
 
 /**
@@ -32,6 +39,24 @@ export const EvenAIStatusName: Record<number, string> = {
   3: "EVEN_AI_EXIT",
 };
 
+/**
+ * Synthetic gestures from the Wear OS remote (RawInputEvent kind
+ * "watch-gesture"). Not a firmware enum: the glasses never send these.
+ */
+export const WatchGestureType = {
+  SWIPE_LEFT: 0,
+  SWIPE_RIGHT: 1,
+  SWIPE_UP: 2,
+  SWIPE_DOWN: 3,
+} as const;
+
+export const WatchGestureTypeName: Record<number, string> = {
+  0: "SWIPE_LEFT",
+  1: "SWIPE_RIGHT",
+  2: "SWIPE_UP",
+  3: "SWIPE_DOWN",
+};
+
 export const OsEventTypeList = {
   CLICK_EVENT: 0,
   SCROLL_TOP_EVENT: 1,
@@ -44,6 +69,14 @@ export const OsEventTypeList = {
   IMU_DATA_REPORT: 8,
   RING_LONG_PRESS_EVENT: 9,
   RING_LONG_PRESS_RELEASE_EVENT: 10,
+  /** CFW extension: the 2.2.9 tap-then-hold Menu gesture. */
+  SHORT_THEN_LONG_PRESS_EVENT: 11,
+  /**
+   * CFW extension (head-tilt wake branch): the IMU head-up gesture, forwarded
+   * while the display sleeps. Reaches the phone as a display-wake carrying
+   * this eventType; the glance host treats it as a press.
+   */
+  HEAD_UP_EVENT: 12,
 } as const;
 
 export const OsEventTypeName: Record<number, string> = {
@@ -58,4 +91,6 @@ export const OsEventTypeName: Record<number, string> = {
   8: "IMU_DATA_REPORT",
   9: "RING_LONG_PRESS_EVENT",
   10: "RING_LONG_PRESS_RELEASE_EVENT",
+  11: "SHORT_THEN_LONG_PRESS_EVENT",
+  12: "HEAD_UP_EVENT",
 };

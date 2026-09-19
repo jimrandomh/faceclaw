@@ -1,10 +1,13 @@
 import { GrayImage } from "../graphics/image";
 import { logCurrent, spanCurrent } from "./frame-timings";
 import { toUint8Array } from "../util/array-util";
+import { rememberNotificationSources } from "./notification-sources";
 
 declare const com: any;
 
 const ICON_SIZE = 24;
+/** Ask the native listener for every active source, including those below the list's display limit. */
+export const ALL_NOTIFICATIONS = 0x7fffffff;
 // Backstop TTL only: the icon caches are invalidated eagerly whenever a
 // notification is posted or dismissed (see invalidateIconCaches callers), so
 // the tray is kept fresh by invalidation, not by expiry. A short TTL just
@@ -25,28 +28,8 @@ function invalidateIconCaches(): void {
   keyedIconCache.clear();
 }
 
-export type AndroidNotificationAction = {
-  index: number;
-  title: string;
-  enabled: boolean;
-};
-
-export type AndroidNotification = {
-  key: string;
-  packageName: string;
-  appName: string;
-  title: string;
-  text: string;
-  bigText: string;
-  subText: string;
-  infoText: string;
-  summaryText: string;
-  category: string;
-  lines: string[];
-  postTime: number;
-  when: number;
-  actions: AndroidNotificationAction[];
-};
+import type { AndroidNotification, AndroidNotificationAction } from "./notification-types";
+export type { AndroidNotification, AndroidNotificationAction } from "./notification-types";
 
 export type NotificationIconsResult = {
   icons: GrayImage[];
@@ -158,7 +141,9 @@ export function readActiveNotifications(maxNotifications = 50): AndroidNotificat
     );
     const parsed = JSON.parse(json);
     if (!Array.isArray(parsed)) return [];
-    return parsed.map(normalizeNotification).filter((item): item is AndroidNotification => Boolean(item));
+    const notifications = parsed.map(normalizeNotification).filter((item): item is AndroidNotification => Boolean(item));
+    rememberNotificationSources(notifications);
+    return notifications;
   } catch {
     return [];
   }

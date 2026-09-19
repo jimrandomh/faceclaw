@@ -13,29 +13,38 @@
  *
  * Controls (ball ready): scroll sets launch power, click launches. In play:
  * click flips both flippers, scroll-up/down flips left/right individually,
- * long-press nudges the table (three quick nudges tilt), double-click pauses.
+ * double-click pauses. Watch swipes: left/right work the matching flipper,
+ * up/down raise and lower launch power at the plunger.
  * Paused/game over: click resumes or starts a new game, double-click yields
- * focus, long-press opens the window menu.
+ * focus, long-press opens the window menu. Losing input focus mid-game (a
+ * shell overlay such as the system menu or a notification, focus to the
+ * sidebar) pauses, as does backgrounding or screen-off.
  */
 import "@nativescript/core/globals";
 import { GrayImage } from "../../graphics/image";
-import { getDefaultSmallFont, getFont } from "../../graphics/bdffont";
+import { flattenPlanesWithDraws, planesFingerprint, type Plane } from "../../graphics/plane";
+import { prepareFrameDraws } from "../../graphics/glyph-wire";
+import { getFont } from "../../graphics/bdffont";
+import { getDefaultSmallFont } from "../../graphics/ui-fonts";
 import * as frameTimings from "../../native/frame-timings";
+import { playWorkerBuzzerSequence } from "../../native/worker-buzzer";
+import { getActiveDisplay } from "../../native/active-display";
 import { getStringSetting, setStringSetting } from "../../native/settings-store";
-import type { DashboardInputEvent } from "../../ui/layers";
 import { buildSoundSequencePayload, type Step } from "../../ui/sound-effects";
-import { defaultWindowMenuItems, WindowMenu } from "../../ui/window-menu";
+import { loadSoundEnabled, saveSoundEnabled } from "../../ui/sound-setting";
+import { type MenuItem } from "../../ui/menu";
+import { WindowMenu } from "../../ui/window-menu";
 import type { WorkerAppMessage, WorkerAppReply } from "../../ui/shell/worker-window";
 import {
+  directionalFallback,
   GESTURE_CLICK,
   GESTURE_DOUBLE_CLICK,
-  GESTURE_LONG_PRESS,
   GESTURE_SCROLL,
+  type InputEvent,
 } from "../../ui/gestures";
 import { clamp } from "../../util/numeric-util";
 
 declare const global: any;
-declare const com: any;
 
 const largeFont = getFont("terminus32");
 const mediumFont = getFont("terminus24");
@@ -64,16 +73,11 @@ const GRAVITY = 240;
 const DRAG_PER_S = 0.12;
 const MAX_SPEED = 600;
 const PHYSICS_DT = 1 / 120;
-const RENDER_TICK_MS = 110;
+const RENDER_TICK_MS = 50;
 /** Launch speed by power setting (index = power - 1). */
 const LAUNCH_SPEEDS = [320, 380, 440, 500, 560] as const;
 const BUMPER_KICK = 340;
 const SLING_KICK = 300;
-const NUDGE_KICK_UP = 70;
-const NUDGE_KICK_SIDE = 45;
-/** Nudges add 1 heat each and decay slowly; reaching 3 tilts the ball away. */
-const TILT_LIMIT = 3;
-const TILT_HEAT_DECAY_PER_S = 0.4;
 
 const SCORE_BUMPER = 100;
 const SCORE_SLING = 25;
@@ -200,7 +204,6 @@ const SFX_DRAIN: Step[] = [
   { freq: 370, duty: 45, ms: 100 },
   { freq: 247, duty: 50, ms: 200 },
 ];
-const SFX_TILT: Step[] = [{ freq: 110, duty: 60, ms: 300 }];
 const SFX_GAME_OVER: Step[] = [
   { freq: 494, duty: 45, ms: 150 },
   { freq: 440, duty: 45, ms: 150 },
@@ -235,12 +238,13 @@ type Flipper = {
 type PinballWindow = {
   windowId: string;
   surfaceId: string;
+  title: string;
   viewportWidth: number;
   viewportHeight: number;
   foreground: boolean;
   /** Whether this window is the shell's input target (pushed with each message). */
   focused: boolean;
-  /** Long-press window menu; created on first open. */
+  /** Tap-then-hold window menu; created on first open. */
   menu: WindowMenu | null;
   phase: GamePhase;
   /** "ready" = parked on the plunger awaiting launch; "live" = in play. */
@@ -260,10 +264,6 @@ type PinballWindow = {
   /** Debounce: a sensor re-arms only after the ball leaves its zone. */
   rolloverInside: boolean[];
   bumperFlashUntilMs: number[];
-  tiltHeat: number;
-  tilted: boolean;
-  /** Alternates nudge direction so mashing doesn't push one way forever. */
-  nudgeSign: 1 | -1;
   /** Transient center-table message ("BALL LOST", "+500", ...). */
   toast: string;
   toastUntilMs: number;
@@ -281,6 +281,12 @@ function post(message: WorkerAppReply): void {
   global.postMessage(message);
 }
 
+// The host queues messages until this arrives: posts to a worker whose bundle
+// is still evaluating can be silently dropped (see WorkerAppHost). Top-level
+// evaluation is synchronous, so the handler below is installed before any
+// queued message can be delivered.
+post({ type: "worker-ready" });
+
 global.onmessage = (event: { data: WorkerAppMessage }) => {
   const message = event.data;
   switch (message.type) {
@@ -288,6 +294,7 @@ global.onmessage = (event: { data: WorkerAppMessage }) => {
       const window: PinballWindow = {
         windowId: message.windowId,
         surfaceId: message.surfaceId,
+        title: message.title,
         viewportWidth: message.viewport.width,
         viewportHeight: message.viewport.height,
         foreground: false,
@@ -315,15 +322,12 @@ global.onmessage = (event: { data: WorkerAppMessage }) => {
         rolloverLit: ROLLOVERS.map(() => false),
         rolloverInside: ROLLOVERS.map(() => false),
         bumperFlashUntilMs: BUMPERS.map(() => 0),
-        tiltHeat: 0,
-        tilted: false,
-        nudgeSign: 1,
         toast: "",
         toastUntilMs: 0,
         tickTimer: null,
         lastTickAtMs: 0,
         lastMinorSfxAtMs: 0,
-        soundOn: true,
+        soundOn: loadSoundEnabled("pinball"),
         lastSubmittedFingerprint: "",
       };
       windows.set(message.windowId, window);
@@ -343,7 +347,10 @@ global.onmessage = (event: { data: WorkerAppMessage }) => {
       }
       window.focused = message.focused;
       inferForeground(window, message.focused);
-      handleInput(window, message.event as DashboardInputEvent, message.frameId);
+      // Marks the main-thread -> worker hop, which is otherwise an
+      // unexplained gap inside the shell's handle-input span.
+      frameTimings.logFrame(message.frameId, `input received in ${message.windowId} worker`);
+      handleInput(window, message.event as InputEvent, message.frameId);
       break;
     }
     case "render": {
@@ -364,6 +371,19 @@ global.onmessage = (event: { data: WorkerAppMessage }) => {
       if (!window.foreground && window.phase === "playing") window.phase = "paused";
       syncTickTimer(window);
       if (window.foreground) renderAndSubmit(window, 0);
+      break;
+    }
+    case "input-focus": {
+      const window = windows.get(message.windowId);
+      if (!window) break;
+      // Anything that takes input away (the system menu, a notification
+      // modal, the voice dialog, focus back to the sidebar) pauses: the
+      // ball must not drain under a menu the player can't flip through.
+      if (!message.focused && window.phase === "playing") {
+        window.phase = "paused";
+        syncTickTimer(window);
+        if (window.foreground) renderAndSubmit(window, 0);
+      }
       break;
     }
     case "screen":
@@ -409,7 +429,7 @@ function saveHighScore(window: PinballWindow): void {
 
 /**
  * Fire a buzzer effect. Non-blocking: the firmware's sequencer plays the
- * steps on its own timer, and the Java call is safe from the worker thread.
+ * steps on its own timer; the platform bridge routes it from the worker.
  * Minor (frequent) effects are dropped when they'd arrive within the
  * rate-limit gap; newsworthy ones always play.
  */
@@ -419,17 +439,15 @@ function playSfx(window: PinballWindow, steps: Step[], minor = false): void {
   if (minor && now - window.lastMinorSfxAtMs < MINOR_SFX_MIN_GAP_MS) return;
   if (minor) window.lastMinorSfxAtMs = now;
   try {
-    const communicator = com.faceclaw.app.FaceclawBleCommunicator.getActive();
-    if (!communicator) return;
-    communicator.playBuzzerSequence(buildSoundSequencePayload(steps).buffer);
+    playWorkerBuzzerSequence(buildSoundSequencePayload(steps));
   } catch (error) {
     console.warn(`pinball sfx failed: ${error}`);
   }
 }
 
-/** The window's long-press menu (game actions + default entries). */
-function openWindowMenu(window: PinballWindow): void {
-  windowMenu(window).open([
+/** The window's context menu (game actions), offered while paused or over. */
+function windowMenuItems(window: PinballWindow): MenuItem[] {
+  return [
     {
       label: "New game",
       onSelect: (ctx) => {
@@ -443,16 +461,20 @@ function openWindowMenu(window: PinballWindow): void {
       onSelect: (ctx) => {
         ctx.stack.pop();
         window.soundOn = !window.soundOn;
+        saveSoundEnabled("pinball", window.soundOn);
         if (window.soundOn) playSfx(window, SFX_RESUME);
       },
     },
-    ...defaultWindowMenuItems(window.windowId, post),
-  ]);
+  ];
 }
 
 function windowMenu(window: PinballWindow): WindowMenu {
   if (!window.menu) {
     window.menu = new WindowMenu({
+      windowId: window.windowId,
+      post,
+      title: () => window.title,
+      items: () => (window.phase === "playing" ? [] : windowMenuItems(window)),
       size: { width: window.viewportWidth, height: window.viewportHeight },
       paintBase: () => paintContent(window),
       isFocused: () => window.focused,
@@ -461,11 +483,12 @@ function windowMenu(window: PinballWindow): WindowMenu {
   return window.menu;
 }
 
-function handleInput(window: PinballWindow, event: DashboardInputEvent, frameId: number): void {
-  // An open window menu owns all input (it closes itself via pop).
+function handleInput(window: PinballWindow, event: InputEvent, frameId: number): void {
+  // An open window menu owns all input (it closes itself via pop); menus are
+  // list UIs, so watch swipes take their standard fallback meanings there.
   if (window.menu?.isOpen()) {
     window.menu
-      .handleInput(event)
+      .handleInput(directionalFallback(event))
       .catch((error) => console.error(`pinball menu input failed: ${error}`))
       .then(() => renderAndSubmit(window, frameId));
     return;
@@ -478,7 +501,7 @@ function handleInput(window: PinballWindow, event: DashboardInputEvent, frameId:
   }
 }
 
-function handlePlayingInput(window: PinballWindow, event: DashboardInputEvent, frameId: number): void {
+function handlePlayingInput(window: PinballWindow, event: InputEvent, frameId: number): void {
   const ready = window.ballState === "ready";
   switch (event.type) {
     case "scroll-up":
@@ -495,6 +518,24 @@ function handlePlayingInput(window: PinballWindow, event: DashboardInputEvent, f
         flip(window, window.flippers[1]!);
       }
       break;
+    // Watch swipes: left/right work the matching flipper; up/down set the
+    // launch power at the plunger.
+    case "swipe-left":
+      if (!ready) flip(window, window.flippers[0]!);
+      break;
+    case "swipe-right":
+      if (!ready) flip(window, window.flippers[1]!);
+      break;
+    case "swipe-up":
+      if (ready) {
+        window.launchPower = clamp(window.launchPower + 1, 1, LAUNCH_SPEEDS.length);
+      }
+      break;
+    case "swipe-down":
+      if (ready) {
+        window.launchPower = clamp(window.launchPower - 1, 1, LAUNCH_SPEEDS.length);
+      }
+      break;
     case "click":
       if (ready) {
         launchBall(window);
@@ -503,12 +544,9 @@ function handlePlayingInput(window: PinballWindow, event: DashboardInputEvent, f
         flip(window, window.flippers[1]!);
       }
       break;
-    case "long-press":
-      if (ready) {
-        frameTimings.finishFrame(frameId, "discarded: pinball ignored input");
-        return;
-      }
-      nudge(window);
+    case "short-then-long-press":
+      // No context menu mid-game, so this opens the system menu instead.
+      windowMenu(window).open();
       break;
     case "double-click":
       window.phase = "paused";
@@ -523,9 +561,9 @@ function handlePlayingInput(window: PinballWindow, event: DashboardInputEvent, f
   renderAndSubmit(window, frameId);
 }
 
-/** Input while paused or game over. */
-function handleIdleInput(window: PinballWindow, event: DashboardInputEvent, frameId: number): void {
-  switch (event.type) {
+/** Input while paused or game over. Swipes take their standard fallback meanings. */
+function handleIdleInput(window: PinballWindow, event: InputEvent, frameId: number): void {
+  switch (directionalFallback(event).type) {
     case "click":
       if (window.phase === "game-over") resetGame(window);
       window.phase = "playing";
@@ -536,8 +574,8 @@ function handleIdleInput(window: PinballWindow, event: DashboardInputEvent, fram
       frameTimings.finishFrame(frameId, "discarded: pinball yielded focus");
       post({ type: "yield-focus", windowId: window.windowId });
       return;
-    case "long-press":
-      openWindowMenu(window);
+    case "short-then-long-press":
+      windowMenu(window).open();
       break;
     default:
       frameTimings.finishFrame(frameId, "discarded: pinball ignored input");
@@ -558,8 +596,6 @@ function resetGame(window: PinballWindow): void {
   window.score = 0;
   window.rolloverLit = ROLLOVERS.map(() => false);
   window.rolloverInside = ROLLOVERS.map(() => false);
-  window.tiltHeat = 0;
-  window.tilted = false;
   window.toast = "";
   window.toastUntilMs = 0;
   for (const flipper of window.flippers) {
@@ -580,7 +616,6 @@ function launchBall(window: PinballWindow): void {
 }
 
 function flip(window: PinballWindow, flipper: Flipper): void {
-  if (window.tilted) return;
   if (flipper.state === "hold") {
     flipper.holdUntilMs = Date.now() + FLIPPER_HOLD_MS;
     return;
@@ -589,25 +624,8 @@ function flip(window: PinballWindow, flipper: Flipper): void {
   playSfx(window, SFX_FLIPPER, true);
 }
 
-function nudge(window: PinballWindow): void {
-  if (window.tilted) return;
-  window.ballVy -= NUDGE_KICK_UP;
-  window.ballVx += window.nudgeSign * NUDGE_KICK_SIDE;
-  window.nudgeSign = window.nudgeSign === 1 ? -1 : 1;
-  window.tiltHeat += 1;
-  if (window.tiltHeat >= TILT_LIMIT) {
-    window.tilted = true;
-    showToast(window, "TILT");
-    // A tilt drops the flippers dead until the ball drains.
-    for (const flipper of window.flippers) {
-      if (flipper.state !== "rest") flipper.state = "falling";
-    }
-    playSfx(window, SFX_TILT);
-  }
-}
-
 function addScore(window: PinballWindow, points: number): void {
-  if (!window.tilted) window.score += points;
+  window.score += points;
 }
 
 function showToast(window: PinballWindow, text: string, ms = 1100): void {
@@ -662,7 +680,6 @@ function tick(window: PinballWindow): void {
 function stepPhysics(window: PinballWindow): void {
   const dt = PHYSICS_DT;
   stepFlippers(window, dt);
-  window.tiltHeat = Math.max(0, window.tiltHeat - TILT_HEAT_DECAY_PER_S * dt);
   if (window.ballState !== "live") return;
 
   window.ballVy += GRAVITY * dt;
@@ -846,8 +863,6 @@ function ballDrained(window: PinballWindow): void {
   window.ballVx = 0;
   window.ballVy = 0;
   window.trail = [];
-  window.tilted = false;
-  window.tiltHeat = 0;
   window.ballsLeft--;
   if (window.ballsLeft <= 0) {
     window.phase = "game-over";
@@ -907,11 +922,8 @@ function drawFlipper(image: GrayImage, flipper: Flipper): void {
   }
 }
 
-function paint(window: PinballWindow): GrayImage {
-  if (window.menu?.isOpen()) {
-    return window.menu.paint();
-  }
-  return paintContent(window);
+function paint(window: PinballWindow): Plane[] {
+  return windowMenu(window).paint();
 }
 
 function paintContent(window: PinballWindow): GrayImage {
@@ -962,9 +974,6 @@ function paintContent(window: PinballWindow): GrayImage {
   if (window.toastUntilMs > now && window.toast) {
     drawCenteredIn(image, mediumFont, LEFT, LANE_X - LEFT, 150, window.toast, 245);
   }
-  if (window.tilted) {
-    drawCenteredIn(image, mediumFont, LEFT, LANE_X - LEFT, 60, "TILT", 245);
-  }
   if (window.phase === "paused") {
     paintDialog(image, "PAUSED", [`${GESTURE_CLICK} resume`, `${GESTURE_DOUBLE_CLICK} leave`]);
   } else if (window.phase === "game-over") {
@@ -1005,7 +1014,7 @@ function paintPanel(image: GrayImage, window: PinballWindow): void {
     image.drawText(smallFont, PANEL_X, 236, `${GESTURE_DOUBLE_CLICK} pause`, 115);
   } else {
     image.drawText(smallFont, PANEL_X, 216, `${GESTURE_CLICK} flip   ${GESTURE_SCROLL} L/R flip`, 115);
-    image.drawText(smallFont, PANEL_X, 236, `${GESTURE_LONG_PRESS} nudge   ${GESTURE_DOUBLE_CLICK} pause`, 115);
+    image.drawText(smallFont, PANEL_X, 236, `${GESTURE_DOUBLE_CLICK} pause`, 115);
   }
 }
 
@@ -1025,21 +1034,22 @@ function renderAndSubmit(window: PinballWindow, inputFrameId: number): void {
   const frameId = inputFrameId > 0 ? inputFrameId : frameTimings.startFrame(`render:${window.windowId}`);
   try {
     const paintStartedAtMs = Date.now();
-    const image = frameTimings.span(frameId, "paint", () =>
+    const planes = frameTimings.span(frameId, "paint", () =>
       frameTimings.runWithFrame(frameId, () => paint(window)),
     );
     const paintMs = Date.now() - paintStartedAtMs;
-    const fingerprint = image.fingerprint();
+    const fingerprint = planesFingerprint(planes);
     if (fingerprint === window.lastSubmittedFingerprint) {
       frameTimings.finishFrame(frameId, "discarded: pinball content unchanged");
       return;
     }
-    const communicator = com.faceclaw.app.FaceclawBleCommunicator.getActive();
+    const communicator = getActiveDisplay();
     if (!communicator) {
-      frameTimings.finishFrame(frameId, "discarded: no active communicator");
+      frameTimings.finishFrame(frameId, "discarded: no active display");
       return;
     }
-    const buffer = image.to8bppBuffer();
+    const { image, draws } = frameTimings.span(frameId, "flatten", () => flattenPlanesWithDraws(planes));
+    const buffer = frameTimings.span(frameId, "to8bpp", () => image.to8bppBuffer());
     communicator.submitSurfaceFrame(
       buffer.buffer,
       window.surfaceId,
@@ -1050,6 +1060,7 @@ function renderAndSubmit(window: PinballWindow, inputFrameId: number): void {
       fingerprint,
       paintMs,
       frameId,
+      frameTimings.span(frameId, "prepareFrameDraws", () => prepareFrameDraws(draws)),
     );
     window.lastSubmittedFingerprint = fingerprint;
   } catch (error) {

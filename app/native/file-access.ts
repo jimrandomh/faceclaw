@@ -118,6 +118,77 @@ export function writeTextToDownloads(filename: string, text: string): string | n
   }
 }
 
+/** Read a whole file as bytes; null when unreadable. */
+export function readBinaryFile(path: string): Uint8Array | null {
+  try {
+    const file = new java.io.File(path);
+    if (!file.isFile()) return null;
+    const bytes = java.nio.file.Files.readAllBytes(file.toPath());
+    try {
+      // The V8 runtime can wrap a ByteBuffer's memory directly; copy out of it
+      // so the result outlives the Java array.
+      const arrayBuffer = (ArrayBuffer as any).from(java.nio.ByteBuffer.wrap(bytes));
+      return new Uint8Array(arrayBuffer).slice();
+    } catch {
+      const out = new Uint8Array(bytes.length);
+      for (let i = 0; i < bytes.length; i++) {
+        out[i] = bytes[i] & 0xff;
+      }
+      return out;
+    }
+  } catch (error) {
+    console.warn(`readBinaryFile failed for ${path}: ${error}`);
+    return null;
+  }
+}
+
+/** Write bytes to a file, creating parent directories; false on failure. */
+export function writeBinaryFile(path: string, bytes: Uint8Array): boolean {
+  try {
+    const file = new java.io.File(path);
+    const parent = file.getParentFile();
+    if (parent) parent.mkdirs();
+    const stream = new java.io.FileOutputStream(file);
+    try {
+      // An ArrayBuffer marshals to java.nio.ByteBuffer (the same conversion
+      // submitSurfaceFrame relies on), so write through the channel.
+      const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+      stream.getChannel().write(buffer);
+    } finally {
+      stream.close();
+    }
+    return true;
+  } catch (error) {
+    console.warn(`writeBinaryFile failed for ${path}: ${error}`);
+    return false;
+  }
+}
+
+/** Recursively delete a file or directory tree (best effort). */
+export function deletePathRecursively(path: string): void {
+  try {
+    const root = new java.io.File(path);
+    if (!root.exists()) return;
+    if (root.isDirectory()) {
+      const children = root.listFiles();
+      if (children) {
+        for (let i = 0; i < children.length; i++) {
+          deletePathRecursively(String(children[i].getAbsolutePath()));
+        }
+      }
+    }
+    root.delete();
+  } catch (error) {
+    console.warn(`deletePathRecursively failed for ${path}: ${error}`);
+  }
+}
+
+/** The app-private files directory (no permissions needed). */
+export function appFilesDirPath(): string {
+  const context = Utils.android.getApplicationContext();
+  return String(context.getFilesDir().getAbsolutePath());
+}
+
 /** Read a UTF-8 text file (size-capped); null when unreadable or too large. */
 export function readTextFile(path: string): string | null {
   try {

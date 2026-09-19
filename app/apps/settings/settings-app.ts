@@ -1,7 +1,8 @@
-import { GrayImage } from "../../graphics/image";
+import { type Plane } from "../../graphics/plane";
 import { LayerActions } from "../../ui/layers";
 import { EditTextSettingLayer } from "../../ui/dashboard-settings";
 import { createSettingsPanelLayer } from "../../ui/dashboard/settings-menus";
+import { SettingsDescriptionOverlayLayer } from "../../ui/dashboard/settings-panel";
 import { createInProcessWindow, type InProcessWindow } from "../../ui/shell/in-process-window";
 import { type ShellWindow } from "../../ui/shell/shell";
 
@@ -10,7 +11,7 @@ export const SETTINGS_SURFACE_ID = "window:settings";
 
 export type SettingsAppOptions = {
   actions: LayerActions;
-  submitFrame: (image: GrayImage, paintMs: number, frameId: number) => Promise<void>;
+  submitFrame: (planes: Plane[], paintMs: number, frameId: number) => Promise<void>;
   setSurfaceVisible: (visible: boolean) => void;
   removeSurface: () => void;
   onClosed: () => void;
@@ -54,6 +55,10 @@ export function createSettingsAppWindow(options: SettingsAppOptions): SettingsAp
     onClosed: options.onClosed,
   });
   const { window, stack, requestRender } = inProcess;
+  // The help-text band draws as its own plane so it can partially occlude
+  // list rows (a plane's raster covers lower planes' glyphs); it forwards
+  // input to the panel, so the stack behaves as if the panel were on top.
+  stack.push(new SettingsDescriptionOverlayLayer(panel));
   return {
     window,
     inProcess,

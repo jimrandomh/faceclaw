@@ -1,4 +1,5 @@
 import { NotificationsListLayer } from "../../ui/notifications";
+import { NotificationFilterLayer } from "../../ui/notification-filter";
 import { onAndroidNotificationPosted } from "../../native/notification-icons";
 import {
   createInProcessWindow,
@@ -25,6 +26,13 @@ export function createNotificationsAppWindow(options: InProcessAppOptions): InPr
     iconLetter: "N",
     icon: "bell",
     closeable: true,
+    menuItems: () => [{
+      label: "Notification filter",
+      onSelect: (ctx) => {
+        ctx.stack.pop();
+        ctx.stack.push(new NotificationFilterLayer());
+      },
+    }],
     actions: options.actions,
     baseLayer: new YieldAtRootLayer(new NotificationsListLayer()),
     submitFrame: options.submitFrame,

@@ -1,6 +1,8 @@
 import { ensureCalendarPermission, hasCalendarPermission } from "../../g2/android-permissions";
 import { invalidateCalendarCache } from "../../native/calendar";
+import { makeImageWindowIcon, windowIcon } from "../../ui/shell/chrome-layer";
 import { CalendarLayer } from "./calendar";
+import { renderCalendarDateIcon } from "./calendar-icon";
 import {
   createInProcessWindow,
   YieldAtRootLayer,
@@ -39,6 +41,7 @@ export function createCalendarAppWindow(options: InProcessAppOptions): InProcess
     title: "Calendar",
     iconLetter: "Ca",
     icon: "calendar",
+    drawIcon: makeImageWindowIcon(renderCalendarDateIcon, windowIcon("calendar", "Ca")),
     closeable: true,
     actions: options.actions,
     baseLayer: new YieldAtRootLayer(new CalendarLayer(requestPermission)),
