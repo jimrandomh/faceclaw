@@ -4,7 +4,6 @@ const unavailable: Record<string, string> = {
   notifications: 'Phone notification integration is not available on iOS yet.',
   transcribe: 'Voice capture and transcription are not available on iOS yet.',
   microphones: 'Glasses microphone capture is not available on iOS yet.',
-  compass: 'Glasses compass streaming is not available on iOS yet.',
   navigate: 'Navigation location tracking is not available on iOS yet.',
   weather: 'Weather location access is not available on iOS yet.',
   calendar: 'Calendar access is not available on iOS yet.',

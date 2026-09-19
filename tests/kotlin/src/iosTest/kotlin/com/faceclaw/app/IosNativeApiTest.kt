@@ -23,6 +23,14 @@ class IosNativeApiTest {
     }
 
     @Test
+    fun compassFacadePreservesTheEndOfTheCrcFreePayload() {
+        val protocol = IosProtocol()
+        val payload = byteArrayOf(8, 15, 16, 0, 82, 3, 8, -25, 2).data()
+        assertEquals(359, protocol.compassInput(payload, 8, 1)?.headingDegrees)
+        assertNull(protocol.compassInput(payload, 8, 0))
+    }
+
+    @Test
     fun nativeCompositorClipsPartialUpdatesBeforeCoalescing() {
         val compositor = IosSurfaceCompositor(3, 2)
         compositor.configure("app", 0, 0, 3, 2, 0, false)

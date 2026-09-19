@@ -1,3 +1,4 @@
+import { bindCompassSession, receiveCompassEvent } from '../native/compass.ios'
 import { Dialogs, File, knownFolders, path, type ImageSource } from '@nativescript/core'
 import { iosBluetooth } from '../native/ios-bluetooth'
 import { iosVoiceInput } from '../native/ios-voice-input'
@@ -378,7 +379,8 @@ export class IosPreviewController {
             input.kind === 'display-wake' && input.eventType === OsEventTypeList.HEAD_UP_EVENT)
           this.logBluetooth(`Input ${input.eventType} source ${input.eventSource}`)
         }).catch(error => this.fail(error))
-      }, message => this.logBluetooth(message), () => this.refreshClock())
+      }, message => this.logBluetooth(message), () => this.refreshClock(), receiveCompassEvent)
+      bindCompassSession(this.session)
     }
     await this.session.start(addresses)
   }

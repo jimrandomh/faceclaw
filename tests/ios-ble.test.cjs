@@ -159,10 +159,10 @@ async function until(predicate) {
   assert.fail('Timed out waiting for test state');
 }
 function harness(t, transport = new FakeTransport()) {
-  const states = [], input = [];
-  const session = new GlassesSession(transport, state => states.push(state), event => input.push(event));
+  const states = [], input = [], compass = [];
+  const session = new GlassesSession(transport, state => states.push(state), event => input.push(event), undefined, undefined, event => compass.push(event));
   t.after(async () => { transport.hold = false; await session.stop(); });
-  return { transport, session, states, input };
+  return { transport, session, states, input, compass };
 }
 test('session authenticates both arms, checks firmware and sends acknowledged display data to L', async t => {
   const h = harness(t); await h.session.start({ ...addresses, ring: 'AA:BB:CC:DD:EE:03' });
@@ -171,7 +171,7 @@ test('session authenticates both arms, checks firmware and sends acknowledged di
   assert.equal(h.session.state.charging, false);
   assert.deepEqual(h.transport.sent.filter(s => s.message.sid === 128).map(s => s.id).sort(), ['L', 'R']);
   h.session.setFrame(new Uint8Array(640 * 480)); await until(() => h.session.state.frames === 1);
-  const image = h.transport.sent.find(s => s.message.sid === p.SID.cfw);
+  const image = h.transport.sent.find(s => s.message.sid === p.SID.cfw && s.message.payload[0] === 6);
   assert.equal(image.id, 'L');
   assert.equal(image.message.payload[0], 6);
   const layout = h.transport.sent.find(s => s.message.sid === p.SID.hub && s.message.command === 0);
@@ -293,7 +293,7 @@ test('release while microphone enable awaits ACK sends disable last and rejects 
   assert.equal(p.readInteger(p.readBytes(mic.at(-1).message.payload, 18), 1), 0);
 });
 
-const imageMessages = transport => transport.sent.filter(s => s.message.sid === p.SID.cfw && s.message.payload[0] !== 11);
+const imageMessages = transport => transport.sent.filter(s => s.message.sid === p.SID.cfw && ![10, 11].includes(s.message.payload[0]));
 const imageBody = sent => sent.message.payload;
 const ack = (transport, sent, overrides) => transport.ack(sent.id, sent.message, overrides);
 const tick = () => new Promise(resolve => setImmediate(resolve));
@@ -466,4 +466,48 @@ test('delta ids skip reserved values and advance only on emitted deltas; reconne
   const wrapped = await submit(base); assert.equal(wrapped[5] | (wrapped[6] << 8), 1);
   await h.session.stop(); await h.session.start(addresses);
   assert.equal((await submit(base))[0], 6); // Even the same pixels need a trusted full base.
+});
+
+const compassMessages = transport => transport.sent.filter(s => s.message.sid === p.SID.cfw && s.message.payload[0] === 10);
+test('compass desired state survives connecting and reconnecting; explicit stop disables it first', async t => {
+  const h = harness(t);
+  h.session.setCompassEnabled(true);
+  await h.session.start(addresses);
+  assert.equal(compassMessages(h.transport).length, 1);
+  assert.equal(compassMessages(h.transport)[0].id, 'L');
+  assert.deepEqual([...compassMessages(h.transport)[0].message.payload], [10, 2, 100, 0, 0, 0]);
+  await h.session.stop();
+  assert.deepEqual([...compassMessages(h.transport).at(-1).message.payload], [10, 0]);
+  assert.equal(h.transport.sent.at(-1).message.payload[0], 11);
+  await h.session.start(addresses);
+  assert.equal(compassMessages(h.transport).at(-1).message.payload[1], 2);
+  h.transport.emit({ kind: 'disconnected', identifier: 'R' });
+  assert.equal(h.session.state.phase, 'retrying');
+  await h.session.start(addresses, true);
+  assert.equal(compassMessages(h.transport).at(-1).message.payload[1], 2);
+});
+test('release during pending compass enable sends disable after the enable ACK', async t => {
+  const h = harness(t); await h.session.start(addresses);
+  assert.deepEqual([...compassMessages(h.transport)[0].message.payload], [10, 0]);
+  h.transport.hold = true;
+  h.session.setCompassEnabled(true);
+  await until(() => h.transport.held.length === 1);
+  h.session.setCompassEnabled(false);
+  const enabling = h.transport.held.shift();
+  h.transport.hold = false; h.transport.ack(enabling.id, enabling.message);
+  await until(() => compassMessages(h.transport).length === 3);
+  assert.deepEqual(compassMessages(h.transport).map(s => s.message.payload[1]), [0, 2, 0]);
+});
+test('compass notifications only come from the right arm and preserve diagnostics and calibration', async t => {
+  const h = harness(t); await h.session.start(addresses);
+  const payload = new Uint8Array(Buffer.from('080f1000520308e702a2060c434d010302038c0098badcfe', 'hex'));
+  const emit = (id, sid = 8, flag = 1, body = payload) => h.transport.emit({ kind: 'notification', identifier: id,
+    characteristic: p.G2_NOTIFY, data: hex(p.concat(...p.frameMessage(body, sid, flag, 20))) });
+  emit('L'); emit('other'); emit('R', 9); emit('R', 8, 0x20);
+  assert.equal(h.compass.length, 0);
+  emit('R'); emit('R', 8, 6, new Uint8Array([8, 16, 16, 0]));
+  emit('R', 8, 1, new Uint8Array([8, 17, 16, 0]));
+  assert.deepEqual(h.compass, [{ command: 15, headingDegrees: 359, diagnostics: {
+    magneticAccuracy: 3, magneticAnomalies: 2, orientationSource: 3, flags: 140, sampleTimeMs: 0xfedcba98,
+  } }, { command: 16, headingDegrees: -1 }, { command: 17, headingDegrees: -1 }]);
 });

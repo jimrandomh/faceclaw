@@ -89,6 +89,7 @@ test('background glasses input still composites frames; phone resume preserves t
   }
   const settings = { onAnySettingChanged: () => () => {}, previewColorSetting: { get: () => 'white' } };
   const modules = {
+    '../native/compass.ios': { bindCompassSession() {}, receiveCompassEvent() {} },
     '@nativescript/core': { File: { fromPath: () => ({ writeTextSync() {} }) }, knownFolders: { documents: () => ({ path: '/tmp' }) }, path },
     '../native/ios-voice-input': { iosVoiceInput: { handleSessionEnded() {} } },
     '../native/ios-bluetooth': { iosBluetooth: () => ({}) }, './glasses-session': { GlassesSession: Session },
@@ -156,6 +157,7 @@ test('iOS bandwidth footer toggles live, polls only in foreground and resets its
     on: (key, fn) => appEvents.set(key, fn), off: key => appEvents.delete(key) },
     Button: View, Color: class {}, Dialogs: {}, GridLayout: View, Image: View, Label: View, Page: View, StackLayout: View };
   const modules = {
+    '../native/compass.ios': { bindCompassSession() {}, receiveCompassEvent() {} },
     '@nativescript/core': core,
     '../apps/all-apps': { ALL_APPS: [] },
     '../g2/ios-preview-controller': { IosPreviewController: class { resume() {} pause() {} } },

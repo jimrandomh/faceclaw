@@ -1027,13 +1027,14 @@ class BleProtocol {
         /** Decode the stock firmware's compass navigation notifications (sid 0x08). */
         @JvmStatic
         fun parseCompassEvent(frame: ParsedFrame?): CompassEvent? {
-            if (
-                ((((frame == null) || !frame.ok) || (frame.sid != SID_NAVIGATION)) ||
-                    ((frame.flag != FLAG_NOTIFY) && (frame.flag != FLAG_NOTIFY_ALT)))
-            ) {
-                return null
-            }
-            var root: ByteArray = stripTrailingCrc(frame.pb)
+            if (frame == null || !frame.ok) return null
+            return parseCompassPayload(frame.sid, frame.flag, stripTrailingCrc(frame.pb))
+        }
+
+        /** MessageReceiver has already validated and removed the CRC. */
+        @JvmStatic
+        fun parseCompassPayload(sid: Int, flag: Int, root: ByteArray): CompassEvent? {
+            if (sid != SID_NAVIGATION || (flag != FLAG_NOTIFY && flag != FLAG_NOTIFY_ALT)) return null
             var command: Int = readVarintFieldValue(root, 1, -1)
             if ((command == NAV_CMD_COMPASS_CHANGED)) {
                 var compass: ByteArray? = readFieldBytes(root, 10)

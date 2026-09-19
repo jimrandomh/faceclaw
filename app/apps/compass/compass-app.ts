@@ -21,7 +21,7 @@ import {
   type InProcessWindow,
 } from "../../ui/shell/in-process-window";
 import { shell } from "../../ui/shell/shell";
-import { ensureLocationPermission, hasLocationPermission } from "../../g2/android-permissions";
+import { ensureLocationPermission, hasLocationPermission } from "../../native/location-permissions";
 import { isCompassCalibrated, normalizeHeading } from "./calibration";
 import { cardinalDirection, createCompassBackground, drawCompassRose, layoutCompassRose, TICK_HEIGHT } from "./compass-rose";
 import { CompassCalibrationLayer } from "./calibration-layer";
@@ -268,6 +268,7 @@ export function createCompassAppWindow(options: InProcessAppOptions): InProcessW
     submitFrame: options.submitFrame,
     setSurfaceVisible: options.setSurfaceVisible,
     removeSurface: options.removeSurface,
+    reconfigureSurface: options.reconfigureSurface,
     onClosed: () => {
       layer.stop();
       options.onClosed();

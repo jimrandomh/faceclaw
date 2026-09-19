@@ -2,16 +2,16 @@
  * Local magnetic declination for the compass, so the app can show true north.
  *
  * Declination only varies over tens of kilometres, so the location it needs is
- * whatever the phone can cheaply produce: the same one-shot coarse lookup the
- * Weather app uses, refreshed no more than daily. The last fix is persisted so
- * a fresh start has a usable declination before location comes back, and the
- * model is re-evaluated at the current time when it does.
+ * whatever the phone can cheaply produce, refreshed no more than daily. The
+ * last fix is persisted so a fresh start has a usable correction immediately.
+ * Android re-evaluates its magnetic model; iOS caches the correction supplied
+ * by Core Location (true heading minus magnetic heading).
  */
-import { hasLocationPermission } from "../../g2/android-permissions";
-import { magneticDeclinationDegrees } from "../../native/geomagnetic";
-import { getCurrentLocation } from "../../native/location";
+import { hasLocationPermission } from "../../native/location-permissions";
+import { getCurrentDeclination, restoreDeclination } from "../../native/declination";
 import { getStringSetting, setStringSetting } from "../../native/settings-store";
 
+const DEGREES_KEY = "compass.declination.degrees";
 const LATITUDE_KEY = "compass.declination.latitude";
 const LONGITUDE_KEY = "compass.declination.longitude";
 const LOCATED_AT_KEY = "compass.declination.locatedAtMs";
@@ -40,7 +40,7 @@ function loadStoredFix(): void {
   const locatedAtMs = parseInt(getStringSetting(LOCATED_AT_KEY, ""), 10);
   if (Number.isFinite(latitude) && Number.isFinite(longitude) && Number.isFinite(locatedAtMs)) {
     fix = { latitude, longitude, locatedAtMs };
-    declination = magneticDeclinationDegrees(latitude, longitude);
+    declination = restoreDeclination(latitude, longitude, parseFloat(getStringSetting(DEGREES_KEY, "")));
   }
 }
 
@@ -73,16 +73,17 @@ export function refreshDeclination(): void {
   loadStoredFix();
   if (refreshing || !hasLocationPermission()) return;
   const now = Date.now();
-  if (fix !== null && now - fix.locatedAtMs < FIX_MAX_AGE_MS) return;
+  if (declination !== null && fix !== null && now - fix.locatedAtMs < FIX_MAX_AGE_MS) return;
   if (now - lastAttemptMs < RETRY_INTERVAL_MS) return;
   lastAttemptMs = now;
   refreshing = true;
-  getCurrentLocation()
+  getCurrentDeclination()
     .then((location) => {
-      const value = magneticDeclinationDegrees(location.latitude, location.longitude);
-      if (value === null) return;
+      const value = location.degrees;
+      if (!Number.isFinite(value)) return;
       fix = { latitude: location.latitude, longitude: location.longitude, locatedAtMs: now };
       declination = value;
+      setStringSetting(DEGREES_KEY, String(value));
       setStringSetting(LATITUDE_KEY, String(location.latitude));
       setStringSetting(LONGITUDE_KEY, String(location.longitude));
       setStringSetting(LOCATED_AT_KEY, String(now));

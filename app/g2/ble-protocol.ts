@@ -1,3 +1,4 @@
+import { type CompassEvent } from '../native/compass-types'
 /** G2 wire protocol, ported from g2protocol/BleProtocol.java. No platform APIs. */
 import { OsEventTypeList } from './events'
 export const G2_WRITE = '00002760-08c2-11e1-9073-0e8ac72e5401'
@@ -177,4 +178,24 @@ export function rle4(packed: Uint8Array): Uint8Array {
     i = end
   }
   return output.slice(0, used)
+}
+
+/** Reference decoder for host tests; iOS uses the shared Kotlin implementation. */
+export function decodeCompassInput(message: ProtocolMessage): CompassEvent | null {
+  if (message.sid !== 8 || ![1, 6].includes(message.flag)) return null
+  const command = readInteger(message.payload, 1, -1)
+  if (command === 16 || command === 17) return { command, headingDegrees: -1 }
+  if (command !== 15) return null
+  const compass = readBytes(message.payload, 10)
+  const headingDegrees = compass ? readInteger(compass, 1, -1) : -1
+  if (headingDegrees < 0 || headingDegrees >= 360) return null
+  const event: CompassEvent = { command, headingDegrees }
+  let d: Uint8Array | undefined
+  try { d = readBytes(message.payload, 100) } catch { return event }
+  if (d?.length === 12 && d[0] === 67 && d[1] === 77 && d[2] === 1 && d[7] === 0 &&
+      (d[3] <= 3 || d[3] === 255) && (d[4] <= 2 || d[4] === 255) && d[5] <= 3) {
+    event.diagnostics = { magneticAccuracy: d[3] === 255 ? -1 : d[3], magneticAnomalies: d[4] === 255 ? -1 : d[4],
+      orientationSource: d[5], flags: d[6], sampleTimeMs: new DataView(d.buffer, d.byteOffset + 8, 4).getUint32(0, true) }
+  }
+  return event
 }

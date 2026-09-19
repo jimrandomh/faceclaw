@@ -58,7 +58,7 @@ function compass({ style, width = 576, height = 260 } = {}) {
       createInProcessWindow: (options) => { window = options; return { requestRender: () => renders++ }; },
     },
     '../../ui/shell/shell': { shell: { isWindowVisible: () => true } },
-    '../../g2/android-permissions': { hasLocationPermission: () => false },
+    '../../native/location-permissions': { hasLocationPermission: () => false },
     './calibration': { isCompassCalibrated: () => true, normalizeHeading: (n) => ((n % 360) + 360) % 360 },
     './calibration-layer': {},
     './compass-rose': load('app/apps/compass/compass-rose.ts', {

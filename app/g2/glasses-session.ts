@@ -1,3 +1,4 @@
+import { type CompassEvent } from '../native/compass-types'
 import * as protocol from './ble-protocol'
 import { iosBleTraffic } from './ble-traffic-counters'
 import { buildBoundingBoxPayload, buildFullFrameBands } from './ble-image-optimizer'
@@ -74,11 +75,16 @@ export class GlassesSession {
   private microphoneToken = 0
   private microphoneWork: Promise<void> = Promise.resolve()
   private microphoneEnabled = false
+  private compassWanted = false
+  private compassSent: boolean | null = null
+  private compassStopping = false
+  private compassWork: Promise<void> = Promise.resolve()
   constructor(private readonly transport: SessionTransport,
     private readonly onState: (state: SessionState) => void,
     private readonly onInput: (input: protocol.GlassesInput) => void,
     private readonly log: (message: string) => void = () => {},
-    private readonly onActivity: () => void = () => {}) {
+    private readonly onActivity: () => void = () => {},
+    private readonly onCompass: (event: CompassEvent) => void = () => {}) {
     this.off = transport.onEvent(event => this.receive(event))
   }
   private update(phase: SessionState['phase'], status: string): void {
@@ -88,7 +94,7 @@ export class GlassesSession {
     if (['connecting', 'connected', 'disconnecting'].includes(this.state.phase)) return
     const invalid = deviceAddressError(addresses)
     if (invalid) { this.update('error', invalid); return }
-    this.addresses = { ...addresses }; this.wanted = true
+    this.addresses = { ...addresses }; this.wanted = true; this.compassStopping = false
     if (!retry) this.retryCount = 0
     const generation = ++this.generation
     this.state = { ...this.state, capabilities: '', leftVersion: '', rightVersion: '', battery: null, charging: null, ring: false }
@@ -131,6 +137,7 @@ export class GlassesSession {
       this.lastHeartbeat = this.lastLease = this.lastSettings = Date.now()
       this.displayed = null; this.retryCount = 0
       this.update('connected', 'Glasses connected')
+      await this.syncCompass(); this.check(generation)
       this.schedule()
       if (addresses.ring && ids.ring) await this.connectRing(generation)
       else if (addresses.ring) this.update('connected', 'Glasses connected; configured ring was not found')
@@ -347,6 +354,10 @@ export class GlassesSession {
         }
         if (message.sid === protocol.SID.settings) this.applySettings(message)
         if (event.identifier === this.ids.right) {
+          if (this.state.phase === 'connected') {
+            const compass = protocol.decodeCompassInput(message)
+            if (compass) this.onCompass(compass)
+          }
           const input = protocol.decodeGlassesInput(message)
           if (input) {
             if (input.kind === 'sys-event' && [5, 6, 7].includes(input.eventType) && this.state.phase === 'connected') {
@@ -404,6 +415,24 @@ export class GlassesSession {
       throw error
     })
     this.microphoneWork = work
+    return work
+  }
+  setCompassEnabled(enabled: boolean): void {
+    this.compassWanted = enabled
+    void this.syncCompass()
+  }
+  /** Serialize changes so a release cannot overtake an unacknowledged enable. */
+  private syncCompass(): Promise<void> {
+    const generation = this.generation
+    const work = this.compassWork.then(async () => {
+      if (generation !== this.generation || this.state.phase !== 'connected') return
+      const enabled = !this.compassStopping && this.compassWanted
+      if (this.compassSent === enabled) return
+      // Same CFW mode 10, 100 ms report interval and zero minimum change as Android.
+      await this.requestCfw('left', new Uint8Array(enabled ? [10, 2, 100, 0, 0, 0] : [10, 0]))
+      if (generation === this.generation) this.compassSent = enabled
+    }).catch(error => { if (generation === this.generation) this.fail(error, true) })
+    this.compassWork = work
     return work
   }
   wake(): void {
@@ -480,6 +509,7 @@ export class GlassesSession {
   }
   private reset(): void {
     ++this.generation
+    this.compassSent = null; this.compassWork = Promise.resolve()
     ++this.microphoneToken; this.audioListener = null; this.microphoneEnabled = false
     if (this.timer !== null) clearTimeout(this.timer)
     if (this.retryTimer !== null) clearTimeout(this.retryTimer)
@@ -516,6 +546,8 @@ export class GlassesSession {
   }
   private async stopInternal(): Promise<void> {
     this.wanted = false
+    this.compassStopping = true
+    await this.syncCompass()
     // Stop mic capture before ending the display session. Late enable ACKs
     // cannot leave a microphone streaming after an explicit Disconnect.
     if (this.audioListener || this.microphoneEnabled) {

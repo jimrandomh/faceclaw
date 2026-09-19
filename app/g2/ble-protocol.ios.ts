@@ -1,3 +1,4 @@
+import { type CompassEvent } from '../native/compass-types'
 /** iOS binary bridge to the same Kotlin protocol used by Android. */
 import { fromData, toData, nativeArray } from '../native/kotlin-data'
 import { OsEventTypeList } from './events'
@@ -64,3 +65,13 @@ export function packGray4(gray: Uint8Array, width: number, height: number): Uint
   return fromData(protocol.packDataWidthHeight(toData(gray), width, height))
 }
 export const rle4 = (packed: Uint8Array): Uint8Array => fromData(protocol.rleData(toData(packed)))
+
+export function decodeCompassInput(message: ProtocolMessage): CompassEvent | null {
+  const event = protocol.compassInputDataSidFlag(toData(message.payload), message.sid, message.flag)
+  return event ? { command: event.command, headingDegrees: event.headingDegrees,
+    ...(event.diagnosticFlags >= 0 ? { diagnostics: {
+      magneticAccuracy: event.magneticAccuracy, magneticAnomalies: event.magneticAnomalies,
+      orientationSource: event.orientationSource, flags: event.diagnosticFlags, sampleTimeMs: Number(event.sampleTimeMs),
+    } } : {}),
+  } : null
+}

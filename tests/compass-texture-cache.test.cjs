@@ -43,7 +43,7 @@ const compass = load('app/apps/compass/compass-app.ts', {
   '../../ui/shell/geometry': { screenCenterInViewportX: () => viewportWidth - 320 },
   '../../ui/shell/in-process-window': {},
   '../../ui/shell/shell': {},
-  '../../g2/android-permissions': {},
+  '../../native/location-permissions': {},
   './calibration': calibration,
   './calibration-layer': {},
   './compass-rose': rose,

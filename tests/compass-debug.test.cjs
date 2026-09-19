@@ -59,7 +59,7 @@ function compass(width = 576, height = 260) {
       createInProcessWindow: (options) => { window = options; return { requestRender: () => ++renders }; },
     },
     '../../ui/shell/shell': { shell: { isWindowVisible: () => true } },
-    '../../g2/android-permissions': { hasLocationPermission: () => false },
+    '../../native/location-permissions': { hasLocationPermission: () => false },
     './calibration': calibration,
     './calibration-layer': {}, './declination': { onDeclinationChanged: () => () => {} },
     './heading': { getNorthReference: () => 'magnetic', resolveHeading: (v) => ({ displayDegrees: v }) },

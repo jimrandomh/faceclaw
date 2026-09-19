@@ -132,6 +132,9 @@ class IosProtocol {
             G2Event.decodePayload(sid, data.byteArray())
         else null
 
+    fun compassInput(data: NSData, sid: Int, flag: Int): BleProtocol.CompassEvent? =
+        BleProtocol.parseCompassPayload(sid, flag, data.byteArray())
+
     fun ringInput(data: NSData): G2Event? = FaceclawRingEventDecoder.decode(data.byteArray())?.event
 
     fun pack(data: NSData, width: Int, height: Int): NSData {

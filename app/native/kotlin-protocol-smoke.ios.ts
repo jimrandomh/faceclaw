@@ -32,5 +32,9 @@ export function runKotlinProtocolSmokeTest(): void {
   const changed = new Uint8Array(16); changed[0] = 255
   assert(buildBoundingBoxPayload(new Uint8Array(16), changed, 8, 4, 1)?.[0] === 3, 'image update')
   assert(lvglMetrics('/nonexistent/faceclaw-font').length === 0, 'font bridge')
+  const compass = protocol.decodeCompassInput({ sid: 8, flag: 1, command: 15, magic: 0,
+    payload: new Uint8Array([8, 15, 16, 0, 82, 3, 8, 231, 2, 162, 6, 12, 67, 77, 1, 3, 2, 3, 140, 0, 152, 186, 220, 254]) })
+  if (compass?.headingDegrees !== 359 || compass.diagnostics?.sampleTimeMs !== 0xfedcba98)
+    throw new Error('Kotlin compass notification mismatch')
   console.log('FACECLAW_KOTLIN_PROTOCOL_PASS iOS')
 }
