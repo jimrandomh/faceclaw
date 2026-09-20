@@ -1884,7 +1884,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 int frameId = FrameTimings.getInstance().startFrame(
                     "input:" + event.kind + " type=" + event.eventType + " src=" + event.eventSource);
                 FrameTimings.getInstance().log(frameId, "input event decoded from BLE notification");
-                emitRingEvent(event.kind, event.containerName, event.eventType, event.eventSource, event.systemExitReasonCode, frameId);
+                emitRingEvent(event, frameId);
             }
         }
     }
@@ -1905,7 +1905,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         logLine("direct ring " + decoded.label + " " + decoded.detail + " raw=" + hex(data));
         int frameId = FrameTimings.getInstance().startFrame("input:ring:" + decoded.label);
         FrameTimings.getInstance().log(frameId, "input event decoded from direct ring notification");
-        emitRingEvent(event.kind, event.containerName, event.eventType, event.eventSource, event.systemExitReasonCode, frameId);
+        emitRingEvent(event, frameId);
         interruptibleSleep.interrupt();
     }
 
@@ -3798,17 +3798,18 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         // the very cause of the session teardown that got us here.
     }
 
-    private void emitRingEvent(String kind, String containerName, int eventType, int eventSource, int systemExitReasonCode, int frameId) {
+    private void emitRingEvent(G2Event event, int frameId) {
         final FaceclawBleCommunicatorListener current = listener;
         if (current == null) {
             FrameTimings.getInstance().finishFrame(frameId, "discarded: no listener attached");
             return;
         }
-        final String containerNameSnapshot = containerName == null ? "" : containerName;
+        final String containerNameSnapshot = event.containerName == null ? "" : event.containerName;
         mainHandler.post(() -> {
             FrameTimings.getInstance().log(frameId, "dispatching input event on main thread");
             try {
-                current.onRingEvent(kind, containerNameSnapshot, eventType, eventSource, systemExitReasonCode, frameId);
+                current.onRingEvent(event.kind, containerNameSnapshot, event.eventType, event.eventSource, event.systemExitReasonCode, frameId,
+                        event.ringTick, event.ringType, event.ringAux, event.ringSpeed);
             } catch (Throwable t) {
                 Log.w(TAG, "listener onRingEvent failed", t);
                 FrameTimings.getInstance().finishFrame(frameId, "discarded: listener onRingEvent failed");

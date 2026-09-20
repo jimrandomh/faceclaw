@@ -1,3 +1,4 @@
+import { acceptInput, resetRingInputFilter } from "../ui/input-monitor";
 import { Application, ImageSource } from "@nativescript/core";
 import { EvenAIStatus, EvenAIStatusName, EventSourceType, EventSourceTypeName, OsEventTypeList, OsEventTypeName, WatchGestureType, WatchGestureTypeName } from "./events";
 import { isValidMacAddress, loadDeviceAddresses } from "./device-addresses";
@@ -1320,6 +1321,7 @@ class DashboardController {
         this.appendLog(line);
       });
       this.offState = communicator.onStateChange((state) => {
+        if (state.phase !== "connected") resetRingInputFilter();
         if (state.phase === "unpaired") {
           // Java parked its retry loop: an arm's Android bond is gone, so
           // every redial would fail the same way until the user re-pairs.
@@ -2047,6 +2049,7 @@ class DashboardController {
     let frameOwned = false;
     try {
       const inputEvent = rawInputEventToInputEvent(event);
+      if (!acceptInput(inputEvent)) return;
       // The gesture, plus which app is on screen and whether input goes to it,
       // the sidebar, or a shell overlay. Java only knows the raw event codes,
       // and without the target the export says what was pressed but not who

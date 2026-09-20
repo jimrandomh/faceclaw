@@ -1,3 +1,4 @@
+import type { RingInput } from "../g2/ring-input";
 import { ImageSource, Utils } from "@nativescript/core";
 import * as frameTimings from "./frame-timings";
 
@@ -52,7 +53,7 @@ export type SurfaceOptions = {
   transparency: "opaque" | "color-key";
 };
 
-export type RawInputEvent =
+export type RawInputEvent = { ringInput?: RingInput } & (
   | {
       kind: "list-click";
       containerName: string;
@@ -113,7 +114,7 @@ export type RawInputEvent =
       eventSource: number;
       systemExitReasonCode: number;
       frameId: number;
-    };
+    });
 
 function nonNegativeNumber(value: number): number {
   const numeric = Number(value);
@@ -177,6 +178,7 @@ export class FaceclawCommunicatorBridge {
         eventSource: number,
         systemExitReasonCode: number,
         frameId: number,
+        ringTick: number, ringType: number, ringAux: number, ringSpeed: number,
       ) => {
         const event = {
           kind: String(kind) as RawInputEvent["kind"],
@@ -185,6 +187,8 @@ export class FaceclawCommunicatorBridge {
           eventSource: Number(eventSource),
           systemExitReasonCode: Number(systemExitReasonCode),
           frameId: Number(frameId),
+          ringInput: Number(ringTick) >= 0 ? { tick: Number(ringTick), type: Number(ringType),
+            aux: Number(ringAux), speed: Number(ringSpeed) } : undefined,
         };
         frameTimings.logFrame(event.frameId, "input event received on JS side");
         this.emitAsync(this.ringListeners, event);

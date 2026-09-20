@@ -2,7 +2,7 @@ import { G2_LENS_HEIGHT, G2_LENS_WIDTH, GrayImage } from "../../graphics/image";
 import { singlePlane, type Plane } from "../../graphics/plane";
 import { getDefaultSmallFont } from "../../graphics/ui-fonts";
 import { EvenAIStatus, EventSourceType, OsEventTypeList, WatchGestureType } from "../../g2/events";
-import { notifyInputListeners } from "../input-monitor";
+import { acceptInput } from "../input-monitor";
 import type { RawInputEvent } from "../../native/faceclaw-communicator";
 import {
   directionalFallback,
@@ -709,7 +709,7 @@ class Shell {
   }
 
   async receiveInput(event: InputEvent, frameId = 0): Promise<ShellInputOutcome> {
-    notifyInputListeners(event);
+    if (!acceptInput(event)) return { shell: false, window: false };
     try {
       return await this.routeInput(event, frameId);
     } finally {
@@ -1552,7 +1552,8 @@ function formatAssistantTime(date: Date): string {
 }
 
 export function rawInputEventToInputEvent(event: RawInputEvent): InputEvent {
-  return makeInputEvent(rawInputEventToPayload(event));
+  return { ...makeInputEvent(rawInputEventToPayload(event)),
+    ...(event.ringInput ? { ringInput: { ...event.ringInput } } : {}) };
 }
 
 function rawInputEventToPayload(event: RawInputEvent): InputEventPayload {
@@ -1625,9 +1626,13 @@ function rawInputEventToPayload(event: RawInputEvent): InputEventPayload {
   };
 }
 
-/** Scroll events only carry a source when it is the watch (the stock ones never needed one). */
+/** Preserve explicit sources; stock scroll notifications usually omit them. */
 function scrollEvent(type: "scroll-up" | "scroll-down", eventSource: number): InputEventPayload {
-  return eventSource === EventSourceType.TOUCH_EVENT_FROM_WATCH ? { type, source: "watch" } : { type };
+  return eventSource === EventSourceType.TOUCH_EVENT_FROM_WATCH ||
+    eventSource === EventSourceType.TOUCH_EVENT_FROM_RING ||
+    eventSource === EventSourceType.TOUCH_EVENT_FROM_GLASSES_L ||
+    eventSource === EventSourceType.TOUCH_EVENT_FROM_GLASSES_R
+    ? { type, source: eventSourceToString(eventSource) } : { type };
 }
 
 function eventSourceToString(eventSource: number): InputSource {

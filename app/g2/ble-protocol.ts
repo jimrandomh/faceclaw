@@ -1,3 +1,4 @@
+import { type RingInput, decodeRingMetadata } from "./ring-input";
 import { type CompassEvent } from '../native/compass-types'
 /** G2 wire protocol, ported from g2protocol/BleProtocol.java. No platform APIs. */
 import { OsEventTypeList } from './events'
@@ -127,7 +128,7 @@ export function readString(data: Uint8Array, number: number): string { return Ar
 export function authenticationSucceeded(message: ProtocolMessage, magic: number): boolean {
   return message.sid === SID.auth && message.command === 4 && message.magic === magic && readBytes(message.payload, 3)?.length === 0
 }
-export type GlassesInput = { kind: 'sys-event' | 'list-click' | 'text-click' | 'display-wake' | 'even-ai'; eventType: number; eventSource: number; systemExitReasonCode: number; containerName: string; frameId: number }
+export type GlassesInput = { ringInput?: RingInput; kind: 'sys-event' | 'list-click' | 'text-click' | 'display-wake' | 'even-ai'; eventType: number; eventSource: number; systemExitReasonCode: number; containerName: string; frameId: number }
 export function decodeGlassesInput(message: ProtocolMessage): GlassesInput | null {
   if (message.sid !== SID.hub || ![1, 6].includes(message.flag)) return null
   const events = readBytes(message.payload, 13); if (!events) return null
@@ -135,6 +136,7 @@ export function decodeGlassesInput(message: ProtocolMessage): GlassesInput | nul
     const event = readBytes(events, field)
     if (event) return { kind: kind === 'sys-event' && readInteger(event, typeField) === OsEventTypeList.HEAD_UP_EVENT ? 'display-wake' : kind,
       eventType: readInteger(event, typeField), eventSource: field === 3 ? readInteger(event, 2) : 0,
+      ringInput: field === 3 && readInteger(event, 2) === 2 ? decodeRingMetadata(readBytes(event, 100)) : undefined,
       systemExitReasonCode: field === 3 ? readInteger(event, 4) : 0, containerName: field === 3 ? '' : readString(event, 2), frameId: 0 }
   }
   return null

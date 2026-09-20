@@ -1,3 +1,4 @@
+import { acceptInput, resetRingInputFilter } from "../ui/input-monitor";
 import { bindIosNotifications, iosNotificationsChanged, onIosNotificationPopup } from '../native/notification-icons.ios'
 import { shouldShowNotificationOnGlasses } from '../native/notification-sources'
 import { readActiveNotifications } from '../native/notification-icons.ios'
@@ -347,6 +348,7 @@ export class IosPreviewController {
     }).catch(error => this.fail(error))
   }
   private async receiveInput(event: InputEvent, headTilt = false): Promise<void> {
+    if (!acceptInput(event)) return
     if (this.glassesLocked) {
       // Preserve the locked display's sleep/wake controls without dispatching
       // gestures to apps, shell menus, voice input or the Glanceboard.
@@ -497,6 +499,7 @@ export class IosPreviewController {
     if (error) { this.onError(error); return }
     if (!this.session) {
       this.session = new GlassesSession(iosBluetooth(), state => {
+        if (state.phase !== "connected") resetRingInputFilter()
         this.maybePlayWelcomeSound(state)
         if (state.phase !== 'connected' && state.phase !== 'connecting') this.glassesWorn = null
         if (state.phase !== 'connected') iosVoiceInput.handleSessionEnded()

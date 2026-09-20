@@ -20,12 +20,13 @@ const event = (type, timestampMs = 1000) => ({ type, source: 'ring', timestampMs
 
 function shellDeclarations() {
   const source = ts.createSourceFile('shell.ts', read('app/ui/shell/shell.ts'), ts.ScriptTarget.Latest, true);
-  const names = new Set(['rawInputEventToPayload', 'eventSourceToString', 'scrollEvent']);
+  const names = new Set(['rawInputEventToInputEvent', 'rawInputEventToPayload', 'eventSourceToString', 'scrollEvent']);
   const declarations = source.statements.filter((s) => ts.isFunctionDeclaration(s) && names.has(s.name?.text));
   assert.equal(declarations.length, names.size);
   const shell = source.statements.find((s) => ts.isClassDeclaration(s) && s.name?.text === 'Shell');
   const methods = shell.members.filter((s) => ['receiveInput', 'routeInput'].includes(s.name?.getText(source)));
-  const context = { exports: {}, notifyInputListeners: monitor.notifyInputListeners,
+  const context = { exports: {}, acceptInput: monitor.acceptInput,
+    makeInputEvent: (payload) => ({ ...payload, timestampMs: 12345678 }),
     ...load('app/g2/events.ts') };
   vm.createContext(context);
   vm.runInContext(js(declarations.map((s) => s.getText(source)).join('\n') +
@@ -103,11 +104,16 @@ test('Input events captures while visible, pauses for history, and unsubscribes 
     pop: () => pops++, popThrough: (page) => { assert.equal(page, layer); page.onRemoved(); } } };
   try {
     for (const type of ['ring-press','click','ring-press','ring-press','double-click','long-press','long-press-release','short-then-long-press']) {
-      const e = event(type, 1000 + renders * 75); monitor.notifyInputListeners(e); layer.handleInput(e);
+      const e = { ...event(type, 1000 + renders * 75), ringInput: { tick: 4294967200 + renders, type: 1, aux:0, speed:0 } };
+      monitor.notifyInputListeners(e, renders > 0); layer.handleInput(e);
     }
     assert.equal(renders, 8); assert.equal(layer.log.count, 8); assert.equal(pops, 0);
     visible = false; monitor.notifyInputListeners(event('click')); assert.equal(renders, 8); visible = true;
     const image = layer.paint(ctx);
+    assert.ok(image.texts.some(t => t.text.startsWith("R4294967")));
+    assert.ok(image.texts.some(t => t.text.startsWith("*")));
+    layer.menuItems()[2].onSelect(ctx);
+    assert.ok(layer.paint(ctx).texts.some(t => t.text.startsWith("Phone receive time")));
     for (const text of image.texts) {
       assert.ok(text.x >= 0 && text.x + text.width <= image.width, text.text);
       assert.ok(text.y >= 0 && text.y + text.height <= image.height, text.text);
@@ -120,7 +126,69 @@ test('Input events captures while visible, pauses for history, and unsubscribes 
     layer.menuItems()[1].onSelect(ctx); assert.equal(layer.log.count, 0);
     layer.menuItems()[0].onSelect(ctx); monitor.notifyInputListeners(event('ring-press'));
     assert.equal(layer.log.count, 1);
-    layer.menuItems()[2].onSelect(ctx); monitor.notifyInputListeners(event('click'));
+    layer.menuItems()[3].onSelect(ctx); monitor.notifyInputListeners(event('click'));
     assert.equal(removed, 1); assert.equal(layer.log.count, 1);
   } finally { layer.onRemoved(); }
+});
+
+const ring = (type, tick, received = 1000) => ({ ...event('click', received),
+  ringInput: { type, tick, aux: 17, speed: 29 } });
+
+test('filter matches stock timing boundaries, exemptions, wrap, reset and zero sentinel', () => {
+  const f = new monitor.RingInputFilter();
+  for (const [type, tick, accepted] of [
+    [1,1000,true], [1,1099,false], [10,1099,true], [1,1100,true],
+    [8,1101,true], [2,1200,false], [2,1201,true], [2,1201,false],
+    [10,1201,true], [10,1202,true], [9,1301,true],
+  ]) assert.equal(f.accept(ring(type, tick)), accepted, `${type}@${tick}`);
+  f.reset(); assert.equal(f.accept(ring(1,1)), true);
+  f.reset(); assert.equal(f.accept(ring(1,0xffffffd0)),true);
+  assert.equal(f.accept(ring(1,0x33)),false); assert.equal(f.accept(ring(1,0x34)),true);
+  // Backward timestamps / ring restart pass using unsigned subtraction.
+  assert.equal(f.accept(ring(1,5)),true);
+  f.reset(); assert.equal(f.accept(ring(1,0)),true); assert.equal(f.accept(ring(1,1)),true);
+  assert.equal(f.accept(event('click')),true);
+  assert.equal(f.accept({ ...event('click'), source: 'watch' }),true);
+  // Host scheduling does not affect decisions; filtered events do not extend the window.
+  f.reset(); assert.equal(f.accept(ring(4,1000,100000)),true);
+  assert.equal(f.accept(ring(4,1050,999999)),false);
+  assert.equal(f.accept(ring(4,1100,999999)),true);
+  f.reset(); assert.equal(f.accept(ring(99,2000)),true);
+  assert.equal(f.accept(ring(1,2050)),false);
+});
+
+test('raw debug observer sees suppressed reports once before app routing', async () => {
+  monitor.resetRingInputFilter();
+  const { exports: { Shell } } = shellDeclarations(), s = new Shell(), seen = [], routed = [];
+  s.routeInput = async (e) => { routed.push(e); return { shell:false,window:true }; };
+  s.syncInputFocus = () => {};
+  const off = monitor.addInputListener((e, filtered) => seen.push([e, filtered]));
+  try {
+    const first = ring(1,1000), second = ring(1,1050);
+    assert.equal(monitor.acceptInput(first),true); await s.receiveInput(first);
+    assert.equal(monitor.acceptInput(second),false); await s.receiveInput(second);
+    assert.equal(seen.length,2); assert.equal(routed.length,1);
+    assert.deepEqual(seen.map((e) => e[1]),[false,true]);
+    assert.equal(seen[1][0].ringInput.tick,1050);
+    assert.equal(Object.isFrozen(seen[1][0].ringInput),true);
+  } finally { off(); monitor.resetRingInputFilter(); }
+});
+
+test('raw-to-app conversion retains the unsigned ring clock and explicit scroll source', () => {
+  const d = shellDeclarations();
+  for (const [wire,eventType,direction] of [[4,1,'scroll-up'],[5,2,'scroll-down']]) {
+    const raw = { kind:'sys-event', eventType, eventSource:2, ringInput: ring(wire,0xffffffff).ringInput };
+    const input = d.exports.rawInputEventToInputEvent(raw);
+    assert.equal(input.type,direction); assert.equal(input.source,'ring');
+    assert.equal(input.timestampMs,12345678); assert.equal(input.ringInput.tick,0xffffffff);
+    assert.notEqual(input.ringInput,raw.ringInput);
+  }
+});
+
+test('debug history retains both clocks and uses unsigned gaps across counter wrap', () => {
+  const log = new monitor.InputEventLog();
+  log.add(ring(1,0xfffffff0,5000)); log.add(ring(1,0x10,5001),true);
+  assert.equal(log.entries[0].gapMs,1); assert.equal(log.entries[0].ringGapTicks,32);
+  assert.equal(log.entries[0].filtered,true);
+  log.clear(); log.add(ring(1,500)); assert.equal(log.entries[0].ringGapTicks,null);
 });
