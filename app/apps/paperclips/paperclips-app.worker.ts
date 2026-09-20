@@ -30,8 +30,14 @@
  * click presses the selected one, and (inverting the usual back/exit
  * convention, because rapid clicking IS the game) double-click presses it
  * twice; long-press pauses, or closes an open modal. Paused: click resumes,
- * double-click yields focus, long-press opens the window menu (which also
- * has a 10x speed toggle for testing).
+ * double-click yields focus, long-press opens the window menu, whose Cheats
+ * submenu holds a speed multiplier and shortcuts past parts of the game.
+ *
+ * Persistence: the game autosaves (as JSON in the shared settings store)
+ * every 30 s of play and whenever the economy stops: pause, background,
+ * screen off, window close. Launch shows a splash screen (a box of clips)
+ * with Continue when a save exists and New game, which asks before erasing
+ * a save.
  *
  * Economy constants follow the original where practical (demand formula,
  * sales roll, wire market sine walk, cost curves, fibonacci trust
@@ -44,8 +50,12 @@ import { getDefaultSmallFont, getFont } from "../../graphics/bdffont";
 import * as frameTimings from "../../native/frame-timings";
 import type { DashboardInputEvent } from "../../ui/layers";
 import { buildSoundSequencePayload, type Step } from "../../ui/sound-effects";
-import { defaultWindowMenuItems, WindowMenu } from "../../ui/window-menu";
+import { defaultWindowMenuItems, WindowMenu, WindowMenuLayer } from "../../ui/window-menu";
+import { drawSubmenuIndicator, type MenuItem } from "../../ui/menu";
+import type { LayerContext } from "../../ui/layers";
 import type { WorkerAppMessage, WorkerAppReply } from "../../ui/shell/worker-window";
+import { getStringSetting, setStringSetting } from "../../native/settings-store";
+import { BOX_ART_HEIGHT, BOX_ART_WIDTH, BOX_LABEL_CENTER, drawPaperclipBox } from "./paperclips-art";
 import {
   GESTURE_CLICK,
   GESTURE_DOUBLE_CLICK,
@@ -61,6 +71,13 @@ const mediumFont = getFont("terminus24");
 const smallFont = getDefaultSmallFont();
 
 const TICK_MS = 200;
+/** Settings-store key holding the JSON save file, and its schema version. */
+const SAVE_KEY = "paperclips.save";
+const SAVE_VERSION = 1;
+/** Autosave interval while the economy runs, in ticks (30 s at 200 ms). */
+const AUTOSAVE_TICKS = 150;
+/** Economy steps per tick offered by the speed cheat, in cycle order. */
+const SPEED_LEVELS = [1, 10, 100] as const;
 /** Clips per second per AutoClipper / MegaClipper (original rates), before boosts. */
 const CLIPS_PER_CLIPPER_PER_SEC = 1;
 const CLIPS_PER_MEGACLIPPER_PER_SEC = 500;
@@ -120,7 +137,17 @@ const SFX_TRUST: Step[] = [
   { freq: 2093, ms: 90 },
 ];
 
-type GamePhase = "playing" | "paused" | "milestone";
+type GamePhase = "splash" | "playing" | "paused" | "milestone";
+
+/** Splash screen state: the main menu, or the erase-save confirmation. */
+type SplashMode = "menu" | "confirm-new";
+
+/** What the splash screen says about the saved game. */
+type SaveSummary = {
+  clips: number;
+  stage: GameStage;
+  savedAt: number;
+};
 
 type ModalKind = "invest" | "tournament";
 
@@ -281,12 +308,41 @@ type PaperclipsWindow = {
   /** Open modal (investment details / tournament), painted over the page. */
   modal: ModalKind | null;
   modalSelectedIndex: number;
-  /** Testing multiplier from the window menu: economy steps per tick. */
+  /** Cheat multiplier from the window menu: economy steps per tick. */
   speed: number;
   tickTimer: ReturnType<typeof setInterval> | null;
   soundOn: boolean;
   lastSubmittedFingerprint: string;
+  /** Splash screen (phase === "splash") state. */
+  splashMode: SplashMode;
+  splashIndex: number;
+  /** The saved game the splash offers to continue, if any. */
+  savedSummary: SaveSummary | null;
+  /** Economy ticks since the last autosave. */
+  ticksSinceSave: number;
 };
+
+/**
+ * Window fields that are runtime plumbing or session settings rather than
+ * game state; everything else on PaperclipsWindow goes into the save file.
+ */
+const RUNTIME_KEYS: ReadonlySet<string> = new Set<keyof PaperclipsWindow>([
+  "windowId",
+  "surfaceId",
+  "viewportWidth",
+  "viewportHeight",
+  "foreground",
+  "focused",
+  "menu",
+  "speed",
+  "tickTimer",
+  "soundOn",
+  "lastSubmittedFingerprint",
+  "splashMode",
+  "splashIndex",
+  "savedSummary",
+  "ticksSinceSave",
+]);
 
 /** An actionable chip in selection-cycle order. */
 type Selectable = {
@@ -334,13 +390,19 @@ global.onmessage = (event: { data: WorkerAppMessage }) => {
         tickTimer: null,
         soundOn: true,
         lastSubmittedFingerprint: "",
+        splashMode: "menu",
+        splashIndex: 0,
+        savedSummary: null,
+        ticksSinceSave: 0,
       } as PaperclipsWindow;
       resetGame(window);
+      showSplash(window);
       windows.set(message.windowId, window);
       break;
     }
     case "close-window": {
       const window = windows.get(message.windowId);
+      if (window) saveGame(window);
       if (window?.tickTimer) clearInterval(window.tickTimer);
       windows.delete(message.windowId);
       break;
@@ -413,8 +475,23 @@ function playSfx(window: PaperclipsWindow, steps: Step[]): void {
   }
 }
 
-/** The window's long-press menu (game actions + default entries). */
+/**
+ * The window's long-press menu (game actions + default entries). On the
+ * splash screen only the settings and default entries apply.
+ */
 function openWindowMenu(window: PaperclipsWindow): void {
+  const soundItem: MenuItem = {
+    label: window.soundOn ? "Sound: on" : "Sound: off",
+    onSelect: (ctx) => {
+      ctx.stack.pop();
+      window.soundOn = !window.soundOn;
+      if (window.soundOn) playSfx(window, SFX_RESUME);
+    },
+  };
+  if (window.phase === "splash") {
+    windowMenu(window).open([soundItem, ...defaultWindowMenuItems(window.windowId, post)]);
+    return;
+  }
   windowMenu(window).open([
     {
       label: "Resume",
@@ -426,31 +503,124 @@ function openWindowMenu(window: PaperclipsWindow): void {
       },
     },
     {
+      // Saves first, then asks on the splash screen before erasing it.
       label: "New game",
       onSelect: (ctx) => {
         ctx.stack.pop();
-        resetGame(window);
-        playSfx(window, SFX_RESUME);
+        saveGame(window);
+        showSplash(window);
+        window.splashMode = "confirm-new";
       },
     },
     {
-      // Testing aid: run the economy at 10x while leaving input alone.
-      label: `Speed: ${window.speed}x → ${window.speed === 1 ? 10 : 1}x`,
-      onSelect: (ctx) => {
-        ctx.stack.pop();
-        window.speed = window.speed === 1 ? 10 : 1;
+      label: "Cheats",
+      render: ({ image, x, y, width, height, selected, text }) => {
+        const value = selected ? 255 : 200;
+        image.drawText(smallFont, x, y + 3, text, value);
+        // The row's highlight box is inset 12 px from the menu edge; the
+        // render args are inset 22, so widen back out by 10 on each side.
+        drawSubmenuIndicator(image, smallFont, x - 10, y, width + 20, height + 2, value);
       },
+      onSelect: (ctx) => openCheatsMenu(window, ctx, 0),
     },
-    {
-      label: window.soundOn ? "Sound: on" : "Sound: off",
-      onSelect: (ctx) => {
-        ctx.stack.pop();
-        window.soundOn = !window.soundOn;
-        if (window.soundOn) playSfx(window, SFX_RESUME);
-      },
-    },
+    soundItem,
     ...defaultWindowMenuItems(window.windowId, post),
   ]);
+}
+
+/**
+ * The Cheats submenu, pushed over the window menu: the speed multiplier
+ * plus shortcuts past the grind. Each cheat closes the whole menu and
+ * announces itself on the ticker; the speed row reopens the submenu so its
+ * label shows the new value.
+ */
+function openCheatsMenu(window: PaperclipsWindow, ctx: LayerContext, selectedIndex: number): void {
+  const human = window.stage === "human";
+  const cheat = (label: string, apply: () => void, disabled?: () => boolean): MenuItem => ({
+    label,
+    disabled,
+    onSelect: (itemCtx) => {
+      apply();
+      window.message = `Cheat: ${label}`;
+      itemCtx.stack.clearToBase();
+      saveGame(window);
+    },
+  });
+  const items: MenuItem[] = [
+    {
+      label: `Speed: ${window.speed}x`,
+      onSelect: (itemCtx) => {
+        const index = SPEED_LEVELS.indexOf(window.speed as (typeof SPEED_LEVELS)[number]);
+        window.speed = SPEED_LEVELS[(index + 1) % SPEED_LEVELS.length]!;
+        itemCtx.stack.pop();
+        openCheatsMenu(window, itemCtx, 0);
+      },
+    },
+    cheat(
+      human ? "Clips +1,000,000" : "Clips +1 sextillion",
+      () => {
+        const amount = human ? 1000000 : 1e21;
+        window.clips += amount;
+        window.unusedClips += amount;
+        checkMilestones(window);
+      },
+    ),
+    cheat(
+      "Funds +$1,000,000",
+      () => {
+        window.fundsCents += 100000000;
+      },
+      () => !human,
+    ),
+    cheat(
+      "Trust +10",
+      () => {
+        window.trust += 10;
+      },
+      () => !human || !window.computeUnlocked,
+    ),
+    cheat(
+      "Ops to max, creativity +1,000",
+      () => {
+        window.ops = opsMax(window);
+        window.creativity += 1000;
+      },
+      () => !window.computeUnlocked,
+    ),
+    cheat(
+      "Yomi +10,000",
+      () => {
+        window.yomi += 10000;
+      },
+      () => !window.computeUnlocked,
+    ),
+    cheat(
+      "Swarm gifts +100",
+      () => {
+        window.swarmGifts += 100;
+      },
+      () => human,
+    ),
+    cheat(
+      "Reveal all projects",
+      () => {
+        for (const project of PROJECTS) {
+          const eraOk = human ? project.era !== "machine" : project.era !== undefined;
+          if (eraOk && !window.purchasedProjects.has(project.id)) window.revealedProjects.add(project.id);
+        }
+      },
+      () => !window.computeUnlocked,
+    ),
+    cheat(
+      "Skip to machine era",
+      () => {
+        window.computeUnlocked = true;
+        releaseTheHypnoDrones(window);
+      },
+      () => !human,
+    ),
+  ];
+  ctx.stack.push(new WindowMenuLayer(items).selectItem(selectedIndex));
 }
 
 function windowMenu(window: PaperclipsWindow): WindowMenu {
@@ -475,6 +645,9 @@ function handleInput(window: PaperclipsWindow, event: DashboardInputEvent, frame
   }
 
   switch (window.phase) {
+    case "splash":
+      handleSplashInput(window, event, frameId);
+      return;
     case "playing":
       if (window.modal !== null) {
         handleModalInput(window, event, frameId);
@@ -586,6 +759,179 @@ function handlePausedInput(window: PaperclipsWindow, event: DashboardInputEvent,
   renderAndSubmit(window, frameId);
 }
 
+/** Splash screen: scroll picks a row, click presses it, long-press opens the menu. */
+function handleSplashInput(window: PaperclipsWindow, event: DashboardInputEvent, frameId: number): void {
+  const rows = splashRows(window);
+  switch (event.type) {
+    case "scroll-up":
+      window.splashIndex = (window.splashIndex - 1 + rows.length) % rows.length;
+      break;
+    case "scroll-down":
+      window.splashIndex = (window.splashIndex + 1) % rows.length;
+      break;
+    case "click":
+      rows[Math.min(window.splashIndex, rows.length - 1)]!.press();
+      break;
+    case "double-click":
+      frameTimings.finishFrame(frameId, "discarded: paperclips yielded focus");
+      post({ type: "yield-focus", windowId: window.windowId });
+      return;
+    case "long-press":
+      openWindowMenu(window);
+      break;
+    default:
+      frameTimings.finishFrame(frameId, "discarded: paperclips ignored input");
+      return;
+  }
+  renderAndSubmit(window, frameId);
+}
+
+/** The splash screen's menu rows for its current mode. */
+function splashRows(window: PaperclipsWindow): Array<{ label: string; press: () => void }> {
+  if (window.splashMode === "confirm-new") {
+    return [
+      {
+        label: "Keep saved game",
+        press: () => {
+          window.splashMode = "menu";
+          window.splashIndex = 0;
+        },
+      },
+      {
+        label: "Erase and restart",
+        press: () => startNewGame(window),
+      },
+    ];
+  }
+  const rows: Array<{ label: string; press: () => void }> = [];
+  if (window.savedSummary) {
+    rows.push({
+      label: "Continue",
+      press: () => {
+        if (!loadGame(window)) {
+          window.message = "Saved game could not be read";
+          startNewGame(window);
+        }
+        playSfx(window, SFX_RESUME);
+      },
+    });
+  }
+  rows.push({
+    label: "New game",
+    press: () => {
+      if (window.savedSummary) {
+        window.splashMode = "confirm-new";
+        window.splashIndex = 0;
+      } else {
+        startNewGame(window);
+      }
+    },
+  });
+  return rows;
+}
+
+/** Enter the splash screen (from launch, or from the in-game New game item). */
+function showSplash(window: PaperclipsWindow): void {
+  window.savedSummary = readSaveSummary();
+  window.phase = "splash";
+  window.splashMode = "menu";
+  window.splashIndex = 0;
+  window.modal = null;
+  syncTick(window);
+}
+
+/** Start from scratch and make that the saved game. */
+function startNewGame(window: PaperclipsWindow): void {
+  resetGame(window);
+  saveGame(window);
+  playSfx(window, SFX_RESUME);
+}
+
+type SaveFile = {
+  version: number;
+  savedAt: number;
+  state: Record<string, unknown>;
+};
+
+/** Every non-runtime window field, with Sets flattened to arrays. */
+function serializeState(window: PaperclipsWindow): Record<string, unknown> {
+  const state: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(window)) {
+    if (RUNTIME_KEYS.has(key)) continue;
+    state[key] = value instanceof Set ? Array.from(value) : value;
+  }
+  return state;
+}
+
+/**
+ * Write the save file. No-op on the splash screen, where the in-memory
+ * state is a placeholder rather than a game in progress.
+ */
+function saveGame(window: PaperclipsWindow): void {
+  if (window.phase === "splash") return;
+  window.ticksSinceSave = 0;
+  const file: SaveFile = { version: SAVE_VERSION, savedAt: Date.now(), state: serializeState(window) };
+  try {
+    setStringSetting(SAVE_KEY, JSON.stringify(file));
+  } catch (error) {
+    console.warn(`paperclips save failed: ${error}`);
+  }
+}
+
+function readSaveFile(): SaveFile | null {
+  try {
+    const raw = getStringSetting(SAVE_KEY, "");
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<SaveFile>;
+    if (parsed.version !== SAVE_VERSION || typeof parsed.state !== "object" || parsed.state === null) {
+      return null;
+    }
+    return { version: parsed.version, savedAt: Number(parsed.savedAt) || 0, state: parsed.state };
+  } catch (error) {
+    console.warn(`paperclips save unreadable: ${error}`);
+    return null;
+  }
+}
+
+function readSaveSummary(): SaveSummary | null {
+  const file = readSaveFile();
+  if (!file) return null;
+  const clips = Number(file.state.clips);
+  return {
+    clips: Number.isFinite(clips) ? clips : 0,
+    stage: file.state.stage === "machine" ? "machine" : "human",
+    savedAt: file.savedAt,
+  };
+}
+
+/**
+ * Restore the saved game over a fresh reset (so fields missing from an
+ * older save keep their defaults). Each field is applied only when it
+ * exists on the window and matches the default's type; Sets come back from
+ * arrays. A save made while paused resumes playing.
+ */
+function loadGame(window: PaperclipsWindow): boolean {
+  const file = readSaveFile();
+  if (!file) return false;
+  resetGame(window);
+  const target = window as unknown as Record<string, unknown>;
+  for (const [key, value] of Object.entries(file.state)) {
+    if (RUNTIME_KEYS.has(key) || !Object.prototype.hasOwnProperty.call(target, key)) continue;
+    const current = target[key];
+    if (current instanceof Set) {
+      if (Array.isArray(value)) {
+        target[key] = new Set(value.filter((item): item is string => typeof item === "string"));
+      }
+    } else if (current === null || value === null || typeof current === typeof value) {
+      target[key] = value;
+    }
+  }
+  window.phase = window.phase === "milestone" && window.overlay ? "milestone" : "playing";
+  window.ticksSinceSave = 0;
+  syncTick(window);
+  return true;
+}
+
 /** Reset gameplay to the opening state (speed and sound settings survive). */
 function resetGame(window: PaperclipsWindow): void {
   window.phase = "playing";
@@ -676,6 +1022,7 @@ function resetGame(window: PaperclipsWindow): void {
   window.selectedIndex = 0;
   window.modal = null;
   window.modalSelectedIndex = 0;
+  window.ticksSinceSave = 0;
   syncTick(window);
 }
 
@@ -2209,17 +2556,24 @@ function checkMilestones(window: PaperclipsWindow): void {
   }
 }
 
-/** Keep the economy timer running exactly when playing, foreground, screen on. */
+/**
+ * Keep the economy timer running exactly when playing, foreground, screen
+ * on. Autosaves periodically while running and whenever it stops (pause,
+ * background, screen off, milestone).
+ */
 function syncTick(window: PaperclipsWindow): void {
   const shouldRun = window.phase === "playing" && window.foreground && screenOn;
   if (shouldRun && window.tickTimer === null) {
     window.tickTimer = setInterval(() => {
       for (let i = 0; i < window.speed; i++) step(window);
+      window.ticksSinceSave += 1;
+      if (window.ticksSinceSave >= AUTOSAVE_TICKS) saveGame(window);
       renderAndSubmit(window, 0);
     }, TICK_MS);
   } else if (!shouldRun && window.tickTimer !== null) {
     clearInterval(window.tickTimer);
     window.tickTimer = null;
+    saveGame(window);
   }
 }
 
@@ -2277,11 +2631,13 @@ function paint(window: PaperclipsWindow): GrayImage {
 }
 
 function paintContent(window: PaperclipsWindow): GrayImage {
+  if (window.phase === "splash") return paintSplash(window);
   resolveSelection(window);
   const image = new GrayImage(window.viewportWidth, window.viewportHeight, 0);
   drawCentered(image, smallFont, 0, window.viewportWidth, 2, window.message, 170);
   if (window.speed !== 1) {
-    image.drawText(smallFont, window.viewportWidth - 34, 2, `${window.speed}x`, 250);
+    const speedText = `${window.speed}x`;
+    image.drawText(smallFont, window.viewportWidth - 6 - smallFont.measureText(speedText), 2, speedText, 250);
   }
   paintLeftColumn(image, window);
   paintRightColumn(image, window);
@@ -2295,6 +2651,64 @@ function paintContent(window: PaperclipsWindow): GrayImage {
   } else if (window.phase === "paused") {
     paintPausedOverlay(image, window);
   }
+  return image;
+}
+
+/** The splash screen: the box of clips on the left, title and menu on the right. */
+function paintSplash(window: PaperclipsWindow): GrayImage {
+  const image = new GrayImage(window.viewportWidth, window.viewportHeight, 0);
+  const artX = 16;
+  const artY = Math.round((window.viewportHeight - BOX_ART_HEIGHT) / 2);
+  drawPaperclipBox(image, artX, artY);
+  const label = "PAPERCLIPS";
+  image.drawText(
+    smallFont,
+    artX + BOX_LABEL_CENTER[0] - Math.round(smallFont.measureText(label) / 2),
+    artY + BOX_LABEL_CENTER[1] - Math.round(smallFont.lineHeight / 2),
+    label,
+    225,
+  );
+
+  const menuX = artX + BOX_ART_WIDTH + 18;
+  const menuWidth = window.viewportWidth - menuX - 16;
+  drawCentered(image, mediumFont, menuX, menuWidth, 24, "UNIVERSAL", 250);
+  drawCentered(image, mediumFont, menuX, menuWidth, 50, "PAPERCLIPS", 250);
+
+  const summary = window.savedSummary;
+  const summaryText =
+    window.splashMode === "confirm-new"
+      ? "Erase the saved game?"
+      : summary
+        ? `Saved: ${summary.stage === "machine" ? formatLarge(summary.clips) : formatInt(summary.clips)} clips`
+        : "No saved game";
+  drawCentered(image, smallFont, menuX, menuWidth, 88, summaryText, 160);
+
+  const rows = splashRows(window);
+  const rowHeight = mediumFont.lineHeight + 8;
+  let y = 118;
+  for (let i = 0; i < rows.length; i++) {
+    const selected = i === Math.min(window.splashIndex, rows.length - 1);
+    const text = rows[i]!.label;
+    if (selected) {
+      image.fillRoundedRect(menuX, y - 4, menuWidth, rowHeight, 235, 6);
+    }
+    drawCentered(image, mediumFont, menuX, menuWidth, y, text, selected ? 0 : 215);
+    y += rowHeight + 6;
+  }
+
+  drawCentered(
+    image,
+    smallFont,
+    menuX,
+    menuWidth,
+    window.viewportHeight - 22,
+    gestureHints([
+      [GESTURE_SCROLL, "move"],
+      [GESTURE_CLICK, "select"],
+      [GESTURE_LONG_PRESS, "menu"],
+    ]),
+    115,
+  );
   return image;
 }
 
