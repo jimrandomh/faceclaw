@@ -362,7 +362,8 @@ global.onmessage = (event: { data: WorkerAppMessage }) => {
       // Enter ("\r") after a wrapper-side pause so paste-detecting apps
       // (e.g. Claude Code) submit instead of inserting a newline.
       if (window && window.kind === "view") {
-        window.client.submitInput(message.text);
+        if (message.submit === false) window.client.sendInput(message.text);
+        else window.client.submitInput(message.text);
       } else if (window && window.kind === "hub" && window.mode === "add") {
         terminalNewConnectionSetting.set(message.text);
         scheduleRender(window);

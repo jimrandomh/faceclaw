@@ -2,7 +2,12 @@
 
 ## 0.7.3 - Future
 
+### Other Features
+
+* Add tokens and faceclaw-input script, which allows using a CLI utility as an input device for the glasses
+
 ### iOS port:
+
 * Add iOS calendar integration
 * iOS main screen matches the Android version's styling
 * Hub apps on iOS no longer have their timers stopped while the phone app is in the background

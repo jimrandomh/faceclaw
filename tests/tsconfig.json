@@ -11,6 +11,8 @@
     "outDir": "../.test-build"
   },
   "include": [
+    "../app/remote/protocol.ts",
+    "../app/remote/listeners.ts",
     "../app/g2/ancs-client.ts",
     "../app/g2/ble-protocol.ts",
     "../app/graphics/lvgl-font.ts",

@@ -137,7 +137,7 @@ export type ShellWindow = {
    * Deliver a text string to the window (e.g. finalized voice input). Optional:
    * only windows that consume typed text (the terminal) implement it.
    */
-  receiveTextInput?: (text: string) => void;
+  receiveTextInput?: (text: string, options?: { submit?: boolean }) => void;
   /** Foreground state changed: this window's surface is (not) the visible one. */
   setForeground?: (foreground: boolean) => void;
   /**
@@ -1105,8 +1105,8 @@ class Shell {
   }
 
   /** Deliver a text string to the foreground window (e.g. finalized voice input). */
-  sendTextToForegroundWindow(text: string): void {
-    this.foregroundWindow()?.receiveTextInput?.(text);
+  sendTextToForegroundWindow(text: string, options?: { submit?: boolean }): void {
+    this.foregroundWindow()?.receiveTextInput?.(text, options);
   }
 
   /**

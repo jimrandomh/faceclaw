@@ -24,7 +24,7 @@ const timings = load('app/native/frame-timings.ts', {});
 
 function fixture() {
   const observers = new Map(), phoneState = { protectedDataAvailable: true };
-  let settingsChanged;
+  let settingsChanged, remoteHost;
   let now = 1000, nextTask = 0, screenOn = true, shellOptions, session;
   const tasks = new Map(), sent = [], previews = [], received = [], errors = [];
   const boardStats = { starts: 0, stops: 0, paints: 0 };
@@ -74,6 +74,7 @@ function fixture() {
   const inputMonitor = load("app/ui/input-monitor.ts", {});
   const modules = {
     "../ui/input-monitor": inputMonitor,
+    '../remote/service': { startRemoteInput(host) { remoteHost = host; } },
     '../assistant/system-tools': { registerSystemTools() {} },
     '../assistant/window-tools': { registerWindowTools() {} },
     '../assistant/navigate-tools': { registerNavigateTools() {} },
@@ -139,7 +140,7 @@ function fixture() {
     await render();
   }
   async function phone(type, origin = 'ring') { controller.gesture(type, origin); await render(); }
-  return { controller, shell, keyboardChanged: session => shellOptions.onKeyboardInputChanged(session), settings, phoneState, observers, wear: wearing => session.onWear(wearing), settingsChanged: () => settingsChanged(), sent, previews, received, boardStats, hardware, phone, advance, render };
+  return { controller, shell, remoteHost, keyboardChanged: session => shellOptions.onKeyboardInputChanged(session), settings, phoneState, observers, wear: wearing => session.onWear(wearing), settingsChanged: () => settingsChanged(), sent, previews, received, boardStats, hardware, phone, advance, render };
 }
 const assertBlank = pixels => assert.ok(pixels.every(p => p === 0));
 const assertBoard = pixels => {
@@ -318,4 +319,20 @@ test('keyboard sessions cannot deliver text after the glasses lock or phone leav
   editor.setText('background'); editor.sendTo('app');
   assert.equal(calls.length, 2);
   editor.discard(); assert.deepEqual(calls.at(-1), ['discard']);
+});
+
+
+test('external input shares iOS dispatch, including hold release and phone-lock gating', async () => {
+  const f = fixture(); await f.controller.connect(); f.wear(false);
+  assert.equal(f.remoteHost.ready(), true);
+  assert.equal(f.remoteHost.locked(), false);
+  await f.remoteHost.input('swipe-left', 'watch');
+  await f.remoteHost.input('long-press', 'ring');
+  assert.deepEqual(f.received.map(e => [e.type, e.source]), [
+    ['swipe-left', 'watch'], ['long-press', 'ring'], ['long-press-release', 'ring'],
+  ]);
+  f.observers.get('lock')();
+  assert.equal(f.remoteHost.locked(), true);
+  await f.remoteHost.input('click', 'watch');
+  assert.equal(f.received.length, 3);
 });

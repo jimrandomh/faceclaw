@@ -76,6 +76,7 @@ for (const isIOS of [true, false]) {
     } });
     const menus = load('app/ui/dashboard/settings-menus.ts', { global: { isIOS }, require: id => {
       if (id === '../dashboard-settings') return settings;
+      if (id === './remote-input-menu') return { remoteInputMenuItem: () => ({ label: 'Input tokens' }) };
       if (id === './settings-panel') return { SettingsPanelLayer: class { constructor(sections) { this.sections = sections; } } };
       return { LOCAL_MODEL: { sizeBytes: 1000 }, ASR_MODELS: { moonshine: {}, 'whisper-base-en': {} },
         uiFontPickerMenuItem: () => ({ label: 'Font' }), terminalFontPickerMenuItem: () => ({ label: 'Terminal font' }) };
@@ -193,6 +194,7 @@ test('background glasses input still composites frames; phone resume preserves t
   const settings = { brightnessSetting: { get: () => 'auto' }, brightnessSettingToLevel: () => null, lockScreenEnabledSetting: { get: () => true }, onAnySettingChanged: () => () => {}, previewColorSetting: { get: () => 'white' } };
   const modules = {
     "../ui/input-monitor": load("app/ui/input-monitor.ts", {}),
+    '../remote/service': { startRemoteInput() {} },
     '../assistant/system-tools': { registerSystemTools() {} },
     '../assistant/window-tools': { registerWindowTools() {} },
     '../assistant/navigate-tools': { registerNavigateTools() {} },

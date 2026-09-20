@@ -20,7 +20,7 @@ export type WorkerAppMessage =
   | { type: "resize-window"; windowId: string; viewport: { width: number; height: number } }
   | { type: "close-window"; windowId: string }
   | { type: "input"; windowId: string; event: unknown; frameId: number; focused: boolean }
-  | { type: "text-input"; windowId: string; text: string }
+  | { type: "text-input"; windowId: string; text: string; submit?: boolean }
   | { type: "render"; windowId: string; focused: boolean }
   | { type: "foreground"; windowId: string; foreground: boolean; focused: boolean }
   /**
@@ -441,8 +441,8 @@ export class WorkerAppHost {
       requestRender: () => {
         this.post({ type: "render", windowId: spec.windowId, focused: shell.isWindowFocused(spec.windowId) });
       },
-      receiveTextInput: (text) => {
-        this.post({ type: "text-input", windowId: spec.windowId, text });
+      receiveTextInput: (text, options) => {
+        this.post({ type: "text-input", windowId: spec.windowId, text, ...(options?.submit === undefined ? {} : { submit: options.submit }) });
       },
       setForeground: (foreground) => {
         this.options.setSurfaceVisible(surfaceId, foreground);

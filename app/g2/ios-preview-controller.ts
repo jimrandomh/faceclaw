@@ -1,3 +1,4 @@
+import { startRemoteInput } from "../remote/service"
 import type { KeyboardInputSession } from '../ui/shell/keyboard-input'
 import { acceptInput, resetRingInputFilter } from "../ui/input-monitor";
 import { bindIosNotifications, iosNotificationsChanged, onIosNotificationPopup } from '../native/notification-icons.ios'
@@ -169,6 +170,23 @@ export class IosPreviewController {
       const woke = !shell.isScreenOn() && shell.wake('sidebar')
       shell.openNotificationModal(key, woke)
       this.requestShellRender()
+    })
+    startRemoteInput({
+      ready: () => this.runtimeRunning,
+      locked: () => this.glassesLocked,
+      input: (gesture, source) => {
+        // Share the controller queue with physical input. A discrete hold includes its release.
+        const task = this.inputQueue.then(async () => {
+          await this.receiveInput(makeInputEvent({ type: gesture, source } as InputEventPayload))
+          if (gesture === 'long-press') await this.receiveInput(makeInputEvent({ type: 'long-press-release', source }))
+        })
+        this.inputQueue = task.catch(error => this.fail(error))
+        return task
+      },
+      acceptsText: () => !!shell.foregroundWindow()?.receiveTextInput,
+      text: (text, submit) => { if (!shell.isScreenOn()) shell.wake('window'); shell.sendTextToForegroundWindow(text, { submit }); this.requestShellRender() },
+      assistantAvailable: () => shell.isAssistantAvailable(),
+      assistant: text => shell.sendToAssistant(text),
     })
     registerSystemTools()
     registerWindowTools({ apps: ALL_APPS.filter(app => !iosAppUnavailableReason(app.appId)),

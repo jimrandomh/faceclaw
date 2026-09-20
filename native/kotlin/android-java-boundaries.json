@@ -83,6 +83,12 @@
     ]
   },
   {
+    "reason": "Android JVM loopback sockets, SecureRandom and SHA-256; iOS uses its native socket and Security implementations. Protocol and permissions stay in shared TypeScript.",
+    "files": [
+      "com/faceclaw/app/FaceclawRemoteInput.java"
+    ]
+  },
+  {
     "reason": "Android Bitmap/Canvas/Paint/typeface, SVG rasterization and camera scanning",
     "files": [
       "com/faceclaw/app/FontFileRenderer.java",

@@ -1,3 +1,4 @@
+import { startRemoteInput } from "../remote/service";
 import { acceptInput, resetRingInputFilter } from "../ui/input-monitor";
 import { Application, ImageSource } from "@nativescript/core";
 import { EvenAIStatus, EvenAIStatusName, EventSourceType, EventSourceTypeName, OsEventTypeList, OsEventTypeName, WatchGestureType, WatchGestureTypeName } from "./events";
@@ -404,6 +405,15 @@ class DashboardController {
     this.syncAssistantBridge();
     // The watch drives the same synthetic-input path as the phone UI's test
     // buttons, plus app/window/lock commands; it mirrors the state below.
+    startRemoteInput({
+      ready: () => this.phase === "connected" || this.phase === "charging",
+      locked: () => this.glassesLocked,
+      input: (gesture, source) => this.injectSyntheticRingInput(gesture, source),
+      acceptsText: () => !!shell.foregroundWindow()?.receiveTextInput,
+      text: (text, submit) => { if (!shell.isScreenOn()) shell.wake("window"); shell.sendTextToForegroundWindow(text, { submit }); this.requestShellRender(); },
+      assistantAvailable: () => shell.isAssistantAvailable(),
+      assistant: text => shell.sendToAssistant(text),
+    });
     this.wearRemote = new WearRemote({
       apps: LAUNCHABLE_APPS,
       injectInput: (kind) => this.injectSyntheticRingInput(kind, "watch"),

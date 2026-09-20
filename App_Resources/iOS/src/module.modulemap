@@ -11,6 +11,7 @@ module FaceclawGraphics {
   header "FaceclawConfigPort.h"
   header "FaceclawEvenHubWebView.h"
   header "FaceclawCrypto.h"
+  header "FaceclawRemoteInput.h"
   header "FaceclawQrScanner.h"
   export *
 }

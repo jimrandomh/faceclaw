@@ -1,3 +1,4 @@
+import { remoteInputMenuItem } from "./remote-input-menu";
 import { knownFolders } from "@nativescript/core";
 import { getDefaultSmallFont } from "../../graphics/ui-fonts";
 import type { GrayImage } from "../../graphics/image";
@@ -144,6 +145,7 @@ function settingsSections(): SettingsSection[] {
     {
       label: "API Keys",
       items: [
+        remoteInputMenuItem(),
         textSettingMenuItem(elevenLabsApiKeySetting),
         textSettingMenuItem(openAiApiKeySetting),
         textSettingMenuItem(sonioxApiKeySetting),
