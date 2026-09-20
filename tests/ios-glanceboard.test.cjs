@@ -70,7 +70,9 @@ function fixture() {
     createBoard: () => ({ start: () => boardStats.starts++, stop: () => boardStats.stops++,
       paint: () => { boardStats.paints++; return new images.GrayImage(100, 80, 200); } }),
   };
+  const inputMonitor = load("app/ui/input-monitor.ts", {});
   const modules = {
+    "../ui/input-monitor": inputMonitor,
     '../assistant/system-tools': { registerSystemTools() {} },
     '../assistant/window-tools': { registerWindowTools() {} },
     '../assistant/navigate-tools': { registerNavigateTools() {} },
@@ -103,6 +105,7 @@ function fixture() {
     '../ui/gestures': { makeInputEvent: event => event }, '../ui/layers': { noopLayerActions: {} },
     '../apps/files/text-viewer': {},
     '../ui/shell/shell': { shell, rawInputEventToInputEvent: event => ({
+      ringInput: event.ringInput, timestampMs: now,
       type: event.kind === 'display-wake' ? 'display-wake'
         : ({ 0: 'click', 1: 'scroll-up', 2: 'scroll-down', 3: 'double-click', 9: 'long-press',
           10: 'long-press-release', 11: 'short-then-long-press' })[event.eventType] ?? 'unknown', source: 'ring',
@@ -127,9 +130,11 @@ function fixture() {
     await drain();
   }
   async function render() { await drain(); await advance(33); assert.deepEqual(errors, []); }
-  async function hardware(type, source = 2) {
+  async function hardware(type, source = 2, ringTick) {
     const payload = protocol.bytes(13, protocol.bytes(3, protocol.concat(protocol.integer(1, type), protocol.integer(2, source))));
-    session.onInput(protocol.decodeGlassesInput({ sid: protocol.SID.hub, flag: 1, payload }));
+    const input = protocol.decodeGlassesInput({ sid: protocol.SID.hub, flag: 1, payload });
+    if (ringTick !== undefined) input.ringInput = { type: type === 3 ? 2 : 1, tick: ringTick, aux:0, speed:0 };
+    session.onInput(input);
     await render();
   }
   async function phone(type, origin = 'ring') { controller.gesture(type, origin); await render(); }
@@ -272,4 +277,25 @@ test('iOS locked phone controls cannot dispatch mirror, voice, or keyboard input
   f.controller.session.onState({ phase: 'connected' });
   await f.render();
   assert.ok(f.sent.at(-1).every(p => p === 123));
+});
+
+
+test('iOS deduplicates original ring ticks before apps, lock toggles and Glanceboard', async () => {
+  const f = fixture(); await f.controller.connect();
+  await f.hardware(0,2,1000); await f.hardware(0,2,1050);
+  assert.equal(f.received.length,1);
+  await f.hardware(0,2,1100); assert.equal(f.received.length,2);
+  // A filtered click cannot open a sleep-time board.
+  f.shell.sleep(); await f.hardware(0,2,1150);
+  assert.equal(f.controller.glance.isVisible(),false);
+  await f.hardware(0,2,1200); assert.equal(f.controller.glance.isVisible(),true);
+  // A duplicated double tap must not wake and immediately re-sleep a lock screen.
+  f.observers.get('lock')(); f.wear(false); await f.render();
+  f.shell.sleep(); await f.hardware(3,2,2000);
+  assert.equal(f.shell.isScreenOn(),true);
+  await f.hardware(3,2,2050); assert.equal(f.shell.isScreenOn(),true);
+  // A new transport session starts a fresh suppression window.
+  f.controller.session.onState({ phase:'retrying' });
+  f.controller.session.onState({ phase:'connected' });
+  await f.hardware(3,2,2051); assert.equal(f.shell.isScreenOn(),false);
 });

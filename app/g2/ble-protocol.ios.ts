@@ -1,3 +1,4 @@
+import { type RingInput } from "./ring-input";
 import { type CompassEvent } from '../native/compass-types'
 /** iOS binary bridge to the same Kotlin protocol used by Android. */
 import { fromData, toData, nativeArray } from '../native/kotlin-data'
@@ -52,10 +53,12 @@ export const readString = (data: Uint8Array, field: number): string => protocol.
 export function authenticationSucceeded(message: ProtocolMessage, magic: number): boolean {
   return message.sid === SID.auth && message.command === 4 && message.magic === magic && readBytes(message.payload, 3)?.length === 0
 }
-export type GlassesInput = { kind: 'sys-event' | 'list-click' | 'text-click' | 'display-wake' | 'even-ai'; eventType: number; eventSource: number; systemExitReasonCode: number; containerName: string; frameId: number }
+export type GlassesInput = { ringInput?: RingInput; kind: 'sys-event' | 'list-click' | 'text-click' | 'display-wake' | 'even-ai'; eventType: number; eventSource: number; systemExitReasonCode: number; containerName: string; frameId: number }
 function input(event: any): GlassesInput | null {
   return event ? { kind: event.kind === 'sys-event' && event.eventType === OsEventTypeList.HEAD_UP_EVENT ? 'display-wake' : event.kind,
     eventType: event.eventType, eventSource: event.eventSource, systemExitReasonCode: event.systemExitReasonCode,
+    ringInput: Number(event.ringTick) >= 0 ? { tick: Number(event.ringTick), type: Number(event.ringType),
+      aux: Number(event.ringAux), speed: Number(event.ringSpeed) } : undefined,
     containerName: event.containerName, frameId: 0 } : null
 }
 export const decodeGlassesInput = (message: ProtocolMessage): GlassesInput | null => input(protocol.glassesInputDataSidFlag(toData(message.payload), message.sid, message.flag))

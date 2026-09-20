@@ -1,7 +1,7 @@
 /**
  * Builds the Faceclaw custom firmware on-device: downloads the stock Even
  * Realities G2 image the patch set was built against (CFW_PATCH_SET.base,
- * currently 2.2.9.22) from Even's CDN, verifies its SHA-256, applies
+ * currently 2.3.0.24) from Even's CDN, verifies its SHA-256, applies
  * the committed byte-patch set (cfw-patches.ts), extracts the stock EvenHub
  * fonts for phone-side rendering, verifies the patched SHA-256, and writes the
  * result to app storage.
@@ -28,10 +28,10 @@ import { firmwareSha256, writeFirmwareFile } from "../native/firmware-files";
 // The CDN names firmware files by MD5. This must be the image whose SHA-256 is
 // CFW_PATCH_SET.baseSha256 — keep it in sync with FW_URL in g2flash/build_cfw.sh
 // whenever cfw-patches.ts is regenerated against a new stock base.
-// (2.2.9.22 = fc250b05…; the older 2.2.6.10 base was e2873843….)
-const FIRMWARE_URL = "https://cdn.evenreal.co/firmware/fc250b05e98a9ff998b4b68f5f99f994.bin";
-// Output names follow the patch set's base name (e.g. g2_2.2.9.22.bin →
-// g2_2.2.9.22_cfw.bin) so a rebase can't leave stale version numbers here.
+// (2.3.0.24 = 1dbdf37b…; the older 2.2.9.22 base was fc250b05….)
+const FIRMWARE_URL = "https://cdn.evenreal.co/firmware/1dbdf37b03a1169c384945e94d671371.bin";
+// Output names follow the patch set's base name (e.g. g2_2.3.0.24.bin →
+// g2_2.3.0.24_cfw.bin) so a rebase can't leave stale version numbers here.
 const STOCK_OUTPUT_FILENAME = CFW_PATCH_SET.base;
 const CFW_OUTPUT_FILENAME = CFW_PATCH_SET.base.replace(/\.bin$/, "") + "_cfw.bin";
 

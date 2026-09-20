@@ -2,6 +2,7 @@ import { G2_LENS_HEIGHT, G2_LENS_WIDTH, GrayImage } from "../../graphics/image";
 import { singlePlane, type Plane } from "../../graphics/plane";
 import { getDefaultSmallFont } from "../../graphics/ui-fonts";
 import { EvenAIStatus, EventSourceType, OsEventTypeList, WatchGestureType } from "../../g2/events";
+import { acceptInput } from "../input-monitor";
 import type { RawInputEvent } from "../../native/faceclaw-communicator";
 import {
   directionalFallback,
@@ -708,6 +709,7 @@ class Shell {
   }
 
   async receiveInput(event: InputEvent, frameId = 0): Promise<ShellInputOutcome> {
+    if (!acceptInput(event)) return { shell: false, window: false };
     try {
       return await this.routeInput(event, frameId);
     } finally {
@@ -718,6 +720,16 @@ class Shell {
   }
 
   private async routeInput(event: InputEvent, frameId: number): Promise<ShellInputOutcome> {
+    // Touch-down supplements gestures. It must not wake the screen, operate
+    // menus, or cancel the hold-to-escape timer. Apps can opt into it later.
+    if (event.type === "ring-press") {
+      const window = this.foregroundWindow();
+      if (this.screenOn && this.focus === "window" && this.stack.isAtBase() && window) {
+        await window.handleInput(event, frameId);
+        return { shell: false, window: true };
+      }
+      return { shell: false, window: false };
+    }
     const previous = this.lastInput;
     this.lastInput = event;
     // A visible window may paint a source-dependent indicator (see
@@ -1540,12 +1552,19 @@ function formatAssistantTime(date: Date): string {
 }
 
 export function rawInputEventToInputEvent(event: RawInputEvent): InputEvent {
-  return makeInputEvent(rawInputEventToPayload(event));
+  return { ...makeInputEvent(rawInputEventToPayload(event)),
+    ...(event.ringInput ? { ringInput: { ...event.ringInput } } : {}) };
 }
 
 function rawInputEventToPayload(event: RawInputEvent): InputEventPayload {
   if (event.kind === "sys-event") {
-    if (event.eventType === OsEventTypeList.CLICK_EVENT) {
+    if (event.eventType === OsEventTypeList.RING_PRESS_EVENT &&
+        (event.eventSource === EventSourceType.TOUCH_EVENT_FORM_DUMMY_NULL ||
+         event.eventSource === EventSourceType.TOUCH_EVENT_FROM_RING)) {
+      // The firmware emits this dedicated ID only for full raw source 4.
+      // Its stock sender leaves the source unspecified for extension 14.
+      return { type: "ring-press", source: "ring" };
+    } else if (event.eventType === OsEventTypeList.CLICK_EVENT) {
       return {
         type: "click",
         source: eventSourceToString(event.eventSource),
@@ -1607,9 +1626,13 @@ function rawInputEventToPayload(event: RawInputEvent): InputEventPayload {
   };
 }
 
-/** Scroll events only carry a source when it is the watch (the stock ones never needed one). */
+/** Preserve explicit sources; stock scroll notifications usually omit them. */
 function scrollEvent(type: "scroll-up" | "scroll-down", eventSource: number): InputEventPayload {
-  return eventSource === EventSourceType.TOUCH_EVENT_FROM_WATCH ? { type, source: "watch" } : { type };
+  return eventSource === EventSourceType.TOUCH_EVENT_FROM_WATCH ||
+    eventSource === EventSourceType.TOUCH_EVENT_FROM_RING ||
+    eventSource === EventSourceType.TOUCH_EVENT_FROM_GLASSES_L ||
+    eventSource === EventSourceType.TOUCH_EVENT_FROM_GLASSES_R
+    ? { type, source: eventSourceToString(eventSource) } : { type };
 }
 
 function eventSourceToString(eventSource: number): InputSource {
@@ -1627,6 +1650,8 @@ function eventSourceToString(eventSource: number): InputSource {
 
 export function inputEventToString(event: InputEvent): string {
   switch (event.type) {
+    case "ring-press":
+      return "Ring press";
     case "click":
       return `Click from ${event.source}`;
     case "double-click":

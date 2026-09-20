@@ -12,6 +12,10 @@ interface FaceclawBleCommunicatorListener {
         eventSource: Int,
         systemExitReasonCode: Int,
         frameId: Int,
+        ringTick: Long,
+        ringType: Int,
+        ringAux: Int,
+        ringSpeed: Int,
     ): Unit
 
     fun onBatteryState(

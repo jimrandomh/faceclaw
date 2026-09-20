@@ -12,8 +12,8 @@
  * keep the BLE payload down to the dirty region around the ball.
  *
  * Controls (ball ready): scroll sets launch power, click launches. In play:
- * click flips both flippers, scroll-up/down flips left/right individually,
- * double-click pauses. Watch swipes: left/right work the matching flipper,
+ * ring-press flips both flippers for 300 ms; click launches from the plunger,
+ * double-click pauses. Swipes no longer trigger individual flippers;
  * up/down raise and lower launch power at the plunger.
  * Paused/game over: click resumes or starts a new game, double-click yields
  * focus, long-press opens the window menu. Losing input focus mid-game (a
@@ -92,8 +92,8 @@ const FLIPPER_REST_DEG = 32;
 const FLIPPER_UP_DEG = -34;
 const FLIPPER_RISE_DEG_PER_S = 950;
 const FLIPPER_FALL_DEG_PER_S = 480;
-/** Held at the top this long before falling, so early flips still connect. */
-const FLIPPER_HOLD_MS = 140;
+/** Activation duration from input to release, including the rise animation. */
+const FLIPPER_HOLD_MS = 300;
 const FLIPPER_E = 0.4;
 
 type SegmentKind = "wall" | "gate" | "sling";
@@ -507,25 +507,14 @@ function handlePlayingInput(window: PinballWindow, event: InputEvent, frameId: n
     case "scroll-up":
       if (ready) {
         window.launchPower = clamp(window.launchPower + 1, 1, LAUNCH_SPEEDS.length);
-      } else {
-        flip(window, window.flippers[0]!);
       }
       break;
     case "scroll-down":
       if (ready) {
         window.launchPower = clamp(window.launchPower - 1, 1, LAUNCH_SPEEDS.length);
-      } else {
-        flip(window, window.flippers[1]!);
       }
       break;
-    // Watch swipes: left/right work the matching flipper; up/down set the
-    // launch power at the plunger.
-    case "swipe-left":
-      if (!ready) flip(window, window.flippers[0]!);
-      break;
-    case "swipe-right":
-      if (!ready) flip(window, window.flippers[1]!);
-      break;
+    // Watch swipes up/down still set launch power at the plunger.
     case "swipe-up":
       if (ready) {
         window.launchPower = clamp(window.launchPower + 1, 1, LAUNCH_SPEEDS.length);
@@ -536,10 +525,14 @@ function handlePlayingInput(window: PinballWindow, event: InputEvent, frameId: n
         window.launchPower = clamp(window.launchPower - 1, 1, LAUNCH_SPEEDS.length);
       }
       break;
+    case "ring-press":
+      flip(window, window.flippers[0]!);
+      flip(window, window.flippers[1]!);
+      break;
     case "click":
       if (ready) {
         launchBall(window);
-      } else {
+      } else if (event.source !== "ring") {
         flip(window, window.flippers[0]!);
         flip(window, window.flippers[1]!);
       }
@@ -616,10 +609,9 @@ function launchBall(window: PinballWindow): void {
 }
 
 function flip(window: PinballWindow, flipper: Flipper): void {
-  if (flipper.state === "hold") {
-    flipper.holdUntilMs = Date.now() + FLIPPER_HOLD_MS;
-    return;
-  }
+  // Time the pulse from the input, including the rise animation.
+  flipper.holdUntilMs = Date.now() + FLIPPER_HOLD_MS;
+  if (flipper.state === "hold") return;
   flipper.state = "rising";
   playSfx(window, SFX_FLIPPER, true);
 }
@@ -725,7 +717,7 @@ function stepFlippers(window: PinballWindow, dt: number): void {
         if (flipper.angleDeg <= FLIPPER_UP_DEG) {
           flipper.angleDeg = FLIPPER_UP_DEG;
           flipper.state = "hold";
-          flipper.holdUntilMs = now + FLIPPER_HOLD_MS;
+          if (now >= flipper.holdUntilMs) flipper.state = "falling";
         }
         break;
       case "hold":
@@ -1013,7 +1005,7 @@ function paintPanel(image: GrayImage, window: PinballWindow): void {
     image.drawText(smallFont, PANEL_X, 216, `${GESTURE_SCROLL} power   ${GESTURE_CLICK} launch`, 115);
     image.drawText(smallFont, PANEL_X, 236, `${GESTURE_DOUBLE_CLICK} pause`, 115);
   } else {
-    image.drawText(smallFont, PANEL_X, 216, `${GESTURE_CLICK} flip   ${GESTURE_SCROLL} L/R flip`, 115);
+    image.drawText(smallFont, PANEL_X, 216, "Touch ring: both flippers", 115);
     image.drawText(smallFont, PANEL_X, 236, `${GESTURE_DOUBLE_CLICK} pause`, 115);
   }
 }

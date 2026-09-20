@@ -18,7 +18,7 @@
  * small and rare.
  *
  * Controls (a watch swipe in either direction is the primary flap):
- * swipe-up, swipe-down, click, or scroll-up flaps; double-click pauses;
+ * ring-press flaps immediately; watch swipes/clicks also flap. Double-click pauses;
  * tap-then-hold opens the window menu. Ready / paused / game over: click or
  * a swipe starts or resumes, double-click yields focus. Losing input focus
  * mid-flight (a shell overlay such as the system menu or a notification,
@@ -410,9 +410,15 @@ function handleFlightInput(window: FlappyWindow, event: InputEvent, frameId: num
     // which way the thumb went shouldn't matter.
     case "swipe-up":
     case "swipe-down":
-    case "click":
-    case "scroll-up":
+    case "ring-press":
       flap(window);
+      break;
+    case "click":
+      // The ring already flapped on down; its later click must not flap again.
+      if (event.source !== "ring") flap(window);
+      break;
+    case "scroll-up":
+      if (event.source === "watch") flap(window);
       break;
     case "double-click":
       if (window.phase === "playing") {
@@ -696,7 +702,7 @@ function paintHud(image: GrayImage, window: FlappyWindow): void {
       if (window.highScore > 0) {
         drawCenteredIn(image, smallFont, 0, width, 44, `best ${window.highScore}`, 150);
       }
-      drawCenteredIn(image, smallFont, 0, width, groundTop(window) - 26, `swipe / ${GESTURE_CLICK} flap`, 150);
+      drawCenteredIn(image, smallFont, 0, width, groundTop(window) - 26, "Touch ring / swipe to flap", 150);
       break;
     case "paused":
       paintDialog(image, window, "PAUSED", [`${GESTURE_CLICK} resume`, `${GESTURE_DOUBLE_CLICK} leave`]);

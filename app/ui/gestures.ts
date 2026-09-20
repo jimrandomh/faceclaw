@@ -1,3 +1,5 @@
+import type { RingInput } from "../g2/ring-input";
+
 /**
  * Where an input came from. The ring and the glasses' arms are the stock
  * sources; "watch" is the Wear OS remote, which components may treat with a
@@ -10,14 +12,18 @@ export type InputSource = "ring" | "left-arm" | "right-arm" | "watch";
 export type BaseInputEvent = {
   /**
    * When the event was received from the device (or synthesized), as a
-   * Date.now() epoch-ms value. The G2 wire formats carry no device-side
-   * clock, so this is phone receive time.
+   * Date.now() epoch-ms value. This remains separate from the original
+   * ring clock so app timers can continue comparing against Date.now().
    */
   timestampMs: number;
+  /** Present for unfiltered ring reports forwarded by Faceclaw/19. */
+  ringInput?: RingInput;
 };
 
 /** The per-type part of InputEvent; makeInputEvent adds the BaseInputEvent fields. */
 export type InputEventPayload =
+  /** Raw ring touch-down; a later interpreted gesture may follow. */
+  | { type: "ring-press"; source: "ring" }
   | { type: "click"; source: InputSource }
   | { type: "double-click"; source: InputSource }
   /** Ring scroll (or a watch crown turn, then tagged source "watch"). */

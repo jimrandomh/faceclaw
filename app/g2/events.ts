@@ -77,6 +77,8 @@ export const OsEventTypeList = {
    * this eventType; the glance host treats it as a press.
    */
   HEAD_UP_EVENT: 12,
+  /** Faceclaw/18: R1 touch-down, before click/hold/slide recognition. */
+  RING_PRESS_EVENT: 14,
 } as const;
 
 export const OsEventTypeName: Record<number, string> = {
@@ -93,4 +95,5 @@ export const OsEventTypeName: Record<number, string> = {
   10: "RING_LONG_PRESS_RELEASE_EVENT",
   11: "SHORT_THEN_LONG_PRESS_EVENT",
   12: "HEAD_UP_EVENT",
+  14: "RING_PRESS_EVENT",
 };

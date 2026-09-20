@@ -15,6 +15,7 @@ test('iOS installed apps launch, recover missing packages, and close before unin
   const calls = [], app = { packageId: 'test.app', name: 'Test' };
   let present = true;
   const modules = {
+    "../ui/input-monitor": load("app/ui/input-monitor.ts", {}),
     '../apps/all-apps': { ALL_APPS: [{ appId: 'evenhub' }] },
     '../apps/evenhub/installed-apps': { getInstalledEvenHubAppById: id => id === 'installed' ? app : null,
       installedEvenHubPackageId: id => id === 'installed' ? app.packageId : null,
@@ -190,6 +191,7 @@ test('background glasses input still composites frames; phone resume preserves t
   }
   const settings = { lockScreenEnabledSetting: { get: () => true }, onAnySettingChanged: () => () => {}, previewColorSetting: { get: () => 'white' } };
   const modules = {
+    "../ui/input-monitor": load("app/ui/input-monitor.ts", {}),
     '../assistant/system-tools': { registerSystemTools() {} },
     '../assistant/window-tools': { registerWindowTools() {} },
     '../assistant/navigate-tools': { registerNavigateTools() {} },
@@ -271,6 +273,7 @@ test('iOS bandwidth footer toggles live, polls only in foreground and resets its
     on: (key, fn) => appEvents.set(key, fn), off: key => appEvents.delete(key) },
     Button: View, Color: class {}, Dialogs: {}, GridLayout: View, Image: View, Label: View, Page: View, StackLayout: View };
   const modules = {
+    "../ui/input-monitor": load("app/ui/input-monitor.ts", {}),
     '../assistant/system-tools': { registerSystemTools() {} },
     '../assistant/window-tools': { registerWindowTools() {} },
     '../assistant/navigate-tools': { registerNavigateTools() {} },

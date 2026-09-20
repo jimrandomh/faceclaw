@@ -75,11 +75,30 @@ class G2Event {
                         z,
                     )
                 }
-                return G2Event("sys-event", "", eventType, eventSource, exitReason)
+                return G2Event("sys-event", "", eventType, eventSource, exitReason).apply {
+                    // Faceclaw/19 SysEvent field 100: RI/v1 + raw R1 metadata.
+                    val raw = BleProtocol.readFieldBytes(sysEvent, 100)
+                    if (eventSource == 2 && raw != null && raw.size == 12 &&
+                        raw[0] == 0x52.toByte() && raw[1] == 0x49.toByte() &&
+                        raw[2] == 1.toByte() && raw[3] == 1.toByte() && raw[7] == 0.toByte()) {
+                        ringTick = (0..3).fold(0L) { tick, i ->
+                            tick or ((raw[8 + i].toLong() and 255L) shl (8 * i))
+                        }
+                        ringType = raw[4].toInt() and 255
+                        ringAux = raw[5].toInt() and 255
+                        ringSpeed = raw[6].toInt() and 255
+                    }
+                }
             }
             return null
         }
     }
+
+    /** -1 means no original ring timestamp (stock/legacy/synthetic input). */
+    @JvmField var ringTick: Long = -1
+    @JvmField var ringType: Int = 0
+    @JvmField var ringAux: Int = 0
+    @JvmField var ringSpeed: Int = 0
 
     @JvmField val kind: String
 

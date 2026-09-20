@@ -92,6 +92,12 @@ test('ring and arm input decoders preserve gesture and source', () => {
   assert.equal(wake.kind, 'display-wake');
   assert.equal(wake.eventType, 12);
   assert.equal(wake.eventSource, 1);
+  // The stock G2 sender omits source for dedicated Faceclaw event 14.
+  const press = p.decodeGlassesInput({ sid: 224, flag: 1,
+    payload: p.bytes(13, p.bytes(3, p.integer(1, 14))) });
+  assert.equal(press.kind, 'sys-event');
+  assert.equal(press.eventType, 14);
+  assert.equal(press.eventSource, 0);
 });
 
 class FakeTransport {
@@ -605,7 +611,7 @@ test('wear notifications validate the event and peer and work during initial con
 
 
 test('ANCS packets are scoped to the right link and cleared on disconnect and authorization revocation', async t => {
-  const transport = new FakeTransport(); transport.firmware = 16;
+  const transport = new FakeTransport(); transport.firmware = REQUIRED_FACECLAW_FIRMWARE_VERSION;
   const h = harness(t, transport); await h.session.start(addresses);
   await until(() => transport.ancs?.length);
   const token = Array.from(transport.ancs[0].frame.subarray(4,8));
@@ -624,12 +630,13 @@ test('firmware 15 requires an upgrade before starting notification relay', async
   const transport = new FakeTransport(); transport.firmware = 15;
   const h = harness(t, transport); await h.session.start(addresses);
   assert.equal(h.session.notifications.state, 'disconnected');
-  assert.match(h.session.notifications.statusMessage, /firmware 16 or newer/);
+  assert.equal(h.session.state.phase, 'error');
+  assert.match(h.session.state.status, new RegExp(`requires revision ${REQUIRED_FACECLAW_FIRMWARE_VERSION}`));
   assert.equal(transport.ancs?.length ?? 0, 0);
 });
 
 test('ANCS app-name lookup uses the right-link write limit, including after reauthorization', async t => {
-  const transport = new FakeTransport(); transport.firmware = 16;
+  const transport = new FakeTransport(); transport.firmware = REQUIRED_FACECLAW_FIRMWARE_VERSION;
   const h = harness(t, transport); await h.session.start(addresses);
   await until(() => transport.ancs?.length);
   const id = 'net.superblock.Pushover';

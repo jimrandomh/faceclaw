@@ -96,7 +96,7 @@ test('pinball responds on contact, holds independently, and releases before tap'
   assert.equal(h.w.flippers[1].state, 'falling');
 });
 
-test('pinball retains old firmware/ring controls and plunger click launch', () => {
+test('pinball uses ring press for flippers and retains plunger click launch', () => {
   const h = worker();
   h.input('click');
   assert.ok(h.w.flippers.every((f) => f.state === 'rising'));
@@ -106,7 +106,7 @@ test('pinball retains old firmware/ring controls and plunger click launch', () =
   assert.equal(h.w.ballState, 'ready');
   h.input('click');
   assert.equal(h.w.ballState, 'live');
-  h.input('click', 'ring');
+  h.input('ring-press', 'ring');
   assert.ok(h.w.flippers.every((f) => f.state === 'rising'));
 });
 
