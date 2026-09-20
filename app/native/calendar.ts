@@ -1,6 +1,8 @@
 import { Utils } from "@nativescript/core";
 import { hasCalendarPermission } from "../g2/android-permissions";
 import { spanCurrent } from "./frame-timings";
+import { type CalendarEvent, type CalendarReadState } from "./calendar-types";
+export type { CalendarEvent } from "./calendar-types";
 
 declare const com: any;
 
@@ -10,15 +12,9 @@ declare const com: any;
  * the Calendar app don't re-run the content-provider query every frame.
  */
 
-export type CalendarEvent = {
-  id: number;
-  title: string;
-  startMs: number;
-  endMs: number;
-  allDay: boolean;
-  location: string;
-  calendarName: string;
-};
+// Android reads synchronously; iOS notifies subscribers after background reads.
+export function onCalendarChanged(_listener: () => void): () => void { return () => {}; }
+export function getCalendarReadState(): CalendarReadState { return "ready"; }
 
 const DEFAULT_MAX_EVENTS = 50;
 const DEFAULT_WINDOW_MS = 14 * 24 * 60 * 60 * 1000;
@@ -71,6 +67,11 @@ export function readUpcomingEvents(
   } catch {
     return [];
   }
+}
+
+/** Awaitable API shared with the iOS background reader. */
+export async function readUpcomingEventsAsync(maxEvents = DEFAULT_MAX_EVENTS, windowMs = DEFAULT_WINDOW_MS): Promise<CalendarEvent[]> {
+  return readUpcomingEvents(maxEvents, windowMs);
 }
 
 /** Drop the cached events so the next read re-queries the provider. */

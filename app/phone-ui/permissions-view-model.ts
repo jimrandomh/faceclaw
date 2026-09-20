@@ -2,10 +2,8 @@ import { iosBluetooth } from "../native/ios-bluetooth";
 import { Application, Dialogs, EventData, Frame, Observable, View } from "@nativescript/core";
 
 import {
-  ensureCalendarPermission,
   ensureFineLocationPermission,
   hasBlePermissions,
-  hasCalendarPermission,
   hasFineLocationPermission,
   hasMicrophonePermission,
   hasPostNotificationsPermission,
@@ -13,6 +11,7 @@ import {
   requestMicrophonePermission,
   requestPostNotificationsPermission,
 } from "../g2/android-permissions";
+import { ensureCalendarPermission, hasCalendarPermission } from "../native/calendar-permissions";
 import { isIgnoringBatteryOptimizations, requestIgnoreBatteryOptimizations } from "../native/battery-optimization";
 import { isNotificationListenerEnabled, requestNotificationListenerAccess } from "../native/notification-access";
 
@@ -97,6 +96,12 @@ const PERMISSIONS: PermissionDefinition[] = global.isIOS ? [{
   description: "Needed to communicate with your smart glasses over Bluetooth.", optional: false,
   isGranted: () => iosBluetooth().state === 5,
   request: () => iosBluetooth().ensureReady(),
+}, {
+  id: "calendar", title: "Calendar",
+  description: "Optional: display upcoming events in Calendar and Glanceboard on your glasses. Choose Full Access when asked; Faceclaw only reads events.",
+  optional: true,
+  isGranted: hasCalendarPermission,
+  request: ensureCalendarPermission,
 }] : ANDROID_PERMISSIONS;
 
 /** One Repeater card: the permission's copy plus the display-only fields the XML binds. */
@@ -110,7 +115,7 @@ export type PermissionCardItem = {
 };
 
 /**
- * The Permissions screen: one card per Android permission Faceclaw uses, with
+ * The Permissions screen: one card per permission Faceclaw uses, with
  * a checkmark when it is already granted and tap-to-grant otherwise. Reached
  * both from onboarding (between the disclaimer and the firmware step) and from
  * the main-screen menu.
@@ -152,7 +157,7 @@ export class PermissionsViewModel extends Observable {
   }
 
   get instructions(): string {
-    if (global.isIOS) return "Faceclaw uses Bluetooth to communicate with your smart glasses. Tap the card to allow access; a checkmark means Bluetooth is ready.";
+    if (global.isIOS) return "Faceclaw uses Bluetooth to communicate with your smart glasses. Calendar access is optional. Tap a card to allow access; a checkmark means it is ready.";
     return this.onboarding
       ? `Faceclaw uses these ${global.isIOS ? "iOS" : "Android"} permissions. Tap a card to grant one; a checkmark means it is already granted. ` +
           "Optional permissions can also be granted later, from the Permissions item in the main-screen menu."
@@ -226,7 +231,7 @@ export class PermissionsViewModel extends Observable {
     try {
       await definition.request();
     } catch (error) {
-      if (global.isIOS) await Dialogs.alert({ title: "Bluetooth Unavailable", message: String((error as Error).message ?? error), okButtonText: "OK" });
+      if (global.isIOS) await Dialogs.alert({ title: `${definition.title} Unavailable`, message: String((error as Error).message ?? error), okButtonText: "OK" });
       // A denial simply leaves the card unchecked; the user can tap again.
     } finally {
       this.requesting = false;

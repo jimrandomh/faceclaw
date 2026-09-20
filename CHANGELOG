@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.3 - Future
+
+* Add iOS calendar integration
+
 ## 0.7.2 - 2026-09-19
 
 * Rebase to firmware 2.3.0, fixing an issue with some R1 ring input events being lost

@@ -2,10 +2,10 @@ import { getDefaultSmallFont } from "../../graphics/ui-fonts";
 import { GrayImage, type UiFont } from "../../graphics/image";
 import { wrapText, truncateText } from "../../graphics/textwrap";
 import { clamp } from "../../util/numeric-util";
-import { readUpcomingEvents, type CalendarEvent } from "../../native/calendar";
+import { getCalendarReadState, readUpcomingEvents, type CalendarEvent } from "../../native/calendar";
 import { timeFormatSetting } from "../../ui/dashboard-settings";
 import { GESTURE_CLICK, type InputEvent } from "../../ui/gestures";
-import { hasCalendarPermission } from "../../g2/android-permissions";
+import { hasCalendarPermission } from "../../native/calendar-permissions";
 import { type Layer, type LayerContext } from "../../ui/layers";
 import { lineStep } from "../../ui/metrics";
 
@@ -58,7 +58,9 @@ export class CalendarLayer implements Layer {
     const events = readUpcomingEvents(MAX_EVENTS);
     if (!events.length) {
       image.drawText(font, TITLE_X, TITLE_Y, "Calendar", 220);
-      image.drawText(font, 24, 72, "No upcoming events.", 190);
+      const state = getCalendarReadState();
+      image.drawText(font, 24, 72, state === "loading" ? "Loading calendar..."
+        : state === "error" ? "Calendar unavailable. Try again shortly." : "No upcoming events.", 190);
       return image;
     }
 
