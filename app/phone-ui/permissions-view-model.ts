@@ -98,7 +98,7 @@ const PERMISSIONS: PermissionDefinition[] = global.isIOS ? [{
   request: () => iosBluetooth().ensureReady(),
 }, {
   id: "calendar", title: "Calendar",
-  description: "Optional: display upcoming events in Calendar and Glanceboard on your glasses. Choose Full Access when asked; Faceclaw only reads events.",
+  description: "Optional: display upcoming events in Calendar and Glanceboard on your glasses. Choose Full Access when asked.",
   optional: true,
   isGranted: hasCalendarPermission,
   request: ensureCalendarPermission,
