@@ -155,24 +155,6 @@
              (ui/shell/keyboard-input.ts). Same placement and collapsing rules
              as the setting editor above. Enter inserts a newline; the send
              buttons pick a destination directly. -->
-        <StackLayout
-            class="system-name-modal"
-            visibility="{{ keyboardInputVisibility }}"
-            horizontalAlignment="stretch"
-            verticalAlignment="bottom">
-            <Label text="Keyboard input" class="h2" />
-            <TextView
-                id="keyboardInputField"
-                text="{{ keyboardInputText }}"
-                hint="Type a message"
-                textChange="{{ onKeyboardInputTextChange }}"
-                height="120" />
-            <!-- Wraps onto a second line when the labels don't fit side by side. -->
-            <FlexboxLayout flexWrap="wrap" class="m-t-8">
-                <Button text="{{ keyboardInputPrimaryTargetLabel }}" tap="{{ onKeyboardInputPrimarySendTap }}" visibility="{{ keyboardInputPrimaryTargetVisibility }}" flexGrow="1" class="-primary" />
-                <Button text="{{ keyboardInputSecondaryTargetLabel }}" tap="{{ onKeyboardInputSecondarySendTap }}" visibility="{{ keyboardInputSecondaryTargetVisibility }}" flexGrow="1" />
-                <Button text="Discard" tap="{{ onKeyboardInputDiscardTap }}" flexGrow="1" />
-            </FlexboxLayout>
-        </StackLayout>
+        <rc:keyboard-input-panel />
     </GridLayout>
 </Page>

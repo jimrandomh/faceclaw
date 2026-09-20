@@ -667,3 +667,20 @@ test('ANCS app-name lookup uses the right-link write limit, including after reau
     assert.equal(h.session.notifications.read()[0].appName,'Pushover Notifications');
   }
 });
+
+test('brightness sends the Android settings payload to the right temple, including explicit zero and Auto', async () => {
+  const transport = new FakeTransport(), session = new GlassesSession(transport, () => {}, () => {});
+  await session.setBrightness(50);
+  assert.equal(transport.sent.length, 0, 'preview mode must not send Bluetooth commands');
+  const requests = [];
+  session.state.phase = 'connected';
+  session.request = async (role, sid, build) => { requests.push({ role, sid, payload: hex(build(105)) }); };
+  await session.setBrightness(0);
+  await session.setBrightness(80);
+  await session.setBrightness(null);
+  assert.deepEqual(requests, [
+    { role: 'right', sid: 9, payload: '080110691a060a0408001000' },
+    { role: 'right', sid: 9, payload: '080110691a060a0408001050' },
+    { role: 'right', sid: 9, payload: '080110691a040a020801' },
+  ]);
+});

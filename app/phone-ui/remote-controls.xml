@@ -15,7 +15,7 @@
   height (the Watch face centers in it); the three sections share the star
   cell, only one visible at a time.
 -->
-<GridLayout xmlns="http://schemas.nativescript.org/tns.xsd" rows="auto,*" class="remote-controls">
+<GridLayout xmlns="http://schemas.nativescript.org/tns.xsd" xmlns:android="http://schemas.nativescript.org/tns.xsd" rows="auto,*" class="remote-controls">
   <!-- rows="auto" everywhere below: a rows-less GridLayout's implicit row
        acts as star, and this component sits in a bounded (star-row) parent,
        where that would balloon the first grid to fill all remaining height. -->
@@ -26,10 +26,10 @@
     <!-- A Button can't hold an image, so these are button-styled tiles. The
          explicit star row makes the cell fill the tile's height so the icon's
          center alignment has room to work in. -->
-    <GridLayout col="3" rows="*" tap="{{ onSyntheticMicTap }}" class="tab-button tab-icon-button">
+    <GridLayout col="3" rows="*" accessible="true" accessibilityRole="button" accessibilityLabel="Voice input" tap="{{ onSyntheticMicTap }}" class="tab-button tab-icon-button">
       <Image src="res://ic_tab_mic" class="tab-icon" verticalAlignment="center" horizontalAlignment="center" />
     </GridLayout>
-    <GridLayout col="4" rows="*" tap="{{ onKeyboardTap }}" class="tab-button tab-icon-button">
+    <GridLayout col="4" rows="*" accessible="true" accessibilityRole="button" accessibilityLabel="Keyboard input" tap="{{ onKeyboardTap }}" class="tab-button tab-icon-button">
       <Image src="res://ic_tab_keyboard" class="tab-icon" verticalAlignment="center" horizontalAlignment="center" />
     </GridLayout>
   </GridLayout>
@@ -53,9 +53,9 @@
 
     <!-- Watch tab: centered in the leftover height, capped at the 1.5:1 face
          aspect (watchFaceWidth = min(available, 1.5 x face height). -->
-    <GridLayout visibility="{{ watchTabVisibility }}" width="{{ watchFaceWidth }}" height="{{ watchFaceHeight }}" horizontalAlignment="center" verticalAlignment="center" class="touchpad" tap="{{ onPadTap }}" doubleTap="{{ onPadDoubleTap }}" longPress="{{ onPadLongPress }}" swipe="{{ onPadSwipe }}" touch="{{ onPadTouch }}">
-      <Label text="{{ padFocusLine }}" class="pad-focus" horizontalAlignment="center" verticalAlignment="center" />
-      <Label text="▲▼ swipe   ● select   ●● back   ‒ menu" class="pad-legend" horizontalAlignment="center" verticalAlignment="bottom" />
+    <GridLayout visibility="{{ watchTabVisibility }}" width="{{ watchFaceWidth }}" height="{{ watchFaceHeight }}" horizontalAlignment="center" verticalAlignment="center" class="touchpad" android:tap="{{ onPadTap }}" android:doubleTap="{{ onPadDoubleTap }}" android:longPress="{{ onPadLongPress }}" android:swipe="{{ onPadSwipe }}" touch="{{ onPadTouch }}">
+      <Label isUserInteractionEnabled="false" text="{{ padFocusLine }}" class="pad-focus" horizontalAlignment="center" verticalAlignment="center" />
+      <Label isUserInteractionEnabled="false" text="▲▼ swipe   ● select   ●● back   ‒ menu" class="pad-legend" horizontalAlignment="center" verticalAlignment="bottom" />
     </GridLayout>
 
     <!-- Ring tab: a touchpad on the ring's own scheme. Vertical swipes only
@@ -66,8 +66,8 @@
     <GridLayout visibility="{{ ringTabVisibility }}" height="{{ ringTouchpadHeight }}" class="touchpad ring-touchpad"
         rows="*,auto,*,auto,*,auto,*,auto,*,auto,*,auto,*"
         horizontalAlignment="center" verticalAlignment="center"
-        tap="{{ onRingPadTap }}" doubleTap="{{ onRingPadDoubleTap }}"
-        longPress="{{ onRingPadLongPress }}" swipe="{{ onRingPadSwipe }}"
+        android:tap="{{ onRingPadTap }}" android:doubleTap="{{ onRingPadDoubleTap }}"
+        android:longPress="{{ onRingPadLongPress }}" android:swipe="{{ onRingPadSwipe }}"
         touch="{{ onRingPadTouch }}">
       <Label row="1" class="ring-pad-marking" isUserInteractionEnabled="false" />
       <Label row="3" class="ring-pad-marking" isUserInteractionEnabled="false" />

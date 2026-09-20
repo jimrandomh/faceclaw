@@ -1,3 +1,4 @@
+import type { KeyboardInputSession } from '../ui/shell/keyboard-input'
 import { acceptInput, resetRingInputFilter } from "../ui/input-monitor";
 import { bindIosNotifications, iosNotificationsChanged, onIosNotificationPopup } from '../native/notification-icons.ios'
 import { shouldShowNotificationOnGlasses } from '../native/notification-sources'
@@ -42,7 +43,7 @@ import { TextViewerLayer } from '../apps/files/text-viewer'
 import { shell, rawInputEventToInputEvent, type ShellWindow } from '../ui/shell/shell'
 import { appViewportRect, SIDEBAR_WIDTH, sidebarStripVisible } from '../ui/shell/geometry'
 import { DISPLAY_MODE_VALUES, displayModeLabel, displayModeSetting, onAnySettingChanged,
-  previewColorSetting, lockScreenEnabledSetting } from '../ui/dashboard-settings'
+  previewColorSetting, lockScreenEnabledSetting, brightnessSetting, brightnessSettingToLevel } from '../ui/dashboard-settings'
 import type { PhoneGesture } from '../phone-ui/phone-gestures'
 import { isWelcomeSoundPending, setWelcomeSoundPending } from '../phone-ui/onboarding-state'
 import { findSoundEffect, playSoundEffect } from '../ui/sound-effects'
@@ -83,13 +84,13 @@ export class IosPreviewController {
   private renderTimer: ReturnType<typeof setTimeout> | null = null
   private clockTimer: ReturnType<typeof setInterval> | null = null
   private offSettings: (() => void) | null = null
+  private lastBrightness: string | null = null
   private active = false
   private runtimeRunning = false
   private clockMinute = -1
   private shellDirty = true
   private inputQueue: Promise<void> = Promise.resolve()
   private lastLayout = ''
-  private prompting = false
   private readonly appHosts = new Map<string, WorkerAppHost>()
   private readonly inProcessApps = new Map<string, InProcessWindow>()
   private readonly batteryObservers: any[] = []
@@ -124,7 +125,8 @@ export class IosPreviewController {
 
   constructor(private readonly onFrame: (image: ImageSource, focus: string) => void,
     private readonly onError: (message: string) => void,
-    private readonly onConnectionState: (state: SessionState) => void = () => {}) {
+    private readonly onConnectionState: (state: SessionState) => void = () => {},
+    private readonly onKeyboardInputChanged: (session: KeyboardInputSession | null) => void = () => {}) {
     this.compositor.configureSurface('shell', { x: 0, y: 0, width: 640, height: 480, zOrder: 1, transparency: 'color-key' })
     this.compositor.configureSurface(LOCK_SCREEN_SURFACE_ID, {
       x: 0, y: 0, width: G2_LENS_WIDTH, height: G2_LENS_HEIGHT, zOrder: 1000, transparency: 'opaque',
@@ -133,6 +135,13 @@ export class IosPreviewController {
     shell.configure({
       actions: this.actions,
       voiceInputEnabled: true,
+      onKeyboardInputChanged: session => this.onKeyboardInputChanged(session ? {
+        targets: session.targets,
+        setText: text => { if (this.active && !this.glassesLocked) session.setText(text) },
+        send: () => { if (this.active && !this.glassesLocked) session.send() },
+        sendTo: id => { if (this.active && !this.glassesLocked) session.sendTo(id) },
+        discard: () => session.discard(),
+      } : null),
       prepareVoiceCapture: () => this.prepareVoiceCapture(),
       getScreenTimeoutMs: () => null,
       requestShellRender: () => this.requestShellRender(),
@@ -184,6 +193,7 @@ export class IosPreviewController {
   pause(): void {
     if (!this.active) return
     this.active = false
+    iosVoiceInput.stopPhoneCapture()
     // The phone preview is hidden; the glasses still own their screen and input.
     this.syncRuntime()
     this.logBluetooth(`Phone background; glasses ${this.session?.state.phase ?? 'disconnected'}`)
@@ -230,11 +240,23 @@ export class IosPreviewController {
     this.logBluetooth(`Phone battery ${phone.battery ?? "unknown"}% charging=${phone.charging}`)
     this.offSettings = onAnySettingChanged(() => {
       this.syncLockSetting()
+      this.pushBrightness()
       this.relayout()
       shell.foregroundWindow()?.requestRender()
       this.requestShellRender()
     })
     this.clockTimer = setInterval(() => this.refreshClock(), 60_000)
+  }
+  private pushBrightness(): void {
+    const session = this.session
+    if (session?.state.phase !== 'connected') { this.lastBrightness = null; return }
+    const value = brightnessSetting.get()
+    if (value === this.lastBrightness) return
+    this.lastBrightness = value
+    void session.setBrightness(brightnessSettingToLevel(value)).catch(error => {
+      this.lastBrightness = null
+      this.logBluetooth(`Brightness: ${String(error)}`)
+    })
   }
   private syncLockSetting(): void {
     const enabled = lockScreenEnabledSetting.get()
@@ -500,6 +522,7 @@ export class IosPreviewController {
     if (!this.session) {
       this.session = new GlassesSession(iosBluetooth(), state => {
         if (state.phase !== "connected") resetRingInputFilter()
+        this.pushBrightness()
         this.maybePlayWelcomeSound(state)
         if (state.phase !== 'connected' && state.phase !== 'connecting') this.glassesWorn = null
         if (state.phase !== 'connected') iosVoiceInput.handleSessionEnded()
@@ -540,17 +563,22 @@ export class IosPreviewController {
   startVoiceInput(): void { if (!this.glassesLocked) shell.startVoiceInput() }
   private async prepareVoiceCapture(): Promise<boolean> {
     if (this.glassesLocked) return false
-    if (this.session?.state.phase !== 'connected') {
-      if (this.active) this.onError('Connect the glasses to use their microphone.')
-      return false
-    }
-    const ready = await iosVoiceInput.prepare(this.active)
+    const usePhoneMic = this.session?.state.phase !== 'connected'
+    if (usePhoneMic && !this.active) return false
+    const ready = await iosVoiceInput.prepare(this.active, usePhoneMic)
     if (!ready && this.active) this.onError(iosVoiceInput.statusText)
-    return ready && !this.glassesLocked && this.session?.state.phase === 'connected'
+    return ready && !this.glassesLocked && (this.session?.state.phase === 'connected' || this.active)
   }
   private async startVoiceCapture(endpointing = false): Promise<void> {
-    if (this.glassesLocked || !this.session || this.session.state.phase !== 'connected') return
-    await iosVoiceInput.startGlassesCapture(this.session, message => this.logBluetooth(message), endpointing)
+    if (this.glassesLocked) return
+    const log = (message: string) => this.logBluetooth(message)
+    if (this.session?.state.phase === 'connected') {
+      await iosVoiceInput.startGlassesCapture(this.session, log, endpointing)
+    } else if (this.active) {
+      // Recheck microphone permission if the glasses disconnected after prepare.
+      if (!await iosVoiceInput.prepare(this.active, true) || !this.active || this.glassesLocked) return
+      await iosVoiceInput.startPhoneCapture(log, endpointing)
+    }
   }
   private logBluetooth(message: string): void {
     const line = `${new Date().toISOString()} [${this.active ? 'foreground' : 'background'}${UIApplication.sharedApplication.protectedDataAvailable ? '' : ',protected-data-unavailable'}] ${message}`
@@ -568,17 +596,9 @@ export class IosPreviewController {
     try { File.fromPath(path.join(knownFolders.documents().path, 'bluetooth.log')).writeTextSync(this.logLines.join('\n')) }
     catch (error) { console.warn(`Bluetooth log: ${error}`) }
   }
-  async typeIntoApp(): Promise<void> {
-    if (this.glassesLocked) return
-    if (!this.active) { this.logBluetooth('Text input requires opening Faceclaw on the phone'); return }
-    if (this.prompting || !shell.foregroundWindow()?.receiveTextInput) return
-    this.prompting = true
-    try {
-      const result = await Dialogs.prompt({ title: 'Type into ' + shell.foregroundWindow()?.title,
-        message: 'Enter text to send to this app.', okButtonText: 'Send', cancelButtonText: 'Cancel' })
-      if (result.result && !this.glassesLocked) shell.sendTextToForegroundWindow(result.text)
-    } catch (error) { this.fail(error) }
-    finally { this.prompting = false }
+  typeIntoApp(): void {
+    if (this.glassesLocked || !this.active) return
+    shell.startKeyboardInput()
   }
   private async editSetting(setting: { editorTitle: string; inputKind?: string; get(): string; set(value: string): void }): Promise<boolean> {
     if (!this.active) { this.logBluetooth('Editing text settings requires opening Faceclaw on the phone'); return false }

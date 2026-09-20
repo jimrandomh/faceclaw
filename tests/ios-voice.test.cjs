@@ -4,11 +4,13 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 const ts = require('typescript');
 function harness() {
-  const native = { startWithEndpointing(endpointing) { this.endpointing = endpointing; return ''; }, cancel() { this.cancels++; }, cancels: 0, finish() { this.finished = true; }, acceptPacket: p => audio.push(p) };
+  const native = { startWithEndpointing(endpointing) { this.endpointing = endpointing; return ''; }, startPhoneWithEndpointing(endpointing) { this.endpointing = endpointing; this.phone = true; return this.error ?? ''; }, cancel() { this.cancels++; }, cancels: 0, finish() { this.finished = true; }, acceptPacket: p => audio.push(p) };
   const audio = [], timers = new Map(), commands = [], text = [];
-  let authorization = 3, permissionRequests = 0, release;
+  let authorization = 3, microphoneAuthorization = 3, microphoneRequests = 0, permissionRequests = 0, release;
   const sandbox = { exports: {}, FaceclawSpeech: { new: () => native, authorizationStatus: () => authorization,
-    requestAuthorization: done => { permissionRequests++; done(3); } },
+    requestAuthorization: done => { permissionRequests++; done(3); },
+    microphoneAuthorizationStatus: () => microphoneAuthorization,
+    requestMicrophoneAuthorization: done => { microphoneRequests++; done(3); } },
     setTimeout: fn => { timers.set(fn, fn); return fn; }, clearTimeout: fn => timers.delete(fn),
     NSData: { dataWithBytesLength: (b, n) => Buffer.from(b, 0, n) }, interop: { handleof: b => b } };
   vm.runInNewContext(ts.transpileModule(fs.readFileSync('app/native/voice-control.ios.ts', 'utf8'), {
@@ -21,6 +23,7 @@ function harness() {
     return Promise.resolve();
   } };
   return { bridge, native, session, audio, commands, text, timers, release: () => release(),
+    microphoneAuthorization: value => { microphoneAuthorization = value; }, microphoneRequests: () => microphoneRequests,
     authorization: value => { authorization = value; }, permissionRequests: () => permissionRequests,
     event: event => native.eventHandler(JSON.stringify(event)) };
 }
@@ -80,4 +83,56 @@ test('hands-free endpointing releases the microphone and waits for the final tra
   const manual = h.bridge.startGlassesCapture(h.session, () => {}); h.release(); await manual;
   assert.equal(h.native.endpointing, false);
   const cancelled = h.bridge.stopPushToTalk(); h.bridge.stop(); await cancelled;
+});
+
+test('phone microphone permission is requested only for foreground preview capture', async () => {
+  const h = harness(); h.microphoneAuthorization(0);
+  assert.equal(await h.bridge.prepare(true), true);
+  assert.equal(h.microphoneRequests(), 0, 'glasses input does not need phone microphone permission');
+  assert.equal(await h.bridge.prepare(false, true), false);
+  assert.equal(h.microphoneRequests(), 0);
+  assert.equal(await h.bridge.prepare(true, true), true);
+  assert.equal(h.microphoneRequests(), 1);
+  h.microphoneAuthorization(2);
+  assert.equal(await h.bridge.prepare(true, true), false);
+  assert.match(h.bridge.statusText, /Microphone.*Settings/);
+});
+
+test('phone capture forwards endpointing and drains final text without touching Bluetooth', async () => {
+  const h = harness();
+  await h.bridge.startPhoneCapture(() => {}, true);
+  assert.equal(h.native.phone, true); assert.equal(h.native.endpointing, true);
+  h.bridge.handleSessionEnded();
+  h.event({ kind: 'transcript', text: 'First line\nSecond line', final: false });
+  assert.equal(h.text.length, 1, 'BLE state changes must not stop phone capture');
+  h.event({ kind: 'finishing' });
+  let finished = false;
+  const completion = h.bridge.stopPushToTalk().then(() => { finished = true; });
+  await Promise.resolve(); assert.equal(finished, false);
+  h.bridge.handleSessionEnded();
+  h.event({ kind: 'transcript', text: 'First line\nSecond line.', final: true });
+  h.event({ kind: 'ended' }); await completion;
+  assert.equal(h.text.at(-1).text, 'First line\nSecond line.');
+  assert.deepEqual(h.commands, []);
+});
+
+test('background cleanup stops phone capture but preserves glasses capture', async () => {
+  const h = harness(); let ends = 0; h.bridge.onSpeechEnd(() => ends++);
+  await h.bridge.startPhoneCapture(() => {});
+  h.bridge.stopPhoneCapture();
+  assert.equal(ends, 1);
+  h.event({ kind: 'transcript', text: 'stale', final: true }); assert.equal(h.text.length, 0);
+  const start = h.bridge.startGlassesCapture(h.session, () => {}); h.release(); await start;
+  h.bridge.stopPhoneCapture();
+  h.event({ kind: 'transcript', text: 'on glasses', final: false });
+  assert.equal(h.text.at(-1).text, 'on glasses');
+  h.bridge.stop();
+});
+
+test('phone microphone startup errors end capture with an actionable status', async () => {
+  const h = harness(); let ends = 0; h.bridge.onSpeechEnd(() => ends++);
+  h.native.error = 'No phone microphone is available.';
+  await h.bridge.startPhoneCapture(() => {});
+  assert.equal(ends, 1); assert.match(h.bridge.statusText, /No phone microphone/);
+  await h.bridge.stopPushToTalk();
 });

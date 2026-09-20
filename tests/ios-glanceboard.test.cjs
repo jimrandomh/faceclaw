@@ -60,6 +60,7 @@ function fixture() {
     async enableWearDetectionAndRequestState() {}
     async start() { this.state = { phase: 'connected' }; this.onState(this.state); }
     async stop() { this.state = { phase: 'disconnected' }; this.onState(this.state); }
+    async setBrightness() {}
     setFrame(pixels) { if (this.state.phase === 'connected') sent.push(pixels); }
     wake() {}
   }
@@ -84,7 +85,7 @@ function fixture() {
     '@nativescript/core': { File: { fromPath: () => ({ writeTextSync() {} }) },
       knownFolders: { documents: () => ({ path: '/tmp' }) }, path },
     '../native/ios-bluetooth': { iosBluetooth: () => ({}) },
-    '../native/ios-voice-input': { iosVoiceInput: { handleSessionEnded() {} } },
+    '../native/ios-voice-input': { iosVoiceInput: { handleSessionEnded() {}, stopPhoneCapture() {} } },
     './glasses-session': { GlassesSession: Session },
     '../native/nightscout-bridge': { nightscoutBridge: { async start() {}, async stop() {} } },
     './glance-host': { GlanceHost }, './events': events,
@@ -97,7 +98,7 @@ function fixture() {
     '../phone-ui/onboarding-state': { isWelcomeSoundPending: () => false },
     '../ui/sound-effects': {},
     '../ui/shell/worker-window': {}, '../ui/shell/in-process-window': {},
-    '../ui/dashboard-settings': { lockScreenEnabledSetting: { get: () => settings.lock }, onAnySettingChanged: fn => { settingsChanged = fn; return () => {}; }, previewColorSetting: { get: () => 'white' } },
+    '../ui/dashboard-settings': { brightnessSetting: { get: () => 'auto' }, brightnessSettingToLevel: () => null, lockScreenEnabledSetting: { get: () => settings.lock }, onAnySettingChanged: fn => { settingsChanged = fn; return () => {}; }, previewColorSetting: { get: () => 'white' } },
     '../native/phone-battery': { readPhoneBatteryState: () => ({ battery: 80, charging: false }) },
     '../apps/ios-availability': { iosAppUnavailableReason: () => null },
     '../graphics/surface-compositor': { SurfaceCompositor }, '../graphics/plane': planes, '../graphics/image': images,
@@ -138,7 +139,7 @@ function fixture() {
     await render();
   }
   async function phone(type, origin = 'ring') { controller.gesture(type, origin); await render(); }
-  return { controller, shell, settings, phoneState, observers, wear: wearing => session.onWear(wearing), settingsChanged: () => settingsChanged(), sent, previews, received, boardStats, hardware, phone, advance, render };
+  return { controller, shell, keyboardChanged: session => shellOptions.onKeyboardInputChanged(session), settings, phoneState, observers, wear: wearing => session.onWear(wearing), settingsChanged: () => settingsChanged(), sent, previews, received, boardStats, hardware, phone, advance, render };
 }
 const assertBlank = pixels => assert.ok(pixels.every(p => p === 0));
 const assertBoard = pixels => {
@@ -298,4 +299,23 @@ test('iOS deduplicates original ring ticks before apps, lock toggles and Glanceb
   f.controller.session.onState({ phase:'retrying' });
   f.controller.session.onState({ phase:'connected' });
   await f.hardware(3,2,2051); assert.equal(f.shell.isScreenOn(),false);
+});
+
+test('keyboard sessions cannot deliver text after the glasses lock or phone leaves the foreground', () => {
+  const f = fixture();
+  let editor;
+  f.controller.onKeyboardInputChanged = session => { editor = session; };
+  const calls = [];
+  f.keyboardChanged({ targets: [{ id: 'app', label: 'Type into App' }],
+    setText: text => calls.push(['text', text]), send: () => calls.push(['send']),
+    sendTo: id => calls.push(['target', id]), discard: () => calls.push(['discard']) });
+  editor.setText('hello'); editor.sendTo('app');
+  assert.deepEqual(calls, [['text', 'hello'], ['target', 'app']]);
+  f.controller.glassesLocked = true;
+  editor.setText('locked'); editor.send(); editor.sendTo('app');
+  assert.equal(calls.length, 2);
+  f.controller.glassesLocked = false; f.controller.pause();
+  editor.setText('background'); editor.sendTo('app');
+  assert.equal(calls.length, 2);
+  editor.discard(); assert.deepEqual(calls.at(-1), ['discard']);
 });

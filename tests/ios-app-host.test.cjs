@@ -185,11 +185,12 @@ test('background glasses input still composites frames; phone resume preserves t
     constructor(_transport, onState, onInput) { session = this; this.onState = onState; this.onInput = onInput; }
     async start() { starts++; this.state = { phase: 'connected' }; this.onState(this.state); }
     async stop() { stops++; this.state = { phase: 'disconnected' }; this.onState(this.state); }
+    async setBrightness() {}
     setFrame(pixels) { if (this.state.phase === 'connected') frames.push(pixels); }
     playBuzzerSequence(payload) { sounds.push([...payload]); }
     wake() {}
   }
-  const settings = { lockScreenEnabledSetting: { get: () => true }, onAnySettingChanged: () => () => {}, previewColorSetting: { get: () => 'white' } };
+  const settings = { brightnessSetting: { get: () => 'auto' }, brightnessSettingToLevel: () => null, lockScreenEnabledSetting: { get: () => true }, onAnySettingChanged: () => () => {}, previewColorSetting: { get: () => 'white' } };
   const modules = {
     "../ui/input-monitor": load("app/ui/input-monitor.ts", {}),
     '../assistant/system-tools': { registerSystemTools() {} },
@@ -201,7 +202,7 @@ test('background glasses input still composites frames; phone resume preserves t
     '../native/notification-sources': { shouldShowNotificationOnGlasses: () => true },
     '../native/compass.ios': { bindCompassSession() {}, receiveCompassEvent() {} },
     '@nativescript/core': { File: { fromPath: () => ({ writeTextSync() {} }) }, knownFolders: { documents: () => ({ path: '/tmp' }) }, path },
-    '../native/ios-voice-input': { iosVoiceInput: { handleSessionEnded() {} } },
+    '../native/ios-voice-input': { iosVoiceInput: { handleSessionEnded() {}, stopPhoneCapture() {} } },
     '../native/ios-bluetooth': { iosBluetooth: () => ({}) }, './glasses-session': { GlassesSession: Session },
     '../native/nightscout-bridge': { nightscoutBridge: { async start() { pollStarts++; }, async stop() { pollStops++; } } },
     './glance-host': { GlanceHost: class { dismiss() {} isVisible() { return false; } } },
@@ -266,12 +267,15 @@ test('iOS bandwidth footer toggles live, polls only in foreground and resets its
     constructor() { views.push(this); }
     on(event, fn) { this.events.set(event, fn); }
     addChild(view) { this.children.push(view); }
+    set(key, value) { this[key] = value; }
+    notifyPropertyChange() {}
     getActualSize() { return { width: 0, height: 0 }; }
+    getViewById() { return null; }
     static setRow() {} static setColumn() {}
   }
   const core = { Application: { suspendEvent: 'suspend', resumeEvent: 'resume',
     on: (key, fn) => appEvents.set(key, fn), off: key => appEvents.delete(key) },
-    Button: View, Color: class {}, Dialogs: {}, GridLayout: View, Image: View, Label: View, Page: View, StackLayout: View };
+    Builder: { load: () => new View() }, Observable: View, Button: View, Color: class {}, Dialogs: {}, GridLayout: View, Image: View, Label: View, Page: View, StackLayout: View };
   const modules = {
     "../ui/input-monitor": load("app/ui/input-monitor.ts", {}),
     '../assistant/system-tools': { registerSystemTools() {} },
@@ -289,15 +293,19 @@ test('iOS bandwidth footer toggles live, polls only in foreground and resets its
     './phone-gestures': { PhoneGestureRecognizer: class { cancel() {} } },
     './ble-bandwidth-meter': require('../.test-build/app/phone-ui/ble-bandwidth-meter.js'),
     '../native/ble-traffic': { sampleBleTraffic: () => totals },
-    '../ui/dashboard-settings': { showBleBandwidthSetting: { get: () => enabled },
+    '../ui/dashboard-settings': { brightnessSetting: { get: () => 'auto' }, displayModeSetting: { get: () => 'full' }, displayModeLabel: () => 'Full', showBleBandwidthSetting: { get: () => enabled },
       onAnySettingChanged: fn => { settingListeners.add(fn); return () => settingListeners.delete(fn); } },
     '../g2/device-addresses': { loadDeviceAddresses: () => ({}) },
     '../g2/ios-peripheral-identity': { deviceAddressError: () => 'no test devices' },
     './onboarding-state': { isPreviewOnlyMode: () => false },
     '../g2/reconnect-policy': { isAutoReconnectSuppressed: () => false },
   };
+  modules['./keyboard-input-view-model'] = load('app/phone-ui/keyboard-input-view-model.ts', { require: id => modules[id] });
+  modules['./remote-controls-view-model'] = load('app/phone-ui/remote-controls-view-model.ts', { require: id => modules[id] });
   const { createMainPage } = load('app/phone-ui/main-page.ios.ts', {
     require: id => modules[id] ?? {}, Date: { now: () => atMs },
+    NSNotificationCenter: { defaultCenter: { addObserverForNameObjectQueueUsingBlock: () => ({}), removeObserver() {} } },
+    UIKeyboardWillChangeFrameNotification: 'keyboard', NSOperationQueue: { mainQueue: {} },
     setInterval: fn => { const id = ++nextId; intervals.set(id, fn); return id; }, clearInterval: id => intervals.delete(id),
     setTimeout: () => 1, clearTimeout() {},
   });
@@ -396,4 +404,36 @@ test('iOS welcome sound waits for a new acknowledged frame and is consumed once'
   host.maybePlayWelcomeSound({ phase: 'connected', frames: 1 });
   host.maybePlayWelcomeSound({ phase: 'connected', frames: 2 });
   assert.equal(played.length, count);
+});
+
+test('iOS preview voice uses the phone microphone, while connected capture stays on glasses', async () => {
+  const calls = [];
+  const bridge = { prepare: async (foreground, phone) => { calls.push(['prepare', foreground, phone]); return true; },
+    startPhoneCapture: async (_log, endpointing) => calls.push(['phone', endpointing]),
+    startGlassesCapture: async (_session, _log, endpointing) => calls.push(['glasses', endpointing]) };
+  const { IosPreviewController } = load('app/g2/ios-preview-controller.ts', {
+    require: id => id === '../native/ios-voice-input' ? { iosVoiceInput: bridge } : {},
+  });
+  const host = Object.create(IosPreviewController.prototype);
+  host.active = true; host.glassesLocked = false;
+  assert.equal(await host.prepareVoiceCapture(), true);
+  await host.startVoiceCapture(true);
+  assert.deepEqual(calls, [['prepare', true, true], ['prepare', true, true], ['phone', true]]);
+  calls.length = 0; host.session = { state: { phase: 'connected' } };
+  assert.equal(await host.prepareVoiceCapture(), true); await host.startVoiceCapture(false);
+  assert.deepEqual(calls, [['prepare', true, false], ['glasses', false]]);
+  calls.length = 0; host.active = false; host.session = null;
+  assert.equal(await host.prepareVoiceCapture(), false); await host.startVoiceCapture();
+  assert.deepEqual(calls, []);
+});
+
+test('iOS keyboard action opens the shared destination session and remains blocked while locked', () => {
+  let opened = 0;
+  const { IosPreviewController } = load('app/g2/ios-preview-controller.ts', {
+    require: id => id === '../ui/shell/shell' ? { shell: { startKeyboardInput: () => opened++ } } : {},
+  });
+  const host = Object.create(IosPreviewController.prototype);
+  host.active = true; host.glassesLocked = false; host.typeIntoApp(); assert.equal(opened, 1);
+  host.glassesLocked = true; host.typeIntoApp(); assert.equal(opened, 1);
+  host.glassesLocked = false; host.active = false; host.typeIntoApp(); assert.equal(opened, 1);
 });

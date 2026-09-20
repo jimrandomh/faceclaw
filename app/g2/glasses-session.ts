@@ -1,3 +1,4 @@
+import { setBrightness } from './brightness-protocol'
 import { AncsClient, ANCS_FIRMWARE_VERSION } from './ancs-client'
 import { type CompassEvent } from '../native/compass-types'
 import * as protocol from './ble-protocol'
@@ -422,6 +423,10 @@ export class GlassesSession {
     await this.send('right', protocol.SID.settings, 0x20, queryWearState())
     this.check(generation)
     await this.send('left', protocol.SID.settings, 0x20, queryWearState())
+  }
+  async setBrightness(level: number | null): Promise<void> {
+    if (this.state.phase !== 'connected') return
+    await this.request('right', protocol.SID.settings, magic => setBrightness(magic, level), 'Brightness')
   }
   setFrame(gray: Uint8Array): void {
     if (this.state.phase !== 'connected') return
