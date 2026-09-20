@@ -8,6 +8,7 @@ module FaceclawGraphics {
   header "FaceclawSseRequest.h"
   header "FaceclawLocation.h"
   header "FaceclawConfigPort.h"
+  header "FaceclawSettings.h"
   header "FaceclawEvenHubWebView.h"
   header "FaceclawCrypto.h"
   header "FaceclawQrScanner.h"

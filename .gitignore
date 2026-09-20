@@ -43,6 +43,7 @@ old
 # pull_config.sh output: the phone's live settings, including API keys
 faceclaw_settings.xml
 faceclaw_settings.ios.json
+faceclaw_settings*.jsonc
 
 # Developer configs
 build_paths.sh

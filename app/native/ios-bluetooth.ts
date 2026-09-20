@@ -1,4 +1,4 @@
-import { ApplicationSettings } from '@nativescript/core'
+import { getStringSetting, removeSetting, setStringSetting } from "./settings-store";
 import { identifyIosPeripheral, type IosAdvertisement, type IosDevice } from '../g2/ios-peripheral-identity'
 import { hexToBytes } from '../util/hex-util'
 
@@ -50,7 +50,7 @@ export class IosBluetooth {
       const device = identifyIosPeripheral(raw)
       if (device) {
         this.devices.set(device.address, device)
-        ApplicationSettings.setString(`ios.ble.peripheral.${device.address}`, JSON.stringify({ identifier: device.identifier, role: device.role }))
+        setStringSetting(`ios.ble.peripheral.${device.address}`, JSON.stringify({ identifier: device.identifier, role: device.role }))
         this.emit({ kind: 'device', device })
       }
       return
@@ -99,7 +99,7 @@ export class IosBluetooth {
       const live = this.devices.get(address)
       if (live && live.role !== role) throw new Error(`${address} advertises as ${live.role}, not ${role}. Check Configure devices.`)
       try {
-        const saved = JSON.parse(ApplicationSettings.getString(`ios.ble.peripheral.${address}`, '{}'))
+        const saved = JSON.parse(getStringSetting(`ios.ble.peripheral.${address}`, '{}'))
         if (saved.role === role && typeof saved.identifier === 'string') result[role] = saved.identifier
       } catch { /* A fresh scan can recover malformed settings. */ }
     }
@@ -146,7 +146,7 @@ export class IosBluetooth {
     await this.operation(identifier, id => this.native.writeCharacteristicDataRequestId(identifier, characteristic, data, id))
   }
   disconnect(identifier: string): void { this.native.disconnect(identifier) }
-  forget(address: string): void { ApplicationSettings.remove(`ios.ble.peripheral.${address}`); this.devices.delete(address) }
+  forget(address: string): void { removeSetting(`ios.ble.peripheral.${address}`); this.devices.delete(address) }
 }
 let instance: IosBluetooth | null = null
 export function iosBluetooth(): IosBluetooth { return instance ??= new IosBluetooth() }

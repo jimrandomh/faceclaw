@@ -17,6 +17,8 @@ function fixture({ ios = false, connected = true } = {}) {
     '../../native/settings-store': {
       getBooleanSetting: (key, fallback) => settings.get(key) ?? fallback,
       setBooleanSetting: (key, value) => settings.set(key, value),
+      getStringSetting: (key, fallback) => settings.get(key) ?? fallback,
+      setStringSetting: (key, value) => settings.set(key, value),
     },
   };
   mocks['../native/settings-store'] = mocks['../../native/settings-store'];
@@ -47,10 +49,13 @@ function fixture({ ios = false, connected = true } = {}) {
   const send = data => global.onmessage({ data });
   const input = type => send({ type: 'input', windowId: 'paperclips:main', focused: true, frameId: 1,
     event: { type, source: 'ring', timestampMs: 1 } });
+  // Opens the window and, with no saved game, presses the splash screen's
+  // only row (New game) so play begins.
   const open = () => {
     send({ type: 'open-window', windowId: 'paperclips:main', surfaceId: 'window:paperclips:main',
       title: 'Paperclips', viewport: { width: 576, height: 260 } });
     send({ type: 'foreground', windowId: 'paperclips:main', foreground: true, focused: true });
+    input('click');
   };
   const pixels = () => ios ? Buffer.from(messages.filter(m => m.type === 'surface-frame').at(-1).pixels, 'base64')
     : Buffer.from(frames.at(-1)[0]);
@@ -73,8 +78,10 @@ for (const ios of [false, true]) {
     h.input('long-press');
     assert.equal(h.timers.size, 0);
     assert.ok(ios ? h.messages.some(m => m.type === 'buzzer-sequence' && m.payload.length) : h.sounds.length);
+    // The splash screen leaves long-press to the shell; play claims it; pause releases it.
     const gestures = h.messages.filter(m => m.type === 'set-window-gestures');
-    assert.equal(gestures[0].claimsLongPress, true);
+    assert.equal(gestures[0].claimsLongPress, false);
+    assert.equal(gestures[1].claimsLongPress, true);
     assert.equal(gestures.at(-1).claimsLongPress, false);
     // The gap between the pause title and hints must occlude the deferred
     // game labels below, rather than letting them draw over the modal.
@@ -86,18 +93,19 @@ for (const ios of [false, true]) {
     assert.equal(h.timers.size, 1);
     h.send({ type: 'close-window', windowId: 'paperclips:main' });
     assert.equal(h.timers.size, 0);
+    assert.match(h.settings.get('paperclips.save'), /"version"/);
     assert.deepEqual(h.errors, []);
   });
 }
 
 test('Paperclips uses the disconnected preview and suppresses duplicate frames', () => {
   const h = fixture({ connected: false });
-  h.open();
-  assert.equal(h.frames.length, 1);
-  h.send({ type: 'render', windowId: 'paperclips:main', focused: true });
-  assert.equal(h.frames.length, 1);
-  h.input('click');
+  h.open(); // splash, then the fresh game
   assert.equal(h.frames.length, 2);
+  h.send({ type: 'render', windowId: 'paperclips:main', focused: true });
+  assert.equal(h.frames.length, 2);
+  h.input('click');
+  assert.equal(h.frames.length, 3);
   assert.deepEqual(h.errors, []);
 });
 

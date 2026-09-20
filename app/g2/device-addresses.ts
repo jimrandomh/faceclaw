@@ -1,4 +1,4 @@
-import { ApplicationSettings } from "@nativescript/core";
+import { getNumberSetting, getStringSetting, removeSetting, setNumberSetting, setStringSetting } from "../native/settings-store";
 
 import { normalizeMacAddress } from "./even-advertisement";
 
@@ -24,16 +24,16 @@ const DEFAULT_DEVICE_ADDRESSES: DeviceAddresses = {
 
 export function loadDeviceAddresses(): DeviceAddresses {
   return {
-    right: normalizeMacAddress(ApplicationSettings.getString(ADDRESS_KEYS.right, DEFAULT_DEVICE_ADDRESSES.right)),
-    left: normalizeMacAddress(ApplicationSettings.getString(ADDRESS_KEYS.left, DEFAULT_DEVICE_ADDRESSES.left)),
-    ring: normalizeMacAddress(ApplicationSettings.getString(ADDRESS_KEYS.ring, DEFAULT_DEVICE_ADDRESSES.ring)),
+    right: normalizeMacAddress(getStringSetting(ADDRESS_KEYS.right, DEFAULT_DEVICE_ADDRESSES.right)),
+    left: normalizeMacAddress(getStringSetting(ADDRESS_KEYS.left, DEFAULT_DEVICE_ADDRESSES.left)),
+    ring: normalizeMacAddress(getStringSetting(ADDRESS_KEYS.ring, DEFAULT_DEVICE_ADDRESSES.ring)),
   };
 }
 
 export function saveDeviceAddresses(addresses: DeviceAddresses): void {
-  ApplicationSettings.setString(ADDRESS_KEYS.right, normalizeMacAddress(addresses.right));
-  ApplicationSettings.setString(ADDRESS_KEYS.left, normalizeMacAddress(addresses.left));
-  ApplicationSettings.setString(ADDRESS_KEYS.ring, normalizeMacAddress(addresses.ring));
+  setStringSetting(ADDRESS_KEYS.right, normalizeMacAddress(addresses.right));
+  setStringSetting(ADDRESS_KEYS.left, normalizeMacAddress(addresses.left));
+  setStringSetting(ADDRESS_KEYS.ring, normalizeMacAddress(addresses.ring));
 }
 
 export function isValidMacAddress(value: string, allowEmpty = false): boolean {
@@ -78,34 +78,34 @@ const IDENTITY_KEYS = {
 } as const;
 
 export function loadPairedGlassesIdentity(): PairedGlassesIdentity | null {
-  const serial = ApplicationSettings.getString(IDENTITY_KEYS.serial, "").trim();
+  const serial = getStringSetting(IDENTITY_KEYS.serial, "").trim();
   if (!serial) return null;
   return {
     serial,
-    leftName: ApplicationSettings.getString(IDENTITY_KEYS.leftName, ""),
-    rightName: ApplicationSettings.getString(IDENTITY_KEYS.rightName, ""),
-    leftAddress: normalizeMacAddress(ApplicationSettings.getString(IDENTITY_KEYS.leftAddress, "")),
-    rightAddress: normalizeMacAddress(ApplicationSettings.getString(IDENTITY_KEYS.rightAddress, "")),
-    ringName: ApplicationSettings.getString(IDENTITY_KEYS.ringName, ""),
-    ringAddress: normalizeMacAddress(ApplicationSettings.getString(IDENTITY_KEYS.ringAddress, "")),
-    pairedAtMs: ApplicationSettings.getNumber(IDENTITY_KEYS.pairedAtMs, 0),
+    leftName: getStringSetting(IDENTITY_KEYS.leftName, ""),
+    rightName: getStringSetting(IDENTITY_KEYS.rightName, ""),
+    leftAddress: normalizeMacAddress(getStringSetting(IDENTITY_KEYS.leftAddress, "")),
+    rightAddress: normalizeMacAddress(getStringSetting(IDENTITY_KEYS.rightAddress, "")),
+    ringName: getStringSetting(IDENTITY_KEYS.ringName, ""),
+    ringAddress: normalizeMacAddress(getStringSetting(IDENTITY_KEYS.ringAddress, "")),
+    pairedAtMs: getNumberSetting(IDENTITY_KEYS.pairedAtMs, 0),
   };
 }
 
 export function savePairedGlassesIdentity(identity: PairedGlassesIdentity): void {
-  ApplicationSettings.setString(IDENTITY_KEYS.serial, identity.serial.trim().toUpperCase());
-  ApplicationSettings.setString(IDENTITY_KEYS.leftName, identity.leftName);
-  ApplicationSettings.setString(IDENTITY_KEYS.rightName, identity.rightName);
-  ApplicationSettings.setString(IDENTITY_KEYS.leftAddress, normalizeMacAddress(identity.leftAddress));
-  ApplicationSettings.setString(IDENTITY_KEYS.rightAddress, normalizeMacAddress(identity.rightAddress));
-  ApplicationSettings.setString(IDENTITY_KEYS.ringName, identity.ringName);
-  ApplicationSettings.setString(IDENTITY_KEYS.ringAddress, normalizeMacAddress(identity.ringAddress));
-  ApplicationSettings.setNumber(IDENTITY_KEYS.pairedAtMs, identity.pairedAtMs);
+  setStringSetting(IDENTITY_KEYS.serial, identity.serial.trim().toUpperCase());
+  setStringSetting(IDENTITY_KEYS.leftName, identity.leftName);
+  setStringSetting(IDENTITY_KEYS.rightName, identity.rightName);
+  setStringSetting(IDENTITY_KEYS.leftAddress, normalizeMacAddress(identity.leftAddress));
+  setStringSetting(IDENTITY_KEYS.rightAddress, normalizeMacAddress(identity.rightAddress));
+  setStringSetting(IDENTITY_KEYS.ringName, identity.ringName);
+  setStringSetting(IDENTITY_KEYS.ringAddress, normalizeMacAddress(identity.ringAddress));
+  setNumberSetting(IDENTITY_KEYS.pairedAtMs, identity.pairedAtMs);
 }
 
 export function clearPairedGlassesIdentity(): void {
   for (const key of Object.values(IDENTITY_KEYS)) {
-    ApplicationSettings.remove(key);
+    removeSetting(key);
   }
 }
 

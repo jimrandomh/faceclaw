@@ -65,3 +65,7 @@ export function onSettingsStoreChanged(listener: (key: string) => void): () => v
     changeListeners.delete(listener);
   };
 }
+
+export function getNumberSetting(key: string, fallback: number): number { return Number(getJava().getNumber(key, fallback)); }
+export function setNumberSetting(key: string, value: number): void { getJava().setNumber(key, value); }
+export function removeSetting(key: string): void { getJava().remove(key); }
