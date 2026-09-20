@@ -165,9 +165,9 @@ async function until(predicate) {
   for (let i = 0; i < 100; i++) { if (predicate()) return; await new Promise(resolve => setTimeout(resolve, 5)); }
   assert.fail('Timed out waiting for test state');
 }
-function harness(t, transport = new FakeTransport()) {
+function harness(t, transport = new FakeTransport(), textures) {
   const states = [], input = [], compass = [], wear = [];
-  const session = new GlassesSession(transport, state => states.push(state), event => input.push(event), undefined, undefined, event => compass.push(event), wearing => wear.push(wearing));
+  const session = new GlassesSession(transport, state => states.push(state), event => input.push(event), undefined, undefined, event => compass.push(event), wearing => wear.push(wearing), undefined, textures);
   t.after(async () => { transport.hold = false; await session.stop(); });
   return { transport, session, states, input, compass, wear };
 }
@@ -305,6 +305,67 @@ const imageBody = sent => sent.message.payload;
 const ack = (transport, sent, overrides) => transport.ack(sent.id, sent.message, overrides);
 const tick = () => new Promise(resolve => setImmediate(resolve));
 const noisy = () => Uint8Array.from({ length: 640 * 480 }, (_, i) => (i % 2) * 255);
+
+test('texture uploads precede their frame, share ACK accounting, and coalesce pixels with draw identities', async t => {
+  const plans = [];
+  let resets = 0;
+  const textures = {
+    reset() { resets++; },
+    plan(previous, next, frame, firstId) {
+      plans.push({ previous, next, frame, firstId });
+      return { uploads: plans.length === 1 ? [new Uint8Array([18, 1]), new Uint8Array([18, 2])] : [],
+        payload: new Uint8Array([8, plans.length]), nextFid: firstId + 2, usedBytes: 100 };
+    },
+  };
+  const h = harness(t, new FakeTransport(), textures);
+  await h.session.start(addresses); h.transport.hold = true;
+  const a = { native: { id: 'a' } }, b = { native: { id: 'b' } }, c = { native: { id: 'c' } };
+  h.session.setFrame(new Uint8Array(640 * 480), a);
+  await until(() => imageMessages(h.transport).length === 3);
+  const sent = imageMessages(h.transport);
+  assert.deepEqual(sent.map(s => s.message.payload[0]), [18, 18, 8]);
+  h.session.setFrame(new Uint8Array(640 * 480).fill(80), b);
+  h.session.setFrame(new Uint8Array(640 * 480).fill(160), c);
+  assert.equal(plans.length, 1, 'coalesced frames must not allocate textures');
+  ack(h.transport, sent[2]); ack(h.transport, sent[1]); await tick();
+  assert.equal(h.session.state.frames, 0, 'a draw ACK cannot retire an unacknowledged upload');
+  ack(h.transport, sent[0]); await until(() => imageMessages(h.transport).length === 4);
+  assert.equal(h.session.state.frames, 1);
+  assert.equal(plans.length, 2); assert.equal(plans[1].frame, c);
+  assert.deepEqual(plans[1].previous, plans[0].next);
+  assert.equal(plans[1].firstId, plans[0].firstId + 2);
+  assert.ok(plans[1].next.every(value => value === 0xaa));
+  ack(h.transport, imageMessages(h.transport)[3]); await until(() => h.session.state.frames === 2);
+  h.transport.hold = false; await h.session.stop();
+  assert.ok(resets > 0);
+});
+
+test('a failed texture upload invalidates residency and the pipelined frame base', async t => {
+  let resets = 0;
+  const textures = {
+    reset() { resets++; },
+    plan() { return { uploads: [new Uint8Array([18])], payload: new Uint8Array([8]), nextFid: 1, usedBytes: 4 }; },
+  };
+  const h = harness(t, new FakeTransport(), textures); await h.session.start(addresses);
+  const original = h.session.requestCfw.bind(h.session);
+  h.session.requestCfw = (role, payload) => payload[0] === 18 ? Promise.reject(new Error('texture upload failed')) : original(role, payload);
+  h.session.setFrame(new Uint8Array(640 * 480), { native: {} });
+  await until(() => h.session.state.phase === 'retrying');
+  assert.equal(resets, 1); assert.equal(h.session.lastEnqueued, null);
+  assert.equal(h.session.latestTextures, null); assert.equal(h.session.state.frames, 0);
+});
+
+test('resuming near framebuffer lease expiry discards cached draws before transmission', async t => {
+  let resets = 0, plans = 0;
+  const textures = { reset() { resets++; }, plan() { plans++; return null; } };
+  const h = harness(t, new FakeTransport(), textures); await h.session.start(addresses);
+  h.session.lastLease = Date.now() - 85_000;
+  h.session.setFrame(new Uint8Array(640 * 480), { native: {} });
+  await h.session.pump();
+  assert.equal(h.session.state.phase, 'retrying');
+  assert.equal(resets, 1); assert.equal(plans, 0);
+  assert.equal(imageMessages(h.transport).length, 0);
+});
 
 // Both eyes must finish; wrong ingress, size, CRC, ordinal and legacy replies do not count.
 test('CFW ACK identity and both-lens completion gate display metrics', async t => {

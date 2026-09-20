@@ -466,6 +466,18 @@ class SurfaceCompositor {
         rectWidth: Int,
         rectHeight: Int,
         fingerprint: String,
+    ) = submitSurface(surfaceId, pixels, rectX, rectY, rectWidth, rectHeight, fingerprint, null)
+
+    /** Retain the full surface's draw identities along with its already-baked pixels. */
+    fun submitSurface(
+        surfaceId: String,
+        pixels: ByteReader,
+        rectX: Int,
+        rectY: Int,
+        rectWidth: Int,
+        rectHeight: Int,
+        fingerprint: String,
+        draws: ByteReader?,
     ) {
         updateSurface(
             surfaceId,
@@ -475,7 +487,7 @@ class SurfaceCompositor {
             rectWidth,
             rectHeight,
             fingerprint,
-            null,
+            draws,
             false,
         )
     }

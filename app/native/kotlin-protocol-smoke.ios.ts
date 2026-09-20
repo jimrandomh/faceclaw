@@ -4,6 +4,8 @@ import { CfwTransport, parseCfwAcks } from '../g2/cfw-transport.ios'
 import { SurfaceCompositor } from '../graphics/surface-compositor.ios'
 import { buildBoundingBoxPayload } from '../g2/ble-image-optimizer.ios'
 import { lvglMetrics } from './lvgl-font.ios'
+import { textureImageId } from './texture-atlas.ios'
+import { IosTexturePlanner } from './texture-planner.ios'
 
 /** Development-only checks of real NativeScript selectors and bulk data crossings. */
 export function runKotlinProtocolSmokeTest(): void {
@@ -30,6 +32,18 @@ export function runKotlinProtocolSmokeTest(): void {
   assert(hex(c.composite()) === '0010ff203040', 'composition')
   assert(hex(protocol.packGray4(c.composite(), 3, 2)) === '01f02340', 'packing')
   c.setScreenBlanked(true); assert(c.composite().every(p => p === 0), 'blanking')
+  const textures = new IosTexturePlanner(), textured = new SurfaceCompositor(4, 2)
+  textured.configureSurface('icon', { x: 0, y: 0, width: 2, height: 2, zOrder: 0, transparency: 'opaque' })
+  const white = new Uint8Array(4).fill(255)
+  const icon = textureImageId('protocol-smoke-white', 2, 2, white)
+  const draw = new DataView(new ArrayBuffer(9)); draw.setUint8(0, 1); draw.setUint32(1, icon, true)
+  textured.submitSurfaceFrame('icon', white, { x: 0, y: 0, width: 2, height: 2 }, draw.buffer)
+  const snapshot = textured.compositeFrame(), packed = protocol.packGray4(snapshot.pixels, 4, 2)
+  const cold = textures.plan(null, packed, snapshot.textures, 1)
+  assert(!!cold && cold.uploads[0]?.[0] === 18 && cold.payload[0] === 8, 'texture upload and draw')
+  assert(textures.plan(null, packed, snapshot.textures, 1)?.uploads.length === 0, 'texture reuse')
+  textures.reset()
+  assert((textures.plan(null, packed, snapshot.textures, 1)?.uploads.length ?? 0) > 0, 'texture reset')
   const changed = new Uint8Array(16); changed[0] = 255
   assert(buildBoundingBoxPayload(new Uint8Array(16), changed, 8, 4, 1)?.[0] === 3, 'image update')
   assert(lvglMetrics('/nonexistent/faceclaw-font').length === 0, 'font bridge')

@@ -37,7 +37,7 @@ export type WorkerAppReply =
   | { type: "buzzer-sequence"; payload: number[] }
   | { type: "navigation-sensors"; request: NavigationSensorRequest }
   | { type: "open-url"; url: string }
-  | { type: "surface-frame"; surfaceId: string; width: number; height: number; pixels: string }
+  | { type: "surface-frame"; surfaceId: string; width: number; height: number; pixels: string; draws?: string }
   | {
       /**
        * The worker's bundle has evaluated and its onmessage handler is
@@ -190,7 +190,7 @@ export type WorkerAppHostOptions = {
   setSurfaceVisible: (surfaceId: string, visible: boolean) => void;
   removeSurface: (surfaceId: string) => void;
   requestShellRender: () => void;
-  submitPixels?: (surfaceId: string, pixels: Uint8Array, width: number, height: number) => void;
+  submitPixels?: (surfaceId: string, pixels: Uint8Array, width: number, height: number, draws: ArrayBuffer | null) => void;
   startTextInput?: () => void;
   /** Open or focus the Settings app, optionally selecting a section. */
   openSettings: (section?: string) => void;
@@ -259,7 +259,9 @@ export class WorkerAppHost {
           const { width, height } = message;
           if (!Number.isInteger(width) || !Number.isInteger(height) || width < 1 || height < 1 || width > 640 || height > 480) break;
           const data = NSData.alloc().initWithBase64EncodedStringOptions(message.pixels, 0 as NSDataBase64DecodingOptions);
-          if (data?.length === width * height) this.options.submitPixels(message.surfaceId, new Uint8Array(interop.bufferFromData(data)), width, height);
+          const draws = message.draws ? NSData.alloc().initWithBase64EncodedStringOptions(message.draws, 0 as NSDataBase64DecodingOptions) : null;
+          if (data?.length === width * height) this.options.submitPixels(message.surfaceId, new Uint8Array(interop.bufferFromData(data)), width, height,
+            draws ? interop.bufferFromData(draws) : null);
           break;
         }
         case "worker-ready":

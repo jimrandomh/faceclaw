@@ -149,13 +149,14 @@ test('heading updates reuse the texture; brightness, layout and clipping changes
 
 test('the background registers once and uses a nine-byte image reference on later frames', () => {
   const registered = [];
-  const { prepareFrameDraws } = load('app/graphics/glyph-wire.ts', {}, '', {
+  const atlas = load('app/native/texture-atlas.ts', {}, '', {
     global: { isAndroid: true },
     com: { faceclaw: { app: { AndroidByteReader: class { constructor(buffer) { this.buffer = buffer; } }, ImageAtlas: { ensure: (...args) => {
       registered.push(args);
       return 1;
     } } } } },
   });
+  const { prepareFrameDraws } = load('app/graphics/glyph-wire.ts', { '../native/texture-atlas': atlas });
   const background = compass.createCompassBackground(576, 260, 256, 193.25, 98, 140, 1);
   for (const heading of [0, 1, 2, 45, 90]) {
     const image = background.clone();

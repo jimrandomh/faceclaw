@@ -1,20 +1,20 @@
 /**
- * Marshals deferred-draw identity (text glyphs and icon images) to the Java
- * side for the texture-cache pipeline (CFW modes 12/13/14; see
+ * Marshals deferred-draw identity (text glyphs and icon images) to the Kotlin
+ * side for the texture-cache pipeline (CFW modes 18/19/20; see
  * notes/texture-cache-display-list-design.md).
  *
  * Channels, all cheap ByteBuffer crossings:
- *  - glyph raster registration into the process-wide Java GlyphAtlas, once
+ *  - glyph raster registration into the process-wide Kotlin GlyphAtlas, once
  *    per (font, glyph) per JS context (main thread and each worker register
  *    independently; the atlas dedupes by the font's stable atlasKey);
- *  - image registration into the Java ImageAtlas, once per distinct image
+ *  - image registration into the Kotlin ImageAtlas, once per distinct image
  *    content per JS context (images are content-addressed: the key is a hash
  *    of dimensions + pixels, so the same icon rendered anywhere dedupes and
  *    a changed icon is simply a new image);
  *  - a per-frame draw list accompanying each submitted surface frame, which
- *    the Java planner may replay as on-glasses cached draws.
+ *    the Kotlin planner may replay as on-glasses cached draws.
  *
- * Draws that can't participate (no atlasKey, outside the mode-14 ASCII
+ * Draws that can't participate (no atlasKey, outside the mode-20 ASCII
  * table, ink outside the line cell, oversized images) are simply left out —
  * their pixels are baked into the submitted frame either way, so exclusion
  * only means "no wire savings for this draw".
@@ -22,7 +22,7 @@
 import { Glyph } from "./bdffont";
 import { GrayImage, type DeferredDraw, type GlyphFont, type PlacedFwText, type PlacedImage } from "./image";
 
-declare const com: any;
+import { textureAtlasAvailable, textureFontId, registerTextureGlyphs, registerFirmwareGlyphs, textureImageId } from "../native/texture-atlas";
 
 const GLYPH_RECORD_BYTES = 12;   // [0][fontId u16][encoding u32][penX s16][lineY s16][value u8]
 const IMAGE_RECORD_BYTES = 9;    // [1][imageId u32][x s16][y s16]
@@ -32,14 +32,14 @@ const FWTEXT_MEMBER_BYTES = 7;   // [cp u32][dx s16][ink u8]
 type FontWireState = {
   fontId: number;
   cellHeight: number;
-  /** Encodings already registered with the Java atlas from this JS context. */
+  /** Encodings already registered with the Kotlin atlas from this JS context. */
   registered: Set<number>;
 };
 
 const fontStates = new Map<GlyphFont, FontWireState>();
 
 /**
- * Java-side image id per source image object, or null for images that can't
+ * Kotlin-side image id per source image object, or null for images that can't
  * participate. Sources handed to drawImage are immutable by contract, so
  * memoizing by object identity is safe; a re-rendered icon is a new object
  * and re-resolves (usually to the same content-addressed id).
@@ -47,12 +47,12 @@ const fontStates = new Map<GlyphFont, FontWireState>();
 const imageIds = new WeakMap<GrayImage, number | null>();
 
 function fontWireState(font: GlyphFont): FontWireState | null {
-  if (!global.isAndroid || !font.atlasKey) return null;
+  if (!textureAtlasAvailable() || !font.atlasKey) return null;
   if (font.lineHeight <= 0 || font.lineHeight > 255) return null;
   let state = fontStates.get(font);
   if (!state) {
     state = {
-      fontId: com.faceclaw.app.GlyphAtlas.fontId(font.atlasKey),
+      fontId: textureFontId(font.atlasKey),
       cellHeight: font.lineHeight,
       registered: new Set(),
     };
@@ -63,7 +63,7 @@ function fontWireState(font: GlyphFont): FontWireState | null {
 
 /**
  * Whether this glyph can be expressed as an on-glasses cached draw: within
- * the mode-14 char table (32..127), a nonempty raster that fits the font's
+ * the mode-20 char table (32..127), a nonempty raster that fits the font's
  * line cell (the cached image is bbxWidth x lineHeight with the ink placed at
  * inkTop), and metrics that fit the wire fields.
  */
@@ -76,12 +76,12 @@ function representableGlyph(font: GlyphFont, glyph: Glyph): boolean {
   return inkTop >= 0 && inkTop + glyph.bbxHeight <= font.lineHeight;
 }
 
-/** Firmware-font codepoints already registered with the Java FwGlyphAtlas. */
+/** Firmware-font codepoints already registered with the Kotlin FwGlyphAtlas. */
 const fwRegistered = new Set<string>();
 
 /**
  * Whether a firmware-text run is expressible on the wire, registering any
- * unseen ink members' rasters with the Java FwGlyphAtlas as a side effect.
+ * unseen ink members' rasters with the Kotlin FwGlyphAtlas as a side effect.
  */
 function prepareFwTextRun(placed: PlacedFwText): boolean {
   if (!inRange16(placed.x) || !inRange16(placed.y)) return false;
@@ -116,21 +116,21 @@ function prepareFwTextRun(placed: PlacedFwText): boolean {
       bytes.set(entry.data.nibbles, offset + 10);
       offset += 10 + entry.data.nibbles.length;
     }
-    com.faceclaw.app.FwGlyphAtlas.register(new com.faceclaw.app.AndroidByteReader(buffer));
+    registerFirmwareGlyphs(buffer);
   }
   return true;
 }
 
-/** Resolve (registering on first sight) the Java image id for a drawImage source. */
+/** Resolve (registering on first sight) the Kotlin image id for a drawImage source. */
 function imageId(placed: PlacedImage): number | null {
-  if (!global.isAndroid) return null;
+  if (!textureAtlasAvailable()) return null;
   const source = placed.source;
   const memo = imageIds.get(source);
   if (memo !== undefined) return memo;
   let id: number | null = null;
   if (source.width > 0 && source.width <= 255 && source.height > 0 && source.height <= 255) {
     const key = `img:${source.width}x${source.height}:${source.contentHash32().toString(16)}`;
-    id = com.faceclaw.app.ImageAtlas.ensure(key, source.width, source.height, new com.faceclaw.app.AndroidByteReader(source.pixels.buffer));
+    id = textureImageId(key, source.width, source.height, source.pixels);
     if (!(typeof id === "number") || id <= 0) id = null;
   }
   imageIds.set(source, id);
@@ -143,16 +143,16 @@ function inRange16(v: number): boolean {
 
 /**
  * Register any not-yet-registered glyph rasters and image contents among
- * `draws` with the Java atlases, then build the per-frame draw buffer to pass
+ * `draws` with the Kotlin atlases, then build the per-frame draw buffer to pass
  * alongside the frame's pixels: little-endian tagged records
  *   [0][fontId u16][encoding u32][penX s16][lineY s16][value u8]   (glyph)
  *   [1][imageId u32][x s16][y s16]                                 (image)
  *   [2][x s16][y s16][value u8][count u8]                          (fw text run)
  *      then count x [cp u32][dx s16][ink u8]
- * in draw order. Returns null when nothing is expressible (or off-Android).
+ * in draw order. Returns null when nothing is expressible (or without a native atlas).
  */
 export function prepareFrameDraws(draws: readonly DeferredDraw[]): ArrayBuffer | null {
-  if (!global.isAndroid || draws.length === 0) return null;
+  if (!textureAtlasAvailable() || draws.length === 0) return null;
 
   // Pass 1: resolve ids, register unseen rasters, size the buffer.
   let registration: Map<FontWireState, RegistrationGroup> | null = null;
@@ -184,9 +184,9 @@ export function prepareFrameDraws(draws: readonly DeferredDraw[]): ArrayBuffer |
   }
   if (registration) {
     const plainBuffer = buildRegistrationBuffer(registration);
-    if (plainBuffer) com.faceclaw.app.GlyphAtlas.register(new com.faceclaw.app.AndroidByteReader(plainBuffer));
+    if (plainBuffer) registerTextureGlyphs(plainBuffer, false);
     const aaBuffer = buildAaRegistrationBuffer(registration);
-    if (aaBuffer) com.faceclaw.app.GlyphAtlas.registerAa(new com.faceclaw.app.AndroidByteReader(aaBuffer));
+    if (aaBuffer) registerTextureGlyphs(aaBuffer, true);
   }
   if (bytes === 0) return null;
 
@@ -247,7 +247,7 @@ type RegistrationGroup = {
  * then per glyph
  *   [encoding u32][bbxX s8][inkTop u8][width u8][inkHeight u8]
  *   [inkHeight x row u32]   (bit (ceil(width/8)*8 - 1 - col) = ink)
- * mirroring GlyphAtlas.register on the Java side. Null when the groups hold
+ * mirroring GlyphAtlas.register on the Kotlin side. Null when the groups hold
  * no 1bpp glyphs.
  */
 function buildRegistrationBuffer(

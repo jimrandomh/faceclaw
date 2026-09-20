@@ -9,6 +9,7 @@ import { hasCompatibleFirmware, firmwareIncompatibilityMessage, REQUIRED_FACECLA
 import { hexToBytes } from '../util/hex-util'
 import { deviceAddressError } from './ios-peripheral-identity'
 import { decodeWearState, enableWearDetection, queryWearState } from './wear-protocol'
+import type { SessionTexturePlanner, TextureFrame } from './texture-planner'
 
 declare function setTimeout(callback: () => void, ms: number): number
 declare function clearTimeout(id: number): void
@@ -60,6 +61,7 @@ export class GlassesSession {
   private wanted = false
   private addresses: SessionAddresses | null = null
   private latest: Uint8Array | null = null
+  private latestTextures: TextureFrame | null = null
   private displayed: Uint8Array | null = null
   private lastEnqueued: Uint8Array | null = null
   // Match Android: advance only for emitted deltas, skipping 0 / 0xffff.
@@ -90,7 +92,8 @@ export class GlassesSession {
     private readonly onActivity: () => void = () => {},
     private readonly onCompass: (event: CompassEvent) => void = () => {},
     private readonly onWearState: (wearing: boolean) => void = () => {},
-    onNotificationsChanged: (key?: string, popup?: boolean) => void = () => {}) {
+    onNotificationsChanged: (key?: string, popup?: boolean) => void = () => {},
+    private readonly textures?: SessionTexturePlanner) {
     this.notifications = new AncsClient(packet => this.writePackets('right', () => [packet]), onNotificationsChanged, message => this.log('ANCS: ' + message))
     this.off = transport.onEvent(event => this.receive(event))
   }
@@ -428,9 +431,11 @@ export class GlassesSession {
     if (this.state.phase !== 'connected') return
     await this.request('right', protocol.SID.settings, magic => setBrightness(magic, level), 'Brightness')
   }
-  setFrame(gray: Uint8Array): void {
+  setFrame(gray: Uint8Array, textures?: TextureFrame): void {
     if (this.state.phase !== 'connected') return
-    this.latest = protocol.packGray4(gray, 640, 480); this.schedule(0)
+    this.latest = protocol.packGray4(gray, 640, 480)
+    this.latestTextures = textures ?? null
+    this.schedule(0)
   }
   /** Same mode-5 kind-4 sequencer payload and acknowledged image path as Android. */
   async playBuzzerSequence(payload: Uint8Array): Promise<void> {
@@ -499,16 +504,27 @@ export class GlassesSession {
     while (this.canSendDisplay()) {
       if (!this.displaySending) {
         const packed = this.latest!; this.latest = null
+        const textureFrame = this.latestTextures; this.latestTextures = null
         // Compare with the last enqueued image, not the last ACKed one. In an
         // A -> B -> A sequence, B may still be in flight when A is requested.
         if (this.lastEnqueued && packed.every((value, i) => value === this.lastEnqueued![i])) continue
-        const delta = buildBoundingBoxPayload(this.lastEnqueued, packed, 640, 480, this.nextImageFrameId)
-        const payload = delta ?? protocol.concat(new Uint8Array([6]), protocol.rle4(packed))
-        if (delta) this.nextImageFrameId = this.nextImageFrameId >= 0xfffe ? 1 : this.nextImageFrameId + 1
-        const commands = payload.length <= CFW_MAX_MESSAGE ? [payload] : buildFullFrameBands(packed, 640, 480, this.nextImageFrameId)
-        if (payload.length > CFW_MAX_MESSAGE) for (const _ of commands)
-          this.nextImageFrameId = this.nextImageFrameId >= 0xfffe ? 1 : this.nextImageFrameId + 1
-        this.log(`Display ${delta ? 'bbox' : 'full'} (${commands.length} CFW commands)`)
+        const texturePlan = textureFrame ? this.textures?.plan(this.lastEnqueued, packed, textureFrame, this.nextImageFrameId) : null
+        let commands: Uint8Array[]
+        if (texturePlan) {
+          // Uploads participate in the same ordered, acknowledged command window as
+          // the image. Coalescing only happens before planning mutates residency.
+          commands = [...texturePlan.uploads, texturePlan.payload]
+          this.nextImageFrameId = texturePlan.nextFid
+          this.log(`Display textures (${texturePlan.uploads.length} uploads, cache=${texturePlan.usedBytes}B)`)
+        } else {
+          const delta = buildBoundingBoxPayload(this.lastEnqueued, packed, 640, 480, this.nextImageFrameId)
+          const payload = delta ?? protocol.concat(new Uint8Array([6]), protocol.rle4(packed))
+          if (delta) this.nextImageFrameId = this.nextImageFrameId >= 0xfffe ? 1 : this.nextImageFrameId + 1
+          commands = payload.length <= CFW_MAX_MESSAGE ? [payload] : buildFullFrameBands(packed, 640, 480, this.nextImageFrameId)
+          if (payload.length > CFW_MAX_MESSAGE) for (const _ of commands)
+            this.nextImageFrameId = this.nextImageFrameId >= 0xfffe ? 1 : this.nextImageFrameId + 1
+          this.log(`Display ${delta ? 'bbox' : 'full'} (${commands.length} CFW commands)`)
+        }
         this.displaySending = { packed, commands, offset: 0, pending: 0 }
         this.displayFrames.push(this.displaySending); this.lastEnqueued = packed
       }
@@ -538,6 +554,10 @@ export class GlassesSession {
     this.pumping = true; const generation = this.generation
     try {
       const now = Date.now()
+      // Firmware frees textures when its 90-second framebuffer lease expires.
+      // After a long iOS suspension, reconnect rather than replaying pending
+      // draws against unknown memory. Leave a margin for the two arm writes.
+      if (now - this.lastLease >= 80_000) throw new Error('Display lease lapsed; restarting session')
       if (now - this.lastHeartbeat >= 4000) {
         const gap = now - this.lastHeartbeat
         await this.request('right', protocol.SID.hub, protocol.heartbeat, 'Heartbeat', 1500); this.lastHeartbeat = Date.now()
@@ -571,6 +591,7 @@ export class GlassesSession {
     for (const item of custom) item.reject(new Error('Connection ended'))
     this.cfwTransports.clear()
     this.receiver.clear(); this.writes.clear(); this.latest = this.displayed = null
+    this.latestTextures = null; this.textures?.reset()
     this.lastEnqueued = null; this.displayFrames = []; this.displaySending = null; this.displayInFlight = 0
   }
   private closeLinks(): void {

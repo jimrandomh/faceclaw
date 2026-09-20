@@ -1,4 +1,5 @@
 import { fromData, toData } from '../native/kotlin-data'
+import type { TextureFrame } from '../g2/texture-planner'
 import type { SurfaceConfiguration, SurfaceRect } from './surface-compositor'
 export type { SurfaceConfiguration, SurfaceRect } from './surface-compositor'
 declare const FaceclawKitIosSurfaceCompositor: any
@@ -23,13 +24,18 @@ export class SurfaceCompositor {
     this.native.dimBelowFactor(belowZOrder, factor)
   }
   setScreenBlanked(blanked: boolean): void { this.native.blankBlanked(blanked) }
-  submitSurfaceFrame(id: string, pixels: Uint8Array, rect: SurfaceRect): void {
+  submitSurfaceFrame(id: string, pixels: Uint8Array, rect: SurfaceRect, draws: ArrayBuffer | null = null): void {
     // Keep lifecycle errors catchable in JS; an undeclared Kotlin exception
     // crossing the Objective-C boundary terminates the process.
     if (!this.surfaces.has(id)) throw new Error(`Unknown surface: ${id}`)
     if (![rect.x, rect.y, rect.width, rect.height].every(Number.isInteger)
       || rect.width <= 0 || rect.height <= 0 || pixels.length !== rect.width * rect.height) throw new Error('Invalid frame buffer or rectangle')
-    this.native.submitIdDataXYWidthHeight(id, toData(pixels), rect.x, rect.y, rect.width, rect.height)
+    this.native.submitDrawsIdDataXYWidthHeightDraws(id, toData(pixels), rect.x, rect.y, rect.width, rect.height,
+      draws ? toData(new Uint8Array(draws)) : null)
   }
   composite(): Uint8Array { return fromData(this.native.composite()) }
+  compositeFrame(): { pixels: Uint8Array; textures: TextureFrame } {
+    const native = this.native.compositeFrame()
+    return { pixels: fromData(native.pixels), textures: { native } }
+  }
 }

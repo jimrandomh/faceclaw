@@ -1,4 +1,5 @@
 /** Platform-independent 8bpp surface composition for the local display. */
+import type { TextureFrame } from '../g2/texture-planner'
 export type SurfaceRect = { x: number; y: number; width: number; height: number }
 export type SurfaceConfiguration = SurfaceRect & {
   zOrder: number
@@ -35,7 +36,7 @@ export class SurfaceCompositor {
     this.dimFactor = Math.max(0, Math.min(1, factor))
   }
   setScreenBlanked(blanked: boolean): void { this.blanked = blanked }
-  submitSurfaceFrame(id: string, pixels: Uint8Array, rect: SurfaceRect): void {
+  submitSurfaceFrame(id: string, pixels: Uint8Array, rect: SurfaceRect, _draws: ArrayBuffer | null = null): void {
     const surface = this.surfaces.get(id)
     if (!surface) throw new Error(`Unknown surface: ${id}`)
     if (![rect.x, rect.y, rect.width, rect.height].every(Number.isInteger)
@@ -50,6 +51,7 @@ export class SurfaceCompositor {
       surface.pixels.set(pixels.subarray(source, source + right - left), y * surface.width + left)
     }
   }
+  compositeFrame(): { pixels: Uint8Array; textures?: TextureFrame } { return { pixels: this.composite() } }
   composite(): Uint8Array {
     const output = new Uint8Array(this.width * this.height)
     if (this.blanked) return output

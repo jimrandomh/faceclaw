@@ -35,7 +35,9 @@ import { getStringSettingById, nightscoutSiteUrlSetting, nightscoutApiTokenSetti
 import { readPhoneBatteryState } from '../native/phone-battery'
 import { iosAppUnavailableReason } from '../apps/ios-availability'
 import { SurfaceCompositor } from '../graphics/surface-compositor'
-import { flattenPlanes, type Plane } from '../graphics/plane'
+import { flattenPlanesWithDraws, type Plane } from '../graphics/plane'
+import { prepareFrameDraws } from '../graphics/glyph-wire'
+import { IosTexturePlanner } from '../native/texture-planner.ios'
 import { G2_LENS_WIDTH, G2_LENS_HEIGHT } from '../graphics/image'
 import { previewPixels } from '../native/ios-graphics'
 import { makeInputEvent, type InputEvent, type InputEventPayload } from '../ui/gestures'
@@ -62,8 +64,8 @@ export class IosPreviewController {
     setScreenBlanked: async blanked => {
       this.compositor.setScreenBlanked(blanked); this.scheduleFrame()
     },
-    submitSurfaceFrame: async (id, pixels, rect) => {
-      this.compositor.submitSurfaceFrame(id, pixels, rect); this.scheduleFrame()
+    submitSurfaceFrame: async (id, pixels, rect, _fingerprint, _paintMs, _frameId, draws) => {
+      this.compositor.submitSurfaceFrame(id, pixels, rect, draws); this.scheduleFrame()
     },
   }
   private readonly glance = new GlanceHost({
@@ -336,8 +338,8 @@ export class IosPreviewController {
     }
   }
   private async submit(id: string, planes: Plane[]): Promise<void> {
-    const image = flattenPlanes(planes)
-    this.compositor.submitSurfaceFrame(id, image.pixels, { x: 0, y: 0, width: image.width, height: image.height })
+    const { image, draws } = flattenPlanesWithDraws(planes)
+    this.compositor.submitSurfaceFrame(id, image.pixels, { x: 0, y: 0, width: image.width, height: image.height }, prepareFrameDraws(draws))
     this.scheduleFrame()
   }
   private requestShellRender(): void { this.shellDirty = true; this.scheduleFrame() }
@@ -350,12 +352,12 @@ export class IosPreviewController {
       try {
         if (this.shellDirty) {
           this.shellDirty = false
-          const image = flattenPlanes(shell.paintSurface(), { width: 640, height: 480 })
-          this.compositor.submitSurfaceFrame('shell', image.pixels, { x: 0, y: 0, width: 640, height: 480 })
+          const { image, draws } = flattenPlanesWithDraws(shell.paintSurface(), { width: 640, height: 480 })
+          this.compositor.submitSurfaceFrame('shell', image.pixels, { x: 0, y: 0, width: 640, height: 480 }, prepareFrameDraws(draws))
           this.compositor.setUnderlayDim(1, shell.underlayDim())
         }
-        const pixels = this.compositor.composite()
-        this.session?.setFrame(pixels)
+        const { pixels, textures } = this.compositor.compositeFrame()
+        this.session?.setFrame(pixels, textures)
         if (this.active) {
           const image = previewPixels(pixels, 640, 480, previewColorSetting.get() === 'green')
           this.onFrame(image, this.glassesLocked ? 'Glasses locked' : this.glance.isVisible() ? 'Glanceboard'
@@ -511,8 +513,8 @@ export class IosPreviewController {
       },
       setSurfaceVisible: (id, visible) => { this.compositor.setSurfaceVisible(id, visible); this.scheduleFrame() },
       removeSurface: id => { this.compositor.removeSurface(id); this.scheduleFrame() },
-      submitPixels: (id, pixels, width, height) => {
-        this.compositor.submitSurfaceFrame(id, pixels, { x: 0, y: 0, width, height }); this.scheduleFrame()
+      submitPixels: (id, pixels, width, height, draws) => {
+        this.compositor.submitSurfaceFrame(id, pixels, { x: 0, y: 0, width, height }, draws); this.scheduleFrame()
       },
       requestShellRender: () => this.requestShellRender(),
       openSettings: section => { void this.launchApp('settings', { section }) },
@@ -560,7 +562,7 @@ export class IosPreviewController {
         this.refreshClock()
       }, receiveCompassEvent, wearing => this.handleWearState(wearing), (key, popup) => {
         iosNotificationsChanged(key, popup); this.requestShellRender()
-      })
+      }, new IosTexturePlanner())
       bindIosNotifications(this.session.notifications)
       bindCompassSession(this.session)
     }

@@ -102,6 +102,8 @@ function fixture() {
     '../ui/dashboard-settings': { brightnessSetting: { get: () => 'auto' }, brightnessSettingToLevel: () => null, lockScreenEnabledSetting: { get: () => settings.lock }, onAnySettingChanged: fn => { settingsChanged = fn; return () => {}; }, previewColorSetting: { get: () => 'white' } },
     '../native/phone-battery': { readPhoneBatteryState: () => ({ battery: 80, charging: false }) },
     '../apps/ios-availability': { iosAppUnavailableReason: () => null },
+    '../graphics/glyph-wire': { prepareFrameDraws: () => null },
+    '../native/texture-planner.ios': { IosTexturePlanner: class {} },
     '../graphics/surface-compositor': { SurfaceCompositor }, '../graphics/plane': planes, '../graphics/image': images,
     '../native/ios-graphics': { previewPixels: pixels => pixels },
     '../ui/gestures': { makeInputEvent: event => event }, '../ui/layers': { noopLayerActions: {} },

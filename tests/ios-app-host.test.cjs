@@ -11,6 +11,39 @@ function load(file, context) {
   return sandbox.exports;
 }
 
+test('iOS worker replies keep cached draw references paired with their baked pixels', () => {
+  const replies = [], received = [];
+  const wrap = buffer => ({ length: buffer.byteLength, buffer,
+    base64EncodedStringWithOptions: () => Buffer.from(buffer).toString('base64') });
+  const NSData = {
+    dataWithBytesLength: buffer => wrap(buffer),
+    alloc: () => ({ initWithBase64EncodedStringOptions: text => {
+      const bytes = Uint8Array.from(Buffer.from(text, 'base64')); return wrap(bytes.buffer);
+    } }),
+  };
+  const interop = { handleof: buffer => buffer, bufferFromData: data => data.buffer };
+  const display = load('app/native/active-display.ios.ts', {
+    NSData, interop, global: { postMessage: message => replies.push(message) },
+  }).getActiveDisplay();
+  const pixels = new Uint8Array([255, 0, 0, 255]), draws = new Uint8Array([1, 7, 0, 0, 0, 0, 0, 0, 0]);
+  display.submitSurfaceFrame(pixels.buffer, 'window:test', 0, 0, 2, 2, 'frame', 0, 1, draws.buffer);
+  const worker = {};
+  const { WorkerAppHost } = load('app/ui/shell/worker-window.ts', {
+    require: () => ({}), global: { isIOS: true }, NSData, interop,
+  });
+  const host = new WorkerAppHost({ appId: 'test', worker, submitPixels: (...args) => received.push(args) });
+  host.openWindows.add('test');
+  worker.onmessage({ data: replies[0] });
+  assert.equal(received.length, 1);
+  assert.deepEqual([...received[0][1]], [...pixels]);
+  assert.deepEqual([...new Uint8Array(received[0][4])], [...draws]);
+  display.submitSurfaceFrame(pixels.buffer, 'window:test', 0, 0, 2, 2);
+  worker.onmessage({ data: replies[1] });
+  assert.equal(received[1][4], null, 'a pixel-only update must clear previous draw identities');
+  host.openWindows.clear(); worker.onmessage({ data: replies[0] });
+  assert.equal(received.length, 2, 'closed windows cannot deliver stale cached draws');
+});
+
 test('iOS installed apps launch, recover missing packages, and close before uninstall', async () => {
   const calls = [], app = { packageId: 'test.app', name: 'Test' };
   let present = true;
@@ -215,9 +248,11 @@ test('background glasses input still composites frames; phone resume preserves t
     '../native/phone-battery': { readPhoneBatteryState: () => ({ battery: 80, charging: false }) },
     '../graphics/surface-compositor': { SurfaceCompositor: class {
       configureSurface() {} setSurfaceVisible() {} submitSurfaceFrame() {} setUnderlayDim() {} setScreenBlanked() {}
-      composite() { return new Uint8Array([1, 2]); }
+      compositeFrame() { return { pixels: new Uint8Array([1, 2]) }; }
     } },
-    '../graphics/plane': { flattenPlanes: () => ({ pixels: new Uint8Array([1, 2]), width: 2, height: 1 }) },
+    '../graphics/plane': { flattenPlanesWithDraws: () => ({ image: { pixels: new Uint8Array([1, 2]), width: 2, height: 1 }, draws: [] }) },
+    '../graphics/glyph-wire': { prepareFrameDraws: () => null },
+    '../native/texture-planner.ios': { IosTexturePlanner: class {} },
     '../native/ios-graphics': { previewPixels: pixels => pixels },
     '../ui/shell/shell': { shell, rawInputEventToInputEvent: input => input },
     '../ui/shell/geometry': { appViewportRect: () => ({ x: 0, y: 0, width: 640, height: 480 }) },
@@ -333,7 +368,8 @@ test('iOS configures an in-process surface before submitting constructor-trigger
     require: name => ({
       '../ui/shell/shell': { shell },
       '../ui/shell/geometry': { appViewportRect: () => ({ x: 0, y: 0, width: 2, height: 1 }) },
-      '../graphics/plane': { flattenPlanes: planes => planes[0] },
+      '../graphics/plane': { flattenPlanesWithDraws: planes => ({ image: planes[0], draws: [] }) },
+      '../graphics/glyph-wire': { prepareFrameDraws: () => null },
     })[name] ?? {},
     console,
   });
@@ -365,7 +401,7 @@ test('iOS configures an in-process surface before submitting constructor-trigger
 
 test('iOS compositor rejects missing and removed surfaces before crossing into Kotlin', () => {
   let nativeSubmissions = 0;
-  const native = { configureIdXYWidthHeightZOrderTransparent() {}, removeId() {}, submitIdDataXYWidthHeight() { nativeSubmissions++; } };
+  const native = { configureIdXYWidthHeightZOrderTransparent() {}, removeId() {}, submitDrawsIdDataXYWidthHeightDraws() { nativeSubmissions++; } };
   const api = load('app/graphics/surface-compositor.ios.ts', {
     require: () => ({ toData: data => data }),
     FaceclawKitIosSurfaceCompositor: { alloc: () => ({ initWithWidthHeight: () => native }) },

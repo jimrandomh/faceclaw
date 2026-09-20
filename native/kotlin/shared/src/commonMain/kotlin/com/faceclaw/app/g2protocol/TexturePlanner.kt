@@ -1,6 +1,7 @@
 package com.faceclaw.app
 
 import kotlin.jvm.JvmField
+import kotlin.jvm.JvmOverloads
 import kotlin.jvm.JvmStatic
 
 /**
@@ -54,6 +55,7 @@ class TexturePlanner {
          * should run instead (no replayable draws, or identical frames).
          */
         @JvmStatic
+        @JvmOverloads
         fun plan(
             previous: ByteArray?,
             next: ByteArray?,
@@ -64,6 +66,7 @@ class TexturePlanner {
             fidStart: Int,
             allowMultiRect: Boolean,
             maxRects: Int,
+            platform: ProtocolPlatform = protocolPlatform(),
         ): Result? {
             if (
                 (((((next == null) || (draws == null)) || (draws.size == 0)) || (width <= 0)) ||
@@ -75,7 +78,7 @@ class TexturePlanner {
             if ((next.size != (stride * height))) {
                 return null
             }
-            var planStartedAtMs: Long = protocolPlatform().elapsedRealtimeMs()
+            var planStartedAtMs: Long = platform.elapsedRealtimeMs()
             var fullFrame: Boolean = ((previous == null) || (previous.size != next.size))
             var rects: MutableList<IntArray>
             if (!fullFrame) {
@@ -103,7 +106,7 @@ class TexturePlanner {
             } else {
                 rects = mutableListOf(intArrayOf(0, 0, width, height))
             }
-            var matchStartedAtMs: Long = protocolPlatform().elapsedRealtimeMs()
+            var matchStartedAtMs: Long = platform.elapsedRealtimeMs()
             var selected: MutableList<Selected> = ArrayList()
             var bakedCandidates: Int = 0
             var selectedImages: Int = 0
@@ -177,7 +180,7 @@ class TexturePlanner {
             if ((selected.isEmpty() && fwSubs.isEmpty())) {
                 return null
             }
-            var cacheStartedAtMs: Long = protocolPlatform().elapsedRealtimeMs()
+            var cacheStartedAtMs: Long = platform.elapsedRealtimeMs()
             var drawable: MutableList<Selected> =
                 (if (selected.isEmpty()) mutableListOf() else ensureResident(cache, selected))
             bakedCandidates += (selected.size - drawable.size)
@@ -204,7 +207,7 @@ class TexturePlanner {
                 }
                 return null
             }
-            var punchStartedAtMs: Long = protocolPlatform().elapsedRealtimeMs()
+            var punchStartedAtMs: Long = platform.elapsedRealtimeMs()
             var punched: ByteArray = next.copyOf()
             for (sel in drawn) {
                 punch(punched, stride, width, height, sel)
@@ -212,7 +215,7 @@ class TexturePlanner {
             for (fw in fwPunches) {
                 punchFw(punched, stride, width, height, fw)
             }
-            var encodeStartedAtMs: Long = protocolPlatform().elapsedRealtimeMs()
+            var encodeStartedAtMs: Long = platform.elapsedRealtimeMs()
             var subs: MutableList<ByteArray> = ArrayList()
             var fid: Int = fidStart
             if (fullFrame) {
@@ -256,7 +259,7 @@ class TexturePlanner {
                     uploadBytes,
                     fullFrame,
                 )
-            var doneAtMs: Long = protocolPlatform().elapsedRealtimeMs()
+            var doneAtMs: Long = platform.elapsedRealtimeMs()
             result.rectsMs = ((matchStartedAtMs - planStartedAtMs)).toInt()
             result.matchMs = ((cacheStartedAtMs - matchStartedAtMs)).toInt()
             result.cacheMs = ((punchStartedAtMs - cacheStartedAtMs)).toInt()

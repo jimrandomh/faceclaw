@@ -45,9 +45,21 @@ On `ios-port`, platform adapters route the existing TypeScript session and UI
 logic through shared Kotlin for protocol builders, CRC/framing/reassembly,
 event decoding, CFW compression/ACKs, changed-image regions, surface composition,
 and LVGL glyphs. The original pure TypeScript implementations remain as Node
-test references; NativeScript selects the `.ios.ts` native adapters. Features
-not yet present in the iOS app can use the shared audio/recording and texture
-classes without another Java port.
+test references; NativeScript selects the `.ios.ts` native adapters.
+
+Texture rendering uses the same `GlyphAtlas`, `ImageAtlas`, `TextureCacheState`
+and `TexturePlanner` on both platforms. iOS's `IosTextureAtlas` and
+`IosTexturePlanner` expose bulk `NSData` bridges. Surface updates retain draw
+identities through composition, including worker replies; immutable composite
+snapshots keep those identities paired with the pixels while frames coalesce.
+The BLE session plans only frames it will enqueue, sends mode-18 uploads before
+the mode-19/20 draw batch, and counts a frame only after all uploads and draws
+are acknowledged by both lenses. Session failure/teardown resets residency;
+resuming near the firmware's 90-second lease deadline restarts the session
+before queued draws can reference a freed cache. In either case,
+the next frame reuploads lazily. Plans over the CFW message limit fall back to
+pixel bands and invalidate any unsent allocations. The 256 KiB bump allocator
+and reset-on-full policy are unchanged; there is no pinning or individual eviction.
 
 ## Build and validation
 
@@ -71,7 +83,8 @@ npm run test:kotlin:ios
 and iOS: wire vectors, framing/corruption/expiry, streaming compression, replay,
 composition, PNG pixels, font glyphs, and Java SHA-256 golden outputs for DSP
 and GIF. Android additionally runs the existing Java protocol fixtures and
-concurrency checks; iOS exercises `NSData` and compositor adapters. Debug app
+concurrency checks; common texture tests cover reuse, overflow, reset and 32-bit
+offsets, and iOS exercises `NSData`, atlas, compositor and planner adapters. Debug app
 startup checks real NativeScript metadata and bidirectional callbacks, logging
 `FACECLAW_KOTLIN_BRIDGE_PASS` and `FACECLAW_KOTLIN_PROTOCOL_PASS`.
 
