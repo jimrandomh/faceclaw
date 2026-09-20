@@ -20,7 +20,7 @@ export function registerSystemTools(registry: ToolRegistry = toolRegistry): void
   registered = true;
 
   // Keep a media listener warm so "what's playing" works without opening Music.
-  void mediaControllerBridge.start();
+  if (!global.isIOS) void mediaControllerBridge.start();
 
   registry.registerSystemTool(
     {
@@ -53,6 +53,9 @@ export function registerSystemTools(registry: ToolRegistry = toolRegistry): void
       return ok("Displayed.");
     },
   );
+
+  // Calendar, phone media and notifications have no iOS backend yet.
+  if (global.isIOS) return;
 
   registry.registerSystemTool(
     {

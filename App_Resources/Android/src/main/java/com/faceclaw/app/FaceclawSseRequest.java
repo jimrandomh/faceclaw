@@ -134,6 +134,7 @@ public class FaceclawSseRequest {
                     sharedClient = new OkHttpClient.Builder()
                         .connectTimeout(15, TimeUnit.SECONDS)
                         .readTimeout(180, TimeUnit.SECONDS)
+                        .addInterceptor(FaceclawHttp.userAgentInterceptor())
                         .build();
                 }
                 client = sharedClient;

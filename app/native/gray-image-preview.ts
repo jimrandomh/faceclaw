@@ -17,10 +17,11 @@ export function grayImageToPreviewSource(image: GrayImage): ImageSource | null {
     return null;
   }
 
+  const baked = image.withDrawsBaked();
   const bitmap = com.faceclaw.app.PreviewBitmapUtil.fromGray(
-    image.pixels.buffer,
-    image.width,
-    image.height,
+    baked.pixels.buffer,
+    baked.width,
+    baked.height,
     PREVIEW_BRIGHTEN_GAMMA,
   );
   return new ImageSource(bitmap);

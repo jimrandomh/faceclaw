@@ -1,27 +1,44 @@
 /**
  * Builds the Faceclaw custom firmware on-device: downloads the stock Even
- * Realities G2 2.2.6.10 image from Even's CDN, verifies its SHA-256, applies
- * the committed byte-patch set (cfw-patches.ts), verifies the patched SHA-256,
- * and writes the result to app storage.
+ * Realities G2 image the patch set was built against (CFW_PATCH_SET.base,
+ * currently 2.3.0.24) from Even's CDN, verifies its SHA-256, applies
+ * the committed byte-patch set (cfw-patches.ts), extracts the stock EvenHub
+ * fonts for phone-side rendering, verifies the patched SHA-256, and writes the
+ * result to app storage.
  *
  * This mirrors g2flash/build_cfw.sh + patches/apply_patches.py exactly (same
  * URL, same pinned hashes, same offset/old/new patch semantics), so a
  * successful run reproduces the reviewed image byte-for-byte. It does NOT flash
  * anything — producing and verifying the image is the whole job here.
  */
-import { knownFolders } from "@nativescript/core";
+import { File, knownFolders } from "@nativescript/core";
 
 import { CFW_PATCH_SET, FirmwarePatchOp } from "./firmware/cfw-patches";
+import {
+  EVENHUB_RUNTIME_FONT_FILENAME,
+  extractEvenHubFontAsset,
+  isEvenHubFontAsset,
+} from "./firmware-fonts";
+import { fetchWithUserAgent } from "../util/http";
+import { bytesToHex, hexToBytes as hexToBytesLenient } from "../util/hex-util";
+import { EvenHubFont } from "../graphics/evenhub-font";
 
-declare const com: any;
+import { firmwareSha256, writeFirmwareFile } from "../native/firmware-files";
 
-const FIRMWARE_URL = "https://cdn.evenreal.co/firmware/e28738432d7b612d625331b00383149b.bin";
-const CFW_OUTPUT_FILENAME = "g2_2.2.6.10_cfw.bin";
-const STOCK_OUTPUT_FILENAME = "g2_2.2.6.10.bin";
+// The CDN names firmware files by MD5. This must be the image whose SHA-256 is
+// CFW_PATCH_SET.baseSha256 — keep it in sync with FW_URL in g2flash/build_cfw.sh
+// whenever cfw-patches.ts is regenerated against a new stock base.
+// (2.3.0.24 = 1dbdf37b…; the older 2.2.9.22 base was fc250b05….)
+const FIRMWARE_URL = "https://cdn.evenreal.co/firmware/1dbdf37b03a1169c384945e94d671371.bin";
+// Output names follow the patch set's base name (e.g. g2_2.3.0.24.bin →
+// g2_2.3.0.24_cfw.bin) so a rebase can't leave stale version numbers here.
+const STOCK_OUTPUT_FILENAME = CFW_PATCH_SET.base;
+const CFW_OUTPUT_FILENAME = CFW_PATCH_SET.base.replace(/\.bin$/, "") + "_cfw.bin";
 
 export type FirmwareProgress =
   | { phase: "downloading" }
   | { phase: "verifying-base" }
+  | { phase: "extracting-fonts" }
   | { phase: "patching"; applied: number; total: number }
   | { phase: "verifying-output" }
   | { phase: "writing" }
@@ -34,6 +51,36 @@ export type BuiltFirmware = {
 };
 
 export class FirmwareBuildError extends Error {}
+
+/** True only when a complete, parseable runtime extraction is present. */
+export function hasExtractedEvenHubFonts(): boolean {
+  const path = `${knownFolders.documents().path}/${EVENHUB_RUNTIME_FONT_FILENAME}`;
+  if (!File.exists(path)) return false;
+  try {
+    return isEvenHubFontAsset(JSON.parse(File.fromPath(path).readTextSync()));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Download and verify the pinned stock image, then extract its EvenHub fonts.
+ * Used to repair an existing custom-firmware install without reflashing it.
+ */
+export async function downloadAndExtractEvenHubFonts(
+  onProgress?: (progress: FirmwareProgress) => void,
+): Promise<void> {
+  const report = (progress: FirmwareProgress) => {
+    try {
+      onProgress?.(progress);
+    } catch {
+      // progress reporting must never break extraction
+    }
+  };
+  const base = await downloadAndVerifyBase(report);
+  report({ phase: "extracting-fonts" });
+  persistEvenHubFonts(base);
+}
 
 /**
  * Download → verify → patch → verify → persist. Rejects with a
@@ -52,6 +99,9 @@ export async function buildCustomFirmware(
   };
 
   const base = await downloadAndVerifyBase(report);
+
+  report({ phase: "extracting-fonts" });
+  persistEvenHubFonts(base);
 
   const patched = applyPatches(new Uint8Array(base), CFW_PATCH_SET.patches, (applied, total) =>
     report({ phase: "patching", applied, total }),
@@ -117,7 +167,7 @@ async function downloadAndVerifyBase(report: (progress: FirmwareProgress) => voi
 async function downloadFirmware(): Promise<ArrayBuffer> {
   let response: Response;
   try {
-    response = await fetch(FIRMWARE_URL);
+    response = await fetchWithUserAgent(FIRMWARE_URL);
   } catch (error) {
     throw new FirmwareBuildError(`Could not reach Even's firmware CDN: ${(error as Error)?.message ?? error}`);
   }
@@ -125,6 +175,28 @@ async function downloadFirmware(): Promise<ArrayBuffer> {
     throw new FirmwareBuildError(`Firmware download failed (HTTP ${response.status}).`);
   }
   return response.arrayBuffer();
+}
+
+function persistEvenHubFonts(base: ArrayBuffer): void {
+  try {
+    const asset = extractEvenHubFontAsset(base);
+    let writeError: unknown;
+    knownFolders.documents().getFile(EVENHUB_RUNTIME_FONT_FILENAME).writeTextSync(
+      JSON.stringify(asset),
+      (error) => {
+        writeError = error;
+      },
+    );
+    if (writeError) throw writeError;
+    // A degraded EvenHubFont (built before this extraction existed) is cached
+    // per JS context; drop it so the next render picks up the real fonts
+    // without an app restart.
+    EvenHubFont.invalidate();
+  } catch (error) {
+    throw new FirmwareBuildError(
+      `The firmware was verified, but its EvenHub fonts could not be extracted: ${(error as Error)?.message ?? error}`,
+    );
+  }
 }
 
 /**
@@ -178,23 +250,12 @@ function applyPatches(
   return buf;
 }
 
+/** Patch-op hex is data, not user input: reject malformed strings instead of the shared decoder's silent stripping. */
 function hexToBytes(hex: string): Uint8Array {
-  if (hex.length % 2 !== 0) {
-    throw new FirmwareBuildError(`odd-length hex string: ${hex}`);
+  if (hex.length % 2 !== 0 || /[^0-9a-fA-F]/.test(hex)) {
+    throw new FirmwareBuildError(`invalid hex string: ${hex}`);
   }
-  const out = new Uint8Array(hex.length / 2);
-  for (let i = 0; i < out.length; i++) {
-    out[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
-  }
-  return out;
-}
-
-function bytesToHex(bytes: Uint8Array): string {
-  let hex = "";
-  for (let i = 0; i < bytes.length; i++) {
-    hex += bytes[i].toString(16).padStart(2, "0");
-  }
-  return hex;
+  return hexToBytesLenient(hex);
 }
 
 function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
@@ -220,12 +281,12 @@ function tightBuffer(bytes: Uint8Array): ArrayBuffer {
   return bytes.slice().buffer;
 }
 
-/** SHA-256 hex digest of an ArrayBuffer, via Android's MessageDigest. */
+/** SHA-256 hex digest using the platform's native crypto implementation. */
 function sha256Hex(buffer: ArrayBuffer): string {
-  return String(com.faceclaw.app.FaceclawFirmwareUtil.sha256Hex(buffer));
+  return firmwareSha256(buffer);
 }
 
-/** Write an ArrayBuffer's bytes to `path`, via a native FileChannel write. */
+/** Persist the verified image using the platform's native file API. */
 function writeFile(path: string, buffer: ArrayBuffer): void {
-  com.faceclaw.app.FaceclawFirmwareUtil.writeFile(path, buffer);
+  writeFirmwareFile(path, buffer);
 }

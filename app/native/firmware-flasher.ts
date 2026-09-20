@@ -2,15 +2,8 @@ import { Utils } from "@nativescript/core";
 
 declare const com: any;
 
-export type FlashState = "validating" | "connecting" | "flashing" | "rebooting" | "done" | "error";
-
-export type FlashProgress = {
-  lens: string;
-  componentIndex: number;
-  componentCount: number;
-  blockIndex: number;
-  blockCount: number;
-};
+import type { FlashState, FlashProgress } from "../g2/firmware-types";
+export type { FlashState, FlashProgress } from "../g2/firmware-types";
 
 /**
  * TS wrapper around the native FaceclawFirmwareFlasher — streams a verified
@@ -42,6 +35,8 @@ export class FirmwareFlasher {
         componentCount: number,
         blockIndex: number,
         blockCount: number,
+        bytesSent: number,
+        bytesTotal: number,
       ) =>
         this.emit(this.progressListeners, {
           lens: String(lens),
@@ -49,6 +44,8 @@ export class FirmwareFlasher {
           componentCount: Number(componentCount),
           blockIndex: Number(blockIndex),
           blockCount: Number(blockCount),
+          bytesSent: Number(bytesSent),
+          bytesTotal: Number(bytesTotal),
         }),
       onState: (state: string, detail: string) =>
         this.emit(this.stateListeners, String(state) as FlashState, String(detail ?? "")),

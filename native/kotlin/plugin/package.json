@@ -1,0 +1,7 @@
+{
+  "name": "@faceclaw/kotlin",
+  "version": "0.1.0",
+  "private": true,
+  "main": "index.js",
+  "nativescript": { "platforms": { "android": "9.1.1", "ios": "9.0.3" } }
+}

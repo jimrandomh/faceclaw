@@ -5,8 +5,8 @@
  * lines highlight as one unit) and the scroll position follows it, matching
  * the house list style in ui/menu.ts.
  */
-import { GrayImage } from "../../graphics/image";
-import { getDefaultMediumFont, getDefaultSmallFont, type BdfFont } from "../../graphics/bdffont";
+import { GrayImage, type UiFont } from "../../graphics/image";
+import { getDefaultMediumFont, getDefaultSmallFont } from "../../graphics/ui-fonts";
 import { wrapText } from "../../graphics/textwrap";
 import { clamp } from "../../util/numeric-util";
 import { drawListScrollbar, drawSelectionHighlight } from "../menu";
@@ -35,7 +35,7 @@ type LayoutLine = {
   indentX: number;
   textX: number;
   height: number;
-  font: BdfFont;
+  font: UiFont;
   /** Line belongs to a code block (shaded background). */
   codeBlock: boolean;
   segments: Segment[];
@@ -305,7 +305,7 @@ function inlineSpans(inlines: readonly DocInline[]): InlineSpan[] {
 
 /** Split one wrapped line (plainText[start..start+text.length)) at span boundaries. */
 function segmentLine(
-  font: BdfFont,
+  font: UiFont,
   text: string,
   start: number,
   spans: readonly InlineSpan[],

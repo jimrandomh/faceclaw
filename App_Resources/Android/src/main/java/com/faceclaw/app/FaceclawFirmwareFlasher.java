@@ -14,17 +14,23 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
-import java.util.concurrent.Executors;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.LinkedBlockingQueue;
-import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 
 /**
  * Ports g2flash.py's OTA flash procedure to Android. Streams the EVENOTA
  * firmware container to each lens over the firmware-data service using the
- * aa21 envelope (BleProtocol.framePb) and the c0/c1 control/data protocol, with
- * a heartbeat on the EvenHub control char to keep the session alive.
+ * aa21 envelope (BleProtocol.framePb) and the c0/c1 control/data protocol.
+ *
+ * Each lens connection completes the sid-0x80 security-auth exchange before
+ * OTA BEGIN — firmware 2.2.9 closes unauthenticated links ~30 s in, killing
+ * the transfer mid-component. No control-channel traffic is injected during
+ * the transfer itself: official OTA captures show none between BEGIN and the
+ * final END, heartbeats demonstrably do not satisfy the 2.2.9 deadline, and a
+ * concurrent control writer would interleave with the marker/data
+ * transactions. (See ../notes/ble-connections-2.2.9.md.)
  *
  * Lenses are flashed one at a time (left, then right). Finishing either lens
  * reboots BOTH lenses, so the second lens is briefly unreachable — the reconnect
@@ -40,7 +46,6 @@ public class FaceclawFirmwareFlasher implements FaceclawBleListener {
     // OTA message types (envelope sid byte) and control opcodes.
     private static final int SID_CTRL = 0xc0;
     private static final int SID_DATA = 0xc1;
-    private static final int SID_HEARTBEAT = 0x80;
     private static final int FLAG_OTA = 0x00;
     private static final int OP_BEGIN = 0x00;
     private static final int OP_FILE_CHECK = 0x01;
@@ -52,9 +57,6 @@ public class FaceclawFirmwareFlasher implements FaceclawBleListener {
     private static final int CTRL_ACK_TIMEOUT_MS = 8_000;
     private static final int BLOCK_NAK_RETRIES = 3;
     private static final int COMPONENT_RETRIES = 3;
-    private static final int HEARTBEAT_INTERVAL_MS = 12_000;
-    private static final byte[] HEARTBEAT_PAYLOAD =
-        new byte[] {0x08, 0x0e, 0x10, 0x26, 0x6a, 0x00};
 
     // Reconnect windows. The first lens connects from an idle device; the second
     // must ride out the post-first-lens reboot of both lenses.
@@ -67,8 +69,10 @@ public class FaceclawFirmwareFlasher implements FaceclawBleListener {
     // END ack statuses that mean "component accepted": SUCCESS, UPDATING, SYS_RESTART.
     private static final int[] END_OK = new int[] {0, 8, 9};
 
-    // Firmware layout expectations (mirrors g2flash.py).
-    private static final int EXPECTED_SEGMENTS = 5;
+    // Firmware layout expectations (mirrors g2flash.py). Firmware 2.2.4 has 5
+    // components; 2.2.6 has 6.
+    private static final int MIN_SEGMENTS = 5;
+    private static final int MAX_SEGMENTS = 6;
     private static final String REQUIRED_SEGMENT = "ota/s200_firmware_ota.bin";
     private static final long APP_LOAD_ADDR = 0x00438000L;
     private static final long APP_MAX_END = 0x007F0000L;
@@ -87,10 +91,12 @@ public class FaceclawFirmwareFlasher implements FaceclawBleListener {
     private volatile FaceclawFirmwareFlasherListener listener;
     private volatile Thread worker;
     private volatile boolean cancelled = false;
-    private volatile ScheduledExecutorService heartbeatExecutor;
-    private volatile String heartbeatAddress;
 
     private int nextSeq = 0;
+    private int nextAuthMagic = 0x60;
+    private int pendingAuthMagic = -1;
+    private CountDownLatch authLatch;
+    private byte[] authAckPb;
 
     public FaceclawFirmwareFlasher(Context context, String rightAddress, String leftAddress, String firmwarePath) {
         this.context = context.getApplicationContext();
@@ -125,7 +131,6 @@ public class FaceclawFirmwareFlasher implements FaceclawBleListener {
 
     public void close() {
         cancel();
-        stopHeartbeat();
         try {
             bleManager.close();
         } catch (Exception ignored) {
@@ -170,27 +175,34 @@ public class FaceclawFirmwareFlasher implements FaceclawBleListener {
 
     private void flashLens(String lens, String address, byte[] img, List<Segment> segs, int connectWindowMs)
             throws TimeoutException {
-        resetSeq();
         emitState("connecting", lens);
         connectLensResilient(lens, address, connectWindowMs);
         sleepInterruptibly(NOTIFY_SETTLE_MS);
         drainAcks();
+        // Fresh envelope counter for the OTA stream (the auth exchange during
+        // bring-up used its own); mirrors the stock sequence.
+        resetSeq();
 
         emitState("flashing", lens);
-        startHeartbeat(address);
-        try {
-            int beginStatus = sendCtrlAndWait(address, OP_BEGIN, EMPTY, CTRL_ACK_TIMEOUT_MS);
-            if (!isEndOk(beginStatus)) {
-                emitLog("warning: unexpected begin status " + beginStatus + "; continuing");
+        int beginStatus = sendCtrlAndWait(address, OP_BEGIN, EMPTY, CTRL_ACK_TIMEOUT_MS);
+        if (!isEndOk(beginStatus)) {
+            emitLog("warning: unexpected begin status " + beginStatus + "; continuing");
+        }
+        // Progress is reported in bytes across the whole image: the segments
+        // are one large firmware blob plus several small ones, so a bar
+        // stepped per segment would sit still through the big one and then
+        // sprint through the rest.
+        long totalBytes = 0;
+        for (Segment seg : segs) {
+            totalBytes += seg.ps;
+        }
+        long bytesBefore = 0;
+        for (int i = 0; i < segs.size(); i++) {
+            if (cancelled) {
+                throw new IllegalStateException("Cancelled.");
             }
-            for (int i = 0; i < segs.size(); i++) {
-                if (cancelled) {
-                    throw new IllegalStateException("Cancelled.");
-                }
-                flashComponentWithRetry(lens, address, i, segs.size(), segs.get(i), img);
-            }
-        } finally {
-            stopHeartbeat();
+            flashComponentWithRetry(lens, address, i, segs.size(), segs.get(i), img, bytesBefore, totalBytes);
+            bytesBefore += segs.get(i).ps;
         }
         emitLog(lens + " lens: all components verified");
         try {
@@ -199,14 +211,15 @@ public class FaceclawFirmwareFlasher implements FaceclawBleListener {
         }
     }
 
-    private void flashComponentWithRetry(String lens, String address, int index, int count, Segment seg, byte[] img) {
+    private void flashComponentWithRetry(String lens, String address, int index, int count, Segment seg, byte[] img,
+            long bytesBefore, long totalBytes) {
         for (int attempt = 0; attempt < COMPONENT_RETRIES; attempt++) {
             if (attempt > 0) {
                 emitLog(seg.name + ": re-flash attempt " + (attempt + 1) + "/" + COMPONENT_RETRIES);
             }
             int endStatus;
             try {
-                endStatus = flashComponent(lens, address, index, count, seg, img);
+                endStatus = flashComponent(lens, address, index, count, seg, img, bytesBefore, totalBytes);
             } catch (TimeoutException | RuntimeException e) {
                 emitLog(seg.name + ": block phase failed: " + e.getMessage());
                 endStatus = -1;
@@ -224,8 +237,8 @@ public class FaceclawFirmwareFlasher implements FaceclawBleListener {
         throw new IllegalStateException("component " + seg.name + " failed after " + COMPONENT_RETRIES + " attempts");
     }
 
-    private int flashComponent(String lens, String address, int index, int count, Segment seg, byte[] img)
-            throws TimeoutException {
+    private int flashComponent(String lens, String address, int index, int count, Segment seg, byte[] img,
+            long bytesBefore, long totalBytes) throws TimeoutException {
         byte[] sub = Arrays.copyOfRange(img, seg.off, seg.off + 128);
         int ps = seg.ps;
         int payloadStart = seg.off + 128;
@@ -258,7 +271,8 @@ public class FaceclawFirmwareFlasher implements FaceclawBleListener {
                 throw new IllegalStateException("block " + b + " NAK'd " + BLOCK_NAK_RETRIES + " times");
             }
             if (b % 20 == 0 || b == blockCount - 1) {
-                emitProgress(lens, index + 1, count, b + 1, blockCount);
+                long bytesSent = bytesBefore + Math.min((long) (b + 1) * BLOCK_SIZE, (long) ps);
+                emitProgress(lens, index + 1, count, b + 1, blockCount, bytesSent, totalBytes);
             }
         }
         emitLog(seg.name + ": data phase done; sending END");
@@ -287,7 +301,7 @@ public class FaceclawFirmwareFlasher implements FaceclawBleListener {
     private boolean writeOta(String address, String writeChar, int sid, byte[] payload, int seq) {
         List<byte[]> frames = BleProtocol.framePb(payload, sid, FLAG_OTA, seq);
         return bleManager.writeFrames(
-            address, writeChar, frames, ConnectionOptions.WRITE_TYPE, ConnectionOptions.WRITE_TIMEOUT_MS);
+            address, writeChar, frames, AndroidProtocolPlatform.writeType(ConnectionOptions.WRITE_MODE), ConnectionOptions.WRITE_TIMEOUT_MS);
     }
 
     private int waitAck(int wantOp, int timeoutMs) throws TimeoutException {
@@ -354,50 +368,64 @@ public class FaceclawFirmwareFlasher implements FaceclawBleListener {
         if (!bleManager.discoverServices(address, ConnectionOptions.SERVICES_TIMEOUT_MS)) {
             return false;
         }
+        // Control-channel notify carries the auth response; mandatory.
+        if (!bleManager.enableNotifications(address, BleProtocol.NOTIFY_CHAR_UUID, true, ConnectionOptions.DESCRIPTOR_TIMEOUT_MS)) {
+            return false;
+        }
         if (!bleManager.enableNotifications(address, BleProtocol.OTA_DATA_NOTIFY_UUID, true, ConnectionOptions.DESCRIPTOR_TIMEOUT_MS)) {
             return false;
         }
-        // Control-channel notify (heartbeat responses); best-effort.
-        bleManager.enableNotifications(address, BleProtocol.NOTIFY_CHAR_UUID, true, ConnectionOptions.DESCRIPTOR_TIMEOUT_MS);
+        if (!authenticate(address)) {
+            throw new IllegalStateException(
+                "security auth not acknowledged — if Android shows a Bluetooth pairing request, accept it");
+        }
         return true;
     }
 
-    // ---- heartbeat -----------------------------------------------------------
-
-    private void startHeartbeat(String address) {
-        stopHeartbeat();
-        heartbeatAddress = address;
-        ScheduledExecutorService executor = Executors.newSingleThreadScheduledExecutor(runnable -> {
-            Thread t = new Thread(runnable, "faceclaw-flash-hb");
-            t.setDaemon(true);
-            return t;
-        });
-        heartbeatExecutor = executor;
-        executor.scheduleWithFixedDelay(
-            this::sendHeartbeat, HEARTBEAT_INTERVAL_MS, HEARTBEAT_INTERVAL_MS, TimeUnit.MILLISECONDS);
-    }
-
-    private void sendHeartbeat() {
-        if (cancelled) {
-            return;
-        }
-        String address = heartbeatAddress;
-        if (address == null) {
-            return;
+    /**
+     * Complete the sid-0x80 security-auth exchange on this connection. On an
+     * unbonded phone this triggers SMP pairing (possibly with an OS prompt),
+     * so the wait is generous. Must succeed before any OTA traffic.
+     */
+    private boolean authenticate(String address) {
+        int magic;
+        CountDownLatch latch = new CountDownLatch(1);
+        synchronized (lock) {
+            magic = nextAuthMagic;
+            nextAuthMagic = nextAuthMagic >= 0x7f ? 0x60 : nextAuthMagic + 1;
+            pendingAuthMagic = magic;
+            authAckPb = null;
+            authLatch = latch;
         }
         try {
-            writeOta(address, BleProtocol.WRITE_CHAR_UUID, SID_HEARTBEAT, HEARTBEAT_PAYLOAD, nextSeq());
-        } catch (Exception e) {
-            Log.w(TAG, "heartbeat failed: " + e.getMessage());
-        }
-    }
-
-    private void stopHeartbeat() {
-        ScheduledExecutorService executor = heartbeatExecutor;
-        heartbeatExecutor = null;
-        heartbeatAddress = null;
-        if (executor != null) {
-            executor.shutdownNow();
+            if (!writeOta(address, BleProtocol.WRITE_CHAR_UUID, BleProtocol.SID_SECURITY_AUTH,
+                    BleProtocol.buildAuthenticationRequest(magic), nextSeq())) {
+                emitLog("auth write failed: " + address);
+                return false;
+            }
+            boolean signalled;
+            try {
+                signalled = latch.await(ConnectionOptions.SECURITY_AUTH_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return false;
+            }
+            byte[] pb;
+            synchronized (lock) {
+                pb = authAckPb;
+            }
+            if (!signalled || !BleProtocol.isAuthenticationSuccess(pb, magic)) {
+                emitLog("security auth not acknowledged (" + address
+                    + ") — if Android shows a Bluetooth pairing request, accept it");
+                return false;
+            }
+            emitLog("security auth complete: " + address);
+            return true;
+        } finally {
+            synchronized (lock) {
+                pendingAuthMagic = -1;
+                authLatch = null;
+            }
         }
     }
 
@@ -444,8 +472,9 @@ public class FaceclawFirmwareFlasher implements FaceclawBleListener {
 
     private List<Segment> validate(byte[] img) {
         List<Segment> segs = parseSegments(img);
-        if (segs.size() != EXPECTED_SEGMENTS) {
-            throw new IllegalStateException("expected " + EXPECTED_SEGMENTS + " components, found " + segs.size());
+        if (segs.size() < MIN_SEGMENTS || segs.size() > MAX_SEGMENTS) {
+            throw new IllegalStateException(
+                "expected " + MIN_SEGMENTS + "-" + MAX_SEGMENTS + " components, found " + segs.size());
         }
         Segment main = null;
         for (Segment s : segs) {
@@ -494,8 +523,25 @@ public class FaceclawFirmwareFlasher implements FaceclawBleListener {
 
     @Override
     public void onNotification(String address, String characteristicUuid, byte[] data) {
+        if (BleProtocol.NOTIFY_CHAR_UUID.equalsIgnoreCase(characteristicUuid)) {
+            // Control channel: only the security-auth response is awaited here.
+            // A value can carry several envelope frames back to back (e.g. the
+            // response packed with one of the lens's own sid-0x80 notifies).
+            for (byte[] buf : BleProtocol.splitFrames(data)) {
+                BleProtocol.ParsedFrame frame = BleProtocol.parseFrame(buf);
+                if (frame.ok && frame.sid == BleProtocol.SID_SECURITY_AUTH) {
+                    synchronized (lock) {
+                        if (authLatch != null && frame.msgSeq == pendingAuthMagic) {
+                            authAckPb = frame.pb;
+                            authLatch.countDown();
+                        }
+                    }
+                }
+            }
+            return;
+        }
         if (!BleProtocol.OTA_DATA_NOTIFY_UUID.equalsIgnoreCase(characteristicUuid)) {
-            return; // acks arrive on the data-notify char; ignore heartbeat responses
+            return; // OTA acks arrive on the data-notify char
         }
         BleProtocol.ParsedFrame frame = BleProtocol.parseFrame(data);
         if (!frame.ok || frame.pb.length < 2) {
@@ -514,7 +560,6 @@ public class FaceclawFirmwareFlasher implements FaceclawBleListener {
     // ---- helpers -------------------------------------------------------------
 
     private void teardown() {
-        stopHeartbeat();
         try {
             bleManager.close();
         } catch (Exception ignored) {
@@ -618,11 +663,12 @@ public class FaceclawFirmwareFlasher implements FaceclawBleListener {
         });
     }
 
-    private void emitProgress(String lens, int componentIndex, int componentCount, int blockIndex, int blockCount) {
+    private void emitProgress(String lens, int componentIndex, int componentCount, int blockIndex, int blockCount,
+            long bytesSent, long bytesTotal) {
         mainHandler.post(() -> {
             FaceclawFirmwareFlasherListener current = listener;
             if (current != null) {
-                current.onProgress(lens, componentIndex, componentCount, blockIndex, blockCount);
+                current.onProgress(lens, componentIndex, componentCount, blockIndex, blockCount, bytesSent, bytesTotal);
             }
         });
     }

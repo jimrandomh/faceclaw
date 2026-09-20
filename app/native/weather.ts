@@ -1,5 +1,7 @@
-import { hasLocationPermission } from "../g2/android-permissions";
+import { hasLocationPermission } from "./location-permissions";
 import { getCurrentLocation, type CurrentLocation } from "./location";
+import { fetchWithUserAgent } from "../util/http";
+import { USER_AGENT } from "../version";
 
 export type WeatherPhase = "permission-required" | "locating" | "loading" | "ready" | "error";
 
@@ -87,7 +89,8 @@ type NwsMeasure = {
 const NWS_API_ROOT = "https://api.weather.gov";
 const NWS_HEADERS = {
   Accept: "application/geo+json",
-  "User-Agent": "Faceclaw/1.0 (https://github.com/jimrandomh/faceclaw)",
+  // NWS asks callers to identify themselves with a contact address.
+  "User-Agent": `${USER_AGENT} (https://github.com/jimrandomh/faceclaw)`,
 };
 const WEATHER_REFRESH_MS = 30 * 60 * 1000;
 const FETCH_TIMEOUT_MS = 20_000;
@@ -230,7 +233,7 @@ async function loadLatestObservation(stationsUrl: string): Promise<NwsObservatio
 }
 
 async function fetchNwsJson<T>(url: string): Promise<T> {
-  const request = fetch(url, { headers: NWS_HEADERS });
+  const request = fetchWithUserAgent(url, { headers: NWS_HEADERS });
   let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
   const timeout = new Promise<never>((_resolve, reject) => {
     timeoutHandle = setTimeout(() => reject(new Error("Weather request timed out.")), FETCH_TIMEOUT_MS);

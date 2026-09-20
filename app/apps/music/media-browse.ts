@@ -1,7 +1,7 @@
-import { getDefaultSmallFont, type BdfFont } from "../../graphics/bdffont";
-import { GrayImage } from "../../graphics/image";
+import { getDefaultSmallFont } from "../../graphics/ui-fonts";
+import { GrayImage, type UiFont } from "../../graphics/image";
 import { clamp } from "../../util/numeric-util";
-import { GESTURE_CLICK, GESTURE_DOUBLE_CLICK, GESTURE_SCROLL } from "../../ui/gestures";
+import { GESTURE_CLICK, GESTURE_DOUBLE_CLICK, GESTURE_SCROLL, type InputEvent } from "../../ui/gestures";
 import {
   MenuLayer,
   drawListScrollbar,
@@ -9,17 +9,19 @@ import {
   drawSubmenuIndicator,
   scrollToKeepSelectionVisible,
 } from "../../ui/menu";
+import { lineStep, tightRowHeight } from "../../ui/metrics";
 import {
   mediaBrowserBridge,
   type MediaBrowseItem,
   type MediaBrowserApp,
 } from "../../native/media-browser";
-import { Layer, type DashboardInputEvent, type LayerContext } from "../../ui/layers";
+import { Layer, type LayerContext } from "../../ui/layers";
 
-const HEADER_HEIGHT = 34;
-const ROW_HEIGHT = 16;
+/** Header: title line + path line (34px at the 12px bitmap default). */
+function headerHeight(font: UiFont): number {
+  return 8 + lineStep(font) + font.lineHeight;
+}
 const LIST_X = 20;
-const FOOTER_HEIGHT = 22;
 
 export type MediaBrowseOptions = {
   app: MediaBrowserApp;
@@ -67,49 +69,50 @@ export class MediaBrowseLayer implements Layer {
     image.drawText(font, 20, 8, `Library: ${this.options.app.appName}`, 220);
 
     if (this.phase === "connecting" || this.phase === "idle") {
-      image.drawText(font, 24, HEADER_HEIGHT + 8, `Starting ${this.options.app.appName}...`, 150);
-      image.drawText(font, 20, height - 16, `${GESTURE_DOUBLE_CLICK} back`, 110);
+      image.drawText(font, 24, headerHeight(font) + 8, `Starting ${this.options.app.appName}...`, 150);
+      image.drawText(font, 20, height - font.lineHeight - 4, `${GESTURE_DOUBLE_CLICK} back`, 110);
       return image;
     }
     if (this.phase === "failed") {
-      image.drawText(font, 24, HEADER_HEIGHT + 8, "Could not connect:", 180);
-      image.drawText(font, 24, HEADER_HEIGHT + 24, truncateRight(font, this.connectError, width - 48), 140);
-      image.drawText(font, 20, height - 16, `${GESTURE_CLICK} retry   ${GESTURE_DOUBLE_CLICK} back`, 110);
+      image.drawText(font, 24, headerHeight(font) + 8, "Could not connect:", 180);
+      image.drawText(font, 24, headerHeight(font) + 8 + lineStep(font), truncateRight(font, this.connectError, width - 48), 140);
+      image.drawText(font, 20, height - font.lineHeight - 4, `${GESTURE_CLICK} retry   ${GESTURE_DOUBLE_CLICK} back`, 110);
       return image;
     }
 
     const level = this.currentLevel();
     const path = this.levels.map((entry) => entry.title).join(" / ");
-    image.drawText(font, 20, 22, truncateLeft(font, path, width - 40), 130);
+    image.drawText(font, 20, 8 + lineStep(font), truncateLeft(font, path, width - 40), 130);
 
     if (!level || level.items === null) {
-      image.drawText(font, 24, HEADER_HEIGHT + 8, level?.error ? level.error : "Loading...", level?.error ? 140 : 150);
-      image.drawText(font, 20, height - 16, `${GESTURE_DOUBLE_CLICK} up / back`, 110);
+      image.drawText(font, 24, headerHeight(font) + 8, level?.error ? level.error : "Loading...", level?.error ? 140 : 150);
+      image.drawText(font, 20, height - font.lineHeight - 4, `${GESTURE_DOUBLE_CLICK} up / back`, 110);
       return image;
     }
 
     const items = level.items;
     if (!items.length) {
-      image.drawText(font, 24, HEADER_HEIGHT + 8, "(empty)", 120);
-      image.drawText(font, 20, height - 16, `${GESTURE_DOUBLE_CLICK} up / back`, 110);
+      image.drawText(font, 24, headerHeight(font) + 8, "(empty)", 120);
+      image.drawText(font, 20, height - font.lineHeight - 4, `${GESTURE_DOUBLE_CLICK} up / back`, 110);
       return image;
     }
 
     level.selectedIndex = clamp(level.selectedIndex, 0, items.length - 1);
-    const listHeight = height - HEADER_HEIGHT - FOOTER_HEIGHT;
-    const visibleRows = Math.max(1, (listHeight / ROW_HEIGHT) | 0);
+    const listHeight = height - headerHeight(font) - font.lineHeight - 10;
+    const rowH = tightRowHeight(font);
+    const visibleRows = Math.max(1, (listHeight / rowH) | 0);
     level.scrollRow = scrollToKeepSelectionVisible(level.scrollRow, level.selectedIndex, visibleRows, items.length);
 
     const rowWidth = width - 2 * LIST_X;
     const lastVisible = Math.min(items.length, level.scrollRow + visibleRows);
     for (let index = level.scrollRow; index < lastVisible; index++) {
       const item = items[index]!;
-      const y = HEADER_HEIGHT + (index - level.scrollRow) * ROW_HEIGHT;
+      const y = headerHeight(font) + (index - level.scrollRow) * rowH;
       const selected = index === level.selectedIndex;
       const highlightX = LIST_X - 6;
       const highlightY = y - 1;
       const highlightWidth = rowWidth + 12;
-      const highlightHeight = ROW_HEIGHT - 1;
+      const highlightHeight = rowH - 1;
       if (selected) {
         drawSelectionHighlight(image, highlightX, highlightY, highlightWidth, highlightHeight, ctx.stack.isFocused(), 4);
       }
@@ -131,8 +134,8 @@ export class MediaBrowseLayer implements Layer {
       drawListScrollbar(
         image,
         width - 12,
-        HEADER_HEIGHT,
-        visibleRows * ROW_HEIGHT - 4,
+        headerHeight(font),
+        visibleRows * rowH - 4,
         level.scrollRow,
         visibleRows,
         items.length,
@@ -149,7 +152,7 @@ export class MediaBrowseLayer implements Layer {
     return image;
   }
 
-  async handleInput(event: DashboardInputEvent, ctx: LayerContext): Promise<void> {
+  async handleInput(event: InputEvent, ctx: LayerContext): Promise<void> {
     if (this.phase === "failed") {
       if (event.type === "click") {
         this.phase = "idle";
@@ -285,7 +288,7 @@ export class MediaBrowseLayer implements Layer {
   }
 }
 
-function truncateRight(font: BdfFont, text: string, maxWidth: number): string {
+function truncateRight(font: UiFont, text: string, maxWidth: number): string {
   if (font.measureText(text) <= maxWidth) return text;
   let out = text;
   while (out.length > 1 && font.measureText(`${out}...`) > maxWidth) {
@@ -294,7 +297,7 @@ function truncateRight(font: BdfFont, text: string, maxWidth: number): string {
   return `${out}...`;
 }
 
-function truncateLeft(font: BdfFont, text: string, maxWidth: number): string {
+function truncateLeft(font: UiFont, text: string, maxWidth: number): string {
   if (font.measureText(text) <= maxWidth) return text;
   let out = text;
   while (out.length > 1 && font.measureText(`...${out}`) > maxWidth) {

@@ -1,6 +1,11 @@
 # Faceclaw Privacy Policy
 
-Faceclaw is a privacy-conscious app.
+Faceclaw is a privacy-conscious app. The developers of Faceclaw don't collect
+or store user data. Faceclaw does integrate with some third-party services,
+which have their own privacy policies; this document describes what those
+services are, what they're used for and what data they collect, and links to
+their privacy policies.
+
 
 ## Audio
 
@@ -62,4 +67,25 @@ The Weather app will retrieve the user's coarse location, and will use it to
 query a third-party weather information provider.
 
 
+## EvenHub
 
+The EvenHub app store is subject to Even Realities' privacy policy:
+https://support.evenrealities.com/hc/en-us/articles/14127464826511-Privacy-Policy.
+Apps downloaded from the EvenHub app store come with their own privacy
+policies.
+
+
+## Wear OS Watch
+
+The optional Faceclaw watch app (wear/) talks to the phone over Google Play
+services' Wearable Data Layer, the same channel the watch uses for
+notifications and other companion apps. Gestures, commands, the watch's own
+speech-recognition results, and the mirrored glasses status and assistant
+replies travel between your watch and your phone over their Bluetooth (or,
+when paired that way, Wi-Fi) link; Faceclaw does not send any of it to a
+server. Speech recognized on the watch uses the watch's system speech
+recognizer, which may send audio to Google under Google's privacy policy:
+
+  Google: https://policies.google.com/privacy
+
+The phone does nothing watch-related on phones without Google Play services.

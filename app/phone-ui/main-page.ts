@@ -1,4 +1,4 @@
-import { Application, Color, EventData, isAndroid, Observable, Page, ScrollView, TextField } from '@nativescript/core'
+import { Application, Color, EventData, isAndroid, Observable, Page, TextField, TextView } from '@nativescript/core'
 import { MainViewModel } from './main-view-model'
 import { dashboardController } from '../g2/dashboard-controller'
 
@@ -13,9 +13,6 @@ export function navigatingTo(args: EventData) {
 
 type MainPageState = {
   model: MainViewModel
-  isPinnedToBottom: boolean
-  scrollViews: ScrollView[]
-  scrollHandler: (args: EventData) => void
   propertyChangeHandler: (args: EventData & { propertyName?: string }) => void
   orientationHandler: () => void
 }
@@ -34,31 +31,20 @@ function cleanupPage(page: Page): void {
     setPageState(page, undefined)
     return
   }
-  for (const scrollView of state.scrollViews) {
-    scrollView.off(ScrollView.scrollEvent, state.scrollHandler)
-  }
   state.model.off(Observable.propertyChangeEvent, state.propertyChangeHandler)
   Application.off(Application.orientationChangedEvent, state.orientationHandler)
+  // navigatingTo builds a fresh model each visit; drop the old one's
+  // controller/settings subscriptions or every navigation leaks a listener.
+  state.model.dispose()
   setPageState(page, undefined)
 }
 
-function isAtBottom(scrollView: ScrollView): boolean {
-  return scrollView.scrollableHeight <= 0 || scrollView.verticalOffset >= scrollView.scrollableHeight - 8
-}
-
-function scrollToBottom(scrollView: ScrollView): void {
-  setTimeout(() => {
-    scrollView.scrollToVerticalOffset(scrollView.scrollableHeight, false)
-  }, 0)
-}
-
-function scrollLogsToBottom(scrollViews: ScrollView[]): void {
-  for (const scrollView of scrollViews) {
-    scrollToBottom(scrollView)
-  }
-}
-
-function applySettingsTextFieldContrast(textField: TextField): void {
+/**
+ * Readable colours for the light editor panels in both themes. selectAllOnFocus
+ * suits replacing an existing setting value; a message being composed keeps
+ * its caret where the user taps.
+ */
+function applySettingsTextFieldContrast(textField: TextField | TextView, selectAllOnFocus = true): void {
   textField.color = SETTINGS_TEXT_COLOR
   textField.backgroundColor = SETTINGS_BACKGROUND_COLOR
   textField.placeholderColor = SETTINGS_PLACEHOLDER_COLOR
@@ -67,7 +53,7 @@ function applySettingsTextFieldContrast(textField: TextField): void {
     return
   }
 
-  const nativeTextField = (textField as TextField & { nativeView?: android.widget.EditText }).nativeView
+  const nativeTextField = (textField as (TextField | TextView) & { nativeView?: android.widget.EditText }).nativeView
   if (!nativeTextField) {
     return
   }
@@ -76,16 +62,45 @@ function applySettingsTextFieldContrast(textField: TextField): void {
   nativeTextField.setHintTextColor(android.graphics.Color.rgb(102, 102, 102))
   // Editing an existing value usually means replacing it: select all on focus
   // so typing starts fresh but the current value stays visible.
-  nativeTextField.setSelectAllOnFocus(true)
+  nativeTextField.setSelectAllOnFocus(selectAllOnFocus)
 }
 
-function focusSystemNameField(page: Page): void {
+/**
+ * Leaving keyboard-input mode: the glasses navigated away from the text
+ * setting, so the phone's keyboard has nothing to type into any more.
+ */
+function dismissTextEditorKeyboard(page: Page): void {
+  page.getViewById<TextField>('settingsTextField')?.dismissSoftInput()
+  page.getViewById<TextField>('secondarySettingsTextField')?.dismissSoftInput()
+}
+
+function focusTextEditor(page: Page): void {
   setTimeout(() => {
     const textField = page.getViewById<TextField>('settingsTextField')
+    const secondaryTextField = page.getViewById<TextField>('secondarySettingsTextField')
     if (textField) {
       applySettingsTextFieldContrast(textField)
     }
+    if (secondaryTextField) {
+      applySettingsTextFieldContrast(secondaryTextField)
+    }
     textField?.focus()
+  }, 0)
+}
+
+/** The keyboard dialog closed on the glasses (sent, discarded, or screen off). */
+function dismissKeyboardInputKeyboard(page: Page): void {
+  page.getViewById<TextView>('keyboardInputField')?.dismissSoftInput()
+}
+
+/** The keyboard dialog opened: bring up the IME on its field right away. */
+function focusKeyboardInput(page: Page): void {
+  setTimeout(() => {
+    const textField = page.getViewById<TextView>('keyboardInputField')
+    if (textField) {
+      applySettingsTextFieldContrast(textField, false)
+      textField.focus()
+    }
   }, 0)
 }
 
@@ -95,72 +110,56 @@ export function loaded(args: EventData) {
   dashboardController.refreshEvenAppStatus()
 
   const model = page.bindingContext as MainViewModel | null
+  // Re-subscribe after a suspend/resume cycle (unloaded disposed the model);
+  // a no-op on the first load after construction.
+  model?.attach()
   // Automatically connect on reaching the main page (no-op if already
   // connected or if no glasses are configured).
   void model?.autoConnect()
   // Reopen the apps that were open before the last restart (no-op after the
   // first load).
   void dashboardController.restoreOpenApps()
-  const scrollViews = [
-    page.getViewById<ScrollView>('logScrollView'),
-    page.getViewById<ScrollView>('logScrollViewLandscape'),
-  ].filter((scrollView): scrollView is ScrollView => !!scrollView)
   const settingsTextField = page.getViewById<TextField>('settingsTextField')
   model?.refreshLayoutMetrics()
   if (settingsTextField) {
     applySettingsTextFieldContrast(settingsTextField)
   }
-  if (!model || scrollViews.length === 0) {
+  if (!model) {
     return
   }
 
   const state: MainPageState = {
     model,
-    isPinnedToBottom: true,
-    scrollViews,
-    scrollHandler: (scrollArgs) => {
-      state.isPinnedToBottom = isAtBottom(scrollArgs.object as ScrollView)
-    },
     orientationHandler: () => {
       setTimeout(() => {
         model.refreshLayoutMetrics()
-        if (state.isPinnedToBottom) {
-          scrollLogsToBottom(scrollViews)
-        }
       }, 0)
     },
     propertyChangeHandler: (propertyArgs) => {
-      if (propertyArgs.propertyName === 'showLog') {
-        if (model.showLog) {
-          state.isPinnedToBottom = true
-          scrollLogsToBottom(scrollViews)
-        }
-        return
-      }
       if (propertyArgs.propertyName === 'activeTextSettingId') {
         if (model.isTextSettingEditorActive) {
-          focusSystemNameField(page)
+          focusTextEditor(page)
+        } else {
+          dismissTextEditorKeyboard(page)
         }
-        return
-      }
-      if (propertyArgs.propertyName !== 'log') {
-        return
-      }
-      if (state.isPinnedToBottom) {
-        scrollLogsToBottom(scrollViews)
+      } else if (propertyArgs.propertyName === 'keyboardInputActive') {
+        if (model.keyboardInputActive) {
+          focusKeyboardInput(page)
+        } else {
+          dismissKeyboardInputKeyboard(page)
+        }
       }
     },
   }
 
-  for (const scrollView of scrollViews) {
-    scrollView.on(ScrollView.scrollEvent, state.scrollHandler)
-  }
   model.on(Observable.propertyChangeEvent, state.propertyChangeHandler)
   Application.on(Application.orientationChangedEvent, state.orientationHandler)
   setPageState(page, state)
-  scrollLogsToBottom(scrollViews)
   if (model.isTextSettingEditorActive) {
-    focusSystemNameField(page)
+    focusTextEditor(page)
+  }
+  if (model.keyboardInputActive) {
+    focusKeyboardInput(page)
   }
 }
 

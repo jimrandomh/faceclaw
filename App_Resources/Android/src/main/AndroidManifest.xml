@@ -25,7 +25,17 @@
 	<uses-permission android:name="android.permission.BLUETOOTH_CONNECT"/>
 	<uses-permission android:name="android.permission.BLUETOOTH_SCAN" android:usesPermissionFlags="neverForLocation"/>
 	<uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
-	<uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM"/>
+	<!-- Alarm clock reliability (Timers app): USE_EXACT_ALARM is granted
+	     outright on Android 13+ for alarm-clock apps and cannot be revoked
+	     by accident; SCHEDULE_EXACT_ALARM covers Android 12. The receiver
+	     re-arms alarms after reboots; the ringing service plays on the alarm
+	     stream and shows a full-screen alarm over the lock screen. -->
+	<uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" android:maxSdkVersion="32"/>
+	<uses-permission android:name="android.permission.USE_EXACT_ALARM"/>
+	<uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>
+	<uses-permission android:name="android.permission.VIBRATE"/>
+	<uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT"/>
+	<uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK"/>
 	<uses-permission android:name="android.permission.READ_CALENDAR"/>
 	<uses-permission android:name="android.permission.RECORD_AUDIO"/>
 	<uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS"/>
@@ -55,10 +65,29 @@
 		android:usesCleartextTraffic="true"
 		android:hardwareAccelerated="true">
 
+		<!-- Ask Play Services to fetch the ML Kit barcode scanner module at
+		     install time, so the Developer app's "Load app from QR code" does
+		     not have to download it on first use. -->
+		<meta-data
+			android:name="com.google.mlkit.vision.DEPENDENCIES"
+			android:value="barcode_ui" />
+
+		<!-- Read-only content URIs for cached documents handed to system viewers. -->
+		<provider
+			android:name="androidx.core.content.FileProvider"
+			android:authorities="${applicationId}.fileprovider"
+			android:exported="false"
+			android:grantUriPermissions="true">
+			<meta-data
+				android:name="android.support.FILE_PROVIDER_PATHS"
+				android:resource="@xml/file_provider_paths" />
+		</provider>
+
 		<activity
 			android:name="com.tns.NativeScriptActivity"
 			android:label="@string/title_activity_kimera"
 			android:configChanges="keyboard|keyboardHidden|orientation|screenSize|smallestScreenSize|screenLayout|locale|uiMode"
+			android:windowSoftInputMode="adjustResize"
 			android:theme="@style/LaunchScreenTheme"
 			android:hardwareAccelerated="true"
       		android:launchMode="singleTask"
@@ -92,9 +121,64 @@
 				<action android:name="android.service.notification.NotificationListenerService" />
 			</intent-filter>
 		</service>
+		<!-- Wear OS: Play services routes watch-app messages (paths under
+		     /faceclaw) and watch reachability changes here, starting the app
+		     process if needed. See FaceclawWearBridge. -->
+		<service
+			android:name="com.faceclaw.app.FaceclawWearListenerService"
+			android:enabled="true"
+			android:exported="true">
+			<intent-filter>
+				<action android:name="com.google.android.gms.wearable.MESSAGE_RECEIVED" />
+				<data android:scheme="wear" android:host="*" android:pathPrefix="/faceclaw" />
+			</intent-filter>
+			<intent-filter>
+				<action android:name="com.google.android.gms.wearable.CAPABILITY_CHANGED" />
+				<data android:scheme="wear" android:host="*" android:pathPrefix="/" />
+			</intent-filter>
+		</service>
+		<!-- Timers app alarm clock: the AlarmManager target, the reboot /
+		     time-change rescheduler, the ringing foreground service, and the
+		     lock-screen ringing activity. All Java, so alarms ring with the
+		     JavaScript side asleep or gone. -->
 		<receiver
-			android:name="com.faceclaw.app.FaceclawTimerReceiver"
+			android:name="com.faceclaw.app.FaceclawAlarmReceiver"
 			android:enabled="true"
 			android:exported="false" />
+		<receiver
+			android:name="com.faceclaw.app.FaceclawAlarmRescheduleReceiver"
+			android:enabled="true"
+			android:exported="true">
+			<intent-filter>
+				<action android:name="android.intent.action.BOOT_COMPLETED" />
+				<action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+				<action android:name="android.intent.action.TIME_SET" />
+				<action android:name="android.intent.action.TIMEZONE_CHANGED" />
+				<action android:name="android.intent.action.QUICKBOOT_POWERON" />
+				<action android:name="com.htc.intent.action.QUICKBOOT_POWERON" />
+			</intent-filter>
+		</receiver>
+		<service
+			android:name="com.faceclaw.app.FaceclawAlarmService"
+			android:enabled="true"
+			android:exported="false"
+			android:foregroundServiceType="mediaPlayback" />
+		<activity
+			android:name="com.faceclaw.app.FaceclawAlarmActivity"
+			android:exported="false"
+			android:excludeFromRecents="true"
+			android:launchMode="singleInstance"
+			android:showWhenLocked="true"
+			android:turnScreenOn="true"
+			android:theme="@android:style/Theme.Material.NoActionBar" />
+		<!-- adb-only settings export/import (see FaceclawSettingsPortReceiver).
+		     DUMP is a development permission: the adb shell holds it, other
+		     apps cannot get it granted without adb, so this stays reachable
+		     from the command line but not from apps on the phone. -->
+		<receiver
+			android:name="com.faceclaw.app.FaceclawSettingsPortReceiver"
+			android:enabled="true"
+			android:exported="true"
+			android:permission="android.permission.DUMP" />
 	</application>
 </manifest>

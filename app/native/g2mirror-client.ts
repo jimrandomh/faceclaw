@@ -1,3 +1,4 @@
+import { openSocket } from "./socket";
 import { toUint8Array } from "../util/array-util";
 
 declare const com: any;
@@ -25,6 +26,13 @@ export type G2MirrorSession = {
   cwdHint: string;
   /** Unix epoch ms of the terminal's last bell, or null if none observed. */
   lastBellAt: number | null;
+  /**
+   * Unix epoch ms (host clock) of the app's last output, or null if none
+   * observed. Fresh to within the wrapper's 2s activity reporting interval
+   * while we're connected; compare against other host timestamps, not the
+   * phone clock (see the worker's local-receive-time activity tracking).
+   */
+  lastOutputAt: number | null;
   /** Window title the app last set (xterm OSC 0/2), or null if none observed. */
   title: string | null;
 };
@@ -41,6 +49,12 @@ export type G2MirrorState = {
   status: string;
   sessions: G2MirrorSession[];
   attachedCommand: string;
+  /**
+   * server_name from the init success reply: a human-readable name for the
+   * machine the server runs on. "" until the handshake succeeds (or when an
+   * older server omits the field).
+   */
+  serverName: string;
 };
 
 /** A page of archived scrollback lines (see PROTOCOL.md "Scrollback history"). */
@@ -56,6 +70,8 @@ export type G2MirrorHistoryReply = {
 };
 
 export type G2MirrorClientOptions = {
+  /** TLS (g2mirrors:// → wss) vs plain (g2mirror:// → ws). */
+  secure: boolean;
   host: string;
   port: number;
   authToken: string;
@@ -69,10 +85,12 @@ type TerminalDataKind = "snapshot" | "output";
 export class G2MirrorClient {
   private ws: any = null;
   private listenerProxy: any = null;
+  private connectionGeneration = 0;
   private phase: G2MirrorPhase = "idle";
   private status = "Not connected.";
   private sessions: G2MirrorSession[] = [];
   private attachedCommand = "";
+  private serverName = "";
   // Scrollback archive extent: `historyNext` is the splice point (index of the
   // next line to be archived), `historyOldest` the oldest retained index.
   private historyNext = 0;
@@ -86,6 +104,7 @@ export class G2MirrorClient {
   private readonly sessionAttachedListeners = new Set<(command: string) => void>();
   private readonly sessionDetachedListeners = new Set<(reason: string) => void>();
   private readonly bellListeners = new Set<(socket: string, lastBellAtMs: number) => void>();
+  private readonly activityListeners = new Set<(socket: string, lastOutputAtMs: number) => void>();
   private readonly titleListeners = new Set<(socket: string, title: string) => void>();
   // Launch requests awaiting their reply, oldest first. The server answers
   // each `launch` with either `launched` or an `error` whose message starts
@@ -104,6 +123,7 @@ export class G2MirrorClient {
       status: this.status,
       sessions: this.sessions.slice(),
       attachedCommand: this.attachedCommand,
+      serverName: this.serverName,
     };
   }
 
@@ -134,20 +154,37 @@ export class G2MirrorClient {
     return () => this.bellListeners.delete(listener);
   }
 
+  /**
+   * Unsolicited output-activity notification for any monitored terminal
+   * (rate-limited by the wrapper to one per 2s per terminal, leading edge
+   * only — notifications stop as soon as the output does).
+   */
+  onActivity(listener: (socket: string, lastOutputAtMs: number) => void): () => void {
+    this.activityListeners.add(listener);
+    return () => this.activityListeners.delete(listener);
+  }
+
   /** Unsolicited title change for any monitored terminal. */
   onTitle(listener: (socket: string, title: string) => void): () => void {
     this.titleListeners.add(listener);
     return () => this.titleListeners.delete(listener);
   }
 
+  /** Grid dimensions for the next connection's handshake. */
+  setViewport(cols: number, rows: number): void {
+    this.options.cols = cols;
+    this.options.rows = rows;
+  }
+
   start(): void {
     if (this.ws) return;
     this.stopped = false;
-    const url = `ws://${this.options.host}:${this.options.port}`;
+    const generation = ++this.connectionGeneration;
+    const url = `${this.options.secure ? "wss" : "ws"}://${this.options.host}:${this.options.port}`;
     this.setState("connecting", `Connecting to ${this.options.host}:${this.options.port}...`);
-    this.listenerProxy = new com.faceclaw.app.FaceclawWebSocketListener({
+    this.listenerProxy = {
       onOpen: () => {
-        if (this.stopped) return;
+        if (this.stopped || generation !== this.connectionGeneration) return;
         this.setState("connecting", "Authenticating...");
         this.send({
           type: "init",
@@ -159,20 +196,20 @@ export class G2MirrorClient {
         });
       },
       onTextMessage: (message: string) => {
-        if (this.stopped) return;
+        if (this.stopped || generation !== this.connectionGeneration) return;
         this.handleMessage(String(message));
       },
       onClosed: (code: number, reason: string) => {
-        if (this.stopped) return;
+        if (this.stopped || generation !== this.connectionGeneration) return;
         this.handleConnectionLost(`Connection closed (${Number(code)}${reason ? `: ${String(reason)}` : ""}).`);
       },
       onFailure: (message: string) => {
-        if (this.stopped) return;
+        if (this.stopped || generation !== this.connectionGeneration) return;
         this.handleConnectionLost(`Connection failed: ${shortenError(String(message))}`);
       },
-    });
+    };
     try {
-      this.ws = new com.faceclaw.app.FaceclawWebSocket(url, this.listenerProxy, null, null);
+      this.ws = openSocket(url, this.listenerProxy);
     } catch (error) {
       this.ws = null;
       this.handleConnectionLost(`Connection failed: ${shortenError(String((error as Error)?.message ?? error))}`);
@@ -181,6 +218,7 @@ export class G2MirrorClient {
 
   stop(): void {
     this.stopped = true;
+    ++this.connectionGeneration;
     this.rejectAllPendingLaunches("client stopped");
     this.clearListRefreshTimer();
     if (this.ws) {
@@ -288,7 +326,9 @@ export class G2MirrorClient {
    */
   submitInput(text: string): void {
     if (this.phase !== "attached") return;
-    const textByteLength = new java.lang.String(text).getBytes("UTF-8").length;
+    const textByteLength = global.isIOS
+      ? NSString.stringWithString(text).lengthOfBytesUsingEncoding(NSUTF8StringEncoding)
+      : new java.lang.String(text).getBytes("UTF-8").length;
     this.send({
       type: "input",
       data: encodeBase64Utf8(`${text}\r`),
@@ -312,6 +352,9 @@ export class G2MirrorClient {
 
     switch (message.type) {
       case "init":
+        if (typeof message.server_name === "string" && message.server_name) {
+          this.serverName = message.server_name;
+        }
         this.setState("connected", "Connected.");
         this.listSessions();
         this.ensureListRefreshTimer();
@@ -337,6 +380,7 @@ export class G2MirrorClient {
             pid: Number(item?.pid) || 0,
             cwdHint: String(item?.cwd_hint ?? ""),
             lastBellAt: typeof item?.last_bell_at === "number" ? item.last_bell_at : null,
+            lastOutputAt: typeof item?.last_output_at === "number" ? item.last_output_at : null,
             title: typeof item?.title === "string" ? item.title : null,
           }))
           .filter((session: G2MirrorSession) => session.socket.length > 0);
@@ -351,6 +395,19 @@ export class G2MirrorClient {
         if (session) session.lastBellAt = lastBellAt;
         for (const listener of Array.from(this.bellListeners)) {
           listener(socket, lastBellAt);
+        }
+        return;
+      }
+      case "activity": {
+        const socket = String(message.socket ?? "");
+        const lastOutputAt = Number(message.last_output_at) || 0;
+        if (!socket || !lastOutputAt) return;
+        const session = this.sessions.find((s) => s.socket === socket);
+        if (session) session.lastOutputAt = lastOutputAt;
+        // No emitState: activity is frequent while an app is busy, and the
+        // terminal worker drives its own hub animation off the listener.
+        for (const listener of Array.from(this.activityListeners)) {
+          listener(socket, lastOutputAt);
         }
         return;
       }
@@ -517,11 +574,19 @@ export class G2MirrorClient {
 
 function decodeBase64(data: string): Uint8Array {
   if (!data) return new Uint8Array(0);
+  if (global.isIOS) {
+    const decoded = NSData.alloc().initWithBase64EncodedStringOptions(data, 0 as NSDataBase64DecodingOptions);
+    return decoded ? new Uint8Array(interop.bufferFromData(decoded)).slice() : new Uint8Array();
+  }
   return toUint8Array(android.util.Base64.decode(data, android.util.Base64.DEFAULT));
 }
 
 function decodeBase64Utf8(data: string): string {
   if (!data) return "";
+  if (global.isIOS) {
+    const decoded = NSData.alloc().initWithBase64EncodedStringOptions(data, 0 as NSDataBase64DecodingOptions);
+    return decoded ? String(NSString.alloc().initWithDataEncoding(decoded, NSUTF8StringEncoding) ?? "") : "";
+  }
   const bytes = android.util.Base64.decode(data, android.util.Base64.DEFAULT);
   return String(new java.lang.String(bytes, "UTF-8"));
 }
@@ -533,6 +598,7 @@ function stripAnsi(text: string): string {
 }
 
 function encodeBase64Utf8(text: string): string {
+  if (global.isIOS) return NSString.stringWithString(text).dataUsingEncoding(NSUTF8StringEncoding).base64EncodedStringWithOptions(0 as NSDataBase64EncodingOptions);
   const bytes = new java.lang.String(text).getBytes("UTF-8");
   return String(android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP));
 }

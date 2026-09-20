@@ -1,7 +1,13 @@
 # NativeScript
-hooks/
+hooks/*
+!hooks/before-prepare/
+hooks/before-prepare/*
+!hooks/before-prepare/faceclaw-kotlin.js
 node_modules/
 platforms/
+
+# Release APKs from scripts/release.sh
+dist/
 
 # Logs
 logs
@@ -9,6 +15,9 @@ logs
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+
+# npm test compile output (tests/tsconfig.json outDir)
+.test-build/
 
 # General
 .DS_Store
@@ -22,6 +31,7 @@ typings/
 .gradle-cursor
 App_Resources/Android/src/main/jniLibs/**/*.so
 App_Resources/Android/src/main/assets/faceclaw-voice-asr/
+old
 
 # Visual Studio Code
 .vscode/*
@@ -32,3 +42,24 @@ App_Resources/Android/src/main/assets/faceclaw-voice-asr/
 
 # pull_config.sh output: the phone's live settings, including API keys
 faceclaw_settings.xml
+faceclaw_settings.ios.json
+
+# Developer configs
+build_paths.sh
+**/xcuserdata/
+
+# Kotlin build outputs and staged NativeScript artifacts
+native/kotlin/.gradle/
+native/kotlin/.kotlin/
+native/kotlin/build/
+native/kotlin/shared/build/
+native/kotlin/local.properties
+native/kotlin/plugin/platforms/android/*.aar
+native/kotlin/plugin/platforms/ios/
+!native/kotlin/plugin/platforms/
+!native/kotlin/plugin/platforms/android/
+!native/kotlin/plugin/platforms/android/include.gradle
+
+tests/kotlin/.gradle/
+tests/kotlin/.kotlin/
+tests/kotlin/build/

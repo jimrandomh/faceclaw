@@ -1,11 +1,12 @@
 import { clamp } from "~/util/numeric-util";
 import { formatRelativeTime } from "~/util/date-util";
-import { BdfFont, getDefaultSmallFont } from "../graphics/bdffont";
+import { getDefaultSmallFont } from "../graphics/ui-fonts";
 import { truncateText } from "../graphics/textwrap";
-import { GrayImage } from "../graphics/image";
+import { GrayImage, type UiFont } from "../graphics/image";
 import { wrapText } from "../graphics/textwrap";
-import { GESTURE_DOUBLE_CLICK } from "./gestures";
+import { lineStep, listRowHeight } from "./metrics";
 import {
+  ALL_NOTIFICATIONS,
   dismissNotification,
   invokeNotificationAction,
   readActiveNotifications,
@@ -13,18 +14,23 @@ import {
   type AndroidNotification,
   type AndroidNotificationAction,
 } from "../native/notification-icons";
-import { isNotificationListenerEnabled } from "../native/notification-access";
+import { setNotificationSourceEnabled } from "../native/notification-sources";
+import { notificationEmptyMessage } from "../native/notification-access";
 import { noteStaleDataUsed, renderPassAllowsStaleData } from "../util/render-freshness";
-import { type DashboardInputEvent, type Layer, type LayerContext, type PaintBelow } from "./layers";
+import { type InputEvent } from "./gestures";
+import { type Layer, type LayerContext, type PaintBelow } from "./layers";
+import { MenuLayer } from "./menu";
 
 const PAGE_X = 12;
 const PAGE_Y = 12;
+// Title position, shared with the other list apps (terminal, calendar).
+const TITLE_X = 18;
+const TITLE_Y = 10;
 const LIST_TOP = 38;
 const CARD_X = 20;
 const ICON_SIZE = 24;
 const ICON_TEXT_GAP = 8;
 const CARD_TEXT_X = 10 + ICON_SIZE + ICON_TEXT_GAP;
-const LINE_HEIGHT = 14;
 const CARD_GAP = 6;
 const MAX_NOTIFICATIONS = 50;
 // Right-hand action menu of the detail view.
@@ -49,7 +55,8 @@ type CardLayout = {
 type DetailMenuItem =
   | { kind: "back"; label: string }
   | { kind: "action"; label: string; action: AndroidNotificationAction }
-  | { kind: "dismiss"; label: string };
+  | { kind: "dismiss"; label: string }
+  | { kind: "disable-source"; label: string };
 
 export type SingleNotificationLayerOrigin = "notifications-list" | "new-notification-modal";
 
@@ -79,24 +86,26 @@ export class NotificationsListLayer implements Layer {
       buildNotificationCardLayout(font, notification, index === selectedIndex, cardTextWidth),
     );
 
-    image.drawText(font, PAGE_X + 12, PAGE_Y + 9, "Notifications", 220);
-    image.drawText(font, width - 96, PAGE_Y + 9, `${selectedIndex + 1}/${notifications.length}`, 150);
-
     if (!notifications.length) {
-      const message = isNotificationListenerEnabled()
-        ? "No current Android notifications."
-        : "Grant permission on your phone to view notifications on the glasses.";
+      image.drawText(font, TITLE_X, TITLE_Y, "Notifications", 220);
+      const message = notificationEmptyMessage();
       const messageLines = wrapText(font, message, width - 48);
       for (let index = 0; index < messageLines.length; index++) {
-        image.drawText(font, 24, 72 + index * LINE_HEIGHT, messageLines[index]!, 190);
+        image.drawText(font, 24, 72 + index * lineStep(font), messageLines[index]!, 190);
       }
-      image.drawText(font, 24, height - 36, `${GESTURE_DOUBLE_CLICK} back`, 110);
       return image;
     }
 
     const focused = ctx.stack.isFocused();
     const listBottom = height;
     const scrollY = scrollForSelected(layouts, selectedIndex, listBottom - LIST_TOP);
+    // The title scrolls away with the list. Card text is drawn as deferred
+    // glyphs (always composited above raster fills), so a fixed title would
+    // show through cards scrolled over it; moving it with the content keeps
+    // it above the first card instead.
+    if (TITLE_Y - scrollY + font.lineHeight > 0) {
+      image.drawText(font, TITLE_X, TITLE_Y - scrollY, "Notifications", 220);
+    }
     let cursorY = LIST_TOP - scrollY;
     for (let index = 0; index < layouts.length; index++) {
       const layout = layouts[index]!;
@@ -113,7 +122,7 @@ export class NotificationsListLayer implements Layer {
     return image;
   }
 
-  handleInput(event: DashboardInputEvent, ctx: LayerContext): void {
+  handleInput(event: InputEvent, ctx: LayerContext): void {
     const notifications = readActiveNotifications(MAX_NOTIFICATIONS);
     const selectedIndex = this.resolveSelectedIndex(notifications);
     if (event.type === "double-click") {
@@ -160,6 +169,7 @@ export class NotificationsListLayer implements Layer {
  */
 export class SingleNotificationLayer implements Layer {
   private selectedMenuIndex = 0;
+  private confirmation: { source: AndroidNotification; menu: MenuLayer } | null = null;
 
   constructor(
     private readonly notificationKey: string,
@@ -167,29 +177,36 @@ export class SingleNotificationLayer implements Layer {
   ) {}
 
   paint(ctx: LayerContext, paintBelow: PaintBelow): GrayImage {
+    if (this.confirmation) return this.paintConfirmation(ctx);
     const font = getDefaultSmallFont();
     const { width, height } = ctx.stack.getBaseSize();
     const image = new GrayImage(width, height, 0);
-    const notification = readActiveNotifications(MAX_NOTIFICATIONS).find((item) => item.key === this.notificationKey);
+    const notification = readActiveNotifications(ALL_NOTIFICATIONS).find((item) => item.key === this.notificationKey);
 
     if (!notification) {
       return this.closeUnavailableNotification(ctx, paintBelow);
     }
 
-    const menu = buildDetailMenu(notification);
+    const menu = buildDetailMenu(notification, this.options.origin);
     this.selectedMenuIndex = clamp(this.selectedMenuIndex, 0, Math.max(0, menu.length - 1));
     drawDetailContent(image, font, notification, iconForNotification(notification.key), width, height);
     drawDetailMenu(image, font, menu, this.selectedMenuIndex, width);
     return image;
   }
 
-  handleInput(event: DashboardInputEvent, ctx: LayerContext): void {
-    const notification = readActiveNotifications(MAX_NOTIFICATIONS).find((item) => item.key === this.notificationKey);
+  async handleInput(event: InputEvent, ctx: LayerContext): Promise<void> {
+    if (this.confirmation) {
+      if (event.type === "double-click") this.close(ctx);
+      else await this.confirmation.menu.handleInput(event, ctx);
+      return;
+    }
+    const notification = readActiveNotifications(ALL_NOTIFICATIONS).find((item) => item.key === this.notificationKey);
     if (!notification) {
       this.closeUnavailableNotification(ctx);
       return;
     }
-    const menu = buildDetailMenu(notification);
+    const menu = buildDetailMenu(notification, this.options.origin);
+    this.selectedMenuIndex = clamp(this.selectedMenuIndex, 0, menu.length - 1);
 
     if (event.type === "double-click") {
       this.close(ctx);
@@ -210,13 +227,45 @@ export class SingleNotificationLayer implements Layer {
       this.close(ctx);
     } else if (item.kind === "action") {
       invokeNotificationAction(this.notificationKey, item.action.index);
-      if (!readActiveNotifications(MAX_NOTIFICATIONS).some((item) => item.key === this.notificationKey)) {
+      if (!readActiveNotifications(ALL_NOTIFICATIONS).some((item) => item.key === this.notificationKey)) {
         this.closeUnavailableNotification(ctx);
       }
     } else if (item.kind === "dismiss") {
       dismissNotification(this.notificationKey);
       this.closeUnavailableNotification(ctx);
+    } else if (item.kind === "disable-source") {
+      // Keep the modal alive for confirmation even after Android removes the notification.
+      this.confirmation = {
+        source: notification,
+        menu: new MenuLayer(null, [
+          { label: "Cancel", onSelect: () => this.close(ctx) },
+          { label: "Turn off popups", onSelect: () => {
+            setNotificationSourceEnabled(notification, false);
+            this.close(ctx);
+          } },
+        ], { x: 12, y: 0, width: ctx.stack.getBaseSize().width - 24, minHeight: 0, showBorder: false }),
+      };
+      dismissNotification(this.notificationKey);
     }
+  }
+
+  private paintConfirmation(ctx: LayerContext): GrayImage {
+    const { source, menu } = this.confirmation!;
+    const font = getDefaultSmallFont();
+    const { width, height } = ctx.stack.getBaseSize();
+    const image = new GrayImage(width, height, 0);
+    // Put actions first so they remain reachable even with a large UI font.
+    menu.paint(ctx, () => image);
+    const top = 24 + 2 * listRowHeight(font);
+    const prompt = `Turn off notification popups from ${source.appName || source.packageName}? You can turn them back on in the Notifications app's Notification filter.`;
+    const lines = wrapText(font, prompt, width - 48);
+    const maxLines = Math.max(1, Math.floor((height - top - 12) / lineStep(font)));
+    for (let index = 0; index < Math.min(lines.length, maxLines); index++) {
+      const text = index === maxLines - 1 && lines.length > maxLines
+        ? truncateText(font, lines[index] + "...", width - 48) : lines[index]!;
+      image.drawText(font, 24, top + index * lineStep(font), text, 210);
+    }
+    return image;
   }
 
   /** Leave the detail view, whatever hosts it. */
@@ -237,7 +286,7 @@ export class SingleNotificationLayer implements Layer {
 
 
 function buildNotificationCardLayout(
-  font: BdfFont,
+  font: UiFont,
   notification: AndroidNotification,
   selected: boolean,
   cardTextWidth: number,
@@ -267,13 +316,13 @@ function buildNotificationCardLayout(
   return {
     notification,
     lines,
-    height: Math.max(42, 12 + lines.length * LINE_HEIGHT),
+    height: Math.max(ICON_SIZE + 18, 12 + lines.length * lineStep(font)),
   };
 }
 
 function drawNotificationCard(
   image: GrayImage,
-  font: BdfFont,
+  font: UiFont,
   layout: CardLayout,
   x: number,
   y: number,
@@ -294,7 +343,7 @@ function drawNotificationCard(
   }
   for (let index = 0; index < layout.lines.length; index++) {
     const value = index === 0 ? 140 : selected ? 235 : 185;
-    image.drawText(font, x + CARD_TEXT_X, y + 7 + index * LINE_HEIGHT, layout.lines[index]!, value);
+    image.drawText(font, x + CARD_TEXT_X, y + 7 + index * lineStep(font), layout.lines[index]!, value);
   }
 }
 
@@ -313,7 +362,7 @@ function scrollForSelected(layouts: CardLayout[], selectedIndex: number, viewpor
 
 function drawDetailContent(
   image: GrayImage,
-  font: BdfFont,
+  font: UiFont,
   notification: AndroidNotification,
   icon: GrayImage | null,
   width: number,
@@ -343,32 +392,50 @@ function drawDetailContent(
     lines.push(...wrapText(font, meta, contentWidth));
   }
 
-  const maxLines = Math.max(1, ((height - 64 - 14) / LINE_HEIGHT) | 0);
+  const step = lineStep(font);
+  const bodyTop = 48 + font.lineHeight + 4;
+  const maxLines = Math.max(1, ((height - bodyTop - step) / step) | 0);
   for (let index = 0; index < Math.min(lines.length, maxLines); index++) {
     const line = lines[index]!;
-    image.drawText(font, contentX, 64 + index * LINE_HEIGHT, line, index === 0 ? 230 : 190);
+    image.drawText(font, contentX, bodyTop + index * step, line, index === 0 ? 230 : 190);
   }
   if (lines.length > maxLines) {
     image.drawText(font, contentX, height - 24, "...", 140);
   }
 }
 
-function drawDetailMenu(image: GrayImage, font: BdfFont, menu: DetailMenuItem[], selectedIndex: number, width: number): void {
+function drawDetailMenu(image: GrayImage, font: UiFont, menu: DetailMenuItem[], selectedIndex: number, width: number): void {
   const menuX = width - DETAIL_MENU_WIDTH - 24;
   const menuY = 24;
+  const rows = menu.map((item) => {
+    const lines = item.kind === "disable-source"
+      ? wrapText(font, item.label, DETAIL_MENU_WIDTH - 16)
+      : [truncateText(font, item.label, DETAIL_MENU_WIDTH - 16)];
+    return { lines, height: lines.length * lineStep(font) + 8 };
+  });
+  const selectedBottom = rows.slice(0, selectedIndex + 1).reduce((sum, row) => sum + row.height, 0);
+  const scrollY = Math.max(0, selectedBottom - (image.height - menuY - 12));
+  let y = menuY - scrollY;
   for (let index = 0; index < menu.length; index++) {
-    const y = menuY + index * 22;
+    const row = rows[index]!;
+    if (y < menuY) {
+      y += row.height;
+      continue;
+    }
+    if (y + row.height > image.height - 12) break;
     const selected = index === selectedIndex;
     if (selected) {
-      image.fillRoundedRect(menuX - 8, y - 2, DETAIL_MENU_WIDTH, 19, 18, 6);
-      image.drawRoundedRect(menuX - 8, y - 2, DETAIL_MENU_WIDTH, 19, 60, 6);
+      image.fillRoundedRect(menuX - 8, y - 2, DETAIL_MENU_WIDTH, row.height - 3, 18, 6);
+      image.drawRoundedRect(menuX - 8, y - 2, DETAIL_MENU_WIDTH, row.height - 3, 60, 6);
     }
-    const label = truncateText(font, menu[index]!.label, DETAIL_MENU_WIDTH - 12);
-    image.drawText(font, menuX, y + 2, label, selected ? 255 : 185);
+    for (let line = 0; line < row.lines.length; line++) {
+      image.drawText(font, menuX, y + 2 + line * lineStep(font), row.lines[line]!, selected ? 255 : 185);
+    }
+    y += row.height;
   }
 }
 
-function buildDetailMenu(notification: AndroidNotification): DetailMenuItem[] {
+function buildDetailMenu(notification: AndroidNotification, origin: SingleNotificationLayerOrigin): DetailMenuItem[] {
   return [
     { kind: "back", label: "Back" },
     ...notification.actions.map((action): DetailMenuItem => ({
@@ -376,7 +443,9 @@ function buildDetailMenu(notification: AndroidNotification): DetailMenuItem[] {
       label: action.enabled ? action.title : `${action.title} (unavailable)`,
       action,
     })),
-    { kind: "dismiss", label: "Dismiss" },
+    { kind: "dismiss", label: notification.dismissLabel || "Dismiss" },
+    ...(origin === "new-notification-modal" && notification.packageName
+      ? [{ kind: "disable-source" as const, label: "Don't show on glasses again" }] : []),
   ];
 }
 

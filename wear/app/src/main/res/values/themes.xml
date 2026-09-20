@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- The pad uses rightward swipes as input, so the system's whole-window
+         swipe-to-dismiss is off; the crown/home button leaves the app, and
+         inner screens still swipe back through SwipeDismissableNavHost. -->
+    <style name="Theme.Faceclaw" parent="@android:style/Theme.DeviceDefault">
+        <item name="android:windowSwipeToDismiss">false</item>
+    </style>
+</resources>

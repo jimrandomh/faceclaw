@@ -1,0 +1,147 @@
+# Changelog
+
+## 0.7.2 - 2026-09-19
+
+* Rebase to firmware 2.3.0, fixing an issue with some R1 ring input events being lost
+* Receive lower-level ring events: ring-press as opposed to click, bypass filtering, swipe speeds
+* Modify built in games to use ring-press rather than click
+
+## 0.7.1 - 2026-09-19
+
+### iOS Developer Beta
+
+This release contains a developer beta of an iOS port. Most of the
+functionality present in the Android version is working, but it is
+considerably buggier, missing some functionality entirely, and generally not
+quite ready for non-developer users. To use it at this stage, you will have to
+compile it from source code yourself; it is not present in the App Store and
+does not have a Testflight.
+
+Current status:
+* Custom firmware flashing: Tested end to end and working
+* Voice input: Working. On-device transcription with Siri dictation only; cloud transcription providers are not yet supported.
+* AI agent integration: Working. Cloud providers only; on-device LLM is not yet supported.
+* Notifications: Working, with rough edges. Notifications appear on the glasses, but they don't have distinguishing icons and the only action you can take on a notification is dismissing it.
+* Music player integration: Not yet implemented at all
+* Calendar: Not yet implemented at all
+* EvenHub: Partially working. Hub apps install and run, sometimes. They freeze when the app is in the background or the phone is locked.
+
+### Minor Features
+
+* Mark stock firmware 2.3 as validated for installing custom firmware over
+* Add on-device Whisper as a voice transcription option
+* Add Wear OS watch battery indicator to the top bar and Glanceboard
+* Refinements to builtin games
+* Short-then-long gesture from screen off activates the glanceboard
+* Compass: No longer discards calibration when off
+* Glanceboard: Tap setting includes a Disable option
+* Glanceboard: Add a 2x3 layout option
+* Convert a large chunk of the codebase from Android-specific Java to cross-platform Kotlin for iOS porting
+
+### Bluetooth Protocol Changes
+
+* Custom bluetooth messages now use a new SID, rather than modifying the stock image-update message type
+* Compression is done at the transport layer, rather than individual image data buffers
+* Expand the texture cache to 256kb
+
+## 0.7.0 - 2026-09-12
+
+### Major Features
+
+* Add Glanceboard
+
+The Glanceboard is a customizable dashboard, which opens when you single-tap
+or long-press-and-hold while the screen is off, then closes automatically. The
+idea is that this is where you put things that you want to keep accessible
+while you're not actively using the glasses. The glanceboard has four slots
+for widgets, and has a system card widget (time, notifications, etc) and
+widgets for music, calendar, terminals, and more.
+
+* Add "AI Chat" app
+
+This is a conversational-style way to use the voice assistant that was already
+built in. Rather than say the wake word each time, while in the AI Chat app,
+you press-and-hold the ring to start speaking and release to send.
+
+* Significantly increase speed
+
+This version reconfigures the glasses' Bluetooth radio link, increasing
+transfer speed by 3-10x. This makes the user interface a lot snappier overall,
+and will enable better animations and graphics in future versions. There is a
+new Flappy game, to demonstrate that we can now reasonably handle 30fps
+full-screen animation. This does increase battery usage, but not by very much;
+based on the specs of the bluetooth chip used, this is estiamted to consume an
+extra 5% battery per day.
+
+### Smaller Features and Bug Fixes
+
+* After starting in Preview mode, connecting glasses walks you through the custom firmware flashing process in the same way as regular onboarding
+* Messaging in the flasher distinguishes between downgrading from stock firmwares where that's been validated and veresions where it hasn't, and considers 2.2.10 validated
+* Navigate and Terminal apps have their own config setting for screen-size
+* Transcribe app: Scrolling; automatic reconnection; insert newlines
+* Notifications: Add notification filters
+* Phone screen preview: Add rotation option; improve landscape layout
+* Add brightness control to the system context menu
+* Add R1 ring battery to the top bar
+* Battery indicators have new styling and more customization options
+* Add magnetometer calibration debug info to the Compass app
+* Nightscout app has alert thresholds for canula age, cartridge volume, pump battery, time since last loop, shown in the top bar
+* Terminal app: Icons in the app-switcher sidebar show terminal activity
+* Speed up wake wake from sleep (https://github.com/jimrandomh/faceclaw/pull/24)
+
+## 0.6.5 - 2026-09-04
+* Changed context menu gestures: — for system, ●— for app context menu.
+* System and app context menus show gesture help for switching to the other context menu
+* Move some items from app context menus to the system context menu
+* Long-press now opens the system context menu and tap-then-hold the app context menu (games keep long-press as a move while playing)
+* Content beneath an open context menu is dimmed
+* Add a keyboard-input button to the phone home screen
+* Add a light sensor demo to the Developer app
+* Move Calculator, Microphones, Nightscout, and Roam apps to Prototypes folder by default
+* Navigate app: Location indicator rotates based on the compass
+* Navigate app: Add saved home/work and recent address settings
+* Navigate app: Darken the map background color
+* EvenHub app: Add New, Search, and Updates tabs
+* Timer app: Fully rewritten, with new better UI
+* Add a teleprompter app
+
+## 0.6.4 - 2026-09-02
+* Context menus are centered and include window title
+* Long-press and short-then-long with a context menu open switches between context menus
+* Developer speed metrics include bytes/frame
+* The custom firmware uninstaller flashes 2.2.9.22, not 2.2.6.10
+* Compass app: Increase sample rate from 1/s to ~3/s
+* Compass app: Handle the distinction between true north and magnetic north
+* EvenHub compass readings now include calibrated magnetic, declination and true headings
+* Files app: Viewing image files gamma-corrects and dithers them
+* Watch app: Uses ambient mode so the watch no longer blurs when idle
+* Watch app: Fix flicker on waking the watch
+* Watch app: Tapping the idle watch to wake it counts as a tap on the pad
+* Watch app: Remove a number of unfinished prototype features
+* Firmware flasher checks for glasses battery>30% before starting
+* Fix a problem in 0.6.3 where it would abort before starting a custom firmware install with a checksum error
+
+## 0.6.3 - 2026-09-01
+* Update custom firmware base version from 2.2.6 to 2.2.9
+* Add support for the short-then-long-press gesture
+* Update EvenHub compatibility layer to include new functions from 0.0.14
+* EvenHub permissions dialog scrolls when it overflows
+* Add "Show BLE bandwidth usage" option to developer settings
+
+## 0.6.2 - 2026-08-30
+* Preview Only mode works
+* Voice input uses phone mic in preview mode
+* Simulated ring input on phone screen is swipe-style rather than separate buttons
+* Simulated watch input on phone screen is more minimalist
+* Fix an issue where you could be missing the EvenHub font after skipping onboarding
+* Terminal app has an activity indicator based on last-output-at tracking
+
+## 0.6.1 - 2026-08-30
+* Settings import/export scripts work on release builds
+* Fixed an issue where the onboarding flow failed to detect the existing glasses firmware version
+* Update launcher, files, and game UIs to work better with watch input
+* Calendar app shows the day-of-the-month in its icon
+* Move Roam settings out of the shared Settings app and into the Roam app itself
+
+## 0.6 - 2026-08-29
+- Start keeping a changelog and making signed binaries via GitHub Releases

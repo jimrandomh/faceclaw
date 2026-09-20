@@ -57,10 +57,18 @@ export function createTranscribeAppWindow(options: TranscribeAppOptions): InProc
     closeable: true,
     actions: options.actions,
     baseLayer: new YieldAtRootLayer(layer),
+    menuItems: () => [{
+      label: "Save",
+      onSelect: (ctx) => {
+        ctx.stack.pop();
+        layer.saveTranscript();
+      },
+    }],
     submitFrame: options.submitFrame,
     setSurfaceVisible: options.setSurfaceVisible,
     removeSurface: options.removeSurface,
     onClosed: () => {
+      layer.onRemoved();
       options.stopContinuousVoiceCapture();
       shell.setTrayIcon(TRAY_ICON_ID, null);
       options.onClosed();

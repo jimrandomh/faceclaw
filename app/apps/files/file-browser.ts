@@ -1,10 +1,10 @@
-import { getDefaultSmallFont, type BdfFont } from "../../graphics/bdffont";
+import { getDefaultSmallFont } from "../../graphics/ui-fonts";
 import { truncateText, truncateLeft } from "../../graphics/textwrap";
-import { GrayImage } from "../../graphics/image";
+import { GrayImage, type UiFont } from "../../graphics/image";
 import { renderIcon, type IconName } from "../../graphics/icons";
 import { clamp } from "../../util/numeric-util";
-import { GESTURE_CLICK, GESTURE_DOUBLE_CLICK, GESTURE_SCROLL } from "../../ui/gestures";
 import { drawListScrollbar, drawSelectionHighlight, scrollToKeepSelectionVisible, type MenuItem } from "../../ui/menu";
+import { iconGridMinRowHeight, tightRowHeight } from "../../ui/metrics";
 import { ConfigSettingEnum } from "../../ui/dashboard-settings";
 import { getStringSetting, setStringSetting } from "../../native/settings-store";
 import {
@@ -15,16 +15,18 @@ import {
   statPath,
   type DirectoryEntry,
 } from "../../native/file-access";
-import { Layer, type DashboardInputEvent, type LayerContext } from "../../ui/layers";
+import { directionalFallback, isWatchInput, type InputEvent } from "../../ui/gestures";
+import { Layer, type LayerContext } from "../../ui/layers";
+import { shell } from "../../ui/shell/shell";
 
-const HEADER_HEIGHT = 34;
-const ROW_HEIGHT = 16;
 const LIST_X = 20;
-const FOOTER_HEIGHT = 22;
+
+/** Header: one line holding both the title and the current path. */
+function headerHeight(font: UiFont): number {
+  return 10 + font.lineHeight;
+}
 
 const GRID_COLS = 5;
-const GRID_VISIBLE_ROWS = 3;
-const GRID_BOTTOM_MARGIN = 20;
 const ICON_SIZE = 44;
 const LABEL_GAP = 2;
 
@@ -65,12 +67,14 @@ const TEXT_EXT = /\.(txt|md|markdown|log|json|xml|csv|ini|conf|cfg|yaml|yml|ts|j
 const IMAGE_EXT = /\.(png|jpe?g|gif|bmp|webp|heic|heif|svg)$/i;
 const VIDEO_EXT = /\.(mp4|mkv|webm|avi|mov|3gp|m4v)$/i;
 const AUDIO_EXT = /\.(mp3|m4a|aac|ogg|oga|opus|flac|wav|mid)$/i;
+const FONT_EXT = /\.(ttf|otf|ttc|bdf|woff2?)$/i;
 
 function fileIconName(name: string): IconName {
   if (TEXT_EXT.test(name)) return "file-text";
   if (IMAGE_EXT.test(name)) return "image";
   if (VIDEO_EXT.test(name)) return "film";
   if (AUDIO_EXT.test(name)) return "music";
+  if (FONT_EXT.test(name)) return "type";
   return "file";
 }
 
@@ -111,9 +115,17 @@ type IconMode = "row" | "item";
  * click drops into the row, scroll picks the item); list view is a flat list.
  * Click descends into a directory or picks a supported file; double-click
  * backs out one level (item selection, then parent directory, then Places,
- * then leaving the browser). Sized to its hosting stack.
+ * then leaving the browser). That is the ring's scheme; in icons view the
+ * watch (see handleIconsWatchInput) skips row mode and moves one cell at a
+ * time in four directions, exactly as in the launcher. Sized to its hosting
+ * stack.
  */
 export class FileBrowserLayer implements Layer {
+  // Watch swipes are spatial in icons view: up/down move between rows,
+  // left/right between columns. From the leftmost column, left keeps going
+  // out (parent directory, Places, then the sidebar). List view maps swipes
+  // through directionalFallback itself.
+  readonly acceptsDirectional = true;
   /** Current directory, or null at the Places level. */
   private location: string | null = null;
   /** The Places entry we descended through; going up from it returns to Places. */
@@ -137,7 +149,8 @@ export class FileBrowserLayer implements Layer {
 
     image.drawText(font, 20, 8, "Files", 220);
     const pathLabel = this.location === null ? "Places" : this.location;
-    image.drawText(font, 20, 22, truncateLeft(font, pathLabel, width - 40), 130);
+    const pathX = 20 + font.measureText("Files") + 14;
+    image.drawText(font, pathX, 8, truncateLeft(font, pathLabel, width - pathX - 20), 130);
 
     if (filesViewModeSetting.get() === "list") {
       this.paintList(image, font, rows, ctx);
@@ -147,42 +160,43 @@ export class FileBrowserLayer implements Layer {
     return image;
   }
 
-  private paintList(image: GrayImage, font: BdfFont, rows: BrowserItem[], ctx: LayerContext): void {
+  private paintList(image: GrayImage, font: UiFont, rows: BrowserItem[], ctx: LayerContext): void {
     const { width, height } = ctx.stack.getBaseSize();
     this.listIndex = clamp(this.listIndex, 0, Math.max(0, rows.length - 1));
 
-    const listHeight = height - HEADER_HEIGHT - FOOTER_HEIGHT;
-    const visibleRows = Math.max(1, (listHeight / ROW_HEIGHT) | 0);
+    const rowH = tightRowHeight(font);
+    const headerH = headerHeight(font);
+    const listHeight = height - headerH - 4;
+    const visibleRows = Math.max(1, (listHeight / rowH) | 0);
     this.scrollRow = scrollToKeepSelectionVisible(this.scrollRow, this.listIndex, visibleRows, rows.length);
 
     const lastVisible = Math.min(rows.length, this.scrollRow + visibleRows);
     for (let index = this.scrollRow; index < lastVisible; index++) {
       const row = rows[index]!;
-      const y = HEADER_HEIGHT + (index - this.scrollRow) * ROW_HEIGHT;
+      const y = headerH + (index - this.scrollRow) * rowH;
       const selected = index === this.listIndex;
       if (selected) {
-        drawSelectionHighlight(image, LIST_X - 6, y - 1, width - 2 * LIST_X + 12, ROW_HEIGHT - 1, ctx.stack.isFocused(), 4);
+        drawSelectionHighlight(image, LIST_X - 6, y - 1, width - 2 * LIST_X + 12, rowH - 1, ctx.stack.isFocused(), 4);
       }
       const value = itemValue(row, selected);
       image.drawText(font, LIST_X, y + 1, truncateText(font, row.label, width - 2 * LIST_X), value);
     }
-
-    image.drawText(font, 20, height - 16, `${GESTURE_CLICK} open   ${GESTURE_DOUBLE_CLICK} up / back`, 110);
   }
 
-  private paintIcons(image: GrayImage, font: BdfFont, rows: BrowserItem[], ctx: LayerContext): void {
+  private paintIcons(image: GrayImage, font: UiFont, rows: BrowserItem[], ctx: LayerContext): void {
     const { width, height } = ctx.stack.getBaseSize();
     const focused = ctx.stack.isFocused();
     const iconRows = buildIconRows(rows);
     this.selectedRow = clamp(this.selectedRow, 0, Math.max(0, iconRows.length - 1));
 
-    const gridTop = HEADER_HEIGHT;
-    const gridBottom = height - GRID_BOTTOM_MARGIN;
-    const rowH = Math.floor((gridBottom - gridTop) / GRID_VISIBLE_ROWS);
+    const gridTop = headerHeight(font);
+    const gridBottom = height - 6;
+    const visibleRows = Math.max(1, Math.floor((gridBottom - gridTop) / iconGridMinRowHeight(font, ICON_SIZE, LABEL_GAP)));
+    const rowH = Math.floor((gridBottom - gridTop) / visibleRows);
     const colW = width / GRID_COLS;
-    this.scrollRow = scrollToKeepSelectionVisible(this.scrollRow, this.selectedRow, GRID_VISIBLE_ROWS, iconRows.length);
+    this.scrollRow = scrollToKeepSelectionVisible(this.scrollRow, this.selectedRow, visibleRows, iconRows.length);
 
-    const lastVisible = Math.min(iconRows.length, this.scrollRow + GRID_VISIBLE_ROWS);
+    const lastVisible = Math.min(iconRows.length, this.scrollRow + visibleRows);
     for (let rowIndex = this.scrollRow; rowIndex < lastVisible; rowIndex++) {
       const row = iconRows[rowIndex]!;
       const y = gridTop + (rowIndex - this.scrollRow) * rowH;
@@ -198,11 +212,16 @@ export class FileBrowserLayer implements Layer {
       }
 
       if (selected) {
-        if (this.iconMode === "row") {
-          drawSelectionHighlight(image, 4, y + 1, width - 8, rowH - 2, focused, 6);
-        } else {
+        // Same preview rule as the launcher: while defocused with the watch
+        // as the last-used source, show the cell a click would land on (watch
+        // focus enters item mode directly; see onFocus) instead of a row band
+        // the watch scheme never shows.
+        const cellHighlight = this.iconMode === "item" || (!focused && shell.lastInputWasWatch());
+        if (cellHighlight) {
           this.selectedCol = clamp(this.selectedCol, 0, row.items.length - 1);
           drawSelectionHighlight(image, this.selectedCol * colW + 4, y + 1, colW - 8, rowH - 2, focused, 6);
+        } else {
+          drawSelectionHighlight(image, 4, y + 1, width - 8, rowH - 2, focused, 6);
         }
       }
 
@@ -222,26 +241,41 @@ export class FileBrowserLayer implements Layer {
       }
     }
 
-    if (iconRows.length > GRID_VISIBLE_ROWS) {
-      drawListScrollbar(image, width - 5, gridTop, GRID_VISIBLE_ROWS * rowH - 4, this.scrollRow, GRID_VISIBLE_ROWS, iconRows.length);
+    if (iconRows.length > visibleRows) {
+      drawListScrollbar(image, width - 5, gridTop, visibleRows * rowH - 4, this.scrollRow, visibleRows, iconRows.length);
     }
-
-    const hint =
-      this.iconMode === "row"
-        ? `${GESTURE_SCROLL} row   ${GESTURE_CLICK} pick   ${GESTURE_DOUBLE_CLICK} up / back`
-        : `${GESTURE_SCROLL} item   ${GESTURE_CLICK} open   ${GESTURE_DOUBLE_CLICK} row`;
-    image.drawText(font, 20, height - 16, hint, 110);
   }
 
-  async handleInput(event: DashboardInputEvent, ctx: LayerContext): Promise<void> {
+  async handleInput(event: InputEvent, ctx: LayerContext): Promise<void> {
     if (filesViewModeSetting.get() === "list") {
-      await this.handleListInput(event, ctx);
+      // The flat list has no spatial meaning for swipes; give them the
+      // standard scroll / select / back meanings (the layer opted into
+      // directional delivery for the icons view, so the stack won't).
+      await this.handleListInput(directionalFallback(event), ctx);
+    } else if (isWatchInput(event)) {
+      await this.handleIconsWatchInput(event, ctx);
     } else {
       await this.handleIconsInput(event, ctx);
     }
   }
 
-  private async handleListInput(event: DashboardInputEvent, ctx: LayerContext): Promise<void> {
+  /**
+   * Focus arriving from the watch goes straight to item selection, as in the
+   * launcher: the watch has left/right swipes, so it never needs row mode.
+   * Any other source keeps the two-level scheme and enters in row mode.
+   */
+  onFocus(lastInput: InputEvent | null): void {
+    if (filesViewModeSetting.get() !== "icons") return;
+    if (lastInput && isWatchInput(lastInput)) {
+      this.iconMode = "item";
+      const iconRows = buildIconRows(this.flatRows());
+      this.clampColToRow(iconRows[clamp(this.selectedRow, 0, Math.max(0, iconRows.length - 1))]);
+    } else {
+      this.iconMode = "row";
+    }
+  }
+
+  private async handleListInput(event: InputEvent, ctx: LayerContext): Promise<void> {
     const rows = this.flatRows();
     switch (event.type) {
       case "scroll-up":
@@ -263,7 +297,7 @@ export class FileBrowserLayer implements Layer {
     }
   }
 
-  private async handleIconsInput(event: DashboardInputEvent, ctx: LayerContext): Promise<void> {
+  private async handleIconsInput(event: InputEvent, ctx: LayerContext): Promise<void> {
     const rows = this.flatRows();
     const iconRows = buildIconRows(rows);
     this.selectedRow = clamp(this.selectedRow, 0, Math.max(0, iconRows.length - 1));
@@ -320,6 +354,88 @@ export class FileBrowserLayer implements Layer {
       default:
         return;
     }
+  }
+
+  /**
+   * The watch's scheme for the icons view — the launcher's: there is no row
+   * mode, the selection is always one cell (a special row counts as its
+   * single full-width item). Up/down (and the crown) move between rows
+   * keeping the column, right/left move within the row, and left from the
+   * leftmost column keeps going out — parent directory, Places, then the
+   * sidebar. Row mode is restored on the way out so a ring user finds the
+   * grid as they left it.
+   */
+  private async handleIconsWatchInput(event: InputEvent, ctx: LayerContext): Promise<void> {
+    const iconRows = buildIconRows(this.flatRows());
+    this.selectedRow = clamp(this.selectedRow, 0, Math.max(0, iconRows.length - 1));
+    const row = iconRows[this.selectedRow];
+    if (this.iconMode === "row") {
+      this.iconMode = "item";
+      this.clampColToRow(row);
+    }
+    switch (event.type) {
+      case "swipe-up":
+      case "swipe-down":
+      case "scroll-up":
+      case "scroll-down": {
+        const delta = event.type === "swipe-down" || event.type === "scroll-down" ? 1 : -1;
+        this.selectedRow = clamp(this.selectedRow + delta, 0, Math.max(0, iconRows.length - 1));
+        // Keep the column; a shorter row (or a special one) clamps it.
+        this.clampColToRow(iconRows[this.selectedRow]);
+        return;
+      }
+      case "swipe-right":
+        if (row?.kind === "grid") {
+          this.selectedCol = clamp(this.selectedCol + 1, 0, row.items.length - 1);
+        }
+        return;
+      case "swipe-left":
+        if (row?.kind === "grid" && this.selectedCol > 0) {
+          this.selectedCol--;
+        } else {
+          this.watchNavigateUp();
+        }
+        return;
+      case "click": {
+        if (!row) return;
+        if (row.kind === "special") {
+          await this.activateItem(row.item, ctx);
+        } else {
+          const item = row.items[clamp(this.selectedCol, 0, row.items.length - 1)];
+          if (item) await this.activateItem(item, ctx);
+        }
+        // Descending into a directory resets the selection for the ring (row
+        // mode at the top); the watch scheme stays in single-item selection.
+        this.iconMode = "item";
+        return;
+      }
+      case "double-click":
+        this.watchNavigateUp();
+        return;
+      default:
+        return;
+    }
+  }
+
+  private clampColToRow(row: IconRow | undefined): void {
+    if (row?.kind === "grid") {
+      this.selectedCol = clamp(this.selectedCol, 0, row.items.length - 1);
+    }
+  }
+
+  /**
+   * navigateUp for the watch scheme: inside the browser the selection stays
+   * in item mode (resetSelection/selectPath put it back in row mode for the
+   * ring); leaving from Places restores row mode on the way out.
+   */
+  private watchNavigateUp(): void {
+    if (this.location === null) {
+      this.iconMode = "row";
+      this.options.onLeave();
+      return;
+    }
+    this.navigateUp();
+    this.iconMode = "item";
   }
 
   /**
@@ -469,8 +585,8 @@ export class FileBrowserLayer implements Layer {
       for (const path of getBookmarkedPaths()) {
         rows.push(this.bookmarkItem(path));
       }
-      rows.push(this.placeItem("Internal storage", externalStorageRootPath()));
-      rows.push(this.placeItem("/", "/"));
+      rows.push(this.placeItem(global.isIOS ? "Faceclaw documents" : "Internal storage", externalStorageRootPath()));
+      if (!global.isIOS) rows.push(this.placeItem("/", "/"));
       return rows;
     }
     this.loadEntries();

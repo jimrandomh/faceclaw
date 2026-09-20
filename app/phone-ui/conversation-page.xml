@@ -1,0 +1,49 @@
+<Page xmlns="http://schemas.nativescript.org/tns.xsd" navigatingTo="navigatingTo" unloaded="unloaded">
+    <ActionBar title="{{ pageTitle }}">
+        <ActionItem text="Re-diarize" tap="{{ onRediarizeTap }}" android.position="popup" />
+        <ActionItem text="Split speaker..." tap="{{ onSplitSpeakerTap }}" android.position="popup" />
+        <ActionItem text="Delete conversation" tap="{{ onDeleteTap }}" android.position="popup" />
+    </ActionBar>
+
+    <GridLayout rows="auto,auto,auto,*" class="p-8">
+        <StackLayout row="0">
+            <Label text="{{ headerDate }}" class="conversation-meta" />
+            <Label text="{{ headerMeta }}" class="conversation-meta" textWrap="true" />
+        </StackLayout>
+
+        <Image row="1" src="{{ graphSource }}" height="120" stretch="fill" class="m-t-8" visibility="{{ graphVisibility }}" />
+
+        <Label row="2" text="{{ status }}" class="conversation-status m-t-4" textWrap="true" visibility="{{ statusVisibility }}" />
+
+        <ScrollView row="3" class="m-t-8">
+            <StackLayout>
+                <Label text="{{ emptyMessage }}" class="conversation-empty" textWrap="true" visibility="{{ emptyVisibility }}" />
+                <Repeater items="{{ transcriptRows }}">
+                    <Repeater.itemsLayout>
+                        <StackLayout />
+                    </Repeater.itemsLayout>
+                    <Repeater.itemTemplate>
+                        <StackLayout class="{{ rowClass }}" tap="{{ onRowTap }}" longPress="{{ onRowLongPress }}">
+                            <GridLayout columns="*,auto">
+                                <Label col="0" textWrap="true">
+                                    <Label.formattedText>
+                                        <FormattedString>
+                                            <Span text="{{ speakerPrefix }}" color="{{ speakerColor }}" fontWeight="bold" />
+                                            <Span text="{{ text }}" />
+                                        </FormattedString>
+                                    </Label.formattedText>
+                                </Label>
+                                <Label col="1" text="{{ playIndicator }}" class="transcript-play" verticalAlignment="top" />
+                            </GridLayout>
+                            <Label text="{{ translation }}" class="transcript-translation" textWrap="true" visibility="{{ translationVisibility }}" />
+                            <StackLayout orientation="horizontal" class="m-t-4">
+                                <Label text="{{ timeLabel }}" class="transcript-time" />
+                                <Label text="{{ emotionLabel }}" class="transcript-emotion m-l-6" backgroundColor="{{ emotionColor }}" visibility="{{ emotionVisibility }}" />
+                            </StackLayout>
+                        </StackLayout>
+                    </Repeater.itemTemplate>
+                </Repeater>
+            </StackLayout>
+        </ScrollView>
+    </GridLayout>
+</Page>

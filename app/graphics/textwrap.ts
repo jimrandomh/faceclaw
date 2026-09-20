@@ -1,4 +1,13 @@
-import { BdfFont } from "./bdffont";
+/**
+ * What wrapping and truncation need from a font. BdfFont and TtfFont both
+ * satisfy it structurally: getGlyph feeds per-codepoint advances for wrap
+ * measurement (integer and kerning-free, so slightly conservative for kerned
+ * faces), measureText feeds truncation.
+ */
+export interface WrapFont {
+  measureText(text: string): number;
+  getGlyph(codePoint: number): { dwidthX: number } | undefined;
+}
 
 export type WrapTextOptions = {
   preserveLeadingWhitespace?: boolean;
@@ -34,7 +43,7 @@ export function findWrapOpportunities(text: string): number[] {
   return offsets;
 }
 
-export function wrapText(font: BdfFont, text: string, targetWidth: number, opts: WrapTextOptions = {}): string[] {
+export function wrapText(font: WrapFont, text: string, targetWidth: number, opts: WrapTextOptions = {}): string[] {
   if (targetWidth <= 0) {
     return text.length ? text.split("\n") : [""];
   }
@@ -47,7 +56,7 @@ export function wrapText(font: BdfFont, text: string, targetWidth: number, opts:
   return lines.length ? lines : [""];
 }
 
-export function truncateText(font: BdfFont, text: string, maxWidth: number): string {
+export function truncateText(font: WrapFont, text: string, maxWidth: number): string {
   if (font.measureText(text) <= maxWidth) return text;
   let out = text;
   while (out.length > 1 && font.measureText(`${out}...`) > maxWidth) {
@@ -56,7 +65,7 @@ export function truncateText(font: BdfFont, text: string, maxWidth: number): str
   return `${out}...`;
 }
 
-export function truncateLeft(font: BdfFont, text: string, maxWidth: number): string {
+export function truncateLeft(font: WrapFont, text: string, maxWidth: number): string {
   if (font.measureText(text) <= maxWidth) return text;
   let out = text;
   while (out.length > 1 && font.measureText(`...${out}`) > maxWidth) {
@@ -65,7 +74,7 @@ export function truncateLeft(font: BdfFont, text: string, maxWidth: number): str
   return `...${out}`;
 }
 
-function wrapParagraph(font: BdfFont, paragraph: string, targetWidth: number, opts: WrapTextOptions): string[] {
+function wrapParagraph(font: WrapFont, paragraph: string, targetWidth: number, opts: WrapTextOptions): string[] {
   if (paragraph.length === 0) {
     return [""];
   }
@@ -109,7 +118,7 @@ function wrapParagraph(font: BdfFont, paragraph: string, targetWidth: number, op
   return lines.length ? lines : [""];
 }
 
-function measureOffsets(font: BdfFont, text: string): Map<number, number> {
+function measureOffsets(font: WrapFont, text: string): Map<number, number> {
   const widths = new Map<number, number>();
   let total = 0;
   widths.set(0, 0);

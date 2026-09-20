@@ -1,0 +1,21 @@
+{
+  "name": "faceclaw-extensions",
+  "version": "0.1.0",
+  "description": "Type definitions and helpers for EvenHub apps to detect and use Faceclaw-specific extension APIs.",
+  "license": "MIT",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": ["dist", "README.md"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json"
+  },
+  "keywords": ["evenhub", "even-realities", "g2", "faceclaw", "smart-glasses"],
+  "sideEffects": false
+}

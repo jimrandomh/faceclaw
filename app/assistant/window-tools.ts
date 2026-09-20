@@ -3,6 +3,13 @@
  * list / focus / close shell windows, and manage the launcher's folder
  * grouping. Registered from the dashboard controller (which owns launchApp);
  * mirrors what the user can do from the launcher grid and the sidebar.
+ *
+ * The launchable set is the built-in launcher apps plus whatever EvenHub
+ * packages are installed right now, matching the launcher grid. Installs and
+ * uninstalls change that set at runtime, so the tools re-register (replacing
+ * themselves by name) whenever it changes to keep the id enums and
+ * descriptions current; register() fires the tools-changed broadcast that
+ * propagates the new specs to the assistant backends.
  */
 import { shell, type ShellWindow } from "../ui/shell/shell";
 import type { AppDefinition } from "../apps/app-definition";
@@ -14,10 +21,16 @@ import {
   resolveFolderName,
   setAppFolder,
 } from "../apps/launcher/launcher-folders";
+import {
+  getInstalledEvenHubApps,
+  getInstalledEvenHubFingerprint,
+  installedEvenHubAppId,
+} from "../apps/evenhub/installed-apps";
+import { onAnySettingChanged } from "../ui/dashboard-settings";
 import { toolRegistry, type ToolRegistry, type ToolResult } from "./tool-registry";
 
 export type WindowToolsOptions = {
-  /** The launcher's app list; fixes the ids apps.launch accepts. */
+  /** The built-in launcher apps; installed EvenHub apps are added dynamically. */
   apps: readonly AppDefinition[];
   /** Launch (or focus) an app exactly as the launcher grid would. */
   launchApp: (appId: string) => Promise<void> | void;
@@ -33,14 +46,40 @@ export function registerWindowTools(
 ): void {
   if (registered) return;
   registered = true;
+  registerTools(options, registry);
+  let fingerprint = getInstalledEvenHubFingerprint();
+  onAnySettingChanged(() => {
+    const current = getInstalledEvenHubFingerprint();
+    if (current === fingerprint) return;
+    fingerprint = current;
+    registerTools(options, registry);
+  });
+}
 
-  const appIds = options.apps.map((app) => app.appId).sort();
+function registerTools(options: WindowToolsOptions, registry: ToolRegistry): void {
+  const installedApps = getInstalledEvenHubApps();
+  const apps = new Map(options.apps.map((app) => [app.appId, app.title]));
+  for (const app of installedApps) {
+    apps.set(installedEvenHubAppId(app.packageId), app.name);
+  }
+  const appIds = Array.from(apps.keys()).sort();
+  /** An id plus its display name, when the name isn't obvious from the id. */
+  const describeApp = (appId: string): string => {
+    const title = apps.get(appId);
+    return title && title.toLowerCase() !== appId.toLowerCase() ? `${appId} ("${title}")` : appId;
+  };
+  const installedNote = installedApps.length
+    ? ` Installed EvenHub apps: ${installedApps
+        .map((app) => describeApp(installedEvenHubAppId(app.packageId)))
+        .join(", ")}.`
+    : "";
 
   registry.registerSystemTool(
     {
       name: "apps.launch",
       description:
-        "Open an app on the glasses and bring it to the foreground. If the app already has a window open, this focuses it instead. Wakes the display if it is off.",
+        "Open an app on the glasses and bring it to the foreground. If the app already has a window open, this focuses it instead. Wakes the display if it is off." +
+        installedNote,
       inputSchema: {
         type: "object",
         properties: {
@@ -57,7 +96,7 @@ export function registerWindowTools(
       }
       shell.wake("window");
       await options.launchApp(appId);
-      return ok(`Opened ${appId}.`);
+      return ok(`Opened ${describeApp(appId)}.`);
     },
   );
 
@@ -144,7 +183,7 @@ export function registerWindowTools(
     {
       name: "apps.list_folders",
       description:
-        "List the app launcher's folders and the apps inside each, plus the ungrouped top-level apps.",
+        "List the app launcher's folders and the apps inside each, plus the ungrouped top-level apps. Includes installed EvenHub apps, shown as app_id (\"display name\").",
       inputSchema: { type: "object", properties: {}, additionalProperties: false },
       proactive: true,
     },
@@ -152,11 +191,11 @@ export function registerWindowTools(
       const lines: string[] = [];
       for (const [name, members] of getFolders()) {
         const known = members.filter((appId) => appIds.indexOf(appId) >= 0).sort();
-        if (known.length) lines.push(`${name}: ${known.join(", ")}`);
+        if (known.length) lines.push(`${name}: ${known.map(describeApp).join(", ")}`);
       }
       const assignments = getFolderAssignments();
       const ungrouped = appIds.filter((appId) => !assignments[appId]);
-      lines.push(`Ungrouped: ${ungrouped.length ? ungrouped.join(", ") : "(none)"}`);
+      lines.push(`Ungrouped: ${ungrouped.length ? ungrouped.map(describeApp).join(", ") : "(none)"}`);
       return ok(lines.join("\n"));
     },
   );
@@ -190,7 +229,7 @@ export function registerWindowTools(
         return err(`Folder names are limited to ${FOLDER_NAME_MAX_LENGTH} characters.`);
       }
       setAppFolder(appId, folder);
-      return ok(`Moved ${appId} into "${folder}".`);
+      return ok(`Moved ${describeApp(appId)} into "${folder}".`);
     },
   );
 
@@ -214,9 +253,9 @@ export function registerWindowTools(
         return err(`Unknown app: ${appId}. Available apps: ${appIds.join(", ")}`);
       }
       const folder = getFolderAssignments()[appId];
-      if (!folder) return ok(`${appId} isn't in a folder.`);
+      if (!folder) return ok(`${describeApp(appId)} isn't in a folder.`);
       setAppFolder(appId, null);
-      return ok(`Removed ${appId} from "${folder}".`);
+      return ok(`Removed ${describeApp(appId)} from "${folder}".`);
     },
   );
 

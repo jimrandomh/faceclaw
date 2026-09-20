@@ -1,5 +1,5 @@
 import { knownFolders } from "@nativescript/core";
-import { getStringSetting, onSettingsStoreChanged } from "~/native/settings-store";
+import type { GrayImage } from "./image";
 
 export type Glyph = {
   encoding: number;
@@ -9,9 +9,42 @@ export type Glyph = {
   bbxX: number;
   bbxY: number;
   bitmapRows: number[];
+  /**
+   * Antialiased coverage, bbxWidth*bbxHeight 4bpp levels (0..15) row-major.
+   * When present the glyph is an AA raster (e.g. a TTF render; see
+   * ttf-font.ts) and bitmapRows is unused/empty; when absent the glyph is
+   * 1bpp via bitmapRows.
+   */
+  coverage?: Uint8Array;
+  /** Exact (fractional) advance in pixels; dwidthX is its integer stand-in. */
+  advance?: number;
 };
 
+let nextFontFingerprintId = 1;
+
+/**
+ * Allocate a process-local font fingerprint id. Shared by every font class
+ * that participates in PlacedGlyph fingerprints (BdfFont, TtfFont) so ids
+ * never collide across font kinds.
+ */
+export function allocateFontFingerprintId(): number {
+  return nextFontFingerprintId++;
+}
+
 export class BdfFont {
+  /**
+   * Process-local identity for content fingerprints (fonts are cached
+   * singletons, so two draws with the same id + encoding are the same glyph
+   * bitmap). Only meaningful within one JS context; never persist it.
+   */
+  readonly fingerprintId = allocateFontFingerprintId();
+  /**
+   * Stable cross-context identity for the on-glasses glyph atlas (the
+   * embedded font name). Worker threads and the main thread must agree on
+   * it, unlike fingerprintId. Fonts without one (ad-hoc parses) simply never
+   * participate in texture caching — their glyphs stay baked.
+   */
+  readonly atlasKey: string | null;
   readonly ascent: number;
   readonly descent: number;
   readonly lineHeight: number;
@@ -32,6 +65,7 @@ export class BdfFont {
     defaultChar: number;
     glyphs: Map<number, Glyph>;
     fallback?: BdfFont;
+    atlasKey?: string;
   }) {
     this.ascent = opts.ascent;
     this.descent = opts.descent;
@@ -39,9 +73,10 @@ export class BdfFont {
     this.defaultChar = opts.defaultChar;
     this.glyphs = opts.glyphs;
     this.fallback = opts.fallback;
+    this.atlasKey = opts.atlasKey ?? null;
   }
 
-  static parse(source: string, opts: { fallback?: BdfFont; minEncoding?: number } = {}): BdfFont {
+  static parse(source: string, opts: { fallback?: BdfFont; minEncoding?: number; atlasKey?: string } = {}): BdfFont {
     const minEncoding = opts.minEncoding ?? 0;
     const lines = source.replace(/\r/g, "").split("\n");
     let ascent = 10;
@@ -120,7 +155,7 @@ export class BdfFont {
       }
     }
 
-    return new BdfFont({ ascent, descent, defaultChar, glyphs, fallback: opts.fallback });
+    return new BdfFont({ ascent, descent, defaultChar, glyphs, fallback: opts.fallback, atlasKey: opts.atlasKey });
   }
 
   /** Exact lookup for a single code point, with no default-char substitution. */
@@ -147,6 +182,25 @@ export class BdfFont {
       width += this.getGlyph(char.codePointAt(0) ?? 32)?.dwidthX ?? 0;
     }
     return width;
+  }
+
+  /**
+   * Draw text with integer advances, recording each glyph as a deferred draw
+   * on the image (UiFont contract; y is the top of the line).
+   */
+  drawText(image: GrayImage, x: number, y: number, text: string, value: number): void {
+    let cursorX = x;
+    for (const char of text) {
+      if (char === "\n") {
+        cursorX = x;
+        y += this.lineHeight;
+        continue;
+      }
+      const glyph = this.getGlyph(char.codePointAt(0) ?? 32);
+      if (!glyph) continue;
+      image.drawGlyph(this, glyph, cursorX, y, value);
+      cursorX += glyph.dwidthX;
+    }
   }
 }
 
@@ -184,6 +238,7 @@ function loadEmbeddedFont(name: EmbeddedFontName): BdfFont {
   const font = BdfFont.parse(text, {
     fallback: fallbackName ? loadEmbeddedFont(fallbackName) : undefined,
     minEncoding: fontMinEncoding[name],
+    atlasKey: name,
   });
   cachedEmbeddedFonts.set(name, font);
   return font;
@@ -193,46 +248,6 @@ export function getFont(font: EmbeddedFontName): BdfFont {
   return loadEmbeddedFont(font);
 }
 
-// User-selectable UI typeface. Only the small (12px) font has an alternative,
-// since TerminusV ships no larger sizes; medium/large stay Terminus. The
-// storage key and values are re-used by the settings UI in dashboard-settings.
-export const UI_FONT_SETTING_KEY = "display.uiFont";
-export const UI_FONT_VALUES = ["terminus", "terminusv"] as const;
-export type UiFontChoice = (typeof UI_FONT_VALUES)[number];
-
-const SMALL_FONT_FOR_CHOICE: Record<UiFontChoice, EmbeddedFontName> = {
-  terminus: "terminus12",
-  terminusv: "terminusv12",
-};
-
-// Reading the setting hits a JNI bridge, and getDefaultSmallFont() is called
-// once per menu item per paint, so cache the resolved choice and invalidate it
-// when the setting changes (in any isolate).
-let cachedSmallFontChoice: UiFontChoice | null = null;
-let smallFontListenerInstalled = false;
-
-function currentSmallFontName(): EmbeddedFontName {
-  if (!smallFontListenerInstalled) {
-    onSettingsStoreChanged((key) => {
-      if (key === UI_FONT_SETTING_KEY) cachedSmallFontChoice = null;
-    });
-    smallFontListenerInstalled = true;
-  }
-  if (cachedSmallFontChoice === null) {
-    const raw = getStringSetting(UI_FONT_SETTING_KEY, "terminus");
-    cachedSmallFontChoice = (UI_FONT_VALUES as readonly string[]).includes(raw)
-      ? (raw as UiFontChoice)
-      : "terminus";
-  }
-  return SMALL_FONT_FOR_CHOICE[cachedSmallFontChoice];
-}
-
-export function getDefaultSmallFont(): BdfFont {
-  return getFont(currentSmallFontName());
-}
-export function getDefaultMediumFont(): BdfFont {
-  return getFont("terminus16");
-}
-export function getDefaultLargeFont(): BdfFont {
-  return getFont("terminus24");
-}
+// NOTE: the default UI font getters (getDefaultSmallFont & co.) live in
+// ./ui-fonts, which resolves the user's font settings to a BdfFont or
+// TtfFont. This module stays a pure BDF loader.
