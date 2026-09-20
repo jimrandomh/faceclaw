@@ -25,3 +25,15 @@ which now call the Kotlin implementation from Android host tests. Common tests
 also run as native iOS simulator binaries. See [the Kotlin README](../native/kotlin/README.md)
 for SDK requirements, source layout and coverage. The compass and battery
 fixtures retain the golden packets shared with firmware tests.
+
+The native iOS EvenHub probe runs separately on a booted simulator:
+
+    node tests/ios-evenhub-native.cjs <simulator-UUID>
+
+It compiles the production WKWebView host into an isolated app and checks local
+and remote loading, document-start injection, assets, storage and navigation.
+It then opens Safari to background the probe and verifies that injected timeouts,
+intervals and animation callbacks still fire, and cancelled timers stay cancelled.
+A short UIKit background task keeps the test process running without glasses.
+This covers the ticker's background behavior; sustained execution with BLE and a
+locked physical phone still requires device testing.

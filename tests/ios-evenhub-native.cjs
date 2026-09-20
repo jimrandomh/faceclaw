@@ -39,17 +39,32 @@ const server = http.createServer((request, response) => {
   response.setHeader('Content-Type', file.endsWith('.js') ? 'text/javascript' : file.endsWith('.json') ? 'application/json' : file.endsWith('.png') ? 'image/png' : 'text/html');
   response.end(fs.readFileSync(file));
 });
-server.listen(0, '127.0.0.1', () => {
-fs.writeFileSync(path.join(bundle, 'remote.txt'), `http://127.0.0.1:${server.address().port}/`);
-const device = process.argv[2] || 'booted';
-execFileSync('xcrun', ['simctl', 'install', device, bundle], { stdio: 'inherit' });
-execFileSync('xcrun', ['simctl', 'launch', '--terminate-running-process', device, 'com.faceclaw.evenhub-probe'], { stdio: 'inherit' });
-const container = execFileSync('xcrun', ['simctl', 'get_app_container', device, 'com.faceclaw.evenhub-probe', 'data'], { encoding: 'utf8' }).trim();
-const resultFile = path.join(container, 'Documents/result.json');
-setTimeout(() => {
-  const result = JSON.parse(fs.readFileSync(resultFile, 'utf8'));
-  console.log(JSON.stringify({ work, ...result }));
-  if (!result.passed) process.exitCode = 1;
-  server.closeAllConnections(); server.close();
-}, 23000);
+server.listen(0, '127.0.0.1', async () => {
+  try {
+    fs.writeFileSync(path.join(bundle, 'remote.txt'), `http://127.0.0.1:${server.address().port}/`);
+    const device = process.argv[2] || 'booted';
+    execFileSync('xcrun', ['simctl', 'install', device, bundle], { stdio: 'inherit' });
+    const container = execFileSync('xcrun', ['simctl', 'get_app_container', device, 'com.faceclaw.evenhub-probe', 'data'], { encoding: 'utf8' }).trim();
+    const resultFile = path.join(container, 'Documents/result.json');
+    const readyFile = path.join(container, 'Documents/background-ready.json');
+    for (const file of [resultFile, readyFile]) fs.rmSync(file, { force: true });
+    execFileSync('xcrun', ['simctl', 'launch', '--terminate-running-process', device, 'com.faceclaw.evenhub-probe'], { stdio: 'inherit' });
+    let backgrounded = false;
+    const deadline = Date.now() + 50000;
+    while (!fs.existsSync(resultFile)) {
+      if (Date.now() > deadline) throw new Error(`EvenHub probe timed out (backgrounded=${backgrounded}); artifacts: ${work}`);
+      if (!backgrounded && fs.existsSync(readyFile)) {
+        execFileSync('xcrun', ['simctl', 'launch', device, 'com.apple.mobilesafari'], { stdio: 'inherit' });
+        backgrounded = true;
+      }
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    const result = JSON.parse(fs.readFileSync(resultFile, 'utf8'));
+    console.log(JSON.stringify({ work, ...result }));
+    if (!result.passed) process.exitCode = 1;
+  } catch (error) {
+    console.error(error); process.exitCode = 1;
+  } finally {
+    server.closeAllConnections(); server.close();
+  }
 });

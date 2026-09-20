@@ -2,8 +2,10 @@
 
 ## 0.7.3 - Future
 
+### iOS port:
 * Add iOS calendar integration
 * iOS main screen matches the Android version's styling
+* Hub apps on iOS no longer have their timers stopped while the phone app is in the background
 
 ## 0.7.2 - 2026-09-19
 
