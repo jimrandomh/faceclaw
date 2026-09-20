@@ -1,4 +1,5 @@
-import { readUpcomingEvents, type CalendarEvent } from "../native/calendar";
+import { readUpcomingEventsAsync, type CalendarEvent } from "../native/calendar";
+import { hasCalendarPermission } from "../native/calendar-permissions";
 import { mediaControllerBridge } from "../native/media-controller";
 import { dismissNotification, readActiveNotifications } from "../native/notification-icons";
 import { shell } from "../ui/shell/shell";
@@ -54,9 +55,6 @@ export function registerSystemTools(registry: ToolRegistry = toolRegistry): void
     },
   );
 
-  // Calendar, phone media and notifications have no iOS backend yet.
-  if (global.isIOS) return;
-
   registry.registerSystemTool(
     {
       name: "calendar.list_events",
@@ -74,14 +72,22 @@ export function registerSystemTools(registry: ToolRegistry = toolRegistry): void
         additionalProperties: false,
       },
     },
-    (args) => {
+    async (args) => {
+      if (!hasCalendarPermission()) return err("Calendar access is not granted. Open Calendar or Permissions on your phone to allow access.");
       const withinHours = clampNumber(args?.within_hours, 1, 24 * 60, 168);
       const maxEvents = clampNumber(args?.max_events, 1, 50, 10);
-      const events = readUpcomingEvents(maxEvents, withinHours * 60 * 60 * 1000);
-      if (!events.length) return ok("No upcoming events in that window.");
-      return ok(events.map(formatEvent).join("\n"));
+      try {
+        const events = await readUpcomingEventsAsync(maxEvents, withinHours * 60 * 60 * 1000);
+        if (!events.length) return ok("No upcoming events in that window.");
+        return ok(events.map(formatEvent).join("\n"));
+      } catch {
+        return err("Calendar events could not be read. Check calendar access on your phone and try again.");
+      }
     },
   );
+
+  // Phone media and Android notification tools are still platform-specific.
+  if (global.isIOS) return;
 
   registry.registerSystemTool(
     {

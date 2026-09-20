@@ -1,8 +1,8 @@
 import { type GrayImage, type UiFont } from "../../../graphics/image";
 import { truncateText } from "../../../graphics/textwrap";
 import { getDefaultMediumFont, getDefaultSmallFont } from "../../../graphics/ui-fonts";
-import { hasCalendarPermission } from "../../../g2/android-permissions";
-import { readUpcomingEvents, type CalendarEvent } from "../../../native/calendar";
+import { hasCalendarPermission } from "../../../native/calendar-permissions";
+import { getCalendarReadState, onCalendarChanged, readUpcomingEvents, type CalendarEvent } from "../../../native/calendar";
 import { lineStep } from "../../../ui/metrics";
 import { dayHeaderLabel, formatEventTime } from "../../calendar/calendar";
 import { type GlanceWidget } from "../widget";
@@ -22,14 +22,19 @@ const HOUR_MS = 60 * MINUTE_MS;
  */
 export class CalendarWidget implements GlanceWidget {
   private tick: ReturnType<typeof setInterval> | null = null;
+  private unsubscribe: (() => void) | null = null;
 
   start(requestRender: () => void): void {
+    this.stop();
+    this.unsubscribe = onCalendarChanged(requestRender);
     this.tick = setInterval(requestRender, MINUTE_MS);
   }
 
   stop(): void {
     if (this.tick !== null) clearInterval(this.tick);
     this.tick = null;
+    this.unsubscribe?.();
+    this.unsubscribe = null;
   }
 
   paint(image: GrayImage): void {
@@ -50,7 +55,9 @@ export class CalendarWidget implements GlanceWidget {
     const events = readUpcomingEvents().filter((event) => event.endMs > nowMs);
     if (!events.length) {
       image.drawText(small, PAD, PAD, "Calendar", 150);
-      image.drawText(small, PAD, PAD + step + 4, "No upcoming events", 140);
+      const state = getCalendarReadState();
+      image.drawText(small, PAD, PAD + step + 4, state === "loading" ? "Loading calendar..."
+        : state === "error" ? "Calendar unavailable" : "No upcoming events", 140);
       return;
     }
 
