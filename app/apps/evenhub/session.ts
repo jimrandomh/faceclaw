@@ -17,7 +17,7 @@
  *    shutDown/setLocalStorage -> boolean; getLocalStorage -> string;
  *    getUserInfo/getGlassesInfo -> plain JSON objects (not strings).
  */
-import { ApplicationSettings } from "@nativescript/core";
+import { getStringSetting, setStringSetting } from "../../native/settings-store";
 import { GrayImage } from "../../graphics/image";
 import { EvenHubFont } from "../../graphics/evenhub-font";
 import { type InputEvent, type InputSource } from "../../ui/gestures";
@@ -767,10 +767,10 @@ export class EvenHubSession implements EvenHubMicClient, EvenHubImuClient, EvenH
       case "shutDownPageContainer":
         return this.shutDown(readNumber(data, "exitMode", 0));
       case "setLocalStorage":
-        ApplicationSettings.setString(this.storageKey(readString(data, "key", "")), readString(data, "value", ""));
+        setStringSetting(this.storageKey(readString(data, "key", "")), readString(data, "value", ""));
         return true;
       case "getLocalStorage":
-        return ApplicationSettings.getString(this.storageKey(readString(data, "key", "")), "");
+        return getStringSetting(this.storageKey(readString(data, "key", "")), "");
       case "getUserInfo":
         return { uid: 0, name: "Faceclaw", avatar: "", country: "" };
       case "getGlassesInfo":

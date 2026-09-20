@@ -101,7 +101,7 @@ test('local package runtimes unpack independently and clean up after closing or 
 function sessionHarness(overrides = {}, playBuzzer = () => {}) {
   const settings = new Map(), logs = [], renders = [];
   const load = loader({ global: { isIOS: true }, setTimeout, clearTimeout, Promise }, {
-    '@nativescript/core': { ApplicationSettings: { getString: (k, d) => settings.get(k) ?? d, setString: (k, v) => settings.set(k, v) } },
+    '../../native/settings-store': { getStringSetting: (k, d) => settings.get(k) ?? d, setStringSetting: (k, v) => settings.set(k, v) },
     'upng-js': require('upng-js'),
     '../../graphics/evenhub-font': { EvenHubFont: { get: () => ({ drawText() {}, drawTextWrapped() {}, lineHeight: 20 }) } },
     '../../ui/dashboard-settings': {}, '../../ui/sound-effects': {}, './api-key-dialog': {},

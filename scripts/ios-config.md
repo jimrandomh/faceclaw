@@ -5,39 +5,39 @@ unlocked/trusted iPhone. Both commands restart Faceclaw, briefly interrupting it
 Bluetooth and Terminal sessions.
 
 ```sh
-scripts/pull_config_ios.sh                         # faceclaw_settings.ios.json
+scripts/pull_config_ios.sh                         # faceclaw_settings.ios.jsonc
 scripts/push_config_ios.sh                         # import the edited file
-scripts/pull_config_ios.sh -f /tmp/settings.json --device IPHONE_UDID
-scripts/push_config_ios.sh faceclaw_settings.xml   # Android pull_config.sh output
+scripts/pull_config_ios.sh -f /tmp/settings.jsonc --device IPHONE_UDID
+scripts/push_config_ios.sh faceclaw_settings.xml   # legacy Android export
 ```
 
 Use `--device` / `-d` or set `IOS_DEVICE` when more than one device is connected.
 Without either, the script selects the only device with an active Xcode tunnel.
 For the simulator, add `--simulator` (defaults to `booted`; `--device` selects one).
 
-The JSON format preserves setting types:
+Both platforms use [schema 2 JSONC](settings-config.md), preserving nested values:
 
-```json
+```jsonc
 {
-  "schema": 1,
+  "schema": 2,
   "settings": {
-    "terminal.connections": "[]",
+    "terminal.connections": [],
     "terminal.autoReconnect": true
   }
 }
 ```
 
 Pull accepts an `.xml` output filename to write Android shared-preferences XML.
-Push detects JSON or XML by content and supports strings, booleans and numbers.
+Push detects JSONC or legacy XML by content, migrates schema 1, and supports
+strings, booleans, numbers, objects and arrays.
 Malformed input, unsupported values and files over 2 MiB fail before restarting
 the app. Push **merges supplied keys**, preserving omitted settings (including
 phone-specific pairing). To clear a value, supply its empty/default value.
 
 Transfers use `devicectl` app-container access. The app consumes a uniquely
 identified request at bootstrap, before loading settings getters and workers;
-it applies imports through NSUserDefaults rather than overwriting a plist that
-cfprefsd could restore from cache. Each successful push first saves the previous
-preferences to `Library/FaceclawConfigPort/previous.plist`. Replies are checked
+it applies imports through the shared JSONC store. Each successful push first
+saves the previous file to `Library/faceclaw_settings.jsonc.previous`. Replies are checked
 against the request ID, so a stale export cannot appear to confirm an import.
 
 Exports may contain API keys and Terminal tokens. Scripts do not print values,

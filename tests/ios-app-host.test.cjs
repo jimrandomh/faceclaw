@@ -125,9 +125,11 @@ test('iOS phone battery distinguishes unknown, charging, full and unplugged read
 });
 test('settings changes propagate between iOS worker isolates once, including after a getter read', () => {
   const store = new Map(), ticks = new Set(), tasks = [];
-  const ApplicationSettings = { getString: (k, d) => store.get(k) ?? d, getBoolean: (k, d) => store.get(k) ?? d,
-    setString: (k, v) => store.set(k, v), setBoolean: (k, v) => store.set(k, v), hasKey: k => store.has(k) };
-  const context = { require: () => ({ ApplicationSettings }), setTimeout: fn => tasks.push(fn),
+  let token = 0;
+  const native = { getStringFallback: (k, d) => store.get(k) ?? d, getBooleanFallback: (k, d) => store.get(k) ?? d,
+    setStringValue: (k, v) => { store.set(k, v); token++; }, setBooleanValue: (k, v) => { store.set(k, v); token++; },
+    changeToken: () => String(token) };
+  const context = { FaceclawSettings: { shared: () => native }, setTimeout: fn => tasks.push(fn),
     setInterval: fn => { ticks.add(fn); return fn; }, clearInterval: fn => ticks.delete(fn) };
   const main = load('app/native/settings-store.ios.ts', context), worker = load('app/native/settings-store.ios.ts', context);
   const seenMain = [], seenWorker = [];
