@@ -1,5 +1,7 @@
 import { MenuLayer, drawSubmenuIndicator, type MenuItem } from "../../ui/menu";
 import { ScreenTestLayer } from "./screen-test";
+import { InputEventsLayer } from "./input-events";
+import { shell } from "../../ui/shell/shell";
 import { BuzzerDemoLayer } from "./buzzer-demo";
 import { AccelerometerDemoLayer } from "./accelerometer-demo";
 import { BandwidthBenchmarkLayer } from "./bandwidth-benchmark";
@@ -48,10 +50,11 @@ function submenuItem(label: string, onSelect: MenuItem["onSelect"]): MenuItem {
 }
 
 /** The diagnostic demos, one level down from the root menu. */
-function debugTestsMenu(): MenuLayer {
+function debugTestsMenu(openInputEvents: (ctx: Parameters<MenuItem["onSelect"]>[0]) => void): MenuLayer {
   return new MenuLayer(
     "Debug tests",
     [
+      { label: "Input events", onSelect: openInputEvents },
       {
         label: "Dither test",
         onSelect: (ctx) => {
@@ -103,6 +106,7 @@ function debugTestsMenu(): MenuLayer {
  * under "Debug tests".
  */
 export function createDeveloperAppWindow(appContext: AppContext, options: InProcessAppOptions): InProcessWindow {
+  let inputEvents: InputEventsLayer | null = null;
   const menu = new MenuLayer(
     "Developer",
     [
@@ -131,7 +135,13 @@ export function createDeveloperAppWindow(appContext: AppContext, options: InProc
         },
       },
       submenuItem("Debug tests", (ctx) => {
-        ctx.stack.push(debugTestsMenu());
+        ctx.stack.push(debugTestsMenu((inputCtx) => {
+          const page = new InputEventsLayer(inputCtx.actions.requestRender,
+            () => shell.isWindowVisible(DEVELOPER_WINDOW_ID),
+            () => { if (inputEvents === page) inputEvents = null; });
+          inputEvents = page;
+          inputCtx.stack.push(page);
+        }));
       }),
     ],
     MENU_LAYOUT,
@@ -145,6 +155,7 @@ export function createDeveloperAppWindow(appContext: AppContext, options: InProc
     icon: "wrench",
     closeable: true,
     actions: options.actions,
+    menuItems: () => inputEvents?.menuItems() ?? [],
     // Dictating a URL is the one thing worth speaking at in this app; the
     // load pages take the text and every other page ignores it.
     receiveTextInput: (text) => {

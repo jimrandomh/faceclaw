@@ -25,12 +25,13 @@ type FontSpec = {
 // is built against (CFW_PATCH_SET.base), so they move on every firmware
 // rebase: run scripts/find-firmware-fonts.py against the new stock .bin and
 // match rows by cmap count / code-point count (12/8081, 9/9566, 4/11590).
+//   2.3.0.24: 0x007b699c, 0x007b69b0, 0x007b68c0
 //   2.2.9.22: 0x007a8954, 0x007a8968, 0x007a8878
 //   2.2.6.10: 0x0077f414, 0x0077f428, 0x0077f374
 const FONT_SPECS: FontSpec[] = [
-  { descriptor: 0x007a8954, lineHeight: 27, baseLine: 5 },
-  { descriptor: 0x007a8968, lineHeight: 26, baseLine: 5 },
-  { descriptor: 0x007a8878, lineHeight: 20, baseLine: 2 },
+  { descriptor: 0x007b699c, lineHeight: 27, baseLine: 5 },
+  { descriptor: 0x007b69b0, lineHeight: 26, baseLine: 5 },
+  { descriptor: 0x007b68c0, lineHeight: 20, baseLine: 2 },
 ];
 
 type ExtractedGlyph = {

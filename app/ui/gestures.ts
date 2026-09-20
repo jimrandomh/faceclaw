@@ -18,6 +18,8 @@ export type BaseInputEvent = {
 
 /** The per-type part of InputEvent; makeInputEvent adds the BaseInputEvent fields. */
 export type InputEventPayload =
+  /** Raw ring touch-down; a later interpreted gesture may follow. */
+  | { type: "ring-press"; source: "ring" }
   | { type: "click"; source: InputSource }
   | { type: "double-click"; source: InputSource }
   /** Ring scroll (or a watch crown turn, then tagged source "watch"). */

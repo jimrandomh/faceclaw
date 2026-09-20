@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.7.2 - Unreleased
+
+* Rebase to firmware 2.3.0, fixing an issue with some R1 ring input events being lost
+* Modify built in games to use ring-press rather than click
+
 ## 0.7.1 - 2026-09-19
 
 ### iOS Developer Beta
