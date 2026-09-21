@@ -244,7 +244,7 @@ function settingsSections(): SettingsSection[] {
     },
   ];
   if (!global.isIOS) return sections;
-  const deferred = new Set(["Navigate", "Watch"]);
+  const deferred = new Set(["Watch"]);
   return sections.map(section => {
     if (section.label === "Developer") return { ...section, items: [toggleSettingMenuItem(showBleBandwidthSetting)] };
     if (section.label === "Voice") return { label: "Voice", items: [enumSettingMenuItem(wakeWordActionSetting), {
@@ -256,8 +256,7 @@ function settingsSections(): SettingsSection[] {
       description: `${section.label} integration has not been ported to iOS.`,
     }] };
     if (section.label === "Display") return { ...section, items: section.items.filter(item =>
-      ![brightnessSetting.label, screenTimeoutSetting.label].includes(item.label)) };
-    if (section.label === "Phone display") return { ...section, items: section.items.filter(item => item.label !== mirrorTouchSetting.label) };
+      item.label !== screenTimeoutSetting.label) };
     return section;
   });
 }
