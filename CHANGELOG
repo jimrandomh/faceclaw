@@ -5,6 +5,7 @@
 ### Other Features
 
 * Add tokens and faceclaw-input script, which allows using a CLI utility as an input device for the glasses
+* Navigate app: Add map-without-destination mode
 
 ### iOS port:
 
