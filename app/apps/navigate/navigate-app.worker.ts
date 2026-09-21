@@ -114,7 +114,7 @@ const largeFont = getFont("terminus32");
 const mediumFont = getFont("terminus24");
 const smallFont = getDefaultSmallFont();
 
-type NavPhase = "idle" | "acquiring" | "routing" | "navigating" | "arrived";
+type NavPhase = "idle" | "acquiring" | "routing" | "navigating" | "map" | "arrived";
 type MapMode = "follow" | "overview";
 
 type NavWindow = {
@@ -196,8 +196,8 @@ type NavTarget =
   | { kind: "place"; name: string; place: string; longitude: number; latitude: number };
 
 /**
- * An entry on the idle page's list: a destination, or (while no Mapbox
- * token is set) one of the setup actions offered in its place.
+ * An entry on the idle page's list: the map, a destination, or (while no
+ * Mapbox token is set) one of the setup actions offered in its place.
  */
 type IdleEntry =
   | { kind: "saved"; destination: SavedDestination }
@@ -249,7 +249,7 @@ const tracker = new LocationTracker({
   onLocation: (fix) => handleFix(fix),
   onError: (message) => {
     statusMessage = message;
-    if (phase === "acquiring") phase = "idle";
+    if (phase === "acquiring") stopNavigation(message);
     render();
   },
 });
@@ -299,6 +299,10 @@ global.onmessage = (event: { data: WorkerAppMessage }) => {
       window.viewportHeight = message.viewport.height;
       window.menu?.resize(message.viewport);
       window.lastSubmittedFingerprint = "";
+      if (phase === "map") {
+        resetMapState();
+        maybeRefreshMap();
+      }
       render();
       break;
     case "close-window":
@@ -386,6 +390,31 @@ function startNavigation(query: string, requestedProfile: RouteProfile): Promise
   );
 }
 
+async function startMap(): Promise<void> {
+  if (!isMapboxConfigured()) return;
+  stopNavigation("");
+  const generation = navigationGeneration;
+  phase = "acquiring";
+  mapMode = "follow";
+  zoomOffset = 0;
+  statusMessage = "Locating you for the map...";
+  render();
+  try {
+    ensureTracking();
+    await waitForFix();
+    if (generation !== navigationGeneration) return;
+    phase = "map";
+    statusMessage = "";
+    ensureTickTimer();
+    maybeRefreshMap();
+    render();
+  } catch (error) {
+    if (generation !== navigationGeneration) return;
+    stopNavigation(String((error as Error)?.message ?? error));
+    render();
+  }
+}
+
 async function startNavigationTo(target: NavTarget, requestedProfile: RouteProfile): Promise<string> {
   const query = target.kind === "query" ? target.query : target.name;
   if (!isMapboxConfigured()) {
@@ -397,6 +426,7 @@ async function startNavigationTo(target: NavTarget, requestedProfile: RouteProfi
   const generation = ++navigationGeneration;
   const checkCurrent = () => { if (generation !== navigationGeneration) throw new Error("Navigation cancelled."); };
   const hadActiveRoute = phase === "navigating" && follower !== null;
+  const hadActiveMap = phase === "map";
   const previous = {
     destination,
     destinationName,
@@ -459,11 +489,10 @@ async function startNavigationTo(target: NavTarget, requestedProfile: RouteProfi
     if (generation !== navigationGeneration) throw error;
     const message = String((error as Error)?.message ?? error);
     statusMessage = message;
-    // A failed new destination shouldn't kill guidance that was already
-    // running; fall back to the ongoing route (and its destination, which
-    // the geocode step may have partially overwritten).
-    if (hadActiveRoute) {
-      phase = "navigating";
+    // A failed new destination shouldn't close the existing map or guidance.
+    // Restore the destination too: geocoding may have overwritten it.
+    if (hadActiveRoute || hadActiveMap) {
+      phase = hadActiveRoute ? "navigating" : "map";
       destination = previous.destination;
       destinationName = previous.destinationName;
       destinationPlace = previous.destinationPlace;
@@ -484,7 +513,6 @@ function adoptRoute(route: Route): void {
   mapMode = "follow";
   zoomOffset = 0;
   statusMessage = "";
-  routeGeneration++;
   resetMapState();
   ensureTracking();
   ensureTickTimer();
@@ -502,7 +530,6 @@ function stopNavigation(finalStatus: string): void {
   destination = null;
   destinationName = "";
   destinationPlace = "";
-  routeGeneration++;
   resetMapState();
   stopTrackingIfIdle();
   ensureTickTimer();
@@ -523,6 +550,12 @@ function handleFix(fix: TrackedLocation): void {
   }
   for (const waiter of firstFixWaiters.splice(0)) waiter(fix);
 
+  if (phase === "map") {
+    statusMessage = "";
+    maybeRefreshMap();
+    render();
+    return;
+  }
   if (phase !== "navigating" || !follower) return;
   progress = follower.update(fix.longitude, fix.latitude);
 
@@ -595,7 +628,7 @@ function waitForFix(): Promise<TrackedLocation> {
 /** Hold the magnetometer only while its reading is actually on screen. */
 function reconcileCompass(): void {
   const wanted =
-    window !== null && window.foreground && screenOn && phase === "navigating" && mapMode === "follow";
+    window !== null && window.foreground && screenOn && (phase === "navigating" || phase === "map") && mapMode === "follow";
   if (wanted === compassActive) return;
   compassActive = wanted;
   if (wanted) {
@@ -633,7 +666,7 @@ function angularDistance(a: number, b: number): number {
 }
 
 function ensureTickTimer(): void {
-  const shouldRun = phase === "navigating";
+  const shouldRun = phase === "navigating" || phase === "map";
   if (shouldRun && tickTimer === null) {
     tickTimer = setInterval(() => {
       maybeRefreshMap();
@@ -649,6 +682,7 @@ function ensureTickTimer(): void {
 // Map pane
 
 function resetMapState(): void {
+  routeGeneration++;
   mapImage = null;
   mapFetchedKey = "";
   mapInFlight = false;
@@ -679,7 +713,7 @@ function currentBearing(): number {
 
 function currentZoom(): number {
   let zoom: number;
-  if (profile === "walking") {
+  if (phase === "map" || profile === "walking") {
     zoom = 16.5;
   } else if (progress && progress.metersToNextManeuver < 250) {
     zoom = 16.5;
@@ -706,7 +740,7 @@ function desiredMapView(): { camera: StaticMapCamera; key: string; path: Array<[
   const position = currentPosition();
   if (!position) return null;
   const zoom = currentZoom();
-  const bearing = Math.round(currentBearing() / BEARING_BUCKET_DEG) * BEARING_BUCKET_DEG;
+  const bearing = phase === "map" ? 0 : Math.round(currentBearing() / BEARING_BUCKET_DEG) * BEARING_BUCKET_DEG;
   const path =
     follower && progress
       ? simplifyPath(follower.routeSliceAround(progress.alongMeters, 250, 3000), 80)
@@ -724,6 +758,7 @@ function desiredMapView(): { camera: StaticMapCamera; key: string; path: Array<[
  * a few seconds passed while moving. Single-flight with failure backoff.
  */
 function maybeRefreshMap(): void {
+  if (phase !== "navigating" && phase !== "map") return;
   if (!window || !window.foreground || !screenOn) return;
   if (mapInFlight || Date.now() < mapNextRetryAtMs) return;
   if (!isMapboxConfigured()) return;
@@ -733,7 +768,8 @@ function maybeRefreshMap(): void {
   let stale = mapImage === null || view.key !== mapFetchedKey;
   if (!stale && view.camera.kind === "center" && mapLastFetchCenter) {
     const moved = haversineMeters(mapLastFetchCenter, [view.camera.longitude, view.camera.latitude]);
-    const viewportMeters = MAP_SIZE * metersPerPixel(view.camera.zoom, view.camera.latitude);
+    const size = mapDimensions();
+    const viewportMeters = Math.min(size.width, size.height) * metersPerPixel(view.camera.zoom, view.camera.latitude);
     if (moved > viewportMeters * MOVE_REFRESH_FRACTION) stale = true;
     else if (Date.now() - mapLastFetchAtMs > IDLE_REFRESH_MS && moved > IDLE_REFRESH_MIN_MOVE_M) stale = true;
   }
@@ -743,13 +779,12 @@ function maybeRefreshMap(): void {
   const generation = routeGeneration;
   fetchStaticMapGray({
     camera: view.camera,
-    width: MAP_SIZE,
-    height: MAP_SIZE,
+    ...mapDimensions(),
     routePath: view.path.length >= 2 ? view.path : undefined,
   })
     .then((image) => {
-      mapInFlight = false;
       if (generation !== routeGeneration) return; // Route/mode changed mid-fetch.
+      mapInFlight = false;
       levelMap(image);
       mapImage = image;
       mapFetchedKey = view.key;
@@ -760,11 +795,18 @@ function maybeRefreshMap(): void {
       render();
     })
     .catch((error) => {
+      if (generation !== routeGeneration) return;
       mapInFlight = false;
       mapNextRetryAtMs = Date.now() + MAP_RETRY_BACKOFF_MS;
       mapLastError = String((error as Error)?.message ?? error);
       render();
     });
+}
+
+function mapDimensions(): { width: number; height: number } {
+  return phase === "map" && window
+    ? { width: window.viewportWidth, height: Math.max(1, window.viewportHeight - 30) }
+    : { width: MAP_SIZE, height: MAP_SIZE };
 }
 
 /** Keep every Nth point (ends always included) to bound the overlay URL size. */
@@ -848,6 +890,7 @@ function startSummary(picked: GeocodeCandidate, candidates: GeocodeCandidate[], 
 }
 
 function describeRouteStatus(): string {
+  if (phase === "map") return "Showing the map around your current location. No destination set.";
   if (phase === "arrived") return `Arrived at ${destinationName}.`;
   if (phase !== "navigating" || !follower) return "Navigation is not active.";
   if (!progress) return `Navigating to ${destinationName}; waiting for a GPS fix.`;
@@ -869,12 +912,12 @@ function describeRouteStatus(): string {
  */
 function windowMenuItems(win: NavWindow): MenuItem[] {
   const items: MenuItem[] = [];
-  if (phase === "navigating" || phase === "arrived") {
+  if (phase !== "idle") {
     items.push({
-      label: "Stop navigation",
+      label: phase === "map" ? "Close map" : "Stop navigation",
       onSelect: (ctx) => {
         ctx.stack.pop();
-        stopNavigation("Navigation stopped.");
+        stopNavigation(phase === "map" ? "" : "Navigation stopped.");
         render();
       },
     });
@@ -1141,9 +1184,15 @@ function tokenSetupEntries(): IdleEntry[] {
 
 function idleEntries(): IdleEntry[] {
   if (!isMapboxConfigured()) return tokenSetupEntries();
-  const entries: IdleEntry[] = loadSavedDestinations()
+  const entries: IdleEntry[] = [{
+    kind: "action",
+    label: "Map around me",
+    detail: "Follow my location",
+    run: () => { void startMap(); },
+  }];
+  entries.push(...loadSavedDestinations()
     .filter((destination) => destination.address)
-    .map((destination): IdleEntry => ({ kind: "saved", destination }));
+    .map((destination): IdleEntry => ({ kind: "saved", destination })));
   for (const destination of loadRecentDestinations()) {
     entries.push({ kind: "recent", destination });
   }
@@ -1223,7 +1272,7 @@ function handleInput(win: NavWindow, event: InputEvent, frameId: number): void {
       mapMode = mapMode === "follow" ? "overview" : "follow";
       resetMapState();
       maybeRefreshMap();
-    } else if (phase === "arrived") {
+    } else if (phase === "arrived" || phase === "map") {
       stopNavigation("");
     } else if (phase === "idle") {
       const entry = idleEntries()[idleSelection];
@@ -1240,7 +1289,7 @@ function handleInput(win: NavWindow, event: InputEvent, frameId: number): void {
     return;
   }
   if (event.type === "scroll-up" || event.type === "scroll-down") {
-    if (phase === "navigating" && mapMode === "follow") {
+    if ((phase === "navigating" || phase === "map") && mapMode === "follow") {
       zoomOffset = Math.max(-3, Math.min(2, zoomOffset + (event.type === "scroll-up" ? 0.5 : -0.5)));
       maybeRefreshMap();
       renderAndSubmit(win, frameId);
@@ -1267,6 +1316,8 @@ function paintContent(win: NavWindow): GrayImage {
   const image = new GrayImage(win.viewportWidth, win.viewportHeight, 0);
   if (editing) {
     paintEdit(image, editing);
+  } else if (phase === "map") {
+    paintMap(image);
   } else if (phase === "idle" || phase === "acquiring" || phase === "routing") {
     paintIdle(image, win);
   } else {
@@ -1303,7 +1354,7 @@ function paintIdle(image: GrayImage, win: NavWindow): void {
   const hint = !configured
     ? "Navigation needs a Mapbox public token (free at mapbox.com). Get one, then enter it here or in Settings > API Keys."
     : entries.length
-      ? "Pick a destination below, or say one via Voice input (system menu, long-press)."
+      ? "View the map or pick a destination below. Use Voice input (system menu, long-press) to say a destination."
       : "Ask the voice assistant to navigate somewhere, or pick Voice input from the system menu (long-press) to say a destination. Save Home, Work and other places from the app menu.";
   const hintLines = wrapText(smallFont, hint, image.width - 48);
   const hintStep = smallFont.lineHeight + 2;
@@ -1329,7 +1380,7 @@ function paintIdle(image: GrayImage, win: NavWindow): void {
   }
 }
 
-/** Saved destinations (name + address) then recent places, one selectable row each. */
+/** Map action, saved destinations, then recent places, one selectable row each. */
 function paintIdleList(image: GrayImage, win: NavWindow, entries: IdleEntry[], top: number): void {
   const rowHeight = listRowHeight(smallFont);
   const listBottom = image.height - 30;
@@ -1456,6 +1507,21 @@ function paintNavigating(image: GrayImage, win: NavWindow): void {
   }
   const modeHint = mapMode === "follow" ? "overview" : "follow";
   drawFooter(image, `${GESTURE_SCROLL} zoom   ${GESTURE_CLICK} ${modeHint}   ${GESTURE_DOUBLE_CLICK} back`, PANEL_X + 8);
+}
+
+function paintMap(image: GrayImage): void {
+  const { width, height } = mapDimensions();
+  if (mapImage) {
+    image.bitBlt(mapImage, 0, 0);
+    drawChevron(image, width / 2, height / 2, headHeadingDeg ?? 0);
+  } else {
+    image.drawText(smallFont, 24, height / 2 - 8, mapLastError ? "Map unavailable; retrying..." : "Loading map...", 170);
+  }
+  if (statusMessage) {
+    image.fillRect(0, 0, width, smallFont.lineHeight + 8, 0);
+    image.drawText(smallFont, 16, 4, truncateText(smallFont, statusMessage, width - 32), 200);
+  }
+  drawFooter(image, `${GESTURE_SCROLL} zoom   ${GESTURE_CLICK} destinations   ${GESTURE_DOUBLE_CLICK} back`);
 }
 
 /**

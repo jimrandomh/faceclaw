@@ -100,7 +100,7 @@ test('Navigate resize preserves its active route and window, and remeasures an o
     menu: { resize: (size) => { menuSize = size; } }, lastSubmittedFingerprint: 'old' };
   const route = { destination: 'Home' };
   const resize = resizeHandler('app/apps/navigate/navigate-app.worker.ts', {
-    window, route, render: () => { paints++; },
+    window, route, phase: 'navigating', render: () => { paints++; },
   });
   resize({ width: 576, height: 260 });
   assert.equal(window.viewportHeight, 260);
