@@ -40,10 +40,10 @@ export function runKotlinProtocolSmokeTest(): void {
   textured.submitSurfaceFrame('icon', white, { x: 0, y: 0, width: 2, height: 2 }, draw.buffer)
   const snapshot = textured.compositeFrame(), packed = protocol.packGray4(snapshot.pixels, 4, 2)
   const cold = textures.plan(null, packed, snapshot.textures, 1)
-  assert(!!cold && cold.uploads[0]?.[0] === 18 && cold.payload[0] === 8, 'texture upload and draw')
-  assert(textures.plan(null, packed, snapshot.textures, 1)?.uploads.length === 0, 'texture reuse')
+  assert(!!cold && cold.resourceCommands.some(command => command[0] === 21) && cold.payload[0] === 8, 'texture upload and draw')
+  assert(textures.plan(null, packed, snapshot.textures, 1)?.resourceCommands.length === 0, 'texture reuse')
   textures.reset()
-  assert((textures.plan(null, packed, snapshot.textures, 1)?.uploads.length ?? 0) > 0, 'texture reset')
+  assert((textures.plan(null, packed, snapshot.textures, 1)?.resourceCommands.length ?? 0) > 0, 'texture reset')
   const changed = new Uint8Array(16); changed[0] = 255
   assert(buildBoundingBoxPayload(new Uint8Array(16), changed, 8, 4, 1)?.[0] === 3, 'image update')
   assert(lvglMetrics('/nonexistent/faceclaw-font').length === 0, 'font bridge')

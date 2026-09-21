@@ -199,6 +199,20 @@ class ProtocolTest {
     }
 
     @Test
+    fun evictionWaitsForAllEarlierReplayableCommands() {
+        val earlier = message(input = byteArrayOf(19, 0, 0))
+        val eviction = message(input = byteArrayOf(22, 1, 0, 0, 0))
+        val upload = message(input = byteArrayOf(21, 1, 0))
+        assertFalse(CfwMessageWindow.canSend(listOf(earlier), eviction))
+        earlier.cfwAckLenses = 3 // Still retained behind an unresolved window head.
+        assertFalse(CfwMessageWindow.canSend(listOf(earlier), eviction))
+        assertTrue(CfwMessageWindow.canSend(emptyList(), eviction))
+        assertTrue(CfwMessageWindow.canSend(listOf(message(sid = 1)), eviction))
+        assertTrue(CfwMessageWindow.canSend(listOf(earlier), upload))
+        assertTrue(CfwMessageWindow.canSend(listOf(eviction), upload))
+    }
+
+    @Test
     fun orderedCompletionAndWholeWindowRecovery() {
         val head = message()
         val tail = message()

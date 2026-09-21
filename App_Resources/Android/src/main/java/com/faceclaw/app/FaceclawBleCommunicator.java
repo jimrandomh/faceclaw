@@ -130,7 +130,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private int faceclawWakePendingNonce = -1;
     /**
      * The last firmware-info read said the glasses run Faceclaw's custom
-     * firmware. Gates the private modes (cleanup, texture cache, ...) so stock
+     * firmware. Gates the private modes (cleanup, resource cache, ...) so stock
      * or third-party firmware never sees them; the TS side checks the actual
      * revision and disconnects on a mismatch, so no per-feature gating is
      * needed here.
@@ -245,7 +245,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private int desiredPaintMs;
     private int desiredFrameId;
     // Screen-space deferred draws (glyphs + images) whose pixels are baked
-    // into desiredPacked; the texture-cache planner may replay them as
+    // into desiredPacked; the resource-cache planner may replay them as
     // on-glasses cached draws.
     private SurfaceCompositor.ScreenDraw[] desiredDraws = new SurfaceCompositor.ScreenDraw[0];
     // (frame, reason) of the last "waiting to send" line, so a frame that
@@ -260,11 +260,11 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
 
     private final SurfaceCompositor compositor = new SurfaceCompositor();
 
-    // Phone-side model of the CFW's 64 KiB texture cache (modes 12/13/14).
+    // Phone-side model of the CFW's 256 KiB resource cache (modes 19/20/21/22).
     // Reset whenever the image pipeline / EvenHub session is torn down: the
     // firmware frees the cache with the fb lease, and after any resync the
     // cheap safe assumption is an empty cache (glyphs re-upload lazily).
-    private final TextureCacheState textureCache = new TextureCacheState();
+    private final ResourceCacheState resourceCache = new ResourceCacheState();
 
     private final ArrayDeque<OutboundMessage> pendingMessages = new ArrayDeque<>();
     private final CfwTransport[] cfwTransports = { new CfwTransport(AndroidProtocolPlatform.INSTANCE), new CfwTransport(AndroidProtocolPlatform.INSTANCE) };
@@ -1210,7 +1210,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     /**
      * As above, with the frame's glyph draws (see SurfaceCompositor's glyph
      * overload for the buffer format): the surface's full text content as
-     * structured draws, letting the texture-cache planner ship glyphs as
+     * structured draws, letting the resource-cache planner ship glyphs as
      * on-glasses cached draws instead of pixels. Null when the submitter has
      * no glyph metadata; the pixels alone remain fully correct.
      */
@@ -1415,10 +1415,10 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
      */
     public boolean suspendEvenHubSession() {
         // Ending the plugin task releases the fb lease, which frees the
-        // on-glasses texture cache; forget it phone-side either way (a lost
+        // on-glasses resource cache; forget it phone-side either way (a lost
         // ack may still have taken effect).
         synchronized (lock) {
-            textureCache.reset();
+            resourceCache.reset();
         }
         if (sendShutdownInternal(0, false)) {
             return true;
@@ -2439,7 +2439,8 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                         return ConnectionOptions.IDLE_SLEEP_MS;
                     }
 
-                    if (messageToPrewrite == null && sessionReady && windowHasRoom && !pendingMessages.isEmpty()) {
+                    if (messageToPrewrite == null && sessionReady && windowHasRoom && !pendingMessages.isEmpty()
+                            && CfwMessageWindow.canSend(inFlightMessages, pendingMessages.peekFirst())) {
                         messageToWrite = pendingMessages.removeFirst();
                         Log.i(TAG, "sending pending message: " + messageToWrite.label);
                     } else if (messageToPrewrite == null && !shutdownRequested && !benchmarkActive
@@ -2954,8 +2955,8 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
             return;
         }
 
-        // Texture-cache path: ship text as cached-glyph draws, punching their
-        // ink out of the baked deltas. Uploads (mode 12) ride ahead of the
+        // Resource-cache path: ship text as cached-glyph draws, punching their
+        // ink out of the baked deltas. Resource commands (modes 21/22) ride ahead of the
         // image message on the ordered transport. Falls through to the plain
         // paths whenever the planner has nothing to draw.
         if (customFirmwareDetected && connectionOptions.TEXTURE_CACHE_FRAMES
@@ -2965,13 +2966,13 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                     ? lastEnqueuedPacked : null;
             FrameTimings.getInstance().spanStart(frameId, "texture-plan");
             TexturePlanner.Result tex = TexturePlanner.plan(
-                    deltaBase, packed, width, height, draws, textureCache,
+                    deltaBase, packed, width, height, draws, resourceCache,
                     nextImageFrameId,
                     connectionOptions.MULTI_RECT_FRAMES, ConnectionOptions.MULTI_RECT_MAX_RECTS);
             if (tex != null) {
                 nextImageFrameId = tex.nextFid;
-                for (byte[] upload : tex.uploads) {
-                    enqueueTextureUploadLocked(upload);
+                for (byte[] upload : tex.resourceCommands) {
+                    enqueueResourceCommandLocked(upload);
                 }
                 BleImageOptimizer.TileImagePlan plan = new BleImageOptimizer.TileImagePlan(
                         0, DASHBOARD_TILE, packed, width, height, nextMapSessionId(), tex.payload);
@@ -2982,7 +2983,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                         + " fw=" + tex.fwGlyphs + "/" + tex.fwRuns
                         + " baked=" + tex.bakedCandidates
                         + (tex.uploadBytes > 0 ? " upload=" + tex.uploadBytes + "B" : "")
-                        + " cache=" + textureCache.usedBytes() + "B"
+                        + " cache=" + resourceCache.usedBytes() + "B"
                         + " payload=" + tex.payload.length + "B"
                         + " (rects " + tex.rectsMs + "ms, match " + tex.matchMs
                         + "ms, cache " + tex.cacheMs + "ms, punch " + tex.punchMs
@@ -3081,23 +3082,23 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     }
 
     /**
-     * Enqueue one mode-12 texture-cache upload ahead of the image message that
+     * Enqueue one resource eviction/upload command ahead of the image message that
      * references its glyphs (the transport is FIFO, so no ack round trip is
      * needed before use). A timeout means the on-glasses cache state is
      * unknown; forget everything phone-side (glyphs re-upload lazily) and let
      * the accompanying image update's own timeout drive the frame resync.
      */
-    private void enqueueTextureUploadLocked(byte[] payload) {
+    private void enqueueResourceCommandLocked(byte[] payload) {
         OutboundMessage message = messageBuilder.imagePayload(
-            "texcache",
+            "resources",
             DASHBOARD_TILE,
             nextMapSessionId(),
             payload,
-            "texture upload " + payload.length + "B",
+            "resource command " + payload.length + "B",
             connectionOptions.sendImagesToLeft);
         message.onTimeout = () -> {
-            textureCache.reset();
-            logLine("texture upload ack timeout; texture cache state reset");
+            resourceCache.reset();
+            logLine("resource command ack timeout; resource cache state reset");
         };
         pendingMessages.addLast(message);
         logLine("queue " + message.label);
@@ -3591,10 +3592,10 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         // image is a full keyframe rather than a delta onto a stale base.
         lastEnqueuedPacked = new byte[0];
         lastEnqueuedFingerprint = "";
-        // Queued texture uploads (if any) were dropped with the rest, and the
+        // Queued resource commands (if any) were dropped with the rest, and the
         // session churn behind a full clear may have freed the on-glasses
         // cache; forget it phone-side so glyphs re-upload lazily.
-        textureCache.reset();
+        resourceCache.reset();
     }
 
     /**
@@ -3625,7 +3626,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         clearInFlightMessagesLocked(reason);
         lastEnqueuedPacked = new byte[0];
         lastEnqueuedFingerprint = "";
-        textureCache.reset();
+        resourceCache.reset();
     }
 
     /** Any image update whose fragments are still queued (not yet sent). */

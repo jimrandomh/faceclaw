@@ -16,7 +16,7 @@ class BmpUtil {
             ByteArray(256) { v -> if (v == 0) 0 else minOf(15, (v + 8) shr 4).toByte() }
 
         /**
-         * The 4bpp level an 8-bit gray value packs to. Public so the texture-cache planner computes
+         * The 4bpp level an 8-bit gray value packs to. Public so the resource-cache planner computes
          * a glyph draw's top color with the exact quantization the composited frame was packed
          * with.
          */

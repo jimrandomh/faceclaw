@@ -249,7 +249,7 @@ class BleImageOptimizer {
          * multiples of 4 (=> left>>1, width>>1 are whole bytes), top/ height multiples of 2. The
          * box pixels are top-down rows of `next` (4bpp packed, width>>1 bytes/row), run-length
          * encoded before deflate. Shared by the single-bbox path, each rect of a mode-8 multi-rect
-         * batch, and the texture-cache planner.
+         * batch, and the resource-cache planner.
          */
         @JvmStatic
         fun encodeMode3Rect(

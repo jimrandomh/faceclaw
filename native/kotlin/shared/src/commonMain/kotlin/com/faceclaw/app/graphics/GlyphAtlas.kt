@@ -6,7 +6,7 @@ import kotlin.jvm.JvmStatic
 /**
  * Process-wide registry of glyph rasters, fed from the TS side so glyph identity survives to the
  * BLE encoder (see notes/texture-cache-display-list- design.md). A frame's glyph list references
- * entries here by (fontId, encoding); the texture-cache planner uses the raster three ways:
+ * entries here by (fontId, encoding); the resource-cache planner uses the raster three ways:
  *
  * - as the ink mask for the "would this draw land correctly" check against the composited frame,
  * - to punch the ink pixels out of the baked delta rect it replaces,

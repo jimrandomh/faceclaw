@@ -98,7 +98,7 @@ class SurfaceCompositor {
     /**
      * One deferred draw (a text glyph or an icon image) within a frame, in screen coordinates. The
      * draw's pixels are already baked into the composited gray buffer (the TS side bakes before
-     * submitting); this record preserves the draw's identity so the texture-cache planner can
+     * submitting); this record preserves the draw's identity so the resource-cache planner can
      * replay it as an on-glasses cached draw instead of image bytes.
      *
      * Glyphs: x/y are the pen position and line top; the raster (and its bearing/cell placement)

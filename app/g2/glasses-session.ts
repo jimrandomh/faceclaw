@@ -496,6 +496,7 @@ export class GlassesSession {
     this.timer = setTimeout(() => { this.timer = null; void this.pump() }, delay)
   }
   private canSendDisplay(): boolean {
+    if (this.displaySending?.commands[this.displaySending.offset][0] === 22 && this.cfwPending.length) return false
     // Also bound completed frames retained behind a missing/out-of-order ACK.
     return this.displayInFlight < DISPLAY_WINDOW_SIZE && !!(this.displaySending ||
       (this.latest && !this.charging && this.displayFrames.length < DISPLAY_WINDOW_SIZE))
@@ -511,11 +512,11 @@ export class GlassesSession {
         const texturePlan = textureFrame ? this.textures?.plan(this.lastEnqueued, packed, textureFrame, this.nextImageFrameId) : null
         let commands: Uint8Array[]
         if (texturePlan) {
-          // Uploads participate in the same ordered, acknowledged command window as
+          // Resource commands participate in the same ordered, acknowledged command window as
           // the image. Coalescing only happens before planning mutates residency.
-          commands = [...texturePlan.uploads, texturePlan.payload]
+          commands = [...texturePlan.resourceCommands, texturePlan.payload]
           this.nextImageFrameId = texturePlan.nextFid
-          this.log(`Display textures (${texturePlan.uploads.length} uploads, cache=${texturePlan.usedBytes}B)`)
+          this.log(`Display textures (${texturePlan.resourceCommands.length} resource commands, cache=${texturePlan.usedBytes}B)`)
         } else {
           const delta = buildBoundingBoxPayload(this.lastEnqueued, packed, 640, 480, this.nextImageFrameId)
           const payload = delta ?? protocol.concat(new Uint8Array([6]), protocol.rle4(packed))
@@ -528,7 +529,10 @@ export class GlassesSession {
         this.displaySending = { packed, commands, offset: 0, pending: 0 }
         this.displayFrames.push(this.displaySending); this.lastEnqueued = packed
       }
-      const frame = this.displaySending, payload = frame.commands[frame.offset++]
+      const frame = this.displaySending
+      // Drain earlier commands before evicting: recovery may replay any unresolved draw/upload.
+      if (frame.commands[frame.offset][0] === 22 && this.cfwPending.length) return
+      const payload = frame.commands[frame.offset++]
       frame.pending++; this.displayInFlight++
       if (frame.offset >= frame.commands.length) this.displaySending = null
       // Writes serialize on L while up to three complete commands await their
@@ -554,7 +558,7 @@ export class GlassesSession {
     this.pumping = true; const generation = this.generation
     try {
       const now = Date.now()
-      // Firmware frees textures when its 90-second framebuffer lease expires.
+      // Firmware frees resources when its 90-second framebuffer lease expires.
       // After a long iOS suspension, reconnect rather than replaying pending
       // draws against unknown memory. Leave a margin for the two arm writes.
       if (now - this.lastLease >= 80_000) throw new Error('Display lease lapsed; restarting session')

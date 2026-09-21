@@ -306,14 +306,14 @@ const ack = (transport, sent, overrides) => transport.ack(sent.id, sent.message,
 const tick = () => new Promise(resolve => setImmediate(resolve));
 const noisy = () => Uint8Array.from({ length: 640 * 480 }, (_, i) => (i % 2) * 255);
 
-test('texture uploads precede their frame, share ACK accounting, and coalesce pixels with draw identities', async t => {
+test('resource evictions and uploads precede their frame, share ACK accounting, and coalesce pixels with draw identities', async t => {
   const plans = [];
   let resets = 0;
   const textures = {
     reset() { resets++; },
     plan(previous, next, frame, firstId) {
       plans.push({ previous, next, frame, firstId });
-      return { uploads: plans.length === 1 ? [new Uint8Array([18, 1]), new Uint8Array([18, 2])] : [],
+      return { resourceCommands: plans.length === 1 ? [new Uint8Array([22, 1]), new Uint8Array([21, 2])] : [],
         payload: new Uint8Array([8, plans.length]), nextFid: firstId + 2, usedBytes: 100 };
     },
   };
@@ -323,7 +323,7 @@ test('texture uploads precede their frame, share ACK accounting, and coalesce pi
   h.session.setFrame(new Uint8Array(640 * 480), a);
   await until(() => imageMessages(h.transport).length === 3);
   const sent = imageMessages(h.transport);
-  assert.deepEqual(sent.map(s => s.message.payload[0]), [18, 18, 8]);
+  assert.deepEqual(sent.map(s => s.message.payload[0]), [22, 21, 8]);
   h.session.setFrame(new Uint8Array(640 * 480).fill(80), b);
   h.session.setFrame(new Uint8Array(640 * 480).fill(160), c);
   assert.equal(plans.length, 1, 'coalesced frames must not allocate textures');
@@ -340,15 +340,39 @@ test('texture uploads precede their frame, share ACK accounting, and coalesce pi
   assert.ok(resets > 0);
 });
 
-test('a failed texture upload invalidates residency and the pipelined frame base', async t => {
+test('evictions drain earlier replayable draws before resource IDs can be reused', async t => {
+  let plans = 0;
+  const textures = {
+    reset() {},
+    plan() { return { resourceCommands: ++plans === 1 ? [] : [new Uint8Array([22]), new Uint8Array([21])],
+      payload: new Uint8Array([8]), nextFid: 1, usedBytes: 100 }; },
+  };
+  const h = harness(t, new FakeTransport(), textures); await h.session.start(addresses);
+  h.transport.hold = true;
+  h.session.setFrame(new Uint8Array(640 * 480), { native: {} });
+  await until(() => imageMessages(h.transport).length === 1);
+  h.session.setFrame(new Uint8Array(640 * 480).fill(80), { native: {} });
+  await until(() => plans === 2); await tick();
+  assert.equal(imageMessages(h.transport).length, 1, 'eviction cannot enter an unresolved window');
+  h.session.recoverCfw(); await tick();
+  assert.equal(imageMessages(h.transport).length, 1);
+  ack(h.transport, imageMessages(h.transport)[0]);
+  await until(() => imageMessages(h.transport).length === 4);
+  assert.deepEqual(imageMessages(h.transport).map(s => s.message.payload[0]), [8, 22, 21, 8]);
+  h.transport.hold = false;
+  for (const sent of imageMessages(h.transport).slice(1)) ack(h.transport, sent);
+  await until(() => h.session.state.frames === 2);
+});
+
+test('a failed resource upload invalidates residency and the pipelined frame base', async t => {
   let resets = 0;
   const textures = {
     reset() { resets++; },
-    plan() { return { uploads: [new Uint8Array([18])], payload: new Uint8Array([8]), nextFid: 1, usedBytes: 4 }; },
+    plan() { return { resourceCommands: [new Uint8Array([21])], payload: new Uint8Array([8]), nextFid: 1, usedBytes: 4 }; },
   };
   const h = harness(t, new FakeTransport(), textures); await h.session.start(addresses);
   const original = h.session.requestCfw.bind(h.session);
-  h.session.requestCfw = (role, payload) => payload[0] === 18 ? Promise.reject(new Error('texture upload failed')) : original(role, payload);
+  h.session.requestCfw = (role, payload) => payload[0] === 21 ? Promise.reject(new Error('texture upload failed')) : original(role, payload);
   h.session.setFrame(new Uint8Array(640 * 480), { native: {} });
   await until(() => h.session.state.phase === 'retrying');
   assert.equal(resets, 1); assert.equal(h.session.lastEnqueued, null);

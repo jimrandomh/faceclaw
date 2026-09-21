@@ -161,7 +161,7 @@
   },
   {
     "java": "com/faceclaw/app/g2protocol/TextureCacheState.java",
-    "kotlin": "shared/src/commonMain/kotlin/com/faceclaw/app/g2protocol/TextureCacheState.kt"
+    "kotlin": "shared/src/commonMain/kotlin/com/faceclaw/app/g2protocol/ResourceCacheState.kt"
   },
   {
     "java": "com/faceclaw/app/g2protocol/TexturePlanner.java",

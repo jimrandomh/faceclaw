@@ -4,7 +4,7 @@ import kotlin.jvm.JvmField
 import kotlin.jvm.JvmStatic
 
 /**
- * Process-wide registry of icon/image rasters for the texture-cache pipeline, the image counterpart
+ * Process-wide registry of icon/image rasters for the resource-cache pipeline, the image counterpart
  * of GlyphAtlas. Entries are content-addressed: the TS side keys each image by a hash of its
  * dimensions and pixels, so the same icon registered from any thread or rendered at any time
  * dedupes to one entry, and an icon whose content changes is simply a new entry.
@@ -81,11 +81,14 @@ class ImageAtlas {
         /** CFW cached-image bytes: [w][h][RLE(w*h pixels)]. */
         @JvmField val cachedBytes: ByteArray
 
+        val resource: CachedResource
+
         constructor(width: Int, height: Int, nibbles: ByteArray) {
             this.width = width
             this.height = height
             this.nibbles = nibbles
             this.cachedBytes = encodeCachedImage()
+            this.resource = CachedResource(cachedBytes)
         }
 
         /** The 4bpp value the mode-13 draw would write at (col, row); 0 = skipped. */
