@@ -248,6 +248,7 @@ function shellEnv({ wakeAction = 'voice-input', skipConfirmation = false } = {})
   const settings = { wakeWordActionSetting: { get: () => wakeAction }, brightnessSetting: { get: () => 'auto' },
     assistantSkipConfirmationSetting: { get: () => skipConfirmation } };
   const { shell, rawInputEventToInputEvent } = load('app/ui/shell/shell.ts', {
+    '../../graphics/shell-scene': { encodeShellScene: () => new Uint8Array([0, 0]) },
     '../../graphics/image': images, '../../graphics/plane': {}, '../../graphics/ui-fonts': {}, '../../g2/events': load('app/g2/events.ts', {}),
     '../gestures': gestures, '../layers': layers, '../menu': { MenuLayer: Menu },
     '../input-monitor': load('app/ui/input-monitor.ts', {}),

@@ -12,7 +12,7 @@ const DIALOG_X = 40;
 const DIALOG_W = G2_LENS_WIDTH - 80;
 // The dialog fits inside the min-height window band (like the other shell
 // overlays), wherever the vertical position setting puts it.
-const DIALOG_MARGIN_Y = 24;
+const DIALOG_MARGIN_Y = 28;
 const DIALOG_H = MIN_WINDOW_HEIGHT - 2 * DIALOG_MARGIN_Y;
 const TEXT_MAX_WIDTH = DIALOG_W - 32;
 const MENU_ROWS = 2;
@@ -95,8 +95,8 @@ export class AssistantLayer implements Layer {
 
     // Solid dialog box (fill 1, matching the voice dialog: opaque after 4bpp
     // quantization, but not the color-key transparent 0).
-    image.fillRoundedRect(DIALOG_X, top, DIALOG_W, DIALOG_H, 1, 10);
-    image.drawRoundedRect(DIALOG_X, top, DIALOG_W, DIALOG_H, 90, 10);
+    image.fillRect(DIALOG_X, top, DIALOG_W, DIALOG_H, 1);
+    image.drawRect(DIALOG_X, top, DIALOG_W, DIALOG_H, 90);
 
     const left = DIALOG_X + 16;
     image.drawText(font, left, top + 12, this.phase === "thinking" ? "Assistant ●" : "Assistant", 220);

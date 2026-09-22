@@ -212,7 +212,7 @@ test('background glasses input still composites frames; phone resume preserves t
     setScreenOn: on => screenStates.push(on), requestRender() {} };
   const shell = { configure() {}, registerWindow() {}, wake() {}, focusWindow() {},
     getWindows: () => [window], foregroundWindow: () => window, isScreenOn: () => true,
-    setBatteryLevels() {}, paintSurface() {}, underlayDim: () => 0, getFocus: () => 'app',
+    setBatteryLevels() {}, paintScene() { return new Uint8Array([0,0]); }, paintSurface() {}, underlayDim: () => 0, getFocus: () => 'app',
     receiveInput: async input => { inputs.push(input); } };
   class Session {
     state = { phase: 'disconnected' };
@@ -247,7 +247,7 @@ test('background glasses input still composites frames; phone resume preserves t
     '../apps/all-apps': { ALL_APPS: [] }, '../ui/dashboard-settings': settings,
     '../native/phone-battery': { readPhoneBatteryState: () => ({ battery: 80, charging: false }) },
     '../graphics/surface-compositor': { SurfaceCompositor: class {
-      configureSurface() {} setSurfaceVisible() {} submitSurfaceFrame() {} setUnderlayDim() {} setScreenBlanked() {}
+      setShellScene() {} configureSurface() {} setSurfaceVisible() {} submitSurfaceFrame() {} setUnderlayDim() {} setScreenBlanked() {}
       compositeFrame() { return { pixels: new Uint8Array([1, 2]) }; }
     } },
     '../graphics/plane': { flattenPlanesWithDraws: () => ({ image: { pixels: new Uint8Array([1, 2]), width: 2, height: 1 }, draws: [] }) },

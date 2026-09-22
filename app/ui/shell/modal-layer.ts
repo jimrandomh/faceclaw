@@ -16,7 +16,7 @@ function modalInterior(): { width: number; height: number } {
   const viewport = appViewportSize("min");
   return {
     width: viewport.width - 2 * MODAL_MARGIN - 2 * MODAL_PADDING,
-    height: viewport.height - 2 * MODAL_MARGIN - 2 * MODAL_PADDING,
+    height: Math.min(viewport.height - 2 * MODAL_MARGIN, Math.floor(65530 / Math.ceil((viewport.width - 2 * MODAL_MARGIN) / 2))) - 2 * MODAL_PADDING,
   };
 }
 
@@ -27,7 +27,7 @@ export function modalRect(): { x: number; y: number; width: number; height: numb
     x: viewport.x + MODAL_MARGIN,
     y: viewport.y + MODAL_MARGIN,
     width: viewport.width - 2 * MODAL_MARGIN,
-    height: viewport.height - 2 * MODAL_MARGIN,
+    height: Math.min(viewport.height - 2 * MODAL_MARGIN, Math.floor(65530 / Math.ceil((viewport.width - 2 * MODAL_MARGIN) / 2))),
   };
 }
 
@@ -54,8 +54,8 @@ export class ShellModalLayer implements Layer {
     // below transplants the finished modal content into this layer's plane.
     const inner = flattenPlanes(this.stack.paint(), interior);
     const rect = modalRect();
-    image.fillRoundedRect(rect.x, rect.y, rect.width, rect.height, SHELL_OPAQUE_BLACK, 8);
-    image.drawRoundedRect(rect.x, rect.y, rect.width, rect.height, 110, 8);
+    image.fillRect(rect.x, rect.y, rect.width, rect.height, SHELL_OPAQUE_BLACK);
+    image.drawRect(rect.x, rect.y, rect.width, rect.height, 110);
     image.bitBlt(inner, rect.x + MODAL_PADDING, rect.y + MODAL_PADDING, { transparentZero: true });
     return image;
   }

@@ -15,6 +15,8 @@ import { GrayImage, type DeferredDraw } from "./image";
  * existing incremental-update and screen-preview pipeline.
  */
 export type Plane = {
+  shellKey?: number;
+  dimUnderneath?: number;
   image: GrayImage;
   /**
    * Offset of the plane's top-left within the submitted frame. Applied

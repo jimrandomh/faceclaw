@@ -33,6 +33,7 @@ export class SurfaceCompositor {
     this.native.submitDrawsIdDataXYWidthHeightDraws(id, toData(pixels), rect.x, rect.y, rect.width, rect.height,
       draws ? toData(new Uint8Array(draws)) : null)
   }
+  setShellScene(bytes: Uint8Array): void { this.native.shellData(toData(bytes)) }
   composite(): Uint8Array { return fromData(this.native.composite()) }
   compositeFrame(): { pixels: Uint8Array; textures: TextureFrame } {
     const native = this.native.compositeFrame()

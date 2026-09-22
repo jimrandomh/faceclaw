@@ -42,6 +42,7 @@ export type MenuLayout = {
    * renders over whatever is below it (modal/window menus).
    */
   opaque?: boolean;
+  squareCorners?: boolean;
 };
 
 export type MenuItemRenderArgs = {
@@ -226,6 +227,7 @@ export class MenuLayer implements Layer {
     const maxHeight = Math.min(
       this.layout.maxHeight ?? image.height - y - DEFAULT_MENU_Y,
       image.height - y,
+      this.layout.squareCorners ? Math.floor(65530 / Math.ceil(width / 2)) : Infinity,
     );
     const footerHeight = this.layout.footer ? MENU_FOOTER_GAP + lineStep(font) : 0;
     const contentHeight = chromeTop + this.items.length * rowHeight + footerHeight + MENU_BODY_PADDING;
@@ -243,9 +245,11 @@ export class MenuLayer implements Layer {
 
     // Fill 1, not 0: identical after 4bpp quantization, but 0 is the
     // transparent color key when a menu paints on the shell surface.
-    image.fillRoundedRect(x, y, width, height, 1);
+    if (this.layout.squareCorners) image.fillRect(x, y, width, height, 1);
+    else image.fillRoundedRect(x, y, width, height, 1);
     if (this.layout.showBorder !== false) {
-      image.drawRoundedRect(x, y, width, height, 72);
+      if (this.layout.squareCorners) image.drawRect(x, y, width, height, 72);
+      else image.drawRoundedRect(x, y, width, height, 72);
     }
     if (this.title) {
       image.drawText(font, x + 12, y + 8, this.title, 220);

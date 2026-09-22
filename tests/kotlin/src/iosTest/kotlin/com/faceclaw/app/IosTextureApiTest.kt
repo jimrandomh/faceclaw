@@ -24,9 +24,9 @@ class IosTextureApiTest {
         val next = IosProtocol().pack(frame.pixels, 8, 4)
         val planner = IosTexturePlanner()
         val cold = assertNotNull(planner.plan(null, next, frame, 1))
-        assertEquals(22, cold.resourceCommands.first().byteArray()[0].toInt())
+        assertEquals(27, cold.resourceCommands.first().byteArray()[0].toInt())
         assertTrue(cold.resourceCommands.any { it.byteArray()[0].toInt() == 21 })
-        assertEquals(8, cold.payload.byteArray()[0].toInt())
+        assertEquals(28, cold.payload.byteArray()[0].toInt())
         val warm = assertNotNull(planner.plan(null, next, frame, 1))
         assertTrue(warm.resourceCommands.isEmpty())
         assertContentEquals(cold.payload.byteArray(), warm.payload.byteArray())
@@ -52,10 +52,11 @@ class IosTextureApiTest {
         val frame = compositor.compositeFrame()
         val plan = assertNotNull(IosTexturePlanner().plan(null, IosProtocol().pack(frame.pixels, 4, 2), frame, 1))
         assertTrue(plan.usedBytes > 2048 + 192)
-        val payload = plan.payload.byteArray()
-        // The last mode-8 submessage is the shared mode-20 cached glyph run.
-        assertEquals(20, payload[payload.size - 10].toInt())
-        assertEquals(65, payload.last().toInt())
+        assertEquals(28, plan.payload.byteArray()[0].toInt())
+        assertTrue(plan.resourceCommands.any { command ->
+            val bytes = command.byteArray()
+            bytes[0].toInt() == 26 && bytes.last().toInt() == 65
+        })
     }
 
     @Test
@@ -76,7 +77,9 @@ class IosTextureApiTest {
         compositor.submitDraws("noise", gray.data(), 0, 0, 640, 480, imageDraw(id).data())
         val frame = compositor.compositeFrame()
         val planner = IosTexturePlanner()
-        assertNull(planner.plan(null, IosProtocol().pack(frame.pixels, 640, 480), frame, 1))
+        val noisy = assertNotNull(planner.plan(null, IosProtocol().pack(frame.pixels, 640, 480), frame, 1))
+        assertTrue(noisy.resourceCommands.all { it.length <= 65535uL })
+        planner.reset()
         val small = IosSurfaceCompositor(4, 2)
         small.configure("icon", 0, 0, 2, 2, 0, false)
         small.submitDraws("icon", white, 0, 0, 2, 2, imageDraw(id).data())

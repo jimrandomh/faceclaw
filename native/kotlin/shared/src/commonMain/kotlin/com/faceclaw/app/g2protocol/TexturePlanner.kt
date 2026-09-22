@@ -243,7 +243,7 @@ class TexturePlanner {
             subs.addAll(runs)
             subs.addAll(fwSubs)
             var payload: ByteArray = assembleMode8(subs)
-            if (payload.size > CfwTransport.MAX_MESSAGE) {
+            if (payload.size > CfwTransport.MAX_MESSAGE - 16) {
                 rollback()
                 return null
             }

@@ -352,9 +352,7 @@ export class IosPreviewController {
       try {
         if (this.shellDirty) {
           this.shellDirty = false
-          const { image, draws } = flattenPlanesWithDraws(shell.paintSurface(), { width: 640, height: 480 })
-          this.compositor.submitSurfaceFrame('shell', image.pixels, { x: 0, y: 0, width: 640, height: 480 }, prepareFrameDraws(draws))
-          this.compositor.setUnderlayDim(1, shell.underlayDim())
+          this.compositor.setShellScene(shell.paintScene())
         }
         const { pixels, textures } = this.compositor.compositeFrame()
         this.session?.setFrame(pixels, textures)

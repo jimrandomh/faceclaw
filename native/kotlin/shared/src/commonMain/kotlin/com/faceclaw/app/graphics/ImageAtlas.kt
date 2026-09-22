@@ -11,7 +11,7 @@ import kotlin.jvm.JvmStatic
  *
  * Unlike glyphs (1-bit ink recolored at draw time), images keep their exact 4bpp values: the cached
  * bytes quantize the registered 8bpp pixels with the same GRAY_TO_NIBBLE table the composite is
- * packed with, and the planner draws them via mode 13 with an identity LUT (top color 15) and the
+ * packed with, and the planner draws them via the image draw call with an identity LUT (top color 15) and the
  * transparent bit — the draw writes exactly the nonzero-nibble pixels, which is what the
  * eligibility check and hole punching are defined over.
  */
@@ -78,7 +78,7 @@ class ImageAtlas {
         /** One 4bpp value per pixel, row-major. */
         @JvmField val nibbles: ByteArray
 
-        /** CFW cached-image bytes: [w][h][RLE(w*h pixels)]. */
+        /** CFW cached-image bytes: [flags=RLE][w][h][RLE(w*h pixels)]. */
         @JvmField val cachedBytes: ByteArray
 
         val resource: CachedResource
@@ -98,10 +98,11 @@ class ImageAtlas {
 
         private fun encodeCachedImage(): ByteArray {
             var total: Int = (width * height)
-            var out: ByteArray = ByteArray((2 + total))
-            out[0] = (width).toByte()
-            out[1] = (height).toByte()
-            var o: Int = 2
+            var out: ByteArray = ByteArray((3 + total))
+            out[0] = DrawProtocol.RLE.toByte()
+            out[1] = (width).toByte()
+            out[2] = (height).toByte()
+            var o: Int = 3
             var i: Int = 0
             while ((i < total)) {
                 var color: Int = (nibbles[i] and 0xff)

@@ -16,7 +16,7 @@ const DIALOG_X = 40;
 const DIALOG_W = G2_LENS_WIDTH - 80;
 // The dialog fits inside the min-height window band (like the other shell
 // overlays), wherever the vertical position setting puts it.
-const DIALOG_MARGIN_Y = 24;
+const DIALOG_MARGIN_Y = 28;
 const DIALOG_H = MIN_WINDOW_HEIGHT - 2 * DIALOG_MARGIN_Y;
 const TEXT_MAX_WIDTH = DIALOG_W - 32;
 
@@ -51,8 +51,8 @@ export function paintInputDialog(image: GrayImage, content: InputDialogContent):
 
   // Solid dialog box over the underlying UI. Fill 1, not 0: identical after
   // 4bpp quantization, but 0 is transparent on the color-key shell surface.
-  image.fillRoundedRect(DIALOG_X, top, DIALOG_W, DIALOG_H, 1, 10);
-  image.drawRoundedRect(DIALOG_X, top, DIALOG_W, DIALOG_H, 90, 10);
+  image.fillRect(DIALOG_X, top, DIALOG_W, DIALOG_H, 1);
+  image.drawRect(DIALOG_X, top, DIALOG_W, DIALOG_H, 90);
 
   const left = DIALOG_X + 16;
   image.drawText(font, left, top + 12, content.title, 220);

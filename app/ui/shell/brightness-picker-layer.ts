@@ -25,8 +25,8 @@ export class BrightnessPickerLayer implements Layer {
     const height = BAR_HEIGHT + 3 * font.lineHeight + 56;
     const left = viewport.x + Math.round((viewport.width - DIALOG_WIDTH) / 2);
     const top = viewport.y + Math.round((viewport.height - height) / 2);
-    image.fillRoundedRect(left, top, DIALOG_WIDTH, height, SHELL_OPAQUE_BLACK, 8);
-    image.drawRoundedRect(left, top, DIALOG_WIDTH, height, 110, 8);
+    image.fillRect(left, top, DIALOG_WIDTH, height, SHELL_OPAQUE_BLACK);
+    image.drawRect(left, top, DIALOG_WIDTH, height, 110);
 
     const centeredText = (text: string, y: number, value: number) => {
       image.drawText(font, left + Math.round((DIALOG_WIDTH - font.measureText(text)) / 2), y, text, value);

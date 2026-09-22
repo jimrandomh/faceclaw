@@ -178,9 +178,9 @@ test('session authenticates both arms, checks firmware and sends acknowledged di
   assert.equal(h.session.state.charging, false);
   assert.deepEqual(h.transport.sent.filter(s => s.message.sid === 128).map(s => s.id).sort(), ['L', 'R']);
   h.session.setFrame(new Uint8Array(640 * 480)); await until(() => h.session.state.frames === 1);
-  const image = h.transport.sent.find(s => s.message.sid === p.SID.cfw && s.message.payload[0] === 6);
+  const image = h.transport.sent.find(s => s.message.sid === p.SID.cfw && s.message.payload[0] === 26);
   assert.equal(image.id, 'L');
-  assert.equal(image.message.payload[0], 6);
+  assert.equal(image.message.payload[0], 26);
   const layout = h.transport.sent.find(s => s.message.sid === p.SID.hub && s.message.command === 0);
   assert.equal(p.readBytes(p.readBytes(layout.message.payload, 3), 4), undefined);
   await h.session.stop();
@@ -399,14 +399,15 @@ test('CFW ACK identity and both-lens completion gate display metrics', async t =
   const write = h.transport.write.bind(h.transport);
   h.transport.write = async (...args) => { written += args[2].length; await write(...args); };
   h.session.setFrame(new Uint8Array(640 * 480));
-  await until(() => imageMessages(h.transport).length === 1);
-  const sent = imageMessages(h.transport)[0];
+  await until(() => imageMessages(h.transport).length === 2);
+  const [draw, sent] = imageMessages(h.transport);
+  ack(h.transport,draw);
   for (const wrong of [{ identifier: 'R' }, { size: 99 }, { checksum: 0 }, { ordinal: 1 }, { magic: sent.message.magic + 1 }]) ack(h.transport, sent, wrong);
   ack(h.transport, sent, { lenses: [1] }); await tick();
   assert.equal(h.session.state.frames, 0);
   ack(h.transport, sent, { lenses: [2] }); await until(() => h.session.state.frames === 1);
   assert.equal(iosBleTraffic.sample().bytes - before.bytes, written);
-  assert.equal(iosBleTraffic.sample().messages - before.messages, 1);
+  assert.equal(iosBleTraffic.sample().messages - before.messages, 2);
   assert.equal(iosBleTraffic.sample().frames - before.frames, 1);
   ack(h.transport, sent); await tick(); assert.equal(h.session.state.frames, 1);
 });
@@ -421,7 +422,7 @@ test('large frames use bounded RLE bands and ordered three-message pipelining', 
   assert.equal(imageMessages(h.transport).length, 3); assert.equal(h.session.state.frames, 0);
   ack(h.transport, first[0]); await until(() => imageMessages(h.transport).length === 6);
   for (const sent of imageMessages(h.transport).slice(3)) ack(h.transport, sent);
-  await until(() => imageMessages(h.transport).length === 8);
+  await until(() => imageMessages(h.transport).length === 9);
   assert.equal(h.session.state.frames, 0);
   for (const sent of imageMessages(h.transport).slice(6)) ack(h.transport, sent);
   await until(() => h.session.state.frames === 1);
@@ -433,19 +434,21 @@ test('large frames use bounded RLE bands and ordered three-message pipelining', 
   assert.deepEqual(shadow, p.packGray4(gray, 640, 480));
 });
 
-test('display pipelines A-B-A and coalesces newer waiting frames', async t => {
-  const h = harness(t); await h.session.start(addresses); h.transport.hold = true;
-  const submit = async value => { h.session.setFrame(new Uint8Array(640 * 480).fill(value)); await h.session.pump(); await tick(); };
-  await submit(0); await submit(0); assert.equal(imageMessages(h.transport).length, 1);
-  await submit(255); await submit(0); await until(() => imageMessages(h.transport).length === 3);
-  await submit(80); await submit(160);
-  const sent = imageMessages(h.transport);
-  ack(h.transport, sent[2]); ack(h.transport, sent[1]); await tick();
-  assert.equal(h.session.state.frames, 0); assert.equal(imageMessages(h.transport).length, 3);
-  ack(h.transport, sent[0]); await until(() => imageMessages(h.transport).length === 4);
-  assert.equal(h.session.state.frames, 3);
-  assert.deepEqual(imageBody(imageMessages(h.transport)[3]), p.concat(new Uint8Array([6]), p.rle4(p.packGray4(new Uint8Array(640 * 480).fill(160), 640, 480))));
-  ack(h.transport, imageMessages(h.transport)[3]); await until(() => h.session.state.frames === 4);
+test('draw/present pairs pipeline and coalesce waiting frames', async t => {
+  const h=harness(t);await h.session.start(addresses);h.transport.hold=true;
+  const submit=async v=>{h.session.setFrame(new Uint8Array(640*480).fill(v));await h.session.pump();await tick();};
+  await submit(0);await submit(0);assert.equal(imageMessages(h.transport).length,2);
+  await submit(255);await until(()=>imageMessages(h.transport).length===3);
+  await submit(80);await submit(160);
+  const first=imageMessages(h.transport);ack(h.transport,first[2]);ack(h.transport,first[1]);await tick();
+  assert.equal(h.session.state.frames,0);assert.equal(imageMessages(h.transport).length,3);
+  ack(h.transport,first[0]);await until(()=>imageMessages(h.transport).length===6);
+  for(const message of imageMessages(h.transport).slice(3)) ack(h.transport,message);
+  await until(()=>h.session.state.frames===3);
+  const {applyDisplayPayload}=require('./helpers/display-payload.cjs');let screen=new Uint8Array(320*480);
+  for(const {message} of imageMessages(h.transport)) screen=applyDisplayPayload(screen,message.payload);
+  assert.deepEqual(screen,p.packGray4(new Uint8Array(640*480).fill(160),640,480));
+  assert.deepEqual(imageMessages(h.transport).map(s=>s.message.payload[0]),[26,28,26,28,26,28]);
 });
 
 test('NACK replays the unresolved window with fresh IDs and reset compression; stale ACKs are ignored', async t => {
@@ -459,6 +462,8 @@ test('NACK replays the unresolved window with fresh IDs and reset compression; s
   for (const sent of old) ack(h.transport, sent);
   await tick(); assert.equal(h.session.state.frames, 0);
   replay.forEach((sent, i) => { assert.notEqual(sent.message.magic, old[i].message.magic); assert.ok(sent.message.flags & 8); assert.deepEqual(sent.message.payload, old[i].message.payload); ack(h.transport, sent); });
+  await until(() => imageMessages(h.transport).length === 9);
+  imageMessages(h.transport).slice(6).forEach(sent=>ack(h.transport,sent));
   await until(() => h.session.state.frames === 3);
 });
 
@@ -470,10 +475,10 @@ test('timeout starts after writes; missing ACK retries are bounded and invalidat
   h.session.setFrame(new Uint8Array(640 * 480)); await h.session.pump();
   await new Promise(resolve => setTimeout(resolve, 550));
   assert.equal(h.session.state.phase, 'connected'); assert.equal(imageMessages(h.transport).length, 0);
-  release(); await until(() => imageMessages(h.transport).length === 1); await tick();
+  release(); await until(() => imageMessages(h.transport).length === 2); await tick();
   for (let i = 1; i <= 4; i++) {
     h.session.cfwPending.forEach(p => p.deadline = 1); h.session.recoverCfw();
-    if (i < 4) await until(() => imageMessages(h.transport).length === i + 1);
+    if (i < 4) await until(() => imageMessages(h.transport).length === 2 * (i + 1));
   }
   assert.equal(h.session.state.phase, 'retrying'); assert.match(h.session.state.status, /retry limit/);
   assert.equal(h.session.lastEnqueued, null); assert.equal(h.session.cfwPending.length, 0);
@@ -509,55 +514,30 @@ test('full display window still services input and microphone control', async t 
   assert.deepEqual(audio, ['010203']); assert.equal(h.session.displayInFlight, 3);
 });
 
-test('pipelined bounding boxes reconstruct moving and erased content against the last queued frame', async t => {
-  const { applyDisplayPayload } = require('./helpers/display-payload.cjs');
-  const h = harness(t); await h.session.start(addresses); h.transport.hold = true;
-  const base = new Uint8Array(640 * 480), a = base.slice(), b = base.slice();
-  a[11 * 640 + 13] = 255; b[11 * 640 + 101] = 160;
-  const frames = [base, a, b];
-  for (let i = 0; i < frames.length; i++) {
-    h.session.setFrame(frames[i]); await h.session.pump();
-    await until(() => imageMessages(h.transport).length === i + 1);
+test('draw updates reconstruct moving and erased pixels while present gates frame completion', async t => {
+  const {applyDisplayPayload}=require('./helpers/display-payload.cjs');
+  const h=harness(t);await h.session.start(addresses);h.transport.hold=true;
+  const base=new Uint8Array(640*480),a=base.slice(),b=base.slice();a[11*640+13]=255;b[11*640+101]=160;
+  let screen=new Uint8Array(320*480);
+  for(const [i,frame] of [base,a,b,base].entries()) {
+    h.session.setFrame(frame);await h.session.pump();await until(()=>imageMessages(h.transport).length===(i+1)*2);
+    const [draw,present]=imageMessages(h.transport).slice(i*2);
+    assert.equal(draw.message.payload[0],26);assert.equal(present.message.payload[0],28);
+    screen=applyDisplayPayload(screen,draw.message.payload);assert.deepEqual(screen,p.packGray4(frame,640,480));
+    ack(h.transport,draw);await tick();assert.equal(h.session.state.frames,i);
+    ack(h.transport,present);await until(()=>h.session.state.frames===i+1);
   }
-  const messages = imageMessages(h.transport), payloads = messages.map(m => imageBody(m));
-  assert.deepEqual(payloads.map(b => b[0]), [6, 3, 3]);
-  assert.deepEqual(payloads.slice(1).map(b => b[5] | (b[6] << 8)), [1, 2]);
-  assert.equal(h.session.state.frames, 0); // All three updates precede any ACK.
-  let shadow = new Uint8Array(320 * 480);
-  for (let i = 0; i < payloads.length; i++) {
-    shadow = applyDisplayPayload(shadow, payloads[i]);
-    assert.deepEqual(shadow, p.packGray4(frames[i], 640, 480));
-  }
-  // A late ACK for the old full frame must not replace the delta comparison base.
-  ack(h.transport, messages[0]); await until(() => h.session.state.frames === 1);
-  h.session.setFrame(base); await h.session.pump();
-  await until(() => imageMessages(h.transport).length === 4);
-  const clear = imageBody(imageMessages(h.transport)[3]);
-  assert.equal(clear[0], 3); assert.equal(clear[1], 25); // Only B's dot needs clearing.
-  assert.deepEqual(applyDisplayPayload(shadow, clear), p.packGray4(base, 640, 480));
-  for (const message of imageMessages(h.transport).slice(1)) ack(h.transport, message);
-  await until(() => h.session.state.frames === 4);
+  assert.equal(imageMessages(h.transport)[2].message.payload[7],0); // compact bbox
 });
 
-test('delta ids skip reserved values and advance only on emitted deltas; reconnect reseeds with a full frame', async t => {
-  const h = harness(t); await h.session.start(addresses);
-  const submit = async gray => {
-    const before = h.session.state.frames; h.session.setFrame(gray);
-    await until(() => h.session.state.frames === before + 1);
-    return imageBody(imageMessages(h.transport).at(-1));
-  };
-  const base = new Uint8Array(640 * 480), next = base.slice(); next[1234] = 255;
-  assert.equal((await submit(base))[0], 6);
-  h.session.nextImageFrameId = 0xfffe;
-  const delta = await submit(next); assert.equal(delta[5] | (delta[6] << 8), 0xfffe);
-  h.session.setFrame(next); await h.session.pump(); await tick();
-  assert.equal(h.session.nextImageFrameId, 1);
-  const full = await submit(new Uint8Array(640 * 480).fill(255)); assert.equal(full[0], 6);
-  assert.equal(h.session.nextImageFrameId, 1);
-  const clear = await submit(next); assert.equal(clear[0], 6); // Whole-screen bounding box.
-  const wrapped = await submit(base); assert.equal(wrapped[5] | (wrapped[6] << 8), 1);
-  await h.session.stop(); await h.session.start(addresses);
-  assert.equal((await submit(base))[0], 6); // Even the same pixels need a trusted full base.
+test('reconnect reseeds the screen and unified draw calls carry no legacy frame id', async t => {
+  const h=harness(t);await h.session.start(addresses);
+  const submit=async gray=>{const before=h.session.state.frames;h.session.setFrame(gray);await until(()=>h.session.state.frames===before+1);return imageBody(imageMessages(h.transport).at(-2));};
+  const base=new Uint8Array(640*480),next=base.slice();next[1234]=255;
+  assert.equal((await submit(base))[7],1); // wide full-screen bounds
+  const delta=await submit(next);assert.equal(delta[7],0); // compact bbox, immediately followed by RLE
+  const count=imageMessages(h.transport).length;h.session.setFrame(next);await h.session.pump();await tick();assert.equal(imageMessages(h.transport).length,count);
+  await h.session.stop();await h.session.start(addresses);assert.equal((await submit(next))[7],1);
 });
 
 const compassMessages = transport => transport.sent.filter(s => s.message.sid === p.SID.cfw && s.message.payload[0] === 10);

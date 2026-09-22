@@ -202,6 +202,8 @@ class SurfaceCompositor {
 
     /** One composited full-screen frame plus the metadata the pipeline needs. */
     class Composite {
+        @JvmField var screenGray: ByteArray
+        @JvmField var shellScene: ShellScene = ShellScene.EMPTY
         /** Full-screen 8bpp grayscale pixels, screenWidth*screenHeight bytes. */
         @JvmField val gray: ByteArray
 
@@ -233,12 +235,19 @@ class SurfaceCompositor {
             draws: Array<ScreenDraw>?,
         ) {
             this.gray = gray
+            this.screenGray = gray
             this.width = width
             this.height = height
             this.fingerprint = fingerprint
             this.seq = seq
             this.draws = (if ((draws == null)) NO_DRAWS else draws)
         }
+    }
+
+    private var shellScene: ShellScene? = null
+    fun setShellScene(reader: ByteReader) {
+        val scene = ShellScene.decode(reader)
+        lock.withLock { shellScene = scene }
     }
 
     private class Surface {
@@ -372,6 +381,7 @@ class SurfaceCompositor {
 
     /** The dim factor (256 = none) that applies to a surface. */
     private fun dimForLocked(surface: Surface): Int {
+        if (shellScene != null) return 256
         return (if ((surface.zOrder < underlayDimBelowZOrder)) underlayDim else 256)
     }
 
@@ -560,8 +570,10 @@ class SurfaceCompositor {
             if (((screenWidth <= 0) || (screenHeight <= 0))) {
                 return null
             }
-            var gray: ByteArray = buildGrayLocked()
-            return Composite(gray, screenWidth, screenHeight, "preview", 0, NO_DRAWS)
+            val seq = nextCompositeSeq
+            val result = compositeLocked()
+            nextCompositeSeq = seq
+            return result
         }
     }
 
@@ -598,7 +610,7 @@ class SurfaceCompositor {
         fingerprint.append(screenWidth).append('x').append(screenHeight)
         var draws: MutableList<ScreenDraw> = ArrayList()
         for (surface in ordered) {
-            if (!surface.visible) {
+            if (!surface.visible || (shellScene != null && surface.id == "shell")) {
                 continue
             }
             blendLocked(gray, surface)
@@ -644,14 +656,10 @@ class SurfaceCompositor {
                 fingerprint.append(":dim").append(dim)
             }
         }
-        return Composite(
-            gray,
-            screenWidth,
-            screenHeight,
-            fingerprint.toString(),
-            nextCompositeSeq++,
-            draws.toTypedArray(),
-        )
+        val scene = if (surfaces.values.any { it.visible && it.zOrder > 1 }) ShellScene.EMPTY else shellScene ?: ShellScene.EMPTY
+        val preview = if (shellScene != null) scene.preview(gray, screenWidth, screenHeight) else gray
+        return Composite(preview, screenWidth, screenHeight, fingerprint.append("|shell:").append(scene.fingerprint).toString(),
+            nextCompositeSeq++, draws.toTypedArray()).also { it.screenGray = gray; it.shellScene = scene }
     }
 
     private fun blendLocked(gray: ByteArray, surface: Surface): Unit {

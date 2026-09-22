@@ -64,7 +64,7 @@ class ResourceCacheTest {
 
     @Test fun lruEvictsByBytesAndProtectsAllCurrentFrameHits() {
         val cache = ResourceCacheState()
-        val a = resource(65536, 1); val b = resource(65536, 2); val c = resource(65536, 3); val d = resource(65536, 4)
+        val a = resource(60000, 1); val b = resource(60000, 2); val c = resource(60000, 3); val d = resource(60000, 4)
         assertContentEquals(intArrayOf(0, 1, 2), cache.prepare(listOf(a, b, c)))
         cache.drainCommands(3600)
         cache.prepare(listOf(a)); cache.drainCommands(3600) // b is oldest now.
@@ -142,12 +142,12 @@ class ResourceCacheTest {
     @Test fun fontTablesUseRelativeU16OffsetsAndGrowOnDemand() {
         val id = registerFont("resource-font-relative", listOf(65, 66))
         val first = FontResourceAtlas.get(id, setOf(65))
-        assertEquals(192, u16(first.resource.bytes, (65 - 32) * 2))
-        assertEquals(0, u16(first.resource.bytes, (66 - 32) * 2))
+        assertEquals(193, u16(first.resource.bytes, 1 + (65 - 32) * 2))
+        assertEquals(0, u16(first.resource.bytes, 1 + (66 - 32) * 2))
         assertSame(first, FontResourceAtlas.get(id, setOf(65)))
         val second = FontResourceAtlas.get(id, setOf(66))
         assertTrue(second.encodings.containsAll(setOf(65, 66)))
-        assertEquals(192 + GlyphAtlas.get(id, 65)!!.cachedBytes.size, u16(second.resource.bytes, (66 - 32) * 2))
+        assertEquals(193 + GlyphAtlas.get(id, 65)!!.cachedBytes.size, u16(second.resource.bytes, 1 + (66 - 32) * 2))
         val cache = ResourceCacheState()
         cache.prepare(listOf(second.resource)); val commands = cache.drainCommands(3600)
         assertContentEquals(second.resource.bytes, uploaded(commands).getValue(0))
@@ -160,7 +160,7 @@ class ResourceCacheTest {
         val b = FontResourceAtlas.get(id, setOf(66))
         assertEquals(setOf(66), b.encodings)
         assertTrue(b.resource.bytes.size <= 65536)
-        assertEquals(0, u16(b.resource.bytes, (65 - 32) * 2))
-        assertEquals(192, u16(b.resource.bytes, (66 - 32) * 2))
+        assertEquals(0, u16(b.resource.bytes, 1 + (65 - 32) * 2))
+        assertEquals(193, u16(b.resource.bytes, 1 + (66 - 32) * 2))
     }
 }

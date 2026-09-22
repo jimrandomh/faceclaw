@@ -1,3 +1,4 @@
+import { drawMessages } from './draw-protocol'
 import { setBrightness } from './brightness-protocol'
 import { AncsClient, ANCS_FIRMWARE_VERSION } from './ancs-client'
 import { type CompassEvent } from '../native/compass-types'
@@ -254,7 +255,7 @@ export class GlassesSession {
     return Promise.all(['right', 'left'].map(role => this.send(role, protocol.SID.settings, 0x20, protocol.framebufferLease(acquire))))
   }
   private requestCfw(role: string, payload: Uint8Array): Promise<void> {
-    if (payload.length > CFW_MAX_MESSAGE) return Promise.reject(new Error('CFW message too large'))
+    if (payload.length > CFW_MAX_MESSAGE - 16) return Promise.reject(new Error('CFW message too large'))
     return new Promise((resolve, reject) => {
       const item: CfwPending = { role, payload, checksum: protocol.crc16(payload), magic: this.nextMagic(), ackLenses: 0, retries: 0,
         retryPending: false, deadline: 0, resolve, reject }
@@ -508,7 +509,7 @@ export class GlassesSession {
         const textureFrame = this.latestTextures; this.latestTextures = null
         // Compare with the last enqueued image, not the last ACKed one. In an
         // A -> B -> A sequence, B may still be in flight when A is requested.
-        if (this.lastEnqueued && packed.every((value, i) => value === this.lastEnqueued![i])) continue
+        if (!textureFrame && this.lastEnqueued && packed.every((value, i) => value === this.lastEnqueued![i])) continue
         const texturePlan = textureFrame ? this.textures?.plan(this.lastEnqueued, packed, textureFrame, this.nextImageFrameId) : null
         let commands: Uint8Array[]
         if (texturePlan) {
@@ -521,9 +522,10 @@ export class GlassesSession {
           const delta = buildBoundingBoxPayload(this.lastEnqueued, packed, 640, 480, this.nextImageFrameId)
           const payload = delta ?? protocol.concat(new Uint8Array([6]), protocol.rle4(packed))
           if (delta) this.nextImageFrameId = this.nextImageFrameId >= 0xfffe ? 1 : this.nextImageFrameId + 1
-          commands = payload.length <= CFW_MAX_MESSAGE ? [payload] : buildFullFrameBands(packed, 640, 480, this.nextImageFrameId)
-          if (payload.length > CFW_MAX_MESSAGE) for (const _ of commands)
+          commands = payload.length <= CFW_MAX_MESSAGE - 16 ? [payload] : buildFullFrameBands(packed, 640, 480, this.nextImageFrameId)
+          if (payload.length > CFW_MAX_MESSAGE - 16) for (const _ of commands)
             this.nextImageFrameId = this.nextImageFrameId >= 0xfffe ? 1 : this.nextImageFrameId + 1
+          commands = [...commands.flatMap(command => drawMessages(command)), new Uint8Array([28])]
           this.log(`Display ${delta ? 'bbox' : 'full'} (${commands.length} CFW commands)`)
         }
         this.displaySending = { packed, commands, offset: 0, pending: 0 }

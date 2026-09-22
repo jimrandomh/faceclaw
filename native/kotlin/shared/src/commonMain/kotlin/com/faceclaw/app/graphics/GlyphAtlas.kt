@@ -10,8 +10,8 @@ import kotlin.jvm.JvmStatic
  *
  * - as the ink mask for the "would this draw land correctly" check against the composited frame,
  * - to punch the ink pixels out of the baked delta rect it replaces,
- * - pre-encoded as the CFW cached-image bytes ([w][h][4bpp RLE]) uploaded via mode 12 and drawn via
- *   mode 14 with a top-color LUT. 1bpp (BDF) glyphs store ink at 15 so the LUT maps them to exactly
+ * - pre-encoded as the CFW cached-image bytes ([flags=RLE][w][h][4bpp RLE]) uploaded as resources and drawn via
+ *   the resource-text draw call with a top-color LUT. 1bpp (BDF) glyphs store ink at 15 so the LUT maps them to exactly
  *   the requested level; AA (TTF) glyphs store true coverage nibbles the LUT scales.
  *
  * Fonts are identified by a stable string key (the embedded font name), NOT a per-JS-context
@@ -232,7 +232,7 @@ class GlyphAtlas {
         /** AA coverage, width*inkHeight nibble values 0..15; null for 1bpp glyphs. */
         @JvmField val coverage: ByteArray?
 
-        /** CFW cached-image bytes: [w][cellHeight][RLE(w*cellHeight px)]. */
+        /** CFW cached-image bytes: [flags=RLE][w][cellHeight][RLE(w*cellHeight px)]. */
         @JvmField val cachedBytes: ByteArray
 
         constructor(
@@ -280,16 +280,17 @@ class GlyphAtlas {
         }
 
         /**
-         * The firmware cached-image encoding: [width][height][RLE tokens] covering exactly
+         * The firmware cached-image encoding: [flags=RLE][width][height][RLE tokens] covering exactly
          * width*cellHeight pixels (no row padding), each pixel's stored color being its nibbleAt
          * value.
          */
         private fun encodeCachedImage(): ByteArray {
             var total: Int = (width * cellHeight)
-            var out: ByteArray = ByteArray((2 + total))
-            out[0] = (width).toByte()
-            out[1] = (cellHeight).toByte()
-            var o: Int = 2
+            var out: ByteArray = ByteArray((3 + total))
+            out[0] = DrawProtocol.RLE.toByte()
+            out[1] = (width).toByte()
+            out[2] = (cellHeight).toByte()
+            var o: Int = 3
             var i: Int = 0
             while ((i < total)) {
                 var color: Int = nibbleAt((i % width), (i / width))

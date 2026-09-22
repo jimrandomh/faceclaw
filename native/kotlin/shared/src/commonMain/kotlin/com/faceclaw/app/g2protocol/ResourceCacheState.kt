@@ -1,14 +1,16 @@
 package com.faceclaw.app
 
+import kotlin.jvm.JvmOverloads
+
 /** Immutable content-addressed bytes; equality verifies bytes when hashes collide. */
-class CachedResource(bytes: ByteArray) {
+class CachedResource @JvmOverloads constructor(bytes: ByteArray, val owner: String? = null) {
     val bytes: ByteArray = bytes.copyOf()
     val hash: Long = this.bytes.fold(-3750763034362895579L) { hash, byte ->
         (hash xor (byte.toLong() and 255)) * 1099511628211L
     }
-    override fun hashCode(): Int = (hash xor (hash ushr 32)).toInt()
+    override fun hashCode(): Int = owner?.hashCode() ?: (hash xor (hash ushr 32)).toInt()
     override fun equals(other: Any?): Boolean = this === other ||
-        other is CachedResource && hash == other.hash && bytes.contentEquals(other.bytes)
+        other is CachedResource && owner == other.owner && hash == other.hash && bytes.contentEquals(other.bytes)
 }
 
 /**
@@ -18,7 +20,7 @@ class CachedResource(bytes: ByteArray) {
  */
 class ResourceCacheState {
     companion object {
-        const val CACHE_SIZE = 262144
+        const val CACHE_SIZE = 196608
         const val RESOURCE_COUNT = 512
         const val TABLE_BYTES = RESOURCE_COUNT * 4
         const val ARENA_BYTES = CACHE_SIZE - TABLE_BYTES
@@ -32,6 +34,10 @@ class ResourceCacheState {
     private data class Resident(val id: Int, val resource: CachedResource, var lastUsed: Long)
     private val residents = LinkedHashMap<CachedResource, Resident>()
     private val occupied = BooleanArray(RESOURCE_COUNT)
+    var generation = 0
+        private set
+    private var pinned = emptySet<CachedResource>()
+    fun pin(resources: Collection<CachedResource>) { pinned = resources.toSet() }
     private var allocated = 0
     private var clock = 0L
     private var resetRequired = true
@@ -40,6 +46,8 @@ class ResourceCacheState {
 
     /** Forget uncertain device state. The next upload first evicts every ID on both lenses. */
     fun reset() {
+        generation++
+        pinned = emptySet()
         residents.clear(); occupied.fill(false); allocated = 0; clock = 0
         evictions.clear(); uploads.clear(); resetRequired = true
     }
@@ -52,6 +60,7 @@ class ResourceCacheState {
     fun prepare(resources: List<CachedResource>): IntArray {
         check(uploads.isEmpty() && evictions.isEmpty()) { "Previous resource commands have not been drained" }
         val protected = HashSet<Int>()
+        for (resource in pinned) residents[resource]?.let { protected.add(it.id) }
         for (resource in resources) residents[resource]?.let { protected.add(it.id) }
         return IntArray(resources.size) { index ->
             val resource = resources[index]
@@ -126,6 +135,11 @@ class ResourceCacheState {
         }
         for (entry in uploads) {
             val data = entry.resource.bytes
+            if (entry.resource.owner != null) {
+                flush()
+                result.add(byteArrayOf(DrawProtocol.CREATE.toByte(), 1, 0) + DrawProtocol.word(entry.id) + data.copyOfRange(1, 5))
+                continue
+            }
             var offset = 0
             while (offset < data.size) {
                 val count = minOf(data.size - offset, maxPayloadBytes - 13)

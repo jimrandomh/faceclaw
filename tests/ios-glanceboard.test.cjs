@@ -48,7 +48,7 @@ function fixture() {
     isScreenOn: () => screenOn, getWindows: () => [window], foregroundWindow: () => window,
     setBatteryLevels() {}, underlayDim: () => 1, getFocus: () => 'app', hasOverlay: () => false,
     describeInputTarget: () => 'test app',
-    paintSurface: () => [{ image: new images.GrayImage(640, 480, 0), x: 0, y: 0 }],
+    paintScene: () => new Uint8Array([0, 0]), paintSurface: () => [{ image: new images.GrayImage(640, 480, 0), x: 0, y: 0 }],
     receiveInput: async input => {
       received.push(input);
       if (input.type === 'display-wake' || !screenOn && input.type === 'double-click') shell.wake();
@@ -179,17 +179,17 @@ test('double-tap and other shell wakes replace Glanceboard without waking it aga
   const f = fixture(); await f.controller.connect(); f.shell.sleep();
   await f.hardware(9); await f.hardware(3);
   assert.equal(f.shell.isScreenOn(), true); assert.equal(f.controller.glance.isVisible(), false);
-  assert.equal(f.sent.at(-1)[0], 75); assert.equal(f.boardStats.stops, 1);
+  assert.equal(f.sent.at(-1)[0], 80); assert.equal(f.boardStats.stops, 1);
   f.shell.sleep(); await f.hardware(0); f.shell.wake(); await f.render();
-  assert.equal(f.controller.glance.isVisible(), false); assert.equal(f.sent.at(-1)[0], 75);
-  await f.advance(5000); await f.render(); assert.equal(f.sent.at(-1)[0], 75);
+  assert.equal(f.controller.glance.isVisible(), false); assert.equal(f.sent.at(-1)[0], 80);
+  await f.advance(5000); await f.render(); assert.equal(f.sent.at(-1)[0], 80);
 });
 
 test('head tilt uses Glanceboard when enabled and otherwise wakes the regular UI', async () => {
   const f = fixture(); await f.controller.connect(); f.shell.sleep();
   await f.hardware(12, 1); assertBoard(f.sent.at(-1)); assert.equal(f.shell.isScreenOn(), false);
   await f.hardware(3); f.shell.sleep(); f.settings.tilt = false;
-  await f.hardware(12, 1); assert.equal(f.shell.isScreenOn(), true); assert.equal(f.sent.at(-1)[0], 75);
+  await f.hardware(12, 1); assert.equal(f.shell.isScreenOn(), true); assert.equal(f.sent.at(-1)[0], 80);
 });
 
 test('disabled triggers and scrolls do not show the board; awake taps still reach the shell', async () => {
@@ -234,7 +234,7 @@ test('iOS lock hides apps and Glanceboard, blocks input, and stays locked when p
   await f.hardware(12, 1); assert.ok(f.sent.at(-1).every(p => p === 123));
   f.observers.get('unlock')(); await f.render();
   assert.equal(f.controller.glassesLocked, false);
-  assert.equal(f.sent.at(-1)[0], 75);
+  assert.equal(f.sent.at(-1)[0], 80);
   await f.hardware(0); assert.equal(f.received.length, 1);
 });
 

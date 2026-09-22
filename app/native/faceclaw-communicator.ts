@@ -541,6 +541,11 @@ export class FaceclawCommunicatorBridge {
    * next composite. How a shell overlay's Layer.dimUnderneath reaches the
    * window surfaces beneath the shell surface.
    */
+  async submitShellScene(bytes: Uint8Array, paintMs = 0, frameId = 0): Promise<void> {
+    const snapshot = new Uint8Array(bytes);
+    await this.enqueueJavaCall(() => this.communicator.submitShellScene(snapshot.buffer, paintMs, frameId), true);
+  }
+
   async setUnderlayDim(belowZOrder: number, factor: number): Promise<void> {
     await this.enqueueJavaCall(() => {
       this.communicator.setUnderlayDim(Math.round(belowZOrder), dimFactor256(factor));

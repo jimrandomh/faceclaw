@@ -230,6 +230,8 @@ class IosSurfaceCompositor(width: Int, height: Int) {
 
     fun blank(blanked: Boolean) = compositor.setBlanked(blanked)
 
+    fun shell(data: NSData) = compositor.setShellScene(IosByteReader(data))
+
     fun submit(id: String, data: NSData, x: Int, y: Int, width: Int, height: Int) =
         submitDraws(id, data, x, y, width, height, null)
 

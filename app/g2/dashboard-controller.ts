@@ -2467,7 +2467,7 @@ class DashboardController {
     beginRenderPass(!wantFreshData);
     const paintStartedAtMs = Date.now();
     const planes = frameTimings.span(frameId, "paint", () =>
-      frameTimings.runWithFrame(frameId, () => shell.paintSurface()),
+      frameTimings.runWithFrame(frameId, () => shell.paintScene()),
     );
     const paintMs = Date.now() - paintStartedAtMs;
     const paintUsedStaleData = endRenderPass();
@@ -2484,32 +2484,7 @@ class DashboardController {
       frameTimings.finishFrame(frameId, "discarded: shell render with no display target");
       return;
     }
-    // A shell overlay that dims what it covers (a context menu) must dim the
-    // window surfaces too, which live below the shell surface in the
-    // compositor: forward the factor before this frame composites.
-    const underlayDim = shell.underlayDim();
-    if (underlayDim !== this.appliedUnderlayDim) {
-      this.appliedUnderlayDim = underlayDim;
-      await display.setUnderlayDim(SHELL_SURFACE_Z_ORDER, underlayDim);
-    }
-    const fingerprint = frameTimings.span(frameId, "fingerprint", () => planesFingerprint(planes));
-    const { image, draws } = frameTimings.span(frameId, "flatten", () => flattenPlanesWithDraws(planes));
-    const buffer = frameTimings.span(frameId, "to8bpp", () => image.to8bppBuffer());
-    const preparedDraws = frameTimings.span(frameId, "prepareFrameDraws", () => prepareFrameDraws(draws));
-    // Spanned because the bridge serializes Java calls: a frame can sit here
-    // behind another surface's submission, which is otherwise an unexplained
-    // jump between the paint spans and the composite.
-    await frameTimings.spanAsync(frameId, "submit", () =>
-      display.submitSurfaceFrame(
-        SHELL_SURFACE_ID,
-        buffer,
-        { x: 0, y: 0, width: image.width, height: image.height },
-        fingerprint,
-        paintMs,
-        frameId,
-        preparedDraws,
-      ),
-    );
+    await frameTimings.spanAsync(frameId, "submit", () => display.submitShellScene(planes, paintMs, frameId));
     // Backpressure: the next shell render waits for this one to reach the
     // glasses. Timing out here means the loop was blocked for the full timeout
     // and any input arriving meanwhile had its chrome repaint delayed, so say

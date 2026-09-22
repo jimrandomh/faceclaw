@@ -1,0 +1,41 @@
+package com.faceclaw.app
+
+/** Immutable shell snapshot. Keys identify writable surfaces across repaints, not their pixels. */
+class ShellScene(val layers: List<Layer>) {
+    class Layer(val key: Int, val x: Int, val y: Int, val width: Int, val height: Int, val dim: Int, val packed: ByteArray)
+    val fingerprint: String = layers.joinToString(";") { "${it.key},${it.x},${it.y},${it.width},${it.height},${it.dim},${CachedResource(it.packed).hash}" }
+    fun preview(screenGray: ByteArray, width: Int, height: Int): ByteArray {
+        val screen = BmpUtil.pack4bppFromGray8(screenGray, width, height)
+        val output = ByteArray(screen.size); val resources = HashMap<Int, ByteArray>(); val calls = ArrayList<ByteArray>()
+        for ((id, layer) in layers.withIndex()) {
+            if (layer.dim < 256) calls.add(DrawProtocol.lut(width, height, layer.dim))
+            resources[id] = DrawProtocol.rawImage(layer.width, layer.height, layer.packed)
+            calls.add(DrawProtocol.image(id, layer.x, layer.y))
+        }
+        resources[511] = DrawProtocol.displayList(calls)
+        DisplayListRenderer(resources).render(511, DisplayListRenderer.Target(screen, width, height), DisplayListRenderer.Target(output, width, height))
+        val target = DisplayListRenderer.Target(output, width, height)
+        return ByteArray(width * height) { (target.get(it % width, it / width) * 16).toByte() }
+    }
+    companion object {
+        val EMPTY = ShellScene(emptyList())
+        fun decode(reader: ByteReader): ShellScene {
+            val count = reader.getShort().toInt() and 65535; require(count <= 64)
+            val layers = ArrayList<Layer>()
+            repeat(count) {
+                require(reader.remaining() >= 14)
+                val key = reader.getShort().toInt() and 65535
+                val x = reader.getShort().toInt(); val y = reader.getShort().toInt()
+                val w = reader.getShort().toInt() and 65535; val h = reader.getShort().toInt() and 65535
+                val dim = reader.getShort().toInt() and 65535
+                val reserved = reader.getShort().toInt(); require(reserved == 0 && dim <= 256)
+                require(w in 1..640 && h in 1..480 && 5 + (w + 1) / 2 * h <= 65536 && reader.remaining() >= w * h)
+                val gray = ByteArray(w * h); reader.get(gray)
+                layers.add(Layer(key, x, y, w, h, dim, BmpUtil.pack4bppFromGray8(gray, w, h)))
+            }
+            require(reader.remaining() == 0)
+            require(layers.map { it.key }.toSet().size == layers.size)
+            return ShellScene(layers)
+        }
+    }
+}

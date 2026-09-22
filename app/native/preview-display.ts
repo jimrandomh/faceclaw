@@ -22,6 +22,7 @@ export type DisplayTarget = Pick<
   | "setUnderlayDim"
   | "setScreenBlanked"
   | "submitSurfaceFrame"
+  | "submitShellScene"
   | "waitForFrameFinished"
   | "getCompositePreview"
   | "saveScreenshot"
@@ -95,6 +96,10 @@ export class PreviewDisplayTarget implements DisplayTarget {
 
   async setSurfaceVisible(id: string, visible: boolean): Promise<void> {
     this.compositor.setSurfaceVisible(id, Boolean(visible));
+  }
+
+  async submitShellScene(bytes: Uint8Array, paintMs = 0, frameId = 0): Promise<void> {
+    this.compositor.submitShellScene(new Uint8Array(bytes).buffer, paintMs, frameId);
   }
 
   async setUnderlayDim(belowZOrder: number, factor: number): Promise<void> {
