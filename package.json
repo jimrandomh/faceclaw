@@ -5,6 +5,7 @@
   "private": false,
   "scripts": {
     "input": "node scripts/faceclaw-input.cjs",
+    "profile:android": "node scripts/profile-android.cjs",
     "native:android": "node scripts/kotlin-build.cjs android",
     "native:ios": "node scripts/kotlin-build.cjs ios",
     "test:kotlin": "bash scripts/test-kotlin.sh",
