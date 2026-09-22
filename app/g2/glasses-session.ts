@@ -1,3 +1,4 @@
+import { CFW_MSG_CLEANUP, CFW_MSG_COMPASS, CFW_MSG_EVICT_RESOURCE, CFW_MSG_FULL_FRAME, CFW_MSG_PRESENT } from "./cfw-message-type";
 import { drawMessages } from './draw-protocol'
 import { setBrightness } from './brightness-protocol'
 import { AncsClient, ANCS_FIRMWARE_VERSION } from './ancs-client'
@@ -481,7 +482,7 @@ export class GlassesSession {
       const enabled = !this.compassStopping && this.compassWanted
       if (this.compassSent === enabled) return
       // Same CFW mode 10, 100 ms report interval and zero minimum change as Android.
-      await this.requestCfw('left', new Uint8Array(enabled ? [10, 2, 100, 0, 0, 0] : [10, 0]))
+      await this.requestCfw('left', new Uint8Array(enabled ? [CFW_MSG_COMPASS, 2, 100, 0, 0, 0] : [CFW_MSG_COMPASS, 0]))
       if (generation === this.generation) this.compassSent = enabled
     }).catch(error => { if (generation === this.generation) this.fail(error, true) })
     this.compassWork = work
@@ -497,7 +498,7 @@ export class GlassesSession {
     this.timer = setTimeout(() => { this.timer = null; void this.pump() }, delay)
   }
   private canSendDisplay(): boolean {
-    if (this.displaySending?.commands[this.displaySending.offset][0] === 22 && this.cfwPending.length) return false
+    if (this.displaySending?.commands[this.displaySending.offset][0] === CFW_MSG_EVICT_RESOURCE && this.cfwPending.length) return false
     // Also bound completed frames retained behind a missing/out-of-order ACK.
     return this.displayInFlight < DISPLAY_WINDOW_SIZE && !!(this.displaySending ||
       (this.latest && !this.charging && this.displayFrames.length < DISPLAY_WINDOW_SIZE))
@@ -520,12 +521,12 @@ export class GlassesSession {
           this.log(`Display textures (${texturePlan.resourceCommands.length} resource commands, cache=${texturePlan.usedBytes}B)`)
         } else {
           const delta = buildBoundingBoxPayload(this.lastEnqueued, packed, 640, 480, this.nextImageFrameId)
-          const payload = delta ?? protocol.concat(new Uint8Array([6]), protocol.rle4(packed))
+          const payload = delta ?? protocol.concat(new Uint8Array([CFW_MSG_FULL_FRAME]), protocol.rle4(packed))
           if (delta) this.nextImageFrameId = this.nextImageFrameId >= 0xfffe ? 1 : this.nextImageFrameId + 1
           commands = payload.length <= CFW_MAX_MESSAGE - 16 ? [payload] : buildFullFrameBands(packed, 640, 480, this.nextImageFrameId)
           if (payload.length > CFW_MAX_MESSAGE - 16) for (const _ of commands)
             this.nextImageFrameId = this.nextImageFrameId >= 0xfffe ? 1 : this.nextImageFrameId + 1
-          commands = [...commands.flatMap(command => drawMessages(command)), new Uint8Array([28])]
+          commands = [...commands.flatMap(command => drawMessages(command)), new Uint8Array([CFW_MSG_PRESENT])]
           this.log(`Display ${delta ? 'bbox' : 'full'} (${commands.length} CFW commands)`)
         }
         this.displaySending = { packed, commands, offset: 0, pending: 0 }
@@ -533,7 +534,7 @@ export class GlassesSession {
       }
       const frame = this.displaySending
       // Drain earlier commands before evicting: recovery may replay any unresolved draw/upload.
-      if (frame.commands[frame.offset][0] === 22 && this.cfwPending.length) return
+      if (frame.commands[frame.offset][0] === CFW_MSG_EVICT_RESOURCE && this.cfwPending.length) return
       const payload = frame.commands[frame.offset++]
       frame.pending++; this.displayInFlight++
       if (frame.offset >= frame.commands.length) this.displaySending = null
@@ -634,7 +635,7 @@ export class GlassesSession {
     this.update('disconnecting', 'Disconnecting…'); this.reset()
     try {
       if (cleanup) {
-        await this.requestCfw('left', new Uint8Array([11]))
+        await this.requestCfw('left', new Uint8Array([CFW_MSG_CLEANUP]))
       }
     } catch (error) { this.log(`Disconnect cleanup: ${this.message(error)}`) }
     finally { this.reset(); this.closeLinks(); this.update('disconnected', 'Preview only') }

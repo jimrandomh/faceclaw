@@ -39,28 +39,28 @@ class DisplayListRenderer(private val resources: Map<Int, ByteArray>, private va
     }
     private fun image(b: ByteArray, start: Int = 0): Image {
         require(start in b.indices); val flags = b[start].toInt() and 255
-        require(flags and 12 == flags)
-        val header = if (flags and 4 != 0) 5 else 3
+        require(flags and CFW_RESOURCE_IMAGE_FLAGS_MASK == flags)
+        val header = if (flags and CFW_RESOURCE_FLAG_LARGE != 0) 5 else 3
         require(b.size - start >= header)
         val w = if (header == 5) word(b, start + 1) else b[start + 1].toInt() and 255
         val h = if (header == 5) word(b, start + 3) else b[start + 2].toInt() and 255
         require(w in 1..640 && h in 1..480)
-        val pixels = if (flags and 8 != 0) decodeRle(b, start + header, w * h, false)
+        val pixels = if (flags and CFW_RESOURCE_FLAG_RLE != 0) decodeRle(b, start + header, w * h, false)
             else { val t = Target(b, w, h, start + header); IntArray(w * h) { t.get(it % w, it / w) } }
         return Image(w, h, pixels)
     }
     private fun target(id: Int): Target {
-        val b = resource(id); require(b.isNotEmpty() && b[0].toInt() and 11 == 0)
+        val b = resource(id); require(b.isNotEmpty() && b[0].toInt() and (CFW_RESOURCE_TYPE_MASK or CFW_RESOURCE_FLAG_RLE) == 0)
         image(b) // Validate the complete raw image before exposing a write target.
-        return if (b[0].toInt() and 4 != 0) Target(b, word(b, 1), word(b, 3), 5)
+        return if (b[0].toInt() and CFW_RESOURCE_FLAG_LARGE != 0) Target(b, word(b, 1), word(b, 3), 5)
             else Target(b, b[1].toInt() and 255, b[2].toInt() and 255, 3)
     }
     private fun draw(image: Image, target: Target, x: Int, y: Int, options: Int, apply: Boolean) {
         if (!apply) return
         for (i in image.pixels.indices) {
-            val v = image.pixels[i]; if (v == 0 && options and 16 != 0) continue
-            val source = if (options and 32 != 0) 15 - v else v
-            target.put(x + i % image.width, y + i / image.width, source * (options and 15) / 15)
+            val v = image.pixels[i]; if (v == 0 && options and CFW_TEXTURE_OPT_TRANSPARENT != 0) continue
+            val source = if (options and CFW_TEXTURE_OPT_INVERSE != 0) 15 - v else v
+            target.put(x + i % image.width, y + i / image.width, source * (options and CFW_TEXTURE_OPT_BRIGHTNESS_MASK) / 15)
         }
     }
     private fun copyScreen(screen: Target, composition: Target) {
@@ -108,7 +108,7 @@ class DisplayListRenderer(private val resources: Map<Int, ByteArray>, private va
         return references
     }
     private fun executeList(id: Int, t: Target, screen: Target, apply: Boolean, stack: MutableList<Int>, budget: IntArray, refs: MutableSet<Int>) {
-        require(stack.size < 8 && id !in stack); val b = resource(id); require(b.size >= 3 && b[0].toInt() == 2)
+        require(stack.size < 8 && id !in stack); val b = resource(id); require(b.size >= 3 && b[0].toInt() == CFW_RESOURCE_TYPE_DISPLAY_LIST)
         refs.add(id); stack.add(id); executeSequence(b.copyOfRange(1, b.size), t, screen, apply, stack, budget, refs); stack.removeAt(stack.lastIndex)
     }
     private fun executeSequence(b: ByteArray, inherited: Target, screen: Target, apply: Boolean, stack: MutableList<Int>, budget: IntArray, refs: MutableSet<Int>) {
@@ -116,14 +116,14 @@ class DisplayListRenderer(private val resources: Map<Int, ByteArray>, private va
         repeat(count) {
             val n = word(b, pos); pos += 2; require(n >= 2 && n <= b.size - pos && budget[0]-- > 0)
             val call = b.copyOfRange(pos, pos + n); pos += n
-            val flags = call[1].toInt() and 255; require(flags <= 3)
+            val flags = call[1].toInt() and 255; require(flags and DRAW_FLAGS_MASK.inv() == 0)
             var t = inherited; var header = 2
-            if (flags and 1 != 0) { val id = word(call, 2); refs.add(id); t = target(id).shifted(inherited.shiftX); header += 2 }
-            if (flags and 2 != 0) { require(header < call.size); t = t.shifted(DrawProtocol.depthOffset(call[header++].toInt(), rightLens)) }
+            if (flags and DRAW_FLAG_RESOURCE_TARGET != 0) { val id = word(call, 2); refs.add(id); t = target(id).shifted(inherited.shiftX); header += 2 }
+            if (flags and DRAW_FLAG_DEPTH != 0) { require(header < call.size); t = t.shifted(DrawProtocol.depthOffset(call[header++].toInt(), rightLens)) }
             val p = call.copyOfRange(header, call.size)
             when (call[0].toInt()) {
-                1 -> {
-                    require(p.isNotEmpty() && p[0].toInt() in 0..1); val wide = p[0].toInt() == 1
+                DRAW_OP_BOUNDING_BOX -> {
+                    require(p.isNotEmpty() && (p[0].toInt() and 255) and DRAW_BBOX_FLAG_U16.inv() == 0); val wide = p[0].toInt() and DRAW_BBOX_FLAG_U16 != 0
                     require(p.size >= if (wide) 9 else 5)
                     val x = if (wide) word(p, 1) else (p[1].toInt() and 255) * 4
                     val y = if (wide) word(p, 3) else (p[2].toInt() and 255) * 2
@@ -133,7 +133,7 @@ class DisplayListRenderer(private val resources: Map<Int, ByteArray>, private va
                     val pixels = decodeRle(p, if (wide) 9 else 5, w * h, true)
                     if (apply) for (i in pixels.indices) t.put(x + i % w, y + i / w, pixels[i])
                 }
-                2 -> {
+                DRAW_OP_RECT_COPY -> {
                     require(p.size == 14); val id = word(p, 0)
                     val src = when(id) { DrawProtocol.SCREEN -> screen; DrawProtocol.CURRENT -> t; else -> { refs.add(id); target(id) } }
                     val x = word(p, 2); val y = word(p, 4); val w = word(p, 6); val h = word(p, 8)
@@ -142,7 +142,7 @@ class DisplayListRenderer(private val resources: Map<Int, ByteArray>, private va
                     if (apply) { val copy = IntArray(w * h) { src.get(x + it % w, y + it / w) }
                         for (i in copy.indices) t.put(dx + i % w, dy + i / w, copy[i]) }
                 }
-                3 -> {
+                DRAW_OP_STOCK_FONT_STRING -> {
                     require(p.size >= 6 && p.size == 6 + (p[5].toInt() and 255))
                     val text = p.copyOfRange(6, p.size).decodeToString(throwOnInvalidSequence = true)
                     val cps = ArrayList<Int>(); var i = 0
@@ -156,12 +156,12 @@ class DisplayListRenderer(private val resources: Map<Int, ByteArray>, private va
                         draw(image(g.image), t, x + g.x, y + g.y, p[4].toInt() and 255, apply); x += g.advance
                     }
                 }
-                4, 5 -> {
-                    val font = call[0].toInt() == 5; require(if(font) p.size >= 8 && p.size == 8 + (p[7].toInt() and 255) else p.size == 7)
+                DRAW_OP_IMAGE, DRAW_OP_TEXT -> {
+                    val font = call[0].toInt() == DRAW_OP_TEXT; require(if(font) p.size >= 8 && p.size == 8 + (p[7].toInt() and 255) else p.size == 7)
                     val id = word(p, 0); refs.add(id); val data = resource(id)
                     var x = signed(p, 2); val y = signed(p, 4); val options = p[6].toInt() and 255
                     if (!font) draw(image(data), t, x, y, options, apply)
-                    else { require(data.size >= 193 && data[0].toInt() == 1)
+                    else { require(data.size >= 193 && data[0].toInt() == CFW_RESOURCE_TYPE_FONT)
                         for (j in 8 until p.size) { val ch = p[j].toInt() and 255
                             if(ch in 1..31) { x += ch - 11; continue }; require(ch in 32..127)
                             val offset = word(data, 1 + (ch - 32) * 2); require(offset >= 193)
@@ -169,7 +169,7 @@ class DisplayListRenderer(private val resources: Map<Int, ByteArray>, private va
                         }
                     }
                 }
-                6 -> {
+                DRAW_OP_REMAP_COLORS -> {
                     require(p.size == 16); val x = word(p, 0); val y = word(p, 2); val w = word(p, 4); val h = word(p, 6)
                     require(w > 0 && h > 0 && x + w <= t.width && y + h <= t.height)
                     if (apply) for(yy in y until y + h) for(xx in x until x + w) {
@@ -177,20 +177,20 @@ class DisplayListRenderer(private val resources: Map<Int, ByteArray>, private va
                         val v = t.get(xx + t.shiftX, yy)
                         t.put(xx, yy, (p[8 + v / 2].toInt() ushr (if(v % 2 == 0) 4 else 0)) and 15) }
                 }
-                8 -> {
+                DRAW_OP_ROUNDED_RECT -> {
                     require(p.size == 12)
                     val x = signed(p, 0); val y = signed(p, 2); val w = word(p, 4); val h = word(p, 6)
                     val radius = word(p, 8); val fill = p[10].toInt() and 255; val border = p[11].toInt() and 255
-                    require(w in 1..640 && h in 1..480 && fill <= 15 && border <= 16)
+                    require(w in 1..640 && h in 1..480 && fill <= 15 && border <= DRAW_ROUNDED_RECT_NO_BORDER)
                     if (apply) for (yy in 0 until h) for (xx in 0 until w) {
                         if (!roundedContains(xx, yy, w, h, radius)) continue
                         val tx = x + xx + t.shiftX; val ty = y + yy
                         if (tx !in 0 until t.width || ty !in 0 until t.height) continue
                         val edge = !roundedContains(xx - 1, yy - 1, w - 2, h - 2, maxOf(0, radius - 1))
-                        t.put(x + xx, ty, if (edge && border < 16) border else maxOf(fill, t.get(tx, ty)))
+                        t.put(x + xx, ty, if (edge && border < DRAW_ROUNDED_RECT_NO_BORDER) border else maxOf(fill, t.get(tx, ty)))
                     }
                 }
-                7 -> { require(p.size == 2); executeList(word(p, 0), t, screen, apply, stack, budget, refs) }
+                DRAW_OP_DISPLAY_LIST -> { require(p.size == 2); executeList(word(p, 0), t, screen, apply, stack, budget, refs) }
                 else -> error("Unknown draw opcode")
             }
         }

@@ -779,7 +779,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         // would compress even a random payload if we reused it across the run.
         byte[] payload = new byte[benchmarkMessageSize];
         benchmarkRandom.nextBytes(payload);
-        payload[0] = 7;             // CFW diagnostic-control mode...
+        payload[0] = CfwMessageTypeKt.CFW_MSG_DIAGNOSTICS;             // CFW diagnostic-control mode...
         payload[1] = (byte) 0x7f;   // ...with an unused sub-op: acked, no effect
         OutboundMessage message = messageBuilder.imagePayload(
             "bandwidth",
@@ -859,7 +859,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     /** Request one CFW ambient-light report (image-handler mode 16 op 0). */
     public void queryAmbientLight() {
         synchronized (lock) {
-            enqueueAmbientLightControlLocked(new byte[] { (byte) 16, (byte) 0 }, "als query", false);
+            enqueueAmbientLightControlLocked(new byte[] { (byte) CfwMessageTypeKt.CFW_MSG_AMBIENT_LIGHT, (byte) 0 }, "als query", false);
         }
         interruptibleSleep.interrupt();
     }
@@ -877,7 +877,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                                        int heartbeatMs, boolean bindToLease) {
         byte[] payload = enable
             ? new byte[] {
-                (byte) 16,
+                (byte) CfwMessageTypeKt.CFW_MSG_AMBIENT_LIGHT,
                 (byte) 1,
                 (byte) (bindToLease ? 1 : 0),
                 (byte) (intervalMs & 0xff),
@@ -887,7 +887,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
                 (byte) (heartbeatMs & 0xff),
                 (byte) ((heartbeatMs >> 8) & 0xff),
             }
-            : new byte[] { (byte) 16, (byte) 2 };
+            : new byte[] { (byte) CfwMessageTypeKt.CFW_MSG_AMBIENT_LIGHT, (byte) 2 };
         synchronized (lock) {
             clearMessagesOfKindLocked("als-control");
             enqueueAmbientLightControlLocked(payload, "als polling " + (enable ? "start" : "stop"), true);
@@ -2887,7 +2887,7 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     private void enqueueFirmwareDebugFlagsLocked() {
         boolean show = firmwareDebugFlagsEnabled;
         int sub = show ? 2 : 1;
-        byte[] payload = new byte[] { (byte) 7, (byte) sub };
+        byte[] payload = new byte[] { (byte) CfwMessageTypeKt.CFW_MSG_DIAGNOSTICS, (byte) sub };
         OutboundMessage message = messageBuilder.imagePayload(
             DASHBOARD_TILE, nextMapSessionId(), payload,
             "fw-debug-flags " + (show ? "show" : "hide"),
@@ -2905,14 +2905,14 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
         int sentState = enable ? 1 : 0;
         byte[] payload = enable
             ? new byte[] {
-                (byte) 10,
+                (byte) CfwMessageTypeKt.CFW_MSG_COMPASS,
                 (byte) 2,
                 (byte) (COMPASS_REPORT_INTERVAL_MS & 0xff),
                 (byte) ((COMPASS_REPORT_INTERVAL_MS >> 8) & 0xff),
                 (byte) (COMPASS_MIN_CHANGE_DEGREES & 0xff),
                 (byte) ((COMPASS_MIN_CHANGE_DEGREES >> 8) & 0xff),
             }
-            : new byte[] { (byte) 10, (byte) 0 };
+            : new byte[] { (byte) CfwMessageTypeKt.CFW_MSG_COMPASS, (byte) 0 };
         OutboundMessage message = messageBuilder.imagePayload(
             "compass-control",
             DASHBOARD_TILE,

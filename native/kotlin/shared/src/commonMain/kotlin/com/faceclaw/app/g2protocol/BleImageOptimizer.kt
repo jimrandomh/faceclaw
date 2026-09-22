@@ -277,7 +277,7 @@ class BleImageOptimizer {
             }
             var compressed: ByteArray = rleEncode(region)
             var out: ByteArray = ByteArray((7 + compressed.size))
-            out[0] = 3
+            out[0] = CFW_MSG_BOUNDING_BOX.toByte()
             out[1] = ((left / 4)).toByte()
             out[2] = ((top / 2)).toByte()
             out[3] = ((boxWidth / 4)).toByte()
@@ -369,7 +369,7 @@ class BleImageOptimizer {
                 fid = (if ((fid >= 0xfffe)) 1 else (fid + 1))
             }
             var out: ByteArray = ByteArray(total)
-            out[0] = 8
+            out[0] = CFW_MSG_MULTI_SEGMENT.toByte()
             out[1] = (rects.size).toByte()
             var pos: Int = 2
             for (sub in subs) {
@@ -553,7 +553,7 @@ class BleImageOptimizer {
             }
             var z: ByteArray = rleEncode(packed)
             var out: ByteArray = ByteArray((z.size + 1))
-            out[0] = 6
+            out[0] = CFW_MSG_FULL_FRAME.toByte()
             z.copyInto(out, 1, 0, 0 + z.size)
             return out
         }

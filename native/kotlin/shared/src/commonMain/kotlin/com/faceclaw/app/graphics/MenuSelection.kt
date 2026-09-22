@@ -9,16 +9,16 @@ class MenuSelection(val x: Int, val y: Int, val width: Int, val height: Int, val
     fun calls(id: Int): List<ByteArray> {
         val image = when (kind) {
             3 -> listOf(DrawProtocol.roundedRect(x, y, width, height, radius, background, border, depth),
-                DrawProtocol.image(id, x, y, 31, depth = depth))
-            4 -> listOf(DrawProtocol.image(id, x, y, 31, depth = depth))
+                DrawProtocol.image(id, x, y, CFW_TEXTURE_OPT_BRIGHTNESS_MASK or CFW_TEXTURE_OPT_TRANSPARENT, depth = depth))
+            4 -> listOf(DrawProtocol.image(id, x, y, CFW_TEXTURE_OPT_BRIGHTNESS_MASK or CFW_TEXTURE_OPT_TRANSPARENT, depth = depth))
             // Gray8 zero is transparent but gray8 one is opaque black. Rect copies preserve
             // that distinction after packing, including the transparent corners of app menus.
-            5 -> mask.map { r -> DrawProtocol.call(2, DrawProtocol.word(id) +
+            5 -> mask.map { r -> DrawProtocol.call(DRAW_OP_RECT_COPY, DrawProtocol.word(id) +
                 r.flatMap { DrawProtocol.word(it).toList() }.toByteArray() +
                 DrawProtocol.word(x + r[0]) + DrawProtocol.word(y + r[1]), depth = depth) }
             else -> error("Invalid presentation kind")
         }
-        return image + occlusions.map { r -> DrawProtocol.call(2, DrawProtocol.word(DrawProtocol.SCREEN) + r.flatMap { DrawProtocol.word(it).toList() }.toByteArray() + DrawProtocol.word(r[0]) + DrawProtocol.word(r[1])) }
+        return image + occlusions.map { r -> DrawProtocol.call(DRAW_OP_RECT_COPY, DrawProtocol.word(DrawProtocol.SCREEN) + r.flatMap { DrawProtocol.word(it).toList() }.toByteArray() + DrawProtocol.word(r[0]) + DrawProtocol.word(r[1])) }
     }
     companion object {
         /** The caller has consumed the presentation tag (3, 4 or 5). Colors cross the bridge in gray8, pixels in gray8 rows. */

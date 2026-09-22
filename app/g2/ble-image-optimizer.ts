@@ -1,3 +1,4 @@
+import { CFW_MSG_BOUNDING_BOX } from "./cfw-message-type";
 import { concat, rle4 } from './ble-protocol'
 
 /** Android BleImageOptimizer's mode-3 changed rectangle. Coordinates are in
@@ -29,7 +30,7 @@ export function buildBoundingBoxPayload(previous: Uint8Array | null, next: Uint8
     const start = (top + y) * stride + left / 2
     region.set(next.subarray(start, start + regionStride), y * regionStride)
   }
-  return concat(new Uint8Array([3, left / 4, top / 2, boxWidth / 4, boxHeight / 2,
+  return concat(new Uint8Array([CFW_MSG_BOUNDING_BOX, left / 4, top / 2, boxWidth / 4, boxHeight / 2,
     frameId & 255, (frameId >>> 8) & 255]), rle4(region))
 }
 
@@ -41,7 +42,7 @@ export function buildFullFrameBands(packed: Uint8Array, width: number, height: n
   let id = firstId
   for (let top = 0; top < height; top += 64) {
     const rows = Math.min(64, height - top)
-    bands.push(concat(new Uint8Array([3, 0, top / 2, width / 4, rows / 2, id & 255, id >>> 8]),
+    bands.push(concat(new Uint8Array([CFW_MSG_BOUNDING_BOX, 0, top / 2, width / 4, rows / 2, id & 255, id >>> 8]),
       rle4(packed.subarray(top * width / 2, (top + rows) * width / 2))))
     id = id >= 0xfffe ? 1 : id + 1
   }

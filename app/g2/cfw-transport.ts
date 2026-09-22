@@ -1,6 +1,7 @@
 import { concat, crc16, SID } from './ble-protocol'
 
 declare const require: (name: string) => any
+/** Mirrors CFW_MESSAGE_MAX in g2flash/patches/message_transport.h. */
 export const CFW_MAX_MESSAGE = 65535
 export type CfwAck = { nack: boolean; streamId: number; messageId: number; lens: number; size: number; checksum: number }
 const u16 = (data: Uint8Array, offset: number) => data[offset] | (data[offset + 1] << 8)

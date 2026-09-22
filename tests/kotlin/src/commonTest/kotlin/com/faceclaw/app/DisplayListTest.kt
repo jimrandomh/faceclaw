@@ -48,8 +48,8 @@ class DisplayListTest {
         val resources = mutableMapOf(10 to raw, 11 to hex("0802024f"), 12 to font)
         val nested = listOf(DrawProtocol.image(11, -1, 0), DrawProtocol.bbox(hex("0c000000"), 2, 1, 0, 1, 1, 10))
         resources[20]=DrawProtocol.displayList(nested)
-        val calls = listOf(DrawProtocol.call(7,DrawProtocol.word(20)), DrawProtocol.image(10,3,1),
-            DrawProtocol.call(5,hex("0c00070003000f0141")), DrawProtocol.lut(8,4,128))
+        val calls = listOf(DrawProtocol.call(DRAW_OP_DISPLAY_LIST,DrawProtocol.word(20)), DrawProtocol.image(10,3,1),
+            DrawProtocol.call(DRAW_OP_TEXT,hex("0c00070003000f0141")), DrawProtocol.lut(8,4,128))
         resources[21]=DrawProtocol.displayList(calls)
         val screen=hex("123456789abcdef0123456789abcdef0"); val output=ByteArray(16)
         val renderer=DisplayListRenderer(resources)
@@ -62,14 +62,14 @@ class DisplayListTest {
     }
     @Test fun graphValidationPrecedesMutationAndCopyPreservesOverlap() {
         val screen=hex("12345678"); val target=DisplayListRenderer.Target(screen,8,1)
-        val copy=DrawProtocol.call(2,hex("feff000000000600010002000000"))
+        val copy=DrawProtocol.call(DRAW_OP_RECT_COPY,hex("feff000000000600010002000000"))
         DisplayListRenderer(emptyMap()).execute(DrawProtocol.sequence(listOf(copy)),target)
         assertContentEquals(hex("12123456"),screen)
         val valid=DrawProtocol.bbox(hex("ffffffff"),4,0,0,8,1)
         assertFails { DisplayListRenderer(emptyMap()).execute(DrawProtocol.sequence(listOf(valid,byteArrayOf(99,0))),target) }
         assertContentEquals(hex("12123456"),screen)
-        val cyclic=mapOf(1 to DrawProtocol.displayList(listOf(DrawProtocol.call(7,DrawProtocol.word(2)))),
-            2 to DrawProtocol.displayList(listOf(DrawProtocol.call(7,DrawProtocol.word(1)))))
+        val cyclic=mapOf(1 to DrawProtocol.displayList(listOf(DrawProtocol.call(DRAW_OP_DISPLAY_LIST,DrawProtocol.word(2)))),
+            2 to DrawProtocol.displayList(listOf(DrawProtocol.call(DRAW_OP_DISPLAY_LIST,DrawProtocol.word(1)))))
         assertFails { DisplayListRenderer(cyclic).render(1,target,target) }
     }
     @Test fun roundedRectsAndNestedOddNegativeDepthMatchFirmwareOnBothLenses() {
@@ -95,7 +95,7 @@ class DisplayListTest {
         val fill = DrawProtocol.roundedRect(-1,0,8,8,2,6,16,2)
         DisplayListRenderer(emptyMap()).execute(DrawProtocol.sequence(listOf(fill)),target)
         assertEquals(15,target.get(2,3)); assertEquals(6,target.get(3,3)); assertEquals(1,target.get(0,0))
-        val bbox = DrawProtocol.call(1,hex("00000002010f10"),depth=-1)
+        val bbox = DrawProtocol.call(DRAW_OP_BOUNDING_BOX,hex("00000002010f10"),depth=-1)
         DisplayListRenderer(emptyMap()).execute(DrawProtocol.sequence(listOf(bbox)),target)
         assertEquals(15,target.get(0,0));assertEquals(1,target.get(7,0))
         val before=pixels.copyOf()

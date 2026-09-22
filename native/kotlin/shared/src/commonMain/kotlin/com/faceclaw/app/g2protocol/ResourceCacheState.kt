@@ -20,14 +20,17 @@ class CachedResource @JvmOverloads constructor(bytes: ByteArray, val owner: Stri
  */
 class ResourceCacheState {
     companion object {
+        /** Mirrors g2flash/patches/resource_cache.h. */
         const val CACHE_SIZE = 196608
         const val RESOURCE_COUNT = 512
         const val TABLE_BYTES = RESOURCE_COUNT * 4
         const val ARENA_BYTES = CACHE_SIZE - TABLE_BYTES
         const val MAX_RESOURCE_SIZE = 65536
         const val BLOCK_HEADER_BYTES = 16
-        const val UPLOAD_MODE = 21
-        const val EVICT_MODE = 22
+
+        /** Mirrors g2flash/patches/zlib_glue.c. */
+        const val UPLOAD_MODE = CFW_MSG_UPLOAD_RESOURCE
+        const val EVICT_MODE = CFW_MSG_EVICT_RESOURCE
         fun allocationBytes(size: Int): Int = BLOCK_HEADER_BYTES + ((size + 3) and -4)
     }
 

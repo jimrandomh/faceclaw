@@ -419,7 +419,7 @@ test('iOS compositor rejects missing and removed surfaces before crossing into K
 
 test('iOS welcome sound waits for a new acknowledged frame and is consumed once', async () => {
   let pending = true;
-  const played = [], sounds = load('app/ui/sound-effects.ts', {});
+  const played = [], sounds = load('app/ui/sound-effects.ts', { require: name => { assert.equal(name, '../g2/cfw-message-type'); return load('app/g2/cfw-message-type.ts', {}); } });
   const { IosPreviewController } = load('app/g2/ios-preview-controller.ts', {
     require: id => ({
       '../phone-ui/onboarding-state': { isWelcomeSoundPending: () => pending, setWelcomeSoundPending: value => { pending = value; } },

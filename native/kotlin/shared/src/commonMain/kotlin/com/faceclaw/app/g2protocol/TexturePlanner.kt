@@ -47,7 +47,7 @@ class TexturePlanner {
         private const val MAX_ADJUST_BYTES: Int = 4
 
         /** Options: identity LUT (top 15) + transparent, for mode-19 image draws. */
-        private const val IMAGE_DRAW_OPTIONS: Int = 0x1f
+        private const val IMAGE_DRAW_OPTIONS: Int = CFW_TEXTURE_OPT_BRIGHTNESS_MASK or CFW_TEXTURE_OPT_TRANSPARENT
 
         /**
          * Plan a cached-draw update. previous is the delta base (the frame the shadow currently
@@ -368,12 +368,12 @@ class TexturePlanner {
                     continue
                 }
                 var sub: ByteArray = ByteArray((7 + bytesToLastInk))
-                sub[0] = 15
+                sub[0] = CFW_MSG_STOCK_FONT_STRING.toByte()
                 sub[1] = ((startX and 0xff)).toByte()
                 sub[2] = (((startX shr 8) and 0xff)).toByte()
                 sub[3] = ((draw.y and 0xff)).toByte()
                 sub[4] = (((draw.y shr 8) and 0xff)).toByte()
-                sub[5] = ((top or 0x10)).toByte()
+                sub[5] = ((top or CFW_TEXTURE_OPT_TRANSPARENT)).toByte()
                 sub[6] = (bytesToLastInk).toByte()
                 var pos: Int = 7
                 run {
@@ -718,7 +718,7 @@ class TexturePlanner {
         /** Mode-19 cached-image draw: [19][resourceId u16][x u16][y u16][options u8]. */
         @JvmStatic
         private fun encodeImageDraw(sel: Selected): ByteArray = byteArrayOf(
-            19, sel.resourceId.toByte(), (sel.resourceId ushr 8).toByte(),
+            CFW_MSG_CACHED_IMAGE.toByte(), sel.resourceId.toByte(), (sel.resourceId ushr 8).toByte(),
             sel.draw.x.toByte(), (sel.draw.x ushr 8).toByte(),
             sel.draw.y.toByte(), (sel.draw.y ushr 8).toByte(), IMAGE_DRAW_OPTIONS.toByte(),
         )
@@ -781,14 +781,14 @@ class TexturePlanner {
                 if (!runGlyphs.isEmpty()) {
                     var stringBytes: ByteArray = string.toByteArray()
                     val run = ByteArray(9 + stringBytes.size)
-                    run[0] = 20
+                    run[0] = CFW_MSG_CACHED_TEXT.toByte()
                     run[1] = fontResource.toByte()
                     run[2] = (fontResource ushr 8).toByte()
                     run[3] = first.gx.toByte()
                     run[4] = (first.gx ushr 8).toByte()
                     run[5] = first.draw.y.toByte()
                     run[6] = (first.draw.y ushr 8).toByte()
-                    run[7] = (first.top or 0x10).toByte()
+                    run[7] = (first.top or CFW_TEXTURE_OPT_TRANSPARENT).toByte()
                     run[8] = stringBytes.size.toByte()
                     stringBytes.copyInto(run, 9)
                     outRuns.add(run)
@@ -825,7 +825,7 @@ class TexturePlanner {
                 total += (2 + sub.size)
             }
             var out: ByteArray = ByteArray(total)
-            out[0] = 8
+            out[0] = CFW_MSG_MULTI_SEGMENT.toByte()
             out[1] = (subs.size).toByte()
             var pos: Int = 2
             for (sub in subs) {

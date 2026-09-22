@@ -89,7 +89,8 @@ class BleProtocol {
 
         const val FACECLAW_WEAR_OP_QUERY: Int = 7
 
-        const val CFW_IMAGE_MODE_CLEANUP: Int = 11
+        /** Mirrors g2flash/patches/zlib_glue.c. */
+        const val CFW_IMAGE_MODE_CLEANUP: Int = CFW_MSG_CLEANUP
 
         private const val FACECLAW_WAKE_EVENT: Int = 1
 

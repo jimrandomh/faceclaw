@@ -1,3 +1,4 @@
+import { CFW_MSG_BOUNDING_BOX, CFW_MSG_CREATE_SURFACE, CFW_MSG_PRESENT, CFW_MSG_UPLOAD_RESOURCE } from "../g2/cfw-message-type";
 import { GrayImage } from "../graphics/image"
 import { encodeShellScene } from "../graphics/shell-scene"
 import { decodeImageBytes } from './image-bytes.ios'
@@ -44,7 +45,7 @@ export function runKotlinProtocolSmokeTest(): void {
   textured.submitSurfaceFrame('icon', white, { x: 0, y: 0, width: 2, height: 2 }, draw.buffer)
   const snapshot = textured.compositeFrame(), packed = protocol.packGray4(snapshot.pixels, 4, 2)
   const cold = textures.plan(null, packed, snapshot.textures, 1)
-  assert(!!cold && cold.resourceCommands.some(command => command[0] === 21) && cold.payload[0] === 28, 'texture upload and draw')
+  assert(!!cold && cold.resourceCommands.some(command => command[0] === CFW_MSG_UPLOAD_RESOURCE) && cold.payload[0] === CFW_MSG_PRESENT, 'texture upload and draw')
   assert(textures.plan(null, packed, snapshot.textures, 1)?.resourceCommands.length === 0, 'texture reuse')
   textures.reset()
   assert((textures.plan(null, packed, snapshot.textures, 1)?.resourceCommands.length ?? 0) > 0, 'texture reset')
@@ -55,9 +56,9 @@ export function runKotlinProtocolSmokeTest(): void {
   const selectedSnapshot = selectedPreview.compositeFrame()
   assert(selectedSnapshot.pixels[10] === 240 && selectedSnapshot.pixels[9] === 0, 'menu selection depth and bridge')
   const selectedPlan = new IosTexturePlanner().plan(null, protocol.packGray4(selectedSnapshot.pixels, 8, 4), selectedSnapshot.textures, 1)
-  assert(!!selectedPlan && selectedPlan.payload[0] === 28 && selectedPlan.resourceCommands.some(c => c[0] === 29), 'menu resource planning')
+  assert(!!selectedPlan && selectedPlan.payload[0] === CFW_MSG_PRESENT && selectedPlan.resourceCommands.some(c => c[0] === CFW_MSG_CREATE_SURFACE), 'menu resource planning')
   const changed = new Uint8Array(16); changed[0] = 255
-  assert(buildBoundingBoxPayload(new Uint8Array(16), changed, 8, 4, 1)?.[0] === 3, 'image update')
+  assert(buildBoundingBoxPayload(new Uint8Array(16), changed, 8, 4, 1)?.[0] === CFW_MSG_BOUNDING_BOX, 'image update')
   assert(lvglMetrics('/nonexistent/faceclaw-font').length === 0, 'font bridge')
   const compass = protocol.decodeCompassInput({ sid: 8, flag: 1, command: 15, magic: 0,
     payload: new Uint8Array([8, 15, 16, 0, 82, 3, 8, 231, 2, 162, 6, 12, 67, 77, 1, 3, 2, 3, 140, 0, 152, 186, 220, 254]) })
