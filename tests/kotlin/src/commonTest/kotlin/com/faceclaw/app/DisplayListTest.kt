@@ -1,9 +1,47 @@
 package com.faceclaw.app
 
 import kotlin.test.*
+import kotlin.random.Random
 
 class DisplayListTest {
     private fun hex(s: String) = s.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
+    @Test fun screenCopyPreservesOffsetsClippingPaddingAndAliasing() {
+        val random = Random(42)
+        val renderer = DisplayListRenderer(emptyMap())
+        for (sourceWidth in listOf(1, 2, 3, 7, 8, 640)) for (destinationWidth in listOf(1, 2, 3, 7, 8, 640)) {
+            for (shared in listOf(false, true)) for (shift in listOf(-3, 0, 2)) {
+                val sourceHeight = random.nextInt(1, 5); val destinationHeight = random.nextInt(1, 5)
+                val sourceOffset = random.nextInt(4); val destinationOffset = random.nextInt(4)
+                val size = maxOf(sourceOffset + (sourceWidth + 1) / 2 * sourceHeight,
+                    destinationOffset + (destinationWidth + 1) / 2 * destinationHeight) + 3
+                val source = random.nextBytes(size)
+                val destination = if (shared) source else random.nextBytes(size)
+                val expectedSource = source.copyOf()
+                val expectedDestination = if (shared) expectedSource else destination.copyOf()
+                // Original per-pixel semantics, including cascading writes when
+                // views alias and ignoring shiftX when reading the source.
+                val referenceSource = DisplayListRenderer.Target(expectedSource, sourceWidth, sourceHeight, sourceOffset, 5)
+                val referenceDestination = DisplayListRenderer.Target(expectedDestination, destinationWidth, destinationHeight, destinationOffset, shift)
+                for (y in 0 until sourceHeight) for (x in 0 until sourceWidth)
+                    referenceDestination.put(x, y, referenceSource.get(x, y))
+                assertEquals(emptySet(), renderer.render(DrawProtocol.SCREEN,
+                    DisplayListRenderer.Target(source, sourceWidth, sourceHeight, sourceOffset, 5),
+                    DisplayListRenderer.Target(destination, destinationWidth, destinationHeight, destinationOffset, shift)))
+                assertContentEquals(expectedDestination, destination, "$sourceWidth/$destinationWidth shared=$shared shift=$shift")
+                assertContentEquals(expectedSource, source)
+            }
+        }
+        val source = random.nextBytes(640 * 480 / 2)
+        val destination = ByteArray(source.size)
+        renderer.render(DrawProtocol.SCREEN, DisplayListRenderer.Target(source,640,480), DisplayListRenderer.Target(destination,640,480))
+        assertContentEquals(source, destination)
+    }
+    @Test fun invalidGraphDoesNotCopyScreenIntoComposition() {
+        val screen = hex("12345678"); val composition = hex("9abcdef0")
+        val resources = mapOf(1 to DrawProtocol.displayList(listOf(byteArrayOf(99,0))))
+        assertFails { DisplayListRenderer(resources).render(1, DisplayListRenderer.Target(screen,8,1), DisplayListRenderer.Target(composition,8,1)) }
+        assertContentEquals(hex("9abcdef0"), composition)
+    }
     @Test fun oddPixelsRawRleClippingFontsNestedListsAndLut() {
         val raw = DrawProtocol.rawImage(3, 3, hex("123045607890"))
         val font = ByteArray(197); font[0]=1; font[67]=193.toByte(); hex("0801011f").copyInto(font,193)

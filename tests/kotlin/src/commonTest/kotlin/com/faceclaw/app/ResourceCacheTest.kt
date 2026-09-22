@@ -126,6 +126,51 @@ class ResourceCacheTest {
         assertNull(TexturePlanner.plan(null, ByteArray(packed.size), 8, 4, draws, cache, 1, true, 8, testPlatform()))
     }
 
+    @Test fun imagePixelLoopsPreserveClippingTransparencyAndNeighborNibbles() {
+        val width = 12
+        val height = 8
+        for (imageWidth in listOf(3, 4, 5, 9)) {
+            val imageHeight = 5
+            val pixels = ByteArray(imageWidth * imageHeight) { i ->
+                if (i % 3 == 0) 0 else (((i % 15) + 1) * 16).toByte()
+            }
+            val id = ImageAtlas.ensure("pixel-loop-$imageWidth", imageWidth, imageHeight, ArrayByteReader(pixels))
+            for (left in listOf(-1, 0, 1, 2, 10, 11, 14)) for (top in listOf(-1, 0, 1, 7, 9)) {
+                val gray = ByteArray(width * height) { ((it % 15 + 1) * 16).toByte() }
+                val visibleInk = ArrayList<Int>()
+                for (row in 0 until imageHeight) for (col in 0 until imageWidth) {
+                    val x = left + col; val y = top + row; val value = pixels[row * imageWidth + col]
+                    if (x in 0 until width && y in 0 until height && value.toInt() != 0) {
+                        gray[y * width + x] = value
+                        visibleInk.add(y * width + x)
+                    }
+                }
+                val expected = BmpUtil.pack4bppFromGray8(gray, width, height)
+                val draws = arrayOf(SurfaceCompositor.ScreenDraw.image(id, left, top))
+                val plan = TexturePlanner.plan(null, expected, width, height, draws, ResourceCacheState(), 1, true, 8, testPlatform())
+                if (left < 0 || top < 0 || left >= width || top >= height) {
+                    assertNull(plan) // The wire format cannot replay negative image origins.
+                    continue
+                }
+                val result = assertNotNull(plan, "$imageWidth at $left,$top")
+                assertEquals(1, result.drawnImages)
+                val actual = ByteArray(expected.size) { 0x55 }
+                DisplayListRenderer(uploaded(result.resourceCommands)).execute(
+                    DrawProtocol.sequence(DrawProtocol.fromOptimized(result.payload, width, height)),
+                    DisplayListRenderer.Target(actual, width, height))
+                assertContentEquals(expected, actual, "$imageWidth at $left,$top")
+
+                // A conflicting visible ink pixel must reject the cached draw.
+                if (visibleInk.isNotEmpty()) {
+                    val offset = visibleInk.first()
+                    gray[offset] = 0
+                    assertNull(TexturePlanner.plan(null, BmpUtil.pack4bppFromGray8(gray, width, height),
+                        width, height, draws, ResourceCacheState(), 1, true, 8, testPlatform()))
+                }
+            }
+        }
+    }
+
     private fun registerFont(key: String, encodings: List<Int>, size: Int = 2): Int {
         val out = ByteSink(); val name = key.encodeToByteArray()
         out.write(name.size); out.write(name, 0, name.size); out.write(size)

@@ -137,7 +137,6 @@ export class FaceclawCommunicatorBridge {
   // does not race against finishes that land before the wait starts.
   private readonly finishedFrameOutcomes = new Map<number, string>();
   private readonly frameFinishedWaiters = new Map<number, Set<(outcome: string) => void>>();
-  private readonly logListeners = new Set<(line: string) => void>();
   private readonly stateListeners = new Set<(state: CommunicatorState) => void>();
   private readonly ringListeners = new Set<(event: RawInputEvent) => void>();
   private readonly batteryListeners = new Set<(state: HeadsetBatteryState) => void>();
@@ -161,9 +160,6 @@ export class FaceclawCommunicatorBridge {
       addresses.ring ?? "",
     );
     this.listenerProxy = new com.faceclaw.app.FaceclawBleCommunicatorListener({
-      onLog: (line: string) => {
-        this.emitAsync(this.logListeners, String(line));
-      },
       onStateChange: (phase: string, status: string) => {
         const state = {
           phase: String(phase) as CommunicatorPhase,
@@ -291,11 +287,6 @@ export class FaceclawCommunicatorBridge {
       () => undefined,
     );
     return result;
-  }
-
-  onLog(listener: (line: string) => void): () => void {
-    this.logListeners.add(listener);
-    return () => this.logListeners.delete(listener);
   }
 
   onStateChange(listener: (state: CommunicatorState) => void): () => void {

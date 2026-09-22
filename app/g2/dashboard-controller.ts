@@ -268,7 +268,6 @@ class DashboardController {
   private lockSurfaceConfigured = false;
   private lastLockScreenEnabled = lockScreenEnabledSetting.get();
   private offState: (() => void) | null = null;
-  private offLog: (() => void) | null = null;
   private offRing: (() => void) | null = null;
   private offBattery: (() => void) | null = null;
   private offSilentMode: (() => void) | null = null;
@@ -1327,9 +1326,6 @@ class DashboardController {
         ring: ringAddress,
       });
       this.communicator = communicator;
-      this.offLog = communicator.onLog((line) => {
-        this.appendLog(line);
-      });
       this.offState = communicator.onStateChange((state) => {
         if (state.phase !== "connected") resetRingInputFilter();
         if (state.phase === "unpaired") {
@@ -1542,8 +1538,6 @@ class DashboardController {
       const message = this.formatError(error);
       this.offState?.();
       this.offState = null;
-      this.offLog?.();
-      this.offLog = null;
       this.offRing?.();
       this.offRing = null;
       this.offBattery?.();
@@ -1682,8 +1676,6 @@ class DashboardController {
     this.clearDashboardTimer();
     this.offState?.();
     this.offState = null;
-    this.offLog?.();
-    this.offLog = null;
     this.offRing?.();
     this.offRing = null;
     this.offBattery?.();
@@ -2593,7 +2585,7 @@ class DashboardController {
   }
 
   private appendLog(line: string): void {
-    console.log(`[${formatTimestamp(new Date())}] ${line}`);
+    //console.log(`[${formatTimestamp(new Date())}] ${line}`);
   }
 
   private setDisplayPreview(preview: ImageSource | null): void {
@@ -2610,6 +2602,22 @@ class DashboardController {
    */
   private previewTrailingTimer: ReturnType<typeof setTimeout> | null = null;
   private lastRecordCaptureAtMs = 0;
+  private phonePreviewVisible: (() => boolean) | null = null;
+
+  /** The main page owns the mirror; other phone pages must not keep it rendering. */
+  attachPhonePreview(isVisible: () => boolean): () => void {
+    this.phonePreviewVisible = isVisible;
+    this.lastConnectedPreviewUpdateAtMs = 0;
+    this.updateCompositePreview();
+    return () => {
+      if (this.phonePreviewVisible !== isVisible) return;
+      this.phonePreviewVisible = null;
+      if (this.previewTrailingTimer) {
+        clearTimeout(this.previewTrailingTimer);
+        this.previewTrailingTimer = null;
+      }
+    };
+  }
 
   /**
    * Refresh the preview now if the floor allows, otherwise once the floor
@@ -2617,6 +2625,7 @@ class DashboardController {
    * of waiting for the safety-net poll.
    */
   private schedulePreviewUpdate(): void {
+    if (!this.phonePreviewVisible && !this.screenRecordingActive) return;
     if (this.previewTrailingTimer) return;
     const wait = this.lastConnectedPreviewUpdateAtMs + CONNECTED_PREVIEW_MIN_UPDATE_MS - Date.now();
     if (wait <= 0) {
@@ -2644,6 +2653,13 @@ class DashboardController {
       return;
     }
     this.lastConnectedPreviewUpdateAtMs = now;
+    // A user-requested GIF is an independent consumer, including while the
+    // phone is asleep or another page/app is foregrounded.
+    if (this.screenRecordingActive && now - this.lastRecordCaptureAtMs >= RECORDING_MIN_CAPTURE_MS) {
+      this.lastRecordCaptureAtMs = now;
+      display.recordScreenFrame();
+    }
+    if (!this.phonePreviewVisible?.()) return;
     // The connected foreground service intentionally keeps this controller
     // alive after the phone UI is backgrounded. Do not keep constructing
     // 640x480 Android Bitmaps for a window that cannot display them: besides
@@ -2652,10 +2668,8 @@ class DashboardController {
     if (global.isAndroid) {
       const activity = Application.android.foregroundActivity;
       if (!activity || !activity.hasWindowFocus()) return;
-    }
-    if (this.screenRecordingActive && now - this.lastRecordCaptureAtMs >= RECORDING_MIN_CAPTURE_MS) {
-      this.lastRecordCaptureAtMs = now;
-      display.recordScreenFrame();
+      const power = activity.getSystemService(android.content.Context.POWER_SERVICE) as android.os.PowerManager;
+      if (!power?.isInteractive()) return;
     }
     const preview = display.getCompositePreview(previewColorSetting.get() === "green");
     if (preview) {

@@ -574,16 +574,20 @@ class BleImageOptimizer {
          */
         @JvmStatic
         fun rleEncode(pix: ByteArray): ByteArray {
-            var n: Int = (pix.size * 2)
-            var out: ByteArray = ByteArray(n)
+            val n = pix.size * 2
+            val out = ByteArray(n)
             var o: Int = 0
             var i: Int = 0
             while ((i < n)) {
-                var v: Int = nibbleAt(pix, i)
-                var j: Int = (i + 1)
-                while (((j < n) && (nibbleAt(pix, j) == v))) {
-                    j++
-                }
+                val first = pix[i ushr 1].toInt() and 255
+                val v = if (i and 1 == 0) first ushr 4 else first and 15
+                // Start at a byte boundary, consuming the known low nibble
+                // first if the previous run ended halfway through a byte.
+                var j = i + (i and 1)
+                val pair = ((v shl 4) or v).toByte()
+                while (j < n && pix[j ushr 1] == pair) j += 2
+                // A final high nibble can match even when its low nibble doesn't.
+                if (j < n && (pix[j ushr 1].toInt() and 240) == v shl 4) j++
                 var run: Int = (j - i)
                 while ((run > 0)) {
                     var c: Int = minOf(run, 0xffff)
@@ -607,10 +611,6 @@ class BleImageOptimizer {
             return out.copyOf(o)
         }
 
-        private fun nibbleAt(pix: ByteArray, i: Int): Int {
-            var b: Int = (pix[(i shr 1)] and 0xff)
-            return (if (((i and 1) != 0)) (b and 0x0f) else (b shr 4))
-        }
     }
 
     constructor() {}

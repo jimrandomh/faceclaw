@@ -93,7 +93,7 @@ class ImageAtlas {
 
         /** The 4bpp value the mode-13 draw would write at (col, row); 0 = skipped. */
         fun nibbleAt(col: Int, row: Int): Int {
-            return (nibbles[((row * width) + col)] and 0xff)
+            return nibbles[row * width + col].toInt() and 255
         }
 
         private fun encodeCachedImage(): ByteArray {

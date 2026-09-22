@@ -149,7 +149,9 @@ export class GrayImage {
     this.width = width;
     this.height = height;
     this.pixels = new Uint8Array(width * height);
-    this.clear(fill);
+    if (fill !== 0) {
+      this.clear(fill);
+    }
   }
 
   get draws(): readonly DeferredDraw[] {

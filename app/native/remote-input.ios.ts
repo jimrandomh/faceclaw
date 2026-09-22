@@ -1,9 +1,10 @@
 import { createListenerPool, type InterfaceAddress } from '../remote/listeners';
 declare const FaceclawRemoteInput: any;
-export function remoteNative() {
+export function remoteNative(onRequestReady: () => void) {
   return createListenerPool(() => {
     const native = FaceclawRemoteInput.alloc().init();
-    return { start: (port, address) => String(native.startAddress(port, address)), stop: () => native.stop(),
+    native.setRequestListener(onRequestReady);
+    return { start: (port, address) => String(native.startAddress(port, address)), stop: () => { native.setRequestListener(null); native.stop(); },
       nextRequest: () => native.nextRequest(), complete: (id, response) => native.completeResponse(id, response) };
   });
 }

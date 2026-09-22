@@ -2,6 +2,7 @@ package com.faceclaw.app
 
 import kotlin.jvm.JvmField
 import kotlin.jvm.JvmStatic
+import kotlin.jvm.JvmOverloads
 
 /**
  * Retained-surface compositor: the phone-side model of what is on the glasses screen.
@@ -30,7 +31,7 @@ import kotlin.jvm.JvmStatic
  * atomically under an internal lock, and each composite carries a monotonic sequence number so
  * callers can detect when a composite was superseded by a concurrent one before being acted on.
  */
-class SurfaceCompositor {
+class SurfaceCompositor @JvmOverloads constructor(private val includePreviewInFrames: Boolean = true) {
     companion object {
         const val TRANSPARENCY_OPAQUE: Int = 0
 
@@ -206,7 +207,11 @@ class SurfaceCompositor {
     class Composite {
         @JvmField var screenGray: ByteArray
         @JvmField var shellScene: ShellScene = ShellScene.EMPTY
-        /** Full-screen 8bpp grayscale pixels, screenWidth*screenHeight bytes. */
+        /**
+         * Full-screen preview pixels. When includePreviewInFrames is false,
+         * submitted composites alias screenGray here; use previewComposite()
+         * for the shell/selection-rendered preview, screenshots or recording.
+         */
         @JvmField val gray: ByteArray
 
         @JvmField val width: Int
@@ -573,7 +578,7 @@ class SurfaceCompositor {
                 return null
             }
             val seq = nextCompositeSeq
-            val result = compositeLocked()
+            val result = compositeLocked(includePreview = true)
             nextCompositeSeq = seq
             return result
         }
@@ -594,7 +599,7 @@ class SurfaceCompositor {
         return gray
     }
 
-    private fun compositeLocked(): Composite {
+    private fun compositeLocked(includePreview: Boolean = includePreviewInFrames): Composite {
         var gray: ByteArray = ByteArray((screenWidth * screenHeight))
         if (blanked) {
             return Composite(
@@ -662,7 +667,7 @@ class SurfaceCompositor {
             }
         }
         val scene = if (surfaces.values.any { it.visible && it.zOrder > 1 }) ShellScene.EMPTY else ShellScene(shellScene?.layers ?: emptyList(), selections)
-        val preview = if (shellScene != null || selections.isNotEmpty()) scene.preview(gray, screenWidth, screenHeight) else gray
+        val preview = if (includePreview && (shellScene != null || selections.isNotEmpty())) scene.preview(gray, screenWidth, screenHeight) else gray
         return Composite(preview, screenWidth, screenHeight, fingerprint.append("|shell:").append(scene.fingerprint).toString(),
             nextCompositeSeq++, draws.toTypedArray()).also { it.screenGray = gray; it.shellScene = scene }
     }

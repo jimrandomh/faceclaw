@@ -761,17 +761,19 @@ function renderAndSubmit(window: FlappyWindow, inputFrameId: number): void {
     }
     const { image, draws } = frameTimings.span(frameId, "flatten", () => flattenPlanesWithDraws(planes));
     const buffer = frameTimings.span(frameId, "to8bpp", () => image.to8bppBuffer());
-    communicator.submitSurfaceFrame(
-      buffer.buffer,
-      window.surfaceId,
-      0,
-      0,
-      image.width,
-      image.height,
-      fingerprint,
-      paintMs,
-      frameId,
-      frameTimings.span(frameId, "prepareFrameDraws", () => prepareFrameDraws(draws)),
+    frameTimings.span(frameId, "submitSurfaceFrame", () =>
+      communicator.submitSurfaceFrame(
+        buffer.buffer,
+        window.surfaceId,
+        0,
+        0,
+        image.width,
+        image.height,
+        fingerprint,
+        paintMs,
+        frameId,
+        frameTimings.span(frameId, "prepareFrameDraws", () => prepareFrameDraws(draws)),
+      )
     );
     window.lastSubmittedFingerprint = fingerprint;
   } catch (error) {

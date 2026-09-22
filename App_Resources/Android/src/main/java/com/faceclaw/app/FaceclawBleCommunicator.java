@@ -258,7 +258,9 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
     // included in the newer composite).
     private long lastStoredCompositeSeq;
 
-    private final SurfaceCompositor compositor = new SurfaceCompositor();
+    // Wire submissions need screenGray + the shell scene, never preview pixels.
+    // Preview/screenshot/recording callers render those explicitly on demand.
+    private final SurfaceCompositor compositor = new SurfaceCompositor(false);
 
     // Phone-side model of the CFW's 192 KiB resource cache.
     // Reset whenever the image pipeline / EvenHub session is torn down: the
@@ -4025,17 +4027,6 @@ public class FaceclawBleCommunicator implements FaceclawBleListener, Runnable {
 
     private void logLine(String line) {
         Log.i(TAG, line);
-        final FaceclawBleCommunicatorListener current = listener;
-        if (current == null) {
-            return;
-        }
-        mainHandler.post(() -> {
-            try {
-                current.onLog(line);
-            } catch (Throwable t) {
-                Log.w(TAG, "listener onLog failed", t);
-            }
-        });
     }
 
     private static String timestamp(long elapsedMs) {

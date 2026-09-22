@@ -5,6 +5,7 @@
 - (NSString *)start:(int)port;
 - (NSString *)start:(int)port address:(NSString *)address;
 - (void)stop;
+- (void)setRequestListener:(void (^)(void))listener;
 - (NSString *)nextRequest;
 - (void)complete:(long long)identifier response:(NSString *)response;
 - (NSString *)randomSecret;

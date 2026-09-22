@@ -1,5 +1,7 @@
 package com.faceclaw.app;
 
+import android.os.Handler;
+import android.os.Looper;
 import java.io.ByteArrayOutputStream;
 import java.net.InetAddress;
 import java.net.NetworkInterface;
@@ -13,7 +15,7 @@ import java.security.MessageDigest;
 import java.security.SecureRandom;
 import org.json.JSONObject;
 
-/** Explicit-address, bounded, one-request-per-connection input port. JS polls on its own thread. */
+/** Explicit-address, bounded input port. Complete requests notify JS on the main thread. */
 public final class FaceclawRemoteInput {
     private static final FaceclawRemoteInput INSTANCE = new FaceclawRemoteInput();
     public static FaceclawRemoteInput getInstance() { return INSTANCE; }
@@ -22,6 +24,22 @@ public final class FaceclawRemoteInput {
     private String pending, reply;
     private long nextId, requestId;
     private long deadline;
+    private final Handler mainHandler = new Handler(Looper.getMainLooper());
+    private Runnable requestListener;
+
+    public synchronized void setRequestListener(Runnable listener) { requestListener = listener; }
+
+    private void notifyRequestReady(long id) {
+        // Called with this monitor held; posting avoids entering JS on the socket thread.
+        mainHandler.post(() -> {
+            Runnable callback;
+            synchronized (this) {
+                if (requestId != id || pending == null || System.currentTimeMillis() >= deadline) return;
+                callback = requestListener;
+            }
+            if (callback != null) callback.run();
+        });
+    }
 
     public synchronized String start(int port) { return startAddress(port, "127.0.0.1"); }
     public synchronized String startAddress(int port, String address) {
@@ -81,6 +99,7 @@ public final class FaceclawRemoteInput {
                     reply = null;
                     pending = new JSONObject().put("id", requestId).put("expiresAt", deadline)
                         .put("body", text).toString();
+                    notifyRequestReady(requestId);
                     while (reply == null && server == listener && System.currentTimeMillis() < deadline) {
                         wait(Math.max(1, deadline - System.currentTimeMillis()));
                     }

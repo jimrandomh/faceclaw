@@ -17,6 +17,7 @@
     long long _nextId, _requestId;
     NSTimeInterval _deadline;
     NSString *_pending, *_reply;
+    void (^_requestListener)(void);
 }
 + (instancetype)shared {
     static FaceclawRemoteInput *instance; static dispatch_once_t once;
@@ -65,6 +66,20 @@
     NSString *result = NSDate.date.timeIntervalSince1970 < _deadline ? _pending : nil;
     _pending = nil; [_condition unlock]; return result;
 }
+- (void)setRequestListener:(void (^)(void))listener {
+    [_condition lock]; _requestListener = [listener copy]; [_condition unlock];
+}
+- (void)notifyRequestReady:(long long)identifier {
+    // Dispatch from under the condition lock; invoke JS only on the main thread,
+    // outside the lock, and discard notifications invalidated by stop/timeout.
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [self->_condition lock];
+        void (^callback)(void) = self->_requestId == identifier && self->_pending &&
+            NSDate.date.timeIntervalSince1970 < self->_deadline ? self->_requestListener : nil;
+        [self->_condition unlock];
+        if (callback) callback();
+    });
+}
 - (void)complete:(long long)identifier response:(NSString *)response {
     [_condition lock];
     if (_requestId == identifier && NSDate.date.timeIntervalSince1970 < _deadline) { _reply = response; [_condition signal]; }
@@ -104,6 +119,7 @@
                     _requestId = ++_nextId; _deadline = NSDate.date.timeIntervalSince1970 + 5; _reply = nil;
                     NSData *json = [NSJSONSerialization dataWithJSONObject:@{@"id":@(_requestId), @"expiresAt":@(_deadline * 1000), @"body":text} options:0 error:nil];
                     _pending = [[NSString alloc] initWithData:json encoding:NSUTF8StringEncoding];
+                    [self notifyRequestReady:_requestId];
                     while (!_reply && generation == _generation && NSDate.date.timeIntervalSince1970 < _deadline)
                         [_condition waitUntilDate:[NSDate dateWithTimeIntervalSince1970:_deadline]];
                     NSString *reply = _reply ?: @"{\"ok\":false,\"error\":\"timeout\",\"message\":\"Faceclaw did not respond in time.\"}";

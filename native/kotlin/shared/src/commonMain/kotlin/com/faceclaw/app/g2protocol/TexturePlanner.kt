@@ -591,35 +591,26 @@ class TexturePlanner {
             left: Int,
             top: Int,
         ): Boolean {
-            run {
-                var row: Int = 0
-                while ((row < atlas.height)) {
-                    var y: Int = (top + row)
-                    if (((y < 0) || (y >= height))) {
-                        row++
-                        continue
+            val pixels = atlas.nibbles
+            val imageWidth = atlas.width
+            val startX = maxOf(0, left)
+            val endX = minOf(width, left + imageWidth)
+            val endY = minOf(height, top + atlas.height)
+            var y = maxOf(0, top)
+            while (y < endY) {
+                var src = (y - top) * imageWidth + startX - left
+                val dstRow = y * stride
+                var x = startX
+                while (x < endX) {
+                    val source = pixels[src++].toInt() and 255
+                    if (source != 0) {
+                        val byte = packed[dstRow + (x ushr 1)].toInt() and 255
+                        val actual = if (x and 1 == 0) byte ushr 4 else byte and 15
+                        if (actual != source) return false
                     }
-                    run {
-                        var col: Int = 0
-                        while ((col < atlas.width)) {
-                            var source: Int = atlas.nibbleAt(col, row)
-                            if ((source == 0)) {
-                                col++
-                                continue
-                            }
-                            var x: Int = (left + col)
-                            if (((x < 0) || (x >= width))) {
-                                col++
-                                continue
-                            }
-                            if ((nibbleAt(packed, stride, x, y) != source)) {
-                                return false
-                            }
-                            col++
-                        }
-                    }
-                    row++
+                    x++
                 }
+                y++
             }
             return true
         }
@@ -661,29 +652,39 @@ class TexturePlanner {
                     }
                 }
             } else {
-                var atlas: ImageAtlas.Entry = sel.imageAtlas!!
-                run {
-                    var row: Int = 0
-                    while ((row < atlas.height)) {
-                        var y: Int = (sel.draw.y + row)
-                        if (((y < 0) || (y >= height))) {
-                            row++
-                            continue
-                        }
-                        run {
-                            var col: Int = 0
-                            while ((col < atlas.width)) {
-                                if ((atlas.nibbleAt(col, row) == 0)) {
-                                    col++
-                                    continue
-                                }
-                                punchPixel(packed, stride, width, (sel.gx + col), y)
-                                col++
-                            }
-                        }
-                        row++
+                punchImage(packed, stride, width, height, sel.imageAtlas!!, sel.gx, sel.draw.y)
+            }
+        }
+
+        /** Clear only visible nonzero image pixels, preserving the neighboring nibble. */
+        private fun punchImage(
+            packed: ByteArray,
+            stride: Int,
+            width: Int,
+            height: Int,
+            atlas: ImageAtlas.Entry,
+            left: Int,
+            top: Int,
+        ) {
+            val pixels = atlas.nibbles
+            val imageWidth = atlas.width
+            val startX = maxOf(0, left)
+            val endX = minOf(width, left + imageWidth)
+            val endY = minOf(height, top + atlas.height)
+            var y = maxOf(0, top)
+            while (y < endY) {
+                var src = (y - top) * imageWidth + startX - left
+                val dstRow = y * stride
+                var x = startX
+                while (x < endX) {
+                    if (pixels[src++].toInt() != 0) {
+                        val index = dstRow + (x ushr 1)
+                        val mask = if (x and 1 == 0) 15 else 240
+                        packed[index] = (packed[index].toInt() and mask).toByte()
                     }
+                    x++
                 }
+                y++
             }
         }
 
