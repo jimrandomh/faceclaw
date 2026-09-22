@@ -1,3 +1,5 @@
+import { GrayImage } from "../graphics/image"
+import { encodeShellScene } from "../graphics/shell-scene"
 import { decodeImageBytes } from './image-bytes.ios'
 import * as protocol from '../g2/ble-protocol.ios'
 import { CfwTransport, parseCfwAcks } from '../g2/cfw-transport.ios'
@@ -31,7 +33,7 @@ export function runKotlinProtocolSmokeTest(): void {
   c.submitSurfaceFrame('test', new Uint8Array([0, 16, 255, 32, 48, 64]), { x: 0, y: 0, width: 3, height: 2 })
   assert(hex(c.composite()) === '0010ff203040', 'composition')
   assert(hex(protocol.packGray4(c.composite(), 3, 2)) === '01f02340', 'packing')
-  c.setShellScene(new Uint8Array([1,0,1,0,0,0,0,0,1,0,1,0,128,0,0,0,255]))
+  c.setShellScene(new Uint8Array([1,0,1,0,0,0,0,0,1,0,1,0,128,0,0,0,0,0,255]))
   assert(hex(c.composite()) === 'f00070101020', 'shell scene bridge and 4bpp composition')
   c.setScreenBlanked(true); assert(c.composite().every(p => p === 0), 'blanking')
   const textures = new IosTexturePlanner(), textured = new SurfaceCompositor(4, 2)
@@ -46,6 +48,14 @@ export function runKotlinProtocolSmokeTest(): void {
   assert(textures.plan(null, packed, snapshot.textures, 1)?.resourceCommands.length === 0, 'texture reuse')
   textures.reset()
   assert((textures.plan(null, packed, snapshot.textures, 1)?.resourceCommands.length ?? 0) > 0, 'texture reset')
+  const selectedSurface = new GrayImage(8, 4, 1)
+  selectedSurface.drawMenuSelection(new GrayImage(4, 2, 255), 1, 1, 16, 48, 0, 2)
+  const selectedPreview = new SurfaceCompositor(8, 4)
+  selectedPreview.setShellScene(encodeShellScene([{ image: selectedSurface, x: 0, y: 0, shellKey: 100 }]))
+  const selectedSnapshot = selectedPreview.compositeFrame()
+  assert(selectedSnapshot.pixels[10] === 240 && selectedSnapshot.pixels[9] === 0, 'menu selection depth and bridge')
+  const selectedPlan = new IosTexturePlanner().plan(null, protocol.packGray4(selectedSnapshot.pixels, 8, 4), selectedSnapshot.textures, 1)
+  assert(!!selectedPlan && selectedPlan.payload[0] === 28 && selectedPlan.resourceCommands.some(c => c[0] === 29), 'menu resource planning')
   const changed = new Uint8Array(16); changed[0] = 255
   assert(buildBoundingBoxPayload(new Uint8Array(16), changed, 8, 4, 1)?.[0] === 3, 'image update')
   assert(lvglMetrics('/nonexistent/faceclaw-font').length === 0, 'font bridge')

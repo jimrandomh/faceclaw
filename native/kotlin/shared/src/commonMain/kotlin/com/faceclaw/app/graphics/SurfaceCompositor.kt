@@ -50,6 +50,7 @@ class SurfaceCompositor {
             var out: MutableList<ScreenDraw> = ArrayList()
             while ((cursor.remaining() >= 1)) {
                 var kind: Int = (cursor.get() and 0xff)
+                if (kind in 3..5) { out.add(ScreenDraw.image(0, 0, 0).also { it.selection = MenuSelection.read(cursor, kind) }); continue }
                 if (((kind == ScreenDraw.KIND_GLYPH) && (cursor.remaining() >= 11))) {
                     var fontId: Int = (cursor.getShort().toInt() and 0xffff)
                     var encoding: Int = cursor.getInt()
@@ -106,6 +107,7 @@ class SurfaceCompositor {
      * raster comes from ImageAtlas under imageId.
      */
     class ScreenDraw {
+        @JvmField var selection: MenuSelection? = null
         companion object {
             const val KIND_GLYPH: Int = 0
 
@@ -609,6 +611,7 @@ class SurfaceCompositor {
         var fingerprint: StringBuilder = StringBuilder()
         fingerprint.append(screenWidth).append('x').append(screenHeight)
         var draws: MutableList<ScreenDraw> = ArrayList()
+        val selections = ArrayList<MenuSelection>()
         for (surface in ordered) {
             if (!surface.visible || (shellScene != null && surface.id == "shell")) {
                 continue
@@ -616,6 +619,8 @@ class SurfaceCompositor {
             blendLocked(gray, surface)
             var dim: Int = dimForLocked(surface)
             for (draw in surface.draws) {
+                val selected = draw.selection
+                if (selected != null) { selections.add(selected.translated(surface.x, surface.y)); continue }
                 if (((dim < 256) && (draw.kind == ScreenDraw.KIND_IMAGE))) {
                     continue
                 }
@@ -656,8 +661,8 @@ class SurfaceCompositor {
                 fingerprint.append(":dim").append(dim)
             }
         }
-        val scene = if (surfaces.values.any { it.visible && it.zOrder > 1 }) ShellScene.EMPTY else shellScene ?: ShellScene.EMPTY
-        val preview = if (shellScene != null) scene.preview(gray, screenWidth, screenHeight) else gray
+        val scene = if (surfaces.values.any { it.visible && it.zOrder > 1 }) ShellScene.EMPTY else ShellScene(shellScene?.layers ?: emptyList(), selections)
+        val preview = if (shellScene != null || selections.isNotEmpty()) scene.preview(gray, screenWidth, screenHeight) else gray
         return Composite(preview, screenWidth, screenHeight, fingerprint.append("|shell:").append(scene.fingerprint).toString(),
             nextCompositeSeq++, draws.toTypedArray()).also { it.screenGray = gray; it.shellScene = scene }
     }

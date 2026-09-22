@@ -156,7 +156,7 @@ test('the background registers once and uses a nine-byte image reference on late
       return 1;
     } } } } },
   });
-  const { prepareFrameDraws } = load('app/graphics/glyph-wire.ts', { '../native/texture-atlas': atlas });
+  const { prepareFrameDraws } = load('app/graphics/glyph-wire.ts', { '../native/texture-atlas': atlas, './presentation-wire': load('app/graphics/presentation-wire.ts') });
   const background = compass.createCompassBackground(576, 260, 256, 193.25, 98, 140, 1);
   for (const heading of [0, 1, 2, 45, 90]) {
     const image = background.clone();

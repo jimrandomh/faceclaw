@@ -19,6 +19,8 @@ const MENU_HIGHLIGHT_SELECTED_BACKGROUND_FILL = 15;
 const MENU_HIGHLIGHT_SELECTED_BORDER_STROKE = 45;
 
 export type MenuLayout = {
+  /** Stereo depth of the menu surface; selected rows add +2. */
+  depth?: number;
   /** Left edge, or "center" to center horizontally on the painted surface. */
   x: number | "center";
   y: number;
@@ -192,6 +194,8 @@ export class MenuLayer implements Layer {
   private selectedIndex = 0;
   private scrollRow = 0;
 
+  get depth(): number { return this.layout.depth ?? 0; }
+
   get dimUnderneath(): false | number {
     return this.layout.dimUnderneath ?? false;
   }
@@ -227,7 +231,7 @@ export class MenuLayer implements Layer {
     const maxHeight = Math.min(
       this.layout.maxHeight ?? image.height - y - DEFAULT_MENU_Y,
       image.height - y,
-      this.layout.squareCorners ? Math.floor(65530 / Math.ceil(width / 2)) : Infinity,
+      (this.layout.squareCorners || this.depth !== 0) ? Math.floor(65530 / Math.ceil(width / 2)) : Infinity,
     );
     const footerHeight = this.layout.footer ? MENU_FOOTER_GAP + lineStep(font) : 0;
     const contentHeight = chromeTop + this.items.length * rowHeight + footerHeight + MENU_BODY_PADDING;
@@ -266,22 +270,14 @@ export class MenuLayer implements Layer {
       const rowY = bodyY + (index - this.scrollRow) * rowHeight;
       const selected = index === this.selectedIndex;
       const disabled = isMenuItemDisabled(item);
-      if (selected) {
-        drawSelectionHighlight(
-          image,
-          x + 12,
-          rowY,
-          width - 24,
-          rowHeight - 1,
-          focused,
-          8,
-        );
-      }
+      const row = selected ? new GrayImage(width - 24, rowHeight - 1, 0) : image;
+      const textX = selected ? 10 : x + 22;
+      const textY = selected ? 0 : rowY;
       if (item.render) {
         item.render({
-          image,
-          x: x + 22,
-          y: rowY,
+          image: row,
+          x: textX,
+          y: textY,
           width: width - 44,
           height: rowHeight - 3,
           selected,
@@ -290,8 +286,9 @@ export class MenuLayer implements Layer {
           ctx,
         });
       } else {
-        image.drawText(font, x + 22, rowY + LIST_ROW_TEXT_INSET, item.label, disabled ? 70 : selected ? 255 : 200);
+        row.drawText(font, textX, textY + LIST_ROW_TEXT_INSET, item.label, disabled ? 70 : selected ? 255 : 200);
       }
+      if (selected) image.drawMenuSelection(row, x + 12, rowY, focused ? MENU_HIGHLIGHT_SELECTED_BACKGROUND_FILL : 0, MENU_HIGHLIGHT_SELECTED_BORDER_STROKE, 8, 2);
     }
 
     if (this.items.length > visibleRowCount) {

@@ -228,7 +228,7 @@ export class ShellChromeLayer implements Layer {
     const canvas = new GrayImage(G2_LENS_WIDTH, G2_LENS_HEIGHT, 0);
     this.drawTopBar(canvas, state);
     const left = sidebarStripVisible(state.focus, state.foregroundAppId) ? SIDEBAR_WIDTH : 0;
-    parts.push(shellCrop(canvas, left, windowTop(state.foregroundHeightMode, state.foregroundAppId), G2_LENS_WIDTH-left, TOP_BAR_HEIGHT, 2));
+    parts.push({ ...shellCrop(canvas, left, windowTop(state.foregroundHeightMode, state.foregroundAppId), G2_LENS_WIDTH-left, TOP_BAR_HEIGHT, 2), depth: -2 });
     drawAmbientCards(canvas, parts);
     return parts;
   }
@@ -288,14 +288,16 @@ export class ShellChromeLayer implements Layer {
     // the icon drawn inverted. Only the right column touches the separator;
     // a selected overflow icon gets a self-contained box instead.
     const sep = SIDEBAR_WIDTH - 1;
+    // Start beside the app content, leaving the area alongside the top bar open.
+    const sepTop = Math.max(bandTop, windowTop(state.foregroundHeightMode, state.foregroundAppId) + TOP_BAR_HEIGHT);
     const selVisible = state.selectedIndex >= this.scrollRow && state.selectedIndex < lastVisible;
     const selSlot = selVisible ? slotOf(state.selectedIndex) : null;
     const selTabTop = selSlot && selSlot.column === firstColumn ? selSlot.y - 2 : null;
     if (selTabTop !== null) {
-      image.drawLine(sep, bandTop, sep, selTabTop, BORDER_VALUE);
+      image.drawLine(sep, sepTop, sep, selTabTop, BORDER_VALUE);
       image.drawLine(sep, selTabTop + iconSize + 4, sep, bandBottom - 1, BORDER_VALUE);
     } else {
-      image.drawLine(sep, bandTop, sep, bandBottom - 1, BORDER_VALUE);
+      image.drawLine(sep, sepTop, sep, bandBottom - 1, BORDER_VALUE);
     }
 
     for (let index = this.scrollRow; index < lastVisible; index++) {
@@ -312,13 +314,17 @@ export class ShellChromeLayer implements Layer {
         // slot, so anything wider would clip at the screen edge.
         drawSelectionBox(image, left, y - 2, variant.columnWidth, iconSize + 4, focused);
       }
-      window.drawIcon(image, x, y, iconSize, focused);
+      // Paint unselected icons into their own resource so only the replayed copy moves.
+      const icon = selected ? image : new GrayImage(iconSize, iconSize + 1);
+      const iconX = selected ? x : 0, iconY = selected ? y : 1;
+      window.drawIcon(icon, iconX, iconY, iconSize, focused);
       if (window.attention) {
         // Black dot on the white focused tab, white dot otherwise. A deferred
         // image (not a raster fill) so it renders above the icon, which is
         // itself a deferred draw.
-        image.drawImage(attentionDot(focused ? SHELL_OPAQUE_BLACK : 255), x + iconSize - 7, y - 1);
+        icon.drawImage(attentionDot(focused ? SHELL_OPAQUE_BLACK : 255), iconX + iconSize - 7, iconY - 1);
       }
+      if (!selected) image.drawDepthImage(icon, x, y - 1, -2);
     }
 
     // Chevrons center over the icon area, which in the one-column variant is

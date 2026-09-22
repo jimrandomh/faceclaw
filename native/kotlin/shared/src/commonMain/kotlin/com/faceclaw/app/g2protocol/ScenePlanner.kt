@@ -25,18 +25,19 @@ class ScenePlanner(private val cache: ResourceCacheState) {
             CachedResource(DrawProtocol.rawImage(layer.width, layer.height), keys[i])
         } }
         owned.keys.retainAll(keys.toSet()); pixels.keys.retainAll(keys.toSet())
-        cache.pin(surfaces)
+        val selectedResources = scene.allSelections.map { it.resource }
+        cache.pin(surfaces + selectedResources)
         val absent = surfaces.map { cache.resourceId(it) < 0 }
-        val ids = cache.prepare(surfaces)
-        check(ids.all { it >= 0 }) { "Shell surfaces exceed the resource budget" }
+        val prepared = cache.prepare(surfaces + selectedResources)
+        val ids = prepared.copyOfRange(0, surfaces.size)
+        val selectedIds = prepared.copyOfRange(surfaces.size, prepared.size)
+        check(prepared.all { it >= 0 }) { "Shell surfaces exceed the resource budget" }
         commands.addAll(cache.drainCommands(3600))
-        val rootCalls = ArrayList<ByteArray>()
+        val rootCalls = scene.calls(width, height, ids, selectedIds)
         for ((i, layer) in scene.layers.withIndex()) {
             val old = if (absent[i]) null else pixels[keys[i]]
             commands.addAll(DrawProtocol.messages(pixelCalls(old, layer.packed, layer.width, layer.height, ids[i])))
             pixels[keys[i]] = layer.packed
-            if (layer.dim < 256) rootCalls.add(DrawProtocol.lut(width, height, layer.dim))
-            rootCalls.add(DrawProtocol.image(ids[i], layer.x, layer.y))
         }
         val base = if (incremental) previous else null
         val texture = if (textures) TexturePlanner.plan(base, screen, width, height, draws, cache, firstId, multiRect, maxRects) else null
@@ -48,7 +49,7 @@ class ScenePlanner(private val cache: ResourceCacheState) {
         val rootId = cache.prepare(listOf(list))[0]
         check(rootId >= 0) { "No space for root display list" }
         commands.addAll(cache.drainCommands(3600))
-        cache.pin(surfaces + list)
+        cache.pin(surfaces + selectedResources + list)
         val evicted = commands.any { it[0].toInt() == ResourceCacheState.EVICT_MODE }
         if (evicted) commands.add(0, DrawProtocol.root(DrawProtocol.SCREEN))
         if (root != rootId || evicted) commands.add(DrawProtocol.root(rootId))

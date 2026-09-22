@@ -34,7 +34,86 @@ class DisplayListTest {
             2 to DrawProtocol.displayList(listOf(DrawProtocol.call(7,DrawProtocol.word(1)))))
         assertFails { DisplayListRenderer(cyclic).render(1,target,target) }
     }
-    private class Glasses {
+    @Test fun roundedRectsAndNestedOddNegativeDepthMatchFirmwareOnBothLenses() {
+        val resources = mapOf(
+            40 to hex("0404000200f00f0ff0"),
+            41 to hex("0202000f00080202010001000c0008000300040a0a000402022800050004001f"),
+            42 to hex("02010005000702fd2900"))
+        val screen = hex("012345601234560112345601234560122345601234560123345601234560123445601234560123455601234f60123456601234560123456001234560123456011234560123456012234560123456012334560123456012344560123456012345")
+        val expected = listOf("01234560123456011aaaaaaaaaa56012aa45644444aa0123a4564444456a1234a564f44f564a2345a6444fff644a3456a4444456444a4560aa44456444aa56011aaaaaaaaaa56012234560123456012334560123456012344560123456012345", "012345601234560112aaaaaaaaaa60122aa56444445aa1233a5644444564a2344a644f44f644a3455a4444ff6444a4566a4444564444a5600aa44564444aa60112aaaaaaaaaa6012234560123456012334560123456012344560123456012345")
+        for (right in listOf(false, true)) {
+            val output = ByteArray(screen.size)
+            DisplayListRenderer(resources, rightLens = right).render(42, DisplayListRenderer.Target(screen,16,12), DisplayListRenderer.Target(output,16,12))
+            assertContentEquals(hex(expected[if(right) 1 else 0]), output)
+        }
+        for (depth in -128..127) {
+            assertEquals(kotlin.math.floor(depth / 2.0).toInt(), DrawProtocol.depthOffset(depth, false))
+            assertEquals(-kotlin.math.floor((depth + 1) / 2.0).toInt(), DrawProtocol.depthOffset(depth, true))
+        }
+    }
+    @Test fun roundedFillPreservesBrighterTextAndDepthClipsWithoutNibbleDamage() {
+        val pixels = ByteArray(32) { 0x11 }; pixels[13] = 0xf1.toByte()
+        val target = DisplayListRenderer.Target(pixels,8,8)
+        val fill = DrawProtocol.roundedRect(-1,0,8,8,2,6,16,2)
+        DisplayListRenderer(emptyMap()).execute(DrawProtocol.sequence(listOf(fill)),target)
+        assertEquals(15,target.get(2,3)); assertEquals(6,target.get(3,3)); assertEquals(1,target.get(0,0))
+        val bbox = DrawProtocol.call(1,hex("00000002010f10"),depth=-1)
+        DisplayListRenderer(emptyMap()).execute(DrawProtocol.sequence(listOf(bbox)),target)
+        assertEquals(15,target.get(0,0));assertEquals(1,target.get(7,0))
+        val before=pixels.copyOf()
+        assertFails { DisplayListRenderer(emptyMap()).execute(DrawProtocol.sequence(listOf(byteArrayOf(8,2))),target) }
+        assertContentEquals(before,pixels)
+    }
+    @Test fun selectedMenuResourcesStayOutOfScreenAndReplayAtDepthTwo() {
+        val planner=ScenePlanner(ResourceCacheState()); val left=Glasses(); val right=Glasses(true)
+        val app=ByteArray(640*480/2) { 0x11 }
+        fun row(x:Int) = MenuSelection(x,8,8,4,1,4,9,2,hex("00ff0000000000000000000000000000"))
+        val scene=ShellScene(emptyList(),listOf(row(10)))
+        val first=planner.plan(app,640,480,null,scene,1);left.apply(first.commands);right.apply(first.commands)
+        assertContentEquals(app,left.screen);assertContentEquals(app,right.screen)
+        val l=DisplayListRenderer.Target(left.composition,640,480);val r=DisplayListRenderer.Target(right.composition,640,480)
+        assertEquals(15,l.get(13,8));assertEquals(15,r.get(11,8));assertEquals(1,l.get(9,8))
+        val moved=planner.plan(app,640,480,null,ShellScene(emptyList(),listOf(row(20))),1)
+        assertFalse(moved.commands.any { it[0].toInt()==26 || it[0].toInt()==29 })
+        left.apply(moved.commands);assertContentEquals(app,left.screen)
+        left.apply(planner.plan(app,640,480,null,ShellScene.EMPTY,1).commands)
+        assertContentEquals(app,left.composition)
+    }
+    @Test fun contextMenusAndSidebarDepthReplayOnBothLensesWithoutBakedCopies() {
+        fun record(kind: Int, x: Int, y: Int, w: Int, h: Int, depth: Int, gray: ByteArray): MenuSelection {
+            val bytes = DrawProtocol.word(x) + DrawProtocol.word(y) + DrawProtocol.word(w) + DrawProtocol.word(h) +
+                DrawProtocol.word(0) + byteArrayOf(16, 48, depth.toByte()) + DrawProtocol.word(0) + gray
+            return MenuSelection.read(ArrayByteReader(bytes), kind)
+        }
+        val menu = record(5, 10, 10, 8, 8, 4, ByteArray(64) { if (it == 0) 0 else 1 })
+        val selected = record(3, 12, 12, 4, 2, 6, ByteArray(8) { -1 })
+        val icon = record(4, 30, 10, 2, 2, -2, ByteArray(4) { -1 })
+        val app = ByteArray(640 * 480 / 2) { 0x66 }
+        val planner = ScenePlanner(ResourceCacheState())
+        val scene = ShellScene(emptyList(), listOf(menu, selected, icon))
+        val plan = planner.plan(app, 640, 480, null, scene, 1)
+        for (right in listOf(false, true)) {
+            val glasses = Glasses(right); glasses.apply(plan.commands)
+            assertContentEquals(app, glasses.screen)
+            val output = DisplayListRenderer.Target(glasses.composition,640,480)
+            val shift = if (right) -2 else 2
+            assertEquals(6, output.get(10 + shift,10)) // transparent corner
+            assertEquals(0, output.get(11 + shift,10)) // opaque black stays opaque
+            assertEquals(15, output.get(12 + (if (right) -3 else 3),12))
+            assertEquals(15, output.get(30 + (if (right) 1 else -1),10))
+            assertEquals(6, output.get(if (right) 30 else 31,10)) // no unshifted icon
+            val preview = scene.preview(ByteArray(640*480) { 96 },640,480,right)
+            assertContentEquals(glasses.composition, BmpUtil.pack4bppFromGray8(preview,640,480))
+        }
+        // The shell uses an independently owned surface with its own depth.
+        val shell = ShellScene(listOf(ShellScene.Layer(1,10,10,8,8,256,ByteArray(32),listOf(selected),4)))
+        val left = shell.preview(ByteArray(640*480) { 96 },640,480)
+        val right = shell.preview(ByteArray(640*480) { 96 },640,480,true)
+        assertEquals(0,left[10*640+12].toInt()); assertEquals(96,left[10*640+10].toInt())
+        assertEquals(0,right[10*640+8].toInt()); assertEquals(96,right[10*640+16].toInt())
+    }
+
+    private class Glasses(val right: Boolean = false) {
         val resources=mutableMapOf<Int,ByteArray>(); val screen=ByteArray(640*480/2);val composition=ByteArray(screen.size)
         var root=65535
         fun apply(commands: List<ByteArray>) {
@@ -46,9 +125,9 @@ class DisplayListTest {
                 } }
                 22 -> repeat(DrawProtocol.u16(b,1)) { resources.remove(DrawProtocol.u16(b,3+it*2)) }
                 29 -> repeat(DrawProtocol.u16(b,1)) { val p=3+it*6;resources.getOrPut(DrawProtocol.u16(b,p)) { DrawProtocol.rawImage(DrawProtocol.u16(b,p+2),DrawProtocol.u16(b,p+4)) } }
-                26 -> DisplayListRenderer(resources).execute(b.copyOfRange(1,b.size),DisplayListRenderer.Target(screen,640,480))
+                26 -> DisplayListRenderer(resources, rightLens = right).execute(b.copyOfRange(1,b.size),DisplayListRenderer.Target(screen,640,480))
                 27 -> root=DrawProtocol.u16(b,1)
-                28 -> DisplayListRenderer(resources).render(root,DisplayListRenderer.Target(screen,640,480),DisplayListRenderer.Target(composition,640,480))
+                28 -> DisplayListRenderer(resources, rightLens = right).render(root,DisplayListRenderer.Target(screen,640,480),DisplayListRenderer.Target(composition,640,480))
                 else -> error("legacy command ${b[0]}")
             }
         }

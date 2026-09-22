@@ -1,17 +1,26 @@
 package com.faceclaw.app
 
 /** Reference interpreter. It uses the firmware's packed rows, clipping, LUT and call grammar. */
-class DisplayListRenderer(private val resources: Map<Int, ByteArray>, private val builtin: ((Int, Int) -> BuiltinGlyph)? = null) {
+class DisplayListRenderer(private val resources: Map<Int, ByteArray>, private val builtin: ((Int, Int) -> BuiltinGlyph)? = null, private val rightLens: Boolean = false) {
     class BuiltinGlyph(val image: ByteArray, val advance: Int, val x: Int = 0, val y: Int = 0)
-    class Target(val bytes: ByteArray, val width: Int, val height: Int, val offset: Int = 0) {
+    class Target(val bytes: ByteArray, val width: Int, val height: Int, val offset: Int = 0, val shiftX: Int = 0) {
         val stride = (width + 1) / 2
         init { require(width > 0 && height > 0 && offset >= 0 && bytes.size - offset >= stride * height) }
         fun get(x: Int, y: Int) = (bytes[offset + y * stride + x / 2].toInt() ushr (if (x % 2 == 0) 4 else 0)) and 15
-        fun put(x: Int, y: Int, v: Int) {
+        fun shifted(dx: Int) = Target(bytes, width, height, offset, shiftX + dx)
+        fun put(localX: Int, y: Int, v: Int) {
+            val x = localX + shiftX
             if (x !in 0 until width || y !in 0 until height) return
             val index = offset + y * stride + x / 2; val old = bytes[index].toInt()
             bytes[index] = (if (x % 2 == 0) (old and 15) or (v shl 4) else (old and 240) or v).toByte()
         }
+    }
+    private fun roundedContains(x: Int, y: Int, w: Int, h: Int, radius: Int): Boolean {
+        if (x !in 0 until w || y !in 0 until h) return false
+        val r = minOf(radius, w / 2, h / 2)
+        val dx = maxOf(0, 2 * r - (2 * minOf(x, w - 1 - x) + 1))
+        val dy = maxOf(0, 2 * r - (2 * minOf(y, h - 1 - y) + 1))
+        return dx * dx + dy * dy <= 4 * r * r
     }
     private class Image(val width: Int, val height: Int, val pixels: IntArray)
     private fun word(b: ByteArray, p: Int): Int { require(p >= 0 && p + 2 <= b.size); return DrawProtocol.u16(b, p) }
@@ -77,9 +86,10 @@ class DisplayListRenderer(private val resources: Map<Int, ByteArray>, private va
         repeat(count) {
             val n = word(b, pos); pos += 2; require(n >= 2 && n <= b.size - pos && budget[0]-- > 0)
             val call = b.copyOfRange(pos, pos + n); pos += n
-            val flags = call[1].toInt() and 255; require(flags <= 1)
+            val flags = call[1].toInt() and 255; require(flags <= 3)
             var t = inherited; var header = 2
-            if (flags == 1) { val id = word(call, 2); refs.add(id); t = target(id); header += 2 }
+            if (flags and 1 != 0) { val id = word(call, 2); refs.add(id); t = target(id).shifted(inherited.shiftX); header += 2 }
+            if (flags and 2 != 0) { require(header < call.size); t = t.shifted(DrawProtocol.depthOffset(call[header++].toInt(), rightLens)) }
             val p = call.copyOfRange(header, call.size)
             when (call[0].toInt()) {
                 1 -> {
@@ -132,8 +142,23 @@ class DisplayListRenderer(private val resources: Map<Int, ByteArray>, private va
                 6 -> {
                     require(p.size == 16); val x = word(p, 0); val y = word(p, 2); val w = word(p, 4); val h = word(p, 6)
                     require(w > 0 && h > 0 && x + w <= t.width && y + h <= t.height)
-                    if (apply) for(yy in y until y + h) for(xx in x until x + w) { val v = t.get(xx, yy)
+                    if (apply) for(yy in y until y + h) for(xx in x until x + w) {
+                        if (xx + t.shiftX !in 0 until t.width) continue
+                        val v = t.get(xx + t.shiftX, yy)
                         t.put(xx, yy, (p[8 + v / 2].toInt() ushr (if(v % 2 == 0) 4 else 0)) and 15) }
+                }
+                8 -> {
+                    require(p.size == 12)
+                    val x = signed(p, 0); val y = signed(p, 2); val w = word(p, 4); val h = word(p, 6)
+                    val radius = word(p, 8); val fill = p[10].toInt() and 255; val border = p[11].toInt() and 255
+                    require(w in 1..640 && h in 1..480 && fill <= 15 && border <= 16)
+                    if (apply) for (yy in 0 until h) for (xx in 0 until w) {
+                        if (!roundedContains(xx, yy, w, h, radius)) continue
+                        val tx = x + xx + t.shiftX; val ty = y + yy
+                        if (tx !in 0 until t.width || ty !in 0 until t.height) continue
+                        val edge = !roundedContains(xx - 1, yy - 1, w - 2, h - 2, maxOf(0, radius - 1))
+                        t.put(x + xx, ty, if (edge && border < 16) border else maxOf(fill, t.get(tx, ty)))
+                    }
                 }
                 7 -> { require(p.size == 2); executeList(word(p, 0), t, screen, apply, stack, budget, refs) }
                 else -> error("Unknown draw opcode")

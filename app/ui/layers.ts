@@ -80,6 +80,7 @@ export interface LayerContext {
 }
 
 export interface Layer {
+  readonly depth?: number;
   paintParts?(): Plane[];
   readonly paintOverBase?: boolean;
   /**
@@ -284,7 +285,7 @@ export class LayerStack {
         return canvas;
       }),
     );
-    const ownPlane: Plane = { image, x: 0, y: 0, shellKey: key, dimUnderneath: layer.dimUnderneath === false ? 1 : layer.dimUnderneath };
+    const ownPlane: Plane = { image, x: 0, y: 0, shellKey: key, depth: layer.depth, dimUnderneath: layer.dimUnderneath === false ? 1 : layer.dimUnderneath };
     if (index <= 0) {
       this.lastBaseDim = dimSoFar;
       return [ownPlane];

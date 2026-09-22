@@ -142,6 +142,10 @@ test('Music settings keeps toggles and selection when a new app arrives and supp
   const font = BdfFont.parse(source('app/fonts/terminus/ter-u20n.bdf'));
   class RecordingImage extends graphics.GrayImage {
     texts = [];
+    drawMenuSelection(source, x, y, ...args) {
+      this.texts.push(...source.texts.map(t => ({ ...t, x: t.x + x, y: t.y + y })));
+      super.drawMenuSelection(source, x, y, ...args);
+    }
     drawText(font, x, y, text, value) { this.texts.push({ x, y, text }); super.drawText(font, x, y, text, value); }
   }
   const deps = {

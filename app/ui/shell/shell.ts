@@ -233,6 +233,7 @@ class ShellOverlayMenuLayer extends MenuLayer {
       squareCorners: true,
       footer,
       dimUnderneath: CONTEXT_MENU_DIM,
+      depth: 4,
     });
   }
 

@@ -1,6 +1,6 @@
 package com.faceclaw.app
 
-/** Revision 25 wire grammar, shared by scene planning and the local renderer. */
+/** Revision 26 wire grammar, shared by scene planning and the local renderer. */
 object DrawProtocol {
     const val DRAW = 26
     const val ROOT = 27
@@ -15,8 +15,19 @@ object DrawProtocol {
     const val CURRENT = 65534
     fun u16(b: ByteArray, p: Int): Int = (b[p].toInt() and 255) or ((b[p + 1].toInt() and 255) shl 8)
     fun word(n: Int) = byteArrayOf(n.toByte(), (n ushr 8).toByte())
-    fun call(op: Int, args: ByteArray, target: Int? = null): ByteArray =
-        byteArrayOf(op.toByte(), if (target == null) 0 else 1) + (target?.let { word(it) } ?: byteArrayOf()) + args
+    fun call(op: Int, args: ByteArray, target: Int? = null, depth: Int? = null): ByteArray {
+        require(depth == null || depth in -128..127)
+        val flags = (if (target == null) 0 else 1) or (if (depth == null) 0 else 2)
+        return byteArrayOf(op.toByte(), flags.toByte()) + (target?.let { word(it) } ?: byteArrayOf()) +
+            (depth?.let { byteArrayOf(it.toByte()) } ?: byteArrayOf()) + args
+    }
+    fun depthOffset(depth: Int, right: Boolean): Int =
+        if (right) -floorHalf(depth + 1) else floorHalf(depth)
+    private fun floorHalf(n: Int): Int = if (n < 0) (n - 1) / 2 else n / 2
+    fun roundedRect(x: Int, y: Int, width: Int, height: Int, radius: Int, background: Int, border: Int = 16, depth: Int? = null): ByteArray {
+        require(width in 1..640 && height in 1..480 && radius in 0..65535 && background in 0..15 && border in 0..16)
+        return call(8, word(x) + word(y) + word(width) + word(height) + word(radius) + byteArrayOf(background.toByte(), border.toByte()), depth = depth)
+    }
     fun sequence(calls: List<ByteArray>): ByteArray {
         require(calls.size <= 4096)
         val out = ByteSink(); out.write(word(calls.size))
@@ -26,8 +37,8 @@ object DrawProtocol {
     fun message(calls: List<ByteArray>) = byteArrayOf(DRAW.toByte()) + sequence(calls)
     fun displayList(calls: List<ByteArray>) = byteArrayOf(LIST.toByte()) + sequence(calls)
     fun root(id: Int) = byteArrayOf(ROOT.toByte()) + word(id)
-    fun image(id: Int, x: Int, y: Int, options: Int = 15, target: Int? = null) =
-        call(4, word(id) + word(x) + word(y) + byteArrayOf(options.toByte()), target)
+    fun image(id: Int, x: Int, y: Int, options: Int = 15, target: Int? = null, depth: Int? = null) =
+        call(4, word(id) + word(x) + word(y) + byteArrayOf(options.toByte()), target, depth)
     fun lut(width: Int, height: Int, factor: Int): ByteArray {
         val table = ByteArray(8) { i ->
             (((i * 2 * factor / 256).coerceIn(0, 15) shl 4) or ((i * 2 + 1) * factor / 256).coerceIn(0, 15)).toByte()
@@ -60,7 +71,7 @@ object DrawProtocol {
         flush()
         return call(1, out.toByteArray(), target)
     }
-    /** Internal optimizer formats are translated here; they are never sent to revision 25. */
+    /** Internal optimizer formats are translated here; they are never sent to revision 26. */
     fun fromOptimized(payload: ByteArray, width: Int = 640, height: Int = 480): List<ByteArray> {
         return when (val mode = payload[0].toInt() and 127) {
             8 -> {

@@ -73,6 +73,7 @@ export type PlacedGlyph = {
  * from the moment it is placed.
  */
 export type PlacedImage = {
+  presentation?: { mode?: "image" | "masked-image"; radius: number; background: number; border: number; depth: number; occlusions?: readonly { x: number; y: number; width: number; height: number }[] };
   kind: "image";
   source: GrayImage;
   x: number;
@@ -391,6 +392,7 @@ export class GrayImage {
         hash = mixInt(hash, placed.source.width);
         hash = mixInt(hash, placed.source.height);
         hash = mixInt(hash, placed.source.sourceContentHash32());
+        if (placed.presentation) { const p = placed.presentation; for (const value of [p.radius, p.background, p.border, p.depth, p.mode === "image" ? 1 : p.mode === "masked-image" ? 2 : 0]) hash = mixInt(hash, value); }
       } else {
         hash = mixInt(hash, 0xf17e);
         hash = mixInt(hash, placed.font.atlasTag);
@@ -501,6 +503,24 @@ export class GrayImage {
     this.drawList.push({ kind: "fwtext", font, x, y, value: clampByte(value), glyphs });
   }
 
+  /** Retain the selected row separately from the menu surface for glasses-side composition. */
+  drawMenuSelection(source: GrayImage, x: number, y: number, background: number, border: number, radius = 8, depth = 2): void {
+    this.drawList.push({ kind: "image", source: source.withDrawsBaked(), x, y,
+      presentation: { radius, background, border, depth } });
+  }
+
+  /** Replay an image at stereo depth. Masked images preserve intentional gray8 black (1). */
+  drawDepthImage(source: GrayImage, x: number, y: number, depth: number, masked = false): void {
+    this.drawList.push({ kind: "image", source: source.withDrawsBaked(), x, y,
+      presentation: { mode: masked ? "masked-image" : "image", radius: 0, background: 0, border: 0, depth } });
+  }
+
+  copyPresentationsInto(target: GrayImage, dx: number, dy: number): void {
+    for (const placed of this.drawList) if (placed.kind === "image" && placed.presentation) {
+      target.drawList.push({ ...placed, x: placed.x + dx, y: placed.y + dy });
+    }
+  }
+
   /**
    * Bake this image's deferred draws into its own pixels and clear the list.
    * Used where later raster must be able to cover earlier draws within the
@@ -513,7 +533,8 @@ export class GrayImage {
       if (placed.kind === "glyph") {
         rasterizeGlyph(this, placed.font, placed.glyph, placed.x, placed.y, placed.value);
       } else if (placed.kind === "image") {
-        this.bitBlt(placed.source, placed.x, placed.y, { transparentZero: true });
+        if (placed.presentation) { const one = new GrayImage(this.width, this.height); one.drawList.push(placed); one.bakeDrawsInto(this, 0, 0); }
+        else this.bitBlt(placed.source, placed.x, placed.y, { transparentZero: true });
       } else {
         placed.font.bakeFwTextRun(this, placed, 0, 0);
       }
@@ -534,7 +555,7 @@ export class GrayImage {
     const copy = new GrayImage(this.width, this.height, 0);
     copy.pixels.set(this.pixels);
     for (const placed of this.drawList) {
-      if (placed.kind === "image") {
+      if (placed.kind === "image" && !placed.presentation) {
         copy.bitBlt(placed.source, placed.x, placed.y, { transparentZero: true });
       }
     }
@@ -544,7 +565,10 @@ export class GrayImage {
       if (value !== 0) pixels[i] = dimValue(value, scale);
     }
     for (const placed of this.drawList) {
-      if (placed.kind !== "image") {
+      if (placed.kind === "image" && placed.presentation) {
+        const p = placed.presentation;
+        copy.drawList.push({ ...placed, source: placed.source.dimmed(factor), presentation: { ...p, background: dimValue(p.background, scale), border: dimValue(p.border, scale) } });
+      } else if (placed.kind !== "image") {
         copy.drawList.push({ ...placed, value: dimValue(placed.value, scale) });
       }
     }
@@ -556,11 +580,11 @@ export class GrayImage {
    * Returns this image unchanged when there are none, otherwise a baked copy
    * with an empty draw list.
    */
-  withDrawsBaked(): GrayImage {
+  withDrawsBaked(presentations = true): GrayImage {
     if (!this.drawList.length) return this;
     const baked = new GrayImage(this.width, this.height, 0);
     baked.pixels.set(this.pixels);
-    this.bakeDrawsInto(baked, 0, 0);
+    this.bakeDrawsInto(baked, 0, 0, presentations);
     return baked;
   }
 
@@ -579,11 +603,28 @@ export class GrayImage {
   }
 
   /** Rasterize this image's deferred draws into target, translated by (dx, dy). */
-  bakeDrawsInto(target: GrayImage, dx: number, dy: number): void {
+  bakeDrawsInto(target: GrayImage, dx: number, dy: number, presentations = true): void {
     for (const placed of this.drawList) {
       if (placed.kind === "glyph") {
         rasterizeGlyph(target, placed.font, placed.glyph, placed.x + dx, placed.y + dy, placed.value);
       } else if (placed.kind === "image") {
+        if (placed.presentation) {
+          if (!presentations) continue;
+          if (placed.presentation.mode) {
+            target.bitBlt(placed.source, placed.x + dx, placed.y + dy, { transparentZero: true });
+            continue;
+          }
+          const { radius, background, border } = placed.presentation;
+          const fill = new GrayImage(placed.source.width, placed.source.height);
+          fill.fillRoundedRect(0, 0, fill.width, fill.height, background, radius);
+          for (let y = 0; y < fill.height; y++) for (let x = 0; x < fill.width; x++) {
+            const tx = placed.x + dx + x, ty = placed.y + dy + y;
+            if (tx >= 0 && ty >= 0 && tx < target.width && ty < target.height) {
+              const i = ty * target.width + tx; target.pixels[i] = Math.max(target.pixels[i], fill.pixels[y * fill.width + x]);
+            }
+          }
+          target.drawRoundedRect(placed.x + dx, placed.y + dy, fill.width, fill.height, border, radius);
+        }
         target.bitBlt(placed.source, placed.x + dx, placed.y + dy, { transparentZero: true });
       } else {
         placed.font.bakeFwTextRun(target, placed, dx, dy);
