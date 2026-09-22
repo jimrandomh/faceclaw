@@ -1,4 +1,4 @@
-import { type GrayImage } from "../../../graphics/image";
+import { GrayImage } from "../../../graphics/image";
 import { getDefaultLargeFont, getDefaultSmallFont } from "../../../graphics/ui-fonts";
 import { truncateText } from "../../../graphics/textwrap";
 import { nightscoutBridge, type NightscoutState } from "../../../native/nightscout-bridge";
@@ -91,22 +91,6 @@ export class NightscoutWidget implements GlanceWidget {
     image.drawText(small, PAD, y, `IOB ${state.iob === null ? "--" : state.iob.toFixed(2)}`, 160);
     y += step;
 
-    // Breached limits only, one per line while they fit, inverted like the
-    // app's warning fields. Nothing here means nothing is out of range.
-    const alerts = evaluateNightscoutAlerts(state, loadNightscoutThresholds(), nowMs);
-    const warnings: string[] = [];
-    if (alerts.cannula) warnings.push(`CAGE ${formatAgeShortFromTimestamp(state.cageTimestampMs, nowMs)}`);
-    if (alerts.cartridge) warnings.push(`Reservoir ${state.reservoirUnits === null ? "--" : Math.round(state.reservoirUnits)}U`);
-    if (alerts.battery) warnings.push(`Battery ${state.batteryVoltage === null ? "--" : state.batteryVoltage.toFixed(2)}V`);
-    if (alerts.loop) warnings.push(`Loop ${formatAgeShortFromTimestamp(state.loopTimestampMs, nowMs)}`);
-    for (const warning of warnings) {
-      if (y + small.lineHeight > image.height - 2) break;
-      const text = truncateText(small, warning, READOUT_WIDTH - 4);
-      image.fillRect(PAD - 2, y - 1, small.measureText(text) + 4, small.lineHeight + 2, 230);
-      image.drawText(small, PAD, y, text, 1);
-      y += step;
-    }
-
     const graphX = PAD + READOUT_WIDTH + PAD;
     drawNightscoutGraph(
       image,
@@ -115,5 +99,32 @@ export class NightscoutWidget implements GlanceWidget {
       nowMs,
       small,
     );
+
+    // Breached limits only, inverted like the app's warning fields. Continue
+    // at the top of a second column over the graph when the readout is full.
+    const alerts = evaluateNightscoutAlerts(state, loadNightscoutThresholds(), nowMs);
+    const warnings: string[] = [];
+    if (alerts.cannula) warnings.push(`CAGE ${formatAgeShortFromTimestamp(state.cageTimestampMs, nowMs)}`);
+    if (alerts.cartridge) warnings.push(`Reservoir ${state.reservoirUnits === null ? "--" : Math.round(state.reservoirUnits)}U`);
+    if (alerts.battery) warnings.push(`Battery ${state.batteryVoltage === null ? "--" : state.batteryVoltage.toFixed(2)}V`);
+    if (alerts.loop) warnings.push(`Loop ${formatAgeShortFromTimestamp(state.loopTimestampMs, nowMs)}`);
+    let warningX = PAD;
+    for (const warning of warnings) {
+      if (y + small.lineHeight > image.height - 2) {
+        warningX = graphX;
+        y = PAD;
+      }
+      const text = truncateText(small, warning, READOUT_WIDTH - 4);
+      const width = Math.ceil(small.measureText(text)) + 4;
+      if (warningX === PAD) {
+        image.fillRect(warningX - 2, y - 1, width, small.lineHeight + 2, 230);
+      } else {
+        // Graph labels are deferred glyphs: a deferred opaque background
+        // covers those as well as the graph's raster lines.
+        image.drawImage(new GrayImage(width, small.lineHeight + 2, 230), warningX - 2, y - 1);
+      }
+      image.drawText(small, warningX, y, text, 1);
+      y += step;
+    }
   }
 }
