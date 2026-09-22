@@ -503,6 +503,7 @@ export class IosPreviewController {
       ? new IosNavigationSensors(event => worker.postMessage({ type: 'navigation-sensors', event })) : undefined
     const host = new WorkerAppHost({
       appId, worker, navigationSensors,
+      onStopping: () => { if (this.appHosts.get(appId) === host) this.appHosts.delete(appId) },
       playBuzzerSequence: payload => this.actions.playBuzzerSequence(payload),
       openUrl: url => { void Utils.openUrl(url) },
       configureSurface: async (id, visible, heightMode) => {

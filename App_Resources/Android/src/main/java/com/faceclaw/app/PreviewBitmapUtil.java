@@ -12,7 +12,28 @@ import java.nio.ByteBuffer;
  * JS/Java bridge, where it used to cost ~150ms per preview.
  */
 public final class PreviewBitmapUtil {
+    private static int[] cachedLut;
+    private static long cachedGammaBits;
+    private static boolean cachedGreen;
+
     private PreviewBitmapUtil() {}
+
+    /** Reuse the current preview palette; rebuild only when gamma or color changes. */
+    private static synchronized int[] lookupTable(double brightenGamma, boolean green) {
+        long gammaBits = Double.doubleToLongBits(brightenGamma);
+        if (cachedLut != null && cachedGammaBits == gammaBits && cachedGreen == green) {
+            return cachedLut;
+        }
+        int[] lut = new int[256];
+        for (int g = 0; g < 256; g++) {
+            int v = (int) Math.max(0, Math.min(255, Math.round(255 * Math.pow(g / 255.0, brightenGamma))));
+            lut[g] = green ? (0xff000000 | (v << 8)) : (0xff000000 | (v << 16) | (v << 8) | v);
+        }
+        cachedGammaBits = gammaBits;
+        cachedGreen = green;
+        cachedLut = lut;
+        return lut;
+    }
 
     public static Bitmap fromGray(ByteBuffer gray, int width, int height, double brightenGamma) {
         return fromGray(gray, width, height, brightenGamma, false);
@@ -23,11 +44,7 @@ public final class PreviewBitmapUtil {
         if (gray == null || width <= 0 || height <= 0 || gray.remaining() < width * height) {
             throw new IllegalArgumentException("invalid gray preview buffer");
         }
-        int[] lut = new int[256];
-        for (int g = 0; g < 256; g++) {
-            int v = (int) Math.max(0, Math.min(255, Math.round(255 * Math.pow(g / 255.0, brightenGamma))));
-            lut[g] = green ? (0xff000000 | (v << 8)) : (0xff000000 | (v << 16) | (v << 8) | v);
-        }
+        int[] lut = lookupTable(brightenGamma, green);
         byte[] bytes = new byte[width * height];
         gray.get(bytes);
         int[] colors = new int[width * height];

@@ -31,6 +31,8 @@
  * re-attach snapshot resyncs contents and scrollback only once it's needed.
  */
 import "@nativescript/core/globals";
+import { hasTerminalBackgroundWork } from "./background";
+import { finishWorkerShutdown } from "../../ui/shell/worker-lifecycle";
 import { GrayImage, type UiFont } from "../../graphics/image";
 import { flattenPlanesWithDraws, planesFingerprint, type Plane } from "../../graphics/plane";
 import { prepareFrameDraws } from "../../graphics/glyph-wire";
@@ -311,6 +313,14 @@ post({ type: "worker-ready" });
 global.onmessage = (event: { data: WorkerAppMessage }) => {
   const message = event.data;
   switch (message.type) {
+    case "check-idle":
+      reportIdle();
+      break;
+    case "shutdown":
+      for (const control of controls.values()) stopControl(control);
+      controls.clear();
+      finishWorkerShutdown();
+      break;
     case "open-window":
       openWindow(message.windowId, message.surfaceId, message.title, message.viewport);
       break;
@@ -424,12 +434,17 @@ global.onmessage = (event: { data: WorkerAppMessage }) => {
 // toggles edited in the Settings app, the Add-connection draft typed on the
 // phone).
 onSettingsStoreChanged((key) => {
+  if (key.startsWith("glanceboard.")) {
+    reportIdle();
+    return;
+  }
   if (!key.startsWith("terminal.")) return;
   switch (key) {
     case TERMINAL_CONNECTIONS_KEY:
       // Only once the app has actually been opened.
       if (controlsInitialized) syncControlsFromSettings();
       renderHubWindows();
+      reportIdle();
       return;
     case NEW_CONNECTION_DRAFT_KEY:
       // Live keystrokes from the phone editor; repaint the add screen.
@@ -438,7 +453,7 @@ onSettingsStoreChanged((key) => {
     case "terminal.autoReconnect":
       if (!terminalAutoReconnectSetting.get()) {
         cancelPendingReconnects();
-      } else if (windows.size > 0) {
+      } else if (windows.size > 0 || hasTerminalBackgroundWork()) {
         for (const control of controls.values()) {
           if ((control.state?.phase ?? "idle") === "failed") scheduleControlReconnect(control);
         }
@@ -449,6 +464,10 @@ onSettingsStoreChanged((key) => {
       return;
   }
 });
+
+function reportIdle(): void {
+  if (windows.size === 0 && !hasTerminalBackgroundWork()) post({ type: "worker-idle" });
+}
 
 /** Cancel scheduled retries (auto-reconnect turned off); stale views stay marked. */
 function cancelPendingReconnects(): void {
@@ -521,8 +540,8 @@ function closeWindow(windowId: string): void {
   windows.delete(windowId);
   windowIconActivity.delete(windowId);
   updateHubAnimation();
-  // Auto-reconnect only runs while at least one terminal window is open.
-  if (windows.size === 0) {
+  // A configured widget owns the control connections after the last window closes.
+  if (windows.size === 0 && !hasTerminalBackgroundWork()) {
     for (const control of controls.values()) {
       cancelControlReconnect(control);
     }
@@ -676,19 +695,18 @@ function noteSessionListRecency(control: ControlConnection, state: G2MirrorState
 /**
  * Retry a control connection after a backoff delay. The delay doubles per
  * scheduled attempt and resets when a connection reaches "connected" (or on
- * a manual Connect). No-op when auto-reconnect is off, no terminal window is
- * open, or the connection was disabled/removed meanwhile.
+ * a manual Connect). Windows and a configured widget can both own the client.
  */
 function scheduleControlReconnect(control: ControlConnection): void {
   if (control.reconnectTimer) return;
   if (!terminalAutoReconnectSetting.get()) return;
-  if (windows.size === 0) return;
+  if (windows.size === 0 && !hasTerminalBackgroundWork()) return;
   if (!control.config.enabled) return;
   const delayMs = control.reconnectDelayMs;
   control.reconnectDelayMs = Math.min(control.reconnectDelayMs * 2, RECONNECT_MAX_DELAY_MS);
   control.reconnectTimer = setTimeout(() => {
     control.reconnectTimer = null;
-    if (!terminalAutoReconnectSetting.get() || windows.size === 0) return;
+    if (!terminalAutoReconnectSetting.get() || (windows.size === 0 && !hasTerminalBackgroundWork())) return;
     if (controls.get(control.config.id) !== control || !control.config.enabled) return;
     if ((control.state?.phase ?? "idle") === "failed") startControl(control);
   }, delayMs);

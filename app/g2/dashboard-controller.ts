@@ -2228,6 +2228,7 @@ class DashboardController {
     const host = new WorkerAppHost({
       appId,
       worker: createWorker(),
+      onStopping: () => { if (this.appHosts.get(appId) === host) this.appHosts.delete(appId); },
       configureSurface: (surfaceId, visible, heightMode) =>
         this.configureWindowSurface(surfaceId, visible, heightMode),
       setSurfaceVisible: (surfaceId, visible) => this.setWindowSurfaceVisible(surfaceId, visible),

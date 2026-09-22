@@ -63,11 +63,41 @@ class DisplayListRenderer(private val resources: Map<Int, ByteArray>, private va
             target.put(x + i % image.width, y + i / image.width, source * (options and 15) / 15)
         }
     }
+    private fun copyScreen(screen: Target, composition: Target) {
+        val source = screen.bytes
+        val destination = composition.bytes
+        // Shared backing arrays can overlap and the pixel loop intentionally reads
+        // earlier writes. Keep that behavior, as well as shifted target clipping.
+        if (source === destination || composition.shiftX != 0) {
+            for (y in 0 until screen.height) for (x in 0 until screen.width) composition.put(x, y, screen.get(x, y))
+            return
+        }
+        val width = minOf(screen.width, composition.width)
+        val height = minOf(screen.height, composition.height)
+        val sourceStride = screen.stride
+        val destinationStride = composition.stride
+        var src = screen.offset
+        var dst = composition.offset
+        if (screen.width == composition.width && width and 1 == 0) {
+            source.copyInto(destination, dst, src, src + sourceStride * height)
+            return
+        }
+        val pairs = width / 2
+        for (y in 0 until height) {
+            source.copyInto(destination, dst, src, src + pairs)
+            // The last pixel of an odd-width row shares a byte with padding or
+            // an untouched destination pixel; preserve that low nibble.
+            if (width and 1 != 0) destination[dst + pairs] =
+                ((source[src + pairs].toInt() and 240) or (destination[dst + pairs].toInt() and 15)).toByte()
+            src += sourceStride
+            dst += destinationStride
+        }
+    }
     /** Validate the whole graph before changing any pixels. Resource writes remain call-scoped. */
     fun render(root: Int, screen: Target, composition: Target): Set<Int> {
         val references = mutableSetOf<Int>()
         for (apply in listOf(false, true)) {
-            if (apply) for (y in 0 until screen.height) for (x in 0 until screen.width) composition.put(x, y, screen.get(x, y))
+            if (apply) copyScreen(screen, composition)
             if (root != DrawProtocol.SCREEN) executeList(root, composition, screen, apply, mutableListOf(), intArrayOf(4096), references)
         }
         return references
