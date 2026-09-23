@@ -132,7 +132,8 @@ class RemoteInputSession(
     fun randomSecret(): String = BinaryEncoding.bytesToHex(random.nextBytes(32))
 
     private fun notifyRequestReady(id: Long) {
-        // Called with the condition held; dispatching keeps JS off the socket thread and outside the lock.
+        // Called WITHOUT the condition held (ProtocolCondition is not reentrant on iOS, and a
+        // dispatcher may run the closure inline); the closure re-checks the request under the lock.
         dispatch {
             val callback = condition.withLock {
                 if (requestId != id || pending == null || wallClock() >= deadline) null else requestListener
@@ -150,14 +151,18 @@ class RemoteInputSession(
                     client = connection
                 }
                 val text = readFrame(connection) ?: continue
-                val response: String = condition.withLock {
+                val id = condition.withLock {
                     if (server !== listener) return
                     requestId = ++nextId
                     deadline = wallClock() + requestTimeoutMs
                     reply = null
                     pending = Json.write(linkedMapOf("id" to requestId, "expiresAt" to deadline, "body" to text))
-                    notifyRequestReady(requestId)
-                    while (reply == null && server === listener && wallClock() < deadline) {
+                    requestId
+                }
+                notifyRequestReady(id)
+                val response: String = condition.withLock {
+                    if (server !== listener) return
+                    while (reply == null && requestId == id && server === listener && wallClock() < deadline) {
                         condition.awaitMs(maxOf(1L, deadline - wallClock()))
                     }
                     val result = reply ?: TIMEOUT_RESPONSE

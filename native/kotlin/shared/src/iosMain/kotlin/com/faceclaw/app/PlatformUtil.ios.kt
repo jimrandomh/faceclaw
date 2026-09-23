@@ -63,12 +63,16 @@ actual fun formatLocalTime(epochMs: Long, pattern: String): String {
 }
 
 actual object PlatformLog {
-    actual fun i(tag: String, message: String) = NSLog("%@", "$tag: $message")
+    // NSLog's vararg bridge cannot take a Kotlin String (it segfaults), so the message becomes
+    // the format string itself with '%' escaped.
+    private fun emit(text: String) = NSLog(text.replace("%", "%%"))
 
-    actual fun w(tag: String, message: String) = NSLog("%@", "$tag: [warn] $message")
+    actual fun i(tag: String, message: String) = emit("$tag: $message")
+
+    actual fun w(tag: String, message: String) = emit("$tag: [warn] $message")
 
     actual fun e(tag: String, message: String, error: Throwable?) =
-        NSLog("%@", "$tag: [error] $message" + (error?.let { " (${it.message})" } ?: ""))
+        emit("$tag: [error] $message" + (error?.let { " (${it.message})" } ?: ""))
 }
 
 actual fun startThread(name: String, daemon: Boolean, body: () -> Unit) {

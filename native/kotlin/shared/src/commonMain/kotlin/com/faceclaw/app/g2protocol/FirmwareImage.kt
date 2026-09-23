@@ -19,7 +19,7 @@ object FirmwareImage {
     const val TOC_ENTRY_SIZE = 16
     const val SUBHEADER_SIZE = 128
     const val NAME_OFFSET = 48
-    const val NAME_MAX = 80
+    const val NAME_LENGTH = 80
 
     // Firmware 2.2.4 has 5 components; 2.2.6 has 6.
     const val MIN_SEGMENTS = 5
@@ -107,7 +107,7 @@ object FirmwareImage {
             if (psLong <= 0 || off + SUBHEADER_SIZE + psLong > img.size) {
                 throw IllegalStateException("segment $i payload is truncated")
             }
-            val name = readCString(img, off + NAME_OFFSET, NAME_MAX)
+            val name = readCString(img, off + NAME_OFFSET, NAME_LENGTH)
             val seg = Segment(off, psLong.toInt(), crc, name)
             for (other in segs) {
                 if (seg.off < other.end && other.off < seg.end) {

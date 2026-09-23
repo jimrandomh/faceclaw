@@ -32,6 +32,10 @@ class GlassesSessionCore(
     companion object {
         const val TAG = "FaceclawComm"
 
+        /** Relay-frame signature ('A','N') checked by [rawFrameTap]. */
+        internal const val RELAY_TAG_A: Byte = 0x41
+        internal const val RELAY_TAG_N: Byte = 0x4e
+
         // Local metadata for custom-command bookkeeping, not an EvenHub container.
         // Submitted frames supply pixel geometry; the stock layout only captures input.
         internal val DASHBOARD_TILE: BleProtocol.ImageTileOptions =
@@ -102,6 +106,14 @@ class GlassesSessionCore(
     internal val ringAddress: String = ringAddress?.trim() ?: ""
 
     @Volatile internal var listener: FaceclawBleCommunicatorListener? = null
+
+    /**
+     * Optional tap for relay frames the session does not interpret: notifications on the
+     * right arm's data characteristic whose first two bytes are 'A','N' (the iOS ANCS
+     * notification relay, consumed by the phone-side ANCS client). Unset (Android) they
+     * fall through to the normal frame parser exactly as before. Called on the BLE thread.
+     */
+    @Volatile internal var rawFrameTap: ((ByteArray) -> Unit)? = null
     internal val imuListeners = CopyOnWriteList<FaceclawImuListener>(platform)
     /** A compass subscriber plus the dispatcher it registered from (see addCompassListener). */
     internal class CompassSubscription(
@@ -308,6 +320,33 @@ class GlassesSessionCore(
 
     // ---------------------------------------------------------------------
     // Lifecycle
+
+    /** See [rawFrameTap]; null restores the default (frames parsed by the session). */
+    fun setRawFrameTap(tap: ((ByteArray) -> Unit)?) {
+        rawFrameTap = tap
+    }
+
+    /**
+     * Write one already-framed packet to an arm outside the message scheduler (the ANCS
+     * relay client builds its own packets). Blocks like any link write; false when the
+     * arm is unknown, the link rejects the write, or the session is not running.
+     */
+    fun writeRawPacket(arm: String, packet: ByteArray): Boolean {
+        val address = when (arm.uppercase()) {
+            "R", "RIGHT" -> rightAddress
+            "L", "LEFT" -> leftAddress
+            else -> return false
+        }
+        val active = monitor.withLock { running }
+        if (!active) return false
+        return try {
+            link.writeFrames(address, BleProtocol.WRITE_CHAR_UUID, listOf(packet), ConnectionOptions.WRITE_MODE,
+                ConnectionOptions.WRITE_TIMEOUT_MS)
+        } catch (t: Throwable) {
+            logLine("raw packet write failed: " + safeMessage(t))
+            false
+        }
+    }
 
     fun setListener(listener: FaceclawBleCommunicatorListener?) {
         this.listener = listener
@@ -1306,6 +1345,13 @@ class GlassesSessionCore(
                 drainCfwAcknowledgementsLocked()
             }
             interruptibleSleep.interrupt()
+            return
+        }
+        val tap = rawFrameTap
+        if (tap != null && data.size >= 2 && data[0] == RELAY_TAG_A && data[1] == RELAY_TAG_N
+                && address.equals(rightAddress, ignoreCase = true)) {
+            monitor.withLock { lastIncomingAtMs = now() }
+            tap(data.copyOf())
             return
         }
         logDebug("onNotification: address=" + address + " characteristicUuid=" + characteristicUuid + " data.length=" + data.size)
