@@ -38,6 +38,6 @@ test('every remaining Java source has an explicit Android boundary and every mig
   assert.equal(new Set(migrated.map(entry => entry.java)).size, migrated.length);
   for (const entry of migrated) {
     assert.equal(fs.existsSync(path.join(java, entry.java)), false, entry.java);
-    assert.ok(fs.existsSync(path.join(root, 'native/kotlin', entry.kotlin)), entry.kotlin);
+    assert.ok(fs.existsSync(path.join(root, entry.kotlin)), entry.kotlin);
   }
 });

@@ -1326,6 +1326,12 @@ class DashboardController {
         ring: ringAddress,
       });
       this.communicator = communicator;
+      // Size the compositor before anything else is awaited: windows opened
+      // during the bridge start-ups below (the terminal hub, restored apps)
+      // configure their surfaces through this.communicator, and the Java call
+      // queue is FIFO, so enqueuing the screen size first guarantees it lands
+      // ahead of them. Mirrors ensurePreviewDisplay.
+      await communicator.configureCompositorScreen(G2_LENS_WIDTH, G2_LENS_HEIGHT);
       this.offState = communicator.onStateChange((state) => {
         if (state.phase !== "connected") resetRingInputFilter();
         if (state.phase === "unpaired") {
@@ -1493,7 +1499,6 @@ class DashboardController {
       await nightscoutBridge.start();
       // Register the compositor surfaces: the shell chrome above all windows,
       // and a surface per live window (only the foreground one is composited).
-      await communicator.configureCompositorScreen(G2_LENS_WIDTH, G2_LENS_HEIGHT);
       await communicator.configureSurface(SHELL_SURFACE_ID, {
         x: 0,
         y: 0,

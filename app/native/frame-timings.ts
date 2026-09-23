@@ -1,6 +1,6 @@
 /**
  * TS-side wrapper for the Java FrameTimings singleton (per-frame latency
- * instrumentation; see FrameTimings.java). Frame ID 0 means "no frame" and is
+ * instrumentation; see FrameTimings.kt). Frame ID 0 means "no frame" and is
  * ignored by every method, so callers never need to null-check.
  *
  * Frames form a tree: pass the causing frame's ID as `parentFrameId` when one
