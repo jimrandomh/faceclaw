@@ -1,7 +1,23 @@
 import type { PlacedImage } from './image'
 import type { MenuHighlightAnimation } from '../ui/menu-highlight-motion'
 
-/** Bridge record: tag 3 (selection), 4 (image), 5 (gray8-masked image), 6 (animated selection), signed xy, u16 wh/radius, gray fill/stroke, signed depth, restore-count, gray pixels, restore rectangles. */
+/** TS/native bridge tags, not firmware draw opcodes. Keep in sync with DrawRecordKind.kt. */
+export const DrawRecordKind = {
+  GLYPH: 0,
+  TEXTURE_IMAGE: 1,
+  FIRMWARE_TEXT: 2,
+  MENU_SELECTION: 3,
+  TRANSPARENT_IMAGE: 4,
+  MASKED_IMAGE: 5,
+  ANIMATED_MENU_SELECTION: 6,
+} as const
+
+export function isPresentationKind(kind: number | undefined): boolean {
+  return kind === DrawRecordKind.MENU_SELECTION || kind === DrawRecordKind.TRANSPARENT_IMAGE ||
+    kind === DrawRecordKind.MASKED_IMAGE || kind === DrawRecordKind.ANIMATED_MENU_SELECTION
+}
+
+/** Presentation record: tag, signed xy, u16 wh/radius, gray fill/stroke, signed depth, restore-count, optional animation, gray pixels, restore rectangles. */
 export function encodePresentation(draw: PlacedImage): Uint8Array {
   const p = draw.presentation!
   const { width, height, pixels } = draw.source
@@ -12,7 +28,9 @@ export function encodePresentation(draw: PlacedImage): Uint8Array {
   if (animation && (!Number.isInteger(animation.durationMs) || animation.durationMs < 1 || animation.durationMs > 65535)) throw new Error('Invalid menu animation duration')
   const header = animation ? 28 : 16;
   const bytes = new Uint8Array(header + width * height + (p.occlusions?.length ?? 0) * 8), view = new DataView(bytes.buffer)
-  bytes[0] = animation ? 6 : p.mode === "image" ? 4 : p.mode === "masked-image" ? 5 : 3
+  bytes[0] = animation ? DrawRecordKind.ANIMATED_MENU_SELECTION
+    : p.mode === "image" ? DrawRecordKind.TRANSPARENT_IMAGE
+    : p.mode === "masked-image" ? DrawRecordKind.MASKED_IMAGE : DrawRecordKind.MENU_SELECTION
   view.setInt16(1, draw.x, true); view.setInt16(3, draw.y, true)
   view.setUint16(5, width, true); view.setUint16(7, height, true); view.setUint16(9, p.radius, true)
   bytes[11] = p.background; bytes[12] = p.border; view.setInt8(13, p.depth)
@@ -35,11 +53,12 @@ export function encodePresentation(draw: PlacedImage): Uint8Array {
 export type Selection = { animation?: MenuHighlightAnimation; mode?: "image" | "masked-image"; x: number; y: number; width: number; height: number; radius: number; background: number; border: number; depth: number; pixels: Uint8Array; occlusions: { x: number; y: number; width: number; height: number }[] }
 export function readPresentation(bytes: Uint8Array, offset: number): { selection: Selection; end: number } {
   const v = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength), w = v.getUint16(offset + 5, true), h = v.getUint16(offset + 7, true)
-  const header = bytes[offset] === 6 ? 28 : 16
-  const selection: Selection = { mode: bytes[offset] === 4 ? "image" : bytes[offset] === 5 ? "masked-image" : undefined, x: v.getInt16(offset+1,true), y: v.getInt16(offset+3,true), width:w, height:h,
+  const kind = bytes[offset]
+  const header = kind === DrawRecordKind.ANIMATED_MENU_SELECTION ? 28 : 16
+  const selection: Selection = { mode: kind === DrawRecordKind.TRANSPARENT_IMAGE ? "image" : kind === DrawRecordKind.MASKED_IMAGE ? "masked-image" : undefined, x: v.getInt16(offset+1,true), y: v.getInt16(offset+3,true), width:w, height:h,
     radius:v.getUint16(offset+9,true), background:bytes[offset+11]!, border:bytes[offset+12]!, depth:v.getInt8(offset+13),
     pixels:bytes.slice(offset+header,offset+header+w*h), occlusions:[] }
-  if (header === 28) {
+  if (kind === DrawRecordKind.ANIMATED_MENU_SELECTION) {
     const durationMs = v.getUint16(offset+26,true), elapsed = v.getUint16(offset+20,true)
     if (!durationMs || elapsed > durationMs) throw new Error('Invalid menu animation timing')
     selection.animation = { dx:v.getInt16(offset+16,true), dy:v.getInt16(offset+18,true),
@@ -53,10 +72,10 @@ export function presentationRecords(buffer: ArrayBuffer | null): Selection[] {
   if (!buffer) return []
   const bytes=new Uint8Array(buffer), result:Selection[]=[]
   for(let p=0;p<bytes.length;) {
-    if(bytes[p]===3 || bytes[p]===4 || bytes[p]===5 || bytes[p]===6) { const record=readPresentation(bytes,p);result.push(record.selection);p=record.end }
-    else if(bytes[p]===0) p+=12
-    else if(bytes[p]===1) p+=9
-    else if(bytes[p]===2) p+=7+bytes[p+6]!*7
+    if(isPresentationKind(bytes[p])) { const record=readPresentation(bytes,p);result.push(record.selection);p=record.end }
+    else if(bytes[p]===DrawRecordKind.GLYPH) p+=12
+    else if(bytes[p]===DrawRecordKind.TEXTURE_IMAGE) p+=9
+    else if(bytes[p]===DrawRecordKind.FIRMWARE_TEXT) p+=7+bytes[p+6]!*7
     else break
   }
   return result

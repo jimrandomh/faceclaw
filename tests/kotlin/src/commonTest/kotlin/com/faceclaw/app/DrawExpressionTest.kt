@@ -77,7 +77,7 @@ class DrawExpressionTest {
         val wire = hex("06030002000200020001001030020000fefffcffc8002a0000002c01ffffffff")
         val input = ArrayByteReader(wire)
         assertEquals(6, input.get().toInt())
-        val row = MenuSelection.read(input, 6).translated(10, 10)
+        val row = MenuSelection.read(input, DrawRecordKind.ANIMATED_MENU_SELECTION).translated(10, 10)
         assertEquals(0, input.remaining())
         val motion = assertNotNull(row.animation)
         assertEquals(42, motion.token)
@@ -96,7 +96,7 @@ class DrawExpressionTest {
             assertEquals(elapsed < 100, frame.animationPending)
         }
         for (end in 1 until wire.size) assertFails {
-            MenuSelection.read(ArrayByteReader(wire.copyOf(end), 1), 6)
+            MenuSelection.read(ArrayByteReader(wire.copyOf(end), 1), DrawRecordKind.ANIMATED_MENU_SELECTION)
         }
     }
 

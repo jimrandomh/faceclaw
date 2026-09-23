@@ -2,7 +2,7 @@ package com.faceclaw.app
 
 /** A retained selection or image, replayed at stereo depth over the screen and shell surfaces. */
 class MenuSelection(val x: Int, val y: Int, val width: Int, val height: Int, val radius: Int,
-    val background: Int, val border: Int, val depth: Int, val packed: ByteArray, val occlusions: List<IntArray> = emptyList(), val kind: Int = 3, val mask: List<IntArray> = emptyList(), val animation: Animation? = null) {
+    val background: Int, val border: Int, val depth: Int, val packed: ByteArray, val occlusions: List<IntArray> = emptyList(), val kind: Int = DrawRecordKind.MENU_SELECTION, val mask: List<IntArray> = emptyList(), val animation: Animation? = null) {
     class Animation(val dx: Int, val dy: Int, val startedAt: Long, val token: Int, val durationMs: Int)
     val resource = CachedResource(DrawProtocol.rawImage(width, height, packed))
     val fingerprint = "${animation?.token},${animation?.dx},${animation?.dy},${animation?.durationMs},$kind,${mask.joinToString { it.joinToString() }},$x,$y,$width,$height,$radius,$background,$border,$depth,${resource.hash},${occlusions.joinToString { it.joinToString() }}"
@@ -12,12 +12,12 @@ class MenuSelection(val x: Int, val y: Int, val width: Int, val height: Int, val
         val highlightX = animation?.let { DrawValue.animate(x + it.dx, x, it.durationMs, elapsed) } ?: DrawValue.Integer(x)
         val highlightY = animation?.let { DrawValue.animate(y + it.dy, y, it.durationMs, elapsed) } ?: DrawValue.Integer(y)
         val image = when (kind) {
-            3 -> listOf(DrawProtocol.roundedRect(highlightX, highlightY, width, height, radius, background, border, depth),
+            DrawRecordKind.MENU_SELECTION -> listOf(DrawProtocol.roundedRect(highlightX, highlightY, width, height, radius, background, border, depth),
                 DrawProtocol.image(id, x, y, CFW_TEXTURE_OPT_BRIGHTNESS_MASK or CFW_TEXTURE_OPT_TRANSPARENT, depth = depth))
-            4 -> listOf(DrawProtocol.image(id, x, y, CFW_TEXTURE_OPT_BRIGHTNESS_MASK or CFW_TEXTURE_OPT_TRANSPARENT, depth = depth))
+            DrawRecordKind.TRANSPARENT_IMAGE -> listOf(DrawProtocol.image(id, x, y, CFW_TEXTURE_OPT_BRIGHTNESS_MASK or CFW_TEXTURE_OPT_TRANSPARENT, depth = depth))
             // Gray8 zero is transparent but gray8 one is opaque black. Rect copies preserve
             // that distinction after packing, including the transparent corners of app menus.
-            5 -> mask.map { rect ->
+            DrawRecordKind.MASKED_IMAGE -> mask.map { rect ->
                 DrawProtocol.rectCopy(id, rect[0], rect[1], rect[2], rect[3],
                     x + rect[0], y + rect[1], depth = depth)
             }
@@ -29,9 +29,9 @@ class MenuSelection(val x: Int, val y: Int, val width: Int, val height: Int, val
     }
 
     companion object {
-        /** The caller has consumed the presentation tag (3–6). Colors cross the bridge in gray8, pixels in gray8 rows. */
-        fun read(reader: ByteReader, kind: Int = 3): MenuSelection {
-            require(kind in 3..6)
+        /** The caller has consumed a presentation tag from [DrawRecordKind]. Colors and pixels cross in gray8. */
+        fun read(reader: ByteReader, kind: Int = DrawRecordKind.MENU_SELECTION): MenuSelection {
+            require(DrawRecordKind.isPresentation(kind))
             require(reader.remaining() >= 15)
             val x = reader.getShort().toInt(); val y = reader.getShort().toInt()
             val w = reader.getShort().toInt() and 65535; val h = reader.getShort().toInt() and 65535
@@ -42,7 +42,7 @@ class MenuSelection(val x: Int, val y: Int, val width: Int, val height: Int, val
             val count = reader.getShort().toInt() and 65535
             require(count <= 2048)
             require(w in 1..640 && h in 1..480 && 5 + (w + 1) / 2 * h <= 65536 && reader.remaining() >= w * h)
-            val animation = if (kind == 6) {
+            val animation = if (kind == DrawRecordKind.ANIMATED_MENU_SELECTION) {
                 require(reader.remaining() >= 12)
                 val dx = reader.getShort().toInt()
                 val dy = reader.getShort().toInt()
@@ -56,7 +56,7 @@ class MenuSelection(val x: Int, val y: Int, val width: Int, val height: Int, val
             require(reader.remaining() >= count * 8)
             val occlusions = List(count) { IntArray(4) { reader.getShort().toInt() and 65535 } }
             val mask = ArrayList<IntArray>()
-            if (kind == 5) for (yy in 0 until h) {
+            if (kind == DrawRecordKind.MASKED_IMAGE) for (yy in 0 until h) {
                 var start = -1
                 for (xx in 0..w) {
                     val covered = xx < w && gray[yy * w + xx].toInt() != 0
@@ -68,7 +68,8 @@ class MenuSelection(val x: Int, val y: Int, val width: Int, val height: Int, val
                     }
                 }
             }
-            return MenuSelection(x, y, w, h, radius, background, border, depth, BmpUtil.pack4bppFromGray8(gray, w, h), occlusions, if (kind == 6) 3 else kind, mask, animation)
+            val normalizedKind = if (kind == DrawRecordKind.ANIMATED_MENU_SELECTION) DrawRecordKind.MENU_SELECTION else kind
+            return MenuSelection(x, y, w, h, radius, background, border, depth, BmpUtil.pack4bppFromGray8(gray, w, h), occlusions, normalizedKind, mask, animation)
         }
     }
 }

@@ -1,4 +1,4 @@
-import { encodePresentation } from "./presentation-wire";
+import { DrawRecordKind, encodePresentation } from "./presentation-wire";
 /**
  * Marshals deferred-draw identity (text glyphs and icon images) to the Kotlin
  * side for the texture-cache pipeline (CFW modes 18/19/20; see
@@ -201,7 +201,7 @@ export function prepareFrameDraws(draws: readonly DeferredDraw[]): ArrayBuffer |
       if (!inRange16(placed.x) || !inRange16(placed.y)) continue;
       const state = fontWireState(placed.font);
       if (!state || !representableGlyph(placed.font, placed.glyph)) continue;
-      out.setUint8(offset, 0);
+      out.setUint8(offset, DrawRecordKind.GLYPH);
       out.setUint16(offset + 1, state.fontId, true);
       out.setUint32(offset + 3, placed.glyph.encoding, true);
       out.setInt16(offset + 7, placed.x, true);
@@ -213,14 +213,14 @@ export function prepareFrameDraws(draws: readonly DeferredDraw[]): ArrayBuffer |
       if (placed.presentation) { const bytes = encodePresentation(placed); new Uint8Array(out.buffer).set(bytes, offset); offset += bytes.length; continue; }
       const id = imageId(placed);
       if (id === null) continue;
-      out.setUint8(offset, 1);
+      out.setUint8(offset, DrawRecordKind.TEXTURE_IMAGE);
       out.setUint32(offset + 1, id, true);
       out.setInt16(offset + 5, placed.x, true);
       out.setInt16(offset + 7, placed.y, true);
       offset += IMAGE_RECORD_BYTES;
     } else {
       if (!fwRunOk.get(placed)) continue;
-      out.setUint8(offset, 2);
+      out.setUint8(offset, DrawRecordKind.FIRMWARE_TEXT);
       out.setInt16(offset + 1, placed.x, true);
       out.setInt16(offset + 3, placed.y, true);
       out.setUint8(offset + 5, placed.value);

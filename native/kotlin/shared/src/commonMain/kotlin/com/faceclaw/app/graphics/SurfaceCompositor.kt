@@ -51,7 +51,7 @@ class SurfaceCompositor @JvmOverloads constructor(private val includePreviewInFr
             var out: MutableList<ScreenDraw> = ArrayList()
             while ((cursor.remaining() >= 1)) {
                 var kind: Int = (cursor.get() and 0xff)
-                if (kind in 3..6) { out.add(ScreenDraw.image(0, 0, 0).also { it.selection = MenuSelection.read(cursor, kind) }); continue }
+                if (DrawRecordKind.isPresentation(kind)) { out.add(ScreenDraw.image(0, 0, 0).also { it.selection = MenuSelection.read(cursor, kind) }); continue }
                 if (((kind == ScreenDraw.KIND_GLYPH) && (cursor.remaining() >= 11))) {
                     var fontId: Int = (cursor.getShort().toInt() and 0xffff)
                     var encoding: Int = cursor.getInt()
@@ -110,12 +110,12 @@ class SurfaceCompositor @JvmOverloads constructor(private val includePreviewInFr
     class ScreenDraw {
         @JvmField var selection: MenuSelection? = null
         companion object {
-            const val KIND_GLYPH: Int = 0
+            const val KIND_GLYPH: Int = DrawRecordKind.GLYPH
 
-            const val KIND_IMAGE: Int = 1
+            const val KIND_IMAGE: Int = DrawRecordKind.TEXTURE_IMAGE
 
             /** A firmware-builtin-font text run (CFW mode 15). */
-            const val KIND_FWTEXT: Int = 2
+            const val KIND_FWTEXT: Int = DrawRecordKind.FIRMWARE_TEXT
 
             @JvmStatic
             fun glyph(fontId: Int, encoding: Int, penX: Int, lineY: Int, value: Int): ScreenDraw {
