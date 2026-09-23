@@ -1007,12 +1007,30 @@ class DashboardController {
    * charging and silent mode both make the display unavailable while BLE stays
    * up, and a battery that just ran out simply stops answering.
    */
+  /**
+   * Drop a stale silent-mode belief when the glasses do something they could
+   * not do in silent mode. The firmware blanks the display and ignores input
+   * while silent, so input or a presented frame is direct evidence it ended.
+   */
+  private clearSilentModeOnEvidence(reason: string): void {
+    if (!this.silentMode) return;
+    this.silentMode = false;
+    this.appendLog(`silent mode cleared: ${reason}`);
+    this.emit();
+  }
+
   private displayPreviewMessage(): string {
     if (this.phase === "charging") {
       return this.glassesDisplayLabel();
     }
     if (this.silentMode && this.phase === "connected") {
-      return "Connected (Silent mode enabled)";
+      // Say how to leave it. Silent mode is entered and exited only by the
+      // same gesture on the glasses, the firmware ignores all input and blanks
+      // the display while it is on, and nothing here can turn it off -- there
+      // is no setter, only onSilentMode. So a user who triggered it by
+      // accident sees a connected pair of glasses that answers nothing, with
+      // no way to find out why. The instruction belongs where they are looking.
+      return "Connected (Silent mode — long-press both touchpads on the glasses to exit)";
     }
     // The preview compositor keeps the mirror live (including as a black
     // frame while the simulated screen is off), so never cover it.
@@ -1399,6 +1417,12 @@ class DashboardController {
         }
       });
       this.offRing = communicator.onRingEvent((event) => {
+        // Input is proof silent mode ended: the firmware ignores all input while
+        // it is on, so one cannot arrive in that state. silentMode is otherwise
+        // cleared only on a disconnect, on the assumption that the firmware
+        // re-reports it, so a toggle made on the glasses without the link ever
+        // dropping leaves the phone claiming silent mode indefinitely.
+        this.clearSilentModeOnEvidence("input from the glasses");
         void this.handleInputEvent(event).catch((error) => {
           const message = this.formatError(error);
           this.appendLog(`input handler failed: ${message}`);
@@ -2503,6 +2527,9 @@ class DashboardController {
       frameTimings.finishFrame(frameId, "discarded: shell render with no display target");
       return;
     }
+    // A display target is standing, which silent mode does not leave in place.
+    // Evidence enough to drop the flag even if the user never touches the glasses.
+    this.clearSilentModeOnEvidence("the glasses are presenting frames");
     // A shell overlay that dims what it covers (a context menu) must dim the
     // window surfaces too, which live below the shell surface in the
     // compositor: forward the factor before this frame composites.
