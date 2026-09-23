@@ -51,6 +51,15 @@ public class FaceclawFlashPromptCommunicator implements FaceclawBleListener {
     // Index 0 = decline, index 1 = approve. Kept short for the ~50-col grid.
     private static final String[] ITEMS = new String[] {"No, cancel", "Yes, flash"};
 
+    /**
+     * Shown instead of a bare "prompt page not acked" timeout. Silent mode is
+     * entered and left by the same gesture on the glasses and nothing here can
+     * clear it, so the instruction has to travel with the error.
+     */
+    private static final String SILENT_MODE_MESSAGE =
+            "Your glasses are in silent mode, so they cannot show the confirmation prompt. "
+                    + "Long-press both touchpads on the glasses to leave silent mode, then try again.";
+
     private static final int HEARTBEAT_INTERVAL_MS = 4_000;
     private static final int SELECTION_TIMEOUT_MS = 120_000;
     private static final int CREATE_ACK_TIMEOUT_MS = 3_000;
@@ -183,6 +192,12 @@ public class FaceclawFlashPromptCommunicator implements FaceclawBleListener {
             sendPrelude(rightAddress);
 
             if (!skipPrompt) {
+                // Ask before writing a page that cannot be answered: silent mode
+                // blanks the display and stops the firmware dispatching input while
+                // BLE stays up, so the create-prompt write is still accepted and the
+                // flash would spend four attempts timing out on an error that says
+                // nothing about the reason.
+                requireNotSilent(rightAddress);
                 showPrompt(rightAddress);
                 startHeartbeat();
                 emitState("prompting", "");
@@ -376,6 +391,18 @@ public class FaceclawFlashPromptCommunicator implements FaceclawBleListener {
     }
 
     private int readBattery(String address, String arm) throws InterruptedException {
+        BleProtocol.BatterySnapshot snapshot = readSettings(address, arm);
+        return snapshot == null ? -1 : snapshot.battery;
+    }
+
+    /**
+     * The sid-0x09 settings read behind both the battery gate and the
+     * silent-mode check. One ack carries both fields, so neither caller needs
+     * a query of its own. Returns null when the arm does not answer or the ack
+     * carries no settings payload.
+     */
+    private BleProtocol.BatterySnapshot readSettings(String address, String arm)
+            throws InterruptedException {
         for (int attempt = 0; attempt < 2 && !cancelled; attempt++) {
             int magic = allocMagic();
             byte[] ack = writeAndAwaitAck(
@@ -386,16 +413,38 @@ public class FaceclawFlashPromptCommunicator implements FaceclawBleListener {
                 BleProtocol.buildSettingsQuery(magic),
                 BATTERY_ACK_TIMEOUT_MS);
             if (ack == null) {
-                emitLog("battery read attempt " + (attempt + 1) + " unacked: " + arm + " arm");
+                emitLog("settings read attempt " + (attempt + 1) + " unacked: " + arm + " arm");
                 continue;
             }
             BleProtocol.BatterySnapshot snapshot = BleProtocol.parseSettingsBattery(ack);
             if (snapshot != null) {
-                return snapshot.battery;
+                return snapshot;
             }
-            emitLog("battery read ack had no battery field: " + arm + " arm");
+            emitLog("settings read ack had no settings payload: " + arm + " arm");
         }
-        return -1;
+        return null;
+    }
+
+    /**
+     * Refuse the prompt only when the arm POSITIVELY reports silent mode. An
+     * arm that does not answer, and firmware whose ack omits the field
+     * (silentMode -1), both fall through to the prompt, so behavior on older
+     * firmware is unchanged and a missing answer never blocks a flash.
+     */
+    private void requireNotSilent(String address) throws InterruptedException {
+        BleProtocol.BatterySnapshot snapshot = readSettings(address, "right");
+        String state;
+        if (snapshot == null) {
+            state = "unknown (arm did not answer)";
+        } else if (snapshot.silentMode < 0) {
+            state = "unknown (ack omits the field)";
+        } else {
+            state = snapshot.silentMode > 0 ? "on" : "off";
+        }
+        emitLog("silent mode before prompt: " + state);
+        if (snapshot != null && snapshot.silentMode > 0) {
+            throw new IllegalStateException(SILENT_MODE_MESSAGE);
+        }
     }
 
     /** Write and wait for the matching ack; returns the ack's protobuf (may be empty), or null on timeout/write failure. */

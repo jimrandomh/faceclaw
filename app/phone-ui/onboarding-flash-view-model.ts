@@ -56,8 +56,6 @@ export class OnboardingFlashViewModel extends Observable {
   private flasher: FirmwareFlasher | null = null;
   private flasherUnsubscribers: Array<() => void> = [];
   private retryAction: () => void = () => this.beginPrompt();
-  /** Overrides the error screen's "Retry" when the action is not a retry. */
-  private primaryLabelOverride: string | null = null;
 
   constructor(options?: { mode?: FlashMode; fromOnboarding?: boolean; autoStart?: boolean }) {
     super();
@@ -176,7 +174,7 @@ export class OnboardingFlashViewModel extends Observable {
       case "flashed":
         return "Finish";
       case "error":
-        return this.primaryLabelOverride ?? "Retry";
+        return "Retry";
       default:
         return "";
     }
@@ -331,25 +329,6 @@ export class OnboardingFlashViewModel extends Observable {
         break;
       case "error":
         this.busy = false;
-        // An unacked prompt page is not a connection failure. The lens accepts the
-        // write at the GATT layer and then never answers, which is what firmware
-        // older than the revision this build needs does -- measured on revision 13,
-        // four writes accepted with status 0 and no reply, nothing shown on the lens.
-        // Flashing is the only way OFF that firmware, so failing here leaves the
-        // glasses permanently unupgradable. Fall back to the phone-side confirmation
-        // that the low-battery retry already uses, and say plainly what is being
-        // given up: the on-lens step is what proves these are the wearer's glasses.
-        if (/prompt page not acked/i.test(detail)) {
-          this.toError(
-            "Your glasses are on older firmware that can't show the confirmation prompt, so it can't be " +
-              "confirmed on the lens. You can confirm here instead. Only continue if these are your glasses " +
-              "and you want to install Faceclaw's custom firmware.",
-            () => this.beginPrompt({ skipPrompt: true }),
-            "Confirm On Your Phone",
-            "Confirm & Install",
-          );
-          break;
-        }
         this.toError(detail || "Connection failed.", () => this.beginPrompt({ skipPrompt }));
         break;
     }
@@ -590,13 +569,7 @@ export class OnboardingFlashViewModel extends Observable {
     });
   }
 
-  private toError(
-    message: string,
-    retry: () => void,
-    headline = "Something Went Wrong",
-    primaryLabel: string | null = null,
-  ): void {
-    this.primaryLabelOverride = primaryLabel;
+  private toError(message: string, retry: () => void, headline = "Something Went Wrong"): void {
     this.retryAction = retry;
     this.status = message;
     this.setPhase("error");
