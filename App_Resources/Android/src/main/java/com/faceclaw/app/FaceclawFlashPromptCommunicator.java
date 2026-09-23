@@ -366,9 +366,15 @@ public class FaceclawFlashPromptCommunicator implements FaceclawBleListener {
             int magic = allocMagic();
             byte[] page = BleProtocol.buildCreatePromptPage(
                 magic, TEXT_NAME, TEXT_CONTAINER_ID, warningText, LIST_NAME, LIST_CONTAINER_ID, ITEMS);
+            emitLog("prompt page attempt " + (attempt + 1) + " writing " + page.length + " bytes to " + address);
             pageAck = writeAndAwaitAck(address, BleProtocol.SID_EVENHUB, BleProtocol.FLAG_REQUEST, magic, page, CREATE_ACK_TIMEOUT_MS);
             if (pageAck == null) {
                 emitLog("prompt page attempt " + (attempt + 1) + " unacked: " + address);
+            } else {
+                // An ack is not a render. The lens can accept the page and show
+                // nothing, so the payload it answers with is the only thing that
+                // can say why; log it rather than only null-checking it.
+                emitLog("prompt page ack payload (" + pageAck.length + " bytes): " + toHex(pageAck));
             }
         }
         if (pageAck == null) {
@@ -631,6 +637,15 @@ public class FaceclawFlashPromptCommunicator implements FaceclawBleListener {
                 current.onLog(line);
             }
         });
+    }
+
+    /** Ack payloads are short; hex is the only honest way to log an opaque reply. */
+    private static String toHex(byte[] bytes) {
+        StringBuilder out = new StringBuilder(bytes.length * 2);
+        for (byte b : bytes) {
+            out.append(String.format(java.util.Locale.ROOT, "%02x", b & 255));
+        }
+        return out.toString();
     }
 
     private void emitState(String state, String detail) {
