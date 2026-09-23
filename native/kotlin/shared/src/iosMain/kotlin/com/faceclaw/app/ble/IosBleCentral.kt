@@ -182,8 +182,14 @@ class IosBleCentral(private val platform: ProtocolPlatform = IosProtocolPlatform
         central = CBCentralManager(delegate = delegate, queue = queue)
     }
 
+    /**
+     * Registers the scan/state listener and creates the central if needed, so a listener that
+     * only waits for readiness (no scan) still receives the state report; an existing central's
+     * current state is re-reported to the new listener on the main queue.
+     */
     fun setScanListener(listener: IosBleScanListener?) {
         scanListener = listener
+        if (listener != null && !closed) ensureCentral()
     }
 
     /** Starts (or keeps) scanning for all peripherals with duplicates; events reach the scan listener on main. */

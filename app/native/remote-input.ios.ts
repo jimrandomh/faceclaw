@@ -1,14 +1,16 @@
 import { createListenerPool, type InterfaceAddress } from '../remote/listeners';
-declare const FaceclawRemoteInput: any;
+declare const FaceclawKitIosRemoteInput: any;
+/** The shared Kotlin RemoteInputSession over POSIX sockets; request notifications arrive on the main queue. */
 export function remoteNative(onRequestReady: () => void) {
   return createListenerPool(() => {
-    const native = FaceclawRemoteInput.alloc().init();
-    native.setRequestListener(onRequestReady);
-    return { start: (port, address) => String(native.startAddress(port, address)), stop: () => { native.setRequestListener(null); native.stop(); },
-      nextRequest: () => native.nextRequest(), complete: (id, response) => native.completeResponse(id, response) };
+    const native = FaceclawKitIosRemoteInput.new();
+    native.setRequestListenerListener(onRequestReady);
+    return { start: (port, address) => String(native.startAddressPortAddress(port, address)), stop: () => { native.setRequestListenerListener(null); native.stop(); },
+      nextRequest: () => native.nextRequest(), complete: (id, response) => native.completeIdValue(id, response) };
   });
 }
-export function remoteInterfaces(): InterfaceAddress[] { return JSON.parse(String(FaceclawRemoteInput.interfaces())); }
-export function randomTokenSecret(): string { return String(FaceclawRemoteInput.shared().randomSecret()); }
-export function tokenHash(value: string): string { return String(FaceclawRemoteInput.shared().tokenDigest(value)); }
+function shared(): any { return FaceclawKitIosRemoteInput.companion.shared; }
+export function remoteInterfaces(): InterfaceAddress[] { return JSON.parse(String(shared().interfaces())); }
+export function randomTokenSecret(): string { return String(shared().randomSecret()); }
+export function tokenHash(value: string): string { return String(shared().tokenDigestValue(value)); }
 export function copyRemoteToken(value: string): void { UIPasteboard.generalPasteboard.string = value; }

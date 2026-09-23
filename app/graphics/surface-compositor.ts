@@ -1,6 +1,5 @@
 import { presentationRecords, readPresentation, paintPresentation, type Selection } from "./presentation-wire"
 /** Platform-independent 8bpp surface composition for the local display. */
-import type { TextureFrame } from '../g2/texture-planner'
 export type SurfaceRect = { x: number; y: number; width: number; height: number }
 export type SurfaceConfiguration = SurfaceRect & {
   zOrder: number
@@ -55,7 +54,6 @@ export class SurfaceCompositor {
       surface.pixels.set(pixels.subarray(source, source + right - left), y * surface.width + left)
     }
   }
-  compositeFrame(): { pixels: Uint8Array; textures?: TextureFrame } { return { pixels: this.composite() } }
   composite(): Uint8Array {
     const output = new Uint8Array(this.width * this.height)
     if (this.blanked) return output

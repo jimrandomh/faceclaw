@@ -1,28 +1,19 @@
 import { type SseListener } from './sse-types';
 import { withUserAgent } from '../util/http';
+import { kotlinListener } from './kotlin-listener.ios';
 export { type SseListener } from './sse-types';
-declare const FaceclawSseRequest: any;
+declare const FaceclawKitIosSseRequest: any, FaceclawKitFaceclawSseListener: any;
 
-/** Drain native events on the requesting JS isolate, never on a URLSession thread. */
+/** The shared Kotlin SseStream over NSURLSession; the Kotlin side delivers every callback on the main queue, in order. */
 export function openSseRequest(url: string, body: string, headers: Record<string, string>, listener: SseListener): { cancel(): void } {
-  const native = FaceclawSseRequest.alloc().initWithURLBodyHeaders(url, body, JSON.stringify(withUserAgent(headers)));
   let ended = false;
-  const cancel = () => { if (ended) return; ended = true; clearInterval(timer); native.cancel(); };
-  const timer = setInterval(() => {
-    try {
-      for (const event of JSON.parse(native.takeEvents())) {
-        if (ended) break;
-        if (event.kind === 'line') listener.onLine(event.text);
-        else {
-          cancel();
-          if (event.kind === 'complete') listener.onComplete();
-          else if (event.kind === 'http-error') listener.onHttpError(event.code, event.text);
-          else listener.onFailure(event.text);
-        }
-      }
-    } catch (error) {
-      cancel(); listener.onFailure(String((error as Error)?.message ?? error));
-    }
-  }, 25);
-  return { cancel };
+  const once = (deliver: () => void) => { if (ended) return; ended = true; deliver(); };
+  const nativeListener = kotlinListener(FaceclawKitFaceclawSseListener, {
+    onLineLine: (line: string) => { if (!ended) listener.onLine(String(line ?? '')); },
+    onHttpErrorCodeBody: (code: number, errorBody: string) => once(() => listener.onHttpError(Number(code), String(errorBody ?? ''))),
+    onComplete: () => once(() => listener.onComplete()),
+    onFailureMessage_: (message: string) => once(() => listener.onFailure(String(message ?? ''))),
+  });
+  const native = FaceclawKitIosSseRequest.alloc().initWithUrlBodyHeadersJsonListener(url, body, JSON.stringify(withUserAgent(headers)), nativeListener);
+  return { cancel: () => { if (ended) return; ended = true; native.cancel(); } };
 }

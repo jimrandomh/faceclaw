@@ -1,5 +1,4 @@
 import { fromData, toData } from '../native/kotlin-data'
-import type { TextureFrame } from '../g2/texture-planner'
 import type { SurfaceConfiguration, SurfaceRect } from './surface-compositor'
 export type { SurfaceConfiguration, SurfaceRect } from './surface-compositor'
 declare const FaceclawKitIosSurfaceCompositor: any
@@ -35,8 +34,4 @@ export class SurfaceCompositor {
   }
   setShellScene(bytes: Uint8Array): void { this.native.shellData(toData(bytes)) }
   composite(): Uint8Array { return fromData(this.native.composite()) }
-  compositeFrame(): { pixels: Uint8Array; textures: TextureFrame } {
-    const native = this.native.compositeFrame()
-    return { pixels: fromData(native.pixels), textures: { native } }
-  }
 }

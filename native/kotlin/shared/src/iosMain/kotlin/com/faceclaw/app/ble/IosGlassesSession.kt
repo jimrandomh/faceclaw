@@ -15,6 +15,11 @@ interface IosAncsListener {
     fun onRelayFrame(data: NSData)
 }
 
+/** Audio packets for the NativeScript side as NSData (a Kotlin ByteArray crosses per byte). Main queue. */
+interface IosAudioPacketListener {
+    fun onAudioPacket(data: NSData, arm: String, arrivalMs: Long)
+}
+
 /**
  * ObjC-facing facade over the shared [GlassesSessionCore] for the NativeScript app: the iOS
  * counterpart of Android's FaceclawBleCommunicator with the same method names. GATT goes
@@ -118,6 +123,16 @@ class IosGlassesSession internal constructor(
         core.startG2AudioCapture(listener?.let { MainQueueAudioListener(it) })
 
     fun stopG2AudioCapture() = core.stopG2AudioCapture()
+
+    /** As [startG2AudioCapture], with packets delivered as NSData on the main queue. */
+    fun startG2AudioCaptureNsData(listener: IosAudioPacketListener): Boolean =
+        core.startG2AudioCapture(NsDataAudioListener(listener))
+
+    /** The right arm's usable write payload (ATT MTU minus the 3-byte header), or 20 when unknown. */
+    fun rightWriteLimit(): Int {
+        val mtu = try { central?.negotiatedMtu(rightIdentifier) ?: 0 } catch (t: Throwable) { 0 }
+        return if (mtu > 3) mtu - 3 else 20
+    }
 
     fun isAudioCaptureActive(): Boolean = core.isAudioCaptureActive()
 
@@ -236,6 +251,14 @@ class IosGlassesSession internal constructor(
     fun frameTimingsExport(): String = frameTimings.buildExport()
 
     internal fun coreForTests(): GlassesSessionCore = core
+
+    private class NsDataAudioListener(private val delegate: IosAudioPacketListener) : FaceclawAudioPacketListener {
+        override fun onAudioPacket(data: ByteArray?, arm: String?, arrivalMs: Long) {
+            val packet = (data ?: ByteArray(0)).data()
+            val label = arm ?: ""
+            dispatch_async(dispatch_get_main_queue()) { delegate.onAudioPacket(packet, label, arrivalMs) }
+        }
+    }
 
     private class MainQueueAudioListener(private val delegate: FaceclawAudioPacketListener) : FaceclawAudioPacketListener {
         override fun onAudioPacket(data: ByteArray?, arm: String?, arrivalMs: Long) {

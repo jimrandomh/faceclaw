@@ -82,7 +82,7 @@ test('iOS host forwards hands-free capture mode to the voice bridge', async () =
   const { IosPreviewController } = load('app/g2/ios-preview-controller.ts', { require: id => id === '../native/ios-voice-input'
     ? { iosVoiceInput: { startGlassesCapture: (_session, _log, endpointing) => captures.push(endpointing) } } : {} });
   const host = Object.create(IosPreviewController.prototype);
-  host.session = { state: { phase: 'connected' } };
+  host.communicator = {}; host.state = { phase: 'connected' };
   await host.startVoiceCapture(true);
   await host.startVoiceCapture();
   assert.deepEqual(captures, [true, false]);
@@ -207,22 +207,43 @@ test('settings-driven repaint runs after font cache invalidation, regardless of 
 
 test('background glasses input still composites frames; phone resume preserves the session; explicit stop stays stopped', async () => {
   const tasks = new Map(), screenStates = [], inputs = [], frames = [], previews = [], states = [], sounds = [];
-  let nextTask = 0, starts = 0, stops = 0, pollStarts = 0, pollStops = 0, session;
+  let nextTask = 0, starts = 0, stops = 0, pollStarts = 0, pollStops = 0, bridge;
   const window = { windowId: 'launcher', surfaceId: 'launcher', appId: 'launcher', title: 'Apps',
     setScreenOn: on => screenStates.push(on), requestRender() {} };
   const shell = { configure() {}, registerWindow() {}, wake() {}, focusWindow() {},
     getWindows: () => [window], foregroundWindow: () => window, isScreenOn: () => true,
     setBatteryLevels() {}, paintScene() { return new Uint8Array([0,0]); }, paintSurface() {}, underlayDim: () => 0, getFocus: () => 'app',
     receiveInput: async input => { inputs.push(input); } };
-  class Session {
-    state = { phase: 'disconnected' };
-    constructor(_transport, onState, onInput) { session = this; this.onState = onState; this.onInput = onInput; }
-    async start() { starts++; this.state = { phase: 'connected' }; this.onState(this.state); }
-    async stop() { stops++; this.state = { phase: 'disconnected' }; this.onState(this.state); }
-    async setBrightness() {}
-    setFrame(pixels) { if (this.state.phase === 'connected') frames.push(pixels); }
-    playBuzzerSequence(payload) { sounds.push([...payload]); }
-    wake() {}
+  // The shared Kotlin session, as seen through the iOS bridge: frames reach it
+  // only while connected, callbacks come back on the JS thread.
+  const noop = () => () => {};
+  class FaceclawCommunicatorBridge {
+    phase = 'disconnected';
+    constructor() { bridge = this; }
+    onStateChange(fn) { this.stateListener = fn; return noop(); }
+    onRingEvent(fn) { this.ringListener = fn; return noop(); }
+    onBatteryState() { return noop(); } onFirmwareInfo() { return noop(); } onFrameMetrics() { return noop(); }
+    onWearState() { return noop(); } addCompassListener() { return noop(); } onAncsRelayFrame() { return noop(); }
+    onAncsAuthorization() { return noop(); } setRequiresAncs() {} rightWriteLimit() { return 20; } onPhoneLockSignal() {}
+    async writeRawToRight() {}
+    async start() { starts++; this.phase = 'connected'; this.stateListener({ phase: 'connected', status: 'Connected.' }); }
+    async disconnect() { stops++; this.phase = 'disconnected'; this.stateListener({ phase: 'disconnected', status: 'Disconnected.' }); }
+    async close() {}
+    async setBrightness() {} async enableWearDetectionAndRequestState() {}
+    async configureCompositorScreen() {} async configureSurface() {} async setUnderlayDim() {} async setSurfaceVisible() {}
+    async setScreenBlanked() {} async removeSurface() {}
+    async submitSurfaceFrame(_id, pixels) { if (this.phase === 'connected') frames.push(pixels); }
+    async submitShellScene(bytes) { if (this.phase === 'connected') frames.push(bytes); }
+    waitForFrameFinished() { return Promise.resolve('sent'); }
+    getCompositePreview() { return new Uint8Array([1, 2]); }
+    async playBuzzerSequence(payload) { sounds.push([...payload]); }
+  }
+  class PreviewDisplayTarget {
+    activate() {} release() {}
+    async configureCompositorScreen() {} async configureSurface() {} async setUnderlayDim() {} async setSurfaceVisible() {}
+    async setScreenBlanked() {} async removeSurface() {} async submitSurfaceFrame() {} async submitShellScene() {}
+    waitForFrameFinished() { return Promise.resolve('composited'); }
+    getCompositePreview() { return new Uint8Array([1, 2]); }
   }
   const settings = { brightnessSetting: { get: () => 'auto' }, brightnessSettingToLevel: () => null, lockScreenEnabledSetting: { get: () => true }, onAnySettingChanged: () => () => {}, previewColorSetting: { get: () => 'white' } };
   const modules = {
@@ -238,22 +259,20 @@ test('background glasses input still composites frames; phone resume preserves t
     '../native/compass.ios': { bindCompassSession() {}, receiveCompassEvent() {} },
     '@nativescript/core': { File: { fromPath: () => ({ writeTextSync() {} }) }, knownFolders: { documents: () => ({ path: '/tmp' }) }, path },
     '../native/ios-voice-input': { iosVoiceInput: { handleSessionEnded() {}, stopPhoneCapture() {} } },
-    '../native/ios-bluetooth': { iosBluetooth: () => ({}) }, './glasses-session': { GlassesSession: Session },
+    '../native/faceclaw-communicator.ios': { FaceclawCommunicatorBridge, resolveIosPeripherals: async addresses => addresses },
+    '../native/preview-display.ios': { PreviewDisplayTarget },
+    './ancs-client': { ANCS_FIRMWARE_VERSION: 16, AncsClient: class { state = 'disconnected'; start() {} stop() {} stopCommand() { return new Uint8Array(); } receive() { return false; } } },
     '../native/nightscout-bridge': { nightscoutBridge: { async start() { pollStarts++; }, async stop() { pollStops++; } } },
-    './glance-host': { GlanceHost: class { dismiss() {} isVisible() { return false; } } },
-    './device-addresses': { loadDeviceAddresses: () => ({}) }, './ios-peripheral-identity': { deviceAddressError: () => null },
+    './glance-host': { GlanceHost: class { dismiss() {} reset() {} isVisible() { return false; } } },
+    './device-addresses': { loadDeviceAddresses: () => ({ right: 'AA', left: 'BB', ring: '' }) }, './ios-peripheral-identity': { deviceAddressError: () => null },
     '../apps/launcher/launcher-app': { createLauncherWindow: () => window, LAUNCHER_SURFACE_ID: 'launcher' },
     '../apps/launcher': { launcherEntries: () => [] },
     '../apps/all-apps': { ALL_APPS: [] }, '../ui/dashboard-settings': settings,
     '../native/phone-battery': { readPhoneBatteryState: () => ({ battery: 80, charging: false }) },
-    '../graphics/surface-compositor': { SurfaceCompositor: class {
-      setShellScene() {} configureSurface() {} setSurfaceVisible() {} submitSurfaceFrame() {} setUnderlayDim() {} setScreenBlanked() {}
-      compositeFrame() { return { pixels: new Uint8Array([1, 2]) }; }
-    } },
-    '../graphics/plane': { flattenPlanesWithDraws: () => ({ image: { pixels: new Uint8Array([1, 2]), width: 2, height: 1 }, draws: [] }) },
+    '../graphics/plane': { flattenPlanesWithDraws: () => ({ image: { pixels: new Uint8Array([1, 2]), width: 2, height: 1 }, draws: [] }), planesFingerprint: () => 'fp' },
     '../graphics/glyph-wire': { prepareFrameDraws: () => null },
-    '../native/texture-planner.ios': { IosTexturePlanner: class {} },
-    '../native/ios-graphics': { previewPixels: pixels => pixels },
+    '../graphics/image': { G2_LENS_WIDTH: 640, G2_LENS_HEIGHT: 480 },
+    './lock-screen': { LOCK_SCREEN_SURFACE_ID: 'lock-screen', createLockScreenImage: () => ({ width: 1, height: 1, to8bppBuffer: () => new Uint8Array(1) }) },
     '../ui/shell/shell': { shell, rawInputEventToInputEvent: input => input },
     '../ui/shell/geometry': { appViewportRect: () => ({ x: 0, y: 0, width: 640, height: 480 }) },
     pako: { deflate: x => x },
@@ -269,29 +288,32 @@ test('background glasses input still composites frames; phone resume preserves t
     NSOperationQueue: { mainQueue: {} },
   });
   const flush = () => { for (const [id, fn] of [...tasks]) { if (tasks.delete(id)) fn(); } };
+  const settle = async () => { for (let i = 0; i < 4; i++) { flush(); await new Promise(resolve => setImmediate(resolve)); } };
   const controller = new api.IosPreviewController(image => previews.push(image), assert.fail, state => states.push(state));
   await controller.actions.playBuzzerSequence(new Uint8Array([5, 4, 0]));
   assert.equal(sounds.length, 0);
-  controller.resume(); await controller.connect(); flush();
+  controller.resume(); await controller.connect(); await settle();
   await controller.actions.playBuzzerSequence(new Uint8Array([5, 4, 0]));
   assert.deepEqual(sounds, [[5, 4, 0]]);
   const previewCount = previews.length, stateCount = states.length;
   controller.pause(); controller.pause(); // NativeScript also unloads its root page on background entry.
   assert.equal(stops, 0); assert.ok(screenStates.every(Boolean));
   assert.equal(pollStarts, 1); assert.equal(pollStops, 0, 'connected glasses keep Nightscout polling in background');
-  session.onInput({ eventType: 3, eventSource: 1 });
-  await controller.inputQueue; flush();
-  assert.equal(inputs.length, 1); assert.ok(frames.length >= 2);
+  const frameCount = frames.length;
+  bridge.ringListener({ kind: 'sys-event', containerName: '', eventType: 3, eventSource: 1, systemExitReasonCode: 0, frameId: 0 });
+  await controller.inputQueue; await settle();
+  assert.equal(inputs.length, 1); assert.ok(frames.length > frameCount, 'background input still composites frames');
   assert.equal(previews.length, previewCount); assert.equal(states.length, stateCount);
-  controller.resume(); flush();
+  controller.resume(); await settle();
   assert.equal(starts, 1); assert.ok(previews.length > previewCount);
-  controller.pause(); await controller.disconnect(); flush();
+  controller.pause(); await controller.disconnect(); await settle();
   assert.equal(stops, 1); assert.equal(screenStates.at(-1), false);
   assert.equal(pollStops, 1);
-  const frameCount = frames.length;
-  session.onInput({ eventType: 3, eventSource: 1 }); await controller.inputQueue; flush();
-  assert.equal(inputs.length, 1); assert.equal(frames.length, frameCount);
-  controller.resume(); flush();
+  const stoppedFrames = frames.length;
+  bridge.ringListener({ kind: 'sys-event', containerName: '', eventType: 3, eventSource: 1, systemExitReasonCode: 0, frameId: 0 });
+  await controller.inputQueue; await settle();
+  assert.equal(inputs.length, 1); assert.equal(frames.length, stoppedFrames);
+  controller.resume(); await settle();
   assert.equal(starts, 1); assert.equal(controller.connectionState.phase, 'disconnected');
   assert.equal(pollStarts, 2, 'resuming the phone restarts Nightscout polling');
 });
@@ -368,21 +390,22 @@ test('iOS configures an in-process surface before submitting constructor-trigger
     require: name => ({
       '../ui/shell/shell': { shell },
       '../ui/shell/geometry': { appViewportRect: () => ({ x: 0, y: 0, width: 2, height: 1 }) },
-      '../graphics/plane': { flattenPlanesWithDraws: planes => ({ image: planes[0], draws: [] }) },
+      '../graphics/plane': { flattenPlanesWithDraws: planes => ({ image: planes[0], draws: [] }), planesFingerprint: () => 'fp' },
       '../graphics/glyph-wire': { prepareFrameDraws: () => null },
     })[name] ?? {},
     console,
   });
-  // Exercise the real launch method with a strict compositor boundary. App
+  // Exercise the real launch method with a strict display boundary. App
   // construction paints synchronously, as Nightscout's tray subscription does.
   const controller = Object.create(api.IosPreviewController.prototype);
   controller.inProcessApps = new Map();
   controller.requestShellRender = () => {};
-  controller.scheduleFrame = () => {};
-  controller.compositor = {
-    configureSurface(id) { surfaces.add(id); }, setSurfaceVisible() {},
-    removeSurface(id) { surfaces.delete(id); },
-    submitSurfaceFrame(id, pixels) { assert.ok(surfaces.has(id), `unconfigured ${id}`); submitted.push([...pixels]); },
+  controller.schedulePreviewUpdate = () => {};
+  controller.communicator = null;
+  controller.previewTarget = {
+    async configureSurface(id) { surfaces.add(id); }, async setSurfaceVisible() {},
+    async removeSurface(id) { surfaces.delete(id); },
+    async submitSurfaceFrame(id, pixels) { assert.ok(surfaces.has(id), `unconfigured ${id}`); submitted.push([...pixels]); },
   };
   let plumbing, early;
   const fresh = [{ pixels: new Uint8Array([30, 40]), width: 2, height: 1 }];
@@ -453,14 +476,14 @@ test('iOS preview voice uses the phone microphone, while connected capture stays
     require: id => id === '../native/ios-voice-input' ? { iosVoiceInput: bridge } : {},
   });
   const host = Object.create(IosPreviewController.prototype);
-  host.active = true; host.glassesLocked = false;
+  host.active = true; host.glassesLocked = false; host.communicator = null; host.state = { phase: 'disconnected' };
   assert.equal(await host.prepareVoiceCapture(), true);
   await host.startVoiceCapture(true);
   assert.deepEqual(calls, [['prepare', true, true], ['prepare', true, true], ['phone', true]]);
-  calls.length = 0; host.session = { state: { phase: 'connected' } };
+  calls.length = 0; host.communicator = {}; host.state = { phase: 'connected' };
   assert.equal(await host.prepareVoiceCapture(), true); await host.startVoiceCapture(false);
   assert.deepEqual(calls, [['prepare', true, false], ['glasses', false]]);
-  calls.length = 0; host.active = false; host.session = null;
+  calls.length = 0; host.active = false; host.communicator = null; host.state = { phase: 'disconnected' };
   assert.equal(await host.prepareVoiceCapture(), false); await host.startVoiceCapture();
   assert.deepEqual(calls, []);
 });

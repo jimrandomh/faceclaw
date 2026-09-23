@@ -62,11 +62,14 @@ that remains: the sherpa-onnx classes, which are the vendored Android JNI ABI.
 PNG/GIF adapters retain only Android storage responsibilities; their codecs are
 shared.
 
-On `ios-port`, platform adapters route the existing TypeScript session and UI
-logic through shared Kotlin for protocol builders, CRC/framing/reassembly,
-event decoding, CFW compression/ACKs, changed-image regions, surface composition,
-and LVGL glyphs. The original pure TypeScript implementations remain as Node
-test references; NativeScript selects the `.ios.ts` native adapters.
+On iOS (since 2026-09-22) `iosMain` also hosts the platform actuals for the shared
+cores: `ble/IosBleCentral` (CoreBluetooth, implements `SessionLink` and `StockLink`
+plus scanning and ANCS authorization), `ble/IosSessionHost`, `ble/IosGlassesSession`
+(the facade `app/native/faceclaw-communicator.ios.ts` wraps), `ble/IosStockFlows`
+(device-info probe, flash prompt, OTA flasher), `net/IosRemoteInput`,
+`net/IosSseRequest`, `net/IosModelDownloader` and `IosFrameTimings`. Callbacks into
+TypeScript are always dispatched to the main queue. The former pure-TypeScript
+session/protocol duplicates were deleted; their coverage lives in `tests/kotlin`.
 
 Texture rendering uses the same `GlyphAtlas`, `ImageAtlas`, `TextureCacheState`
 and `TexturePlanner` on both platforms. iOS's `IosTextureAtlas` and
