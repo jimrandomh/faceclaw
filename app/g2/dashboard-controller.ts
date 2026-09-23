@@ -204,6 +204,14 @@ class DashboardController {
   private activeTextSettings: ConfigSettingString[] = [];
   private activeTextEditorTitle = "";
   private activeTextEditorOnFinish: (() => void) | null = null;
+  /**
+   * The caller's cancel callback. LayerActions has always declared this fifth
+   * parameter, but neither the wiring below nor startTextSettingsEdit accepted
+   * it, so it was dropped silently -- a 4-parameter function is assignable to a
+   * 5-parameter type, so nothing failed to compile. A caller that tracks its own
+   * "editor is open" state therefore had no way to learn the editor closed.
+   */
+  private activeTextEditorOnCancel: (() => void) | null = null;
   private activeTextEditorToggle: TextSettingsEditToggle | null = null;
   private evenNotificationActive = false;
   private evenAppConflictMessage = "";
@@ -320,7 +328,8 @@ class DashboardController {
         title: string,
         onFinish?: () => void,
         toggle?: TextSettingsEditToggle,
-      ) => this.startTextSettingsEdit(settings, title, onFinish, toggle),
+        onCancel?: () => void,
+      ) => this.startTextSettingsEdit(settings, title, onFinish, toggle, onCancel),
       endTextSettingEdit: () => this.endTextSettingEdit(),
       startVoiceCapture: (endpointing = false) => this.startVoiceCapture(endpointing),
       stopVoiceCapture: () => this.stopVoiceCapture(),
@@ -1881,11 +1890,13 @@ class DashboardController {
     title: string,
     onFinish?: () => void,
     toggle?: TextSettingsEditToggle,
+    onCancel?: () => void,
   ): void {
     this.activeTextSettings = Array.from(settings.slice(0, 2));
     this.activeTextEditorTitle = title;
     this.activeTextEditorOnFinish = onFinish ?? null;
     this.activeTextEditorToggle = toggle ?? null;
+    this.activeTextEditorOnCancel = onCancel ?? null;
     this.emit();
   }
 
@@ -2002,11 +2013,16 @@ class DashboardController {
 
   private endTextSettingEdit(): void {
     const finishedSettings = this.activeTextSettings;
+    // Closing without the done key is a cancel from the caller's point of view.
+    // finishTextSettingEdit clears this first, so a completed edit never fires it.
+    const onCancel = this.activeTextEditorOnCancel;
     this.activeTextSettings = [];
     this.activeTextEditorTitle = "";
     this.activeTextEditorOnFinish = null;
     this.activeTextEditorToggle = null;
+    this.activeTextEditorOnCancel = null;
     this.emit();
+    onCancel?.();
     if (finishedSettings.includes(nightscoutSiteUrlSetting) || finishedSettings.includes(nightscoutApiTokenSetting)) {
       void this.refreshNightscoutAfterSettingsChange();
     }
@@ -2020,6 +2036,9 @@ class DashboardController {
   finishActiveTextSettingEdit(): void {
     if (!this.activeTextSettings.length) return;
     const onFinish = this.activeTextEditorOnFinish;
+    // Completing is not cancelling: drop the cancel callback before
+    // endTextSettingEdit, which fires whatever is still set.
+    this.activeTextEditorOnCancel = null;
     const closesGlassesEditor = this.activeTextSettings.length === 1;
     this.endTextSettingEdit();
     if (closesGlassesEditor && this.textEditorHost?.closeTextEditor()) {

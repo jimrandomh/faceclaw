@@ -124,9 +124,16 @@ export class EvenHubStoreLayer implements Layer {
   paint(ctx: LayerContext): GrayImage {
     if (!this.started) {
       this.started = true;
-      if (this.showingLogin) {
-        this.openCredentialEditor(ctx);
-      } else {
+      // Do NOT open the phone credential editor here. This runs on the first
+      // paint, which includes the restore of a still-open EvenHub at app
+      // startup -- so an unfinished sign-in re-opened the form on every launch,
+      // and the form has no way out: it has no Cancel control, its onCancel is
+      // dropped before it reaches the controller, and Back leaves the app
+      // rather than closing it. The login pane already says "Enter your Even
+      // account email and password in the phone app" and already opens the
+      // editor on click (handleInput), so the editor is still one tap away for
+      // someone who actually wants it.
+      if (!this.showingLogin) {
         void this.ensureTabLoaded(ctx, this.activeTab);
       }
     }
@@ -650,7 +657,11 @@ export class EvenHubStoreLayer implements Layer {
     return true;
   }
 
-  private enterLogin(ctx: LayerContext, status = "Sign in to browse public apps."): void {
+  private enterLogin(
+    ctx: LayerContext,
+    status = "Sign in to browse public apps.",
+    openEditor = true,
+  ): void {
     const wasShowingLogin = this.showingLogin;
     this.closePhoneEditor(ctx.actions, "search");
     this.showingLogin = true;
@@ -659,7 +670,7 @@ export class EvenHubStoreLayer implements Layer {
     for (const tab of TABS) this.tabs[tab.id] = emptyTab();
     this.focus = "list";
     if (!wasShowingLogin) resetEvenHubLoginForm();
-    this.openCredentialEditor(ctx);
+    if (openEditor) this.openCredentialEditor(ctx);
     ctx.actions.requestRender();
   }
 
@@ -699,7 +710,19 @@ export class EvenHubStoreLayer implements Layer {
     const email = evenHubLoginEmailSetting.get();
     const password = evenHubLoginPasswordSetting.get();
     if (!email.trim() || !password) {
-      this.enterLogin(ctx, "Email and password are required.");
+      // The phone editor has no Cancel control, so submitting an untouched form
+      // with the keyboard's Done key is the only way someone can back out of
+      // it. Reopening the editor there makes that a loop with no exit, so a
+      // wholly empty submission is treated as a cancel and leaves the editor
+      // closed -- the login pane still says how to get back in, and a click
+      // reopens the editor. A half-filled form is a real mistake, so that
+      // still reopens with the message.
+      const cancelled = !email.trim() && !password;
+      this.enterLogin(
+        ctx,
+        cancelled ? "Sign in to browse public apps." : "Email and password are required.",
+        !cancelled,
+      );
       return;
     }
     this.loginBusy = true;
