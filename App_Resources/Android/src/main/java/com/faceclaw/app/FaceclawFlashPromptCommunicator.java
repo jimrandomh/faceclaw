@@ -4,6 +4,7 @@ import android.bluetooth.BluetoothGatt;
 import android.content.Context;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.util.Log;
 
 import java.util.List;
@@ -54,6 +55,15 @@ public class FaceclawFlashPromptCommunicator implements FaceclawBleListener {
     private static final int SELECTION_TIMEOUT_MS = 120_000;
     private static final int CREATE_ACK_TIMEOUT_MS = 3_000;
     private static final int BATTERY_ACK_TIMEOUT_MS = 3_000;
+    /**
+     * A single connect attempt is not enough. The lens is routinely unavailable for a
+     * moment right after a previous link to it closed, which is exactly the situation
+     * this class is in whenever the user retries. FaceclawFirmwareFlasher already
+     * retries within a window for the same reason; this matches it rather than
+     * failing on the first refusal.
+     */
+    private static final int ARM_CONNECT_WINDOW_MS = 30_000;
+    private static final int ARM_RETRY_DELAY_MS = 2_500;
 
     private final Context context;
     private final String rightAddress;
@@ -75,6 +85,14 @@ public class FaceclawFlashPromptCommunicator implements FaceclawBleListener {
     private volatile boolean rightConnected = false;
     private volatile boolean leftConnected = false;
     private volatile boolean rightLost = false;
+    /**
+     * True while the arms are still being brought up. connectArmResilient disconnects
+     * between retries, which fires onConnectionStateChange, and that callback latches
+     * rightLost AND finished -- so without this guard a deliberate retry-disconnect
+     * ends the whole run, even when the very next attempt connects. Only a drop AFTER
+     * both arms are up is a lost connection.
+     */
+    private volatile boolean establishing = true;
     private volatile Boolean approved = null;
     private volatile ScheduledExecutorService heartbeatExecutor;
 
@@ -121,7 +139,8 @@ public class FaceclawFlashPromptCommunicator implements FaceclawBleListener {
         stopHeartbeat();
         try {
             bleManager.close();
-        } catch (Exception ignored) {
+        } catch (Exception e) {
+            Log.w(TAG, "close: ble manager close failed", e);
         }
     }
 
@@ -148,6 +167,8 @@ public class FaceclawFlashPromptCommunicator implements FaceclawBleListener {
                 }
             }
 
+            // Both arms are up: from here a disconnect really is a lost connection.
+            establishing = false;
             emitState("connected", "");
             // Auth both arms now (pairing prompts, if any, happen here) before
             // anything else, so both bonds exist by the time flashing starts.
@@ -185,7 +206,10 @@ public class FaceclawFlashPromptCommunicator implements FaceclawBleListener {
                 }
                 try {
                     sendShutdown();
-                } catch (Exception ignored) {
+                } catch (Exception e) {
+                    // The lens is about to be torn down either way, but a shutdown that
+                    // never lands is why it can come back up in an odd state.
+                    Log.w(TAG, "sendShutdown failed", e);
                 }
                 if (!Boolean.TRUE.equals(approved)) {
                     emitResult(false);
@@ -224,9 +248,7 @@ public class FaceclawFlashPromptCommunicator implements FaceclawBleListener {
     }
 
     private void connectArm(String address, String arm) {
-        if (!bleManager.connect(address, ConnectionOptions.CONNECT_TIMEOUT_MS)) {
-            throw new IllegalStateException("could not connect to the " + arm + " arm (" + address + ")");
-        }
+        connectArmResilient(address, arm);
         bleManager.requestConnectionPriority(address, BluetoothGatt.CONNECTION_PRIORITY_HIGH);
         bleManager.requestMtu(address, ConnectionOptions.DESIRED_MTU, ConnectionOptions.CONNECT_TIMEOUT_MS);
         if (!bleManager.discoverServices(address, ConnectionOptions.SERVICES_TIMEOUT_MS)) {
@@ -236,6 +258,51 @@ public class FaceclawFlashPromptCommunicator implements FaceclawBleListener {
             throw new IllegalStateException("enableNotifications failed: " + arm + " arm (" + address + ")");
         }
         emitLog("connected " + arm + " arm");
+    }
+
+    private void sleepInterruptibly(int ms) {
+        try {
+            Thread.sleep(ms);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    /**
+     * Keep trying to open the link until the window closes, reporting each attempt.
+     * Mirrors FaceclawFirmwareFlasher.connectLensResilient.
+     */
+    private void connectArmResilient(String address, String arm) {
+        long deadline = SystemClock.elapsedRealtime() + ARM_CONNECT_WINDOW_MS;
+        String lastError = "unknown";
+        int attempt = 0;
+        while (SystemClock.elapsedRealtime() < deadline && !cancelled) {
+            attempt++;
+            try {
+                if (bleManager.connect(address, ConnectionOptions.CONNECT_TIMEOUT_MS)) {
+                    if (attempt > 1) {
+                        emitLog("connected " + arm + " arm (attempt " + attempt + ")");
+                    }
+                    return;
+                }
+                lastError = "connect refused";
+            } catch (Exception e) {
+                lastError = e.getMessage() == null ? e.toString() : e.getMessage();
+            }
+            emitLog(arm + " arm connect attempt " + attempt + " failed (" + lastError + "); retrying...");
+            try {
+                bleManager.disconnect(address);
+            } catch (Exception e) {
+                // Expected between retries: the link is usually already gone.
+                Log.d(TAG, "disconnect before retry failed: address=" + address, e);
+            }
+            sleepInterruptibly(ARM_RETRY_DELAY_MS);
+        }
+        if (cancelled) {
+            throw new IllegalStateException("Cancelled.");
+        }
+        throw new IllegalStateException(
+                "could not connect to the " + arm + " arm after " + attempt + " attempts: " + lastError);
     }
 
     /**
@@ -412,7 +479,8 @@ public class FaceclawFlashPromptCommunicator implements FaceclawBleListener {
         stopHeartbeat();
         try {
             bleManager.close();
-        } catch (Exception ignored) {
+        } catch (Exception e) {
+            Log.w(TAG, "teardown: ble manager close failed", e);
         }
         rightConnected = false;
         leftConnected = false;
@@ -485,7 +553,7 @@ public class FaceclawFlashPromptCommunicator implements FaceclawBleListener {
         if (address.equalsIgnoreCase(rightAddress)) {
             rightConnected = false;
             synchronized (lock) {
-                if (!finished && !cancelled) {
+                if (!establishing && !finished && !cancelled) {
                     rightLost = true;
                     finished = true;
                     selectionLatch.countDown();
@@ -518,6 +586,8 @@ public class FaceclawFlashPromptCommunicator implements FaceclawBleListener {
 
     private void emitState(String state, String detail) {
         final String safeDetail = detail == null ? "" : detail;
+        // Listener-only until now, so a prompt that never appeared left no trace in a log.
+        Log.i(TAG, "state=" + state + (safeDetail.isEmpty() ? "" : " -- " + safeDetail));
         mainHandler.post(() -> {
             FaceclawFlashPromptListener current = listener;
             if (current != null) {
@@ -536,6 +606,7 @@ public class FaceclawFlashPromptCommunicator implements FaceclawBleListener {
     }
 
     private void emitResult(boolean approvedResult) {
+        Log.i(TAG, "result=" + (approvedResult ? "approved" : "declined"));
         mainHandler.post(() -> {
             FaceclawFlashPromptListener current = listener;
             if (current != null) {

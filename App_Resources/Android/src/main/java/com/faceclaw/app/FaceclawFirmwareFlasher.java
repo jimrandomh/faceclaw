@@ -133,7 +133,8 @@ public class FaceclawFirmwareFlasher implements FaceclawBleListener {
         cancel();
         try {
             bleManager.close();
-        } catch (Exception ignored) {
+        } catch (Exception e) {
+            Log.w(TAG, "close: ble manager close failed", e);
         }
     }
 
@@ -207,7 +208,8 @@ public class FaceclawFirmwareFlasher implements FaceclawBleListener {
         emitLog(lens + " lens: all components verified");
         try {
             bleManager.disconnect(address);
-        } catch (Exception ignored) {
+        } catch (Exception e) {
+            Log.w(TAG, "disconnect after " + lens + " lens failed: address=" + address, e);
         }
     }
 
@@ -349,7 +351,9 @@ public class FaceclawFirmwareFlasher implements FaceclawBleListener {
             emitLog(lens + " connect attempt " + attempt + " failed (" + lastError + "); retrying...");
             try {
                 bleManager.disconnect(address);
-            } catch (Exception ignored) {
+            } catch (Exception e) {
+                // Routine between retries: the link is usually already gone.
+                Log.d(TAG, "disconnect before retry failed: address=" + address, e);
             }
             sleepInterruptibly(RETRY_DELAY_MS);
         }
@@ -545,6 +549,8 @@ public class FaceclawFirmwareFlasher implements FaceclawBleListener {
         }
         BleProtocol.ParsedFrame frame = BleProtocol.parseFrame(data);
         if (!frame.ok || frame.pb.length < 2) {
+            // Dropped acks surface upstream as an unexplained timeout, so say so here.
+            Log.d(TAG, "ignoring ack frame: ok=" + frame.ok + " len=" + frame.pb.length);
             return;
         }
         dataAcks.add(Arrays.copyOf(frame.pb, Math.min(frame.pb.length, 2)));
@@ -552,9 +558,7 @@ public class FaceclawFirmwareFlasher implements FaceclawBleListener {
 
     @Override
     public void onConnectionStateChange(String address, boolean connected) {
-        if (!connected) {
-            Log.i(TAG, "disconnected: " + address);
-        }
+        Log.i(TAG, (connected ? "connected: " : "disconnected: ") + address);
     }
 
     // ---- helpers -------------------------------------------------------------
@@ -562,7 +566,8 @@ public class FaceclawFirmwareFlasher implements FaceclawBleListener {
     private void teardown() {
         try {
             bleManager.close();
-        } catch (Exception ignored) {
+        } catch (Exception e) {
+            Log.w(TAG, "teardown: ble manager close failed", e);
         }
     }
 
@@ -665,6 +670,13 @@ public class FaceclawFirmwareFlasher implements FaceclawBleListener {
 
     private void emitProgress(String lens, int componentIndex, int componentCount, int blockIndex, int blockCount,
             long bytesSent, long bytesTotal) {
+        // Per-block, so DEBUG and behind isLoggable: thousands of these per flash, and
+        // without the guard the message is built every time even when nobody reads it.
+        // The component boundaries are the interesting ones and emitLog reports those.
+        if (Log.isLoggable(TAG, Log.DEBUG)) {
+            Log.d(TAG, "progress " + lens + " component " + (componentIndex + 1) + "/" + componentCount
+                    + " block " + (blockIndex + 1) + "/" + blockCount + " " + bytesSent + "/" + bytesTotal + " bytes");
+        }
         mainHandler.post(() -> {
             FaceclawFirmwareFlasherListener current = listener;
             if (current != null) {
@@ -675,6 +687,13 @@ public class FaceclawFirmwareFlasher implements FaceclawBleListener {
 
     private void emitState(String state, String detail) {
         final String safeDetail = detail == null ? "" : detail;
+        // These went only to the in-app listener, so a failed flash left its reason on
+        // the phone screen and nowhere a log could be read from afterwards.
+        if ("error".equals(state)) {
+            Log.e(TAG, "state=" + state + (safeDetail.isEmpty() ? "" : " -- " + safeDetail));
+        } else {
+            Log.i(TAG, "state=" + state + (safeDetail.isEmpty() ? "" : " -- " + safeDetail));
+        }
         mainHandler.post(() -> {
             FaceclawFirmwareFlasherListener current = listener;
             if (current != null) {
@@ -685,6 +704,13 @@ public class FaceclawFirmwareFlasher implements FaceclawBleListener {
 
     private void emitComplete(boolean success, String detail) {
         final String safeDetail = detail == null ? "" : detail;
+        // The single most important line of a flash, and it used to be invisible to
+        // logcat: on failure this carries the reason.
+        if (success) {
+            Log.i(TAG, "complete success -- " + safeDetail);
+        } else {
+            Log.e(TAG, "complete FAILED -- " + safeDetail);
+        }
         mainHandler.post(() -> {
             FaceclawFirmwareFlasherListener current = listener;
             if (current != null) {
