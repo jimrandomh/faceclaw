@@ -2480,6 +2480,19 @@ class DashboardController {
     this.pendingShellRenderCauseFrameId = 0;
     const frameId = frameTimings.startFrame("render:shell", causeFrameId);
     frameTimings.annotateFrame(frameId, shell.describeInputTarget());
+    // Nothing to send a frame to: stop here, BEFORE painting. This check used
+    // to run only after the paint, which made a no-display state a
+    // main-thread busy loop: paint (~55 ms) -> endRenderPass reports stale
+    // data -> requestShellRender re-queues (shellRenderQueued, since a render
+    // is in progress) -> the display check discards the work -> the do/while
+    // in requestShellRender goes straight round again. Measured on a device
+    // with the glasses not presenting: 40 of 40 frames discarded, ~19 a
+    // second, enough to starve input and ANR. Leaving early costs nothing and
+    // breaks the loop, because the re-request lives downstream of this point.
+    if (!this.display || this.phase === "charging") {
+      frameTimings.finishFrame(frameId, "discarded: shell render with no display target");
+      return;
+    }
     const wantFreshData = this.nextShellRenderWantsFreshData;
     this.nextShellRenderWantsFreshData = false;
     if (wantFreshData) frameTimings.logFrame(frameId, "follow-up repaint that must not use cached data");
@@ -2498,11 +2511,12 @@ class DashboardController {
       this.nextShellRenderWantsFreshData = true;
       this.requestShellRender(frameId);
     }
+    // The display-target check that used to live here now runs before the
+    // paint, at the top of this function. Nothing between the two can change
+    // it -- paintSurface is synchronous and there is no await in between -- so
+    // repeating it here is dead code, and the compiler agrees: the early
+    // return narrows this.phase, making the "charging" comparison impossible.
     const display = this.display;
-    if (!display || this.phase === "charging") {
-      frameTimings.finishFrame(frameId, "discarded: shell render with no display target");
-      return;
-    }
     // A shell overlay that dims what it covers (a context menu) must dim the
     // window surfaces too, which live below the shell surface in the
     // compositor: forward the factor before this frame composites.
