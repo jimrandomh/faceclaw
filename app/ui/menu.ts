@@ -1,3 +1,4 @@
+import { MenuHighlightMotion } from "./menu-highlight-motion";
 import { G2_LENS_HEIGHT, G2_LENS_WIDTH, GrayImage, type UiFont } from "../graphics/image";
 import { wrapText } from "../graphics/textwrap";
 import { getDefaultSmallFont } from "../graphics/ui-fonts";
@@ -19,7 +20,7 @@ const MENU_HIGHLIGHT_SELECTED_BACKGROUND_FILL = 15;
 const MENU_HIGHLIGHT_SELECTED_BORDER_STROKE = 45;
 
 export type MenuLayout = {
-  /** Stereo depth of the menu surface; selected rows add +2. */
+  /** Stereo depth of the menu surface, including the selected row. */
   depth?: number;
   /** Left edge, or "center" to center horizontally on the painted surface. */
   x: number | "center";
@@ -193,6 +194,7 @@ export const CONTEXT_MENU_DIM = 0.25;
 export class MenuLayer implements Layer {
   private selectedIndex = 0;
   private scrollRow = 0;
+  private readonly highlightMotion = new MenuHighlightMotion();
 
   get depth(): number { return this.layout.depth ?? 0; }
 
@@ -288,7 +290,11 @@ export class MenuLayer implements Layer {
       } else {
         row.drawText(font, textX, textY + LIST_ROW_TEXT_INSET, item.label, disabled ? 70 : selected ? 255 : 200);
       }
-      if (selected) image.drawMenuSelection(row, x + 12, rowY, focused ? MENU_HIGHLIGHT_SELECTED_BACKGROUND_FILL : 0, MENU_HIGHLIGHT_SELECTED_BORDER_STROKE, 8, 2);
+      if (selected) {
+        const animation = this.highlightMotion.paint(index, this.scrollRow, x + 12, rowY, width - 24, rowHeight - 1, Date.now());
+        image.drawMenuSelection(row, x + 12, rowY, focused ? MENU_HIGHLIGHT_SELECTED_BACKGROUND_FILL : 0,
+          MENU_HIGHLIGHT_SELECTED_BORDER_STROKE, 8, 0, animation);
+      }
     }
 
     if (this.items.length > visibleRowCount) {
@@ -315,9 +321,11 @@ export class MenuLayer implements Layer {
     }
     switch (event.type) {
       case "scroll-up":
+        this.highlightMotion.navigate(this.selectedIndex, this.selectedIndex === 0);
         this.selectedIndex = (this.selectedIndex + this.items.length - 1) % this.items.length;
         return;
       case "scroll-down":
+        this.highlightMotion.navigate(this.selectedIndex, this.selectedIndex === this.items.length - 1);
         this.selectedIndex = (this.selectedIndex + 1) % this.items.length;
         return;
       case "double-click":

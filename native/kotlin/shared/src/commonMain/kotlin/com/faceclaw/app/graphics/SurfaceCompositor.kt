@@ -51,7 +51,7 @@ class SurfaceCompositor @JvmOverloads constructor(private val includePreviewInFr
             var out: MutableList<ScreenDraw> = ArrayList()
             while ((cursor.remaining() >= 1)) {
                 var kind: Int = (cursor.get() and 0xff)
-                if (kind in 3..5) { out.add(ScreenDraw.image(0, 0, 0).also { it.selection = MenuSelection.read(cursor, kind) }); continue }
+                if (kind in 3..6) { out.add(ScreenDraw.image(0, 0, 0).also { it.selection = MenuSelection.read(cursor, kind) }); continue }
                 if (((kind == ScreenDraw.KIND_GLYPH) && (cursor.remaining() >= 11))) {
                     var fontId: Int = (cursor.getShort().toInt() and 0xffff)
                     var encoding: Int = cursor.getInt()
@@ -287,6 +287,18 @@ class SurfaceCompositor @JvmOverloads constructor(private val includePreviewInFr
     }
 
     private val lock = protocolPlatform().createLock()
+    private var animatedPreview: ShellScene.AnimatedPreview? = null
+    private var previewKey: String? = null
+
+    private fun previewScene(scene: ShellScene, gray: ByteArray, key: String): ByteArray {
+        if (previewKey != key) {
+            animatedPreview?.player?.stop()
+            animatedPreview = scene.animatedPreview(gray, screenWidth, screenHeight,
+                schedule = { delay, action -> scheduleDrawRedraw(delay) { lock.withLock(action) } })
+            previewKey = key
+        }
+        return animatedPreview!!.pixels
+    }
 
     private var screenWidth: Int = 0
 
@@ -602,6 +614,9 @@ class SurfaceCompositor @JvmOverloads constructor(private val includePreviewInFr
     private fun compositeLocked(includePreview: Boolean = includePreviewInFrames): Composite {
         var gray: ByteArray = ByteArray((screenWidth * screenHeight))
         if (blanked) {
+            animatedPreview?.player?.stop()
+            animatedPreview = null
+            previewKey = null
             return Composite(
                 gray,
                 screenWidth,
@@ -667,8 +682,18 @@ class SurfaceCompositor @JvmOverloads constructor(private val includePreviewInFr
             }
         }
         val scene = if (surfaces.values.any { it.visible && it.zOrder > 1 }) ShellScene.EMPTY else ShellScene(shellScene?.layers ?: emptyList(), selections)
-        val preview = if (includePreview && (shellScene != null || selections.isNotEmpty())) scene.preview(gray, screenWidth, screenHeight) else gray
-        return Composite(preview, screenWidth, screenHeight, fingerprint.append("|shell:").append(scene.fingerprint).toString(),
+        val sceneKey = fingerprint.append("|shell:").append(scene.fingerprint).toString()
+        val preview = if (includePreview && (shellScene != null || selections.isNotEmpty())) {
+            previewScene(scene, gray, sceneKey)
+        } else {
+            if (includePreview) {
+                animatedPreview?.player?.stop()
+                animatedPreview = null
+                previewKey = null
+            }
+            gray
+        }
+        return Composite(preview, screenWidth, screenHeight, sceneKey,
             nextCompositeSeq++, draws.toTypedArray()).also { it.screenGray = gray; it.shellScene = scene }
     }
 

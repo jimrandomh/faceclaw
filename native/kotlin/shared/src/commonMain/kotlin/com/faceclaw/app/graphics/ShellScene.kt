@@ -7,11 +7,12 @@ class ShellScene(val layers: List<Layer>, val selections: List<MenuSelection> = 
     val fingerprint: String = layers.joinToString(";") { "${it.key},${it.x},${it.y},${it.width},${it.height},${it.dim},${it.depth},${CachedResource(it.packed).hash},${it.selections.joinToString { row -> row.fingerprint }}" } + selections.joinToString { it.fingerprint }
     fun calls(width: Int, height: Int, surfaces: IntArray, selected: IntArray): List<ByteArray> {
         val calls = ArrayList<ByteArray>(); var rowId = 0
-        for (row in selections) calls.addAll(row.calls(selected[rowId++]))
+        val now = drawAnimationTimeMs()
+        for (row in selections) calls.addAll(row.calls(selected[rowId++], now))
         for ((index, layer) in layers.withIndex()) {
             if (layer.dim < 256) calls.add(DrawProtocol.lut(width, height, layer.dim))
             calls.add(DrawProtocol.image(surfaces[index], layer.x, layer.y, depth = layer.depth))
-            for (row in layer.selections) calls.addAll(row.calls(selected[rowId++]))
+            for (row in layer.selections) calls.addAll(row.calls(selected[rowId++], now))
         }
         return calls
     }
@@ -27,6 +28,36 @@ class ShellScene(val layers: List<Layer>, val selections: List<MenuSelection> = 
         val target = DisplayListRenderer.Target(output, width, height)
         return ByteArray(width * height) { (target.get(it % width, it / width) * 16).toByte() }
     }
+    internal class AnimatedPreview(val player: DisplayListPlayer, var pixels: ByteArray)
+
+    internal fun animatedPreview(
+        screenGray: ByteArray, width: Int, height: Int,
+        schedule: (Int, () -> Unit) -> (() -> Unit),
+    ): AnimatedPreview {
+        val screen = BmpUtil.pack4bppFromGray8(screenGray, width, height)
+        val output = ByteArray(screen.size)
+        val resources = HashMap<Int, ByteArray>()
+        val surfaces = IntArray(layers.size) { id ->
+            val layer = layers[id]
+            resources[id] = DrawProtocol.rawImage(layer.width, layer.height, layer.packed)
+            id
+        }
+        val rows = IntArray(allSelections.size) { id ->
+            resources[id + layers.size] = allSelections[id].resource.bytes
+            id + layers.size
+        }
+        resources[511] = DrawProtocol.displayList(calls(width, height, surfaces, rows))
+        val target = DisplayListRenderer.Target(output, width, height)
+        lateinit var preview: AnimatedPreview
+        val player = DisplayListPlayer(DisplayListRenderer(resources),
+            DisplayListRenderer.Target(screen, width, height), target,
+            clock = { drawAnimationTimeMs() }, schedule = schedule,
+            displayed = { preview.pixels = ByteArray(width * height) { (target.get(it % width, it / width) * 16).toByte() } })
+        preview = AnimatedPreview(player, screenGray)
+        player.present(511)
+        return preview
+    }
+
     companion object {
         val EMPTY = ShellScene(emptyList())
         fun decode(reader: ByteReader): ShellScene {

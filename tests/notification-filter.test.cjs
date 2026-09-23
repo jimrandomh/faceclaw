@@ -84,6 +84,7 @@ function ui(fontSize = 12) {
     '../native/notification-sources': prefs,
     '../native/notification-access': { isNotificationListenerEnabled: () => true },
     '../util/render-freshness': { renderPassAllowsStaleData: () => false },
+    './menu-highlight-motion': require('../.test-build/app/ui/menu-highlight-motion.js'),
     './metrics': load('app/ui/metrics.ts'),
     './gestures': {},
   };

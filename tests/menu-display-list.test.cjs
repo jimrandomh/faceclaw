@@ -18,7 +18,8 @@ const font={lineHeight:12,ascent:10,descent:2,measureText:text=>text.length*4,
 const {MenuLayer}=load('app/ui/menu.ts',{
   '../graphics/image':graphics,'../graphics/textwrap':{},'../graphics/ui-fonts':{getDefaultSmallFont:()=>font},
   '../util/numeric-util':{clamp:(n,a,b)=>Math.max(a,Math.min(b,n))},'./gestures':{},
-  './metrics':require('../.test-build/app/ui/metrics.js'),
+  './menu-highlight-motion': require('../.test-build/app/ui/menu-highlight-motion.js'),
+    './metrics':require('../.test-build/app/ui/metrics.js'),
 });
 const {prepareFrameDraws}=load('app/graphics/glyph-wire.ts',{'./presentation-wire':wire,'../native/texture-atlas':{textureAtlasAvailable:()=>false}});
 function menu() {
@@ -26,9 +27,9 @@ function menu() {
   const context={stack:{getBaseSize:()=>({width:80,height:80}),isFocused:()=>true}};
   return {layer,paint:()=>layer.paint(context,()=>new graphics.GrayImage(80,80)),context};
 }
-test('menu retains the selected text and rounded highlight at depth +2',async()=>{
+test('menu retains the selected text and rounded highlight on the menu plane',async()=>{
   const m=menu(),image=m.paint(),row=image.draws.find(d=>d.presentation);
-  assert.equal(row.presentation.depth,2);assert.equal(row.presentation.radius,8);
+  assert.equal(row.presentation.depth,0);assert.equal(row.presentation.radius,8);
   assert.ok(row.source.pixels.some(v=>v===255));assert.ok(!image.withDrawsBaked(false).pixels.some(v=>v===255));
   const flat=planes.flattenPlanesWithDraws([{image,x:0,y:0}]);
   const records=wire.presentationRecords(prepareFrameDraws(flat.draws));assert.equal(records.length,1);
@@ -37,7 +38,7 @@ test('menu retains the selected text and rounded highlight at depth +2',async()=
   const screen=flat.image.pixels.slice(),preview=c.composite();
   assert.ok(preview.some(v=>v===240));assert.deepEqual(flat.image.pixels,screen);
   await m.layer.handleInput({type:'scroll-down'},m.context);
-  const next=m.paint().draws.find(d=>d.presentation);assert.ok(next.y>row.y);assert.equal(next.presentation.depth,2);
+  const next=m.paint().draws.find(d=>d.presentation);assert.ok(next.y>row.y);assert.equal(next.presentation.depth,0);
 });
 test('shell menu selection survives serialization and is not baked into its surface',()=>{
   const image=menu().paint(),bytes=encodeShellScene([{image,x:0,y:0,shellKey:7}]);
@@ -58,14 +59,14 @@ test('later opaque planes occlude a replayed selection without erasing its visib
 const {LayerStack,noopLayerActions}=load('app/ui/layers.ts',{
   '../graphics/image':graphics,'../graphics/plane':planes,'../native/frame-timings':{spanCurrent:(_name,fn)=>fn()},'./gestures':{},
 });
-test('context menu surface uses +4 and selected row +6 without changing the app screen',()=>{
+test('context menu surface and selected row both use +4 without changing the app screen',()=>{
   const base=new graphics.GrayImage(100,90,96);
   const stack=new LayerStack({paint:()=>base},noopLayerActions,{width:100,height:90});
   stack.push(new MenuLayer(null,[{label:'FIRST',onSelect(){}}],{x:10,y:8,width:80,minHeight:70,maxHeight:70,depth:4}));
   const frame=planes.flattenPlanesWithDraws(stack.paint());
   assert.deepEqual(frame.image.pixels,base.pixels);
   const records=wire.presentationRecords(prepareFrameDraws(frame.draws));
-  assert.deepEqual(records.map(r=>r.depth),[4,6]);assert.equal(records[0].mode,'masked-image');
+  assert.deepEqual(records.map(r=>r.depth),[4,4]);assert.equal(records[0].mode,'masked-image');
   const c=new SurfaceCompositor(100,90);c.configureSurface('app',{x:0,y:0,width:100,height:90,zOrder:0,transparency:'opaque'});
   c.submitSurfaceFrame('app',frame.image.pixels,{x:0,y:0,width:100,height:90},prepareFrameDraws(frame.draws));
   const preview=c.composite();
@@ -77,11 +78,11 @@ test('context menu surface uses +4 and selected row +6 without changing the app 
   c.submitSurfaceFrame('app',closed.image.pixels,{x:0,y:0,width:100,height:90},prepareFrameDraws(closed.draws));
   assert.deepEqual(c.composite(),base.pixels);
 });
-test('system menu bridge shifts its surface +4 and selected row +6',()=>{
+test('system menu bridge shifts its surface and selected row together by +4',()=>{
   const image=menu().paint(),bytes=encodeShellScene([{image,x:8,y:0,shellKey:7,depth:4}]);
   const view=new DataView(bytes.buffer),w=view.getUint16(8,true),h=view.getUint16(10,true);
   assert.equal(view.getInt16(16,true),4);
-  assert.equal(wire.readPresentation(bytes,18+w*h).selection.depth,6);
+  assert.equal(wire.readPresentation(bytes,18+w*h).selection.depth,4);
   const c=new SurfaceCompositor(100,80);c.setShellScene(bytes);const preview=c.composite();
   assert.equal(preview[40*100+8],0);assert.equal(preview[40*100+10],80);
 });

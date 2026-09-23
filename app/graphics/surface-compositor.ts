@@ -10,7 +10,8 @@ type Surface = SurfaceConfiguration & { pixels: Uint8Array; visible: boolean; se
 export class SurfaceCompositor {
   private readonly surfaces = new Map<string, Surface>()
   private shellScene: Uint8Array | null = null
-  setShellScene(bytes: Uint8Array): void { this.shellScene = new Uint8Array(bytes) }
+  private shellReceivedAt = 0
+  setShellScene(bytes: Uint8Array): void { this.shellScene = new Uint8Array(bytes); this.shellReceivedAt = Date.now() }
   private dimBelow = 0
   private dimFactor = 1
   private blanked = false
@@ -92,7 +93,7 @@ export class SurfaceCompositor {
           if(x+xx+shift>=0 && y+yy>=0 && x+xx+shift<this.width && y+yy<this.height) output[(y+yy)*this.width+x+xx+shift]=quantize(bytes[p+yy*w+xx])*16
         }
         p+=w*h
-        for(let j=0;j<selections;j++) { const record=readPresentation(bytes,p);p=record.end;paintPresentation(output,screen,this.width,this.height,record.selection) }
+        for(let j=0;j<selections;j++) { const record=readPresentation(bytes,p);p=record.end;if(record.selection.animation) record.selection.animation.startedAt -= Date.now()-this.shellReceivedAt;paintPresentation(output,screen,this.width,this.height,record.selection) }
       }
     }
     return output

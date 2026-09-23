@@ -27,6 +27,7 @@ const layers = load('app/ui/layers.ts', {
   '../native/frame-timings': { spanCurrent: (_name, paint) => paint() },
 });
 const menu = load('app/ui/menu.ts', {
+  './menu-highlight-motion': require('../.test-build/app/ui/menu-highlight-motion.js'),
   '../graphics/image': graphics, '../graphics/ui-fonts': fonts, '../graphics/textwrap': textwrap,
   '../util/numeric-util': numeric, './gestures': gestures, './metrics': load('app/ui/metrics.ts'),
 });

@@ -153,6 +153,7 @@ test('Music settings keeps toggles and selection when a new app arrives and supp
     '../graphics/textwrap': textwrap,
     '../graphics/ui-fonts': { getDefaultSmallFont: () => font },
     '../util/numeric-util': { clamp: (n, lo, hi) => Math.max(lo, Math.min(hi, n)) },
+    './menu-highlight-motion': require('../.test-build/app/ui/menu-highlight-motion.js'),
     './metrics': load('app/ui/metrics.ts'), './gestures': {},
   };
   const menu = load('app/ui/menu.ts', (name) => deps[name]);

@@ -1,3 +1,4 @@
+import type { MenuHighlightAnimation } from "../ui/menu-highlight-motion";
 import { Glyph } from "./bdffont";
 import { wrapText } from "./textwrap";
 
@@ -73,7 +74,7 @@ export type PlacedGlyph = {
  * from the moment it is placed.
  */
 export type PlacedImage = {
-  presentation?: { mode?: "image" | "masked-image"; radius: number; background: number; border: number; depth: number; occlusions?: readonly { x: number; y: number; width: number; height: number }[] };
+  presentation?: { animation?: MenuHighlightAnimation; mode?: "image" | "masked-image"; radius: number; background: number; border: number; depth: number; occlusions?: readonly { x: number; y: number; width: number; height: number }[] };
   kind: "image";
   source: GrayImage;
   x: number;
@@ -394,7 +395,7 @@ export class GrayImage {
         hash = mixInt(hash, placed.source.width);
         hash = mixInt(hash, placed.source.height);
         hash = mixInt(hash, placed.source.sourceContentHash32());
-        if (placed.presentation) { const p = placed.presentation; for (const value of [p.radius, p.background, p.border, p.depth, p.mode === "image" ? 1 : p.mode === "masked-image" ? 2 : 0]) hash = mixInt(hash, value); }
+        if (placed.presentation) { const p = placed.presentation; for (const value of [p.radius, p.background, p.border, p.depth, p.mode === "image" ? 1 : p.mode === "masked-image" ? 2 : 0, p.animation?.token ?? 0, p.animation?.dx ?? 0, p.animation?.dy ?? 0]) hash = mixInt(hash, value); }
       } else {
         hash = mixInt(hash, 0xf17e);
         hash = mixInt(hash, placed.font.atlasTag);
@@ -506,9 +507,9 @@ export class GrayImage {
   }
 
   /** Retain the selected row separately from the menu surface for glasses-side composition. */
-  drawMenuSelection(source: GrayImage, x: number, y: number, background: number, border: number, radius = 8, depth = 2): void {
+  drawMenuSelection(source: GrayImage, x: number, y: number, background: number, border: number, radius = 8, depth = 2, animation?: MenuHighlightAnimation): void {
     this.drawList.push({ kind: "image", source: source.withDrawsBaked(), x, y,
-      presentation: { radius, background, border, depth } });
+      presentation: { radius, background, border, depth, animation } });
   }
 
   /** Replay an image at stereo depth. Masked images preserve intentional gray8 black (1). */
