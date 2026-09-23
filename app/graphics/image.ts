@@ -395,7 +395,7 @@ export class GrayImage {
         hash = mixInt(hash, placed.source.width);
         hash = mixInt(hash, placed.source.height);
         hash = mixInt(hash, placed.source.sourceContentHash32());
-        if (placed.presentation) { const p = placed.presentation; for (const value of [p.radius, p.background, p.border, p.depth, p.mode === "image" ? 1 : p.mode === "masked-image" ? 2 : 0, p.animation?.token ?? 0, p.animation?.dx ?? 0, p.animation?.dy ?? 0]) hash = mixInt(hash, value); }
+        if (placed.presentation) { const p = placed.presentation; for (const value of [p.radius, p.background, p.border, p.depth, p.mode === "image" ? 1 : p.mode === "masked-image" ? 2 : 0, p.animation?.token ?? 0, p.animation?.dx ?? 0, p.animation?.dy ?? 0, p.animation?.durationMs ?? 0]) hash = mixInt(hash, value); }
       } else {
         hash = mixInt(hash, 0xf17e);
         hash = mixInt(hash, placed.font.atlasTag);

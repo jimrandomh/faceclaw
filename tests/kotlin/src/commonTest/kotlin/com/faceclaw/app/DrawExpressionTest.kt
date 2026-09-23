@@ -61,30 +61,31 @@ class DrawExpressionTest {
     }
 
     @Test fun smoothstepCoordinatesMatchFirmwareAndSurvivePresentTimeReset() {
-        val value = DrawValue.animate(10, 110) as DrawValue.Expression
+        val value = DrawValue.animate(10, 110, 500) as DrawValue.Expression
         val code = "010a3001806e300181f432010010300181f43023414031"
         assertContentEquals(hex(code), value.program)
         for ((time, expected) in listOf(0L to 10, 125L to 25, 250L to 60, 375L to 94, 500L to 110, 900L to 110)) {
             assertEquals(expected to (time < 500), evaluate(value.program, time))
         }
-        val continued = DrawValue.animate(10, 110, elapsedMs = 250) as DrawValue.Expression
+        val continued = DrawValue.animate(10, 110, 500, elapsedMs = 250) as DrawValue.Expression
         assertEquals(60 to true, evaluate(continued.program, 0))
         assertEquals(110 to false, evaluate(continued.program, 250))
     }
 
     @Test fun animatedMenuBridgePreservesElapsedTimeAndTranslation() {
-        // Tag 6 record emitted by the TypeScript bridge: elapsed=200, delta=(-2,-4).
-        val wire = hex("06030002000200020001001030020000fefffcffc8002a000000ffffffff")
+        // Tag 6 record emitted by the TypeScript bridge: elapsed=200, delta=(-2,-4), duration=300.
+        val wire = hex("06030002000200020001001030020000fefffcffc8002a0000002c01ffffffff")
         val input = ArrayByteReader(wire)
         assertEquals(6, input.get().toInt())
         val row = MenuSelection.read(input, 6).translated(10, 10)
         assertEquals(0, input.remaining())
         val motion = assertNotNull(row.animation)
         assertEquals(42, motion.token)
+        assertEquals(300, motion.durationMs)
         assertEquals(-2, motion.dx)
         assertEquals(-4, motion.dy)
         val call = row.calls(7, motion.startedAt + 200).first()
-        for ((elapsed, expected) in listOf(0L to (11 to 9), 300L to (13 to 12))) {
+        for ((elapsed, expected) in listOf(0L to (12 to 10), 100L to (13 to 12))) {
             val reader = DrawReader(call)
             assertEquals(8, reader.readU8())
             assertEquals(DRAW_FLAG_DEPTH, reader.readU8())
@@ -92,15 +93,29 @@ class DrawExpressionTest {
             val frame = DrawEvaluation(elapsed)
             assertEquals(expected.first, ExtendedVarint.evaluate(reader, frame))
             assertEquals(expected.second, ExtendedVarint.evaluate(reader, frame))
-            assertEquals(elapsed < 300, frame.animationPending)
+            assertEquals(elapsed < 100, frame.animationPending)
         }
         for (end in 1 until wire.size) assertFails {
             MenuSelection.read(ArrayByteReader(wire.copyOf(end), 1), 6)
         }
     }
 
+    @Test fun menuCoordinatesUseTheSuppliedDuration() {
+        val row = MenuSelection(0, 4, 2, 2, 0, 15, 16, 0, ByteArray(2),
+            animation = MenuSelection.Animation(0, -4, 1000, 42, 120))
+        val call = row.calls(7, 1000).first()
+        for ((elapsed, y) in listOf(0L to 0, 60L to 2, 120L to 4)) {
+            val reader = DrawReader(call)
+            reader.readBytes(3) // opcode, flags, depth
+            val frame = DrawEvaluation(elapsed)
+            assertEquals(0, ExtendedVarint.evaluate(reader, frame))
+            assertEquals(y, ExtendedVarint.evaluate(reader, frame))
+            assertEquals(elapsed < 120, frame.animationPending)
+        }
+    }
+
     @Test fun playerSchedulesOnlyUnfinishedFramesAndCancelsStaleCallbacks() {
-        val call = DrawProtocol.roundedRect(DrawValue.Integer(0), DrawValue.animate(0, 4), 2, 2, 0, 15)
+        val call = DrawProtocol.roundedRect(DrawValue.Integer(0), DrawValue.animate(0, 4, 300), 2, 2, 0, 15)
         val renderer = DisplayListRenderer(mapOf(1 to DrawProtocol.displayList(listOf(call))))
         val screen = DisplayListRenderer.Target(ByteArray(16), 4, 8)
         val output = DisplayListRenderer.Target(ByteArray(16), 4, 8)
@@ -116,7 +131,7 @@ class DrawExpressionTest {
         player.present(1)
         assertEquals(15, output.get(0, 0))
         val first = queued.removeAt(0)
-        now += 250
+        now += 150
         first()
         assertEquals(15, output.get(0, 2))
         assertEquals(0, output.get(0, 0))
@@ -125,7 +140,7 @@ class DrawExpressionTest {
         assertEquals(15, output.get(0, 0))
         stale()
         assertEquals(3, displayed)
-        now += 500
+        now += 300
         queued.removeAt(0)()
         assertEquals(15, output.get(0, 4))
         assertFalse(renderer.animationPending)

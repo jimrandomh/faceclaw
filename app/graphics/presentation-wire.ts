@@ -1,4 +1,5 @@
 import type { PlacedImage } from './image'
+import type { MenuHighlightAnimation } from '../ui/menu-highlight-motion'
 
 /** Bridge record: tag 3 (selection), 4 (image), 5 (gray8-masked image), 6 (animated selection), signed xy, u16 wh/radius, gray fill/stroke, signed depth, restore-count, gray pixels, restore rectangles. */
 export function encodePresentation(draw: PlacedImage): Uint8Array {
@@ -8,7 +9,8 @@ export function encodePresentation(draw: PlacedImage): Uint8Array {
   if (!Number.isInteger(p.depth) || p.depth < -128 || p.depth > 127) throw new Error('Invalid menu depth')
   if ((p.occlusions?.length ?? 0) > 2048) throw new Error('Too many menu occlusion rectangles')
   const animation = p.animation;
-  const header = animation ? 26 : 16;
+  if (animation && (!Number.isInteger(animation.durationMs) || animation.durationMs < 1 || animation.durationMs > 65535)) throw new Error('Invalid menu animation duration')
+  const header = animation ? 28 : 16;
   const bytes = new Uint8Array(header + width * height + (p.occlusions?.length ?? 0) * 8), view = new DataView(bytes.buffer)
   bytes[0] = animation ? 6 : p.mode === "image" ? 4 : p.mode === "masked-image" ? 5 : 3
   view.setInt16(1, draw.x, true); view.setInt16(3, draw.y, true)
@@ -17,8 +19,9 @@ export function encodePresentation(draw: PlacedImage): Uint8Array {
   view.setUint16(14, p.occlusions?.length ?? 0, true)
   if (animation) {
     view.setInt16(16, animation.dx, true); view.setInt16(18, animation.dy, true);
-    view.setUint16(20, Math.max(0, Math.min(500, Date.now() - animation.startedAt)), true);
+    view.setUint16(20, Math.max(0, Math.min(animation.durationMs, Date.now() - animation.startedAt)), true);
     view.setUint32(22, animation.token, true);
+    view.setUint16(26, animation.durationMs, true);
   }
   bytes.set(pixels, header)
   let offset = header + pixels.length
@@ -29,15 +32,19 @@ export function encodePresentation(draw: PlacedImage): Uint8Array {
   return bytes
 }
 
-export type Selection = { animation?: { dx: number; dy: number; startedAt: number; token: number }; mode?: "image" | "masked-image"; x: number; y: number; width: number; height: number; radius: number; background: number; border: number; depth: number; pixels: Uint8Array; occlusions: { x: number; y: number; width: number; height: number }[] }
+export type Selection = { animation?: MenuHighlightAnimation; mode?: "image" | "masked-image"; x: number; y: number; width: number; height: number; radius: number; background: number; border: number; depth: number; pixels: Uint8Array; occlusions: { x: number; y: number; width: number; height: number }[] }
 export function readPresentation(bytes: Uint8Array, offset: number): { selection: Selection; end: number } {
   const v = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength), w = v.getUint16(offset + 5, true), h = v.getUint16(offset + 7, true)
-  const header = bytes[offset] === 6 ? 26 : 16
+  const header = bytes[offset] === 6 ? 28 : 16
   const selection: Selection = { mode: bytes[offset] === 4 ? "image" : bytes[offset] === 5 ? "masked-image" : undefined, x: v.getInt16(offset+1,true), y: v.getInt16(offset+3,true), width:w, height:h,
     radius:v.getUint16(offset+9,true), background:bytes[offset+11]!, border:bytes[offset+12]!, depth:v.getInt8(offset+13),
     pixels:bytes.slice(offset+header,offset+header+w*h), occlusions:[] }
-  if (header === 26) selection.animation = { dx:v.getInt16(offset+16,true), dy:v.getInt16(offset+18,true),
-    startedAt:Date.now()-v.getUint16(offset+20,true), token:v.getUint32(offset+22,true) }
+  if (header === 28) {
+    const durationMs = v.getUint16(offset+26,true), elapsed = v.getUint16(offset+20,true)
+    if (!durationMs || elapsed > durationMs) throw new Error('Invalid menu animation timing')
+    selection.animation = { dx:v.getInt16(offset+16,true), dy:v.getInt16(offset+18,true),
+      startedAt:Date.now()-elapsed, token:v.getUint32(offset+22,true), durationMs }
+  }
   let end=offset+header+w*h
   for(let i=0;i<v.getUint16(offset+14,true);i++) { selection.occlusions.push({x:v.getUint16(end,true),y:v.getUint16(end+2,true),width:v.getUint16(end+4,true),height:v.getUint16(end+6,true)});end+=8 }
   return {selection,end}
@@ -62,7 +69,7 @@ export function paintPresentation(output: Uint8Array, screen: Uint8Array, width:
     const dx=Math.max(0,2*r-(2*Math.min(x,w-1-x)+1)),dy=Math.max(0,2*r-(2*Math.min(y,h-1-y)+1))
     return dx*dx+dy*dy<=4*r*r
   }
-  const t = row.animation ? Math.max(0, Math.min(1, (Date.now() - row.animation.startedAt) / 500)) : 1
+  const t = row.animation ? Math.max(0, Math.min(1, (Date.now() - row.animation.startedAt) / row.animation.durationMs)) : 1
   const remaining = 1 - t * t * (3 - 2 * t)
   const highlightX = Math.trunc(row.x + (row.animation?.dx ?? 0) * remaining)
   const highlightY = Math.trunc(row.y + (row.animation?.dy ?? 0) * remaining)

@@ -7,7 +7,7 @@ sealed class DrawValue {
 
     companion object {
         /** Smoothstep interpolation; time is measured from the next PRESENT. */
-        fun animate(from: Int, to: Int, durationMs: Int = 500, elapsedMs: Int = 0): DrawValue {
+        fun animate(from: Int, to: Int, durationMs: Int, elapsedMs: Int = 0): DrawValue {
             require(durationMs > 0 && elapsedMs >= 0)
             if (from == to || elapsedMs >= durationMs) return Integer(to)
             val code = ByteSink()

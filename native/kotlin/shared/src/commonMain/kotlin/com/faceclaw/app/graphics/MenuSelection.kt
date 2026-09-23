@@ -3,14 +3,14 @@ package com.faceclaw.app
 /** A retained selection or image, replayed at stereo depth over the screen and shell surfaces. */
 class MenuSelection(val x: Int, val y: Int, val width: Int, val height: Int, val radius: Int,
     val background: Int, val border: Int, val depth: Int, val packed: ByteArray, val occlusions: List<IntArray> = emptyList(), val kind: Int = 3, val mask: List<IntArray> = emptyList(), val animation: Animation? = null) {
-    class Animation(val dx: Int, val dy: Int, val startedAt: Long, val token: Int)
+    class Animation(val dx: Int, val dy: Int, val startedAt: Long, val token: Int, val durationMs: Int)
     val resource = CachedResource(DrawProtocol.rawImage(width, height, packed))
-    val fingerprint = "${animation?.token},${animation?.dx},${animation?.dy},$kind,${mask.joinToString { it.joinToString() }},$x,$y,$width,$height,$radius,$background,$border,$depth,${resource.hash},${occlusions.joinToString { it.joinToString() }}"
+    val fingerprint = "${animation?.token},${animation?.dx},${animation?.dy},${animation?.durationMs},$kind,${mask.joinToString { it.joinToString() }},$x,$y,$width,$height,$radius,$background,$border,$depth,${resource.hash},${occlusions.joinToString { it.joinToString() }}"
     fun translated(dx: Int, dy: Int) = MenuSelection(x + dx, y + dy, width, height, radius, background, border, depth, packed, occlusions.map { intArrayOf(it[0] + dx, it[1] + dy, it[2], it[3]) }, kind, mask, animation)
     fun calls(id: Int, nowMs: Long = drawAnimationTimeMs()): List<ByteArray> {
-        val elapsed = animation?.let { (nowMs - it.startedAt).coerceIn(0, 500).toInt() } ?: 500
-        val highlightX = animation?.let { DrawValue.animate(x + it.dx, x, 500, elapsed) } ?: DrawValue.Integer(x)
-        val highlightY = animation?.let { DrawValue.animate(y + it.dy, y, 500, elapsed) } ?: DrawValue.Integer(y)
+        val elapsed = animation?.let { (nowMs - it.startedAt).coerceIn(0, it.durationMs.toLong()).toInt() } ?: 0
+        val highlightX = animation?.let { DrawValue.animate(x + it.dx, x, it.durationMs, elapsed) } ?: DrawValue.Integer(x)
+        val highlightY = animation?.let { DrawValue.animate(y + it.dy, y, it.durationMs, elapsed) } ?: DrawValue.Integer(y)
         val image = when (kind) {
             3 -> listOf(DrawProtocol.roundedRect(highlightX, highlightY, width, height, radius, background, border, depth),
                 DrawProtocol.image(id, x, y, CFW_TEXTURE_OPT_BRIGHTNESS_MASK or CFW_TEXTURE_OPT_TRANSPARENT, depth = depth))
@@ -43,12 +43,14 @@ class MenuSelection(val x: Int, val y: Int, val width: Int, val height: Int, val
             require(count <= 2048)
             require(w in 1..640 && h in 1..480 && 5 + (w + 1) / 2 * h <= 65536 && reader.remaining() >= w * h)
             val animation = if (kind == 6) {
-                require(reader.remaining() >= 10)
+                require(reader.remaining() >= 12)
                 val dx = reader.getShort().toInt()
                 val dy = reader.getShort().toInt()
                 val elapsed = reader.getShort().toInt() and 65535
-                require(elapsed <= 500)
-                Animation(dx, dy, drawAnimationTimeMs() - elapsed, reader.getInt())
+                val token = reader.getInt()
+                val duration = reader.getShort().toInt() and 65535
+                require(duration > 0 && elapsed <= duration)
+                Animation(dx, dy, drawAnimationTimeMs() - elapsed, token, duration)
             } else null
             val gray = ByteArray(w * h); reader.get(gray)
             require(reader.remaining() >= count * 8)
