@@ -4,7 +4,6 @@ import android.os.Handler
 import android.os.Looper
 import android.util.Log
 
-import java.io.BufferedReader
 import java.io.IOException
 import java.util.concurrent.TimeUnit
 
@@ -23,6 +22,10 @@ import okhttp3.Response
  * is delivered line by line as it arrives, so the JS side can parse SSE
  * events incrementally. Like FaceclawWebSocket, listener callbacks are posted
  * to the Looper of the thread that constructed this object.
+ *
+ * The line splitting, error-body and overflow policy live in the shared
+ * SseStream; this class only supplies okhttp as the transport and the Handler
+ * delivery.
  */
 class FaceclawSseRequest
 /**
@@ -32,7 +35,8 @@ class FaceclawSseRequest
  */
 constructor(url: String?, jsonBody: String?, headers: Array<String?>?, listener: FaceclawSseListener?) {
     private val callbackHandler: Handler
-    private val call: Call
+    private val stream = SseStream()
+    private val transfer: Cancellable
     @Volatile
     private var cancelled = false
 
@@ -45,63 +49,49 @@ constructor(url: String?, jsonBody: String?, headers: Array<String?>?, listener:
         }
         val looper = Looper.myLooper()
         callbackHandler = Handler(looper ?: Looper.getMainLooper())
-        val builder = Request.Builder()
-            .url(url.trim())
-            .post((jsonBody ?: "").toRequestBody(JSON))
-        if (headers != null) {
-            var i = 0
-            while (i + 1 < headers.size) {
-                val name = headers[i]
-                val value = headers[i + 1]
-                if (name != null && !name.isEmpty() && value != null) {
-                    builder.addHeader(name, value)
-                }
-                i += 2
-            }
-        }
-        call = getClient().newCall(builder.build())
-        call.enqueue(object : Callback {
-            override fun onFailure(call: Call, e: IOException) {
-                postFailure(listener, e.toString())
+        val sink = object : ChunkSink {
+            override fun onStatus(code: Int) {
+                stream.onStatus(code)
             }
 
-            override fun onResponse(call: Call, response: Response) {
-                try {
-                    response.body.use { body ->
-                        if (!response.isSuccessful) {
-                            val code = response.code
-                            var errorBody = ""
-                            try {
-                                errorBody = body?.string() ?: ""
-                            } catch (e: IOException) {
-                                Log.w(TAG, "error body read failed", e)
-                            }
-                            val finalBody = errorBody
-                            post { listener.onHttpError(code, finalBody) }
-                            return
-                        }
-                        if (body == null) {
-                            post { listener.onComplete() }
-                            return
-                        }
-                        val reader = BufferedReader(body.charStream())
-                        var line: String?
-                        while (reader.readLine().also { line = it } != null) {
-                            val finalLine = line
-                            post { listener.onLine(finalLine) }
-                        }
-                        post { listener.onComplete() }
-                    }
-                } catch (e: IOException) {
-                    postFailure(listener, e.toString())
-                }
+            override fun onChunk(bytes: ByteArray, offset: Int, length: Int) {
+                stream.onChunk(bytes, offset, length)
+                drain(listener)
             }
-        })
+
+            override fun onComplete() {
+                stream.onComplete()
+                drain(listener)
+            }
+
+            override fun onFailure(message: String) {
+                stream.onFailure(message)
+                drain(listener)
+            }
+        }
+        transfer = OkHttpStreaming.post(url.trim(), jsonBody ?: "", SseStream.unpackHeaders(headers), sink)
     }
 
     fun cancel() {
         cancelled = true
-        call.cancel()
+        stream.cancel()
+        transfer.cancel()
+    }
+
+    /** Hands every queued event to the listener on the constructing thread, in order. */
+    private fun drain(listener: FaceclawSseListener) {
+        val events = stream.takeEvents()
+        if (events.isEmpty()) return
+        post {
+            for (event in events) {
+                if (cancelled) return@post
+                try {
+                    SseStream.deliver(event, listener)
+                } catch (t: Throwable) {
+                    Log.w(TAG, "listener callback failed", t)
+                }
+            }
+        }
     }
 
     private fun post(runnable: Runnable) {
@@ -112,19 +102,47 @@ constructor(url: String?, jsonBody: String?, headers: Array<String?>?, listener:
             if (cancelled) {
                 return@post
             }
-            try {
-                runnable.run()
-            } catch (t: Throwable) {
-                Log.w(TAG, "listener callback failed", t)
-            }
+            runnable.run()
         }
     }
 
-    private fun postFailure(listener: FaceclawSseListener, message: String) {
-        if (cancelled) {
-            return
+    /** okhttp transport: enqueues the call and feeds the body to the sink in chunks. */
+    private object OkHttpStreaming : StreamingHttp {
+        override fun post(url: String, body: String, headers: List<Pair<String, String>>, sink: ChunkSink): Cancellable {
+            val builder = Request.Builder()
+                .url(url)
+                .post(body.toRequestBody(JSON))
+            for ((name, value) in headers) builder.addHeader(name, value)
+            val call = getClient().newCall(builder.build())
+            call.enqueue(object : Callback {
+                override fun onFailure(call: Call, e: IOException) {
+                    sink.onFailure(e.toString())
+                }
+
+                override fun onResponse(call: Call, response: Response) {
+                    try {
+                        response.use {
+                            sink.onStatus(response.code)
+                            val input = response.body?.byteStream()
+                            if (input != null) {
+                                val buffer = ByteArray(8192)
+                                while (true) {
+                                    val read = input.read(buffer)
+                                    if (read < 0) break
+                                    if (read > 0) sink.onChunk(buffer, 0, read)
+                                }
+                            }
+                            sink.onComplete()
+                        }
+                    } catch (e: IOException) {
+                        sink.onFailure(e.toString())
+                    }
+                }
+            })
+            return object : Cancellable {
+                override fun cancel() = call.cancel()
+            }
         }
-        post { listener.onFailure(message) }
     }
 
     companion object {
@@ -141,9 +159,14 @@ constructor(url: String?, jsonBody: String?, headers: Array<String?>?, listener:
                         // Streaming responses can pause between events (e.g. while
                         // the model thinks), so the read timeout is generous. The
                         // Anthropic API sends periodic ping events well within it.
+                        // Redirects are not followed: provider credentials in the
+                        // headers must never be forwarded to another endpoint (a
+                        // 3xx surfaces to the listener as an HTTP error instead).
                         sharedClient = OkHttpClient.Builder()
                             .connectTimeout(15, TimeUnit.SECONDS)
                             .readTimeout(180, TimeUnit.SECONDS)
+                            .followRedirects(false)
+                            .followSslRedirects(false)
                             .addInterceptor(FaceclawHttp.userAgentInterceptor())
                             .build()
                     }

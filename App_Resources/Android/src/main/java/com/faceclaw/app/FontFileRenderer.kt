@@ -11,7 +11,6 @@ import android.util.Log
 import java.io.File
 import java.io.RandomAccessFile
 import java.nio.ByteBuffer
-import java.nio.ByteOrder
 import java.util.LinkedHashMap
 
 /**
@@ -20,7 +19,9 @@ import java.util.LinkedHashMap
  * minikin/HarfBuzz. Output uses the same grayscale packet format as
  * ImageFileLoader ([widthLo, widthHi, heightLo, heightHi, pixels...], one
  * byte per pixel, row-major), which the TS side turns into a GrayImage and
- * the compositor later quantizes to the 4bpp the firmware wants.
+ * the compositor later quantizes to the 4bpp the firmware wants. The packet
+ * layouts, gamma mapping and ink cropping are shared with iOS in GlyphPacket;
+ * only rasterization lives here.
  *
  * The gamma parameter maps antialiased coverage to output shade:
  * out = 255 * (coverage/255)^gamma. The G2 display response looks roughly
@@ -88,27 +89,13 @@ class FontFileRenderer private constructor() {
                 // keep at least the advance width so spacing stays truthful.
                 var left = pad
                 var right = pad + advance
-                val painted = paintedColumnRange(pixels, width, height)
+                val painted = GlyphPacket.paintedColumnRange(pixels, width, height)
                 if (painted != null) {
                     left = Math.min(left, painted[0])
                     right = Math.max(right, painted[1] + 1)
                 }
                 val outWidth = Math.max(1, right - left)
-
-                val lut = gammaLut(gamma)
-                val out = ByteArray(4 + outWidth * height)
-                out[0] = (outWidth and 0xff).toByte()
-                out[1] = ((outWidth shr 8) and 0xff).toByte()
-                out[2] = (height and 0xff).toByte()
-                out[3] = ((height shr 8) and 0xff).toByte()
-                for (y in 0 until height) {
-                    val srcRow = y * width
-                    val dstRow = 4 + y * outWidth
-                    for (x in 0 until outWidth) {
-                        out[dstRow + x] = lut[pixels[srcRow + left + x].toInt() and 0xff]
-                    }
-                }
-                return out
+                return GlyphPacket.packImageRegion(pixels, width, left, 0, outWidth, height, gamma)
             } catch (e: Exception) {
                 Log.w(TAG, "text render failed: $path", e)
                 return ByteArray(0)
@@ -159,16 +146,7 @@ class FontFileRenderer private constructor() {
                 val pixels = alpha8Pixels(bitmap, maxWidth, height)
                 bitmap.recycle()
 
-                val lut = gammaLut(gamma)
-                val out = ByteArray(4 + pixels.size)
-                out[0] = (maxWidth and 0xff).toByte()
-                out[1] = ((maxWidth shr 8) and 0xff).toByte()
-                out[2] = (height and 0xff).toByte()
-                out[3] = ((height shr 8) and 0xff).toByte()
-                for (i in pixels.indices) {
-                    out[4 + i] = lut[pixels[i].toInt() and 0xff]
-                }
-                return out
+                return GlyphPacket.packImage(pixels, maxWidth, height, gamma)
             } catch (e: Exception) {
                 Log.w(TAG, "wrapped render failed: $path", e)
                 return ByteArray(0)
@@ -206,7 +184,7 @@ class FontFileRenderer private constructor() {
                 val bounds = android.graphics.Rect()
                 paint.getTextBounds(text, 0, text.length, bounds)
                 if (bounds.isEmpty) {
-                    return glyphCellPacket(advanceFixed, 0, 0, 0, 0, null)
+                    return GlyphPacket.emptyGlyphCell(advanceFixed)
                 }
                 // getTextBounds can be off by a hair on AA edges; render with
                 // padding, then trim to the actually painted box.
@@ -224,40 +202,11 @@ class FontFileRenderer private constructor() {
                 val pixels = alpha8Pixels(bitmap, bw, bh)
                 bitmap.recycle()
 
-                var x0 = bw
-                var x1 = -1
-                var y0 = bh
-                var y1 = -1
-                for (y in 0 until bh) {
-                    val row = y * bw
-                    for (x in 0 until bw) {
-                        if (pixels[row + x].toInt() != 0) {
-                            if (x < x0) x0 = x
-                            if (x > x1) x1 = x
-                            if (y < y0) y0 = y
-                            if (y > y1) y1 = y
-                        }
-                    }
-                }
-                if (x1 < x0) {
-                    return glyphCellPacket(advanceFixed, 0, 0, 0, 0, null)
-                }
-                val width = x1 - x0 + 1
-                val height = y1 - y0 + 1
+                // Trim to the tight ink box; bearing/inkTop become pen- and
+                // line-relative inside the shared packer.
                 val fm = paint.fontMetricsInt
-                val bearingX = x0 - penX
-                val inkTop = (-fm.ascent) + (y0 - baselineY)
-
-                val lut = gammaLut(gamma)
-                val coverage = ByteArray(width * height)
-                for (y in 0 until height) {
-                    val src = (y0 + y) * bw + x0
-                    val dst = y * width
-                    for (x in 0 until width) {
-                        coverage[dst + x] = lut[pixels[src + x].toInt() and 0xff]
-                    }
-                }
-                return glyphCellPacket(advanceFixed, bearingX, inkTop, width, height, coverage)
+                return GlyphPacket.packGlyphCell(
+                        advanceFixed, pixels, bw, bh, penX, baselineY, -fm.ascent, gamma)
             } catch (e: Exception) {
                 Log.w(TAG, "glyph render failed: " + path + " U+" + Integer.toHexString(codePoint), e)
                 return ByteArray(0)
@@ -292,26 +241,6 @@ class FontFileRenderer private constructor() {
             // cache model cannot represent; kerning still applies.
             paint.fontFeatureSettings = "'liga' off, 'clig' off"
             return paint
-        }
-
-        @JvmStatic
-        private fun glyphCellPacket(
-                advanceFixed: Int, bearingX: Int, inkTop: Int, width: Int, height: Int, coverage: ByteArray?): ByteArray {
-            val out = ByteArray(10 + (coverage?.size ?: 0))
-            out[0] = (advanceFixed and 0xff).toByte()
-            out[1] = ((advanceFixed shr 8) and 0xff).toByte()
-            out[2] = (bearingX and 0xff).toByte()
-            out[3] = ((bearingX shr 8) and 0xff).toByte()
-            out[4] = (inkTop and 0xff).toByte()
-            out[5] = ((inkTop shr 8) and 0xff).toByte()
-            out[6] = (width and 0xff).toByte()
-            out[7] = ((width shr 8) and 0xff).toByte()
-            out[8] = (height and 0xff).toByte()
-            out[9] = ((height shr 8) and 0xff).toByte()
-            if (coverage != null) {
-                System.arraycopy(coverage, 0, out, 10, coverage.size)
-            }
-            return out
         }
 
         /**
@@ -361,8 +290,21 @@ class FontFileRenderer private constructor() {
          */
         @JvmStatic
         fun getFontName(path: String?): String {
+            if (path == null) {
+                return ""
+            }
             try {
-                return parseNameTable(path)
+                RandomAccessFile(path, "r").use { raf ->
+                    return OpenTypeNames.parse(object : RandomAccessBytes {
+                        override val length: Long
+                            get() = raf.length()
+
+                        override fun read(offset: Long, into: ByteArray, count: Int) {
+                            raf.seek(offset)
+                            raf.readFully(into, 0, count)
+                        }
+                    })
+                }
             } catch (e: Exception) {
                 Log.w(TAG, "name table parse failed: $path", e)
                 return ""
@@ -430,145 +372,6 @@ class FontFileRenderer private constructor() {
                 System.arraycopy(raw, y * rowBytes, pixels, y * width, width)
             }
             return pixels
-        }
-
-        /** [first, last] painted (nonzero) column indexes, or null if blank. */
-        @JvmStatic
-        private fun paintedColumnRange(pixels: ByteArray, width: Int, height: Int): IntArray? {
-            var first = width
-            var last = -1
-            for (y in 0 until height) {
-                val row = y * width
-                var x = 0
-                while (x < first) {
-                    if (pixels[row + x].toInt() != 0) {
-                        first = x
-                        break
-                    }
-                    x++
-                }
-                x = width - 1
-                while (x > last) {
-                    if (pixels[row + x].toInt() != 0) {
-                        last = x
-                        break
-                    }
-                    x--
-                }
-            }
-            return if (last >= first) intArrayOf(first, last) else null
-        }
-
-        @JvmStatic
-        private fun gammaLut(gammaIn: Double): ByteArray {
-            val lut = ByteArray(256)
-            var gamma = gammaIn
-            if (gamma <= 0) {
-                gamma = 1.0
-            }
-            for (i in 0 until 256) {
-                lut[i] = Math.max(0, Math.min(255,
-                        Math.round(255.0 * Math.pow(i / 255.0, gamma)).toInt())).toByte()
-            }
-            return lut
-        }
-
-        // --- Minimal 'name' table reader (TTF/OTF/TTC) for preview titles ---
-
-        @JvmStatic
-        @Throws(Exception::class)
-        private fun parseNameTable(path: String?): String {
-            RandomAccessFile(path, "r").use { raf ->
-                val fileSize = raf.length()
-                if (fileSize < 12) {
-                    return ""
-                }
-                var offset = 0L
-                val tag = readU32(raf, 0)
-                if (tag == 0x74746366) { // 'ttcf': use the first face
-                    if (readU32(raf, 8) < 1) {
-                        return ""
-                    }
-                    offset = readU32(raf, 12).toLong() and 0xffffffffL
-                }
-                val numTables = readU16(raf, offset + 4)
-                var nameOffset = -1L
-                for (i in 0 until numTables) {
-                    val rec = offset + 12 + i * 16L
-                    if (rec + 16 > fileSize) {
-                        return ""
-                    }
-                    if (readU32(raf, rec) == 0x6e616d65) { // 'name'
-                        nameOffset = readU32(raf, rec + 8).toLong() and 0xffffffffL
-                        break
-                    }
-                }
-                if (nameOffset < 0 || nameOffset + 6 > fileSize) {
-                    return ""
-                }
-                val count = readU16(raf, nameOffset + 2)
-                val stringStorage = nameOffset + readU16(raf, nameOffset + 4)
-                var family: String? = null
-                var style: String? = null
-                var preferredFamily: String? = null
-                var preferredStyle: String? = null
-                for (i in 0 until count) {
-                    val rec = nameOffset + 6 + i * 12L
-                    if (rec + 12 > fileSize) {
-                        break
-                    }
-                    val platform = readU16(raf, rec)
-                    val nameId = readU16(raf, rec + 6)
-                    if (nameId != 1 && nameId != 2 && nameId != 16 && nameId != 17) {
-                        continue
-                    }
-                    val length = readU16(raf, rec + 8)
-                    val strOffset = stringStorage + readU16(raf, rec + 10)
-                    if (strOffset + length > fileSize || length <= 0 || length > 512) {
-                        continue
-                    }
-                    val data = ByteArray(length)
-                    raf.seek(strOffset)
-                    raf.readFully(data)
-                    // Platform 0 (Unicode) and 3 (Windows) store UTF-16BE;
-                    // platform 1 (Mac) is close enough to Latin-1 for names.
-                    var value = if (platform == 1)
-                            String(data, java.nio.charset.StandardCharsets.ISO_8859_1)
-                            else String(data, java.nio.charset.StandardCharsets.UTF_16BE)
-                    value = value.trim()
-                    if (value.isEmpty()) {
-                        continue
-                    }
-                    if (nameId == 1 && family == null) family = value
-                    if (nameId == 2 && style == null) style = value
-                    if (nameId == 16 && preferredFamily == null) preferredFamily = value
-                    if (nameId == 17 && preferredStyle == null) preferredStyle = value
-                }
-                val outFamily = preferredFamily ?: family
-                val outStyle = preferredStyle ?: style
-                if (outFamily == null) {
-                    return ""
-                }
-                return outFamily + "\n" + (outStyle ?: "")
-            }
-        }
-
-        @JvmStatic
-        @Throws(Exception::class)
-        private fun readU16(raf: RandomAccessFile, offset: Long): Int {
-            raf.seek(offset)
-            val b = ByteArray(2)
-            raf.readFully(b)
-            return ByteBuffer.wrap(b).order(ByteOrder.BIG_ENDIAN).getShort().toInt() and 0xffff
-        }
-
-        @JvmStatic
-        @Throws(Exception::class)
-        private fun readU32(raf: RandomAccessFile, offset: Long): Int {
-            raf.seek(offset)
-            val b = ByteArray(4)
-            raf.readFully(b)
-            return ByteBuffer.wrap(b).order(ByteOrder.BIG_ENDIAN).getInt()
         }
     }
 }

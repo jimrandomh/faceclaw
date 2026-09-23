@@ -4,9 +4,6 @@ import android.content.Context
 import android.content.SharedPreferences
 import android.os.Handler
 import android.os.Looper
-import android.util.Log
-
-import java.util.concurrent.CopyOnWriteArrayList
 
 /**
  * App settings store shared by every JS isolate (main thread and app
@@ -22,16 +19,26 @@ import java.util.concurrent.CopyOnWriteArrayList
  * NativeScript worker threads run a message loop, so both the main thread
  * and workers have a Looper; a listener registered from a Looper-less thread
  * is accepted but never notified (it can still read fresh values on demand).
+ * The reads/writes and the fan-out live in the shared SettingsChangeHub.
  */
 class FaceclawSettings private constructor(context: Context) {
     private val prefs: SharedPreferences = context.applicationContext
         .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-    private val listeners = CopyOnWriteArrayList<ListenerEntry>()
+    private val hub = SettingsChangeHub(object : SettingsStorage {
+        override fun getString(key: String?, defaultValue: String?): String? = prefs.getString(key, defaultValue)
 
-    private class ListenerEntry(val listener: FaceclawSettingsListener, val handler: Handler?)
+        override fun putString(key: String?, value: String?) {
+            prefs.edit().putString(key, value).apply()
+        }
+
+        override fun getBoolean(key: String?, defaultValue: Boolean): Boolean = prefs.getBoolean(key, defaultValue)
+
+        override fun putBoolean(key: String?, value: Boolean) {
+            prefs.edit().putBoolean(key, value).apply()
+        }
+    })
 
     companion object {
-        private const val TAG = "FaceclawSettings"
         private const val PREFS_NAME = "faceclaw_settings"
         @Volatile
         private var instance: FaceclawSettings? = null
@@ -58,23 +65,13 @@ class FaceclawSettings private constructor(context: Context) {
         }
     }
 
-    fun getString(key: String?, defaultValue: String?): String? {
-        return prefs.getString(key, defaultValue)
-    }
+    fun getString(key: String?, defaultValue: String?): String? = hub.getString(key, defaultValue)
 
-    fun setString(key: String?, value: String?) {
-        prefs.edit().putString(key, value).apply()
-        notifyChanged(key)
-    }
+    fun setString(key: String?, value: String?) = hub.setString(key, value)
 
-    fun getBoolean(key: String?, defaultValue: Boolean): Boolean {
-        return prefs.getBoolean(key, defaultValue)
-    }
+    fun getBoolean(key: String?, defaultValue: Boolean): Boolean = hub.getBoolean(key, defaultValue)
 
-    fun setBoolean(key: String?, value: Boolean) {
-        prefs.edit().putBoolean(key, value).apply()
-        notifyChanged(key)
-    }
+    fun setBoolean(key: String?, value: Boolean) = hub.setBoolean(key, value)
 
     /**
      * Register a change listener. Must be called from the thread whose
@@ -83,30 +80,9 @@ class FaceclawSettings private constructor(context: Context) {
      */
     fun registerListener(listener: FaceclawSettingsListener) {
         val looper = Looper.myLooper()
-        if (looper == null) {
-            Log.w(TAG, "settings listener registered from a Looper-less thread; it will never be notified")
-        }
-        listeners.add(ListenerEntry(listener, if (looper != null) Handler(looper) else null))
+        val handler = if (looper != null) Handler(looper) else null
+        hub.register(listener, if (handler != null) SettingsDispatcher { action -> handler.post(action) } else null)
     }
 
-    fun unregisterListener(listener: FaceclawSettingsListener?) {
-        for (entry in listeners) {
-            if (entry.listener === listener) {
-                listeners.remove(entry)
-            }
-        }
-    }
-
-    private fun notifyChanged(key: String?) {
-        for (entry in listeners) {
-            val handler = entry.handler ?: continue
-            handler.post {
-                try {
-                    entry.listener.onSettingChanged(key)
-                } catch (e: Exception) {
-                    Log.w(TAG, "settings listener failed for key $key", e)
-                }
-            }
-        }
-    }
+    fun unregisterListener(listener: FaceclawSettingsListener?) = hub.unregister(listener)
 }

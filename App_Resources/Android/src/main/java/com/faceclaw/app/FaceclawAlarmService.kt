@@ -22,9 +22,6 @@ import android.os.PowerManager
 import android.os.VibrationEffect
 import android.os.Vibrator
 
-import java.util.ArrayList
-import java.util.Collections
-import java.util.LinkedHashMap
 
 /**
  * The ringing foreground service. One instance carries every item currently
@@ -37,22 +34,14 @@ import java.util.LinkedHashMap
  * to total silence) Do Not Disturb do not silence it.
  */
 class FaceclawAlarmService : Service() {
+    /** The shared item model; kept as a nested subclass so the lock-screen activity's references hold. */
     internal class Ringing(
-        @JvmField val id: Long,
+        id: Long,
         title: String?,
         text: String?,
         kind: String?,
         snoozeMinutes: Int
-    ) {
-        @JvmField val title: String = if (title == null || title.trim().isEmpty()) "Alarm" else title
-        @JvmField val text: String = text ?: ""
-        @JvmField val kind: String = kind ?: FaceclawAlarms.KIND_ALARM
-        @JvmField val snoozeMinutes: Int = Math.max(1, snoozeMinutes)
-        @JvmField val ringAtMs: Long = System.currentTimeMillis()
-        @JvmField var deliveredAtMs: Long = 0
-        @JvmField var escalated: Boolean = false
-        @JvmField var silenced: Boolean = false
-    }
+    ) : RingingItem(id, title, text, kind, snoozeMinutes, System.currentTimeMillis())
 
     companion object {
         const val CHANNEL_ID = "faceclaw-alarms"
@@ -72,17 +61,11 @@ class FaceclawAlarmService : Service() {
         /** Alarm-stream level (fraction of max) used when the wearer has it muted. */
         internal const val MUTED_VOLUME_FRACTION = 0.6f
 
-        /** Ringing items, oldest first; static so the activity can read them. */
-        private val ringing: MutableMap<Long, Ringing> = Collections.synchronizedMap(LinkedHashMap())
         /**
-         * Signals that arrived before the ring intent was processed (the JS
-         * engine fires, launches its window and reports delivery on the same
-         * main thread the service's onStartCommand queues behind), keyed by id
-         * with their arrival time. Consumed by startRinging.
+         * The escalation policy is process-wide (the activity reads it, the static entry points
+         * consult it before the service exists); the live service attaches its timers/effects.
          */
-        private val deliveredEarly: MutableMap<Long, Long> = Collections.synchronizedMap(LinkedHashMap())
-        private val stoppedEarly: MutableMap<Long, Long> = Collections.synchronizedMap(LinkedHashMap())
-        private const val EARLY_SIGNAL_MAX_AGE_MS = 15_000L
+        private val policy = AlarmRingingPolicy(FaceclawAlarms.glassesGate)
 
         // ------------------------------------------------------------------
         // Static entry points
@@ -102,8 +85,7 @@ class FaceclawAlarmService : Service() {
 
         @JvmStatic
         fun delivered(context: Context, id: Long) {
-            if (!ringing.containsKey(id)) {
-                deliveredEarly[id] = System.currentTimeMillis()
+            if (!policy.deliveredOrDefer(id)) {
                 return
             }
             val appContext = context.applicationContext
@@ -114,8 +96,7 @@ class FaceclawAlarmService : Service() {
 
         @JvmStatic
         fun stopItem(context: Context, id: Long) {
-            if (!ringing.containsKey(id)) {
-                stoppedEarly[id] = System.currentTimeMillis()
+            if (!policy.stopOrDefer(id)) {
                 return
             }
             val appContext = context.applicationContext
@@ -125,21 +106,13 @@ class FaceclawAlarmService : Service() {
         }
 
         @JvmStatic
-        fun isRinging(id: Long): Boolean {
-            return ringing.containsKey(id)
-        }
+        fun isRinging(id: Long): Boolean = policy.isRinging(id)
 
         @JvmStatic
-        fun isAnythingRinging(): Boolean {
-            return !ringing.isEmpty()
-        }
+        fun isAnythingRinging(): Boolean = policy.isAnythingRinging()
 
         @JvmStatic
-        internal fun snapshot(): List<Ringing> {
-            synchronized(ringing) {
-                return ArrayList(ringing.values)
-            }
-        }
+        internal fun snapshot(): List<Ringing> = policy.snapshot().map { it as Ringing }
 
         @JvmStatic
         internal fun actionIntent(appContext: Context, action: String, id: Long): PendingIntent {
@@ -155,16 +128,6 @@ class FaceclawAlarmService : Service() {
                 return PendingIntent.getForegroundService(appContext, code, intent, flags)
             }
             return PendingIntent.getService(appContext, code, intent, flags)
-        }
-
-        /** Consume an early signal for the id; stale entries are dropped. */
-        private fun takeEarlySignal(signals: MutableMap<Long, Long>, id: Long): Boolean {
-            val at = signals.remove(id)
-            val now = System.currentTimeMillis()
-            synchronized(signals) {
-                signals.values.removeIf { stamp -> now - stamp > EARLY_SIGNAL_MAX_AGE_MS }
-            }
-            return at != null && now - at <= EARLY_SIGNAL_MAX_AGE_MS
         }
 
         private fun notificationId(id: Long): Int {
@@ -188,6 +151,11 @@ class FaceclawAlarmService : Service() {
         return null
     }
 
+    override fun onCreate() {
+        super.onCreate()
+        policy.attach(timers, effects)
+    }
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val action = intent?.action
         val id = if (intent == null) 0L else intent.getLongExtra(FaceclawAlarms.EXTRA_ID, 0)
@@ -206,13 +174,13 @@ class FaceclawAlarmService : Service() {
                     intent.getIntExtra(FaceclawAlarms.EXTRA_SNOOZE_MINUTES, 10)
                 ))
             ACTION_DELIVERED ->
-                markDelivered(id)
+                policy.markDelivered(id)
             ACTION_DISMISS ->
-                dismiss(id)
+                policy.dismiss(id)
             ACTION_SNOOZE ->
-                snooze(id)
+                policy.snooze(id)
             ACTION_STOP_ITEM ->
-                stopItemQuietly(id, "acknowledged")
+                policy.stopQuietly(id, "acknowledged")
             else -> {}
         }
         finishIfIdle()
@@ -220,6 +188,7 @@ class FaceclawAlarmService : Service() {
     }
 
     override fun onDestroy() {
+        policy.detach()
         handler.removeCallbacksAndMessages(null)
         stopSound()
         releaseWakeLock()
@@ -234,120 +203,69 @@ class FaceclawAlarmService : Service() {
             return
         }
         ensureChannel()
-        val existing = ringing[item.id]
-        if (existing != null) {
-            // The engine's JS timeout and the AlarmManager alarm both fired: one ring.
-            showNotification(existing)
-            return
-        }
-        if (takeEarlySignal(stoppedEarly, item.id)) {
-            // Acknowledged or cancelled before this intent was processed.
-            FaceclawAlarms.log(this, "ring " + item.id + " already acknowledged")
-            return
-        }
-        ringing[item.id] = item
-        FaceclawAlarms.log(this, "ring " + item.kind + " " + item.id + " (" + FaceclawAlarms.glassesStatusDescription() + ")")
-        acquireWakeLock()
-        showNotification(item)
-        if (!FaceclawAlarms.glassesCanCarryAlarm()) {
-            escalate(item, FaceclawAlarms.glassesStatusDescription())
-            return
-        }
-        if (takeEarlySignal(deliveredEarly, item.id)) {
-            markDelivered(item.id)
-            return
-        }
-        // The glasses could carry it: give the JS side a moment to confirm
-        // they are actually showing it, then hold for the acknowledgement.
-        handler.postDelayed({
-            val current = ringing[item.id]
-            if (current != null && !current.escalated && current.deliveredAtMs == 0L) {
-                escalate(current, "not delivered to the glasses")
+        policy.ring(item)
+    }
+
+    /** Escalation timers on the service's main-thread Handler. */
+    private val timers = object : AlarmScheduler {
+        private val pending = HashMap<Any, Runnable>()
+
+        override fun postDelayed(token: Any, delayMs: Long, action: () -> Unit) {
+            pending.remove(token)?.let { handler.removeCallbacks(it) }
+            val runnable = Runnable {
+                pending.remove(token)
+                action()
             }
-        }, DELIVERY_WAIT_MS)
+            pending[token] = runnable
+            handler.postDelayed(runnable, delayMs)
+        }
+
+        override fun cancel(token: Any) {
+            pending.remove(token)?.let { handler.removeCallbacks(it) }
+        }
+
+        override fun cancelAll() {
+            pending.clear()
+            handler.removeCallbacksAndMessages(null)
+        }
     }
 
-    private fun markDelivered(id: Long) {
-        val item = ringing[id]
-        if (item == null || item.deliveredAtMs != 0L) {
-            return
-        }
-        item.deliveredAtMs = System.currentTimeMillis()
-        FaceclawAlarms.log(this, "delivered $id to glasses")
-        handler.postDelayed({
-            val current = ringing[id]
-            if (current != null && !current.escalated) {
-                escalate(current, "not acknowledged on the glasses")
+    /** The phone-side effects of the shared policy: notifications, sound, schedule, journal. */
+    private val effects = object : RingingSink {
+        override fun showNotification(item: RingingItem) = this@FaceclawAlarmService.showNotification(item as Ringing)
+
+        override fun itemRemoved(item: RingingItem) {
+            val manager = getSystemService(NotificationManager::class.java)
+            manager?.cancel(notificationId(item.id))
+            if (item.id == foregroundId) {
+                promoteAnotherToForeground()
             }
-        }, ACK_WAIT_MS)
-    }
-
-    private fun escalate(item: Ringing, reason: String) {
-        if (item.escalated) {
-            return
         }
-        item.escalated = true
-        FaceclawAlarms.log(this, "phone sound for " + item.id + ": " + reason)
-        showNotification(item)
-        startSound()
-        handler.postDelayed({
-            val current = ringing[item.id]
-            if (current != null && current.escalated && !current.silenced) {
-                current.silenced = true
-                FaceclawAlarms.log(this, "auto-silenced " + current.id)
-                showNotification(current)
-                syncSound()
-            }
-        }, AUTO_SILENCE_MS)
-    }
 
-    private fun dismiss(id: Long) {
-        val item = ringing[id] ?: return
-        FaceclawAlarms.recordPhoneAction(this, id, "dismiss", 0)
-        removeItem(item)
-        // Also drop the schedule entry (a one-off is over; the engine re-arms repeats).
-        FaceclawAlarms.cancel(this, id)
-    }
+        override fun ringingStarted() = acquireWakeLock()
 
-    private fun snooze(id: Long) {
-        val item = ringing[id] ?: return
-        val minutes = item.snoozeMinutes
-        FaceclawAlarms.recordPhoneAction(this, id, "snooze", minutes)
-        removeItem(item)
-        // Re-arm on the phone directly so the snooze holds even with the JS
-        // side gone; the engine replays the journal and lands on the same id.
-        FaceclawAlarms.schedule(
-            this,
-            id,
-            System.currentTimeMillis() + minutes * 60_000L,
-            item.title,
-            item.text,
-            item.kind,
-            minutes
-        )
-    }
+        override fun startSound() = this@FaceclawAlarmService.startSound()
 
-    private fun stopItemQuietly(id: Long, reason: String) {
-        val item = ringing[id] ?: return
-        FaceclawAlarms.log(this, "$reason $id")
-        removeItem(item)
-    }
+        override fun stopSound() = this@FaceclawAlarmService.stopSound()
 
-    private fun removeItem(item: Ringing) {
-        ringing.remove(item.id)
-        val manager = getSystemService(NotificationManager::class.java)
-        manager?.cancel(notificationId(item.id))
-        syncSound()
-        if (item.id == foregroundId) {
-            promoteAnotherToForeground()
+        override fun reschedule(item: RingingItem, atMs: Long, minutes: Int) {
+            // The engine replays the journal and lands on the same id.
+            FaceclawAlarms.schedule(this@FaceclawAlarmService, item.id, atMs, item.title, item.text, item.kind, minutes)
         }
+
+        override fun cancelSchedule(id: Long) = FaceclawAlarms.cancel(this@FaceclawAlarmService, id)
+
+        override fun recordPhoneAction(id: Long, action: String, minutes: Int) =
+            FaceclawAlarms.recordPhoneAction(this@FaceclawAlarmService, id, action, minutes)
+
+        override fun log(line: String) = FaceclawAlarms.log(this@FaceclawAlarmService, line)
     }
 
     private fun finishIfIdle() {
-        if (!ringing.isEmpty()) {
+        if (policy.isAnythingRinging()) {
             return
         }
-        handler.removeCallbacksAndMessages(null)
+        policy.cancelTimers()
         stopSound()
         releaseWakeLock()
         stopForeground(STOP_FOREGROUND_REMOVE)
@@ -359,7 +277,7 @@ class FaceclawAlarmService : Service() {
 
     private fun showNotification(item: Ringing) {
         val notification = buildNotification(item)
-        if (foregroundId == 0L || foregroundId == item.id || !ringing.containsKey(foregroundId)) {
+        if (foregroundId == 0L || foregroundId == item.id || !policy.isRinging(foregroundId)) {
             foregroundId = item.id
             startForegroundCompat(notificationId(item.id), notification)
         } else {
@@ -455,21 +373,6 @@ class FaceclawAlarmService : Service() {
 
     // ------------------------------------------------------------------
     // Sound and vibration (only while some item is escalated and not yet silenced)
-
-    private fun syncSound() {
-        var wanted = false
-        for (item in snapshot()) {
-            if (item.escalated && !item.silenced) {
-                wanted = true
-                break
-            }
-        }
-        if (wanted) {
-            startSound()
-        } else {
-            stopSound()
-        }
-    }
 
     private fun startSound() {
         if (player != null) {

@@ -7,27 +7,18 @@ import okhttp3.Request
 import okhttp3.Response
 
 /**
- * Shared HTTP identity for the Java networking helpers. The version lives in
+ * Android okhttp face of the shared HTTP identity. The version lives in
  * app/version.ts, so the TypeScript side pushes the real string in at startup
- * (see installNativeUserAgent in app/util/http.ts); the default below is only
- * a fallback for requests that somehow beat that call.
+ * (see installNativeUserAgent in app/util/http.ts); the value itself is held
+ * by the shared HttpIdentity so every platform's networking reads one string.
  */
 class FaceclawHttp private constructor() {
     companion object {
-        @Volatile
-        private var userAgent = "Faceclaw"
+        @JvmStatic
+        fun setUserAgent(value: String?) = HttpIdentity.setUserAgent(value)
 
         @JvmStatic
-        fun setUserAgent(value: String?) {
-            if (value != null && !value.trim().isEmpty()) {
-                userAgent = value.trim()
-            }
-        }
-
-        @JvmStatic
-        fun getUserAgent(): String {
-            return userAgent
-        }
+        fun getUserAgent(): String = HttpIdentity.getUserAgent()
 
         /** Stamps our User-Agent on any request that doesn't already carry one. */
         @JvmStatic
@@ -39,7 +30,7 @@ class FaceclawHttp private constructor() {
                     if (request.header("User-Agent") != null) {
                         return chain.proceed(request)
                     }
-                    return chain.proceed(request.newBuilder().header("User-Agent", userAgent).build())
+                    return chain.proceed(request.newBuilder().header("User-Agent", HttpIdentity.getUserAgent()).build())
                 }
             }
         }

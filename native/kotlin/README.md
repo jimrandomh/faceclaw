@@ -8,7 +8,21 @@ local `@faceclaw/kotlin` plugin. Generated binaries and Gradle caches are ignore
 - `commonMain/kotlin`: wire protocol, fragmentation/reassembly, event decoding,
   image/RLE/texture planning, retained surface composition, glyph/image atlases,
   LVGL font parsing, spectral noise suppression, PNG/GIF/WAV encodings and
-  callback interfaces.
+  callback interfaces. Since 2026-09-22 also the platform-neutral cores behind
+  the Android adapters: `util/` (Json codec, FrameTimingsCore, concurrency
+  primitives, sha256/clock/log/file expects), `g2protocol/FirmwareImage`,
+  `audio/` (Lc3PacketFramer, AudioSegmentation, VoicePrint, WavPcmReader),
+  `graphics/` (GrayPacket, PreviewPalette, StatusIconArt, GlyphPacket,
+  OpenTypeNames, SvgIconSource), `net/` (HttpIdentity, SseStream,
+  ResumableDownload, RemoteInputSession), `evenhub/EvenHubAssetServer`,
+  `alarms/` (AlarmSchedule, AlarmRingingPolicy), `settings/SettingsChangeHub`,
+  the stock-firmware flows over a `StockLink` GATT port (`g2protocol/StockLinkSession`,
+  `DeviceInfoProbeFlow`, `FlashPromptFlow`, `OtaFlashFlow`), the full glasses session
+  (`g2protocol/session/GlassesSessionCore` over `SessionLink`/`SessionHost`) and the
+  voice/caption pipelines (`audio/VoiceCaptureSession`, `CaptionEngineCore`).
+  Cores take port interfaces (GATT link, storage, transport, dispatcher) and call
+  listeners synchronously; the Android adapters in `App_Resources` own threads,
+  Handler marshalling and OS APIs. See `notes/stage2-shared-kotlin-plan.md`.
 - `androidMain/kotlin`: monotonic clock, reentrant locks, JVM zlib and file I/O,
   zero-copy `ByteBuffer` readers, firmware hashing/file writes and WAV file storage.
 - `iosMain/kotlin`: monotonic clock, recursive locks, native zlib and POSIX file
@@ -22,7 +36,9 @@ bulk buffer crossing without putting Java APIs in common code. iOS uses
 
 ## Platform boundaries
 
-`ProtocolPlatform` supplies clocks, locks and persistent deflaters. `expect` /
+`ProtocolPlatform` supplies clocks, locks, persistent deflaters and condition
+variables (`ProtocolCondition`, NOT reentrant on iOS: NSCondition). `InterruptibleSleep`,
+`Latch` and `BlockingQueue` in commonMain build on it. `expect` /
 `actual` functions select default platform services at compilation. Stateful
 transports and caches retain reentrant locking; callbacks still run on their
 caller's thread. The migration does not introduce implicit UI-thread dispatch.

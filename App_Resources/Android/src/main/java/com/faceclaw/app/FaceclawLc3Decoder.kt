@@ -2,23 +2,23 @@ package com.faceclaw.app
 
 import android.util.Log
 
+/**
+ * Android LC3 decoder for G2 microphone packets: the liblc3 JNI codec behind the shared
+ * [Lc3PacketFramer], which owns the counter/duplicate/trailer logic and statistics.
+ */
 class FaceclawLc3Decoder {
     companion object {
         private const val TAG = "FaceclawLc3"
-        const val SAMPLE_RATE = 16000
-        const val FRAME_US = 10000
-        const val FRAME_BYTES = 40
-        const val FRAMES_PER_PACKET = 5
-        const val PACKET_BYTES = 205
-        const val COUNTER_OFFSET = 204
-        const val SAMPLES_PER_FRAME = 160
-        const val SAMPLES_PER_PACKET = FRAMES_PER_PACKET * SAMPLES_PER_FRAME
-        // Trailer layout (firmware service_audio.c): after the 200 LC3 bytes the
-        // glasses DSP appends two signed 16-bit LE values computed on the raw
-        // stereo capture before the mono downmix — a signal-strength ratio and the
-        // asin-derived direction-of-arrival in degrees — then the packet counter.
-        const val SSR_OFFSET = 200
-        const val ANGLE_OFFSET = 202
+        const val SAMPLE_RATE = Lc3PacketFramer.SAMPLE_RATE
+        const val FRAME_US = Lc3PacketFramer.FRAME_US
+        const val FRAME_BYTES = Lc3PacketFramer.FRAME_BYTES
+        const val FRAMES_PER_PACKET = Lc3PacketFramer.FRAMES_PER_PACKET
+        const val PACKET_BYTES = Lc3PacketFramer.PACKET_BYTES
+        const val COUNTER_OFFSET = Lc3PacketFramer.COUNTER_OFFSET
+        const val SAMPLES_PER_FRAME = Lc3PacketFramer.SAMPLES_PER_FRAME
+        const val SAMPLES_PER_PACKET = Lc3PacketFramer.SAMPLES_PER_PACKET
+        const val SSR_OFFSET = Lc3PacketFramer.SSR_OFFSET
+        const val ANGLE_OFFSET = Lc3PacketFramer.ANGLE_OFFSET
 
         init {
             System.loadLibrary("faceclaw_lc3")
@@ -32,17 +32,15 @@ class FaceclawLc3Decoder {
         private external fun nativeDestroy(handle: Long)
     }
 
-    private var nativeHandle: Long
-    private var lastCounter = -1
-    private var realPackets: Long = 0
-    private var duplicatePackets: Long = 0
-    private var missingPackets: Long = 0
-    private var decodeErrors: Long = 0
-    private var lastSsr = 0
-    private var lastAngleDegrees = 0
+    private var nativeHandle: Long = nativeCreate(FRAME_US, SAMPLE_RATE)
+    private val framer = Lc3PacketFramer(object : Lc3Codec {
+        override fun decodeFrames(packet: ByteArray, offset: Int, length: Int, pcmOut: ShortArray): Int {
+            // The JNI entry decodes the five 40-byte frames at the start of the packet.
+            return nativeDecodePacket(nativeHandle, packet, pcmOut)
+        }
+    })
 
     init {
-        nativeHandle = nativeCreate(FRAME_US, SAMPLE_RATE)
         if (nativeHandle == 0L) {
             throw IllegalStateException("Could not create LC3 decoder")
         }
@@ -54,70 +52,30 @@ class FaceclawLc3Decoder {
             throw IllegalStateException("LC3 decoder is closed")
         }
         if (packet == null || packet.size != PACKET_BYTES) {
-            decodeErrors++
             Log.w(TAG, "unexpected G2 audio packet length=" + (packet?.size ?: -1))
-            return 0
         }
-        if (pcmOut == null || pcmOut.size < SAMPLES_PER_PACKET) {
-            throw IllegalArgumentException("pcmOut must hold $SAMPLES_PER_PACKET samples")
-        }
-
-        val counter = packet[COUNTER_OFFSET].toInt() and 0xff
-        if (lastCounter >= 0) {
-            val gap = (counter - lastCounter) and 0xff
-            if (gap == 0) {
-                duplicatePackets++
-                return 0
-            }
-            val missing = gap - 1
-            if (missing > 0) {
-                missingPackets += missing.toLong()
-            }
-        }
-
-        val decoded = nativeDecodePacket(nativeHandle, packet, pcmOut)
-        if (decoded <= 0) {
-            decodeErrors++
-            return 0
-        }
-        realPackets++
-        lastCounter = counter
-        lastSsr = ((packet[SSR_OFFSET].toInt() and 0xff) or (packet[SSR_OFFSET + 1].toInt() shl 8)).toShort().toInt()
-        lastAngleDegrees = ((packet[ANGLE_OFFSET].toInt() and 0xff) or (packet[ANGLE_OFFSET + 1].toInt() shl 8)).toShort().toInt()
-        return decoded
+        return framer.decodePacket(packet, pcmOut)
     }
 
     /** Firmware signal-strength ratio from the most recent decoded packet. */
     @Synchronized
-    fun getLastSsr(): Int {
-        return lastSsr
-    }
+    fun getLastSsr(): Int = framer.lastSsr
 
     /** Firmware direction-of-arrival (signed degrees) from the most recent decoded packet. */
     @Synchronized
-    fun getLastAngleDegrees(): Int {
-        return lastAngleDegrees
-    }
+    fun getLastAngleDegrees(): Int = framer.lastAngleDegrees
 
     @Synchronized
-    fun getRealPackets(): Long {
-        return realPackets
-    }
+    fun getRealPackets(): Long = framer.realPackets
 
     @Synchronized
-    fun getDuplicatePackets(): Long {
-        return duplicatePackets
-    }
+    fun getDuplicatePackets(): Long = framer.duplicatePackets
 
     @Synchronized
-    fun getMissingPackets(): Long {
-        return missingPackets
-    }
+    fun getMissingPackets(): Long = framer.missingPackets
 
     @Synchronized
-    fun getDecodeErrors(): Long {
-        return decodeErrors
-    }
+    fun getDecodeErrors(): Long = framer.decodeErrors
 
     @Synchronized
     fun close() {

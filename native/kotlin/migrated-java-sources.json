@@ -409,6 +409,6 @@
   },
   {
     "java": "com/faceclaw/app/util/InterruptibleSleep.java",
-    "kotlin": "App_Resources/Android/src/main/java/com/faceclaw/app/util/InterruptibleSleep.kt"
+    "kotlin": "native/kotlin/shared/src/commonMain/kotlin/com/faceclaw/app/util/Concurrency.kt"
   }
 ]

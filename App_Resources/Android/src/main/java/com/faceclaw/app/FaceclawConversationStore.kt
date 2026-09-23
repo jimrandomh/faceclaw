@@ -13,8 +13,6 @@ import org.json.JSONException
 import org.json.JSONObject
 
 import java.io.File
-import java.nio.ByteBuffer
-import java.nio.ByteOrder
 import java.util.ArrayList
 
 /**
@@ -47,41 +45,6 @@ class FaceclawConversationStore private constructor(context: Context) : SQLiteOp
             }
         }
 
-        // ---- blob helpers ----
-
-        private fun blobToFloats(blob: ByteArray?): FloatArray? {
-            if (blob == null || blob.size < 4 || blob.size % 4 != 0) {
-                return null
-            }
-            val buffer = ByteBuffer.wrap(blob).order(ByteOrder.LITTLE_ENDIAN)
-            val out = FloatArray(blob.size / 4)
-            for (i in out.indices) {
-                out[i] = buffer.getFloat()
-            }
-            return out
-        }
-
-        private fun floatsToBlob(values: FloatArray): ByteArray {
-            val buffer = ByteBuffer.allocate(values.size * 4).order(ByteOrder.LITTLE_ENDIAN)
-            for (v in values) {
-                buffer.putFloat(v)
-            }
-            return buffer.array()
-        }
-
-        private fun l2NormalizeInPlace(v: FloatArray) {
-            var sum = 0.0
-            for (x in v) {
-                sum += x.toDouble() * x
-            }
-            val norm = Math.sqrt(sum)
-            if (norm <= 0) {
-                return
-            }
-            for (i in v.indices) {
-                v[i] = (v[i] / norm).toFloat()
-            }
-        }
     }
 
     override fun onCreate(db: SQLiteDatabase) {
@@ -567,7 +530,7 @@ class FaceclawConversationStore private constructor(context: Context) : SQLiteOp
     fun updateSpeakerEmbedding(speakerId: Long, embeddingBase64: String?, maxCount: Int) {
         try {
             val incoming = Base64.decode(embeddingBase64, Base64.NO_WRAP)
-            val update = blobToFloats(incoming)
+            val update = SpeakerEmbeddings.blobToFloats(incoming)
             if (update == null) {
                 return
             }
@@ -578,28 +541,16 @@ class FaceclawConversationStore private constructor(context: Context) : SQLiteOp
                 arrayOf(speakerId.toString()))
             try {
                 if (c.moveToFirst()) {
-                    current = if (c.isNull(0)) null else blobToFloats(c.getBlob(0))
+                    current = if (c.isNull(0)) null else SpeakerEmbeddings.blobToFloats(c.getBlob(0))
                     count = c.getInt(1)
                 }
             } finally {
                 c.close()
             }
-            val merged: FloatArray
-            if (current == null || current.size != update.size) {
-                merged = update
-                count = 1
-            } else {
-                val effective = Math.min(count, Math.max(1, maxCount))
-                merged = FloatArray(current.size)
-                for (i in merged.indices) {
-                    merged[i] = (current[i] * effective + update[i]) / (effective + 1)
-                }
-                l2NormalizeInPlace(merged)
-                count = count + 1
-            }
+            val centroid = SpeakerEmbeddings.runningMean(current, count, update, maxCount)
             val values = ContentValues()
-            values.put("embedding", floatsToBlob(merged))
-            values.put("embedding_count", count)
+            values.put("embedding", SpeakerEmbeddings.floatsToBlob(centroid.embedding))
+            values.put("embedding_count", centroid.count)
             values.put("last_heard_at", System.currentTimeMillis())
             writableDatabase.update("speakers", values, "id=?",
                 arrayOf(speakerId.toString()))
@@ -630,7 +581,7 @@ class FaceclawConversationStore private constructor(context: Context) : SQLiteOp
             try {
                 while (c.moveToNext()) {
                     val id = c.getLong(0)
-                    val embedding = if (c.isNull(1)) null else blobToFloats(c.getBlob(1))
+                    val embedding = if (c.isNull(1)) null else SpeakerEmbeddings.blobToFloats(c.getBlob(1))
                     val count = c.getInt(2)
                     if (id == fromId) {
                         from = embedding
@@ -644,21 +595,10 @@ class FaceclawConversationStore private constructor(context: Context) : SQLiteOp
             } finally {
                 c.close()
             }
-            var merged: FloatArray? = into
-            if (from != null && into != null && from.size == into.size) {
-                val blended = FloatArray(into.size)
-                val total = Math.max(1, fromCount + intoCount)
-                for (i in blended.indices) {
-                    blended[i] = (into[i] * intoCount + from[i] * fromCount) / total
-                }
-                l2NormalizeInPlace(blended)
-                merged = blended
-            } else if (into == null) {
-                merged = from
-            }
+            val merged = SpeakerEmbeddings.blend(from, fromCount, into, intoCount)
             val values = ContentValues()
             if (merged != null) {
-                values.put("embedding", floatsToBlob(merged))
+                values.put("embedding", SpeakerEmbeddings.floatsToBlob(merged))
                 values.put("embedding_count", fromCount + intoCount)
             }
             if (fromWearer) {
@@ -677,7 +617,7 @@ class FaceclawConversationStore private constructor(context: Context) : SQLiteOp
                     val hasInsights = !c2.isNull(0) && !c2.getString(0).isEmpty()
                     if (c2.position == 0) {
                         targetHasInsights = hasInsights
-                    } else if (!targetHasInsights && hasInsights) {
+                    } else if (SpeakerEmbeddings.shouldAdoptInsights(targetHasInsights, hasInsights)) {
                         values.put("last_recap", c2.getString(0))
                         values.put("action_items", if (c2.isNull(1)) "" else c2.getString(1))
                         values.put("facts", if (c2.isNull(2)) "" else c2.getString(2))

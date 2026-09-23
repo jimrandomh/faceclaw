@@ -10,7 +10,8 @@ import android.util.Log
  * pixels...] with one byte per pixel, row-major, or an empty array on
  * failure. FaceclawMediaController's album art shares bitmapToGrayPacket;
  * the TS side (app/native/image-files.ts) owns the shared photo-tone preset
- * passed as (gamma, dither).
+ * passed as (gamma, dither). The pixel math (tone curve, alpha darkening,
+ * dither) lives in the shared GrayPacket so iOS produces identical bytes.
  */
 class ImageFileLoader private constructor() {
     companion object {
@@ -151,95 +152,13 @@ class ImageFileLoader private constructor() {
                 }
                 val pixels = IntArray(width * height)
                 scaled.getPixels(pixels, 0, width, 0, 0, width, height)
-                val out = ByteArray(4 + width * height)
-                out[0] = (width and 0xff).toByte()
-                out[1] = ((width shr 8) and 0xff).toByte()
-                out[2] = (height and 0xff).toByte()
-                out[3] = ((height shr 8) and 0xff).toByte()
-                val tone = toneCurve(gamma)
-                for (i in pixels.indices) {
-                    val p = pixels[i]
-                    val a = (p ushr 24) and 0xff
-                    val r = (p shr 16) and 0xff
-                    val g = (p shr 8) and 0xff
-                    val b = p and 0xff
-                    out[4 + i] = tone[((r * 299 + g * 587 + b * 114) / 1000) * a / 255].toByte()
-                }
-                if (dither) {
-                    ditherToDisplayLevels(out, 4, width, height)
-                }
-                return out
+                return GrayPacket.fromArgb(pixels, width, height, gamma, dither)
             } catch (e: Exception) {
                 Log.w(TAG, "bitmap conversion failed", e)
                 return ByteArray(0)
             } catch (e: OutOfMemoryError) {
                 Log.w(TAG, "bitmap conversion failed", e)
                 return ByteArray(0)
-            }
-        }
-
-        /** 256-entry map of source gray to displayed gray for out = in^gamma. */
-        @JvmStatic
-        private fun toneCurve(gamma: Float): IntArray {
-            val curve = IntArray(256)
-            for (v in 0 until 256) {
-                curve[v] = if (gamma == 1f)
-                        v
-                        else Math.round(255f * Math.pow((v / 255f).toDouble(), gamma.toDouble()).toFloat())
-            }
-            return curve
-        }
-
-        /**
-         * Floyd-Steinberg error diffusion onto the display's 16 gray levels, in
-         * place over an 8bpp plane. Serpentine scanning keeps the diffusion from
-         * building up a directional texture across wide flat areas.
-         *
-         * Level n is written back as n * 16 rather than the n * 17 it stands for
-         * so that BmpUtil's (v + 8) >> 4 reproduces n exactly; level 0 is written
-         * as 1, not 0, because 0 is the shell's color-key for transparent.
-         */
-        @JvmStatic
-        private fun ditherToDisplayLevels(plane: ByteArray, offset: Int, width: Int, height: Int) {
-            var curr = FloatArray(width)
-            var next = FloatArray(width)
-            for (x in 0 until width) {
-                curr[x] = (plane[offset + x].toInt() and 0xff).toFloat()
-            }
-            for (y in 0 until height) {
-                val rowStart = offset + y * width
-                val nextStart = rowStart + width
-                val hasNext = y + 1 < height
-                for (x in 0 until width) {
-                    next[x] = if (hasNext) (plane[nextStart + x].toInt() and 0xff).toFloat() else 0f
-                }
-                val leftToRight = (y and 1) == 0
-                val start = if (leftToRight) 0 else width - 1
-                val step = if (leftToRight) 1 else -1
-                for (i in 0 until width) {
-                    val x = start + i * step
-                    val wanted = curr[x]
-                    val level = Math.round(Math.min(255f, Math.max(0f, wanted)) / 17f)
-                    val error = wanted - level * 17f
-                    plane[rowStart + x] = (if (level == 0) 1 else level * 16).toByte()
-                    val ahead = x + step
-                    if (ahead >= 0 && ahead < width) {
-                        curr[ahead] += error * (7f / 16f)
-                    }
-                    if (hasNext) {
-                        if (ahead >= 0 && ahead < width) {
-                            next[ahead] += error * (1f / 16f)
-                        }
-                        next[x] += error * (5f / 16f)
-                        val behind = x - step
-                        if (behind >= 0 && behind < width) {
-                            next[behind] += error * (3f / 16f)
-                        }
-                    }
-                }
-                val swap = curr
-                curr = next
-                next = swap
             }
         }
     }

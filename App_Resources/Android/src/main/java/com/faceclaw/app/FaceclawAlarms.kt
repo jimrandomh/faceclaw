@@ -47,32 +47,19 @@ class FaceclawAlarms private constructor() {
         internal const val EXTRA_KIND = "kind"
         internal const val EXTRA_SNOOZE_MINUTES = "snoozeMinutes"
 
-        const val KIND_TIMER = "timer"
-        const val KIND_ALARM = "alarm"
+        const val KIND_TIMER = AlarmSchedule.KIND_TIMER
+        const val KIND_ALARM = AlarmSchedule.KIND_ALARM
 
         private const val PREFS_NAME = "faceclaw-alarms"
-        private const val KEY_SCHEDULED = "scheduled"
-        private const val KEY_JOURNAL = "journal"
-        private const val KEY_LOG = "log"
-        private const val LOG_LINES = 60
 
-        /**
-         * A schedule entry found already past due (after a reboot, or when the
-         * process was asleep) rings if it is at most this late; older ones are
-         * dropped as missed. Matches the JS engine's grace window.
-         */
-        internal const val LATE_GRACE_MS = 5 * 60_000L
-        /** A glasses status report older than this is not trusted (the JS side is probably gone). */
-        internal const val GLASSES_STATUS_MAX_AGE_MS = 3 * 60_000L
+        /** Grace window for past-due entries found on replay (shared policy). */
+        internal const val LATE_GRACE_MS = AlarmSchedule.LATE_GRACE_MS
+        /** A glasses status report older than this is not trusted (shared policy). */
+        internal const val GLASSES_STATUS_MAX_AGE_MS = GlassesStatusGate.MAX_AGE_MS
 
-        @Volatile
-        private var glassesConnected = false
-        @Volatile
-        private var glassesWorn = false
-        @Volatile
-        private var glassesCharging = false
-        @Volatile
-        private var glassesStatusAtMs = 0L
+        /** The last glasses status pushed by the JS side; read by the ringing service. */
+        @JvmField
+        internal val glassesGate = GlassesStatusGate()
 
         @Volatile
         private var listener: FaceclawAlarmListener? = null
@@ -95,66 +82,30 @@ class FaceclawAlarms private constructor() {
             return base.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         }
 
-        // The Java statics were `synchronized`, i.e. locked on the class object;
-        // the explicit blocks below keep that single monitor.
-        private fun readArray(context: Context, key: String): JSONArray {
-            synchronized(FaceclawAlarms::class.java) {
-                val raw = prefs(context).getString(key, "[]")
-                return try {
-                    JSONArray(raw)
-                } catch (error: JSONException) {
-                    JSONArray()
-                }
-            }
-        }
+        @Volatile
+        private var scheduleInstance: AlarmSchedule? = null
 
-        private fun writeArray(context: Context, key: String, array: JSONArray) {
+        /** The shared schedule/journal/log core over the device-protected prefs (one per process). */
+        @JvmStatic
+        internal fun scheduleCore(context: Context): AlarmSchedule {
+            scheduleInstance?.let { return it }
             synchronized(FaceclawAlarms::class.java) {
-                prefs(context).edit().putString(key, array.toString()).apply()
+                scheduleInstance?.let { return it }
+                val prefs = prefs(context)
+                val created = AlarmSchedule(object : AlarmStore {
+                    override fun read(key: String): String? = prefs.getString(key, null)
+
+                    override fun write(key: String, value: String?) {
+                        prefs.edit().putString(key, value).apply()
+                    }
+                })
+                scheduleInstance = created
+                return created
             }
         }
 
         @JvmStatic
-        internal fun findScheduled(context: Context, id: Long): JSONObject? {
-            val scheduled = readArray(context, KEY_SCHEDULED)
-            for (index in 0 until scheduled.length()) {
-                val entry = scheduled.optJSONObject(index)
-                if (entry != null && entry.optLong("id") == id) {
-                    return entry
-                }
-            }
-            return null
-        }
-
-        private fun putScheduled(context: Context, entry: JSONObject) {
-            synchronized(FaceclawAlarms::class.java) {
-                val scheduled = readArray(context, KEY_SCHEDULED)
-                val next = JSONArray()
-                val id = entry.optLong("id")
-                for (index in 0 until scheduled.length()) {
-                    val existing = scheduled.optJSONObject(index)
-                    if (existing != null && existing.optLong("id") != id) {
-                        next.put(existing)
-                    }
-                }
-                next.put(entry)
-                writeArray(context, KEY_SCHEDULED, next)
-            }
-        }
-
-        private fun removeScheduled(context: Context, id: Long) {
-            synchronized(FaceclawAlarms::class.java) {
-                val scheduled = readArray(context, KEY_SCHEDULED)
-                val next = JSONArray()
-                for (index in 0 until scheduled.length()) {
-                    val existing = scheduled.optJSONObject(index)
-                    if (existing != null && existing.optLong("id") != id) {
-                        next.put(existing)
-                    }
-                }
-                writeArray(context, KEY_SCHEDULED, next)
-            }
-        }
+        internal fun findScheduled(context: Context, id: Long): AlarmEntry? = scheduleCore(context).find(id)
 
         // ------------------------------------------------------------------
         // Scheduling
@@ -177,26 +128,16 @@ class FaceclawAlarms private constructor() {
             snoozeMinutes: Int
         ) {
             val appContext = context.applicationContext
-            val entry = JSONObject()
-            try {
-                entry.put("id", id)
-                entry.put("at", triggerAtMs)
-                entry.put("title", title ?: "")
-                entry.put("text", text ?: "")
-                entry.put("kind", kind ?: KIND_ALARM)
-                entry.put("snoozeMinutes", snoozeMinutes)
-            } catch (ignored: JSONException) {
-                return
-            }
-            putScheduled(appContext, entry)
+            val entry = AlarmEntry(id, triggerAtMs, title, text, kind ?: KIND_ALARM, snoozeMinutes)
+            scheduleCore(appContext).put(entry)
             armAlarm(appContext, entry)
         }
 
-        private fun armAlarm(appContext: Context, entry: JSONObject) {
+        private fun armAlarm(appContext: Context, entry: AlarmEntry) {
             val manager = appContext.getSystemService(Context.ALARM_SERVICE) as AlarmManager?
                 ?: return
-            val id = entry.optLong("id")
-            val triggerAt = Math.max(System.currentTimeMillis(), entry.optLong("at"))
+            val id = entry.id
+            val triggerAt = Math.max(System.currentTimeMillis(), entry.at)
             val fire = expiryPendingIntent(appContext, entry)
             try {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
@@ -219,15 +160,9 @@ class FaceclawAlarms private constructor() {
             val appContext = context.applicationContext
             val manager = appContext.getSystemService(Context.ALARM_SERVICE) as AlarmManager?
             if (manager != null) {
-                val entry = JSONObject()
-                try {
-                    entry.put("id", id)
-                } catch (ignored: JSONException) {
-                    // unreachable for a numeric put
-                }
-                manager.cancel(expiryPendingIntent(appContext, entry))
+                manager.cancel(expiryPendingIntent(appContext, AlarmEntry(id, 0L, null, null, null, 10)))
             }
-            removeScheduled(appContext, id)
+            scheduleCore(appContext).remove(id)
             FaceclawAlarmService.stopItem(appContext, id)
         }
 
@@ -239,25 +174,7 @@ class FaceclawAlarms private constructor() {
         @JvmStatic
         fun rescheduleAll(context: Context, reason: String?) {
             val appContext = context.applicationContext
-            val scheduled = readArray(appContext, KEY_SCHEDULED)
-            val now = System.currentTimeMillis()
-            var armed = 0
-            for (index in 0 until scheduled.length()) {
-                val entry = scheduled.optJSONObject(index) ?: continue
-                val at = entry.optLong("at")
-                if (at <= now) {
-                    if (now - at <= LATE_GRACE_MS) {
-                        ringEntry(appContext, entry)
-                    } else {
-                        log(appContext, "missed " + entry.optString("kind") + " " + entry.optLong("id") + " (" + reason + ")")
-                        removeScheduled(appContext, entry.optLong("id"))
-                    }
-                    continue
-                }
-                armAlarm(appContext, entry)
-                armed++
-            }
-            log(appContext, "rescheduled $armed ($reason)")
+            scheduleCore(appContext).replay(reason, { ringEntry(appContext, it) }, { armAlarm(appContext, it) })
         }
 
         /**
@@ -271,24 +188,13 @@ class FaceclawAlarms private constructor() {
                 return false
             }
             val appContext = context.applicationContext
-            val scheduled = readArray(appContext, KEY_SCHEDULED)
-            val now = System.currentTimeMillis()
-            var soonest = Long.MAX_VALUE
-            for (index in 0 until scheduled.length()) {
-                val entry = scheduled.optJSONObject(index)
-                if (entry != null && entry.optLong("at") > now) {
-                    soonest = Math.min(soonest, entry.optLong("at"))
-                }
-            }
-            if (soonest == Long.MAX_VALUE) {
+            val core = scheduleCore(appContext)
+            if (core.soonestPendingAt() == null) {
                 return false
             }
             val manager = appContext.getSystemService(Context.ALARM_SERVICE) as AlarmManager?
                 ?: return false
-            val next = manager.nextAlarmClock
-            // Another app's alarm may legitimately be sooner; only a later (or
-            // absent) system alarm proves ours is missing.
-            return next == null || next.triggerTime > soonest + 1000
+            return core.looksStale(manager.nextAlarmClock?.triggerTime)
         }
 
         // ------------------------------------------------------------------
@@ -296,15 +202,8 @@ class FaceclawAlarms private constructor() {
 
         /** An item came due: hand it to the ringing service (idempotent per id). */
         @JvmStatic
-        internal fun ringEntry(appContext: Context, entry: JSONObject) {
-            FaceclawAlarmService.ring(
-                appContext,
-                entry.optLong("id"),
-                entry.optString("title"),
-                entry.optString("text"),
-                entry.optString("kind", KIND_ALARM),
-                entry.optInt("snoozeMinutes", 10)
-            )
+        internal fun ringEntry(appContext: Context, entry: AlarmEntry) {
+            FaceclawAlarmService.ring(appContext, entry.id, entry.title, entry.text, entry.kind, entry.snoozeMinutes)
         }
 
         /** The JS engine's own expiry path; the service deduplicates against the alarm's. */
@@ -313,13 +212,7 @@ class FaceclawAlarms private constructor() {
             val appContext = context.applicationContext
             val manager = appContext.getSystemService(Context.ALARM_SERVICE) as AlarmManager?
             if (manager != null) {
-                val probe = JSONObject()
-                try {
-                    probe.put("id", id)
-                } catch (ignored: JSONException) {
-                    // unreachable for a numeric put
-                }
-                manager.cancel(expiryPendingIntent(appContext, probe))
+                manager.cancel(expiryPendingIntent(appContext, AlarmEntry(id, 0L, null, null, null, 10)))
             }
             FaceclawAlarmService.ring(appContext, id, title, text, kind, snoozeMinutes)
         }
@@ -334,7 +227,7 @@ class FaceclawAlarms private constructor() {
         @JvmStatic
         fun acknowledge(context: Context, id: Long) {
             val appContext = context.applicationContext
-            removeScheduled(appContext, id)
+            scheduleCore(appContext).remove(id)
             FaceclawAlarmService.stopItem(appContext, id)
         }
 
@@ -343,42 +236,15 @@ class FaceclawAlarms private constructor() {
 
         @JvmStatic
         fun setGlassesStatus(connected: Boolean, worn: Boolean, charging: Boolean) {
-            glassesConnected = connected
-            glassesWorn = worn
-            glassesCharging = charging
-            glassesStatusAtMs = System.currentTimeMillis()
+            glassesGate.set(connected, worn, charging)
         }
 
         /** True only when a fresh report says the glasses are connected, on a head, and not charging. */
         @JvmStatic
-        internal fun glassesCanCarryAlarm(): Boolean {
-            val age = System.currentTimeMillis() - glassesStatusAtMs
-            if (glassesStatusAtMs == 0L || age > GLASSES_STATUS_MAX_AGE_MS) {
-                return false
-            }
-            return glassesConnected && glassesWorn && !glassesCharging
-        }
+        internal fun glassesCanCarryAlarm(): Boolean = glassesGate.canCarryAlarm()
 
         @JvmStatic
-        internal fun glassesStatusDescription(): String {
-            if (glassesStatusAtMs == 0L) {
-                return "no glasses status"
-            }
-            val age = System.currentTimeMillis() - glassesStatusAtMs
-            if (age > GLASSES_STATUS_MAX_AGE_MS) {
-                return "glasses status stale"
-            }
-            if (!glassesConnected) {
-                return "glasses not connected"
-            }
-            if (glassesCharging) {
-                return "glasses charging"
-            }
-            if (!glassesWorn) {
-                return "glasses not worn"
-            }
-            return "glasses worn"
-        }
+        internal fun glassesStatusDescription(): String = glassesGate.description()
 
         // ------------------------------------------------------------------
         // Phone actions -> JS
@@ -396,21 +262,7 @@ class FaceclawAlarms private constructor() {
         @JvmStatic
         internal fun recordPhoneAction(context: Context, id: Long, action: String, minutes: Int) {
             val appContext = context.applicationContext
-            val event = JSONObject()
-            try {
-                event.put("id", id)
-                event.put("action", action)
-                event.put("minutes", minutes)
-                event.put("at", System.currentTimeMillis())
-            } catch (ignored: JSONException) {
-                return
-            }
-            synchronized(FaceclawAlarms::class.java) {
-                val journal = readArray(appContext, KEY_JOURNAL)
-                journal.put(event)
-                writeArray(appContext, KEY_JOURNAL, journal)
-            }
-            log(appContext, "phone " + action + " " + id + (if (minutes > 0) " ($minutes min)" else ""))
+            scheduleCore(appContext).appendJournal(id, action, minutes)
             val current = listener
             if (current != null) {
                 mainHandler.post {
@@ -425,14 +277,7 @@ class FaceclawAlarms private constructor() {
 
         /** Hand the journal to the JS side (as a JSON array) and clear it. */
         @JvmStatic
-        fun drainJournal(context: Context): String {
-            synchronized(FaceclawAlarms::class.java) {
-                val appContext = context.applicationContext
-                val journal = readArray(appContext, KEY_JOURNAL)
-                writeArray(appContext, KEY_JOURNAL, JSONArray())
-                return journal.toString()
-            }
-        }
+        fun drainJournal(context: Context): String = scheduleCore(context.applicationContext).drainJournal()
 
         // ------------------------------------------------------------------
         // Reliability self-check
@@ -577,45 +422,25 @@ class FaceclawAlarms private constructor() {
 
         @JvmStatic
         internal fun log(context: Context, line: String) {
-            synchronized(FaceclawAlarms::class.java) {
-                val appContext = context.applicationContext
-                val log = readArray(appContext, KEY_LOG)
-                val next = JSONArray()
-                val start = Math.max(0, log.length() - (LOG_LINES - 1))
-                for (index in start until log.length()) {
-                    next.put(log.optString(index))
-                }
-                next.put(System.currentTimeMillis().toString() + " " + line)
-                writeArray(appContext, KEY_LOG, next)
-            }
+            scheduleCore(context.applicationContext).log(line)
         }
 
         /** The ring / miss / action log, newest last, one line per entry. */
         @JvmStatic
-        fun readLog(context: Context): String {
-            val log = readArray(context.applicationContext, KEY_LOG)
-            val out = StringBuilder()
-            for (index in 0 until log.length()) {
-                if (index > 0) {
-                    out.append('\n')
-                }
-                out.append(log.optString(index))
-            }
-            return out.toString()
-        }
+        fun readLog(context: Context): String = scheduleCore(context.applicationContext).readLog()
 
         // ------------------------------------------------------------------
         // Intents
 
-        private fun expiryPendingIntent(appContext: Context, entry: JSONObject): PendingIntent {
+        private fun expiryPendingIntent(appContext: Context, entry: AlarmEntry): PendingIntent {
             val intent = Intent(appContext, FaceclawAlarmReceiver::class.java)
             intent.action = ACTION_EXPIRE
-            val id = entry.optLong("id")
+            val id = entry.id
             intent.putExtra(EXTRA_ID, id)
-            intent.putExtra(EXTRA_TITLE, entry.optString("title"))
-            intent.putExtra(EXTRA_TEXT, entry.optString("text"))
-            intent.putExtra(EXTRA_KIND, entry.optString("kind", KIND_ALARM))
-            intent.putExtra(EXTRA_SNOOZE_MINUTES, entry.optInt("snoozeMinutes", 10))
+            intent.putExtra(EXTRA_TITLE, entry.title)
+            intent.putExtra(EXTRA_TEXT, entry.text)
+            intent.putExtra(EXTRA_KIND, entry.kind)
+            intent.putExtra(EXTRA_SNOOZE_MINUTES, entry.snoozeMinutes)
             var flags = PendingIntent.FLAG_UPDATE_CURRENT
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
                 flags = flags or PendingIntent.FLAG_IMMUTABLE
@@ -635,9 +460,7 @@ class FaceclawAlarms private constructor() {
         }
 
         @JvmStatic
-        internal fun requestCode(id: Long): Int {
-            return (id xor (id ushr 32)).toInt() and 0x7fffffff
-        }
+        internal fun requestCode(id: Long): Int = AlarmSchedule.requestCode(id)
 
         @JvmStatic
         internal fun startServiceCompat(appContext: Context, intent: Intent) {

@@ -11,28 +11,9 @@ import com.k2fsa.sherpa.onnx.SpeakerEmbeddingExtractorConfig
  * utterance; matching/enrollment happens on the TS side (cosine similarity
  * against the stored speaker profiles).
  */
-class FaceclawSpeakerId(private val modelPath: String?) {
+class FaceclawSpeakerId(private val modelPath: String?) : SpeakerEmbedder {
     companion object {
         private const val TAG = "FaceclawSpeakerId"
-
-        @JvmStatic
-        private fun l2Normalize(v: FloatArray?): FloatArray? {
-            if (v == null) {
-                return null
-            }
-            var sum = 0.0
-            for (x in v) {
-                sum += x.toDouble() * x
-            }
-            val norm = Math.sqrt(sum)
-            if (norm <= 0) {
-                return v
-            }
-            for (i in v.indices) {
-                v[i] = (v[i] / norm).toFloat()
-            }
-            return v
-        }
     }
 
     private var extractor: SpeakerEmbeddingExtractor? = null
@@ -71,20 +52,18 @@ class FaceclawSpeakerId(private val modelPath: String?) {
      * is too short to embed (under ~0.5 s).
      */
     @Synchronized
-    fun embed(pcm16le: ByteArray?, sampleRate: Int): FloatArray? {
-        if (pcm16le == null || pcm16le.size < sampleRate) {
+    override fun embed(pcm16le: ByteArray, sampleRate: Int): FloatArray? = embedNullable(pcm16le, sampleRate)
+
+    @Synchronized
+    fun embedNullable(pcm16le: ByteArray?, sampleRate: Int): FloatArray? {
+        if (pcm16le == null || !VoicePrint.isLongEnoughToEmbed(pcm16le.size, sampleRate)) {
             return null
         }
         if (!ensureLoaded()) {
             return null
         }
         val extractor = this.extractor!!
-        val count = pcm16le.size / 2
-        val samples = FloatArray(count)
-        for (i in 0 until count) {
-            val s = ((pcm16le[i * 2].toInt() and 0xff) or (pcm16le[i * 2 + 1].toInt() shl 8)).toShort()
-            samples[i] = s / 32768.0f
-        }
+        val samples = AudioSegmentation.pcm16leToFloat(pcm16le)
         var stream: OnlineStream? = null
         try {
             stream = extractor.createStream()
@@ -94,7 +73,7 @@ class FaceclawSpeakerId(private val modelPath: String?) {
                 return null
             }
             val embedding = extractor.compute(stream)
-            return l2Normalize(embedding)
+            return VoicePrint.l2Normalize(embedding)
         } catch (t: Throwable) {
             Log.w(TAG, "embedding failed", t)
             return null
@@ -104,6 +83,8 @@ class FaceclawSpeakerId(private val modelPath: String?) {
             }
         }
     }
+
+    override fun release() = close()
 
     @Synchronized
     fun close() {

@@ -9,8 +9,6 @@ import android.util.Log
 import java.io.File
 import java.io.FileInputStream
 import java.io.IOException
-import java.nio.ByteBuffer
-import java.nio.ByteOrder
 
 /**
  * Transcodes a 16-bit PCM WAV conversation recording into AAC-LC in an M4A
@@ -28,69 +26,25 @@ class FaceclawAudioTranscoder(
         private const val TAG = "FaceclawTranscode"
         private const val CODEC_TIMEOUT_US: Long = 10_000
 
-        /** Minimal RIFF walk: locates fmt and data chunks, 16-bit PCM only. */
+        /** Shared RIFF walk over the file's first bytes: locates fmt and data chunks, 16-bit PCM only. */
         @JvmStatic
         @Throws(IOException::class)
-        private fun readWavHeader(path: String?): WavInfo {
-            FileInputStream(path).use { `in` ->
-                val head = ByteArray(12)
-                if (`in`.read(head) != 12 || head[0] != 'R'.code.toByte() || head[1] != 'I'.code.toByte() || head[8] != 'W'.code.toByte()) {
-                    throw IOException("not a WAV file")
+        private fun readWavHeader(path: String?): WavPcmReader.WavInfo {
+            val file = File(path)
+            val fileLength = file.length()
+            FileInputStream(file).use { `in` ->
+                val prefix = ByteArray(Math.min(fileLength, WavPcmReader.HEADER_PREFIX_BYTES.toLong()).toInt())
+                var filled = 0
+                while (filled < prefix.size) {
+                    val read = `in`.read(prefix, filled, prefix.size - filled)
+                    if (read <= 0) break
+                    filled += read
                 }
-                val info = WavInfo()
-                var offset: Long = 12
-                val chunkHead = ByteArray(8)
-                while (`in`.read(chunkHead) == 8) {
-                    val b = ByteBuffer.wrap(chunkHead).order(ByteOrder.LITTLE_ENDIAN)
-                    val id = b.getInt()
-                    val size = b.getInt().toLong() and 0xffffffffL
-                    offset += 8
-                    if (id == 0x20746d66) { // "fmt "
-                        val fmt = ByteArray(Math.min(size, 16L).toInt())
-                        if (`in`.read(fmt) != fmt.size) {
-                            throw IOException("truncated fmt chunk")
-                        }
-                        val f = ByteBuffer.wrap(fmt).order(ByteOrder.LITTLE_ENDIAN)
-                        val audioFormat = f.getShort().toInt()
-                        info.channels = f.getShort().toInt()
-                        info.sampleRate = f.getInt()
-                        f.getInt()
-                        f.getShort()
-                        val bits = f.getShort().toInt()
-                        if (audioFormat != 1 || bits != 16) {
-                            throw IOException("only 16-bit PCM WAV is supported")
-                        }
-                        var skip = size - fmt.size
-                        while (skip > 0) {
-                            val step = `in`.skip(skip)
-                            if (step <= 0) {
-                                break
-                            }
-                            skip -= step
-                        }
-                        offset += size
-                    } else if (id == 0x61746164) { // "data"
-                        info.dataOffset = offset
-                        // A zero size means the header was never patched (crash
-                        // mid-recording); recover the length from the file size.
-                        info.dataBytes = if (size > 0) size else File(path).length() - offset
-                        break
-                    } else {
-                        var skip = size
-                        while (skip > 0) {
-                            val step = `in`.skip(skip)
-                            if (step <= 0) {
-                                break
-                            }
-                            skip -= step
-                        }
-                        offset += size
-                    }
+                try {
+                    return WavPcmReader.parseHeader(if (filled == prefix.size) prefix else prefix.copyOf(filled), fileLength)
+                } catch (e: IllegalArgumentException) {
+                    throw IOException(e.message ?: "not a WAV file")
                 }
-                if (info.sampleRate == 0 || info.dataOffset == 0L) {
-                    throw IOException("missing fmt or data chunk")
-                }
-                return info
             }
         }
     }
@@ -225,12 +179,5 @@ class FaceclawAudioTranscoder(
                 muxer.release()
             }
         }
-    }
-
-    private class WavInfo {
-        var sampleRate = 0
-        var channels = 0
-        var dataOffset: Long = 0
-        var dataBytes: Long = 0
     }
 }

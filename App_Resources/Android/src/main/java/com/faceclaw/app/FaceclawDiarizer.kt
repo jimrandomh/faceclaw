@@ -129,17 +129,19 @@ class FaceclawDiarizer(
             val file = File(path)
             val fileLength = file.length()
             DataInputStream(FileInputStream(file)).use { `in` ->
-                val header = ByteArray(44)
-                `in`.readFully(header)
-                if (header[0] != 'R'.code.toByte() || header[1] != 'I'.code.toByte() || header[8] != 'W'.code.toByte()) {
-                    throw IOException("not a WAV file")
+                // Shared RIFF walk (handles extra chunks and unpatched data sizes); the
+                // stream is then positioned at the first PCM sample.
+                val prefix = ByteArray(Math.min(fileLength, WavPcmReader.HEADER_PREFIX_BYTES.toLong()).toInt())
+                `in`.readFully(prefix)
+                val info = try {
+                    WavPcmReader.parseHeader(prefix, fileLength)
+                } catch (e: IllegalArgumentException) {
+                    throw IOException(e.message ?: "not a WAV file")
                 }
-                val channels = (header[22].toInt() and 0xff) or (header[23].toInt() shl 8)
-                val bits = (header[34].toInt() and 0xff) or (header[35].toInt() shl 8)
-                if (channels != 1 || bits != 16) {
+                if (info.channels != 1) {
                     throw IOException("only 16-bit mono WAV is supported")
                 }
-                val dataBytes = fileLength - 44
+                val dataBytes = info.dataBytes
                 val count = Math.min(dataBytes / 2, Int.MAX_VALUE.toLong()).toInt()
                 val samples = FloatArray(count)
                 val chunk = ByteArray(65536)
@@ -147,6 +149,21 @@ class FaceclawDiarizer(
                 var carried = 0
                 var carriedByte: Byte = 0
                 var read = 0
+                // The prefix already holds the start of the PCM data; consume it first.
+                val prefixData = prefix.size - info.dataOffset.toInt()
+                if (prefixData > 0) {
+                    val pairs = prefixData / 2
+                    var i = 0
+                    while (i < pairs && sampleIndex < count) {
+                        val base = info.dataOffset.toInt() + i * 2
+                        samples[sampleIndex++] = AudioSegmentation.pcm16le(prefix[base], prefix[base + 1]) / 32768.0f
+                        i++
+                    }
+                    if ((prefixData and 1) == 1) {
+                        carried = 1
+                        carriedByte = prefix[prefix.size - 1]
+                    }
+                }
                 while (sampleIndex < count && `in`.read(chunk).also { read = it } > 0) {
                     var offset = 0
                     if (carried == 1) {
