@@ -21,7 +21,8 @@ class FrameDisplayList private constructor(
     override fun translated(dx: Int, dy: Int) = FrameDisplayList(x + dx, y + dy, depth, resources, commands, startedAt, identity)
 
     private class Command(val op: Int, val depth: Int, val values: IntArray,
-        val x: DrawValue = DrawValue.Integer(0), val y: DrawValue = DrawValue.Integer(0))
+        val x: DrawValue = DrawValue.Integer(0), val y: DrawValue = DrawValue.Integer(0),
+        val dx: DrawValue = DrawValue.Integer(0), val dy: DrawValue = DrawValue.Integer(0))
 
     override fun calls(ids: IntArray, nowMs: Long): List<ByteArray> {
         require(ids.size == resources.size)
@@ -34,9 +35,9 @@ class FrameDisplayList private constructor(
                     v[0], v[1], v[2], v[3], v[4], depth + c.depth)
                 DRAW_OP_IMAGE -> DrawProtocol.image(resource(v[0]), x + v[1], y + v[2], v[3], depth = depth + c.depth)
                 DRAW_OP_RECT_COPY -> DrawProtocol.rectCopy(resource(v[0]),
-                    v[1] + if (v[0] == DrawProtocol.SCREEN) x else 0,
-                    v[2] + if (v[0] == DrawProtocol.SCREEN) y else 0,
-                    v[3], v[4], x + v[5], y + v[6], depth = depth + c.depth)
+                    bind(c.x, elapsed, if (v[0] == DrawProtocol.SCREEN) x else 0),
+                    bind(c.y, elapsed, if (v[0] == DrawProtocol.SCREEN) y else 0),
+                    v[1], v[2], bind(c.dx, elapsed, x), bind(c.dy, elapsed, y), depth = depth + c.depth)
                 else -> error("Unsupported frame display-list opcode")
             }
         }
@@ -115,11 +116,12 @@ class FrameDisplayList private constructor(
                         Command(op, d, intArrayOf(id, xx, yy, options))
                     }
                     DRAW_OP_RECT_COPY -> {
-                        val id = resource(); val sx = r.readS16(); val sy = r.readS16()
-                        val w = r.readU16(); val h = r.readU16(); val dx = r.readS16(); val dy = r.readS16()
+                        val id = resource(); val sx = value(); val sy = value()
+                        val w = r.readU16(); val h = r.readU16(); val dx = value(); val dy = value()
                         require(w in 1..640 && h in 1..480)
-                        require(id == DrawProtocol.SCREEN || sx >= 0 && sy >= 0)
-                        Command(op, d, intArrayOf(id, sx, sy, w, h, dx, dy))
+                        // Relative SCREEN sources may be negative until placement is added.
+                        require(id == DrawProtocol.SCREEN || listOf(sx, sy).all { it !is DrawValue.Integer || it.value >= 0 })
+                        Command(op, d, intArrayOf(id, w, h), sx, sy, dx, dy)
                     }
                     else -> error("Unsupported frame display-list opcode")
                 }

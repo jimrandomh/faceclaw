@@ -5,7 +5,8 @@ import kotlin.test.*
 class FrameDisplayListTest {
     // Golden records emitted by display-list-authoring.test.cjs.
     private val menu = "077e0000000300020002000200022a00000096000000010002000200ffffffff0200080000ff24017e30020000000001812c8001812c1611010017328001812c16103001812c3023414031ff24017c30020000000001812c8001812c1611010017328001812c16103001812c302341403102000200010001030400000000000000001f"
-    private val multi = "074c000000030002000400010002000000000000000002000200010000ff010001006003000400000000000000001f020000010000000000010001000200000002feffffffffff000001000100ffff0000"
+    private val multi = "0744000000030002000400010002000000000000000002000200010000ff010001006003000400000000000000001f0200000100000001000100020002feffffff7f00010001007f00"
+    private val scroll = "0787000000030002000400020000070000009600000001000200040011223344556677880200020000000000ff220100300102300180f0800180f0161101001732800180f01610300180f0302341403102000200010008000000ff280101300100300180f0800180f0161101001732800180f01610300180f030234140310100170100160400020000000103"
     private fun hex(s: String) = s.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
     private fun read(bytes: ByteArray, now: Long = 1150): FrameDisplayList {
         val reader = ArrayByteReader(bytes)
@@ -34,6 +35,25 @@ class FrameDisplayListTest {
         assertEquals(read(hex(menu)).fingerprint, read(later).fingerprint)
         val other = hex(menu).also { it[14] = 43 } // timeline token
         assertNotEquals(read(hex(menu)).fingerprint, read(other).fingerprint)
+    }
+
+    @Test fun animatedCopySourcesRebindOnPresentAndDestinationsTranslate() {
+        // Emitted by menu-scroll-animation.test.cjs: a menu strip scrolling from row 0 to row 2.
+        val list = read(hex(scroll)).translated(10, 10)
+        fun copy(elapsed: Long): List<Int> {
+            val call = DrawReader(list.calls(intArrayOf(5), 1150).first())
+            assertEquals(DRAW_OP_RECT_COPY, call.readU8())
+            assertEquals(DRAW_FLAG_DEPTH, call.readU8())
+            assertEquals(0, call.readS8())
+            val frame = DrawEvaluation(elapsed)
+            val values = listOf(call.readU16(), ExtendedVarint.evaluate(call, frame), ExtendedVarint.evaluate(call, frame),
+                call.readU16(), call.readU16(), ExtendedVarint.evaluate(call, frame), ExtendedVarint.evaluate(call, frame))
+            call.requireDone()
+            return values + if (frame.animationPending) 1 else 0
+        }
+        // 150 of 240 ms elapsed before this PRESENT; the source row is not translated with the surface.
+        assertEquals(listOf(5, 0, 1, 2, 2, 14, 12, 1), copy(0))
+        assertEquals(listOf(5, 0, 2, 2, 2, 14, 12, 0), copy(90))
     }
 
     @Test fun localResourceIdsAreResolvedAndScreenCopiesStayAtScreenDepth() {

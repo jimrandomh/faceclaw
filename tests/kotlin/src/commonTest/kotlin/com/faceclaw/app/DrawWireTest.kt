@@ -5,13 +5,13 @@ import kotlin.test.*
 class DrawWireTest {
     private fun hex(value: String) = value.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
 
-    @Test fun encodersUseRevision28CoordinatesAndPreserveOtherWireBytes() {
+    @Test fun encodersUseRevision29CoordinatesAndPreserveOtherWireBytes() {
         // Literal vectors pin the firmware grammar independently of the reader.
         val calls = listOf(
             DrawProtocol.image(0x1234, -32768, 32767, 0x1f, target = 511, depth = -128) to
                 "0403ff018034120080ff7f1f",
             DrawProtocol.rectCopy(DrawProtocol.CURRENT, 1, 2, 3, 4, -5, -6) to
-                "0200feff0100020003000400fbfffaff",
+                "0200feff0102030004007b7a",
             DrawProtocol.stockText(-1, 2, 15, hex("41c3a9")) to "0300ffff02000f0341c3a9",
             DrawProtocol.text(511, -2, 3, 31, hex("01417f")) to "0500ff01feff03001f0301417f",
             DrawProtocol.playList(511, depth = 127) to "07027fff01",
@@ -29,11 +29,11 @@ class DrawWireTest {
         assertContentEquals(hex("1bffff"), DrawProtocol.root(DrawProtocol.SCREEN))
         val flat = DrawProtocol.screenCopy(640, 352)
         assertEquals(1, flat.size)
-        assertContentEquals(hex("0200ffff000000008002600100000000"), flat[0])
+        assertContentEquals(hex("0200ffff0000800260010000"), flat[0])
         val shifted = DrawProtocol.screenCopy(640, 352, -32)
         assertEquals(2, shifted.size)
         assertContentEquals(hex("090000"), shifted[0])
-        assertContentEquals(hex("0202e0ffff000000008002600100000000"), shifted[1])
+        assertContentEquals(hex("0202e0ffff0000800260010000"), shifted[1])
     }
 
     @Test fun optimizerFieldsAreReencodedAndOpaqueBytesArePreserved() {
@@ -43,7 +43,7 @@ class DrawWireTest {
             "0fffff02001f0341c3a9" to "0300ffff02001f0341c3a9",
             "030001020134120f10" to "010000000102010f10",
             "060f10" to "01000100000000080002000f10",
-            "090100020003000400fbfffaff" to "0200feff0100020003000400fbfffaff",
+            "090100020003000400fbfffaff" to "0200feff0102030004007b7a",
         )
         for ((record, expected) in records) {
             val calls = DrawProtocol.fromOptimized(hex(record), 8, 2)

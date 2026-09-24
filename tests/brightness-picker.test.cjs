@@ -27,11 +27,11 @@ const layers = load('app/ui/layers.ts', {
   '../native/frame-timings': { spanCurrent: (_name, paint) => paint() },
 });
 const menu = load('app/ui/menu.ts', {
-  './menu-highlight-motion': require('../.test-build/app/ui/menu-highlight-motion.js'),
+  './menu-highlight-motion': require('../.test-build/app/ui/menu-highlight-motion.js'), '../graphics/menu-scroll-list': require('../.test-build/app/graphics/menu-scroll-list.js'), './menu-scroll-motion': require('../.test-build/app/ui/menu-scroll-motion.js'),
   '../graphics/image': graphics, '../graphics/ui-fonts': fonts, '../graphics/textwrap': textwrap,
   '../util/numeric-util': numeric, './gestures': gestures, './metrics': load('app/ui/metrics.ts'),
   './menu-core': load('app/ui/menu-core.ts', {
-    '../graphics/image': graphics, './menu-highlight-motion': require('../.test-build/app/ui/menu-highlight-motion.js'),
+    '../graphics/image': graphics, './menu-highlight-motion': require('../.test-build/app/ui/menu-highlight-motion.js'), '../graphics/menu-scroll-list': require('../.test-build/app/graphics/menu-scroll-list.js'), './menu-scroll-motion': require('../.test-build/app/ui/menu-scroll-motion.js'),
   }),
 });
 

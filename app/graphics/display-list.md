@@ -32,10 +32,12 @@ Supported calls in this first pass:
 - `IMAGE`: a local resource index, integer `x`/`y`, and `transparent`. Transparent
   images skip pixels quantized to zero. Resources have `width`, `height`, and
   gray8 `pixels`; a baked `GrayImage` can be used directly.
-- `RECT_COPY`: a local resource index, integer source rectangle and destination
-  `dx`/`dy`. `SCREEN` reads the uncomposed frame; its source coordinates are also
-  relative to this list's placement. Each call may add its own `depth` to the
-  list's depth. A screen restore normally uses the negative of the list depth.
+- `RECT_COPY`: a local resource index, source rectangle and destination
+  `dx`/`dy`. Source x/y and `dx`/`dy` accept expressions (revision 29); the
+  source rectangle must stay inside the source at every time, or firmware
+  rejects the list. `SCREEN` reads the uncomposed frame; its source coordinates
+  are also relative to this list's placement. Each call may add its own `depth`
+  to the list's depth. A screen restore normally uses the negative of the list depth.
 
 Kotlin allocates/cache-pins all image resources, resolves the local indices, applies
 surface placement, and includes the calls in the root firmware display list. The
@@ -48,7 +50,9 @@ the current firmware protocol; no firmware update is needed for this bridge chan
 integer remainder, negation, explicit conversions, lerp, and the easing functions
 in `ExprOp`. `ease()` defaults to smoothstep. Integers wrap at 32 bits; float
 operations round to f32. The firmware's existing stack/error semantics apply.
-Only rounded-rectangle x/y accept expressions in this first pass.
+Rounded-rectangle x/y and rect-copy source/destination coordinates accept
+expressions. `E.progress(duration, delay)` stays 0 for the first `delay` ms of
+the timeline, so one list can run motions that started at different times.
 
 `maximum.time()` returns `min(milliseconds since PRESENT, maximum)`. The existing
 45 ms repaint timer remains active while this is below maximum. `E.elapsed()` is
@@ -64,7 +68,8 @@ exclude the changing elapsed duration. Without a timeline, raw `time()` expressi
 start at each PRESENT. Native compilation strips the bridge-only elapsed opcode.
 
 `menu-selection-list.ts` authors both the rounded highlight and the transparent row
-image using this API. Navigation eligibility, duration, and easing remain in
+image using this API. `menu-scroll-list.ts` authors a menu scroll: a viewport-sized
+copy from a strip resource whose source y animates, then the highlight. Navigation eligibility, duration, and easing remain in
 TypeScript. There is no animated-menu tag or menu animation policy in Kotlin.
 
 ## Bridge framing
@@ -73,8 +78,8 @@ Tag 7 is followed by a little-endian u32 byte length and a bounded body:
 placement (i16 x/y, u16 width/height, i8 depth), timeline (u32 token/elapsed),
 u16 resource count, gray8 images (u16 width/height followed by pixels), u16 call
 count, then calls. Calls start with the firmware opcode and an i16 relative depth;
-operands otherwise use their fixed-width fields, except rounded x/y which use
-extended varints. Expressions use the firmware bytecode plus bridge-only
+operands otherwise use their fixed-width fields, except rounded x/y and rect-copy
+x/y/dx/dy which use extended varints. Expressions use the firmware bytecode plus bridge-only
 `ELAPSED = 128`. Resource indices are local to this record, never firmware IDs.
 Rect-copy source x/y are signed here to permit relative SCREEN coordinates.
 

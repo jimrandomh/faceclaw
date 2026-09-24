@@ -11,8 +11,15 @@ function stringMenu(overrides = {}) {
   const menu = new Menu({
     items: ['a', 'b', 'c', 'd', 'e'],
     getHeight: () => 20,
-    draw: (args) => drawn.push({ item: args.item, x: args.x, y: args.y, width: args.width, height: args.height,
-      selected: args.selected, focused: args.focused, scratch: args.image !== drawn.image }),
+    draw: (args) => {
+      // A scroll animation also draws rows into a strip taller than one row; only
+      // the frame's rows are recorded. A strip's selected row uses a row scratch
+      // like the static one, and an empty strip falls back to the static paint,
+      // so paint() keeps one draw per row.
+      if (args.image !== drawn.image && args.image.height !== args.height) return;
+      drawn.push({ item: args.item, index: args.index, x: args.x, y: args.y, width: args.width, height: args.height,
+        selected: args.selected, focused: args.focused, scratch: args.image !== drawn.image });
+    },
     onSelect: (item, index) => selected.push({ item, index }),
     onExitTop: () => exits.top++,
     onExitBottom: () => exits.bottom++,
@@ -23,7 +30,8 @@ function stringMenu(overrides = {}) {
   const paint = (focused = true, box = { x: 10, y: 5, width: 80, height: 60 }) => {
     drawn.length = 0;
     menu.paint(image, box, focused);
-    return drawn.slice();
+    const rows = new Map(drawn.map((row) => [row.index, row]));
+    return [...rows.values()].sort((a, b) => a.index - b.index);
   };
   return { menu, paint, drawn, exits, selected, image };
 }
@@ -49,14 +57,16 @@ test('rowGap shrinks the drawable box without changing the pitch', () => {
   assert.deepEqual(rows.map((r) => r.y), [0, 25, 45]);
 });
 
-test('scrolling keeps the selection visible and aligns the viewport to a row top', async () => {
+test('scrolling keeps the selection and its neighbors visible and aligns the viewport to a row top', async () => {
   const { menu, paint } = stringMenu();
   await menu.handleInput({ type: 'scroll-down' });
+  assert.deepEqual(paint().map((r) => r.item), ['a', 'b', 'c'], 'b and both neighbors already fit');
   await menu.handleInput({ type: 'scroll-down' });
+  assert.deepEqual(paint().map((r) => r.item), ['b', 'c', 'd'], 'c reveals d below it');
   await menu.handleInput({ type: 'scroll-down' });
   assert.equal(menu.selectedIndex, 3);
-  assert.deepEqual(paint().map((r) => r.item), ['b', 'c', 'd']);
-  assert.equal(menu.scrollTop, 20);
+  assert.deepEqual(paint().map((r) => r.item), ['c', 'd', 'e']);
+  assert.equal(menu.scrollTop, 40);
   await menu.handleInput({ type: 'scroll-up' });
   await menu.handleInput({ type: 'scroll-up' });
   await menu.handleInput({ type: 'scroll-up' });
@@ -144,14 +154,14 @@ test('setItems keeps the index by default, takes an explicit one, and holds the 
   const { menu, paint } = stringMenu();
   menu.select(3);
   paint();
-  assert.equal(menu.scrollTop, 20, 'row d sits at the bottom of the viewport');
+  assert.equal(menu.scrollTop, 40, 'row d sits above its neighbor e at the bottom of the viewport');
   menu.setItems(['x', 'y', 'z', 'd2', 'e2', 'f2', 'g2']);
   assert.equal(menu.selectedIndex, 3);
-  assert.equal(menu.scrollTop, 20);
+  assert.equal(menu.scrollTop, 40);
   menu.setItems(['x', 'y', 'z', 'w', 'v', 'u', 'd3'], 6);
   assert.equal(menu.selectedIndex, 6);
   paint();
-  assert.equal(menu.scrollTop, 80, 'row d3 (top 120) stays 40 px below the viewport top');
+  assert.equal(menu.scrollTop, 80, 'row d3 (top 120) stays at the bottom, 40 px below the viewport top');
   menu.setItems(['only'], null);
   assert.equal(menu.selectedIndex, null);
   menu.setItems(['p', 'q'], 9);
@@ -274,14 +284,14 @@ test('setItems never leaves the viewport scrolled past the end of the list', () 
   menu.setItems(['a', 'b', 'c'], 2);
   assert.deepEqual(paint().map((r) => r.item), ['a', 'b', 'c'], 'a row sorted in above stays visible');
   assert.equal(menu.scrollTop, 0);
-  // The selected row at the top of a scrolled viewport loses the rows below it:
+  // The selected row near the top of a scrolled viewport loses the rows below it:
   // keeping its on-screen position would leave a gap, so pull back to show the end.
   const long = stringMenu({ items: ['a', 'b', 'c', 'd', 'e', 'f', 'g'] });
   long.menu.select(6);
   long.paint();
   long.menu.select(4);
   long.paint();
-  assert.equal(long.menu.scrollTop, 80, 'e is the top row');
+  assert.equal(long.menu.scrollTop, 60, 'd, above e, is the top row');
   long.menu.setItems(['a', 'b', 'c', 'd', 'e'], 4);
   assert.deepEqual(long.paint().map((r) => r.item), ['c', 'd', 'e']);
   assert.equal(long.menu.scrollTop, 40);

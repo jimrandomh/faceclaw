@@ -59,12 +59,17 @@ export class DrawExpression<T extends 'i32' | 'f32'> {
   }
   /** Time already elapsed on this list's timeline when the next PRESENT happens. */
   static elapsed(): DrawExpression<'i32'> { return new DrawExpression('i32', [ExprOp.ELAPSED]); }
-  /** A 0..1 timeline fraction that survives subsequent PRESENT clock resets. */
-  static progress(durationMs: number): DrawExpression<'f32'> {
+  /**
+   * A 0..1 timeline fraction that survives subsequent PRESENT clock resets.
+   * With a delay, it stays 0 for the first delayMs of the timeline.
+   */
+  static progress(durationMs: number, delayMs = 0): DrawExpression<'f32'> {
     const duration = DrawExpression.i32(integer(durationMs, 1, 2147483647));
-    const elapsed = DrawExpression.elapsed().min(duration);
-    return duration.sub(elapsed).max(DrawExpression.i32(0)).time()
-      .add(elapsed).toFloat().div(duration.toFloat());
+    const end = DrawExpression.i32(integer(delayMs + durationMs, 1, 2147483647));
+    const elapsed = DrawExpression.elapsed().min(end);
+    let total = end.sub(elapsed).max(DrawExpression.i32(0)).time().add(elapsed);
+    if (delayMs) total = total.sub(DrawExpression.i32(delayMs)).max(DrawExpression.i32(0));
+    return total.toFloat().div(duration.toFloat());
   }
   static decode(code: Uint8Array): DrawExpression<'i32'> { return new DrawExpression('i32', Array.from(code)); }
   private binary(other: DrawExpression<T>, i: number, f: number): DrawExpression<T> {

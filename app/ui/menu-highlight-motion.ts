@@ -3,6 +3,11 @@ export type MenuHighlightAnimation = { dx: number; dy: number; startedAt: number
 
 let nextToken = 1;
 
+/** A fresh display-list timeline token, shared by all menu animations. */
+export function nextAnimationToken(): number {
+  return nextToken++;
+}
+
 /** Eligibility is decided by menu navigation, before the display-list bridge. */
 export class MenuHighlightMotion {
   private previous?: { index: number; scroll: number; x: number; y: number; width: number; height: number };
@@ -13,7 +18,8 @@ export class MenuHighlightMotion {
     this.fromIndex = wrapped ? null : from;
   }
 
-  paint(index: number, scroll: number, x: number, y: number, width: number, height: number, now: number): MenuHighlightAnimation | undefined {
+  /** `scrolling`: the scroll change since the last paint is itself animated, so the highlight may slide across it. */
+  paint(index: number, scroll: number, x: number, y: number, width: number, height: number, now: number, scrolling = false): MenuHighlightAnimation | undefined {
     const previous = this.previous;
     if (!previous || previous.index !== index || previous.scroll !== scroll ||
         previous.x !== x || previous.y !== y || previous.width !== width || previous.height !== height) {
@@ -25,8 +31,8 @@ export class MenuHighlightMotion {
         fromY += this.animation.dy * remaining;
       }
       const eligible = previous && previous.index !== index && this.fromIndex === previous.index &&
-        previous.scroll === scroll && previous.width === width && previous.height === height;
-      this.animation = eligible ? { dx: Math.round(fromX - x), dy: Math.round(fromY - y), startedAt: now, token: nextToken++, durationMs: MENU_HIGHLIGHT_DURATION_MS } : undefined;
+        (previous.scroll === scroll || scrolling) && previous.width === width && previous.height === height;
+      this.animation = eligible ? { dx: Math.round(fromX - x), dy: Math.round(fromY - y), startedAt: now, token: nextAnimationToken(), durationMs: MENU_HIGHLIGHT_DURATION_MS } : undefined;
       this.fromIndex = null;
       this.previous = { index, scroll, x, y, width, height };
     }

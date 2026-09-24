@@ -8,7 +8,7 @@ export type ListImage = { readonly width: number; readonly height: number; reado
 export type ListCall = (
   | { op: typeof DrawOp.ROUNDED_RECT; x: DrawValue; y: DrawValue; width: number; height: number; radius: number; background: number; border: number }
   | { op: typeof DrawOp.IMAGE; resource: number; x: number; y: number; transparent: boolean }
-  | { op: typeof DrawOp.RECT_COPY; resource: number; x: number; y: number; width: number; height: number; dx: number; dy: number }
+  | { op: typeof DrawOp.RECT_COPY; resource: number; x: DrawValue; y: DrawValue; width: number; height: number; dx: DrawValue; dy: DrawValue }
 ) & { depth?: number };
 export type DisplayList = {
   readonly resources: readonly ListImage[];
@@ -53,12 +53,13 @@ export function encodeDisplayList(placed: PlacedDisplayList, now = Date.now()): 
       out.u8(integer(call.background, 0, 15)); out.u8(integer(call.border, 0, 16));
     } else {
       if (call.resource !== SCREEN) integer(call.resource, 0, list.resources.length - 1);
-      if (call.op === DrawOp.RECT_COPY && call.resource !== SCREEN && (call.x < 0 || call.y < 0)) throw new Error('Negative image source coordinate');
+      if (call.op === DrawOp.RECT_COPY && call.resource !== SCREEN && [call.x, call.y].some(v => typeof v === 'number' && v < 0)) throw new Error('Negative image source coordinate');
       if (call.op === DrawOp.IMAGE && call.resource === SCREEN) throw new Error('Use rectCopy to read SCREEN');
       out.u16(call.resource);
       if (call.op === DrawOp.IMAGE) { out.i16(call.x); out.i16(call.y); out.u8(call.transparent ? 31 : 15); }
       else {
-        out.i16(call.x); out.i16(call.y); out.u16(integer(call.width, 1, 640)); out.u16(integer(call.height, 1, 480)); out.i16(call.dx); out.i16(call.dy);
+        out.raw(encodeValue(call.x)); out.raw(encodeValue(call.y)); out.u16(integer(call.width, 1, 640)); out.u16(integer(call.height, 1, 480));
+        out.raw(encodeValue(call.dx)); out.raw(encodeValue(call.dy));
       }
     }
   }
@@ -81,7 +82,7 @@ export function readDisplayList(bytes: Uint8Array, offset: number, now = Date.no
     const op = r.u8(), depth = r.i16();
     if (op === DrawOp.ROUNDED_RECT) calls.push({ op, depth, x: readValue(r), y: readValue(r), width: r.u16(), height: r.u16(), radius: r.u16(), background: r.u8(), border: r.u8() });
     else if (op === DrawOp.IMAGE) calls.push({ op, depth, resource: r.u16(), x: r.i16(), y: r.i16(), transparent: (r.u8() & 16) !== 0 });
-    else if (op === DrawOp.RECT_COPY) calls.push({ op, depth, resource: r.u16(), x: r.i16(), y: r.i16(), width: r.u16(), height: r.u16(), dx: r.i16(), dy: r.i16() });
+    else if (op === DrawOp.RECT_COPY) calls.push({ op, depth, resource: r.u16(), x: readValue(r), y: readValue(r), width: r.u16(), height: r.u16(), dx: readValue(r), dy: readValue(r) });
     else throw new Error('Unsupported display-list call');
   }
   if (r.offset !== length) throw new Error('Trailing display-list bytes');
@@ -121,8 +122,9 @@ export function paintDisplayList(output: Uint8Array, screen: Uint8Array, width: 
     } else {
       const source = c.resource === SCREEN ? { width, height, pixels: screen } : placed.displayList.resources[c.resource];
       const w = c.op === DrawOp.IMAGE ? source.width : c.width, h = c.op === DrawOp.IMAGE ? source.height : c.height;
-      const sx = c.op === DrawOp.IMAGE ? 0 : c.x + (c.resource === SCREEN ? placed.x : 0), sy = c.op === DrawOp.IMAGE ? 0 : c.y + (c.resource === SCREEN ? placed.y : 0);
-      const x = placed.x + (c.op === DrawOp.IMAGE ? c.x : c.dx) + shift, y = placed.y + (c.op === DrawOp.IMAGE ? c.y : c.dy);
+      const at = (v: DrawValue) => evaluate(v, elapsed, presentTime).value;
+      const sx = c.op === DrawOp.IMAGE ? 0 : at(c.x) + (c.resource === SCREEN ? placed.x : 0), sy = c.op === DrawOp.IMAGE ? 0 : at(c.y) + (c.resource === SCREEN ? placed.y : 0);
+      const x = placed.x + (c.op === DrawOp.IMAGE ? c.x : at(c.dx)) + shift, y = placed.y + (c.op === DrawOp.IMAGE ? c.y : at(c.dy));
       for (let yy = 0; yy < h; yy++) for (let xx = 0; xx < w; xx++) {
         if (x + xx < 0 || y + yy < 0 || x + xx >= width || y + yy >= height || sx + xx < 0 || sy + yy < 0 || sx + xx >= source.width || sy + yy >= source.height) continue;
         const v = q(source.pixels[(sy + yy) * source.width + sx + xx]);

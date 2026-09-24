@@ -1,6 +1,8 @@
 import { GrayImage } from "../graphics/image";
+import { menuScrollList, type MenuScrollHighlight } from "../graphics/menu-scroll-list";
 import type { InputEvent } from "./gestures";
 import { MenuHighlightMotion } from "./menu-highlight-motion";
+import { MenuScrollMotion, type MenuScrollAnimation } from "./menu-scroll-motion";
 
 /** Selected-row fill while the menu owns input; the outline alone marks an unfocused menu's selection. */
 export const MENU_HIGHLIGHT_FILL = 15;
@@ -9,6 +11,8 @@ const SCROLLBAR_TRACK_VALUE = 30;
 const SCROLLBAR_THUMB_VALUE = 120;
 const SCROLLBAR_WIDTH = 3;
 const SCROLLBAR_MIN_THUMB = 8;
+/** Largest packed scroll strip, in bytes: the firmware's per-resource limit. */
+const MAX_SCROLL_STRIP_BYTES = 65536;
 
 /** A rectangle in image coordinates. */
 export type MenuBox = { x: number; y: number; width: number; height: number };
@@ -17,8 +21,9 @@ export type MenuDrawArgs<T> = {
   /**
    * Draw into this image, inside the (x, y, width, height) rect. For the
    * selected row this is a scratch image exactly the rect's size (so x and y
-   * are 0), replayed over the highlight. Never draw relative to image.width
-   * or image.height, and never outside the rect.
+   * are 0), replayed over the highlight. While a scroll animates, rows are
+   * also drawn into a strip image covering both viewports. Never draw
+   * relative to image.width or image.height, and never outside the rect.
    */
   image: GrayImage;
   item: T;
@@ -73,9 +78,16 @@ type MenuLayout = { tops: number[]; heights: number[]; total: number };
  *
  * Rows may vary in height and some may be unselectable; navigation skips
  * those. Scrolling is pixel-based: the viewport moves the minimum needed to
- * keep the selection fully visible, then aligns to a row top so the list
- * never starts with a partially visible row. Rows that don't fully fit at
- * the bottom are not drawn.
+ * keep the selection and its neighbors fully visible (just the selection
+ * when they don't all fit), then aligns to a row top so the list never
+ * starts with a partially visible row. Rows that don't fully fit at the
+ * bottom are not drawn.
+ *
+ * Navigation that scrolls (without wrapping) animates on the glasses: the
+ * rows visible before and after are drawn into one strip, and a display list
+ * slides a viewport-sized copy of it while the highlight moves on the same
+ * timeline. When the strip would be too large or the menu doesn't fit the
+ * assumptions below (see scrollStrip), the scroll snaps instead.
  */
 export class Menu<T> {
   private itemList: readonly T[];
@@ -89,6 +101,7 @@ export class Menu<T> {
   private scrollY = 0;
   private lastBox: MenuBox | null = null;
   private readonly motion = new MenuHighlightMotion();
+  private readonly scrollMotion = new MenuScrollMotion();
 
   constructor(private readonly options: MenuOptions<T>) {
     this.itemList = options.items ?? [];
@@ -162,6 +175,7 @@ export class Menu<T> {
     const next = this.nextSelectable(from, delta);
     if (next !== null) {
       if (from !== null) this.motion.navigate(from, false);
+      this.scrollMotion.navigate(false);
       this.selected = next;
       this.deselected = false;
       return;
@@ -171,6 +185,7 @@ export class Menu<T> {
       const wrapped = this.nextSelectable(null, delta);
       if (wrapped !== null && wrapped !== from) {
         if (from !== null) this.motion.navigate(from, true);
+        this.scrollMotion.navigate(true);
         this.selected = wrapped;
         this.deselected = false;
       } else if (from === null && this.lastBox) {
@@ -225,8 +240,13 @@ export class Menu<T> {
     this.reconcile();
     const layout = this.layout(box.width);
     this.ensureVisible(layout, box.height);
+    const now = Date.now();
+    const scroll = this.scrollMotion.paint(this.scrollY, box, now);
+    const strip = scroll ? this.scrollStrip(image, layout, box, focused, scroll) : null;
+    if (scroll && !strip) this.scrollMotion.cancel();
     const gap = this.options.rowGap ?? 0;
     const highlight = this.options.highlight;
+    let scrollHighlight: MenuScrollHighlight | undefined;
     for (let index = 0; index < this.itemList.length; index++) {
       const top = layout.tops[index]! - this.scrollY;
       const height = layout.heights[index]! - gap;
@@ -238,14 +258,27 @@ export class Menu<T> {
       const rowY = box.y + top;
       const item = this.itemList[index]!;
       if (selected && highlight !== false) {
+        const animation = this.motion.paint(index, this.scrollY, box.x, rowY, box.width, height, now, !!strip);
+        const background = focused ? MENU_HIGHLIGHT_FILL : 0;
+        if (strip) {
+          // The strip already holds this row's content; only the box is drawn over it.
+          scrollHighlight = { y: top, width: box.width, height, radius: highlight?.radius ?? 8,
+            background, border: MENU_HIGHLIGHT_STROKE, animation };
+          continue;
+        }
         const row = new GrayImage(box.width, height, 0);
         this.options.draw({ image: row, item, index, x: 0, y: 0, width: box.width, height, selected, focused });
-        const animation = this.motion.paint(index, this.scrollY, box.x, rowY, box.width, height, Date.now());
-        image.drawMenuSelection(row, box.x, rowY, focused ? MENU_HIGHLIGHT_FILL : 0, MENU_HIGHLIGHT_STROKE,
+        image.drawMenuSelection(row, box.x, rowY, background, MENU_HIGHLIGHT_STROKE,
           highlight?.radius ?? 8, highlight?.depth ?? 0, animation);
       } else {
         this.options.draw({ image, item, index, x: box.x, y: rowY, width: box.width, height, selected, focused });
       }
+    }
+    // The rows painted above stay underneath: once the animation ends, the
+    // strip's final frame and the static paint are pixel-identical.
+    if (strip && scroll) {
+      image.drawDisplayList(menuScrollList(strip.image, strip.x, strip.top, box.height, scroll, scrollHighlight),
+        box.x, box.y, box.width, box.height, 0);
     }
   }
 
@@ -260,6 +293,65 @@ export class Menu<T> {
     const fraction = Math.min(1, Math.max(0, this.scrollY) / maxScroll);
     image.fillRect(x, y, SCROLLBAR_WIDTH, height, SCROLLBAR_TRACK_VALUE);
     image.fillRect(x, y + (((height - thumbHeight) * fraction) | 0), SCROLLBAR_WIDTH, thumbHeight, SCROLLBAR_THUMB_VALUE);
+  }
+
+  /**
+   * Render every row visible at either end of the scroll into one strip, or
+   * return null to snap. Its final frame must match the static paint, so
+   * rows the static paint hides (partial ones at the bottom) are left out of
+   * the part the new viewport shows. The strip copy is opaque, so this also
+   * requires a black background under the menu, a selected row that fits,
+   * and a highlight at the menu's own depth.
+   */
+  private scrollStrip(image: GrayImage, layout: MenuLayout, box: MenuBox, focused: boolean,
+      scroll: MenuScrollAnimation): { image: GrayImage; x: number; top: number } | null {
+    const highlight = this.options.highlight;
+    if (highlight !== false && (highlight?.depth ?? 0) !== 0) return null;
+    const gap = this.options.rowGap ?? 0;
+    const selected = this.selected;
+    if (selected !== null && layout.tops[selected]! + layout.heights[selected]! - gap - scroll.to > box.height) return null;
+    const top = Math.min(scroll.from, scroll.to);
+    const bottom = Math.max(scroll.from, scroll.to) + box.height;
+    const strip = new GrayImage(box.width, bottom - top, 0);
+    for (let index = 0; index < this.itemList.length; index++) {
+      const rowTop = layout.tops[index]!;
+      const height = layout.heights[index]! - gap;
+      const rowBottom = rowTop + height;
+      const shownAfter = rowTop >= scroll.to && rowBottom <= scroll.to + box.height;
+      const outsideAfter = rowBottom <= scroll.to || rowTop >= scroll.to + box.height;
+      if (!shownAfter && !(outsideAfter && rowTop >= top && rowBottom <= bottom)) continue;
+      const item = this.itemList[index]!;
+      const y = rowTop - top;
+      const isSelected = index === selected;
+      if (isSelected && highlight !== false) {
+        // Clip like the static selected row, which is drawn in a scratch image.
+        const row = new GrayImage(box.width, height, 0);
+        this.options.draw({ image: row, item, index, x: 0, y: 0, width: box.width, height, selected: true, focused });
+        strip.bitBlt(row.withDrawsBaked(), 0, y, { transparentZero: true });
+      } else {
+        this.options.draw({ image: strip, item, index, x: 0, y, width: box.width, height, selected: isSelected, focused });
+      }
+    }
+    // Crop to the columns with ink; the static paint shows the rest unchanged.
+    const baked = strip.withDrawsBaked();
+    let left = baked.width, right = -1;
+    for (let y = 0; y < baked.height; y++) {
+      const row = y * baked.width;
+      for (let x = 0; x < left; x++) if (baked.pixels[row + x]! >= 8) { left = x; break; }
+      for (let x = baked.width - 1; x > right; x--) if (baked.pixels[row + x]! >= 8) { right = x; break; }
+    }
+    if (right < left) return null;
+    const width = right - left + 1;
+    if (5 + Math.ceil(width / 2) * baked.height > MAX_SCROLL_STRIP_BYTES) return null;
+    // Whatever the host drew under the copied columns would be covered.
+    for (let y = box.y; y < box.y + box.height; y++) {
+      for (let x = box.x + left; x <= box.x + right; x++) {
+        if (x >= 0 && y >= 0 && x < image.width && y < image.height && image.pixels[y * image.width + x]! >= 8) return null;
+      }
+    }
+    const cropped = new GrayImage(width, baked.height, 0);
+    cropped.bitBlt(baked, -left, 0);
+    return { image: cropped, x: left, top };
   }
 
   private isSelectable(index: number): boolean {
@@ -319,17 +411,27 @@ export class Menu<T> {
       this.scrollY = Math.max(0, Math.min(this.maxScroll(layout, viewportHeight), this.scrollY));
       return;
     }
-    const top = layout.tops[this.selected]!;
-    const bottom = top + layout.heights[this.selected]! - (this.options.rowGap ?? 0);
+    const gap = this.options.rowGap ?? 0;
+    const selected = this.selected;
+    const top = layout.tops[selected]!;
+    const bottom = top + layout.heights[selected]! - gap;
+    // Keep the neighbors in view too when all three fit, so the user sees
+    // what the next step will reach.
+    const contextTop = selected > 0 ? layout.tops[selected - 1]! : top;
+    const contextBottom = selected + 1 < this.itemList.length
+      ? layout.tops[selected + 1]! + layout.heights[selected + 1]! - gap : bottom;
+    const fits = contextBottom - contextTop <= viewportHeight;
+    const wantTop = fits ? contextTop : top;
+    const wantBottom = fits ? contextBottom : bottom;
     let target = this.scrollY;
-    if (top < target) {
-      target = top;
-    } else if (bottom > target + viewportHeight) {
+    if (wantTop < target) {
+      target = wantTop;
+    } else if (wantBottom > target + viewportHeight) {
       // A row taller than the viewport shows from its top.
-      target = Math.min(top, bottom - viewportHeight);
-      // Snap to the first row that starts inside the viewport: the selected
-      // row still fits (its bottom is within viewportHeight of that top).
-      for (let index = 0; index <= this.selected; index++) {
+      target = Math.min(top, wantBottom - viewportHeight);
+      // Snap to the first row that starts inside the viewport: the wanted
+      // rows still fit (their bottom is within viewportHeight of that top).
+      for (let index = 0; index <= selected; index++) {
         if (layout.tops[index]! >= target) {
           target = layout.tops[index]!;
           break;

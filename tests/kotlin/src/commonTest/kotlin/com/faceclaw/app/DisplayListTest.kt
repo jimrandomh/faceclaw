@@ -90,9 +90,20 @@ class DisplayListTest {
     }
     @Test fun graphValidationPrecedesMutationAndCopyPreservesOverlap() {
         val screen=hex("12345678"); val target=DisplayListRenderer.Target(screen,8,1)
-        val copy=DrawProtocol.call(DRAW_OP_RECT_COPY,hex("feff000000000600010002000000"))
+        val copy=DrawProtocol.call(DRAW_OP_RECT_COPY,hex("feff0000060001000200"))
         DisplayListRenderer(emptyMap()).execute(DrawProtocol.sequence(listOf(copy)),target)
         assertContentEquals(hex("12123456"),screen)
+        // Revision 29: an animated source row scrolls a raw strip; source bounds are checked each frame.
+        val strip=mapOf(9 to DrawProtocol.rawImage(2,4,hex("11223344")))
+        val scroll=DrawProtocol.rectCopy(9,DrawValue.Integer(0),DrawValue.animate(0,2,100),2,2,DrawValue.Integer(0),DrawValue.Integer(0))
+        for ((elapsed,rows) in listOf(0L to "1122",100L to "3344",500L to "3344")) {
+            val window=DisplayListRenderer.Target(ByteArray(2),2,2)
+            val renderer=DisplayListRenderer(strip)
+            renderer.execute(DrawProtocol.sequence(listOf(scroll)),window,elapsedMs=elapsed)
+            assertContentEquals(hex(rows),window.bytes); assertEquals(elapsed<100,renderer.animationPending)
+        }
+        val past=DrawProtocol.rectCopy(9,0,3,2,2,0,0)
+        assertFails { DisplayListRenderer(strip).execute(DrawProtocol.sequence(listOf(past)),DisplayListRenderer.Target(ByteArray(2),2,2)) }
         val valid=DrawProtocol.bbox(hex("ffffffff"),4,0,0,8,1)
         assertFails { DisplayListRenderer(emptyMap()).execute(DrawProtocol.sequence(listOf(valid,byteArrayOf(99,0))),target) }
         assertContentEquals(hex("12123456"),screen)

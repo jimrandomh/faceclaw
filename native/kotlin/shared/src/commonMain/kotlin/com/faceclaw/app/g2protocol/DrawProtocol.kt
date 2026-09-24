@@ -1,6 +1,6 @@
 package com.faceclaw.app
 
-/** Revision 28 wire grammar, shared by scene planning and the local renderer. */
+/** Revision 29 wire grammar, shared by scene planning and the local renderer. */
 object DrawProtocol {
     /** Mirrors g2flash/patches/zlib_glue.c. */
     const val DRAW = CFW_MSG_DRAW_CALLS
@@ -97,14 +97,21 @@ object DrawProtocol {
     fun rectCopy(
         source: Int, x: Int, y: Int, width: Int, height: Int, dx: Int, dy: Int,
         target: Int? = null, depth: Int? = null,
+    ): ByteArray = rectCopy(source, DrawValue.Integer(x), DrawValue.Integer(y), width, height,
+        DrawValue.Integer(dx), DrawValue.Integer(dy), target, depth)
+
+    /** Revision 29: source and destination coordinates may be expressions; the source rect must stay in bounds. */
+    fun rectCopy(
+        source: Int, x: DrawValue, y: DrawValue, width: Int, height: Int, dx: DrawValue, dy: DrawValue,
+        target: Int? = null, depth: Int? = null,
     ): ByteArray = call(DRAW_OP_RECT_COPY, target, depth) {
         writeU16(source)
-        writeU16(x)
-        writeU16(y)
+        writeExtended(x)
+        writeExtended(y)
         writeU16(width)
         writeU16(height)
-        writeS16(dx)
-        writeS16(dy)
+        writeExtended(dx)
+        writeExtended(dy)
     }
 
     /** Fill the whole target, ignoring depth. */

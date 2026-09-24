@@ -256,13 +256,14 @@ class DisplayListRenderer(
 
     private fun drawRectCopy(reader: DrawReader, target: Target, walk: Walk) {
         val id = reader.readU16()
-        val x = reader.readU16()
-        val y = reader.readU16()
+        val x = ExtendedVarint.evaluate(reader, walk.frame)
+        val y = ExtendedVarint.evaluate(reader, walk.frame)
         val width = reader.readU16()
         val height = reader.readU16()
-        val dx = reader.readS16()
-        val dy = reader.readS16()
+        val dx = ExtendedVarint.evaluate(reader, walk.frame)
+        val dy = ExtendedVarint.evaluate(reader, walk.frame)
         reader.requireDone()
+        require(x >= 0 && y >= 0)
         val source = when (id) {
             DrawProtocol.SCREEN -> walk.screen
             DrawProtocol.CURRENT -> target
@@ -272,7 +273,8 @@ class DisplayListRenderer(
             }
         }
         require(width > 0 && height > 0 && x + width <= source.width && y + height <= source.height)
-        if (walk.apply) {
+        // Mirrors the firmware's overflow guard before the depth shift.
+        if (walk.apply && dx in -65536..65536) {
             // Snapshot the rectangle so overlapping copies have memmove semantics.
             val copy = IntArray(width * height) { source.get(x + it % width, y + it / width) }
             for (i in copy.indices) target.put(dx + i % width, dy + i / width, copy[i])

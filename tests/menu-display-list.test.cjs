@@ -16,12 +16,12 @@ function load(file,modules) {
 const font={lineHeight:12,ascent:10,descent:2,measureText:text=>text.length*4,
   drawText:(image,x,y,text,value)=>{for(let i=0;i<text.length;i++) image.fillRect(x+i*4,y+2,2,6,value);}};
 const menuCore=load('app/ui/menu-core.ts',{
-  '../graphics/image':graphics,'./menu-highlight-motion': require('../.test-build/app/ui/menu-highlight-motion.js'),
+  '../graphics/image':graphics,'./menu-highlight-motion': require('../.test-build/app/ui/menu-highlight-motion.js'), '../graphics/menu-scroll-list': require('../.test-build/app/graphics/menu-scroll-list.js'), './menu-scroll-motion': require('../.test-build/app/ui/menu-scroll-motion.js'),
 });
 const {MenuLayer}=load('app/ui/menu.ts',{
   '../graphics/image':graphics,'../graphics/textwrap':{},'../graphics/ui-fonts':{getDefaultSmallFont:()=>font},
   '../util/numeric-util':{clamp:(n,a,b)=>Math.max(a,Math.min(b,n))},'./gestures':{},
-  './menu-highlight-motion': require('../.test-build/app/ui/menu-highlight-motion.js'),
+  './menu-highlight-motion': require('../.test-build/app/ui/menu-highlight-motion.js'), '../graphics/menu-scroll-list': require('../.test-build/app/graphics/menu-scroll-list.js'), './menu-scroll-motion': require('../.test-build/app/ui/menu-scroll-motion.js'),
     './metrics':require('../.test-build/app/ui/metrics.js'),'./menu-core':menuCore,
 });
 const {prepareFrameDraws}=load('app/graphics/glyph-wire.ts',{'./presentation-wire':wire,'../native/texture-atlas':{textureAtlasAvailable:()=>false}});
