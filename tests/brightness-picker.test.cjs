@@ -30,6 +30,9 @@ const menu = load('app/ui/menu.ts', {
   './menu-highlight-motion': require('../.test-build/app/ui/menu-highlight-motion.js'),
   '../graphics/image': graphics, '../graphics/ui-fonts': fonts, '../graphics/textwrap': textwrap,
   '../util/numeric-util': numeric, './gestures': gestures, './metrics': load('app/ui/metrics.ts'),
+  './menu-core': load('app/ui/menu-core.ts', {
+    '../graphics/image': graphics, './menu-highlight-motion': require('../.test-build/app/ui/menu-highlight-motion.js'),
+  }),
 });
 
 function fixture(initial = '50', viewport = { x: 64, y: 124, width: 576, height: 260 }) {

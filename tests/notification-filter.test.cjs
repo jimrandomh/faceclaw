@@ -92,6 +92,7 @@ function ui(fontSize = 12) {
     assert.ok(name in dependencies, `Unexpected dependency ${name}`);
     return dependencies[name];
   };
+  dependencies['./menu-core'] = load('app/ui/menu-core.ts', requireModule);
   dependencies['./menu'] = load('app/ui/menu.ts', requireModule);
   const { SingleNotificationLayer } = load('app/ui/notifications.ts', requireModule);
   const { NotificationFilterLayer } = load('app/ui/notification-filter.ts', requireModule);

@@ -1,9 +1,9 @@
-import { MenuHighlightMotion } from "./menu-highlight-motion";
 import { G2_LENS_HEIGHT, G2_LENS_WIDTH, GrayImage, type UiFont } from "../graphics/image";
 import { wrapText } from "../graphics/textwrap";
 import { getDefaultSmallFont } from "../graphics/ui-fonts";
 import { clamp } from "../util/numeric-util";
 import { Layer, LayerContext, PaintBelow } from "./layers";
+import { Menu, MENU_HIGHLIGHT_FILL, MENU_HIGHLIGHT_STROKE } from "./menu-core";
 
 import { GESTURE_DOUBLE_CLICK, InputEvent } from "./gestures";
 import { LIST_ROW_TEXT_INSET, lineStep, listRowHeight, menuTitleHeight } from "./metrics";
@@ -16,8 +16,10 @@ const DEFAULT_MENU_MIN_HEIGHT = G2_LENS_HEIGHT / 2 - 2 * DEFAULT_MENU_Y;
 const MENU_BODY_PADDING = 8;
 /** Gap between the last item row and a footer hint line. */
 const MENU_FOOTER_GAP = 8;
-const MENU_HIGHLIGHT_SELECTED_BACKGROUND_FILL = 15;
-const MENU_HIGHLIGHT_SELECTED_BORDER_STROKE = 45;
+/** Horizontal inset of the row (highlight) boxes from the menu box's edges. */
+const MENU_ROW_INSET = 12;
+/** Horizontal inset of row text from the row box. */
+const MENU_ROW_TEXT_INSET = 10;
 
 export type MenuLayout = {
   /** Stereo depth of the menu surface, including the selected row. */
@@ -85,9 +87,9 @@ export function drawSelectionHighlight(
   radius = 6,
 ): void {
   if (focused) {
-    image.fillRoundedRect(x, y, width, height, MENU_HIGHLIGHT_SELECTED_BACKGROUND_FILL, radius);
+    image.fillRoundedRect(x, y, width, height, MENU_HIGHLIGHT_FILL, radius);
   }
-  image.drawRoundedRect(x, y, width, height, MENU_HIGHLIGHT_SELECTED_BORDER_STROKE, radius);
+  image.drawRoundedRect(x, y, width, height, MENU_HIGHLIGHT_STROKE, radius);
 }
 
 /**
@@ -192,9 +194,9 @@ export function drawRightValueMenuItem(
 export const CONTEXT_MENU_DIM = 0.25;
 
 export class MenuLayer implements Layer {
-  private selectedIndex = 0;
-  private scrollRow = 0;
-  private readonly highlightMotion = new MenuHighlightMotion();
+  private readonly menu: Menu<MenuItem>;
+  /** The context of the paint in progress, handed to item render callbacks. */
+  private paintCtx: LayerContext | null = null;
 
   get depth(): number { return this.layout.depth ?? 0; }
 
@@ -211,11 +213,38 @@ export class MenuLayer implements Layer {
       width: DEFAULT_MENU_WIDTH,
     },
     public readonly paintOverBase = false,
-  ) {}
+  ) {
+    this.menu = new Menu<MenuItem>({
+      items,
+      wrap: true,
+      rowGap: 1,
+      getHeight: () => listRowHeight(getDefaultSmallFont()),
+      draw: ({ image, item, x, y, width, height, selected }) => {
+        const font = getDefaultSmallFont();
+        const disabled = isMenuItemDisabled(item);
+        if (item.render) {
+          item.render({
+            image,
+            x: x + MENU_ROW_TEXT_INSET,
+            y,
+            width: width - 2 * MENU_ROW_TEXT_INSET,
+            height: height - 2,
+            selected,
+            disabled,
+            text: item.label,
+            ctx: this.paintCtx!,
+          });
+        } else {
+          image.drawText(font, x + MENU_ROW_TEXT_INSET, y + LIST_ROW_TEXT_INSET, item.label,
+            disabled ? 70 : selected ? 255 : 200);
+        }
+      },
+    });
+  }
 
   /** Start a newly opened picker on its current value. */
   selectItem(index: number): this {
-    this.selectedIndex = clamp(index, 0, Math.max(0, this.items.length - 1));
+    this.menu.select(index);
     return this;
   }
 
@@ -242,12 +271,6 @@ export class MenuLayer implements Layer {
       1,
       ((height - chromeTop - footerHeight - MENU_BODY_PADDING) / rowHeight) | 0,
     );
-    this.scrollRow = scrollToKeepSelectionVisible(
-      this.scrollRow,
-      this.selectedIndex,
-      visibleRowCount,
-      this.items.length,
-    );
 
     // Fill 1, not 0: identical after 4bpp quantization, but 0 is the
     // transparent color key when a menu paints on the shell surface.
@@ -265,78 +288,32 @@ export class MenuLayer implements Layer {
     }
 
     const bodyY = y + chromeTop;
-    const focused = ctx.stack.isFocused();
-    const lastVisibleRow = Math.min(this.items.length, this.scrollRow + visibleRowCount);
-    for (let index = this.scrollRow; index < lastVisibleRow; index++) {
-      const item = this.items[index]!;
-      const rowY = bodyY + (index - this.scrollRow) * rowHeight;
-      const selected = index === this.selectedIndex;
-      const disabled = isMenuItemDisabled(item);
-      const row = selected ? new GrayImage(width - 24, rowHeight - 1, 0) : image;
-      const textX = selected ? 10 : x + 22;
-      const textY = selected ? 0 : rowY;
-      if (item.render) {
-        item.render({
-          image: row,
-          x: textX,
-          y: textY,
-          width: width - 44,
-          height: rowHeight - 3,
-          selected,
-          disabled,
-          text: item.label,
-          ctx,
-        });
-      } else {
-        row.drawText(font, textX, textY + LIST_ROW_TEXT_INSET, item.label, disabled ? 70 : selected ? 255 : 200);
-      }
-      if (selected) {
-        const animation = this.highlightMotion.paint(index, this.scrollRow, x + 12, rowY, width - 24, rowHeight - 1, Date.now());
-        image.drawMenuSelection(row, x + 12, rowY, focused ? MENU_HIGHLIGHT_SELECTED_BACKGROUND_FILL : 0,
-          MENU_HIGHLIGHT_SELECTED_BORDER_STROKE, 8, 0, animation);
-      }
+    const listHeight = visibleRowCount * rowHeight;
+    this.paintCtx = ctx;
+    try {
+      this.menu.paint(image, { x: x + MENU_ROW_INSET, y: bodyY, width: width - 2 * MENU_ROW_INSET, height: listHeight },
+        ctx.stack.isFocused());
+    } finally {
+      this.paintCtx = null;
     }
-
-    if (this.items.length > visibleRowCount) {
-      drawListScrollbar(
-        image,
-        x + width - 7,
-        bodyY,
-        visibleRowCount * rowHeight - 4,
-        this.scrollRow,
-        visibleRowCount,
-        this.items.length,
-      );
-    }
-
+    this.menu.drawScrollbar(image, x + width - 7, bodyY, listHeight - 4);
     return image;
   }
 
   async handleInput(event: InputEvent, ctx: LayerContext): Promise<void> {
-    if (!this.items.length) {
-      if (event.type === "double-click") {
-        ctx.stack.pop();
-      }
-      return;
-    }
     switch (event.type) {
-      case "scroll-up":
-        this.highlightMotion.navigate(this.selectedIndex, this.selectedIndex === 0);
-        this.selectedIndex = (this.selectedIndex + this.items.length - 1) % this.items.length;
-        return;
-      case "scroll-down":
-        this.highlightMotion.navigate(this.selectedIndex, this.selectedIndex === this.items.length - 1);
-        this.selectedIndex = (this.selectedIndex + 1) % this.items.length;
-        return;
       case "double-click":
         ctx.stack.pop();
         return;
-      case "click":
-        if (!isMenuItemDisabled(this.items[this.selectedIndex]!)) {
-          await this.items[this.selectedIndex]!.onSelect(ctx, this);
+      case "click": {
+        const item = this.menu.selectedItem;
+        if (item && !isMenuItemDisabled(item)) {
+          await item.onSelect(ctx, this);
         }
         return;
+      }
       default:
+        await this.menu.handleInput(event);
         return;
     }
   }

@@ -25,6 +25,7 @@
     "../app/graphics/plane.ts",
     "../app/graphics/shell-scene.ts",
     "../app/ui/metrics.ts",
+    "../app/ui/menu-core.ts",
     "../app/phone-ui/phone-gestures.ts",
     "../app/g2/firmware-compat.ts",
     "../app/g2/glasses-hardware-identity.ts",

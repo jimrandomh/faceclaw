@@ -156,6 +156,7 @@ test('Music settings keeps toggles and selection when a new app arrives and supp
     './menu-highlight-motion': require('../.test-build/app/ui/menu-highlight-motion.js'),
     './metrics': load('app/ui/metrics.ts'), './gestures': {},
   };
+  deps['./menu-core'] = load('app/ui/menu-core.ts', (name) => deps[name]);
   const menu = load('app/ui/menu.ts', (name) => deps[name]);
   const uiDeps = {
     '../../graphics/image': deps['../graphics/image'],
