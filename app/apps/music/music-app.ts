@@ -5,7 +5,7 @@ import { clamp } from "../../util/numeric-util";
 import { directionalFallback, GESTURE_CLICK, GESTURE_DOUBLE_CLICK, GESTURE_SCROLL_DOWN, GESTURE_SCROLL_UP, type InputEvent, isDirectionalInput } from "../../ui/gestures";
 import { MenuLayer, drawSubmenuIndicator } from "../../ui/menu";
 import { Menu, type MenuDrawArgs } from "../../ui/menu-core";
-import { lineStep, tightRowHeight } from "../../ui/metrics";
+import { centeredTextY, lineStep, tightRowHeight } from "../../ui/metrics";
 import { mediaControllerBridge, type MediaControllerState, type MediaQueueItem } from "../../native/media-controller";
 import { mediaBrowserBridge, type MediaBrowserApp } from "../../native/media-browser";
 import { MediaBrowseLayer } from "./media-browse";
@@ -139,7 +139,7 @@ class MusicAppLayer implements Layer {
     this.reconcileSelection(actions, queue);
     const listHeight = height - LIST_TOP - LIST_BOTTOM_MARGIN;
     const focused = ctx.stack.isFocused();
-    // Row boxes start one pixel above LIST_TOP so the text lands at LIST_TOP + 1.
+    // Row boxes start one pixel above LIST_TOP, level with the column divider.
     this.actionsMenu.paint(
       image,
       { x: ACTION_X - LIST_TEXT_INSET, y: LIST_TOP - 1, width: ACTION_WIDTH + 2 * LIST_TEXT_INSET - 4, height: listHeight },
@@ -165,16 +165,16 @@ class MusicAppLayer implements Layer {
   private drawAction({ image, item: action, x, y, width, height, selected }: MenuDrawArgs<MusicAction>): void {
     const font = getDefaultSmallFont();
     const value = !action.enabled ? (selected ? 130 : 90) : selected ? 255 : 200;
-    image.drawText(font, x + LIST_TEXT_INSET, y + 2, truncateText(font, action.label, ACTION_WIDTH - 16), value);
+    image.drawText(font, x + LIST_TEXT_INSET, centeredTextY(font, y, height), truncateText(font, action.label, ACTION_WIDTH - 16), value);
     if ((action.kind === "playlist" || action.kind === "browse") && action.enabled) {
       drawSubmenuIndicator(image, font, x, y, width, height, value);
     }
   }
 
-  private drawQueueItem({ image, item, x, y, width, selected }: MenuDrawArgs<MediaQueueItem>): void {
+  private drawQueueItem({ image, item, x, y, width, height, selected }: MenuDrawArgs<MediaQueueItem>): void {
     const font = getDefaultSmallFont();
     const label = `${item.active ? "> " : "  "}${item.title || "(untitled)"}`;
-    image.drawText(font, x + LIST_TEXT_INSET, y + 2, truncateText(font, label, width - 2 * LIST_TEXT_INSET), selected ? 255 : 200);
+    image.drawText(font, x + LIST_TEXT_INSET, centeredTextY(font, y, height), truncateText(font, label, width - 2 * LIST_TEXT_INSET), selected ? 255 : 200);
   }
 
   async handleInput(event: InputEvent, ctx: LayerContext): Promise<void> {

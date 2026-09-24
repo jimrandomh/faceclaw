@@ -80,15 +80,20 @@ type MenuLayout = { tops: number[]; heights: number[]; total: number };
 export class Menu<T> {
   private itemList: readonly T[];
   private selected: number | null;
+  /**
+   * The caller asked for no selection. Otherwise a null selection only means
+   * nothing was selectable, and the first selectable item is chosen as soon
+   * as one exists (a menu created empty and filled later starts on it).
+   */
+  private deselected: boolean;
   private scrollY = 0;
   private lastBox: MenuBox | null = null;
   private readonly motion = new MenuHighlightMotion();
 
   constructor(private readonly options: MenuOptions<T>) {
     this.itemList = options.items ?? [];
-    this.selected = options.selectedIndex === undefined
-      ? this.nextSelectable(null, 1)
-      : this.resolve(options.selectedIndex);
+    this.deselected = options.selectedIndex === null;
+    this.selected = this.settle(options.selectedIndex ?? null);
   }
 
   get items(): readonly T[] {
@@ -110,6 +115,11 @@ export class Menu<T> {
     return this.scrollY;
   }
 
+  /** Move the viewport's top edge; the next paint clamps it and scrolls the selection back into view. */
+  set scrollTop(value: number) {
+    this.scrollY = Math.max(0, value | 0);
+  }
+
   /** True when the content did not fit the box given to the last paint. */
   get overflows(): boolean {
     if (!this.lastBox) return false;
@@ -119,8 +129,8 @@ export class Menu<T> {
   /**
    * Replace the items. `selectedIndex` names the new selection (null for
    * none); left out, the selection stays at the same index, clamped into
-   * range. The viewport keeps the selected row at the same on-screen
-   * position when it can.
+   * range, or lands on the first selectable item if there was none. The
+   * viewport keeps the selected row at the same on-screen position when it can.
    */
   setItems(items: readonly T[], selectedIndex?: number | null): void {
     const width = this.lastBox?.width;
@@ -128,15 +138,21 @@ export class Menu<T> {
       ? this.layout(width).tops[this.selected]! - this.scrollY
       : null;
     this.itemList = items;
-    this.selected = this.resolve(selectedIndex === undefined ? this.selected : selectedIndex);
+    if (selectedIndex !== undefined) this.deselected = selectedIndex === null;
+    this.selected = this.settle(selectedIndex === undefined ? this.selected : selectedIndex);
     if (before !== null && this.selected !== null && width !== undefined) {
       this.scrollY = Math.max(0, this.layout(width).tops[this.selected]! - before);
     }
   }
 
-  /** Move the selection; a non-selectable or out-of-range index lands on the nearest selectable one. */
+  /**
+   * Move the selection; a non-selectable or out-of-range index lands on the
+   * nearest selectable one. null clears it until the user scrolls or a
+   * number is selected.
+   */
   select(index: number | null): void {
-    this.selected = this.resolve(index);
+    this.deselected = index === null;
+    this.selected = this.settle(index);
   }
 
   /** Step the selection by one selectable row; handles wrap and the exit callbacks. */
@@ -147,6 +163,7 @@ export class Menu<T> {
     if (next !== null) {
       if (from !== null) this.motion.navigate(from, false);
       this.selected = next;
+      this.deselected = false;
       return;
     }
     if (from === null && this.scrollContent(delta)) return;
@@ -155,6 +172,7 @@ export class Menu<T> {
       if (wrapped !== null && wrapped !== from) {
         if (from !== null) this.motion.navigate(from, true);
         this.selected = wrapped;
+        this.deselected = false;
       } else if (from === null && this.lastBox) {
         this.scrollY = delta > 0 ? 0 : this.maxScroll(this.layout(this.lastBox.width), this.lastBox.height);
       }
@@ -258,9 +276,15 @@ export class Menu<T> {
     return null;
   }
 
+  /** Resolve a stored selection: null stays null only when the caller deselected. */
+  private settle(index: number | null): number | null {
+    if (index === null) return this.deselected ? null : this.nextSelectable(null, 1);
+    return this.resolve(index);
+  }
+
   /** Clamp an index into range and onto a selectable row (nearest below, else nearest above). */
-  private resolve(index: number | null): number | null {
-    if (index === null || !this.itemList.length) return null;
+  private resolve(index: number): number | null {
+    if (!this.itemList.length) return null;
     const clamped = Math.max(0, Math.min(this.itemList.length - 1, index | 0));
     if (this.isSelectable(clamped)) return clamped;
     return this.nextSelectable(clamped, 1) ?? this.nextSelectable(clamped, -1);
@@ -268,7 +292,7 @@ export class Menu<T> {
 
   /** Re-validate the selection against the current items (they may have been edited in place). */
   private reconcile(): void {
-    this.selected = this.resolve(this.selected);
+    this.selected = this.settle(this.selected);
   }
 
   private layout(width: number): MenuLayout {
@@ -311,6 +335,15 @@ export class Menu<T> {
           break;
         }
       }
+    }
+    // Never scroll past the end (setItems can leave the viewport there when
+    // rows are removed or inserted above the selection): pull back to the
+    // first row top that still shows the last row, so no partial row starts
+    // the list. The selected row stays visible, since it ends by the list's end.
+    const maxScroll = this.maxScroll(layout, viewportHeight);
+    if (target > maxScroll) {
+      const aligned = layout.tops.find((rowTop) => rowTop >= maxScroll);
+      target = aligned !== undefined && aligned <= target ? aligned : maxScroll;
     }
     this.scrollY = Math.max(0, target);
   }

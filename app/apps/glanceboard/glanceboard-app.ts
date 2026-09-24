@@ -3,9 +3,10 @@ import { truncateText, wrapText } from "../../graphics/textwrap";
 import { getDefaultSmallFont } from "../../graphics/ui-fonts";
 import { enumSettingMenuItem, onAnySettingChanged, toggleSettingMenuItem } from "../../ui/dashboard-settings";
 import { type InputEvent } from "../../ui/gestures";
-import { type Layer, type LayerContext, type PaintBelow } from "../../ui/layers";
-import { drawSelectionHighlight, MenuLayer, openModalMenu, type MenuItem } from "../../ui/menu";
-import { LIST_ROW_TEXT_INSET, lineStep } from "../../ui/metrics";
+import { type Layer, type LayerContext } from "../../ui/layers";
+import { drawSelectionHighlight, isMenuItemDisabled, MenuLayer, openModalMenu, type MenuItem } from "../../ui/menu";
+import { Menu } from "../../ui/menu-core";
+import { LIST_ROW_TEXT_INSET, lineStep, listRowHeight } from "../../ui/metrics";
 import { createInProcessWindow, type InProcessAppOptions, type InProcessWindow } from "../../ui/shell/in-process-window";
 import { shell } from "../../ui/shell/shell";
 import { GlanceBoard } from "./board";
@@ -35,6 +36,15 @@ const PARAGRAPH_X = 24;
 const PREVIEW_MARGIN = 8;
 const PREVIEW_MIN_LINE_VALUE = 20;
 const PREVIEW_LINE_VALUE = 100;
+/** The entry menu's row boxes: left inset, gap below the paragraph, and inset from the page's bottom. */
+const HOME_MENU_X = 20;
+const HOME_MENU_TOP_GAP = 12;
+const HOME_MENU_BOTTOM_MARGIN = 8;
+/** Horizontal inset of row text (and custom row content) from its selection box. */
+const HOME_ROW_TEXT_X = 10;
+// A throwaway menu to satisfy MenuItem.onSelect's second parameter; the
+// entry page's items never use it (they act via ctx only).
+const NO_MENU = new MenuLayer(null, []);
 
 const INTRO =
   "Your Glanceboard is a display for things you want to look at quickly. Starting " +
@@ -55,25 +65,21 @@ function pageMenuLayout(width: number) {
  * a double-tap returns focus to the menu.
  */
 class GlanceboardHomeLayer implements Layer {
-  private menu: MenuLayer | null = null;
-  private menuTop = 0;
-  private menuHeight = 0;
+  private readonly menu: Menu<MenuItem>;
   private focus: "menu" | "preview" = "menu";
   private selectedSlot = 0;
+  /** The context of the paint in progress, handed to item render callbacks. */
+  private paintCtx: LayerContext | null = null;
 
-  constructor(private readonly setPreviewVisible: (visible: boolean) => void) {}
-
-  private currentMenu(ctx: LayerContext, menuTop: number): MenuLayer {
-    const { width, height } = ctx.stack.getBaseSize();
-    if (!this.menu || this.menuTop !== menuTop || this.menuHeight !== height) {
-      const half = (width / 2) | 0;
-      const items: MenuItem[] = [
+  constructor(private readonly setPreviewVisible: (visible: boolean) => void) {
+    this.menu = new Menu<MenuItem>({
+      items: [
         toggleSettingMenuItem(glanceboardEnabledSetting),
         {
           label: "Preview",
-          onSelect: (menuCtx) => {
-            menuCtx.stack.push(new GlancePreviewLayer(
-              () => menuCtx.actions.requestRender(),
+          onSelect: (ctx) => {
+            ctx.stack.push(new GlancePreviewLayer(
+              () => ctx.actions.requestRender(),
               () => this.setPreviewVisible(false),
             ));
             this.setPreviewVisible(true);
@@ -87,17 +93,32 @@ class GlanceboardHomeLayer implements Layer {
         },
         {
           label: "Settings",
-          onSelect: (menuCtx) => menuCtx.stack.push(new GlanceSettingsLayer()),
+          onSelect: openGlanceSettings,
         },
-      ];
-      this.menuTop = menuTop;
-      this.menuHeight = height;
-      this.menu = new MenuLayer(null, items, {
-        x: 8, y: menuTop, width: half - 16,
-        showBorder: false, minHeight: 0, maxHeight: height - menuTop,
-      });
-    }
-    return this.menu;
+      ],
+      wrap: true,
+      rowGap: 1,
+      getHeight: () => listRowHeight(getDefaultSmallFont()),
+      draw: ({ image, item, x, y, width, height, selected }) => {
+        const disabled = isMenuItemDisabled(item);
+        if (item.render) {
+          item.render({
+            image,
+            x: x + HOME_ROW_TEXT_X,
+            y,
+            width: width - 2 * HOME_ROW_TEXT_X,
+            height: height - 2,
+            selected,
+            disabled,
+            text: item.label,
+            ctx: this.paintCtx!,
+          });
+        } else {
+          image.drawText(getDefaultSmallFont(), x + HOME_ROW_TEXT_X, y + LIST_ROW_TEXT_INSET, item.label,
+            disabled ? 70 : selected ? 255 : 200);
+        }
+      },
+    });
   }
 
   /** Where the scaled board sits: the right half, board aspect, vertically centred. */
@@ -128,13 +149,19 @@ class GlanceboardHomeLayer implements Layer {
       image.drawText(font, PARAGRAPH_X, y, line, 160);
       y += step;
     }
-    // The menu paints onto this page below the paragraph (its fill is raster,
-    // so the deferred paragraph glyphs above stay untouched either way).
-    // While the preview has focus the menu keeps its outline-only selection.
-    const menu = this.currentMenu(ctx, y + 4);
-    const menuFocused = ctx.stack.isFocused() && this.focus === "menu";
-    const menuCtx: LayerContext = { ...ctx, stack: Object.assign(Object.create(ctx.stack), { isFocused: () => menuFocused }) };
-    menu.paint(menuCtx, () => image);
+    // The menu sits below the paragraph in the left half. While the preview
+    // has focus the menu keeps its outline-only selection.
+    const menuTop = y + HOME_MENU_TOP_GAP;
+    const menuWidth = half - 2 * HOME_MENU_X;
+    const menuHeight = Math.max(0, height - menuTop - HOME_MENU_BOTTOM_MARGIN);
+    this.paintCtx = ctx;
+    try {
+      this.menu.paint(image, { x: HOME_MENU_X, y: menuTop, width: menuWidth, height: menuHeight },
+        ctx.stack.isFocused() && this.focus === "menu");
+    } finally {
+      this.paintCtx = null;
+    }
+    this.menu.drawScrollbar(image, HOME_MENU_X + menuWidth + 5, menuTop, menuHeight - 4);
 
     this.selectedSlot = Math.min(this.selectedSlot, glanceLayout().slots.length - 1);
     const preview = this.previewRect(width, height);
@@ -173,7 +200,12 @@ class GlanceboardHomeLayer implements Layer {
       shell.yieldFocusToSidebar();
       return;
     }
-    await this.currentMenu(ctx, this.menuTop).handleInput(event, ctx);
+    if (event.type === "click") {
+      const item = this.menu.selectedItem;
+      if (item && !isMenuItemDisabled(item)) await item.onSelect(ctx, NO_MENU);
+      return;
+    }
+    await this.menu.handleInput(event);
   }
 }
 
@@ -266,31 +298,15 @@ function openSlotPicker(ctx: LayerContext, slotIndex: number): void {
 }
 
 /** Settings: layout, sleep gestures, duration, and slot lines. */
-class GlanceSettingsLayer implements Layer {
-  private menu: MenuLayer | null = null;
-
-  private currentMenu(ctx: LayerContext): MenuLayer {
-    if (!this.menu) {
-      const { width } = ctx.stack.getBaseSize();
-      const items: MenuItem[] = [
-        enumSettingMenuItem(glanceLayoutSetting),
-        enumSettingMenuItem(glanceTapDurationSetting),
-        toggleSettingMenuItem(glanceShowOnLongPressSetting),
-        toggleSettingMenuItem(glanceShowOnHeadTiltSetting),
-        toggleSettingMenuItem(glanceShowLinesSetting),
-      ];
-      this.menu = new MenuLayer("Glanceboard settings", items, pageMenuLayout(width));
-    }
-    return this.menu;
-  }
-
-  paint(ctx: LayerContext, paintBelow: PaintBelow): GrayImage {
-    return this.currentMenu(ctx).paint(ctx, paintBelow);
-  }
-
-  async handleInput(event: InputEvent, ctx: LayerContext): Promise<void> {
-    await this.currentMenu(ctx).handleInput(event, ctx);
-  }
+function openGlanceSettings(ctx: LayerContext): void {
+  const items: MenuItem[] = [
+    enumSettingMenuItem(glanceLayoutSetting),
+    enumSettingMenuItem(glanceTapDurationSetting),
+    toggleSettingMenuItem(glanceShowOnLongPressSetting),
+    toggleSettingMenuItem(glanceShowOnHeadTiltSetting),
+    toggleSettingMenuItem(glanceShowLinesSetting),
+  ];
+  ctx.stack.push(new MenuLayer("Glanceboard settings", items, pageMenuLayout(ctx.stack.getBaseSize().width)));
 }
 
 /** The live board in the window; any click or double-click returns to the list. */

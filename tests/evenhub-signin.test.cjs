@@ -26,7 +26,8 @@ const loadStoreLayer = () => {
     '../../graphics/textwrap': { truncateText: (_f, text) => text, wrapText: (_f, text) => [text] },
     '../../util/numeric-util': { clamp: (v, lo, hi) => Math.min(hi, Math.max(lo, v)) },
     '../../ui/gestures': { GESTURE_CLICK: 'click' },
-    '../../ui/menu': { drawListScrollbar() {}, drawSelectionHighlight() {}, scrollToKeepSelectionVisible() {} },
+    '../../ui/menu': { drawSelectionHighlight() {} },
+    '../../ui/menu-core': require('../.test-build/app/ui/menu-core.js'),
     '../../ui/shell/shell': { shell: { yieldFocusToSidebar() {} } },
     '../../ui/metrics': { lineStep: () => 12 },
     '../../ui/dashboard-settings': {

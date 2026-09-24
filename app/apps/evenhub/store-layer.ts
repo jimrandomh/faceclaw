@@ -1,10 +1,10 @@
 import { getDefaultSmallFont } from "../../graphics/ui-fonts";
 import { GrayImage, type UiFont } from "../../graphics/image";
 import { truncateText, wrapText } from "../../graphics/textwrap";
-import { clamp } from "../../util/numeric-util";
 import { GESTURE_CLICK, type InputEvent } from "../../ui/gestures";
 import { type Layer, type LayerActions, type LayerContext, type LayerStack } from "../../ui/layers";
-import { drawListScrollbar, drawSelectionHighlight, scrollToKeepSelectionVisible, type MenuItem } from "../../ui/menu";
+import { drawSelectionHighlight, type MenuItem } from "../../ui/menu";
+import { Menu } from "../../ui/menu-core";
 import { shell } from "../../ui/shell/shell";
 import { ConfigSettingString } from "../../ui/dashboard-settings";
 import { evenHubApi, EvenHubAuthenticationError, isEvenHubStoreConfigured, type EvenHubStoreApp, type EvenHubStorePage } from "./even-api";
@@ -22,6 +22,11 @@ const TAB_GAP = 18;
 /** Header: title + tabs line, then the status/subtitle line, then a small gap. */
 function headerHeight(font: UiFont): number {
   return 8 + lineStep(font) + font.lineHeight + 6;
+}
+
+/** Row pitch of the two-line app list (title + detail), including the 2px gap between highlights. */
+function storeRowHeight(font: UiFont): number {
+  return Math.max(30, 2 * lineStep(font) + 4);
 }
 
 /** Last search typed on the phone; kept so reopening the store shows it again. */
@@ -64,25 +69,44 @@ type TabState = {
   loading: boolean;
   /** Progress or error text for the subtitle line. */
   status: string;
-  selectedIndex: number;
-  scrollRow: number;
+  /** Selection and scroll over `rows` (resynced before each paint and input). */
+  menu: Menu<StoreRow>;
   /** Search only: the query the rows belong to. */
   query: string;
 };
 
 function emptyTab(): TabState {
+  const rows: StoreRow[] = [];
   return {
-    rows: [],
+    rows,
     total: 0,
     nextPage: 1,
     exhausted: false,
     loaded: false,
     loading: false,
     status: "",
-    selectedIndex: 0,
-    scrollRow: 0,
+    menu: new Menu<StoreRow>({
+      items: rows,
+      rowGap: 2,
+      highlight: { radius: 5 },
+      getHeight: () => storeRowHeight(getDefaultSmallFont()),
+      draw: ({ image, item, x, y, width }) => {
+        const font = getDefaultSmallFont();
+        const { title, detail, titleValue } = rowText(item);
+        const textX = x + 6;
+        const textW = width - 12;
+        image.drawText(font, textX, y + 2, truncateText(font, title, textW), titleValue);
+        image.drawText(font, textX, y + 2 + lineStep(font), truncateText(font, detail, textW), 115);
+      },
+    }),
     query: "",
   };
+}
+
+/** The tab's menu, with its items brought up to date with `rows` (which loads replace or extend). */
+function tabMenu(tab: TabState): Menu<StoreRow> {
+  if (tab.menu.items !== tab.rows) tab.menu.setItems(tab.rows);
+  return tab.menu;
 }
 
 export type EvenHubStoreLayerOptions = {
@@ -170,25 +194,16 @@ export class EvenHubStoreLayer implements Layer {
       return image;
     }
 
-    tab.selectedIndex = clamp(tab.selectedIndex, 0, tab.rows.length - 1);
-    const rowH = Math.max(30, 2 * lineStep(font) + 4);
+    const rowH = storeRowHeight(font);
     const visibleRows = Math.max(1, Math.floor((height - headerH - 4) / rowH));
-    tab.scrollRow = scrollToKeepSelectionVisible(tab.scrollRow, tab.selectedIndex, visibleRows, tab.rows.length);
-    const last = Math.min(tab.rows.length, tab.scrollRow + visibleRows);
     const listFocused = ctx.stack.isFocused() && this.focus === "list";
-    for (let index = tab.scrollRow; index < last; index++) {
-      const row = tab.rows[index]!;
-      const y = headerH + (index - tab.scrollRow) * rowH;
-      if (index === tab.selectedIndex) {
-        drawSelectionHighlight(image, LIST_X - 6, y, width - LIST_X * 2 + 12, rowH - 2, listFocused, 5);
-      }
-      const { title, detail, titleValue } = this.rowText(row);
-      image.drawText(font, LIST_X, y + 2, truncateText(font, title, width - LIST_X * 2), titleValue);
-      image.drawText(font, LIST_X, y + 2 + lineStep(font), truncateText(font, detail, width - LIST_X * 2), 115);
-    }
-    if (tab.rows.length > visibleRows) {
-      drawListScrollbar(image, width - 5, headerH, visibleRows * rowH - 3, tab.scrollRow, visibleRows, tab.rows.length);
-    }
+    const menu = tabMenu(tab);
+    menu.paint(
+      image,
+      { x: LIST_X - 6, y: headerH, width: width - LIST_X * 2 + 12, height: visibleRows * rowH - 2 },
+      listFocused,
+    );
+    menu.drawScrollbar(image, width - 5, headerH, visibleRows * rowH - 3);
     return image;
   }
 
@@ -250,41 +265,6 @@ export class EvenHubStoreLayer implements Layer {
     }
   }
 
-  private rowText(row: StoreRow): { title: string; detail: string; titleValue: number } {
-    switch (row.kind) {
-      case "search-query": {
-        const query = evenHubSearchQuerySetting.get();
-        return {
-          title: query ? `Search: ${query}` : "Search: (enter a query)",
-          detail: "Click to type on the phone, or use voice input.",
-          titleValue: 200,
-        };
-      }
-      case "orphan":
-        return {
-          title: row.update.installed.name,
-          detail: row.update.error
-            ? `Package missing · store lookup failed: ${row.update.error}`
-            : "Package missing · not in the store · click to forget",
-          titleValue: 170,
-        };
-      case "app": {
-        const { app, update } = row;
-        if (!update) {
-          return {
-            title: app.name,
-            detail: app.tagline || `${app.creatorName} · ${formatCount(app.installCount)} installs`,
-            titleValue: 215,
-          };
-        }
-        const detail = update.packageMissing
-          ? `Package missing · reinstall ${app.version ? `version ${app.version}` : ""}`.trim()
-          : `Version ${update.installed.version} installed · ${app.version} available`;
-        return { title: app.name, detail, titleValue: 215 };
-      }
-    }
-  }
-
   async handleInput(event: InputEvent, ctx: LayerContext): Promise<void> {
     if (this.showingLogin) {
       if (event.type === "click" && !this.loginBusy) {
@@ -299,16 +279,17 @@ export class EvenHubStoreLayer implements Layer {
       return;
     }
     const tab = this.tabs[this.activeTab];
+    const menu = tabMenu(tab);
     switch (event.type) {
       case "scroll-up":
-        tab.selectedIndex = Math.max(0, tab.selectedIndex - 1);
+        await menu.handleInput(event);
         return;
       case "scroll-down":
-        tab.selectedIndex = Math.min(Math.max(0, tab.rows.length - 1), tab.selectedIndex + 1);
-        if (tab.selectedIndex >= tab.rows.length - 4) void this.loadNextPage(ctx, this.activeTab);
+        await menu.handleInput(event);
+        if ((menu.selectedIndex ?? 0) >= tab.rows.length - 4) void this.loadNextPage(ctx, this.activeTab);
         return;
       case "click":
-        await this.activateRow(ctx, tab.rows[tab.selectedIndex]);
+        await this.activateRow(ctx, menu.selectedItem ?? undefined);
         return;
       case "double-click":
         this.focus = "tabs";
@@ -540,7 +521,7 @@ export class EvenHubStoreLayer implements Layer {
     state.rows = [{ kind: "search-query" }];
     state.loaded = !query;
     // Keep the cursor on the first result once there are some.
-    state.selectedIndex = query ? 1 : 0;
+    state.menu.setItems(state.rows, query ? 1 : 0);
     this.tabs.search = state;
     ctx.actions.requestRender();
     if (query) await this.loadNextPage(ctx, "search");
@@ -566,8 +547,8 @@ export class EvenHubStoreLayer implements Layer {
         update.latest ? { kind: "app", app: update.latest, update } : { kind: "orphan", update },
       );
       state.rows = rows;
-      state.selectedIndex = 0;
-      state.scrollRow = 0;
+      state.menu.setItems(rows, 0);
+      state.menu.scrollTop = 0;
       state.status = "";
       state.exhausted = true;
     } catch (error) {
@@ -643,7 +624,7 @@ export class EvenHubStoreLayer implements Layer {
     state.rows = state.rows.filter((row) =>
       row.kind === "search-query" ? true : row.kind === "app" ? row.app.packageId !== packageId : row.update.installed.packageId !== packageId,
     );
-    state.selectedIndex = clamp(state.selectedIndex, 0, Math.max(0, state.rows.length - 1));
+    state.menu.setItems(state.rows);
   }
 
   // ---- login and phone editors --------------------------------------------
@@ -751,6 +732,42 @@ export class EvenHubStoreLayer implements Layer {
       evenHubLoginPasswordSetting.set("");
       this.loginBusy = false;
       if (!this.closed) ctx.actions.requestRender();
+    }
+  }
+}
+
+/** A list row's title (with its shade) and dim detail line. */
+function rowText(row: StoreRow): { title: string; detail: string; titleValue: number } {
+  switch (row.kind) {
+    case "search-query": {
+      const query = evenHubSearchQuerySetting.get();
+      return {
+        title: query ? `Search: ${query}` : "Search: (enter a query)",
+        detail: "Click to type on the phone, or use voice input.",
+        titleValue: 200,
+      };
+    }
+    case "orphan":
+      return {
+        title: row.update.installed.name,
+        detail: row.update.error
+          ? `Package missing · store lookup failed: ${row.update.error}`
+          : "Package missing · not in the store · click to forget",
+        titleValue: 170,
+      };
+    case "app": {
+      const { app, update } = row;
+      if (!update) {
+        return {
+          title: app.name,
+          detail: app.tagline || `${app.creatorName} · ${formatCount(app.installCount)} installs`,
+          titleValue: 215,
+        };
+      }
+      const detail = update.packageMissing
+        ? `Package missing · reinstall ${app.version ? `version ${app.version}` : ""}`.trim()
+        : `Version ${update.installed.version} installed · ${app.version} available`;
+      return { title: app.name, detail, titleValue: 215 };
     }
   }
 }

@@ -54,7 +54,8 @@ import { clamp } from "../../util/numeric-util";
 import { terminalAutoReconnectSetting, terminalLaunchPresetsSetting, terminalNewConnectionSetting, terminalWakeOnBellSetting } from "../../ui/dashboard-settings";
 import { connectionDisplayName, loadConnections, parseConnectionString, saveConnections, TERMINAL_CONNECTIONS_KEY, updateConnection, type TerminalConnection } from "./connections";
 import { TerminalEmulator } from "./terminal-emulator";
-import { drawListScrollbar, drawSelectionHighlight, scrollToKeepSelectionVisible, type MenuItem } from "../../ui/menu";
+import { type MenuItem } from "../../ui/menu";
+import { Menu, type MenuDrawArgs } from "../../ui/menu-core";
 import { lineStep, listRowHeight } from "../../ui/metrics";
 import { WindowMenu } from "../../ui/window-menu";
 import { appViewportSize } from "../../ui/shell/geometry";
@@ -126,8 +127,8 @@ type HubMode = "sessions" | "connections" | "add";
 type HubWindow = BaseWindow & {
   kind: "hub";
   mode: HubMode;
-  selectedIndex: number;
-  scrollRow: number;
+  /** The section's item list; created on first paint or input (hubMenu). */
+  list: Menu<HubItem> | null;
   /**
    * Session recency keys in display order, captured when the window last
    * became visible so the list doesn't reshuffle under the user while it's
@@ -507,8 +508,7 @@ function openWindow(windowId: string, surfaceId: string, title: string, viewport
     lastSubmittedFingerprint: "",
     menu: null,
     mode: "sessions",
-    selectedIndex: 0,
-    scrollRow: 0,
+    list: null,
     sessionOrder: [],
     addError: "",
   });
@@ -1189,11 +1189,48 @@ type HubItem = {
   onSelect?: () => void;
 };
 
+/** Vertical offset of a row's text line from the top of its selection box. */
+const HUB_ROW_TEXT_INSET = 4;
+/** Horizontal inset of the list's selection boxes from the viewport edges. */
+const HUB_LIST_X = 20;
+
+/** The hub window's list, created on first use so openWindow stays free of paint dependencies. */
+function hubMenu(window: HubWindow): Menu<HubItem> {
+  window.list ??= new Menu<HubItem>({
+    wrap: false,
+    rowGap: 1,
+    getHeight: () => listRowHeight(chromeFont()),
+    isSelectable: (item) => Boolean(item.onSelect),
+    onSelect: (item) => item.onSelect?.(),
+    draw: drawHubRow,
+  });
+  return window.list;
+}
+
+function drawHubRow({ image, item, x, y, width, selected }: MenuDrawArgs<HubItem>): void {
+  const font = chromeFont();
+  if (item.heading) {
+    image.drawText(font, x, y + HUB_ROW_TEXT_INSET, item.label, 140);
+    return;
+  }
+  // Activity gutter, open-window number column, then the label, truncated
+  // to the row (shared with the Glanceboard's Terminal widget).
+  drawSessionRow(image, font, {
+    x: x + 2,
+    y: y + HUB_ROW_TEXT_INSET,
+    width: width - 8,
+    label: item.label,
+    openGlyph: item.openGlyph ?? null,
+    active: Boolean(item.active),
+    phase: hubAnimationPhase,
+    value: selected ? 255 : 200,
+  });
+}
+
 /** Switch the hub between its sections, resetting selection state. */
 function setHubMode(window: HubWindow, mode: HubMode): void {
   window.mode = mode;
-  window.selectedIndex = 0;
-  window.scrollRow = 0;
+  window.list?.select(0);
   window.addError = "";
 }
 
@@ -1423,34 +1460,6 @@ function endAddConnection(window: HubWindow): void {
   post({ type: "end-text-setting-edit" });
 }
 
-/** Move the hub selection to the next selectable item in `direction`. */
-function moveHubSelection(window: HubWindow, items: HubItem[], direction: -1 | 1): void {
-  let index = window.selectedIndex + direction;
-  while (index >= 0 && index < items.length && !items[index]!.onSelect) {
-    index += direction;
-  }
-  if (index >= 0 && index < items.length) {
-    window.selectedIndex = index;
-  }
-}
-
-/** Clamp the selection into range and off heading rows (prefer moving down). */
-function clampHubSelection(window: HubWindow, items: HubItem[]): void {
-  if (!items.length) {
-    window.selectedIndex = 0;
-    return;
-  }
-  let index = Math.max(0, Math.min(window.selectedIndex, items.length - 1));
-  if (!items[index]!.onSelect) {
-    let forward = index;
-    while (forward < items.length && !items[forward]!.onSelect) forward++;
-    let backward = index;
-    while (backward >= 0 && !items[backward]!.onSelect) backward--;
-    index = forward < items.length ? forward : Math.max(0, backward);
-  }
-  window.selectedIndex = index;
-}
-
 function handleHubInput(window: HubWindow, event: InputEvent, frameId: number): void {
   if (window.mode === "add") {
     if (event.type === "click") {
@@ -1461,23 +1470,18 @@ function handleHubInput(window: HubWindow, event: InputEvent, frameId: number): 
     frameTimings.finishFrame(frameId, "discarded: terminal add-connection ignored input");
     return;
   }
-  const items = hubItems(window);
-  clampHubSelection(window, items);
+  const list = hubMenu(window);
+  list.setItems(hubItems(window));
   switch (event.type) {
     case "scroll-up":
-      moveHubSelection(window, items, -1);
-      renderAndSubmit(window, frameId);
-      return;
     case "scroll-down":
-      moveHubSelection(window, items, 1);
+    case "click":
+      // The menu's input handler is async only to await onSelect; hub item
+      // callbacks are synchronous, so the selection move or action has
+      // already applied when it returns and the frame can paint right away.
+      list.handleInput(event).catch((error) => console.error("terminal hub action failed", error));
       renderAndSubmit(window, frameId);
       return;
-    case "click": {
-      const item = items[window.selectedIndex];
-      item?.onSelect?.();
-      renderAndSubmit(window, frameId);
-      return;
-    }
     default:
       frameTimings.finishFrame(frameId, "discarded: terminal hub ignored input");
       return;
@@ -1601,49 +1605,18 @@ function paintHub(window: HubWindow): GrayImage {
     listTop += 2 * step + 6;
   }
 
-  const items = hubItems(window);
-  clampHubSelection(window, items);
-  const hubRowH = listRowHeight(chromeFont());
-  const visibleRowCount = Math.max(1, ((window.viewportHeight - 6 - listTop) / hubRowH) | 0);
-  window.scrollRow = scrollToKeepSelectionVisible(window.scrollRow, window.selectedIndex, visibleRowCount, items.length);
-  const lastVisibleRow = Math.min(items.length, window.scrollRow + visibleRowCount);
-  for (let index = window.scrollRow; index < lastVisibleRow; index++) {
-    const y = listTop + (index - window.scrollRow) * hubRowH;
-    const item = items[index]!;
-    if (item.heading) {
-      image.drawText(chromeFont(), 20, y + 2, item.label, 140);
-      continue;
-    }
-    const selected = index === window.selectedIndex;
-    if (selected) {
-      // Match the shell convention: fill only when this window has focus, so
-      // an outline-only selection signals the sidebar owns input.
-      drawSelectionHighlight(image, 20, y - 2, window.viewportWidth - 40, hubRowH - 1, window.focused, 8);
-    }
-    // Activity gutter, open-window number column, then the label, truncated
-    // to the row (shared with the Glanceboard's Terminal widget).
-    drawSessionRow(image, chromeFont(), {
-      x: 22,
-      y: y + 2,
-      width: window.viewportWidth - 22 - 26,
-      label: item.label,
-      openGlyph: item.openGlyph ?? null,
-      active: Boolean(item.active),
-      phase: hubAnimationPhase,
-      value: selected ? 255 : 200,
-    });
-  }
-  if (items.length > visibleRowCount) {
-    drawListScrollbar(
-      image,
-      window.viewportWidth - 10,
-      listTop,
-      visibleRowCount * hubRowH - 4,
-      window.scrollRow,
-      visibleRowCount,
-      items.length,
-    );
-  }
+  const list = hubMenu(window);
+  list.setItems(hubItems(window));
+  // Selection boxes start above the text line; the menu fills the selected
+  // box only while this window has focus (an outline alone means the sidebar
+  // owns input), matching the shell convention.
+  const listHeight = window.viewportHeight - 6 - listTop;
+  list.paint(
+    image,
+    { x: HUB_LIST_X, y: listTop - 2, width: window.viewportWidth - 2 * HUB_LIST_X, height: listHeight },
+    window.focused,
+  );
+  list.drawScrollbar(image, window.viewportWidth - 10, listTop, listHeight - 4);
 
   return image;
 }

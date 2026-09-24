@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const ts = require('typescript');
+const { Menu } = require('../.test-build/app/ui/menu-core.js');
 
 function load(file, deps, globals = {}) {
   const exports = {};
@@ -27,7 +28,10 @@ function dialog({ autoSend = false, deferred = true, synchronousFinal, isIOS = f
     '../../native/anthropic': { refineDictation(options) { refinements.push(options); return { cancel() {} }; } },
     '../dashboard-settings': { anthropicApiKeySetting: { get: () => 'key' } },
     '../gestures': { gestureHints: () => '' },
-    './input-dialog': { paintInputDialog(_image, options) { frame = options; } },
+    './input-dialog': {
+      paintInputDialog(_image, options) { frame = options; },
+      createInputDialogMenu: (items, selectedIndex) => new Menu({ items, selectedIndex, wrap: true, getHeight: () => 1, draw() {} }),
+    },
   }, {
     global: { isIOS },
     setTimeout(cb) { const id = ++timerId; timers.set(id, cb); return id; },

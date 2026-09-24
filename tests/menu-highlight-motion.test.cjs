@@ -5,16 +5,17 @@ const { GrayImage } = require('../.test-build/app/graphics/image.js');
 const { encodePresentation, readPresentation, paintPresentation } = require('../.test-build/app/graphics/presentation-wire.js');
 
 test('highlight animates only navigation that preserves the scroll window', () => {
+  const D = MENU_HIGHLIGHT_DURATION_MS;
   const motion = new MenuHighlightMotion();
   assert.equal(motion.paint(0, 0, 10, 20, 100, 20, 0), undefined);
   motion.navigate(0, false);
   const moved = motion.paint(1, 0, 10, 40, 100, 20, 100);
   assert.equal(moved.dx, 0);
   assert.equal(moved.dy, -20);
-  assert.equal(moved.durationMs, 300);
-  assert.equal(motion.paint(1, 0, 10, 40, 100, 20, 250).token, moved.token);
+  assert.equal(moved.durationMs, D);
+  assert.equal(motion.paint(1, 0, 10, 40, 100, 20, 100 + D / 4).token, moved.token);
   motion.navigate(1, false);
-  const next = motion.paint(2, 0, 10, 60, 100, 20, 250);
+  const next = motion.paint(2, 0, 10, 60, 100, 20, 100 + D / 2);
   assert.equal(next.dy, -30, 'continue from the halfway position');
   motion.navigate(2, false);
   assert.equal(motion.paint(3, 1, 10, 60, 100, 20, 400), undefined, 'scroll snaps');
@@ -22,8 +23,8 @@ test('highlight animates only navigation that preserves the scroll window', () =
   assert.equal(motion.paint(0, 0, 10, 20, 100, 20, 500), undefined, 'wrap snaps');
   motion.navigate(0, false);
   motion.paint(1, 0, 10, 40, 100, 20, 600);
-  assert.ok(motion.paint(1, 0, 10, 40, 100, 20, 899));
-  assert.equal(motion.paint(1, 0, 10, 40, 100, 20, 900), undefined, 'finished after 300 ms');
+  assert.ok(motion.paint(1, 0, 10, 40, 100, 20, 600 + D - 1));
+  assert.equal(motion.paint(1, 0, 10, 40, 100, 20, 600 + D), undefined, `finished after ${D} ms`);
   assert.equal(motion.paint(2, 0, 10, 60, 100, 20, 1200), undefined, 'programmatic changes snap');
 });
 

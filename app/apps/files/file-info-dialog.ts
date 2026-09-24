@@ -4,7 +4,7 @@ import { wrapText } from "../../graphics/textwrap";
 import type { DirectoryEntry } from "../../native/file-access";
 import { GESTURE_DOUBLE_CLICK, type InputEvent } from "../../ui/gestures";
 import { Layer, type LayerContext, type PaintBelow } from "../../ui/layers";
-import { drawSelectionHighlight } from "../../ui/menu";
+import { Menu, type MenuDrawArgs } from "../../ui/menu-core";
 import { LIST_ROW_TEXT_INSET, lineStep, listRowHeight } from "../../ui/metrics";
 
 const DIALOG_X = 8;
@@ -25,12 +25,21 @@ export type FileInfoAction = {
  * double-click closes it.
  */
 export class FileInfoDialogLayer implements Layer {
-  private selectedIndex = 0;
+  private readonly menu: Menu<FileInfoAction>;
 
   constructor(
     private readonly entry: DirectoryEntry,
     private readonly actions: FileInfoAction[],
-  ) {}
+  ) {
+    this.menu = new Menu<FileInfoAction>({
+      items: actions,
+      wrap: true,
+      rowGap: 1,
+      highlight: { radius: 8 },
+      getHeight: () => listRowHeight(getDefaultSmallFont()),
+      draw: (args) => drawActionRow(args),
+    });
+  }
 
   paint(ctx: LayerContext, paintBelow: PaintBelow): GrayImage {
     const font = getDefaultSmallFont();
@@ -69,32 +78,23 @@ export class FileInfoDialogLayer implements Layer {
       image.drawText(font, DIALOG_X + PADDING + 2, y + 3, `${GESTURE_DOUBLE_CLICK} close`, 110);
       return image;
     }
-    const focused = ctx.stack.isFocused();
-    for (let index = 0; index < this.actions.length; index++) {
-      const rowY = y + index * rowH;
-      const selected = index === this.selectedIndex;
-      if (selected) {
-        drawSelectionHighlight(image, DIALOG_X + 12, rowY, DIALOG_WIDTH - 24, rowH - 1, focused, 8);
-      }
-      image.drawText(font, DIALOG_X + 22, rowY + LIST_ROW_TEXT_INSET, this.actions[index]!.label, selected ? 255 : 200);
-    }
+    // The rows fill the rest of the dialog (and scroll if a clamped dialog is too short).
+    this.menu.paint(
+      image,
+      { x: DIALOG_X + 12, y, width: DIALOG_WIDTH - 24, height: Math.max(0, DIALOG_Y + height - PADDING - y) },
+      ctx.stack.isFocused(),
+    );
     return image;
   }
 
   async handleInput(event: InputEvent, ctx: LayerContext): Promise<void> {
     switch (event.type) {
       case "scroll-up":
-        if (this.actions.length) {
-          this.selectedIndex = (this.selectedIndex + this.actions.length - 1) % this.actions.length;
-        }
-        return;
       case "scroll-down":
-        if (this.actions.length) {
-          this.selectedIndex = (this.selectedIndex + 1) % this.actions.length;
-        }
+        await this.menu.handleInput(event);
         return;
       case "click":
-        await this.actions[this.selectedIndex]?.onSelect(ctx);
+        await this.menu.selectedItem?.onSelect(ctx);
         return;
       case "double-click":
         ctx.stack.pop();
@@ -103,6 +103,10 @@ export class FileInfoDialogLayer implements Layer {
         return;
     }
   }
+}
+
+function drawActionRow({ image, item, x, y, selected }: MenuDrawArgs<FileInfoAction>): void {
+  image.drawText(getDefaultSmallFont(), x + 10, y + LIST_ROW_TEXT_INSET, item.label, selected ? 255 : 200);
 }
 
 function formatSize(bytes: number): string {

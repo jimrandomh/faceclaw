@@ -16,14 +16,12 @@ import { getDefaultSmallFont } from "../../graphics/ui-fonts";
 import * as frameTimings from "../../native/frame-timings";
 import { getActiveDisplay } from "../../native/active-display";
 import {
-  drawListScrollbar,
   drawRightValueMenuItem,
-  drawSelectionHighlight,
   drawSubmenuIndicator,
   drawToggleMenuItem,
-  scrollToKeepSelectionVisible,
   type MenuItem,
 } from "../../ui/menu";
+import { Menu, type MenuDrawArgs } from "../../ui/menu-core";
 import { LIST_ROW_TEXT_INSET, listRowHeight } from "../../ui/metrics";
 import { WindowMenu, WindowMenuLayer } from "../../ui/window-menu";
 import type { LayerContext } from "../../ui/layers";
@@ -205,9 +203,8 @@ type IdleEntry =
   | { kind: "recent"; destination: RecentDestination }
   | { kind: "action"; label: string; detail: string; run: () => void };
 
-/** Idle-page list selection (index into idleEntries()). */
-let idleSelection = 0;
-let idleScrollRow = 0;
+/** The idle page's list; created on first use (idleList) so module load stays free of paint dependencies. */
+let idleMenu: Menu<IdleEntry> | null = null;
 
 /**
  * In-progress destination edit: the phone text editor is open on `setting`
@@ -948,7 +945,7 @@ function windowMenuItems(win: NavWindow): MenuItem[] {
     onSelect: () => {
       const enabled = navigateRememberRecentSetting.toggle();
       if (!enabled) clearRecentDestinations();
-      clampIdleSelection();
+      syncIdleList();
     },
     render: ({ image, x, y, width, selected }) => {
       drawToggleMenuItem(
@@ -963,7 +960,7 @@ function windowMenuItems(win: NavWindow): MenuItem[] {
       );
     },
   });
-  const selectedEntry = phase === "idle" ? idleEntries()[idleSelection] : undefined;
+  const selectedEntry = phase === "idle" ? syncIdleList().selectedItem : null;
   if (selectedEntry?.kind === "recent") {
     const recent = selectedEntry.destination;
     items.push({
@@ -971,7 +968,7 @@ function windowMenuItems(win: NavWindow): MenuItem[] {
       onSelect: (ctx) => {
         ctx.stack.pop();
         removeRecentDestination(recent);
-        clampIdleSelection();
+        syncIdleList();
       },
     });
   }
@@ -981,7 +978,7 @@ function windowMenuItems(win: NavWindow): MenuItem[] {
       onSelect: (ctx) => {
         ctx.stack.pop();
         clearRecentDestinations();
-        clampIdleSelection();
+        syncIdleList();
       },
     });
   }
@@ -1066,7 +1063,7 @@ function customDestinationMenuItems(destination: SavedDestination): MenuItem[] {
       onSelect: (ctx) => {
         closeMenusAnd(ctx, () => {
           removeCustomDestination(destination.id);
-          clampIdleSelection();
+          syncIdleList();
         });
       },
     },
@@ -1121,7 +1118,7 @@ function finishEdit(confirmed: boolean): void {
   if (!editing) {
     navigateDestinationNameDraftSetting.set("");
     navigateDestinationAddressDraftSetting.set("");
-    clampIdleSelection();
+    syncIdleList();
     render();
   }
 }
@@ -1206,9 +1203,27 @@ function idleEntries(): IdleEntry[] {
   return entries;
 }
 
-function clampIdleSelection(): void {
-  const count = idleEntries().length;
-  idleSelection = Math.max(0, Math.min(idleSelection, count - 1));
+/** Horizontal inset of the idle list's selection boxes. */
+const IDLE_LIST_X = 20;
+/** Pixels between consecutive idle rows' selection boxes. */
+const IDLE_ROW_GAP = 2;
+
+function idleList(): Menu<IdleEntry> {
+  idleMenu ??= new Menu<IdleEntry>({
+    wrap: false,
+    rowGap: IDLE_ROW_GAP,
+    highlight: { radius: 6 },
+    getHeight: () => listRowHeight(smallFont),
+    draw: drawIdleRow,
+  });
+  return idleMenu;
+}
+
+/** Refresh the idle list from idleEntries(); the selection keeps its index, clamped into range. */
+function syncIdleList(): Menu<IdleEntry> {
+  const list = idleList();
+  list.setItems(idleEntries());
+  return list;
 }
 
 function navigateToIdleEntry(entry: IdleEntry): void {
@@ -1282,7 +1297,7 @@ function handleInput(win: NavWindow, event: InputEvent, frameId: number): void {
     } else if (phase === "arrived" || phase === "map") {
       stopNavigation("");
     } else if (phase === "idle") {
-      const entry = idleEntries()[idleSelection];
+      const entry = syncIdleList().selectedItem;
       if (!entry) {
         frameTimings.finishFrame(frameId, "discarded: navigate ignored click");
         return;
@@ -1301,8 +1316,7 @@ function handleInput(win: NavWindow, event: InputEvent, frameId: number): void {
       maybeRefreshMap();
       renderAndSubmit(win, frameId);
     } else if (phase === "idle" && idleEntries().length > 1) {
-      const count = idleEntries().length;
-      idleSelection = Math.max(0, Math.min(count - 1, idleSelection + (event.type === "scroll-down" ? 1 : -1)));
+      syncIdleList().moveSelection(event.type === "scroll-down" ? 1 : -1);
       renderAndSubmit(win, frameId);
     } else {
       frameTimings.finishFrame(frameId, "discarded: navigate ignored scroll");
@@ -1392,59 +1406,33 @@ function paintIdleList(image: GrayImage, win: NavWindow, entries: IdleEntry[], t
   const rowHeight = listRowHeight(smallFont);
   const listBottom = image.height - 30;
   const visibleRows = Math.max(1, Math.floor((listBottom - top) / rowHeight));
-  idleSelection = Math.max(0, Math.min(idleSelection, entries.length - 1));
-  idleScrollRow = scrollToKeepSelectionVisible(idleScrollRow, idleSelection, visibleRows, entries.length);
-  const rowX = 20;
   const rowWidth = image.width - 40 - (entries.length > visibleRows ? 10 : 0);
-  const labelWidth = Math.floor(rowWidth * 0.4);
-  for (let row = 0; row < visibleRows; row++) {
-    const index = idleScrollRow + row;
-    const entry = entries[index];
-    if (!entry) break;
-    const y = top + row * rowHeight;
-    const selected = index === idleSelection;
-    if (selected) drawSelectionHighlight(image, rowX, y, rowWidth, rowHeight - 2, win.focused);
-    const textX = rowX + 6;
-    const textY = y + LIST_ROW_TEXT_INSET;
-    if (entry.kind === "action") {
-      const label = truncateText(smallFont, entry.label, labelWidth);
-      image.drawText(smallFont, textX, textY, label, selected ? 245 : 210);
-      const detailX = textX + labelWidth + 8;
-      image.drawText(
-        smallFont,
-        detailX,
-        textY,
-        truncateText(smallFont, entry.detail, rowX + rowWidth - 6 - detailX),
-        selected ? 170 : 130,
-      );
-    } else if (entry.kind === "saved") {
-      const label = truncateText(smallFont, entry.destination.name, labelWidth);
-      image.drawText(smallFont, textX, textY, label, selected ? 245 : 210);
-      const detailX = textX + labelWidth + 8;
-      image.drawText(
-        smallFont,
-        detailX,
-        textY,
-        truncateText(smallFont, entry.destination.address, rowX + rowWidth - 6 - detailX),
-        selected ? 170 : 130,
-      );
-    } else {
-      const label = truncateText(smallFont, entry.destination.name, labelWidth);
-      image.drawText(smallFont, textX, textY, label, selected ? 245 : 210);
-      const detailX = textX + labelWidth + 8;
-      const detail = entry.destination.place ? `${entry.destination.place}  (recent)` : "(recent)";
-      image.drawText(
-        smallFont,
-        detailX,
-        textY,
-        truncateText(smallFont, detail, rowX + rowWidth - 6 - detailX),
-        selected ? 170 : 130,
-      );
-    }
+  const list = idleList();
+  list.setItems(entries);
+  list.paint(image, { x: IDLE_LIST_X, y: top, width: rowWidth, height: visibleRows * rowHeight - IDLE_ROW_GAP }, win.focused);
+  list.drawScrollbar(image, IDLE_LIST_X + rowWidth + 4, top, visibleRows * rowHeight - 2);
+}
+
+/** Two columns: the entry's name, then its detail (action hint, address or place). */
+function drawIdleRow({ image, item: entry, x, y, width, selected }: MenuDrawArgs<IdleEntry>): void {
+  const labelWidth = Math.floor(width * 0.4);
+  const textX = x + 6;
+  const textY = y + LIST_ROW_TEXT_INSET;
+  let label: string;
+  let detail: string;
+  if (entry.kind === "action") {
+    label = entry.label;
+    detail = entry.detail;
+  } else if (entry.kind === "saved") {
+    label = entry.destination.name;
+    detail = entry.destination.address;
+  } else {
+    label = entry.destination.name;
+    detail = entry.destination.place ? `${entry.destination.place}  (recent)` : "(recent)";
   }
-  if (entries.length > visibleRows) {
-    drawListScrollbar(image, rowX + rowWidth + 4, top, visibleRows * rowHeight - 2, idleScrollRow, visibleRows, entries.length);
-  }
+  image.drawText(smallFont, textX, textY, truncateText(smallFont, label, labelWidth), selected ? 245 : 210);
+  const detailX = textX + labelWidth + 8;
+  image.drawText(smallFont, detailX, textY, truncateText(smallFont, detail, x + width - 6 - detailX), selected ? 170 : 130);
 }
 
 function paintNavigating(image: GrayImage, win: NavWindow): void {

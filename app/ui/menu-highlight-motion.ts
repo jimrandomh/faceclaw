@@ -1,4 +1,4 @@
-export const MENU_HIGHLIGHT_DURATION_MS = 300;
+export const MENU_HIGHLIGHT_DURATION_MS = 240;
 export type MenuHighlightAnimation = { dx: number; dy: number; startedAt: number; token: number; durationMs: number };
 
 let nextToken = 1;

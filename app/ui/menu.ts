@@ -6,7 +6,7 @@ import { Layer, LayerContext, PaintBelow } from "./layers";
 import { Menu, MENU_HIGHLIGHT_FILL, MENU_HIGHLIGHT_STROKE } from "./menu-core";
 
 import { GESTURE_DOUBLE_CLICK, InputEvent } from "./gestures";
-import { LIST_ROW_TEXT_INSET, lineStep, listRowHeight, menuTitleHeight } from "./metrics";
+import { LIST_ROW_TEXT_INSET, centeredTextY, lineStep, listRowHeight, menuTitleHeight } from "./metrics";
 const DEFAULT_MENU_X = 8;
 const DEFAULT_MENU_Y = 8;
 const DEFAULT_MENU_WIDTH = 272;
@@ -148,7 +148,7 @@ export function drawSubmenuIndicator(
 ): void {
   const arrow = ">";
   const x = highlightX + highlightWidth - font.measureText(arrow) - 4;
-  const y = highlightY + (((highlightHeight - font.lineHeight) / 2) | 0);
+  const y = centeredTextY(font, highlightY, highlightHeight);
   image.drawText(font, x, y, arrow, value);
 }
 
@@ -206,7 +206,7 @@ export class MenuLayer implements Layer {
 
   constructor(
     private readonly title: string | null,
-    private readonly items: MenuItem[],
+    private items: MenuItem[],
     private readonly layout: MenuLayout = {
       x: DEFAULT_MENU_X,
       y: DEFAULT_MENU_Y,
@@ -246,6 +246,25 @@ export class MenuLayer implements Layer {
   selectItem(index: number): this {
     this.menu.select(index);
     return this;
+  }
+
+  /** The selected row's index, or null when nothing is selectable. */
+  get selectedIndex(): number | null {
+    return this.menu.selectedIndex;
+  }
+
+  get selectedItem(): MenuItem | null {
+    return this.menu.selectedItem;
+  }
+
+  /**
+   * Replace the rows in place, keeping scroll and highlight state. The
+   * selection follows Menu.setItems: pass the new index of the previously
+   * selected row, or leave it out to keep the same index, clamped.
+   */
+  setItems(items: MenuItem[], selectedIndex?: number | null): void {
+    this.items = items;
+    this.menu.setItems(items, selectedIndex);
   }
 
   paint(ctx: LayerContext, paintBelow: PaintBelow): GrayImage {

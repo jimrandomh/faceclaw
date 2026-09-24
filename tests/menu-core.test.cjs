@@ -238,3 +238,51 @@ test('the scrollbar tracks the pixel scroll fraction', () => {
   short.menu.drawScrollbar(short.image, 95, 5, 60);
   assert.equal(short.image.getPixel(95, 5), 0, 'no scrollbar when the content fits');
 });
+
+test('a menu created empty starts on the first selectable item once items arrive', () => {
+  const { menu } = stringMenu({ items: [], isSelectable: (item) => !item.startsWith('Group') });
+  assert.equal(menu.selectedIndex, null);
+  menu.setItems(['Group', 'a', 'b']);
+  assert.equal(menu.selectedIndex, 1, 'skips a leading heading');
+  menu.setItems([]);
+  assert.equal(menu.selectedIndex, null);
+  menu.setItems(['x', 'y']);
+  assert.equal(menu.selectedIndex, 0, 'emptying and refilling starts over at the top');
+});
+
+test('an explicit deselection survives setItems until the user or caller selects', async () => {
+  const { menu } = stringMenu({ items: [] , selectedIndex: null });
+  menu.setItems(['a', 'b']);
+  assert.equal(menu.selectedIndex, null, 'constructed with no selection');
+  menu.select(1);
+  menu.setItems(['a', 'b', 'c'], null);
+  menu.setItems(['a', 'b', 'c', 'd']);
+  assert.equal(menu.selectedIndex, null, 'setItems without an index keeps the deselection');
+  await menu.handleInput({ type: 'scroll-down' });
+  assert.equal(menu.selectedIndex, 0);
+  menu.setItems([]);
+  menu.setItems(['p', 'q']);
+  assert.equal(menu.selectedIndex, 0, 'scrolling ended the deselection');
+});
+
+test('setItems never leaves the viewport scrolled past the end of the list', () => {
+  // Box 60px, rows 20px: a 3-row list fits, so it must sit at the top.
+  const { menu, paint } = stringMenu({ items: ['b', 'c', 'd'] });
+  menu.select(2);
+  paint();
+  assert.equal(menu.scrollTop, 0);
+  menu.setItems(['a', 'b', 'c'], 2);
+  assert.deepEqual(paint().map((r) => r.item), ['a', 'b', 'c'], 'a row sorted in above stays visible');
+  assert.equal(menu.scrollTop, 0);
+  // The selected row at the top of a scrolled viewport loses the rows below it:
+  // keeping its on-screen position would leave a gap, so pull back to show the end.
+  const long = stringMenu({ items: ['a', 'b', 'c', 'd', 'e', 'f', 'g'] });
+  long.menu.select(6);
+  long.paint();
+  long.menu.select(4);
+  long.paint();
+  assert.equal(long.menu.scrollTop, 80, 'e is the top row');
+  long.menu.setItems(['a', 'b', 'c', 'd', 'e'], 4);
+  assert.deepEqual(long.paint().map((r) => r.item), ['c', 'd', 'e']);
+  assert.equal(long.menu.scrollTop, 40);
+});
