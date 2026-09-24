@@ -5,10 +5,12 @@ const { MENU_HIGHLIGHT_DURATION_MS } = require('../.test-build/app/ui/menu-highl
 const { GrayImage } = require('../.test-build/app/graphics/image.js');
 const { DrawOp, encodeDisplayList, readDisplayList } = require('../.test-build/app/graphics/display-list.js');
 const { evaluate } = require('../.test-build/app/graphics/draw-expression.js');
-const { menuScrollList } = require('../.test-build/app/graphics/menu-scroll-list.js');
+const { DrawExpression: E } = require('../.test-build/app/graphics/draw-expression.js');
+const { menuScrollList, slidingHighlightY } = require('../.test-build/app/graphics/menu-scroll-list.js');
+const { MENU_BOUNCE_DURATION_MS, scrollOffsetExpression } = require('../.test-build/app/ui/menu-scroll-motion.js');
 const { encodePresentation } = require('../.test-build/app/graphics/presentation-wire.js');
 // Also consumed by FrameDisplayListTest.kt.
-const SCROLL = '0787000000030002000400020000070000009600000001000200040011223344556677880200020000000000ff220100300102300180f0800180f0161101001732800180f01610300180f0302341403102000200010008000000ff280101300100300180f0800180f0161101001732800180f01610300180f030234140310100170100160400020000000103';
+const SCROLL = '078a000000030002000400020000070000009600000001000200040011223344556677880200020000000000ff250100300102300180f0800180f0161101001732800180f01610300180f0302341403101001102000200010008000000ff280101300100300180f0800180f0161101001732800180f01610300180f030234140310100170100160400020000000103';
 
 const BOX = { x: 10, y: 5, width: 40, height: 60 };
 const ITEMS = ['a', 'b', 'c', 'd', 'e', 'f', 'g'];
@@ -127,10 +129,79 @@ test('wraps, programmatic moves, busy backgrounds and oversized strips snap', ()
   assert.equal(wide(40)[0].resources[0].width, 40);
 });
 
+test('rows cut off by the viewport edge scroll without popping in either direction', () => {
+  // 70px box, 20px rows: at rest the fourth visible row shows its top half.
+  const box = { x: 10, y: 5, width: 40, height: 70 };
+  const menu = inkMenu();
+  menu.select(1);
+  let before = paint(menu, 1000, { box });
+  for (const [delta, at] of [[1, 2000], [1, 3000], [-1, 4000], [-1, 5000]]) {
+    const scrollTop = menu.scrollTop;
+    menu.moveSelection(delta);
+    const moving = paint(menu, at, { box });
+    assert.notEqual(menu.scrollTop, scrollTop, `step at ${at} scrolls`);
+    assert.equal(scrollLists(moving).length, 1);
+    assert.deepEqual(shown(moving, at), shown(before, at - 1000), `first frame at ${at}`);
+    const end = at + MENU_HIGHLIGHT_DURATION_MS;
+    before = paint(menu, end, { box });
+    assert.deepEqual(shown(moving, end), shown(before, end), `last frame at ${at}`);
+  }
+});
+
+test('an end without wrap or exit callback bounces, carrying the highlight with its row', () => {
+  for (const [start, delta] of [[6, 1], [0, -1]]) {
+    const menu = inkMenu();
+    menu.select(start);
+    const rest = paint(menu, 1000);
+    const scrollTop = menu.scrollTop;
+    menu.moveSelection(delta);
+    assert.equal(menu.selectedIndex, start);
+    const bouncing = paint(menu, 2000);
+    assert.equal(menu.scrollTop, scrollTop);
+    const [list] = scrollLists(bouncing);
+    assert.ok(list, `bounce ${delta}`);
+    const [copy, box] = list.calls;
+    const at = (value, ms) => evaluate(value, ms, 0).value;
+    const peak = Math.round(MENU_BOUNCE_DURATION_MS * 0.35);
+    // Offsets relative to rest: 8px (0.4 of a 20px row) past the end at the peak.
+    assert.equal(at(copy.y, peak) - at(copy.y, 0), 8 * delta);
+    assert.equal(at(copy.y, MENU_BOUNCE_DURATION_MS), at(copy.y, 0));
+    assert.equal(at(box.y, peak) - at(box.y, 0), -8 * delta, 'the highlight moves with its row');
+    assert.ok(evaluate(copy.y, MENU_BOUNCE_DURATION_MS - 1, 0).pending);
+    assert.deepEqual(shown(bouncing, 2000), shown(rest, 1000));
+    const end = 2000 + MENU_BOUNCE_DURATION_MS;
+    assert.deepEqual(shown(bouncing, end), shown(paint(menu, end), end));
+  }
+  const exits = [];
+  const exiting = inkMenu({ onExitBottom: () => exits.push('bottom') });
+  exiting.select(6);
+  paint(exiting, 1000);
+  exiting.moveSelection(1);
+  assert.deepEqual(exits, ['bottom']);
+  assert.equal(scrollLists(paint(exiting, 2000)).length, 0, 'an exit callback replaces the bounce');
+});
+
+test('a bounce during a scroll starts from the offset on screen', () => {
+  const menu = inkMenu();
+  menu.select(4);
+  paint(menu, 1000);
+  menu.moveSelection(1);
+  paint(menu, 2000); // 60 -> 80, the end
+  menu.moveSelection(1);
+  paint(menu, 2060); // the highlight moves to the last row; no further scroll
+  assert.equal(menu.selectedIndex, 6);
+  menu.moveSelection(1);
+  const [list] = scrollLists(paint(menu, 2120));
+  const offsets = [0, MENU_BOUNCE_DURATION_MS].map((ms) => evaluate(list.calls[0].y, ms, 0).value);
+  assert.ok(offsets[0] < offsets[1], 'it starts where the scroll had got to, above its settled offset');
+});
+
 test('scroll lists survive the bridge with animated copy coordinates', () => {
   const strip = { width: 2, height: 4, pixels: Uint8Array.of(17, 34, 51, 68, 85, 102, 119, 136) };
-  const list = menuScrollList(strip, 1, 0, 2, { from: 0, to: 2, startedAt: 1000, token: 7, durationMs: MENU_HIGHLIGHT_DURATION_MS },
-    { y: 0, width: 4, height: 2, radius: 0, background: 15, border: 45, animation: { dx: 0, dy: 1, startedAt: 1000, token: 7, durationMs: MENU_HIGHLIGHT_DURATION_MS } });
+  const timeline = { from: 0, to: 2, startedAt: 1000, token: 7, durationMs: MENU_HIGHLIGHT_DURATION_MS };
+  const y = slidingHighlightY(0, { dx: 0, dy: 1, startedAt: 1000, token: 7, durationMs: MENU_HIGHLIGHT_DURATION_MS }, 1000);
+  const list = menuScrollList(strip, 1, 2, timeline, scrollOffsetExpression(timeline).sub(E.i32(0)),
+    { y, width: 4, height: 2, radius: 0, background: 15, border: 45 });
   const bytes = encodeDisplayList({ displayList: list, x: 3, y: 2, width: 4, height: 2, depth: 0 }, 1150);
   assert.equal(Buffer.from(bytes).toString('hex'), SCROLL);
   const { placed } = readDisplayList(bytes, 0, 1150);

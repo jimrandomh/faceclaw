@@ -168,16 +168,28 @@ test('setItems keeps the index by default, takes an explicit one, and holds the 
   assert.equal(menu.selectedIndex, 1, 'an out-of-range index clamps');
 });
 
-test('variable heights: the layout follows getHeight and partial rows are hidden', () => {
+test('variable heights: the layout follows getHeight and partial rows are clipped', () => {
   const heights = { a: 10, b: 30, c: 15, d: 40, e: 5 };
   const { menu, paint } = stringMenu({ getHeight: (item) => heights[item] });
   let rows = paint();
-  assert.deepEqual(rows.map((r) => [r.item, r.y, r.height]), [['a', 0, 10], ['b', 15, 30], ['c', 45, 15]]);
+  assert.deepEqual(rows.map((r) => [r.item, r.y, r.height, r.scratch]),
+    [['a', 0, 10, true], ['b', 15, 30, false], ['c', 45, 15, false], ['d', 0, 40, true]],
+    'd is drawn in a scratch image and clipped to the viewport');
   menu.select(3);
   rows = paint();
   assert.equal(menu.scrollTop, 40, 'aligned to the top of row c');
   assert.deepEqual(rows.map((r) => [r.item, r.y]), [['c', 5], ['d', 0], ['e', 60]], 'e fits under d exactly');
   assert.equal(menu.overflows, true);
+});
+
+test('a partially visible row shows only its top, hinting at more rows', () => {
+  const menu = new Menu({ items: ['a', 'b', 'c', 'd'], getHeight: () => 20,
+    draw: ({ image, x, y, width, height }) => image.fillRect(x, y, width, height, 200) });
+  const image = new GrayImage(20, 60);
+  menu.paint(image, { x: 0, y: 5, width: 20, height: 50 }, true);
+  const column = Array.from({ length: 60 }, (_, y) => image.pixels[y * 20]);
+  assert.deepEqual(column.slice(25, 55), new Array(30).fill(200), 'rows b and the top half of c');
+  assert.deepEqual(column.slice(55), new Array(5).fill(0), 'nothing below the box');
 });
 
 test('a selected row taller than the box is drawn from its top', () => {

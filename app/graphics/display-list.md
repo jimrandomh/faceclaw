@@ -68,8 +68,11 @@ exclude the changing elapsed duration. Without a timeline, raw `time()` expressi
 start at each PRESENT. Native compilation strips the bridge-only elapsed opcode.
 
 `menu-selection-list.ts` authors both the rounded highlight and the transparent row
-image using this API. `menu-scroll-list.ts` authors a menu scroll: a viewport-sized
-copy from a strip resource whose source y animates, then the highlight. Navigation eligibility, duration, and easing remain in
+image using this API. `menu-scroll-list.ts` authors a menu scroll or bounce: a
+viewport-sized copy from a strip resource whose source y animates, then the
+highlight. The bounce curve (`app/ui/menu-scroll-motion.ts`) needs no branches:
+the easing ops clamp their input to 0..1, so `ease(t / p)` holds at 1 after the
+peak and `ease((t - p) / (1 - p))` holds at 0 before it. Navigation eligibility, duration, and easing remain in
 TypeScript. There is no animated-menu tag or menu animation policy in Kotlin.
 
 ## Bridge framing

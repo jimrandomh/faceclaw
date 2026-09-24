@@ -61,9 +61,12 @@ export class DrawExpression<T extends 'i32' | 'f32'> {
   static elapsed(): DrawExpression<'i32'> { return new DrawExpression('i32', [ExprOp.ELAPSED]); }
   /**
    * A 0..1 timeline fraction that survives subsequent PRESENT clock resets.
-   * With a delay, it stays 0 for the first delayMs of the timeline.
+   * With a delay, it stays 0 for the first delayMs of the timeline; a
+   * negative delay continues a motion that started before the timeline.
    */
   static progress(durationMs: number, delayMs = 0): DrawExpression<'f32'> {
+    integer(delayMs, -2147483647, 2147483647);
+    if (delayMs + durationMs <= 0) return DrawExpression.f32(1);
     const duration = DrawExpression.i32(integer(durationMs, 1, 2147483647));
     const end = DrawExpression.i32(integer(delayMs + durationMs, 1, 2147483647));
     const elapsed = DrawExpression.elapsed().min(end);

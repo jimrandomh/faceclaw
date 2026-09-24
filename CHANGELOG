@@ -6,6 +6,7 @@
 
 * A new display-list system for glasses-side drawing, unlocking z-effects and animation
 * Menus animate when changing selection and scrolling
+* Menus bounce at the ends, and show part of the next row when there is more below
 * Depth effects for the window switcher, top bar, and modals
 * Glanceboard has configurable distance
 

@@ -32,6 +32,10 @@ test('typed expressions follow i32/f32 arithmetic, easing, time and error semant
   assert.deepEqual(evaluate(E.i32(300).time(),0,300), {value:300,pending:false});
   assert.deepEqual(evaluate(E.i32(300).time().div(E.i32(0)),0,150), {value:0,pending:false});
   assert.deepEqual(evaluate(E.decode(Uint8Array.of(ExprOp.IADD)),0), {value:0,pending:false});
+  // Delayed timelines: a later start holds at 0, an earlier one continues, a finished one is constant.
+  const pct = (d, delay, elapsed) => evaluate(E.progress(d, delay).mul(E.f32(100)).toInt(), elapsed).value;
+  assert.deepEqual([pct(200, 100, 50), pct(200, 100, 200), pct(200, -50, 0), pct(200, -50, 150), pct(200, -300, 0)], [0, 50, 25, 100, 100]);
+  assert.equal(Buffer.from(E.progress(300, 0).code).toString('hex'), Buffer.from(E.progress(300).code).toString('hex'));
 });
 
 test('menu authors the golden generic list and stable timeline identity', () => {
