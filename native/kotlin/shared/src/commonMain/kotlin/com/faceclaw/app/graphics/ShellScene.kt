@@ -1,15 +1,16 @@
 package com.faceclaw.app
 
 /** Immutable shell snapshot. Keys identify writable surfaces across repaints, not their pixels. */
-class ShellScene(val layers: List<Layer>, val selections: List<RetainedDrawing> = emptyList()) {
+class ShellScene(val layers: List<Layer>, val selections: List<RetainedDrawing> = emptyList(), val screenDepth: Int = 0) {
     class Layer(val key: Int, val x: Int, val y: Int, val width: Int, val height: Int, val dim: Int, val packed: ByteArray, val selections: List<RetainedDrawing> = emptyList(), val depth: Int = 0)
     val allSelections = selections + layers.flatMap { it.selections }
     val retainedResources = allSelections.flatMap { it.resources }
-    init { require(retainedResources.size + layers.size < 511) }
-    val fingerprint: String = layers.joinToString(";") { "${it.key},${it.x},${it.y},${it.width},${it.height},${it.dim},${it.depth},${CachedResource(it.packed).hash},${it.selections.joinToString { row -> row.fingerprint }}" } + selections.joinToString { it.fingerprint }
+    init { require(retainedResources.size + layers.size < 511 && screenDepth in -128..127) }
+    val fingerprint: String = layers.joinToString(";") { "${it.key},${it.x},${it.y},${it.width},${it.height},${it.dim},${it.depth},${CachedResource(it.packed).hash},${it.selections.joinToString { row -> row.fingerprint }}" } + selections.joinToString { it.fingerprint } + "|depth:$screenDepth"
     fun calls(width: Int, height: Int, surfaces: IntArray, selected: IntArray): List<ByteArray> {
         val calls = ArrayList<ByteArray>(); var rowId = 0
         val now = drawAnimationTimeMs()
+        calls.addAll(DrawProtocol.screenCopy(width, height, screenDepth))
         fun add(row: RetainedDrawing) {
             calls.addAll(row.calls(selected.copyOfRange(rowId, rowId + row.resources.size), now))
             rowId += row.resources.size

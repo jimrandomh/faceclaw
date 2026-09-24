@@ -33,6 +33,8 @@ export class SurfaceCompositor {
     const surface = this.surfaces.get(id)
     if (surface) surface.visible = visible
   }
+  /** Stereo depth only shifts the lenses; this local composite shows the unshifted screen. */
+  setSurfaceDepth(_id: string, _depth: number): void {}
   setUnderlayDim(belowZOrder: number, factor: number): void {
     if (!Number.isFinite(factor)) throw new Error('Invalid dim factor')
     this.dimBelow = belowZOrder

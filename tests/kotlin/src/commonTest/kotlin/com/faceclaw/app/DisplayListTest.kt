@@ -51,14 +51,42 @@ class DisplayListTest {
         val calls = listOf(DrawProtocol.call(DRAW_OP_DISPLAY_LIST,DrawProtocol.word(20)), DrawProtocol.image(10,3,1),
             DrawProtocol.call(DRAW_OP_TEXT,hex("0c00070003000f0141")), DrawProtocol.lut(8,4,128))
         resources[21]=DrawProtocol.displayList(calls)
-        val screen=hex("123456789abcdef0123456789abcdef0"); val output=ByteArray(16)
+        // Like the C harness, seed composition with the screen: this list has no screen copy.
+        val screen=hex("123456789abcdef0123456789abcdef0"); val output=screen.copyOf()
         val renderer=DisplayListRenderer(resources)
         assertEquals(setOf(10,11,12,20,21),renderer.render(21,DisplayListRenderer.Target(screen,8,4),DisplayListRenderer.Target(output,8,4)))
         // Shared with the C sanitizer harness: signed clipping, resource target override, font and LUT.
         assertContentEquals(hex("71122334755061700112233445534477"),output)
-        val first=output.copyOf(); renderer.render(21,DisplayListRenderer.Target(screen,8,4),DisplayListRenderer.Target(output,8,4))
+        val first=output.copyOf(); screen.copyInto(output); renderer.render(21,DisplayListRenderer.Target(screen,8,4),DisplayListRenderer.Target(output,8,4))
         assertContentEquals(first,output)
         assertContentEquals(hex("123456789abcdef0123456789abcdef0"),screen)
+    }
+    @Test fun rootListsComposeTheScreenCopyAndClearBeforeDepthShifts() {
+        val screen = ByteArray(640 * 480 / 2) { (0x12 + it * 0x22).toByte() }
+        val sourceTarget = DisplayListRenderer.Target(screen, 640, 480)
+        // Without a copy, a root presents only what it draws.
+        val empty = mapOf(1 to DrawProtocol.displayList(emptyList()))
+        val composition = ByteArray(screen.size) { 0x55 }
+        DisplayListRenderer(empty).render(1, sourceTarget, DisplayListRenderer.Target(composition, 640, 480))
+        assertTrue(composition.all { it == 0x55.toByte() })
+        for (depth in listOf(-64, -17, 0, 1, 32)) for (right in listOf(false, true)) {
+            val resources = mapOf(1 to DrawProtocol.displayList(DrawProtocol.screenCopy(640, 480, depth)))
+            val output = ByteArray(screen.size) { -1 }
+            val target = DisplayListRenderer.Target(output, 640, 480)
+            DisplayListRenderer(resources, rightLens = right).render(1, sourceTarget, target)
+            val shift = DrawProtocol.depthOffset(depth, right)
+            for (y in listOf(0, 479)) for (x in 0 until 640) {
+                val sx = x - shift
+                assertEquals(if (sx in 0 until 640) sourceTarget.get(sx, y) else 0, target.get(x, y), "depth=$depth right=$right x=$x")
+            }
+        }
+        // Clear fills the whole resource target, padding included, and ignores depth.
+        val raw = DrawProtocol.rawImage(3, 2, hex("1234ab12"))
+        DisplayListRenderer(mapOf(5 to raw)).execute(DrawProtocol.sequence(listOf(DrawProtocol.clear(7, target = 5))),
+            DisplayListRenderer.Target(ByteArray(1), 1, 1))
+        assertContentEquals(DrawProtocol.rawImage(3, 2, hex("77777777")), raw)
+        val rejected = DrawProtocol.call(DRAW_OP_CLEAR, hex("10"))
+        assertFails { DisplayListRenderer(emptyMap()).execute(DrawProtocol.sequence(listOf(rejected)), DisplayListRenderer.Target(ByteArray(1), 1, 1)) }
     }
     @Test fun graphValidationPrecedesMutationAndCopyPreservesOverlap() {
         val screen=hex("12345678"); val target=DisplayListRenderer.Target(screen,8,1)
@@ -80,7 +108,7 @@ class DisplayListTest {
         val screen = hex("012345601234560112345601234560122345601234560123345601234560123445601234560123455601234f60123456601234560123456001234560123456011234560123456012234560123456012334560123456012344560123456012345")
         val expected = listOf("01234560123456011aaaaaaaaaa56012aa45644444aa0123a4564444456a1234a564f44f564a2345a6444fff644a3456a4444456444a4560aa44456444aa56011aaaaaaaaaa56012234560123456012334560123456012344560123456012345", "012345601234560112aaaaaaaaaa60122aa56444445aa1233a5644444564a2344a644f44f644a3455a4444ff6444a4566a4444564444a5600aa44564444aa60112aaaaaaaaaa6012234560123456012334560123456012344560123456012345")
         for (right in listOf(false, true)) {
-            val output = ByteArray(screen.size)
+            val output = screen.copyOf() // the shared vector's list has no screen copy
             DisplayListRenderer(resources, rightLens = right).render(42, DisplayListRenderer.Target(screen,16,12), DisplayListRenderer.Target(output,16,12))
             assertContentEquals(hex(expected[if(right) 1 else 0]), output)
         }
@@ -188,6 +216,36 @@ class DisplayListTest {
         cache.reset();val reconnect=planner.plan(newer,640,480,null,changed,1)
         assertTrue(reconnect.commands.any { it[0].toInt()==29 });glasses.apply(reconnect.commands)
         assertContentEquals(newer,glasses.screen)
+    }
+    @Test fun fullScreenSurfaceDepthShiftsThePresentedScreenPerLens() {
+        val c = SurfaceCompositor()
+        c.configureScreen(640, 480)
+        c.configureSurface("app", 0, 0, 640, 480, 0, 0)
+        c.configureSurface("glance", 0, 0, 640, 480, 900, 0)
+        val board = ByteArray(640 * 480) { if (it % 640 in 100 until 110) 255.toByte() else 0 }
+        c.submitSurface("glance", ArrayByteReader(board), 0, 0, 640, 480, "board")
+        c.setSurfaceDepth("glance", 32)
+        assertEquals(32, c.composite().shellScene.screenDepth)
+        // Only the topmost visible surface counts, and only when it opaquely covers the screen.
+        c.configureSurface("partial", 0, 0, 10, 10, 950, 0)
+        assertEquals(0, c.composite().shellScene.screenDepth)
+        c.setSurfaceVisible("partial", false)
+        c.setSurfaceVisible("glance", false)
+        assertEquals(0, c.composite().shellScene.screenDepth)
+        c.setSurfaceVisible("glance", true)
+        val composite = c.composite()
+        val screen = BmpUtil.pack4bppFromGray8(composite.screenGray, 640, 480)
+        for (right in listOf(false, true)) {
+            val glasses = Glasses(right)
+            glasses.composition.fill(-1) // stale pixels from an earlier frame
+            glasses.apply(ScenePlanner(ResourceCacheState()).plan(screen, 640, 480, null, composite.shellScene, 1).commands)
+            assertContentEquals(screen, glasses.screen)
+            val output = DisplayListRenderer.Target(glasses.composition, 640, 480)
+            val shift = if (right) -16 else 16
+            assertEquals(15, output.get(100 + shift, 0)); assertEquals(0, output.get(99 + shift, 0))
+            assertEquals(15, output.get(109 + shift, 479)); assertEquals(0, output.get(110 + shift, 479))
+            assertEquals(0, output.get(if (right) 639 else 0, 240)) // cleared, not stale
+        }
     }
     @Test fun noisyFramesRemainBoundedAndResourceBudgetIs192KiB() {
         val cache=ResourceCacheState();val planner=ScenePlanner(cache);val glasses=Glasses()

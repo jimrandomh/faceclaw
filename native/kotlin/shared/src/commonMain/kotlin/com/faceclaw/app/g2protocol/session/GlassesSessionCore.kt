@@ -930,6 +930,9 @@ class GlassesSessionCore(
      * actually appear — otherwise a static window (e.g. the terminal hub) whose
      * frame landed while briefly hidden would stay blank until its next repaint.
      */
+    /** Stereo depth for a full-screen surface; applies from its next frame. */
+    fun setSurfaceDepth(id: String, depth: Int) = compositor.setSurfaceDepth(id, depth)
+
     fun setSurfaceVisible(id: String, visible: Boolean) {
         // Its own frame: this recomposite is a real screen update with real
         // latency, and without one it would show up in other frames' logs only

@@ -27,7 +27,7 @@ function fixture() {
   let now = 1000, nextTask = 0, screenOn = true, shellOptions;
   const tasks = new Map(), sent = [], previews = [], received = [], errors = [];
   const boardStats = { starts: 0, stops: 0, paints: 0 };
-  const settings = { lock: true, enabled: true, tap: true, hold: true, tilt: true, duration: 3000 };
+  const settings = { lock: true, enabled: true, tap: true, hold: true, tilt: true, duration: 3000, depth: 0 };
   const clock = { Date: class extends Date { static now() { return now; } },
     setTimeout: (fn, ms) => { tasks.set(++nextTask, { fn, at: now + ms }); return nextTask; },
     clearTimeout: id => tasks.delete(id), setInterval: () => ++nextTask, clearInterval() {} };
@@ -63,6 +63,8 @@ function fixture() {
     async configureSurface(id, options) { this.compositor.configureSurface(id, options); }
     async removeSurface(id) { this.compositor.removeSurface(id); this.changed(); }
     async setSurfaceVisible(id, visible) { this.compositor.setSurfaceVisible(id, visible); this.changed(); }
+    depths = [];
+    async setSurfaceDepth(id, depth) { this.depths.push([id, depth]); this.compositor.setSurfaceDepth(id, depth); }
     async setUnderlayDim(below, factor) { this.compositor.setUnderlayDim(below, factor); this.changed(); }
     async setScreenBlanked(blanked) { this.compositor.setScreenBlanked(blanked); this.changed(); }
     async submitSurfaceFrame(id, pixels, rect, _fingerprint, _paintMs, _frameId, draws = null) { this.compositor.submitSurfaceFrame(id, pixels, rect, draws); this.changed(); }
@@ -96,7 +98,7 @@ function fixture() {
   const provider = {
     isEnabled: () => settings.enabled, showOnTap: () => settings.tap,
     showOnLongPress: () => settings.hold, showOnHeadTilt: () => settings.tilt,
-    tapTimeoutMs: () => settings.duration,
+    tapTimeoutMs: () => settings.duration, depth: () => settings.depth,
     createBoard: () => ({ start: () => boardStats.starts++, stop: () => boardStats.stops++,
       paint: () => { boardStats.paints++; return new images.GrayImage(100, 80, 200); } }),
   };
@@ -192,6 +194,16 @@ test('iOS sleep tap shows the shared board; repeated tap renews timeout and hide
   assert.equal(f.controller.glance.isVisible(), false);
   for (const pixels of f.sent.slice(offset)) assertBlank(pixels);
   assert.equal(f.boardStats.starts, 1); assert.equal(f.boardStats.stops, 1);
+});
+
+test('Glanceboard applies its depth setting to its surface only when it changes', async () => {
+  const f = fixture(); await f.connect(); f.shell.sleep(); await f.render();
+  f.settings.depth = 32; await f.hardware(0); assertBoard(f.sent.at(-1));
+  await f.advance(3100); await f.render(); assert.equal(f.controller.glance.isVisible(), false);
+  await f.hardware(0); assert.equal(f.controller.glance.isVisible(), true);
+  await f.advance(3100); await f.render();
+  f.settings.depth = 0; await f.hardware(0);
+  assert.deepEqual(f.controller.display.depths, [['glance', 32], ['glance', 0]]);
 });
 
 test('iOS holds and tap-then-holds last until release, including with phone backgrounded', async () => {

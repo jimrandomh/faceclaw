@@ -551,6 +551,16 @@ export class FaceclawCommunicatorBridge {
   }
 
   /**
+   * Stereo depth for a surface, applied while it is the topmost visible
+   * surface and opaquely covers the screen; takes effect at its next frame.
+   */
+  async setSurfaceDepth(id: string, depth: number): Promise<void> {
+    await this.enqueueJavaCall(() => {
+      this.communicator.setSurfaceDepth(id, Math.round(depth));
+    });
+  }
+
+  /**
    * Blank (screen off) or unblank the composited output; retained surface
    * state survives, so unblanking restores the screen without repaints.
    */

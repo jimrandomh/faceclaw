@@ -274,6 +274,9 @@ class SurfaceCompositor @JvmOverloads constructor(private val includePreviewInFr
 
         @JvmField var visible: Boolean = true
 
+        /** Stereo depth; see setSurfaceDepth. */
+        @JvmField var depth: Int = 0
+
         @JvmField var pixels: ByteArray = ByteArray(0)
 
         @JvmField var fingerprint: String = ""
@@ -417,6 +420,27 @@ class SurfaceCompositor @JvmOverloads constructor(private val includePreviewInFr
             }
             surface.visible = visible
         }
+    }
+
+    /**
+     * Stereo depth (DrawProtocol.depthOffset) for a surface. It applies while the surface is the
+     * topmost visible one and opaquely covers the screen: the glasses then copy the whole screen
+     * into the frame shifted per lens. Takes effect when the next frame composites.
+     */
+    fun setSurfaceDepth(id: String, depth: Int): Unit {
+        require(depth in -128..127) { "bad depth $depth for $id" }
+        lock.withLock {
+            val surface = surfaces.get(id) ?: throw IllegalArgumentException(("unknown surface " + id))
+            surface.depth = depth
+        }
+    }
+
+    /** The screen's stereo depth: see setSurfaceDepth. */
+    private fun screenDepthLocked(ordered: List<Surface>): Int {
+        val top = ordered.lastOrNull { it.visible } ?: return 0
+        val covers = top.transparency == TRANSPARENCY_OPAQUE && top.x <= 0 && top.y <= 0 &&
+            top.x + top.width >= screenWidth && top.y + top.height >= screenHeight
+        return if (covers) top.depth else 0
     }
 
     /**
@@ -681,7 +705,9 @@ class SurfaceCompositor @JvmOverloads constructor(private val includePreviewInFr
                 fingerprint.append(":dim").append(dim)
             }
         }
-        val scene = if (surfaces.values.any { it.visible && it.zOrder > 1 }) ShellScene.EMPTY else ShellScene(shellScene?.layers ?: emptyList(), selections)
+        val screenDepth = screenDepthLocked(ordered)
+        val scene = if (surfaces.values.any { it.visible && it.zOrder > 1 }) ShellScene(emptyList(), screenDepth = screenDepth)
+            else ShellScene(shellScene?.layers ?: emptyList(), selections, screenDepth)
         val sceneKey = fingerprint.append("|shell:").append(scene.fingerprint).toString()
         val preview = if (includePreview && (shellScene != null || selections.isNotEmpty())) {
             previewScene(scene, gray, sceneKey)

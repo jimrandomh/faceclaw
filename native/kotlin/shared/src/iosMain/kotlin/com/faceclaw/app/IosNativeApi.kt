@@ -223,6 +223,8 @@ class IosSurfaceCompositor(width: Int, height: Int) {
 
     fun visible(id: String, visible: Boolean) = compositor.setSurfaceVisible(id, visible)
 
+    fun depth(id: String, depth: Int) = compositor.setSurfaceDepth(id, depth)
+
     fun dim(below: Int, factor: Double) {
         require(factor.isFinite())
         compositor.setUnderlayDim(below, (factor.coerceIn(0.0, 1.0) * 256).toInt())

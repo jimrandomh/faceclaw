@@ -13,6 +13,7 @@ import { GlanceBoard } from "./board";
 import {
   clearConflictingSlots,
   glanceboardEnabledSetting,
+  glanceDepthSetting,
   glanceLayout,
   glanceLayoutSetting,
   glanceShowLinesSetting,
@@ -297,7 +298,7 @@ function openSlotPicker(ctx: LayerContext, slotIndex: number): void {
   openModalMenu(ctx, setting.label, items, Math.max(0, setting.values.indexOf(current)));
 }
 
-/** Settings: layout, sleep gestures, duration, and slot lines. */
+/** Settings: layout, sleep gestures, duration, slot lines, and stereo depth. */
 function openGlanceSettings(ctx: LayerContext): void {
   const items: MenuItem[] = [
     enumSettingMenuItem(glanceLayoutSetting),
@@ -305,6 +306,7 @@ function openGlanceSettings(ctx: LayerContext): void {
     toggleSettingMenuItem(glanceShowOnLongPressSetting),
     toggleSettingMenuItem(glanceShowOnHeadTiltSetting),
     toggleSettingMenuItem(glanceShowLinesSetting),
+    enumSettingMenuItem(glanceDepthSetting),
   ];
   ctx.stack.push(new MenuLayer("Glanceboard settings", items, pageMenuLayout(ctx.stack.getBaseSize().width)));
 }

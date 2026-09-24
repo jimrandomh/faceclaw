@@ -524,6 +524,10 @@ export class FaceclawCommunicatorBridge {
     await this.enqueueNativeCall(() => { this.communicator.setSurfaceVisibleIdVisible(id, Boolean(visible)); });
   }
 
+  async setSurfaceDepth(id: string, depth: number): Promise<void> {
+    await this.enqueueNativeCall(() => { this.communicator.setSurfaceDepthIdDepth(id, Math.round(depth)); });
+  }
+
   async setScreenBlanked(blanked: boolean): Promise<void> {
     await this.enqueueNativeCall(() => { this.communicator.setScreenBlankedBlanked(Boolean(blanked)); });
   }

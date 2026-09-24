@@ -1,6 +1,6 @@
 package com.faceclaw.app
 
-/** Revision 27 wire grammar, shared by scene planning and the local renderer. */
+/** Revision 28 wire grammar, shared by scene planning and the local renderer. */
 object DrawProtocol {
     /** Mirrors g2flash/patches/zlib_glue.c. */
     const val DRAW = CFW_MSG_DRAW_CALLS
@@ -106,6 +106,20 @@ object DrawProtocol {
         writeS16(dx)
         writeS16(dy)
     }
+
+    /** Fill the whole target, ignoring depth. */
+    fun clear(color: Int = 0, target: Int? = null): ByteArray {
+        require(color in 0..15)
+        return call(DRAW_OP_CLEAR, target) { writeU8(color) }
+    }
+
+    /**
+     * The copy that starts every root list: firmware presents only what the root
+     * draws. A shifted copy clears first so its uncovered edge is not stale.
+     */
+    fun screenCopy(width: Int, height: Int, depth: Int = 0): List<ByteArray> =
+        if (depth == 0) listOf(rectCopy(SCREEN, 0, 0, width, height, 0, 0))
+        else listOf(clear(), rectCopy(SCREEN, 0, 0, width, height, 0, 0, depth = depth))
 
     fun stockText(x: Int, y: Int, options: Int, text: ByteArray): ByteArray {
         require(text.size <= 255)

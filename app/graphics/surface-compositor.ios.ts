@@ -18,6 +18,7 @@ export class SurfaceCompositor {
   }
   removeSurface(id: string): void { this.native.removeId(id); this.surfaces.delete(id) }
   setSurfaceVisible(id: string, visible: boolean): void { this.native.visibleIdVisible(id, visible) }
+  setSurfaceDepth(id: string, depth: number): void { this.native.depthIdDepth(id, depth) }
   setUnderlayDim(belowZOrder: number, factor: number): void {
     if (!Number.isFinite(factor)) throw new Error('Invalid dim factor')
     this.native.dimBelowFactor(belowZOrder, factor)

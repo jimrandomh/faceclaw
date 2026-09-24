@@ -5,7 +5,7 @@ import kotlin.test.*
 class DrawWireTest {
     private fun hex(value: String) = value.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
 
-    @Test fun encodersUseRevision27CoordinatesAndPreserveOtherWireBytes() {
+    @Test fun encodersUseRevision28CoordinatesAndPreserveOtherWireBytes() {
         // Literal vectors pin the firmware grammar independently of the reader.
         val calls = listOf(
             DrawProtocol.image(0x1234, -32768, 32767, 0x1f, target = 511, depth = -128) to
@@ -20,12 +20,20 @@ class DrawWireTest {
             DrawProtocol.lut(640, 480, 256) to "0600000000008002e0010123456789abcdef",
             DrawProtocol.bbox(hex("ffffffffffffffff"), 4, 0, 0, 8, 2) to "010000000002010f10",
             DrawProtocol.bbox(hex("0f"), 1, 1, 0, 1, 1) to "01000101000000010001001f",
+            DrawProtocol.clear(15, target = 511) to "0901ff010f",
         )
         for ((call, expected) in calls) assertContentEquals(hex(expected), call)
         assertContentEquals(hex("0100050007027fff01"), DrawProtocol.sequence(listOf(calls[4].first)))
         assertContentEquals(hex("1a0100050007027fff01"), DrawProtocol.message(listOf(calls[4].first)))
         assertContentEquals(hex("020100050007027fff01"), DrawProtocol.displayList(listOf(calls[4].first)))
         assertContentEquals(hex("1bffff"), DrawProtocol.root(DrawProtocol.SCREEN))
+        val flat = DrawProtocol.screenCopy(640, 352)
+        assertEquals(1, flat.size)
+        assertContentEquals(hex("0200ffff000000008002600100000000"), flat[0])
+        val shifted = DrawProtocol.screenCopy(640, 352, -32)
+        assertEquals(2, shifted.size)
+        assertContentEquals(hex("090000"), shifted[0])
+        assertContentEquals(hex("0202e0ffff000000008002600100000000"), shifted[1])
     }
 
     @Test fun optimizerFieldsAreReencodedAndOpaqueBytesArePreserved() {

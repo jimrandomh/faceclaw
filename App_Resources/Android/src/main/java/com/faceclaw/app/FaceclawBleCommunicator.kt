@@ -291,6 +291,8 @@ class FaceclawBleCommunicator(context: Context, rightAddress: String?, leftAddre
 
     fun setSurfaceVisible(id: String, visible: Boolean) = core.setSurfaceVisible(id, visible)
 
+    fun setSurfaceDepth(id: String, depth: Int) = core.setSurfaceDepth(id, depth)
+
     fun setScreenBlanked(blanked: Boolean) = core.setScreenBlanked(blanked)
 
     fun configureSurface(id: String?, x: Int, y: Int, width: Int, height: Int, zOrder: Int, transparency: Int) =

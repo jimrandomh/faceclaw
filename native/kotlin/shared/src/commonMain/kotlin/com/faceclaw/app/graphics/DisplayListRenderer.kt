@@ -164,9 +164,11 @@ class DisplayListRenderer(
         val frame = DrawEvaluation(elapsedMs)
         val references = mutableSetOf<Int>()
         for (apply in listOf(false, true)) {
-            if (apply) copyScreen(screen, composition)
+            // A root list composes the whole frame, including its screen copy.
             if (root != DrawProtocol.SCREEN) {
                 executeList(root, composition, Walk(screen, apply, references, frame))
+            } else if (apply) {
+                copyScreen(screen, composition)
             }
         }
         animationPending = frame.animationPending
@@ -226,6 +228,7 @@ class DisplayListRenderer(
             DRAW_OP_TEXT -> drawText(reader, target, walk)
             DRAW_OP_REMAP_COLORS -> remapColors(reader, target, walk)
             DRAW_OP_ROUNDED_RECT -> drawRoundedRect(reader, target, walk)
+            DRAW_OP_CLEAR -> clear(reader, target, walk)
             DRAW_OP_DISPLAY_LIST -> {
                 val id = reader.readU16()
                 reader.requireDone()
@@ -358,6 +361,13 @@ class DisplayListRenderer(
             val shift = if (value % 2 == 0) 4 else 0
             target.put(xx, yy, (table[value / 2].toInt() ushr shift) and 15)
         }
+    }
+
+    private fun clear(reader: DrawReader, target: Target, walk: Walk) {
+        val color = reader.readU8()
+        reader.requireDone()
+        require(color <= 15)
+        if (walk.apply) target.bytes.fill((color * 17).toByte(), target.offset, target.offset + target.stride * target.height)
     }
 
     private fun drawRoundedRect(reader: DrawReader, target: Target, walk: Walk) {

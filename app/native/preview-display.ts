@@ -19,6 +19,7 @@ export type DisplayTarget = Pick<
   | "configureSurface"
   | "removeSurface"
   | "setSurfaceVisible"
+  | "setSurfaceDepth"
   | "setUnderlayDim"
   | "setScreenBlanked"
   | "submitSurfaceFrame"
@@ -96,6 +97,10 @@ export class PreviewDisplayTarget implements DisplayTarget {
 
   async setSurfaceVisible(id: string, visible: boolean): Promise<void> {
     this.compositor.setSurfaceVisible(id, Boolean(visible));
+  }
+
+  async setSurfaceDepth(id: string, depth: number): Promise<void> {
+    this.compositor.setSurfaceDepth(id, Math.round(depth));
   }
 
   async submitShellScene(bytes: Uint8Array, paintMs = 0, frameId = 0): Promise<void> {

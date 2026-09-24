@@ -87,6 +87,10 @@ class FaceclawPreviewCompositor(context: Context) {
         compositor.setSurfaceVisible(id, visible)
     }
 
+    fun setSurfaceDepth(id: String, depth: Int) {
+        compositor.setSurfaceDepth(id, depth)
+    }
+
     /** Blank (screen off) or unblank the output; retained surface state survives. */
     fun setScreenBlanked(blanked: Boolean) {
         compositor.setBlanked(blanked)

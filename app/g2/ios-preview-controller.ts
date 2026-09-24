@@ -86,6 +86,7 @@ export class IosPreviewController {
   private readonly glanceDisplay: GlanceDisplay = {
     configureSurface: async (id, options) => { await this.display?.configureSurface(id, options) },
     setSurfaceVisible: async (id, visible) => { await this.display?.setSurfaceVisible(id, visible); this.schedulePreviewUpdate() },
+    setSurfaceDepth: async (id, depth) => { await this.display?.setSurfaceDepth(id, depth) },
     setScreenBlanked: async blanked => { await this.display?.setScreenBlanked(blanked); this.schedulePreviewUpdate() },
     submitSurfaceFrame: async (id, pixels, rect, fingerprint, paintMs, frameId, draws) => {
       await this.display?.submitSurfaceFrame(id, pixels, rect, fingerprint, paintMs, frameId, draws); this.schedulePreviewUpdate()

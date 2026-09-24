@@ -74,7 +74,7 @@ class DrawExpressionTest {
 
     @Test fun playerSchedulesOnlyUnfinishedFramesAndCancelsStaleCallbacks() {
         val call = DrawProtocol.roundedRect(DrawValue.Integer(0), DrawValue.animate(0, 4, 300), 2, 2, 0, 15)
-        val renderer = DisplayListRenderer(mapOf(1 to DrawProtocol.displayList(listOf(call))))
+        val renderer = DisplayListRenderer(mapOf(1 to DrawProtocol.displayList(DrawProtocol.screenCopy(4, 8) + call)))
         val screen = DisplayListRenderer.Target(ByteArray(16), 4, 8)
         val output = DisplayListRenderer.Target(ByteArray(16), 4, 8)
         var now = 1000L
