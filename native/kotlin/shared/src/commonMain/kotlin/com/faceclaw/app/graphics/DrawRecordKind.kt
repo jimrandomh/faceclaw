@@ -8,10 +8,10 @@ object DrawRecordKind {
     const val MENU_SELECTION = 3
     const val TRANSPARENT_IMAGE = 4
     const val MASKED_IMAGE = 5
-    const val ANIMATED_MENU_SELECTION = 6
+    const val DISPLAY_LIST = 7
 
     fun isPresentation(kind: Int): Boolean = when (kind) {
-        MENU_SELECTION, TRANSPARENT_IMAGE, MASKED_IMAGE, ANIMATED_MENU_SELECTION -> true
+        MENU_SELECTION, TRANSPARENT_IMAGE, MASKED_IMAGE, DISPLAY_LIST -> true
         else -> false
     }
 }

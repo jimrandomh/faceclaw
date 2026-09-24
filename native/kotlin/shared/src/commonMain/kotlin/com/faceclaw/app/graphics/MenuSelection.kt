@@ -2,17 +2,15 @@ package com.faceclaw.app
 
 /** A retained selection or image, replayed at stereo depth over the screen and shell surfaces. */
 class MenuSelection(val x: Int, val y: Int, val width: Int, val height: Int, val radius: Int,
-    val background: Int, val border: Int, val depth: Int, val packed: ByteArray, val occlusions: List<IntArray> = emptyList(), val kind: Int = DrawRecordKind.MENU_SELECTION, val mask: List<IntArray> = emptyList(), val animation: Animation? = null) {
-    class Animation(val dx: Int, val dy: Int, val startedAt: Long, val token: Int, val durationMs: Int)
+    val background: Int, val border: Int, val depth: Int, val packed: ByteArray, val occlusions: List<IntArray> = emptyList(), val kind: Int = DrawRecordKind.MENU_SELECTION, val mask: List<IntArray> = emptyList()) : RetainedDrawing {
     val resource = CachedResource(DrawProtocol.rawImage(width, height, packed))
-    val fingerprint = "${animation?.token},${animation?.dx},${animation?.dy},${animation?.durationMs},$kind,${mask.joinToString { it.joinToString() }},$x,$y,$width,$height,$radius,$background,$border,$depth,${resource.hash},${occlusions.joinToString { it.joinToString() }}"
-    fun translated(dx: Int, dy: Int) = MenuSelection(x + dx, y + dy, width, height, radius, background, border, depth, packed, occlusions.map { intArrayOf(it[0] + dx, it[1] + dy, it[2], it[3]) }, kind, mask, animation)
-    fun calls(id: Int, nowMs: Long = drawAnimationTimeMs()): List<ByteArray> {
-        val elapsed = animation?.let { (nowMs - it.startedAt).coerceIn(0, it.durationMs.toLong()).toInt() } ?: 0
-        val highlightX = animation?.let { DrawValue.animate(x + it.dx, x, it.durationMs, elapsed) } ?: DrawValue.Integer(x)
-        val highlightY = animation?.let { DrawValue.animate(y + it.dy, y, it.durationMs, elapsed) } ?: DrawValue.Integer(y)
+    override val resources = listOf(resource)
+    override val fingerprint = "$kind,${mask.joinToString { it.joinToString() }},$x,$y,$width,$height,$radius,$background,$border,$depth,${resource.hash},${occlusions.joinToString { it.joinToString() }}"
+    override fun translated(dx: Int, dy: Int) = MenuSelection(x + dx, y + dy, width, height, radius, background, border, depth, packed, occlusions.map { intArrayOf(it[0] + dx, it[1] + dy, it[2], it[3]) }, kind, mask)
+    override fun calls(ids: IntArray, nowMs: Long) = calls(ids.single())
+    fun calls(id: Int): List<ByteArray> {
         val image = when (kind) {
-            DrawRecordKind.MENU_SELECTION -> listOf(DrawProtocol.roundedRect(highlightX, highlightY, width, height, radius, background, border, depth),
+            DrawRecordKind.MENU_SELECTION -> listOf(DrawProtocol.roundedRect(x, y, width, height, radius, background, border, depth),
                 DrawProtocol.image(id, x, y, CFW_TEXTURE_OPT_BRIGHTNESS_MASK or CFW_TEXTURE_OPT_TRANSPARENT, depth = depth))
             DrawRecordKind.TRANSPARENT_IMAGE -> listOf(DrawProtocol.image(id, x, y, CFW_TEXTURE_OPT_BRIGHTNESS_MASK or CFW_TEXTURE_OPT_TRANSPARENT, depth = depth))
             // Gray8 zero is transparent but gray8 one is opaque black. Rect copies preserve
@@ -31,7 +29,7 @@ class MenuSelection(val x: Int, val y: Int, val width: Int, val height: Int, val
     companion object {
         /** The caller has consumed a presentation tag from [DrawRecordKind]. Colors and pixels cross in gray8. */
         fun read(reader: ByteReader, kind: Int = DrawRecordKind.MENU_SELECTION): MenuSelection {
-            require(DrawRecordKind.isPresentation(kind))
+            require(kind in listOf(DrawRecordKind.MENU_SELECTION, DrawRecordKind.TRANSPARENT_IMAGE, DrawRecordKind.MASKED_IMAGE))
             require(reader.remaining() >= 15)
             val x = reader.getShort().toInt(); val y = reader.getShort().toInt()
             val w = reader.getShort().toInt() and 65535; val h = reader.getShort().toInt() and 65535
@@ -42,16 +40,6 @@ class MenuSelection(val x: Int, val y: Int, val width: Int, val height: Int, val
             val count = reader.getShort().toInt() and 65535
             require(count <= 2048)
             require(w in 1..640 && h in 1..480 && 5 + (w + 1) / 2 * h <= 65536 && reader.remaining() >= w * h)
-            val animation = if (kind == DrawRecordKind.ANIMATED_MENU_SELECTION) {
-                require(reader.remaining() >= 12)
-                val dx = reader.getShort().toInt()
-                val dy = reader.getShort().toInt()
-                val elapsed = reader.getShort().toInt() and 65535
-                val token = reader.getInt()
-                val duration = reader.getShort().toInt() and 65535
-                require(duration > 0 && elapsed <= duration)
-                Animation(dx, dy, drawAnimationTimeMs() - elapsed, token, duration)
-            } else null
             val gray = ByteArray(w * h); reader.get(gray)
             require(reader.remaining() >= count * 8)
             val occlusions = List(count) { IntArray(4) { reader.getShort().toInt() and 65535 } }
@@ -68,8 +56,7 @@ class MenuSelection(val x: Int, val y: Int, val width: Int, val height: Int, val
                     }
                 }
             }
-            val normalizedKind = if (kind == DrawRecordKind.ANIMATED_MENU_SELECTION) DrawRecordKind.MENU_SELECTION else kind
-            return MenuSelection(x, y, w, h, radius, background, border, depth, BmpUtil.pack4bppFromGray8(gray, w, h), occlusions, normalizedKind, mask, animation)
+            return MenuSelection(x, y, w, h, radius, background, border, depth, BmpUtil.pack4bppFromGray8(gray, w, h), occlusions, kind, mask)
         }
     }
 }

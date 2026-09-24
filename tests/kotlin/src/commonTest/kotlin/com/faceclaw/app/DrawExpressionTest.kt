@@ -72,48 +72,6 @@ class DrawExpressionTest {
         assertEquals(110 to false, evaluate(continued.program, 250))
     }
 
-    @Test fun animatedMenuBridgePreservesElapsedTimeAndTranslation() {
-        // Tag 6 record emitted by the TypeScript bridge: elapsed=200, delta=(-2,-4), duration=300.
-        val wire = hex("06030002000200020001001030020000fefffcffc8002a0000002c01ffffffff")
-        val input = ArrayByteReader(wire)
-        assertEquals(6, input.get().toInt())
-        val row = MenuSelection.read(input, DrawRecordKind.ANIMATED_MENU_SELECTION).translated(10, 10)
-        assertEquals(0, input.remaining())
-        val motion = assertNotNull(row.animation)
-        assertEquals(42, motion.token)
-        assertEquals(300, motion.durationMs)
-        assertEquals(-2, motion.dx)
-        assertEquals(-4, motion.dy)
-        val call = row.calls(7, motion.startedAt + 200).first()
-        for ((elapsed, expected) in listOf(0L to (12 to 10), 100L to (13 to 12))) {
-            val reader = DrawReader(call)
-            assertEquals(8, reader.readU8())
-            assertEquals(DRAW_FLAG_DEPTH, reader.readU8())
-            assertEquals(2, reader.readS8())
-            val frame = DrawEvaluation(elapsed)
-            assertEquals(expected.first, ExtendedVarint.evaluate(reader, frame))
-            assertEquals(expected.second, ExtendedVarint.evaluate(reader, frame))
-            assertEquals(elapsed < 100, frame.animationPending)
-        }
-        for (end in 1 until wire.size) assertFails {
-            MenuSelection.read(ArrayByteReader(wire.copyOf(end), 1), DrawRecordKind.ANIMATED_MENU_SELECTION)
-        }
-    }
-
-    @Test fun menuCoordinatesUseTheSuppliedDuration() {
-        val row = MenuSelection(0, 4, 2, 2, 0, 15, 16, 0, ByteArray(2),
-            animation = MenuSelection.Animation(0, -4, 1000, 42, 120))
-        val call = row.calls(7, 1000).first()
-        for ((elapsed, y) in listOf(0L to 0, 60L to 2, 120L to 4)) {
-            val reader = DrawReader(call)
-            reader.readBytes(3) // opcode, flags, depth
-            val frame = DrawEvaluation(elapsed)
-            assertEquals(0, ExtendedVarint.evaluate(reader, frame))
-            assertEquals(y, ExtendedVarint.evaluate(reader, frame))
-            assertEquals(elapsed < 120, frame.animationPending)
-        }
-    }
-
     @Test fun playerSchedulesOnlyUnfinishedFramesAndCancelsStaleCallbacks() {
         val call = DrawProtocol.roundedRect(DrawValue.Integer(0), DrawValue.animate(0, 4, 300), 2, 2, 0, 15)
         val renderer = DisplayListRenderer(mapOf(1 to DrawProtocol.displayList(listOf(call))))

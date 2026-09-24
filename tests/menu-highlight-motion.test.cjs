@@ -35,7 +35,7 @@ test('bridge and fallback preview use the supplied animation duration', () => {
     image.drawMenuSelection(new GrayImage(2, 2), 5, 0, 0, 255, 0, 0,
       { dx: -4, dy: 0, startedAt: 1000, token: 1, durationMs: 100 });
     const record = readPresentation(encodePresentation(image.draws[0]), 0);
-    assert.equal(record.selection.animation.durationMs, 100);
+    assert.ok(record.selection.displayList);
     const screen = new Uint8Array(16), output = new Uint8Array(16);
     paintPresentation(output, screen, 8, 2, record.selection);
     assert.equal(output[3], 240, 'halfway at 50 ms');
@@ -56,11 +56,11 @@ test('animated selection bridge carries relative start, elapsed time and stable 
     image.drawMenuSelection(new GrayImage(2, 2, 255), 3, 2, 16, 48, 1, 2,
       { dx: -2, dy: -4, startedAt: 1000, token: 42, durationMs: MENU_HIGHLIGHT_DURATION_MS });
     const bytes = encodePresentation(image.draws[0]);
-    assert.equal(bytes[0], 6);
-    assert.equal(bytes.length, 32);
+    assert.equal(bytes[0], 7);
     const record = readPresentation(bytes, 0);
     assert.equal(record.end, bytes.length);
-    assert.deepEqual(record.selection.animation, { dx: -2, dy: -4, startedAt: 1000, token: 42, durationMs: MENU_HIGHLIGHT_DURATION_MS });
+    assert.deepEqual(record.selection.displayList.timeline, { startedAt: 1000, token: 42 });
+    assert.equal(record.selection.displayList.calls[0].op, 8);
     assert.equal(record.selection.x, 3);
     assert.equal(record.selection.y, 2);
   } finally { Date.now = now; }

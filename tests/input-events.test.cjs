@@ -83,7 +83,7 @@ test('bounded history preserves equal-time events, snapshots and arrival gaps; p
 
 test('Input events captures while visible, pauses for history, and unsubscribes on removal', () => {
   const textwrap = load('app/graphics/textwrap.ts');
-  const graphics = load('app/graphics/image.ts', { './textwrap': textwrap });
+  const graphics = require('../.test-build/app/graphics/image.js');
   const { BdfFont } = load('app/graphics/bdffont.ts', { '@nativescript/core': {} });
   const font = BdfFont.parse(read('app/fonts/terminus/ter-u18n.bdf'));
   class RecordingImage extends graphics.GrayImage {

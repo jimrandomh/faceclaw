@@ -159,6 +159,7 @@ export function prepareFrameDraws(draws: readonly DeferredDraw[]): ArrayBuffer |
   // Pass 1: resolve ids, register unseen rasters, size the buffer.
   let registration: Map<FontWireState, RegistrationGroup> | null = null;
   const fwRunOk = new Map<PlacedFwText, boolean>();
+  const presentations = new Map<PlacedImage, Uint8Array>();
   let bytes = 0;
   for (const placed of draws) {
     if (placed.kind === "glyph") {
@@ -177,7 +178,7 @@ export function prepareFrameDraws(draws: readonly DeferredDraw[]): ArrayBuffer |
       (placed.glyph.coverage ? group.aaGlyphs : group.glyphs).push(placed.glyph);
     } else if (placed.kind === "image") {
       if (!inRange16(placed.x) || !inRange16(placed.y)) continue;
-      if (placed.presentation) bytes += encodePresentation(placed).length;
+      if (placed.presentation) { const record = encodePresentation(placed); presentations.set(placed, record); bytes += record.length; }
       else if (imageId(placed) !== null) bytes += IMAGE_RECORD_BYTES;
     } else {
       const ok = prepareFwTextRun(placed);
@@ -210,7 +211,7 @@ export function prepareFrameDraws(draws: readonly DeferredDraw[]): ArrayBuffer |
       offset += GLYPH_RECORD_BYTES;
     } else if (placed.kind === "image") {
       if (!inRange16(placed.x) || !inRange16(placed.y)) continue;
-      if (placed.presentation) { const bytes = encodePresentation(placed); new Uint8Array(out.buffer).set(bytes, offset); offset += bytes.length; continue; }
+      if (placed.presentation) { const bytes = presentations.get(placed)!; new Uint8Array(out.buffer).set(bytes, offset); offset += bytes.length; continue; }
       const id = imageId(placed);
       if (id === null) continue;
       out.setUint8(offset, DrawRecordKind.TEXTURE_IMAGE);

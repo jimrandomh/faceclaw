@@ -51,7 +51,7 @@ class SurfaceCompositor @JvmOverloads constructor(private val includePreviewInFr
             var out: MutableList<ScreenDraw> = ArrayList()
             while ((cursor.remaining() >= 1)) {
                 var kind: Int = (cursor.get() and 0xff)
-                if (DrawRecordKind.isPresentation(kind)) { out.add(ScreenDraw.image(0, 0, 0).also { it.selection = MenuSelection.read(cursor, kind) }); continue }
+                if (DrawRecordKind.isPresentation(kind)) { out.add(ScreenDraw.image(0, 0, 0).also { it.selection = readRetainedDrawing(cursor, kind) }); continue }
                 if (((kind == ScreenDraw.KIND_GLYPH) && (cursor.remaining() >= 11))) {
                     var fontId: Int = (cursor.getShort().toInt() and 0xffff)
                     var encoding: Int = cursor.getInt()
@@ -108,7 +108,7 @@ class SurfaceCompositor @JvmOverloads constructor(private val includePreviewInFr
      * raster comes from ImageAtlas under imageId.
      */
     class ScreenDraw {
-        @JvmField var selection: MenuSelection? = null
+        @JvmField var selection: RetainedDrawing? = null
         companion object {
             const val KIND_GLYPH: Int = DrawRecordKind.GLYPH
 
@@ -631,7 +631,7 @@ class SurfaceCompositor @JvmOverloads constructor(private val includePreviewInFr
         var fingerprint: StringBuilder = StringBuilder()
         fingerprint.append(screenWidth).append('x').append(screenHeight)
         var draws: MutableList<ScreenDraw> = ArrayList()
-        val selections = ArrayList<MenuSelection>()
+        val selections = ArrayList<RetainedDrawing>()
         for (surface in ordered) {
             if (!surface.visible || (shellScene != null && surface.id == "shell")) {
                 continue

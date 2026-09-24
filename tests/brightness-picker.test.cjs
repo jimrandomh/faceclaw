@@ -15,7 +15,7 @@ function load(file, modules = {}) {
 }
 
 const textwrap = load('app/graphics/textwrap.ts');
-const graphics = load('app/graphics/image.ts', { './textwrap': textwrap });
+const graphics = require('../.test-build/app/graphics/image.js');
 const plane = load('app/graphics/plane.ts', { './image': graphics });
 const gestures = load('app/ui/gestures.ts');
 const numeric = load('app/util/numeric-util.ts');

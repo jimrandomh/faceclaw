@@ -1,18 +1,24 @@
 package com.faceclaw.app
 
 /** Immutable shell snapshot. Keys identify writable surfaces across repaints, not their pixels. */
-class ShellScene(val layers: List<Layer>, val selections: List<MenuSelection> = emptyList()) {
-    class Layer(val key: Int, val x: Int, val y: Int, val width: Int, val height: Int, val dim: Int, val packed: ByteArray, val selections: List<MenuSelection> = emptyList(), val depth: Int = 0)
+class ShellScene(val layers: List<Layer>, val selections: List<RetainedDrawing> = emptyList()) {
+    class Layer(val key: Int, val x: Int, val y: Int, val width: Int, val height: Int, val dim: Int, val packed: ByteArray, val selections: List<RetainedDrawing> = emptyList(), val depth: Int = 0)
     val allSelections = selections + layers.flatMap { it.selections }
+    val retainedResources = allSelections.flatMap { it.resources }
+    init { require(retainedResources.size + layers.size < 511) }
     val fingerprint: String = layers.joinToString(";") { "${it.key},${it.x},${it.y},${it.width},${it.height},${it.dim},${it.depth},${CachedResource(it.packed).hash},${it.selections.joinToString { row -> row.fingerprint }}" } + selections.joinToString { it.fingerprint }
     fun calls(width: Int, height: Int, surfaces: IntArray, selected: IntArray): List<ByteArray> {
         val calls = ArrayList<ByteArray>(); var rowId = 0
         val now = drawAnimationTimeMs()
-        for (row in selections) calls.addAll(row.calls(selected[rowId++], now))
+        fun add(row: RetainedDrawing) {
+            calls.addAll(row.calls(selected.copyOfRange(rowId, rowId + row.resources.size), now))
+            rowId += row.resources.size
+        }
+        for (row in selections) add(row)
         for ((index, layer) in layers.withIndex()) {
             if (layer.dim < 256) calls.add(DrawProtocol.lut(width, height, layer.dim))
             calls.add(DrawProtocol.image(surfaces[index], layer.x, layer.y, depth = layer.depth))
-            for (row in layer.selections) calls.addAll(row.calls(selected[rowId++], now))
+            for (row in layer.selections) add(row)
         }
         return calls
     }
@@ -22,7 +28,7 @@ class ShellScene(val layers: List<Layer>, val selections: List<MenuSelection> = 
         val surfaces = IntArray(layers.size) { id ->
             val layer = layers[id]; resources[id] = DrawProtocol.rawImage(layer.width, layer.height, layer.packed); id
         }
-        val rows = IntArray(allSelections.size) { id -> resources[id + layers.size] = allSelections[id].resource.bytes; id + layers.size }
+        val rows = IntArray(retainedResources.size) { id -> resources[id + layers.size] = retainedResources[id].bytes; id + layers.size }
         resources[511] = DrawProtocol.displayList(calls(width, height, surfaces, rows))
         DisplayListRenderer(resources, rightLens = rightLens).render(511, DisplayListRenderer.Target(screen, width, height), DisplayListRenderer.Target(output, width, height))
         val target = DisplayListRenderer.Target(output, width, height)
@@ -42,8 +48,8 @@ class ShellScene(val layers: List<Layer>, val selections: List<MenuSelection> = 
             resources[id] = DrawProtocol.rawImage(layer.width, layer.height, layer.packed)
             id
         }
-        val rows = IntArray(allSelections.size) { id ->
-            resources[id + layers.size] = allSelections[id].resource.bytes
+        val rows = IntArray(retainedResources.size) { id ->
+            resources[id + layers.size] = retainedResources[id].bytes
             id + layers.size
         }
         resources[511] = DrawProtocol.displayList(calls(width, height, surfaces, rows))
@@ -73,11 +79,11 @@ class ShellScene(val layers: List<Layer>, val selections: List<MenuSelection> = 
                 val depth = reader.getShort().toInt(); require(depth in -128..127)
                 require(w in 1..640 && h in 1..480 && 5 + (w + 1) / 2 * h <= 65536 && reader.remaining() >= w * h)
                 val gray = ByteArray(w * h); reader.get(gray)
-                val selections = List(selectionCount) { MenuSelection.read(reader, reader.get().toInt()) }
+                val selections = List(selectionCount) { readRetainedDrawing(reader, reader.get().toInt()) }
                 layers.add(Layer(key, x, y, w, h, dim, BmpUtil.pack4bppFromGray8(gray, w, h), selections, depth))
             }
             require(reader.remaining() == 0)
-            require(layers.sumOf { it.selections.size } + layers.size < 511)
+            require(layers.sumOf { layer -> layer.selections.sumOf { it.resources.size } } + layers.size < 511)
             require(layers.map { it.key }.toSet().size == layers.size)
             return ShellScene(layers)
         }

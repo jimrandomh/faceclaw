@@ -137,7 +137,7 @@ test('Music settings keeps toggles and selection when a new app arrives and supp
   const { prefs } = store();
   let refreshes = 0, closes = 0;
   const textwrap = load('app/graphics/textwrap.ts');
-  const graphics = load('app/graphics/image.ts', () => textwrap);
+  const graphics = require('../.test-build/app/graphics/image.js');
   const { BdfFont } = load('app/graphics/bdffont.ts', () => ({}));
   const font = BdfFont.parse(source('app/fonts/terminus/ter-u20n.bdf'));
   class RecordingImage extends graphics.GrayImage {

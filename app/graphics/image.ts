@@ -1,3 +1,5 @@
+import { menuSelectionList } from "./menu-selection-list";
+import { encodeDisplayList, dimDisplayList, paintDisplayList, type DisplayList } from "./display-list";
 import type { MenuHighlightAnimation } from "../ui/menu-highlight-motion";
 import { Glyph } from "./bdffont";
 import { wrapText } from "./textwrap";
@@ -74,7 +76,7 @@ export type PlacedGlyph = {
  * from the moment it is placed.
  */
 export type PlacedImage = {
-  presentation?: { animation?: MenuHighlightAnimation; mode?: "image" | "masked-image"; radius: number; background: number; border: number; depth: number; occlusions?: readonly { x: number; y: number; width: number; height: number }[] };
+  presentation?: { displayList?: DisplayList; mode?: "image" | "masked-image"; radius: number; background: number; border: number; depth: number; occlusions?: readonly { x: number; y: number; width: number; height: number }[] };
   kind: "image";
   source: GrayImage;
   x: number;
@@ -395,7 +397,9 @@ export class GrayImage {
         hash = mixInt(hash, placed.source.width);
         hash = mixInt(hash, placed.source.height);
         hash = mixInt(hash, placed.source.sourceContentHash32());
-        if (placed.presentation) { const p = placed.presentation; for (const value of [p.radius, p.background, p.border, p.depth, p.mode === "image" ? 1 : p.mode === "masked-image" ? 2 : 0, p.animation?.token ?? 0, p.animation?.dx ?? 0, p.animation?.dy ?? 0, p.animation?.durationMs ?? 0]) hash = mixInt(hash, value); }
+        if (placed.presentation) { const p = placed.presentation; for (const value of [p.radius, p.background, p.border, p.depth, p.mode === "image" ? 1 : p.mode === "masked-image" ? 2 : 0]) hash = mixInt(hash, value);
+          if (p.displayList) for (const byte of encodeDisplayList({ displayList: p.displayList, x: 0, y: 0, width: placed.source.width, height: placed.source.height, depth: p.depth }, p.displayList.timeline?.startedAt ?? 0)) hash = mixInt(hash, byte);
+        }
       } else {
         hash = mixInt(hash, 0xf17e);
         hash = mixInt(hash, placed.font.atlasTag);
@@ -508,8 +512,15 @@ export class GrayImage {
 
   /** Retain the selected row separately from the menu surface for glasses-side composition. */
   drawMenuSelection(source: GrayImage, x: number, y: number, background: number, border: number, radius = 8, depth = 2, animation?: MenuHighlightAnimation): void {
-    this.drawList.push({ kind: "image", source: source.withDrawsBaked(), x, y,
-      presentation: { radius, background, border, depth, animation } });
+    const baked = source.withDrawsBaked();
+    this.drawList.push({ kind: "image", source: baked, x, y,
+      presentation: { radius, background, border, depth, displayList: menuSelectionList(baked, background, border, radius, animation) } });
+  }
+
+  /** Submit a retained list alongside this frame; coordinates are relative to x/y. */
+  drawDisplayList(displayList: DisplayList, x: number, y: number, width: number, height: number, depth = 0): void {
+    this.drawList.push({ kind: "image", source: new GrayImage(width, height), x, y,
+      presentation: { radius: 0, background: 0, border: 0, depth, displayList } });
   }
 
   /** Replay an image at stereo depth. Masked images preserve intentional gray8 black (1). */
@@ -570,7 +581,7 @@ export class GrayImage {
     for (const placed of this.drawList) {
       if (placed.kind === "image" && placed.presentation) {
         const p = placed.presentation;
-        copy.drawList.push({ ...placed, source: placed.source.dimmed(factor), presentation: { ...p, background: dimValue(p.background, scale), border: dimValue(p.border, scale) } });
+        copy.drawList.push({ ...placed, source: placed.source.dimmed(factor), presentation: { ...p, background: dimValue(p.background, scale), border: dimValue(p.border, scale), displayList: p.displayList && dimDisplayList(p.displayList, factor) } });
       } else if (placed.kind !== "image") {
         copy.drawList.push({ ...placed, value: dimValue(placed.value, scale) });
       }
@@ -613,6 +624,11 @@ export class GrayImage {
       } else if (placed.kind === "image") {
         if (placed.presentation) {
           if (!presentations) continue;
+          if (placed.presentation.displayList) {
+            paintDisplayList(target.pixels, target.pixels.slice(), target.width, target.height,
+              { displayList: placed.presentation.displayList, x: placed.x + dx, y: placed.y + dy, width: placed.source.width, height: placed.source.height, depth: placed.presentation.depth });
+            continue;
+          }
           if (placed.presentation.mode) {
             target.bitBlt(placed.source, placed.x + dx, placed.y + dy, { transparentZero: true });
             continue;

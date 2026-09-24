@@ -53,7 +53,7 @@ function ui(fontSize = 12) {
   let dismissals = 0;
   let closes = 0;
   const textwrap = load('app/graphics/textwrap.ts');
-  const graphics = load('app/graphics/image.ts', () => textwrap);
+  const graphics = require('../.test-build/app/graphics/image.js');
   const { BdfFont } = load('app/graphics/bdffont.ts', () => ({}));
   const font = BdfFont.parse(source(`app/fonts/terminus/ter-u${fontSize}n.bdf`));
   class RecordingImage extends graphics.GrayImage {

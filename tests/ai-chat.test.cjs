@@ -355,7 +355,7 @@ function chatLayerEnv() {
   const env = conversations();
   const textwrap = load('app/graphics/textwrap.ts', {});
   const { BdfFont } = load('app/graphics/bdffont.ts', { '@nativescript/core': {} });
-  const graphics = load('app/graphics/image.ts', { './textwrap': textwrap });
+  const graphics = require('../.test-build/app/graphics/image.js');
   const font = BdfFont.parse(fs.readFileSync(path.join(__dirname, '../app/fonts/terminus/ter-u12n.bdf'), 'utf8'));
   let windowOptions;
   const { createAiChatWindow } = load('app/apps/ai-chat/ai-chat-app.ts', {

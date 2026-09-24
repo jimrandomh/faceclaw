@@ -17,7 +17,7 @@ function load(file, modules = {}, globals = {}) {
   return context.exports;
 }
 const textwrap = load('app/graphics/textwrap.ts');
-const graphics = load('app/graphics/image.ts', { './textwrap': textwrap });
+const graphics = require('../.test-build/app/graphics/image.js');
 const { BdfFont } = load('app/graphics/bdffont.ts', { '@nativescript/core': {} });
 const font = (size) => BdfFont.parse(fs.readFileSync(path.join(__dirname, `../app/fonts/terminus/ter-u${size}n.bdf`), 'utf8'));
 const small = font(18), large = font(32);

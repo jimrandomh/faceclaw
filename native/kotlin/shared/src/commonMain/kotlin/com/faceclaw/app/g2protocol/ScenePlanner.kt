@@ -25,7 +25,7 @@ class ScenePlanner(private val cache: ResourceCacheState) {
             CachedResource(DrawProtocol.rawImage(layer.width, layer.height), keys[i])
         } }
         owned.keys.retainAll(keys.toSet()); pixels.keys.retainAll(keys.toSet())
-        val selectedResources = scene.allSelections.map { it.resource }
+        val selectedResources = scene.retainedResources
         cache.pin(surfaces + selectedResources)
         val absent = surfaces.map { cache.resourceId(it) < 0 }
         val prepared = cache.prepare(surfaces + selectedResources)

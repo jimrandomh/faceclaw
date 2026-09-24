@@ -93,7 +93,7 @@ export class SurfaceCompositor {
           if(x+xx+shift>=0 && y+yy>=0 && x+xx+shift<this.width && y+yy<this.height) output[(y+yy)*this.width+x+xx+shift]=quantize(bytes[p+yy*w+xx])*16
         }
         p+=w*h
-        for(let j=0;j<selections;j++) { const record=readPresentation(bytes,p);p=record.end;if(record.selection.animation) record.selection.animation.startedAt -= Date.now()-this.shellReceivedAt;paintPresentation(output,screen,this.width,this.height,record.selection) }
+        for(let j=0;j<selections;j++) { const record=readPresentation(bytes,p);p=record.end;if(record.selection.displayList?.timeline) record.selection.displayList = { ...record.selection.displayList, presentedAt: this.shellReceivedAt, timeline: { ...record.selection.displayList.timeline, startedAt: record.selection.displayList.timeline.startedAt - (Date.now()-this.shellReceivedAt) } };paintPresentation(output,screen,this.width,this.height,record.selection) }
       }
     }
     return output

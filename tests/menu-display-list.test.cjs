@@ -48,7 +48,7 @@ test('shell menu selection survives serialization and is not baked into its surf
 test('later opaque planes occlude a replayed selection without erasing its visible part',()=>{
   const image=menu().paint(),row=image.draws.find(d=>d.presentation),cover=new graphics.GrayImage(10,8,1);
   const flat=planes.flattenPlanesWithDraws([{image,x:0,y:0},{image:cover,x:row.x+10,y:row.y+2}]);
-  const records=wire.presentationRecords(prepareFrameDraws(flat.draws));assert.ok(records[0].occlusions.length);
+  const records=wire.presentationRecords(prepareFrameDraws(flat.draws));assert.ok(records[0].displayList.calls.some(c => c.op === 2 && c.resource === 65535));
   const c=new SurfaceCompositor(80,80);c.configureSurface('app',{x:0,y:0,width:80,height:80,zOrder:0,transparency:'opaque'});
   c.submitSurfaceFrame('app',flat.image.pixels,{x:0,y:0,width:80,height:80},prepareFrameDraws(flat.draws));
   const preview=c.composite();
