@@ -49,7 +49,7 @@ class DisplayListTest {
         val nested = listOf(DrawProtocol.image(11, -1, 0), DrawProtocol.bbox(hex("0c000000"), 2, 1, 0, 1, 1, 10))
         resources[20]=DrawProtocol.displayList(nested)
         val calls = listOf(DrawProtocol.call(DRAW_OP_DISPLAY_LIST,DrawProtocol.word(20)), DrawProtocol.image(10,3,1),
-            DrawProtocol.call(DRAW_OP_TEXT,hex("0c00070003000f0141")), DrawProtocol.lut(8,4,128))
+            DrawProtocol.call(DRAW_OP_TEXT,hex("0c0007030f0141")), DrawProtocol.lut(8,4,128))
         resources[21]=DrawProtocol.displayList(calls)
         // Like the C harness, seed composition with the screen: this list has no screen copy.
         val screen=hex("123456789abcdef0123456789abcdef0"); val output=screen.copyOf()
@@ -114,7 +114,7 @@ class DisplayListTest {
     @Test fun roundedRectsAndNestedOddNegativeDepthMatchFirmwareOnBothLenses() {
         val resources = mapOf(
             40 to hex("0404000200f00f0ff0"),
-            41 to hex("0202000d0008020201010c0008000300040a0a000402022800050004001f"),
+            41 to hex("0202000d0008020201010c0008000300040a0800040202280005041f"),
             42 to hex("02010005000702fd2900"))
         val screen = hex("012345601234560112345601234560122345601234560123345601234560123445601234560123455601234f60123456601234560123456001234560123456011234560123456012234560123456012334560123456012344560123456012345")
         val expected = listOf("01234560123456011aaaaaaaaaa56012aa45644444aa0123a4564444456a1234a564f44f564a2345a6444fff644a3456a4444456444a4560aa44456444aa56011aaaaaaaaaa56012234560123456012334560123456012344560123456012345", "012345601234560112aaaaaaaaaa60122aa56444445aa1233a5644444564a2344a644f44f644a3455a4444ff6444a4566a4444564444a5600aa44564444aa60112aaaaaaaaaa6012234560123456012334560123456012344560123456012345")
@@ -266,5 +266,39 @@ class DisplayListTest {
         assertTrue(plan.commands.all { it.size<=65535 });glasses.apply(plan.commands)
         assertContentEquals(app,glasses.screen);assertContentEquals(app,glasses.composition)
         assertEquals(196608,ResourceCacheState.CACHE_SIZE)
+    }
+    /** Revision 35. Same calls and expectations as ClipTest in g2flash/tests/test_display_list.py. */
+    @Test fun clipRectsNarrowEveryOpNestThroughListsAndMoveWithDepth() {
+        val font = ByteArray(198); font[0] = 1; font[1 + 33 * 2] = 193.toByte(); hex("000202ffff").copyInto(font, 193)
+        val resources = mutableMapOf(1 to hex("000404ffffffffffffffff"), 3 to font,
+            5 to hex("0202000700" + "0400010000000f" + "0f00" + "04040900000002000200010008000f"),
+            6 to hex("00040200000000"), 7 to hex("0201000e00080106000000040002000000" + "0f10"))
+        fun draw(call: String, right: Boolean = false): DisplayListRenderer.Target {
+            val target = DisplayListRenderer.Target(ByteArray(64) { 0x11 }, 16, 8)
+            DisplayListRenderer(resources, rightLens = right).execute(DrawProtocol.sequence(listOf(hex(call))), target)
+            return target
+        }
+        fun expect(target: DisplayListRenderer.Target, color: Int, inside: (Int, Int) -> Boolean) {
+            for (y in 0 until 8) for (x in 0 until 16) assertEquals(if (inside(x, y)) color else 1, target.get(x, y), "($x, $y)")
+        }
+        expect(draw("040403000200" + "0a000a00" + "0100" + "0201" + "0f"), 15) { x, y -> x in 3..5 && y in 2..4 }
+        expect(draw("0400" + "0100" + "ff020105" + "00" + "0f"), 15) { x, y -> x in 5..8 && y < 4 }
+        expect(draw("0504" + "0100000002000100" + "0300" + "0000" + "0f" + "02" + "4141"), 15) { x, y -> y == 0 && x in 1..2 }
+        expect(draw("0804" + "0400040004000200" + "0000" + "1000" + "0800" + "0000" + "0f10"), 15) { x, y -> x in 4..7 && y in 4..5 }
+        expect(draw("0904" + "fefffeff04000400" + "09"), 9) { x, y -> x < 2 && y < 2 }
+        expect(draw("0904" + "0300050003000100" + "09"), 9) { x, y -> y == 5 && x in 3..5 }
+        expect(draw("0604" + "0100010001000600" + "0000000010000800" + "77".repeat(16)), 7) { x, y -> x == 1 && y in 1..6 }
+        expect(draw("0204" + "0200020001000100" + "0100" + "0000" + "04000400" + "0000"), 15) { x, y -> x == 2 && y == 2 }
+        expect(draw("0104" + "0100010002000100" + "00" + "000001" + "01" + "8f"), 15) { x, y -> y == 1 && x in 1..2 }
+        expect(draw("0704" + "000000000a000300" + "0500"), 15) { x, y -> (x < 4 && y < 3) || (x == 9 && y < 2) }
+        val deep = "0806" + "02" + "0000000004000400" + "0000" + "1000" + "0800" + "0000" + "0f10"
+        expect(draw(deep), 15) { x, y -> x in 1..4 && y < 4 }
+        expect(draw(deep, right = true), 15) { x, y -> x < 3 && y < 4 }
+        // A target override starts unclipped: the whole resource fills, the screen stays.
+        expect(draw("0704" + "0000000001000100" + "0700"), 15) { _, _ -> false }
+        assertContentEquals(hex("000402ffffffff"), resources.getValue(6))
+        expect(draw("0804" + "0400040000000000" + "0000" + "1000" + "0800" + "0000" + "0f10"), 15) { _, _ -> false }
+        // Unknown flag bits, a truncated clip header, and the old s16 image layout all reject.
+        for (bad in listOf("090800", "0904000000000100", "04000100020001000f")) assertFails(bad) { draw(bad) }
     }
 }

@@ -802,14 +802,14 @@ class TexturePlanner {
         }
 
         /** How many 1..31 control bytes are needed to move the cursor by delta. */
-        private fun adjustByteCount(delta: Int): Int {
+        internal fun adjustByteCount(delta: Int): Int {
             if ((delta == 0)) {
                 return 0
             }
             return (if ((delta > 0)) ((delta + 19) / 20) else ((-delta + 9) / 10))
         }
 
-        private fun emitAdjust(out: ByteSink, delta: Int): Unit {
+        internal fun emitAdjust(out: ByteSink, delta: Int): Unit {
             var delta = delta
             while ((delta != 0)) {
                 var step: Int = (if ((delta > 0)) minOf(delta, 20) else maxOf(delta, -10))

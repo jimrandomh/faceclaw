@@ -15,8 +15,8 @@ const SCROLLBAR_MIN_THUMB = 8;
 /** Largest packed scroll strip, in bytes: the firmware's per-resource limit. */
 const MAX_SCROLL_STRIP_BYTES = 65536;
 /** A bounce overshoots by this fraction of the end row's pitch, as if starting to reveal another row. */
-const BOUNCE_FRACTION = 0.4;
-const MAX_BOUNCE = 24;
+export const BOUNCE_FRACTION = 0.4;
+export const MAX_BOUNCE = 24;
 
 /** A rectangle in image coordinates. */
 export type MenuBox = { x: number; y: number; width: number; height: number };

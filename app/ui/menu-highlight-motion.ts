@@ -38,4 +38,9 @@ export class MenuHighlightMotion {
     }
     return this.animation && now - this.animation.startedAt < this.animation.durationMs ? this.animation : undefined;
   }
+
+  /** Cancel an animation in flight, e.g. when it cannot be drawn; the next change snaps from where it rests. */
+  cancel(): void {
+    this.animation = undefined;
+  }
 }

@@ -8,12 +8,18 @@ class DisplayListRenderer(
 ) {
     class BuiltinGlyph(val image: ByteArray, val advance: Int, val x: Int = 0, val y: Int = 0)
 
+    /**
+     * [clip] (revision 35) is the writable [left, top, right, bottom) in
+     * shifted target pixels, or null for the whole target. Like the depth
+     * shift, it is inherited by nested lists and dropped by a target override.
+     */
     class Target(
         val bytes: ByteArray,
         val width: Int,
         val height: Int,
         val offset: Int = 0,
         val shiftX: Int = 0,
+        val clip: IntArray? = null,
     ) {
         val stride = (width + 1) / 2
 
@@ -26,11 +32,26 @@ class DisplayListRenderer(
             return (bytes[offset + y * stride + x / 2].toInt() ushr shift) and 15
         }
 
-        fun shifted(dx: Int) = Target(bytes, width, height, offset, shiftX + dx)
+        fun shifted(dx: Int) = Target(bytes, width, height, offset, shiftX + dx, clip)
+
+        /** Narrow the clip to a rect in (unshifted) call coordinates. */
+        fun clipped(x: Int, y: Int, w: Int, h: Int): Target {
+            val left = x + shiftX
+            val rect = intArrayOf(left, y, left + w, y + h)
+            if (clip != null) {
+                rect[0] = maxOf(rect[0], clip[0]); rect[1] = maxOf(rect[1], clip[1])
+                rect[2] = minOf(rect[2], clip[2]); rect[3] = minOf(rect[3], clip[3])
+            }
+            return Target(bytes, width, height, offset, shiftX, rect)
+        }
+
+        fun writable(x: Int, y: Int): Boolean =
+            x in 0 until width && y in 0 until height &&
+                (clip == null || (x >= clip[0] && y >= clip[1] && x < clip[2] && y < clip[3]))
 
         fun put(localX: Int, y: Int, value: Int) {
             val x = localX + shiftX
-            if (x !in 0 until width || y !in 0 until height) return
+            if (!writable(x, y)) return
             val index = offset + y * stride + x / 2
             val old = bytes[index].toInt()
             bytes[index] = if (x % 2 == 0) {
@@ -220,6 +241,9 @@ class DisplayListRenderer(
         if (flags and DRAW_FLAG_DEPTH != 0) {
             target = target.shifted(DrawProtocol.depthOffset(reader.readS8(), rightLens))
         }
+        if (flags and DRAW_FLAG_CLIP != 0) {
+            target = target.clipped(reader.readS16(), reader.readS16(), reader.readU16(), reader.readU16())
+        }
         when (opcode) {
             DRAW_OP_BOUNDING_BOX -> drawBoundingBox(reader, target, walk)
             DRAW_OP_RECT_COPY -> drawRectCopy(reader, target, walk)
@@ -313,26 +337,31 @@ class DisplayListRenderer(
         }
     }
 
+    /** Mirrors the firmware: far-off image/text coordinates draw nothing (before the depth shift can overflow). */
+    private fun offTarget(x: Int, y: Int) = x !in -65536..65536 || y !in -65536..65536
+
     private fun drawImage(reader: DrawReader, target: Target, walk: Walk) {
         val id = reader.readU16()
-        val x = reader.readS16()
-        val y = reader.readS16()
+        val x = ExtendedVarint.evaluate(reader, walk.frame)
+        val y = ExtendedVarint.evaluate(reader, walk.frame)
         val options = reader.readU8()
         reader.requireDone()
         walk.references.add(id)
-        draw(image(resource(id)), target, x, y, options, walk.apply)
+        val image = image(resource(id))
+        if (!offTarget(x, y)) draw(image, target, x, y, options, walk.apply)
     }
 
     private fun drawText(reader: DrawReader, target: Target, walk: Walk) {
         val id = reader.readU16()
-        var x = reader.readS16()
-        val y = reader.readS16()
+        var x = ExtendedVarint.evaluate(reader, walk.frame)
+        val y = ExtendedVarint.evaluate(reader, walk.frame)
         val options = reader.readU8()
         val text = reader.readBytes(reader.readU8())
         reader.requireDone()
         walk.references.add(id)
         val data = resource(id)
         require(data.size >= 193 && data[0].toInt() == CFW_RESOURCE_TYPE_FONT)
+        val apply = walk.apply && !offTarget(x, y)
         for (byte in text) {
             val char = byte.toInt() and 255
             if (char in 1..31) {
@@ -343,7 +372,7 @@ class DisplayListRenderer(
             val offset = DrawProtocol.u16(data, 1 + (char - 32) * 2)
             require(offset >= 193)
             val glyph = image(data, offset)
-            draw(glyph, target, x, y, options, walk.apply)
+            draw(glyph, target, x, y, options, apply)
             x += glyph.width
         }
     }
@@ -359,7 +388,7 @@ class DisplayListRenderer(
         if (!walk.apply) return
         for (yy in y until y + height) for (xx in x until x + width) {
             val tx = xx + target.shiftX
-            if (tx !in 0 until target.width) continue
+            if (!target.writable(tx, yy)) continue
             val value = target.get(tx, yy)
             val shift = if (value % 2 == 0) 4 else 0
             // The even-parity table comes first; parity is of the shifted target pixel.
@@ -371,7 +400,16 @@ class DisplayListRenderer(
         val color = reader.readU8()
         reader.requireDone()
         require(color <= 15)
-        if (walk.apply) target.bytes.fill((color * 17).toByte(), target.offset, target.offset + target.stride * target.height)
+        if (!walk.apply) return
+        val clip = target.clip
+        if (clip == null) {
+            target.bytes.fill((color * 17).toByte(), target.offset, target.offset + target.stride * target.height)
+        } else {
+            // Revision 35: a clipped clear fills just the clip, which is in shifted pixels already.
+            for (y in maxOf(0, clip[1]) until minOf(target.height, clip[3])) {
+                for (x in maxOf(0, clip[0]) until minOf(target.width, clip[2])) target.put(x - target.shiftX, y, color)
+            }
+        }
     }
 
     private fun drawRoundedRect(reader: DrawReader, target: Target, walk: Walk) {

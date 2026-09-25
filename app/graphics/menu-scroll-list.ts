@@ -18,9 +18,14 @@ export type MenuScrollHighlight = {
  * started at `timelineStart` (the slide may have started before or after it).
  */
 export function slidingHighlightY(y: number, motion: MenuHighlightAnimation | undefined, timelineStart: number): E<'i32'> {
-  if (!motion?.dy) return E.i32(y);
+  return slidingCoordinate(y, motion?.dy ?? 0, motion, timelineStart);
+}
+
+/** One coordinate of a highlight sliding by `delta` to rest at `value`; see slidingHighlightY. */
+export function slidingCoordinate(value: number, delta: number, motion: MenuHighlightAnimation | undefined, timelineStart: number): E<'i32'> {
+  if (!motion || !delta) return E.i32(value);
   return E.progress(motion.durationMs, motion.startedAt - timelineStart).ease()
-    .lerp(E.i32(y + motion.dy).toFloat(), E.i32(y).toFloat()).toInt();
+    .lerp(E.i32(value + delta).toFloat(), E.i32(value).toFloat()).toInt();
 }
 
 /**

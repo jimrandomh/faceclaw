@@ -2,10 +2,10 @@ import { getDefaultSmallFont } from "../../graphics/ui-fonts";
 import { truncateText, truncateLeft } from "../../graphics/textwrap";
 import { GrayImage, type UiFont } from "../../graphics/image";
 import { renderIcon, type IconName } from "../../graphics/icons";
-import { clamp } from "../../util/numeric-util";
-import { drawListScrollbar, drawSelectionHighlight, scrollToKeepSelectionVisible, type MenuItem } from "../../ui/menu";
+import { type MenuItem } from "../../ui/menu";
 import { Menu, type MenuDrawArgs } from "../../ui/menu-core";
-import { centeredTextY, iconGridMinRowHeight, tightRowHeight } from "../../ui/metrics";
+import { IconGrid, ICON_GRID_ICON_SIZE } from "../../ui/icon-grid";
+import { centeredTextY, tightRowHeight } from "../../ui/metrics";
 import { ConfigSettingEnum } from "../../ui/dashboard-settings";
 import { getStringSetting, setStringSetting } from "../../native/settings-store";
 import {
@@ -16,9 +16,8 @@ import {
   statPath,
   type DirectoryEntry,
 } from "../../native/file-access";
-import { directionalFallback, isWatchInput, type InputEvent } from "../../ui/gestures";
+import { directionalFallback, type InputEvent } from "../../ui/gestures";
 import { Layer, type LayerContext } from "../../ui/layers";
-import { shell } from "../../ui/shell/shell";
 
 const LIST_X = 20;
 /** List view: the selection box extends this far left and right of the row text. */
@@ -28,10 +27,6 @@ const LIST_HIGHLIGHT_PAD = 6;
 function headerHeight(font: UiFont): number {
   return 10 + font.lineHeight;
 }
-
-const GRID_COLS = 5;
-const ICON_SIZE = 44;
-const LABEL_GAP = 2;
 
 export type FilesViewMode = "icons" | "list";
 
@@ -105,23 +100,14 @@ type EntryItem = {
 
 type BrowserItem = { kind: "grant"; label: string } | { kind: "info"; label: string } | EntryItem;
 
-type IconRow =
-  | { kind: "special"; item: BrowserItem; flatIndex: number }
-  | { kind: "grid"; items: EntryItem[]; firstIndex: number };
-
-type IconMode = "row" | "item";
-
 /**
  * Filesystem browser with two views. The top "Places" level lists bookmarks
- * and the storage roots; descending browses real directories. Icons view is a
- * 5-column grid with launcher-style two-level selection (scroll picks a row,
- * click drops into the row, scroll picks the item); list view is a flat list.
+ * and the storage roots; descending browses real directories. Icons view is
+ * the launcher's IconGrid (two-level ring selection, four-way watch
+ * selection; notice rows span the full width); list view is a flat list.
  * Click descends into a directory or picks a supported file; double-click
  * backs out one level (item selection, then parent directory, then Places,
- * then leaving the browser). That is the ring's scheme; in icons view the
- * watch (see handleIconsWatchInput) skips row mode and moves one cell at a
- * time in four directions, exactly as in the launcher. Sized to its hosting
- * stack.
+ * then leaving the browser). Sized to its hosting stack.
  */
 export class FileBrowserLayer implements Layer {
   // Watch swipes are spatial in icons view: up/down move between rows,
@@ -136,7 +122,7 @@ export class FileBrowserLayer implements Layer {
   private entries: DirectoryEntry[] | null = null;
   private listingFailed = false;
 
-  /** List view. Its selected index is the flat-row index both views translate through (setViewMode). */
+  /** List view. Both views index the same flatRows(), which is how setViewMode carries the selection across. */
   private readonly listMenu = new Menu<BrowserItem>({
     wrap: false,
     rowGap: 1,
@@ -144,10 +130,18 @@ export class FileBrowserLayer implements Layer {
     getHeight: () => tightRowHeight(getDefaultSmallFont()),
     draw: (args) => this.drawListRow(args),
   });
-  private selectedRow = 0;
-  private selectedCol = 0;
-  private iconMode: IconMode = "row";
-  private scrollRow = 0;
+  /** Icons view. */
+  private readonly grid = new IconGrid<BrowserItem>({
+    items: () => this.flatRows(),
+    isWide: (item) => item.kind !== "entry",
+    describe: (item, selected) =>
+      item.kind === "entry"
+        ? { label: item.label, icon: gridIcon(item), labelValue: item.supported ? 210 : 100 }
+        : { label: item.label, labelValue: itemValue(item, selected) },
+    onActivate: (item, _index, ctx) => this.activateItem(item, ctx),
+    onBack: () => this.navigateUp(),
+    scrollbar: true,
+  });
 
   constructor(private readonly options: FileBrowserOptions) {}
 
@@ -155,7 +149,6 @@ export class FileBrowserLayer implements Layer {
     const font = getDefaultSmallFont();
     const { width, height } = ctx.stack.getBaseSize();
     const image = new GrayImage(width, height, 0);
-    const rows = this.flatRows();
 
     image.drawText(font, 20, 8, "Files", 220);
     const pathLabel = this.location === null ? "Places" : this.location;
@@ -163,17 +156,18 @@ export class FileBrowserLayer implements Layer {
     image.drawText(font, pathX, 8, truncateLeft(font, pathLabel, width - pathX - 20), 130);
 
     if (filesViewModeSetting.get() === "list") {
-      this.paintList(image, font, rows, ctx);
+      this.paintList(image, font, ctx);
     } else {
-      this.paintIcons(image, font, rows, ctx);
+      const headerH = headerHeight(font);
+      this.grid.paint(image, { x: 0, y: headerH, width, height: height - headerH - 6 }, ctx.stack.isFocused());
     }
     return image;
   }
 
-  private paintList(image: GrayImage, font: UiFont, rows: BrowserItem[], ctx: LayerContext): void {
+  private paintList(image: GrayImage, font: UiFont, ctx: LayerContext): void {
     const { width, height } = ctx.stack.getBaseSize();
     const headerH = headerHeight(font);
-    this.listMenu.setItems(rows);
+    this.listMenu.setItems(this.flatRows());
     // Row boxes start one pixel above the header's bottom edge.
     this.listMenu.paint(
       image,
@@ -188,96 +182,19 @@ export class FileBrowserLayer implements Layer {
     image.drawText(font, x + LIST_HIGHLIGHT_PAD, centeredTextY(font, y, height), label, itemValue(item, selected));
   }
 
-  private paintIcons(image: GrayImage, font: UiFont, rows: BrowserItem[], ctx: LayerContext): void {
-    const { width, height } = ctx.stack.getBaseSize();
-    const focused = ctx.stack.isFocused();
-    const iconRows = buildIconRows(rows);
-    this.selectedRow = clamp(this.selectedRow, 0, Math.max(0, iconRows.length - 1));
-
-    const gridTop = headerHeight(font);
-    const gridBottom = height - 6;
-    const visibleRows = Math.max(1, Math.floor((gridBottom - gridTop) / iconGridMinRowHeight(font, ICON_SIZE, LABEL_GAP)));
-    const rowH = Math.floor((gridBottom - gridTop) / visibleRows);
-    const colW = width / GRID_COLS;
-    this.scrollRow = scrollToKeepSelectionVisible(this.scrollRow, this.selectedRow, visibleRows, iconRows.length);
-
-    const lastVisible = Math.min(iconRows.length, this.scrollRow + visibleRows);
-    for (let rowIndex = this.scrollRow; rowIndex < lastVisible; rowIndex++) {
-      const row = iconRows[rowIndex]!;
-      const y = gridTop + (rowIndex - this.scrollRow) * rowH;
-      const selected = rowIndex === this.selectedRow;
-
-      if (row.kind === "special") {
-        const textY = y + (((rowH - font.lineHeight) / 2) | 0);
-        if (selected) {
-          drawSelectionHighlight(image, LIST_X - 6, textY - 2, width - 2 * LIST_X + 12, font.lineHeight + 4, focused, 4);
-        }
-        image.drawText(font, LIST_X, textY, truncateText(font, row.item.label, width - 2 * LIST_X), itemValue(row.item, selected));
-        continue;
-      }
-
-      if (selected) {
-        // Same preview rule as the launcher: while defocused with the watch
-        // as the last-used source, show the cell a click would land on (watch
-        // focus enters item mode directly; see onFocus) instead of a row band
-        // the watch scheme never shows.
-        const cellHighlight = this.iconMode === "item" || (!focused && shell.lastInputWasWatch());
-        if (cellHighlight) {
-          this.selectedCol = clamp(this.selectedCol, 0, row.items.length - 1);
-          drawSelectionHighlight(image, this.selectedCol * colW + 4, y + 1, colW - 8, rowH - 2, focused, 6);
-        } else {
-          drawSelectionHighlight(image, 4, y + 1, width - 8, rowH - 2, focused, 6);
-        }
-      }
-
-      for (let col = 0; col < row.items.length; col++) {
-        const item = row.items[col]!;
-        const centerX = col * colW + colW / 2;
-        const blockTop = y + Math.max(2, (rowH - ICON_SIZE - font.lineHeight - LABEL_GAP) / 2);
-        const icon = renderIcon(item.icon, ICON_SIZE);
-        if (icon) {
-          image.bitBlt(item.supported ? icon : dimmedIcon(item.icon, icon), Math.round(centerX - icon.width / 2), Math.round(blockTop), {
-            transparentZero: true,
-          });
-        }
-        const label = truncateText(font, item.label, colW - 8);
-        const labelY = Math.round(blockTop + ICON_SIZE + LABEL_GAP);
-        image.drawText(font, Math.round(centerX - font.measureText(label) / 2), labelY, label, item.supported ? 210 : 100);
-      }
-    }
-
-    if (iconRows.length > visibleRows) {
-      drawListScrollbar(image, width - 5, gridTop, visibleRows * rowH - 4, this.scrollRow, visibleRows, iconRows.length);
-    }
-  }
-
   async handleInput(event: InputEvent, ctx: LayerContext): Promise<void> {
     if (filesViewModeSetting.get() === "list") {
       // The flat list has no spatial meaning for swipes; give them the
       // standard scroll / select / back meanings (the layer opted into
       // directional delivery for the icons view, so the stack won't).
       await this.handleListInput(directionalFallback(event), ctx);
-    } else if (isWatchInput(event)) {
-      await this.handleIconsWatchInput(event, ctx);
     } else {
-      await this.handleIconsInput(event, ctx);
+      await this.grid.handleInput(event, ctx);
     }
   }
 
-  /**
-   * Focus arriving from the watch goes straight to item selection, as in the
-   * launcher: the watch has left/right swipes, so it never needs row mode.
-   * Any other source keeps the two-level scheme and enters in row mode.
-   */
   onFocus(lastInput: InputEvent | null): void {
-    if (filesViewModeSetting.get() !== "icons") return;
-    if (lastInput && isWatchInput(lastInput)) {
-      this.iconMode = "item";
-      const iconRows = buildIconRows(this.flatRows());
-      this.clampColToRow(iconRows[clamp(this.selectedRow, 0, Math.max(0, iconRows.length - 1))]);
-    } else {
-      this.iconMode = "row";
-    }
+    if (filesViewModeSetting.get() === "icons") this.grid.onFocus(lastInput);
   }
 
   private async handleListInput(event: InputEvent, ctx: LayerContext): Promise<void> {
@@ -298,147 +215,6 @@ export class FileBrowserLayer implements Layer {
       default:
         return;
     }
-  }
-
-  private async handleIconsInput(event: InputEvent, ctx: LayerContext): Promise<void> {
-    const rows = this.flatRows();
-    const iconRows = buildIconRows(rows);
-    this.selectedRow = clamp(this.selectedRow, 0, Math.max(0, iconRows.length - 1));
-    const row = iconRows[this.selectedRow];
-    switch (event.type) {
-      case "scroll-up":
-      case "scroll-down": {
-        const delta = event.type === "scroll-down" ? 1 : -1;
-        if (this.iconMode === "item") {
-          // Item selection traverses linearly: past a row's edge it continues
-          // onto the adjacent row (a special row counts as a single item).
-          if (row?.kind === "grid") {
-            const next = clamp(this.selectedCol, 0, row.items.length - 1) + delta;
-            if (next >= 0 && next < row.items.length) {
-              this.selectedCol = next;
-              return;
-            }
-          }
-          const adjacentIndex = this.selectedRow + delta;
-          if (adjacentIndex < 0 || adjacentIndex >= iconRows.length) return;
-          this.selectedRow = adjacentIndex;
-          const adjacent = iconRows[adjacentIndex]!;
-          if (adjacent.kind === "grid") {
-            this.selectedCol = delta > 0 ? 0 : adjacent.items.length - 1;
-          }
-        } else {
-          this.selectedRow = clamp(this.selectedRow + delta, 0, Math.max(0, iconRows.length - 1));
-        }
-        return;
-      }
-      case "click": {
-        if (!row) return;
-        if (row.kind === "special") {
-          await this.activateItem(row.item, ctx);
-          return;
-        }
-        if (this.iconMode === "row") {
-          this.iconMode = "item";
-          // Default to the middle column (clamped to the row's item count).
-          this.selectedCol = Math.min(Math.floor(GRID_COLS / 2), row.items.length - 1);
-        } else {
-          const item = row.items[clamp(this.selectedCol, 0, row.items.length - 1)];
-          if (item) await this.activateItem(item, ctx);
-        }
-        return;
-      }
-      case "double-click":
-        if (this.iconMode === "item") {
-          this.iconMode = "row";
-        } else {
-          this.navigateUp();
-        }
-        return;
-      default:
-        return;
-    }
-  }
-
-  /**
-   * The watch's scheme for the icons view — the launcher's: there is no row
-   * mode, the selection is always one cell (a special row counts as its
-   * single full-width item). Up/down (and the crown) move between rows
-   * keeping the column, right/left move within the row, and left from the
-   * leftmost column keeps going out — parent directory, Places, then the
-   * sidebar. Row mode is restored on the way out so a ring user finds the
-   * grid as they left it.
-   */
-  private async handleIconsWatchInput(event: InputEvent, ctx: LayerContext): Promise<void> {
-    const iconRows = buildIconRows(this.flatRows());
-    this.selectedRow = clamp(this.selectedRow, 0, Math.max(0, iconRows.length - 1));
-    const row = iconRows[this.selectedRow];
-    if (this.iconMode === "row") {
-      this.iconMode = "item";
-      this.clampColToRow(row);
-    }
-    switch (event.type) {
-      case "swipe-up":
-      case "swipe-down":
-      case "scroll-up":
-      case "scroll-down": {
-        const delta = event.type === "swipe-down" || event.type === "scroll-down" ? 1 : -1;
-        this.selectedRow = clamp(this.selectedRow + delta, 0, Math.max(0, iconRows.length - 1));
-        // Keep the column; a shorter row (or a special one) clamps it.
-        this.clampColToRow(iconRows[this.selectedRow]);
-        return;
-      }
-      case "swipe-right":
-        if (row?.kind === "grid") {
-          this.selectedCol = clamp(this.selectedCol + 1, 0, row.items.length - 1);
-        }
-        return;
-      case "swipe-left":
-        if (row?.kind === "grid" && this.selectedCol > 0) {
-          this.selectedCol--;
-        } else {
-          this.watchNavigateUp();
-        }
-        return;
-      case "click": {
-        if (!row) return;
-        if (row.kind === "special") {
-          await this.activateItem(row.item, ctx);
-        } else {
-          const item = row.items[clamp(this.selectedCol, 0, row.items.length - 1)];
-          if (item) await this.activateItem(item, ctx);
-        }
-        // Descending into a directory resets the selection for the ring (row
-        // mode at the top); the watch scheme stays in single-item selection.
-        this.iconMode = "item";
-        return;
-      }
-      case "double-click":
-        this.watchNavigateUp();
-        return;
-      default:
-        return;
-    }
-  }
-
-  private clampColToRow(row: IconRow | undefined): void {
-    if (row?.kind === "grid") {
-      this.selectedCol = clamp(this.selectedCol, 0, row.items.length - 1);
-    }
-  }
-
-  /**
-   * navigateUp for the watch scheme: inside the browser the selection stays
-   * in item mode (resetSelection/selectPath put it back in row mode for the
-   * ring); leaving from Places restores row mode on the way out.
-   */
-  private watchNavigateUp(): void {
-    if (this.location === null) {
-      this.iconMode = "row";
-      this.options.onLeave();
-      return;
-    }
-    this.navigateUp();
-    this.iconMode = "item";
   }
 
   /**
@@ -480,34 +256,23 @@ export class FileBrowserLayer implements Layer {
       this.listMenu.setItems(rows);
       return this.listMenu.selectedItem;
     }
-    const iconRows = buildIconRows(rows);
-    const row = iconRows[clamp(this.selectedRow, 0, iconRows.length - 1)];
-    if (!row) return null;
-    if (row.kind === "special") return row.item;
-    if (this.iconMode !== "item") return null;
-    return row.items[clamp(this.selectedCol, 0, row.items.length - 1)] ?? null;
+    return this.grid.selectedItem;
   }
 
   private setViewMode(mode: FilesViewMode): void {
     if (filesViewModeSetting.get() === mode) return;
-    const rows = this.flatRows();
-    const iconRows = buildIconRows(rows);
-    this.listMenu.setItems(rows);
+    this.listMenu.setItems(this.flatRows());
     if (mode === "list") {
-      // Carry the icon-grid selection into the flat list (clamped column when
-      // only a row was selected).
-      const row = iconRows[clamp(this.selectedRow, 0, Math.max(0, iconRows.length - 1))];
-      if (row) {
-        this.listMenu.select(
-          row.kind === "special" ? row.flatIndex : row.firstIndex + clamp(this.selectedCol, 0, row.items.length - 1),
-        );
-      }
+      // Carry the icon-grid selection into the flat list (the remembered
+      // column when only a row was selected).
+      const index = this.grid.cursorIndex;
+      if (index !== null) this.listMenu.select(index);
     } else {
-      this.setGridSelectionFromFlatIndex(rows, this.listMenu.selectedIndex ?? 0);
-      this.iconMode = "row";
+      const index = this.listMenu.selectedIndex ?? 0;
+      this.grid.resetSelection();
+      this.grid.selectIndex(index);
     }
     filesViewModeSetting.set(mode);
-    this.scrollRow = 0;
     this.listMenu.scrollTop = 0;
   }
 
@@ -534,11 +299,12 @@ export class FileBrowserLayer implements Layer {
     this.resetSelection();
   }
 
-  private navigateUp(): void {
+  /** Back out one level; true when that left the browser (from Places). */
+  private navigateUp(): boolean {
     const from = this.location;
     if (from === null) {
       this.options.onLeave();
-      return;
+      return true;
     }
     if (from === this.navRoot || from === "/") {
       this.location = null;
@@ -546,20 +312,18 @@ export class FileBrowserLayer implements Layer {
       this.resetSelection();
       this.selectPath(this.navRoot ?? from);
       this.navRoot = null;
-      return;
+      return false;
     }
     const parentRaw = from.slice(0, from.lastIndexOf("/"));
     this.navigateTo(parentRaw.length ? parentRaw : "/");
     this.selectPath(from);
+    return false;
   }
 
   private resetSelection(): void {
     this.listMenu.select(0);
     this.listMenu.scrollTop = 0;
-    this.selectedRow = 0;
-    this.selectedCol = 0;
-    this.iconMode = "row";
-    this.scrollRow = 0;
+    this.grid.resetSelection();
   }
 
   /** Select the item with the given path (e.g. the directory just left). */
@@ -570,27 +334,17 @@ export class FileBrowserLayer implements Layer {
     // Items first, then the selection, so the viewport scrolls minimally from the top.
     this.listMenu.setItems(rows);
     this.listMenu.select(index);
-    this.setGridSelectionFromFlatIndex(rows, index);
-  }
-
-  private setGridSelectionFromFlatIndex(rows: BrowserItem[], index: number): void {
-    const specials = leadingSpecialCount(rows);
-    if (index < specials) {
-      this.selectedRow = index;
-      this.selectedCol = 0;
-      return;
-    }
-    const ordinal = index - specials;
-    this.selectedRow = specials + Math.floor(ordinal / GRID_COLS);
-    this.selectedCol = ordinal % GRID_COLS;
+    this.grid.selectIndex(index);
   }
 
   private flatRows(): BrowserItem[] {
     const rows: BrowserItem[] = [];
-    if (!hasAllFilesAccess()) {
-      rows.push({ kind: "grant", label: "Grant file access (opens phone Settings)" });
-    }
     if (this.location === null) {
+      // Only on Places: without All Files access some folders (e.g. Download)
+      // may still be readable, and the prompt shouldn't crowd their listings.
+      if (!hasAllFilesAccess()) {
+        rows.push({ kind: "grant", label: "Grant file access (opens phone Settings)" });
+      }
       for (const path of getBookmarkedPaths()) {
         rows.push(this.bookmarkItem(path));
       }
@@ -663,32 +417,16 @@ export class FileBrowserLayer implements Layer {
   }
 }
 
-function buildIconRows(flat: BrowserItem[]): IconRow[] {
-  const rows: IconRow[] = [];
-  let index = 0;
-  // Special rows (grant prompt, empty/unreadable info) lead the list; each
-  // gets a full-width row of its own. Entries follow, chunked into grid rows.
-  while (index < flat.length && flat[index]!.kind !== "entry") {
-    rows.push({ kind: "special", item: flat[index]!, flatIndex: index });
-    index++;
-  }
-  for (; index < flat.length; index += GRID_COLS) {
-    rows.push({ kind: "grid", items: flat.slice(index, index + GRID_COLS) as EntryItem[], firstIndex: index });
-  }
-  return rows;
-}
-
-function leadingSpecialCount(rows: BrowserItem[]): number {
-  let count = 0;
-  while (count < rows.length && rows[count]!.kind !== "entry") count++;
-  return count;
-}
-
 function itemValue(item: BrowserItem, selected: boolean): number {
   if (item.kind === "info") return 120;
   if (item.kind === "grant") return selected ? 255 : 210;
   if (!item.supported) return selected ? 140 : 100;
   return selected ? 255 : 200;
+}
+
+function gridIcon(item: EntryItem): GrayImage | null {
+  const icon = renderIcon(item.icon, ICON_GRID_ICON_SIZE);
+  return icon && !item.supported ? dimmedIcon(item.icon, icon) : icon;
 }
 
 // Unsupported files draw their grid icon at half brightness; rendered once

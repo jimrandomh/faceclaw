@@ -24,7 +24,7 @@ const list: DisplayList = {
 frame.drawDisplayList(list, 20, 30, 140, 20, 0);
 ```
 
-Supported calls in this first pass:
+Supported calls:
 
 - `ROUNDED_RECT`: literal or expression `x`/`y`, literal dimensions/radius, and
   4-bit colors (0–15). Border 16 means no border. Fill takes the maximum of the
@@ -38,6 +38,24 @@ Supported calls in this first pass:
   rejects the list. `SCREEN` reads the uncomposed frame; its source coordinates
   are also relative to this list's placement. Each call may add its own `depth`
   to the list's depth. A screen restore normally uses the negative of the list depth.
+- `CLEAR` (revision 35 with a clip): fill with a 4-bit `color`. Under a clip it
+  fills just the clip rect, which is how to blank a region; without one it
+  fills the whole screen.
+- `DRAWS` (bridge-only): replay glyph and icon draws offset by `x`/`y`, which
+  may be expressions. `records`/`count` come from glyph-wire's
+  `encodeReplayDraws(image.draws)`, which registers the rasters and returns null
+  unless every draw is a replayable glyph (atlas font, ASCII, ink inside the
+  line box) or plain image. Kotlin compiles them to firmware IMAGE calls on
+  ImageAtlas resources and TEXT runs on FontResourceAtlas fonts (one run per
+  line and color). `source` keeps the draws for software painting. If Kotlin
+  cannot resolve a record, the whole list draws nothing, so the frame's own
+  pixels show rather than content with a hole in it.
+
+Any call may carry a `clip` (revision 35): a rect in list coordinates outside
+which it draws nothing. It moves with the call's depth, like the call itself.
+The firmware flag also nests (a clipped play-list call clips everything inside
+it, intersected with the calls' own clips), but TS lists are inlined into the
+root, so each call carries its own.
 
 Kotlin allocates/cache-pins all image resources, resolves the local indices, applies
 surface placement, and includes the calls in the root firmware display list. The
@@ -68,7 +86,9 @@ exclude the changing elapsed duration. Without a timeline, raw `time()` expressi
 start at each PRESENT. Native compilation strips the bridge-only elapsed opcode.
 
 `menu-selection-list.ts` authors both the rounded highlight and the transparent row
-image using this API. `menu-scroll-list.ts` authors a menu scroll or bounce: a
+image using this API. `IconGrid` (app/ui/icon-grid.ts) animates a whole grid
+this way: a clipped CLEAR of the grid box, the sliding highlight, then a DRAWS
+of every row visible during the scroll, offset by the scroll expression. `menu-scroll-list.ts` authors a menu scroll or bounce: a
 viewport-sized copy from a strip resource whose source y animates, then the
 highlight. The bounce curve (`app/ui/menu-scroll-motion.ts`) needs no branches:
 the easing ops clamp their input to 0..1, so `ease(t / p)` holds at 1 after the
@@ -80,9 +100,13 @@ TypeScript. There is no animated-menu tag or menu animation policy in Kotlin.
 Tag 7 is followed by a little-endian u32 byte length and a bounded body:
 placement (i16 x/y, u16 width/height, i8 depth), timeline (u32 token/elapsed),
 u16 resource count, gray8 images (u16 width/height followed by pixels), u16 call
-count, then calls. Calls start with the firmware opcode and an i16 relative depth;
-operands otherwise use their fixed-width fields, except rounded x/y and rect-copy
-x/y/dx/dy which use extended varints. Expressions use the firmware bytecode plus bridge-only
+count, then calls. Calls start with the opcode (bit 7 set when a clip follows)
+and an i16 relative depth, then the clip if any (i16 x/y, u16 width/height);
+operands otherwise use their fixed-width fields, except rounded x/y, rect-copy
+x/y/dx/dy and DRAWS x/y which use extended varints. CLEAR is a u8 color. DRAWS
+(opcode 32) is followed by a u16 record count and the records, in the frame
+draw-buffer formats: glyph `[0][fontId u16][encoding u32][penX s16][lineY s16][value u8]`
+and image `[1][imageId u32][x s16][y s16]`. Expressions use the firmware bytecode plus bridge-only
 `ELAPSED = 128`. Resource indices are local to this record, never firmware IDs.
 Rect-copy source x/y are signed here to permit relative SCREEN coordinates.
 

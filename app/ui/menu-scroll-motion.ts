@@ -32,13 +32,14 @@ export function scrollOffsetAt(animation: MenuScrollAnimation, t: number): numbe
 }
 
 /**
- * The offset as a draw expression on the animation's own timeline. The easing
- * ops clamp their input, which splits a bounce into its two phases without
+ * The offset as a draw expression, on a list timeline that started at
+ * `timelineStart` (by default the animation's own start). The easing ops
+ * clamp their input, which splits a bounce into its two phases without
  * comparisons: the return term stays 0 until the peak, the outward one stays 1 after.
  */
-export function scrollOffsetExpression(animation: MenuScrollAnimation) {
+export function scrollOffsetExpression(animation: MenuScrollAnimation, timelineStart = animation.startedAt) {
   const { from, to, peak } = animation;
-  const t = () => E.progress(animation.durationMs);
+  const t = () => E.progress(animation.durationMs, animation.startedAt - timelineStart);
   if (peak === undefined) return t().ease().lerp(E.i32(from).toFloat(), E.i32(to).toFloat()).toInt();
   const out = t().mul(E.f32(1 / BOUNCE_PEAK)).ease(ExprOp.EASE_OUT_QUAD);
   const back = t().sub(E.f32(BOUNCE_PEAK)).div(E.f32(1 - BOUNCE_PEAK)).ease();
