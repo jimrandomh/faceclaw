@@ -102,7 +102,7 @@ export class RemoteControlsViewModel extends Observable {
     const raw = typeof args.value === "number" ? args.value : Number(args.object?.value ?? NaN);
     if (!Number.isFinite(raw)) return;
     // The setting only has every tenth level; snap to the nearest.
-    const level = Math.min(100, Math.max(0, Math.round(raw / 10) * 10));
+    const level = Math.min(100, Math.max(2, Math.round(raw / 10) * 10));
     this.lastManualBrightness = level;
     const value = String(level) as BrightnessSetting;
     if (brightnessSetting.get() !== value) brightnessSetting.set(value);

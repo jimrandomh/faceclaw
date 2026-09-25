@@ -32,5 +32,6 @@ export const CFW_MSG_DRAW_CALLS = 26
 export const CFW_MSG_SET_ROOT_DISPLAY_LIST = 27
 export const CFW_MSG_PRESENT = 28
 export const CFW_MSG_CREATE_SURFACE = 29
+export const CFW_MSG_BRIGHTNESS = 30
 export const CFW_MSG_TYPE_MASK = 127
 export const CFW_MSG_FLAG_LENSES_DIFFER = 128

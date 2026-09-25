@@ -44,7 +44,7 @@ import { TextViewerLayer } from '../apps/files/text-viewer'
 import { shell, rawInputEventToInputEvent, type ShellWindow } from '../ui/shell/shell'
 import { appViewportRect, SIDEBAR_WIDTH, sidebarStripVisible } from '../ui/shell/geometry'
 import { DISPLAY_MODE_VALUES, displayModeLabel, displayModeSetting, onAnySettingChanged,
-  previewColorSetting, lockScreenEnabledSetting, brightnessSetting, brightnessSettingToLevel } from '../ui/dashboard-settings'
+  previewColorSetting, lockScreenEnabledSetting, getBrightnessPreferences } from '../ui/dashboard-settings'
 import type { PhoneGesture } from '../phone-ui/phone-gestures'
 import { isWelcomeSoundPending, setWelcomeSoundPending } from '../phone-ui/onboarding-state'
 import { findSoundEffect, playSoundEffect } from '../ui/sound-effects'
@@ -332,11 +332,11 @@ export class IosPreviewController {
   private pushBrightness(): void {
     const communicator = this.communicator
     if (!communicator || this.state.phase !== 'connected') { this.lastBrightness = null; return }
-    const value = brightnessSetting.get()
+    const preferences = getBrightnessPreferences()
+    const value = JSON.stringify(preferences)
     if (value === this.lastBrightness) return
     this.lastBrightness = value
-    const level = brightnessSettingToLevel(value)
-    void communicator.setBrightness(level === null, level ?? 0).catch(error => {
+    void communicator.configureBrightness(preferences).catch(error => {
       this.lastBrightness = null
       this.logBluetooth(`Brightness: ${String(error)}`)
     })
@@ -694,6 +694,7 @@ export class IosPreviewController {
       this.displayReady = this.registerSurfaces(communicator)
       await this.displayReady
       this.update('connecting', 'Connecting to the glasses…')
+      await communicator.configureBrightness(getBrightnessPreferences())
       this.startedCommunicators.add(communicator)
       await communicator.start()
       for (const window of shell.getWindows()) window.requestRender()
@@ -887,13 +888,21 @@ export class IosPreviewController {
     if (this.glassesLocked || !this.active) return
     shell.startKeyboardInput()
   }
-  private async editSetting(setting: { editorTitle: string; inputKind?: string; get(): string; set(value: string): void }): Promise<boolean> {
+  private async editSetting(setting: { editorTitle: string; inputKind?: string; get(): string; set(value: string): void; validationError?(value?: string): string | null }): Promise<boolean> {
     if (!this.active) { this.logBluetooth('Editing text settings requires opening Faceclaw on the phone'); return false }
-    const result = await Dialogs.prompt({ title: setting.editorTitle, defaultText: setting.get(), inputType: setting.inputKind, okButtonText: 'Save', cancelButtonText: 'Cancel' })
-    if (result.result) {
-      setting.set(result.text)
+    let draft = setting.get()
+    while (true) {
+      const result = await Dialogs.prompt({ title: setting.editorTitle, defaultText: draft, inputType: setting.inputKind, okButtonText: 'Save', cancelButtonText: 'Cancel' })
+      if (!result.result) return false
+      draft = result.text
+      const error = setting.validationError?.(draft)
+      if (error) {
+        await Dialogs.alert({ title: setting.editorTitle, message: error, okButtonText: 'OK' })
+        continue
+      }
+      setting.set(draft)
       if (setting === nightscoutSiteUrlSetting || setting === nightscoutApiTokenSetting) await nightscoutBridge.refreshNow()
+      return true
     }
-    return result.result
   }
 }

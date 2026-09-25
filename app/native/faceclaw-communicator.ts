@@ -442,9 +442,13 @@ export class FaceclawCommunicatorBridge {
     await this.enqueueJavaCall(() => this.communicator.setFirmwareDebugFlags(Boolean(enabled)));
   }
 
-  /** Set lens brightness: auto (ambient sensor) or an explicit 0-100 level. */
+  /** Set lens brightness: Faceclaw auto or a fixed level (clamped to 2–100). */
   async setBrightness(autoAdjust: boolean, level: number): Promise<void> {
     await this.enqueueJavaCall(() => this.communicator.setBrightness(Boolean(autoAdjust), Math.round(level)));
+  }
+
+  async configureBrightness(p: { auto: boolean; level: number; minimum: number; maximum: number; curve: string; fadeMs: number }): Promise<void> {
+    await this.enqueueJavaCall(() => this.communicator.configureBrightness(p.auto, p.level, p.minimum, p.maximum, p.curve, p.fadeMs));
   }
 
   async enableWearDetectionAndRequestState(): Promise<void> {

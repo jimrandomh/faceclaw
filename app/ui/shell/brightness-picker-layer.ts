@@ -53,7 +53,7 @@ export class BrightnessPickerLayer implements Layer {
         const level = brightnessSettingToLevel(brightnessSetting.get());
         // Respect Auto if it was enabled on the phone while this dialog was open.
         if (level === null) return;
-        const next = clamp(level + (event.type === "scroll-up" ? 10 : -10), 0, 100);
+        const next = clamp((level === 2 ? 0 : level) + (event.type === "scroll-up" ? 10 : -10), 2, 100);
         if (next !== level) brightnessSetting.set(String(next) as BrightnessSetting);
         return;
       }

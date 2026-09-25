@@ -66,9 +66,9 @@ test('swipes change the saved level by 10, clamp at both ends, and both tap gest
   await f.input('click'); assert.ok(f.stack.isAtBase()); assert.equal(f.closed(), 1);
   f.open();
   for (let i = 0; i < 12; i++) await f.input('scroll-down');
-  assert.equal(f.value(), '0'); assert.equal(f.writes(), 17);
+  assert.equal(f.value(), '2'); assert.equal(f.writes(), 17);
   await f.input('double-click'); assert.ok(f.stack.isAtBase()); assert.equal(f.closed(), 2);
-  assert.equal(f.value(), '0');
+  assert.equal(f.value(), '2');
 });
 
 test('enabling Auto while the picker is open prevents manual changes', async () => {

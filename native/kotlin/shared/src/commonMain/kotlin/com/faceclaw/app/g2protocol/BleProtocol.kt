@@ -422,18 +422,17 @@ class BleProtocol {
         }
 
         /**
-         * Set the lens brightness: G2SettingPackage{commandId=1 (DeviceReceiveInfo),
-         * deviceReceiveInfoFromApp(3){deviceReceiveBrightness(1){autoAdjust(1),
-         * brightnessLevel(2)}}} on sid 0x09. brightnessLevel is 0-100 (nonlinear; 0 is
-         * dim-but-visible, not off). When autoAdjust is set the ambient-light sensor drives
-         * brightness, so the level field is omitted; otherwise the level is always encoded
-         * (explicit zero included) so brightnessLevel=0 reaches the wire.
+         * Stock settings helper (Faceclaw uses CFW mode 30). autoAdjust and
+         * brightnessLevel are oneof alternatives: never encode both. A level
+         * alone does NOT disable stock auto adjustment; it is a temporary
+         * manual override when auto remains enabled. Stock clamps to 2..100.
          */
         @JvmStatic
         fun buildSetBrightness(magic: Int, autoAdjust: Boolean, brightnessLevel: Int): ByteArray {
             var brightness: MutableList<ByteArray> = ArrayList()
-            brightness.add(encodeVarintField(1, (if (autoAdjust) 1 else 0)))
-            if (!autoAdjust) {
+            if (autoAdjust) {
+                brightness.add(encodeVarintField(1, 1))
+            } else {
                 brightness.add(encodeVarintField(2, brightnessLevel))
             }
             return concat(

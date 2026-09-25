@@ -1,6 +1,6 @@
 import { startRemoteInput } from "../remote/service";
 import { acceptInput, resetRingInputFilter } from "../ui/input-monitor";
-import { Application, ImageSource } from "@nativescript/core";
+import { Application, Dialogs, ImageSource } from "@nativescript/core";
 import { EvenAIStatus, EvenAIStatusName, EventSourceType, EventSourceTypeName, OsEventTypeList, OsEventTypeName, WatchGestureType, WatchGestureTypeName } from "./events";
 import { isValidMacAddress, loadDeviceAddresses } from "./device-addresses";
 import {
@@ -71,7 +71,7 @@ import { loadPersistedOpenApps, savePersistedOpenApps } from "../ui/shell/open-a
 import { appViewportRect, SIDEBAR_WIDTH, sidebarStripVisible, type WindowHeightMode } from "../ui/shell/geometry";
 import { type LayerActions, type TextSettingsEditToggle } from "../ui/layers";
 import { type KeyboardInputSession } from "../ui/shell/keyboard-input";
-import { assistantAllowProactiveSetting, assistantBackendSetting, assistantBridgeHostSetting, assistantBridgePortSetting, assistantBridgeTokenSetting, brightnessSetting, brightnessSettingToLevel, displayModeSetting, navigateDisplayModeSetting, navigateVerticalPositionSetting, terminalDisplayModeSetting, terminalVerticalPositionSetting, elevenLabsApiKeySetting, getStringSettingById, openAiApiKeySetting, nightscoutApiTokenSetting, firmwareDebugFlagsSetting, lockScreenEnabledSetting, nightscoutSiteUrlSetting, onAnySettingChanged, previewColorSetting, ringConnectionModeSetting, saveVoiceRecordingsSetting, sonioxApiKeySetting, screenTimeoutSetting, screenTimeoutSettingToMs, suspendEvenHubWhenScreenOffSetting, verticalPositionSetting, voiceProviderSetting, wakeWordActionSetting, type ConfigSettingString } from "../ui/dashboard-settings";
+import { assistantAllowProactiveSetting, assistantBackendSetting, assistantBridgeHostSetting, assistantBridgePortSetting, assistantBridgeTokenSetting, getBrightnessPreferences, displayModeSetting, navigateDisplayModeSetting, navigateVerticalPositionSetting, terminalDisplayModeSetting, terminalVerticalPositionSetting, elevenLabsApiKeySetting, getStringSettingById, openAiApiKeySetting, nightscoutApiTokenSetting, firmwareDebugFlagsSetting, lockScreenEnabledSetting, nightscoutSiteUrlSetting, onAnySettingChanged, previewColorSetting, ringConnectionModeSetting, saveVoiceRecordingsSetting, sonioxApiKeySetting, screenTimeoutSetting, screenTimeoutSettingToMs, suspendEvenHubWhenScreenOffSetting, verticalPositionSetting, voiceProviderSetting, wakeWordActionSetting, type ConfigSettingString } from "../ui/dashboard-settings";
 import { isIgnoringBatteryOptimizations, requestIgnoreBatteryOptimizations } from "../native/battery-optimization";
 import {
   getInstalledEvenHubAppById,
@@ -908,11 +908,14 @@ class DashboardController {
    */
   private pushBrightness(force = false): void {
     if (!this.communicator) return;
-    const value = brightnessSetting.get();
+    const preferences = getBrightnessPreferences();
+    const value = JSON.stringify(preferences);
     if (!force && value === this.lastPushedBrightness) return;
     this.lastPushedBrightness = value;
-    const level = brightnessSettingToLevel(value);
-    void this.communicator.setBrightness(level === null, level ?? 0).catch(() => {});
+    void this.communicator.configureBrightness(preferences).catch((error) => {
+      this.lastPushedBrightness = null;
+      this.appendLog(`brightness configuration failed: ${this.formatError(error)}`);
+    });
   }
 
   /** Save the occupied part of the composited screen as a 4-bit grayscale PNG. */
@@ -1341,6 +1344,7 @@ class DashboardController {
       // queue is FIFO, so enqueuing the screen size first guarantees it lands
       // ahead of them. Mirrors ensurePreviewDisplay.
       await communicator.configureCompositorScreen(G2_LENS_WIDTH, G2_LENS_HEIGHT);
+      await communicator.configureBrightness(getBrightnessPreferences());
       this.offState = communicator.onStateChange((state) => {
         if (state.phase !== "connected") resetRingInputFilter();
         if (state.phase === "unpaired") {
@@ -2035,6 +2039,11 @@ class DashboardController {
    */
   finishActiveTextSettingEdit(): void {
     if (!this.activeTextSettings.length) return;
+    const invalid = this.activeTextSettings.find(setting => setting.validationError());
+    if (invalid) {
+      void Dialogs.alert({ title: invalid.editorTitle, message: invalid.validationError()!, okButtonText: "OK" });
+      return;
+    }
     const onFinish = this.activeTextEditorOnFinish;
     // Completing is not cancelling: drop the cancel callback before
     // endTextSettingEdit, which fires whatever is still set.

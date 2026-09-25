@@ -169,6 +169,7 @@ internal fun GlassesSessionCore.driveSession(): Long {
                 if (benchmarkActive) {
                     maintainBenchmarkLocked(now)
                 }
+                if (!benchmarkActive) maintainBrightnessLocked(now)
 
                 // Up to WINDOW_SIZE messages may be in flight at once (full
                 // pipelining); a slot frees when an ack arrives. An active
@@ -582,6 +583,10 @@ internal fun GlassesSessionCore.logImageUpdateLandmarkLocked(event: String, mess
 }
 
 internal fun GlassesSessionCore.enqueueCreateLayoutLocked() {
+    brightnessSentVisible = null
+    brightnessSentLevel = -1
+    brightnessAlsStartedAt = -2000
+    brightnessPolicy.resetSamples()
     // New session: re-assert the firmware-debug-flags overlay once
     // the layout is ready (the mode-7 send is gated on this having reset).
     firmwareDebugFlagsLastSent = -1
@@ -705,7 +710,7 @@ internal fun GlassesSessionCore.enqueueAmbientLightControlLocked(payload: ByteAr
 }
 
 internal fun GlassesSessionCore.enqueueDesiredImageLocked() {
-    val fingerprint = desiredFingerprintSnapshot()
+    val fingerprint: String
     val packedSnapshot: ByteArray?
     val width: Int
     val height: Int
@@ -714,6 +719,7 @@ internal fun GlassesSessionCore.enqueueDesiredImageLocked() {
     val draws: Array<SurfaceCompositor.ScreenDraw>?
     val scene: ShellScene
     desiredTilesLock.locked {
+        fingerprint = desiredFingerprint
         packedSnapshot = desiredPacked
         width = desiredWidth
         height = desiredHeight
@@ -724,6 +730,8 @@ internal fun GlassesSessionCore.enqueueDesiredImageLocked() {
         desiredFrameId = 0
     }
     val packedFrame: ByteArray = packedSnapshot ?: ByteArray(0)
+    // Visibility belongs to this immutable composite, not the latest UI request.
+    enqueueBrightnessLocked(!fingerprint.startsWith("blanked:"))
     if (customFirmwareDetected && packedFrame.size > 0) {
         val rendered = scenePlanner.plan(packedFrame, width, height, draws, scene, nextImageFrameId,
             connectionOptions.TEXTURE_CACHE_FRAMES, connectionOptions.INCREMENTAL_FRAMES,
@@ -1195,6 +1203,9 @@ internal fun GlassesSessionCore.clearMessagesOfKindLocked(kind: String) {
 }
 
 internal fun GlassesSessionCore.clearAllMessagesLocked(reason: String) {
+    brightnessSentVisible = null
+    brightnessSentLevel = -1
+    brightnessAlsStartedAt = -2000
     clearPendingMessagesLocked(reason)
     clearInFlightMessagesLocked(reason)
     // The image pipeline is gone: drop the pipelined delta base so the next
@@ -1213,6 +1224,9 @@ internal fun GlassesSessionCore.clearAllMessagesLocked(reason: String) {
  * direct prelude write.
  */
 internal fun GlassesSessionCore.clearAllMessagesPreservingWakeLeaseLocked(reason: String) {
+    brightnessSentVisible = null
+    brightnessSentLevel = -1
+    brightnessAlsStartedAt = -2000
     val pendingIterator = pendingMessages.iterator()
     while (pendingIterator.hasNext()) {
         val message = pendingIterator.next()

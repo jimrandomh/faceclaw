@@ -183,6 +183,11 @@ class GlassesSessionCore(
      * needed here.
      */
     internal var customFirmwareDetected = false
+    internal val brightnessPolicy = BrightnessPolicy()
+    internal var brightnessSentVisible: Boolean? = null
+    internal var brightnessSentLevel = -1
+    internal var brightnessAlsStartedAt = -2000L
+    internal var brightnessDemoPolling = false
     internal var cfwCleanupDelivered = false
     internal var lastCfwCleanupAckMagic = 0
 
@@ -612,25 +617,16 @@ class GlassesSessionCore(
         interruptibleSleep.interrupt()
     }
 
-    /**
-     * Set the lens brightness. Fire-and-forget, like the IMU control: the
-     * message is queued ahead of other traffic and any not-yet-sent brightness
-     * message is superseded. When autoAdjust is true the ambient-light sensor
-     * drives brightness and brightnessLevel is ignored; otherwise
-     * brightnessLevel (0-100) is applied directly.
-     */
+    /** Update desired brightness; retained before readiness and across reconnect. */
     fun setBrightness(autoAdjust: Boolean, brightnessLevel: Int) {
         monitor.withLock {
-            if (!running || !sessionReady) {
-                logLine("skip brightness set; session not ready")
-                return
-            }
-            clearMessagesOfKindLocked("brightness-control")
-            val message = messageBuilder.setBrightness(autoAdjust, brightnessLevel)
-            message.onTimeout = MessageCallback { logLine("brightness control ack timeout") }
-            pendingMessages.addFirst(message)
-            logLine("queue brightness " + (if (autoAdjust) "auto" else "level=$brightnessLevel"))
+            brightnessPolicy.setMode(autoAdjust, brightnessLevel)
         }
+        interruptibleSleep.interrupt()
+    }
+
+    fun configureBrightness(auto: Boolean, level: Int, minimum: Int, maximum: Int, curve: String, fadeMs: Int) {
+        monitor.withLock { brightnessPolicy.configure(auto, level, minimum, maximum, curve, fadeMs) }
         interruptibleSleep.interrupt()
     }
 
@@ -798,6 +794,13 @@ class GlassesSessionCore(
      */
     fun setAmbientLightPolling(enable: Boolean, intervalMs: Int, minDelta: Int,
                                heartbeatMs: Int, bindToLease: Boolean) {
+        // The brightness controller owns passive mode throughout a CFW session.
+        // The demo can request faster samples without releasing that ownership.
+        if (customFirmwareDetected) {
+            monitor.withLock { brightnessDemoPolling = enable; brightnessAlsStartedAt = -2000 }
+            interruptibleSleep.interrupt()
+            return
+        }
         val payload = if (enable)
             byteArrayOf(
                 CFW_MSG_AMBIENT_LIGHT.toByte(),
@@ -1467,6 +1470,7 @@ class GlassesSessionCore(
                 // CFW ambient-light report (field 105) from the master temple.
                 val alsReport = BleProtocol.parseFaceclawAlsReport(frame.pb)
                 if (alsReport != null) {
+                    if (address.equals(rightAddress, ignoreCase = true)) brightnessPolicy.sample(alsReport, now())
                     emitAmbientLight(alsReport)
                 }
             }

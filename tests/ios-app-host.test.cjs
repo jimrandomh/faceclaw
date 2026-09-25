@@ -229,7 +229,7 @@ test('background glasses input still composites frames; phone resume preserves t
     async start() { starts++; this.phase = 'connected'; this.stateListener({ phase: 'connected', status: 'Connected.' }); }
     async disconnect() { stops++; this.phase = 'disconnected'; this.stateListener({ phase: 'disconnected', status: 'Disconnected.' }); }
     async close() {}
-    async setBrightness() {} async enableWearDetectionAndRequestState() {}
+    async configureBrightness() {} async setBrightness() {} async enableWearDetectionAndRequestState() {}
     async configureCompositorScreen() {} async configureSurface() {} async setUnderlayDim() {} async setSurfaceVisible() {}
     async setScreenBlanked() {} async removeSurface() {}
     async submitSurfaceFrame(_id, pixels) { if (this.phase === 'connected') frames.push(pixels); }
@@ -245,7 +245,7 @@ test('background glasses input still composites frames; phone resume preserves t
     waitForFrameFinished() { return Promise.resolve('composited'); }
     getCompositePreview() { return new Uint8Array([1, 2]); }
   }
-  const settings = { brightnessSetting: { get: () => 'auto' }, brightnessSettingToLevel: () => null, lockScreenEnabledSetting: { get: () => true }, onAnySettingChanged: () => () => {}, previewColorSetting: { get: () => 'white' } };
+  const settings = { brightnessSetting: { get: () => 'auto' }, brightnessSettingToLevel: () => null, getBrightnessPreferences: () => ({ auto: true, level: 50, minimum: 2, maximum: 100, curve: '0:0,1000:100', fadeMs: 280 }), lockScreenEnabledSetting: { get: () => true }, onAnySettingChanged: () => () => {}, previewColorSetting: { get: () => 'white' } };
   const modules = {
     "../ui/input-monitor": load("app/ui/input-monitor.ts", {}),
     '../remote/service': { startRemoteInput() {} },
@@ -497,4 +497,19 @@ test('iOS keyboard action opens the shared destination session and remains block
   host.active = true; host.glassesLocked = false; host.typeIntoApp(); assert.equal(opened, 1);
   host.glassesLocked = true; host.typeIntoApp(); assert.equal(opened, 1);
   host.glassesLocked = false; host.active = false; host.typeIntoApp(); assert.equal(opened, 1);
+});
+
+test('iOS curve editor retains invalid draft and retries Save with a validation message', async () => {
+  const prompts = [], errors = [], saved = [];
+  const answers = [{ result: true, text: '0:0,5:' }, { result: true, text: '0:0,5:100' }];
+  const { IosPreviewController } = load('app/g2/ios-preview-controller.ts', { require: id => id === '@nativescript/core'
+    ? { Dialogs: { prompt: async options => { prompts.push(options.defaultText); return answers.shift(); }, alert: async options => errors.push(options.message) } }
+    : {} });
+  const host = Object.create(IosPreviewController.prototype); host.active = true;
+  const curve = require('../.test-build/app/g2/brightness-curve.js');
+  assert.equal(await host.editSetting({ editorTitle: 'Auto light curve', get: () => '0:0,8:100',
+    set: value => saved.push(value), validationError: curve.brightnessCurveError }), true);
+  assert.deepEqual(prompts, ['0:0,8:100', '0:0,5:']);
+  assert.equal(errors.length, 1);
+  assert.deepEqual(saved, ['0:0,5:100']);
 });

@@ -147,6 +147,8 @@ class IosGlassesSession internal constructor(
     fun setCompassEnabledForOwner(owner: String?, enable: Boolean) = core.setCompassEnabled(owner, enable)
 
     fun setBrightness(autoAdjust: Boolean, brightnessLevel: Int) = core.setBrightness(autoAdjust, brightnessLevel)
+    fun configureBrightness(auto: Boolean, level: Int, minimum: Int, maximum: Int, curve: String, fadeMs: Int) =
+        core.configureBrightness(auto, level, minimum, maximum, curve, fadeMs)
 
     fun enableWearDetectionAndRequestState() = core.enableWearDetectionAndRequestState()
 

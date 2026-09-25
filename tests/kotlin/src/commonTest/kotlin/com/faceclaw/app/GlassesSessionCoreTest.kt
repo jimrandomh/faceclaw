@@ -262,6 +262,42 @@ private class Session {
 }
 
 class GlassesSessionCoreTest {
+    @Test fun brightnessConfigPrecedesFirstFrameAndSleepWakeFollowsComposites() {
+        val s = Session()
+        s.core.configureBrightness(false, 70, 2, 100, "0:0,1000:100", 280)
+        s.core.configureCompositorScreen(640, 480)
+        s.core.configureSurface("s", 0, 0, 64, 32, 0, SurfaceCompositor.TRANSPARENCY_OPAQUE)
+        s.startAndAwaitLayout()
+        s.core.monitor.withLock { s.core.customFirmwareDetected = true }
+        try {
+            s.submitFrame(1, 0x70, 1)
+            assertTrue(waitUntil(5000) { s.displayedMatchesDesired() })
+            fun outputs() = s.link.writes.filter { it.address == LEFT && it.kind == "brightness-output" }
+            assertTrue(waitUntil(5000) { outputs().isNotEmpty() })
+            val first = outputs().first().message!!
+            assertContentEquals(byteArrayOf(30, 1, 70, 1, 24, 1), first)
+            val writes = s.link.writes.filter { it.address == LEFT }
+            assertTrue(writes.indexOfFirst { it.kind == "als-control" } < writes.indexOfFirst { it.kind == "brightness-output" })
+            assertTrue(writes.indexOfFirst { it.kind == "brightness-output" } < writes.indexOfFirst { it.message?.firstOrNull() == 28.toByte() })
+            s.core.setScreenBlanked(true)
+            assertTrue(waitUntil(5000) { s.displayedMatchesDesired() && outputs().last().message!![3] == 0.toByte() })
+            s.core.setScreenBlanked(false)
+            assertTrue(waitUntil(5000) { s.displayedMatchesDesired() && outputs().last().message!![3] == 1.toByte() })
+            // The ordered CFW window may replay accepted commands; those must
+            // retain the same brightness and visibility, without an extra toggle.
+            val visibility = outputs().map { it.message!![3].toInt() }
+            val transitions = visibility.filterIndexed { i, v -> i == 0 || visibility[i-1] != v }
+            assertEquals(listOf(1, 0, 1), transitions)
+            assertTrue(outputs().all { it.message!![2] == 70.toByte() })
+            // The demo cannot restore the stock adjuster while Faceclaw owns brightness.
+            s.core.setAmbientLightPolling(false, 250, 0, 1000, true)
+            s.platform.offsetMs += 3000
+            s.core.interruptibleSleep.interrupt()
+            assertTrue(waitUntil(5000) { s.link.writes.count { it.address == LEFT && it.kind == "als-control" } >= 2 })
+            assertTrue(s.link.writes.filter { it.kind == "als-control" }.all { it.message!![1] == 1.toByte() })
+        } finally { s.core.close() }
+    }
+
     @Test
     fun connectsAuthenticatesPreludesAndCreatesTheLayout() {
         val s = Session()
