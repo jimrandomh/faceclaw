@@ -4,7 +4,8 @@ import { GrayImage, type UiFont } from "../../graphics/image";
 import { renderIcon, type IconName } from "../../graphics/icons";
 import { clamp } from "../../util/numeric-util";
 import { drawListScrollbar, drawSelectionHighlight, scrollToKeepSelectionVisible, type MenuItem } from "../../ui/menu";
-import { iconGridMinRowHeight, tightRowHeight } from "../../ui/metrics";
+import { Menu, type MenuDrawArgs } from "../../ui/menu-core";
+import { centeredTextY, iconGridMinRowHeight, tightRowHeight } from "../../ui/metrics";
 import { ConfigSettingEnum } from "../../ui/dashboard-settings";
 import { getStringSetting, setStringSetting } from "../../native/settings-store";
 import {
@@ -20,6 +21,8 @@ import { Layer, type LayerContext } from "../../ui/layers";
 import { shell } from "../../ui/shell/shell";
 
 const LIST_X = 20;
+/** List view: the selection box extends this far left and right of the row text. */
+const LIST_HIGHLIGHT_PAD = 6;
 
 /** Header: one line holding both the title and the current path. */
 function headerHeight(font: UiFont): number {
@@ -133,7 +136,14 @@ export class FileBrowserLayer implements Layer {
   private entries: DirectoryEntry[] | null = null;
   private listingFailed = false;
 
-  private listIndex = 0;
+  /** List view. Its selected index is the flat-row index both views translate through (setViewMode). */
+  private readonly listMenu = new Menu<BrowserItem>({
+    wrap: false,
+    rowGap: 1,
+    highlight: { radius: 4 },
+    getHeight: () => tightRowHeight(getDefaultSmallFont()),
+    draw: (args) => this.drawListRow(args),
+  });
   private selectedRow = 0;
   private selectedCol = 0;
   private iconMode: IconMode = "row";
@@ -162,25 +172,20 @@ export class FileBrowserLayer implements Layer {
 
   private paintList(image: GrayImage, font: UiFont, rows: BrowserItem[], ctx: LayerContext): void {
     const { width, height } = ctx.stack.getBaseSize();
-    this.listIndex = clamp(this.listIndex, 0, Math.max(0, rows.length - 1));
-
-    const rowH = tightRowHeight(font);
     const headerH = headerHeight(font);
-    const listHeight = height - headerH - 4;
-    const visibleRows = Math.max(1, (listHeight / rowH) | 0);
-    this.scrollRow = scrollToKeepSelectionVisible(this.scrollRow, this.listIndex, visibleRows, rows.length);
+    this.listMenu.setItems(rows);
+    // Row boxes start one pixel above the header's bottom edge.
+    this.listMenu.paint(
+      image,
+      { x: LIST_X - LIST_HIGHLIGHT_PAD, y: headerH - 1, width: width - 2 * LIST_X + 2 * LIST_HIGHLIGHT_PAD, height: height - headerH - 4 },
+      ctx.stack.isFocused(),
+    );
+  }
 
-    const lastVisible = Math.min(rows.length, this.scrollRow + visibleRows);
-    for (let index = this.scrollRow; index < lastVisible; index++) {
-      const row = rows[index]!;
-      const y = headerH + (index - this.scrollRow) * rowH;
-      const selected = index === this.listIndex;
-      if (selected) {
-        drawSelectionHighlight(image, LIST_X - 6, y - 1, width - 2 * LIST_X + 12, rowH - 1, ctx.stack.isFocused(), 4);
-      }
-      const value = itemValue(row, selected);
-      image.drawText(font, LIST_X, y + 1, truncateText(font, row.label, width - 2 * LIST_X), value);
-    }
+  private drawListRow({ image, item, x, y, width, height, selected }: MenuDrawArgs<BrowserItem>): void {
+    const font = getDefaultSmallFont();
+    const label = truncateText(font, item.label, width - 2 * LIST_HIGHLIGHT_PAD);
+    image.drawText(font, x + LIST_HIGHLIGHT_PAD, centeredTextY(font, y, height), label, itemValue(item, selected));
   }
 
   private paintIcons(image: GrayImage, font: UiFont, rows: BrowserItem[], ctx: LayerContext): void {
@@ -276,16 +281,14 @@ export class FileBrowserLayer implements Layer {
   }
 
   private async handleListInput(event: InputEvent, ctx: LayerContext): Promise<void> {
-    const rows = this.flatRows();
+    this.listMenu.setItems(this.flatRows());
     switch (event.type) {
       case "scroll-up":
-        this.listIndex = Math.max(0, this.listIndex - 1);
-        return;
       case "scroll-down":
-        this.listIndex = Math.min(Math.max(0, rows.length - 1), this.listIndex + 1);
+        await this.listMenu.handleInput(event);
         return;
       case "click": {
-        const row = rows[clamp(this.listIndex, 0, Math.max(0, rows.length - 1))];
+        const row = this.listMenu.selectedItem;
         if (row) await this.activateItem(row, ctx);
         return;
       }
@@ -461,8 +464,7 @@ export class FileBrowserLayer implements Layer {
         label: isBookmarked(path) ? `Remove bookmark: ${name}` : `Bookmark: ${name}`,
         onSelect: (ctx) => {
           toggleBookmark(path);
-          const rows = this.flatRows();
-          this.listIndex = clamp(this.listIndex, 0, Math.max(0, rows.length - 1));
+          this.listMenu.setItems(this.flatRows());
           ctx.stack.pop();
         },
       });
@@ -475,7 +477,8 @@ export class FileBrowserLayer implements Layer {
     const rows = this.flatRows();
     if (!rows.length) return null;
     if (filesViewModeSetting.get() === "list") {
-      return rows[clamp(this.listIndex, 0, rows.length - 1)] ?? null;
+      this.listMenu.setItems(rows);
+      return this.listMenu.selectedItem;
     }
     const iconRows = buildIconRows(rows);
     const row = iconRows[clamp(this.selectedRow, 0, iconRows.length - 1)];
@@ -489,20 +492,23 @@ export class FileBrowserLayer implements Layer {
     if (filesViewModeSetting.get() === mode) return;
     const rows = this.flatRows();
     const iconRows = buildIconRows(rows);
+    this.listMenu.setItems(rows);
     if (mode === "list") {
       // Carry the icon-grid selection into the flat list (clamped column when
       // only a row was selected).
       const row = iconRows[clamp(this.selectedRow, 0, Math.max(0, iconRows.length - 1))];
       if (row) {
-        this.listIndex =
-          row.kind === "special" ? row.flatIndex : row.firstIndex + clamp(this.selectedCol, 0, row.items.length - 1);
+        this.listMenu.select(
+          row.kind === "special" ? row.flatIndex : row.firstIndex + clamp(this.selectedCol, 0, row.items.length - 1),
+        );
       }
     } else {
-      this.setGridSelectionFromFlatIndex(rows, clamp(this.listIndex, 0, Math.max(0, rows.length - 1)));
+      this.setGridSelectionFromFlatIndex(rows, this.listMenu.selectedIndex ?? 0);
       this.iconMode = "row";
     }
     filesViewModeSetting.set(mode);
     this.scrollRow = 0;
+    this.listMenu.scrollTop = 0;
   }
 
   private async activateItem(item: BrowserItem, ctx: LayerContext): Promise<void> {
@@ -548,7 +554,8 @@ export class FileBrowserLayer implements Layer {
   }
 
   private resetSelection(): void {
-    this.listIndex = 0;
+    this.listMenu.select(0);
+    this.listMenu.scrollTop = 0;
     this.selectedRow = 0;
     this.selectedCol = 0;
     this.iconMode = "row";
@@ -560,7 +567,9 @@ export class FileBrowserLayer implements Layer {
     const rows = this.flatRows();
     const index = rows.findIndex((row) => row.kind === "entry" && row.entry.path === path);
     if (index < 0) return;
-    this.listIndex = index;
+    // Items first, then the selection, so the viewport scrolls minimally from the top.
+    this.listMenu.setItems(rows);
+    this.listMenu.select(index);
     this.setGridSelectionFromFlatIndex(rows, index);
   }
 

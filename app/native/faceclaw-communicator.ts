@@ -137,7 +137,6 @@ export class FaceclawCommunicatorBridge {
   // does not race against finishes that land before the wait starts.
   private readonly finishedFrameOutcomes = new Map<number, string>();
   private readonly frameFinishedWaiters = new Map<number, Set<(outcome: string) => void>>();
-  private readonly logListeners = new Set<(line: string) => void>();
   private readonly stateListeners = new Set<(state: CommunicatorState) => void>();
   private readonly ringListeners = new Set<(event: RawInputEvent) => void>();
   private readonly batteryListeners = new Set<(state: HeadsetBatteryState) => void>();
@@ -161,9 +160,6 @@ export class FaceclawCommunicatorBridge {
       addresses.ring ?? "",
     );
     this.listenerProxy = new com.faceclaw.app.FaceclawBleCommunicatorListener({
-      onLog: (line: string) => {
-        this.emitAsync(this.logListeners, String(line));
-      },
       onStateChange: (phase: string, status: string) => {
         const state = {
           phase: String(phase) as CommunicatorPhase,
@@ -291,11 +287,6 @@ export class FaceclawCommunicatorBridge {
       () => undefined,
     );
     return result;
-  }
-
-  onLog(listener: (line: string) => void): () => void {
-    this.logListeners.add(listener);
-    return () => this.logListeners.delete(listener);
   }
 
   onStateChange(listener: (state: CommunicatorState) => void): () => void {
@@ -451,9 +442,13 @@ export class FaceclawCommunicatorBridge {
     await this.enqueueJavaCall(() => this.communicator.setFirmwareDebugFlags(Boolean(enabled)));
   }
 
-  /** Set lens brightness: auto (ambient sensor) or an explicit 0-100 level. */
+  /** Set lens brightness: Faceclaw auto or a fixed level (clamped to 2–100). */
   async setBrightness(autoAdjust: boolean, level: number): Promise<void> {
     await this.enqueueJavaCall(() => this.communicator.setBrightness(Boolean(autoAdjust), Math.round(level)));
+  }
+
+  async configureBrightness(p: { auto: boolean; level: number; minimum: number; maximum: number; curve: string; fadeMs: number }): Promise<void> {
+    await this.enqueueJavaCall(() => this.communicator.configureBrightness(p.auto, p.level, p.minimum, p.maximum, p.curve, p.fadeMs));
   }
 
   async enableWearDetectionAndRequestState(): Promise<void> {
@@ -541,6 +536,11 @@ export class FaceclawCommunicatorBridge {
    * next composite. How a shell overlay's Layer.dimUnderneath reaches the
    * window surfaces beneath the shell surface.
    */
+  async submitShellScene(bytes: Uint8Array, paintMs = 0, frameId = 0): Promise<void> {
+    const snapshot = new Uint8Array(bytes);
+    await this.enqueueJavaCall(() => this.communicator.submitShellScene(snapshot.buffer, paintMs, frameId), true);
+  }
+
   async setUnderlayDim(belowZOrder: number, factor: number): Promise<void> {
     await this.enqueueJavaCall(() => {
       this.communicator.setUnderlayDim(Math.round(belowZOrder), dimFactor256(factor));
@@ -551,6 +551,16 @@ export class FaceclawCommunicatorBridge {
   async setSurfaceVisible(id: string, visible: boolean): Promise<void> {
     await this.enqueueJavaCall(() => {
       this.communicator.setSurfaceVisible(id, Boolean(visible));
+    });
+  }
+
+  /**
+   * Stereo depth for a surface, applied while it is the topmost visible
+   * surface and opaquely covers the screen; takes effect at its next frame.
+   */
+  async setSurfaceDepth(id: string, depth: number): Promise<void> {
+    await this.enqueueJavaCall(() => {
+      this.communicator.setSurfaceDepth(id, Math.round(depth));
     });
   }
 

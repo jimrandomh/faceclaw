@@ -21,17 +21,20 @@ int main(int argc, const char **argv) { @autoreleasepool {
   NSString *failure = [server start:atoi(argv[1])];
   if (failure.length) return 3;
   puts("READY"); fflush(stdout);
-  for (;;) { @autoreleasepool {
+  __weak FaceclawRemoteInput *weakServer = server;
+  [server setRequestListener:^{ @autoreleasepool {
+    FaceclawRemoteInput *server = weakServer;
+    if (![NSThread isMainThread]) exit(4);
     NSString *raw = [server nextRequest];
     if (raw) {
       NSDictionary *request = [NSJSONSerialization JSONObjectWithData:[raw dataUsingEncoding:NSUTF8StringEncoding] options:0 error:nil];
       NSDictionary *body = [NSJSONSerialization JSONObjectWithData:[request[@"body"] dataUsingEncoding:NSUTF8StringEncoding] options:0 error:nil];
-      if ([body[@"text"] isEqual:@"stop"]) { [server stop]; usleep(300000); puts("STOPPED"); fflush(stdout); return 0; }
+      if ([body[@"text"] isEqual:@"stop"]) { [server stop]; usleep(300000); puts("STOPPED"); fflush(stdout); exit(0); }
       NSData *reply = [NSJSONSerialization dataWithJSONObject:@{@"ok":@YES, @"echo":body ?: @{}} options:0 error:nil];
       [server complete:[request[@"id"] longLongValue] response:[[NSString alloc] initWithData:reply encoding:NSUTF8StringEncoding]];
     }
-    usleep(1000);
-  }}
+  }}];
+  [[NSRunLoop mainRunLoop] run];
 }}
 `);
   const binary = path.join(directory, 'probe');
@@ -66,7 +69,7 @@ int main(int argc, const char **argv) { @autoreleasepool {
     await send(options, { action: 'input', gesture: 'click' });
     await assert.rejects(send(options, { action: 'text', text: 'stop' }));
     assert.equal(await exited, 0);
-    console.log('Native socket probe passed: crypto, framing, UTF-8, multiple connections, shutdown.');
+    console.log('Native socket probe passed: crypto, framing, UTF-8, main-thread request notifications, multiple connections, shutdown.');
   } finally { child.kill(); }
 }
 main().catch(error => { console.error(error); process.exitCode = 1; }).finally(() => fs.rmSync(directory, { recursive: true, force: true }));

@@ -77,23 +77,27 @@ for (const provider of ['openai', 'anthropic']) {
   });
 }
 
-test('iOS SSE adapter invokes listeners on its polling thread and stops polling at cancellation/EOF', () => {
-  const timers = new Set(), instances = [], seen = [];
+test('iOS SSE adapter forwards the Kotlin stream events once and stops after cancellation/EOF', () => {
+  const instances = [], seen = [];
+  const nsObject = { extend: methods => ({ new: () => ({ ...methods }) }) };
+  const listenerModule = loader({ NSObject: nsObject }, {})('app/native/kotlin-listener.ios.ts');
   const api = loader({
-    setInterval: fn => { timers.add(fn); return fn; }, clearInterval: fn => timers.delete(fn),
-    FaceclawSseRequest: { alloc: () => ({ initWithURLBodyHeaders(url, body, headers) {
-      const instance = { events: [], cancelled: false, takeEvents() { const events = this.events; this.events = []; return JSON.stringify(events); }, cancel() { this.cancelled = true; } };
-      instances.push(instance); assert.equal(JSON.parse(headers)['User-Agent'], 'fixture'); return instance;
-    } }) },
-  }, { '../util/http': { withUserAgent: headers => ({ ...headers, 'User-Agent': 'fixture' }) } })('app/native/sse.ios.ts');
-  const listener = { onLine: line => seen.push(line), onComplete: () => seen.push('complete'), onHttpError() {}, onFailure: error => assert.fail(error) };
+    FaceclawKitIosSseRequest: { alloc: () => ({ initWithUrlBodyHeadersJsonListener(url, body, headers, listener) {
+      const instance = { listener, cancelled: false, cancel() { this.cancelled = true; } };
+      instances.push(instance); assert.equal(JSON.parse(headers)['User-Agent'], 'fixture'); assert.equal(url, 'https://fixture'); return instance;
+    } }) }, FaceclawKitFaceclawSseListener: {},
+  }, { '../util/http': { withUserAgent: headers => ({ ...headers, 'User-Agent': 'fixture' }) }, './kotlin-listener.ios': listenerModule })('app/native/sse.ios.ts');
+  const listener = { onLine: line => seen.push(line), onComplete: () => seen.push('complete'), onHttpError: (code, body) => seen.push(`http:${code}:${body}`), onFailure: error => seen.push(`fail:${error}`) };
   const handle = api.openSseRequest('https://fixture', '{}', {}, listener);
-  instances[0].events.push({ kind: 'line', text: 'first' }); assert.deepEqual(seen, []);
-  for (const tick of timers) tick(); assert.deepEqual(seen, ['first']);
-  handle.cancel(); assert.equal(timers.size, 0); assert.equal(instances[0].cancelled, true);
+  instances[0].listener.onLineLine('first'); assert.deepEqual(seen, ['first']);
+  handle.cancel(); handle.cancel(); assert.equal(instances[0].cancelled, true);
+  instances[0].listener.onLineLine('after cancel'); instances[0].listener.onComplete(); assert.deepEqual(seen, ['first']);
   api.openSseRequest('https://fixture', '{}', {}, listener);
-  instances[1].events.push({ kind: 'line', text: 'last' }, { kind: 'complete' });
-  for (const tick of [...timers]) tick(); assert.deepEqual(seen, ['first', 'last', 'complete']); assert.equal(timers.size, 0);
+  instances[1].listener.onLineLine('last'); instances[1].listener.onComplete(); instances[1].listener.onFailureMessage_('late');
+  assert.deepEqual(seen, ['first', 'last', 'complete']);
+  api.openSseRequest('https://fixture', '{}', {}, listener);
+  instances[2].listener.onHttpErrorCodeBody(429, 'slow down'); instances[2].listener.onComplete();
+  assert.deepEqual(seen.at(-1), 'http:429:slow down');
 });
 
 test('iOS only offers cloud assistant models and preserves old local-model conversations as Auto', () => {

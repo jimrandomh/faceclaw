@@ -8,6 +8,7 @@ import {
   Screen,
   SwipeDirection,
   type GestureEventData,
+  type TextField,
   type SwipeGestureEventData,
   type TouchGestureEventData,
   type View,
@@ -986,6 +987,26 @@ export class MainViewModel extends RemoteControlsViewModel {
       dashboardController.setActiveTextSettingValue(text, this.secondaryTextSettingId ?? undefined);
     }
     dashboardController.finishActiveTextSettingEdit();
+  }
+
+  /** The editor's Submit button: the same as the done key on the last field. */
+  onTextSettingSubmitTap(args: { object?: View }): void {
+    // Commit both fields' actual text, in case a final keystroke's textChange
+    // hadn't landed yet (as the return-press handlers do).
+    const page = args?.object?.page;
+    const primaryText = page?.getViewById<TextField>("settingsTextField")?.text;
+    if (typeof primaryText === "string") {
+      dashboardController.setActiveTextSettingValue(primaryText, this.activeTextSettingId ?? undefined);
+    }
+    const secondaryText = page?.getViewById<TextField>("secondarySettingsTextField")?.text;
+    if (this.hasSecondaryTextSetting && typeof secondaryText === "string") {
+      dashboardController.setActiveTextSettingValue(secondaryText, this.secondaryTextSettingId ?? undefined);
+    }
+    dashboardController.finishActiveTextSettingEdit();
+  }
+
+  onTextSettingCancelTap(): void {
+    dashboardController.cancelActiveTextSettingEdit();
   }
 
   onTextSettingToggleChange(args: { value?: boolean; object?: { checked?: boolean } }): void {

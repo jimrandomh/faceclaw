@@ -1,8 +1,6 @@
 package com.faceclaw.app
 
 interface FaceclawBleCommunicatorListener {
-    fun onLog(line: String?): Unit
-
     fun onStateChange(phase: String?, status: String?): Unit
 
     fun onRingEvent(

@@ -31,6 +31,7 @@ function fixture() {
     '../compass/calibration': { calibrateHeading: value => value + 5, normalizeHeading: value => (value + 360) % 360 },
     '../../native/frame-timings': { startFrame: () => 1, finishFrame() {}, logFrame() {}, span: (_id, _name, fn) => fn(), runWithFrame: (_id, fn) => fn() },
     '../../native/active-display': { getActiveDisplay: () => null },
+    '../../ui/menu-core': require('../.test-build/app/ui/menu-core.js'),
     '../../ui/window-menu': { WindowMenu: class { paint() { return []; } isOpen() { return false; } resize() {} } },
     '../../graphics/plane': { planesFingerprint: () => 'frame' },
     '../../native/mapbox': {

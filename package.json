@@ -5,6 +5,7 @@
   "private": false,
   "scripts": {
     "input": "node scripts/faceclaw-input.cjs",
+    "profile:android": "node scripts/profile-android.cjs",
     "native:android": "node scripts/kotlin-build.cjs android",
     "native:ios": "node scripts/kotlin-build.cjs ios",
     "test:kotlin": "bash scripts/test-kotlin.sh",
@@ -17,7 +18,8 @@
     "release": "scripts/release.sh",
     "clean": "rm -rf platforms",
     "test": "tsc -p tests/tsconfig.json && node --test tests/*.test.cjs",
-    "test:kotlin:ios": "bash scripts/test-kotlin.sh iosSimulatorArm64Test compileKotlinIosArm64"
+    "test:kotlin:ios": "bash scripts/test-kotlin.sh iosSimulatorArm64Test compileKotlinIosArm64",
+    "postinstall": "node scripts/install-hooks.cjs"
   },
   "dependencies": {
     "@evenrealities/pretext": "^0.1.4",

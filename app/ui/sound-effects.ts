@@ -1,3 +1,4 @@
+import { CFW_MSG_BUZZER } from "../g2/cfw-message-type";
 /**
  * Sound-effect catalog for the CFW buzzer tone sequencer (load_image_z mode 5
  * kind 4). Ported from g2-kit-unofficial/examples/tunes.ts.
@@ -19,14 +20,14 @@ export type Step = { freq: number; duty?: number; ms: number };
 /** One or more phrases; each phrase is one sequencer message. */
 export type Effect = Step[] | Step[][];
 
-/** Firmware cap: steps per mode-5 kind-4 message. */
+/** Mirrors CFW_SEQ_MAX in g2flash/patches/cfw_context.h. */
 export const CFW_SEQ_MAX = 48;
 
 /** Build the wire buffer: [5][4][nSteps][ freqLo,freqHi,duty,msLo,msHi ]*n. */
 export function buildSoundSequencePayload(steps: Step[]): Uint8Array {
   const count = Math.min(steps.length, CFW_SEQ_MAX);
   const out = new Uint8Array(3 + count * 5);
-  out[0] = 0x05;
+  out[0] = CFW_MSG_BUZZER;
   out[1] = 0x04;
   out[2] = count;
   for (let index = 0; index < count; index++) {

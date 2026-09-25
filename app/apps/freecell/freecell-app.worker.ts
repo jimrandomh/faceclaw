@@ -18,6 +18,7 @@
  * Safe cards auto-play to the foundations after every move.
  */
 import "@nativescript/core/globals";
+import { finishWorkerShutdown } from "../../ui/shell/worker-lifecycle";
 import { GrayImage } from "../../graphics/image";
 import { flattenPlanesWithDraws, planesFingerprint, singlePlane, type Plane } from "../../graphics/plane";
 import { prepareFrameDraws } from "../../graphics/glyph-wire";
@@ -144,6 +145,12 @@ post({ type: "worker-ready" });
 global.onmessage = (event: { data: WorkerAppMessage }) => {
   const message = event.data;
   switch (message.type) {
+    case "check-idle":
+      post({ type: "worker-idle" });
+      break;
+    case "shutdown":
+      finishWorkerShutdown();
+      break;
     case "open-window": {
       const window: FreecellWindow = {
         windowId: message.windowId,

@@ -1,10 +1,12 @@
 import { createListenerPool, type InterfaceAddress } from '../remote/listeners';
 import { Utils } from '@nativescript/core';
 declare const com: any;
-export function remoteNative() {
+export function remoteNative(onRequestReady: () => void) {
   return createListenerPool(() => {
     const native = new com.faceclaw.app.FaceclawRemoteInput();
-    return { start: (port, address) => String(native.startAddress(port, address)), stop: () => native.stop(),
+    const ready = new java.lang.Runnable({ run: onRequestReady });
+    native.setRequestListener(ready);
+    return { start: (port, address) => String(native.startAddress(port, address)), stop: () => { native.setRequestListener(null); native.stop(); },
       nextRequest: () => native.nextRequest(), complete: (id, response) => native.complete(id, response) };
   });
 }

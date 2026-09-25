@@ -21,6 +21,7 @@
  * sidebar) pauses, as does backgrounding or screen-off.
  */
 import "@nativescript/core/globals";
+import { finishWorkerShutdown } from "../../ui/shell/worker-lifecycle";
 import { GrayImage } from "../../graphics/image";
 import { flattenPlanesWithDraws, planesFingerprint, type Plane } from "../../graphics/plane";
 import { prepareFrameDraws } from "../../graphics/glyph-wire";
@@ -290,6 +291,12 @@ post({ type: "worker-ready" });
 global.onmessage = (event: { data: WorkerAppMessage }) => {
   const message = event.data;
   switch (message.type) {
+    case "check-idle":
+      post({ type: "worker-idle" });
+      break;
+    case "shutdown":
+      finishWorkerShutdown();
+      break;
     case "open-window": {
       const window: PinballWindow = {
         windowId: message.windowId,

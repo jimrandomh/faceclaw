@@ -37,6 +37,9 @@ import {
   assistantSkipConfirmationSetting,
   batteryDisplayModeSetting,
   brightnessSetting,
+  autoBrightnessMinSetting,
+  autoBrightnessMaxSetting,
+  autoBrightnessCurveSetting,
   glassesBatteryVisibilitySetting,
   phoneBatteryVisibilitySetting,
   ringBatteryVisibilitySetting,
@@ -97,6 +100,7 @@ function settingsSections(): SettingsSection[] {
         // Auto (ambient sensor) or an exact level; pushed to the glasses by
         // the dashboard controller when changed and on each connect.
         enumSettingMenuItem(brightnessSetting),
+        autoBrightnessMenuItem(),
         enumSettingMenuItem(screenTimeoutSetting, {
           onChange: () => {
             shell.noteUserActivity();
@@ -259,6 +263,20 @@ function settingsSections(): SettingsSection[] {
       item.label !== screenTimeoutSetting.label) };
     return section;
   });
+}
+
+function autoBrightnessMenuItem(): MenuItem {
+  return {
+    label: "Auto-brightness",
+    description: "Adjust the minimum, maximum, and ambient-light curve used by Auto brightness.",
+    onSelect: (ctx) => {
+      openSettingsSubMenu(ctx, "Auto-brightness", [
+        enumSettingMenuItem(autoBrightnessMinSetting),
+        enumSettingMenuItem(autoBrightnessMaxSetting),
+        textSettingMenuItem(autoBrightnessCurveSetting),
+      ]);
+    },
+  };
 }
 
 /**

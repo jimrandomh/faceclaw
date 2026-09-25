@@ -10,6 +10,13 @@ class CfwMessageWindow private constructor() {
         const val ACK_TIMEOUT_MS = 500
         const val MAX_RETRIES = 3
 
+        /** ID reuse must not invalidate an earlier command still eligible for replay. */
+        @JvmStatic
+        fun canSend(messages: Iterable<OutboundMessage>, candidate: OutboundMessage): Boolean =
+            candidate.sid != CfwTransport.SID ||
+                candidate.message.firstOrNull()?.toInt() != ResourceCacheState.EVICT_MODE ||
+                messages.none { it.sid == CfwTransport.SID }
+
         @JvmStatic
         fun acknowledgedHead(messages: Iterable<OutboundMessage>): OutboundMessage? {
             for (message in messages) {

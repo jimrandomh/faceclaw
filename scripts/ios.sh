@@ -19,4 +19,5 @@ if command -v ruby >/dev/null 2>&1; then
   export PATH="$gem_bin:$PATH"
 fi
 
+node scripts/install-hooks.cjs
 exec ns "$@"
