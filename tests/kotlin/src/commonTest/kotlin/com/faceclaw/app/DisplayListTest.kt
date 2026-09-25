@@ -56,7 +56,7 @@ class DisplayListTest {
         val renderer=DisplayListRenderer(resources)
         assertEquals(setOf(10,11,12,20,21),renderer.render(21,DisplayListRenderer.Target(screen,8,4),DisplayListRenderer.Target(output,8,4)))
         // Shared with the C sanitizer harness: signed clipping, resource target override, font and LUT.
-        assertContentEquals(hex("71122334755061700112233445534477"),output)
+        assertContentEquals(hex("81223344755162701122334445544578"),output)
         val first=output.copyOf(); screen.copyInto(output); renderer.render(21,DisplayListRenderer.Target(screen,8,4),DisplayListRenderer.Target(output,8,4))
         assertContentEquals(first,output)
         assertContentEquals(hex("123456789abcdef0123456789abcdef0"),screen)
@@ -215,7 +215,8 @@ class DisplayListTest {
         val overlay=ShellScene(listOf(ShellScene.Layer(1,0,0,3,3,128,hex("fff0fff0fff0"))))
         val first=planner.plan(app,640,480,null,overlay,1);glasses.apply(first.commands)
         assertContentEquals(app,glasses.screen);assertEquals(255,glasses.composition[0].toInt() and 255)
-        assertEquals(0x44,glasses.composition[100].toInt() and 255)
+        // Half of level 9 is a 5/4 checkerboard; x=200 on row 0 is an even pixel.
+        assertEquals(0x54,glasses.composition[100].toInt() and 255)
         val changed=ShellScene(listOf(ShellScene.Layer(1,0,0,3,3,128,hex("111011101110"))))
         val repaint=planner.plan(app,640,480,null,changed,1)
         assertFalse(repaint.commands.any { it[0].toInt() in listOf(21,22,29) })

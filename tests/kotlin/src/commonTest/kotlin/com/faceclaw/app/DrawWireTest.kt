@@ -17,7 +17,7 @@ class DrawWireTest {
             DrawProtocol.playList(511, depth = 127) to "07027fff01",
             DrawProtocol.roundedRect(-1, 2, 640, 480, 65535, 15, 16) to
                 "08007f028002e001ffff0f10",
-            DrawProtocol.lut(640, 480, 256) to "0600000000008002e0010123456789abcdef",
+            DrawProtocol.lut(640, 480, 256) to "0600000000008002e0010123456789abcdef0123456789abcdef",
             DrawProtocol.bbox(hex("ffffffffffffffff"), 4, 0, 0, 8, 2) to "010000000002010f10",
             DrawProtocol.bbox(hex("0f"), 1, 1, 0, 1, 1) to "01000101000000010001001f",
             DrawProtocol.clear(15, target = 511) to "0901ff010f",

@@ -353,15 +353,17 @@ class DisplayListRenderer(
         val y = reader.readU16()
         val width = reader.readU16()
         val height = reader.readU16()
-        val table = reader.readBytes(8)
+        val tables = reader.readBytes(16)
         reader.requireDone()
         require(width > 0 && height > 0 && x + width <= target.width && y + height <= target.height)
         if (!walk.apply) return
         for (yy in y until y + height) for (xx in x until x + width) {
-            if (xx + target.shiftX !in 0 until target.width) continue
-            val value = target.get(xx + target.shiftX, yy)
+            val tx = xx + target.shiftX
+            if (tx !in 0 until target.width) continue
+            val value = target.get(tx, yy)
             val shift = if (value % 2 == 0) 4 else 0
-            target.put(xx, yy, (table[value / 2].toInt() ushr shift) and 15)
+            // The even-parity table comes first; parity is of the shifted target pixel.
+            target.put(xx, yy, (tables[((tx + yy) and 1) * 8 + value / 2].toInt() ushr shift) and 15)
         }
     }
 

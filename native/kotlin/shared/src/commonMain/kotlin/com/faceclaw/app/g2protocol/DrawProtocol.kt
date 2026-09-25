@@ -1,6 +1,6 @@
 package com.faceclaw.app
 
-/** Revision 29 wire grammar, shared by scene planning and the local renderer. */
+/** Revision 33 wire grammar, shared by scene planning and the local renderer. */
 object DrawProtocol {
     /** Mirrors g2flash/patches/zlib_glue.c. */
     const val DRAW = CFW_MSG_DRAW_CALLS
@@ -154,18 +154,24 @@ object DrawProtocol {
     fun playList(id: Int, target: Int? = null, depth: Int? = null): ByteArray =
         call(DRAW_OP_DISPLAY_LIST, target, depth) { writeU16(id) }
 
-    fun lut(width: Int, height: Int, factor: Int): ByteArray {
-        val table = ByteArray(8) { i ->
-            (((i * 2 * factor / 256).coerceIn(0, 15) shl 4) or
-                ((i * 2 + 1) * factor / 256).coerceIn(0, 15)).toByte()
-        }
+    /** Revision 33: target pixels with even x+y map through [even], odd ones through [odd]. */
+    fun remapColors(x: Int, y: Int, width: Int, height: Int, even: IntArray, odd: IntArray): ByteArray {
+        require(even.size == 16 && odd.size == 16 && (even + odd).all { it in 0..15 })
+        fun packed(table: IntArray) = ByteArray(8) { i -> ((table[i * 2] shl 4) or table[i * 2 + 1]).toByte() }
         return call(DRAW_OP_REMAP_COLORS) {
-            writeU16(0)
-            writeU16(0)
+            writeU16(x)
+            writeU16(y)
             writeU16(width)
             writeU16(height)
-            writeBytes(table)
+            writeBytes(packed(even))
+            writeBytes(packed(odd))
         }
+    }
+
+    /** Dim the whole target's light to factor/256 with DimDither's checkerboard. */
+    fun lut(width: Int, height: Int, factor: Int): ByteArray {
+        val (even, odd) = DimDither.tables(factor)
+        return remapColors(0, 0, width, height, even, odd)
     }
 
     fun rawImage(width: Int, height: Int, pixels: ByteArray = ByteArray(((width + 1) / 2) * height)): ByteArray {
