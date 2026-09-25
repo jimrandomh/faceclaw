@@ -13,16 +13,16 @@ class BmpUtil {
         }
 
         private val GRAY_TO_NIBBLE =
-            ByteArray(256) { v -> if (v == 0) 0 else minOf(15, (v + 8) shr 4).toByte() }
+            IntArray(256) { v -> minOf(15, (v + 8) shr 4) }
 
         /**
-         * The 4bpp level an 8-bit gray value packs to. Public so the texture-cache planner computes
+         * The 4bpp level an 8-bit gray value packs to. Public so the resource-cache planner computes
          * a glyph draw's top color with the exact quantization the composited frame was packed
          * with.
          */
         @JvmStatic
         fun nibbleForGray(gray: Int): Int {
-            return (GRAY_TO_NIBBLE[(gray and 0xff)] and 0xff)
+            return GRAY_TO_NIBBLE[gray and 0xff]
         }
 
         /**
@@ -37,32 +37,34 @@ class BmpUtil {
             if (((width <= 0) || (height <= 0))) {
                 return ByteArray(0)
             }
-            var stride: Int = ((width + 1) shr 1)
-            var out: ByteArray = ByteArray((stride * height))
+            val stride = (width + 1) ushr 1
+            val out = ByteArray(stride * height)
             if (((gray8 == null) || (gray8.size < (width * height)))) {
                 return out
             }
-            var pairs: Int = (width shr 1)
-            var src: Int = 0
-            var dst: Int = 0
-            run {
-                var y: Int = 0
-                while ((y < height)) {
-                    run {
-                        var i: Int = 0
-                        while ((i < pairs)) {
-                            out[dst++] =
-                                (((GRAY_TO_NIBBLE[(gray8[src] and 0xff)] shl 4) or
-                                        (GRAY_TO_NIBBLE[(gray8[(src + 1)] and 0xff)] and 0xff)))
-                                    .toByte()
-                            src += 2
-                            i++
-                        }
+            // Work with Ints: Byte.and / Byte.shl in ByteSink.kt are ordinary
+            // function calls, not Kotlin intrinsics. Avoid four calls per pair
+            // even in an interpreted/debug ART build, and load the LUT once.
+            val levels = GRAY_TO_NIBBLE
+            var src = 0
+            var dst = 0
+            if (width and 1 == 0) {
+                // No row padding: the common 640x480 frame is one linear loop.
+                while (dst < out.size) {
+                    out[dst++] = ((levels[gray8[src].toInt() and 255] shl 4) or
+                        levels[gray8[src + 1].toInt() and 255]).toByte()
+                    src += 2
+                }
+            } else {
+                repeat(height) {
+                    val end = src + width - 1
+                    while (src < end) {
+                        out[dst++] = ((levels[gray8[src].toInt() and 255] shl 4) or
+                            levels[gray8[src + 1].toInt() and 255]).toByte()
+                        src += 2
                     }
-                    if (((width and 1) != 0)) {
-                        out[dst++] = ((GRAY_TO_NIBBLE[(gray8[src++] and 0xff)] shl 4)).toByte()
-                    }
-                    y++
+                    // Pad each odd-width row with a zero low nibble.
+                    out[dst++] = (levels[gray8[src++].toInt() and 255] shl 4).toByte()
                 }
             }
             return out

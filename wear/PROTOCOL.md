@@ -3,7 +3,7 @@
 Transport: the Wearable Data Layer (Google Play services). Both apps share the
 `com.faceclaw.app` application id and, for release builds, the signing key —
 the Data Layer routes only between matching apps. Payloads are UTF-8 JSON
-objects. Phone side: `App_Resources/.../FaceclawWearBridge.java` (transport),
+objects. Phone side: `App_Resources/.../FaceclawWearBridge.kt` (transport),
 `app/native/wear-bridge.ts` (JS wrapper), `app/g2/wear-remote.ts` (meaning).
 Watch side: `app/src/main/kotlin/com/faceclaw/wear/Protocol.kt`, `PhoneLink.kt`.
 

@@ -17,10 +17,11 @@ import { IosNavigationSensors } from '../native/ios-navigation-sensors'
 import { Utils } from '@nativescript/core'
 import { bindCompassSession, receiveCompassEvent } from '../native/compass.ios'
 import { Dialogs, File, knownFolders, path, type ImageSource } from '@nativescript/core'
-import { iosBluetooth } from '../native/ios-bluetooth'
 import { iosVoiceInput } from '../native/ios-voice-input'
 import { nightscoutBridge } from '../native/nightscout-bridge'
-import { GlassesSession, type SessionState } from './glasses-session'
+import { FaceclawCommunicatorBridge, resolveIosPeripherals, type CommunicatorState, type RawInputEvent } from '../native/faceclaw-communicator.ios'
+import { PreviewDisplayTarget, type DisplayTarget } from '../native/preview-display.ios'
+import { AncsClient, ANCS_FIRMWARE_VERSION } from './ancs-client'
 import { GlanceHost, type GlanceDisplay } from './glance-host'
 import { createLockScreenImage, LOCK_SCREEN_SURFACE_ID } from './lock-screen'
 import { OsEventTypeList } from './events'
@@ -34,64 +35,90 @@ import { createInProcessWindow, YieldAtRootLayer, type InProcessAppOptions, type
 import { getStringSettingById, nightscoutSiteUrlSetting, nightscoutApiTokenSetting } from '../ui/dashboard-settings'
 import { readPhoneBatteryState } from '../native/phone-battery'
 import { iosAppUnavailableReason } from '../apps/ios-availability'
-import { SurfaceCompositor } from '../graphics/surface-compositor'
-import { flattenPlanesWithDraws, type Plane } from '../graphics/plane'
+import { flattenPlanesWithDraws, planesFingerprint, type Plane } from '../graphics/plane'
 import { prepareFrameDraws } from '../graphics/glyph-wire'
-import { IosTexturePlanner } from '../native/texture-planner.ios'
 import { G2_LENS_WIDTH, G2_LENS_HEIGHT } from '../graphics/image'
-import { previewPixels } from '../native/ios-graphics'
 import { makeInputEvent, type InputEvent, type InputEventPayload } from '../ui/gestures'
 import { noopLayerActions, type LayerActions } from '../ui/layers'
 import { TextViewerLayer } from '../apps/files/text-viewer'
 import { shell, rawInputEventToInputEvent, type ShellWindow } from '../ui/shell/shell'
 import { appViewportRect, SIDEBAR_WIDTH, sidebarStripVisible } from '../ui/shell/geometry'
 import { DISPLAY_MODE_VALUES, displayModeLabel, displayModeSetting, onAnySettingChanged,
-  previewColorSetting, lockScreenEnabledSetting, brightnessSetting, brightnessSettingToLevel } from '../ui/dashboard-settings'
+  previewColorSetting, lockScreenEnabledSetting, getBrightnessPreferences } from '../ui/dashboard-settings'
 import type { PhoneGesture } from '../phone-ui/phone-gestures'
 import { isWelcomeSoundPending, setWelcomeSoundPending } from '../phone-ui/onboarding-state'
 import { findSoundEffect, playSoundEffect } from '../ui/sound-effects'
 
-/** iOS host for the shared app registry, shell, compositor and BLE session. */
+const SHELL_SURFACE_ID = 'shell'
+const SHELL_SURFACE_Z_ORDER = 1
+const LOCK_SURFACE_Z_ORDER = 1000
+/** The shell render loop waits this long for the glasses to take a frame before moving on. */
+const FRAME_TRANSMIT_BACKPRESSURE_TIMEOUT_MS = 2000
+
+export type SessionPhase = 'disconnected' | 'connecting' | 'connected' | 'retrying' | 'disconnecting' | 'error'
+export type SessionState = { phase: SessionPhase; status: string; battery: number | null; charging: boolean | null;
+  ring: boolean; frames: number; capabilities: string; leftVersion: string; rightVersion: string }
+
+function ancsCapable(capabilities: string): boolean {
+  return /^Faceclaw\/(\d+)/.test(capabilities) && Number(capabilities.split('/')[1]) >= ANCS_FIRMWARE_VERSION
+}
+
+/**
+ * iOS host for the shared app registry, shell and BLE session. The session,
+ * compositor and transport live in shared Kotlin (FaceclawCommunicatorBridge
+ * over FaceclawKitIosGlassesSession); with no glasses connected the same
+ * compositor runs headless (PreviewDisplayTarget) so the phone mirror works.
+ */
 export class IosPreviewController {
-  private readonly compositor = new SurfaceCompositor(G2_LENS_WIDTH, G2_LENS_HEIGHT)
+  private previewTarget: PreviewDisplayTarget | null = null
+  private communicator: FaceclawCommunicatorBridge | null = null
+  private readonly startedCommunicators = new WeakSet<FaceclawCommunicatorBridge>()
+  state: SessionState = { phase: 'disconnected', status: 'Preview only', battery: null, charging: null, ring: false,
+    frames: 0, capabilities: '', leftVersion: '', rightVersion: '' }
+  private notifications: AncsClient | null = null
+  private readonly sessionOffs: (() => void)[] = []
+  private stopping: Promise<void> | null = null
+  /** Resolves once the current display target has every surface configured. */
+  private displayReady: Promise<void> = Promise.resolve()
+  private connecting = false
+  private sessionCreated = false
+  private wearDetectionRequested = false
   private readonly glanceDisplay: GlanceDisplay = {
-    configureSurface: async (id, options) => {
-      this.compositor.configureSurface(id, options)
-    },
-    setSurfaceVisible: async (id, visible) => {
-      this.compositor.setSurfaceVisible(id, visible); this.scheduleFrame()
-    },
-    setScreenBlanked: async blanked => {
-      this.compositor.setScreenBlanked(blanked); this.scheduleFrame()
-    },
-    submitSurfaceFrame: async (id, pixels, rect, _fingerprint, _paintMs, _frameId, draws) => {
-      this.compositor.submitSurfaceFrame(id, pixels, rect, draws); this.scheduleFrame()
+    configureSurface: async (id, options) => { await this.display?.configureSurface(id, options) },
+    setSurfaceVisible: async (id, visible) => { await this.display?.setSurfaceVisible(id, visible); this.schedulePreviewUpdate() },
+    setSurfaceDepth: async (id, depth) => { await this.display?.setSurfaceDepth(id, depth) },
+    setScreenBlanked: async blanked => { await this.display?.setScreenBlanked(blanked); this.schedulePreviewUpdate() },
+    submitSurfaceFrame: async (id, pixels, rect, fingerprint, paintMs, frameId, draws) => {
+      await this.display?.submitSurfaceFrame(id, pixels, rect, fingerprint, paintMs, frameId, draws); this.schedulePreviewUpdate()
     },
   }
   private readonly glance = new GlanceHost({
-    getDisplay: () => this.glanceDisplay,
+    getDisplay: () => this.display ? this.glanceDisplay : null,
     getProvider: () => ALL_APPS.find(app => app.glanceboard)?.glanceboard ?? null,
     canShow: () => this.runtimeNeeded && !this.glassesLocked,
     // iOS retains the EvenHub session while the shell sleeps. The board's
     // opaque first frame is ready before we unblank the compositor.
     ensureSessionActive: async () => {
-      this.compositor.setScreenBlanked(false); this.scheduleFrame(); return true
+      await this.display?.setScreenBlanked(false); this.schedulePreviewUpdate(); return true
     },
     onHiddenWhileAsleep: () => {
-      if (!shell.isScreenOn()) this.compositor.setScreenBlanked(true)
-      this.scheduleFrame()
+      if (!shell.isScreenOn()) void this.display?.setScreenBlanked(true).then(() => this.schedulePreviewUpdate())
+      else this.schedulePreviewUpdate()
     },
-    onVisibilityChanged: () => this.scheduleFrame(),
+    onVisibilityChanged: () => this.schedulePreviewUpdate(),
     appendLog: message => this.logBluetooth(message),
   })
-  private renderTimer: ReturnType<typeof setTimeout> | null = null
+  private previewTimer: ReturnType<typeof setTimeout> | null = null
   private clockTimer: ReturnType<typeof setInterval> | null = null
   private offSettings: (() => void) | null = null
   private lastBrightness: string | null = null
   private active = false
   private runtimeRunning = false
   private clockMinute = -1
-  private shellDirty = true
+  private shellRenderInProgress = false
+  private shellRenderQueued = false
+  private nextFrameId = 1
+  private nextWorkerFrame = 0
   private inputQueue: Promise<void> = Promise.resolve()
   private lastLayout = ''
   private readonly appHosts = new Map<string, WorkerAppHost>()
@@ -102,13 +129,12 @@ export class IosPreviewController {
   private glassesWorn: boolean | null = null
   private glassesLocked = false
   private lockEnabled = lockScreenEnabledSetting.get()
-  private session: GlassesSession | null = null
   private acknowledgedFrames = 0
   private logLines: string[] = []
   private logTimer: ReturnType<typeof setTimeout> | null = null
   private readonly actions: LayerActions = {
     ...noopLayerActions,
-    playBuzzerSequence: payload => this.session?.playBuzzerSequence(payload),
+    playBuzzerSequence: payload => this.communicator?.playBuzzerSequence(payload),
     requestRender: () => this.requestShellRender(),
     disconnect: () => this.disconnect(),
     startVoiceCapture: endpointing => this.startVoiceCapture(endpointing),
@@ -130,11 +156,7 @@ export class IosPreviewController {
     private readonly onError: (message: string) => void,
     private readonly onConnectionState: (state: SessionState) => void = () => {},
     private readonly onKeyboardInputChanged: (session: KeyboardInputSession | null) => void = () => {}) {
-    this.compositor.configureSurface('shell', { x: 0, y: 0, width: 640, height: 480, zOrder: 1, transparency: 'color-key' })
-    this.compositor.configureSurface(LOCK_SCREEN_SURFACE_ID, {
-      x: 0, y: 0, width: G2_LENS_WIDTH, height: G2_LENS_HEIGHT, zOrder: 1000, transparency: 'opaque',
-    })
-    this.compositor.setSurfaceVisible(LOCK_SCREEN_SURFACE_ID, false)
+    this.ensurePreviewDisplay()
     shell.configure({
       actions: this.actions,
       voiceInputEnabled: true,
@@ -151,7 +173,8 @@ export class IosPreviewController {
       onWindowsChanged: () => this.requestShellRender(),
       onScreenStateChanged: on => {
         if (on) this.glance.dismiss()
-        this.compositor.setScreenBlanked(!on); this.requestShellRender()
+        void this.display?.setScreenBlanked(!on).catch(error => this.fail(error))
+        this.requestShellRender()
       },
     })
     const launcher = createLauncherWindow({
@@ -160,9 +183,9 @@ export class IosPreviewController {
       launchApp: id => this.launchApp(id),
       uninstallApp: id => this.uninstallApp(id),
       submitFrame: planes => this.submit(LAUNCHER_SURFACE_ID, planes),
-      setSurfaceVisible: visible => { this.compositor.setSurfaceVisible(LAUNCHER_SURFACE_ID, visible); this.scheduleFrame() },
+      setSurfaceVisible: visible => this.setWindowSurfaceVisible(LAUNCHER_SURFACE_ID, visible),
     })
-    this.configureWindow(launcher)
+    void this.configureWindow(launcher)
     shell.registerWindow(launcher)
     shell.wake('window')
     shell.focusWindow(launcher.windowId)
@@ -198,14 +221,54 @@ export class IosPreviewController {
     for (const app of ALL_APPS) if (app.appId !== 'launcher' && !iosAppUnavailableReason(app.appId)) app.boot?.(this.buildAppContext(app))
   }
 
+  /** The compositor frames go to: the live session, else the headless preview. */
+  private get display(): DisplayTarget | null { return this.communicator ?? this.previewTarget }
+
+  private ensurePreviewDisplay(): void {
+    if (this.communicator || this.previewTarget) return
+    const target = new PreviewDisplayTarget()
+    this.previewTarget = target
+    target.activate(() => this.schedulePreviewUpdate())
+    this.displayReady = this.registerSurfaces(target).catch(error => this.fail(error))
+  }
+
+  private teardownPreviewDisplay(): void {
+    const target = this.previewTarget
+    if (!target) return
+    this.previewTarget = null
+    this.glance.reset()
+    target.release()
+  }
+
+  /** (Re)create every compositor surface on a fresh display target. */
+  private async registerSurfaces(target: DisplayTarget): Promise<void> {
+    await target.configureCompositorScreen(G2_LENS_WIDTH, G2_LENS_HEIGHT)
+    await target.configureSurface(SHELL_SURFACE_ID, { x: 0, y: 0, width: G2_LENS_WIDTH, height: G2_LENS_HEIGHT,
+      zOrder: SHELL_SURFACE_Z_ORDER, transparency: 'color-key' })
+    await target.setUnderlayDim(SHELL_SURFACE_Z_ORDER, 1)
+    await target.configureSurface(LOCK_SCREEN_SURFACE_ID, {
+      x: 0, y: 0, width: G2_LENS_WIDTH, height: G2_LENS_HEIGHT, zOrder: LOCK_SURFACE_Z_ORDER, transparency: 'opaque',
+    })
+    if (this.glassesLocked) await this.submitLockImage(target)
+    await target.setSurfaceVisible(LOCK_SCREEN_SURFACE_ID, this.glassesLocked)
+    await target.setScreenBlanked(!shell.isScreenOn())
+    this.lastLayout = ''
+    for (const window of shell.getWindows()) await this.configureWindow(window, target)
+  }
+
+  private async submitLockImage(target: DisplayTarget): Promise<void> {
+    const image = createLockScreenImage()
+    await target.submitSurfaceFrame(LOCK_SCREEN_SURFACE_ID, image.to8bppBuffer(),
+      { x: 0, y: 0, width: image.width, height: image.height }, 'lock-screen', 0, 0)
+  }
+
   resume(): void {
     if (this.active) return
     this.active = true
     this.syncRuntime()
     this.handlePhoneLockState(!UIApplication.sharedApplication.protectedDataAvailable)
     this.logBluetooth('Phone foreground')
-    if (this.session) this.onConnectionState({ ...this.session.state })
-    this.session?.wake()
+    if (this.communicator) this.onConnectionState({ ...this.state })
     this.relayout()
     shell.foregroundWindow()?.requestRender()
     this.requestShellRender()
@@ -216,12 +279,11 @@ export class IosPreviewController {
     iosVoiceInput.stopPhoneCapture()
     // The phone preview is hidden; the glasses still own their screen and input.
     this.syncRuntime()
-    this.logBluetooth(`Phone background; glasses ${this.session?.state.phase ?? 'disconnected'}`)
+    this.logBluetooth(`Phone background; glasses ${this.state.phase}`)
     this.flushBluetoothLog()
-    this.session?.wake()
   }
   private get runtimeNeeded(): boolean {
-    return this.active || !!this.session && ['connected', 'connecting', 'retrying', 'disconnecting'].includes(this.session.state.phase)
+    return this.active || ['connected', 'connecting', 'retrying', 'disconnecting'].includes(this.state.phase)
   }
   private syncRuntime(): void {
     const running = this.runtimeNeeded
@@ -231,14 +293,14 @@ export class IosPreviewController {
     if (!running) {
       void nightscoutBridge.stop().catch(error => this.fail(error))
       this.glance.dismiss()
-      this.compositor.setScreenBlanked(!shell.isScreenOn())
+      void this.display?.setScreenBlanked(!shell.isScreenOn()).catch(error => this.fail(error))
       this.offSettings?.(); this.offSettings = null
       for (const observer of this.batteryObservers.splice(0)) NSNotificationCenter.defaultCenter.removeObserver(observer)
       for (const observer of this.lockObservers.splice(0)) NSNotificationCenter.defaultCenter.removeObserver(observer)
       UIDevice.currentDevice.batteryMonitoringEnabled = false
       if (this.clockTimer !== null) clearInterval(this.clockTimer)
-      if (this.renderTimer !== null) clearTimeout(this.renderTimer)
-      this.clockTimer = this.renderTimer = null
+      if (this.previewTimer !== null) clearTimeout(this.previewTimer)
+      this.clockTimer = this.previewTimer = null
       return
     }
     UIDevice.currentDevice.batteryMonitoringEnabled = true
@@ -268,12 +330,13 @@ export class IosPreviewController {
     this.clockTimer = setInterval(() => this.refreshClock(), 60_000)
   }
   private pushBrightness(): void {
-    const session = this.session
-    if (session?.state.phase !== 'connected') { this.lastBrightness = null; return }
-    const value = brightnessSetting.get()
+    const communicator = this.communicator
+    if (!communicator || this.state.phase !== 'connected') { this.lastBrightness = null; return }
+    const preferences = getBrightnessPreferences()
+    const value = JSON.stringify(preferences)
     if (value === this.lastBrightness) return
     this.lastBrightness = value
-    void session.setBrightness(brightnessSettingToLevel(value)).catch(error => {
+    void communicator.configureBrightness(preferences).catch(error => {
       this.lastBrightness = null
       this.logBluetooth(`Brightness: ${String(error)}`)
     })
@@ -285,12 +348,13 @@ export class IosPreviewController {
     if (!enabled) this.setGlassesLocked(false)
     else {
       if (this.phoneLocked && this.glassesWorn === false) this.setGlassesLocked(true)
-      if (this.session?.state.phase === 'connected')
-        void this.session.enableWearDetectionAndRequestState().catch(error => this.fail(error))
+      if (this.communicator && this.state.phase === 'connected')
+        void this.communicator.enableWearDetectionAndRequestState().catch(error => this.fail(error))
     }
   }
   private handlePhoneLockState(locked: boolean): void {
     this.phoneLocked = locked
+    this.communicator?.onPhoneLockSignal()
     if (!locked) this.setGlassesLocked(false)
     else if (this.lockEnabled && this.glassesWorn === false) this.setGlassesLocked(true)
   }
@@ -304,17 +368,21 @@ export class IosPreviewController {
   }
   private setGlassesLocked(locked: boolean): void {
     if (locked === this.glassesLocked) return
-    if (locked) {
-      const image = createLockScreenImage()
-      this.compositor.submitSurfaceFrame(LOCK_SCREEN_SURFACE_ID, image.to8bppBuffer(),
-        { x: 0, y: 0, width: image.width, height: image.height })
-    }
     this.glassesLocked = locked
     if (locked) {
       this.glance.dismiss()
       iosVoiceInput.handleSessionEnded('Glasses locked. Unlock your phone to start voice input again.')
     }
-    this.compositor.setSurfaceVisible(LOCK_SCREEN_SURFACE_ID, locked)
+    void (async () => {
+      await this.displayReady
+      const display = this.display
+      if (!display) return
+      {
+        if (locked) await this.submitLockImage(display)
+        await display.setSurfaceVisible(LOCK_SCREEN_SURFACE_ID, locked)
+        this.schedulePreviewUpdate()
+      }
+    })().catch(error => this.fail(error))
     this.logBluetooth(`Glasses ${locked ? 'locked' : 'unlocked'}`)
     this.requestShellRender()
   }
@@ -322,47 +390,90 @@ export class IosPreviewController {
     const minute = Math.floor(Date.now() / 60_000)
     if (minute !== this.clockMinute) { this.clockMinute = minute; this.requestShellRender() }
   }
-  private configureWindow(window: ShellWindow): void {
-    this.compositor.configureSurface(window.surfaceId, {
+  private async configureWindow(window: ShellWindow, target: DisplayTarget | null = this.display): Promise<void> {
+    if (!target) return
+    await target.configureSurface(window.surfaceId, {
       ...appViewportRect(window.heightMode, window.appId), zOrder: 0, transparency: 'opaque',
     })
-    this.compositor.setSurfaceVisible(window.surfaceId, shell.foregroundWindow()?.windowId === window.windowId)
+    await target.setSurfaceVisible(window.surfaceId, shell.foregroundWindow()?.windowId === window.windowId)
   }
   private relayout(): void {
     const layout = shell.getWindows().map(window => JSON.stringify(appViewportRect(window.heightMode, window.appId))).join(";")
     if (layout === this.lastLayout) return
     this.lastLayout = layout
     for (const window of shell.getWindows()) {
-      this.configureWindow(window)
+      void this.configureWindow(window).catch(error => this.fail(error))
       window.relayout?.()
     }
   }
+  /** Submit a painted frame for an in-process window (e.g. the launcher). */
   private async submit(id: string, planes: Plane[]): Promise<void> {
+    await this.displayReady
+    const display = this.display
+    if (!display) return
+    const fingerprint = planesFingerprint(planes)
     const { image, draws } = flattenPlanesWithDraws(planes)
-    this.compositor.submitSurfaceFrame(id, image.pixels, { x: 0, y: 0, width: image.width, height: image.height }, prepareFrameDraws(draws))
-    this.scheduleFrame()
+    await display.submitSurfaceFrame(id, image.pixels, { x: 0, y: 0, width: image.width, height: image.height },
+      fingerprint, -1, 0, prepareFrameDraws(draws))
+    this.schedulePreviewUpdate()
   }
-  private requestShellRender(): void { this.shellDirty = true; this.scheduleFrame() }
-  private scheduleFrame(): void {
-    if (!this.runtimeNeeded || this.renderTimer !== null) return
-    // Coalesce window/chrome updates into one glasses frame, capped at 30 fps.
-    this.renderTimer = setTimeout(() => {
-      this.renderTimer = null
-      if (!this.runtimeNeeded) return
+  /** Worker windows ship baked pixels; every submit is new content to the compositor. */
+  private async submitWorkerPixels(id: string, pixels: Uint8Array, width: number, height: number, draws: ArrayBuffer | null): Promise<void> {
+    await this.displayReady
+    const display = this.display
+    if (!display) return
+    await display.submitSurfaceFrame(id, pixels, { x: 0, y: 0, width, height }, `${id}#${++this.nextWorkerFrame}`, -1, 0, draws)
+    this.schedulePreviewUpdate()
+  }
+  private setWindowSurfaceVisible(id: string, visible: boolean): void {
+    void this.display?.setSurfaceVisible(id, visible).then(() => this.schedulePreviewUpdate()).catch(error => this.fail(error))
+  }
+  private removeWindowSurface(id: string): void {
+    void this.display?.removeSurface(id).then(() => this.schedulePreviewUpdate()).catch(error => this.fail(error))
+  }
+  /** Re-render and resubmit the shell surface; one render in flight, at most one queued. */
+  private requestShellRender(): void {
+    if (this.shellRenderInProgress) { this.shellRenderQueued = true; return }
+    this.shellRenderInProgress = true
+    void (async () => {
       try {
-        if (this.shellDirty) {
-          this.shellDirty = false
-          const { image, draws } = flattenPlanesWithDraws(shell.paintSurface(), { width: 640, height: 480 })
-          this.compositor.submitSurfaceFrame('shell', image.pixels, { x: 0, y: 0, width: 640, height: 480 }, prepareFrameDraws(draws))
-          this.compositor.setUnderlayDim(1, shell.underlayDim())
-        }
-        const { pixels, textures } = this.compositor.compositeFrame()
-        this.session?.setFrame(pixels, textures)
-        if (this.active) {
-          const image = previewPixels(pixels, 640, 480, previewColorSetting.get() === 'green')
-          this.onFrame(image, this.glassesLocked ? 'Glasses locked' : this.glance.isVisible() ? 'Glanceboard'
-            : `${shell.foregroundWindow()?.title ?? 'Apps'} · ${shell.getFocus() === 'sidebar' ? 'App switcher' : 'App'}`)
-        }
+        do {
+          this.shellRenderQueued = false
+          await this.renderShell()
+        } while (this.shellRenderQueued)
+      } catch (error) { this.fail(error) }
+      finally { this.shellRenderInProgress = false }
+    })()
+  }
+  private async renderShell(): Promise<void> {
+    await this.displayReady
+    const display = this.display
+    if (!display) return
+    const startedAt = Date.now()
+    const bytes = shell.paintScene()
+    const frameId = this.allocateFrameId()
+    await display.submitShellScene(bytes, Date.now() - startedAt, frameId)
+    // Backpressure: the next shell render waits for this one to reach the
+    // glasses (the preview target resolves immediately; nothing transmits).
+    await display.waitForFrameFinished(frameId, FRAME_TRANSMIT_BACKPRESSURE_TIMEOUT_MS)
+    this.schedulePreviewUpdate()
+  }
+  private allocateFrameId(): number {
+    const id = this.nextFrameId
+    this.nextFrameId = this.nextFrameId >= 0x7fffffff ? 1 : this.nextFrameId + 1
+    return id
+  }
+  /** Refresh the phone mirror from the composited screen, coalesced at 30 fps. */
+  private schedulePreviewUpdate(): void {
+    if (!this.active || this.previewTimer !== null) return
+    this.previewTimer = setTimeout(() => {
+      this.previewTimer = null
+      if (!this.active) return
+      try {
+        const image = this.display?.getCompositePreview(previewColorSetting.get() === 'green')
+        if (!image) return
+        this.onFrame(image, this.glassesLocked ? 'Glasses locked' : this.glance.isVisible() ? 'Glanceboard'
+          : `${shell.foregroundWindow()?.title ?? 'Apps'} · ${shell.getFocus() === 'sidebar' ? 'App switcher' : 'App'}`)
       } catch (error) { this.fail(error) }
     }, 33)
   }
@@ -471,7 +582,7 @@ export class IosPreviewController {
       launchInProcessApp: (id, surface, create) => this.launchInProcessApp(id, surface, create),
       ensureWorkerHost: create => this.ensureWorkerHost(app.appId, create),
       submitWindowFrame: (id, planes) => this.submit(id, planes),
-      setWindowSurfaceVisible: (id, visible) => { this.compositor.setSurfaceVisible(id, visible); this.scheduleFrame() },
+      setWindowSurfaceVisible: (id, visible) => this.setWindowSurfaceVisible(id, visible),
       requestShellRender: () => this.requestShellRender(), appendLog: message => console.log(`[ios-app] ${message}`),
       setTextEditorHost: () => {},
     }
@@ -486,13 +597,17 @@ export class IosPreviewController {
     let surfaceReady = false
     const app = create({
       actions: this.actions, submitFrame: planes => surfaceReady ? this.submit(surfaceId, planes) : Promise.resolve(),
-      setSurfaceVisible: visible => { this.compositor.setSurfaceVisible(surfaceId, visible); this.scheduleFrame() },
-      removeSurface: () => { surfaceReady = false; this.compositor.removeSurface(surfaceId); this.scheduleFrame() },
-      reconfigureSurface: () => { const window = shell.getWindows().find(w => w.windowId === windowId); if (window) this.configureWindow(window); this.requestShellRender() },
+      setSurfaceVisible: visible => this.setWindowSurfaceVisible(surfaceId, visible),
+      removeSurface: () => { surfaceReady = false; this.removeWindowSurface(surfaceId) },
+      reconfigureSurface: () => {
+        const window = shell.getWindows().find(w => w.windowId === windowId)
+        if (window) void this.configureWindow(window).catch(error => this.fail(error))
+        this.requestShellRender()
+      },
       onClosed: () => { this.inProcessApps.delete(windowId) },
     })
     this.inProcessApps.set(windowId, app)
-    this.configureWindow(app.window)
+    await this.configureWindow(app.window)
     surfaceReady = true
     shell.registerWindow(app.window); shell.focusWindow(windowId)
     app.requestRender(); this.requestShellRender()
@@ -505,16 +620,19 @@ export class IosPreviewController {
       ? new IosNavigationSensors(event => worker.postMessage({ type: 'navigation-sensors', event })) : undefined
     const host = new WorkerAppHost({
       appId, worker, navigationSensors,
+      onStopping: () => { if (this.appHosts.get(appId) === host) this.appHosts.delete(appId) },
       playBuzzerSequence: payload => this.actions.playBuzzerSequence(payload),
       openUrl: url => { void Utils.openUrl(url) },
       configureSurface: async (id, visible, heightMode) => {
-        this.compositor.configureSurface(id, { ...appViewportRect(heightMode, appId), zOrder: 0, transparency: 'opaque' })
-        this.compositor.setSurfaceVisible(id, visible)
+        const display = this.display
+        if (!display) return
+        await display.configureSurface(id, { ...appViewportRect(heightMode, appId), zOrder: 0, transparency: 'opaque' })
+        await display.setSurfaceVisible(id, visible)
       },
-      setSurfaceVisible: (id, visible) => { this.compositor.setSurfaceVisible(id, visible); this.scheduleFrame() },
-      removeSurface: id => { this.compositor.removeSurface(id); this.scheduleFrame() },
+      setSurfaceVisible: (id, visible) => this.setWindowSurfaceVisible(id, visible),
+      removeSurface: id => this.removeWindowSurface(id),
       submitPixels: (id, pixels, width, height, draws) => {
-        this.compositor.submitSurfaceFrame(id, pixels, { x: 0, y: 0, width, height }, draws); this.scheduleFrame()
+        void this.submitWorkerPixels(id, pixels, width, height, draws).catch(error => this.fail(error))
       },
       requestShellRender: () => this.requestShellRender(),
       openSettings: section => { void this.launchApp('settings', { section }) },
@@ -530,45 +648,194 @@ export class IosPreviewController {
     displayModeSetting.set(values[(values.indexOf(displayModeSetting.get()) + 1) % values.length])
   }
   get displayModeLabel(): string { return displayModeLabel(displayModeSetting.get()) }
-  get connectionState(): SessionState | null { return this.session?.state ?? null }
+  get connectionState(): SessionState | null { return this.sessionCreated ? this.state : null }
   get connectionDetails(): string {
     const state = this.connectionState
     return state ? `${state.status}\nL: ${state.leftVersion || 'unknown'}\nR: ${state.rightVersion || 'unknown'}\nBattery: ${state.battery ?? '?'}%\nRing: ${state.ring ? 'connected' : 'disconnected'}\nFrames acknowledged: ${state.frames}\n${state.capabilities}\n\n${this.logLines.slice(-12).join('\n')}` : 'Preview only. Configure devices, then connect.'
   }
+  private update(phase: SessionPhase, status: string): void {
+    this.state = { ...this.state, phase, status }
+    this.logBluetooth(status)
+    this.emitState()
+  }
+  private emitState(): void {
+    if (this.state.phase !== 'connected') resetRingInputFilter()
+    this.pushBrightness()
+    this.maybePlayWelcomeSound(this.state)
+    if (this.state.phase !== 'connected' && this.state.phase !== 'connecting') this.glassesWorn = null
+    if (this.state.phase !== 'connected') iosVoiceInput.handleSessionEnded()
+    shell.setBatteryLevels({ headset: this.state.battery, headsetCharging: this.state.charging })
+    this.syncRuntime()
+    if (this.active) this.onConnectionState({ ...this.state })
+    this.requestShellRender()
+  }
   async connect(): Promise<void> {
-    if (!this.active) return
+    if (!this.active || this.connecting || this.stopping) return
+    if (this.communicator && ['connecting', 'connected', 'retrying', 'disconnecting'].includes(this.state.phase)) return
     const addresses = loadDeviceAddresses(), error = deviceAddressError(addresses)
     if (error) { this.onError(error); return }
-    if (!this.session) {
-      this.session = new GlassesSession(iosBluetooth(), state => {
-        if (state.phase !== "connected") resetRingInputFilter()
-        this.pushBrightness()
-        this.maybePlayWelcomeSound(state)
-        if (state.phase !== 'connected' && state.phase !== 'connecting') this.glassesWorn = null
-        if (state.phase !== 'connected') iosVoiceInput.handleSessionEnded()
-        shell.setBatteryLevels({ headset: state.battery, headsetCharging: state.charging })
-        this.syncRuntime()
-        if (this.active) this.onConnectionState(state)
-        this.requestShellRender()
-      }, input => {
-        this.inputQueue = this.inputQueue.then(async () => {
-          if (this.session?.state.phase !== 'connected') return
-          await this.receiveInput(rawInputEventToInputEvent(input),
-            input.kind === 'display-wake' && input.eventType === OsEventTypeList.HEAD_UP_EVENT)
-          this.logBluetooth(`Input ${input.eventType} source ${input.eventSource}`)
-        }).catch(error => this.fail(error))
-      }, message => this.logBluetooth(message), () => {
-        if (!UIApplication.sharedApplication.protectedDataAvailable) this.handlePhoneLockState(true)
-        this.refreshClock()
-      }, receiveCompassEvent, wearing => this.handleWearState(wearing), (key, popup) => {
-        iosNotificationsChanged(key, popup); this.requestShellRender()
-      }, new IosTexturePlanner())
-      bindIosNotifications(this.session.notifications)
-      bindCompassSession(this.session)
+    this.connecting = true
+    this.sessionCreated = true
+    try {
+      this.state = { ...this.state, capabilities: '', leftVersion: '', rightVersion: '', battery: null, charging: null, ring: false }
+      this.update('connecting', 'Finding configured devices…')
+      let identifiers
+      try { identifiers = await resolveIosPeripherals(addresses) }
+      catch (failure) {
+        this.update('error', failure instanceof Error ? failure.message : String(failure))
+        return
+      }
+      if (this.communicator) await this.closeCommunicator()
+      const communicator = new FaceclawCommunicatorBridge(identifiers)
+      this.teardownPreviewDisplay()
+      this.communicator = communicator
+      this.wearDetectionRequested = false
+      this.bindCommunicator(communicator)
+      this.displayReady = this.registerSurfaces(communicator)
+      await this.displayReady
+      this.update('connecting', 'Connecting to the glasses…')
+      await communicator.configureBrightness(getBrightnessPreferences())
+      this.startedCommunicators.add(communicator)
+      await communicator.start()
+      for (const window of shell.getWindows()) window.requestRender()
+      this.requestShellRender()
+    } catch (failure) {
+      this.fail(failure)
+      await this.closeCommunicator().catch(() => {})
+      this.ensurePreviewDisplay()
+      this.update('error', failure instanceof Error ? failure.message : String(failure))
+    } finally {
+      this.connecting = false
     }
-    await this.session.start(addresses)
   }
-  async disconnect(): Promise<void> { await this.session?.stop() }
+  private bindCommunicator(communicator: FaceclawCommunicatorBridge): void {
+    const notifications = new AncsClient(packet => communicator.writeRawToRight(packet), (key, popup) => {
+      iosNotificationsChanged(key, popup); this.requestShellRender()
+    }, message => this.logBluetooth('ANCS: ' + message))
+    this.notifications = notifications
+    bindIosNotifications(notifications)
+    bindCompassSession(communicator)
+    communicator.setRequiresAncs(true)
+    this.sessionOffs.push(
+      communicator.onStateChange(state => this.handleSessionState(communicator, state)),
+      communicator.onRingEvent(input => this.handleRingEvent(input)),
+      communicator.onBatteryState(state => {
+        if (this.communicator !== communicator) return
+        this.state = { ...this.state, battery: state.battery >= 0 && state.battery <= 100 ? state.battery : this.state.battery,
+          charging: state.chargingStatus >= 0 ? state.chargingStatus > 0 : this.state.charging,
+          ring: (state.ringBattery ?? -1) >= 0 || this.state.ring }
+        shell.setBatteryLevels({ headset: this.state.battery, headsetCharging: this.state.charging })
+        if (this.active) this.onConnectionState({ ...this.state })
+        this.requestShellRender()
+      }),
+      communicator.onFirmwareInfo(info => {
+        if (this.communicator !== communicator) return
+        this.state = { ...this.state, leftVersion: info.leftVersion || this.state.leftVersion,
+          rightVersion: info.rightVersion || this.state.rightVersion, capabilities: info.extension || this.state.capabilities }
+        if (this.active) this.onConnectionState({ ...this.state })
+        this.syncNotifications(communicator)
+      }),
+      communicator.onFrameMetrics(() => {
+        if (this.communicator !== communicator) return
+        this.state = { ...this.state, frames: this.state.frames + 1 }
+        this.onActivity()
+        this.maybePlayWelcomeSound(this.state)
+        if (this.active) this.onConnectionState({ ...this.state })
+        this.schedulePreviewUpdate()
+      }),
+      communicator.onWearState(wearing => { if (this.communicator === communicator) this.handleWearState(wearing) }),
+      communicator.addCompassListener(receiveCompassEvent),
+      communicator.onAncsRelayFrame(frame => { if (this.communicator === communicator) notifications.receive(frame) }),
+      communicator.onAncsAuthorization(authorized => {
+        if (this.communicator !== communicator) return
+        if (authorized) { this.syncNotifications(communicator); return }
+        const active = notifications.state !== 'disconnected'
+        const command = notifications.stopCommand()
+        notifications.stop('Enable Share System Notifications in iPhone Settings → Bluetooth → right lens.')
+        if (active && this.state.phase === 'connected') void communicator.writeRawToRight(command).catch(() => {})
+      }),
+    )
+  }
+  private handleSessionState(communicator: FaceclawCommunicatorBridge, state: CommunicatorState): void {
+    if (this.communicator !== communicator) return
+    // Registering the listener makes the Kotlin session report its current state, which is
+    // "disconnected" before start(); that must not be mistaken for the session ending.
+    if (!this.startedCommunicators.has(communicator)) return
+    const phase: SessionPhase = state.phase === 'charging' ? 'connected' : state.phase === 'unpaired' ? 'error' : state.phase
+    if (phase === 'connected' && this.state.phase !== 'connected') {
+      this.state = { ...this.state, frames: this.state.frames }
+      if (!this.wearDetectionRequested) {
+        this.wearDetectionRequested = true
+        void communicator.enableWearDetectionAndRequestState().catch(error => this.logBluetooth(`Wear detection: ${String(error)}`))
+      }
+    }
+    this.update(phase, state.status)
+    if (phase === 'connected') this.syncNotifications(communicator)
+    else if ((phase === 'disconnected' || phase === 'error') && !this.stopping) {
+      // The session ended on its own (retries exhausted, an arm unpaired): release it and go headless.
+      void this.disconnect(state.status)
+    }
+  }
+  private handleRingEvent(input: RawInputEvent): void {
+    this.inputQueue = this.inputQueue.then(async () => {
+      if (this.state.phase !== 'connected') return
+      this.onActivity()
+      if (input.ringInput) this.state = { ...this.state, ring: true }
+      await this.receiveInput(rawInputEventToInputEvent(input),
+        input.kind === 'display-wake' && input.eventType === OsEventTypeList.HEAD_UP_EVENT)
+      this.logBluetooth(`Input ${input.eventType} source ${input.eventSource}`)
+    }).catch(error => this.fail(error))
+  }
+  /** Any glasses traffic: CoreBluetooth can wake a suspended process, so refresh what timers would have. */
+  private onActivity(): void {
+    if (!UIApplication.sharedApplication.protectedDataAvailable) this.handlePhoneLockState(true)
+    this.refreshClock()
+  }
+  /** Start iPhone notification relay once the firmware is known to support it and ANCS is authorized. */
+  private syncNotifications(communicator: FaceclawCommunicatorBridge): void {
+    const notifications = this.notifications
+    if (!notifications || this.state.phase !== 'connected') return
+    if (!ancsCapable(this.state.capabilities)) {
+      if (this.state.capabilities) notifications.stop(`Update glasses to Faceclaw firmware ${ANCS_FIRMWARE_VERSION} or newer for iPhone notifications.`)
+      return
+    }
+    if (notifications.state !== 'disconnected') return
+    notifications.start((Date.now() ^ Math.floor(Math.random() * 0xffffffff)) >>> 0, communicator.rightWriteLimit())
+  }
+  async disconnect(reason?: string): Promise<void> {
+    if (this.stopping) return this.stopping
+    const communicator = this.communicator
+    if (!communicator) return
+    // Marked before any bridge call: the session may report "disconnected" from inside disconnect().
+    let finished!: () => void
+    this.stopping = new Promise<void>(resolve => { finished = resolve })
+    try {
+      const notifications = this.notifications
+      if (notifications && notifications.state !== 'disconnected') {
+        const command = notifications.stopCommand()
+        notifications.stop()
+        if (this.state.phase === 'connected') { try { await communicator.writeRawToRight(command) } catch {} }
+      }
+      if (this.state.phase === 'connected' || this.state.phase === 'connecting' || this.state.phase === 'retrying')
+        this.update('disconnecting', 'Disconnecting…')
+      await communicator.disconnect().catch(error => this.logBluetooth(`Disconnect: ${String(error)}`))
+    } finally {
+      await this.closeCommunicator()
+      this.ensurePreviewDisplay()
+      this.update(reason ? 'error' : 'disconnected', reason ?? 'Preview only')
+      this.stopping = null
+      finished()
+    }
+  }
+  private async closeCommunicator(): Promise<void> {
+    const communicator = this.communicator
+    if (!communicator) return
+    for (const off of this.sessionOffs.splice(0)) off()
+    this.notifications = null
+    this.communicator = null
+    this.glance.reset()
+    await communicator.close().catch(error => this.logBluetooth(`Close: ${String(error)}`))
+  }
   private maybePlayWelcomeSound(state: SessionState): void {
     const firstNewFrame = state.frames > this.acknowledgedFrames
     this.acknowledgedFrames = state.frames
@@ -583,17 +850,18 @@ export class IosPreviewController {
   startVoiceInput(): void { if (!this.glassesLocked) shell.startVoiceInput() }
   private async prepareVoiceCapture(): Promise<boolean> {
     if (this.glassesLocked) return false
-    const usePhoneMic = this.session?.state.phase !== 'connected'
+    const usePhoneMic = this.state.phase !== 'connected'
     if (usePhoneMic && !this.active) return false
     const ready = await iosVoiceInput.prepare(this.active, usePhoneMic)
     if (!ready && this.active) this.onError(iosVoiceInput.statusText)
-    return ready && !this.glassesLocked && (this.session?.state.phase === 'connected' || this.active)
+    return ready && !this.glassesLocked && (this.state.phase === 'connected' || this.active)
   }
   private async startVoiceCapture(endpointing = false): Promise<void> {
     if (this.glassesLocked) return
     const log = (message: string) => this.logBluetooth(message)
-    if (this.session?.state.phase === 'connected') {
-      await iosVoiceInput.startGlassesCapture(this.session, log, endpointing)
+    const communicator = this.communicator
+    if (communicator && this.state.phase === 'connected') {
+      await iosVoiceInput.startGlassesCapture(communicator, log, endpointing)
     } else if (this.active) {
       // Recheck microphone permission if the glasses disconnected after prepare.
       if (!await iosVoiceInput.prepare(this.active, true) || !this.active || this.glassesLocked) return
@@ -620,13 +888,21 @@ export class IosPreviewController {
     if (this.glassesLocked || !this.active) return
     shell.startKeyboardInput()
   }
-  private async editSetting(setting: { editorTitle: string; inputKind?: string; get(): string; set(value: string): void }): Promise<boolean> {
+  private async editSetting(setting: { editorTitle: string; inputKind?: string; get(): string; set(value: string): void; validationError?(value?: string): string | null }): Promise<boolean> {
     if (!this.active) { this.logBluetooth('Editing text settings requires opening Faceclaw on the phone'); return false }
-    const result = await Dialogs.prompt({ title: setting.editorTitle, defaultText: setting.get(), inputType: setting.inputKind, okButtonText: 'Save', cancelButtonText: 'Cancel' })
-    if (result.result) {
-      setting.set(result.text)
+    let draft = setting.get()
+    while (true) {
+      const result = await Dialogs.prompt({ title: setting.editorTitle, defaultText: draft, inputType: setting.inputKind, okButtonText: 'Save', cancelButtonText: 'Cancel' })
+      if (!result.result) return false
+      draft = result.text
+      const error = setting.validationError?.(draft)
+      if (error) {
+        await Dialogs.alert({ title: setting.editorTitle, message: error, okButtonText: 'OK' })
+        continue
+      }
+      setting.set(draft)
       if (setting === nightscoutSiteUrlSetting || setting === nightscoutApiTokenSetting) await nightscoutBridge.refreshNow()
+      return true
     }
-    return result.result
   }
 }

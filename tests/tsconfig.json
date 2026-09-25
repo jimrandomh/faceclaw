@@ -2,7 +2,9 @@
   "compilerOptions": {
     "module": "commonjs",
     "target": "ES2020",
-    "lib": ["ES2020"],
+    "lib": [
+      "ES2020"
+    ],
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
@@ -14,17 +16,16 @@
     "../app/remote/protocol.ts",
     "../app/remote/listeners.ts",
     "../app/g2/ancs-client.ts",
-    "../app/g2/ble-protocol.ts",
     "../app/graphics/lvgl-font.ts",
     "../app/phone-ui/ble-bandwidth-meter.ts",
     "../app/apps/terminal/hub-header.ts",
     "../app/g2/ios-peripheral-identity.ts",
-    "../app/g2/glasses-session.ts",
-    "../app/g2/stock-connection.ts",
-    "../app/g2/firmware-ota.ts",
-    "../app/g2/flash-prompt-protocol.ts",
     "../app/graphics/surface-compositor.ts",
     "../app/graphics/image.ts",
+    "../app/graphics/plane.ts",
+    "../app/graphics/shell-scene.ts",
+    "../app/ui/metrics.ts",
+    "../app/ui/menu-core.ts",
     "../app/phone-ui/phone-gestures.ts",
     "../app/g2/firmware-compat.ts",
     "../app/g2/glasses-hardware-identity.ts",
@@ -45,6 +46,7 @@
     "../app/apps/evenhub/containers.ts",
     "../app/apps/timer/timer-model.ts",
     "../app/apps/teleprompter/script-tracker.ts",
-    "../app/apps/nightscout/nightscout-alerts.ts"
+    "../app/apps/nightscout/nightscout-alerts.ts",
+    "../app/g2/brightness-curve.ts"
   ]
 }

@@ -4,7 +4,7 @@ import { getDefaultSmallFont } from "../graphics/ui-fonts";
 import { truncateText } from "../graphics/textwrap";
 import { GrayImage, type UiFont } from "../graphics/image";
 import { wrapText } from "../graphics/textwrap";
-import { lineStep, listRowHeight } from "./metrics";
+import { LIST_ROW_TEXT_INSET, lineStep, listRowHeight } from "./metrics";
 import {
   ALL_NOTIFICATIONS,
   dismissNotification,
@@ -19,7 +19,7 @@ import { notificationEmptyMessage } from "../native/notification-access";
 import { noteStaleDataUsed, renderPassAllowsStaleData } from "../util/render-freshness";
 import { type InputEvent } from "./gestures";
 import { type Layer, type LayerContext, type PaintBelow } from "./layers";
-import { MenuLayer } from "./menu";
+import { Menu, type MenuBox } from "./menu-core";
 
 const PAGE_X = 12;
 const PAGE_Y = 12;
@@ -35,7 +35,19 @@ const CARD_GAP = 6;
 const MAX_NOTIFICATIONS = 50;
 // Right-hand action menu of the detail view.
 const DETAIL_MENU_WIDTH = 148;
+/** Top of the action menu's first row box, and the space kept below its last. */
+const DETAIL_MENU_TOP = 22;
+const DETAIL_MENU_BOTTOM_MARGIN = 17;
+const DETAIL_MENU_ROW_GAP = 3;
+/** Row text inset from the row box: horizontal, then vertical. */
+const DETAIL_MENU_TEXT_X = 8;
+const DETAIL_MENU_TEXT_Y = 4;
 const DETAIL_CONTENT_X = 24;
+// Disable-source confirmation: actions on top, the explanation below them.
+const CONFIRM_X = 24;
+const CONFIRM_Y = 8;
+const CONFIRM_TEXT_X = 10;
+const CONFIRM_PROMPT_GAP = 16;
 
 /** Icon for a paint pass: allow-stale, reporting staleness to the render loop. */
 function iconForNotification(key: string): GrayImage | null {
@@ -57,6 +69,8 @@ type DetailMenuItem =
   | { kind: "action"; label: string; action: AndroidNotificationAction }
   | { kind: "dismiss"; label: string }
   | { kind: "disable-source"; label: string };
+
+type ConfirmationItem = { label: string; run: (ctx: LayerContext) => void };
 
 export type SingleNotificationLayerOrigin = "notifications-list" | "new-notification-modal";
 
@@ -168,8 +182,24 @@ export class NotificationsListLayer implements Layer {
  * new-notification modal.
  */
 export class SingleNotificationLayer implements Layer {
-  private selectedMenuIndex = 0;
-  private confirmation: { source: AndroidNotification; menu: MenuLayer } | null = null;
+  /** The action column; its items are rebuilt from the live notification on every paint and input. */
+  private readonly detailMenu = new Menu<DetailMenuItem>({
+    wrap: false,
+    rowGap: DETAIL_MENU_ROW_GAP,
+    highlight: { radius: 6 },
+    getHeight: (item, width) => {
+      const font = getDefaultSmallFont();
+      return detailMenuRowLines(font, item, width).length * lineStep(font) + 8;
+    },
+    draw: ({ image, item, x, y, width, selected }) => {
+      const font = getDefaultSmallFont();
+      const lines = detailMenuRowLines(font, item, width);
+      for (let line = 0; line < lines.length; line++) {
+        image.drawText(font, x + DETAIL_MENU_TEXT_X, y + DETAIL_MENU_TEXT_Y + line * lineStep(font), lines[line]!, selected ? 255 : 185);
+      }
+    },
+  });
+  private confirmation: { source: AndroidNotification; menu: Menu<ConfirmationItem> } | null = null;
 
   constructor(
     private readonly notificationKey: string,
@@ -187,17 +217,18 @@ export class SingleNotificationLayer implements Layer {
       return this.closeUnavailableNotification(ctx, paintBelow);
     }
 
-    const menu = buildDetailMenu(notification, this.options.origin);
-    this.selectedMenuIndex = clamp(this.selectedMenuIndex, 0, Math.max(0, menu.length - 1));
+    this.detailMenu.setItems(buildDetailMenu(notification, this.options.origin));
     drawDetailContent(image, font, notification, iconForNotification(notification.key), width, height);
-    drawDetailMenu(image, font, menu, this.selectedMenuIndex, width);
+    this.detailMenu.paint(image, detailMenuBox(width, height), ctx.stack.isFocused());
     return image;
   }
 
   async handleInput(event: InputEvent, ctx: LayerContext): Promise<void> {
     if (this.confirmation) {
+      const { menu } = this.confirmation;
       if (event.type === "double-click") this.close(ctx);
-      else await this.confirmation.menu.handleInput(event, ctx);
+      else if (event.type === "click") menu.selectedItem?.run(ctx);
+      else await menu.handleInput(event);
       return;
     }
     const notification = readActiveNotifications(ALL_NOTIFICATIONS).find((item) => item.key === this.notificationKey);
@@ -205,24 +236,21 @@ export class SingleNotificationLayer implements Layer {
       this.closeUnavailableNotification(ctx);
       return;
     }
-    const menu = buildDetailMenu(notification, this.options.origin);
-    this.selectedMenuIndex = clamp(this.selectedMenuIndex, 0, menu.length - 1);
+    this.detailMenu.setItems(buildDetailMenu(notification, this.options.origin));
 
     if (event.type === "double-click") {
       this.close(ctx);
       return;
     }
-    if (event.type === "scroll-up") {
-      this.selectedMenuIndex = Math.max(0, this.selectedMenuIndex - 1);
-      return;
-    }
-    if (event.type === "scroll-down") {
-      this.selectedMenuIndex = Math.min(menu.length - 1, this.selectedMenuIndex + 1);
+    if (event.type === "scroll-up" || event.type === "scroll-down") {
+      await this.detailMenu.handleInput(event);
       return;
     }
     if (event.type !== "click") return;
 
-    const item = menu[this.selectedMenuIndex]!;
+    // "(unavailable)" actions stay clickable: Android decides whether they do anything.
+    const item = this.detailMenu.selectedItem;
+    if (!item) return;
     if (item.kind === "back") {
       this.close(ctx);
     } else if (item.kind === "action") {
@@ -237,13 +265,21 @@ export class SingleNotificationLayer implements Layer {
       // Keep the modal alive for confirmation even after Android removes the notification.
       this.confirmation = {
         source: notification,
-        menu: new MenuLayer(null, [
-          { label: "Cancel", onSelect: () => this.close(ctx) },
-          { label: "Turn off popups", onSelect: () => {
-            setNotificationSourceEnabled(notification, false);
-            this.close(ctx);
-          } },
-        ], { x: 12, y: 0, width: ctx.stack.getBaseSize().width - 24, minHeight: 0, showBorder: false }),
+        menu: new Menu<ConfirmationItem>({
+          items: [
+            { label: "Cancel", run: (runCtx) => this.close(runCtx) },
+            { label: "Turn off popups", run: (runCtx) => {
+              setNotificationSourceEnabled(notification, false);
+              this.close(runCtx);
+            } },
+          ],
+          wrap: true,
+          rowGap: 1,
+          getHeight: () => listRowHeight(getDefaultSmallFont()),
+          draw: ({ image, item, x, y, selected }) => {
+            image.drawText(getDefaultSmallFont(), x + CONFIRM_TEXT_X, y + LIST_ROW_TEXT_INSET, item.label, selected ? 255 : 200);
+          },
+        }),
       };
       dismissNotification(this.notificationKey);
     }
@@ -255,15 +291,21 @@ export class SingleNotificationLayer implements Layer {
     const { width, height } = ctx.stack.getBaseSize();
     const image = new GrayImage(width, height, 0);
     // Put actions first so they remain reachable even with a large UI font.
-    menu.paint(ctx, () => image);
-    const top = 24 + 2 * listRowHeight(font);
+    const menuBox: MenuBox = {
+      x: CONFIRM_X,
+      y: CONFIRM_Y,
+      width: width - 2 * CONFIRM_X,
+      height: Math.min(menu.items.length * listRowHeight(font), height - CONFIRM_Y),
+    };
+    menu.paint(image, menuBox, ctx.stack.isFocused());
+    const top = menuBox.y + menuBox.height + CONFIRM_PROMPT_GAP;
     const prompt = `Turn off notification popups from ${source.appName || source.packageName}? You can turn them back on in the Notifications app's Notification filter.`;
-    const lines = wrapText(font, prompt, width - 48);
+    const lines = wrapText(font, prompt, width - 2 * CONFIRM_X);
     const maxLines = Math.max(1, Math.floor((height - top - 12) / lineStep(font)));
     for (let index = 0; index < Math.min(lines.length, maxLines); index++) {
       const text = index === maxLines - 1 && lines.length > maxLines
-        ? truncateText(font, lines[index] + "...", width - 48) : lines[index]!;
-      image.drawText(font, 24, top + index * lineStep(font), text, 210);
+        ? truncateText(font, lines[index] + "...", width - 2 * CONFIRM_X) : lines[index]!;
+      image.drawText(font, CONFIRM_X, top + index * lineStep(font), text, 210);
     }
     return image;
   }
@@ -404,35 +446,20 @@ function drawDetailContent(
   }
 }
 
-function drawDetailMenu(image: GrayImage, font: UiFont, menu: DetailMenuItem[], selectedIndex: number, width: number): void {
-  const menuX = width - DETAIL_MENU_WIDTH - 24;
-  const menuY = 24;
-  const rows = menu.map((item) => {
-    const lines = item.kind === "disable-source"
-      ? wrapText(font, item.label, DETAIL_MENU_WIDTH - 16)
-      : [truncateText(font, item.label, DETAIL_MENU_WIDTH - 16)];
-    return { lines, height: lines.length * lineStep(font) + 8 };
-  });
-  const selectedBottom = rows.slice(0, selectedIndex + 1).reduce((sum, row) => sum + row.height, 0);
-  const scrollY = Math.max(0, selectedBottom - (image.height - menuY - 12));
-  let y = menuY - scrollY;
-  for (let index = 0; index < menu.length; index++) {
-    const row = rows[index]!;
-    if (y < menuY) {
-      y += row.height;
-      continue;
-    }
-    if (y + row.height > image.height - 12) break;
-    const selected = index === selectedIndex;
-    if (selected) {
-      image.fillRoundedRect(menuX - 8, y - 2, DETAIL_MENU_WIDTH, row.height - 3, 18, 6);
-      image.drawRoundedRect(menuX - 8, y - 2, DETAIL_MENU_WIDTH, row.height - 3, 60, 6);
-    }
-    for (let line = 0; line < row.lines.length; line++) {
-      image.drawText(font, menuX, y + 2 + line * lineStep(font), row.lines[line]!, selected ? 255 : 185);
-    }
-    y += row.height;
-  }
+/** The action column's row boxes: right of the content, from DETAIL_MENU_TOP to the bottom margin. */
+function detailMenuBox(width: number, height: number): MenuBox {
+  return {
+    x: width - DETAIL_MENU_WIDTH - 32,
+    y: DETAIL_MENU_TOP,
+    width: DETAIL_MENU_WIDTH,
+    height: height - DETAIL_MENU_TOP - DETAIL_MENU_BOTTOM_MARGIN,
+  };
+}
+
+/** An action row's text lines: the disable-source row wraps, the rest truncate to one line. */
+function detailMenuRowLines(font: UiFont, item: DetailMenuItem, rowWidth: number): string[] {
+  const textWidth = rowWidth - 2 * DETAIL_MENU_TEXT_X;
+  return item.kind === "disable-source" ? wrapText(font, item.label, textWidth) : [truncateText(font, item.label, textWidth)];
 }
 
 function buildDetailMenu(notification: AndroidNotification, origin: SingleNotificationLayerOrigin): DetailMenuItem[] {

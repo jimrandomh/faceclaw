@@ -3,8 +3,8 @@ import { GrayImage } from "../../graphics/image";
 import { truncateText } from "../../graphics/textwrap";
 import { type InputEvent } from "../../ui/gestures";
 import { Layer, type LayerContext, type PaintBelow } from "../../ui/layers";
-import { drawSelectionHighlight } from "../../ui/menu";
-import { LIST_ROW_TEXT_INSET, lineStep, listRowHeight } from "../../ui/metrics";
+import { Menu, type MenuDrawArgs } from "../../ui/menu-core";
+import { lineStep, listRowHeight } from "../../ui/metrics";
 
 const DIALOG_X = 8;
 const DIALOG_Y = 8;
@@ -21,6 +21,8 @@ const SERVICE_LABELS: Record<string, string> = {
 
 export type ApiKeyRequestItem = { id: string; configured: boolean };
 
+type ConsentAction = "Allow" | "Deny";
+
 /**
  * Consent dialog shown when an EvenHub app calls requestApiKeyAccess: lists the
  * requested API-key services (marking any the user hasn't configured) and asks
@@ -28,8 +30,14 @@ export type ApiKeyRequestItem = { id: string; configured: boolean };
  * double-click) shares nothing.
  */
 export class EvenHubApiKeyDialogLayer implements Layer {
-  /** 0 = Allow, 1 = Deny. */
-  private selectedIndex = 0;
+  private readonly menu = new Menu<ConsentAction>({
+    items: ["Allow", "Deny"],
+    wrap: true,
+    rowGap: 1,
+    highlight: { radius: 8 },
+    getHeight: () => listRowHeight(getDefaultSmallFont()),
+    draw: (args) => drawActionRow(args),
+  });
   private resolved = false;
 
   constructor(
@@ -67,16 +75,11 @@ export class EvenHubApiKeyDialogLayer implements Layer {
     }
     y += 4;
 
-    const focused = ctx.stack.isFocused();
-    const actions = ["Allow", "Deny"];
-    for (let index = 0; index < actions.length; index++) {
-      const rowY = y + index * actionRowH;
-      const selected = index === this.selectedIndex;
-      if (selected) {
-        drawSelectionHighlight(image, DIALOG_X + 12, rowY, DIALOG_WIDTH - 24, actionRowH - 1, focused, 8);
-      }
-      image.drawText(font, DIALOG_X + 22, rowY + 3, actions[index]!, selected ? 255 : 200);
-    }
+    this.menu.paint(
+      image,
+      { x: DIALOG_X + 12, y, width: DIALOG_WIDTH - 24, height: Math.max(0, DIALOG_Y + height - PADDING - y) },
+      ctx.stack.isFocused(),
+    );
     return image;
   }
 
@@ -84,10 +87,10 @@ export class EvenHubApiKeyDialogLayer implements Layer {
     switch (event.type) {
       case "scroll-up":
       case "scroll-down":
-        this.selectedIndex = (this.selectedIndex + 1) % 2;
+        void this.menu.handleInput(event);
         return;
       case "click":
-        this.resolve(ctx, this.selectedIndex === 0);
+        this.resolve(ctx, this.menu.selectedItem === "Allow");
         return;
       case "double-click":
         this.resolve(ctx, false);
@@ -112,4 +115,8 @@ export class EvenHubApiKeyDialogLayer implements Layer {
     if (allowed) this.onConfirm();
     else this.onCancel();
   }
+}
+
+function drawActionRow({ image, item, x, y, selected }: MenuDrawArgs<ConsentAction>): void {
+  image.drawText(getDefaultSmallFont(), x + 10, y + 3, item, selected ? 255 : 200);
 }

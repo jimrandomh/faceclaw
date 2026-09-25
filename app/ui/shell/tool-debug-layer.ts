@@ -19,7 +19,7 @@ import { lineStep } from "../metrics";
 const DIALOG_WIDTH = 420;
 // Shell overlays align to the min-height window band; the detail box fills
 // the band below the top bar with an 8px margin on each side.
-const DETAIL_HEIGHT = MIN_WINDOW_HEIGHT - TOP_BAR_HEIGHT - 16;
+const DETAIL_HEIGHT = 208;
 
 /** Dialog left edge: past the sidebar strip where one reserves width. */
 function dialogX(): number {
@@ -42,6 +42,7 @@ export class ToolDebugMenuLayer extends MenuLayer {
       x: dialogX(),
       y: dialogY(),
       width: DIALOG_WIDTH,
+      squareCorners: true,
       minHeight: 0,
     });
   }
@@ -89,8 +90,8 @@ class ToolDetailLayer implements Layer {
     const left = dialogX();
     const width = detailWidth();
     const top = dialogY();
-    image.fillRoundedRect(left, top, width, DETAIL_HEIGHT, 1, 10);
-    image.drawRoundedRect(left, top, width, DETAIL_HEIGHT, 72, 10);
+    image.fillRect(left, top, width, DETAIL_HEIGHT, 1);
+    image.drawRect(left, top, width, DETAIL_HEIGHT, 72);
 
     const textX = left + DETAIL_PADDING;
     const textWidth = width - 2 * DETAIL_PADDING - 8;

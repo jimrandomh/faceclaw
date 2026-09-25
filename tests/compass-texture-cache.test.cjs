@@ -19,7 +19,7 @@ function load(file, modules = {}, extra = '', globals = {}) {
 
 const textwrap = load('app/graphics/textwrap.ts');
 const { BdfFont } = load('app/graphics/bdffont.ts', { '@nativescript/core': {} });
-const graphics = load('app/graphics/image.ts', { './textwrap': textwrap });
+const graphics = require('../.test-build/app/graphics/image.js');
 const { GrayImage } = graphics;
 const font = (size) => BdfFont.parse(fs.readFileSync(
   path.join(__dirname, `../app/fonts/terminus/ter-u${size}n.bdf`), 'utf8'));
@@ -156,7 +156,7 @@ test('the background registers once and uses a nine-byte image reference on late
       return 1;
     } } } } },
   });
-  const { prepareFrameDraws } = load('app/graphics/glyph-wire.ts', { '../native/texture-atlas': atlas });
+  const { prepareFrameDraws } = load('app/graphics/glyph-wire.ts', { '../native/texture-atlas': atlas, './presentation-wire': require('../.test-build/app/graphics/presentation-wire.js') });
   const background = compass.createCompassBackground(576, 260, 256, 193.25, 98, 140, 1);
   for (const heading of [0, 1, 2, 45, 90]) {
     const image = background.clone();

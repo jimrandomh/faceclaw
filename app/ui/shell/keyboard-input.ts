@@ -1,8 +1,12 @@
 import { type GrayImage } from "../../graphics/image";
 import { type InputEvent } from "../gestures";
 import { Layer, type LayerActions, type LayerContext } from "../layers";
-import { paintInputDialog } from "./input-dialog";
+import { type Menu } from "../menu-core";
+import { createInputDialogMenu, paintInputDialog, type InputDialogRow } from "./input-dialog";
 import { type VoiceSendTarget } from "./voice-input";
+
+/** A menu row: a send target, or Discard (no target). */
+type KeyboardMenuRow = InputDialogRow & { target?: VoiceSendTarget };
 
 /**
  * The phone side's handle on an open keyboard-input dialog: the phone types
@@ -46,7 +50,7 @@ export type KeyboardInputLayerOptions = {
  */
 export class KeyboardInputLayer implements Layer, KeyboardInputSession {
   private text = "";
-  private menuIndex: number;
+  private readonly menu: Menu<KeyboardMenuRow>;
   private closed = false;
 
   private readonly actions: LayerActions;
@@ -62,7 +66,7 @@ export class KeyboardInputLayer implements Layer, KeyboardInputSession {
     this.sendTargets = options.sendTargets;
     const defaultIndex = options.defaultTargetIndex ?? 0;
     this.defaultTargetIndex = Math.min(Math.max(0, defaultIndex), Math.max(0, this.sendTargets.length - 1));
-    this.menuIndex = this.defaultTargetIndex;
+    this.menu = createInputDialogMenu(this.menuRows(), this.defaultTargetIndex);
   }
 
   get targets(): ReadonlyArray<{ id: string; label: string }> {
@@ -76,8 +80,7 @@ export class KeyboardInputLayer implements Layer, KeyboardInputSession {
   }
 
   send(): void {
-    const row = this.menuRows()[this.menuIndex];
-    const target = row?.target ?? this.sendTargets[this.defaultTargetIndex];
+    const target = this.menu.selectedItem?.target ?? this.sendTargets[this.defaultTargetIndex];
     if (target) this.sendToTarget(target);
   }
 
@@ -101,9 +104,9 @@ export class KeyboardInputLayer implements Layer, KeyboardInputSession {
   }
 
   /** The menu rows: one per send target, then Discard. */
-  private menuRows(): Array<{ label: string; dim: boolean; target?: VoiceSendTarget }> {
+  private menuRows(): KeyboardMenuRow[] {
     const hasText = this.text.trim().length > 0;
-    const rows: Array<{ label: string; dim: boolean; target?: VoiceSendTarget }> = [];
+    const rows: KeyboardMenuRow[] = [];
     for (const target of this.sendTargets) {
       rows.push({ label: target.label, dim: !hasText, target });
     }
@@ -113,29 +116,26 @@ export class KeyboardInputLayer implements Layer, KeyboardInputSession {
 
   paint(_ctx: LayerContext, paintBelow: () => GrayImage): GrayImage {
     const image = paintBelow();
+    this.menu.setItems(this.menuRows());
     paintInputDialog(image, {
       title: "Keyboard",
       status: "Type on the phone",
       text: this.text || "(nothing typed yet)",
-      rows: this.menuRows(),
-      selectedRow: this.menuIndex,
+      menu: this.menu,
     });
     return image;
   }
 
   handleInput(event: InputEvent, _ctx: LayerContext): void {
-    const rowCount = this.menuRows().length;
+    this.menu.setItems(this.menuRows());
     switch (event.type) {
       case "scroll-up":
-        this.menuIndex = (this.menuIndex + rowCount - 1) % rowCount;
-        this.actions.requestRender();
-        return;
       case "scroll-down":
-        this.menuIndex = (this.menuIndex + 1) % rowCount;
+        void this.menu.handleInput(event);
         this.actions.requestRender();
         return;
       case "click": {
-        const row = this.menuRows()[this.menuIndex];
+        const row = this.menu.selectedItem;
         if (!row) return;
         if (row.target) {
           this.sendToTarget(row.target);

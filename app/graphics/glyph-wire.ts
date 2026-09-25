@@ -1,3 +1,4 @@
+import { DrawRecordKind, encodePresentation } from "./presentation-wire";
 /**
  * Marshals deferred-draw identity (text glyphs and icon images) to the Kotlin
  * side for the texture-cache pipeline (CFW modes 18/19/20; see
@@ -84,6 +85,7 @@ const fwRegistered = new Set<string>();
  * unseen ink members' rasters with the Kotlin FwGlyphAtlas as a side effect.
  */
 function prepareFwTextRun(placed: PlacedFwText): boolean {
+  if (!textureAtlasAvailable()) return false;
   if (!inRange16(placed.x) || !inRange16(placed.y)) return false;
   if (placed.glyphs.length === 0 || placed.glyphs.length > 255) return false;
   let registration: Array<{ cp: number; data: NonNullable<ReturnType<PlacedFwText["font"]["fwGlyphWireData"]>> }> | null = null;
@@ -152,11 +154,12 @@ function inRange16(v: number): boolean {
  * in draw order. Returns null when nothing is expressible (or without a native atlas).
  */
 export function prepareFrameDraws(draws: readonly DeferredDraw[]): ArrayBuffer | null {
-  if (!textureAtlasAvailable() || draws.length === 0) return null;
+  if (draws.length === 0) return null;
 
   // Pass 1: resolve ids, register unseen rasters, size the buffer.
   let registration: Map<FontWireState, RegistrationGroup> | null = null;
   const fwRunOk = new Map<PlacedFwText, boolean>();
+  const presentations = new Map<PlacedImage, Uint8Array>();
   let bytes = 0;
   for (const placed of draws) {
     if (placed.kind === "glyph") {
@@ -175,7 +178,8 @@ export function prepareFrameDraws(draws: readonly DeferredDraw[]): ArrayBuffer |
       (placed.glyph.coverage ? group.aaGlyphs : group.glyphs).push(placed.glyph);
     } else if (placed.kind === "image") {
       if (!inRange16(placed.x) || !inRange16(placed.y)) continue;
-      if (imageId(placed) !== null) bytes += IMAGE_RECORD_BYTES;
+      if (placed.presentation) { const record = encodePresentation(placed); presentations.set(placed, record); bytes += record.length; }
+      else if (imageId(placed) !== null) bytes += IMAGE_RECORD_BYTES;
     } else {
       const ok = prepareFwTextRun(placed);
       fwRunOk.set(placed, ok);
@@ -198,7 +202,7 @@ export function prepareFrameDraws(draws: readonly DeferredDraw[]): ArrayBuffer |
       if (!inRange16(placed.x) || !inRange16(placed.y)) continue;
       const state = fontWireState(placed.font);
       if (!state || !representableGlyph(placed.font, placed.glyph)) continue;
-      out.setUint8(offset, 0);
+      out.setUint8(offset, DrawRecordKind.GLYPH);
       out.setUint16(offset + 1, state.fontId, true);
       out.setUint32(offset + 3, placed.glyph.encoding, true);
       out.setInt16(offset + 7, placed.x, true);
@@ -207,16 +211,17 @@ export function prepareFrameDraws(draws: readonly DeferredDraw[]): ArrayBuffer |
       offset += GLYPH_RECORD_BYTES;
     } else if (placed.kind === "image") {
       if (!inRange16(placed.x) || !inRange16(placed.y)) continue;
+      if (placed.presentation) { const bytes = presentations.get(placed)!; new Uint8Array(out.buffer).set(bytes, offset); offset += bytes.length; continue; }
       const id = imageId(placed);
       if (id === null) continue;
-      out.setUint8(offset, 1);
+      out.setUint8(offset, DrawRecordKind.TEXTURE_IMAGE);
       out.setUint32(offset + 1, id, true);
       out.setInt16(offset + 5, placed.x, true);
       out.setInt16(offset + 7, placed.y, true);
       offset += IMAGE_RECORD_BYTES;
     } else {
       if (!fwRunOk.get(placed)) continue;
-      out.setUint8(offset, 2);
+      out.setUint8(offset, DrawRecordKind.FIRMWARE_TEXT);
       out.setInt16(offset + 1, placed.x, true);
       out.setInt16(offset + 3, placed.y, true);
       out.setUint8(offset + 5, placed.value);

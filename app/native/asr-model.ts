@@ -18,7 +18,7 @@ declare const java: any;
  *  - "whisper-base-en": sherpa-onnx's offline Whisper backend, base.en,
  *    int8-quantized. Picked over tiny.en for materially better accuracy
  *    (Whisper's own tiny/base WER gap is real and well documented) on the
- *    reasoning that FaceclawVoiceController.java no longer re-decodes a
+ *    reasoning that FaceclawVoiceController.kt no longer re-decodes a
  *    Whisper segment on every live-partial tick — see its ASR_WHISPER_*
  *    comment — so base.en's extra compute is a one-time cost per utterance,
  *    not a cost paid ~1.4x/second while the user is speaking. tiny.en is an

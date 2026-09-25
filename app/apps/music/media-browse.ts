@@ -1,15 +1,9 @@
 import { getDefaultSmallFont } from "../../graphics/ui-fonts";
 import { GrayImage, type UiFont } from "../../graphics/image";
-import { clamp } from "../../util/numeric-util";
 import { GESTURE_CLICK, GESTURE_DOUBLE_CLICK, GESTURE_SCROLL, type InputEvent } from "../../ui/gestures";
-import {
-  MenuLayer,
-  drawListScrollbar,
-  drawSelectionHighlight,
-  drawSubmenuIndicator,
-  scrollToKeepSelectionVisible,
-} from "../../ui/menu";
-import { lineStep, tightRowHeight } from "../../ui/metrics";
+import { MenuLayer, drawSubmenuIndicator } from "../../ui/menu";
+import { Menu, type MenuDrawArgs } from "../../ui/menu-core";
+import { centeredTextY, lineStep, tightRowHeight } from "../../ui/metrics";
 import {
   mediaBrowserBridge,
   type MediaBrowseItem,
@@ -22,6 +16,8 @@ function headerHeight(font: UiFont): number {
   return 8 + lineStep(font) + font.lineHeight;
 }
 const LIST_X = 20;
+/** The selection box extends this far left and right of the row text. */
+const LIST_HIGHLIGHT_PAD = 6;
 
 export type MediaBrowseOptions = {
   app: MediaBrowserApp;
@@ -37,8 +33,8 @@ type BrowseLevel = {
   /** null while the listing is loading. */
   items: MediaBrowseItem[] | null;
   error: string;
-  selectedIndex: number;
-  scrollRow: number;
+  /** Holds the loaded items; keeps this level's selection and scroll while a child level is open. */
+  menu: Menu<MediaBrowseItem>;
 };
 
 type BrowsePhase = "idle" | "connecting" | "ready" | "failed";
@@ -97,50 +93,16 @@ export class MediaBrowseLayer implements Layer {
       return image;
     }
 
-    level.selectedIndex = clamp(level.selectedIndex, 0, items.length - 1);
-    const listHeight = height - headerHeight(font) - font.lineHeight - 10;
-    const rowH = tightRowHeight(font);
-    const visibleRows = Math.max(1, (listHeight / rowH) | 0);
-    level.scrollRow = scrollToKeepSelectionVisible(level.scrollRow, level.selectedIndex, visibleRows, items.length);
-
-    const rowWidth = width - 2 * LIST_X;
-    const lastVisible = Math.min(items.length, level.scrollRow + visibleRows);
-    for (let index = level.scrollRow; index < lastVisible; index++) {
-      const item = items[index]!;
-      const y = headerHeight(font) + (index - level.scrollRow) * rowH;
-      const selected = index === level.selectedIndex;
-      const highlightX = LIST_X - 6;
-      const highlightY = y - 1;
-      const highlightWidth = rowWidth + 12;
-      const highlightHeight = rowH - 1;
-      if (selected) {
-        drawSelectionHighlight(image, highlightX, highlightY, highlightWidth, highlightHeight, ctx.stack.isFocused(), 4);
-      }
-      const value = selected ? 255 : 200;
-      const title = truncateRight(font, item.title || "(untitled)", rowWidth - 16);
-      image.drawText(font, LIST_X, y + 1, title, value);
-      if (item.subtitle) {
-        const titleWidth = font.measureText(title);
-        const subtitleWidth = font.measureText(item.subtitle);
-        if (titleWidth + subtitleWidth + 24 <= rowWidth - 16) {
-          image.drawText(font, LIST_X + rowWidth - 16 - subtitleWidth, y + 1, item.subtitle, 110);
-        }
-      }
-      if (item.browsable) {
-        drawSubmenuIndicator(image, font, highlightX, highlightY, highlightWidth, highlightHeight, selected ? value : 110);
-      }
-    }
-    if (items.length > visibleRows) {
-      drawListScrollbar(
-        image,
-        width - 12,
-        headerHeight(font),
-        visibleRows * rowH - 4,
-        level.scrollRow,
-        visibleRows,
-        items.length,
-      );
-    }
+    const listTop = headerHeight(font);
+    const listHeight = height - listTop - font.lineHeight - 10;
+    const visibleRows = Math.max(1, (listHeight / tightRowHeight(font)) | 0);
+    // Row boxes start one pixel above the header's bottom edge.
+    level.menu.paint(
+      image,
+      { x: LIST_X - LIST_HIGHLIGHT_PAD, y: listTop - 1, width: width - 2 * LIST_X + 2 * LIST_HIGHLIGHT_PAD, height: listHeight },
+      ctx.stack.isFocused(),
+    );
+    level.menu.drawScrollbar(image, width - 12, listTop, visibleRows * tightRowHeight(font) - 4);
 
     image.drawText(
       font,
@@ -175,13 +137,11 @@ export class MediaBrowseLayer implements Layer {
     if (!level || !items || !items.length) return;
     switch (event.type) {
       case "scroll-up":
-        level.selectedIndex = Math.max(0, level.selectedIndex - 1);
-        return;
       case "scroll-down":
-        level.selectedIndex = Math.min(items.length - 1, level.selectedIndex + 1);
+        await level.menu.handleInput(event);
         return;
       case "click": {
-        const item = items[clamp(level.selectedIndex, 0, items.length - 1)];
+        const item = level.menu.selectedItem;
         if (!item) return;
         if (item.browsable && item.playable) {
           ctx.stack.push(
@@ -233,16 +193,44 @@ export class MediaBrowseLayer implements Layer {
   }
 
   private descendInto(ctx: LayerContext, item: MediaBrowseItem): void {
-    const level: BrowseLevel = {
-      parentId: item.mediaId,
-      title: item.title || "(untitled)",
-      items: null,
-      error: "",
-      selectedIndex: 0,
-      scrollRow: 0,
-    };
+    const level = this.createLevel(item.mediaId, item.title || "(untitled)");
     this.levels.push(level);
     this.loadLevel(ctx, level);
+  }
+
+  private createLevel(parentId: string, title: string): BrowseLevel {
+    return {
+      parentId,
+      title,
+      items: null,
+      error: "",
+      menu: new Menu<MediaBrowseItem>({
+        wrap: false,
+        rowGap: 1,
+        highlight: { radius: 4 },
+        getHeight: () => tightRowHeight(getDefaultSmallFont()),
+        draw: (args) => this.drawItem(args),
+      }),
+    };
+  }
+
+  private drawItem({ image, item, x, y, width, height, selected }: MenuDrawArgs<MediaBrowseItem>): void {
+    const font = getDefaultSmallFont();
+    const value = selected ? 255 : 200;
+    const textWidth = width - 2 * LIST_HIGHLIGHT_PAD - 16;
+    const textY = centeredTextY(font, y, height);
+    const title = truncateRight(font, item.title || "(untitled)", textWidth);
+    image.drawText(font, x + LIST_HIGHLIGHT_PAD, textY, title, value);
+    if (item.subtitle) {
+      const titleWidth = font.measureText(title);
+      const subtitleWidth = font.measureText(item.subtitle);
+      if (titleWidth + subtitleWidth + 24 <= textWidth) {
+        image.drawText(font, x + LIST_HIGHLIGHT_PAD + textWidth - subtitleWidth, textY, item.subtitle, 110);
+      }
+    }
+    if (item.browsable) {
+      drawSubmenuIndicator(image, font, x, y, width, height, selected ? value : 110);
+    }
   }
 
   private startConnect(ctx: LayerContext): void {
@@ -252,14 +240,7 @@ export class MediaBrowseLayer implements Layer {
       .then((rootId) => {
         if (this.removed) return;
         this.phase = "ready";
-        const root: BrowseLevel = {
-          parentId: rootId,
-          title: "Library",
-          items: null,
-          error: "",
-          selectedIndex: 0,
-          scrollRow: 0,
-        };
+        const root = this.createLevel(rootId, "Library");
         this.levels = [root];
         this.loadLevel(ctx, root);
         ctx.actions.requestRender();
@@ -278,6 +259,7 @@ export class MediaBrowseLayer implements Layer {
       .then((items) => {
         if (this.removed) return;
         level.items = items;
+        level.menu.setItems(items, 0);
         ctx.actions.requestRender();
       })
       .catch((error) => {
