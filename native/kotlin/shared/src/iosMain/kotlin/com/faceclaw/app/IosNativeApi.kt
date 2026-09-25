@@ -223,6 +223,8 @@ class IosSurfaceCompositor(width: Int, height: Int) {
 
     fun visible(id: String, visible: Boolean) = compositor.setSurfaceVisible(id, visible)
 
+    fun depth(id: String, depth: Int) = compositor.setSurfaceDepth(id, depth)
+
     fun dim(below: Int, factor: Double) {
         require(factor.isFinite())
         compositor.setUnderlayDim(below, (factor.coerceIn(0.0, 1.0) * 256).toInt())
@@ -230,7 +232,12 @@ class IosSurfaceCompositor(width: Int, height: Int) {
 
     fun blank(blanked: Boolean) = compositor.setBlanked(blanked)
 
-    fun submit(id: String, data: NSData, x: Int, y: Int, width: Int, height: Int) {
+    fun shell(data: NSData) = compositor.setShellScene(IosByteReader(data))
+
+    fun submit(id: String, data: NSData, x: Int, y: Int, width: Int, height: Int) =
+        submitDraws(id, data, x, y, width, height, null)
+
+    fun submitDraws(id: String, data: NSData, x: Int, y: Int, width: Int, height: Int, draws: NSData?) {
         val (sw, sh) = sizes[id] ?: error("Unknown surface: $id")
         require(width > 0 && height > 0 && data.length == width.toULong() * height.toULong())
         val left = maxOf(0, x)
@@ -260,8 +267,14 @@ class IosSurfaceCompositor(width: Int, height: Int) {
             right - left,
             bottom - top,
             (++sequence).toString(),
+            // Draw records describe a full surface. Partial/clipped updates must discard
+            // old identities; their pixels remain available through the baked fallback.
+            if (x == 0 && y == 0 && width == sw && height == sh) draws?.let(::IosByteReader)
+            else null,
         )
     }
 
     fun composite(): NSData = compositor.composite().gray.data()
+
+    fun compositeFrame(): IosTextureFrame = IosTextureFrame(compositor.composite())
 }

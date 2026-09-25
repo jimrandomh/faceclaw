@@ -1,3 +1,4 @@
+import { remoteInputMenuItem } from "./remote-input-menu";
 import { knownFolders } from "@nativescript/core";
 import { getDefaultSmallFont } from "../../graphics/ui-fonts";
 import type { GrayImage } from "../../graphics/image";
@@ -36,6 +37,9 @@ import {
   assistantSkipConfirmationSetting,
   batteryDisplayModeSetting,
   brightnessSetting,
+  autoBrightnessMinSetting,
+  autoBrightnessMaxSetting,
+  autoBrightnessCurveSetting,
   glassesBatteryVisibilitySetting,
   phoneBatteryVisibilitySetting,
   ringBatteryVisibilitySetting,
@@ -96,6 +100,7 @@ function settingsSections(): SettingsSection[] {
         // Auto (ambient sensor) or an exact level; pushed to the glasses by
         // the dashboard controller when changed and on each connect.
         enumSettingMenuItem(brightnessSetting),
+        autoBrightnessMenuItem(),
         enumSettingMenuItem(screenTimeoutSetting, {
           onChange: () => {
             shell.noteUserActivity();
@@ -144,6 +149,7 @@ function settingsSections(): SettingsSection[] {
     {
       label: "API Keys",
       items: [
+        remoteInputMenuItem(),
         textSettingMenuItem(elevenLabsApiKeySetting),
         textSettingMenuItem(openAiApiKeySetting),
         textSettingMenuItem(sonioxApiKeySetting),
@@ -242,7 +248,7 @@ function settingsSections(): SettingsSection[] {
     },
   ];
   if (!global.isIOS) return sections;
-  const deferred = new Set(["Navigate", "Watch"]);
+  const deferred = new Set(["Watch"]);
   return sections.map(section => {
     if (section.label === "Developer") return { ...section, items: [toggleSettingMenuItem(showBleBandwidthSetting)] };
     if (section.label === "Voice") return { label: "Voice", items: [enumSettingMenuItem(wakeWordActionSetting), {
@@ -254,10 +260,23 @@ function settingsSections(): SettingsSection[] {
       description: `${section.label} integration has not been ported to iOS.`,
     }] };
     if (section.label === "Display") return { ...section, items: section.items.filter(item =>
-      ![brightnessSetting.label, screenTimeoutSetting.label].includes(item.label)) };
-    if (section.label === "Phone display") return { ...section, items: section.items.filter(item => item.label !== mirrorTouchSetting.label) };
+      item.label !== screenTimeoutSetting.label) };
     return section;
   });
+}
+
+function autoBrightnessMenuItem(): MenuItem {
+  return {
+    label: "Auto-brightness",
+    description: "Adjust the minimum, maximum, and ambient-light curve used by Auto brightness.",
+    onSelect: (ctx) => {
+      openSettingsSubMenu(ctx, "Auto-brightness", [
+        enumSettingMenuItem(autoBrightnessMinSetting),
+        enumSettingMenuItem(autoBrightnessMaxSetting),
+        textSettingMenuItem(autoBrightnessCurveSetting),
+      ]);
+    },
+  };
 }
 
 /**

@@ -1,3 +1,4 @@
+import { encodeShellScene } from "../../graphics/shell-scene";
 import { G2_LENS_HEIGHT, G2_LENS_WIDTH, GrayImage } from "../../graphics/image";
 import { singlePlane, type Plane } from "../../graphics/plane";
 import { getDefaultSmallFont } from "../../graphics/ui-fonts";
@@ -137,7 +138,7 @@ export type ShellWindow = {
    * Deliver a text string to the window (e.g. finalized voice input). Optional:
    * only windows that consume typed text (the terminal) implement it.
    */
-  receiveTextInput?: (text: string) => void;
+  receiveTextInput?: (text: string, options?: { submit?: boolean }) => void;
   /** Foreground state changed: this window's surface is (not) the visible one. */
   setForeground?: (foreground: boolean) => void;
   /**
@@ -229,8 +230,10 @@ class ShellOverlayMenuLayer extends MenuLayer {
       y: minWindowTop() + TOP_BAR_HEIGHT + 8,
       width,
       minHeight: 150,
+      squareCorners: true,
       footer,
       dimUnderneath: CONTEXT_MENU_DIM,
+      depth: 4,
     });
   }
 
@@ -266,8 +269,8 @@ class ShellAlertLayer implements Layer {
     const font = getDefaultSmallFont();
     // Positioned within the min-height window band, like the other shell overlays.
     const alertY = minWindowTop() + ALERT_Y;
-    image.fillRoundedRect(ALERT_X, alertY, ALERT_W, ALERT_H, 1, 10);
-    image.drawRoundedRect(ALERT_X, alertY, ALERT_W, ALERT_H, 90, 10);
+    image.fillRect(ALERT_X, alertY, ALERT_W, ALERT_H, 1);
+    image.drawRect(ALERT_X, alertY, ALERT_W, ALERT_H, 90);
     image.drawText(font, ALERT_X + 16, alertY + 12, "Assistant", 200);
     image.drawTextWrapped({
       font,
@@ -690,6 +693,8 @@ class Shell {
   }
 
   /** Paint the shell surface: transparent chrome, or all-transparent when asleep. */
+  paintScene(): Uint8Array { return encodeShellScene(this.screenOn ? this.stack.paintUndimmed() : []); }
+
   paintSurface(): Plane[] {
     if (!this.screenOn) {
       return singlePlane(new GrayImage(G2_LENS_WIDTH, G2_LENS_HEIGHT, 0));
@@ -1105,8 +1110,8 @@ class Shell {
   }
 
   /** Deliver a text string to the foreground window (e.g. finalized voice input). */
-  sendTextToForegroundWindow(text: string): void {
-    this.foregroundWindow()?.receiveTextInput?.(text);
+  sendTextToForegroundWindow(text: string, options?: { submit?: boolean }): void {
+    this.foregroundWindow()?.receiveTextInput?.(text, options);
   }
 
   /**

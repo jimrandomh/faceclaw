@@ -1,18 +1,19 @@
 package com.faceclaw.app
 
 import kotlin.jvm.JvmField
+import kotlin.jvm.JvmOverloads
 import kotlin.jvm.JvmStatic
 
 /**
  * Plans a screen update that ships text and icons as on-glasses cached draws instead of pixels (CFW
- * modes 18/19/20; see g2flash/patches/zlib_glue.c and texture_cache.c).
+ * modes 19/20/21/22; see g2flash/patches/zlib_glue.c and resource_cache.c).
  *
  * Approach: dirty rects come from comparing the fully composited old and new frames, exactly as the
  * plain incremental path does. For each deferred draw (glyph or image) whose pixels intersect a
  * sent rect, check that every pixel the on-glasses draw would write lands correct — i.e. the new
  * composite's 4bpp value at each in-panel nonzero-source pixel equals what the draw produces (this
  * one check subsumes plane occlusion, surface occlusion/clipping, and draw-on-draw overlap). A draw
- * that passes and is (or can be made) resident in the texture cache is replayed on-glasses: its
+ * that passes and is (or can be made) resident in the resource cache is replayed on-glasses: its
  * written pixels are punched to 0 in the delta rect content — which is what makes text and icons
  * nearly free to compress — and re-emitted as a mode-20 string or mode-19 image sub-message in the
  * same atomic mode-8 batch, so the shadow after apply equals the full composite exactly. Everything
@@ -39,14 +40,14 @@ class TexturePlanner {
         /** Cap on mode-15 builtin-font string sub-messages per update. */
         private const val MAX_FWTEXT_RUNS: Int = 80
 
-        /** Mode-18 payload size that fits one BLE image message comfortably. */
+        /** Resource command payload size that fits one BLE image message comfortably. */
         private const val UPLOAD_PAYLOAD_MAX: Int = 3600
 
         /** Max x-adjust control bytes between two glyphs before starting a new run. */
         private const val MAX_ADJUST_BYTES: Int = 4
 
         /** Options: identity LUT (top 15) + transparent, for mode-19 image draws. */
-        private const val IMAGE_DRAW_OPTIONS: Int = 0x1f
+        private const val IMAGE_DRAW_OPTIONS: Int = CFW_TEXTURE_OPT_BRIGHTNESS_MASK or CFW_TEXTURE_OPT_TRANSPARENT
 
         /**
          * Plan a cached-draw update. previous is the delta base (the frame the shadow currently
@@ -54,16 +55,18 @@ class TexturePlanner {
          * should run instead (no replayable draws, or identical frames).
          */
         @JvmStatic
+        @JvmOverloads
         fun plan(
             previous: ByteArray?,
             next: ByteArray?,
             width: Int,
             height: Int,
             draws: Array<SurfaceCompositor.ScreenDraw>?,
-            cache: TextureCacheState,
+            cache: ResourceCacheState,
             fidStart: Int,
             allowMultiRect: Boolean,
             maxRects: Int,
+            platform: ProtocolPlatform = protocolPlatform(),
         ): Result? {
             if (
                 (((((next == null) || (draws == null)) || (draws.size == 0)) || (width <= 0)) ||
@@ -75,7 +78,7 @@ class TexturePlanner {
             if ((next.size != (stride * height))) {
                 return null
             }
-            var planStartedAtMs: Long = protocolPlatform().elapsedRealtimeMs()
+            var planStartedAtMs: Long = platform.elapsedRealtimeMs()
             var fullFrame: Boolean = ((previous == null) || (previous.size != next.size))
             var rects: MutableList<IntArray>
             if (!fullFrame) {
@@ -103,7 +106,7 @@ class TexturePlanner {
             } else {
                 rects = mutableListOf(intArrayOf(0, 0, width, height))
             }
-            var matchStartedAtMs: Long = protocolPlatform().elapsedRealtimeMs()
+            var matchStartedAtMs: Long = platform.elapsedRealtimeMs()
             var selected: MutableList<Selected> = ArrayList()
             var bakedCandidates: Int = 0
             var selectedImages: Int = 0
@@ -177,7 +180,8 @@ class TexturePlanner {
             if ((selected.isEmpty() && fwSubs.isEmpty())) {
                 return null
             }
-            var cacheStartedAtMs: Long = protocolPlatform().elapsedRealtimeMs()
+            val rollback = cache.checkpoint()
+            var cacheStartedAtMs: Long = platform.elapsedRealtimeMs()
             var drawable: MutableList<Selected> =
                 (if (selected.isEmpty()) mutableListOf() else ensureResident(cache, selected))
             bakedCandidates += (selected.size - drawable.size)
@@ -191,7 +195,7 @@ class TexturePlanner {
                 }
             }
             var runs: MutableList<ByteArray> = ArrayList()
-            var drawnGlyphs: MutableList<Selected> = buildRuns(cache, glyphDrawable, runs)
+            var drawnGlyphs: MutableList<Selected> = buildRuns(glyphDrawable, runs)
             bakedCandidates += (glyphDrawable.size - drawnGlyphs.size)
             var drawn: MutableList<Selected> = ArrayList(drawnGlyphs)
             drawn.addAll(imageDrawable)
@@ -200,11 +204,11 @@ class TexturePlanner {
                     ((((rects.size + runs.size) + imageDrawable.size) + fwSubs.size) > 255))
             ) {
                 if (!selected.isEmpty()) {
-                    cache.reset()
+                    rollback()
                 }
                 return null
             }
-            var punchStartedAtMs: Long = protocolPlatform().elapsedRealtimeMs()
+            var punchStartedAtMs: Long = platform.elapsedRealtimeMs()
             var punched: ByteArray = next.copyOf()
             for (sel in drawn) {
                 punch(punched, stride, width, height, sel)
@@ -212,7 +216,7 @@ class TexturePlanner {
             for (fw in fwPunches) {
                 punchFw(punched, stride, width, height, fw)
             }
-            var encodeStartedAtMs: Long = protocolPlatform().elapsedRealtimeMs()
+            var encodeStartedAtMs: Long = platform.elapsedRealtimeMs()
             var subs: MutableList<ByteArray> = ArrayList()
             var fid: Int = fidStart
             if (fullFrame) {
@@ -234,17 +238,21 @@ class TexturePlanner {
                 }
             }
             for (sel in imageDrawable) {
-                subs.add(encodeImageDraw(cache, sel))
+                subs.add(encodeImageDraw(sel))
             }
             subs.addAll(runs)
             subs.addAll(fwSubs)
             var payload: ByteArray = assembleMode8(subs)
-            var uploadBytes: Int = cache.pendingUploadBytes()
-            var uploads: MutableList<ByteArray> = cache.drainUploadPayloads(UPLOAD_PAYLOAD_MAX)
+            if (payload.size > CfwTransport.MAX_MESSAGE - 16) {
+                rollback()
+                return null
+            }
+            val resourceCommands = cache.drainCommands(UPLOAD_PAYLOAD_MAX)
+            val uploadBytes = resourceCommands.sumOf { it.size }
             var result: Result =
                 Result(
                     payload,
-                    uploads,
+                    resourceCommands,
                     fid,
                     rects.size,
                     drawnGlyphs.size,
@@ -256,7 +264,7 @@ class TexturePlanner {
                     uploadBytes,
                     fullFrame,
                 )
-            var doneAtMs: Long = protocolPlatform().elapsedRealtimeMs()
+            var doneAtMs: Long = platform.elapsedRealtimeMs()
             result.rectsMs = ((matchStartedAtMs - planStartedAtMs)).toInt()
             result.matchMs = ((cacheStartedAtMs - matchStartedAtMs)).toInt()
             result.cacheMs = ((punchStartedAtMs - cacheStartedAtMs)).toInt()
@@ -360,12 +368,12 @@ class TexturePlanner {
                     continue
                 }
                 var sub: ByteArray = ByteArray((7 + bytesToLastInk))
-                sub[0] = 15
+                sub[0] = CFW_MSG_STOCK_FONT_STRING.toByte()
                 sub[1] = ((startX and 0xff)).toByte()
                 sub[2] = (((startX shr 8) and 0xff)).toByte()
                 sub[3] = ((draw.y and 0xff)).toByte()
                 sub[4] = (((draw.y shr 8) and 0xff)).toByte()
-                sub[5] = ((top or 0x10)).toByte()
+                sub[5] = ((top or CFW_TEXTURE_OPT_TRANSPARENT)).toByte()
                 sub[6] = (bytesToLastInk).toByte()
                 var pos: Int = 7
                 run {
@@ -583,35 +591,26 @@ class TexturePlanner {
             left: Int,
             top: Int,
         ): Boolean {
-            run {
-                var row: Int = 0
-                while ((row < atlas.height)) {
-                    var y: Int = (top + row)
-                    if (((y < 0) || (y >= height))) {
-                        row++
-                        continue
+            val pixels = atlas.nibbles
+            val imageWidth = atlas.width
+            val startX = maxOf(0, left)
+            val endX = minOf(width, left + imageWidth)
+            val endY = minOf(height, top + atlas.height)
+            var y = maxOf(0, top)
+            while (y < endY) {
+                var src = (y - top) * imageWidth + startX - left
+                val dstRow = y * stride
+                var x = startX
+                while (x < endX) {
+                    val source = pixels[src++].toInt() and 255
+                    if (source != 0) {
+                        val byte = packed[dstRow + (x ushr 1)].toInt() and 255
+                        val actual = if (x and 1 == 0) byte ushr 4 else byte and 15
+                        if (actual != source) return false
                     }
-                    run {
-                        var col: Int = 0
-                        while ((col < atlas.width)) {
-                            var source: Int = atlas.nibbleAt(col, row)
-                            if ((source == 0)) {
-                                col++
-                                continue
-                            }
-                            var x: Int = (left + col)
-                            if (((x < 0) || (x >= width))) {
-                                col++
-                                continue
-                            }
-                            if ((nibbleAt(packed, stride, x, y) != source)) {
-                                return false
-                            }
-                            col++
-                        }
-                    }
-                    row++
+                    x++
                 }
+                y++
             }
             return true
         }
@@ -653,29 +652,39 @@ class TexturePlanner {
                     }
                 }
             } else {
-                var atlas: ImageAtlas.Entry = sel.imageAtlas!!
-                run {
-                    var row: Int = 0
-                    while ((row < atlas.height)) {
-                        var y: Int = (sel.draw.y + row)
-                        if (((y < 0) || (y >= height))) {
-                            row++
-                            continue
-                        }
-                        run {
-                            var col: Int = 0
-                            while ((col < atlas.width)) {
-                                if ((atlas.nibbleAt(col, row) == 0)) {
-                                    col++
-                                    continue
-                                }
-                                punchPixel(packed, stride, width, (sel.gx + col), y)
-                                col++
-                            }
-                        }
-                        row++
+                punchImage(packed, stride, width, height, sel.imageAtlas!!, sel.gx, sel.draw.y)
+            }
+        }
+
+        /** Clear only visible nonzero image pixels, preserving the neighboring nibble. */
+        private fun punchImage(
+            packed: ByteArray,
+            stride: Int,
+            width: Int,
+            height: Int,
+            atlas: ImageAtlas.Entry,
+            left: Int,
+            top: Int,
+        ) {
+            val pixels = atlas.nibbles
+            val imageWidth = atlas.width
+            val startX = maxOf(0, left)
+            val endX = minOf(width, left + imageWidth)
+            val endY = minOf(height, top + atlas.height)
+            var y = maxOf(0, top)
+            while (y < endY) {
+                var src = (y - top) * imageWidth + startX - left
+                val dstRow = y * stride
+                var x = startX
+                while (x < endX) {
+                    if (pixels[src++].toInt() != 0) {
+                        val index = dstRow + (x ushr 1)
+                        val mask = if (x and 1 == 0) 15 else 240
+                        packed[index] = (packed[index].toInt() and mask).toByte()
                     }
+                    x++
                 }
+                y++
             }
         }
 
@@ -691,65 +700,31 @@ class TexturePlanner {
             }
         }
 
-        /**
-         * Ensure residency for all of `selected`, resetting the cache once if the allocator fills
-         * mid-plan (a reset invalidates offsets handed out earlier in the same pass, so the whole
-         * pass reruns). Returns the draws that are resident afterwards.
-         */
+        /** Protect every hit before LRU admission so a miss cannot evict this frame's later draws. */
         private fun ensureResident(
-            cache: TextureCacheState,
+            cache: ResourceCacheState,
             selected: MutableList<Selected>,
         ): MutableList<Selected> {
-            run {
-                var attempt: Int = 0
-                while ((attempt < 2)) {
-                    var resident: MutableList<Selected> = ArrayList(selected.size)
-                    var full: Boolean = false
-                    for (sel in selected) {
-                        var offset: Int =
-                            (if ((sel.glyphAtlas != null))
-                                cache.ensureGlyph(
-                                    sel.draw.fontId,
-                                    sel.draw.encoding,
-                                    sel.glyphAtlas,
-                                )
-                            else cache.ensureImage(sel.draw.imageId, sel.imageAtlas))
-                        if ((offset >= 0)) {
-                            resident.add(sel)
-                        } else {
-                            full = true
-                        }
-                    }
-                    if ((!full || (attempt == 1))) {
-                        return resident
-                    }
-                    cache.reset()
-                    attempt++
-                }
+            val fonts = selected.filter { it.glyphAtlas != null }.groupBy { it.draw.fontId }
+                .mapValues { (id, draws) -> FontResourceAtlas.get(id, draws.map { it.draw.encoding }.toSet()) }
+            val candidates = selected.filter { it.glyphAtlas == null || it.draw.encoding in fonts.getValue(it.draw.fontId).encodings }
+            val resources = candidates.map { sel ->
+                if (sel.glyphAtlas != null) fonts.getValue(sel.draw.fontId).resource else sel.imageAtlas!!.resource
             }
-            return mutableListOf()
+            val ids = cache.prepare(resources)
+            return candidates.filterIndexed { index, sel -> sel.resourceId = ids[index]; ids[index] >= 0 }.toMutableList()
         }
 
-        /** Mode-19 cached-image draw: [19][offset u32][x u16][y u16][options u8]. */
+        /** Mode-19 cached-image draw: [19][resourceId u16][x u16][y u16][options u8]. */
         @JvmStatic
-        private fun encodeImageDraw(cache: TextureCacheState, sel: Selected): ByteArray {
-            var offset: Int = cache.ensureImage(sel.draw.imageId, sel.imageAtlas)
-            var sub: ByteArray = ByteArray(10)
-            sub[0] = 19
-            sub[1] = ((offset and 0xff)).toByte()
-            sub[2] = (((offset shr 8) and 0xff)).toByte()
-            sub[3] = (((offset shr 16) and 0xff)).toByte()
-            sub[4] = (((offset shr 24) and 0xff)).toByte()
-            sub[5] = ((sel.draw.x and 0xff)).toByte()
-            sub[6] = (((sel.draw.x shr 8) and 0xff)).toByte()
-            sub[7] = ((sel.draw.y and 0xff)).toByte()
-            sub[8] = (((sel.draw.y shr 8) and 0xff)).toByte()
-            sub[9] = (IMAGE_DRAW_OPTIONS).toByte()
-            return sub
-        }
+        private fun encodeImageDraw(sel: Selected): ByteArray = byteArrayOf(
+            CFW_MSG_CACHED_IMAGE.toByte(), sel.resourceId.toByte(), (sel.resourceId ushr 8).toByte(),
+            sel.draw.x.toByte(), (sel.draw.x ushr 8).toByte(),
+            sel.draw.y.toByte(), (sel.draw.y ushr 8).toByte(), IMAGE_DRAW_OPTIONS.toByte(),
+        )
 
         /**
-         * Group selected glyphs into mode-20 string sub-messages: [20][fontTable u32][x u16][y
+         * Group selected glyphs into mode-20 string sub-messages: [20][fontResource u16][x u16][y
          * u16][options u8][strlen u8][string] One run per (font, line y, top color) span; within a
          * run, control bytes 1..31 adjust x by -10..+20 to hit each glyph's exact position, and
          * each glyph advances x by its cached width. Order across runs is free: every drawn glyph's
@@ -758,7 +733,6 @@ class TexturePlanner {
          */
         @JvmStatic
         private fun buildRuns(
-            cache: TextureCacheState,
             drawable: MutableList<Selected>,
             outRuns: MutableList<ByteArray>,
         ): MutableList<Selected> {
@@ -773,8 +747,8 @@ class TexturePlanner {
             var i: Int = 0
             while (((i < sorted.size) && (outRuns.size < MAX_GLYPH_RUNS))) {
                 var first: Selected = sorted.get(i)
-                var fontTable: Int = cache.fontTableOffset(first.draw.fontId)
-                if ((fontTable < 0)) {
+                val fontResource = first.resourceId
+                if ((fontResource < 0)) {
                     i++
                     continue
                 }
@@ -806,19 +780,17 @@ class TexturePlanner {
                 }
                 if (!runGlyphs.isEmpty()) {
                     var stringBytes: ByteArray = string.toByteArray()
-                    var run: ByteArray = ByteArray((11 + stringBytes.size))
-                    run[0] = 20
-                    run[1] = ((fontTable and 0xff)).toByte()
-                    run[2] = (((fontTable shr 8) and 0xff)).toByte()
-                    run[3] = (((fontTable shr 16) and 0xff)).toByte()
-                    run[4] = (((fontTable shr 24) and 0xff)).toByte()
-                    run[5] = ((first.gx and 0xff)).toByte()
-                    run[6] = (((first.gx shr 8) and 0xff)).toByte()
-                    run[7] = ((first.draw.y and 0xff)).toByte()
-                    run[8] = (((first.draw.y shr 8) and 0xff)).toByte()
-                    run[9] = ((first.top or 0x10)).toByte()
-                    run[10] = (stringBytes.size).toByte()
-                    stringBytes.copyInto(run, 11, 0, 0 + stringBytes.size)
+                    val run = ByteArray(9 + stringBytes.size)
+                    run[0] = CFW_MSG_CACHED_TEXT.toByte()
+                    run[1] = fontResource.toByte()
+                    run[2] = (fontResource ushr 8).toByte()
+                    run[3] = first.gx.toByte()
+                    run[4] = (first.gx ushr 8).toByte()
+                    run[5] = first.draw.y.toByte()
+                    run[6] = (first.draw.y ushr 8).toByte()
+                    run[7] = (first.top or CFW_TEXTURE_OPT_TRANSPARENT).toByte()
+                    run[8] = stringBytes.size.toByte()
+                    stringBytes.copyInto(run, 9)
                     outRuns.add(run)
                     drawn.addAll(runGlyphs)
                     i = j
@@ -830,14 +802,14 @@ class TexturePlanner {
         }
 
         /** How many 1..31 control bytes are needed to move the cursor by delta. */
-        private fun adjustByteCount(delta: Int): Int {
+        internal fun adjustByteCount(delta: Int): Int {
             if ((delta == 0)) {
                 return 0
             }
             return (if ((delta > 0)) ((delta + 19) / 20) else ((-delta + 9) / 10))
         }
 
-        private fun emitAdjust(out: ByteSink, delta: Int): Unit {
+        internal fun emitAdjust(out: ByteSink, delta: Int): Unit {
             var delta = delta
             while ((delta != 0)) {
                 var step: Int = (if ((delta > 0)) minOf(delta, 20) else maxOf(delta, -10))
@@ -853,7 +825,7 @@ class TexturePlanner {
                 total += (2 + sub.size)
             }
             var out: ByteArray = ByteArray(total)
-            out[0] = 8
+            out[0] = CFW_MSG_MULTI_SEGMENT.toByte()
             out[1] = (subs.size).toByte()
             var pos: Int = 2
             for (sub in subs) {
@@ -873,8 +845,8 @@ class TexturePlanner {
         /** Complete image payload: a mode-8 batch of rect deltas + cached draws. */
         @JvmField val payload: ByteArray
 
-        /** Mode-18 upload payloads to enqueue BEFORE the image message. */
-        @JvmField val uploads: MutableList<ByteArray>
+        /** Mode-22 evictions and mode-21 uploads to enqueue BEFORE the image message. */
+        @JvmField val resourceCommands: MutableList<ByteArray>
 
         /** Next mode-3 frame id (deltas consumed some). */
         @JvmField val nextFid: Int
@@ -916,7 +888,7 @@ class TexturePlanner {
 
         constructor(
             payload: ByteArray,
-            uploads: MutableList<ByteArray>,
+            resourceCommands: MutableList<ByteArray>,
             nextFid: Int,
             rectCount: Int,
             drawnGlyphs: Int,
@@ -929,7 +901,7 @@ class TexturePlanner {
             fullFrame: Boolean,
         ) {
             this.payload = payload
-            this.uploads = uploads
+            this.resourceCommands = resourceCommands
             this.nextFid = nextFid
             this.rectCount = rectCount
             this.drawnGlyphs = drawnGlyphs
@@ -945,6 +917,8 @@ class TexturePlanner {
 
     /** One draw selected for on-glasses replay. */
     private class Selected {
+        var resourceId: Int = -1
+
         @JvmField val draw: SurfaceCompositor.ScreenDraw
 
         @JvmField val glyphAtlas: GlyphAtlas.Glyph?

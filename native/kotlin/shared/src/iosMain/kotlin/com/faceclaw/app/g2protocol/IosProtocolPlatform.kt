@@ -10,7 +10,10 @@ import kotlinx.cinterop.*
 import platform.CoreBluetooth.CBCharacteristicWriteType
 import platform.CoreBluetooth.CBCharacteristicWriteWithResponse
 import platform.CoreBluetooth.CBCharacteristicWriteWithoutResponse
+import platform.Foundation.NSCondition
+import platform.Foundation.NSDate
 import platform.Foundation.NSRecursiveLock
+import platform.Foundation.dateWithTimeIntervalSinceNow
 import platform.posix.CLOCK_MONOTONIC_RAW
 import platform.posix.clock_gettime_nsec_np
 import platform.posix.memset
@@ -31,6 +34,21 @@ object IosProtocolPlatform : ProtocolPlatform {
         }
 
     override fun createDeflater(): ProtocolDeflater = IosDeflater()
+
+    override fun createCondition(): ProtocolCondition =
+        object : ProtocolCondition {
+            private val condition = NSCondition()
+
+            override fun lock() = condition.lock()
+
+            override fun unlock() = condition.unlock()
+
+            override fun awaitMs(timeoutMs: Long) {
+                if (timeoutMs > 0) condition.waitUntilDate(NSDate.dateWithTimeIntervalSinceNow(timeoutMs / 1000.0))
+            }
+
+            override fun signalAll() = condition.broadcast()
+        }
 
     fun writeType(mode: GattWriteMode): CBCharacteristicWriteType =
         when (mode) {

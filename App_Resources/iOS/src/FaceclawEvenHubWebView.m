@@ -85,11 +85,14 @@
         [_webView.bottomAnchor constraintEqualToAnchor:_host.safeAreaLayoutGuide.bottomAnchor]
     ]];
     // Keep a nonzero attached view behind the dashboard; do not hide/detach it.
+    // Tick whenever iOS gives us execution time, including in the background or
+    // with the phone locked. Gating on UIApplicationStateActive stalls the
+    // injected timers/rAF even while BLE input can still evaluate JavaScript.
     // Bound host ticks to one evaluation in flight, including across suspension.
     __weak typeof(self) weakSelf = self;
     _timer = [NSTimer timerWithTimeInterval:1.0 / 60 repeats:YES block:^(NSTimer *timer) {
         typeof(self) strongSelf = weakSelf;
-        if (!strongSelf || strongSelf.ticking || UIApplication.sharedApplication.applicationState != UIApplicationStateActive) return;
+        if (!strongSelf || strongSelf.destroyed || strongSelf.ticking) return;
         strongSelf.ticking = YES;
         [strongSelf.webView evaluateJavaScript:@"window.__fcTimerTick && window.__fcTimerTick(); window.__fcRafTick && window.__fcRafTick();" completionHandler:^(id result, NSError *error) {
             weakSelf.ticking = NO;

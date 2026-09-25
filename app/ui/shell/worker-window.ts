@@ -15,12 +15,16 @@ import { publishWorkerState } from "./worker-state";
  * worker→Java directly on Android; iOS posts baked frames to the main host.
  */
 export type WorkerAppMessage =
+  /** Last host window closed: report worker-idle unless background work still owns the worker. */
+  | { type: "check-idle" }
+  /** Release app-wide resources, then acknowledge with worker-stopped. */
+  | { type: "shutdown" }
   | { type: "navigation-sensors"; event: NavigationSensorEvent }
   | { type: "open-window"; windowId: string; surfaceId: string; title: string; viewport: { width: number; height: number } }
   | { type: "resize-window"; windowId: string; viewport: { width: number; height: number } }
   | { type: "close-window"; windowId: string }
   | { type: "input"; windowId: string; event: unknown; frameId: number; focused: boolean }
-  | { type: "text-input"; windowId: string; text: string }
+  | { type: "text-input"; windowId: string; text: string; submit?: boolean }
   | { type: "render"; windowId: string; focused: boolean }
   | { type: "foreground"; windowId: string; foreground: boolean; focused: boolean }
   /**
@@ -34,10 +38,12 @@ export type WorkerAppMessage =
   | { type: "tool-call"; callId: string; windowId: string; name: string; args: unknown };
 
 export type WorkerAppReply =
+  | { type: "worker-idle" }
+  | { type: "worker-stopped" }
   | { type: "buzzer-sequence"; payload: number[] }
   | { type: "navigation-sensors"; request: NavigationSensorRequest }
   | { type: "open-url"; url: string }
-  | { type: "surface-frame"; surfaceId: string; width: number; height: number; pixels: string }
+  | { type: "surface-frame"; surfaceId: string; width: number; height: number; pixels: string; draws?: string }
   | {
       /**
        * The worker's bundle has evaluated and its onmessage handler is
@@ -182,6 +188,8 @@ export type WorkerWindowSpec = {
 export type WorkerAppHostOptions = {
   appId: string;
   worker: Worker;
+  /** Drop this host from the app cache as soon as shutdown begins. */
+  onStopping?: () => void;
   navigationSensors?: { handle(request: NavigationSensorRequest): void; stop(): void };
   openUrl?: (url: string) => void;
   playBuzzerSequence?: (payload: Uint8Array) => Promise<void> | void;
@@ -190,7 +198,7 @@ export type WorkerAppHostOptions = {
   setSurfaceVisible: (surfaceId: string, visible: boolean) => void;
   removeSurface: (surfaceId: string) => void;
   requestShellRender: () => void;
-  submitPixels?: (surfaceId: string, pixels: Uint8Array, width: number, height: number) => void;
+  submitPixels?: (surfaceId: string, pixels: Uint8Array, width: number, height: number, draws: ArrayBuffer | null) => void;
   startTextInput?: () => void;
   /** Open or focus the Settings app, optionally selecting a section. */
   openSettings: (section?: string) => void;
@@ -236,12 +244,23 @@ export class WorkerAppHost {
    */
   private workerReady = false;
   private readonly queuedMessages: WorkerAppMessage[] = [];
+  private stopping = false;
+  private terminated = false;
+  private shutdownTimer: ReturnType<typeof setTimeout> | null = null;
+  private readonly publishedStateKeys = new Set<string>();
 
   constructor(private readonly options: WorkerAppHostOptions) {
     options.worker.onmessage = (event: MessageEvent) => {
       const message = event.data as WorkerAppReply | undefined;
       if (!message) return;
+      if (this.stopping) {
+        if (message.type === "worker-stopped") this.terminate();
+        return;
+      }
       switch (message.type) {
+        case "worker-idle":
+          if (!this.openWindows.size) this.shutdown();
+          break;
         case "buzzer-sequence":
           if (this.openWindows.size) {
             void Promise.resolve(this.options.playBuzzerSequence?.(new Uint8Array(message.payload)))
@@ -259,7 +278,9 @@ export class WorkerAppHost {
           const { width, height } = message;
           if (!Number.isInteger(width) || !Number.isInteger(height) || width < 1 || height < 1 || width > 640 || height > 480) break;
           const data = NSData.alloc().initWithBase64EncodedStringOptions(message.pixels, 0 as NSDataBase64DecodingOptions);
-          if (data?.length === width * height) this.options.submitPixels(message.surfaceId, new Uint8Array(interop.bufferFromData(data)), width, height);
+          const draws = message.draws ? NSData.alloc().initWithBase64EncodedStringOptions(message.draws, 0 as NSDataBase64DecodingOptions) : null;
+          if (data?.length === width * height) this.options.submitPixels(message.surfaceId, new Uint8Array(interop.bufferFromData(data)), width, height,
+            draws ? interop.bufferFromData(draws) : null);
           break;
         }
         case "worker-ready":
@@ -355,6 +376,7 @@ export class WorkerAppHost {
           // Titles are informational for now (sidebar shows icons only).
           break;
         case "publish-state":
+          this.publishedStateKeys.add(message.key);
           publishWorkerState(message.key, message.state);
           break;
         case "set-tools":
@@ -390,8 +412,33 @@ export class WorkerAppHost {
     return this.openWindows.size;
   }
 
+  private shutdown(): void {
+    if (this.stopping) return;
+    this.stopping = true;
+    this.options.onStopping?.();
+    this.queuedMessages.length = 0;
+    this.options.navigationSensors?.stop();
+    shell.setTrayIcon(this.options.appId, null);
+    for (const key of this.publishedStateKeys) publishWorkerState(key, undefined);
+    this.publishedStateKeys.clear();
+    // The idle reply follows all close-window cleanup. Allow the worker to
+    // release app-wide native subscriptions/sockets before killing its isolate.
+    this.shutdownTimer = setTimeout(() => this.terminate(), 5000);
+    this.options.worker.postMessage({ type: "shutdown" } satisfies WorkerAppMessage);
+  }
+
+  private terminate(): void {
+    if (this.terminated) return;
+    this.terminated = true;
+    if (this.shutdownTimer !== null) clearTimeout(this.shutdownTimer);
+    this.shutdownTimer = null;
+    this.options.worker.terminate();
+  }
+
   /** Open a window of this app and register it with the shell. */
   openWindow(spec: WorkerWindowSpec): ShellWindow {
+    if (this.stopping) throw new Error(`Worker ${this.options.appId} is shutting down`);
+    let closed = false;
     const surfaceId = `window:${spec.windowId}`;
     const heightMode = spec.heightMode ?? "min";
     this.openWindows.add(spec.windowId);
@@ -417,6 +464,8 @@ export class WorkerAppHost {
       hasAppMenu: () => this.windowGestures.get(spec.windowId)?.hasAppMenu ?? false,
       claimsLongPress: () => this.windowGestures.get(spec.windowId)?.claimsLongPress ?? false,
       close: () => {
+        if (closed) return;
+        closed = true;
         this.openWindows.delete(spec.windowId);
         if (!this.openWindows.size) this.options.navigationSensors?.stop();
         this.windowGestures.delete(spec.windowId);
@@ -426,6 +475,7 @@ export class WorkerAppHost {
         this.failPendingToolCallsFor(spec.windowId);
         this.post({ type: "close-window", windowId: spec.windowId });
         this.options.removeSurface(surfaceId);
+        if (!this.openWindows.size) this.post({ type: "check-idle" });
       },
       drawIcon: windowIcon(spec.icon, spec.iconLetter, spec.iconGlyph, () => this.windowIconActivity.get(spec.windowId) ?? "idle"),
       handleInput: (event, frameId) => {
@@ -441,8 +491,8 @@ export class WorkerAppHost {
       requestRender: () => {
         this.post({ type: "render", windowId: spec.windowId, focused: shell.isWindowFocused(spec.windowId) });
       },
-      receiveTextInput: (text) => {
-        this.post({ type: "text-input", windowId: spec.windowId, text });
+      receiveTextInput: (text, options) => {
+        this.post({ type: "text-input", windowId: spec.windowId, text, ...(options?.submit === undefined ? {} : { submit: options.submit }) });
       },
       setForeground: (foreground) => {
         this.options.setSurfaceVisible(surfaceId, foreground);
@@ -471,6 +521,7 @@ export class WorkerAppHost {
     void this.options
       .configureSurface(surfaceId, false, heightMode)
       .then(() => {
+        if (closed || this.stopping) return;
         if (spec.focus) {
           shell.focusWindow(spec.windowId);
         }
@@ -509,6 +560,7 @@ export class WorkerAppHost {
   }
 
   private post(message: WorkerAppMessage): void {
+    if (this.stopping) return;
     if (!this.workerReady) {
       this.queuedMessages.push(message);
       return;

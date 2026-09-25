@@ -137,11 +137,15 @@ test('Music settings keeps toggles and selection when a new app arrives and supp
   const { prefs } = store();
   let refreshes = 0, closes = 0;
   const textwrap = load('app/graphics/textwrap.ts');
-  const graphics = load('app/graphics/image.ts', () => textwrap);
+  const graphics = require('../.test-build/app/graphics/image.js');
   const { BdfFont } = load('app/graphics/bdffont.ts', () => ({}));
   const font = BdfFont.parse(source('app/fonts/terminus/ter-u20n.bdf'));
   class RecordingImage extends graphics.GrayImage {
     texts = [];
+    drawMenuSelection(source, x, y, ...args) {
+      this.texts.push(...source.texts.map(t => ({ ...t, x: t.x + x, y: t.y + y })));
+      super.drawMenuSelection(source, x, y, ...args);
+    }
     drawText(font, x, y, text, value) { this.texts.push({ x, y, text }); super.drawText(font, x, y, text, value); }
   }
   const deps = {
@@ -149,8 +153,10 @@ test('Music settings keeps toggles and selection when a new app arrives and supp
     '../graphics/textwrap': textwrap,
     '../graphics/ui-fonts': { getDefaultSmallFont: () => font },
     '../util/numeric-util': { clamp: (n, lo, hi) => Math.max(lo, Math.min(hi, n)) },
+    './menu-highlight-motion': require('../.test-build/app/ui/menu-highlight-motion.js'), '../graphics/menu-scroll-list': require('../.test-build/app/graphics/menu-scroll-list.js'), './menu-scroll-motion': require('../.test-build/app/ui/menu-scroll-motion.js'), '../graphics/draw-expression': require('../.test-build/app/graphics/draw-expression.js'),
     './metrics': load('app/ui/metrics.ts'), './gestures': {},
   };
+  deps['./menu-core'] = load('app/ui/menu-core.ts', (name) => deps[name]);
   const menu = load('app/ui/menu.ts', (name) => deps[name]);
   const uiDeps = {
     '../../graphics/image': deps['../graphics/image'],
@@ -182,49 +188,87 @@ test('Music settings keeps toggles and selection when a new app arrives and supp
   assert.equal(closes, 1);
 });
 
-test('native session selection skips ignored playing and idle apps, including the all-ignored case', () => {
+// FaceclawMediaController is Kotlin compiled by the NativeScript Android build, so
+// compile the extracted method with the same Kotlin compiler Gradle already cached.
+function kotlinCompiler() {
+  const gradle = source('App_Resources/Android/before-plugins.gradle').match(/kotlinVersion\s*=\s*"([^"]+)"/);
+  const cache = path.join(os.homedir(), '.gradle/caches/modules-2/files-2.1');
+  const jar = (group, artifact, version) => {
+    const directory = path.join(cache, group, artifact, version);
+    if (!fs.existsSync(directory)) return null;
+    for (const hash of fs.readdirSync(directory)) {
+      const file = path.join(directory, hash, `${artifact}-${version}.jar`);
+      if (fs.existsSync(file)) return file;
+    }
+    return null;
+  };
+  const anyVersion = (group, artifact) => {
+    const directory = path.join(cache, group, artifact);
+    if (!fs.existsSync(directory)) return null;
+    for (const version of fs.readdirSync(directory).sort().reverse()) {
+      const file = jar(group, artifact, version);
+      if (file) return file;
+    }
+    return null;
+  };
+  if (!gradle) return null;
+  const version = gradle[1];
+  const stdlib = jar('org.jetbrains.kotlin', 'kotlin-stdlib', version);
+  const compiler = [
+    jar('org.jetbrains.kotlin', 'kotlin-compiler-embeddable', version),
+    stdlib,
+    jar('org.jetbrains.kotlin', 'kotlin-script-runtime', version),
+    jar('org.jetbrains.kotlin', 'kotlin-daemon-embeddable', version),
+    anyVersion('org.jetbrains.kotlin', 'kotlin-reflect'),
+    anyVersion('org.jetbrains.intellij.deps', 'trove4j'),
+    anyVersion('org.jetbrains', 'annotations'),
+    anyVersion('org.jetbrains.kotlinx', 'kotlinx-coroutines-core-jvm'),
+  ];
+  if (compiler.some(file => !file)) return null;
+  return { classpath: compiler.join(path.delimiter), stdlib };
+}
+
+test('native session selection skips ignored playing and idle apps, including the all-ignored case', (t) => {
   // Execute the production selection method with lightweight media-session doubles.
-  const java = source('App_Resources/Android/src/main/java/com/faceclaw/app/FaceclawMediaController.java');
-  const method = java.slice(java.indexOf('    private MediaController chooseController('),
-    java.indexOf('    private void emitSessionAppsLocked('));
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'faceclaw-media-java-'));
-  const javaBin = (name) => process.env.JAVA_HOME ? path.join(process.env.JAVA_HOME, 'bin', name) : name;
+  const compiler = kotlinCompiler();
+  if (!compiler) return t.skip('Kotlin compiler not in the Gradle cache; run ./build.sh once');
+  const kotlin = source('App_Resources/Android/src/main/java/com/faceclaw/app/FaceclawMediaController.kt');
+  const method = kotlin.slice(kotlin.indexOf('    private fun chooseController('),
+    kotlin.indexOf('    private fun emitSessionAppsLocked('));
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'faceclaw-media-kotlin-'));
+  const javaBin = process.env.JAVA_HOME ? path.join(process.env.JAVA_HOME, 'bin', 'java') : 'java';
   try {
-    const file = path.join(directory, 'MediaSelectionTest.java');
-    fs.writeFileSync(file, `import java.util.*;
-public class MediaSelectionTest {
-  Set<String> ignoredPackages = new HashSet<>();
-  static class PlaybackState {
-    static final int STATE_PLAYING = 3;
-    int state; PlaybackState(int state) { this.state = state; } int getState() { return state; }
+    const file = path.join(directory, 'MediaSelectionTest.kt');
+    fs.writeFileSync(file, `
+class PlaybackState(val state: Int) { companion object { const val STATE_PLAYING = 3 } }
+class MediaController(val packageName: String, state: Int) { var playbackState: PlaybackState? = PlaybackState(state) }
+class MediaSelectionTest {
+  val ignoredPackages: MutableSet<String> = HashSet()
+${method}
+  fun run() {
+    val ignored = MediaController("browser", 3)
+    val paused = MediaController("player", 2)
+    val playing = MediaController("music", 3)
+    ignoredPackages.add("browser")
+    check(chooseController(listOf(ignored, paused)) === paused)
+    check(chooseController(listOf(ignored, paused, playing)) === playing)
+    check(chooseController(listOf(ignored)) == null)
+    ignored.playbackState = null
+    check(chooseController(listOf(ignored, paused)) === paused)
+    ignoredPackages.add("music")
+    check(chooseController(listOf(ignored, paused, playing)) === paused)
+    ignoredPackages.remove("browser"); ignored.playbackState = PlaybackState(3)
+    check(chooseController(listOf(ignored, paused)) === ignored)
+    check(chooseController(null) == null)
+    check(chooseController(emptyList()) == null)
   }
-  static class MediaController {
-    String name; PlaybackState state;
-    MediaController(String name, int state) { this.name = name; this.state = new PlaybackState(state); }
-    String getPackageName() { return name; } PlaybackState getPlaybackState() { return state; }
-  }
-  ${method}
-  public static void main(String[] args) {
-    MediaSelectionTest test = new MediaSelectionTest();
-    MediaController ignored = new MediaController("browser", 3);
-    MediaController paused = new MediaController("player", 2);
-    MediaController playing = new MediaController("music", 3);
-    test.ignoredPackages.add("browser");
-    assert test.chooseController(Arrays.asList(ignored, paused)) == paused;
-    assert test.chooseController(Arrays.asList(ignored, paused, playing)) == playing;
-    assert test.chooseController(Arrays.asList(ignored)) == null;
-    ignored.state = null;
-    assert test.chooseController(Arrays.asList(ignored, paused)) == paused;
-    test.ignoredPackages.add("music");
-    assert test.chooseController(Arrays.asList(ignored, paused, playing)) == paused;
-    test.ignoredPackages.remove("browser"); ignored.state = new PlaybackState(3);
-    assert test.chooseController(Arrays.asList(ignored, paused)) == ignored;
-    assert test.chooseController(null) == null;
-    assert test.chooseController(Collections.emptyList()) == null;
-  }
-}`);
-    execFileSync(javaBin('javac'), ['-d', directory, file], { stdio: 'pipe' });
-    execFileSync(javaBin('java'), ['-ea', '-cp', directory, 'MediaSelectionTest'], { stdio: 'pipe' });
+}
+fun main() { MediaSelectionTest().run() }
+`);
+    const out = path.join(directory, 'out');
+    execFileSync(javaBin, ['-cp', compiler.classpath, 'org.jetbrains.kotlin.cli.jvm.K2JVMCompiler',
+      '-no-stdlib', '-cp', compiler.stdlib, '-d', out, file], { stdio: 'pipe' });
+    execFileSync(javaBin, ['-cp', [out, compiler.stdlib].join(path.delimiter), 'MediaSelectionTestKt'], { stdio: 'pipe' });
   } finally {
     fs.rmSync(directory, { recursive: true, force: true });
   }

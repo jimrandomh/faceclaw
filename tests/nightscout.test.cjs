@@ -54,6 +54,76 @@ class Image {
   fillRect(...args) { this.draws.push(['rect', ...args]); }
 }
 const font = { measureText: text => text.length * 6, lineHeight: 12, hasGlyph: () => true };
+
+function paintWidget(smallHeight, largeHeight, height = 144, measurements = {}) {
+  const { GrayImage } = require('../.test-build/app/graphics/image.js');
+  const textDraws = [];
+  const small = {
+    ...font, lineHeight: smallHeight, ascent: 1,
+    drawText(image, x, y, text, value) {
+      textDraws.push({ x, y, text, value });
+      // A tiny deferred glyph leaves room to inspect the opaque background.
+      image.drawGlyph(this, { bbxWidth: 1, bbxHeight: 1, bbxX: 2, bbxY: 0, bitmapRows: [128] }, x, y, value);
+    },
+  };
+  const state = {
+    available: true, latest: { sgv: 100, timestampMs: now }, units: 'mg/dL', delta: 0, direction: '', iob: 1,
+    cageTimestampMs: now - 100 * 3_600_000, reservoirUnits: 1, batteryVoltage: 1, loopTimestampMs: now - 60 * 60_000,
+    ...measurements,
+  };
+  const { NightscoutWidget } = load('app/apps/glanceboard/widgets/nightscout-widget.ts', {
+    '../../../graphics/image': { GrayImage },
+    '../../../graphics/ui-fonts': { getDefaultSmallFont: () => small, getDefaultLargeFont: () => ({ ...small, lineHeight: largeHeight }) },
+    '../../../graphics/textwrap': require('../.test-build/app/graphics/textwrap.js'),
+    '../../../native/nightscout-bridge': { nightscoutBridge: { snapshot: () => state } },
+    '../../../ui/dashboard-settings': { isNightscoutSettingsConfigured: () => true, loadNightscoutThresholds: () => limits },
+    '../../../ui/metrics': { lineStep: font => font.lineHeight + 2 },
+    '~/util/date-util': { formatAgeShortFromTimestamp: () => '1h' },
+    '../../nightscout/nightscout-alerts': alerts,
+    '../../nightscout/nightscout': {
+      formatDelta: () => '+0', isNightscoutPointStale: () => false, drawDirectionIndicator() {},
+      drawNightscoutGraph(image, bounds) {
+        image.fillRect(bounds.x, bounds.y, bounds.width, bounds.height, 56);
+        image.drawText(small, bounds.x - 2, bounds.y, 'graph label', 150);
+      },
+    },
+  }, { Date: { now: () => now } });
+  const image = new GrayImage(288, height);
+  new NightscoutWidget().paint(image);
+  return { image, warnings: textDraws.filter(draw => draw.value === 1) };
+}
+
+test('glanceboard keeps fitting warnings in the readout and flows the rest over the graph', () => {
+  for (const [small, large] of [[8, 24], [12, 24], [16, 26], [21, 30]]) {
+    const { warnings } = paintWidget(small, large);
+    assert.deepEqual(warnings.map(draw => draw.text.split(' ')[0]), ['CAGE', 'Reservoir', 'Battery', 'Loop']);
+    assert.ok(warnings.every(draw => draw.y >= 8 && draw.y + small <= 142));
+    const firstY = 8 + 4 * (small + 2) + large + 2;
+    const fitting = Math.max(0, Math.min(4, Math.floor((142 - firstY - small) / (small + 2)) + 1));
+    assert.equal(warnings.filter(draw => draw.x === 8).length, fitting);
+    if (fitting < 4) {
+      assert.equal(warnings[fitting].y, 8);
+      assert.ok(warnings.slice(fitting).every(draw => draw.x === 112));
+    }
+  }
+});
+
+test('glanceboard wraps only when a warning exceeds the bottom margin', () => {
+  assert.equal(paintWidget(12, 24, 104).warnings[0].x, 8);
+  assert.equal(paintWidget(12, 24, 103).warnings[0].x, 112);
+  assert.ok(paintWidget(21, 30, 240).warnings.every(draw => draw.x === 8));
+  assert.equal(paintWidget(21, 30, 144, healthy).warnings.length, 0);
+});
+
+test('overflow warning backgrounds cover graph pixels and deferred graph labels', () => {
+  const { image } = paintWidget(21, 30);
+  const baked = image.withDrawsBaked();
+  assert.equal(baked.getPixel(114, 7), 230, 'background covers the graph');
+  assert.equal(baked.getPixel(112, 8), 230, 'background covers the deferred graph label');
+  assert.equal(baked.getPixel(114, 8), 1, 'warning glyph remains visible');
+  assert.equal(baked.getPixel(200, 8), 56, 'uncovered graph remains visible');
+});
+
 function fixture(always = false) {
   let time = now, icon, tick, changed, notify, renders = 0;
   const state = { ...healthy, available: true, latest: { sgv: 100, timestampMs: now }, history: [], units: 'mg/dL', delta: 0, direction: '', iob: 1, cob: 0, pumpStatus: '0m ago', configurationMissing: false };

@@ -3,7 +3,7 @@ import { GrayImage } from "../../graphics/image";
 import { truncateText, wrapText } from "../../graphics/textwrap";
 import { type InputEvent } from "../../ui/gestures";
 import { type Layer, type LayerContext } from "../../ui/layers";
-import { drawSelectionHighlight } from "../../ui/menu";
+import { Menu } from "../../ui/menu-core";
 import { TextViewerLayer } from "../files/text-viewer";
 import { evenHubApi, type EvenHubStoreApp } from "./even-api";
 import {
@@ -18,17 +18,36 @@ import { lineStep, listRowHeight } from "../../ui/metrics";
 
 const X = 18;
 
+type DetailAction = "about" | "whats-new" | "primary";
+const ACTIONS: readonly DetailAction[] = ["about", "whats-new", "primary"];
+
 export type EvenHubStoreDetailOptions = {
   launchApp: (appId: string) => Promise<void> | void;
   appendLog: (message: string) => void;
   /** A package was installed, updated, or reinstalled from this page. */
   onInstalled?: (app: InstalledEvenHubApp) => void;
+  /** Offered every failure first; returns true if it was a rejected session (and was dealt with). */
+  onAuthError?: (ctx: LayerContext, error: unknown) => boolean;
 };
 
 /** Storefront metadata and the Install/Launch action for one public app. */
 export class EvenHubStoreDetailLayer implements Layer {
-  /** About, What's New, Install/Launch. */
-  private selectedIndex = 2;
+  /** About, What's New, Install/Launch; starts on the primary action. */
+  private readonly actions = new Menu<DetailAction>({
+    items: ACTIONS,
+    selectedIndex: 2,
+    rowGap: 1,
+    highlight: { radius: 8 },
+    getHeight: () => listRowHeight(getDefaultSmallFont()) + 4,
+    draw: ({ image, item, x, y, width, selected }) => {
+      const font = getDefaultSmallFont();
+      const label = item === "about" ? "About" : item === "whats-new" ? "What's New" : this.primaryLabel;
+      const value = this.working && item === "primary" ? 145 : selected ? 245 : 190;
+      image.drawText(font, x + 11, y + 5, truncateText(font, label, width - 18), value);
+    },
+  });
+  /** The primary action's label for the paint in progress. */
+  private primaryLabel = "";
   private working = false;
   private detailPromise: Promise<void> | null = null;
   private status = "";
@@ -47,7 +66,7 @@ export class EvenHubStoreDetailLayer implements Layer {
     const actionRowH = listRowHeight(font) + 4;
 
     const installed = getInstalledEvenHubApp(this.app.packageId);
-    const actions = ["About", "What's New", this.working ? "Installing..." : this.primaryActionLabel(installed)];
+    this.primaryLabel = this.working ? "Installing..." : this.primaryActionLabel(installed);
 
     // Detail lines as (text, shade, extra gap below); built per candidate
     // width so the layout choice below can measure before drawing.
@@ -90,7 +109,7 @@ export class EvenHubStoreDetailLayer implements Layer {
     // Stacked layout (details full-width, actions at the bottom) when it
     // fits; otherwise the actions become a narrow top-right menu and the
     // details flow down a left column beside it.
-    const stackedActionTop = height - 6 - actions.length * actionRowH;
+    const stackedActionTop = height - 6 - ACTIONS.length * actionRowH;
     const stacked = 8 + linesHeight(buildLines(width - X * 2)) + 6 <= stackedActionTop;
     const menuW = 150;
     const menuX = width - menuW - 12;
@@ -105,15 +124,11 @@ export class EvenHubStoreDetailLayer implements Layer {
     const actionX = stacked ? X : menuX;
     const actionW = stacked ? textWidth : menuW;
     const actionTop = stacked ? stackedActionTop : 8;
-    for (let index = 0; index < actions.length; index++) {
-      const actionY = actionTop + index * actionRowH;
-      const selected = index === this.selectedIndex;
-      if (selected) {
-        drawSelectionHighlight(image, actionX - 5, actionY, actionW + 10, actionRowH - 1, ctx.stack.isFocused(), 8);
-      }
-      const value = this.working && index === 2 ? 145 : selected ? 245 : 190;
-      image.drawText(font, actionX + 6, actionY + 5, truncateText(font, actions[index]!, actionW - 8), value);
-    }
+    this.actions.paint(
+      image,
+      { x: actionX - 5, y: actionTop, width: actionW + 10, height: ACTIONS.length * actionRowH - 1 },
+      ctx.stack.isFocused(),
+    );
     return image;
   }
 
@@ -123,12 +138,8 @@ export class EvenHubStoreDetailLayer implements Layer {
       return;
     }
     if (this.working) return;
-    if (event.type === "scroll-up") {
-      this.selectedIndex = Math.max(0, this.selectedIndex - 1);
-      return;
-    }
-    if (event.type === "scroll-down") {
-      this.selectedIndex = Math.min(2, this.selectedIndex + 1);
+    if (event.type === "scroll-up" || event.type === "scroll-down") {
+      await this.actions.handleInput(event);
       return;
     }
     if (event.type !== "click") return;
@@ -143,11 +154,12 @@ export class EvenHubStoreDetailLayer implements Layer {
     try {
       await this.ensureDetail(ctx);
 
-      if (this.selectedIndex === 0) {
+      const action = this.actions.selectedItem;
+      if (action === "about") {
         ctx.stack.push(new TextViewerLayer(this.app.description || "No description supplied.", "About"));
         return;
       }
-      if (this.selectedIndex === 1) {
+      if (action === "whats-new") {
         ctx.stack.push(new TextViewerLayer(this.app.changelog || "No release notes supplied.", "What's New"));
         return;
       }
@@ -160,6 +172,7 @@ export class EvenHubStoreDetailLayer implements Layer {
 
       await this.install(ctx);
     } catch (error) {
+      if (this.options.onAuthError?.(ctx, error)) return;
       this.status = cleanError(error);
       this.options.appendLog(`evenhub store: ${this.status}`);
     } finally { this.working = false; ctx.actions.requestRender(); }
@@ -193,6 +206,7 @@ export class EvenHubStoreDetailLayer implements Layer {
       ctx.actions.requestRender();
       await this.options.launchApp(installedEvenHubAppId(result.packageId));
     } catch (error) {
+      if (this.options.onAuthError?.(ctx, error)) return;
       this.status = cleanError(error);
       this.options.appendLog(`evenhub store: ${this.status}`);
     } finally {
@@ -216,6 +230,7 @@ export class EvenHubStoreDetailLayer implements Layer {
         return undefined;
       })
       .catch((error) => {
+        if (this.options.onAuthError?.(ctx, error)) return;
         this.options.appendLog(`evenhub store: app details unavailable: ${cleanError(error)}`);
       })
       .finally(() => ctx.actions.requestRender());

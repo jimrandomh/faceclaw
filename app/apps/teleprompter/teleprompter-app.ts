@@ -52,10 +52,8 @@ export type TeleprompterAppOptions = InProcessAppOptions & {
  * over the home page.
  */
 export function createTeleprompterAppWindow(options: TeleprompterAppOptions): InProcessWindow {
-  // The home menu's items are rebuilt in place whenever the recents change
-  // (MenuLayer reads the array each paint).
-  const homeItems: MenuItem[] = [];
-  const home = new MenuLayer("Teleprompter", homeItems, HOME_LAYOUT);
+  // The home menu's items are replaced (refreshHome) whenever the recents change.
+  const home = new MenuLayer("Teleprompter", [], HOME_LAYOUT);
   let created: InProcessWindow | null = null;
   let notice = "";
 
@@ -142,10 +140,8 @@ export function createTeleprompterAppWindow(options: TeleprompterAppOptions): In
     if (notice) {
       items.push({ label: notice, disabled: true, onSelect: () => {} });
     }
-    homeItems.length = 0;
-    homeItems.push(...items);
     // Land on the most recent script (one click resumes it), else on Browse.
-    home.selectItem(getRecentScripts().length > 0 ? 1 : 0);
+    home.setItems(items, getRecentScripts().length > 0 ? 1 : 0);
   }
 
   refreshHome();

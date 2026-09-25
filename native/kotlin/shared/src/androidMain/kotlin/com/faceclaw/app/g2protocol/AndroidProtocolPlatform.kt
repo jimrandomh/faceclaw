@@ -20,6 +20,22 @@ object AndroidProtocolPlatform : ProtocolPlatform {
 
     override fun createDeflater(): ProtocolDeflater = AndroidDeflater()
 
+    override fun createCondition(): ProtocolCondition =
+        object : ProtocolCondition {
+            private val lock = ReentrantLock()
+            private val condition = lock.newCondition()
+
+            override fun lock() = lock.lock()
+
+            override fun unlock() = lock.unlock()
+
+            override fun awaitMs(timeoutMs: Long) {
+                if (timeoutMs > 0) condition.await(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS)
+            }
+
+            override fun signalAll() = condition.signalAll()
+        }
+
     @JvmStatic
     fun writeType(mode: GattWriteMode): Int =
         when (mode) {

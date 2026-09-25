@@ -1,10 +1,9 @@
 import { getDefaultSmallFont } from "../../graphics/ui-fonts";
 import { GrayImage } from "../../graphics/image";
-import { clamp } from "../../util/numeric-util";
 import { Layer, type LayerActions, type LayerContext } from "../../ui/layers";
 import { GESTURE_CLICK, GESTURE_DOUBLE_CLICK, GESTURE_SCROLL, type InputEvent } from "../../ui/gestures";
-import { drawSelectionHighlight, scrollToKeepSelectionVisible } from "../../ui/menu";
-import { tightRowHeight } from "../../ui/metrics";
+import { Menu, type MenuDrawArgs } from "../../ui/menu-core";
+import { centeredTextY, tightRowHeight } from "../../ui/metrics";
 import {
   buildSoundSequencePayload,
   CFW_SEQ_MAX,
@@ -28,8 +27,14 @@ function sleep(ms: number): Promise<void> {
  * sequencer message lands as the previous phrase finishes.
  */
 export class BuzzerDemoLayer implements Layer {
-  private selectedIndex = 0;
-  private scrollRow = 0;
+  private readonly menu = new Menu<SoundEffect>({
+    items: SOUND_EFFECTS,
+    wrap: false,
+    rowGap: 1,
+    highlight: { radius: 4 },
+    getHeight: () => tightRowHeight(getDefaultSmallFont()),
+    draw: (args) => drawEffectRow(args),
+  });
   private playing: string | null = null;
 
   paint(ctx: LayerContext): GrayImage {
@@ -42,21 +47,11 @@ export class BuzzerDemoLayer implements Layer {
     image.drawText(font, width - 24 - font.measureText(status), 8, status, 140);
 
     const listHeight = height - HEADER_HEIGHT - FOOTER_HEIGHT;
-    const rowH = tightRowHeight(font);
-    const visibleRows = Math.max(1, (listHeight / rowH) | 0);
-    this.scrollRow = scrollToKeepSelectionVisible(this.scrollRow, this.selectedIndex, visibleRows, SOUND_EFFECTS.length);
-
-    const lastVisible = Math.min(SOUND_EFFECTS.length, this.scrollRow + visibleRows);
-    for (let index = this.scrollRow; index < lastVisible; index++) {
-      const effect = SOUND_EFFECTS[index]!;
-      const y = HEADER_HEIGHT + (index - this.scrollRow) * rowH;
-      const selected = index === this.selectedIndex;
-      if (selected) {
-        drawSelectionHighlight(image, LIST_X - 6, y - 1, width - 2 * LIST_X + 12, rowH - 1, ctx.stack.isFocused(), 4);
-      }
-      image.drawText(font, LIST_X, y + 1, effect.name, selected ? 255 : 200);
-      image.drawText(font, LIST_X + 110, y + 1, effect.desc, selected ? 180 : 120);
-    }
+    this.menu.paint(
+      image,
+      { x: LIST_X - 6, y: HEADER_HEIGHT - 1, width: width - 2 * LIST_X + 12, height: listHeight },
+      ctx.stack.isFocused(),
+    );
 
     return image;
   }
@@ -64,13 +59,11 @@ export class BuzzerDemoLayer implements Layer {
   async handleInput(event: InputEvent, ctx: LayerContext): Promise<void> {
     switch (event.type) {
       case "scroll-up":
-        this.selectedIndex = Math.max(0, this.selectedIndex - 1);
-        return;
       case "scroll-down":
-        this.selectedIndex = Math.min(SOUND_EFFECTS.length - 1, this.selectedIndex + 1);
+        await this.menu.handleInput(event);
         return;
       case "click": {
-        const effect = SOUND_EFFECTS[clamp(this.selectedIndex, 0, SOUND_EFFECTS.length - 1)];
+        const effect = this.menu.selectedItem;
         if (effect && !this.playing) {
           // Fire-and-forget: playback paces itself with sleeps between
           // phrases; awaiting it here would stall input for seconds.
@@ -105,4 +98,12 @@ export class BuzzerDemoLayer implements Layer {
       actions.requestRender();
     }
   }
+}
+
+/** Effect name, then its description in a second column 110px to the right. */
+function drawEffectRow({ image, item: effect, x, y, height, selected }: MenuDrawArgs<SoundEffect>): void {
+  const font = getDefaultSmallFont();
+  const textY = centeredTextY(font, y, height);
+  image.drawText(font, x + 6, textY, effect.name, selected ? 255 : 200);
+  image.drawText(font, x + 6 + 110, textY, effect.desc, selected ? 180 : 120);
 }

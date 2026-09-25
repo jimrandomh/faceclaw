@@ -53,11 +53,15 @@ function ui(fontSize = 12) {
   let dismissals = 0;
   let closes = 0;
   const textwrap = load('app/graphics/textwrap.ts');
-  const graphics = load('app/graphics/image.ts', () => textwrap);
+  const graphics = require('../.test-build/app/graphics/image.js');
   const { BdfFont } = load('app/graphics/bdffont.ts', () => ({}));
   const font = BdfFont.parse(source(`app/fonts/terminus/ter-u${fontSize}n.bdf`));
   class RecordingImage extends graphics.GrayImage {
     texts = [];
+    drawMenuSelection(source, x, y, ...args) {
+      this.texts.push(...source.texts.map(t => ({ ...t, x: t.x + x, y: t.y + y })));
+      super.drawMenuSelection(source, x, y, ...args);
+    }
     drawText(font, x, y, text, value) {
       this.texts.push({ x, y, text });
       super.drawText(font, x, y, text, value);
@@ -80,6 +84,7 @@ function ui(fontSize = 12) {
     '../native/notification-sources': prefs,
     '../native/notification-access': { isNotificationListenerEnabled: () => true },
     '../util/render-freshness': { renderPassAllowsStaleData: () => false },
+    './menu-highlight-motion': require('../.test-build/app/ui/menu-highlight-motion.js'), '../graphics/menu-scroll-list': require('../.test-build/app/graphics/menu-scroll-list.js'), './menu-scroll-motion': require('../.test-build/app/ui/menu-scroll-motion.js'), '../graphics/draw-expression': require('../.test-build/app/graphics/draw-expression.js'),
     './metrics': load('app/ui/metrics.ts'),
     './gestures': {},
   };
@@ -87,6 +92,7 @@ function ui(fontSize = 12) {
     assert.ok(name in dependencies, `Unexpected dependency ${name}`);
     return dependencies[name];
   };
+  dependencies['./menu-core'] = load('app/ui/menu-core.ts', requireModule);
   dependencies['./menu'] = load('app/ui/menu.ts', requireModule);
   const { SingleNotificationLayer } = load('app/ui/notifications.ts', requireModule);
   const { NotificationFilterLayer } = load('app/ui/notification-filter.ts', requireModule);

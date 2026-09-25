@@ -8,6 +8,10 @@ OTHER_LDFLAGS = $(inherited) -framework CoreBluetooth -framework CoreLocation -f
 ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 
 HEADER_SEARCH_PATHS = $(inherited) "$(SRCROOT)/../../App_Resources/iOS/src/lc3"
+// NativeScript's xcconfig merge keeps only the CocoaPods HEADER_SEARCH_PATHS when the
+// generated project is rebuilt, so the vendored liblc3 include dir is also passed as a flag
+// (OTHER_CFLAGS merges like OTHER_LDFLAGS).
+OTHER_CFLAGS = $(inherited) -I"$(SRCROOT)/../../App_Resources/iOS/src/lc3"
 
 // FaceclawKit ships arm64 device and Apple-silicon simulator slices.
 EXCLUDED_ARCHS[sdk=iphonesimulator*] = x86_64;

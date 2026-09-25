@@ -20,8 +20,10 @@
   <true/>
   <key>NSBluetoothAlwaysUsageDescription</key>
   <string>Faceclaw uses Bluetooth to connect to your glasses and ring, display your apps, and receive gestures.</string>
+  <key>NSMicrophoneUsageDescription</key>
+  <string>Faceclaw uses your phone microphone for voice input when your glasses are disconnected.</string>
   <key>NSSpeechRecognitionUsageDescription</key>
-  <string>Faceclaw turns audio from your glasses microphone into text for the app you choose. Dictation uses on-device recognition.</string>
+  <string>Faceclaw turns audio from your glasses or phone microphone into text for the app you choose. Dictation uses on-device recognition.</string>
   <key>NSCameraUsageDescription</key>
   <string>Faceclaw uses the camera to scan QR codes for app URLs you open in Developer.</string>
   <key>NSCalendarsUsageDescription</key>

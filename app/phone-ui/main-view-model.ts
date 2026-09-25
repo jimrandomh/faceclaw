@@ -1,28 +1,23 @@
+import { RemoteControlsViewModel } from './remote-controls-view-model';
 import { BleBandwidthMeter } from "./ble-bandwidth-meter";
 import {
   Application,
   Dialogs,
   Frame,
   ImageSource,
-  Observable,
   Screen,
   SwipeDirection,
   type GestureEventData,
+  type TextField,
   type SwipeGestureEventData,
   type TouchGestureEventData,
   type View,
 } from "@nativescript/core";
 import { dashboardController, type MirrorTouchKind } from "../g2/dashboard-controller";
 import {
-  brightnessSetting,
-  DISPLAY_MODE_VALUES,
-  displayModeLabel,
-  displayModeSetting,
   mirrorTouchSetting,
   onAnySettingChanged,
   showBleBandwidthSetting,
-  type BrightnessSetting,
-  type DisplayModeSetting,
 } from "../ui/dashboard-settings";
 import { sampleBleTraffic } from "../native/ble-traffic";
 import { isValidMacAddress, loadDeviceAddresses } from "../g2/device-addresses";
@@ -35,13 +30,7 @@ const LENS_ASPECT_RATIO = G2_LENS_WIDTH / G2_LENS_HEIGHT;
 
 type LayoutOrientation = "portrait" | "landscape";
 
-type ControlsTab = "settings" | "watch" | "ring";
-
-// Survives navigation round-trips (a fresh view model is built per visit) but
-// not process restarts.
-let lastControlsTab: ControlsTab = "watch";
-
-export class MainViewModel extends Observable {
+export class MainViewModel extends RemoteControlsViewModel {
   private _status = "Disconnected.";
   private _displayPreview: ImageSource | null = null;
   private _displayPreviewMessage = "";
@@ -1000,6 +989,26 @@ export class MainViewModel extends Observable {
     dashboardController.finishActiveTextSettingEdit();
   }
 
+  /** The editor's Submit button: the same as the done key on the last field. */
+  onTextSettingSubmitTap(args: { object?: View }): void {
+    // Commit both fields' actual text, in case a final keystroke's textChange
+    // hadn't landed yet (as the return-press handlers do).
+    const page = args?.object?.page;
+    const primaryText = page?.getViewById<TextField>("settingsTextField")?.text;
+    if (typeof primaryText === "string") {
+      dashboardController.setActiveTextSettingValue(primaryText, this.activeTextSettingId ?? undefined);
+    }
+    const secondaryText = page?.getViewById<TextField>("secondarySettingsTextField")?.text;
+    if (this.hasSecondaryTextSetting && typeof secondaryText === "string") {
+      dashboardController.setActiveTextSettingValue(secondaryText, this.secondaryTextSettingId ?? undefined);
+    }
+    dashboardController.finishActiveTextSettingEdit();
+  }
+
+  onTextSettingCancelTap(): void {
+    dashboardController.cancelActiveTextSettingEdit();
+  }
+
   onTextSettingToggleChange(args: { value?: boolean; object?: { checked?: boolean } }): void {
     dashboardController.setActiveTextEditorToggleValue(
       args.object?.checked ?? args.value ?? false,
@@ -1193,126 +1202,8 @@ export class MainViewModel extends Observable {
   // watch face), Ring (simulated R1 inputs). The whole area collapses while a
   // text setting is being edited so the editor gets the space instead.
 
-  private _controlsTab: ControlsTab = lastControlsTab;
-
   get controlsVisibility(): "visible" | "collapse" {
     return this.isTextSettingEditorActive || this._keyboardInputActive ? "collapse" : "visible";
-  }
-
-  get settingsTabVisibility(): "visible" | "collapse" {
-    return this._controlsTab === "settings" ? "visible" : "collapse";
-  }
-
-  get watchTabVisibility(): "visible" | "collapse" {
-    return this._controlsTab === "watch" ? "visible" : "collapse";
-  }
-
-  get ringTabVisibility(): "visible" | "collapse" {
-    return this._controlsTab === "ring" ? "visible" : "collapse";
-  }
-
-  get settingsTabClass(): string {
-    return this._controlsTab === "settings" ? "tab-button tab-button-selected" : "tab-button";
-  }
-
-  get watchTabClass(): string {
-    return this._controlsTab === "watch" ? "tab-button tab-button-selected" : "tab-button";
-  }
-
-  get ringTabClass(): string {
-    return this._controlsTab === "ring" ? "tab-button tab-button-selected" : "tab-button";
-  }
-
-  onSettingsTabTap(): void {
-    this.setControlsTab("settings");
-  }
-
-  onWatchTabTap(): void {
-    this.setControlsTab("watch");
-  }
-
-  onRingTabTap(): void {
-    this.setControlsTab("ring");
-  }
-
-  private setControlsTab(tab: ControlsTab): void {
-    if (this._controlsTab === tab) return;
-    this._controlsTab = tab;
-    // Remembered across navigations (module-level) so the page comes back on
-    // the tab it left on; deliberately not persisted to disk.
-    lastControlsTab = tab;
-    this.notifyPropertyChange("settingsTabVisibility", this.settingsTabVisibility);
-    this.notifyPropertyChange("watchTabVisibility", this.watchTabVisibility);
-    this.notifyPropertyChange("ringTabVisibility", this.ringTabVisibility);
-    this.notifyPropertyChange("settingsTabClass", this.settingsTabClass);
-    this.notifyPropertyChange("watchTabClass", this.watchTabClass);
-    this.notifyPropertyChange("ringTabClass", this.ringTabClass);
-  }
-
-  // ---- display mode and brightness, on the Settings tab ----
-
-  get displayModeLabel(): string {
-    return displayModeLabel(displayModeSetting.get()) + " ▾";
-  }
-
-  async onDisplayModeTap(): Promise<void> {
-    const current = displayModeSetting.get();
-    const options = DISPLAY_MODE_VALUES.map((value) => displayModeLabel(value) + (value === current ? "  ✓" : ""));
-    const picked = await Dialogs.action({ title: "Display mode", cancelButtonText: "Cancel", actions: options });
-    const index = options.indexOf(picked);
-    if (index < 0) return;
-    const value = DISPLAY_MODE_VALUES[index] as DisplayModeSetting;
-    if (value !== current) displayModeSetting.set(value);
-    this.notifyPropertyChange("displayModeLabel", this.displayModeLabel);
-  }
-
-  get brightnessAuto(): boolean {
-    return brightnessSetting.get() === "auto";
-  }
-
-  get brightnessSliderEnabled(): boolean {
-    return !this.brightnessAuto;
-  }
-
-  /** The slider's position; while Auto, the last manual level (or 50). */
-  get brightnessPercent(): number {
-    const value = brightnessSetting.get();
-    if (value === "auto") return this.lastManualBrightness;
-    const numeric = parseInt(value, 10);
-    return Number.isFinite(numeric) ? numeric : 50;
-  }
-
-  private lastManualBrightness = 50;
-
-  onBrightnessChange(args: { value?: number; object?: { value?: number } }): void {
-    if (this.brightnessAuto) return;
-    const raw = typeof args.value === "number" ? args.value : Number(args.object?.value ?? NaN);
-    if (!Number.isFinite(raw)) return;
-    // The setting only has every tenth level; snap to the nearest.
-    const level = Math.min(100, Math.max(0, Math.round(raw / 10) * 10));
-    this.lastManualBrightness = level;
-    const value = String(level) as BrightnessSetting;
-    if (brightnessSetting.get() !== value) brightnessSetting.set(value);
-  }
-
-  onBrightnessAutoChange(args: { value?: boolean; object?: { checked?: boolean } }): void {
-    const on = typeof args.value === "boolean" ? args.value : Boolean(args.object?.checked);
-    if (on) {
-      if (brightnessSetting.get() !== "auto") {
-        this.lastManualBrightness = this.brightnessPercent;
-        brightnessSetting.set("auto");
-      }
-    } else if (brightnessSetting.get() === "auto") {
-      brightnessSetting.set(String(this.lastManualBrightness) as BrightnessSetting);
-    }
-    this.refreshDisplayControls();
-  }
-
-  private refreshDisplayControls(): void {
-    this.notifyPropertyChange("brightnessAuto", this.brightnessAuto);
-    this.notifyPropertyChange("brightnessSliderEnabled", this.brightnessSliderEnabled);
-    this.notifyPropertyChange("brightnessPercent", this.brightnessPercent);
-    this.notifyPropertyChange("displayModeLabel", this.displayModeLabel);
   }
 
   // ---- BLE bandwidth indicator (Settings > Developer > Show BLE bandwidth usage) ----

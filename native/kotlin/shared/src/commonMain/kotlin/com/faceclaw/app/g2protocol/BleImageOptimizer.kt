@@ -249,7 +249,7 @@ class BleImageOptimizer {
          * multiples of 4 (=> left>>1, width>>1 are whole bytes), top/ height multiples of 2. The
          * box pixels are top-down rows of `next` (4bpp packed, width>>1 bytes/row), run-length
          * encoded before deflate. Shared by the single-bbox path, each rect of a mode-8 multi-rect
-         * batch, and the texture-cache planner.
+         * batch, and the resource-cache planner.
          */
         @JvmStatic
         fun encodeMode3Rect(
@@ -277,7 +277,7 @@ class BleImageOptimizer {
             }
             var compressed: ByteArray = rleEncode(region)
             var out: ByteArray = ByteArray((7 + compressed.size))
-            out[0] = 3
+            out[0] = CFW_MSG_BOUNDING_BOX.toByte()
             out[1] = ((left / 4)).toByte()
             out[2] = ((top / 2)).toByte()
             out[3] = ((boxWidth / 4)).toByte()
@@ -369,7 +369,7 @@ class BleImageOptimizer {
                 fid = (if ((fid >= 0xfffe)) 1 else (fid + 1))
             }
             var out: ByteArray = ByteArray(total)
-            out[0] = 8
+            out[0] = CFW_MSG_MULTI_SEGMENT.toByte()
             out[1] = (rects.size).toByte()
             var pos: Int = 2
             for (sub in subs) {
@@ -553,7 +553,7 @@ class BleImageOptimizer {
             }
             var z: ByteArray = rleEncode(packed)
             var out: ByteArray = ByteArray((z.size + 1))
-            out[0] = 6
+            out[0] = CFW_MSG_FULL_FRAME.toByte()
             z.copyInto(out, 1, 0, 0 + z.size)
             return out
         }
@@ -574,16 +574,20 @@ class BleImageOptimizer {
          */
         @JvmStatic
         fun rleEncode(pix: ByteArray): ByteArray {
-            var n: Int = (pix.size * 2)
-            var out: ByteArray = ByteArray(n)
+            val n = pix.size * 2
+            val out = ByteArray(n)
             var o: Int = 0
             var i: Int = 0
             while ((i < n)) {
-                var v: Int = nibbleAt(pix, i)
-                var j: Int = (i + 1)
-                while (((j < n) && (nibbleAt(pix, j) == v))) {
-                    j++
-                }
+                val first = pix[i ushr 1].toInt() and 255
+                val v = if (i and 1 == 0) first ushr 4 else first and 15
+                // Start at a byte boundary, consuming the known low nibble
+                // first if the previous run ended halfway through a byte.
+                var j = i + (i and 1)
+                val pair = ((v shl 4) or v).toByte()
+                while (j < n && pix[j ushr 1] == pair) j += 2
+                // A final high nibble can match even when its low nibble doesn't.
+                if (j < n && (pix[j ushr 1].toInt() and 240) == v shl 4) j++
                 var run: Int = (j - i)
                 while ((run > 0)) {
                     var c: Int = minOf(run, 0xffff)
@@ -607,10 +611,6 @@ class BleImageOptimizer {
             return out.copyOf(o)
         }
 
-        private fun nibbleAt(pix: ByteArray, i: Int): Int {
-            var b: Int = (pix[(i shr 1)] and 0xff)
-            return (if (((i and 1) != 0)) (b and 0x0f) else (b shr 4))
-        }
     }
 
     constructor() {}

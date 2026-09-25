@@ -14,6 +14,13 @@ let javaInstance: any = null;
 let retainedListenerProxy: any = null;
 const changeListeners = new Set<(key: string) => void>();
 
+/** Release this isolate's native observer before its worker is terminated. */
+export function disposeSettingsStore(): void {
+  changeListeners.clear();
+  if (retainedListenerProxy !== null) getJava().unregisterListener(retainedListenerProxy);
+  retainedListenerProxy = null;
+}
+
 function getJava(): any {
   if (javaInstance === null) {
     const context = Utils.android?.getApplicationContext?.();

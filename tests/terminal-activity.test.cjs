@@ -27,6 +27,9 @@ function worker() {
     clearInterval() { timer = undefined; },
     global: { postMessage: message => messages.push(message) },
     scheduleRender() { renderCount++; }, renderAndSubmit() {}, maybeReconnectView() {},
+    // Glanceboard publication is outside the sidebar activity fixture.
+    publishSessionsSnapshot() {},
+    hasTerminalBackgroundWork: () => false,
     controlsInitialized: true, controls: new Map(), TERMINAL_TOOLS: [],
     getTerminalFontConfig: () => ({ cellWidth: 6, cellHeight: 12 }),
   };
@@ -148,6 +151,7 @@ test('host applies activity only to its own open windows and cleans up on close'
     '../../assistant/tool-registry': { toolRegistry: { removeAppTools() {} } },
     './geometry': { appViewportSize: () => ({ width: 576, height: 260 }) },
     '../../native/frame-timings': {},
+    './worker-state': {},
     './shell': { shell: { registerWindow: w => shellWindows.set(w.windowId, w) } },
   });
   const host = new WorkerAppHost({ appId: 'terminal', worker, configureSurface: async () => {}, requestShellRender() { paints++; }, removeSurface() {} });

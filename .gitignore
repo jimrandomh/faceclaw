@@ -9,6 +9,9 @@ platforms/
 # Release APKs from scripts/release.sh
 dist/
 
+# CPU captures and source maps pulled from the installed app
+profiles/
+
 # Logs
 logs
 *.log

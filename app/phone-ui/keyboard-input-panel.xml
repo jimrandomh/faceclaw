@@ -1,0 +1,18 @@
+<GridLayout rows="auto,*,auto" maxHeight="280" xmlns="http://schemas.nativescript.org/tns.xsd"
+    class="system-name-modal"
+    visibility="{{ keyboardInputVisibility }}"
+    horizontalAlignment="stretch"
+    verticalAlignment="bottom">
+    <Label row="0" text="Keyboard input" class="h2" />
+    <TextView row="1"
+        id="keyboardInputField"
+        text="{{ keyboardInputText }}"
+        hint="Type a message"
+        textChange="{{ onKeyboardInputTextChange }}" />
+    <!-- Wraps onto a second line when the labels don't fit side by side. -->
+    <FlexboxLayout row="2" flexWrap="wrap" class="m-t-8">
+        <Button text="{{ keyboardInputPrimaryTargetLabel }}" tap="{{ onKeyboardInputPrimarySendTap }}" visibility="{{ keyboardInputPrimaryTargetVisibility }}" flexGrow="1" class="-primary" />
+        <Button text="{{ keyboardInputSecondaryTargetLabel }}" tap="{{ onKeyboardInputSecondarySendTap }}" visibility="{{ keyboardInputSecondaryTargetVisibility }}" flexGrow="1" />
+        <Button text="Discard" tap="{{ onKeyboardInputDiscardTap }}" flexGrow="1" />
+    </FlexboxLayout>
+</GridLayout>

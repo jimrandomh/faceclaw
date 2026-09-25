@@ -18,18 +18,21 @@ export class SurfaceCompositor {
   }
   removeSurface(id: string): void { this.native.removeId(id); this.surfaces.delete(id) }
   setSurfaceVisible(id: string, visible: boolean): void { this.native.visibleIdVisible(id, visible) }
+  setSurfaceDepth(id: string, depth: number): void { this.native.depthIdDepth(id, depth) }
   setUnderlayDim(belowZOrder: number, factor: number): void {
     if (!Number.isFinite(factor)) throw new Error('Invalid dim factor')
     this.native.dimBelowFactor(belowZOrder, factor)
   }
   setScreenBlanked(blanked: boolean): void { this.native.blankBlanked(blanked) }
-  submitSurfaceFrame(id: string, pixels: Uint8Array, rect: SurfaceRect): void {
+  submitSurfaceFrame(id: string, pixels: Uint8Array, rect: SurfaceRect, draws: ArrayBuffer | null = null): void {
     // Keep lifecycle errors catchable in JS; an undeclared Kotlin exception
     // crossing the Objective-C boundary terminates the process.
     if (!this.surfaces.has(id)) throw new Error(`Unknown surface: ${id}`)
     if (![rect.x, rect.y, rect.width, rect.height].every(Number.isInteger)
       || rect.width <= 0 || rect.height <= 0 || pixels.length !== rect.width * rect.height) throw new Error('Invalid frame buffer or rectangle')
-    this.native.submitIdDataXYWidthHeight(id, toData(pixels), rect.x, rect.y, rect.width, rect.height)
+    this.native.submitDrawsIdDataXYWidthHeightDraws(id, toData(pixels), rect.x, rect.y, rect.width, rect.height,
+      draws ? toData(new Uint8Array(draws)) : null)
   }
+  setShellScene(bytes: Uint8Array): void { this.native.shellData(toData(bytes)) }
   composite(): Uint8Array { return fromData(this.native.composite()) }
 }

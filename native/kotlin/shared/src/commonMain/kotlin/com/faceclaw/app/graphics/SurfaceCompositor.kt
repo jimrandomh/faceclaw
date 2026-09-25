@@ -2,6 +2,7 @@ package com.faceclaw.app
 
 import kotlin.jvm.JvmField
 import kotlin.jvm.JvmStatic
+import kotlin.jvm.JvmOverloads
 
 /**
  * Retained-surface compositor: the phone-side model of what is on the glasses screen.
@@ -30,7 +31,7 @@ import kotlin.jvm.JvmStatic
  * atomically under an internal lock, and each composite carries a monotonic sequence number so
  * callers can detect when a composite was superseded by a concurrent one before being acted on.
  */
-class SurfaceCompositor {
+class SurfaceCompositor @JvmOverloads constructor(private val includePreviewInFrames: Boolean = true) {
     companion object {
         const val TRANSPARENCY_OPAQUE: Int = 0
 
@@ -50,6 +51,7 @@ class SurfaceCompositor {
             var out: MutableList<ScreenDraw> = ArrayList()
             while ((cursor.remaining() >= 1)) {
                 var kind: Int = (cursor.get() and 0xff)
+                if (DrawRecordKind.isPresentation(kind)) { out.add(ScreenDraw.image(0, 0, 0).also { it.selection = readRetainedDrawing(cursor, kind) }); continue }
                 if (((kind == ScreenDraw.KIND_GLYPH) && (cursor.remaining() >= 11))) {
                     var fontId: Int = (cursor.getShort().toInt() and 0xffff)
                     var encoding: Int = cursor.getInt()
@@ -98,7 +100,7 @@ class SurfaceCompositor {
     /**
      * One deferred draw (a text glyph or an icon image) within a frame, in screen coordinates. The
      * draw's pixels are already baked into the composited gray buffer (the TS side bakes before
-     * submitting); this record preserves the draw's identity so the texture-cache planner can
+     * submitting); this record preserves the draw's identity so the resource-cache planner can
      * replay it as an on-glasses cached draw instead of image bytes.
      *
      * Glyphs: x/y are the pen position and line top; the raster (and its bearing/cell placement)
@@ -106,13 +108,14 @@ class SurfaceCompositor {
      * raster comes from ImageAtlas under imageId.
      */
     class ScreenDraw {
+        @JvmField var selection: RetainedDrawing? = null
         companion object {
-            const val KIND_GLYPH: Int = 0
+            const val KIND_GLYPH: Int = DrawRecordKind.GLYPH
 
-            const val KIND_IMAGE: Int = 1
+            const val KIND_IMAGE: Int = DrawRecordKind.TEXTURE_IMAGE
 
             /** A firmware-builtin-font text run (CFW mode 15). */
-            const val KIND_FWTEXT: Int = 2
+            const val KIND_FWTEXT: Int = DrawRecordKind.FIRMWARE_TEXT
 
             @JvmStatic
             fun glyph(fontId: Int, encoding: Int, penX: Int, lineY: Int, value: Int): ScreenDraw {
@@ -202,7 +205,13 @@ class SurfaceCompositor {
 
     /** One composited full-screen frame plus the metadata the pipeline needs. */
     class Composite {
-        /** Full-screen 8bpp grayscale pixels, screenWidth*screenHeight bytes. */
+        @JvmField var screenGray: ByteArray
+        @JvmField var shellScene: ShellScene = ShellScene.EMPTY
+        /**
+         * Full-screen preview pixels. When includePreviewInFrames is false,
+         * submitted composites alias screenGray here; use previewComposite()
+         * for the shell/selection-rendered preview, screenshots or recording.
+         */
         @JvmField val gray: ByteArray
 
         @JvmField val width: Int
@@ -233,12 +242,19 @@ class SurfaceCompositor {
             draws: Array<ScreenDraw>?,
         ) {
             this.gray = gray
+            this.screenGray = gray
             this.width = width
             this.height = height
             this.fingerprint = fingerprint
             this.seq = seq
             this.draws = (if ((draws == null)) NO_DRAWS else draws)
         }
+    }
+
+    private var shellScene: ShellScene? = null
+    fun setShellScene(reader: ByteReader) {
+        val scene = ShellScene.decode(reader)
+        lock.withLock { shellScene = scene }
     }
 
     private class Surface {
@@ -258,6 +274,9 @@ class SurfaceCompositor {
 
         @JvmField var visible: Boolean = true
 
+        /** Stereo depth; see setSurfaceDepth. */
+        @JvmField var depth: Int = 0
+
         @JvmField var pixels: ByteArray = ByteArray(0)
 
         @JvmField var fingerprint: String = ""
@@ -271,6 +290,18 @@ class SurfaceCompositor {
     }
 
     private val lock = protocolPlatform().createLock()
+    private var animatedPreview: ShellScene.AnimatedPreview? = null
+    private var previewKey: String? = null
+
+    private fun previewScene(scene: ShellScene, gray: ByteArray, key: String): ByteArray {
+        if (previewKey != key) {
+            animatedPreview?.player?.stop()
+            animatedPreview = scene.animatedPreview(gray, screenWidth, screenHeight,
+                schedule = { delay, action -> scheduleDrawRedraw(delay) { lock.withLock(action) } })
+            previewKey = key
+        }
+        return animatedPreview!!.pixels
+    }
 
     private var screenWidth: Int = 0
 
@@ -372,6 +403,7 @@ class SurfaceCompositor {
 
     /** The dim factor (256 = none) that applies to a surface. */
     private fun dimForLocked(surface: Surface): Int {
+        if (shellScene != null) return 256
         return (if ((surface.zOrder < underlayDimBelowZOrder)) underlayDim else 256)
     }
 
@@ -388,6 +420,27 @@ class SurfaceCompositor {
             }
             surface.visible = visible
         }
+    }
+
+    /**
+     * Stereo depth (DrawProtocol.depthOffset) for a surface. It applies while the surface is the
+     * topmost visible one and opaquely covers the screen: the glasses then copy the whole screen
+     * into the frame shifted per lens. Takes effect when the next frame composites.
+     */
+    fun setSurfaceDepth(id: String, depth: Int): Unit {
+        require(depth in -128..127) { "bad depth $depth for $id" }
+        lock.withLock {
+            val surface = surfaces.get(id) ?: throw IllegalArgumentException(("unknown surface " + id))
+            surface.depth = depth
+        }
+    }
+
+    /** The screen's stereo depth: see setSurfaceDepth. */
+    private fun screenDepthLocked(ordered: List<Surface>): Int {
+        val top = ordered.lastOrNull { it.visible } ?: return 0
+        val covers = top.transparency == TRANSPARENCY_OPAQUE && top.x <= 0 && top.y <= 0 &&
+            top.x + top.width >= screenWidth && top.y + top.height >= screenHeight
+        return if (covers) top.depth else 0
     }
 
     /**
@@ -466,6 +519,18 @@ class SurfaceCompositor {
         rectWidth: Int,
         rectHeight: Int,
         fingerprint: String,
+    ) = submitSurface(surfaceId, pixels, rectX, rectY, rectWidth, rectHeight, fingerprint, null)
+
+    /** Retain the full surface's draw identities along with its already-baked pixels. */
+    fun submitSurface(
+        surfaceId: String,
+        pixels: ByteReader,
+        rectX: Int,
+        rectY: Int,
+        rectWidth: Int,
+        rectHeight: Int,
+        fingerprint: String,
+        draws: ByteReader?,
     ) {
         updateSurface(
             surfaceId,
@@ -475,7 +540,7 @@ class SurfaceCompositor {
             rectWidth,
             rectHeight,
             fingerprint,
-            null,
+            draws,
             false,
         )
     }
@@ -548,8 +613,10 @@ class SurfaceCompositor {
             if (((screenWidth <= 0) || (screenHeight <= 0))) {
                 return null
             }
-            var gray: ByteArray = buildGrayLocked()
-            return Composite(gray, screenWidth, screenHeight, "preview", 0, NO_DRAWS)
+            val seq = nextCompositeSeq
+            val result = compositeLocked(includePreview = true)
+            nextCompositeSeq = seq
+            return result
         }
     }
 
@@ -568,9 +635,12 @@ class SurfaceCompositor {
         return gray
     }
 
-    private fun compositeLocked(): Composite {
+    private fun compositeLocked(includePreview: Boolean = includePreviewInFrames): Composite {
         var gray: ByteArray = ByteArray((screenWidth * screenHeight))
         if (blanked) {
+            animatedPreview?.player?.stop()
+            animatedPreview = null
+            previewKey = null
             return Composite(
                 gray,
                 screenWidth,
@@ -585,13 +655,16 @@ class SurfaceCompositor {
         var fingerprint: StringBuilder = StringBuilder()
         fingerprint.append(screenWidth).append('x').append(screenHeight)
         var draws: MutableList<ScreenDraw> = ArrayList()
+        val selections = ArrayList<RetainedDrawing>()
         for (surface in ordered) {
-            if (!surface.visible) {
+            if (!surface.visible || (shellScene != null && surface.id == "shell")) {
                 continue
             }
             blendLocked(gray, surface)
             var dim: Int = dimForLocked(surface)
             for (draw in surface.draws) {
+                val selected = draw.selection
+                if (selected != null) { selections.add(selected.translated(surface.x, surface.y)); continue }
                 if (((dim < 256) && (draw.kind == ScreenDraw.KIND_IMAGE))) {
                     continue
                 }
@@ -632,14 +705,22 @@ class SurfaceCompositor {
                 fingerprint.append(":dim").append(dim)
             }
         }
-        return Composite(
-            gray,
-            screenWidth,
-            screenHeight,
-            fingerprint.toString(),
-            nextCompositeSeq++,
-            draws.toTypedArray(),
-        )
+        val screenDepth = screenDepthLocked(ordered)
+        val scene = if (surfaces.values.any { it.visible && it.zOrder > 1 }) ShellScene(emptyList(), screenDepth = screenDepth)
+            else ShellScene(shellScene?.layers ?: emptyList(), selections, screenDepth)
+        val sceneKey = fingerprint.append("|shell:").append(scene.fingerprint).toString()
+        val preview = if (includePreview && (shellScene != null || selections.isNotEmpty())) {
+            previewScene(scene, gray, sceneKey)
+        } else {
+            if (includePreview) {
+                animatedPreview?.player?.stop()
+                animatedPreview = null
+                previewKey = null
+            }
+            gray
+        }
+        return Composite(preview, screenWidth, screenHeight, sceneKey,
+            nextCompositeSeq++, draws.toTypedArray()).also { it.screenGray = gray; it.shellScene = scene }
     }
 
     private fun blendLocked(gray: ByteArray, surface: Surface): Unit {

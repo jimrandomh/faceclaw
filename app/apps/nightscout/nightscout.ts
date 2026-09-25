@@ -420,11 +420,11 @@ export function nightscoutMenuItems(): MenuItem[] {
         openSettingsSubMenu(ctx, "Nightscout settings", [
           textSettingMenuItem(nightscoutSiteUrlSetting),
           textSettingMenuItem(nightscoutApiTokenSetting),
+          toggleSettingMenuItem(nightscoutAlwaysShowInTopBarSetting),
           textSettingMenuItem(nightscoutMaxCannulaAgeSetting),
           textSettingMenuItem(nightscoutCartridgeLowSetting),
           textSettingMenuItem(nightscoutBatteryLowSetting),
           textSettingMenuItem(nightscoutMaxLoopAgeSetting),
-          toggleSettingMenuItem(nightscoutAlwaysShowInTopBarSetting),
         ]);
       },
     },

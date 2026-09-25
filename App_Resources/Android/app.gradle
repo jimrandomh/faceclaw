@@ -296,7 +296,7 @@ def removeLegacyKotlinBridgeSource = tasks.register("removeLegacyKotlinBridgeSou
   // Explicit, reviewed source moves: never infer deletions from class names.
   def migrations = new groovy.json.JsonSlurper().parse(file("$rootDir/../../native/kotlin/migrated-java-sources.json"))
   migrations.each { migration ->
-    if (!file("$rootDir/../../native/kotlin/${migration.kotlin}").isFile()) {
+    if (!file("$rootDir/../../${migration.kotlin}").isFile()) {
       throw new GradleException("Missing Kotlin replacement: ${migration.kotlin}")
     }
     delete file("$projectDir/src/main/java/${migration.java}")

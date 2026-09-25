@@ -1,12 +1,11 @@
 import { getDefaultLargeFont, getDefaultMediumFont, getDefaultSmallFont } from "../../graphics/ui-fonts";
 import { GrayImage, type UiFont } from "../../graphics/image";
 import { wrapText, truncateText } from "../../graphics/textwrap";
-import { clamp } from "../../util/numeric-util";
 import { type ForecastPeriod, type WeatherState } from "../../native/weather";
 import { GESTURE_CLICK, type InputEvent } from "../../ui/gestures";
 import { type Layer, type LayerContext } from "../../ui/layers";
-import { drawSelectionHighlight, scrollToKeepSelectionVisible } from "../../ui/menu";
-import { lineStep, tightRowHeight } from "../../ui/metrics";
+import { Menu, type MenuDrawArgs } from "../../ui/menu-core";
+import { centeredTextY, lineStep, tightRowHeight } from "../../ui/metrics";
 
 const PAGE_X = 18;
 const HEADER_Y = 8;
@@ -18,11 +17,26 @@ const FORECAST_TOP = 124;
 const FORECAST_MIN_ROW_HEIGHT = 23;
 /** Gap between forecast columns. */
 const FORECAST_COL_GAP = 14;
+/** Left edge of the forecast rows' selection boxes. */
+const FORECAST_BOX_X = PAGE_X - 7;
+/** Pixels between consecutive forecast rows' selection boxes. */
+const FORECAST_ROW_GAP = 2;
+
+/** Forecast column x offsets from the row box's left edge. */
+type ForecastColumns = { name: number; temp: number; precip: number; summary: number };
 
 /** Weather's current-conditions summary and scrollable 12-hour forecast. */
 export class WeatherLayer implements Layer {
-  private selectedIndex = 0;
-  private scrollRow = 0;
+  /** Forecast table rows: selection only, a click does nothing there. */
+  private readonly forecastMenu = new Menu<ForecastPeriod>({
+    wrap: false,
+    rowGap: FORECAST_ROW_GAP,
+    highlight: { radius: 5 },
+    getHeight: () => forecastRowHeight(getDefaultSmallFont()),
+    draw: (args) => this.drawForecastRow(args),
+  });
+  /** Column layout for drawForecastRow, set by each drawForecast. */
+  private columns: ForecastColumns = { name: 0, temp: 0, precip: 0, summary: 0 };
 
   constructor(
     private readonly state: () => WeatherState,
@@ -81,10 +95,9 @@ export class WeatherLayer implements Layer {
       return;
     }
     if (!weather.forecast.length || weather.phase !== "ready") return;
-    if (event.type === "scroll-up") {
-      this.selectedIndex = Math.max(0, this.selectedIndex - 1);
-    } else if (event.type === "scroll-down") {
-      this.selectedIndex = Math.min(weather.forecast.length - 1, this.selectedIndex + 1);
+    if (event.type === "scroll-up" || event.type === "scroll-down") {
+      this.forecastMenu.setItems(weather.forecast);
+      void this.forecastMenu.handleInput(event);
     }
   }
 
@@ -134,12 +147,14 @@ export class WeatherLayer implements Layer {
       image.drawText(font, PAGE_X, FORECAST_TOP, "No upcoming forecast periods.", 160);
       return;
     }
-    this.selectedIndex = clamp(this.selectedIndex, 0, forecast.length - 1);
-    const rowH = Math.max(FORECAST_MIN_ROW_HEIGHT, tightRowHeight(font) + 3);
+    const rowH = forecastRowHeight(font);
     // The last row only needs its text line (not a full row pitch of
     // clearance below), which usually fits one more row before the bottom.
+    // The menu only draws rows whose whole selection box fits, so the box
+    // holds that many rows, cut at the image's bottom edge.
     const visibleRows = Math.max(1, 1 + Math.floor((height - FORECAST_TOP - (font.lineHeight + 4)) / rowH));
-    this.scrollRow = scrollToKeepSelectionVisible(this.scrollRow, this.selectedIndex, visibleRows, forecast.length);
+    const boxTop = FORECAST_TOP - 2;
+    const boxHeight = Math.min(visibleRows * rowH - FORECAST_ROW_GAP, height - boxTop);
 
     // Columns are sized to the widest period name so names ("Wednesday
     // Night") never truncate; the summary column absorbs what's left.
@@ -155,20 +170,31 @@ export class WeatherLayer implements Layer {
     image.drawText(font, tempX, FORECAST_HEADER_Y, "Temp", 105);
     image.drawText(font, precipX, FORECAST_HEADER_Y, "Rain", 105);
 
-    const last = Math.min(forecast.length, this.scrollRow + visibleRows);
-    for (let index = this.scrollRow; index < last; index++) {
-      const period = forecast[index]!;
-      const y = FORECAST_TOP + (index - this.scrollRow) * rowH;
-      const selected = index === this.selectedIndex;
-      if (selected) {
-        drawSelectionHighlight(image, PAGE_X - 7, y - 2, width - 2 * (PAGE_X - 7), rowH - 2, ctx.stack.isFocused(), 5);
-      }
-      const shade = selected ? 245 : 190;
-      image.drawText(font, PAGE_X, y + 2, period.name, shade);
-      image.drawText(font, tempX, y + 2, period.temperatureF === null ? "--" : `${Math.round(period.temperatureF)}°F`, shade);
-      image.drawText(font, precipX, y + 2, period.precipitationPercent === null ? "--" : `${Math.round(period.precipitationPercent)}%`, selected ? 220 : 155);
-      image.drawText(font, summaryX, y + 2, truncateText(font, period.shortForecast, width - summaryX - PAGE_X), selected ? 220 : 165);
-    }
+    this.columns = {
+      name: PAGE_X - FORECAST_BOX_X,
+      temp: tempX - FORECAST_BOX_X,
+      precip: precipX - FORECAST_BOX_X,
+      summary: summaryX - FORECAST_BOX_X,
+    };
+    this.forecastMenu.setItems(forecast);
+    this.forecastMenu.paint(
+      image,
+      { x: FORECAST_BOX_X, y: boxTop, width: width - 2 * FORECAST_BOX_X, height: boxHeight },
+      ctx.stack.isFocused(),
+    );
+  }
+
+  private drawForecastRow({ image, item: period, x, y, width, height, selected }: MenuDrawArgs<ForecastPeriod>): void {
+    const font = getDefaultSmallFont();
+    const columns = this.columns;
+    const shade = selected ? 245 : 190;
+    const textY = centeredTextY(font, y, height);
+    image.drawText(font, x + columns.name, textY, period.name, shade);
+    image.drawText(font, x + columns.temp, textY, period.temperatureF === null ? "--" : `${Math.round(period.temperatureF)}°F`, shade);
+    image.drawText(font, x + columns.precip, textY, period.precipitationPercent === null ? "--" : `${Math.round(period.precipitationPercent)}%`, selected ? 220 : 155);
+    // The summary stops PAGE_X short of the viewport's right edge, as the name starts PAGE_X in from the left.
+    const summaryWidth = width - columns.summary - columns.name;
+    image.drawText(font, x + columns.summary, textY, truncateText(font, period.shortForecast, summaryWidth), selected ? 220 : 165);
   }
 
   private drawMessage(
@@ -188,6 +214,11 @@ export class WeatherLayer implements Layer {
       image.drawText(font, PAGE_X, height - 20, footer, 110);
     }
   }
+}
+
+/** Forecast row pitch, including the gap between selection boxes. */
+function forecastRowHeight(font: UiFont): number {
+  return Math.max(FORECAST_MIN_ROW_HEIGHT, tightRowHeight(font) + 3);
 }
 
 function formatAge(ageMs: number): string {

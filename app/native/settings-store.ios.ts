@@ -21,6 +21,12 @@ function markChanged(key: string): void {
 }
 let pollTimer: ReturnType<typeof setInterval> | null = null
 const listeners = new Set<(key: string) => void>()
+export function disposeSettingsStore(): void {
+  listeners.clear()
+  if (pollTimer !== null) clearInterval(pollTimer)
+  pollTimer = null
+  observed.clear()
+}
 function changed(key: string): void {
   setTimeout(() => { for (const listener of [...listeners]) listener(key) }, 0)
 }
