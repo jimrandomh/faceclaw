@@ -15,7 +15,7 @@ function load(file, modules = {}) {
 }
 
 const textwrap = load('app/graphics/textwrap.ts');
-const graphics = load('app/graphics/image.ts', { './textwrap': textwrap });
+const graphics = require('../.test-build/app/graphics/image.js');
 const plane = load('app/graphics/plane.ts', { './image': graphics });
 const gestures = load('app/ui/gestures.ts');
 const numeric = load('app/util/numeric-util.ts');
@@ -27,8 +27,12 @@ const layers = load('app/ui/layers.ts', {
   '../native/frame-timings': { spanCurrent: (_name, paint) => paint() },
 });
 const menu = load('app/ui/menu.ts', {
+  './menu-highlight-motion': require('../.test-build/app/ui/menu-highlight-motion.js'), '../graphics/menu-scroll-list': require('../.test-build/app/graphics/menu-scroll-list.js'), './menu-scroll-motion': require('../.test-build/app/ui/menu-scroll-motion.js'), '../graphics/draw-expression': require('../.test-build/app/graphics/draw-expression.js'),
   '../graphics/image': graphics, '../graphics/ui-fonts': fonts, '../graphics/textwrap': textwrap,
   '../util/numeric-util': numeric, './gestures': gestures, './metrics': load('app/ui/metrics.ts'),
+  './menu-core': load('app/ui/menu-core.ts', {
+    '../graphics/image': graphics, './menu-highlight-motion': require('../.test-build/app/ui/menu-highlight-motion.js'), '../graphics/menu-scroll-list': require('../.test-build/app/graphics/menu-scroll-list.js'), './menu-scroll-motion': require('../.test-build/app/ui/menu-scroll-motion.js'), '../graphics/draw-expression': require('../.test-build/app/graphics/draw-expression.js'),
+  }),
 });
 
 function fixture(initial = '50', viewport = { x: 64, y: 124, width: 576, height: 260 }) {
@@ -62,9 +66,9 @@ test('swipes change the saved level by 10, clamp at both ends, and both tap gest
   await f.input('click'); assert.ok(f.stack.isAtBase()); assert.equal(f.closed(), 1);
   f.open();
   for (let i = 0; i < 12; i++) await f.input('scroll-down');
-  assert.equal(f.value(), '0'); assert.equal(f.writes(), 17);
+  assert.equal(f.value(), '2'); assert.equal(f.writes(), 17);
   await f.input('double-click'); assert.ok(f.stack.isAtBase()); assert.equal(f.closed(), 2);
-  assert.equal(f.value(), '0');
+  assert.equal(f.value(), '2');
 });
 
 test('enabling Auto while the picker is open prevents manual changes', async () => {

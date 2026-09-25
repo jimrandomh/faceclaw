@@ -181,12 +181,18 @@ export class EvenHubApiClient {
     path: string,
     options: { query?: Record<string, string | number>; body?: Record<string, unknown> } = {},
   ): Promise<unknown> {
-    let token = await this.ensureLogin();
+    const token = await this.ensureLogin();
     const response = await this.request(method, path, { ...options, token, commonVersion: 3 });
-    if (response.httpStatus === 401) {
-      invalidateEvenHubToken();
+    try {
+      return unwrap(response.envelope, response.httpStatus, path);
+    } catch (error) {
+      // A rejected session fails every later request too, so drop the token
+      // (unless a fresh sign-in replaced it while this request was in flight).
+      if (error instanceof EvenHubAuthenticationError && getEvenHubToken() === token) {
+        invalidateEvenHubToken();
+      }
+      throw error;
     }
-    return unwrap(response.envelope, response.httpStatus, path);
   }
 
   private ensureLogin(): Promise<string> {
@@ -350,15 +356,17 @@ async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs = REQU
 }
 
 function unwrap(envelope: ApiEnvelope, httpStatus: number, path: string): unknown {
-  if (httpStatus === 401) {
-    throw new EvenHubAuthenticationError("Even rejected the login session.");
+  const message = typeof envelope.msg === "string" ? envelope.msg.trim() : "";
+  // An expired session can come back as HTTP 401, or as HTTP 200 with code
+  // 401 in the envelope ("Your login is expired").
+  if (httpStatus === 401 || Number(envelope.code) === 401) {
+    throw new EvenHubAuthenticationError(message || "Even rejected the login session.");
   }
   if (httpStatus < 200 || httpStatus >= 300) {
     throw new Error(`EvenHub request failed (HTTP ${httpStatus}, ${path}).`);
   }
   if (envelope.code !== 0) {
-    const detail = typeof envelope.msg === "string" && envelope.msg ? `: ${envelope.msg}` : "";
-    throw new Error(`EvenHub API error ${envelope.code ?? "unknown"}${detail}`);
+    throw new Error(`EvenHub API error ${envelope.code ?? "unknown"}${message ? `: ${message}` : ""}`);
   }
   return envelope.data;
 }

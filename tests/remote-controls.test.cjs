@@ -46,9 +46,9 @@ test('shared brightness controls snap manual levels and restore the manual value
   h.model.onBrightnessAutoChange({ value: false });
   assert.equal(h.brightness(), '80');
   h.model.onBrightnessChange({ value: -10 });
-  assert.equal(h.brightness(), '0');
+  assert.equal(h.brightness(), '2');
   h.model.onBrightnessChange({ value: NaN });
-  assert.equal(h.brightness(), '0');
+  assert.equal(h.brightness(), '2');
 });
 
 test('shared screen-size picker preserves cancellation and applies the selected mode', async () => {

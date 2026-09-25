@@ -25,6 +25,7 @@
  * focus to the sidebar) pauses, as does backgrounding or screen-off.
  */
 import "@nativescript/core/globals";
+import { finishWorkerShutdown } from "../../ui/shell/worker-lifecycle";
 import { GrayImage } from "../../graphics/image";
 import { flattenPlanesWithDraws, planesFingerprint, type Plane } from "../../graphics/plane";
 import { prepareFrameDraws } from "../../graphics/glyph-wire";
@@ -180,6 +181,12 @@ post({ type: "worker-ready" });
 global.onmessage = (event: { data: WorkerAppMessage }) => {
   const message = event.data;
   switch (message.type) {
+    case "check-idle":
+      post({ type: "worker-idle" });
+      break;
+    case "shutdown":
+      finishWorkerShutdown();
+      break;
     case "open-window": {
       const window: FlappyWindow = {
         windowId: message.windowId,
@@ -761,17 +768,19 @@ function renderAndSubmit(window: FlappyWindow, inputFrameId: number): void {
     }
     const { image, draws } = frameTimings.span(frameId, "flatten", () => flattenPlanesWithDraws(planes));
     const buffer = frameTimings.span(frameId, "to8bpp", () => image.to8bppBuffer());
-    communicator.submitSurfaceFrame(
-      buffer.buffer,
-      window.surfaceId,
-      0,
-      0,
-      image.width,
-      image.height,
-      fingerprint,
-      paintMs,
-      frameId,
-      frameTimings.span(frameId, "prepareFrameDraws", () => prepareFrameDraws(draws)),
+    frameTimings.span(frameId, "submitSurfaceFrame", () =>
+      communicator.submitSurfaceFrame(
+        buffer.buffer,
+        window.surfaceId,
+        0,
+        0,
+        image.width,
+        image.height,
+        fingerprint,
+        paintMs,
+        frameId,
+        frameTimings.span(frameId, "prepareFrameDraws", () => prepareFrameDraws(draws)),
+      )
     );
     window.lastSubmittedFingerprint = fingerprint;
   } catch (error) {

@@ -4,14 +4,14 @@ import kotlin.jvm.JvmField
 import kotlin.jvm.JvmStatic
 
 /**
- * Process-wide registry of icon/image rasters for the texture-cache pipeline, the image counterpart
+ * Process-wide registry of icon/image rasters for the resource-cache pipeline, the image counterpart
  * of GlyphAtlas. Entries are content-addressed: the TS side keys each image by a hash of its
  * dimensions and pixels, so the same icon registered from any thread or rendered at any time
  * dedupes to one entry, and an icon whose content changes is simply a new entry.
  *
  * Unlike glyphs (1-bit ink recolored at draw time), images keep their exact 4bpp values: the cached
  * bytes quantize the registered 8bpp pixels with the same GRAY_TO_NIBBLE table the composite is
- * packed with, and the planner draws them via mode 13 with an identity LUT (top color 15) and the
+ * packed with, and the planner draws them via the image draw call with an identity LUT (top color 15) and the
  * transparent bit — the draw writes exactly the nonzero-nibble pixels, which is what the
  * eligibility check and hole punching are defined over.
  */
@@ -78,27 +78,31 @@ class ImageAtlas {
         /** One 4bpp value per pixel, row-major. */
         @JvmField val nibbles: ByteArray
 
-        /** CFW cached-image bytes: [w][h][RLE(w*h pixels)]. */
+        /** CFW cached-image bytes: [flags=RLE][w][h][RLE(w*h pixels)]. */
         @JvmField val cachedBytes: ByteArray
+
+        val resource: CachedResource
 
         constructor(width: Int, height: Int, nibbles: ByteArray) {
             this.width = width
             this.height = height
             this.nibbles = nibbles
             this.cachedBytes = encodeCachedImage()
+            this.resource = CachedResource(cachedBytes)
         }
 
         /** The 4bpp value the mode-13 draw would write at (col, row); 0 = skipped. */
         fun nibbleAt(col: Int, row: Int): Int {
-            return (nibbles[((row * width) + col)] and 0xff)
+            return nibbles[row * width + col].toInt() and 255
         }
 
         private fun encodeCachedImage(): ByteArray {
             var total: Int = (width * height)
-            var out: ByteArray = ByteArray((2 + total))
-            out[0] = (width).toByte()
-            out[1] = (height).toByte()
-            var o: Int = 2
+            var out: ByteArray = ByteArray((3 + total))
+            out[0] = DrawProtocol.RLE.toByte()
+            out[1] = (width).toByte()
+            out[2] = (height).toByte()
+            var o: Int = 3
             var i: Int = 0
             while ((i < total)) {
                 var color: Int = (nibbles[i] and 0xff)

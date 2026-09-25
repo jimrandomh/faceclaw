@@ -13,78 +13,110 @@ function load(file, modules = {}, globals = {}) {
   return context.exports;
 }
 const flush = () => new Promise(resolve => setImmediate(resolve));
-function flasherFixture({ hash = 'custom', failRole = '', backgroundRole = '' } = {}) {
-  const calls = [], events = new Map(), native = { idleTimerDisabled: false, applicationState: 0 };
+const settle = async (rounds = 6) => { for (let i = 0; i < rounds; i++) { await flush(); await new Promise(resolve => setTimeout(resolve, 0)); } };
+// The Kotlin facades (FaceclawKitIos*) deliver listener callbacks on the main queue; the
+// fakes call the TypeScript listener object directly. NSObject.extend is how the wrappers
+// implement Kotlin listener protocols.
+const nsObject = { extend: methods => ({ new: () => ({ ...methods }) }) };
+function bluetooth(identifiers = { right: 'R-ID', left: 'L-ID' }, fail = null) {
+  return { iosBluetooth: () => ({ resolveDevices: async addresses => {
+    if (fail) throw new Error(fail);
+    return Object.fromEntries(Object.entries(identifiers).filter(([role]) => addresses[role]));
+  } }) };
+}
+function flasherFixture({ hash = 'custom', outcome = 'success', backgroundOn = '', resolveError = null } = {}) {
+  const calls = [], events = new Map(), native = { idleTimerDisabled: false, applicationState: 0 }, instances = [];
   const app = { suspendEvent: 'suspend', on: (e, cb) => events.set(e, cb), off: e => events.delete(e) };
-  class Link {
-    closed = false;
-    check() { if (this.closed) throw new Error('Cancelled'); }
-    async resolve() { calls.push('resolve'); }
-    async connect(role, ota) { this.check(); calls.push(`connect:${role}:${ota}`); }
-    async authenticate(role) { this.check(); calls.push(`auth:${role}`); }
-    disconnect(role) { calls.push(`disconnect:${role}`); }
-    close() { this.closed = true; calls.push('close'); }
-  }
+  const FaceclawKitIosFirmwareFlasher = { alloc: () => ({ initWithRightAddressLeftAddressFirmwarePath(right, left, path) {
+    const flasher = { listener: null, cancelled: false, closed: false,
+      setListenerListener(listener) { this.listener = listener; },
+      start() {
+        calls.push(`start:${right}:${left}:${path}`);
+        setTimeout(() => {
+          for (const lens of ['left', 'right']) {
+            if (this.cancelled) break;
+            this.listener.onStateStateDetail('connecting', lens); this.listener.onStateStateDetail('flashing', lens);
+            this.listener.onProgressLensComponentIndexComponentCountBlockIndexBlockCountBytesSentBytesTotal(lens, 1, 1, 1, 1, 16, 16);
+            if (lens === backgroundOn) events.get('suspend')();
+            if (outcome === 'fail' && lens === 'right') { this.listener.onCompleteSuccessDetail(false, 'END rejected'); return; }
+          }
+          if (this.cancelled) { this.listener.onCompleteSuccessDetail(false, 'Cancelled. Retry with both lenses powered on to complete installation.'); return; }
+          this.listener.onStateStateDetail('done', 'Both lenses flashed. Your glasses are rebooting.');
+          this.listener.onCompleteSuccessDetail(true, 'Both lenses flashed. Your glasses are rebooting.');
+        }, 0);
+      },
+      cancel() { this.cancelled = true; calls.push('cancel'); }, close() { this.closed = true; calls.push('close'); } };
+    instances.push(flasher); return flasher;
+  } }) };
   const { FirmwareFlasher } = load('app/native/firmware-flasher.ios.ts', {
-    '@nativescript/core': { Application: app }, '../g2/stock-connection': { StockConnection: Link },
+    '@nativescript/core': { Application: app },
     '../g2/firmware/cfw-patches': { CFW_PATCH_SET: { outputSha256: 'custom', baseSha256: 'stock' } },
     './firmware-files.ios': { readFirmwareFile: () => new Uint8Array(16), firmwareSha256: () => hash },
-    './ios-bluetooth': { iosBluetooth: () => ({}) },
-    '../g2/firmware-ota': { validateFirmware: () => { calls.push('validate'); return []; },
-      flashLensImage: async (link, role) => {
-        calls.push(`flash:${role}`);
-        if (role === backgroundRole) events.get('suspend')();
-        link.check();
-        if (role === failRole) throw new Error('END rejected');
-      } },
-  }, { UIApplication: { sharedApplication: native }, UIApplicationState: { Active: 0 },
-    setTimeout: fn => setTimeout(fn, 0) });
+    './ios-bluetooth': bluetooth({ right: 'R-ID', left: 'L-ID' }, resolveError), './kotlin-listener.ios': listenerModule,
+  }, { UIApplication: { sharedApplication: native }, UIApplicationState: { Active: 0 }, FaceclawKitIosFirmwareFlasher, FaceclawKitFaceclawFirmwareFlasherListener: {} });
   const flasher = new FirmwareFlasher({ right: 'r', left: 'l' }, 'prepared.bin');
+  const states = [], progress = [];
+  flasher.onStateChange((state, detail) => states.push(`${state}:${detail}`)); flasher.onProgress(value => progress.push(value.lens));
   const result = new Promise(resolve => flasher.onComplete((success, detail) => resolve({ success, detail })));
-  return { calls, events, native, flasher, result };
+  return { calls, events, native, flasher, result, instances, states, progress };
 }
+const listenerModule = load('app/native/kotlin-listener.ios.ts', {}, { NSObject: nsObject });
 
-test('iOS flashing authenticates and verifies both lenses in order before reporting success', async () => {
+test('iOS flashing checks the image hash, resolves identifiers, runs the Kotlin OTA flow and reports success', async () => {
   for (const hash of ['custom', 'stock']) {
     const f = flasherFixture({ hash }); f.flasher.start(); f.flasher.start();
     assert.equal((await f.result).success, true);
-    assert.deepEqual(f.calls, ['validate', 'resolve', 'connect:left:true', 'auth:left', 'flash:left', 'disconnect:left',
-      'connect:right:true', 'auth:right', 'flash:right', 'disconnect:right', 'close']);
+    assert.deepEqual(f.calls, ['start:R-ID:L-ID:prepared.bin', 'close']);
     assert.equal(f.native.idleTimerDisabled, false); assert.equal(f.events.size, 0);
+    await settle();
+    assert.deepEqual(f.states, ['validating:', 'connecting:left', 'flashing:left', 'connecting:right', 'flashing:right', 'done:Both lenses flashed. Your glasses are rebooting.']);
+    assert.deepEqual(f.progress, ['left', 'right']);
   }
 });
 
 test('iOS flashing refuses a changed image before Bluetooth and never reports partial success', async () => {
   const invalid = flasherFixture({ hash: 'changed' }); invalid.flasher.start();
-  assert.match((await invalid.result).detail, /SHA-256/); assert.deepEqual(invalid.calls, ['close']);
-  const failure = flasherFixture({ failRole: 'right' }); failure.flasher.start();
+  assert.match((await invalid.result).detail, /SHA-256/); assert.deepEqual(invalid.calls, []); assert.equal(invalid.native.idleTimerDisabled, false);
+  const unresolved = flasherFixture({ resolveError: 'Could not find the left arm.' }); unresolved.flasher.start();
+  assert.match((await unresolved.result).detail, /left arm/); assert.deepEqual(unresolved.calls, []);
+  const failure = flasherFixture({ outcome: 'fail' }); failure.flasher.start();
   const result = await failure.result; assert.equal(result.success, false); assert.match(result.detail, /END rejected/);
-  assert.equal(failure.native.idleTimerDisabled, false); assert.equal(failure.events.size, 0);
+  assert.equal(failure.native.idleTimerDisabled, false); assert.equal(failure.events.size, 0); assert.equal(failure.calls.includes('close'), true);
 });
 
 test('backgrounding during iOS OTA stops the transfer and directs retry of both lenses', async () => {
-  const f = flasherFixture({ backgroundRole: 'left' }); f.flasher.start();
+  const f = flasherFixture({ backgroundOn: 'left' }); f.flasher.start();
   const result = await f.result;
   assert.equal(result.success, false); assert.match(result.detail, /left the foreground.*retry both lenses/);
-  assert.equal(f.calls.includes('flash:right'), false); assert.equal(f.native.idleTimerDisabled, false);
+  assert.equal(f.instances[0].cancelled, true); assert.equal(f.progress.includes('right'), false); assert.equal(f.native.idleTimerDisabled, false);
 });
 
-test('iOS firmware prompt surfaces heartbeat disconnection instead of leaving confirmation stuck', async () => {
-  let heartbeat;
-  const p = require('../.test-build/app/g2/ble-protocol.js');
-  class Link {
-    async resolve() {} async connect() {} async authenticate() {} async request() {}
-    onMessage() { return () => {}; } nextMagic() { return 1; } close() {}
-    async write() { throw new Error('Lost connection to the right lens.'); }
-  }
+test('iOS firmware prompt maps addresses to identifiers, forwards the Kotlin flow events and surfaces its errors', async () => {
+  const instances = [];
+  const FaceclawKitIosFlashPrompt = { alloc: () => ({ initWithRightAddressLeftAddressWarningTextSkipPrompt(right, left, warning, skip) {
+    const prompt = { args: [right, left, warning, skip], listener: null, closed: false, started: 0,
+      setListenerListener(listener) { this.listener = listener; }, start() { this.started++; }, cancel() {}, close() { this.closed = true; } };
+    instances.push(prompt); return prompt;
+  } }) };
   const { FlashPromptCommunicator } = load('app/native/flash-prompt-communicator.ios.ts', {
-    '../g2/stock-connection': { StockConnection: Link }, '../g2/flash-prompt-protocol': {}, '../g2/ble-protocol': p,
-    './ios-bluetooth': { iosBluetooth: () => ({}) },
-  }, { setInterval: fn => { heartbeat = fn; return 1; }, clearInterval() {} });
-  const prompt = new FlashPromptCommunicator({ right: 'r', left: 'l' }, 'warning'), errors = [];
-  prompt.onStateChange((state, detail) => { if (state === 'error') errors.push(detail); });
-  prompt.start(); await flush(); heartbeat(); await flush();
-  assert.deepEqual(errors, ['Lost connection to the right lens.']); prompt.close();
+    './ios-bluetooth': bluetooth(), './kotlin-listener.ios': listenerModule,
+  }, { FaceclawKitIosFlashPrompt, FaceclawKitFaceclawFlashPromptListener: {} });
+  const prompt = new FlashPromptCommunicator({ right: 'r', left: 'l' }, 'warning', { skipPrompt: true }), states = [], results = [], batteries = [];
+  prompt.onStateChange((state, detail) => states.push(`${state}:${detail}`)); prompt.onResult(approved => results.push(approved)); prompt.onBattery(b => batteries.push(b));
+  prompt.start(); prompt.start(); await settle();
+  assert.equal(instances.length, 1); assert.deepEqual(instances[0].args, ['R-ID', 'L-ID', 'warning', true]); assert.equal(instances[0].started, 1);
+  const listener = instances[0].listener;
+  listener.onStateStateDetail('connected', ''); listener.onBatteryRightPercentLeftPercent(88, -1); listener.onResultApproved(true);
+  listener.onStateStateDetail('error', 'Lost connection to the right lens.'); await settle();
+  assert.deepEqual(states, ['connecting:', 'connected:', 'error:Lost connection to the right lens.']);
+  assert.deepEqual(JSON.parse(JSON.stringify(batteries)), [{ right: 88, left: null }]); assert.deepEqual(results, [true]);
+  prompt.close(); assert.equal(instances[0].closed, true);
+  const unresolved = load('app/native/flash-prompt-communicator.ios.ts', {
+    './ios-bluetooth': bluetooth({}, 'Wake the glasses.'), './kotlin-listener.ios': listenerModule,
+  }, { FaceclawKitIosFlashPrompt, FaceclawKitFaceclawFlashPromptListener: {} });
+  const failed = new unresolved.FlashPromptCommunicator({ right: 'r', left: 'l' }, 'warning'), errors = [];
+  failed.onStateChange((state, detail) => { if (state === 'error') errors.push(detail); });
+  failed.start(); await settle(); assert.deepEqual(errors, ['Wake the glasses.']); assert.equal(instances.length, 1);
 });
 
 test('iOS onboarding returns to the existing main controller, or creates it after first setup', () => {
@@ -117,37 +149,34 @@ test('pinned stock firmware reproduces the custom image, extracts fonts, and pas
     '../util/hex-util': require('../.test-build/app/util/hex-util.js'), '../graphics/evenhub-font': { EvenHubFont: { invalidate() {} } },
     '../native/firmware-files': { firmwareSha256: hash, writeFirmwareFile: (file, buffer) => fs.writeFileSync(file, new Uint8Array(buffer)) },
   });
-  const { validateFirmware } = require('../.test-build/app/g2/firmware-ota.js');
   const stock = await builder.buildStockFirmware(); assert.equal(stock.sha256, patches.CFW_PATCH_SET.baseSha256);
-  assert.equal(validateFirmware(fs.readFileSync(stock.path)).length, 6);
   const custom = await builder.buildCustomFirmware(); assert.equal(hash(fs.readFileSync(custom.path)), patches.CFW_PATCH_SET.outputSha256);
-  assert.equal(validateFirmware(fs.readFileSync(custom.path)).length, 6);
   assert.equal(builder.hasExtractedEvenHubFonts(), true);
 });
 
-for (const unsolicited of [false, true]) test(`iOS firmware probe ${unsolicited ? 'accepts a version push with device-owned magic' : 'falls back to the left lens after a silent right lens'}`, async () => {
-  const p = require('../.test-build/app/g2/ble-protocol.js'), calls = [];
-  let listener;
-  const str = (field, text) => p.bytes(field, new Uint8Array(Buffer.from(text)));
-  const version = { sid: p.SID.settings, payload: p.concat(p.bytes(4, p.concat(str(5, '2.2.9.22'), str(6, '2.2.9.22'))), str(100, 'faceclaw/13')) };
-  class Link {
-    onMessage(fn) { listener = fn; } async resolve() {} check() {} isConnected() { return true; }
-    async connect(role) { calls.push(`connect:${role}`); }
-    async authenticate(role) { calls.push(`auth:${role}`); }
-    async request(role, sid) {
-      if (sid === p.SID.launch) return {};
-      if (role === 'right') { if (unsolicited) listener(role, version); throw new Error('Timeout'); }
-      return version;
-    }
-    close() { calls.push('close'); }
-  }
+test('iOS firmware probe resolves identifiers, runs the Kotlin flow and settles once', async () => {
+  const instances = [];
+  const FaceclawKitIosDeviceInfoProbe = { alloc: () => ({ initWithRightAddressLeftAddress(right, left) {
+    const probe = { args: [right, left], listener: null, closed: 0, setListenerListener(listener) { this.listener = listener; }, start() { this.started = true; }, cancel() {}, close() { this.closed++; } };
+    instances.push(probe); return probe;
+  } }) };
   const { DeviceInfoProbe } = load('app/native/device-info-probe.ios.ts', {
-    '../g2/stock-connection': { StockConnection: Link, StockTimeout: class extends Error {} },
-    '../g2/ble-protocol': p, './ios-bluetooth': { iosBluetooth: () => ({}) },
-  });
-  const info = await new DeviceInfoProbe('r', 'l').run();
-  assert.equal(info.rightVersion, '2.2.9.22'); assert.equal(info.leftVersion, '2.2.9.22'); assert.equal(info.extension, 'faceclaw/13');
-  assert.deepEqual(calls, ['connect:right', 'auth:right', 'connect:left', 'auth:left', 'close']);
+    './ios-bluetooth': bluetooth(), './kotlin-listener.ios': listenerModule,
+  }, { FaceclawKitIosDeviceInfoProbe, FaceclawKitFaceclawDeviceInfoProbeListener: {} });
+  const probe = new DeviceInfoProbe('r', 'l'), states = [];
+  probe.onStateChange((state, detail) => states.push(`${state}:${detail}`));
+  const pending = probe.run(); await settle();
+  assert.deepEqual(instances[0].args, ['R-ID', 'L-ID']); assert.equal(instances[0].started, true);
+  instances[0].listener.onStateStateDetail('querying', 'right');
+  instances[0].listener.onResultLeftVersionRightVersionExtension('2.2.9.22', '2.2.9.22', 'faceclaw/13');
+  instances[0].listener.onErrorMessage('late error is ignored');
+  const info = await pending; await settle();
+  assert.deepEqual(JSON.parse(JSON.stringify(info)), { leftVersion: '2.2.9.22', rightVersion: '2.2.9.22', extension: 'faceclaw/13' });
+  assert.deepEqual(states, ['connecting:right', 'querying:right']); assert.equal(instances[0].closed, 1);
+  const failing = new DeviceInfoProbe('r'); const failed = failing.run(); await settle();
+  assert.deepEqual(instances[1].args, ['R-ID', '']);
+  instances[1].listener.onErrorMessage("Connected, but couldn't read a firmware version.");
+  await assert.rejects(failed, /firmware version/);
 });
 
 test('iOS discovery stops pending scans on cancellation and ignores a late permission result', async () => {

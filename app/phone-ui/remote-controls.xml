@@ -43,7 +43,7 @@
       </GridLayout>
       <GridLayout rows="auto" columns="auto,*,auto" class="settings-row">
         <Label col="0" text="☀" class="brightness-icon" verticalAlignment="center" />
-        <Slider col="1" width="100%" minValue="0" maxValue="100" value="{{ brightnessPercent }}" valueChange="{{ onBrightnessChange }}" isEnabled="{{ brightnessSliderEnabled }}" />
+        <Slider col="1" width="100%" minValue="2" maxValue="100" value="{{ brightnessPercent }}" valueChange="{{ onBrightnessChange }}" isEnabled="{{ brightnessSliderEnabled }}" />
         <StackLayout col="2" orientation="horizontal" verticalAlignment="center" class="auto-toggle">
           <Label text="Auto" verticalAlignment="center" />
           <Switch checked="{{ brightnessAuto }}" checkedChange="{{ onBrightnessAutoChange }}" />

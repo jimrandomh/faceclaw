@@ -29,6 +29,7 @@ function worker() {
     scheduleRender() { renderCount++; }, renderAndSubmit() {}, maybeReconnectView() {},
     // Glanceboard publication is outside the sidebar activity fixture.
     publishSessionsSnapshot() {},
+    hasTerminalBackgroundWork: () => false,
     controlsInitialized: true, controls: new Map(), TERMINAL_TOOLS: [],
     getTerminalFontConfig: () => ({ cellWidth: 6, cellHeight: 12 }),
   };

@@ -1,5 +1,4 @@
 import { fromData, toData } from '../native/kotlin-data'
-import type { TextureFrame } from '../g2/texture-planner'
 import type { SurfaceConfiguration, SurfaceRect } from './surface-compositor'
 export type { SurfaceConfiguration, SurfaceRect } from './surface-compositor'
 declare const FaceclawKitIosSurfaceCompositor: any
@@ -19,6 +18,7 @@ export class SurfaceCompositor {
   }
   removeSurface(id: string): void { this.native.removeId(id); this.surfaces.delete(id) }
   setSurfaceVisible(id: string, visible: boolean): void { this.native.visibleIdVisible(id, visible) }
+  setSurfaceDepth(id: string, depth: number): void { this.native.depthIdDepth(id, depth) }
   setUnderlayDim(belowZOrder: number, factor: number): void {
     if (!Number.isFinite(factor)) throw new Error('Invalid dim factor')
     this.native.dimBelowFactor(belowZOrder, factor)
@@ -33,9 +33,6 @@ export class SurfaceCompositor {
     this.native.submitDrawsIdDataXYWidthHeightDraws(id, toData(pixels), rect.x, rect.y, rect.width, rect.height,
       draws ? toData(new Uint8Array(draws)) : null)
   }
+  setShellScene(bytes: Uint8Array): void { this.native.shellData(toData(bytes)) }
   composite(): Uint8Array { return fromData(this.native.composite()) }
-  compositeFrame(): { pixels: Uint8Array; textures: TextureFrame } {
-    const native = this.native.compositeFrame()
-    return { pixels: fromData(native.pixels), textures: { native } }
-  }
 }

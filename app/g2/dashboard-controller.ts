@@ -1,6 +1,6 @@
 import { startRemoteInput } from "../remote/service";
 import { acceptInput, resetRingInputFilter } from "../ui/input-monitor";
-import { Application, ImageSource } from "@nativescript/core";
+import { Application, Dialogs, ImageSource } from "@nativescript/core";
 import { EvenAIStatus, EvenAIStatusName, EventSourceType, EventSourceTypeName, OsEventTypeList, OsEventTypeName, WatchGestureType, WatchGestureTypeName } from "./events";
 import { isValidMacAddress, loadDeviceAddresses } from "./device-addresses";
 import {
@@ -71,7 +71,7 @@ import { loadPersistedOpenApps, savePersistedOpenApps } from "../ui/shell/open-a
 import { appViewportRect, SIDEBAR_WIDTH, sidebarStripVisible, type WindowHeightMode } from "../ui/shell/geometry";
 import { type LayerActions, type TextSettingsEditToggle } from "../ui/layers";
 import { type KeyboardInputSession } from "../ui/shell/keyboard-input";
-import { assistantAllowProactiveSetting, assistantBackendSetting, assistantBridgeHostSetting, assistantBridgePortSetting, assistantBridgeTokenSetting, brightnessSetting, brightnessSettingToLevel, displayModeSetting, navigateDisplayModeSetting, navigateVerticalPositionSetting, terminalDisplayModeSetting, terminalVerticalPositionSetting, elevenLabsApiKeySetting, getStringSettingById, openAiApiKeySetting, nightscoutApiTokenSetting, firmwareDebugFlagsSetting, lockScreenEnabledSetting, nightscoutSiteUrlSetting, onAnySettingChanged, previewColorSetting, ringConnectionModeSetting, saveVoiceRecordingsSetting, sonioxApiKeySetting, screenTimeoutSetting, screenTimeoutSettingToMs, suspendEvenHubWhenScreenOffSetting, verticalPositionSetting, voiceProviderSetting, wakeWordActionSetting, type ConfigSettingString } from "../ui/dashboard-settings";
+import { assistantAllowProactiveSetting, assistantBackendSetting, assistantBridgeHostSetting, assistantBridgePortSetting, assistantBridgeTokenSetting, getBrightnessPreferences, displayModeSetting, navigateDisplayModeSetting, navigateVerticalPositionSetting, terminalDisplayModeSetting, terminalVerticalPositionSetting, elevenLabsApiKeySetting, getStringSettingById, openAiApiKeySetting, nightscoutApiTokenSetting, firmwareDebugFlagsSetting, lockScreenEnabledSetting, nightscoutSiteUrlSetting, onAnySettingChanged, previewColorSetting, ringConnectionModeSetting, saveVoiceRecordingsSetting, sonioxApiKeySetting, screenTimeoutSetting, screenTimeoutSettingToMs, suspendEvenHubWhenScreenOffSetting, verticalPositionSetting, voiceProviderSetting, wakeWordActionSetting, type ConfigSettingString } from "../ui/dashboard-settings";
 import { isIgnoringBatteryOptimizations, requestIgnoreBatteryOptimizations } from "../native/battery-optimization";
 import {
   getInstalledEvenHubAppById,
@@ -213,6 +213,13 @@ class DashboardController {
    */
   private activeTextEditorOnCancel: (() => void) | null = null;
   private activeTextEditorToggle: TextSettingsEditToggle | null = null;
+  /**
+   * The active settings' values (and the toggle's) when the edit began. The
+   * phone fields write through on every keystroke, so this is what the
+   * editor's Cancel button puts back.
+   */
+  private activeTextSettingOriginalValues: string[] = [];
+  private activeTextEditorToggleOriginalValue = false;
   private evenNotificationActive = false;
   private evenAppConflictMessage = "";
   private firmwareWarningMessage = "";
@@ -276,7 +283,6 @@ class DashboardController {
   private lockSurfaceConfigured = false;
   private lastLockScreenEnabled = lockScreenEnabledSetting.get();
   private offState: (() => void) | null = null;
-  private offLog: (() => void) | null = null;
   private offRing: (() => void) | null = null;
   private offBattery: (() => void) | null = null;
   private offSilentMode: (() => void) | null = null;
@@ -909,11 +915,14 @@ class DashboardController {
    */
   private pushBrightness(force = false): void {
     if (!this.communicator) return;
-    const value = brightnessSetting.get();
+    const preferences = getBrightnessPreferences();
+    const value = JSON.stringify(preferences);
     if (!force && value === this.lastPushedBrightness) return;
     this.lastPushedBrightness = value;
-    const level = brightnessSettingToLevel(value);
-    void this.communicator.setBrightness(level === null, level ?? 0).catch(() => {});
+    void this.communicator.configureBrightness(preferences).catch((error) => {
+      this.lastPushedBrightness = null;
+      this.appendLog(`brightness configuration failed: ${this.formatError(error)}`);
+    });
   }
 
   /** Save the occupied part of the composited screen as a 4-bit grayscale PNG. */
@@ -1007,30 +1016,12 @@ class DashboardController {
    * charging and silent mode both make the display unavailable while BLE stays
    * up, and a battery that just ran out simply stops answering.
    */
-  /**
-   * Drop a stale silent-mode belief when the glasses do something they could
-   * not do in silent mode. The firmware blanks the display and ignores input
-   * while silent, so input or a presented frame is direct evidence it ended.
-   */
-  private clearSilentModeOnEvidence(reason: string): void {
-    if (!this.silentMode) return;
-    this.silentMode = false;
-    this.appendLog(`silent mode cleared: ${reason}`);
-    this.emit();
-  }
-
   private displayPreviewMessage(): string {
     if (this.phase === "charging") {
       return this.glassesDisplayLabel();
     }
     if (this.silentMode && this.phase === "connected") {
-      // Say how to leave it. Silent mode is entered and exited only by the
-      // same gesture on the glasses, the firmware ignores all input and blanks
-      // the display while it is on, and nothing here can turn it off -- there
-      // is no setter, only onSilentMode. So a user who triggered it by
-      // accident sees a connected pair of glasses that answers nothing, with
-      // no way to find out why. The instruction belongs where they are looking.
-      return "Connected (Silent mode — long-press both touchpads on the glasses to exit)";
+      return "Connected (Silent mode enabled)";
     }
     // The preview compositor keeps the mirror live (including as a black
     // frame while the simulated screen is off), so never cover it.
@@ -1354,9 +1345,13 @@ class DashboardController {
         ring: ringAddress,
       });
       this.communicator = communicator;
-      this.offLog = communicator.onLog((line) => {
-        this.appendLog(line);
-      });
+      // Size the compositor before anything else is awaited: windows opened
+      // during the bridge start-ups below (the terminal hub, restored apps)
+      // configure their surfaces through this.communicator, and the Java call
+      // queue is FIFO, so enqueuing the screen size first guarantees it lands
+      // ahead of them. Mirrors ensurePreviewDisplay.
+      await communicator.configureCompositorScreen(G2_LENS_WIDTH, G2_LENS_HEIGHT);
+      await communicator.configureBrightness(getBrightnessPreferences());
       this.offState = communicator.onStateChange((state) => {
         if (state.phase !== "connected") resetRingInputFilter();
         if (state.phase === "unpaired") {
@@ -1417,12 +1412,6 @@ class DashboardController {
         }
       });
       this.offRing = communicator.onRingEvent((event) => {
-        // Input is proof silent mode ended: the firmware ignores all input while
-        // it is on, so one cannot arrive in that state. silentMode is otherwise
-        // cleared only on a disconnect, on the assumption that the firmware
-        // re-reports it, so a toggle made on the glasses without the link ever
-        // dropping leaves the phone claiming silent mode indefinitely.
-        this.clearSilentModeOnEvidence("input from the glasses");
         void this.handleInputEvent(event).catch((error) => {
           const message = this.formatError(error);
           this.appendLog(`input handler failed: ${message}`);
@@ -1530,7 +1519,6 @@ class DashboardController {
       await nightscoutBridge.start();
       // Register the compositor surfaces: the shell chrome above all windows,
       // and a surface per live window (only the foreground one is composited).
-      await communicator.configureCompositorScreen(G2_LENS_WIDTH, G2_LENS_HEIGHT);
       await communicator.configureSurface(SHELL_SURFACE_ID, {
         x: 0,
         y: 0,
@@ -1575,8 +1563,6 @@ class DashboardController {
       const message = this.formatError(error);
       this.offState?.();
       this.offState = null;
-      this.offLog?.();
-      this.offLog = null;
       this.offRing?.();
       this.offRing = null;
       this.offBattery?.();
@@ -1715,8 +1701,6 @@ class DashboardController {
     this.clearDashboardTimer();
     this.offState?.();
     this.offState = null;
-    this.offLog?.();
-    this.offLog = null;
     this.offRing?.();
     this.offRing = null;
     this.offBattery?.();
@@ -1920,9 +1904,11 @@ class DashboardController {
     onCancel?: () => void,
   ): void {
     this.activeTextSettings = Array.from(settings.slice(0, 2));
+    this.activeTextSettingOriginalValues = this.activeTextSettings.map((setting) => setting.get());
     this.activeTextEditorTitle = title;
     this.activeTextEditorOnFinish = onFinish ?? null;
     this.activeTextEditorToggle = toggle ?? null;
+    this.activeTextEditorToggleOriginalValue = toggle?.setting.get() ?? false;
     this.activeTextEditorOnCancel = onCancel ?? null;
     this.emit();
   }
@@ -2044,6 +2030,7 @@ class DashboardController {
     // finishTextSettingEdit clears this first, so a completed edit never fires it.
     const onCancel = this.activeTextEditorOnCancel;
     this.activeTextSettings = [];
+    this.activeTextSettingOriginalValues = [];
     this.activeTextEditorTitle = "";
     this.activeTextEditorOnFinish = null;
     this.activeTextEditorToggle = null;
@@ -2062,6 +2049,11 @@ class DashboardController {
    */
   finishActiveTextSettingEdit(): void {
     if (!this.activeTextSettings.length) return;
+    const invalid = this.activeTextSettings.find(setting => setting.validationError());
+    if (invalid) {
+      void Dialogs.alert({ title: invalid.editorTitle, message: invalid.validationError()!, okButtonText: "OK" });
+      return;
+    }
     const onFinish = this.activeTextEditorOnFinish;
     // Completing is not cancelling: drop the cancel callback before
     // endTextSettingEdit, which fires whatever is still set.
@@ -2072,6 +2064,28 @@ class DashboardController {
       this.textEditorHost.requestRender();
     }
     onFinish?.();
+  }
+
+  /**
+   * The phone editor's Cancel button: put back the values the edit started
+   * with, end the edit as a cancel (the caller's onCancel fires), and
+   * navigate the Settings app's glasses editor out of the edit page.
+   */
+  cancelActiveTextSettingEdit(): void {
+    if (!this.activeTextSettings.length) return;
+    this.activeTextSettings.forEach((setting, index) => {
+      const original = this.activeTextSettingOriginalValues[index] ?? "";
+      if (setting.get() !== original) setting.set(original);
+    });
+    const toggle = this.activeTextEditorToggle;
+    if (toggle && toggle.setting.get() !== this.activeTextEditorToggleOriginalValue) {
+      toggle.setting.set(this.activeTextEditorToggleOriginalValue);
+    }
+    const closesGlassesEditor = this.activeTextSettings.length === 1;
+    this.endTextSettingEdit();
+    if (closesGlassesEditor && this.textEditorHost?.closeTextEditor()) {
+      this.textEditorHost.requestRender();
+    }
   }
 
   private updateTextSetting(setting: ConfigSettingString, value: string): void {
@@ -2279,6 +2293,7 @@ class DashboardController {
     const host = new WorkerAppHost({
       appId,
       worker: createWorker(),
+      onStopping: () => { if (this.appHosts.get(appId) === host) this.appHosts.delete(appId); },
       configureSurface: (surfaceId, visible, heightMode) =>
         this.configureWindowSurface(surfaceId, visible, heightMode),
       setSurfaceVisible: (surfaceId, visible) => this.setWindowSurfaceVisible(surfaceId, visible),
@@ -2510,7 +2525,7 @@ class DashboardController {
     beginRenderPass(!wantFreshData);
     const paintStartedAtMs = Date.now();
     const planes = frameTimings.span(frameId, "paint", () =>
-      frameTimings.runWithFrame(frameId, () => shell.paintSurface()),
+      frameTimings.runWithFrame(frameId, () => shell.paintScene()),
     );
     const paintMs = Date.now() - paintStartedAtMs;
     const paintUsedStaleData = endRenderPass();
@@ -2527,35 +2542,7 @@ class DashboardController {
       frameTimings.finishFrame(frameId, "discarded: shell render with no display target");
       return;
     }
-    // A display target is standing, which silent mode does not leave in place.
-    // Evidence enough to drop the flag even if the user never touches the glasses.
-    this.clearSilentModeOnEvidence("the glasses are presenting frames");
-    // A shell overlay that dims what it covers (a context menu) must dim the
-    // window surfaces too, which live below the shell surface in the
-    // compositor: forward the factor before this frame composites.
-    const underlayDim = shell.underlayDim();
-    if (underlayDim !== this.appliedUnderlayDim) {
-      this.appliedUnderlayDim = underlayDim;
-      await display.setUnderlayDim(SHELL_SURFACE_Z_ORDER, underlayDim);
-    }
-    const fingerprint = frameTimings.span(frameId, "fingerprint", () => planesFingerprint(planes));
-    const { image, draws } = frameTimings.span(frameId, "flatten", () => flattenPlanesWithDraws(planes));
-    const buffer = frameTimings.span(frameId, "to8bpp", () => image.to8bppBuffer());
-    const preparedDraws = frameTimings.span(frameId, "prepareFrameDraws", () => prepareFrameDraws(draws));
-    // Spanned because the bridge serializes Java calls: a frame can sit here
-    // behind another surface's submission, which is otherwise an unexplained
-    // jump between the paint spans and the composite.
-    await frameTimings.spanAsync(frameId, "submit", () =>
-      display.submitSurfaceFrame(
-        SHELL_SURFACE_ID,
-        buffer,
-        { x: 0, y: 0, width: image.width, height: image.height },
-        fingerprint,
-        paintMs,
-        frameId,
-        preparedDraws,
-      ),
-    );
+    await frameTimings.spanAsync(frameId, "submit", () => display.submitShellScene(planes, paintMs, frameId));
     // Backpressure: the next shell render waits for this one to reach the
     // glasses. Timing out here means the loop was blocked for the full timeout
     // and any input arriving meanwhile had its chrome repaint delayed, so say
@@ -2664,7 +2651,7 @@ class DashboardController {
   }
 
   private appendLog(line: string): void {
-    console.log(`[${formatTimestamp(new Date())}] ${line}`);
+    //console.log(`[${formatTimestamp(new Date())}] ${line}`);
   }
 
   private setDisplayPreview(preview: ImageSource | null): void {
@@ -2681,6 +2668,22 @@ class DashboardController {
    */
   private previewTrailingTimer: ReturnType<typeof setTimeout> | null = null;
   private lastRecordCaptureAtMs = 0;
+  private phonePreviewVisible: (() => boolean) | null = null;
+
+  /** The main page owns the mirror; other phone pages must not keep it rendering. */
+  attachPhonePreview(isVisible: () => boolean): () => void {
+    this.phonePreviewVisible = isVisible;
+    this.lastConnectedPreviewUpdateAtMs = 0;
+    this.updateCompositePreview();
+    return () => {
+      if (this.phonePreviewVisible !== isVisible) return;
+      this.phonePreviewVisible = null;
+      if (this.previewTrailingTimer) {
+        clearTimeout(this.previewTrailingTimer);
+        this.previewTrailingTimer = null;
+      }
+    };
+  }
 
   /**
    * Refresh the preview now if the floor allows, otherwise once the floor
@@ -2688,6 +2691,7 @@ class DashboardController {
    * of waiting for the safety-net poll.
    */
   private schedulePreviewUpdate(): void {
+    if (!this.phonePreviewVisible && !this.screenRecordingActive) return;
     if (this.previewTrailingTimer) return;
     const wait = this.lastConnectedPreviewUpdateAtMs + CONNECTED_PREVIEW_MIN_UPDATE_MS - Date.now();
     if (wait <= 0) {
@@ -2715,6 +2719,13 @@ class DashboardController {
       return;
     }
     this.lastConnectedPreviewUpdateAtMs = now;
+    // A user-requested GIF is an independent consumer, including while the
+    // phone is asleep or another page/app is foregrounded.
+    if (this.screenRecordingActive && now - this.lastRecordCaptureAtMs >= RECORDING_MIN_CAPTURE_MS) {
+      this.lastRecordCaptureAtMs = now;
+      display.recordScreenFrame();
+    }
+    if (!this.phonePreviewVisible?.()) return;
     // The connected foreground service intentionally keeps this controller
     // alive after the phone UI is backgrounded. Do not keep constructing
     // 640x480 Android Bitmaps for a window that cannot display them: besides
@@ -2723,10 +2734,8 @@ class DashboardController {
     if (global.isAndroid) {
       const activity = Application.android.foregroundActivity;
       if (!activity || !activity.hasWindowFocus()) return;
-    }
-    if (this.screenRecordingActive && now - this.lastRecordCaptureAtMs >= RECORDING_MIN_CAPTURE_MS) {
-      this.lastRecordCaptureAtMs = now;
-      display.recordScreenFrame();
+      const power = activity.getSystemService(android.content.Context.POWER_SERVICE) as android.os.PowerManager;
+      if (!power?.isInteractive()) return;
     }
     const preview = display.getCompositePreview(previewColorSetting.get() === "green");
     if (preview) {

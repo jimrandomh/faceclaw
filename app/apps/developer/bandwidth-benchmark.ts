@@ -2,8 +2,8 @@ import { getDefaultSmallFont } from "../../graphics/ui-fonts";
 import { GrayImage } from "../../graphics/image";
 import { Layer, type LayerContext } from "../../ui/layers";
 import { type InputEvent } from "../../ui/gestures";
-import { drawSelectionHighlight } from "../../ui/menu";
-import { tightRowHeight } from "../../ui/metrics";
+import { Menu, type MenuDrawArgs } from "../../ui/menu-core";
+import { centeredTextY, tightRowHeight } from "../../ui/metrics";
 import {
   cancelBandwidthBenchmark,
   getBandwidthBenchmarkStatus,
@@ -29,6 +29,7 @@ const LIST_X = 20;
 const VALUE_X = 150;
 
 type Phase = "config" | "arming" | "running" | "done";
+type ConfigRow = "size" | "window" | "link" | "start";
 
 /**
  * BLE bandwidth benchmark: pick a message size and pipeline window, stream
@@ -38,7 +39,14 @@ type Phase = "config" | "arming" | "running" | "done";
  */
 export class BandwidthBenchmarkLayer implements Layer {
   private phase: Phase = "config";
-  private selectedRow = 0; // size, window, link preference, start
+  private readonly menu = new Menu<ConfigRow>({
+    items: ["size", "window", "link", "start"],
+    wrap: false,
+    rowGap: 1,
+    highlight: { radius: 4 },
+    getHeight: () => tightRowHeight(getDefaultSmallFont()) + 4,
+    draw: (args) => this.drawRow(args),
+  });
   private sizeIndex = 2;
   private windowIndex = 2;
   private linkModeIndex = 0;
@@ -134,26 +142,14 @@ export class BandwidthBenchmarkLayer implements Layer {
     }
 
     const rowH = tightRowHeight(font) + 4;
-    const rows: Array<[string, string]> = [
-      ["Message size", `${MESSAGE_SIZES[this.sizeIndex]} B`],
-      ["Window size", `${WINDOW_SIZES[this.windowIndex]}`],
-      ["Link request", LINK_MODES[this.linkModeIndex]!],
-      [this.phase === "done" ? "Run again" : "Start", ""],
-    ];
-    for (let index = 0; index < rows.length; index++) {
-      const [label, value] = rows[index]!;
-      const y = HEADER_HEIGHT + index * rowH;
-      const selected = index === this.selectedRow;
-      if (selected) {
-        drawSelectionHighlight(image, LIST_X - 6, y - 1, width - 2 * LIST_X + 12, rowH - 1, ctx.stack.isFocused(), 4);
-      }
-      image.drawText(font, LIST_X, y + 2, label, selected ? 255 : 200);
-      if (value) {
-        image.drawText(font, VALUE_X, y + 2, value, selected ? 235 : 160);
-      }
-    }
+    const rowCount = this.menu.items.length;
+    this.menu.paint(
+      image,
+      { x: LIST_X - 6, y: HEADER_HEIGHT - 1, width: width - 2 * LIST_X + 12, height: rowCount * rowH },
+      ctx.stack.isFocused(),
+    );
 
-    let y = HEADER_HEIGHT + rows.length * rowH + 10;
+    let y = HEADER_HEIGHT + rowCount * rowH + 10;
     if (this.error) {
       image.drawText(font, LIST_X, y, this.error, 180);
     } else if (this.result) {
@@ -176,6 +172,21 @@ export class BandwidthBenchmarkLayer implements Layer {
     return image;
   }
 
+  private drawRow({ image, item, x, y, height, selected }: MenuDrawArgs<ConfigRow>): void {
+    const font = getDefaultSmallFont();
+    const [label, value]: [string, string] =
+      item === "size" ? ["Message size", `${MESSAGE_SIZES[this.sizeIndex]} B`]
+      : item === "window" ? ["Window size", `${WINDOW_SIZES[this.windowIndex]}`]
+      : item === "link" ? ["Link request", LINK_MODES[this.linkModeIndex]!]
+      : [this.phase === "done" ? "Run again" : "Start", ""];
+    const textY = centeredTextY(font, y, height);
+    // Text sits 6px in from the row box (LIST_X), values at VALUE_X.
+    image.drawText(font, x + 6, textY, label, selected ? 255 : 200);
+    if (value) {
+      image.drawText(font, x + 6 + VALUE_X - LIST_X, textY, value, selected ? 235 : 160);
+    }
+  }
+
   async handleInput(event: InputEvent, ctx: LayerContext): Promise<void> {
     if (this.phase === "arming" || this.phase === "running") {
       // A static screen during the run: only allow bailing out.
@@ -186,22 +197,22 @@ export class BandwidthBenchmarkLayer implements Layer {
     }
     switch (event.type) {
       case "scroll-up":
-        this.selectedRow = Math.max(0, this.selectedRow - 1);
-        return;
       case "scroll-down":
-        this.selectedRow = Math.min(3, this.selectedRow + 1);
+        await this.menu.handleInput(event);
         return;
-      case "click":
-        if (this.selectedRow === 0) {
+      case "click": {
+        const row = this.menu.selectedItem;
+        if (row === "size") {
           this.sizeIndex = (this.sizeIndex + 1) % MESSAGE_SIZES.length;
-        } else if (this.selectedRow === 1) {
+        } else if (row === "window") {
           this.windowIndex = (this.windowIndex + 1) % WINDOW_SIZES.length;
-        } else if (this.selectedRow === 2) {
+        } else if (row === "link") {
           this.linkModeIndex = (this.linkModeIndex + 1) % LINK_MODES.length;
-        } else {
+        } else if (row === "start") {
           this.startRun();
         }
         return;
+      }
       case "double-click":
         ctx.stack.pop();
         return;

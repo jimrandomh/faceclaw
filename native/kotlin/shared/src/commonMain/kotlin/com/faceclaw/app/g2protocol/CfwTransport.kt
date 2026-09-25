@@ -48,6 +48,7 @@ class CfwTransport(private val platform: ProtocolPlatform) {
         }
 
     companion object {
+        /** Mirrors g2flash/patches/message_transport.h. */
         const val SID = 0xf0
         const val BOTH = 3
         const val MAX_MESSAGE = 65535

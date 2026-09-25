@@ -10,7 +10,7 @@ class JavaCompatibilityTest {
 
     @Test fun gestures() = FaceclawGestureEventTest.main(emptyArray())
 
-    @Test fun textureCache() = TextureCacheProtocolTest.main(emptyArray())
+    @Test fun resourceCache() = ResourceCacheProtocolTest.main(emptyArray())
 }
 
 class AndroidByteReaderTest {

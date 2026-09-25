@@ -1,13 +1,16 @@
 This is Faceclaw, an Android program that provides user interface on the Even
 Realities G2 smart glasses. It is written in a mix of Typescript/NativeScript
-(for the user interface parts) and Java (for the low-level bluetooth parts and
+(for the user interface parts) and Kotlin (for the low-level bluetooth parts and
 for interfacing with Android SDK).
 
-Typescript parts are in app/. Java parts are in App_Resources/Android/src/main/java/com/faceclaw/app/.
+Typescript parts are in app/. Android-specific Kotlin parts are in
+App_Resources/Android/src/main/java/com/faceclaw/app/ (compiled by the NativeScript
+Android build; only the vendored com.k2fsa.sherpa.onnx JNI classes there remain Java).
+Shared Kotlin Multiplatform code is in native/kotlin/shared/ (see native/kotlin/README.md).
 
 wear/ is a separate Gradle project (Kotlin + Compose for Wear OS): the watch
 remote that drives Faceclaw over the Wearable Data Layer. Its phone-side
-counterparts are FaceclawWearBridge.java, app/native/wear-bridge.ts and
+counterparts are FaceclawWearBridge.kt, app/native/wear-bridge.ts and
 app/g2/wear-remote.ts; the message format is in wear/PROTOCOL.md.
 
 `build.sh` and `build_wear.sh` build the Android and Wear OS apps respectively.

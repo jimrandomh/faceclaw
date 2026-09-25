@@ -8,6 +8,8 @@
  *
  * The formulas reproduce the pre-TTF constants exactly at the 12px default:
  * listRowHeight 20, tightRowHeight 16, lineStep 14, menuTitleHeight 16.
+ * tightRowHeight follows the measured ink rather than the line box, which
+ * for Terminus is the same thing.
  */
 import type { UiFont } from "../graphics/image";
 
@@ -20,13 +22,71 @@ export function listRowHeight(font: UiFont): number {
 export const LIST_ROW_TEXT_INSET = 4;
 
 /**
- * Height of one row in dense lists (file browser, track lists). Grows at
- * half the lineHeight's rate above the 12px anchor: TTF line heights carry
- * internal leading that already reads as row spacing, so full-rate growth
- * made large-font rows feel too tall.
+ * Characters whose ink bounds a font's text rows: accented capitals (the
+ * highest Latin marks), descenders, brackets, and digits.
+ */
+const INK_SAMPLE = "ÅÉÎÖÇÑbdfhklgjpqy()[]{}|/_0123456789";
+
+export type TextInkBounds = {
+  /** First inked row, relative to the drawText y (the line top); may be negative. */
+  top: number;
+  /** One past the last inked row, relative to the line top; may exceed lineHeight. */
+  bottom: number;
+};
+
+const inkBoundsCache = new WeakMap<UiFont, TextInkBounds>();
+
+/**
+ * The vertical extent of a font's ink over a representative sample, measured
+ * from the rendered glyphs. Bitmap faces fill their line box exactly; TTF
+ * faces may leave internal leading inside it or overshoot it with marks.
+ * Falls back to the line box when the font renders no sample ink.
+ */
+export function textInkBounds(font: UiFont): TextInkBounds {
+  const cached = inkBoundsCache.get(font);
+  if (cached) return cached;
+  let top = Infinity;
+  let bottom = -Infinity;
+  if (typeof font.getGlyph === "function") {
+    for (const char of INK_SAMPLE) {
+      const glyph = font.getGlyph(char.codePointAt(0)!);
+      if (!glyph || glyph.bbxHeight <= 0) continue;
+      // Same placement as rasterizeGlyph: baseline at y + ascent, bbxY up from it.
+      const glyphTop = font.ascent - (glyph.bbxHeight + glyph.bbxY);
+      top = Math.min(top, glyphTop);
+      bottom = Math.max(bottom, glyphTop + glyph.bbxHeight);
+    }
+  }
+  const bounds = top < bottom ? { top, bottom } : { top: 0, bottom: font.lineHeight };
+  inkBoundsCache.set(font, bounds);
+  return bounds;
+}
+
+/** Height of a font's ink extent (see textInkBounds). */
+export function textInkHeight(font: UiFont): number {
+  const { top, bottom } = textInkBounds(font);
+  return bottom - top;
+}
+
+/**
+ * The drawText y that centers a font's ink vertically in a box, rounding the
+ * spare pixel to the bottom. Pair with row heights derived from
+ * textInkHeight so the ink fits whatever the face's internal leading.
+ */
+export function centeredTextY(font: UiFont, boxTop: number, boxHeight: number): number {
+  const { top } = textInkBounds(font);
+  return boxTop + Math.floor((boxHeight - textInkHeight(font)) / 2) - top;
+}
+
+/**
+ * Row pitch in dense lists (file browser, track lists): the font's ink height
+ * plus 4px, so a selection box one pixel shorter than the pitch keeps at
+ * least a pixel of clearance around the ink. Draw the text with
+ * centeredTextY; a fixed offset from the row top can overflow faces whose
+ * ink starts below their line top.
  */
 export function tightRowHeight(font: UiFont): number {
-  return font.lineHeight + 4 - Math.floor(Math.max(0, font.lineHeight - 12) / 2);
+  return textInkHeight(font) + 4;
 }
 
 /** Step between consecutive lines of body/paragraph text. */

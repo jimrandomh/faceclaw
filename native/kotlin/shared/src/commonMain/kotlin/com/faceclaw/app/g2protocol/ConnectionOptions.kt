@@ -71,8 +71,8 @@ class ConnectionOptions {
     // Falls back to the single bounding box whenever multi-rect isn't smaller.
     @JvmField val MULTI_RECT_FRAMES = true
 
-    // Ship text as on-glasses cached-glyph draws (CFW modes 12/14) instead of
+    // Ship text as on-glasses cached-glyph draws (CFW modes 19/20/21/22) instead of
     // pixels, punching glyph ink out of the baked deltas (see TexturePlanner).
-    // Also gated at runtime on the firmware advertising texcache12 + texstr14.
+    // Also gated at runtime on the firmware advertising Faceclaw/23 or later.
     @JvmField val TEXTURE_CACHE_FRAMES = true
 }

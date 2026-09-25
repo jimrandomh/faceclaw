@@ -1,5 +1,7 @@
 package com.faceclaw.app
 
+import kotlin.jvm.JvmOverloads
+
 /** Sequential little-endian input. Platform adapters can read native buffers without a copy. */
 abstract class ByteReader {
     abstract fun remaining(): Int
@@ -23,14 +25,28 @@ abstract class ByteReader {
     fun getInt(): Int = (getShort().toInt() and 65535) or (getShort().toInt() shl 16)
 }
 
-class ArrayByteReader(private val bytes: ByteArray) : ByteReader() {
-    private var position = 0
+class ArrayByteReader @JvmOverloads constructor(
+    private val bytes: ByteArray,
+    private val start: Int = 0,
+    private val end: Int = bytes.size,
+) : ByteReader() {
+    private var position = start
 
-    override fun remaining(): Int = bytes.size - position
+    init {
+        require(start >= 0 && start <= end && end <= bytes.size)
+    }
 
-    override fun get(): Byte = bytes[position++]
+    override fun remaining(): Int = end - position
 
-    override fun get(index: Int): Byte = bytes[index]
+    override fun get(): Byte {
+        require(remaining() > 0)
+        return bytes[position++]
+    }
+
+    override fun get(index: Int): Byte {
+        require(index >= 0 && index < end - start)
+        return bytes[start + index]
+    }
 
     override fun get(bytes: ByteArray, offset: Int, length: Int): ByteReader {
         require(

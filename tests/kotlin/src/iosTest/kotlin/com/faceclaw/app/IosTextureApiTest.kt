@@ -24,13 +24,14 @@ class IosTextureApiTest {
         val next = IosProtocol().pack(frame.pixels, 8, 4)
         val planner = IosTexturePlanner()
         val cold = assertNotNull(planner.plan(null, next, frame, 1))
-        assertEquals(18, cold.uploads.first().byteArray()[0].toInt())
-        assertEquals(8, cold.payload.byteArray()[0].toInt())
+        assertEquals(27, cold.resourceCommands.first().byteArray()[0].toInt())
+        assertTrue(cold.resourceCommands.any { it.byteArray()[0].toInt() == 21 })
+        assertEquals(28, cold.payload.byteArray()[0].toInt())
         val warm = assertNotNull(planner.plan(null, next, frame, 1))
-        assertTrue(warm.uploads.isEmpty())
+        assertTrue(warm.resourceCommands.isEmpty())
         assertContentEquals(cold.payload.byteArray(), warm.payload.byteArray())
         planner.reset()
-        assertTrue(assertNotNull(planner.plan(null, next, frame, 1)).uploads.isNotEmpty())
+        assertTrue(assertNotNull(planner.plan(null, next, frame, 1)).resourceCommands.isNotEmpty())
         // A partial update clears identities even if the caller supplies stale draws.
         compositor.submitDraws("app", byteArrayOf(-1).data(), 0, 0, 1, 1, imageDraw(id).data())
         assertTrue(compositor.compositeFrame().composite.draws!!.isEmpty())
@@ -50,11 +51,12 @@ class IosTextureApiTest {
         compositor.submitDraws("text", ByteArray(4) { -1 }.data(), 0, 0, 2, 2, draws.data())
         val frame = compositor.compositeFrame()
         val plan = assertNotNull(IosTexturePlanner().plan(null, IosProtocol().pack(frame.pixels, 4, 2), frame, 1))
-        assertTrue(plan.usedBytes > 384)
-        val payload = plan.payload.byteArray()
-        // The last mode-8 submessage is the shared mode-20 cached glyph run.
-        assertEquals(20, payload[payload.size - 12].toInt())
-        assertEquals(65, payload.last().toInt())
+        assertTrue(plan.usedBytes > 2048 + 192)
+        assertEquals(28, plan.payload.byteArray()[0].toInt())
+        assertTrue(plan.resourceCommands.any { command ->
+            val bytes = command.byteArray()
+            bytes[0].toInt() == 26 && bytes.last().toInt() == 65
+        })
     }
 
     @Test
@@ -75,12 +77,14 @@ class IosTextureApiTest {
         compositor.submitDraws("noise", gray.data(), 0, 0, 640, 480, imageDraw(id).data())
         val frame = compositor.compositeFrame()
         val planner = IosTexturePlanner()
-        assertNull(planner.plan(null, IosProtocol().pack(frame.pixels, 640, 480), frame, 1))
+        val noisy = assertNotNull(planner.plan(null, IosProtocol().pack(frame.pixels, 640, 480), frame, 1))
+        assertTrue(noisy.resourceCommands.all { it.length <= 65535uL })
+        planner.reset()
         val small = IosSurfaceCompositor(4, 2)
         small.configure("icon", 0, 0, 2, 2, 0, false)
         small.submitDraws("icon", white, 0, 0, 2, 2, imageDraw(id).data())
         val next = small.compositeFrame()
         val retry = assertNotNull(planner.plan(null, IosProtocol().pack(next.pixels, 4, 2), next, 1))
-        assertTrue(retry.uploads.isNotEmpty(), "the rejected plan's image was never uploaded")
+        assertTrue(retry.resourceCommands.isNotEmpty(), "the rejected plan's image was never uploaded")
     }
 }

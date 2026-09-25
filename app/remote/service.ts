@@ -10,17 +10,33 @@ export function remoteInputStatus(): string { return status; }
 export function remoteInterfaceSelection(): string { return getStringSetting(INTERFACE_STORAGE_KEY, 'tailscale'); }
 export function selectRemoteInterface(value: string): void { setStringSetting(INTERFACE_STORAGE_KEY, value); }
 
-/** Owned by the main controller. Native socket work never enters a JS isolate. */
+/** Owned by the main controller. Native sockets notify JS only for complete requests. */
 export function startRemoteInput(host: RemoteHost): () => void {
-  const native = remoteNative();
-  let timer: ReturnType<typeof setInterval> | null = null;
+  const native = remoteNative(() => { void drain(); });
   let busy = false;
+  let stopped = false;
   let networkTimer: ReturnType<typeof setInterval> | null = null;
+  // A notification while handling another request is covered by the next drain
+  // iteration. No timer or native bridge calls are needed while sockets are idle.
+  const drain = async () => {
+    if (busy || stopped) return;
+    busy = true;
+    try {
+      while (!stopped) {
+        const raw = native.nextRequest();
+        if (!raw) break;
+        const request = JSON.parse(String(raw));
+        if (Date.now() >= request.expiresAt) continue;
+        let reply;
+        try { reply = await handleRequest(request.body, remoteTokens, host); }
+        catch { reply = { ok: false, error: 'failed', message: 'Request failed.' }; }
+        if (!stopped) native.complete(request.id, JSON.stringify(reply));
+      }
+    } finally { busy = false; }
+  };
   const sync = () => {
     if (!remoteTokens.list().length) {
       native.stop();
-      if (timer !== null) clearInterval(timer);
-      timer = null;
       if (networkTimer !== null) clearInterval(networkTimer);
       networkTimer = null;
       status = 'No tokens; listener stopped.';
@@ -34,21 +50,8 @@ export function startRemoteInput(host: RemoteHost): () => void {
     if (failure) status += `\n${failure}`;
     // Reconcile after VPN reconnects/address changes; unchanged sockets stay open.
     if (networkTimer === null) networkTimer = setInterval(sync, 3000);
-    if (timer !== null) return;
-    timer = setInterval(() => {
-      if (busy) return;
-      const raw = native.nextRequest();
-      if (!raw) return;
-      const request = JSON.parse(String(raw));
-      if (Date.now() >= request.expiresAt) return;
-      busy = true;
-      void handleRequest(request.body, remoteTokens, host)
-        .then(reply => native.complete(request.id, JSON.stringify(reply)))
-        .catch(() => native.complete(request.id, JSON.stringify({ ok: false, error: 'failed', message: 'Request failed.' })))
-        .finally(() => { busy = false; });
-    }, 15);
   };
   sync();
   const off = onSettingsStoreChanged(key => { if (key === TOKEN_STORAGE_KEY || key === INTERFACE_STORAGE_KEY) sync(); });
-  return () => { off(); if (timer !== null) clearInterval(timer); if (networkTimer !== null) clearInterval(networkTimer); native.stop(); };
+  return () => { stopped = true; off(); if (networkTimer !== null) clearInterval(networkTimer); native.stop(); };
 }

@@ -3,6 +3,7 @@ import { GlanceBoard } from "./board";
 import { createGlanceboardAppWindow, GLANCEBOARD_SURFACE_ID, GLANCEBOARD_WINDOW_ID } from "./glanceboard-app";
 import {
   glanceboardEnabledSetting,
+  glanceDepth,
   glanceLayout,
   glanceShowOnHeadTiltSetting,
   glanceShowOnLongPressSetting,
@@ -25,6 +26,7 @@ const glanceboardApp: AppDefinition = {
     tapTimeoutMs: glanceTapTimeoutMs,
     showOnLongPress: () => glanceShowOnLongPressSetting.get(),
     showOnHeadTilt: () => glanceShowOnHeadTiltSetting.get(),
+    depth: glanceDepth,
     createBoard: (requestRender) => new GlanceBoard(requestRender),
   },
 };

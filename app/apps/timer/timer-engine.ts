@@ -8,7 +8,7 @@
  *
  * Two expiry paths run side by side: a JS deadline for prompt on-glasses
  * ringing while the process is awake, and an AlarmManager alarm-clock alarm
- * (FaceclawAlarms.java) that rings on the phone at the right moment even if
+ * (FaceclawAlarms.kt) that rings on the phone at the right moment even if
  * the process is asleep or dead. The phone shows the item silently first
  * and adds its own sound when the glasses cannot carry it (not connected,
  * not worn, charging, not shown within seconds, or not acknowledged within

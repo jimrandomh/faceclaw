@@ -1,75 +1,80 @@
 import { ApplicationSettings } from '@nativescript/core'
 import { identifyIosPeripheral, type IosAdvertisement, type IosDevice } from '../g2/ios-peripheral-identity'
 import { hexToBytes } from '../util/hex-util'
+import { kotlinListener } from './kotlin-listener.ios'
 
-declare const FaceclawBluetooth: any
-type NativeEvent = { kind: string; id?: number; error?: string; details?: ConnectionDetails; state?: number;
-  identifier?: string; characteristic?: string; data?: string; message?: string } & Partial<IosAdvertisement>
-export type ConnectionDetails = { characteristics: string[]; maxWrite: number }
-export type BluetoothEvent = NativeEvent | { kind: 'device'; device: IosDevice }
-type Pending = { resolve: (details: ConnectionDetails) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }
+declare const FaceclawKitIosBleCentral: any, FaceclawKitIosProtocolPlatform: any, FaceclawKitIosBleScanListener: any
 
-/** One central manager per app, with asynchronous main-queue GATT operations. */
+/** CBManagerState raw values reported by the Kotlin central. */
+export const BLE_STATE_UNSUPPORTED = 2, BLE_STATE_UNAUTHORIZED = 3, BLE_STATE_POWERED_OFF = 4, BLE_STATE_POWERED_ON = 5
+
+export type BluetoothEvent =
+  | { kind: 'state'; state: number; authorization: number }
+  | { kind: 'advertisement'; identifier: string; name: string; manufacturerData: string; rssi: number; connectable: boolean }
+  | { kind: 'device'; device: IosDevice }
+  | { kind: 'scan-started' }
+  | { kind: 'scan-stopped' }
+
+/**
+ * Scanning and MAC-address-to-identifier resolution over the shared Kotlin CoreBluetooth
+ * central (FaceclawKitIosBleCentral). GATT sessions no longer pass through here: the
+ * session and stock-firmware flows own their own Kotlin centrals. What stays in TypeScript
+ * is the Even classification of advertisements and the persisted identifier map, which the
+ * Android address model (MACs) needs on iOS.
+ */
 export class IosBluetooth {
-  private readonly native = FaceclawBluetooth.new()
+  private readonly native = FaceclawKitIosBleCentral.alloc().initWithPlatform(FaceclawKitIosProtocolPlatform.shared)
   private readonly listeners = new Set<(event: BluetoothEvent) => void>()
-  private readonly pending = new Map<number, Pending>()
-  private readonly advertisements = new Map<string, IosAdvertisement>()
   readonly devices = new Map<string, IosDevice>()
-  private requestId = 0
   private scanTimer: ReturnType<typeof setTimeout> | null = null
   private scanGeneration = 0
+  private readonly scanListener: object
   state = 0
+  authorization = 0
   scanning = false
   constructor() {
-    this.native.eventHandler = (json: string) => {
-      try { this.receive(JSON.parse(json)) } catch (error) { console.error(`[ios-ble] ${error}`) }
-    }
+    this.scanListener = kotlinListener(FaceclawKitIosBleScanListener, {
+      onBluetoothStateStateAuthorization: (state: number, authorization: number) => {
+        this.state = Number(state); this.authorization = Number(authorization)
+        this.emit({ kind: 'state', state: this.state, authorization: this.authorization })
+      },
+      onAdvertisementIdentifierNameManufacturerDataHexRssiConnectable: (identifier: string, name: string, manufacturerData: string, rssi: number, connectable: boolean) => {
+        // The Kotlin central already merges split advertisements and bounds its cache.
+        const raw: IosAdvertisement = { identifier: String(identifier), name: String(name ?? ''), manufacturerData: String(manufacturerData ?? ''), rssi: Number(rssi), connectable: connectable !== false }
+        this.emit({ kind: 'advertisement', ...raw })
+        const device = identifyIosPeripheral(raw)
+        if (device) {
+          this.devices.set(device.address, device)
+          ApplicationSettings.setString(`ios.ble.peripheral.${device.address}`, JSON.stringify({ identifier: device.identifier, role: device.role }))
+          this.emit({ kind: 'device', device })
+        }
+      },
+    })
+    this.native.setScanListenerListener(this.scanListener)
   }
   onEvent(listener: (event: BluetoothEvent) => void): () => void {
     this.listeners.add(listener); return () => { this.listeners.delete(listener) }
   }
   private emit(event: BluetoothEvent): void { for (const listener of [...this.listeners]) listener(event) }
-  private receive(event: NativeEvent): void {
-    if (event.kind === 'completion') {
-      const pending = this.pending.get(event.id!)
-      if (pending) {
-        this.pending.delete(event.id!); clearTimeout(pending.timer)
-        if (event.error) pending.reject(new Error(event.error)); else pending.resolve(event.details!)
-      }
-      return
-    }
-    if (event.kind === 'state') this.state = event.state!
-    if (event.kind === 'advertisement') {
-      const previous = this.advertisements.get(event.identifier!)
-      const raw: IosAdvertisement = { identifier: event.identifier!, name: event.name || previous?.name || '',
-        manufacturerData: event.manufacturerData || previous?.manufacturerData || '', rssi: event.rssi!, connectable: event.connectable !== false }
-      // Bound the cache even in a crowded radio environment.
-      if (this.advertisements.size >= 512 && !this.advertisements.has(raw.identifier)) this.advertisements.delete(this.advertisements.keys().next().value!)
-      this.advertisements.set(raw.identifier, raw)
-      const device = identifyIosPeripheral(raw)
-      if (device) {
-        this.devices.set(device.address, device)
-        ApplicationSettings.setString(`ios.ble.peripheral.${device.address}`, JSON.stringify({ identifier: device.identifier, role: device.role }))
-        this.emit({ kind: 'device', device })
-      }
-      return
-    }
-    this.emit(event)
+  /** Creates the central (first use shows the Bluetooth permission prompt) without blocking the JS thread. */
+  private ensureCentral(): void {
+    // A zero timeout returns immediately after creating the central; the state arrives
+    // through the scan listener on the main queue.
+    this.native.waitForPoweredOnTimeoutMs(0)
   }
   ensureReady(): Promise<void> {
+    if (this.state === BLE_STATE_POWERED_ON) return Promise.resolve()
     return new Promise((resolve, reject) => {
       const finish = (error?: Error) => { clearTimeout(timer); off(); error ? reject(error) : resolve() }
       const off = this.onEvent(event => {
         if (event.kind !== 'state') return
-        const state = (event as NativeEvent).state
-        if (state === 5) finish()
-        else if (state === 2) finish(new Error('Bluetooth is unavailable on this device. Use the physical iPhone.'))
-        else if (state === 3) finish(new Error('Allow Faceclaw to use Bluetooth in iPhone Settings.'))
-        else if (state === 4) finish(new Error('Turn on Bluetooth, then try again.'))
+        if (event.state === BLE_STATE_POWERED_ON) finish()
+        else if (event.state === BLE_STATE_UNSUPPORTED) finish(new Error('Bluetooth is unavailable on this device. Use the physical iPhone.'))
+        else if (event.state === BLE_STATE_UNAUTHORIZED) finish(new Error('Allow Faceclaw to use Bluetooth in iPhone Settings.'))
+        else if (event.state === BLE_STATE_POWERED_OFF) finish(new Error('Turn on Bluetooth, then try again.'))
       })
       const timer = setTimeout(() => finish(new Error('Waiting for Bluetooth permission timed out. Try again after allowing Bluetooth.')), 30_000)
-      this.native.initializeBluetooth()
+      this.ensureCentral()
     })
   }
   async startScan(durationMs = 12_000): Promise<void> {
@@ -77,17 +82,18 @@ export class IosBluetooth {
     const generation = this.scanGeneration
     await this.ensureReady()
     if (generation !== this.scanGeneration) throw new Error('Bluetooth scan cancelled')
-    this.scanning = true; this.native.scan(true)
+    this.scanning = true; this.native.startScan()
     this.scanTimer = setTimeout(() => this.stopScan(), durationMs)
     this.emit({ kind: 'scan-started' })
   }
   stopScan(): void {
     ++this.scanGeneration
     if (this.scanTimer) clearTimeout(this.scanTimer)
-    this.scanTimer = null; this.native.scan(false)
+    this.scanTimer = null
     const wasScanning = this.scanning; this.scanning = false
-    if (wasScanning) this.emit({ kind: 'scan-stopped' })
+    if (wasScanning) { this.native.stopScan(); this.emit({ kind: 'scan-stopped' }) }
   }
+  /** Peripheral identifiers for the stored MAC addresses, scanning for any that are not remembered. */
   async resolveDevices(addresses: { left: string; right: string; ring: string }): Promise<Record<string, string>> {
     const generation = this.scanGeneration
     await this.ensureReady()
@@ -109,7 +115,7 @@ export class IosBluetooth {
     await new Promise<void>((resolve, reject) => {
       const off = this.onEvent(event => {
         if (event.kind === 'device') {
-          const device = (event as { device: IosDevice }).device
+          const device = event.device
           for (const role of ['left', 'right', 'ring'] as const) {
             if (addresses[role] === device.address && device.role === role) result[role] = device.identifier
           }
@@ -123,29 +129,6 @@ export class IosBluetooth {
     })
     return result
   }
-  private operation(identifier: string, call: (id: number) => void, timeoutMs = 10_000, disconnectOnTimeout = true): Promise<ConnectionDetails> {
-    const id = ++this.requestId
-    return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pending.delete(id); if (disconnectOnTimeout) this.native.disconnect(identifier)
-        reject(new Error('Bluetooth operation timed out. Wake the device and try connecting again.'))
-      }, timeoutMs)
-      this.pending.set(id, { resolve, reject, timer })
-      try { call(id) } catch (error) { clearTimeout(timer); this.pending.delete(id); reject(error) }
-    })
-  }
-  connect(identifier: string, requiresANCS = false): Promise<ConnectionDetails> { return this.operation(identifier, id => this.native.connectRequiresANCSRequestId(identifier, requiresANCS, id), 20_000) }
-  async subscribe(identifier: string, characteristic: string): Promise<void> {
-    // R1 exposes two notification channels; one may never complete its CCCD
-    // request. Keep the link alive so the other channel can still be tried.
-    await this.operation(identifier, id => this.native.subscribeCharacteristicRequestId(identifier, characteristic, id), 30_000, false)
-  }
-  async write(identifier: string, characteristic: string, bytes: Uint8Array): Promise<void> {
-    const copy = new Uint8Array(bytes)
-    const data = NSData.dataWithBytesLength(interop.handleof(copy.buffer), copy.byteLength)
-    await this.operation(identifier, id => this.native.writeCharacteristicDataRequestId(identifier, characteristic, data, id))
-  }
-  disconnect(identifier: string): void { this.native.disconnect(identifier) }
   forget(address: string): void { ApplicationSettings.remove(`ios.ble.peripheral.${address}`); this.devices.delete(address) }
 }
 let instance: IosBluetooth | null = null
