@@ -213,6 +213,13 @@ class DashboardController {
    */
   private activeTextEditorOnCancel: (() => void) | null = null;
   private activeTextEditorToggle: TextSettingsEditToggle | null = null;
+  /**
+   * The active settings' values (and the toggle's) when the edit began. The
+   * phone fields write through on every keystroke, so this is what the
+   * editor's Cancel button puts back.
+   */
+  private activeTextSettingOriginalValues: string[] = [];
+  private activeTextEditorToggleOriginalValue = false;
   private evenNotificationActive = false;
   private evenAppConflictMessage = "";
   private firmwareWarningMessage = "";
@@ -1897,9 +1904,11 @@ class DashboardController {
     onCancel?: () => void,
   ): void {
     this.activeTextSettings = Array.from(settings.slice(0, 2));
+    this.activeTextSettingOriginalValues = this.activeTextSettings.map((setting) => setting.get());
     this.activeTextEditorTitle = title;
     this.activeTextEditorOnFinish = onFinish ?? null;
     this.activeTextEditorToggle = toggle ?? null;
+    this.activeTextEditorToggleOriginalValue = toggle?.setting.get() ?? false;
     this.activeTextEditorOnCancel = onCancel ?? null;
     this.emit();
   }
@@ -2021,6 +2030,7 @@ class DashboardController {
     // finishTextSettingEdit clears this first, so a completed edit never fires it.
     const onCancel = this.activeTextEditorOnCancel;
     this.activeTextSettings = [];
+    this.activeTextSettingOriginalValues = [];
     this.activeTextEditorTitle = "";
     this.activeTextEditorOnFinish = null;
     this.activeTextEditorToggle = null;
@@ -2054,6 +2064,28 @@ class DashboardController {
       this.textEditorHost.requestRender();
     }
     onFinish?.();
+  }
+
+  /**
+   * The phone editor's Cancel button: put back the values the edit started
+   * with, end the edit as a cancel (the caller's onCancel fires), and
+   * navigate the Settings app's glasses editor out of the edit page.
+   */
+  cancelActiveTextSettingEdit(): void {
+    if (!this.activeTextSettings.length) return;
+    this.activeTextSettings.forEach((setting, index) => {
+      const original = this.activeTextSettingOriginalValues[index] ?? "";
+      if (setting.get() !== original) setting.set(original);
+    });
+    const toggle = this.activeTextEditorToggle;
+    if (toggle && toggle.setting.get() !== this.activeTextEditorToggleOriginalValue) {
+      toggle.setting.set(this.activeTextEditorToggleOriginalValue);
+    }
+    const closesGlassesEditor = this.activeTextSettings.length === 1;
+    this.endTextSettingEdit();
+    if (closesGlassesEditor && this.textEditorHost?.closeTextEditor()) {
+      this.textEditorHost.requestRender();
+    }
   }
 
   private updateTextSetting(setting: ConfigSettingString, value: string): void {

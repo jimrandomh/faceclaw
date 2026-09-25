@@ -10,7 +10,7 @@ import { ConfigSettingString } from "../../ui/dashboard-settings";
 import { evenHubApi, EvenHubAuthenticationError, isEvenHubStoreConfigured, type EvenHubStoreApp, type EvenHubStorePage } from "./even-api";
 import { clearEvenHubLoginForm, clearEvenHubSession, clearTransientEvenHubSession, evenHubLoginEmailSetting, evenHubLoginPasswordSetting, evenHubRememberMeSetting, resetEvenHubLoginForm } from "./credentials";
 import { getInstalledEvenHubApps, uninstallEvenHubPackage, type InstalledEvenHubApp } from "./installed-apps";
-import { EvenHubStoreDetailLayer } from "./store-detail-layer";
+import { EvenHubStoreDetailLayer, type EvenHubStoreDetailOptions } from "./store-detail-layer";
 import { cleanError, installStoreApp } from "./store-install";
 import { checkForEvenHubUpdates, describeUpdate, type EvenHubAppUpdate } from "./updates";
 import { lineStep } from "../../ui/metrics";
@@ -150,13 +150,11 @@ export class EvenHubStoreLayer implements Layer {
       this.started = true;
       // Do NOT open the phone credential editor here. This runs on the first
       // paint, which includes the restore of a still-open EvenHub at app
-      // startup -- so an unfinished sign-in re-opened the form on every launch,
-      // and the form has no way out: it has no Cancel control, its onCancel is
-      // dropped before it reaches the controller, and Back leaves the app
-      // rather than closing it. The login pane already says "Enter your Even
-      // account email and password in the phone app" and already opens the
-      // editor on click (handleInput), so the editor is still one tap away for
-      // someone who actually wants it.
+      // startup -- so an unfinished sign-in re-opened the form on every
+      // launch, unasked. The login pane already says "Enter your Even account
+      // email and password in the phone app" and already opens the editor on
+      // click (handleInput), so the editor is still one tap away for someone
+      // who actually wants it.
       if (!this.showingLogin) {
         void this.ensureTabLoaded(ctx, this.activeTab);
       }
@@ -348,13 +346,7 @@ export class EvenHubStoreLayer implements Layer {
       }
       case "app":
         if (this.updatingAll) return;
-        ctx.stack.push(
-          new EvenHubStoreDetailLayer(row.app, {
-            launchApp: this.options.launchApp,
-            appendLog: this.options.appendLog,
-            onInstalled: (installed) => this.onInstalled(installed),
-          }),
-        );
+        ctx.stack.push(new EvenHubStoreDetailLayer(row.app, this.detailOptions()));
         return;
     }
   }
@@ -372,13 +364,7 @@ export class EvenHubStoreLayer implements Layer {
     }
     this.pendingPackage = null;
     stack.clearToBase();
-    stack.push(
-      new EvenHubStoreDetailLayer(placeholderStoreApp(installed), {
-        launchApp: this.options.launchApp,
-        appendLog: this.options.appendLog,
-        onInstalled: (result) => this.onInstalled(result),
-      }),
-    );
+    stack.push(new EvenHubStoreDetailLayer(placeholderStoreApp(installed), this.detailOptions()));
   }
 
   /** Dictated text becomes a search (the shell's "Type Into App" / voice input). */
@@ -595,6 +581,8 @@ export class EvenHubStoreLayer implements Layer {
             failures.push(`${row.app.name} (declined)`);
           }
         } catch (error) {
+          // An expired session fails every remaining update the same way.
+          if (this.handleAuthError(ctx, error)) return;
           const message = cleanError(error);
           this.options.appendLog(`evenhub store: update of ${row.app.packageId} failed: ${message}`);
           failures.push(row.app.name);
@@ -629,13 +617,31 @@ export class EvenHubStoreLayer implements Layer {
 
   // ---- login and phone editors --------------------------------------------
 
-  /** Route a rejected session back to the login form; true if it was one. */
+  /**
+   * Drop back to the logged-out pane when Even rejects the session (an
+   * expired login); true if the error was one. Anything open above the list
+   * (an app page, a permission dialog) needed the session too, so it goes.
+   * The phone form is not opened: this can happen on the first load of a
+   * store window restored at startup (see paint), and the pane's click
+   * opens it.
+   */
   private handleAuthError(ctx: LayerContext, error: unknown): boolean {
     if (!(error instanceof EvenHubAuthenticationError)) return false;
     const message = cleanError(error);
-    this.options.appendLog(`evenhub store login failed: ${message}`);
-    this.enterLogin(ctx, `Login failed: ${message}`);
+    this.options.appendLog(`evenhub store: session rejected: ${message}`);
+    if (this.closed) return true;
+    ctx.stack.clearToBase();
+    this.enterLogin(ctx, `Signed out: ${message}`, false);
     return true;
+  }
+
+  private detailOptions(): EvenHubStoreDetailOptions {
+    return {
+      launchApp: this.options.launchApp,
+      appendLog: this.options.appendLog,
+      onInstalled: (installed) => this.onInstalled(installed),
+      onAuthError: (ctx, error) => this.handleAuthError(ctx, error),
+    };
   }
 
   private enterLogin(
@@ -691,13 +697,11 @@ export class EvenHubStoreLayer implements Layer {
     const email = evenHubLoginEmailSetting.get();
     const password = evenHubLoginPasswordSetting.get();
     if (!email.trim() || !password) {
-      // The phone editor has no Cancel control, so submitting an untouched form
-      // with the keyboard's Done key is the only way someone can back out of
-      // it. Reopening the editor there makes that a loop with no exit, so a
-      // wholly empty submission is treated as a cancel and leaves the editor
-      // closed -- the login pane still says how to get back in, and a click
-      // reopens the editor. A half-filled form is a real mistake, so that
-      // still reopens with the message.
+      // A wholly empty submission (the keyboard's Done key on an untouched
+      // form) is treated as a cancel and leaves the editor closed -- the login
+      // pane still says how to get back in, and a click reopens the editor.
+      // A half-filled form is a real mistake, so that still reopens with the
+      // message.
       const cancelled = !email.trim() && !password;
       this.enterLogin(
         ctx,

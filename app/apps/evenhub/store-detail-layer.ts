@@ -26,6 +26,8 @@ export type EvenHubStoreDetailOptions = {
   appendLog: (message: string) => void;
   /** A package was installed, updated, or reinstalled from this page. */
   onInstalled?: (app: InstalledEvenHubApp) => void;
+  /** Offered every failure first; returns true if it was a rejected session (and was dealt with). */
+  onAuthError?: (ctx: LayerContext, error: unknown) => boolean;
 };
 
 /** Storefront metadata and the Install/Launch action for one public app. */
@@ -170,6 +172,7 @@ export class EvenHubStoreDetailLayer implements Layer {
 
       await this.install(ctx);
     } catch (error) {
+      if (this.options.onAuthError?.(ctx, error)) return;
       this.status = cleanError(error);
       this.options.appendLog(`evenhub store: ${this.status}`);
     } finally { this.working = false; ctx.actions.requestRender(); }
@@ -203,6 +206,7 @@ export class EvenHubStoreDetailLayer implements Layer {
       ctx.actions.requestRender();
       await this.options.launchApp(installedEvenHubAppId(result.packageId));
     } catch (error) {
+      if (this.options.onAuthError?.(ctx, error)) return;
       this.status = cleanError(error);
       this.options.appendLog(`evenhub store: ${this.status}`);
     } finally {
@@ -226,6 +230,7 @@ export class EvenHubStoreDetailLayer implements Layer {
         return undefined;
       })
       .catch((error) => {
+        if (this.options.onAuthError?.(ctx, error)) return;
         this.options.appendLog(`evenhub store: app details unavailable: ${cleanError(error)}`);
       })
       .finally(() => ctx.actions.requestRender());

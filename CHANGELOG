@@ -12,11 +12,12 @@
 * Depth effects for the window switcher, top bar, and modals
 * Glanceboard has configurable distance
 
-### Other Features
+### Other Features and Bugfixes
 
 * Add tokens and faceclaw-input script, which allows using a CLI utility as an input device for the glasses
 * Navigate app: Add map-without-destination mode
 * Nightscout app: Glanceboard widget still shows out-of-bounds values when out of space
+* EvenHub: Fix login form being stuck open without a cancel button
 
 ### iOS port:
 
