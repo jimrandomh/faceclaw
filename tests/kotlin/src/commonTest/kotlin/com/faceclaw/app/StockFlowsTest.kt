@@ -60,11 +60,12 @@ private fun field(number: Int, text: String): ByteArray = field(number, text.enc
 private fun authSuccess(magic: Int) = BleProtocol.encodeVarintField(1, 4) + BleProtocol.encodeVarintField(2, magic) + field(3, ByteArray(0))
 private fun authPending(magic: Int) = BleProtocol.encodeVarintField(1, 4) + BleProtocol.encodeVarintField(2, magic) + field(3, BleProtocol.encodeVarintField(1, 1))
 private fun ack(magic: Int) = BleProtocol.encodeVarintField(1, 1) + BleProtocol.encodeVarintField(2, magic)
-private fun settingsAck(magic: Int, battery: Int = -1, left: String = "", right: String = "", extension: String = ""): ByteArray {
+private fun settingsAck(magic: Int, battery: Int = -1, left: String = "", right: String = "", extension: String = "", silentMode: Int = -1): ByteArray {
     var request = ByteArray(0)
     if (left.isNotEmpty()) request += field(5, left)
     if (right.isNotEmpty()) request += field(6, right)
     if (battery >= 0) request += BleProtocol.encodeVarintField(12, battery)
+    if (silentMode >= 0) request += BleProtocol.encodeVarintField(14, silentMode)
     var pb = BleProtocol.encodeVarintField(1, 2) + BleProtocol.encodeVarintField(2, magic) + field(4, request)
     if (extension.isNotEmpty()) pb += field(100, extension)
     return pb
@@ -205,11 +206,11 @@ class StockFlowsTest {
         override fun onResult(approved: Boolean) { result = approved }
     }
 
-    private fun promptResponder(link: FakeStockLink, selection: Int?, batteries: Map<String, Int>): (FakeStockLink.Written) -> Unit = { w ->
+    private fun promptResponder(link: FakeStockLink, selection: Int?, batteries: Map<String, Int>, silentMode: Int = -1): (FakeStockLink.Written) -> Unit = { w ->
         when (w.sid) {
             BleProtocol.SID_SECURITY_AUTH -> link.notify(w.address, authSuccess(w.magic), w.sid)
             BleProtocol.PRELUDE_ACK_SID -> link.notify(w.address, ack(BleProtocol.PRELUDE_ACK_MAGIC), w.sid)
-            BleProtocol.SID_UI_SETTING -> link.notify(w.address, settingsAck(w.magic, batteries[w.address] ?: -1), w.sid)
+            BleProtocol.SID_UI_SETTING -> link.notify(w.address, settingsAck(w.magic, batteries[w.address] ?: -1, silentMode = silentMode), w.sid)
             BleProtocol.SID_EVENHUB -> {
                 val cmd = BleProtocol.readVarintFieldValue(BleProtocol.stripTrailingCrc(w.pb), 1, -1)
                 link.notify(w.address, ack(w.magic), w.sid)
@@ -273,6 +274,43 @@ class StockFlowsTest {
         events = PromptEvents()
         FlashPromptFlow(lost, R, "", "w", false, events, fast, testPlatform()).run()
         assertEquals("disconnected:Lost connection to the glasses.", events.states.last())
+    }
+
+    @Test
+    fun promptRefusesOnlyWhenTheLensReportsSilentMode() {
+        // Silent mode on: refused with the way out, before any page is written.
+        val silentOn = FakeStockLink()
+        silentOn.responder = promptResponder(silentOn, 1, mapOf(R to 85), silentMode = 1)
+        var events = PromptEvents()
+        FlashPromptFlow(silentOn, R, "", "w", false, events, fast, testPlatform()).run()
+        assertEquals(null, events.result)
+        assertEquals("error:${FlashPromptFlow.SILENT_MODE_MESSAGE}", events.states.last())
+        assertTrue(events.logs.any { it == "silent mode before prompt: on" })
+        assertFalse(silentOn.writes.any { it.sid == BleProtocol.SID_EVENHUB })
+        assertTrue(silentOn.closed)
+
+        // Silent mode off: the prompt is shown and answered as usual.
+        val silentOff = FakeStockLink()
+        silentOff.responder = promptResponder(silentOff, 1, mapOf(R to 85), silentMode = 0)
+        events = PromptEvents()
+        FlashPromptFlow(silentOff, R, "", "w", false, events, fast, testPlatform()).run()
+        assertEquals(true, events.result, events.logs.joinToString("\n"))
+        assertTrue(events.logs.any { it == "silent mode before prompt: off" })
+
+        // Firmware whose ack omits the field: unknown is not a refusal.
+        val omitted = FakeStockLink()
+        omitted.responder = promptResponder(omitted, 1, mapOf(R to 85))
+        events = PromptEvents()
+        FlashPromptFlow(omitted, R, "", "w", false, events, fast, testPlatform()).run()
+        assertEquals(true, events.result, events.logs.joinToString("\n"))
+        assertTrue(events.logs.any { it == "silent mode before prompt: unknown (ack omits the field)" })
+
+        // skipPrompt re-checks the battery only; silent mode does not block it.
+        val skipped = FakeStockLink()
+        skipped.responder = promptResponder(skipped, null, mapOf(R to 85), silentMode = 1)
+        events = PromptEvents()
+        FlashPromptFlow(skipped, R, "", "w", true, events, fast, testPlatform()).run()
+        assertEquals(true, events.result)
     }
 
     // ---- OTA ---------------------------------------------------------------

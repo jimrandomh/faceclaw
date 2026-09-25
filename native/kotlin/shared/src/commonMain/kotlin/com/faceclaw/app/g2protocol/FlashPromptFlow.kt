@@ -13,7 +13,9 @@ import kotlin.concurrent.Volatile
  * pairing prompt, and doing both here means both prompts appear at the start rather than one
  * popping up half way through flashing the second lens. While connected, each arm's battery
  * level is read (they are independent batteries) so the caller can refuse to flash on a low
- * charge.
+ * charge. Before the prompt is shown, the right arm's settings are read once more so a lens
+ * that reports silent mode (which blanks the display and ignores input) is refused with the
+ * way out instead of a prompt nobody can see.
  *
  * With `skipPrompt` the on-glasses confirmation is not shown: the flow is just connect + auth +
  * battery read + result(approved). Used to re-check the battery after the user has already
@@ -38,6 +40,15 @@ class FlashPromptFlow(
         const val LIST_CONTAINER_ID = 2
         // Index 0 = decline, index 1 = approve. Kept short for the ~50-col grid.
         val ITEMS = arrayOf("No, cancel", "Yes, flash")
+
+        /**
+         * Shown instead of a bare "prompt page not acked" error. Silent mode is entered and left
+         * by the same gesture on the glasses and nothing here can clear it, so the instruction
+         * has to travel with the error.
+         */
+        const val SILENT_MODE_MESSAGE =
+            "Your glasses are in silent mode, so they cannot show the confirmation prompt. " +
+                "Long-press both touchpads on the glasses to leave silent mode, then try again."
     }
 
     private val rightAddress = rightAddress.trim()
@@ -121,6 +132,11 @@ class FlashPromptFlow(
             session.sendPrelude(rightAddress, ": $rightAddress")
 
             if (!skipPrompt) {
+                // Ask before writing a page that cannot be answered: silent mode blanks the
+                // display and stops the firmware dispatching input while BLE stays up, so the
+                // create-prompt write is still acked and the user is left waiting on a prompt
+                // that never appears.
+                requireNotSilent(rightAddress)
                 showPrompt(rightAddress)
                 startHeartbeat()
                 listener.onState("prompting", "")
@@ -238,23 +254,49 @@ class FlashPromptFlow(
         listener.onBattery(right, left)
     }
 
-    private fun readBattery(address: String, arm: String): Int {
+    private fun readBattery(address: String, arm: String): Int = readSettingsSnapshot(address, arm)?.battery ?: -1
+
+    /**
+     * The sid-0x09 settings read behind both the battery gate and the silent-mode check; one
+     * ack carries both fields. Two attempts, since on 2.2.9 a request sent right after the
+     * prelude can be dropped. Null when the arm does not answer or the ack has no battery field.
+     */
+    private fun readSettingsSnapshot(address: String, arm: String): BleProtocol.BatterySnapshot? {
         var attempt = 0
         while (attempt < 2 && !cancelled) {
             val ack = session.readSettings(address, timings.batteryAckTimeoutMs)
             if (ack == null) {
-                emitLog("battery read attempt " + (attempt + 1) + " unacked: " + arm + " arm")
+                emitLog("settings read attempt " + (attempt + 1) + " unacked: " + arm + " arm")
                 attempt++
                 continue
             }
             val snapshot = BleProtocol.parseSettingsBattery(ack)
             if (snapshot != null) {
-                return snapshot.battery
+                return snapshot
             }
-            emitLog("battery read ack had no battery field: $arm arm")
+            emitLog("settings read ack had no battery field: $arm arm")
             attempt++
         }
-        return -1
+        return null
+    }
+
+    /**
+     * Refuse the prompt only when the arm POSITIVELY reports silent mode. An arm that does not
+     * answer, and firmware whose ack omits the field, both fall through to the prompt exactly as
+     * before, so a missing answer can never block a flash.
+     */
+    private fun requireNotSilent(address: String) {
+        val snapshot = readSettingsSnapshot(address, "right")
+        val state = when {
+            snapshot == null -> "unknown (arm did not answer)"
+            snapshot.silentMode < 0 -> "unknown (ack omits the field)"
+            snapshot.silentMode > 0 -> "on"
+            else -> "off"
+        }
+        emitLog("silent mode before prompt: $state")
+        if (snapshot != null && snapshot.silentMode > 0) {
+            throw IllegalStateException(SILENT_MODE_MESSAGE)
+        }
     }
 
     private fun startHeartbeat() {
