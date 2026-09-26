@@ -85,3 +85,45 @@ test('frame submission supports resource-free lists and plain PRESENT-relative t
   paintDisplayList(output,screen,8,8,placed,false,1002);
   assert.equal(output[2],240); assert.equal(output[0],0);
 });
+
+// Also consumed by FrameDisplayListTest.kt, with 0xbeef / 0xcafebabe replaced by
+// the font and image ids it registers: a clipped clear, a clipped rounded rect,
+// and replayed glyph + icon draws clipped while sliding up. REPLAY_PIXELS is
+// what the list paints over a nibble-1 screen, 16x8 at 4 bits per pixel.
+const REPLAY = '0780000000020003000800040000070000006400000000000300890000000000000600040002880000010001000200020000000400030000000510a00000000000000600040000ff2502000080c002000000000180c8800180c8161101001732800180c81610300180c830234031020000efbe4100000000000000ff01bebafeca04000100';
+const REPLAY_PIXELS = '11111111111111111111111111111111111111111111111111fff28f111111111125522211111111112552221111111111222222111111111111111111111111';
+
+function replayList() {
+  // 'A' is 3x2 ink one row below a 4px line top; the icon is 2x2.
+  const font = { fingerprintId: 9001, atlasKey: 'stub-font', ascent: 3, lineHeight: 4 };
+  const glyph = { encoding: 65, bbxWidth: 3, bbxHeight: 2, bbxX: 0, bbxY: 0, bitmapRows: [0xa0, 0xe0] };
+  const icon = new GrayImage(2, 2); icon.pixels.set([255, 0, 128, 255]);
+  const source = new GrayImage(8, 4);
+  source.drawGlyph(font, glyph, 0, 0, 255);
+  source.drawImage(icon, 4, 1);
+  const records = Uint8Array.from([0, 0xef, 0xbe, 65, 0, 0, 0, 0, 0, 0, 0, 255, 1, 0xbe, 0xba, 0xfe, 0xca, 4, 0, 1, 0]);
+  const clip = { x: 0, y: 0, width: 6, height: 4 };
+  return { x: 2, y: 3, width: 8, height: 4, depth: 0, displayList: { resources: [], timeline: { token: 7, startedAt: 1000 }, calls: [
+    { op: DrawOp.CLEAR, color: 2, clip },
+    { op: DrawOp.ROUNDED_RECT, x: 0, y: 0, width: 4, height: 3, radius: 0, background: 5, border: 16, clip: { x: 1, y: 1, width: 2, height: 2 } },
+    { op: DrawOp.DRAWS, x: 0, y: E.progress(200).lerp(E.f32(-4), E.f32(0)).toInt(), records, count: 2, source, clip },
+  ] } };
+}
+
+test('clipped clears, rects and replayed draws encode, decode and paint', () => {
+  const placed = replayList();
+  const hex = Buffer.from(encodeDisplayList(placed, 1100)).toString('hex');
+  const output = new Uint8Array(16 * 8).fill(16);
+  paintDisplayList(output, output.slice(), 16, 8, placed, false, 1100);
+  const nibbles = Array.from(output, (v) => (Math.min(15, (v + 8) >> 4)).toString(16)).join('');
+  assert.equal(hex, REPLAY);
+  assert.equal(nibbles, REPLAY_PIXELS);
+  const decoded = readDisplayList(Buffer.from(REPLAY, 'hex'), 0, 1100).placed;
+  const [clear, rect, draws] = decoded.displayList.calls;
+  assert.deepEqual([clear.op, clear.color, clear.clip], [DrawOp.CLEAR, 2, { x: 0, y: 0, width: 6, height: 4 }]);
+  assert.deepEqual(rect.clip, { x: 1, y: 1, width: 2, height: 2 });
+  assert.equal(draws.count, 2);
+  assert.deepEqual(Array.from(draws.records), Array.from(placed.displayList.calls[2].records));
+  assert.equal(draws.source, undefined, 'decoded draws have no software source');
+  assert.throws(() => readDisplayList(Buffer.from(REPLAY.replace('01bebafeca', '05bebafeca'), 'hex'), 0, 1100), /draw record/);
+});

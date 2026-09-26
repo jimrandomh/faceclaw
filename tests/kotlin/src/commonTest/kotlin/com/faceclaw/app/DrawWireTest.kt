@@ -5,15 +5,15 @@ import kotlin.test.*
 class DrawWireTest {
     private fun hex(value: String) = value.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
 
-    @Test fun encodersUseRevision29CoordinatesAndPreserveOtherWireBytes() {
+    @Test fun encodersUseRevision35CoordinatesAndPreserveOtherWireBytes() {
         // Literal vectors pin the firmware grammar independently of the reader.
         val calls = listOf(
             DrawProtocol.image(0x1234, -32768, 32767, 0x1f, target = 511, depth = -128) to
-                "0403ff018034120080ff7f1f",
+                "0403ff01803412df8000c07fff1f",
             DrawProtocol.rectCopy(DrawProtocol.CURRENT, 1, 2, 3, 4, -5, -6) to
                 "0200feff0102030004007b7a",
             DrawProtocol.stockText(-1, 2, 15, hex("41c3a9")) to "0300ffff02000f0341c3a9",
-            DrawProtocol.text(511, -2, 3, 31, hex("01417f")) to "0500ff01feff03001f0301417f",
+            DrawProtocol.text(511, -2, 3, 31, hex("01417f")) to "0500ff017e031f0301417f",
             DrawProtocol.playList(511, depth = 127) to "07027fff01",
             DrawProtocol.roundedRect(-1, 2, 640, 480, 65535, 15, 16) to
                 "08007f028002e001ffff0f10",
@@ -21,6 +21,9 @@ class DrawWireTest {
             DrawProtocol.bbox(hex("ffffffffffffffff"), 4, 0, 0, 8, 2) to "010000000002010f10",
             DrawProtocol.bbox(hex("0f"), 1, 1, 0, 1, 1) to "01000101000000010001001f",
             DrawProtocol.clear(15, target = 511) to "0901ff010f",
+            // Revision 35: the clip rect follows target and depth.
+            DrawProtocol.clear(3, target = 511, clip = DrawClip(-1, 2, 3, 4)) to "0905ff01ffff02000300040003",
+            DrawProtocol.image(7, 1, 2, depth = 2, clip = DrawClip(0, 0, 640, 480)) to "040602000000008002e001070001020f",
         )
         for ((call, expected) in calls) assertContentEquals(hex(expected), call)
         assertContentEquals(hex("0100050007027fff01"), DrawProtocol.sequence(listOf(calls[4].first)))
@@ -38,8 +41,8 @@ class DrawWireTest {
 
     @Test fun optimizerFieldsAreReencodedAndOpaqueBytesArePreserved() {
         val records = listOf(
-            "1300020080ff7f1f" to "040000020080ff7f1f",
-            "14ff01ffff02000f0341017f" to "0500ff01ffff02000f0341017f",
+            "1300020080ff7f1f" to "04000002df8000c07fff1f",
+            "14ff01ffff02000f0341017f" to "0500ff017f020f0341017f",
             "0fffff02001f0341c3a9" to "0300ffff02001f0341c3a9",
             "030001020134120f10" to "010000000102010f10",
             "060f10" to "01000100000000080002000f10",

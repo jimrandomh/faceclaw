@@ -7,7 +7,9 @@ package com.faceclaw.app
 /** Common draw-call header bits. */
 const val DRAW_FLAG_RESOURCE_TARGET = 1
 const val DRAW_FLAG_DEPTH = 2
-const val DRAW_FLAGS_MASK = DRAW_FLAG_RESOURCE_TARGET or DRAW_FLAG_DEPTH
+/** Revision 35: an x/y s16, w/h u16 clip rect follows the depth byte. */
+const val DRAW_FLAG_CLIP = 4
+const val DRAW_FLAGS_MASK = DRAW_FLAG_RESOURCE_TARGET or DRAW_FLAG_DEPTH or DRAW_FLAG_CLIP
 
 /** Bounding-box payload flag: u16 coordinates/sizes instead of aligned compact units. */
 const val DRAW_BBOX_FLAG_U16 = 1

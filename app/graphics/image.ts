@@ -517,6 +517,34 @@ export class GrayImage {
       presentation: { radius, background, border, depth, displayList: menuSelectionList(baked, background, border, radius, animation) } });
   }
 
+  /**
+   * Paint this image's glyph and image draws onto a gray8 buffer at (dx, dy),
+   * inside `clip`, the way the glasses replay them from a display list (see
+   * DrawOp.DRAWS): glyphs firmware-exact, images skipping pixels whose 4-bit
+   * level is 0. Raster pixels and other draw kinds are not painted.
+   */
+  paintReplayDraws(pixels: Uint8Array, width: number, height: number, dx: number, dy: number,
+      clip: { x: number; y: number; width: number; height: number }): void {
+    const left = Math.max(0, clip.x), top = Math.max(0, clip.y);
+    const right = Math.min(width, clip.x + clip.width), bottom = Math.min(height, clip.y + clip.height);
+    const sink: PixelSink = {
+      setPixel: (x, y, value) => {
+        if (x >= left && y >= top && x < right && y < bottom) pixels[y * width + x] = clampByte(value);
+      },
+    };
+    for (const placed of this.drawList) {
+      if (placed.kind === "glyph") {
+        rasterizeGlyph(sink, placed.font, placed.glyph, placed.x + dx, placed.y + dy, placed.value);
+      } else if (placed.kind === "image" && !placed.presentation) {
+        const source = placed.source;
+        for (let y = 0; y < source.height; y++) for (let x = 0; x < source.width; x++) {
+          const level = grayToNibble(source.pixels[y * source.width + x]!);
+          if (level) sink.setPixel(placed.x + dx + x, placed.y + dy + y, level * 16);
+        }
+      }
+    }
+  }
+
   /** Submit a retained list alongside this frame; coordinates are relative to x/y. */
   drawDisplayList(displayList: DisplayList, x: number, y: number, width: number, height: number, depth = 0): void {
     this.drawList.push({ kind: "image", source: new GrayImage(width, height), x, y,
@@ -661,9 +689,12 @@ export function grayToNibble(value: number): number {
   return value <= 0 ? 0 : Math.min(15, (value + 8) >> 4);
 }
 
+/** Where rasterizeGlyph writes: an image, or a clipped buffer (paintReplayDraws). */
+type PixelSink = { setPixel(x: number, y: number, value: number): void };
+
 /** Bake one glyph into an image's pixel buffer (y is the top of the line). */
 function rasterizeGlyph(
-  target: GrayImage,
+  target: PixelSink,
   font: GlyphFont,
   glyph: Glyph,
   x: number,

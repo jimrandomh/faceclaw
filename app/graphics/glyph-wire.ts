@@ -21,7 +21,7 @@ import { DrawRecordKind, encodePresentation } from "./presentation-wire";
  * only means "no wire savings for this draw".
  */
 import { Glyph } from "./bdffont";
-import { GrayImage, type DeferredDraw, type GlyphFont, type PlacedFwText, type PlacedImage } from "./image";
+import { GrayImage, type DeferredDraw, type GlyphFont, type PlacedFwText, type PlacedGlyph, type PlacedImage } from "./image";
 
 import { textureAtlasAvailable, textureFontId, registerTextureGlyphs, registerFirmwareGlyphs, textureImageId } from "../native/texture-atlas";
 
@@ -167,15 +167,7 @@ export function prepareFrameDraws(draws: readonly DeferredDraw[]): ArrayBuffer |
       if (!state || !representableGlyph(placed.font, placed.glyph)) continue;
       if (!inRange16(placed.x) || !inRange16(placed.y)) continue;
       bytes += GLYPH_RECORD_BYTES;
-      if (state.registered.has(placed.glyph.encoding)) continue;
-      state.registered.add(placed.glyph.encoding);
-      registration ??= new Map();
-      let group = registration.get(state);
-      if (!group) {
-        group = { font: placed.font, glyphs: [], aaGlyphs: [] };
-        registration.set(state, group);
-      }
-      (placed.glyph.coverage ? group.aaGlyphs : group.glyphs).push(placed.glyph);
+      registration = queueRegistration(registration, state, placed);
     } else if (placed.kind === "image") {
       if (!inRange16(placed.x) || !inRange16(placed.y)) continue;
       if (placed.presentation) { const record = encodePresentation(placed); presentations.set(placed, record); bytes += record.length; }
@@ -186,12 +178,7 @@ export function prepareFrameDraws(draws: readonly DeferredDraw[]): ArrayBuffer |
       if (ok) bytes += FWTEXT_HEADER_BYTES + placed.glyphs.length * FWTEXT_MEMBER_BYTES;
     }
   }
-  if (registration) {
-    const plainBuffer = buildRegistrationBuffer(registration);
-    if (plainBuffer) registerTextureGlyphs(plainBuffer, false);
-    const aaBuffer = buildAaRegistrationBuffer(registration);
-    if (aaBuffer) registerTextureGlyphs(aaBuffer, true);
-  }
+  registerQueued(registration);
   if (bytes === 0) return null;
 
   // Pass 2: the frame's draw records.
@@ -202,23 +189,13 @@ export function prepareFrameDraws(draws: readonly DeferredDraw[]): ArrayBuffer |
       if (!inRange16(placed.x) || !inRange16(placed.y)) continue;
       const state = fontWireState(placed.font);
       if (!state || !representableGlyph(placed.font, placed.glyph)) continue;
-      out.setUint8(offset, DrawRecordKind.GLYPH);
-      out.setUint16(offset + 1, state.fontId, true);
-      out.setUint32(offset + 3, placed.glyph.encoding, true);
-      out.setInt16(offset + 7, placed.x, true);
-      out.setInt16(offset + 9, placed.y, true);
-      out.setUint8(offset + 11, placed.value);
-      offset += GLYPH_RECORD_BYTES;
+      offset = writeGlyphRecord(out, offset, state, placed);
     } else if (placed.kind === "image") {
       if (!inRange16(placed.x) || !inRange16(placed.y)) continue;
       if (placed.presentation) { const bytes = presentations.get(placed)!; new Uint8Array(out.buffer).set(bytes, offset); offset += bytes.length; continue; }
       const id = imageId(placed);
       if (id === null) continue;
-      out.setUint8(offset, DrawRecordKind.TEXTURE_IMAGE);
-      out.setUint32(offset + 1, id, true);
-      out.setInt16(offset + 5, placed.x, true);
-      out.setInt16(offset + 7, placed.y, true);
-      offset += IMAGE_RECORD_BYTES;
+      offset = writeImageRecord(out, offset, id, placed);
     } else {
       if (!fwRunOk.get(placed)) continue;
       out.setUint8(offset, DrawRecordKind.FIRMWARE_TEXT);
@@ -236,6 +213,88 @@ export function prepareFrameDraws(draws: readonly DeferredDraw[]): ArrayBuffer |
     }
   }
   return out.buffer;
+}
+
+/**
+ * Encode draws for replay inside a display list (DrawOp.DRAWS), registering
+ * unseen glyph rasters and images as prepareFrameDraws does, in its glyph and
+ * image record formats. Null unless every draw is a replayable glyph or plain
+ * image: a list must reproduce all of its content or none of it.
+ */
+export function encodeReplayDraws(draws: readonly DeferredDraw[]): { records: Uint8Array; count: number } | null {
+  if (!textureAtlasAvailable()) return null;
+  let bytes = 0;
+  for (const placed of draws) {
+    if (!inRange16(placed.x) || !inRange16(placed.y)) return null;
+    if (placed.kind === "glyph") {
+      if (!fontWireState(placed.font) || !representableGlyph(placed.font, placed.glyph)) return null;
+      bytes += GLYPH_RECORD_BYTES;
+    } else if (placed.kind === "image" && !placed.presentation && imageId(placed) !== null) {
+      bytes += IMAGE_RECORD_BYTES;
+    } else {
+      return null;
+    }
+  }
+  let registration: Map<FontWireState, RegistrationGroup> | null = null;
+  const out = new DataView(new ArrayBuffer(bytes));
+  let offset = 0;
+  for (const placed of draws) {
+    if (placed.kind === "glyph") {
+      const state = fontWireState(placed.font)!;
+      registration = queueRegistration(registration, state, placed);
+      offset = writeGlyphRecord(out, offset, state, placed);
+    } else if (placed.kind === "image") {
+      offset = writeImageRecord(out, offset, imageId(placed)!, placed);
+    }
+  }
+  registerQueued(registration);
+  return { records: new Uint8Array(out.buffer), count: draws.length };
+}
+
+/** [0][fontId u16][encoding u32][penX s16][lineY s16][value u8] */
+function writeGlyphRecord(out: DataView, offset: number, state: FontWireState, placed: PlacedGlyph): number {
+  out.setUint8(offset, DrawRecordKind.GLYPH);
+  out.setUint16(offset + 1, state.fontId, true);
+  out.setUint32(offset + 3, placed.glyph.encoding, true);
+  out.setInt16(offset + 7, placed.x, true);
+  out.setInt16(offset + 9, placed.y, true);
+  out.setUint8(offset + 11, placed.value);
+  return offset + GLYPH_RECORD_BYTES;
+}
+
+/** [1][imageId u32][x s16][y s16] */
+function writeImageRecord(out: DataView, offset: number, id: number, placed: PlacedImage): number {
+  out.setUint8(offset, DrawRecordKind.TEXTURE_IMAGE);
+  out.setUint32(offset + 1, id, true);
+  out.setInt16(offset + 5, placed.x, true);
+  out.setInt16(offset + 7, placed.y, true);
+  return offset + IMAGE_RECORD_BYTES;
+}
+
+/** Queue a glyph raster for registerQueued unless this JS context already registered it. */
+function queueRegistration(
+  registration: Map<FontWireState, RegistrationGroup> | null,
+  state: FontWireState,
+  placed: PlacedGlyph,
+): Map<FontWireState, RegistrationGroup> | null {
+  if (state.registered.has(placed.glyph.encoding)) return registration;
+  state.registered.add(placed.glyph.encoding);
+  registration ??= new Map();
+  let group = registration.get(state);
+  if (!group) {
+    group = { font: placed.font, glyphs: [], aaGlyphs: [] };
+    registration.set(state, group);
+  }
+  (placed.glyph.coverage ? group.aaGlyphs : group.glyphs).push(placed.glyph);
+  return registration;
+}
+
+function registerQueued(registration: Map<FontWireState, RegistrationGroup> | null): void {
+  if (!registration) return;
+  const plainBuffer = buildRegistrationBuffer(registration);
+  if (plainBuffer) registerTextureGlyphs(plainBuffer, false);
+  const aaBuffer = buildAaRegistrationBuffer(registration);
+  if (aaBuffer) registerTextureGlyphs(aaBuffer, true);
 }
 
 type RegistrationGroup = {

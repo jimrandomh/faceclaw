@@ -18,6 +18,8 @@
 * Navigate app: Add map-without-destination mode
 * Nightscout app: Glanceboard widget still shows out-of-bounds values when out of space
 * EvenHub: Fix login form being stuck open without a cancel button
+* Calendar: Fix a timezone issue that could cause all-day events to appear on the preceding day
+* Compass: Make the calibration readiness visible by default
 
 ### iOS port:
 

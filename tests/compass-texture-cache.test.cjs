@@ -47,7 +47,6 @@ const compass = load('app/apps/compass/compass-app.ts', {
   './calibration': calibration,
   './calibration-layer': {},
   './compass-rose': rose,
-  './debug': { compassDebugLines: () => [], isCompassDebugEnabled: () => false, setCompassDebugEnabled: () => {} },
   './declination': {},
   './heading': { getNorthReference: () => 'magnetic', resolveHeading: (n) => ({ displayDegrees: n }) },
 }, `
@@ -149,7 +148,7 @@ test('heading updates reuse the texture; brightness, layout and clipping changes
 
 test('the background registers once and uses a nine-byte image reference on later frames', () => {
   const registered = [];
-  const atlas = load('app/native/texture-atlas.ts', {}, '', {
+  const atlas = load('app/native/texture-atlas.ts', { './java-direct-buffer': { copyToJavaByteBuffer: (bytes) => bytes } }, '', {
     global: { isAndroid: true },
     com: { faceclaw: { app: { AndroidByteReader: class { constructor(buffer) { this.buffer = buffer; } }, ImageAtlas: { ensure: (...args) => {
       registered.push(args);

@@ -27,6 +27,7 @@
     "../app/ui/metrics.ts",
     "../app/ui/menu-core.ts",
     "../app/phone-ui/phone-gestures.ts",
+    "../app/native/java-direct-buffer.ts",
     "../app/g2/firmware-compat.ts",
     "../app/g2/glasses-hardware-identity.ts",
     "../app/g2/ble-proximity.ts",
@@ -47,6 +48,7 @@
     "../app/apps/timer/timer-model.ts",
     "../app/apps/teleprompter/script-tracker.ts",
     "../app/apps/nightscout/nightscout-alerts.ts",
-    "../app/g2/brightness-curve.ts"
+    "../app/g2/brightness-curve.ts",
+    "../app/g2/events.ts"
   ]
 }

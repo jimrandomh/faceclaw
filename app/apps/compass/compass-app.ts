@@ -27,7 +27,6 @@ import { cardinalDirection, createCompassBackground, drawCompassRose, layoutComp
 import { CompassCalibrationLayer } from "./calibration-layer";
 import { getDeclinationAvailability, onDeclinationChanged, refreshDeclination } from "./declination";
 import { getNorthReference, resolveHeading, setNorthReference, type NorthReference } from "./heading";
-import { compassDebugLines, isCompassDebugEnabled, setCompassDebugEnabled } from "./debug";
 
 export const COMPASS_WINDOW_ID = "compass";
 export const COMPASS_SURFACE_ID = "window:compass";
@@ -89,11 +88,6 @@ class CompassLayer implements Layer {
   toggleNorthReference(): void {
     setNorthReference(getNorthReference() === "true" ? "magnetic" : "true");
     this.ensureDeclination();
-    this.requestRender();
-  }
-
-  toggleDebugInfo(): void {
-    setCompassDebugEnabled(!isCompassDebugEnabled());
     this.requestRender();
   }
 
@@ -162,17 +156,9 @@ class CompassLayer implements Layer {
     const headingText = heading === null ? "--°" : `${Math.round(heading)}° ${cardinalDirection(heading)}`;
     const statusLines = wrapText(small, this.statusText(), width - STACK_GAP * 2);
     const smallStep = lineStep(small);
-    const debugLines = isCompassDebugEnabled() ? compassDebugLines(this.diagnostics) : [];
-    const debugWidth = Math.max(0, ...debugLines.map((line) => small.measureText(line)));
-    const debugGap = debugLines.length ? 12 : 0;
-    // Keep diagnostics beside the heading even in narrow windows. The rose
-    // stays centred on the optical axis; the combined readout fits the viewport.
-    const headingFont = large.measureText(headingText) + debugGap + debugWidth <= width - EDGE_PAD * 2
-      ? large : small;
-    const headingWidth = headingFont.measureText(headingText);
-    const readoutWidth = headingWidth + debugGap + debugWidth;
-    const debugHeight = debugLines.length ? (debugLines.length - 1) * smallStep + small.lineHeight : 0;
-    const readoutHeight = Math.max(headingFont.lineHeight, debugHeight);
+    const headingFont = large.measureText(headingText) <= width - EDGE_PAD * 2 ? large : small;
+    const readoutWidth = headingFont.measureText(headingText);
+    const readoutHeight = headingFont.lineHeight;
 
     // One column centred on the display's true centre, so the rose sits where
     // the wearer is looking rather than 32px right of it.
@@ -204,17 +190,14 @@ class CompassLayer implements Layer {
     const image = this.background.image.clone();
     drawCompassRose(image, cx, cy, radius, heading);
     const readoutX = Math.round(Math.max(EDGE_PAD, Math.min(width - EDGE_PAD - readoutWidth, cx - readoutWidth / 2)));
-    image.drawText(headingFont, readoutX, y + Math.floor((readoutHeight - headingFont.lineHeight) / 2),
-      headingText, heading === null ? 150 : 255);
-    for (let i = 0; i < debugLines.length; i++) {
-      image.drawText(small, readoutX + headingWidth + debugGap,
-        y + Math.floor((readoutHeight - debugHeight) / 2) + i * smallStep, debugLines[i]!, 175);
-    }
+    image.drawText(headingFont, readoutX, y, headingText, heading === null ? 150 : 255);
     y += readoutHeight + 4;
     for (const line of statusLines) {
       image.drawText(small, Math.round(cx - small.measureText(line) / 2), y, line, 125);
       y += smallStep;
     }
+    const accuracyText = magneticAccuracyText(this.diagnostics);
+    image.drawText(small, width - EDGE_PAD - small.measureText(accuracyText), TOP_PAD, accuracyText, 175);
 
     return image;
   }
@@ -255,14 +238,6 @@ export function createCompassAppWindow(options: InProcessAppOptions): InProcessW
           layer.toggleNorthReference();
         },
       },
-      {
-        label: `Debug information: ${isCompassDebugEnabled() ? "On" : "Off"}`,
-        description: "Show magnetic accuracy (0–3), anomaly flags (0–2), and orientation source beside the heading.",
-        onSelect: (ctx) => {
-          ctx.stack.pop();
-          layer.toggleDebugInfo();
-        },
-      },
     ],
     baseLayer: new YieldAtRootLayer(layer),
     submitFrame: options.submitFrame,
@@ -298,4 +273,16 @@ function frameStatusText(): string {
     case "no-fix":
       return "Magnetic heading - waiting for location";
   }
+}
+
+/**
+ * The firmware's magnetometer calibration readiness (0-3) as filled/empty
+ * dots, e.g. "Calibration: ●●○" for 2/3. This is the glasses' own sensor
+ * calibration, not the wearer-fit offset set on the calibration screen.
+ */
+function magneticAccuracyText(diagnostics: CompassDiagnostics | null): string {
+  const accuracy = diagnostics && (diagnostics.flags & 0x80) ? diagnostics.magneticAccuracy : -1;
+  if (accuracy < 0) return "Calibration: --";
+  const filled = Math.min(3, accuracy);
+  return `Calibration: ${"●".repeat(filled)}${"○".repeat(3 - filled)}`;
 }

@@ -100,10 +100,11 @@ export function menuTitleHeight(font: UiFont): number {
 }
 
 /**
- * Minimum height of an icon-grid cell (icon, label line, breathing room).
- * Grid views divide their available height into as many rows of at least
- * this height as fit, so cells grow with the font instead of the label
- * overflowing a fixed-height row.
+ * Height of an icon-grid row (icon, label line, breathing room). IconGrid
+ * uses it as the row pitch directly, so cells grow smoothly with the font
+ * instead of the label overflowing a fixed-height row. Don't stretch rows to
+ * fill the viewport: the padding would jump whenever a font step changes how
+ * many rows fit.
  */
 export function iconGridMinRowHeight(font: UiFont, iconSize: number, labelGap: number): number {
   return iconSize + labelGap + font.lineHeight + 8;

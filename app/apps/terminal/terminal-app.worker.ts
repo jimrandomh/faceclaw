@@ -2,7 +2,8 @@
  * Terminal app, hosted in its own worker thread. Window model:
  * - "terminal:hub": the window opened from the launcher; shows the list of
  *   live g2mirror sessions across every connected host (grouped by host when
- *   more than one is connected), and hosts the Manage Connections section
+ *   more than one is connected; selecting a host's heading launches a shell
+ *   there), and hosts the Manage Connections section
  *   where g2mirror:// connections are added, removed, and toggled.
  * - "terminal:view:N": opened by selecting a session in the hub; each has
  *   its own websocket connection (the protocol allows one attached session
@@ -1047,10 +1048,7 @@ function windowMenuItems(window: TerminalWindow): MenuItem[] {
           label,
           onSelect: (ctx) => {
             ctx.stack.pop();
-            launchAndOpenView(control, preset).catch((error) => {
-              // The hub status line also shows the server's error message.
-              console.warn(`terminal launch ${preset} failed: ${error}`);
-            });
+            launchFromUi(control, preset);
           },
         });
       }
@@ -1180,7 +1178,10 @@ function applyHistoryReply(window: ViewWindow, reply: { start: number; oldest: n
 
 type HubItem = {
   label: string;
-  /** Group heading (host name): drawn differently and skipped by selection. */
+  /**
+   * Group heading (host name): drawn unindented and dimmer. Selectable only
+   * when it has an onSelect (launch a shell on that host).
+   */
   heading?: boolean;
   /** Session with recent output: an animated indicator marks the row. */
   active?: boolean;
@@ -1210,7 +1211,7 @@ function hubMenu(window: HubWindow): Menu<HubItem> {
 function drawHubRow({ image, item, x, y, width, selected }: MenuDrawArgs<HubItem>): void {
   const font = chromeFont();
   if (item.heading) {
-    image.drawText(font, x, y + HUB_ROW_TEXT_INSET, item.label, 140);
+    image.drawText(font, x, y + HUB_ROW_TEXT_INSET, item.label, selected ? 255 : 140);
     return;
   }
   // Activity gutter, open-window number column, then the label, truncated
@@ -1282,9 +1283,14 @@ function hubSessionItems(window: HubWindow): HubItem[] {
   ];
   const connected = connectedControls();
   const multiHost = connected.length > 1;
+  const canLaunch = launchPresetNames().length > 0;
   for (const control of connected) {
     if (multiHost) {
-      items.push({ label: connectionDisplayName(control.config), heading: true });
+      items.push({
+        label: connectionDisplayName(control.config),
+        heading: true,
+        onSelect: canLaunch ? () => launchOnHost(window, control) : undefined,
+      });
     }
     const sessions = orderedSessions(window, control);
     for (const session of sessions) {
@@ -1566,6 +1572,37 @@ function launchPresetNames(): string[] {
     if (name && !names.includes(name)) names.push(name);
   }
   return names;
+}
+
+/**
+ * A host heading in the hub was selected: launch a shell there. With a single
+ * launch preset it starts right away; with several, a submenu titled with the
+ * host's name picks which.
+ */
+function launchOnHost(window: HubWindow, control: ControlConnection): void {
+  const presets = launchPresetNames();
+  if (presets.length === 1) {
+    launchFromUi(control, presets[0]!);
+    return;
+  }
+  windowMenu(window).open(
+    presets.map((preset) => ({
+      label: `Launch ${preset}`,
+      onSelect: (ctx) => {
+        ctx.stack.pop();
+        launchFromUi(control, preset);
+      },
+    })),
+    connectionDisplayName(control.config),
+  );
+}
+
+/** Launch started from a menu or list row; failures only get logged. */
+function launchFromUi(control: ControlConnection, preset: string): void {
+  launchAndOpenView(control, preset).catch((error) => {
+    // The hub status line also shows the server's error message.
+    console.warn(`terminal launch ${preset} failed: ${error}`);
+  });
 }
 
 /** Launch a preset on a host and open a view window on the new session. */

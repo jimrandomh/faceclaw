@@ -1,6 +1,19 @@
 package com.faceclaw.app
 
-/** Revision 33 wire grammar, shared by scene planning and the local renderer. */
+/**
+ * A draw call's clip rect (revision 35, DRAW_FLAG_CLIP), in the call's own
+ * coordinates: it moves with the call's depth, narrows any clip inherited
+ * from an enclosing play-list call, and is dropped by a target override.
+ */
+class DrawClip(val x: Int, val y: Int, val width: Int, val height: Int) {
+    init {
+        require(x in -32768..32767 && y in -32768..32767 && width in 0..65535 && height in 0..65535)
+    }
+
+    fun translated(dx: Int, dy: Int) = DrawClip(x + dx, y + dy, width, height)
+}
+
+/** Revision 35 wire grammar, shared by scene planning and the local renderer. */
 object DrawProtocol {
     /** Mirrors g2flash/patches/zlib_glue.c. */
     const val DRAW = CFW_MSG_DRAW_CALLS
@@ -25,21 +38,29 @@ object DrawProtocol {
 
     private fun encode(write: DrawWriter.() -> Unit): ByteArray = DrawWriter().apply(write).toByteArray()
 
-    fun call(op: Int, args: ByteArray, target: Int? = null, depth: Int? = null): ByteArray {
+    fun call(op: Int, args: ByteArray, target: Int? = null, depth: Int? = null, clip: DrawClip? = null): ByteArray {
         require(depth == null || depth in -128..127)
         val flags = (if (target == null) 0 else DRAW_FLAG_RESOURCE_TARGET) or
-            (if (depth == null) 0 else DRAW_FLAG_DEPTH)
+            (if (depth == null) 0 else DRAW_FLAG_DEPTH) or
+            (if (clip == null) 0 else DRAW_FLAG_CLIP)
         return encode {
             writeU8(op)
             writeU8(flags)
             if (target != null) writeU16(target)
             if (depth != null) writeS8(depth)
+            if (clip != null) {
+                writeS16(clip.x)
+                writeS16(clip.y)
+                writeU16(clip.width)
+                writeU16(clip.height)
+            }
             writeBytes(args)
         }
     }
 
-    private fun call(op: Int, target: Int? = null, depth: Int? = null, write: DrawWriter.() -> Unit): ByteArray =
-        call(op, encode(write), target, depth)
+    private fun call(op: Int, target: Int? = null, depth: Int? = null, clip: DrawClip? = null,
+        write: DrawWriter.() -> Unit): ByteArray =
+        call(op, encode(write), target, depth, clip)
 
     fun depthOffset(depth: Int, right: Boolean): Int =
         if (right) -floorHalf(depth + 1) else floorHalf(depth)
@@ -53,11 +74,11 @@ object DrawProtocol {
 
     fun roundedRect(
         x: DrawValue, y: DrawValue, width: Int, height: Int, radius: Int, background: Int,
-        border: Int = DRAW_ROUNDED_RECT_NO_BORDER, depth: Int? = null,
+        border: Int = DRAW_ROUNDED_RECT_NO_BORDER, depth: Int? = null, clip: DrawClip? = null,
     ): ByteArray {
         require(width in 1..640 && height in 1..480 && radius in 0..65535)
         require(background in 0..15 && border in 0..DRAW_ROUNDED_RECT_NO_BORDER)
-        return call(DRAW_OP_ROUNDED_RECT, depth = depth) {
+        return call(DRAW_OP_ROUNDED_RECT, depth = depth, clip = clip) {
             writeExtended(x)
             writeExtended(y)
             writeU16(width)
@@ -86,11 +107,17 @@ object DrawProtocol {
 
     fun image(
         id: Int, x: Int, y: Int, options: Int = CFW_TEXTURE_OPT_BRIGHTNESS_MASK,
-        target: Int? = null, depth: Int? = null,
-    ): ByteArray = call(DRAW_OP_IMAGE, target, depth) {
+        target: Int? = null, depth: Int? = null, clip: DrawClip? = null,
+    ): ByteArray = image(id, DrawValue.Integer(x), DrawValue.Integer(y), options, target, depth, clip)
+
+    /** Revision 35: x and y are extended values and may be expressions. */
+    fun image(
+        id: Int, x: DrawValue, y: DrawValue, options: Int = CFW_TEXTURE_OPT_BRIGHTNESS_MASK,
+        target: Int? = null, depth: Int? = null, clip: DrawClip? = null,
+    ): ByteArray = call(DRAW_OP_IMAGE, target, depth, clip) {
         writeU16(id)
-        writeS16(x)
-        writeS16(y)
+        writeExtended(x)
+        writeExtended(y)
         writeU8(options)
     }
 
@@ -103,8 +130,8 @@ object DrawProtocol {
     /** Revision 29: source and destination coordinates may be expressions; the source rect must stay in bounds. */
     fun rectCopy(
         source: Int, x: DrawValue, y: DrawValue, width: Int, height: Int, dx: DrawValue, dy: DrawValue,
-        target: Int? = null, depth: Int? = null,
-    ): ByteArray = call(DRAW_OP_RECT_COPY, target, depth) {
+        target: Int? = null, depth: Int? = null, clip: DrawClip? = null,
+    ): ByteArray = call(DRAW_OP_RECT_COPY, target, depth, clip) {
         writeU16(source)
         writeExtended(x)
         writeExtended(y)
@@ -114,10 +141,13 @@ object DrawProtocol {
         writeExtended(dy)
     }
 
-    /** Fill the whole target, ignoring depth. */
-    fun clear(color: Int = 0, target: Int? = null): ByteArray {
+    /**
+     * Fill the whole target, ignoring depth; under a clip (revision 35), just
+     * the clipped part. Depth still moves the clip rect, like any call's.
+     */
+    fun clear(color: Int = 0, target: Int? = null, clip: DrawClip? = null, depth: Int? = null): ByteArray {
         require(color in 0..15)
-        return call(DRAW_OP_CLEAR, target) { writeU8(color) }
+        return call(DRAW_OP_CLEAR, target, depth, clip) { writeU8(color) }
     }
 
     /**
@@ -139,12 +169,17 @@ object DrawProtocol {
         }
     }
 
-    fun text(id: Int, x: Int, y: Int, options: Int, text: ByteArray): ByteArray {
+    fun text(id: Int, x: Int, y: Int, options: Int, text: ByteArray): ByteArray =
+        text(id, DrawValue.Integer(x), DrawValue.Integer(y), options, text)
+
+    /** Revision 35: x and y are extended values and may be expressions. */
+    fun text(id: Int, x: DrawValue, y: DrawValue, options: Int, text: ByteArray, depth: Int? = null,
+        clip: DrawClip? = null): ByteArray {
         require(text.size <= 255)
-        return call(DRAW_OP_TEXT) {
+        return call(DRAW_OP_TEXT, depth = depth, clip = clip) {
             writeU16(id)
-            writeS16(x)
-            writeS16(y)
+            writeExtended(x)
+            writeExtended(y)
             writeU8(options)
             writeU8(text.size)
             writeBytes(text)
