@@ -54,6 +54,7 @@ export class PreviewDisplayTarget implements DisplayTarget {
   // (java-direct-buffer.ts).
   private readonly framePixelsBuffer = new JavaDirectBuffer(640 * 480);
   private readonly frameDrawsBuffer = new JavaDirectBuffer();
+  private readonly shellSceneBuffer = new JavaDirectBuffer();
 
   constructor() {
     const context = Utils.android.getApplicationContext();
@@ -109,7 +110,7 @@ export class PreviewDisplayTarget implements DisplayTarget {
   }
 
   async submitShellScene(bytes: Uint8Array, paintMs = 0, frameId = 0): Promise<void> {
-    this.compositor.submitShellScene(new Uint8Array(bytes).buffer, paintMs, frameId);
+    this.compositor.submitShellScene(this.shellSceneBuffer.load(bytes), paintMs, frameId);
   }
 
   async setUnderlayDim(belowZOrder: number, factor: number): Promise<void> {

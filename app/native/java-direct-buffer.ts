@@ -93,3 +93,20 @@ export class JavaDirectBuffer {
     return this.load(new Uint8Array(buffer));
   }
 }
+
+/**
+ * Copy `bytes` into a fresh Java direct buffer (position 0, limit
+ * `bytes.length`) for a one-off crossing such as an atlas registration or a
+ * file write. Unlike a JavaDirectBuffer nothing is pinned between calls: the
+ * Java buffer is an ordinary object, freed once the JS side drops it.
+ */
+export function copyToJavaByteBuffer(
+  bytes: Uint8Array,
+  backend: DirectBufferBackend = nativeScriptBackend,
+): JavaByteBufferLike {
+  // A zero-capacity direct buffer may have no address to view.
+  const javaBuffer = backend.allocateDirect(Math.max(bytes.length, 1));
+  backend.viewOf(javaBuffer).set(bytes);
+  javaBuffer.limit(bytes.length);
+  return javaBuffer;
+}

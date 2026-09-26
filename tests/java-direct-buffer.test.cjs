@@ -1,7 +1,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
-const { JavaDirectBuffer } = require("../.test-build/app/native/java-direct-buffer.js");
+const { JavaDirectBuffer, copyToJavaByteBuffer } = require("../.test-build/app/native/java-direct-buffer.js");
 
 /**
  * A stand-in for java.nio.ByteBuffer.allocateDirect: fixed capacity, a
@@ -108,4 +108,15 @@ test("a view on a larger buffer contributes only its own bytes", () => {
   const whole = frame(100, 3);
   const view = whole.subarray(10, 30);
   assert.deepEqual(consume(pool.load(view), 20), whole.slice(10, 30));
+});
+
+test("copyToJavaByteBuffer gives each crossing its own exact-length buffer", () => {
+  const backend = fakeBackend();
+  const whole = frame(100, 5);
+  const first = copyToJavaByteBuffer(whole.subarray(10, 30), backend);
+  const second = copyToJavaByteBuffer(frame(7, 1), backend);
+  assert.notEqual(first, second);
+  assert.deepEqual(consume(first, 20), whole.slice(10, 30));
+  assert.deepEqual(consume(second, 7), frame(7, 1));
+  assert.equal(consume(copyToJavaByteBuffer(new Uint8Array(0), backend), 0).length, 0);
 });

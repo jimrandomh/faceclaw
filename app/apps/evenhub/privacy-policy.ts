@@ -1,5 +1,6 @@
 import { Application } from "@nativescript/core";
 import { fetchWithUserAgent } from "../../util/http";
+import { copyToJavaByteBuffer } from "../../native/java-direct-buffer";
 
 declare const android: any;
 declare const androidx: any;
@@ -93,8 +94,7 @@ async function downloadAndOpenPdf(url: string, appName: string, activity: any): 
   const file = new java.io.File(directory, `policy-${hash.toString(16)}.pdf`);
   const stream = new java.io.FileOutputStream(file);
   try {
-    const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
-    stream.getChannel().write(buffer);
+    stream.getChannel().write(copyToJavaByteBuffer(bytes));
   } finally {
     stream.close();
   }

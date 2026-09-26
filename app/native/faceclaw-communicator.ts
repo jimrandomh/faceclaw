@@ -138,6 +138,7 @@ export class FaceclawCommunicatorBridge {
   // immediately before the synchronous Java call that consumes them.
   private readonly framePixelsBuffer = new JavaDirectBuffer(640 * 480);
   private readonly frameDrawsBuffer = new JavaDirectBuffer();
+  private readonly shellSceneBuffer = new JavaDirectBuffer();
   private readonly buzzerBuffer = new JavaDirectBuffer();
   private readonly frameMetricWaiters = new Set<(metrics: FrameMetrics) => void>();
   // Recent frame-finished outcomes from the Java side, so waitForFrameFinished
@@ -545,7 +546,10 @@ export class FaceclawCommunicatorBridge {
    */
   async submitShellScene(bytes: Uint8Array, paintMs = 0, frameId = 0): Promise<void> {
     const snapshot = new Uint8Array(bytes);
-    await this.enqueueJavaCall(() => this.communicator.submitShellScene(snapshot.buffer, paintMs, frameId), true);
+    await this.enqueueJavaCall(
+      () => this.communicator.submitShellScene(this.shellSceneBuffer.load(snapshot), paintMs, frameId),
+      true,
+    );
   }
 
   async setUnderlayDim(belowZOrder: number, factor: number): Promise<void> {
