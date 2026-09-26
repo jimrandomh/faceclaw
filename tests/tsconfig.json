@@ -47,6 +47,7 @@
     "../app/apps/timer/timer-model.ts",
     "../app/apps/teleprompter/script-tracker.ts",
     "../app/apps/nightscout/nightscout-alerts.ts",
-    "../app/g2/brightness-curve.ts"
+    "../app/g2/brightness-curve.ts",
+    "../app/g2/events.ts"
   ]
 }
