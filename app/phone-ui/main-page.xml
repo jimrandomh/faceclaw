@@ -106,73 +106,81 @@
         <!-- Keyboard-input mode: anchored to the bottom of the (keyboard-
              shrunk) page, so it sits in the space below the mirror and only
              overlaps the mirror when the open keyboard leaves too little
-             room. The tabbed controls are collapsed while it is up. -->
-        <StackLayout
-            class="system-name-modal"
-            visibility="{{ textSettingEditorVisibility }}"
-            horizontalAlignment="stretch"
-            verticalAlignment="bottom">
-            <Label text="{{ activeTextEditorTitle }}" class="h2" />
-            <!-- Per-field labels only matter with two fields; a single-field
-                 edit's field title is the same string as the editor title. -->
-            <Label text="{{ activeTextSettingTitle }}" visibility="{{ secondaryTextSettingVisibility }}" />
-            <TextField
-                id="settingsTextField"
-                text="{{ activeTextSettingValue }}"
-                textChange="{{ onTextSettingTextChange }}"
-                returnPress="{{ onPrimaryTextSettingReturnPress }}"
-                autocorrect="false"
-                autocapitalizationType="none"
-                keyboardType="{{ activeTextSettingKeyboardType }}"
-                secure="{{ activeTextSettingSecure }}"
-                returnKeyType="{{ primaryTextSettingReturnKeyType }}" />
-            <StackLayout visibility="{{ secondaryTextSettingVisibility }}">
-                <Label text="{{ secondaryTextSettingTitle }}" />
-                <TextField
-                    id="secondarySettingsTextField"
-                    text="{{ secondaryTextSettingValue }}"
-                    textChange="{{ onSecondaryTextSettingTextChange }}"
-                    returnPress="{{ onSecondaryTextSettingReturnPress }}"
-                    autocorrect="false"
-                    autocapitalizationType="none"
-                    keyboardType="{{ secondaryTextSettingKeyboardType }}"
-                    secure="{{ secondaryTextSettingSecure }}"
-                    returnKeyType="done" />
-            </StackLayout>
-            <GridLayout
-                columns="*,auto"
-                visibility="{{ activeTextEditorToggleVisibility }}"
-                class="m-t-8">
-                <Label col="0" text="{{ activeTextEditorToggleLabel }}" verticalAlignment="center" />
-                <Switch
-                    col="1"
-                    checked="{{ activeTextEditorToggleValue }}"
-                    checkedChange="{{ onTextSettingToggleChange }}" />
-            </GridLayout>
-        </StackLayout>
+             room. The tabbed controls are collapsed while it is up.
+
+             NativeScript has no maxHeight, so the transparent outer grid's
+             fixed height is the cap: it shrinks to the page when the keyboard
+             leaves less room than that, and the bottom-aligned modal inside
+             sizes to its content within it. Past the cap the fields scroll
+             and the buttons stay put.
+
+             Any GridLayout in here needs an explicit rows="auto": the implicit
+             single star row stretches to fill all the height offered (Stack-
+             and DockLayout offer it AT_MOST the remaining height), which is
+             what made the form balloon with the keyboard minimized. -->
+        <GridLayout
+            height="440"
+            verticalAlignment="bottom"
+            isPassThroughParentEnabled="true"
+            visibility="{{ textSettingEditorVisibility }}">
+            <DockLayout
+                class="system-name-modal"
+                stretchLastChild="true"
+                horizontalAlignment="stretch"
+                verticalAlignment="bottom">
+                <Label dock="top" text="{{ activeTextEditorTitle }}" class="h2" />
+                <GridLayout dock="bottom" columns="*,*" rows="auto" class="m-t-8">
+                    <Button col="0" text="Cancel" tap="{{ onTextSettingCancelTap }}" />
+                    <Button col="1" text="Submit" tap="{{ onTextSettingSubmitTap }}" class="-primary" />
+                </GridLayout>
+                <ScrollView>
+                    <StackLayout>
+                        <!-- Per-field labels only matter with two fields; a single-field
+                             edit's field title is the same string as the editor title. -->
+                        <Label text="{{ activeTextSettingTitle }}" visibility="{{ secondaryTextSettingVisibility }}" />
+                        <TextField
+                            id="settingsTextField"
+                            text="{{ activeTextSettingValue }}"
+                            textChange="{{ onTextSettingTextChange }}"
+                            returnPress="{{ onPrimaryTextSettingReturnPress }}"
+                            autocorrect="false"
+                            autocapitalizationType="none"
+                            keyboardType="{{ activeTextSettingKeyboardType }}"
+                            secure="{{ activeTextSettingSecure }}"
+                            returnKeyType="{{ primaryTextSettingReturnKeyType }}" />
+                        <StackLayout visibility="{{ secondaryTextSettingVisibility }}">
+                            <Label text="{{ secondaryTextSettingTitle }}" />
+                            <TextField
+                                id="secondarySettingsTextField"
+                                text="{{ secondaryTextSettingValue }}"
+                                textChange="{{ onSecondaryTextSettingTextChange }}"
+                                returnPress="{{ onSecondaryTextSettingReturnPress }}"
+                                autocorrect="false"
+                                autocapitalizationType="none"
+                                keyboardType="{{ secondaryTextSettingKeyboardType }}"
+                                secure="{{ secondaryTextSettingSecure }}"
+                                returnKeyType="done" />
+                        </StackLayout>
+                        <GridLayout
+                            columns="*,auto"
+                            rows="auto"
+                            visibility="{{ activeTextEditorToggleVisibility }}"
+                            class="m-t-8">
+                            <Label col="0" text="{{ activeTextEditorToggleLabel }}" verticalAlignment="center" />
+                            <Switch
+                                col="1"
+                                checked="{{ activeTextEditorToggleValue }}"
+                                checkedChange="{{ onTextSettingToggleChange }}" />
+                        </GridLayout>
+                    </StackLayout>
+                </ScrollView>
+            </DockLayout>
+        </GridLayout>
         <!-- Keyboard-input panel (the keyboard button beside the mic button):
              the phone's end of the keyboard dialog on the glasses
              (ui/shell/keyboard-input.ts). Same placement and collapsing rules
              as the setting editor above. Enter inserts a newline; the send
              buttons pick a destination directly. -->
-        <StackLayout
-            class="system-name-modal"
-            visibility="{{ keyboardInputVisibility }}"
-            horizontalAlignment="stretch"
-            verticalAlignment="bottom">
-            <Label text="Keyboard input" class="h2" />
-            <TextView
-                id="keyboardInputField"
-                text="{{ keyboardInputText }}"
-                hint="Type a message"
-                textChange="{{ onKeyboardInputTextChange }}"
-                height="120" />
-            <!-- Wraps onto a second line when the labels don't fit side by side. -->
-            <FlexboxLayout flexWrap="wrap" class="m-t-8">
-                <Button text="{{ keyboardInputPrimaryTargetLabel }}" tap="{{ onKeyboardInputPrimarySendTap }}" visibility="{{ keyboardInputPrimaryTargetVisibility }}" flexGrow="1" class="-primary" />
-                <Button text="{{ keyboardInputSecondaryTargetLabel }}" tap="{{ onKeyboardInputSecondarySendTap }}" visibility="{{ keyboardInputSecondaryTargetVisibility }}" flexGrow="1" />
-                <Button text="Discard" tap="{{ onKeyboardInputDiscardTap }}" flexGrow="1" />
-            </FlexboxLayout>
-        </StackLayout>
+        <rc:keyboard-input-panel />
     </GridLayout>
 </Page>

@@ -18,6 +18,7 @@
  * Safe cards auto-play to the foundations after every move.
  */
 import "@nativescript/core/globals";
+import { finishWorkerShutdown } from "../../ui/shell/worker-lifecycle";
 import { GrayImage } from "../../graphics/image";
 import { flattenPlanesWithDraws, planesFingerprint, singlePlane, type Plane } from "../../graphics/plane";
 import { prepareFrameDraws } from "../../graphics/glyph-wire";
@@ -25,6 +26,7 @@ import { getFont } from "../../graphics/bdffont";
 import { ensurePreinstalledFonts, installedFontPath } from "../../graphics/installed-fonts";
 import { TtfFont } from "../../graphics/ttf-font";
 import * as frameTimings from "../../native/frame-timings";
+import { playWorkerBuzzerSequence } from "../../native/worker-buzzer";
 import { getActiveDisplay } from "../../native/active-display";
 import { buildSoundSequencePayload, type Step } from "../../ui/sound-effects";
 import { loadSoundEnabled, saveSoundEnabled } from "../../ui/sound-setting";
@@ -34,7 +36,6 @@ import type { WorkerAppMessage, WorkerAppReply } from "../../ui/shell/worker-win
 import { directionalFallback, GESTURE_CLICK, GESTURE_DOUBLE_CLICK, GESTURE_LONG_PRESS, type InputEvent } from "../../ui/gestures";
 
 declare const global: any;
-declare const com: any;
 
 ensurePreinstalledFonts();
 const fontPath = installedFontPath("Roboto-Regular.ttf");
@@ -144,6 +145,12 @@ post({ type: "worker-ready" });
 global.onmessage = (event: { data: WorkerAppMessage }) => {
   const message = event.data;
   switch (message.type) {
+    case "check-idle":
+      post({ type: "worker-idle" });
+      break;
+    case "shutdown":
+      finishWorkerShutdown();
+      break;
     case "open-window": {
       const window: FreecellWindow = {
         windowId: message.windowId,
@@ -206,14 +213,12 @@ global.onmessage = (event: { data: WorkerAppMessage }) => {
 
 /**
  * Fire a buzzer effect. Non-blocking: the firmware's sequencer plays the
- * steps on its own timer, and the Java call is safe from the worker thread.
+ * steps on its own timer; the platform bridge routes it from the worker.
  */
 function playSfx(window: FreecellWindow, steps: Step[]): void {
   if (!window.soundOn || steps.length === 0) return;
   try {
-    const communicator = com.faceclaw.app.FaceclawBleCommunicator.getActive();
-    if (!communicator) return;
-    communicator.playBuzzerSequence(buildSoundSequencePayload(steps).buffer);
+    playWorkerBuzzerSequence(buildSoundSequencePayload(steps));
   } catch (error) {
     console.warn(`freecell sfx failed: ${error}`);
   }

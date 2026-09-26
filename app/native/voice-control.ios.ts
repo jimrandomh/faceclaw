@@ -1,0 +1,149 @@
+import type { VoiceControlState, VoiceTranscriptEvent } from './voice-control'
+
+declare const FaceclawSpeech: any
+export type IosMicrophoneSession = {
+  setMicrophone(enabled: boolean, listener?: (packet: Uint8Array) => void): Promise<void>
+}
+
+/** iOS implementation of the shared voice dialog's event bridge. Audio comes
+ * from the glasses when connected, or the default phone input in preview mode.
+ */
+export class IosVoiceControlBridge {
+  private native: any = null
+  private readonly statuses = new Set<(state: VoiceControlState) => void>()
+  private readonly transcripts = new Set<(event: VoiceTranscriptEvent) => void>()
+  private readonly ends = new Set<() => void>()
+  private status = 'Voice input ready.'
+  private generation = 0
+  private session: IosMicrophoneSession | null = null
+  private source: 'glasses' | 'phone' | null = null
+  private capturing = false
+  private finalizing = false
+  private completion: Promise<void> = Promise.resolve()
+  private resolveCompletion: (() => void) | null = null
+  private audioTimer: ReturnType<typeof setTimeout> | null = null
+  private packets = 0
+  private log: (message: string) => void = () => {}
+
+  onStatus(listener: (state: VoiceControlState) => void): () => void {
+    this.statuses.add(listener); listener({ status: this.status, listening: this.capturing, detail: '' }); return () => { this.statuses.delete(listener) }
+  }
+  onTranscript(listener: (event: VoiceTranscriptEvent) => void): () => void {
+    this.transcripts.add(listener); return () => { this.transcripts.delete(listener) }
+  }
+  onSpeechEnd(listener: () => void): () => void { this.ends.add(listener); return () => { this.ends.delete(listener) } }
+  onSpeechPause(_listener: () => void): () => void { return () => {} }
+  private setStatus(status: string): void { this.status = status; for (const fn of [...this.statuses]) fn({ status, listening: this.capturing, detail: '' }) }
+  private ensureNative(): any {
+    if (!this.native) {
+      this.native = FaceclawSpeech.new()
+      this.native.eventHandler = (json: string) => this.receive(JSON.parse(json))
+    }
+    return this.native
+  }
+  async prepare(foreground: boolean, usePhoneMic = false): Promise<boolean> {
+    let status = FaceclawSpeech.authorizationStatus()
+    if (status === 0) {
+      if (!foreground) { this.setStatus('Open Faceclaw on the phone once to allow Speech Recognition.'); return false }
+      status = await new Promise<number>(resolve => FaceclawSpeech.requestAuthorization(resolve))
+    }
+    if (status !== 3) { this.setStatus('Allow Speech Recognition for Faceclaw in iPhone Settings.'); return false }
+    if (usePhoneMic) {
+      let microphoneStatus = FaceclawSpeech.microphoneAuthorizationStatus()
+      if (microphoneStatus === 0) {
+        if (!foreground) { this.setStatus('Open Faceclaw on the phone to allow microphone access.'); return false }
+        microphoneStatus = await new Promise<number>(resolve => FaceclawSpeech.requestMicrophoneAuthorization(resolve))
+      }
+      if (microphoneStatus !== 3) { this.setStatus('Allow Microphone access for Faceclaw in iPhone Settings.'); return false }
+    }
+    return true
+  }
+  get statusText(): string { return this.status }
+  async startGlassesCapture(session: IosMicrophoneSession, log: (message: string) => void, endpointing = false): Promise<void> {
+    this.stop()
+    const generation = ++this.generation
+    this.log = log; this.source = 'glasses'; this.session = session; this.packets = 0; this.capturing = true
+    this.completion = new Promise(resolve => { this.resolveCompletion = resolve })
+    const error = String(this.ensureNative().startWithEndpointing(endpointing) ?? '')
+    if (error) { this.stop(); this.setStatus(error); this.emitEnd(); return }
+    try {
+      await session.setMicrophone(true, packet => {
+        if (generation !== this.generation || !this.capturing) return
+        this.packets++
+        const copy = new Uint8Array(packet)
+        this.native.acceptPacket(NSData.dataWithBytesLength(interop.handleof(copy.buffer), copy.byteLength))
+      })
+      if (generation !== this.generation || !this.capturing) return
+      log('Voice: glasses microphone enabled; using on-device recognition')
+      this.audioTimer = setTimeout(() => {
+        this.audioTimer = null
+        if (generation === this.generation && this.capturing && !this.packets) {
+          this.stop(); this.setStatus('No microphone audio received. Reconnect the glasses and try again.'); this.emitEnd()
+        }
+      }, 5000)
+    } catch (error) {
+      if (generation !== this.generation) return
+      this.stop(); this.setStatus(error instanceof Error ? error.message : String(error)); this.emitEnd()
+    }
+  }
+  async startPhoneCapture(log: (message: string) => void, endpointing = false): Promise<void> {
+    this.stop()
+    this.log = log; this.source = 'phone'; this.capturing = true
+    this.completion = new Promise(resolve => { this.resolveCompletion = resolve })
+    const error = String(this.ensureNative().startPhoneWithEndpointing(endpointing) ?? '')
+    if (error) { this.stop(); this.setStatus(error); this.emitEnd(); return }
+    log('Voice: phone default microphone enabled; using on-device recognition')
+  }
+  stopPhoneCapture(): void {
+    if (this.source !== 'phone') return
+    this.stop(); this.setStatus('Phone voice input stopped.'); this.emitEnd()
+  }
+  stopPushToTalk(): Promise<void> {
+    const completion = this.completion
+    if (!this.capturing) return completion
+    this.capturing = false; this.finalizing = true
+    this.clearAudioTimer(); this.releaseMicrophone()
+    this.setStatus('Recognizing…'); this.native?.finish()
+    return completion
+  }
+  stop(): void {
+    ++this.generation
+    this.capturing = this.finalizing = false
+    this.source = null
+    this.clearAudioTimer(); this.releaseMicrophone(); this.native?.cancel()
+    this.finishCompletion()
+  }
+  handleSessionEnded(message = 'Glasses disconnected. Start voice input again after reconnecting.'): void {
+    if (this.source !== 'glasses' || !this.capturing && !this.finalizing) return
+    this.stop(); this.setStatus(message); this.emitEnd()
+  }
+  private clearAudioTimer(): void { if (this.audioTimer !== null) clearTimeout(this.audioTimer); this.audioTimer = null }
+  private releaseMicrophone(): void {
+    const session = this.session; this.session = null
+    if (session) void session.setMicrophone(false).catch(error => this.log(`Voice microphone cleanup: ${error}`))
+  }
+  private emitEnd(): void { for (const fn of [...this.ends]) fn() }
+  private finishCompletion(): void {
+    const resolve = this.resolveCompletion; this.resolveCompletion = null; resolve?.()
+  }
+  private receive(event: { kind: string; text?: string; final?: boolean; message?: string; seconds?: number; packets?: number; rms?: number; missing?: number; errors?: number }): void {
+    if (!this.capturing && !this.finalizing) return
+    if (event.kind === 'transcript') {
+      this.log(`Voice: ${event.final ? 'final' : 'partial'} transcript (${event.text?.length ?? 0} characters)`)
+      for (const fn of [...this.transcripts]) fn({ text: event.text ?? '', isFinal: !!event.final })
+    } else if (event.kind === 'status') this.setStatus(event.message ?? '')
+    else if (event.kind === 'audio') {
+      this.log(`Voice audio: ${event.seconds?.toFixed(1)}s, packets=${event.packets}, RMS=${event.rms?.toFixed(4)}, missing=${event.missing}, errors=${event.errors}`)
+      if (this.capturing) this.setStatus(`Listening on ${this.source === 'phone' ? 'phone' : 'glasses'}… ${event.seconds?.toFixed(0)}s`)
+    } else if (event.kind === 'finishing') {
+      this.stopPushToTalk(); this.emitEnd()
+    } else if (event.kind === 'ended') {
+      this.source = null
+      this.capturing = this.finalizing = false
+      this.clearAudioTimer(); this.releaseMicrophone()
+      this.finishCompletion()
+      this.setStatus(event.message ?? 'Ready to send'); this.emitEnd()
+    }
+  }
+}
+export const voiceControlBridge = new IosVoiceControlBridge()

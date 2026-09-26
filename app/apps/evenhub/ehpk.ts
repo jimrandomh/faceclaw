@@ -18,6 +18,11 @@ const RECORD_FILE = 0xe4;
 const RECORD_DIR = 0xe5;
 const RECORD_FOOTER = 0xe3;
 
+/** Archive paths are relative to one package, never to the phone container. */
+export function safeEhpkPath(value: string): boolean {
+  return !!value && !/[\\\u0000:]/.test(value) && value.split('/').every(part => !!part && part !== '.' && part !== '..');
+}
+
 export type EhpkArchive = {
   /** Relative path (e.g. "app.json", "dist/index.html") to contents. */
   files: Map<string, Uint8Array>;
@@ -71,41 +76,55 @@ export function utf8Decode(bytes: Uint8Array): string {
   return out;
 }
 
-export function parseEhpk(data: Uint8Array): EhpkArchive {
-  if (data.length < 20 || data[0] !== 0x45 || data[1] !== 0x48 || data[2] !== 0x50 || data[3] !== 0x4b) {
+/** Index compressed records without expanding assets merely to read app.json. */
+export function openEhpk(data: Uint8Array) {
+  if (data.length < 20 || data[0] !== 0x45 || data[1] !== 0x48 || data[2] !== 0x50 || data[3] !== 0x4b)
     throw new Error("not an EHPK file");
-  }
   const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
-  const firstRecord = view.getUint32(8, true);
-  const files = new Map<string, Uint8Array>();
-
-  let p = firstRecord;
+  const records = new Map<string, { offset: number; compressed: number; size: number }>();
+  const requireBytes = (offset: number, length: number) => {
+    if (offset < 20 || length < 0 || offset + length > data.length) throw new Error("ehpk: truncated record");
+  };
+  let p = view.getUint32(8, true);
+  requireBytes(p, 0);
   while (p < data.length) {
+    requireBytes(p, 4);
     const type = data[p]!;
-    if (data[p + 1] !== 0xba || data[p + 2] !== 0xa9 || data[p + 3] !== 0xba) {
+    if (data[p + 1] !== 0xba || data[p + 2] !== 0xa9 || data[p + 3] !== 0xba)
       throw new Error(`ehpk: bad record magic at ${p}`);
-    }
     if (type === RECORD_FILE) {
-      const compressedLength = view.getUint32(p + 4, true);
-      const uncompressedLength = view.getUint32(p + 8, true);
+      requireBytes(p, 16);
+      const compressed = view.getUint32(p + 4, true), size = view.getUint32(p + 8, true);
       const nameLength = view.getUint16(p + 14, true);
+      requireBytes(p + 16, nameLength + compressed);
       const name = utf8Decode(unxor(data, p + 16, nameLength));
-      const blob = unxor(data, p + 16 + nameLength, compressedLength);
-      const content = decompress(blob, new Uint8Array(uncompressedLength));
-      if (content.length !== uncompressedLength) {
-        throw new Error(`ehpk: ${name}: expected ${uncompressedLength} bytes, got ${content.length}`);
-      }
-      files.set(name, content);
-      p += 16 + nameLength + compressedLength;
+      if (!safeEhpkPath(name)) throw new Error(`ehpk: invalid file path ${name}`);
+      records.set(name, { offset: p + 16 + nameLength, compressed, size });
+      p += 16 + nameLength + compressed;
     } else if (type === RECORD_DIR) {
-      const nameLength = view.getUint16(p + 6, true);
-      p += 8 + nameLength;
-    } else if (type === RECORD_FOOTER) {
-      break;
-    } else {
-      throw new Error(`ehpk: unknown record type 0x${type.toString(16)} at ${p}`);
-    }
+      requireBytes(p, 8);
+      const length = view.getUint16(p + 6, true);
+      requireBytes(p + 8, length); p += 8 + length;
+    } else if (type === RECORD_FOOTER) break;
+    else throw new Error(`ehpk: unknown record type 0x${type.toString(16)} at ${p}`);
   }
+  return { files: {
+    keys: () => records.keys(),
+    has: (name: string) => records.has(name),
+    get: (name: string): Uint8Array | undefined => {
+      const record = records.get(name);
+      if (!record) return undefined;
+      const content = decompress(unxor(data, record.offset, record.compressed), new Uint8Array(record.size));
+      if (content.length !== record.size) throw new Error(`ehpk: ${name}: expected ${record.size} bytes, got ${content.length}`);
+      return content;
+    },
+  } };
+}
+export type EhpkIndex = ReturnType<typeof openEhpk>;
+
+export function parseEhpk(data: Uint8Array): EhpkArchive {
+  const index = openEhpk(data), files = new Map<string, Uint8Array>();
+  for (const name of index.files.keys()) files.set(name, index.files.get(name)!);
   return { files };
 }
 
@@ -119,6 +138,7 @@ export function parseManifest(appJsonText: string): EvenHubManifest {
   const name = String(raw.name ?? packageId);
   const version = String(raw.version ?? "0");
   const entrypoint = String(raw.entrypoint ?? "index.html");
+  if (!safeEhpkPath(entrypoint)) throw new Error('Invalid EHPK entrypoint');
 
   const permissions = parsePermissions(raw.permissions);
   const privacyPolicyUrl = firstSafeHttpsUrl(

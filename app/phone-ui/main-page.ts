@@ -15,6 +15,7 @@ type MainPageState = {
   model: MainViewModel
   propertyChangeHandler: (args: EventData & { propertyName?: string }) => void
   orientationHandler: () => void
+  detachPreview: () => void
 }
 
 function getPageState(page: Page): MainPageState | undefined {
@@ -32,6 +33,7 @@ function cleanupPage(page: Page): void {
     return
   }
   state.model.off(Observable.propertyChangeEvent, state.propertyChangeHandler)
+  state.detachPreview()
   Application.off(Application.orientationChangedEvent, state.orientationHandler)
   // navigatingTo builds a fresh model each visit; drop the old one's
   // controller/settings subscriptions or every navigation leaks a listener.
@@ -130,6 +132,8 @@ export function loaded(args: EventData) {
 
   const state: MainPageState = {
     model,
+    detachPreview: dashboardController.attachPhonePreview(() =>
+      page.isLoaded && !model.displayPreviewMessage && (!isAndroid || !!page.android?.isShown())),
     orientationHandler: () => {
       setTimeout(() => {
         model.refreshLayoutMetrics()

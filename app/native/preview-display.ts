@@ -1,5 +1,6 @@
 import { ImageSource, Utils } from "@nativescript/core";
 import { dimFactor256, type FaceclawCommunicatorBridge, type SurfaceOptions } from "./faceclaw-communicator";
+import { JavaDirectBuffer } from "./java-direct-buffer";
 
 declare const com: any;
 declare const java: any;
@@ -19,9 +20,11 @@ export type DisplayTarget = Pick<
   | "configureSurface"
   | "removeSurface"
   | "setSurfaceVisible"
+  | "setSurfaceDepth"
   | "setUnderlayDim"
   | "setScreenBlanked"
   | "submitSurfaceFrame"
+  | "submitShellScene"
   | "waitForFrameFinished"
   | "getCompositePreview"
   | "saveScreenshot"
@@ -47,6 +50,11 @@ function nonNegativeNumber(value: number): number {
  */
 export class PreviewDisplayTarget implements DisplayTarget {
   private readonly compositor: any;
+  // Reused Java-side buffers: passing a JS ArrayBuffer to Java leaks it
+  // (java-direct-buffer.ts).
+  private readonly framePixelsBuffer = new JavaDirectBuffer(640 * 480);
+  private readonly frameDrawsBuffer = new JavaDirectBuffer();
+  private readonly shellSceneBuffer = new JavaDirectBuffer();
 
   constructor() {
     const context = Utils.android.getApplicationContext();
@@ -97,6 +105,14 @@ export class PreviewDisplayTarget implements DisplayTarget {
     this.compositor.setSurfaceVisible(id, Boolean(visible));
   }
 
+  async setSurfaceDepth(id: string, depth: number): Promise<void> {
+    this.compositor.setSurfaceDepth(id, Math.round(depth));
+  }
+
+  async submitShellScene(bytes: Uint8Array, paintMs = 0, frameId = 0): Promise<void> {
+    this.compositor.submitShellScene(this.shellSceneBuffer.load(bytes), paintMs, frameId);
+  }
+
   async setUnderlayDim(belowZOrder: number, factor: number): Promise<void> {
     this.compositor.setUnderlayDim(Math.round(belowZOrder), dimFactor256(factor));
   }
@@ -114,11 +130,11 @@ export class PreviewDisplayTarget implements DisplayTarget {
     frameId = 0,
     glyphs: ArrayBuffer | null = null,
   ): Promise<void> {
-    // Copy for the same reason the bridge does: the source may be a view on a
-    // larger buffer, and Java receives the backing ArrayBuffer.
-    const snapshot = new Uint8Array(pixels8bpp);
+    // Copied into a reused Java direct buffer, sized to exactly this view's
+    // bytes; passing the ArrayBuffer itself would leak it
+    // (java-direct-buffer.ts).
     this.compositor.submitSurfaceFrame(
-      snapshot.buffer,
+      this.framePixelsBuffer.load(pixels8bpp),
       surfaceId,
       Math.round(rect.x),
       Math.round(rect.y),
@@ -127,7 +143,7 @@ export class PreviewDisplayTarget implements DisplayTarget {
       fingerprint,
       Math.round(nonNegativeNumber(paintMs)),
       Math.round(nonNegativeNumber(frameId)),
-      glyphs,
+      this.frameDrawsBuffer.loadOptional(glyphs),
     );
     // The Java side finishes the frame: the composite is the end of the line,
     // and worker isolates submit to the same object without coming through here.

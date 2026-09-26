@@ -5,16 +5,17 @@
  * it only discovers and downloads public .ehpk packages. Authentication is
  * the same signed-header scheme used by the firmware API.
  */
-import { Application } from "@nativescript/core";
+import { hmacSha256Base64, getPhoneOpenUdid } from "./even-platform";
+export { getPhoneOpenUdid } from "./even-platform";
 import {
   getEvenHubToken,
   hasEvenHubCredentials,
   invalidateEvenHubToken,
   saveEvenHubSession,
 } from "./credentials";
+import { downloadBinary } from "../../native/binary-http";
 import { fetchWithUserAgent } from "../../util/http";
 
-declare const android: any;
 
 const API_HOST = "https://api.evenrealities.com";
 const PUBLIC_CDN_HOST = "https://cdn-pub.evenhub.evenrealities.com";
@@ -128,9 +129,9 @@ export class EvenHubApiClient {
     const url = typeof metadata.url === "string" ? metadata.url : "";
     if (!url.startsWith("https://")) throw new Error("EvenHub returned no package download URL.");
 
-    const response = await fetchWithTimeout(url, {}, 60_000);
-    if (!response.ok) throw new Error(`EvenHub package download failed (HTTP ${response.status}).`);
-    const bytes = new Uint8Array(await response.arrayBuffer());
+    const response = await downloadBinary(url, 60_000);
+    if (response.status < 200 || response.status >= 300) throw new Error(`EvenHub package download failed (HTTP ${response.status}).`);
+    const bytes = response.bytes;
     const expectedSize = finiteNumber(metadata.size);
     if (expectedSize > 0 && bytes.length !== expectedSize) {
       throw new Error(`EvenHub package was truncated (${bytes.length} of ${expectedSize} bytes).`);
@@ -156,11 +157,11 @@ export class EvenHubApiClient {
     if (!/^prod\/[A-Za-z0-9._~!$&'()*+,;=:@%/-]+\.(?:svg|png|webp|jpe?g)$/i.test(cleanPath) || cleanPath.includes("..")) {
       throw new Error("EvenHub returned an invalid public asset path.");
     }
-    const response = await fetchWithTimeout(`${PUBLIC_CDN_HOST}/${cleanPath}`, {}, 30_000);
-    if (!response.ok) throw new Error(`EvenHub icon download failed (HTTP ${response.status}).`);
-    const contentLength = Number(response.headers.get("Content-Length") ?? 0);
+    const response = await downloadBinary(`${PUBLIC_CDN_HOST}/${cleanPath}`, 30_000);
+    if (response.status < 200 || response.status >= 300) throw new Error(`EvenHub icon download failed (HTTP ${response.status}).`);
+    const contentLength = response.contentLength;
     if (contentLength > 1_000_000) throw new Error("EvenHub icon is unexpectedly large.");
-    const bytes = new Uint8Array(await response.arrayBuffer());
+    const bytes = response.bytes;
     if (bytes.length === 0 || bytes.length > 1_000_000) throw new Error("EvenHub icon is empty or too large.");
     const extension = cleanPath.toLowerCase().match(/\.([a-z0-9]+)$/)?.[1] ?? "";
     return { bytes, extension: extension === "jpeg" ? "jpg" : extension };
@@ -180,12 +181,18 @@ export class EvenHubApiClient {
     path: string,
     options: { query?: Record<string, string | number>; body?: Record<string, unknown> } = {},
   ): Promise<unknown> {
-    let token = await this.ensureLogin();
+    const token = await this.ensureLogin();
     const response = await this.request(method, path, { ...options, token, commonVersion: 3 });
-    if (response.httpStatus === 401) {
-      invalidateEvenHubToken();
+    try {
+      return unwrap(response.envelope, response.httpStatus, path);
+    } catch (error) {
+      // A rejected session fails every later request too, so drop the token
+      // (unless a fresh sign-in replaced it while this request was in flight).
+      if (error instanceof EvenHubAuthenticationError && getEvenHubToken() === token) {
+        invalidateEvenHubToken();
+      }
+      throw error;
     }
-    return unwrap(response.envelope, response.httpStatus, path);
   }
 
   private ensureLogin(): Promise<string> {
@@ -287,9 +294,9 @@ function buildCommon(version: 1 | 3): string {
     buildTime: "26060821",
     appId: "1001",
     v: version,
-    // This is Android's app-scoped SSAID. Even's login endpoint registers a
-    // previously unseen value as a terminal, so Faceclaw does not need the
-    // official Even app's differently-scoped ID.
+    // Keep the established wire profile on both platforms. Even registers
+    // this installation-scoped terminal ID at login (SSAID on Android,
+    // a persisted random ID on iOS).
     openUdid: getPhoneOpenUdid(),
     os: "1",
     sn: "",
@@ -333,13 +340,7 @@ function formEncode(value: string): string {
 }
 
 function hmacSign(message: string): string {
-  if (!global.isAndroid) throw new Error("The EvenHub storefront is currently available only on Android.");
-  const charset = java.nio.charset.StandardCharsets.UTF_8;
-  const key = new javax.crypto.spec.SecretKeySpec(new java.lang.String(SIGN_KEY).getBytes(charset), "HmacSHA256");
-  const mac = javax.crypto.Mac.getInstance("HmacSHA256");
-  mac.init(key);
-  const digest = mac.doFinal(new java.lang.String(message).getBytes(charset));
-  return String(android.util.Base64.encodeToString(digest, android.util.Base64.NO_WRAP));
+  return hmacSha256Base64(SIGN_KEY, message);
 }
 
 async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs = REQUEST_TIMEOUT_MS): Promise<Response> {
@@ -355,28 +356,19 @@ async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs = REQU
 }
 
 function unwrap(envelope: ApiEnvelope, httpStatus: number, path: string): unknown {
-  if (httpStatus === 401) {
-    throw new EvenHubAuthenticationError("Even rejected the login session.");
+  const message = typeof envelope.msg === "string" ? envelope.msg.trim() : "";
+  // An expired session can come back as HTTP 401, or as HTTP 200 with code
+  // 401 in the envelope ("Your login is expired").
+  if (httpStatus === 401 || Number(envelope.code) === 401) {
+    throw new EvenHubAuthenticationError(message || "Even rejected the login session.");
   }
   if (httpStatus < 200 || httpStatus >= 300) {
     throw new Error(`EvenHub request failed (HTTP ${httpStatus}, ${path}).`);
   }
   if (envelope.code !== 0) {
-    const detail = typeof envelope.msg === "string" && envelope.msg ? `: ${envelope.msg}` : "";
-    throw new Error(`EvenHub API error ${envelope.code ?? "unknown"}${detail}`);
+    throw new Error(`EvenHub API error ${envelope.code ?? "unknown"}${message ? `: ${message}` : ""}`);
   }
   return envelope.data;
-}
-
-/** Return this installation's Android ID, which Even calls `openUdid`. */
-export function getPhoneOpenUdid(): string {
-  if (!global.isAndroid) throw new Error("The EvenHub storefront is currently available only on Android.");
-  const resolver = Application.android.context?.getContentResolver();
-  const openUdid = resolver
-    ? String(android.provider.Settings.Secure.getString(resolver, android.provider.Settings.Secure.ANDROID_ID) ?? "")
-    : "";
-  if (!openUdid) throw new Error("Android did not provide a device ID for EvenHub authentication.");
-  return openUdid;
 }
 
 /**

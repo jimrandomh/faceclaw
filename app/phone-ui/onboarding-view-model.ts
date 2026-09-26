@@ -1,3 +1,4 @@
+import { finishOnboardingNavigation } from "./onboarding-navigation";
 import { Frame, Observable, Screen } from "@nativescript/core";
 
 import { setOnboardingCompleted, setPreviewOnlyMode } from "./onboarding-state";
@@ -99,10 +100,7 @@ export class OnboardingViewModel extends Observable {
       // Step 3 secondary: skip flashing, use the on-phone preview only.
       setPreviewOnlyMode(true);
       setOnboardingCompleted(true);
-      Frame.topmost()?.navigate({
-        moduleName: "phone-ui/main-page",
-        clearHistory: true,
-      });
+      finishOnboardingNavigation();
     }
   }
 

@@ -51,10 +51,13 @@ export class DirectAssistantBackend {
     let cancelled = false;
     let streamHandle: LlmStreamHandle | null = null;
     let priorText = "";
+    let deadline: ReturnType<typeof setTimeout> | null = null;
+    const clearDeadline = () => { if (deadline !== null) clearTimeout(deadline); deadline = null; };
 
     const finishError = (message: string) => {
       if (cancelled) return;
       cancelled = true;
+      clearDeadline(); streamHandle?.cancel(); streamHandle = null;
       options.callbacks.onError(message);
     };
 
@@ -102,10 +105,11 @@ export class DirectAssistantBackend {
               block.type === "tool_use",
           );
           if (result.stopReason !== "tool_use" || toolUses.length === 0) {
+            clearDeadline();
             options.callbacks.onTurnDone({ stopReason: result.stopReason });
             return;
           }
-          void this.runToolCalls(toolUses, options)
+          void this.runToolCalls(toolUses, options, () => cancelled)
             .then((toolResults) => {
               // Always record the results, even if cancelled mid-flight: an
               // assistant tool_use with no matching tool_result would make the
@@ -131,11 +135,13 @@ export class DirectAssistantBackend {
             : streamAnthropicMessage(streamOptions);
     };
 
+    deadline = setTimeout(() => finishError("Assistant stopped: turn took too long"), MAX_TURN_MS);
     runIteration(0);
 
     return {
       cancel: () => {
         cancelled = true;
+        clearDeadline();
         streamHandle?.cancel();
         streamHandle = null;
       },
@@ -145,9 +151,14 @@ export class DirectAssistantBackend {
   private async runToolCalls(
     toolUses: Array<Extract<LlmContentBlock, { type: "tool_use" }>>,
     options: DirectTurnOptions,
+    isCancelled: () => boolean,
   ): Promise<LlmContentBlock[]> {
     const results: LlmContentBlock[] = [];
     for (const toolUse of toolUses) {
+      if (isCancelled()) {
+        results.push({ type: "tool_result", tool_use_id: toolUse.id, content: "Cancelled", is_error: true });
+        continue;
+      }
       const canonicalName = options.resolveToolName(toolUse.name);
       options.callbacks.onToolActivity(canonicalName);
       const result = await options.registry.callTool(canonicalName, toolUse.input);

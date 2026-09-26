@@ -62,6 +62,7 @@ export function createNightscoutAppWindow(options: InProcessAppOptions): InProce
     submitFrame: options.submitFrame,
     setSurfaceVisible: options.setSurfaceVisible,
     removeSurface: options.removeSurface,
+    reconfigureSurface: options.reconfigureSurface,
     onClosed: () => {
       windowRenders.delete(render);
       syncNightscout();

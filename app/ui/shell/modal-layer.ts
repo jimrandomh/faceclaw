@@ -16,7 +16,7 @@ function modalInterior(): { width: number; height: number } {
   const viewport = appViewportSize("min");
   return {
     width: viewport.width - 2 * MODAL_MARGIN - 2 * MODAL_PADDING,
-    height: viewport.height - 2 * MODAL_MARGIN - 2 * MODAL_PADDING,
+    height: Math.min(viewport.height - 2 * MODAL_MARGIN, Math.floor(65530 / Math.ceil((viewport.width - 2 * MODAL_MARGIN) / 2))) - 2 * MODAL_PADDING,
   };
 }
 
@@ -27,7 +27,7 @@ export function modalRect(): { x: number; y: number; width: number; height: numb
     x: viewport.x + MODAL_MARGIN,
     y: viewport.y + MODAL_MARGIN,
     width: viewport.width - 2 * MODAL_MARGIN,
-    height: viewport.height - 2 * MODAL_MARGIN,
+    height: Math.min(viewport.height - 2 * MODAL_MARGIN, Math.floor(65530 / Math.ceil((viewport.width - 2 * MODAL_MARGIN) / 2))),
   };
 }
 
@@ -52,11 +52,19 @@ export class ShellModalLayer implements Layer {
     this.stack.setBaseSize(interior);
     // Flattening bakes the inner stack's planes (glyphs included) so the blit
     // below transplants the finished modal content into this layer's plane.
-    const inner = flattenPlanes(this.stack.paint(), interior);
+    // The top plane's retained presentations (a menu's selection highlight
+    // and scroll strip) stay unbaked: they are display lists the glasses
+    // animate, and baking one freezes it on its first frame. Lower planes'
+    // are baked so the top plane's raster still covers them.
+    const planes = this.stack.paint();
+    const top = planes[planes.length - 1]!;
+    const inner = flattenPlanes(planes.map((plane) => plane === top ? { ...plane, image: plane.image.withDrawsBaked(false) } : plane), interior);
     const rect = modalRect();
-    image.fillRoundedRect(rect.x, rect.y, rect.width, rect.height, SHELL_OPAQUE_BLACK, 8);
-    image.drawRoundedRect(rect.x, rect.y, rect.width, rect.height, 110, 8);
-    image.bitBlt(inner, rect.x + MODAL_PADDING, rect.y + MODAL_PADDING, { transparentZero: true });
+    const innerX = rect.x + MODAL_PADDING, innerY = rect.y + MODAL_PADDING;
+    image.fillRect(rect.x, rect.y, rect.width, rect.height, SHELL_OPAQUE_BLACK);
+    image.drawRect(rect.x, rect.y, rect.width, rect.height, 110);
+    image.bitBlt(inner, innerX, innerY, { transparentZero: true });
+    top.image.copyPresentationsInto(image, innerX + top.x, innerY + top.y);
     return image;
   }
 

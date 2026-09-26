@@ -82,10 +82,11 @@ export class CalculatorLayer implements Layer {
   constructor(
     private readonly coordinator: MathCoordinator,
     private readonly actions: LayerActions,
+    private readonly textInput?: () => Promise<void>,
   ) {
     this.coordinator.setUsesDegrees(calculatorDegreesSetting.get());
     this.coordinator.onChanged = () => this.handleCoordinatorChanged();
-    this.unsubscribeTranscript = voiceControlBridge.onTranscript((event) => this.onTranscript(event));
+    if (!this.textInput) this.unsubscribeTranscript = voiceControlBridge.onTranscript((event) => this.onTranscript(event));
   }
 
   private get mode(): CalculatorMode {
@@ -125,6 +126,7 @@ export class CalculatorLayer implements Layer {
   }
 
   private refreshListening(): void {
+    if (this.textInput) return;
     if (!this.foreground) return;
     if (this.listening === "continuous") {
       if (!this.continuousActive) {
@@ -244,6 +246,7 @@ export class CalculatorLayer implements Layer {
    * that did not.
    */
   beginDictation(): void {
+    if (this.textInput) { void this.textInput(); return; }
     if (this.dictating) return;
     this.dictating = true;
     void this.actions.startVoiceCapture(true);
@@ -513,7 +516,8 @@ export class CalculatorLayer implements Layer {
     bodyBottom: number,
   ): void {
     const prompt =
-      this.listening === "continuous"
+      this.textInput ? "Tap to type a problem on your phone"
+      : this.listening === "continuous"
         ? `Say a problem, then "${modeLabel(this.mode).toLowerCase()} it"`
         : "Tap to say a problem — or use Voice input to type one";
     const lines = wrapText(font, prompt, width - 96);
@@ -527,7 +531,7 @@ export class CalculatorLayer implements Layer {
 
   private paintHeardLine(image: GrayImage, font: UiFont, width: number, y: number): void {
     if (!this.lastInput) return;
-    const label = "Heard";
+    const label = this.textInput ? "Entered" : "Heard";
     image.drawText(font, 24, y, label, 110);
     const x = 24 + font.measureText(label) + 10;
     image.drawText(font, x, y, truncateText(font, this.lastInput, width - x - 24), 160);
@@ -579,7 +583,7 @@ export class CalculatorLayer implements Layer {
       this.mode === "explain" && this.coordinator.stepPosition !== null ? "steps" : "mode";
     return gestureHints([
       [GESTURE_SCROLL, scrollTarget],
-      [GESTURE_CLICK, "mic"],
+      [GESTURE_CLICK, this.textInput ? "type" : "mic"],
       [GESTURE_DOUBLE_CLICK, "back"],
     ]);
   }

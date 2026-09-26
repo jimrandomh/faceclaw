@@ -1,4 +1,4 @@
-import { hasLocationPermission } from "../g2/android-permissions";
+import { hasLocationPermission } from "./location-permissions";
 import { getCurrentLocation, type CurrentLocation } from "./location";
 import { fetchWithUserAgent } from "../util/http";
 import { USER_AGENT } from "../version";

@@ -1,0 +1,28 @@
+[
+  {
+    "reason": "Vendored sherpa-onnx JNI ABI: Java classes/fields are consumed by the Android native library; iOS uses its native engine APIs.",
+    "files": [
+      "com/k2fsa/sherpa/onnx/FastClusteringConfig.java",
+      "com/k2fsa/sherpa/onnx/FeatureConfig.java",
+      "com/k2fsa/sherpa/onnx/HomophoneReplacerConfig.java",
+      "com/k2fsa/sherpa/onnx/OfflineModelConfig.java",
+      "com/k2fsa/sherpa/onnx/OfflineMoonshineModelConfig.java",
+      "com/k2fsa/sherpa/onnx/OfflineRecognizer.java",
+      "com/k2fsa/sherpa/onnx/OfflineRecognizerConfig.java",
+      "com/k2fsa/sherpa/onnx/OfflineRecognizerResult.java",
+      "com/k2fsa/sherpa/onnx/OfflineSpeakerDiarization.java",
+      "com/k2fsa/sherpa/onnx/OfflineSpeakerDiarizationCallback.java",
+      "com/k2fsa/sherpa/onnx/OfflineSpeakerDiarizationConfig.java",
+      "com/k2fsa/sherpa/onnx/OfflineSpeakerDiarizationSegment.java",
+      "com/k2fsa/sherpa/onnx/OfflineSpeakerSegmentationModelConfig.java",
+      "com/k2fsa/sherpa/onnx/OfflineSpeakerSegmentationPyannoteModelConfig.java",
+      "com/k2fsa/sherpa/onnx/OfflineStream.java",
+      "com/k2fsa/sherpa/onnx/OfflineWhisperModelConfig.java",
+      "com/k2fsa/sherpa/onnx/OnlineStream.java",
+      "com/k2fsa/sherpa/onnx/QnnConfig.java",
+      "com/k2fsa/sherpa/onnx/SpeakerEmbeddingExtractor.java",
+      "com/k2fsa/sherpa/onnx/SpeakerEmbeddingExtractorConfig.java",
+      "com/k2fsa/sherpa/onnx/SpeakerEmbeddingManager.java"
+    ]
+  }
+]

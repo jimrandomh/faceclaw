@@ -1,0 +1,14 @@
+module FaceclawGraphics {
+  header "FaceclawGraphics.h"
+  header "FaceclawFontRenderer.h"
+  header "FaceclawSocket.h"
+  header "FaceclawLc3Decoder.h"
+  header "FaceclawSpeech.h"
+  header "FaceclawLocation.h"
+  header "FaceclawCalendar.h"
+  header "FaceclawConfigPort.h"
+  header "FaceclawEvenHubWebView.h"
+  header "FaceclawCrypto.h"
+  header "FaceclawQrScanner.h"
+  export *
+}

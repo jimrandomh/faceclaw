@@ -1,0 +1,418 @@
+[
+  {
+    "java": "com/faceclaw/app/LvglFontFile.java",
+    "kotlin": "native/kotlin/shared/src/commonMain/kotlin/com/faceclaw/app/graphics/LvglFontFile.kt"
+  },
+  {
+    "java": "com/faceclaw/app/FaceclawAlarmListener.java",
+    "kotlin": "native/kotlin/shared/src/commonMain/kotlin/com/faceclaw/app/callbacks/FaceclawAlarmListener.kt"
+  },
+  {
+    "java": "com/faceclaw/app/FaceclawAmbientLightListener.java",
+    "kotlin": "native/kotlin/shared/src/commonMain/kotlin/com/faceclaw/app/callbacks/FaceclawAmbientLightListener.kt"
+  },
+  {
+    "java": "com/faceclaw/app/FaceclawAudioPacketListener.java",
+    "kotlin": "native/kotlin/shared/src/commonMain/kotlin/com/faceclaw/app/callbacks/FaceclawAudioPacketListener.kt"
+  },
+  {
+    "java": "com/faceclaw/app/FaceclawBleCommunicatorListener.java",
+    "kotlin": "native/kotlin/shared/src/commonMain/kotlin/com/faceclaw/app/callbacks/FaceclawBleCommunicatorListener.kt"
+  },
+  {
+    "java": "com/faceclaw/app/FaceclawBleListener.java",
+    "kotlin": "native/kotlin/shared/src/commonMain/kotlin/com/faceclaw/app/callbacks/FaceclawBleListener.kt"
+  },
+  {
+    "java": "com/faceclaw/app/FaceclawCaptionEngineListener.java",
+    "kotlin": "native/kotlin/shared/src/commonMain/kotlin/com/faceclaw/app/callbacks/FaceclawCaptionEngineListener.kt"
+  },
+  {
+    "java": "com/faceclaw/app/FaceclawCompassListener.java",
+    "kotlin": "native/kotlin/shared/src/commonMain/kotlin/com/faceclaw/app/callbacks/FaceclawCompassListener.kt"
+  },
+  {
+    "java": "com/faceclaw/app/FaceclawDeviceDiscoveryListener.java",
+    "kotlin": "native/kotlin/shared/src/commonMain/kotlin/com/faceclaw/app/callbacks/FaceclawDeviceDiscoveryListener.kt"
+  },
+  {
+    "java": "com/faceclaw/app/FaceclawDeviceInfoProbeListener.java",
+    "kotlin": "native/kotlin/shared/src/commonMain/kotlin/com/faceclaw/app/callbacks/FaceclawDeviceInfoProbeListener.kt"
+  },
+  {
+    "java": "com/faceclaw/app/FaceclawEvenHubListener.java",
+    "kotlin": "native/kotlin/shared/src/commonMain/kotlin/com/faceclaw/app/callbacks/FaceclawEvenHubListener.kt"
+  },
+  {
+    "java": "com/faceclaw/app/FaceclawFirmwareFlasherListener.java",
+    "kotlin": "native/kotlin/shared/src/commonMain/kotlin/com/faceclaw/app/callbacks/FaceclawFirmwareFlasherListener.kt"
+  },
+  {
+    "java": "com/faceclaw/app/FaceclawFlashPromptListener.java",
+    "kotlin": "native/kotlin/shared/src/commonMain/kotlin/com/faceclaw/app/callbacks/FaceclawFlashPromptListener.kt"
+  },
+  {
+    "java": "com/faceclaw/app/FaceclawImuListener.java",
+    "kotlin": "native/kotlin/shared/src/commonMain/kotlin/com/faceclaw/app/callbacks/FaceclawImuListener.kt"
+  },
+  {
+    "java": "com/faceclaw/app/FaceclawLlamaListener.java",
+    "kotlin": "native/kotlin/shared/src/commonMain/kotlin/com/faceclaw/app/callbacks/FaceclawLlamaListener.kt"
+  },
+  {
+    "java": "com/faceclaw/app/FaceclawLocationListener.java",
+    "kotlin": "native/kotlin/shared/src/commonMain/kotlin/com/faceclaw/app/callbacks/FaceclawLocationListener.kt"
+  },
+  {
+    "java": "com/faceclaw/app/FaceclawLocationTrackerListener.java",
+    "kotlin": "native/kotlin/shared/src/commonMain/kotlin/com/faceclaw/app/callbacks/FaceclawLocationTrackerListener.kt"
+  },
+  {
+    "java": "com/faceclaw/app/FaceclawMediaBrowserListener.java",
+    "kotlin": "native/kotlin/shared/src/commonMain/kotlin/com/faceclaw/app/callbacks/FaceclawMediaBrowserListener.kt"
+  },
+  {
+    "java": "com/faceclaw/app/FaceclawMediaControllerListener.java",
+    "kotlin": "native/kotlin/shared/src/commonMain/kotlin/com/faceclaw/app/callbacks/FaceclawMediaControllerListener.kt"
+  },
+  {
+    "java": "com/faceclaw/app/FaceclawMicStatusListener.java",
+    "kotlin": "native/kotlin/shared/src/commonMain/kotlin/com/faceclaw/app/callbacks/FaceclawMicStatusListener.kt"
+  },
+  {
+    "java": "com/faceclaw/app/FaceclawModelDownloaderListener.java",
+    "kotlin": "native/kotlin/shared/src/commonMain/kotlin/com/faceclaw/app/callbacks/FaceclawModelDownloaderListener.kt"
+  },
+  {
+    "java": "com/faceclaw/app/FaceclawNoiseSuppressor.java",
+    "kotlin": "native/kotlin/shared/src/commonMain/kotlin/com/faceclaw/app/audio/FaceclawNoiseSuppressor.kt"
+  },
+  {
+    "java": "com/faceclaw/app/FaceclawNotificationListener.java",
+    "kotlin": "native/kotlin/shared/src/commonMain/kotlin/com/faceclaw/app/callbacks/FaceclawNotificationListener.kt"
+  },
+  {
+    "java": "com/faceclaw/app/FaceclawQrScannerListener.java",
+    "kotlin": "native/kotlin/shared/src/commonMain/kotlin/com/faceclaw/app/callbacks/FaceclawQrScannerListener.kt"
+  },
+  {
+    "java": "com/faceclaw/app/FaceclawRingEventDecoder.java",
+    "kotlin": "native/kotlin/shared/src/commonMain/kotlin/com/faceclaw/app/g2protocol/FaceclawRingEventDecoder.kt"
+  },
+  {
+    "java": "com/faceclaw/app/FaceclawSettingsListener.java",
+    "kotlin": "native/kotlin/shared/src/commonMain/kotlin/com/faceclaw/app/callbacks/FaceclawSettingsListener.kt"
+  },
+  {
+    "java": "com/faceclaw/app/FaceclawSseListener.java",
+    "kotlin": "native/kotlin/shared/src/commonMain/kotlin/com/faceclaw/app/callbacks/FaceclawSseListener.kt"
+  },
+  {
+    "java": "com/faceclaw/app/FaceclawVoiceControllerListener.java",
+    "kotlin": "native/kotlin/shared/src/commonMain/kotlin/com/faceclaw/app/callbacks/FaceclawVoiceControllerListener.kt"
+  },
+  {
+    "java": "com/faceclaw/app/FaceclawWearListener.java",
+    "kotlin": "native/kotlin/shared/src/commonMain/kotlin/com/faceclaw/app/callbacks/FaceclawWearListener.kt"
+  },
+  {
+    "java": "com/faceclaw/app/FaceclawWebSocketListener.java",
+    "kotlin": "native/kotlin/shared/src/commonMain/kotlin/com/faceclaw/app/callbacks/FaceclawWebSocketListener.kt"
+  },
+  {
+    "java": "com/faceclaw/app/FwGlyphAtlas.java",
+    "kotlin": "native/kotlin/shared/src/commonMain/kotlin/com/faceclaw/app/graphics/FwGlyphAtlas.kt"
+  },
+  {
+    "java": "com/faceclaw/app/g2protocol/BleImageOptimizer.java",
+    "kotlin": "native/kotlin/shared/src/commonMain/kotlin/com/faceclaw/app/g2protocol/BleImageOptimizer.kt"
+  },
+  {
+    "java": "com/faceclaw/app/g2protocol/BleMagicPool.java",
+    "kotlin": "native/kotlin/shared/src/commonMain/kotlin/com/faceclaw/app/g2protocol/BleMagicPool.kt"
+  },
+  {
+    "java": "com/faceclaw/app/g2protocol/BleProtocol.java",
+    "kotlin": "native/kotlin/shared/src/commonMain/kotlin/com/faceclaw/app/g2protocol/BleProtocol.kt"
+  },
+  {
+    "java": "com/faceclaw/app/g2protocol/CfwMessageWindow.java",
+    "kotlin": "native/kotlin/shared/src/commonMain/kotlin/com/faceclaw/app/g2protocol/CfwMessageWindow.kt"
+  },
+  {
+    "java": "com/faceclaw/app/g2protocol/CfwTransport.java",
+    "kotlin": "native/kotlin/shared/src/commonMain/kotlin/com/faceclaw/app/g2protocol/CfwTransport.kt"
+  },
+  {
+    "java": "com/faceclaw/app/g2protocol/ConnectionOptions.java",
+    "kotlin": "native/kotlin/shared/src/commonMain/kotlin/com/faceclaw/app/g2protocol/ConnectionOptions.kt"
+  },
+  {
+    "java": "com/faceclaw/app/g2protocol/G2Event.java",
+    "kotlin": "native/kotlin/shared/src/commonMain/kotlin/com/faceclaw/app/g2protocol/G2Event.kt"
+  },
+  {
+    "java": "com/faceclaw/app/g2protocol/MessageBuilder.java",
+    "kotlin": "native/kotlin/shared/src/commonMain/kotlin/com/faceclaw/app/g2protocol/MessageBuilder.kt"
+  },
+  {
+    "java": "com/faceclaw/app/g2protocol/OutboundMessage.java",
+    "kotlin": "native/kotlin/shared/src/commonMain/kotlin/com/faceclaw/app/g2protocol/OutboundMessage.kt"
+  },
+  {
+    "java": "com/faceclaw/app/g2protocol/TextureCacheState.java",
+    "kotlin": "native/kotlin/shared/src/commonMain/kotlin/com/faceclaw/app/g2protocol/ResourceCacheState.kt"
+  },
+  {
+    "java": "com/faceclaw/app/g2protocol/TexturePlanner.java",
+    "kotlin": "native/kotlin/shared/src/commonMain/kotlin/com/faceclaw/app/g2protocol/TexturePlanner.kt"
+  },
+  {
+    "java": "com/faceclaw/app/GlyphAtlas.java",
+    "kotlin": "native/kotlin/shared/src/commonMain/kotlin/com/faceclaw/app/graphics/GlyphAtlas.kt"
+  },
+  {
+    "java": "com/faceclaw/app/ImageAtlas.java",
+    "kotlin": "native/kotlin/shared/src/commonMain/kotlin/com/faceclaw/app/graphics/ImageAtlas.kt"
+  },
+  {
+    "java": "com/faceclaw/app/SurfaceCompositor.java",
+    "kotlin": "native/kotlin/shared/src/commonMain/kotlin/com/faceclaw/app/graphics/SurfaceCompositor.kt"
+  },
+  {
+    "java": "com/faceclaw/app/util/BmpUtil.java",
+    "kotlin": "native/kotlin/shared/src/commonMain/kotlin/com/faceclaw/app/util/BmpUtil.kt"
+  },
+  {
+    "java": "com/faceclaw/app/util/CollectionUtils.java",
+    "kotlin": "native/kotlin/shared/src/commonMain/kotlin/com/faceclaw/app/util/CollectionUtils.kt"
+  },
+  {
+    "java": "com/faceclaw/app/FaceclawFirmwareUtil.java",
+    "kotlin": "native/kotlin/shared/src/androidMain/kotlin/com/faceclaw/app/FaceclawFirmwareUtil.kt"
+  },
+  {
+    "java": "com/faceclaw/app/FaceclawWavRecorder.java",
+    "kotlin": "native/kotlin/shared/src/androidMain/kotlin/com/faceclaw/app/FaceclawWavRecorder.kt"
+  },
+  {
+    "java": "com/faceclaw/app/AndroidNoiseEffects.java",
+    "kotlin": "App_Resources/Android/src/main/java/com/faceclaw/app/AndroidNoiseEffects.kt"
+  },
+  {
+    "java": "com/faceclaw/app/FaceclawAlarmActivity.java",
+    "kotlin": "App_Resources/Android/src/main/java/com/faceclaw/app/FaceclawAlarmActivity.kt"
+  },
+  {
+    "java": "com/faceclaw/app/FaceclawAlarmReceiver.java",
+    "kotlin": "App_Resources/Android/src/main/java/com/faceclaw/app/FaceclawAlarmReceiver.kt"
+  },
+  {
+    "java": "com/faceclaw/app/FaceclawAlarmRescheduleReceiver.java",
+    "kotlin": "App_Resources/Android/src/main/java/com/faceclaw/app/FaceclawAlarmRescheduleReceiver.kt"
+  },
+  {
+    "java": "com/faceclaw/app/FaceclawAlarmService.java",
+    "kotlin": "App_Resources/Android/src/main/java/com/faceclaw/app/FaceclawAlarmService.kt"
+  },
+  {
+    "java": "com/faceclaw/app/FaceclawAlarms.java",
+    "kotlin": "App_Resources/Android/src/main/java/com/faceclaw/app/FaceclawAlarms.kt"
+  },
+  {
+    "java": "com/faceclaw/app/FaceclawAudioTranscoder.java",
+    "kotlin": "App_Resources/Android/src/main/java/com/faceclaw/app/FaceclawAudioTranscoder.kt"
+  },
+  {
+    "java": "com/faceclaw/app/FaceclawBleCommunicator.java",
+    "kotlin": "App_Resources/Android/src/main/java/com/faceclaw/app/FaceclawBleCommunicator.kt"
+  },
+  {
+    "java": "com/faceclaw/app/FaceclawBleManager.java",
+    "kotlin": "App_Resources/Android/src/main/java/com/faceclaw/app/FaceclawBleManager.kt"
+  },
+  {
+    "java": "com/faceclaw/app/FaceclawCalendarProvider.java",
+    "kotlin": "App_Resources/Android/src/main/java/com/faceclaw/app/FaceclawCalendarProvider.kt"
+  },
+  {
+    "java": "com/faceclaw/app/FaceclawCaptionEngine.java",
+    "kotlin": "App_Resources/Android/src/main/java/com/faceclaw/app/FaceclawCaptionEngine.kt"
+  },
+  {
+    "java": "com/faceclaw/app/FaceclawConversationStore.java",
+    "kotlin": "App_Resources/Android/src/main/java/com/faceclaw/app/FaceclawConversationStore.kt"
+  },
+  {
+    "java": "com/faceclaw/app/FaceclawDeviceDiscovery.java",
+    "kotlin": "App_Resources/Android/src/main/java/com/faceclaw/app/FaceclawDeviceDiscovery.kt"
+  },
+  {
+    "java": "com/faceclaw/app/FaceclawDeviceInfoProbe.java",
+    "kotlin": "App_Resources/Android/src/main/java/com/faceclaw/app/FaceclawDeviceInfoProbe.kt"
+  },
+  {
+    "java": "com/faceclaw/app/FaceclawDiarizer.java",
+    "kotlin": "App_Resources/Android/src/main/java/com/faceclaw/app/FaceclawDiarizer.kt"
+  },
+  {
+    "java": "com/faceclaw/app/FaceclawEvenAppDetector.java",
+    "kotlin": "App_Resources/Android/src/main/java/com/faceclaw/app/FaceclawEvenAppDetector.kt"
+  },
+  {
+    "java": "com/faceclaw/app/FaceclawEvenHubDocumentStart.java",
+    "kotlin": "App_Resources/Android/src/main/java/com/faceclaw/app/FaceclawEvenHubDocumentStart.kt"
+  },
+  {
+    "java": "com/faceclaw/app/FaceclawEvenHubJsBridge.java",
+    "kotlin": "App_Resources/Android/src/main/java/com/faceclaw/app/FaceclawEvenHubJsBridge.kt"
+  },
+  {
+    "java": "com/faceclaw/app/FaceclawEvenHubWebView.java",
+    "kotlin": "App_Resources/Android/src/main/java/com/faceclaw/app/FaceclawEvenHubWebView.kt"
+  },
+  {
+    "java": "com/faceclaw/app/FaceclawEvenHubWebViewClient.java",
+    "kotlin": "App_Resources/Android/src/main/java/com/faceclaw/app/FaceclawEvenHubWebViewClient.kt"
+  },
+  {
+    "java": "com/faceclaw/app/FaceclawEvenHubWebViewHost.java",
+    "kotlin": "App_Resources/Android/src/main/java/com/faceclaw/app/FaceclawEvenHubWebViewHost.kt"
+  },
+  {
+    "java": "com/faceclaw/app/FaceclawFirmwareFlasher.java",
+    "kotlin": "App_Resources/Android/src/main/java/com/faceclaw/app/FaceclawFirmwareFlasher.kt"
+  },
+  {
+    "java": "com/faceclaw/app/FaceclawFlashPromptCommunicator.java",
+    "kotlin": "App_Resources/Android/src/main/java/com/faceclaw/app/FaceclawFlashPromptCommunicator.kt"
+  },
+  {
+    "java": "com/faceclaw/app/FaceclawForegroundService.java",
+    "kotlin": "App_Resources/Android/src/main/java/com/faceclaw/app/FaceclawForegroundService.kt"
+  },
+  {
+    "java": "com/faceclaw/app/FaceclawHttp.java",
+    "kotlin": "App_Resources/Android/src/main/java/com/faceclaw/app/FaceclawHttp.kt"
+  },
+  {
+    "java": "com/faceclaw/app/FaceclawLc3Decoder.java",
+    "kotlin": "App_Resources/Android/src/main/java/com/faceclaw/app/FaceclawLc3Decoder.kt"
+  },
+  {
+    "java": "com/faceclaw/app/FaceclawLlamaRunner.java",
+    "kotlin": "App_Resources/Android/src/main/java/com/faceclaw/app/FaceclawLlamaRunner.kt"
+  },
+  {
+    "java": "com/faceclaw/app/FaceclawLocationProvider.java",
+    "kotlin": "App_Resources/Android/src/main/java/com/faceclaw/app/FaceclawLocationProvider.kt"
+  },
+  {
+    "java": "com/faceclaw/app/FaceclawLocationTracker.java",
+    "kotlin": "App_Resources/Android/src/main/java/com/faceclaw/app/FaceclawLocationTracker.kt"
+  },
+  {
+    "java": "com/faceclaw/app/FaceclawMediaBrowser.java",
+    "kotlin": "App_Resources/Android/src/main/java/com/faceclaw/app/FaceclawMediaBrowser.kt"
+  },
+  {
+    "java": "com/faceclaw/app/FaceclawMediaController.java",
+    "kotlin": "App_Resources/Android/src/main/java/com/faceclaw/app/FaceclawMediaController.kt"
+  },
+  {
+    "java": "com/faceclaw/app/FaceclawMediaNotificationListenerService.java",
+    "kotlin": "App_Resources/Android/src/main/java/com/faceclaw/app/FaceclawMediaNotificationListenerService.kt"
+  },
+  {
+    "java": "com/faceclaw/app/FaceclawModelDownloader.java",
+    "kotlin": "App_Resources/Android/src/main/java/com/faceclaw/app/FaceclawModelDownloader.kt"
+  },
+  {
+    "java": "com/faceclaw/app/FaceclawPreviewCompositor.java",
+    "kotlin": "App_Resources/Android/src/main/java/com/faceclaw/app/FaceclawPreviewCompositor.kt"
+  },
+  {
+    "java": "com/faceclaw/app/FaceclawQrScanner.java",
+    "kotlin": "App_Resources/Android/src/main/java/com/faceclaw/app/FaceclawQrScanner.kt"
+  },
+  {
+    "java": "com/faceclaw/app/FaceclawRemoteInput.java",
+    "kotlin": "App_Resources/Android/src/main/java/com/faceclaw/app/FaceclawRemoteInput.kt"
+  },
+  {
+    "java": "com/faceclaw/app/FaceclawResourceUsage.java",
+    "kotlin": "App_Resources/Android/src/main/java/com/faceclaw/app/FaceclawResourceUsage.kt"
+  },
+  {
+    "java": "com/faceclaw/app/FaceclawSettings.java",
+    "kotlin": "App_Resources/Android/src/main/java/com/faceclaw/app/FaceclawSettings.kt"
+  },
+  {
+    "java": "com/faceclaw/app/FaceclawSettingsPortReceiver.java",
+    "kotlin": "App_Resources/Android/src/main/java/com/faceclaw/app/FaceclawSettingsPortReceiver.kt"
+  },
+  {
+    "java": "com/faceclaw/app/FaceclawSpeakerId.java",
+    "kotlin": "App_Resources/Android/src/main/java/com/faceclaw/app/FaceclawSpeakerId.kt"
+  },
+  {
+    "java": "com/faceclaw/app/FaceclawSseRequest.java",
+    "kotlin": "App_Resources/Android/src/main/java/com/faceclaw/app/FaceclawSseRequest.kt"
+  },
+  {
+    "java": "com/faceclaw/app/FaceclawSystemStatusIconProvider.java",
+    "kotlin": "App_Resources/Android/src/main/java/com/faceclaw/app/FaceclawSystemStatusIconProvider.kt"
+  },
+  {
+    "java": "com/faceclaw/app/FaceclawVoiceController.java",
+    "kotlin": "App_Resources/Android/src/main/java/com/faceclaw/app/FaceclawVoiceController.kt"
+  },
+  {
+    "java": "com/faceclaw/app/FaceclawWearBridge.java",
+    "kotlin": "App_Resources/Android/src/main/java/com/faceclaw/app/FaceclawWearBridge.kt"
+  },
+  {
+    "java": "com/faceclaw/app/FaceclawWearListenerService.java",
+    "kotlin": "App_Resources/Android/src/main/java/com/faceclaw/app/FaceclawWearListenerService.kt"
+  },
+  {
+    "java": "com/faceclaw/app/FaceclawWebSocket.java",
+    "kotlin": "App_Resources/Android/src/main/java/com/faceclaw/app/FaceclawWebSocket.kt"
+  },
+  {
+    "java": "com/faceclaw/app/FontFileRenderer.java",
+    "kotlin": "App_Resources/Android/src/main/java/com/faceclaw/app/FontFileRenderer.kt"
+  },
+  {
+    "java": "com/faceclaw/app/FrameTimings.java",
+    "kotlin": "App_Resources/Android/src/main/java/com/faceclaw/app/FrameTimings.kt"
+  },
+  {
+    "java": "com/faceclaw/app/GifScreenRecorder.java",
+    "kotlin": "App_Resources/Android/src/main/java/com/faceclaw/app/GifScreenRecorder.kt"
+  },
+  {
+    "java": "com/faceclaw/app/IconRenderer.java",
+    "kotlin": "App_Resources/Android/src/main/java/com/faceclaw/app/IconRenderer.kt"
+  },
+  {
+    "java": "com/faceclaw/app/ImageFileLoader.java",
+    "kotlin": "App_Resources/Android/src/main/java/com/faceclaw/app/ImageFileLoader.kt"
+  },
+  {
+    "java": "com/faceclaw/app/PreviewBitmapUtil.java",
+    "kotlin": "App_Resources/Android/src/main/java/com/faceclaw/app/PreviewBitmapUtil.kt"
+  },
+  {
+    "java": "com/faceclaw/app/ScreenshotUtil.java",
+    "kotlin": "App_Resources/Android/src/main/java/com/faceclaw/app/ScreenshotUtil.kt"
+  },
+  {
+    "java": "com/faceclaw/app/util/InterruptibleSleep.java",
+    "kotlin": "native/kotlin/shared/src/commonMain/kotlin/com/faceclaw/app/util/Concurrency.kt"
+  },
+  {
+    "java": "com/faceclaw/app/g2protocol/RingProtocol.java",
+    "kotlin": "native/kotlin/shared/src/commonMain/kotlin/com/faceclaw/app/g2protocol/RingProtocol.kt"
+  }
+]

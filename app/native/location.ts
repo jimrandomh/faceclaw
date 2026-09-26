@@ -2,12 +2,8 @@ import { Utils } from "@nativescript/core";
 
 declare const com: any;
 
-export type CurrentLocation = {
-  latitude: number;
-  longitude: number;
-  accuracyMeters: number | null;
-  timestampMs: number;
-};
+import { type CurrentLocation } from "./location-types";
+export { type CurrentLocation } from "./location-types";
 
 /** Resolve one current foreground location using Android's LocationManager. */
 export function getCurrentLocation(): Promise<CurrentLocation> {

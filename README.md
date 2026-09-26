@@ -29,6 +29,11 @@ walk you through pairing with the glasses and installing custom firmware.
 
 ## Compiling
 
+For the NativeScript iOS port, see [iOS development](notes/ios-development.md).
+Use `scripts/pull_config_ios.sh` and `scripts/push_config_ios.sh` to transfer iPhone
+settings; see [iOS config transfer](scripts/ios-config.md) for options and Android XML support.
+The instructions below build the Android app.
+
 If you want to customize faceclaw, the best way to do it is to download the
 source code and using a coding agent such as Codex or Claude Code.
 
@@ -180,4 +185,3 @@ mention them and link to that provider's privacy policy. For services that
 involve a user-provided API key, we assume that the user agreed to any terms
 associated with that service when they generated the key. For services that
 don't involve API keys, more caution may be required.
-

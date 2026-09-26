@@ -167,10 +167,12 @@ export class NightscoutBridge {
       await this.refreshNow();
       return;
     }
-    await this.refreshNow();
+    // Register polling before awaiting HTTP so stop() during the first fetch
+    // cannot leave a timer behind, and concurrent starts share one timer.
     this.refreshHandle = setInterval(() => {
       void this.refreshNow();
     }, NIGHTSCOUT_REFRESH_MS);
+    await this.refreshNow();
   }
 
   async stop(): Promise<void> {

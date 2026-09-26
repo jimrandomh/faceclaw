@@ -80,7 +80,7 @@ class EvenHubCompassRouter {
         });
       }
       if (!this.enabled) {
-        setCompassEnabled(true);
+        setCompassEnabled(true, "evenhub");
         this.enabled = true;
         // Uses location only if the wearer already granted it; an app turning
         // on the compass is not a reason to raise a system permission prompt.
@@ -88,7 +88,7 @@ class EvenHubCompassRouter {
       }
     } else {
       if (this.enabled) {
-        setCompassEnabled(false);
+        setCompassEnabled(false, "evenhub");
         this.enabled = false;
       }
       this.unsubscribe?.();

@@ -1,0 +1,28 @@
+name: Tests
+
+# Runs the test suite on pushes to main and on pull requests.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: npm ci
+      - run: npm test
+
+  # The shared Kotlin tests (tests/kotlin, on the JVM host). The runner image
+  # already carries the JDK 17 and Android SDK the build needs.
+  test-kotlin:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: npm ci
+      - run: npm run test:kotlin

@@ -1,5 +1,6 @@
 import { normalizeNightscoutThreshold, type NightscoutThresholds } from "../apps/nightscout/nightscout-alerts";
 import { GESTURE_DOUBLE_CLICK, InputEvent } from "./gestures";
+import { DEFAULT_BRIGHTNESS_CURVE, normalizeBrightnessCurve, brightnessCurveError } from "../g2/brightness-curve";
 import {
   getBooleanSetting,
   getStringSetting,
@@ -10,7 +11,7 @@ import {
 import { getDefaultSmallFont } from "~/graphics/ui-fonts";
 import { wrapText } from "~/graphics/textwrap";
 import {
-  ASSISTANT_MODEL_VALUES,
+  ASSISTANT_MODEL_CHOICES,
   assistantModelLabel,
   assistantModelProvider,
   type AssistantModel,
@@ -30,10 +31,9 @@ export type BatteryDisplayMode = "icon" | "percentage" | "stacked" | "stacked-pe
 export type BatteryIndicatorVisibility = "always" | "low" | "never";
 export type TimeFormat = "24h" | "12h";
 export type ScreenTimeoutSetting = "15s" | "30s" | "1m" | "3m" | "never";
-// "auto" lets the glasses' ambient-light sensor drive brightness; the numeric
-// values are exact levels on the firmware's 0-100 scale (nonlinear: ~30 is
-// dim-but-readable indoors, ~60 is bright outdoors).
-export const BRIGHTNESS_VALUES = ["auto", "0", "10", "20", "30", "40", "50", "60", "70", "80", "90", "100"] as const;
+// Auto runs Faceclaw's light curve. Numeric values use the calibrated firmware
+// scale, clamped to 2–100; 2 is also the endpoint for screen fades.
+export const BRIGHTNESS_VALUES = ["auto", "2", "10", "20", "30", "40", "50", "60", "70", "80", "90", "100"] as const;
 export type BrightnessSetting = (typeof BRIGHTNESS_VALUES)[number];
 export type WakeWordAction = "voice-input" | "off" | "turn-screen-on";
 
@@ -62,9 +62,14 @@ export function onAnySettingChanged(listener: () => void): () => void {
 }
 
 onSettingsStoreChanged(() => {
-  for (const listener of Array.from(settingChangeListeners)) {
-    listener();
-  }
+  // Font/cache invalidation listeners may register after this relay. Let the
+  // entire store notification finish before observers synchronously repaint.
+  // Otherwise Save updates the label but paints the previous typeface once.
+  setTimeout(() => {
+    for (const listener of Array.from(settingChangeListeners)) {
+      listener();
+    }
+  }, 0);
 });
 
 export abstract class ConfigSetting<TValue, TId extends string = string> {
@@ -168,6 +173,7 @@ type ConfigSettingStringOptions<TId extends string> = ConfigSettingOptions<strin
   glassesEditTitle?: string;
   inputKind?: "text" | "email" | "password";
   normalize?: (value: string | null | undefined) => string;
+  validate?: (value: string) => string | null;
 };
 
 // Every string setting by id, so isolates that can only pass an id over a
@@ -184,6 +190,7 @@ export class ConfigSettingString<TId extends string = string> extends ConfigSett
   readonly glassesEditTitle: string;
   readonly inputKind: "text" | "email" | "password";
   private readonly normalizer: (value: string | null | undefined) => string;
+  private readonly validator?: (value: string) => string | null;
 
   constructor(options: ConfigSettingStringOptions<TId>) {
     super(options);
@@ -191,6 +198,7 @@ export class ConfigSettingString<TId extends string = string> extends ConfigSett
     this.glassesEditTitle = options.glassesEditTitle ?? `Edit ${options.label}`;
     this.inputKind = options.inputKind ?? "text";
     this.normalizer = options.normalize ?? ((value) => value ?? "");
+    this.validator = options.validate;
     stringSettingsById.set(this.id, this);
   }
 
@@ -200,8 +208,22 @@ export class ConfigSettingString<TId extends string = string> extends ConfigSett
 
   set(value: string): string {
     const normalized = this.normalizer(value);
+    // Preserve drafts for the editor/preview; consumers can use getValidValue().
+    if (this.validator) {
+      const candidate = this.validator(normalized) ? this.get() : normalized;
+      if (!this.validator(candidate)) setStringSetting(this.storageKey + ".valid", candidate);
+    }
     setStringSetting(this.storageKey, normalized);
     return normalized;
+  }
+
+  validationError(value = this.get()): string | null { return this.validator?.(value) ?? null; }
+
+  getValidValue(): string {
+    const value = this.get();
+    if (!this.validationError(value)) return value;
+    const saved = this.normalizer(getStringSetting(this.storageKey + ".valid", this.defaultValue));
+    return this.validationError(saved) ? this.defaultValue : saved;
   }
 }
 
@@ -316,9 +338,35 @@ export const brightnessSetting = new ConfigSettingEnum<BrightnessSetting>({
   storageKey: "display.brightness",
   defaultValue: "auto",
   values: BRIGHTNESS_VALUES,
+  normalize: (value) => value === "0" ? "2" : BRIGHTNESS_VALUES.includes(value as BrightnessSetting) ? value as BrightnessSetting : "auto",
   formatValue: brightnessLabel,
-  description: "Display brightness. Auto lets the ambient-light sensor pick the level; numbers set an exact level. After picking Auto, it may take some time to first adjust.",
+  description: "Auto uses Faceclaw's ambient-light curve; numbers set a fixed level. 2 is the dimmest level.",
 });
+
+const AUTO_BRIGHTNESS_LEVELS = ["2", "5", "10", "20", "25", "30", "40", "50", "60", "70", "80", "90", "100"] as const;
+export const autoBrightnessMinSetting = new ConfigSettingEnum({
+  id: "autoBrightnessMin", label: "Auto minimum", storageKey: "display.autoBrightnessMin",
+  defaultValue: "20", values: AUTO_BRIGHTNESS_LEVELS,
+  description: "Lowest brightness Auto will select. Screen fades can still reach 2.",
+});
+export const autoBrightnessMaxSetting = new ConfigSettingEnum({
+  id: "autoBrightnessMax", label: "Auto maximum", storageKey: "display.autoBrightnessMax",
+  defaultValue: "100", values: AUTO_BRIGHTNESS_LEVELS,
+  description: "Highest brightness Auto will select. A value below the minimum uses the minimum.",
+});
+export const autoBrightnessCurveSetting = new ConfigSettingString({
+  id: "autoBrightnessCurve", label: "Auto light curve", storageKey: "display.autoBrightnessCurve",
+  defaultValue: DEFAULT_BRIGHTNESS_CURVE, normalize: normalizeBrightnessCurve, validate: brightnessCurveError,
+  description: "2–16 lux:percent pairs, separated by commas. Percent is within your minimum–maximum range. Start at 0:0, end at 100%, and increase lux without decreasing percent. Incomplete edits stay in the preview; brightness keeps using the last valid curve.",
+});
+const SCREEN_FADE_MS = 280;
+
+export function getBrightnessPreferences() {
+  const level = brightnessSettingToLevel(brightnessSetting.get());
+  return { auto: level === null, level: level ?? 50,
+    minimum: Number(autoBrightnessMinSetting.get()), maximum: Number(autoBrightnessMaxSetting.get()),
+    curve: autoBrightnessCurveSetting.getValidValue(), fadeMs: SCREEN_FADE_MS };
+}
 
 export const screenTimeoutSetting = new ConfigSettingEnum<ScreenTimeoutSetting>({
   id: "screen-timeout",
@@ -336,7 +384,8 @@ export const lockScreenEnabledSetting = new ConfigSettingBoolean({
   storageKey: "display.lockScreenEnabled",
   defaultValue: true,
   description:
-    "Lock the glasses after they are taken off while the phone is locked. Unlocking the phone unlocks the glasses.",
+    "Lock the glasses after they are taken off while the phone is locked. Unlocking the phone unlocks the glasses." +
+    (global.isIOS ? " On iPhone, this requires a device passcode and follows iOS data-protection notifications, which may be delayed after the screen locks." : ""),
 });
 
 // Phone display: the phone app's mirror of the glasses screen and the
@@ -507,7 +556,7 @@ export const showBleBandwidthSetting = new ConfigSettingBoolean({
   storageKey: "developer.showBleBandwidth",
   defaultValue: false,
   description:
-    "Show a running total of Bluetooth messages and bytes sent, at the bottom of the phone app's main screen.",
+    "Show Bluetooth messages and bytes sent, throughput, acknowledged display fps, and bytes per frame at the bottom of the phone screen. Rates use a five-second window; bytes include control traffic and protocol framing.",
 });
 
 export type RingConnectionMode = "glasses" | "direct";
@@ -590,7 +639,7 @@ export const assistantSkipConfirmationSetting = new ConfigSettingBoolean({
 export type AssistantBackendKind = "direct" | "external";
 
 const assistantBackendLabels: Record<AssistantBackendKind, string> = {
-  direct: "On-phone",
+  direct: global.isIOS ? "Cloud API" : "On-phone",
   external: "My own agent (bridge)",
 };
 
@@ -599,10 +648,10 @@ export const assistantBackendSetting = new ConfigSettingEnum<AssistantBackendKin
   label: "Assistant backend",
   storageKey: "assistant.backend",
   defaultValue: "direct",
-  values: ["direct", "external"],
+  values: global.isIOS ? ["direct"] : ["direct", "external"],
   formatValue: (value) => assistantBackendLabels[value] ?? value,
   description:
-    "Who answers assistant queries: an LLM called from the phone (a cloud API with your key, or the downloaded on-phone model), or your own long-running agent (e.g. OpenClaw) reached through the faceclaw-agent-bridge plugin.",
+    global.isIOS ? "Cloud models called with your OpenAI or Anthropic API key. Add your key in Settings > API Keys." : "Who answers assistant queries: an LLM called from the phone (a cloud API with your key, or the downloaded on-phone model), or your own long-running agent (e.g. OpenClaw) reached through the faceclaw-agent-bridge plugin.",
 });
 
 export const assistantBridgeHostSetting = new ConfigSettingString({
@@ -695,7 +744,7 @@ export const assistantModelSetting = new ConfigSettingEnum<AssistantModel>({
   label: "Assistant model",
   storageKey: "assistant.model",
   defaultValue: "auto",
-  values: ASSISTANT_MODEL_VALUES,
+  values: ASSISTANT_MODEL_CHOICES,
   formatValue: assistantModelLabel,
   isDisabled: (value) => {
     const provider = assistantModelProvider(value);
@@ -705,7 +754,7 @@ export const assistantModelSetting = new ConfigSettingEnum<AssistantModel>({
     return false;
   },
   description:
-    "Model used by the voice assistant. Auto prefers Terra when an OpenAI key is set, then Sonnet when an Anthropic key is set, then the downloaded on-phone model.",
+    global.isIOS ? "Model used by the voice assistant. Auto prefers Terra with an OpenAI key, then Sonnet with an Anthropic key." : "Model used by the voice assistant. Auto prefers Terra when an OpenAI key is set, then Sonnet when an Anthropic key is set, then the downloaded on-phone model.",
 });
 
 export const mapboxApiKeySetting = new ConfigSettingString({
@@ -1142,6 +1191,9 @@ export class EditTextSettingLayer implements Layer {
       image.drawText(font, 22, messageTop + index * step, message[index]!, 200);
     }
     image.drawText(font, 22, messageTop + (message.length + 2) * step, truncateSetting(this.setting.get(), 52), 220);
+    const error = this.setting.validationError();
+    if (error) wrapText(font, error, width - 48).forEach((line, index) =>
+      image.drawText(font, 22, messageTop + (message.length + 4 + index) * step, line, 180));
     image.drawText(font, 22, height - 24 - font.lineHeight, `${GESTURE_DOUBLE_CLICK} back`, 110);
     return image;
   }

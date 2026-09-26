@@ -1,0 +1,13 @@
+platform :ios, '15.1'
+pod 'SVGKit', '3.0.0'
+
+# SVGKit 3's physical-DPI lookup asserts on arm64 simulators. Our icons use
+# only viewBox/pixel units, so that lookup is irrelevant to their rendering.
+post_install do |installer|
+  installer.pods_project.targets.each do |target|
+    next unless target.name == 'SVGKit'
+    target.build_configurations.each do |config|
+      config.build_settings['ENABLE_NS_ASSERTIONS'] = 'NO'
+    end
+  end
+end

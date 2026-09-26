@@ -27,6 +27,9 @@ function worker() {
     clearInterval() { timer = undefined; },
     global: { postMessage: message => messages.push(message) },
     scheduleRender() { renderCount++; }, renderAndSubmit() {}, maybeReconnectView() {},
+    // Glanceboard publication is outside the sidebar activity fixture.
+    publishSessionsSnapshot() {},
+    hasTerminalBackgroundWork: () => false,
     controlsInitialized: true, controls: new Map(), TERMINAL_TOOLS: [],
     getTerminalFontConfig: () => ({ cellWidth: 6, cellHeight: 12 }),
   };
@@ -107,7 +110,11 @@ class Image {
 
 test('cursor replaces only the prompt; marker and frame persist across cached blink phases', () => {
   const renders = [];
-  const icons = load('app/graphics/icons.ts', { './image': { GrayImage: Image } }, {
+  const icons = load('app/graphics/icons.ts', { './image': { GrayImage: Image },
+    '../native/svg-rasterizer': { rasterizeSvg(svg, size, stroke) {
+      renders.push(svg); assert.equal(stroke, 2); const image = new Image(size, size); image.pixels.fill(255); return image;
+    } },
+  }, {
     global: { isAndroid: true },
     com: { faceclaw: { app: { IconRenderer: { renderSvgGray(svg, size, stroke) {
       renders.push(svg); assert.equal(stroke, 2); return new Uint8Array(size * size).fill(255);
@@ -144,6 +151,7 @@ test('host applies activity only to its own open windows and cleans up on close'
     '../../assistant/tool-registry': { toolRegistry: { removeAppTools() {} } },
     './geometry': { appViewportSize: () => ({ width: 576, height: 260 }) },
     '../../native/frame-timings': {},
+    './worker-state': {},
     './shell': { shell: { registerWindow: w => shellWindows.set(w.windowId, w) } },
   });
   const host = new WorkerAppHost({ appId: 'terminal', worker, configureSurface: async () => {}, requestShellRender() { paints++; }, removeSurface() {} });

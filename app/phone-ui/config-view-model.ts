@@ -1,6 +1,7 @@
+import { finishOnboardingNavigation } from "./onboarding-navigation";
 import { Frame, Observable } from "@nativescript/core";
 
-import { ensureBlePermissions } from "../g2/android-permissions";
+import { ensureBlePermissions } from "../native/ble-permissions";
 import {
   isValidMacAddress,
   loadDeviceAddresses,
@@ -38,6 +39,9 @@ export class ConfigViewModel extends Observable {
     this.status = this.onboarding
       ? "Scan for glasses to pick yours by model and serial, load the addresses of devices paired with this phone, or enter them by hand, then Continue."
       : "Edit addresses manually, scan for glasses, or load them from paired devices.";
+    if (global.isIOS) this.status = this.onboarding
+      ? "Scan for glasses to pick yours by model and serial, or enter the addresses by hand, then Continue."
+      : "Edit addresses manually or scan for glasses.";
   }
 
   // --- paired identity card --------------------------------------------------
@@ -183,13 +187,15 @@ export class ConfigViewModel extends Observable {
     this.ringAddress = args.object?.text ?? args.value ?? "";
   }
 
+  get pairedDevicesVisibility(): "visible" | "collapse" { return global.isIOS ? "collapse" : "visible"; }
+
   async onLoadPairedTap(): Promise<void> {
     await this.populateFromDiscovery(async () => this.discovery.getBondedCandidates(), "Loaded paired devices.");
   }
 
   /** The live scan page identifies pairs by serial, model, and distance; hand off to it. */
   async onScanTap(): Promise<void> {
-    if (!this.onboarding) {
+    if (!this.onboarding && global.isAndroid) {
       // A connected arm stops advertising, so drop the link before scanning.
       // Required lazily: a module-scope import would instantiate the dashboard
       // controller singleton during onboarding, which this page is part of.
@@ -221,10 +227,7 @@ export class ConfigViewModel extends Observable {
       frame?.navigate({ moduleName: "phone-ui/onboarding-page", clearHistory: true });
       return;
     }
-    Frame.topmost()?.navigate({
-      moduleName: "phone-ui/main-page",
-      clearHistory: true,
-    });
+    finishOnboardingNavigation();
   }
 
   onSaveTap(): void {
@@ -254,6 +257,10 @@ export class ConfigViewModel extends Observable {
       this.status = "Ring MAC address is invalid.";
       return false;
     }
+    if (right === left || ring === right || ring === left) {
+      this.status = "Each device must have a different MAC address.";
+      return false;
+    }
 
     saveDeviceAddresses({ right, left, ring });
     this.rightAddress = right;
@@ -267,7 +274,7 @@ export class ConfigViewModel extends Observable {
     load: () => Promise<Parameters<typeof buildAddressSet>[0]>,
     successMessage: string,
   ): Promise<void> {
-    if (!global.isAndroid) {
+    if (!global.isAndroid && !global.isIOS) {
       this.status = "Discovery is only available on Android.";
       return;
     }

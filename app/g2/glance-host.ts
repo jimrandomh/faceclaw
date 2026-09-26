@@ -21,8 +21,12 @@ export const GLANCE_SURFACE_ID = "glance";
 /** Above the shell (1) and every window (0); below the lock screen (1000). */
 export const GLANCE_SURFACE_Z_ORDER = 900;
 
+/** Surface operations needed by the board, shared by Android and iOS. */
+export type GlanceDisplay = Pick<DisplayTarget,
+  "configureSurface" | "setSurfaceVisible" | "setSurfaceDepth" | "setScreenBlanked" | "submitSurfaceFrame">;
+
 export type GlanceHostOptions = {
-  getDisplay: () => DisplayTarget | null;
+  getDisplay: () => GlanceDisplay | null;
   getProvider: () => GlanceboardProvider | null;
   /** Whether a board may show right now (connected or preview, not locked). */
   canShow: () => boolean;
@@ -47,7 +51,9 @@ export class GlanceHost {
   /** Whether the surface is currently visible on the compositor. */
   private shown = false;
   private hideTimer: ReturnType<typeof setTimeout> | null = null;
-  private configuredFor: DisplayTarget | null = null;
+  private configuredFor: GlanceDisplay | null = null;
+  /** Last depth given to the surface; null forces the next render to set it. */
+  private configuredDepth: number | null = null;
   /** Serializes show/hide against each other and against in-flight renders. */
   private queue: Promise<void> = Promise.resolve();
   private rendering = false;
@@ -144,7 +150,7 @@ export class GlanceHost {
     }, Math.max(0, hideAtMs - Date.now()));
   }
 
-  private async configureSurface(display: DisplayTarget): Promise<void> {
+  private async configureSurface(display: GlanceDisplay): Promise<void> {
     await display.configureSurface(GLANCE_SURFACE_ID, {
       x: 0,
       y: 0,
@@ -154,6 +160,7 @@ export class GlanceHost {
       transparency: "opaque",
     });
     await display.setSurfaceVisible(GLANCE_SURFACE_ID, false);
+    this.configuredDepth = null;
     this.configuredFor = display;
   }
 
@@ -252,6 +259,12 @@ export class GlanceHost {
       const { image, draws } = frameTimings.span(frameId, "flatten", () => flattenPlanesWithDraws(planes));
       const buffer = frameTimings.span(frameId, "to8bpp", () => image.to8bppBuffer());
       const preparedDraws = frameTimings.span(frameId, "prepareFrameDraws", () => prepareFrameDraws(draws));
+      // The glasses copy the screen shifted per lens while the board covers it.
+      const depth = this.options.getProvider()?.depth() ?? 0;
+      if (depth !== this.configuredDepth) {
+        await display.setSurfaceDepth(GLANCE_SURFACE_ID, depth);
+        this.configuredDepth = depth;
+      }
       await frameTimings.spanAsync(frameId, "submit", () =>
         display.submitSurfaceFrame(
           GLANCE_SURFACE_ID,

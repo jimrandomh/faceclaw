@@ -1,7 +1,7 @@
 /**
  * The health record shapes, normalised for storage and display.
  *
- * These mirror `RingProtocol.java`'s `HourlyRecord` / `StepsRecord` /
+ * These mirror `RingProtocol.kt`'s `HourlyRecord` / `StepsRecord` /
  * `SleepRecord` (on the `ring-health-protocol` branch) but deliberately are
  * NOT the same types: the Java types are wire-shaped - raw hour indices, raw
  * stage ids, ring-relative timestamps, a per-page anchor that may be absent.

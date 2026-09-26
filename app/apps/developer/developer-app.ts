@@ -1,11 +1,14 @@
 import { MenuLayer, drawSubmenuIndicator, type MenuItem } from "../../ui/menu";
 import { ScreenTestLayer } from "./screen-test";
+import { InputEventsLayer } from "./input-events";
+import { shell } from "../../ui/shell/shell";
 import { BuzzerDemoLayer } from "./buzzer-demo";
 import { AccelerometerDemoLayer } from "./accelerometer-demo";
 import { BandwidthBenchmarkLayer } from "./bandwidth-benchmark";
 import { LightSensorDemoLayer } from "./light-sensor-demo";
 import { ResourceUsageLayer } from "./resource-usage";
 import { LoadAppFromQrLayer, LoadAppFromUrlLayer } from "./load-app";
+import { unicodeTestMenu } from "./unicode-test";
 import { type AppContext } from "../app-definition";
 import { getDefaultSmallFont } from "../../graphics/ui-fonts";
 import { appViewportSize } from "../../ui/shell/geometry";
@@ -47,10 +50,11 @@ function submenuItem(label: string, onSelect: MenuItem["onSelect"]): MenuItem {
 }
 
 /** The diagnostic demos, one level down from the root menu. */
-function debugTestsMenu(): MenuLayer {
+function debugTestsMenu(openInputEvents: (ctx: Parameters<MenuItem["onSelect"]>[0]) => void): MenuLayer {
   return new MenuLayer(
     "Debug tests",
     [
+      { label: "Input events", onSelect: openInputEvents },
       {
         label: "Dither test",
         onSelect: (ctx) => {
@@ -59,18 +63,24 @@ function debugTestsMenu(): MenuLayer {
       },
       {
         label: "Buzzer demo",
+        disabled: global.isIOS,
+        description: global.isIOS ? "Glasses sound playback is not available on iOS yet." : undefined,
         onSelect: (ctx) => {
           ctx.stack.push(new BuzzerDemoLayer());
         },
       },
       {
         label: "Accelerometer demo",
+        disabled: global.isIOS,
+        description: global.isIOS ? "Not available on iOS yet." : undefined,
         onSelect: (ctx) => {
           ctx.stack.push(new AccelerometerDemoLayer(DEVELOPER_WINDOW_ID, ctx.actions.requestRender));
         },
       },
       {
         label: "Light sensor",
+        disabled: global.isIOS,
+        description: global.isIOS ? "Not available on iOS yet." : undefined,
         onSelect: (ctx) => {
           ctx.stack.push(new LightSensorDemoLayer(DEVELOPER_WINDOW_ID, ctx.actions.requestRender));
         },
@@ -81,6 +91,9 @@ function debugTestsMenu(): MenuLayer {
           ctx.stack.push(new BandwidthBenchmarkLayer(ctx.actions.requestRender));
         },
       },
+      submenuItem("Unicode test", (ctx) => {
+        ctx.stack.push(unicodeTestMenu(MENU_LAYOUT));
+      }),
     ],
     MENU_LAYOUT,
   );
@@ -93,6 +106,7 @@ function debugTestsMenu(): MenuLayer {
  * under "Debug tests".
  */
 export function createDeveloperAppWindow(appContext: AppContext, options: InProcessAppOptions): InProcessWindow {
+  let inputEvents: InputEventsLayer | null = null;
   const menu = new MenuLayer(
     "Developer",
     [
@@ -114,12 +128,20 @@ export function createDeveloperAppWindow(appContext: AppContext, options: InProc
       },
       {
         label: "Show resource usage",
+        disabled: global.isIOS,
+        description: global.isIOS ? "Not available on iOS yet." : undefined,
         onSelect: (ctx) => {
           ctx.stack.push(new ResourceUsageLayer(DEVELOPER_WINDOW_ID, ctx.actions.requestRender));
         },
       },
       submenuItem("Debug tests", (ctx) => {
-        ctx.stack.push(debugTestsMenu());
+        ctx.stack.push(debugTestsMenu((inputCtx) => {
+          const page = new InputEventsLayer(inputCtx.actions.requestRender,
+            () => shell.isWindowVisible(DEVELOPER_WINDOW_ID),
+            () => { if (inputEvents === page) inputEvents = null; });
+          inputEvents = page;
+          inputCtx.stack.push(page);
+        }));
       }),
     ],
     MENU_LAYOUT,
@@ -133,6 +155,7 @@ export function createDeveloperAppWindow(appContext: AppContext, options: InProc
     icon: "wrench",
     closeable: true,
     actions: options.actions,
+    menuItems: () => inputEvents?.menuItems() ?? [],
     // Dictating a URL is the one thing worth speaking at in this app; the
     // load pages take the text and every other page ignores it.
     receiveTextInput: (text) => {

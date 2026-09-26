@@ -18,19 +18,21 @@
  * small and rare.
  *
  * Controls (a watch swipe in either direction is the primary flap):
- * swipe-up, swipe-down, click, or scroll-up flaps; double-click pauses;
+ * ring-press flaps immediately; watch swipes/clicks also flap. Double-click pauses;
  * tap-then-hold opens the window menu. Ready / paused / game over: click or
  * a swipe starts or resumes, double-click yields focus. Losing input focus
  * mid-flight (a shell overlay such as the system menu or a notification,
  * focus to the sidebar) pauses, as does backgrounding or screen-off.
  */
 import "@nativescript/core/globals";
+import { finishWorkerShutdown } from "../../ui/shell/worker-lifecycle";
 import { GrayImage } from "../../graphics/image";
 import { flattenPlanesWithDraws, planesFingerprint, type Plane } from "../../graphics/plane";
 import { prepareFrameDraws } from "../../graphics/glyph-wire";
 import { getFont } from "../../graphics/bdffont";
 import { getDefaultSmallFont } from "../../graphics/ui-fonts";
 import * as frameTimings from "../../native/frame-timings";
+import { playWorkerBuzzerSequence } from "../../native/worker-buzzer";
 import { getActiveDisplay } from "../../native/active-display";
 import { getStringSetting, setStringSetting } from "../../native/settings-store";
 import { buildSoundSequencePayload, type Step } from "../../ui/sound-effects";
@@ -64,7 +66,6 @@ import {
 } from "./flappy-sprites";
 
 declare const global: any;
-declare const com: any;
 
 const largeFont = getFont("terminus32");
 const mediumFont = getFont("terminus24");
@@ -180,6 +181,12 @@ post({ type: "worker-ready" });
 global.onmessage = (event: { data: WorkerAppMessage }) => {
   const message = event.data;
   switch (message.type) {
+    case "check-idle":
+      post({ type: "worker-idle" });
+      break;
+    case "shutdown":
+      finishWorkerShutdown();
+      break;
     case "open-window": {
       const window: FlappyWindow = {
         windowId: message.windowId,
@@ -311,7 +318,7 @@ function saveHighScore(window: FlappyWindow): void {
 
 /**
  * Fire a buzzer effect. Non-blocking: the firmware's sequencer plays the
- * steps on its own timer, and the Java call is safe from the worker thread.
+ * steps on its own timer; the platform bridge routes it from the worker.
  * Minor (frequent) effects are dropped when they'd arrive within the
  * rate-limit gap; newsworthy ones always play.
  */
@@ -321,9 +328,7 @@ function playSfx(window: FlappyWindow, steps: Step[], minor = false): void {
   if (minor && now - window.lastMinorSfxAtMs < MINOR_SFX_MIN_GAP_MS) return;
   if (minor) window.lastMinorSfxAtMs = now;
   try {
-    const communicator = com.faceclaw.app.FaceclawBleCommunicator.getActive();
-    if (!communicator) return;
-    communicator.playBuzzerSequence(buildSoundSequencePayload(steps).buffer);
+    playWorkerBuzzerSequence(buildSoundSequencePayload(steps));
   } catch (error) {
     console.warn(`flappy sfx failed: ${error}`);
   }
@@ -412,9 +417,15 @@ function handleFlightInput(window: FlappyWindow, event: InputEvent, frameId: num
     // which way the thumb went shouldn't matter.
     case "swipe-up":
     case "swipe-down":
-    case "click":
-    case "scroll-up":
+    case "ring-press":
       flap(window);
+      break;
+    case "click":
+      // The ring already flapped on down; its later click must not flap again.
+      if (event.source !== "ring") flap(window);
+      break;
+    case "scroll-up":
+      if (event.source === "watch") flap(window);
       break;
     case "double-click":
       if (window.phase === "playing") {
@@ -698,7 +709,7 @@ function paintHud(image: GrayImage, window: FlappyWindow): void {
       if (window.highScore > 0) {
         drawCenteredIn(image, smallFont, 0, width, 44, `best ${window.highScore}`, 150);
       }
-      drawCenteredIn(image, smallFont, 0, width, groundTop(window) - 26, `swipe / ${GESTURE_CLICK} flap`, 150);
+      drawCenteredIn(image, smallFont, 0, width, groundTop(window) - 26, "Touch ring / swipe to flap", 150);
       break;
     case "paused":
       paintDialog(image, window, "PAUSED", [`${GESTURE_CLICK} resume`, `${GESTURE_DOUBLE_CLICK} leave`]);
@@ -757,17 +768,19 @@ function renderAndSubmit(window: FlappyWindow, inputFrameId: number): void {
     }
     const { image, draws } = frameTimings.span(frameId, "flatten", () => flattenPlanesWithDraws(planes));
     const buffer = frameTimings.span(frameId, "to8bpp", () => image.to8bppBuffer());
-    communicator.submitSurfaceFrame(
-      buffer.buffer,
-      window.surfaceId,
-      0,
-      0,
-      image.width,
-      image.height,
-      fingerprint,
-      paintMs,
-      frameId,
-      frameTimings.span(frameId, "prepareFrameDraws", () => prepareFrameDraws(draws)),
+    frameTimings.span(frameId, "submitSurfaceFrame", () =>
+      communicator.submitSurfaceFrame(
+        buffer.buffer,
+        window.surfaceId,
+        0,
+        0,
+        image.width,
+        image.height,
+        fingerprint,
+        paintMs,
+        frameId,
+        frameTimings.span(frameId, "prepareFrameDraws", () => prepareFrameDraws(draws)),
+      )
     );
     window.lastSubmittedFingerprint = fingerprint;
   } catch (error) {

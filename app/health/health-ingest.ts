@@ -7,7 +7,7 @@
  * The live BLE path lives on the `ring-health-protocol` branch, which this one
  * deliberately does not touch. What is here is the whole conversion - the part
  * with the judgement calls in it - written against a structural description of
- * `RingProtocol.java`'s record types rather than an import of them, so that
+ * `RingProtocol.kt`'s record types rather than an import of them, so that
  * branch and this one can be joined later without either having been built
  * around the other.
  *
@@ -140,7 +140,7 @@ export function convertRecords(records: readonly WireRecord[]): ConversionResult
  * An UNANCHORED (backlog) page is dropped rather than placed. The decode did
  * solve where one such page landed, but explicitly could not derive the rule
  * that produced it and warned that a future page anchored elsewhere would
- * break it. `RingProtocol.java` already made the matching call - it hands
+ * break it. `RingProtocol.kt` already made the matching call - it hands
  * backlog groups out with `UNKNOWN_TIME` rather than an invented time - and a
  * health chart is exactly the wrong place to be the first component that
  * guesses. Dropping loses a page; guessing corrupts the history silently.

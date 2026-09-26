@@ -5,6 +5,7 @@
  * reasonable for a sideloaded personal tool).
  */
 import { Utils } from "@nativescript/core";
+import { copyToJavaByteBuffer } from "./java-direct-buffer";
 
 declare const android: any;
 declare const java: any;
@@ -150,10 +151,9 @@ export function writeBinaryFile(path: string, bytes: Uint8Array): boolean {
     if (parent) parent.mkdirs();
     const stream = new java.io.FileOutputStream(file);
     try {
-      // An ArrayBuffer marshals to java.nio.ByteBuffer (the same conversion
-      // submitSurfaceFrame relies on), so write through the channel.
-      const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
-      stream.getChannel().write(buffer);
+      // Write through the channel from a Java direct buffer: a bulk copy, and
+      // passing the ArrayBuffer itself would leak it (java-direct-buffer.ts).
+      stream.getChannel().write(copyToJavaByteBuffer(bytes));
     } finally {
       stream.close();
     }

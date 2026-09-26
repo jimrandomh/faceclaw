@@ -1,4 +1,4 @@
-import { ensureFineLocationPermission } from "../../g2/android-permissions";
+import { ensureFineLocationPermission } from "../../native/location-permissions";
 import { launchWorkerAppWindow, type AppDefinition } from "../app-definition";
 
 const navigateApp: AppDefinition = {

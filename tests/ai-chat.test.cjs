@@ -46,7 +46,7 @@ function conversations(saved = '') {
   const env = sessions();
   const { AssistantConversations } = load('app/assistant/conversations.ts', {
     './session': { AssistantSession: env.AssistantSession },
-    './models': { ASSISTANT_MODEL_VALUES: ['auto', 'terra', 'sonnet'] },
+    './models': { supportedAssistantModel: value => value, ASSISTANT_MODEL_VALUES: ['auto', 'terra', 'sonnet'] },
   });
   let stored = '';
   const store = new AssistantConversations((model, effort) => config(model, effort), () => 'terra', (value) => { stored = value; }, saved);
@@ -228,7 +228,7 @@ test('empty capture, rejection and closing never submit stale speech', async () 
   }
 });
 
-function shellEnv() {
+function shellEnv({ wakeAction = 'voice-input', skipConfirmation = false } = {}) {
   const gestures = load('app/ui/gestures.ts', {});
   class Image { constructor(width = 576, height = 260) { this.width = width; this.height = height; } }
   const images = { GrayImage: Image, G2_LENS_WIDTH: 640, G2_LENS_HEIGHT: 480 };
@@ -244,11 +244,19 @@ function shellEnv() {
     paint(_ctx, below) { return below(); }
     handleInput(event, ctx) { if (event.type === 'double-click') ctx.stack.pop(); }
   }
-  const settings = { wakeWordActionSetting: { get: () => 'voice-input' }, brightnessSetting: { get: () => 'auto' } };
-  const { shell } = load('app/ui/shell/shell.ts', {
-    '../../graphics/image': images, '../../graphics/plane': {}, '../../graphics/ui-fonts': {}, '../../g2/events': {},
+  const voiceDialogs = [];
+  const settings = { wakeWordActionSetting: { get: () => wakeAction }, brightnessSetting: { get: () => 'auto' },
+    assistantSkipConfirmationSetting: { get: () => skipConfirmation } };
+  const { shell, rawInputEventToInputEvent } = load('app/ui/shell/shell.ts', {
+    '../../graphics/shell-scene': { encodeShellScene: () => new Uint8Array([0, 0]) },
+    '../../graphics/image': images, '../../graphics/plane': {}, '../../graphics/ui-fonts': {}, '../../g2/events': load('app/g2/events.ts', {}),
     '../gestures': gestures, '../layers': layers, '../menu': { MenuLayer: Menu },
-    './voice-input': {}, './keyboard-input': {}, './voice-activity': {}, './assistant': {},
+    '../input-monitor': load('app/ui/input-monitor.ts', {}),
+    './voice-input': { VoiceInputLayer: class {
+      constructor(options) { this.options = options; voiceDialogs.push(options); }
+      startCapture() {}
+      onRemoved() { this.options.onClosed(); }
+    } }, './keyboard-input': {}, './voice-activity': { voiceActivity: { setActive() {} } }, './assistant': {},
     '../../assistant/conversations': {}, '../../assistant/models': {}, '../../native/settings-store': {},
     '../notifications': {}, '../dashboard-settings': settings, './ambient-cards': {},
     './chrome-layer': { ShellChromeLayer: class {} }, './modal-layer': {}, './tool-debug-layer': {},
@@ -280,8 +288,31 @@ function shellEnv() {
   });
   shell.registerWindow(app.window);
   shell.focusWindow('ai-chat');
-  return { shell, app, input, menus, microphone: () => microphone, event: (type) => gestures.makeInputEvent({ type }) };
+  return { shell, app, input, menus, voiceDialogs, rawInputEventToInputEvent, microphone: () => microphone, event: (type) => gestures.makeInputEvent({ type }) };
 }
+
+test('wakeword wakes the shared shell, respects its action, and opens only one hands-free assistant dialog', async () => {
+  for (const wakeAction of ['off', 'turn-screen-on', 'voice-input']) {
+    const env = shellEnv({ wakeAction, skipConfirmation: true });
+    env.shell.isAssistantAvailable = () => true;
+    env.shell.sleep();
+    const event = env.rawInputEventToInputEvent({ kind: 'even-ai', eventType: 1, eventSource: 0 });
+    assert.equal(event.type, 'wakeword');
+    await env.shell.receiveInput(event);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(env.shell.isScreenOn(), wakeAction !== 'off');
+    assert.equal(env.voiceDialogs.length, wakeAction === 'voice-input' ? 1 : 0);
+    if (wakeAction === 'voice-input') {
+      const options = env.voiceDialogs[0];
+      assert.equal(options.handsFree, true);
+      assert.equal(options.autoSend, true);
+      assert.equal(options.sendTargets[options.defaultTargetIndex].id, 'assistant');
+      await env.shell.receiveInput(event);
+      assert.equal(env.voiceDialogs.length, 1);
+    }
+    env.shell.stack.clearToBase();
+  }
+});
 
 test('chat holds bypass the escape timer; release, menus and double tap follow the requested routing', async () => {
   const env = shellEnv();
@@ -324,7 +355,7 @@ function chatLayerEnv() {
   const env = conversations();
   const textwrap = load('app/graphics/textwrap.ts', {});
   const { BdfFont } = load('app/graphics/bdffont.ts', { '@nativescript/core': {} });
-  const graphics = load('app/graphics/image.ts', { './textwrap': textwrap });
+  const graphics = require('../.test-build/app/graphics/image.js');
   const font = BdfFont.parse(fs.readFileSync(path.join(__dirname, '../app/fonts/terminus/ter-u12n.bdf'), 'utf8'));
   let windowOptions;
   const { createAiChatWindow } = load('app/apps/ai-chat/ai-chat-app.ts', {

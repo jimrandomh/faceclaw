@@ -22,6 +22,10 @@ const SCAN_ACTION = "com.google.zxing.client.android.SCAN";
 // Arbitrary, only has to be distinct from other startActivityForResult callers.
 const SCAN_REQUEST_CODE = 0x51d0;
 
+// Android's scanner is owned by Play Services or another app. The load layer
+// ignores its late result if the user leaves; iOS also closes its own camera.
+export function cancelQrScan(): void {}
+
 function currentActivity(): any {
   return Application.android?.foregroundActivity ?? Application.android?.startActivity ?? null;
 }

@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleDevelopmentRegion</key>
+  <string>en</string>
+  <key>CFBundleExecutable</key>
+  <string>$(EXECUTABLE_NAME)</string>
+  <key>CFBundleName</key>
+  <string>$(PRODUCT_NAME)</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleDisplayName</key>
+  <string>Faceclaw</string>
+  <key>CFBundleShortVersionString</key>
+  <string>1.0.0</string>
+  <key>CFBundleVersion</key>
+  <string>1</string>
+  <key>LSRequiresIPhoneOS</key>
+  <true/>
+  <key>NSBluetoothAlwaysUsageDescription</key>
+  <string>Faceclaw uses Bluetooth to connect to your glasses and ring, display your apps, and receive gestures.</string>
+  <key>NSMicrophoneUsageDescription</key>
+  <string>Faceclaw uses your phone microphone for voice input when your glasses are disconnected.</string>
+  <key>NSSpeechRecognitionUsageDescription</key>
+  <string>Faceclaw turns audio from your glasses or phone microphone into text for the app you choose. Dictation uses on-device recognition.</string>
+  <key>NSCameraUsageDescription</key>
+  <string>Faceclaw uses the camera to scan QR codes for app URLs you open in Developer.</string>
+  <key>NSCalendarsUsageDescription</key>
+  <string>Faceclaw reads your upcoming calendar events to display them in Calendar and Glanceboard on your glasses.</string>
+  <key>NSCalendarsFullAccessUsageDescription</key>
+  <string>Faceclaw reads your upcoming calendar events to display them in Calendar and Glanceboard on your glasses.</string>
+  <key>NSLocationWhenInUseUsageDescription</key>
+  <string>Faceclaw uses your location for local weather, turn-by-turn navigation, and true north on the glasses compass.</string>
+  <key>NSLocationTemporaryUsageDescriptionDictionary</key>
+  <dict><key>Navigation</key><string>Precise location lets Faceclaw follow your route and show upcoming turns on your glasses.</string></dict>
+  <key>UIBackgroundModes</key>
+  <array>
+    <string>bluetooth-central</string>
+    <string>location</string>
+  </array>
+  <key>NSAppTransportSecurity</key>
+  <dict>
+    <key>NSAllowsLocalNetworking</key>
+    <true/>
+    <!-- iOS 17+ needs an explicit exception for the configured g2mirror IP.
+         This permits its ws:// endpoint; TLS certificate validation stays on. -->
+    <key>NSExceptionDomains</key>
+    <dict>
+      <key>100.68.94.67</key>
+      <dict><key>NSExceptionAllowsInsecureHTTPLoads</key><true/></dict>
+    </dict>
+  </dict>
+  <key>NSLocalNetworkUsageDescription</key>
+  <string>Faceclaw connects to the terminal servers and developer app URLs you configure on your local network.</string>
+  <key>UILaunchScreen</key>
+  <dict/>
+  <key>UISupportedInterfaceOrientations</key>
+  <array>
+    <string>UIInterfaceOrientationPortrait</string>
+    <string>UIInterfaceOrientationLandscapeLeft</string>
+    <string>UIInterfaceOrientationLandscapeRight</string>
+  </array>
+  <key>UIRequiresFullScreen</key>
+  <true/>
+	<key>UIFileSharingEnabled</key><true/>
+	<key>LSSupportsOpeningDocumentsInPlace</key><true/>
+</dict>
+</plist>

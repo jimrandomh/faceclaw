@@ -2,7 +2,9 @@
   "compilerOptions": {
     "module": "commonjs",
     "target": "ES2020",
-    "lib": ["ES2020"],
+    "lib": [
+      "ES2020"
+    ],
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
@@ -11,6 +13,21 @@
     "outDir": "../.test-build"
   },
   "include": [
+    "../app/remote/protocol.ts",
+    "../app/remote/listeners.ts",
+    "../app/g2/ancs-client.ts",
+    "../app/graphics/lvgl-font.ts",
+    "../app/phone-ui/ble-bandwidth-meter.ts",
+    "../app/apps/terminal/hub-header.ts",
+    "../app/g2/ios-peripheral-identity.ts",
+    "../app/graphics/surface-compositor.ts",
+    "../app/graphics/image.ts",
+    "../app/graphics/plane.ts",
+    "../app/graphics/shell-scene.ts",
+    "../app/ui/metrics.ts",
+    "../app/ui/menu-core.ts",
+    "../app/phone-ui/phone-gestures.ts",
+    "../app/native/java-direct-buffer.ts",
     "../app/g2/firmware-compat.ts",
     "../app/g2/glasses-hardware-identity.ts",
     "../app/g2/ble-proximity.ts",
@@ -40,6 +57,8 @@
     "../app/health/health-chart.ts",
     "../app/health/health-glance.ts",
     "../app/health/health-card.ts",
-    "../app/health/health-phone-chart.ts"
+    "../app/health/health-phone-chart.ts",
+    "../app/g2/brightness-curve.ts",
+    "../app/g2/events.ts"
   ]
 }

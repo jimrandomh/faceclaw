@@ -31,14 +31,12 @@ import {
 } from "../../ui/gestures";
 import { type Layer, type LayerContext } from "../../ui/layers";
 import {
-  drawListScrollbar,
   drawRightValueMenuItem,
-  drawSelectionHighlight,
   drawToggleMenuItem,
-  scrollToKeepSelectionVisible,
   TextPageLayer,
   type MenuItem,
 } from "../../ui/menu";
+import { Menu, type MenuDrawArgs } from "../../ui/menu-core";
 import { LIST_ROW_TEXT_INSET, lineStep, listRowHeight } from "../../ui/metrics";
 import { createInProcessWindow, type InProcessAppOptions, type InProcessWindow } from "../../ui/shell/in-process-window";
 import { shell } from "../../ui/shell/shell";
@@ -91,6 +89,8 @@ const LIST_SHARE = 0.4;
 const LIST_MIN_WIDTH = 190;
 const LIST_MAX_WIDTH = 240;
 const LIST_TOP = 6;
+/** Pixels between consecutive list rows' selection boxes. */
+const LIST_ROW_GAP = 1;
 const STAGE_X = 10;
 /** Gap between the stage's right edge and the list's divider. */
 const STAGE_LIST_GAP = 14;
@@ -183,8 +183,22 @@ function fittingDigitFont(text: string, maxWidth: number, sizes: readonly number
 export class TimersLayer implements Layer {
   readonly acceptsDirectional = true;
 
+  /**
+   * The selected row's key: the source of truth for the selection, which
+   * survives row rebuilds and is pinned to newly ringing items. The list
+   * menu is re-synced from it before each paint, hit test and move.
+   */
   private selectionKey = "";
-  private scrollRow = 0;
+  private readonly list = new Menu<Row>({
+    wrap: true,
+    rowGap: LIST_ROW_GAP,
+    highlight: { radius: 6 },
+    getHeight: () => listRowHeight(smallFont()),
+    isSelectable: (row) => row.kind !== "header",
+    draw: (args) => this.drawListRow(args),
+  });
+  /** Per-paint inputs to drawListRow. */
+  private listPaint = { dim: 1, now: 0 };
   private mode: Mode = { kind: "list" };
   /** Which of the ringing stage's two buttons is highlighted. */
   private ringButton = 0;
@@ -232,7 +246,8 @@ export class TimersLayer implements Layer {
     let index = rows.findIndex((row) => row.key === this.selectionKey);
     if (index < 0) {
       // The row went away (a dismissed timer, a deleted alarm): stay in place.
-      index = clamp(this.scrollRow, 0, rows.length - 1);
+      const firstVisibleRow = Math.floor(this.list.scrollTop / listRowHeight(smallFont()));
+      index = clamp(firstVisibleRow, 0, rows.length - 1);
       while (index < rows.length && rows[index]!.kind === "header") index++;
       if (index >= rows.length) index = rows.findIndex((row) => row.kind !== "header");
       this.selectionKey = rows[index]!.key;
@@ -244,14 +259,16 @@ export class TimersLayer implements Layer {
     return rows[this.reconcileSelection(rows)]!;
   }
 
-  private moveSelection(rows: Row[], delta: number): void {
-    const count = rows.length;
-    let index = this.reconcileSelection(rows);
-    for (let step = 0; step < count; step++) {
-      index = (index + delta + count) % count;
-      if (rows[index]!.kind !== "header") break;
-    }
-    this.selectionKey = rows[index]!.key;
+  /** Point the list menu at these rows and the current selection. */
+  private syncList(rows: Row[]): void {
+    this.list.setItems(rows, this.reconcileSelection(rows));
+  }
+
+  private moveSelection(rows: Row[], delta: -1 | 1): void {
+    this.syncList(rows);
+    this.list.moveSelection(delta);
+    const index = this.list.selectedIndex;
+    if (index !== null) this.selectionKey = rows[index]!.key;
   }
 
   /** Called on every engine change: jump to a newly ringing item. */
@@ -547,15 +564,14 @@ export class TimersLayer implements Layer {
   /** A mirror touch: on the list, select the row under it. */
   hitTest(x: number, y: number, ctx: LayerContext): boolean {
     if (this.mode.kind !== "list") return false;
-    const { width, height } = ctx.stack.getBaseSize();
+    const { width } = ctx.stack.getBaseSize();
     const listX = width - listWidthFor(width);
     if (x < listX) return false;
     const rows = this.buildRows(Date.now());
-    this.reconcileSelection(rows);
-    const rowHeight = listRowHeight(smallFont());
-    const index = this.scrollRow + Math.floor((y - LIST_TOP) / rowHeight);
-    const row = rows[index];
-    if (!row || row.kind === "header" || y < LIST_TOP || y > height) return true;
+    this.syncList(rows);
+    const index = this.list.indexAt(y);
+    if (index === null) return true;
+    const row = rows[index]!;
     if (this.selectionKey === row.key) {
       this.activateRow(row);
     } else {
@@ -882,79 +898,78 @@ export class TimersLayer implements Layer {
     dim: number,
     now: number,
   ): void {
-    const font = smallFont();
-    const rowHeight = listRowHeight(font);
+    const rowHeight = listRowHeight(smallFont());
     const visible = Math.max(1, Math.floor((height - 2 * LIST_TOP) / rowHeight));
-    this.scrollRow = scrollToKeepSelectionVisible(this.scrollRow, selectedIndex, visible, rows.length);
+    this.listPaint = { dim, now };
+    // While a picker owns the stage the list has no live selection, so no
+    // highlight; drawListRow still brightens the selected row by key.
+    this.list.setItems(rows, dim === 1 ? selectedIndex : null);
+    this.list.paint(image, { x: listX, y: LIST_TOP, width: listWidth - 12, height: visible * rowHeight - LIST_ROW_GAP }, focused);
+    this.list.drawScrollbar(image, listX + listWidth - 7, LIST_TOP, visible * rowHeight - 4);
+  }
+
+  private drawListRow({ image, item: row, x, y, width, height }: MenuDrawArgs<Row>): void {
+    const font = smallFont();
+    const { dim, now } = this.listPaint;
+    const rowHeight = height + LIST_ROW_GAP;
     const shade = (value: number) => Math.round(value * dim);
-    const textX = listX + 8;
-    const textWidth = listWidth - 24;
-    const last = Math.min(rows.length, this.scrollRow + visible);
-    for (let index = this.scrollRow; index < last; index++) {
-      const row = rows[index]!;
-      const y = LIST_TOP + (index - this.scrollRow) * rowHeight;
-      const textY = y + LIST_ROW_TEXT_INSET;
-      if (row.kind === "header") {
-        image.drawText(font, textX, textY, row.title!, shade(90));
-        continue;
-      }
-      const selected = index === selectedIndex;
-      if (selected && dim === 1) {
-        drawSelectionHighlight(image, listX, y, listWidth - 12, rowHeight - 1, focused, 6);
-      }
-      const bright = shade(selected ? 250 : 210);
-      const soft = shade(selected ? 170 : 130);
-      switch (row.kind) {
-        case "timer": {
-          const timer = row.timer!;
-          const phase = timerPhase(timer);
-          const digits = phase === "rung" ? "0:00" : formatCountdown(timerRemainingMs(timer, now));
-          const digitsValue = phase === "rung" ? (Math.floor(now / 1000) % 2 ? bright : soft) : phase === "paused" ? soft : bright;
-          image.drawText(font, textX, textY, digits, digitsValue);
-          const digitsWidth = font.measureText(digits) + 8;
-          const nameWidth = textWidth - digitsWidth - (phase === "paused" ? 12 : 0);
-          if (nameWidth > 12) {
-            image.drawText(font, textX + digitsWidth, textY, truncateText(font, timerDisplayName(timer), nameWidth), soft);
-          }
-          if (phase === "paused") drawPauseMark(image, listX + listWidth - 22, y + Math.floor(rowHeight / 2) - 5, soft);
-          break;
-        }
-        case "new-timer":
-          image.drawText(font, textX, textY, "+ New timer", shade(selected ? 220 : 150));
-          break;
-        case "stopwatch": {
-          const stopwatch = timerEngine.state.stopwatch;
-          const running = stopwatchIsRunning(stopwatch);
-          const elapsed = formatElapsed(stopwatchElapsedMs(stopwatch, now), false);
-          image.drawText(font, textX, textY, "Stopwatch", running ? bright : soft);
-          image.drawText(font, listX + listWidth - 16 - font.measureText(elapsed), textY, elapsed, running ? bright : soft);
-          break;
-        }
-        case "alarm": {
-          const alarm = row.alarm!;
-          const on = alarm.enabled;
-          const time = formatTimeOfDay(alarm.hour, alarm.minute, twelveHour());
-          image.drawText(font, textX, textY, time, on ? bright : soft);
-          const timeWidth = font.measureText(time) + 8;
-          const daysWidth = textWidth - timeWidth - 14;
-          if (daysWidth > 12) {
-            image.drawText(font, textX + timeWidth, textY, truncateText(font, alarm.label || formatDays(alarm.days), daysWidth), on ? soft : shade(80));
-          }
-          const dotX = listX + listWidth - 22;
-          const dotY = y + Math.floor(rowHeight / 2) - 4;
-          if (alarm.ringingSinceMs !== null || on) image.fillRoundedRect(dotX, dotY, 8, 8, on ? shade(220) : shade(90), 4);
-          else image.drawRoundedRect(dotX, dotY, 8, 8, shade(90), 4);
-          break;
-        }
-        case "new-alarm":
-          image.drawText(font, textX, textY, "+ New alarm", shade(selected ? 220 : 150));
-          break;
-        default:
-          break;
-      }
+    const textX = x + 8;
+    const textWidth = width - 12;
+    const textY = y + LIST_ROW_TEXT_INSET;
+    if (row.kind === "header") {
+      image.drawText(font, textX, textY, row.title!, shade(90));
+      return;
     }
-    if (rows.length > visible) {
-      drawListScrollbar(image, listX + listWidth - 7, LIST_TOP, visible * rowHeight - 4, this.scrollRow, visible, rows.length);
+    const selected = row.key === this.selectionKey;
+    const bright = shade(selected ? 250 : 210);
+    const soft = shade(selected ? 170 : 130);
+    switch (row.kind) {
+      case "timer": {
+        const timer = row.timer!;
+        const phase = timerPhase(timer);
+        const digits = phase === "rung" ? "0:00" : formatCountdown(timerRemainingMs(timer, now));
+        const digitsValue = phase === "rung" ? (Math.floor(now / 1000) % 2 ? bright : soft) : phase === "paused" ? soft : bright;
+        image.drawText(font, textX, textY, digits, digitsValue);
+        const digitsWidth = font.measureText(digits) + 8;
+        const nameWidth = textWidth - digitsWidth - (phase === "paused" ? 12 : 0);
+        if (nameWidth > 12) {
+          image.drawText(font, textX + digitsWidth, textY, truncateText(font, timerDisplayName(timer), nameWidth), soft);
+        }
+        if (phase === "paused") drawPauseMark(image, x + width - 10, y + Math.floor(rowHeight / 2) - 5, soft);
+        break;
+      }
+      case "new-timer":
+        image.drawText(font, textX, textY, "+ New timer", shade(selected ? 220 : 150));
+        break;
+      case "stopwatch": {
+        const stopwatch = timerEngine.state.stopwatch;
+        const running = stopwatchIsRunning(stopwatch);
+        const elapsed = formatElapsed(stopwatchElapsedMs(stopwatch, now), false);
+        image.drawText(font, textX, textY, "Stopwatch", running ? bright : soft);
+        image.drawText(font, x + width - 4 - font.measureText(elapsed), textY, elapsed, running ? bright : soft);
+        break;
+      }
+      case "alarm": {
+        const alarm = row.alarm!;
+        const on = alarm.enabled;
+        const time = formatTimeOfDay(alarm.hour, alarm.minute, twelveHour());
+        image.drawText(font, textX, textY, time, on ? bright : soft);
+        const timeWidth = font.measureText(time) + 8;
+        const daysWidth = textWidth - timeWidth - 14;
+        if (daysWidth > 12) {
+          image.drawText(font, textX + timeWidth, textY, truncateText(font, alarm.label || formatDays(alarm.days), daysWidth), on ? soft : shade(80));
+        }
+        const dotX = x + width - 10;
+        const dotY = y + Math.floor(rowHeight / 2) - 4;
+        if (alarm.ringingSinceMs !== null || on) image.fillRoundedRect(dotX, dotY, 8, 8, on ? shade(220) : shade(90), 4);
+        else image.drawRoundedRect(dotX, dotY, 8, 8, shade(90), 4);
+        break;
+      }
+      case "new-alarm":
+        image.drawText(font, textX, textY, "+ New alarm", shade(selected ? 220 : 150));
+        break;
+      default:
+        break;
     }
   }
 

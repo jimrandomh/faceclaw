@@ -100,7 +100,7 @@ test('Navigate resize preserves its active route and window, and remeasures an o
     menu: { resize: (size) => { menuSize = size; } }, lastSubmittedFingerprint: 'old' };
   const route = { destination: 'Home' };
   const resize = resizeHandler('app/apps/navigate/navigate-app.worker.ts', {
-    window, route, render: () => { paints++; },
+    window, route, phase: 'navigating', render: () => { paints++; },
   });
   resize({ width: 576, height: 260 });
   assert.equal(window.viewportHeight, 260);
@@ -148,6 +148,9 @@ test('resizing a terminal reconnects with the new grid and ignores callbacks fro
       },
     } } },
   };
+  const socketContext = { exports: {}, com: context.com };
+  vm.runInNewContext(js(read('app/native/socket.ts')), socketContext);
+  context.require = name => name === './socket' ? socketContext.exports : {};
   vm.runInNewContext(js(read('app/native/g2mirror-client.ts')), context);
   const client = new context.exports.G2MirrorClient({ host: 'localhost', port: 1234, cols: 72, rows: 28 });
   client.start();

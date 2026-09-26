@@ -24,6 +24,7 @@ export const WINDOW_MENU_LAYOUT: MenuLayout = {
   minHeight: 150,
   footer: gestureHints([[GESTURE_LONG_PRESS, "system menu"]]),
   dimUnderneath: CONTEXT_MENU_DIM,
+  depth: 4,
 };
 
 export class WindowMenuLayer extends MenuLayer {
@@ -91,10 +92,10 @@ export class WindowMenu {
 
   /**
    * Open the menu, or the shell's system menu when this window has no
-   * entries. `items` overrides the window's own entries for an app that
-   * reuses this host for another list (a per-row action menu).
+   * entries. `items` (and optionally `title`) override the window's own for
+   * an app that reuses this host for another list (a per-row action menu).
    */
-  open(items: MenuItem[] = this.options.items()): void {
+  open(items: MenuItem[] = this.options.items(), title: string = this.options.title()): void {
     if (this.stack) return;
     if (!items.length) {
       this.options.post({ type: "open-system-menu", windowId: this.options.windowId });
@@ -105,7 +106,7 @@ export class WindowMenu {
       handleInput: () => {},
     };
     const stack = new LayerStack(base, { ...noopLayerActions }, this.options.size, this.options.isFocused);
-    stack.push(new WindowMenuLayer(this.options.title(), items));
+    stack.push(new WindowMenuLayer(title, items));
     this.stack = stack;
   }
 

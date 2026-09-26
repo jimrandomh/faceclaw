@@ -4,7 +4,7 @@
  * the app closed — so these always-available wrappers launch the app first,
  * wait for its tools to register, and forward the call.
  */
-import { ensureFineLocationPermission } from "../g2/android-permissions";
+import { ensureFineLocationPermission } from "../native/location-permissions";
 import { toolRegistry, type ToolRegistry, type ToolResult } from "./tool-registry";
 import { callAppToolWithLaunch } from "./launch-on-call";
 

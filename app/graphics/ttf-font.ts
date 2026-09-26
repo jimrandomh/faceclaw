@@ -1,7 +1,6 @@
 /**
  * TTF/OTF fonts for on-glasses UI text, rendered per-codepoint through the
- * Java FontFileRenderer (Android minikin/HarfBuzz: real shaping, kerning,
- * antialiasing) and cached as 4bpp coverage rasters that ride the
+ * native font renderer (Android Paint / iOS Core Text) and cached as 4bpp coverage rasters that ride the
  * texture-cache glyph pipeline (CFW mode 14; see
  * notes/texture-cache-display-list-design.md and graphics/glyph-wire.ts).
  *
@@ -14,9 +13,9 @@
  * never drifts.
  *
  * Kerning uses memoized per-pair measurements (measure("ab") - a - b);
- * ligatures are disabled Java-side so per-codepoint rasters plus pairwise
+ * ligatures are disabled native-side so per-codepoint rasters plus pairwise
  * kerning fully describe a line. Glyph rasters and advances come from one
- * JNI render per (font, size, codepoint) per JS context, memoized forever.
+ * native render per (font, size, codepoint) per JS context, memoized forever.
  *
  * Cross-context determinism: worker threads and the main thread each build
  * their own TtfFont, but the Java GlyphAtlas dedupes by atlasKey and treats
@@ -26,8 +25,8 @@
 import { allocateFontFingerprintId, type Glyph } from "./bdffont";
 import { GrayImage, grayToNibble, type GlyphFont } from "./image";
 import { toUint8Array } from "../util/array-util";
+import { fontRenderer } from "../native/font-renderer";
 
-declare const com: any;
 declare const global: any;
 
 /**
@@ -65,7 +64,7 @@ export class TtfFont implements GlyphFont {
 
   /**
    * Load (or return the memoized) font at a pixel size. Null when the font
-   * file is missing/unloadable or off-Android — callers fall back to a BDF
+   * file is missing/unloadable or the platform has no renderer — callers fall back to a BDF
    * face.
    */
   static load(path: string, sizePx: number, gamma = DEFAULT_TTF_GAMMA): TtfFont | null {
@@ -73,9 +72,9 @@ export class TtfFont implements GlyphFont {
     const cached = loadedFonts.get(key);
     if (cached !== undefined) return cached;
     let font: TtfFont | null = null;
-    if (global.isAndroid && sizePx > 0) {
+    if ((global.isAndroid || global.isIOS) && Number.isFinite(sizePx) && sizePx > 0) {
       try {
-        const raw = String(com.faceclaw.app.FontFileRenderer.getFontMetrics(path, sizePx) ?? "");
+        const raw = String(fontRenderer.getFontMetrics(path, sizePx) ?? "");
         const parts = raw.split(" ").map((part) => parseInt(part, 10));
         if (parts.length === 3 && parts.every((part) => Number.isFinite(part))) {
           const [ascent, descent] = parts as [number, number, number];
@@ -170,7 +169,7 @@ export class TtfFont implements GlyphFont {
 
   /**
    * Kerning between two adjacent codepoints: measure(ab) - a - b, memoized.
-   * One JNI measurement per distinct pair per JS context.
+   * One native measurement per distinct pair per JS context.
    */
   private kernBetween(a: number, b: number): number {
     const key = a * 0x200000 + b;
@@ -179,7 +178,7 @@ export class TtfFont implements GlyphFont {
     let kern = 0;
     try {
       const pair = Number(
-        com.faceclaw.app.FontFileRenderer.measureTextExact(
+        fontRenderer.measureTextExact(
           this.path,
           String.fromCodePoint(a) + String.fromCodePoint(b),
           this.sizePx,
@@ -203,7 +202,7 @@ export class TtfFont implements GlyphFont {
     let bytes: Uint8Array;
     try {
       bytes = toUint8Array(
-        com.faceclaw.app.FontFileRenderer.renderGlyphCell(this.path, this.sizePx, codePoint, this.gamma),
+        fontRenderer.renderGlyphCell(this.path, this.sizePx, codePoint, this.gamma),
       );
     } catch (error) {
       console.warn(`renderGlyphCell failed for U+${codePoint.toString(16)}: ${error}`);

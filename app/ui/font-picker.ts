@@ -23,7 +23,8 @@ import {
   type UiFontSelection,
 } from "../graphics/ui-fonts";
 import { GESTURE_DOUBLE_CLICK, type InputEvent } from "./gestures";
-import { drawRightValueMenuItem, drawSelectionHighlight, openModalMenu, type MenuItem } from "./menu";
+import { drawRightValueMenuItem, openModalMenu, type MenuItem } from "./menu";
+import { Menu, type MenuDrawArgs } from "./menu-core";
 import { LIST_ROW_TEXT_INSET, listRowHeight } from "./metrics";
 import type { Layer, LayerContext } from "./layers";
 
@@ -62,7 +63,14 @@ type RowId = (typeof ROWS)[number];
 export class FontPickerLayer implements Layer {
   private readonly families: FontFamily[];
   private draft: Draft;
-  private selectedRow = 0;
+  private readonly menu = new Menu<RowId>({
+    items: ROWS,
+    wrap: true,
+    rowGap: 2,
+    highlight: { radius: 8 },
+    getHeight: () => listRowHeight(getDefaultSmallFont()),
+    draw: (args) => this.drawRow(args),
+  });
 
   constructor(private readonly options: FontPickerOptions) {
     this.families = collectFamilies(options.monospaceOnly);
@@ -111,26 +119,7 @@ export class FontPickerLayer implements Layer {
     const rowWidth = width - 2 * rowX;
     const rowHeight = listRowHeight(font);
     const rowsTop = 24 + font.lineHeight;
-    for (let index = 0; index < ROWS.length; index++) {
-      const row = ROWS[index]!;
-      const y = rowsTop + index * rowHeight;
-      const disabled = this.rowDisabled(row);
-      if (index === this.selectedRow) {
-        drawSelectionHighlight(image, rowX - 10, y, rowWidth + 20, rowHeight - 2, focused, 8);
-      }
-      if (row === "save") {
-        image.drawText(font, rowX, y + LIST_ROW_TEXT_INSET, "Save", index === this.selectedRow ? 255 : 200);
-        continue;
-      }
-      const label = row === "face" ? "Font" : row === "weight" ? "Weight" : "Size";
-      const value = this.rowValue(row);
-      if (disabled) {
-        image.drawText(font, rowX, y + LIST_ROW_TEXT_INSET, label, 70);
-        image.drawText(font, rowX + rowWidth - font.measureText(value) - 2, y + LIST_ROW_TEXT_INSET, value, 70);
-      } else {
-        drawRightValueMenuItem(image, font, rowX, y, rowWidth, label, value);
-      }
-    }
+    this.menu.paint(image, { x: rowX - 10, y: rowsTop, width: rowWidth + 20, height: ROWS.length * rowHeight }, focused);
 
     // Preview: a separator, then the sample line in the draft font.
     const previewTop = rowsTop + ROWS.length * rowHeight + 10;
@@ -143,6 +132,25 @@ export class FontPickerLayer implements Layer {
     image.drawText(font, rowX - 4, previewTop + 8 + preview.lineHeight + 6, info, 110);
 
     return image;
+  }
+
+  /** Row box = highlight box; text sits 10px in from its left edge and 10px from its right. */
+  private drawRow({ image, item: row, x, y, width, selected }: MenuDrawArgs<RowId>): void {
+    const font = getDefaultSmallFont();
+    const textX = x + 10;
+    const textWidth = width - 20;
+    if (row === "save") {
+      image.drawText(font, textX, y + LIST_ROW_TEXT_INSET, "Save", selected ? 255 : 200);
+      return;
+    }
+    const label = row === "face" ? "Font" : row === "weight" ? "Weight" : "Size";
+    const value = this.rowValue(row);
+    if (this.rowDisabled(row)) {
+      image.drawText(font, textX, y + LIST_ROW_TEXT_INSET, label, 70);
+      image.drawText(font, textX + textWidth - font.measureText(value) - 2, y + LIST_ROW_TEXT_INSET, value, 70);
+    } else {
+      drawRightValueMenuItem(image, font, textX, y, textWidth, label, value);
+    }
   }
 
   private rowDisabled(row: RowId): boolean {
@@ -165,14 +173,12 @@ export class FontPickerLayer implements Layer {
   handleInput(event: InputEvent, ctx: LayerContext): void {
     switch (event.type) {
       case "scroll-up":
-        this.selectedRow = (this.selectedRow + ROWS.length - 1) % ROWS.length;
-        return;
       case "scroll-down":
-        this.selectedRow = (this.selectedRow + 1) % ROWS.length;
+        void this.menu.handleInput(event);
         return;
       case "click": {
-        const row = ROWS[this.selectedRow]!;
-        if (this.rowDisabled(row)) return;
+        const row = this.menu.selectedItem;
+        if (!row || this.rowDisabled(row)) return;
         if (row === "face") this.openFaceMenu(ctx);
         else if (row === "weight") this.openWeightMenu(ctx);
         else if (row === "size") this.openSizeMenu(ctx);

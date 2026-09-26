@@ -1,10 +1,16 @@
 # NativeScript
-hooks/
+hooks/*
+!hooks/before-prepare/
+hooks/before-prepare/*
+!hooks/before-prepare/faceclaw-kotlin.js
 node_modules/
 platforms/
 
 # Release APKs from scripts/release.sh
 dist/
+
+# CPU captures and source maps pulled from the installed app
+profiles/
 
 # Logs
 logs
@@ -39,10 +45,27 @@ old
 
 # pull_config.sh output: the phone's live settings, including API keys
 faceclaw_settings.xml
+faceclaw_settings.ios.json
 
 # Developer configs
 build_paths.sh
+**/xcuserdata/
 
+# Kotlin build outputs and staged NativeScript artifacts
+native/kotlin/.gradle/
+native/kotlin/.kotlin/
+native/kotlin/build/
+native/kotlin/shared/build/
+native/kotlin/local.properties
+native/kotlin/plugin/platforms/android/*.aar
+native/kotlin/plugin/platforms/ios/
+!native/kotlin/plugin/platforms/
+!native/kotlin/plugin/platforms/android/
+!native/kotlin/plugin/platforms/android/include.gradle
+
+tests/kotlin/.gradle/
+tests/kotlin/.kotlin/
+tests/kotlin/build/
 
 # tools/health-preview.cjs output (rendered PNGs, regenerate with the tool)
 preview/

@@ -1,7 +1,9 @@
+import { encodeShellScene } from "../../graphics/shell-scene";
 import { G2_LENS_HEIGHT, G2_LENS_WIDTH, GrayImage } from "../../graphics/image";
 import { singlePlane, type Plane } from "../../graphics/plane";
 import { getDefaultSmallFont } from "../../graphics/ui-fonts";
 import { EvenAIStatus, EventSourceType, OsEventTypeList, WatchGestureType } from "../../g2/events";
+import { acceptInput } from "../input-monitor";
 import type { RawInputEvent } from "../../native/faceclaw-communicator";
 import {
   directionalFallback,
@@ -136,7 +138,7 @@ export type ShellWindow = {
    * Deliver a text string to the window (e.g. finalized voice input). Optional:
    * only windows that consume typed text (the terminal) implement it.
    */
-  receiveTextInput?: (text: string) => void;
+  receiveTextInput?: (text: string, options?: { submit?: boolean }) => void;
   /** Foreground state changed: this window's surface is (not) the visible one. */
   setForeground?: (foreground: boolean) => void;
   /**
@@ -159,6 +161,8 @@ export type ShellWindow = {
 };
 
 export type ShellConfig = {
+  /** Hosts without microphone support hide and reject voice entry points. */
+  voiceInputEnabled?: boolean;
   /** Actions handed to shell overlay layers; requestRender must re-render the shell surface. */
   actions: LayerActions;
   getScreenTimeoutMs: () => number | null;
@@ -226,8 +230,10 @@ class ShellOverlayMenuLayer extends MenuLayer {
       y: minWindowTop() + TOP_BAR_HEIGHT + 8,
       width,
       minHeight: 150,
+      squareCorners: true,
       footer,
       dimUnderneath: CONTEXT_MENU_DIM,
+      depth: 4,
     });
   }
 
@@ -263,8 +269,8 @@ class ShellAlertLayer implements Layer {
     const font = getDefaultSmallFont();
     // Positioned within the min-height window band, like the other shell overlays.
     const alertY = minWindowTop() + ALERT_Y;
-    image.fillRoundedRect(ALERT_X, alertY, ALERT_W, ALERT_H, 1, 10);
-    image.drawRoundedRect(ALERT_X, alertY, ALERT_W, ALERT_H, 90, 10);
+    image.fillRect(ALERT_X, alertY, ALERT_W, ALERT_H, 1);
+    image.drawRect(ALERT_X, alertY, ALERT_W, ALERT_H, 90);
     image.drawText(font, ALERT_X + 16, alertY + 12, "Assistant", 200);
     image.drawTextWrapped({
       font,
@@ -687,6 +693,8 @@ class Shell {
   }
 
   /** Paint the shell surface: transparent chrome, or all-transparent when asleep. */
+  paintScene(): Uint8Array { return encodeShellScene(this.screenOn ? this.stack.paintUndimmed() : []); }
+
   paintSurface(): Plane[] {
     if (!this.screenOn) {
       return singlePlane(new GrayImage(G2_LENS_WIDTH, G2_LENS_HEIGHT, 0));
@@ -706,6 +714,7 @@ class Shell {
   }
 
   async receiveInput(event: InputEvent, frameId = 0): Promise<ShellInputOutcome> {
+    if (!acceptInput(event)) return { shell: false, window: false };
     try {
       return await this.routeInput(event, frameId);
     } finally {
@@ -716,6 +725,16 @@ class Shell {
   }
 
   private async routeInput(event: InputEvent, frameId: number): Promise<ShellInputOutcome> {
+    // Touch-down supplements gestures. It must not wake the screen, operate
+    // menus, or cancel the hold-to-escape timer. Apps can opt into it later.
+    if (event.type === "ring-press") {
+      const window = this.foregroundWindow();
+      if (this.screenOn && this.focus === "window" && this.stack.isAtBase() && window) {
+        await window.handleInput(event, frameId);
+        return { shell: false, window: true };
+      }
+      return { shell: false, window: false };
+    }
     const previous = this.lastInput;
     this.lastInput = event;
     // A visible window may paint a source-dependent indicator (see
@@ -998,7 +1017,7 @@ class Shell {
     handsFree?: boolean;
     defaultTarget: "assistant" | "app";
   }): void {
-    if (this.voiceDialogPending) return;
+    if (this.config.voiceInputEnabled === false || this.voiceDialogPending) return;
     this.voiceDialogPending = true;
     void (async () => {
       let ready = true;
@@ -1091,8 +1110,8 @@ class Shell {
   }
 
   /** Deliver a text string to the foreground window (e.g. finalized voice input). */
-  sendTextToForegroundWindow(text: string): void {
-    this.foregroundWindow()?.receiveTextInput?.(text);
+  sendTextToForegroundWindow(text: string, options?: { submit?: boolean }): void {
+    this.foregroundWindow()?.receiveTextInput?.(text, options);
   }
 
   /**
@@ -1102,6 +1121,7 @@ class Shell {
    * the dialog finishes on click instead of long-press-release.
    */
   startVoiceInput(): void {
+    if (this.config.voiceInputEnabled === false) return;
     if (!this.screenOn || this.activeVoiceLayer || !this.stack.isAtBase()) return;
     // The transcript is aimed at the window whose menu requested it; the menu
     // entry point defaults the highlight to Type Into App.
@@ -1251,7 +1271,7 @@ class Shell {
       this.showAlert(
         assistantBackendSetting.get() === "external"
           ? "Configure the agent bridge host and token in Settings."
-          : "Set an API key or download the on-phone model in Settings.",
+          : global.isIOS ? "Set an OpenAI or Anthropic API key in Settings." : "Set an API key or download the on-phone model in Settings.",
       );
       return;
     }
@@ -1437,7 +1457,7 @@ class Shell {
           ctx.stack.pop();
         },
       },
-      {
+      ...(this.config.voiceInputEnabled === false ? [] : [{
         label: "Voice input",
         onSelect: (ctx) => {
           // The transcript is aimed at the foreground window, so keep focus
@@ -1446,7 +1466,7 @@ class Shell {
           ctx.stack.pop();
           this.startVoiceInput();
         },
-      },
+      }]),
     );
     if (brightnessSetting.get() !== "auto") {
       items.push({
@@ -1537,12 +1557,19 @@ function formatAssistantTime(date: Date): string {
 }
 
 export function rawInputEventToInputEvent(event: RawInputEvent): InputEvent {
-  return makeInputEvent(rawInputEventToPayload(event));
+  return { ...makeInputEvent(rawInputEventToPayload(event)),
+    ...(event.ringInput ? { ringInput: { ...event.ringInput } } : {}) };
 }
 
 function rawInputEventToPayload(event: RawInputEvent): InputEventPayload {
   if (event.kind === "sys-event") {
-    if (event.eventType === OsEventTypeList.CLICK_EVENT) {
+    if (event.eventType === OsEventTypeList.RING_PRESS_EVENT &&
+        (event.eventSource === EventSourceType.TOUCH_EVENT_FORM_DUMMY_NULL ||
+         event.eventSource === EventSourceType.TOUCH_EVENT_FROM_RING)) {
+      // The firmware emits this dedicated ID only for full raw source 4.
+      // Its stock sender leaves the source unspecified for extension 14.
+      return { type: "ring-press", source: "ring" };
+    } else if (event.eventType === OsEventTypeList.CLICK_EVENT) {
       return {
         type: "click",
         source: eventSourceToString(event.eventSource),
@@ -1604,9 +1631,13 @@ function rawInputEventToPayload(event: RawInputEvent): InputEventPayload {
   };
 }
 
-/** Scroll events only carry a source when it is the watch (the stock ones never needed one). */
+/** Preserve explicit sources; stock scroll notifications usually omit them. */
 function scrollEvent(type: "scroll-up" | "scroll-down", eventSource: number): InputEventPayload {
-  return eventSource === EventSourceType.TOUCH_EVENT_FROM_WATCH ? { type, source: "watch" } : { type };
+  return eventSource === EventSourceType.TOUCH_EVENT_FROM_WATCH ||
+    eventSource === EventSourceType.TOUCH_EVENT_FROM_RING ||
+    eventSource === EventSourceType.TOUCH_EVENT_FROM_GLASSES_L ||
+    eventSource === EventSourceType.TOUCH_EVENT_FROM_GLASSES_R
+    ? { type, source: eventSourceToString(eventSource) } : { type };
 }
 
 function eventSourceToString(eventSource: number): InputSource {
@@ -1624,6 +1655,8 @@ function eventSourceToString(eventSource: number): InputSource {
 
 export function inputEventToString(event: InputEvent): string {
   switch (event.type) {
+    case "ring-press":
+      return "Ring press";
     case "click":
       return `Click from ${event.source}`;
     case "double-click":

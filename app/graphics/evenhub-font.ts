@@ -22,11 +22,9 @@
 import { File, knownFolders } from "@nativescript/core";
 import { getTextWidth } from "@evenrealities/pretext";
 import { EVENHUB_RUNTIME_FONT_FILENAME, isEvenHubFontAsset } from "../g2/firmware-fonts";
-import { toUint8Array } from "../util/array-util";
+import { lvglMetrics, lvglGlyph } from "../native/lvgl-font";
 import { GrayImage, grayToNibble, type FwTextFont, type PlacedFwText, type PlacedFwTextGlyph } from "./image";
 import { TtfFont } from "./ttf-font";
-
-declare const com: any;
 
 const CJK_ASSET_PATH = "fonts/source-han-sans/SourceHanSansSC-Light-20.lvgl.bin";
 
@@ -124,7 +122,7 @@ export class EvenHubFont implements FwTextFont {
       this.glyphs.set(Number(key), asset.glyphs[key]!);
     }
     this.cjkPath = knownFolders.currentApp().getFile(CJK_ASSET_PATH).path;
-    const metrics = toUint8Array(com.faceclaw.app.LvglFontFile.getMetrics(this.cjkPath));
+    const metrics = lvglMetrics(this.cjkPath);
     if (metrics.length < 2) {
       throw new Error("The bundled Source Han Sans font could not be loaded.");
     }
@@ -388,7 +386,7 @@ export class EvenHubFont implements FwTextFont {
   private getCjkGlyph(codePoint: number): CjkGlyph | null {
     const cached = this.cjkGlyphs.get(codePoint);
     if (cached !== undefined) return cached;
-    const bytes = toUint8Array(com.faceclaw.app.LvglFontFile.getGlyph(this.cjkPath, codePoint));
+    const bytes = lvglGlyph(this.cjkPath, codePoint);
     if (bytes.length < 8) {
       this.cjkGlyphs.set(codePoint, null);
       return null;

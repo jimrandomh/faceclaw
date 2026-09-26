@@ -8,13 +8,13 @@ import type {
   LlmToolDefinition,
 } from "../assistant/llm-protocol";
 
-declare const com: any;
+import { openSseRequest, type SseListener } from "./sse";
 
 /**
  * Minimal streaming client for the Anthropic Messages API. There is no
  * official SDK for the NativeScript runtime, so this speaks raw HTTP/SSE via
- * FaceclawSseRequest (okhttp on the Java side), which delivers the response
- * body line by line on this isolate's thread.
+ * the platform transport (OkHttp on Android, URLSession on iOS), which
+ * delivers response lines on this isolate's thread.
  */
 
 const ANTHROPIC_URL = "https://api.anthropic.com/v1/messages";
@@ -55,22 +55,19 @@ export function streamAnthropicMessage(options: AnthropicStreamOptions): Anthrop
   const fail = (message: string) => {
     if (settled) return;
     settled = true;
+    request?.cancel();
     options.onError(message);
   };
   const done = () => {
     if (settled) return;
     settled = true;
+    request?.cancel();
     options.onDone({ text, content: finalizeBlocks(blocks), stopReason });
   };
 
-  if (!global.isAndroid) {
-    // Deferred so the caller gets its handle back before the callback runs.
-    setTimeout(() => fail("Anthropic API is only wired up on Android"), 0);
-    return { cancel: () => {} };
-  }
   if (!apiKey) {
     setTimeout(() => fail("No Anthropic API key set"), 0);
-    return { cancel: () => {} };
+    return { cancel: () => { settled = true; } };
   }
 
   const body: any = {
@@ -83,7 +80,7 @@ export function streamAnthropicMessage(options: AnthropicStreamOptions): Anthrop
   if (options.tools?.length) body.tools = options.tools;
   if (options.effort) body.output_config = { effort: options.effort };
 
-  const listener = new com.faceclaw.app.FaceclawSseListener({
+  const listener: SseListener = {
     onLine: (line: string) => {
       if (settled) return;
       const event = parseSseDataLine(String(line));
@@ -144,25 +141,19 @@ export function streamAnthropicMessage(options: AnthropicStreamOptions): Anthrop
       fail(describeHttpError(Number(code), String(errorBody)));
     },
     onComplete: () => {
-      // Normally message_stop settles first; a clean EOF without it still
-      // resolves with whatever streamed.
-      done();
+      // A transport EOF alone must not execute an unfinished tool call.
+      fail("Anthropic stream ended before the response completed");
     },
     onFailure: (message: string) => {
       fail(`Anthropic connection failed: ${String(message)}`);
     },
-  });
+  };
 
-  const headers = Array.create("java.lang.String", 4) as string[];
-  headers[0] = "x-api-key";
-  headers[1] = apiKey;
-  headers[2] = "anthropic-version";
-  headers[3] = ANTHROPIC_VERSION;
   try {
-    request = new com.faceclaw.app.FaceclawSseRequest(ANTHROPIC_URL, JSON.stringify(body), headers, listener);
+    request = openSseRequest(ANTHROPIC_URL, JSON.stringify(body), { "x-api-key": apiKey, "anthropic-version": ANTHROPIC_VERSION }, listener);
   } catch (error) {
     setTimeout(() => fail(`Anthropic request failed: ${String((error as Error)?.message ?? error)}`), 0);
-    return { cancel: () => {} };
+    return { cancel: () => { settled = true; } };
   }
 
   return {

@@ -1,7 +1,7 @@
 import { GrayImage, type UiFont } from "../../graphics/image";
 import { getDefaultSmallFont } from "../../graphics/ui-fonts";
 import { truncateText, wrapText } from "../../graphics/textwrap";
-import { ASSISTANT_MODEL_VALUES, assistantModelLabel, resolveAssistantModel } from "../../assistant/models";
+import { ASSISTANT_MODEL_CHOICES, assistantModelLabel, resolveAssistantModel } from "../../assistant/models";
 import type { AssistantTranscriptEntry } from "../../assistant/session";
 import type { AssistantConversations, ReasoningLevel } from "../../assistant/conversations";
 import { anthropicApiKeySetting, assistantBackendSetting, openAiApiKeySetting } from "../../ui/dashboard-settings";
@@ -102,7 +102,7 @@ class AiChatLayer implements Layer {
       }
       case "long-press":
         if (!this.conversations.current().session?.isTurnActive()) {
-          if (!shell.isAssistantAvailable()) { shell.showAlert("Set an API key or download the on-phone model in Settings."); return; }
+          if (!shell.isAssistantAvailable()) { shell.showAlert(global.isIOS ? "Set an OpenAI or Anthropic API key in Settings." : "Set an API key or download the on-phone model in Settings."); return; }
           void this.draft.start();
         }
         return;
@@ -126,7 +126,7 @@ class AiChatLayer implements Layer {
           onSelect: (ctx) => { if (this.conversations.select(item.id)) ctx.stack.clearToBase(); },
         }))) },
       { label: `Model: ${assistantModelLabel(record.model)}`, disabled: () => external || busy(), onSelect: (ctx) => submenu(ctx, "Model",
-        ASSISTANT_MODEL_VALUES.map((model) => ({
+        ASSISTANT_MODEL_CHOICES.map((model) => ({
           label: `${model === record.model ? "✓ " : ""}${assistantModelLabel(model)}`,
           disabled: () => !this.conversations.available(model, record.reasoning),
           onSelect: (ctx) => { if (this.conversations.configure(model, record.reasoning)) ctx.stack.clearToBase(); },

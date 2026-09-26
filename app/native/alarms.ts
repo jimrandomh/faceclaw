@@ -124,6 +124,7 @@ export function drainPhoneAlarmJournal(): PhoneAlarmAction[] {
 
 /** Conditions under which the phone may fail to ring, most serious first. */
 export function checkPhoneAlarmReliability(): AlarmReliabilityIssue[] {
+  if (global.isIOS) return [{ code: "ios-foreground-only", message: "Keep Faceclaw open: background timer and alarm alerts are not available on iOS yet.", fixable: false }];
   const context = getContext();
   if (!context) return [];
   let parsed: any;

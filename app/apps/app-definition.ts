@@ -54,6 +54,8 @@ export type GlanceboardProvider = {
   showOnLongPress: () => boolean;
   /** Whether the head-tilt wake goes to the board rather than the regular UI. */
   showOnHeadTilt: () => boolean;
+  /** Stereo depth (firmware units; positive is nearer) while the board covers the screen. */
+  depth: () => number;
   /** A fresh board; requestRender asks the host to repaint it. */
   createBoard: (requestRender: () => void) => GlanceBoardInstance;
 };

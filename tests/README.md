@@ -15,15 +15,25 @@ That compiles the pure modules with the project's TypeScript into
 dependencies are needed — the tests are plain `.test.cjs` files that use
 `node:test` and `node:assert`.
 
-Compass diagnostics have focused UI and wire-format checks:
+The shared Kotlin suite runs separately from the Node tests:
 
-    node --test tests/compass-debug.test.cjs tests/compass-protocol.test.cjs
+    npm run test:kotlin
+    npm run test:kotlin:ios
 
-The protocol check also compiles the production Java parser, so it needs a
-JDK (`JAVA_HOME`, or `javac` and `java` on `PATH`). Its golden packet is shared
-with the firmware encoder test in `g2flash/tests/compass_diagnostics_test.c`.
+It includes the migrated compass, R1 battery, gesture and texture Java fixtures,
+which now call the Kotlin implementation from Android host tests. Common tests
+also run as native iOS simulator binaries. See [the Kotlin README](../native/kotlin/README.md)
+for SDK requirements, source layout and coverage. The compass and battery
+fixtures retain the golden packets shared with firmware tests.
 
-R1 battery field-106 decoding (valid zero, charging, unavailable/disconnected,
-legacy firmware, malformed messages) uses the same C/Java golden packet:
+The native iOS EvenHub probe runs separately on a booted simulator:
 
-    node --test tests/ring-battery-protocol.test.cjs
+    node tests/ios-evenhub-native.cjs <simulator-UUID>
+
+It compiles the production WKWebView host into an isolated app and checks local
+and remote loading, document-start injection, assets, storage and navigation.
+It then opens Safari to background the probe and verifies that injected timeouts,
+intervals and animation callbacks still fire, and cancelled timers stay cancelled.
+A short UIKit background task keeps the test process running without glasses.
+This covers the ticker's background behavior; sustained execution with BLE and a
+locked physical phone still requires device testing.

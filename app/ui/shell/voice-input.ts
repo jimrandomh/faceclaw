@@ -4,7 +4,8 @@ import { refineDictation, type AnthropicStreamHandle } from "../../native/anthro
 import { anthropicApiKeySetting } from "../dashboard-settings";
 import { GESTURE_CLICK, GESTURE_DOUBLE_CLICK, gestureHints, type InputEvent } from "../gestures";
 import { Layer, type LayerActions, type LayerContext } from "../layers";
-import { paintInputDialog } from "./input-dialog";
+import { type Menu } from "../menu-core";
+import { createInputDialogMenu, paintInputDialog, type InputDialogRow } from "./input-dialog";
 // After native recognition finishes, a cloud final can still trail in.
 const FOLLOWUP_FINALIZE_TIMEOUT_MS = 1200;
 
@@ -15,6 +16,9 @@ const FOLLOWUP_FINALIZE_TIMEOUT_MS = 1200;
  * the LLM-merged text, then returns to "menu".
  */
 type VoicePhase = "capturing" | "menu" | "continuing" | "refining";
+
+/** A menu row; dim rows still take clicks, and onSelect decides what they do. */
+type VoiceMenuRow = InputDialogRow & { onSelect: () => void };
 
 /**
  * A destination the captured text can be sent to. The shell supplies these per
@@ -84,7 +88,8 @@ export class VoiceInputLayer implements Layer {
   private stopGeneration = 0;
   private acceptingTranscript = true;
   private refineHandle: AnthropicStreamHandle | null = null;
-  private menuIndex = 0;
+  /** The send / Continue / Discard menu; its rows are rebuilt on every paint and input. */
+  private readonly menu: Menu<VoiceMenuRow>;
   /** Auto-send (wakeword skip-confirmation) is waiting to fire. */
   private pendingAutoSend = false;
   private autoSendTimer: ReturnType<typeof setTimeout> | null = null;
@@ -111,7 +116,7 @@ export class VoiceInputLayer implements Layer {
     this.autoSend = options.autoSend ?? false;
     const defaultIndex = options.defaultTargetIndex ?? 0;
     this.defaultTargetIndex = Math.min(Math.max(0, defaultIndex), Math.max(0, this.sendTargets.length - 1));
-    this.menuIndex = this.defaultTargetIndex;
+    this.menu = createInputDialogMenu(this.menuRows(), this.defaultTargetIndex);
   }
 
   startCapture(): void {
@@ -125,9 +130,9 @@ export class VoiceInputLayer implements Layer {
       this.detail = state.detail;
       this.actions.requestRender();
     });
-    if (this.handsFree) {
-      // No button is held, so the mic has to stop itself. endCapture() is
-      // idempotent, and a click still ends the utterance early.
+    if (this.handsFree || global.isIOS) {
+      // Endpointing or the recognizer ending its session can finish capture.
+      // endCapture() is idempotent, including after a manual button release.
       this.unsubscribeSpeechEnd = voiceControlBridge.onSpeechEnd(() => {
         if (this.phase === "capturing") {
           this.endCapture();
@@ -221,11 +226,11 @@ export class VoiceInputLayer implements Layer {
   }
 
   /** The menu rows: one per send target, then Continue, then Discard. */
-  private menuRows(): Array<{ label: string; dim: boolean; onSelect: () => void }> {
+  private menuRows(): VoiceMenuRow[] {
     const text = this.displayText().trim();
     const hasText = text.length > 0 && !this.stoppingCapture;
     const hasLlmKey = anthropicApiKeySetting.get().trim().length > 0;
-    const rows: Array<{ label: string; dim: boolean; onSelect: () => void }> = [];
+    const rows: VoiceMenuRow[] = [];
     for (const target of this.sendTargets) {
       rows.push({
         label: target.label,
@@ -251,12 +256,12 @@ export class VoiceInputLayer implements Layer {
   paint(_ctx: LayerContext, paintBelow: () => GrayImage): GrayImage {
     const image = paintBelow();
     const inMenu = this.phase === "menu";
+    if (inMenu) this.menu.setItems(this.menuRows());
     paintInputDialog(image, {
       title: this.capturing && this.listening ? "Voice ●" : "Voice",
       status: this.stoppingCapture ? "Finishing transcription..." : this.status,
       text: this.displayText() || this.placeholderText(),
-      rows: inMenu ? this.menuRows() : [],
-      selectedRow: this.menuIndex,
+      menu: inMenu ? this.menu : null,
       hint: inMenu ? undefined : this.hintText(),
     });
     return image;
@@ -290,21 +295,16 @@ export class VoiceInputLayer implements Layer {
   }
 
   private handleMenuInput(event: InputEvent): void {
-    const rowCount = this.menuRows().length;
+    this.menu.setItems(this.menuRows());
     switch (event.type) {
       case "scroll-up":
-        this.menuIndex = (this.menuIndex + rowCount - 1) % rowCount;
-        this.actions.requestRender();
-        return;
       case "scroll-down":
-        this.menuIndex = (this.menuIndex + 1) % rowCount;
+        void this.menu.handleInput(event);
         this.actions.requestRender();
         return;
-      case "click": {
-        const row = this.menuRows()[this.menuIndex];
-        row?.onSelect();
+      case "click":
+        this.menu.selectedItem?.onSelect();
         return;
-      }
       case "double-click":
         this.dismiss();
         return;
@@ -397,7 +397,7 @@ export class VoiceInputLayer implements Layer {
     this.finalizedText = text;
     this.liveText = "";
     this.phase = "menu";
-    this.menuIndex = 0;
+    this.menu.select(0);
     this.status = status;
     this.actions.requestRender();
   }
@@ -427,6 +427,7 @@ export class VoiceInputLayer implements Layer {
       this.capturing = false;
       void this.actions.stopVoiceCapture();
     }
+    if (global.isIOS) voiceControlBridge.stop();
     this.onClosed();
   }
 

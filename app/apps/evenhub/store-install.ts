@@ -53,8 +53,6 @@ export async function installStoreApp(
   const needsPrompt = (manifest.permissions.length > 0 || privacyPolicyUrl)
     && !alreadyGranted(app.packageId, manifest);
   if (needsPrompt) {
-    options.onStatus("");
-    ctx.actions.requestRender();
     const accepted = await new Promise<boolean>((resolve) => {
       ctx.stack.push(
         new EvenHubPermissionDialogLayer(
@@ -65,6 +63,10 @@ export async function installStoreApp(
           () => resolve(false),
         ),
       );
+      // Only once the dialog is stacked: an in-process window's requestRender
+      // paints synchronously, and nothing else repaints after a download.
+      options.onStatus("");
+      ctx.actions.requestRender();
     });
     if (!accepted) return null;
   }

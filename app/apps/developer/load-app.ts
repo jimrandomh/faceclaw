@@ -7,7 +7,7 @@ import { GESTURE_CLICK, GESTURE_DOUBLE_CLICK, type InputEvent } from "../../ui/g
 import { Layer, type LayerContext } from "../../ui/layers";
 import { lineStep } from "../../ui/metrics";
 import { developerAppUrlSetting } from "../../ui/dashboard-settings";
-import { isQrScannerAvailable, scanQrCode } from "../../native/qr-scan";
+import { cancelQrScan, isQrScannerAvailable, scanQrCode } from "../../native/qr-scan";
 
 const MARGIN = 20;
 
@@ -114,25 +114,33 @@ export class LoadAppFromUrlLayer implements Layer {
 }
 
 /**
- * "Load app from QR code": hand off to an installed scanner app, then launch
+ * "Load app from QR code": open the phone's scanner, then launch
  * whatever URL it decodes. The scanned URL is kept in developerAppUrlSetting so
  * the URL page can reload it later without rescanning.
  */
 export class LoadAppFromQrLayer implements Layer {
   private status = "Starting scanner...";
   private busy = false;
+  private removed = false;
 
   constructor(private readonly ctx: AppContext) {}
 
   /** Launches the scanner; call right after pushing the layer. */
   open(ctx: LayerContext): void {
+    if (this.busy || this.removed) return;
     if (!isQrScannerAvailable()) {
-      this.status = "No QR scanner on this phone (needs Play Services or a scanner app).";
+      this.status = global.isIOS ? "No camera available. Scan using a physical iPhone."
+        : "No QR scanner on this phone (needs Play Services or a scanner app).";
       ctx.actions.requestRender();
       return;
     }
     this.busy = true;
     void this.scan(ctx);
+  }
+
+  onRemoved(): void {
+    this.removed = true;
+    if (this.busy) cancelQrScan();
   }
 
   paint(ctx: LayerContext): GrayImage {
@@ -156,12 +164,7 @@ export class LoadAppFromQrLayer implements Layer {
   handleInput(event: InputEvent, ctx: LayerContext): void {
     switch (event.type) {
       case "click":
-        if (!this.busy && isQrScannerAvailable()) {
-          this.busy = true;
-          this.status = "Starting scanner...";
-          ctx.actions.requestRender();
-          void this.scan(ctx);
-        }
+        this.open(ctx);
         return;
       case "double-click":
         ctx.stack.pop();
@@ -176,6 +179,7 @@ export class LoadAppFromQrLayer implements Layer {
       this.status = "Point the phone camera at the QR code.";
       ctx.actions.requestRender();
       const scanned = await scanQrCode();
+      if (this.removed) return;
       if (scanned === null) {
         this.status = "Scan cancelled.";
         return;
@@ -184,17 +188,18 @@ export class LoadAppFromQrLayer implements Layer {
         this.status = `Not a URL: ${scanned}`;
         return;
       }
-      developerAppUrlSetting.set(scanned);
+      developerAppUrlSetting.set(scanned.trim());
       this.status = `Loading ${scanned}`;
       ctx.actions.requestRender();
       await openEvenHubUrl(this.ctx, scanned);
-      ctx.stack.pop();
+      if (!this.removed) ctx.stack.pop();
     } catch (error) {
+      if (this.removed) return;
       this.status = cleanError(error);
       this.ctx.appendLog(`evenhub qr launch failed: ${this.status}`);
     } finally {
       this.busy = false;
-      ctx.actions.requestRender();
+      if (!this.removed) ctx.actions.requestRender();
     }
   }
 }

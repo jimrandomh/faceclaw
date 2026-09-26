@@ -1,6 +1,6 @@
 import { type GrayImage } from "../../../graphics/image";
 import { getDefaultMediumFont, getDefaultSmallFont } from "../../../graphics/ui-fonts";
-import { hasLocationPermission } from "../../../g2/android-permissions";
+import { hasLocationPermission } from "../../../native/location-permissions";
 import { addCompassListener, COMPASS_CHANGED, setCompassEnabled } from "../../../native/compass";
 import { isCompassCalibrated, normalizeHeading } from "../../compass/calibration";
 import { cardinalDirection, createCompassBackground, drawCompassRose, layoutCompassRose, TICK_HEIGHT } from "../../compass/compass-rose";
