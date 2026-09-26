@@ -1,0 +1,9 @@
+# Secret-scanning config for the workflow in .github/workflows/secret-scan.yml.
+[extend]
+useDefault = true
+
+[[rules]]
+id = "generic-api-key"
+  [rules.allowlist]
+  description = "SIGN_KEY in even-api.ts is a client-side constant the app needs to sign EvenHub requests, not a credential."
+  paths = ['''app/apps/evenhub/even-api\.ts''']

@@ -112,3 +112,21 @@ test('unselected sidebar icons retain -2 depth through shell cropping, including
   state.selectedIndex=1;const next=new graphics.GrayImage(640,480);chrome.drawSidebar(next,state);
   assert.equal(next.draws.filter(d=>d.presentation).length,2);
 });
+test('shell modal carries its inner menu highlight animation instead of baking its first frame',async()=>{
+  const {ShellModalLayer}=load('app/ui/shell/modal-layer.ts',{
+    '../../graphics/image':graphics,'../../graphics/plane':planes,'../gestures':{},'../layers':load('app/ui/layers.ts',{
+      '../graphics/image':graphics,'../graphics/plane':planes,'../native/frame-timings':{spanCurrent:(_name,fn)=>fn()},
+      './gestures':{isDirectionalInput:()=>false},
+    }),
+    './geometry':{appViewportSize:()=>({width:120,height:110}),appViewportRect:()=>({x:10,y:20,width:120,height:110}),SHELL_OPAQUE_BLACK:1},
+  });
+  const modal=new ShellModalLayer(menu().layer,noopLayerActions),paint=()=>modal.paint({},()=>new graphics.GrayImage(200,200));
+  const bare=menu().paint().draws.find(d=>d.presentation),before=paint().draws.find(d=>d.presentation);
+  assert.equal(before.x,bare.x+28);assert.equal(before.y,bare.y+38); // translated into the box interior
+  await modal.handleInput({type:'scroll-down'},{});
+  const image=paint(),row=image.draws.find(d=>d.presentation);
+  assert.ok(row.y>before.y);assert.ok(row.presentation.displayList.timeline,'the slide stays a timed display list');
+  assert.ok(!image.withDrawsBaked(false).pixels.some(v=>v===255),'selected text is not baked into the modal surface');
+  const c=new SurfaceCompositor(200,200);c.setShellScene(encodeShellScene([{image,x:0,y:0,shellKey:9}]));
+  assert.ok(c.composite().some(v=>v===240));
+});
