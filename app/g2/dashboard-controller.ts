@@ -1021,7 +1021,13 @@ class DashboardController {
       return this.glassesDisplayLabel();
     }
     if (this.silentMode && this.phase === "connected") {
-      return "Connected (Silent mode enabled)";
+      // Say how to leave it. Silent mode is entered and exited only by the
+      // same gesture on the glasses, the firmware ignores all input and blanks
+      // the display while it is on, and nothing here can turn it off -- there
+      // is no setter, only onSilentMode. So a user who triggered it by
+      // accident sees a connected pair of glasses that answers nothing, with
+      // no way to find out why. The instruction belongs where they are looking.
+      return "Connected (Silent mode — long-press both touchpads on the glasses to exit)";
     }
     // The preview compositor keeps the mirror live (including as a black
     // frame while the simulated screen is off), so never cover it.
