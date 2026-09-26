@@ -47,7 +47,6 @@ const compass = load('app/apps/compass/compass-app.ts', {
   './calibration': calibration,
   './calibration-layer': {},
   './compass-rose': rose,
-  './debug': { compassDebugLines: () => [], isCompassDebugEnabled: () => false, setCompassDebugEnabled: () => {} },
   './declination': {},
   './heading': { getNorthReference: () => 'magnetic', resolveHeading: (n) => ({ displayDegrees: n }) },
 }, `
