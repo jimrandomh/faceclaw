@@ -327,6 +327,10 @@ export class OnboardingFlashViewModel extends Observable {
         this.busy = false;
         this.toError(detail || "Lost connection to the glasses.", () => this.beginPrompt({ skipPrompt }));
         break;
+      case "silent":
+        this.busy = false;
+        this.toError(detail, () => this.beginPrompt(), "Disable Silent Mode");
+        break;
       case "error":
         this.busy = false;
         this.toError(detail || "Connection failed.", () => this.beginPrompt({ skipPrompt }));

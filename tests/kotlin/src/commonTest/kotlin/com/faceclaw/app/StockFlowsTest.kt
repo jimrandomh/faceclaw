@@ -284,7 +284,7 @@ class StockFlowsTest {
         var events = PromptEvents()
         FlashPromptFlow(silentOn, R, "", "w", false, events, fast, testPlatform()).run()
         assertEquals(null, events.result)
-        assertEquals("error:${FlashPromptFlow.SILENT_MODE_MESSAGE}", events.states.last())
+        assertEquals("silent:${FlashPromptFlow.SILENT_MODE_MESSAGE}", events.states.last())
         assertTrue(events.logs.any { it == "silent mode before prompt: on" })
         assertFalse(silentOn.writes.any { it.sid == BleProtocol.SID_EVENHUB })
         assertTrue(silentOn.closed)
@@ -297,13 +297,13 @@ class StockFlowsTest {
         assertEquals(true, events.result, events.logs.joinToString("\n"))
         assertTrue(events.logs.any { it == "silent mode before prompt: off" })
 
-        // Firmware whose ack omits the field: unknown is not a refusal.
+        // The firmware omits the field when silent mode is off (the protobuf default): off.
         val omitted = FakeStockLink()
         omitted.responder = promptResponder(omitted, 1, mapOf(R to 85))
         events = PromptEvents()
         FlashPromptFlow(omitted, R, "", "w", false, events, fast, testPlatform()).run()
         assertEquals(true, events.result, events.logs.joinToString("\n"))
-        assertTrue(events.logs.any { it == "silent mode before prompt: unknown (ack omits the field)" })
+        assertTrue(events.logs.any { it == "silent mode before prompt: off" })
 
         // skipPrompt re-checks the battery only; silent mode does not block it.
         val skipped = FakeStockLink()

@@ -11,6 +11,7 @@ export type FlashPromptState =
   | "cancelled"
   | "timeout"
   | "disconnected"
+  | "silent"
   | "error";
 
 /** Per-arm battery percent; null when that arm didn't answer. */

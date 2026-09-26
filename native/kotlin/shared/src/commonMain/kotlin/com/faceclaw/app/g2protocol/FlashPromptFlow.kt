@@ -42,7 +42,7 @@ class FlashPromptFlow(
         val ITEMS = arrayOf("No, cancel", "Yes, flash")
 
         /**
-         * Shown instead of a bare "prompt page not acked" error. Silent mode is entered and left
+         * Detail of the "silent" state, shown instead of a bare "prompt page not acked" error. Silent mode is entered and left
          * by the same gesture on the glasses and nothing here can clear it, so the instruction
          * has to travel with the error.
          */
@@ -136,7 +136,11 @@ class FlashPromptFlow(
                 // display and stops the firmware dispatching input while BLE stays up, so the
                 // create-prompt write is still acked and the user is left waiting on a prompt
                 // that never appears.
-                requireNotSilent(rightAddress)
+                if (reportsSilentMode(rightAddress)) {
+                    listener.onState("silent", SILENT_MODE_MESSAGE)
+                    teardown()
+                    return
+                }
                 showPrompt(rightAddress)
                 startHeartbeat()
                 listener.onState("prompting", "")
@@ -281,22 +285,20 @@ class FlashPromptFlow(
     }
 
     /**
-     * Refuse the prompt only when the arm POSITIVELY reports silent mode. An arm that does not
-     * answer, and firmware whose ack omits the field, both fall through to the prompt exactly as
-     * before, so a missing answer can never block a flash.
+     * True only when the arm answers and its ack does not say silent mode is off. The firmware
+     * omits field 14 when silent mode is off (the protobuf default), so an answered ack without
+     * the field counts as off. An arm that does not answer falls through to the prompt exactly
+     * as before, so a missing answer can never block a flash.
      */
-    private fun requireNotSilent(address: String) {
+    private fun reportsSilentMode(address: String): Boolean {
         val snapshot = readSettingsSnapshot(address, "right")
         val state = when {
             snapshot == null -> "unknown (arm did not answer)"
-            snapshot.silentMode < 0 -> "unknown (ack omits the field)"
             snapshot.silentMode > 0 -> "on"
             else -> "off"
         }
         emitLog("silent mode before prompt: $state")
-        if (snapshot != null && snapshot.silentMode > 0) {
-            throw IllegalStateException(SILENT_MODE_MESSAGE)
-        }
+        return snapshot != null && snapshot.silentMode > 0
     }
 
     private fun startHeartbeat() {
