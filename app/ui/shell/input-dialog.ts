@@ -1,15 +1,15 @@
-import { G2_LENS_WIDTH, type GrayImage } from "../../graphics/image";
+import { G2_LENS_WIDTH, GrayImage, type UiFont } from "../../graphics/image";
 import { wrapText, truncateText } from "../../graphics/textwrap";
 import { getDefaultSmallFont } from "../../graphics/ui-fonts";
 import { Menu, type MenuDrawArgs } from "../menu-core";
-import { listRowHeight } from "../metrics";
+import { listRowHeight, textInkBounds } from "../metrics";
 import { MIN_WINDOW_HEIGHT, minWindowTop } from "./geometry";
 
 /**
  * The shared look of the shell's text dialogs (voice input, phone keyboard
- * input, and the assistant's reply): a solid box over whatever is on screen with a title line,
- * a status line, the message so far, and either a menu of destinations at
- * the bottom or a gesture hint.
+ * input, and the assistant's reply): a solid box over whatever is on screen with a header
+ * line (title, then status), the message so far, and either a menu of
+ * destinations at the bottom or a gesture hint.
  */
 
 const DIALOG_X = 40;
@@ -27,6 +27,9 @@ const MENU_W = DIALOG_W - 24;
 const MENU_ROW_GAP = 2;
 const MENU_LABEL_INSET_X = 8;
 const MENU_LABEL_INSET_Y = 4;
+const HEADER_STATUS_GAP = 10;
+const HINT_VALUE = 100;
+const HINT_DEPTH = 2;
 
 /** Dialog top edge; band-relative, so computed per paint. */
 function dialogY(): number {
@@ -89,15 +92,20 @@ export function paintInputDialog<T extends InputDialogRow>(image: GrayImage, con
   image.fillRect(DIALOG_X, top, DIALOG_W, DIALOG_H, 1);
   image.drawRect(DIALOG_X, top, DIALOG_W, DIALOG_H, 90);
 
+  // Title and status share one header line, the status in the space after the title.
   const left = TEXT_LEFT;
-  image.drawText(font, left, top + 12, content.title, 220);
-  image.drawText(font, left, top + 30, truncateText(font, content.status, TEXT_MAX_WIDTH), content.statusValue ?? 130);
+  const headerY = top + 12;
+  image.drawText(font, left, headerY, content.title, 220);
+  const statusLeft = left + Math.ceil(font.measureText(content.title)) + HEADER_STATUS_GAP;
+  const statusWidth = TEXT_LEFT + TEXT_MAX_WIDTH - statusLeft;
+  image.drawText(font, statusLeft, headerY, truncateText(font, content.status, statusWidth), content.statusValue ?? 130);
 
   const menu = content.menu;
   const rowCount = menu?.items.length ?? 0;
-  // Reserve space for the actual number of rows this menu has.
-  const textBottom = rowCount > 0 ? top + DIALOG_H - rowCount * menuRowH - 8 : top + DIALOG_H - 8;
-  const textTop = top + 56;
+  // Reserve space for the actual number of rows this menu has, or one row for the hint.
+  const reservedRows = rowCount > 0 ? rowCount : content.hint ? 1 : 0;
+  const textBottom = top + DIALOG_H - reservedRows * menuRowH - 8;
+  const textTop = headerY + font.lineHeight + 12;
   const maxLines = Math.max(1, ((textBottom - textTop) / 16) | 0);
 
   // The tail of a long message stays in view: it is what was said last (or
@@ -113,6 +121,19 @@ export function paintInputDialog<T extends InputDialogRow>(image: GrayImage, con
     const menuTop = top + DIALOG_H - rowCount * menuRowH - 4;
     menu.paint(image, { x: MENU_X, y: menuTop, width: MENU_W, height: rowCount * menuRowH - MENU_ROW_GAP }, true);
   } else if (content.hint) {
-    image.drawText(font, left, top + DIALOG_H - 14, content.hint, 110 - font.lineHeight);
+    // On the line the last menu row's label would occupy, floating in front of the dialog.
+    drawDepthText(image, font, truncateText(font, content.hint, TEXT_MAX_WIDTH), left, top + DIALOG_H - menuRowH, HINT_VALUE, HINT_DEPTH);
   }
+}
+
+/**
+ * Draw one line of text at stereo depth: rendered into its own image (sized
+ * to the font's ink, which can overshoot the line box) and replayed at depth.
+ */
+function drawDepthText(image: GrayImage, font: UiFont, text: string, x: number, y: number, value: number, depth: number): void {
+  const ink = textInkBounds(font);
+  const above = Math.max(0, -ink.top);
+  const source = new GrayImage(Math.ceil(font.measureText(text)) + 2, above + Math.max(font.lineHeight, ink.bottom));
+  source.drawText(font, 0, above, text, value);
+  image.drawDepthImage(source, x, y - above, depth);
 }
