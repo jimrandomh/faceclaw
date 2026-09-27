@@ -150,6 +150,17 @@ class GlassesSessionCore(
     // write timeout. The ring worker drains the queue instead.
     internal val ringReassembler = RingProtocol.Reassembler()
     internal val ringOutbound = ArrayDeque<ByteArray>()
+    /**
+     * Ring-write backoff after a failed write (see writeRingFrame). Every ring
+     * write shares the platform's GATT pipeline with the glasses, and a failing
+     * one can hold it for the whole write timeout, so failures must not be
+     * retried at ring-worker tick rate. Reset on each ring connect. Guarded by
+     * `monitor`.
+     */
+    internal var ringWriteBlockedUntilMs = 0L
+    internal var ringWriteFailures = 0
+    /** Consecutive failed direct-ring connect attempts; stretches the retry delay. Guarded by `monitor`. */
+    internal var ringConnectFailures = 0
     internal val ringHealthRecords = ArrayList<RingProtocol.HealthRecord>()
     /**
      * Total records ever appended to [ringHealthRecords], including every
@@ -311,6 +322,28 @@ class GlassesSessionCore(
     // over the glasses-relayed ringBattery while the ring is connected.
     internal var directRingBattery = -1
     internal var directRingCharging = -1
+    // Ring diagnostics for the Developer > Ring status page (now() clock, 0 = never).
+    internal var lastDirectRingNotifyAtMs = 0L
+    internal var lastDirectRingInputAtMs = 0L
+    internal var lastDirectRingInputLabel = ""
+    internal var lastGlassesRingInputAtMs = 0L
+    internal var lastGlassesRingInputLabel = ""
+    internal var lastGlassesRingBatteryAtMs = 0L
+    internal var ringConnectedChangedAtMs = 0L
+    internal var ringConnectCount = 0
+    internal var lastDirectRingError = ""
+    // What the glasses themselves said about their ring link (sid 0x80
+    // RING_CONNECT_INFO / sid 0x91 ring events). The MAC is kept in wire byte
+    // order so a reconnect can echo it back without guessing the order.
+    internal var glassesRingMac: ByteArray? = null
+    internal var glassesRingName = ""
+    internal var lastGlassesRingReport = ""
+    internal var lastGlassesRingReportAtMs = 0L
+    // The last glasses ring-link command we sent, and how each temple answered.
+    internal var lastRingLinkCommand = ""
+    internal var lastRingLinkCommandAtMs = 0L
+    internal var lastRingLinkResultR = ""
+    internal var lastRingLinkResultL = ""
     // Silent mode: 1 = on, 0 = off, -1 = not yet known. See updateSilentModeLocked.
     internal var silentMode = -1
     internal var wearState = -1
@@ -899,6 +932,65 @@ class GlassesSessionCore(
             finishBenchmarkLocked(true, "cancelled")
         }
         interruptibleSleep.interrupt()
+    }
+
+    /**
+     * Ring connection/input diagnostics as JSON. Times are reported as ages
+     * in ms (-1 = never) so the caller needs no access to this clock.
+     */
+    fun getRingStatus(): String {
+        monitor.withLock {
+            val now = now()
+            fun age(atMs: Long): Long = if (atMs == 0L) -1L else maxOf(0L, now - atMs)
+            val status = linkedMapOf<String, Any?>()
+            status["directEnabled"] = hasRingAddress()
+            status["ringAddress"] = ringAddress
+            status["glassesConnected"] = rightConnected && leftConnected
+            status["sessionReady"] = sessionReady
+            status["directConnected"] = ringConnected
+            status["directNotificationsReady"] = ringNotificationsReady
+            status["directConnectCount"] = ringConnectCount
+            status["directStateAgeMs"] = age(ringConnectedChangedAtMs)
+            status["directBattery"] = directRingBattery
+            status["lastDirectNotifyAgeMs"] = age(lastDirectRingNotifyAtMs)
+            status["lastDirectInputAgeMs"] = age(lastDirectRingInputAtMs)
+            status["lastDirectInput"] = lastDirectRingInputLabel
+            status["glassesRingBattery"] = ringBattery
+            status["glassesRingBatteryAgeMs"] = age(lastGlassesRingBatteryAtMs)
+            status["lastGlassesInputAgeMs"] = age(lastGlassesRingInputAtMs)
+            status["lastGlassesInput"] = lastGlassesRingInputLabel
+            status["lastDirectError"] = lastDirectRingError
+            status["glassesRingMac"] = glassesRingMac?.let { hex(it) } ?: ""
+            status["glassesRingName"] = glassesRingName
+            status["lastGlassesReport"] = lastGlassesRingReport
+            status["lastGlassesReportAgeMs"] = age(lastGlassesRingReportAtMs)
+            status["lastCommand"] = lastRingLinkCommand
+            status["lastCommandAgeMs"] = age(lastRingLinkCommandAtMs)
+            status["lastCommandResultR"] = lastRingLinkResultR
+            status["lastCommandResultL"] = lastRingLinkResultL
+            return try { Json.write(status) } catch (e: Exception) { "{}" }
+        }
+    }
+
+    /**
+     * EXPERIMENTAL: ask the glasses to drop or re-establish their own link to
+     * the ring, so the phone can take the ring over directly and later hand
+     * it back. `action` is "disconnect", "release" or "connect"; see
+     * [queueGlassesRingLinkCommandLocked]. `fallbackAddress` ("AA:BB:..") and
+     * `fallbackName` are used only when the glasses have not reported their
+     * ring target this session. False when no session is up.
+     */
+    fun setGlassesRingLink(action: String, fallbackAddress: String?, fallbackName: String?): Boolean {
+        monitor.withLock {
+            if (!running || !sessionReady) {
+                logLine("skip glasses ring link command; session not ready")
+                return false
+            }
+            val ok = queueGlassesRingLinkCommandLocked(action, fallbackAddress ?: "", fallbackName ?: "")
+            if (!ok) return false
+        }
+        interruptibleSleep.interrupt()
+        return true
     }
 
     /** Status/results of the current or most recent benchmark run, as JSON. */
@@ -1552,6 +1644,10 @@ class GlassesSessionCore(
                 wearState = decodedWearState
                 emitWearState = true
             }
+            if (frame.ok
+                    && (frame.sid == BleProtocol.SID_SECURITY_AUTH || frame.sid == BleProtocol.SID_RING_DATA)) {
+                recordGlassesRingReportLocked(frame, address)
+            }
             var faceclawWakeNotification = false
             if (shutdownRequested
                     && frame.ok
@@ -1631,6 +1727,7 @@ class GlassesSessionCore(
                     if (ring != null) {
                         ringBattery = ring.battery
                         ringCharging = ring.charging
+                        lastGlassesRingBatteryAtMs = now()
                         emitBatteryState(headsetBattery, headsetCharging)
                     }
                 }
@@ -1696,6 +1793,10 @@ class GlassesSessionCore(
                         && decoded.eventType == BleProtocol.EVENT_IMU_DATA_REPORT
                     if (!pureImuSample) {
                         lastConnectionOrInputAtMs = lastIncomingAtMs
+                        if (decoded.eventSource == BleProtocol.EVENT_SOURCE_RING) {
+                            lastGlassesRingInputAtMs = lastIncomingAtMs
+                            lastGlassesRingInputLabel = decoded.kind + " type=" + decoded.eventType
+                        }
                     }
                     if ("list-click" == decoded.kind || "text-click" == decoded.kind) {
                         // Container-routed touchpad input reached us, so the
@@ -1744,6 +1845,7 @@ class GlassesSessionCore(
     }
 
     internal fun handleDirectRingNotification(characteristicUuid: String, data: ByteArray) {
+        monitor.withLock { lastDirectRingNotifyAtMs = now() }
         if (handleRingHealthNotification(characteristicUuid, data)) {
             return
         }
@@ -1758,6 +1860,8 @@ class GlassesSessionCore(
         monitor.withLock {
             lastIncomingAtMs = arrivalMs
             lastConnectionOrInputAtMs = arrivalMs
+            lastDirectRingInputAtMs = arrivalMs
+            lastDirectRingInputLabel = decoded.label + " " + decoded.detail
         }
         logLine("direct ring " + decoded.label + " " + decoded.detail + " raw=" + hex(data))
         val frameId = frameTimings.startFrame("input:ring:" + decoded.label)
@@ -1790,6 +1894,8 @@ class GlassesSessionCore(
                 return
             }
             if (isConfiguredRingAddress(address)) {
+                if (connected != ringConnected) ringConnectedChangedAtMs = now()
+                if (connected && !ringConnected) ringConnectCount++
                 ringConnected = connected
                 ringNotificationsReady = false
                 if (!connected) {
@@ -1979,12 +2085,21 @@ class GlassesSessionCore(
         try {
             connectRing()
         } catch (t: Throwable) {
-            monitor.withLock {
+            // Back off exponentially: each attempt's setup steps hold the
+            // GATT pipeline the glasses share, and an unreachable ring (e.g.
+            // held by the glasses) fails the same way every time.
+            val retryDelayMs = monitor.withLock {
+                val delay = minOf(ConnectionOptions.RING_RECONNECT_MAX_DELAY_MS,
+                    ConnectionOptions.RING_RECONNECT_DELAY_MS.toLong() shl minOf(ringConnectFailures, 5))
+                ringConnectFailures++
                 ringConnected = false
                 ringNotificationsReady = false
-                ringReconnectAfterMs = now() + ConnectionOptions.RING_RECONNECT_DELAY_MS
+                ringReconnectAfterMs = now() + delay
+                lastDirectRingError = "connect failed: " + safeMessage(t)
+                delay
             }
-            logLine("direct ring connect failed (" + reason + "): " + safeMessage(t))
+            logLine("direct ring connect failed (" + reason + "): " + safeMessage(t)
+                + "; retry in " + (retryDelayMs / 1000) + "s")
         }
     }
 
@@ -2042,6 +2157,9 @@ class GlassesSessionCore(
             ringNonce = 0
             ringReassembler.reset()
             ringOutbound.clear()
+            ringWriteBlockedUntilMs = 0L
+            ringWriteFailures = 0
+            ringConnectFailures = 0
         }
         logLine("direct ring ready phoneNotify=$phoneNotify dataNotify=$dataNotify")
 

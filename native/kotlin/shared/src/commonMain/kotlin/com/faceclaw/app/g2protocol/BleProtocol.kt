@@ -62,6 +62,17 @@ class BleProtocol {
 
         private const val SECURITY_AUTH_CMD: Int = 4
 
+        // DevCfgDataPackage ring commands on sid 0x80 (dev_config_protocol /
+        // dev_pair_manager). Wire shapes from g2-kit-unofficial's generated
+        // protos; handler behavior only from openCFW's decompilation
+        // (pb_service_pair_mgr.c) - not captured from the Even app and not
+        // hardware-verified.
+        private const val DEV_CFG_RING_CONNECT_INFO_CMD: Int = 6
+        private const val DEV_CFG_DISCONNECT_INFO_CMD: Int = 8
+
+        /** sid 0x91 RingDataPackage: glasses-side ring events (g2.ring). */
+        const val SID_RING_DATA: Int = 0x91
+
         const val SID_APP_LAUNCH: Int = 0x01
 
         const val SID_EVENHUB: Int = 0xe0
@@ -500,6 +511,79 @@ class BleProtocol {
                     encodeMessageField(3, auth),
                 )
             )
+        }
+
+        /**
+         * DISCONNECT_INFO(8) with DisconnectInfo{dev=RING(0), ringMac}: ask the glasses to drop
+         * their link to the ring. In openCFW's decompilation the handler ignores the payload,
+         * resets the ring retry counter and posts the ring-disconnect event, leaving the stored
+         * ring target alone (unlike RING_CONNECT_INFO, which overwrites it).
+         */
+        @JvmStatic
+        fun buildRingDisconnectRequest(magic: Int, ringMac: ByteArray): ByteArray {
+            return concat(
+                CollectionUtils.listOf(
+                    encodeVarintField(1, DEV_CFG_DISCONNECT_INFO_CMD),
+                    encodeVarintField(2, magic),
+                    encodeMessageField(7, concat(CollectionUtils.listOf(
+                        encodeVarintField(1, 0),
+                        encodeBytesField(2, ringMac),
+                    ))),
+                )
+            )
+        }
+
+        /**
+         * RING_CONNECT_INFO(6) with RingInfo{connectRing, ringMac, ringName}. connectRing is
+         * declared `bytes` but read by the firmware as one byte. Every call overwrites the glasses'
+         * ring target with ringMac/ringName, so pass the target the glasses themselves reported
+         * when one is known. Only the ring-owning temple acts on connect=true; the firmware
+         * ignores connect requests closer than ~20 s apart.
+         */
+        @JvmStatic
+        fun buildRingConnectRequest(magic: Int, connect: Boolean, ringMac: ByteArray, ringName: ByteArray): ByteArray {
+            return concat(
+                CollectionUtils.listOf(
+                    encodeVarintField(1, DEV_CFG_RING_CONNECT_INFO_CMD),
+                    encodeVarintField(2, magic),
+                    encodeMessageField(5, concat(CollectionUtils.listOf(
+                        encodeBytesField(1, byteArrayOf(if (connect) 1 else 0)),
+                        encodeBytesField(2, ringMac),
+                        encodeBytesField(3, ringName),
+                    ))),
+                )
+            )
+        }
+
+        /** A RingInfo (from RING_CONNECT_INFO) or RingEvent (from sid 0x91) the glasses sent. */
+        class GlassesRingReport(
+            @JvmField val source: String,
+            @JvmField val ringMac: ByteArray?,
+            @JvmField val ringName: String,
+            /** connRet for RingInfo (0 = connected, 90 = timeout), eventId for RingEvent; -1 absent. */
+            @JvmField val code: Int,
+        )
+
+        /** Decode a sid-0x80 RING_CONNECT_INFO frame (notification or ack), else null. */
+        @JvmStatic
+        fun parseRingConnectInfo(pb: ByteArray?): GlassesRingReport? {
+            if (pb == null) return null
+            val root = stripTrailingCrc(pb)
+            if (readVarintFieldValue(root, 1, -1) != DEV_CFG_RING_CONNECT_INFO_CMD) return null
+            val info = readFieldBytes(root, 5) ?: return null
+            val name = readFieldBytes(info, 3)
+            return GlassesRingReport("connect-info", readFieldBytes(info, 2),
+                if (name == null) "" else name.decodeToString(), readVarintFieldValue(info, 4, -1))
+        }
+
+        /** Decode a sid-0x91 RingDataPackage EVENT(1) frame, else null. */
+        @JvmStatic
+        fun parseRingDataEvent(pb: ByteArray?): GlassesRingReport? {
+            if (pb == null) return null
+            val root = stripTrailingCrc(pb)
+            if (readVarintFieldValue(root, 1, -1) != 1) return null
+            val event = readFieldBytes(root, 3) ?: return null
+            return GlassesRingReport("ring-event", readFieldBytes(event, 1), "", readVarintFieldValue(event, 2, -1))
         }
 
         /**

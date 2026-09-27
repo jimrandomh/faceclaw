@@ -191,8 +191,29 @@ class RingHealthTransferTest {
         assertEquals(1, s.link.writes.size, "advanced after failed ACK")
         assertEquals(1, s.outboundSize(), "failed ACK was discarded")
         s.link.failAck = false
+        // The failure paused ring writes; the retry must not touch the link yet.
+        assertEquals(-1, s.core.flushRingOutbound(), "retried inside the write backoff")
+        assertEquals(1, s.outboundSize(), "backoff dropped the queued ACK")
+        s.core.monitor.withLock { s.core.ringWriteBlockedUntilMs = 0L }
         assertTrue(s.core.awaitRingHealthDataIdle(s.core.ringHealthDataIdleMs), "retry failed")
         assertEquals(0, s.outboundSize(), "retry did not drain ACKs")
+    }
+
+    @Test fun writeBackoffGrowsAndResetsOnSuccess() {
+        val s = RingSession()
+        s.link.failAck = true
+        s.core.queueRingPageAck(RingProtocol.parse(RingProtocol.buildFrame(RingProtocol.CHAN_HEALTH,
+            RingProtocol.KIND_DATA, RingProtocol.CMD_HI_HEART_RATE, RingProtocol.CMD_LO_HEALTH, 1, byteArrayOf(0, 0)))!!)
+        fun pausedForMs() = s.core.monitor.withLock { s.core.ringWriteBlockedUntilMs - s.core.now() }
+        assertEquals(-1, s.core.flushRingOutbound())
+        val first = pausedForMs()
+        s.core.monitor.withLock { s.core.ringWriteBlockedUntilMs = 0L }
+        assertEquals(-1, s.core.flushRingOutbound())
+        assertTrue(pausedForMs() > first, "backoff did not grow")
+        s.link.failAck = false
+        s.core.monitor.withLock { s.core.ringWriteBlockedUntilMs = 0L }
+        assertEquals(1, s.core.flushRingOutbound())
+        assertEquals(0, s.core.monitor.withLock { s.core.ringWriteFailures }, "success did not reset the backoff")
     }
 
     @Test fun missingRspAbortsWithoutAdvancing() {

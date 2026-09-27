@@ -12,6 +12,8 @@ class ConnectionOptions {
         const val DESCRIPTOR_TIMEOUT_MS = 5_000
         const val RING_DESIRED_MTU = 247
         const val RING_RECONNECT_DELAY_MS = 2_000
+        // Cap for the exponential backoff on repeated direct-ring connect failures.
+        const val RING_RECONNECT_MAX_DELAY_MS = 60_000L
         // The ring connects with autoConnect=true (see SessionLink.connect's
         // 3-arg overload) - Android manages that as a background reconnect rather
         // than an immediate attempt, so it needs far more room than the glasses'

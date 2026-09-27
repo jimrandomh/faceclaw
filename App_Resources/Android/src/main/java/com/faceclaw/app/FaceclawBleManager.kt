@@ -54,6 +54,7 @@ class FaceclawBleManager(context: Context) {
 
     private val gattClients = ConcurrentHashMap<String, BluetoothGatt>()
     private val bluetoothApiLock = Any()
+    private val messageLocks = ConcurrentHashMap<String, Any>()
 
     private val connectLatches = ConcurrentHashMap<String, CountDownLatch>()
     private val connectResults = ConcurrentHashMap<String, Boolean>()
@@ -144,59 +145,58 @@ class FaceclawBleManager(context: Context) {
      * reconnect, not an immediate attempt), so this needs its own longer
      * timeout - do not reuse CONNECT_TIMEOUT_MS/awaitLatch's short window for
      * it, that would just trade one spurious failure for another.
+     *
+     * Only the connectGatt call and the timeout cleanup run under the global
+     * API lock; the wait for the link does not. A pending connection is not a
+     * GATT operation in flight, and holding the lock across it let an
+     * unreachable ring (20s autoConnect timeout, retried every 2s) starve every
+     * glasses write.
      */
     fun connect(address: String?, timeoutMs: Int, autoConnect: Boolean): Boolean {
         if (address == null || address.trim().isEmpty()) {
             throw IllegalArgumentException("address is required")
         }
         val latch = CountDownLatch(1)
-        connectLatches[address] = latch
-        connectResults.remove(address)
-
-        val gattLock = gattLock(address)
-        synchronized(gattLock) {
-            val existing = gattClients[address]
-            if (existing != null) {
-                connectLatches.remove(address)
+        val gatt: BluetoothGatt
+        synchronized(gattLock(address)) {
+            if (gattClients[address] != null) {
                 return true
             }
 
             val device = bluetoothAdapter.getRemoteDevice(address)
-            if (device == null) {
-                connectLatches.remove(address)
-                throw IllegalArgumentException("remote device not found: $address")
-            }
+                ?: throw IllegalArgumentException("remote device not found: $address")
 
-            val gatt: BluetoothGatt? = device.connectGatt(
+            connectLatches[address] = latch
+            connectResults.remove(address)
+            gatt = device.connectGatt(
                 context,
                 autoConnect,
                 gattCallback,
                 BluetoothDevice.TRANSPORT_LE,
                 BluetoothDevice.PHY_LE_2M or BluetoothDevice.PHY_LE_1M
-            )
-            if (gatt != null) {
-                gattClients[address] = gatt
-            }
-
-            if (gatt == null) {
-                connectLatches.remove(address)
+            ) ?: run {
+                connectLatches.remove(address, latch)
                 return false
             }
+            gattClients[address] = gatt
+        }
 
-            if (!awaitLatch(latch, timeoutMs)) {
-                connectLatches.remove(address)
-                connectResults.remove(address)
-                gattClients.remove(address, gatt)
+        val completed = awaitLatch(latch, timeoutMs)
+        connectLatches.remove(address, latch)
+        val connected = connectResults.remove(address) == true
+        if (completed && connected && gattClients[address] === gatt) {
+            return true
+        }
+        // Timed out, or failed. Whoever removed the client from gattClients
+        // (the disconnect callback, or disconnect()) also closes it.
+        synchronized(gattLock(address)) {
+            if (gattClients.remove(address, gatt)) {
                 negotiatedMtus.remove(address)
                 gatt.disconnect()
                 gatt.close()
-                return false
             }
-
-            val connected = connectResults.remove(address)
-            connectLatches.remove(address)
-            return connected == true
         }
+        return false
     }
 
     fun requestConnectionPriority(address: String, priority: Int): Boolean {
@@ -316,6 +316,14 @@ class FaceclawBleManager(context: Context) {
         }
     }
 
+    /**
+     * Writes [frames] in order. The global API lock is held for each frame's
+     * write-and-callback (one GATT operation in flight process-wide), but not
+     * across the whole message or during retry backoff, so a slow or failing
+     * link (the direct ring) can't hold the glasses off the air for a whole
+     * retry cycle. The per-address lock keeps concurrent messages to the same
+     * device from interleaving their frames.
+     */
     fun writeFrames(
         address: String,
         characteristicUuid: String,
@@ -328,9 +336,13 @@ class FaceclawBleManager(context: Context) {
         }
 
         val startMs = System.currentTimeMillis()
-        synchronized(gattLock(address)) {
-            val gatt = requireGatt(address)
-            val characteristic = requireCharacteristic(gatt, characteristicUuid)
+        synchronized(messageLock(address)) {
+            val gatt: BluetoothGatt
+            val characteristic: BluetoothGattCharacteristic
+            synchronized(gattLock(address)) {
+                gatt = requireGatt(address)
+                characteristic = requireCharacteristic(gatt, characteristicUuid)
+            }
 
             for (i in frames.indices) {
                 val frame = frames[i]
@@ -356,45 +368,43 @@ class FaceclawBleManager(context: Context) {
     ): Boolean {
         var retryCount = 0
         while (true) {
-            val latch = CountDownLatch(1)
-            writeLatches[address] = latch
-            writeStatuses.remove(address)
-
-            val currentTime = System.currentTimeMillis()
-            val result = gatt.writeCharacteristic(characteristic, data!!, writeType)
-            val timeAsleep = System.currentTimeMillis() - currentTime
-            //Log.i(TAG, "writeCharacteristic: spent " + timeAsleep + "ms");
-
-            if (result == android.bluetooth.BluetoothStatusCodes.ERROR_GATT_WRITE_REQUEST_BUSY) {
-                writeLatches.remove(address, latch)
-                writeStatuses.remove(address)
-                if (!sleepBeforeWriteRetry(address, "busy", retryCount++)) {
+            val retryReason: String
+            synchronized(gattLock(address)) {
+                if (gattClients[address] !== gatt) {
+                    // Disconnected (and closed) since the write started.
+                    Log.w(TAG, "writeCharacteristic abandoned: address=$address no longer connected")
                     return false
                 }
-                continue
-            } else {
-                //Log.i(TAG, "writeCharacteristic with writeType=" + writeType + " result=" + result + " retryCount=" + retryCount);
-                if (result != android.bluetooth.BluetoothStatusCodes.SUCCESS) {
+                val latch = CountDownLatch(1)
+                writeLatches[address] = latch
+                writeStatuses.remove(address)
+
+                val result = gatt.writeCharacteristic(characteristic, data!!, writeType)
+                if (result == android.bluetooth.BluetoothStatusCodes.ERROR_GATT_WRITE_REQUEST_BUSY) {
                     writeLatches.remove(address, latch)
                     writeStatuses.remove(address)
-                    if (!sleepBeforeWriteRetry(address, "start result=$result", retryCount++)) {
+                    retryReason = "busy"
+                } else if (result != android.bluetooth.BluetoothStatusCodes.SUCCESS) {
+                    writeLatches.remove(address, latch)
+                    writeStatuses.remove(address)
+                    retryReason = "start result=$result"
+                } else {
+                    if (!awaitLatch(latch, timeoutMs)) {
+                        writeLatches.remove(address, latch)
+                        writeStatuses.remove(address)
                         return false
                     }
-                    continue
-                }
-                if (!awaitLatch(latch, timeoutMs)) {
+                    val status = writeStatuses.remove(address)
                     writeLatches.remove(address, latch)
-                    writeStatuses.remove(address)
-                    return false
+                    if (status != null && status == BluetoothGatt.GATT_SUCCESS) {
+                        return true
+                    }
+                    retryReason = "callback status=$status"
                 }
-                val status = writeStatuses.remove(address)
-                writeLatches.remove(address)
-                if (status != null && status == BluetoothGatt.GATT_SUCCESS) {
-                    return true
-                }
-                if (!sleepBeforeWriteRetry(address, "callback status=$status", retryCount++)) {
-                    return false
-                }
+            }
+            // Back off outside the lock so other devices' operations proceed.
+            if (!sleepBeforeWriteRetry(address, retryReason, retryCount++)) {
+                return false
             }
         }
     }
@@ -416,13 +426,18 @@ class FaceclawBleManager(context: Context) {
     }
 
     fun disconnect(address: String?) {
-        val gattLock = gattLock(address)
-        synchronized(gattLock) {
-            val gatt = if (address != null) gattClients.remove(address) else null
-            if (address != null) negotiatedMtus.remove(address)
-            if (gatt == null) {
-                return
-            }
+        if (address == null) {
+            return
+        }
+        val gatt = gattClients.remove(address)
+        negotiatedMtus.remove(address)
+        // Wake anything waiting on this device first: a closed client never
+        // calls back, and the waiter may be holding the lock close() needs.
+        releasePendingOperations(address)
+        if (gatt == null) {
+            return
+        }
+        synchronized(gattLock(address)) {
             gatt.disconnect()
             gatt.close()
         }
@@ -465,7 +480,26 @@ class FaceclawBleManager(context: Context) {
     private fun gattLock(address: String?): Any {
         // Android's Bluetooth stack has process-wide command-pipeline constraints on some devices.
         // Keep every BluetoothGatt API call serialized globally, even for different MAC addresses.
+        // Never hold it across anything unbounded or slow that isn't a GATT operation in flight
+        // (connection waits, retry sleeps): every glasses frame write needs it.
         return bluetoothApiLock
+    }
+
+    /** Serializes whole multi-frame messages per device; taken before [gattLock], never after. */
+    private fun messageLock(address: String): Any {
+        return messageLocks.getOrPut(address) { Any() }
+    }
+
+    /**
+     * Fail every operation still waiting on a callback from [address]. They see no status and
+     * return false, instead of holding the global lock until their timeouts expire.
+     */
+    private fun releasePendingOperations(address: String) {
+        connectLatches.remove(address)?.countDown()
+        servicesLatches.remove(address)?.countDown()
+        mtuLatches.remove(address)?.countDown()
+        descriptorLatches.remove(address)?.countDown()
+        writeLatches.remove(address)?.countDown()
     }
 
     private val gattCallback: BluetoothGattCallback = object : BluetoothGattCallback() {
@@ -485,10 +519,13 @@ class FaceclawBleManager(context: Context) {
                 connectResults[address] = false
                 val latch = connectLatches.remove(address)
                 latch?.countDown()
-                val gattLock = gattLock(address)
-                synchronized(gattLock) {
-                    gattClients.remove(address, gatt)
+                // Unpublish and wake this client's waiters before taking the lock: one of them
+                // may hold it, waiting for a callback that will now never come.
+                if (gattClients.remove(address, gatt)) {
                     negotiatedMtus.remove(address)
+                    releasePendingOperations(address)
+                }
+                synchronized(gattLock(address)) {
                     gatt.close()
                 }
                 dispatchConnectionState(address, false)

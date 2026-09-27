@@ -87,6 +87,10 @@ private const val RING_HEALTH_ABORTED_RETRY_LIMIT = 2
  */
 private const val RING_HEALTH_ABORTED_RETRY_GAP_MS = 60L * 1000L
 
+/** First pause after a failed ring write; doubles per consecutive failure. See [writeRingFrame]. */
+private const val RING_WRITE_BACKOFF_MS = 1_000L
+private const val RING_WRITE_BACKOFF_MAX_MS = 15_000L
+
 /**
  * Device-channel commands Even's real app fires in the gaps between
  * health requests - identity (0x0a), battery (0x01), firmware version
@@ -142,6 +146,7 @@ internal fun GlassesSessionCore.runRingWorker() {
                 ringConnected = false
                 ringNotificationsReady = false
                 ringReconnectAfterMs = now() + ConnectionOptions.RING_RECONNECT_DELAY_MS
+                lastDirectRingError = "worker error: " + GlassesSessionCore.safeMessage(t)
             }
             link.disconnect(ringAddress)
         }
@@ -690,24 +695,47 @@ internal fun GlassesSessionCore.sendRingDevicePing(cmdLo: Int) {
     writeRingFrame(frame, "device ping 0x" + cmdLo.toString(16))
 }
 
-/** Write one already-built ring frame. Ring worker only (blocking). */
+/**
+ * Write one already-built ring frame. Ring worker only (blocking).
+ *
+ * After a failure, further writes fail immediately (without touching the
+ * link) until an exponential backoff expires. The ring worker otherwise
+ * retries a queued ACK every 100ms tick, and each failing attempt can occupy
+ * the GATT pipeline the glasses' display writes need for up to the write
+ * timeout.
+ */
 internal fun GlassesSessionCore.writeRingFrame(frame: ByteArray, what: String): Boolean {
-    return try {
-        val ok = link.writeFrames(
+    val blockedForMs = monitor.withLock { ringWriteBlockedUntilMs - now() }
+    if (blockedForMs > 0) {
+        return false
+    }
+    val ok = try {
+        val written = link.writeFrames(
             ringAddress,
             BleProtocol.R1_WRITE_CHAR_UUID,
             listOf(frame),
             ConnectionOptions.WRITE_MODE,
             ConnectionOptions.WRITE_TIMEOUT_MS
         )
-        if (!ok) {
+        if (!written) {
             logLine("ring $what write failed")
         }
-        ok
+        written
     } catch (t: Throwable) {
         logLine("ring " + what + " write error: " + GlassesSessionCore.safeMessage(t))
         false
     }
+    monitor.withLock {
+        if (ok) {
+            ringWriteFailures = 0
+        } else {
+            val backoffMs = minOf(RING_WRITE_BACKOFF_MAX_MS, RING_WRITE_BACKOFF_MS shl minOf(ringWriteFailures, 4))
+            ringWriteFailures++
+            ringWriteBlockedUntilMs = now() + backoffMs
+            logLine("ring writes paused for " + backoffMs + "ms after " + ringWriteFailures + " consecutive failure(s)")
+        }
+    }
+    return ok
 }
 
 /**
@@ -743,4 +771,107 @@ internal fun GlassesSessionCore.nextRingSeqLocked(): Int {
 internal fun GlassesSessionCore.nextRingNonceLocked(): Int {
     ringNonce = (ringNonce + 1) and 0xffff
     return ringNonce
+}
+
+// ---------------------------------------------------------------------------
+// The glasses' own link to the ring (sid 0x80 pair-manager commands)
+//
+// While the glasses hold the ring, it reports gestures only to them, so a
+// direct phone link sees nothing. These ask the glasses to let go of it and
+// to take it back. Shapes and handler behavior come from g2-kit-unofficial's
+// protos and openCFW's decompilation of pb_service_pair_mgr.c; none of it has
+// been captured from the Even app or verified on hardware. Deliberately no
+// UNPAIR_INFO: that wipes the glasses' stored ring pairing.
+
+/**
+ * Parse "AA:BB:CC:DD:EE:FF" into wire order, least-significant byte first.
+ * Inferred, not verified: the one captured glasses-sent ring MAC
+ * (even-g2-protocol's "Device Identity", b1:6a:9f:2f:43:dc on sid 0x91) is
+ * only a valid random static address (top two bits set) read backwards.
+ */
+internal fun ringMacWireBytes(address: String): ByteArray? {
+    val parts = address.trim().split(':')
+    if (parts.size != 6) return null
+    val bytes = ByteArray(6)
+    for (i in 0 until 6) {
+        val value = parts[i].toIntOrNull(16) ?: return null
+        bytes[5 - i] = value.toByte()
+    }
+    return bytes
+}
+
+/**
+ * Queue one ring-link command to both temples (only the ring-owning temple
+ * acts on a connect; either may hold the link). Actions:
+ * - "disconnect": DISCONNECT_INFO. Drops the link and resets the retry
+ *   counter without touching the stored ring target; the glasses' own
+ *   reconnect policy may take the ring back later.
+ * - "release": RING_CONNECT_INFO connect=0. Also cancels pending connect
+ *   timeouts and clears the connect mode, so it may hold off auto-reconnect.
+ * - "connect": RING_CONNECT_INFO connect=1 with the ring's MAC and name.
+ * Both RING_CONNECT_INFO forms overwrite the stored target, so they echo the
+ * target the glasses reported when there is one.
+ */
+internal fun GlassesSessionCore.queueGlassesRingLinkCommandLocked(
+    action: String, fallbackAddress: String, fallbackName: String,
+): Boolean {
+    val reported = glassesRingMac
+    val mac = reported ?: ringMacWireBytes(fallbackAddress)
+    if (mac == null) {
+        logLine("glasses ring $action skipped: no ring address")
+        return false
+    }
+    val name = (if (reported != null && glassesRingName.isNotEmpty()) glassesRingName else fallbackName)
+        .encodeToByteArray()
+    val macSource = if (reported != null) "glasses-reported" else "configured"
+    lastRingLinkCommand = "$action mac=${GlassesSessionCore.hex(mac)} ($macSource)"
+    lastRingLinkCommandAtMs = now()
+    lastRingLinkResultR = "sent"
+    lastRingLinkResultL = "sent"
+    for (leftArm in booleanArrayOf(false, true)) {
+        val message = messageBuilder.ringLinkCommand("glasses ring $action", leftArm) { magic ->
+            when (action) {
+                "disconnect" -> BleProtocol.buildRingDisconnectRequest(magic, mac)
+                "release" -> BleProtocol.buildRingConnectRequest(magic, false, mac, name)
+                else -> BleProtocol.buildRingConnectRequest(magic, true, mac, name)
+            }
+        }
+        message.onAck = MessageCallback {
+            val result = "ack " + GlassesSessionCore.hex(message.ackPayload)
+            if (leftArm) lastRingLinkResultL = result else lastRingLinkResultR = result
+            logLine("glasses ring $action ${if (leftArm) "L" else "R"} $result")
+        }
+        message.onTimeout = MessageCallback {
+            if (leftArm) lastRingLinkResultL = "no ack" else lastRingLinkResultR = "no ack"
+            logLine("glasses ring $action ${if (leftArm) "L" else "R"} ack timeout")
+        }
+        pendingMessages.addLast(message)
+    }
+    logLine("queue glasses ring $action mac=${GlassesSessionCore.hex(mac)} ($macSource) name=${name.decodeToString()}")
+    return true
+}
+
+/**
+ * Note ring-link reports from the glasses: RING_CONNECT_INFO notifications
+ * (connRet 0 = connected, 90 = connect timeout) and sid-0x91 ring events,
+ * both carrying the ring MAC in the glasses' byte order. Acks to our own
+ * commands are skipped for the MAC so it never just echoes our guess.
+ */
+internal fun GlassesSessionCore.recordGlassesRingReportLocked(frame: BleProtocol.ParsedFrame, address: String) {
+    val report = if (frame.sid == BleProtocol.SID_RING_DATA) BleProtocol.parseRingDataEvent(frame.pb)
+        else BleProtocol.parseRingConnectInfo(frame.pb)
+    if (report == null) return
+    val arm = if (address.equals(leftAddress, ignoreCase = true)) "L" else "R"
+    val ownAck = inFlightMessages.any { it.sid == frame.sid && it.magic == frame.msgSeq }
+    val mac = report.ringMac
+    lastGlassesRingReport = report.source + " " + arm + " code=" + report.code +
+        (if (mac != null) " mac=" + GlassesSessionCore.hex(mac) else "") +
+        (if (report.ringName.isNotEmpty()) " name=" + report.ringName else "") +
+        (if (ownAck) " (ack)" else "")
+    lastGlassesRingReportAtMs = now()
+    if (!ownAck && mac != null && mac.size == 6 && mac.any { it.toInt() != 0 }) {
+        glassesRingMac = mac.copyOf()
+        if (report.ringName.isNotEmpty()) glassesRingName = report.ringName
+    }
+    logLine("glasses ring report: $lastGlassesRingReport")
 }

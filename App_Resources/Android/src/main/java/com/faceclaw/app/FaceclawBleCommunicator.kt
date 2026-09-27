@@ -2,6 +2,9 @@ package com.faceclaw.app
 
 import android.annotation.SuppressLint
 import android.app.KeyguardManager
+import android.bluetooth.BluetoothDevice
+import android.bluetooth.BluetoothManager
+import android.bluetooth.BluetoothProfile
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -33,6 +36,40 @@ class FaceclawBleCommunicator(context: Context, rightAddress: String?, leftAddre
         @JvmStatic
         fun getActive(): FaceclawBleCommunicator? {
             return activeInstance
+        }
+
+        /**
+         * The phone's own Bluetooth view of the ring, independent of whether a
+         * session is running or configured to talk to the ring: bond state,
+         * whether any app on the phone holds a GATT link, and the (hidden-API,
+         * best-effort) ACL connection. JSON; fields are null when unknown.
+         */
+        @JvmStatic
+        fun getSystemBluetoothStateJson(context: Context, address: String?): String {
+            val result = org.json.JSONObject()
+            val trimmed = address?.trim()?.uppercase() ?: ""
+            result.put("address", trimmed)
+            try {
+                val manager = context.applicationContext.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager?
+                val adapter = manager?.adapter
+                if (manager == null || adapter == null || trimmed.isEmpty() || !android.bluetooth.BluetoothAdapter.checkBluetoothAddress(trimmed)) {
+                    return result.toString()
+                }
+                val device = adapter.getRemoteDevice(trimmed)
+                result.put("bonded", device.bondState == BluetoothDevice.BOND_BONDED)
+                result.put("gattConnected",
+                    manager.getConnectionState(device, BluetoothProfile.GATT) == BluetoothProfile.STATE_CONNECTED)
+                try {
+                    val isConnected = BluetoothDevice::class.java.getMethod("isConnected")
+                    result.put("aclConnected", isConnected.invoke(device) as Boolean)
+                } catch (_: Throwable) {
+                    // Hidden API unavailable; leave unknown.
+                }
+                result.put("name", device.name ?: org.json.JSONObject.NULL)
+            } catch (t: Throwable) {
+                result.put("error", t.message ?: t.toString())
+            }
+            return result.toString()
         }
     }
 
@@ -222,6 +259,13 @@ class FaceclawBleCommunicator(context: Context, rightAddress: String?, leftAddre
 
     /** Status/results of the current or most recent benchmark run, as JSON. */
     fun getBandwidthBenchmarkStatus(): String = core.getBandwidthBenchmarkStatus()
+
+    /** See [GlassesSessionCore.getRingStatus]. */
+    fun getRingStatus(): String = core.getRingStatus()
+
+    /** See [GlassesSessionCore.setGlassesRingLink]. */
+    fun setGlassesRingLink(action: String, fallbackAddress: String?, fallbackName: String?): Boolean =
+        core.setGlassesRingLink(action, fallbackAddress, fallbackName)
 
     fun addImuListener(listener: FaceclawImuListener?) = core.addImuListener(listener)
 
