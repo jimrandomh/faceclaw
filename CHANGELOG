@@ -1,16 +1,23 @@
 # Changelog
 
-## 0.7.3 - Future
+## 0.8.1 - Future
+
+* Add config settings to disable animation categories
+* EvenHub compatibility uses menu animations and is closer to style matched
+
+## 0.8.0 - 2026-09-26
 
 ### Depth and Animation
 
 * A new display-list system for glasses-side drawing, unlocking z-effects and animation
 * Menus animate when changing selection and scrolling
 * Menus bounce at the ends, and show part of the next row when there is more below
+* The launcher and Files app icon grids animate sliding, scrolling and bouncing
 * Fade-in/out effects when turning the screen on/off
 * Custom auto-brightness control algorithm, with configurable min, max and curve
 * Depth effects for the window switcher, top bar, and modals
 * Glanceboard has configurable distance
+* Dimmed background behind the system context menu dithers rather than hiding minimum-brightness underlays
 
 ### Other Features and Bugfixes
 
@@ -20,12 +27,26 @@
 * EvenHub: Fix login form being stuck open without a cancel button
 * Calendar: Fix a timezone issue that could cause all-day events to appear on the preceding day
 * Compass: Make the calibration readiness visible by default
+* Terminal app: Tap a host heading to launch a shell there (alternative to the app context menu)
+* Nightscout: Move the "Always show in top bar" setting earlier in the form so it's harder to miss
+* EvenHub: Fix the sign-in form reopening on every launch after an unfinished sign-in
+* EvenHub: Fix the installer not rerendering when an app finishes downloading
+* Fix a frozen menu in the notification modal
+* Fix a race when restoring open apps at startup, which could leave the previously-foreground window covering the new one
+* Reduce phone CPU usage
+* Fix a memory leak
+* Better handling of silent mode
+* Tweak the layout of the voice input dialog
+* Add GitHub workflows for automated tests
 
 ### iOS port:
 
 * Add iOS calendar integration
 * iOS main screen matches the Android version's styling
 * Hub apps on iOS no longer have their timers stopped while the phone app is in the background
+* Some settings that were Android-only are now available on iOS
+* Move a lot more of the iOS implementation onto shared Kotlin code
+* Converted most Android-specific duplicative code to shared code
 
 ## 0.7.2 - 2026-09-19
 

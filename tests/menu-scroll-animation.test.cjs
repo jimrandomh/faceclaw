@@ -9,6 +9,7 @@ const { DrawExpression: E } = require('../.test-build/app/graphics/draw-expressi
 const { menuScrollList, slidingHighlightY } = require('../.test-build/app/graphics/menu-scroll-list.js');
 const { MENU_BOUNCE_DURATION_MS, scrollOffsetExpression } = require('../.test-build/app/ui/menu-scroll-motion.js');
 const { encodePresentation } = require('../.test-build/app/graphics/presentation-wire.js');
+const { setMenuAnimationReader } = require('../.test-build/app/ui/menu-animation-pref.js');
 // Also consumed by FrameDisplayListTest.kt.
 const SCROLL = '078a000000030002000400020000070000009600000001000200040011223344556677880200020000000000ff250100300102300180f0800180f0161101001732800180f01610300180f0302341403101001102000200010008000000ff280101300100300180f0800180f0161101001732800180f01610300180f030234140310100170100160400020000000103';
 
@@ -194,6 +195,26 @@ test('a bounce during a scroll starts from the offset on screen', () => {
   const [list] = scrollLists(paint(menu, 2120));
   const offsets = [0, MENU_BOUNCE_DURATION_MS].map((ms) => evaluate(list.calls[0].y, ms, 0).value);
   assert.ok(offsets[0] < offsets[1], 'it starts where the scroll had got to, above its settled offset');
+});
+
+test('with menu animation off, scrolls, slides and bounces snap', (t) => {
+  setMenuAnimationReader(() => false);
+  t.after(() => setMenuAnimationReader(() => true));
+  const timed = (image) => image.draws.filter((draw) => draw.presentation?.displayList?.timeline);
+  const menu = inkMenu();
+  paint(menu, 1000);
+  menu.moveSelection(1);
+  const slid = paint(menu, 2000);
+  assert.equal(menu.scrollTop, 0);
+  assert.equal(timed(slid).length, 0, 'the highlight snaps');
+  menu.moveSelection(1);
+  const scrolled = paint(menu, 3000);
+  assert.equal(menu.scrollTop, 20);
+  assert.equal(timed(scrolled).length, 0, 'the scroll snaps');
+  menu.select(6);
+  paint(menu, 4000);
+  menu.moveSelection(1);
+  assert.equal(timed(paint(menu, 5000)).length, 0, 'no bounce');
 });
 
 test('scroll lists survive the bridge with animated copy coordinates', () => {

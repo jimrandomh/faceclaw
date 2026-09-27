@@ -7,8 +7,10 @@
  * match what apps expect.
  *
  * Known deviations from stock, acceptable for now:
- *  - List rendering is a plain vertical list; itemWidth-based horizontal
- *    layouts are not implemented yet.
+ *  - List rendering is a plain vertical list. A non-zero itemWidth sets the
+ *    selection outline's width and truncates long items to fit, as on stock;
+ *    whether stock also lays narrow items out side by side is unknown.
+ *  - Lists scroll with our menus' animation and bounce (see list-menu.ts).
  */
 import { GrayImage } from "../../graphics/image";
 import { EvenHubFont } from "../../graphics/evenhub-font";
@@ -19,12 +21,12 @@ import {
   type EvenHubPage,
   type EvenHubTextContainer,
 } from "./containers";
+import { paintListItems } from "./list-menu";
 
 export const EVENHUB_SCREEN_WIDTH = 576;
 export const EVENHUB_SCREEN_HEIGHT = 288;
 
 const TEXT_WHITE = 255;
-const LIST_ROW_PADDING = 4;
 
 /**
  * SDK 0.0.14 textColor levels 0..4 as grey values. Level 4 is the default and
@@ -90,44 +92,9 @@ function paintImageContainer(image: GrayImage, container: EvenHubImageContainer)
   }
 }
 
-/** Horizontal padding between the selection outline and the item text. */
-const LIST_SELECT_PADDING = 8;
-const LIST_SELECT_RADIUS = 8;
-
 function paintListContainer(image: GrayImage, container: EvenHubListContainer, focused: boolean): void {
   paintBorder(image, container);
-  const font = EvenHubFont.get();
-  const inset = container.borderWidth + container.paddingLength;
-  const rowHeight = font.lineHeight + LIST_ROW_PADDING;
-  const left = container.x + inset;
-  const top = container.y + inset;
-  const innerWidth = Math.max(1, container.width - 2 * inset);
-  // Text is indented by the selection padding so the outline sits inside the list.
-  const textX = left + LIST_SELECT_PADDING;
-  const visibleRows = Math.max(1, Math.floor((container.height - 2 * inset) / rowHeight));
-  // Keep the selection in view.
-  let firstRow = 0;
-  if (container.selectedIndex >= visibleRows) firstRow = container.selectedIndex - visibleRows + 1;
-  for (let row = 0; row < visibleRows; row++) {
-    const index = firstRow + row;
-    if (index >= container.itemNames.length) break;
-    const name = container.itemNames[index]!;
-    const y = top + row * rowHeight;
-    if (index === container.selectedIndex) {
-      // Selection: a rounded outline sized to the text (not the full row width),
-      // with padding on each side and no fill — matching stock's appearance.
-      const textWidth = font.measureLine(name);
-      image.drawRoundedRect(
-        left,
-        y,
-        Math.min(textWidth + 2 * LIST_SELECT_PADDING, innerWidth),
-        rowHeight - 1,
-        focused ? TEXT_WHITE : 130,
-        LIST_SELECT_RADIUS,
-      );
-    }
-    font.drawText(image, textX, y + Math.floor(LIST_ROW_PADDING / 2), name, TEXT_WHITE);
-  }
+  paintListItems(image, container, EvenHubFont.get(), focused);
 }
 
 /** Bottom-to-top paint order for a page's containers. */

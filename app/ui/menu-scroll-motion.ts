@@ -1,4 +1,5 @@
 import { DrawExpression as E, ExprOp } from "../graphics/draw-expression";
+import { menuAnimationEnabled } from "./menu-animation-pref";
 import { MENU_HIGHLIGHT_DURATION_MS, nextAnimationToken } from "./menu-highlight-motion";
 
 /** Longest scroll, in pixels, that animates; longer jumps snap. */
@@ -72,16 +73,17 @@ export class MenuScrollMotion {
   /** Record this paint's settled offset; returns the animation in flight, if any. */
   paint(scroll: number, box: Box, now: number): MenuScrollAnimation | undefined {
     const previous = this.previous;
+    const enabled = menuAnimationEnabled();
     const sameBox = !!previous && previous.box.x === box.x && previous.box.y === box.y &&
       previous.box.width === box.width && previous.box.height === box.height;
     if (!previous || !sameBox || previous.scroll !== scroll) {
       const from = previous ? this.offsetAt(previous.scroll, now) : scroll;
-      const eligible = sameBox && this.navigated && from !== scroll && Math.abs(scroll - from) <= MAX_ANIMATED_SCROLL;
+      const eligible = enabled && sameBox && this.navigated && from !== scroll && Math.abs(scroll - from) <= MAX_ANIMATED_SCROLL;
       this.animation = eligible
         ? { from, to: scroll, startedAt: now, token: nextAnimationToken(), durationMs: MENU_HIGHLIGHT_DURATION_MS }
         : undefined;
       this.previous = { scroll, box: { ...box } };
-    } else if (this.bounceBy) {
+    } else if (this.bounceBy && enabled) {
       const from = this.offsetAt(scroll, now);
       this.animation = Math.abs(scroll - from) <= MAX_ANIMATED_SCROLL
         ? { from, peak: scroll + this.bounceBy, to: scroll, startedAt: now, token: nextAnimationToken(), durationMs: MENU_BOUNCE_DURATION_MS }

@@ -52,6 +52,7 @@ import {
   type EvenHubPage,
 } from "./containers";
 import { compositePage } from "./compositor";
+import { stepListSelection } from "./list-menu";
 import { type EvenHubManifest } from "./ehpk";
 import { permissionsIncludeMicrophone, permissionsInclude } from "./permissions";
 import { evenHubMicRouter, type EvenHubMicClient } from "./mic-router";
@@ -502,13 +503,8 @@ export class EvenHubSession implements EvenHubMicClient, EvenHubImuClient, EvenH
   private scrollList(list: EvenHubListContainer, eventType: number): void {
     // Swipe up selects the previous item, swipe down the next (stock direction).
     const delta = eventType === SCROLL_TOP_EVENT ? -1 : 1;
-    const next = list.selectedIndex + delta;
-    if (next < 0 || next >= list.itemNames.length) {
-      // At a boundary the selection stays put and the app hears about it.
-      this.emitListEvent(list, eventType);
-      return;
-    }
-    list.selectedIndex = next;
+    // At a boundary the selection stays put (the list bounces) and the app hears about it.
+    if (!stepListSelection(list, EvenHubFont.get(), delta)) this.emitListEvent(list, eventType);
     this.windowHooks?.requestRender();
   }
 

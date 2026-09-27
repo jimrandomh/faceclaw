@@ -1,12 +1,19 @@
 import { G2_LENS_HEIGHT, G2_LENS_WIDTH, GrayImage, type UiFont } from "../graphics/image";
 import { wrapText } from "../graphics/textwrap";
 import { getDefaultSmallFont } from "../graphics/ui-fonts";
+import { getBooleanSetting } from "../native/settings-store";
 import { clamp } from "../util/numeric-util";
 import { Layer, LayerContext, PaintBelow } from "./layers";
+import { MENU_ANIMATION_KEY, setMenuAnimationReader } from "./menu-animation-pref";
 import { Menu, MENU_HIGHLIGHT_FILL, MENU_HIGHLIGHT_STROKE } from "./menu-core";
 
 import { GESTURE_DOUBLE_CLICK, InputEvent } from "./gestures";
 import { LIST_ROW_TEXT_INSET, centeredTextY, lineStep, listRowHeight, menuTitleHeight } from "./metrics";
+
+// Menu<T> and IconGrid consult this (through their motion classes) at each
+// paint; a SharedPreferences read, so changes apply to the next navigation.
+setMenuAnimationReader(() => getBooleanSetting(MENU_ANIMATION_KEY, true));
+
 const DEFAULT_MENU_X = 8;
 const DEFAULT_MENU_Y = 8;
 const DEFAULT_MENU_WIDTH = 272;

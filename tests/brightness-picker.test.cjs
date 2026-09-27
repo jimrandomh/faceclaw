@@ -27,6 +27,7 @@ const layers = load('app/ui/layers.ts', {
   '../native/frame-timings': { spanCurrent: (_name, paint) => paint() },
 });
 const menu = load('app/ui/menu.ts', {
+  './menu-animation-pref': require('../.test-build/app/ui/menu-animation-pref.js'), '../native/settings-store': { getBooleanSetting: (_key, fallback) => fallback },
   './menu-highlight-motion': require('../.test-build/app/ui/menu-highlight-motion.js'), '../graphics/menu-scroll-list': require('../.test-build/app/graphics/menu-scroll-list.js'), './menu-scroll-motion': require('../.test-build/app/ui/menu-scroll-motion.js'), '../graphics/draw-expression': require('../.test-build/app/graphics/draw-expression.js'),
   '../graphics/image': graphics, '../graphics/ui-fonts': fonts, '../graphics/textwrap': textwrap,
   '../util/numeric-util': numeric, './gestures': gestures, './metrics': load('app/ui/metrics.ts'),

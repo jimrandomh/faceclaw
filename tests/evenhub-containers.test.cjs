@@ -89,3 +89,17 @@ test("an omitted or out-of-range textColor falls back to the device default", ()
     assert.equal(page.containers[0].textColor, undefined);
   }
 });
+
+test("borderWidth is clamped to stock's maximum of 5", () => {
+  const page = parsePage({
+    listObject: [{ containerID: 1, containerName: "l", borderWidth: 9 }],
+    textObject: [{ containerID: 2, containerName: "t", borderWidth: 12 }, { containerID: 3, containerName: "u", borderWidth: 3 }],
+  });
+  assert.deepEqual(page.containers.map((c) => c.borderWidth), [5, 5, 3]);
+});
+
+test("a list without isItemSelectBorderEn has no selection border (protobuf default 0)", () => {
+  const page = parsePage({ listObject: [{ containerID: 1, containerName: "l", itemContainer: { itemName: ["a"] } }] });
+  assert.equal(page.containers[0].selectBorder, false);
+  assert.equal(page.containers[0].itemWidth, 0);
+});

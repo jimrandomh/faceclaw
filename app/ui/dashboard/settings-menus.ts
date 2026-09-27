@@ -60,9 +60,11 @@ import {
   phoneRotationSetting,
   ringConnectionModeSetting,
   sonioxApiKeySetting,
+  screenFadeSetting,
   enumSettingMenuItem,
   firmwareDebugFlagsSetting,
   lockScreenEnabledSetting,
+  menuAnimationSetting,
   saveVoiceRecordingsSetting,
   showBleBandwidthSetting,
   suspendEvenHubWhenScreenOffSetting,
@@ -114,6 +116,8 @@ function settingsSections(): SettingsSection[] {
         enumSettingMenuItem(displayModeSetting),
         // Submenu: top-bar battery indicator style plus per-device visibility.
         batteryIndicatorsMenuItem(),
+        // Submenu: toggles for menu/icon-grid motion and the screen on/off fade.
+        animationsMenuItem(),
         // Controls the top-bar clock (24-hour vs 12-hour).
         enumSettingMenuItem(timeFormatSetting),
         // Opens the modal font picker (face, weight, size) for UI text.
@@ -308,6 +312,20 @@ function batteryIndicatorsMenuItem(): MenuItem {
         "Battery indicators",
         batteryDisplayModeSetting.displayValue(),
       );
+    },
+  };
+}
+
+/** The Display section's "Animations" row: opens a modal submenu of animation toggles. */
+function animationsMenuItem(): MenuItem {
+  return {
+    label: "Animations",
+    description: "Turn off menu and icon-grid motion, or the fade when the screen turns on and off.",
+    onSelect: (ctx) => {
+      openSettingsSubMenu(ctx, "Animations", [
+        toggleSettingMenuItem(menuAnimationSetting),
+        toggleSettingMenuItem(screenFadeSetting),
+      ]);
     },
   };
 }

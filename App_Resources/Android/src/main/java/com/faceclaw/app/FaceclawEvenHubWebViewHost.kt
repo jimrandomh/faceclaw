@@ -1,6 +1,7 @@
 package com.faceclaw.app
 
 import android.app.Activity
+import android.content.MutableContextWrapper
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -54,9 +55,20 @@ import java.util.ArrayList
  * timers/onResume asserted on attach. The main Looper keeps ticking under the
  * foreground service, so apps keep driving their glasses windows in the
  * background.
+ *
+ * Activity recreation: this host outlives any one activity (it is a process
+ * singleton, and apps keep running while the activity is destroyed and
+ * recreated, e.g. after an app update or a config change). The overlay lives in
+ * one activity's content view, so attach and showOnPhone first move it, with
+ * every WebView in it, into the activity they are given if it isn't already
+ * there; otherwise "show" would raise it in a dead window. WebViews are created
+ * on a MutableContextWrapper whose base is re-pointed at the same time, so the
+ * dialogs Chromium opens from the page (e.g. a <select>'s picker) use the live
+ * activity too.
  */
 class FaceclawEvenHubWebViewHost {
     private var overlay: FrameLayout? = null
+    private var overlayActivity: Activity? = null
     private var shown = false
 
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -86,20 +98,38 @@ class FaceclawEvenHubWebViewHost {
         }
     }
 
+    /** The overlay, in [activity]'s content view (moved there, with its WebViews, if it was elsewhere). */
     private fun ensureOverlay(activity: Activity): FrameLayout {
-        overlay?.let { return it }
+        val existing = overlay
+        if (existing != null && overlayActivity === activity && existing.parent != null) return existing
         val content = activity.findViewById<ViewGroup>(android.R.id.content)
         val created = FrameLayout(activity)
+        if (existing != null) {
+            (existing.parent as ViewGroup?)?.removeView(existing)
+            for (web in webViews) {
+                existing.removeView(web)
+                rebaseContext(web, activity)
+                created.addView(web, FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+            }
+        }
         overlay = created
-        // index 0 = behind the NativeScript content view.
+        overlayActivity = activity
+        // index 0 = behind the NativeScript content view (raised again below if shown).
         content.addView(created, 0, FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        if (shown) created.bringToFront()
         return created
+    }
+
+    private fun rebaseContext(web: WebView, activity: Activity) {
+        (web.context as? MutableContextWrapper)?.baseContext = activity
     }
 
     /** Add a WebView to the host, full-size and rendering, hidden behind the UI. */
     fun attach(activity: Activity, web: WebView) {
         val o = ensureOverlay(activity)
+        rebaseContext(web, activity)
         web.visibility = View.VISIBLE
         if (web.parent == null) {
             o.addView(web, FrameLayout.LayoutParams(
@@ -124,9 +154,9 @@ class FaceclawEvenHubWebViewHost {
         }
     }
 
-    /** Bring an app's WebView to the front so it is visible on the phone. */
-    fun showOnPhone(web: WebView) {
-        val o = overlay ?: return
+    /** Bring an app's WebView to the front of [activity] so it is visible on the phone. */
+    fun showOnPhone(activity: Activity?, web: WebView) {
+        val o = if (activity != null) ensureOverlay(activity) else overlay ?: return
         web.bringToFront()
         o.bringToFront()
         shown = true

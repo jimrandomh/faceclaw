@@ -54,7 +54,9 @@ function originRule(url: string): string {
 export function createEvenHubWebView(session: EvenHubSession): EvenHubWebView {
   const activity = Application.android?.foregroundActivity ?? Application.android?.startActivity;
   const context = activity ?? Utils.android.getApplicationContext();
-  const webView = new com.faceclaw.app.FaceclawEvenHubWebView(context);
+  // A mutable wrapper, so the host can re-point the WebView at a recreated
+  // activity (see FaceclawEvenHubWebViewHost).
+  const webView = new com.faceclaw.app.FaceclawEvenHubWebView(new android.content.MutableContextWrapper(context));
   const settings = webView.getSettings();
   settings.setJavaScriptEnabled(true);
   settings.setDomStorageEnabled(true);
@@ -125,7 +127,8 @@ export function createEvenHubWebView(session: EvenHubSession): EvenHubWebView {
         console.warn(`evenhub webview destroy failed: ${error}`);
       }
     },
-    showOnPhone: () => nativeHost.showOnPhone(webView),
+    showOnPhone: () =>
+      nativeHost.showOnPhone(Application.android?.foregroundActivity ?? Application.android?.startActivity ?? null, webView),
     hideOnPhone: () => nativeHost.hideOnPhone(),
   };
 }

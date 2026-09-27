@@ -60,7 +60,11 @@ function loadIconGrid({ lastInputWasWatch = false } = {}) {
     './menu-core': build('ui/menu-core'),
     './metrics': metrics,
   };
-  const menu = load('app/ui/menu.ts', { ...common, './layers': {} });
+  const menu = load('app/ui/menu.ts', {
+    ...common, './layers': {},
+    './menu-animation-pref': build('ui/menu-animation-pref'),
+    '../native/settings-store': { getBooleanSetting: (_key, fallback) => fallback },
+  });
   const grid = load('app/ui/icon-grid.ts', {
     ...common,
     '../graphics/draw-expression': build('graphics/draw-expression'),

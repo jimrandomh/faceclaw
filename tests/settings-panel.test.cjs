@@ -22,6 +22,7 @@ const font = BdfFont.parse(fs.readFileSync(path.join(__dirname, '../app/fonts/te
 const textwrap = load('app/graphics/textwrap.ts', {});
 const fonts = { getDefaultSmallFont: () => font };
 const menu = load('app/ui/menu.ts', {
+  './menu-animation-pref': require('../.test-build/app/ui/menu-animation-pref.js'), '../native/settings-store': { getBooleanSetting: (_key, fallback) => fallback },
   '../graphics/image': graphics, '../graphics/textwrap': textwrap, '../graphics/ui-fonts': fonts,
   '../util/numeric-util': { clamp: (n, lo, hi) => Math.max(lo, Math.min(hi, n)) }, './gestures': {},
   './metrics': metrics, './menu-core': menuCore,

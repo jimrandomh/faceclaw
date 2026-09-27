@@ -18,6 +18,7 @@ import {
 } from "~/assistant/models";
 import { isLocalModelReady } from "../native/llama";
 import { drawRightValueMenuItem, drawToggleMenuItem, MenuItem, openModalMenu } from "./menu";
+import { MENU_ANIMATION_KEY } from "./menu-animation-pref";
 import { LIST_ROW_TEXT_INSET, lineStep } from "./metrics";
 import { Layer, type LayerContext } from "./layers";
 import { GrayImage } from "~/graphics/image";
@@ -361,11 +362,27 @@ export const autoBrightnessCurveSetting = new ConfigSettingString({
 });
 const SCREEN_FADE_MS = 280;
 
+export const menuAnimationSetting = new ConfigSettingBoolean({
+  id: "menu-animation",
+  label: "Menu animation",
+  storageKey: MENU_ANIMATION_KEY,
+  defaultValue: true,
+  description: "Slide the highlight, scroll, and bounce at the ends in menus, lists, and the launcher and Files icon grids. When off, they move instantly.",
+});
+
+export const screenFadeSetting = new ConfigSettingBoolean({
+  id: "screen-fade",
+  label: "Screen fade",
+  storageKey: "display.screenFade",
+  defaultValue: true,
+  description: "Fade the display in and out when the screen turns on or off. When off, it switches instantly.",
+});
+
 export function getBrightnessPreferences() {
   const level = brightnessSettingToLevel(brightnessSetting.get());
   return { auto: level === null, level: level ?? 50,
     minimum: Number(autoBrightnessMinSetting.get()), maximum: Number(autoBrightnessMaxSetting.get()),
-    curve: autoBrightnessCurveSetting.getValidValue(), fadeMs: SCREEN_FADE_MS };
+    curve: autoBrightnessCurveSetting.getValidValue(), fadeMs: screenFadeSetting.get() ? SCREEN_FADE_MS : 0 };
 }
 
 export const screenTimeoutSetting = new ConfigSettingEnum<ScreenTimeoutSetting>({

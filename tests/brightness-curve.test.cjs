@@ -22,6 +22,7 @@ function settingsFixture(store = new Map()) {
     if (id.includes('settings-store')) return {
       onSettingsStoreChanged() {}, getStringSetting: (k, d) => store.get(k) ?? d,
       setStringSetting: (k, v) => store.set(k, v),
+      getBooleanSetting: (k, d) => store.get(k) ?? d, setBooleanSetting: (k, v) => store.set(k, v),
     };
     if (id.includes('brightness-curve')) return require('../.test-build/app/g2/brightness-curve.js');
     return { Layer: class {}, ASSISTANT_MODEL_CHOICES: [] };
@@ -34,6 +35,12 @@ function settingsFixture(store = new Map()) {
 test('auto minimum defaults to 20 and preserves a saved preference', () => {
   assert.equal(settingsFixture().getBrightnessPreferences().minimum, 20);
   assert.equal(settingsFixture(new Map([['display.autoBrightnessMin', '25']])).getBrightnessPreferences().minimum, 25);
+});
+test('the screen fade setting switches the on/off fade between 280 ms and instant', () => {
+  const api = settingsFixture();
+  assert.equal(api.getBrightnessPreferences().fadeMs, 280);
+  api.screenFadeSetting.set(false);
+  assert.equal(api.getBrightnessPreferences().fadeMs, 0);
 });
 test('curve drafts preview exactly while brightness keeps the previous valid saved curve', () => {
   const store = new Map([['display.autoBrightnessCurve', '0:0,2:50,8:100']]);

@@ -57,7 +57,9 @@ export type EvenHubListContainer = {
   zOrderIndex: number | undefined;
   preserve: boolean;
   itemNames: string[];
+  /** Fixed width of each item's selection outline; 0 is auto (the outline hugs the text). */
   itemWidth: number;
+  /** isItemSelectBorderEn: whether the selected item is outlined. A protobuf field, so absent means off. */
   selectBorder: boolean;
   /** Selection is host-local: scroll moves it with no app round-trip. */
   selectedIndex: number;
@@ -81,6 +83,9 @@ export type EvenHubPage = {
    */
   menuItems: EvenHubMenuItem[];
 };
+
+/** Stock draws at most a 5px border; wider requests are clamped. */
+const MAX_BORDER_WIDTH = 5;
 
 /** Firmware brightness levels for text; 4 is the device default. */
 const MIN_TEXT_BRIGHTNESS = 0;
@@ -129,6 +134,10 @@ export function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
 }
 
+function readBorderWidth(json: Record<string, unknown>): number {
+  return Math.max(0, Math.min(MAX_BORDER_WIDTH, readNumber(json, "borderWidth", 0)));
+}
+
 function parseTextContainer(json: Record<string, unknown>): EvenHubTextContainer {
   return {
     kind: "text",
@@ -138,7 +147,7 @@ function parseTextContainer(json: Record<string, unknown>): EvenHubTextContainer
     y: readNumber(json, "yPosition", 0),
     width: readNumber(json, "width", 0),
     height: readNumber(json, "height", 0),
-    borderWidth: readNumber(json, "borderWidth", 0),
+    borderWidth: readBorderWidth(json),
     borderRadius: readNumber(json, "borderRadius", 0),
     paddingLength: readNumber(json, "paddingLength", 0),
     isEventCapture: readNumber(json, "isEventCapture", 0) !== 0,
@@ -230,7 +239,7 @@ function parseListContainer(json: Record<string, unknown>): EvenHubListContainer
     y: readNumber(json, "yPosition", 0),
     width: readNumber(json, "width", 0),
     height: readNumber(json, "height", 0),
-    borderWidth: readNumber(json, "borderWidth", 0),
+    borderWidth: readBorderWidth(json),
     borderRadius: readNumber(json, "borderRadius", 0),
     paddingLength: readNumber(json, "paddingLength", 0),
     isEventCapture: readNumber(json, "isEventCapture", 0) !== 0,

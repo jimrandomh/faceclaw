@@ -86,6 +86,7 @@ function ui(fontSize = 12) {
     '../util/render-freshness': { renderPassAllowsStaleData: () => false },
     './menu-highlight-motion': require('../.test-build/app/ui/menu-highlight-motion.js'), '../graphics/menu-scroll-list': require('../.test-build/app/graphics/menu-scroll-list.js'), './menu-scroll-motion': require('../.test-build/app/ui/menu-scroll-motion.js'), '../graphics/draw-expression': require('../.test-build/app/graphics/draw-expression.js'),
     './metrics': load('app/ui/metrics.ts'),
+    './menu-animation-pref': require('../.test-build/app/ui/menu-animation-pref.js'), '../native/settings-store': { getBooleanSetting: (_key, fallback) => fallback },
     './gestures': {},
   };
   const requireModule = (name) => {
