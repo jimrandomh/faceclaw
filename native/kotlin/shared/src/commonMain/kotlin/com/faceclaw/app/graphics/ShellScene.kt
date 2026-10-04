@@ -4,8 +4,21 @@ package com.faceclaw.app
  * Immutable shell snapshot. Keys identify writable surfaces across repaints, not their pixels.
  * [screenDepth] is the stereo depth of the whole presentation: the screen copy and everything
  * drawn over it shift together per lens (see [calls]).
+ *
+ * [overlay] is the foreground window's overlay (a window context menu): retained drawings that
+ * play after the window's own [selections] and the shell's chrome, before layer [overlayAt] (the
+ * first shell overlay, such as the system menu), so the window can dim the chrome too. First it
+ * dims everything drawn so far by [overlayDim]/256, unless a shell layer dims: that layer then
+ * comes after the overlay and is the only dim, so no pixel is dimmed twice.
  */
-class ShellScene(val layers: List<Layer>, val selections: List<RetainedDrawing> = emptyList(), val screenDepth: Int = 0) {
+class ShellScene(
+    val layers: List<Layer>,
+    val selections: List<RetainedDrawing> = emptyList(),
+    val screenDepth: Int = 0,
+    val overlay: List<RetainedDrawing> = emptyList(),
+    val overlayDim: Int = 256,
+    val overlayAt: Int = layers.size,
+) {
     class Layer(val key: Int, val x: Int, val y: Int, val width: Int, val height: Int, val dim: Int, val packed: ByteArray, val selections: List<RetainedDrawing> = emptyList(), val depth: Int = 0) {
         // Layers are reused by every composite until the shell repaints, and hashing packed
         // byte-by-byte on each one was a measurable share of the compositor's time.
@@ -13,10 +26,16 @@ class ShellScene(val layers: List<Layer>, val selections: List<RetainedDrawing> 
             "$key,$x,$y,$width,$height,$dim,$depth,${CachedResource(packed).hash},${selections.joinToString { row -> row.fingerprint }}"
         }
     }
-    val allSelections = selections + layers.flatMap { it.selections }
+    /** Every retained drawing, in the order [calls] plays them. */
+    val allSelections = selections + layers.take(overlayAt).flatMap { it.selections } + overlay +
+        layers.drop(overlayAt).flatMap { it.selections }
     val retainedResources = allSelections.flatMap { it.resources }
-    init { require(retainedResources.size + layers.size < 511 && screenDepth in -128..127) }
-    val fingerprint: String = layers.joinToString(";") { it.fingerprint } + selections.joinToString { it.fingerprint } + "|depth:$screenDepth"
+    init {
+        require(retainedResources.size + layers.size < 511 && screenDepth in -128..127)
+        require(overlayAt in 0..layers.size && overlayDim in 0..256)
+    }
+    val fingerprint: String = layers.joinToString(";") { it.fingerprint } + selections.joinToString { it.fingerprint } + "|depth:$screenDepth" +
+        "|overlay@$overlayAt:$overlayDim:" + overlay.joinToString { it.fingerprint }
     /**
      * The root list. A nonzero [screenDepth] adds to every positional call's own depth, so the
      * scene moves as one; depths are even (see uiDepthSetting) so the per-lens halves add
@@ -33,15 +52,21 @@ class ShellScene(val layers: List<Layer>, val selections: List<RetainedDrawing> 
             rowId += row.resources.size
         }
         for (row in selections) add(row)
+        fun addOverlay() {
+            if (overlayDim < 256 && layers.none { it.dim < 256 }) calls.add(DrawProtocol.lut(width, height, overlayDim))
+            for (row in overlay) add(row)
+        }
         for ((index, layer) in layers.withIndex()) {
+            if (index == overlayAt) addOverlay()
             if (layer.dim < 256) calls.add(DrawProtocol.lut(width, height, layer.dim))
             calls.add(DrawProtocol.image(surfaces[index], layer.x, layer.y, depth = DrawProtocol.addDepth(layer.depth, screenDepth)))
             for (row in layer.selections) add(row)
         }
+        if (overlayAt == layers.size) addOverlay()
         return calls
     }
     /** This scene without its whole-presentation shift: the phone mirror's view (see SurfaceCompositor.previewScene). */
-    fun unshifted(): ShellScene = if (screenDepth == 0) this else ShellScene(layers, selections, 0)
+    fun unshifted(): ShellScene = if (screenDepth == 0) this else ShellScene(layers, selections, 0, overlay, overlayDim, overlayAt)
 
     fun preview(screenGray: ByteArray, width: Int, height: Int, rightLens: Boolean = false): ByteArray {
         val screen = BmpUtil.pack4bppFromGray8(screenGray, width, height)
@@ -103,11 +128,12 @@ class ShellScene(val layers: List<Layer>, val selections: List<RetainedDrawing> 
                 val selections = List(selectionCount) { readRetainedDrawing(reader, reader.get().toInt()) }
                 layers.add(Layer(key, x, y, w, h, dim, BmpUtil.pack4bppFromGray8(gray, w, h), selections, depth))
             }
-            require(reader.remaining() == 2)
+            require(reader.remaining() == 4)
             val screenDepth = reader.getShort().toInt()
+            val overlayAt = reader.getShort().toInt() and 65535; require(overlayAt <= layers.size)
             require(layers.sumOf { layer -> layer.selections.sumOf { it.resources.size } } + layers.size < 511)
             require(layers.map { it.key }.toSet().size == layers.size)
-            return ShellScene(layers, screenDepth = screenDepth)
+            return ShellScene(layers, screenDepth = screenDepth, overlayAt = overlayAt)
         }
     }
 }

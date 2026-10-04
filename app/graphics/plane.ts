@@ -1,6 +1,16 @@
 import { GrayImage, type DeferredDraw, type PlacedImage } from "./image";
 
 /**
+ * Where a frame's draws switch to its overlay (see Plane.overlay): the draws
+ * after it are the overlay's, and `dim` is the brightness factor the overlay
+ * applies to everything drawn before it.
+ */
+export type OverlayMarker = { kind: "overlay"; dim: number };
+
+/** A surface frame's draw list, as flattenPlanesWithDraws produces it. */
+export type FrameDraw = DeferredDraw | OverlayMarker;
+
+/**
  * The unit apps (and the shell) submit to the compositor: instead of one
  * flattened image, a frame is an ordered array of planes, each an image plus
  * placement metadata. Planes composite in array order, first at the bottom,
@@ -15,6 +25,14 @@ export type Plane = {
   shellKey?: number;
   depth?: number;
   dimUnderneath?: number;
+  /**
+   * Window planes only: part of the window's overlay (see
+   * LayerStack.paintWindow), which stays out of the window's surface and is
+   * replayed by the compositor after the shell chrome, below any shell
+   * overlays. The first overlay plane's dimUnderneath dims everything drawn
+   * before the overlay, chrome included, unless a shell overlay dims too.
+   */
+  overlay?: boolean;
   image: GrayImage;
   /**
    * Offset of the plane's top-left within the submitted frame. Applied
@@ -71,6 +89,8 @@ export function flattenPlanes(
  * images), translated into frame coordinates and in bake order (plane order,
  * then each image's draw order). Regular draws are baked into the image;
  * selected-menu presentation records remain unbaked for root-list replay.
+ * Overlay planes, like planes with depth, stay out of the image entirely and
+ * cross as presentations, after an OverlayMarker.
  * The list preserves the draws' identity
  * so the texture-cache pipeline can replay them as on-glasses cached draws
  * (see graphics/glyph-wire.ts).
@@ -78,13 +98,15 @@ export function flattenPlanes(
 export function flattenPlanesWithDraws(
   planes: readonly Plane[],
   size?: { width: number; height: number },
-): { image: GrayImage; draws: DeferredDraw[] } {
+): { image: GrayImage; draws: FrameDraw[] } {
   const rasters = planes.map(p => p.image.withDrawsBaked(false));
-  const image = flattenPlanes(planes.map((plane, i) => ({ ...plane, image: plane.depth ? new GrayImage(plane.image.width, plane.image.height) : rasters[i]! })), size);
-  const draws: DeferredDraw[] = [];
+  const retainedOnly = (plane: Plane) => !!plane.depth || !!plane.overlay;
+  const image = flattenPlanes(planes.map((plane, i) => ({ ...plane, image: retainedOnly(plane) ? new GrayImage(plane.image.width, plane.image.height) : rasters[i]! })), size);
+  const draws: FrameDraw[] = [];
   for (const [index, plane] of planes.entries()) {
+    if (plane.overlay && !planes[index - 1]?.overlay) draws.push({ kind: "overlay", dim: plane.dimUnderneath ?? 1 });
     const retained: DeferredDraw[] = [];
-    if (plane.depth) {
+    if (retainedOnly(plane)) {
       // Keep the whole menu off the screen buffer, including its black background.
       const raster = rasters[index]!;
       let left = raster.width, top = raster.height, right = -1, bottom = -1;
@@ -95,12 +117,12 @@ export function flattenPlanesWithDraws(
         const crop = new GrayImage(right-left+1,bottom-top+1);
         for(let y=0;y<crop.height;y++) crop.pixels.set(raster.pixels.subarray((y+top)*raster.width+left,(y+top)*raster.width+right+1),y*crop.width);
         retained.push({ kind: "image", source: crop, x: left, y: top,
-          presentation: { mode: "masked-image", radius: 0, background: 0, border: 0, depth: plane.depth } });
+          presentation: { mode: "masked-image", radius: 0, background: 0, border: 0, depth: plane.depth ?? 0 } });
       }
     }
-    const planeDraws = plane.depth ? [...retained, ...plane.image.draws.filter(d => d.kind === "image" && d.presentation).map(d => {
+    const planeDraws = retainedOnly(plane) ? [...retained, ...plane.image.draws.filter(d => d.kind === "image" && d.presentation).map(d => {
       const draw = d as PlacedImage;
-      return { ...draw, presentation: { ...draw.presentation!, depth: draw.presentation!.depth + plane.depth! } };
+      return { ...draw, presentation: { ...draw.presentation!, depth: draw.presentation!.depth + (plane.depth ?? 0) } };
     })] : plane.image.draws;
     for (const placed of planeDraws) {
       const translated = { ...placed, x: placed.x + plane.x, y: placed.y + plane.y };
@@ -115,7 +137,7 @@ export function flattenPlanesWithDraws(
         for (let y = Math.max(0, translated.y); y < Math.min(image.height, translated.y + translated.source.height); y++) {
           let start = -1;
           for (let x = left; x <= right; x++) {
-            const covered = x < right && planes.some((p, i) => i > index && !p.depth && x >= p.x && y >= p.y && x < p.x + p.image.width && y < p.y + p.image.height && rasters[i]!.pixels[(y-p.y)*p.image.width+x-p.x] !== 0);
+            const covered = x < right && planes.some((p, i) => i > index && !retainedOnly(p) && x >= p.x && y >= p.y && x < p.x + p.image.width && y < p.y + p.image.height && rasters[i]!.pixels[(y-p.y)*p.image.width+x-p.x] !== 0);
             if (covered && start < 0) start = x;
             if (!covered && start >= 0) {
               const previous = occlusions.find(r => r.x === start && r.width === x - start && r.y + r.height === y);
@@ -139,6 +161,6 @@ export function flattenPlanesWithDraws(
  */
 export function planesFingerprint(planes: readonly Plane[]): string {
   return planes
-    .map((plane) => `${plane.depth ?? 0}:${plane.x},${plane.y}+${plane.image.width}x${plane.image.height}:${plane.image.fingerprint()}`)
+    .map((plane) => `${plane.depth ?? 0}${plane.overlay ? `@${plane.dimUnderneath ?? 1}` : ""}:${plane.x},${plane.y}+${plane.image.width}x${plane.image.height}:${plane.image.fingerprint()}`)
     .join("|");
 }

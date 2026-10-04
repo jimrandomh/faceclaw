@@ -308,7 +308,9 @@ export class MenuLayer implements Layer {
     const maxHeight = Math.min(
       this.layout.maxHeight ?? image.height - y - DEFAULT_MENU_Y,
       image.height - y,
-      (this.layout.squareCorners || this.depth !== 0) ? Math.floor(65530 / Math.ceil(width / 2)) : Infinity,
+      // Retained as one resource: as a shell surface, at depth, or as a
+      // dimming window overlay (see LayerStack.paintWindow).
+      (this.layout.squareCorners || this.depth !== 0 || this.dimUnderneath !== false) ? Math.floor(65530 / Math.ceil(width / 2)) : Infinity,
     );
     const footerHeight = this.layout.footer ? MENU_FOOTER_GAP + lineStep(font) : 0;
     const contentHeight = chromeTop + this.items.length * rowHeight + footerHeight + MENU_BODY_PADDING;

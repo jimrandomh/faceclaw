@@ -43,7 +43,7 @@ class PreviewPackingTest {
         compositor.configureSurface("app", 0, 0, 3, 2, 0, SurfaceCompositor.TRANSPARENCY_OPAQUE)
         // One white 2x1 shell layer at (0,0), with no dimming or selection.
         val header = listOf(1, 1, 0, 0, 2, 1, 256, 0, 0).flatMap { listOf(it.toByte(), (it shr 8).toByte()) }.toByteArray()
-        compositor.setShellScene(ArrayByteReader(header + byteArrayOf(-16, -16) + DrawProtocol.word(0)))
+        compositor.setShellScene(ArrayByteReader(header + byteArrayOf(-16, -16) + DrawProtocol.word(0) + DrawProtocol.word(1)))
         val wire = compositor.applyAndComposite("app", ArrayByteReader(ByteArray(6) { 32 }), 0, 0, 3, 2, "first")
         assertSame(wire.screenGray, wire.gray) // ShellScene.preview allocates its own pixels.
         assertContentEquals(ByteArray(6) { 32 }, wire.screenGray)

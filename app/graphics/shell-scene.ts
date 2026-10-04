@@ -20,10 +20,18 @@ export function shellCrop(image: GrayImage, x: number, y: number, width: number,
  * Shared Kotlin receives original 8-bit pixels and quantizes once, before
  * composing. `screenDepth` is the whole display's stereo depth (geometry.ts
  * uiDepth), trailing the layers.
+ *
+ * The first `chromePlanes` planes are the chrome, which the foreground
+ * window's overlay (Plane.overlay) draws over; the rest are shell overlays,
+ * which draw over it. The window overlay also goes under the first plane
+ * that dims, so a dimming shell layer stays on top and is the only dim. Its
+ * layer index trails the screen depth.
  */
-export function encodeShellScene(planes: readonly Plane[], screenDepth = 0): Uint8Array {
+export function encodeShellScene(planes: readonly Plane[], screenDepth = 0, chromePlanes = planes.length): Uint8Array {
   const layers: { image: GrayImage; x: number; y: number; key: number; depth: number; dim: number; selections: Uint8Array[] }[] = []
-  for (const plane of planes) {
+  let windowOverlayAt = -1
+  for (const [index, plane] of planes.entries()) {
+    if (windowOverlayAt < 0 && (index >= chromePlanes || (plane.dimUnderneath ?? 1) < 1)) windowOverlayAt = layers.length
     const image = plane.image.withDrawsBaked(false)
     let left = image.width, top = image.height, right = -1, bottom = -1
     for (let y = 0; y < image.height; y++) for (let x = 0; x < image.width; x++) {
@@ -40,11 +48,12 @@ export function encodeShellScene(planes: readonly Plane[], screenDepth = 0): Uin
         presentation: { ...d.presentation!, depth: d.presentation!.depth + (plane.depth ?? 0) } }))
     layers.push({ depth: plane.depth ?? 0, selections, image: cropped.image, x: plane.x + left, y: plane.y + top, key: plane.shellKey!, dim: Math.round((plane.dimUnderneath ?? 1) * 256) })
   }
-  const result = new Uint8Array(4 + layers.reduce((n, l) => n + 16 + l.image.pixels.length + l.selections.reduce((sum, b) => sum + b.length, 0), 0))
+  if (windowOverlayAt < 0) windowOverlayAt = layers.length
+  const result = new Uint8Array(6 + layers.reduce((n, l) => n + 16 + l.image.pixels.length + l.selections.reduce((sum, b) => sum + b.length, 0), 0))
   const view = new DataView(result.buffer); let p = 0
   const word = (n: number) => { view.setUint16(p, n, true); p += 2 }
   word(layers.length)
   for (const l of layers) { word(l.key); word(l.x); word(l.y); word(l.image.width); word(l.image.height); word(l.dim); word(l.selections.length); word(l.depth); result.set(l.image.pixels, p); p += l.image.pixels.length; for (const selection of l.selections) { result.set(selection, p); p += selection.length } }
-  word(screenDepth)
+  word(screenDepth); word(windowOverlayAt)
   return result
 }

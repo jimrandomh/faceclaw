@@ -316,7 +316,7 @@ class DisplayListTest {
             0, 0, 576, 480, "stripe")
         // One white 2x1 shell layer at (200, 10), dimming what is under it, at layer depth -2; scene depth 8.
         val header = listOf(1, 1, 200, 10, 2, 1, 128, 0, -2).flatMap { listOf(it.toByte(), (it shr 8).toByte()) }.toByteArray()
-        c.setShellScene(ArrayByteReader(header + byteArrayOf(-1, -1) + DrawProtocol.word(8)))
+        c.setShellScene(ArrayByteReader(header + byteArrayOf(-1, -1) + DrawProtocol.word(8) + DrawProtocol.word(1)))
         val composite = c.composite()
         assertEquals(8, composite.shellScene.screenDepth)
         val calls = composite.shellScene.calls(640, 480, intArrayOf(1), IntArray(0))

@@ -151,7 +151,7 @@ export class WindowMenu {
    */
   paint(content?: () => Plane[]): Plane[] {
     this.syncGestures();
-    if (this.stack) return this.stack.paint();
+    if (this.stack) return this.stack.paintWindow();
     return content ? content() : singlePlane(this.options.paintBase());
   }
 

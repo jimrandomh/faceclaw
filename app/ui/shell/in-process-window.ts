@@ -130,7 +130,7 @@ export function createInProcessWindow(options: InProcessWindowOptions): InProces
     // runWithFrame so leaf data sources (notification icons, calendar) attach
     // their own spans to this frame.
     const planes = frameTimings.span(frameId, "paint", () =>
-      frameTimings.runWithFrame(frameId, () => stack.paint()),
+      frameTimings.runWithFrame(frameId, () => stack.paintWindow()),
     );
     const paintUsedStaleData = endRenderPass();
     await options.submitFrame(planes, Date.now() - paintStartedAtMs, frameId);

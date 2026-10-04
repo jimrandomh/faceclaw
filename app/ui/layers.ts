@@ -89,7 +89,8 @@ export interface Layer {
    * (only meaningful for layers that call paintBelow). false, the default,
    * leaves the planes below as painted. For the shell's stack the factor also
    * reaches the window surfaces beneath the shell surface (see
-   * LayerStack.baseDim).
+   * LayerStack.baseDim); in a window's stack it reaches the shell chrome too
+   * (see LayerStack.paintWindow).
    */
   readonly dimUnderneath?: false | number;
   paint(ctx: LayerContext, paintBelow: PaintBelow): GrayImage;
@@ -129,6 +130,7 @@ export class LayerStack {
   private baseHeight: number;
   private readonly focusedFn: () => boolean;
   private lastBaseDim: number | false = 1;
+  private lastBasePlaneCount = 0;
 
   constructor(
     baseLayer: Layer,
@@ -223,7 +225,24 @@ export class LayerStack {
    */
   paint(): Plane[] {
     this.lastBaseDim = false;
+    this.lastBasePlaneCount = 0;
     return this.paintLayer(this.layers.length - 1, 1);
+  }
+
+  /**
+   * Paint a window's stack. Like paint, except that the topmost layer with
+   * dimUnderneath doesn't dim the planes below it: its plane and those of
+   * the layers above it become the window's overlay (Plane.overlay), which
+   * the compositor draws after the shell chrome, dimming everything drawn
+   * before it. A window context menu thereby dims the app switcher and
+   * status bar along with the window, as the shell's system menu does.
+   * While the window lacks input focus (the menu stays open when focus moves
+   * to the switcher) the overlay doesn't dim, leaving the switcher bright.
+   */
+  paintWindow(): Plane[] {
+    this.lastBaseDim = false;
+    this.lastBasePlaneCount = 0;
+    return this.paintLayer(this.layers.length - 1, 1, false, true);
   }
 
   /**
@@ -233,10 +252,23 @@ export class LayerStack {
    * A stack whose base is transparent over something else (the shell chrome
    * over the window surfaces) forwards this to what lies beneath.
    */
-  paintUndimmed(): Plane[] { return this.paintLayer(this.layers.length - 1, 1, true); }
+  paintUndimmed(): Plane[] {
+    this.lastBasePlaneCount = 0;
+    return this.paintLayer(this.layers.length - 1, 1, true);
+  }
 
   baseDim(): number | false {
     return this.lastBaseDim;
+  }
+
+  /**
+   * How many of the last paint's planes are the base layer's (first in the
+   * array; 0 when a stacked layer replaced the base). For the shell's stack
+   * these are the chrome, which a window's overlay draws over, and the rest
+   * are shell overlays, which draw over it.
+   */
+  basePlaneCount(): number {
+    return this.lastBasePlaneCount;
   }
 
   async handleInput(event: InputEvent): Promise<void> {
@@ -268,10 +300,18 @@ export class LayerStack {
   }
 
 
-  /** Paint layer `index`; `dimSoFar` is the factor the layers above apply to it. */
-  private paintLayer(index: number, dimSoFar: number, raw = false): Plane[] {
+  /**
+   * Paint layer `index`; `dimSoFar` is the factor the layers above apply to
+   * it. With `overlayPending`, no layer above has started a window overlay
+   * yet, so a dimming layer here starts one (see paintWindow).
+   */
+  private paintLayer(index: number, dimSoFar: number, raw = false, overlayPending = false): Plane[] {
     const layer = this.layers[index]!;
-    if (raw && index === 0 && layer.paintParts) return layer.paintParts();
+    if (raw && index === 0 && layer.paintParts) {
+      const parts = layer.paintParts();
+      this.lastBasePlaneCount = parts.length;
+      return parts;
+    }
     let key = this.shellKeys.get(layer);
     if (key === undefined) { key = LayerStack.allocateShellKey(); this.shellKeys.set(layer, key); }
     let canvas: GrayImage | null = null;
@@ -288,13 +328,22 @@ export class LayerStack {
     const ownPlane: Plane = { image, x: 0, y: 0, shellKey: key, depth: layer.depth, dimUnderneath: layer.dimUnderneath === false ? 1 : layer.dimUnderneath };
     if (index <= 0) {
       this.lastBaseDim = dimSoFar;
+      this.lastBasePlaneCount = 1;
       return [ownPlane];
     }
     if (!belowRequested) {
       return [ownPlane];
     }
     const dim = layer.dimUnderneath || 1;
-    const below = this.paintLayer(layer.paintOverBase ? 0 : index - 1, dimSoFar * dim, raw);
-    return [...(!raw && dim < 1 ? dimPlanes(below, dim) : below), ownPlane];
+    const belowIndex = layer.paintOverBase ? 0 : index - 1;
+    if (overlayPending && dim < 1) {
+      // The compositor applies this dim, to the chrome as well as the window.
+      const overlayDim = this.isFocused() ? dim : 1;
+      return [...this.paintLayer(belowIndex, dimSoFar, raw), { ...ownPlane, overlay: true, dimUnderneath: overlayDim }];
+    }
+    const planes = this.paintLayer(belowIndex, dimSoFar * dim, raw, overlayPending);
+    // A layer over the overlay's first plane is part of the overlay too.
+    const overlay = planes[planes.length - 1]?.overlay;
+    return [...(!raw && dim < 1 ? dimPlanes(planes, dim) : planes), overlay ? { ...ownPlane, overlay } : ownPlane];
   }
 }

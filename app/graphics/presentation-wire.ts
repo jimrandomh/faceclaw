@@ -10,7 +10,11 @@ export const DrawRecordKind = {
   TRANSPARENT_IMAGE: 4,
   MASKED_IMAGE: 5,
   DISPLAY_LIST: DISPLAY_LIST_RECORD,
+  /** [8][dim u16, 256 = none]: the presentations after it are the window's overlay (see Plane.overlay). */
+  WINDOW_OVERLAY: 8,
 } as const
+
+export const WINDOW_OVERLAY_RECORD_BYTES = 3
 
 export function isPresentationKind(kind: number | undefined): boolean {
   return kind === DrawRecordKind.MENU_SELECTION || kind === DrawRecordKind.TRANSPARENT_IMAGE ||
@@ -72,6 +76,7 @@ export function presentationRecords(buffer: ArrayBuffer | null): Selection[] {
     else if(bytes[p]===DrawRecordKind.GLYPH) p+=12
     else if(bytes[p]===DrawRecordKind.TEXTURE_IMAGE) p+=9
     else if(bytes[p]===DrawRecordKind.FIRMWARE_TEXT) p+=7+bytes[p+6]!*7
+    else if(bytes[p]===DrawRecordKind.WINDOW_OVERLAY) p+=WINDOW_OVERLAY_RECORD_BYTES
     else break
   }
   return result

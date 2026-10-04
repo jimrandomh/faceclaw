@@ -64,6 +64,39 @@ test('context menu surface and selected row both use +4 without changing the app
   assert.deepEqual(closed.image.pixels,base.pixels);
   assert.deepEqual(wire.presentationRecords(prepareFrameDraws(closed.draws)),[]);
 });
+test('a window context menu dims through an overlay instead of dimming the window planes',()=>{
+  const base=new graphics.GrayImage(100,90,96);
+  const stack=new LayerStack({paint:()=>base},noopLayerActions,{width:100,height:90});
+  stack.push(new MenuLayer(null,[{label:'FIRST',onSelect(){}}],{x:10,y:8,width:80,minHeight:70,maxHeight:70,depth:4,dimUnderneath:0.25}));
+  const window=stack.paintWindow();
+  assert.deepEqual(Array.from(window,p=>!!p.overlay),[false,true]);
+  const frame=planes.flattenPlanesWithDraws(window);
+  // The compositor applies the dim, to the chrome as well as the window.
+  assert.deepEqual(frame.image.pixels,base.pixels);
+  assert.equal(frame.draws[0].kind,'overlay');
+  const bytes=new Uint8Array(prepareFrameDraws(frame.draws));
+  assert.deepEqual([bytes[0],bytes[1],bytes[2]],[wire.DrawRecordKind.WINDOW_OVERLAY,64,0]);
+  assert.deepEqual(wire.presentationRecords(bytes.buffer).map(r=>r.depth),[4,4]);
+  // Unfocused (the switcher has focus), the overlay leaves the switcher bright.
+  let focused=false;
+  const unfocused=new LayerStack({paint:()=>base},noopLayerActions,{width:100,height:90},()=>focused);
+  unfocused.push(new MenuLayer(null,[{label:'FIRST',onSelect(){}}],{x:10,y:8,width:80,minHeight:70,maxHeight:70,depth:4,dimUnderneath:0.25}));
+  assert.equal(planes.flattenPlanesWithDraws(unfocused.paintWindow()).draws[0].dim,1);
+  focused=true;
+  assert.equal(planes.flattenPlanesWithDraws(unfocused.paintWindow()).draws[0].dim,0.25);
+  // paint() still dims the window's own planes.
+  const plain=stack.paint();
+  assert.ok(!plain.some(p=>p.overlay));
+  assert.ok(planes.flattenPlanesWithDraws(plain).image.pixels[0]<96);
+});
+test('the window overlay goes over the chrome, under shell overlays and the first dimming layer',()=>{
+  const part=(key,dim)=>({image:new graphics.GrayImage(4,4,200),x:0,y:0,shellKey:key,dimUnderneath:dim});
+  const at=bytes=>new DataView(bytes.buffer).getUint16(bytes.length-2,true);
+  assert.equal(at(encodeShellScene([part(1),part(2),part(3,0.25)],0,2)),2);
+  assert.equal(at(encodeShellScene([part(1,0.5),part(2)],0,2)),0);
+  assert.equal(at(encodeShellScene([part(1),part(2)])),2);
+  assert.equal(at(encodeShellScene([])),0);
+});
 test('system menu bridge shifts its surface and selected row together by +4',()=>{
   const image=menu().paint(),bytes=encodeShellScene([{image,x:8,y:0,shellKey:7,depth:4}]);
   const view=new DataView(bytes.buffer),w=view.getUint16(8,true),h=view.getUint16(10,true);

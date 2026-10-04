@@ -61,6 +61,10 @@ class SurfaceCompositor @JvmOverloads constructor(private val includePreviewInFr
             while ((cursor.remaining() >= 1)) {
                 var kind: Int = (cursor.get() and 0xff)
                 if (DrawRecordKind.isPresentation(kind)) { out.add(ScreenDraw.image(0, 0, 0).also { it.selection = readRetainedDrawing(cursor, kind) }); continue }
+                if (kind == DrawRecordKind.WINDOW_OVERLAY && cursor.remaining() >= 2) {
+                    out.add(ScreenDraw.overlay(minOf(256, cursor.getShort().toInt() and 0xffff)))
+                    continue
+                }
                 if (((kind == ScreenDraw.KIND_GLYPH) && (cursor.remaining() >= 11))) {
                     var fontId: Int = (cursor.getShort().toInt() and 0xffff)
                     var encoding: Int = cursor.getInt()
@@ -126,6 +130,12 @@ class SurfaceCompositor @JvmOverloads constructor(private val includePreviewInFr
             /** A firmware-builtin-font text run (CFW mode 15). */
             const val KIND_FWTEXT: Int = DrawRecordKind.FIRMWARE_TEXT
 
+            /**
+             * Not a draw: the start of the surface's overlay (its later selections), with the
+             * overlay's dim (256 = none) in value. See ShellScene.overlay.
+             */
+            const val KIND_OVERLAY: Int = DrawRecordKind.WINDOW_OVERLAY
+
             @JvmStatic
             fun glyph(fontId: Int, encoding: Int, penX: Int, lineY: Int, value: Int): ScreenDraw {
                 return ScreenDraw(
@@ -145,6 +155,11 @@ class SurfaceCompositor @JvmOverloads constructor(private val includePreviewInFr
             @JvmStatic
             fun image(imageId: Int, x: Int, y: Int): ScreenDraw {
                 return ScreenDraw(KIND_IMAGE, 0, 0, imageId, x, y, 0, null, null, null)
+            }
+
+            @JvmStatic
+            fun overlay(dim: Int): ScreenDraw {
+                return ScreenDraw(KIND_OVERLAY, 0, 0, 0, 0, 0, dim, null, null, null)
             }
 
             @JvmStatic
@@ -302,6 +317,10 @@ class SurfaceCompositor @JvmOverloads constructor(private val includePreviewInFr
          * scene built from them (and its fingerprint) can be reused too.
          */
         @JvmField var placedSelections: List<RetainedDrawing> = emptyList()
+        /** As [placedSelections], for those after the overlay marker (see ShellScene.overlay). */
+        @JvmField var placedOverlay: List<RetainedDrawing> = emptyList()
+        /** The overlay marker's dim; 256 when it has none (or there is no overlay). */
+        @JvmField var overlayDim: Int = 256
         @JvmField var placedFor: Array<ScreenDraw>? = null
         @JvmField var placedX: Int = 0
         @JvmField var placedY: Int = 0
@@ -735,15 +754,20 @@ class SurfaceCompositor @JvmOverloads constructor(private val includePreviewInFr
         fingerprint.append(screenWidth).append('x').append(screenHeight)
         var draws: MutableList<ScreenDraw> = ArrayList()
         val selections = ArrayList<RetainedDrawing>()
+        val overlay = ArrayList<RetainedDrawing>()
+        var overlayDim = 256
         for (surface in ordered) {
             if (!surface.visible || (shellScene != null && surface.id == "shell")) {
                 continue
             }
             blendLocked(gray, surface)
             var dim: Int = dimForLocked(surface)
-            selections.addAll(placedSelectionsLocked(surface))
+            placeSelectionsLocked(surface)
+            selections.addAll(surface.placedSelections)
+            overlay.addAll(surface.placedOverlay)
+            overlayDim = minOf(overlayDim, surface.overlayDim)
             for (draw in surface.draws) {
-                if (draw.selection != null) continue
+                if (draw.selection != null || draw.kind == ScreenDraw.KIND_OVERLAY) continue
                 if (((dim < 256) && (draw.kind == ScreenDraw.KIND_IMAGE))) {
                     continue
                 }
@@ -788,15 +812,19 @@ class SurfaceCompositor @JvmOverloads constructor(private val includePreviewInFr
         val overlaid = surfaces.values.any { it.visible && it.zOrder > 1 }
         val sceneLayers = if (overlaid) emptyList() else shellScene?.layers ?: emptyList()
         val sceneSelections: List<RetainedDrawing> = if (overlaid) emptyList() else selections
+        val sceneOverlay: List<RetainedDrawing> = if (overlaid) emptyList() else overlay
+        val sceneOverlayDim = if (overlaid) 256 else overlayDim
+        val sceneOverlayAt = if (overlaid) 0 else shellScene?.overlayAt ?: 0
         // Built per composite, a scene rebuilt its fingerprint and resource lists every time even
         // though its inputs (the decoded shell layers, cached placed selections) rarely change.
         val previous = lastScene
         val scene = if (previous != null && previous.layers === sceneLayers && previous.screenDepth == screenDepth &&
-            sameElements(previous.selections, sceneSelections)) previous
-            else ShellScene(sceneLayers, sceneSelections, screenDepth)
+            sameElements(previous.selections, sceneSelections) && sameElements(previous.overlay, sceneOverlay) &&
+            previous.overlayDim == sceneOverlayDim && previous.overlayAt == sceneOverlayAt) previous
+            else ShellScene(sceneLayers, sceneSelections, screenDepth, sceneOverlay, sceneOverlayDim, sceneOverlayAt)
         lastScene = scene
         val sceneKey = fingerprint.append("|shell:").append(scene.fingerprint).toString()
-        val preview = if (includePreview && (shellScene != null || selections.isNotEmpty())) {
+        val preview = if (includePreview && (shellScene != null || selections.isNotEmpty() || overlay.isNotEmpty() || overlayDim < 256)) {
             previewScene(scene, gray, sceneKey)
         } else {
             if (includePreview) {
@@ -810,14 +838,19 @@ class SurfaceCompositor @JvmOverloads constructor(private val includePreviewInFr
             nextCompositeSeq++, draws.toTypedArray()).also { it.screenGray = gray; it.shellScene = scene }
     }
 
-    private fun placedSelectionsLocked(surface: Surface): List<RetainedDrawing> {
+    /** Bring [surface]'s placed selections, overlay and overlay dim up to date with its draws. */
+    private fun placeSelectionsLocked(surface: Surface) {
         if (surface.placedFor !== surface.draws || surface.placedX != surface.x || surface.placedY != surface.y) {
-            surface.placedSelections = surface.draws.mapNotNull { it.selection?.translated(surface.x, surface.y) }
+            val draws = surface.draws.asList()
+            val marker = draws.indexOfFirst { it.kind == ScreenDraw.KIND_OVERLAY }
+            fun placed(part: List<ScreenDraw>) = part.mapNotNull { it.selection?.translated(surface.x, surface.y) }
+            surface.placedSelections = placed(if (marker < 0) draws else draws.subList(0, marker))
+            surface.placedOverlay = if (marker < 0) emptyList() else placed(draws.subList(marker + 1, draws.size))
+            surface.overlayDim = if (marker < 0) 256 else draws[marker].value
             surface.placedFor = surface.draws
             surface.placedX = surface.x
             surface.placedY = surface.y
         }
-        return surface.placedSelections
     }
 
     private fun sameElements(a: List<RetainedDrawing>, b: List<RetainedDrawing>): Boolean {

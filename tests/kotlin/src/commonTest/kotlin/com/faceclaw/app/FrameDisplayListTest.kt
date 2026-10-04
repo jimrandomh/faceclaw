@@ -99,7 +99,7 @@ class FrameDisplayListTest {
         // One opaque 1x1 shell layer, with one generic list after its pixels.
         val layer = DrawProtocol.word(1) + DrawProtocol.word(1) + DrawProtocol.word(0) + DrawProtocol.word(0) +
             DrawProtocol.word(1) + DrawProtocol.word(1) + DrawProtocol.word(256) + DrawProtocol.word(1) +
-            DrawProtocol.word(0) + byteArrayOf(32) + hex(multi) + DrawProtocol.word(0)
+            DrawProtocol.word(0) + byteArrayOf(32) + hex(multi) + DrawProtocol.word(0) + DrawProtocol.word(1)
         val shell = ShellScene.decode(ArrayByteReader(layer))
         assertEquals(2, shell.retainedResources.size)
         assertEquals(240, shell.preview(ByteArray(64) { 32 }, 8, 8)[21].toInt() and 255)

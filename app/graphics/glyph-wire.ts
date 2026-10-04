@@ -1,4 +1,4 @@
-import { DrawRecordKind, encodePresentation } from "./presentation-wire";
+import { DrawRecordKind, WINDOW_OVERLAY_RECORD_BYTES, encodePresentation } from "./presentation-wire";
 /**
  * Marshals deferred-draw identity (text glyphs and icon images) to the Kotlin
  * side for the texture-cache pipeline (CFW modes 18/19/20; see
@@ -22,6 +22,7 @@ import { DrawRecordKind, encodePresentation } from "./presentation-wire";
  */
 import { Glyph } from "./bdffont";
 import { GrayImage, type DeferredDraw, type GlyphFont, type PlacedFwText, type PlacedGlyph, type PlacedImage } from "./image";
+import type { FrameDraw } from "./plane";
 
 import { textureAtlasAvailable, textureFontId, registerTextureGlyphs, registerFirmwareGlyphs, textureImageId } from "../native/texture-atlas";
 
@@ -151,9 +152,11 @@ function inRange16(v: number): boolean {
  *   [1][imageId u32][x s16][y s16]                                 (image)
  *   [2][x s16][y s16][value u8][count u8]                          (fw text run)
  *      then count x [cp u32][dx s16][ink u8]
- * in draw order. Returns null when nothing is expressible (or without a native atlas).
+ *   [8][dim u16]                                                   (overlay start)
+ * in draw order, among the presentation records (presentation-wire.ts).
+ * Returns null when nothing is expressible (or without a native atlas).
  */
-export function prepareFrameDraws(draws: readonly DeferredDraw[]): ArrayBuffer | null {
+export function prepareFrameDraws(draws: readonly FrameDraw[]): ArrayBuffer | null {
   if (draws.length === 0) return null;
 
   // Pass 1: resolve ids, register unseen rasters, size the buffer.
@@ -172,6 +175,8 @@ export function prepareFrameDraws(draws: readonly DeferredDraw[]): ArrayBuffer |
       if (!inRange16(placed.x) || !inRange16(placed.y)) continue;
       if (placed.presentation) { const record = encodePresentation(placed); presentations.set(placed, record); bytes += record.length; }
       else if (imageId(placed) !== null) bytes += IMAGE_RECORD_BYTES;
+    } else if (placed.kind === "overlay") {
+      bytes += WINDOW_OVERLAY_RECORD_BYTES;
     } else {
       const ok = prepareFwTextRun(placed);
       fwRunOk.set(placed, ok);
@@ -196,6 +201,10 @@ export function prepareFrameDraws(draws: readonly DeferredDraw[]): ArrayBuffer |
       const id = imageId(placed);
       if (id === null) continue;
       offset = writeImageRecord(out, offset, id, placed);
+    } else if (placed.kind === "overlay") {
+      out.setUint8(offset, DrawRecordKind.WINDOW_OVERLAY);
+      out.setUint16(offset + 1, Math.round(Math.max(0, Math.min(1, placed.dim)) * 256), true);
+      offset += WINDOW_OVERLAY_RECORD_BYTES;
     } else {
       if (!fwRunOk.get(placed)) continue;
       out.setUint8(offset, DrawRecordKind.FIRMWARE_TEXT);
