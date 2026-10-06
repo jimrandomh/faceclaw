@@ -13,6 +13,7 @@ import {
   FILES_SURFACE_ID,
   FILES_WINDOW_ID,
 } from "./files-app";
+import { createVideoPlayerWindow } from "./video-window";
 
 // Document windows are closeable and non-singleton; the serial keeps their
 // windowIds unique.
@@ -51,6 +52,17 @@ function openFontDocumentWindow(ctx: AppContext, title: string, path: string): v
     });
 }
 
+function openVideoWindow(ctx: AppContext, title: string, path: string): void {
+  const windowId = `files:doc:${nextDocumentSerial++}`;
+  void ctx
+    .launchInProcessApp(windowId, `window:${windowId}`, (options) =>
+      createVideoPlayerWindow(windowId, title, path, options),
+    )
+    .catch((error) => {
+      ctx.appendLog(`video window failed: ${error}`);
+    });
+}
+
 const filesApp: AppDefinition = {
   appId: "files",
   title: "Files",
@@ -78,6 +90,7 @@ const filesApp: AppDefinition = {
           }
         },
         openFontWindow: (title, path) => openFontDocumentWindow(ctx, title, path),
+        openVideoWindow: (title, path) => openVideoWindow(ctx, title, path),
       }),
     ),
   // A document arriving via Android's Share intent opens as its own window.

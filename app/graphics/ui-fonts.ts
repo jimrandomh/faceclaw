@@ -73,7 +73,7 @@ export function parseFontSelection(raw: string): UiFontSelection | null {
 }
 
 /** Default UI font when the user has never picked one. */
-const DEFAULT_UI_FONT: UiFontSelection = { kind: "ttf", file: "Roboto-Light.ttf", size: 14 };
+const DEFAULT_UI_FONT: UiFontSelection = { kind: "ttf", file: "Roboto-Light.ttf", size: 16 };
 
 export function getUiFontSelection(): UiFontSelection {
   const parsed = parseFontSelection(getStringSetting(UI_FONT_SELECTION_KEY, ""));
@@ -111,21 +111,49 @@ export function fontSelectionLabel(selection: UiFontSelection): string {
 
 // --- Resolution, cached per isolate ---
 
-const resolved = new Map<string, UiFont>();
-let invalidationInstalled = false;
+type UiFontRole = "small" | "medium" | "large";
 
-function cacheKey(role: string): string {
-  return role;
+const UI_FONT_KEYS: readonly string[] = [UI_FONT_SELECTION_KEY, LEGACY_UI_FONT_KEY];
+
+/**
+ * The three role fonts for one selection source, resolved lazily and cached
+ * until a change to any of `keys` (the settings the selection reads).
+ */
+class RoleFonts {
+  private readonly resolved = new Map<UiFontRole, UiFont>();
+
+  constructor(
+    readonly keys: readonly string[],
+    private readonly selection: () => UiFontSelection,
+  ) {}
+
+  get(role: UiFontRole): UiFont {
+    installInvalidation();
+    const cached = this.resolved.get(role);
+    if (cached) return cached;
+    const font = resolveRole(this.selection(), role);
+    this.resolved.set(role, font);
+    return font;
+  }
+
+  clear(): void {
+    this.resolved.clear();
+  }
 }
+
+const roleFontSets: RoleFonts[] = [];
+const uiRoleFonts = new RoleFonts(UI_FONT_KEYS, getUiFontSelection);
+roleFontSets.push(uiRoleFonts);
+let invalidationInstalled = false;
 
 function installInvalidation(): void {
   if (invalidationInstalled) return;
   invalidationInstalled = true;
   onSettingsStoreChanged((key) => {
-    if (key === UI_FONT_SELECTION_KEY || key === LEGACY_UI_FONT_KEY || key === TERMINAL_FONT_SELECTION_KEY) {
-      resolved.clear();
-      cachedTerminalConfig = null;
+    for (const fonts of roleFontSets) {
+      if (fonts.keys.includes(key)) fonts.clear();
     }
+    if (key === TERMINAL_FONT_SELECTION_KEY) cachedTerminalConfig = null;
   });
 }
 
@@ -148,46 +176,72 @@ function resolveTtf(selection: UiFontSelection, minLineHeight = 0): TtfFont | nu
   return null;
 }
 
-function resolveRole(role: "small" | "medium" | "large"): UiFont {
-  installInvalidation();
-  const key = cacheKey(role);
-  const cached = resolved.get(key);
-  if (cached) return cached;
-  const selection = getUiFontSelection();
-  let font: UiFont | null = null;
+function resolveRole(selection: UiFontSelection, role: UiFontRole): UiFont {
   // Enforce the guaranteed small-font range even against a stale or
   // hand-edited selection: an out-of-range selection falls back to bitmap for
   // every role (medium/large derive from small, so their documented ranges
   // follow and the roles never mix faces).
   if (selection.kind === "ttf" && uiFontSizeAllowed(installedFontPath(selection.file), selection.size)) {
-    font =
+    const font =
       role === "small"
         ? resolveTtf(selection)
         : resolveTtf(selection, role === "medium" ? MEDIUM_MIN_LINE_HEIGHT : LARGE_MIN_LINE_HEIGHT);
+    if (font) return font;
   }
-  if (!font) {
-    font = bitmapForRole(selection.kind === "bitmap" ? selection.face : "terminus", role);
-  }
-  resolved.set(key, font);
-  return font;
+  return bitmapForRole(selection.kind === "bitmap" ? selection.face : "terminus", role);
 }
 
 // Only the small (12px) bitmap font has a TerminusV alternative (it ships no
 // larger sizes); bitmap medium/large stay Terminus, as before the picker.
-function bitmapForRole(face: BitmapFace, role: "small" | "medium" | "large"): BdfFont {
+function bitmapForRole(face: BitmapFace, role: UiFontRole): BdfFont {
   if (role === "medium") return getFont("terminus16");
   if (role === "large") return getFont("terminus24");
   return getFont(face === "terminusv" ? "terminusv12" : "terminus12");
 }
 
 export function getDefaultSmallFont(): UiFont {
-  return resolveRole("small");
+  return uiRoleFonts.get("small");
 }
 export function getDefaultMediumFont(): UiFont {
-  return resolveRole("medium");
+  return uiRoleFonts.get("medium");
 }
 export function getDefaultLargeFont(): UiFont {
-  return resolveRole("large");
+  return uiRoleFonts.get("large");
+}
+
+/**
+ * A per-app UI font that defaults to the Display UI font: a selection stored
+ * as JSON under `storageKey`, or nothing to inherit. Its small/medium/large
+ * fonts derive from the selection exactly as the UI font's roles do, with
+ * the same line-height guarantees, so layouts written against
+ * getDefault*Font work unchanged.
+ */
+export class UiFontOverride {
+  private readonly fonts: RoleFonts;
+
+  constructor(readonly storageKey: string) {
+    this.fonts = new RoleFonts([storageKey, ...UI_FONT_KEYS], () => this.getSelection() ?? getUiFontSelection());
+    roleFontSets.push(this.fonts);
+  }
+
+  /** The app's own selection, or null when it inherits the UI font. */
+  getSelection(): UiFontSelection | null {
+    return parseFontSelection(getStringSetting(this.storageKey, ""));
+  }
+
+  setSelection(selection: UiFontSelection | null): void {
+    setStringSetting(this.storageKey, selection ? JSON.stringify(selection) : "");
+  }
+
+  small(): UiFont {
+    return this.fonts.get("small");
+  }
+  medium(): UiFont {
+    return this.fonts.get("medium");
+  }
+  large(): UiFont {
+    return this.fonts.get("large");
+  }
 }
 
 // --- Terminal font ---

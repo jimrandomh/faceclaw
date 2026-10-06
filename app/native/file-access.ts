@@ -124,19 +124,19 @@ export function readBinaryFile(path: string): Uint8Array | null {
   try {
     const file = new java.io.File(path);
     if (!file.isFile()) return null;
-    const bytes = java.nio.file.Files.readAllBytes(file.toPath());
+    // Read into a direct buffer, which the V8 runtime can view in place, then
+    // copy once so the result outlives it. Nothing lands on the Java heap, and
+    // no path copies per byte (EvenHub packages can be tens of MB).
+    const length = Number(file.length());
+    const buffer = java.nio.ByteBuffer.allocateDirect(Math.max(length, 1));
+    const channel = new java.io.FileInputStream(file).getChannel();
     try {
-      // The V8 runtime can wrap a ByteBuffer's memory directly; copy out of it
-      // so the result outlives the Java array.
-      const arrayBuffer = (ArrayBuffer as any).from(java.nio.ByteBuffer.wrap(bytes));
-      return new Uint8Array(arrayBuffer).slice();
-    } catch {
-      const out = new Uint8Array(bytes.length);
-      for (let i = 0; i < bytes.length; i++) {
-        out[i] = bytes[i] & 0xff;
-      }
-      return out;
+      while (buffer.position() < length && channel.read(buffer) >= 0) { /* fill */ }
+    } finally {
+      channel.close();
     }
+    const read = Number(buffer.position());
+    return new Uint8Array((ArrayBuffer as any).from(buffer), 0, read).slice();
   } catch (error) {
     console.warn(`readBinaryFile failed for ${path}: ${error}`);
     return null;
@@ -187,6 +187,12 @@ export function deletePathRecursively(path: string): void {
 export function appFilesDirPath(): string {
   const context = Utils.android.getApplicationContext();
   return String(context.getFilesDir().getAbsolutePath());
+}
+
+/** The app-private cache directory, for scratch files the OS may reclaim. */
+export function appCacheDirPath(): string {
+  const context = Utils.android.getApplicationContext();
+  return String(context.getCacheDir().getAbsolutePath());
 }
 
 /** Read a UTF-8 text file (size-capped); null when unreadable or too large. */

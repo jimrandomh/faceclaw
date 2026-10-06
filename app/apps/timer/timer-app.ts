@@ -368,6 +368,7 @@ export class TimersLayer implements Layer {
             else timerEngine.restartTimer(timer.id);
             return;
         }
+        return;
       }
       case "new-timer":
         this.openDial("");

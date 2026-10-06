@@ -1,9 +1,10 @@
 /**
  * Terminal app, hosted in its own worker thread. Window model:
  * - "terminal:hub": the window opened from the launcher; shows the list of
- *   live g2mirror sessions across every connected host (grouped by host when
- *   more than one is connected; selecting a host's heading launches a shell
- *   there), and hosts the Manage Connections section
+ *   live g2mirror sessions grouped under a heading per configured host
+ *   (unconnected hosts show their state and a Connect row; selecting a
+ *   connected host's heading launches a shell there), and hosts the Manage
+ *   Connections section
  *   where g2mirror:// connections are added, removed, and toggled.
  * - "terminal:view:N": opened by selecting a session in the hub; each has
  *   its own websocket connection (the protocol allows one attached session
@@ -23,7 +24,7 @@
  * Frames are painted here and submitted directly to the Java compositor from
  * this worker's thread.
  *
- * Auto-reconnect (Settings > Terminal, default on): while any terminal window
+ * Auto-reconnect (window menu > Settings, default on): while any terminal window
  * is open, a dropped control connection reconnects with exponential backoff;
  * the first session list after reconnect delivers bells that rang while
  * disconnected (attention + wake) via their advanced lastBellAt. A dropped
@@ -38,8 +39,7 @@ import { GrayImage, type UiFont } from "../../graphics/image";
 import { flattenPlanesWithDraws, planesFingerprint, type Plane } from "../../graphics/plane";
 import { prepareFrameDraws } from "../../graphics/glyph-wire";
 import { getDefaultSmallFont, getTerminalFontConfig } from "../../graphics/ui-fonts";
-import { layoutHubHeader } from "./hub-header";
-import { truncateText } from "../../graphics/textwrap";
+import { HUB_TITLE_X, layoutHubHeader } from "./hub-header";
 import { TERMINAL_ICON_GLYPHS, type IconActivity } from "../../graphics/icons";
 import {
   drawSessionRow,
@@ -52,21 +52,31 @@ import { GESTURE_DOUBLE_CLICK, type InputEvent } from "../../ui/gestures";
 import { G2MirrorClient, type G2MirrorClientOptions, type G2MirrorSession, type G2MirrorState } from "../../native/g2mirror-client";
 import { onSettingsStoreChanged } from "../../native/settings-store";
 import { clamp } from "../../util/numeric-util";
-import { terminalAutoReconnectSetting, terminalLaunchPresetsSetting, terminalNewConnectionSetting, terminalWakeOnBellSetting } from "../../ui/dashboard-settings";
+import {
+  enumSettingMenuItem,
+  terminalAutoReconnectSetting,
+  terminalDisplayModeSetting,
+  terminalLaunchPresetsSetting,
+  terminalNewConnectionSetting,
+  terminalVerticalPositionSetting,
+  terminalWakeOnBellSetting,
+  textSettingMenuItem,
+  toggleSettingMenuItem,
+} from "../../ui/dashboard-settings";
+import { terminalFontPickerMenuItem } from "../../ui/font-picker";
 import { connectionDisplayName, loadConnections, parseConnectionString, saveConnections, TERMINAL_CONNECTIONS_KEY, updateConnection, type TerminalConnection } from "./connections";
 import { TerminalEmulator } from "./terminal-emulator";
-import { type MenuItem } from "../../ui/menu";
+import { drawSubmenuIndicator, submenuItem, type MenuItem } from "../../ui/menu";
 import { Menu, type MenuDrawArgs } from "../../ui/menu-core";
-import { lineStep, listRowHeight } from "../../ui/metrics";
-import { WindowMenu } from "../../ui/window-menu";
+import { centeredTextY, lineStep, listRowHeight, textInkHeight } from "../../ui/metrics";
+import { WindowMenu, WindowMenuLayer } from "../../ui/window-menu";
 import { appViewportSize } from "../../ui/shell/geometry";
 import type { WorkerAppMessage, WorkerAppReply } from "../../ui/shell/worker-window";
 import type { ToolResult, ToolSpec } from "../../assistant/tool-registry";
 
 declare const global: any;
-declare const com: any;
 
-// Cell geometry comes from the terminal font setting (Settings > Terminal >
+// Cell geometry comes from the terminal font setting (window menu > Settings >
 // Font; the default is Terminus-12's 6x12). Each window derives its grid from
 // the viewport in its open-window message (the hub is min-height, session
 // views full-height). Grid dimensions are baked into each session's websocket
@@ -94,6 +104,8 @@ const RECONNECT_MAX_DELAY_MS = 60_000;
 // Storage key of terminalNewConnectionSetting (the Add-connection draft the
 // phone text editor types into); its changes just repaint the add screen.
 const NEW_CONNECTION_DRAFT_KEY = "terminal.newConnectionDraft";
+// Storage key of terminalLaunchPresetsSetting, edited from the window menu.
+const LAUNCH_PRESETS_KEY = "terminal.launchPresets";
 
 type BaseWindow = {
   windowId: string;
@@ -429,12 +441,14 @@ global.onmessage = (event: { data: WorkerAppMessage }) => {
         );
       break;
     }
+    case "input-focus":
+    case "navigation-sensors":
+      break;
   }
 };
 
 // React to setting changes (connections edited here or in another isolate,
-// toggles edited in the Settings app, the Add-connection draft typed on the
-// phone).
+// the window menu's settings, the Add-connection draft typed on the phone).
 onSettingsStoreChanged((key) => {
   if (key.startsWith("glanceboard.")) {
     reportIdle();
@@ -461,8 +475,17 @@ onSettingsStoreChanged((key) => {
         }
       }
       return;
+    case LAUNCH_PRESETS_KEY:
+      // Live keystrokes from the phone editor (Settings > Launch presets in
+      // the window menu): repaint its edit page, and the hub, whose host
+      // headings launch presets.
+      for (const window of windows.values()) {
+        if (window.menu?.isOpen()) scheduleRender(window);
+      }
+      renderHubWindows();
+      return;
     default:
-      // launchPresets, wakeOnBell: no connection impact.
+      // wakeOnBell: no connection impact.
       return;
   }
 });
@@ -538,6 +561,8 @@ function closeWindow(windowId: string): void {
     // Window closed mid-add: shut the phone editor down.
     endAddConnection(window);
   }
+  // Likewise for a setting being edited from the window menu.
+  window.menu?.close();
   windows.delete(windowId);
   windowIconActivity.delete(windowId);
   updateHubAnimation();
@@ -1018,23 +1043,22 @@ function windowMenu(window: TerminalWindow): WindowMenu {
   return window.menu;
 }
 
+/** Whether a control's handshake has been accepted (it can list and launch sessions). */
+function isControlConnected(control: ControlConnection): boolean {
+  const phase = control.state?.phase;
+  return phase === "connected" || phase === "attached";
+}
+
 /** Controls currently connected (handshake accepted), in stored order. */
 function connectedControls(): ControlConnection[] {
-  return [...controls.values()].filter((control) => {
-    const phase = control.state?.phase;
-    return phase === "connected" || phase === "attached";
-  });
+  return [...controls.values()].filter(isControlConnected);
 }
 
 function windowMenuItems(window: TerminalWindow): MenuItem[] {
   const items: MenuItem[] = [
-    {
-      label: "Settings",
-      onSelect: (ctx) => {
-        ctx.stack.pop();
-        post({ type: "open-settings", section: "Terminal" });
-      },
-    },
+    submenuItem("Settings", (ctx) => {
+      ctx.stack.push(new WindowMenuLayer("Terminal settings", settingsMenuItems()));
+    }),
   ];
   if (window.kind === "hub") {
     const connected = connectedControls();
@@ -1088,11 +1112,27 @@ function windowMenuItems(window: TerminalWindow): MenuItem[] {
   return items;
 }
 
+/**
+ * The app's settings (the window menu's Settings submenu). Connections are
+ * managed in the hub's Manage Connections section instead.
+ */
+function settingsMenuItems(): MenuItem[] {
+  return [
+    enumSettingMenuItem(terminalDisplayModeSetting),
+    enumSettingMenuItem(terminalVerticalPositionSetting),
+    terminalFontPickerMenuItem(),
+    // Opens the phone text editor; the settings listener repaints its page.
+    textSettingMenuItem(terminalLaunchPresetsSetting),
+    toggleSettingMenuItem(terminalAutoReconnectSetting),
+    toggleSettingMenuItem(terminalWakeOnBellSetting),
+  ];
+}
+
 function handleInput(window: TerminalWindow, event: InputEvent, frameId: number): void {
   if (window.kind === "view") activeViewId = window.windowId;
   // An open window menu owns all input (it closes itself via pop).
   if (window.menu?.isOpen()) {
-    window.menu
+    void window.menu
       .handleInput(event)
       .catch((error) => console.error(`terminal menu input failed: ${error}`))
       .then(() => renderAndSubmit(window, frameId));
@@ -1183,6 +1223,14 @@ type HubItem = {
    * when it has an onSelect (launch a shell on that host).
    */
   heading?: boolean;
+  /**
+   * Top-level action (Manage Connections, Settings): drawn
+   * unindented like a heading but at full brightness, rather than as an
+   * indented session row.
+   */
+  topLevel?: boolean;
+  /** Opens a nested menu: a right-edge ">" marks the row. */
+  submenu?: boolean;
   /** Session with recent output: an animated indicator marks the row. */
   active?: boolean;
   /** Glyph of the view window showing this session (the number column). */
@@ -1192,8 +1240,12 @@ type HubItem = {
 
 /** Vertical offset of a row's text line from the top of its selection box. */
 const HUB_ROW_TEXT_INSET = 4;
-/** Horizontal inset of the list's selection boxes from the viewport edges. */
-const HUB_LIST_X = 20;
+/** Left edge of the list's selection boxes. */
+const HUB_LIST_LEFT = 12;
+/** Right inset of the selection boxes, clear of the scrollbar. */
+const HUB_LIST_RIGHT = 20;
+/** Left padding of unindented (heading and top-level) row text inside its selection box. */
+const HUB_TOP_LEVEL_TEXT_X = 6;
 
 /** The hub window's list, created on first use so openWindow stays free of paint dependencies. */
 function hubMenu(window: HubWindow): Menu<HubItem> {
@@ -1208,10 +1260,12 @@ function hubMenu(window: HubWindow): Menu<HubItem> {
   return window.list;
 }
 
-function drawHubRow({ image, item, x, y, width, selected }: MenuDrawArgs<HubItem>): void {
+function drawHubRow({ image, item, x, y, width, height, selected }: MenuDrawArgs<HubItem>): void {
   const font = chromeFont();
-  if (item.heading) {
-    image.drawText(font, x, y + HUB_ROW_TEXT_INSET, item.label, selected ? 255 : 140);
+  if (item.heading || item.topLevel) {
+    const value = selected ? 255 : item.heading ? 140 : 200;
+    image.drawText(font, x + HUB_TOP_LEVEL_TEXT_X, y + HUB_ROW_TEXT_INSET, item.label, value);
+    if (item.submenu) drawSubmenuIndicator(image, font, x, y, width, height, value);
     return;
   }
   // Activity gutter, open-window number column, then the label, truncated
@@ -1278,20 +1332,41 @@ function hubSessionItems(window: HubWindow): HubItem[] {
   const items: HubItem[] = [
     {
       label: "Manage Connections",
+      topLevel: true,
       onSelect: () => setHubMode(window, "connections"),
     },
+    {
+      label: "Settings",
+      topLevel: true,
+      submenu: true,
+      onSelect: () => windowMenu(window).open(settingsMenuItems(), "Terminal settings"),
+    },
   ];
-  const connected = connectedControls();
-  const multiHost = connected.length > 1;
+  const multiHost = controls.size > 1;
   const canLaunch = launchPresetNames().length > 0;
-  for (const control of connected) {
-    if (multiHost) {
-      items.push({
-        label: connectionDisplayName(control.config),
-        heading: true,
-        onSelect: canLaunch ? () => launchOnHost(window, control) : undefined,
-      });
+  // Every configured host is listed under its own heading, in stored order,
+  // whatever its connection state: a connected host lists its sessions, any
+  // other shows its state on the heading plus a Connect row (unless it is
+  // already connecting). Full management (remove, add) lives in Manage
+  // Connections.
+  for (const control of controls.values()) {
+    const name = connectionDisplayName(control.config);
+    if (!isControlConnected(control)) {
+      items.push({ label: `${name}  (${controlStatusWord(control)})`, heading: true });
+      const connecting = control.config.enabled && control.state?.phase === "connecting";
+      if (!connecting && clientOptionsFor(control.config)) {
+        items.push({
+          label: control.reconnectTimer ? "Connect now" : "Connect",
+          onSelect: () => connectControl(control),
+        });
+      }
+      continue;
     }
+    items.push({
+      label: name,
+      heading: true,
+      onSelect: canLaunch ? () => launchOnHost(window, control) : undefined,
+    });
     const sessions = orderedSessions(window, control);
     for (const session of sessions) {
       items.push({
@@ -1314,16 +1389,6 @@ function hubSessionItems(window: HubWindow): HubItem[] {
         onSelect: () => control.client?.listSessions(),
       });
     }
-  }
-  // Disconnected/failed connections get a one-click Connect shortcut here;
-  // full management (remove, add) lives in Manage Connections.
-  for (const control of controls.values()) {
-    if (connected.includes(control)) continue;
-    if (control.config.enabled && control.state?.phase === "connecting") continue;
-    items.push({
-      label: `Connect ${connectionDisplayName(control.config)}`,
-      onSelect: () => connectControl(control),
-    });
   }
   return items;
 }
@@ -1564,7 +1629,7 @@ function openViewWindow(control: ControlConnection, socket: string, label: strin
   });
 }
 
-/** Preset names the user listed in Settings > Terminal (the wire protocol has no way to enumerate the server's). */
+/** Preset names the user listed in the app's settings (the wire protocol has no way to enumerate the server's). */
 function launchPresetNames(): string[] {
   const names: string[] = [];
   for (const piece of terminalLaunchPresetsSetting.get().split(",")) {
@@ -1631,14 +1696,14 @@ function paintHub(window: HubWindow): GrayImage {
   // No border box: the shell chrome (top bar + sidebar) already frames the app.
   // Long statuses get a wrapped block and move the list below it.
   const title = window.mode === "connections" ? "Terminal - Connections" : "Terminal";
-  image.drawText(font, 18, 10, title, 220);
+  image.drawText(font, HUB_TITLE_X, 10, title, 220);
   const header = layoutHubHeader(font, title, hubStatusLine(window), window.viewportWidth, step);
   header.lines.forEach((line, index) => image.drawText(font, header.x, header.y + index * step, line, 170));
 
   let listTop = header.listTop;
   if (window.mode === "sessions" && controls.size === 0) {
-    image.drawText(font, 24, listTop, "Add a g2mirror:// connection to get started, see:", 150);
-    image.drawText(font, 24, listTop + step, "https://github.com/jimrandomh/g2mirror", 190);
+    image.drawText(font, HUB_TITLE_X + 6, listTop, "Add a g2mirror:// connection to get started, see:", 150);
+    image.drawText(font, HUB_TITLE_X + 6, listTop + step, "https://github.com/jimrandomh/g2mirror", 190);
     listTop += 2 * step + 6;
   }
 
@@ -1650,7 +1715,7 @@ function paintHub(window: HubWindow): GrayImage {
   const listHeight = window.viewportHeight - 6 - listTop;
   list.paint(
     image,
-    { x: HUB_LIST_X, y: listTop - 2, width: window.viewportWidth - 2 * HUB_LIST_X, height: listHeight },
+    { x: HUB_LIST_LEFT, y: listTop - 2, width: window.viewportWidth - HUB_LIST_LEFT - HUB_LIST_RIGHT, height: listHeight },
     window.focused,
   );
   list.drawScrollbar(image, window.viewportWidth - 10, listTop, listHeight - 4);
@@ -1750,11 +1815,14 @@ function paintView(window: ViewWindow): GrayImage {
   }
 
   // Stale content stays visible across a disconnect, so flag it: a status
-  // line over the bottom row whenever the session isn't actually attached.
-  // Text is deferred glyphs (always on top of raster), so the covered rows
-  // must be suppressed rather than painted over.
+  // line over the bottom row(s) whenever the session isn't actually attached.
+  // It's in the UI font, which can be taller than a terminal cell, so it's
+  // sized to that font's ink. Text is deferred glyphs (always on top of
+  // raster), so the covered rows must be suppressed rather than painted over.
+  const statusFont = chromeFont();
+  const statusBannerHeight = Math.max(window.cellHeight, textInkHeight(statusFont));
   const statusBannerY = window.client.state().phase !== "attached"
-    ? window.viewportHeight - window.cellHeight
+    ? window.viewportHeight - statusBannerHeight
     : null;
 
   for (let row = 0; row < rows; row++) {
@@ -1775,8 +1843,8 @@ function paintView(window: ViewWindow): GrayImage {
     drawScrollIndicator(image, top, window.archiveStart, bottomTop);
   }
   if (statusBannerY !== null) {
-    image.fillRect(0, statusBannerY, window.viewportWidth, window.cellHeight, 0);
-    image.drawText(chromeFont(), 0, statusBannerY, window.status, 170);
+    image.fillRect(0, statusBannerY, window.viewportWidth, statusBannerHeight, 0);
+    image.drawText(statusFont, 0, centeredTextY(statusFont, statusBannerY, statusBannerHeight), window.status, 170);
   }
   return image;
 }
@@ -1873,7 +1941,7 @@ function handleTerminalTool(name: string, args: any): ToolResult | Promise<ToolR
 function toolListLaunchPresets(): ToolResult {
   const presets = launchPresetNames();
   if (!presets.length) {
-    return { ok: true, content: "No launch presets configured (Settings > Terminal > Launch presets)." };
+    return { ok: true, content: "No launch presets configured (Terminal window menu > Settings > Launch presets)." };
   }
   return { ok: true, content: presets.map((preset) => `- ${preset}`).join("\n") };
 }

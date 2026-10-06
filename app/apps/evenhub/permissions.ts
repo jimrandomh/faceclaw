@@ -22,7 +22,7 @@ export type EvenHubPermissionName =
   | "album"
   | "camera"
   | "fs"
-  | string;
+  | (string & {});
 
 export type EvenHubPermission = {
   name: EvenHubPermissionName;

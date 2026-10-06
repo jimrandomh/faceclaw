@@ -2,7 +2,7 @@ import { getDefaultMediumFont, getDefaultSmallFont } from "../../graphics/ui-fon
 import { GrayImage } from "../../graphics/image";
 import { clamp } from "../../util/numeric-util";
 import { addImuListener, imuSourceLabel, setImuReportEnabled, type ImuReading } from "../../native/imu";
-import { GESTURE_DOUBLE_CLICK, type InputEvent } from "../../ui/gestures";
+import { type InputEvent } from "../../ui/gestures";
 import { Layer, type LayerContext } from "../../ui/layers";
 import { shell } from "../../ui/shell/shell";
 

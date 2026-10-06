@@ -16,9 +16,10 @@ User-facing documentation lives at https://faceclaw.org/.
 
 ![App launcher](website/screenshots/launcher.png)
 ![Music player](website/screenshots/music-player.png)
+![Customization settings](website/screenshots/settings-customization.png)
 ![Assistant settings](website/screenshots/settings-assistant.png)
-![Display settings](website/screenshots/settings-display.png)
 ![Compass](website/screenshots/compass.png)
+![Blocks](website/screenshots/blocks.png)
 
 ## Installation
 
@@ -67,16 +68,14 @@ import it into the new version.
    your own long-running OpenClaw agent.
  * **Multitasking**, with an app-switcher sidebar and app launcher.
  * **Glanceboard**, a dashboard with widgets that you can quickly view with a
-   tap or tap-and-hold from the screen-off state.
- * **Mostly-compatible with EvenHub apps.**
+ * **Mostly-compatible with EvenHub.** Install and runapps from the Even app
+   store.
  * **A lock screen**; glasses lock automatically when you take them off and
    unlock when you unlock your phone.
  * **The full display.** Full-screen apps can use the full 640x480 display
    area, rather than the 576x288 that EvenHub apps can use.
- * **Integration with Android notifications**: a top bar that shows the same
-   icons your phone does, popups when notifications arrive, and menu items to
-   dismiss or use Android-app-provided custom actions like mark as read or
-   quick reply.
+ * **Integration with Android notifications**: shows the same notification
+   icons your phone does, and popups when notifications arrive.
  * **Terminal mirroring.** Mirror terminal apps such as Claude Code or Codex
    CLI with [g2mirror](https://github.com/jimrandomh/g2mirror), view them on
    the glasses, and send them inputs with the voice assistant.
@@ -88,17 +87,12 @@ import it into the new version.
  * **Power management**: the glasses go to sleep properly when the screen is
    off, and wake when you double-tap the ring or speak the wakeword, allowing
    battery life similar to the stock Even app.
- * **A Wear OS watch app** that complements (or replaces) the R1 ring: tap,
+ * **A Wear OS watch app** that replaces (and outdoes) the R1 ring: tap,
    swipe, hold and crown gestures, side buttons, app launching and window
    switching, voice or keyboard queries to the assistant with the reply on
    your wrist, typing into apps, and glasses status/lock/display control.
- * **On-phone screen mirroring**: Shows the glasses screen contents and
-   provides a phone-screen touch area equivalent to the R1 ring or the Wear OS
-   watch app. This can also be used to try out the app without pairing or
-   flashing a real pair of glasses.
- * **Dual-language NativeScript architecture**, with Java for the
-   multithreaded Android API and bluetooth stack bits, Typescript for the bits
-   you want to hack on.
+ * **On-phone screen mirroring**: Your phone screen shows the same contents as
+   the glasses, and you can use the phone touchscreen as an input device..
 <!-- END GENERATED: features -->
 
 ## Watch remote (Wear OS)

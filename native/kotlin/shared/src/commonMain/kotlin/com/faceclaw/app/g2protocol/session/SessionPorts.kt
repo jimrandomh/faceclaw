@@ -13,6 +13,7 @@ import kotlin.contracts.contract
  * must call from whatever thread the platform stack delivers on.
  */
 interface SessionLink {
+    /** Connect, waiting up to [timeoutMs]; waits on an attempt already started by [beginConnect]. */
     fun connect(address: String, timeoutMs: Int): Boolean
 
     /**
@@ -20,6 +21,17 @@ interface SessionLink {
      * [autoConnect] is set. The R1 ring needs it; platforms without the distinction ignore it.
      */
     fun connect(address: String, timeoutMs: Int, autoConnect: Boolean): Boolean = connect(address, timeoutMs)
+
+    /**
+     * Start connecting without waiting, so the attempt can land while the caller does other
+     * work. [background] asks for a low-duty-cycle attempt that stays pending until the
+     * device shows up. Returns true while a connection exists or is pending, false when the
+     * link can't do this (callers then fall back to a blocking [connect]).
+     */
+    fun beginConnect(address: String, background: Boolean): Boolean = false
+
+    /** Whether a connection to [address] is up (not merely pending). */
+    fun isConnected(address: String): Boolean = false
 
     /** Best effort; no completion point (see connectArm). */
     fun requestHighPriority(address: String)

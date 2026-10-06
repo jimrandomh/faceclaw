@@ -7,7 +7,25 @@ export type PhoneBatteryState = {
   charging: boolean | null;
 };
 
+// The Android read is a sticky-broadcast binder round trip, and the top bar
+// asks on every shell paint; the level moves far slower than that.
+const ANDROID_CACHE_MS = 5000;
+let cachedState: PhoneBatteryState | null = null;
+let cachedAtMs = 0;
+
 export function readPhoneBatteryState(): PhoneBatteryState {
+  if (global.isAndroid) {
+    const now = Date.now();
+    if (cachedState === null || now - cachedAtMs >= ANDROID_CACHE_MS || now < cachedAtMs) {
+      cachedState = readPhoneBatteryStateUncached();
+      cachedAtMs = now;
+    }
+    return { ...cachedState };
+  }
+  return readPhoneBatteryStateUncached();
+}
+
+function readPhoneBatteryStateUncached(): PhoneBatteryState {
   if (global.isIOS) {
     const device = UIDevice.currentDevice
     const level = device.batteryLevel

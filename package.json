@@ -14,6 +14,7 @@
     "prepare:ios": "scripts/ios.sh prepare ios",
     "doctor:ios": "scripts/ios.sh doctor ios",
     "build": "./build.sh",
+    "lint": "./lint.sh",
     "run": "./build_and_run.sh",
     "release": "scripts/release.sh",
     "clean": "rm -rf platforms",
@@ -39,6 +40,8 @@
     "@nativescript/ios": "9.0.3",
     "@nativescript/types": "~9.0.0",
     "@nativescript/webpack": "~5.0.25",
+    "oxlint": "^1.85.0",
+    "oxlint-tsgolint": "^7.0.2003",
     "typescript": "~5.4.0"
   }
 }

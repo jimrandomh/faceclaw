@@ -6,11 +6,12 @@
  *
  * Glasses-first: launching does NOT take over the phone screen. The phone
  * stays on the Faceclaw dashboard; an app's phone UI is shown on demand
- * (window menu -> "Show phone UI"), overlaying the dashboard, and the Back
- * button returns to it. Apps are kept alive until explicitly closed (no memory
- * eviction yet).
+ * (window menu -> "Show phone UI", or the app-icon button in the phone's
+ * action bar while the app is foreground on the glasses), overlaying the
+ * dashboard, and the Back button or the overlay's close button returns to it.
+ * Apps are kept alive until explicitly closed (no memory eviction yet).
  */
-import { Application } from "@nativescript/core";
+import { Application, type ImageSource } from "@nativescript/core";
 import { type AppContext } from "../app-definition";
 import {
   appFilesDirPath,
@@ -23,6 +24,8 @@ import { EvenHubSession } from "./session";
 import { createEvenHubWindow } from "./evenhub-window";
 import { createEvenHubWebView, type EvenHubWebView } from "./webview";
 import { shell } from "../../ui/shell/shell";
+import { GrayImage } from "../../graphics/image";
+import { grayImageToWhiteIconSource } from "../../native/gray-image-preview";
 import {
   readEvenHubPackageManifest,
   installedEvenHubAppId,
@@ -36,12 +39,31 @@ type RunningApp = {
   packageId: string;
   session: EvenHubSession;
   webView: EvenHubWebView;
+  /** The app's icon for the phone action bar, rendered on first use. */
+  phoneIcon?: ImageSource | null;
 };
+
+/** The phone action bar's button for opening the foreground app's phone UI. */
+export type PhoneUiButton = { windowId: string; title: string; icon: ImageSource | null };
+
+/** Pixel size the action-bar icon is rendered at (~21dp at xxhdpi). */
+const PHONE_ICON_SIZE = 63;
 
 const running = new Map<string, RunningApp>();
 let nextSerial = 1;
 let phoneShownWindowId: string | null = null;
 let backHandlerRegistered = false;
+const phoneShownListeners = new Set<() => void>();
+
+/** Called whenever an app's phone UI is shown or hidden. Returns an unsubscribe. */
+export function onPhoneShownChanged(listener: () => void): () => void {
+  phoneShownListeners.add(listener);
+  return () => phoneShownListeners.delete(listener);
+}
+
+function notifyPhoneShownChanged(): void {
+  for (const listener of phoneShownListeners) listener();
+}
 
 /** Intercept Android Back while an app's phone UI is overlaying the dashboard. */
 function ensureBackHandler(): void {
@@ -112,6 +134,7 @@ async function startApp(
       if (phoneShownWindowId === windowId) {
         webView.hideOnPhone();
         phoneShownWindowId = null;
+        notifyPhoneShownChanged();
       }
       webView.destroy();
       cleanup?.();
@@ -205,15 +228,35 @@ export function showOnPhone(windowId: string): void {
   const app = running.get(windowId);
   if (!app) return;
   if (phoneShownWindowId && phoneShownWindowId !== windowId) hidePhone();
-  app.webView.showOnPhone();
+  app.webView.showOnPhone(hidePhone);
   phoneShownWindowId = windowId;
+  notifyPhoneShownChanged();
 }
 
-/** Return the phone to the dashboard (Back, or the shown app closing). */
+/** Return the phone to the dashboard (Back, the close button, or the shown app closing). */
 export function hidePhone(): void {
   if (!phoneShownWindowId) return;
   running.get(phoneShownWindowId)?.webView.hideOnPhone();
   phoneShownWindowId = null;
+  notifyPhoneShownChanged();
+}
+
+/**
+ * The foreground glasses window, when it is an EvenHub app whose phone UI
+ * isn't showing: the phone action bar then offers a button to show it.
+ */
+export function phoneUiButton(): PhoneUiButton | null {
+  const window = shell.foregroundWindow();
+  const app = window ? running.get(window.windowId) : undefined;
+  if (!window || !app || phoneShownWindowId === app.windowId) return null;
+  if (app.phoneIcon === undefined) {
+    // The same artwork as the glasses sidebar (installed icon, else the
+    // generic package icon), drawn white.
+    const image = new GrayImage(PHONE_ICON_SIZE, PHONE_ICON_SIZE, 0);
+    window.drawIcon(image, 0, 0, PHONE_ICON_SIZE);
+    app.phoneIcon = grayImageToWhiteIconSource(image);
+  }
+  return { windowId: app.windowId, title: window.title, icon: app.phoneIcon };
 }
 
 export function runningAppCount(): number {

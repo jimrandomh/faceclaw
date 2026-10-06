@@ -102,8 +102,8 @@ export class FaceclawVoiceControlBridge {
   private readonly speechPauseListeners = new Set<() => void>();
   private readonly speechPause = new SpeechPauseDetector();
   private readonly speechEndListeners = new Set<() => void>();
-  private controller: any | null = null;
-  private listenerProxy: any | null = null;
+  private controller: any = null;
+  private listenerProxy: any = null;
   private status = "Voice control stopped.";
   private listening = false;
   private detail = "";

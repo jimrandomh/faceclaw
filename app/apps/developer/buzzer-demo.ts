@@ -1,7 +1,7 @@
 import { getDefaultSmallFont } from "../../graphics/ui-fonts";
 import { GrayImage } from "../../graphics/image";
 import { Layer, type LayerActions, type LayerContext } from "../../ui/layers";
-import { GESTURE_CLICK, GESTURE_DOUBLE_CLICK, GESTURE_SCROLL, type InputEvent } from "../../ui/gestures";
+import { GESTURE_CLICK, type InputEvent } from "../../ui/gestures";
 import { Menu, type MenuDrawArgs } from "../../ui/menu-core";
 import { centeredTextY, tightRowHeight } from "../../ui/metrics";
 import {

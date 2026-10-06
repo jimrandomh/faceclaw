@@ -8,6 +8,10 @@ class ConnectionOptions {
         const val DESIRED_MTU = 512
 
         const val CONNECT_TIMEOUT_MS = 5_000
+        // How long one session connect attempt keeps both arms' connections pending before
+        // giving up. Both are dialed at once, so a slow or missing arm gets the whole
+        // window (it stays under Android's own ~30 s direct-connect timeout).
+        const val ARM_CONNECT_WINDOW_MS = 20_000
         const val SERVICES_TIMEOUT_MS = 5_000
         const val DESCRIPTOR_TIMEOUT_MS = 5_000
         const val RING_DESIRED_MTU = 247
@@ -43,7 +47,13 @@ class ConnectionOptions {
         const val MAX_CONSECUTIVE_ACK_TIMEOUTS = 8
         const val EVEN_APP_WRITE_FAILURE_WINDOW_MS = 15_000
         const val IDLE_SLEEP_MS = 100
-        const val RECONNECT_DELAY_MS = 2_000
+        // Delay before each consecutive reconnect attempt (the last entry repeats). Android
+        // keeps an LE link up for a few seconds after its last GATT client closes (4 s on a
+        // Pixel), so the quick first retry reuses the old links and the glasses never see a
+        // disconnect; later retries wait long enough for the links to really drop.
+        @JvmField val RECONNECT_BACKOFF_MS = intArrayOf(2_000, 6_000, 10_000)
+        // A session that stayed up this long starts the backoff over when it fails.
+        const val STABLE_SESSION_MS = 30_000
         // Cap on rects per batch. Each rect consumes a distinct CFW frame id, and the
         // firmware's duplicate-fid ring holds 16, so keep several batches of history
         // within it. Above this the split is abandoned for a single bounding box.

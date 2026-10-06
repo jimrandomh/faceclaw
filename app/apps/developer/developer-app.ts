@@ -1,4 +1,4 @@
-import { MenuLayer, drawSubmenuIndicator, type MenuItem } from "../../ui/menu";
+import { MenuLayer, submenuItem, type MenuItem } from "../../ui/menu";
 import { ScreenTestLayer } from "./screen-test";
 import { InputEventsLayer } from "./input-events";
 import { shell } from "../../ui/shell/shell";
@@ -6,14 +6,13 @@ import { BuzzerDemoLayer } from "./buzzer-demo";
 import { AccelerometerDemoLayer } from "./accelerometer-demo";
 import { BandwidthBenchmarkLayer } from "./bandwidth-benchmark";
 import { LightSensorDemoLayer } from "./light-sensor-demo";
+import { MicrophonesMonitorLayer } from "./microphones-monitor";
 import { ResourceUsageLayer } from "./resource-usage";
 import { RingStatusLayer } from "./ring-status";
 import { LoadAppFromQrLayer, LoadAppFromUrlLayer } from "./load-app";
 import { unicodeTestMenu } from "./unicode-test";
 import { type AppContext } from "../app-definition";
-import { getDefaultSmallFont } from "../../graphics/ui-fonts";
 import { appViewportSize } from "../../ui/shell/geometry";
-import { LIST_ROW_TEXT_INSET } from "../../ui/metrics";
 import {
   createInProcessWindow,
   YieldAtRootLayer,
@@ -36,22 +35,10 @@ const MENU_LAYOUT = {
   opaque: true,
 };
 
-/** A row that opens a nested page: the label plus a right-edge ">". */
-function submenuItem(label: string, onSelect: MenuItem["onSelect"]): MenuItem {
-  return {
-    label,
-    onSelect,
-    render: ({ image, x, y, width, height, selected, disabled, text }) => {
-      const font = getDefaultSmallFont();
-      const value = disabled ? 70 : selected ? 255 : 200;
-      image.drawText(font, x, y + LIST_ROW_TEXT_INSET, text, value);
-      drawSubmenuIndicator(image, font, x, y, width, height, value);
-    },
-  };
-}
+type OpenPage = (ctx: Parameters<MenuItem["onSelect"]>[0]) => void;
 
 /** The diagnostic demos, one level down from the root menu. */
-function debugTestsMenu(openInputEvents: (ctx: Parameters<MenuItem["onSelect"]>[0]) => void): MenuLayer {
+function debugTestsMenu(openInputEvents: OpenPage, openMicrophones: OpenPage): MenuLayer {
   return new MenuLayer(
     "Debug tests",
     [
@@ -95,6 +82,12 @@ function debugTestsMenu(openInputEvents: (ctx: Parameters<MenuItem["onSelect"]>[
         },
       },
       {
+        label: "Microphones",
+        disabled: global.isIOS,
+        description: global.isIOS ? "Not available on iOS yet." : undefined,
+        onSelect: openMicrophones,
+      },
+      {
         label: "BLE bandwidth",
         onSelect: (ctx) => {
           ctx.stack.push(new BandwidthBenchmarkLayer(ctx.actions.requestRender));
@@ -116,6 +109,7 @@ function debugTestsMenu(openInputEvents: (ctx: Parameters<MenuItem["onSelect"]>[
  */
 export function createDeveloperAppWindow(appContext: AppContext, options: InProcessAppOptions): InProcessWindow {
   let inputEvents: InputEventsLayer | null = null;
+  let microphones: MicrophonesMonitorLayer | null = null;
   const menu = new MenuLayer(
     "Developer",
     [
@@ -150,6 +144,11 @@ export function createDeveloperAppWindow(appContext: AppContext, options: InProc
             () => { if (inputEvents === page) inputEvents = null; });
           inputEvents = page;
           inputCtx.stack.push(page);
+        }, (micCtx) => {
+          const page = new MicrophonesMonitorLayer(DEVELOPER_WINDOW_ID, micCtx.actions.requestRender,
+            () => { if (microphones === page) microphones = null; });
+          microphones = page;
+          micCtx.stack.push(page);
         }));
       }),
     ],
@@ -164,7 +163,7 @@ export function createDeveloperAppWindow(appContext: AppContext, options: InProc
     icon: "wrench",
     closeable: true,
     actions: options.actions,
-    menuItems: () => inputEvents?.menuItems() ?? [],
+    menuItems: () => inputEvents?.menuItems() ?? microphones?.menuItems() ?? [],
     // Dictating a URL is the one thing worth speaking at in this app; the
     // load pages take the text and every other page ignores it.
     receiveTextInput: (text) => {

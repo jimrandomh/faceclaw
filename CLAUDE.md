@@ -21,9 +21,10 @@ relevant tools and an Android device ID to install on; do this in
 build_paths.sh, which is created from build_paths.sh.template and not checked
 into git.
 
-To lint and typecheck, prefer to use build.sh; if the user asks you to run or
+To typecheck, prefer to use build.sh; if the user asks you to run or
 test the app, use build_and_run.sh and then use `adb logcat` to view the
-results.
+results. `lint.sh` (`npm run lint`) runs oxlint over the TypeScript, including
+type-aware rules; rule selection is in .oxlintrc.json.
 
 If you are working on low-level communication bits, consider checking out
 https://github.com/Commute773/g2-kit-unofficial/ and referring to ble/docs/

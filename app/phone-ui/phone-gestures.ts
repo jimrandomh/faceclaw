@@ -1,7 +1,8 @@
 /** One touch recognizer for a phone pad or mirror. Coordinates are in DIP. */
 declare function setTimeout(callback: () => void, ms: number): number
 declare function clearTimeout(id: number): void
-export type PhoneGesture = 'tap' | 'double-tap' | 'long-press' | 'long-press-release'
+/** 'press' is every first-finger touch-down, ahead of whatever gesture it becomes (the ring's ring-press). */
+export type PhoneGesture = 'press' | 'tap' | 'double-tap' | 'long-press' | 'long-press-release'
   | 'short-then-long-press' | 'swipe-up' | 'swipe-down' | 'swipe-left' | 'swipe-right'
 export type PhoneTouch = { action: 'down' | 'move' | 'up' | 'cancel'; x: number; y: number; pointers: number }
 export type GestureClock = { set: (callback: () => void, ms: number) => unknown; clear: (id: unknown) => void }
@@ -27,6 +28,7 @@ export class PhoneGestureRecognizer {
       this.secondTap = !!this.lastTap && Math.hypot(event.x - this.lastTap.x, event.y - this.lastTap.y) < 36
       if (this.secondTap) { this.clearTap() }
       else if (this.lastTap) { const tap = this.lastTap; this.clearTap(); this.emit('tap', tap.x, tap.y) }
+      this.emit('press', event.x, event.y)
       this.hold = this.timer.set(() => {
         this.hold = null
         if (!this.start || this.moved || this.multi) return

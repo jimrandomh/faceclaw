@@ -1,6 +1,6 @@
 import { getDefaultSmallFont } from "../../graphics/ui-fonts";
 import { GrayImage } from "../../graphics/image";
-import { truncateText } from "../../graphics/textwrap";
+import { truncateText, wrapText } from "../../graphics/textwrap";
 import { type InputEvent } from "../../ui/gestures";
 import { Layer, type LayerContext, type PaintBelow } from "../../ui/layers";
 import { drawListScrollbar, drawSelectionHighlight } from "../../ui/menu";
@@ -8,9 +8,9 @@ import { permissionDetail, permissionLabel, type EvenHubPermission } from "./per
 import { openPrivacyPolicyOnPhone } from "./privacy-policy";
 import { lineStep, listRowHeight } from "../../ui/metrics";
 
-const DIALOG_X = 8;
-const DIALOG_Y = 8;
-const DIALOG_WIDTH = 272;
+/** Minimum gap between the dialog and the edges of the window it's centered in. */
+const DIALOG_MARGIN = 8;
+const DIALOG_WIDTH = 320;
 const PADDING = 10;
 const PERM_GAP = 4;
 
@@ -27,6 +27,8 @@ const PERM_GAP = 4;
  * list on screen.
  */
 export class EvenHubPermissionDialogLayer implements Layer {
+  /** Floats in front of the window content, like the context menus. */
+  readonly depth = 2;
   /** Starts on Allow; the optional privacy-policy action is inserted after it. */
   private selectedIndex = 0;
   /** First content row drawn; rows above it are scrolled off. */
@@ -50,10 +52,12 @@ export class EvenHubPermissionDialogLayer implements Layer {
 
   paint(ctx: LayerContext, paintBelow: PaintBelow): GrayImage {
     const font = getDefaultSmallFont();
-    const { height: viewportHeight } = ctx.stack.getBaseSize();
+    const { width: viewportWidth, height: viewportHeight } = ctx.stack.getBaseSize();
     const image = paintBelow();
-    const textWidth = DIALOG_WIDTH - 2 * PADDING - 4;
-    const left = DIALOG_X + PADDING + 2;
+    const dialogWidth = Math.min(DIALOG_WIDTH, viewportWidth - 2 * DIALOG_MARGIN);
+    const dialogX = ((viewportWidth - dialogWidth) / 2) | 0;
+    const textWidth = dialogWidth - 2 * PADDING - 4;
+    const left = dialogX + PADDING + 2;
 
     const headerStep = lineStep(font) + 2;
     const permLabelStep = lineStep(font) + 1;
@@ -80,15 +84,17 @@ export class EvenHubPermissionDialogLayer implements Layer {
     for (let index = 0; index < this.permissions.length; index++) {
       const permission = this.permissions[index]!;
       const detail = permissionDetail(permission);
+      // One row per wrapped line, so the explanation scrolls line by line.
+      const detailLines = detail ? wrapText(font, detail, textWidth - 8) : [];
       const gapBelow = PERM_GAP + (index === this.permissions.length - 1 ? 2 : 0);
       rows.push({
-        height: permLabelStep + (detail ? 0 : gapBelow),
+        height: permLabelStep + (detailLines.length ? 0 : gapBelow),
         draw: (top) => image.drawText(font, left, top, truncateText(font, permissionLabel(permission.name), textWidth), 220),
       });
-      if (detail) {
+      for (let line = 0; line < detailLines.length; line++) {
         rows.push({
-          height: permDetailStep + gapBelow,
-          draw: (top) => image.drawText(font, left + 8, top, truncateText(font, detail, textWidth - 8), 140),
+          height: permDetailStep + (line === detailLines.length - 1 ? gapBelow : 0),
+          draw: (top) => image.drawText(font, left + 8, top, detailLines[line]!, 140),
         });
       }
     }
@@ -98,15 +104,16 @@ export class EvenHubPermissionDialogLayer implements Layer {
         draw: (top) => {
           const selected = this.atBottom() && index === this.selectedIndex;
           if (selected) {
-            drawSelectionHighlight(image, DIALOG_X + 12, top, DIALOG_WIDTH - 24, actionRowH - 1, focused, 8);
+            drawSelectionHighlight(image, dialogX + 12, top, dialogWidth - 24, actionRowH - 1, focused, 8);
           }
-          image.drawText(font, DIALOG_X + 22, top + 3, actions[index]!, selected ? 255 : 200);
+          image.drawText(font, dialogX + 22, top + 3, actions[index]!, selected ? 255 : 200);
         },
       });
     }
 
     const contentHeight = rows.reduce((sum, row) => sum + row.height, 0);
-    const height = Math.min(contentHeight + 2 * PADDING, viewportHeight - 2 * DIALOG_Y);
+    const height = Math.min(contentHeight + 2 * PADDING, viewportHeight - 2 * DIALOG_MARGIN);
+    const dialogY = ((viewportHeight - height) / 2) | 0;
     const visibleHeight = height - 2 * PADDING;
 
     // The bottommost scroll position: the largest suffix of rows that fits.
@@ -120,13 +127,13 @@ export class EvenHubPermissionDialogLayer implements Layer {
     this.firstRow = Math.max(0, Math.min(this.firstRow, maxFirstRow));
 
     // Fill 1 (transparent color key is 0), outline for the dialog edge.
-    image.fillRoundedRect(DIALOG_X, DIALOG_Y, DIALOG_WIDTH, height, 1);
-    image.drawRoundedRect(DIALOG_X, DIALOG_Y, DIALOG_WIDTH, height, 72);
+    image.fillRoundedRect(dialogX, dialogY, dialogWidth, height, 1);
+    image.drawRoundedRect(dialogX, dialogY, dialogWidth, height, 72);
 
-    let y = DIALOG_Y + PADDING;
+    let y = dialogY + PADDING;
     for (let index = this.firstRow; index < rows.length; index++) {
       const row = rows[index]!;
-      if (y + row.height > DIALOG_Y + PADDING + visibleHeight) break;
+      if (y + row.height > dialogY + PADDING + visibleHeight) break;
       row.draw(y);
       y += row.height;
     }
@@ -134,8 +141,8 @@ export class EvenHubPermissionDialogLayer implements Layer {
     if (maxFirstRow > 0) {
       drawListScrollbar(
         image,
-        DIALOG_X + DIALOG_WIDTH - 7,
-        DIALOG_Y + PADDING,
+        dialogX + dialogWidth - 7,
+        dialogY + PADDING,
         visibleHeight,
         this.firstRow,
         rows.length - maxFirstRow,

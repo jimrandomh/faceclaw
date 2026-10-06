@@ -1,14 +1,13 @@
 import { imageFromAsciiArt } from "../../graphics/image";
 import { getDefaultSmallFont } from "../../graphics/ui-fonts";
 import { appViewportSize } from "../../ui/shell/geometry";
-import { LIST_ROW_TEXT_INSET } from "../../ui/metrics";
 import {
   MenuLayer,
   TextPageLayer,
   drawRightValueMenuItem,
-  drawSubmenuIndicator,
   drawToggleMenuItem,
   openModalMenu,
+  submenuItem,
   type MenuItem,
 } from "../../ui/menu";
 import { enumSettingMenuItem, toggleSettingMenuItem } from "../../ui/dashboard-settings";
@@ -60,7 +59,7 @@ const TRAY_ICON = imageFromAsciiArt(
     "  #       #   ",
     "  ###     ### ",
   ],
-  220,
+  { "#": 220 },
 );
 
 const MENU_LAYOUT = {
@@ -72,19 +71,6 @@ const MENU_LAYOUT = {
   maxHeight: appViewportSize("min").height - 16,
   opaque: true,
 };
-
-function submenuItem(label: string, onSelect: MenuItem["onSelect"]): MenuItem {
-  return {
-    label,
-    onSelect,
-    render: ({ image, x, y, width, height, selected, disabled, text }) => {
-      const font = getDefaultSmallFont();
-      const value = disabled ? 70 : selected ? 255 : 200;
-      image.drawText(font, x, y + LIST_ROW_TEXT_INSET, text, value);
-      drawSubmenuIndicator(image, font, x, y, width, height, value);
-    },
-  };
-}
 
 /** Persist a config change and re-apply it live when the array is streaming. */
 function updateMicConfig(mutate: (config: MicConfig) => MicConfig): void {

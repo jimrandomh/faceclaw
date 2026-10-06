@@ -1,4 +1,4 @@
-import { G2_LENS_WIDTH, GrayImage } from "../../graphics/image";
+import { GrayImage } from "../../graphics/image";
 import { getDefaultSmallFont } from "../../graphics/ui-fonts";
 import { wrapText } from "../../graphics/textwrap";
 import { clamp } from "../../util/numeric-util";
@@ -6,7 +6,7 @@ import type { ToolDebugEntry } from "../../assistant/tool-registry";
 import { InputEvent } from "../gestures";
 import { Layer, LayerContext, PaintBelow } from "../layers";
 import { MenuLayer, drawListScrollbar, type MenuItem } from "../menu";
-import { MIN_WINDOW_HEIGHT, minWindowTop, sidebarWidth, TOP_BAR_HEIGHT } from "./geometry";
+import { appViewportRect } from "./geometry";
 import { lineStep } from "../metrics";
 
 /**
@@ -21,18 +21,19 @@ const DIALOG_WIDTH = 420;
 // the band below the top bar with an 8px margin on each side.
 const DETAIL_HEIGHT = 208;
 
-/** Dialog left edge: past the sidebar strip where one reserves width. */
+/** Dialog left edge: inside the app area, clear of a left sidebar strip. */
 function dialogX(): number {
-  return sidebarWidth() + 8;
+  return appViewportRect("min").x + 8;
 }
 
+/** Detail box width: the app area (clear of a right sidebar strip) less margins. */
 function detailWidth(): number {
-  return G2_LENS_WIDTH - dialogX() - 8;
+  return appViewportRect("min").width - 16;
 }
 
 /** Dialog top edge, aligned to the min-height band's content area. */
 function dialogY(): number {
-  return minWindowTop() + TOP_BAR_HEIGHT + 8;
+  return appViewportRect("min").y + 8;
 }
 const DETAIL_PADDING = 14;
 
@@ -152,6 +153,8 @@ class ToolDetailLayer implements Layer {
       case "click":
       case "double-click":
         ctx.stack.pop();
+        return;
+      default:
         return;
     }
   }

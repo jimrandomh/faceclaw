@@ -24,10 +24,15 @@ import {
 } from "../../native/asr-model";
 import { TextViewerLayer } from "../../apps/files/text-viewer";
 import type { LayerContext } from "../layers";
-import { drawRightValueMenuItem, openModalMenu, type MenuItem } from "../menu";
+import { drawRightValueMenuItem, openModalMenu, submenuItem, type MenuItem } from "../menu";
 import { shell } from "../shell/shell";
 import {
   anthropicApiKeySetting,
+  appSwitcherPositionSetting,
+  statusBarPositionSetting,
+  statusBarVisibilitySetting,
+  windowBorderSetting,
+  uiDepthSetting,
   assistantAllowProactiveSetting,
   assistantBackendSetting,
   assistantBridgeHostSetting,
@@ -45,16 +50,9 @@ import {
   ringBatteryVisibilitySetting,
   watchBatteryVisibilitySetting,
   displayModeSetting,
-  navigateDisplayModeSetting,
-  navigateVerticalPositionSetting,
-  terminalDisplayModeSetting,
-  terminalVerticalPositionSetting,
   elevenLabsApiKeySetting,
   mapboxApiKeySetting,
   mirrorTouchSetting,
-  navigateHomeAddressSetting,
-  navigateRememberRecentSetting,
-  navigateWorkAddressSetting,
   openAiApiKeySetting,
   previewColorSetting,
   phoneRotationSetting,
@@ -68,9 +66,6 @@ import {
   saveVoiceRecordingsSetting,
   showBleBandwidthSetting,
   suspendEvenHubWhenScreenOffSetting,
-  terminalAutoReconnectSetting,
-  terminalLaunchPresetsSetting,
-  terminalWakeOnBellSetting,
   textSettingMenuItem,
   timeFormatSetting,
   toggleSettingMenuItem,
@@ -84,10 +79,9 @@ import {
   watchMirrorAssistantSetting,
   watchRemoteEnabledSetting,
 } from "../dashboard-settings";
-import { clearRecentDestinations } from "../../apps/navigate/destinations";
 import { wearBridge } from "../../native/wear-bridge";
 import { openSettingsSubMenu, SettingsPanelLayer, type SettingsSection } from "./settings-panel";
-import { terminalFontPickerMenuItem, uiFontPickerMenuItem } from "../font-picker";
+import { uiFontPickerMenuItem } from "../font-picker";
 
 /** The Settings app's master-detail panel (sections on the left, contents on the right). */
 export function createSettingsPanelLayer(): SettingsPanelLayer {
@@ -95,6 +89,7 @@ export function createSettingsPanelLayer(): SettingsPanelLayer {
 }
 
 function settingsSections(): SettingsSection[] {
+  const customizationItems = customizationRows();
   const sections: SettingsSection[] = [
     {
       label: "Display",
@@ -114,15 +109,15 @@ function settingsSections(): SettingsSection[] {
         enumSettingMenuItem(verticalPositionSetting),
         // Band / tall / full-panel; the dashboard controller reflows windows.
         enumSettingMenuItem(displayModeSetting),
-        // Submenu: top-bar battery indicator style plus per-device visibility.
-        batteryIndicatorsMenuItem(),
-        // Submenu: toggles for menu/icon-grid motion and the screen on/off fade.
-        animationsMenuItem(),
-        // Controls the top-bar clock (24-hour vs 12-hour).
-        enumSettingMenuItem(timeFormatSetting),
-        // Opens the modal font picker (face, weight, size) for UI text.
-        uiFontPickerMenuItem(),
       ],
+    },
+    {
+      label: "Customization",
+      // Depth only applies (and only shows) with the app switcher at the
+      // bottom; the panel re-reads the rows each paint.
+      get items() {
+        return customizationItems();
+      },
     },
     {
       label: "Voice",
@@ -159,35 +154,6 @@ function settingsSections(): SettingsSection[] {
         textSettingMenuItem(sonioxApiKeySetting),
         textSettingMenuItem(anthropicApiKeySetting),
         textSettingMenuItem(mapboxApiKeySetting),
-      ],
-    },
-    {
-      label: "Terminal",
-      // Connections (g2mirror:// strings) are managed inside the Terminal
-      // app's Manage Connections section, not here.
-      items: [
-        enumSettingMenuItem(terminalDisplayModeSetting),
-        enumSettingMenuItem(terminalVerticalPositionSetting),
-        terminalFontPickerMenuItem(),
-        textSettingMenuItem(terminalLaunchPresetsSetting),
-        toggleSettingMenuItem(terminalAutoReconnectSetting),
-        toggleSettingMenuItem(terminalWakeOnBellSetting),
-      ],
-    },
-    {
-      label: "Navigate",
-      // Home/Work are plain addresses; other named destinations (and the
-      // recent list) are managed inside the Navigate app's context menu.
-      items: [
-        enumSettingMenuItem(navigateDisplayModeSetting),
-        enumSettingMenuItem(navigateVerticalPositionSetting),
-        textSettingMenuItem(navigateHomeAddressSetting),
-        textSettingMenuItem(navigateWorkAddressSetting),
-        toggleSettingMenuItem(navigateRememberRecentSetting, {
-          onChange: (_ctx, enabled) => {
-            if (!enabled) clearRecentDestinations();
-          },
-        }),
       ],
     },
     {
@@ -269,22 +235,66 @@ function settingsSections(): SettingsSection[] {
   });
 }
 
+/**
+ * The Customization rows, as a function of the current settings: the same
+ * array while the switcher position stays put, so the panel's menu sees a
+ * stable list between paints.
+ */
+function customizationRows(): () => MenuItem[] {
+  // Opens the modal font picker (face, weight, size) for UI text.
+  const font = uiFontPickerMenuItem();
+  // Left / right / bottom edge, or popup; the dashboard controller moves or
+  // resizes windows on change.
+  const position = enumSettingMenuItem(appSwitcherPositionSetting);
+  // The whole display's stereo depth; the shell sends it with its scene.
+  const depth = enumSettingMenuItem(uiDepthSetting);
+  // Top bar, or the bottom: the right end of a bottom switcher's row, or a
+  // bar under the window with a popup switcher; the dashboard controller
+  // resizes or moves windows on change.
+  const statusBar = enumSettingMenuItem(statusBarPositionSetting);
+  // Popup switcher only: whether the status bar shows only in the switcher
+  // (windows then grow into its rows), and the foreground window's border.
+  const statusBarVisibility = enumSettingMenuItem(statusBarVisibilitySetting);
+  const windowBorder = toggleSettingMenuItem(windowBorderSetting);
+  const rest = [
+    // Submenu: top-bar battery indicator style plus per-device visibility.
+    batteryIndicatorsMenuItem(),
+    // Submenu: toggles for menu/icon-grid motion and the screen on/off fade.
+    animationsMenuItem(),
+    // Controls the top-bar clock (24-hour vs 12-hour).
+    enumSettingMenuItem(timeFormatSetting),
+  ];
+  const bottomRows = [font, position, depth, statusBar, ...rest];
+  const popupRows = [font, position, depth, statusBar, statusBarVisibility, windowBorder, ...rest];
+  const sideRows = [font, position, ...rest];
+  return () => {
+    switch (appSwitcherPositionSetting.get()) {
+      case "bottom":
+        return bottomRows;
+      case "popup":
+        return popupRows;
+      default:
+        return sideRows;
+    }
+  };
+}
+
 function autoBrightnessMenuItem(): MenuItem {
-  return {
-    label: "Auto-brightness",
-    description: "Adjust the minimum, maximum, and ambient-light curve used by Auto brightness.",
-    onSelect: (ctx) => {
+  return submenuItem(
+    "Auto-brightness",
+    (ctx) => {
       openSettingsSubMenu(ctx, "Auto-brightness", [
         enumSettingMenuItem(autoBrightnessMinSetting),
         enumSettingMenuItem(autoBrightnessMaxSetting),
         textSettingMenuItem(autoBrightnessCurveSetting),
       ]);
     },
-  };
+    { description: "Adjust the minimum, maximum, and ambient-light curve used by Auto brightness." },
+  );
 }
 
 /**
- * The Display section's "Battery indicators" row: opens a modal submenu with
+ * The Customization section's "Battery indicators" row: opens a modal submenu with
  * the style (icon / percentage / stacked) and, per device, when its
  * indicator is visible. The row itself shows the current style.
  */
@@ -316,18 +326,18 @@ function batteryIndicatorsMenuItem(): MenuItem {
   };
 }
 
-/** The Display section's "Animations" row: opens a modal submenu of animation toggles. */
+/** The Customization section's "Animations" row: opens a modal submenu of animation speeds. */
 function animationsMenuItem(): MenuItem {
-  return {
-    label: "Animations",
-    description: "Turn off menu and icon-grid motion, or the fade when the screen turns on and off.",
-    onSelect: (ctx) => {
+  return submenuItem(
+    "Animations",
+    (ctx) => {
       openSettingsSubMenu(ctx, "Animations", [
-        toggleSettingMenuItem(menuAnimationSetting),
-        toggleSettingMenuItem(screenFadeSetting),
+        enumSettingMenuItem(menuAnimationSetting),
+        enumSettingMenuItem(screenFadeSetting),
       ]);
     },
-  };
+    { description: "Speed up, slow down, or turn off menu and icon-grid motion and the fade when the screen turns on and off." },
+  );
 }
 
 const LOCAL_MODEL_GB = `${(LOCAL_MODEL.sizeBytes / 1e9).toFixed(1)}GB`;

@@ -52,6 +52,9 @@ fun interface IosAncsAuthorizationListener {
     fun onAncsAuthorization(identifier: String, authorized: Boolean)
 }
 
+/** The canonical 8-4-4-4-12 hex form -[NSUUID initWithUUIDString:] accepts. */
+private val UUID_STRING = Regex("^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$")
+
 /**
  * CoreBluetooth central used by the shared session and stock-firmware flows on iOS. It is
  * the iOS counterpart of Android's FaceclawBleManager: every [SessionLink]/[StockLink] call
@@ -268,7 +271,10 @@ class IosBleCentral(private val platform: ProtocolPlatform = IosProtocolPlatform
         var retrieved: CBPeripheral? = null
         dispatch_sync(queue) {
             val manager = central ?: return@dispatch_sync
-            val uuid = NSUUID(uUIDString = identifier) ?: return@dispatch_sync
+            // NSUUID's initializer can return nil, but Kotlin imports it as a
+            // non-null constructor: screen out malformed identifiers first.
+            if (!UUID_STRING.matches(identifier)) return@dispatch_sync
+            val uuid = NSUUID(uUIDString = identifier)
             retrieved = manager.retrievePeripheralsWithIdentifiers(listOf(uuid)).firstOrNull() as? CBPeripheral
         }
         retrieved?.let { return remember(it) }

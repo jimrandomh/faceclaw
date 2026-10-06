@@ -45,7 +45,7 @@ class FrameDisplayList private constructor(
             val clip = c.clip?.translated(x, y)
             when (c.op) {
                 DRAW_OP_ROUNDED_RECT -> DrawProtocol.roundedRect(bind(c.x, elapsed, x), bind(c.y, elapsed, y),
-                    v[0], v[1], v[2], v[3], v[4], depth + c.depth, clip)
+                    v[0], v[1], v[2], v[3], v[4], depth + c.depth, clip, v[5].takeIf { it != DRAW_ROUNDED_RECT_NO_OUTSIDE })
                 DRAW_OP_IMAGE -> DrawProtocol.image(resource(v[0]), bind(c.x, elapsed, x + v[1]), bind(c.y, elapsed, y + v[2]),
                     v[3], depth = depth + c.depth, clip = clip)
                 DRAW_OP_TEXT -> DrawProtocol.text(resource(v[0]), bind(c.x, elapsed, x + v[1]), bind(c.y, elapsed, y + v[2]),
@@ -185,9 +185,9 @@ class FrameDisplayList private constructor(
                     DRAW_OP_ROUNDED_RECT -> {
                         val xx = value(); val yy = value()
                         val w = r.readU16(); val h = r.readU16(); val radius = r.readU16()
-                        val background = r.readU8(); val border = r.readU8()
-                        require(w in 1..640 && h in 1..480 && background in 0..15 && border in 0..16)
-                        commands.add(Command(op, d, intArrayOf(w, h, radius, background, border), xx, yy, clip = clip))
+                        val background = r.readU8(); val border = r.readU8(); val outside = r.readU8()
+                        require(w in 1..640 && h in 1..480 && background in 0..15 && border in 0..16 && outside in 0..16)
+                        commands.add(Command(op, d, intArrayOf(w, h, radius, background, border, outside), xx, yy, clip = clip))
                     }
                     DRAW_OP_IMAGE -> {
                         val id = resource(); require(id != DrawProtocol.SCREEN)

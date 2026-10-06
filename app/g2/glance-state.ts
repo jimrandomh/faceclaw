@@ -66,7 +66,7 @@ export function reduceGlance(
  * already handles or ignores while asleep.
  */
 export function glanceEventForGesture(
-  gesture: "click" | "double-click" | "long-press" | "short-then-long-press" | "long-press-release" | "head-tilt" | string,
+  gesture: "click" | "double-click" | "long-press" | "short-then-long-press" | "long-press-release" | "head-tilt" | (string & {}),
   boardVisible: boolean,
 ): GlanceEvent | null {
   switch (gesture) {

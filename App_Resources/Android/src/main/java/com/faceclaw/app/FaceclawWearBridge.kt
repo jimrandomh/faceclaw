@@ -23,6 +23,8 @@ import java.nio.charset.StandardCharsets
 import java.util.ArrayDeque
 import java.util.ArrayList
 import java.util.Collections
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
 
 /**
  * Phone side of the Wear OS integration: the single place that talks to the
@@ -61,6 +63,8 @@ class FaceclawWearBridge private constructor(context: Context) {
         const val PATH_STATE_REQUEST = "/faceclaw/state/request"
         /** Watch -> phone: the watch's own battery; carries no seq and is never acked. */
         const val PATH_WATCH_BATTERY = "/faceclaw/battery"
+        /** Watch -> phone: touch-down ahead of a gesture; carries no seq and is never acked. */
+        const val PATH_WATCH_PRESS = "/faceclaw/press"
         /** Phone -> watch: answered with PATH_WATCH_BATTERY even while the watch app is closed. */
         const val PATH_WATCH_BATTERY_REQUEST = "/faceclaw/battery/request"
         const val PATH_ACK = "/faceclaw/ack"
@@ -114,6 +118,16 @@ class FaceclawWearBridge private constructor(context: Context) {
     private val pending = ArrayDeque<PendingMessage>()
     private val watchNodes: MutableList<Node> = ArrayList()
     private var lastPublishedState: String? = null
+    /** Latest state waiting for [publishExecutor]; null when none is queued. Guarded by [lock]. */
+    private var queuedState: String? = null
+    /**
+     * Serializing a DataMap and handing it to Play services costs ~10-25ms per
+     * publish, and the switcher publishes on every foreground change, so it
+     * runs here instead of on the main thread.
+     */
+    private val publishExecutor: ExecutorService = Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, "FaceclawWearPublish").apply { isDaemon = true }
+    }
 
     private class PendingMessage(
         val path: String,
@@ -210,12 +224,28 @@ class FaceclawWearBridge private constructor(context: Context) {
         publishState(json, false)
     }
 
-    /** As [publishState]; `force` re-sends an unchanged state. */
+    /**
+     * As [publishState]; `force` re-sends an unchanged state. The put happens
+     * on [publishExecutor]; states that arrive while one is still waiting
+     * replace it, since only the latest matters to the watch.
+     */
     fun publishState(json: String?, force: Boolean) {
         if (!available || json == null) return
         synchronized(lock) {
             if (!force && json == lastPublishedState) return
             lastPublishedState = json
+            val alreadyQueued = queuedState != null
+            queuedState = json
+            if (alreadyQueued) return
+        }
+        publishExecutor.execute { publishQueuedState() }
+    }
+
+    private fun publishQueuedState() {
+        val json: String
+        synchronized(lock) {
+            json = queuedState ?: return
+            queuedState = null
         }
         try {
             val request = PutDataMapRequest.create(PATH_STATE)
@@ -303,6 +333,9 @@ class FaceclawWearBridge private constructor(context: Context) {
         // dashboard to receive it, it is simply dropped (the dashboard polls
         // again when it starts), and the watch does not expect an ack.
         if (PATH_WATCH_BATTERY == path) return
+        // A touch-down only matters live; the gesture that follows it gets
+        // the failure ack below.
+        if (PATH_WATCH_PRESS == path) return
 
         // No JS listener yet: tell the watch so it can explain why nothing is
         // happening. Only state requests are kept for replay (see class doc);

@@ -8,7 +8,7 @@ declare const java: any;
  * translation to the phone's default language beneath it.
  */
 
-let languageIdentifier: any | null = null;
+let languageIdentifier: any = null;
 // Translators are expensive to build (model download on first use); cache by
 // "src>dst" and keep the proxies referenced so they aren't GC'd mid-flight.
 const translators = new Map<string, any>();
@@ -59,7 +59,7 @@ export function identifyLanguage(text: string): Promise<string> {
   });
 }
 
-function translatorFor(sourceLang: string, targetLang: string): any | null {
+function translatorFor(sourceLang: string, targetLang: string): any {
   const key = `${sourceLang}>${targetLang}`;
   const cached = translators.get(key);
   if (cached) return cached;

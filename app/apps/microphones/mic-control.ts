@@ -57,7 +57,7 @@ export function loadMicConfig(): MicConfig {
     return {
       ...defaults,
       ...parsed,
-      hostMics: { ...defaults.hostMics, ...(parsed.hostMics ?? {}) },
+      hostMics: { ...defaults.hostMics, ...parsed.hostMics },
     };
   } catch {
     return defaultMicConfig();
@@ -72,8 +72,8 @@ class MicArrayController {
   private readonly statusListeners = new Set<(statuses: MicArrayStatuses) => void>();
   private statuses: MicArrayStatuses = { left: null, right: null };
   // The Java listener proxy must stay referenced or it gets GC'd.
-  private statusProxy: any | null = null;
-  private proxyCommunicator: any | null = null;
+  private statusProxy: any = null;
+  private proxyCommunicator: any = null;
   private leaseTimer: ReturnType<typeof setInterval> | null = null;
   private armed = false;
 

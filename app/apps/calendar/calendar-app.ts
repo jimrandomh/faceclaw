@@ -21,7 +21,6 @@ export const CALENDAR_SURFACE_ID = "window:calendar";
  */
 export function createCalendarAppWindow(options: InProcessAppOptions): InProcessWindow {
   let requesting = false;
-  let app: InProcessWindow;
   let unsubscribe = () => {};
   let tick: ReturnType<typeof setInterval> | null = null;
 
@@ -37,7 +36,7 @@ export function createCalendarAppWindow(options: InProcessAppOptions): InProcess
       .finally(() => { requesting = false; });
   };
 
-  app = createInProcessWindow({
+  const app = createInProcessWindow({
     appId: "calendar",
     windowId: CALENDAR_WINDOW_ID,
     title: "Calendar",

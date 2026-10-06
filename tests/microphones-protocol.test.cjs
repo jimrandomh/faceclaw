@@ -1,7 +1,7 @@
 // Pins the mic_control wire codec against the firmware contract in g2flash's
 // patches/mic_control.c (microphone-configurations branch): field-103 control
 // records, the 21-byte field-104 status, and the 21-byte 'SM' stream header
-// with concatenated (not interleaved) channel payloads.
+// with interleaved PCM16 channel payloads.
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
@@ -13,7 +13,7 @@ const {
   encodeMicControl,
   decodeMicStatus,
   decodeMicStreamFrame,
-  splitConcatenatedPcm16,
+  splitInterleavedPcm16,
   defaultMicConfig,
   micEnabled,
   setMicEnabled,
@@ -154,12 +154,13 @@ function buildSmFrame({ channels = 2, samplesPerChannel = 4, angle = -30, ssr = 
   data[18] = ssr >> 8;
   data[19] = payLen & 0xff;
   data[20] = payLen >> 8;
-  // Channel blocks are CONCATENATED: channel 0 all-1000s, channel 1 all-(-2000)s.
+  // Channels are INTERLEAVED (ch0, ch1, ch0, ch1, ...): channel 0 all-1000s,
+  // channel 1 all-(-2000)s.
   for (let c = 0; c < channels; c++) {
     const value = c === 0 ? 1000 : -2000;
     const unsigned = value < 0 ? value + 0x10000 : value;
     for (let s = 0; s < samplesPerChannel; s++) {
-      const base = SM_HEADER_BYTES + c * samplesPerChannel * 2 + s * 2;
+      const base = SM_HEADER_BYTES + (s * channels + c) * 2;
       data[base] = unsigned & 0xff;
       data[base + 1] = unsigned >> 8;
     }
@@ -182,9 +183,9 @@ test("SM frame decode: header fields and negative angle", () => {
   assert.equal(decodeMicStreamFrame(buildSmFrame({ truncated: true })).truncated, true);
 });
 
-test("SM payload splits as concatenated channel blocks", () => {
+test("SM payload deinterleaves into per-channel samples", () => {
   const frame = decodeMicStreamFrame(buildSmFrame({ samplesPerChannel: 3 }));
-  const channels = splitConcatenatedPcm16(frame);
+  const channels = splitInterleavedPcm16(frame);
   assert.ok(channels);
   assert.equal(channels.length, 2);
   assert.equal(channels[0].length, 3);

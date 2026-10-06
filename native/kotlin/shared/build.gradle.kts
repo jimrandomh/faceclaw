@@ -6,6 +6,14 @@ plugins {
     id("com.android.kotlin.multiplatform.library")
 }
 kotlin {
+    compilerOptions {
+        // expect/actual classes are Beta in Kotlin 2.x; opt in deliberately.
+        freeCompilerArgs.add("-Xexpect-actual-classes")
+        // The compiler prints a warning only when it recompiles that file, and
+        // up-to-date or incremental builds never replay it, so warnings are easy
+        // to miss. Fail the build instead.
+        allWarningsAsErrors.set(true)
+    }
     android {
         namespace = "com.faceclaw.shared"
         compileSdk = 35

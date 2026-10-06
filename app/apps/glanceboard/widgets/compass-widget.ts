@@ -1,11 +1,11 @@
 import { type GrayImage } from "../../../graphics/image";
-import { getDefaultMediumFont, getDefaultSmallFont } from "../../../graphics/ui-fonts";
 import { hasLocationPermission } from "../../../native/location-permissions";
 import { addCompassListener, COMPASS_CHANGED, setCompassEnabled } from "../../../native/compass";
 import { isCompassCalibrated, normalizeHeading } from "../../compass/calibration";
 import { cardinalDirection, createCompassBackground, drawCompassRose, layoutCompassRose, TICK_HEIGHT } from "../../compass/compass-rose";
 import { getDeclinationAvailability, onDeclinationChanged, refreshDeclination } from "../../compass/declination";
 import { getNorthReference, resolveHeading } from "../../compass/heading";
+import { glanceFont } from "../glance-font";
 import { type GlanceWidget } from "../widget";
 
 /** Owner token for the refcounted magnetometer, distinct from the Compass app's. */
@@ -63,8 +63,8 @@ export class CompassWidget implements GlanceWidget {
   }
 
   paint(image: GrayImage): void {
-    const medium = getDefaultMediumFont();
-    const small = getDefaultSmallFont();
+    const medium = glanceFont.medium();
+    const small = glanceFont.small();
     const { width, height } = image;
     const heading = this.rawHeading === null ? null : resolveHeading(this.rawHeading).displayDegrees;
     const headingText = heading === null ? "--°" : `${Math.round(heading)}° ${cardinalDirection(heading)}`;

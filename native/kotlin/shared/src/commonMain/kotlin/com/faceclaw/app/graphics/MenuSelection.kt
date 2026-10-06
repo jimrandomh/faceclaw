@@ -2,11 +2,14 @@ package com.faceclaw.app
 
 /** A retained selection or image, replayed at stereo depth over the screen and shell surfaces. */
 class MenuSelection(val x: Int, val y: Int, val width: Int, val height: Int, val radius: Int,
-    val background: Int, val border: Int, val depth: Int, val packed: ByteArray, val occlusions: List<IntArray> = emptyList(), val kind: Int = DrawRecordKind.MENU_SELECTION, val mask: List<IntArray> = emptyList()) : RetainedDrawing {
-    val resource = CachedResource(DrawProtocol.rawImage(width, height, packed))
+    val background: Int, val border: Int, val depth: Int, val packed: ByteArray, val occlusions: List<IntArray> = emptyList(), val kind: Int = DrawRecordKind.MENU_SELECTION, val mask: List<IntArray> = emptyList(),
+    /** [packed] as a raw-image resource; translated copies share it (and its hash) instead of rebuilding it. */
+    val resource: CachedResource = CachedResource(DrawProtocol.rawImage(width, height, packed))) : RetainedDrawing {
     override val resources = listOf(resource)
-    override val fingerprint = "$kind,${mask.joinToString { it.joinToString() }},$x,$y,$width,$height,$radius,$background,$border,$depth,${resource.hash},${occlusions.joinToString { it.joinToString() }}"
-    override fun translated(dx: Int, dy: Int) = MenuSelection(x + dx, y + dy, width, height, radius, background, border, depth, packed, occlusions.map { intArrayOf(it[0] + dx, it[1] + dy, it[2], it[3]) }, kind, mask)
+    override val fingerprint: String by lazy {
+        "$kind,${mask.joinToString { it.joinToString() }},$x,$y,$width,$height,$radius,$background,$border,$depth,${resource.hash},${occlusions.joinToString { it.joinToString() }}"
+    }
+    override fun translated(dx: Int, dy: Int) = if (dx == 0 && dy == 0) this else MenuSelection(x + dx, y + dy, width, height, radius, background, border, depth, packed, occlusions.map { intArrayOf(it[0] + dx, it[1] + dy, it[2], it[3]) }, kind, mask, resource)
     override fun calls(ids: IntArray, nowMs: Long) = calls(ids.single())
     fun calls(id: Int): List<ByteArray> {
         val image = when (kind) {
@@ -36,7 +39,7 @@ class MenuSelection(val x: Int, val y: Int, val width: Int, val height: Int, val
             val radius = reader.getShort().toInt() and 65535
             val background = BmpUtil.nibbleForGray(reader.get() and 255)
             val border = BmpUtil.nibbleForGray(reader.get() and 255)
-            val depth = reader.get().toByte().toInt()
+            val depth = reader.get().toInt()
             val count = reader.getShort().toInt() and 65535
             require(count <= 2048)
             require(w in 1..640 && h in 1..480 && 5 + (w + 1) / 2 * h <= 65536 && reader.remaining() >= w * h)

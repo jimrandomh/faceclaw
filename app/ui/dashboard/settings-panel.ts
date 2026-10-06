@@ -10,7 +10,8 @@ import { shell } from "../shell/shell";
 
 /**
  * One left-column entry. `items` are the right-column rows (reusing the shared
- * MenuItem builders). `renderDetail`, when set, draws custom informational
+ * MenuItem builders); it may be a getter for rows that come and go with other
+ * settings, since the panel re-reads it on every paint. `renderDetail`, when set, draws custom informational
  * content (e.g. About) at the top of the pane and returns the pixel height it
  * consumed; the row list renders below it. Returning nothing claims the whole
  * pane (an info-only section).

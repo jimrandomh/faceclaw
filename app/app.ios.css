@@ -174,6 +174,7 @@ Page.main-page {
 }
 .main-page .action-bar-title { font-size: 18; font-weight: bold; color: #ffffff; }
 .main-page .action-bar-status { font-size: 14; color: #ffffff; margin-right: 12; }
+.main-page .action-bar-warning { font-size: 18; padding: 4 6; }
 .main-page .overflow-button {
   background-color: transparent;
   color: #ffffff;

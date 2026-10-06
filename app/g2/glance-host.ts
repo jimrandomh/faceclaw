@@ -79,7 +79,7 @@ export class GlanceHost {
    * "Show on head tilt" is off (it then wakes the regular UI). A release
    * always passes so a hold in progress can end.
    */
-  eventForGesture(gesture: "head-tilt" | string): GlanceEvent | null {
+  eventForGesture(gesture: "head-tilt" | (string & {})): GlanceEvent | null {
     const provider = this.options.getProvider();
     if (!provider?.isEnabled()) return null;
     if (gesture === "click" && !provider.showOnTap()) return null;

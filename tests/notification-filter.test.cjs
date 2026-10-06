@@ -86,7 +86,7 @@ function ui(fontSize = 12) {
     '../util/render-freshness': { renderPassAllowsStaleData: () => false },
     './menu-highlight-motion': require('../.test-build/app/ui/menu-highlight-motion.js'), '../graphics/menu-scroll-list': require('../.test-build/app/graphics/menu-scroll-list.js'), './menu-scroll-motion': require('../.test-build/app/ui/menu-scroll-motion.js'), '../graphics/draw-expression': require('../.test-build/app/graphics/draw-expression.js'),
     './metrics': load('app/ui/metrics.ts'),
-    './menu-animation-pref': require('../.test-build/app/ui/menu-animation-pref.js'), '../native/settings-store': { getBooleanSetting: (_key, fallback) => fallback },
+    './menu-animation-pref': require('../.test-build/app/ui/menu-animation-pref.js'), './animation-speed': require('../.test-build/app/ui/animation-speed.js'), '../native/settings-store': { getStringSetting: (_key, fallback) => fallback },
     './gestures': {},
   };
   const requireModule = (name) => {
@@ -98,13 +98,39 @@ function ui(fontSize = 12) {
   const { SingleNotificationLayer } = load('app/ui/notifications.ts', requireModule);
   const { NotificationFilterLayer } = load('app/ui/notification-filter.ts', requireModule);
   const ctx = { stack: { getBaseSize: () => ({ width: 540, height: 224 }), isFocused: () => true, pop: () => closes++ } };
-  const popup = new SingleNotificationLayer('key', { origin: 'new-notification-modal', closeModal: () => closes++ });
+  const popup = new SingleNotificationLayer('key', { origin: 'new-notification-modal', onClose: () => closes++ });
+  const trayCloses = [];
+  const tray = new SingleNotificationLayer('key', { origin: 'notification-tray', onClose: (_ctx, gone) => trayCloses.push(gone) });
   const filter = new NotificationFilterLayer();
-  const paint = (layer) => layer.paint(ctx, () => new RecordingImage(540, 224));
+  let paintedBelow = 0;
+  const paint = (layer) => layer.paint(ctx, () => { paintedBelow++; return new RecordingImage(540, 224); });
   const input = (layer, type) => layer.handleInput({ type }, ctx);
-  return { prefs, popup, filter, paint, input, active: (value) => { active = value; },
-    dismissals: () => dismissals, closes: () => closes };
+  return { prefs, popup, tray, filter, paint, input, active: (value) => { active = value; },
+    dismissals: () => dismissals, closes: () => closes, trayCloses, paintedBelow: () => paintedBelow };
 }
+
+test('a notification the switcher selected reports back and dismissal to it, and repeats its last frame once gone', async () => {
+  const app = ui();
+  const labels = (image) => image.texts.map(({ text }) => text);
+  assert.ok(labels(app.paint(app.tray)).includes('Back'));
+  assert.ok(!labels(app.paint(app.tray)).some((text) => text.includes("Don't show")));
+  await app.input(app.tray, 'double-click');
+  await app.input(app.tray, 'click');
+  assert.deepEqual(app.trayCloses, [false, false]);
+  await app.input(app.tray, 'scroll-down');
+  const last = app.paint(app.tray);
+  await app.input(app.tray, 'click');
+  assert.equal(app.dismissals(), 1);
+  assert.deepEqual(app.trayCloses, [false, false, true]);
+  // The switcher swaps in a neighbour after the paint; until then the paint
+  // holds what was showing rather than the list below.
+  const again = app.paint(app.tray);
+  assert.deepEqual(app.trayCloses, [false, false, true, true]);
+  assert.equal(app.paintedBelow(), 0);
+  // (Compared unbaked: the menu highlight's draws animate with the clock.)
+  assert.deepEqual(Buffer.from(again.pixels), Buffer.from(last.pixels));
+  assert.deepEqual(again.drawList, last.drawList);
+});
 
 test('popup dismisses before confirmation; confirming disables the source even after the notification disappears', async () => {
   const app = ui();

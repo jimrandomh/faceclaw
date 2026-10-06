@@ -21,3 +21,5 @@ const val CFW_TEXTURE_OPT_INVERSE = 32
 
 /** Rounded-rectangle border sentinel, not a color or flag bit. */
 const val DRAW_ROUNDED_RECT_NO_BORDER = 16
+/** Revision 36: the rounded rectangle's optional outside color is absent (bridge sentinel). */
+const val DRAW_ROUNDED_RECT_NO_OUTSIDE = 16

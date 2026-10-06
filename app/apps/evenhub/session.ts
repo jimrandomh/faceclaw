@@ -110,30 +110,61 @@ export const EVENHUB_BRIDGE_INJECT_SCRIPT = `
   };
 })();
 (function () {
-  // Host-driven timers. Chromium heavily throttles a page's own
-  // setTimeout/setInterval when the phone screen is off, which slows
-  // timer-driven apps to a crawl. Replace them with a queue fired by
-  // window.__fcTimerTick(), which the native host calls at ~60Hz regardless of
+  // Host-driven timers and requestAnimationFrame. Chromium heavily throttles a
+  // page's own setTimeout/setInterval when the phone screen is off, and pauses
+  // or throttles a hidden page's rAF, which slows timer-driven apps to a crawl
+  // and stalls canvas apps that render on a rAF loop. Replace them with queues
+  // fired by window.__fcTick(), which the native host calls regardless of
   // screen state (host-initiated evaluateJavascript escapes the throttle).
-  if (window.__fcTimerTick) return;
+  // (The glasses render via BLE, not the phone's display, so vsync alignment
+  // doesn't matter — a steady frame rate does.)
+  //
+  // __fcTick returns how many ms until it next has work (-1: none), and the
+  // host sleeps until then instead of evaluating JS at 60Hz for an idle page.
+  // Work added outside a tick that is due before the host's next tick wakes it
+  // through the bridge.
+  if (window.__fcTick) return;
+  var FRAME_MS = 16;
   var timers = new Map();
   var nextId = 1;
+  var rafs = new Map();
+  var nextRafId = 1;
+  var inTick = false;
+  // When the host will next call __fcTick; Infinity while it is idle.
+  var hostNextTickAt = Infinity;
+  function needTickBy(due) {
+    if (inTick || due >= hostNextTickAt) return;
+    hostNextTickAt = Date.now();
+    var bridge = window.__faceclawEvenHub;
+    if (bridge && bridge.wakeTimers) bridge.wakeTimers();
+  }
   window.setTimeout = function (cb, delay) {
     var args = Array.prototype.slice.call(arguments, 2);
     var id = nextId++;
-    timers.set(id, { cb: cb, args: args, due: Date.now() + (+delay || 0), interval: 0 });
+    var due = Date.now() + (+delay || 0);
+    timers.set(id, { cb: cb, args: args, due: due, interval: 0 });
+    needTickBy(due);
     return id;
   };
   window.setInterval = function (cb, delay) {
     var args = Array.prototype.slice.call(arguments, 2);
     var id = nextId++;
     var d = +delay || 0;
-    timers.set(id, { cb: cb, args: args, due: Date.now() + d, interval: d });
+    var due = Date.now() + d;
+    timers.set(id, { cb: cb, args: args, due: due, interval: d });
+    needTickBy(due);
     return id;
   };
   window.clearTimeout = function (id) { timers.delete(id); };
   window.clearInterval = function (id) { timers.delete(id); };
-  window.__fcTimerTick = function () {
+  window.requestAnimationFrame = function (cb) {
+    var id = nextRafId++;
+    rafs.set(id, cb);
+    needTickBy(Date.now() + FRAME_MS);
+    return id;
+  };
+  window.cancelAnimationFrame = function (id) { rafs.delete(id); };
+  function runTimers() {
     var now = Date.now();
     var dueIds = [];
     timers.forEach(function (entry, id) { if (entry.due <= now) dueIds.push(id); });
@@ -151,24 +182,8 @@ export const EVENHUB_BRIDGE_INJECT_SCRIPT = `
       }
       try { entry.cb.apply(null, entry.args); } catch (e) { if (window.console) console.error(e); }
     }
-  };
-})();
-(function () {
-  // Host-driven requestAnimationFrame, same idea as the timers above: a hidden
-  // page's rAF is paused/throttled with the screen off, stalling canvas apps
-  // that render on a rAF loop. Drive it from window.__fcRafTick(), called by the
-  // native ticker each frame. (The glasses render via BLE, not the phone's
-  // display, so vsync alignment doesn't matter — a steady frame rate does.)
-  if (window.__fcRafTick) return;
-  var rafs = new Map();
-  var nextRafId = 1;
-  window.requestAnimationFrame = function (cb) {
-    var id = nextRafId++;
-    rafs.set(id, cb);
-    return id;
-  };
-  window.cancelAnimationFrame = function (id) { rafs.delete(id); };
-  window.__fcRafTick = function () {
+  }
+  function runRafs() {
     if (rafs.size === 0) return;
     var ts = window.performance && performance.now ? performance.now() : Date.now();
     // Snapshot and clear: callbacks that re-request during this frame run on
@@ -178,6 +193,32 @@ export const EVENHUB_BRIDGE_INJECT_SCRIPT = `
     current.forEach(function (cb) {
       try { cb(ts); } catch (e) { if (window.console) console.error(e); }
     });
+  }
+  function inTickDo(fn) {
+    inTick = true;
+    try { fn(); } finally { inTick = false; }
+  }
+  // Fixed-rate entry points for hosts that don't use __fcTick's schedule (the
+  // iOS host calls both every frame).
+  window.__fcTimerTick = function () { inTickDo(runTimers); };
+  window.__fcRafTick = function () { inTickDo(runRafs); };
+  window.__fcTick = function () {
+    inTick = true;
+    try {
+      runTimers();
+      runRafs();
+    } finally {
+      inTick = false;
+    }
+    var now = Date.now();
+    var delay = rafs.size ? FRAME_MS : -1;
+    timers.forEach(function (entry) {
+      var d = entry.due - now;
+      if (delay < 0 || d < delay) delay = d;
+    });
+    if (delay >= 0) delay = Math.max(FRAME_MS, Math.ceil(delay));
+    hostNextTickAt = delay < 0 ? Infinity : now + delay;
+    return delay;
   };
 })();
 `;
@@ -1136,7 +1177,7 @@ export class EvenHubSession implements EvenHubMicClient, EvenHubImuClient, EvenH
       }
       return out;
     };
-    if (requested.length === 0 || requested.every((id) => this.grantedApiKeys.has(id))) {
+    if (requested.every((id) => this.grantedApiKeys.has(id))) {
       return Promise.resolve(buildGrant());
     }
     if (!this.windowHooks) return Promise.resolve({});

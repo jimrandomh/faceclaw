@@ -51,9 +51,19 @@ export function installedEvenHubPackageId(appId: string): string | null {
   }
 }
 
+// The parsed index for the last stored value: the launcher and the watch
+// state both list installed apps on every refresh, and the sort's
+// localeCompare dominated the cost.
+let parsedIndex: { raw: string; apps: InstalledEvenHubApp[] } | null = null;
+
 export function getInstalledEvenHubApps(): InstalledEvenHubApp[] {
   const raw = getStringSetting(STORAGE_KEY, "");
   if (!raw) return [];
+  if (parsedIndex?.raw !== raw) parsedIndex = { raw, apps: parseInstalledIndex(raw) };
+  return parsedIndex.apps.map((app) => ({ ...app }));
+}
+
+function parseInstalledIndex(raw: string): InstalledEvenHubApp[] {
   try {
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];

@@ -4,6 +4,7 @@ import { toUint8Array } from "../util/array-util";
 import { rememberNotificationSources } from "./notification-sources";
 
 declare const com: any;
+declare const java: any;
 
 const ICON_SIZE = 24;
 /** Ask the native listener for every active source, including those below the list's display limit. */
@@ -17,10 +18,11 @@ export const ALL_NOTIFICATIONS = 0x7fffffff;
 const ICON_CACHE_MS = 60_000;
 
 let cachedIcons: GrayImage[] = [];
+let cachedKeys: string[] = [];
 let cachedAtMs = 0;
 const keyedIconCache = new Map<string, { icon: GrayImage | null; atMs: number }>();
 const KEYED_ICON_CACHE_MAX = 128;
-let notificationListenerProxy: any | null = null;
+let notificationListenerProxy: any = null;
 const notificationPostedListeners = new Set<(notificationKey: string) => void>();
 
 function invalidateIconCaches(): void {
@@ -33,6 +35,11 @@ export type { AndroidNotification, AndroidNotificationAction } from "./notificat
 
 export type NotificationIconsResult = {
   icons: GrayImage[];
+  /**
+   * The notification each icon stands for, by key, in step with icons: the
+   * member of its group (which gets one icon) the icon was taken from.
+   */
+  keys: string[];
   /** True when the icons came from an expired (or empty) cache under allowStale. */
   stale: boolean;
 };
@@ -46,23 +53,25 @@ export type NotificationIconsResult = {
  * on what is in the tray.
  */
 export function readActiveNotificationIcons(maxIcons: number, allowStale: boolean): NotificationIconsResult {
-  if (!global.isAndroid || maxIcons <= 0) return { icons: [], stale: false };
+  if (!global.isAndroid || maxIcons <= 0) return { icons: [], keys: [], stale: false };
 
   const now = Date.now();
   if (cachedAtMs > 0 && now - cachedAtMs < ICON_CACHE_MS) {
     logCurrent("notification icons served from cache");
-    return { icons: cachedIcons.map(icon => icon.clone()), stale: false };
+    return { icons: cachedIcons.map(icon => icon.clone()), keys: cachedKeys.slice(), stale: false };
   }
   if (allowStale) {
     logCurrent("notification icons served stale");
-    return { icons: cachedIcons.map(icon => icon.clone()), stale: true };
+    return { icons: cachedIcons.map(icon => icon.clone()), keys: cachedKeys.slice(), stale: true };
   }
 
+  const keyList = new java.util.ArrayList();
   const bytes = spanCurrent("fetch-notification-icons", () =>
     toUint8Array(
       com.faceclaw.app.FaceclawMediaNotificationListenerService.getActiveNotificationIconGrays(
         ICON_SIZE,
         maxIcons,
+        keyList,
       ),
     ),
   );
@@ -74,10 +83,15 @@ export function readActiveNotificationIcons(maxIcons: number, allowStale: boolea
     icon.pixels.set(bytes.subarray(index * iconByteLength, (index + 1) * iconByteLength));
     icons.push(icon);
   }
+  const keys: string[] = [];
+  for (let index = 0; index < iconCount; index++) {
+    keys.push(index < keyList.size() ? String(keyList.get(index)) : "");
+  }
 
   cachedIcons = icons;
+  cachedKeys = keys;
   cachedAtMs = now;
-  return { icons: icons.map(icon => icon.clone()), stale: false };
+  return { icons: icons.map(icon => icon.clone()), keys: keys.slice(), stale: false };
 }
 
 export type NotificationIconResult = {

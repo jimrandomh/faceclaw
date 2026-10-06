@@ -2,6 +2,7 @@ import { GrayImage } from "../../graphics/image";
 import { truncateText, wrapText } from "../../graphics/textwrap";
 import { getDefaultSmallFont } from "../../graphics/ui-fonts";
 import { enumSettingMenuItem, onAnySettingChanged, toggleSettingMenuItem } from "../../ui/dashboard-settings";
+import { uiFontOverridePickerMenuItem } from "../../ui/font-picker";
 import { type InputEvent } from "../../ui/gestures";
 import { type Layer, type LayerContext } from "../../ui/layers";
 import { drawSelectionHighlight, isMenuItemDisabled, MenuLayer, openModalMenu, type MenuItem } from "../../ui/menu";
@@ -10,6 +11,7 @@ import { LIST_ROW_TEXT_INSET, lineStep, listRowHeight } from "../../ui/metrics";
 import { createInProcessWindow, type InProcessAppOptions, type InProcessWindow } from "../../ui/shell/in-process-window";
 import { shell } from "../../ui/shell/shell";
 import { GlanceBoard } from "./board";
+import { glanceFont } from "./glance-font";
 import {
   clearConflictingSlots,
   glanceboardEnabledSetting,
@@ -298,7 +300,7 @@ function openSlotPicker(ctx: LayerContext, slotIndex: number): void {
   openModalMenu(ctx, setting.label, items, Math.max(0, setting.values.indexOf(current)));
 }
 
-/** Settings: layout, sleep gestures, duration, slot lines, and stereo depth. */
+/** Settings: layout, sleep gestures, duration, slot lines, widget font, and stereo depth. */
 function openGlanceSettings(ctx: LayerContext): void {
   const items: MenuItem[] = [
     enumSettingMenuItem(glanceLayoutSetting),
@@ -306,6 +308,11 @@ function openGlanceSettings(ctx: LayerContext): void {
     toggleSettingMenuItem(glanceShowOnLongPressSetting),
     toggleSettingMenuItem(glanceShowOnHeadTiltSetting),
     toggleSettingMenuItem(glanceShowLinesSetting),
+    uiFontOverridePickerMenuItem(glanceFont, {
+      title: "Glanceboard font",
+      description:
+        "Typeface for the Glanceboard's widgets. Same as UI font follows the Font setting in Settings > Customization.",
+    }),
     enumSettingMenuItem(glanceDepthSetting),
   ];
   ctx.stack.push(new MenuLayer("Glanceboard settings", items, pageMenuLayout(ctx.stack.getBaseSize().width)));
@@ -344,7 +351,6 @@ class GlancePreviewLayer implements Layer {
 export function createGlanceboardAppWindow(options: InProcessAppOptions): InProcessWindow {
   let previewVisible = false;
   const heightMode = () => previewVisible && glanceLayoutSetting.get() === "2x3" ? "max" as const : "medium" as const;
-  let unsubscribeSettings: (() => void) | undefined;
   const app = createInProcessWindow({
     appId: "glanceboard",
     windowId: GLANCEBOARD_WINDOW_ID,
@@ -367,10 +373,10 @@ export function createGlanceboardAppWindow(options: InProcessAppOptions): InProc
     removeSurface: options.removeSurface,
     reconfigureSurface: options.reconfigureSurface,
     onClosed: () => {
-      unsubscribeSettings?.();
+      unsubscribeSettings();
       options.onClosed();
     },
   });
-  unsubscribeSettings = onAnySettingChanged(() => app.setHeightMode(heightMode()));
+  const unsubscribeSettings = onAnySettingChanged(() => app.setHeightMode(heightMode()));
   return app;
 }

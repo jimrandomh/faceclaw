@@ -40,8 +40,12 @@ export function modalRect(): { x: number; y: number; width: number; height: numb
 export class ShellModalLayer implements Layer {
   private readonly stack: LayerStack;
 
-  constructor(baseLayer: Layer, actions: LayerActions) {
+  constructor(baseLayer: Layer, actions: LayerActions, private readonly removed?: () => void) {
     this.stack = new LayerStack(baseLayer, actions, modalInterior());
+  }
+
+  onRemoved(): void {
+    this.removed?.();
   }
 
   paint(_ctx: LayerContext, paintBelow: PaintBelow): GrayImage {

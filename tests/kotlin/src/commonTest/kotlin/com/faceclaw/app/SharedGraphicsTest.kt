@@ -98,6 +98,46 @@ class SharedGraphicsTest {
     }
 
     @Test
+    fun surfaceIsCurrentOnlyAfterItsContentAndEveryChangeWasComposited() {
+        val c = SurfaceCompositor()
+        c.configureScreen(3, 2)
+        c.configureSurface("app", 0, 0, 3, 2, 0, 0)
+        assertFalse(c.isSurfaceCurrent("app", ""))
+        c.applyAndComposite("app", ArrayByteReader(ByteArray(6) { 200.toByte() }), 0, 0, 3, 2, "a")
+        assertTrue(c.isSurfaceCurrent("app", "a"))
+        assertFalse(c.isSurfaceCurrent("app", "b"))
+        assertFalse(c.isSurfaceCurrent("missing", "a"))
+        // A preview composite is not kept, so it does not apply pending changes.
+        c.setUnderlayDim(1, 128)
+        assertFalse(c.isSurfaceCurrent("app", "a"))
+        c.previewComposite()
+        assertFalse(c.isSurfaceCurrent("app", "a"))
+        c.composite()
+        assertTrue(c.isSurfaceCurrent("app", "a"))
+        for (change in listOf<() -> Unit>(
+            { c.configureSurface("app", 1, 0, 3, 2, 0, 0) },
+            { c.setSurfaceVisible("app", false) },
+            { c.setSurfaceDepth("app", 2) },
+            { c.setBlanked(false) },
+            { c.removeSurface("other") },
+        )) {
+            change()
+            assertFalse(c.isSurfaceCurrent("app", "a"))
+            c.composite()
+            assertTrue(c.isSurfaceCurrent("app", "a"))
+        }
+        // Submitting without compositing retains the content but leaves it unapplied.
+        c.submitSurface("app", ArrayByteReader(ByteArray(6)), 0, 0, 3, 2, "b")
+        assertFalse(c.isSurfaceCurrent("app", "b"))
+        c.composite()
+        assertTrue(c.isSurfaceCurrent("app", "b"))
+        // A resize discards the retained content.
+        c.configureSurface("app", 0, 0, 2, 2, 0, 0)
+        c.composite()
+        assertFalse(c.isSurfaceCurrent("app", "b"))
+    }
+
+    @Test
     fun pngChunksAndPixels() {
         val png = SharedScreenshots.encode4BitGrayPng(byteArrayOf(0, 16, -1, 32, 48, 64), 3, 2)
         assertContentEquals(hex("89504e470d0a1a0a"), png.copyOf(8))

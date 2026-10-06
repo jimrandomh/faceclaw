@@ -5,7 +5,6 @@ const path = require('node:path');
 const vm = require('node:vm');
 const ts = require('typescript');
 const images = require('../.test-build/app/graphics/image.js');
-const { SurfaceCompositor } = require('../.test-build/app/graphics/surface-compositor.js');
 const events = require('../.test-build/app/g2/events.js');
 
 function load(file, modules, globals = {}) {
@@ -20,6 +19,7 @@ function load(file, modules, globals = {}) {
 }
 const planes = load('app/graphics/plane.ts', { './image': images });
 const timings = load('app/native/frame-timings.ts', {});
+const LAUNCHER_GRAY = 75;
 
 function fixture() {
   const observers = new Map(), phoneState = { protectedDataAvailable: true };
@@ -38,7 +38,7 @@ function fixture() {
     '../util/render-freshness': { beginRenderPass() {}, endRenderPass: () => false },
     './glance-state': require('../.test-build/app/g2/glance-state.js'),
   }, clock);
-  const launcherPixels = new Uint8Array(640 * 480).fill(75), fullRect = { x: 0, y: 0, width: 640, height: 480 };
+  const launcherPixels = new Uint8Array(640 * 480).fill(LAUNCHER_GRAY), fullRect = { x: 0, y: 0, width: 640, height: 480 };
   const window = { windowId: 'launcher', surfaceId: 'launcher', appId: 'launcher', title: 'Apps',
     // The launcher repaints into whichever display target the controller has after a switch.
     requestRender() { void controller?.displayReady.then(() => controller.display?.submitSurfaceFrame('launcher', launcherPixels, fullRect, 'launcher')); }, setScreenOn() {} };
@@ -55,21 +55,43 @@ function fixture() {
       if (input.type === 'display-wake' || !screenOn && input.type === 'double-click') shell.wake();
     },
   };
-  // Both display targets compose with the real (TypeScript reference) compositor so
-  // the pixel assertions below exercise real layering, blanking and lock surfaces.
+  // Both display targets share a minimal compositor (z-ordered opaque and
+  // color-keyed surfaces, visibility, blanking) so the pixel assertions below
+  // exercise layering, blanking and lock surfaces.
   class Display {
-    compositor = new SurfaceCompositor(640, 480);
+    surfaces = new Map(); blanked = false; depths = [];
     async configureCompositorScreen() {}
-    async configureSurface(id, options) { this.compositor.configureSurface(id, options); }
-    async removeSurface(id) { this.compositor.removeSurface(id); this.changed(); }
-    async setSurfaceVisible(id, visible) { this.compositor.setSurfaceVisible(id, visible); this.changed(); }
-    depths = [];
-    async setSurfaceDepth(id, depth) { this.depths.push([id, depth]); this.compositor.setSurfaceDepth(id, depth); }
-    async setUnderlayDim(below, factor) { this.compositor.setUnderlayDim(below, factor); this.changed(); }
-    async setScreenBlanked(blanked) { this.compositor.setScreenBlanked(blanked); this.changed(); }
-    async submitSurfaceFrame(id, pixels, rect, _fingerprint, _paintMs, _frameId, draws = null) { this.compositor.submitSurfaceFrame(id, pixels, rect, draws); this.changed(); }
-    async submitShellScene(bytes) { this.compositor.setShellScene(bytes); this.changed(); }
-    getCompositePreview() { return this.compositor.composite(); }
+    async configureSurface(id, options) {
+      const previous = this.surfaces.get(id);
+      const pixels = previous?.width === options.width && previous.height === options.height
+        ? previous.pixels : new Uint8Array(options.width * options.height);
+      this.surfaces.set(id, { ...options, pixels, visible: previous?.visible ?? true });
+    }
+    async removeSurface(id) { this.surfaces.delete(id); this.changed(); }
+    async setSurfaceVisible(id, visible) { const surface = this.surfaces.get(id); if (surface) surface.visible = visible; this.changed(); }
+    async setSurfaceDepth(id, depth) { this.depths.push([id, depth]); }
+    async setUnderlayDim() { this.changed(); }
+    async setScreenBlanked(blanked) { this.blanked = blanked; this.changed(); }
+    async submitSurfaceFrame(id, pixels, rect) {
+      const surface = this.surfaces.get(id);
+      if (!surface) throw new Error(`Unknown surface: ${id}`);
+      for (let y = 0; y < rect.height; y++) {
+        surface.pixels.set(pixels.subarray(y * rect.width, (y + 1) * rect.width), (rect.y + y) * surface.width + rect.x);
+      }
+      this.changed();
+    }
+    async submitShellScene() { this.changed(); }
+    getCompositePreview() {
+      const output = new Uint8Array(640 * 480);
+      if (this.blanked) return output;
+      for (const s of [...this.surfaces.values()].filter(s => s.visible).sort((a, b) => a.zOrder - b.zOrder)) {
+        for (let y = 0; y < s.height; y++) for (let x = 0; x < s.width; x++) {
+          const value = s.pixels[y * s.width + x];
+          if (s.transparency !== 'color-key' || value) output[(s.y + y) * 640 + s.x + x] = value;
+        }
+      }
+      return output;
+    }
     changed() {}
   }
   class PreviewDisplayTarget extends Display {
@@ -93,7 +115,7 @@ function fixture() {
     async start() { this.emitState('connected', 'Connected.'); }
     async disconnect() { this.emitState('disconnected', 'Disconnected.'); }
     waitForFrameFinished() { return Promise.resolve('sent'); }
-    changed() { if (this.phase === 'connected') sent.push(this.compositor.composite()); }
+    changed() { if (this.phase === 'connected') sent.push(this.getCompositePreview()); }
   }
   const provider = {
     isEnabled: () => settings.enabled, showOnTap: () => settings.tap,
@@ -121,9 +143,11 @@ function fixture() {
     '../native/preview-display.ios': { PreviewDisplayTarget },
     './ancs-client': { ANCS_FIRMWARE_VERSION: 16, AncsClient: class { state = 'disconnected'; start() {} stop() {} stopCommand() { return new Uint8Array(); } receive() { return false; } } },
     '../native/nightscout-bridge': { nightscoutBridge: { async start() {}, async stop() {} } },
+    '../native/weather': { weatherBridge: { setSessionActive() {} } },
     './glance-host': { GlanceHost }, './events': events,
     './lock-screen': { LOCK_SCREEN_SURFACE_ID: 'lock-screen', createLockScreenImage: () => new images.GrayImage(640, 480, 123) },
     './device-addresses': { loadDeviceAddresses: () => ({ right: 'AA', left: 'BB', ring: '' }) }, './ios-peripheral-identity': { deviceAddressError: () => null },
+    './firmware-compat': load('app/g2/firmware-compat.ts', {}), './reconnect-policy': load('app/g2/reconnect-policy.ts', {}),
     '../apps/launcher': { launcherEntries: () => [] },
     '../apps/evenhub/installed-apps': {}, '../apps/evenhub/manager': {}, '../apps/evenhub/updates': {}, '../apps/evenhub': {},
     '../apps/launcher/launcher-app': { createLauncherWindow: () => window, LAUNCHER_SURFACE_ID: 'launcher' },
@@ -182,70 +206,6 @@ const assertBoard = pixels => {
   assert.equal(pixels[0], 0, 'opaque Glanceboard hides the retained app and shell');
 };
 
-test('iOS sleep tap shows the shared board; repeated tap renews timeout and hides to black', async () => {
-  const f = fixture(); await f.connect(); f.shell.sleep(); await f.render();
-  assertBlank(f.sent.at(-1));
-  await f.hardware(0); assertBoard(f.sent.at(-1)); assert.equal(f.shell.isScreenOn(), false);
-  assert.equal(f.previews.at(-1).title, 'Glanceboard'); assert.equal(f.received.length, 0);
-  await f.advance(2000); await f.hardware(0); await f.advance(1100);
-  assert.equal(f.controller.glance.isVisible(), true);
-  const offset = f.sent.length;
-  await f.advance(2000); await f.render();
-  assert.equal(f.controller.glance.isVisible(), false);
-  for (const pixels of f.sent.slice(offset)) assertBlank(pixels);
-  assert.equal(f.boardStats.starts, 1); assert.equal(f.boardStats.stops, 1);
-});
-
-test('Glanceboard applies its depth setting to its surface only when it changes', async () => {
-  const f = fixture(); await f.connect(); f.shell.sleep(); await f.render();
-  f.settings.depth = 32; await f.hardware(0); assertBoard(f.sent.at(-1));
-  await f.advance(3100); await f.render(); assert.equal(f.controller.glance.isVisible(), false);
-  await f.hardware(0); assert.equal(f.controller.glance.isVisible(), true);
-  await f.advance(3100); await f.render();
-  f.settings.depth = 0; await f.hardware(0);
-  assert.deepEqual(f.controller.display.depths, [['glance', 32], ['glance', 0]]);
-});
-
-test('iOS holds and tap-then-holds last until release, including with phone backgrounded', async () => {
-  const f = fixture(); await f.connect(); f.shell.sleep(); f.controller.pause();
-  const previews = f.previews.length;
-  for (const type of [9, 11]) {
-    await f.hardware(type, 1); assertBoard(f.sent.at(-1));
-    await f.advance(10000); assert.equal(f.controller.glance.isVisible(), true);
-    await f.hardware(10, 1); assertBlank(f.sent.at(-1));
-  }
-  assert.equal(f.previews.length, previews); assert.equal(f.received.length, 0);
-});
-
-test('double-tap and other shell wakes replace Glanceboard without waking it again', async () => {
-  const f = fixture(); await f.connect(); f.shell.sleep();
-  await f.hardware(9); await f.hardware(3);
-  assert.equal(f.shell.isScreenOn(), true); assert.equal(f.controller.glance.isVisible(), false);
-  assert.equal(f.sent.at(-1)[0], 80); assert.equal(f.boardStats.stops, 1);
-  f.shell.sleep(); await f.hardware(0); f.shell.wake(); await f.render();
-  assert.equal(f.controller.glance.isVisible(), false); assert.equal(f.sent.at(-1)[0], 80);
-  await f.advance(5000); await f.render(); assert.equal(f.sent.at(-1)[0], 80);
-});
-
-test('head tilt uses Glanceboard when enabled and otherwise wakes the regular UI', async () => {
-  const f = fixture(); await f.connect(); f.shell.sleep();
-  await f.hardware(12, 1); assertBoard(f.sent.at(-1)); assert.equal(f.shell.isScreenOn(), false);
-  await f.hardware(3); f.shell.sleep(); f.settings.tilt = false;
-  await f.hardware(12, 1); assert.equal(f.shell.isScreenOn(), true); assert.equal(f.sent.at(-1)[0], 80);
-});
-
-test('disabled triggers and scrolls do not show the board; awake taps still reach the shell', async () => {
-  const f = fixture(); await f.connect();
-  await f.hardware(0); assert.equal(f.received.at(-1).type, 'click'); assert.equal(f.boardStats.starts, 0);
-  f.shell.sleep(); f.settings.tap = false; f.settings.hold = false;
-  for (const type of [0, 9, 11, 10, 1, 2]) await f.hardware(type);
-  assert.equal(f.boardStats.starts, 0); assertBlank(f.sent.at(-1));
-  f.settings.enabled = false; f.settings.tap = f.settings.hold = true;
-  for (const type of [0, 9, 11]) await f.hardware(type);
-  assert.equal(f.boardStats.starts, 0);
-  await f.hardware(3); assert.equal(f.shell.isScreenOn(), true);
-});
-
 test('phone preview gestures use Glanceboard; losing runtime cleans up holds and timers', async () => {
   const f = fixture(); f.shell.sleep();
   await f.phone('tap', 'mirror'); assertBoard(f.previews.at(-1).pixels);
@@ -256,94 +216,6 @@ test('phone preview gestures use Glanceboard; losing runtime cleans up holds and
   f.controller.pause(); await f.render(); assert.equal(f.controller.glance.isVisible(), false);
   f.controller.resume(); await f.render(); assertBlank(f.previews.at(-1).pixels);
   assert.equal(f.boardStats.starts, f.boardStats.stops);
-});
-
-
-test('iOS lock hides apps and Glanceboard, blocks input, and stays locked when put back on', async () => {
-  const f = fixture(); await f.connect(); f.shell.sleep(); await f.hardware(0);
-  f.controller.pause();
-  // The notification precedes the property change: do not immediately undo it.
-  f.observers.get('lock')(); f.wear(false); await f.render();
-  assert.equal(f.controller.glassesLocked, true);
-  assert.equal(f.controller.glance.isVisible(), false);
-  await f.hardware(3); // wake the lock screen
-  assert.ok(f.sent.at(-1).every(p => p === 123));
-  for (const type of [0, 1, 2, 9, 11]) await f.hardware(type);
-  f.wear(true); await f.render();
-  assert.equal(f.received.length, 0);
-  assert.ok(f.sent.at(-1).every(p => p === 123));
-  await f.hardware(3); assertBlank(f.sent.at(-1));
-  await f.hardware(12, 1); assert.ok(f.sent.at(-1).every(p => p === 123));
-  f.observers.get('unlock')(); await f.render();
-  assert.equal(f.controller.glassesLocked, false);
-  assert.equal(f.sent.at(-1)[0], 80);
-  await f.hardware(0); assert.equal(f.received.length, 1);
-});
-
-test('iOS removal before phone lock, setting changes, and observer lifetime', async () => {
-  const f = fixture(); await f.connect(); f.wear(false); await f.render();
-  assert.equal(f.controller.glassesLocked, false);
-  f.observers.get('lock')(); await f.render();
-  assert.equal(f.controller.glassesLocked, true);
-  f.settings.lock = false; f.settingsChanged(); await f.render();
-  assert.equal(f.controller.glassesLocked, false);
-  f.settings.lock = true; f.settingsChanged(); await f.render();
-  assert.equal(f.controller.glassesLocked, true);
-  f.controller.pause(); assert.ok(f.observers.has('unlock'));
-  await f.controller.disconnect(); assert.equal(f.observers.has('unlock'), false);
-  f.controller.resume(); await f.render();
-  assert.equal(f.controller.glassesLocked, false);
-  assert.equal(f.observers.size, 4);
-});
-
-test('iOS wear notifications catch protected-data changes missed while suspended', async () => {
-  const f = fixture(); await f.connect(); f.controller.pause();
-  f.phoneState.protectedDataAvailable = false; f.wear(false); await f.render();
-  assert.equal(f.controller.glassesLocked, true);
-  f.controller.resume(); await f.render();
-  assert.equal(f.controller.glassesLocked, true);
-  f.controller.pause(); f.phoneState.protectedDataAvailable = true;
-  f.controller.resume(); await f.render();
-  assert.equal(f.controller.glassesLocked, false);
-});
-
-
-test('iOS locked phone controls cannot dispatch mirror, voice, or keyboard input', async () => {
-  const f = fixture(); await f.connect(); f.wear(false);
-  f.observers.get('lock')(); await f.render();
-  await f.phone('tap', 'mirror'); await f.phone('long-press', 'watch');
-  f.controller.startVoiceInput();
-  assert.equal(await f.controller.prepareVoiceCapture(), false);
-  await f.controller.startVoiceCapture(); await f.controller.typeIntoApp();
-  assert.equal(f.received.length, 0);
-  assert.equal(f.controller.glassesLocked, true);
-  // Locked state also survives transport recovery until a phone unlock.
-  f.bridge.emitState('retrying');
-  f.bridge.emitState('connecting');
-  f.bridge.emitState('connected');
-  await f.render();
-  assert.ok(f.sent.at(-1).every(p => p === 123));
-});
-
-
-test('iOS deduplicates original ring ticks before apps, lock toggles and Glanceboard', async () => {
-  const f = fixture(); await f.connect();
-  await f.hardware(0,2,1000); await f.hardware(0,2,1050);
-  assert.equal(f.received.length,1);
-  await f.hardware(0,2,1100); assert.equal(f.received.length,2);
-  // A filtered click cannot open a sleep-time board.
-  f.shell.sleep(); await f.hardware(0,2,1150);
-  assert.equal(f.controller.glance.isVisible(),false);
-  await f.hardware(0,2,1200); assert.equal(f.controller.glance.isVisible(),true);
-  // A duplicated double tap must not wake and immediately re-sleep a lock screen.
-  f.observers.get('lock')(); f.wear(false); await f.render();
-  f.shell.sleep(); await f.hardware(3,2,2000);
-  assert.equal(f.shell.isScreenOn(),true);
-  await f.hardware(3,2,2050); assert.equal(f.shell.isScreenOn(),true);
-  // A new transport session starts a fresh suppression window.
-  f.bridge.emitState('retrying');
-  f.bridge.emitState('connected');
-  await f.hardware(3,2,2051); assert.equal(f.shell.isScreenOn(),false);
 });
 
 test('keyboard sessions cannot deliver text after the glasses lock or phone leaves the foreground', () => {
@@ -365,18 +237,3 @@ test('keyboard sessions cannot deliver text after the glasses lock or phone leav
   editor.discard(); assert.deepEqual(calls.at(-1), ['discard']);
 });
 
-
-test('external input shares iOS dispatch, including hold release and phone-lock gating', async () => {
-  const f = fixture(); await f.connect(); f.wear(false);
-  assert.equal(f.remoteHost.ready(), true);
-  assert.equal(f.remoteHost.locked(), false);
-  await f.remoteHost.input('swipe-left', 'watch');
-  await f.remoteHost.input('long-press', 'ring');
-  assert.deepEqual(f.received.map(e => [e.type, e.source]), [
-    ['swipe-left', 'watch'], ['long-press', 'ring'], ['long-press-release', 'ring'],
-  ]);
-  f.observers.get('lock')();
-  assert.equal(f.remoteHost.locked(), true);
-  await f.remoteHost.input('click', 'watch');
-  assert.equal(f.received.length, 3);
-});

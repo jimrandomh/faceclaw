@@ -3,13 +3,13 @@ import { GESTURE_DOUBLE_CLICK, type InputEvent } from "../gestures";
 import { Layer, type LayerActions, type LayerContext } from "../layers";
 import { createInputDialogMenu, paintInputDialog, type InputDialogRow } from "./input-dialog";
 
-const FOLLOW_UP_ROW = 0;
+const FOLLOW_UP_ROW = 1;
 const MENU_ROWS: readonly InputDialogRow[] = [
-  { label: "Follow-up", dim: false },
   { label: "Done", dim: false },
+  { label: "Follow-up", dim: false },
 ];
 
-/** thinking: turn running; done/error: finished, showing the Follow-up/Done menu. */
+/** thinking: turn running; done/error: finished, showing the Done/Follow-up menu. */
 type AssistantPhase = "thinking" | "done" | "error";
 
 export type AssistantLayerCallbacks = {
@@ -25,7 +25,7 @@ export type AssistantLayerCallbacks = {
 
 /**
  * The assistant overlay: streamed reply text with a status line for tool
- * activity, and a Follow-up / Done menu once the turn ends. Double-click
+ * activity, and a Done / Follow-up menu once the turn ends. Double-click
  * cancels an in-flight turn. The shell owns the AssistantSession and drives
  * this layer's state through the on* methods as the turn streams.
  */
@@ -99,7 +99,7 @@ export class AssistantLayer implements Layer {
       }
       return;
     }
-    // done / error: the Follow-up / Done menu.
+    // done / error: the Done / Follow-up menu.
     switch (event.type) {
       case "scroll-up":
       case "scroll-down":

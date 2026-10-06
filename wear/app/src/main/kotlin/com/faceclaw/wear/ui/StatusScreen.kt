@@ -47,7 +47,7 @@ fun StatusScreen(link: PhoneLink, haptics: Haptics, onOpenSettings: () -> Unit) 
                 val phaseLabel = when {
                     state == null -> "No status yet"
                     state?.charging == true || state?.phase == "charging" ->
-                        state?.battery?.let { "Charging · G2 $it%" } ?: "Charging"
+                        state?.battery?.let { "Charging" } ?: "Charging"
                     connected -> "Connected"
                     state?.phase == "connecting" -> "Connecting…"
                     state?.phase == "disconnecting" -> "Disconnecting…"

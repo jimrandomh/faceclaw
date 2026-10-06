@@ -1,8 +1,14 @@
-import { BATTERY_ICON_WIDTH, drawBattery } from "../../../graphics/battery";
+import {
+  BATTERY_ICON_WIDTH,
+  DENSE_BATTERY_BLOCK_HEIGHT,
+  drawBattery,
+  drawDenseBatteries,
+  type BatteryDevice,
+} from "../../../graphics/battery";
 import { type GrayImage, type UiFont } from "../../../graphics/image";
-import { getDefaultLargeFont, getDefaultMediumFont, getDefaultSmallFont } from "../../../graphics/ui-fonts";
 import { onAndroidNotificationPosted, readActiveNotificationIcons } from "../../../native/notification-icons";
 import { readPhoneBatteryState } from "../../../native/phone-battery";
+import { weatherBridge } from "../../../native/weather";
 import { formatClockDate, formatClockTime } from "../../../ui/clock-format";
 import {
   batteryDisplayModeSetting,
@@ -20,6 +26,9 @@ import { truncateText } from "../../../graphics/textwrap";
 import { timerEngine } from "../../timer/timer-engine";
 import { formatCountdown, sortTimers, timerDisplayName, timerPhase, timerRemainingMs } from "../../timer/timer-model";
 import { lineStep } from "../../../ui/metrics";
+import { drawWeatherReading, measureWeatherReading, weatherReading } from "../../weather/weather-icons";
+import { weatherShowOnSystemCardSetting } from "../../weather/weather-settings";
+import { glanceFont } from "../glance-font";
 import { type GlanceWidget } from "../widget";
 
 const PAD = 8;
@@ -27,15 +36,20 @@ const NOTIFICATION_ICON_SIZE = 24;
 const NOTIFICATION_ICON_GAP = 4;
 const BATTERY_ITEM_GAP = 12;
 const BATTERY_LABEL_VALUE = 150;
+/** Gap between the battery block and the weather reading below it. */
+const WEATHER_GAP = 6;
 
-type BatteryItem = { label: string; percent: number; charging: boolean };
+type BatteryItem = { label: string; device: BatteryDevice; percent: number; charging: boolean };
+/** A block drawn against the card's right edge: its left edge and its rows. */
+type RightBlock = { left: number; top: number; bottom: number };
 
 /**
  * Date and time, the phone's notification icons, the phone/watch/G2/R1
- * battery indicators (the Wear OS watch's only while one is reachable), and
+ * battery indicators (the Wear OS watch's only while one is reachable), the
+ * current weather (when the Weather app's "Show on system card" is on), and
  * the Timers app's countdowns: the top bar's contents plus timers, laid out
  * for a card. Battery style and per-device visibility
- * follow Settings > Display > Battery indicators, so the card agrees with
+ * follow Settings > Customization > Battery indicators, so the card agrees with
  * the bar. Countdowns tick once a second only while one is running.
  */
 export class SystemCardWidget implements GlanceWidget {
@@ -45,6 +59,7 @@ export class SystemCardWidget implements GlanceWidget {
   private unsubscribeNotifications: (() => void) | null = null;
   private unsubscribeSettings: (() => void) | null = null;
   private unsubscribeTimers: (() => void) | null = null;
+  private unsubscribeWeather: (() => void) | null = null;
 
   start(requestRender: () => void): void {
     this.requestRender = requestRender;
@@ -55,6 +70,8 @@ export class SystemCardWidget implements GlanceWidget {
       this.syncSecondTick();
       this.requestRender?.();
     });
+    // The Weather app's indicator keeps the bridge refreshing; this only listens.
+    this.unsubscribeWeather = weatherBridge.onStateChange(() => this.requestRender?.());
     this.syncSecondTick();
   }
 
@@ -70,6 +87,8 @@ export class SystemCardWidget implements GlanceWidget {
     this.unsubscribeSettings = null;
     this.unsubscribeTimers?.();
     this.unsubscribeTimers = null;
+    this.unsubscribeWeather?.();
+    this.unsubscribeWeather = null;
   }
 
   /** Countdowns change every second; run that clock only while one is running. */
@@ -97,14 +116,20 @@ export class SystemCardWidget implements GlanceWidget {
   }
 
   paint(image: GrayImage): void {
-    const large = getDefaultLargeFont();
-    const medium = getDefaultMediumFont();
-    const small = getDefaultSmallFont();
+    const large = glanceFont.large();
+    const medium = glanceFont.medium();
+    const small = glanceFont.small();
     const now = new Date();
 
-    // Clock and date down the left; batteries take the right edge.
-    const batteryLeft = drawBatteryBlock(image, small, image.width - PAD, PAD);
-    const textWidth = Math.max(0, batteryLeft - BATTERY_ITEM_GAP - PAD);
+    // Clock and date down the left; batteries take the right edge, with the
+    // weather right-aligned beneath them. Text on the left stops short of
+    // whichever of those shares its rows.
+    const battery = drawBatteryBlock(image, small, image.width - PAD, PAD);
+    const weatherTop = battery.bottom > battery.top ? battery.bottom + WEATHER_GAP : PAD;
+    const weather = drawWeatherBlock(image, medium, image.width - PAD, weatherTop, now.getTime());
+    const textRight = (top: number, bottom: number): number =>
+      weather && weather.top < bottom && weather.bottom > top ? Math.min(battery.left, weather.left) : battery.left;
+    const textWidth = Math.max(0, textRight(PAD, PAD + large.lineHeight) - BATTERY_ITEM_GAP - PAD);
     const timeText = formatClockTime(now);
     const timeFont = large.measureText(timeText) <= textWidth ? large : medium;
     let y = PAD;
@@ -116,7 +141,8 @@ export class SystemCardWidget implements GlanceWidget {
     // Notification icons along the bottom, as many as fit; the Timers app's
     // countdowns take the band between the date and the icons.
     const iconY = image.height - PAD - NOTIFICATION_ICON_SIZE;
-    drawTimers(image, small, PAD, y, textWidth, iconY - 4, now.getTime());
+    const timersWidth = Math.max(0, textRight(y, iconY - 4) - BATTERY_ITEM_GAP - PAD);
+    drawTimers(image, small, PAD, y, timersWidth, iconY - 4, now.getTime());
     const maxIcons = Math.max(0, ((image.width - 2 * PAD + NOTIFICATION_ICON_GAP) / (NOTIFICATION_ICON_SIZE + NOTIFICATION_ICON_GAP)) | 0);
     if (maxIcons > 0) {
       const { icons, stale } = readActiveNotificationIcons(maxIcons, renderPassAllowsStaleData());
@@ -130,19 +156,25 @@ export class SystemCardWidget implements GlanceWidget {
 
 function collectBatteryItems(): BatteryItem[] {
   const items: BatteryItem[] = [];
-  const push = (visibility: BatteryIndicatorVisibility, label: string, percent: number | null, charging: boolean | null) => {
+  const push = (
+    visibility: BatteryIndicatorVisibility,
+    label: string,
+    device: BatteryDevice,
+    percent: number | null,
+    charging: boolean | null,
+  ) => {
     if (percent === null || !Number.isFinite(percent)) return;
     const clamped = Math.max(0, Math.min(100, Math.round(percent)));
     if (!batteryIndicatorVisible(visibility, clamped)) return;
-    items.push({ label, percent: clamped, charging: Boolean(charging) });
+    items.push({ label, device, percent: clamped, charging: Boolean(charging) });
   };
   const phone = readPhoneBatteryState();
-  push(phoneBatteryVisibilitySetting.get(), "Phone", phone.battery, phone.charging);
+  push(phoneBatteryVisibilitySetting.get(), "Phone", "phone", phone.battery, phone.charging);
   const levels = shell.getBatteryLevels();
-  push(watchBatteryVisibilitySetting.get(), "Watch", levels.watch, levels.watchCharging);
-  push(glassesBatteryVisibilitySetting.get(), "G2", levels.headset, levels.headsetCharging);
+  push(watchBatteryVisibilitySetting.get(), "Watch", "watch", levels.watch, levels.watchCharging);
+  push(glassesBatteryVisibilitySetting.get(), "G2", "glasses", levels.headset, levels.headsetCharging);
   if (levels.ring !== null && Number.isInteger(levels.ring) && levels.ring >= 0 && levels.ring <= 100) {
-    push(ringBatteryVisibilitySetting.get(), "R1", levels.ring, levels.ringCharging);
+    push(ringBatteryVisibilitySetting.get(), "R1", "ring", levels.ring, levels.ringCharging);
   }
   return items;
 }
@@ -150,16 +182,22 @@ function collectBatteryItems(): BatteryItem[] {
 /**
  * The battery indicators right-aligned at `right`, in the configured style.
  * Side-by-side styles put the label beside the gauge (or percentage) on one
- * line; stacked styles centre the label above it. Returns the block's left
- * edge (or `right` when nothing is shown).
+ * line; stacked styles centre the label above it; the dense style swaps
+ * labels for device icons and stacks two indicators per column, as in the
+ * top bar. Returns the block's extent (zero-height at `right` when nothing
+ * is shown).
  */
-function drawBatteryBlock(image: GrayImage, font: UiFont, right: number, top: number): number {
+function drawBatteryBlock(image: GrayImage, font: UiFont, right: number, top: number): RightBlock {
   const items = collectBatteryItems();
-  if (!items.length) return right;
+  if (!items.length) return { left: right, top, bottom: top };
   const mode = batteryDisplayModeSetting.get();
+  if (mode === "dense") {
+    return { left: drawDenseBatteries(image, items, right, top), top, bottom: top + DENSE_BATTERY_BLOCK_HEIGHT };
+  }
   const percentage = mode === "percentage" || mode === "stacked-percentage";
   const stacked = mode === "stacked" || mode === "stacked-percentage";
   const gaugeHeight = drawBattery(0, false).height;
+  const valueHeight = percentage ? font.lineHeight : Math.max(font.lineHeight, gaugeHeight);
   let x = right;
   for (let index = items.length - 1; index >= 0; index--) {
     const item = items[index]!;
@@ -178,7 +216,23 @@ function drawBatteryBlock(image: GrayImage, font: UiFont, right: number, top: nu
     }
     x -= BATTERY_ITEM_GAP;
   }
-  return x + BATTERY_ITEM_GAP;
+  return { left: x + BATTERY_ITEM_GAP, top, bottom: top + (stacked ? font.lineHeight + 2 : 0) + valueHeight };
+}
+
+/**
+ * The current weather's condition icon and temperature, right-aligned at
+ * `right` from `top`, while the system-card weather setting is on and a
+ * fresh reading exists. Returns the block's extent, or null when not drawn.
+ */
+function drawWeatherBlock(image: GrayImage, font: UiFont, right: number, top: number, nowMs: number): RightBlock | null {
+  if (!weatherShowOnSystemCardSetting.get()) return null;
+  const reading = weatherReading(weatherBridge.snapshot(), nowMs);
+  if (!reading) return null;
+  const iconSize = font.lineHeight + 4;
+  const height = Math.max(iconSize, font.lineHeight);
+  const left = right - Math.ceil(measureWeatherReading(reading, font, iconSize));
+  drawWeatherReading(image, reading, font, iconSize, left, top, height, 200);
+  return { left, top, bottom: top + height };
 }
 
 function drawBatteryValue(

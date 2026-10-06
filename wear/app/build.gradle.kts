@@ -46,6 +46,9 @@ android {
     }
     kotlinOptions {
         jvmTarget = "17"
+        // Warnings print only when a file is recompiled; fail instead so they
+        // can't scroll by unnoticed (as in native/kotlin/shared).
+        allWarningsAsErrors = true
     }
 }
 

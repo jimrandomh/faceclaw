@@ -16,8 +16,9 @@ ActionItem {
   color: #ffffff;
 }
 
-/* The main page's custom titleView: title left, connection status and the
- * warning triangle right-aligned beside the overflow menu. */
+/* The main page's custom titleView: title left; the EvenHub app icon,
+ * connection status and the warning triangle right-aligned beside the
+ * overflow menu. */
 .action-bar-title {
   color: #ffffff;
   font-size: 18;
@@ -29,6 +30,16 @@ ActionItem {
   color: #ffffff;
   font-size: 14;
   margin-right: 12;
+  vertical-align: center;
+}
+
+/* The foreground EvenHub app's icon (opens its phone UI); the padding widens
+ * the tap target. */
+.action-bar-app-icon {
+  width: 32;
+  height: 32;
+  padding: 5.5;
+  margin-right: 8;
   vertical-align: center;
 }
 
@@ -292,6 +303,10 @@ Button.pairing-link {
   color: #2a5bc4;
   font-size: 14;
   border-width: 0;
+  /* Buttons keep their Material elevation shadow even with a transparent
+   * background, which shows up as a stray, downward-offset outline. */
+  android-elevation: 0;
+  android-dynamic-elevation-offset: 0;
 }
 
 /*

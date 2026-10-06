@@ -15,8 +15,18 @@ actual class Sha256Digest actual constructor() {
 
 actual fun currentTimeMillis(): Long = System.currentTimeMillis()
 
-actual fun formatLocalTime(epochMs: Long, pattern: String): String =
-    SimpleDateFormat(pattern, Locale.US).format(Date(epochMs))
+// SimpleDateFormat is costly to build (pattern parse, Calendar, locale data) and not thread-safe,
+// so keep one per thread per pattern; the send loop formats a timestamp for every image it logs.
+private val localTimeFormats = object : ThreadLocal<HashMap<String, SimpleDateFormat>>() {
+    override fun initialValue() = HashMap<String, SimpleDateFormat>()
+}
+
+actual fun formatLocalTime(epochMs: Long, pattern: String): String {
+    val format = localTimeFormats.get()!!.getOrPut(pattern) { SimpleDateFormat(pattern, Locale.US) }
+    // Re-read the default zone each call, as a fresh instance would.
+    format.timeZone = java.util.TimeZone.getDefault()
+    return format.format(Date(epochMs))
+}
 
 actual fun localUtcOffsetMs(epochMs: Long): Int = java.util.TimeZone.getDefault().getOffset(epochMs)
 

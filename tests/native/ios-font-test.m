@@ -66,6 +66,13 @@ int main(int argc, char **argv) { @autoreleasepool {
     for (NSUInteger i=10; i<light.length; i++) { Check(l[i] >= d[i], @"gamma monotonic"); if (l[i] > 0 && l[i] < 255) antialiased = YES; }
     Check(antialiased, @"antialias coverage");
     Check([FaceclawFontRenderer renderGlyphCell:font size:32 codePoint:0x1f642 gamma:1].length > 10, @"non-BMP fallback glyph");
+    // macOS falls back to Apple Color Emoji for ⌚ (as iOS does for ▶), whose
+    // alpha-only raster is a bare silhouette 1.3125em wide; a text font has it.
+    NSData *watch = [FaceclawFontRenderer renderGlyphCell:font size:32 codePoint:0x231a gamma:1];
+    double watchAdvance = U16(watch.bytes) / 64.0;
+    Check(watch.length > 10 && watchAdvance < 32, @"text presentation preferred over color emoji fallback");
+    Check(fabs(watchAdvance - [FaceclawFontRenderer measureTextExact:font text:@"⌚" size:32]) <= 1.0/128, @"text-presentation advance agrees");
+    Check(fabs([FaceclawFontRenderer measureTextExact:font text:@"A⌚" size:32] - a - watchAdvance) < 0.01, @"text-presentation pair measure agrees");
     NSString *sample = @"AgjÉ 0123456789 — AV fi ffi";
     SavePGM([FaceclawFontRenderer renderText:font text:sample size:32 gamma:1], [outDir stringByAppendingPathComponent:@"line.pgm"]);
     NSString *paragraph = @"The quick brown fox jumps over the lazy dog.\nCafé déjà vu — 23°C. ALongWordWithoutSpacesToExerciseWrapping. More text for truncation.";

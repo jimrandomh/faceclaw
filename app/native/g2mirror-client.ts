@@ -1,7 +1,6 @@
 import { openSocket } from "./socket";
 import { toUint8Array } from "../util/array-util";
 
-declare const com: any;
 declare const android: any;
 declare const java: any;
 

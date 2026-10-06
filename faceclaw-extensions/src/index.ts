@@ -172,7 +172,7 @@ export interface AssistantTool {
    * JSON-serializable value) to report back to the assistant; throw to report an
    * error. May be async.
    */
-  handler: (args: any) => unknown | Promise<unknown>;
+  handler: (args: any) => unknown;
 }
 
 /**

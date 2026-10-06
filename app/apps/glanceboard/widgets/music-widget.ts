@@ -1,9 +1,9 @@
 import { GrayImage } from "../../../graphics/image";
 import { renderIcon } from "../../../graphics/icons";
-import { getDefaultMediumFont, getDefaultSmallFont } from "../../../graphics/ui-fonts";
 import { truncateText } from "../../../graphics/textwrap";
 import { mediaControllerBridge, type MediaControllerState } from "../../../native/media-controller";
 import { clamp } from "../../../util/numeric-util";
+import { glanceFont } from "../glance-font";
 import { type GlanceWidget } from "../widget";
 
 const PAD = 8;
@@ -75,8 +75,8 @@ export class MusicWidget implements GlanceWidget {
   }
 
   paint(image: GrayImage): void {
-    const medium = getDefaultMediumFont();
-    const small = getDefaultSmallFont();
+    const medium = glanceFont.medium();
+    const small = glanceFont.small();
     const media = mediaControllerBridge.snapshot();
     this.media = media;
     if (!media.available || (!media.title && !media.artist)) {
@@ -142,7 +142,7 @@ export class MusicWidget implements GlanceWidget {
       image.drawRect(dx - 1, dy - 1, this.art.width + 2, this.art.height + 2, 60);
     } else {
       image.drawRect(ART_X, artY, ART_SIZE, ART_SIZE, 60);
-      const font = getDefaultSmallFont();
+      const font = glanceFont.small();
       image.drawText(font, ART_X + Math.round((ART_SIZE - font.measureText("no art")) / 2),
         artY + Math.round((ART_SIZE - font.lineHeight) / 2), "no art", 90);
     }

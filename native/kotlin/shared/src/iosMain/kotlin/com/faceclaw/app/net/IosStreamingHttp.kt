@@ -8,7 +8,6 @@ import platform.Foundation.NSData
 import platform.Foundation.NSError
 import platform.Foundation.NSHTTPURLResponse
 import platform.Foundation.NSMutableURLRequest
-import platform.Foundation.NSString
 import platform.Foundation.NSURL
 import platform.Foundation.NSURLRequest
 import platform.Foundation.NSURLResponse
@@ -19,9 +18,6 @@ import platform.Foundation.NSURLSessionDataTask
 import platform.Foundation.NSURLSessionResponseAllow
 import platform.Foundation.NSURLSessionResponseDisposition
 import platform.Foundation.NSURLSessionTask
-import platform.Foundation.NSUTF8StringEncoding
-import platform.Foundation.create
-import platform.Foundation.dataUsingEncoding
 import platform.Foundation.setHTTPBody
 import platform.Foundation.setHTTPMethod
 import platform.Foundation.setValue
@@ -31,7 +27,7 @@ import platform.darwin.NSObject
 internal fun buildRequest(url: NSURL, method: String, body: String?, headers: List<Pair<String, String>>): NSMutableURLRequest {
     val request = NSMutableURLRequest.requestWithURL(url)
     request.setHTTPMethod(method)
-    if (body != null) request.setHTTPBody((body as NSString).dataUsingEncoding(NSUTF8StringEncoding))
+    if (body != null) request.setHTTPBody(body.encodeToByteArray().data())
     var hasUserAgent = false
     for ((name, value) in headers) {
         if (name.equals("User-Agent", ignoreCase = true)) hasUserAgent = true

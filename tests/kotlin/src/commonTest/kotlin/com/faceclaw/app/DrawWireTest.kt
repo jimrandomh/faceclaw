@@ -96,7 +96,9 @@ class DrawWireTest {
             renderer.execute(DrawProtocol.sequence(listOf(call)), target)
             screen.fill(0x12)
             val savedResources = resources.mapValues { it.value.copyOf() }
-            val malformed = (0 until call.size).map { call.copyOf(it) } + listOf(call + byteArrayOf(0))
+            // A rounded rect may end in one outside-color byte (revision 36), but not one past 15.
+            val overlong = if (call[0].toInt() == DRAW_OP_ROUNDED_RECT) byteArrayOf(16) else byteArrayOf(0)
+            val malformed = (0 until call.size).map { call.copyOf(it) } + listOf(call + overlong, call + byteArrayOf(0, 0))
             for (bad in malformed) {
                 assertFails { renderer.execute(DrawProtocol.sequence(listOf(valid, bad, valid)), target) }
                 assertContentEquals(ByteArray(16) { 0x12 }, screen)

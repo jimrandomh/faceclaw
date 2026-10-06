@@ -38,6 +38,9 @@ const TOP_PAD = 2;
 const BOTTOM_PAD = 4;
 /** Clearance between the rose's widest point and the viewport edge. */
 const EDGE_PAD = 8;
+/** Inset of the top-right magnetometer calibration readout from the window edges. */
+const ACCURACY_TOP_PAD = TOP_PAD + 4;
+const ACCURACY_RIGHT_PAD = EDGE_PAD + 4;
 /** Cap on the rose's radius, so a tall window doesn't get a comical one. */
 const MAX_ROSE_RADIUS = 98;
 
@@ -161,7 +164,7 @@ class CompassLayer implements Layer {
     const readoutHeight = headingFont.lineHeight;
 
     // One column centred on the display's true centre, so the rose sits where
-    // the wearer is looking rather than 32px right of it.
+    // the wearer is looking rather than 32px beside it (with a side strip).
     const cx = screenCenterInViewportX();
 
     // The rose is sized and placed first — it hangs off the bottom edge — and
@@ -197,7 +200,7 @@ class CompassLayer implements Layer {
       y += smallStep;
     }
     const accuracyText = magneticAccuracyText(this.diagnostics);
-    image.drawText(small, width - EDGE_PAD - small.measureText(accuracyText), TOP_PAD, accuracyText, 175);
+    image.drawText(small, width - ACCURACY_RIGHT_PAD - small.measureText(accuracyText), ACCURACY_TOP_PAD, accuracyText, 175);
 
     return image;
   }
@@ -211,10 +214,9 @@ class CompassLayer implements Layer {
 }
 
 export function createCompassAppWindow(options: InProcessAppOptions): InProcessWindow {
-  let app: InProcessWindow;
   let requestRender = () => {};
   const layer = new CompassLayer(() => requestRender());
-  app = createInProcessWindow({
+  const app = createInProcessWindow({
     appId: "compass",
     windowId: COMPASS_WINDOW_ID,
     title: "Compass",

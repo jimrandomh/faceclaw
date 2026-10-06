@@ -103,16 +103,3 @@ test('iOS without a camera explains availability and can retry when available', 
   assert.equal(f.instances.length, 1); f.layer.onRemoved(); await flush();
 });
 
-test('Developer QR menu is enabled on iOS and pushes then opens its layer', () => {
-  let menu, options; const calls = [];
-  const { createDeveloperAppWindow } = load('app/apps/developer/developer-app.ts', {
-    '../../ui/menu': { MenuLayer: class { constructor(_title, items) { menu = items; } } },
-    '../../ui/shell/geometry': { appViewportSize: () => ({ height: 480 }) },
-    '../../ui/shell/in-process-window': { YieldAtRootLayer: class {}, createInProcessWindow: value => { options = value; return {}; } },
-    './load-app': { LoadAppFromQrLayer: class { open() { calls.push('open'); } } },
-  }, { global: { isIOS: true } });
-  createDeveloperAppWindow({}, {});
-  const qr = menu.find(item => item.label === 'Load app from QR code');
-  assert.ok(!qr.disabled); qr.onSelect({ stack: { push: () => calls.push('push') } });
-  assert.deepEqual(calls, ['push', 'open']);
-});

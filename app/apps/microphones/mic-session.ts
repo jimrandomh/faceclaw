@@ -16,7 +16,6 @@ import {
   type HeadOrientation,
 } from "./dsp";
 import { micArrayController, micControlSupported, loadMicConfig, saveMicConfig } from "./mic-control";
-import type { MicConfig } from "./mic-protocol";
 import { micModelPath } from "./mic-models";
 import {
   MIC_CHANNEL_KEYS,
@@ -24,9 +23,10 @@ import {
   isStockAudioPacket,
   micChannelKey,
   micChannelLabel,
-  splitConcatenatedPcm16,
+  splitInterleavedPcm16,
   templeActive,
   type MicChannelKey,
+  type MicConfig,
   type MicSide,
 } from "./mic-protocol";
 import {
@@ -158,8 +158,8 @@ class MicSession {
 
   // Captions state.
   private captionLines: CaptionLine[] = [];
-  private captionEngine: any | null = null;
-  private captionListenerProxy: any | null = null;
+  private captionEngine: any = null;
+  private captionListenerProxy: any = null;
   private captionsActive = false;
   private engineStartWallMs = 0;
   private sessionRowId = -1;
@@ -168,7 +168,7 @@ class MicSession {
   private conversationLang = "und";
 
   // Recording state.
-  private recorder: any | null = null;
+  private recorder: any = null;
   private recordingPath = "";
 
   // Stock path subscriptions.
@@ -177,7 +177,7 @@ class MicSession {
   private offCompass: (() => void) | null = null;
 
   // Extended path.
-  private forwardingProxy: any | null = null;
+  private forwardingProxy: any = null;
   private temples = new Map<MicSide, TempleAudioPipeline>();
   private templeAngles: { left: number | null; right: number | null } = { left: null, right: null };
   private templeSsr: { left: number; right: number } = { left: 0, right: 0 };
@@ -193,7 +193,7 @@ class MicSession {
   private offVoiceActivity: (() => void) | null = null;
 
   // Phone-side spectral noise suppressor (FaceclawNoiseSuppressor).
-  private suppressor: any | null = null;
+  private suppressor: any = null;
   private suppressorEngine = "";
 
   // True between the caption engine's speech-start event and the utterance
@@ -586,7 +586,7 @@ class MicSession {
       return;
     }
     const side: MicSide = arm === "L" ? "left" : "right";
-    const channels = splitConcatenatedPcm16(frame);
+    const channels = splitInterleavedPcm16(frame);
     if (!channels || channels.length === 0) return;
 
     // Meter every arriving channel — a host-disabled mic still shows its

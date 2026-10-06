@@ -123,7 +123,7 @@ export class Polynomial {
    */
   dividingByRoot(root: MathNumber): Polynomial {
     if (this.degree < 1) return this;
-    const quotient: MathNumber[] = new Array(this.degree).fill(integer(0));
+    const quotient: MathNumber[] = Array.from({ length: this.degree }, () => integer(0));
     let carry: MathNumber = integer(0);
     for (let power = this.degree; power >= 1; power--) {
       const coefficient = add(this.at(power), carry);
@@ -235,7 +235,7 @@ function addAt(value: MathNumber, power: number, coefficients: MathNumber[]): vo
 
 function convolve(lhs: MathNumber[], rhs: MathNumber[]): MathNumber[] {
   if (lhs.length === 0 || rhs.length === 0) return [integer(0)];
-  const result: MathNumber[] = new Array(lhs.length + rhs.length - 1).fill(integer(0));
+  const result: MathNumber[] = Array.from({ length: lhs.length + rhs.length - 1 }, () => integer(0));
   for (let i = 0; i < lhs.length; i++) {
     if (isZero(lhs[i]!)) continue;
     for (let j = 0; j < rhs.length; j++) {

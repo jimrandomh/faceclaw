@@ -7,13 +7,20 @@ plugins {
 
 // Compile the production sources without building NativeScript or touching BLE.
 kotlin {
+    // Match native/kotlin/shared/build.gradle.kts.
+    compilerOptions {
+        freeCompilerArgs.add("-Xexpect-actual-classes")
+        allWarningsAsErrors.set(true)
+    }
     android {
         namespace = "com.faceclaw.protocoltests"
         compileSdk = 35
         minSdk = 24
         withJava()
         compilerOptions { jvmTarget.set(JvmTarget.JVM_17) }
-        withHostTestBuilder {}.configure {}
+        // Production code logs through android.util.Log, which the host-test android.jar
+        // stubs to throw; a throw on the session worker turns into a spurious reconnect.
+        withHostTestBuilder {}.configure { isReturnDefaultValues = true }
     }
     iosArm64()
     iosSimulatorArm64()

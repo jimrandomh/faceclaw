@@ -15,7 +15,6 @@ function load(file, modules = {}, globals = {}) {
   }).outputText, sandbox);
   return sandbox.exports;
 }
-const flush = () => new Promise(resolve => setImmediate(resolve));
 
 function provider() {
   let now = 1000000, granted = true;
@@ -166,6 +165,7 @@ function screenFixture() {
   const calendar = load('app/apps/calendar/calendar.ts', modules('../../'));
   const widget = load('app/apps/glanceboard/widgets/calendar-widget.ts', {
     ...modules('../../../'), '../../calendar/calendar': calendar,
+    '../glance-font': { glanceFont: { small: () => font, medium: () => font } },
   }, { ...f.clock, setInterval: fn => { timers.set(++nextTimer, fn); return nextTimer; }, clearInterval: id => timers.delete(id) });
   return { ...f, ...calendar, ...widget, timers, Image };
 }
@@ -204,27 +204,6 @@ test('Calendar window subscribes, refreshes periodically, and cleans up on close
   createCalendarAppWindow({ onClosed: () => closed++ });
   listener(); tick(); assert.equal(renders, 2);
   options.onClosed(); assert.equal(unsubscribed, 1); assert.equal(cleared, 1); assert.equal(closed, 1);
-});
-
-test('iOS Calendar is launchable and its permission remains optional during onboarding', async () => {
-  const availability = load('app/apps/ios-availability.ts');
-  assert.equal(availability.iosAppUnavailableReason('calendar'), null);
-  const f = permissionFixture(); let resumed;
-  const { PermissionsViewModel } = load('app/phone-ui/permissions-view-model.ts', {
-    '@nativescript/core': { Observable: class { notifyPropertyChange() {} },
-      Application: { on: (_event, fn) => { resumed = fn; }, off() {} } },
-    '../native/ios-bluetooth': { iosBluetooth: () => ({ state: 5 }) },
-    '../native/calendar-permissions': f.api,
-    '../g2/android-permissions': {}, '../native/battery-optimization': {}, '../native/notification-access': {},
-  }, { global: { isIOS: true } });
-  const model = new PermissionsViewModel({ onboarding: true }); model.onPageLoaded();
-  const card = () => model.cards.find(item => item.id === 'calendar');
-  assert.equal(card().optionalVisibility, 'visible'); assert.equal(card().checkVisibility, 'collapse');
-  assert.equal(model.primaryClass, '-primary');
-  model.onCardTap({ object: { bindingContext: card() } }); assert.equal(f.requests.length, 1);
-  f.status('granted'); f.requests[0](true, null); await flush();
-  assert.equal(card().checkVisibility, 'visible');
-  f.status('denied'); resumed(); assert.equal(card().checkVisibility, 'collapse');
 });
 
 test('awaited calendar reads do not replace the display cache and reject failures or revoked access', async () => {

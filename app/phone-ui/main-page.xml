@@ -1,11 +1,13 @@
 <Page xmlns="http://schemas.nativescript.org/tns.xsd" xmlns:rc="phone-ui" navigatingTo="navigatingTo" loaded="loaded" unloaded="unloaded">
     <ActionBar>
-        <!-- Custom titleView: app title on the left; connection status and the
-             warning-triangle indicator right-aligned beside the overflow menu. -->
-        <GridLayout columns="auto,*,auto,auto" width="100%" verticalAlignment="center">
+        <!-- Custom titleView: app title on the left; the foreground EvenHub
+             app's phone-UI button, connection status and the warning-triangle
+             indicator right-aligned beside the overflow menu. -->
+        <GridLayout columns="auto,*,auto,auto,auto" width="100%" verticalAlignment="center">
             <Label col="0" text="Faceclaw" class="action-bar-title" />
-            <Label col="2" text="{{ connectionStatusLabel }}" tap="{{ onConnectionStatusTap }}" class="action-bar-status" />
-            <Label col="3" text="&#x26A0;&#xFE0F;" tap="{{ onWarningIconTap }}" visibility="{{ warningIconVisibility }}" class="action-bar-warning" />
+            <Image col="2" src="{{ evenHubPhoneUiIcon }}" tap="{{ onEvenHubPhoneUiTap }}" visibility="{{ evenHubPhoneUiVisibility }}" class="action-bar-app-icon" />
+            <Label col="3" text="{{ connectionStatusLabel }}" tap="{{ onConnectionStatusTap }}" class="action-bar-status" />
+            <Label col="4" text="&#x26A0;&#xFE0F;" tap="{{ onWarningIconTap }}" visibility="{{ warningIconVisibility }}" class="action-bar-warning" />
         </GridLayout>
         <ActionItem text="{{ buttonLabel }}" tap="{{ onTap }}" isEnabled="{{ connectItemEnabled }}" visibility="{{ glassesMenuItemsVisibility }}" android.position="popup" />
         <ActionItem text="Pair glasses" tap="{{ onPairGlassesTap }}" isEnabled="{{ canRun }}" android.position="popup" />

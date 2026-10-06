@@ -27,3 +27,21 @@ export function grayImageToPreviewSource(image: GrayImage): ImageSource | null {
   );
   return new ImageSource(bitmap);
 }
+
+/**
+ * A glasses icon as a white-on-transparent phone image (gray becomes alpha),
+ * for the dark action bar.
+ */
+export function grayImageToWhiteIconSource(image: GrayImage): ImageSource | null {
+  if (!global.isAndroid) {
+    return null;
+  }
+
+  const baked = image.withDrawsBaked();
+  const bitmap = com.faceclaw.app.PreviewBitmapUtil.whiteIconFromGray(
+    copyToJavaByteBuffer(baked.pixels),
+    baked.width,
+    baked.height,
+  );
+  return new ImageSource(bitmap);
+}

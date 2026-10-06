@@ -288,7 +288,7 @@ function extractMessageText(item: any): string {
     .join("");
 }
 
-function parseSseDataLine(line: string): any | null {
+function parseSseDataLine(line: string): any {
   if (!line.startsWith("data:")) return null;
   const payload = line.slice(5).trim();
   if (!payload || payload === "[DONE]") return null;

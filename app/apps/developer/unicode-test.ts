@@ -236,6 +236,8 @@ export class UnicodeSampleLayer implements Layer {
       case "double-click":
         ctx.stack.pop();
         return;
+      default:
+        return;
     }
   }
 

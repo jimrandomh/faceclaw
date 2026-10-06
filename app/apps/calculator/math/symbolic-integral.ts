@@ -29,12 +29,12 @@ import {
   numberEquals,
   rational,
   reciprocal,
+  isZero,
 } from "./math-number";
 import { simplify } from "./simplifier";
 import { differentiate, integrateNumeric } from "./derivative";
 import { evaluateValue } from "./evaluator";
 import { Polynomial } from "./polynomial";
-import { isZero } from "./math-number";
 
 /** Indefinite integral with respect to `variable`, without the constant. */
 export function integrate(expression: MathExpression, variable: string): MathExpression | null {

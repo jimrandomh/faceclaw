@@ -360,10 +360,6 @@
     "kotlin": "App_Resources/Android/src/main/java/com/faceclaw/app/FaceclawSseRequest.kt"
   },
   {
-    "java": "com/faceclaw/app/FaceclawSystemStatusIconProvider.java",
-    "kotlin": "App_Resources/Android/src/main/java/com/faceclaw/app/FaceclawSystemStatusIconProvider.kt"
-  },
-  {
     "java": "com/faceclaw/app/FaceclawVoiceController.java",
     "kotlin": "App_Resources/Android/src/main/java/com/faceclaw/app/FaceclawVoiceController.kt"
   },

@@ -13,6 +13,7 @@ import {
 } from "../g2/android-permissions";
 import { ensureCalendarPermission, hasCalendarPermission } from "../native/calendar-permissions";
 import { isIgnoringBatteryOptimizations, requestIgnoreBatteryOptimizations } from "../native/battery-optimization";
+import { hasAllFilesAccess, requestAllFilesAccess } from "../native/file-access";
 import { isNotificationListenerEnabled, requestNotificationListenerAccess } from "../native/notification-access";
 
 type PermissionDefinition = {
@@ -26,9 +27,10 @@ type PermissionDefinition = {
 };
 
 /**
- * Battery Optimization and Read Notifications are not runtime permissions:
- * their request() opens a system screen, so the granted state can only be
- * re-checked when the app resumes (the page refreshes on Application.resume).
+ * Battery Optimization, Read Notifications and All Files Access are not
+ * runtime permissions: their request() opens a system screen, so the granted
+ * state can only be re-checked when the app resumes (the page refreshes on
+ * Application.resume).
  */
 const ANDROID_PERMISSIONS: PermissionDefinition[] = [
   {
@@ -89,6 +91,14 @@ const ANDROID_PERMISSIONS: PermissionDefinition[] = [
     isGranted: hasCalendarPermission,
     request: ensureCalendarPermission,
   },
+  {
+    id: "all-files-access",
+    title: "All Files Access",
+    description: "Needed to browse and view files in the Files app on the glasses.",
+    optional: true,
+    isGranted: hasAllFilesAccess,
+    request: requestAllFilesAccess,
+  },
 ];
 
 const PERMISSIONS: PermissionDefinition[] = global.isIOS ? [{
@@ -132,8 +142,9 @@ export class PermissionsViewModel extends Observable {
   }
 
   /**
-   * Battery Optimization and Read Notifications grant flows leave the app for
-   * a system screen; re-check everything whenever the app comes back.
+   * Battery Optimization, Read Notifications and All Files Access grant flows
+   * leave the app for a system screen; re-check everything whenever the app
+   * comes back.
    */
   private readonly onAppResume = (): void => this.refresh();
 

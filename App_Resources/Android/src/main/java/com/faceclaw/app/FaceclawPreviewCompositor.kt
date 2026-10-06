@@ -51,11 +51,13 @@ class FaceclawPreviewCompositor(context: Context) {
         if (activeInstance === this) {
             activeInstance = null
         }
-        frameListener = null
+        setFrameListener(null)
     }
 
+    /** Also notified after each step of an animation the preview is replaying (see SurfaceCompositor). */
     fun setFrameListener(listener: Runnable?) {
         this.frameListener = listener
+        compositor.setPreviewAnimationListener(listener?.let { { mainHandler.post(it); Unit } })
     }
 
     /** Set the compositor's output frame size. Call before configuring surfaces. */

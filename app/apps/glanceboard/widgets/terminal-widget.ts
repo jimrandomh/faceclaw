@@ -1,6 +1,5 @@
 import { type GrayImage } from "../../../graphics/image";
 import { truncateText } from "../../../graphics/textwrap";
-import { getDefaultSmallFont } from "../../../graphics/ui-fonts";
 import { lineStep } from "../../../ui/metrics";
 import { onWorkerStateChanged, readWorkerState } from "../../../ui/shell/worker-state";
 import {
@@ -10,6 +9,7 @@ import {
   TERMINAL_SESSIONS_STATE_KEY,
   type TerminalSessionsSnapshot,
 } from "../../terminal/session-list";
+import { glanceFont } from "../glance-font";
 import { type GlanceWidget } from "../widget";
 
 const PAD = 8;
@@ -26,7 +26,7 @@ const BOTTOM_MARGIN = 2;
  * once the snapshot is in.
  */
 export class TerminalWidget implements GlanceWidget {
-  private snapshot: TerminalSessionsSnapshot | undefined = readWorkerState(TERMINAL_SESSIONS_STATE_KEY);
+  private snapshot = readWorkerState(TERMINAL_SESSIONS_STATE_KEY) as TerminalSessionsSnapshot | undefined;
   private unsubscribe: (() => void) | null = null;
   private requestRender: (() => void) | null = null;
   private phase = 0;
@@ -34,9 +34,9 @@ export class TerminalWidget implements GlanceWidget {
 
   start(requestRender: () => void): void {
     this.requestRender = requestRender;
-    this.snapshot = readWorkerState(TERMINAL_SESSIONS_STATE_KEY);
-    this.unsubscribe = onWorkerStateChanged<TerminalSessionsSnapshot>(TERMINAL_SESSIONS_STATE_KEY, (snapshot) => {
-      this.snapshot = snapshot;
+    this.snapshot = readWorkerState(TERMINAL_SESSIONS_STATE_KEY) as TerminalSessionsSnapshot | undefined;
+    this.unsubscribe = onWorkerStateChanged(TERMINAL_SESSIONS_STATE_KEY, (snapshot) => {
+      this.snapshot = snapshot as TerminalSessionsSnapshot;
       this.syncAnimation();
       requestRender();
     });
@@ -72,7 +72,7 @@ export class TerminalWidget implements GlanceWidget {
   }
 
   paint(image: GrayImage): void {
-    const font = getDefaultSmallFont();
+    const font = glanceFont.small();
     const step = lineStep(font);
     const textWidth = image.width - 2 * PAD;
     const snapshot = this.snapshot;

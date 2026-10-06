@@ -1,9 +1,8 @@
 import { startRemoteInput } from "../remote/service"
 import type { KeyboardInputSession } from '../ui/shell/keyboard-input'
 import { acceptInput, resetRingInputFilter } from "../ui/input-monitor";
-import { bindIosNotifications, iosNotificationsChanged, onIosNotificationPopup } from '../native/notification-icons.ios'
+import { bindIosNotifications, iosNotificationsChanged, onIosNotificationPopup, readActiveNotifications } from '../native/notification-icons.ios'
 import { shouldShowNotificationOnGlasses } from '../native/notification-sources'
-import { readActiveNotifications } from '../native/notification-icons.ios'
 import { launcherEntries } from '../apps/launcher'
 import { getInstalledEvenHubAppById, installedEvenHubPackageId, uninstallEvenHubPackage } from '../apps/evenhub/installed-apps'
 import { isInstalledPackagePresent } from '../apps/evenhub/updates'
@@ -14,11 +13,11 @@ import { registerWindowTools } from '../assistant/window-tools'
 import { registerNavigateTools } from '../assistant/navigate-tools'
 import { registerRoamTools } from '../assistant/roam-tools'
 import { IosNavigationSensors } from '../native/ios-navigation-sensors'
-import { Utils } from '@nativescript/core'
 import { bindCompassSession, receiveCompassEvent } from '../native/compass.ios'
-import { Dialogs, File, knownFolders, path, type ImageSource } from '@nativescript/core'
+import { Dialogs, File, knownFolders, path, Utils, type ImageSource } from '@nativescript/core'
 import { iosVoiceInput } from '../native/ios-voice-input'
 import { nightscoutBridge } from '../native/nightscout-bridge'
+import { weatherBridge } from '../native/weather'
 import { FaceclawCommunicatorBridge, resolveIosPeripherals, type CommunicatorState, type RawInputEvent } from '../native/faceclaw-communicator.ios'
 import { PreviewDisplayTarget, type DisplayTarget } from '../native/preview-display.ios'
 import { AncsClient, ANCS_FIRMWARE_VERSION } from './ancs-client'
@@ -26,13 +25,14 @@ import { GlanceHost, type GlanceDisplay } from './glance-host'
 import { createLockScreenImage, LOCK_SCREEN_SURFACE_ID } from './lock-screen'
 import { OsEventTypeList } from './events'
 import { loadDeviceAddresses } from './device-addresses'
+import { firmwareIncompatibilityMessage, hasCompatibleFirmware } from './firmware-compat'
+import { isHaltedSessionPhase, suppressAutoReconnect } from './reconnect-policy'
 import { deviceAddressError } from './ios-peripheral-identity'
 import { createLauncherWindow, LAUNCHER_SURFACE_ID } from '../apps/launcher/launcher-app'
 import { ALL_APPS } from '../apps/all-apps'
 import type { AppContext, AppDefinition, AppLaunchParams } from '../apps/app-definition'
 import { WorkerAppHost } from '../ui/shell/worker-window'
 import { createInProcessWindow, YieldAtRootLayer, type InProcessAppOptions, type InProcessWindow } from '../ui/shell/in-process-window'
-import { getStringSettingById, nightscoutSiteUrlSetting, nightscoutApiTokenSetting } from '../ui/dashboard-settings'
 import { readPhoneBatteryState } from '../native/phone-battery'
 import { iosAppUnavailableReason } from '../apps/ios-availability'
 import { flattenPlanesWithDraws, planesFingerprint, type Plane } from '../graphics/plane'
@@ -42,9 +42,10 @@ import { makeInputEvent, type InputEvent, type InputEventPayload } from '../ui/g
 import { noopLayerActions, type LayerActions } from '../ui/layers'
 import { TextViewerLayer } from '../apps/files/text-viewer'
 import { shell, rawInputEventToInputEvent, type ShellWindow } from '../ui/shell/shell'
-import { appViewportRect, SIDEBAR_WIDTH, sidebarStripVisible } from '../ui/shell/geometry'
+import { appViewportRect, isOnSwitcherEdge, sidebarStripVisible } from '../ui/shell/geometry'
 import { DISPLAY_MODE_VALUES, displayModeLabel, displayModeSetting, onAnySettingChanged,
-  previewColorSetting, lockScreenEnabledSetting, getBrightnessPreferences } from '../ui/dashboard-settings'
+  previewColorSetting, lockScreenEnabledSetting, getBrightnessPreferences, getStringSettingById,
+  nightscoutSiteUrlSetting, nightscoutApiTokenSetting } from '../ui/dashboard-settings'
 import type { PhoneGesture } from '../phone-ui/phone-gestures'
 import { isWelcomeSoundPending, setWelcomeSoundPending } from '../phone-ui/onboarding-state'
 import { findSoundEffect, playSoundEffect } from '../ui/sound-effects'
@@ -57,7 +58,9 @@ const FRAME_TRANSMIT_BACKPRESSURE_TIMEOUT_MS = 2000
 
 export type SessionPhase = 'disconnected' | 'connecting' | 'connected' | 'retrying' | 'disconnecting' | 'error'
 export type SessionState = { phase: SessionPhase; status: string; battery: number | null; charging: boolean | null;
-  ring: boolean; frames: number; capabilities: string; leftVersion: string; rightVersion: string }
+  ring: boolean; frames: number; capabilities: string; leftVersion: string; rightVersion: string;
+  /** Why the connected firmware can't run Faceclaw (firmware-compat.ts), or '' when it can or is unknown. */
+  firmwareWarning: string }
 
 function ancsCapable(capabilities: string): boolean {
   return /^Faceclaw\/(\d+)/.test(capabilities) && Number(capabilities.split('/')[1]) >= ANCS_FIRMWARE_VERSION
@@ -74,7 +77,7 @@ export class IosPreviewController {
   private communicator: FaceclawCommunicatorBridge | null = null
   private readonly startedCommunicators = new WeakSet<FaceclawCommunicatorBridge>()
   state: SessionState = { phase: 'disconnected', status: 'Preview only', battery: null, charging: null, ring: false,
-    frames: 0, capabilities: '', leftVersion: '', rightVersion: '' }
+    frames: 0, capabilities: '', leftVersion: '', rightVersion: '', firmwareWarning: '' }
   private notifications: AncsClient | null = null
   private readonly sessionOffs: (() => void)[] = []
   private stopping: Promise<void> | null = null
@@ -83,6 +86,8 @@ export class IosPreviewController {
   private connecting = false
   private sessionCreated = false
   private wearDetectionRequested = false
+  /** The last firmware report was Faceclaw's firmware at the required revision. */
+  private firmwareCompatible = false
   private readonly glanceDisplay: GlanceDisplay = {
     configureSurface: async (id, options) => { await this.display?.configureSurface(id, options) },
     setSurfaceVisible: async (id, visible) => { await this.display?.setSurfaceVisible(id, visible); this.schedulePreviewUpdate() },
@@ -292,6 +297,7 @@ export class IosPreviewController {
     for (const window of shell.getWindows()) window.setScreenOn?.(running && shell.isScreenOn())
     if (!running) {
       void nightscoutBridge.stop().catch(error => this.fail(error))
+      weatherBridge.setSessionActive(false)
       this.glance.dismiss()
       void this.display?.setScreenBlanked(!shell.isScreenOn()).catch(error => this.fail(error))
       this.offSettings?.(); this.offSettings = null
@@ -315,6 +321,7 @@ export class IosPreviewController {
     this.handlePhoneLockState(!UIApplication.sharedApplication.protectedDataAvailable)
     this.syncLockSetting()
     void nightscoutBridge.start().catch(error => this.fail(error))
+    weatherBridge.setSessionActive(true)
     for (const name of [UIDeviceBatteryLevelDidChangeNotification, UIDeviceBatteryStateDidChangeNotification]) {
       this.batteryObservers.push(NSNotificationCenter.defaultCenter.addObserverForNameObjectQueueUsingBlock(name, null, NSOperationQueue.mainQueue, () => this.requestShellRender()))
     }
@@ -348,7 +355,7 @@ export class IosPreviewController {
     if (!enabled) this.setGlassesLocked(false)
     else {
       if (this.phoneLocked && this.glassesWorn === false) this.setGlassesLocked(true)
-      if (this.communicator && this.state.phase === 'connected')
+      if (this.communicator && this.state.phase === 'connected' && this.firmwareCompatible)
         void this.communicator.enableWearDetectionAndRequestState().catch(error => this.fail(error))
     }
   }
@@ -362,9 +369,13 @@ export class IosPreviewController {
     // Sample false to catch a notification missed during suspension. Do not
     // sample true here: WillBecomeUnavailable precedes the property transition.
     if (!UIApplication.sharedApplication.protectedDataAvailable) this.handlePhoneLockState(true)
+    // Putting the glasses on (an observed OFF_HEAD -> ON_HEAD transition, not
+    // a session's first snapshot) wakes the screen, to the lock notice if locked.
+    const putOn = wearing && this.glassesWorn === false
     this.glassesWorn = wearing
     this.logBluetooth(`Glasses wear state: ${wearing ? 'ON_HEAD' : 'OFF_HEAD'}`)
     if (!wearing && this.phoneLocked && this.lockEnabled) this.setGlassesLocked(true)
+    if (putOn && this.runtimeRunning && !shell.isScreenOn()) shell.wake('sidebar')
   }
   private setGlassesLocked(locked: boolean): void {
     if (locked === this.glassesLocked) return
@@ -486,10 +497,12 @@ export class IosPreviewController {
   gesture(gesture: PhoneGesture, origin: 'watch' | 'ring' | 'mirror', nx = 0, ny = 0): void {
     this.inputQueue = this.inputQueue.then(async () => {
       if (!this.active) return
+      // A mirror tap may land on a hit target rather than being a gesture.
+      if (gesture === 'press' && origin === 'mirror') return
       if (gesture === 'tap' && origin === 'mirror' && shell.isScreenOn() && !this.glassesLocked) {
         await this.mirrorTap(nx, ny)
       } else {
-        let type: string = ({ tap: 'click', 'double-tap': 'double-click' } as Record<string, string>)[gesture] ?? gesture
+        let type: string = ({ press: 'ring-press', tap: 'click', 'double-tap': 'double-click' } as Record<string, string>)[gesture] ?? gesture
         if (origin === 'ring' && type.startsWith('swipe-')) {
           if (type === 'swipe-left' || type === 'swipe-right') return
           type = type === 'swipe-up' ? 'scroll-up' : 'scroll-down'
@@ -527,7 +540,8 @@ export class IosPreviewController {
     const x = Math.max(0, Math.min(639, Math.floor(nx * 640)))
     const y = Math.max(0, Math.min(479, Math.floor(ny * 480)))
     const window = shell.foregroundWindow()
-    if (!shell.hasOverlay() && sidebarStripVisible(shell.getFocus(), window?.appId) && x < SIDEBAR_WIDTH) {
+    if (!shell.hasOverlay() && sidebarStripVisible(shell.getFocus(), window?.appId)
+      && isOnSwitcherEdge(x, y, window?.heightMode ?? 'min', window?.appId)) {
       const target = shell.windowAtSidebarPoint(x, y)
       if (target) { shell.focusWindow(target.windowId); target.requestRender(); this.requestShellRender() }
       return
@@ -542,10 +556,10 @@ export class IosPreviewController {
     this.requestShellRender()
   }
   async launchApp(id: string, params?: AppLaunchParams): Promise<void> {
-    const app = ALL_APPS.find(app => app.appId === id)
+    const app = ALL_APPS.find(candidate => candidate.appId === id)
     if (!app) {
       const installed = getInstalledEvenHubAppById(id)
-      const host = ALL_APPS.find(app => app.appId === 'evenhub')
+      const host = ALL_APPS.find(candidate => candidate.appId === 'evenhub')
       if (installed && host) {
         try {
           if (isInstalledPackagePresent(installed.packageId))
@@ -677,7 +691,8 @@ export class IosPreviewController {
     this.connecting = true
     this.sessionCreated = true
     try {
-      this.state = { ...this.state, capabilities: '', leftVersion: '', rightVersion: '', battery: null, charging: null, ring: false }
+      this.state = { ...this.state, capabilities: '', leftVersion: '', rightVersion: '', firmwareWarning: '', battery: null, charging: null, ring: false }
+      this.firmwareCompatible = false
       this.update('connecting', 'Finding configured devices…')
       let identifiers
       try { identifiers = await resolveIosPeripherals(addresses) }
@@ -730,10 +745,19 @@ export class IosPreviewController {
       }),
       communicator.onFirmwareInfo(info => {
         if (this.communicator !== communicator) return
+        this.logBluetooth(`Firmware: L=${info.leftVersion || '?'} R=${info.rightVersion || '?'}` +
+          (info.extension ? ` ext="${info.extension}"` : ' (no firmware extension string)'))
+        // The shared session halts on incompatible firmware by itself ("incompatible-firmware"
+        // phase, handled in handleSessionState); this only records why, for the warning.
+        const firmwareWarning = firmwareIncompatibilityMessage(info) ?? ''
+        if (firmwareWarning && firmwareWarning !== this.state.firmwareWarning) this.logBluetooth(`Firmware compatibility warning: ${firmwareWarning}`)
+        this.firmwareCompatible = !firmwareWarning && hasCompatibleFirmware(info)
         this.state = { ...this.state, leftVersion: info.leftVersion || this.state.leftVersion,
-          rightVersion: info.rightVersion || this.state.rightVersion, capabilities: info.extension || this.state.capabilities }
+          rightVersion: info.rightVersion || this.state.rightVersion, capabilities: info.extension || this.state.capabilities,
+          firmwareWarning }
         if (this.active) this.onConnectionState({ ...this.state })
         this.syncNotifications(communicator)
+        this.ensureWearDetection(communicator)
       }),
       communicator.onFrameMetrics(() => {
         if (this.communicator !== communicator) return
@@ -743,6 +767,7 @@ export class IosPreviewController {
         if (this.active) this.onConnectionState({ ...this.state })
         this.schedulePreviewUpdate()
       }),
+      communicator.onPreviewAnimationFrame(() => { if (this.communicator === communicator) this.schedulePreviewUpdate() }),
       communicator.onWearState(wearing => { if (this.communicator === communicator) this.handleWearState(wearing) }),
       communicator.addCompassListener(receiveCompassEvent),
       communicator.onAncsRelayFrame(frame => { if (this.communicator === communicator) notifications.receive(frame) }),
@@ -761,20 +786,30 @@ export class IosPreviewController {
     // Registering the listener makes the Kotlin session report its current state, which is
     // "disconnected" before start(); that must not be mistaken for the session ending.
     if (!this.startedCommunicators.has(communicator)) return
-    const phase: SessionPhase = state.phase === 'charging' ? 'connected' : state.phase === 'unpaired' ? 'error' : state.phase
-    if (phase === 'connected' && this.state.phase !== 'connected') {
-      this.state = { ...this.state, frames: this.state.frames }
-      if (!this.wearDetectionRequested) {
-        this.wearDetectionRequested = true
-        void communicator.enableWearDetectionAndRequestState().catch(error => this.logBluetooth(`Wear detection: ${String(error)}`))
-      }
-    }
+    // The shared session parked its retry loop (an arm unpaired, or firmware Faceclaw can't
+    // run): a redial would fail the same way, so stay down until the user connects explicitly
+    // (or re-pairs / installs the custom firmware, which lift the suppression).
+    if (isHaltedSessionPhase(state.phase)) suppressAutoReconnect()
+    const phase: SessionPhase = state.phase === 'charging' ? 'connected' : isHaltedSessionPhase(state.phase) ? 'error' : state.phase
+    // Wear state is a per-transport snapshot: ask again on every new session.
+    if (phase !== 'connected') this.wearDetectionRequested = false
     this.update(phase, state.status)
-    if (phase === 'connected') this.syncNotifications(communicator)
-    else if ((phase === 'disconnected' || phase === 'error') && !this.stopping) {
-      // The session ended on its own (retries exhausted, an arm unpaired): release it and go headless.
+    if (phase === 'connected') {
+      this.syncNotifications(communicator)
+      this.ensureWearDetection(communicator)
+    } else if ((phase === 'disconnected' || phase === 'error') && !this.stopping) {
+      // The session ended on its own (an arm unpaired, incompatible firmware): release it and go headless.
       void this.disconnect(state.status)
     }
+  }
+  /**
+   * Wear reports come from the custom firmware, so like Android only ask once the session
+   * is up and the firmware is confirmed compatible (stock firmware never hears the query).
+   */
+  private ensureWearDetection(communicator: FaceclawCommunicatorBridge): void {
+    if (this.wearDetectionRequested || !this.firmwareCompatible || this.state.phase !== 'connected') return
+    this.wearDetectionRequested = true
+    void communicator.enableWearDetectionAndRequestState().catch(error => this.logBluetooth(`Wear detection: ${String(error)}`))
   }
   private handleRingEvent(input: RawInputEvent): void {
     this.inputQueue = this.inputQueue.then(async () => {

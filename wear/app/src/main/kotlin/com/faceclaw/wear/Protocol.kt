@@ -11,6 +11,8 @@ object Protocol {
     const val CAPABILITY_PHONE = "faceclaw_phone"
 
     const val PATH_INPUT = "/faceclaw/input"
+    /** Watch -> phone: a finger landed on the pad, ahead of the gesture it becomes; no seq, never acked. */
+    const val PATH_PRESS = "/faceclaw/press"
     const val PATH_COMMAND = "/faceclaw/command"
     const val PATH_ASSISTANT = "/faceclaw/assistant"
     const val PATH_TEXT = "/faceclaw/text"

@@ -1,5 +1,5 @@
 import { nightscoutApiTokenSetting, nightscoutSiteUrlSetting } from "../ui/dashboard-settings";
-import { fetchWithUserAgent } from "../util/http";
+import { fetchTextWithUserAgent } from "../util/http";
 
 export type NightscoutPoint = {
   timestampMs: number;
@@ -106,7 +106,6 @@ type NightscoutTreatmentResponse = {
 
 const NIGHTSCOUT_REFRESH_MS = 60_000;
 const NIGHTSCOUT_HISTORY_COUNT = 30;
-const NIGHTSCOUT_GRAPH_WINDOW_MS = 2 * 60 * 60 * 1000;
 const NIGHTSCOUT_TREATMENT_LOOKBACK_MS = 3 * 60 * 60 * 1000;
 // The v1 treatments API silently adds `created_at >= now - 4 days` to any
 // query without an explicit date filter (lib/server/query.js enforceDateFilter),
@@ -305,11 +304,11 @@ export class NightscoutBridge {
 }
 
 async function fetchJson<T>(url: string): Promise<T> {
-  const response = await fetchWithUserAgent(url);
+  const response = await fetchTextWithUserAgent(url);
   if (!response.ok) {
     throw new Error(`HTTP ${response.status}`);
   }
-  return (await response.json()) as T;
+  return response.json<T>();
 }
 
 function parseTreatments(treatments: NightscoutTreatmentResponse[], nowMs: number): {

@@ -1,4 +1,4 @@
-import { Application } from "@nativescript/core";
+import { Utils } from "@nativescript/core";
 
 export function hmacSha256Base64(secret: string, message: string): string {
   const charset = java.nio.charset.StandardCharsets.UTF_8;
@@ -10,7 +10,7 @@ export function hmacSha256Base64(secret: string, message: string): string {
 }
 
 export function getPhoneOpenUdid(): string {
-  const resolver = Application.android.context?.getContentResolver();
+  const resolver = Utils.android.getApplicationContext()?.getContentResolver();
   const id = resolver ? String(android.provider.Settings.Secure.getString(resolver, android.provider.Settings.Secure.ANDROID_ID) ?? "") : "";
   if (!id) throw new Error("Android did not provide a device ID for EvenHub authentication.");
   return id;

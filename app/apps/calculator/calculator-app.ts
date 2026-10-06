@@ -96,8 +96,7 @@ export function createCalculatorAppWindow(options: InProcessAppOptions): InProce
     },
   ];
 
-  let app: InProcessWindow;
-  app = createInProcessWindow({
+  const app = createInProcessWindow({
     appId: "calculator",
     windowId: CALCULATOR_WINDOW_ID,
     title: "Calculator",

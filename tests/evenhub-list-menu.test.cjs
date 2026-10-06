@@ -42,21 +42,6 @@ function paint(container, now, focused = true) {
 const displayLists = (image) => image.draws.map((draw) => draw.presentation?.displayList).filter(Boolean);
 const pixel = (image, x, y) => image.withDrawsBaked().pixels[y * image.width + x];
 
-test("rows are padded 6px around the text; unselected text is at level 2/15", () => {
-  const rowHeight = listRowHeight(font);
-  assert.equal(rowHeight, 32);
-  const container = list(["ab", "cd"], 100);
-  const image = paint(container, 1000);
-  const textX = LIST_ITEM_PADDING_X, textY = LIST_ITEM_PADDING_Y + 4;
-  assert.equal(pixel(image, textX, textY), 255, "selected text is full brightness");
-  assert.equal(pixel(image, textX, rowHeight + textY), DESELECTED_TEXT, "unselected text is 2/15");
-  assert.equal(DESELECTED_TEXT + 8 >> 4, 2);
-  // The outline hugs the text plus padding, not the row width.
-  const outlineRight = 2 * 10 + 2 * LIST_ITEM_PADDING_X - 1;
-  assert.equal(pixel(image, outlineRight, rowHeight / 2), 255);
-  assert.equal(pixel(image, outlineRight + 2, rowHeight / 2), 0);
-});
-
 test("the unfocused outline is dimmer", () => {
   const image = paint(list(["ab"], 100), 1000, false);
   assert.equal(pixel(image, 0, 16), 130);

@@ -64,8 +64,8 @@ export class IosVoiceControlBridge {
     const generation = ++this.generation
     this.log = log; this.source = 'glasses'; this.session = session; this.packets = 0; this.capturing = true
     this.completion = new Promise(resolve => { this.resolveCompletion = resolve })
-    const error = String(this.ensureNative().startWithEndpointing(endpointing) ?? '')
-    if (error) { this.stop(); this.setStatus(error); this.emitEnd(); return }
+    const startError = String(this.ensureNative().startWithEndpointing(endpointing) ?? '')
+    if (startError) { this.stop(); this.setStatus(startError); this.emitEnd(); return }
     try {
       await session.setMicrophone(true, packet => {
         if (generation !== this.generation || !this.capturing) return
@@ -136,7 +136,7 @@ export class IosVoiceControlBridge {
       this.log(`Voice audio: ${event.seconds?.toFixed(1)}s, packets=${event.packets}, RMS=${event.rms?.toFixed(4)}, missing=${event.missing}, errors=${event.errors}`)
       if (this.capturing) this.setStatus(`Listening on ${this.source === 'phone' ? 'phone' : 'glasses'}… ${event.seconds?.toFixed(0)}s`)
     } else if (event.kind === 'finishing') {
-      this.stopPushToTalk(); this.emitEnd()
+      void this.stopPushToTalk(); this.emitEnd()
     } else if (event.kind === 'ended') {
       this.source = null
       this.capturing = this.finalizing = false

@@ -108,6 +108,7 @@ class AiChatLayer implements Layer {
         return;
       case "long-press-release": this.draft.release(); return;
       case "double-click": this.draft.cancel(); shell.yieldFocusToSidebar(); return;
+      default: return;
     }
   }
   menuItems(): MenuItem[] {
@@ -123,20 +124,20 @@ class AiChatLayer implements Layer {
       { label: "Switch session", disabled: () => external || busy(), onSelect: (ctx) => submenu(ctx, "Sessions",
         [...this.conversations.list()].reverse().map((item) => ({
           label: `${item.id === record.id ? "✓ " : ""}${this.conversations.title(item)}`,
-          onSelect: (ctx) => { if (this.conversations.select(item.id)) ctx.stack.clearToBase(); },
+          onSelect: (pickCtx) => { if (this.conversations.select(item.id)) pickCtx.stack.clearToBase(); },
         }))) },
       { label: `Model: ${assistantModelLabel(record.model)}`, disabled: () => external || busy(), onSelect: (ctx) => submenu(ctx, "Model",
         ASSISTANT_MODEL_CHOICES.map((model) => ({
           label: `${model === record.model ? "✓ " : ""}${assistantModelLabel(model)}`,
           disabled: () => !this.conversations.available(model, record.reasoning),
-          onSelect: (ctx) => { if (this.conversations.configure(model, record.reasoning)) ctx.stack.clearToBase(); },
+          onSelect: (pickCtx) => { if (this.conversations.configure(model, record.reasoning)) pickCtx.stack.clearToBase(); },
         }))) },
       { label: `Reasoning: ${record.reasoning}`, disabled: () => {
         const llm = resolveAssistantModel(record.model, { anthropic: anthropicApiKeySetting.get(), openai: openAiApiKeySetting.get() });
         return external || busy() || !llm?.effort;
       }, onSelect: (ctx) => submenu(ctx, "Reasoning", (["default", "low", "medium", "high"] as ReasoningLevel[]).map((reasoning) => ({
         label: `${reasoning === record.reasoning ? "✓ " : ""}${reasoning === "default" ? "Model default" : reasoning}`,
-        onSelect: (ctx) => { if (this.conversations.configure(record.model, reasoning)) ctx.stack.clearToBase(); },
+        onSelect: (pickCtx) => { if (this.conversations.configure(record.model, reasoning)) pickCtx.stack.clearToBase(); },
       }))) },
       ...(record.session?.isTurnActive() ? [{ label: "Cancel response", onSelect: (ctx: LayerContext) => {
         record.session?.cancel(); ctx.stack.clearToBase();

@@ -1,5 +1,5 @@
 import { File, knownFolders, path, type ImageSource } from "@nativescript/core";
-import { SurfaceCompositor } from "../graphics/surface-compositor";
+import { SurfaceCompositor } from "../graphics/surface-compositor.ios";
 import { G2_LENS_WIDTH, G2_LENS_HEIGHT } from "../graphics/image";
 import { previewPixels } from "./ios-graphics";
 import { toData } from "./kotlin-data";
@@ -18,6 +18,7 @@ export type DisplayTarget = Pick<
   | "setUnderlayDim"
   | "setScreenBlanked"
   | "submitSurfaceFrame"
+  | "isSurfaceCurrent"
   | "submitShellScene"
   | "waitForFrameFinished"
   | "getCompositePreview"
@@ -44,14 +45,20 @@ export class PreviewDisplayTarget implements DisplayTarget {
   private onFrameComposited: (() => void) | null = null;
   private released = false;
 
-  /** Receive a callback per applied frame, the stand-in for the connected path's frame-finished callback. */
+  /**
+   * Receive a callback per applied frame, the stand-in for the connected
+   * path's frame-finished callback, and per step of an animation the
+   * preview is replaying.
+   */
   activate(onFrameComposited: () => void): void {
     this.onFrameComposited = onFrameComposited;
+    this.compositor.setPreviewAnimationListener(() => this.composited());
   }
 
   release(): void {
     this.released = true;
     this.onFrameComposited = null;
+    this.compositor.setPreviewAnimationListener(null);
   }
 
   private composited(): void {
@@ -60,7 +67,9 @@ export class PreviewDisplayTarget implements DisplayTarget {
 
   async configureCompositorScreen(width: number, height: number): Promise<void> {
     if (Math.round(width) !== this.compositor.width || Math.round(height) !== this.compositor.height) {
+      this.compositor.setPreviewAnimationListener(null);
       this.compositor = new SurfaceCompositor(Math.round(width), Math.round(height));
+      if (this.onFrameComposited) this.compositor.setPreviewAnimationListener(() => this.composited());
     }
   }
 
@@ -107,6 +116,11 @@ export class PreviewDisplayTarget implements DisplayTarget {
     this.compositor.submitSurfaceFrame(surfaceId, pixels8bpp,
       { x: Math.round(rect.x), y: Math.round(rect.y), width: Math.round(rect.width), height: Math.round(rect.height) }, glyphs);
     this.composited();
+  }
+
+  /** Never skips: preview frames are cheap and nothing is transmitted. */
+  isSurfaceCurrent(_surfaceId: string, _fingerprint: string): boolean {
+    return false;
   }
 
   async submitShellScene(bytes: Uint8Array, _paintMs = 0, _frameId = 0): Promise<void> {

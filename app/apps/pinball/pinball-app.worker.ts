@@ -12,7 +12,8 @@
  * keep the BLE payload down to the dirty region around the ball.
  *
  * Controls (ball ready): scroll sets launch power, click launches. In play:
- * ring-press flips both flippers for 300 ms; click launches from the plunger,
+ * a touch-down (ring-press) flips both flippers for 300 ms, as does a click
+ * without one; click launches from the plunger,
  * double-click pauses. Swipes no longer trigger individual flippers;
  * up/down raise and lower launch power at the plunger.
  * Paused/game over: click resumes or starts a new game, double-click yields
@@ -42,6 +43,7 @@ import {
   GESTURE_DOUBLE_CLICK,
   GESTURE_SCROLL,
   type InputEvent,
+  PressTracker,
 } from "../../ui/gestures";
 import { clamp } from "../../util/numeric-util";
 
@@ -61,6 +63,12 @@ const TOP = 4;
 const BOTTOM = 256;
 const LANE_X = 232;
 const PANEL_X = 310;
+/**
+ * Height the table and panel are drawn for: a min-height window's viewport
+ * under the standard top bar. A taller viewport (the status bar folded into
+ * the switcher row, a full-panel display) centers the layout vertically.
+ */
+const LAYOUT_HEIGHT = 260;
 
 const BALL_R = 6;
 /** Ball resting spot on the plunger, and where launches start. */
@@ -273,6 +281,8 @@ type PinballWindow = {
   lastMinorSfxAtMs: number;
   soundOn: boolean;
   lastSubmittedFingerprint: string;
+  /** Which gestures already flipped on their ring-press. */
+  presses: PressTracker;
 };
 
 const windows = new Map<string, PinballWindow>();
@@ -336,6 +346,7 @@ global.onmessage = (event: { data: WorkerAppMessage }) => {
         lastMinorSfxAtMs: 0,
         soundOn: loadSoundEnabled("pinball"),
         lastSubmittedFingerprint: "",
+        presses: new PressTracker(),
       };
       windows.set(message.windowId, window);
       break;
@@ -399,6 +410,11 @@ global.onmessage = (event: { data: WorkerAppMessage }) => {
         if (!screenOn && window.phase === "playing") window.phase = "paused";
         syncTickTimer(window);
       }
+      break;
+    case "navigation-sensors":
+    case "resize-window":
+    case "text-input":
+    case "tool-call":
       break;
   }
 };
@@ -491,10 +507,11 @@ function windowMenu(window: PinballWindow): WindowMenu {
 }
 
 function handleInput(window: PinballWindow, event: InputEvent, frameId: number): void {
+  const followsPress = window.presses.followsPress(event);
   // An open window menu owns all input (it closes itself via pop); menus are
   // list UIs, so watch swipes take their standard fallback meanings there.
   if (window.menu?.isOpen()) {
-    window.menu
+    void window.menu
       .handleInput(directionalFallback(event))
       .catch((error) => console.error(`pinball menu input failed: ${error}`))
       .then(() => renderAndSubmit(window, frameId));
@@ -502,13 +519,14 @@ function handleInput(window: PinballWindow, event: InputEvent, frameId: number):
   }
 
   if (window.phase === "playing") {
-    handlePlayingInput(window, event, frameId);
+    handlePlayingInput(window, event, frameId, followsPress);
   } else {
     handleIdleInput(window, event, frameId);
   }
 }
 
-function handlePlayingInput(window: PinballWindow, event: InputEvent, frameId: number): void {
+/** `followsPress` marks a gesture whose touch-down already flipped (see PressTracker). */
+function handlePlayingInput(window: PinballWindow, event: InputEvent, frameId: number, followsPress: boolean): void {
   const ready = window.ballState === "ready";
   switch (event.type) {
     case "scroll-up":
@@ -539,7 +557,7 @@ function handlePlayingInput(window: PinballWindow, event: InputEvent, frameId: n
     case "click":
       if (ready) {
         launchBall(window);
-      } else if (event.source !== "ring") {
+      } else if (!followsPress) {
         flip(window, window.flippers[0]!);
         flip(window, window.flippers[1]!);
       }
@@ -737,6 +755,8 @@ function stepFlippers(window: PinballWindow, dt: number): void {
           flipper.state = "rest";
         }
         break;
+      case "rest":
+        break;
     }
   }
 }
@@ -880,8 +900,8 @@ let staticBackground: GrayImage | null = null;
 
 /** Everything that never changes: walls, guides, slings, outlines, labels. */
 function getStaticBackground(window: PinballWindow): GrayImage {
-  if (staticBackground) return staticBackground;
-  const image = new GrayImage(window.viewportWidth, window.viewportHeight, 0);
+  if (staticBackground?.width === window.viewportWidth) return staticBackground;
+  const image = new GrayImage(window.viewportWidth, LAYOUT_HEIGHT, 0);
   for (const segment of SEGMENTS) {
     image.drawLine(segment.x0, segment.y0, segment.x1, segment.y1, segment.shade);
   }
@@ -981,6 +1001,14 @@ function paintContent(window: PinballWindow): GrayImage {
       `${GESTURE_CLICK} new game`,
     ]);
   }
+  return centeredInViewport(window, image);
+}
+
+/** Place the fixed-height layout vertically centered in the window's viewport. */
+function centeredInViewport(window: PinballWindow, layout: GrayImage): GrayImage {
+  if (layout.height === window.viewportHeight) return layout;
+  const image = new GrayImage(window.viewportWidth, window.viewportHeight, 0);
+  layout.composeInto(image, 0, Math.max(0, Math.floor((window.viewportHeight - layout.height) / 2)));
   return image;
 }
 

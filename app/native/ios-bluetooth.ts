@@ -38,7 +38,7 @@ export class IosBluetooth {
         this.state = Number(state); this.authorization = Number(authorization)
         this.emit({ kind: 'state', state: this.state, authorization: this.authorization })
       },
-      onAdvertisementIdentifierNameManufacturerDataHexRssiConnectable: (identifier: string, name: string, manufacturerData: string, rssi: number, connectable: boolean) => {
+      onAdvertisementIdentifierNameManufacturerDataHexRssiConnectable: (identifier: string, name: string, manufacturerData: string, rssi: number, connectable: boolean | undefined) => {
         // The Kotlin central already merges split advertisements and bounds its cache.
         const raw: IosAdvertisement = { identifier: String(identifier), name: String(name ?? ''), manufacturerData: String(manufacturerData ?? ''), rssi: Number(rssi), connectable: connectable !== false }
         this.emit({ kind: 'advertisement', ...raw })
@@ -65,7 +65,7 @@ export class IosBluetooth {
   ensureReady(): Promise<void> {
     if (this.state === BLE_STATE_POWERED_ON) return Promise.resolve()
     return new Promise((resolve, reject) => {
-      const finish = (error?: Error) => { clearTimeout(timer); off(); error ? reject(error) : resolve() }
+      const finish = (error?: Error) => { clearTimeout(timer); off(); if (error) reject(error); else resolve() }
       const off = this.onEvent(event => {
         if (event.kind !== 'state') return
         if (event.state === BLE_STATE_POWERED_ON) finish()

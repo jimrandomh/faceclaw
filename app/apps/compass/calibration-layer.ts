@@ -80,7 +80,7 @@ export class CompassCalibrationLayer implements Layer {
 
     // The crosshair marks where the wearer is looking, so its horizontal
     // position must be the true centre of the display, not of the app
-    // viewport the sidebar has pushed to the right. Vertically it just sits in
+    // viewport a side strip has pushed off centre. Vertically it just sits in
     // the free space between the instructions and the readouts; the window
     // band's own placement on screen is the wearer's Display setting and
     // doesn't affect the heading being aimed.

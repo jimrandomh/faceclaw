@@ -87,8 +87,14 @@ class FaceclawMediaNotificationListenerService : NotificationListenerService() {
             return false
         }
 
+        /**
+         * The tray's notification icons, iconSize*iconSize gray bytes each: one
+         * per notification group. When keysOut is given, each icon's
+         * notification key (the group member it was taken from) is appended
+         * to it in step, so the tray can tell which notification an icon is.
+         */
         @JvmStatic
-        fun getActiveNotificationIconGrays(iconSize: Int, maxIcons: Int): ByteArray {
+        fun getActiveNotificationIconGrays(iconSize: Int, maxIcons: Int, keysOut: MutableList<String>?): ByteArray {
             val service = activeService
             val size = Math.max(1, Math.min(96, iconSize))
             val limit = Math.max(0, maxIcons)
@@ -130,6 +136,7 @@ class FaceclawMediaNotificationListenerService : NotificationListenerService() {
                     + " drawable=" + drawable.javaClass.simpleName
                     + " intrinsic=" + drawable.intrinsicWidth + "x" + drawable.intrinsicHeight)
                 appendIconGrayBytes(drawable, size, out, service, emitted, statusBarNotification.packageName)
+                keysOut?.add(statusBarNotification.key ?: "")
                 if (dedupeGroupKey != null) {
                     emittedGroupKeys.add(dedupeGroupKey)
                 }

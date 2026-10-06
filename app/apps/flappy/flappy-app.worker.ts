@@ -17,8 +17,9 @@
  * fall back to raster (the planner needs a non-negative origin), which is
  * small and rare.
  *
- * Controls (a watch swipe in either direction is the primary flap):
- * ring-press flaps immediately; watch swipes/clicks also flap. Double-click pauses;
+ * Controls: a touch-down on the ring or watch pad (ring-press) flaps
+ * immediately; a click, a watch swipe in either direction or a crown turn
+ * without one flaps too. Double-click pauses;
  * tap-then-hold opens the window menu. Ready / paused / game over: click or
  * a swipe starts or resumes, double-click yields focus. Losing input focus
  * mid-flight (a shell overlay such as the system menu or a notification,
@@ -45,6 +46,7 @@ import {
   GESTURE_CLICK,
   GESTURE_DOUBLE_CLICK,
   type InputEvent,
+  PressTracker,
 } from "../../ui/gestures";
 import { clamp } from "../../util/numeric-util";
 import {
@@ -153,6 +155,8 @@ type FlappyWindow = {
   lastMinorSfxAtMs: number;
   soundOn: boolean;
   lastSubmittedFingerprint: string;
+  /** Which gestures already flapped on their ring-press. */
+  presses: PressTracker;
 };
 
 const windows = new Map<string, FlappyWindow>();
@@ -210,6 +214,7 @@ global.onmessage = (event: { data: WorkerAppMessage }) => {
         lastMinorSfxAtMs: 0,
         soundOn: loadSoundEnabled("flappy"),
         lastSubmittedFingerprint: "",
+        presses: new PressTracker(),
       };
       resetGame(window);
       windows.set(message.windowId, window);
@@ -281,6 +286,10 @@ global.onmessage = (event: { data: WorkerAppMessage }) => {
         if (!screenOn && window.phase === "playing") window.phase = "paused";
         syncTickTimer(window);
       }
+      break;
+    case "navigation-sensors":
+    case "text-input":
+    case "tool-call":
       break;
   }
 };
@@ -374,10 +383,11 @@ function windowMenu(window: FlappyWindow): WindowMenu {
 // --- Input ------------------------------------------------------------------
 
 function handleInput(window: FlappyWindow, event: InputEvent, frameId: number): void {
+  const followsPress = window.presses.followsPress(event);
   // An open window menu owns all input (it closes itself via pop); menus are
   // list UIs, so watch swipes take their standard fallback meanings there.
   if (window.menu?.isOpen()) {
-    window.menu
+    void window.menu
       .handleInput(directionalFallback(event))
       .catch((error) => console.error(`flappy menu input failed: ${error}`))
       .then(() => renderAndSubmit(window, frameId));
@@ -398,7 +408,7 @@ function handleInput(window: FlappyWindow, event: InputEvent, frameId: number): 
   switch (window.phase) {
     case "ready":
     case "playing":
-      handleFlightInput(window, event, frameId);
+      handleFlightInput(window, event, frameId, followsPress);
       break;
     case "dying":
       // Let the tumble finish; a flap mashed during it must not restart.
@@ -410,22 +420,24 @@ function handleInput(window: FlappyWindow, event: InputEvent, frameId: number): 
   }
 }
 
-/** Input while ready or flying: the flap gestures, plus pause. */
-function handleFlightInput(window: FlappyWindow, event: InputEvent, frameId: number): void {
+/**
+ * Input while ready or flying: the flap gestures, plus pause. `followsPress`
+ * marks a gesture whose touch-down already flapped (see PressTracker).
+ */
+function handleFlightInput(window: FlappyWindow, event: InputEvent, frameId: number, followsPress: boolean): void {
   switch (event.type) {
+    case "ring-press":
+      flap(window);
+      break;
     // Either swipe direction flaps: on the watch the flap is a reflex, and
     // which way the thumb went shouldn't matter.
     case "swipe-up":
     case "swipe-down":
-    case "ring-press":
-      flap(window);
-      break;
     case "click":
-      // The ring already flapped on down; its later click must not flap again.
-      if (event.source !== "ring") flap(window);
+      if (!followsPress) flap(window);
       break;
     case "scroll-up":
-      if (event.source === "watch") flap(window);
+      if (event.source === "watch" && !followsPress) flap(window);
       break;
     case "double-click":
       if (window.phase === "playing") {
@@ -719,6 +731,9 @@ function paintHud(image: GrayImage, window: FlappyWindow): void {
         `score ${window.score}   best ${window.highScore}`,
         `${GESTURE_CLICK} new game   ${GESTURE_DOUBLE_CLICK} leave`,
       ]);
+      break;
+    case "playing":
+    case "dying":
       break;
   }
 }

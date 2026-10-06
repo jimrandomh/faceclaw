@@ -176,6 +176,25 @@ class PhoneLink(context: Context) :
         send(Protocol.PATH_INPUT, JSONObject().put("gesture", gesture.wire).put("steps", steps))
     }
 
+    /**
+     * A finger landed: the phone delivers it as the ring's touch-down
+     * (ring-press) ahead of whatever gesture the touch becomes. Fire-and-forget
+     * and silent, since the gesture that follows reports any failure; skipped
+     * unless the glasses are showing something for it to act on.
+     */
+    fun sendPress() {
+        if (state.value?.let { it.connected && it.screenOn } != true) return
+        val nodeId = _link.value.phoneNodeId ?: return
+        if (!_link.value.phoneAppInstalled) return
+        Log.d(TAG, "send ${Protocol.PATH_PRESS}")
+        try {
+            messageClient.sendMessage(nodeId, Protocol.PATH_PRESS, ByteArray(0))
+                .addOnFailureListener { error -> Log.w(TAG, "press failed", error) }
+        } catch (error: Exception) {
+            Log.w(TAG, "press failed", error)
+        }
+    }
+
     fun sendCommand(command: String, vararg extras: Pair<String, String>) {
         val body = JSONObject().put("command", command)
         for ((key, value) in extras) body.put(key, value)

@@ -73,7 +73,7 @@ export async function checkForEvenHubUpdates(
   onProgress?: (done: number, total: number) => void,
 ): Promise<EvenHubAppUpdate[]> {
   const installed = getInstalledEvenHubApps();
-  const results: EvenHubAppUpdate[] = new Array(installed.length);
+  const results: EvenHubAppUpdate[] = [];
   let next = 0;
   let done = 0;
   const worker = async () => {

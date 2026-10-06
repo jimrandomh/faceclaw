@@ -59,8 +59,8 @@ const DEFAULT_MEDIA_STATE: MediaControllerState = {
 
 export class FaceclawMediaControllerBridge {
   private readonly stateListeners = new Set<(state: MediaControllerState) => void>();
-  private controller: any | null = null;
-  private listenerProxy: any | null = null;
+  private controller: any = null;
+  private listenerProxy: any = null;
   private state: MediaControllerState = { ...DEFAULT_MEDIA_STATE };
   private stateUpdatedAtMs = Date.now();
   private started = false;

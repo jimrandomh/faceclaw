@@ -1,7 +1,7 @@
 import { GrayImage } from "../graphics/image";
 import { singlePlane, type Plane } from "../graphics/plane";
 import { GESTURE_LONG_PRESS, GESTURE_SHORT_THEN_LONG_PRESS, gestureHints, type InputEvent } from "./gestures";
-import { type Layer, LayerStack, noopLayerActions } from "./layers";
+import { type Layer, type LayerActions, LayerStack, noopLayerActions } from "./layers";
 import { CONTEXT_MENU_DIM, MenuLayer, type MenuItem, type MenuLayout } from "./menu";
 import type { WorkerAppReply } from "./shell/worker-window";
 
@@ -69,10 +69,16 @@ export type WindowMenuOptions = {
  * content with the menu drawn over it and keeps the shell told about the
  * window's gesture bindings (whether it has a menu, whether it claims
  * long-press).
+ *
+ * Text-setting rows (textSettingMenuItem) work here too: the phone editor
+ * opens through the shell, and the app repaints the edit page as the setting
+ * changes. Call close() when the window closes so an open edit is ended.
  */
 export class WindowMenu {
   private stack: LayerStack | null = null;
   private reported: { hasAppMenu: boolean; claimsLongPress: boolean } | null = null;
+  /** A text-setting row opened the phone editor and nothing has closed it yet. */
+  private textEditOpen = false;
 
   constructor(private readonly options: WindowMenuOptions) {}
 
@@ -105,9 +111,37 @@ export class WindowMenu {
       paint: () => this.options.paintBase(),
       handleInput: () => {},
     };
-    const stack = new LayerStack(base, { ...noopLayerActions }, this.options.size, this.options.isFocused);
+    const stack = new LayerStack(base, this.layerActions(), this.options.size, this.options.isFocused);
     stack.push(new WindowMenuLayer(title, items));
     this.stack = stack;
+  }
+
+  /** Close the menu outright (the window is closing), ending any phone edit. */
+  close(): void {
+    this.stack?.clearToBase();
+    this.stack = null;
+    this.endTextEdit();
+  }
+
+  /**
+   * No-ops apart from the phone text editor, which the shell owns: a worker
+   * can only ask for it by setting id.
+   */
+  private layerActions(): LayerActions {
+    return {
+      ...noopLayerActions,
+      startTextSettingEdit: (setting) => {
+        this.textEditOpen = true;
+        this.options.post({ type: "start-text-setting-edit", settingId: setting.id });
+      },
+      endTextSettingEdit: () => this.endTextEdit(),
+    };
+  }
+
+  private endTextEdit(): void {
+    if (!this.textEditOpen) return;
+    this.textEditOpen = false;
+    this.options.post({ type: "end-text-setting-edit" });
   }
 
   /**
@@ -142,8 +176,7 @@ export class WindowMenu {
     // The shell opened its system menu over this window; close ours so the
     // two context menus never stack.
     if (event.type === "system-menu-opened") {
-      stack.clearToBase();
-      this.stack = null;
+      this.close();
       return;
     }
     await stack.handleInput(event);

@@ -11,11 +11,18 @@ export const DrawOp = { RECT_COPY: 2, IMAGE: 4, ROUNDED_RECT: 8, CLEAR: 9, DRAWS
 export const DISPLAY_LIST_RECORD = 7;
 /** Bridge opcode bit: a clip rect follows the call's depth. */
 const CLIPPED = 128;
+/** Bridge sentinel for a rounded rect without an outside color. */
+const NO_OUTSIDE = 16;
 export type ListImage = { readonly width: number; readonly height: number; readonly pixels: Uint8Array };
 /** Revision 35: a call draws only inside its clip, in list coordinates (and moves with its depth). */
 export type ListClip = { readonly x: number; readonly y: number; readonly width: number; readonly height: number };
 export type ListCall = (
-  | { op: typeof DrawOp.ROUNDED_RECT; x: DrawValue; y: DrawValue; width: number; height: number; radius: number; background: number; border: number }
+  /**
+   * The background max-blends (0 leaves the interior alone); border 16 draws no
+   * outline. `outside` (revision 36) colors the box's pixels outside the
+   * rounded shape, cutting what is underneath to the corners.
+   */
+  | { op: typeof DrawOp.ROUNDED_RECT; x: DrawValue; y: DrawValue; width: number; height: number; radius: number; background: number; border: number; outside?: number }
   | { op: typeof DrawOp.IMAGE; resource: number; x: number; y: number; transparent: boolean }
   | { op: typeof DrawOp.RECT_COPY; resource: number; x: DrawValue; y: DrawValue; width: number; height: number; dx: DrawValue; dy: DrawValue }
   /** Fill with a 4-bit color: the clip rect when there is one, else the whole screen. */
@@ -36,14 +43,34 @@ export type DisplayList = {
 };
 export type PlacedDisplayList = { displayList: DisplayList; x: number; y: number; width: number; height: number; depth: number };
 
+/**
+ * Growable byte buffer. Lists are encoded on every frame that carries one, and
+ * twice more for its fingerprint and the preview; resources (whole menu rows,
+ * scroll strips) are tens of KB, so they go in with one set() rather than a
+ * push per byte.
+ */
 class Writer {
-  bytes: number[] = [];
-  u8(n: number): void { this.bytes.push(integer(n, 0, 255)); }
+  private buffer = new Uint8Array(256);
+  length = 0;
+  private reserve(count: number): void {
+    const needed = this.length + count;
+    if (needed <= this.buffer.length) return;
+    let size = this.buffer.length * 2;
+    while (size < needed) size *= 2;
+    const grown = new Uint8Array(size);
+    grown.set(this.buffer.subarray(0, this.length));
+    this.buffer = grown;
+  }
+  u8(n: number): void { integer(n, 0, 255); this.reserve(1); this.buffer[this.length++] = n; }
   i8(n: number): void { this.u8(integer(n, -128, 127) & 255); }
-  u16(n: number): void { integer(n, 0, 65535); this.bytes.push(n & 255, n >>> 8); }
+  u16(n: number): void { integer(n, 0, 65535); this.reserve(2); this.buffer[this.length++] = n & 255; this.buffer[this.length++] = n >>> 8; }
   i16(n: number): void { this.u16(integer(n, -32768, 32767) & 65535); }
   u32(n: number): void { integer(n, 0, 4294967295); this.u16(n & 65535); this.u16(n >>> 16); }
-  raw(bytes: ArrayLike<number>): void { for (let i = 0; i < bytes.length; i++) this.bytes.push(bytes[i]); }
+  raw(bytes: ArrayLike<number>): void { this.reserve(bytes.length); this.buffer.set(bytes, this.length); this.length += bytes.length; }
+  /** The written bytes, in a buffer of their own. */
+  bytes(): Uint8Array { return this.buffer.slice(0, this.length); }
+  /** A view of the written bytes; valid until the next write. */
+  view(): Uint8Array { return this.buffer.subarray(0, this.length); }
 }
 
 /** Length-delimited bridge envelope; call operands use fixed widths except extended x/y. */
@@ -68,6 +95,7 @@ export function encodeDisplayList(placed: PlacedDisplayList, now = Date.now()): 
       out.raw(encodeValue(call.x)); out.raw(encodeValue(call.y));
       out.u16(integer(call.width, 1, 640)); out.u16(integer(call.height, 1, 480)); out.u16(call.radius);
       out.u8(integer(call.background, 0, 15)); out.u8(integer(call.border, 0, 16));
+      out.u8(call.outside === undefined ? NO_OUTSIDE : integer(call.outside, 0, 15));
     } else if (call.op === DrawOp.CLEAR) {
       out.u8(integer(call.color, 0, 15));
     } else if (call.op === DrawOp.DRAWS) {
@@ -85,9 +113,9 @@ export function encodeDisplayList(placed: PlacedDisplayList, now = Date.now()): 
       }
     }
   }
-  if (out.bytes.length > 4 * 1024 * 1024) throw new Error('Display list exceeds bridge limit');
-  const header = new Writer(); header.u8(DISPLAY_LIST_RECORD); header.u32(out.bytes.length); header.raw(out.bytes);
-  return Uint8Array.from(header.bytes);
+  if (out.length > 4 * 1024 * 1024) throw new Error('Display list exceeds bridge limit');
+  const header = new Writer(); header.u8(DISPLAY_LIST_RECORD); header.u32(out.length); header.raw(out.view());
+  return header.bytes();
 }
 
 /** Replay-record sizes by tag, as in glyph-wire's frame draw buffer. */
@@ -101,24 +129,28 @@ export function readDisplayList(bytes: Uint8Array, offset: number, now = Date.no
   const x = r.i16(), y = r.i16(), width = r.u16(), height = r.u16(), depth = r.u8() << 24 >> 24;
   const token = r.u32(), elapsed = r.u32(), count = r.u16(); integer(count, 0, 256);
   const resources: ListImage[] = [];
-  for (let i = 0; i < count; i++) { const width = r.u16(), height = r.u16(); resources.push({ width, height, pixels: r.take(width * height) }); }
+  for (let i = 0; i < count; i++) { const w = r.u16(), h = r.u16(); resources.push({ width: w, height: h, pixels: r.take(w * h) }); }
   const calls: ListCall[] = [], callCount = r.u16(); integer(callCount, 0, 4096);
   for (let i = 0; i < callCount; i++) {
-    const header = r.u8(), op = header & ~CLIPPED, depth = r.i16();
+    const header = r.u8(), op = header & ~CLIPPED, callDepth = r.i16();
     const clip = header & CLIPPED ? { x: r.i16(), y: r.i16(), width: r.u16(), height: r.u16() } : undefined;
-    const common = clip ? { depth, clip } : { depth };
-    if (op === DrawOp.ROUNDED_RECT) calls.push({ op, ...common, x: readValue(r), y: readValue(r), width: r.u16(), height: r.u16(), radius: r.u16(), background: r.u8(), border: r.u8() });
+    const common = clip ? { depth: callDepth, clip } : { depth: callDepth };
+    if (op === DrawOp.ROUNDED_RECT) {
+      const call = { op, ...common, x: readValue(r), y: readValue(r), width: r.u16(), height: r.u16(), radius: r.u16(), background: r.u8(), border: r.u8() };
+      const outside = r.u8();
+      calls.push(outside === NO_OUTSIDE ? call : { ...call, outside });
+    }
     else if (op === DrawOp.IMAGE) calls.push({ op, ...common, resource: r.u16(), x: r.i16(), y: r.i16(), transparent: (r.u8() & 16) !== 0 });
     else if (op === DrawOp.RECT_COPY) calls.push({ op, ...common, resource: r.u16(), x: readValue(r), y: readValue(r), width: r.u16(), height: r.u16(), dx: readValue(r), dy: readValue(r) });
     else if (op === DrawOp.CLEAR) calls.push({ op, ...common, color: r.u8() });
     else if (op === DrawOp.DRAWS) {
-      const x = readValue(r), y = readValue(r), records = r.u16(), start = r.offset;
+      const drawX = readValue(r), drawY = readValue(r), records = r.u16(), start = r.offset;
       for (let n = 0; n < records; n++) {
         const size = RECORD_BYTES[r.bytes[r.offset]!];
         if (!size) throw new Error('Unsupported display-list draw record');
         r.take(size);
       }
-      calls.push({ op, ...common, x, y, count: records, records: r.bytes.slice(start, r.offset) });
+      calls.push({ op, ...common, x: drawX, y: drawY, count: records, records: r.bytes.slice(start, r.offset) });
     } else throw new Error('Unsupported display-list call');
   }
   if (r.offset !== length) throw new Error('Trailing display-list bytes');
@@ -137,7 +169,8 @@ export function dimDisplayList(list: DisplayList, factor: number): DisplayList {
   if (list.calls.some(c => c.op === DrawOp.DRAWS)) return { ...list, calls: [] };
   const dim = (v: number) => v === 0 ? 0 : Math.max(1, Math.round(v * factor));
   return { ...list, resources: list.resources.map(r => ({ ...r, pixels: r.pixels.map(dim) })),
-    calls: list.calls.map(c => c.op === DrawOp.ROUNDED_RECT ? { ...c, background: Math.min(15, Math.round(c.background * factor)), border: c.border === 16 ? 16 : Math.min(15, Math.round(c.border * factor)) }
+    calls: list.calls.map(c => c.op === DrawOp.ROUNDED_RECT ? { ...c, background: Math.min(15, Math.round(c.background * factor)), border: c.border === 16 ? 16 : Math.min(15, Math.round(c.border * factor)),
+        ...(c.outside === undefined ? {} : { outside: Math.min(15, Math.round(c.outside * factor)) }) }
       : c.op === DrawOp.CLEAR ? { ...c, color: Math.min(15, Math.round(c.color * factor)) } : c) };
 }
 
@@ -171,8 +204,12 @@ export function paintDisplayList(output: Uint8Array, screen: Uint8Array, width: 
     } else if (c.op === DrawOp.ROUNDED_RECT) {
       const x = placed.x + evaluate(c.x, elapsed, presentTime).value + shift, y = placed.y + evaluate(c.y, elapsed, presentTime).value;
       for (let yy = 0; yy < c.height; yy++) for (let xx = 0; xx < c.width; xx++) {
-        if (!writable(x + xx, y + yy) || !inside(xx, yy, c.width, c.height, c.radius)) continue;
+        if (!writable(x + xx, y + yy)) continue;
         const p = (y + yy) * width + x + xx;
+        if (!inside(xx, yy, c.width, c.height, c.radius)) {
+          if (c.outside !== undefined) output[p] = c.outside * 16;
+          continue;
+        }
         output[p] = c.border !== 16 && !inside(xx - 1, yy - 1, c.width - 2, c.height - 2, Math.max(0, c.radius - 1)) ? c.border * 16 : Math.max(output[p], c.background * 16);
       }
     } else {

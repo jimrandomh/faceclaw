@@ -16,6 +16,8 @@ declare const com: any;
 export const WEAR_PATHS = {
   /** Watch -> phone: a ring-style gesture. */
   input: "/faceclaw/input",
+  /** Watch -> phone: a finger landed on the pad (the ring-press ahead of a gesture); never acked. */
+  press: "/faceclaw/press",
   /** Watch -> phone: a shell command (launch app, wake, lock, ...). */
   command: "/faceclaw/command",
   /** Watch -> phone: a text query for the assistant. */
@@ -52,14 +54,14 @@ type MessageListener = (message: WearMessage) => void;
 type ConnectionListener = (connection: WearWatchConnection) => void;
 
 class WearBridge {
-  private java: any | null | undefined = undefined;
+  private java: any = undefined;
   // The Java-side listener proxy must stay referenced or it gets GC'd.
   private retainedListenerProxy: any = null;
   private readonly messageListeners = new Set<MessageListener>();
   private readonly connectionListeners = new Set<ConnectionListener>();
   private lastConnection: WearWatchConnection = { reachable: false, watchName: "" };
 
-  private getJava(): any | null {
+  private getJava(): any {
     if (this.java !== undefined) return this.java;
     if (!global.isAndroid) {
       this.java = null;

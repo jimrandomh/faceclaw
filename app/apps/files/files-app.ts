@@ -2,6 +2,7 @@ import { readTextFile, type DirectoryEntry } from "../../native/file-access";
 import { isFontFile } from "../../native/font-files";
 import { installFontFile, isFontInstalled } from "../../graphics/installed-fonts";
 import { isDecodableImageFile } from "../../native/image-files";
+import { isPlayableVideoFile } from "../../native/video-player";
 import { readEvenHubPackageManifest } from "../evenhub/installed-apps";
 import { EvenHubPermissionDialogLayer } from "../evenhub/permission-dialog";
 import { FileBrowserLayer } from "./file-browser";
@@ -35,17 +36,21 @@ export type FilesAppOptions = InProcessAppOptions & {
   installEhpkApp: (path: string) => Promise<void> | void;
   /** Open a font file's previewer as its own shell window. */
   openFontWindow: (title: string, path: string) => void;
+  /** Open a video file's player (settings panel first) as its own shell window. */
+  openVideoWindow: (title: string, path: string) => void;
 };
 
 /**
  * The Files app's launcher-opened window: a file browser over Places
  * (bookmarks and storage roots). Picking any file opens an info dialog with
- * metadata plus, for viewable types (text, images), the open actions.
+ * metadata plus, for viewable types (text, images, video), the open actions.
  */
 export function createFilesAppWindow(options: FilesAppOptions): InProcessWindow {
   let created: InProcessWindow | null = null;
   const browser = new FileBrowserLayer({
-    isSupportedFile: (name) => TEXT_FILE.test(name) || isFontFile(name) || EHPK_FILE.test(name) || (!global.isIOS && isDecodableImageFile(name)),
+    isSupportedFile: (name) =>
+      TEXT_FILE.test(name) || isFontFile(name) || EHPK_FILE.test(name) ||
+      (!global.isIOS && (isDecodableImageFile(name) || isPlayableVideoFile(name))),
     // The browser handles double-click itself (up a level), so it is not
     // wrapped in YieldAtRootLayer; it yields explicitly from the top level.
     onLeave: () => shell.yieldFocusToSidebar(),
@@ -226,6 +231,17 @@ function fileOpenActions(entry: DirectoryEntry, options: FilesAppOptions): FileI
         onSelect: (ctx) => {
           ctx.stack.pop();
           options.openImageWindow(entry.name, entry.path);
+        },
+      },
+    ];
+  }
+  if (isPlayableVideoFile(entry.name)) {
+    return [
+      {
+        label: "Play video",
+        onSelect: (ctx) => {
+          ctx.stack.pop();
+          options.openVideoWindow(entry.name, entry.path);
         },
       },
     ];

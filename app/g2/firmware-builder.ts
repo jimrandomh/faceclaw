@@ -187,7 +187,7 @@ function persistEvenHubFonts(base: ArrayBuffer): void {
         writeError = error;
       },
     );
-    if (writeError) throw writeError;
+    if (writeError) throw writeError instanceof Error ? writeError : new Error(String(writeError));
     // A degraded EvenHubFont (built before this extraction existed) is cached
     // per JS context; drop it so the next render picks up the real fonts
     // without an app restart.

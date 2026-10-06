@@ -1,6 +1,7 @@
-import { menuAnimationEnabled } from "./menu-animation-pref";
+import { menuAnimationDurationMs } from "./menu-animation-pref";
 
-export const MENU_HIGHLIGHT_DURATION_MS = 240;
+/** At Normal menu animation speed; menuAnimationDurationMs scales it to the setting. */
+export const MENU_HIGHLIGHT_DURATION_MS = 120;
 export type MenuHighlightAnimation = { dx: number; dy: number; startedAt: number; token: number; durationMs: number };
 
 let nextToken = 1;
@@ -32,9 +33,10 @@ export class MenuHighlightMotion {
         fromX += this.animation.dx * remaining;
         fromY += this.animation.dy * remaining;
       }
-      const eligible = menuAnimationEnabled() && previous && previous.index !== index && this.fromIndex === previous.index &&
+      const durationMs = menuAnimationDurationMs(MENU_HIGHLIGHT_DURATION_MS);
+      const eligible = durationMs > 0 && previous && previous.index !== index && this.fromIndex === previous.index &&
         (previous.scroll === scroll || scrolling) && previous.width === width && previous.height === height;
-      this.animation = eligible ? { dx: Math.round(fromX - x), dy: Math.round(fromY - y), startedAt: now, token: nextAnimationToken(), durationMs: MENU_HIGHLIGHT_DURATION_MS } : undefined;
+      this.animation = eligible ? { dx: Math.round(fromX - x), dy: Math.round(fromY - y), startedAt: now, token: nextAnimationToken(), durationMs } : undefined;
       this.fromIndex = null;
       this.previous = { index, scroll, x, y, width, height };
     }

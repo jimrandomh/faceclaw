@@ -64,6 +64,8 @@ export class ScreenTestLayer implements Layer {
       case "double-click":
         ctx.stack.pop();
         return;
+      default:
+        return;
     }
   }
 }

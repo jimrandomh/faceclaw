@@ -22,11 +22,13 @@ import { FACECLAW_VERSION } from "../../version";
 
 declare const android: any;
 declare const com: any;
+declare const java: any;
 
 export type EvenHubWebView = {
   evaluateJs: (js: string) => void;
   destroy: () => void;
-  showOnPhone: () => void;
+  /** Show the app's phone UI; `onClose` runs when its top bar's close button is tapped. */
+  showOnPhone: (onClose: () => void) => void;
   hideOnPhone: () => void;
   /** The native android.webkit.WebView, for the host. */
   native: unknown;
@@ -96,16 +98,7 @@ export function createEvenHubWebView(session: EvenHubSession): EvenHubWebView {
   webView.addJavascriptInterface(new com.faceclaw.app.FaceclawEvenHubJsBridge(listener), "__faceclawEvenHub");
 
   // Surface the app's console in logcat (tag FaceclawEvenHubConsole).
-  const ChromeClient = (android.webkit.WebChromeClient as any).extend({
-    onConsoleMessage: (message: any): boolean => {
-      android.util.Log.i(
-        "FaceclawEvenHubConsole",
-        `${message.message()} (${message.sourceId()}:${message.lineNumber()})`,
-      );
-      return true;
-    },
-  });
-  webView.setWebChromeClient(new ChromeClient());
+  webView.setWebChromeClient(new com.faceclaw.app.FaceclawEvenHubChromeClient());
 
   const nativeHost = com.faceclaw.app.FaceclawEvenHubWebViewHost.getInstance();
   nativeHost.attach(activity, webView);
@@ -127,8 +120,13 @@ export function createEvenHubWebView(session: EvenHubSession): EvenHubWebView {
         console.warn(`evenhub webview destroy failed: ${error}`);
       }
     },
-    showOnPhone: () =>
-      nativeHost.showOnPhone(Application.android?.foregroundActivity ?? Application.android?.startActivity ?? null, webView),
+    showOnPhone: (onClose: () => void) =>
+      nativeHost.showOnPhone(
+        Application.android?.foregroundActivity ?? Application.android?.startActivity ?? null,
+        webView,
+        session.manifest.name,
+        new java.lang.Runnable({ run: onClose }),
+      ),
     hideOnPhone: () => nativeHost.hideOnPhone(),
   };
 }

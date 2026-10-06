@@ -4,13 +4,13 @@ import kotlin.test.*
 
 class FrameDisplayListTest {
     // Golden records emitted by display-list-authoring.test.cjs.
-    private val menu = "077e0000000300020002000200022a00000096000000010002000200ffffffff0200080000ff24017e30020000000001812c8001812c1611010017328001812c16103001812c3023414031ff24017c30020000000001812c8001812c1611010017328001812c16103001812c302341403102000200010001030400000000000000001f"
+    private val menu = "077f0000000300020002000200022a00000096000000010002000200ffffffff0200080000ff24017e30020000000001812c8001812c1611010017328001812c16103001812c3023414031ff24017c30020000000001812c8001812c1611010017328001812c16103001812c30234140310200020001000103100400000000000000001f"
     private val multi = "0744000000030002000400010002000000000000000002000200010000ff010001006003000400000000000000001f0200000100000001000100020002feffffff7f00010001007f00"
-    private val scroll = "078a000000030002000400020000070000009600000001000200040011223344556677880200020000000000ff250100300102300180f0800180f0161101001732800180f01610300180f0302341403101001102000200010008000000ff280101300100300180f0800180f0161101001732800180f01610300180f030234140310100170100160400020000000103"
+    private val scroll = "078b000000030002000400020000070000009600000001000200040011223344556677880200020000000000ff250100300102300180f0800180f0161101001732800180f01610300180f0302341403101001102000200010008000000ff280101300100300180f0800180f0161101001732800180f01610300180f03023414031010017010016040002000000010310"
     // Clipped clear, clipped rounded rect, and replayed glyph + icon records with
     // placeholder atlas ids 0xbeef / 0xcafebabe, plus what they paint over a
     // nibble-1 16x8 screen (display-list-authoring.test.cjs).
-    private val replay = "0780000000020003000800040000070000006400000000000300890000000000000600040002880000010001000200020000000400030000000510a00000000000000600040000ff2502000080c002000000000180c8800180c8161101001732800180c81610300180c830234031020000efbe4100000000000000ff01bebafeca04000100"
+    private val replay = "078100000002000300080004000007000000640000000000030089000000000000060004000288000001000100020002000000040003000000051010a00000000000000600040000ff2502000080c002000000000180c8800180c8161101001732800180c81610300180c830234031020000efbe4100000000000000ff01bebafeca04000100"
     private val replayPixels = "11111111111111111111111111111111111111111111111111fff28f111111111125522211111111112552221111111111222222111111111111111111111111"
     private fun hex(s: String) = s.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
     private fun read(bytes: ByteArray, now: Long = 1150): FrameDisplayList {
@@ -43,7 +43,8 @@ class FrameDisplayListTest {
     }
 
     @Test fun animatedCopySourcesRebindOnPresentAndDestinationsTranslate() {
-        // Emitted by menu-scroll-animation.test.cjs: a menu strip scrolling from row 0 to row 2.
+        // Recorded from a since-removed menu-scroll-animation.test.cjs case (240ms slides):
+        // a menu strip scrolling from row 0 to row 2.
         val list = read(hex(scroll)).translated(10, 10)
         fun copy(elapsed: Long): List<Int> {
             val call = DrawReader(list.calls(intArrayOf(5), 1150).first())
@@ -98,7 +99,7 @@ class FrameDisplayListTest {
         // One opaque 1x1 shell layer, with one generic list after its pixels.
         val layer = DrawProtocol.word(1) + DrawProtocol.word(1) + DrawProtocol.word(0) + DrawProtocol.word(0) +
             DrawProtocol.word(1) + DrawProtocol.word(1) + DrawProtocol.word(256) + DrawProtocol.word(1) +
-            DrawProtocol.word(0) + byteArrayOf(32) + hex(multi)
+            DrawProtocol.word(0) + byteArrayOf(32) + hex(multi) + DrawProtocol.word(0)
         val shell = ShellScene.decode(ArrayByteReader(layer))
         assertEquals(2, shell.retainedResources.size)
         assertEquals(240, shell.preview(ByteArray(64) { 32 }, 8, 8)[21].toInt() and 255)
@@ -139,6 +140,28 @@ class FrameDisplayListTest {
         DisplayListRenderer(resources).execute(DrawProtocol.sequence(calls), target)
         val nibbles = (0 until 128).joinToString("") { target.get(it % 16, it / 16).toString(16) }
         assertEquals(replayPixels, nibbles)
+    }
+
+    // A window-frame rounded rect (display-list-authoring.test.cjs): no fill, a
+    // border of 3, black outside the curve (revision 36), clipped short of its
+    // bottom row, over a nibble-9 12x8 screen.
+    private val frame = "072b00000002000100080006000000000000000000000000010088000000000000080005000000080006000300000300"
+    private val framePixels = "999999999999990333333099993399993399993999999399993999999399993399993399999999999999999999999999"
+
+    @Test fun roundedRectOutsideColorBridgesToTheTrailingByteAndPaintsLikeTheSoftwareRenderer() {
+        val call = read(hex(frame)).calls(IntArray(0), 0).single()
+        val plain = DrawProtocol.roundedRect(DrawValue.Integer(2), DrawValue.Integer(1), 8, 6, 3, 0, 3,
+            depth = 0, clip = DrawClip(2, 1, 8, 5))
+        assertContentEquals(plain + byteArrayOf(0), call)
+        val target = DisplayListRenderer.Target(ByteArray(48) { 0x99.toByte() }, 12, 8)
+        DisplayListRenderer(emptyMap()).execute(DrawProtocol.sequence(listOf(call)), target)
+        assertEquals(framePixels, (0 until 96).joinToString("") { target.get(it % 12, it / 12).toString(16) })
+        // Without the trailing byte the corners keep what was there; a color past 15 is rejected.
+        val corners = DisplayListRenderer.Target(ByteArray(48) { 0x99.toByte() }, 12, 8)
+        DisplayListRenderer(emptyMap()).execute(DrawProtocol.sequence(listOf(plain)), corners)
+        assertEquals(9, corners.get(2, 1)); assertEquals(3, corners.get(5, 1))
+        assertFails { DisplayListRenderer(emptyMap()).execute(DrawProtocol.sequence(listOf(plain + byteArrayOf(16))), corners) }
+        assertFails { DrawProtocol.roundedRect(DrawValue.Integer(0), DrawValue.Integer(0), 8, 6, 3, 0, 3, outside = 16) }
     }
 
     @Test fun replayWithAnUnknownRecordDrawsNothing() {

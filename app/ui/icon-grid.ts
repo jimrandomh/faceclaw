@@ -24,6 +24,10 @@ const DEFAULT_LABEL_VALUE = 210;
 const WIDE_TEXT_X = 20;
 /** The scrollbar's columns at the right edge, which animations leave alone. */
 const SCROLLBAR_GUTTER = 5;
+/** How far a row-mode highlight band is inset from the box's left and right edges. */
+export const ICON_GRID_BAND_INSET_X = 4;
+/** How far a grid row's highlight (band or cell) is inset from the row's top and bottom. */
+export const ICON_GRID_HIGHLIGHT_INSET_Y = 2;
 
 export type IconGridCell = {
   label: string;
@@ -271,11 +275,13 @@ export class IconGrid<T> {
       return { key: row.firstIndex, x: box.x + WIDE_TEXT_X - 6, y: textY - 2,
         width: box.width - 2 * WIDE_TEXT_X + 12, height: font.lineHeight + 4, radius: 4 };
     }
+    const insetY = ICON_GRID_HIGHLIGHT_INSET_Y;
     if (this.mode === "item" || (!focused && shell.lastInputWasWatch())) {
-      return { key: row.firstIndex + this.selectedCol, x: Math.round(box.x + this.selectedCol * colW) + 6, y: y + 2,
-        width: Math.round(colW) - 12, height: rowH - 4, radius: 6 };
+      return { key: row.firstIndex + this.selectedCol, x: Math.round(box.x + this.selectedCol * colW) + 6, y: y + insetY,
+        width: Math.round(colW) - 12, height: rowH - 2 * insetY, radius: 6 };
     }
-    return { key: -1 - this.selectedRow, x: box.x + 4, y: y + 2, width: box.width - 8, height: rowH - 4, radius: 6 };
+    return { key: -1 - this.selectedRow, x: box.x + ICON_GRID_BAND_INSET_X, y: y + insetY,
+      width: box.width - 2 * ICON_GRID_BAND_INSET_X, height: rowH - 2 * insetY, radius: 6 };
   }
 
   /**

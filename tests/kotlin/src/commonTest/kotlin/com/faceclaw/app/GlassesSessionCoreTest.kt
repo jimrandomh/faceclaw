@@ -10,6 +10,7 @@ import kotlin.test.assertTrue
 
 private const val RIGHT = "AA:00:00:00:00:01"
 private const val LEFT = "AA:00:00:00:00:02"
+private const val STOCK_VERSION = "2.3.0.24"
 
 /** The test platform with a clock the tests can jump forward (the real waits keep real time). */
 private class ClockPlatform(private val base: ProtocolPlatform) : ProtocolPlatform by base {
@@ -62,6 +63,14 @@ private class FakeLink(private val platform: ProtocolPlatform) : SessionLink {
     val connected = HashSet<String>()
     val disconnected = ArrayList<String>()
     @Volatile var closed = false
+    /** An address whose connection attempts fail, like an arm that isn't advertising. */
+    @Volatile var unreachable: String? = null
+    /**
+     * The firmware-extension string settings READ acks report alongside [STOCK_VERSION] on both
+     * arms ("" is stock firmware, which omits the field), or null for an ack without firmware info.
+     */
+    @Volatile var firmwareExtension: String? = null
+    @Volatile var connects = 0
     var seq = 0
 
     val writes: List<Write>
@@ -71,9 +80,13 @@ private class FakeLink(private val platform: ProtocolPlatform) : SessionLink {
     fun cfwMessages(): List<ByteArray> = writes.filter { it.sid == CfwTransport.SID && it.kind == "image" }.mapNotNull { it.message }
 
     override fun connect(address: String, timeoutMs: Int): Boolean {
-        connected.add(address)
+        connects++
+        if (address == unreachable) return false
+        lock.withLock { connected.add(address) }
         return true
     }
+
+    override fun isConnected(address: String): Boolean = lock.withLock { address in connected }
 
     override fun requestHighPriority(address: String) {}
 
@@ -100,23 +113,32 @@ private class FakeLink(private val platform: ProtocolPlatform) : SessionLink {
             if (sid == CfwTransport.SID) {
                 for (lens in 1..2) core.onNotification(address, BleProtocol.NOTIFY_CHAR_UUID, cfwAck(magic, lens, inFlight.message.size, inFlight.cfwChecksum))
             } else {
-                core.onNotification(address, BleProtocol.NOTIFY_CHAR_UUID, ackFrame(sid, magic, pb))
+                core.onNotification(address, BleProtocol.NOTIFY_CHAR_UUID, ackFrame(sid, magic, inFlight.kind))
             }
         }
         return true
     }
 
-    private fun ackFrame(sid: Int, magic: Int, request: ByteArray): ByteArray {
+    private fun ackFrame(sid: Int, magic: Int, kind: String?): ByteArray {
+        val extension = firmwareExtension
         val body = if (sid == BleProtocol.SID_SECURITY_AUTH)
             BleProtocol.encodeVarintField(1, 4) + BleProtocol.encodeVarintField(2, magic) + byteArrayOf(0x1a, 0x00)
+        else if (kind == "battery" && extension != null)
+            BleProtocol.encodeVarintField(1, 1) + BleProtocol.encodeVarintField(2, magic) +
+                BleProtocol.encodeBytesField(4,
+                    BleProtocol.encodeBytesField(5, STOCK_VERSION.encodeToByteArray()) +
+                        BleProtocol.encodeBytesField(6, STOCK_VERSION.encodeToByteArray())) +
+                (if (extension.isEmpty()) ByteArray(0) else BleProtocol.encodeBytesField(100, extension.encodeToByteArray()))
         else
             BleProtocol.encodeVarintField(1, 1) + BleProtocol.encodeVarintField(2, magic)
         return BleProtocol.framePb(body, sid, 0x00, seq++)[0]
     }
 
     override fun disconnect(address: String) {
-        disconnected.add(address)
-        connected.remove(address)
+        lock.withLock {
+            disconnected.add(address)
+            connected.remove(address)
+        }
     }
 
     override fun close() {
@@ -196,12 +218,15 @@ private class FakeHost(private val platform: ProtocolPlatform) : SessionHost {
 
 private class FakeListener : FaceclawBleCommunicatorListener {
     val phases = ArrayList<String>()
+    @Volatile var lastStatus = ""
     val events = ArrayList<String>()
     val finished = ArrayList<String>()
     val batteries = ArrayList<String>()
+    val firmware = ArrayList<String>()
 
     override fun onStateChange(phase: String?, status: String?) {
         phases.add(phase ?: "")
+        lastStatus = status ?: ""
     }
 
     override fun onRingEvent(kind: String?, containerName: String?, eventType: Int, eventSource: Int, systemExitReasonCode: Int, frameId: Int, ringTick: Long, ringType: Int, ringAux: Int, ringSpeed: Int) {
@@ -226,7 +251,9 @@ private class FakeListener : FaceclawBleCommunicatorListener {
         finished.add("$frameId:$outcome")
     }
 
-    override fun onFirmwareInfo(leftVersion: String?, rightVersion: String?, extension: String?) {}
+    override fun onFirmwareInfo(leftVersion: String?, rightVersion: String?, extension: String?) {
+        firmware.add("$leftVersion|$rightVersion|$extension")
+    }
 }
 
 private class Session {
@@ -453,5 +480,215 @@ class GlassesSessionCoreTest {
         assertEquals(1, message.cfwRetries)
         assertContentEquals(first.message, second.message)
         s.core.disconnect()
+    }
+
+    @Test
+    fun aCfwAckSlowerThanHalfASecondIsNotReplayed() {
+        val s = Session()
+        s.link.muted.add("image")
+        s.startAndAwaitLayout()
+        s.core.configureCompositorScreen(64, 32)
+        s.core.configureSurface("s", 0, 0, 64, 32, 0, SurfaceCompositor.TRANSPARENCY_OPAQUE)
+        try {
+            s.submitFrame(3, 0x20, 1)
+            assertTrue(waitUntil(5_000) { s.link.cfwMessages().size == 1 })
+            // Well past the old 500 ms deadline, but inside the 3 s ack window.
+            s.platform.offsetMs += 1_500
+            sleepMs(400)
+            assertFalse(s.host.hasLog("CFW recovery"), s.host.logs().takeLast(10).toString())
+            assertEquals(1, s.link.cfwMessages().size)
+            // The late ack still completes the frame.
+            val first = s.link.writes.first { it.sid == CfwTransport.SID && it.kind == "image" }
+            val message = assertNotNull(s.core.monitor.withLock { s.core.inFlightMessages.firstOrNull { it.magic == first.magic } })
+            for (lens in 1..2) {
+                s.core.onNotification(LEFT, BleProtocol.NOTIFY_CHAR_UUID, cfwAck(first.magic, lens, message.message.size, message.cfwChecksum))
+            }
+            assertTrue(waitUntil(3_000) { s.displayedMatchesDesired() })
+        } finally {
+            s.core.close()
+        }
+    }
+
+    @Test
+    fun cfwAckDeadlinesFollowTheirOwnArmsWritesAndAcks() {
+        val core = Session().core
+        fun cfw(magic: Int, leftArm: Boolean) = OutboundMessage(
+            "image", "m$magic", CfwTransport.SID, 0, magic, byteArrayOf(1), CfwMessageWindow.ACK_STALL_MS, 0, leftArm)
+        val left = cfw(1, true)
+        val right = cfw(2, false)
+        core.monitor.withLock {
+            for (message in listOf(left, right)) {
+                message.sentAtMs = 1_000
+                message.ackDeadlineAtMs = 4_000
+                core.inFlightMessages.addLast(message)
+            }
+            core.lastArmCfwAckAtMs[0] = 2_000
+            core.lastArmWriteAtMs[1] = 5_000
+            core.refreshCfwAckDeadlinesLocked()
+        }
+        assertEquals(5_000L, left.ackDeadlineAtMs)
+        assertEquals(5_500L, right.ackDeadlineAtMs)
+        // Any CFW ack from an arm counts as that arm's progress, matched or not.
+        val before = core.now()
+        core.onNotification(LEFT, BleProtocol.NOTIFY_CHAR_UUID, cfwAck(77, 1, 1, 0))
+        assertTrue(core.monitor.withLock { core.lastArmCfwAckAtMs[0] } >= before)
+        assertEquals(0L, core.monitor.withLock { core.lastArmCfwAckAtMs[1] })
+    }
+
+    @Test
+    fun reconnectBackoffGrowsAndRestartsAfterAStableSession() {
+        val core = Session().core
+        core.monitor.withLock {
+            assertEquals(2_000L, core.scheduleReconnectLocked(false))
+            assertEquals(6_000L, core.scheduleReconnectLocked(false))
+            assertEquals(10_000L, core.scheduleReconnectLocked(false))
+            assertEquals(10_000L, core.scheduleReconnectLocked(false))
+            // A session that dies soon after coming up keeps backing off...
+            core.lastSessionReadyAtMs = core.now() - 1_000
+            assertEquals(10_000L, core.scheduleReconnectLocked(true))
+            // ...one that stayed up starts the schedule over.
+            core.lastSessionReadyAtMs = core.now() - ConnectionOptions.STABLE_SESSION_MS
+            assertEquals(2_000L, core.scheduleReconnectLocked(true))
+            assertEquals(6_000L, core.scheduleReconnectLocked(false))
+        }
+    }
+
+    @Test
+    fun unreachableArmIsNamedAndRetriedWithBackoff() {
+        val s = Session()
+        s.link.unreachable = LEFT
+        fun retryDelayMs() = s.core.monitor.withLock { s.core.reconnectAfterMs } - s.platform.elapsedRealtimeMs()
+        fun attempts() = s.core.monitor.withLock { s.core.consecutiveReconnects }
+        try {
+            assertTrue(s.core.start())
+            assertTrue(waitUntil(5_000) { attempts() == 1 }, s.host.logs().takeLast(10).toString())
+            assertTrue(s.host.hasLog("Transport failure: left arm not found"))
+            assertTrue(s.listener.lastStatus.startsWith("Can't reach the left arm"), s.listener.lastStatus)
+            assertTrue(retryDelayMs() in 1_000L..2_000L)
+            // Both arms are torn down, so the right arm doesn't sit connected on its own.
+            assertTrue(s.link.disconnected.containsAll(listOf(RIGHT, LEFT)))
+
+            s.platform.offsetMs += 2_000
+            assertTrue(waitUntil(5_000) { attempts() == 2 })
+            assertTrue(retryDelayMs() in 5_000L..6_000L)
+            s.platform.offsetMs += 6_000
+            assertTrue(waitUntil(5_000) { attempts() == 3 })
+            assertTrue(retryDelayMs() in 9_000L..10_000L)
+
+            // Once the arm answers again, the session comes up.
+            s.link.unreachable = null
+            s.platform.offsetMs += 10_000
+            assertTrue(waitUntil(5_000) { s.layoutCreated() }, s.host.logs().takeLast(10).toString())
+        } finally {
+            s.core.close()
+        }
+    }
+
+    @Test
+    fun stockFirmwareHaltsTheSessionBeforeAnyCustomFirmwareTraffic() {
+        val s = Session()
+        s.core.setRequiredFirmwareRevision(36)
+        s.link.firmwareExtension = ""
+        try {
+            assertTrue(s.core.start())
+            assertTrue(waitUntil(5_000) { s.listener.phases.contains("incompatible-firmware") }, s.host.logs().takeLast(10).toString())
+            assertEquals(listOf("$STOCK_VERSION|$STOCK_VERSION|"), s.listener.firmware)
+            assertTrue(s.host.hasLog("incompatible firmware"), s.host.logs().takeLast(10).toString())
+            // The settings reply precedes the layout, so stock never sees a private-stream message.
+            assertEquals(0, s.link.writes.count { it.kind == "create-layout" })
+            assertEquals(0, s.link.writes.count { it.sid == CfwTransport.SID })
+            assertTrue(s.link.disconnected.containsAll(listOf(RIGHT, LEFT)))
+            assertFalse(s.core.isSessionReady())
+            // Parked rather than retrying: no redial even well past the backoff schedule.
+            val connects = s.link.connects
+            s.platform.offsetMs += 60_000
+            s.core.interruptibleSleep.interrupt()
+            sleepMs(300)
+            assertEquals(connects, s.link.connects)
+            assertEquals("incompatible-firmware", s.listener.phases.last())
+            assertFalse(s.listener.phases.contains("retrying"))
+        } finally {
+            s.core.close()
+        }
+    }
+
+    @Test
+    fun anOlderFaceclawRevisionAlsoHalts() {
+        val s = Session()
+        s.core.setRequiredFirmwareRevision(36)
+        s.link.firmwareExtension = "Faceclaw/35"
+        try {
+            assertTrue(s.core.start())
+            assertTrue(waitUntil(5_000) { s.listener.phases.contains("incompatible-firmware") }, s.host.logs().takeLast(10).toString())
+            assertEquals(0, s.link.writes.count { it.kind == "create-layout" })
+        } finally {
+            s.core.close()
+        }
+    }
+
+    @Test
+    fun compatibleFirmwareIsCheckedAgainOnEverySession() {
+        val s = Session()
+        s.core.setRequiredFirmwareRevision(36)
+        s.link.firmwareExtension = "Faceclaw/36"
+        try {
+            s.startAndAwaitLayout()
+            assertTrue(s.core.monitor.withLock { s.core.customFirmwareDetected })
+            assertFalse(s.listener.phases.contains("incompatible-firmware"))
+            // The glasses come back on stock firmware (reflashed while the link was down):
+            // the new session's own settings query catches it before the layout.
+            s.link.firmwareExtension = ""
+            s.core.handleTransportFailure("test drop")
+            s.platform.offsetMs += 10_000
+            s.core.interruptibleSleep.interrupt()
+            assertTrue(waitUntil(5_000) { s.listener.phases.contains("incompatible-firmware") }, s.host.logs().takeLast(10).toString())
+            assertEquals(2, s.link.writes.count { it.kind == "battery" })
+            assertEquals(1, s.link.writes.count { it.kind == "enter-evenhub" })
+            assertEquals(0, s.link.writes.count { it.kind == "create-layout" })
+        } finally {
+            s.core.close()
+        }
+    }
+
+    @Test
+    fun customFirmwareEntersEvenHubOnEverySessionInsteadOfCreatingTheLayout() {
+        val s = Session()
+        s.core.setRequiredFirmwareRevision(37)
+        s.link.firmwareExtension = "Faceclaw/37"
+        try {
+            s.startAndAwaitLayout()
+            fun enters() = s.link.writes.filter { it.kind == "enter-evenhub" }
+            assertEquals(1, enters().size)
+            assertEquals(CfwTransport.SID, enters()[0].sid)
+            assertContentEquals(byteArrayOf(CFW_MSG_ENTER_EVENHUB.toByte()), enters()[0].message)
+            // The settings reply that identifies the firmware comes first.
+            assertTrue(s.link.writes.indexOfFirst { it.kind == "battery" } < s.link.writes.indexOf(enters()[0]))
+            // A reconnect may find the previous session's page still up. Mode 31
+            // ACKs in that state, so the session is entered the same way again.
+            s.core.handleTransportFailure("test drop")
+            assertTrue(waitUntil(5_000) { !s.layoutCreated() })
+            s.platform.offsetMs += 10_000
+            s.core.interruptibleSleep.interrupt()
+            assertTrue(waitUntil(5_000) { s.layoutCreated() && enters().size == 2 }, s.host.logs().takeLast(10).toString())
+            assertEquals(0, s.link.writes.count { it.kind == "create-layout" })
+        } finally {
+            s.core.close()
+        }
+    }
+
+    @Test
+    fun firmwareCompatibilityFollowsTheRevisionString() {
+        fun info(extension: String) = BleProtocol.FirmwareInfo(STOCK_VERSION, STOCK_VERSION, extension)
+        assertEquals(-1, info("").faceclawRevision())
+        assertEquals(-1, info("EVENCFW/22 img640").faceclawRevision())
+        assertEquals(-1, info("Faceclaw/abc").faceclawRevision())
+        assertEquals(-1, info("OtherCFW/36").faceclawRevision())
+        assertEquals(36, info(" Faceclaw/36 ").faceclawRevision())
+        assertFalse(info("").isCompatible(36))
+        assertFalse(info("Faceclaw/35").isCompatible(36))
+        assertTrue(info("Faceclaw/36").isCompatible(36))
+        assertTrue(info("Faceclaw/40").isCompatible(36))
+        assertTrue(info("Faceclaw/1").isCompatible(0))
+        assertFalse(info("EVENCFW/22").isCompatible(0))
     }
 }

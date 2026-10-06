@@ -14,8 +14,9 @@ export type PersistedOpenApps = {
 
 const STATE_VERSION = 1;
 const FILE_NAME = "open-apps.json";
-// Coalesces bursts (restore, sidebar scrolling) into one write; short enough
-// that a build-reinstall kill right after a change rarely loses it.
+// Coalesces bursts (restore, sidebar scrolling) into one write once they
+// settle; short enough that a build-reinstall kill right after a change
+// rarely loses it.
 const WRITE_DELAY_MS = 1000;
 
 function openAppsFilePath(): string {
@@ -50,15 +51,18 @@ let pendingState: PersistedOpenApps | null = null;
 /** Save the open-app state (debounced; the latest state wins). */
 export function savePersistedOpenApps(state: PersistedOpenApps): void {
   pendingState = state;
-  if (writeTimer !== null) return;
+  // Restarted on every change: scrolling through the switcher changes the
+  // foreground app a few times a second, and each synchronous write costs
+  // several milliseconds of main thread.
+  if (writeTimer !== null) clearTimeout(writeTimer);
   writeTimer = setTimeout(() => {
     writeTimer = null;
-    const state = pendingState;
+    const pending = pendingState;
     pendingState = null;
-    if (!state) return;
+    if (!pending) return;
     try {
       File.fromPath(openAppsFilePath()).writeTextSync(
-        JSON.stringify({ version: STATE_VERSION, ...state }),
+        JSON.stringify({ version: STATE_VERSION, ...pending }),
       );
     } catch (error) {
       console.warn("open-apps state write failed", error);

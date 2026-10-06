@@ -63,7 +63,8 @@ function loadIconGrid({ lastInputWasWatch = false } = {}) {
   const menu = load('app/ui/menu.ts', {
     ...common, './layers': {},
     './menu-animation-pref': build('ui/menu-animation-pref'),
-    '../native/settings-store': { getBooleanSetting: (_key, fallback) => fallback },
+    './animation-speed': build('ui/animation-speed'),
+    '../native/settings-store': { getStringSetting: (_key, fallback) => fallback },
   });
   const grid = load('app/ui/icon-grid.ts', {
     ...common,
@@ -121,6 +122,20 @@ const animation = (image) => image.draws.find((draw) => draw.presentation?.displ
 function shown(image, at) {
   return withClock(at, () => Array.from(image.withDrawsBaked().pixels, (v) => Math.min(15, (v + 8) >> 4)));
 }
+
+test('a box topped at the band inset less the highlight inset pads the first row band evenly', () => {
+  // The launcher's root grid (launcher-app.ts ROOT_GRID_TOP) relies on this.
+  const { grid } = makeGrid();
+  const { ICON_GRID_BAND_INSET_X: insetX, ICON_GRID_HIGHLIGHT_INSET_Y: insetY } = loadIconGrid();
+  const image = paint(grid, 1000, { x: 0, y: insetX - insetY, width: 500, height: 190 });
+  const stroke = build('ui/menu-core').MENU_HIGHLIGHT_STROKE;
+  let left = 500, right = -1, top = 200;
+  image.pixels.forEach((v, i) => {
+    if (v !== stroke) return;
+    left = Math.min(left, i % 500); right = Math.max(right, i % 500); top = Math.min(top, (i / 500) | 0);
+  });
+  assert.deepEqual([top, left, 500 - 1 - right], [insetX, insetX, insetX]);
+});
 
 test('rows keep their content height instead of stretching, and the next row peeks clipped', () => {
   assert.equal(metrics.iconGridMinRowHeight({ lineHeight: LINE_HEIGHT }, 44, 2), ROW_H);

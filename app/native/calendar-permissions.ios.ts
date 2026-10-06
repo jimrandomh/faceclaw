@@ -24,7 +24,7 @@ async function requestPermission(): Promise<boolean> {
       okButtonText: "Open Settings",
       cancelButtonText: "Cancel",
     });
-    if (open) await Utils.openUrl("app-settings:");
+    if (open) Utils.openUrl("app-settings:");
     return false;
   }
   if (status === "restricted") {

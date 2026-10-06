@@ -400,6 +400,9 @@ export class WorkerAppHost {
           }
           break;
         }
+        case "worker-stopped":
+          // Only meaningful as the reply to shutdown(), handled above.
+          break;
       }
     };
     options.worker.onerror = (error) => {

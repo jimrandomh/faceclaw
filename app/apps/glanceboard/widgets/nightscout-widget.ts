@@ -1,5 +1,4 @@
 import { GrayImage } from "../../../graphics/image";
-import { getDefaultLargeFont, getDefaultSmallFont } from "../../../graphics/ui-fonts";
 import { truncateText } from "../../../graphics/textwrap";
 import { nightscoutBridge, type NightscoutState } from "../../../native/nightscout-bridge";
 import { isNightscoutSettingsConfigured, loadNightscoutThresholds } from "../../../ui/dashboard-settings";
@@ -13,6 +12,7 @@ import {
   formatDelta,
   isNightscoutPointStale,
 } from "../../nightscout/nightscout";
+import { glanceFont } from "../glance-font";
 import { type GlanceWidget } from "../widget";
 
 const PAD = 8;
@@ -48,8 +48,8 @@ export class NightscoutWidget implements GlanceWidget {
   }
 
   paint(image: GrayImage): void {
-    const small = getDefaultSmallFont();
-    const large = getDefaultLargeFont();
+    const small = glanceFont.small();
+    const large = glanceFont.large();
     const state = this.state;
     const nowMs = Date.now();
     const step = lineStep(small);

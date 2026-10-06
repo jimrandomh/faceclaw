@@ -113,7 +113,7 @@ class MessageBuilder {
             0,
             streamId,
             payload,
-            CfwMessageWindow.ACK_TIMEOUT_MS,
+            CfwMessageWindow.ACK_STALL_MS,
             tileIndex,
             leftArm,
         )
@@ -200,6 +200,20 @@ class MessageBuilder {
             ACK_TIMEOUT_MS,
             -1,
             false,
+        )
+    }
+
+    /**
+     * CFW mode 31: the firmware queues its own copy of [createLayout]'s page, and ACKs whether
+     * or not that page already existed. Stock firmware never ACKs a repeated create.
+     */
+    fun enterEvenHub(leftArm: Boolean): OutboundMessage {
+        return customMessage(
+            "enter-evenhub",
+            byteArrayOf(CFW_MSG_ENTER_EVENHUB.toByte()),
+            "enter EvenHub",
+            -1,
+            leftArm,
         )
     }
 

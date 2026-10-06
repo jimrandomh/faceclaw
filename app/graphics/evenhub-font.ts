@@ -95,6 +95,34 @@ function inMode15UncertainRange(cp: number): boolean {
   return false;
 }
 
+/**
+ * advanceOf's result per (codePoint, nextCodePoint) pair. Pretext's metrics
+ * are static data, so this never goes stale; it saves wrap/draw three
+ * getTextWidth calls (each splitting strings and walking the font chain) for
+ * every character of every repaint.
+ */
+const kernedAdvances = new Map<number, number>();
+
+function kernedAdvance(codePoint: number, nextCodePoint: number): number {
+  // Codepoints are < 0x110000, so this key is unique and exact as a double.
+  const key = codePoint * 0x110000 + nextCodePoint;
+  let advance = kernedAdvances.get(key);
+  if (advance === undefined) {
+    const a = String.fromCodePoint(codePoint);
+    if (!nextCodePoint) {
+      advance = getTextWidth(a);
+    } else {
+      const b = String.fromCodePoint(nextCodePoint);
+      advance = getTextWidth(a + b) - getTextWidth(b);
+    }
+    // Pairs are bounded by the text actually shown, but CJK-heavy apps could
+    // still accumulate a lot of them; start over rather than grow forever.
+    if (kernedAdvances.size >= 65536) kernedAdvances.clear();
+    kernedAdvances.set(key, advance);
+  }
+  return advance;
+}
+
 /** The 4bpp level an 8-bit value packs to (BmpUtil's GRAY_TO_NIBBLE). */
 const quantNibble = grayToNibble;
 
@@ -178,15 +206,15 @@ export class EvenHubFont implements FwTextFont {
    * exactly: width(a+b) - width(b) isolates a's kerned advance.
    */
   advanceOf(codePoint: number, nextCodePoint = 0): number {
-    const a = String.fromCodePoint(codePoint);
-    if (!nextCodePoint) return getTextWidth(a);
-    const b = String.fromCodePoint(nextCodePoint);
-    return getTextWidth(a + b) - getTextWidth(b);
+    return kernedAdvance(codePoint, nextCodePoint);
   }
 
   /** Single-line pixel width including kerning (pretext-exact). */
   measureLine(text: string): number {
-    return getTextWidth(text);
+    const cps = Array.from(text, (c) => c.codePointAt(0)!);
+    let width = 0;
+    for (let i = 0; i < cps.length; i++) width += kernedAdvance(cps[i]!, cps[i + 1] ?? 0);
+    return width;
   }
 
   /**

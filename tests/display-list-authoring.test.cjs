@@ -5,7 +5,7 @@ const { DrawOp, SCREEN, encodeDisplayList, readDisplayList, paintDisplayList } =
 const { GrayImage } = require('../.test-build/app/graphics/image.js');
 const { encodePresentation } = require('../.test-build/app/graphics/presentation-wire.js');
 // Also consumed by FrameDisplayListTest.kt: bridge bytes, not independently rebuilt native calls.
-const MENU = '077e0000000300020002000200022a00000096000000010002000200ffffffff0200080000ff24017e30020000000001812c8001812c1611010017328001812c16103001812c3023414031ff24017c30020000000001812c8001812c1611010017328001812c16103001812c302341403102000200010001030400000000000000001f';
+const MENU = '077f0000000300020002000200022a00000096000000010002000200ffffffff0200080000ff24017e30020000000001812c8001812c1611010017328001812c16103001812c3023414031ff24017c30020000000001812c8001812c1611010017328001812c16103001812c30234140310200020001000103100400000000000000001f';
 const MULTI = '0744000000030002000400010002000000000000000002000200010000ff010001006003000400000000000000001f0200000100000001000100020002feffffff7f00010001007f00';
 
 test('extended integers agree with firmware widths and sign extension', () => {
@@ -90,8 +90,32 @@ test('frame submission supports resource-free lists and plain PRESENT-relative t
 // the font and image ids it registers: a clipped clear, a clipped rounded rect,
 // and replayed glyph + icon draws clipped while sliding up. REPLAY_PIXELS is
 // what the list paints over a nibble-1 screen, 16x8 at 4 bits per pixel.
-const REPLAY = '0780000000020003000800040000070000006400000000000300890000000000000600040002880000010001000200020000000400030000000510a00000000000000600040000ff2502000080c002000000000180c8800180c8161101001732800180c81610300180c830234031020000efbe4100000000000000ff01bebafeca04000100';
+const REPLAY = '078100000002000300080004000007000000640000000000030089000000000000060004000288000001000100020002000000040003000000051010a00000000000000600040000ff2502000080c002000000000180c8800180c8161101001732800180c81610300180c830234031020000efbe4100000000000000ff01bebafeca04000100';
 const REPLAY_PIXELS = '11111111111111111111111111111111111111111111111111fff28f111111111125522211111111112552221111111111222222111111111111111111111111';
+
+// Also consumed by FrameDisplayListTest.kt: a window-frame rounded rect with no
+// fill, a border of 3 and black outside the curve (revision 36), clipped short
+// of its bottom row, and what it paints over a nibble-9 12x8 screen.
+const FRAME = '072b00000002000100080006000000000000000000000000010088000000000000080005000000080006000300000300';
+const FRAME_PIXELS = '999999999999990333333099993399993399993999999399993999999399993399993399999999999999999999999999';
+
+test('a rounded rect outside color encodes, decodes and paints over the corners', () => {
+  const placed = { x: 2, y: 1, width: 8, height: 6, depth: 0, displayList: { resources: [], calls: [
+    { op: DrawOp.ROUNDED_RECT, x: 0, y: 0, width: 8, height: 6, radius: 3, background: 0, border: 3, outside: 0, clip: { x: 0, y: 0, width: 8, height: 5 } },
+  ] } };
+  assert.equal(Buffer.from(encodeDisplayList(placed, 0)).toString('hex'), FRAME);
+  const output = new Uint8Array(12 * 8).fill(9 * 16);
+  paintDisplayList(output, output.slice(), 12, 8, placed, false, 0);
+  assert.equal(Array.from(output, (v) => (v >> 4).toString(16)).join(''), FRAME_PIXELS);
+  const [rect] = readDisplayList(Buffer.from(FRAME, 'hex'), 0, 0).placed.displayList.calls;
+  assert.equal(rect.outside, 0);
+  // Without one, the call decodes without it and leaves the corners alone.
+  const plain = { ...placed, displayList: { resources: [], calls: [{ ...placed.displayList.calls[0], outside: undefined }] } };
+  assert.equal('outside' in readDisplayList(encodeDisplayList(plain, 0), 0, 0).placed.displayList.calls[0], false);
+  const corners = new Uint8Array(12 * 8).fill(9 * 16);
+  paintDisplayList(corners, corners.slice(), 12, 8, plain, false, 0);
+  assert.deepEqual([corners[12 + 2] >> 4, corners[12 + 5] >> 4], [9, 3]);
+});
 
 function replayList() {
   // 'A' is 3x2 ink one row below a 4px line top; the icon is 2x2.

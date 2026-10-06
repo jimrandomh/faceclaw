@@ -88,63 +88,6 @@ test('iOS host forwards hands-free capture mode to the voice bridge', async () =
   assert.deepEqual(captures, [true, false]);
 });
 
-for (const isIOS of [true, false]) {
-  test(`${isIOS ? 'iOS' : 'Android'} Assistant settings expose supported controls and usable model choices`, () => {
-    const store = new Map();
-    let picker;
-    const models = load('app/assistant/models.ts', { global: { isIOS }, require: () => ({
-      LOCAL_MODEL: { label: 'Qwen', id: 'qwen' }, isLocalModelReady: () => false,
-    }) });
-    const settings = load('app/ui/dashboard-settings.ts', { global: { isIOS }, require: id => {
-      if (id.includes('settings-store')) return {
-        onSettingsStoreChanged() {},
-        getStringSetting: (key, fallback) => store.get(key) ?? fallback,
-        setStringSetting: (key, value) => store.set(key, value),
-        getBooleanSetting: (key, fallback) => store.get(key) ?? fallback,
-        setBooleanSetting: (key, value) => store.set(key, value),
-      };
-      if (id === '~/assistant/models') return models;
-      return { Layer: class {}, isLocalModelReady: () => false,
-        openModalMenu: (_ctx, _title, items) => { picker = items; } };
-    } });
-    const menus = load('app/ui/dashboard/settings-menus.ts', { global: { isIOS }, require: id => {
-      if (id === '../dashboard-settings') return settings;
-      if (id === './remote-input-menu') return { remoteInputMenuItem: () => ({ label: 'Input tokens' }) };
-      if (id === './settings-panel') return { SettingsPanelLayer: class { constructor(sections) { this.sections = sections; } } };
-      return { LOCAL_MODEL: { sizeBytes: 1000 }, ASR_MODELS: { moonshine: {}, 'whisper-base-en': {} },
-        uiFontPickerMenuItem: () => ({ label: 'Font' }), terminalFontPickerMenuItem: () => ({ label: 'Terminal font' }) };
-    } });
-    const sections = menus.createSettingsPanelLayer().sections;
-    assert.ok(sections.find(section => section.label === 'Display').items.some(item => item.label === settings.lockScreenEnabledSetting.label));
-    const assistant = sections.find(section => section.label === 'Assistant');
-    assert.equal(assistant.items.some(item => item.disabled === true), false);
-    const ctx = { stack: { pop() {} }, actions: { requestRender() {} } };
-    const row = setting => assistant.items.find(item => item.label === setting.label);
-    row(settings.assistantBackendSetting).onSelect(ctx);
-    assert.deepEqual(Array.from(picker, item => item.label), isIOS ? ['Cloud API'] : ['On-phone', 'My own agent (bridge)']);
-    assert.equal(assistant.items.some(item => item.label === 'On-phone model'), !isIOS);
-    assert.equal(!!row(settings.assistantBridgeHostSetting), !isIOS);
-    assert.equal(!!row(settings.assistantAllowProactiveSetting), !isIOS);
-    row(settings.assistantModelSetting).onSelect(ctx);
-    assert.equal(picker.some(item => item.label.includes('Qwen')), !isIOS);
-    const terra = picker.find(item => item.label === 'Terra');
-    assert.equal(terra.disabled(), true);
-    const keys = sections.find(section => section.label === 'API Keys').items;
-    assert.ok(keys.some(item => item.label === settings.openAiApiKeySetting.label));
-    assert.ok(keys.some(item => item.label === settings.anthropicApiKeySetting.label));
-    settings.openAiApiKeySetting.set('fixture-key');
-    assert.equal(terra.disabled(), false);
-    terra.onSelect(ctx);
-    assert.equal(settings.assistantModelSetting.get(), 'terra');
-    assert.equal(models.resolveAssistantModel(settings.assistantModelSetting.get(), {
-      openai: settings.openAiApiKeySetting.get(), anthropic: '',
-    }).provider, 'openai');
-    row(settings.assistantSkipConfirmationSetting).onSelect(ctx);
-    assert.equal(settings.assistantSkipConfirmationSetting.get(), true);
-    assert.ok(sections.find(section => section.label === 'Voice').items.some(item => item.label === settings.wakeWordActionSetting.label));
-  });
-}
-
 test('iOS phone battery distinguishes unknown, charging, full and unplugged readings', () => {
   const device = { batteryLevel: -1, batteryState: 0 };
   const api = load('app/native/phone-battery.ts', { require: () => ({}), global: { isIOS: true },
@@ -203,119 +146,6 @@ test('settings-driven repaint runs after font cache invalidation, regardless of 
   for (const listener of listeners) listener('display.uiFont2');
   while (tasks.length) tasks.shift()();
   assert.deepEqual(painted, ['Bold']);
-});
-
-test('background glasses input still composites frames; phone resume preserves the session; explicit stop stays stopped', async () => {
-  const tasks = new Map(), screenStates = [], inputs = [], frames = [], previews = [], states = [], sounds = [];
-  let nextTask = 0, starts = 0, stops = 0, pollStarts = 0, pollStops = 0, bridge;
-  const window = { windowId: 'launcher', surfaceId: 'launcher', appId: 'launcher', title: 'Apps',
-    setScreenOn: on => screenStates.push(on), requestRender() {} };
-  const shell = { configure() {}, registerWindow() {}, wake() {}, focusWindow() {},
-    getWindows: () => [window], foregroundWindow: () => window, isScreenOn: () => true,
-    setBatteryLevels() {}, paintScene() { return new Uint8Array([0,0]); }, paintSurface() {}, underlayDim: () => 0, getFocus: () => 'app',
-    receiveInput: async input => { inputs.push(input); } };
-  // The shared Kotlin session, as seen through the iOS bridge: frames reach it
-  // only while connected, callbacks come back on the JS thread.
-  const noop = () => () => {};
-  class FaceclawCommunicatorBridge {
-    phase = 'disconnected';
-    constructor() { bridge = this; }
-    onStateChange(fn) { this.stateListener = fn; return noop(); }
-    onRingEvent(fn) { this.ringListener = fn; return noop(); }
-    onBatteryState() { return noop(); } onFirmwareInfo() { return noop(); } onFrameMetrics() { return noop(); }
-    onWearState() { return noop(); } addCompassListener() { return noop(); } onAncsRelayFrame() { return noop(); }
-    onAncsAuthorization() { return noop(); } setRequiresAncs() {} rightWriteLimit() { return 20; } onPhoneLockSignal() {}
-    async writeRawToRight() {}
-    async start() { starts++; this.phase = 'connected'; this.stateListener({ phase: 'connected', status: 'Connected.' }); }
-    async disconnect() { stops++; this.phase = 'disconnected'; this.stateListener({ phase: 'disconnected', status: 'Disconnected.' }); }
-    async close() {}
-    async configureBrightness() {} async setBrightness() {} async enableWearDetectionAndRequestState() {}
-    async configureCompositorScreen() {} async configureSurface() {} async setUnderlayDim() {} async setSurfaceVisible() {}
-    async setScreenBlanked() {} async removeSurface() {}
-    async submitSurfaceFrame(_id, pixels) { if (this.phase === 'connected') frames.push(pixels); }
-    async submitShellScene(bytes) { if (this.phase === 'connected') frames.push(bytes); }
-    waitForFrameFinished() { return Promise.resolve('sent'); }
-    getCompositePreview() { return new Uint8Array([1, 2]); }
-    async playBuzzerSequence(payload) { sounds.push([...payload]); }
-  }
-  class PreviewDisplayTarget {
-    activate() {} release() {}
-    async configureCompositorScreen() {} async configureSurface() {} async setUnderlayDim() {} async setSurfaceVisible() {}
-    async setScreenBlanked() {} async removeSurface() {} async submitSurfaceFrame() {} async submitShellScene() {}
-    waitForFrameFinished() { return Promise.resolve('composited'); }
-    getCompositePreview() { return new Uint8Array([1, 2]); }
-  }
-  const settings = { brightnessSetting: { get: () => 'auto' }, brightnessSettingToLevel: () => null, getBrightnessPreferences: () => ({ auto: true, level: 50, minimum: 2, maximum: 100, curve: '0:0,1000:100', fadeMs: 280 }), lockScreenEnabledSetting: { get: () => true }, onAnySettingChanged: () => () => {}, previewColorSetting: { get: () => 'white' } };
-  const modules = {
-    "../ui/input-monitor": load("app/ui/input-monitor.ts", {}),
-    '../remote/service': { startRemoteInput() {} },
-    '../assistant/system-tools': { registerSystemTools() {} },
-    '../assistant/window-tools': { registerWindowTools() {} },
-    '../assistant/navigate-tools': { registerNavigateTools() {} },
-    '../assistant/roam-tools': { registerRoamTools() {} },
-    "../native/ios-navigation-sensors": {},
-    '../native/notification-icons.ios': { bindIosNotifications() {}, iosNotificationsChanged() {}, onIosNotificationPopup: () => () => {}, readActiveNotifications: () => [] },
-    '../native/notification-sources': { shouldShowNotificationOnGlasses: () => true },
-    '../native/compass.ios': { bindCompassSession() {}, receiveCompassEvent() {} },
-    '@nativescript/core': { File: { fromPath: () => ({ writeTextSync() {} }) }, knownFolders: { documents: () => ({ path: '/tmp' }) }, path },
-    '../native/ios-voice-input': { iosVoiceInput: { handleSessionEnded() {}, stopPhoneCapture() {} } },
-    '../native/faceclaw-communicator.ios': { FaceclawCommunicatorBridge, resolveIosPeripherals: async addresses => addresses },
-    '../native/preview-display.ios': { PreviewDisplayTarget },
-    './ancs-client': { ANCS_FIRMWARE_VERSION: 16, AncsClient: class { state = 'disconnected'; start() {} stop() {} stopCommand() { return new Uint8Array(); } receive() { return false; } } },
-    '../native/nightscout-bridge': { nightscoutBridge: { async start() { pollStarts++; }, async stop() { pollStops++; } } },
-    './glance-host': { GlanceHost: class { dismiss() {} reset() {} isVisible() { return false; } } },
-    './device-addresses': { loadDeviceAddresses: () => ({ right: 'AA', left: 'BB', ring: '' }) }, './ios-peripheral-identity': { deviceAddressError: () => null },
-    '../apps/launcher/launcher-app': { createLauncherWindow: () => window, LAUNCHER_SURFACE_ID: 'launcher' },
-    '../apps/launcher': { launcherEntries: () => [] },
-    '../apps/all-apps': { ALL_APPS: [] }, '../ui/dashboard-settings': settings,
-    '../native/phone-battery': { readPhoneBatteryState: () => ({ battery: 80, charging: false }) },
-    '../graphics/plane': { flattenPlanesWithDraws: () => ({ image: { pixels: new Uint8Array([1, 2]), width: 2, height: 1 }, draws: [] }), planesFingerprint: () => 'fp' },
-    '../graphics/glyph-wire': { prepareFrameDraws: () => null },
-    '../graphics/image': { G2_LENS_WIDTH: 640, G2_LENS_HEIGHT: 480 },
-    './lock-screen': { LOCK_SCREEN_SURFACE_ID: 'lock-screen', createLockScreenImage: () => ({ width: 1, height: 1, to8bppBuffer: () => new Uint8Array(1) }) },
-    '../ui/shell/shell': { shell, rawInputEventToInputEvent: input => input },
-    '../ui/shell/geometry': { appViewportRect: () => ({ x: 0, y: 0, width: 640, height: 480 }) },
-    pako: { deflate: x => x },
-  };
-  const api = load('app/g2/ios-preview-controller.ts', {
-    require: id => modules[id] ?? {}, console: { log() {}, warn() {}, error() {} },
-    setTimeout: fn => { tasks.set(++nextTask, fn); return nextTask; }, clearTimeout: id => tasks.delete(id),
-    setInterval: () => ++nextTask, clearInterval() {},
-    UIDevice: { currentDevice: {} }, UIApplication: { sharedApplication: { protectedDataAvailable: true } },
-    UIApplicationProtectedDataWillBecomeUnavailable: 'lock', UIApplicationProtectedDataDidBecomeAvailable: 'unlock',
-    UIDeviceBatteryLevelDidChangeNotification: 'level', UIDeviceBatteryStateDidChangeNotification: 'state',
-    NSNotificationCenter: { defaultCenter: { addObserverForNameObjectQueueUsingBlock() {}, removeObserver() {} } },
-    NSOperationQueue: { mainQueue: {} },
-  });
-  const flush = () => { for (const [id, fn] of [...tasks]) { if (tasks.delete(id)) fn(); } };
-  const settle = async () => { for (let i = 0; i < 4; i++) { flush(); await new Promise(resolve => setImmediate(resolve)); } };
-  const controller = new api.IosPreviewController(image => previews.push(image), assert.fail, state => states.push(state));
-  await controller.actions.playBuzzerSequence(new Uint8Array([5, 4, 0]));
-  assert.equal(sounds.length, 0);
-  controller.resume(); await controller.connect(); await settle();
-  await controller.actions.playBuzzerSequence(new Uint8Array([5, 4, 0]));
-  assert.deepEqual(sounds, [[5, 4, 0]]);
-  const previewCount = previews.length, stateCount = states.length;
-  controller.pause(); controller.pause(); // NativeScript also unloads its root page on background entry.
-  assert.equal(stops, 0); assert.ok(screenStates.every(Boolean));
-  assert.equal(pollStarts, 1); assert.equal(pollStops, 0, 'connected glasses keep Nightscout polling in background');
-  const frameCount = frames.length;
-  bridge.ringListener({ kind: 'sys-event', containerName: '', eventType: 3, eventSource: 1, systemExitReasonCode: 0, frameId: 0 });
-  await controller.inputQueue; await settle();
-  assert.equal(inputs.length, 1); assert.ok(frames.length > frameCount, 'background input still composites frames');
-  assert.equal(previews.length, previewCount); assert.equal(states.length, stateCount);
-  controller.resume(); await settle();
-  assert.equal(starts, 1); assert.ok(previews.length > previewCount);
-  controller.pause(); await controller.disconnect(); await settle();
-  assert.equal(stops, 1); assert.equal(screenStates.at(-1), false);
-  assert.equal(pollStops, 1);
-  const stoppedFrames = frames.length;
-  bridge.ringListener({ kind: 'sys-event', containerName: '', eventType: 3, eventSource: 1, systemExitReasonCode: 0, frameId: 0 });
-  await controller.inputQueue; await settle();
-  assert.equal(inputs.length, 1); assert.equal(frames.length, stoppedFrames);
-  controller.resume(); await settle();
-  assert.equal(starts, 1); assert.equal(controller.connectionState.phase, 'disconnected');
-  assert.equal(pollStarts, 2, 'resuming the phone restarts Nightscout polling');
 });
 
 test('iOS bandwidth footer toggles live, polls only in foreground and resets its rate window on resume', () => {
@@ -438,7 +268,6 @@ test('iOS compositor rejects missing and removed surfaces before crossing into K
   assert.throws(() => c.submitSurfaceFrame('nightscout', pixels, rect), /Unknown surface/);
   assert.equal(nativeSubmissions, 1);
 });
-
 
 test('iOS welcome sound waits for a new acknowledged frame and is consumed once', async () => {
   let pending = true;

@@ -1,5 +1,5 @@
 import { getDefaultMediumFont, getDefaultSmallFont } from "../../graphics/ui-fonts";
-import { GrayImage } from "../../graphics/image";
+import { GrayImage, type UiFont } from "../../graphics/image";
 import { wrapText, truncateText } from "../../graphics/textwrap";
 import { clamp } from "../../util/numeric-util";
 import { directionalFallback, GESTURE_CLICK, GESTURE_DOUBLE_CLICK, GESTURE_SCROLL_DOWN, GESTURE_SCROLL_UP, type InputEvent, isDirectionalInput } from "../../ui/gestures";
@@ -20,8 +20,9 @@ const ART_SIZE = 112;
 const ART_X = 8; // left margin matches the top margin
 const ART_Y = 8;
 const META_X = ART_X + ART_SIZE + 14;
-const PROGRESS_TIME_Y = ART_Y + 100;
 const PROGRESS_BAR_Y = ART_Y + 116;
+/** Clear rows between the time labels' baseline (digits have no descenders) and the bar. */
+const PROGRESS_TIME_GAP = 3;
 const LIST_TOP = 136;
 /** Gap between the menus' last row band and the viewport bottom. */
 const LIST_BOTTOM_MARGIN = 4;
@@ -47,6 +48,8 @@ type FocusColumn = "actions" | "playlist";
  * Music controller app: metadata + album art + transport controls for the
  * active Android media session (any player that publishes one), plus the
  * player's queue when it exposes one (scroll to a track, click to jump).
+ * With no session, the front page lists the apps whose library can be
+ * browsed (click one to open its MediaBrowseLayer).
  */
 class MusicAppLayer implements Layer {
   // Watch swipes skip tracks: right = next, left = previous.
@@ -66,6 +69,19 @@ class MusicAppLayer implements Layer {
     getHeight: () => tightRowHeight(getDefaultSmallFont()),
     draw: (args) => this.drawQueueItem(args),
   });
+  /** The no-session front page's picker of apps whose library can be browsed. */
+  private readonly libraryMenu = new Menu<MediaBrowserApp>({
+    wrap: false,
+    rowGap: 1,
+    highlight: { radius: 4 },
+    getHeight: () => tightRowHeight(getDefaultSmallFont()),
+    draw: (args) => this.drawLibraryApp(args),
+  });
+  /**
+   * Whether the browsable-app list has been re-queried since the no-session
+   * page last appeared (apps installed since the cached query then show up).
+   */
+  private libraryAppsFresh = false;
   private art: GrayImage | null = null;
   private artKey = "";
 
@@ -93,16 +109,31 @@ class MusicAppLayer implements Layer {
     }
 
     if (!media.available) {
+      const apps = mediaBrowserBridge.listBrowsableApps(!this.libraryAppsFresh);
+      this.libraryAppsFresh = true;
+      this.libraryMenu.setItems(apps);
       image.drawText(font, 24, 16, "No active media session.", 180);
-      if (mediaBrowserBridge.listBrowsableApps().length) {
-        image.drawText(font, 24, 22 + lineStep(font), "Click to browse a music app's library,", 150);
-        image.drawText(font, 24, 22 + 2 * lineStep(font), "or start playback on the phone.", 150);
-        image.drawText(font, 20, height - 16, `${GESTURE_CLICK} browse`, 110);
-      } else {
-        image.drawText(font, 24, 22 + lineStep(font), "Start playback in another app on the phone.", 150);
+      const prompt = apps.length
+        ? "Browse a music app's library, or start playback on the phone."
+        : "Start playback in another app on the phone.";
+      let y = 22 + lineStep(font);
+      for (const line of wrapText(font, prompt, width - 48)) {
+        image.drawText(font, 24, y, line, 150);
+        y += lineStep(font);
+      }
+      if (apps.length) {
+        const listTop = y + 6;
+        const listHeight = height - listTop - LIST_BOTTOM_MARGIN;
+        this.libraryMenu.paint(
+          image,
+          { x: 24 - LIST_TEXT_INSET, y: listTop - 1, width: width - 48 + 2 * LIST_TEXT_INSET - 4, height: listHeight },
+          ctx.stack.isFocused(),
+        );
+        this.libraryMenu.drawScrollbar(image, width - 12, listTop, listHeight - 4);
       }
       return image;
     }
+    this.libraryAppsFresh = false;
 
     this.drawArt(image, media);
 
@@ -113,7 +144,7 @@ class MusicAppLayer implements Layer {
     // (title, second title line, artist, album, player app); when the font is
     // too large for all five, the title gets one truncated line instead of
     // wrapping to two, and the rest shift up a slot.
-    const maxLines = Math.floor((PROGRESS_TIME_Y - metaTop - 4 - font.lineHeight) / metaStep) + 1;
+    const maxLines = Math.floor((progressTimeY(font) - metaTop - 4 - font.lineHeight) / metaStep) + 1;
     const titleSlots = maxLines >= 5 ? 2 : 1;
     const title = media.title || "Unknown title";
     const titleLines =
@@ -171,6 +202,13 @@ class MusicAppLayer implements Layer {
     }
   }
 
+  private drawLibraryApp({ image, item: app, x, y, width, height, selected }: MenuDrawArgs<MediaBrowserApp>): void {
+    const font = getDefaultSmallFont();
+    const value = selected ? 255 : 200;
+    image.drawText(font, x + LIST_TEXT_INSET, centeredTextY(font, y, height), truncateText(font, app.appName, width - 2 * LIST_TEXT_INSET - 16), value);
+    drawSubmenuIndicator(image, font, x, y, width, height, value);
+  }
+
   private drawQueueItem({ image, item, x, y, width, height, selected }: MenuDrawArgs<MediaQueueItem>): void {
     const font = getDefaultSmallFont();
     const label = `${item.active ? "> " : "  "}${item.title || "(untitled)"}`;
@@ -197,8 +235,12 @@ class MusicAppLayer implements Layer {
       return;
     }
     if (!media.available) {
-      if (event.type === "click") {
-        this.openBrowse(ctx);
+      this.libraryMenu.setItems(mediaBrowserBridge.listBrowsableApps());
+      if (event.type === "scroll-up" || event.type === "scroll-down") {
+        await this.libraryMenu.handleInput(event);
+      } else if (event.type === "click") {
+        const app = this.libraryMenu.selectedItem;
+        if (app) this.pushLibraryBrowser(ctx, app);
       }
       return;
     }
@@ -252,23 +294,15 @@ class MusicAppLayer implements Layer {
 
   /**
    * Open the media-library browser (the Android Auto MediaBrowserService
-   * path): with one browsable player installed go straight to its library,
-   * otherwise offer a picker first.
+   * path) from the now-playing page: with one browsable player installed go
+   * straight to its library, otherwise offer a picker first. (With no session
+   * the picker is the front page itself.)
    */
   private openBrowse(ctx: LayerContext): void {
     const apps = mediaBrowserBridge.listBrowsableApps(true);
     if (!apps.length) return;
-    const pushBrowser = (target: LayerContext, app: MediaBrowserApp) => {
-      target.stack.push(
-        new MediaBrowseLayer({
-          app,
-          onPlayed: (browseCtx) => browseCtx.stack.pop(),
-          onLeave: (browseCtx) => browseCtx.stack.pop(),
-        }),
-      );
-    };
     if (apps.length === 1) {
-      pushBrowser(ctx, apps[0]!);
+      this.pushLibraryBrowser(ctx, apps[0]!);
       return;
     }
     ctx.stack.push(
@@ -278,10 +312,20 @@ class MusicAppLayer implements Layer {
           label: app.appName,
           onSelect: (menuCtx: LayerContext) => {
             menuCtx.stack.pop();
-            pushBrowser(menuCtx, app);
+            this.pushLibraryBrowser(menuCtx, app);
           },
         })),
       ),
+    );
+  }
+
+  private pushLibraryBrowser(ctx: LayerContext, app: MediaBrowserApp): void {
+    ctx.stack.push(
+      new MediaBrowseLayer({
+        app,
+        onPlayed: (browseCtx) => browseCtx.stack.pop(),
+        onLeave: (browseCtx) => browseCtx.stack.pop(),
+      }),
     );
   }
 
@@ -316,8 +360,9 @@ class MusicAppLayer implements Layer {
     const font = getDefaultSmallFont();
     const elapsed = formatMediaTime(media.positionMs);
     const duration = formatMediaTime(media.durationMs);
-    image.drawText(font, META_X, PROGRESS_TIME_Y, elapsed, 140);
-    image.drawText(font, META_X + width - font.measureText(duration), PROGRESS_TIME_Y, duration, 140);
+    const timeY = progressTimeY(font);
+    image.drawText(font, META_X, timeY, elapsed, 140);
+    image.drawText(font, META_X + width - font.measureText(duration), timeY, duration, 140);
 
     const barY = PROGRESS_BAR_Y;
     image.drawRect(META_X, barY, width, 5, 55);
@@ -479,6 +524,15 @@ export function createMusicAppWindow(options: InProcessAppOptions): InProcessWin
     app.requestRender();
   });
   return app;
+}
+
+/**
+ * Line top of the elapsed/duration labels: their baseline sits a fixed gap
+ * above the progress bar, so the labels hug the bar whatever the font's
+ * height (a taller face grows upward into the metadata's line budget).
+ */
+function progressTimeY(font: UiFont): number {
+  return PROGRESS_BAR_Y - PROGRESS_TIME_GAP - font.ascent;
 }
 
 function formatMediaTime(milliseconds: number): string {

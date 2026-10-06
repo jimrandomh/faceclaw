@@ -32,7 +32,7 @@ const MIC_ICON = imageFromAsciiArt(
     "       #      ",
     "     ######   ",
   ],
-  220,
+  { "#": 220 },
 );
 
 export type TranscribeAppOptions = InProcessAppOptions & {

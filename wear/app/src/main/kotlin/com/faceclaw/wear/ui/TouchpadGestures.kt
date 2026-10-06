@@ -12,6 +12,11 @@ import kotlin.math.abs
 
 /** What the remote's touch surface can report. */
 class TouchpadCallbacks(
+    /**
+     * A finger landed (each first finger down, the second tap of a pair
+     * included), before it is known what the touch will become.
+     */
+    val onPress: () -> Unit,
     val onTap: (position: Offset) -> Unit,
     val onDoubleTap: (position: Offset) -> Unit,
     /** A tap whose immediate second press was held: the G2 tap-then-hold gesture. */
@@ -65,7 +70,8 @@ class PendingTap {
  * once: tap, double-tap (a second tap inside the double-tap timeout), a hold
  * (reported at the long-press timeout and again on release), tap-then-hold (a
  * second tap held past the long-press timeout), a swipe, and a two-finger tap
- * or swipe. Written as a single awaitEachGesture loop because the stock
+ * or swipe; each finger-down is also reported as it lands (a press), before
+ * any of those is known. Written as a single awaitEachGesture loop because the stock
  * detectors would each claim the same finger. A press that pairs with
  * [pendingTap] skips straight to the second-tap handling.
  */
@@ -77,6 +83,7 @@ suspend fun PointerInputScope.detectTouchpadGestures(callbacks: TouchpadCallback
     awaitEachGesture {
         val down = awaitFirstDown()
         down.consume()
+        callbacks.onPress()
         val downTime = down.uptimeMillis
         if (pendingTap.claim(downTime)) {
             secondTap(callbacks, longPressTimeout, down.position, down)
@@ -139,6 +146,7 @@ suspend fun PointerInputScope.detectTouchpadGestures(callbacks: TouchpadCallback
                         if (second == null) {
                             callbacks.onTap(down.position)
                         } else {
+                            callbacks.onPress()
                             secondTap(callbacks, longPressTimeout, down.position, second)
                         }
                     }

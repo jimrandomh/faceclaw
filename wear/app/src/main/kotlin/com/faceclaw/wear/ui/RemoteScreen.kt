@@ -179,6 +179,7 @@ fun RemoteScreen(
 
     val callbacks = remember(link, haptics) {
         TouchpadCallbacks(
+            onPress = { link.sendPress() },
             onTap = { _ -> click() },
             onDoubleTap = { _ -> doubleClick() },
             onShortThenLongPress = {

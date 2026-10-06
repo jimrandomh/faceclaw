@@ -24,7 +24,7 @@ import {
   findDigits,
   highlightedMatch,
 } from "./digit-search";
-import { type MathWorkload, longRunOffer as makeLongRunOffer, type LongRunOffer } from "./workload";
+import { type MathWorkload } from "./workload";
 import {
   binomial,
   factorizationText,

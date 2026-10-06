@@ -1,10 +1,11 @@
 import { DrawExpression as E, ExprOp } from "../graphics/draw-expression";
-import { menuAnimationEnabled } from "./menu-animation-pref";
+import { menuAnimationDurationMs } from "./menu-animation-pref";
 import { MENU_HIGHLIGHT_DURATION_MS, nextAnimationToken } from "./menu-highlight-motion";
 
 /** Longest scroll, in pixels, that animates; longer jumps snap. */
 export const MAX_ANIMATED_SCROLL = 96;
-export const MENU_BOUNCE_DURATION_MS = 320;
+/** At Normal menu animation speed, like MENU_HIGHLIGHT_DURATION_MS. */
+export const MENU_BOUNCE_DURATION_MS = 160;
 /** Fraction of a bounce spent moving out to the peak; the rest settles back. */
 const BOUNCE_PEAK = 0.35;
 
@@ -73,20 +74,21 @@ export class MenuScrollMotion {
   /** Record this paint's settled offset; returns the animation in flight, if any. */
   paint(scroll: number, box: Box, now: number): MenuScrollAnimation | undefined {
     const previous = this.previous;
-    const enabled = menuAnimationEnabled();
+    const scrollMs = menuAnimationDurationMs(MENU_HIGHLIGHT_DURATION_MS);
     const sameBox = !!previous && previous.box.x === box.x && previous.box.y === box.y &&
       previous.box.width === box.width && previous.box.height === box.height;
     if (!previous || !sameBox || previous.scroll !== scroll) {
       const from = previous ? this.offsetAt(previous.scroll, now) : scroll;
-      const eligible = enabled && sameBox && this.navigated && from !== scroll && Math.abs(scroll - from) <= MAX_ANIMATED_SCROLL;
+      const eligible = scrollMs > 0 && sameBox && this.navigated && from !== scroll && Math.abs(scroll - from) <= MAX_ANIMATED_SCROLL;
       this.animation = eligible
-        ? { from, to: scroll, startedAt: now, token: nextAnimationToken(), durationMs: MENU_HIGHLIGHT_DURATION_MS }
+        ? { from, to: scroll, startedAt: now, token: nextAnimationToken(), durationMs: scrollMs }
         : undefined;
       this.previous = { scroll, box: { ...box } };
-    } else if (this.bounceBy && enabled) {
+    } else if (this.bounceBy && scrollMs > 0) {
       const from = this.offsetAt(scroll, now);
       this.animation = Math.abs(scroll - from) <= MAX_ANIMATED_SCROLL
-        ? { from, peak: scroll + this.bounceBy, to: scroll, startedAt: now, token: nextAnimationToken(), durationMs: MENU_BOUNCE_DURATION_MS }
+        ? { from, peak: scroll + this.bounceBy, to: scroll, startedAt: now, token: nextAnimationToken(),
+          durationMs: menuAnimationDurationMs(MENU_BOUNCE_DURATION_MS) }
         : undefined;
     }
     this.navigated = false;

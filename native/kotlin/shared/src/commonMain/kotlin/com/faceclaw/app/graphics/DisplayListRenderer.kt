@@ -1,10 +1,14 @@
 package com.faceclaw.app
 
-/** Reference interpreter. It uses the firmware's packed rows, clipping, LUT and call grammar. */
+/**
+ * Reference interpreter. It uses the firmware's packed rows, clipping, LUT and call grammar.
+ * [flat] ignores stereo depth, for pixels both lenses share (see ShellScene.flatten).
+ */
 class DisplayListRenderer(
     private val resources: Map<Int, ByteArray>,
     private val builtin: ((Int, Int) -> BuiltinGlyph)? = null,
     private val rightLens: Boolean = false,
+    private val flat: Boolean = false,
 ) {
     class BuiltinGlyph(val image: ByteArray, val advance: Int, val x: Int = 0, val y: Int = 0)
 
@@ -239,7 +243,8 @@ class DisplayListRenderer(
             target = target(id).shifted(inherited.shiftX)
         }
         if (flags and DRAW_FLAG_DEPTH != 0) {
-            target = target.shifted(DrawProtocol.depthOffset(reader.readS8(), rightLens))
+            val depth = reader.readS8()
+            if (!flat) target = target.shifted(DrawProtocol.depthOffset(depth, rightLens))
         }
         if (flags and DRAW_FLAG_CLIP != 0) {
             target = target.clipped(reader.readS16(), reader.readS16(), reader.readU16(), reader.readU16())
@@ -298,11 +303,78 @@ class DisplayListRenderer(
         }
         require(width > 0 && height > 0 && x + width <= source.width && y + height <= source.height)
         // Mirrors the firmware's overflow guard before the depth shift.
-        if (walk.apply && dx in -65536..65536) {
-            // Snapshot the rectangle so overlapping copies have memmove semantics.
-            val copy = IntArray(width * height) { source.get(x + it % width, y + it / width) }
-            for (i in copy.indices) target.put(dx + i % width, dy + i / width, copy[i])
+        if (!walk.apply || dx !in -65536..65536) return
+        // Clip the destination to the writable area, in shifted target pixels.
+        // The source is read unshifted, like Target.get.
+        val originX = dx + target.shiftX
+        var left = maxOf(originX, 0)
+        var right = minOf(originX + width, target.width)
+        var top = maxOf(dy, 0)
+        var bottom = minOf(dy.toLong() + height, target.height.toLong()).toInt()
+        target.clip?.let { clip ->
+            left = maxOf(left, clip[0]); top = maxOf(top, clip[1])
+            right = minOf(right, clip[2]); bottom = minOf(bottom, clip[3])
         }
+        if (left >= right || top >= bottom) return
+        val count = right - left
+        val rows = bottom - top
+        var sourceX = x + (left - originX)
+        var sourceBytes = source.bytes
+        var sourceStride = source.stride
+        var sourceRow = source.offset + (y + (top - dy)) * sourceStride
+        if (sourceBytes === target.bytes) {
+            // Snapshot the packed source span so overlapping copies have memmove semantics.
+            val first = sourceX / 2
+            val span = (sourceX + count - 1) / 2 - first + 1
+            val snapshot = ByteArray(span * rows)
+            for (row in 0 until rows) {
+                val start = sourceRow + row * sourceStride + first
+                sourceBytes.copyInto(snapshot, row * span, start, start + span)
+            }
+            sourceBytes = snapshot
+            sourceStride = span
+            sourceRow = 0
+            sourceX = sourceX and 1
+        }
+        for (row in 0 until rows) {
+            copyPixels(sourceBytes, sourceRow + row * sourceStride, sourceX,
+                target.bytes, target.offset + (top + row) * target.stride, left, count)
+        }
+    }
+
+    /** Copy [count] packed 4bpp pixels between rows that must not overlap. */
+    private fun copyPixels(source: ByteArray, sourceRow: Int, sourceX: Int,
+                           destination: ByteArray, destinationRow: Int, destinationX: Int, count: Int) {
+        var sx = sourceX
+        var dx = destinationX
+        var remaining = count
+        if (dx and 1 != 0) {
+            putPixel(destination, destinationRow, dx++, getPixel(source, sourceRow, sx++))
+            remaining--
+        }
+        val pairs = remaining / 2
+        var si = sourceRow + sx / 2
+        var di = destinationRow + dx / 2
+        if (sx and 1 == 0) {
+            source.copyInto(destination, di, si, si + pairs)
+        } else {
+            // Misaligned: each destination byte straddles two source bytes.
+            repeat(pairs) {
+                destination[di++] = ((source[si].toInt() shl 4) or ((source[++si].toInt() and 255) ushr 4)).toByte()
+            }
+        }
+        if (remaining and 1 != 0) {
+            putPixel(destination, destinationRow, dx + pairs * 2, getPixel(source, sourceRow, sx + pairs * 2))
+        }
+    }
+
+    private fun getPixel(bytes: ByteArray, row: Int, x: Int): Int =
+        (bytes[row + x / 2].toInt() ushr (if (x and 1 == 0) 4 else 0)) and 15
+
+    private fun putPixel(bytes: ByteArray, row: Int, x: Int, value: Int) {
+        val index = row + x / 2
+        val old = bytes[index].toInt()
+        bytes[index] = if (x and 1 == 0) ((old and 15) or (value shl 4)).toByte() else ((old and 240) or value).toByte()
     }
 
     private fun drawStockText(reader: DrawReader, target: Target, walk: Walk) {
@@ -420,16 +492,21 @@ class DisplayListRenderer(
         val radius = reader.readU16()
         val fill = reader.readU8()
         val border = reader.readU8()
+        // Revision 36: an optional trailing color for the corners outside the shape.
+        val outside = if (reader.remaining == 1) reader.readU8().also { require(it <= 15) } else DRAW_ROUNDED_RECT_NO_OUTSIDE
         reader.requireDone()
         require(width in 1..640 && height in 1..480 && fill <= 15 && border <= DRAW_ROUNDED_RECT_NO_BORDER)
         if (!walk.apply) return
         if (x < -width - target.shiftX || x >= target.width - target.shiftX ||
             y < -height || y >= target.height) return
         for (yy in 0 until height) for (xx in 0 until width) {
-            if (!roundedContains(xx, yy, width, height, radius)) continue
             val tx = x + xx + target.shiftX
             val ty = y + yy
             if (tx !in 0 until target.width || ty !in 0 until target.height) continue
+            if (!roundedContains(xx, yy, width, height, radius)) {
+                if (outside != DRAW_ROUNDED_RECT_NO_OUTSIDE) target.put(x + xx, ty, outside)
+                continue
+            }
             val edge = !roundedContains(xx - 1, yy - 1, width - 2, height - 2, maxOf(0, radius - 1))
             val value = if (edge && border < DRAW_ROUNDED_RECT_NO_BORDER) border else maxOf(fill, target.get(tx, ty))
             target.put(x + xx, ty, value)

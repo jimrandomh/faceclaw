@@ -1,11 +1,13 @@
 /**
- * Modal font picker for the Settings app: choose a face (bitmap Terminus
+ * Modal font picker for font settings: choose a face (bitmap Terminus
  * variants or any installed TTF family), a weight (the family's installed
  * styles), and a pixel size, with a live preview line rendered in the draft
  * font. Selections only persist on Save; double-click cancels.
  *
- * Used for both the UI font (Display section) and the terminal font
- * (Terminal section, filtered to monospace faces).
+ * Used for the UI font (Settings > Customization), the terminal font (the
+ * Terminal app's settings, filtered to monospace faces), and per-app
+ * overrides of the UI font (UiFontOverride, which add an "inherit" face
+ * ahead of the others).
  */
 import { getFont } from "../graphics/bdffont";
 import { GrayImage, type UiFont } from "../graphics/image";
@@ -20,9 +22,10 @@ import {
   setTerminalFontSelection,
   setUiFontSelection,
   type BitmapFace,
+  type UiFontOverride,
   type UiFontSelection,
 } from "../graphics/ui-fonts";
-import { GESTURE_DOUBLE_CLICK, type InputEvent } from "./gestures";
+import { type InputEvent } from "./gestures";
 import { drawRightValueMenuItem, openModalMenu, type MenuItem } from "./menu";
 import { Menu, type MenuDrawArgs } from "./menu-core";
 import { LIST_ROW_TEXT_INSET, listRowHeight } from "./metrics";
@@ -31,6 +34,11 @@ import type { Layer, LayerContext } from "./layers";
 const SIZE_CHOICES = [8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 20, 22, 24, 26, 28] as const;
 const DEFAULT_TTF_SIZE = 16;
 const PREVIEW_TEXT = "The quick brown fox jumps over 0123456789";
+const INHERIT_UI_FONT_LABEL = "Same as UI font";
+const UI_BITMAP_FACES: FontPickerOptions["bitmapFaces"] = [
+  { face: "terminus", label: "Terminus" },
+  { face: "terminusv", label: "TerminusV" },
+];
 
 type FontPickerOptions = {
   title: string;
@@ -43,8 +51,12 @@ type FontPickerOptions = {
   sizeAllowed?: (path: string, size: number) => boolean;
   /** Bitmap faces offered ahead of the installed TTF families. */
   bitmapFaces: readonly { face: BitmapFace; label: string }[];
-  get(): UiFontSelection;
-  set(selection: UiFontSelection): void;
+  /** When set, the first face choice is this label for "no selection of
+   * its own" (get/set null), which previews and stores as inheriting. */
+  inheritLabel?: string;
+  /** Null (inherit) only when inheritLabel is set. */
+  get(): UiFontSelection | null;
+  set(selection: UiFontSelection | null): void;
 };
 
 type FontFamily = {
@@ -52,8 +64,9 @@ type FontFamily = {
   fonts: InstalledFont[];
 };
 
-/** The draft being edited: a bitmap face, or a TTF family + style + size. */
+/** The draft being edited: inherit, a bitmap face, or a TTF family + style + size. */
 type Draft =
+  | { kind: "inherit" }
   | { kind: "bitmap"; face: BitmapFace }
   | { kind: "ttf"; family: FontFamily; font: InstalledFont; size: number };
 
@@ -77,7 +90,8 @@ export class FontPickerLayer implements Layer {
     this.draft = this.draftFromSelection(options.get());
   }
 
-  private draftFromSelection(selection: UiFontSelection): Draft {
+  private draftFromSelection(selection: UiFontSelection | null): Draft {
+    if (selection === null) return { kind: "inherit" };
     if (selection.kind === "ttf") {
       for (const family of this.families) {
         const font = family.fonts.find((f) => f.fileName === selection.file);
@@ -91,14 +105,20 @@ export class FontPickerLayer implements Layer {
     return { kind: "bitmap", face };
   }
 
-  private draftSelection(): UiFontSelection {
-    return this.draft.kind === "bitmap"
-      ? { kind: "bitmap", face: this.draft.face }
-      : { kind: "ttf", file: this.draft.font.fileName, size: this.draft.size };
+  private draftSelection(): UiFontSelection | null {
+    switch (this.draft.kind) {
+      case "inherit":
+        return null;
+      case "bitmap":
+        return { kind: "bitmap", face: this.draft.face };
+      case "ttf":
+        return { kind: "ttf", file: this.draft.font.fileName, size: this.draft.size };
+    }
   }
 
   /** The draft's concrete font for the preview (bitmap fallback if unloadable). */
   private previewFont(): UiFont {
+    if (this.draft.kind === "inherit") return getDefaultSmallFont();
     if (this.draft.kind === "ttf") {
       const font = TtfFont.load(this.draft.font.path, this.draft.size);
       if (font) return font;
@@ -154,18 +174,19 @@ export class FontPickerLayer implements Layer {
   }
 
   private rowDisabled(row: RowId): boolean {
-    return (row === "weight" || row === "size") && this.draft.kind === "bitmap";
+    return (row === "weight" || row === "size") && this.draft.kind !== "ttf";
   }
 
   private rowValue(row: RowId): string {
     if (row === "face") {
+      if (this.draft.kind === "inherit") return this.options.inheritLabel ?? "";
       if (this.draft.kind === "bitmap") {
         return this.options.bitmapFaces.find((b) => b.face === (this.draft as { face: BitmapFace }).face)?.label
           ?? "Terminus";
       }
       return this.draft.family.label;
     }
-    if (this.draft.kind === "bitmap") return "-";
+    if (this.draft.kind !== "ttf") return "-";
     if (row === "weight") return this.draft.font.style || "Regular";
     return String(this.draft.size);
   }
@@ -198,6 +219,16 @@ export class FontPickerLayer implements Layer {
 
   private openFaceMenu(ctx: LayerContext): void {
     const items: MenuItem[] = [];
+    const inheritLabel = this.options.inheritLabel;
+    if (inheritLabel !== undefined) {
+      items.push({
+        label: inheritLabel,
+        onSelect: (innerCtx) => {
+          this.draft = { kind: "inherit" };
+          innerCtx.stack.pop();
+        },
+      });
+    }
     for (const bitmap of this.options.bitmapFaces) {
       items.push({
         label: `${bitmap.label} (bitmap)`,
@@ -216,10 +247,13 @@ export class FontPickerLayer implements Layer {
         },
       });
     }
+    const inheritRows = inheritLabel !== undefined ? 1 : 0;
     const currentIndex =
-      this.draft.kind === "bitmap"
-        ? Math.max(0, this.options.bitmapFaces.findIndex((b) => b.face === (this.draft as { face: BitmapFace }).face))
-        : this.options.bitmapFaces.length + this.families.indexOf(this.draft.family);
+      this.draft.kind === "inherit"
+        ? 0
+        : this.draft.kind === "bitmap"
+          ? inheritRows + Math.max(0, this.options.bitmapFaces.findIndex((b) => b.face === (this.draft as { face: BitmapFace }).face))
+          : inheritRows + this.options.bitmapFaces.length + this.families.indexOf(this.draft.family);
     openModalMenu(ctx, "Font Face", items, Math.max(0, currentIndex));
   }
 
@@ -306,12 +340,30 @@ export function uiFontPickerMenuItem(): MenuItem {
     title: "UI font",
     monospaceOnly: false,
     sizeAllowed: uiFontSizeAllowed,
-    bitmapFaces: [
-      { face: "terminus", label: "Terminus" },
-      { face: "terminusv", label: "TerminusV" },
-    ],
+    bitmapFaces: UI_BITMAP_FACES,
     get: getUiFontSelection,
     set: setUiFontSelection,
+  });
+}
+
+/**
+ * Settings row for an app's own UI font, defaulting to the Display UI font
+ * (same faces and size bounds as the UI font picker).
+ */
+export function uiFontOverridePickerMenuItem(
+  override: UiFontOverride,
+  options: { title: string; description: string },
+): MenuItem {
+  return fontPickerMenuItem({
+    rowLabel: "Font",
+    description: options.description,
+    title: options.title,
+    monospaceOnly: false,
+    sizeAllowed: uiFontSizeAllowed,
+    bitmapFaces: UI_BITMAP_FACES,
+    inheritLabel: INHERIT_UI_FONT_LABEL,
+    get: () => override.getSelection(),
+    set: (selection) => override.setSelection(selection),
   });
 }
 
@@ -337,6 +389,7 @@ function fontPickerMenuItem(options: FontPickerOptions & { rowLabel: string; des
       ctx.stack.push(new FontPickerLayer(options));
     },
     render: ({ image, x, y, width }) => {
+      const selection = options.get();
       drawRightValueMenuItem(
         image,
         getDefaultSmallFont(),
@@ -344,7 +397,7 @@ function fontPickerMenuItem(options: FontPickerOptions & { rowLabel: string; des
         y,
         width,
         options.rowLabel,
-        fontSelectionLabel(options.get()),
+        selection ? fontSelectionLabel(selection) : options.inheritLabel ?? "",
       );
     },
   };

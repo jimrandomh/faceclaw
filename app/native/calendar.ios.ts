@@ -97,7 +97,7 @@ export async function readUpcomingEventsAsync(maxEvents = 50, windowMs = DEFAULT
       try {
         if (!hasCalendarPermission()) throw new Error("Calendar permission is required.");
         resolve(parseEvents(json, error, maxEvents, endMs));
-      } catch (error) { reject(error); }
+      } catch (err) { reject(err); }
     });
   });
 }

@@ -142,6 +142,8 @@ class MainActivity : ComponentActivity() {
                     // A dark display takes the stem too: a press shows the
                     // phone's Glanceboard, a hold keeps it up until release.
                     stemOneIgnored = false
+                    // Key-down is the stem's touch-down, as on the pad.
+                    link.sendPress()
                     val runnable = Runnable {
                         stemHoldSent = true
                         haptics.heavy()

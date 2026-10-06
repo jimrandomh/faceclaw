@@ -19,7 +19,6 @@ import {
   multiplyExpr,
   negate,
   num,
-  numberValue,
   relation as relationExpr,
   spokenRelation,
   subtractExpr,

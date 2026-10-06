@@ -121,7 +121,7 @@ async function roamPost(endpoint: "q" | "pull" | "write", body: object): Promise
         base = API_BASE;
         continue;
       }
-      throw new Error(`Roam API request failed: ${(error as Error)?.message ?? error}`);
+      throw new Error(`Roam API request failed: ${(error as Error)?.message ?? error}`, { cause: error });
     }
     if (response.status >= 300 && response.status < 400) {
       const location = response.headers?.get?.("Location") ?? response.headers?.get?.("location");

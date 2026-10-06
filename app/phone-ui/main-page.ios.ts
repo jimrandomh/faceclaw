@@ -20,7 +20,7 @@ export function createMainPage(): Page {
   root.rows = 'auto,*'
   page.content = root
   const header = new GridLayout()
-  header.columns = '*,auto,auto'; header.className = 'main-header'
+  header.columns = '*,auto,auto,auto'; header.className = 'main-header'
   const title = new Label()
   title.text = 'Faceclaw'; title.className = 'action-bar-title'
   header.addChild(title)
@@ -29,10 +29,17 @@ export function createMainPage(): Page {
   state.verticalAlignment = 'middle'
   state.on('tap', () => { void openDevices() })
   GridLayout.setColumn(state, 1); header.addChild(state)
+  // Android's warning triangle: shown while the glasses report firmware Faceclaw can't run.
+  const warning = new Label()
+  warning.text = '\u26A0\uFE0F'; warning.className = 'action-bar-warning'
+  warning.accessibilityLabel = 'Attention needed'; warning.verticalAlignment = 'middle'
+  warning.visibility = 'collapse'
+  warning.on('tap', () => { void showFirmwareWarning() })
+  GridLayout.setColumn(warning, 2); header.addChild(warning)
   const overflow = new Button()
   overflow.text = '⋮'; overflow.accessibilityLabel = 'More options'; overflow.className = 'overflow-button'
   overflow.on('tap', () => openMenu())
-  GridLayout.setColumn(overflow, 2); header.addChild(overflow); root.addChild(header)
+  GridLayout.setColumn(overflow, 3); header.addChild(overflow); root.addChild(header)
   const body = new GridLayout()
   GridLayout.setRow(body, 1); root.addChild(body)
   const mirror = new Image()
@@ -60,6 +67,7 @@ export function createMainPage(): Page {
   }, connection => {
     state.text = ({ connected: 'Connected', disconnected: 'Preview', connecting: 'Connecting',
       retrying: 'Reconnecting', disconnecting: 'Disconnecting', error: 'Failed' })[connection.phase]
+    warning.visibility = connection.firmwareWarning ? 'visible' : 'collapse'
   }, session => {
     keyboardModel.setSession(session)
     controls.visibility = session ? 'collapse' : 'visible'
@@ -114,6 +122,13 @@ export function createMainPage(): Page {
     }
     page.ios.presentViewControllerAnimatedCompletion(menu, true, null)
   }
+  async function showFirmwareWarning(): Promise<void> {
+    const message = controller.connectionState?.firmwareWarning
+    if (!message) return
+    const install = await Dialogs.confirm({ title: 'Attention needed', message,
+      okButtonText: 'Install custom firmware', cancelButtonText: 'Close' })
+    if (install) await navigateDevicePage('phone-ui/onboarding-flash-page', { mode: 'install', fromOnboarding: false })
+  }
   async function openDevices(): Promise<void> {
     const connected = ['connected', 'connecting', 'retrying'].includes(controller.connectionState?.phase ?? '')
     const choice = await Dialogs.action({ title: 'Connection status', message: controller.connectionState?.status ?? 'Preview only', cancelButtonText: 'Cancel',
@@ -148,7 +163,7 @@ export function createMainPage(): Page {
   model.set('onPadTouch', touch(watchInput))
   model.set('onRingPadTouch', touch(ringInput))
   model.set('onSyntheticMicTap', () => controller.startVoiceInput())
-  model.set('onKeyboardTap', () => { void controller.typeIntoApp() })
+  model.set('onKeyboardTap', () => { controller.typeIntoApp() })
   mirror.on('touch', touch(mirrorInput))
   const cancelGestures = () => { watchInput.cancel(); ringInput.cancel(); mirrorInput.cancel() }
   model.on('propertyChange', (args: PropertyChangeData) => {

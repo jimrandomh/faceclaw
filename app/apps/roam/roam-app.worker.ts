@@ -52,7 +52,6 @@ import {
 } from "./roam-doc";
 
 declare const global: any;
-declare const com: any;
 
 const HEADER_HEIGHT = 30;
 const BOTTOM_MARGIN = 6;
@@ -252,6 +251,10 @@ global.onmessage = (event: { data: WorkerAppMessage }) => {
         );
       break;
     }
+    case "input-focus":
+    case "navigation-sensors":
+    case "resize-window":
+      break;
   }
 };
 
@@ -339,7 +342,7 @@ function windowMenu(win: RoamWindow): WindowMenu {
       windowId: win.windowId,
       post,
       title: () => win.title,
-      items: () => menuItems(win),
+      items: () => menuItems(),
       size: { width: win.viewportWidth, height: win.viewportHeight },
       paintBase: () => paintContent(win),
       isFocused: () => win.focused,
@@ -348,7 +351,7 @@ function windowMenu(win: RoamWindow): WindowMenu {
   return win.menu;
 }
 
-function menuItems(win: RoamWindow): MenuItem[] {
+function menuItems(): MenuItem[] {
   const items: MenuItem[] = [];
   const today = todayRef();
   if (currentRef?.uid !== today.uid) {
@@ -415,7 +418,7 @@ function endSettingEdit(): void {
 
 function handleInput(win: RoamWindow, event: InputEvent, frameId: number): void {
   if (win.menu?.isOpen()) {
-    win.menu
+    void win.menu
       .handleInput(event)
       .catch((error) => console.error(`roam menu input failed: ${error}`))
       .then(() => renderAndSubmit(win, frameId));

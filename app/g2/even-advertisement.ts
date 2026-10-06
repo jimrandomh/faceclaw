@@ -95,7 +95,7 @@ export function g2NameAddressTail(name: string | null | undefined): string | nul
  * Even's wire order is reversed human order: "AA:BB:CC:DD:EE:FF" ⇄ [FF EE DD CC BB AA].
  */
 export function wireBytesFromHumanReadableAddress(address: string): Uint8Array | null {
-  const cleaned = address.replace(/[:\-]/g, "").trim();
+  const cleaned = address.replace(/[:-]/g, "").trim();
   if (cleaned.length !== 12 || !/^[0-9a-fA-F]{12}$/.test(cleaned)) return null;
   const human = hexToBytes(cleaned);
   return new Uint8Array(Array.from(human).reverse());

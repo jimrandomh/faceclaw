@@ -198,6 +198,19 @@ export class LayerStack {
     return true;
   }
 
+  /**
+   * Remove one stacked layer wherever it sits, leaving the layers above it in
+   * place (e.g. a notification modal that closes under a menu opened over it).
+   * Returns false if the layer isn't stacked (the base layer can never be removed).
+   */
+  remove(layer: Layer): boolean {
+    const index = this.layers.indexOf(layer);
+    if (index <= 0) return false;
+    this.layers.splice(index, 1);
+    notifyRemoved(layer);
+    return true;
+  }
+
   isAtBase(): boolean {
     return this.layers.length === 1;
   }

@@ -30,8 +30,8 @@ type PendingRequest<T> = {
  * Holds at most one connection at a time.
  */
 export class FaceclawMediaBrowserBridge {
-  private browser: any | null = null;
-  private listenerProxy: any | null = null;
+  private browser: any = null;
+  private listenerProxy: any = null;
   private nextRequestId = 1;
   private readonly pendingConnects = new Map<number, PendingRequest<string>>();
   private readonly pendingBrowses = new Map<number, PendingRequest<MediaBrowseItem[]>>();

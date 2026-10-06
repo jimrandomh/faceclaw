@@ -58,9 +58,6 @@ function rankOf(card: number): number {
 function isRed(card: number): boolean {
   return (card & 1) === 1;
 }
-function cardLabel(card: number): string {
-  return RANK_CHARS[rankOf(card)]! + SUIT_CHARS[suitOf(card)]!;
-}
 
 const CARD_W = 60;
 const CARD_H = 36;
@@ -208,6 +205,13 @@ global.onmessage = (event: { data: WorkerAppMessage }) => {
       if (window.foreground) renderAndSubmit(window, 0);
       break;
     }
+    case "input-focus":
+    case "navigation-sensors":
+    case "resize-window":
+    case "screen":
+    case "text-input":
+    case "tool-call":
+      break;
   }
 };
 
@@ -285,7 +289,7 @@ function handleInput(window: FreecellWindow, event: InputEvent, frameId: number)
   // An open window menu owns all input (it closes itself via pop); menus are
   // list UIs, so watch swipes take their standard fallback meanings there.
   if (window.menu?.isOpen()) {
-    window.menu
+    void window.menu
       .handleInput(directionalFallback(event))
       .catch((error) => console.error(`freecell menu input failed: ${error}`))
       .then(() => renderAndSubmit(window, frameId));
@@ -792,7 +796,6 @@ function paintCard(
   if (selected) image.drawRoundedRect(x + 1, y + 1, CARD_W - 2, CARD_H - 2, 255, 3);
   const rankText: string = RANK_CHARS[rankOf(card)]!
   const suitText: string = SUIT_CHARS[suitOf(card)]!;
-  const labelText = rankText + suitText;
   image.drawText(labelFont, x + 5, y, rankText, 255);
   image.drawText(suitFont, x + 5 + labelFont.measureText(rankText), y + 3, suitText, 150);
   if (isRed(card)) {

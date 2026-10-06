@@ -22,7 +22,7 @@ export type SettingsAppWindow = {
   /** The full in-process window record, for hosts that manage window lifecycle. */
   inProcess: InProcessWindow;
   requestRender: () => void;
-  /** Select a section in the left column by label (e.g. "Terminal"). */
+  /** Select a section in the left column by label (e.g. "Voice"). */
   focusSection: (label: string) => void;
   /** Whether the glasses-side text-setting editor is the top layer. */
   isTextEditorOnTop: () => boolean;

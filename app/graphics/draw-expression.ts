@@ -112,10 +112,10 @@ export function evaluate(value: DrawValue, elapsed: number, presentTime = 0): { 
   if (typeof value === 'number') return { value, pending: false };
   const reader = new DrawBytes(Uint8Array.from(value.code)), stack: { value: number; float: boolean }[] = [];
   let pending = false;
-  const push = (value: number, float = false) => {
-    value = float ? Math.fround(value) : value | 0;
-    if (!Number.isFinite(value) || stack.length === 32) throw new Error('Invalid expression stack');
-    stack.push({ value, float });
+  const push = (n: number, float = false) => {
+    n = float ? Math.fround(n) : n | 0;
+    if (!Number.isFinite(n) || stack.length === 32) throw new Error('Invalid expression stack');
+    stack.push({ value: n, float });
   };
   const pop = (float: boolean) => { const v = stack.pop(); if (!v || v.float !== float) throw new Error('Expression type mismatch'); return v.value; };
   const toInt = (v: number) => { if (v < -2147483648 || v >= 2147483648) throw new Error('Invalid integer conversion'); return Math.trunc(v); };

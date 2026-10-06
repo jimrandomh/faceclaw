@@ -103,8 +103,7 @@ function render(expression: MathExpression, parentPrecedence: number): string {
         return wrap(`1/${inner}`, parentPrecedence > PRECEDENCE.product);
       }
       const body =
-        `${render(expression.base, PRECEDENCE.power + 1)}` +
-        `^${render(expression.exponent, PRECEDENCE.power + 1)}`;
+        `${render(expression.base, PRECEDENCE.power + 1)}^${render(expression.exponent, PRECEDENCE.power + 1)}`;
       return wrap(body, parentPrecedence > PRECEDENCE.power);
     }
 
@@ -116,11 +115,7 @@ function render(expression: MathExpression, parentPrecedence: number): string {
     }
 
     case "relation":
-      return (
-        `${render(expression.lhs, PRECEDENCE.relation)} ` +
-        `${expression.relation} ` +
-        `${render(expression.rhs, PRECEDENCE.relation)}`
-      );
+      return `${render(expression.lhs, PRECEDENCE.relation)} ${expression.relation} ${render(expression.rhs, PRECEDENCE.relation)}`;
   }
 }
 

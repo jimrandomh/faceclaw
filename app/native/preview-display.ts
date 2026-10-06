@@ -24,6 +24,7 @@ export type DisplayTarget = Pick<
   | "setUnderlayDim"
   | "setScreenBlanked"
   | "submitSurfaceFrame"
+  | "isSurfaceCurrent"
   | "submitShellScene"
   | "waitForFrameFinished"
   | "getCompositePreview"
@@ -107,6 +108,11 @@ export class PreviewDisplayTarget implements DisplayTarget {
 
   async setSurfaceDepth(id: string, depth: number): Promise<void> {
     this.compositor.setSurfaceDepth(id, Math.round(depth));
+  }
+
+  /** Never skips: preview frames are cheap and nothing is transmitted. */
+  isSurfaceCurrent(_surfaceId: string, _fingerprint: string): boolean {
+    return false;
   }
 
   async submitShellScene(bytes: Uint8Array, paintMs = 0, frameId = 0): Promise<void> {

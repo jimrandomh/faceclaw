@@ -40,6 +40,9 @@ test('new SysEvent decodes independently of click, double-tap, hold and release'
     const decoded = d.rawInputEventToPayload({ kind: 'sys-event', eventType: 14, eventSource: source });
     assert.equal(decoded.type, 'ring-press'); assert.equal(decoded.source, 'ring');
   }
+  // Synthetic watch touch-down (TOUCH_EVENT_FROM_WATCH, never sent by firmware).
+  const watch = d.rawInputEventToPayload({ kind: 'sys-event', eventType: 14, eventSource: 4 });
+  assert.equal(watch.type, 'ring-press'); assert.equal(watch.source, 'watch');
   for (const source of [1, 3, 99, undefined]) {
     assert.equal(d.rawInputEventToPayload({ kind: 'sys-event', eventType: 14, eventSource: source }).type, 'unknown');
   }
@@ -191,4 +194,21 @@ test('debug history retains both clocks and uses unsigned gaps across counter wr
   assert.equal(log.entries[0].gapMs,1); assert.equal(log.entries[0].ringGapTicks,32);
   assert.equal(log.entries[0].filtered,true);
   log.clear(); log.add(ring(1,500)); assert.equal(log.entries[0].ringGapTicks,null);
+});
+
+test('PressTracker pairs each gesture with the touch-down that began it', () => {
+  const { PressTracker } = load('app/ui/gestures.ts');
+  const t = new PressTracker();
+  const ev = (type, source) => ({ type, source, timestampMs: 0 });
+  assert.equal(t.followsPress(ev('ring-press', 'watch')), false);
+  assert.equal(t.followsPress(ev('click', 'watch')), true);
+  // Input with no touch-down of its own (finger-pinch tap, crown, older watch app) still acts.
+  assert.equal(t.followsPress(ev('click', 'watch')), false);
+  // A press pairs only with the next event, and only from its own source.
+  t.followsPress(ev('ring-press', 'watch'));
+  assert.equal(t.followsPress(ev('click', 'left-arm')), false);
+  assert.equal(t.followsPress(ev('click', 'watch')), false);
+  // Stock ring scroll notifications omit their source.
+  t.followsPress(ev('ring-press', 'ring'));
+  assert.equal(t.followsPress({ type: 'scroll-up', timestampMs: 0 }), true);
 });

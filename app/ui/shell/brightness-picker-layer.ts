@@ -61,6 +61,8 @@ export class BrightnessPickerLayer implements Layer {
       case "double-click":
         ctx.stack.pop();
         return;
+      default:
+        return;
     }
   }
 }

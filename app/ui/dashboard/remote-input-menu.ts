@@ -5,7 +5,7 @@ import { copyRemoteToken, remoteInterfaces } from '../../native/remote-input';
 import { TextViewerLayer } from '../../apps/files/text-viewer';
 import { ConfigSettingString, textSettingMenuItem } from '../dashboard-settings';
 import { getDefaultSmallFont } from '../../graphics/ui-fonts';
-import { drawRightValueMenuItem, type MenuItem } from '../menu';
+import { drawRightValueMenuItem, submenuItem, type MenuItem } from '../menu';
 import { type LayerContext } from '../layers';
 import { openSettingsSubMenu } from './settings-panel';
 
@@ -86,5 +86,5 @@ function openTokens(ctx: LayerContext): void {
   ]);
 }
 export function remoteInputMenuItem(): MenuItem {
-  return { label: 'Input tokens', description: 'Allow another app to provide ring/watch input, type into the foreground window, or send messages to the voice assistant. Create tokens with individual permissions and revoke them here.', onSelect: openTokens };
+  return submenuItem('Input tokens', openTokens, { description: 'Allow another app to provide ring/watch input, type into the foreground window, or send messages to the voice assistant. Create tokens with individual permissions and revoke them here.' });
 }

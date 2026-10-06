@@ -1,8 +1,9 @@
 import { G2_LENS_HEIGHT, G2_LENS_WIDTH, GrayImage, type UiFont } from "../graphics/image";
 import { wrapText } from "../graphics/textwrap";
 import { getDefaultSmallFont } from "../graphics/ui-fonts";
-import { getBooleanSetting } from "../native/settings-store";
+import { getStringSetting } from "../native/settings-store";
 import { clamp } from "../util/numeric-util";
+import { normalizeAnimationSpeed } from "./animation-speed";
 import { Layer, LayerContext, PaintBelow } from "./layers";
 import { MENU_ANIMATION_KEY, setMenuAnimationReader } from "./menu-animation-pref";
 import { Menu, MENU_HIGHLIGHT_FILL, MENU_HIGHLIGHT_STROKE } from "./menu-core";
@@ -12,7 +13,7 @@ import { LIST_ROW_TEXT_INSET, centeredTextY, lineStep, listRowHeight, menuTitleH
 
 // Menu<T> and IconGrid consult this (through their motion classes) at each
 // paint; a SharedPreferences read, so changes apply to the next navigation.
-setMenuAnimationReader(() => getBooleanSetting(MENU_ANIMATION_KEY, true));
+setMenuAnimationReader(() => normalizeAnimationSpeed(getStringSetting(MENU_ANIMATION_KEY, "normal")));
 
 const DEFAULT_MENU_X = 8;
 const DEFAULT_MENU_Y = 8;
@@ -140,7 +141,7 @@ export function drawListScrollbar(
 }
 
 /**
- * Draw a ">" submenu indicator inset at the right edge of a row's selection
+ * Draw a "▶>" submenu indicator inset at the right edge of a row's selection
  * highlight box, vertically centered within it. Pass the same rect as the
  * row's drawSelectionHighlight call (the row need not actually be selected).
  */
@@ -153,10 +154,29 @@ export function drawSubmenuIndicator(
   highlightHeight: number,
   value: number,
 ): void {
-  const arrow = ">";
+  const arrow = "▶";
   const x = highlightX + highlightWidth - font.measureText(arrow) - 4;
   const y = centeredTextY(font, highlightY, highlightHeight);
   image.drawText(font, x, y, arrow, value);
+}
+
+/** A row that opens a nested menu: the label plus a right-edge ">". */
+export function submenuItem(
+  label: string,
+  onSelect: MenuItem["onSelect"],
+  options: Pick<MenuItem, "description" | "disabled"> = {},
+): MenuItem {
+  return {
+    ...options,
+    label,
+    onSelect,
+    render: ({ image, x, y, width, height, selected, disabled, text }) => {
+      const font = getDefaultSmallFont();
+      const value = disabled ? 70 : selected ? 255 : 200;
+      image.drawText(font, x, y + LIST_ROW_TEXT_INSET, text, value);
+      drawSubmenuIndicator(image, font, x, y, width, height, value);
+    },
+  };
 }
 
 export function drawToggleMenuItem(

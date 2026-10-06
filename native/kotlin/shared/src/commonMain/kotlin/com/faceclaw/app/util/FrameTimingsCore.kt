@@ -92,7 +92,7 @@ class FrameTimingsCore(
         fun root(): Frame {
             var frame: Frame = this
             while (frame.parent != null) {
-                frame = frame.parent!!
+                frame = frame.parent
             }
             return frame
         }
@@ -268,13 +268,16 @@ class FrameTimingsCore(
         get() = lock.withLock { exportDirty }
 
     /** The full export text (does not clear the dirty flag). */
-    fun buildExport(): String = lock.withLock { buildExportLocked() }
+    fun buildExport(): String = formatExport(lock.withLock { exportSnapshotLocked() })
 
     /** The export text if anything changed since the last take, else null; clears the dirty flag. */
-    fun takeExport(): String? = lock.withLock {
-        if (!exportDirty) return null
-        exportDirty = false
-        buildExportLocked()
+    fun takeExport(): String? {
+        val snapshot = lock.withLock {
+            if (!exportDirty) return null
+            exportDirty = false
+            exportSnapshotLocked()
+        }
+        return formatExport(snapshot)
     }
 
     // ---------------------------------------------------------------------
@@ -360,30 +363,72 @@ class FrameTimingsCore(
         )
     }
 
-    private fun buildExportLocked(): String {
+    /**
+     * Frame state as of one moment, formatted into the export text outside the lock. Formatting
+     * the full export takes tens of milliseconds, and holding the lock for it stalled every
+     * thread recording a span meanwhile, the main thread included.
+     */
+    private class FrameSnapshot(
+        val id: Int,
+        val reason: String,
+        val startedAtMs: Long,
+        val startedWallClockMs: Long,
+        val durationMs: Long,
+        val open: Boolean,
+        val outcome: String?,
+        val subtreeEndAtMs: Long,
+        val subtreeHasOpenFrame: Boolean,
+        val lines: List<Line>,
+        val children: List<FrameSnapshot>,
+    )
+
+    private class ExportSnapshot(
+        val wallClockMs: Long,
+        val statsSummary: String,
+        val slowest: List<FrameSnapshot>,
+        val recent: List<FrameSnapshot>,
+    )
+
+    private fun snapshotLocked(frame: Frame, now: Long): FrameSnapshot = FrameSnapshot(
+        frame.id, frame.reason, frame.startedAtMs, frame.startedWallClockMs, frame.durationMs(), frame.isOpen(),
+        frame.outcome, frame.subtreeEndAtMs(now), frame.subtreeHasOpenFrame(), frame.lines.toList(),
+        frame.children.map { snapshotLocked(it, now) },
+    )
+
+    private fun exportSnapshotLocked(): ExportSnapshot {
         val now = platform.elapsedRealtimeMs()
+        // Stable sort, descending by whole-tree duration (matches Collections.sort).
+        val treeDurations = HashMap<Frame, Long>()
+        for (frame in slowestRoots) treeDurations[frame] = frame.subtreeEndAtMs(now) - frame.startedAtMs
+        slowestRoots.sortWith(compareByDescending { treeDurations.getValue(it) })
+        while (slowestRoots.size > SLOWEST_ROOTS_KEPT) {
+            slowestRoots.removeAt(slowestRoots.size - 1)
+        }
+        return ExportSnapshot(
+            wallClockMs(),
+            statsSummaryLocked(),
+            slowestRoots.map { snapshotLocked(it, now) },
+            recentRoots.map { snapshotLocked(it, now) },
+        )
+    }
+
+    private fun formatExport(snapshot: ExportSnapshot): String {
         val out = StringBuilder(64 * 1024)
-        out.append("FrameTimings export at ").append(formatWallClock(wallClockMs())).append('\n')
-        out.append(statsSummaryLocked()).append('\n')
+        out.append("FrameTimings export at ").append(formatWallClock(snapshot.wallClockMs)).append('\n')
+        out.append(snapshot.statsSummary).append('\n')
         out.append('\n')
         out.append("Frames are trees: an input event's own frame is the root, and the renders it\n")
         out.append("caused are indented under it with offsets measured from the root's start.\n")
         out.append('\n')
 
-        // Stable sort, descending by whole-tree duration (matches Collections.sort).
-        slowestRoots.sortWith(compareByDescending { it.subtreeEndAtMs(now) - it.startedAtMs })
-        while (slowestRoots.size > SLOWEST_ROOTS_KEPT) {
-            slowestRoots.removeAt(slowestRoots.size - 1)
-        }
-
         out.append("=== slowest frames that reached the glasses ===\n")
-        for (frame in slowestRoots) {
-            appendTreeLocked(out, frame, frame, now)
+        for (frame in snapshot.slowest) {
+            appendTree(out, frame, frame, 0)
         }
 
         out.append("=== recent frames (oldest first) ===\n")
-        for (frame in recentRoots) {
-            appendTreeLocked(out, frame, frame, now)
+        for (frame in snapshot.recent) {
+            appendTree(out, frame, frame, 0)
         }
         return out.toString()
     }
@@ -416,28 +461,22 @@ class FrameTimingsCore(
     }
 
     /** Print a frame and its descendants, all timed against root's start. */
-    private fun appendTreeLocked(out: StringBuilder, frame: Frame, root: Frame, now: Long) {
-        var depth = 0
-        var walk: Frame? = frame
-        while (walk !== root) {
-            depth++
-            walk = walk!!.parent
-        }
+    private fun appendTree(out: StringBuilder, frame: FrameSnapshot, root: FrameSnapshot, depth: Int) {
         val indent = "  ".repeat(depth)
         val startOffsetMs = frame.startedAtMs - root.startedAtMs
         out.append(indent).append("frame#").append(frame.id)
             .append(" [").append(frame.reason).append(']')
         if (frame === root) {
             out.append(" started ").append(formatWallClock(frame.startedWallClockMs))
-            val totalMs = frame.subtreeEndAtMs(now) - frame.startedAtMs
-            out.append(" duration ").append(frame.durationMs()).append("ms")
+            val totalMs = frame.subtreeEndAtMs - frame.startedAtMs
+            out.append(" duration ").append(frame.durationMs).append("ms")
             if (frame.children.isNotEmpty()) {
                 out.append(" (tree ").append(totalMs).append("ms")
-                    .append(if (frame.subtreeHasOpenFrame()) ", still open" else "").append(')')
+                    .append(if (frame.subtreeHasOpenFrame) ", still open" else "").append(')')
             }
         } else {
             out.append(" started +").append(startOffsetMs).append("ms")
-                .append(" duration ").append(if (frame.isOpen()) "open" else (frame.durationMs().toString() + "ms"))
+                .append(" duration ").append(if (frame.open) "open" else (frame.durationMs.toString() + "ms"))
         }
         out.append(" outcome ").append(frame.outcome ?: "(open)").append('\n')
         for (line in frame.lines) {
@@ -445,7 +484,7 @@ class FrameTimingsCore(
                 .append("ms [").append(line.thread).append("] ").append(line.message).append('\n')
         }
         for (child in frame.children) {
-            appendTreeLocked(out, child, root, now)
+            appendTree(out, child, root, depth + 1)
         }
     }
 }

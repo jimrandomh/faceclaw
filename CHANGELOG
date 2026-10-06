@@ -1,9 +1,49 @@
 # Changelog
 
-## 0.8.1 - Future
+## 0.8.3 - Future
 
+* Fix several issues that would cause disconnection and disconnect-looping
+* Add a client for T3 Code
+* Weather app shows an icon for current conditions, and can add the weather to the status bar and the Glanceboard system card (Weather menu > Settings)
+
+## 0.8.2 - 2026-10-03
+
+### User Interface Customization
+
+* Customizable app switcher: put it on the left, right, bottom, or make it a popup
+* The status bar can be combined with the app switcher when it's on the bottom
+* The display depth is configurable when the app switcher is on the bottom
+* Add Dense style for battery indicators
+
+### Other Features and Fixes
+
+* Animations have configurable speed
+* Fix an issue where animations on the phone preview display stopped before finishing
+* Terminal app lists every configured host, including ones that are still connecting
+* Music app shows its library-browsing app picker on the front page when nothing is playing
+* Fix iOS failing to connect when an incompatible firmware version is installed
+* Mark stock firmware 2.3.2 as validated for installing custom firmware over
+
+## 0.8.1 - 2026-09-30
+
+### Assorted Features and Bug Fixes
+
+* Improve connection reliability
+* Add a video player, launched by picking a video file in the Files app
+* Fix some bugs impacting the Microphones app
 * Add config settings to disable animation categories
+* Reduce phone CPU usage
+* Putting on the glasses auto-wakes the screen
+* Add a button to the phone screen top bar to open EvenHub app phone UI
+* Glanceboard font can be configured separately from the main font 
+* Move Terminal and Navigate settings out of the Settings app and into their respective apps
+
+### EvenHub
+
 * EvenHub compatibility uses menu animations and is closer to style matched
+* EvenHub apps show an icon in the phone top bar to open their phone-side UI
+* Fix a crash on install of larger EvenHub apps
+* Fix line wrapping on EvenHub permissions dialog
 
 ## 0.8.0 - 2026-09-26
 

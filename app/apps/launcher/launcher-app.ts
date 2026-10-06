@@ -1,11 +1,10 @@
-import { type BdfFont } from "../../graphics/bdffont";
 import { getDefaultSmallFont } from "../../graphics/ui-fonts";
 import { truncateText } from "../../graphics/textwrap";
 import { GrayImage } from "../../graphics/image";
 import { type Plane } from "../../graphics/plane";
 import { renderIcon, type IconName } from "../../graphics/icons";
 import { InputEvent } from "../../ui/gestures";
-import { IconGrid, ICON_GRID_ICON_SIZE } from "../../ui/icon-grid";
+import { IconGrid, ICON_GRID_BAND_INSET_X, ICON_GRID_HIGHLIGHT_INSET_Y, ICON_GRID_ICON_SIZE } from "../../ui/icon-grid";
 import { Layer, LayerActions, LayerContext } from "../../ui/layers";
 import { MenuLayer, type MenuItem } from "../../ui/menu";
 import { WINDOW_MENU_LAYOUT } from "../../ui/window-menu";
@@ -45,6 +44,11 @@ export const LAUNCHER_WINDOW_ID = "launcher";
 export const LAUNCHER_SURFACE_ID = "window:launcher";
 
 const GRID_TOP = 6;
+/**
+ * The root grid's top: its first row's highlight band then sits as far
+ * below the window's top edge as it is from the side edges.
+ */
+const ROOT_GRID_TOP = ICON_GRID_BAND_INSET_X - ICON_GRID_HIGHLIGHT_INSET_Y;
 
 /** One cell of the grid: an app, or a folder holding some of the apps. */
 type LauncherGridEntry =
@@ -259,12 +263,13 @@ class LauncherGridLayer implements Layer {
     const { width, height } = ctx.stack.getBaseSize();
     const image = new GrayImage(width, height, 0);
     // The folder-name header band scales with the font.
-    const gridTop = this.currentFolder !== null ? GRID_TOP + font.lineHeight + 4 : GRID_TOP;
+    const gridTop = this.currentFolder !== null ? GRID_TOP + font.lineHeight + 4 : ROOT_GRID_TOP;
     if (this.currentFolder !== null) {
       image.drawText(font, 8, GRID_TOP - 2, truncateText(font, this.currentFolder, width - 16), 160);
     }
-    const gridBottom = height - 4;
-    this.grid.paint(image, { x: 0, y: gridTop, width, height: gridBottom - gridTop }, ctx.stack.isFocused());
+    // The grid runs to the window's bottom edge, so a row cut off there for
+    // scrolling meets the window's border rather than a blank strip.
+    this.grid.paint(image, { x: 0, y: gridTop, width, height: height - gridTop }, ctx.stack.isFocused());
     return image;
   }
 

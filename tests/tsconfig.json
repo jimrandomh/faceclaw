@@ -16,12 +16,11 @@
     "../app/remote/protocol.ts",
     "../app/remote/listeners.ts",
     "../app/g2/ancs-client.ts",
-    "../app/graphics/lvgl-font.ts",
     "../app/phone-ui/ble-bandwidth-meter.ts",
     "../app/apps/terminal/hub-header.ts",
     "../app/g2/ios-peripheral-identity.ts",
-    "../app/graphics/surface-compositor.ts",
     "../app/graphics/image.ts",
+    "../app/graphics/battery.ts",
     "../app/graphics/plane.ts",
     "../app/graphics/shell-scene.ts",
     "../app/ui/metrics.ts",
@@ -35,7 +34,9 @@
     "../app/g2/glasses-artwork.ts",
     "../app/g2/glasses-display-state.ts",
     "../app/g2/glance-state.ts",
+    "../app/ui/shell/notification-modal-queue.ts",
     "../app/apps/glanceboard/layout.ts",
+    "../app/apps/files/video-layout.ts",
     "../app/g2/pairing-candidates.ts",
     "../app/apps/calculator/math/*.ts",
     "../app/apps/microphones/mic-protocol.ts",
@@ -60,6 +61,13 @@
     "../app/health/health-card.ts",
     "../app/health/health-phone-chart.ts",
     "../app/g2/brightness-curve.ts",
-    "../app/g2/events.ts"
+    "../app/g2/events.ts",
+    "../app/apps/t3code/t3-rpc.ts",
+    "../app/apps/t3code/t3-pairing.ts",
+    "../app/apps/t3code/t3-model.ts",
+    "../app/apps/t3code/t3-auth.ts",
+    "../app/apps/t3code/t3-client.ts",
+    "../app/apps/t3code/t3-transcript.ts",
+    "../app/apps/t3code/t3-glance.ts"
   ]
 }

@@ -4,6 +4,7 @@ import launcherApp from "./launcher";
 import timerApp from "./timer";
 import calculatorApp from "./calculator";
 import terminalApp from "./terminal";
+import t3codeApp from "./t3code";
 import filesApp from "./files";
 import musicApp from "./music";
 import nightscoutApp from "./nightscout";
@@ -38,6 +39,7 @@ export const ALL_APPS: readonly AppDefinition[] = [
   timerApp,
   calculatorApp,
   terminalApp,
+  t3codeApp,
   filesApp,
   musicApp,
   nightscoutApp,

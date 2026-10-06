@@ -25,6 +25,7 @@ function settingsFixture(store = new Map()) {
       getBooleanSetting: (k, d) => store.get(k) ?? d, setBooleanSetting: (k, v) => store.set(k, v),
     };
     if (id.includes('brightness-curve')) return require('../.test-build/app/g2/brightness-curve.js');
+    if (id.includes('animation-speed')) return require('../.test-build/app/ui/animation-speed.js');
     return { Layer: class {}, ASSISTANT_MODEL_CHOICES: [] };
   }};
   vm.runInNewContext(ts.transpileModule(fs.readFileSync('app/ui/dashboard-settings.ts', 'utf8'), {
@@ -36,11 +37,11 @@ test('auto minimum defaults to 20 and preserves a saved preference', () => {
   assert.equal(settingsFixture().getBrightnessPreferences().minimum, 20);
   assert.equal(settingsFixture(new Map([['display.autoBrightnessMin', '25']])).getBrightnessPreferences().minimum, 25);
 });
-test('the screen fade setting switches the on/off fade between 280 ms and instant', () => {
+test('the screen fade speed scales the 280 ms on/off fade, or makes it instant', () => {
   const api = settingsFixture();
   assert.equal(api.getBrightnessPreferences().fadeMs, 280);
-  api.screenFadeSetting.set(false);
-  assert.equal(api.getBrightnessPreferences().fadeMs, 0);
+  const fadeAt = (speed) => { api.screenFadeSetting.set(speed); return api.getBrightnessPreferences().fadeMs; };
+  assert.deepEqual(['very-fast', 'fast', 'normal', 'slow', 'disabled'].map(fadeAt), [56, 140, 280, 560, 0]);
 });
 test('curve drafts preview exactly while brightness keeps the previous valid saved curve', () => {
   const store = new Map([['display.autoBrightnessCurve', '0:0,2:50,8:100']]);

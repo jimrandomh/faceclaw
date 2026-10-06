@@ -36,6 +36,46 @@ class DisplayListTest {
         renderer.render(DrawProtocol.SCREEN, DisplayListRenderer.Target(source,640,480), DisplayListRenderer.Target(destination,640,480))
         assertContentEquals(source, destination)
     }
+    @Test fun rectCopyMatchesPerPixelReferenceWithShiftsClipsAndAliasing() {
+        val random = Random(7)
+        repeat(4000) { case ->
+            val width = random.nextInt(1, 20); val height = random.nextInt(1, 6)
+            val offset = random.nextInt(3); val shift = random.nextInt(-4, 5)
+            val clip = if (random.nextBoolean()) null else {
+                val left = random.nextInt(-3, width + 1); val top = random.nextInt(-2, height + 1)
+                intArrayOf(left, top, left + random.nextInt(0, width + 3), top + random.nextInt(0, height + 2))
+            }
+            // Screen as a separate array, the target's own array at another offset, or the target itself.
+            val mode = random.nextInt(3)
+            val screenWidth = random.nextInt(1, 20); val screenHeight = random.nextInt(1, 6)
+            val screenOffset = random.nextInt(3)
+            val targetSize = offset + (width + 1) / 2 * height
+            val screenSize = screenOffset + (screenWidth + 1) / 2 * screenHeight
+            val bytes = random.nextBytes(maxOf(targetSize, if (mode == 1) screenSize else 0) + 2)
+            val screenBytes = if (mode == 0) random.nextBytes(screenSize + 1) else bytes
+            val sourceId = if (mode == 2) DrawProtocol.CURRENT else DrawProtocol.SCREEN
+            val sourceWidth = if (mode == 2) width else screenWidth
+            val sourceHeight = if (mode == 2) height else screenHeight
+            val w = random.nextInt(1, sourceWidth + 1); val h = random.nextInt(1, sourceHeight + 1)
+            val x = random.nextInt(sourceWidth - w + 1); val y = random.nextInt(sourceHeight - h + 1)
+            val dx = random.nextInt(-w - 5, width + 5); val dy = random.nextInt(-h - 2, height + 2)
+
+            val expected = bytes.copyOf()
+            val expectedScreen = if (mode == 0) screenBytes.copyOf() else expected
+            val referenceTarget = DisplayListRenderer.Target(expected, width, height, offset, shift, clip)
+            val referenceSource = if (mode == 2) referenceTarget
+                else DisplayListRenderer.Target(expectedScreen, screenWidth, screenHeight, screenOffset)
+            val snapshot = IntArray(w * h) { referenceSource.get(x + it % w, y + it / w) }
+            for (i in snapshot.indices) referenceTarget.put(dx + i % w, dy + i / w, snapshot[i])
+
+            val target = DisplayListRenderer.Target(bytes, width, height, offset, shift, clip)
+            val screen = if (mode == 2) target else DisplayListRenderer.Target(screenBytes, screenWidth, screenHeight, screenOffset)
+            DisplayListRenderer(emptyMap()).execute(
+                DrawProtocol.sequence(listOf(DrawProtocol.rectCopy(sourceId, x, y, w, h, dx, dy))), target, screen)
+            assertContentEquals(expected, bytes, "case $case")
+            if (mode == 0) assertContentEquals(expectedScreen, screenBytes, "case $case screen")
+        }
+    }
     @Test fun invalidGraphDoesNotCopyScreenIntoComposition() {
         val screen = hex("12345678"); val composition = hex("9abcdef0")
         val resources = mapOf(1 to DrawProtocol.displayList(listOf(byteArrayOf(99,0))))
@@ -257,6 +297,79 @@ class DisplayListTest {
             assertEquals(15, output.get(100 + shift, 0)); assertEquals(0, output.get(99 + shift, 0))
             assertEquals(15, output.get(109 + shift, 479)); assertEquals(0, output.get(110 + shift, 479))
             assertEquals(0, output.get(if (right) 639 else 0, 240)) // cleared, not stale
+        }
+    }
+    @Test fun addedDepthJoinsOrInsertsTheDepthField() {
+        val copy = DrawProtocol.rectCopy(DrawProtocol.SCREEN, 0, 0, 4, 4, 0, 0)
+        assertContentEquals(DrawProtocol.rectCopy(DrawProtocol.SCREEN, 0, 0, 4, 4, 0, 0, depth = 8), DrawProtocol.withAddedDepth(copy, 8))
+        val targeted = DrawProtocol.image(3, 1, 2, target = 5, depth = -2)
+        assertContentEquals(DrawProtocol.image(3, 1, 2, target = 5, depth = 6), DrawProtocol.withAddedDepth(targeted, 8))
+        assertSame(copy, DrawProtocol.withAddedDepth(copy, 0))
+        assertContentEquals(DrawProtocol.image(3, 1, 2, depth = 127), DrawProtocol.withAddedDepth(DrawProtocol.image(3, 1, 2, depth = 120), 16))
+    }
+    /** The bottom switcher's Depth setting: the shell scene's depth moves the screen, shell layers and selections together. */
+    @Test fun shellSceneDepthShiftsTheWholePresentationButNotDimming() {
+        val c = SurfaceCompositor()
+        c.configureScreen(640, 480)
+        c.configureSurface("app", 32, 0, 576, 480, 0, 0)
+        c.submitSurface("app", ArrayByteReader(ByteArray(576 * 480) { if (it % 576 in 100 until 110) 255.toByte() else 0 }),
+            0, 0, 576, 480, "stripe")
+        // One white 2x1 shell layer at (200, 10), dimming what is under it, at layer depth -2; scene depth 8.
+        val header = listOf(1, 1, 200, 10, 2, 1, 128, 0, -2).flatMap { listOf(it.toByte(), (it shr 8).toByte()) }.toByteArray()
+        c.setShellScene(ArrayByteReader(header + byteArrayOf(-1, -1) + DrawProtocol.word(8)))
+        val composite = c.composite()
+        assertEquals(8, composite.shellScene.screenDepth)
+        val calls = composite.shellScene.calls(640, 480, intArrayOf(1), IntArray(0))
+        assertTrue(calls.any { it.contentEquals(DrawProtocol.lut(640, 480, 128)) }) // the dim stays whole-screen
+        val screen = BmpUtil.pack4bppFromGray8(composite.screenGray, 640, 480)
+        for (right in listOf(false, true)) {
+            val glasses = Glasses(right)
+            glasses.apply(ScenePlanner(ResourceCacheState()).plan(screen, 640, 480, null, composite.shellScene, 1).commands)
+            val output = DisplayListRenderer.Target(glasses.composition, 640, 480)
+            // Screen: half of 8 per lens. Layer: depth -2 + 8, so one pixel less than the screen's shift on each lens.
+            val shift = if (right) -4 else 4
+            val layerShift = if (right) -3 else 3
+            assertEquals(0, output.get(131 + shift, 200)); assertTrue(output.get(132 + shift, 200) > 0)
+            assertTrue(output.get(141 + shift, 200) > 0); assertEquals(0, output.get(142 + shift, 200))
+            assertEquals(15, output.get(200 + layerShift, 10)); assertEquals(15, output.get(201 + layerShift, 10))
+        }
+        // The phone mirror shows the scene unshifted, so touches land where they look.
+        val preview = assertNotNull(c.previewComposite()).gray
+        assertEquals(0, preview[131].toInt() and 255); assertTrue((preview[132].toInt() and 255) > 0)
+        // A covering surface's own depth still wins over the scene's.
+        c.configureSurface("glance", 0, 0, 640, 480, 900, 0)
+        c.setSurfaceDepth("glance", -16)
+        assertEquals(-16, c.composite().shellScene.screenDepth)
+    }
+    /** #42: stacked modal-sized layers overflow the cache, so the frame bakes the bottom ones instead of throwing. */
+    @Test fun shellOverTheResourceBudgetBakesBottomLayersAndRecovers() {
+        val cache = ResourceCacheState(); val planner = ScenePlanner(cache)
+        val gray = ByteArray(640 * 480) { 48 }; val app = BmpUtil.pack4bppFromGray8(gray, 640, 480)
+        fun layer(key: Int, y: Int, h: Int, nibble: Int, depth: Int = 0) =
+            ShellScene.Layer(key, 14, y, 612, h, 256, ByteArray(306 * h) { (nibble * 17).toByte() }, depth = depth)
+        // Each 612x214 layer is just under the 64 KiB resource cap; three exceed the arena on their own.
+        fun chrome(depth: Int) = layer(1, 444, 36, 7, depth)
+        val modals = listOf(layer(2, 10, 214, 9), layer(3, 120, 214, 11), layer(4, 230, 214, 13, depth = 4))
+        val overflow = ShellScene(listOf(chrome(6)) + modals)
+        val plan = planner.plan(app, 640, 480, null, overflow, 1)
+        assertEquals(2, plan.bakedLayers); assertFalse(plan.bakedSelections)
+        assertTrue(plan.commands.all { it.size <= 65535 })
+        assertTrue(cache.usedBytes() <= ResourceCacheState.CACHE_SIZE)
+        // Baked layers lose their stereo depth; the live ones keep it.
+        val expected = ShellScene(listOf(chrome(0)) + modals)
+        val lenses = listOf(Glasses(), Glasses(true))
+        for (glasses in lenses) {
+            glasses.apply(plan.commands)
+            assertContentEquals(BmpUtil.pack4bppFromGray8(expected.preview(gray, 640, 480, glasses.right), 640, 480), glasses.composition)
+        }
+        // Once the shell fits again, the next frame is fully live and the screen is the app's again.
+        val fits = ShellScene(listOf(chrome(0), modals[2]))
+        val next = planner.plan(app, 640, 480, null, fits, plan.nextFid)
+        assertEquals(0, next.bakedLayers)
+        for (glasses in lenses) {
+            glasses.apply(next.commands)
+            assertContentEquals(app, glasses.screen)
+            assertContentEquals(BmpUtil.pack4bppFromGray8(fits.preview(gray, 640, 480, glasses.right), 640, 480), glasses.composition)
         }
     }
     @Test fun noisyFramesRemainBoundedAndResourceBudgetIs192KiB() {

@@ -322,7 +322,7 @@ export function digitalRoot(value: number): number {
 
 export function isPalindrome(value: number): boolean {
   const text = String(Math.abs(value));
-  return text === [...text].reverse().join("");
+  return text === text.split("").reverse().join("");
 }
 
 export function isPerfect(value: number): boolean {

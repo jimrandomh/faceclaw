@@ -193,7 +193,7 @@ function finalizeBlocks(blocks: Map<number, StreamingBlock>): AnthropicContentBl
 }
 
 /** Parse one SSE line; returns the JSON payload of a data: line, else null. */
-function parseSseDataLine(line: string): any | null {
+function parseSseDataLine(line: string): any {
   if (!line.startsWith("data:")) return null;
   const payload = line.slice(5).trim();
   if (!payload || payload === "[DONE]") return null;

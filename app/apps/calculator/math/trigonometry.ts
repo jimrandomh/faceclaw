@@ -26,14 +26,14 @@ export type SolutionFamily = {
   baseExpression: MathExpression | null;
 };
 
-export function familyValues(family: SolutionFamily, lower: number, upper: number): number[] {
-  if (family.period <= 0) {
-    return family.base >= lower && family.base <= upper ? [family.base] : [];
+export function familyValues(solutionFamily: SolutionFamily, lower: number, upper: number): number[] {
+  if (solutionFamily.period <= 0) {
+    return solutionFamily.base >= lower && solutionFamily.base <= upper ? [solutionFamily.base] : [];
   }
   const results: number[] = [];
-  let n = Math.floor((lower - family.base) / family.period);
+  let n = Math.floor((lower - solutionFamily.base) / solutionFamily.period);
   for (;;) {
-    const value = family.base + n * family.period;
+    const value = solutionFamily.base + n * solutionFamily.period;
     if (value > upper) break;
     if (value >= lower) results.push(value);
     n += 1;
@@ -42,14 +42,14 @@ export function familyValues(family: SolutionFamily, lower: number, upper: numbe
   return results;
 }
 
-export function familyText(family: SolutionFamily): string {
-  const baseText = family.baseExpression
-    ? plain(family.baseExpression)
-    : describeNumber(fromDecimal(family.base));
+export function familyText(solutionFamily: SolutionFamily): string {
+  const baseText = solutionFamily.baseExpression
+    ? plain(solutionFamily.baseExpression)
+    : describeNumber(fromDecimal(solutionFamily.base));
   // The separator is load-bearing: "2*pi" run straight into the index reads
   // as "2*pin", a different and nonsensical expression to anyone scanning it
   // on the lens.
-  const periodText = describePi(family.period);
+  const periodText = describePi(solutionFamily.period);
   return `${baseText} + ${periodText}·n`;
 }
 

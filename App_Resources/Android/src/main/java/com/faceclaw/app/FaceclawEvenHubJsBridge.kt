@@ -23,4 +23,10 @@ class FaceclawEvenHubJsBridge(private val listener: FaceclawEvenHubListener) {
             listener.onEvenAppMessage(handlerName, argsJson, callId)
         }
     }
+
+    /** The page's timer shim has work due before the host's next tick. */
+    @JavascriptInterface
+    fun wakeTimers() {
+        FaceclawEvenHubWebViewHost.getInstance().wakeTimers()
+    }
 }

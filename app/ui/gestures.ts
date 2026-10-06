@@ -22,8 +22,14 @@ export type BaseInputEvent = {
 
 /** The per-type part of InputEvent; makeInputEvent adds the BaseInputEvent fields. */
 export type InputEventPayload =
-  /** Raw ring touch-down; a later interpreted gesture may follow. */
-  | { type: "ring-press"; source: "ring" }
+  /**
+   * Raw touch-down at the start of a touch gesture, before it is known
+   * whether it becomes a tap, scroll, double tap or hold; a later interpreted
+   * gesture may follow. Sent by the ring and by the watch's touchpad (and the
+   * phone's stand-ins for both). Sources without a touch-down (the glasses'
+   * arms, the watch crown or finger-pinch taps) never send one.
+   */
+  | { type: "ring-press"; source: "ring" | "watch" }
   | { type: "click"; source: InputSource }
   | { type: "double-click"; source: InputSource }
   /** Ring scroll (or a watch crown turn, then tagged source "watch"). */
@@ -77,6 +83,32 @@ export function makeInputEvent(payload: InputEventPayload): InputEvent {
 /** True for input from the Wear OS remote (any type that carries a source). */
 export function isWatchInput(event: InputEvent): boolean {
   return "source" in event && event.source === "watch";
+}
+
+/**
+ * Pairs each gesture with the ring-press that began it, for components that
+ * act on touch-down (a flap, a flip) and must not act a second time on the
+ * gesture that follows. Feed it every input event. Input with no touch-down
+ * of its own (the arms, the watch crown or finger-pinch taps, an older watch
+ * app) never follows a press, so it still acts.
+ */
+export class PressTracker {
+  private pressedSource: InputSource | null = null;
+
+  /** True when `event` is the gesture a ring-press from the same source already announced. */
+  followsPress(event: InputEvent): boolean {
+    if (event.type === "ring-press") {
+      this.pressedSource = event.source;
+      return false;
+    }
+    const pressed = this.pressedSource;
+    this.pressedSource = null;
+    if (pressed === null) return false;
+    // Stock ring scroll notifications usually omit their source.
+    const scroll = event.type === "scroll-up" || event.type === "scroll-down";
+    const source = ("source" in event ? event.source : undefined) ?? (scroll ? "ring" : null);
+    return source === pressed;
+  }
 }
 
 export type DirectionalInputEvent = Extract<

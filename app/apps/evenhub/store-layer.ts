@@ -174,7 +174,7 @@ export class EvenHubStoreLayer implements Layer {
       for (const [index, line] of wrapText(font, message, width - LIST_X * 2).entries()) {
         image.drawText(font, LIST_X, headerH + 16 + index * lineStep(font), line, 190);
       }
-      image.drawText(font, LIST_X, height - font.lineHeight - 4, `${GESTURE_CLICK} edit credentials`, 105);
+      image.drawText(font, LIST_X, height - font.lineHeight - 4, `${GESTURE_CLICK} log in`, 105);
       return image;
     }
 

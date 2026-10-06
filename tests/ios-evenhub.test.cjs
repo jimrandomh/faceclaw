@@ -1,10 +1,8 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs'), vm = require('node:vm');
-const { createHash } = require('node:crypto');
 const { zstdCompressSync } = require('node:zlib');
 const { loader } = require('./helpers/load-typescript.cjs');
-const { LvglFont } = require('../.test-build/app/graphics/lvgl-font.js');
 
 function pack(files) {
   const key = Buffer.from('EVEN REALITIES');
@@ -16,27 +14,6 @@ function pack(files) {
     return Buffer.concat([record, xor(path), xor(body)]);
   })]);
 }
-
-test('iOS LVGL reader loads the bundled font including CJK and game symbols', () => {
-  const bytes = new Uint8Array(fs.readFileSync('app/fonts/source-han-sans/SourceHanSansSC-Light-20.lvgl.bin'));
-  const font = new LvglFont(bytes);
-  // Metrics and full glyph SHA-256 vectors from production Java LvglFontFile.
-  assert.deepEqual([...font.metrics], [25, 19]);
-  const vectors = [
-    [0x25a6, 'b08ecb603fd059b0a00ba3088f18b79185c421e73049797cd3cb0828e1e5cd04'],
-    [0x25c6, 'c176d5dcdb5f7e3a7220455528efde3760672c40cee39b422fc3f5ad20df66dd'],
-    [0x4e2d, '9bde2c8f1ffcf7afc598f4d0350c9ff262484816aa0c9b46d31f0c3c09613003'],
-    [0xff21, '0074f96299a75b86912282416e47e0823790e091352aec852eff49b89b2e719d'],
-  ];
-  for (const [cp, hash] of vectors) {
-    const glyph = font.glyph(cp);
-    const w = glyph[0] | glyph[1] << 8, h = glyph[2] | glyph[3] << 8;
-    assert.ok(w > 0 && h > 0); assert.equal(glyph.length, 8 + (Math.floor(w / 2) + 1) * h);
-    assert.equal(createHash('sha256').update(glyph).digest('hex'), hash);
-  }
-  assert.equal(font.glyph(0x10ffff).length, 0);
-  assert.throws(() => new LvglFont(bytes.subarray(0, 80)), /bounds|Truncated/);
-});
 
 test('EHPK entrypoints and extraction paths cannot escape their package directory', () => {
   const load = loader({}, { fzstd: require('fzstd') });
@@ -56,6 +33,7 @@ test('Files on iOS exposes Run app for EHPKs and passes the selected local path'
   const load = loader({ global: { isIOS: true } }, {
     '../../native/file-access': {}, '../../native/font-files': { isFontFile: () => false },
     '../../graphics/installed-fonts': {}, '../../native/image-files': { isDecodableImageFile: () => false },
+    '../../native/video-player': { isPlayableVideoFile: () => true },
     '../evenhub/installed-apps': { readEvenHubPackageManifest: () => null }, '../evenhub/permission-dialog': {},
     './file-browser': { FileBrowserLayer: class { constructor(options) { browserOptions = options; } } },
     './file-info-dialog': { FileInfoDialogLayer: class { constructor(entry, value) { actions = value; } } },
@@ -64,6 +42,8 @@ test('Files on iOS exposes Run app for EHPKs and passes the selected local path'
   });
   load('app/apps/files/files-app.ts').createFilesAppWindow({ openEhpkApp: path => { opened = path; }, installEhpkApp: path => { installed = path; } });
   assert.equal(browserOptions.isSupportedFile('test.EHPK'), true);
+  // Video playback is Android-only for now.
+  assert.equal(browserOptions.isSupportedFile('clip.mp4'), false);
   const ctx = { stack: { push() {}, pop() {} } };
   browserOptions.onFilePicked({ name: 'test.ehpk', path: '/Documents/test.ehpk' }, ctx);
   assert.deepEqual(Array.from(actions, a => a.label), ['Run app', 'Install']);

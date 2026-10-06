@@ -20,19 +20,19 @@ export function publishWorkerState(key: string, value: unknown): void {
 }
 
 /** The latest published value for `key`, or undefined when nothing was published yet. */
-export function readWorkerState<T>(key: string): T | undefined {
-  return values.get(key) as T | undefined;
+export function readWorkerState(key: string): unknown {
+  return values.get(key);
 }
 
 /** Subscribe to later publications of `key`; returns the unsubscribe. */
-export function onWorkerStateChanged<T>(key: string, listener: (value: T) => void): () => void {
+export function onWorkerStateChanged(key: string, listener: (value: unknown) => void): () => void {
   let set = listeners.get(key);
   if (!set) {
     set = new Set();
     listeners.set(key, set);
   }
-  set.add(listener as (value: unknown) => void);
+  set.add(listener);
   return () => {
-    set!.delete(listener as (value: unknown) => void);
+    set!.delete(listener);
   };
 }

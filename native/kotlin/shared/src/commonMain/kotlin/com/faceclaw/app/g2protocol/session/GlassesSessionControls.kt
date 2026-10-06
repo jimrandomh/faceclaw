@@ -359,23 +359,7 @@ internal fun GlassesSessionCore.firstUnpairedArm(): String? {
  */
 internal fun GlassesSessionCore.handleUnpairedFailure(address: String) {
     logError("Connect failed and $address is not paired; suspending reconnect")
-    monitor.withLock {
-        reconnectHalted = true
-        sessionReady = false
-        fixedLayoutCreated = false
-        startupProbePending = false
-        shutdownRequested = false
-        chargingMode = false
-        imageRetryAfterMs = 0
-        displayedFingerprint = ""
-        faceclawWakePendingNonce = -1
-        lastFaceclawWakeLeaseQueuedAtMs = 0
-        faceclawWakeControlSentCount = 0
-        clearAllMessagesLocked("arm not paired: $address")
-        reconnectAfterMs = Long.MAX_VALUE
-        link.disconnect(rightAddress)
-        link.disconnect(leftAddress)
-    }
+    monitor.withLock { haltReconnectLocked("arm not paired: $address") }
     if (!userDisconnectRequested) {
         setStateDisplay(
             "unpaired",
@@ -386,11 +370,70 @@ internal fun GlassesSessionCore.handleUnpairedFailure(address: String) {
     interruptibleSleep.interrupt()
 }
 
-internal fun GlassesSessionCore.handleTransportFailure(reason: String?) {
+/**
+ * The settings ack reported firmware this app can't run: stock, another
+ * project's, or an older Faceclaw revision (see
+ * [BleProtocol.FirmwareInfo.isCompatible]). Everything else this session
+ * would send is a private-mode message the glasses may misread (stock leaves
+ * them unacked until the CFW retry limit drops the link), and a redial would
+ * only find the same firmware, so park the worker loop like
+ * [handleUnpairedFailure], without any cleanup messages. The firmware info
+ * was emitted just before this, so the TS side can explain the mismatch and
+ * offer the custom-firmware install.
+ */
+internal fun GlassesSessionCore.handleIncompatibleFirmware() {
+    val info = monitor.withLock {
+        val pending = incompatibleFirmware
+        incompatibleFirmware = null
+        pending
+    } ?: return
+    logError("Glasses report incompatible firmware L=" + info.leftVersion + " R=" + info.rightVersion
+        + " ext=\"" + info.extension + "\" (need Faceclaw/" + requiredFirmwareRevision + "); suspending reconnect")
+    monitor.withLock { haltReconnectLocked("incompatible firmware") }
+    if (!userDisconnectRequested) {
+        setStateDisplay(
+            "incompatible-firmware",
+            "The glasses firmware is not compatible with this version of Faceclaw."
+                + " Install the custom firmware, then connect."
+        )
+    }
+    interruptibleSleep.interrupt()
+}
+
+/**
+ * Park the worker loop for good: drop both arms, discard queued traffic and
+ * stop redialing. Only an explicit connect (start() on a fresh communicator)
+ * tries again.
+ */
+internal fun GlassesSessionCore.haltReconnectLocked(reason: String) {
+    reconnectHalted = true
+    sessionReady = false
+    fixedLayoutCreated = false
+    startupProbePending = false
+    shutdownRequested = false
+    chargingMode = false
+    imageRetryAfterMs = 0
+    displayedFingerprint = ""
+    faceclawWakePendingNonce = -1
+    lastFaceclawWakeLeaseQueuedAtMs = 0
+    faceclawWakeControlSentCount = 0
+    clearAllMessagesLocked(reason)
+    reconnectAfterMs = Long.MAX_VALUE
+    link.disconnect(rightAddress)
+    link.disconnect(leftAddress)
+}
+
+/**
+ * Tear the session down and schedule a reconnect. [displayStatus], when given, replaces the
+ * generic "Reconnecting after <reason>" status line.
+ */
+internal fun GlassesSessionCore.handleTransportFailure(reason: String?, displayStatus: String? = null) {
     logError("Transport failure: $reason")
+    val retryDelayMs: Long
     monitor.withLock {
         maybeEmitEvenAppConflictLocked(reason)
         finishBenchmarkLocked(true, "transport failure")
+        val sessionWasReady = sessionReady
         sessionReady = false
         fixedLayoutCreated = false
         startupProbePending = false
@@ -402,14 +445,36 @@ internal fun GlassesSessionCore.handleTransportFailure(reason: String?) {
         lastFaceclawWakeLeaseQueuedAtMs = 0
         faceclawWakeControlSentCount = 0
         clearAllMessagesLocked("transport failure: $reason")
-        reconnectAfterMs = now() + ConnectionOptions.RECONNECT_DELAY_MS
+        retryDelayMs = scheduleReconnectLocked(sessionWasReady)
         link.disconnect(rightAddress)
         link.disconnect(leftAddress)
     }
+    logLine("reconnect attempt in " + retryDelayMs + "ms")
     if (!userDisconnectRequested) {
-        setStateDisplay("retrying", if (reason == null || reason.isEmpty()) "Reconnecting..." else "Reconnecting after $reason")
+        setStateDisplay("retrying", when {
+            displayStatus != null -> displayStatus + " Retrying in " + ((retryDelayMs + 999) / 1000) + "s."
+            reason == null || reason.isEmpty() -> "Reconnecting..."
+            else -> "Reconnecting after $reason"
+        })
     }
     interruptibleSleep.interrupt()
+}
+
+/**
+ * Set [reconnectAfterMs] for the next attempt after a failure and return the delay. Repeated
+ * failures back off along RECONNECT_BACKOFF_MS; a session that stayed up for
+ * STABLE_SESSION_MS before failing ([sessionWasReady]) starts the schedule over.
+ */
+internal fun GlassesSessionCore.scheduleReconnectLocked(sessionWasReady: Boolean): Long {
+    val now = now()
+    if (sessionWasReady && now - lastSessionReadyAtMs >= ConnectionOptions.STABLE_SESSION_MS) {
+        consecutiveReconnects = 0
+    }
+    val schedule = ConnectionOptions.RECONNECT_BACKOFF_MS
+    val delayMs = schedule[minOf(consecutiveReconnects, schedule.size - 1)].toLong()
+    consecutiveReconnects++
+    reconnectAfterMs = now + delayMs
+    return delayMs
 }
 
 internal fun GlassesSessionCore.resetSessionStateLocked() {
@@ -426,7 +491,9 @@ internal fun GlassesSessionCore.resetSessionStateLocked() {
     ringConnected = false
     ringNotificationsReady = false
     reconnectAfterMs = 0
+    consecutiveReconnects = 0
     reconnectHalted = false
+    incompatibleFirmware = null
     ringReconnectAfterMs = 0
     lastAckAtMs = 0
     lastIncomingAtMs = 0
@@ -485,6 +552,22 @@ internal fun GlassesSessionCore.emitMicStatus(body: ByteArray, address: String) 
                 micListener.onMicStatus(copy, arm)
             } catch (t: Throwable) {
                 logWarn("mic status listener failed", t)
+            }
+        }
+    }
+}
+
+internal fun GlassesSessionCore.emitAudioMonitorPacket(data: ByteArray, arm: String, arrivalMs: Long) {
+    if (audioMonitorListeners.isEmpty()) {
+        return
+    }
+    val copy = data.copyOf()
+    host.postToMain {
+        for (monitorListener in audioMonitorListeners) {
+            try {
+                monitorListener.onAudioPacket(copy, arm, arrivalMs)
+            } catch (t: Throwable) {
+                logWarn("audio monitor listener failed", t)
             }
         }
     }

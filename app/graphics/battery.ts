@@ -34,16 +34,153 @@ export const BATTERY_ICON_WIDTH = BODY_WIDTH + NUB_WIDTH;
 
 const BATTERY_BOLT_ICON = imageFromAsciiArt(
   [
-    "....#..",
-    "...##..",
-    "..##...",
-    ".######",
-    "...##..",
-    "..##...",
-    "..#....",
-  ],
-  255,
+    "    #  ",
+    "   ##  ",
+    "  ##   ",
+    " ######",
+    "   ##  ",
+    "  ##   ",
+    "  #    ",
+  ], {
+    "#": 255,
+    " ": 0,
+  },
 );
+
+const PHONE_ICON = imageFromAsciiArt(
+  [
+    " ###### ",
+    " #//### ",
+    " #//### ",
+    " ###### ",
+    " ###### ",
+    " ###### ",
+    " ###### ",
+    " ###### ",
+    " ###### ",
+    " ###### ",
+  ], {
+    "#": 255,
+    "/": 64,
+    " ": 0,
+  }
+);
+
+const GLASSES_ICON = imageFromAsciiArt(
+  [
+    " _       _ ",
+    "#         #",
+    "#         #",
+    "#         #",
+    "#         #",
+    "####/ /####",
+    "#___###___#",
+    "#___# #___#",
+    " ###   ### ",
+    "           ",
+  ], {
+    "#": 255,
+    "/": 192,
+    "_": 32,
+    " ": 0,
+  }
+);
+
+const WATCH_ICON = imageFromAsciiArt(
+  [
+    "   //   ",
+    "   //   ",
+    "   //   ",
+    "  ####  ",
+    "  #!!#  ",
+    "  #!!#  ",
+    "  ####  ",
+    "   //   ",
+    "   //   ",
+    "   //   ",
+  ], {
+    "#": 255,
+    "!": 192,
+    "/": 140,
+    " ": 0,
+  }
+);
+
+const RING_ICON = imageFromAsciiArt(
+  [
+    "  /###/  ",
+    " /#####/ ",
+    "/#     #/",
+    "#       #",
+    "#       #",
+    "#       #",
+    "/#     #/",
+    " /#   #/ ",
+    "  /###/  ",
+    "         ",
+  ], {
+    "#": 255,
+    "/": 96,
+    " ": 0,
+  },
+);
+
+/** A device with a battery indicator, for the dense style's icon labels. */
+export type BatteryDevice = "phone" | "watch" | "glasses" | "ring";
+
+const DEVICE_ICONS: Readonly<Record<BatteryDevice, GrayImage>> = {
+  phone: PHONE_ICON,
+  watch: WATCH_ICON,
+  glasses: GLASSES_ICON,
+  ring: RING_ICON,
+};
+
+export type DenseBatteryItem = { device: BatteryDevice; percent: number; charging: boolean };
+
+/** Clear rows between the two indicators in a dense column. */
+const DENSE_ROW_GAP = 2;
+/** Clear columns between a device icon's slot and its gauge. */
+const DENSE_ICON_GAP = 3;
+const DENSE_COLUMN_GAP = 8;
+
+/** Height of a dense block: two indicator rows and the gap between them. */
+export const DENSE_BATTERY_BLOCK_HEIGHT = 2 * ICON_HEIGHT + DENSE_ROW_GAP;
+
+/**
+ * Dense style: each device's icon to the left of its gauge, two indicators
+ * stacked per column, columns right-aligned at `right` with `top` the upper
+ * row's top edge. Columns pair from the right, so an odd count leaves the
+ * first indicator alone in the leftmost column, centered vertically. Within
+ * a column the gauges line up and each icon is centered in a slot as wide as
+ * the column's widest icon. Returns the block's left edge (`right` when there
+ * are no items).
+ */
+export function drawDenseBatteries(
+  image: GrayImage,
+  items: readonly DenseBatteryItem[],
+  right: number,
+  top: number,
+): number {
+  if (!items.length) return right;
+  let x = right;
+  for (let end = items.length; end > 0; end -= 2) {
+    const column = items.slice(Math.max(0, end - 2), end);
+    const slotWidth = Math.max(...column.map((item) => DEVICE_ICONS[item.device].width));
+    x -= slotWidth + DENSE_ICON_GAP + BATTERY_ICON_WIDTH;
+    const firstRowTop = column.length === 2 ? top : top + (((DENSE_BATTERY_BLOCK_HEIGHT - ICON_HEIGHT) / 2) | 0);
+    for (let row = 0; row < column.length; row++) {
+      const item = column[row]!;
+      const rowTop = firstRowTop + row * (ICON_HEIGHT + DENSE_ROW_GAP);
+      const icon = DEVICE_ICONS[item.device];
+      image.bitBlt(icon, x + (((slotWidth - icon.width) / 2) | 0), rowTop, { transparentZero: true });
+      image.bitBlt(drawBattery(item.percent, item.charging), x + slotWidth + DENSE_ICON_GAP, rowTop, {
+        transparentZero: true,
+      });
+    }
+    x -= DENSE_COLUMN_GAP;
+  }
+  return x + DENSE_COLUMN_GAP;
+}
 
 /** The empty outline, built once from the geometry constants. */
 const EMPTY_BATTERY_ICON = buildEmptyBattery();

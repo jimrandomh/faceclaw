@@ -1,6 +1,9 @@
 import { ensureLocationPermission, hasLocationPermission } from "../../native/location-permissions";
 import { weatherBridge } from "../../native/weather";
+import { toggleSettingMenuItem } from "../../ui/dashboard-settings";
+import { openSettingsSubMenu } from "../../ui/dashboard/settings-panel";
 import { WeatherLayer } from "./weather";
+import { weatherShowInStatusBarSetting, weatherShowOnSystemCardSetting } from "./weather-settings";
 import {
   createInProcessWindow,
   YieldAtRootLayer,
@@ -16,7 +19,6 @@ export function createWeatherAppWindow(options: InProcessAppOptions): InProcessW
   let closed = false;
   let requestingPermission = false;
   let unsubscribe: (() => void) | null = null;
-  let app: InProcessWindow;
 
   const requestUpdate = () => {
     if (closed || requestingPermission) return;
@@ -33,7 +35,15 @@ export function createWeatherAppWindow(options: InProcessAppOptions): InProcessW
     }).catch((error) => { requestingPermission = false; console.warn(`Weather permission: ${error}`); });
   };
 
-  app = createInProcessWindow({
+  // An indicator switched on without location access asks for it here, since
+  // its background refreshes have no screen of their own to prompt from.
+  const indicatorSettingOptions = {
+    onChange: (_ctx: unknown, enabled: boolean) => {
+      if (enabled && !hasLocationPermission()) requestUpdate();
+    },
+  };
+
+  const app = createInProcessWindow({
     appId: "weather",
     windowId: WEATHER_WINDOW_ID,
     title: "Weather",
@@ -46,6 +56,18 @@ export function createWeatherAppWindow(options: InProcessAppOptions): InProcessW
         onSelect: (ctx) => {
           ctx.stack.pop();
           requestUpdate();
+        },
+      },
+      {
+        label: "Settings",
+        onSelect: (ctx) => {
+          // Pop the menu first so closing the settings modal lands back on
+          // the forecast, not this menu.
+          ctx.stack.pop();
+          openSettingsSubMenu(ctx, "Weather settings", [
+            toggleSettingMenuItem(weatherShowInStatusBarSetting, indicatorSettingOptions),
+            toggleSettingMenuItem(weatherShowOnSystemCardSetting, indicatorSettingOptions),
+          ]);
         },
       },
     ],

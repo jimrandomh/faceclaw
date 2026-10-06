@@ -1,10 +1,9 @@
 import { clamp } from "~/util/numeric-util";
 import { formatRelativeTime } from "~/util/date-util";
 import { getDefaultSmallFont } from "../graphics/ui-fonts";
-import { truncateText } from "../graphics/textwrap";
+import { truncateText, wrapText } from "../graphics/textwrap";
 import { GrayImage, type UiFont } from "../graphics/image";
-import { wrapText } from "../graphics/textwrap";
-import { LIST_ROW_TEXT_INSET, lineStep, listRowHeight } from "./metrics";
+import { LIST_ROW_TEXT_INSET, centeredTextY, lineStep, listRowHeight } from "./metrics";
 import {
   ALL_NOTIFICATIONS,
   dismissNotification,
@@ -21,8 +20,6 @@ import { type InputEvent } from "./gestures";
 import { type Layer, type LayerContext, type PaintBelow } from "./layers";
 import { Menu, type MenuBox } from "./menu-core";
 
-const PAGE_X = 12;
-const PAGE_Y = 12;
 // Title position, shared with the other list apps (terminal, calendar).
 const TITLE_X = 18;
 const TITLE_Y = 10;
@@ -43,6 +40,10 @@ const DETAIL_MENU_ROW_GAP = 3;
 const DETAIL_MENU_TEXT_X = 8;
 const DETAIL_MENU_TEXT_Y = 4;
 const DETAIL_CONTENT_X = 24;
+const DETAIL_TITLE_Y = 21;
+/** Gaps below the title's line box and below the icon/app-name header row. */
+const DETAIL_HEADER_GAP = 3;
+const DETAIL_BODY_GAP = 4;
 // Disable-source confirmation: actions on top, the explanation below them.
 const CONFIRM_X = 24;
 const CONFIRM_Y = 8;
@@ -72,12 +73,18 @@ type DetailMenuItem =
 
 type ConfirmationItem = { label: string; run: (ctx: LayerContext) => void };
 
-export type SingleNotificationLayerOrigin = "notifications-list" | "new-notification-modal";
+export type SingleNotificationLayerOrigin = "notifications-list" | "new-notification-modal" | "notification-tray";
 
 type SingleNotificationLayerOptions = {
   origin: SingleNotificationLayerOrigin;
-  /** Close hook for the modal origin (the layer is the modal stack's base, so pop() cannot close it). */
-  closeModal?: (ctx: LayerContext) => void;
+  /**
+   * Close hook for hosts that take the layer down themselves instead of
+   * popping it: the modal (the layer is the modal stack's base, so pop()
+   * cannot close it), and the app switcher's tray selection, which keeps
+   * the layer up until the selection moves on. `gone` says the notification
+   * itself went away (dismissed, or removed by one of its actions).
+   */
+  onClose?: (ctx: LayerContext, gone: boolean) => void;
 };
 
 /**
@@ -200,6 +207,9 @@ export class SingleNotificationLayer implements Layer {
     },
   });
   private confirmation: { source: AndroidNotification; menu: Menu<ConfirmationItem> } | null = null;
+  // The last paint, which a tray-hosted layer repeats once its notification
+  // is gone, until the tray swaps in a neighbour's (see closeUnavailableNotification).
+  private lastImage: GrayImage | null = null;
 
   constructor(
     private readonly notificationKey: string,
@@ -220,6 +230,7 @@ export class SingleNotificationLayer implements Layer {
     this.detailMenu.setItems(buildDetailMenu(notification, this.options.origin));
     drawDetailContent(image, font, notification, iconForNotification(notification.key), width, height);
     this.detailMenu.paint(image, detailMenuBox(width, height), ctx.stack.isFocused());
+    this.lastImage = image;
     return image;
   }
 
@@ -255,7 +266,7 @@ export class SingleNotificationLayer implements Layer {
       this.close(ctx);
     } else if (item.kind === "action") {
       invokeNotificationAction(this.notificationKey, item.action.index);
-      if (!readActiveNotifications(ALL_NOTIFICATIONS).some((item) => item.key === this.notificationKey)) {
+      if (!readActiveNotifications(ALL_NOTIFICATIONS).some((active) => active.key === this.notificationKey)) {
         this.closeUnavailableNotification(ctx);
       }
     } else if (item.kind === "dismiss") {
@@ -276,8 +287,8 @@ export class SingleNotificationLayer implements Layer {
           wrap: true,
           rowGap: 1,
           getHeight: () => listRowHeight(getDefaultSmallFont()),
-          draw: ({ image, item, x, y, selected }) => {
-            image.drawText(getDefaultSmallFont(), x + CONFIRM_TEXT_X, y + LIST_ROW_TEXT_INSET, item.label, selected ? 255 : 200);
+          draw: ({ image, item: option, x, y, selected }) => {
+            image.drawText(getDefaultSmallFont(), x + CONFIRM_TEXT_X, y + LIST_ROW_TEXT_INSET, option.label, selected ? 255 : 200);
           },
         }),
       };
@@ -311,17 +322,23 @@ export class SingleNotificationLayer implements Layer {
   }
 
   /** Leave the detail view, whatever hosts it. */
-  private close(ctx: LayerContext): void {
-    if (this.options.origin === "new-notification-modal") {
-      this.options.closeModal?.(ctx);
+  private close(ctx: LayerContext, gone = false): void {
+    if (this.options.onClose) {
+      this.options.onClose(ctx, gone);
     } else {
       ctx.stack.pop();
     }
   }
 
   private closeUnavailableNotification(ctx: LayerContext, paintBelow?: PaintBelow): GrayImage {
-    this.close(ctx);
+    this.close(ctx, true);
     const { width, height } = ctx.stack.getBaseSize();
+    // The tray replaces this layer only after the paint (swapping layers
+    // mid-paint would render re-entrantly); meanwhile the screen keeps what
+    // it showed rather than flashing the list beneath.
+    if (this.options.origin === "notification-tray" && this.lastImage) {
+      return this.lastImage.clone();
+    }
     return paintBelow ? paintBelow() : new GrayImage(width, height, 0);
   }
 }
@@ -413,13 +430,17 @@ function drawDetailContent(
   const contentX = DETAIL_CONTENT_X;
   const menuX = width - DETAIL_MENU_WIDTH - 24;
   const contentWidth = menuX - contentX - 20;
-  image.drawText(font, PAGE_X + 12, PAGE_Y + 9, "Notification", 220);
+  image.drawText(font, contentX, DETAIL_TITLE_Y, "Notification", 220);
+  // The header row (icon + app name) and the body stack below the title's
+  // line box, so a large UI font pushes them down instead of overlapping.
+  const headerTop = DETAIL_TITLE_Y + font.lineHeight + DETAIL_HEADER_GAP;
+  const headerHeight = Math.max(ICON_SIZE, font.lineHeight);
   let appLineX = contentX;
   if (icon) {
-    image.bitBlt(icon, contentX, 36, { transparentZero: true });
+    image.bitBlt(icon, contentX, headerTop + ((headerHeight - ICON_SIZE) >> 1), { transparentZero: true });
     appLineX = contentX + ICON_SIZE + ICON_TEXT_GAP;
   }
-  image.drawText(font, appLineX, 42, `${notification.appName || notification.packageName}  ${formatRelativeTime(notification.postTime)}`, 150);
+  image.drawText(font, appLineX, centeredTextY(font, headerTop, headerHeight), `${notification.appName || notification.packageName}  ${formatRelativeTime(notification.postTime)}`, 150);
 
   const lines: string[] = [];
   lines.push(...wrapText(font, notification.title || "(untitled)", contentWidth));
@@ -435,7 +456,7 @@ function drawDetailContent(
   }
 
   const step = lineStep(font);
-  const bodyTop = 48 + font.lineHeight + 4;
+  const bodyTop = headerTop + headerHeight + DETAIL_BODY_GAP;
   const maxLines = Math.max(1, ((height - bodyTop - step) / step) | 0);
   for (let index = 0; index < Math.min(lines.length, maxLines); index++) {
     const line = lines[index]!;

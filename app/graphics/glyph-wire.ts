@@ -192,7 +192,7 @@ export function prepareFrameDraws(draws: readonly DeferredDraw[]): ArrayBuffer |
       offset = writeGlyphRecord(out, offset, state, placed);
     } else if (placed.kind === "image") {
       if (!inRange16(placed.x) || !inRange16(placed.y)) continue;
-      if (placed.presentation) { const bytes = presentations.get(placed)!; new Uint8Array(out.buffer).set(bytes, offset); offset += bytes.length; continue; }
+      if (placed.presentation) { const record = presentations.get(placed)!; new Uint8Array(out.buffer).set(record, offset); offset += record.length; continue; }
       const id = imageId(placed);
       if (id === null) continue;
       offset = writeImageRecord(out, offset, id, placed);

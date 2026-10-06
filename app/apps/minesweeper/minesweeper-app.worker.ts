@@ -250,6 +250,11 @@ global.onmessage = (event: { data: WorkerAppMessage }) => {
         syncClock(window);
       }
       break;
+    case "navigation-sensors":
+    case "resize-window":
+    case "text-input":
+    case "tool-call":
+      break;
   }
 };
 
@@ -350,7 +355,7 @@ function handleInput(window: MinesweeperWindow, event: InputEvent, frameId: numb
   // An open window menu owns all input (it closes itself via pop); menus are
   // list UIs, so watch swipes take their standard fallback meanings there.
   if (window.menu?.isOpen()) {
-    window.menu
+    void window.menu
       .handleInput(directionalFallback(event))
       .catch((error) => console.error(`minesweeper menu input failed: ${error}`))
       .then(() => renderAndSubmit(window, frameId));

@@ -8,17 +8,24 @@ export const G2_LENS_WIDTH = 640;
 export const G2_LENS_HEIGHT = 480;
 const DEFAULT_CORNER_RADIUS = 8;
 
-export function imageFromAsciiArt(lines: readonly string[], value = 255): GrayImage {
+/**
+ * Maps ASCII-art characters to gray levels 0-255. Space and "." are 0 unless
+ * the palette overrides them; any other character must have an entry.
+ */
+export type AsciiArtPalette = Readonly<Record<string, number>>;
+
+export function imageFromAsciiArt(lines: readonly string[], palette: AsciiArtPalette): GrayImage {
   const width = Math.max(0, ...lines.map((line) => line.length));
   const image = new GrayImage(width, lines.length, 0);
-  const fill = clampByte(value);
   for (let y = 0; y < lines.length; y++) {
     const line = lines[y]!;
     for (let x = 0; x < line.length; x++) {
-      const pixel = line[x];
-      if (pixel && pixel !== " " && pixel !== ".") {
-        image.pixels[y * width + x] = fill;
+      const pixel = line[x]!;
+      const value = palette[pixel] ?? (pixel === " " || pixel === "." ? 0 : undefined);
+      if (value === undefined) {
+        throw new Error(`imageFromAsciiArt: no palette entry for ${JSON.stringify(pixel)}`);
       }
+      image.pixels[y * width + x] = clampByte(value);
     }
   }
   return image;
@@ -277,17 +284,30 @@ export class GrayImage {
     const destX = dx | 0;
     const destY = dy | 0;
 
-    for (let row = 0; row < copyHeight; row++) {
-      const sy = srcY + row;
-      const ty = destY + row;
-      if (sy < 0 || sy >= source.height || ty < 0 || ty >= this.height) continue;
-      for (let col = 0; col < copyWidth; col++) {
-        const sx = srcX + col;
-        const tx = destX + col;
-        if (sx < 0 || sx >= source.width || tx < 0 || tx >= this.width) continue;
-        const value = source.pixels[sy * source.width + sx] ?? 0;
+    // Clip once, then copy row spans: flattening a frame blits every plane,
+    // and per-pixel bounds checks made that a sizeable share of a paint.
+    const colStart = Math.max(0, -destX);
+    const colEnd = Math.min(copyWidth, source.width - srcX, this.width - destX);
+    const rowStart = Math.max(0, -destY);
+    const rowEnd = Math.min(copyHeight, source.height - srcY, this.height - destY);
+    const span = colEnd - colStart;
+    const src = source.pixels;
+    const dst = this.pixels;
+    // A blit within one image copies pixel by pixel, forwards, as it always has.
+    const bulk = !opts.transparentZero && source !== this;
+    // No columns in range means no rows to copy.
+    const rowLimit = span > 0 ? rowEnd : rowStart;
+    for (let row = rowStart; row < rowLimit; row++) {
+      const from = (srcY + row) * source.width + srcX + colStart;
+      const to = (destY + row) * this.width + destX + colStart;
+      if (bulk) {
+        dst.set(src.subarray(from, from + span), to);
+        continue;
+      }
+      for (let i = 0; i < span; i++) {
+        const value = src[from + i]!;
         if (opts.transparentZero && value === 0) continue;
-        this.pixels[ty * this.width + tx] = value;
+        dst[to + i] = value;
       }
     }
 
@@ -398,7 +418,7 @@ export class GrayImage {
         hash = mixInt(hash, placed.source.height);
         hash = mixInt(hash, placed.source.sourceContentHash32());
         if (placed.presentation) { const p = placed.presentation; for (const value of [p.radius, p.background, p.border, p.depth, p.mode === "image" ? 1 : p.mode === "masked-image" ? 2 : 0]) hash = mixInt(hash, value);
-          if (p.displayList) for (const byte of encodeDisplayList({ displayList: p.displayList, x: 0, y: 0, width: placed.source.width, height: placed.source.height, depth: p.depth }, p.displayList.timeline?.startedAt ?? 0)) hash = mixInt(hash, byte);
+          if (p.displayList) hash = mixInt(hash, bytesHash32(encodeDisplayList({ displayList: p.displayList, x: 0, y: 0, width: placed.source.width, height: placed.source.height, depth: p.depth }, p.displayList.timeline?.startedAt ?? 0)));
         }
       } else {
         hash = mixInt(hash, 0xf17e);
@@ -415,28 +435,9 @@ export class GrayImage {
     return hash >>> 0;
   }
 
-  /**
-   * FNV-1a over the raster pixels. Four bytes at a time where alignment
-   * allows: this runs on every frame's fingerprint, over the whole screen, on
-   * the thread that is about to hand the frame to the transport.
-   */
+  /** Hash of the raster pixels; see bytesHash32. */
   private pixelsHash32(): number {
-    const pixels = this.pixels;
-    let hash = 2166136261;
-    let i = 0;
-    if ((pixels.byteOffset & 3) === 0) {
-      const words = new Uint32Array(pixels.buffer, pixels.byteOffset, pixels.length >>> 2);
-      for (let w = 0; w < words.length; w++) {
-        hash ^= words[w]!;
-        hash = Math.imul(hash, 16777619);
-      }
-      i = words.length << 2;
-    }
-    for (; i < pixels.length; i++) {
-      hash ^= pixels[i]!;
-      hash = Math.imul(hash, 16777619);
-    }
-    return hash >>> 0;
+    return bytesHash32(this.pixels);
   }
 
   /**
@@ -744,6 +745,29 @@ function clampByte(value: number): number {
 }
 
 /** Fold a 32-bit int into an FNV-style running hash. */
+/**
+ * FNV-1a over bytes. Four bytes at a time where alignment allows: this runs on
+ * every frame's fingerprint, over the whole screen, on the thread that is
+ * about to hand the frame to the transport.
+ */
+function bytesHash32(bytes: Uint8Array): number {
+  let hash = 2166136261;
+  let i = 0;
+  if ((bytes.byteOffset & 3) === 0) {
+    const words = new Uint32Array(bytes.buffer, bytes.byteOffset, bytes.length >>> 2);
+    for (let w = 0; w < words.length; w++) {
+      hash ^= words[w]!;
+      hash = Math.imul(hash, 16777619);
+    }
+    i = words.length << 2;
+  }
+  for (; i < bytes.length; i++) {
+    hash ^= bytes[i]!;
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
+}
+
 function mixInt(hash: number, value: number): number {
   hash ^= value | 0;
   return Math.imul(hash, 16777619);

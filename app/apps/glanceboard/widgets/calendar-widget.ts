@@ -1,10 +1,10 @@
 import { type GrayImage, type UiFont } from "../../../graphics/image";
 import { truncateText } from "../../../graphics/textwrap";
-import { getDefaultMediumFont, getDefaultSmallFont } from "../../../graphics/ui-fonts";
 import { hasCalendarPermission } from "../../../native/calendar-permissions";
 import { getCalendarReadState, onCalendarChanged, readUpcomingEvents, type CalendarEvent } from "../../../native/calendar";
 import { lineStep } from "../../../ui/metrics";
 import { dayHeaderLabel, formatEventTime } from "../../calendar/calendar";
+import { glanceFont } from "../glance-font";
 import { type GlanceWidget } from "../widget";
 
 const PAD = 8;
@@ -38,8 +38,8 @@ export class CalendarWidget implements GlanceWidget {
   }
 
   paint(image: GrayImage): void {
-    const small = getDefaultSmallFont();
-    const medium = getDefaultMediumFont();
+    const small = glanceFont.small();
+    const medium = glanceFont.medium();
     const step = lineStep(small);
     const textWidth = image.width - 2 * PAD;
 

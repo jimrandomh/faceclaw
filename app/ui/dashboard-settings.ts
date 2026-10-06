@@ -18,6 +18,7 @@ import {
 } from "~/assistant/models";
 import { isLocalModelReady } from "../native/llama";
 import { drawRightValueMenuItem, drawToggleMenuItem, MenuItem, openModalMenu } from "./menu";
+import { ANIMATION_SPEEDS, animationSpeedLabel, scaleAnimationDuration, type AnimationSpeed } from "./animation-speed";
 import { MENU_ANIMATION_KEY } from "./menu-animation-pref";
 import { LIST_ROW_TEXT_INSET, lineStep } from "./metrics";
 import { Layer, type LayerContext } from "./layers";
@@ -27,7 +28,7 @@ export type NightscoutSettings = {
   siteUrl: string;
   apiToken: string;
 };
-export type BatteryDisplayMode = "icon" | "percentage" | "stacked" | "stacked-percentage";
+export type BatteryDisplayMode = "icon" | "percentage" | "stacked" | "stacked-percentage" | "dense";
 /** When a top-bar battery indicator is shown: always, only below 50%, or never. */
 export type BatteryIndicatorVisibility = "always" | "low" | "never";
 export type TimeFormat = "24h" | "12h";
@@ -100,7 +101,8 @@ export abstract class ConfigSetting<TValue, TId extends string = string> {
 }
 
 export class ConfigSettingBoolean<TId extends string = string> extends ConfigSetting<boolean, TId> {
-  constructor(options: ConfigSettingOptions<boolean, TId>) {
+  // Widens ConfigSetting's protected constructor.
+  public constructor(options: ConfigSettingOptions<boolean, TId>) {
     super(options);
   }
 
@@ -233,10 +235,10 @@ export const batteryDisplayModeSetting = new ConfigSettingEnum<BatteryDisplayMod
   id: "batteryDisplayMode",
   label: "Style",
   storageKey: "dashboard.systemCard.batteryDisplayMode",
-  defaultValue: "stacked",
-  values: ["icon", "percentage", "stacked", "stacked-percentage"],
+  defaultValue: "dense",
+  values: ["icon", "percentage", "stacked", "stacked-percentage", "dense"],
   formatValue: batteryDisplayModeLabel,
-  description: "How the top bar shows battery levels: a gauge icon or exact percentage beside the label, or a compact gauge or percentage with the label stacked above it.",
+  description: "How the top bar shows battery levels: a gauge icon or exact percentage beside the label, a compact gauge or percentage with the label stacked above it, or (dense) a device icon beside each gauge with two indicators stacked per column.",
 });
 
 /** Below this charge level a "Below 50%" indicator becomes visible. */
@@ -307,19 +309,32 @@ export const timeFormatSetting = new ConfigSettingEnum<TimeFormat>({
  * How much of the 640x480 panel the UI uses. "576x288" is the stock band
  * (sidebar + a 288px-tall window at the vertical position); "576x480" keeps
  * the sidebar and gives every window the full height; "640x480" is the whole
- * panel, with the sidebar an overlay that shows only while it has focus.
+ * panel, with the sidebar an overlay that shows only while it has focus. The
+ * values name the sizes beside a side strip; with the app switcher along the
+ * bottom, the tall height loses the switcher row (displayModeLabel shows the
+ * actual size).
  */
 export const DISPLAY_MODE_VALUES = ["576x288", "576x480", "640x480"] as const;
 export type DisplayModeSetting = (typeof DISPLAY_MODE_VALUES)[number];
 
-const DISPLAY_MODE_LABELS: Record<DisplayModeSetting, string> = {
-  "576x288": "Band · 576×288",
-  "576x480": "Tall · 576×480",
-  "640x480": "Full panel · 640×480",
+const DISPLAY_MODE_NAMES: Record<DisplayModeSetting, string> = {
+  "576x288": "Band",
+  "576x480": "Tall",
+  "640x480": "Full panel",
+};
+
+/** Window size per mode with the app switcher along the bottom (see geometry.ts). */
+const BOTTOM_SWITCHER_SIZES: Record<DisplayModeSetting, string> = {
+  "576x288": "576×288",
+  "576x480": "576×444",
+  "640x480": "640×480",
 };
 
 export function displayModeLabel(value: DisplayModeSetting): string {
-  return DISPLAY_MODE_LABELS[value] ?? value;
+  const name = DISPLAY_MODE_NAMES[value];
+  if (!name) return value;
+  const size = appSwitcherPositionSetting.get() === "bottom" ? BOTTOM_SWITCHER_SIZES[value] : value.replace("x", "×");
+  return `${name} · ${size}`;
 }
 
 export const displayModeSetting = new ConfigSettingEnum<DisplayModeSetting>({
@@ -330,7 +345,113 @@ export const displayModeSetting = new ConfigSettingEnum<DisplayModeSetting>({
   values: DISPLAY_MODE_VALUES,
   formatValue: displayModeLabel,
   description:
-    "Band: the stock 576×288 window beside the sidebar. Tall: the sidebar plus full-height windows. Full panel: the whole 640×480 display; the sidebar overlays the app only while you are in it. Open apps reopen in the new size.",
+    "Band: the stock 288px-tall window beside the app switcher. Tall: the app switcher plus full-height windows. Full panel: the whole 640×480 display; the app switcher overlays the app only while you are in it. Open apps reopen in the new size.",
+});
+
+/**
+ * Where the app switcher (the open-window icons) sits: a strip along the
+ * left or right edge of the display, a row under the window, or a popup box
+ * over the middle of the window that shows only while it has focus.
+ */
+export type AppSwitcherPosition = "left" | "right" | "bottom" | "popup";
+
+const APP_SWITCHER_POSITION_LABELS: Record<AppSwitcherPosition, string> = {
+  left: "Left",
+  right: "Right",
+  bottom: "Bottom",
+  popup: "Popup",
+};
+
+export const appSwitcherPositionSetting = new ConfigSettingEnum<AppSwitcherPosition>({
+  id: "app-switcher-position",
+  label: "App switcher position",
+  storageKey: "display.appSwitcherPosition",
+  defaultValue: "bottom",
+  values: ["left", "right", "bottom", "popup"],
+  formatValue: (value) => APP_SWITCHER_POSITION_LABELS[value] ?? value,
+  description:
+    "Where the open-app icons go. Left and right take a column beside windows; bottom puts a row beneath the window, which makes full-height windows a little shorter; popup shows them only while you're in the app switcher, in a box over the dimmed window. Bottom and popup leave room at the sides to set the display's depth. Open apps reopen at their new size when a change resizes windows.",
+});
+
+const UI_DEPTH_VALUES = ["-62", "-48", "-32", "-16", "0", "16", "32", "48", "62"] as const;
+export type UiDepth = (typeof UI_DEPTH_VALUES)[number];
+
+/**
+ * Stereo depth of the whole display, in the firmware's depth units: the
+ * lenses shift everything by half this many pixels each, in opposite
+ * directions. Only applies with the app switcher at the bottom or a popup,
+ * where the windows' 576px width leaves 32px at each side: one for the side
+ * of the window's frame and 31 to shift into, hence ±62 (see geometry.ts
+ * uiDepth and windowFramed); values stay even so the per-lens halves of
+ * nested depths add exactly.
+ */
+export const uiDepthSetting = new ConfigSettingEnum<UiDepth>({
+  id: "ui-depth",
+  label: "Depth",
+  storageKey: "display.uiDepth",
+  defaultValue: "48",
+  values: UI_DEPTH_VALUES,
+  formatValue: (value) => {
+    const depth = Number(value);
+    return depth === 0 ? "0" : depth > 0 ? `+${depth} (nearer)` : `${depth} (farther)`;
+  },
+  description:
+    "Moves the whole display nearer (positive) or farther away (negative) by shifting it in opposite directions on the two lenses. Available with the app switcher at the bottom or as a popup. Full-panel windows lose a sliver at the edges.",
+});
+
+/**
+ * Where the status bar (clock, notification icons, app widgets, batteries)
+ * goes: the top bar over each window, or its bottom. With a bottom app
+ * switcher, the bottom is the right end of the switcher's row (geometry.ts
+ * statusInSwitcherRow), where windows grow into the top bar's height; with a
+ * popup switcher, a bar under the window (geometry.ts statusBarEdge).
+ */
+export type StatusBarPosition = "top" | "bottom";
+
+export const statusBarPositionSetting = new ConfigSettingEnum<StatusBarPosition>({
+  id: "status-bar-position",
+  label: "Status bar position",
+  storageKey: "display.statusBarPosition",
+  defaultValue: "bottom",
+  values: ["top", "bottom"],
+  // "switcher" was the bottom value's name while only a bottom row had one.
+  normalize: (value) => value === "bottom" || value === "switcher" ? "bottom" : "top",
+  formatValue: (value) => value === "top" ? "Top"
+    : appSwitcherPositionSetting.get() === "bottom" ? "With app switcher" : "Bottom",
+  description:
+    "Where the clock, notification icons, app widgets and battery indicators go. With the app switcher at the bottom, With app switcher puts them at the right end of its row, and windows grow into the top bar's space; with a popup app switcher, Bottom puts them under the window. Available with the app switcher at the bottom or as a popup; with a bottom app switcher, the full-panel display mode keeps the top bar. Changing it reopens open apps in the new size.",
+});
+
+/**
+ * Whether the status bar always takes its rows along the window's edge, or
+ * shows only while the popup app switcher is up, over the window's edge
+ * (geometry.ts statusBarOverlays); the windows then grow into its rows.
+ */
+export type StatusBarVisibility = "always" | "switcher";
+
+export const statusBarVisibilitySetting = new ConfigSettingEnum<StatusBarVisibility>({
+  id: "status-bar-visibility",
+  label: "Status bar visibility",
+  storageKey: "display.statusBarVisibility",
+  defaultValue: "always",
+  values: ["always", "switcher"],
+  formatValue: (value) => value === "switcher" ? "In app switcher" : "Always",
+  description:
+    "Always keeps the clock, notification icons, app widgets and battery indicators beside the window. In app switcher shows them only while the app switcher is open, over the edge of the window, and windows grow into their space. Available with a popup app switcher. Changing it reopens open apps in the new size.",
+});
+
+/**
+ * Whether the foreground window gets a rounded border with a popup app
+ * switcher (geometry.ts windowFramed); without one, a line divides the
+ * window from the status bar.
+ */
+export const windowBorderSetting = new ConfigSettingBoolean({
+  id: "window-border",
+  label: "Window border",
+  storageKey: "display.windowBorder",
+  defaultValue: true,
+  description:
+    "Draw a rounded border around the window. Without it, a line separates the window from the status bar. Available with a popup app switcher. Changing it reopens open apps in the new size.",
 });
 
 export const brightnessSetting = new ConfigSettingEnum<BrightnessSetting>({
@@ -360,29 +481,34 @@ export const autoBrightnessCurveSetting = new ConfigSettingString({
   defaultValue: DEFAULT_BRIGHTNESS_CURVE, normalize: normalizeBrightnessCurve, validate: brightnessCurveError,
   description: "2–16 lux:percent pairs, separated by commas. Percent is within your minimum–maximum range. Start at 0:0, end at 100%, and increase lux without decreasing percent. Incomplete edits stay in the preview; brightness keeps using the last valid curve.",
 });
+/** The screen on/off fade at Normal speed. */
 const SCREEN_FADE_MS = 280;
 
-export const menuAnimationSetting = new ConfigSettingBoolean({
+export const menuAnimationSetting = new ConfigSettingEnum<AnimationSpeed>({
   id: "menu-animation",
   label: "Menu animation",
   storageKey: MENU_ANIMATION_KEY,
-  defaultValue: true,
-  description: "Slide the highlight, scroll, and bounce at the ends in menus, lists, and the launcher and Files icon grids. When off, they move instantly.",
+  defaultValue: "normal",
+  values: ANIMATION_SPEEDS,
+  formatValue: animationSpeedLabel,
+  description: "How fast the highlight slides, lists scroll, and the ends bounce in menus, lists, and the launcher and Files icon grids. Disabled moves them instantly.",
 });
 
-export const screenFadeSetting = new ConfigSettingBoolean({
+export const screenFadeSetting = new ConfigSettingEnum<AnimationSpeed>({
   id: "screen-fade",
   label: "Screen fade",
-  storageKey: "display.screenFade",
-  defaultValue: true,
-  description: "Fade the display in and out when the screen turns on or off. When off, it switches instantly.",
+  storageKey: "display.screenFadeSpeed",
+  defaultValue: "normal",
+  values: ANIMATION_SPEEDS,
+  formatValue: animationSpeedLabel,
+  description: "How fast the display fades in and out when the screen turns on or off. Disabled switches it instantly.",
 });
 
 export function getBrightnessPreferences() {
   const level = brightnessSettingToLevel(brightnessSetting.get());
   return { auto: level === null, level: level ?? 50,
     minimum: Number(autoBrightnessMinSetting.get()), maximum: Number(autoBrightnessMaxSetting.get()),
-    curve: autoBrightnessCurveSetting.getValidValue(), fadeMs: screenFadeSetting.get() ? SCREEN_FADE_MS : 0 };
+    curve: autoBrightnessCurveSetting.getValidValue(), fadeMs: scaleAnimationDuration(SCREEN_FADE_MS, screenFadeSetting.get()) };
 }
 
 export const screenTimeoutSetting = new ConfigSettingEnum<ScreenTimeoutSetting>({
@@ -803,6 +929,31 @@ export const terminalNewConnectionSetting = new ConfigSettingString({
 });
 
 /**
+ * Staging buffer for the T3 Code app's Pair-environment screen: the phone
+ * text editor types the `t3 pair` link into it, and the app reads it back
+ * when the user confirms on the glasses. Cleared after each attempt (the link
+ * carries a one-time credential).
+ */
+export const t3codePairingLinkSetting = new ConfigSettingString({
+  id: "t3code-pairing-link",
+  label: "T3 Code pairing link",
+  storageKey: "t3code.pairingDraft",
+  defaultValue: "",
+  editorTitle: "T3 Code pairing link (from `t3 pair`)",
+  glassesEditTitle: "Pair T3 Code",
+  normalize: (value) => (value ?? "").replace(/[\x00-\x1f]+/g, " ").trim(),
+});
+
+export const t3codeWakeOnAttentionSetting = new ConfigSettingBoolean({
+  id: "t3code-wake-on-attention",
+  label: "Wake when a thread needs you",
+  storageKey: "t3code.wakeOnAttention",
+  defaultValue: false,
+  description:
+    "When a T3 Code agent asks for approval or asks a question while the glasses are asleep, wake them and show the T3 Code thread list.",
+});
+
+/**
  * Staging buffer for the Developer app's "Load app from URL" flow: the app
  * opens the phone text editor on this setting, the user types (or scans, or
  * dictates) the URL, and the app reads it back when the load is confirmed on
@@ -923,7 +1074,7 @@ export const nightscoutMaxLoopAgeSetting = nightscoutThresholdSetting(
 );
 export const nightscoutAlwaysShowInTopBarSetting = new ConfigSettingBoolean({
   id: "nightscout-always-show-in-top-bar",
-  label: "Always show in top bar",
+  label: "Always show in status bar",
   storageKey: "integrations.nightscout.alwaysShowInTopBar",
   defaultValue: false,
   description: "Keep the Nightscout glucose graph and warnings in the top bar even when all Nightscout windows are closed.",
@@ -1061,6 +1212,7 @@ export function batteryDisplayModeLabel(value: BatteryDisplayMode): string {
   if (value === "percentage") return "Percentage";
   if (value === "stacked") return "Stacked";
   if (value === "stacked-percentage") return "Stacked percentage";
+  if (value === "dense") return "Dense";
   return "Icon";
 }
 
@@ -1085,11 +1237,6 @@ export function isNightscoutSettingsConfigured(): boolean {
   return nightscoutSiteUrlSetting.get().length > 0 && nightscoutApiTokenSetting.get().length > 0;
 }
 
-
-function normalizeSystemCardName(name: string | null | undefined): string {
-  const normalized = (name ?? "").replace(/[\x00-\x1f]+/g, " ").replace(/\s+/g, " ").trim();
-  return normalized;
-}
 
 function normalizeNightscoutSiteUrl(siteUrl: string | null | undefined): string {
   return (siteUrl ?? "").replace(/[\x00-\x1f]+/g, "").trim().replace(/\/+$/, "");
@@ -1169,7 +1316,6 @@ export function toggleSettingMenuItem<TId extends string = string>(
 
 export function textSettingMenuItem<TId extends string = string>(
   setting: ConfigSettingString<TId>,
-  opts?: SettingsMenuOptions<string>
 ): MenuItem {
   return {
     label: setting.label,

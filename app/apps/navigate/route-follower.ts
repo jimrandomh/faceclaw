@@ -46,7 +46,7 @@ export class RouteFollower {
 
   constructor(route: Route) {
     this.route = route;
-    this.vertexMeters = new Array(route.coordinates.length);
+    this.vertexMeters = Array.from({ length: route.coordinates.length }, () => 0);
     let along = 0;
     this.vertexMeters[0] = 0;
     for (let i = 1; i < route.coordinates.length; i++) {
@@ -58,7 +58,7 @@ export class RouteFollower {
     // Each step's maneuver happens where the previous step's travel ends, so
     // the maneuver point of step k sits at the sum of steps 0..k-1 distances.
     // (Slight drift vs the geometry is fine at guidance granularity.)
-    this.stepStartMeters = new Array(route.steps.length);
+    this.stepStartMeters = Array.from({ length: route.steps.length }, () => 0);
     let stepAlong = 0;
     for (let i = 0; i < route.steps.length; i++) {
       this.stepStartMeters[i] = Math.min(stepAlong, this.totalMeters);

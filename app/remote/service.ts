@@ -22,6 +22,8 @@ export function startRemoteInput(host: RemoteHost): () => void {
     if (busy || stopped) return;
     busy = true;
     try {
+      // stop() can flip `stopped` while handleRequest is awaited.
+      // oxlint-disable-next-line no-unmodified-loop-condition
       while (!stopped) {
         const raw = native.nextRequest();
         if (!raw) break;

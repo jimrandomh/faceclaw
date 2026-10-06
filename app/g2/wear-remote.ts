@@ -43,6 +43,8 @@ import { FACECLAW_VERSION } from "../version";
 export const WEAR_PROTOCOL_VERSION = 1;
 
 export type WearRemoteInputKind =
+  /** Touch-down at the start of any pad gesture; arrives on its own path (see handleMessage). */
+  | "ring-press"
   | "click"
   | "double-click"
   | "scroll-up"
@@ -307,6 +309,16 @@ export class WearRemote {
       const battery = readNumber(message.payload.battery, -1);
       const valid = Number.isInteger(battery) && battery >= 0 && battery <= 100;
       this.setWatchBattery(valid ? battery : null, valid ? message.payload.charging === true : null);
+      return;
+    }
+    if (message.path === WEAR_PATHS.press) {
+      // Touch-down ahead of the gesture that follows it. Fire-and-forget like
+      // the battery (no seq, never acked): wherever that gesture would be
+      // refused, the press is dropped silently and the gesture's ack says why.
+      const phase = this.host.getState().phase;
+      if (watchRemoteEnabledSetting.get() && (phase === "connected" || phase === "charging")) {
+        await this.host.injectInput("ring-press");
+      }
       return;
     }
     if (!watchRemoteEnabledSetting.get()) {

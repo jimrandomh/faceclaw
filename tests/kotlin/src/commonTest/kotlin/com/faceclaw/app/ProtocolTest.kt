@@ -213,6 +213,18 @@ class ProtocolTest {
     }
 
     @Test
+    fun cfwAckDeadlineWaitsWhileEitherWritesOrAcksProgress() {
+        // Sent at 1000 into an idle arm: 3 s from the send.
+        assertEquals(4_000L, CfwMessageWindow.ackDeadline(1_000, 1_000, 0))
+        // An ack from the arm restarts the 3 s ack window.
+        assertEquals(5_500L, CfwMessageWindow.ackDeadline(1_000, 1_000, 2_500))
+        // Writes still completing keep it waiting past the ack window, 500 ms at a time.
+        assertEquals(6_700L, CfwMessageWindow.ackDeadline(1_000, 6_200, 2_500))
+        // An ack from before the send doesn't shorten anything.
+        assertEquals(4_000L, CfwMessageWindow.ackDeadline(1_000, 1_000, 900))
+    }
+
+    @Test
     fun orderedCompletionAndWholeWindowRecovery() {
         val head = message()
         val tail = message()

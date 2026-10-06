@@ -43,7 +43,7 @@ export class TranscribeLayer implements Layer {
     const { width, height } = ctx.stack.getBaseSize();
     const image = new GrayImage(width, height, 0);
     const text = this.transcript.text || (this.listening ? "Listening..." : this.detail);
-    const wrapped = wrapTranscribeText((text) => font.measureText(text), text, width - 64);
+    const wrapped = wrapTranscribeText((line) => font.measureText(line), text, width - 64);
 
     image.drawText(font, 24, 20, "Transcribe", 200);
     image.drawText(font, 24, 40, this.saveNotice || this.status, 110);

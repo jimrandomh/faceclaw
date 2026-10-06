@@ -1,0 +1,85 @@
+{
+  // Run via ./lint.sh (or `npm run lint`). Rule docs:
+  // https://oxc.rs/docs/guide/usage/linter/rules.html
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": ["eslint", "typescript", "unicorn", "oxc", "import", "promise"],
+  "options": {
+    // Type-aware rules run through oxlint-tsgolint (typescript-go), which
+    // reads tsconfig.json with TS7 semantics (no baseUrl, rootDir explicit).
+    "typeAware": true
+  },
+  "categories": {
+    "correctness": "warn",
+    "suspicious": "warn",
+    "pedantic": "off",
+    "perf": "off",
+    "style": "off",
+    "restriction": "off",
+    "nursery": "off"
+  },
+  "rules": {
+    // --- Opted in from non-default categories ---
+    "eslint/eqeqeq": ["warn", "always", { "null": "ignore" }],
+    "eslint/no-fallthrough": "warn",
+    "eslint/no-var": "warn",
+    "eslint/prefer-const": "warn",
+    "import/no-duplicates": "warn",
+    "typescript/no-deprecated": "warn",
+    "typescript/no-misused-promises": "warn",
+    // Rethrowing / rejecting with a caught `unknown` is propagation, not a bug.
+    "typescript/only-throw-error": ["warn", { "allowThrowingUnknown": true }],
+    "typescript/prefer-promise-reject-errors": ["warn", { "allowThrowingUnknown": true }],
+    "typescript/restrict-plus-operands": "warn",
+    "typescript/switch-exhaustiveness-check": [
+      "warn",
+      { "considerDefaultExhaustiveForUnions": true }
+    ],
+
+    // --- Turned off from the enabled categories ---
+    // Intentional control-character stripping and ANSI/terminal handling.
+    "eslint/no-control-regex": "off",
+    // Private-by-convention `_field` names are common here.
+    "eslint/no-underscore-dangle": "off",
+    // Side-effect imports (polyfills, registrations) are deliberate.
+    "import/no-unassigned-import": "off",
+    // Fires on `.then()` chains used for side effects.
+    "promise/always-return": "off",
+    // Worker onmessage/postMessage are NativeScript workers, not windows.
+    "unicorn/prefer-add-event-listener": "off",
+    "unicorn/require-post-message-target-origin": "off",
+    // In-place sort/reverse on locally owned arrays is fine.
+    "unicorn/no-array-sort": "off",
+    "unicorn/no-array-reverse": "off",
+    // Stylistic: prefers hoisting closures that don't capture anything.
+    "unicorn/consistent-function-scoping": "off",
+    // `for (const l of [...listeners])` snapshots before notifying.
+    "unicorn/no-useless-spread": "off",
+    // references.d.ts pulls in @nativescript/types this way.
+    "typescript/triple-slash-reference": "off",
+    // Mostly `${error}` on unknown catch values, which is fine.
+    "typescript/restrict-template-expressions": "off",
+    // Mostly String(x) on unknown-typed parsed JSON.
+    "typescript/no-base-to-string": "off",
+    // Flags exhaustive switches that tsc already checks.
+    "typescript/consistent-return": "off",
+    // The app is not strictNullChecks, so these misfire on `!` and on
+    // String()/Number() coercions of Java-bridged values.
+    "typescript/no-unnecessary-type-assertion": "off",
+    "typescript/no-unnecessary-type-conversion": "off",
+    // Too noisy for NativeScript code that casts bridged `any` values.
+    "typescript/no-unsafe-type-assertion": "off"
+  },
+  // TypeScript only: scripts, tests and vendored web code are plain JS.
+  "ignorePatterns": [
+    "**/*.js",
+    "**/*.cjs",
+    "**/*.mjs",
+    "**/*.jsx",
+    "node_modules/**",
+    "platforms/**",
+    "dist/**",
+    "faceclaw-extensions/dist/**",
+    "old/**",
+    "tmp/**"
+  ]
+}

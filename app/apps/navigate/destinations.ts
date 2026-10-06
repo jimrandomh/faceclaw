@@ -1,6 +1,6 @@
 /**
  * Saved and recent destinations for the Navigate app: Home and Work (plain
- * address settings, also editable in the Settings app), custom named
+ * address settings), custom named
  * destinations, and a recency list of resolved places. Pure settings-store
  * accessors, usable from the worker and the main thread alike.
  */

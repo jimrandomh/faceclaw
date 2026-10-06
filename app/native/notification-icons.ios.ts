@@ -36,8 +36,11 @@ function bell(): GrayImage {
   return image
 }
 export function readActiveNotificationIcons(maxIcons: number, _allowStale: boolean) {
-  const sources = new Set(readActiveNotifications(ALL_NOTIFICATIONS).map(n => n.packageName))
-  return {icons: Array.from(sources).slice(0,Math.max(0,maxIcons)).map(() => bell()),stale:false}
+  // One icon per source, standing for its first notification.
+  const sources = new Map<string, string>()
+  for (const n of readActiveNotifications(ALL_NOTIFICATIONS)) if (!sources.has(n.packageName)) sources.set(n.packageName, n.key)
+  const keys = Array.from(sources.values()).slice(0,Math.max(0,maxIcons))
+  return {icons: keys.map(() => bell()),keys,stale:false}
 }
 export function readNotificationIconByKey(key: string, _allowStale: boolean) {
   return {icon: readActiveNotifications(ALL_NOTIFICATIONS).some(n => n.key === key) ? bell() : null,stale:false}

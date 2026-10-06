@@ -29,6 +29,51 @@ static NSAttributedString *Attributed(CTFontRef font, NSString *text, BOOL glyph
     if (glyphLayout) attrs[(__bridge id)kCTLigatureAttributeName] = @0;
     return [[NSAttributedString alloc] initWithString:text attributes:attrs];
 }
+static CTLineRef CreateRawLine(CTFontRef font, NSString *text, BOOL glyphLayout) CF_RETURNS_RETAINED {
+    return CTLineCreateWithAttributedString((__bridge CFAttributedStringRef)Attributed(font, text, glyphLayout));
+}
+static BOOL IsColorRun(CTRunRef run) {
+    CTFontRef font = CFDictionaryGetValue(CTRunGetAttributes(run), kCTFontAttributeName);
+    return font && (CTFontGetSymbolicTraits(font) & kCTFontTraitColorGlyphs);
+}
+static BOOL HasColorRun(CTLineRef line) {
+    for (id run in (__bridge NSArray *)CTLineGetGlyphRuns(line)) if (IsColorRun((__bridge CTRunRef)run)) return YES;
+    return NO;
+}
+// iOS falls back to Apple Color Emoji for default-text symbols the face lacks
+// (▶ U+25B6 in Roboto), where Android's minikin picks a text font; the
+// alpha-only raster keeps just the emoji's silhouette (▶ becomes a solid
+// rounded square). Request text presentation (U+FE0E) for each lone codepoint
+// that fell back to a color font, wherever a text font can supply it. Returns
+// `text` itself when nothing changes.
+static NSString *PreferTextPresentation(CTFontRef font, NSString *text, CTLineRef line, BOOL glyphLayout) {
+    NSMutableIndexSet *color = [NSMutableIndexSet new];
+    for (id run in (__bridge NSArray *)CTLineGetGlyphRuns(line)) if (IsColorRun((__bridge CTRunRef)run)) {
+        CFRange range = CTRunGetStringRange((__bridge CTRunRef)run);
+        [color addIndexesInRange:NSMakeRange(range.location, range.length)];
+    }
+    if (!color.count) return text;
+    NSMutableString *out = [NSMutableString new];
+    __block BOOL changed = NO;
+    [text enumerateSubstringsInRange:NSMakeRange(0, text.length) options:NSStringEnumerationByComposedCharacterSequences
+        usingBlock:^(NSString *ch, NSRange range, __unused NSRange enclosing, __unused BOOL *stop) {
+        [out appendString:ch];
+        // Multi-scalar sequences (ZWJ, flags, keycaps, explicit selectors) stay emoji.
+        if (![color containsIndex:range.location] || [ch lengthOfBytesUsingEncoding:NSUTF32StringEncoding] != 4) return;
+        NSString *variant = [ch stringByAppendingString:@"\uFE0E"];
+        CTLineRef retry = CreateRawLine(font, variant, glyphLayout);
+        if (!HasColorRun(retry)) { [out appendString:@"\uFE0E"]; changed = YES; }
+        CFRelease(retry);
+    }];
+    return changed ? out : text;
+}
+static CTLineRef CreateLine(CTFontRef font, NSString *text, BOOL glyphLayout) CF_RETURNS_RETAINED {
+    CTLineRef line = CreateRawLine(font, text, glyphLayout);
+    NSString *preferred = PreferTextPresentation(font, text, line, glyphLayout);
+    if (preferred == text) return line;
+    CFRelease(line);
+    return CreateRawLine(font, preferred, glyphLayout);
+}
 static BOOL ValidText(NSString *text) { return text != nil && text.length <= 100000; }
 static BOOL ValidRaster(NSInteger width, NSInteger height) {
     return width > 0 && height > 0 && width <= 65535 && height <= 65535 && width * height <= 4000000;
@@ -85,7 +130,7 @@ static NSData *ImagePacket(NSData *pixels, NSInteger width, NSInteger height, do
     if (!ValidText(text)) return 0;
     CTFontRef font = CreateFont(path, size);
     if (!font) return 0;
-    CTLineRef line = CTLineCreateWithAttributedString((__bridge CFAttributedStringRef)Attributed(font, text, YES));
+    CTLineRef line = CreateLine(font, text, YES);
     double width = CTLineGetTypographicBounds(line, NULL, NULL, NULL);
     CFRelease(line); CFRelease(font); return width;
 }
@@ -95,7 +140,7 @@ static NSData *ImagePacket(NSData *pixels, NSInteger width, NSInteger height, do
     if (!font) return [NSData data];
     uint32_t scalar = (uint32_t)cp;
     NSString *text = [[NSString alloc] initWithBytes:&scalar length:4 encoding:NSUTF32LittleEndianStringEncoding];
-    CTLineRef line = CTLineCreateWithAttributedString((__bridge CFAttributedStringRef)Attributed(font, text, YES));
+    CTLineRef line = CreateLine(font, text, YES);
     double advance = CTLineGetTypographicBounds(line, NULL, NULL, NULL);
     NSMutableData *out = [NSMutableData dataWithLength:10];
     U16(out.mutableBytes, MAX(0, MIN(65535, lround(advance * 64))));
@@ -128,7 +173,7 @@ static NSData *ImagePacket(NSData *pixels, NSInteger width, NSInteger height, do
     if (!ValidText(text)) return [NSData data];
     CTFontRef font = CreateFont(path, size);
     if (!font) return [NSData data];
-    CTLineRef line = CTLineCreateWithAttributedString((__bridge CFAttributedStringRef)Attributed(font, text, NO));
+    CTLineRef line = CreateLine(font, text, NO);
     CGRect bounds = CTLineGetImageBounds(line, NULL);
     BOOL ink = !CGRectIsNull(bounds) && !CGRectIsEmpty(bounds);
     NSInteger left = ink ? MIN(0, floor(CGRectGetMinX(bounds))) : 0;
@@ -155,6 +200,9 @@ static NSData *ImagePacket(NSData *pixels, NSInteger width, NSInteger height, do
     NSInteger step = MAX(1, ascent + descent + (NSInteger)ceil(MAX(0, CTFontGetLeading(font))));
     maxLines = MIN(maxLines, MIN(65535 / step, 4000000 / width / step));
     if (maxLines <= 0) { CFRelease(font); return [NSData data]; }
+    CTLineRef probe = CreateRawLine(font, text, NO);
+    text = PreferTextPresentation(font, text, probe, NO); // Before any index math below.
+    CFRelease(probe);
     NSAttributedString *attributed = Attributed(font, text, NO);
     CTTypesetterRef typesetter = CTTypesetterCreateWithAttributedString((__bridge CFAttributedStringRef)attributed);
     NSMutableArray *lines = [NSMutableArray new];
@@ -165,8 +213,8 @@ static NSData *ImagePacket(NSData *pixels, NSInteger width, NSInteger height, do
         CTLineRef line;
         if (lines.count == (NSUInteger)maxLines - 1 && start + count < (CFIndex)text.length) {
             NSString *rest = [[text substringFromIndex:start] stringByReplacingOccurrencesOfString:@"\n" withString:@" "];
-            CTLineRef full = CTLineCreateWithAttributedString((__bridge CFAttributedStringRef)Attributed(font, rest, NO));
-            CTLineRef token = CTLineCreateWithAttributedString((__bridge CFAttributedStringRef)Attributed(font, @"…", NO));
+            CTLineRef full = CreateRawLine(font, rest, NO);
+            CTLineRef token = CreateRawLine(font, @"…", NO);
             line = CTLineCreateTruncatedLine(full, width, kCTLineTruncationEnd, token);
             if (!line) line = CFRetain(token);
             CFRelease(full); CFRelease(token);
