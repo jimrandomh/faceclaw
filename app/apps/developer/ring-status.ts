@@ -3,13 +3,17 @@ import { GrayImage } from "../../graphics/image";
 import { type InputEvent } from "../../ui/gestures";
 import { Layer, type LayerContext } from "../../ui/layers";
 import { shell } from "../../ui/shell/shell";
-import { ringConnectionModeSetting } from "../../ui/dashboard-settings";
+import { MenuLayer, type MenuItem } from "../../ui/menu";
+import { ringConnectionModeSetting, ringDirectRoleSetting } from "../../ui/dashboard-settings";
 import { loadDeviceAddresses } from "../../g2/device-addresses";
 import {
   getRingSessionStatus,
   getRingSystemBluetoothState,
+  sendRingConfigCommand,
+  setDirectRingRole,
   setGlassesRingLink,
   type GlassesRingLinkAction,
+  type RingConfigAction,
   type RingSessionStatus,
   type RingSystemBluetoothState,
 } from "../../native/ring-status";
@@ -20,26 +24,46 @@ const VALUE_X = 130;
 const BUTTON_GAP = 8;
 
 type Row = { label: string; value: string; dim?: boolean };
-type Button = { label: string; action: GlassesRingLinkAction | "mode" };
+type Button = "glasses" | "ring" | "mode" | "role";
 
-const BUTTONS: readonly Button[] = [
-  { label: "Disconnect", action: "disconnect" },
-  { label: "Release", action: "release" },
-  { label: "Reconnect", action: "connect" },
-  { label: "Mode", action: "mode" },
+const BUTTONS: readonly Button[] = ["glasses", "ring", "mode", "role"];
+
+/** Glasses-side commands (sid 0x80 pair manager). */
+const GLASSES_ACTIONS: readonly { label: string; action: GlassesRingLinkAction }[] = [
+  { label: "Disconnect ring", action: "disconnect" },
+  { label: "Release ring", action: "release" },
+  { label: "Unpair ring", action: "unpair" },
+  { label: "Connect ring", action: "connect" },
 ];
+
+/** Ring-side commands over the direct link, and the combined flows. */
+const RING_ACTIONS: readonly { label: string; action: RingConfigAction }[] = [
+  { label: "Bind to these glasses", action: "bind" },
+  { label: "Unbind from glasses", action: "unbind" },
+  { label: "Targets: these glasses", action: "targets-glasses" },
+  { label: "Targets: clear (any)", action: "targets-clear" },
+  { label: "Remove ring notify", action: "remove-ring" },
+  { label: "Touch source on", action: "touch-on" },
+  { label: "Touch source off", action: "touch-off" },
+  { label: "Pair auth (phone role)", action: "pair-auth" },
+];
+
+const ACTION_MENU_LAYOUT = { x: "center" as const, y: 8, width: 300, dimUnderneath: 0.35 };
 
 /**
  * Where R1 ring input is coming from: the phone's own Bluetooth link to the
  * ring, the direct-link session state, and when input last arrived directly
- * versus relayed by the glasses. A ring connected to the glasses does not
- * also report gestures to a phone that connects to it directly, so the two
- * "input" rows are the quickest way to see which path is live.
+ * versus relayed by the glasses. The ring sends gestures only to whichever
+ * link holds its glasses role, so the two "input" rows are the quickest way
+ * to see which path is live.
  *
- * The buttons are EXPERIMENTAL glasses-side ring link commands (sid 0x80,
- * see GlassesSessionRing.kt): Disconnect / Release ask the glasses to let go
- * of the ring, Reconnect hands it back, and Mode flips the Developer "Ring
- * connection" setting, which applies on the next glasses connection.
+ * Everything below is EXPERIMENTAL (see GlassesSessionRing.kt and
+ * notes/ring-link-control.md). "Glasses..." sends sid 0x80 ring-link commands
+ * to the glasses; "Ring..." sends binding commands to the ring over the
+ * direct link (Mode must be direct and the link up), including Bind/Unbind,
+ * which do both halves in the official app's order. Mode flips the Developer
+ * "Ring connection" setting (applies on the next glasses connection); Role
+ * cycles which ring role the direct link claims and applies immediately.
  */
 export class RingStatusLayer implements Layer {
   private session: RingSessionStatus | null = null;
@@ -101,9 +125,7 @@ export class RingStatusLayer implements Layer {
       const selected = index === this.selected;
       if (selected) image.fillRoundedRect(x, buttonTop, buttonWidth, buttonHeight, 40, 4);
       image.drawRoundedRect(x, buttonTop, buttonWidth, buttonHeight, selected ? 200 : 70, 4);
-      const text = button.action === "mode"
-        ? (ringConnectionModeSetting.get() === "direct" ? "Mode: direct" : "Mode: glasses")
-        : button.label;
+      const text = buttonLabel(button);
       image.drawText(font, x + Math.max(0, Math.floor((buttonWidth - font.measureText(text)) / 2)),
         buttonTop + 4, text, selected ? 255 : 170);
     });
@@ -132,11 +154,17 @@ export class RingStatusLayer implements Layer {
         : "not connected";
       const since = s.directStateAgeMs >= 0 ? ` ${formatAge(s.directStateAgeMs)}` : "";
       const battery = s.directBattery >= 0 ? `, ${s.directBattery}%` : "";
-      rows.push({ label: "Direct link", value: `${state}${since}, ${s.directConnectCount} connects${battery}` });
+      rows.push({
+        label: "Direct link",
+        value: `${state}${since}, role ${s.directRole}, ${s.directConnectCount} connects${battery}`,
+      });
     }
     rows.push({ label: "Direct input", value: describeInput(s.lastDirectInputAgeMs, s.lastDirectInput) });
     if (s.directEnabled) {
       rows.push({ label: "Direct pkts", value: describeAge(s.lastDirectNotifyAgeMs) });
+      if (s.lastDirectRaw) {
+        rows.push({ label: "Direct raw", value: `${formatAge(s.lastDirectRawAgeMs)} ago: ${s.lastDirectRaw}` });
+      }
     }
     rows.push({ label: "Glasses input", value: describeInput(s.lastGlassesInputAgeMs, s.lastGlassesInput) });
     rows.push({
@@ -148,27 +176,66 @@ export class RingStatusLayer implements Layer {
     if (s.lastGlassesReport) {
       rows.push({ label: "Glasses said", value: `${s.lastGlassesReport} (${formatAge(s.lastGlassesReportAgeMs)} ago)` });
     }
+    if (s.lastRingCommand) {
+      rows.push({
+        label: "Ring cmd",
+        value: `${s.lastRingCommand} ${formatAge(s.lastRingCommandAgeMs)} ago: ${s.lastRingCommandResult}`,
+      });
+    }
     if (s.lastCommand) {
-      rows.push({ label: "Sent", value: `${s.lastCommand} ${formatAge(s.lastCommandAgeMs)} ago` });
-      rows.push({ label: "Result", value: `R ${s.lastCommandResultR}; L ${s.lastCommandResultL}` });
+      rows.push({ label: "Glasses cmd", value: `${s.lastCommand} ${formatAge(s.lastCommandAgeMs)} ago` });
+      rows.push({ label: "Glasses ack", value: `R ${s.lastCommandResultR}; L ${s.lastCommandResultL}` });
     }
     if (s.lastDirectError) rows.push({ label: "Direct error", value: s.lastDirectError, dim: true });
     return rows;
   }
 
-  private activate(): void {
-    const button = BUTTONS[this.selected]!;
-    if (button.action === "mode") {
-      const next = ringConnectionModeSetting.get() === "direct" ? "glasses" : "direct";
-      ringConnectionModeSetting.set(next);
-      this.notice = `Ring connection set to ${ringConnectionModeSetting.displayValue(next)}; applies on next glasses connection`;
-      return;
+  private activate(ctx: LayerContext): void {
+    switch (BUTTONS[this.selected]!) {
+      case "glasses":
+        ctx.stack.push(this.actionMenu("Glasses ring link", GLASSES_ACTIONS.map(({ label, action }) => ({
+          label,
+          onSelect: (menuCtx) => {
+            this.runGlassesAction(label, action);
+            menuCtx.stack.pop();
+          },
+        }))));
+        return;
+      case "ring":
+        ctx.stack.push(this.actionMenu("Ring binding", RING_ACTIONS.map(({ label, action }) => ({
+          label,
+          onSelect: (menuCtx) => {
+            this.notice = `${label}: ${sendRingConfigCommand(action, this.ringAddress(), this.system?.name ?? "")}`;
+            this.poll();
+            menuCtx.stack.pop();
+          },
+        }))));
+        return;
+      case "mode": {
+        const next = ringConnectionModeSetting.get() === "direct" ? "glasses" : "direct";
+        ringConnectionModeSetting.set(next);
+        this.notice = `Ring connection set to ${ringConnectionModeSetting.displayValue(next)}; applies on next glasses connection`;
+        return;
+      }
+      case "role": {
+        const next = ringDirectRoleSetting.set(ringDirectRoleSetting.next());
+        setDirectRingRole(next);
+        this.notice = this.session?.directEnabled
+          ? `Direct ring role: ${ringDirectRoleSetting.displayValue(next)}; reconnecting the direct link`
+          : `Direct ring role: ${ringDirectRoleSetting.displayValue(next)}; used once Mode is direct`;
+        return;
+      }
     }
-    const address = this.ringAddress();
-    const name = this.system?.name ?? "";
-    this.notice = setGlassesRingLink(button.action, address, name)
-      ? `${button.label} sent (experimental)`
-      : `${button.label} not sent (no session or no ring address)`;
+  }
+
+  private actionMenu(title: string, items: MenuItem[]): MenuLayer {
+    return new MenuLayer(title, items, ACTION_MENU_LAYOUT);
+  }
+
+  private runGlassesAction(label: string, action: GlassesRingLinkAction): void {
+    this.notice = setGlassesRingLink(action, this.ringAddress(), this.system?.name ?? "")
+      ? `${label} sent (experimental)`
+      : `${label} not sent (no session or no ring address)`;
     this.poll();
   }
 
@@ -181,7 +248,7 @@ export class RingStatusLayer implements Layer {
         this.selected = (this.selected + 1) % BUTTONS.length;
         return;
       case "click":
-        this.activate();
+        this.activate(ctx);
         return;
       case "double-click":
         ctx.stack.pop();
@@ -189,6 +256,19 @@ export class RingStatusLayer implements Layer {
       default:
         return;
     }
+  }
+}
+
+function buttonLabel(button: Button): string {
+  switch (button) {
+    case "glasses":
+      return "Glasses...";
+    case "ring":
+      return "Ring...";
+    case "mode":
+      return ringConnectionModeSetting.get() === "direct" ? "Mode: direct" : "Mode: glasses";
+    case "role":
+      return `Role: ${ringDirectRoleSetting.get()}`;
   }
 }
 

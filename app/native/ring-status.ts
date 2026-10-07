@@ -37,14 +37,38 @@ export type RingSessionStatus = {
   lastCommandAgeMs: number;
   lastCommandResultR: string;
   lastCommandResultL: string;
+  /** Which ring role the direct link claims: "both", "phone" or "glasses". */
+  directRole: string;
+  lastRingCommand: string;
+  lastRingCommandAgeMs: number;
+  lastRingCommandResult: string;
+  /** Last direct-link notification nothing decoded: characteristic prefix and hex. */
+  lastDirectRaw: string;
+  lastDirectRawAgeMs: number;
 };
 
 /**
  * EXPERIMENTAL glasses-side ring link control (sid 0x80 pair manager):
  * "disconnect" drops the glasses' ring link, "release" also clears their
- * connect mode (may hold off auto-reconnect), "connect" hands the ring back.
+ * connect mode (may hold off auto-reconnect), "unpair" makes them forget the
+ * ring, "connect" hands the ring back.
  */
-export type GlassesRingLinkAction = "disconnect" | "release" | "connect";
+export type GlassesRingLinkAction = "disconnect" | "release" | "unpair" | "connect";
+
+/**
+ * EXPERIMENTAL ring-side binding commands over the direct link (see
+ * GlassesSessionCore.sendRingConfigCommand). "bind" and "unbind" combine the
+ * ring and glasses halves in the official app's order.
+ */
+export type RingConfigAction =
+  | "bind"
+  | "unbind"
+  | "pair-auth"
+  | "targets-glasses"
+  | "targets-clear"
+  | "touch-on"
+  | "touch-off"
+  | "remove-ring";
 
 export type RingSystemBluetoothState = {
   address: string;
@@ -98,5 +122,28 @@ export function setGlassesRingLink(action: GlassesRingLinkAction, fallbackAddres
   } catch (error) {
     console.warn(`setGlassesRingLink failed: ${error}`);
     return false;
+  }
+}
+
+/** A one-line outcome for the UI. */
+export function sendRingConfigCommand(action: RingConfigAction, fallbackAddress: string, fallbackName: string): string {
+  const active = activeCommunicator();
+  if (!active) return "not sent: no glasses session";
+  try {
+    return String(active.sendRingConfigCommand(action, fallbackAddress, fallbackName));
+  } catch (error) {
+    console.warn(`sendRingConfigCommand failed: ${error}`);
+    return `failed: ${error}`;
+  }
+}
+
+/** Apply a direct ring role to the running session (reconnects the direct link if it is up). */
+export function setDirectRingRole(role: string): void {
+  const active = activeCommunicator();
+  if (!active) return;
+  try {
+    active.setDirectRingRole(role);
+  } catch (error) {
+    console.warn(`setDirectRingRole failed: ${error}`);
   }
 }

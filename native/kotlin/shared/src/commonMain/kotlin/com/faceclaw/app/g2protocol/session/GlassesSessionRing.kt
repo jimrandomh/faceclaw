@@ -93,20 +93,23 @@ private const val RING_WRITE_BACKOFF_MAX_MS = 15_000L
 
 /**
  * Device-channel commands Even's real app fires in the gaps between
- * health requests - identity (0x0a), battery (0x01), firmware version
- * (0x02), device id (0x0b) - found by extracting the literal wire order
- * of a real successful sync (same capture as ringHealthRspTimeoutMs; two
+ * health requests - battery (0x01), firmware version (0x02), device id
+ * (0x0b) - found by extracting the literal wire order of a real
+ * successful sync (same capture as ringHealthRspTimeoutMs; two
  * independent syncs in it agree). Rotated one-per-health-type here rather
  * than replicated exactly (Even's real cadence isn't perfectly regular
  * either - compare the two syncs in the capture), since which of these,
  * if any, is actually load-bearing for the ring answering has never
  * been isolated. This is matching cadence, not a confirmed protocol
  * requirement.
+ *
+ * Even's sync also sends 0x0a, which used to be replayed here with the
+ * capture's "opaque blob". 0x0a is advStart: the blob was the capturing
+ * phone's two glasses MACs, which the ring persists as the only glasses it
+ * accepts. It is now sent only on request (queueRingConfigCommandLocked),
+ * with our own glasses' addresses.
  */
-private val RING_DEVICE_PING_CMD_LO = intArrayOf(0x0a, 0x01, 0x02, 0x0b)
-
-/** The opaque blob Even sends with every device-channel 0x0a request (f8f53d235ac4ceaa073885cc). */
-private val RING_IDENTITY_BLOB: ByteArray = "f8f53d235ac4ceaa073885cc".chunked(2).map { it.toInt(16).toByte() }.toByteArray()
+private val RING_DEVICE_PING_CMD_LO = intArrayOf(0x01, 0x02, 0x0b)
 
 /**
  * A snapshot of the health buffer together with the watermark identifying
@@ -127,8 +130,10 @@ class RingHealthBatch internal constructor(
 internal fun GlassesSessionCore.runRingWorker() {
     while (running) {
         try {
+            restartRingLinkForRoleChange()
             if (shouldAttemptRingConnect()) tryConnectRing("ring worker")
             if (!running) break
+            flushRingConfigCommands()
             flushRingOutbound()
             runRequestedRingHealthPull()
             resumeAbortedRingHealthPull()
@@ -221,6 +226,7 @@ internal fun GlassesSessionCore.handleRingHealthNotification(characteristicUuid:
             }
             logLine("direct ring battery " + status.battery + "% charging=" + status.charging)
         }
+        recordRingConfigResponse(frame)
         logDebug("ring device frame " + frame.describe())
         return true
     }
@@ -386,7 +392,7 @@ internal fun GlassesSessionCore.resumeAbortedRingHealthPull() {
         if (ringHealthAbortedRetries == 0) {
             return
         }
-        if (!ringConnected || !ringNotificationsReady) {
+        if (!ringConnected || !ringNotificationsReady || directRingRole == DIRECT_RING_ROLE_GLASSES) {
             return
         }
         if (now - ringHealthLastRequestedAtMs < RING_HEALTH_ABORTED_RETRY_GAP_MS) {
@@ -408,6 +414,10 @@ internal fun GlassesSessionCore.runRequestedRingHealthPull() {
         ringHealthPullRequested = false
         if (!ringConnected || !ringNotificationsReady) {
             logLine("ring health: on-demand pull skipped, ring not ready")
+            return
+        }
+        if (directRingRole == DIRECT_RING_ROLE_GLASSES) {
+            logLine("ring health: on-demand pull skipped, direct link holds the glasses role")
             return
         }
         if (ringHealthLastRequestedAtMs != 0L
@@ -446,37 +456,29 @@ internal fun GlassesSessionCore.sendRingHandshake() {
         + " (tz " + localTimeZoneId() + ")")
     val clock = le32(liveClockSeconds)
 
-    val seqs = IntArray(7)
-    val nonces = IntArray(7)
+    val seqs = IntArray(6)
+    val nonces = IntArray(6)
     monitor.withLock {
-        for (i in 0 until 7) {
+        for (i in 0 until 6) {
             seqs[i] = nextRingSeqLocked()
             nonces[i] = nextRingNonceLocked()
         }
     }
 
     val frames = arrayOf(
-        RingProtocol.buildFrame(RingProtocol.CHAN_DEVICE, RingProtocol.KIND_REQ, 0x00, 0x08, seqs[0],
-            // NO nonce prefix on this one frame - payload is exactly the
-            // three bytes 3f 01 01. Every other request on both channels
-            // starts with the 2-byte nonce; 00:08 does not, and the ring
-            // silently drops the whole frame if you add one, then ignores
-            // everything that follows on the connection.
-            //
-            // Measured 2026-09-11 across all four btsnoop captures, 46
-            // real 00:08 writes, zero exceptions:
-            //   payload 3f0101       (3 bytes) -> 3 writes, ALL answered (12-21 notifications each)
-            //   payload 01003f0101   (5 bytes) -> 43 writes, ALL silent (zero notifications)
-            // The 5-byte form is the more common one in the captures only
-            // because it is ours, failing and retrying all night. Do not
-            // "fix" this back to the nonce form by pattern-matching the
-            // other frames or by counting which variant appears more.
-            //
-            // This also explains 2026-09-10: the handshake worked when it
-            // was raw bytes replayed from the capture, and stopped working
-            // the moment it was rebuilt "properly" through buildFrame(),
-            // which is what introduced the nonce prefix.
-            byteArrayOf(0x3f, 0x01, 0x01)),
+        // pairAuth. Its bytes after the header must be exactly 3f 01 01:
+        // measured 2026-09-11 across all four btsnoop captures, 46 real
+        // 00:08 writes, zero exceptions:
+        //   3f0101       (3 bytes) -> 3 writes, ALL answered (12-21 notifications each)
+        //   01003f0101   (5 bytes) -> 43 writes, ALL silent (zero notifications)
+        // The 5-byte form was ours, failing and retrying all night. The
+        // first two bytes are not a nonce: they are the frame's phone
+        // checksum (3f01 is its value at seq 1), and the role byte 01 must
+        // follow it directly. A nonce in front shifted the role byte, so the
+        // ring never assigned us the phone role and ignored everything after.
+        // buildPairAuth computes the checksum; at seq 1 it is the captured
+        // frame byte for byte (see GlassesRingLinkTest).
+        RingProtocol.buildPairAuth(seqs[0]),
         RingProtocol.buildFrame(RingProtocol.CHAN_DEVICE, RingProtocol.KIND_DATA, 0x00, 0x0e, seqs[1],
             le16(nonces[1]) + clock + byteArrayOf(0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00)),
         RingProtocol.buildFrame(RingProtocol.CHAN_DEVICE, RingProtocol.KIND_DATA, 0x00, 0x05, seqs[2],
@@ -489,8 +491,8 @@ internal fun GlassesSessionCore.sendRingHandshake() {
             le16(nonces[4])),
         RingProtocol.buildFrame(RingProtocol.CHAN_DEVICE, RingProtocol.KIND_REQ, 0x00, 0x0b, seqs[5],
             le16(nonces[5])),
-        RingProtocol.buildFrame(RingProtocol.CHAN_DEVICE, RingProtocol.KIND_REQ, 0x00, 0x0a, seqs[6],
-            le16(nonces[6]) + RING_IDENTITY_BLOB),
+        // Even's handshake ends with advStart (00:0A) naming its glasses; it is
+        // not replayed here (see RING_DEVICE_PING_CMD_LO).
     )
     for (frame in frames) {
         if (!writeRingFrame(frame, "handshake")) {
@@ -679,18 +681,7 @@ internal fun GlassesSessionCore.awaitRingHealthDataIdle(idleMs: Long): Boolean {
  */
 internal fun GlassesSessionCore.sendRingDevicePing(cmdLo: Int) {
     val frame = monitor.withLock {
-        val seq = nextRingSeqLocked()
-        val nonce = nextRingNonceLocked()
-        if (cmdLo == 0x0a) {
-            // The only one of these four that isn't a bare nonce - it
-            // carries the same opaque constant blob as the handshake's
-            // own 0x0a frame (confirmed byte-identical across two
-            // different nights, see sendRingHandshake()'s comments).
-            RingProtocol.buildFrame(RingProtocol.CHAN_DEVICE, RingProtocol.KIND_REQ, 0x00, 0x0a, seq,
-                le16(nonce) + RING_IDENTITY_BLOB)
-        } else {
-            RingProtocol.buildRequest(RingProtocol.CHAN_DEVICE, 0x00, cmdLo, seq, nonce)
-        }
+        RingProtocol.buildRequest(RingProtocol.CHAN_DEVICE, 0x00, cmdLo, nextRingSeqLocked(), nextRingNonceLocked())
     }
     writeRingFrame(frame, "device ping 0x" + cmdLo.toString(16))
 }
@@ -777,19 +768,21 @@ internal fun GlassesSessionCore.nextRingNonceLocked(): Int {
 // The glasses' own link to the ring (sid 0x80 pair-manager commands)
 //
 // While the glasses hold the ring, it reports gestures only to them, so a
-// direct phone link sees nothing. These ask the glasses to let go of it and
-// to take it back. Shapes and handler behavior come from g2-kit-unofficial's
-// protos and openCFW's decompilation of pb_service_pair_mgr.c; none of it has
-// been captured from the Even app or verified on hardware. Deliberately no
-// UNPAIR_INFO: that wipes the glasses' stored ring pairing.
+// direct phone link sees nothing. These ask the glasses to let go of it, to
+// forget it, and to take it back. Shapes and handler behavior come from
+// g2-kit-unofficial's protos and openCFW's decompilation of
+// pb_service_pair_mgr.c; the connect form also matches the official app's
+// decompiled builder. None of it has been verified on hardware. UNPAIR_INFO
+// wipes the glasses' stored ring pairing; the Even app can re-pair.
 
 /**
- * Parse "AA:BB:CC:DD:EE:FF" into wire order, least-significant byte first.
- * Inferred, not verified: the one captured glasses-sent ring MAC
- * (even-g2-protocol's "Device Identity", b1:6a:9f:2f:43:dc on sid 0x91) is
- * only a valid random static address (top two bits set) read backwards.
+ * Parse "AA:BB:CC:DD:EE:FF" into wire order, least-significant byte first,
+ * for both ring and glasses addresses. The official app's
+ * StringExt.macToBytes reverses the same way for RING_CONNECT_INFO, and the
+ * R1 (a Nordic part) compares advStart targets against its little-endian
+ * peer addresses.
  */
-internal fun ringMacWireBytes(address: String): ByteArray? {
+internal fun macWireBytes(address: String): ByteArray? {
     val parts = address.trim().split(':')
     if (parts.size != 6) return null
     val bytes = ByteArray(6)
@@ -809,6 +802,8 @@ internal fun ringMacWireBytes(address: String): ByteArray? {
  * - "release": RING_CONNECT_INFO connect=0. Also cancels pending connect
  *   timeouts and clears the connect mode, so it may hold off auto-reconnect.
  * - "connect": RING_CONNECT_INFO connect=1 with the ring's MAC and name.
+ * - "unpair": UNPAIR_INFO dev=RING. The glasses forget the ring, so they
+ *   stop reconnecting to it until something sends "connect" again.
  * Both RING_CONNECT_INFO forms overwrite the stored target, so they echo the
  * target the glasses reported when there is one.
  */
@@ -816,7 +811,7 @@ internal fun GlassesSessionCore.queueGlassesRingLinkCommandLocked(
     action: String, fallbackAddress: String, fallbackName: String,
 ): Boolean {
     val reported = glassesRingMac
-    val mac = reported ?: ringMacWireBytes(fallbackAddress)
+    val mac = reported ?: macWireBytes(fallbackAddress)
     if (mac == null) {
         logLine("glasses ring $action skipped: no ring address")
         return false
@@ -832,6 +827,7 @@ internal fun GlassesSessionCore.queueGlassesRingLinkCommandLocked(
         val message = messageBuilder.ringLinkCommand("glasses ring $action", leftArm) { magic ->
             when (action) {
                 "disconnect" -> BleProtocol.buildRingDisconnectRequest(magic, mac)
+                "unpair" -> BleProtocol.buildRingUnpairRequest(magic, mac)
                 "release" -> BleProtocol.buildRingConnectRequest(magic, false, mac, name)
                 else -> BleProtocol.buildRingConnectRequest(magic, true, mac, name)
             }
@@ -874,4 +870,176 @@ internal fun GlassesSessionCore.recordGlassesRingReportLocked(frame: BleProtocol
         if (report.ringName.isNotEmpty()) glassesRingName = report.ringName
     }
     logLine("glasses ring report: $lastGlassesRingReport")
+}
+
+// ---------------------------------------------------------------------------
+// The ring's own binding state (system-channel commands over the direct link)
+//
+// The R1 keeps one phone role and one glasses role, and a pair of glasses
+// addresses (advStart targets) it will accept in the glasses role; gestures go
+// only to the glasses role. Behavior is from openCFW's R1 decompilation
+// (r1/docs/correlation/CONNECTION-CONTROL-CORRELATION.md and
+// ADV-START-TOUCH-SWITCH-HANDLERS-CORRELATION.md); the official app's order
+// (advStart, then RING_CONNECT_INFO to the glasses) is from its decompiled
+// EvConnect.startRingAdvForCurrentGlasses. Not verified on hardware.
+
+internal const val DIRECT_RING_ROLE_BOTH = "both"
+internal const val DIRECT_RING_ROLE_PHONE = "phone"
+internal const val DIRECT_RING_ROLE_GLASSES = "glasses"
+
+/** How long a command with a follow-up waits for the ring's answer before running it anyway. */
+private const val RING_CONFIG_RESPONSE_TIMEOUT_MS = 3_000L
+
+/** Six 0xFF bytes: an unset advStart target, the value removeRingNotify writes. */
+private val RING_TARGET_UNSET = ByteArray(6) { 0xff.toByte() }
+
+/**
+ * One queued ring command. `followUp` is a glasses ring-link action (see
+ * [queueGlassesRingLinkCommandLocked]) to queue once the ring has answered.
+ */
+internal class RingConfigCommand(
+    val label: String,
+    val frame: ByteArray,
+    val cmdLo: Int,
+    val followUp: String?,
+    val followUpAddress: String,
+    val followUpName: String,
+)
+
+/**
+ * Queue one ring-side command for the ring worker. Actions:
+ * - "pair-auth": pairAuth, claiming the phone role (the handshake already does).
+ * - "targets-glasses": advStart with this session's right and left arms.
+ * - "targets-clear": advStart with both targets unset (any glasses accepted).
+ * - "touch-on" / "touch-off": touchSwitch on the glasses touch source.
+ * - "remove-ring": removeRingNotify (clears both targets and the
+ *   glasses-connected flag).
+ * Returns null when queued, else why not.
+ */
+internal fun GlassesSessionCore.queueRingConfigCommandLocked(
+    action: String, followUp: String?, followUpAddress: String, followUpName: String,
+): String? {
+    val seq = nextRingSeqLocked()
+    val label: String
+    val frame: ByteArray
+    when (action) {
+        "pair-auth" -> {
+            label = "pairAuth"
+            frame = RingProtocol.buildPairAuth(seq)
+        }
+        "targets-glasses" -> {
+            val right = macWireBytes(rightAddress)
+            val left = macWireBytes(leftAddress)
+            if (right == null || left == null) return "not sent: glasses addresses unparseable"
+            label = "advStart R=$rightAddress L=$leftAddress"
+            frame = RingProtocol.buildAdvStart(seq, right, left)
+        }
+        "targets-clear" -> {
+            label = "advStart cleared"
+            frame = RingProtocol.buildAdvStart(seq, RING_TARGET_UNSET, RING_TARGET_UNSET)
+        }
+        "touch-on", "touch-off" -> {
+            label = "touchSwitch glasses " + (if (action == "touch-on") "on" else "off")
+            frame = RingProtocol.buildTouchSwitch(seq, RingProtocol.TOUCH_SWITCH_SELECTOR_GLASSES, action == "touch-on")
+        }
+        "remove-ring" -> {
+            label = "removeRingNotify"
+            frame = RingProtocol.buildRemoveRingNotify(seq)
+        }
+        else -> return "not sent: unknown ring action $action"
+    }
+    val cmdLo = frame[12].toInt() and 0xff
+    ringConfigQueue.addLast(RingConfigCommand(label, frame, cmdLo, followUp, followUpAddress, followUpName))
+    lastRingConfigCommand = label + (if (followUp != null) " then glasses $followUp" else "")
+    lastRingConfigCommandAtMs = now()
+    lastRingConfigResult = "queued"
+    logLine("queue ring command $label seq=$seq" + (if (followUp != null) " then glasses $followUp" else ""))
+    monitor.signalAll()
+    return null
+}
+
+/** The direct link went away: queued commands (and their follow-ups) are not sent. */
+internal fun GlassesSessionCore.dropRingConfigCommandsLocked(reason: String) {
+    lastRingConfigResult = when {
+        ringConfigQueue.isNotEmpty() -> "dropped: $reason"
+        ringConfigAwaiting != null -> "no answer: $reason"
+        else -> return
+    }
+    ringConfigQueue.clear()
+    ringConfigAwaiting = null
+    monitor.signalAll()
+}
+
+/**
+ * Write queued ring commands. Ring worker only. A command with a follow-up
+ * waits for the ring's answer (or a timeout), then queues the glasses half.
+ * A failed write leaves the command queued for the next tick.
+ */
+internal fun GlassesSessionCore.flushRingConfigCommands() {
+    while (true) {
+        val command = monitor.withLock {
+            if (!ringNotificationsReady) return
+            ringConfigQueue.firstOrNull() ?: return
+        }
+        if (!writeRingFrame(command.frame, command.label)) return
+        monitor.withLock {
+            val index = ringConfigQueue.indexOfFirst { it === command }
+            if (index >= 0) ringConfigQueue.removeAt(index)
+            ringConfigAwaiting = command
+            lastRingConfigResult = "sent, awaiting ring"
+        }
+        logLine("ring command ${command.label} written: " + GlassesSessionCore.hex(command.frame))
+        val followUp = command.followUp ?: continue
+        val answered = awaitRingConfigResponse(command)
+        val queued = monitor.withLock {
+            if (!running || !sessionReady) false
+            else queueGlassesRingLinkCommandLocked(followUp, command.followUpAddress, command.followUpName)
+        }
+        logLine("ring command ${command.label}: " + (if (answered) "answered" else "no answer")
+            + "; glasses $followUp " + (if (queued) "queued" else "not sent"))
+        interruptibleSleep.interrupt()
+    }
+}
+
+private fun GlassesSessionCore.awaitRingConfigResponse(command: RingConfigCommand): Boolean {
+    val deadline = now() + RING_CONFIG_RESPONSE_TIMEOUT_MS
+    monitor.withLock {
+        while (running && ringConfigAwaiting === command) {
+            val remaining = deadline - now()
+            if (remaining <= 0) break
+            monitor.awaitMs(remaining)
+        }
+        return ringConfigAwaiting !== command
+    }
+}
+
+/** Match a system-channel response to the command awaiting one. GATT callback thread. */
+internal fun GlassesSessionCore.recordRingConfigResponse(frame: RingProtocol.Frame) {
+    if (frame.cmdHi != RingProtocol.CMD_HI_DEVICE) return
+    val result = RingProtocol.responseResult(frame.kind) ?: return
+    val label = monitor.withLock {
+        val awaiting = ringConfigAwaiting
+        if (awaiting == null || awaiting.cmdLo != frame.cmdLo) return
+        ringConfigAwaiting = null
+        lastRingConfigResult = result + " (status " + RingProtocol.hex2(frame.kind) + ")"
+        monitor.signalAll()
+        awaiting.label
+    }
+    logLine("ring command $label answered: $result " + frame.describe())
+}
+
+/** Apply a [GlassesSessionCore.setDirectRingRole] change by reconnecting the direct link. Ring worker only. */
+internal fun GlassesSessionCore.restartRingLinkForRoleChange() {
+    val role = monitor.withLock {
+        if (!ringRoleReconnectPending) return
+        ringRoleReconnectPending = false
+        ringConnected = false
+        ringNotificationsReady = false
+        ringReconnectAfterMs = 0
+        ringOutbound.clear()
+        dropRingConfigCommandsLocked("role change")
+        directRingRole
+    }
+    logLine("direct ring: reconnecting to take the $role role")
+    link.disconnect(ringAddress)
 }

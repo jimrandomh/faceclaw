@@ -353,6 +353,20 @@ class GlassesSessionCore(
     internal var lastRingLinkCommandAtMs = 0L
     internal var lastRingLinkResultR = ""
     internal var lastRingLinkResultL = ""
+    // Which of the ring's two roles the direct link claims; see setDirectRingRole.
+    internal var directRingRole = DIRECT_RING_ROLE_BOTH
+    internal var ringRoleReconnectPending = false
+    // Ring-side binding commands (system channel) waiting for the ring worker,
+    // the one written and not yet answered, and the last one's outcome.
+    internal val ringConfigQueue = ArrayDeque<RingConfigCommand>()
+    internal var ringConfigAwaiting: RingConfigCommand? = null
+    internal var lastRingConfigCommand = ""
+    internal var lastRingConfigCommandAtMs = 0L
+    internal var lastRingConfigResult = ""
+    // Last direct-link notification nothing decoded (e.g. legacy-channel
+    // frames while claiming the glasses role).
+    internal var lastDirectRingRaw = ""
+    internal var lastDirectRingRawAtMs = 0L
     // Silent mode: 1 = on, 0 = off, -1 = not yet known. See updateSilentModeLocked.
     internal var silentMode = -1
     internal var wearState = -1
@@ -995,14 +1009,90 @@ class GlassesSessionCore(
             status["lastCommandAgeMs"] = age(lastRingLinkCommandAtMs)
             status["lastCommandResultR"] = lastRingLinkResultR
             status["lastCommandResultL"] = lastRingLinkResultL
+            status["directRole"] = directRingRole
+            status["lastRingCommand"] = lastRingConfigCommand
+            status["lastRingCommandAgeMs"] = age(lastRingConfigCommandAtMs)
+            status["lastRingCommandResult"] = lastRingConfigResult
+            status["lastDirectRaw"] = lastDirectRingRaw
+            status["lastDirectRawAgeMs"] = age(lastDirectRingRawAtMs)
             return try { Json.write(status) } catch (e: Exception) { "{}" }
         }
     }
 
     /**
-     * EXPERIMENTAL: ask the glasses to drop or re-establish their own link to
-     * the ring, so the phone can take the ring over directly and later hand
-     * it back. `action` is "disconnect", "release" or "connect"; see
+     * Which ring role the direct link claims. The R1 holds one phone role and
+     * one glasses role at a time and sends gestures only to the glasses role
+     * (openCFW R1 decompilation):
+     * - "phone": pairAuth on the system channel, health sync; only the data
+     *   CCCD (what Even's app does).
+     * - "glasses": enable the legacy-channel CCCD, which appears to be what
+     *   assigns a link the glasses role, and skip pairAuth and health. Only works while the
+     *   glasses themselves do not hold that role.
+     * - "both": the long-standing default, both CCCDs plus pairAuth. If the
+     *   glasses role is free this probably asks for both roles on one link;
+     *   the decompiled stock role setter hits a fatal assertion on that.
+     * A change while the direct link is up reconnects it.
+     */
+    fun setDirectRingRole(role: String?) {
+        val normalized = when (role) {
+            DIRECT_RING_ROLE_PHONE -> DIRECT_RING_ROLE_PHONE
+            DIRECT_RING_ROLE_GLASSES -> DIRECT_RING_ROLE_GLASSES
+            else -> DIRECT_RING_ROLE_BOTH
+        }
+        monitor.withLock {
+            if (normalized == directRingRole) return
+            directRingRole = normalized
+            if (ringConnected || ringNotificationsReady) {
+                ringRoleReconnectPending = true
+                monitor.signalAll()
+            }
+        }
+        logLine("direct ring role set to $normalized")
+    }
+
+    /**
+     * EXPERIMENTAL: ring-side binding commands over the direct link, plus the
+     * two combined flows. Returns a one-line outcome for the UI. Actions:
+     * "pair-auth", "targets-glasses", "targets-clear", "touch-on",
+     * "touch-off", "remove-ring" (see [queueRingConfigCommandLocked]);
+     * "bind" = advStart(our glasses), then after the ring answers the glasses
+     * RING_CONNECT_INFO connect=1 (the official app's order); "unbind" = the
+     * glasses' UNPAIR_INFO, then removeRingNotify to the ring.
+     * `fallbackAddress`/`fallbackName` are the ring's, for the glasses side.
+     */
+    fun sendRingConfigCommand(action: String, fallbackAddress: String?, fallbackName: String?): String {
+        val outcome = monitor.withLock {
+            if (!running || !sessionReady) return "not sent: no glasses session"
+            val directReady = ringNotificationsReady
+            when (action) {
+                "bind" -> {
+                    if (!directReady) return "not sent: direct ring link not ready"
+                    queueRingConfigCommandLocked("targets-glasses", "connect", fallbackAddress ?: "", fallbackName ?: "")
+                }
+                "unbind" -> {
+                    val glasses = queueGlassesRingLinkCommandLocked("unpair", fallbackAddress ?: "", fallbackName ?: "")
+                    val ring = directReady && queueRingConfigCommandLocked("remove-ring", null, "", "") == null
+                    when {
+                        glasses && ring -> null
+                        glasses -> "glasses unpair sent; ring part skipped (direct link not ready)"
+                        ring -> "ring part sent; glasses unpair skipped (no ring address)"
+                        else -> "not sent: no ring address and no direct link"
+                    }
+                }
+                else -> {
+                    if (!directReady) return "not sent: direct ring link not ready"
+                    queueRingConfigCommandLocked(action, null, "", "")
+                }
+            }
+        }
+        interruptibleSleep.interrupt()
+        return outcome ?: "sent"
+    }
+
+    /**
+     * EXPERIMENTAL: ask the glasses to drop, forget or re-establish their own
+     * link to the ring, so the phone can take the ring over directly and later
+     * hand it back. `action` is "disconnect", "release", "unpair" or "connect"; see
      * [queueGlassesRingLinkCommandLocked]. `fallbackAddress` ("AA:BB:..") and
      * `fallbackName` are used only when the glasses have not reported their
      * ring target this session. False when no session is up.
@@ -1922,6 +2012,10 @@ class GlassesSessionCore(
         }
         val decoded = FaceclawRingEventDecoder.decode(data)
         if (decoded == null) {
+            monitor.withLock {
+                lastDirectRingRaw = characteristicUuid.take(8) + " " + hex(data.copyOf(minOf(data.size, 24)))
+                lastDirectRingRawAtMs = now()
+            }
             logDebug("direct ring notify ignored: characteristicUuid=" + characteristicUuid + " raw=" + hex(data))
             return
         }
@@ -1979,6 +2073,7 @@ class GlassesSessionCore(
                     // link; the sequence counter restarts on the next connect.
                     ringReassembler.reset()
                     ringOutbound.clear()
+                    dropRingConfigCommandsLocked("direct link dropped")
                     directRingBattery = -1
                     directRingCharging = -1
                     emitBatteryState(headsetBattery, headsetCharging)
@@ -2259,7 +2354,16 @@ class GlassesSessionCore(
         // channel is plausibly what carries ring-as-remote gesture events,
         // which are a daily-driver feature; matching Even byte-for-byte here
         // buys nothing and risks breaking them.
-        val phoneNotify = enableRingNotification(BleProtocol.R1_PHONE_NOTIFY_CHAR_UUID)
+        //
+        // Per openCFW's R1 decompilation, the "phone-notify" characteristic
+        // (bae80011) is really the legacy channel the glasses use. Enabling its
+        // CCCD appears to be what assigns a link the ring's glasses role (BAE8
+        // service events 6/7), and the ring sends gestures (00 09 61 00 ...)
+        // only to that role. The direct ring
+        // role setting decides which CCCDs we enable; see setDirectRingRole.
+        val role = monitor.withLock { directRingRole }
+        val phoneNotify = role != DIRECT_RING_ROLE_PHONE
+            && enableRingNotification(BleProtocol.R1_PHONE_NOTIFY_CHAR_UUID)
         val dataNotify = enableRingNotification(BleProtocol.R1_NOTIFY_CHAR_UUID)
         if (!phoneNotify && !dataNotify) {
             throw IllegalStateException("no R1 notify characteristic subscribed")
@@ -2278,9 +2382,11 @@ class GlassesSessionCore(
             ringWriteFailures = 0
             ringConnectFailures = 0
         }
-        logLine("direct ring ready phoneNotify=$phoneNotify dataNotify=$dataNotify")
+        logLine("direct ring ready role=$role phoneNotify=$phoneNotify dataNotify=$dataNotify")
 
-        if (dataNotify && host.supportsRingHealth()) {
+        // Claiming the glasses role means no pairAuth (it would ask for the
+        // phone role on the same link) and therefore no health sync.
+        if (dataNotify && host.supportsRingHealth() && role != DIRECT_RING_ROLE_GLASSES) {
             onRingDataChannelReady()
         }
     }

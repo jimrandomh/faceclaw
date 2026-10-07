@@ -57,6 +57,7 @@ import {
   previewColorSetting,
   phoneRotationSetting,
   ringConnectionModeSetting,
+  ringDirectRoleSetting,
   sonioxApiKeySetting,
   screenFadeSetting,
   enumSettingMenuItem,
@@ -184,6 +185,7 @@ function settingsSections(): SettingsSection[] {
         // Whether the phone opens its own BLE link to the R1 ring; the
         // glasses relay ring gestures either way. Applied at connect time.
         enumSettingMenuItem(ringConnectionModeSetting),
+        enumSettingMenuItem(ringDirectRoleSetting),
         toggleSettingMenuItem(saveVoiceRecordingsSetting),
         toggleSettingMenuItem(firmwareDebugFlagsSetting),
         toggleSettingMenuItem(suspendEvenHubWhenScreenOffSetting),

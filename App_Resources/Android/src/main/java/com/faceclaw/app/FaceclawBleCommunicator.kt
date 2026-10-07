@@ -269,6 +269,13 @@ class FaceclawBleCommunicator(context: Context, rightAddress: String?, leftAddre
     fun setGlassesRingLink(action: String, fallbackAddress: String?, fallbackName: String?): Boolean =
         core.setGlassesRingLink(action, fallbackAddress, fallbackName)
 
+    /** See [GlassesSessionCore.sendRingConfigCommand]. */
+    fun sendRingConfigCommand(action: String, fallbackAddress: String?, fallbackName: String?): String =
+        core.sendRingConfigCommand(action, fallbackAddress, fallbackName)
+
+    /** See [GlassesSessionCore.setDirectRingRole]. */
+    fun setDirectRingRole(role: String?) = core.setDirectRingRole(role)
+
     fun addImuListener(listener: FaceclawImuListener?) = core.addImuListener(listener)
 
     fun removeImuListener(listener: FaceclawImuListener?) = core.removeImuListener(listener)

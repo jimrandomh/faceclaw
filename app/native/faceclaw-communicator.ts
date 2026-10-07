@@ -161,7 +161,7 @@ export class FaceclawCommunicatorBridge {
   private readonly firmwareInfoListeners = new Set<(info: FirmwareInfo) => void>();
   private readonly previewAnimationListeners = new Set<() => void>();
 
-  constructor(addresses: { right: string; left: string; ring?: string }) {
+  constructor(addresses: { right: string; left: string; ring?: string; ringRole?: string }) {
     const context = Utils.android.getApplicationContext();
     if (!context) throw new Error("Android application context unavailable");
 
@@ -173,6 +173,8 @@ export class FaceclawCommunicatorBridge {
     );
     // The shared session halts on any other firmware ("incompatible-firmware").
     this.communicator.setRequiredFirmwareRevision(REQUIRED_FACECLAW_FIRMWARE_VERSION);
+    // Which R1 role the direct ring link claims; only matters with a ring address.
+    if (addresses.ringRole) this.communicator.setDirectRingRole(addresses.ringRole);
     this.listenerProxy = new com.faceclaw.app.FaceclawBleCommunicatorListener({
       onStateChange: (phase: string, status: string) => {
         const state = {

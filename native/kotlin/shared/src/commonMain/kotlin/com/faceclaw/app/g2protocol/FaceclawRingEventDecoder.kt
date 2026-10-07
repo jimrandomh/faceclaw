@@ -10,57 +10,50 @@ class FaceclawRingEventDecoder {
             if (((raw == null) || (raw.size == 0))) {
                 return null
             }
-            var chargerGesture: DirectRingEvent? = decodeChargerGesture(raw)
-            if ((chargerGesture != null)) {
-                return chargerGesture
+            var report: DirectRingEvent? = decodeRingReport(raw)
+            if ((report != null)) {
+                return report
             }
             return decodeDirectGesture(raw)
         }
 
-        private fun decodeChargerGesture(raw: ByteArray): DirectRingEvent? {
-            if ((raw.size != 11)) {
+        /**
+         * The R1's standard input report, `00 09 61 00 TYPE AUX SPEED TICK_LE32`: the same
+         * 11 bytes the ring sends the glasses, which CFW's gesture_fwd.c forwards as an EvenHub
+         * SysEvent. TYPE maps exactly as CFW maps it, and the raw fields ride along as ring
+         * metadata, so direct and glasses-relayed input look the same to the TypeScript side
+         * (including RingInputFilter's 100-tick suppression). Unmapped types become
+         * EVENT_RING_UNKNOWN, which is kept for diagnostics but never routed as a gesture.
+         */
+        private fun decodeRingReport(raw: ByteArray): DirectRingEvent? {
+            if (raw.size != 11 || u8(raw[0]) != 0x00 || u8(raw[1]) != 0x09 ||
+                u8(raw[2]) != 0x61 || u8(raw[3]) != 0x00) {
                 return null
             }
-            if (
-                ((((u8(raw[0]) != 0x00) || (u8(raw[1]) != 0x09)) || (u8(raw[2]) != 0x61)) ||
-                    (u8(raw[3]) != 0x00))
-            ) {
-                return null
+            val type = u8(raw[4])
+            val aux = u8(raw[5])
+            val speed = u8(raw[6])
+            val tick = (u8(raw[7]) or (u8(raw[8]) shl 8) or (u8(raw[9]) shl 16) or (u8(raw[10]) shl 24))
+                .toLong() and 0xffffffffL
+            val label = ringReportTypeName(type)
+            val eventType = when (type) {
+                0x00 -> BleProtocol.EVENT_RING_LONG_PRESS
+                0x01 -> BleProtocol.EVENT_CLICK
+                0x02 -> BleProtocol.EVENT_DOUBLE_CLICK
+                0x04 -> BleProtocol.EVENT_SCROLL_TOP
+                0x05 -> BleProtocol.EVENT_SCROLL_BOTTOM
+                0x08 -> BleProtocol.EVENT_RING_LONG_PRESS_RELEASE
+                0x09 -> BleProtocol.EVENT_SHORT_THEN_LONG_PRESS
+                0x0a -> BleProtocol.EVENT_RING_PRESS
+                else -> BleProtocol.EVENT_RING_UNKNOWN
             }
-            var code: Int = u8(raw[4])
-            var param: Int = (u8(raw[5]) or (u8(raw[6]) shl 8))
-            var tick: Long =
-                ((((u8(raw[7]) or (u8(raw[8]) shl 8)) or (u8(raw[9]) shl 16)) or
-                        (u8(raw[10]) shl 24))
-                    .toLong() and 0xffffffffL)
-            var detail: String =
-                "code=0x${code.toString(16).padStart(2, '0')}(${chargerCodeName(code)}) param=0x${param.toString(16).padStart(4, '0')} tick=$tick"
-            when (code) {
-                0x00 -> {
-                    return event(BleProtocol.EVENT_RING_LONG_PRESS, "LONG_PRESS", detail)
-                }
-                0x01 -> {
-                    return event(BleProtocol.EVENT_CLICK, "TAP", detail)
-                }
-                0x02 -> {
-                    return event(BleProtocol.EVENT_DOUBLE_CLICK, "DOUBLE_TAP", detail)
-                }
-                0x04 -> {
-                    return event(BleProtocol.EVENT_SCROLL_TOP, "SWIPE_UP", detail)
-                }
-                0x05 -> {
-                    return event(BleProtocol.EVENT_SCROLL_BOTTOM, "SWIPE_DOWN", detail)
-                }
-                0x08 -> {
-                    return event(
-                        BleProtocol.EVENT_RING_LONG_PRESS_RELEASE,
-                        "LONG_PRESS_RELEASE",
-                        detail,
-                    )
-                }
-                else -> {
-                    return null
-                }
+            val detail = "type=0x${type.toString(16).padStart(2, '0')}($label) " +
+                "aux=0x${aux.toString(16).padStart(2, '0')} speed=0x${speed.toString(16).padStart(2, '0')} tick=$tick"
+            return event(eventType, label, detail).also {
+                it.event.ringTick = tick
+                it.event.ringType = type
+                it.event.ringAux = aux
+                it.event.ringSpeed = speed
             }
         }
 
@@ -96,29 +89,17 @@ class FaceclawRingEventDecoder {
             return DirectRingEvent(event, label, detail)
         }
 
-        private fun chargerCodeName(code: Int): String {
-            when (code) {
-                0x00 -> {
-                    return "LONG_PRESS"
-                }
-                0x01 -> {
-                    return "TAP"
-                }
-                0x02 -> {
-                    return "DOUBLE_TAP"
-                }
-                0x04 -> {
-                    return "SWIPE_UP"
-                }
-                0x05 -> {
-                    return "SWIPE_DOWN"
-                }
-                0x08 -> {
-                    return "LONG_PRESS_RELEASE"
-                }
-                else -> {
-                    return "unknown"
-                }
+        private fun ringReportTypeName(type: Int): String {
+            return when (type) {
+                0x00 -> "LONG_PRESS"
+                0x01 -> "TAP"
+                0x02 -> "DOUBLE_TAP"
+                0x04 -> "SWIPE_UP"
+                0x05 -> "SWIPE_DOWN"
+                0x08 -> "LONG_PRESS_RELEASE"
+                0x09 -> "TAP_THEN_HOLD"
+                0x0a -> "TOUCH_DOWN"
+                else -> "UNKNOWN"
             }
         }
 

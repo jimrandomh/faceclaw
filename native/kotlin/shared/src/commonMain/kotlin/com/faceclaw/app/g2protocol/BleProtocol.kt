@@ -69,6 +69,7 @@ class BleProtocol {
         // hardware-verified.
         private const val DEV_CFG_RING_CONNECT_INFO_CMD: Int = 6
         private const val DEV_CFG_DISCONNECT_INFO_CMD: Int = 8
+        private const val DEV_CFG_UNPAIR_INFO_CMD: Int = 9
 
         /** sid 0x91 RingDataPackage: glasses-side ring events (g2.ring). */
         const val SID_RING_DATA: Int = 0x91
@@ -194,6 +195,12 @@ class BleProtocol {
         const val EVENT_SHORT_THEN_LONG_PRESS: Int = 11
 
         const val EVENT_HEAD_UP: Int = 12
+
+        /** Faceclaw/18: R1 touch-down, before the gesture is known (R1 2.3.0+, wire type 10). */
+        const val EVENT_RING_PRESS: Int = 14
+
+        /** CFW's SysEvent for an R1 wire type it has no mapping for; diagnostics only. */
+        const val EVENT_RING_UNKNOWN: Int = 127
 
         const val EVENT_SOURCE_GLASSES_R: Int = 1
 
@@ -526,6 +533,26 @@ class BleProtocol {
                     encodeVarintField(1, DEV_CFG_DISCONNECT_INFO_CMD),
                     encodeVarintField(2, magic),
                     encodeMessageField(7, concat(CollectionUtils.listOf(
+                        encodeVarintField(1, 0),
+                        encodeBytesField(2, ringMac),
+                    ))),
+                )
+            )
+        }
+
+        /**
+         * UNPAIR_INFO(9) with UnpairInfo{dev=RING(0), ringMac}: the glasses forget their stored ring
+         * pairing. Never dev=RING_GLASSES(2): openCFW's decompilation shows that also enters OTA
+         * mode and unpairs the phone from the glasses. The handler uses the MAC only when it is
+         * exactly 6 bytes; whether it compares it against the stored ring is unknown.
+         */
+        @JvmStatic
+        fun buildRingUnpairRequest(magic: Int, ringMac: ByteArray): ByteArray {
+            return concat(
+                CollectionUtils.listOf(
+                    encodeVarintField(1, DEV_CFG_UNPAIR_INFO_CMD),
+                    encodeVarintField(2, magic),
+                    encodeMessageField(8, concat(CollectionUtils.listOf(
                         encodeVarintField(1, 0),
                         encodeBytesField(2, ringMac),
                     ))),

@@ -715,6 +715,20 @@ export const ringConnectionModeSetting = new ConfigSettingEnum<RingConnectionMod
     "How R1 ring input reaches the phone. Only via glasses: the ring's own link to the glasses carries its gestures, and the phone never opens a Bluetooth connection to the ring. Direct: also connect to the ring from the phone (currently unreliable). Takes effect on the next connection to the glasses.",
 });
 
+/** Which of the R1's two roles the direct link claims; see GlassesSessionCore.setDirectRingRole. */
+export type RingDirectRole = "both" | "phone" | "glasses";
+
+export const ringDirectRoleSetting = new ConfigSettingEnum<RingDirectRole>({
+  id: "ring-direct-role",
+  label: "Direct ring role",
+  storageKey: "developer.ringDirectRole",
+  defaultValue: "both",
+  values: ["both", "phone", "glasses"],
+  formatValue: (value) => (value === "phone" ? "Phone" : value === "glasses" ? "Glasses" : "Both"),
+  description:
+    "EXPERIMENTAL, only used when Ring connection is Direct. The ring has a phone role (health sync) and a glasses role (gestures). Phone: claim only the phone role, like Even's app. Glasses: claim the glasses role so ring gestures come straight to the phone; works only while the glasses are not holding the ring, and disables ring health sync. Both: the old behavior, which asks for both roles on one link.",
+});
+
 // "whisper" (no "onboard-" prefix) is OpenAI's CLOUD realtime model
 // (gpt-realtime-whisper); "onboard-whisper" is the on-device sherpa-onnx
 // Whisper backend. Same underlying model family, two different places it

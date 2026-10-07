@@ -74,6 +74,21 @@ class RingProtocol private constructor() {
         const val CMD_LO_PAGE_ACK: Int = 0x7E
 
         /**
+         * System-channel (00:xx) commands that configure the ring's binding.
+         * Subcommand numbers and handler behavior are from openCFW's R1
+         * decompilation (r1/src/r1_dispatch.c, r1/docs/correlation/
+         * CONNECTION-CONTROL-CORRELATION.md); g2-kit-unofficial's ring.ts names
+         * the same table. Only pairAuth and advStart have been seen in a capture
+         * of Even's app.
+         */
+        const val CMD_LO_TOUCH_SWITCH: Int = 0x07
+        const val CMD_LO_PAIR_AUTH: Int = 0x08
+        const val CMD_LO_ADV_START: Int = 0x0A
+        const val CMD_LO_REMOVE_RING_NOTIFY: Int = 0x82
+        /** touchSwitch selector for the glasses touch source; selector 1 (phone) is diagnostic-only. */
+        const val TOUCH_SWITCH_SELECTOR_GLASSES: Int = 2
+
+        /**
          * The five health pulls, in the order Even's own app issues them:
          * heart rate, HRV, SpO2, sleep, steps. That order is identical in all four
          * sync bursts of the reference capture. (It is NOT the order the spec
@@ -200,6 +215,100 @@ class RingProtocol private constructor() {
             payload[6] = (pageSeq and 0xff).toByte()
             // payload[7..11] stay zero.
             return buildFrame(CHAN_DEVICE, KIND_ACK, CMD_HI_DEVICE, CMD_LO_PAGE_ACK, seq, payload)
+        }
+
+        /**
+         * The ring's phone-direction model checksum: the two bytes that sit
+         * where [buildFrame]'s callers put a "nonce". It is a CRC-16 (Nordic
+         * crc16_compute, init 0xFFFF) over header bytes 5-8 and 10-14 (skipping
+         * the high byte of the 16-bit serial) and then the arguments. Verified
+         * against five captured Even-app frames; see GlassesRingLinkTest.
+         *
+         * Most of our frames still carry a counter there instead and the ring
+         * answers them anyway, so the ring does not seem to enforce it; the
+         * binding commands below compute it so they do not depend on that.
+         */
+        @JvmStatic
+        fun phoneChecksum(chan: Int, seq: Int, kind: Int, cmdHi: Int, cmdLo: Int, args: ByteArray): Int {
+            val plen = HEADER_LEN + 2 + args.size - 5
+            val header = byteArrayOf(
+                MAGIC.toByte(), chan.toByte(), MAGIC.toByte(), seq.toByte(),
+                kind.toByte(), cmdHi.toByte(), cmdLo.toByte(), plen.toByte(), (plen ushr 8).toByte(),
+            )
+            var crc = 0xffff
+            for (b in header + args) {
+                crc = ((crc ushr 8) or (crc shl 8)) and 0xffff
+                crc = crc xor (b.toInt() and 0xff)
+                crc = crc xor ((crc and 0xff) ushr 4)
+                crc = crc xor ((crc shl 12) and 0xffff)
+                crc = crc xor (((crc and 0xff) shl 5) and 0xffff)
+            }
+            return crc
+        }
+
+        /** A frame whose two leading payload bytes are the [phoneChecksum] of `args`. */
+        @JvmStatic
+        fun buildCheckedFrame(chan: Int, kind: Int, cmdHi: Int, cmdLo: Int, seq: Int, args: ByteArray): ByteArray {
+            val crc = phoneChecksum(chan, seq, kind, cmdHi, cmdLo, args)
+            return buildFrame(chan, kind, cmdHi, cmdLo, seq, nonceBytes(crc) + args)
+        }
+
+        /**
+         * pairAuth (00:08) with role byte 1: claims the ring's phone role, after
+         * which the ring asks for link security (bonding) and starts answering
+         * requests. For seq 1 this is byte-identical to Even's captured frame.
+         */
+        @JvmStatic
+        fun buildPairAuth(seq: Int): ByteArray =
+            buildCheckedFrame(CHAN_DEVICE, KIND_REQ, CMD_HI_DEVICE, CMD_LO_PAIR_AUTH, seq, byteArrayOf(0x01))
+
+        /**
+         * advStart (00:0A): the two glasses addresses the ring will accept as
+         * its glasses peer, each in wire order (least-significant byte first).
+         * The ring persists them, disconnects a connected glasses peer that
+         * matches neither (after ~20 s), and treats a slot of all 00 or all FF
+         * as unset; with both unset it accepts any glasses peer. Sent with the
+         * REQ status byte because that is what Even's captured frames use.
+         */
+        @JvmStatic
+        fun buildAdvStart(seq: Int, first: ByteArray, second: ByteArray): ByteArray {
+            require(first.size == 6 && second.size == 6) { "advStart targets must be 6 bytes each" }
+            return buildCheckedFrame(CHAN_DEVICE, KIND_REQ, CMD_HI_DEVICE, CMD_LO_ADV_START, seq, first + second)
+        }
+
+        /**
+         * touchSwitch (00:07) SET: [selector, value]. Selector 2 opens (value 1)
+         * or closes (value 0) the glasses touch source; the phone selector does
+         * nothing in the decompiled handler.
+         */
+        @JvmStatic
+        fun buildTouchSwitch(seq: Int, selector: Int, on: Boolean): ByteArray =
+            buildCheckedFrame(CHAN_DEVICE, KIND_DATA, CMD_HI_DEVICE, CMD_LO_TOUCH_SWITCH, seq,
+                byteArrayOf(selector.toByte(), if (on) 1 else 0))
+
+        /**
+         * removeRingNotify (00:82) SET, one byte: the ring clears its
+         * glasses-connected flag and erases both advStart targets. The retail
+         * handler acts on any nonempty payload; 1 is our choice.
+         */
+        @JvmStatic
+        fun buildRemoveRingNotify(seq: Int): ByteArray =
+            buildCheckedFrame(CHAN_DEVICE, KIND_DATA, CMD_HI_DEVICE, CMD_LO_REMOVE_RING_NOTIFY, seq, byteArrayOf(0x01))
+
+        /**
+         * The outcome a ring response's status byte carries: `0x03 | code << 2`
+         * with code 0 ok, 1 error, 2 refused, 3 unsupported. Null when `kind` is
+         * not a response.
+         */
+        @JvmStatic
+        fun responseResult(kind: Int): String? {
+            if ((kind and 0x03) != KIND_RSP) return null
+            return when ((kind ushr 2) and 0x03) {
+                0 -> "ok"
+                1 -> "error"
+                2 -> "refused"
+                else -> "unsupported"
+            }
         }
 
         private fun nonceBytes(nonce: Int): ByteArray {
