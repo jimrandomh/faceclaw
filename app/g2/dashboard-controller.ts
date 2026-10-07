@@ -18,6 +18,8 @@ import { weatherBridge } from "../native/weather";
 import { ALL_NOTIFICATIONS, onAndroidNotificationPosted, readActiveNotifications } from "../native/notification-icons";
 import { shouldShowNotificationOnGlasses } from "../native/notification-sources";
 import { openEvenAppSettings, readEvenAppNotificationState } from "../native/even-app-conflict";
+import { defaultRingName, setGlassesRingLink } from "../native/ring-status";
+import { getBooleanSetting, setBooleanSetting } from "../native/settings-store";
 import { grayImageToPreviewSource } from "../native/gray-image-preview";
 import { firmwareIncompatibilityMessage, hasCompatibleFirmware } from "./firmware-compat";
 import { hasExtractedEvenHubFonts } from "./firmware-builder";
@@ -72,7 +74,7 @@ import { loadPersistedOpenApps, savePersistedOpenApps } from "../ui/shell/open-a
 import { appViewportRect, isOnSwitcherEdge, sidebarStripVisible, type WindowHeightMode } from "../ui/shell/geometry";
 import { type LayerActions, type TextSettingsEditToggle } from "../ui/layers";
 import { type KeyboardInputSession } from "../ui/shell/keyboard-input";
-import { appSwitcherPositionSetting, statusBarPositionSetting, statusBarVisibilitySetting, windowBorderSetting, assistantAllowProactiveSetting, assistantBackendSetting, assistantBridgeHostSetting, assistantBridgePortSetting, assistantBridgeTokenSetting, getBrightnessPreferences, displayModeSetting, navigateDisplayModeSetting, navigateVerticalPositionSetting, terminalDisplayModeSetting, terminalVerticalPositionSetting, elevenLabsApiKeySetting, getStringSettingById, openAiApiKeySetting, nightscoutApiTokenSetting, firmwareDebugFlagsSetting, lockScreenEnabledSetting, nightscoutSiteUrlSetting, onAnySettingChanged, previewColorSetting, ringConnectionModeSetting, ringDirectRoleSetting, saveVoiceRecordingsSetting, sonioxApiKeySetting, screenTimeoutSetting, screenTimeoutSettingToMs, suspendEvenHubWhenScreenOffSetting, verticalPositionSetting, voiceProviderSetting, wakeWordActionSetting, type ConfigSettingString } from "../ui/dashboard-settings";
+import { appSwitcherPositionSetting, statusBarPositionSetting, statusBarVisibilitySetting, windowBorderSetting, assistantAllowProactiveSetting, assistantBackendSetting, assistantBridgeHostSetting, assistantBridgePortSetting, assistantBridgeTokenSetting, getBrightnessPreferences, displayModeSetting, navigateDisplayModeSetting, navigateVerticalPositionSetting, terminalDisplayModeSetting, terminalVerticalPositionSetting, elevenLabsApiKeySetting, getStringSettingById, openAiApiKeySetting, nightscoutApiTokenSetting, firmwareDebugFlagsSetting, lockScreenEnabledSetting, nightscoutSiteUrlSetting, onAnySettingChanged, previewColorSetting, ringConnectionModeSetting, type RingConnectionMode, saveVoiceRecordingsSetting, sonioxApiKeySetting, screenTimeoutSetting, screenTimeoutSettingToMs, suspendEvenHubWhenScreenOffSetting, verticalPositionSetting, voiceProviderSetting, wakeWordActionSetting, type ConfigSettingString } from "../ui/dashboard-settings";
 import { isIgnoringBatteryOptimizations, requestIgnoreBatteryOptimizations } from "../native/battery-optimization";
 import {
   getInstalledEvenHubAppById,
@@ -238,6 +240,9 @@ function sourceName(eventSource: number): string {
   return EventSourceTypeName[eventSource] ?? `SOURCE_${eventSource}`;
 }
 
+/** Set while a Direct ring session may have taken the R1 from the glasses; see handRingBackToGlassesIfNeeded. */
+const RING_TAKEN_FROM_GLASSES_KEY = "developer.ringTakenFromGlasses";
+
 class DashboardController {
   private phase: ConnectionPhase = "disconnected";
   private status = "Disconnected.";
@@ -315,6 +320,8 @@ class DashboardController {
   /** Faceclaw's firmware at the required revision reported in; its extensions can be used. */
   private customFirmwareConfirmed = false;
   private faceclawWakeLeaseState: boolean | null = null;
+  /** Ring connection mode the current session was started with (it applies per connection). */
+  private ringModeAtConnect: RingConnectionMode = "glasses";
   private glassesWorn: boolean | null = null;
   /** Put on while charging: Java reconnects on that, and the wake waits for the new session. */
   private wakeAfterChargingReconnect = false;
@@ -991,6 +998,25 @@ class DashboardController {
     this.evenHubSuspendTimer = null;
   }
 
+  /**
+   * A Direct-mode session may have unpaired the R1 from the glasses (see
+   * GlassesSessionRing.releaseRingFromGlassesLocked). The first session in
+   * another mode asks the glasses to connect to it again; the ring's own
+   * glasses targets were cleared, so it accepts them. Called on connect.
+   */
+  private handRingBackToGlassesIfNeeded(): void {
+    if (this.ringModeAtConnect === "direct" || !getBooleanSetting(RING_TAKEN_FROM_GLASSES_KEY, false)) return;
+    const ring = loadDeviceAddresses().ring;
+    if (!ring) {
+      setBooleanSetting(RING_TAKEN_FROM_GLASSES_KEY, false);
+      return;
+    }
+    if (setGlassesRingLink("connect", ring, defaultRingName(ring))) {
+      setBooleanSetting(RING_TAKEN_FROM_GLASSES_KEY, false);
+      this.appendLog(`Handing the R1 ring ${ring} back to the glasses`);
+    }
+  }
+
   private pushFirmwareDebugFlags(): void {
     if (!this.communicator) return;
     void this.communicator
@@ -1423,10 +1449,14 @@ class DashboardController {
     this.setPhase("connecting");
     this.setStatus("Connecting to the glasses...");
     // "Only via glasses" (the default) means the phone never opens its own
-    // link to the ring: the glasses relay its gestures to us anyway, and the
-    // direct link is currently unreliable. An empty address disables every
-    // direct-ring code path in the communicator.
-    const ringAddress = ringConnectionModeSetting.get() === "direct" ? addresses.ring : "";
+    // link to the ring: the glasses relay its gestures to us anyway. An empty
+    // address disables every direct-ring code path in the communicator.
+    const ringMode = ringConnectionModeSetting.get();
+    this.ringModeAtConnect = ringMode;
+    const ringAddress = ringMode !== "glasses" ? addresses.ring : "";
+    // Direct mode may unpair the ring from the glasses; remember to hand it
+    // back once a later session runs in another mode.
+    if (ringMode === "direct" && ringAddress) setBooleanSetting(RING_TAKEN_FROM_GLASSES_KEY, true);
     this.appendLog(
       `Using configured arms: R=${addresses.right} L=${addresses.left}${ringAddress ? ` ring=${ringAddress}` : ""}`,
     );
@@ -1446,7 +1476,9 @@ class DashboardController {
         right: addresses.right,
         left: addresses.left,
         ring: ringAddress,
-        ringRole: ringDirectRoleSetting.get(),
+        // Direct mode acts as the ring's glasses (gestures, battery); health
+        // sync needs the phone role instead.
+        ringRole: ringMode === "direct" ? "glasses" : "phone",
       });
       this.communicator = communicator;
       // Size the compositor before anything else is awaited: windows opened
@@ -1493,6 +1525,7 @@ class DashboardController {
           // mode-7 control message once the dashboard container is warmed up.
           this.pushFirmwareDebugFlags();
           this.pushBrightness(true);
+          this.handRingBackToGlassesIfNeeded();
         }
         if (mappedPhase !== "connected" && mappedPhase !== "charging") {
           // A wear snapshot is session-scoped. CFW reports a fresh value when

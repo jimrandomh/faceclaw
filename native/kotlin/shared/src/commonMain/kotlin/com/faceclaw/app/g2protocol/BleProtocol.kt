@@ -25,8 +25,14 @@ class BleProtocol {
         // R1 ring, vendor service bae80001-4f05-4503-8e65-3af1f7329d1f. The service
         // holds two write/notify pairs: bae80010 (write) + bae80011 (notify), and
         // bae80012 (write) + bae80013 (notify). The health-data protocol
-        // (RingProtocol) rides the SECOND pair.
-        const val R1_PHONE_NOTIFY_CHAR_UUID: String = "bae80011-4f05-4503-8e65-3af1f7329d1f"
+        // (RingProtocol) rides the SECOND pair. The first is the legacy channel
+        // the glasses use: enabling its CCCD gives a link the ring's glasses
+        // role, and the ring sends gestures and battery there (RingProtocol's
+        // legacy-channel section).
+        const val R1_LEGACY_NOTIFY_CHAR_UUID: String = "bae80011-4f05-4503-8e65-3af1f7329d1f"
+
+        /** Legacy-channel writes (write without response), e.g. the glasses' 00 35 88 00. */
+        const val R1_LEGACY_WRITE_CHAR_UUID: String = "bae80010-4f05-4503-8e65-3af1f7329d1f"
 
         const val R1_NOTIFY_CHAR_UUID: String = "bae80013-4f05-4503-8e65-3af1f7329d1f"
 

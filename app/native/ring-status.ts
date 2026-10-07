@@ -37,8 +37,11 @@ export type RingSessionStatus = {
   lastCommandAgeMs: number;
   lastCommandResultR: string;
   lastCommandResultL: string;
-  /** Which ring role the direct link claims: "both", "phone" or "glasses". */
+  /** Which ring role the direct link claims: "phone" or "glasses". */
   directRole: string;
+  /** Glasses role only: what the ring made of our legacy pair-auth this connection ("" = not sent). */
+  directGlassesAuth: string;
+  directGlassesAuthAgeMs: number;
   lastRingCommand: string;
   lastRingCommandAgeMs: number;
   lastRingCommandResult: string;
@@ -137,13 +140,12 @@ export function sendRingConfigCommand(action: RingConfigAction, fallbackAddress:
   }
 }
 
-/** Apply a direct ring role to the running session (reconnects the direct link if it is up). */
-export function setDirectRingRole(role: string): void {
-  const active = activeCommunicator();
-  if (!active) return;
-  try {
-    active.setDirectRingRole(role);
-  } catch (error) {
-    console.warn(`setDirectRingRole failed: ${error}`);
-  }
+/**
+ * The R1's advertised name, "EVEN R1_" plus the last three address bytes
+ * (e.g. FF:AA:F1:F6:7E:28 -> "EVEN R1_F67E28"). The glasses store it with the
+ * ring's MAC when told to connect.
+ */
+export function defaultRingName(address: string): string {
+  const hex = address.replace(/[^0-9a-fA-F]/g, "").toUpperCase();
+  return hex.length === 12 ? `EVEN R1_${hex.slice(6)}` : "";
 }

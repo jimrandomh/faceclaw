@@ -311,6 +311,46 @@ class RingProtocol private constructor() {
             }
         }
 
+        // ------------------------------------------------------------------
+        // Legacy (glasses-role) channel: bae80010 write / bae80011 notify
+        //
+        // Raw frames with the opcode in byte 2, not the 0x64 models above. What
+        // the G2 sends and what the ring answers come from g2-firmware-emulator
+        // (docs/r1-command88-native.md, r1-cccd-frontier.md) running the stock
+        // firmwares; the gesture report shape is in FaceclawRingEventDecoder.
+        // ------------------------------------------------------------------
+
+        /**
+         * The G2's legacy pair-auth, opcode 0x88, captured from the stock glasses
+         * firmware writing it right after enabling the bae80011 CCCD. The ring
+         * marks the link as its glasses peer and checks it against the advStart
+         * targets: accepted (a target matches, or none are set) answers with a
+         * battery report; rejected answers [LEGACY_TARGET_REJECTED] and drops the
+         * link about 20 s later.
+         */
+        @JvmField val LEGACY_GLASSES_PAIR_AUTH: ByteArray = byteArrayOf(0x00, 0x35, 0x88.toByte(), 0x00)
+
+        /** The ring's "non-target glasses connected" notice, opcode 0x96. */
+        @JvmField val LEGACY_TARGET_REJECTED: ByteArray = byteArrayOf(0x00, 0x01, 0x96.toByte(), 0x00)
+
+        /**
+         * The ring's battery report to its glasses peer, `00 09 8B 00 <percent>
+         * <charging>`: sent when a glasses pair-auth is accepted and whenever the
+         * percentage changes. Null for anything else.
+         */
+        @JvmStatic
+        fun parseLegacyBattery(raw: ByteArray?): DeviceStatus? {
+            if (raw == null || raw.size != 6 || raw[0].toInt() != 0x00 || raw[1].toInt() != 0x09 ||
+                (raw[2].toInt() and 0xff) != 0x8B || raw[3].toInt() != 0x00) return null
+            val battery = raw[4].toInt() and 0xff
+            if (battery > 100) return null
+            return DeviceStatus(battery, if (raw[5].toInt() != 0) 1 else 0)
+        }
+
+        @JvmStatic
+        fun isLegacyTargetRejected(raw: ByteArray?): Boolean =
+            raw != null && raw.contentEquals(LEGACY_TARGET_REJECTED)
+
         private fun nonceBytes(nonce: Int): ByteArray {
             return byteArrayOf((nonce and 0xff).toByte(), ((nonce ushr 8) and 0xff).toByte())
         }

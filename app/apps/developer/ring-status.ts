@@ -4,13 +4,12 @@ import { type InputEvent } from "../../ui/gestures";
 import { Layer, type LayerContext } from "../../ui/layers";
 import { shell } from "../../ui/shell/shell";
 import { MenuLayer, type MenuItem } from "../../ui/menu";
-import { ringConnectionModeSetting, ringDirectRoleSetting } from "../../ui/dashboard-settings";
+import { ringConnectionModeSetting } from "../../ui/dashboard-settings";
 import { loadDeviceAddresses } from "../../g2/device-addresses";
 import {
   getRingSessionStatus,
   getRingSystemBluetoothState,
   sendRingConfigCommand,
-  setDirectRingRole,
   setGlassesRingLink,
   type GlassesRingLinkAction,
   type RingConfigAction,
@@ -24,9 +23,9 @@ const VALUE_X = 130;
 const BUTTON_GAP = 8;
 
 type Row = { label: string; value: string; dim?: boolean };
-type Button = "glasses" | "ring" | "mode" | "role";
+type Button = "glasses" | "ring" | "mode";
 
-const BUTTONS: readonly Button[] = ["glasses", "ring", "mode", "role"];
+const BUTTONS: readonly Button[] = ["glasses", "ring", "mode"];
 
 /** Glasses-side commands (sid 0x80 pair manager). */
 const GLASSES_ACTIONS: readonly { label: string; action: GlassesRingLinkAction }[] = [
@@ -62,8 +61,9 @@ const ACTION_MENU_LAYOUT = { x: "center" as const, y: 8, width: 300, dimUndernea
  * to the glasses; "Ring..." sends binding commands to the ring over the
  * direct link (Mode must be direct and the link up), including Bind/Unbind,
  * which do both halves in the official app's order. Mode flips the Developer
- * "Ring connection" setting (applies on the next glasses connection); Role
- * cycles which ring role the direct link claims and applies immediately.
+ * "Ring connection" setting (applies on the next glasses connection). In
+ * Direct mode the session does the setup on its own (see
+ * GlassesSessionRing.runRingGlassesSetup); the menus are for experiments.
  */
 export class RingStatusLayer implements Layer {
   private session: RingSessionStatus | null = null;
@@ -146,8 +146,8 @@ export class RingStatusLayer implements Layer {
     }
 
     if (!s.directEnabled) {
-      const pending = ringConnectionModeSetting.get() === "direct";
-      rows.push({ label: "Direct link", value: pending ? "on after glasses reconnect" : "off (mode: glasses)", dim: true });
+      const pending = ringConnectionModeSetting.get() !== "glasses";
+      rows.push({ label: "Direct link", value: pending ? "on after glasses reconnect" : "off (only via glasses)", dim: true });
     } else {
       const state = s.directNotificationsReady ? "subscribed"
         : s.directConnected ? "connected, subscribing"
@@ -157,6 +157,12 @@ export class RingStatusLayer implements Layer {
       rows.push({
         label: "Direct link",
         value: `${state}${since}, role ${s.directRole}, ${s.directConnectCount} connects${battery}`,
+      });
+    }
+    if (s.directEnabled && s.directRole === "glasses") {
+      rows.push({
+        label: "Direct auth",
+        value: s.directGlassesAuth ? `${s.directGlassesAuth} ${formatAge(s.directGlassesAuthAgeMs)} ago` : "not sent yet",
       });
     }
     rows.push({ label: "Direct input", value: describeInput(s.lastDirectInputAgeMs, s.lastDirectInput) });
@@ -212,17 +218,8 @@ export class RingStatusLayer implements Layer {
         }))));
         return;
       case "mode": {
-        const next = ringConnectionModeSetting.get() === "direct" ? "glasses" : "direct";
-        ringConnectionModeSetting.set(next);
+        const next = ringConnectionModeSetting.set(ringConnectionModeSetting.next());
         this.notice = `Ring connection set to ${ringConnectionModeSetting.displayValue(next)}; applies on next glasses connection`;
-        return;
-      }
-      case "role": {
-        const next = ringDirectRoleSetting.set(ringDirectRoleSetting.next());
-        setDirectRingRole(next);
-        this.notice = this.session?.directEnabled
-          ? `Direct ring role: ${ringDirectRoleSetting.displayValue(next)}; reconnecting the direct link`
-          : `Direct ring role: ${ringDirectRoleSetting.displayValue(next)}; used once Mode is direct`;
         return;
       }
     }
@@ -266,9 +263,7 @@ function buttonLabel(button: Button): string {
     case "ring":
       return "Ring...";
     case "mode":
-      return ringConnectionModeSetting.get() === "direct" ? "Mode: direct" : "Mode: glasses";
-    case "role":
-      return `Role: ${ringDirectRoleSetting.get()}`;
+      return `Mode: ${ringConnectionModeSetting.get()}`;
   }
 }
 

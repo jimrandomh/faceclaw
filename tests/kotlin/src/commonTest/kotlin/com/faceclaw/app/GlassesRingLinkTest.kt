@@ -84,6 +84,24 @@ class GlassesRingLinkTest {
         assertEquals("02" + "0082" + "01", toHex(remove.copyOfRange(10, 13)) + toHex(remove.copyOfRange(17, remove.size)))
     }
 
+    @Test fun legacyGlassesChannelFrames() {
+        // Bytes from g2-firmware-emulator: the stock G2's pair-auth, the R1's battery
+        // report (67%, then charging) and its non-target rejection.
+        assertEquals("00358800", toHex(RingProtocol.LEGACY_GLASSES_PAIR_AUTH))
+        val idle = assertNotNull(RingProtocol.parseLegacyBattery(hex("00098b004300")))
+        assertEquals(67, idle.battery)
+        assertEquals(0, idle.charging)
+        assertEquals(1, assertNotNull(RingProtocol.parseLegacyBattery(hex("00098b004301"))).charging)
+        assertNull(RingProtocol.parseLegacyBattery(hex("00098b006500")))   // 101%
+        assertNull(RingProtocol.parseLegacyBattery(hex("00098b0043")))
+        assertNull(RingProtocol.parseLegacyBattery(hex("000961000a000013cb0000")))
+        assertTrue(RingProtocol.isLegacyTargetRejected(hex("00019600")))
+        assertFalse(RingProtocol.isLegacyTargetRejected(hex("0001960000")))
+        // Neither is mistaken for input.
+        assertNull(FaceclawRingEventDecoder.decode(hex("00098b004300")))
+        assertNull(FaceclawRingEventDecoder.decode(hex("00019600")))
+    }
+
     @Test fun ringResponseStatusDecodes() {
         assertEquals("ok", RingProtocol.responseResult(0x03))
         assertEquals("error", RingProtocol.responseResult(0x07))

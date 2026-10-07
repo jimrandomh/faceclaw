@@ -134,6 +134,7 @@ internal fun GlassesSessionCore.runRingWorker() {
             if (shouldAttemptRingConnect()) tryConnectRing("ring worker")
             if (!running) break
             flushRingConfigCommands()
+            runRingGlassesSetup()
             flushRingOutbound()
             runRequestedRingHealthPull()
             resumeAbortedRingHealthPull()
@@ -695,7 +696,9 @@ internal fun GlassesSessionCore.sendRingDevicePing(cmdLo: Int) {
  * the GATT pipeline the glasses' display writes need for up to the write
  * timeout.
  */
-internal fun GlassesSessionCore.writeRingFrame(frame: ByteArray, what: String): Boolean {
+internal fun GlassesSessionCore.writeRingFrame(
+    frame: ByteArray, what: String, characteristicUuid: String = BleProtocol.R1_WRITE_CHAR_UUID,
+): Boolean {
     val blockedForMs = monitor.withLock { ringWriteBlockedUntilMs - now() }
     if (blockedForMs > 0) {
         return false
@@ -703,7 +706,7 @@ internal fun GlassesSessionCore.writeRingFrame(frame: ByteArray, what: String): 
     val ok = try {
         val written = link.writeFrames(
             ringAddress,
-            BleProtocol.R1_WRITE_CHAR_UUID,
+            characteristicUuid,
             listOf(frame),
             ConnectionOptions.WRITE_MODE,
             ConnectionOptions.WRITE_TIMEOUT_MS
@@ -870,6 +873,9 @@ internal fun GlassesSessionCore.recordGlassesRingReportLocked(frame: BleProtocol
         if (report.ringName.isNotEmpty()) glassesRingName = report.ringName
     }
     logLine("glasses ring report: $lastGlassesRingReport")
+    if (!ownAck && frame.sid != BleProtocol.SID_RING_DATA && report.code == 0) {
+        releaseRingFromGlassesLocked("glasses connected the ring")
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -883,7 +889,6 @@ internal fun GlassesSessionCore.recordGlassesRingReportLocked(frame: BleProtocol
 // (advStart, then RING_CONNECT_INFO to the glasses) is from its decompiled
 // EvConnect.startRingAdvForCurrentGlasses. Not verified on hardware.
 
-internal const val DIRECT_RING_ROLE_BOTH = "both"
 internal const val DIRECT_RING_ROLE_PHONE = "phone"
 internal const val DIRECT_RING_ROLE_GLASSES = "glasses"
 
@@ -1042,4 +1047,100 @@ internal fun GlassesSessionCore.restartRingLinkForRoleChange() {
     }
     logLine("direct ring: reconnecting to take the $role role")
     link.disconnect(ringAddress)
+}
+
+// ---------------------------------------------------------------------------
+// Acting as the ring's glasses (direct ring role "glasses")
+//
+// Mirrors what the stock G2 does on connecting to its ring
+// (g2-firmware-emulator docs/r1-cccd-frontier.md, r1-command88-native.md):
+// enable the legacy CCCD (connectRing), then write the legacy pair-auth. We
+// add touchSwitch "glasses source on", without which a link gets no
+// gestures (hardware, 2026-10-06). The ring keeps its targets and the
+// glasses keep their unpairing across connections, so those are sent only
+// when the ring or the glasses show they are still bound to each other.
+
+/** Floor between automatic glasses unpair requests, so a fight with something re-binding the ring stays slow. */
+private const val RING_RELEASE_MIN_INTERVAL_MS = 2L * 60L * 1000L
+
+/**
+ * The per-connection glasses-role setup. Ring worker only; a failed write
+ * leaves it pending for the next tick (after writeRingFrame's backoff).
+ */
+internal fun GlassesSessionCore.runRingGlassesSetup() {
+    monitor.withLock {
+        if (!ringGlassesSetupPending || !ringNotificationsReady) return
+        // Before the write: the ring answers within milliseconds.
+        directGlassesAuth = "sent"
+        directGlassesAuthAtMs = now()
+    }
+    if (!writeRingFrame(RingProtocol.LEGACY_GLASSES_PAIR_AUTH, "glasses pair-auth", BleProtocol.R1_LEGACY_WRITE_CHAR_UUID)) {
+        return
+    }
+    val touch = monitor.withLock {
+        RingProtocol.buildTouchSwitch(nextRingSeqLocked(), RingProtocol.TOUCH_SWITCH_SELECTOR_GLASSES, true)
+    }
+    if (!writeRingFrame(touch, "touch source on")) {
+        return
+    }
+    monitor.withLock { ringGlassesSetupPending = false }
+    logLine("direct ring: sent glasses pair-auth and touch source on")
+}
+
+/**
+ * Legacy-channel control frames that are not input: the battery report and
+ * the target rejection. Returns true when consumed. GATT callback thread.
+ */
+internal fun GlassesSessionCore.handleRingLegacyControl(data: ByteArray): Boolean {
+    val battery = RingProtocol.parseLegacyBattery(data)
+    if (battery != null) {
+        monitor.withLock {
+            directRingBattery = battery.battery
+            directRingCharging = battery.charging
+            // Only the accepted glasses peer gets these.
+            directGlassesAuth = "accepted"
+            directGlassesAuthAtMs = now()
+            emitBatteryState(headsetBattery, headsetCharging)
+        }
+        logLine("direct ring battery " + battery.battery + "% charging=" + battery.charging + " (legacy report)")
+        return true
+    }
+    if (!RingProtocol.isLegacyTargetRejected(data)) {
+        return false
+    }
+    // The ring's advStart targets name other glasses (normally ours, from the
+    // Even app's pairing), so it drops this link in ~20 s. Clear them once per
+    // connection, then repeat the pair-auth so it is checked again.
+    val clearing = monitor.withLock {
+        directGlassesAuthAtMs = now()
+        if (directGlassesAuthRetried) {
+            directGlassesAuth = "rejected again: ring is bound to other glasses"
+            false
+        } else {
+            directGlassesAuthRetried = true
+            directGlassesAuth = "rejected: clearing the ring's glasses targets"
+            queueRingConfigCommandLocked("remove-ring", null, "", "")
+            ringGlassesSetupPending = true
+            true
+        }
+    }
+    logLine("direct ring: glasses pair-auth rejected (ring bound to other glasses)"
+        + if (clearing) "; clearing its targets and retrying" else "; giving up for this connection")
+    return true
+}
+
+/**
+ * The glasses still hold the ring while the direct link wants its glasses
+ * role: ask them to unpair it (UNPAIR_INFO), which they remember until
+ * something re-pairs them. Rate-limited. Caller holds `monitor`.
+ */
+internal fun GlassesSessionCore.releaseRingFromGlassesLocked(reason: String) {
+    if (!hasRingAddress() || directRingRole != DIRECT_RING_ROLE_GLASSES || !running || !sessionReady) return
+    val now = now()
+    if (lastRingReleaseAtMs != 0L && now - lastRingReleaseAtMs < RING_RELEASE_MIN_INTERVAL_MS) return
+    lastRingReleaseAtMs = now
+    logLine("direct ring: the glasses still hold the ring ($reason); asking them to unpair it")
+    if (queueGlassesRingLinkCommandLocked("unpair", ringAddress, glassesRingName)) {
+        interruptibleSleep.interrupt()
+    }
 }

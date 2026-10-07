@@ -1033,6 +1033,7 @@ internal fun GlassesSessionCore.createBatteryQueryMessageLocked(): OutboundMessa
         // Old firmware and missing/malformed extensions must clear any prior reading.
         ringBattery = if (ring == null) -1 else ring.battery
         ringCharging = if (ring == null) -1 else ring.charging
+        if (ringBattery >= 0) releaseRingFromGlassesLocked("glasses report the ring connected")
         val snapshot = BleProtocol.parseSettingsBattery(message.ackPayload)
         if (snapshot != null) {
             headsetBattery = snapshot.battery
