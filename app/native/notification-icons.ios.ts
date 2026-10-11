@@ -1,6 +1,8 @@
 import { GrayImage } from '../graphics/image'
+import { renderIcon, type IconName } from '../graphics/icons'
 import { AncsClient, ANCS_CONNECT_MESSAGE, type AncsState } from '../g2/ancs-client'
 import { rememberNotificationSources } from './notification-sources'
+import type { AndroidNotification } from './notification-types'
 export type { AndroidNotification, AndroidNotificationAction } from './notification-types'
 export type { NotificationIconsResult, NotificationIconResult } from './notification-icons'
 
@@ -26,8 +28,17 @@ export function dismissNotification(key: string): boolean { return active?.dismi
 export function onAndroidNotificationPosted(listener: (key: string) => void): () => void {
   listeners.add(listener); return () => { listeners.delete(listener) }
 }
-// ANCS does not provide app icons. Use a local bell; never fetch notification
-// sources or content from a third-party icon service.
+// ANCS does not provide app icons, so show one for the notification's ANCS
+// category; never fetch notification sources or content from a third-party
+// icon service. Indexed by CategoryID: Other, IncomingCall, MissedCall,
+// Voicemail, Social, Schedule, Email, News, HealthAndFitness,
+// BusinessAndFinance, Location, Entertainment.
+const CATEGORY_ICONS: readonly IconName[] = ['bell','phone-incoming','phone-missed','voicemail','message-circle',
+  'calendar','mail','newspaper','heart-pulse','briefcase','map-pin','tv']
+function categoryIcon(category: string): GrayImage {
+  return renderIcon(CATEGORY_ICONS[Number(category)] ?? 'bell',24)?.clone() ?? bell()
+}
+// Drawn fallback for when the SVG rasterizer fails.
 function bell(): GrayImage {
   const image = new GrayImage(24,24,0)
   image.fillRoundedRect(6,5,12,13,220,5)
@@ -37,11 +48,12 @@ function bell(): GrayImage {
 }
 export function readActiveNotificationIcons(maxIcons: number, _allowStale: boolean) {
   // One icon per source, standing for its first notification.
-  const sources = new Map<string, string>()
-  for (const n of readActiveNotifications(ALL_NOTIFICATIONS)) if (!sources.has(n.packageName)) sources.set(n.packageName, n.key)
-  const keys = Array.from(sources.values()).slice(0,Math.max(0,maxIcons))
-  return {icons: keys.map(() => bell()),keys,stale:false}
+  const sources = new Map<string, AndroidNotification>()
+  for (const n of readActiveNotifications(ALL_NOTIFICATIONS)) if (!sources.has(n.packageName)) sources.set(n.packageName, n)
+  const shown = Array.from(sources.values()).slice(0,Math.max(0,maxIcons))
+  return {icons: shown.map(n => categoryIcon(n.category)),keys: shown.map(n => n.key),stale:false}
 }
 export function readNotificationIconByKey(key: string, _allowStale: boolean) {
-  return {icon: readActiveNotifications(ALL_NOTIFICATIONS).some(n => n.key === key) ? bell() : null,stale:false}
+  const notification = readActiveNotifications(ALL_NOTIFICATIONS).find(n => n.key === key)
+  return {icon: notification ? categoryIcon(notification.category) : null,stale:false}
 }
