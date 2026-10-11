@@ -4,8 +4,10 @@
 
 * Fix several issues that would cause disconnection and disconnect-looping
 * Add a client for T3 Code
-* Weather app shows an icon for current conditions, and can add the weather to the status bar and the Glanceboard system card (Weather menu > Settings)
+* Optional anonymous usage statistics (Settings>Privacy>Data collection; off by default)
+* Add an on-glasses Onboarding app, which prompts you to configure some things
 * iOS Notifications have an icon based on ANCS category
+* Weather app is more graphical, and can appear on the status bar and glanceboard Glanceboard system card
 
 ## 0.8.2 - 2026-10-03
 

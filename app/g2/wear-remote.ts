@@ -23,6 +23,7 @@
  * Transport is app/native/wear-bridge.ts (Java FaceclawWearBridge); the
  * message shapes are documented in wear/PROTOCOL.md.
  */
+import { flagAnalyticsEvent } from "../analytics/analytics";
 import { type AppDefinition } from "../apps/app-definition";
 import { getInstalledEvenHubApps, installedEvenHubAppId } from "../apps/evenhub/installed-apps";
 import { WEAR_PATHS, wearBridge, type WearMessage } from "../native/wear-bridge";
@@ -167,6 +168,7 @@ export class WearRemote {
       // with it (no placeholder).
       if (changed) this.watchBatteryPollsUnanswered = 0;
       if (connection.reachable) {
+        flagAnalyticsEvent("minimal", "device.wear.reachable");
         this.publishNow(true);
         this.pollWatchBattery(true);
       } else if (changed) {
@@ -326,6 +328,7 @@ export class WearRemote {
       return;
     }
 
+    flagAnalyticsEvent("minimal", "device.wear.used");
     switch (message.path) {
       case WEAR_PATHS.input:
         await this.handleInput(message.payload, ack);

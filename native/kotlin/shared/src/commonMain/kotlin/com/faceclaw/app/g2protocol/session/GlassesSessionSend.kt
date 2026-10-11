@@ -87,6 +87,7 @@ internal fun GlassesSessionCore.driveSession(): Long {
                 val oldest = inFlightMessages.firstOrNull()
                 val replay = CfwMessageWindow.replayWindow(inFlightMessages, now)
                 if (!replay.isEmpty()) {
+                    ConnectionCounters.increment("g2.cfw-replay")
                     logLine("CFW recovery: replay " + replay.size
                             + " unresolved message(s) from id=" + replay[0].magic)
                     for (candidate in replay) {
@@ -665,7 +666,7 @@ internal fun GlassesSessionCore.enqueueCreateLayoutLocked() {
             }
             startupProbePending = false
         }
-        handleTransportFailure("ack timeout")
+        handleTransportFailure("create layout ack timeout")
     }
     pendingMessages.addLast(message)
     logLine("queue create layout")
@@ -706,7 +707,7 @@ internal fun GlassesSessionCore.enqueueStartupProbeLocked() {
         if (hasPendingOrInflightKindLocked("create-layout")) {
             return@MessageCallback
         }
-        handleTransportFailure("ack timeout")
+        handleTransportFailure("startup probe ack timeout")
     }
     pendingMessages.addLast(message)
     startupProbePending = true
@@ -1279,6 +1280,7 @@ internal fun GlassesSessionCore.hasPendingMagicLocked(sid: Int, magic: Int): Boo
 
 internal fun GlassesSessionCore.handleAckTimeoutLocked(message: OutboundMessage) {
     consecutiveAckTimeouts += 1
+    ConnectionCounters.increment("g2.ack-timeout")
 
     val onTimeout = message.onTimeout
     if (onTimeout != null) {

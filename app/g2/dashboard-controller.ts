@@ -45,10 +45,10 @@ const MIRROR_TOUCH_GESTURES: Record<Exclude<MirrorTouchKind, "tap">, WearRemoteI
   "swipe-left": "swipe-left",
   "swipe-right": "swipe-right",
 };
-import { findSoundEffect, playSoundEffect } from "../ui/sound-effects";
 import { GlanceHost } from "./glance-host";
 import { type GlanceEvent } from "./glance-state";
-import { isPreviewOnlyMode, isWelcomeSoundPending, setWelcomeSoundPending } from "../phone-ui/onboarding-state";
+import { isPreviewOnlyMode } from "../phone-ui/onboarding-state";
+import { claimGlassesOnboardingAutoLaunch, ONBOARDING_APP_ID } from "../apps/onboarding/onboarding-progress";
 import { beginRenderPass, endRenderPass } from "../util/render-freshness";
 import { voiceControlBridge } from "../native/voice-control";
 import { G2_LENS_HEIGHT, G2_LENS_WIDTH, GrayImage } from "../graphics/image";
@@ -278,9 +278,6 @@ class DashboardController {
   // drop-off right after a low reading can be explained as a flat battery.
   private lastHeadsetBattery: number | null = null;
   private readonly listeners = new Set<DashboardListener>();
-  // Set at connect time from the persisted flag; the one-time post-onboarding
-  // welcome sound plays on the first rendered frame (proof the session is warm).
-  private welcomeSoundArmed = false;
 
   private communicator: FaceclawCommunicatorBridge | null = null;
   // Headless stand-in for the compositor when no glasses are paired
@@ -1413,7 +1410,6 @@ class DashboardController {
     this.teardownPreviewDisplay();
     this.lastInput = "waiting...";
     this.lastSys = "none yet";
-    this.welcomeSoundArmed = isWelcomeSoundPending();
     this.firmwareWarningMessage = "";
     this.glassesWorn = null;
     this.wakeAfterChargingReconnect = false;
@@ -1580,11 +1576,12 @@ class DashboardController {
           // parked by the previous session (or by an EvenHub suspend) resumes.
           this.resumeVoiceCapture();
           // A rendered frame means the session is warmed up (fixedLayoutCreated),
-          // so the buzzer won't be dropped. Play the one-time welcome sound now.
-          if (this.welcomeSoundArmed) {
-            this.welcomeSoundArmed = false;
-            setWelcomeSoundPending(false);
-            void this.playWelcomeSound();
+          // so the onboarding's welcome jingle won't be dropped. Open the
+          // on-glasses onboarding if this version hasn't been through it.
+          if (claimGlassesOnboardingAutoLaunch()) {
+            this.launchApp(ONBOARDING_APP_ID).catch((error) => {
+              this.appendLog(`onboarding launch failed: ${this.formatError(error)}`);
+            });
           }
         }
       });
@@ -2739,21 +2736,6 @@ class DashboardController {
       return;
     }
     await this.communicator.playBuzzerSequence(payload);
-  }
-
-  /** One-time celebratory jingle on the first connection after onboarding. */
-  private async playWelcomeSound(): Promise<void> {
-    const effect = findSoundEffect("questcomplete");
-    if (!effect) return;
-    try {
-      await playSoundEffect(
-        effect,
-        (payload) => this.playBuzzerSequence(payload),
-        (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
-      );
-    } catch (error) {
-      this.appendLog(`welcome sound failed: ${this.formatError(error)}`);
-    }
   }
 
   private clearDashboardTimer(): void {

@@ -1,10 +1,50 @@
 # Faceclaw Privacy Policy
 
-Faceclaw is a privacy-conscious app. The developers of Faceclaw don't collect
-or store user data. Faceclaw does integrate with some third-party services,
-which have their own privacy policies; this document describes what those
-services are, what they're used for and what data they collect, and links to
-their privacy policies.
+Faceclaw is a privacy-conscious app. Unless you choose to share anonymous
+usage statistics (described below), the developers of Faceclaw don't collect
+or store any data about you or how you use the app. Faceclaw does integrate
+with some third-party services, which have their own privacy policies; this
+document describes what those services are, what they're used for and what
+data they collect, and links to their privacy policies.
+
+
+## Usage Statistics
+
+The first time you connect your glasses, Faceclaw asks whether to share
+anonymous usage statistics with its developers, to help them fix problems and
+improve the app. The choices are None, Minimal and Full, and you can change
+your choice at any time in Settings > Privacy. Until you choose, it is None.
+
+With None, Faceclaw sends nothing and keeps no statistics on your phone.
+
+With Minimal, Faceclaw keeps counts on your phone and sends them about once a
+day to stats.faceclaw.org, a server run by Faceclaw's developers:
+
+  - the Faceclaw version, whether it runs on Android or iOS, and whether it is
+    an official release or a build someone compiled themselves;
+  - whether glasses and a ring are paired, and which devices (glasses, ring,
+    Wear OS watch) were in use each day;
+  - counts of connection events: connection attempts, disconnections and
+    their causes, message timeouts and retries, Bluetooth error codes, and
+    how long connections lasted.
+
+With Full, it also sends:
+
+  - which kinds of API key are set (for example, that an Anthropic key is
+    set), but never the keys themselves;
+  - how many terminal and T3 Code connections are set up, and which of
+    Faceclaw's built-in fonts is in use;
+  - the values of settings chosen from fixed options, such as on/off
+    switches and pick-one lists. Settings you type in, such as addresses,
+    URLs and names, are never sent.
+
+Statistics never include your name or contact details, your location,
+Bluetooth device addresses, anything you say or type, or what is shown on
+your glasses. Each report carries a random identifier, created when you turn
+statistics on, which links your reports to each other but not to you.
+Turning statistics off deletes that identifier and everything kept on the
+phone, and stops all reports; turning them back on starts a new identifier.
+The statistics server doesn't record the IP addresses reports come from.
 
 
 ## Audio

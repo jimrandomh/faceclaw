@@ -6,7 +6,12 @@ declare const interop: any;
 
 const UPNG = require("upng-js");
 
-export function loadPngAsGrayImage(path: string): GrayImage {
+/**
+ * Decode a PNG to grayscale, premultiplied by alpha so transparency reads as
+ * black. With `invert`, the PNG is dark art on a light or transparent ground
+ * (e.g. the phone-side logo) and its ink is drawn white instead.
+ */
+export function loadPngAsGrayImage(path: string, options: { invert?: boolean } = {}): GrayImage {
   const file = resolveFile(path);
   const raw = file.readSync();
   const pngBuffer = toArrayBuffer(raw);
@@ -25,7 +30,8 @@ export function loadPngAsGrayImage(path: string): GrayImage {
       const g = rgba[offset + 1] ?? 0;
       const b = rgba[offset + 2] ?? 0;
       const a = (rgba[offset + 3] ?? 0) / 255;
-      const gray = Math.round((0.2126 * r + 0.7152 * g + 0.0722 * b) * a);
+      const luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+      const gray = Math.round((options.invert ? 255 - luminance : luminance) * a);
       image.pixels[y * decoded.width + x] = gray;
     }
   }

@@ -507,6 +507,7 @@ class FaceclawBleManager(context: Context) {
         override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
             val address = gatt.device.address
             Log.i(TAG, "onConnectionStateChange: address=$address status=$status newState=$newState")
+            if (status != BluetoothGatt.GATT_SUCCESS) ConnectionCounters.increment("ble.gatt-status.$status")
             val link = links[address]
             val current = link?.gatt
             if (link == null || (current != null && current !== gatt)) {
