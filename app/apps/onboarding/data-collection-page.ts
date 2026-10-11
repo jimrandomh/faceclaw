@@ -31,9 +31,9 @@ export class DataCollectionPage implements OnboardingPage {
   paint(image: GrayImage, focused: boolean): void {
     const top = drawPageHeading(
       image,
-      "Data collection",
-      "Choose what Faceclaw may send its developers to help fix problems and improve the app. " +
-        "You can change this later in Settings > Privacy.",
+      "Faceclaw statistics",
+      (global.isIOS ? "If using TestFlight, crash/usage reports cannot be disabled here. " : "") +
+        "Choose optional Faceclaw statistics. Change later in Settings > Privacy.",
       3,
     ) + CONTENT_GAP;
     const body = onboardingFont("body");

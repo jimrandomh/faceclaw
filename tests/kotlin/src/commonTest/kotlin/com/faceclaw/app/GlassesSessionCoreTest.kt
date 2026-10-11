@@ -453,7 +453,7 @@ class GlassesSessionCoreTest {
         s.core.interruptibleSleep.interrupt()
         assertTrue(waitUntil(3_000) { s.listener.phases.contains("retrying") }, s.host.logs().takeLast(10).toString())
         assertTrue(s.host.hasLog("message timed out: create-layout"))
-        assertTrue(s.host.hasLog("Transport failure: ack timeout"))
+        assertTrue(s.host.hasLog("Transport failure: create layout ack timeout"))
         assertTrue(s.link.disconnected.containsAll(listOf(RIGHT, LEFT)))
         s.core.disconnect()
         assertEquals("disconnected", s.listener.phases.last())

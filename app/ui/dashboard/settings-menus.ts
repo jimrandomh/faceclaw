@@ -23,6 +23,7 @@ import {
   type AsrModelId,
 } from "../../native/asr-model";
 import { TextViewerLayer } from "../../apps/files/text-viewer";
+import { IOS_PRIVACY_NOTICE } from "../../analytics/privacy-disclosure";
 import type { LayerContext } from "../layers";
 import { drawRightValueMenuItem, openModalMenu, submenuItem, type MenuItem } from "../menu";
 import { shell } from "../shell/shell";
@@ -197,6 +198,12 @@ function settingsSections(): SettingsSection[] {
       items: [
         // First chosen in the on-glasses onboarding (app/apps/onboarding/).
         enumSettingMenuItem(dataCollectionSetting),
+        ...(global.isIOS ? [{
+          label: "iOS / TestFlight privacy",
+          description: "Apple's beta reports are separate from Faceclaw statistics. Tap to read.",
+          onSelect: (ctx: LayerContext) => ctx.stack.push(new TextViewerLayer(IOS_PRIVACY_NOTICE, "iOS / TestFlight privacy")),
+        }] : []),
+        bundledDocMenuItem("PRIVACY", "Privacy policy"),
       ],
     },
     {
