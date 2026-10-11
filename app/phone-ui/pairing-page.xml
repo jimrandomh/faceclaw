@@ -82,8 +82,8 @@
                 <Button col="1" text="{{ primaryLabel }}" tap="{{ onPrimaryTap }}" class="-primary" isEnabled="{{ primaryEnabled }}" />
             </GridLayout>
             <GridLayout columns="*,*" class="m-t-4">
-                <Button col="0" text="{{ scanToggleLabel }}" tap="{{ onScanToggleTap }}" class="pairing-link" />
-                <Button col="1" text="Enter addresses manually" tap="{{ onManualTap }}" class="pairing-link" />
+                <Button col="0" text="{{ scanToggleLabel }}" tap="{{ onScanToggleTap }}" class="pairing-link" textWrap="true" />
+                <Button col="1" text="Enter addresses manually" tap="{{ onManualTap }}" class="pairing-link" textWrap="true" />
             </GridLayout>
         </StackLayout>
     </GridLayout>
