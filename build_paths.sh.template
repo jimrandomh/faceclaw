@@ -6,4 +6,6 @@
 #export PATH=
 #export ANDROID_KEYSTORE=
 #export DEVICE_ID=
+# Apple signing team for iOS device builds (Xcode > Settings > Accounts)
+#export IOS_TEAM_ID=
 

@@ -20,4 +20,13 @@ if command -v ruby >/dev/null 2>&1; then
 fi
 
 node scripts/install-hooks.cjs
+
+# NativeScript otherwise guesses the signing team from installed provisioning
+# profiles; once a free team's profile expires and Xcode deletes it, the guess
+# is null and the generated project gets an unloadable DEVELOPMENT_TEAM.
+if [[ -n "${IOS_TEAM_ID:-}" && " $* " != *" --teamId"* ]]; then
+  case "${1:-}" in
+    build|run|debug|deploy) set -- "$@" --teamId "$IOS_TEAM_ID" ;;
+  esac
+fi
 exec ns "$@"

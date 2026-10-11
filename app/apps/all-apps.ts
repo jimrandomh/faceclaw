@@ -26,6 +26,7 @@ import developerApp from "./developer";
 import evenhubApp from "./evenhub";
 import glanceboardApp from "./glanceboard";
 import settingsApp from "./settings";
+import onboardingApp from "./onboarding";
 
 /**
  * Every app, in launcher-grid order (the launcher itself is first but hidden
@@ -60,4 +61,5 @@ export const ALL_APPS: readonly AppDefinition[] = [
   evenhubApp,
   glanceboardApp,
   settingsApp,
+  onboardingApp,
 ];

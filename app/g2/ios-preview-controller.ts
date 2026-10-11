@@ -48,8 +48,7 @@ import { DISPLAY_MODE_VALUES, displayModeLabel, displayModeSetting, onAnySetting
   previewColorSetting, lockScreenEnabledSetting, getBrightnessPreferences, getStringSettingById,
   nightscoutSiteUrlSetting, nightscoutApiTokenSetting } from '../ui/dashboard-settings'
 import type { PhoneGesture } from '../phone-ui/phone-gestures'
-import { isWelcomeSoundPending, setWelcomeSoundPending } from '../phone-ui/onboarding-state'
-import { findSoundEffect, playSoundEffect } from '../ui/sound-effects'
+import { claimGlassesOnboardingAutoLaunch, ONBOARDING_APP_ID } from '../apps/onboarding/onboarding-progress'
 
 const SHELL_SURFACE_ID = 'shell'
 const SHELL_SURFACE_Z_ORDER = 1
@@ -681,7 +680,7 @@ export class IosPreviewController {
   private emitState(): void {
     if (this.state.phase !== 'connected') resetRingInputFilter()
     this.pushBrightness()
-    this.maybePlayWelcomeSound(this.state)
+    this.maybeLaunchOnboarding(this.state)
     if (this.state.phase !== 'connected' && this.state.phase !== 'connecting') this.glassesWorn = null
     if (this.state.phase !== 'connected') iosVoiceInput.handleSessionEnded()
     shell.setBatteryLevels({ headset: this.state.battery, headsetCharging: this.state.charging })
@@ -770,7 +769,7 @@ export class IosPreviewController {
         if (this.communicator !== communicator) return
         this.state = { ...this.state, frames: this.state.frames + 1 }
         this.onActivity()
-        this.maybePlayWelcomeSound(this.state)
+        this.maybeLaunchOnboarding(this.state)
         if (this.active) this.onConnectionState({ ...this.state })
         this.schedulePreviewUpdate()
       }),
@@ -878,16 +877,13 @@ export class IosPreviewController {
     this.glance.reset()
     await communicator.close().catch(error => this.logBluetooth(`Close: ${String(error)}`))
   }
-  private maybePlayWelcomeSound(state: SessionState): void {
+  private maybeLaunchOnboarding(state: SessionState): void {
     const firstNewFrame = state.frames > this.acknowledgedFrames
     this.acknowledgedFrames = state.frames
-    // Match Android: wait for an acknowledged frame before consuming the jingle.
-    if (!firstNewFrame || state.phase !== 'connected' || !isWelcomeSoundPending()) return
-    setWelcomeSoundPending(false)
-    const effect = findSoundEffect('questcomplete')
-    if (effect) void playSoundEffect(effect, payload => this.actions.playBuzzerSequence(payload),
-      ms => new Promise(resolve => setTimeout(resolve, ms)))
-      .catch(error => this.logBluetooth(`Welcome sound failed: ${error}`))
+    // Match Android: wait for an acknowledged frame (a warm session, so the
+    // onboarding's welcome jingle isn't dropped) before opening it.
+    if (!firstNewFrame || state.phase !== 'connected' || !claimGlassesOnboardingAutoLaunch()) return
+    void this.launchApp(ONBOARDING_APP_ID)
   }
   startVoiceInput(): void { if (!this.glassesLocked) shell.startVoiceInput() }
   private async prepareVoiceCapture(): Promise<boolean> {

@@ -359,6 +359,7 @@ internal fun GlassesSessionCore.firstUnpairedArm(): String? {
  */
 internal fun GlassesSessionCore.handleUnpairedFailure(address: String) {
     logError("Connect failed and $address is not paired; suspending reconnect")
+    ConnectionCounters.increment("g2.unpaired")
     monitor.withLock { haltReconnectLocked("arm not paired: $address") }
     if (!userDisconnectRequested) {
         setStateDisplay(
@@ -387,6 +388,7 @@ internal fun GlassesSessionCore.handleIncompatibleFirmware() {
         incompatibleFirmware = null
         pending
     } ?: return
+    ConnectionCounters.increment("g2.incompatible-firmware")
     logError("Glasses report incompatible firmware L=" + info.leftVersion + " R=" + info.rightVersion
         + " ext=\"" + info.extension + "\" (need Faceclaw/" + requiredFirmwareRevision + "); suspending reconnect")
     monitor.withLock { haltReconnectLocked("incompatible firmware") }
@@ -429,11 +431,13 @@ internal fun GlassesSessionCore.haltReconnectLocked(reason: String) {
  */
 internal fun GlassesSessionCore.handleTransportFailure(reason: String?, displayStatus: String? = null) {
     logError("Transport failure: $reason")
+    ConnectionCounters.increment("g2.failure." + ConnectionCounters.slug(reason ?: "unknown"))
     val retryDelayMs: Long
     monitor.withLock {
         maybeEmitEvenAppConflictLocked(reason)
         finishBenchmarkLocked(true, "transport failure")
         val sessionWasReady = sessionReady
+        if (sessionWasReady) countSessionEnded("failure")
         sessionReady = false
         fixedLayoutCreated = false
         startupProbePending = false
@@ -458,6 +462,23 @@ internal fun GlassesSessionCore.handleTransportFailure(reason: String?, displayS
         })
     }
     interruptibleSleep.interrupt()
+}
+
+/**
+ * Counts a ready session ending, by [cause] and by how long it had been up
+ * (for the analytics in app/analytics/).
+ */
+internal fun GlassesSessionCore.countSessionEnded(cause: String) {
+    ConnectionCounters.increment("g2.session-end.$cause")
+    val minutes = (now() - lastSessionReadyAtMs) / 60_000
+    ConnectionCounters.increment(
+        "g2.session-length." + when {
+            minutes < 1 -> "under-1m"
+            minutes < 10 -> "1m-10m"
+            minutes < 60 -> "10m-1h"
+            else -> "over-1h"
+        }
+    )
 }
 
 /**
@@ -737,6 +758,7 @@ internal fun GlassesSessionCore.maybeEmitEvenAppConflictLocked(reason: String?) 
         return
     }
     lastEvenAppConflictAtMs = now
+    ConnectionCounters.increment("g2.even-app-conflict")
     emitEvenAppConflict("The Even Realities app still appears to be running. It can hold the glasses BLE link and cause Faceclaw write failures. Open its app settings and force stop it, then reconnect Faceclaw.")
 }
 

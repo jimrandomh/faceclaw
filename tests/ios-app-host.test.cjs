@@ -269,31 +269,37 @@ test('iOS compositor rejects missing and removed surfaces before crossing into K
   assert.equal(nativeSubmissions, 1);
 });
 
-test('iOS welcome sound waits for a new acknowledged frame and is consumed once', async () => {
-  let pending = true;
-  const played = [], sounds = load('app/ui/sound-effects.ts', { require: name => { assert.equal(name, '../g2/cfw-message-type'); return load('app/g2/cfw-message-type.ts', {}); } });
-  const { IosPreviewController } = load('app/g2/ios-preview-controller.ts', {
+test('iOS opens the on-glasses onboarding on a new acknowledged frame, once per run while due', () => {
+  const settings = new Map();
+  const progress = load('app/apps/onboarding/onboarding-progress.ts', {
     require: id => ({
-      '../phone-ui/onboarding-state': { isWelcomeSoundPending: () => pending, setWelcomeSoundPending: value => { pending = value; } },
-      '../ui/sound-effects': sounds,
-    })[id] ?? {},
-    setTimeout: fn => { fn(); return 1; },
+      '../../native/settings-store': {
+        getStringSetting: (key, fallback) => settings.get(key) ?? fallback,
+        setStringSetting: (key, value) => settings.set(key, value),
+      },
+      '../../version': { FACECLAW_VERSION: '9.9.9' },
+    })[id],
+  });
+  const launched = [];
+  const { IosPreviewController } = load('app/g2/ios-preview-controller.ts', {
+    require: id => ({ '../apps/onboarding/onboarding-progress': progress })[id] ?? {},
   });
   const host = Object.create(IosPreviewController.prototype);
   host.acknowledgedFrames = 0;
-  host.actions = { playBuzzerSequence: bytes => played.push([...bytes]) };
-  host.logBluetooth = assert.fail;
-  host.maybePlayWelcomeSound({ phase: 'connecting', frames: 0 });
-  host.maybePlayWelcomeSound({ phase: 'connected', frames: 0 });
-  assert.equal(pending, true); assert.equal(played.length, 0);
-  host.maybePlayWelcomeSound({ phase: 'connected', frames: 1 });
-  assert.equal(pending, false);
-  await new Promise(resolve => setImmediate(resolve));
-  assert.ok(played.length > 0);
-  const count = played.length;
-  host.maybePlayWelcomeSound({ phase: 'connected', frames: 1 });
-  host.maybePlayWelcomeSound({ phase: 'connected', frames: 2 });
-  assert.equal(played.length, count);
+  host.launchApp = id => { launched.push(id); return Promise.resolve(); };
+  host.maybeLaunchOnboarding({ phase: 'connecting', frames: 0 });
+  host.maybeLaunchOnboarding({ phase: 'connected', frames: 0 });
+  assert.deepEqual(launched, []);
+  host.maybeLaunchOnboarding({ phase: 'connected', frames: 1 });
+  assert.deepEqual(launched, ['onboarding']);
+  // Still unfinished, but a reconnect in the same run doesn't reopen it.
+  host.maybeLaunchOnboarding({ phase: 'connected', frames: 2 });
+  assert.deepEqual(launched, ['onboarding']);
+  assert.equal(progress.isGlassesOnboardingDue(), true);
+  progress.markGlassesOnboardingFinished();
+  assert.equal(progress.isGlassesOnboardingDue(), false);
+  settings.set('onboarding.glassesFinishedVersion', '9.9.8');
+  assert.equal(progress.isGlassesOnboardingDue(), true, 'an upgrade makes onboarding due again');
 });
 
 test('iOS preview voice uses the phone microphone, while connected capture stays on glasses', async () => {

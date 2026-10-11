@@ -27,6 +27,35 @@ jobs:
       - run: npm ci
       - run: npm run test:kotlin
 
+  # The stats.faceclaw.org server: typecheck, and the tests including the
+  # database one against a throwaway Postgres.
+  stats-server:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: stats-server
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      PGHOST: localhost
+      PGUSER: postgres
+      PGPASSWORD: postgres
+      STATS_TEST_DATABASE: postgres
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+      - run: npm run check
+      - run: npm test
+
   # The @faceclaw/evenhub-extensions npm package: typecheck (including
   # compatibility with the stock SDK's container classes), build, and check
   # that the committed API reference matches the source.

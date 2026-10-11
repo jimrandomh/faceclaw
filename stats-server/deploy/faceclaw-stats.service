@@ -1,0 +1,21 @@
+# Template: setup-server.sh fills in @USER@ and @DIR@ and installs it as
+# /etc/systemd/system/faceclaw-stats.service.
+[Unit]
+Description=Faceclaw stats server (stats.faceclaw.org)
+After=network.target postgresql.service
+
+[Service]
+Type=simple
+User=@USER@
+WorkingDirectory=@DIR@
+EnvironmentFile=@DIR@/deploy/stats.env
+ExecStart=@DIR@/deploy/run.sh
+# deploy.sh restarts the server by ending the process.
+Restart=always
+RestartSec=2
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+
+[Install]
+WantedBy=multi-user.target

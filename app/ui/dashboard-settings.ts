@@ -23,6 +23,7 @@ import { MENU_ANIMATION_KEY } from "./menu-animation-pref";
 import { LIST_ROW_TEXT_INSET, lineStep } from "./metrics";
 import { Layer, type LayerContext } from "./layers";
 import { GrayImage } from "~/graphics/image";
+import type { DataCollectionLevel } from "../analytics/analytics-store";
 
 export type NightscoutSettings = {
   siteUrl: string;
@@ -47,6 +48,11 @@ type ConfigSettingOptions<TValue, TId extends string> = {
   formatValue?: (value: TValue) => string;
   /** Extended description shown in the Settings panel when the row is selected. */
   description?: string;
+  /**
+   * Boolean and enum settings only take fixed values, so Full analytics
+   * reports them (fixedChoiceSettingValues); false keeps this one out.
+   */
+  reportInAnalytics?: boolean;
 };
 
 // Fired after any setting changes, in any isolate (storage lives in the Java
@@ -73,6 +79,21 @@ onSettingsStoreChanged(() => {
     }
   }, 0);
 });
+
+// Boolean and enum settings by storage key, for fixedChoiceSettingValues.
+// Settings built repeatedly (per-app or per-slot) just replace themselves.
+const fixedChoiceSettings = new Map<string, ConfigSetting<boolean> | ConfigSetting<string>>();
+
+/**
+ * The current value of every boolean and enum setting this isolate has
+ * loaded, keyed by storage key: what Full analytics reports as settings.
+ * Free-text settings never appear.
+ */
+export function fixedChoiceSettingValues(): Record<string, boolean | string> {
+  const values: Record<string, boolean | string> = {};
+  for (const [storageKey, setting] of fixedChoiceSettings) values[storageKey] = setting.get();
+  return values;
+}
 
 export abstract class ConfigSetting<TValue, TId extends string = string> {
   readonly id: TId;
@@ -104,6 +125,7 @@ export class ConfigSettingBoolean<TId extends string = string> extends ConfigSet
   // Widens ConfigSetting's protected constructor.
   public constructor(options: ConfigSettingOptions<boolean, TId>) {
     super(options);
+    if (options.reportInAnalytics !== false) fixedChoiceSettings.set(options.storageKey, this);
   }
 
   get(): boolean {
@@ -134,6 +156,7 @@ export class ConfigSettingEnum<TValue extends string, TId extends string = strin
 
   constructor(options: ConfigSettingEnumOptions<TValue, TId>) {
     super(options);
+    if (options.reportInAnalytics !== false) fixedChoiceSettings.set(options.storageKey, this);
     this.values = options.values;
     this.disabledPredicate = options.isDisabled ?? (() => false);
     if (options.normalize) {
@@ -659,6 +682,45 @@ export const navigateDisplayModeSetting = appDisplayModeSetting("navigate", "glo
 export const navigateVerticalPositionSetting = appVerticalPositionSetting("navigate");
 export const terminalDisplayModeSetting = appDisplayModeSetting("terminal", "default");
 export const terminalVerticalPositionSetting = appVerticalPositionSetting("terminal");
+
+export type { DataCollectionLevel };
+
+/** The data-collection setting's key, for observers (app/analytics/analytics.ts). */
+export const DATA_COLLECTION_KEY = "privacy.dataCollection";
+
+const DATA_COLLECTION_LABELS: Record<DataCollectionLevel, string> = {
+  none: "None",
+  minimal: "Minimal",
+  full: "Full",
+};
+
+// What each level collects is set out in app/analytics/analytics-store.ts and
+// the privacy policy (PRIVACY); keep these in step with both.
+const DATA_COLLECTION_SUMMARIES: Record<DataCollectionLevel, string> = {
+  none: "Send nothing",
+  minimal: "Version, devices, connection reliability",
+  full: "Also settings and API-key presence",
+};
+
+/** One-line summary of what a data-collection level sends (onboarding, settings). */
+export function dataCollectionSummary(level: DataCollectionLevel): string {
+  return DATA_COLLECTION_SUMMARIES[level];
+}
+
+/** Chosen in the on-glasses onboarding; changeable in Settings > Privacy. */
+export const dataCollectionSetting = new ConfigSettingEnum<DataCollectionLevel>({
+  id: "data-collection",
+  label: "Data collection",
+  storageKey: DATA_COLLECTION_KEY,
+  defaultValue: "none",
+  values: ["none", "minimal", "full"],
+  formatValue: (value) => DATA_COLLECTION_LABELS[value],
+  description:
+    "Anonymous statistics Faceclaw may send its developers once a day, to help fix problems and improve the " +
+    "app. None: send nothing, and keep nothing on the phone. Minimal: the app version, which devices are " +
+    "paired and in use, and how reliable the connection to them is. Full: also settings chosen from fixed " +
+    "options, and which kinds of API key are set (never the keys themselves).",
+});
 
 export const voiceControlEnabledSetting = new ConfigSettingBoolean({
   id: "voice-control-enabled",

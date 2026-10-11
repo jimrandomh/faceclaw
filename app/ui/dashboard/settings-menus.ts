@@ -45,6 +45,7 @@ import {
   autoBrightnessMinSetting,
   autoBrightnessMaxSetting,
   autoBrightnessCurveSetting,
+  dataCollectionSetting,
   glassesBatteryVisibilitySetting,
   phoneBatteryVisibilitySetting,
   ringBatteryVisibilitySetting,
@@ -189,6 +190,13 @@ function settingsSections(): SettingsSection[] {
         toggleSettingMenuItem(suspendEvenHubWhenScreenOffSetting),
         toggleSettingMenuItem(useMicControlSetting),
         toggleSettingMenuItem(showBleBandwidthSetting),
+      ],
+    },
+    {
+      label: "Privacy",
+      items: [
+        // First chosen in the on-glasses onboarding (app/apps/onboarding/).
+        enumSettingMenuItem(dataCollectionSetting),
       ],
     },
     {
