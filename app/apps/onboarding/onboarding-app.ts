@@ -5,6 +5,7 @@ import { createInProcessWindow, type InProcessAppOptions, type InProcessWindow }
 import { shell } from "../../ui/shell/shell";
 import { findSoundEffect, playSoundEffect } from "../../ui/sound-effects";
 import { DataCollectionPage } from "./data-collection-page";
+import { IosPrivacyPage } from "./ios-privacy-page";
 import { markGlassesOnboardingFinished, ONBOARDING_APP_ID } from "./onboarding-progress";
 import type { OnboardingPage } from "./onboarding-page";
 import { TextSizePage } from "./text-size-page";
@@ -21,7 +22,11 @@ export const ONBOARDING_SURFACE_ID = "window:onboarding";
  * closing it early leaves onboarding due.
  */
 export function createOnboardingAppWindow(options: InProcessAppOptions): InProcessWindow {
-  const pages: OnboardingPage[] = [new WelcomePage(), new TextSizePage(), new DataCollectionPage()];
+  const pages: OnboardingPage[] = [
+    new WelcomePage(), new TextSizePage(),
+    ...(global.isIOS ? [new IosPrivacyPage()] : []),
+    new DataCollectionPage(),
+  ];
   const app = createInProcessWindow({
     appId: ONBOARDING_APP_ID,
     windowId: ONBOARDING_WINDOW_ID,

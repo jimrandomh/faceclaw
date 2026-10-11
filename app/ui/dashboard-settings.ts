@@ -24,6 +24,7 @@ import { LIST_ROW_TEXT_INSET, lineStep } from "./metrics";
 import { Layer, type LayerContext } from "./layers";
 import { GrayImage } from "~/graphics/image";
 import type { DataCollectionLevel } from "../analytics/analytics-store";
+import { IOS_PRIVACY_SUMMARY } from "../analytics/privacy-disclosure";
 
 export type NightscoutSettings = {
   siteUrl: string;
@@ -697,7 +698,7 @@ const DATA_COLLECTION_LABELS: Record<DataCollectionLevel, string> = {
 // What each level collects is set out in app/analytics/analytics-store.ts and
 // the privacy policy (PRIVACY); keep these in step with both.
 const DATA_COLLECTION_SUMMARIES: Record<DataCollectionLevel, string> = {
-  none: "Send nothing",
+  none: "No Faceclaw statistics",
   minimal: "Version, devices, connection reliability",
   full: "Also settings and API-key presence",
 };
@@ -710,14 +711,15 @@ export function dataCollectionSummary(level: DataCollectionLevel): string {
 /** Chosen in the on-glasses onboarding; changeable in Settings > Privacy. */
 export const dataCollectionSetting = new ConfigSettingEnum<DataCollectionLevel>({
   id: "data-collection",
-  label: "Data collection",
+  label: "Faceclaw statistics",
   storageKey: DATA_COLLECTION_KEY,
   defaultValue: "none",
   values: ["none", "minimal", "full"],
   formatValue: (value) => DATA_COLLECTION_LABELS[value],
   description:
-    "Anonymous statistics Faceclaw may send its developers once a day, to help fix problems and improve the " +
-    "app. None: send nothing, and keep nothing on the phone. Minimal: the app version, which devices are " +
+    (global.isIOS ? IOS_PRIVACY_SUMMARY + " " : "") +
+    "Optional statistics Faceclaw may send its developers once a day, to help fix problems and improve the " +
+    "app. None: no Faceclaw statistics are stored or sent. Minimal: the app version, which devices are " +
     "paired and in use, and how reliable the connection to them is. Full: also settings chosen from fixed " +
     "options, and which kinds of API key are set (never the keys themselves).",
 });

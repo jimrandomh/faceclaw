@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Install — Faceclaw</title>
-<meta name="description" content="How to install Faceclaw on an Android phone and flash the custom firmware onto Even Realities G2 glasses.">
+<meta name="description" content="Install Faceclaw on Android or try the iPhone beta, and set up your Even Realities G2 glasses.">
 <link rel="icon" href="images/favicon.png">
 <link rel="stylesheet" href="style.css">
 </head>
@@ -34,20 +34,35 @@
 
     <h2>What you need</h2>
     <ul>
-      <li>A pair of Even Realities G2 glasses.</li>
-      <li>An Android phone. Faceclaw runs as a background app and talks to the glasses over Bluetooth LE.</li>
-      <li>Optionally, a Wear OS 3+ watch, if you want the watch remote instead of the R1 ring.</li>
+      <li>A pair of Even Realities G2 glasses, or use Preview Only to explore on your phone without glasses.</li>
+      <li>An Android phone or an iPhone running iOS 15.1 or later. Faceclaw talks to the glasses over Bluetooth LE.</li>
+      <li>On Android, optionally a Wear OS 3+ watch, if you want the watch remote instead of the R1 ring.</li>
     </ul>
-    <p>There is no iOS version, and there will not be one — the app depends on Android APIs for background Bluetooth, notification access and media control.</p>
+    <p>Some features are platform-specific: Android notification access, Android media controls and the Wear OS remote are Android features.</p>
 
-    <h2>Install the app</h2>
+    <h2 id="ios">iPhone beta</h2>
+    <p>The iPhone beta uses Apple's TestFlight. No compiling or developer account is needed.</p>
+    <p><strong>First public build pending:</strong> installation will become available after Apple approves the beta. Until then, TestFlight may say this beta is not accepting testers.</p>
+    <div class="callout">
+      <p><strong>TestFlight privacy:</strong> Apple automatically collects crash logs, installs, sessions and device/app details, and shares beta testing data with Faceclaw's developers. Faceclaw's statistics setting cannot disable this. Joining through a public link hides your name and email from us, but not from Apple; email invitations and optional feedback can identify you. Read the <a href="privacy.html">privacy policy</a> before joining.</p>
+    </div>
+    <p><a class="btn primary" href="https://testflight.apple.com/join/R7kPtdqm">Join the iPhone beta</a></p>
+    <ol>
+      <li>Open the signup link on your iPhone and follow Apple's instructions to install TestFlight.</li>
+      <li>Return to the signup link, accept the invitation, and install Faceclaw in TestFlight.</li>
+      <li>Open Faceclaw and follow onboarding, or choose <strong>Preview Only</strong> to explore without glasses.</li>
+    </ol>
+    <p>TestFlight builds expire after 90 days. Keep Faceclaw updated through TestFlight. To leave, open Faceclaw's page in TestFlight and choose <strong>Stop Testing</strong>, then uninstall the beta.</p>
+
+    <h2 id="android">Android</h2>
     <p>Faceclaw is not on the Play Store. Download the most recent APK from the <a href="https://github.com/jimrandomh/faceclaw/releases">releases page</a> and open it on your phone; Android will ask you to allow installing apps from that source.</p>
 
     <h2>Install the firmware</h2>
     <p>Faceclaw needs custom firmware on the glasses, and installs it for you. On first run, the onboarding flow will offer to download the stock firmware from Even Realities, apply the <a href="https://github.com/jimrandomh/g2flash">g2flash</a> patches locally, and flash the result. You confirm the flash on the glasses themselves.</p>
-    <p>Onboarding also offers a preview-only path, which connects to unmodified glasses so you can look around before committing. Faceclaw can restore the stock firmware later from the same screens.</p>
+    <p>Onboarding also offers a Preview Only path so you can explore the interface on your phone without glasses. Faceclaw can restore the stock firmware later from the same screens.</p>
 
     <h2>Grant permissions</h2>
+    <p>On iPhone, allow Bluetooth when prompted to connect your glasses. Features such as voice input and navigation may request microphone, speech recognition or location access when needed; you can review Faceclaw's permissions in iPhone Settings.</p>
     <p>Android does not reliably prompt for everything Faceclaw uses. After installing, go to <strong>Settings &rarr; Apps &rarr; Faceclaw</strong> and check that permissions are granted — notification access and Bluetooth in particular — or parts of the app will silently do nothing.</p>
     <p>Also exempt Faceclaw from battery optimization. Being a background app on a locked Android phone is fraught, and manufacturer-specific battery software may pause it or throttle it to low CPU usage.</p>
 
@@ -60,7 +75,7 @@
     </ul>
 
     <h2>Building from source</h2>
-    <p>Faceclaw is a NativeScript app written in TypeScript and Java, and builds with an Android SDK 35 environment and a JDK 21. The <a href="https://github.com/jimrandomh/faceclaw#installation">README</a> has the current build and <code>adb</code> instructions; they are kept there rather than duplicated here, so they stay in step with the code.</p>
+    <p>Faceclaw uses NativeScript, TypeScript and native platform code. See the <a href="https://github.com/jimrandomh/faceclaw#installation">README</a> for Android build instructions and the <a href="https://github.com/jimrandomh/faceclaw/blob/main/notes/ios-development.md">iOS development guide</a> for building with Xcode on a Mac.</p>
   </div>
 </section>
 </main>

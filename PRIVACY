@@ -1,21 +1,22 @@
 # Faceclaw Privacy Policy
 
-Faceclaw is a privacy-conscious app. Unless you choose to share anonymous
-usage statistics (described below), the developers of Faceclaw don't collect
-or store any data about you or how you use the app. Faceclaw does integrate
-with some third-party services, which have their own privacy policies; this
-document describes what those services are, what they're used for and what
-data they collect, and links to their privacy policies.
+Faceclaw's own usage statistics are off unless you opt in. Separately, Apple
+collects and shares information when you use an iOS TestFlight build, even
+when Faceclaw statistics are set to None. Information you voluntarily send
+us, such as feedback, may also identify you. This policy describes these
+separate channels and the third-party services you can choose to use.
 
 
 ## Usage Statistics
 
 The first time you connect your glasses, Faceclaw asks whether to share
-anonymous usage statistics with its developers, to help them fix problems and
+usage statistics with its developers, to help them fix problems and
 improve the app. The choices are None, Minimal and Full, and you can change
-your choice at any time in Settings > Privacy. Until you choose, it is None.
+your choice at any time in Settings > Privacy > Faceclaw statistics. Until
+you choose, it is None. This setting controls only Faceclaw's own statistics.
 
-With None, Faceclaw sends nothing and keeps no statistics on your phone.
+With None, Faceclaw sends and stores none of its own usage statistics. This
+does not disable Apple's TestFlight reports or services you choose to use.
 
 With Minimal, Faceclaw keeps counts on your phone and sends them about once a
 day to stats.faceclaw.org, a server run by Faceclaw's developers:
@@ -38,13 +39,53 @@ With Full, it also sends:
     switches and pick-one lists. Settings you type in, such as addresses,
     URLs and names, are never sent.
 
-Statistics never include your name or contact details, your location,
+Faceclaw's own statistics never include your name or contact details, your location,
 Bluetooth device addresses, anything you say or type, or what is shown on
 your glasses. Each report carries a random identifier, created when you turn
 statistics on, which links your reports to each other but not to you.
 Turning statistics off deletes that identifier and everything kept on the
 phone, and stops all reports; turning them back on starts a new identifier.
 The statistics server doesn't record the IP addresses reports come from.
+
+
+## iOS and TestFlight
+
+For TestFlight builds, Apple automatically collects crash reports and beta
+usage information and shares them with us. This includes installations,
+sessions, crashes, app/build and OS versions, device model and identifier,
+and language. It is separate from Faceclaw statistics, with no in-app opt-out.
+
+Joining only through a public TestFlight link hides your name and email from
+us, not from Apple. Email invitations can identify you to us. Apple also
+collects your device's name (not shared with us) and may use your IP address
+to estimate your region for beta availability.
+
+Feedback is optional. Comments, screenshots and diagnostics submitted
+through TestFlight go to Apple and us. Public-link testers can omit their
+email in the feedback form. Email sent directly to us reveals your email
+even after public-link enrollment, but is not shared with Apple. Check
+screenshots and comments for private content; feedback can include device
+state such as battery level, free storage and network type.
+
+Faceclaw has no public iOS API to switch off TestFlight's automatic reporting.
+Its statistics setting and iOS tracking permissions do not control it. To
+leave, select Stop Testing on Faceclaw's TestFlight information page, then
+stop using and uninstall the beta. This does not erase previous reports.
+Self-built installations do not use TestFlight reporting.
+
+For ordinary iOS analytics, use iPhone Settings > Privacy & Security >
+Analytics & Improvements, including Share With App Developers. Faceclaw
+cannot change these system settings. TestFlight crash reporting applies
+regardless of those settings. See https://www.apple.com/legal/privacy/data/en/app-analytics/.
+
+We use TestFlight reports only to improve Faceclaw, not for advertising or
+sharing with third parties. Apple retains feedback for one year and may keep
+crash/usage reports until bugs are resolved. For access/deletion requests,
+contact us using the developer email in TestFlight; manage Apple's data at
+https://privacy.apple.com/.
+
+Apple's details: https://www.apple.com/legal/privacy/data/en/test-flight/
+and https://testflight.apple.com/.
 
 
 ## Audio

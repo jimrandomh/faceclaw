@@ -251,7 +251,8 @@ if (faceclawVersionFile.exists()) {
   }
 }
 def faceclawVersionCode = {
-  def parts = (faceclawVersionName.tokenize('.') + ["0", "0"]).take(3)*.toInteger()
+  // Prerelease labels belong in versionName, not the numeric versionCode.
+  def parts = (faceclawVersionName.split('-')[0].tokenize('.') + ["0", "0"]).take(3)*.toInteger()
   return parts[0] * 10000 + parts[1] * 100 + parts[2]
 }()
 

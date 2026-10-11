@@ -1,10 +1,11 @@
 # Changelog
 
-## 0.8.3 - Future
+## 0.8.3-rc1 - 2026-10-10
 
 * Fix several issues that would cause disconnection and disconnect-looping
 * Add a client for T3 Code
-* Optional anonymous usage statistics (Settings>Privacy>Data collection; off by default)
+* Optional usage statistics (Settings>Privacy>Faceclaw statistics; off by default)
+* Disclose Apple's separate TestFlight reporting in iOS onboarding and privacy settings
 * Add an on-glasses Onboarding app, which prompts you to configure some things
 * iOS Notifications have an icon based on ANCS category
 * Weather app is more graphical, and can appear on the status bar and glanceboard Glanceboard system card
