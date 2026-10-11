@@ -4,6 +4,9 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 const ts = require('typescript');
 const path = require('node:path');
+// The provider settings ios-preview-controller hands the voice bridge.
+const voiceSettings = { voiceProviderSetting: { get: () => 'onboard' }, elevenLabsApiKeySetting: { get: () => '' },
+  openAiApiKeySetting: { get: () => '' }, sonioxApiKeySetting: { get: () => '' } };
 function load(file, context) {
   const sandbox = { exports: {}, ...context };
   const source = fs.readFileSync(path.join(__dirname, '..', file), 'utf8');
@@ -80,7 +83,8 @@ test('iOS settings prompts honor password input and report cancellation', async 
 test('iOS host forwards hands-free capture mode to the voice bridge', async () => {
   const captures = [];
   const { IosPreviewController } = load('app/g2/ios-preview-controller.ts', { require: id => id === '../native/ios-voice-input'
-    ? { iosVoiceInput: { startGlassesCapture: (_session, _log, endpointing) => captures.push(endpointing) } } : {} });
+    ? { iosVoiceInput: { startGlassesCapture: (_session, _voice, _log, endpointing) => captures.push(endpointing) } }
+    : id === '../ui/dashboard-settings' ? voiceSettings : {} });
   const host = Object.create(IosPreviewController.prototype);
   host.communicator = {}; host.state = { phase: 'connected' };
   await host.startVoiceCapture(true);
@@ -304,20 +308,20 @@ test('iOS opens the on-glasses onboarding on a new acknowledged frame, once per 
 
 test('iOS preview voice uses the phone microphone, while connected capture stays on glasses', async () => {
   const calls = [];
-  const bridge = { prepare: async (foreground, phone) => { calls.push(['prepare', foreground, phone]); return true; },
-    startPhoneCapture: async (_log, endpointing) => calls.push(['phone', endpointing]),
-    startGlassesCapture: async (_session, _log, endpointing) => calls.push(['glasses', endpointing]) };
+  const bridge = { prepare: async (foreground, phone, voice) => { calls.push(['prepare', foreground, phone, voice.provider]); return true; },
+    startPhoneCapture: async (voice, _log, endpointing) => calls.push(['phone', voice.provider, endpointing]),
+    startGlassesCapture: async (_session, voice, _log, endpointing) => calls.push(['glasses', voice.provider, endpointing]) };
   const { IosPreviewController } = load('app/g2/ios-preview-controller.ts', {
-    require: id => id === '../native/ios-voice-input' ? { iosVoiceInput: bridge } : {},
+    require: id => id === '../native/ios-voice-input' ? { iosVoiceInput: bridge } : id === '../ui/dashboard-settings' ? voiceSettings : {},
   });
   const host = Object.create(IosPreviewController.prototype);
   host.active = true; host.glassesLocked = false; host.communicator = null; host.state = { phase: 'disconnected' };
   assert.equal(await host.prepareVoiceCapture(), true);
   await host.startVoiceCapture(true);
-  assert.deepEqual(calls, [['prepare', true, true], ['prepare', true, true], ['phone', true]]);
+  assert.deepEqual(calls, [['prepare', true, true, 'onboard'], ['prepare', true, true, 'onboard'], ['phone', 'onboard', true]]);
   calls.length = 0; host.communicator = {}; host.state = { phase: 'connected' };
   assert.equal(await host.prepareVoiceCapture(), true); await host.startVoiceCapture(false);
-  assert.deepEqual(calls, [['prepare', true, false], ['glasses', false]]);
+  assert.deepEqual(calls, [['prepare', true, false, 'onboard'], ['glasses', 'onboard', false]]);
   calls.length = 0; host.active = false; host.communicator = null; host.state = { phase: 'disconnected' };
   assert.equal(await host.prepareVoiceCapture(), false); await host.startVoiceCapture();
   assert.deepEqual(calls, []);

@@ -193,3 +193,28 @@ test('an unsolicited Soniox session end finalizes visible text and reconnects', 
   assert.equal(h.sockets.length, 2);
   h.client.stop();
 });
+
+test('provider selection falls back to on-device without a key and connects the chosen provider with one', () => {
+  const sockets = [];
+  const load = loader({
+    setTimeout() {}, clearTimeout() {}, console: { log() {}, warn() {} },
+    com: { faceclaw: { app: {
+      FaceclawWebSocketListener: function(callbacks) { return callbacks; },
+      FaceclawWebSocket: class { constructor(url, _listener, header, value) { sockets.push({ url, header, value }); } },
+    } } },
+  }, { './cloud-stt': { CLOUD_STT_SAMPLE_RATE: 16000, encodeBase64: () => '', toJavaBytes: bytes => bytes } });
+  const { createCloudSttClient, usesCloudStt } = load('app/native/cloud-stt-provider.ts');
+  const statuses = [];
+  const options = { onTranscript() {}, onStatus: status => statuses.push(status), onError() {} };
+  const selection = { provider: 'onboard', elevenLabsApiKey: '', openAiApiKey: ' ', sonioxApiKey: 'soniox-key' };
+  assert.equal(usesCloudStt(selection), false);
+  assert.equal(createCloudSttClient(selection, options, () => false), null);
+  assert.equal(usesCloudStt({ ...selection, provider: 'whisper' }), false);
+  assert.equal(createCloudSttClient({ ...selection, provider: 'whisper' }, options, () => false), null);
+  assert.deepEqual(statuses, ['No OpenAI key set; using on-device voice.']);
+  assert.equal(usesCloudStt({ ...selection, provider: 'soniox' }), true);
+  createCloudSttClient({ ...selection, provider: 'soniox' }, options, () => false).start();
+  createCloudSttClient({ ...selection, provider: 'elevenlabs', elevenLabsApiKey: ' xi ' }, options, () => false).start();
+  assert.deepEqual(sockets.map(({ url, header, value }) => [new URL(url).host, header, value]),
+    [['stt-rt.soniox.com', null, null], ['api.elevenlabs.io', 'xi-api-key', 'xi']]);
+});

@@ -1,11 +1,8 @@
 import { Utils } from "@nativescript/core";
 
-import { type CloudSttTranscriptEvent, type CloudSttOptions, CloudSttClient } from "./cloud-stt";
-import { ReconnectingSttClient } from "./reconnecting-stt";
+import { type CloudSttTranscriptEvent, CloudSttClient } from "./cloud-stt";
+import { createCloudSttClient } from "./cloud-stt-provider";
 import { SpeechPauseDetector } from "./speech-pause";
-import { ElevenLabsSttClient } from "./elevenlabs-stt";
-import { OpenAiRealtimeSttClient } from "./openai-stt";
-import { SonioxSttClient } from "./soniox-stt";
 import { toUint8Array } from "../util/array-util";
 
 declare const com: any;
@@ -341,38 +338,12 @@ export class FaceclawVoiceControlBridge {
    * than failing the capture outright.
    */
   private createCloudClient(options: PushToTalkOptions): CloudSttClient | null {
-    if (options.provider === "onboard" || options.provider === "onboard-whisper") return null;
-    const sttOptions = {
-      apiKey: "",
+    return createCloudSttClient(options, {
       onTranscript: (event: CloudSttTranscriptEvent) =>
         this.emitTranscript(event.text, event.isFinal, event),
       onStatus: (status: string) => this.setStatus(status),
       onError: (message: string) => this.setStatus(message),
-    };
-    const reconnecting = (create: (options: CloudSttOptions) => CloudSttClient, apiKey: string) =>
-      new ReconnectingSttClient(create, { ...sttOptions, apiKey }, () => this.captureHolders.has("continuous"));
-    if (options.provider === "elevenlabs") {
-      const apiKey = options.elevenLabsApiKey.trim();
-      if (!apiKey) {
-        this.setStatus("No ElevenLabs key set; using on-device voice.");
-        return null;
-      }
-      return reconnecting((config) => new ElevenLabsSttClient(config), apiKey);
-    }
-    if (options.provider === "soniox") {
-      const apiKey = options.sonioxApiKey.trim();
-      if (!apiKey) {
-        this.setStatus("No Soniox key set; using on-device voice.");
-        return null;
-      }
-      return reconnecting((config) => new SonioxSttClient(config), apiKey);
-    }
-    const apiKey = options.openAiApiKey.trim();
-    if (!apiKey) {
-      this.setStatus("No OpenAI key set; using on-device voice.");
-      return null;
-    }
-    return reconnecting((config) => new OpenAiRealtimeSttClient(config), apiKey);
+    }, () => this.captureHolders.has("continuous"));
   }
 
   private releaseCapture(holder: CaptureHolder, commit: boolean): void {

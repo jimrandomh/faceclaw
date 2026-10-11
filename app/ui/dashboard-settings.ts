@@ -785,8 +785,10 @@ export const ringConnectionModeSetting = new ConfigSettingEnum<RingConnectionMod
 // below now says "OpenAI" to tell the two apart in the picker.
 export type VoiceProvider = "onboard" | "onboard-whisper" | "elevenlabs" | "whisper" | "soniox";
 
+// On iOS "onboard" is Apple's on-device recognizer, and there is no
+// "onboard-whisper" (the sherpa-onnx models are Android-only).
 const voiceProviderLabels: Record<VoiceProvider, string> = {
-  onboard: "On-device (Moonshine)",
+  onboard: global.isIOS ? "On-device (Apple)" : "On-device (Moonshine)",
   "onboard-whisper": "On-device (Whisper)",
   elevenlabs: "ElevenLabs",
   whisper: "OpenAI (Whisper)",
@@ -798,7 +800,7 @@ export const voiceProviderSetting = new ConfigSettingEnum<VoiceProvider>({
   label: "Transcription Provider",
   storageKey: "voice.provider",
   defaultValue: "onboard",
-  values: ["onboard", "onboard-whisper", "elevenlabs", "whisper", "soniox"],
+  values: global.isIOS ? ["onboard", "elevenlabs", "whisper", "soniox"] : ["onboard", "onboard-whisper", "elevenlabs", "whisper", "soniox"],
   formatValue: (value) => voiceProviderLabels[value] ?? value,
   isDisabled: (value) => {
     if (value === "elevenlabs") return elevenLabsApiKeySetting.get().trim().length === 0;
@@ -806,7 +808,9 @@ export const voiceProviderSetting = new ConfigSettingEnum<VoiceProvider>({
     if (value === "soniox") return sonioxApiKeySetting.get().trim().length === 0;
     return false;
   },
-  description: "Speech-to-text engine for voice input. ElevenLabs, OpenAI, and Soniox are cloud services that need an API key, with significantly better accuracy than on-device transcription. The two On-device options need their voice model downloaded (below) and never leave the phone.",
+  description: global.isIOS
+    ? "Speech-to-text engine for voice input. ElevenLabs, OpenAI, and Soniox are cloud services that need an API key (Settings > API Keys), with significantly better accuracy than on-device transcription. On-device uses your iPhone's speech language and never leaves the phone."
+    : "Speech-to-text engine for voice input. ElevenLabs, OpenAI, and Soniox are cloud services that need an API key, with significantly better accuracy than on-device transcription. The two On-device options need their voice model downloaded (below) and never leave the phone.",
 });
 
 const wakeWordActionLabels: Record<WakeWordAction, string> = {

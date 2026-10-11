@@ -15,6 +15,7 @@
 @property(atomic) NSUInteger generation;
 @property(nonatomic) NSUInteger pendingPackets;
 @property(atomic) BOOL accepting;
+@property(nonatomic) BOOL pcmOutput;
 @property(nonatomic, strong) AVAudioEngine *phoneEngine;
 @property(nonatomic) BOOL phoneTapInstalled;
 @property(nonatomic) BOOL phoneSessionActive;
@@ -23,6 +24,23 @@
 @property(nonatomic, strong) FaceclawSpeechTranscript *transcript;
 @property(nonatomic, strong) FaceclawKitVoiceEndpointDetector *endpointDetector;
 @end
+/** Resamples one tap buffer to 16 kHz mono PCM16LE. Called on the serial
+ * audio queue; the converter keeps its filter state between buffers. */
+static NSData *resampleToPcm(AVAudioConverter *converter, AVAudioPCMBuffer *input) {
+    AVAudioFormat *format = converter.outputFormat;
+    AVAudioFrameCount capacity = (AVAudioFrameCount)ceil(input.frameLength * format.sampleRate / input.format.sampleRate) + 32;
+    AVAudioPCMBuffer *output = [[AVAudioPCMBuffer alloc] initWithPCMFormat:format frameCapacity:capacity];
+    __block BOOL supplied = NO;
+    NSError *error = nil;
+    AVAudioConverterOutputStatus status = [converter convertToBuffer:output error:&error
+        withInputFromBlock:^AVAudioBuffer *(AVAudioPacketCount count, AVAudioConverterInputStatus *inputStatus) {
+            // NoDataNow (not EndOfStream) leaves the stream open for the next buffer.
+            if (supplied) { *inputStatus = AVAudioConverterInputStatus_NoDataNow; return nil; }
+            supplied = YES; *inputStatus = AVAudioConverterInputStatus_HaveData; return input;
+        }];
+    if (status == AVAudioConverterOutputStatus_Error || !output.frameLength) return nil;
+    return [NSData dataWithBytes:output.int16ChannelData[0] length:output.frameLength * sizeof(int16_t)];
+}
 @implementation FaceclawSpeech
 - (instancetype)init {
     if ((self = [super init])) _audioQueue = dispatch_queue_create("com.faceclaw.glasses-speech", DISPATCH_QUEUE_SERIAL);
@@ -46,25 +64,43 @@
     if (json) self.eventHandler([[NSString alloc] initWithData:json encoding:NSUTF8StringEncoding]);
 }
 - (NSString *)startWithEndpointing:(BOOL)endpointing {
-    return [self startWithEndpointing:endpointing phone:NO];
+    return [self startWithEndpointing:endpointing phone:NO pcm:NO];
 }
 - (NSString *)startPhoneWithEndpointing:(BOOL)endpointing {
-    return [self startWithEndpointing:endpointing phone:YES];
+    return [self startWithEndpointing:endpointing phone:YES pcm:NO];
 }
-- (NSString *)startWithEndpointing:(BOOL)endpointing phone:(BOOL)phone {
+- (NSString *)startPcmCaptureWithEndpointing:(BOOL)endpointing phone:(BOOL)phone {
+    return [self startWithEndpointing:endpointing phone:phone pcm:YES];
+}
+- (NSString *)startWithEndpointing:(BOOL)endpointing phone:(BOOL)phone pcm:(BOOL)pcm {
     [self cancel];
     if (phone && [FaceclawSpeech microphoneAuthorizationStatus] != AVAuthorizationStatusAuthorized)
         return @"Allow Microphone access for Faceclaw in iPhone Settings.";
-    if (SFSpeechRecognizer.authorizationStatus != SFSpeechRecognizerAuthorizationStatusAuthorized)
-        return @"Allow Speech Recognition for Faceclaw in iPhone Settings.";
     NSString *language = NSLocale.preferredLanguages.firstObject ?: @"en-US";
-    self.recognizer = [[SFSpeechRecognizer alloc] initWithLocale:[NSLocale localeWithLocaleIdentifier:language]];
-    if (!self.recognizer.supportsOnDeviceRecognition)
-        return [NSString stringWithFormat:@"On-device speech is unavailable for %@. Enable Dictation for that language in iPhone Settings → General → Keyboard, then retry.", language];
-    if (!self.recognizer.available) return @"Speech recognition is temporarily unavailable. Try again shortly.";
+    if (!pcm) {
+        if (SFSpeechRecognizer.authorizationStatus != SFSpeechRecognizerAuthorizationStatusAuthorized)
+            return @"Allow Speech Recognition for Faceclaw in iPhone Settings.";
+        self.recognizer = [[SFSpeechRecognizer alloc] initWithLocale:[NSLocale localeWithLocaleIdentifier:language]];
+        if (!self.recognizer.supportsOnDeviceRecognition)
+            return [NSString stringWithFormat:@"On-device speech is unavailable for %@. Enable Dictation for that language in iPhone Settings → General → Keyboard, then retry.", language];
+        if (!self.recognizer.available) return @"Speech recognition is temporarily unavailable. Try again shortly.";
+    }
     if (!phone) {
         self.decoder = [FaceclawLc3Decoder new];
         if (!self.decoder) return @"Could not initialize the glasses audio decoder.";
+    }
+    self.pcmOutput = pcm;
+    self.bestText = @""; self.accepting = YES;
+    self.endpointDetector = endpointing ? [FaceclawKitVoiceEndpointDetector new] : nil;
+    NSUInteger generation = self.generation;
+    __weak FaceclawSpeech *weakSelf = self;
+    if (pcm) {
+        if (phone) {
+            NSString *error = [self startPhoneAudio];
+            if (error.length) { [self cancel]; return error; }
+        }
+        // The PCM consumer reports its own status and has no session limit.
+        return @"";
     }
     self.recognizer.queue = NSOperationQueue.mainQueue;
     self.request = [SFSpeechAudioBufferRecognitionRequest new];
@@ -72,11 +108,7 @@
     self.request.shouldReportPartialResults = YES;
     self.request.taskHint = SFSpeechRecognitionTaskHintDictation;
     if (@available(iOS 16.0, *)) self.request.addsPunctuation = YES;
-    self.bestText = @""; self.accepting = YES;
     self.transcript = [FaceclawSpeechTranscript new];
-    self.endpointDetector = endpointing ? [FaceclawKitVoiceEndpointDetector new] : nil;
-    NSUInteger generation = self.generation;
-    __weak FaceclawSpeech *weakSelf = self;
     self.task = [self.recognizer recognitionTaskWithRequest:self.request resultHandler:^(SFSpeechRecognitionResult *result, NSError *error) {
         dispatch_async(dispatch_get_main_queue(), ^{
             FaceclawSpeech *owner = weakSelf;
@@ -124,6 +156,13 @@
     AVAudioInputNode *input = self.phoneEngine.inputNode;
     AVAudioFormat *format = [input outputFormatForBus:0];
     if (format.sampleRate <= 0 || !format.channelCount) return @"No phone microphone is available. Check your audio input and try again.";
+    AVAudioConverter *converter = nil;
+    if (self.pcmOutput) {
+        AVAudioFormat *pcmFormat = [[AVAudioFormat alloc] initWithCommonFormat:AVAudioPCMFormatInt16 sampleRate:16000 channels:1 interleaved:YES];
+        converter = [[AVAudioConverter alloc] initFromFormat:format toFormat:pcmFormat];
+        if (!converter) return @"Could not convert phone microphone audio.";
+        converter.downmix = YES;
+    }
     NSUInteger generation = self.generation;
     SFSpeechAudioBufferRecognitionRequest *request = self.request;
     FaceclawKitVoiceEndpointDetector *detector = self.endpointDetector;
@@ -141,7 +180,10 @@
             memcpy(destination->mBuffers[i].mData, source->mBuffers[i].mData, source->mBuffers[i].mDataByteSize);
         dispatch_async(owner.audioQueue, ^{ @autoreleasepool {
             if (owner.generation != generation) return;
-            [request appendAudioPCMBuffer:copy];
+            if (converter) {
+                NSData *pcm = resampleToPcm(converter, copy);
+                if (pcm.length) [owner deliverPcm:pcm generation:generation];
+            } else [request appendAudioPCMBuffer:copy];
             double sum = 0;
             if (copy.floatChannelData) {
                 const float *samples = copy.floatChannelData[0];
@@ -188,6 +230,7 @@
     FaceclawLc3Decoder *decoder = self.decoder;
     SFSpeechAudioBufferRecognitionRequest *request = self.request;
     FaceclawKitVoiceEndpointDetector *endpointDetector = self.endpointDetector;
+    BOOL pcmOutput = self.pcmOutput;
     NSData *copy = [packet copy];
     dispatch_async(self.audioQueue, ^{ @autoreleasepool {
         if (self.generation != generation) return;
@@ -195,17 +238,26 @@
         double rms = 0;
         BOOL speechEnded = NO;
         if (pcm.length) {
-            AVAudioFormat *format = [[AVAudioFormat alloc] initWithCommonFormat:AVAudioPCMFormatFloat32 sampleRate:16000 channels:1 interleaved:NO];
-            AVAudioPCMBuffer *buffer = [[AVAudioPCMBuffer alloc] initWithPCMFormat:format frameCapacity:(AVAudioFrameCount)(pcm.length / 2)];
-            buffer.frameLength = buffer.frameCapacity;
-            const int16_t *samples = pcm.bytes;
-            for (NSUInteger i = 0; i < buffer.frameLength; i++) {
-                float value = samples[i] / 32768.0f;
-                buffer.floatChannelData[0][i] = value; rms += value * value;
+            AVAudioFrameCount frames = (AVAudioFrameCount)(pcm.length / 2);
+            AVAudioPCMBuffer *buffer = nil;
+            if (!pcmOutput) {
+                AVAudioFormat *format = [[AVAudioFormat alloc] initWithCommonFormat:AVAudioPCMFormatFloat32 sampleRate:16000 channels:1 interleaved:NO];
+                buffer = [[AVAudioPCMBuffer alloc] initWithPCMFormat:format frameCapacity:frames];
+                buffer.frameLength = frames;
             }
-            rms = sqrt(rms / buffer.frameLength);
-            if (self.generation == generation) [request appendAudioPCMBuffer:buffer];
-            speechEnded = [endpointDetector acceptLevelRms:rms * 32768.0 sampleCount:(int32_t)buffer.frameLength];
+            const int16_t *samples = pcm.bytes;
+            for (NSUInteger i = 0; i < frames; i++) {
+                float value = samples[i] / 32768.0f;
+                if (buffer) buffer.floatChannelData[0][i] = value;
+                rms += value * value;
+            }
+            rms = sqrt(rms / frames);
+            if (self.generation == generation) {
+                // The decoder's output is already the PCM consumer's format.
+                if (pcmOutput) [self deliverPcm:pcm generation:generation];
+                else [request appendAudioPCMBuffer:buffer];
+            }
+            speechEnded = [endpointDetector acceptLevelRms:rms * 32768.0 sampleCount:(int32_t)frames];
         }
         NSUInteger packets = decoder.packets, errors = decoder.errors, missing = decoder.missing;
         dispatch_async(dispatch_get_main_queue(), ^{
@@ -223,9 +275,15 @@
     [self stopPhoneAudio];
     NSUInteger generation = self.generation;
     SFSpeechAudioBufferRecognitionRequest *request = self.request;
+    BOOL pcmOutput = self.pcmOutput;
     [self emit:@{@"kind":@"finishing"}];
     // Drain already received audio before marking the utterance complete.
-    dispatch_async(self.audioQueue, ^{ if (self.generation == generation) [request endAudio]; });
+    dispatch_async(self.audioQueue, ^{
+        if (self.generation != generation) return;
+        if (!pcmOutput) { [request endAudio]; return; }
+        // Drained chunks are already queued for pcmHandler; "ended" follows them.
+        dispatch_async(dispatch_get_main_queue(), ^{ if (self.generation == generation) [self complete:@"Ready to send"]; });
+    });
     __weak FaceclawSpeech *weakSelf = self;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 8 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
         FaceclawSpeech *owner = weakSelf;
@@ -239,9 +297,14 @@
     if (text.length) [self emit:@{@"kind":@"transcript", @"text":text, @"final":@YES}];
     if (self.generation == generation) [self emit:@{@"kind":@"ended", @"message":status}];
 }
+- (void)deliverPcm:(NSData *)pcm generation:(NSUInteger)generation {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (self.generation == generation && self.pcmHandler) self.pcmHandler(pcm);
+    });
+}
 - (void)cancel {
     self.generation++;
-    self.accepting = NO; self.pendingPackets = 0;
+    self.accepting = NO; self.pendingPackets = 0; self.pcmOutput = NO;
     [self stopPhoneAudio];
     [self.task cancel]; self.task = nil; self.request = nil; self.decoder = nil; self.recognizer = nil;
     self.bestText = @""; self.transcript = nil; self.endpointDetector = nil;

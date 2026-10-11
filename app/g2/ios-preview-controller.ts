@@ -46,7 +46,9 @@ import { shell, rawInputEventToInputEvent, type ShellWindow } from '../ui/shell/
 import { appViewportRect, isOnSwitcherEdge, sidebarStripVisible } from '../ui/shell/geometry'
 import { DISPLAY_MODE_VALUES, displayModeLabel, displayModeSetting, onAnySettingChanged,
   previewColorSetting, lockScreenEnabledSetting, getBrightnessPreferences, getStringSettingById,
-  nightscoutSiteUrlSetting, nightscoutApiTokenSetting } from '../ui/dashboard-settings'
+  nightscoutSiteUrlSetting, nightscoutApiTokenSetting, voiceProviderSetting, elevenLabsApiKeySetting,
+  openAiApiKeySetting, sonioxApiKeySetting } from '../ui/dashboard-settings'
+import type { VoiceProviderSelection } from '../native/cloud-stt-provider'
 import type { PhoneGesture } from '../phone-ui/phone-gestures'
 import { claimGlassesOnboardingAutoLaunch, ONBOARDING_APP_ID } from '../apps/onboarding/onboarding-progress'
 
@@ -890,7 +892,7 @@ export class IosPreviewController {
     if (this.glassesLocked) return false
     const usePhoneMic = this.state.phase !== 'connected'
     if (usePhoneMic && !this.active) return false
-    const ready = await iosVoiceInput.prepare(this.active, usePhoneMic)
+    const ready = await iosVoiceInput.prepare(this.active, usePhoneMic, this.voiceProvider())
     if (!ready && this.active) this.onError(iosVoiceInput.statusText)
     return ready && !this.glassesLocked && (this.state.phase === 'connected' || this.active)
   }
@@ -898,13 +900,19 @@ export class IosPreviewController {
     if (this.glassesLocked) return
     const log = (message: string) => this.logBluetooth(message)
     const communicator = this.communicator
+    const voice = this.voiceProvider()
     if (communicator && this.state.phase === 'connected') {
-      await iosVoiceInput.startGlassesCapture(communicator, log, endpointing)
+      await iosVoiceInput.startGlassesCapture(communicator, voice, log, endpointing)
     } else if (this.active) {
       // Recheck microphone permission if the glasses disconnected after prepare.
-      if (!await iosVoiceInput.prepare(this.active, true) || !this.active || this.glassesLocked) return
-      await iosVoiceInput.startPhoneCapture(log, endpointing)
+      if (!await iosVoiceInput.prepare(this.active, true, voice) || !this.active || this.glassesLocked) return
+      await iosVoiceInput.startPhoneCapture(voice, log, endpointing)
     }
+  }
+  /** The transcription provider setting and the keys the cloud ones need. */
+  private voiceProvider(): VoiceProviderSelection {
+    return { provider: voiceProviderSetting.get(), elevenLabsApiKey: elevenLabsApiKeySetting.get(),
+      openAiApiKey: openAiApiKeySetting.get(), sonioxApiKey: sonioxApiKeySetting.get() }
   }
   private logBluetooth(message: string): void {
     const line = `${new Date().toISOString()} [${this.active ? 'foreground' : 'background'}${UIApplication.sharedApplication.protectedDataAvailable ? '' : ',protected-data-unavailable'}] ${message}`

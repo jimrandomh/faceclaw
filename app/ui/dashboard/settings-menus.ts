@@ -229,10 +229,9 @@ function settingsSections(): SettingsSection[] {
   const deferred = new Set(["Watch"]);
   return sections.map(section => {
     if (section.label === "Developer") return { ...section, items: [toggleSettingMenuItem(showBleBandwidthSetting)] };
-    if (section.label === "Voice") return { label: "Voice", items: [enumSettingMenuItem(wakeWordActionSetting), {
-      label: "On-device dictation (Apple)", disabled: true, onSelect: () => {},
-      description: "Uses the glasses microphone and your iPhone's speech language. No transcription API key needed. Say Hey Even for hands-free input, or open Voice from the menu and click when finished.",
-    }] };
+    // No downloadable on-device models: iOS's on-device option is Apple's recognizer.
+    if (section.label === "Voice") return { label: "Voice", items: [enumSettingMenuItem(wakeWordActionSetting),
+      enumSettingMenuItem(voiceProviderSetting)] };
     if (deferred.has(section.label)) return { label: section.label, items: [{
       label: "Not available on iOS yet", disabled: true, onSelect: () => {},
       description: `${section.label} integration has not been ported to iOS.`,

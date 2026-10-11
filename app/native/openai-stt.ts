@@ -1,6 +1,5 @@
 import { CLOUD_STT_SAMPLE_RATE, CloudSttClient, CloudSttOptions, encodeBase64 } from "./cloud-stt";
-
-declare const com: any;
+import { openSocket, type SocketConnection } from "./socket";
 
 /**
  * OpenAI realtime speech-to-text over WebSocket (a transcription-only session
@@ -23,8 +22,7 @@ const TARGET_SAMPLE_RATE = 24000;
 export type OpenAiSttOptions = CloudSttOptions;
 
 export class OpenAiRealtimeSttClient implements CloudSttClient {
-  private ws: any = null;
-  private listenerProxy: any = null;
+  private ws: SocketConnection | null = null;
   private open = false;
   private closed = false;
   // Base64 audio (or the commit sentinel) queued until the socket opens.
@@ -38,7 +36,7 @@ export class OpenAiRealtimeSttClient implements CloudSttClient {
 
   start(): void {
     if (this.closed || this.ws) return;
-    this.listenerProxy = new com.faceclaw.app.FaceclawWebSocketListener({
+    const listener = {
       onOpen: () => {
         if (this.closed) return;
         this.open = true;
@@ -59,14 +57,9 @@ export class OpenAiRealtimeSttClient implements CloudSttClient {
         if (this.closed) return;
         this.options.onDisconnected?.(`OpenAI connection failed: ${String(message)}`);
       },
-    });
+    };
     try {
-      this.ws = new com.faceclaw.app.FaceclawWebSocket(
-        WS_URL,
-        this.listenerProxy,
-        "Authorization",
-        `Bearer ${this.options.apiKey}`,
-      );
+      this.ws = openSocket(WS_URL, listener, { name: "Authorization", value: `Bearer ${this.options.apiKey}` });
       this.options.onStatus("Connecting to OpenAI...");
     } catch (error) {
       this.options.onDisconnected?.(`OpenAI connection failed: ${String((error as Error)?.message ?? error)}`);
@@ -117,7 +110,6 @@ export class OpenAiRealtimeSttClient implements CloudSttClient {
       }
       this.ws = null;
     }
-    this.listenerProxy = null;
     this.pendingChunks.length = 0;
   }
 

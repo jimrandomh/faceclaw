@@ -171,6 +171,7 @@ test('native completion is capture-specific, follows the final, and does not wai
   const { FaceclawVoiceControlBridge } = load('app/native/voice-control.ts', {
     '@nativescript/core': { Utils: { android: { getApplicationContext: () => ({}) } } },
     './speech-pause': { SpeechPauseDetector: class { reset() {} } },
+    './cloud-stt-provider': { createCloudSttClient: () => null },
   }, { global: { isAndroid: true }, com: { faceclaw: { app: {
     FaceclawVoiceController: Controller,
     FaceclawVoiceControllerListener: function (listener) { return listener; },

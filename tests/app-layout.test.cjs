@@ -612,7 +612,7 @@ test('resizing a terminal reconnects with the new grid and ignores callbacks fro
       },
     } } },
   };
-  const socketContext = { exports: {}, com: context.com };
+  const socketContext = { exports: {}, com: context.com, require: () => ({ toJavaBytes: bytes => bytes }) };
   vm.runInNewContext(js(read('app/native/socket.ts')), socketContext);
   context.require = name => name === './socket' ? socketContext.exports : {};
   vm.runInNewContext(js(read('app/native/g2mirror-client.ts')), context);
