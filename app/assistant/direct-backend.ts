@@ -1,4 +1,5 @@
 import { streamAnthropicMessage } from "../native/anthropic";
+import { streamHermesChat } from "../native/hermes";
 import { streamLocalQwen } from "../native/llama";
 import { streamOpenAiResponse } from "../native/openai";
 import type {
@@ -30,6 +31,9 @@ export type DirectTurnOptions = {
   apiKey: string;
   model: string;
   effort?: "low" | "medium" | "high";
+  /** Hermes: the API root, and the server-side session this conversation maps to. */
+  baseUrl?: string;
+  sessionId?: string;
   system: string;
   /** Owned by the session; this loop appends assistant + tool_result messages. */
   messages: LlmMessage[];
@@ -79,7 +83,8 @@ export class DirectAssistantBackend {
         system: options.system,
         effort: options.effort,
         messages: options.messages,
-        tools: options.buildTools(),
+        // Hermes runs its own tools; Faceclaw's are not offered to it.
+        tools: options.provider === "hermes" ? [] : options.buildTools(),
         onTextDelta: (delta, textSoFar) => {
           if (cancelled) return;
           options.callbacks.onTextDelta(delta, priorText + textSoFar);
@@ -128,7 +133,9 @@ export class DirectAssistantBackend {
         },
       };
       streamHandle =
-        options.provider === "openai"
+        options.provider === "hermes"
+          ? streamHermesChat({ ...streamOptions, baseUrl: options.baseUrl ?? "", sessionId: options.sessionId ?? "" })
+          : options.provider === "openai"
           ? streamOpenAiResponse(streamOptions)
           : options.provider === "local"
             ? streamLocalQwen(streamOptions)

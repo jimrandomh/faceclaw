@@ -10,6 +10,7 @@ export const ASSISTANT_MODEL_VALUES = [
   "terra",
   "sol",
   "qwen",
+  "hermes",
 ] as const;
 
 export type AssistantModel = (typeof ASSISTANT_MODEL_VALUES)[number];
@@ -20,11 +21,14 @@ export function supportedAssistantModel(value: AssistantModel): AssistantModel {
   return global.isIOS && value === "qwen" ? "auto" : value;
 }
 
-export type AssistantProvider = "anthropic" | "openai" | "local";
+export type AssistantProvider = "anthropic" | "openai" | "local" | "hermes";
 
 export type AssistantApiKeys = {
   anthropic: string;
   openai: string;
+  /** A Hermes Agent API server; only the voice assistant passes these. */
+  hermesUrl?: string;
+  hermesKey?: string;
 };
 
 export type ResolvedAssistantModel = {
@@ -33,6 +37,8 @@ export type ResolvedAssistantModel = {
   model: string;
   apiKey: string;
   effort?: "low" | "medium" | "high";
+  /** API root for providers that are not fixed services (Hermes). */
+  baseUrl?: string;
 };
 
 type ModelDefinition = {
@@ -55,6 +61,8 @@ const MODEL_DEFINITIONS: Record<Exclude<AssistantModel, "auto">, ModelDefinition
   // Runs on the phone itself (llama.cpp); needs the downloaded model file,
   // not an API key. The default for users who haven't set any key.
   qwen: { label: `${LOCAL_MODEL.label} (on-phone)`, provider: "local", model: LOCAL_MODEL.id },
+  // Your own Hermes Agent (its API server), with its own tools and memory.
+  hermes: { label: "Hermes agent", provider: "hermes", model: "hermes-agent" },
 };
 
 export function assistantModelLabel(value: AssistantModel): string {
@@ -93,6 +101,11 @@ export function resolveAssistantModel(
   }
 
   const definition = MODEL_DEFINITIONS[resolvedSelection as Exclude<AssistantModel, "auto">];
+  if (definition.provider === "hermes") {
+    const baseUrl = keys.hermesUrl?.trim() ?? "";
+    if (!baseUrl) return null;
+    return { selection, provider: "hermes", model: definition.model, apiKey: keys.hermesKey?.trim() ?? "", baseUrl };
+  }
   if (definition.provider === "local") {
     if (!isLocalModelReady()) return null;
     return {

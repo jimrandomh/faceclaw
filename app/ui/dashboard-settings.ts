@@ -894,6 +894,28 @@ export const assistantBackendSetting = new ConfigSettingEnum<AssistantBackendKin
     global.isIOS ? "Cloud models called with your OpenAI or Anthropic API key. Add your key in Settings > API Keys." : "Who answers assistant queries: an LLM called from the phone (a cloud API with your key, or the downloaded on-phone model), or your own long-running agent (e.g. OpenClaw) reached through the faceclaw-agent-bridge plugin.",
 });
 
+export const assistantHermesUrlSetting = new ConfigSettingString({
+  id: "assistant-hermes-url",
+  label: "Hermes URL",
+  storageKey: "assistant.hermesUrl",
+  defaultValue: "",
+  editorTitle: "Hermes API server (e.g. http://host:8642/v1)",
+  glassesEditTitle: "Edit Hermes URL",
+  formatValue: (value) => value || "(not set)",
+  description: "Address of a Hermes Agent gateway's API server, used when Hermes agent is the assistant model.",
+});
+
+export const assistantHermesKeySetting = new ConfigSettingString({
+  id: "assistant-hermes-key",
+  label: "Hermes key",
+  storageKey: "assistant.hermesKey",
+  defaultValue: "",
+  editorTitle: "Hermes API server key",
+  glassesEditTitle: "Edit Hermes key",
+  formatValue: (value) => (value ? `${value.slice(0, 6)}...` : "(not set)"),
+  description: "The API server's key (API_SERVER_KEY in Hermes's .env).",
+});
+
 export const assistantBridgeHostSetting = new ConfigSettingString({
   id: "assistant-bridge-host",
   label: "Bridge host",
@@ -991,6 +1013,7 @@ export const assistantModelSetting = new ConfigSettingEnum<AssistantModel>({
     if (provider === "anthropic") return anthropicApiKeySetting.get().trim().length === 0;
     if (provider === "openai") return openAiApiKeySetting.get().trim().length === 0;
     if (provider === "local") return !isLocalModelReady();
+    if (provider === "hermes") return assistantHermesUrlSetting.get().trim().length === 0;
     return false;
   },
   description:

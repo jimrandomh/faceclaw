@@ -31,6 +31,8 @@ import type { AssistantContext } from "../../assistant/types";
 import { SingleNotificationLayer } from "../notifications";
 import {
   anthropicApiKeySetting,
+  assistantHermesKeySetting,
+  assistantHermesUrlSetting,
   assistantBackendSetting,
   assistantBridgeHostSetting,
   assistantBridgePortSetting,
@@ -1680,6 +1682,8 @@ class Shell {
     const llm = resolveAssistantModel(model, {
       anthropic: anthropicApiKeySetting.get(),
       openai: openAiApiKeySetting.get(),
+      hermesUrl: assistantHermesUrlSetting.get(),
+      hermesKey: assistantHermesKeySetting.get(),
     });
     if (llm && reasoning !== "default" && llm.effort) llm.effort = reasoning;
     return llm ? { kind: "direct", llm } : null;
