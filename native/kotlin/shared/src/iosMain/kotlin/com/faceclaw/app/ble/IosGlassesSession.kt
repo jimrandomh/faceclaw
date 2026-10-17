@@ -15,9 +15,13 @@ interface IosAncsListener {
     fun onRelayFrame(data: NSData)
 }
 
-/** Audio packets for the NativeScript side as NSData (a Kotlin ByteArray crosses per byte). Main queue. */
+/**
+ * Audio packets for the NativeScript side as NSData (a Kotlin ByteArray crosses per byte). Main queue.
+ * Not named onAudioPacket: that selector collides with FaceclawAudioPacketListener's, and the
+ * mangled name Kotlin/Native picks broke the TypeScript proxy ("unrecognized selector").
+ */
 interface IosAudioPacketListener {
-    fun onAudioPacket(data: NSData, arm: String, arrivalMs: Long)
+    fun onNsDataAudioPacket(data: NSData, arm: String, arrivalMs: Long)
 }
 
 /**
@@ -209,14 +213,21 @@ class IosGlassesSession internal constructor(
     /** Set the compositor's output frame size. Call before configuring surfaces. */
     fun configureCompositorScreen(width: Int, height: Int) = core.configureCompositorScreen(width, height)
 
-    fun setSurfaceVisible(id: String, visible: Boolean) = core.setSurfaceVisible(id, visible)
+    // The compositor throws for an unknown surface or a bad rect, and without @Throws (which
+    // would rename the selectors) that aborts the process. Log and drop instead; false then.
 
-    fun setSurfaceDepth(id: String, depth: Int) = core.setSurfaceDepth(id, depth)
+    fun setSurfaceVisible(id: String, visible: Boolean): Boolean = surfaceCall("setSurfaceVisible $id") {
+        core.setSurfaceVisible(id, visible)
+    }
+
+    fun setSurfaceDepth(id: String, depth: Int): Boolean = surfaceCall("setSurfaceDepth $id") {
+        core.setSurfaceDepth(id, depth)
+    }
 
     fun setScreenBlanked(blanked: Boolean) = core.setScreenBlanked(blanked)
 
-    fun configureSurface(id: String, x: Int, y: Int, width: Int, height: Int, zOrder: Int, transparency: Int) =
-        core.configureSurface(id, x, y, width, height, zOrder, transparency)
+    fun configureSurface(id: String, x: Int, y: Int, width: Int, height: Int, zOrder: Int, transparency: Int): Boolean =
+        surfaceCall("configureSurface $id") { core.configureSurface(id, x, y, width, height, zOrder, transparency) }
 
     fun removeSurface(id: String) = core.removeSurface(id)
 
@@ -235,10 +246,28 @@ class IosGlassesSession internal constructor(
         paintMs: Int,
         frameId: Int,
         glyphs: NSData?,
-    ) = core.submitSurfaceFrame(
-        IosByteReader(pixels8bpp), surfaceId, rectX, rectY, rectWidth, rectHeight, contentFingerprint, paintMs, frameId,
-        glyphs?.let { IosByteReader(it) },
-    )
+    ): Boolean {
+        val ok = surfaceCall("submitSurfaceFrame $surfaceId") {
+            core.submitSurfaceFrame(
+                IosByteReader(pixels8bpp), surfaceId, rectX, rectY, rectWidth, rectHeight, contentFingerprint, paintMs, frameId,
+                glyphs?.let { IosByteReader(it) },
+            )
+        }
+        if (!ok) frameTimings.finishFrame(frameId, "discarded: surface $surfaceId rejected")
+        return ok
+    }
+
+    private inline fun surfaceCall(what: String, block: () -> Unit): Boolean =
+        try {
+            block()
+            true
+        } catch (e: IllegalArgumentException) {
+            core.logLine("$what dropped: ${e.message}")
+            false
+        } catch (e: IllegalStateException) {
+            core.logLine("$what dropped: ${e.message}")
+            false
+        }
 
     /** The current composited screen (gray, 8bpp) or null before any surface was configured. */
     fun previewComposite(): IosTextureFrame? = core.previewComposite()?.let { IosTextureFrame(it) }
@@ -265,7 +294,7 @@ class IosGlassesSession internal constructor(
         override fun onAudioPacket(data: ByteArray?, arm: String?, arrivalMs: Long) {
             val packet = (data ?: ByteArray(0)).data()
             val label = arm ?: ""
-            dispatch_async(dispatch_get_main_queue()) { delegate.onAudioPacket(packet, label, arrivalMs) }
+            dispatch_async(dispatch_get_main_queue()) { delegate.onNsDataAudioPacket(packet, label, arrivalMs) }
         }
     }
 

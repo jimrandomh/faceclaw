@@ -141,7 +141,7 @@ class AncsListener extends NSObject {
 class AudioPacketListener extends NSObject {
   static ObjCProtocols = [FaceclawKitIosAudioPacketListener];
   handler!: (packet: Uint8Array, arm: string, arrivalMs: number) => void;
-  onAudioPacketDataArmArrivalMs(data: NSData, arm: string, arrivalMs: number): void {
+  onNsDataAudioPacketDataArmArrivalMs(data: NSData, arm: string, arrivalMs: number): void {
     this.handler(fromData(data), String(arm ?? ""), Number(arrivalMs));
   }
 }
@@ -178,6 +178,8 @@ export class FaceclawCommunicatorBridge {
   private ancsProxy: AncsListener | null = null;
   private nativeCallQueue: Promise<void> = Promise.resolve();
   private queuedNativeCalls = 0;
+  // Surfaces Kotlin holds, as of the queued call now running (see hasNativeSurface).
+  private readonly nativeSurfaces = new Set<string>();
   private readonly frameMetricWaiters = new Set<(metrics: FrameMetrics) => void>();
   private readonly finishedFrameOutcomes = new Map<number, string>();
   private readonly frameFinishedWaiters = new Map<number, Set<(outcome: string) => void>>();
@@ -518,15 +520,29 @@ export class FaceclawCommunicatorBridge {
   async configureSurface(id: string, options: SurfaceOptions): Promise<void> {
     const transparency = options.transparency === "color-key" ? 1 : 0;
     await this.enqueueNativeCall(() => {
-      this.communicator.configureSurfaceIdXYWidthHeightZOrderTransparency(
+      const configured = this.communicator.configureSurfaceIdXYWidthHeightZOrderTransparency(
         id, Math.round(options.x), Math.round(options.y), Math.round(options.width), Math.round(options.height),
         Math.round(options.zOrder), transparency,
       );
+      if (configured !== false) this.nativeSurfaces.add(id);
     });
   }
 
   async removeSurface(id: string): Promise<void> {
-    await this.enqueueNativeCall(() => { this.communicator.removeSurfaceId(id); });
+    await this.enqueueNativeCall(() => {
+      this.nativeSurfaces.delete(id);
+      this.communicator.removeSurfaceId(id);
+    });
+  }
+
+  /**
+   * Checked inside each queued call: a render in flight when its window closed lands
+   * behind the removal, and Kotlin aborts on a frame for an unknown surface.
+   */
+  private hasNativeSurface(id: string, what: string): boolean {
+    if (this.nativeSurfaces.has(id)) return true;
+    console.log(`[ios-ble] ${what} for removed surface ${id} dropped`);
+    return false;
   }
 
   async submitShellScene(bytes: Uint8Array, paintMs = 0, frameId = 0): Promise<void> {
@@ -541,11 +557,15 @@ export class FaceclawCommunicatorBridge {
   }
 
   async setSurfaceVisible(id: string, visible: boolean): Promise<void> {
-    await this.enqueueNativeCall(() => { this.communicator.setSurfaceVisibleIdVisible(id, Boolean(visible)); });
+    await this.enqueueNativeCall(() => {
+      if (this.hasNativeSurface(id, "setSurfaceVisible")) this.communicator.setSurfaceVisibleIdVisible(id, Boolean(visible));
+    });
   }
 
   async setSurfaceDepth(id: string, depth: number): Promise<void> {
-    await this.enqueueNativeCall(() => { this.communicator.setSurfaceDepthIdDepth(id, Math.round(depth)); });
+    await this.enqueueNativeCall(() => {
+      if (this.hasNativeSurface(id, "setSurfaceDepth")) this.communicator.setSurfaceDepthIdDepth(id, Math.round(depth));
+    });
   }
 
   async setScreenBlanked(blanked: boolean): Promise<void> {
@@ -572,6 +592,7 @@ export class FaceclawCommunicatorBridge {
     const snapshot = new Uint8Array(pixels8bpp);
     const draws = glyphs ? toData(new Uint8Array(glyphs)) : null;
     await this.enqueueNativeCall(() => {
+      if (!this.hasNativeSurface(surfaceId, "frame")) return;
       this.communicator.submitSurfaceFramePixels8bppSurfaceIdRectXRectYRectWidthRectHeightContentFingerprintPaintMsFrameIdGlyphs(
         toData(snapshot), surfaceId, Math.round(rect.x), Math.round(rect.y), Math.round(rect.width), Math.round(rect.height),
         fingerprint, Math.round(nonNegativeNumber(paintMs)), Math.round(nonNegativeNumber(frameId)), draws,

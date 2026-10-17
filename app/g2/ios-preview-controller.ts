@@ -48,7 +48,7 @@ import { mirrorToPanelFraction, phonePreviewCrop } from './phone-preview-crop'
 import { onAnySettingChanged,
   previewColorSetting, lockScreenEnabledSetting, getBrightnessPreferences, getStringSettingById,
   nightscoutSiteUrlSetting, nightscoutApiTokenSetting, voiceProviderSetting, elevenLabsApiKeySetting,
-  openAiApiKeySetting, sonioxApiKeySetting } from '../ui/dashboard-settings'
+  openAiApiKeySetting, sonioxApiKeySetting, ringConnectionModeSetting } from '../ui/dashboard-settings'
 import type { VoiceProviderSelection } from '../native/cloud-stt-provider'
 import type { PhoneGesture } from '../phone-ui/phone-gestures'
 import { claimGlassesOnboardingAutoLaunch, ONBOARDING_APP_ID } from '../apps/onboarding/onboarding-progress'
@@ -451,10 +451,11 @@ export class IosPreviewController {
     }
   }
   /** Submit a painted frame for an in-process window (e.g. the launcher). */
-  private async submit(id: string, planes: Plane[]): Promise<void> {
+  private async submit(id: string, planes: Plane[], live: () => boolean = () => true): Promise<void> {
     await this.displayReady
     const display = this.display
-    if (!display) return
+    // The window can close (removing its surface) while this frame waits.
+    if (!display || !live()) return
     const fingerprint = planesFingerprint(planes)
     const { image, draws } = flattenPlanesWithDraws(planes)
     await display.submitSurfaceFrame(id, image.pixels, { x: 0, y: 0, width: image.width, height: image.height },
@@ -646,7 +647,7 @@ export class IosPreviewController {
     // The explicit render below supplies a fresh frame after configuration.
     let surfaceReady = false
     const app = create({
-      actions: this.actions, submitFrame: planes => surfaceReady ? this.submit(surfaceId, planes) : Promise.resolve(),
+      actions: this.actions, submitFrame: planes => surfaceReady ? this.submit(surfaceId, planes, () => surfaceReady) : Promise.resolve(),
       setSurfaceVisible: visible => this.setWindowSurfaceVisible(surfaceId, visible),
       removeSurface: () => { surfaceReady = false; this.removeWindowSurface(surfaceId) },
       reconfigureSurface: () => {
@@ -731,7 +732,10 @@ export class IosPreviewController {
       this.firmwareCompatible = false
       this.update('connecting', 'Finding configured devices…')
       let identifiers
-      try { identifiers = await resolveIosPeripherals(addresses) }
+      // As on Android, connect to the ring only in "Direct" mode; otherwise a phone-side connect
+      // fails and retries every few seconds, starving the glasses link.
+      const ring = ringConnectionModeSetting.get() === 'direct' ? addresses.ring : ''
+      try { identifiers = await resolveIosPeripherals({ ...addresses, ring }) }
       catch (failure) {
         this.update('error', failure instanceof Error ? failure.message : String(failure))
         return
