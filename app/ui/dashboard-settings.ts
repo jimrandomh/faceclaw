@@ -570,6 +570,14 @@ export function getBrightnessPreferences() {
     curve: autoBrightnessCurveSetting.getValidValue(), fadeMs: scaleAnimationDuration(SCREEN_FADE_MS, screenFadeSetting.get()) };
 }
 
+export const wakeToLastAppSetting = new ConfigSettingBoolean({
+  id: "wake-to-last-app",
+  label: "Wake into last app",
+  storageKey: "display.wakeToLastApp",
+  defaultValue: true,
+  description: "Waking the display with a double tap returns to the app you were using. Off: wake into the app switcher.",
+});
+
 export const screenTimeoutSetting = new ConfigSettingEnum<ScreenTimeoutSetting>({
   id: "screen-timeout",
   label: "Screen timeout",

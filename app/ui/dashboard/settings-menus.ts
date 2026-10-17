@@ -75,6 +75,7 @@ import {
   useMicControlSetting,
   voiceProviderSetting,
   screenTimeoutSetting,
+  wakeToLastAppSetting,
   wakeWordActionSetting,
   watchCanUnlockSetting,
   watchCrownClockwiseNextSetting,
@@ -106,6 +107,7 @@ function settingsSections(): SettingsSection[] {
           },
         }),
         toggleSettingMenuItem(lockScreenEnabledSetting),
+        toggleSettingMenuItem(wakeToLastAppSetting),
         // A band (at one of five heights) / Tall / Full Screen; the
         // dashboard controller moves or reflows windows on change.
         enumSettingMenuItem(displayLayoutSetting),

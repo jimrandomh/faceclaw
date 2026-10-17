@@ -2356,7 +2356,7 @@ class DashboardController {
       let shellPreWoke = false;
       if (wakewordShouldWake || displayShouldWake) {
         if (!shell.isScreenOn()) {
-          shellPreWoke = shell.wake("sidebar");
+          shellPreWoke = shell.wake(displayShouldWake ? shell.userWakeFocus() : "sidebar");
         }
         if (shellPreWoke || this.evenHubSessionSuspended || this.evenHubResumePromise) {
           const ready = await frameTimings.spanAsync(frameId, "wake-barrier", () =>
