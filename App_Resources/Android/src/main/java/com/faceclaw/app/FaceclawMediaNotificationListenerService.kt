@@ -30,7 +30,15 @@ class FaceclawMediaNotificationListenerService : NotificationListenerService() {
     companion object {
         private const val TAG = "FaceclawNotify"
         private const val NOTIFICATION_ICON_GAMMA = 1.6
+        /** Alpha at or below this is treated as cut out when classifying an icon. */
+        private const val TEMPLATE_ALPHA_FLOOR = 32
+        /** Spread between an icon pixel's brightest and darkest channel that reads as hue. */
+        private const val TEMPLATE_CHROMA_THRESHOLD = 24
         private const val EXTRA_SUBSTITUTE_APP_NAME = "android.substName"
+
+        /** Set once the debug-icon directory has been cleaned for this process. */
+        @Volatile
+        private var debugIconsPruned = false
 
         @Volatile
         private var activeService: FaceclawMediaNotificationListenerService? = null
@@ -412,13 +420,12 @@ class FaceclawMediaNotificationListenerService : NotificationListenerService() {
                 if (smallIcon != null) {
                     val drawable: Drawable? = smallIcon.loadDrawable(service)
                     if (drawable != null) {
-                        // Status-bar small icons are alpha templates: the platform
-                        // draws them tinted and ignores their color channels, which
-                        // apps may fill with garbage (Discord ships noise there).
-                        // Tint white so the shape comes from alpha alone, matching
-                        // how the status bar renders them.
+                        // Template or not is decided from the rendered pixels
+                        // (see iconIsAlphaTemplate): apps also ship filled color
+                        // bitmaps as their small icon, and tinting one of those
+                        // white keeps the alpha while discarding the shape that
+                        // the colors carried, leaving a solid block.
                         drawable.mutate()
-                        drawable.setTint(Color.WHITE)
                         if (drawable is BitmapDrawable) {
                             drawable.setFilterBitmap(true)
                         }
@@ -443,17 +450,63 @@ class FaceclawMediaNotificationListenerService : NotificationListenerService() {
         private fun appendIconGrayBytes(drawable: Drawable, size: Int, out: ByteArrayOutputStream,
                                         service: FaceclawMediaNotificationListenerService, index: Int, packageName: String?) {
             val bitmap = renderIconScaled(drawable, size)
+            val template = iconIsAlphaTemplate(bitmap)
             dumpIconDebugPng(service, index, packageName, bitmap)
             for (y in 0 until size) {
                 for (x in 0 until size) {
                     val color = bitmap.getPixel(x, y)
                     val alpha = Color.alpha(color)
-                    val grayLinear = (0.2126 * Color.red(color) + 0.7152 * Color.green(color) + 0.0722 * Color.blue(color)) * alpha / (255.0 * 255.0)
+                    val grayLinear = if (template) {
+                        alpha / 255.0
+                    } else {
+                        (0.2126 * Color.red(color) + 0.7152 * Color.green(color) + 0.0722 * Color.blue(color)) * alpha / (255.0 * 255.0)
+                    }
                     val gray = Math.round(255.0 * Math.pow(Math.max(0.0, Math.min(1.0, grayLinear)), NOTIFICATION_ICON_GAMMA)).toInt()
                     out.write(gray and 0xff)
                 }
             }
             bitmap.recycle()
+        }
+
+        /**
+         * Whether a rendered icon is an alpha template: a shape the platform
+         * draws by tinting, where alpha alone carries the outline.
+         *
+         * Small icons are meant to be templates, but plenty of apps put a filled
+         * color bitmap there instead. Tinting one of those white keeps its alpha
+         * and throws away the only thing that carried the shape, so the glasses
+         * got a blank block where the icon should be.
+         *
+         * Hue settles it: an icon with color is color artwork. A colorless icon is
+         * a template only when its alpha is actually cut out, and a colorless
+         * icon with solid alpha is a flat image its own brightness has to carry.
+         */
+        private fun iconIsAlphaTemplate(bitmap: Bitmap): Boolean {
+            var opaque = 0
+            var transparent = 0
+            var colored = 0
+            for (y in 0 until bitmap.height) {
+                for (x in 0 until bitmap.width) {
+                    val color = bitmap.getPixel(x, y)
+                    val alpha = Color.alpha(color)
+                    if (alpha < TEMPLATE_ALPHA_FLOOR) {
+                        transparent += 1
+                        continue
+                    }
+                    opaque += 1
+                    val red = Color.red(color)
+                    val green = Color.green(color)
+                    val blue = Color.blue(color)
+                    val high = Math.max(red, Math.max(green, blue))
+                    val low = Math.min(red, Math.min(green, blue))
+                    if (high - low >= TEMPLATE_CHROMA_THRESHOLD) colored += 1
+                }
+            }
+            if (opaque == 0) return false
+            // A quarter of the icon carrying hue is color artwork, whatever its alpha does.
+            if (colored * 4 >= opaque) return false
+            // Otherwise it is a template only if there is something cut out of it.
+            return transparent * 20 >= opaque + transparent
         }
 
         /**
@@ -483,6 +536,11 @@ class FaceclawMediaNotificationListenerService : NotificationListenerService() {
             return bitmap
         }
 
+        private fun isDebuggable(service: FaceclawMediaNotificationListenerService): Boolean {
+            val flags = service.applicationInfo.flags
+            return (flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0
+        }
+
         /**
          * Debug aid for garbled-icon reports: saves each rendered icon to
          * <externalFilesDir>/debug-icons/ (adb-pullable) so extraction problems can
@@ -493,10 +551,19 @@ class FaceclawMediaNotificationListenerService : NotificationListenerService() {
             if (index < 0) {
                 return
             }
+            // Debug aid only. Nobody can pull these files out of a release build,
+            // and the directory kept one file per icon per index forever.
+            if (!isDebuggable(service)) {
+                return
+            }
             try {
                 val dir = java.io.File(service.getExternalFilesDir(null), "debug-icons")
                 if (!dir.exists() && !dir.mkdirs()) {
                     return
+                }
+                if (!debugIconsPruned) {
+                    debugIconsPruned = true
+                    dir.listFiles()?.forEach { stale -> stale.delete() }
                 }
                 val safeName = if (packageName == null) "unknown" else packageName.replace(Regex("[^A-Za-z0-9._-]"), "_")
                 val file = java.io.File(dir, "icon-$index-$safeName.png")
