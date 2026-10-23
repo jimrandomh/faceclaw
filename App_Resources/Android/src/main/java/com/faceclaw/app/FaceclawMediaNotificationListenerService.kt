@@ -3,6 +3,7 @@ package com.faceclaw.app
 import android.app.Notification
 import android.app.NotificationManager
 import android.app.PendingIntent
+import android.content.ComponentName
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
@@ -30,6 +31,10 @@ class FaceclawMediaNotificationListenerService : NotificationListenerService() {
     companion object {
         private const val TAG = "FaceclawNotify"
         private const val NOTIFICATION_ICON_GAMMA = 1.6
+        /** First delay before asking the system to rebind after a disconnect. */
+        private const val REBIND_BASE_DELAY_MS = 1000
+        /** Rebinds back off from the base delay by this many doublings, then stay there. */
+        private const val REBIND_MAX_DOUBLINGS = 5
         private const val EXTRA_SUBSTITUTE_APP_NAME = "android.substName"
 
         @Volatile
@@ -179,6 +184,12 @@ class FaceclawMediaNotificationListenerService : NotificationListenerService() {
             val service = activeService
             val limit = Math.max(0, maxNotifications)
             if (service == null || limit == 0) {
+                // Reaching here with a live app but no bound service is the
+                // failure mode behind a permanently empty notification list:
+                // the read is silently answered from nothing.
+                if (service == null) {
+                    Log.w(TAG, "notification list requested with no listener bound")
+                }
                 return "[]"
             }
 
@@ -456,6 +467,7 @@ class FaceclawMediaNotificationListenerService : NotificationListenerService() {
             bitmap.recycle()
         }
 
+
         /**
          * Render a drawable at the target size with proper downscaling. Detailed
          * sources (e.g. avatar bitmaps used as notification icons) are rendered at
@@ -635,6 +647,8 @@ class FaceclawMediaNotificationListenerService : NotificationListenerService() {
             return value?.toString() ?: ""
         }
     }
+    /** How many consecutive rebinds have been requested after a disconnect. */
+    private var rebindAttempts = 0
 
     override fun onCreate() {
         super.onCreate()
@@ -649,6 +663,7 @@ class FaceclawMediaNotificationListenerService : NotificationListenerService() {
     }
 
     override fun onListenerConnected() {
+        rebindAttempts = 0
         activeService = this
         super.onListenerConnected()
         refreshActiveNotificationWakeKeys(this)
@@ -659,6 +674,12 @@ class FaceclawMediaNotificationListenerService : NotificationListenerService() {
             activeService = null
         }
         super.onListenerDisconnected()
+        // The system drops a notification listener's binding without warning and
+        // does not restore it on its own; every read then answers from a null
+        // service, which is why the notification list can stay empty for the
+        // life of the process. Ask for the binding back, backing off so a device
+        // that keeps refusing does not spin on the request.
+        scheduleRebind()
     }
 
     override fun onNotificationPosted(statusBarNotification: StatusBarNotification?) {
@@ -683,5 +704,24 @@ class FaceclawMediaNotificationListenerService : NotificationListenerService() {
             emitNotificationRemoved(statusBarNotification!!.key)
         }
         super.onNotificationRemoved(statusBarNotification)
+    }
+
+    /**
+     * Ask the system to rebind this listener after a disconnect. Backs off on
+     * repeated failures: a rebind the system refuses re-enters
+     * onListenerDisconnected, so an unbounded retry would loop once a second.
+     */
+    private fun scheduleRebind() {
+        val component = ComponentName(this, FaceclawMediaNotificationListenerService::class.java)
+        val doublings = Math.min(rebindAttempts, REBIND_MAX_DOUBLINGS)
+        val delayMs = (REBIND_BASE_DELAY_MS shl doublings).toLong()
+        rebindAttempts += 1
+        mainHandler.postDelayed({
+            try {
+                requestRebind(component)
+            } catch (t: Throwable) {
+                Log.w(TAG, "requestRebind failed", t)
+            }
+        }, delayMs)
     }
 }
