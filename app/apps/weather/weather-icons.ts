@@ -1,6 +1,7 @@
 import { renderSvgIcon } from "../../graphics/icons";
 import { type GrayImage, type UiFont } from "../../graphics/image";
 import { type WeatherCondition, type WeatherState } from "../../native/weather";
+import { formatTemperature } from "./temperature-format";
 
 // Lucide weather icons (ISC licensed), kept verbatim so they can be diffed
 // against upstream.
@@ -90,7 +91,7 @@ export function weatherReading(state: WeatherState, nowMs: number): WeatherReadi
   return {
     condition: current.condition,
     isDaytime: current.isDaytime,
-    temperature: current.temperatureF === null ? "--°" : `${Math.round(current.temperatureF)}°`,
+    temperature: current.temperatureF === null ? "--°" : formatTemperature(current.temperatureF, false),
   };
 }
 
