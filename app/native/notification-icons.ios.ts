@@ -4,7 +4,7 @@ import { AncsClient, ANCS_CONNECT_MESSAGE, type AncsState } from '../g2/ancs-cli
 import { rememberNotificationSources } from './notification-sources'
 import type { AndroidNotification } from './notification-types'
 export type { AndroidNotification, AndroidNotificationAction } from './notification-types'
-export type { NotificationIconsResult, NotificationIconResult } from './notification-icons'
+export type { NotificationIconsResult, NotificationIconResult, NotificationPictureResult } from './notification-icons'
 
 export const ALL_NOTIFICATIONS = 0x7fffffff
 let active: AncsClient | null = null
@@ -60,4 +60,8 @@ export function readActiveNotificationIcons(maxIcons: number, _allowStale: boole
 export function readNotificationIconByKey(key: string, _allowStale: boolean) {
   const notification = readActiveNotifications(ALL_NOTIFICATIONS).find(n => n.key === key)
   return {icon: notification ? categoryIcon(notification.category) : null,stale:false}
+}
+// ANCS carries no attachments.
+export function readNotificationPicture(_notification: AndroidNotification, _maxWidth: number, _maxHeight: number, _allowStale: boolean) {
+  return {picture: null,stale:false}
 }

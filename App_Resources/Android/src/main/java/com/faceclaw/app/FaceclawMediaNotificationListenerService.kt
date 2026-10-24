@@ -9,6 +9,7 @@ import android.graphics.Color
 import android.graphics.drawable.BitmapDrawable
 import android.graphics.drawable.Drawable
 import android.graphics.drawable.Icon
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -172,6 +173,33 @@ class FaceclawMediaNotificationListenerService : NotificationListenerService() {
             val out = ByteArrayOutputStream(size * size)
             appendIconGrayBytes(drawable, size, out, service, -1, statusBarNotification.packageName)
             return out.toByteArray()
+        }
+
+        /**
+         * The picture attached to one active notification (BigPictureStyle: a
+         * photo, a screenshot, Dexcom's glucose graph), scaled to fit
+         * maxWidth x maxHeight as a gray packet with the tone handling (and
+         * light-background inversion) of ImageFileLoader.bitmapToGrayPacket;
+         * empty when the notification or its picture is unavailable.
+         */
+        @JvmStatic
+        fun getNotificationPictureGray(
+            key: String?, maxWidth: Int, maxHeight: Int, gamma: Float, dither: Boolean, invertLightBackground: Boolean,
+        ): ByteArray {
+            val service = activeService
+            if (service == null || maxWidth <= 0 || maxHeight <= 0) {
+                return ByteArray(0)
+            }
+            val statusBarNotification = findActiveNotificationByKey(service, key)
+            if (statusBarNotification == null || statusBarNotification.notification == null) {
+                return ByteArray(0)
+            }
+            val picture = loadNotificationPicture(service, statusBarNotification.notification)
+            if (picture == null) {
+                return ByteArray(0)
+            }
+            return ImageFileLoader.bitmapToGrayPacket(
+                halveToward(picture, maxWidth, maxHeight), maxWidth, maxHeight, gamma, dither, invertLightBackground)
         }
 
         @JvmStatic
@@ -483,6 +511,79 @@ class FaceclawMediaNotificationListenerService : NotificationListenerService() {
             return bitmap
         }
 
+        /** Whether a notification carries a picture for loadNotificationPicture, without loading it. */
+        @Suppress("DEPRECATION")
+        private fun hasNotificationPicture(extras: Bundle): Boolean {
+            return extras.get(Notification.EXTRA_PICTURE) != null
+                || (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && extras.get(Notification.EXTRA_PICTURE_ICON) != null)
+        }
+
+        /**
+         * A notification's attached picture: BigPictureStyle's bitmap
+         * (EXTRA_PICTURE) or, from Android 12, its Icon (EXTRA_PICTURE_ICON).
+         * Newer releases swap large pictures for a content URI to a bitmap
+         * the system has offloaded (Dexcom's graph arrives that way); the
+         * offload provider lets enabled notification listeners open those.
+         */
+        @Suppress("DEPRECATION")
+        private fun loadNotificationPicture(service: FaceclawMediaNotificationListenerService, notification: Notification): Bitmap? {
+            val extras: Bundle = notification.extras ?: return null
+            try {
+                val picture: Bitmap? = extras.getParcelable(Notification.EXTRA_PICTURE)
+                if (picture != null) {
+                    return softwareBitmap(picture)
+                }
+            } catch (t: Throwable) {
+                Log.w(TAG, "failed to read notification picture", t)
+            }
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
+                return null
+            }
+            try {
+                val icon: Icon? = extras.getParcelable(Notification.EXTRA_PICTURE_ICON)
+                val drawable: Drawable? = icon?.loadDrawable(service)
+                if (drawable is BitmapDrawable && drawable.bitmap != null) {
+                    return softwareBitmap(drawable.bitmap)
+                }
+                if (drawable != null && drawable.intrinsicWidth > 0 && drawable.intrinsicHeight > 0) {
+                    val bitmap = Bitmap.createBitmap(drawable.intrinsicWidth, drawable.intrinsicHeight, Bitmap.Config.ARGB_8888)
+                    drawable.setBounds(0, 0, bitmap.width, bitmap.height)
+                    drawable.draw(Canvas(bitmap))
+                    return bitmap
+                }
+            } catch (t: Throwable) {
+                Log.w(TAG, "failed to load notification picture icon", t)
+            }
+            return null
+        }
+
+        /** Hardware bitmaps can't be read back pixel by pixel or drawn on a software canvas; copy those. */
+        private fun softwareBitmap(bitmap: Bitmap): Bitmap {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && bitmap.config == Bitmap.Config.HARDWARE) {
+                return bitmap.copy(Bitmap.Config.ARGB_8888, false)
+            }
+            return bitmap
+        }
+
+        /**
+         * Halve a picture while it is still at least twice the size it will
+         * be shown at, leaving the last (under 2x) step of fitting it into
+         * maxWidth x maxHeight to bitmapToGrayPacket. As with icons
+         * (renderIconScaled), one filtered pass from a much larger source
+         * samples too sparsely: a graph's thin lines break up into dots.
+         */
+        private fun halveToward(source: Bitmap, maxWidth: Int, maxHeight: Int): Bitmap {
+            var bitmap = source
+            while ((bitmap.width >= maxWidth * 2 || bitmap.height >= maxHeight * 2) && bitmap.width >= 2 && bitmap.height >= 2) {
+                val halved = Bitmap.createScaledBitmap(bitmap, bitmap.width / 2, bitmap.height / 2, true)
+                if (bitmap !== source) {
+                    bitmap.recycle()
+                }
+                bitmap = halved
+            }
+            return bitmap
+        }
+
         /**
          * Debug aid for garbled-icon reports: saves each rendered icon to
          * <externalFilesDir>/debug-icons/ (adb-pullable) so extraction problems can
@@ -563,8 +664,10 @@ class FaceclawMediaNotificationListenerService : NotificationListenerService() {
                     }
                 }
                 out.put("lines", lines)
+                out.put("hasPicture", hasNotificationPicture(extras))
             } else {
                 out.put("lines", JSONArray())
+                out.put("hasPicture", false)
             }
 
             val actionsJson = JSONArray()

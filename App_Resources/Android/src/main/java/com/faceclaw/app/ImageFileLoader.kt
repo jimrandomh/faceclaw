@@ -132,10 +132,15 @@ class ImageFileLoader private constructor() {
          * round on its own, which turns smooth gradients into visible bands.
          * Dithered output is already quantized: every byte is a level times 16,
          * which BmpUtil re-quantizes back to exactly that level.
+         *
+         * invertLightBackground shows a picture drawn on a light background
+         * (a chart, a screenshot) as its negative; see GrayPacket.fromArgb.
          */
         @JvmStatic
+        @JvmOverloads
         fun bitmapToGrayPacket(
-                source: Bitmap?, maxWidth: Int, maxHeight: Int, gamma: Float, dither: Boolean): ByteArray {
+                source: Bitmap?, maxWidth: Int, maxHeight: Int, gamma: Float, dither: Boolean,
+                invertLightBackground: Boolean = false): ByteArray {
             if (source == null || source.width <= 0 || source.height <= 0
                     || maxWidth <= 0 || maxHeight <= 0) {
                 return ByteArray(0)
@@ -152,7 +157,7 @@ class ImageFileLoader private constructor() {
                 }
                 val pixels = IntArray(width * height)
                 scaled.getPixels(pixels, 0, width, 0, 0, width, height)
-                return GrayPacket.fromArgb(pixels, width, height, gamma, dither)
+                return GrayPacket.fromArgb(pixels, width, height, gamma, dither, invertLightBackground)
             } catch (e: Exception) {
                 Log.w(TAG, "bitmap conversion failed", e)
                 return ByteArray(0)

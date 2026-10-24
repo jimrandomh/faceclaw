@@ -2,6 +2,7 @@ import { GrayImage } from "../graphics/image";
 import { logCurrent, spanCurrent } from "./frame-timings";
 import { toUint8Array } from "../util/array-util";
 import { rememberNotificationSources } from "./notification-sources";
+import { PHOTO_TONE, grayImageFromPacket } from "./image-files";
 
 declare const com: any;
 declare const java: any;
@@ -22,6 +23,11 @@ let cachedKeys: string[] = [];
 let cachedAtMs = 0;
 const keyedIconCache = new Map<string, { icon: GrayImage | null; atMs: number }>();
 const KEYED_ICON_CACHE_MAX = 128;
+/** Pictures are the size of a detail view, not 24px icons: keep just the recently viewed few. */
+const pictureCache = new Map<string, {
+  postTime: number; maxWidth: number; maxHeight: number; picture: GrayImage | null; atMs: number;
+}>();
+const PICTURE_CACHE_MAX = 8;
 let notificationListenerProxy: any = null;
 const notificationPostedListeners = new Set<(notificationKey: string) => void>();
 const notificationRemovedListeners = new Set<(notificationKey: string) => void>();
@@ -151,6 +157,71 @@ export function readNotificationIconByKey(key: string, allowStale: boolean): Not
   return { icon: icon?.clone() ?? null, stale: false };
 }
 
+export type NotificationPictureResult = {
+  /** Shared with the cache: blit it, don't draw on it. */
+  picture: GrayImage | null;
+  /** True when allowStale served an earlier fetch (or nothing) in place of a fetch for these arguments. */
+  stale: boolean;
+};
+
+/**
+ * The picture attached to a notification (hasPicture), scaled to fit
+ * maxWidth x maxHeight with the photo tone and inverted if it is drawn on a
+ * light background (GrayPacket.hasLightBackground), under the allow-stale contract of
+ * readNotificationIconByKey. Cached per post of the notification: an ongoing
+ * notification updated in place (Dexcom redraws its graph every few minutes)
+ * fires no posted event, but its postTime moves. ICON_CACHE_MS is the
+ * backstop here too. Under allowStale an earlier fetch stands in, if it fits.
+ */
+export function readNotificationPicture(
+  notification: AndroidNotification,
+  maxWidth: number,
+  maxHeight: number,
+  allowStale: boolean,
+): NotificationPictureResult {
+  const width = Math.round(maxWidth);
+  const height = Math.round(maxHeight);
+  if (!global.isAndroid || !notification.hasPicture || width <= 0 || height <= 0) {
+    return { picture: null, stale: false };
+  }
+
+  const now = Date.now();
+  const cached = pictureCache.get(notification.key);
+  if (
+    cached && cached.postTime === notification.postTime && cached.maxWidth === width
+    && cached.maxHeight === height && now - cached.atMs < ICON_CACHE_MS
+  ) {
+    return { picture: cached.picture, stale: false };
+  }
+  if (allowStale) {
+    const fits = cached?.picture && cached.picture.width <= width && cached.picture.height <= height;
+    return { picture: fits ? cached!.picture : null, stale: true };
+  }
+
+  const picture = spanCurrent("fetch-notification-picture", () =>
+    grayImageFromPacket(
+      com.faceclaw.app.FaceclawMediaNotificationListenerService.getNotificationPictureGray(
+        notification.key,
+        width,
+        height,
+        PHOTO_TONE.gamma,
+        PHOTO_TONE.dither,
+        // A chart or screenshot made for a light theme would be a glaring
+        // lit panel on the glasses: show it light-on-dark.
+        true,
+      ),
+    ),
+  );
+  pictureCache.delete(notification.key);
+  pictureCache.set(notification.key, { postTime: notification.postTime, maxWidth: width, maxHeight: height, picture, atMs: now });
+  while (pictureCache.size > PICTURE_CACHE_MAX) {
+    const oldestKey = pictureCache.keys().next().value;
+    if (oldestKey === undefined) break;
+    pictureCache.delete(oldestKey);
+  }
+  return { picture, stale: false };
+}
+
 export function readActiveNotifications(maxNotifications = 50): AndroidNotification[] {
   if (!global.isAndroid || maxNotifications <= 0) return [];
   try {
@@ -250,6 +321,7 @@ function normalizeNotification(value: any): AndroidNotification | null {
     when: Number(value.when) || 0,
     actions,
     foregroundService: Boolean(value.foregroundService),
+    hasPicture: Boolean(value.hasPicture),
   };
 }
 
