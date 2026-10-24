@@ -30,6 +30,16 @@ function page() {
   return { win, fc, posted };
 }
 
+test('the package helper returns the shim, and treats unversioned 0.8.0-0.8.2 hosts as absent', () => {
+  const { loader } = require('./helpers/load-typescript.cjs');
+  const helper = (window) => loader(window === undefined ? {} : { window })('evenhub-extensions/src/index.ts').getFaceclawExtensions();
+  const { win, fc } = page();
+  assert.equal(helper(win), fc);
+  assert.equal(helper({ getFaceclawExtensions: () => ({ getVersion: () => 'Faceclaw/0.8.2' }) }), null);
+  assert.equal(helper({}), null);
+  assert.equal(helper(undefined), null);
+});
+
 test('the shim implements exactly the members the package declares', () => {
   const { fc } = page();
   assert.deepEqual(Object.keys(fc).sort(), interfaceMembers('FaceclawExtensions'));
