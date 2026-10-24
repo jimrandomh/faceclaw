@@ -118,7 +118,7 @@ test('closing Weather during permission prompt cannot restart polling', async ()
     '../../native/weather': { weatherBridge: { start() { starts++; }, stop() { stops++; }, onStateChange: () => () => {}, snapshot() {} } },
     './weather': { WeatherLayer: class {} },
     './weather-settings': {},
-    '../../ui/dashboard-settings': { toggleSettingMenuItem: () => ({}) },
+    '../../ui/dashboard-settings': { toggleSettingMenuItem: () => ({}), onAnySettingChanged: () => () => {} },
     '../../ui/dashboard/settings-panel': { openSettingsSubMenu() {} },
     '../../ui/shell/in-process-window': { YieldAtRootLayer: class {}, createInProcessWindow: opts => { options = opts; return { requestRender() {} }; } },
   })('app/apps/weather/weather-app.ts');

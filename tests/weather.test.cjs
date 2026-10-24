@@ -273,6 +273,7 @@ function indicatorHarness() {
     } },
     '../../ui/dashboard-settings': {
       ConfigSettingBoolean: Setting,
+      temperatureUnitSetting: new Setting({ storageKey: 'display.temperatureUnit', defaultValue: 'fahrenheit' }),
       onAnySettingChanged: listener => { settingListeners.add(listener); return () => settingListeners.delete(listener); },
     },
     '../../ui/shell/shell': { shell: { setTrayIcon: (id, icon) => trays.push([id, icon]) } },
@@ -308,6 +309,9 @@ test('Weather tray icon follows the status-bar setting and hides a stale reading
   assert.equal(icon.height, 24);
   assert.deepEqual(icon.draws.map(draw => draw[0]), ['image', 'text']);
   assert.equal(icon.draws[1][3], '72°');
+  h.setSetting('display.temperatureUnit', 'celsius');
+  assert.equal(h.trays.at(-1)[1].draws[1][3], '22°', 'the temperature unit setting rebuilds the icon');
+  h.setSetting('display.temperatureUnit', 'fahrenheit');
 
   // An unchanged reading does not rebuild the icon.
   const count = h.trays.length;
