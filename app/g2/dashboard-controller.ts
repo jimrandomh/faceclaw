@@ -73,9 +73,9 @@ import { type AppContext, type AppDefinition, type AppLaunchParams, type TextEdi
 import { type InProcessAppOptions, type InProcessWindow } from "../ui/shell/in-process-window";
 import { loadPersistedOpenApps, savePersistedOpenApps } from "../ui/shell/open-apps-persistence";
 import { appViewportRect, isOnSwitcherEdge, sidebarStripVisible, type ScreenRect, type WindowHeightMode } from "../ui/shell/geometry";
-import { type LayerActions, type TextSettingsEditToggle } from "../ui/layers";
+import { type ContinuousCaptureOptions, type LayerActions, type TextSettingsEditToggle } from "../ui/layers";
 import { type KeyboardInputSession } from "../ui/shell/keyboard-input";
-import { appSwitcherPositionSetting, statusBarPositionSetting, statusBarVisibilitySetting, windowBorderSetting, assistantAllowProactiveSetting, assistantBackendSetting, assistantBridgeHostSetting, assistantBridgePortSetting, assistantBridgeTokenSetting, getBrightnessPreferences, displayLayoutSetting, navigateDisplayLayoutSetting, terminalDisplayLayoutSetting, elevenLabsApiKeySetting, getStringSettingById, openAiApiKeySetting, nightscoutApiTokenSetting, firmwareDebugFlagsSetting, whisperServerApiKeySetting, whisperServerLanguageSetting, whisperServerModelSetting, whisperServerUrlSetting, lockScreenEnabledSetting, nightscoutSiteUrlSetting, onAnySettingChanged, previewColorSetting, ringConnectionModeSetting, saveVoiceRecordingsSetting, sonioxApiKeySetting, screenTimeoutSetting, screenTimeoutSettingToMs, suspendEvenHubWhenScreenOffSetting, voiceProviderSetting, wakeWordActionSetting, type ConfigSettingString } from "../ui/dashboard-settings";
+import { appSwitcherPositionSetting, statusBarPositionSetting, statusBarVisibilitySetting, windowBorderSetting, assistantAllowProactiveSetting, assistantBackendSetting, assistantBridgeHostSetting, assistantBridgePortSetting, assistantBridgeTokenSetting, getBrightnessPreferences, displayLayoutSetting, navigateDisplayLayoutSetting, terminalDisplayLayoutSetting, elevenLabsApiKeySetting, getStringSettingById, openAiApiKeySetting, nightscoutApiTokenSetting, firmwareDebugFlagsSetting, whisperServerApiKeySetting, whisperServerLanguageSetting, whisperServerModelSetting, whisperServerUrlSetting, lockScreenEnabledSetting, nightscoutSiteUrlSetting, onAnySettingChanged, previewColorSetting, ringConnectionModeSetting, saveVoiceRecordingsSetting, sonioxApiKeySetting, screenTimeoutSetting, screenTimeoutSettingToMs, suspendEvenHubWhenScreenOffSetting, voiceProviderSetting, wakeWordActionSetting, type ConfigSettingString, type VoiceProvider } from "../ui/dashboard-settings";
 import { isIgnoringBatteryOptimizations, requestIgnoreBatteryOptimizations } from "../native/battery-optimization";
 import {
   getInstalledEvenHubAppById,
@@ -392,7 +392,8 @@ class DashboardController {
       endTextSettingEdit: () => this.endTextSettingEdit(),
       startVoiceCapture: (endpointing = false) => this.startVoiceCapture(endpointing),
       stopVoiceCapture: () => this.stopVoiceCapture(),
-      startContinuousVoiceCapture: (client: string) => this.startContinuousVoiceCapture(client),
+      startContinuousVoiceCapture: (client: string, options?: ContinuousCaptureOptions) =>
+        this.startContinuousVoiceCapture(client, options),
       stopContinuousVoiceCapture: (client: string) => this.stopContinuousVoiceCapture(client),
       playBuzzerSequence: (payload: Uint8Array) => this.playBuzzerSequence(payload),
     };
@@ -2066,21 +2067,28 @@ class DashboardController {
     return voiceControlBridge.stopPushToTalk();
   }
 
-  // Windows that want continuous capture. They share one stream, which runs
-  // while any of them wants it: one window letting go must not cut off another.
-  private readonly continuousClients = new Set<string>();
+  // Windows that want continuous capture, and what each needs of it. They
+  // share one stream, which runs while any of them wants it: one window
+  // letting go must not cut off another.
+  private readonly continuousClients = new Map<string, ContinuousCaptureOptions>();
   // The connection a continuous-capture start was last tried on (undefined:
   // none since the last teardown), so a window waiting on the glasses is
   // retried once per new session rather than on every frame.
   private continuousAttemptedOn: FaceclawCommunicatorBridge | null | undefined = undefined;
 
-  private startContinuousVoiceCapture(client: string): void {
-    this.continuousClients.add(client);
+  private startContinuousVoiceCapture(client: string, options: ContinuousCaptureOptions = {}): void {
+    this.continuousClients.set(client, options);
+    this.retargetContinuousCapture();
     this.ensureContinuousCapture(true);
   }
 
   private stopContinuousVoiceCapture(client: string): void {
-    if (!this.continuousClients.delete(client) || this.continuousClients.size > 0) return;
+    if (!this.continuousClients.delete(client)) return;
+    if (this.continuousClients.size > 0) {
+      // The window that needed its own provider may be the one that left.
+      this.retargetContinuousCapture();
+      return;
+    }
     try {
       voiceControlBridge.stopContinuousCapture();
     } finally {
@@ -2099,6 +2107,19 @@ class DashboardController {
     if (!force && this.continuousAttemptedOn === this.communicator) return;
     this.continuousAttemptedOn = this.communicator;
     void this.beginVoiceCapture("continuous").finally(() => this.syncContinuousClaim());
+  }
+
+  /** Move a running continuous capture onto the provider its windows now call for. */
+  private retargetContinuousCapture(): void {
+    voiceControlBridge.retargetContinuousCapture(this.voiceCaptureOptions(this.communicator));
+  }
+
+  /** The provider a continuous-capture window needs (Translate's multilingual one), if any. */
+  private multilingualProvider(): VoiceProvider | undefined {
+    for (const options of this.continuousClients.values()) {
+      if (options.multilingualProvider) return options.multilingualProvider;
+    }
+    return undefined;
   }
 
   /**
@@ -2121,16 +2142,20 @@ class DashboardController {
    * stands in for the G2 mic.
    */
   private voiceCaptureOptions(communicator: FaceclawCommunicatorBridge | null) {
+    // A window that needs a multilingual provider sets it for every capture
+    // while it is open, so push-to-talk still shares its stream.
+    const multilingual = this.multilingualProvider();
     return {
       communicator: communicator?.getNativeCommunicator() ?? null,
       usePhoneMic: communicator === null,
-      provider: voiceProviderSetting.get(),
+      provider: multilingual ?? voiceProviderSetting.get(),
       elevenLabsApiKey: elevenLabsApiKeySetting.get(),
       openAiApiKey: openAiApiKeySetting.get(),
       sonioxApiKey: sonioxApiKeySetting.get(),
       whisperServerUrl: whisperServerUrlSetting.get(),
       whisperServerModel: whisperServerModelSetting.get(),
-      whisperServerLanguage: whisperServerLanguageSetting.get(),
+      // Whisper detects the language itself when the speech may be in any.
+      whisperServerLanguage: multilingual ? "" : whisperServerLanguageSetting.get(),
       whisperServerApiKey: whisperServerApiKeySetting.get(),
       saveRecording: saveVoiceRecordingsSetting.get(),
       // "My voice only" (Microphones app): verify command utterances

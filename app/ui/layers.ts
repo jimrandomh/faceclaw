@@ -1,12 +1,25 @@
 import { G2_LENS_HEIGHT, G2_LENS_WIDTH, GrayImage } from "../graphics/image";
 import { dimPlanes, type Plane } from "../graphics/plane";
 import { spanCurrent } from "../native/frame-timings";
-import { type ConfigSettingBoolean, type ConfigSettingString } from "./dashboard-settings";
+import { type ConfigSettingBoolean, type ConfigSettingString, type VoiceProvider } from "./dashboard-settings";
 import { directionalFallback, isDirectionalInput, type InputEvent } from "./gestures";
 
 export type TextSettingsEditToggle = {
   setting: ConfigSettingBoolean;
   label: string;
+};
+
+/** A continuous-capture client's needs (see LayerActions.startContinuousVoiceCapture). */
+export type ContinuousCaptureOptions = {
+  /** Names a WAV of the captured audio in Downloads (iOS, when Save Transcribe audio is on). */
+  recordAs?: string;
+  /**
+   * Transcribe with this provider instead of the Transcription Provider
+   * setting, letting it detect the spoken language (Translate). While any
+   * client asks for one, every capture uses it, and a shared capture running
+   * another provider restarts on it.
+   */
+  multilingualProvider?: VoiceProvider;
 };
 
 export type LayerActions = {
@@ -33,10 +46,10 @@ export type LayerActions = {
   stopVoiceCapture: () => Promise<void> | void;
   /**
    * Start continuous capture on behalf of `client` (one id per window); shares
-   * the mic with push-to-talk, and runs while any client wants it. recordAs
-   * names a WAV of the captured audio in Downloads (iOS, when enabled).
+   * the mic with push-to-talk, and runs while any client wants it. Calling it
+   * again for the same client replaces its options.
    */
-  startContinuousVoiceCapture: (client: string, options?: { recordAs?: string }) => Promise<void> | void;
+  startContinuousVoiceCapture: (client: string, options?: ContinuousCaptureOptions) => Promise<void> | void;
   stopContinuousVoiceCapture: (client: string) => Promise<void> | void;
   /** Play a CFW tone-sequencer payload (see sound-effects.ts). */
   playBuzzerSequence: (payload: Uint8Array) => Promise<void> | void;

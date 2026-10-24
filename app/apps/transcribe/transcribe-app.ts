@@ -13,8 +13,8 @@ export const TRANSCRIBE_SURFACE_ID = "window:transcribe";
 
 const TRAY_ICON_ID = "transcribe";
 
-// 16x18 microphone glyph for the top-bar tray.
-const MIC_ICON = imageFromAsciiArt(
+// 16x18 microphone glyph for the top-bar tray (also Translate's).
+export const MIC_ICON = imageFromAsciiArt(
   [
     "     ####     ",
     "    ######    ",

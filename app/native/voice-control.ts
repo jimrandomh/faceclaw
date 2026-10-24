@@ -1,7 +1,7 @@
 import { Utils } from "@nativescript/core";
 
 import { type CloudSttTranscriptEvent, CloudSttClient } from "./cloud-stt";
-import { createCloudSttClient } from "./cloud-stt-provider";
+import { createCloudSttClient, transcriptionKey } from "./cloud-stt-provider";
 import { SpeechPauseDetector } from "./speech-pause";
 import { toUint8Array } from "../util/array-util";
 
@@ -128,6 +128,9 @@ export class FaceclawVoiceControlBridge {
   private captureEndpointing = false;
   // Non-null while a cloud provider owns the transcript; Java only decodes PCM.
   private cloudClient: CloudSttClient | null = null;
+  // What the running STT stream transcribes with (transcriptionKey); a holder
+  // asking for something else restarts the stream rather than sharing it.
+  private streamProvider: string | null = null;
   // Raw-PCM tap (EvenHub mic apps, the Microphones app): when active, the
   // controller runs in the decode-only "cloud" mode and every decoded PCM
   // frame is broadcast to these listeners. STT capture preempts it — a live
@@ -215,6 +218,17 @@ export class FaceclawVoiceControlBridge {
 
   stopContinuousCapture(): void {
     this.releaseCapture("continuous", false);
+  }
+
+  /**
+   * Restart the running continuous capture when it transcribes with another
+   * provider than `options` asks for (a window that needs a multilingual one
+   * opened or closed), keeping every holder on the new stream. A parked
+   * capture is left alone: it takes the options when it resumes.
+   */
+  retargetContinuousCapture(options: PushToTalkOptions): void {
+    if (!this.captureHolders.has("continuous") || !this.micIsLive()) return;
+    this.acquireCapture("continuous", options);
   }
 
   /** Subscribe to decoded raw mic PCM (16 kHz mono S16LE). */
@@ -307,13 +321,15 @@ export class FaceclawVoiceControlBridge {
     const micLive = this.micIsLive();
     this.suspendedHolders.delete(holder);
     this.captureHolders.add(holder);
-    if (micLive) {
+    if (micLive && this.streamProvider === transcriptionKey(options)) {
       // Mic already running; the new holder just shares the existing stream
       // (transcripts are already broadcast to its listeners).
       return;
     }
-    // Any leftover capture is dead; drop it before starting the new one.
+    // Any leftover capture is dead, or transcribes with another provider than
+    // this holder needs; drop it before starting the new one.
     if (this.started) this.teardownCapture();
+    this.streamProvider = transcriptionKey(options);
     this.ensureController();
     this.controller?.setCommunicator(options.communicator);
     this.controller?.setUsePhoneMic(Boolean(options.usePhoneMic));
@@ -484,6 +500,7 @@ export class FaceclawVoiceControlBridge {
   /** Stop the native capture and any cloud client; leaves holders alone. */
   private teardownCapture(): void {
     this.rawActive = false;
+    this.streamProvider = null;
     if (global.isAndroid) {
       this.controller?.stop();
     }
