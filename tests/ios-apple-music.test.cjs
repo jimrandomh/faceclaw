@@ -56,6 +56,8 @@ function controller(music = fakeMusic()) {
     './image-files': { grayImageFromPacket: bytes => (bytes && bytes.length ? { bytes } : null), PHOTO_TONE: { gamma: 2.2, dither: true } },
     './kotlin-data': { fromData: data => data },
     './media-types': types,
+    // Signed out of Spotify: the composite bridge follows Apple Music alone.
+    './spotify.ios': { spotifyService: () => null },
   }, {
     FaceclawAppleMusic: { shared: () => music },
     FaceclawKitIosProtocol: { new: () => ({ grayPacketBgraGammaDither: (packet, gamma, dither) => {
@@ -155,7 +157,11 @@ test('access requests share one prompt, and denied or restricted access points t
 });
 
 function browser(music = fakeMusic()) {
-  const api = load('app/native/media-browser.ios.ts', { './media-types': types }, {
+  const api = load('app/native/media-browser.ios.ts', {
+    './media-types': types,
+    './spotify.ios': { spotifyService: () => null },
+    './spotify-player': { SPOTIFY_PACKAGE: 'com.spotify.client' },
+  }, {
     FaceclawAppleMusic: { shared: () => music },
   });
   return { bridge: api.mediaBrowserBridge, music };
@@ -165,7 +171,7 @@ test('the Apple Music library browses only with access and drops answers after d
   const f = browser();
   const [app] = f.bridge.listBrowsableApps();
   assert.equal(app.appName, 'Apple Music');
-  await assert.rejects(f.bridge.connect({ ...app, packageName: 'other' }), /Only Apple Music/);
+  await assert.rejects(f.bridge.connect({ ...app, packageName: 'other' }), /Not an Apple Music library/);
   await assert.rejects(f.bridge.browse('root'), /Not connected/);
 
   assert.equal(await f.bridge.connect(app), 'root');

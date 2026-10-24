@@ -18,6 +18,7 @@ import {
 } from "~/assistant/models";
 import { isLocalModelReady } from "../native/llama";
 import { normalizeWhisperServerUrl } from "../native/whisper-server-stt";
+import { isValidSpotifyClientId, SPOTIFY_CLIENT_ID_KEY } from "../native/spotify-auth";
 import { drawRightValueMenuItem, drawToggleMenuItem, MenuItem, openModalMenu } from "./menu";
 import { ANIMATION_SPEEDS, animationSpeedLabel, scaleAnimationDuration, type AnimationSpeed } from "./animation-speed";
 import { MENU_ANIMATION_KEY } from "./menu-animation-pref";
@@ -1099,6 +1100,21 @@ export const mapboxApiKeySetting = new ConfigSettingString({
   glassesEditTitle: "Edit Mapbox token",
   formatValue: (value) => (value ? `${value.slice(0, 6)}...` : "(not set)"),
   description: "Mapbox public token (pk. prefix), used by the Navigate app for maps, geocoding, and directions.",
+});
+
+/** Edited from the Music app's Spotify menu (iOS); a sign-in is tied to the client ID it was made with. */
+export const spotifyClientIdSetting = new ConfigSettingString({
+  id: "spotify-client-id",
+  label: "Client ID",
+  storageKey: SPOTIFY_CLIENT_ID_KEY,
+  defaultValue: "",
+  editorTitle: "Spotify client ID (from your app in the Spotify Developer Dashboard)",
+  glassesEditTitle: "Edit Spotify client ID",
+  normalize: (value) => (value ?? "").trim(),
+  validate: (value) => (!value || isValidSpotifyClientId(value) ? null
+    : "A Spotify client ID is 32 letters and digits, shown on your app's page in the Spotify Developer Dashboard."),
+  formatValue: (value) => (value ? `${value.slice(0, 6)}...` : "(not set)"),
+  description: "The client ID of your own Spotify developer app, which Faceclaw signs in with.",
 });
 
 /**
