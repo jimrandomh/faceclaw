@@ -3,68 +3,25 @@ import { GrayImage } from "../graphics/image";
 import { grayImageFromPacket, PHOTO_TONE } from "./image-files";
 import { ignoredMediaPackages, MEDIA_APPS_KEY, rememberMediaApps } from "./media-apps";
 import { onSettingsStoreChanged } from "./settings-store";
+import { isNotificationListenerEnabled } from "./notification-access";
+import {
+  DEFAULT_MEDIA_STATE,
+  interpolateMediaState,
+  type MediaControllerBridge,
+  type MediaControllerState,
+  type MediaPlaybackState,
+  type MediaQueueItem,
+} from "./media-types";
 
 declare const com: any;
 
-export type MediaQueueItem = {
-  id: number;
-  title: string;
-  active: boolean;
-};
+export type { MediaControllerState, MediaPlaybackState, MediaQueueItem } from "./media-types";
 
-export type MediaPlaybackState =
-  | "notification-access-required"
-  | "idle"
-  | "playing"
-  | "paused"
-  | "buffering"
-  | "stopped"
-  | "unknown";
-
-export type MediaControllerState = {
-  available: boolean;
-  accessEnabled: boolean;
-  packageName: string;
-  appName: string;
-  playbackState: MediaPlaybackState;
-  title: string;
-  artist: string;
-  album: string;
-  positionMs: number;
-  durationMs: number;
-  playbackSpeed: number;
-  status: string;
-  canPlayPause: boolean;
-  canSkipNext: boolean;
-  canSkipPrevious: boolean;
-  /**
-   * Changes whenever getAlbumArt's result may have changed (any metadata
-   * update or session switch). Key cached art on this, not the title:
-   * players re-publish the same strings with a different bitmap.
-   */
-  artVersion: number;
-};
-
-const DEFAULT_MEDIA_STATE: MediaControllerState = {
-  available: false,
-  accessEnabled: false,
-  packageName: "",
-  appName: "",
-  playbackState: "idle",
-  title: "",
-  artist: "",
-  album: "",
-  positionMs: -1,
-  durationMs: -1,
-  playbackSpeed: 0,
-  status: "Media controller unavailable.",
-  canPlayPause: false,
-  canSkipNext: false,
-  canSkipPrevious: false,
-  artVersion: 0,
-};
-
-export class FaceclawMediaControllerBridge {
+export class FaceclawMediaControllerBridge implements MediaControllerBridge {
+  readonly accessPrompt = "Notification access is required to control Android media sessions. Tap to open settings.";
+  readonly accessLabel = "Notification access needed";
+  readonly accessAction = "open settings";
+  readonly skipRebuildsQueue = true;
   private readonly stateListeners = new Set<(state: MediaControllerState) => void>();
   private controller: any = null;
   private listenerProxy: any = null;
@@ -79,12 +36,7 @@ export class FaceclawMediaControllerBridge {
   }
 
   snapshot(): MediaControllerState {
-    const state = { ...this.state };
-    if (state.playbackState === "playing" && state.positionMs >= 0 && state.playbackSpeed !== 0) {
-      state.positionMs += (Date.now() - this.stateUpdatedAtMs) * state.playbackSpeed;
-      state.positionMs = Math.max(0, state.durationMs > 0 ? Math.min(state.positionMs, state.durationMs) : state.positionMs);
-    }
-    return state;
+    return interpolateMediaState(this.state, this.stateUpdatedAtMs, Date.now());
   }
 
   async start(): Promise<void> {
@@ -115,9 +67,15 @@ export class FaceclawMediaControllerBridge {
     this.controller?.skipPrevious();
   }
 
-  openNotificationAccessSettings(): void {
+  hasAccess(): boolean {
+    return isNotificationListenerEnabled();
+  }
+
+  /** Opens the notification-access settings screen; the grant is only visible once the app resumes. */
+  async requestAccess(): Promise<boolean> {
     this.ensureController();
     this.controller?.openNotificationAccessSettings();
+    return false;
   }
 
   /** Jump playback to a queue item (see getQueue). */
@@ -257,4 +215,4 @@ function normalizePlaybackState(value: string): MediaPlaybackState {
   }
 }
 
-export const mediaControllerBridge = new FaceclawMediaControllerBridge();
+export const mediaControllerBridge: MediaControllerBridge = new FaceclawMediaControllerBridge();

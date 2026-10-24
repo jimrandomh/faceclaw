@@ -89,6 +89,8 @@ function bridges() {
     './settings-store': storage,
     '../graphics/image': {},
     './image-files': {},
+    './notification-access': { isNotificationListenerEnabled: () => true },
+    './media-types': load('app/native/media-types.ts', () => { throw new Error('media-types has no imports'); }),
   };
   const globals = { global: { isAndroid: true }, com: { faceclaw: { app: {
     FaceclawMediaBrowser: NativeBrowser,
