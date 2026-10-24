@@ -7,7 +7,7 @@ const vm = require('node:vm');
 // The injected shim (app/apps/evenhub/session.ts) and the published types
 // (evenhub-extensions/src/index.ts) describe the same API from two sides.
 const source = fs.readFileSync(path.join(__dirname, '../app/apps/evenhub/session.ts'), 'utf8');
-const template = source.match(/export function buildFaceclawExtensionsScript[^`]*`([\s\S]*?)`;\r?\n}/)[1];
+const template = source.match(/export function buildFaceclawExtensionsScript[^`]*`([\s\S]*?)`;\n}/)[1];
 const shim = template.replace('${JSON.stringify(versionString)}', JSON.stringify('Faceclaw/9.9.9'));
 const types = fs.readFileSync(path.join(__dirname, '../evenhub-extensions/src/index.ts'), 'utf8');
 
