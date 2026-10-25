@@ -4,6 +4,8 @@ import android.app.Notification
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.ComponentName
+import android.content.Context
+import android.database.ContentObserver
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.drawable.BitmapDrawable
@@ -13,6 +15,8 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
+import android.provider.Settings
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
 import android.util.Log
@@ -30,17 +34,176 @@ import org.json.JSONObject
 class FaceclawMediaNotificationListenerService : NotificationListenerService() {
     companion object {
         private const val TAG = "FaceclawNotify"
-        /** First delay before asking the system to rebind after a disconnect. */
-        private const val REBIND_BASE_DELAY_MS = 1000
-        /** Rebinds back off from the base delay by this many doublings, then stay there. */
-        private const val REBIND_MAX_DOUBLINGS = 5
         private const val EXTRA_SUBSTITUTE_APP_NAME = "android.substName"
+        /**
+         * How long notification access can be granted with no listener
+         * connected before the watchdog forces a rebind: longer than a
+         * normal bind at process start, and than the system's own single
+         * retry 10 s after a binding dies. Later attempts double from here.
+         */
+        private const val REBIND_GRACE_MS = 15_000L
+        private const val REBIND_MAX_DELAY_MS = 15 * 60_000L
+        /** Missing this long, the listener needs the user to toggle notification access. */
+        private const val LISTENER_STUCK_MS = 30_000L
+        /** Notifications posted while disconnected alert on reconnect only if this recent. */
+        private const val RECONNECT_ALERT_WINDOW_MS = 5 * 60_000L
 
+        /** The connected listener; null until onListenerConnected and after onListenerDisconnected. */
         @Volatile
         private var activeService: FaceclawMediaNotificationListenerService? = null
         private val mainHandler = Handler(Looper.getMainLooper())
         private val notificationListeners: MutableSet<FaceclawNotificationListener> = CopyOnWriteArraySet()
+        private val listenerStateObservers: MutableSet<Runnable> = CopyOnWriteArraySet()
         private val activeNotificationWakeKeys: MutableSet<String> = HashSet()
+
+        // Binding watchdog (see watchListenerBinding); written on the main thread only.
+        private var watchdogContext: Context? = null
+        private var rebindScheduled = false
+        private var rebindDelayMs = REBIND_GRACE_MS
+        /** elapsedRealtime when the watchdog first saw access granted with no listener; 0 when not missing. */
+        @Volatile
+        private var listenerMissingSinceMs = 0L
+        /** Wall-clock time of the last disconnect in this process (compared with postTime); 0 if none. */
+        private var lastListenerDisconnectAtMs = 0L
+        private val forceRebindTask = Runnable { forceRebindIfStillMissing() }
+        private val accessObserver = object : ContentObserver(mainHandler) {
+            override fun onChange(selfChange: Boolean) {
+                checkListenerBinding()
+                notifyListenerStateChanged()
+            }
+        }
+
+        /**
+         * Start watching for the listener going missing while notification
+         * access is granted. Android can drop a listener's binding, or give
+         * up rebinding it after the process dies, and not bring it back;
+         * every read then comes back empty for the life of the process.
+         * Called at app boot; disconnects and access changes re-check.
+         */
+        @JvmStatic
+        fun watchListenerBinding(context: Context?) {
+            if (context == null) {
+                return
+            }
+            val appContext = context.applicationContext
+            mainHandler.post {
+                if (watchdogContext == null) {
+                    watchdogContext = appContext
+                    try {
+                        appContext.contentResolver.registerContentObserver(
+                            Settings.Secure.getUriFor("enabled_notification_listeners"), false, accessObserver)
+                    } catch (t: Throwable) {
+                        Log.w(TAG, "notification access observer registration failed", t)
+                    }
+                }
+                checkListenerBinding()
+            }
+        }
+
+        /**
+         * "connected"; "no-access" (notification access not granted);
+         * "connecting" (granted, listener not connected yet); or "stuck"
+         * (granted, but still missing past LISTENER_STUCK_MS, which forced
+         * rebinds can't always fix: the user has to toggle access).
+         */
+        @JvmStatic
+        fun getListenerState(context: Context?): String {
+            if (activeService != null) {
+                return "connected"
+            }
+            if (!FaceclawEvenAppDetector.isNotificationAccessEnabled(context)) {
+                return "no-access"
+            }
+            val missingSince = listenerMissingSinceMs
+            if (missingSince > 0 && SystemClock.elapsedRealtime() - missingSince >= LISTENER_STUCK_MS) {
+                return "stuck"
+            }
+            return "connecting"
+        }
+
+        /** Run on the main thread whenever getListenerState may have changed. */
+        @JvmStatic
+        fun addListenerStateObserver(observer: Runnable?) {
+            if (observer != null) {
+                listenerStateObservers.add(observer)
+            }
+        }
+
+        @JvmStatic
+        fun removeListenerStateObserver(observer: Runnable?) {
+            if (observer != null) {
+                listenerStateObservers.remove(observer)
+            }
+        }
+
+        private fun notifyListenerStateChanged() {
+            for (observer in listenerStateObservers) {
+                mainHandler.post {
+                    try {
+                        observer.run()
+                    } catch (t: Throwable) {
+                        Log.w(TAG, "listener state observer failed", t)
+                    }
+                }
+            }
+        }
+
+        /** Main thread. Starts the forced-rebind countdown when access is granted and no listener is connected. */
+        private fun checkListenerBinding() {
+            val context = watchdogContext ?: return
+            if (activeService != null || !FaceclawEvenAppDetector.isNotificationAccessEnabled(context)) {
+                resetRebindWatchdog()
+                return
+            }
+            if (listenerMissingSinceMs == 0L) {
+                listenerMissingSinceMs = SystemClock.elapsedRealtime()
+            }
+            scheduleForcedRebind()
+        }
+
+        private fun scheduleForcedRebind() {
+            if (!rebindScheduled) {
+                rebindScheduled = true
+                mainHandler.postDelayed(forceRebindTask, rebindDelayMs)
+            }
+        }
+
+        private fun resetRebindWatchdog() {
+            mainHandler.removeCallbacks(forceRebindTask)
+            rebindScheduled = false
+            rebindDelayMs = REBIND_GRACE_MS
+            listenerMissingSinceMs = 0L
+        }
+
+        private fun forceRebindIfStillMissing() {
+            rebindScheduled = false
+            val context = watchdogContext ?: return
+            if (activeService != null || !FaceclawEvenAppDetector.isNotificationAccessEnabled(context)) {
+                resetRebindWatchdog()
+                return
+            }
+            val missingSeconds = (SystemClock.elapsedRealtime() - listenerMissingSinceMs) / 1000
+            Log.w(TAG, "notification access granted but no listener connected for ${missingSeconds}s; forcing a rebind")
+            val component = ComponentName(context, FaceclawMediaNotificationListenerService::class.java)
+            try {
+                // requestRebind only undoes a requestUnbind, so alone it can't
+                // bring back a binding the system dropped. Unbinding by
+                // component first marks the listener snoozed and drops any
+                // record of it; the rebind then un-snoozes it and binds afresh.
+                // Below API 34 there is no public equivalent (and flipping the
+                // component's enabled state can make the system revoke
+                // access), so there the state goes "stuck" for the user.
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                    NotificationListenerService.requestUnbind(component)
+                }
+                NotificationListenerService.requestRebind(component)
+            } catch (t: Throwable) {
+                Log.w(TAG, "forced notification listener rebind failed", t)
+            }
+            rebindDelayMs = Math.min(rebindDelayMs * 2, REBIND_MAX_DELAY_MS)
+            scheduleForcedRebind()
+            notifyListenerStateChanged()
+        }
 
         @JvmStatic
         fun addNotificationListener(listener: FaceclawNotificationListener?) {
@@ -208,12 +371,6 @@ class FaceclawMediaNotificationListenerService : NotificationListenerService() {
             val service = activeService
             val limit = Math.max(0, maxNotifications)
             if (service == null || limit == 0) {
-                // Reaching here with a live app but no bound service is the
-                // failure mode behind a permanently empty notification list:
-                // the read is silently answered from nothing.
-                if (service == null) {
-                    Log.w(TAG, "notification list requested with no listener bound")
-                }
                 return "[]"
             }
 
@@ -324,7 +481,14 @@ class FaceclawMediaNotificationListenerService : NotificationListenerService() {
             }
         }
 
-        private fun refreshActiveNotificationWakeKeys(service: FaceclawMediaNotificationListenerService) {
+        /**
+         * Re-seed the wake keys from what is active now. After a reconnect
+         * this also catches the glasses up on the gap: keys that went away
+         * are reported removed (closing a popup for a notification
+         * dismissed meanwhile), and recent notifications posted since the
+         * disconnect are reported posted. A first connect only seeds.
+         */
+        private fun reconcileActiveNotificationWakeKeys(service: FaceclawMediaNotificationListenerService) {
             val notifications: Array<StatusBarNotification?>?
             try {
                 notifications = service.activeNotifications
@@ -332,19 +496,40 @@ class FaceclawMediaNotificationListenerService : NotificationListenerService() {
                 Log.w(TAG, "failed to refresh active notification wake keys", t)
                 return
             }
+            if (notifications == null) {
+                return
+            }
+            val disconnectedAtMs = lastListenerDisconnectAtMs
+            val alertAfterMs = Math.max(disconnectedAtMs, System.currentTimeMillis() - RECONNECT_ALERT_WINDOW_MS)
+            val posted = ArrayList<String>()
+            val removed = ArrayList<String>()
             synchronized(activeNotificationWakeKeys) {
+                val previous = HashSet(activeNotificationWakeKeys)
                 activeNotificationWakeKeys.clear()
-                if (notifications == null) {
-                    return
-                }
                 for (statusBarNotification in notifications) {
-                    if (shouldShowNotificationInList(service, statusBarNotification)) {
-                        val key: String? = statusBarNotification!!.key
-                        if (key != null && !key.isEmpty()) {
-                            activeNotificationWakeKeys.add(key)
-                        }
+                    if (!shouldShowNotificationInList(service, statusBarNotification)) {
+                        continue
+                    }
+                    val key: String? = statusBarNotification!!.key
+                    if (key == null || key.isEmpty()) {
+                        continue
+                    }
+                    activeNotificationWakeKeys.add(key)
+                    if (disconnectedAtMs > 0 && !previous.contains(key) && statusBarNotification.postTime > alertAfterMs) {
+                        posted.add(key)
                     }
                 }
+                for (key in previous) {
+                    if (!activeNotificationWakeKeys.contains(key)) {
+                        removed.add(key)
+                    }
+                }
+            }
+            for (key in removed) {
+                emitNotificationRemoved(key)
+            }
+            for (key in posted) {
+                emitNotificationPosted(key)
             }
         }
 
@@ -643,39 +828,26 @@ class FaceclawMediaNotificationListenerService : NotificationListenerService() {
             return value?.toString() ?: ""
         }
     }
-    /** How many consecutive rebinds have been requested after a disconnect. */
-    private var rebindAttempts = 0
-
-    override fun onCreate() {
-        super.onCreate()
-        activeService = this
-    }
-
-    override fun onDestroy() {
-        if (activeService === this) {
-            activeService = null
-        }
-        super.onDestroy()
-    }
 
     override fun onListenerConnected() {
-        rebindAttempts = 0
         activeService = this
         super.onListenerConnected()
-        refreshActiveNotificationWakeKeys(this)
+        Log.i(TAG, "notification listener connected")
+        resetRebindWatchdog()
+        reconcileActiveNotificationWakeKeys(this)
+        notifyListenerStateChanged()
     }
 
+    // Also called from onDestroy, which is how an unbind usually arrives.
     override fun onListenerDisconnected() {
         if (activeService === this) {
             activeService = null
+            lastListenerDisconnectAtMs = System.currentTimeMillis()
+            Log.w(TAG, "notification listener disconnected")
+            notifyListenerStateChanged()
         }
         super.onListenerDisconnected()
-        // The system drops a notification listener's binding without warning and
-        // does not restore it on its own; every read then answers from a null
-        // service, which is why the notification list can stay empty for the
-        // life of the process. Ask for the binding back, backing off so a device
-        // that keeps refusing does not spin on the request.
-        scheduleRebind()
+        watchListenerBinding(applicationContext)
     }
 
     override fun onNotificationPosted(statusBarNotification: StatusBarNotification?) {
@@ -700,24 +872,5 @@ class FaceclawMediaNotificationListenerService : NotificationListenerService() {
             emitNotificationRemoved(statusBarNotification!!.key)
         }
         super.onNotificationRemoved(statusBarNotification)
-    }
-
-    /**
-     * Ask the system to rebind this listener after a disconnect. Backs off on
-     * repeated failures: a rebind the system refuses re-enters
-     * onListenerDisconnected, so an unbounded retry would loop once a second.
-     */
-    private fun scheduleRebind() {
-        val component = ComponentName(this, FaceclawMediaNotificationListenerService::class.java)
-        val doublings = Math.min(rebindAttempts, REBIND_MAX_DOUBLINGS)
-        val delayMs = (REBIND_BASE_DELAY_MS shl doublings).toLong()
-        rebindAttempts += 1
-        mainHandler.postDelayed({
-            try {
-                requestRebind(component)
-            } catch (t: Throwable) {
-                Log.w(TAG, "requestRebind failed", t)
-            }
-        }, delayMs)
     }
 }

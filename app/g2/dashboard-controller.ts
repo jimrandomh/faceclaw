@@ -17,6 +17,7 @@ import { nightscoutBridge } from "../native/nightscout-bridge";
 import { weatherBridge } from "../native/weather";
 import { ALL_NOTIFICATIONS, onAndroidNotificationPosted, onAndroidNotificationRemoved, readActiveNotifications } from "../native/notification-icons";
 import { shouldShowNotificationOnGlasses } from "../native/notification-sources";
+import { watchNotificationListenerBinding } from "../native/notification-access";
 import { openEvenAppSettings, readEvenAppNotificationState } from "../native/even-app-conflict";
 import { grayImageToPreviewSource } from "../native/gray-image-preview";
 import { firmwareIncompatibilityMessage, hasCompatibleFirmware } from "./firmware-compat";
@@ -452,6 +453,7 @@ class DashboardController {
     timerEngine.onChange(() => this.refreshAlarmReliabilityWarning());
     this.offAndroidNotification = onAndroidNotificationPosted((notificationKey) => this.handleAndroidNotificationPosted(notificationKey));
     this.offAndroidNotificationRemoved = onAndroidNotificationRemoved((notificationKey) => this.handleAndroidNotificationRemoved(notificationKey));
+    watchNotificationListenerBinding();
     readActiveNotifications(ALL_NOTIFICATIONS);
     // Settings toggled from the glasses can change what the phone UI shows
     // (e.g. the text-setting editor), so re-emit the snapshot on any change.
