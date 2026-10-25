@@ -44,6 +44,7 @@ import {
   parseTimersState,
   pushRecentDuration,
   serializeTimersState,
+  soonestRunningTimer,
   stopwatchElapsedMs,
   timerRemainingMs,
   type Alarm,
@@ -685,13 +686,8 @@ function alarmNotificationText(alarm: Alarm): string {
 
 /** Remaining time of the timer that ends soonest, for the tray icon; null when none runs. */
 export function soonestRunningTimerRemainingMs(engine: TimerEngine, now = Date.now()): number | null {
-  let soonest: number | null = null;
-  for (const timer of engine.state.timers) {
-    if (timer.endsAtMs === null || timer.rungAtMs !== null) continue;
-    const remaining = timerRemainingMs(timer, now);
-    if (soonest === null || remaining < soonest) soonest = remaining;
-  }
-  return soonest;
+  const timer = soonestRunningTimer(engine.state.timers, now);
+  return timer ? timerRemainingMs(timer, now) : null;
 }
 
 export const timerEngine = new TimerEngine();

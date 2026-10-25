@@ -66,7 +66,7 @@ const PANEL_X = 310;
 /**
  * Height the table and panel are drawn for: a min-height window's viewport
  * under the standard top bar. A taller viewport (the status bar folded into
- * the switcher row, a full-panel display) centers the layout vertically.
+ * the switcher row, a Tall or Full Screen display) centers the layout vertically.
  */
 const LAYOUT_HEIGHT = 260;
 
@@ -411,8 +411,17 @@ global.onmessage = (event: { data: WorkerAppMessage }) => {
         syncTickTimer(window);
       }
       break;
+    case "resize-window": {
+      const window = windows.get(message.windowId);
+      if (!window) break;
+      window.viewportWidth = message.viewport.width;
+      window.viewportHeight = message.viewport.height;
+      window.menu?.resize({ width: window.viewportWidth, height: window.viewportHeight });
+      window.lastSubmittedFingerprint = "";
+      if (window.foreground) renderAndSubmit(window, 0);
+      break;
+    }
     case "navigation-sensors":
-    case "resize-window":
     case "text-input":
     case "tool-call":
       break;

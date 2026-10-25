@@ -12,8 +12,8 @@ local `@faceclaw/kotlin` plugin. Generated binaries and Gradle caches are ignore
   the Android adapters: `util/` (Json codec, FrameTimingsCore, concurrency
   primitives, sha256/clock/log/file expects), `g2protocol/FirmwareImage`,
   `audio/` (Lc3PacketFramer, AudioSegmentation, VoicePrint, WavPcmReader),
-  `graphics/` (GrayPacket, PreviewPalette, StatusIconArt, GlyphPacket,
-  OpenTypeNames, SvgIconSource), `net/` (HttpIdentity, SseStream,
+  `graphics/` (GrayPacket, PreviewPalette, StatusIconArt, NotificationIconArt,
+  GlyphPacket, OpenTypeNames, SvgIconSource), `net/` (HttpIdentity, SseStream,
   ResumableDownload, RemoteInputSession), `evenhub/EvenHubAssetServer`,
   `alarms/` (AlarmSchedule, AlarmRingingPolicy), `settings/SettingsChangeHub`,
   the stock-firmware flows over a `StockLink` GATT port (`g2protocol/StockLinkSession`,

@@ -104,10 +104,14 @@
   font-size: 20;
   color: #ffffff;
 }
-.pad-legend {
-  font-size: 11;
+/* "Display off": dimmed like the dark screen it describes. */
+.pad-focus-asleep {
   color: #8a8a8a;
-  margin-bottom: 8;
+}
+.pad-wake-hint {
+  font-size: 13;
+  color: #6a6a6a;
+  margin-top: 4;
 }
 .action-row {
   margin-top: 6;

@@ -6,7 +6,7 @@ import { getDefaultMediumFont, getDefaultSmallFont } from "../../graphics/ui-fon
 import { truncateText } from "../../graphics/textwrap";
 import { activeAmbientCards } from "./ambient-cards";
 import { BATTERY_ICON_WIDTH, DENSE_BATTERY_BLOCK_HEIGHT, drawBattery, drawDenseBatteries, type BatteryDevice } from "../../graphics/battery";
-import { readActiveNotificationIcons } from "../../native/notification-icons";
+import { ALL_NOTIFICATIONS, readActiveNotificationIcons } from "../../native/notification-icons";
 import { readPhoneBatteryState } from "../../native/phone-battery";
 import { noteStaleDataUsed, renderPassAllowsStaleData } from "../../util/render-freshness";
 import { renderIcon, renderIconWithGlyph, type IconActivity, type IconName } from "../../graphics/icons";
@@ -27,8 +27,10 @@ import { scrollToKeepSelectionVisible } from "../menu";
 import { lineStep } from "../metrics";
 import {
   appViewportRect,
+  isImmersive,
   MIN_WINDOW_HEIGHT,
   minWindowTop,
+  setSwitcherBarHeight,
   SHELL_OPAQUE_BLACK,
   SIDEBAR_WIDTH,
   sidebarStripVisible,
@@ -55,7 +57,8 @@ import {
  * sidebar. In the two-column variant the column against the app area fills
  * first and windows past that overflow into the outer column, so the common
  * case keeps every icon next to the content it belongs to. A bottom row
- * always uses the roomy slots, laid out left to right.
+ * always uses the roomy slots, laid out left to right, and when they don't
+ * fit beside the status bar, in a second row (see planBottomBar).
  */
 type SidebarVariant = { columns: number; columnWidth: number; iconSize: number };
 const ONE_COLUMN: SidebarVariant = { columns: 1, columnWidth: 36, iconSize: 32 };
@@ -73,16 +76,25 @@ const ROW_STEP = ROW_ICON_SIZE + ICON_SPACING;
 // The status bar in the switcher row (geometry.ts statusInSwitcherRow) keeps
 // the top bar's layout, so every element sits as it does there: its 28 rows
 // (whose last is the divider, which the row has no use for) centred in the
-// row below its separator line.
+// row below its separator line. A second row of status items sits a top
+// bar's height under the first, or, beside two rows of windows, a row's
+// height under it, level with the second row of windows.
 const ROW_STATUS_TOP = 1 + ((SWITCHER_ROW_HEIGHT - TOP_BAR_HEIGHT) >> 1);
 // Its clock ends flush with the row's right end, which is the window's
-// right edge; batteries keep the top bar's clock-to-icons gap from it.
+// right edge; batteries keep the top bar's clock-to-icons gap from it, as
+// does whatever else comes right before the clock.
 const ROW_CLOCK_GAP = 16;
 // Between the windows' end of the row (its scroll chevron) and the status.
 const ROW_STATUS_GAP = 8;
-// Notification icons stop short of room for this many windows' slots (or
-// all of them, when there are fewer); the windows take whatever is left.
+// When the windows have to scroll anyway (planBottomBar's last layout),
+// notification icons stop short of room for this many windows' slots in a
+// row (or all of them, when there are fewer); the windows take whatever is
+// left.
 const ROW_MIN_WINDOW_SLOTS = 3;
+// After an app widget (tray icon), and between the last notification icon
+// and what follows it, as in the top bar.
+const TRAY_ICON_GAP = 10;
+const NOTIFICATIONS_GAP = 8;
 
 // The popup switcher (geometry.ts "popup"): a box centred over the
 // foreground window's content, holding a row of window icons above the
@@ -154,29 +166,34 @@ type SwitcherLayout = {
 
 /**
  * Switcher geometry for the foreground window (a bottom row sits under it).
- * `windowsRight` is where a bottom row's window icons must end: short of
- * the status bar when it shares the row. `scrollRow` is the first visible
- * window's index.
+ * A bottom switcher's window icons take `bar`'s slots (planBottomBar), the
+ * row against the window first, then the one under it. `scrollRow` is the
+ * first visible window's index.
  */
-function switcherLayout(windowCount: number, heightMode: WindowHeightMode, appId?: string, windowsRight?: number, scrollRow = 0): SwitcherLayout {
+function switcherLayout(windowCount: number, heightMode: WindowHeightMode, appId: string | undefined, bar: BottomBarPlan | null, scrollRow = 0): SwitcherLayout {
   const position = switcherPosition();
   if (position === "bottom") {
     const row = switcherRect(heightMode, appId);
-    const width = (windowsRight ?? row.x + row.width) - row.x;
+    const { windowColumns, windowRows } = bar ?? planBottomBar(row.width, windowCount, []);
+    const columns = Math.max(1, windowColumns);
     // Under a framed window the first window's cell (the launcher's) starts
     // at the frame's left side, one pixel outside the window, so a selection
     // tab there carries the side straight down (drawWindowFrame squares that
     // corner for it). Scrolled past it, the cells keep the margin the left
-    // chevron needs. The count of slots stays the same either way.
+    // chevron needs. The count of slots stays the same either way. Only the
+    // first row's cells touch the separator; a second row's lines up under it.
     const first = windowFramed(appId) && scrollRow === 0 ? row.x - 1 : row.x + LIST_MARGIN - 2;
     return {
       position,
       iconSize: ROW_ICON_SIZE,
-      visibleCount: Math.max(1, ((width - 2 * LIST_MARGIN + ICON_SPACING) / ROW_STEP) | 0),
-      cell: (slot) => ({
-        x: first + slot * ROW_STEP, y: row.y, width: ROW_ICON_SIZE + 4, height: SWITCHER_ROW_HEIGHT,
-        atSeparator: true,
-      }),
+      visibleCount: columns * windowRows,
+      cell: (slot) => {
+        const line = (slot / columns) | 0;
+        return {
+          x: first + (slot % columns) * ROW_STEP, y: row.y + line * SWITCHER_ROW_HEIGHT,
+          width: ROW_ICON_SIZE + 4, height: SWITCHER_ROW_HEIGHT, atSeparator: line === 0,
+        };
+      },
     };
   }
   // Slots fill the column against the separator top to bottom, then
@@ -199,6 +216,126 @@ function switcherLayout(windowCount: number, heightMode: WindowHeightMode, appId
       };
     },
   };
+}
+
+/**
+ * One of the status bar's items as the bottom switcher lays it out (see
+ * planBottomBar): left to right, the notification icons, app widgets (tray
+ * icons), the battery block and the clock.
+ */
+type RowStatusSize = { kind: "notification" | "tray" | "batteries" | "clock"; width: number };
+
+/** A status item ready to draw with its left edge at x, in the top bar's layout from `top`. */
+type RowStatusItem = RowStatusSize & { draw: (image: GrayImage, x: number, top: number) => void };
+
+/**
+ * A layout of the bottom switcher (planBottomBar): its window icons in
+ * `windowRows` rows of `windowColumns` slots, scrolling when there are more
+ * windows than that; the status bar's items in `statusRows` (top first),
+ * each right-aligned against the switcher's end, `statusPitch` apart; and
+ * the height it all takes.
+ */
+export type BottomBarPlan<T extends RowStatusSize = RowStatusSize> = {
+  /** Which of planBottomBar's layouts this is, 1 (the roomiest) to 4. */
+  level: number;
+  height: number;
+  windowRows: number;
+  windowColumns: number;
+  statusRows: T[][];
+  /** Width of the widest status row; the windows take what it leaves. */
+  statusWidth: number;
+  statusPitch: number;
+};
+
+/**
+ * Lay out the bottom switcher, `width` wide, for `windowCount` windows and
+ * the status bar's items (none unless it shares the switcher; notification
+ * icons first), trying denser layouts in turn until one fits:
+ *
+ * 1. One row: the windows, then the status bar's items.
+ * 2. The status bar's items in two rows, broken where the two come nearest
+ *    the same width, beside the one row of windows. The extra height comes
+ *    out of the slack under a window band, or a full-height window's height
+ *    (geometry.ts windowTop).
+ * 3. The windows in two rows too.
+ * 4. As 3, but with only as many windows showing as fit, scrolling to the
+ *    rest, and notification icons dropped from the end as need be to leave
+ *    the windows room for a few slots a row.
+ *
+ * A layout fails when its windows don't all fit beside its status rows; the
+ * last can't fail.
+ */
+export function planBottomBar<T extends RowStatusSize>(width: number, windowCount: number, status: T[]): BottomBarPlan<T> {
+  const plan = (level: number, windowRows: number, statusRows: T[][]): BottomBarPlan<T> => {
+    const statusWidth = Math.max(0, ...statusRows.map(statusRowWidth));
+    return {
+      level,
+      height: windowRows > 1 ? windowRows * SWITCHER_ROW_HEIGHT
+        : SWITCHER_ROW_HEIGHT + Math.max(0, statusRows.length - 1) * TOP_BAR_HEIGHT,
+      windowRows,
+      windowColumns: rowWindowColumns(width - (statusWidth > 0 ? statusWidth + ROW_STATUS_GAP : 0)),
+      statusRows,
+      statusWidth,
+      statusPitch: windowRows > 1 ? SWITCHER_ROW_HEIGHT : TOP_BAR_HEIGHT,
+    };
+  };
+  const twoRows = splitStatusRows(status);
+  for (const candidate of [plan(1, 1, status.length ? [status] : []), plan(2, 1, twoRows), plan(3, 2, twoRows)]) {
+    if (candidate.windowColumns * candidate.windowRows >= windowCount && candidate.statusWidth <= width) return candidate;
+  }
+  const notifications = status.filter((item) => item.kind === "notification").length;
+  const room = width - ROW_STATUS_GAP - rowWindowsWidth(Math.min(Math.ceil(windowCount / 2), ROW_MIN_WINDOW_SLOTS));
+  let last = plan(4, 2, twoRows);
+  for (let kept = notifications - 1; kept >= 0 && last.statusWidth > room; kept--) {
+    last = plan(4, 2, splitStatusRows([...status.slice(0, kept), ...status.slice(notifications)]));
+  }
+  return { ...last, windowColumns: Math.max(1, last.windowColumns) };
+}
+
+/** Width `columns` window slots take in the bottom switcher, with its end margins. */
+function rowWindowsWidth(columns: number): number {
+  return columns > 0 ? 2 * LIST_MARGIN + columns * ROW_STEP - ICON_SPACING : 0;
+}
+
+/** How many window slots fit across `width` of the bottom switcher. */
+function rowWindowColumns(width: number): number {
+  return Math.max(0, ((width - 2 * LIST_MARGIN + ICON_SPACING) / ROW_STEP) | 0);
+}
+
+/** Space between two neighbouring status items, as the top bar spaces them. */
+function statusGap(left: RowStatusSize, right: RowStatusSize): number {
+  if (right.kind === "clock" || left.kind === "batteries") return ROW_CLOCK_GAP;
+  if (left.kind === "tray") return TRAY_ICON_GAP;
+  return right.kind === "notification" ? NOTIFICATION_ICON_STEP - NOTIFICATION_ICON_SIZE : NOTIFICATIONS_GAP;
+}
+
+/** Width of a row of status items, from the first's left edge to the last's right. */
+function statusRowWidth(items: readonly RowStatusSize[]): number {
+  let width = 0;
+  for (let index = 0; index < items.length; index++) {
+    width += items[index]!.width + (index > 0 ? statusGap(items[index - 1]!, items[index]!) : 0);
+  }
+  return width;
+}
+
+/**
+ * Status items in two rows (one when there are fewer than two), broken
+ * where the wider row is narrowest, so the two come out about as wide.
+ */
+function splitStatusRows<T extends RowStatusSize>(items: T[]): T[][] {
+  if (items.length < 2) return items.length ? [items] : [];
+  const total = statusRowWidth(items);
+  let best = 1, bestWidth = Infinity, before = 0;
+  for (let index = 1; index < items.length; index++) {
+    // Items before `index` take the first row; the gap at the break goes.
+    before += items[index - 1]!.width + (index > 1 ? statusGap(items[index - 2]!, items[index - 1]!) : 0);
+    const widest = Math.max(before, total - before - statusGap(items[index - 1]!, items[index]!));
+    if (widest < bestWidth) {
+      best = index;
+      bestWidth = widest;
+    }
+  }
+  return [items.slice(0, best), items.slice(best)];
 }
 
 /**
@@ -250,7 +387,7 @@ export function sidebarContentSpan(windowCount: number): { left: number; right: 
 
 /**
  * Horizontal extent of the top bar: the foreground window's, short of a side
- * strip overlaid on it (full-panel mode, sidebar focused).
+ * strip overlaid on it (an immersive window, sidebar focused).
  */
 function topBarSpan(state: ShellChromeState): { left: number; right: number } {
   const viewport = appViewportRect(state.foregroundHeightMode, state.foregroundAppId);
@@ -275,14 +412,15 @@ type StatusBarPlacement = { left: number; right: number; top: number; contentTop
 
 /**
  * The status bar's placement for the foreground window, or null when it
- * isn't drawn as a bar: when it shares a bottom switcher row, or when it
- * overlays the window (geometry.ts statusBarOverlays) and the popup
- * switcher isn't up. An overlaying bar sits inside a window frame, whose
- * side runs along its outer row, so it keeps its divider.
+ * isn't drawn as a bar: when the window is immersive, when it shares a
+ * bottom switcher row, or when it overlays the window (geometry.ts
+ * statusBarOverlays) and the popup switcher isn't up. An overlaying bar
+ * sits inside a window frame, whose side runs along its outer row, so it
+ * keeps its divider.
  */
 function statusBarPlacement(state: ShellChromeState): StatusBarPlacement | null {
   const appId = state.foregroundAppId;
-  if (statusInSwitcherRow(appId)) return null;
+  if (isImmersive(appId) || statusInSwitcherRow(appId)) return null;
   const overlays = statusBarOverlays();
   if (overlays && !sidebarStripVisible(state.focus, appId)) return null;
   const { left, right } = topBarSpan(state);
@@ -294,6 +432,9 @@ function statusBarPlacement(state: ShellChromeState): StatusBarPlacement | null 
 
 const NOTIFICATION_ICON_SIZE = 24;
 const NOTIFICATION_ICON_STEP = NOTIFICATION_ICON_SIZE + 4;
+// Notification icons' top, in the top bar's layout (where any status icon's
+// selection box starts, a row above).
+const NOTIFICATION_ICON_TOP = ((TOP_BAR_HEIGHT - NOTIFICATION_ICON_SIZE) / 2) | 0;
 // The box round a selected notification icon: clear of it by 2px either
 // side, and by 1px above and below, all a top bar leaves above its divider.
 const NOTIFICATION_BOX_MARGIN_X = 2;
@@ -308,15 +449,31 @@ export type ShellChromeWindow = {
   drawIcon: (image: GrayImage, x: number, y: number, size: number, inverted?: boolean) => void;
 };
 
+/**
+ * A status bar item the app switcher's selection can move onto (see
+ * Shell.moveSelection): a notification's icon, by notification key, or an
+ * app widget (a tray icon), by its owner's id.
+ */
+export type StatusItem = { kind: "notification" | "widget"; key: string };
+
+/** Whether two status bar items are the same one. */
+export function sameStatusItem(a: StatusItem | null | undefined, b: StatusItem | null | undefined): boolean {
+  return !!a && !!b && a.kind === b.kind && a.key === b.key;
+}
+
+/** An app's tray icon, by its owner's id (see Shell.setTrayIcon). */
+export type ShellChromeTrayIcon = { ownerId: string; icon: GrayImage };
+
 export type ShellChromeState = {
   windows: ShellChromeWindow[];
-  /** The selected window's index, or -1 while the selection is on a notification. */
+  /** The selected window's index, or -1 while the selection is on a status bar item. */
   selectedIndex: number;
   /**
-   * The notification (by key) whose icon the switcher's selection is on
-   * instead of a window, if any (see Shell.moveSelection).
+   * The status bar item (a notification's icon or an app widget) the
+   * switcher's selection is on instead of a window, if any (see
+   * Shell.moveSelection).
    */
-  selectedNotificationKey?: string | null;
+  selectedStatusItem?: StatusItem | null;
   focus: "sidebar" | "window";
   /** Height mode of the foreground window; decides where its top bar sits. */
   foregroundHeightMode: WindowHeightMode;
@@ -331,7 +488,7 @@ export type ShellChromeState = {
     watchCharging: boolean | null;
   };
   /** App-provided tray images, drawn between notification icons and batteries. */
-  trayIcons: GrayImage[];
+  trayIcons: ShellChromeTrayIcon[];
 };
 
 /** Placeholder window icon: rounded outline with a single letter. */
@@ -348,22 +505,55 @@ export function makeLetterWindowIcon(letter: string): ShellChromeWindow["drawIco
 }
 
 /**
+ * Perceptual gamma for inverting icon shades. The G2's levels are roughly
+ * linear in brightness while lightness is perceived roughly as brightness's
+ * 1/2.2 power, so flipping the levels themselves (15 - n) turns a dim stroke
+ * into one barely darker than the white box: level 1 would invert to 14.
+ */
+const ICON_INVERSION_GAMMA = 2.2;
+
+let invertedShadeLut: Uint8Array | null = null;
+
+/**
+ * Gray8 value → its perceptual negative, by the display level it packs to
+ * (so faint fringe values that show as black stay invisible on the white
+ * box): level 1 inverts to 7, and level 6 and up to 1 or 0. Written back as
+ * n*16, which packs to n, except that white is 255 (the box's fill) and
+ * black is SHELL_OPAQUE_BLACK (1) rather than 0, the surface's transparent
+ * color key.
+ */
+function invertedShades(): Uint8Array {
+  if (!invertedShadeLut) {
+    invertedShadeLut = new Uint8Array(256);
+    for (let value = 1; value < 256; value++) {
+      const lightness = Math.pow(grayToNibble(value) / 15, 1 / ICON_INVERSION_GAMMA);
+      const level = Math.round(15 * Math.pow(1 - lightness, ICON_INVERSION_GAMMA));
+      invertedShadeLut[value] = level === 0 ? SHELL_OPAQUE_BLACK : level === 15 ? 255 : level * 16;
+    }
+  }
+  return invertedShadeLut;
+}
+
+/**
  * Inverted (black-on-white) variant of an icon raster, for the focused tab:
- * coverage becomes darkness, with full coverage mapping to SHELL_OPAQUE_BLACK
- * (1) rather than 0, since 0 is the surface's transparent color key. Memoized
- * per source object so the variant is a stable image the texture cache can
- * key on (mode-13's inverse LUT can't reproduce this mapping exactly, so it
- * is simply a separate cached image).
+ * each shade becomes its perceptual negative (invertedShades), so full
+ * coverage is SHELL_OPAQUE_BLACK. Memoized per source object so the variant
+ * is a stable image the texture cache can key on (mode-13's inverse LUT can't
+ * reproduce this mapping, so it is simply a separate cached image). Deferred
+ * draws (an app widget's text) are baked in first, to be inverted with the
+ * rest.
  */
 const invertedIconCache = new WeakMap<GrayImage, GrayImage>();
 function invertedIcon(icon: GrayImage): GrayImage {
   let inverted = invertedIconCache.get(icon);
   if (!inverted) {
+    const flat = icon.withDrawsBaked();
+    const shades = invertedShades();
     inverted = new GrayImage(icon.width, icon.height, 0);
-    for (let i = 0; i < icon.pixels.length; i++) {
-      const coverage = icon.pixels[i]!;
+    for (let i = 0; i < flat.pixels.length; i++) {
+      const coverage = flat.pixels[i]!;
       if (coverage > 0) {
-        inverted.pixels[i] = Math.max(SHELL_OPAQUE_BLACK, 255 - coverage);
+        inverted.pixels[i] = shades[coverage]!;
       }
     }
     invertedIconCache.set(icon, inverted);
@@ -414,26 +604,35 @@ export class ShellChromeLayer implements Layer {
   private scrollRow = 0;
   // The popup switcher's shell surface.
   private popupKey: number | undefined;
-  // Where the last paint ended a bottom row's window icons, for hit testing.
-  private rowWindowsRight: number | undefined;
+  // The bottom switcher's layout as the last paint planned it, for hit testing.
+  private bottomBar: BottomBarPlan<RowStatusItem> | null = null;
   // Whether the last paint's selection tab carries the window frame's left
   // side down, so the frame's bottom-left corner is square.
   private frameCornerSquare = false;
-  // The notification icons the last paint drew, left to right: what the
-  // switcher's selection can move onto, and mirror touches hit.
-  private notificationEntries: NotificationEntry[] = [];
+  // The status bar icons (notifications' and app widgets') the last paint
+  // drew: what the switcher's selection can move onto, and mirror touches hit.
+  private statusEntries: StatusEntry[] = [];
 
-  constructor(private readonly getState: () => ShellChromeState) {}
+  /**
+   * `onBottomBarHeightChanged` is called, during a paint, when the bottom
+   * switcher's layout changes its height so that windows have to move or
+   * resize (see layoutBottomBar).
+   */
+  constructor(
+    private readonly getState: () => ShellChromeState,
+    private readonly onBottomBarHeightChanged: () => void = () => {},
+  ) {}
 
   paint(): GrayImage {
     const image = new GrayImage(G2_LENS_WIDTH, G2_LENS_HEIGHT, 0);
     const state = this.getState();
-    this.notificationEntries = [];
+    this.statusEntries = [];
+    this.bottomBar = this.layoutBottomBar(state);
     const statusInRow = statusInSwitcherRow(state.foregroundAppId);
     const popup = switcherPosition() === "popup";
-    // Full-panel mode: the strip is an overlay, present only while the user
-    // is in it (the window underneath keeps its full width the rest of the
-    // time); a popup only ever shows then.
+    // Over an immersive window the strip is an overlay, present only while
+    // the user is in it (the window underneath keeps the whole panel the
+    // rest of the time); a popup only ever shows then.
     const switcherShown = sidebarStripVisible(state.focus, state.foregroundAppId);
     if (switcherShown && !popup) {
       this.drawSidebar(image, state, statusInRow ? image : undefined);
@@ -449,7 +648,8 @@ export class ShellChromeLayer implements Layer {
 
   paintParts(): Plane[] {
     const state = this.getState(), parts: Plane[] = [];
-    this.notificationEntries = [];
+    this.statusEntries = [];
+    this.bottomBar = this.layoutBottomBar(state);
     const statusInRow = statusInSwitcherRow(state.foregroundAppId);
     const canvas = new GrayImage(G2_LENS_WIDTH, G2_LENS_HEIGHT, 0);
     const span = topBarSpan(state);
@@ -532,7 +732,7 @@ export class ShellChromeLayer implements Layer {
     if (windowCount === 0) return null;
     const state = this.getState();
     const layout = switcherPosition() === "popup" ? popupLayout(windowCount, state)
-      : switcherLayout(windowCount, state.foregroundHeightMode, state.foregroundAppId, this.rowWindowsRight, this.scrollRow);
+      : switcherLayout(windowCount, state.foregroundHeightMode, state.foregroundAppId, this.bottomBar, this.scrollRow);
     const lastVisible = Math.min(windowCount, this.scrollRow + layout.visibleCount);
     for (let index = this.scrollRow; index < lastVisible; index++) {
       const cell = layout.cell(index - this.scrollRow);
@@ -543,22 +743,27 @@ export class ShellChromeLayer implements Layer {
     return null;
   }
 
-  /** Keys of the notifications whose icons the last paint drew, left to right. */
-  notificationKeys(): string[] {
-    return this.notificationEntries.map((entry) => entry.key);
+  /**
+   * The status bar items whose icons the last paint drew, in reading order:
+   * left to right, then a second row's. Notifications come before app
+   * widgets wherever the status bar is.
+   */
+  statusItems(): StatusItem[] {
+    return [...this.statusEntries].sort((a, b) => a.y - b.y || a.x - b.x).map(({ kind, key }) => ({ kind, key }));
   }
 
-  /** Which notification's icon is under (x, y) on screen, if any (mirror touches). */
-  notificationKeyAt(x: number, y: number): string | null {
-    const entry = this.notificationEntries.find((e) => x >= e.x && x < e.x + e.width && y >= e.y && y < e.y + e.height);
-    return entry?.key ?? null;
+  /** Which status bar item's icon is under (x, y) on screen, if any (mirror touches). */
+  statusItemAt(x: number, y: number): StatusItem | null {
+    const entry = this.statusEntries.find((e) => x >= e.x && x < e.x + e.width && y >= e.y && y < e.y + e.height);
+    return entry ? { kind: entry.kind, key: entry.key } : null;
   }
 
   /**
-   * Draw the switcher strip or row. Given `statusImage`, a bottom row shares
-   * its right end with the status bar, drawn there (into that image, which
-   * may be this one) first, and the window icons take what it leaves.
-   * Returns the status bar's left edge, or null without one.
+   * Draw the switcher strip or row. Given `statusImage`, a bottom switcher
+   * shares its right end with the status bar, drawn there (into that image,
+   * which may be this one) first, and the window icons take what it leaves
+   * (see planBottomBar). Returns the status bar's left edge, or null without
+   * one.
    */
   private drawSidebar(image: GrayImage, state: ShellChromeState, statusImage?: GrayImage): number | null {
     // A side strip aligns with the app's preferred band (legacy tall
@@ -571,18 +776,17 @@ export class ShellChromeLayer implements Layer {
     // windows off-screen before/after. Sidebar icons fill the column against
     // the separator top to bottom, then overflow into the outer one, so a
     // visible slot's column is decided by its position within the scrolled
-    // window.
+    // window; a bottom switcher's two rows likewise fill the top one first.
     const count = state.windows.length;
-    const statusLeft = statusImage && switcherPosition() === "bottom"
-      ? this.drawRowStatus(statusImage, state, strip, count) : null;
+    const bar = this.bottomBar;
+    const statusLeft = statusImage && bar?.statusRows.length ? this.drawRowStatus(statusImage, strip, bar) : null;
     const windowsRight = statusLeft === null ? strip.x + strip.width : statusLeft - ROW_STATUS_GAP;
-    this.rowWindowsRight = windowsRight;
-    const visibleCount = switcherLayout(count, state.foregroundHeightMode, state.foregroundAppId, windowsRight).visibleCount;
+    const visibleCount = switcherLayout(count, state.foregroundHeightMode, state.foregroundAppId, bar).visibleCount;
     // With the selection out on a notification, the windows stay scrolled as they were.
     this.scrollRow = state.selectedIndex >= 0
       ? scrollToKeepSelectionVisible(this.scrollRow, state.selectedIndex, visibleCount, count)
       : Math.min(this.scrollRow, Math.max(0, count - visibleCount));
-    const layout = switcherLayout(count, state.foregroundHeightMode, state.foregroundAppId, windowsRight, this.scrollRow);
+    const layout = switcherLayout(count, state.foregroundHeightMode, state.foregroundAppId, bar, this.scrollRow);
     const { iconSize, position } = layout;
     const lastVisible = Math.min(count, this.scrollRow + layout.visibleCount);
     const cellOf = (index: number) => layout.cell(index - this.scrollRow);
@@ -598,7 +802,7 @@ export class ShellChromeLayer implements Layer {
     const selCell = selVisible ? cellOf(state.selectedIndex) : null;
     drawSeparator(image, state, strip, selCell?.atSeparator ? selCell : null);
     const frame = position === "bottom" ? windowFrameRect(state) : null;
-    this.frameCornerSquare = !!frame && selCell?.x === frame.x;
+    this.frameCornerSquare = !!frame && !!selCell?.atSeparator && selCell.x === frame.x;
 
     for (let index = this.scrollRow; index < lastVisible; index++) {
       const window = state.windows[index]!;
@@ -628,13 +832,14 @@ export class ShellChromeLayer implements Layer {
     }
 
     if (position === "bottom") {
-      // Chevrons sit in the margins at either end of the icons, pointing off them.
-      const chevronY = strip.y + ((strip.height / 2) | 0);
+      // Chevrons sit in the margins at either end of the icons, pointing off
+      // them: before the first row's, and after the last row's.
+      const rowMiddle = (line: number) => strip.y + line * SWITCHER_ROW_HEIGHT + (SWITCHER_ROW_HEIGHT >> 1);
       if (this.scrollRow > 0) {
-        drawChevron(image, strip.x + 6, chevronY, "left");
+        drawChevron(image, strip.x + 6, rowMiddle(0), "left");
       }
       if (lastVisible < count) {
-        drawChevron(image, windowsRight - 6, chevronY, "right");
+        drawChevron(image, windowsRight - 6, rowMiddle((bar?.windowRows ?? 1) - 1), "right");
       }
       return statusLeft;
     }
@@ -652,39 +857,75 @@ export class ShellChromeLayer implements Layer {
   }
 
   /**
-   * The status bar at the right end of the switcher row, right to left:
-   * date and time, batteries, app widgets, then notification icons, each as
-   * it sits in the top bar (see ROW_STATUS_TOP). Notification icons stop
-   * short of room for a few window slots; the windows get the rest, and
-   * whatever they leave over is free space between the two. Returns the
-   * left edge of what it drew.
+   * Lay out the bottom switcher for this paint (planBottomBar) under the
+   * foreground window, with the status bar's items when it shares the
+   * switcher, and record its height in geometry.ts, telling the shell when
+   * that moves or resizes windows. Null for the other switcher positions.
    */
-  private drawRowStatus(image: GrayImage, state: ShellChromeState, row: Rect, windowCount: number): number {
-    image.fillRect(row.x, row.y + 1, row.width, row.height - 1, SHELL_OPAQUE_BLACK);
-    const top = row.y + ROW_STATUS_TOP;
-    const font = getDefaultMediumFont();
-    const clock = clockText();
-    // A TTF face measures fractionally; the status surface's crop edges need whole pixels.
-    const clockX = row.x + row.width - Math.ceil(font.measureText(clock));
-    image.drawText(font, clockX, top + Math.max(0, ((TOP_BAR_HEIGHT - font.lineHeight) / 2) | 0), clock, 210);
-    // The battery block keeps its usual right margin inside the edge it's given.
-    const batteryLeft = this.drawTopBarBatteries(image, state, top, clockX - ROW_CLOCK_GAP + BATTERY_BLOCK_RIGHT_MARGIN);
-    const trayLeft = drawTrayIcons(image, state.trayIcons, batteryLeft, top);
+  private layoutBottomBar(state: ShellChromeState): BottomBarPlan<RowStatusItem> | null {
+    if (switcherPosition() !== "bottom") return null;
+    const appId = state.foregroundAppId;
+    const status = statusInSwitcherRow(appId) ? this.rowStatusItems(state) : [];
+    const plan = planBottomBar(switcherRect(state.foregroundHeightMode, appId).width, state.windows.length, status);
+    if (setSwitcherBarHeight(plan.height, appId)) this.onBottomBarHeightChanged();
+    return plan;
+  }
 
-    // Right-aligned against the widgets, with the top bar's spacing.
-    const slots = Math.min(windowCount, ROW_MIN_WINDOW_SLOTS);
-    const windowsFloor = row.x + 2 * LIST_MARGIN + Math.max(0, slots * ROW_STEP - ICON_SPACING) + ROW_STATUS_GAP;
-    const iconsRight = trayLeft - 8, step = NOTIFICATION_ICON_STEP;
-    const maxIcons = Math.max(0, ((iconsRight - windowsFloor + 4) / step) | 0);
-    if (maxIcons === 0) return trayLeft;
-    const { icons, keys, stale } = readActiveNotificationIcons(maxIcons, renderPassAllowsStaleData());
+  /**
+   * The status bar's items for the bottom switcher, left to right: every
+   * notification icon, the app widgets, the battery block, and the date and
+   * time, each to draw as it sits in the top bar.
+   */
+  private rowStatusItems(state: ShellChromeState): RowStatusItem[] {
+    const items: RowStatusItem[] = [];
+    const { icons, keys, stale } = readActiveNotificationIcons(ALL_NOTIFICATIONS, renderPassAllowsStaleData());
     if (stale) {
       noteStaleDataUsed();
     }
-    if (!icons.length) return trayLeft;
-    const iconsLeft = iconsRight - icons.length * step + 4;
-    this.drawNotificationIcons(image, state, icons, keys, iconsLeft, top + (((TOP_BAR_HEIGHT - NOTIFICATION_ICON_SIZE) / 2) | 0));
-    return iconsLeft;
+    icons.forEach((icon, index) => items.push({
+      kind: "notification", width: NOTIFICATION_ICON_SIZE,
+      draw: (image, x, top) => this.drawStatusIcon(image, state, notificationItem(keys[index]), icon, x, top),
+    }));
+    for (const tray of state.trayIcons) {
+      items.push({ kind: "tray", width: tray.icon.width, draw: (image, x, top) => this.drawTrayIcon(image, state, tray, x, top) });
+    }
+    const batteries = batteryItems(state);
+    if (batteries.length) {
+      // Measured by drawing it: each battery style lays itself out as it draws.
+      const scratch = new GrayImage(G2_LENS_WIDTH, TOP_BAR_HEIGHT, 0);
+      const width = G2_LENS_WIDTH - BATTERY_BLOCK_RIGHT_MARGIN - drawBatteryBlock(scratch, batteries, 0, G2_LENS_WIDTH);
+      // The block keeps its usual right margin inside the edge it's given.
+      items.push({ kind: "batteries", width,
+        draw: (image, x, top) => drawBatteryBlock(image, batteries, top, x + width + BATTERY_BLOCK_RIGHT_MARGIN) });
+    }
+    const font = getDefaultMediumFont();
+    const clock = clockText();
+    // A TTF face measures fractionally; the status surface's crop edges need whole pixels.
+    items.push({ kind: "clock", width: Math.ceil(font.measureText(clock)),
+      draw: (image, x, top) => image.drawText(font, x, top + Math.max(0, ((TOP_BAR_HEIGHT - font.lineHeight) / 2) | 0), clock, 210) });
+    return items;
+  }
+
+  /**
+   * The status bar at the right end of the bottom switcher: its rows as
+   * planned (planBottomBar), each right-aligned against the switcher's end,
+   * the first row ROW_STATUS_TOP under its top. Whatever the windows leave
+   * over is free space between the two. Returns the left edge of the widest
+   * row.
+   */
+  private drawRowStatus(image: GrayImage, row: Rect, bar: BottomBarPlan<RowStatusItem>): number {
+    image.fillRect(row.x, row.y + 1, row.width, row.height - 1, SHELL_OPAQUE_BLACK);
+    const right = row.x + row.width;
+    bar.statusRows.forEach((items, line) => {
+      const top = row.y + ROW_STATUS_TOP + line * bar.statusPitch;
+      let x = right - statusRowWidth(items);
+      items.forEach((item, index) => {
+        if (index > 0) x += statusGap(items[index - 1]!, item);
+        item.draw(image, x, top);
+        x += item.width;
+      });
+    });
+    return right - bar.statusWidth;
   }
 
   /**
@@ -742,7 +983,7 @@ export class ShellChromeLayer implements Layer {
     // edge of the foreground window's band, wherever its height mode puts
     // that (screen top for max height). It moves when the foreground
     // switches to a window of a different height. It spans the app viewport;
-    // with a side strip overlaid (full-panel mode, sidebar focused) it still
+    // with a side strip overlaid (an immersive window, sidebar focused) it still
     // stops at the strip.
     const { left: barLeft, right: barRight } = bar;
     image.fillRect(barLeft, bar.top, barRight - barLeft, TOP_BAR_HEIGHT, SHELL_OPAQUE_BLACK);
@@ -757,117 +998,145 @@ export class ShellChromeLayer implements Layer {
     const textY = barTop + Math.max(0, ((TOP_BAR_HEIGHT - font.lineHeight) / 2) | 0);
     image.drawText(font, clockX, textY, clock, 210);
 
-    const batteryLeft = this.drawTopBarBatteries(image, state, barTop, barRight);
-    const trayLeft = drawTrayIcons(image, state.trayIcons, batteryLeft, barTop);
+    const batteryLeft = drawBatteryBlock(image, batteryItems(state), barTop, barRight);
+    const trayLeft = this.drawTrayIcons(image, state, batteryLeft, barTop);
 
     const iconsX = clockX + Math.ceil(font.measureText(clock)) + 16;
-    const maxIcons = Math.max(0, ((trayLeft - 8 - iconsX) / NOTIFICATION_ICON_STEP) | 0);
+    const maxIcons = Math.max(0, ((trayLeft - NOTIFICATIONS_GAP - iconsX) / NOTIFICATION_ICON_STEP) | 0);
     if (maxIcons > 0) {
       const { icons, keys, stale } = readActiveNotificationIcons(maxIcons, renderPassAllowsStaleData());
       if (stale) {
         noteStaleDataUsed();
       }
-      this.drawNotificationIcons(image, state, icons, keys, iconsX, barTop + (((TOP_BAR_HEIGHT - NOTIFICATION_ICON_SIZE) / 2) | 0));
-    }
-  }
-
-  /**
-   * Draw the notification icons left to right from `left`, noting each as a
-   * notification entry. The one the switcher's selection is on
-   * (state.selectedNotificationKey) sits in a rounded box like a sidebar
-   * overflow icon's: filled, with the icon inverted, while the switcher has
-   * focus, and outlined while its detail view in the foreground window has.
-   */
-  private drawNotificationIcons(image: GrayImage, state: ShellChromeState, icons: GrayImage[], keys: string[], left: number, iconY: number): void {
-    for (let index = 0; index < icons.length; index++) {
-      const x = left + index * NOTIFICATION_ICON_STEP;
-      const key = keys[index];
-      const box = {
-        x: x - NOTIFICATION_BOX_MARGIN_X, y: iconY - NOTIFICATION_BOX_MARGIN_Y,
-        width: NOTIFICATION_ICON_SIZE + 2 * NOTIFICATION_BOX_MARGIN_X, height: NOTIFICATION_ICON_SIZE + 2 * NOTIFICATION_BOX_MARGIN_Y,
-      };
-      if (key) this.notificationEntries.push({ key, ...box });
-      const selected = !!key && key === state.selectedNotificationKey;
-      const focused = selected && state.focus === "sidebar";
-      if (selected) drawSelectionBox(image, box.x, box.y, box.width, box.height, focused);
-      image.drawImage(focused ? invertedIcon(icons[index]!) : icons[index]!, x, iconY);
-    }
-  }
-
-  /**
-   * Labelled battery indicators for the phone, Wear OS watch, G2, and R1,
-   * right-aligned in the top bar. The watch one exists only while a watch
-   * running the Faceclaw watch app is reachable (no placeholder otherwise).
-   * The Settings > Customization > Battery indicators submenu picks the
-   * style (label beside a gauge icon or percentage, stacked above either, or
-   * dense: device icons beside gauges, two per column) and, per device,
-   * whether the indicator shows always, only below 50%, or never. `barRight`
-   * is the bar's right edge (short of a right-hand sidebar). Returns the left
-   * edge of the battery block.
-   */
-  private drawTopBarBatteries(image: GrayImage, state: ShellChromeState, barTop: number, barRight: number): number {
-    const mode = batteryDisplayModeSetting.get();
-    const items: BatteryItem[] = [];
-    const phone = readPhoneBatteryState();
-    if (phone.battery !== null && Number.isFinite(phone.battery)) {
-      pushBatteryItem(items, phoneBatteryVisibilitySetting.get(), "Phone", "phone", phone.battery, Boolean(phone.charging));
-    }
-    if (state.battery.watch !== null && Number.isFinite(state.battery.watch)) {
-      pushBatteryItem(items, watchBatteryVisibilitySetting.get(), "Watch", "watch", state.battery.watch,
-        Boolean(state.battery.watchCharging));
-    }
-    if (state.battery.headset !== null && Number.isFinite(state.battery.headset)) {
-      pushBatteryItem(items, glassesBatteryVisibilitySetting.get(), "G2", "glasses", state.battery.headset,
-        Boolean(state.battery.headsetCharging));
-    }
-    if (state.battery.ring !== null && Number.isInteger(state.battery.ring)
-        && state.battery.ring >= 0 && state.battery.ring <= 100) {
-      pushBatteryItem(items, ringBatteryVisibilitySetting.get(), "R1", "ring", state.battery.ring,
-        Boolean(state.battery.ringCharging));
-    }
-    if (!items.length) return barRight;
-    if (mode === "stacked" || mode === "stacked-percentage") {
-      return drawStackedBatteries(image, items, barTop, barRight, mode === "stacked-percentage");
-    }
-    if (mode === "dense") {
-      return drawDenseBatteries(image, items, barRight - BATTERY_BLOCK_RIGHT_MARGIN, barTop + DENSE_TOP);
-    }
-
-    const font = getDefaultSmallFont();
-    const percentageMode = mode === "percentage";
-    const labelGap = 5;
-    const itemGap = 12;
-    const textY = barTop + Math.max(0, ((TOP_BAR_HEIGHT - font.lineHeight) / 2) | 0);
-    let x = barRight - BATTERY_BLOCK_RIGHT_MARGIN;
-    for (let index = items.length - 1; index >= 0; index--) {
-      const item = items[index]!;
-      const percentText = `${item.percent}%`;
-      const valueWidth = percentageMode ? Math.ceil(font.measureText(percentText)) : BATTERY_ICON_WIDTH;
-      const labelWidth = Math.ceil(font.measureText(item.label));
-      x -= labelWidth + labelGap + valueWidth;
-      image.drawText(font, x, textY, item.label, BATTERY_LABEL_VALUE);
-      const valueX = x + labelWidth + labelGap;
-      if (percentageMode) {
-        if (item.charging) {
-          // Inverted text marks charging, matching the dashboard card.
-          image.fillRect(valueX - 2, textY - 1, valueWidth + 4, font.lineHeight + 2, 255);
-          image.drawText(font, valueX, textY, percentText, 1);
-        } else {
-          image.drawText(font, valueX, textY, percentText, 200);
-        }
-      } else {
-        const icon = drawBattery(item.percent, item.charging);
-        image.bitBlt(icon, valueX, barTop + Math.max(0, ((TOP_BAR_HEIGHT - icon.height) / 2) | 0), {
-          transparentZero: true,
-        });
+      for (let index = 0; index < icons.length; index++) {
+        this.drawStatusIcon(image, state, notificationItem(keys[index]), icons[index]!, iconsX + index * NOTIFICATION_ICON_STEP, barTop);
       }
-      x -= itemGap;
     }
-    return x + itemGap;
+  }
+
+  /**
+   * Draw app tray icons right-to-left, ending just left of the battery
+   * block; returns the left edge of the tray region.
+   */
+  private drawTrayIcons(image: GrayImage, state: ShellChromeState, rightEdge: number, barTop: number): number {
+    let x = rightEdge;
+    for (let index = state.trayIcons.length - 1; index >= 0; index--) {
+      const tray = state.trayIcons[index]!;
+      x -= tray.icon.width + TRAY_ICON_GAP;
+      this.drawTrayIcon(image, state, tray, x, barTop);
+    }
+    return x;
+  }
+
+  /** Draw an app tray icon (an app widget's) with its left edge at x, as drawStatusIcon does. */
+  private drawTrayIcon(image: GrayImage, state: ShellChromeState, tray: ShellChromeTrayIcon, x: number, barTop: number): void {
+    this.drawStatusIcon(image, state, { kind: "widget", key: tray.ownerId }, tray.icon, x, barTop);
+  }
+
+  /**
+   * Draw a status bar item's icon with its left edge at x, centred in the
+   * top bar's layout from `barTop`, noting it as a status entry (unless
+   * `item` is null). The one the switcher's selection is on
+   * (state.selectedStatusItem) sits in a rounded box like a sidebar
+   * overflow icon's: filled, with the icon inverted, while the switcher has
+   * focus, and outlined while its window has. The box is a notification
+   * icon's height whatever the icon's, clear of the top bar's divider.
+   */
+  private drawStatusIcon(image: GrayImage, state: ShellChromeState, item: StatusItem | null, icon: GrayImage, x: number, barTop: number): void {
+    const iconY = barTop + Math.max(0, ((TOP_BAR_HEIGHT - icon.height) / 2) | 0);
+    const box = {
+      x: x - NOTIFICATION_BOX_MARGIN_X, y: barTop + NOTIFICATION_ICON_TOP - NOTIFICATION_BOX_MARGIN_Y,
+      width: icon.width + 2 * NOTIFICATION_BOX_MARGIN_X, height: NOTIFICATION_ICON_SIZE + 2 * NOTIFICATION_BOX_MARGIN_Y,
+    };
+    if (item) this.statusEntries.push({ ...item, ...box });
+    const selected = sameStatusItem(item, state.selectedStatusItem);
+    const focused = selected && state.focus === "sidebar";
+    if (selected) drawSelectionBox(image, box.x, box.y, box.width, box.height, focused);
+    image.drawImage(focused ? invertedIcon(icon) : icon, x, iconY);
   }
 }
 
 type BatteryItem = { label: string; device: BatteryDevice; percent: number; charging: boolean };
+
+/**
+ * Labelled battery indicators for the phone, Wear OS watch, G2, and R1. The
+ * watch one exists only while a watch running the Faceclaw watch app is
+ * reachable (no placeholder otherwise). The Settings > Customization >
+ * Battery indicators submenu picks, per device, whether the indicator shows
+ * always, only below 50%, or never.
+ */
+function batteryItems(state: ShellChromeState): BatteryItem[] {
+  const items: BatteryItem[] = [];
+  const phone = readPhoneBatteryState();
+  if (phone.battery !== null && Number.isFinite(phone.battery)) {
+    pushBatteryItem(items, phoneBatteryVisibilitySetting.get(), "Phone", "phone", phone.battery, Boolean(phone.charging));
+  }
+  if (state.battery.watch !== null && Number.isFinite(state.battery.watch)) {
+    pushBatteryItem(items, watchBatteryVisibilitySetting.get(), "Watch", "watch", state.battery.watch,
+      Boolean(state.battery.watchCharging));
+  }
+  if (state.battery.headset !== null && Number.isFinite(state.battery.headset)) {
+    pushBatteryItem(items, glassesBatteryVisibilitySetting.get(), "G2", "glasses", state.battery.headset,
+      Boolean(state.battery.headsetCharging));
+  }
+  if (state.battery.ring !== null && Number.isInteger(state.battery.ring)
+      && state.battery.ring >= 0 && state.battery.ring <= 100) {
+    pushBatteryItem(items, ringBatteryVisibilitySetting.get(), "R1", "ring", state.battery.ring,
+      Boolean(state.battery.ringCharging));
+  }
+  return items;
+}
+
+/**
+ * The battery indicators (batteryItems), right-aligned in the top bar's
+ * layout from `barTop`, in the style the Battery indicators submenu picks:
+ * label beside a gauge icon or percentage, stacked above either, or dense
+ * (device icons beside gauges, two per column). `barRight` is the bar's
+ * right edge (short of a right-hand sidebar). Returns the left edge of the
+ * battery block, or `barRight` with no indicators.
+ */
+function drawBatteryBlock(image: GrayImage, items: BatteryItem[], barTop: number, barRight: number): number {
+  const mode = batteryDisplayModeSetting.get();
+  if (!items.length) return barRight;
+  if (mode === "stacked" || mode === "stacked-percentage") {
+    return drawStackedBatteries(image, items, barTop, barRight, mode === "stacked-percentage");
+  }
+  if (mode === "dense") {
+    return drawDenseBatteries(image, items, barRight - BATTERY_BLOCK_RIGHT_MARGIN, barTop + DENSE_TOP);
+  }
+
+  const font = getDefaultSmallFont();
+  const percentageMode = mode === "percentage";
+  const labelGap = 5;
+  const itemGap = 12;
+  const textY = barTop + Math.max(0, ((TOP_BAR_HEIGHT - font.lineHeight) / 2) | 0);
+  let x = barRight - BATTERY_BLOCK_RIGHT_MARGIN;
+  for (let index = items.length - 1; index >= 0; index--) {
+    const item = items[index]!;
+    const percentText = `${item.percent}%`;
+    const valueWidth = percentageMode ? Math.ceil(font.measureText(percentText)) : BATTERY_ICON_WIDTH;
+    const labelWidth = Math.ceil(font.measureText(item.label));
+    x -= labelWidth + labelGap + valueWidth;
+    image.drawText(font, x, textY, item.label, BATTERY_LABEL_VALUE);
+    const valueX = x + labelWidth + labelGap;
+    if (percentageMode) {
+      if (item.charging) {
+        // Inverted text marks charging, matching the dashboard card.
+        image.fillRect(valueX - 2, textY - 1, valueWidth + 4, font.lineHeight + 2, 255);
+        image.drawText(font, valueX, textY, percentText, 1);
+      } else {
+        image.drawText(font, valueX, textY, percentText, 200);
+      }
+    } else {
+      const icon = drawBattery(item.percent, item.charging);
+      image.bitBlt(icon, valueX, barTop + Math.max(0, ((TOP_BAR_HEIGHT - icon.height) / 2) | 0), {
+        transparentZero: true,
+      });
+    }
+    x -= itemGap;
+  }
+  return x + itemGap;
+}
 
 /** The status bar's date and time. */
 function clockText(): string {
@@ -999,20 +1268,6 @@ function drawAmbientCards(image: GrayImage, right: number, parts?: Plane[]): voi
   }
 }
 
-/**
- * Draw app tray icons right-to-left, ending just left of the battery block;
- * returns the left edge of the tray region.
- */
-function drawTrayIcons(image: GrayImage, trayIcons: GrayImage[], rightEdge: number, barTop: number): number {
-  let x = rightEdge;
-  for (let index = trayIcons.length - 1; index >= 0; index--) {
-    const icon = trayIcons[index]!;
-    x -= icon.width + 10;
-    image.drawImage(icon, x, barTop + Math.max(0, ((TOP_BAR_HEIGHT - icon.height) / 2) | 0));
-  }
-  return x;
-}
-
 /** The sidebar attention marker, cached per fill value (deferred-image source). */
 const attentionDots = new Map<number, GrayImage>();
 function attentionDot(value: number): GrayImage {
@@ -1027,8 +1282,13 @@ function attentionDot(value: number): GrayImage {
 
 type Rect = { x: number; y: number; width: number; height: number };
 
-/** A notification icon as drawn: its notification's key, and its selection box. */
-type NotificationEntry = Rect & { key: string };
+/** A status bar item's icon as drawn: the item, and its selection box. */
+type StatusEntry = Rect & StatusItem;
+
+/** A notification's status item, if its icon came with a key. */
+function notificationItem(key: string | undefined): StatusItem | null {
+  return key ? { kind: "notification", key } : null;
+}
 
 /** Corner radius of the foreground window's frame. */
 const FRAME_RADIUS = 8;

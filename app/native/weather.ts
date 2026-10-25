@@ -1,10 +1,21 @@
 import { hasLocationPermission } from "./location-permissions";
 import { getCurrentLocation, type CurrentLocation } from "./location";
+import { type Place } from "./location-types";
+import { reverseGeocode } from "./reverse-geocode";
 import { getStringSetting, setStringSetting } from "./settings-store";
 import { fetchWithUserAgent } from "../util/http";
 import { USER_AGENT } from "../version";
 
 export type WeatherPhase = "permission-required" | "locating" | "loading" | "ready" | "error";
+
+/** National Weather Service in the US, Open-Meteo everywhere else. */
+export type WeatherSource = "nws" | "open-meteo";
+
+/** Short source names for the Weather app's credit line. */
+export const WEATHER_SOURCE_NAMES: Record<WeatherSource, string> = {
+  nws: "NWS",
+  "open-meteo": "Open-Meteo",
+};
 
 /** Sky and precipitation state, as coarse as the icons that show it. */
 export type WeatherCondition =
@@ -48,6 +59,8 @@ export type ForecastPeriod = {
 export type WeatherState = {
   phase: WeatherPhase;
   status: string;
+  /** Where current and forecast came from; null until the first refresh. */
+  source: WeatherSource | null;
   locationName: string;
   current: CurrentWeather | null;
   forecast: ForecastPeriod[];
@@ -106,12 +119,56 @@ type NwsMeasure = {
   unitCode?: unknown;
 };
 
+type OpenMeteoResponse = {
+  utc_offset_seconds?: unknown;
+  current?: {
+    time?: unknown;
+    temperature_2m?: unknown;
+    relative_humidity_2m?: unknown;
+    is_day?: unknown;
+    weather_code?: unknown;
+    wind_speed_10m?: unknown;
+    wind_direction_10m?: unknown;
+  };
+  hourly?: {
+    time?: unknown;
+    temperature_2m?: unknown;
+    precipitation_probability?: unknown;
+    weather_code?: unknown;
+    wind_speed_10m?: unknown;
+    wind_direction_10m?: unknown;
+  };
+};
+
+type LoadedWeather = {
+  source: WeatherSource;
+  locationName: string;
+  current: CurrentWeather;
+  forecast: ForecastPeriod[];
+};
+
 const NWS_API_ROOT = "https://api.weather.gov";
 const NWS_HEADERS = {
   Accept: "application/geo+json",
   // NWS asks callers to identify themselves with a contact address.
   "User-Agent": `${USER_AGENT} (https://github.com/jimrandomh/faceclaw)`,
 };
+// Free for non-commercial use without a key; data is CC BY 4.0, credited
+// on the Weather app's source line and in ACKNOWLEDGEMENTS.md.
+const OPEN_METEO_FORECAST_URL = "https://api.open-meteo.com/v1/forecast";
+/**
+ * Days of hourly forecast to ask Open-Meteo for, from local midnight today:
+ * enough that MAX_FORECAST_PERIODS periods from any hour end before it does.
+ */
+const OPEN_METEO_FORECAST_DAYS = 8;
+/** Local hours Open-Meteo forecast days and nights start at, as NWS periods do. */
+const DAY_START_HOUR = 6;
+const NIGHT_START_HOUR = 18;
+/** How long a place-name lookup may hold up an Open-Meteo refresh. */
+const GEOCODE_TIMEOUT_MS = 10_000;
+const HOUR_MS = 60 * 60 * 1000;
+const DAY_MS = 24 * HOUR_MS;
+const WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 /** Refresh period while the Weather app is open. */
 const APP_REFRESH_MS = 30 * 60 * 1000;
 /** Refresh period for the status-bar and system-card indicators. */
@@ -127,6 +184,7 @@ const CACHE_VERSION = 1;
 const DEFAULT_STATE: WeatherState = {
   phase: "permission-required",
   status: "Location permission is required for local weather.",
+  source: null,
   locationName: "",
   current: null,
   forecast: [],
@@ -135,6 +193,8 @@ const DEFAULT_STATE: WeatherState = {
 
 type WeatherCache = {
   version: number;
+  /** Absent from caches written before Open-Meteo, which all came from NWS. */
+  source?: WeatherSource;
   locationName: string;
   current: CurrentWeather | null;
   forecast: ForecastPeriod[];
@@ -262,12 +322,13 @@ export class WeatherBridge {
       this.emit();
       const location = await getCurrentLocation();
 
-      this.state = { ...this.state, phase: "loading", status: "Loading National Weather Service data..." };
+      this.state = { ...this.state, phase: "loading", status: "Loading weather..." };
       this.emit();
-      const weather = await loadNwsWeather(location);
+      const weather = await loadWeather(location);
       this.state = {
         phase: "ready",
         status: "Weather updated.",
+        source: weather.source,
         locationName: weather.locationName,
         current: weather.current,
         forecast: weather.forecast,
@@ -311,6 +372,7 @@ function loadCachedState(): WeatherState {
     return cloneState({
       phase: "ready",
       status: "Weather updated.",
+      source: cache.source === "open-meteo" ? "open-meteo" : "nws",
       locationName: typeof cache.locationName === "string" ? cache.locationName : "",
       current: cache.current && typeof cache.current === "object" ? cache.current : null,
       forecast: cache.forecast,
@@ -326,6 +388,7 @@ function saveCachedState(state: WeatherState): void {
   if (state.lastUpdatedMs === null) return;
   const cache: WeatherCache = {
     version: CACHE_VERSION,
+    source: state.source ?? undefined,
     locationName: state.locationName,
     current: state.current,
     forecast: state.forecast,
@@ -338,15 +401,23 @@ function saveCachedState(state: WeatherState): void {
   }
 }
 
-async function loadNwsWeather(location: CurrentLocation): Promise<{
-  locationName: string;
-  current: CurrentWeather;
-  forecast: ForecastPeriod[];
-}> {
+/** NWS where it has coverage (the US and its territories), Open-Meteo everywhere else. */
+async function loadWeather(location: CurrentLocation): Promise<LoadedWeather> {
+  return (await loadNwsWeather(location)) ?? loadOpenMeteoWeather(location);
+}
+
+/** NWS weather, or null when the location is outside its coverage. */
+async function loadNwsWeather(location: CurrentLocation): Promise<LoadedWeather | null> {
   // NWS recommends no more than four decimals for its point lookup.
   const latitude = location.latitude.toFixed(4);
   const longitude = location.longitude.toFixed(4);
-  const point = await fetchNwsJson<NwsPointResponse>(`${NWS_API_ROOT}/points/${latitude},${longitude}`);
+  let point: NwsPointResponse;
+  try {
+    point = await fetchNwsJson<NwsPointResponse>(`${NWS_API_ROOT}/points/${latitude},${longitude}`);
+  } catch (error) {
+    if (error instanceof WeatherHttpError && error.status === 404) return null;
+    throw error;
+  }
   const properties = point.properties;
   const forecastUrl = stringValue(properties?.forecast);
   const hourlyUrl = stringValue(properties?.forecastHourly);
@@ -369,6 +440,7 @@ async function loadNwsWeather(location: CurrentLocation): Promise<{
     .find((period): period is ForecastPeriod => period !== null);
 
   return {
+    source: "nws",
     locationName: pointLocationName(point, latitude, longitude),
     current: observation ? normalizeObservation(observation, hourly) : currentFromHourly(hourly, forecast[0]!),
     forecast,
@@ -382,20 +454,26 @@ async function loadLatestObservation(stationsUrl: string): Promise<NwsObservatio
   return fetchNwsJson<NwsObservationResponse>(`${stationUrl}/observations/latest`);
 }
 
-async function fetchNwsJson<T>(url: string): Promise<T> {
-  const request = fetchWithUserAgent(url, { headers: NWS_HEADERS });
+function fetchNwsJson<T>(url: string): Promise<T> {
+  return fetchWeatherJson<T>(url, "National Weather Service", NWS_HEADERS);
+}
+
+/** A weather request the server answered with an error status. */
+class WeatherHttpError extends Error {
+  constructor(sourceName: string, readonly status: number) {
+    super(`${sourceName} request failed (HTTP ${status}).`);
+  }
+}
+
+async function fetchWeatherJson<T>(url: string, sourceName: string, headers?: Record<string, string>): Promise<T> {
+  const request = fetchWithUserAgent(url, headers ? { headers } : undefined);
   let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
   const timeout = new Promise<never>((_resolve, reject) => {
     timeoutHandle = setTimeout(() => reject(new Error("Weather request timed out.")), FETCH_TIMEOUT_MS);
   });
   try {
     const response = await Promise.race([request, timeout]);
-    if (!response.ok) {
-      if (response.status === 404 && url.includes("/points/")) {
-        throw new Error("This location is outside National Weather Service coverage.");
-      }
-      throw new Error(`National Weather Service request failed (HTTP ${response.status}).`);
-    }
+    if (!response.ok) throw new WeatherHttpError(sourceName, response.status);
     return (await response.json()) as T;
   } finally {
     if (timeoutHandle) clearTimeout(timeoutHandle);
@@ -526,6 +604,193 @@ function conditionFromText(text: string): WeatherCondition | null {
   return null;
 }
 
+async function loadOpenMeteoWeather(location: CurrentLocation): Promise<LoadedWeather> {
+  const latitude = location.latitude.toFixed(4);
+  const longitude = location.longitude.toFixed(4);
+  const query = [
+    `latitude=${latitude}`,
+    `longitude=${longitude}`,
+    "current=temperature_2m,relative_humidity_2m,is_day,weather_code,wind_speed_10m,wind_direction_10m",
+    "hourly=temperature_2m,precipitation_probability,weather_code,wind_speed_10m,wind_direction_10m",
+    `forecast_days=${OPEN_METEO_FORECAST_DAYS}`,
+    // Local-time periods need the location's UTC offset, which timezone=auto adds.
+    "timezone=auto",
+    "timeformat=unixtime",
+    "temperature_unit=fahrenheit",
+    "wind_speed_unit=mph",
+  ].join("&");
+  const [response, placeName] = await Promise.all([
+    fetchWeatherJson<OpenMeteoResponse>(`${OPEN_METEO_FORECAST_URL}?${query}`, "Open-Meteo"),
+    lookUpPlaceName(location),
+  ]);
+  const forecast = openMeteoForecastPeriods(response, Date.now()).slice(0, MAX_FORECAST_PERIODS);
+  if (!forecast.length) throw new Error("Open-Meteo returned an empty forecast.");
+  return {
+    source: "open-meteo",
+    locationName: placeName || `${latitude}, ${longitude}`,
+    current: normalizeOpenMeteoCurrent(response) ?? currentFromHourly(undefined, forecast[0]!),
+    forecast,
+  };
+}
+
+/** Open-Meteo's current conditions, which come from its forecast models rather than a station. */
+function normalizeOpenMeteoCurrent(response: OpenMeteoResponse): CurrentWeather | null {
+  const current = response.current;
+  if (!current || typeof current !== "object") return null;
+  const wmo = wmoCode(finiteNumber(current.weather_code));
+  const windDegrees = finiteNumber(current.wind_direction_10m);
+  const time = finiteNumber(current.time);
+  const isDay = finiteNumber(current.is_day);
+  return {
+    temperatureF: finiteNumber(current.temperature_2m),
+    description: wmo?.description ?? "Current conditions",
+    humidityPercent: finiteNumber(current.relative_humidity_2m),
+    windSpeedMph: finiteNumber(current.wind_speed_10m),
+    windDirection: windDegrees === null ? "" : degreesToCompass(windDegrees),
+    timestampMs: time === null ? null : time * 1000,
+    observed: false,
+    condition: wmo?.condition ?? null,
+    isDaytime: isDay === null ? isLocalDaytime() : isDay === 1,
+  };
+}
+
+/**
+ * NWS-style day (6am-6pm) and night periods from Open-Meteo's hourly
+ * forecast, in the location's local time: each has its warmest daytime or
+ * coolest nighttime temperature, its highest chance of rain, and the weather
+ * from periodWeatherCode. The current period counts only the hours left in
+ * it. Local time uses today's UTC offset, so periods after a DST change are
+ * an hour off.
+ */
+function openMeteoForecastPeriods(response: OpenMeteoResponse, nowMs: number): ForecastPeriod[] {
+  const hourly = response.hourly;
+  const times = numberArray(hourly?.time);
+  const temperatures = numberArray(hourly?.temperature_2m);
+  const precipitation = numberArray(hourly?.precipitation_probability);
+  const codes = numberArray(hourly?.weather_code);
+  const windSpeeds = numberArray(hourly?.wind_speed_10m);
+  const windDirections = numberArray(hourly?.wind_direction_10m);
+  const offsetMs = (finiteNumber(response.utc_offset_seconds) ?? 0) * 1000;
+  const todayIndex = Math.floor((nowMs + offsetMs) / DAY_MS);
+
+  // The hourly indexes of each period still to come, in order.
+  const groups: Array<{ dayIndex: number; isDaytime: boolean; hours: number[] }> = [];
+  times.forEach((time, index) => {
+    if (time === null || time * 1000 + HOUR_MS <= nowMs) return;
+    const localMs = time * 1000 + offsetMs;
+    const hour = new Date(localMs).getUTCHours();
+    const isDaytime = hour >= DAY_START_HOUR && hour < NIGHT_START_HOUR;
+    // A night belongs to the date it starts on.
+    const dayIndex = Math.floor(localMs / DAY_MS) - (hour < DAY_START_HOUR ? 1 : 0);
+    const last = groups[groups.length - 1];
+    if (last && last.dayIndex === dayIndex && last.isDaytime === isDaytime) last.hours.push(index);
+    else groups.push({ dayIndex, isDaytime, hours: [index] });
+  });
+
+  return groups.map(({ dayIndex, isDaytime, hours }) => {
+    const during = (values: Array<number | null>) => hours.map((index) => values[index] ?? null);
+    const wmo = wmoCode(periodWeatherCode(during(codes)));
+    const speeds = during(windSpeeds);
+    const windiest = maxValue(speeds);
+    const windDegrees = windiest === null ? null : windDirections[hours[speeds.indexOf(windiest)]!] ?? null;
+    return {
+      name: openMeteoPeriodName(dayIndex, isDaytime, todayIndex),
+      startTimeMs: times[hours[0]!]! * 1000,
+      temperatureF: isDaytime ? maxValue(during(temperatures)) : minValue(during(temperatures)),
+      shortForecast: wmo?.description ?? "",
+      detailedForecast: "",
+      precipitationPercent: maxValue(during(precipitation)),
+      windSpeed: windiest === null ? "" : `${Math.round(windiest)} mph`,
+      windDirection: windDegrees === null ? "" : degreesToCompass(windDegrees),
+      isDaytime,
+      condition: wmo?.condition ?? null,
+    };
+  });
+}
+
+/**
+ * The most severe weather code that lasts at least two hours of a period (or
+ * its only hour), so one stray hour of drizzle doesn't name it. WMO codes
+ * rise with severity, as Open-Meteo's own daily summaries assume.
+ */
+function periodWeatherCode(codes: Array<number | null>): number | null {
+  const known = codes.filter((code): code is number => code !== null).sort((a, b) => b - a);
+  return known.length ? known[Math.min(1, known.length - 1)]! : null;
+}
+
+/** "Today", "Tonight", "Friday", "Friday Night", or "Overnight" for last night's remainder. */
+function openMeteoPeriodName(dayIndex: number, isDaytime: boolean, todayIndex: number): string {
+  if (dayIndex < todayIndex) return "Overnight";
+  if (dayIndex === todayIndex) return isDaytime ? "Today" : "Tonight";
+  const weekday = WEEKDAYS[new Date(dayIndex * DAY_MS).getUTCDay()]!;
+  return isDaytime ? weekday : `${weekday} Night`;
+}
+
+// WMO weather interpretation codes, as Open-Meteo reports them
+// (https://open-meteo.com/en/docs#weather_variable_documentation).
+const WMO_CODES: Record<number, { description: string; condition: WeatherCondition }> = {
+  0: { description: "Clear", condition: "clear" },
+  1: { description: "Mostly Clear", condition: "partly-cloudy" },
+  2: { description: "Partly Cloudy", condition: "partly-cloudy" },
+  3: { description: "Overcast", condition: "cloudy" },
+  45: { description: "Fog", condition: "fog" },
+  48: { description: "Freezing Fog", condition: "fog" },
+  51: { description: "Light Drizzle", condition: "drizzle" },
+  53: { description: "Drizzle", condition: "drizzle" },
+  55: { description: "Heavy Drizzle", condition: "drizzle" },
+  56: { description: "Light Freezing Drizzle", condition: "sleet" },
+  57: { description: "Freezing Drizzle", condition: "sleet" },
+  61: { description: "Light Rain", condition: "rain" },
+  63: { description: "Rain", condition: "rain" },
+  65: { description: "Heavy Rain", condition: "rain" },
+  66: { description: "Light Freezing Rain", condition: "sleet" },
+  67: { description: "Freezing Rain", condition: "sleet" },
+  71: { description: "Light Snow", condition: "snow" },
+  73: { description: "Snow", condition: "snow" },
+  75: { description: "Heavy Snow", condition: "snow" },
+  77: { description: "Snow Grains", condition: "snow" },
+  80: { description: "Light Rain Showers", condition: "showers" },
+  81: { description: "Rain Showers", condition: "showers" },
+  82: { description: "Heavy Rain Showers", condition: "rain" },
+  85: { description: "Light Snow Showers", condition: "snow" },
+  86: { description: "Heavy Snow Showers", condition: "snow" },
+  95: { description: "Thunderstorms", condition: "thunderstorm" },
+  96: { description: "Thunderstorms and Hail", condition: "thunderstorm" },
+  99: { description: "Thunderstorms and Heavy Hail", condition: "thunderstorm" },
+};
+
+function wmoCode(code: number | null): { description: string; condition: WeatherCondition } | undefined {
+  return code === null ? undefined : WMO_CODES[code];
+}
+
+/** "Sydney, Australia" from the phone's geocoder, or "" when it can't name the place in time. */
+async function lookUpPlaceName(location: CurrentLocation): Promise<string> {
+  let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+  const timeout = new Promise<null>((resolve) => {
+    timeoutHandle = setTimeout(() => resolve(null), GEOCODE_TIMEOUT_MS);
+  });
+  try {
+    const place = await Promise.race([
+      reverseGeocode(location.latitude, location.longitude).catch((error) => {
+        console.warn(`weather place lookup failed: ${error}`);
+        return null;
+      }),
+      timeout,
+    ]);
+    return placeLabel(place);
+  } finally {
+    if (timeoutHandle) clearTimeout(timeoutHandle);
+  }
+}
+
+/** The city (or failing that, the region) and country. */
+function placeLabel(place: Place | null): string {
+  if (!place) return "";
+  const local = place.locality || place.region;
+  if (!local || local === place.country) return place.country;
+  return place.country ? `${local}, ${place.country}` : local;
+}
+
 /** Rough day/night by the phone's clock, for when NWS gives no hint. */
 function isLocalDaytime(): boolean {
   const hour = new Date().getHours();
@@ -573,6 +838,20 @@ function finiteNumber(value: unknown): number | null {
   return Number.isFinite(number) ? number : null;
 }
 
+function numberArray(value: unknown): Array<number | null> {
+  return Array.isArray(value) ? value.map((item) => finiteNumber(item)) : [];
+}
+
+function maxValue(values: Array<number | null>): number | null {
+  const numbers = values.filter((value): value is number => value !== null);
+  return numbers.length ? Math.max(...numbers) : null;
+}
+
+function minValue(values: Array<number | null>): number | null {
+  const numbers = values.filter((value): value is number => value !== null);
+  return numbers.length ? Math.min(...numbers) : null;
+}
+
 function timestampValue(value: unknown): number | null {
   if (typeof value !== "string") return null;
   const timestamp = Date.parse(value);
@@ -586,7 +865,7 @@ function stringValue(value: unknown): string {
 function friendlyWeatherError(error: unknown): string {
   const message = (error as Error)?.message || String(error);
   if (/network request failed|failed to fetch|unable to resolve host/i.test(message)) {
-    return "Couldn't reach the National Weather Service. Check the phone's connection and retry.";
+    return "Couldn't reach the weather service. Check the phone's connection and retry.";
   }
   return message;
 }

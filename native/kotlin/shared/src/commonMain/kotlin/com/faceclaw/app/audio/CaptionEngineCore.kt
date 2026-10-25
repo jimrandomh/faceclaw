@@ -312,6 +312,21 @@ class CaptionSession(
         }
     }
 
+    /**
+     * Stops without waiting. The worker still flushes the trailing utterance and releases the
+     * models, then reports onStopped, so a caller can close out after the last line arrives
+     * instead of blocking its thread on the decode.
+     */
+    fun requestStop() {
+        lock.withLock {
+            if (!started) {
+                return
+            }
+            started = false
+        }
+        queue.wake()
+    }
+
     /** Push decoded 16 kHz mono S16LE PCM (any chunking). */
     fun acceptPcm(pcm16le: ByteArray?) {
         if (!started || pcm16le == null || pcm16le.size < 2) {
@@ -322,6 +337,7 @@ class CaptionSession(
 
     private fun runLoop(finished: Latch) {
         workerThreadName = currentThreadName()
+        var failure: String? = null
         try {
             loadModels()
             segmenter.reset()
@@ -329,18 +345,35 @@ class CaptionSession(
                 val chunk = queue.take(250) { started } ?: continue
                 segmenter.processChunk(chunk)
             }
-            // Flush a trailing utterance so its text isn't lost on stop.
+            // Finish the audio already queued when the stop landed, then flush the trailing
+            // utterance so its text isn't lost on stop.
+            while (true) {
+                val chunk = queue.take(0) { false } ?: break
+                segmenter.processChunk(chunk)
+            }
             segmenter.flush()
         } catch (t: Throwable) {
             logError("caption engine failed", t)
-            emitStatus("Captions failed: " + t.message)
+            failure = t.message ?: t.toString()
+            emitStatus("Captions failed: $failure")
         } finally {
-            decoder?.release()
+            try {
+                decoder?.release()
+            } catch (t: Throwable) {
+                logError("caption model release failed", t)
+            }
             decoder = null
             lock.withLock {
-                workerFinished = null
-                workerThreadName = null
+                // A worker that died on its own leaves the session stopped, so the owner can
+                // tell (and acceptPcm stops queueing for nobody).
+                if (workerFinished === finished) {
+                    started = false
+                    workerFinished = null
+                    workerThreadName = null
+                }
             }
+            // Posted before the latch opens, so a blocking stop() returns after it.
+            emitStopped(failure)
             finished.countDown()
         }
     }
@@ -366,8 +399,20 @@ class CaptionSession(
 
     override fun onUtterance(samples: ShortArray, length: Int, startMs: Long, endMs: Long, peakRms: Double) {
         val currentDecoder = decoder ?: return
-        val text = currentDecoder.recognize(samples, length)
-        val embedding = currentDecoder.embed(samples, length)
+        // One utterance the models choke on must not end captioning for the session: deliver
+        // what did decode and keep listening.
+        val text = try {
+            currentDecoder.recognize(samples, length)
+        } catch (t: Throwable) {
+            logError("caption recognition failed", t)
+            ""
+        }
+        val embedding = try {
+            currentDecoder.embed(samples, length)
+        } catch (t: Throwable) {
+            logError("caption voice-print failed", t)
+            null
+        }
         val currentListener = listener ?: return
         val embeddingCopy = embedding?.copyOf()
         host.dispatcher.post { currentListener.onUtterance(text, embeddingCopy, startMs, endMs, peakRms) }
@@ -376,5 +421,10 @@ class CaptionSession(
     private fun emitStatus(status: String?) {
         val currentListener = listener ?: return
         host.dispatcher.post { currentListener.onStatus(status) }
+    }
+
+    private fun emitStopped(error: String?) {
+        val currentListener = listener ?: return
+        host.dispatcher.post { currentListener.onStopped(error) }
     }
 }

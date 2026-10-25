@@ -28,7 +28,7 @@ test('every remaining Java source has an explicit Android boundary and every mig
   const java = path.join(root, 'App_Resources/Android/src/main/java');
   const list = directory => fs.readdirSync(directory, { withFileTypes: true }).flatMap(entry => {
     const file = path.join(directory, entry.name);
-    return entry.isDirectory() ? list(file) : file.endsWith('.java') ? [path.relative(java, file)] : [];
+    return entry.isDirectory() ? list(file) : file.endsWith('.java') ? [path.relative(java, file).split(path.sep).join('/')] : [];
   });
   const boundaries = require('../native/kotlin/android-java-boundaries.json');
   const retained = boundaries.flatMap(group => { assert.ok(group.reason.length > 20); return group.files; });

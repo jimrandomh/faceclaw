@@ -718,6 +718,94 @@ class FaceclawConversationStore private constructor(context: Context) : SQLiteOp
         }
     }
 
+    // ---- crash recovery ----
+
+    /**
+     * Close out sessions a dead process left open (ended_at NULL): the end becomes the last
+     * stored segment's end (or the start), and the tone average comes from the stored segments.
+     * excludeIdsJson is a JSON array of session ids that are legitimately still open. Returns
+     * the sessions it closed as a JSON array of {id, audioPath, audioCodec}.
+     */
+    fun closeInterruptedSessions(excludeIdsJson: String?): String {
+        val exclude = HashSet<Long>()
+        if (excludeIdsJson != null && !excludeIdsJson.isEmpty()) {
+            val ids = JSONArray(excludeIdsJson)
+            for (i in 0 until ids.length()) {
+                exclude.add(ids.getLong(i))
+            }
+        }
+        val db = writableDatabase
+        val closed = JSONArray()
+        val closedIds = ArrayList<Long>()
+        db.rawQuery("SELECT id, audio_path, audio_codec FROM sessions WHERE ended_at IS NULL", null).use { c ->
+            while (c.moveToNext()) {
+                val id = c.getLong(0)
+                if (id in exclude) continue
+                closedIds.add(id)
+                val row = JSONObject()
+                row.put("id", id)
+                row.put("audioPath", if (c.isNull(1)) JSONObject.NULL else c.getString(1))
+                row.put("audioCodec", if (c.isNull(2)) JSONObject.NULL else c.getString(2))
+                closed.put(row)
+            }
+        }
+        for (id in closedIds) {
+            db.execSQL(
+                "UPDATE sessions SET"
+                    + " ended_at = COALESCE((SELECT MAX(ended_at) FROM segments WHERE session_id = ?), started_at),"
+                    + " avg_sentiment = COALESCE((SELECT AVG(sentiment) FROM segments WHERE session_id = ?), 0)"
+                    + " WHERE id = ?",
+                arrayOf<Any?>(id, id, id))
+        }
+        return closed.toString()
+    }
+
+    /**
+     * Closed sessions whose audio is still the WAV: a transcode that never finished (the process
+     * died mid-transcode, or recovery failed partway on an earlier boot). Returns a JSON array of
+     * {id, audioPath}.
+     */
+    fun listUntranscodedSessions(): String {
+        val sessions = JSONArray()
+        readableDatabase.rawQuery(
+            "SELECT id, audio_path FROM sessions"
+                + " WHERE ended_at IS NOT NULL AND audio_codec = 'wav' AND audio_path IS NOT NULL",
+            null,
+        ).use { c ->
+            while (c.moveToNext()) {
+                val row = JSONObject()
+                row.put("id", c.getLong(0))
+                row.put("audioPath", c.getString(1))
+                sessions.put(row)
+            }
+        }
+        return sessions.toString()
+    }
+
+    /**
+     * Delete recordings in dirPath that no session's audio_path names: files a session row never
+     * learned about, or partial transcoder output. Matched by file name, so a storage move that
+     * changed the directory's absolute path can't make live recordings look orphaned. Only call
+     * while no recording or transcode is in flight. Returns how many files were deleted.
+     */
+    fun deleteUnreferencedRecordings(dirPath: String?): Int {
+        if (dirPath == null) return 0
+        val files = File(dirPath).listFiles() ?: return 0
+        val referenced = HashSet<String>()
+        readableDatabase.rawQuery("SELECT audio_path FROM sessions WHERE audio_path IS NOT NULL", null).use { c ->
+            while (c.moveToNext()) {
+                referenced.add(File(c.getString(0)).name)
+            }
+        }
+        var deleted = 0
+        for (file in files) {
+            if (file.isFile && file.name !in referenced && file.delete()) {
+                deleted++
+            }
+        }
+        return deleted
+    }
+
     fun deleteSession(sessionId: Long) {
         val db = writableDatabase
         val path = getSessionAudioPath(sessionId)

@@ -286,6 +286,12 @@ export function angleInArc(azimuth: number, arcCenter: number, arcHalfWidth: num
 export class TempleAudioPipeline {
   private readonly beamformer: DelaySumBeamformer;
   private readonly anc = new InterMicNoiseCanceller();
+  // Steering delays reach back before the start of each frame. Carrying the
+  // previous frame's last samples keeps those real; zero-filling them (as a
+  // standalone beam() does) dips the output at every frame boundary.
+  private readonly carry: number;
+  private frontTail: Float32Array;
+  private rearTail: Float32Array;
   enableANC = true;
 
   constructor(
@@ -294,19 +300,38 @@ export class TempleAudioPipeline {
     geometry: MicGeometry = G2_DEFAULT_GEOMETRY,
   ) {
     this.beamformer = new DelaySumBeamformer(sampleRate, geometry);
+    const { front, rear } = geometry.positions[side];
+    const spacing = Math.hypot(front.x - rear.x, front.y - rear.y, front.z - rear.z);
+    this.carry = Math.ceil((spacing / geometry.speedOfSound) * sampleRate) + 1;
+    this.frontTail = new Float32Array(this.carry);
+    this.rearTail = new Float32Array(this.carry);
   }
 
   /**
    * Process one frame's deinterleaved front/rear channels toward a
    * device-frame target, returning the enhanced mono beam for this temple.
+   * Frames must be consecutive: each one continues the previous.
    */
   process(front: Float32Array, rear: Float32Array, target: Bearing): Float32Array {
-    const beam = this.beamformer.beam(this.side, front, rear, target);
+    const n = Math.min(front.length, rear.length);
+    const extendedFront = this.withTail(this.frontTail, front, n);
+    const extendedRear = this.withTail(this.rearTail, rear, n);
+    this.frontTail = extendedFront.slice(n);
+    this.rearTail = extendedRear.slice(n);
+    const beam = this.beamformer
+      .beam(this.side, extendedFront, extendedRear, target)
+      .slice(this.carry);
     if (!this.enableANC) return beam;
     // Null-steer reference: the difference channel carries off-axis noise.
-    const n = Math.min(front.length, rear.length);
     const reference = new Float32Array(n);
     for (let i = 0; i < n; i++) reference[i] = front[i]! - rear[i]!;
     return this.anc.process(beam, reference);
+  }
+
+  private withTail(tail: Float32Array, frame: Float32Array, n: number): Float32Array {
+    const out = new Float32Array(tail.length + n);
+    out.set(tail);
+    out.set(frame.subarray(0, n), tail.length);
+    return out;
   }
 }

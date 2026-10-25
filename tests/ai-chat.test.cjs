@@ -117,6 +117,27 @@ test('cancelled tools and late callbacks cannot mutate the next turn or its hist
   assert.equal(session.isTurnActive(), false);
 });
 
+test('tool names are sanitized, shortened to 64 characters, kept distinct, and mapped back', () => {
+  const env = sessions();
+  const pkg = 'com.example.some-long-developer-name.evenhub';
+  const names = ['glasses.get_state', `app.${pkg}.set_metronome_tempo_and_signature`,
+    `app.${pkg}.set_metronome_tempo_and_signature_v2`, 'a.b', 'a_b'];
+  const registry = { listTools: () => names.map(name => ({ name, description: '', inputSchema: { type: 'object' } })) };
+  const session = new env.AssistantSession(config(), registry);
+  session.sendUtterance('hi', {}, callbacks());
+  const turn = env.turns.at(-1);
+  const apiNames = turn.buildTools().map(tool => tool.name);
+  assert.equal(apiNames[0], 'glasses_get_state');
+  assert.ok(apiNames.every(name => /^[a-zA-Z0-9_-]{1,64}$/.test(name)), apiNames.join(', '));
+  assert.equal(new Set(apiNames).size, names.length);
+  assert.match(apiNames[1], /^app_com_example_/);
+  assert.match(apiNames[1], /tempo_and_signature$/);
+  assert.deepEqual(apiNames.slice(3), ['a_b', 'a_b_2']);
+  assert.deepEqual(apiNames.map(turn.resolveToolName), names);
+  // The same canonical name shortens the same way on the next turn.
+  assert.deepEqual(turn.buildTools().map(tool => tool.name), apiNames);
+});
+
 test('synchronous provider errors do not leave a permanently active turn', () => {
   const env = sessions(); env.setError();
   const session = new env.AssistantSession(config());
@@ -271,7 +292,7 @@ function shellEnv({ wakeAction = 'voice-input', skipConfirmation = false } = {})
     '../../graphics/image': images, '../../native/frame-timings': timings,
     '../../util/render-freshness': { beginRenderPass() {}, endRenderPass: () => false },
     '../layers': layers, '../window-menu': { WindowMenuLayer: Menu },
-    './chrome-layer': { windowIcon: () => () => null }, './geometry': { appViewportSize: () => ({ width: 576, height: 260 }) },
+    './chrome-layer': { windowIcon: () => () => null }, './geometry': { appViewportSize: () => ({ width: 576, height: 260 }), setAppImmersive: () => false },
     './shell': { shell },
   });
   const input = [], menus = [];

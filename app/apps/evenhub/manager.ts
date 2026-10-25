@@ -22,6 +22,7 @@ import { unpackRuntime } from "./unpack-runtime";
 import { type EvenHubPermission } from "./permissions";
 import { EvenHubSession } from "./session";
 import { createEvenHubWindow } from "./evenhub-window";
+import { liveDeviceStatusSource } from "./device-status-source";
 import { createEvenHubWebView, type EvenHubWebView } from "./webview";
 import { shell } from "../../ui/shell/shell";
 import { GrayImage } from "../../graphics/image";
@@ -126,7 +127,7 @@ async function startApp(
 ): Promise<void> {
   const windowId = `evenhub:app:${nextSerial++}`;
   const session = new EvenHubSession(manifest, distDir, ctx.appendLog, remoteUrl,
-    payload => ctx.actions.playBuzzerSequence(payload));
+    payload => ctx.actions.playBuzzerSequence(payload), liveDeviceStatusSource);
   const webView = createEvenHubWebView(session);
   session.attachWebView({
     evaluateJs: webView.evaluateJs,
@@ -147,7 +148,7 @@ async function startApp(
 
   try {
     await ctx.launchInProcessApp(windowId, `window:${windowId}`, (options) =>
-      createEvenHubWindow(windowId, appId, session, options, () => showOnPhone(windowId)),
+      createEvenHubWindow(windowId, appId, session, options, () => showOnPhone(windowId), () => ctx.requestShellRender()),
     );
   } catch (error) { session.close(); throw error; }
 }

@@ -460,10 +460,10 @@ export class WorkerAppHost {
       closeable: true,
       acceptsDirectional: spec.acceptsDirectional,
       heightMode,
-      // These apps can resize their live content without losing route/session state.
-      relayout: this.options.appId === "navigate" || this.options.appId === "terminal"
-        ? () => this.post({ type: "resize-window", windowId: spec.windowId, viewport: appViewportSize(heightMode, this.options.appId) })
-        : undefined,
+      // Every app worker resizes its live content in place, keeping its state
+      // (a game in progress, a route): the bottom switcher's height changes
+      // with what it holds, and full-height windows give way to it.
+      relayout: () => this.post({ type: "resize-window", windowId: spec.windowId, viewport: appViewportSize(heightMode, this.options.appId) }),
       hasAppMenu: () => this.windowGestures.get(spec.windowId)?.hasAppMenu ?? false,
       claimsLongPress: () => this.windowGestures.get(spec.windowId)?.claimsLongPress ?? false,
       close: () => {

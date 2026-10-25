@@ -37,3 +37,14 @@ intervals and animation callbacks still fire, and cancelled timers stay cancelle
 A short UIKit background task keeps the test process running without glasses.
 This covers the ticker's background behavior; sustained execution with BLE and a
 locked physical phone still requires device testing.
+
+The native Android EvenHub probe runs on a booted emulator or attached device:
+
+    node tests/android-evenhub-native.cjs [adb-serial]
+
+It compiles the production EvenHub WebView classes into an isolated APK (with the
+Kotlin compiler and AndroidX artifacts a prior `./build.sh` cached), installs it,
+and checks per-package WebView profiles, that the bridge reaches only the app's
+own main frame (not its iframes or pages it navigates to), that host scripts and
+timer ticks stay out of other sites, and that a renderer crash leaves the process
+running.

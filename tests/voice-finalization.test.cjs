@@ -157,25 +157,30 @@ test('cloud fallback and a synchronous final still send exactly once', () => {
   }
 });
 
-test('native completion is capture-specific, follows the final, and does not wait for shared capture', async () => {
-  let controller;
-  class Controller {
-    constructor() { controller = this; }
-    setListener(listener) { this.listener = listener; }
-    setCommunicator() {} setUsePhoneMic() {} setSaveRecordings() {} setEndpointing() {}
-    setNoiseSuppression() {} setBeamFilter() {} clearSpeakerVerification() {} setOnboardModelKind() {}
-    start(_mode, id) { this.captureId = id; this.active = true; }
-    stop() { this.active = false; }
-    isCapturing() { return this.active; }
-  }
+/** The Android voice bridge over a fake native controller (on-device recognition only). */
+function androidBridge() {
+  const controller = {
+    starts: 0,
+    setListener(listener) { this.listener = listener; },
+    setCommunicator() {}, setUsePhoneMic() {}, setSaveRecordings() {}, setEndpointing() {},
+    setNoiseSuppression() {}, setBeamFilter() {}, clearSpeakerVerification() {}, setOnboardModelKind() {},
+    start(_mode, id) { this.captureId = id; this.active = true; this.starts++; },
+    stop() { this.active = false; },
+    isCapturing() { return this.active; },
+  };
   const { FaceclawVoiceControlBridge } = load('app/native/voice-control.ts', {
     '@nativescript/core': { Utils: { android: { getApplicationContext: () => ({}) } } },
     './speech-pause': { SpeechPauseDetector: class { reset() {} } },
+    './cloud-stt-provider': { createCloudSttClient: () => null, transcriptionKey: options => options.provider },
   }, { global: { isAndroid: true }, com: { faceclaw: { app: {
-    FaceclawVoiceController: Controller,
+    FaceclawVoiceController: function () { return controller; },
     FaceclawVoiceControllerListener: function (listener) { return listener; },
   } } } });
-  const bridge = new FaceclawVoiceControlBridge();
+  return { bridge: new FaceclawVoiceControlBridge(), controller };
+}
+
+test('native completion is capture-specific, follows the final, and does not wait for shared capture', async () => {
+  const { bridge, controller } = androidBridge();
   const options = { provider: 'onboard-whisper' };
   const events = [];
   bridge.onTranscript(event => events.push(event.text));
@@ -191,4 +196,22 @@ test('native completion is capture-specific, follows the final, and does not wai
   assert.equal(bridge.stopPushToTalk(), undefined);
   assert.equal(controller.active, true);
   bridge.stopContinuousCapture(); controller.listener.onStopped(controller.captureId);
+});
+
+test('a shared capture restarts for a holder that needs another provider, and is shared otherwise', () => {
+  const { bridge, controller } = androidBridge();
+  bridge.retargetContinuousCapture({ provider: 'soniox' }); // nothing continuous to retarget
+  assert.equal(controller.starts, 0);
+  bridge.startPushToTalk({ provider: 'onboard' });
+  bridge.startContinuousCapture({ provider: 'onboard' });
+  assert.equal(controller.starts, 1);
+  bridge.retargetContinuousCapture({ provider: 'soniox' });
+  assert.equal(controller.starts, 2);
+  bridge.retargetContinuousCapture({ provider: 'soniox' });
+  bridge.startPushToTalk({ provider: 'soniox' });
+  assert.equal(controller.starts, 2);
+  // Push-to-talk still holds the restarted stream once continuous lets go.
+  bridge.stopContinuousCapture();
+  assert.equal(controller.active, true);
+  assert.equal(bridge.holdsCapture('ptt'), true);
 });

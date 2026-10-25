@@ -35,6 +35,7 @@ typings/
 App_Resources/Android/src/main/jniLibs/**/*.so
 App_Resources/Android/src/main/assets/faceclaw-voice-asr/
 old
+__pycache__
 
 # Visual Studio Code
 .vscode/*

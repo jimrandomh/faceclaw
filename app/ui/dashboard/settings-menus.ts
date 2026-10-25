@@ -23,6 +23,7 @@ import {
   type AsrModelId,
 } from "../../native/asr-model";
 import { TextViewerLayer } from "../../apps/files/text-viewer";
+import { IOS_PRIVACY_NOTICE } from "../../analytics/privacy-disclosure";
 import type { LayerContext } from "../layers";
 import { drawRightValueMenuItem, openModalMenu, submenuItem, type MenuItem } from "../menu";
 import { shell } from "../shell/shell";
@@ -35,6 +36,8 @@ import {
   uiDepthSetting,
   assistantAllowProactiveSetting,
   assistantBackendSetting,
+  assistantHermesKeySetting,
+  assistantHermesUrlSetting,
   assistantBridgeHostSetting,
   assistantBridgePortSetting,
   assistantBridgeTokenSetting,
@@ -45,19 +48,26 @@ import {
   autoBrightnessMinSetting,
   autoBrightnessMaxSetting,
   autoBrightnessCurveSetting,
+  dataCollectionSetting,
   glassesBatteryVisibilitySetting,
   phoneBatteryVisibilitySetting,
   ringBatteryVisibilitySetting,
   watchBatteryVisibilitySetting,
-  displayModeSetting,
+  displayLayoutSetting,
   elevenLabsApiKeySetting,
   mapboxApiKeySetting,
   mirrorTouchSetting,
   openAiApiKeySetting,
   previewColorSetting,
+  previewScalingSetting,
   phoneRotationSetting,
   ringConnectionModeSetting,
   sonioxApiKeySetting,
+  saveTranscribeAudioSetting,
+  whisperServerApiKeySetting,
+  whisperServerLanguageSetting,
+  whisperServerModelSetting,
+  whisperServerUrlSetting,
   screenFadeSetting,
   enumSettingMenuItem,
   firmwareDebugFlagsSetting,
@@ -66,13 +76,14 @@ import {
   saveVoiceRecordingsSetting,
   showBleBandwidthSetting,
   suspendEvenHubWhenScreenOffSetting,
+  temperatureUnitSetting,
   textSettingMenuItem,
   timeFormatSetting,
   toggleSettingMenuItem,
   useMicControlSetting,
-  verticalPositionSetting,
   voiceProviderSetting,
   screenTimeoutSetting,
+  wakeToLastAppSetting,
   wakeWordActionSetting,
   watchCanUnlockSetting,
   watchCrownClockwiseNextSetting,
@@ -104,11 +115,10 @@ function settingsSections(): SettingsSection[] {
           },
         }),
         toggleSettingMenuItem(lockScreenEnabledSetting),
-        // Where min-height windows (and the sidebar) sit vertically on the
-        // screen; the dashboard controller repositions surfaces on change.
-        enumSettingMenuItem(verticalPositionSetting),
-        // Band / tall / full-panel; the dashboard controller reflows windows.
-        enumSettingMenuItem(displayModeSetting),
+        toggleSettingMenuItem(wakeToLastAppSetting),
+        // A band (at one of five heights) / Tall / Full Screen; the
+        // dashboard controller moves or reflows windows on change.
+        enumSettingMenuItem(displayLayoutSetting),
       ],
     },
     {
@@ -124,6 +134,7 @@ function settingsSections(): SettingsSection[] {
       items: [
         enumSettingMenuItem(wakeWordActionSetting),
         enumSettingMenuItem(voiceProviderSetting),
+        ...whisperServerMenuItems(),
         asrModelMenuItem("moonshine"),
         asrModelMenuItem("whisper-base-en"),
       ],
@@ -134,6 +145,8 @@ function settingsSections(): SettingsSection[] {
         // iOS offers cloud APIs; Android also supports local models and the bridge.
         enumSettingMenuItem(assistantBackendSetting),
         enumSettingMenuItem(assistantModelSetting),
+        textSettingMenuItem(assistantHermesUrlSetting),
+        textSettingMenuItem(assistantHermesKeySetting),
         ...(!global.isIOS ? [localModelMenuItem()] : []),
         toggleSettingMenuItem(assistantSkipConfirmationSetting),
         // iOS has no local LLM or agent bridge yet.
@@ -163,6 +176,7 @@ function settingsSections(): SettingsSection[] {
       items: [
         enumSettingMenuItem(phoneRotationSetting),
         enumSettingMenuItem(previewColorSetting),
+        enumSettingMenuItem(previewScalingSetting),
         toggleSettingMenuItem(mirrorTouchSetting),
       ],
     },
@@ -189,6 +203,19 @@ function settingsSections(): SettingsSection[] {
         toggleSettingMenuItem(suspendEvenHubWhenScreenOffSetting),
         toggleSettingMenuItem(useMicControlSetting),
         toggleSettingMenuItem(showBleBandwidthSetting),
+      ],
+    },
+    {
+      label: "Privacy",
+      items: [
+        // First chosen in the on-glasses onboarding (app/apps/onboarding/).
+        enumSettingMenuItem(dataCollectionSetting),
+        ...(global.isIOS ? [{
+          label: "iOS / TestFlight privacy",
+          description: "Apple's beta reports are separate from Faceclaw statistics. Tap to read.",
+          onSelect: (ctx: LayerContext) => ctx.stack.push(new TextViewerLayer(IOS_PRIVACY_NOTICE, "iOS / TestFlight privacy")),
+        }] : []),
+        bundledDocMenuItem("PRIVACY", "Privacy policy"),
       ],
     },
     {
@@ -220,11 +247,11 @@ function settingsSections(): SettingsSection[] {
   if (!global.isIOS) return sections;
   const deferred = new Set(["Watch"]);
   return sections.map(section => {
-    if (section.label === "Developer") return { ...section, items: [toggleSettingMenuItem(showBleBandwidthSetting)] };
-    if (section.label === "Voice") return { label: "Voice", items: [enumSettingMenuItem(wakeWordActionSetting), {
-      label: "On-device dictation (Apple)", disabled: true, onSelect: () => {},
-      description: "Uses the glasses microphone and your iPhone's speech language. No transcription API key needed. Say Hey Even for hands-free input, or open Voice from the menu and click when finished.",
-    }] };
+    if (section.label === "Developer") return { ...section, items: [enumSettingMenuItem(ringConnectionModeSetting),
+      toggleSettingMenuItem(showBleBandwidthSetting)] };
+    // No downloadable on-device models: iOS's on-device option is Apple's recognizer.
+    if (section.label === "Voice") return { label: "Voice", items: [enumSettingMenuItem(wakeWordActionSetting),
+      enumSettingMenuItem(voiceProviderSetting), toggleSettingMenuItem(saveTranscribeAudioSetting), ...whisperServerMenuItems()] };
     if (deferred.has(section.label)) return { label: section.label, items: [{
       label: "Not available on iOS yet", disabled: true, onSelect: () => {},
       description: `${section.label} integration has not been ported to iOS.`,
@@ -263,6 +290,8 @@ function customizationRows(): () => MenuItem[] {
     animationsMenuItem(),
     // Controls the top-bar clock (24-hour vs 12-hour).
     enumSettingMenuItem(timeFormatSetting),
+    // Fahrenheit or Celsius, wherever weather temperatures show.
+    enumSettingMenuItem(temperatureUnitSetting),
   ];
   const bottomRows = [font, position, depth, statusBar, ...rest];
   const popupRows = [font, position, depth, statusBar, statusBarVisibility, windowBorder, ...rest];
@@ -436,6 +465,19 @@ function asrModelStatusText(id: AsrModelId): string {
     return `${pct}% of ${asrModelMb(id)}`;
   }
   return "not downloaded";
+}
+
+/**
+ * The self-hosted Whisper server's settings. Always listed: the provider
+ * option stays disabled until the URL is set.
+ */
+function whisperServerMenuItems(): MenuItem[] {
+  return [
+    textSettingMenuItem(whisperServerUrlSetting),
+    textSettingMenuItem(whisperServerModelSetting),
+    textSettingMenuItem(whisperServerLanguageSetting),
+    textSettingMenuItem(whisperServerApiKeySetting),
+  ];
 }
 
 /** Download/cancel/delete management for one on-device transcription model. */

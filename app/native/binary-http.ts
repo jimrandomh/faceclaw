@@ -2,6 +2,7 @@ declare const com: any;
 declare const java: any;
 
 export type BinaryResponse = { status: number; bytes: Uint8Array; contentLength: number };
+export type BinaryPostResponse = { status: number; text: string };
 
 let nextDownloadSerial = 0;
 
@@ -33,5 +34,27 @@ export function downloadBinary(url: string, timeoutMs: number): Promise<BinaryRe
       },
     });
     new com.faceclaw.app.FaceclawFileDownload(url, path, timeoutMs, listener).start();
+  });
+}
+
+/**
+ * POST a binary body and read the response as text. Not NativeScript's http
+ * module: it hands an ArrayBuffer body to Java one bridge call per byte
+ * (ByteBuffer.wrap(Array.from(...))), which for a ~1MB WAV upload stalls the
+ * main thread. FaceclawBinaryPost takes it as one direct-buffer copy instead.
+ */
+export function postBinary(url: string, body: ArrayBuffer, headers: Record<string, string>, timeoutMs: number): Promise<BinaryPostResponse> {
+  // Required lazily so Node tests can load this module's importers.
+  const { copyToJavaByteBuffer } = require("./java-direct-buffer") as typeof import("./java-direct-buffer");
+  const entries = Object.entries(headers);
+  const nativeHeaders = Array.create("java.lang.String", entries.length * 2);
+  entries.forEach(([name, value], index) => { nativeHeaders[index * 2] = name; nativeHeaders[index * 2 + 1] = value; });
+  return new Promise((resolve, reject) => {
+    const listener = new com.faceclaw.app.FaceclawBinaryPostListener({
+      onResponse: (status: number, text: string | null) => resolve({ status, text: String(text ?? "") }),
+      onFailure: (message: string | null) => reject(new Error(String(message ?? "Request failed."))),
+    });
+    // The User-Agent comes from the okhttp client's interceptor.
+    new com.faceclaw.app.FaceclawBinaryPost(url, copyToJavaByteBuffer(new Uint8Array(body)), nativeHeaders, timeoutMs, listener).start();
   });
 }

@@ -1,4 +1,5 @@
 import { type GrayImage } from "../../graphics/image";
+import { type MenuItem } from "../../ui/menu";
 
 /**
  * A Glanceboard widget: a small self-contained view that paints into a slot
@@ -39,5 +40,11 @@ export type GlanceWidgetDefinition = {
    * gets the taller canvas; the divider between the slots is not drawn.
    */
   tall?: boolean;
+  /**
+   * The rows of this widget's submenu in the Glanceboard app's Settings. A
+   * widget without settings still gets a row there (disabled) while it is
+   * on the board.
+   */
+  settingsMenuItems?: () => MenuItem[];
   create: () => GlanceWidget;
 };

@@ -76,6 +76,23 @@
     CGColorSpaceRelease(space);
     return result;
 }
++ (UIImage *)whiteIcon:(NSData *)gray width:(NSInteger)width height:(NSInteger)height {
+    if (width <= 0 || height <= 0 || gray.length != width * height) return nil;
+    NSMutableData *rgba = [NSMutableData dataWithLength:width * height * 4];
+    const uint8_t *src = gray.bytes;
+    uint8_t *dst = rgba.mutableBytes;
+    // Premultiplied white: every channel equals the alpha.
+    for (NSInteger i = 0; i < width * height; i++) memset(dst + i * 4, src[i], 4);
+    CGColorSpaceRef space = CGColorSpaceCreateDeviceRGB();
+    CGDataProviderRef provider = CGDataProviderCreateWithCFData((__bridge CFDataRef)rgba);
+    CGImageRef image = CGImageCreate(width, height, 8, 32, width * 4, space,
+        kCGBitmapByteOrder32Big | (CGBitmapInfo)kCGImageAlphaPremultipliedLast, provider, NULL, false, kCGRenderingIntentDefault);
+    UIImage *result = image ? [UIImage imageWithCGImage:image scale:1 orientation:UIImageOrientationUp] : nil;
+    if (image) CGImageRelease(image);
+    CGDataProviderRelease(provider);
+    CGColorSpaceRelease(space);
+    return result;
+}
 + (NSData *)renderSVG:(NSString *)svg size:(NSInteger)size {
     if (size <= 0 || size > 1024) return nil;
     SVGKImage *image = [SVGKImage imageWithData:[svg dataUsingEncoding:NSUTF8StringEncoding]];

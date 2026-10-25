@@ -22,7 +22,7 @@ import { isAsrModelReady, startAsrModelDownload, asrModelState } from "../../nat
 import { CaptionsLayer } from "./captions-layer";
 import { LevelsLayer } from "./levels-layer";
 import { RadarLayer } from "./radar-layer";
-import { loadMicConfig, micArrayController, micControlSupported, saveMicConfig } from "./mic-control";
+import { loadMicConfig, micArrayController, micControlSupported } from "./mic-control";
 import { isMicModelReady, micModelState, startMicModelDownload } from "./mic-models";
 import { micChannelLabel, type MicChannelKey, type MicConfig } from "./mic-protocol";
 import { micSession } from "./mic-session";
@@ -72,13 +72,9 @@ const MENU_LAYOUT = {
   opaque: true,
 };
 
-/** Persist a config change and re-apply it live when the array is streaming. */
+/** Persist a config change; the running session applies it live. */
 function updateMicConfig(mutate: (config: MicConfig) => MicConfig): void {
-  const updated = mutate(loadMicConfig());
-  saveMicConfig(updated);
-  if (micSession.getState().mode === "extended") {
-    micArrayController.apply(updated);
-  }
+  micSession.updateConfig(mutate);
 }
 
 function micChannelToggleItem(
@@ -457,8 +453,9 @@ export function createMicrophonesAppWindow(options: InProcessAppOptions): InProc
       }),
       configToggleItem(
         "Captions",
-        () => captionsEnabledSetting.get(),
-        () => micSession.setCaptionsEnabled(!captionsEnabledSetting.get()),
+        // Shows off after repeated engine failures, so turning it on retries.
+        () => micSession.captionsEnabled(),
+        () => micSession.setCaptionsEnabled(!micSession.captionsEnabled()),
         undefined,
         captionsEnabledSetting.description,
       ),

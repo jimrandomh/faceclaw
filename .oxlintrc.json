@@ -78,7 +78,7 @@
     "node_modules/**",
     "platforms/**",
     "dist/**",
-    "faceclaw-extensions/dist/**",
+    "evenhub-extensions/dist/**",
     "old/**",
     "tmp/**"
   ]

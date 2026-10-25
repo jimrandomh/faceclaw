@@ -172,3 +172,21 @@ test("temple pipeline matches the raw beam with ANC disabled", () => {
   assert.equal(viaPipeline.length, direct.length);
   for (let i = 0; i < direct.length; i++) assert.equal(viaPipeline[i], direct[i]);
 });
+
+test("temple pipeline output is seamless across frame boundaries", () => {
+  // Streamed frame by frame, the steering delay must reach into the previous
+  // frame rather than zero-fill, so splitting the signal changes nothing.
+  const front = makeNoise(800, 3);
+  const rear = makeNoise(800, 4);
+  const target = { azimuth: deg(60) };
+  const whole = new TempleAudioPipeline("left", 16000);
+  whole.enableANC = false;
+  const expected = whole.process(front, rear, target);
+  const framed = new TempleAudioPipeline("left", 16000);
+  framed.enableANC = false;
+  const first = framed.process(front.subarray(0, 400), rear.subarray(0, 400), target);
+  const second = framed.process(front.subarray(400), rear.subarray(400), target);
+  assert.equal(first.length + second.length, expected.length);
+  for (let i = 0; i < 400; i++) assert.ok(near(first[i], expected[i], 1e-6));
+  for (let i = 0; i < 400; i++) assert.ok(near(second[i], expected[400 + i], 1e-6));
+});

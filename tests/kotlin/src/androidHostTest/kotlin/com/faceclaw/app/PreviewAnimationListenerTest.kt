@@ -10,9 +10,11 @@ import kotlin.test.*
  */
 class PreviewAnimationListenerTest {
     // FrameDisplayListTest's menu golden (a 2x2 highlight sliding in to rest at (3, 2)),
-    // restarted at 0 of its 240 ms so the slide is still in flight at the first pull.
+    // restarted at 1 of its 240 ms so the slide is still in flight at the first pull. Not 0:
+    // at exactly 0 the highlight is wholly above this 8x8 screen, so a pull in the same
+    // millisecond as the submit (a warm JIT) would match the settled frame.
     private val menu = "077f0000000300020002000200022a00000096000000010002000200ffffffff0200080000ff24017e30020000000001812c8001812c1611010017328001812c16103001812c3023414031ff24017c30020000000001812c8001812c1611010017328001812c16103001812c30234140310200020001000103100400000000000000001f"
-        .chunked(2).map { it.toInt(16).toByte() }.toByteArray().also { it.fill(0, 18, 22) }
+        .chunked(2).map { it.toInt(16).toByte() }.toByteArray().also { it.fill(0, 18, 22); it[18] = 1 }
 
     private fun settledPreview(): ByteArray {
         val reader = ArrayByteReader(menu)

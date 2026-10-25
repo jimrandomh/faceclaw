@@ -99,9 +99,10 @@ export class WindowMenu {
   /**
    * Open the menu, or the shell's system menu when this window has no
    * entries. `items` (and optionally `title`) override the window's own for
-   * an app that reuses this host for another list (a per-row action menu).
+   * an app that reuses this host for another list (a per-row action menu),
+   * and `selectedIndex` starts a picker on its current value.
    */
-  open(items: MenuItem[] = this.options.items(), title: string = this.options.title()): void {
+  open(items: MenuItem[] = this.options.items(), title: string = this.options.title(), selectedIndex?: number): void {
     if (this.stack) return;
     if (!items.length) {
       this.options.post({ type: "open-system-menu", windowId: this.options.windowId });
@@ -112,7 +113,9 @@ export class WindowMenu {
       handleInput: () => {},
     };
     const stack = new LayerStack(base, this.layerActions(), this.options.size, this.options.isFocused);
-    stack.push(new WindowMenuLayer(title, items));
+    const layer = new WindowMenuLayer(title, items);
+    if (selectedIndex !== undefined) layer.selectItem(selectedIndex);
+    stack.push(layer);
     this.stack = stack;
   }
 

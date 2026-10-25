@@ -116,6 +116,9 @@ export function createCalculatorAppWindow(options: InProcessAppOptions): InProce
     },
     removeSurface: options.removeSurface,
     onClosed: () => {
+      // Closing keeps the base layer (clearToBase), so stop its continuous
+      // listening explicitly; otherwise the mic capture outlives the window.
+      layer.onRemoved();
       toolRegistry.removeAppTools(CALCULATOR_WINDOW_ID);
       options.onClosed();
     },

@@ -44,6 +44,11 @@ export type InstalledFont = {
   monospace: boolean;
 };
 
+/** Whether `fileName` is one of the fonts the app ships, rather than one the user installed. */
+export function isPreinstalledFont(fileName: string): boolean {
+  return (PREINSTALLED_FONT_FILES as readonly string[]).includes(fileName);
+}
+
 /** The app-internal fonts directory (created on first use). */
 export function installedFontsDir(): string {
   return knownFolders.documents().getFolder("fonts").path;

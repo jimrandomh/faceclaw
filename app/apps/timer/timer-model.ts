@@ -185,6 +185,16 @@ export function sortTimers(timers: readonly CountdownTimer[], nowMs: number): Co
   });
 }
 
+/** The running timer that ends soonest (the one the tray icon counts down); null when none runs. */
+export function soonestRunningTimer(timers: readonly CountdownTimer[], nowMs: number): CountdownTimer | null {
+  let soonest: CountdownTimer | null = null;
+  for (const timer of timers) {
+    if (timer.endsAtMs === null || timer.rungAtMs !== null) continue;
+    if (!soonest || timerRemainingMs(timer, nowMs) < timerRemainingMs(soonest, nowMs)) soonest = timer;
+  }
+  return soonest;
+}
+
 export function pushRecentDuration(recent: readonly number[], durationMs: number): number[] {
   return [durationMs, ...recent.filter((value) => value !== durationMs)].slice(0, RECENT_DURATION_COUNT);
 }

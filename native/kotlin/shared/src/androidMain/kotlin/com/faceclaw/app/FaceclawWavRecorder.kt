@@ -13,6 +13,30 @@ constructor(
     private val sampleRate: Int,
     private val channels: Int,
 ) {
+    companion object {
+        /**
+         * Rewrite the header of a recording whose writer never finished (the process died
+         * mid-recording, leaving the empty header written at start) to cover the PCM actually on
+         * disk, trimming any partial sample frame. Returns the PCM byte count, or -1 when the
+         * file doesn't exist.
+         */
+        @JvmStatic
+        @Throws(IOException::class)
+        fun repairHeader(path: String, sampleRate: Int, channels: Int): Long {
+            val target = File(path)
+            if (!target.exists()) return -1
+            val headerBytes = BinaryEncoding.wavHeader(0, sampleRate, channels).size.toLong()
+            val frameBytes = channels * 2L
+            val pcmBytes = maxOf(0L, target.length() - headerBytes) / frameBytes * frameBytes
+            RandomAccessFile(target, "rw").use {
+                it.setLength(headerBytes + pcmBytes)
+                it.seek(0)
+                it.write(BinaryEncoding.wavHeader(minOf(pcmBytes, Int.MAX_VALUE.toLong()).toInt(), sampleRate, channels))
+            }
+            return pcmBytes
+        }
+    }
+
     private var file: RandomAccessFile?
     private var dataBytes = 0L
 

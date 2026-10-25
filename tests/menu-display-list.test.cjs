@@ -17,9 +17,9 @@ const font={lineHeight:12,ascent:10,descent:2,measureText:text=>text.length*4,
 const menuCore=load('app/ui/menu-core.ts',{
   '../graphics/image':graphics,'./menu-highlight-motion': require('../.test-build/app/ui/menu-highlight-motion.js'), '../graphics/menu-scroll-list': require('../.test-build/app/graphics/menu-scroll-list.js'), './menu-scroll-motion': require('../.test-build/app/ui/menu-scroll-motion.js'), '../graphics/draw-expression': require('../.test-build/app/graphics/draw-expression.js'),
 });
-const {MenuLayer}=load('app/ui/menu.ts',{
+const {MenuLayer,TextPageLayer}=load('app/ui/menu.ts',{
   './menu-animation-pref': require('../.test-build/app/ui/menu-animation-pref.js'), './animation-speed': require('../.test-build/app/ui/animation-speed.js'), '../native/settings-store': { getStringSetting: (_key, fallback) => fallback },
-  '../graphics/image':graphics,'../graphics/textwrap':{},'../graphics/ui-fonts':{getDefaultSmallFont:()=>font},
+  '../graphics/image':graphics,'../graphics/textwrap':{wrapText:(_font,text)=>text.split('\n')},'../graphics/ui-fonts':{getDefaultSmallFont:()=>font},
   '../util/numeric-util':{clamp:(n,a,b)=>Math.max(a,Math.min(b,n))},'./gestures':{},
   './menu-highlight-motion': require('../.test-build/app/ui/menu-highlight-motion.js'), '../graphics/menu-scroll-list': require('../.test-build/app/graphics/menu-scroll-list.js'), './menu-scroll-motion': require('../.test-build/app/ui/menu-scroll-motion.js'), '../graphics/draw-expression': require('../.test-build/app/graphics/draw-expression.js'),
     './metrics':require('../.test-build/app/ui/metrics.js'),'./menu-core':menuCore,
@@ -63,6 +63,15 @@ test('context menu surface and selected row both use +4 without changing the app
   stack.pop();const closed=planes.flattenPlanesWithDraws(stack.paint());
   assert.deepEqual(closed.image.pixels,base.pixels);
   assert.deepEqual(wire.presentationRecords(prepareFrameDraws(closed.draws)),[]);
+});
+test('text page paints at the stack size, not the lens size',()=>{
+  // An app window's stack is its viewport; a lens-sized plane is rejected by
+  // the compositor as larger than the window surface.
+  const stack=new LayerStack({paint:()=>new graphics.GrayImage(576,260)},noopLayerActions,{width:576,height:260});
+  stack.push(new TextPageLayer('Array status','Left: no status yet\nRight: no status yet'));
+  const painted=stack.paint();
+  assert.equal(painted.length,1);
+  assert.equal(painted[0].image.width,576);assert.equal(painted[0].image.height,260);
 });
 test('system menu bridge shifts its surface and selected row together by +4',()=>{
   const image=menu().paint(),bytes=encodeShellScene([{image,x:8,y:0,shellKey:7,depth:4}]);

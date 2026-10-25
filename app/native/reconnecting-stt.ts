@@ -24,6 +24,8 @@ export class ReconnectingSttClient implements CloudSttClient {
     private readonly create: (options: CloudSttOptions) => CloudSttClient,
     private readonly options: CloudSttOptions,
     private readonly continuous: () => boolean,
+    /** How long finish() waits for the provider's final transcript. */
+    readonly finalTimeoutMs = 5000,
   ) {}
 
   start(): void {
@@ -90,7 +92,7 @@ export class ReconnectingSttClient implements CloudSttClient {
       this.stop();
       return;
     }
-    this.finishTimeout = setTimeout(() => this.stop(), 5000);
+    this.finishTimeout = setTimeout(() => this.stop(), this.finalTimeoutMs);
     if (this.ready) this.client?.finish();
   }
 

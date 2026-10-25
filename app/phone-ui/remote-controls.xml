@@ -38,7 +38,7 @@
     <!-- Settings tab -->
     <StackLayout visibility="{{ settingsTabVisibility }}">
       <GridLayout rows="auto" columns="auto,*" class="settings-row">
-        <Label col="0" text="Screen size" class="settings-row-label" verticalAlignment="center" />
+        <Label col="0" text="Display mode" class="settings-row-label" verticalAlignment="center" />
         <Button col="1" text="{{ displayModeLabel }}" tap="{{ onDisplayModeTap }}" class="mode-button" horizontalAlignment="left" />
       </GridLayout>
       <GridLayout rows="auto" columns="auto,*,auto" class="settings-row">
@@ -52,10 +52,12 @@
     </StackLayout>
 
     <!-- Watch tab: centered in the leftover height, capped at the 1.5:1 face
-         aspect (watchFaceWidth = min(available, 1.5 x face height). -->
-    <GridLayout visibility="{{ watchTabVisibility }}" width="{{ watchFaceWidth }}" height="{{ watchFaceHeight }}" horizontalAlignment="center" verticalAlignment="center" class="touchpad" android:tap="{{ onPadTap }}" android:doubleTap="{{ onPadDoubleTap }}" android:longPress="{{ onPadLongPress }}" android:swipe="{{ onPadSwipe }}" touch="{{ onPadTouch }}">
-      <Label isUserInteractionEnabled="false" text="{{ padFocusLine }}" class="pad-focus" horizontalAlignment="center" verticalAlignment="center" />
-      <Label isUserInteractionEnabled="false" text="▲▼ swipe   ● select   ●● back   ‒ menu" class="pad-legend" horizontalAlignment="center" verticalAlignment="bottom" />
+         aspect (watchFaceWidth = min(available, 1.5 x face height). The star
+         rows center the status line, plus the wake hint under it while the
+         display is off (a double-tap is the only gesture that wakes it). -->
+    <GridLayout visibility="{{ watchTabVisibility }}" width="{{ watchFaceWidth }}" height="{{ watchFaceHeight }}" rows="*,auto,auto,*" horizontalAlignment="center" verticalAlignment="center" class="touchpad" android:tap="{{ onPadTap }}" android:doubleTap="{{ onPadDoubleTap }}" android:longPress="{{ onPadLongPress }}" android:swipe="{{ onPadSwipe }}" touch="{{ onPadTouch }}">
+      <Label row="1" isUserInteractionEnabled="false" text="{{ padFocusLine }}" class="{{ padFocusClass }}" horizontalAlignment="center" />
+      <Label row="2" isUserInteractionEnabled="false" text="●● wake" visibility="{{ padWakeHintVisibility }}" class="pad-wake-hint" horizontalAlignment="center" />
     </GridLayout>
 
     <!-- Ring tab: a touchpad on the ring's own scheme. Vertical swipes only

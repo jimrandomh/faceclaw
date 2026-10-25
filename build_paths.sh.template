@@ -6,4 +6,9 @@
 #export PATH=
 #export ANDROID_KEYSTORE=
 #export DEVICE_ID=
+# Apple signing team for iOS device builds (Xcode > Settings > Accounts)
+#export IOS_TEAM_ID=
+# iOS bundle ID; set one your signing team owns to sideload alongside the
+# official build (default com.faceclaw.app). Also used by the iOS config scripts.
+#export IOS_BUNDLE_ID=
 

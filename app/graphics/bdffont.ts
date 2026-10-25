@@ -248,6 +248,29 @@ export function getFont(font: EmbeddedFontName): BdfFont {
   return loadEmbeddedFont(font);
 }
 
+/** Every Terminus size bundled under fonts/terminus, each in normal and bold. */
+export const TERMINUS_SIZES = [12, 14, 16, 18, 20, 22, 24, 28, 32] as const;
+
+const terminusFonts = new Map<string, BdfFont>();
+
+/**
+ * Terminus at any bundled size, normal or bold (EvenHub apps pick fonts by
+ * size and weight). Null for a size that isn't bundled. The sizes the UI
+ * already uses come back as the same objects getFont returns.
+ */
+export function getTerminusFont(size: number, bold: boolean): BdfFont | null {
+  if (!(TERMINUS_SIZES as readonly number[]).includes(size)) return null;
+  const name = `terminus${size}${bold ? "b" : ""}`;
+  if (name in embeddedFonts) return loadEmbeddedFont(name as EmbeddedFontName);
+  let font = terminusFonts.get(name);
+  if (!font) {
+    const text = knownFolders.currentApp().getFile(`fonts/terminus/ter-u${size}${bold ? "b" : "n"}.bdf`).readTextSync();
+    font = BdfFont.parse(text, { atlasKey: name });
+    terminusFonts.set(name, font);
+  }
+  return font;
+}
+
 // NOTE: the default UI font getters (getDefaultSmallFont & co.) live in
 // ./ui-fonts, which resolves the user's font settings to a BdfFont or
 // TtfFont. This module stays a pure BDF loader.

@@ -567,6 +567,8 @@ class GlassesSessionCore(
             releaseFaceclawFramebufferLease()
         }
         monitor.withLock {
+            ConnectionCounters.increment("g2.disconnect-requested")
+            if (sessionReady) countSessionEnded("requested")
             userDisconnectRequested = true
             running = false
             audioCaptureActive = false
@@ -1254,16 +1256,17 @@ class GlassesSessionCore(
      * Queue a CFW mic_control record (['M','C',ver,op,...]) as a settings
      * field-103 write to both temples, or to a single one. Fire-and-forget:
      * the firmware answers with a field-104 status notify per temple, which
-     * arrives through addMicStatusListener.
+     * arrives through addMicStatusListener. Returns false when nothing was
+     * queued (no session, or a malformed record).
      */
-    fun sendFaceclawMicControl(record: ByteArray?, label: String, rightTemple: Boolean, leftTemple: Boolean) {
+    fun sendFaceclawMicControl(record: ByteArray?, label: String, rightTemple: Boolean, leftTemple: Boolean): Boolean {
         if (record == null || record.size < 4) {
-            return
+            return false
         }
         monitor.withLock {
             if (!running || !sessionReady) {
                 logLine("skip mic control ($label); session not ready")
-                return
+                return false
             }
             if (rightTemple) {
                 pendingMessages.addLast(messageBuilder.faceclawMicControl(record, label, false))
@@ -1274,6 +1277,7 @@ class GlassesSessionCore(
             logLine("queue mic control $label")
         }
         interruptibleSleep.interrupt()
+        return true
     }
 
     /**
@@ -1750,6 +1754,7 @@ class GlassesSessionCore(
                         val ingress = if (message.isLeftArmMessage) leftAddress else rightAddress
                         if (message.sid == CfwTransport.SID && address.equals(ingress, ignoreCase = true) && message.magic == ack.streamId) {
                             message.acceptCfwAck(ack)
+                            if (ack.nack) ConnectionCounters.increment("g2.cfw-nack")
                             logLine("CFW " + (if (ack.nack) "NACK" else "ACK") + " id=" + ack.streamId
                                     + " ordinal=" + ack.messageId + " lens=" + ack.lens + " txseq=" + (data[2].toInt() and 255)
                                     + " redundant=" + (ack !== acks[0])
@@ -1960,6 +1965,11 @@ class GlassesSessionCore(
                         if (decoded.eventType == BleProtocol.EVENT_ABNORMAL_EXIT || decoded.eventType == BleProtocol.EVENT_SYSTEM_EXIT) {
                             if (shutdownRequested) {
                                 lastShutdownExitAtMs = now()
+                            } else {
+                                ConnectionCounters.increment(
+                                    if (decoded.eventType == BleProtocol.EVENT_ABNORMAL_EXIT) "g2.firmware-abnormal-exit"
+                                    else "g2.firmware-system-exit"
+                                )
                             }
                             fixedLayoutCreated = false
                             displayedFingerprint = ""
@@ -2093,6 +2103,7 @@ class GlassesSessionCore(
                 // Wakes the ring worker, which owns ring connect/setup.
                 monitor.signalAll()
             }
+            ConnectionCounters.increment(if (connected) "ring.direct.connect" else "ring.direct.disconnect")
             logLine(if (connected) "direct ring BLE connected" else "direct ring BLE disconnected")
             return
         }
@@ -2110,6 +2121,12 @@ class GlassesSessionCore(
                 // dropping mid-setup): the connect sequence notices on its own and
                 // schedules the retry, so leave the backoff alone.
                 lostSession = sessionReady
+                if (lostSession) {
+                    ConnectionCounters.increment(
+                        if (address.equals(rightAddress, ignoreCase = true)) "g2.arm-drop.right" else "g2.arm-drop.left"
+                    )
+                    countSessionEnded("arm-drop")
+                }
                 sessionReady = false
                 fixedLayoutCreated = false
                 startupProbePending = false
@@ -2141,6 +2158,7 @@ class GlassesSessionCore(
             wearState = -1
         }
         setStateDisplay("connecting", "Connecting to the glasses...")
+        ConnectionCounters.increment("g2.connect-attempt")
         try {
             // Dial both arms at once, so the left arm's attempt is already pending (and
             // can land) while the right arm is being set up; they share one window.
@@ -2194,6 +2212,7 @@ class GlassesSessionCore(
                 }
             }
             setStateDisplay("connected", "Connected.")
+            ConnectionCounters.increment("g2.session-ready")
             logLine("session ready")
             monitor.withLock {
                 // Query settings at the start of every session so firmware
@@ -2464,6 +2483,7 @@ class GlassesSessionCore(
         monitor.withLock {
             if (!inFlightMessages.isEmpty()) {
                 clearInFlightMessagesLocked("security auth timeout")
+                ConnectionCounters.increment("g2.auth-unacknowledged")
                 logLine("security auth not acknowledged; continuing (2.2.9 stock requires it; older/custom firmware may not answer)")
                 return
             }
@@ -2490,7 +2510,7 @@ class GlassesSessionCore(
         prelude.onAck = MessageCallback {
         }
         prelude.onTimeout = MessageCallback {
-            handleTransportFailure("ack timeout")
+            handleTransportFailure("prelude ack timeout")
         }
         prelude.sentAtMs = now
         writeMessage(prelude)

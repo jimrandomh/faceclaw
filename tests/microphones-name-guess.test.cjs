@@ -22,6 +22,12 @@ test("self-introductions are recognized", () => {
     name: "Alice",
     kind: "self",
   });
+  // Phone-style self-introductions, including ASR's stray capitalization.
+  assert.deepEqual(inferIntroducedName("Hey this is Dana calling about the order"), {
+    name: "Dana",
+    kind: "self",
+  });
+  assert.deepEqual(inferIntroducedName("This is Bob Speaking."), { name: "Bob", kind: "self" });
 });
 
 test("third-party introductions are recognized", () => {

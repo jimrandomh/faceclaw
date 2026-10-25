@@ -15,6 +15,11 @@ export function isTerminalWidgetConfigured(): boolean {
   return isGlanceWidgetConfigured("terminal");
 }
 
+/** Whether the system card can show: it is in a slot and the Glanceboard is enabled. */
+export function isSystemCardWidgetInUse(): boolean {
+  return getBooleanSetting("glanceboard.enabled", false) && isGlanceWidgetConfigured("system-card");
+}
+
 /**
  * Whether the T3 Code widget can show: it is in a slot and the Glanceboard is
  * enabled (the T3 worker holds its server connections open only then).

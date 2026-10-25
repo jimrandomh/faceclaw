@@ -15,7 +15,8 @@ import {
   webSocketUrl,
   type T3Fetch,
 } from "./t3-auth";
-import { ShellModel, ThreadDetailModel, type T3ServerProvider } from "./t3-model";
+import type { T3ServerProvider } from "./t3-launch";
+import { ShellModel, ThreadDetailModel } from "./t3-model";
 import { T3RpcConnection, T3RpcError, type RpcSocketFactory, type T3Subscription } from "./t3-rpc";
 
 /** A paired environment as stored on the phone. */
@@ -79,6 +80,8 @@ export class T3EnvironmentClient {
   readonly shell = new ShellModel();
   providers: T3ServerProvider[] = [];
   settings: Record<string, any> | null = null;
+  /** The folder of threads without a project (its project is the "Scratch" one). */
+  scratchWorkspaceRoot: string | null = null;
   private phaseValue: EnvironmentPhase = "idle";
   private statusValue = "";
   private connection: T3RpcConnection | null = null;
@@ -200,6 +203,11 @@ export class T3EnvironmentClient {
     return String(result?.threadId ?? payload.threadId);
   }
 
+  /** Any other unary RPC (vcs.listRefs, projects.readFile, ...). */
+  call<T>(method: string, payload: Record<string, unknown>): Promise<T> {
+    return this.requireConnection().call<T>(method, payload);
+  }
+
   private requireConnection(): T3RpcConnection {
     if (this.phaseValue !== "connected" || !this.connection) {
       throw new T3RpcError("disconnected", `Not connected to ${this.config.label || "the server"}.`);
@@ -265,6 +273,7 @@ export class T3EnvironmentClient {
             }
             this.providers = Array.isArray(config.providers) ? config.providers : [];
             this.settings = config.settings ?? null;
+            this.scratchWorkspaceRoot = typeof config.scratchWorkspaceRoot === "string" ? config.scratchWorkspaceRoot : null;
             if (typeof config.environment?.label === "string" && config.environment.label && config.environment.label !== this.config.label) {
               this.config = { ...this.config, label: config.environment.label };
             }

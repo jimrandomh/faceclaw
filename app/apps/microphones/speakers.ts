@@ -139,8 +139,9 @@ export class SpeakerRegistry {
       }));
       this.loaded = true;
     } catch (error) {
+      // Keep the last good cache: emptying it would make the next utterance
+      // enroll an already-known voice as a duplicate "Speaker N".
       console.error(`speaker reload failed: ${String(error)}`);
-      this.profiles = [];
     }
   }
 
@@ -194,7 +195,8 @@ export class SpeakerRegistry {
     const id = Number(store().createSpeaker(name, color, false, encodeEmbedding(embedding)));
     this.reload();
     this.notifyChanged();
-    const profile = this.byId(id)!;
+    const profile = this.byId(id);
+    if (!profile) throw new Error(`speaker "${name}" was not created (id ${id})`);
     return { profile, similarity: best?.similarity ?? 0, classification: "new", previousLastHeardAt: 0 };
   }
 
@@ -213,12 +215,14 @@ export class SpeakerRegistry {
       store().updateSpeakerEmbedding(existing.id, encodeEmbedding(embedding), CENTROID_UPDATE_CAP);
       this.reload();
       this.notifyChanged();
-      return this.byId(existing.id)!;
+      return this.byId(existing.id) ?? existing;
     }
     const id = Number(store().createSpeaker("Me", "#64B5F6", true, encodeEmbedding(embedding)));
     this.reload();
     this.notifyChanged();
-    return this.byId(id)!;
+    const profile = this.byId(id);
+    if (!profile) throw new Error(`wearer profile was not created (id ${id})`);
+    return profile;
   }
 
   /** Is this utterance the wearer's own voice? Used to gate command recognition. */

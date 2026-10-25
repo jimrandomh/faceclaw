@@ -198,22 +198,6 @@ test('plainMarkdown cleans up for the glasses', () => {
   );
 });
 
-test('default model selection mirrors mobile', () => {
-  const providers = [
-    { instanceId: 'codex', enabled: true, installed: true, auth: { status: 'unauthenticated' }, models: [{ slug: 'gpt-5', isDefault: true }] },
-    { instanceId: 'claudeAgent', enabled: true, installed: true, auth: { status: 'authenticated' }, models: [{ slug: 'old', isLegacy: true, isDefault: true }, { slug: 'claude-sonnet-5' }, { slug: 'claude-opus-5', isDefault: true }] },
-  ];
-  const project = { id: 'p1', title: 'faceclaw' };
-  assert.deepEqual(model.defaultModelSelection(null, providers, project), { instanceId: 'claudeAgent', model: 'claude-opus-5' });
-  const settings = { defaultModelSelection: { instanceId: 'codex', model: 'gpt-5' }, projectSettingsOverrides: { p1: { defaultModelSelection: { instanceId: 'claudeAgent', model: 'claude-sonnet-5' } } } };
-  assert.deepEqual(model.defaultModelSelection(settings, providers, project), { instanceId: 'claudeAgent', model: 'claude-sonnet-5' });
-  assert.equal(model.defaultModelSelection({ defaultModelSelection: { instanceId: 'codex', model: 'gpt-5' } }, providers.slice(0, 1), project), null, 'unauthenticated providers are skipped');
-  const payload = model.launchThreadPayload(project, '  Fix   the login test  ', { instanceId: 'claudeAgent', model: 'claude-opus-5' }, null);
-  assert.equal(payload.title, 'Fix the login test');
-  assert.equal(payload.runtimeMode, 'full-access');
-  assert.deepEqual(payload.workspaceStrategy, { type: 'root' });
-});
-
 test('formatAge', () => {
   assert.equal(model.formatAge(NOW - 20_000, NOW), 'now');
   assert.equal(model.formatAge(NOW - 5 * 60_000, NOW), '5m');

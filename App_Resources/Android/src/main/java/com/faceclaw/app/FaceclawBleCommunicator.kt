@@ -294,7 +294,7 @@ class FaceclawBleCommunicator(context: Context, rightAddress: String?, leftAddre
 
     fun removeMicStatusListener(listener: FaceclawMicStatusListener?) = core.removeMicStatusListener(listener)
 
-    fun sendFaceclawMicControl(record: ByteArray?, label: String, rightTemple: Boolean, leftTemple: Boolean) =
+    fun sendFaceclawMicControl(record: ByteArray?, label: String, rightTemple: Boolean, leftTemple: Boolean): Boolean =
         core.sendFaceclawMicControl(record, label, rightTemple, leftTemple)
 
     fun startG2AudioForwarding(listener: FaceclawAudioPacketListener?): Boolean = core.startG2AudioForwarding(listener)
@@ -327,6 +327,15 @@ class FaceclawBleCommunicator(context: Context, rightAddress: String?, leftAddre
         val composite = core.previewComposite() ?: return null
         return PreviewBitmapUtil.fromGray(
                 java.nio.ByteBuffer.wrap(composite.gray), composite.width, composite.height, brightenGamma, green)
+    }
+
+    /** As above, cropped to a screen area (Settings > Phone display > Preview scaling); black past the screen's edges. */
+    fun getCompositePreviewBitmap(brightenGamma: Double, green: Boolean,
+                                  cropX: Int, cropY: Int, cropWidth: Int, cropHeight: Int): android.graphics.Bitmap? {
+        val composite = core.previewComposite() ?: return null
+        return PreviewBitmapUtil.fromGray(
+                java.nio.ByteBuffer.wrap(composite.gray), composite.width, composite.height, brightenGamma, green,
+                cropX, cropY, cropWidth, cropHeight)
     }
 
     /**

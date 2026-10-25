@@ -39,7 +39,7 @@ export class VoiceDraft {
       this.phase = "listening";
       this.status = "Listening... release to send";
       this.ownsVoiceActivity = true;
-      voiceActivity.setActive(true);
+      voiceActivity.setActive(true, "voice-draft");
       this.unsubscribe.push(voiceControlBridge.onTranscript((event) => {
         if (!this.active || generation !== this.generation) return;
         if (event.isFinal) {
@@ -129,7 +129,7 @@ export class VoiceDraft {
     }
     if (this.ownsVoiceActivity) {
       this.ownsVoiceActivity = false;
-      voiceActivity.setActive(false);
+      voiceActivity.setActive(false, "voice-draft");
     }
     this.changed();
   }

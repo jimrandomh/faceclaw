@@ -24,6 +24,10 @@ const BOTTOM_MARGIN = 2;
  * The indicator animates on the hub's cadence while any session is active;
  * each row carries its own activity deadline, so nothing needs the worker
  * once the snapshot is in.
+ *
+ * The worker sorts sessions most-recently-updated first; the widget keeps the
+ * order it first sees after the board opens so rows don't jump around while
+ * it is showing. Sessions that appear later go to the end of their host.
  */
 export class TerminalWidget implements GlanceWidget {
   private snapshot = readWorkerState(TERMINAL_SESSIONS_STATE_KEY) as TerminalSessionsSnapshot | undefined;
@@ -31,12 +35,17 @@ export class TerminalWidget implements GlanceWidget {
   private requestRender: (() => void) | null = null;
   private phase = 0;
   private animationTimer: ReturnType<typeof setInterval> | null = null;
+  /** Row key -> display rank, fixed from the first snapshot seen since start. */
+  private readonly rowOrder = new Map<string, number>();
 
   start(requestRender: () => void): void {
     this.requestRender = requestRender;
+    this.rowOrder.clear();
     this.snapshot = readWorkerState(TERMINAL_SESSIONS_STATE_KEY) as TerminalSessionsSnapshot | undefined;
+    this.rankNewRows();
     this.unsubscribe = onWorkerStateChanged(TERMINAL_SESSIONS_STATE_KEY, (snapshot) => {
       this.snapshot = snapshot as TerminalSessionsSnapshot;
+      this.rankNewRows();
       this.syncAnimation();
       requestRender();
     });
@@ -49,6 +58,15 @@ export class TerminalWidget implements GlanceWidget {
     this.unsubscribe = null;
     if (this.animationTimer !== null) clearInterval(this.animationTimer);
     this.animationTimer = null;
+  }
+
+  /** Give rows not seen yet the next ranks, in the snapshot's (recency) order. */
+  private rankNewRows(): void {
+    for (const host of this.snapshot?.hosts ?? []) {
+      for (const row of host.sessions) {
+        if (!this.rowOrder.has(row.key)) this.rowOrder.set(row.key, this.rowOrder.size);
+      }
+    }
   }
 
   private anyActive(nowMs = Date.now()): boolean {
@@ -107,7 +125,10 @@ export class TerminalWidget implements GlanceWidget {
         image.drawText(font, PAD, y, truncateText(font, host.name, textWidth), 110);
         y += step;
       }
-      for (const row of host.sessions) {
+      const rows = host.sessions
+        .slice()
+        .sort((a, b) => (this.rowOrder.get(a.key) ?? 0) - (this.rowOrder.get(b.key) ?? 0));
+      for (const row of rows) {
         if (!fits(y)) return;
         drawSessionRow(image, font, {
           x: GUTTER_X,

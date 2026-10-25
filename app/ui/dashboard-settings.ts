@@ -17,12 +17,15 @@ import {
   type AssistantModel,
 } from "~/assistant/models";
 import { isLocalModelReady } from "../native/llama";
+import { normalizeWhisperServerUrl } from "../native/whisper-server-stt";
 import { drawRightValueMenuItem, drawToggleMenuItem, MenuItem, openModalMenu } from "./menu";
 import { ANIMATION_SPEEDS, animationSpeedLabel, scaleAnimationDuration, type AnimationSpeed } from "./animation-speed";
 import { MENU_ANIMATION_KEY } from "./menu-animation-pref";
 import { LIST_ROW_TEXT_INSET, lineStep } from "./metrics";
 import { Layer, type LayerContext } from "./layers";
 import { GrayImage } from "~/graphics/image";
+import type { DataCollectionLevel } from "../analytics/analytics-store";
+import { IOS_PRIVACY_SUMMARY } from "../analytics/privacy-disclosure";
 
 export type NightscoutSettings = {
   siteUrl: string;
@@ -32,6 +35,7 @@ export type BatteryDisplayMode = "icon" | "percentage" | "stacked" | "stacked-pe
 /** When a top-bar battery indicator is shown: always, only below 50%, or never. */
 export type BatteryIndicatorVisibility = "always" | "low" | "never";
 export type TimeFormat = "24h" | "12h";
+export type TemperatureUnit = "fahrenheit" | "celsius";
 export type ScreenTimeoutSetting = "15s" | "30s" | "1m" | "3m" | "never";
 // Auto runs Faceclaw's light curve. Numeric values use the calibrated firmware
 // scale, clamped to 2–100; 2 is also the endpoint for screen fades.
@@ -47,6 +51,11 @@ type ConfigSettingOptions<TValue, TId extends string> = {
   formatValue?: (value: TValue) => string;
   /** Extended description shown in the Settings panel when the row is selected. */
   description?: string;
+  /**
+   * Boolean and enum settings only take fixed values, so Full analytics
+   * reports them (fixedChoiceSettingValues); false keeps this one out.
+   */
+  reportInAnalytics?: boolean;
 };
 
 // Fired after any setting changes, in any isolate (storage lives in the Java
@@ -73,6 +82,21 @@ onSettingsStoreChanged(() => {
     }
   }, 0);
 });
+
+// Boolean and enum settings by storage key, for fixedChoiceSettingValues.
+// Settings built repeatedly (per-app or per-slot) just replace themselves.
+const fixedChoiceSettings = new Map<string, ConfigSetting<boolean> | ConfigSetting<string>>();
+
+/**
+ * The current value of every boolean and enum setting this isolate has
+ * loaded, keyed by storage key: what Full analytics reports as settings.
+ * Free-text settings never appear.
+ */
+export function fixedChoiceSettingValues(): Record<string, boolean | string> {
+  const values: Record<string, boolean | string> = {};
+  for (const [storageKey, setting] of fixedChoiceSettings) values[storageKey] = setting.get();
+  return values;
+}
 
 export abstract class ConfigSetting<TValue, TId extends string = string> {
   readonly id: TId;
@@ -104,6 +128,7 @@ export class ConfigSettingBoolean<TId extends string = string> extends ConfigSet
   // Widens ConfigSetting's protected constructor.
   public constructor(options: ConfigSettingOptions<boolean, TId>) {
     super(options);
+    if (options.reportInAnalytics !== false) fixedChoiceSettings.set(options.storageKey, this);
   }
 
   get(): boolean {
@@ -134,6 +159,7 @@ export class ConfigSettingEnum<TValue extends string, TId extends string = strin
 
   constructor(options: ConfigSettingEnumOptions<TValue, TId>) {
     super(options);
+    if (options.reportInAnalytics !== false) fixedChoiceSettings.set(options.storageKey, this);
     this.values = options.values;
     this.disabledPredicate = options.isDisabled ?? (() => false);
     if (options.normalize) {
@@ -305,47 +331,14 @@ export const timeFormatSetting = new ConfigSettingEnum<TimeFormat>({
   description: "Whether the top-bar clock shows 24-hour or 12-hour time.",
 });
 
-/**
- * How much of the 640x480 panel the UI uses. "576x288" is the stock band
- * (sidebar + a 288px-tall window at the vertical position); "576x480" keeps
- * the sidebar and gives every window the full height; "640x480" is the whole
- * panel, with the sidebar an overlay that shows only while it has focus. The
- * values name the sizes beside a side strip; with the app switcher along the
- * bottom, the tall height loses the switcher row (displayModeLabel shows the
- * actual size).
- */
-export const DISPLAY_MODE_VALUES = ["576x288", "576x480", "640x480"] as const;
-export type DisplayModeSetting = (typeof DISPLAY_MODE_VALUES)[number];
-
-const DISPLAY_MODE_NAMES: Record<DisplayModeSetting, string> = {
-  "576x288": "Band",
-  "576x480": "Tall",
-  "640x480": "Full panel",
-};
-
-/** Window size per mode with the app switcher along the bottom (see geometry.ts). */
-const BOTTOM_SWITCHER_SIZES: Record<DisplayModeSetting, string> = {
-  "576x288": "576×288",
-  "576x480": "576×444",
-  "640x480": "640×480",
-};
-
-export function displayModeLabel(value: DisplayModeSetting): string {
-  const name = DISPLAY_MODE_NAMES[value];
-  if (!name) return value;
-  const size = appSwitcherPositionSetting.get() === "bottom" ? BOTTOM_SWITCHER_SIZES[value] : value.replace("x", "×");
-  return `${name} · ${size}`;
-}
-
-export const displayModeSetting = new ConfigSettingEnum<DisplayModeSetting>({
-  id: "display-mode",
-  label: "Display mode",
-  storageKey: "display.mode",
-  defaultValue: "576x288",
-  values: DISPLAY_MODE_VALUES,
-  formatValue: displayModeLabel,
-  description:
-    "Band: the stock 288px-tall window beside the app switcher. Tall: the app switcher plus full-height windows. Full panel: the whole 640×480 display; the app switcher overlays the app only while you are in it. Open apps reopen in the new size.",
+export const temperatureUnitSetting = new ConfigSettingEnum<TemperatureUnit>({
+  id: "temperatureUnit",
+  label: "Temperature unit",
+  storageKey: "display.temperatureUnit",
+  defaultValue: "fahrenheit",
+  values: ["fahrenheit", "celsius"],
+  formatValue: (value) => value === "celsius" ? "Celsius" : "Fahrenheit",
+  description: "Whether the Weather app, its top-bar indicator, and the Glanceboard's system card show temperatures in Fahrenheit or Celsius.",
 });
 
 /**
@@ -373,6 +366,83 @@ export const appSwitcherPositionSetting = new ConfigSettingEnum<AppSwitcherPosit
     "Where the open-app icons go. Left and right take a column beside windows; bottom puts a row beneath the window, which makes full-height windows a little shorter; popup shows them only while you're in the app switcher, in a box over the dimmed window. Bottom and popup leave room at the sides to set the display's depth. Open apps reopen at their new size when a change resizes windows.",
 });
 
+/**
+ * An enum setting that took over from older settings: until it is first
+ * set, its value is derived from theirs.
+ */
+class ConfigSettingEnumWithLegacy<TValue extends string> extends ConfigSettingEnum<TValue> {
+  constructor(options: ConfigSettingEnumOptions<TValue, string>, private readonly legacyValue: () => TValue) {
+    super(options);
+  }
+
+  get(): TValue {
+    return getStringSetting(this.storageKey, "") === "" ? this.legacyValue() : super.get();
+  }
+}
+
+/**
+ * How much of the 640x480 panel windows use, and where: the stock
+ * 288px-tall band, at one of five heights in the field of view; Tall, every
+ * window the full height; or Full Screen, Tall at the panel's whole 640px
+ * width. The app switcher keeps its own room in every mode. Full Screen
+ * needs a bottom row or popup app switcher (a side strip leaves no width to
+ * spare; there it is Tall), has no window frame, and plays at depth 0,
+ * since its windows reach the panel's edges (geometry.ts).
+ */
+export const DISPLAY_LAYOUT_VALUES = [
+  "band-top", "band-high", "band-middle", "band-low", "band-bottom", "tall", "fullscreen",
+] as const;
+export type DisplayLayout = (typeof DISPLAY_LAYOUT_VALUES)[number];
+
+const DISPLAY_LAYOUT_LABELS: Record<DisplayLayout, string> = {
+  "band-top": "Band · Top",
+  "band-high": "Band · High",
+  "band-middle": "Band · Middle",
+  "band-low": "Band · Low",
+  "band-bottom": "Band · Bottom",
+  tall: "Tall",
+  fullscreen: "Full Screen",
+};
+
+export function displayLayoutLabel(value: DisplayLayout): string {
+  return DISPLAY_LAYOUT_LABELS[value] ?? value;
+}
+
+/** Whether the Full Screen display mode is available: with a bottom row or popup app switcher. */
+export function fullScreenAvailable(): boolean {
+  const position = appSwitcherPositionSetting.get();
+  return position === "bottom" || position === "popup";
+}
+
+// Until 2026-10-10 the display mode ("576x288" band, "576x480" tall,
+// "640x480" full panel) and the band's vertical position were separate
+// settings, globally and per app.
+const LEGACY_MODE_LAYOUTS: Record<string, DisplayLayout> = { "576x480": "tall", "640x480": "fullscreen" };
+const LEGACY_POSITION_LAYOUTS: Record<string, DisplayLayout> = {
+  top: "band-top", upper: "band-high", middle: "band-middle", lower: "band-low", bottom: "band-bottom",
+};
+
+function legacyBand(position: string): DisplayLayout {
+  return LEGACY_POSITION_LAYOUTS[position] ?? "band-middle";
+}
+
+function legacyDisplayLayout(): DisplayLayout {
+  const mode = getStringSetting("display.mode", "576x288");
+  return LEGACY_MODE_LAYOUTS[mode] ?? legacyBand(getStringSetting("display.verticalPosition", "middle"));
+}
+
+export const displayLayoutSetting = new ConfigSettingEnumWithLegacy<DisplayLayout>({
+  id: "display-mode",
+  label: "Display mode",
+  storageKey: "display.layout",
+  defaultValue: "band-middle",
+  values: DISPLAY_LAYOUT_VALUES,
+  formatValue: displayLayoutLabel,
+  isDisabled: (value) => value === "fullscreen" && !fullScreenAvailable(),
+  description:
+    "Band: the stock 288px-tall window, at the height in your field of view you choose. Tall: full-height windows. Full Screen: full-height windows across the display's whole width; it needs the app switcher at the bottom or as a popup, and turns depth off, since windows reach the display's edges. Navigate and Terminal can override this. Open apps reopen in the new size.",
+}, legacyDisplayLayout);
+
 const UI_DEPTH_VALUES = ["-62", "-48", "-32", "-16", "0", "16", "32", "48", "62"] as const;
 export type UiDepth = (typeof UI_DEPTH_VALUES)[number];
 
@@ -382,8 +452,9 @@ export type UiDepth = (typeof UI_DEPTH_VALUES)[number];
  * directions. Only applies with the app switcher at the bottom or a popup,
  * where the windows' 576px width leaves 32px at each side: one for the side
  * of the window's frame and 31 to shift into, hence ±62 (see geometry.ts
- * uiDepth and windowFramed); values stay even so the per-lens halves of
- * nested depths add exactly.
+ * uiDepth and windowFramed); not to Full Screen windows, which have no such
+ * margins. Values stay even so the per-lens halves of nested depths add
+ * exactly.
  */
 export const uiDepthSetting = new ConfigSettingEnum<UiDepth>({
   id: "ui-depth",
@@ -396,7 +467,7 @@ export const uiDepthSetting = new ConfigSettingEnum<UiDepth>({
     return depth === 0 ? "0" : depth > 0 ? `+${depth} (nearer)` : `${depth} (farther)`;
   },
   description:
-    "Moves the whole display nearer (positive) or farther away (negative) by shifting it in opposite directions on the two lenses. Available with the app switcher at the bottom or as a popup. Full-panel windows lose a sliver at the edges.",
+    "Moves the whole display nearer (positive) or farther away (negative) by shifting it in opposite directions on the two lenses. Available with the app switcher at the bottom or as a popup; not applied in the Full Screen display mode, whose windows reach the display's edges.",
 });
 
 /**
@@ -419,7 +490,7 @@ export const statusBarPositionSetting = new ConfigSettingEnum<StatusBarPosition>
   formatValue: (value) => value === "top" ? "Top"
     : appSwitcherPositionSetting.get() === "bottom" ? "With app switcher" : "Bottom",
   description:
-    "Where the clock, notification icons, app widgets and battery indicators go. With the app switcher at the bottom, With app switcher puts them at the right end of its row, and windows grow into the top bar's space; with a popup app switcher, Bottom puts them under the window. Available with the app switcher at the bottom or as a popup; with a bottom app switcher, the full-panel display mode keeps the top bar. Changing it reopens open apps in the new size.",
+    "Where the clock, notification icons, app widgets and battery indicators go. With the app switcher at the bottom, With app switcher puts them at the right end of its row, and windows grow into the top bar's space; with a popup app switcher, Bottom puts them under the window. Available with the app switcher at the bottom or as a popup. Changing it reopens open apps in the new size.",
 });
 
 /**
@@ -511,6 +582,14 @@ export function getBrightnessPreferences() {
     curve: autoBrightnessCurveSetting.getValidValue(), fadeMs: scaleAnimationDuration(SCREEN_FADE_MS, screenFadeSetting.get()) };
 }
 
+export const wakeToLastAppSetting = new ConfigSettingBoolean({
+  id: "wake-to-last-app",
+  label: "Wake into last app",
+  storageKey: "display.wakeToLastApp",
+  defaultValue: false,
+  description: "Waking the display with a double tap returns to the app you were using. Off: wake into the app switcher.",
+});
+
 export const screenTimeoutSetting = new ConfigSettingEnum<ScreenTimeoutSetting>({
   id: "screen-timeout",
   label: "Screen timeout",
@@ -555,6 +634,19 @@ export const previewColorSetting = new ConfigSettingEnum<PreviewColor>({
   formatValue: (value) => (value === "green" ? "Green" : "White"),
   description:
     "How the phone's mirror of the glasses display renders: white/grayscale (clearest), or green to match the physical glasses.",
+});
+
+export type PreviewScaling = "scaled" | "raw";
+
+export const previewScalingSetting = new ConfigSettingEnum<PreviewScaling>({
+  id: "preview-scaling",
+  label: "Preview scaling",
+  storageKey: "phone.previewScaling",
+  defaultValue: "scaled",
+  values: ["scaled", "raw"],
+  formatValue: (value) => (value === "raw" ? "Raw" : "Scaled"),
+  description:
+    "How much of the glasses display the phone's mirror shows: Scaled centers and enlarges the part the current display mode uses; Raw shows the whole 640x480 panel.",
 });
 
 export const mirrorTouchSetting = new ConfigSettingBoolean({
@@ -605,60 +697,81 @@ export const watchMirrorAssistantSetting = new ConfigSettingBoolean({
   description: "Stream assistant replies and on-glasses alerts to the watch so they can be read from the wrist.",
 });
 
-export type VerticalPosition = "top" | "upper" | "middle" | "lower" | "bottom";
+/**
+ * A per-app display mode (Navigate, Terminal): the global one ("global"),
+ * Terminal's own default ("default": tall sessions, the sessions list at
+ * the global mode), or a mode of its own.
+ */
+export type AppDisplayLayout = "default" | "global" | DisplayLayout;
 
-const VERTICAL_POSITION_LABELS: Record<VerticalPosition, string> = {
-  top: "Top",
-  upper: "Upper",
-  middle: "Middle",
-  lower: "Lower",
-  bottom: "Bottom",
-};
+function legacyAppDisplayLayout(appId: string, defaultValue: AppDisplayLayout): AppDisplayLayout {
+  const mode = getStringSetting(`${appId}.displayMode`, defaultValue);
+  const position = getStringSetting(`${appId}.verticalPosition`, "global");
+  if (LEGACY_MODE_LAYOUTS[mode]) return LEGACY_MODE_LAYOUTS[mode];
+  const global = displayLayoutSetting.get();
+  if (mode === "576x288") return position === "global" ? (global.startsWith("band-") ? global : legacyDisplayLayout()) : legacyBand(position);
+  // Following the global mode at a band position of its own.
+  if (mode === "global" && position !== "global" && global.startsWith("band-")) return legacyBand(position);
+  return mode === "default" || mode === "global" ? mode : defaultValue;
+}
 
-export const verticalPositionSetting = new ConfigSettingEnum<VerticalPosition>({
-  id: "vertical-position",
-  label: "Vertical position",
-  storageKey: "display.verticalPosition",
-  defaultValue: "middle",
-  values: ["top", "upper", "middle", "lower", "bottom"],
-  formatValue: (value) => VERTICAL_POSITION_LABELS[value] ?? value,
-  description:
-    "Where standard (reduced-height) windows sit vertically within the display area, to position them within your field of view. Full-height windows use the whole screen. Navigate and Terminal can override these display settings.",
-});
-
-/** Per-app layouts can inherit the display preferences or choose their own size. */
-export type AppDisplayMode = "default" | "global" | DisplayModeSetting;
-
-function appDisplayModeSetting(appId: string, defaultValue: AppDisplayMode): ConfigSettingEnum<AppDisplayMode> {
-  return new ConfigSettingEnum<AppDisplayMode>({
+function appDisplayLayoutSetting(appId: string, defaultValue: AppDisplayLayout): ConfigSettingEnum<AppDisplayLayout> {
+  return new ConfigSettingEnumWithLegacy<AppDisplayLayout>({
     id: `${appId}-display-mode`,
     label: "Display mode",
-    storageKey: `${appId}.displayMode`,
+    storageKey: `${appId}.displayLayout`,
     defaultValue,
-    values: appId === "terminal" ? ["default", "global", ...DISPLAY_MODE_VALUES] : ["global", ...DISPLAY_MODE_VALUES],
-    formatValue: (value) => value === "default" ? "Tall sessions (default)" : value === "global" ? "Use global" : displayModeLabel(value),
+    values: appId === "terminal" ? ["default", "global", ...DISPLAY_LAYOUT_VALUES] : ["global", ...DISPLAY_LAYOUT_VALUES],
+    formatValue: (value) => value === "default" ? "Tall sessions (default)" : value === "global" ? "Use global" : displayLayoutLabel(value),
+    isDisabled: (value) => value === "fullscreen" && !fullScreenAvailable(),
     description: appId === "terminal"
-      ? "Screen size for Terminal. The default keeps session windows tall and the terminals list at the global size. Use global follows Display settings for all Terminal windows. Resizing an open session reconnects its view at the new size."
-      : "Screen size for Navigate. Choose Band to leave more of your field of view clear, or Use global to follow Display settings. Applies to the current route too.",
-  });
+      ? "Display mode for Terminal. The default keeps session windows tall and the terminals list in the global mode. Use global follows Display settings for all Terminal windows. Resizing an open session reconnects its view at the new size."
+      : "Display mode for Navigate. Choose a Band to leave more of your field of view clear, or Use global to follow Display settings. Applies to the current route too.",
+  }, () => legacyAppDisplayLayout(appId, defaultValue));
 }
 
-function appVerticalPositionSetting(appId: string): ConfigSettingEnum<"global" | VerticalPosition> {
-  return new ConfigSettingEnum<"global" | VerticalPosition>({
-    id: `${appId}-vertical-position`,
-    label: "Vertical position",
-    storageKey: `${appId}.verticalPosition`,
-    defaultValue: "global",
-    values: ["global", "top", "upper", "middle", "lower", "bottom"],
-    formatValue: (value) => value === "global" ? "Use global" : VERTICAL_POSITION_LABELS[value],
-    description: "Where reduced-height windows for this app sit in your field of view. Use global follows Display settings. Full-height windows fill the display vertically.",
-  });
+export const navigateDisplayLayoutSetting = appDisplayLayoutSetting("navigate", "global");
+export const terminalDisplayLayoutSetting = appDisplayLayoutSetting("terminal", "default");
+
+export type { DataCollectionLevel };
+
+/** The data-collection setting's key, for observers (app/analytics/analytics.ts). */
+export const DATA_COLLECTION_KEY = "privacy.dataCollection";
+
+const DATA_COLLECTION_LABELS: Record<DataCollectionLevel, string> = {
+  none: "None",
+  minimal: "Minimal",
+  full: "Full",
+};
+
+// What each level collects is set out in app/analytics/analytics-store.ts and
+// the privacy policy (PRIVACY); keep these in step with both.
+const DATA_COLLECTION_SUMMARIES: Record<DataCollectionLevel, string> = {
+  none: "Disable all data sharing",
+  minimal: "Version, devices, and connection reliability statistics",
+  full: "More detailed usage data",
+};
+
+/** One-line summary of what a data-collection level sends (onboarding, settings). */
+export function dataCollectionSummary(level: DataCollectionLevel): string {
+  return DATA_COLLECTION_SUMMARIES[level];
 }
 
-export const navigateDisplayModeSetting = appDisplayModeSetting("navigate", "global");
-export const navigateVerticalPositionSetting = appVerticalPositionSetting("navigate");
-export const terminalDisplayModeSetting = appDisplayModeSetting("terminal", "default");
-export const terminalVerticalPositionSetting = appVerticalPositionSetting("terminal");
+/** Chosen in the on-glasses onboarding; changeable in Settings > Privacy. */
+export const dataCollectionSetting = new ConfigSettingEnum<DataCollectionLevel>({
+  id: "data-collection",
+  label: "Faceclaw statistics",
+  storageKey: DATA_COLLECTION_KEY,
+  defaultValue: "none",
+  values: ["none", "minimal", "full"],
+  formatValue: (value) => DATA_COLLECTION_LABELS[value],
+  description:
+    (global.isIOS ? IOS_PRIVACY_SUMMARY + " " : "") +
+    "Optional statistics Faceclaw may send its developers once a day, to help fix problems and improve the " +
+    "app. None: no Faceclaw statistics are stored or sent. Minimal: the app version, which devices are " +
+    "paired and in use, and how reliable the connection to them is. Full: also settings chosen from fixed " +
+    "options, and which kinds of API key are set (never the keys themselves).",
+});
 
 export const voiceControlEnabledSetting = new ConfigSettingBoolean({
   id: "voice-control-enabled",
@@ -728,14 +841,18 @@ export const ringConnectionModeSetting = new ConfigSettingEnum<RingConnectionMod
 // runs -- see the same note in native/voice-control.ts. The "whisper" value
 // keeps its name (it's a persisted setting on real installs) but its label
 // below now says "OpenAI" to tell the two apart in the picker.
-export type VoiceProvider = "onboard" | "onboard-whisper" | "elevenlabs" | "whisper" | "soniox";
+// "whisper-server" is a self-hosted OpenAI-compatible Whisper (e.g. vLLM).
+export type VoiceProvider = "onboard" | "onboard-whisper" | "elevenlabs" | "whisper" | "soniox" | "whisper-server";
 
+// On iOS "onboard" is Apple's on-device recognizer, and there is no
+// "onboard-whisper" (the sherpa-onnx models are Android-only).
 const voiceProviderLabels: Record<VoiceProvider, string> = {
-  onboard: "On-device (Moonshine)",
+  onboard: global.isIOS ? "On-device (Apple)" : "On-device (Moonshine)",
   "onboard-whisper": "On-device (Whisper)",
   elevenlabs: "ElevenLabs",
   whisper: "OpenAI (Whisper)",
   soniox: "Soniox",
+  "whisper-server": "Whisper server (self-hosted)",
 };
 
 export const voiceProviderSetting = new ConfigSettingEnum<VoiceProvider>({
@@ -743,15 +860,20 @@ export const voiceProviderSetting = new ConfigSettingEnum<VoiceProvider>({
   label: "Transcription Provider",
   storageKey: "voice.provider",
   defaultValue: "onboard",
-  values: ["onboard", "onboard-whisper", "elevenlabs", "whisper", "soniox"],
+  values: global.isIOS
+    ? ["onboard", "elevenlabs", "whisper", "soniox", "whisper-server"]
+    : ["onboard", "onboard-whisper", "elevenlabs", "whisper", "soniox", "whisper-server"],
   formatValue: (value) => voiceProviderLabels[value] ?? value,
   isDisabled: (value) => {
     if (value === "elevenlabs") return elevenLabsApiKeySetting.get().trim().length === 0;
     if (value === "whisper") return openAiApiKeySetting.get().trim().length === 0;
     if (value === "soniox") return sonioxApiKeySetting.get().trim().length === 0;
+    if (value === "whisper-server") return !normalizeWhisperServerUrl(whisperServerUrlSetting.get());
     return false;
   },
-  description: "Speech-to-text engine for voice input. ElevenLabs, OpenAI, and Soniox are cloud services that need an API key, with significantly better accuracy than on-device transcription. The two On-device options need their voice model downloaded (below) and never leave the phone.",
+  description: global.isIOS
+    ? "Speech-to-text engine for voice input. ElevenLabs, OpenAI, and Soniox are cloud services that need an API key (Settings > API Keys), with significantly better accuracy than on-device transcription. Whisper server is your own OpenAI-compatible Whisper (set its URL below). On-device uses your iPhone's speech language and never leaves the phone."
+    : "Speech-to-text engine for voice input. ElevenLabs, OpenAI, and Soniox are cloud services that need an API key, with significantly better accuracy than on-device transcription. Whisper server is your own OpenAI-compatible Whisper (set its URL below). The two On-device options need their voice model downloaded (below) and never leave the phone.",
 });
 
 const wakeWordActionLabels: Record<WakeWordAction, string> = {
@@ -768,6 +890,14 @@ export const wakeWordActionSetting = new ConfigSettingEnum<WakeWordAction>({
   values: ["voice-input", "off", "turn-screen-on"],
   formatValue: (value) => wakeWordActionLabels[value] ?? value,
   description: "What saying \"Hey Even\" does: start voice input, just turn the screen on, or nothing.",
+});
+
+export const saveTranscribeAudioSetting = new ConfigSettingBoolean({
+  id: "save-transcribe-audio",
+  label: "Save Transcribe audio",
+  storageKey: "voice.saveTranscribeAudio",
+  defaultValue: true,
+  description: "Record each Transcribe session's audio as a WAV file in Downloads (about 2 MB per minute), named like its transcript. Recordings are kept until you delete them.",
 });
 
 export const saveVoiceRecordingsSetting = new ConfigSettingBoolean({
@@ -802,6 +932,28 @@ export const assistantBackendSetting = new ConfigSettingEnum<AssistantBackendKin
   formatValue: (value) => assistantBackendLabels[value] ?? value,
   description:
     global.isIOS ? "Cloud models called with your OpenAI or Anthropic API key. Add your key in Settings > API Keys." : "Who answers assistant queries: an LLM called from the phone (a cloud API with your key, or the downloaded on-phone model), or your own long-running agent (e.g. OpenClaw) reached through the faceclaw-agent-bridge plugin.",
+});
+
+export const assistantHermesUrlSetting = new ConfigSettingString({
+  id: "assistant-hermes-url",
+  label: "Hermes URL",
+  storageKey: "assistant.hermesUrl",
+  defaultValue: "",
+  editorTitle: "Hermes API server (e.g. http://host:8642/v1)",
+  glassesEditTitle: "Edit Hermes URL",
+  formatValue: (value) => value || "(not set)",
+  description: "Address of a Hermes Agent gateway's API server, used when Hermes agent is the assistant model.",
+});
+
+export const assistantHermesKeySetting = new ConfigSettingString({
+  id: "assistant-hermes-key",
+  label: "Hermes key",
+  storageKey: "assistant.hermesKey",
+  defaultValue: "",
+  editorTitle: "Hermes API server key",
+  glassesEditTitle: "Edit Hermes key",
+  formatValue: (value) => (value ? `${value.slice(0, 6)}...` : "(not set)"),
+  description: "The API server's key (API_SERVER_KEY in Hermes's .env).",
 });
 
 export const assistantBridgeHostSetting = new ConfigSettingString({
@@ -878,6 +1030,54 @@ export const sonioxApiKeySetting = new ConfigSettingString({
   description: "Soniox API key, used when Soniox is the transcription provider.",
 });
 
+export const whisperServerUrlSetting = new ConfigSettingString({
+  id: "whisper-server-url",
+  label: "Whisper server URL",
+  storageKey: "voice.whisperServerUrl",
+  defaultValue: "",
+  editorTitle: "Whisper server URL (e.g. http://100.x.y.z:8004/v1)",
+  glassesEditTitle: "Edit Whisper server URL",
+  formatValue: (value) => value || "(not set)",
+  validate: (value) => (!value.trim() || normalizeWhisperServerUrl(value) ? null : "Enter an http:// or https:// address."),
+  description:
+    "API root of an OpenAI-compatible Whisper server (vLLM, speaches, LocalAI...), used when Whisper server is the transcription provider. On iOS a plain-http address must also be allowed by the app's App Transport Security exceptions.",
+});
+
+export const whisperServerModelSetting = new ConfigSettingString({
+  id: "whisper-server-model",
+  label: "Whisper server model",
+  storageKey: "voice.whisperServerModel",
+  defaultValue: "",
+  editorTitle: "Whisper model id (empty: server's first)",
+  glassesEditTitle: "Edit Whisper model",
+  formatValue: (value) => value || "(server default)",
+  description: "Model id sent to the Whisper server. Leave empty to use the first model the server lists.",
+});
+
+export const whisperServerLanguageSetting = new ConfigSettingString({
+  id: "whisper-server-language",
+  label: "Whisper language",
+  storageKey: "voice.whisperServerLanguage",
+  defaultValue: "",
+  editorTitle: "Language code, e.g. en or sk (empty: auto)",
+  glassesEditTitle: "Edit Whisper language",
+  formatValue: (value) => value || "Auto-detect",
+  validate: (value) => (!value.trim() || /^[a-z]{2,3}$/i.test(value.trim()) ? null : "Use a language code like en, sk or cs."),
+  description:
+    "Spoken language for the Whisper server. Leave empty to auto-detect; a wrong fixed language makes Whisper translate into it instead of transcribing.",
+});
+
+export const whisperServerApiKeySetting = new ConfigSettingString({
+  id: "whisper-server-api-key",
+  label: "Whisper server key",
+  storageKey: "voice.whisperServerApiKey",
+  defaultValue: "",
+  editorTitle: "Whisper server API key (optional)",
+  glassesEditTitle: "Edit Whisper server key",
+  formatValue: (value) => (value ? `${value.slice(0, 6)}...` : "(none)"),
+  description: "Bearer token for the Whisper server, if it requires one.",
+});
+
 export const anthropicApiKeySetting = new ConfigSettingString({
   id: "anthropic-api-key",
   label: "Anthropic key",
@@ -901,6 +1101,7 @@ export const assistantModelSetting = new ConfigSettingEnum<AssistantModel>({
     if (provider === "anthropic") return anthropicApiKeySetting.get().trim().length === 0;
     if (provider === "openai") return openAiApiKeySetting.get().trim().length === 0;
     if (provider === "local") return !isLocalModelReady();
+    if (provider === "hermes") return assistantHermesUrlSetting.get().trim().length === 0;
     return false;
   },
   description:
@@ -1086,6 +1287,23 @@ export const nightscoutAlwaysShowInTopBarSetting = new ConfigSettingBoolean({
   defaultValue: false,
   description: "Keep the Nightscout glucose graph and warnings in the top bar even when all Nightscout windows are closed.",
 });
+export const nightscoutMissedBolusAlertsSetting = new ConfigSettingBoolean({
+  id: "nightscout-missed-bolus-alerts",
+  label: "Missed-bolus alerts",
+  storageKey: "integrations.nightscout.missedBolusAlerts",
+  defaultValue: false,
+  description: "Show a notification on the glasses when glucose rises like an unannounced meal with no bolus or carbs entered. Experimental.",
+});
+export const nightscoutMissedBolusCooldownSetting = new ConfigSettingString({
+  id: "nightscout-missed-bolus-cooldown-minutes",
+  label: "Missed-bolus alert cooldown",
+  storageKey: "integrations.nightscout.missedBolusCooldownMinutes",
+  defaultValue: "120",
+  editorTitle: "Missed-bolus alert cooldown (min)",
+  normalize: normalizeNightscoutThreshold,
+  formatValue: (value) => `${value} min`,
+  description: "After a missed-bolus alert, wait at least this many minutes before showing another.",
+});
 
 export function loadNightscoutThresholds(): NightscoutThresholds {
   return {
@@ -1265,14 +1483,17 @@ function maskToken(token: string): string {
 
 type SettingsMenuOptions<T> = {
   onChange?: (ctx: LayerContext, newValue: T, oldValue: T) => void
+  /** Row label in place of the setting's own (for a setting shown in more than one menu). */
+  label?: string
 }
 
 export function enumSettingMenuItem<TValue extends string, TId extends string = string>(
   setting: ConfigSettingEnum<TValue, TId>,
   opts?: SettingsMenuOptions<TValue>
 ): MenuItem {
+  const label = opts?.label ?? setting.label;
   return {
-    label: setting.label,
+    label,
     description: setting.description,
     onSelect: (ctx) => {
       const current = setting.get();
@@ -1296,10 +1517,10 @@ export function enumSettingMenuItem<TValue extends string, TId extends string = 
           );
         },
       }));
-      openModalMenu(ctx, setting.label, items, Math.max(0, setting.values.indexOf(current)));
+      openModalMenu(ctx, label, items, Math.max(0, setting.values.indexOf(current)));
     },
     render: ({ image, x, y, width }) => {
-      drawRightValueMenuItem(image, getDefaultSmallFont(), x, y, width, setting.label, setting.displayValue(setting.get()));
+      drawRightValueMenuItem(image, getDefaultSmallFont(), x, y, width, label, setting.displayValue(setting.get()));
     },
   };
 }
@@ -1308,15 +1529,16 @@ export function toggleSettingMenuItem<TId extends string = string>(
   setting: ConfigSettingBoolean<TId>,
    opts?: SettingsMenuOptions<boolean>
 ): MenuItem {
+  const label = opts?.label ?? setting.label;
   return {
-    label: setting.label,
+    label,
     description: setting.description,
     onSelect: (ctx) => {
       setting.set(!setting.get());
       opts?.onChange?.(ctx, setting.get(), !setting.get());
     },
     render: ({ image, x, y, width, selected }) => {
-      drawToggleMenuItem(image, getDefaultSmallFont(), x, y, width, setting.label, setting.get(), selected);
+      drawToggleMenuItem(image, getDefaultSmallFont(), x, y, width, label, setting.get(), selected);
     },
   };
 }

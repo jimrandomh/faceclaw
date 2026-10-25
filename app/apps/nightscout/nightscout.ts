@@ -13,6 +13,8 @@ import {
   nightscoutBatteryLowSetting,
   nightscoutMaxLoopAgeSetting,
   nightscoutAlwaysShowInTopBarSetting,
+  nightscoutMissedBolusAlertsSetting,
+  nightscoutMissedBolusCooldownSetting,
   toggleSettingMenuItem,
   nightscoutApiTokenSetting,
   nightscoutSiteUrlSetting,
@@ -28,6 +30,7 @@ export const NIGHTSCOUT_STALE_MS = 15 * 60 * 1000;
 const NIGHTSCOUT_GRAPH_WINDOW_MS = 2 * 60 * 60 * 1000;
 const NIGHTSCOUT_GRAPH_TIME_QUANTUM_MS = 60 * 1000;
 
+/** Draws the trend indicator; returns its width. */
 export function drawDirectionIndicator(
   image: GrayImage,
   font: UiFont,
@@ -35,16 +38,10 @@ export function drawDirectionIndicator(
   y: number,
   direction: string,
   shade: number,
-): void {
-  const label = directionGlyphLabel(font, direction);
-  if (label) {
-    image.drawText(font, x, y, label, shade);
-    return;
-  }
-
-  if (direction) {
-    image.drawText(font, x, y, truncateLine(direction, 10), shade);
-  }
+): number {
+  const label = directionGlyphLabel(font, direction) || (direction ? truncateLine(direction, 10) : "");
+  if (label) image.drawText(font, x, y, label, shade);
+  return font.measureText(label);
 }
 
 /**
@@ -425,6 +422,8 @@ export function nightscoutMenuItems(): MenuItem[] {
           textSettingMenuItem(nightscoutCartridgeLowSetting),
           textSettingMenuItem(nightscoutBatteryLowSetting),
           textSettingMenuItem(nightscoutMaxLoopAgeSetting),
+          toggleSettingMenuItem(nightscoutMissedBolusAlertsSetting),
+          textSettingMenuItem(nightscoutMissedBolusCooldownSetting),
         ]);
       },
     },

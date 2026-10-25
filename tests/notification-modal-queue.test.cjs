@@ -102,3 +102,21 @@ test("the removal reported after a close is ignored, as are stale modals", () =>
   assert.deepEqual(host.opened.map((modal) => modal.notificationKey), ["a", "b"]);
   assert.deepEqual(queue.queuedKeys(), []);
 });
+
+test("a withdrawn notification leaves the queue; the open one is handed back to close", () => {
+  const host = makeHost();
+  const queue = new NotificationModalQueue(host);
+  queue.post("a", true);
+  queue.post("b", false);
+  queue.post("c", false);
+  assert.equal(queue.withdrawn("b"), null);
+  assert.deepEqual(queue.queuedKeys(), ["c"]);
+  assert.equal(queue.withdrawn("unknown"), null);
+  const open = queue.withdrawn("a");
+  assert.equal(open, host.opened[0]);
+  // The host closes it, which moves on to the next as a user close would.
+  queue.closed(open);
+  assert.deepEqual(host.opened.map((modal) => modal.notificationKey), ["a", "c"]);
+  queue.closed(queue.withdrawn("c"));
+  assert.equal(host.sleeps, 1, "the screen the withdrawn notification woke sleeps again");
+});

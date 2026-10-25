@@ -1,5 +1,5 @@
 import { imageFromAsciiArt } from "../../graphics/image";
-import { TranscribeLayer } from "./transcribe";
+import { TranscribeLayer, transcriptTimestamp } from "./transcribe";
 import {
   createInProcessWindow,
   YieldAtRootLayer,
@@ -13,8 +13,8 @@ export const TRANSCRIBE_SURFACE_ID = "window:transcribe";
 
 const TRAY_ICON_ID = "transcribe";
 
-// 16x18 microphone glyph for the top-bar tray.
-const MIC_ICON = imageFromAsciiArt(
+// 16x18 microphone glyph for the top-bar tray (also Translate's).
+export const MIC_ICON = imageFromAsciiArt(
   [
     "     ####     ",
     "    ######    ",
@@ -37,7 +37,7 @@ const MIC_ICON = imageFromAsciiArt(
 
 export type TranscribeAppOptions = InProcessAppOptions & {
   /** Begin continuous mic capture (kept on while the window is open). */
-  startContinuousVoiceCapture: () => void;
+  startContinuousVoiceCapture: (options?: { recordAs?: string }) => void;
   stopContinuousVoiceCapture: () => void;
 };
 
@@ -47,7 +47,9 @@ export type TranscribeAppOptions = InProcessAppOptions & {
  * shows a microphone tray icon in the top bar.
  */
 export function createTranscribeAppWindow(options: TranscribeAppOptions): InProcessWindow {
-  const layer = new TranscribeLayer();
+  // One timestamp per session names both the audio recording and a saved transcript.
+  const stamp = transcriptTimestamp();
+  const layer = new TranscribeLayer(stamp);
   const app = createInProcessWindow({
     appId: "transcribe",
     windowId: TRANSCRIBE_WINDOW_ID,
@@ -77,7 +79,7 @@ export function createTranscribeAppWindow(options: TranscribeAppOptions): InProc
   // Wire async state changes to this window's renderer, rather than the
   // controller action from which the window-specific actions were derived.
   layer.start(app.requestRender);
-  options.startContinuousVoiceCapture();
+  options.startContinuousVoiceCapture({ recordAs: `transcribe-${stamp}` });
   shell.setTrayIcon(TRAY_ICON_ID, MIC_ICON);
   return app;
 }

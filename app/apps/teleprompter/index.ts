@@ -9,8 +9,8 @@ const teleprompterApp: AppDefinition = {
     ctx.launchInProcessApp(TELEPROMPTER_WINDOW_ID, TELEPROMPTER_SURFACE_ID, (options) =>
       createTeleprompterAppWindow({
         ...options,
-        startContinuousVoiceCapture: () => void options.actions.startContinuousVoiceCapture(),
-        stopContinuousVoiceCapture: () => void options.actions.stopContinuousVoiceCapture(),
+        startContinuousVoiceCapture: () => void options.actions.startContinuousVoiceCapture("teleprompter"),
+        stopContinuousVoiceCapture: () => void options.actions.stopContinuousVoiceCapture("teleprompter"),
         appendLog: (message) => ctx.appendLog(message),
       }),
     ),

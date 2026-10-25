@@ -182,6 +182,16 @@ export function drawDenseBatteries(
   return x + DENSE_COLUMN_GAP;
 }
 
+/** The width drawDenseBatteries would take for `items` (0 when empty), to place the block before drawing it. */
+export function denseBatteriesWidth(items: readonly DenseBatteryItem[]): number {
+  let width = 0;
+  for (let end = items.length; end > 0; end -= 2) {
+    const column = items.slice(Math.max(0, end - 2), end);
+    width += Math.max(...column.map((item) => DEVICE_ICONS[item.device].width)) + DENSE_ICON_GAP + BATTERY_ICON_WIDTH + DENSE_COLUMN_GAP;
+  }
+  return Math.max(0, width - DENSE_COLUMN_GAP);
+}
+
 /** The empty outline, built once from the geometry constants. */
 const EMPTY_BATTERY_ICON = buildEmptyBattery();
 

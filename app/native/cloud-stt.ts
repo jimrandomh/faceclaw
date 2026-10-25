@@ -2,8 +2,9 @@
  * Shared shape for the cloud speech-to-text providers (ElevenLabs, Whisper,
  * Soniox).
  * The voice bridge holds one of these while a cloud provider owns the
- * transcript; the Java controller then only decodes LC3 to PCM and hands it
- * over via acceptPcm.
+ * transcript; the native capture (FaceclawVoiceController on Android,
+ * FaceclawSpeech on iOS) then only decodes audio to PCM and hands it over
+ * via acceptPcm.
  */
 
 export type CloudSttTranscriptEvent = {
@@ -51,8 +52,13 @@ export function toJavaBytes(bytes: Uint8Array): any {
   return javaBytes;
 }
 
-/** Base64 for audio payloads, via the Android SDK (no JS base64 in NS core). */
+/** Base64 for audio payloads, via the platform SDK (no JS base64 in NS core). */
 export function encodeBase64(bytes: Uint8Array): string {
+  if (global.isIOS) {
+    const copy = bytes.slice();
+    return NSData.dataWithBytesLength(interop.handleof(copy.buffer), copy.byteLength)
+      .base64EncodedStringWithOptions(0 as NSDataBase64EncodingOptions);
+  }
   if (!global.isAndroid) return "";
   return String(android.util.Base64.encodeToString(toJavaBytes(bytes), android.util.Base64.NO_WRAP));
 }

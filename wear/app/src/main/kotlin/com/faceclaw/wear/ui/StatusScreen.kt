@@ -21,7 +21,6 @@ import androidx.wear.compose.material.Scaffold
 import androidx.wear.compose.material.Text
 import androidx.wear.compose.material.TimeText
 import com.faceclaw.wear.Command
-import com.faceclaw.wear.DisplayMode
 import com.faceclaw.wear.Haptics
 import com.faceclaw.wear.PhoneLink
 import com.faceclaw.wear.R
@@ -99,20 +98,6 @@ fun StatusScreen(link: PhoneLink, haptics: Haptics, onOpenSettings: () -> Unit) 
                     colors = ChipDefaults.secondaryChipColors(),
                     modifier = Modifier.fillMaxWidth(),
                     enabled = connected && !(locked && state?.canUnlock == false),
-                )
-            }
-            item {
-                val mode = DisplayMode.fromWire(state?.displayMode ?: "") ?: DisplayMode.BAND
-                Chip(
-                    onClick = {
-                        haptics.click()
-                        link.sendCommand(Command.DISPLAY_MODE, "value" to mode.next().wire)
-                    },
-                    label = { Text("Display mode") },
-                    secondaryLabel = { Text(mode.label) },
-                    colors = ChipDefaults.secondaryChipColors(),
-                    modifier = Modifier.fillMaxWidth(),
-                    enabled = connected,
                 )
             }
             state?.foreground?.let { foreground ->

@@ -65,6 +65,14 @@ type ArmStats = {
   statusAtMs: number | null;
 };
 
+/** Drop arrivals older than the rate window. */
+function trimRecent(stats: ArmStats, nowMs: number): void {
+  const cutoff = nowMs - RATE_WINDOW_MS;
+  let drop = 0;
+  while (drop < stats.recent.length && stats.recent[drop]!.wallMs < cutoff) drop++;
+  if (drop > 0) stats.recent.splice(0, drop);
+}
+
 function emptyStats(): ArmStats {
   return {
     packets: 0,
@@ -169,6 +177,8 @@ export class MicrophonesMonitorLayer implements Layer {
     this.advanceBuckets(nowMs);
     stats.packets++;
     stats.buckets[BUCKETS - 1]!++;
+    // Trim here too: painting (the other trim) stops while the page is hidden.
+    trimRecent(stats, nowMs);
     stats.recent.push({ wallMs: nowMs, arrivalMs, bytes: data.length });
     stats.lastArrivalWallMs = nowMs;
 
@@ -268,8 +278,7 @@ export class MicrophonesMonitorLayer implements Layer {
     const font = getDefaultSmallFont();
     const line = font.lineHeight;
     const stats = this.stats[arm];
-    const cutoff = nowMs - RATE_WINDOW_MS;
-    while (stats.recent.length > 0 && stats.recent[0]!.wallMs < cutoff) stats.recent.shift();
+    trimRecent(stats, nowMs);
     const rate = (stats.recent.length * 1000) / RATE_WINDOW_MS;
     const byteRate = stats.recent.reduce((sum, arrival) => sum + arrival.bytes, 0) / RATE_WINDOW_MS;
     let maxGap = 0;

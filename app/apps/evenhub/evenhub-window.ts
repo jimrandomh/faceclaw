@@ -5,7 +5,7 @@
  */
 import { GrayImage } from "../../graphics/image";
 import { EVENHUB_SCREEN_WIDTH } from "./compositor";
-import { type InputEvent } from "../../ui/gestures";
+import { directionalFallback, isDirectionalInput, type InputEvent } from "../../ui/gestures";
 import { type Layer, type LayerContext } from "../../ui/layers";
 import {
   createInProcessWindow,
@@ -18,13 +18,20 @@ import { EvenHubSession } from "./session";
 import { renderInstalledEvenHubIcon } from "./installed-apps";
 
 class EvenHubAppLayer implements Layer {
+  /**
+   * Watch swipes become the usual stock gestures here rather than in the
+   * stack's fallback, which labels them as ring input: an app reading the
+   * extension's source field should see that they came from the watch.
+   */
+  readonly acceptsDirectional = true;
+
   constructor(private readonly session: EvenHubSession) {}
 
   paint(ctx: LayerContext): GrayImage {
     const size = ctx.stack.getBaseSize();
-    // EvenHub apps lay out for the stock 576-wide surface. In the full-panel
-    // display mode the window is 640 wide; paint at stock width and centre
-    // it rather than leaving all the slack on the right.
+    // EvenHub apps lay out for the stock 576-wide surface. In the Full
+    // Screen display mode the window is 640 wide; paint at stock width and
+    // centre it rather than leaving all the slack on the right.
     if (size.width > EVENHUB_SCREEN_WIDTH) {
       const content = this.session.paint({ width: EVENHUB_SCREEN_WIDTH, height: size.height }, ctx.stack.isFocused());
       const image = new GrayImage(size.width, size.height, 0);
@@ -40,7 +47,7 @@ class EvenHubAppLayer implements Layer {
     // menu intercepts tap-then-hold), which is the guaranteed way out since
     // EvenHub apps own double-click. Tap-then-hold is still reported to the
     // app as LONG_PRESS_EVENT — see the handleInput wrapper below.
-    this.session.handleGesture(event);
+    this.session.handleGesture(isDirectionalInput(event) ? ({ ...directionalFallback(event), source: "watch" } as InputEvent) : event);
   }
 }
 
@@ -50,6 +57,7 @@ export function createEvenHubWindow(
   session: EvenHubSession,
   options: InProcessAppOptions,
   onShowPhone: () => void,
+  requestShellRender: () => void,
 ): InProcessWindow {
   const fallbackIcon = windowIcon("package", session.manifest.name.charAt(0).toUpperCase() || "E");
   const created = createInProcessWindow({
@@ -58,11 +66,14 @@ export function createEvenHubWindow(
     title: session.manifest.name,
     iconLetter: session.manifest.name.charAt(0).toUpperCase() || "E",
     closeable: true,
+    // An icon the app set at runtime (extension setWindowIcon) wins over the
+    // package's.
     drawIcon: makeImageWindowIcon(
-      (size) => renderInstalledEvenHubIcon(session.manifest.packageId, size),
+      (size) => session.renderWindowIcon(size) ?? renderInstalledEvenHubIcon(session.manifest.packageId, size),
       fallbackIcon,
     ),
     heightMode: "medium",
+    keepsScreenOn: () => session.keepsScreenOn(),
     // The window's context menu doubles as the OS contextual menu EvenHub
     // apps register with `menuObject` (SDK 0.0.14): the app's own entries come
     // first, then the host entries. Evaluated at open time, so a rebuild that
@@ -99,6 +110,14 @@ export function createEvenHubWindow(
     // The extended layout uses the full 576x452 app area ("max"); stock apps
     // stay in the 576x288 band ("medium").
     setTallCanvas: (tall) => created.setHeightMode(tall ? "max" : "medium"),
+    setAttention: (attention) => shell.setWindowAttention(windowId, attention),
+    // Only while the app listens for text: otherwise the shell's Type Into App
+    // destinations (voice dialog, phone keyboard, watch) would send into a void.
+    setAcceptsTextInput: (accept) => {
+      created.window.receiveTextInput = accept ? (text, textOptions) => session.deliverTextInput(text, textOptions) : undefined;
+    },
+    startVoiceInput: () => shell.foregroundWindow()?.windowId === windowId && shell.startVoiceInput(),
+    iconChanged: requestShellRender,
     windowId,
   });
 

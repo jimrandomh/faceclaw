@@ -250,8 +250,17 @@ global.onmessage = (event: { data: WorkerAppMessage }) => {
         syncClock(window);
       }
       break;
+    case "resize-window": {
+      const window = windows.get(message.windowId);
+      if (!window) break;
+      window.viewportWidth = message.viewport.width;
+      window.viewportHeight = message.viewport.height;
+      window.menu?.resize({ width: window.viewportWidth, height: window.viewportHeight });
+      window.lastSubmittedFingerprint = "";
+      if (window.foreground) renderAndSubmit(window, 0);
+      break;
+    }
     case "navigation-sensors":
-    case "resize-window":
     case "text-input":
     case "tool-call":
       break;

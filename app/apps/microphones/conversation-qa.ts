@@ -16,6 +16,10 @@ declare const com: any;
 
 // Qwen runs with a 4096-token context; leave room for the answer.
 const MAX_CONTEXT_CHARS = 7000;
+// The speaker roster grows with every voice ever heard; cap it and the
+// conversation list so they can't crowd the transcript excerpts out.
+const MAX_HEADER_CHARS = MAX_CONTEXT_CHARS / 2;
+const EXCERPTS_HEADING = "# Transcript excerpts\n";
 const MAX_KEYWORDS = 6;
 const SEGMENTS_PER_KEYWORD = 30;
 const RECENT_SEGMENT_LIMIT = 120;
@@ -156,31 +160,57 @@ function buildContext(question: string): { context: string; note: string } {
     }
   }
 
-  const segments = [...segmentMap.values()].sort((a, b) => a.startedAt - b.startedAt);
+  let header =
+    `# Known speakers\n${speakerLines.join("\n") || "(none yet)"}\n\n` +
+    `# Conversations${filters.sinceMs !== null || filters.emotion !== null ? " (filtered by the question)" : ""}\n` +
+    `${sessionLines.join("\n") || "(none in range)"}\n\n`;
+  let truncated = false;
+  if (header.length > MAX_HEADER_CHARS) {
+    header = `${header.slice(0, MAX_HEADER_CHARS)}\n(...)\n\n`;
+    truncated = true;
+  }
+
+  const sessionHeading = (sessionId: number) =>
+    `\n## ${sessionTitles.get(sessionId) ?? `Conversation #${sessionId}`}`;
+  const segmentText = (segment: SegmentRow) => {
+    const speaker =
+      segment.speakerId !== null ? (speakerNames.get(segment.speakerId) ?? "Speaker") : "Speaker";
+    const emotion = segment.emotion && segment.emotion !== "neutral" ? ` [${segment.emotion}]` : "";
+    const line = `[${formatWhen(segment.startedAt)}] ${speaker}${emotion}: ${segment.text}`;
+    return segment.translation ? `${line}\n  (translated: ${segment.translation})` : line;
+  };
+
+  // Fill the remaining budget newest-first, so an overflowing history drops
+  // its oldest excerpts rather than its most recent ones.
+  const sorted = [...segmentMap.values()].sort((a, b) => a.startedAt - b.startedAt);
+  let budget = MAX_CONTEXT_CHARS - header.length - EXCERPTS_HEADING.length;
+  const segments: SegmentRow[] = [];
+  let runSession = -1;
+  for (let index = sorted.length - 1; index >= 0; index--) {
+    const segment = sorted[index]!;
+    let cost = segmentText(segment).length + 1;
+    if (segment.sessionId !== runSession) cost += sessionHeading(segment.sessionId).length + 1;
+    if (cost > budget) {
+      truncated = true;
+      break;
+    }
+    budget -= cost;
+    runSession = segment.sessionId;
+    segments.push(segment);
+  }
+  segments.reverse();
+
   const excerptLines: string[] = [];
   let currentSession = -1;
   for (const segment of segments) {
     if (segment.sessionId !== currentSession) {
       currentSession = segment.sessionId;
-      excerptLines.push(`\n## ${sessionTitles.get(currentSession) ?? `Conversation #${currentSession}`}`);
+      excerptLines.push(sessionHeading(currentSession));
     }
-    const speaker =
-      segment.speakerId !== null ? (speakerNames.get(segment.speakerId) ?? "Speaker") : "Speaker";
-    const emotion = segment.emotion && segment.emotion !== "neutral" ? ` [${segment.emotion}]` : "";
-    excerptLines.push(`[${formatWhen(segment.startedAt)}] ${speaker}${emotion}: ${segment.text}`);
-    if (segment.translation) excerptLines.push(`  (translated: ${segment.translation})`);
+    excerptLines.push(segmentText(segment));
   }
 
-  let context =
-    `# Known speakers\n${speakerLines.join("\n") || "(none yet)"}\n\n` +
-    `# Conversations${filters.sinceMs !== null || filters.emotion !== null ? " (filtered by the question)" : ""}\n` +
-    `${sessionLines.join("\n") || "(none in range)"}\n\n` +
-    `# Transcript excerpts\n${excerptLines.join("\n") || "(no matching lines)"}`;
-  let truncated = false;
-  if (context.length > MAX_CONTEXT_CHARS) {
-    context = context.slice(0, MAX_CONTEXT_CHARS);
-    truncated = true;
-  }
+  const context = `${header}${EXCERPTS_HEADING}${excerptLines.join("\n") || "(no matching lines)"}`;
   const note =
     `${sessions.length} conversation${sessions.length === 1 ? "" : "s"}, ` +
     `${segments.length} transcript line${segments.length === 1 ? "" : "s"} consulted` +

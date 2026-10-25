@@ -1,6 +1,6 @@
 import { NotificationsListLayer } from "../../ui/notifications";
 import { NotificationFilterLayer } from "../../ui/notification-filter";
-import { onAndroidNotificationPosted } from "../../native/notification-icons";
+import { onAndroidNotificationsChanged } from "../../native/notification-icons";
 import {
   createInProcessWindow,
   YieldAtRootLayer,
@@ -18,7 +18,7 @@ export const NOTIFICATIONS_SURFACE_ID = "window:notifications";
  */
 export function createNotificationsAppWindow(options: InProcessAppOptions): InProcessWindow {
   // Newly posted notifications repaint the list while the window is open.
-  let offNotificationPosted: (() => void) | null = null;
+  let offNotificationsChanged: (() => void) | null = null;
   const created = createInProcessWindow({
     appId: "notifications",
     windowId: NOTIFICATIONS_WINDOW_ID,
@@ -39,10 +39,10 @@ export function createNotificationsAppWindow(options: InProcessAppOptions): InPr
     setSurfaceVisible: options.setSurfaceVisible,
     removeSurface: options.removeSurface,
     onClosed: () => {
-      offNotificationPosted?.();
+      offNotificationsChanged?.();
       options.onClosed();
     },
   });
-  offNotificationPosted = onAndroidNotificationPosted(() => created.requestRender());
+  offNotificationsChanged = onAndroidNotificationsChanged(() => created.requestRender());
   return created;
 }

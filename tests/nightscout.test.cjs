@@ -5,6 +5,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 const ts = require('typescript');
 const alerts = require('../.test-build/app/apps/nightscout/nightscout-alerts.js');
+const detector = require('../.test-build/app/apps/nightscout/missed-bolus-detector.js');
 const now = 1_800_000_000_000;
 const limits = { maxCannulaAgeHours: 72, cartridgeLowUnits: 20, batteryLowVoltage: 1.2, maxLoopAgeMinutes: 15 };
 const healthy = { cageTimestampMs: now, reservoirUnits: 100, batteryVoltage: 1.5, loopTimestampMs: now };
@@ -206,6 +207,7 @@ test('bridge exposes numeric measurements and treats absent values as unknown', 
   let pump = { reservoir: '10.5', battery: { voltage: '1.15' } };
   const module = load('app/native/nightscout-bridge.ts', {
     '../ui/dashboard-settings': { nightscoutSiteUrlSetting: { get: () => 'https://example.test' }, nightscoutApiTokenSetting: { get: () => 'test' } },
+    '../apps/nightscout/missed-bolus-detector': detector,
     '../util/http': { async fetchTextWithUserAgent(url) {
       const body = url.includes('/entries.') ? [{ date: now, sgv: 100 }] : url.includes('/devicestatus.') ? [{ pump, openaps: { suggested: { mills: now - 60_000 } } }] : url.includes('/status.') ? {} : [];
       return { ok: true, json: async () => body };
@@ -225,12 +227,44 @@ test('bridge exposes numeric measurements and treats absent values as unknown', 
   assert.equal(bridge.snapshot().reservoirUnits, 0);
 });
 
+test('bridge tags bolus kinds and falls back to the last reading when the window is empty', async () => {
+  const urls = [];
+  let recent = [];
+  const module = load('app/native/nightscout-bridge.ts', {
+    '../ui/dashboard-settings': { nightscoutSiteUrlSetting: { get: () => 'https://example.test' }, nightscoutApiTokenSetting: { get: () => 'test' } },
+    '../apps/nightscout/missed-bolus-detector': detector,
+    '../util/http': { async fetchTextWithUserAgent(url) {
+      urls.push(url);
+      const iso = new Date(now - 30 * 60_000).toISOString();
+      const body = url.includes('/entries.') ? (url.includes('%24gte') ? recent : [{ date: now - 5 * 3_600_000, sgv: 140 }])
+        : url.includes('/treatments.') && !url.includes('Site%20Change') ? [
+          { eventType: 'Meal Bolus', created_at: iso, insulin: 6, carbs: 50 },
+          { eventType: 'Correction Bolus', created_at: iso, insulin: 0.3 },
+          { eventType: 'Correction Bolus', created_at: iso, insulin: 0.2, automatic: true },
+        ]
+        : url.includes('/status.') ? {} : [];
+      return { ok: true, json: async () => body };
+    } },
+  }, { Date: class extends Date { static now() { return now; } }, console });
+  const bridge = new module.NightscoutBridge();
+  await bridge.refreshNow();
+  assert.deepEqual(Array.from(bridge.snapshot().boluses, b => b.kind).sort(), ['ambiguous', 'automatic', 'meal']);
+  assert.equal(bridge.snapshot().latest.sgv, 140, 'a stale last reading still shows');
+  assert.ok(urls.some(url => url.includes('/entries.json?count=1&')));
+  recent = [{ date: now - 60_000, sgv: 120 }];
+  urls.length = 0;
+  await bridge.refreshNow();
+  assert.equal(bridge.snapshot().latest.sgv, 120);
+  assert.ok(!urls.some(url => url.includes('/entries.json?count=1&')), 'no fallback when the window has readings');
+});
+
 test('polling starts once and stops even while the initial HTTP request is pending', async () => {
   let resolveHttp, calls = 0, nextTimer = 0;
   const pending = new Promise(resolve => { resolveHttp = resolve; });
   const timers = new Map();
   const module = load('app/native/nightscout-bridge.ts', {
     '../ui/dashboard-settings': { nightscoutSiteUrlSetting: { get: () => 'https://example.test' }, nightscoutApiTokenSetting: { get: () => 'test' } },
+    '../apps/nightscout/missed-bolus-detector': detector,
     '../util/http': { async fetchTextWithUserAgent() {
       calls++;
       await pending;
@@ -248,6 +282,7 @@ test('polling starts once and stops even while the initial HTTP request is pendi
   assert.equal(timers.size, 0, 'finishing the first refresh must not restart polling');
   await bridge.start();
   assert.equal(timers.size, 1);
-  assert.equal(calls, 10);
+  // Five requests per refresh, plus the last-reading fallback for the empty glucose window.
+  assert.equal(calls, 12);
   await bridge.stop();
 });

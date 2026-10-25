@@ -55,10 +55,9 @@ import { clamp } from "../../util/numeric-util";
 import {
   enumSettingMenuItem,
   terminalAutoReconnectSetting,
-  terminalDisplayModeSetting,
+  terminalDisplayLayoutSetting,
   terminalLaunchPresetsSetting,
   terminalNewConnectionSetting,
-  terminalVerticalPositionSetting,
   terminalWakeOnBellSetting,
   textSettingMenuItem,
   toggleSettingMenuItem,
@@ -1118,8 +1117,7 @@ function windowMenuItems(window: TerminalWindow): MenuItem[] {
  */
 function settingsMenuItems(): MenuItem[] {
   return [
-    enumSettingMenuItem(terminalDisplayModeSetting),
-    enumSettingMenuItem(terminalVerticalPositionSetting),
+    enumSettingMenuItem(terminalDisplayLayoutSetting),
     terminalFontPickerMenuItem(),
     // Opens the phone text editor; the settings listener repaints its page.
     textSettingMenuItem(terminalLaunchPresetsSetting),

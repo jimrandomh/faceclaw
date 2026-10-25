@@ -1,8 +1,8 @@
-import { type AppDefinition } from "../app-definition";
+import { inProcessTrayWidget, type AppDefinition } from "../app-definition";
 import { shell } from "../../ui/shell/shell";
 import { registerTimerTools } from "../../assistant/timer-tools";
 import { timerEngine, timersWakeSetting } from "./timer-engine";
-import { createTimerAppWindow, startTimersTrayIcon, TIMER_SURFACE_ID, TIMER_WINDOW_ID } from "./timer-app";
+import { createTimerAppWindow, showTrayTimer, startTimersTrayIcon, TIMER_SURFACE_ID, TIMER_WINDOW_ID } from "./timer-app";
 
 /**
  * Timers, stopwatch and alarms. The clock engine boots with the shell so
@@ -33,7 +33,8 @@ const timerApp: AppDefinition = {
           .catch((error) => console.error(`timers ring launch failed: ${error}`));
       },
     });
-    startTimersTrayIcon();
+    // Selected in the switcher, the tray readout shows its timer in the app's window.
+    startTimersTrayIcon(inProcessTrayWidget(ctx, TIMER_WINDOW_ID, TIMER_SURFACE_ID, createTimerAppWindow, showTrayTimer));
     registerTimerTools((appId) => ctx.launchApp(appId));
   },
   launch: (ctx) => ctx.launchInProcessApp(TIMER_WINDOW_ID, TIMER_SURFACE_ID, createTimerAppWindow),

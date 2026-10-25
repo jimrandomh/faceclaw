@@ -2,6 +2,7 @@ package com.faceclaw.app
 
 import android.os.Handler
 import android.os.Looper
+import android.webkit.RenderProcessGoneDetail
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
@@ -33,6 +34,11 @@ import java.nio.charset.StandardCharsets
  * The shim is registered as a document-start script instead
  * (FaceclawEvenHubDocumentStart); injectOnPageStarted is the fallback for
  * WebView versions that lack that API.
+ *
+ * An app can crash its renderer, or the system can kill it for memory. Unless
+ * every WebView that renderer served handles that, WebView aborts the whole
+ * process, taking Faceclaw down with it; so onRenderProcessGone retires the
+ * affected WebView and reports it instead.
  */
 class FaceclawEvenHubWebViewClient(
     private val rootDir: String?,
@@ -91,6 +97,15 @@ class FaceclawEvenHubWebViewClient(
         mainHandler.post {
             listener.onPageFinished(url)
         }
+    }
+
+    override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {
+        // Called on the main thread for each WebView the renderer served. This
+        // one can't be used again: drop it, and the app shows as failed.
+        Log.w(TAG, "renderer gone (crashed=${detail.didCrash()}) for $host")
+        FaceclawEvenHubWebViewHost.getInstance().detach(view)
+        listener.onRenderProcessGone(detail.didCrash())
+        return true
     }
 
     companion object {

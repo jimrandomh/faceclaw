@@ -23,14 +23,19 @@ window.__faceclawEvenHub = { postMessage: function(name, args, id) {
 export function createEvenHubWebView(session: EvenHubSession): EvenHubWebView {
   const host = FaceclawEvenHubWebView.new()
   host.packageIdentifier = session.manifest.packageId
+  // The manager's close callback for the shown phone UI; the native back
+  // button hides the host itself and reports it as a 'hidden' event.
+  let onClose: (() => void) | null = null
   host.eventHandler = (json: string) => {
     try {
       const event = JSON.parse(json)
       if (event.kind === 'call' && typeof event.name === 'string' && typeof event.args === 'string' && Number.isSafeInteger(event.id))
         session.handleBridgeCall(event.name, event.args, event.id)
       else if (event.kind === 'loaded') session.webViewLoaded()
-      else if (event.kind === 'error') session.webViewFailed(String(event.message))
-      else if (event.kind === 'console') console.log(`[evenhub:${session.manifest.name}] ${event.message}`)
+      else if (event.kind === 'error') session.webViewFailed(String(event.message), event.fatal === true)
+      else if (event.kind === 'hidden') { const close = onClose; onClose = null; close?.() }
+      // 'notice': host-side events such as a blocked navigation, logged with the app's console.
+      else if (event.kind === 'console' || event.kind === 'notice') console.log(`[evenhub:${session.manifest.name}] ${event.message}`)
     } catch (error) { console.warn(`EvenHub bridge: ${error}`) }
   }
   // Defer loading until manager.ts has attached the session/window handles.
@@ -41,5 +46,6 @@ export function createEvenHubWebView(session: EvenHubSession): EvenHubWebView {
   }, 0)
   return { native: host, evaluateJs: js => host.evaluate(js),
     destroy: () => { clearTimeout(loading); host.destroy() },
-    showOnPhone: () => host.showOnPhone(), hideOnPhone: () => host.hideOnPhone() }
+    showOnPhone: close => { onClose = close; host.showOnPhone() },
+    hideOnPhone: () => { onClose = null; host.hideOnPhone() } }
 }

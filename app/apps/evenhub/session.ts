@@ -63,6 +63,16 @@ import { toolRegistry, type ToolResult, type ToolSpec } from "../../assistant/to
 import { getCurrentLocation } from "../../native/location";
 import { LocationTracker, type TrackedLocation } from "../../native/location-tracker";
 import { ensureFineLocationPermission } from "../../native/location-permissions";
+import {
+  buildEvenHubDeviceStatus,
+  OFFLINE_DEVICE_STATUS_SOURCE,
+  sameDeviceStatus,
+  type EvenHubDeviceStatus,
+  type EvenHubDeviceStatusSource,
+} from "./device-status";
+import { parseWindowIcon, WindowIconRenderer } from "./window-icon";
+import { availableFontFamilies, containerFace, measureContainerText } from "./fonts";
+import { parseFontSpec } from "./font-spec";
 
 const UPNG = require("upng-js");
 
@@ -226,9 +236,15 @@ export const EVENHUB_BRIDGE_INJECT_SCRIPT = `
 /**
  * Injected at document-start (after the stock bridge shim): defines
  * `window.getFaceclawExtensions`, the single entry point for Faceclaw-only
- * capabilities (see the faceclaw-extensions package). It never touches the
- * standard SDK or any prototype — everything lives behind this one global, so
- * apps stay compatible with the stock Even app (where the global is absent).
+ * capabilities. Its public contract (the `FaceclawExtensions` interface) is
+ * the @faceclaw/evenhub-extensions package in evenhub-extensions/. Keep the
+ * two in step (tests/evenhub-extensions-shim.test.cjs checks the member list).
+ * When adding members, bump API_VERSION and tag them `@since apiVersion N` in
+ * the package.
+ *
+ * It never touches the standard SDK or any prototype — everything lives behind
+ * this one global, so apps stay compatible with the stock Even app (where the
+ * global is absent).
  *
  * RPC uses its own id-keyed promise map and `__fcExtResolve`, kept separate
  * from the stock `__fcResolve` channel. Events arrive via `__fcExtEvent`.
@@ -239,13 +255,15 @@ export function buildFaceclawExtensionsScript(versionString: string): string {
 (function () {
   if (window.getFaceclawExtensions) return;
   var VERSION = ${JSON.stringify(versionString)};
+  var API_VERSION = 1;
   var pending = {};
   var nextId = 1;
   window.__fcExtResolve = function (id, ok, value) {
     var entry = pending[id];
     if (!entry) return;
     delete pending[id];
-    (ok ? entry[0] : entry[1])(value);
+    if (ok) entry[0](value);
+    else entry[1](new Error(String(value)));
   };
   function call(method, params) {
     return new Promise(function (resolve, reject) {
@@ -260,9 +278,10 @@ export function buildFaceclawExtensionsScript(versionString: string): string {
   }
   var listeners = {};
   window.__fcExtEvent = function (name, data) {
-    var arr = listeners[name];
-    if (!arr) return;
-    for (var i = 0; i < arr.slice().length; i++) {
+    // Iterate a snapshot, so a listener that unsubscribes mid-dispatch
+    // doesn't make the next one get skipped.
+    var arr = (listeners[name] || []).slice();
+    for (var i = 0; i < arr.length; i++) {
       try { arr[i](data); } catch (e) { if (window.console) console.error(e); }
     }
   };
@@ -275,18 +294,28 @@ export function buildFaceclawExtensionsScript(versionString: string): string {
       if (i >= 0) arr.splice(i, 1);
     };
   }
-  // Compass: enable on first listener, disable when the last one leaves.
-  var compassListeners = [];
-  function addCompass(cb) {
-    compassListeners.push(cb);
-    if (compassListeners.length === 1) send("setCompass", [true]);
-    var off = on("compass", cb);
-    return function () {
-      off();
-      var i = compassListeners.indexOf(cb);
-      if (i >= 0) compassListeners.splice(i, 1);
-      if (compassListeners.length === 0) send("setCompass", [false]);
+  // Events the host only produces on request (compass, touch-down, text
+  // input): it is told to start on the first listener and to stop when the
+  // last one leaves. Each unsubscribe function works once.
+  function counted(name, setMethod) {
+    var count = 0;
+    return function (cb) {
+      var off = on(name, cb);
+      if (++count === 1) send(setMethod, [true]);
+      var active = true;
+      return function () {
+        if (!active) return;
+        active = false;
+        off();
+        if (--count === 0) send(setMethod, [false]);
+      };
     };
+  }
+  function setWindowIcon(icon) {
+    if (!icon) return call("setWindowIcon", [null]);
+    // Typed arrays (ImageData.data) don't survive JSON; send a plain array.
+    var data = Array.prototype.slice.call(icon.data || []);
+    return call("setWindowIcon", [{ width: icon.width, height: icon.height, data: data }]);
   }
   // Voice-assistant tools: specs go to the host; handlers stay here and run when
   // the host invokes a tool via __fcExtInvokeTool.
@@ -318,6 +347,7 @@ export function buildFaceclawExtensionsScript(versionString: string): string {
     send("setAssistantTools", [specs]);
   }
   var extensions = {
+    apiVersion: API_VERSION,
     getVersion: function () { return VERSION; },
     returnToAppSwitcher: function () { send("returnToAppSwitcher"); },
     quit: function () { send("quit"); },
@@ -325,10 +355,18 @@ export function buildFaceclawExtensionsScript(versionString: string): string {
     getConfiguredApiKeys: function () { return call("getConfiguredApiKeys"); },
     requestApiKeyAccess: function (services) { return call("requestApiKeyAccess", [services || []]); },
     playBuzzer: function (steps) { return call("playBuzzer", [steps || []]); },
-    addCompassListener: addCompass,
+    addCompassListener: counted("compass", "setCompass"),
     createLayout: function (layout) { return call("createLayout", [layout || {}]); },
     replaceLayout: function (layout) { return call("replaceLayout", [layout || {}]); },
-    setAssistantTools: setAssistantTools
+    setAssistantTools: setAssistantTools,
+    addTouchDownListener: counted("touchDown", "setTouchDown"),
+    addTextInputListener: counted("textInput", "setTextInput"),
+    startVoiceInput: function () { return call("startVoiceInput"); },
+    setWindowIcon: setWindowIcon,
+    setAttention: function (attention) { send("setAttention", [!!attention]); },
+    setKeepScreenOn: function (keepOn) { send("setKeepScreenOn", [!!keepOn]); },
+    getFonts: function () { return call("getFonts"); },
+    measureText: function (text, font) { return call("measureText", [String(text), font || null]); }
   };
   window.getFaceclawExtensions = function () { return extensions; };
 })();
@@ -354,6 +392,14 @@ export type EvenHubWindowHooks = {
   pushOverlay: (layer: Layer) => void;
   /** Switch the window between the stock 576x288 band and the full 576x452 canvas. */
   setTallCanvas: (tall: boolean) => void;
+  /** Show or clear the attention dot on the window's switcher icon. */
+  setAttention: (attention: boolean) => void;
+  /** Offer (or stop offering) the window as the shell's "Type Into App" destination. */
+  setAcceptsTextInput: (accept: boolean) => void;
+  /** Open the shell's voice dialog aimed at the window; false if it can't open now. */
+  startVoiceInput: () => boolean;
+  /** The app changed its window icon: repaint the switcher. */
+  iconChanged: () => void;
   /** The shell window id (unique per running instance; used for tool registration). */
   windowId: string;
 };
@@ -404,6 +450,21 @@ export class EvenHubSession implements EvenHubMicClient, EvenHubImuClient, EvenH
   private shellFocused = true;
   /** API-key services the user has granted this app this session. */
   private readonly grantedApiKeys = new Set<string>();
+  /** The app listens for touch-down (extension addTouchDownListener). */
+  private touchDownRequested = false;
+  /** The app listens for text input, so the shell offers it as a Type Into App destination. */
+  private textInputRequested = false;
+  /** The app asked for the attention dot on its switcher icon. */
+  private attention = false;
+  /** The app asked the idle screen timeout to wait while it is in the foreground. */
+  private keepScreenOnRequested = false;
+  /** The app's own switcher icon; null draws the package icon. */
+  private windowIcon: WindowIconRenderer | null = null;
+  /** The paired glasses' serial, read once so getGlassesInfo and every status push agree. */
+  private glassesSerial: string | null | undefined = undefined;
+  /** The last deviceStatusChanged sent, and the subscriptions that refresh it. */
+  private lastDeviceStatus: EvenHubDeviceStatus | null = null;
+  private readonly deviceStatusOffs: (() => void)[] = [];
   private log: (message: string) => void;
 
   constructor(
@@ -412,6 +473,7 @@ export class EvenHubSession implements EvenHubMicClient, EvenHubImuClient, EvenH
     log: (message: string) => void,
     remoteUrl = "",
     private readonly sendBuzzerSequence: (payload: Uint8Array) => Promise<void> | void = () => {},
+    private readonly deviceStatusSource: EvenHubDeviceStatusSource = OFFLINE_DEVICE_STATUS_SOURCE,
   ) {
     this.manifest = manifest;
     this.distDir = distDir;
@@ -425,26 +487,28 @@ export class EvenHubSession implements EvenHubMicClient, EvenHubImuClient, EvenH
     this.webViewHandle = handle;
   }
 
-  webViewFailed(message: string): void {
+  /**
+   * A WebView load failed. Once the app has loaded, a failed or blocked
+   * navigation leaves its page running, so only a failure before then (or one
+   * the host marks `fatal`) replaces the glasses window with the error.
+   */
+  webViewFailed(message: string, fatal = false): void {
     if (this.closed) return;
-    this.loadError = message; this.log(`evenhub: ${message}`); this.windowHooks?.requestRender();
+    this.log(`evenhub: ${message}`);
+    if (this.launchContextPushed && !fatal) return;
+    this.loadError = message; this.windowHooks?.requestRender();
   }
 
   /** The WebView finished loading the app: push the one-shot launch context. */
   webViewLoaded(): void {
+    if (this.loadError) { this.loadError = ''; this.windowHooks?.requestRender(); }
     if (this.launchContextPushed) return;
     this.launchContextPushed = true;
     // Launched to drive the glasses (from the on-glasses file browser), so
     // apps that branch on this should take their glasses path.
     this.pushMessage("evenAppLaunchSource", { launchSource: "glassesMenu" });
-    this.pushMessage("deviceStatusChanged", {
-      sn: "FACECLAW-G2",
-      connectType: "connected",
-      isWearing: true,
-      batteryLevel: 100,
-      isCharging: false,
-      isInCase: false,
-    });
+    this.pushDeviceStatus();
+    this.deviceStatusOffs.push(this.deviceStatusSource.subscribe(() => this.pushDeviceStatus()));
   }
 
   // ----- glasses window wiring -----
@@ -452,6 +516,10 @@ export class EvenHubSession implements EvenHubMicClient, EvenHubImuClient, EvenH
   attachWindow(hooks: EvenHubWindowHooks): void {
     this.windowHooks = hooks;
     this.shellWindowId = hooks.windowId;
+    // Requests the app made before the window existed.
+    if (this.textInputRequested) hooks.setAcceptsTextInput(true);
+    if (this.attention) hooks.setAttention(true);
+    if (this.windowIcon) hooks.iconChanged();
   }
 
   windowClosed(): void {
@@ -481,18 +549,29 @@ export class EvenHubSession implements EvenHubMicClient, EvenHubImuClient, EvenH
    * locally with events only for clicks and boundary scrolls.
    */
   handleGesture(event: InputEvent): void {
+    // Touch-down has no stock event (an unknown eventType would parse as a
+    // click), so it goes only to apps that subscribed through the extension.
+    if (event.type === "ring-press") {
+      if (this.touchDownRequested) {
+        this.pushExtEvent("touchDown", { source: extensionInputSource(event.source), timestampMs: event.timestampMs });
+      }
+      return;
+    }
     if (!this.page) return;
-    const capture = this.page ? eventCaptureContainer(this.page) : undefined;
+    const capture = eventCaptureContainer(this.page);
+    // The stock eventSource can't tell the watch from the ring, and scrolls
+    // carry none; the extension field names the device when it is known.
+    const inputSource = "source" in event && event.source ? extensionInputSource(event.source) : undefined;
     switch (event.type) {
       case "click":
         if (capture?.kind === "list") {
-          this.emitListEvent(capture, CLICK_EVENT);
+          this.emitListEvent(capture, CLICK_EVENT, inputSource);
         } else {
-          this.emitSysEvent(CLICK_EVENT, gestureSource(event.source));
+          this.emitSysEvent(CLICK_EVENT, gestureSource(event.source), inputSource);
         }
         break;
       case "double-click":
-        this.emitSysEvent(DOUBLE_CLICK_EVENT, gestureSource(event.source));
+        this.emitSysEvent(DOUBLE_CLICK_EVENT, gestureSource(event.source), inputSource);
         break;
       case "long-press":
       case "short-then-long-press":
@@ -506,9 +585,9 @@ export class EvenHubSession implements EvenHubMicClient, EvenHubImuClient, EvenH
         // given exclusive use of the gesture.
         const eventType = event.type === "long-press-release" ? LONG_PRESS_RELEASE_EVENT : LONG_PRESS_EVENT;
         if (capture?.kind === "list") {
-          this.emitListEvent(capture, eventType);
+          this.emitListEvent(capture, eventType, inputSource);
         } else {
-          this.emitSysEvent(eventType, gestureSource(event.source));
+          this.emitSysEvent(eventType, gestureSource(event.source), inputSource);
         }
         break;
       }
@@ -516,9 +595,9 @@ export class EvenHubSession implements EvenHubMicClient, EvenHubImuClient, EvenH
       case "scroll-down": {
         const eventType = event.type === "scroll-up" ? SCROLL_TOP_EVENT : SCROLL_BOTTOM_EVENT;
         if (capture?.kind === "list") {
-          this.scrollList(capture, eventType);
+          this.scrollList(capture, eventType, inputSource);
         } else {
-          this.emitSysEvent(eventType, 0);
+          this.emitSysEvent(eventType, 0, inputSource);
         }
         break;
       }
@@ -541,11 +620,11 @@ export class EvenHubSession implements EvenHubMicClient, EvenHubImuClient, EvenH
     this.pushMessage("evenHubEvent", { type: "menuItemClickEvent", jsonData: { itemID } });
   }
 
-  private scrollList(list: EvenHubListContainer, eventType: number): void {
+  private scrollList(list: EvenHubListContainer, eventType: number, inputSource?: ExtensionInputSource): void {
     // Swipe up selects the previous item, swipe down the next (stock direction).
     const delta = eventType === SCROLL_TOP_EVENT ? -1 : 1;
     // At a boundary the selection stays put (the list bounces) and the app hears about it.
-    if (!stepListSelection(list, EvenHubFont.get(), delta)) this.emitListEvent(list, eventType);
+    if (!stepListSelection(list, containerFace(list.font), delta)) this.emitListEvent(list, eventType, inputSource);
     this.windowHooks?.requestRender();
   }
 
@@ -810,19 +889,10 @@ export class EvenHubSession implements EvenHubMicClient, EvenHubImuClient, EvenH
         return ApplicationSettings.getString(this.storageKey(readString(data, "key", "")), "");
       case "getUserInfo":
         return { uid: 0, name: "Faceclaw", avatar: "", country: "" };
-      case "getGlassesInfo":
-        return {
-          model: "g2",
-          sn: "FACECLAW-G2",
-          status: {
-            sn: "FACECLAW-G2",
-            connectType: "connected",
-            isWearing: true,
-            batteryLevel: 100,
-            isCharging: false,
-            isInCase: false,
-          },
-        };
+      case "getGlassesInfo": {
+        const status = this.deviceStatus();
+        return { model: "g2", sn: status.sn, status };
+      }
       case "audioControl":
         return this.audioControl(data);
       case "getAppLocation":
@@ -956,7 +1026,12 @@ export class EvenHubSession implements EvenHubMicClient, EvenHubImuClient, EvenH
   }
 
   private storageKey(key: string): string {
-    return `evenhub:${this.manifest.packageId}:ls:${key}`;
+    // The package ID must end at the first ':' so that no other package can
+    // reach this one's keys (manifest IDs are unvalidated: package "a" asking
+    // for key "b:ls:c" must not read package "a:ls:b"'s "c"). IDs containing
+    // ':' or '%' are encoded, so they can't collide with the plain IDs either.
+    const id = this.manifest.packageId;
+    return `evenhub:${/[:%]/.test(id) ? encodeURIComponent(id) : id}:ls:${key}`;
   }
 
   // ----- pushes (host -> web) -----
@@ -980,6 +1055,12 @@ export class EvenHubSession implements EvenHubMicClient, EvenHubImuClient, EvenH
     );
   }
 
+  /** Log a problem with the app's own calls where its developer will see it: the app's console. */
+  private warnApp(message: string): void {
+    this.log(`evenhub: ${message}`);
+    this.webViewHandle?.evaluateJs(`window.console && console.warn(${JSON.stringify(`Faceclaw: ${message}`)})`);
+  }
+
   /** Deliver an extension event to the app (e.g. windowLifecycle). */
   private pushExtEvent(name: string, data: unknown): void {
     this.webViewHandle?.evaluateJs(
@@ -991,17 +1072,18 @@ export class EvenHubSession implements EvenHubMicClient, EvenHubImuClient, EvenH
     this.pushMessage("evenHubEvent", { type: payloadType, jsonData: elideZeroFields(jsonData) });
   }
 
-  private emitSysEvent(eventType: number, eventSource: number): void {
-    this.pushEvenHubEvent("sysEvent", { eventType, eventSource });
+  private emitSysEvent(eventType: number, eventSource: number, inputSource?: ExtensionInputSource): void {
+    this.pushEvenHubEvent("sysEvent", { eventType, eventSource, [INPUT_SOURCE_FIELD]: inputSource });
   }
 
-  private emitListEvent(list: EvenHubListContainer, eventType: number): void {
+  private emitListEvent(list: EvenHubListContainer, eventType: number, inputSource?: ExtensionInputSource): void {
     this.pushEvenHubEvent("listEvent", {
       containerID: list.id,
       containerName: list.name,
       currentSelectItemIndex: list.selectedIndex,
       currentSelectItemName: list.itemNames[list.selectedIndex] ?? "",
       eventType,
+      [INPUT_SOURCE_FIELD]: inputSource,
     });
   }
 
@@ -1017,7 +1099,7 @@ export class EvenHubSession implements EvenHubMicClient, EvenHubImuClient, EvenH
         result = await this.dispatchExtension(method, args.slice(1));
       } catch (error) {
         ok = false;
-        result = String(error);
+        result = error instanceof Error ? error.message : String(error);
         this.log(`evenhub: extension call failed: ${error}`);
       }
       // id 0 is a fire-and-forget send; nothing is awaiting it.
@@ -1050,10 +1132,94 @@ export class EvenHubSession implements EvenHubMicClient, EvenHubImuClient, EvenH
       case "setAssistantTools":
         this.setAssistantTools(Array.isArray(params[0]) ? params[0] : []);
         return null;
+      case "setTouchDown":
+        this.touchDownRequested = params[0] === true;
+        return null;
+      case "setTextInput":
+        this.setTextInputRequested(params[0] === true);
+        return null;
+      case "startVoiceInput":
+        // Without a text listener the dialog would have nowhere in the app to send to.
+        return this.textInputRequested && (this.windowHooks?.startVoiceInput() ?? false);
+      case "setWindowIcon":
+        this.setWindowIcon(params[0]);
+        return null;
+      case "setAttention":
+        this.attention = params[0] === true;
+        this.windowHooks?.setAttention(this.attention);
+        return null;
+      case "setKeepScreenOn":
+        this.keepScreenOnRequested = params[0] === true;
+        return null;
+      case "getFonts":
+        return availableFontFamilies();
+      case "measureText":
+        // No font measures in the stock font, as a container without one draws.
+        return measureContainerText(String(params[0] ?? ""), parseFontSpec(params[1]));
       default:
         this.log(`evenhub: unknown extension method ${method}`);
         return null;
     }
+  }
+
+  // ----- device status (stock getGlassesInfo / deviceStatusChanged) -----
+
+  private deviceStatus(): EvenHubDeviceStatus {
+    const input = this.deviceStatusSource.read();
+    if (this.glassesSerial === undefined) this.glassesSerial = input.serial;
+    return buildEvenHubDeviceStatus({ ...input, serial: this.glassesSerial });
+  }
+
+  /** Push deviceStatusChanged if the status differs from the last one sent. */
+  private pushDeviceStatus(): void {
+    if (this.closed) return;
+    const status = this.deviceStatus();
+    if (this.lastDeviceStatus && sameDeviceStatus(status, this.lastDeviceStatus)) return;
+    this.lastDeviceStatus = status;
+    this.pushMessage("deviceStatusChanged", status);
+  }
+
+  // ----- window controls and text input (extensions) -----
+
+  /** Whether the idle screen timeout should wait while this window is in the foreground. */
+  keepsScreenOn(): boolean {
+    return this.keepScreenOnRequested;
+  }
+
+  /** The app's own switcher icon at `size`, or null to draw the package icon. */
+  renderWindowIcon(size: number): GrayImage | null {
+    return this.windowIcon?.render(size) ?? null;
+  }
+
+  private setWindowIcon(raw: unknown): void {
+    if (raw == null) {
+      this.windowIcon = null;
+    } else {
+      const image = parseWindowIcon(raw);
+      if (!image) {
+        throw new Error(
+          "setWindowIcon: expected {width, height, data} of at most 256x256, with data holding " +
+            "width*height grayscale or width*height*4 RGBA bytes",
+        );
+      }
+      this.windowIcon = new WindowIconRenderer(image);
+    }
+    this.windowHooks?.iconChanged();
+  }
+
+  private setTextInputRequested(accept: boolean): void {
+    if (this.textInputRequested === accept) return;
+    this.textInputRequested = accept;
+    this.windowHooks?.setAcceptsTextInput(accept);
+  }
+
+  /**
+   * Text the shell routed to this window: the voice dialog's Type Into App,
+   * the phone keyboard, the watch, or remote input. Only arrives while the
+   * app listens (setAcceptsTextInput).
+   */
+  deliverTextInput(text: string, options?: { submit?: boolean }): void {
+    this.pushExtEvent("textInput", options?.submit === undefined ? { text } : { text, submit: options.submit });
   }
 
   // ----- compass (EvenHubCompassClient) -----
@@ -1106,12 +1272,16 @@ export class EvenHubSession implements EvenHubMicClient, EvenHubImuClient, EvenH
     for (const raw of rawSpecs) {
       const record = asRecord(raw);
       const name = readString(record, "name", "");
-      if (!name) continue;
+      const problem = appToolProblem(name, record.parameters);
+      if (problem) {
+        this.warnApp(`setAssistantTools: skipped tool ${JSON.stringify(name)}: ${problem}`);
+        continue;
+      }
       const availability = record.availability === "open" ? "open" : "foreground";
       specs.push({
         name,
         description: readString(record, "description", ""),
-        inputSchema: asRecord(record.parameters),
+        inputSchema: record.parameters == null ? { type: "object", properties: {} } : asRecord(record.parameters),
         availability,
       });
     }
@@ -1202,13 +1372,8 @@ export class EvenHubSession implements EvenHubMicClient, EvenHubImuClient, EvenH
     if (steps.length === 0) return;
     for (let i = 0; i < steps.length; i += CFW_SEQ_MAX) {
       const chunk = steps.slice(i, i + CFW_SEQ_MAX);
-      const payload = buildSoundSequencePayload(chunk);
-      try {
-        await this.sendBuzzerSequence(payload);
-      } catch (error) {
-        this.log(`evenhub: playBuzzer failed: ${error}`);
-        return;
-      }
+      // A send failure rejects the app's promise (handleExtensionCall logs it).
+      await this.sendBuzzerSequence(buildSoundSequencePayload(chunk));
       if (i + CFW_SEQ_MAX < steps.length) await delay(phraseDurationMs(chunk));
     }
   }
@@ -1239,6 +1404,7 @@ export class EvenHubSession implements EvenHubMicClient, EvenHubImuClient, EvenH
     this.pendingToolCalls.clear();
     this.locationTracker?.stop();
     this.locationTracker = null;
+    for (const off of this.deviceStatusOffs.splice(0)) off();
     if (!this.systemExitSent) {
       // Best effort: lets the app's teardown handlers run before the webview dies.
       this.emitSysEvent(SYSTEM_EXIT_EVENT, 0);
@@ -1350,6 +1516,35 @@ function configuredApiKeyServices(): string[] {
   return API_KEY_SERVICES.filter((service) => service.setting.get().trim()).map((service) => service.id);
 }
 
+/** App assistant-tool names: what every model provider accepts in a tool name. */
+const APP_TOOL_NAME = /^[A-Za-z0-9_-]{1,64}$/;
+
+/**
+ * Why an app's assistant tool can't be offered, or null if it can. Provider
+ * APIs reject a whole request over one bad tool definition, so offering it
+ * would break every assistant turn while the app runs.
+ */
+function appToolProblem(name: string, parameters: unknown): string | null {
+  if (!APP_TOOL_NAME.test(name)) return "name must be 1-64 letters, digits, underscores or hyphens";
+  if (parameters == null) return null;
+  const schema = parameters as Record<string, unknown>;
+  if (typeof parameters !== "object" || Array.isArray(parameters) || schema.type !== "object") {
+    return 'parameters must be a JSON Schema with type "object"';
+  }
+  if ("oneOf" in schema || "anyOf" in schema || "allOf" in schema) {
+    return "parameters can't use oneOf, anyOf or allOf at the top level";
+  }
+  const properties = schema.properties;
+  if (properties !== undefined && (!properties || typeof properties !== "object" || Array.isArray(properties))) {
+    return "parameters.properties must be an object";
+  }
+  const required = schema.required;
+  if (required !== undefined && !(Array.isArray(required) && required.every((key) => typeof key === "string"))) {
+    return "parameters.required must be an array of property names";
+  }
+  return null;
+}
+
 /** Coerce an app-supplied buzzer step list into validated {freq, ms, duty?}. */
 function normalizeBuzzerSteps(raw: unknown[]): Step[] {
   const out: Step[] = [];
@@ -1439,6 +1634,27 @@ function decodeBmp(bytes: Uint8Array): { pixels: Uint8Array; width: number; heig
 
 function luminance(r: number, g: number, b: number): number {
   return Math.round(0.2126 * r + 0.7152 * g + 0.0722 * b);
+}
+
+/**
+ * Input-device names in the extension API: the touchDown event's source, and
+ * the `faceclawInputSource` field added to stock gesture events.
+ */
+type ExtensionInputSource = "ring" | "left-touchpad" | "right-touchpad" | "watch";
+
+const INPUT_SOURCE_FIELD = "faceclawInputSource";
+
+function extensionInputSource(source: InputSource): ExtensionInputSource {
+  switch (source) {
+    case "ring":
+      return "ring";
+    case "left-arm":
+      return "left-touchpad";
+    case "right-arm":
+      return "right-touchpad";
+    case "watch":
+      return "watch";
+  }
 }
 
 /**

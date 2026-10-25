@@ -37,6 +37,15 @@ export function dailyPageUid(date: Date): string {
   return `${month}-${day}-${date.getFullYear()}`;
 }
 
+/** The date a daily-note page uid names, or null for any other uid. */
+export function dailyPageDate(uid: string): Date | null {
+  const match = /^(\d{2})-(\d{2})-(\d{4})$/.exec(uid);
+  if (!match) return null;
+  const date = new Date(Number(match[3]), Number(match[1]) - 1, Number(match[2]));
+  // Rejects out-of-range fields such as 02-31, which Date would roll over.
+  return dailyPageUid(date) === uid ? date : null;
+}
+
 /** Daily-note page title for a date, e.g. "August 3rd, 2026". */
 export function dailyPageTitle(date: Date): string {
   const months = [

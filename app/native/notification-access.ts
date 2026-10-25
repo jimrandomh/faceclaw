@@ -32,7 +32,44 @@ export function requestNotificationListenerAccess(): void {
   com.faceclaw.app.FaceclawEvenAppDetector.openNotificationAccessSettings(context);
 }
 
+/**
+ * Whether Android has the listener connected, and if not, why not:
+ * "connecting" is access granted but not (yet, or again) bound; "stuck" is
+ * still unbound after the native watchdog's forced rebinds, which only the
+ * user toggling notification access is sure to fix.
+ */
+export type NotificationListenerState = "connected" | "no-access" | "connecting" | "stuck";
+
+export function notificationListenerState(): NotificationListenerState {
+  if (!global.isAndroid) return "connected";
+  const context = Utils.android.getApplicationContext();
+  if (!context) return "no-access";
+  return String(
+    com.faceclaw.app.FaceclawMediaNotificationListenerService.getListenerState(context),
+  ) as NotificationListenerState;
+}
+
+/**
+ * Start the native watchdog that rebinds the listener when Android drops it
+ * while access is granted (see FaceclawMediaNotificationListenerService
+ * .watchListenerBinding). Called once at boot.
+ */
+export function watchNotificationListenerBinding(): void {
+  if (!global.isAndroid) return;
+  const context = Utils.android.getApplicationContext();
+  if (!context) return;
+  com.faceclaw.app.FaceclawMediaNotificationListenerService.watchListenerBinding(context);
+}
+
 export function notificationEmptyMessage(): string {
-  return isNotificationListenerEnabled() ? "No current Android notifications."
-    : "Grant permission on your phone to view notifications on the glasses.";
+  switch (notificationListenerState()) {
+    case "no-access":
+      return "Grant permission on your phone to view notifications on the glasses.";
+    case "connecting":
+      return "Connecting to Android notifications...";
+    case "stuck":
+      return "Android stopped sending notifications to Faceclaw. Turn Faceclaw's notification access off and on again in phone settings.";
+    case "connected":
+      return "No current Android notifications.";
+  }
 }

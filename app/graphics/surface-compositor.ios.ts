@@ -20,17 +20,25 @@ export class SurfaceCompositor {
     this.surfaces.add(id)
   }
   removeSurface(id: string): void { this.native.removeId(id); this.surfaces.delete(id) }
-  setSurfaceVisible(id: string, visible: boolean): void { this.native.visibleIdVisible(id, visible) }
-  setSurfaceDepth(id: string, depth: number): void { this.native.depthIdDepth(id, depth) }
+  hasSurface(id: string): boolean { return this.surfaces.has(id) }
+  // Keep lifecycle errors catchable in JS; an undeclared Kotlin exception
+  // crossing the Objective-C boundary terminates the process.
+  private requireSurface(id: string): void {
+    if (!this.surfaces.has(id)) throw new Error(`Unknown surface: ${id}`)
+  }
+  setSurfaceVisible(id: string, visible: boolean): void { this.requireSurface(id); this.native.visibleIdVisible(id, visible) }
+  setSurfaceDepth(id: string, depth: number): void {
+    this.requireSurface(id)
+    if (!Number.isInteger(depth) || depth < -128 || depth > 127) throw new Error(`Invalid surface depth ${depth} for ${id}`)
+    this.native.depthIdDepth(id, depth)
+  }
   setUnderlayDim(belowZOrder: number, factor: number): void {
     if (!Number.isFinite(factor)) throw new Error('Invalid dim factor')
     this.native.dimBelowFactor(belowZOrder, factor)
   }
   setScreenBlanked(blanked: boolean): void { this.native.blankBlanked(blanked) }
   submitSurfaceFrame(id: string, pixels: Uint8Array, rect: SurfaceRect, draws: ArrayBuffer | null = null): void {
-    // Keep lifecycle errors catchable in JS; an undeclared Kotlin exception
-    // crossing the Objective-C boundary terminates the process.
-    if (!this.surfaces.has(id)) throw new Error(`Unknown surface: ${id}`)
+    this.requireSurface(id)
     if (![rect.x, rect.y, rect.width, rect.height].every(Number.isInteger)
       || rect.width <= 0 || rect.height <= 0 || pixels.length !== rect.width * rect.height) throw new Error('Invalid frame buffer or rectangle')
     this.native.submitDrawsIdDataXYWidthHeightDraws(id, toData(pixels), rect.x, rect.y, rect.width, rect.height,

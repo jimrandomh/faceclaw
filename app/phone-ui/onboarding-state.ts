@@ -2,32 +2,17 @@ import { ApplicationSettings } from "@nativescript/core";
 
 const ONBOARDING_COMPLETE_KEY = "onboarding.complete";
 const PREVIEW_ONLY_KEY = "onboarding.previewOnly";
-const WELCOME_SOUND_PENDING_KEY = "onboarding.welcomeSoundPending";
 
 export function hasCompletedOnboarding(): boolean {
   return ApplicationSettings.getBoolean(ONBOARDING_COMPLETE_KEY, false);
 }
 
-export function setOnboardingCompleted(completed: boolean): void {
-  const wasCompleted = hasCompletedOnboarding();
-  ApplicationSettings.setBoolean(ONBOARDING_COMPLETE_KEY, completed);
-  // Arm the one-time welcome sound on the first-ever completion (not on the
-  // idempotent re-completions that happen when installing from the main menu).
-  if (completed && !wasCompleted) {
-    setWelcomeSoundPending(true);
-  }
-}
-
 /**
- * True when onboarding just completed and the celebratory sound hasn't played
- * yet. Consumed (and cleared) on the first successful glasses connection.
+ * Phone-side onboarding. The on-glasses onboarding that follows it on the
+ * first connection is tracked separately (app/apps/onboarding/).
  */
-export function isWelcomeSoundPending(): boolean {
-  return ApplicationSettings.getBoolean(WELCOME_SOUND_PENDING_KEY, false);
-}
-
-export function setWelcomeSoundPending(pending: boolean): void {
-  ApplicationSettings.setBoolean(WELCOME_SOUND_PENDING_KEY, pending);
+export function setOnboardingCompleted(completed: boolean): void {
+  ApplicationSettings.setBoolean(ONBOARDING_COMPLETE_KEY, completed);
 }
 
 /**

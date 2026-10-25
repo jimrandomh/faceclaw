@@ -90,6 +90,7 @@ class CaptionEngineCoreTest {
             }
             override fun onSpeechStart(startMs: Long) { events.add("start:$startMs"); startLatch.countDown() }
             override fun onStatus(status: String?) { events.add("status:$status") }
+            override fun onStopped(error: String?) { events.add("stopped:$error") }
         }
         val host = object : CaptionHost {
             override val dispatcher = CallbackDispatcher { it() }
@@ -123,5 +124,105 @@ class CaptionEngineCoreTest {
         assertEquals("status:Captions listening...", events[1])
         assertEquals("start:0", events[2])
         assertEquals("utterance:hi:2:0", events[3])
+        assertEquals("stopped:null", events.last())
+    }
+
+    /** Records listener events; `stopped` opens once the worker reports onStopped. */
+    private class RecordingListener : FaceclawCaptionEngineListener {
+        val events = mutableListOf<String>()
+        val stopped = Latch(1, testPlatform())
+        var utteranceLatch = Latch(1, testPlatform())
+        override fun onUtterance(text: String?, embedding: FloatArray?, startMs: Long, endMs: Long, peakRms: Double) {
+            events.add("utterance:$text")
+            utteranceLatch.countDown()
+        }
+        override fun onSpeechStart(startMs: Long) {}
+        override fun onStatus(status: String?) {}
+        override fun onStopped(error: String?) {
+            events.add("stopped:$error")
+            stopped.countDown()
+        }
+        // Read only after a latch: callbacks run on the worker (the test dispatcher is inline).
+        fun snapshot(): List<String> = events.toList()
+    }
+
+    private fun captionHost(transcriber: () -> OfflineTranscriber?) = object : CaptionHost {
+        override val dispatcher = CallbackDispatcher { it() }
+        override fun loadTranscriber(modelDir: String): OfflineTranscriber? = transcriber()
+        override fun loadEmbedder(modelPath: String): SpeakerEmbedder? = null
+    }
+
+    private fun speak(session: CaptionSession, loudChunks: Int = 10, quietChunks: Int = 8) {
+        val loud = AudioSegmentation.pcm16ToLittleEndian(chunk(3000), 0, 800)
+        val quiet = AudioSegmentation.pcm16ToLittleEndian(chunk(0), 0, 800)
+        val idle = AudioSegmentation.pcm16ToLittleEndian(chunk(10), 0, 800)
+        repeat(2) { session.acceptPcm(idle) }
+        repeat(loudChunks) { session.acceptPcm(loud) }
+        repeat(quietChunks) { session.acceptPcm(quiet) }
+    }
+
+    @Test
+    fun captionSessionSurvivesAnUtteranceTheModelRejects() {
+        var calls = 0
+        val transcriber = object : OfflineTranscriber {
+            override fun recognize(samples: FloatArray, count: Int): String {
+                calls++
+                if (calls == 1) throw IllegalStateException("bad input")
+                return "second"
+            }
+            override fun release() {}
+        }
+        val listener = RecordingListener()
+        val errors = mutableListOf<String>()
+        val session = CaptionSession(captionHost { transcriber }, testPlatform(), "caption-reject-test") { m, _ -> errors.add(m) }
+        session.setListener(listener)
+        session.setAsrModelDir("models")
+        session.setSilenceMs(300)
+        session.start()
+        speak(session)
+        assertTrue(listener.utteranceLatch.await(5000))
+        listener.utteranceLatch = Latch(1, testPlatform())
+        speak(session)
+        assertTrue(listener.utteranceLatch.await(5000))
+        session.stop()
+        // The rejected utterance still arrives (without text), and the worker kept going.
+        assertEquals(listOf("utterance:", "utterance:second", "stopped:null"), listener.snapshot())
+        assertEquals(listOf("caption recognition failed"), errors.toList())
+    }
+
+    @Test
+    fun requestStopDeliversTheTrailingUtteranceBeforeStopped() {
+        val transcriber = object : OfflineTranscriber {
+            override fun recognize(samples: FloatArray, count: Int): String = "last words"
+            override fun release() {}
+        }
+        val listener = RecordingListener()
+        val session = CaptionSession(captionHost { transcriber }, testPlatform(), "caption-flush-test") { m, e -> error("$m: $e") }
+        session.setListener(listener)
+        session.setAsrModelDir("models")
+        session.start()
+        // Speech with no closing silence: the utterance is still open when the stop lands.
+        speak(session, loudChunks = 10, quietChunks = 0)
+        session.requestStop()
+        assertTrue(listener.stopped.await(5000))
+        assertEquals(listOf("utterance:last words", "stopped:null"), listener.snapshot())
+    }
+
+    @Test
+    fun aModelLoadFailureReportsStoppedWithTheError() {
+        val listener = RecordingListener()
+        val session = CaptionSession(
+            captionHost { throw IllegalStateException("model corrupt") },
+            testPlatform(),
+            "caption-load-test",
+        ) { _, _ -> }
+        session.setListener(listener)
+        session.setAsrModelDir("models")
+        session.start()
+        assertTrue(listener.stopped.await(5000))
+        assertEquals(listOf("stopped:model corrupt"), listener.snapshot())
+        // The dead worker left the session stopped, so a later stop is a no-op.
+        session.stop()
+        session.requestStop()
     }
 }

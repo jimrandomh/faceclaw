@@ -10,8 +10,8 @@ function fixture() {
   }
   const settings = {
     brightnessSetting: { get: () => brightness, set: value => { brightness = value; writes.push(value); } },
-    displayModeSetting: { get: () => mode, set: value => { mode = value; } },
-    DISPLAY_MODE_VALUES: ['small', 'large'], displayModeLabel: value => value === 'small' ? 'Small' : 'Large',
+    displayLayoutSetting: { get: () => mode, set: value => { mode = value; }, values: ['small', 'large', 'huge'],
+      isDisabled: value => value === 'huge', displayValue(value = mode) { return value[0].toUpperCase() + value.slice(1); } },
   };
   const { RemoteControlsViewModel } = loader({}, {
     '@nativescript/core': { Observable, Dialogs: { action: async () => picked } },
@@ -51,9 +51,12 @@ test('shared brightness controls snap manual levels and restore the manual value
   assert.equal(h.brightness(), '2');
 });
 
-test('shared screen-size picker preserves cancellation and applies the selected mode', async () => {
+test('shared display-mode picker preserves cancellation and applies the selected mode', async () => {
   const h = fixture();
   h.pick('Cancel'); await h.model.onDisplayModeTap();
+  assert.equal(h.mode(), 'small');
+  // Unavailable modes (Full Screen beside a side strip) are not offered.
+  h.pick('Huge'); await h.model.onDisplayModeTap();
   assert.equal(h.mode(), 'small');
   h.pick('Large'); await h.model.onDisplayModeTap();
   assert.equal(h.mode(), 'large');

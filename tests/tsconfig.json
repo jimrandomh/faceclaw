@@ -35,6 +35,7 @@
     "../app/g2/glasses-display-state.ts",
     "../app/g2/glance-state.ts",
     "../app/ui/shell/notification-modal-queue.ts",
+    "../app/ui/shell/notification-popup-delay.ts",
     "../app/apps/glanceboard/layout.ts",
     "../app/apps/files/video-layout.ts",
     "../app/g2/pairing-candidates.ts",
@@ -44,12 +45,17 @@
     "../app/apps/microphones/sentiment.ts",
     "../app/apps/microphones/dsp.ts",
     "../app/apps/microphones/radar-dots.ts",
+    "../app/apps/microphones/caption-clock.ts",
     "../app/apps/microphones/name-guess.ts",
     "../app/apps/evenhub/containers.ts",
     "../app/apps/evenhub/list-menu.ts",
+    "../app/apps/evenhub/device-status.ts",
+    "../app/apps/evenhub/font-spec.ts",
+    "../app/apps/evenhub/window-icon.ts",
     "../app/apps/timer/timer-model.ts",
     "../app/apps/teleprompter/script-tracker.ts",
     "../app/apps/nightscout/nightscout-alerts.ts",
+    "../app/apps/nightscout/missed-bolus-detector.ts",
     "../app/health/health-types.ts",
     "../app/health/health-derive.ts",
     "../app/health/health-store.ts",
@@ -68,6 +74,7 @@
     "../app/apps/t3code/t3-auth.ts",
     "../app/apps/t3code/t3-client.ts",
     "../app/apps/t3code/t3-transcript.ts",
-    "../app/apps/t3code/t3-glance.ts"
+    "../app/apps/t3code/t3-glance.ts",
+    "../app/apps/t3code/t3-launch.ts"
   ]
 }

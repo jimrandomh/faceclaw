@@ -16,6 +16,7 @@ import {
   type HeadOrientation,
 } from "./dsp";
 import { micArrayController, micControlSupported, loadMicConfig, saveMicConfig } from "./mic-control";
+import { CaptionClock } from "./caption-clock";
 import { micModelPath } from "./mic-models";
 import {
   MIC_CHANNEL_KEYS,
@@ -67,6 +68,7 @@ import { formatRelativeTime } from "../../util/date-util";
 import { deviceLanguage, identifyLanguage, translateText } from "./translate";
 
 declare const com: any;
+declare const java: any;
 
 /**
  * The Microphones session: owns mic capture while the app window is open,
@@ -83,6 +85,11 @@ declare const com: any;
  *   mics as raw PCM 'SM' frames; per-temple delay-and-sum beamforming plus
  *   NLMS noise cancellation run on the phone, and the two temple bearings
  *   are fused for the radar.
+ *
+ * Neither path can assume an earlier start still holds: the mic enable
+ * lives in the glasses session (an arm drop or EvenHub resume clears it),
+ * and other mic users preempt the shared tap. A periodic check brings
+ * capture up when it isn't and re-acquires it when audio stops arriving.
  */
 
 const SAMPLE_RATE = 16000;
@@ -95,6 +102,37 @@ const RECORDING_AAC_BITRATE = 32_000;
 const ENCOUNTER_GAP_MS = 15 * 60 * 1000;
 const ENCOUNTER_CARD_TTL_MS = 12_000;
 const ENCOUNTER_CARD_MAX_ACTION_ITEMS = 2;
+// A temple that has sent no frame (or no bearing) for this long no longer
+// counts: its stream stopped, its mics were toggled off, or its arm dropped.
+const TEMPLE_STALE_MS = 1000;
+// An enabled temple silent this long while forwarding holds gets its config
+// re-sent; it is also the time a temple gets to start streaming after each
+// CONFIGURE.
+const TEMPLE_SILENT_MS = 5000;
+// The fused direction of arrival only gates audio while it is this fresh: a
+// direction nobody reports any more (Direction detection turned off, the
+// temples gone quiet) must not keep muting the captions.
+const DOA_STALE_MS = TEMPLE_STALE_MS;
+// The caption feed moves to the other temple only once that temple has
+// clearly out-heard the current one for a while. Each switch splices in
+// audio on another temple's clock, so flapping near the threshold glitches it.
+const FEED_SWITCH_RATIO = 1.5;
+const FEED_SWITCH_HOLD_MS = 500;
+// How often capture is checked: brought up if it isn't, re-acquired if
+// audio stopped arriving.
+const CAPTURE_CHECK_MS = 3000;
+// A caption engine that dies on its own is restarted on the same
+// conversation, with growing delays, this many times before captions give up.
+const CAPTION_MAX_RESTARTS = 3;
+const CAPTION_RESTART_BASE_MS = 2000;
+// How long a stopping caption engine gets to deliver its trailing utterance
+// before its conversation is closed without it.
+const CAPTION_STOP_TIMEOUT_MS = 20_000;
+const COMPASS_OWNER = "microphones";
+// This app's claim on the shared raw-PCM tap (stock path).
+const RAW_CAPTURE_OWNER = "microphones";
+const WAITING_TEXT = "Waiting for the glasses microphone...";
+const STALLED_TEXT = "No audio from the glasses; reconnecting the mic...";
 
 export type CaptionLine = {
   speakerId: number | null;
@@ -133,22 +171,59 @@ export type MicSessionState = {
   /** Human-readable description of the active noise-cancellation engine. */
   ancEngine: string;
   captionsActive: boolean;
+  /** Why captions aren't running, for the captions view ("" while they are). */
+  captionsNote: string;
   captionLines: CaptionLine[];
   speakerDots: SpeakerDot[];
 };
 
 type StateListener = (state: MicSessionState) => void;
 
+/** One saved caption conversation: its store row and its running tone average. */
+type ConversationRecord = { rowId: number; sentimentSum: number; sentimentCount: number };
+
+/**
+ * One caption-engine instance. Its utterance times are on its own sample
+ * clock (audio fed to it), converted to wall time by `clock` and to
+ * recording time with the recording offset taken at its start; an engine
+ * restarted after a failure is a new run on the same conversation.
+ */
+type CaptionRun = {
+  engine: any;
+  // The Java listener proxy must stay referenced or it gets GC'd.
+  listener: any;
+  audioBaseMs: number;
+  clock: CaptionClock;
+  conversation: ConversationRecord | null;
+  /** The app session (start() count) it belongs to. */
+  generation: number;
+  stopTimer: ReturnType<typeof setTimeout> | null;
+  /** Runs once the stopped engine has delivered its trailing utterance. */
+  afterStop: (() => void) | null;
+};
+
+// Boot-time recovery runs once per process.
+let recoveryDone = false;
+
 class MicSession {
   private readonly stateListeners = new Set<StateListener>();
   private running = false;
   private mode: "off" | "stock" | "extended" = "off";
   private statusText = "Idle";
+  // Whether the current mode's capture path is up; until it is, the capture
+  // check keeps retrying.
+  private captureUp = false;
+  // Capture is up but audio isn't arriving (the check is re-acquiring it).
+  private captureStalled = false;
+  // Consecutive checks that found the stock raw tap dead and restarted it.
+  private stockRestarts = 0;
 
   // Radar state.
   private levels: number[] = [];
   private levelLabels: string[] = [];
   private doaDeviceDeg: number | null = null;
+  // When doaDeviceDeg was last updated from a reported bearing.
+  private doaAtMs = 0;
   private ssr = 0;
   private headingDeg: number | null = null;
   private beamWorldDeg = 0;
@@ -158,13 +233,20 @@ class MicSession {
 
   // Captions state.
   private captionLines: CaptionLine[] = [];
-  private captionEngine: any = null;
-  private captionListenerProxy: any = null;
+  // Captions are on for this app session: an engine is running, or being
+  // restarted after a failure.
   private captionsActive = false;
-  private engineStartWallMs = 0;
-  private sessionRowId = -1;
-  private sentimentSum = 0;
-  private sentimentCount = 0;
+  private captionRun: CaptionRun | null = null;
+  // Runs told to stop that haven't reported back; each holds its
+  // conversation open until its trailing utterance is in.
+  private readonly stoppingRuns = new Set<CaptionRun>();
+  private conversation: ConversationRecord | null = null;
+  private captionFailures = 0;
+  private captionRestartTimer: ReturnType<typeof setTimeout> | null = null;
+  // Why captions gave up after repeated engine failures ("" when they haven't).
+  private captionsFailure = "";
+  // Bumped per start(), so a stopping run's late line isn't shown in a later session.
+  private sessionGeneration = 0;
   private conversationLang = "und";
 
   // Recording state.
@@ -181,7 +263,13 @@ class MicSession {
   private temples = new Map<MicSide, TempleAudioPipeline>();
   private templeAngles: { left: number | null; right: number | null } = { left: null, right: null };
   private templeSsr: { left: number; right: number } = { left: 0, right: 0 };
+  private templeAngleAtMs: Record<MicSide, number> = { left: 0, right: 0 };
+  private templeFrameAtMs: Record<MicSide, number> = { left: 0, right: 0 };
+  // When each temple was last sent CONFIGURE, for its start-up grace period.
+  private templeArmedAtMs: Record<MicSide, number> = { left: 0, right: 0 };
   private captionFeedSide: MicSide = "left";
+  // When the other temple first clearly out-heard the caption feed's (0 = it hasn't).
+  private feedSwitchSinceMs = 0;
   // Cached at capture start so the ~80 Hz packet path never re-reads settings.
   private activeConfig: MicConfig = loadMicConfig();
   // Hot-path flags mirrored from settings so the packet path avoids a JNI
@@ -202,6 +290,7 @@ class MicSession {
   private speechActive = false;
 
   private renderTimer: ReturnType<typeof setInterval> | null = null;
+  private captureCheckTimer: ReturnType<typeof setInterval> | null = null;
 
   onState(listener: StateListener): () => void {
     this.stateListeners.add(listener);
@@ -232,6 +321,7 @@ class MicSession {
       ancOn: ancEnabledSetting.get(),
       ancEngine: this.describeAncEngine(),
       captionsActive: this.captionsActive,
+      captionsNote: this.captionsNote(),
       captionLines: [...this.captionLines],
       speakerDots: [...(this.speakerDots = pruneDots(this.speakerDots, Date.now()))],
     };
@@ -244,6 +334,16 @@ class MicSession {
       : this.suppressorEngine;
   }
 
+  private captionsNote(): string {
+    if (this.captionsActive) return "";
+    if (this.captionsFailure) {
+      return `Captions stopped: ${this.captionsFailure}. Turn Captions back on in the menu to retry.`;
+    }
+    // Wanted, but waiting for the microphone to come up.
+    if (this.running && captionsEnabledSetting.get()) return this.statusText;
+    return "Captions are off (enable in the Microphones menu).";
+  }
+
   private notify(): void {
     const state = this.getState();
     this.stateListeners.forEach((listener) => listener(state));
@@ -254,41 +354,26 @@ class MicSession {
   start(): void {
     if (this.running || !global.isAndroid) return;
     this.running = true;
+    this.sessionGeneration += 1;
     this.captionLines = [];
     this.speakerDots = [];
-    this.sentimentSum = 0;
-    this.sentimentCount = 0;
+    this.captionsFailure = "";
     this.conversationLang = "und";
 
     this.activeConfig = loadMicConfig();
     this.refreshCachedFlags();
-    this.offSettings = onSettingsStoreChanged(() => this.refreshCachedFlags());
+    this.mode = this.desiredMode();
+    this.offSettings = onSettingsStoreChanged(() => this.handleSettingsChanged());
     this.offSpeakerChanges = speakerRegistry.onChanged(() => this.refreshSpeakerIdentities());
     this.offVoiceActivity = voiceActivity.subscribe((active) => this.handleVoiceActivity(active));
-    const extended = micControlSupported() && this.activeConfig.armHardware;
-    this.mode = extended ? "extended" : "stock";
     this.startSuppressor();
     this.startCompass();
-    if (captionsEnabledSetting.get()) {
-      this.startCaptions();
-    }
-    if (saveRecordingsSetting.get() && recordingsRetentionSetting.get() !== "none") {
-      this.startRecording();
-    }
-    const ok = extended ? this.startExtended() : this.startStock();
-    if (!ok) {
-      this.statusText = "Microphone unavailable (glasses not connected?)";
-      this.running = false;
-      this.stopCaptions();
-      this.stopRecording(false);
-      this.stopCompass();
-      this.mode = "off";
-      this.notify();
-      return;
-    }
-    this.statusText = extended ? "Listening (4-mic array)" : "Listening";
+    // Captions start once capture is up (bringUpCapture), so a session
+    // waiting on the glasses doesn't open an empty conversation.
+    this.bringUpCapture();
     // Levels/DOA update at packet rate; coalesce UI renders to 5 Hz.
     this.renderTimer = setInterval(() => this.notify(), 200);
+    this.captureCheckTimer = setInterval(() => this.checkCapture(), CAPTURE_CHECK_MS);
     this.notify();
   }
 
@@ -299,29 +384,122 @@ class MicSession {
       clearInterval(this.renderTimer);
       this.renderTimer = null;
     }
-    if (this.mode === "extended") {
-      this.stopExtended();
-    } else {
-      this.stopStock();
+    if (this.captureCheckTimer) {
+      clearInterval(this.captureCheckTimer);
+      this.captureCheckTimer = null;
     }
+    this.stopCapture();
     this.offSettings?.();
     this.offSettings = null;
     this.offSpeakerChanges?.();
     this.offSpeakerChanges = null;
     this.offVoiceActivity?.();
     this.offVoiceActivity = null;
+    // Closes the recording now; the conversation closes once the engine's
+    // trailing utterance is in.
     this.stopCaptions();
-    this.stopRecording(true);
     this.stopCompass();
     this.suppressor = null;
     this.speechActive = false;
-    this.finishSessionRow();
     this.mode = "off";
     this.statusText = "Idle";
+    this.captureStalled = false;
     this.levels = [];
-    this.doaDeviceDeg = null;
+    this.clearDirection();
     this.notify();
     void this.applyRetentionSweep();
+  }
+
+  private listeningText(): string {
+    return this.mode === "extended" ? "Listening (4-mic array)" : "Listening";
+  }
+
+  private desiredMode(): "stock" | "extended" {
+    return micControlSupported() && this.activeConfig.armHardware ? "extended" : "stock";
+  }
+
+  /**
+   * Start the current mode's capture path. Until it is up the session stays
+   * running and the capture check retries; captions begin once it is.
+   */
+  private bringUpCapture(): boolean {
+    // The voice dialog or Transcribe owns the mic; take it back when it ends.
+    if (voiceActivity.isActive() || !this.startCapture()) {
+      this.captureUp = false;
+      this.statusText = WAITING_TEXT;
+      return false;
+    }
+    this.captureUp = true;
+    this.captureStalled = false;
+    this.statusText = this.listeningText();
+    if (captionsEnabledSetting.get() && !this.captionsActive && !this.captionsFailure) {
+      this.startCaptions();
+    }
+    return true;
+  }
+
+  /** Start the current mode's capture path, undoing any partial start on failure. */
+  private startCapture(): boolean {
+    try {
+      if (this.mode === "extended" ? this.startExtended() : this.startStock()) return true;
+    } catch (error) {
+      console.warn(`mic capture start failed: ${error}`);
+    }
+    this.stopCapture();
+    return false;
+  }
+
+  private stopCapture(): void {
+    this.captureUp = false;
+    if (this.mode === "extended") {
+      this.stopExtended();
+    } else {
+      this.stopStock();
+    }
+  }
+
+  /**
+   * Persist a Microphone setup change. While running it takes effect live:
+   * toggling 4-mic capture swaps the capture path, and any other change is
+   * re-sent to the streaming temples.
+   */
+  updateConfig(mutate: (config: MicConfig) => MicConfig): void {
+    const config = mutate(loadMicConfig());
+    const directionChanged = config.beamform !== this.activeConfig.beamform;
+    const modeBefore = this.mode;
+    // Before saving: the save's settings event re-checks the capture mode.
+    this.activeConfig = config;
+    saveMicConfig(config);
+    if (this.running) {
+      if (directionChanged) this.clearDirection();
+      this.syncCaptureMode();
+      if (
+        this.mode === modeBefore &&
+        this.mode === "extended" &&
+        this.captureUp &&
+        !voiceActivity.isActive()
+      ) {
+        this.armExtended();
+      }
+    }
+    this.notify();
+  }
+
+  private handleSettingsChanged(): void {
+    this.refreshCachedFlags();
+    // The developer gate on mic control can change under a running session.
+    this.syncCaptureMode();
+  }
+
+  /** Swap capture paths when 4-mic capture (or its developer gate) changed. */
+  private syncCaptureMode(): void {
+    if (!this.running) return;
+    const mode = this.desiredMode();
+    if (mode === this.mode) return;
+    this.stopCapture();
+    this.mode = mode;
+    this.clearDirection();
+    this.bringUpCapture();
   }
 
   private refreshCachedFlags(): void {
@@ -358,15 +536,16 @@ class MicSession {
   }
 
   /**
-   * The assistant modal owns the single G2 mic while open. Pause our capture
-   * for its duration and re-acquire when it closes — the stock raw tap is
-   * preempted by the bridge and must be re-requested; the extended SM stream
-   * must stop so the assistant's stock-format session can run at all.
+   * Speech capture (the assistant modal, a dictation draft, Transcribe) owns
+   * the single G2 mic while active. Pause our capture for its duration and
+   * re-acquire when it ends — the stock raw tap is preempted by the bridge
+   * and must be re-requested; the extended SM stream must stop so the
+   * stock-format capture can run at all.
    */
   private handleVoiceActivity(active: boolean): void {
     if (!this.running) return;
     if (active) {
-      if (this.mode === "extended") {
+      if (this.mode === "extended" && this.captureUp) {
         micArrayController.stopStreaming();
         try {
           this.nativeCommunicator()?.stopG2AudioForwarding();
@@ -376,15 +555,88 @@ class MicSession {
       }
       return;
     }
-    const communicator = this.nativeCommunicator();
-    if (!communicator) return;
-    if (this.mode === "extended") {
-      if (this.forwardingProxy && communicator.startG2AudioForwarding(this.forwardingProxy)) {
-        micArrayController.apply({ ...this.activeConfig, channelMask: 0b11 });
+    // Take the mic back now rather than at the next check.
+    this.checkCapture();
+  }
+
+  /**
+   * Bring capture up if it isn't, and re-acquire it if audio stopped
+   * arriving. Runs every CAPTURE_CHECK_MS and when speech capture ends.
+   */
+  private checkCapture(): void {
+    if (!this.running || voiceActivity.isActive()) return;
+    try {
+      if (!this.captureUp) {
+        // Retrying while disconnected would only log skipped sends.
+        if (this.nativeCommunicator()?.isSessionReady()) this.bringUpCapture();
+        return;
       }
-    } else {
-      voiceControlBridge.startRawCapture({ communicator });
+      const healthy = this.mode === "extended" ? this.checkExtendedCapture() : this.checkStockCapture();
+      this.setCaptureStalled(!healthy);
+    } catch (error) {
+      console.warn(`mic capture check failed: ${error}`);
     }
+  }
+
+  private setCaptureStalled(stalled: boolean): void {
+    if (stalled === this.captureStalled) return;
+    this.captureStalled = stalled;
+    this.statusText = stalled ? STALLED_TEXT : this.listeningText();
+  }
+
+  /**
+   * The stock raw tap dies with the glasses session, and an STT capture
+   * preempts it. Restart it whenever it isn't live. Returns false (stalled)
+   * while disconnected or once restarts keep failing.
+   */
+  private checkStockCapture(): boolean {
+    if (voiceControlBridge.isRawCaptureLive()) {
+      this.stockRestarts = 0;
+      return true;
+    }
+    const communicator = this.nativeCommunicator();
+    if (!communicator?.isSessionReady()) return false;
+    voiceControlBridge.startRawCapture({ communicator, owner: RAW_CAPTURE_OWNER });
+    // One restart is routine (after the voice dialog, or a reconnect); only
+    // report a stall once restarts keep failing.
+    this.stockRestarts += 1;
+    return this.stockRestarts < 2;
+  }
+
+  /**
+   * The extended stream's forwarding lives in the glasses session: an arm
+   * drop or EvenHub resume clears it, so re-establish it and re-send the
+   * config. With forwarding in place, each enabled temple must actually be
+   * streaming: a lost CONFIGURE or a temple that restarted on its own looks
+   * like silence, so a temple quiet past its grace period is reconfigured.
+   * Returns whether audio is arriving from every enabled temple.
+   */
+  private checkExtendedCapture(): boolean {
+    const communicator = this.nativeCommunicator();
+    if (!communicator?.isSessionReady()) return false;
+    if (!communicator.isAudioCaptureActive()) {
+      if (!this.forwardingProxy || !communicator.startG2AudioForwarding(this.forwardingProxy)) return false;
+      // Routine after the voice dialog or a reconnect; the frame check below
+      // reports a stall if the temples don't start streaming.
+      return this.armExtended() && !this.captureStalled;
+    }
+    const now = Date.now();
+    const wire = wireConfig(this.activeConfig);
+    let healthy = true;
+    for (const side of ["left", "right"] as const) {
+      if (!templeActive(this.activeConfig, side)) continue;
+      if (now - this.templeFrameAtMs[side] < TEMPLE_SILENT_MS) continue;
+      if (now - this.templeArmedAtMs[side] < TEMPLE_SILENT_MS) {
+        // Just (re)configured: give it time to start streaming, without
+        // calling it healthy if it was already stalled.
+        if (this.captureStalled) healthy = false;
+        continue;
+      }
+      healthy = false;
+      this.templeArmedAtMs[side] = now;
+      micArrayController.reconfigureTemple(wire, side);
+    }
+    return healthy;
   }
 
   private startSuppressor(): void {
@@ -455,11 +707,39 @@ class MicSession {
     );
   }
 
+  /** Record a newly reported direction of arrival (device frame). */
+  private updateDirection(deviceDeg: number, nowMs: number): void {
+    this.doaDeviceDeg = smoothAngleDeg(this.doaDeviceDeg, deviceDeg, DOA_SMOOTHING);
+    this.doaAtMs = nowMs;
+    if (this.beamLocked && this.doaDeviceDeg !== null) {
+      this.beamWorldDeg = this.toWorldDeg(this.doaDeviceDeg);
+    }
+  }
+
+  private clearDirection(): void {
+    this.doaDeviceDeg = null;
+    this.doaAtMs = 0;
+    this.ssr = 0;
+    this.templeAngles = { left: null, right: null };
+    this.templeSsr = { left: 0, right: 0 };
+    this.templeAngleAtMs = { left: 0, right: 0 };
+  }
+
+  /**
+   * Beam filter: whether to drop audio because it arrives from outside the
+   * beam. Only a current direction can gate; with none, audio passes.
+   */
+  private outsideBeam(): boolean {
+    if (!this.beamFilterOn || this.ssr <= 0 || this.doaDeviceDeg === null) return false;
+    if (Date.now() - this.doaAtMs >= DOA_STALE_MS) return false;
+    return !this.inBeam(this.doaDeviceDeg);
+  }
+
   // ---- compass (world-frame radar + beam-follow while head turns) ----
 
   private startCompass(): void {
     try {
-      setCompassEnabled(true);
+      setCompassEnabled(true, COMPASS_OWNER);
       this.offCompass = addCompassListener((event) => {
         if (event.headingDegrees >= 0) {
           this.headingDeg = event.headingDegrees;
@@ -474,7 +754,7 @@ class MicSession {
     this.offCompass?.();
     this.offCompass = null;
     try {
-      setCompassEnabled(false);
+      setCompassEnabled(false, COMPASS_OWNER);
     } catch {
       // Disconnected; the stream is already gone.
     }
@@ -484,19 +764,18 @@ class MicSession {
 
   private startStock(): boolean {
     const communicator = this.nativeCommunicator();
-    if (!communicator) return false;
+    // The tap only records intent without a session; wait for one instead.
+    if (!communicator?.isSessionReady()) return false;
     this.levels = [0];
     this.levelLabels = ["Glasses mic"];
-    const started = voiceControlBridge.startRawCapture({ communicator });
+    this.stockRestarts = 0;
+    const started = voiceControlBridge.startRawCapture({ communicator, owner: RAW_CAPTURE_OWNER });
     if (!started) return false;
     this.offRawPcm = voiceControlBridge.onRawPcm((pcm) => this.handleStockPcm(pcm));
     this.offFrameMeta = voiceControlBridge.onFrameMeta((meta) => {
       this.ssr = meta.ssr;
       if (meta.angleDegrees !== 0 || meta.ssr !== 0) {
-        this.doaDeviceDeg = smoothAngleDeg(this.doaDeviceDeg, meta.angleDegrees, DOA_SMOOTHING);
-        if (this.beamLocked && this.doaDeviceDeg !== null) {
-          this.beamWorldDeg = this.toWorldDeg(this.doaDeviceDeg);
-        }
+        this.updateDirection(meta.angleDegrees, Date.now());
       }
       this.trackLiveSpeaker();
     });
@@ -508,18 +787,13 @@ class MicSession {
     this.offRawPcm = null;
     this.offFrameMeta?.();
     this.offFrameMeta = null;
-    voiceControlBridge.stopRawCapture();
+    voiceControlBridge.stopRawCapture(RAW_CAPTURE_OWNER);
   }
 
   private handleStockPcm(pcm: Uint8Array): void {
     const level = pcmLevel(pcm);
     this.levels[0] = Math.max(level, (this.levels[0] ?? 0) * LEVEL_DECAY);
-    const gated =
-      this.beamFilterOn &&
-      this.doaDeviceDeg !== null &&
-      this.ssr > 0 &&
-      !this.inBeam(this.doaDeviceDeg);
-    if (gated) return;
+    if (this.outsideBeam()) return;
     this.feedPcm(pcm);
   }
 
@@ -527,7 +801,7 @@ class MicSession {
 
   private startExtended(): boolean {
     const communicator = this.nativeCommunicator();
-    if (!communicator) return false;
+    if (!communicator?.isSessionReady()) return false;
     // Each active temple streams its full front+rear stereo pair; the four
     // mics are split, metered, and selected here on the host.
     this.levelLabels = MIC_CHANNEL_KEYS.map(micChannelLabel);
@@ -542,11 +816,14 @@ class MicSession {
       },
     });
     if (!communicator.startG2AudioForwarding(this.forwardingProxy)) return false;
-    if (!micArrayController.apply({ ...this.activeConfig, channelMask: 0b11 })) {
-      communicator.stopG2AudioForwarding();
-      return false;
-    }
-    return true;
+    return this.armExtended();
+  }
+
+  /** Send the config to the temples, starting each one's grace period to begin streaming. */
+  private armExtended(): boolean {
+    const now = Date.now();
+    this.templeArmedAtMs = { left: now, right: now };
+    return micArrayController.apply(wireConfig(this.activeConfig));
   }
 
   /**
@@ -555,14 +832,7 @@ class MicSession {
    * captions; a temple with both mics off has its stream stopped entirely.
    */
   setMicChannelEnabled(key: MicChannelKey, enabled: boolean): void {
-    const config = loadMicConfig();
-    config.hostMics = { ...config.hostMics, [key]: enabled };
-    saveMicConfig(config);
-    this.activeConfig = config;
-    if (this.running && this.mode === "extended") {
-      micArrayController.apply({ ...config, channelMask: 0b11 });
-    }
-    this.notify();
+    this.updateConfig((config) => ({ ...config, hostMics: { ...config.hostMics, [key]: enabled } }));
   }
 
   private stopExtended(): void {
@@ -576,6 +846,16 @@ class MicSession {
     this.forwardingProxy = null;
     this.temples.clear();
     this.templeAngles = { left: null, right: null };
+    this.templeSsr = { left: 0, right: 0 };
+    this.templeAngleAtMs = { left: 0, right: 0 };
+    this.templeFrameAtMs = { left: 0, right: 0 };
+    this.templeArmedAtMs = { left: 0, right: 0 };
+    this.feedSwitchSinceMs = 0;
+  }
+
+  /** A temple's last bearing, or null once it has gone quiet. */
+  private freshTempleAngle(side: MicSide, nowMs: number): number | null {
+    return nowMs - this.templeAngleAtMs[side] < TEMPLE_STALE_MS ? this.templeAngles[side] : null;
   }
 
   private handleExtendedPacket(data: Uint8Array, arm: string): void {
@@ -588,6 +868,8 @@ class MicSession {
     const side: MicSide = arm === "L" ? "left" : "right";
     const channels = splitInterleavedPcm16(frame);
     if (!channels || channels.length === 0) return;
+    const now = Date.now();
+    this.templeFrameAtMs[side] = now;
 
     // Meter every arriving channel — a host-disabled mic still shows its
     // live level (marked off in the UI), it just doesn't feed anything.
@@ -606,8 +888,10 @@ class MicSession {
     if (frame.angleDegrees !== 0 || frame.ssr !== 0) {
       this.templeAngles[side] = frame.angleDegrees;
       this.templeSsr[side] = frame.ssr;
-      const left = this.templeAngles.left;
-      const right = this.templeAngles.right;
+      this.templeAngleAtMs[side] = now;
+      // A temple that stopped reporting must not keep steering the fusion.
+      const left = this.freshTempleAngle("left", now);
+      const right = this.freshTempleAngle("right", now);
       let fusedDeg: number;
       if (left !== null && right !== null) {
         const fused = fuseBearings(
@@ -620,11 +904,8 @@ class MicSession {
       } else {
         fusedDeg = (left ?? right)!;
       }
-      this.doaDeviceDeg = smoothAngleDeg(this.doaDeviceDeg, fusedDeg, DOA_SMOOTHING);
-      this.ssr = Math.max(this.templeSsr.left, this.templeSsr.right);
-      if (this.beamLocked && this.doaDeviceDeg !== null) {
-        this.beamWorldDeg = this.toWorldDeg(this.doaDeviceDeg);
-      }
+      this.ssr = Math.max(left === null ? 0 : this.templeSsr.left, right === null ? 0 : this.templeSsr.right);
+      this.updateDirection(fusedDeg, now);
       this.trackLiveSpeaker();
     }
 
@@ -650,32 +931,52 @@ class MicSession {
   }
 
   private deliverExtendedAudio(side: MicSide, samples: Float32Array): void {
-    // Feed captions from one temple only; prefer the one hearing more
-    // signal, among the temples that still have an enabled microphone.
-    const leftUsable = templeActive(this.activeConfig, "left");
-    const rightUsable = templeActive(this.activeConfig, "right");
-    let stronger: MicSide = this.templeSsr.right > this.templeSsr.left * 1.5 ? "right" : "left";
-    if (stronger === "right" && !rightUsable) stronger = "left";
-    if (stronger === "left" && !leftUsable) stronger = "right";
-    if (strongerChanged(this.captionFeedSide, stronger)) {
-      this.captionFeedSide = stronger;
-    }
+    // Feed captions from one temple only.
+    this.updateCaptionFeedSide(Date.now());
     if (side !== this.captionFeedSide) return;
-    if (
-      this.beamFilterOn &&
-      this.doaDeviceDeg !== null &&
-      this.ssr > 0 &&
-      !this.inBeam(this.doaDeviceDeg)
-    ) {
+    if (this.outsideBeam()) return;
+    this.feedPcm(floatToPcm16(samples));
+  }
+
+  /**
+   * Pick the temple that feeds captions: the one hearing more signal, among
+   * the temples with an enabled microphone that are still streaming. A
+   * switch needs the other temple ahead by FEED_SWITCH_RATIO for
+   * FEED_SWITCH_HOLD_MS; losing the current temple switches at once.
+   */
+  private updateCaptionFeedSide(nowMs: number): void {
+    const usable = (side: MicSide) =>
+      templeActive(this.activeConfig, side) && nowMs - this.templeFrameAtMs[side] < TEMPLE_STALE_MS;
+    const heard = (side: MicSide) => (this.freshTempleAngle(side, nowMs) === null ? 0 : this.templeSsr[side]);
+    const current = this.captionFeedSide;
+    const other: MicSide = current === "left" ? "right" : "left";
+    if (!usable(other)) {
+      this.feedSwitchSinceMs = 0;
       return;
     }
-    this.feedPcm(floatToPcm16(samples));
+    if (!usable(current)) {
+      this.captionFeedSide = other;
+      this.feedSwitchSinceMs = 0;
+      return;
+    }
+    if (heard(other) <= heard(current) * FEED_SWITCH_RATIO) {
+      this.feedSwitchSinceMs = 0;
+      return;
+    }
+    if (this.feedSwitchSinceMs === 0) {
+      this.feedSwitchSinceMs = nowMs;
+    } else if (nowMs - this.feedSwitchSinceMs >= FEED_SWITCH_HOLD_MS) {
+      this.captionFeedSide = other;
+      this.feedSwitchSinceMs = 0;
+    }
   }
 
   // ---- shared audio consumers ----
 
   private feedPcm(pcm: Uint8Array): void {
-    if (!this.captionEngine && !this.recorder) return;
+    const run = this.captionRun;
+    const engine = run?.engine;
+    if (!engine && !this.recorder) return;
     let javaBytes = toJavaBytes(pcm);
     if (this.ancOn && this.suppressor) {
       try {
@@ -684,9 +985,10 @@ class MicSession {
         console.warn(`noise suppression failed: ${error}`);
       }
     }
-    if (this.captionEngine) {
+    if (run) {
       try {
-        this.captionEngine.acceptPcm(javaBytes);
+        run.engine.acceptPcm(javaBytes);
+        run.clock.noteFed(Number(javaBytes.length), Date.now());
       } catch (error) {
         console.warn(`caption feed failed: ${error}`);
       }
@@ -702,61 +1004,219 @@ class MicSession {
 
   // ---- captions ----
 
+  /** Whether captions are on, as the menu toggle shows it (off after they gave up). */
+  captionsEnabled(): boolean {
+    return captionsEnabledSetting.get() && !this.captionsFailure;
+  }
+
   setCaptionsEnabled(enabled: boolean): void {
     captionsEnabledSetting.set(enabled);
-    if (!this.running) return;
-    if (enabled && !this.captionsActive) {
-      this.startCaptions();
-      if (saveRecordingsSetting.get() && !this.recorder) this.startRecording();
-    } else if (!enabled && this.captionsActive) {
-      this.stopCaptions();
-      this.finishSessionRow();
+    this.captionsFailure = "";
+    if (this.running) {
+      if (enabled && !this.captionsActive) {
+        // While capture is still coming up, bringUpCapture starts them.
+        if (this.captureUp) this.startCaptions();
+      } else if (!enabled && this.captionsActive) {
+        this.stopCaptions();
+      }
     }
     this.notify();
   }
 
+  /** Begin a captioned conversation: the engine, then its store row and recording. */
   private startCaptions(): void {
     if (this.captionsActive) return;
-    const engine = new com.faceclaw.app.FaceclawCaptionEngine();
-    this.captionListenerProxy = new com.faceclaw.app.FaceclawCaptionEngineListener({
-      onUtterance: (text: string, embedding: any, startMs: number, endMs: number, peakRms: number) => {
-        this.handleUtterance(String(text), embedding, Number(startMs), Number(endMs), Number(peakRms));
-      },
-      onSpeechStart: (_startMs: number) => {
-        this.speechActive = true;
-      },
-      onStatus: (status: string) => {
-        this.statusText = String(status);
-      },
-    });
-    engine.setListener(this.captionListenerProxy);
-    // Live captions are a separate sherpa-onnx pipeline (FaceclawCaptionEngine)
-    // that only ever uses Moonshine; unaffected by the two-model on-device
-    // Whisper addition in native/voice-control.ts's push-to-talk path.
-    engine.setAsrModelDir(isAsrModelReady("moonshine") ? moonshineModelDir() : null);
-    engine.setSpeakerModelPath(micModelPath("speaker-embedding"));
-    engine.start();
-    this.captionEngine = engine;
+    const run = this.createCaptionRun();
+    if (!run) {
+      this.captionsFailure = "the caption engine could not start";
+      return;
+    }
     this.captionsActive = true;
-    this.engineStartWallMs = Date.now();
+    this.captionsFailure = "";
+    this.captionFailures = 0;
     this.encounterShown.clear();
-    if (saveCaptionsSetting.get() && captionsRetentionSetting.get() !== "none") {
-      this.sessionRowId = Number(
-        this.store().startSession(Date.now(), `Conversation ${new Date().toLocaleString()}`),
-      );
+    this.conversation = this.openConversation();
+    run.conversation = this.conversation;
+    this.captionRun = run;
+    if (this.conversation && this.shouldRecord()) this.startRecording(this.conversation);
+  }
+
+  /** Start a caption engine on the current conversation, or null if it can't start. */
+  private createCaptionRun(): CaptionRun | null {
+    let engine: any = null;
+    try {
+      engine = new com.faceclaw.app.FaceclawCaptionEngine();
+      const run: CaptionRun = {
+        engine,
+        listener: null,
+        // A restarted engine's clock starts at zero partway into the recording.
+        audioBaseMs: this.recorder ? Number(this.recorder.getDurationMs()) : 0,
+        clock: new CaptionClock(SAMPLE_RATE, Date.now()),
+        conversation: this.conversation,
+        generation: this.sessionGeneration,
+        stopTimer: null,
+        afterStop: null,
+      };
+      run.listener = new com.faceclaw.app.FaceclawCaptionEngineListener({
+        onUtterance: (text: string, embedding: any, startMs: number, endMs: number, _peakRms: number) => {
+          // Never let an exception escape into the engine's Java callback.
+          try {
+            this.handleUtterance(run, String(text), embedding, Number(startMs), Number(endMs));
+          } catch (error) {
+            console.warn(`caption utterance failed: ${error}`);
+          }
+        },
+        onSpeechStart: (_startMs: number) => {
+          if (run === this.captionRun) this.speechActive = true;
+        },
+        onStatus: (status: string) => {
+          // Capture problems outrank the engine's own progress messages.
+          if (run === this.captionRun && this.captureUp && !this.captureStalled) {
+            this.statusText = String(status);
+          }
+        },
+        onStopped: (error: string | null) => {
+          try {
+            this.handleRunStopped(run, error === null || error === undefined ? null : String(error));
+          } catch (stopError) {
+            console.warn(`caption engine stop handling failed: ${stopError}`);
+          }
+        },
+      });
+      engine.setListener(run.listener);
+      // Live captions are a separate sherpa-onnx pipeline (FaceclawCaptionEngine)
+      // that only ever uses Moonshine; unaffected by the two-model on-device
+      // Whisper addition in native/voice-control.ts's push-to-talk path.
+      engine.setAsrModelDir(isAsrModelReady("moonshine") ? moonshineModelDir() : null);
+      engine.setSpeakerModelPath(micModelPath("speaker-embedding"));
+      engine.start();
+      return run;
+    } catch (error) {
+      console.warn(`caption engine start failed: ${error}`);
+      try {
+        engine?.stop();
+      } catch {
+        // It never started.
+      }
+      return null;
     }
   }
 
+  private handleRunStopped(run: CaptionRun, error: string | null): void {
+    if (run === this.captionRun) {
+      // The live engine ended on its own (its models failed to load, or the
+      // worker died): restart it on the same conversation.
+      this.captionRun = null;
+      this.speechActive = false;
+      this.scheduleCaptionRestart(error ?? "the caption engine stopped");
+      return;
+    }
+    this.settleRun(run);
+  }
+
+  private scheduleCaptionRestart(reason: string): void {
+    this.captionFailures += 1;
+    if (this.captionFailures > CAPTION_MAX_RESTARTS) {
+      console.warn(`captions giving up after ${this.captionFailures} failures: ${reason}`);
+      this.stopCaptions();
+      this.captionsFailure = reason;
+      this.notify();
+      return;
+    }
+    this.statusText = `Captions failed (${reason}); restarting...`;
+    this.captionRestartTimer = setTimeout(() => {
+      this.captionRestartTimer = null;
+      if (!this.running || !this.captionsActive || this.captionRun) return;
+      const run = this.createCaptionRun();
+      if (run) {
+        this.captionRun = run;
+      } else {
+        this.scheduleCaptionRestart("the caption engine could not restart");
+      }
+    }, CAPTION_RESTART_BASE_MS * this.captionFailures);
+    this.notify();
+  }
+
+  private clearCaptionRestart(): void {
+    if (this.captionRestartTimer) {
+      clearTimeout(this.captionRestartTimer);
+      this.captionRestartTimer = null;
+    }
+  }
+
+  /**
+   * End the captioned conversation. The recording holds every byte the
+   * engine was fed, so it closes now; the store row stays open until the
+   * engine has delivered its trailing utterance (or a timeout passes).
+   */
   private stopCaptions(): void {
     if (!this.captionsActive) return;
+    this.captionsActive = false;
+    this.speechActive = false;
+    this.clearCaptionRestart();
+    const endedAtMs = Date.now();
+    const run = this.captionRun;
+    this.captionRun = null;
+    const conversation = this.conversation;
+    this.conversation = null;
+    this.stopRecording(true, conversation);
+    if (run) {
+      this.stopRun(run, () => this.finishConversation(conversation, endedAtMs));
+    } else {
+      this.finishConversation(conversation, endedAtMs);
+    }
+  }
+
+  private stopRun(run: CaptionRun, afterStop: () => void): void {
+    run.afterStop = afterStop;
+    this.stoppingRuns.add(run);
+    run.stopTimer = setTimeout(() => {
+      console.warn("caption engine did not report stopping; closing its conversation anyway");
+      this.settleRun(run);
+    }, CAPTION_STOP_TIMEOUT_MS);
     try {
-      this.captionEngine?.stop();
+      run.engine.requestStop();
     } catch (error) {
       console.warn(`caption engine stop failed: ${error}`);
+      this.settleRun(run);
     }
-    this.captionEngine = null;
-    this.captionListenerProxy = null;
-    this.captionsActive = false;
+  }
+
+  /** A stopping run is done (reported back, or timed out): close what it held open. */
+  private settleRun(run: CaptionRun): void {
+    if (!this.stoppingRuns.delete(run)) return;
+    if (run.stopTimer) clearTimeout(run.stopTimer);
+    run.stopTimer = null;
+    const afterStop = run.afterStop;
+    run.afterStop = null;
+    afterStop?.();
+  }
+
+  /** The store row for a new conversation, when captions are being saved. */
+  private openConversation(): ConversationRecord | null {
+    if (!saveCaptionsSetting.get() || captionsRetentionSetting.get() === "none") return null;
+    try {
+      const rowId = Number(
+        this.store().startSession(Date.now(), `Conversation ${new Date().toLocaleString()}`),
+      );
+      return rowId >= 0 ? { rowId, sentimentSum: 0, sentimentCount: 0 } : null;
+    } catch (error) {
+      console.warn(`caption session start failed: ${error}`);
+      return null;
+    }
+  }
+
+  private finishConversation(conversation: ConversationRecord | null, endedAtMs: number): void {
+    if (!conversation) return;
+    const avg = conversation.sentimentCount > 0 ? conversation.sentimentSum / conversation.sentimentCount : 0;
+    try {
+      this.store().endSession(conversation.rowId, endedAtMs, "", "", avg);
+    } catch (error) {
+      console.warn(`session finish failed: ${error}`);
+    }
+    // Recap/action-items/facts per speaker, generated in the background with
+    // the on-phone model (no-op when it isn't downloaded).
+    generateSessionInsights(conversation.rowId);
   }
 
   /** The next captioned utterance enrolls (or refreshes) the wearer's voice. */
@@ -882,25 +1342,43 @@ class MicSession {
   }
 
   private handleUtterance(
+    run: CaptionRun,
     text: string,
     embedding: any,
     startMs: number,
     endMs: number,
-    _peakRms: number,
   ): void {
     if (!text.trim() && !embedding) return;
+    const live = run === this.captionRun;
+    // A stopping run's trailing line still shows if it belongs to this app
+    // session; it is saved to its own conversation either way.
+    const shown = this.running && run.generation === this.sessionGeneration;
+    if (live) this.captionFailures = 0;
     const embeddingFloats = embedding ? floatArrayToFloat32(embedding) : null;
-    if (this.wearerEnrollmentArmed && embeddingFloats) {
+    if (live && this.wearerEnrollmentArmed && embeddingFloats) {
       this.wearerEnrollmentArmed = false;
-      const wearer = speakerRegistry.enrollWearer(embeddingFloats);
-      this.statusText = `Enrolled your voice as "${wearer.name}"`;
+      try {
+        const wearer = speakerRegistry.enrollWearer(embeddingFloats);
+        this.statusText = `Enrolled your voice as "${wearer.name}"`;
+      } catch (error) {
+        console.warn(`wearer enrollment failed: ${error}`);
+        this.statusText = "Voice enrollment failed";
+      }
     }
-    let match = embeddingFloats ? speakerRegistry.assign(embeddingFloats) : null;
-    if (match) this.maybeShowEncounterCard(match);
+    let match: SpeakerMatch | null = null;
+    if (embeddingFloats) {
+      try {
+        match = speakerRegistry.assign(embeddingFloats);
+      } catch (error) {
+        // Still caption the line, just unattributed.
+        console.warn(`speaker assignment failed: ${error}`);
+      }
+    }
+    if (match && shown) this.maybeShowEncounterCard(match);
     // Spoken introductions name the auto-numbered speakers: "I'm Alice"
     // renames the speaker of the line; "this is Bob" pends the name for the
     // next different still-generic voice. User-set names are never touched.
-    if (match && text.trim()) {
+    if (match && shown && text.trim()) {
       const now = Date.now();
       const pending = this.pendingIntroduction;
       if (pending && pendingApplies(pending, match.profile.id, match.profile.name, now)) {
@@ -918,11 +1396,12 @@ class MicSession {
       if (refreshed) match = { ...match, profile: refreshed };
     }
     const isWearer = match?.profile.isWearer ?? false;
-    const doaAtUtterance = this.doaDeviceDeg;
+    const doaAtUtterance = shown ? this.doaDeviceDeg : null;
     const analyzed = text.trim() ? analyzeLine(text) : null;
-    if (analyzed) {
-      this.sentimentSum += analyzed.score;
-      this.sentimentCount += 1;
+    const conversation = run.conversation;
+    if (analyzed && conversation) {
+      conversation.sentimentSum += analyzed.score;
+      conversation.sentimentCount += 1;
     }
 
     const line: CaptionLine = {
@@ -935,47 +1414,53 @@ class MicSession {
       lang: "",
       emotion: analyzed?.emotion ?? "",
       sentiment: analyzed?.score ?? 0,
-      atMs: this.engineStartWallMs + startMs,
+      atMs: run.clock.wallMs(startMs),
     };
-    this.captionLines.push(line);
-    if (this.captionLines.length > CAPTION_LINE_LIMIT) {
-      this.captionLines.splice(0, this.captionLines.length - CAPTION_LINE_LIMIT);
-    }
+    if (shown) {
+      this.captionLines.push(line);
+      if (this.captionLines.length > CAPTION_LINE_LIMIT) {
+        this.captionLines.splice(0, this.captionLines.length - CAPTION_LINE_LIMIT);
+      }
 
-    // Radar dot at the utterance's direction (world frame, so it stays put
-    // as the head turns and follows the person when they move).
-    this.speechActive = false;
-    clearSpeaking(this.speakerDots);
-    if (match && doaAtUtterance !== null) {
-      this.speakerDots = placeDotForUtterance(
-        this.speakerDots,
-        { speakerId: match.profile.id, name: match.profile.name, color: match.profile.color },
-        this.toWorldDeg(doaAtUtterance),
-        Date.now(),
-      );
+      // Radar dot at the utterance's direction (world frame, so it stays put
+      // as the head turns and follows the person when they move).
+      this.speechActive = false;
+      clearSpeaking(this.speakerDots);
+      if (match && doaAtUtterance !== null) {
+        this.speakerDots = placeDotForUtterance(
+          this.speakerDots,
+          { speakerId: match.profile.id, name: match.profile.name, color: match.profile.color },
+          this.toWorldDeg(doaAtUtterance),
+          Date.now(),
+        );
+      }
     }
 
     let segmentId = -1;
-    if (this.sessionRowId >= 0 && line.text) {
-      segmentId = Number(
-        this.store().insertSegment(
-          JSON.stringify({
-            sessionId: this.sessionRowId,
-            speakerId: match?.profile.id,
-            startedAt: this.engineStartWallMs + startMs,
-            endedAt: this.engineStartWallMs + endMs,
-            audioOffsetMs: startMs,
-            text: line.text,
-            sentiment: line.sentiment,
-            emotion: line.emotion,
-            searchMeta: analyzed ? searchableMetadata(analyzed.emotion, analyzed.score) : "",
-            angle: doaAtUtterance === null ? undefined : Math.round(doaAtUtterance),
-            embeddingBase64: embeddingFloats ? encodeEmbeddingBase64(embeddingFloats) : undefined,
-          }),
-        ),
-      );
+    if (conversation && line.text) {
+      try {
+        segmentId = Number(
+          this.store().insertSegment(
+            JSON.stringify({
+              sessionId: conversation.rowId,
+              speakerId: match?.profile.id,
+              startedAt: run.clock.wallMs(startMs),
+              endedAt: run.clock.wallMs(endMs),
+              audioOffsetMs: run.audioBaseMs + startMs,
+              text: line.text,
+              sentiment: line.sentiment,
+              emotion: line.emotion,
+              searchMeta: analyzed ? searchableMetadata(analyzed.emotion, analyzed.score) : "",
+              angle: doaAtUtterance === null ? undefined : Math.round(doaAtUtterance),
+              embeddingBase64: embeddingFloats ? encodeEmbeddingBase64(embeddingFloats) : undefined,
+            }),
+          ),
+        );
+      } catch (error) {
+        console.warn(`caption segment save failed: ${error}`);
+      }
     }
-    this.notify();
+    if (shown) this.notify();
 
     // Language identification + translation are async; the UI line and the
     // stored segment update when they resolve.
@@ -1024,10 +1509,19 @@ class MicSession {
 
   // ---- recording ----
 
-  private startRecording(): void {
+  /**
+   * Recordings belong to a saved caption conversation: retention and the
+   * phone UI find audio only through its session row, so a file recorded
+   * without one would never be shown or expired.
+   */
+  private shouldRecord(): boolean {
+    return saveRecordingsSetting.get() && recordingsRetentionSetting.get() !== "none";
+  }
+
+  private startRecording(conversation: ConversationRecord): void {
     try {
-      const context = Utils.android.getApplicationContext();
-      const dir = `${context.getExternalFilesDir(null).getAbsolutePath()}/mic-recordings`;
+      const dir = recordingsDir();
+      if (!dir) throw new Error("external storage unavailable");
       const stamp = new Date().toISOString().replace(/[:.]/g, "-");
       this.recordingPath = `${dir}/conversation-${stamp}.wav`;
       this.recorder = new com.faceclaw.app.FaceclawWavRecorder(this.recordingPath, SAMPLE_RATE, 1);
@@ -1035,46 +1529,34 @@ class MicSession {
       console.warn(`recording start failed: ${error}`);
       this.recorder = null;
       this.recordingPath = "";
+      return;
+    }
+    // Link the file at once: if the process dies mid-recording, the row
+    // still names it, and boot recovery repairs and keeps it.
+    try {
+      this.store().setSessionAudio(conversation.rowId, this.recordingPath, "wav");
+    } catch (error) {
+      console.warn(`recording link failed: ${error}`);
     }
   }
 
-  private stopRecording(keep: boolean): void {
+  private stopRecording(keep: boolean, conversation: ConversationRecord | null): void {
     const recorder = this.recorder;
     this.recorder = null;
     if (!recorder) return;
+    const wavPath = this.recordingPath;
     try {
       const bytes = Number(recorder.finish());
-      if (!keep || bytes < SAMPLE_RATE) {
-        // Under half a second of audio isn't worth keeping.
+      if (!keep || bytes < SAMPLE_RATE || !conversation) {
+        // Under half a second of audio isn't worth keeping, and audio with no
+        // session row to own it would be unreachable and never expire.
         recorder.discard();
+        if (conversation) this.store().setSessionAudio(conversation.rowId, null, null);
         return;
       }
-      const wavPath = this.recordingPath;
-      const m4aPath = wavPath.replace(/\.wav$/, ".m4a");
-      const sessionRowId = this.sessionRowId;
       const store = this.store();
-      if (sessionRowId >= 0) {
-        store.setSessionAudio(sessionRowId, wavPath, "wav");
-      }
-      // Transcode in the background; swap the session's audio to the M4A on
-      // success (the transcoder deletes the WAV).
-      const transcoder = new com.faceclaw.app.FaceclawAudioTranscoder(
-        wavPath,
-        m4aPath,
-        RECORDING_AAC_BITRATE,
-        true,
-        new com.faceclaw.app.FaceclawAudioTranscoder.Listener({
-          onDone: (outputPath: string, _outputBytes: number) => {
-            if (sessionRowId >= 0) {
-              store.setSessionAudio(sessionRowId, String(outputPath), "aac");
-            }
-          },
-          onError: (message: string) => {
-            console.warn(`recording transcode failed: ${message}`);
-          },
-        }),
-      );
-      transcoder.start();
+      store.setSessionAudio(conversation.rowId, wavPath, "wav");
+      transcodeRecording(store, conversation.rowId, wavPath);
     } catch (error) {
       console.warn(`recording stop failed: ${error}`);
     }
@@ -1085,21 +1567,6 @@ class MicSession {
   private store(): any {
     const context = Utils.android.getApplicationContext();
     return com.faceclaw.app.FaceclawConversationStore.getInstance(context);
-  }
-
-  private finishSessionRow(): void {
-    if (this.sessionRowId < 0) return;
-    const avg = this.sentimentCount > 0 ? this.sentimentSum / this.sentimentCount : 0;
-    const finishedSessionId = this.sessionRowId;
-    try {
-      this.store().endSession(finishedSessionId, Date.now(), "", "", avg);
-    } catch (error) {
-      console.warn(`session finish failed: ${error}`);
-    }
-    this.sessionRowId = -1;
-    // Recap/action-items/facts per speaker, generated in the background with
-    // the on-phone model (no-op when it isn't downloaded).
-    generateSessionInsights(finishedSessionId);
   }
 
   async applyRetentionSweep(): Promise<void> {
@@ -1118,6 +1585,71 @@ class MicSession {
     }
   }
 
+  /**
+   * Repair what a dead process left behind, once per process at boot:
+   * conversations it never closed, recording files no session row knows
+   * about, and recordings never transcoded (header patched to the audio on
+   * disk, then transcoded). The steps fail independently, and the last one
+   * works from what the store still holds as WAV rather than from what this
+   * boot closed, so whatever a failure leaves is picked up by a later boot.
+   */
+  recoverInterruptedConversations(): void {
+    if (!global.isAndroid || recoveryDone || this.running) return;
+    recoveryDone = true;
+    let store: any;
+    try {
+      store = this.store();
+    } catch (error) {
+      console.warn(`mic recovery failed: ${error}`);
+      return;
+    }
+    let closed: number[] = [];
+    try {
+      const rows = JSON.parse(
+        String(store.closeInterruptedSessions(JSON.stringify(this.openConversationRows()))),
+      ) as Array<{ id: number }>;
+      closed = rows.map((row) => Number(row.id));
+    } catch (error) {
+      console.warn(`mic recovery: closing conversations failed: ${error}`);
+    }
+    for (const rowId of closed) generateSessionInsights(rowId);
+    // Before any transcode below starts writing, so its output isn't swept.
+    let removed = 0;
+    try {
+      const dir = recordingsDir();
+      if (dir) removed = Number(store.deleteUnreferencedRecordings(dir));
+    } catch (error) {
+      console.warn(`mic recovery: orphan sweep failed: ${error}`);
+    }
+    // The ones just closed, plus any whose transcode died with an earlier
+    // process; patching an already-finished header changes nothing.
+    let untranscoded: Array<{ id: number; audioPath: string }> = [];
+    try {
+      untranscoded = JSON.parse(String(store.listUntranscodedSessions())) as typeof untranscoded;
+    } catch (error) {
+      console.warn(`mic recovery: listing recordings failed: ${error}`);
+    }
+    for (const session of untranscoded) {
+      recoverRecording(store, Number(session.id), String(session.audioPath));
+    }
+    if (closed.length > 0 || removed > 0 || untranscoded.length > 0) {
+      console.log(
+        `mic recovery: closed ${closed.length} conversation(s), removed ${removed} orphaned recording(s), ` +
+          `finishing ${untranscoded.length} recording(s)`,
+      );
+    }
+  }
+
+  /** Session rows legitimately still open: the live conversation and ones awaiting a trailing line. */
+  private openConversationRows(): number[] {
+    const rows = new Set<number>();
+    if (this.conversation) rows.add(this.conversation.rowId);
+    for (const run of this.stoppingRuns) {
+      if (run.conversation) rows.add(run.conversation.rowId);
+    }
+    return Array.from(rows);
+  }
+
   private nativeCommunicator(): any {
     try {
       return com.faceclaw.app.FaceclawBleCommunicator.getActive();
@@ -1128,6 +1660,14 @@ class MicSession {
 }
 
 // ---- helpers ----
+
+/**
+ * The config as sent to the temples: each active temple always streams its
+ * full front+rear pair, and per-mic selection happens host-side.
+ */
+function wireConfig(config: MicConfig): MicConfig {
+  return { ...config, channelMask: 0b11 };
+}
 
 function pcmLevel(pcm: Uint8Array): number {
   let sumSquares = 0;
@@ -1178,13 +1718,81 @@ function encodeEmbeddingBase64(embedding: Float32Array): string {
   return encodeBase64(new Uint8Array(embedding.buffer, embedding.byteOffset, embedding.byteLength));
 }
 
-function strongerChanged(current: MicSide, candidate: MicSide): boolean {
-  return current !== candidate;
-}
-
 function moonshineModelDir(): string {
   const context = Utils.android.getApplicationContext();
   return `${context.getFilesDir().getAbsolutePath()}/faceclaw-voice-asr/sherpa-onnx-moonshine-base-en-quantized-2026-02-27`;
+}
+
+/** Where recordings live, or null while external storage is unavailable. */
+function recordingsDir(): string | null {
+  const context = Utils.android.getApplicationContext();
+  const base = context.getExternalFilesDir(null);
+  return base ? `${base.getAbsolutePath()}/mic-recordings` : null;
+}
+
+function deleteFile(path: string): void {
+  try {
+    new java.io.File(path).delete();
+  } catch (error) {
+    console.warn(`could not delete ${path}: ${error}`);
+  }
+}
+
+// Transcoder listeners are referenced only from Java while a transcode runs;
+// hold them here so they aren't GC'd before their callback.
+const pendingTranscodes = new Set<any>();
+
+/**
+ * Transcode a finished WAV recording to M4A in the background and move its
+ * session onto it. The WAV is deleted only once the row names the M4A, so a
+ * failure at any step leaves the session pointing at a file that exists.
+ */
+function transcodeRecording(store: any, rowId: number, wavPath: string): void {
+  const m4aPath = wavPath.replace(/\.wav$/, ".m4a");
+  const listener = new com.faceclaw.app.FaceclawAudioTranscoder.Listener({
+    onDone: (outputPath: string, _outputBytes: number) => {
+      pendingTranscodes.delete(listener);
+      try {
+        store.setSessionAudio(rowId, String(outputPath), "aac");
+      } catch (error) {
+        console.warn(`recording audio update failed: ${error}`);
+        deleteFile(String(outputPath));
+        return;
+      }
+      deleteFile(wavPath);
+    },
+    onError: (message: string) => {
+      pendingTranscodes.delete(listener);
+      console.warn(`recording transcode failed: ${message}`);
+    },
+  });
+  pendingTranscodes.add(listener);
+  try {
+    // deleteSourceOnSuccess false: the WAV goes only after the row update above.
+    new com.faceclaw.app.FaceclawAudioTranscoder(wavPath, m4aPath, RECORDING_AAC_BITRATE, false, listener).start();
+  } catch (error) {
+    pendingTranscodes.delete(listener);
+    console.warn(`recording transcode start failed: ${error}`);
+  }
+}
+
+/**
+ * Finish a recording left as WAV (its process died writing or transcoding
+ * it): patch the header to the audio on disk, then transcode it as a normal
+ * stop would. Too short (or gone) and it is dropped from the session instead.
+ */
+function recoverRecording(store: any, rowId: number, wavPath: string): void {
+  try {
+    const bytes = Number(com.faceclaw.app.FaceclawWavRecorder.repairHeader(wavPath, SAMPLE_RATE, 1));
+    if (bytes < SAMPLE_RATE) {
+      deleteFile(wavPath);
+      store.setSessionAudio(rowId, null, null);
+      return;
+    }
+    transcodeRecording(store, rowId, wavPath);
+  } catch (error) {
+    console.warn(`recording recovery failed (${wavPath}): ${error}`);
+  }
 }
 
 export const micSession = new MicSession();

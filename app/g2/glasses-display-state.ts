@@ -23,10 +23,23 @@ export function glassesDisplayLabel(state: GlassesDisplayState): string {
   if (state.silentMode) {
     return "Silent mode";
   }
-  if (!state.screenOn) {
+  if (glassesDisplayAsleep(state)) {
     return "Display off";
   }
   return state.foregroundTitle || "Launcher";
+}
+
+/**
+ * True when the label reads "Display off": the screen is dark but the glasses
+ * (or the preview standing in for them) would light it on a wake gesture.
+ */
+export function glassesDisplayAsleep(state: GlassesDisplayState): boolean {
+  return (
+    state.phase !== "charging" &&
+    (state.phase === "connected" || state.previewMode) &&
+    !state.silentMode &&
+    !state.screenOn
+  );
 }
 
 export function chargingDisplayLabel(battery: number | null): string {

@@ -4,7 +4,8 @@
  *
  * Text uses Even's extracted 20px firmware font (via EvenHubFont), measured
  * and wrapped with @evenrealities/pretext, so glyph widths and line breaks
- * match what apps expect.
+ * match what apps expect. Extended layouts may pick other fonts per container
+ * (fonts.ts), which wrap with Faceclaw's own text wrapping.
  *
  * Known deviations from stock, acceptable for now:
  *  - List rendering is a plain vertical list. A non-zero itemWidth sets the
@@ -13,7 +14,7 @@
  *  - Lists scroll with our menus' animation and bounce (see list-menu.ts).
  */
 import { GrayImage } from "../../graphics/image";
-import { EvenHubFont } from "../../graphics/evenhub-font";
+import { containerFace } from "./fonts";
 import {
   type EvenHubContainer,
   type EvenHubImageContainer,
@@ -47,14 +48,11 @@ function paintTextContainer(image: GrayImage, container: EvenHubTextContainer): 
   // the container's border at full brightness regardless.
   paintBorder(image, container);
   const inset = container.borderWidth + container.paddingLength;
-  EvenHubFont.get().drawTextWrapped(
-    image,
-    container.x + inset,
-    container.y + inset,
-    Math.max(1, container.width - 2 * inset),
-    container.content,
-    textGrey(container.textColor),
-  );
+  const face = containerFace(container.font);
+  const lines = face.wrap(container.content, Math.max(1, container.width - 2 * inset));
+  for (let i = 0; i < lines.length; i++) {
+    face.drawText(image, container.x + inset, container.y + inset + i * face.lineHeight, lines[i]!, textGrey(container.textColor));
+  }
 }
 
 function paintBorder(
@@ -94,7 +92,7 @@ function paintImageContainer(image: GrayImage, container: EvenHubImageContainer)
 
 function paintListContainer(image: GrayImage, container: EvenHubListContainer, focused: boolean): void {
   paintBorder(image, container);
-  paintListItems(image, container, EvenHubFont.get(), focused);
+  paintListItems(image, container, containerFace(container.font), focused);
 }
 
 /** Bottom-to-top paint order for a page's containers. */

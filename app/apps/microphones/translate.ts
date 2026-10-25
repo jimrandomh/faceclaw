@@ -18,7 +18,10 @@ const downloadedPairs = new Set<string>();
 export function deviceLanguage(): string {
   if (!global.isAndroid) return "en";
   try {
-    return String(java.util.Locale.getDefault().getLanguage() || "en");
+    // toLanguageTag() gives the modern code ("he", "id", "yi") that ML Kit
+    // uses; getLanguage() returns the legacy "iw", "in", "ji".
+    const tag = String(java.util.Locale.getDefault().toLanguageTag() || "");
+    return tag.split("-")[0] || "en";
   } catch {
     return "en";
   }
@@ -95,11 +98,18 @@ export function translateText(text: string, sourceLang: string, targetLang: stri
   if (!translator) return Promise.resolve("");
   const key = `${sourceLang}>${targetLang}`;
   return new Promise((resolve) => {
+    // Also runs from the download listener, where a throw would escape into
+    // the Play Services callback and leave this promise unsettled.
     const runTranslate = () => {
-      translator
-        .translate(text)
-        .addOnSuccessListener(successListener((result: any) => resolve(String(result))))
-        .addOnFailureListener(failureListener(() => resolve("")));
+      try {
+        translator
+          .translate(text)
+          .addOnSuccessListener(successListener((result: any) => resolve(String(result))))
+          .addOnFailureListener(failureListener(() => resolve("")));
+      } catch (error) {
+        console.warn(`translation failed (${key}): ${error}`);
+        resolve("");
+      }
     };
     if (downloadedPairs.has(key)) {
       runTranslate();

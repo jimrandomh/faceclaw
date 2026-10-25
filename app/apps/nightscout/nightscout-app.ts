@@ -10,7 +10,7 @@ import {
 } from "../../ui/shell/in-process-window";
 import { evaluateNightscoutAlerts } from "./nightscout-alerts";
 import { loadNightscoutThresholds, nightscoutAlwaysShowInTopBarSetting, onAnySettingChanged } from "../../ui/dashboard-settings";
-import { shell } from "../../ui/shell/shell";
+import { shell, type TrayWidget } from "../../ui/shell/shell";
 
 export const NIGHTSCOUT_WINDOW_ID = "nightscout";
 export const NIGHTSCOUT_SURFACE_ID = "window:nightscout";
@@ -23,11 +23,12 @@ const TRAY_GRAPH_WINDOW_MS = 2 * 60 * 60 * 1000;
 
 const windowRenders = new Set<() => void>();
 let trayStarted = false;
+let trayWidget: TrayWidget | undefined;
 let trayTick: ReturnType<typeof setInterval> | null = null;
 
 function syncNightscout(): void {
   const visible = windowRenders.size > 0 || nightscoutAlwaysShowInTopBarSetting.get();
-  shell.setTrayIcon(TRAY_ICON_ID, visible ? buildNightscoutTrayIcon(nightscoutBridge.snapshot()) : null);
+  shell.setTrayIcon(TRAY_ICON_ID, visible ? buildNightscoutTrayIcon(nightscoutBridge.snapshot()) : null, trayWidget);
   for (const render of windowRenders) render();
   // Age warnings and stale glucose must advance even during a stalled fetch.
   if (visible && trayTick === null) trayTick = setInterval(syncNightscout, 60_000);
@@ -37,8 +38,12 @@ function syncNightscout(): void {
   }
 }
 
-/** Shell-lifetime subscription so the tray can be enabled before any window opens. */
-export function startNightscoutTrayIcon(): void {
+/**
+ * Shell-lifetime subscription so the tray can be enabled before any window
+ * opens; `widget` makes it selectable in the switcher.
+ */
+export function startNightscoutTrayIcon(widget?: TrayWidget): void {
+  trayWidget ??= widget;
   if (trayStarted) return;
   trayStarted = true;
   nightscoutBridge.onStateChange(syncNightscout);

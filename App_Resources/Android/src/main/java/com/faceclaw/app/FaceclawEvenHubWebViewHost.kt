@@ -59,8 +59,8 @@ import java.util.HashMap
  * requestAnimationFrame) with JS queues fired by window.__fcTick(), and this
  * host ticks those on the main thread regardless of screen state. The tick
  * returns when the page next has work, so an idle page isn't evaluated at
- * 60Hz; work scheduled between ticks wakes the host through
- * FaceclawEvenHubJsBridge.wakeTimers. The main Looper keeps running under the
+ * 60Hz; work scheduled between ticks wakes the host through the bridge's
+ * "wake" message (FaceclawEvenHubJsBridge). The main Looper keeps running under the
  * foreground service, so the tick survives the screen turning off. (Matches the
  * official Even app's approach.)
  *
@@ -105,8 +105,12 @@ class FaceclawEvenHubWebViewHost {
      * the page wakes it. It also re-ticks after IDLE_POLL_MS regardless, so a
      * lost evaluateJavascript callback (e.g. mid-navigation) or a page whose
      * wake didn't reach us stalls its timers for at most that long.
+     *
+     * The tick only runs in the app's own documents ([appCheck], a JS
+     * expression): after a navigation the WebView may show another site.
      */
-    private inner class Ticker(private val web: WebView) : Runnable {
+    private inner class Ticker(private val web: WebView, appCheck: String) : Runnable {
+        private val tickJs = "if ($appCheck) { $TICK_JS }"
         private var inFlight = false
         private var wakePending = false
         private var stopped = false
@@ -114,7 +118,7 @@ class FaceclawEvenHubWebViewHost {
         override fun run() {
             if (stopped) return
             inFlight = true
-            web.evaluateJavascript(TICK_JS) { result -> onTicked(result) }
+            web.evaluateJavascript(tickJs) { result -> onTicked(result) }
             schedule(IDLE_POLL_MS)
         }
 
@@ -278,8 +282,11 @@ class FaceclawEvenHubWebViewHost {
         (web.context as? MutableContextWrapper)?.baseContext = activity
     }
 
-    /** Add a WebView to the host, full-size and rendering, hidden behind the UI. */
-    fun attach(activity: Activity, web: WebView) {
+    /**
+     * Add a WebView to the host, full-size and rendering, hidden behind the UI.
+     * [appCheck] is a JS expression that is true only in the app's own documents.
+     */
+    fun attach(activity: Activity, web: WebView, appCheck: String) {
         ensureOverlay(activity)
         rebaseContext(web, activity)
         web.visibility = View.VISIBLE
@@ -301,7 +308,7 @@ class FaceclawEvenHubWebViewHost {
         }
         if (!webViews.contains(web)) webViews.add(web)
         if (!tickers.containsKey(web)) {
-            val ticker = Ticker(web)
+            val ticker = Ticker(web, appCheck)
             tickers[web] = ticker
             mainHandler.postDelayed(ticker, TICK_MS)
         }
@@ -348,9 +355,9 @@ class FaceclawEvenHubWebViewHost {
         return shown
     }
 
-    /** Remove and destroy a WebView (its app is closing). */
+    /** Remove and destroy a WebView (its app is closing, or its renderer is gone). Idempotent. */
     fun detach(web: WebView) {
-        webViews.remove(web)
+        if (!webViews.remove(web)) return
         tickers.remove(web)?.stop()
         stack?.removeView(web)
         web.destroy()

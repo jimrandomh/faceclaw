@@ -30,10 +30,20 @@ async function buildKotlin(platform, configuration = 'debug') {
   if (!['debug', 'release'].includes(configuration)) throw new Error(`Unsupported Kotlin configuration: ${configuration}`);
   const variant = configuration === 'release' ? 'Release' : 'Debug';
   const task = platform === 'android' ? ':shared:assembleAndroidMain' : `:shared:assembleFaceclawKit${variant}XCFramework`;
-  const wrapper = path.join(root, 'wear', process.platform === 'win32' ? 'gradlew.bat' : 'gradlew');
+  const windows = process.platform === 'win32';
+  const wrapper = path.join(root, 'wear', windows ? 'gradlew.bat' : 'gradlew');
+  // Through cmd.exe a missing wrapper is only "not recognized" and exit 1.
+  if (!existsSync(wrapper)) throw new Error(`Gradle wrapper not found: ${wrapper}`);
+  const args = [task, '--console=plain'];
   console.log(`[kotlin] Building ${platform} (${configuration})`);
   await new Promise((resolve, reject) => {
-    const child = spawn(wrapper, [task, '--console=plain'], { cwd: kotlin, stdio: 'inherit' });
+    // Node refuses to spawn a .bat directly (EINVAL, since the CVE-2024-27980
+    // fix), so cmd.exe runs it. It gets one command string because args
+    // alongside shell: true are deprecated (DEP0190); the wrapper is quoted for
+    // checkouts under paths with spaces.
+    const child = windows
+      ? spawn(`"${wrapper}" ${args.join(' ')}`, { cwd: kotlin, stdio: 'inherit', shell: true })
+      : spawn(wrapper, args, { cwd: kotlin, stdio: 'inherit' });
     child.on('error', reject);
     child.on('exit', (code, signal) => {
       if (code === 0) resolve();

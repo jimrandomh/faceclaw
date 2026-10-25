@@ -5,6 +5,7 @@
  * own the magnetometer lifecycle and the readout text around it.
  */
 import { GrayImage } from "../../graphics/image";
+import { type CompassDiagnostics } from "../../native/compass-types";
 import { normalizeHeading } from "./calibration";
 
 /**
@@ -100,6 +101,19 @@ export function layoutCompassRose(options: {
 export function cardinalDirection(heading: number): string {
   const names = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
   return names[Math.round(normalizeHeading(heading) / 45) % names.length]!;
+}
+
+/**
+ * The firmware's magnetometer calibration readiness (0-3) as filled/empty
+ * dots, e.g. "●●○" for 2/3, or null when the firmware doesn't report it. This
+ * is the glasses' own sensor calibration, not the wearer-fit offset set on the
+ * calibration screen.
+ */
+export function magneticAccuracyDots(diagnostics: CompassDiagnostics | null): string | null {
+  const accuracy = diagnostics && (diagnostics.flags & 0x80) ? diagnostics.magneticAccuracy : -1;
+  if (accuracy < 0) return null;
+  const filled = Math.min(3, accuracy);
+  return "●".repeat(filled) + "○".repeat(3 - filled);
 }
 
 interface Point {

@@ -6,6 +6,7 @@ module FaceclawGraphics {
   header "FaceclawSpeech.h"
   header "FaceclawLocation.h"
   header "FaceclawCalendar.h"
+  header "FaceclawAppleMusic.h"
   header "FaceclawConfigPort.h"
   header "FaceclawEvenHubWebView.h"
   header "FaceclawCrypto.h"

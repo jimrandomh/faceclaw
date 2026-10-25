@@ -110,6 +110,7 @@ class MicArrayController {
    * doesn't spend BLE bandwidth.
    */
   apply(config: MicConfig): boolean {
+    if (config.armHardware && !micControlSupported()) return false;
     const leftActive = templeActive(config, "left");
     const rightActive = templeActive(config, "right");
     if (leftActive || rightActive) {
@@ -122,6 +123,17 @@ class MicArrayController {
     this.armed = config.armHardware && (leftActive || rightActive);
     this.syncLeaseTimer();
     return true;
+  }
+
+  /**
+   * Re-send CONFIGURE to one temple whose stream went quiet (a lost write, or
+   * a temple that restarted on its own), leaving the other temple's stream
+   * untouched.
+   */
+  reconfigureTemple(config: MicConfig, side: MicSide): boolean {
+    if (!templeActive(config, side)) return false;
+    if (config.armHardware && !micControlSupported()) return false;
+    return this.send("configure", config, `configure-${side}`, side === "right", side === "left");
   }
 
   query(): boolean {
@@ -148,11 +160,11 @@ class MicArrayController {
   ): boolean {
     const communicator = activeCommunicator();
     if (!communicator) return false;
-    this.ensureStatusProxy(communicator);
     try {
+      this.ensureStatusProxy(communicator);
       const record = encodeMicControl(op, config);
-      communicator.sendFaceclawMicControl(toJavaBytes(record), label, rightTemple, leftTemple);
-      return true;
+      // False when the session wasn't ready and nothing was queued.
+      return communicator.sendFaceclawMicControl(toJavaBytes(record), label, rightTemple, leftTemple) !== false;
     } catch (error) {
       console.warn(`mic control ${label} failed: ${error}`);
       return false;

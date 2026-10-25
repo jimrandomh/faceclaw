@@ -78,8 +78,8 @@ test('local package runtimes unpack independently and clean up after closing or 
   assert.equal(files.size, 0);
 });
 
-function sessionHarness(overrides = {}, playBuzzer = () => {}) {
-  const settings = new Map(), logs = [], renders = [];
+function sessionHarness(overrides = {}, playBuzzer = () => {}, { packageId = 'test.probe', settings = new Map() } = {}) {
+  const logs = [], renders = [];
   const load = loader({ global: { isIOS: true }, setTimeout, clearTimeout, Promise }, {
     '@nativescript/core': { ApplicationSettings: { getString: (k, d) => settings.get(k) ?? d, setString: (k, v) => settings.set(k, v) } },
     'upng-js': require('upng-js'),
@@ -90,7 +90,7 @@ function sessionHarness(overrides = {}, playBuzzer = () => {}) {
     '../../native/location': {}, '../../native/location-tracker': {}, '../../native/location-permissions': {}, ...overrides,
   });
   const api = load('app/apps/evenhub/session.ts');
-  const session = new api.EvenHubSession({ name: 'Probe', packageId: 'test.probe', permissions: [] }, '/test/dist', line => logs.push(line), '', playBuzzer);
+  const session = new api.EvenHubSession({ name: 'Probe', packageId, permissions: [] }, '/test/dist', line => logs.push(line), '', playBuzzer);
   session.attachWindow({ requestRender: () => renders.push(1), windowId: 'probe', closeWindow() {} });
   const web = vm.createContext({ Promise, Map, Date, console });
   web.window = web;
@@ -136,6 +136,52 @@ test('iOS webview adapter defers loading until handles attach and destroys a not
   const remote = createEvenHubWebView({ ...session, remoteUrl: 'https://example.test' });
   timers.get(1)(); assert.equal(calls.at(-1)[0], 'https://example.test');
   remote.destroy();
+});
+
+test('iOS webview adapter passes fatal errors through and logs host notices', () => {
+  const native = {}, failures = [], logs = [];
+  const load = loader({ FaceclawEvenHubWebView: { new: () => native }, setTimeout: () => 1, clearTimeout() {},
+    console: { log: line => logs.push(line), warn() {} } }, {
+    './session': { EVENHUB_BRIDGE_INJECT_SCRIPT: '', buildFaceclawExtensionsScript: () => '' }, '../../version': { FACECLAW_VERSION: 'test' },
+  });
+  load('app/apps/evenhub/webview.ios.ts').createEvenHubWebView({ manifest: { name: 'Probe' },
+    webViewFailed: (message, fatal) => failures.push([message, fatal]) });
+  native.eventHandler(JSON.stringify({ kind: 'error', message: 'offline' }));
+  native.eventHandler(JSON.stringify({ kind: 'error', message: 'crashed', fatal: true }));
+  native.eventHandler(JSON.stringify({ kind: 'notice', message: 'Blocked navigation to a mailto: URL.' }));
+  assert.deepEqual(failures, [['offline', false], ['crashed', true]]);
+  assert.deepEqual(logs, ['[evenhub:Probe] Blocked navigation to a mailto: URL.']);
+});
+
+test('EvenHub load errors replace the window only before the app loads, and a later load clears them', () => {
+  const drawn = [];
+  const h = sessionHarness({ '../../graphics/evenhub-font': { EvenHubFont: { get: () => ({
+    drawText: (_image, _x, _y, text) => drawn.push(text), drawTextWrapped() {}, lineHeight: 20 }) } } });
+  const heading = () => { drawn.length = 0; h.session.paint({ width: 576, height: 288 }, true); return drawn[0]; };
+  h.session.webViewFailed('offline');
+  assert.equal(heading(), 'Could not run Probe...');
+  h.session.webViewLoaded();
+  assert.equal(heading(), 'Loading Probe...');
+  // A failed navigation after the first load leaves the app's page running.
+  h.session.webViewFailed('A server with the specified hostname could not be found.');
+  assert.equal(heading(), 'Loading Probe...');
+  assert.ok(h.logs.includes('evenhub: A server with the specified hostname could not be found.'));
+  h.session.webViewFailed('The app\'s web process ended.', true);
+  assert.equal(heading(), 'Could not run Probe...');
+  h.session.close();
+});
+
+test('SDK storage is partitioned by package, even for package IDs containing the key separator', async () => {
+  const settings = new Map();
+  const [plain, colon, percent] = ['a', 'a:ls:b', 'a%3Als%3Ab'].map(packageId => sessionHarness({}, undefined, { packageId, settings }));
+  assert.equal(await colon.call('setLocalStorage', { key: 'c', value: 'secret' }), true);
+  assert.equal(await colon.call('getLocalStorage', { key: 'c' }), 'secret');
+  assert.equal(await plain.call('getLocalStorage', { key: 'b:ls:c' }), '');
+  assert.equal(await percent.call('getLocalStorage', { key: 'c' }), '');
+  // Ordinary package IDs keep their existing keys.
+  assert.equal(await plain.call('setLocalStorage', { key: 'k', value: 'v' }), true);
+  assert.equal(settings.get('evenhub:a:ls:k'), 'v');
+  for (const h of [plain, colon, percent]) h.session.close();
 });
 
 test('EvenHub location uses the platform boundary and closes its subscription', async () => {
@@ -212,5 +258,42 @@ test('EvenHub buzzer RPC uses the host action on iOS and chunks and paces long s
   assert.deepEqual(played[1], [...sounds.buildSoundSequencePayload(steps.slice(48))]);
   await h.session.dispatchExtension('playBuzzer', [[null, { freq: 'bad', ms: 10 }]]);
   assert.equal(played.length, 2);
+  h.session.close();
+});
+
+test('EvenHub buzzer RPC rejects the app promise when sending fails', async () => {
+  const sounds = loader()('app/ui/sound-effects.ts');
+  const h = sessionHarness({ '../../ui/sound-effects': sounds }, () => Promise.reject(new Error('link lost')));
+  await assert.rejects(h.session.dispatchExtension('playBuzzer', [[{ freq: 880, ms: 50 }]]), /link lost/);
+  h.session.close();
+});
+
+test('EvenHub assistant tools skip malformed names and schemas with a warning in the app console', () => {
+  const offered = [];
+  const h = sessionHarness({ '../../assistant/tool-registry': { toolRegistry: { setAppTools: provider => offered.push(provider), removeAppTools() {} } } });
+  const warnings = [];
+  h.web.console = { warn: message => warnings.push(message) };
+  const object = { type: 'object', properties: { n: { type: 'number' } }, required: ['n'] };
+  h.session.dispatchExtension('setAssistantTools', [[
+    { name: 'ok', description: 'fine', parameters: object },
+    { name: 'no_params', description: 'defaults' },
+    { name: 'has space', parameters: object },
+    { name: 'x'.repeat(65), parameters: object },
+    { name: 'untyped', parameters: { properties: {} } },
+    { name: 'string', parameters: { type: 'string' } },
+    { name: 'union', parameters: { type: 'object', anyOf: [object] } },
+    { name: 'bad_props', parameters: { type: 'object', properties: [] } },
+    { name: 'bad_required', parameters: { type: 'object', required: 'n' } },
+  ]]);
+  // Through JSON: the default schema is built in the session's realm.
+  assert.deepEqual(JSON.parse(JSON.stringify(offered[0].specs.map(spec => [spec.name, spec.inputSchema]))), [
+    ['ok', object],
+    ['no_params', { type: 'object', properties: {} }],
+  ]);
+  assert.equal(warnings.length, 7);
+  assert.ok(warnings.every(message => message.startsWith('Faceclaw: setAssistantTools: skipped tool')));
+  assert.match(warnings[0], /"has space": name must be/);
+  assert.match(warnings[2], /"untyped": parameters must be a JSON Schema with type "object"/);
+  assert.match(warnings[4], /"union": parameters can't use oneOf, anyOf or allOf/);
   h.session.close();
 });

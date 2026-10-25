@@ -6,6 +6,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 const { execFileSync } = require('node:child_process');
 const ts = require('typescript');
+const { kotlinCompiler } = require('./helpers/kotlin-compiler.cjs');
 
 const source = (file) => fs.readFileSync(path.join(__dirname, '..', file), 'utf8');
 function load(file, requireModule, globals = {}) {
@@ -88,6 +89,8 @@ function bridges() {
     './settings-store': storage,
     '../graphics/image': {},
     './image-files': {},
+    './notification-access': { isNotificationListenerEnabled: () => true },
+    './media-types': load('app/native/media-types.ts', () => { throw new Error('media-types has no imports'); }),
   };
   const globals = { global: { isAndroid: true }, com: { faceclaw: { app: {
     FaceclawMediaBrowser: NativeBrowser,
@@ -188,46 +191,6 @@ test('Music settings keeps toggles and selection when a new app arrives and supp
   await input('double-click');
   assert.equal(closes, 1);
 });
-
-// FaceclawMediaController is Kotlin compiled by the NativeScript Android build, so
-// compile the extracted method with the same Kotlin compiler Gradle already cached.
-function kotlinCompiler() {
-  const gradle = source('App_Resources/Android/before-plugins.gradle').match(/kotlinVersion\s*=\s*"([^"]+)"/);
-  const cache = path.join(os.homedir(), '.gradle/caches/modules-2/files-2.1');
-  const jar = (group, artifact, version) => {
-    const directory = path.join(cache, group, artifact, version);
-    if (!fs.existsSync(directory)) return null;
-    for (const hash of fs.readdirSync(directory)) {
-      const file = path.join(directory, hash, `${artifact}-${version}.jar`);
-      if (fs.existsSync(file)) return file;
-    }
-    return null;
-  };
-  const anyVersion = (group, artifact) => {
-    const directory = path.join(cache, group, artifact);
-    if (!fs.existsSync(directory)) return null;
-    for (const version of fs.readdirSync(directory).sort().reverse()) {
-      const file = jar(group, artifact, version);
-      if (file) return file;
-    }
-    return null;
-  };
-  if (!gradle) return null;
-  const version = gradle[1];
-  const stdlib = jar('org.jetbrains.kotlin', 'kotlin-stdlib', version);
-  const compiler = [
-    jar('org.jetbrains.kotlin', 'kotlin-compiler-embeddable', version),
-    stdlib,
-    jar('org.jetbrains.kotlin', 'kotlin-script-runtime', version),
-    jar('org.jetbrains.kotlin', 'kotlin-daemon-embeddable', version),
-    anyVersion('org.jetbrains.kotlin', 'kotlin-reflect'),
-    anyVersion('org.jetbrains.intellij.deps', 'trove4j'),
-    anyVersion('org.jetbrains', 'annotations'),
-    anyVersion('org.jetbrains.kotlinx', 'kotlinx-coroutines-core-jvm'),
-  ];
-  if (compiler.some(file => !file)) return null;
-  return { classpath: compiler.join(path.delimiter), stdlib };
-}
 
 test('native session selection skips ignored playing and idle apps, including the all-ignored case', (t) => {
   // Execute the production selection method with lightweight media-session doubles.

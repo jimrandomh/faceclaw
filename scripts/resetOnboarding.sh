@@ -4,7 +4,8 @@
 # pre-onboarding state, for testing the onboarding flow repeatedly.
 #
 # By default this only clears the onboarding-related preference keys
-# (onboarding.complete, onboarding.previewOnly, ...) and leaves everything
+# (onboarding.complete, onboarding.previewOnly, the on-glasses onboarding's
+# onboarding.glassesFinishedVersion, ...) and leaves everything
 # else — notably the saved glasses/ring MAC addresses — intact, so you don't
 # have to re-scan devices on every test pass. Pass --all to wipe ALL app data
 # (a true fresh-install state, addresses included).

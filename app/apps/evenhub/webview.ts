@@ -15,6 +15,11 @@
  * the offline serving entirely and loads that URL from the network; the shim
  * is registered as a document-start script instead of being spliced into the
  * served HTML.
+ *
+ * The app can navigate its WebView to other sites, so host access is tied to
+ * the app's origin: the bridge port is injected only into the app's own frames
+ * (FaceclawEvenHubJsBridge), and every script the host runs in the WebView is
+ * guarded by an origin check.
  */
 import { Application, Utils } from "@nativescript/core";
 import { EVENHUB_BRIDGE_INJECT_SCRIPT, buildFaceclawExtensionsScript, type EvenHubSession } from "./session";
@@ -34,19 +39,40 @@ export type EvenHubWebView = {
   native: unknown;
 };
 
-/** A distinct (fake, intercepted) https origin per app isolates web storage. */
-function originHost(session: EvenHubSession): string {
-  const safe = session.manifest.packageId.toLowerCase().replace(/[^a-z0-9.-]/g, "-");
-  return `${safe}.evenhub.invalid`;
+/**
+ * Wraps the bridge port (window.__faceclawEvenHubPort, which WebView injects
+ * only into the app's own frames) as the window.__faceclawEvenHub interface
+ * the bridge shim and the extensions call.
+ */
+export const ANDROID_EVENHUB_TRANSPORT_SCRIPT = `
+(function () {
+  var port = window.__faceclawEvenHubPort;
+  if (!port || window.__faceclawEvenHub) return;
+  window.__faceclawEvenHub = {
+    postMessage: function (name, args, id) { port.postMessage(JSON.stringify(['call', String(name), String(args), id])); },
+    wakeTimers: function () { port.postMessage('["wake"]'); }
+  };
+})();
+`;
+
+/** A JS expression that is true only in a document from `startUrl`'s origin. */
+export function appOriginCheck(startUrl: string): string {
+  return `(function (app) { return app.protocol === location.protocol && app.host === location.host; })(new URL(${JSON.stringify(startUrl)}))`;
+}
+
+/** `js`, run only when the WebView's document is from `startUrl`'s origin. */
+export function guardToAppOrigin(startUrl: string, js: string): string {
+  return `if (${appOriginCheck(startUrl)}) {\n${js}\n}`;
 }
 
 /**
- * The allowed-origin rule for a remote app's document-start script: the
- * loaded URL's own origin, so the shim isn't handed to third-party frames.
+ * A distinct (fake, intercepted) https origin per app. The per-app profile is
+ * what keeps storage apart; without one, this still separates origin-scoped
+ * storage, though not cookies scoped to the shared evenhub.invalid domain.
  */
-function originRule(url: string): string {
-  const match = /^(https?:\/\/[^/?#]+)/i.exec(url);
-  return match ? match[1]! : "*";
+function originHost(session: EvenHubSession): string {
+  const safe = session.manifest.packageId.toLowerCase().replace(/[^a-z0-9.-]/g, "-");
+  return `${safe}.evenhub.invalid`;
 }
 
 /**
@@ -59,12 +85,20 @@ export function createEvenHubWebView(session: EvenHubSession): EvenHubWebView {
   // A mutable wrapper, so the host can re-point the WebView at a recreated
   // activity (see FaceclawEvenHubWebViewHost).
   const webView = new com.faceclaw.app.FaceclawEvenHubWebView(new android.content.MutableContextWrapper(context));
+  // The app's own WebView profile, so its browser storage (and that of sites it
+  // navigates to) is separate from every other app's. This must come before
+  // any other use of the WebView.
+  if (!com.faceclaw.app.FaceclawEvenHubProfile.apply(webView, session.manifest.packageId)) {
+    console.warn(`evenhub: this WebView can't separate profiles; ${session.manifest.packageId} shares browser storage with other apps`);
+  }
   const settings = webView.getSettings();
   settings.setJavaScriptEnabled(true);
   settings.setDomStorageEnabled(true);
   settings.setAllowFileAccess(false);
   settings.setMediaPlaybackRequiresUserGesture(false);
 
+  // Set once the renderer is gone: the WebView is destroyed and must not be used.
+  let gone = false;
   const listener = new com.faceclaw.app.FaceclawEvenHubListener({
     onEvenAppMessage: (handlerName: string, argsJson: string, callId: number) => {
       session.handleBridgeCall(String(handlerName), String(argsJson), Number(callId));
@@ -72,17 +106,31 @@ export function createEvenHubWebView(session: EvenHubSession): EvenHubWebView {
     onPageFinished: () => {
       session.webViewLoaded();
     },
+    onRenderProcessGone: (crashed: boolean) => {
+      gone = true;
+      session.webViewFailed(crashed
+        ? "The app's web page crashed. Close and reopen the app."
+        : "Android stopped the app's web page to free memory. Close and reopen the app.", true);
+    },
   });
 
   const remoteUrl = session.remoteUrl;
   // Remote apps load from their own server, so nothing is intercepted and the
   // fake per-app origin is unused.
   const host = remoteUrl ? "" : originHost(session);
-  // Stock bridge shim first, then the Faceclaw extensions global (both at
-  // document-start, before any app JS).
-  const injectScript = EVENHUB_BRIDGE_INJECT_SCRIPT + buildFaceclawExtensionsScript(`Faceclaw/${FACECLAW_VERSION}`);
-  const documentStartInstalled = remoteUrl
-    ? com.faceclaw.app.FaceclawEvenHubDocumentStart.install(webView, injectScript, originRule(remoteUrl)) === true
+  const startUrl = remoteUrl || `https://${host}/${session.manifest.entrypoint}`;
+  const originRule: string | null = com.faceclaw.app.FaceclawEvenHubJsBridge.originRule(startUrl);
+  const appCheck = appOriginCheck(startUrl);
+  const guarded = (js: string) => guardToAppOrigin(startUrl, js);
+  // The transport, the stock bridge shim, then the Faceclaw extensions global
+  // (all at document-start, before any app JS).
+  const injectScript = guarded(ANDROID_EVENHUB_TRANSPORT_SCRIPT + EVENHUB_BRIDGE_INJECT_SCRIPT +
+    buildFaceclawExtensionsScript(`Faceclaw/${FACECLAW_VERSION}`));
+  const bridgeError: string | null = originRule
+    ? com.faceclaw.app.FaceclawEvenHubJsBridge.install(webView, originRule, listener)
+    : `Not a web address: ${startUrl}`;
+  const documentStartInstalled = remoteUrl && originRule
+    ? com.faceclaw.app.FaceclawEvenHubDocumentStart.install(webView, injectScript, originRule) === true
     : false;
   webView.setWebViewClient(
     new com.faceclaw.app.FaceclawEvenHubWebViewClient(
@@ -95,20 +143,22 @@ export function createEvenHubWebView(session: EvenHubSession): EvenHubWebView {
       listener,
     ),
   );
-  webView.addJavascriptInterface(new com.faceclaw.app.FaceclawEvenHubJsBridge(listener), "__faceclawEvenHub");
 
   // Surface the app's console in logcat (tag FaceclawEvenHubConsole).
   webView.setWebChromeClient(new com.faceclaw.app.FaceclawEvenHubChromeClient());
 
   const nativeHost = com.faceclaw.app.FaceclawEvenHubWebViewHost.getInstance();
-  nativeHost.attach(activity, webView);
-  webView.loadUrl(remoteUrl || `https://${host}/${session.manifest.entrypoint}`);
+  nativeHost.attach(activity, webView, appCheck);
+  // Without the bridge the app could only hang waiting for it.
+  if (bridgeError) session.webViewFailed(String(bridgeError), true);
+  else webView.loadUrl(startUrl);
 
   return {
     native: webView,
     evaluateJs: (js: string) => {
+      if (gone) return;
       try {
-        webView.evaluateJavascript(js, null);
+        webView.evaluateJavascript(guarded(js), null);
       } catch (error) {
         console.warn(`evenhub evaluateJs failed: ${error}`);
       }

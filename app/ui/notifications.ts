@@ -10,6 +10,7 @@ import {
   invokeNotificationAction,
   readActiveNotifications,
   readNotificationIconByKey,
+  readNotificationPicture,
   type AndroidNotification,
   type AndroidNotificationAction,
 } from "../native/notification-icons";
@@ -44,6 +45,13 @@ const DETAIL_TITLE_Y = 21;
 /** Gaps below the title's line box and below the icon/app-name header row. */
 const DETAIL_HEADER_GAP = 3;
 const DETAIL_BODY_GAP = 4;
+/** Text lines an attached picture leaves room for above it (when there are that many); it takes the rest. */
+const DETAIL_PICTURE_TEXT_LINES = 2;
+/** Gap between the text and an attached picture, and the space kept below the picture. */
+const DETAIL_PICTURE_GAP = 6;
+const DETAIL_PICTURE_BOTTOM_MARGIN = 12;
+/** An attached picture with less height than this to fit in (a large UI font) is left out. */
+const DETAIL_PICTURE_MIN_HEIGHT = 32;
 // Disable-source confirmation: actions on top, the explanation below them.
 const CONFIRM_X = 24;
 const CONFIRM_Y = 8;
@@ -57,6 +65,16 @@ function iconForNotification(key: string): GrayImage | null {
     noteStaleDataUsed();
   }
   return icon;
+}
+
+/** Attached picture for a paint pass, fitting maxWidth x maxHeight; allow-stale like iconForNotification. */
+function pictureForNotification(notification: AndroidNotification, maxWidth: number, maxHeight: number): GrayImage | null {
+  if (!notification.hasPicture || maxHeight < DETAIL_PICTURE_MIN_HEIGHT) return null;
+  const { picture, stale } = readNotificationPicture(notification, maxWidth, maxHeight, renderPassAllowsStaleData());
+  if (stale) {
+    noteStaleDataUsed();
+  }
+  return picture;
 }
 
 type CardLayout = {
@@ -190,22 +208,7 @@ export class NotificationsListLayer implements Layer {
  */
 export class SingleNotificationLayer implements Layer {
   /** The action column; its items are rebuilt from the live notification on every paint and input. */
-  private readonly detailMenu = new Menu<DetailMenuItem>({
-    wrap: false,
-    rowGap: DETAIL_MENU_ROW_GAP,
-    highlight: { radius: 6 },
-    getHeight: (item, width) => {
-      const font = getDefaultSmallFont();
-      return detailMenuRowLines(font, item, width).length * lineStep(font) + 8;
-    },
-    draw: ({ image, item, x, y, width, selected }) => {
-      const font = getDefaultSmallFont();
-      const lines = detailMenuRowLines(font, item, width);
-      for (let line = 0; line < lines.length; line++) {
-        image.drawText(font, x + DETAIL_MENU_TEXT_X, y + DETAIL_MENU_TEXT_Y + line * lineStep(font), lines[line]!, selected ? 255 : 185);
-      }
-    },
-  });
+  private readonly detailMenu = createNotificationActionMenu<DetailMenuItem>((item) => item.kind === "disable-source");
   private confirmation: { source: AndroidNotification; menu: Menu<ConfirmationItem> } | null = null;
   // The last paint, which a tray-hosted layer repeats once its notification
   // is gone, until the tray swaps in a neighbour's (see closeUnavailableNotification).
@@ -215,6 +218,11 @@ export class SingleNotificationLayer implements Layer {
     private readonly notificationKey: string,
     private readonly options: SingleNotificationLayerOptions,
   ) {}
+
+  /** Whether the layer stays up once its notification is gone: the disable-source confirmation dismisses it first. */
+  outlivesNotification(): boolean {
+    return this.confirmation !== null;
+  }
 
   paint(ctx: LayerContext, paintBelow: PaintBelow): GrayImage {
     if (this.confirmation) return this.paintConfirmation(ctx);
@@ -229,7 +237,7 @@ export class SingleNotificationLayer implements Layer {
 
     this.detailMenu.setItems(buildDetailMenu(notification, this.options.origin));
     drawDetailContent(image, font, notification, iconForNotification(notification.key), width, height);
-    this.detailMenu.paint(image, detailMenuBox(width, height), ctx.stack.isFocused());
+    this.detailMenu.paint(image, notificationActionMenuBox(width, height), ctx.stack.isFocused());
     this.lastImage = image;
     return image;
   }
@@ -427,60 +435,120 @@ function drawDetailContent(
   width: number,
   height: number,
 ): void {
-  const contentX = DETAIL_CONTENT_X;
-  const menuX = width - DETAIL_MENU_WIDTH - 24;
-  const contentWidth = menuX - contentX - 20;
-  image.drawText(font, contentX, DETAIL_TITLE_Y, "Notification", 220);
-  // The header row (icon + app name) and the body stack below the title's
-  // line box, so a large UI font pushes them down instead of overlapping.
-  const headerTop = DETAIL_TITLE_Y + font.lineHeight + DETAIL_HEADER_GAP;
-  const headerHeight = Math.max(ICON_SIZE, font.lineHeight);
-  let appLineX = contentX;
-  if (icon) {
-    image.bitBlt(icon, contentX, headerTop + ((headerHeight - ICON_SIZE) >> 1), { transparentZero: true });
-    appLineX = contentX + ICON_SIZE + ICON_TEXT_GAP;
-  }
-  image.drawText(font, appLineX, centeredTextY(font, headerTop, headerHeight), `${notification.appName || notification.packageName}  ${formatRelativeTime(notification.postTime)}`, 150);
+  const contentX = NOTIFICATION_CONTENT_X;
+  const contentWidth = notificationContentWidth(width);
+  const bodyTop = drawNotificationHeader(image, font, icon, `${notification.appName || notification.packageName}  ${formatRelativeTime(notification.postTime)}`);
 
   const lines: string[] = [];
-  lines.push(...wrapText(font, notification.title || "(untitled)", contentWidth));
+  // A picture can be the whole notification (Dexcom's has no text), so it
+  // stands in for the "(untitled)" placeholder.
+  const hasTitle = Boolean(notification.title) || !notification.hasPicture;
+  if (hasTitle) {
+    lines.push(...wrapText(font, notification.title || "(untitled)", contentWidth));
+  }
   const body = detailNotificationBody(notification);
   if (body) {
-    lines.push("");
+    if (lines.length) lines.push("");
     lines.push(...wrapText(font, body, contentWidth));
   }
   const meta = [notification.subText, notification.infoText, notification.summaryText].filter(Boolean).join("  ");
   if (meta) {
-    lines.push("");
+    if (lines.length) lines.push("");
     lines.push(...wrapText(font, meta, contentWidth));
   }
 
   const step = lineStep(font);
-  const bodyTop = headerTop + headerHeight + DETAIL_BODY_GAP;
+  const textValue = (index: number) => index === 0 && hasTitle ? 230 : 190;
+  const reservedTextHeight = Math.min(lines.length, DETAIL_PICTURE_TEXT_LINES) * step;
+  const picture = pictureForNotification(notification, contentWidth,
+    height - DETAIL_PICTURE_BOTTOM_MARGIN - bodyTop - reservedTextHeight - (reservedTextHeight ? DETAIL_PICTURE_GAP : 0));
+  if (picture) {
+    // The text gets whatever the picture leaves, above it, with its last
+    // shown line marked when some is cut off.
+    const roomForText = height - DETAIL_PICTURE_BOTTOM_MARGIN - picture.height - DETAIL_PICTURE_GAP - bodyTop;
+    const shownLines = Math.min(lines.length, Math.max(0, (roomForText / step) | 0));
+    for (let index = 0; index < shownLines; index++) {
+      const line = index === shownLines - 1 && lines.length > shownLines
+        ? truncateText(font, lines[index] + "...", contentWidth) : lines[index]!;
+      image.drawText(font, contentX, bodyTop + index * step, line, textValue(index));
+    }
+    image.bitBlt(picture, contentX, bodyTop + shownLines * step + (shownLines ? DETAIL_PICTURE_GAP : 0));
+    return;
+  }
+
   const maxLines = Math.max(1, ((height - bodyTop - step) / step) | 0);
   for (let index = 0; index < Math.min(lines.length, maxLines); index++) {
     const line = lines[index]!;
-    image.drawText(font, contentX, bodyTop + index * step, line, index === 0 ? 230 : 190);
+    image.drawText(font, contentX, bodyTop + index * step, line, textValue(index));
   }
   if (lines.length > maxLines) {
     image.drawText(font, contentX, height - 24, "...", 140);
   }
 }
 
+/** Left edge of a notification detail view's content column. */
+export const NOTIFICATION_CONTENT_X = DETAIL_CONTENT_X;
+
+/** Width of a notification detail view's content column, left of the action column. */
+export function notificationContentWidth(width: number): number {
+  return width - DETAIL_MENU_WIDTH - 24 - NOTIFICATION_CONTENT_X - 20;
+}
+
+/**
+ * The top of a notification detail view: the "Notification" title, then the
+ * source's icon and label. Returns the y where the body starts.
+ */
+export function drawNotificationHeader(image: GrayImage, font: UiFont, icon: GrayImage | null, sourceLabel: string): number {
+  const contentX = NOTIFICATION_CONTENT_X;
+  image.drawText(font, contentX, DETAIL_TITLE_Y, "Notification", 220);
+  // The header row (icon + app name) and the body stack below the title's
+  // line box, so a large UI font pushes them down instead of overlapping.
+  const headerTop = DETAIL_TITLE_Y + font.lineHeight + DETAIL_HEADER_GAP;
+  const headerHeight = Math.max(ICON_SIZE, font.lineHeight);
+  let sourceX = contentX;
+  if (icon) {
+    image.bitBlt(icon, contentX, headerTop + ((headerHeight - ICON_SIZE) >> 1), { transparentZero: true });
+    sourceX = contentX + ICON_SIZE + ICON_TEXT_GAP;
+  }
+  image.drawText(font, sourceX, centeredTextY(font, headerTop, headerHeight), sourceLabel, 150);
+  return headerTop + headerHeight + DETAIL_BODY_GAP;
+}
+
+/**
+ * A notification detail view's right-hand action column. Rows truncate their
+ * label to one line, except those `wraps` picks, which wrap it.
+ */
+export function createNotificationActionMenu<T extends { label: string }>(wraps: (item: T) => boolean = () => false): Menu<T> {
+  const rowLines = (font: UiFont, item: T, rowWidth: number): string[] => {
+    const textWidth = rowWidth - 2 * DETAIL_MENU_TEXT_X;
+    return wraps(item) ? wrapText(font, item.label, textWidth) : [truncateText(font, item.label, textWidth)];
+  };
+  return new Menu<T>({
+    wrap: false,
+    rowGap: DETAIL_MENU_ROW_GAP,
+    highlight: { radius: 6 },
+    getHeight: (item, width) => {
+      const font = getDefaultSmallFont();
+      return rowLines(font, item, width).length * lineStep(font) + 8;
+    },
+    draw: ({ image, item, x, y, width, selected }) => {
+      const font = getDefaultSmallFont();
+      const lines = rowLines(font, item, width);
+      for (let line = 0; line < lines.length; line++) {
+        image.drawText(font, x + DETAIL_MENU_TEXT_X, y + DETAIL_MENU_TEXT_Y + line * lineStep(font), lines[line]!, selected ? 255 : 185);
+      }
+    },
+  });
+}
+
 /** The action column's row boxes: right of the content, from DETAIL_MENU_TOP to the bottom margin. */
-function detailMenuBox(width: number, height: number): MenuBox {
+export function notificationActionMenuBox(width: number, height: number): MenuBox {
   return {
     x: width - DETAIL_MENU_WIDTH - 32,
     y: DETAIL_MENU_TOP,
     width: DETAIL_MENU_WIDTH,
     height: height - DETAIL_MENU_TOP - DETAIL_MENU_BOTTOM_MARGIN,
   };
-}
-
-/** An action row's text lines: the disable-source row wraps, the rest truncate to one line. */
-function detailMenuRowLines(font: UiFont, item: DetailMenuItem, rowWidth: number): string[] {
-  const textWidth = rowWidth - 2 * DETAIL_MENU_TEXT_X;
-  return item.kind === "disable-source" ? wrapText(font, item.label, textWidth) : [truncateText(font, item.label, textWidth)];
 }
 
 function buildDetailMenu(notification: AndroidNotification, origin: SingleNotificationLayerOrigin): DetailMenuItem[] {

@@ -23,7 +23,14 @@ import {
 import { shell } from "../../ui/shell/shell";
 import { ensureLocationPermission, hasLocationPermission } from "../../native/location-permissions";
 import { isCompassCalibrated, normalizeHeading } from "./calibration";
-import { cardinalDirection, createCompassBackground, drawCompassRose, layoutCompassRose, TICK_HEIGHT } from "./compass-rose";
+import {
+  cardinalDirection,
+  createCompassBackground,
+  drawCompassRose,
+  layoutCompassRose,
+  magneticAccuracyDots,
+  TICK_HEIGHT,
+} from "./compass-rose";
 import { CompassCalibrationLayer } from "./calibration-layer";
 import { getDeclinationAvailability, onDeclinationChanged, refreshDeclination } from "./declination";
 import { getNorthReference, resolveHeading, setNorthReference, type NorthReference } from "./heading";
@@ -277,14 +284,7 @@ function frameStatusText(): string {
   }
 }
 
-/**
- * The firmware's magnetometer calibration readiness (0-3) as filled/empty
- * dots, e.g. "Calibration: ●●○" for 2/3. This is the glasses' own sensor
- * calibration, not the wearer-fit offset set on the calibration screen.
- */
+/** The firmware's magnetometer calibration readiness, e.g. "Calibration: ●●○" for 2/3. */
 function magneticAccuracyText(diagnostics: CompassDiagnostics | null): string {
-  const accuracy = diagnostics && (diagnostics.flags & 0x80) ? diagnostics.magneticAccuracy : -1;
-  if (accuracy < 0) return "Calibration: --";
-  const filled = Math.min(3, accuracy);
-  return `Calibration: ${"●".repeat(filled)}${"○".repeat(3 - filled)}`;
+  return `Calibration: ${magneticAccuracyDots(diagnostics) ?? "--"}`;
 }

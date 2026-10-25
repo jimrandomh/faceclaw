@@ -16,6 +16,7 @@ import { type Layer, type LayerActions, type LayerContext } from "../../ui/layer
 import { ConfigSettingBoolean, ConfigSettingEnum } from "../../ui/dashboard-settings";
 import { shell } from "../../ui/shell/shell";
 import { voiceControlBridge, type VoiceTranscriptEvent } from "../../native/voice-control";
+import { voiceActivity } from "../../ui/shell/voice-activity";
 import { type MathBranchOutcome, MathCoordinator } from "./math/coordinator";
 import { type LongRunOffer, type LongRunProgress, offerGlassesPrompt, progressText } from "./math/workload";
 import { plain } from "./math/text-renderer";
@@ -55,6 +56,11 @@ export const calculatorDegreesSetting = new ConfigSettingBoolean({
   defaultValue: false,
   description: "Evaluate sin/cos/tan in degrees instead of radians.",
 });
+
+// The calculator's id for shared continuous capture, and its claim on the mic
+// while a dictation is armed.
+const CONTINUOUS_CLIENT = "calculator";
+const DICTATION_HOLDER = "calculator-dictation";
 
 // ---------------------------------------------------------------------------
 // Layer
@@ -131,22 +137,22 @@ export class CalculatorLayer implements Layer {
     if (this.listening === "continuous") {
       if (!this.continuousActive) {
         this.continuousActive = true;
-        void this.actions.startContinuousVoiceCapture();
+        void this.actions.startContinuousVoiceCapture(CONTINUOUS_CLIENT);
       }
     } else if (this.continuousActive) {
       this.continuousActive = false;
-      void this.actions.stopContinuousVoiceCapture();
+      void this.actions.stopContinuousVoiceCapture(CONTINUOUS_CLIENT);
     }
   }
 
   private stopListening(): void {
     if (this.dictating) {
-      this.dictating = false;
       void this.actions.stopVoiceCapture();
+      this.setDictating(false);
     }
     if (this.continuousActive) {
       this.continuousActive = false;
-      void this.actions.stopContinuousVoiceCapture();
+      void this.actions.stopContinuousVoiceCapture(CONTINUOUS_CLIENT);
     }
   }
 
@@ -248,15 +254,25 @@ export class CalculatorLayer implements Layer {
   beginDictation(): void {
     if (this.textInput) { void this.textInput(); return; }
     if (this.dictating) return;
-    this.dictating = true;
+    this.setDictating(true);
     void this.actions.startVoiceCapture(true);
     this.requestRender();
   }
 
+  /**
+   * Arm or disarm dictation, holding the mic claim for it as the voice dialog
+   * does: the Microphones app and EvenHub mic apps stand down meanwhile (in
+   * 4-mic mode their stream would otherwise reach the recognizer).
+   */
+  private setDictating(dictating: boolean): void {
+    this.dictating = dictating;
+    voiceActivity.setActive(dictating, DICTATION_HOLDER);
+  }
+
   cancelDictation(): void {
     if (!this.dictating) return;
-    this.dictating = false;
     void this.actions.stopVoiceCapture();
+    this.setDictating(false);
     this.requestRender();
   }
 
@@ -277,8 +293,8 @@ export class CalculatorLayer implements Layer {
     const continuous = this.continuousActive && this.foreground;
     if (!armed && !continuous) return;
     if (armed) {
-      this.dictating = false;
       void this.actions.stopVoiceCapture();
+      this.setDictating(false);
     }
     // A standing offer or a run in flight owns the next yes/no said in the
     // room ("keep going", "never mind", "stop").

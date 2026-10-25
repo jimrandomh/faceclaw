@@ -15,6 +15,11 @@ fs.writeFileSync(path.join(dist, 'index.html'), `<script>flutter_inappwebview.ca
 fs.writeFileSync(path.join(dist, 'app.js'), `
 import { value } from './module.js';
 const call = name => flutter_inappwebview.callHandler(name);
+const params = new URLSearchParams(location.search);
+if (params.has('code')) await call(['oauth', params.get('code'), params.get('state'), params.get('shim')].join(':'));
+const frame = document.createElement('iframe'); frame.src = '/frame.html';
+frame.onload = () => { if (frame.contentDocument.getElementById('frame')?.textContent === 'frame') call('iframe'); };
+document.documentElement.appendChild(frame);
 if (value === 42) await call('module');
 const previous = localStorage.getItem('probe'); localStorage.setItem('probe','saved'); await call(previous === 'saved' ? 'restored' : 'stored');
 if ((await (await fetch('/data.json')).json()).ok) await call('fetch');
@@ -24,24 +29,48 @@ await WebAssembly.instantiate(new Uint8Array([0,97,115,109,1,0,0,0])); await cal
 if (!(await fetch('/%2e%2e/secret.txt')).ok) await call('traversal');
 `);
 fs.writeFileSync(path.join(dist, 'module.js'), 'export const value = 42;');
+const untrusted = "<script>webkit.messageHandlers.faceclaw.postMessage({kind:'call', name:'UNTRUSTED', args:'[]', id:0})</script>";
+fs.writeFileSync(path.join(dist, 'frame.html'), `<p id="frame">frame</p>${untrusted}`);
 fs.writeFileSync(path.join(dist, 'data.json'), '{"ok":true}');
 fs.writeFileSync(path.join(dist, 'pixel.png'), Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aBVkAAAAASUVORK5CYII=', 'base64'));
 fs.writeFileSync(path.join(bundle, 'Info.plist'), `<?xml version="1.0"?><plist version="1.0"><dict><key>CFBundleIdentifier</key><string>com.faceclaw.evenhub-probe</string><key>CFBundleExecutable</key><string>EvenHubProbe</string><key>CFBundleName</key><string>EvenHubProbe</string><key>CFBundlePackageType</key><string>APPL</string><key>CFBundleVersion</key><string>1</string><key>CFBundleShortVersionString</key><string>1</string><key>NSAppTransportSecurity</key><dict><key>NSAllowsLocalNetworking</key><true/></dict><key>UILaunchScreen</key><dict/><key>LSRequiresIPhoneOS</key><true/></dict></plist>`);
 const sdk = execFileSync('xcrun', ['--sdk', 'iphonesimulator', '--show-sdk-path'], { encoding: 'utf8' }).trim();
 execFileSync('xcrun', ['clang', '-fobjc-arc', '-target', `${process.arch === 'arm64' ? 'arm64' : 'x86_64'}-apple-ios15.1-simulator`, '-isysroot', sdk,
-  '-framework', 'UIKit', '-framework', 'Foundation', '-framework', 'CoreGraphics', '-framework', 'WebKit', '-framework', 'UniformTypeIdentifiers',
+  '-framework', 'UIKit', '-framework', 'Foundation', '-framework', 'CoreGraphics', '-framework', 'WebKit', '-framework', 'SafariServices', '-framework', 'UniformTypeIdentifiers',
   '-I', 'App_Resources/iOS/src', 'tests/native/ios-evenhub-test.m', 'App_Resources/iOS/src/FaceclawEvenHubWebView.m', 'App_Resources/iOS/src/FaceclawCrypto.m', '-o', path.join(bundle, 'EvenHubProbe')], { cwd: root, stdio: 'inherit' });
+// Requests that must never arrive: the provider's reply landing outside the app,
+// host messages evaluated in a page the app navigated away to, and the cookie the
+// first package's sign-in page set reaching the server from another package.
+// ownCookie (the first package sending it again later) shows the cookie stuck.
+const hits = { callback: 0, awayEval: 0, cookieLeak: 0, ownCookie: 0 };
 const server = http.createServer((request, response) => {
-  if (request.url === '/redirect') { response.writeHead(302, { Location: `http://localhost:${server.address().port}/untrusted` }); response.end(); return; }
-  if (request.url === '/untrusted') { response.end("<script>webkit.messageHandlers.faceclaw.postMessage({kind:'call', name:'UNTRUSTED', args:'[]', id:0})</script>"); return; }
-  const file = path.join(dist, request.url === '/' ? 'index.html' : request.url.slice(1));
+  const url = new URL(request.url, 'http://probe'), port = server.address().port;
+  if (/\bprobe=1\b/.test(request.headers.cookie ?? '')) {
+    if (url.pathname === '/away') hits.ownCookie++;
+    else if (url.pathname !== '/approve') hits.cookieLeak++;
+  }
+  // The app's URL redirects to another origin before loading; the app lives there.
+  if (url.pathname === '/redirect') { response.writeHead(302, { Location: `http://localhost:${port}/` }); response.end(); return; }
+  // A third-party sign-in page: no bridge or shim, then a server redirect to the app's redirect_uri.
+  if (url.pathname === '/authorize') { response.end(`${untrusted}<script>document.cookie = 'probe=1; max-age=3600'; location.replace('/approve' + location.search + '&shim=' + typeof window.flutter_inappwebview)</script>`); return; }
+  if (url.pathname === '/approve') {
+    const query = url.searchParams;
+    response.writeHead(302, { Location: `${query.get('redirect_uri')}?code=probe&state=${query.get('state')}&shim=${query.get('shim')}` }); response.end(); return;
+  }
+  if (url.pathname.startsWith('/callback')) { hits.callback++; response.end('callback'); return; }
+  if (url.pathname === '/away') { response.end('<p>away</p>'); return; }
+  if (url.pathname === '/away-eval') { hits.awayEval++; response.end(); return; }
+  const file = path.join(dist, url.pathname === '/' ? 'index.html' : url.pathname.slice(1));
   if (!file.startsWith(dist + path.sep) || !fs.existsSync(file)) { response.writeHead(404); response.end(); return; }
   response.setHeader('Content-Type', file.endsWith('.js') ? 'text/javascript' : file.endsWith('.json') ? 'application/json' : file.endsWith('.png') ? 'image/png' : 'text/html');
   response.end(fs.readFileSync(file));
 });
 server.listen(0, '127.0.0.1', async () => {
   try {
-    fs.writeFileSync(path.join(bundle, 'remote.txt'), `http://127.0.0.1:${server.address().port}/`);
+    const port = server.address().port;
+    fs.writeFileSync(path.join(bundle, 'remote.txt'), `http://127.0.0.1:${port}/`);
+    fs.writeFileSync(path.join(bundle, 'authorize.txt'),
+      `http://127.0.0.1:${port}/authorize?client_id=probe&redirect_uri=${encodeURIComponent(`http://localhost:${port}/callback/`)}&state=s1`);
     const device = process.argv[2] || 'booted';
     execFileSync('xcrun', ['simctl', 'install', device, bundle], { stdio: 'inherit' });
     const container = execFileSync('xcrun', ['simctl', 'get_app_container', device, 'com.faceclaw.evenhub-probe', 'data'], { encoding: 'utf8' }).trim();
@@ -60,8 +89,8 @@ server.listen(0, '127.0.0.1', async () => {
       await new Promise(resolve => setTimeout(resolve, 100));
     }
     const result = JSON.parse(fs.readFileSync(resultFile, 'utf8'));
-    console.log(JSON.stringify({ work, ...result }));
-    if (!result.passed) process.exitCode = 1;
+    console.log(JSON.stringify({ work, hits, ...result }));
+    if (!result.passed || hits.callback || hits.awayEval || hits.cookieLeak || !hits.ownCookie) process.exitCode = 1;
   } catch (error) {
     console.error(error); process.exitCode = 1;
   } finally {

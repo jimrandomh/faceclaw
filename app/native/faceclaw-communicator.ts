@@ -509,11 +509,21 @@ export class FaceclawCommunicatorBridge {
   /**
    * Phone-UI preview of the current composited screen, or null if none yet.
    * `green` tints it green-on-black (the Preview color setting) instead of
-   * grayscale.
+   * grayscale; `crop` limits it to a screen area (the Preview scaling
+   * setting), black where that runs past the screen's edges.
    */
-  getCompositePreview(green = false): ImageSource | null {
+  getCompositePreview(green = false, crop: { x: number; y: number; width: number; height: number } | null = null): ImageSource | null {
     if (!global.isAndroid) return null;
-    const bitmap = this.communicator.getCompositePreviewBitmap(PREVIEW_BRIGHTEN_GAMMA, green);
+    const bitmap = crop
+      ? this.communicator.getCompositePreviewBitmap(
+          PREVIEW_BRIGHTEN_GAMMA,
+          green,
+          Math.round(crop.x),
+          Math.round(crop.y),
+          Math.round(crop.width),
+          Math.round(crop.height),
+        )
+      : this.communicator.getCompositePreviewBitmap(PREVIEW_BRIGHTEN_GAMMA, green);
     return bitmap ? new ImageSource(bitmap) : null;
   }
 

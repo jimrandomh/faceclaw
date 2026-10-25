@@ -187,29 +187,69 @@ test('popup action wraps fully and stays visible with small and large fonts', as
   }
 });
 
-test('controller filters before waking or opening a popup, and still refreshes the tray', async () => {
+test('controller filters before waking or opening a popup, and still refreshes the tray', () => {
   const file = ts.createSourceFile('controller.ts', source('app/g2/dashboard-controller.ts'), ts.ScriptTarget.Latest, true);
   const controller = file.statements.find((node) => ts.isClassDeclaration(node) && node.name.text === 'DashboardController');
-  const handler = controller.members.find((node) => node.name?.getText(file) === 'handleAndroidNotificationPosted');
+  const members = ['handleAndroidNotificationPosted', 'handleAndroidNotificationRemoved', 'popUpAndroidNotification']
+    .map((name) => controller.members.find((node) => node.name?.getText(file) === name).getText(file));
+  const { NotificationPopupDelay, notificationPopupDelayMs } = require('../.test-build/app/ui/shell/notification-popup-delay.js');
   const prefs = store();
+  let active = [{ ...mail, key: 'key' }];
   let wakes = 0, popups = 0, renders = 0;
-  const { Harness } = evaluate(`export class Harness { ${handler.getText(file)} }`, null, {
+  const removed = [];
+  const { Harness } = evaluate(`export class Harness { ${members.join('\n')} }`, null, {
     ALL_NOTIFICATIONS: 0x7fffffff,
-    readActiveNotifications: () => [{ ...mail, key: 'key' }],
+    readActiveNotifications: () => active,
     shouldShowNotificationOnGlasses: prefs.shouldShowNotificationOnGlasses,
-    shell: { isScreenOn: () => false, wake: () => { wakes++; return true; }, openNotificationModal: () => popups++ },
+    notificationPopupDelayMs,
+    shell: {
+      isScreenOn: () => false,
+      wake: () => { wakes++; return true; },
+      openNotificationModal: () => popups++,
+      notificationRemoved: (key) => removed.push(key),
+    },
   });
+  // Popup delays run when the test says so.
+  let timers = [];
+  const elapse = () => { const due = timers; timers = []; for (const timer of due) if (!timer.cancelled) timer.run(); };
   const instance = new Harness();
+  instance.notificationPopups = new NotificationPopupDelay((key) => instance.popUpAndroidNotification(key), (run) => {
+    const timer = { run, cancelled: false };
+    timers.push(timer);
+    return () => { timer.cancelled = true; };
+  });
   instance.requestShellRender = () => renders++;
   instance.appendLog = () => {};
+
   prefs.setNotificationSourceEnabled(mail, false);
-  await instance.handleAndroidNotificationPosted('key');
-  await instance.handleAndroidNotificationPosted('gone');
+  instance.handleAndroidNotificationPosted('key');
+  instance.handleAndroidNotificationPosted('gone');
+  elapse();
   assert.equal(wakes, 0);
   assert.equal(popups, 0);
   assert.equal(renders, 2);
+
   prefs.setNotificationSourceEnabled(mail, true);
-  await instance.handleAndroidNotificationPosted('key');
+  instance.handleAndroidNotificationPosted('key');
+  assert.equal(popups, 0, 'the popup waits out its delay');
+  elapse();
   assert.equal(wakes, 1);
+  assert.equal(popups, 1);
+
+  // Withdrawn by its source during the delay: no wake, no popup, and the shell hears of it.
+  active = [{ ...mail, key: 'working', foregroundService: true }];
+  instance.handleAndroidNotificationPosted('working');
+  active = [];
+  instance.handleAndroidNotificationRemoved('working');
+  elapse();
+  assert.equal(wakes, 1);
+  assert.equal(popups, 1);
+  assert.deepEqual(removed, ['working']);
+
+  // The filter is checked again once the delay is over.
+  active = [{ ...mail, key: 'key' }];
+  instance.handleAndroidNotificationPosted('key');
+  prefs.setNotificationSourceEnabled(mail, false);
+  elapse();
   assert.equal(popups, 1);
 });

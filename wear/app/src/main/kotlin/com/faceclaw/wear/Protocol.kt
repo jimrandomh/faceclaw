@@ -69,20 +69,6 @@ object Command {
     const val CONNECT = "connect"
     const val DISCONNECT = "disconnect"
     const val CLOSE_ASSISTANT = "close-assistant"
-    const val DISPLAY_MODE = "display-mode"
-}
-
-/** The glasses' display modes, mirroring the phone's Display > Display mode. */
-enum class DisplayMode(val wire: String, val label: String) {
-    BAND("576x288", "Band · 576×288"),
-    TALL("576x480", "Tall · 576×480"),
-    FULL("640x480", "Full panel · 640×480");
-
-    fun next(): DisplayMode = entries[(ordinal + 1) % entries.size]
-
-    companion object {
-        fun fromWire(value: String): DisplayMode? = entries.firstOrNull { it.wire == value }
-    }
 }
 
 data class AppEntry(val appId: String, val title: String)
@@ -106,8 +92,6 @@ data class PhoneState(
     val locked: Boolean,
     val worn: Boolean?,
     val listening: Boolean,
-    /** Display mode wire value ("576x288" | "576x480" | "640x480"). */
-    val displayMode: String,
     /** Current or last-known G2 charge percentage. */
     val battery: Int?,
     val charging: Boolean,
@@ -137,7 +121,6 @@ data class PhoneState(
                     locked = o.optBoolean("locked", false),
                     worn = if (o.isNull("worn")) null else o.optBoolean("worn"),
                     listening = o.optBoolean("listening", false),
-                    displayMode = o.optString("displayMode", "576x288"),
                     battery = if (o.isNull("battery")) null else o.optInt("battery", -1).takeIf { it in 0..100 },
                     charging = o.optBoolean("charging", false),
                     silentMode = o.optBoolean("silentMode", false),

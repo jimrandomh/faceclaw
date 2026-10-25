@@ -19,4 +19,10 @@ interface FaceclawCaptionEngineListener {
     fun onSpeechStart(startMs: Long): Unit
 
     fun onStatus(status: String?): Unit
+
+    /**
+     * The worker has exited, after delivering any trailing utterance. error is null after
+     * stop()/requestStop(), or the failure that ended captioning on its own.
+     */
+    fun onStopped(error: String?): Unit
 }

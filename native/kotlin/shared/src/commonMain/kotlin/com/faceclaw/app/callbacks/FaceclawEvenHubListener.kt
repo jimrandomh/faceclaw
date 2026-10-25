@@ -15,4 +15,10 @@ interface FaceclawEvenHubListener {
 
     /** The WebView finished loading the app's page. */
     fun onPageFinished(url: String?): Unit
+
+    /**
+     * The WebView's renderer process is gone: it [crashed], or the system killed it to reclaim
+     * memory. The WebView has already been detached and destroyed, so the app's page is lost.
+     */
+    fun onRenderProcessGone(crashed: Boolean): Unit
 }

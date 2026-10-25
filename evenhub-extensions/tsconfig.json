@@ -3,12 +3,10 @@
     "target": "ES2020",
     "module": "ESNext",
     "moduleResolution": "bundler",
-    "declaration": true,
-    "rootDir": "src",
-    "outDir": "dist",
     "strict": true,
+    "noEmit": true,
     "skipLibCheck": true,
-    "lib": ["ESNext", "DOM"]
+    "lib": ["ES2020", "DOM"]
   },
-  "include": ["src/**/*"]
+  "include": ["src/**/*", "test/**/*"]
 }

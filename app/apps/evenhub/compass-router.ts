@@ -14,7 +14,7 @@ import { isCompassCalibrated } from "../compass/calibration";
 import { refreshDeclination } from "../compass/declination";
 import { resolveHeading } from "../compass/heading";
 
-/** Wire shape of the `compass` extension event (faceclaw-extensions `CompassReading`). */
+/** Wire shape of the `compass` extension event (@faceclaw/evenhub-extensions `CompassReading`). */
 export type EvenHubCompassReading = {
   headingDegrees: number;
   magneticHeadingDegrees: number;

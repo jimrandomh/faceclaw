@@ -235,7 +235,7 @@ export class EvenHubApiClient {
     const token = options.token ?? "";
     const headers: Record<string, string> = {
       common,
-      sign: hmacSign(signingParts(method, path, common, query, token, body)),
+      sign: hmacSign(signingParts(method, path, common, signedQuery(options.query ?? {}), token, body)),
       "Content-Type": "application/json",
     };
     if (token) headers.token = token;
@@ -266,7 +266,7 @@ export function signingParts(
   body = "",
 ): string {
   const parts = [method.toUpperCase(), path, common];
-  if (query) parts.push(normalizeQuery(query));
+  if (query) parts.push(query);
   if (token) parts.push(token);
   if (body) parts.push(body);
   return parts.sort().join("\n");
@@ -320,19 +320,26 @@ function buildCommon(version: 1 | 3): string {
   return Object.entries(fields).map(([key, value]) => `${formEncode(key)}=${formEncode(String(value))}`).join("&");
 }
 
-function encodePairs(values: Record<string, string | number>): string {
+/** Query entries sorted by key in code-unit order (Dart's default String sort). */
+function sortedPairs(values: Record<string, string | number>): [string, string][] {
   return Object.entries(values)
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([key, value]) => `${formEncode(key)}=${formEncode(String(value))}`)
-    .join("&");
+    .map(([key, value]): [string, string] => [key, String(value)])
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
 }
 
-function normalizeQuery(query: string): string {
-  return query
-    .split("&")
-    .filter(Boolean)
-    .sort((a, b) => a.split("=", 1)[0]!.localeCompare(b.split("=", 1)[0]!))
-    .join("&");
+function encodePairs(values: Record<string, string | number>): string {
+  return sortedPairs(values).map(([key, value]) => `${formEncode(key)}=${formEncode(value)}`).join("&");
+}
+
+/**
+ * The query as it participates in signing: sorted raw `key=value` pairs, NOT
+ * URL-encoded (SignatureUtil.calculateSignature in the official 2.2.8 Dart
+ * image). The server signs the decoded parameters, so signing the encoded
+ * form only matched when encoding was a no-op (a search for "two words" was
+ * rejected with HTTP 406).
+ */
+function signedQuery(values: Record<string, string | number>): string {
+  return sortedPairs(values).map(([key, value]) => `${key}=${value}`).join("&");
 }
 
 function formEncode(value: string): string {

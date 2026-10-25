@@ -1,7 +1,6 @@
-import { CLOUD_STT_SAMPLE_RATE, CloudSttClient, CloudSttOptions, toJavaBytes } from "./cloud-stt";
+import { CLOUD_STT_SAMPLE_RATE, CloudSttClient, CloudSttOptions } from "./cloud-stt";
+import { openSocket, type SocketConnection } from "./socket";
 import { TimedTranscript } from "./transcript-format";
-
-declare const com: any;
 
 /**
  * Soniox realtime speech-to-text over WebSocket.
@@ -24,8 +23,7 @@ const MODEL_ID = "stt-rt-v5";
 export type SonioxSttOptions = CloudSttOptions;
 
 export class SonioxSttClient implements CloudSttClient {
-  private ws: any = null;
-  private listenerProxy: any = null;
+  private ws: SocketConnection | null = null;
   private open = false;
   private closed = false;
   // PCM queued until the socket opens and the config message is sent.
@@ -40,7 +38,7 @@ export class SonioxSttClient implements CloudSttClient {
 
   start(): void {
     if (this.closed || this.ws) return;
-    this.listenerProxy = new com.faceclaw.app.FaceclawWebSocketListener({
+    const listener = {
       onOpen: () => {
         if (this.closed) return;
         // The API key rides in the config message; there is no auth header.
@@ -77,9 +75,9 @@ export class SonioxSttClient implements CloudSttClient {
         if (this.closed) return;
         this.options.onDisconnected?.(`Soniox connection failed: ${String(message)}`);
       },
-    });
+    };
     try {
-      this.ws = new com.faceclaw.app.FaceclawWebSocket(WS_URL, this.listenerProxy, null, null);
+      this.ws = openSocket(WS_URL, listener);
       this.options.onStatus("Connecting to Soniox...");
     } catch (error) {
       this.options.onDisconnected?.(`Soniox connection failed: ${String((error as Error)?.message ?? error)}`);
@@ -122,13 +120,12 @@ export class SonioxSttClient implements CloudSttClient {
       }
       this.ws = null;
     }
-    this.listenerProxy = null;
     this.pendingPcm.length = 0;
   }
 
   private sendPcm(pcm: Uint8Array): void {
     try {
-      if (this.ws?.sendBinary(toJavaBytes(pcm)) === false) {
+      if (this.ws?.sendBinary(pcm) === false) {
         this.options.onDisconnected?.("Soniox audio send failed.");
       }
     } catch (error) {

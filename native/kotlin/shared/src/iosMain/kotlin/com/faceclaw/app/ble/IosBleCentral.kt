@@ -584,6 +584,7 @@ class IosBleCentral(private val platform: ProtocolPlatform = IosProtocolPlatform
 
     private fun onDisconnected(peripheral: CBPeripheral, error: NSError?) {
         val peer = remember(peripheral)
+        if (error != null) ConnectionCounters.increment("ble.ios-disconnect-error." + error.code)
         failPeer(peer, error?.localizedDescription ?: "Disconnected", notifyListeners = true)
     }
 

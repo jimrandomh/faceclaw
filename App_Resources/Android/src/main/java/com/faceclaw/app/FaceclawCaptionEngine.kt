@@ -68,6 +68,11 @@ class FaceclawCaptionEngine {
         session.stop()
     }
 
+    /** Stop without blocking; the listener's onStopped follows the trailing utterance. */
+    fun requestStop() {
+        session.requestStop()
+    }
+
     /** Push decoded 16 kHz mono S16LE PCM (any chunking). */
     fun acceptPcm(pcm16le: ByteArray?) {
         session.acceptPcm(pcm16le)

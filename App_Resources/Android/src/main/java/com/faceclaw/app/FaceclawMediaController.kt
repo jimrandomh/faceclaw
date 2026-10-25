@@ -46,6 +46,7 @@ class FaceclawMediaController(context: Context) {
 
         override fun onMetadataChanged(metadata: MediaMetadata?) {
             synchronized(lock) {
+                artVersion++
                 emitStateLocked()
             }
         }
@@ -91,6 +92,15 @@ class FaceclawMediaController(context: Context) {
     private var started = false
     private var sessionsListenerRegistered = false
     private var ignoredPackages: Set<String> = HashSet()
+
+    /**
+     * Bumped whenever the art getAlbumArtGray would return may have changed:
+     * every metadata update and every switch of active session. Players
+     * re-publish the same title/album with a different bitmap (art attached
+     * after download, or a stale bitmap from the previous track replaced
+     * after a quick double skip), so the strings can't key an art cache.
+     */
+    private var artVersion = 0
 
     init {
         this.listenerComponent = ComponentName(appContext, FaceclawMediaNotificationListenerService::class.java)
@@ -404,6 +414,7 @@ class FaceclawMediaController(context: Context) {
             previous.unregisterCallback(controllerCallback)
         }
         activeController = controller
+        artVersion++
         if (controller != null) {
             controller.registerCallback(controllerCallback, mainHandler)
         }
@@ -503,6 +514,7 @@ class FaceclawMediaController(context: Context) {
         val finalCanSkipPrevious = canSkipPrevious
         val finalAccessEnabled = accessEnabled
         val finalStatus = status
+        val finalArtVersion = artVersion
 
         mainHandler.post {
             currentListener.onStateChange(
@@ -519,7 +531,8 @@ class FaceclawMediaController(context: Context) {
                 finalCanSkipNext,
                 finalCanSkipPrevious,
                 finalAccessEnabled,
-                finalStatus
+                finalStatus,
+                finalArtVersion
             )
         }
     }

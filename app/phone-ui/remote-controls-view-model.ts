@@ -1,8 +1,5 @@
 import { Dialogs, Observable } from '@nativescript/core';
-import {
-  brightnessSetting, DISPLAY_MODE_VALUES, displayModeLabel, displayModeSetting,
-  type BrightnessSetting, type DisplayModeSetting,
-} from '../ui/dashboard-settings';
+import { brightnessSetting, displayLayoutSetting, type BrightnessSetting } from '../ui/dashboard-settings';
 
 type ControlsTab = 'settings' | 'watch' | 'ring';
 // Remember the tab across navigation on both platforms, without persisting it.
@@ -36,6 +33,23 @@ export class RemoteControlsViewModel extends Observable {
     return this._controlsTab === "ring" ? "tab-button tab-button-selected" : "tab-button";
   }
 
+  /**
+   * The watch face's status line reads "Display off": dim it and show the wake
+   * gesture under it. The host overrides this and notifies padFocusClass and
+   * padWakeHintVisibility when it changes.
+   */
+  protected get padDisplayAsleep(): boolean {
+    return false;
+  }
+
+  get padFocusClass(): string {
+    return this.padDisplayAsleep ? "pad-focus pad-focus-asleep" : "pad-focus";
+  }
+
+  get padWakeHintVisibility(): "visible" | "collapse" {
+    return this.padDisplayAsleep ? "visible" : "collapse";
+  }
+
   onSettingsTabTap(): void {
     this.setControlsTab("settings");
   }
@@ -65,17 +79,19 @@ export class RemoteControlsViewModel extends Observable {
   // ---- display mode and brightness, on the Settings tab ----
 
   get displayModeLabel(): string {
-    return displayModeLabel(displayModeSetting.get()) + " ▾";
+    return displayLayoutSetting.displayValue() + " ▾";
   }
 
   async onDisplayModeTap(): Promise<void> {
-    const current = displayModeSetting.get();
-    const options = DISPLAY_MODE_VALUES.map((value) => displayModeLabel(value) + (value === current ? "  ✓" : ""));
+    const current = displayLayoutSetting.get();
+    // Full Screen is offered only with a bottom or popup app switcher.
+    const values = displayLayoutSetting.values.filter((value) => !displayLayoutSetting.isDisabled(value));
+    const options = values.map((value) => displayLayoutSetting.displayValue(value) + (value === current ? "  ✓" : ""));
     const picked = await Dialogs.action({ title: "Display mode", cancelButtonText: "Cancel", actions: options });
     const index = options.indexOf(picked);
     if (index < 0) return;
-    const value = DISPLAY_MODE_VALUES[index] as DisplayModeSetting;
-    if (value !== current) displayModeSetting.set(value);
+    const value = values[index]!;
+    if (value !== current) displayLayoutSetting.set(value);
     this.notifyPropertyChange("displayModeLabel", this.displayModeLabel);
   }
 

@@ -33,8 +33,7 @@ import {
   navigateDestinationAddressDraftSetting,
   navigateDestinationNameDraftSetting,
   navigateRememberRecentSetting,
-  navigateDisplayModeSetting,
-  navigateVerticalPositionSetting,
+  navigateDisplayLayoutSetting,
   mapboxApiKeySetting,
   enumSettingMenuItem,
   type ConfigSettingString,
@@ -935,10 +934,7 @@ function windowMenuItems(): MenuItem[] {
       },
     });
   }
-  items.push(
-    enumSettingMenuItem(navigateDisplayModeSetting),
-    enumSettingMenuItem(navigateVerticalPositionSetting),
-  );
+  items.push(enumSettingMenuItem(navigateDisplayLayoutSetting));
   items.push(submenuItem("Saved destinations", (ctx) => {
     ctx.stack.push(new WindowMenuLayer("Saved destinations", savedDestinationMenuItems()));
   }));

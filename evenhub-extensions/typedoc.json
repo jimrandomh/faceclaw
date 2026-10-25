@@ -1,0 +1,45 @@
+{
+  "$schema": "https://typedoc-plugin-markdown.org/schema.json",
+  "entryPoints": [
+    "src/index.ts"
+  ],
+  "tsconfig": "tsconfig.json",
+  "plugin": [
+    "typedoc-plugin-markdown"
+  ],
+  "out": "docs/api",
+  "readme": "none",
+  "outputFileStrategy": "modules",
+  "hidePageHeader": true,
+  "hideBreadcrumbs": true,
+  "useCodeBlocks": true,
+  "disableSources": true,
+  "excludeExternals": true,
+  "treatWarningsAsErrors": true,
+  "groupOrder": [
+    "Entry point",
+    "Window",
+    "Input",
+    "Text input",
+    "Extended layout",
+    "Fonts",
+    "API keys",
+    "Buzzer",
+    "Compass",
+    "Assistant tools",
+    "Properties",
+    "Methods",
+    "*"
+  ],
+  "sort": [
+    "source-order"
+  ],
+  "interfacePropertiesFormat": "table",
+  "typeDeclarationFormat": "table",
+  "parametersFormat": "table",
+  "tableColumnSettings": {
+    "hideInherited": true,
+    "hideOverrides": true,
+    "hideSources": true
+  }
+}

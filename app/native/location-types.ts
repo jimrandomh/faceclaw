@@ -5,6 +5,15 @@ export type CurrentLocation = {
   timestampMs: number;
 };
 
+/** A reverse-geocoded place; parts the geocoder doesn't know are empty. */
+export type Place = {
+  /** City or town. */
+  locality: string;
+  /** State, province or similar. */
+  region: string;
+  country: string;
+};
+
 export type TrackedLocation = {
   latitude: number;
   longitude: number;

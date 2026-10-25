@@ -39,7 +39,7 @@ import {
 import { Menu, type MenuDrawArgs } from "../../ui/menu-core";
 import { LIST_ROW_TEXT_INSET, lineStep, listRowHeight } from "../../ui/metrics";
 import { createInProcessWindow, type InProcessAppOptions, type InProcessWindow } from "../../ui/shell/in-process-window";
-import { shell } from "../../ui/shell/shell";
+import { shell, type TrayWidget } from "../../ui/shell/shell";
 import { WindowMenuLayer } from "../../ui/window-menu";
 import { clamp } from "../../util/numeric-util";
 import {
@@ -68,6 +68,7 @@ import {
   formatTimeOfDay,
   nearestLadderIndex,
   sortAlarms,
+  soonestRunningTimer,
   sortTimers,
   stopwatchElapsedMs,
   stopwatchIsRunning,
@@ -269,6 +270,19 @@ export class TimersLayer implements Layer {
     this.list.moveSelection(delta);
     const index = this.list.selectedIndex;
     if (index !== null) this.selectionKey = rows[index]!.key;
+  }
+
+  /**
+   * Put a timer on the stage, out of any picker: the tray widget's view of
+   * the timer it counts down. Lands the selection first, if this is before
+   * the first paint, so that doesn't move it again.
+   */
+  showTimer(timer: CountdownTimer): void {
+    this.reconcileSelection(this.buildRows(Date.now()));
+    this.selectionKey = timerKey(timer);
+    this.mode = { kind: "list" };
+    this.ringButton = 0;
+    this.notice = "";
   }
 
   /** Called on every engine change: jump to a newly ringing item. */
@@ -1291,8 +1305,12 @@ function pad2(value: number): string {
 // ---------------------------------------------------------------------------
 // Window
 
+/** The open Timers window's layer, for the tray widget (see showTrayTimer). */
+let windowLayer: TimersLayer | null = null;
+
 export function createTimerAppWindow(options: InProcessAppOptions): InProcessWindow {
   const layer = new TimersLayer();
+  windowLayer = layer;
   let tick: ReturnType<typeof setInterval> | null = null;
   let unsubscribe: (() => void) | null = null;
   const stopTick = () => {
@@ -1324,6 +1342,7 @@ export function createTimerAppWindow(options: InProcessAppOptions): InProcessWin
       stopTick();
       unsubscribe?.();
       unsubscribe = null;
+      if (windowLayer === layer) windowLayer = null;
       options.onClosed();
     },
   });
@@ -1348,9 +1367,10 @@ let trayTick: ReturnType<typeof setInterval> | null = null;
 /**
  * Keep a small "soonest timer" readout in the top bar while a timer runs,
  * so any app can glance at it. Minute granularity until the last minute,
- * so the shell isn't repainted every second for an hour.
+ * so the shell isn't repainted every second for an hour. `widget` makes it
+ * selectable in the switcher (see showTrayTimer).
  */
-export function startTimersTrayIcon(): void {
+export function startTimersTrayIcon(widget?: TrayWidget): void {
   const sync = () => {
     const remaining = soonestRunningTimerRemainingMs(timerEngine);
     let text: string | null = null;
@@ -1359,7 +1379,7 @@ export function startTimersTrayIcon(): void {
     }
     if (text === trayText) return;
     trayText = text;
-    shell.setTrayIcon("timer", text === null ? null : renderTrayIcon(text));
+    shell.setTrayIcon("timer", text === null ? null : renderTrayIcon(text), widget);
     if (text !== null && trayTick === null) {
       trayTick = setInterval(sync, 1000);
     } else if (text === null && trayTick !== null) {
@@ -1369,6 +1389,16 @@ export function startTimersTrayIcon(): void {
   };
   timerEngine.onChange(sync);
   sync();
+}
+
+/**
+ * The tray widget's view: the open Timers window with the timer the tray
+ * icon counts down on its stage. Called each time the switcher's selection
+ * moves onto the widget, once the window is open.
+ */
+export function showTrayTimer(): void {
+  const timer = soonestRunningTimer(timerEngine.state.timers, Date.now());
+  if (timer) windowLayer?.showTimer(timer);
 }
 
 function renderTrayIcon(text: string): GrayImage {

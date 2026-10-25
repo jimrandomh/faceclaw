@@ -12,7 +12,7 @@ import time
 import uuid
 import xml.etree.ElementTree as ET
 
-BUNDLE = 'com.faceclaw.app'
+BUNDLE = os.environ.get('IOS_BUNDLE_ID') or 'com.faceclaw.app'
 REMOTE = 'Library/FaceclawConfigPort'
 LIMIT = 2 * 1024 * 1024
 

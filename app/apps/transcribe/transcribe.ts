@@ -23,6 +23,9 @@ export class TranscribeLayer implements Layer {
   private unsubscribePause: (() => void) | null = null;
   private unsubscribeStatus: (() => void) | null = null;
 
+  /** `stamp` names the saved transcript, matching the session's audio recording. */
+  constructor(private readonly stamp: string = transcriptTimestamp()) {}
+
   start(requestRender: () => void): void {
     this.unsubscribeTranscript = voiceControlBridge.onTranscript((event) => {
       this.transcript.accept(event);
@@ -93,13 +96,13 @@ export class TranscribeLayer implements Layer {
       this.saveNotice = "Nothing to save yet.";
       return;
     }
-    const filename = `transcript-${transcriptTimestamp()}.txt`;
+    const filename = `transcript-${this.stamp}.txt`;
     const path = writeTextToDownloads(filename, `${text}\n`);
     this.saveNotice = path ? `Saved ${filename}` : "Save failed (check file access).";
   }
 }
 
-function transcriptTimestamp(): string {
+export function transcriptTimestamp(): string {
   const now = new Date();
   const pad = (value: number) => String(value).padStart(2, "0");
   return (

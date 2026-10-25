@@ -2,7 +2,8 @@
  * Roam app worker. Shows a Roam Research page (today's daily note by default)
  * as a selectable outline: ring scroll moves the selection, click toggles a
  * todo or follows a [[page]] link, double-click walks back through visited
- * pages then yields focus. Edits (check/uncheck, add todo, edit block) go
+ * pages then yields focus. The context menu jumps to today's or a picked
+ * date's daily note. Edits (check/uncheck, add todo, edit block) go
  * through the Roam backend API and are also exposed as assistant tools.
  * The graph name and API token are configured here too, from the context
  * menu, via the phone app's text editor.
@@ -19,6 +20,7 @@ import { getActiveDisplay } from "../../native/active-display";
 import { onSettingsStoreChanged } from "../../native/settings-store";
 import type { MenuItem } from "../../ui/menu";
 import { WindowMenu } from "../../ui/window-menu";
+import { DatePickerLayer } from "../../ui/date-picker";
 import type { WorkerAppMessage, WorkerAppReply } from "../../ui/shell/worker-window";
 import type { ToolResult, ToolSpec } from "../../assistant/tool-registry";
 import { GESTURE_CLICK, type InputEvent } from "../../ui/gestures";
@@ -32,6 +34,7 @@ import { docNodePageLink, type DocNode } from "../../ui/document/document-model"
 import {
   createBlock,
   createPage,
+  dailyPageDate,
   dailyPageTitle,
   dailyPageUid,
   fetchPageByUid,
@@ -251,9 +254,17 @@ global.onmessage = (event: { data: WorkerAppMessage }) => {
         );
       break;
     }
+    case "resize-window":
+      if (!window || window.windowId !== message.windowId) break;
+      window.viewportWidth = message.viewport.width;
+      window.viewportHeight = message.viewport.height;
+      window.view.resize(message.viewport.width - DOC_MARGIN * 2, message.viewport.height - HEADER_HEIGHT - BOTTOM_MARGIN);
+      window.menu?.resize(message.viewport);
+      window.lastSubmittedFingerprint = "";
+      render();
+      break;
     case "input-focus":
     case "navigation-sensors":
-    case "resize-window":
       break;
   }
 };
@@ -272,9 +283,12 @@ function inferForeground(focused: boolean): void {
 // ---------------------------------------------------------------------------
 // Page loading
 
+function dailyRef(date: Date): PageRef {
+  return { uid: dailyPageUid(date), title: dailyPageTitle(date) };
+}
+
 function todayRef(): PageRef {
-  const now = new Date();
-  return { uid: dailyPageUid(now), title: dailyPageTitle(now) };
+  return dailyRef(new Date());
 }
 
 async function loadPage(ref: PageRef, options: { resetStack?: boolean; pushCurrent?: boolean } = {}): Promise<void> {
@@ -303,8 +317,8 @@ async function loadPage(ref: PageRef, options: { resetStack?: boolean; pushCurre
     if (page) {
       currentPage = page;
       pageMissing = false;
-    } else if (uid === dailyPageUid(new Date())) {
-      // Today's daily note isn't created until something is written to it.
+    } else if (dailyPageDate(uid)) {
+      // A daily note isn't created until something is written to it.
       currentPage = { uid, title: ref.title, children: [] };
       pageMissing = true;
     } else {
@@ -363,6 +377,22 @@ function menuItems(): MenuItem[] {
       },
     });
   }
+  items.push({
+    label: "Go to date",
+    onSelect: (ctx) => {
+      ctx.stack.pop();
+      ctx.stack.push(new DatePickerLayer({
+        title: "Go to date",
+        initial: (currentRef?.uid ? dailyPageDate(currentRef.uid) : null) ?? new Date(),
+        confirmLabel: "open",
+        onPick: (date) => {
+          const ref = dailyRef(date);
+          if (ref.uid === currentRef?.uid) void reloadCurrentPage();
+          else void loadPage(ref, { pushCurrent: true });
+        },
+      }));
+    },
+  });
   items.push({
     label: "Refresh",
     onSelect: (ctx) => {
@@ -507,7 +537,7 @@ async function toggleTodo(node: DocNode): Promise<void> {
   }
 }
 
-/** Create today's daily page if it only exists locally. */
+/** Create the shown daily page if it only exists locally. */
 async function ensureCurrentPageExists(): Promise<void> {
   if (!currentPage || !pageMissing) return;
   await createPage(currentPage.title, currentPage.uid);

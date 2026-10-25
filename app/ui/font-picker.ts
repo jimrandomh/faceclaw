@@ -31,7 +31,8 @@ import { Menu, type MenuDrawArgs } from "./menu-core";
 import { LIST_ROW_TEXT_INSET, listRowHeight } from "./metrics";
 import type { Layer, LayerContext } from "./layers";
 
-const SIZE_CHOICES = [8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 20, 22, 24, 26, 28] as const;
+/** Pixel sizes offered for TTF faces (also by the onboarding's text-size page). */
+export const FONT_SIZE_CHOICES = [8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 20, 22, 24, 26, 28] as const;
 const DEFAULT_TTF_SIZE = 16;
 const PREVIEW_TEXT = "The quick brown fox jumps over 0123456789";
 const INHERIT_UI_FONT_LABEL = "Same as UI font";
@@ -279,7 +280,7 @@ export class FontPickerLayer implements Layer {
     const allowed = this.options.sizeAllowed;
     if (!allowed || allowed(font.path, size)) return size;
     let best = -1;
-    for (const candidate of SIZE_CHOICES) {
+    for (const candidate of FONT_SIZE_CHOICES) {
       if (!allowed(font.path, candidate)) continue;
       if (best < 0 || Math.abs(candidate - size) < Math.abs(best - size)) best = candidate;
     }
@@ -302,7 +303,7 @@ export class FontPickerLayer implements Layer {
   private openSizeMenu(ctx: LayerContext): void {
     if (this.draft.kind !== "ttf") return;
     const draft = this.draft;
-    const sizes = SIZE_CHOICES.filter((size) =>
+    const sizes = FONT_SIZE_CHOICES.filter((size) =>
       this.options.sizeAllowed === undefined || this.options.sizeAllowed(draft.font.path, size),
     );
     const items = sizes.map((size): MenuItem => ({
@@ -312,7 +313,7 @@ export class FontPickerLayer implements Layer {
         innerCtx.stack.pop();
       },
     }));
-    openModalMenu(ctx, "Size", items, Math.max(0, sizes.indexOf(draft.size as (typeof SIZE_CHOICES)[number])));
+    openModalMenu(ctx, "Size", items, Math.max(0, sizes.indexOf(draft.size as (typeof FONT_SIZE_CHOICES)[number])));
   }
 }
 

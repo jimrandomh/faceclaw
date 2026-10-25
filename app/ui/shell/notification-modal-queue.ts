@@ -74,6 +74,17 @@ export class NotificationModalQueue<M> {
     this.openNext(current.wokeScreen);
   }
 
+  /**
+   * The notification went away on the phone (its source cancelled it, or it
+   * was dismissed there). Drops it from the queue, and returns the open modal
+   * if that is the one showing it, for the host to close (via closed()).
+   */
+  withdrawn(notificationKey: string): M | null {
+    const index = this.queued.findIndex((entry) => entry.notificationKey === notificationKey);
+    if (index >= 0) this.queued.splice(index, 1);
+    return this.current?.notificationKey === notificationKey ? this.current.modal : null;
+  }
+
   /** Notifications waiting behind the open modal (for diagnostics and tests). */
   queuedKeys(): string[] {
     return this.queued.map((entry) => entry.notificationKey);

@@ -75,6 +75,9 @@ export type MicModelState = {
 };
 
 const downloaders = new Map<MicModelId, any>();
+// Each download's listener is referenced only from Java while it runs; hold
+// it here so it isn't GC'd before its callbacks.
+const downloadListeners = new Map<MicModelId, any>();
 const progress = new Map<MicModelId, number>();
 const stateListeners = new Set<(id: MicModelId, state: MicModelState) => void>();
 
@@ -142,6 +145,7 @@ function notifyStateChanged(id: MicModelId): void {
 
 export function startMicModelDownload(id: MicModelId): void {
   if (!global.isAndroid || downloaders.has(id) || isMicModelReady(id)) return;
+  progress.delete(id);
   downloadNextFile(id);
   notifyStateChanged(id);
 }
@@ -151,6 +155,7 @@ function downloadNextFile(id: MicModelId): void {
   const nextFile = definition.files.find((file) => !isFilePresent(id, file));
   if (!nextFile) {
     downloaders.delete(id);
+    downloadListeners.delete(id);
     notifyStateChanged(id);
     return;
   }
@@ -168,18 +173,28 @@ function downloadNextFile(id: MicModelId): void {
     onError: (message: string) => {
       console.error(`Mic model download failed (${id}/${nextFile.name}): ${message}`);
       downloaders.delete(id);
+      downloadListeners.delete(id);
       notifyStateChanged(id);
     },
   });
-  const downloader = new com.faceclaw.app.FaceclawModelDownloader(
-    `${definition.baseUrl}${nextFile.remoteName}`,
-    filePath(id, nextFile),
-    nextFile.sha256,
-    nextFile.sizeBytes,
-    listener,
-  );
-  downloaders.set(id, downloader);
-  downloader.start();
+  downloadListeners.set(id, listener);
+  try {
+    const downloader = new com.faceclaw.app.FaceclawModelDownloader(
+      `${definition.baseUrl}${nextFile.remoteName}`,
+      filePath(id, nextFile),
+      nextFile.sha256,
+      nextFile.sizeBytes,
+      listener,
+    );
+    downloaders.set(id, downloader);
+    downloader.start();
+  } catch (error) {
+    // Without this, a dead entry would pin the model at "downloading".
+    console.error(`Mic model download failed to start (${id}/${nextFile.name}): ${String(error)}`);
+    downloaders.delete(id);
+    downloadListeners.delete(id);
+    notifyStateChanged(id);
+  }
 }
 
 export function cancelMicModelDownload(id: MicModelId): void {
@@ -187,6 +202,7 @@ export function cancelMicModelDownload(id: MicModelId): void {
   if (!downloader) return;
   downloader.cancel();
   downloaders.delete(id);
+  downloadListeners.delete(id);
   notifyStateChanged(id);
 }
 

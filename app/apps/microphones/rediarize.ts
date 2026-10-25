@@ -35,6 +35,10 @@ function store(): any {
   return com.faceclaw.app.FaceclawConversationStore.getInstance(context);
 }
 
+// Each run's listener is referenced only from Java while the diarizer works;
+// hold it here so it isn't GC'd before its callbacks.
+const activeListeners = new Set<any>();
+
 export function rediarizeSession(
   sessionId: number,
   options: { numSpeakers?: number; threshold?: number },
@@ -54,6 +58,7 @@ export function rediarizeSession(
   const listener = new com.faceclaw.app.FaceclawDiarizer.Listener({
     onProgress: (progress: number) => callbacks.onProgress(Number(progress)),
     onDone: (turnsJson: string) => {
+      activeListeners.delete(listener);
       try {
         const turns = JSON.parse(String(turnsJson)) as Turn[];
         callbacks.onDone(applyTurns(sessionId, turns));
@@ -61,17 +66,26 @@ export function rediarizeSession(
         callbacks.onError(`Applying diarization failed: ${String(error)}`);
       }
     },
-    onError: (message: string) => callbacks.onError(String(message)),
+    onError: (message: string) => {
+      activeListeners.delete(listener);
+      callbacks.onError(String(message));
+    },
   });
-  const diarizer = new com.faceclaw.app.FaceclawDiarizer(
-    segmentationModel,
-    embeddingModel,
-    audioPath,
-    options.numSpeakers ?? -1,
-    options.threshold ?? 0.5,
-    listener,
-  );
-  diarizer.start();
+  activeListeners.add(listener);
+  try {
+    const diarizer = new com.faceclaw.app.FaceclawDiarizer(
+      segmentationModel,
+      embeddingModel,
+      audioPath,
+      options.numSpeakers ?? -1,
+      options.threshold ?? 0.5,
+      listener,
+    );
+    diarizer.start();
+  } catch (error) {
+    activeListeners.delete(listener);
+    callbacks.onError(`Re-diarization failed to start: ${String(error)}`);
+  }
 }
 
 type StoredSegment = {
@@ -140,6 +154,8 @@ function applyTurns(sessionId: number, turns: Turn[]): RediarizeResult {
     } else {
       const id = Number(store().createSpeaker(nextAutoName(), "#90A4AE", false, encodeEmbedding(centroid)));
       speakerRegistry.reload();
+      // A failed insert returns -1; leave that cluster's segments as they were.
+      if (id < 0) continue;
       clusterSpeaker.set(cluster, id);
       newSpeakers += 1;
     }

@@ -12,6 +12,14 @@
 @property(nonatomic) BOOL foregroundPassed;
 @end
 @implementation Probe
+- (void)after:(double)seconds run:(void (^)(void))block {
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(seconds * NSEC_PER_SEC)), dispatch_get_main_queue(), block);
+}
+- (UIButton *)button:(NSString *)identifier in:(UIView *)view {
+    if ([view isKindOfClass:UIButton.class] && [view.accessibilityIdentifier isEqual:identifier]) return (UIButton *)view;
+    for (UIView *child in view.subviews) { UIButton *found = [self button:identifier in:child]; if (found) return found; }
+    return nil;
+}
 - (void)writeResult:(NSDictionary *)result name:(NSString *)name {
     NSData *data = [NSJSONSerialization dataWithJSONObject:result options:0 error:nil];
     NSString *documents = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
@@ -30,8 +38,10 @@
     self.host.eventHandler = ^(NSString *json) {
         NSLog(@"EHPROBE %@", json);
         NSDictionary *event = [NSJSONSerialization JSONObjectWithData:[json dataUsingEncoding:NSUTF8StringEncoding] options:0 error:nil];
-        if ([event[@"kind"] isEqual:@"error"] && [event[@"message"] containsString:@"outside the app origin"])
+        if ([event[@"kind"] isEqual:@"notice"] && [event[@"message"] containsString:@"Blocked navigation to a faceclaw-test:"])
             [weakSelf.seen addObject:@"blocked-navigation"];
+        // Blocked and interrupted navigations are not load errors.
+        if ([event[@"kind"] isEqual:@"error"]) [weakSelf.seen addObject:[@"ERROR:" stringByAppendingString:event[@"message"]]];
         if ([event[@"kind"] isEqual:@"call"]) {
             [weakSelf.seen addObject:event[@"name"]];
             [weakSelf.seen addObject:[NSString stringWithFormat:@"%ld:%@", (long)weakSelf.phase, event[@"name"]]];
@@ -46,6 +56,24 @@
     };
     NSString *root = NSBundle.mainBundle.resourcePath;
     NSString *script = [NSString stringWithContentsOfFile:[root stringByAppendingPathComponent:@"bridge.js"] encoding:NSUTF8StringEncoding error:nil];
+    NSString *remote = [NSString stringWithContentsOfFile:[root stringByAppendingPathComponent:@"remote.txt"] encoding:NSUTF8StringEncoding error:nil];
+    NSString *authorize = [NSString stringWithContentsOfFile:[root stringByAppendingPathComponent:@"authorize.txt"] encoding:NSUTF8StringEncoding error:nil];
+    // Phase 1: an OAuth sign-in through a third-party page comes back to the packaged app.
+    [self after:2 run:^{ [self.host evaluate:[NSString stringWithFormat:@"location.href = '%@'", authorize]]; }];
+    // Phase 2: a non-web scheme is blocked without failing the app; a followed link
+    // leaves the app, which the Return button restores.
+    [self after:4.5 run:^{ [self.host evaluate:@"location.href = 'faceclaw-test:blocked'"]; }];
+    [self after:5 run:^{ [self.host evaluate:[NSString stringWithFormat:@"location.href = '%@away'", remote]]; }];
+    [self after:6 run:^{
+        UIButton *button = [self button:@"evenhub-return" in:self.window];
+        if (button && !button.hidden) [self.seen addObject:@"return-visible"];
+        [self.host evaluate:@"new Image().src = '/away-eval'"];
+        [button sendActionsForControlEvents:UIControlEventTouchUpInside];
+    }];
+    [self after:7 run:^{
+        if ([self button:@"evenhub-return" in:self.window].hidden) [self.seen addObject:@"return-hidden"];
+        [self.host evaluate:@"flutter_inappwebview.callHandler('returned')"];
+    }];
     dispatch_async(dispatch_get_main_queue(), ^{
         [self.host start:[root stringByAppendingPathComponent:@"dist"] entrypoint:@"index.html" script:script];
     });
@@ -57,15 +85,15 @@
             self.host.eventHandler = handler;
             self.host.packageIdentifier = phase == 2 ? package : [package stringByAppendingString:@".other"];
             if (phase <= 3) [self.host start:[root stringByAppendingPathComponent:@"dist"] entrypoint:@"index.html" script:script];
-            else {
-                NSString *url = [NSString stringWithContentsOfFile:[root stringByAppendingPathComponent:@"remote.txt"] encoding:NSUTF8StringEncoding error:nil];
-                [self.host startURL:phase == 5 ? [url stringByAppendingString:@"redirect"] : url script:script];
-            }
+            else [self.host startURL:phase == 5 ? [remote stringByAppendingString:@"redirect"] : remote script:script];
         });
     }
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 21 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
-        NSArray *required = @[@"early", @"module", @"fetch", @"image", @"timer", @"raf", @"wasm", @"traversal", @"1:stored", @"2:restored", @"3:stored", @"4:early", @"4:module", @"4:fetch", @"4:timer", @"blocked-navigation"];
-        BOOL passed = [[NSSet setWithArray:required] isSubsetOfSet:self.seen] && ![self.seen containsObject:@"UNTRUSTED"];
+        NSArray *required = @[@"early", @"module", @"fetch", @"image", @"timer", @"raf", @"wasm", @"traversal", @"1:stored", @"2:restored", @"3:stored",
+            @"1:iframe", @"1:oauth:probe:s1:undefined", @"blocked-navigation", @"return-visible", @"return-hidden", @"2:returned",
+            @"4:early", @"4:module", @"4:fetch", @"4:timer", @"4:iframe", @"5:early", @"5:module"];
+        BOOL passed = [[NSSet setWithArray:required] isSubsetOfSet:self.seen] && ![self.seen containsObject:@"UNTRUSTED"] &&
+            ![[self.seen.allObjects componentsJoinedByString:@"\n"] containsString:@"ERROR:"];
         NSString *signature = [FaceclawCrypto hmacSha256:@"key" message:@"The quick brown fox jumps over the lazy dog"];
         passed &= [signature isEqual:@"97yD9DBThCSxMpjmqm+xQ+9NWaFJRhdZl0edvC0aPNg="];
         self.foregroundPassed = passed;

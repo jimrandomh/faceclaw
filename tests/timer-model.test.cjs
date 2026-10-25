@@ -113,6 +113,16 @@ test("timers sort ringing first, then soonest running, then paused", () => {
   assert.deepEqual(model.sortTimers([running, paused, rung, sooner], now).map((timer) => timer.id), [4, 2, 1, 3]);
 });
 
+test("the tray counts down the running timer that ends soonest", () => {
+  const now = 1_000_000;
+  const running = { id: 1, label: "", durationMs: 600_000, endsAtMs: now + 300_000, pausedRemainingMs: null, rungAtMs: null, createdAtMs: 1 };
+  const sooner = { ...running, id: 2, endsAtMs: now + 60_000 };
+  const paused = { ...running, id: 3, endsAtMs: null, pausedRemainingMs: 10_000 };
+  const rung = { ...running, id: 4, endsAtMs: now - 5000, rungAtMs: now - 5000 };
+  assert.equal(model.soonestRunningTimer([running, paused, rung, sooner], now)?.id, 2);
+  assert.equal(model.soonestRunningTimer([paused, rung], now), null);
+});
+
 test("tool arguments: times of day", () => {
   assert.deepEqual(model.parseTimeOfDay("7:30"), { hour: 7, minute: 30 });
   assert.deepEqual(model.parseTimeOfDay("7:30 pm"), { hour: 19, minute: 30 });

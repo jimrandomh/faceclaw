@@ -14,11 +14,15 @@ export const weatherShowInStatusBarSetting = new ConfigSettingBoolean({
     "Show the current conditions and temperature in the top bar. Weather for your current location is fetched once an hour while the glasses are connected.",
 });
 
+/**
+ * Also the Weather toggle in the system card's Glanceboard settings. On by
+ * default: it only fetches while the system card is on an enabled board.
+ */
 export const weatherShowOnSystemCardSetting = new ConfigSettingBoolean({
   id: "weather-show-on-system-card",
   label: "Show on system card",
   storageKey: "weather.showOnSystemCard",
-  defaultValue: false,
+  defaultValue: true,
   description:
-    "Show the current conditions and temperature on the Glanceboard's system card. Weather for your current location is fetched once an hour while the glasses are connected.",
+    "Show the current conditions and temperature on the Glanceboard's system card. Weather for your current location is fetched once an hour while the glasses are connected and the system card is on the Glanceboard.",
 });

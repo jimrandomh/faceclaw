@@ -2,7 +2,7 @@
 #import <WebKit/WebKit.h>
 
 /** One local or URL EvenHub runtime, retained by its TS session until its window closes. */
-@interface FaceclawEvenHubWebView : NSObject <WKScriptMessageHandler, WKNavigationDelegate, WKURLSchemeHandler>
+@interface FaceclawEvenHubWebView : NSObject <WKScriptMessageHandler, WKNavigationDelegate, WKUIDelegate, WKURLSchemeHandler>
 @property(nonatomic, copy) void (^eventHandler)(NSString *json);
 @property(nonatomic, copy) NSString *packageIdentifier;
 - (void)start:(NSString *)directory entrypoint:(NSString *)entrypoint script:(NSString *)script;

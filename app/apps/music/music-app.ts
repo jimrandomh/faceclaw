@@ -46,10 +46,11 @@ type FocusColumn = "actions" | "playlist";
 
 /**
  * Music controller app: metadata + album art + transport controls for the
- * active Android media session (any player that publishes one), plus the
- * player's queue when it exposes one (scroll to a track, click to jump).
- * With no session, the front page lists the apps whose library can be
- * browsed (click one to open its MediaBrowseLayer).
+ * active Android media session (any player that publishes one) or, on iOS,
+ * the Apple Music system player, plus the player's queue when it exposes one
+ * (scroll to a track, click to jump). With no session, the front page lists
+ * the apps whose library can be browsed (click one to open its
+ * MediaBrowseLayer).
  */
 class MusicAppLayer implements Layer {
   // Watch swipes skip tracks: right = next, left = previous.
@@ -83,7 +84,8 @@ class MusicAppLayer implements Layer {
    */
   private libraryAppsFresh = false;
   private art: GrayImage | null = null;
-  private artKey = "";
+  /** The artVersion `art` was fetched for; -1 = not fetched yet. */
+  private artVersion = -1;
 
   isPlaylistFocused(): boolean {
     return this.focusColumn === "playlist";
@@ -96,15 +98,11 @@ class MusicAppLayer implements Layer {
     const media = mediaControllerBridge.snapshot();
 
     if (!media.accessEnabled) {
-      const lines = wrapText(
-        font,
-        "Notification access is required to control Android media sessions. Tap to open settings.",
-        width - 48,
-      );
+      const lines = wrapText(font, mediaControllerBridge.accessPrompt, width - 48);
       for (let index = 0; index < lines.length; index++) {
         image.drawText(font, 24, 16 + index * lineStep(font), lines[index]!, 180);
       }
-      image.drawText(font, 20, height - 16, `${GESTURE_CLICK} open settings`, 110);
+      image.drawText(font, 20, height - 16, `${GESTURE_CLICK} ${mediaControllerBridge.accessAction}`, 110);
       return image;
     }
 
@@ -112,10 +110,12 @@ class MusicAppLayer implements Layer {
       const apps = mediaBrowserBridge.listBrowsableApps(!this.libraryAppsFresh);
       this.libraryAppsFresh = true;
       this.libraryMenu.setItems(apps);
-      image.drawText(font, 24, 16, "No active media session.", 180);
-      const prompt = apps.length
-        ? "Browse a music app's library, or start playback on the phone."
-        : "Start playback in another app on the phone.";
+      image.drawText(font, 24, 16, global.isIOS ? "Nothing is playing in Apple Music." : "No active media session.", 180);
+      const prompt = global.isIOS
+        ? "Browse your library, or start playback on the phone."
+        : apps.length
+          ? "Browse a music app's library, or start playback on the phone."
+          : "Start playback in another app on the phone.";
       let y = 22 + lineStep(font);
       for (const line of wrapText(font, prompt, width - 48)) {
         image.drawText(font, 24, y, line, 150);
@@ -228,7 +228,7 @@ class MusicAppLayer implements Layer {
     }
     if (!media.accessEnabled) {
       if (event.type === "click") {
-        mediaControllerBridge.openNotificationAccessSettings();
+        void mediaControllerBridge.requestAccess();
       } else if (event.type === "double-click") {
         ctx.stack.pop();
       }
@@ -267,8 +267,8 @@ class MusicAppLayer implements Layer {
           const item = this.queueMenu.selectedItem;
           if (item) {
             await mediaControllerBridge.skipToQueueItem(item.id);
-            // The player rebuilds the queue with the chosen track at index 0.
-            this.queueMenu.select(0);
+            // Android players rebuild the queue with the chosen track at index 0.
+            if (mediaControllerBridge.skipRebuildsQueue) this.queueMenu.select(0);
           }
           return;
         }
@@ -371,12 +371,12 @@ class MusicAppLayer implements Layer {
   }
 
   private drawArt(image: GrayImage, media: MediaControllerState): void {
-    const key = `${media.packageName}|${media.title}|${media.album}`;
-    // Retry while null: players (e.g. Spotify) often publish metadata before
-    // the art bitmap is downloaded, then re-emit the same strings with the
-    // bitmap attached. The no-art fetch path is a cheap near-no-op.
-    if (key !== this.artKey || this.art === null) {
-      this.artKey = key;
+    // Keyed on artVersion, not the strings: players (e.g. Spotify) publish
+    // metadata before the art bitmap is downloaded, or with the previous
+    // track's bitmap after a quick double skip, then re-emit the same
+    // strings with the right bitmap attached.
+    if (media.artVersion !== this.artVersion) {
+      this.artVersion = media.artVersion;
       this.art = mediaControllerBridge.getAlbumArt(ART_SIZE);
     }
     if (this.art) {
@@ -496,7 +496,8 @@ export function createMusicAppWindow(options: InProcessAppOptions): InProcessWin
     iconLetter: "M",
     icon: "music",
     closeable: true,
-    menuItems: () => [{
+    // Music settings choose among Android media apps; iOS has only Apple Music.
+    menuItems: () => global.isIOS ? [] : [{
       label: "Music settings",
       onSelect: (ctx) => {
         ctx.stack.pop();

@@ -17,6 +17,9 @@ import { voiceActivity } from "../../ui/shell/voice-activity";
 
 declare const com: any;
 
+// The router's claim on the shared raw-PCM tap (the Microphones app holds its own).
+const RAW_CAPTURE_OWNER = "evenhub-mic-router";
+
 export type EvenHubMicClient = {
   readonly windowId: string;
   isForeground(): boolean;
@@ -83,9 +86,9 @@ class EvenHubMicRouter {
       // eligibility change so it self-heals after an STT preemption. Returns
       // false if STT currently owns the mic; a later trigger (assistant modal
       // close, foreground/screen change) re-tries.
-      voiceControlBridge.startRawCapture({ communicator: activeCommunicator() });
+      voiceControlBridge.startRawCapture({ communicator: activeCommunicator(), owner: RAW_CAPTURE_OWNER });
     } else {
-      voiceControlBridge.stopRawCapture();
+      voiceControlBridge.stopRawCapture(RAW_CAPTURE_OWNER);
     }
   }
 }

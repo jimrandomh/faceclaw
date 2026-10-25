@@ -22,6 +22,8 @@ export type AssistantSessionHistory = {
   transcript: AssistantTranscriptEntry[];
   /** Model identity for safe replay after Auto resolves differently on restart. */
   engine?: string;
+  /** The Hermes server-side session for this conversation (Hermes keeps the history). */
+  hermesSessionId?: string;
 };
 
 /** Which engine answers utterances, plus what it needs to do so. */
@@ -31,6 +33,16 @@ export type AssistantBackendConfig =
 
 /** Trim history from the head once it grows past this many messages. */
 const MAX_HISTORY_MESSAGES = 40;
+
+/** The longest tool name every provider accepts (OpenAI allows 64; Anthropic, 128). */
+const MAX_API_TOOL_NAME_LENGTH = 64;
+/** Characters of the sanitized name kept at the start when shortening it. */
+const SHORTENED_TOOL_NAME_HEAD = 16;
+
+
+/** Hermes brings its own persona and tools; it only needs to know where the reply is shown. */
+const HERMES_SYSTEM_PROMPT =
+  "The user is talking to you through smart glasses with a small text display. Reply briefly in plain text, without Markdown.";
 
 export class AssistantSession {
   private readonly directBackend = new DirectAssistantBackend();
@@ -43,12 +55,18 @@ export class AssistantSession {
   // API-safe tool name -> canonical registry name. Provider APIs restrict tool
   // names, so dotted registry names are sanitized and mapped back on calls.
   private readonly toolNameMap = new Map<string, string>();
+  // Saved with the history: Faceclaw only sends Hermes the latest message, so a
+  // restored conversation must keep addressing the same server-side session.
+  private readonly hermesSessionId: string;
 
   constructor(
     private config: AssistantBackendConfig,
     private readonly registry: ToolRegistry = toolRegistry,
     history?: AssistantSessionHistory,
   ) {
+    this.hermesSessionId = typeof history?.hermesSessionId === "string" && history.hermesSessionId
+      ? history.hermesSessionId
+      : `faceclaw-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
     if (history) {
       this.messages.push(...history.messages);
       this.transcript.push(...history.transcript);
@@ -68,7 +86,7 @@ export class AssistantSession {
   }
 
   history(): AssistantSessionHistory {
-    return { messages: this.messages, transcript: this.transcript, engine: this.engine() };
+    return { messages: this.messages, transcript: this.transcript, engine: this.engine(), hermesSessionId: this.hermesSessionId };
   }
 
   configure(config: AssistantBackendConfig): void {
@@ -173,7 +191,10 @@ export class AssistantSession {
       apiKey: llm.apiKey,
       model: llm.model,
       effort: llm.effort,
-      system: isLocal ? ASSISTANT_SYSTEM_PROMPT_BASE : buildAssistantSystemPrompt(ctx),
+      baseUrl: llm.baseUrl,
+      sessionId: this.hermesSessionId,
+      system: llm.provider === "hermes" ? HERMES_SYSTEM_PROMPT
+        : isLocal ? ASSISTANT_SYSTEM_PROMPT_BASE : buildAssistantSystemPrompt(ctx),
       messages: turnMessages,
       buildTools: () => this.buildToolDefinitions(),
       registry: this.registry,
@@ -221,13 +242,20 @@ export class AssistantSession {
   /** Convert a canonical registry name to a provider-legal tool name. */
   private toApiToolName(name: string): string {
     let base = name.replace(/[^a-zA-Z0-9_-]/g, "_");
-    // Disambiguate the rare case where two canonical names sanitize alike.
-    if (this.toolNameMap.has(base)) {
-      let i = 2;
-      while (this.toolNameMap.has(`${base}_${i}`)) i++;
-      base = `${base}_${i}`;
+    if (base.length > MAX_API_TOOL_NAME_LENGTH) {
+      // Keep the start (the namespace) and the end (the tool's own name). The
+      // hash of the whole name keeps shortened names distinct and stable.
+      const hash = fnv32(name).toString(16).padStart(8, "0");
+      const tail = MAX_API_TOOL_NAME_LENGTH - SHORTENED_TOOL_NAME_HEAD - hash.length - 2;
+      base = `${base.slice(0, SHORTENED_TOOL_NAME_HEAD)}_${hash}_${base.slice(-tail)}`;
     }
-    return base;
+    // Disambiguate the rare case where two canonical names sanitize alike.
+    let apiName = base;
+    for (let i = 2; this.toolNameMap.has(apiName); i++) {
+      const suffix = `_${i}`;
+      apiName = base.slice(0, MAX_API_TOOL_NAME_LENGTH - suffix.length) + suffix;
+    }
+    return apiName;
   }
 
   private trimHistory(): void {
@@ -249,4 +277,14 @@ function startsWithToolResult(message: LlmMessage): boolean {
     message.content.length > 0 &&
     message.content[0]!.type === "tool_result"
   );
+}
+
+/** FNV-1a over UTF-16 code units: a small stable hash for shortened tool names. */
+function fnv32(text: string): number {
+  let hash = 2166136261;
+  for (let i = 0; i < text.length; i++) {
+    hash ^= text.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
 }

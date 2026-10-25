@@ -13,6 +13,9 @@ and others who contributed to documenting the G2's bluetooth protocol and firmwa
 
 G2 microphone LC3 decoding uses Google's liblc3: https://github.com/google/liblc3
 
+Weather data outside the US is by Open-Meteo.com: https://open-meteo.com/. It is
+licensed under CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/).
+
 The Terminus font is by Dimitar Zhekov's Terminus: https://framagit.org/ohnonot/terv-terc
 and is distributed under the SIL Open Font License; see app/fonts/terminus/LICENSE.
 

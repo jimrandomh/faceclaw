@@ -17,7 +17,9 @@ const microphonesApp: AppDefinition = {
   title: "Microphones",
   icon: "mic",
   boot: () => {
-    // Prune expired captions/recordings per the retention settings.
+    // Close out conversations and recordings a dead process left open, then
+    // prune expired captions/recordings per the retention settings.
+    micSession.recoverInterruptedConversations();
     void micSession.applyRetentionSweep();
   },
   launch: async (ctx) => {

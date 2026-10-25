@@ -1,8 +1,15 @@
 import { type GrayImage } from "../../../graphics/image";
 import { hasLocationPermission } from "../../../native/location-permissions";
-import { addCompassListener, COMPASS_CHANGED, setCompassEnabled } from "../../../native/compass";
+import { addCompassListener, COMPASS_CHANGED, setCompassEnabled, type CompassDiagnostics } from "../../../native/compass";
 import { isCompassCalibrated, normalizeHeading } from "../../compass/calibration";
-import { cardinalDirection, createCompassBackground, drawCompassRose, layoutCompassRose, TICK_HEIGHT } from "../../compass/compass-rose";
+import {
+  cardinalDirection,
+  createCompassBackground,
+  drawCompassRose,
+  layoutCompassRose,
+  magneticAccuracyDots,
+  TICK_HEIGHT,
+} from "../../compass/compass-rose";
 import { getDeclinationAvailability, onDeclinationChanged, refreshDeclination } from "../../compass/declination";
 import { getNorthReference, resolveHeading } from "../../compass/heading";
 import { glanceFont } from "../glance-font";
@@ -14,16 +21,21 @@ const TOP_PAD = 4;
 const BOTTOM_PAD = 4;
 const EDGE_PAD = 8;
 const MAX_ROSE_RADIUS = 60;
+/** Inset of the top-right magnetometer calibration dots from the card edges. */
+const ACCURACY_TOP_PAD = TOP_PAD;
+const ACCURACY_RIGHT_PAD = EDGE_PAD;
 
 /**
  * The Compass app's rose at card size: heading readout above, tilted rose
  * below. Turns the magnetometer on for as long as the board shows it (the
  * Compass app keeps its own hold, so the two never switch each other off).
  * Never prompts for location: true north is used when a declination is
- * already known, otherwise the readout says it is magnetic.
+ * already known, otherwise the readout says it is magnetic. The firmware's
+ * magnetometer calibration shows as the Compass app's dots, without a label.
  */
 export class CompassWidget implements GlanceWidget {
   private rawHeading: number | null = null;
+  private diagnostics: CompassDiagnostics | null = null;
   private unsubscribe: (() => void) | null = null;
   private unsubscribeDeclination: (() => void) | null = null;
   private enabled = false;
@@ -33,6 +45,7 @@ export class CompassWidget implements GlanceWidget {
     this.unsubscribe = addCompassListener((event) => {
       if (event.command === COMPASS_CHANGED && event.headingDegrees >= 0) {
         this.rawHeading = normalizeHeading(event.headingDegrees);
+        this.diagnostics = event.diagnostics ?? null;
         requestRender();
       }
     });
@@ -95,6 +108,10 @@ export class CompassWidget implements GlanceWidget {
     image.drawText(medium, Math.round(cx - medium.measureText(headingText) / 2), y, headingText, heading === null ? 150 : 255);
     if (status) {
       image.drawText(small, Math.round(cx - small.measureText(status) / 2), y + medium.lineHeight + 2, status, 125);
+    }
+    const accuracyDots = magneticAccuracyDots(this.diagnostics);
+    if (accuracyDots) {
+      image.drawText(small, width - ACCURACY_RIGHT_PAD - small.measureText(accuracyDots), ACCURACY_TOP_PAD, accuracyDots, 175);
     }
   }
 }

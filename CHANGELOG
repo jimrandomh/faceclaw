@@ -1,10 +1,57 @@
 # Changelog
 
-## 0.8.3 - Future
+## 0.8.5 - Future
+
+### Features
+
+* Use Open-Meteo for weather in regions that the US National Weather Service doesn't cover
+* Android: Show pictures attached to notifications (such as Dexcom's glucose graph) in the notification view
+* Add an Apple Music integration on iOS
+
+### Bug fixes
+
+* Inverting Android notification-icons to indicate selectionis now gamma-correct
+* Android notification icons that are full-color pictures rather than shapes no longer show as blank blocks
+
+## 0.8.4 - 2026-10-17
+
+### Features
+
+* Bottom-bar app switcher switches two a multi-row layout when it runs out of space
+* T3 Code client: Add options (worktree, host, etc) when creating threads
+* Add configuration options to the glanceboard system card and music player
+* Glanceboard compass shows calibration-accuracy indicator
+* Status-bar widgets (nightscout, weather, timer) are selectable
+* Roam app: Add a date-picker for navigating to a daily page
+* Clear notification popups when they're dismissed on the phone, and avoid showing some notifications that are spurious
+* Add depth effects to some modals that didn't have them
+* Add EvenHub icon to the phone preview screen
+* Add Hermes integration
+* Add wake-into-last-app setting (changes the default focus after screen wake)
+* Nightscout: Add a missed-bolus detection feature
+
+### Bug fixes
+
+* iOS: Fix several bugs that would crash the app
+* EvenHub: Fix issues that would prevent logging in with the webview on another domain
+* EvenHub app localstorage is now partitioned by app
+* Phone preview is centered on the phone screen when apps are not maximized
+* Fix a bug where album art and track display could get out of sync if you advance twice quickly
+* Fix a bug where EvenHub searches with spaces in the search term would fail
+* Crashes in a webview renderer can no longer take down the rest of the app
+* Fix issues that would prevent sign-in to EvenHub apps that rely on cross-domain navigation
+* Fix a bunch of bugs in the Microphones prototype app
+
+## 0.8.3 - 2026-10-10
 
 * Fix several issues that would cause disconnection and disconnect-looping
 * Add a client for T3 Code
-* Weather app shows an icon for current conditions, and can add the weather to the status bar and the Glanceboard system card (Weather menu > Settings)
+* Optional usage statistics
+* Add an on-glasses Onboarding app, which prompts you to configure some things
+* iOS Notifications have an icon based on ANCS category
+* iOS voice input can use cloud transcription providers
+* Weather app is more graphical, and can appear on the status bar and glanceboard Glanceboard system card
+* Set up an iOS TestFlight (but it may take awhile before Apple approves it)
 
 ## 0.8.2 - 2026-10-03
 

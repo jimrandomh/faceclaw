@@ -1,0 +1,23 @@
+{
+  "name": "faceclaw-stats-server",
+  "private": true,
+  "description": "Receives Faceclaw's opt-in analytics reports at stats.faceclaw.org and stores them in Postgres.",
+  "license": "GPL-3.0-or-later",
+  "type": "module",
+  "engines": {
+    "node": ">=22.18"
+  },
+  "scripts": {
+    "start": "node src/server.ts",
+    "check": "tsc -p tsconfig.json",
+    "test": "node --test test/*.test.ts"
+  },
+  "dependencies": {
+    "pg": "^8.16.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.18.0",
+    "@types/pg": "^8.15.5",
+    "typescript": "~5.9.0"
+  }
+}

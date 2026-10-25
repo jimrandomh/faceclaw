@@ -15,7 +15,9 @@
  *   chosen from the menu). Tap-then-hold has Stop, Settle, etc.
  * - environments / pair: manage paired servers; pairing takes the link from
  *   `t3 pair`, typed into the phone app's text editor.
- * - compose: the first message of a new thread in a chosen project.
+ * - compose: a new thread's options (host, project, model and its options,
+ *   access mode, workspace/worktree, branch), then its first message by
+ *   voice or phone keyboard.
  * Double-click backs out a level, and from the list yields focus.
  *
  * Connections (one T3EnvironmentClient per paired environment) live while the
@@ -39,7 +41,7 @@ import { openSocket } from "../../native/socket";
 import { fetchWithUserAgent } from "../../util/http";
 import { drawSubmenuIndicator, submenuItem, type MenuItem } from "../../ui/menu";
 import { Menu, type MenuDrawArgs } from "../../ui/menu-core";
-import { lineStep, listRowHeight } from "../../ui/metrics";
+import { LIST_ROW_TEXT_INSET, lineStep, listRowHeight } from "../../ui/metrics";
 import { WindowMenu, WindowMenuLayer } from "../../ui/window-menu";
 import type { WorkerAppMessage, WorkerAppReply } from "../../ui/shell/worker-window";
 import type { ToolResult, ToolSpec } from "../../assistant/tool-registry";
@@ -57,17 +59,14 @@ import { buildGlanceSnapshot, glanceSummary, T3_GLANCE_STATE_KEY } from "./t3-gl
 import {
   approvalOptions,
   approvalResponseCommand,
-  defaultModelSelection,
   describeRequest,
   formatAge,
   interruptCommand,
   isThreadSettled,
   isThreadUnread,
-  launchThreadPayload,
   messageDispatchCommand,
   optionAnswer,
   plainMarkdown,
-  providerDisplayName,
   questionAnswerCommand,
   sectionThreads,
   settleCommand,
@@ -78,10 +77,43 @@ import {
   timelineEntries,
   visitCommand,
   type PendingRequest,
+  type T3ModelSelection,
   type T3ProjectShell,
   type T3ThreadShell,
   type T3ThreadStatus,
 } from "./t3-model";
+import {
+  branchLabel,
+  emptyLaunchDraft,
+  isScratchProject,
+  launchThreadPayload,
+  matchingProject,
+  modelChoices,
+  modelDisplayName,
+  modelOptionDescriptors,
+  needsCheckout,
+  optionValue,
+  optionValueLabel,
+  parseProjectFile,
+  pickBranch,
+  pickWorkspaceMode,
+  providerDisplayName,
+  refBadge,
+  resolveLaunch,
+  runtimeModeChoices,
+  runtimeModeLabel,
+  selectableChoices,
+  T3_PROJECT_FILE_NAME,
+  withModelOption,
+  workspaceLabel,
+  type LaunchDraft,
+  type ResolvedLaunch,
+  type T3OptionDescriptor,
+  type T3ProjectFileDefaults,
+  type T3RefList,
+  type T3VcsRef,
+  type WorkspaceMode,
+} from "./t3-launch";
 import { parsePairingInput, baseUrlLabel } from "./t3-pairing";
 import type { RpcSocketFactory } from "./t3-rpc";
 import { TranscriptLayout } from "./t3-transcript";
@@ -118,7 +150,7 @@ type Screen =
   | { kind: "thread"; envId: string; threadId: string }
   | { kind: "environments" }
   | { kind: "pair"; repairId: string | null }
-  | { kind: "compose"; envId: string; projectId: string };
+  | { kind: "compose" };
 
 type AppWindow = {
   windowId: string;
@@ -157,9 +189,10 @@ type ThreadView = {
 
 type ListItem = {
   key: string;
-  kind: "heading" | "thread" | "action";
+  /** "field": a new-thread option, its name in a column and `right` as its value. */
+  kind: "heading" | "thread" | "action" | "field";
   label: string;
-  /** Dim text at the right edge (project, age, status). */
+  /** Dim text at the right edge (project, age, status); a field's value. */
   right?: string;
   /** Status marker drawn left of a thread title. */
   marker?: string;
@@ -183,6 +216,25 @@ let noticeTimer: ReturnType<typeof setTimeout> | null = null;
 /** Pair / compose screen progress and errors. */
 let busyText = "";
 let screenError = "";
+
+/** The new thread being set up on the compose screen. */
+type ComposeState = {
+  envId: string;
+  projectId: string;
+  draft: LaunchDraft;
+  /** vcs.listRefs for the project: null while loading, or when it failed (refsError). */
+  refs: T3RefList | null;
+  refsError: string;
+  /** The repo's t3.json defaults: undefined while reading, null when it has none. */
+  projectFile: T3ProjectFileDefaults | null | undefined;
+  /** Settles when the branch list and t3.json reads in flight finish. */
+  loading: Promise<void>;
+};
+
+let compose: ComposeState | null = null;
+let composeSelectionKey: string | null = null;
+/** Where field values start on the compose screen (set per paint from the field names). */
+let composeValueColumn = 0;
 
 const clients = new Map<string, T3EnvironmentClient>();
 const clientUnsubscribers = new Map<string, () => void>();
@@ -276,7 +328,8 @@ const T3_TOOLS: ToolSpec[] = [
   },
   {
     name: "start_thread",
-    description: "Start a new T3 Code thread in a project (found by matching its name) with a first message for the agent.",
+    description:
+      "Start a new T3 Code thread in a project (found by matching its name) with a first message for the agent. Uses the project's defaults for model, access mode and workspace.",
     inputSchema: {
       type: "object",
       properties: {
@@ -339,6 +392,7 @@ global.onmessage = (event: { data: WorkerAppMessage }) => {
       if (window.renderTimer) clearTimeout(window.renderTimer);
       window = null;
       closeThreadView();
+      compose = null;
       screen = { kind: "list" };
       // The Glanceboard widget may still want the connections.
       if (!hasT3BackgroundWork()) stopAllClients();
@@ -582,10 +636,11 @@ function noteAttention(client: T3EnvironmentClient): void {
 function setScreen(next: Screen): void {
   leaveScreenSideEffects();
   if (next.kind !== "thread") closeThreadView();
+  if (next.kind !== "compose") compose = null;
   screen = next;
   busyText = "";
   screenError = "";
-  if (next.kind === "list" || next.kind === "environments") listMenu?.select(0);
+  if (next.kind === "list" || next.kind === "environments" || next.kind === "compose") listMenu?.select(0);
   if (window) post({ type: "set-title", windowId: window.windowId, title: next.kind === "thread" ? threadTitle() : APP_TITLE });
   updateListRefreshTimer();
 }
@@ -689,10 +744,10 @@ function showNotice(text: string): void {
  * From inside another menu's item the old menu is still closing (WindowMenu
  * ignores open() until its input handling finishes), so wait a tick.
  */
-function openWindowMenu(items: MenuItem[], title: string): void {
+function openWindowMenu(items: MenuItem[], title: string, selectedIndex?: number): void {
   const open = () => {
     if (!window) return;
-    windowMenu(window).open(items, title);
+    windowMenu(window).open(items, title, selectedIndex);
     renderNow();
   };
   if (window?.menu?.isOpen()) setTimeout(open, 0);
@@ -732,6 +787,7 @@ function handleInput(win: AppWindow, event: InputEvent, frameId: number): void {
   switch (screen.kind) {
     case "list":
     case "environments":
+    case "compose":
       handleListInput(event, frameId);
       return;
     case "thread":
@@ -741,13 +797,6 @@ function handleInput(win: AppWindow, event: InputEvent, frameId: number): void {
       if (event.type === "click" && !busyText) {
         void pairFromDraft();
         renderNow(frameId);
-        return;
-      }
-      break;
-    case "compose":
-      if (event.type === "click" && !busyText) {
-        post({ type: "start-voice-input", windowId: win.windowId });
-        frameTimings.finishFrame(frameId, "discarded: t3code opened voice input");
         return;
       }
       break;
@@ -761,12 +810,24 @@ function handleListInput(event: InputEvent, frameId: number): void {
     return;
   }
   const menu = list();
-  const items = screen.kind === "environments" ? environmentItems() : listItems();
+  const items = currentListItems();
   menu.setItems(items, selectionIndex(items));
   // Item actions are synchronous, so the move or action has applied when this returns.
   menu.handleInput(event).catch((error) => console.error("t3code list action failed", error));
-  if (event.type !== "click") listSelectionKey = menu.selectedItem?.key ?? null;
+  if (event.type !== "click") setSelectedKey(menu.selectedItem?.key ?? null);
   renderNow(frameId);
+}
+
+/** The rows of whichever list-shaped screen is showing. */
+function currentListItems(): ListItem[] {
+  switch (screen.kind) {
+    case "environments":
+      return environmentItems();
+    case "compose":
+      return composeItems();
+    default:
+      return listItems();
+  }
 }
 
 function handleThreadInput(event: InputEvent, frameId: number): void {
@@ -825,7 +886,7 @@ function handleTextInput(text: string): void {
       render();
       return;
     case "compose":
-      void launchNewThread(screen.envId, screen.projectId, text);
+      void launchNewThread(text);
       return;
     case "thread": {
       const view = threadView;
@@ -1081,8 +1142,7 @@ function projectMenuItems(): MenuItem[] {
     label: multiEnv ? `${project.title} · ${environmentName(client)}` : project.title,
     onSelect: (ctx) => {
       ctx.stack.clearToBase();
-      setScreen({ kind: "compose", envId: client.config.id, projectId: project.id });
-      if (window) post({ type: "start-voice-input", windowId: window.windowId });
+      beginCompose(client, project);
     },
   }));
 }
@@ -1156,35 +1216,430 @@ async function pairFromDraft(): Promise<void> {
 // ---------------------------------------------------------------------------
 // New threads
 
-function composeTarget(): { client: T3EnvironmentClient; project: T3ProjectShell } | null {
-  if (screen.kind !== "compose") return null;
-  const client = clients.get(screen.envId);
-  const project = client?.shell.projects.get(screen.projectId);
-  return client && project ? { client, project } : null;
+/** Most branches a picker lists (vcs.listRefs pages past this aren't fetched). */
+const BRANCH_LIST_LIMIT = 100;
+
+type ComposeTarget = { client: T3EnvironmentClient; project: T3ProjectShell; state: ComposeState };
+
+function composeTarget(): ComposeTarget | null {
+  if (screen.kind !== "compose" || !compose) return null;
+  const client = clients.get(compose.envId);
+  const project = client?.shell.projects.get(compose.projectId);
+  return client && project ? { client, project, state: compose } : null;
 }
 
-async function launchNewThread(envId: string, projectId: string, text: string): Promise<void> {
-  const client = clients.get(envId);
-  const project = client?.shell.projects.get(projectId);
-  if (!client || !project) return;
-  const selection = defaultModelSelection(client.settings, client.providers, project);
-  if (!selection) {
-    screenError = "No usable agent on that computer: sign in to Claude Code, Codex or another provider in T3 Code first.";
+/** Show the new-thread options for a project, keeping whatever `draft` picks still apply there. */
+function beginCompose(client: T3EnvironmentClient, project: T3ProjectShell, draft: LaunchDraft = emptyLaunchDraft()): void {
+  const state: ComposeState = {
+    envId: client.config.id,
+    projectId: project.id,
+    draft,
+    refs: null,
+    refsError: "",
+    projectFile: undefined,
+    loading: Promise.resolve(),
+  };
+  if (screen.kind === "compose") {
+    // Another host or project: keep the selection on the row that changed it.
+    compose = state;
+    screenError = "";
+  } else {
+    compose = state;
+    composeSelectionKey = null;
+    setScreen({ kind: "compose" });
+  }
+  loadComposeContext(state);
+  render();
+}
+
+/** Read the project's branches and t3.json (defaults and the branch picker). */
+function loadComposeContext(state: ComposeState): void {
+  const client = clients.get(state.envId);
+  const project = client?.shell.projects.get(state.projectId);
+  if (!client || !project?.workspaceRoot || isScratchProject(project, client.scratchWorkspaceRoot)) {
+    state.projectFile = null;
+    return;
+  }
+  state.refsError = "";
+  const refs = fetchRefs(client, project, true).then(
+    (refList) => {
+      if (compose !== state) return;
+      state.refs = refList;
+      render();
+    },
+    (error) => {
+      if (compose !== state) return;
+      state.refsError = errorMessage(error);
+      render();
+    },
+  );
+  const projectFile =
+    state.projectFile !== undefined
+      ? Promise.resolve()
+      : readProjectFile(client, project).then((file) => {
+          if (compose !== state) return;
+          state.projectFile = file;
+          render();
+        });
+  state.loading = Promise.all([refs, projectFile]).then(() => {});
+}
+
+function fetchRefs(client: T3EnvironmentClient, project: T3ProjectShell, refresh: boolean): Promise<T3RefList> {
+  // refresh: the cached list's "current" flag can lag a checkout made outside T3 by minutes.
+  return client.call<T3RefList>("vcs.listRefs", { cwd: project.workspaceRoot, limit: BRANCH_LIST_LIMIT, ...(refresh ? { refresh: true } : {}) });
+}
+
+/** The repo's t3.json defaults; null when it has none or it can't be read. */
+async function readProjectFile(client: T3EnvironmentClient, project: T3ProjectShell): Promise<T3ProjectFileDefaults | null> {
+  try {
+    const result = await client.call<{ contents?: unknown; truncated?: boolean }>("projects.readFile", {
+      cwd: project.workspaceRoot,
+      relativePath: T3_PROJECT_FILE_NAME,
+    });
+    return typeof result?.contents === "string" && !result.truncated ? parseProjectFile(result.contents) : null;
+  } catch {
+    return null;
+  }
+}
+
+function composeResolved({ client, project, state }: ComposeTarget): ResolvedLaunch {
+  return resolveLaunch(state.draft, {
+    settings: client.settings,
+    providers: client.providers,
+    project,
+    scratchWorkspaceRoot: client.scratchWorkspaceRoot,
+    projectFile: state.projectFile,
+    refs: state.refs,
+  });
+}
+
+/** A new-thread option row; `action` opens its picker (or toggles it). */
+function field(key: string, label: string, value: string, action?: () => void, submenu = true): ListItem {
+  return {
+    key: `field:${key}`,
+    kind: "field",
+    label,
+    right: value,
+    submenu: Boolean(action) && submenu,
+    onSelect: action
+      ? () => {
+          if (!busyText) action();
+        }
+      : undefined,
+  };
+}
+
+function composeItems(): ListItem[] {
+  const target = composeTarget();
+  if (!target) return [];
+  const { client, project, state } = target;
+  const resolved = composeResolved(target);
+  const model = resolved.model;
+  const items: ListItem[] = [
+    {
+      key: "start",
+      kind: "action",
+      label: "Say what to do…",
+      right: "or type it on the phone",
+      onSelect: () => {
+        if (!busyText && window) post({ type: "start-voice-input", windowId: window.windowId });
+      },
+    },
+    field("host", "Host", environmentName(client), readyClients().length > 1 ? () => openHostPicker(target) : undefined),
+    field("project", "Project", project.title, () => openProjectPicker(target)),
+    field(
+      "model",
+      "Model",
+      model ? modelRowValue(client, model) : "None available",
+      modelChoices(client.providers).length ? () => openModelPicker(target, resolved) : undefined,
+    ),
+  ];
+  if (model) {
+    for (const descriptor of modelOptionDescriptors(client.providers, model)) {
+      const value = optionValue(descriptor, model);
+      const shown = optionValueLabel(descriptor, value);
+      if (descriptor.type === "boolean") {
+        items.push(field(`option:${descriptor.id}`, descriptor.label, shown, () => setModelOption(target, resolved, descriptor.id, !value), false));
+      } else if (selectableChoices(descriptor).length) {
+        items.push(field(`option:${descriptor.id}`, descriptor.label, shown, () => openOptionPicker(target, resolved, descriptor)));
+      }
+    }
+  }
+  const accessChoices = runtimeModeChoices(client.providers.find((provider) => provider.instanceId === model?.instanceId));
+  items.push(field("access", "Access", runtimeModeLabel(resolved.runtimeMode), accessChoices.length > 1 ? () => openAccessPicker(target, resolved) : undefined));
+  if (!resolved.canChooseWorkspace) {
+    const why = isScratchProject(project, client.scratchWorkspaceRoot) ? "Own folder (no project)" : "Project folder (not a git repo)";
+    items.push(field("workspace", "Workspace", why));
+    return items;
+  }
+  items.push(field("workspace", "Workspace", workspaceLabel(resolved), () => openWorkspacePicker(target, resolved)));
+  const branchName = resolved.workspaceMode === "worktree" ? "Base" : "Branch";
+  if (state.refsError) {
+    items.push(field("branch", branchName, "Couldn't load; retry", () => {
+      loadComposeContext(state);
+      render();
+    }, false));
+  } else if (!state.refs && !resolved.branch) {
+    items.push(field("branch", branchName, "Loading…"));
+  } else {
+    items.push(field("branch", branchName, branchLabel(resolved, Boolean(state.refs?.hasPrimaryRemote)), state.refs ? () => openBranchPicker(target, resolved) : undefined));
+  }
+  if (resolved.workspaceMode === "worktree" && state.refs?.hasPrimaryRemote) {
+    items.push(field("origin", "From origin", resolved.startFromOrigin ? "On" : "Off", () => {
+      state.draft = { ...state.draft, startFromOrigin: !resolved.startFromOrigin };
+    }, false));
+  }
+  return items;
+}
+
+/** "Claude Opus 5", or "Codex · GPT-5.4" when the model's name doesn't say whose it is. */
+function modelRowValue(client: T3EnvironmentClient, model: T3ModelSelection): string {
+  const provider = providerDisplayName(client.providers, model.instanceId);
+  const name = modelDisplayName(client.providers, model);
+  return name.toLowerCase().startsWith(provider.toLowerCase()) ? name : `${provider} · ${name}`;
+}
+
+/** A picker row, " *" marking the current value, with an optional dim tag at the right. */
+function choiceItem(label: string, onSelect: MenuItem["onSelect"], options: { current?: boolean; right?: string } = {}): MenuItem {
+  const text = options.current ? `${label} *` : label;
+  const right = options.right;
+  return {
+    label: text,
+    onSelect,
+    render: right
+      ? ({ image, x, y, width, selected, disabled }) => {
+          const f = font();
+          const rightWidth = f.measureText(right);
+          image.drawText(f, x, y + LIST_ROW_TEXT_INSET, truncateText(f, text, width - rightWidth - 12), disabled ? 70 : selected ? 255 : 200);
+          image.drawText(f, x + width - rightWidth - 2, y + LIST_ROW_TEXT_INSET, right, selected ? 200 : 120);
+        }
+      : undefined,
+  };
+}
+
+/** Open a picker on its current row. */
+function openChoices(items: MenuItem[], title: string, currentIndex: number): void {
+  openWindowMenu(items, title, currentIndex >= 0 ? currentIndex : undefined);
+}
+
+function openHostPicker({ client, project }: ComposeTarget): void {
+  const hosts = readyClients();
+  const items = hosts.map((host) =>
+    choiceItem(
+      environmentName(host),
+      (ctx) => {
+        ctx.stack.pop();
+        if (host === client) return;
+        // The same repository there if it has it, else its most recently used project.
+        const target = matchingProject(host.shell.projects.values(), project) ?? projectChoices().find((choice) => choice.client === host)?.project;
+        if (!target) {
+          showNotice(`${environmentName(host)} has no projects.`);
+          return;
+        }
+        beginCompose(host, target);
+      },
+      { current: host === client },
+    ),
+  );
+  openChoices(items, "Host", hosts.indexOf(client));
+}
+
+function openProjectPicker({ client, project, state }: ComposeTarget): void {
+  const projects = projectChoices()
+    .filter((choice) => choice.client === client)
+    .map((choice) => choice.project);
+  const items = projects.map((candidate) =>
+    choiceItem(
+      candidate.title,
+      (ctx) => {
+        ctx.stack.pop();
+        if (candidate.id === project.id) return;
+        // The model and access picks carry over; workspace and branch belong to the old repo.
+        beginCompose(client, candidate, { ...emptyLaunchDraft(), model: state.draft.model, runtimeMode: state.draft.runtimeMode });
+      },
+      { current: candidate.id === project.id },
+    ),
+  );
+  openChoices(items, "Project", projects.findIndex((candidate) => candidate.id === project.id));
+}
+
+function openModelPicker({ client, state }: ComposeTarget, resolved: ResolvedLaunch): void {
+  const current = resolved.model;
+  const isCurrent = (instanceId: string, model: string) => current?.instanceId === instanceId && current.model === model;
+  const groups = modelChoices(client.providers);
+  const modelItems = (group: (typeof groups)[number]) =>
+    group.models.map((choice) =>
+      choiceItem(
+        choice.label,
+        (ctx) => {
+          ctx.stack.clearToBase();
+          // A different model starts from its own option defaults.
+          if (!isCurrent(choice.selection.instanceId, choice.selection.model)) state.draft = { ...state.draft, model: choice.selection };
+        },
+        { current: isCurrent(choice.selection.instanceId, choice.selection.model), right: choice.isLegacy ? "legacy" : undefined },
+      ),
+    );
+  const currentModelIndex = (group: (typeof groups)[number]) => group.models.findIndex((choice) => isCurrent(choice.selection.instanceId, choice.selection.model));
+  if (groups.length === 1) {
+    openChoices(modelItems(groups[0]!), `${groups[0]!.label} model`, currentModelIndex(groups[0]!));
+    return;
+  }
+  const items = groups.map((group) =>
+    submenuItem(group.instanceId === current?.instanceId ? `${group.label} *` : group.label, (ctx) =>
+      ctx.stack.push(new WindowMenuLayer(`${group.label} model`, modelItems(group)).selectItem(Math.max(0, currentModelIndex(group)))),
+    ),
+  );
+  openChoices(items, "Model", groups.findIndex((group) => group.instanceId === current?.instanceId));
+}
+
+function setModelOption({ state }: ComposeTarget, resolved: ResolvedLaunch, id: string, value: string | boolean): void {
+  if (!resolved.model) return;
+  state.draft = { ...state.draft, model: withModelOption(resolved.model, id, value) };
+}
+
+function openOptionPicker(target: ComposeTarget, resolved: ResolvedLaunch, descriptor: Extract<T3OptionDescriptor, { type: "select" }>): void {
+  const value = optionValue(descriptor, resolved.model);
+  const choices = selectableChoices(descriptor);
+  const items = choices.map((choice) =>
+    choiceItem(
+      choice.label,
+      (ctx) => {
+        ctx.stack.pop();
+        setModelOption(target, resolved, descriptor.id, choice.id);
+      },
+      { current: choice.id === value },
+    ),
+  );
+  openChoices(items, descriptor.label, choices.findIndex((choice) => choice.id === value));
+}
+
+function openAccessPicker({ client, state }: ComposeTarget, resolved: ResolvedLaunch): void {
+  const choices = runtimeModeChoices(client.providers.find((provider) => provider.instanceId === resolved.model?.instanceId));
+  const items = choices.map((choice) =>
+    choiceItem(
+      choice.label,
+      (ctx) => {
+        ctx.stack.pop();
+        state.draft = { ...state.draft, runtimeMode: choice.mode };
+      },
+      { current: choice.mode === resolved.runtimeMode },
+    ),
+  );
+  openChoices(items, "Access", choices.findIndex((choice) => choice.mode === resolved.runtimeMode));
+}
+
+function openWorkspacePicker({ state }: ComposeTarget, resolved: ResolvedLaunch): void {
+  const modes: Array<{ mode: WorkspaceMode; label: string }> = [
+    { mode: "local", label: "Current checkout" },
+    { mode: "worktree", label: "New worktree" },
+  ];
+  const items = modes.map(({ mode, label }) =>
+    choiceItem(
+      label,
+      (ctx) => {
+        ctx.stack.pop();
+        if (mode !== resolved.workspaceMode || state.draft.worktreePath) state.draft = pickWorkspaceMode(state.draft, mode);
+      },
+      { current: mode === resolved.workspaceMode && !resolved.worktreePath },
+    ),
+  );
+  openChoices(items, "Workspace", modes.findIndex(({ mode }) => mode === resolved.workspaceMode));
+}
+
+function openBranchPicker(target: ComposeTarget, resolved: ResolvedLaunch): void {
+  const { project, state } = target;
+  const mode = resolved.workspaceMode;
+  // A thread in the checkout runs on a local branch; a worktree can start from a remote one too.
+  const refs = (state.refs?.refs ?? []).filter((ref) => mode === "worktree" || !ref.isRemote);
+  const items: MenuItem[] = refs.map((ref) =>
+    choiceItem(
+      ref.name,
+      (ctx) => {
+        ctx.stack.pop();
+        void selectBranch(target, ref, mode);
+      },
+      { current: ref.name === resolved.branch, right: needsCheckout(ref, mode) ? "check out" : refBadge(ref, project) || undefined },
+    ),
+  );
+  const hidden = (state.refs?.totalCount ?? 0) - (state.refs?.refs.length ?? 0);
+  if (state.refs?.nextCursor != null && hidden > 0) items.push({ label: `(${hidden} more not listed)`, disabled: true, onSelect: () => {} });
+  if (!items.length) items.push({ label: "No branches", disabled: true, onSelect: () => {} });
+  openChoices(items, mode === "worktree" ? "New worktree from" : "Run on branch", refs.findIndex((ref) => ref.name === resolved.branch));
+}
+
+/**
+ * Use a branch. In the project checkout, a branch that isn't checked out
+ * anywhere is checked out first (vcs.switchRef), as T3's own app does;
+ * one checked out in another worktree runs there.
+ */
+async function selectBranch({ client, project, state }: ComposeTarget, ref: T3VcsRef, mode: WorkspaceMode): Promise<void> {
+  if (!needsCheckout(ref, mode)) {
+    state.draft = pickBranch(state.draft, ref, mode, project);
     render();
     return;
   }
+  busyText = `Checking out ${ref.name}…`;
+  screenError = "";
+  render();
+  try {
+    const result = await client.call<{ refName?: string | null }>("vcs.switchRef", { cwd: project.workspaceRoot, refName: ref.name });
+    if (compose !== state) return;
+    state.draft = pickBranch(state.draft, { ...ref, name: result?.refName || ref.name, current: true }, mode, project);
+    busyText = "";
+    showNotice(`Checked out ${result?.refName || ref.name}`);
+    loadComposeContext(state);
+  } catch (error) {
+    if (compose !== state) return;
+    busyText = "";
+    screenError = `Couldn't check out ${ref.name}: ${errorMessage(error)}`;
+    render();
+  }
+}
+
+async function launchNewThread(text: string): Promise<void> {
+  const target = composeTarget();
+  if (!target) return;
+  if (busyText) {
+    showNotice(`Not started: still ${busyText.replace(/…$/, "").toLowerCase()}.`);
+    return;
+  }
+  const { client, project, state } = target;
   busyText = "Starting thread…";
   screenError = "";
   render();
   try {
-    const threadId = await client.launchThread(launchThreadPayload(project, text, selection, client.settings));
-    if (screen.kind === "compose") openThread(envId, threadId);
+    // Defaults can depend on the branch list and t3.json.
+    await state.loading;
+    if (compose !== state) return;
+    const resolved = composeResolved(target);
+    if (resolved.blocker) throw new Error(resolved.blocker);
+    const threadId = await client.launchThread(launchThreadPayload(project, text, resolved, client.providers));
+    if (compose === state) openThread(client.config.id, threadId);
     render();
   } catch (error) {
+    if (compose !== state) return;
     busyText = "";
     screenError = errorMessage(error);
     render();
   }
+}
+
+/** The project's own defaults for a new thread (the assistant tool has no screen to pick on). */
+async function defaultLaunch(client: T3EnvironmentClient, project: T3ProjectShell): Promise<ResolvedLaunch> {
+  const scratch = isScratchProject(project, client.scratchWorkspaceRoot);
+  const usesRepo = Boolean(project.workspaceRoot) && !scratch;
+  const [projectFile, refs] = await Promise.all([
+    usesRepo ? readProjectFile(client, project) : Promise.resolve(null),
+    usesRepo ? fetchRefs(client, project, false).catch(() => null) : Promise.resolve(null),
+  ]);
+  return resolveLaunch(emptyLaunchDraft(), {
+    settings: client.settings,
+    providers: client.providers,
+    project,
+    scratchWorkspaceRoot: client.scratchWorkspaceRoot,
+    projectFile,
+    refs,
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -1208,9 +1663,15 @@ function list(): Menu<ListItem> {
 
 /** The selection index for the remembered key (selection follows its thread as the list reorders). */
 function selectionIndex(items: readonly ListItem[]): number | undefined {
-  if (!listSelectionKey) return undefined;
-  const index = items.findIndex((item) => item.key === listSelectionKey);
+  const key = screen.kind === "compose" ? composeSelectionKey : listSelectionKey;
+  if (!key) return undefined;
+  const index = items.findIndex((item) => item.key === key);
   return index >= 0 ? index : undefined;
+}
+
+function setSelectedKey(key: string | null): void {
+  if (screen.kind === "compose") composeSelectionKey = key;
+  else listSelectionKey = key;
 }
 
 function threadItem(client: T3EnvironmentClient, thread: T3ThreadShell, multiEnv: boolean, nowMs: number): ListItem {
@@ -1363,6 +1824,15 @@ function drawListRow({ image, item, x, y, width, height, selected }: MenuDrawArg
   const textY = y + Math.max(0, Math.floor((height - f.lineHeight) / 2));
   if (item.kind === "heading") {
     image.drawText(f, x + 4, textY, truncateText(f, item.label, width - 8), selected ? 255 : 140);
+    return;
+  }
+  if (item.kind === "field") {
+    const submenuWidth = item.submenu ? 16 : 0;
+    const valueX = x + 6 + composeValueColumn;
+    image.drawText(f, x + 6, textY, truncateText(f, item.label, composeValueColumn - 8), selected ? 230 : 140);
+    const valueValue = selected ? 255 : item.onSelect ? 210 : 150;
+    image.drawText(f, valueX, textY, truncateText(f, item.right ?? "", Math.max(10, x + width - valueX - submenuWidth - 6)), valueValue);
+    if (item.submenu) drawSubmenuIndicator(image, f, x, y, width, height, selected ? 255 : 200);
     return;
   }
   const value = selected ? 255 : 200;
@@ -1580,20 +2050,33 @@ function paintPair(win: AppWindow): GrayImage {
 function paintCompose(win: AppWindow): GrayImage {
   const target = composeTarget();
   if (!target) return paintMessageScreen(win, "New thread", [{ text: "That project is no longer available.", value: 170 }], "");
-  const { client, project } = target;
-  const selection = defaultModelSelection(client.settings, client.providers, project);
-  const agent = selection ? `${providerDisplayName(client.providers, selection.instanceId)} · ${selection.model}` : "No usable agent";
-  return paintMessageScreen(
-    win,
-    `New thread: ${project.title}`,
-    [
-      { text: `Agent: ${agent}`, value: 150 },
-      { text: "Say or type what the agent should do.", value: 200 },
-      { text: busyText, value: 200 },
-      { text: screenError, value: 230 },
-    ],
-    busyText ? "" : `${GESTURE_CLICK} speak   ${GESTURE_DOUBLE_CLICK} cancel`,
-  );
+  const image = new GrayImage(win.viewportWidth, win.viewportHeight, 0);
+  const f = font();
+  const step = lineStep(f);
+  const title = "New thread";
+  image.drawText(f, TITLE_X, TITLE_Y, title, 220);
+  const status = busyText || notice?.text || "";
+  if (status) {
+    const statusX = TITLE_X + f.measureText(title) + 16;
+    image.drawText(f, statusX, TITLE_Y, truncateText(f, status, win.viewportWidth - statusX - 14), 150);
+  }
+  // Below the list: an error, or why nothing can start here.
+  const resolved = composeResolved(target);
+  const problem = screenError || (resolved.model ? "" : (resolved.blocker ?? ""));
+  const problemLines = problem ? wrapText(f, problem, win.viewportWidth - TITLE_X * 2).slice(0, 3) : [];
+  const listTop = TITLE_Y + step + 8;
+  const listWidth = win.viewportWidth - LIST_LEFT - LIST_RIGHT;
+  const listHeight = win.viewportHeight - 6 - listTop - (problemLines.length ? problemLines.length * step + 6 : 0);
+  const items = composeItems();
+  const widest = Math.max(0, ...items.filter((item) => item.kind === "field").map((item) => f.measureText(item.label)));
+  composeValueColumn = Math.min(widest + 16, Math.floor(listWidth * 0.4));
+  const menu = list();
+  menu.setItems(items, selectionIndex(items));
+  composeSelectionKey = menu.selectedItem?.key ?? composeSelectionKey;
+  menu.paint(image, { x: LIST_LEFT, y: listTop - 2, width: listWidth, height: listHeight }, win.focused);
+  menu.drawScrollbar(image, win.viewportWidth - 10, listTop, listHeight - 4);
+  problemLines.forEach((line, index) => image.drawText(f, TITLE_X, listTop + listHeight + 4 + index * step, line, 230));
+  return image;
 }
 
 // ---------------------------------------------------------------------------
@@ -1735,10 +2218,16 @@ async function handleTool(name: string, args: any): Promise<ToolResult> {
       if (!choice) {
         return { ok: false, error: `No project matches "${args?.project}". Projects: ${projectChoices().map(({ project }) => project.title).join(", ")}` };
       }
-      const selection = defaultModelSelection(choice.client.settings, choice.client.providers, choice.project);
-      if (!selection) return { ok: false, error: "No usable agent provider on that computer." };
-      const threadId = await choice.client.launchThread(launchThreadPayload(choice.project, text, selection, choice.client.settings));
-      return { ok: true, content: `Started a thread in ${choice.project.title} (id ${threadId}).` };
+      const { client, project } = choice;
+      const resolved = await defaultLaunch(client, project);
+      if (resolved.blocker) return { ok: false, error: resolved.blocker };
+      const threadId = await client.launchThread(launchThreadPayload(project, text, resolved, client.providers));
+      const how = [
+        modelDisplayName(client.providers, resolved.model),
+        runtimeModeLabel(resolved.runtimeMode).toLowerCase(),
+        resolved.workspaceMode === "worktree" ? `new worktree from ${resolved.branch}` : resolved.branch ? `on ${resolved.branch}` : "",
+      ].filter(Boolean);
+      return { ok: true, content: `Started a thread in ${project.title} (${how.join(", ")}; id ${threadId}).` };
     }
     default:
       return { ok: false, error: `Unknown T3 Code tool: ${name}` };

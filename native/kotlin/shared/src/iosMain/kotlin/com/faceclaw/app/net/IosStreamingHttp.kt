@@ -57,8 +57,9 @@ internal object IosStreamingHttp : StreamingHttp {
         }
         val request = buildRequest(target, "POST", body, listOf("Content-Type" to "application/json; charset=utf-8", "Accept" to "text/event-stream") + headers)
         val configuration = NSURLSessionConfiguration.ephemeralSessionConfiguration
+        // An idle limit only, like Android's OkHttp read timeout: callers cap a stream's
+        // total time, and a Hermes agent turn can stream for many minutes.
         configuration.timeoutIntervalForRequest = 180.0
-        configuration.timeoutIntervalForResource = 180.0
         val delegate = StreamingDelegate(sink)
         val session = NSURLSession.sessionWithConfiguration(configuration, delegate, delegateQueue = null)
         val task = session.dataTaskWithRequest(request)

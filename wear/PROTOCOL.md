@@ -20,7 +20,7 @@ carries `seq` (monotonic per watch process) and is answered on `/faceclaw/ack`.
 | --- | --- | --- |
 | `/faceclaw/input` | `{gesture, steps?}` | A ring gesture through the same path as the phone UI's test buttons. `gesture` ∈ `click`, `double-click`, `scroll-up`, `scroll-down`, `long-press` (complete short hold), `long-press-start`, `long-press-release`, `short-then-long-press` (tap then hold: the app's context menu; a plain `long-press` is the glasses' system menu), `wakeword` ("Hey Even"), `swipe-up`, `swipe-down`, `swipe-left`, `swipe-right` (spatial input only a watch can produce: delivered to the glasses UI as `swipe-*` events for components that navigate spatially — launcher grid, settings columns, sidebar, Music — with a scroll / click / double-click fallback elsewhere). `steps` (1–12) repeats a scroll. Refused while the glasses are disconnected. The lock screen is honoured exactly as for the ring. While the display is off, a double-click wakes the display, a `click` shows the phone's Glanceboard for a few seconds, and `long-press-start`/`long-press-release` hold it up; everything else is ignored. |
 | `/faceclaw/press` | none | A finger landed on the pad (each first-finger touch-down, the second tap of a double-tap included) or the stem button went down: delivered on the glasses as a `ring-press` from source `watch`, exactly like the R1 ring's touch-down, ahead of whatever gesture the touch becomes (which is still sent on `/faceclaw/input`). Components that act on touch-down (Flappy, Pinball) then ignore the gesture that follows. Sent only while the mirrored state says the glasses are connected with the display on. Carries no `seq` and is never acked; the phone drops it silently wherever the following gesture would be refused. |
-| `/faceclaw/command` | `{command, …}` | `launch-app {appId}`, `focus-window {windowId}`, `close-window {windowId}`, `sidebar`, `wake`, `sleep`, `lock`, `unlock`, `connect`, `disconnect`, `close-assistant`, `display-mode {value}` (`value` ∈ `576x288`, `576x480`, `640x480`; sets the phone's Display > Display mode). Everything but connect/disconnect needs a connection; everything but lock/unlock is refused while locked; `unlock` also needs the phone's "Watch can unlock glasses" setting. |
+| `/faceclaw/command` | `{command, …}` | `launch-app {appId}`, `focus-window {windowId}`, `close-window {windowId}`, `sidebar`, `wake`, `sleep`, `lock`, `unlock`, `connect`, `disconnect`, `close-assistant`. Everything but connect/disconnect needs a connection; everything but lock/unlock is refused while locked; `unlock` also needs the phone's "Watch can unlock glasses" setting. |
 | `/faceclaw/assistant` | `{text}` | Send a query to the assistant (`shell.sendToAssistant`) — the reply shows on the glasses and streams back to the watch as events. |
 | `/faceclaw/text` | `{text}` | Type text into the foreground window (`receiveTextInput`, e.g. the terminal). Refused when the window doesn't take text. |
 | `/faceclaw/state/request` | `{}` | Re-publish the state item even if unchanged. |
@@ -61,7 +61,6 @@ dashboard state, re-sent whenever it changes (and at least every 30 s):
   "foreground": {"appId": "music", "title": "Music"},
   "windows": [{"windowId": "…", "title": "…", "appId": "…", "focused": true, "closeable": true, "acceptsText": false}],
   "apps": [{"appId": "timer", "title": "Timer"}],
-  "displayMode": "576x288",
   "remoteEnabled": true, "crownClockwiseNext": false,
   "canUnlock": true, "mirrorAssistant": true,
   "assistantAvailable": true
@@ -73,8 +72,7 @@ dashboard state, re-sent whenever it changes (and at least every 30 s):
 visible even though the BLE session remains available.
 
 `protocol` is reserved for incompatible revisions of this format (nothing
-checks it yet); `displayMode` mirrors the phone's Display > Display mode and
-is what the `display-mode` command changes. `crownClockwiseNext` mirrors the
+checks it yet). `crownClockwiseNext` mirrors the
 on-glasses Settings > Watch toggle; when false (the default), clockwise crown
 rotation sends previous/up, and when true it sends next/down.
 

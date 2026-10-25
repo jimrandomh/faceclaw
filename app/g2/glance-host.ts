@@ -12,7 +12,7 @@ import { prepareFrameDraws } from "../graphics/glyph-wire";
 import { flattenPlanesWithDraws, planesFingerprint, type Plane } from "../graphics/plane";
 import * as frameTimings from "../native/frame-timings";
 import { type DisplayTarget } from "../native/preview-display";
-import { minWindowTop } from "../ui/shell/geometry";
+import { minWindowTop, type ScreenRect } from "../ui/shell/geometry";
 import { beginRenderPass, endRenderPass } from "../util/render-freshness";
 import { type GlanceBoardInstance, type GlanceboardProvider } from "../apps/app-definition";
 import { GLANCE_HIDDEN, glanceEventForGesture, reduceGlance, type GlanceEvent, type GlanceState } from "./glance-state";
@@ -59,11 +59,18 @@ export class GlanceHost {
   private rendering = false;
   private renderPending = false;
   private nextRenderWantsFreshData = false;
+  /** Where the last render put the board on screen. */
+  private boardRect: ScreenRect | null = null;
 
   constructor(private readonly options: GlanceHostOptions) {}
 
   isVisible(): boolean {
     return this.state.visible;
+  }
+
+  /** The board's area of the screen while it shows (for the phone mirror's Scaled preview), else null. */
+  screenRect(): ScreenRect | null {
+    return this.state.visible ? this.boardRect : null;
   }
 
   /** Whether sleep-time gestures should reach the board at all. */
@@ -249,6 +256,7 @@ export class GlanceHost {
           const x = Math.max(0, ((G2_LENS_WIDTH - boardImage.width) / 2) | 0);
           const y = Math.max(0, Math.min(G2_LENS_HEIGHT - boardImage.height, minWindowTop()));
           boardImage.composeInto(full, x, y);
+          this.boardRect = { x, y, width: boardImage.width, height: boardImage.height };
           return full;
         }),
       );

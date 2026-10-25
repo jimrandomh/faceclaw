@@ -4,6 +4,7 @@ interface FaceclawMediaControllerListener {
     /** All observed session owners, before filtering or choosing the active player. */
     fun onSessionAppsChanged(appsJson: String?): Unit
 
+    /** artVersion changes whenever the current item's album art may have changed. */
     fun onStateChange(
         playbackState: String?,
         packageName: String?,
@@ -19,5 +20,6 @@ interface FaceclawMediaControllerListener {
         canSkipPrevious: Boolean,
         accessEnabled: Boolean,
         status: String?,
+        artVersion: Int,
     ): Unit
 }

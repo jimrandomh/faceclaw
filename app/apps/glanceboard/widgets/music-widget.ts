@@ -2,6 +2,8 @@ import { GrayImage } from "../../../graphics/image";
 import { renderIcon } from "../../../graphics/icons";
 import { truncateText } from "../../../graphics/textwrap";
 import { mediaControllerBridge, type MediaControllerState } from "../../../native/media-controller";
+import { ConfigSettingBoolean, onAnySettingChanged, toggleSettingMenuItem } from "../../../ui/dashboard-settings";
+import { type MenuItem } from "../../../ui/menu";
 import { clamp } from "../../../util/numeric-util";
 import { glanceFont } from "../glance-font";
 import { type GlanceWidget } from "../widget";
@@ -36,20 +38,37 @@ function idleNoteImage(): GrayImage | null {
   return note;
 }
 const ART_X = PAD;
+const ART_TEXT_GAP = 12;
 const PROGRESS_BAR_HEIGHT = 5;
 
+export const musicShowAlbumArtSetting = new ConfigSettingBoolean({
+  id: "glanceboard-music-show-album-art",
+  label: "Show album art",
+  storageKey: "glanceboard.music.showAlbumArt",
+  defaultValue: true,
+  description:
+    "Show the album art beside the track details. When off, the title, artist, album and progress bar use the full width of the card.",
+});
+
+/** The music card's submenu in Glanceboard > Settings. */
+export function musicSettingsMenuItems(): MenuItem[] {
+  return [toggleSettingMenuItem(musicShowAlbumArtSetting)];
+}
+
 /**
- * Now playing: album art, title/artist/album and a progress bar for the
- * active Android media session, the Music app's header at card size. The
- * media bridge runs for the whole session; the widget subscribes and ticks
- * once a second only while something is playing.
+ * Now playing: album art (unless turned off), title/artist/album and a
+ * progress bar for the active media session (Apple Music on iOS), the Music
+ * app's header at card size. The media bridge runs for the whole session; the
+ * widget subscribes and ticks once a second only while something is playing.
  */
 export class MusicWidget implements GlanceWidget {
   private media: MediaControllerState = mediaControllerBridge.snapshot();
   private unsubscribe: (() => void) | null = null;
+  private unsubscribeSettings: (() => void) | null = null;
   private progressTimer: ReturnType<typeof setInterval> | null = null;
   private art: GrayImage | null = null;
-  private artKey = "";
+  /** The artVersion `art` was fetched for; -1 = not fetched yet. */
+  private artVersion = -1;
 
   start(requestRender: () => void): void {
     this.unsubscribe = mediaControllerBridge.onStateChange((state) => {
@@ -61,11 +80,14 @@ export class MusicWidget implements GlanceWidget {
       }
       requestRender();
     });
+    this.unsubscribeSettings = onAnySettingChanged(requestRender);
   }
 
   stop(): void {
     this.unsubscribe?.();
     this.unsubscribe = null;
+    this.unsubscribeSettings?.();
+    this.unsubscribeSettings = null;
     this.stopProgressTimer();
   }
 
@@ -83,7 +105,7 @@ export class MusicWidget implements GlanceWidget {
       if (!media.accessEnabled) {
         // Actionable, so it stays as text.
         image.drawText(small, PAD, PAD, "Music", 150);
-        image.drawText(small, PAD, PAD + small.lineHeight + 6, "Notification access needed", 140);
+        image.drawText(small, PAD, PAD + small.lineHeight + 6, mediaControllerBridge.accessLabel, 140);
         return;
       }
       // Nothing playing: a dim note, centred, and nothing else.
@@ -92,10 +114,12 @@ export class MusicWidget implements GlanceWidget {
       return;
     }
 
+    // Without the art, the text and progress bar keep its rows and take its columns.
     const artY = Math.max(PAD, ((image.height - ART_SIZE) / 2) | 0);
-    this.drawArt(image, media, artY);
+    const showArt = musicShowAlbumArtSetting.get();
+    if (showArt) this.drawArt(image, media, artY);
 
-    const textX = ART_X + ART_SIZE + 12;
+    const textX = showArt ? ART_X + ART_SIZE + ART_TEXT_GAP : PAD;
     const textWidth = image.width - textX - PAD;
     let y = artY;
     image.drawText(medium, textX, y, truncateText(medium, media.title || "Unknown title", textWidth), 230);
@@ -129,10 +153,8 @@ export class MusicWidget implements GlanceWidget {
   }
 
   private drawArt(image: GrayImage, media: MediaControllerState, artY: number): void {
-    const key = `${media.packageName}|${media.title}|${media.album}`;
-    // Retry while null: players often publish metadata before the bitmap.
-    if (key !== this.artKey || this.art === null) {
-      this.artKey = key;
+    if (media.artVersion !== this.artVersion) {
+      this.artVersion = media.artVersion;
       this.art = mediaControllerBridge.getAlbumArt(ART_SIZE);
     }
     if (this.art) {

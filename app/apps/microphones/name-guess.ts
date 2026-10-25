@@ -55,7 +55,9 @@ const SELF_PATTERNS = [
   new RegExp(`\\b[Mm]y name is ${NAME}`),
   new RegExp(`\\b[Ii](?:'| a)m ${NAME}`),
   new RegExp(`\\b[Cc]all me ${NAME}`),
-  new RegExp(`\\b[Tt]his is ${NAME} speaking\\b`),
+  // Phone-style: "this is Dana calling about..." is the speaker, not a
+  // third party being introduced.
+  new RegExp(`\\b[Tt]his is ${NAME} (?:[Ss]peaking|[Cc]alling)\\b`),
 ];
 
 const THIRD_PARTY_PATTERNS = [

@@ -1,6 +1,5 @@
 import { type CloudSttOptions, type CloudSttTranscriptEvent, encodeBase64 } from "./cloud-stt";
-
-declare const com: any;
+import { openSocket, type SocketConnection } from "./socket";
 
 /**
  * ElevenLabs realtime speech-to-text over WebSocket.
@@ -22,8 +21,7 @@ export type ElevenLabsTranscriptEvent = CloudSttTranscriptEvent;
 export type ElevenLabsSttOptions = CloudSttOptions;
 
 export class ElevenLabsSttClient {
-  private ws: any = null;
-  private listenerProxy: any = null;
+  private ws: SocketConnection | null = null;
   private open = false;
   private closed = false;
   // PCM that arrived before the socket finished opening; flushed on open.
@@ -36,7 +34,7 @@ export class ElevenLabsSttClient {
   start(): void {
     if (this.closed || this.ws) return;
     const url = `${WS_URL}?model_id=${MODEL_ID}&audio_format=pcm_${SAMPLE_RATE}&commit_strategy=manual`;
-    this.listenerProxy = new com.faceclaw.app.FaceclawWebSocketListener({
+    const listener = {
       onOpen: () => {
         if (this.closed) return;
         this.open = true;
@@ -56,12 +54,12 @@ export class ElevenLabsSttClient {
         if (this.closed) return;
         this.options.onDisconnected?.(`ElevenLabs connection failed: ${String(message)}`);
       },
-    });
+    };
     try {
-      // The API key rides an xi-api-key header, added by FaceclawWebSocket.
+      // The API key rides an xi-api-key header on the handshake.
       const key = this.options.apiKey;
       console.log(`[elevenlabs] connecting; apiKey length=${key.length} prefix=${key.slice(0, 4)}`);
-      this.ws = new com.faceclaw.app.FaceclawWebSocket(url, this.listenerProxy, "xi-api-key", key);
+      this.ws = openSocket(url, listener, { name: "xi-api-key", value: key });
       this.options.onStatus("Connecting to ElevenLabs...");
     } catch (error) {
       this.options.onDisconnected?.(`ElevenLabs connection failed: ${String((error as Error)?.message ?? error)}`);
@@ -106,7 +104,6 @@ export class ElevenLabsSttClient {
       }
       this.ws = null;
     }
-    this.listenerProxy = null;
     this.pendingChunks.length = 0;
   }
 

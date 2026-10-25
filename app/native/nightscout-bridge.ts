@@ -1,5 +1,6 @@
 import { nightscoutApiTokenSetting, nightscoutSiteUrlSetting } from "../ui/dashboard-settings";
 import { fetchTextWithUserAgent } from "../util/http";
+import { bolusKindFromTreatment, type BolusKind } from "../apps/nightscout/missed-bolus-detector";
 
 export type NightscoutPoint = {
   timestampMs: number;
@@ -14,6 +15,8 @@ export type NightscoutCarbEvent = {
 export type NightscoutBolusEvent = {
   timestampMs: number;
   insulin: number;
+  /** Meal, manual, loop-automatic, or unmarked (see BolusKind). */
+  kind: BolusKind;
 };
 
 export type NightscoutBasalEvent = {
@@ -102,10 +105,17 @@ type NightscoutTreatmentResponse = {
   absolute?: unknown;
   rate?: unknown;
   duration?: unknown;
+  automatic?: unknown;
+  isSMB?: unknown;
+  type?: unknown;
+  wizard?: unknown;
 };
 
 const NIGHTSCOUT_REFRESH_MS = 60_000;
-const NIGHTSCOUT_HISTORY_COUNT = 30;
+// Glucose history by time rather than count, so a 1-minute CGM still covers
+// the graphs' 2 hours and the missed-bolus detector's 90-minute lookback.
+const NIGHTSCOUT_HISTORY_WINDOW_MS = 3 * 60 * 60 * 1000;
+const NIGHTSCOUT_HISTORY_MAX_COUNT = 200;
 const NIGHTSCOUT_TREATMENT_LOOKBACK_MS = 3 * 60 * 60 * 1000;
 // The v1 treatments API silently adds `created_at >= now - 4 days` to any
 // query without an explicit date filter (lib/server/query.js enforceDateFilter),
@@ -208,13 +218,17 @@ export class NightscoutBridge {
         this.emit();
         return;
       }
+      const historyStartMs = nowMs - NIGHTSCOUT_HISTORY_WINDOW_MS;
       const treatmentStartIso = new Date(nowMs - NIGHTSCOUT_TREATMENT_LOOKBACK_MS).toISOString();
       const siteChangeStartIso = new Date(nowMs - NIGHTSCOUT_SITE_CHANGE_LOOKBACK_MS).toISOString();
       const tokenQuery = `token=${encodeURIComponent(apiToken)}`;
       const [entries, deviceStatus, status, treatments, siteChanges] = await Promise.all([
         fetchJson<NightscoutEntryResponse[]>(
-          `${siteUrl}/api/v1/entries.json?count=${NIGHTSCOUT_HISTORY_COUNT}&${tokenQuery}`,
-        ),
+          `${siteUrl}/api/v1/entries.json?find%5Bdate%5D%5B%24gte%5D=${historyStartMs}&count=${NIGHTSCOUT_HISTORY_MAX_COUNT}&${tokenQuery}`,
+        ).then(async (recent) => recent?.length
+          ? recent
+          // Nothing in the window: still show the last reading, as stale.
+          : await fetchJson<NightscoutEntryResponse[]>(`${siteUrl}/api/v1/entries.json?count=1&${tokenQuery}`)),
         fetchJson<NightscoutDeviceStatusResponse[]>(
           `${siteUrl}/api/v1/devicestatus.json?count=1&${tokenQuery}`,
         ),
@@ -334,7 +348,7 @@ function parseTreatments(treatments: NightscoutTreatmentResponse[], nowMs: numbe
 
     const insulinValue = firstFiniteNumber(treatment.insulin);
     if (insulinValue !== null && insulinValue > 0) {
-      boluses.push({ timestampMs, insulin: insulinValue });
+      boluses.push({ timestampMs, insulin: insulinValue, kind: bolusKindFromTreatment(treatment) });
     }
 
     const eventType = typeof treatment.eventType === "string" ? treatment.eventType : "";

@@ -160,9 +160,18 @@ export class PreviewDisplayTarget implements DisplayTarget {
     return Promise.resolve("composited");
   }
 
-  getCompositePreview(green = false): ImageSource | null {
+  getCompositePreview(green = false, crop: { x: number; y: number; width: number; height: number } | null = null): ImageSource | null {
     if (!global.isAndroid) return null;
-    const bitmap = this.compositor.getCompositePreviewBitmap(PREVIEW_BRIGHTEN_GAMMA, green);
+    const bitmap = crop
+      ? this.compositor.getCompositePreviewBitmap(
+          PREVIEW_BRIGHTEN_GAMMA,
+          green,
+          Math.round(crop.x),
+          Math.round(crop.y),
+          Math.round(crop.width),
+          Math.round(crop.height),
+        )
+      : this.compositor.getCompositePreviewBitmap(PREVIEW_BRIGHTEN_GAMMA, green);
     return bitmap ? new ImageSource(bitmap) : null;
   }
 

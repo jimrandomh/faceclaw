@@ -17,7 +17,7 @@ function harness() {
     Application: { android: { get foregroundActivity() { return activityPresent ? activity : null; } } },
     android: { content: { Context: { POWER_SERVICE: 'power' } } },
     Date: { now: () => now }, CONNECTED_PREVIEW_MIN_UPDATE_MS: 100, RECORDING_MIN_CAPTURE_MS: 200,
-    previewColorSetting: { get: () => 'green' },
+    previewColorSetting: { get: () => 'green' }, phonePreviewCrop: () => null,
     setTimeout: fn => { const id = timers.size + 1; timers.set(id, fn); return id; },
     clearTimeout: id => timers.delete(id),
   };
@@ -27,6 +27,7 @@ function harness() {
   const instance = new context.exports.Harness();
   Object.assign(instance, { lastConnectedPreviewUpdateAtMs: 0, lastRecordCaptureAtMs: 0,
     phonePreviewVisible: null, previewTrailingTimer: null, screenRecordingActive: false,
+    glassesLocked: false, glance: { screenRect: () => null },
     display: { getCompositePreview: () => { previews++; return {}; }, recordScreenFrame: () => records++ },
     setDisplayPreview() {},
   });

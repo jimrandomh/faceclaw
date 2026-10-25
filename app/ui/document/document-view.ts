@@ -49,9 +49,17 @@ export class DocumentView {
   private scrollLine = 0;
 
   constructor(
-    private readonly width: number,
-    private readonly height: number,
+    private width: number,
+    private height: number,
   ) {}
+
+  /** Re-wrap the document for a region of a new size, keeping the selection in view. */
+  resize(width: number, height: number): void {
+    if (width === this.width && height === this.height) return;
+    this.width = width;
+    this.height = height;
+    if (this.root) this.setDocument(this.root);
+  }
 
   setDocument(root: DocumentRoot): void {
     const previousId = this.selectedNode()?.id;

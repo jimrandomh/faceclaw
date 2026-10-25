@@ -1,0 +1,59 @@
+{
+  "name": "@faceclaw/evenhub-extensions",
+  "version": "0.1.0",
+  "description": "Types and a helper for EvenHub apps to detect Faceclaw and use its extension APIs on the Even Realities G2 glasses.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jimrandomh/faceclaw.git",
+    "directory": "evenhub-extensions"
+  },
+  "homepage": "https://github.com/jimrandomh/faceclaw/tree/main/evenhub-extensions#readme",
+  "bugs": {
+    "url": "https://github.com/jimrandomh/faceclaw/issues"
+  },
+  "keywords": [
+    "evenhub",
+    "even-realities",
+    "g2",
+    "faceclaw",
+    "smart-glasses"
+  ],
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist"
+  ],
+  "sideEffects": false,
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsup",
+    "check": "tsc -p tsconfig.json",
+    "docs": "typedoc",
+    "prepublishOnly": "npm run check && npm run build"
+  },
+  "devDependencies": {
+    "@evenrealities/even_hub_sdk": "^0.0.16",
+    "tsup": "^8.5.1",
+    "typedoc": "^0.28.20",
+    "typedoc-plugin-markdown": "^4.13.1",
+    "typescript": "~5.9.0"
+  }
+}

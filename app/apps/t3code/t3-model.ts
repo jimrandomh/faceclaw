@@ -3,6 +3,7 @@
  * transport and rendering: the shell (projects + thread list) reducer, the
  * per-thread detail reducer, thread status / ordering for the glasses list,
  * one-line summaries of timeline items, and the dispatch-command builders.
+ * (New-thread options and the launch payload are in t3-launch.ts.)
  *
  * Mirrors T3's own client runtime (packages/client-runtime/src/state/
  * shellReducer.ts, orchestrationV2Projection.ts, models.ts; apps/mobile's
@@ -18,10 +19,16 @@ export type T3ProjectShell = {
   id: string;
   title: string;
   workspaceRoot?: string;
+  repositoryIdentity?: { canonicalKey?: string | null } | null;
+  /** Legacy per-project defaults (superseded by settings.projectSettingsOverrides once folded). */
   defaultModelSelection?: T3ModelSelection | null;
+  defaultThreadEnvMode?: string | null;
 };
 
-export type T3ModelSelection = { instanceId: string; model: string; options?: unknown[] };
+/** A provider model option picked for a run ("effort" = "high", "fastMode" = true). */
+export type T3ModelOptionSelection = { id: string; value: string | boolean };
+
+export type T3ModelSelection = { instanceId: string; model: string; options?: T3ModelOptionSelection[] };
 
 export type T3ThreadShell = {
   id: string;
@@ -838,87 +845,4 @@ export function approvalOptions(item: T3TurnItem): T3ApprovalOption[] {
 /** What an option answers a question with: its value if it has one, else its label. */
 export function optionAnswer(option: { label: string; value?: string }): string {
   return option.value ?? option.label;
-}
-
-// ---------------------------------------------------------------------------
-// New threads
-
-export type T3ServerProvider = {
-  instanceId: string;
-  displayName?: string;
-  driver?: string;
-  enabled?: boolean;
-  installed?: boolean;
-  auth?: { status?: string };
-  models?: Array<{ slug: string; name?: string; isDefault?: boolean; isLegacy?: boolean }>;
-};
-
-function providerUsable(provider: T3ServerProvider): boolean {
-  return provider.enabled !== false && provider.installed !== false && provider.auth?.status !== "unauthenticated";
-}
-
-export function providerDisplayName(providers: readonly T3ServerProvider[], instanceId: string | null | undefined): string {
-  if (!instanceId) return "";
-  const provider = providers.find((candidate) => candidate.instanceId === instanceId);
-  return provider?.displayName || provider?.driver || instanceId;
-}
-
-/**
- * Model for a new thread, the way T3's mobile app defaults it: project
- * override, environment default, the project's legacy default, then the
- * first usable provider's default model, then any usable model.
- */
-export function defaultModelSelection(
-  settings: Record<string, any> | null,
-  providers: readonly T3ServerProvider[],
-  project: T3ProjectShell,
-): T3ModelSelection | null {
-  const usable = (selection: T3ModelSelection | null | undefined): selection is T3ModelSelection => {
-    if (!selection?.instanceId || !selection.model) return false;
-    const provider = providers.find((candidate) => candidate.instanceId === selection.instanceId);
-    return provider ? providerUsable(provider) : providers.length === 0;
-  };
-  const candidates = [
-    settings?.projectSettingsOverrides?.[project.id]?.defaultModelSelection,
-    settings?.defaultModelSelection,
-    project.defaultModelSelection,
-  ];
-  for (const candidate of candidates) if (usable(candidate)) return candidate;
-  for (const pickDefault of [true, false]) {
-    for (const provider of providers) {
-      if (!providerUsable(provider)) continue;
-      const model = (provider.models ?? []).find((entry) => !entry.isLegacy && (!pickDefault || entry.isDefault));
-      if (model) return { instanceId: provider.instanceId, model: model.slug };
-    }
-  }
-  return null;
-}
-
-/** First line of a prompt as a provisional title (the server generates a better one). */
-export function provisionalTitle(text: string): string {
-  const collapsed = oneLine(text);
-  if (!collapsed) return "New thread";
-  return collapsed.length > 72 ? `${collapsed.slice(0, 71).trimEnd()}…` : collapsed;
-}
-
-export function launchThreadPayload(
-  project: T3ProjectShell,
-  text: string,
-  modelSelection: T3ModelSelection,
-  settings: Record<string, any> | null,
-): Record<string, unknown> {
-  const runtimeMode = settings?.projectSettingsOverrides?.[project.id]?.defaultRuntimeMode ?? settings?.defaultRuntimeMode ?? "full-access";
-  return {
-    commandId: uuidv4(),
-    creationSource: "mobile",
-    threadId: uuidv4(),
-    projectId: project.id,
-    title: provisionalTitle(text),
-    generateTitle: true,
-    modelSelection,
-    runtimeMode,
-    interactionMode: "default",
-    workspaceStrategy: { type: "root" },
-    initialMessage: { messageId: uuidv4(), text, attachments: [] },
-  };
 }

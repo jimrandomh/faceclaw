@@ -5,7 +5,7 @@ import { enumSettingMenuItem, onAnySettingChanged, toggleSettingMenuItem } from 
 import { uiFontOverridePickerMenuItem } from "../../ui/font-picker";
 import { type InputEvent } from "../../ui/gestures";
 import { type Layer, type LayerContext } from "../../ui/layers";
-import { drawSelectionHighlight, isMenuItemDisabled, MenuLayer, openModalMenu, type MenuItem } from "../../ui/menu";
+import { drawSelectionHighlight, isMenuItemDisabled, MenuLayer, openModalMenu, submenuItem, type MenuItem } from "../../ui/menu";
 import { Menu } from "../../ui/menu-core";
 import { LIST_ROW_TEXT_INSET, lineStep, listRowHeight } from "../../ui/metrics";
 import { createInProcessWindow, type InProcessAppOptions, type InProcessWindow } from "../../ui/shell/in-process-window";
@@ -27,7 +27,8 @@ import {
   type GlanceSlotChoice,
 } from "./glanceboard-settings";
 import { resolveGlanceRegions, slotDividers } from "./layout";
-import { glanceWidgetSpans } from "./widgets";
+import { type GlanceWidgetDefinition } from "./widget";
+import { findGlanceWidget, glanceWidgetSpans } from "./widgets";
 
 export const GLANCEBOARD_WINDOW_ID = "glanceboard";
 export const GLANCEBOARD_SURFACE_ID = "window:glanceboard";
@@ -300,10 +301,14 @@ function openSlotPicker(ctx: LayerContext, slotIndex: number): void {
   openModalMenu(ctx, setting.label, items, Math.max(0, setting.values.indexOf(current)));
 }
 
-/** Settings: layout, sleep gestures, duration, slot lines, widget font, and stereo depth. */
+/**
+ * Settings: layout, sleep gestures, duration, slot lines, widget font, and
+ * stereo depth, then a row per widget on the board for its own settings.
+ */
 function openGlanceSettings(ctx: LayerContext): void {
-  const items: MenuItem[] = [
-    enumSettingMenuItem(glanceLayoutSetting),
+  const items = (): MenuItem[] => [
+    // The layout decides which slots (and so which widgets) are on the board.
+    enumSettingMenuItem(glanceLayoutSetting, { onChange: () => layer.setItems(items()) }),
     enumSettingMenuItem(glanceTapDurationSetting),
     toggleSettingMenuItem(glanceShowOnLongPressSetting),
     toggleSettingMenuItem(glanceShowOnHeadTiltSetting),
@@ -314,8 +319,31 @@ function openGlanceSettings(ctx: LayerContext): void {
         "Typeface for the Glanceboard's widgets. Same as UI font follows the Font setting in Settings > Customization.",
     }),
     enumSettingMenuItem(glanceDepthSetting),
+    ...widgetSettingsMenuItems(),
   ];
-  ctx.stack.push(new MenuLayer("Glanceboard settings", items, pageMenuLayout(ctx.stack.getBaseSize().width)));
+  const layer = new MenuLayer("Glanceboard settings", items(), pageMenuLayout(ctx.stack.getBaseSize().width));
+  ctx.stack.push(layer);
+}
+
+/**
+ * One row per widget on the board, in slot order: a submenu of the widget's
+ * settings, or a disabled row for a widget that has none.
+ */
+function widgetSettingsMenuItems(): MenuItem[] {
+  const widgets = new Set<GlanceWidgetDefinition>();
+  for (const setting of glanceSlotSettings()) {
+    const widget = findGlanceWidget(setting.get());
+    if (widget) widgets.add(widget);
+  }
+  return Array.from(widgets, (widget): MenuItem => {
+    const settingsMenuItems = widget.settingsMenuItems;
+    if (!settingsMenuItems) {
+      return { label: widget.label, description: `${widget.label} has no settings.`, disabled: true, onSelect: () => {} };
+    }
+    return submenuItem(widget.label, (ctx) => {
+      ctx.stack.push(new MenuLayer(`${widget.label} settings`, settingsMenuItems(), pageMenuLayout(ctx.stack.getBaseSize().width)));
+    }, { description: `Settings for the ${widget.label} widget.` });
+  });
 }
 
 /** The live board in the window; any click or double-click returns to the list. */

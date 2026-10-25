@@ -1,4 +1,5 @@
 import { streamAnthropicMessage } from "../native/anthropic";
+import { streamHermesChat } from "../native/hermes";
 import { streamLocalQwen } from "../native/llama";
 import { streamOpenAiResponse } from "../native/openai";
 import type {
@@ -24,12 +25,22 @@ const MAX_ITERATIONS = 8;
 /** The on-phone model is slower per step and unreliable on long tool chains. */
 const MAX_ITERATIONS_LOCAL = 4;
 const MAX_TURN_MS = 2 * 60 * 1000;
+/**
+ * Hermes runs whole multi-tool agent tasks in one request, and dropping the
+ * stream interrupts the run on the server, so its cap is only a backstop. A
+ * dead server is caught sooner: Hermes sends keepalives every 10s, and both
+ * transports fail a stream that goes quiet for 180s.
+ */
+const MAX_TURN_MS_HERMES = 20 * 60 * 1000;
 
 export type DirectTurnOptions = {
   provider: AssistantProvider;
   apiKey: string;
   model: string;
   effort?: "low" | "medium" | "high";
+  /** Hermes: the API root, and the server-side session this conversation maps to. */
+  baseUrl?: string;
+  sessionId?: string;
   system: string;
   /** Owned by the session; this loop appends assistant + tool_result messages. */
   messages: LlmMessage[];
@@ -62,13 +73,14 @@ export class DirectAssistantBackend {
     };
 
     const maxIterations = options.provider === "local" ? MAX_ITERATIONS_LOCAL : MAX_ITERATIONS;
+    const maxTurnMs = options.provider === "hermes" ? MAX_TURN_MS_HERMES : MAX_TURN_MS;
     const runIteration = (iteration: number): void => {
       if (cancelled) return;
       if (iteration >= maxIterations) {
         finishError("Assistant stopped: too many tool steps");
         return;
       }
-      if (Date.now() - startMs > MAX_TURN_MS) {
+      if (Date.now() - startMs > maxTurnMs) {
         finishError("Assistant stopped: turn took too long");
         return;
       }
@@ -79,7 +91,8 @@ export class DirectAssistantBackend {
         system: options.system,
         effort: options.effort,
         messages: options.messages,
-        tools: options.buildTools(),
+        // Hermes runs its own tools; Faceclaw's are not offered to it.
+        tools: options.provider === "hermes" ? [] : options.buildTools(),
         onTextDelta: (delta, textSoFar) => {
           if (cancelled) return;
           options.callbacks.onTextDelta(delta, priorText + textSoFar);
@@ -128,14 +141,16 @@ export class DirectAssistantBackend {
         },
       };
       streamHandle =
-        options.provider === "openai"
+        options.provider === "hermes"
+          ? streamHermesChat({ ...streamOptions, baseUrl: options.baseUrl ?? "", sessionId: options.sessionId ?? "" })
+          : options.provider === "openai"
           ? streamOpenAiResponse(streamOptions)
           : options.provider === "local"
             ? streamLocalQwen(streamOptions)
             : streamAnthropicMessage(streamOptions);
     };
 
-    deadline = setTimeout(() => finishError("Assistant stopped: turn took too long"), MAX_TURN_MS);
+    deadline = setTimeout(() => finishError("Assistant stopped: turn took too long"), maxTurnMs);
     runIteration(0);
 
     return {
