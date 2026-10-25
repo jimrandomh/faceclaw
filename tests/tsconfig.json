@@ -20,6 +20,7 @@
     "../app/apps/terminal/hub-header.ts",
     "../app/g2/ios-peripheral-identity.ts",
     "../app/graphics/image.ts",
+    "../app/graphics/textwrap.ts",
     "../app/graphics/battery.ts",
     "../app/graphics/plane.ts",
     "../app/graphics/shell-scene.ts",

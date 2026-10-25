@@ -11,6 +11,11 @@ export interface WrapFont {
 
 export type WrapTextOptions = {
   preserveLeadingWhitespace?: boolean;
+  /**
+   * A word too wide for a line of its own starts on the current line and is
+   * split at the width, rather than first being pushed to a line of its own.
+   * Words that fit on a line still wrap whole.
+   */
   breakLongWords?: boolean;
 };
 
@@ -89,17 +94,20 @@ function wrapParagraph(font: WrapFont, paragraph: string, targetWidth: number, o
 
   while (start < paragraph.length) {
     let best = -1;
+    let overflow = -1;
     for (const candidate of wrapOffsets) {
       if (candidate <= start) continue;
       if (measureSpan(widths, candidate) - measureSpan(widths, start) <= targetWidth) {
         best = candidate;
         continue;
       }
+      overflow = candidate;
       break;
     }
 
     const splitOffset = furthestFittingOffset(widths, start, targetWidth);
-    if (opts.breakLongWords && splitOffset > start && (best < 0 || splitOffset > trimEndOffset(paragraph, best))) {
+    if (opts.breakLongWords && splitOffset > start && splitOffset > best
+      && (best < 0 || (overflow >= 0 && wordWidth(paragraph, widths, best, overflow) > targetWidth))) {
       best = splitOffset;
     }
     if (best < 0) {
@@ -155,6 +163,11 @@ function nextOffset(widths: Map<number, number>, start: number): number {
 
 function measureSpan(widths: Map<number, number>, offset: number): number {
   return widths.get(offset) ?? 0;
+}
+
+/** Width of the word between two wrap offsets, without surrounding whitespace. */
+function wordWidth(text: string, widths: Map<number, number>, from: number, to: number): number {
+  return measureSpan(widths, trimEndOffset(text, to)) - measureSpan(widths, skipLeadingWhitespace(text, from));
 }
 
 function skipLeadingWhitespace(text: string, offset: number): number {
