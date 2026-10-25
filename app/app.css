@@ -154,6 +154,60 @@ Button.-primary {
   color: #222222;
 }
 
+/* Keyboard-input panel: tighter than the setting editor, with the text
+ * box's edges in line with the title and the one-strip buttons (the theme's
+ * 16dp TextView side margins doubled the inset). */
+.system-name-modal.keyboard-input-panel {
+  margin: 8;
+  padding: 8 16 12 16;
+}
+
+.keyboard-input-panel TextView {
+  margin: 4 0 0 0;
+  padding: 6;
+}
+
+/* Glasses-only: the field stays focused for the IME but is an invisible
+ * sliver; the hint line takes its place. */
+.keyboard-input-panel TextView.keyboard-input-field-hidden {
+  opacity: 0;
+  height: 1;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+}
+
+.system-name-modal Label.keyboard-input-hidden-hint,
+.ns-dark .system-name-modal Label.keyboard-input-hidden-hint {
+  color: #666666;
+  padding: 8 0;
+}
+
+.keyboard-input-buttons {
+  margin-top: 8;
+}
+
+.keyboard-input-panel Button,
+.keyboard-input-panel Button.-primary {
+  margin: 0;
+  font-size: 16;
+}
+
+.keyboard-input-panel Button.keyboard-input-gap {
+  margin-left: 8;
+}
+
+/* Flat icon buttons in the panel's title row (the modal stays light in dark
+ * mode, so one tint). */
+.panel-icon-button {
+  padding: 6 8;
+}
+
+.panel-icon {
+  height: 20;
+  tint-color: #333333;
+}
+
 /* Modal behind the action bar's warning triangle: the problem-status warnings
  * that used to sit inline on the main page, each with its fix-it button.
  * The width is set from the view model (near-full-width on phones, capped on

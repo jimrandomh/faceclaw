@@ -1,4 +1,5 @@
 import { RemoteControlsViewModel } from './remote-controls-view-model';
+import { KeyboardInputViewModel } from './keyboard-input-view-model';
 import { BleBandwidthMeter } from "./ble-bandwidth-meter";
 import {
   Application,
@@ -52,8 +53,6 @@ export class MainViewModel extends RemoteControlsViewModel {
   private _activeTextEditorToggleValue = false;
   private _activeTextEditorToggleVisible = false;
   private _keyboardInputActive = false;
-  private _keyboardInputTargets: ReadonlyArray<{ id: string; label: string }> = [];
-  private _keyboardInputText = "";
   private _evenAppConflictMessage = "";
   private _evenAppConflictWarningVisible = false;
   private _firmwareWarningMessage = "";
@@ -103,8 +102,8 @@ export class MainViewModel extends RemoteControlsViewModel {
       this.activeTextEditorToggleLabel = snapshot.activeTextEditorToggleLabel;
       this.activeTextEditorToggleValue = snapshot.activeTextEditorToggleValue;
       this.activeTextEditorToggleVisible = snapshot.activeTextEditorToggleVisible;
-      // Targets before active: the panel's buttons are labelled when it appears.
-      this.keyboardInputTargets = snapshot.keyboardInputTargets;
+      // Session before active: the panel is filled in when it appears.
+      this.keyboardInputModel.setSession(dashboardController.keyboardInputSession);
       this.keyboardInputActive = snapshot.keyboardInputActive;
       this.evenAppConflictMessage = snapshot.evenAppConflictMessage;
       this.evenAppConflictWarningVisible = snapshot.evenAppConflictWarningVisible;
@@ -494,11 +493,13 @@ export class MainViewModel extends RemoteControlsViewModel {
 
   // ---- keyboard-input panel (the keyboard button beside the mic button) ----
   //
-  // The dialog lives on the glasses (ui/shell/keyboard-input.ts); this panel
-  // is the phone's end of it: the text field the IME types into and a send
-  // button per destination. The field's text is the panel's own state, never
-  // echoed back from the controller (see setActiveTextSettingValue for why);
-  // it is cleared whenever a dialog opens or closes.
+  // The dialog lives on the glasses (ui/shell/keyboard-input.ts); the panel
+  // is the phone's end of it, bound to keyboardInputModel (shared with iOS).
+  // Its text is the panel's own state, never echoed back from the controller
+  // (see setActiveTextSettingValue for why); it is cleared whenever a dialog
+  // opens or closes.
+
+  readonly keyboardInputModel = new KeyboardInputViewModel();
 
   get keyboardInputActive(): boolean {
     return this._keyboardInputActive;
@@ -507,76 +508,12 @@ export class MainViewModel extends RemoteControlsViewModel {
   set keyboardInputActive(value: boolean) {
     if (this._keyboardInputActive === value) return;
     this._keyboardInputActive = value;
-    this.keyboardInputText = "";
     this.notifyPropertyChange("keyboardInputActive", value);
-    this.notifyPropertyChange("keyboardInputVisibility", this.keyboardInputVisibility);
     this.notifyPropertyChange("controlsVisibility", this.controlsVisibility);
-  }
-
-  get keyboardInputVisibility(): "visible" | "collapse" {
-    return this._keyboardInputActive ? "visible" : "collapse";
-  }
-
-  get keyboardInputText(): string {
-    return this._keyboardInputText;
-  }
-
-  set keyboardInputText(value: string) {
-    if (this._keyboardInputText === value) return;
-    this._keyboardInputText = value;
-    this.notifyPropertyChange("keyboardInputText", value);
-  }
-
-  set keyboardInputTargets(value: ReadonlyArray<{ id: string; label: string }>) {
-    this._keyboardInputTargets = value;
-    this.notifyPropertyChange("keyboardInputPrimaryTargetLabel", this.keyboardInputPrimaryTargetLabel);
-    this.notifyPropertyChange("keyboardInputPrimaryTargetVisibility", this.keyboardInputPrimaryTargetVisibility);
-    this.notifyPropertyChange("keyboardInputSecondaryTargetLabel", this.keyboardInputSecondaryTargetLabel);
-    this.notifyPropertyChange("keyboardInputSecondaryTargetVisibility", this.keyboardInputSecondaryTargetVisibility);
-  }
-
-  // The glasses menu has at most two destinations (assistant, app), so the
-  // panel has a fixed pair of buttons rather than a repeater.
-  get keyboardInputPrimaryTargetLabel(): string {
-    return this._keyboardInputTargets[0]?.label ?? "";
-  }
-
-  get keyboardInputPrimaryTargetVisibility(): "visible" | "collapse" {
-    return this._keyboardInputTargets[0] ? "visible" : "collapse";
-  }
-
-  get keyboardInputSecondaryTargetLabel(): string {
-    return this._keyboardInputTargets[1]?.label ?? "";
-  }
-
-  get keyboardInputSecondaryTargetVisibility(): "visible" | "collapse" {
-    return this._keyboardInputTargets[1] ? "visible" : "collapse";
   }
 
   onKeyboardTap(): void {
     dashboardController.startKeyboardInput();
-  }
-
-  onKeyboardInputTextChange(args: { value?: string; object?: { text?: string } }): void {
-    const text = args.object?.text ?? args.value ?? "";
-    // Track the draft so closing the dialog emits a clear even when the
-    // binding hasn't updated the model. Avoid echoing edits into the IME.
-    this._keyboardInputText = text;
-    dashboardController.setKeyboardInputText(text);
-  }
-
-  onKeyboardInputPrimarySendTap(): void {
-    const target = this._keyboardInputTargets[0];
-    if (target) dashboardController.sendKeyboardInput(target.id);
-  }
-
-  onKeyboardInputSecondarySendTap(): void {
-    const target = this._keyboardInputTargets[1];
-    if (target) dashboardController.sendKeyboardInput(target.id);
-  }
-
-  onKeyboardInputDiscardTap(): void {
-    dashboardController.discardKeyboardInput();
   }
 
   get evenAppConflictMessage(): string {

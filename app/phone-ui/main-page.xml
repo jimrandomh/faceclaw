@@ -182,7 +182,8 @@
              the phone's end of the keyboard dialog on the glasses
              (ui/shell/keyboard-input.ts). Same placement and collapsing rules
              as the setting editor above. Enter inserts a newline; the send
-             buttons pick a destination directly. -->
-        <rc:keyboard-input-panel />
+             buttons pick a destination directly. Bound to its own model
+             (KeyboardInputViewModel, shared with iOS). -->
+        <rc:keyboard-input-panel bindingContext="{{ keyboardInputModel }}" />
     </GridLayout>
 </Page>
