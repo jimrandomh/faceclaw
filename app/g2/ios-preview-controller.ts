@@ -443,6 +443,7 @@ export class IosPreviewController {
       iosVoiceInput.handleSessionEnded('Glasses locked. Unlock your phone to start voice input again.',
         'Glasses locked. Transcription resumes when you unlock your phone.')
     } else this.syncContinuousCapture()
+    this.syncRawMicSession()
     void (async () => {
       await this.displayReady
       const display = this.display
@@ -745,6 +746,8 @@ export class IosPreviewController {
     this.pushBrightness()
     this.maybeLaunchOnboarding(this.state)
     if (this.state.phase !== 'connected' && this.state.phase !== 'connecting') this.glassesWorn = null
+    // Unbound first, so a speech capture ending below doesn't hand the mic back to the dead session.
+    this.syncRawMicSession()
     if (this.state.phase !== 'connected') iosVoiceInput.handleSessionEnded()
     this.syncContinuousSession()
     this.pushBatteryLevels()
@@ -952,6 +955,8 @@ export class IosPreviewController {
     for (const off of this.sessionOffs.splice(0)) off()
     this.notifications = null
     this.communicator = null
+    // Releases an EvenHub app's mic before the session closes.
+    this.syncRawMicSession()
     this.glance.reset()
     await communicator.close().catch(error => this.logBluetooth(`Close: ${String(error)}`))
   }
@@ -1064,6 +1069,15 @@ export class IosPreviewController {
       await iosVoiceInput.startPhoneCapture(voice, log, false, true)
     }
     if (current()) this.syncContinuousClaim()
+  }
+  /**
+   * EvenHub apps' mic (the bridge's raw tap) listens through a connected,
+   * unlocked glasses session, as speech capture does; the EvenHub mic router
+   * decides which app hears it and when.
+   */
+  private syncRawMicSession(): void {
+    const ready = this.state.phase === 'connected' && !this.glassesLocked
+    iosVoiceInput.setRawSession(ready ? this.communicator : null, message => this.logBluetooth(message))
   }
   /** Other mic users stand down while continuous capture really holds the mic, not merely while a window wants it. */
   private syncContinuousClaim(): void {

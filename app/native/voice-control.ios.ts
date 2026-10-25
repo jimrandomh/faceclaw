@@ -11,6 +11,9 @@ export type IosMicrophoneSession = {
 }
 /** How long a cloud provider gets, after the last audio, to send its final transcript. */
 const CLOUD_FINAL_TIMEOUT_MS = 5000
+/** Retries of a failed raw-tap start (a new session's display path is usually still coming up). */
+const RAW_RETRY_MS = 3000
+const RAW_RETRY_LIMIT = 5
 
 /** iOS implementation of the shared voice dialog's event bridge. Audio comes
  * from the glasses when connected, or the default phone input in preview mode,
@@ -53,6 +56,21 @@ export class IosVoiceControlBridge {
   // and it is created by the first audio, so a failed start leaves no file.
   private recordingName = ''
   private recorder: WavRecorder | null = null
+  // Raw-PCM tap (EvenHub mic apps): decode-only glasses audio, broadcast to
+  // rawListeners while any owner wants it, from the session setRawSession
+  // bound. It shares the one glasses mic with speech capture, which preempts
+  // it; it resumes on its own once that capture has ended.
+  private rawNative: any = null
+  private readonly rawListeners = new Set<(pcm: Uint8Array) => void>()
+  private readonly rawOwners = new Set<string>()
+  private rawSession: IosMicrophoneSession | null = null
+  // The session the tap enabled the mic on, while it is starting or live.
+  private rawHeld: IosMicrophoneSession | null = null
+  private rawLive = false
+  private rawGeneration = 0
+  private rawFailures = 0
+  private rawRetryTimer: ReturnType<typeof setTimeout> | null = null
+  private rawLog: (message: string) => void = () => {}
 
   onStatus(listener: (state: VoiceControlState) => void): () => void {
     this.statuses.add(listener); listener({ status: this.status, listening: this.capturing, detail: '' }); return () => { this.statuses.delete(listener) }
@@ -62,7 +80,7 @@ export class IosVoiceControlBridge {
   }
   onSpeechEnd(listener: () => void): () => void { this.ends.add(listener); return () => { this.ends.delete(listener) } }
   onSpeechPause(_listener: () => void): () => void { return () => {} }
-  /** The mic level (see pcmLevel) of each PCM chunk; only cloud captures supply PCM. */
+  /** The mic level (see pcmLevel) of each PCM chunk; only cloud captures and the raw tap supply PCM. */
   onMicLevel(listener: (level: number) => void): () => void { this.levels.add(listener); return () => { this.levels.delete(listener) } }
   private setStatus(status: string): void { this.status = status; for (const fn of [...this.statuses]) fn({ status, listening: this.capturing, detail: '' }) }
   private ensureNative(): any {
@@ -102,6 +120,8 @@ export class IosVoiceControlBridge {
   get statusText(): string { return this.status }
   async startGlassesCapture(session: IosMicrophoneSession, voice: VoiceProviderSelection, log: (message: string) => void, endpointing = false, continuous = false): Promise<void> {
     if (this.joinsContinuous(continuous)) return
+    // Speech capture preempts the raw tap; its mic release is queued before this enable, which wins.
+    this.endRawTap()
     this.stop()
     const generation = ++this.generation
     this.continuous = continuous
@@ -131,6 +151,7 @@ export class IosVoiceControlBridge {
   }
   async startPhoneCapture(voice: VoiceProviderSelection, log: (message: string) => void, endpointing = false, continuous = false): Promise<void> {
     if (this.joinsContinuous(continuous)) return
+    this.endRawTap()
     this.stop()
     this.continuous = continuous
     this.log = log; this.source = 'phone'; this.capturing = true
@@ -228,6 +249,100 @@ export class IosVoiceControlBridge {
     if (this.continuous) { if (this.capturing) void this.finalizeCapture(continuousMessage); return }
     this.stop(); this.setStatus(message); this.emitEnd()
   }
+  /** Subscribe to the raw tap's decoded glasses PCM (16 kHz mono S16LE). */
+  onRawPcm(listener: (pcm: Uint8Array) => void): () => void {
+    this.rawListeners.add(listener); return () => { this.rawListeners.delete(listener) }
+  }
+  /**
+   * The glasses session the raw tap captures from (connected and unlocked),
+   * or null. Owners outlive a change: the tap moves to the next session.
+   */
+  setRawSession(session: IosMicrophoneSession | null, log: (message: string) => void): void {
+    this.rawLog = log
+    if (session === this.rawSession) return
+    this.endRawTap()
+    this.rawSession = session; this.rawFailures = 0
+    this.syncRawTap()
+  }
+  /**
+   * Start the decode-only raw tap on behalf of `owner`; the communicator is
+   * the one setRawSession bound, not `options.communicator`. False while
+   * speech capture holds the mic or no session is bound: the owner stays
+   * registered and the tap starts once it can. Idempotent while running.
+   */
+  startRawCapture(options: { communicator: any; owner: string }): boolean {
+    if (!this.rawOwners.has(options.owner)) { this.rawOwners.add(options.owner); this.rawFailures = 0 }
+    this.syncRawTap()
+    return this.rawHeld !== null
+  }
+  /** `owner` no longer wants the raw tap; it stops once no owner does. */
+  stopRawCapture(owner: string): void {
+    if (this.rawOwners.delete(owner)) this.syncRawTap()
+  }
+  /** Whether the raw tap's glasses mic enable went through and still holds. */
+  isRawCaptureLive(): boolean { return this.rawLive }
+  /** Run the tap while an owner wants it, a session is bound, and no speech capture holds the mic. */
+  private syncRawTap(): void {
+    const session = this.rawSession
+    if (!session || !this.rawOwners.size || this.capturing || this.finalizing) { this.endRawTap(); return }
+    if (this.rawHeld || this.rawRetryTimer !== null) return
+    void this.beginRawTap(session)
+  }
+  private async beginRawTap(session: IosMicrophoneSession): Promise<void> {
+    const generation = ++this.rawGeneration
+    const native = this.ensureRawNative()
+    const error = String(native.startPcmCaptureWithEndpointingPhone(false, false) ?? '')
+    if (error) { this.failRawTap(error); return }
+    this.rawHeld = session
+    try {
+      await session.setMicrophone(true, packet => {
+        if (generation !== this.rawGeneration) return
+        const copy = new Uint8Array(packet)
+        native.acceptPacket(NSData.dataWithBytesLength(interop.handleof(copy.buffer), copy.byteLength))
+      })
+      if (generation !== this.rawGeneration) return
+      this.rawLive = true
+      this.rawLog('EvenHub mic: glasses microphone enabled')
+    } catch (failure) {
+      if (generation === this.rawGeneration) this.failRawTap(failure instanceof Error ? failure.message : String(failure))
+    }
+  }
+  private ensureRawNative(): any {
+    if (!this.rawNative) {
+      this.rawNative = FaceclawSpeech.new()
+      // A PCM capture only ends on its own when decoding failed or fell behind.
+      this.rawNative.eventHandler = (json: string) => {
+        const event = JSON.parse(json)
+        if (event.kind === 'ended' && this.rawHeld) this.failRawTap(String(event.message ?? 'audio ended'))
+      }
+      this.rawNative.pcmHandler = (pcm: NSData) => {
+        // Copied: bufferFromData doesn't retain pcm.
+        const bytes = new Uint8Array(interop.bufferFromData(pcm)).slice()
+        // Audio is flowing, so a later failure is a new problem worth retrying.
+        this.rawFailures = 0
+        for (const fn of [...this.rawListeners]) fn(bytes)
+        if (this.levels.size) { const level = pcmLevel(bytes); for (const fn of [...this.levels]) fn(level) }
+      }
+    }
+    return this.rawNative
+  }
+  /** Drop the tap and retry it shortly, a bounded number of times. */
+  private failRawTap(message: string): void {
+    this.rawLog(`EvenHub mic: ${message}`)
+    this.endRawTap()
+    if (++this.rawFailures >= RAW_RETRY_LIMIT) return
+    this.rawRetryTimer = setTimeout(() => { this.rawRetryTimer = null; this.syncRawTap() }, RAW_RETRY_MS)
+  }
+  /** Stop the tap; owners stay. Releases the mic only if the tap enabled it. */
+  private endRawTap(): void {
+    ++this.rawGeneration
+    if (this.rawRetryTimer !== null) clearTimeout(this.rawRetryTimer)
+    this.rawRetryTimer = null
+    this.rawLive = false
+    this.rawNative?.cancel()
+    const session = this.rawHeld; this.rawHeld = null
+    if (session) void session.setMicrophone(false).catch(error => this.rawLog(`EvenHub mic cleanup: ${error}`))
+  }
   private clearAudioTimer(): void { if (this.audioTimer !== null) clearTimeout(this.audioTimer); this.audioTimer = null }
   private releaseMicrophone(): void {
     const session = this.session; this.session = null
@@ -261,7 +376,11 @@ export class IosVoiceControlBridge {
     // In continuous capture, earlier pause segments (paragraphBreakAfter) may still arrive.
     if (event.isFinal && this.cloudEndStatus !== null && !(this.continuous && event.paragraphBreakAfter)) this.completeCloud()
   }
-  private emitEnd(): void { for (const fn of [...this.ends]) fn() }
+  private emitEnd(): void {
+    for (const fn of [...this.ends]) fn()
+    // After the listeners: one may start the next capture, which keeps the mic.
+    this.syncRawTap()
+  }
   private finishCompletion(): void {
     const resolve = this.resolveCompletion; this.resolveCompletion = null; resolve?.()
   }

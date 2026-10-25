@@ -16,6 +16,8 @@
 * Android notification icons that are full-color pictures rather than shapes no longer show as blank blocks
 * Fix missing R1 ring battery indicator on iOS
 * Fix a bug on iOS that would cause corrupted installs of EvenHub apps
+* EvenHub apps can use the glasses microphone on iOS (such as Chess's voice moves, which said "Mic unavailable")
+* EvenHub apps on iOS should now be able to use the mic
 
 ## 0.8.4 - 2026-10-17
 
