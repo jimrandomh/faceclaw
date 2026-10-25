@@ -15,6 +15,7 @@
 * Inverting Android notification-icons to indicate selectionis now gamma-correct
 * Android notification icons that are full-color pictures rather than shapes no longer show as blank blocks
 * Fix missing R1 ring battery indicator on iOS
+* Fix a bug on iOS that would cause corrupted installs of EvenHub apps
 
 ## 0.8.4 - 2026-10-17
 

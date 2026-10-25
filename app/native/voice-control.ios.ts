@@ -70,7 +70,8 @@ export class IosVoiceControlBridge {
       this.native = FaceclawSpeech.new()
       this.native.eventHandler = (json: string) => this.receive(JSON.parse(json))
       this.native.pcmHandler = (pcm: NSData) => {
-        const bytes = new Uint8Array(interop.bufferFromData(pcm))
+        // Copied: bufferFromData doesn't retain pcm, and STT clients queue chunks.
+        const bytes = new Uint8Array(interop.bufferFromData(pcm)).slice()
         this.cloud?.acceptPcm(bytes)
         if (this.continuous) this.record(bytes)
         if (this.levels.size) { const level = pcmLevel(bytes); for (const fn of [...this.levels]) fn(level) }

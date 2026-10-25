@@ -4,7 +4,7 @@ import { acceptInput, resetRingInputFilter } from "../ui/input-monitor";
 import { bindIosNotifications, iosNotificationsChanged, onIosNotificationPopup, readActiveNotifications } from '../native/notification-icons.ios'
 import { shouldShowNotificationOnGlasses } from '../native/notification-sources'
 import { launcherEntries } from '../apps/launcher'
-import { getInstalledEvenHubAppById, installedEvenHubPackageId, uninstallEvenHubPackage } from '../apps/evenhub/installed-apps'
+import { discardZeroedEvenHubPackage, getInstalledEvenHubAppById, installedEvenHubPackageId, uninstallEvenHubPackage } from '../apps/evenhub/installed-apps'
 import { isInstalledPackagePresent } from '../apps/evenhub/updates'
 import { openEvenHubStoreForPackage } from '../apps/evenhub'
 import { launchInstalledPackage, closeRunningPackage, onPhoneShownChanged, phoneUiButton, showOnPhone, type PhoneUiButton } from '../apps/evenhub/manager'
@@ -625,9 +625,15 @@ export class IosPreviewController {
       const host = ALL_APPS.find(candidate => candidate.appId === 'evenhub')
       if (installed && host) {
         try {
-          if (isInstalledPackagePresent(installed.packageId))
-            await launchInstalledPackage(this.buildAppContext({ ...host, appId: id }), installed)
-          else await openEvenHubStoreForPackage(this.buildAppContext(host), installed)
+          if (isInstalledPackagePresent(installed.packageId)) {
+            try { await launchInstalledPackage(this.buildAppContext({ ...host, appId: id }), installed); return }
+            catch (error) {
+              // Checked only after a failure: it reads the whole package again.
+              if (!discardZeroedEvenHubPackage(installed.packageId)) throw error
+              console.log(`[ios-preview] Discarded zeroed package for ${installed.packageId}; opening store page`)
+            }
+          }
+          await openEvenHubStoreForPackage(this.buildAppContext(host), installed)
         }
         catch (error) { this.fail(error) }
       }

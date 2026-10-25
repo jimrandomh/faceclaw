@@ -71,6 +71,30 @@ test('iOS installed apps launch, recover missing packages, and close before unin
   assert.deepEqual(calls, [['launch', 'installed', 'test.app'], ['reinstall', 'test.app'], ['close', 'test.app'], ['uninstall', 'test.app']]);
 });
 
+test('iOS launch failures on a zeroed package fall back to the store page; other failures still report', async () => {
+  const calls = [], failures = [], app = { packageId: 'test.app', name: 'Test' };
+  let zeroed = true;
+  const modules = {
+    "../ui/input-monitor": load("app/ui/input-monitor.ts", {}),
+    '../apps/all-apps': { ALL_APPS: [{ appId: 'evenhub' }] },
+    '../apps/evenhub/installed-apps': { getInstalledEvenHubAppById: () => app,
+      discardZeroedEvenHubPackage: id => { calls.push(['discard', id]); return zeroed; } },
+    '../apps/evenhub/updates': { isInstalledPackagePresent: () => true },
+    '../apps/evenhub': { openEvenHubStoreForPackage: (_ctx, value) => calls.push(['reinstall', value.packageId]) },
+    '../apps/evenhub/manager': { launchInstalledPackage: async () => { calls.push(['launch']); throw new Error('Could not read the EHPK manifest.'); } },
+  };
+  const { IosPreviewController } = load('app/g2/ios-preview-controller.ts', { require: id => modules[id] ?? {} });
+  const host = Object.create(IosPreviewController.prototype);
+  host.buildAppContext = app => app; host.fail = error => failures.push(error.message); host.requestShellRender = () => {};
+  await host.launchApp('installed');
+  assert.deepEqual(calls, [['launch'], ['discard', 'test.app'], ['reinstall', 'test.app']]);
+  assert.deepEqual(failures, []);
+  calls.length = 0; zeroed = false;
+  await host.launchApp('installed');
+  assert.deepEqual(calls, [['launch'], ['discard', 'test.app']]);
+  assert.deepEqual(failures, ['Could not read the EHPK manifest.']);
+});
+
 test('iOS settings prompts honor password input and report cancellation', async () => {
   const prompts = [], writes = [];
   const { IosPreviewController } = load('app/g2/ios-preview-controller.ts', { require: id => id === '@nativescript/core' ? {
