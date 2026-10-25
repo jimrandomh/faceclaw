@@ -229,6 +229,7 @@ test('iOS assistant calendar tool awaits events, reports denied access and failu
   const { registerSystemTools } = load('app/assistant/system-tools.ts', {
     '../native/calendar': f.api, '../native/calendar-permissions': f.permissions,
     '../native/media-controller': { mediaControllerBridge: { start: async () => {} } },
+    '../native/spotify': { spotifyService: () => null },
     '../native/notification-icons': {}, '../ui/shell/shell': {}, './tool-registry': {},
   }, { global: { isIOS: true } });
   registerSystemTools({ registerSystemTool: (definition, handler) => registered.set(definition.name, handler) });

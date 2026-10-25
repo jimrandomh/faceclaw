@@ -8,8 +8,10 @@ import { Menu, type MenuDrawArgs } from "../../ui/menu-core";
 import { centeredTextY, lineStep, tightRowHeight } from "../../ui/metrics";
 import { mediaControllerBridge, type MediaControllerState, type MediaQueueItem } from "../../native/media-controller";
 import { mediaBrowserBridge, type MediaBrowserApp } from "../../native/media-browser";
+import { spotifyService } from "../../native/spotify";
 import { MediaBrowseLayer } from "./media-browse";
 import { MusicSettingsLayer } from "./music-settings";
+import { spotifyMenuItem } from "./spotify-menu";
 import { Layer, type LayerContext, type PaintBelow } from "../../ui/layers";
 import { createInProcessWindow, YieldAtRootLayer, type InProcessAppOptions, type InProcessWindow } from "../../ui/shell/in-process-window";
 
@@ -33,6 +35,8 @@ const QUEUE_X = 204;
 /** Horizontal inset of row text from its selection box. */
 const LIST_TEXT_INSET = 6;
 const PLAYLIST_ACTION_INDEX = 1;
+/** Minimum room for the dim artist after a queue row's title; less and it is left off. */
+const QUEUE_SUBTITLE_MIN_WIDTH = 40;
 
 type MusicAction =
   | { kind: "play-pause"; label: string; enabled: boolean }
@@ -40,14 +44,17 @@ type MusicAction =
   | { kind: "next"; label: string; enabled: boolean }
   | { kind: "volume"; label: string; enabled: boolean }
   | { kind: "playlist"; label: string; enabled: boolean }
-  | { kind: "browse"; label: string; enabled: boolean };
+  | { kind: "browse"; label: string; enabled: boolean }
+  /** A player-specific action from the state's customActions (Spotify's shuffle / repeat / like). */
+  | { kind: "custom"; label: string; enabled: boolean; action: string };
 
 type FocusColumn = "actions" | "playlist";
 
 /**
  * Music controller app: metadata + album art + transport controls for the
  * active Android media session (any player that publishes one) or, on iOS,
- * the Apple Music system player, plus the player's queue when it exposes one
+ * the Apple Music system player or Spotify (signed in from the window menu),
+ * plus the player's queue when it exposes one
  * (scroll to a track, click to jump). With no session, the front page lists
  * the apps whose library can be browsed (click one to open its
  * MediaBrowseLayer).
@@ -110,7 +117,7 @@ class MusicAppLayer implements Layer {
       const apps = mediaBrowserBridge.listBrowsableApps(!this.libraryAppsFresh);
       this.libraryAppsFresh = true;
       this.libraryMenu.setItems(apps);
-      image.drawText(font, 24, 16, global.isIOS ? "Nothing is playing in Apple Music." : "No active media session.", 180);
+      image.drawText(font, 24, 16, global.isIOS ? media.status || "Nothing is playing." : "No active media session.", 180);
       const prompt = global.isIOS
         ? "Browse your library, or start playback on the phone."
         : apps.length
@@ -119,6 +126,11 @@ class MusicAppLayer implements Layer {
       let y = 22 + lineStep(font);
       for (const line of wrapText(font, prompt, width - 48)) {
         image.drawText(font, 24, y, line, 150);
+        y += lineStep(font);
+      }
+      // Why the last command failed (e.g. playing from the Spotify library with no device open).
+      for (const line of media.notice ? wrapText(font, media.notice, width - 48) : []) {
+        image.drawText(font, 24, y, line, 200);
         y += lineStep(font);
       }
       if (apps.length) {
@@ -156,12 +168,13 @@ class MusicAppLayer implements Layer {
     if (media.album) {
       image.drawText(font, META_X, metaTop + 4 + (titleSlots + 1) * metaStep, truncateText(font, media.album, metaWidth), 150);
     }
+    // The player line, or for a few seconds why a command failed.
     image.drawText(
       font,
       META_X,
       metaTop + 4 + (titleSlots + 2) * metaStep,
-      truncateText(font, media.appName || media.packageName, metaWidth),
-      110,
+      truncateText(font, media.notice || media.appName || media.packageName, metaWidth),
+      media.notice ? 200 : 110,
     );
     this.drawProgress(image, media, metaWidth);
 
@@ -212,7 +225,16 @@ class MusicAppLayer implements Layer {
   private drawQueueItem({ image, item, x, y, width, height, selected }: MenuDrawArgs<MediaQueueItem>): void {
     const font = getDefaultSmallFont();
     const label = `${item.active ? "> " : "  "}${item.title || "(untitled)"}`;
-    image.drawText(font, x + LIST_TEXT_INSET, centeredTextY(font, y, height), truncateText(font, label, width - 2 * LIST_TEXT_INSET), selected ? 255 : 200);
+    const textWidth = width - 2 * LIST_TEXT_INSET;
+    const textY = centeredTextY(font, y, height);
+    const title = truncateText(font, label, textWidth);
+    image.drawText(font, x + LIST_TEXT_INSET, textY, title, selected ? 255 : 200);
+    // The artist, dimmer, in whatever room the title leaves.
+    const subtitleX = font.measureText(`${label}  `);
+    if (item.subtitle && title === label && textWidth - subtitleX >= QUEUE_SUBTITLE_MIN_WIDTH) {
+      image.drawText(font, x + LIST_TEXT_INSET + subtitleX, textY,
+        truncateText(font, item.subtitle, textWidth - subtitleX), selected ? 150 : 110);
+    }
   }
 
   async handleInput(event: InputEvent, ctx: LayerContext): Promise<void> {
@@ -278,6 +300,7 @@ class MusicAppLayer implements Layer {
         else if (action.kind === "previous") await mediaControllerBridge.skipPrevious();
         else if (action.kind === "next") await mediaControllerBridge.skipNext();
         else if (action.kind === "browse") this.openBrowse(ctx);
+        else if (action.kind === "custom") await mediaControllerBridge.sendCustomAction?.(action.action);
         else if (action.kind === "volume") {
           ctx.stack.push(new VolumeModalLayer(mediaControllerBridge.getMediaVolumePercent()));
         } else if (action.kind === "playlist") {
@@ -342,6 +365,12 @@ class MusicAppLayer implements Layer {
       { kind: "volume", label: volume >= 0 ? `Volume (${volume})` : "Volume", enabled: volume >= 0 },
       { kind: "next", label: "Next track", enabled: media.canSkipNext },
       { kind: "previous", label: "Previous track", enabled: media.canSkipPrevious },
+      ...(mediaControllerBridge.sendCustomAction ? media.customActions ?? [] : []).map((custom): MusicAction => ({
+        kind: "custom",
+        label: custom.name,
+        enabled: true,
+        action: custom.action,
+      })),
     ];
   }
 
@@ -496,14 +525,20 @@ export function createMusicAppWindow(options: InProcessAppOptions): InProcessWin
     iconLetter: "M",
     icon: "music",
     closeable: true,
-    // Music settings choose among Android media apps; iOS has only Apple Music.
-    menuItems: () => global.isIOS ? [] : [{
-      label: "Music settings",
-      onSelect: (ctx) => {
-        ctx.stack.pop();
-        ctx.stack.push(new MusicSettingsLayer());
-      },
-    }],
+    // Music settings choose among Android media apps; iOS has Apple Music, plus Spotify's sign-in here.
+    menuItems: () => {
+      if (!global.isIOS) {
+        return [{
+          label: "Music settings",
+          onSelect: (ctx) => {
+            ctx.stack.pop();
+            ctx.stack.push(new MusicSettingsLayer());
+          },
+        }];
+      }
+      const spotify = spotifyService();
+      return spotify ? [spotifyMenuItem(spotify)] : [];
+    },
     actions: options.actions,
     baseLayer: new MusicRootLayer(musicLayer),
     submitFrame: options.submitFrame,

@@ -11,5 +11,7 @@ module FaceclawGraphics {
   header "FaceclawEvenHubWebView.h"
   header "FaceclawCrypto.h"
   header "FaceclawQrScanner.h"
+  header "FaceclawLoopbackRedirect.h"
+  header "FaceclawWebSignIn.h"
   export *
 }

@@ -120,4 +120,42 @@
     CGColorSpaceRelease(space);
     return gray;
 }
++ (NSData *)bgraPacket:(CGImageRef)image maxSize:(NSInteger)maxSize {
+    if (!image || maxSize <= 0 || maxSize > 1024) return nil;
+    double sourceWidth = CGImageGetWidth(image), sourceHeight = CGImageGetHeight(image);
+    if (sourceWidth <= 0 || sourceHeight <= 0) return nil;
+    double scale = MIN(1.0, MIN(maxSize / sourceWidth, maxSize / sourceHeight));
+    NSInteger width = MAX(1, lround(sourceWidth * scale)), height = MAX(1, lround(sourceHeight * scale));
+    NSMutableData *packet = [NSMutableData dataWithLength:4 + width * height * 4];
+    uint8_t *bytes = packet.mutableBytes;
+    bytes[0] = width & 255; bytes[1] = (width >> 8) & 255;
+    bytes[2] = height & 255; bytes[3] = (height >> 8) & 255;
+    uint8_t *pixels = bytes + 4;
+    CGColorSpaceRef space = CGColorSpaceCreateDeviceRGB();
+    // Memory order B, G, R, A: one little-endian ARGB word per pixel.
+    CGContextRef context = CGBitmapContextCreate(pixels, width, height, 8, width * 4, space,
+        kCGBitmapByteOrder32Little | (CGBitmapInfo)kCGImageAlphaPremultipliedFirst);
+    CGColorSpaceRelease(space);
+    if (!context) return nil;
+    CGContextSetInterpolationQuality(context, kCGInterpolationHigh);
+    CGContextDrawImage(context, CGRectMake(0, 0, width, height), image);
+    CGContextRelease(context);
+    // Composited over black (the display's see-through background); now opaque.
+    for (NSInteger i = 0; i < width * height; i++) pixels[i * 4 + 3] = 255;
+    return packet;
+}
++ (NSData *)bgraPacketFromImageData:(NSData *)data maxSize:(NSInteger)maxSize {
+    if (!data.length || maxSize <= 0 || maxSize > 1024) return nil;
+    CGImageSourceRef source = CGImageSourceCreateWithData((__bridge CFDataRef)data, NULL);
+    if (!source) return nil;
+    NSDictionary *options = @{(id)kCGImageSourceCreateThumbnailFromImageAlways: @YES,
+        (id)kCGImageSourceCreateThumbnailWithTransform: @YES,
+        (id)kCGImageSourceThumbnailMaxPixelSize: @(maxSize)};
+    CGImageRef image = CGImageSourceCreateThumbnailAtIndex(source, 0, (__bridge CFDictionaryRef)options);
+    CFRelease(source);
+    if (!image) return nil;
+    NSData *packet = [self bgraPacket:image maxSize:maxSize];
+    CGImageRelease(image);
+    return packet;
+}
 @end

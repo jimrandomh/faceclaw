@@ -3,7 +3,8 @@ import type { GrayImage } from "../graphics/image";
 /**
  * Shapes shared by the media bridges: media-controller.ts / media-browser.ts
  * drive Android media sessions and MediaBrowserServices; their .ios.ts
- * counterparts drive Apple Music through the MediaPlayer framework.
+ * counterparts drive Apple Music through the MediaPlayer framework and
+ * Spotify through its Web API.
  */
 
 /** The player behind the iOS bridges: the system Music app. */
@@ -13,7 +14,17 @@ export const APPLE_MUSIC_PACKAGE = "com.apple.Music";
 export type MediaQueueItem = {
   id: number;
   title: string;
+  /** Usually the artist; absent when the player gives none. */
+  subtitle?: string;
   active: boolean;
+};
+
+/** A player-specific action beyond the transport controls (Spotify's shuffle, repeat, like). */
+export type MediaCustomAction = {
+  /** Stable id to send back with sendCustomAction. */
+  action: string;
+  /** The row label, naming the current state where there is one ("Shuffle: on"). */
+  name: string;
 };
 
 export type MediaPlaybackState =
@@ -47,6 +58,10 @@ export type MediaControllerState = {
    * players re-publish the same strings with a different bitmap.
    */
   artVersion: number;
+  /** Player-specific actions (see sendCustomAction); absent when the player offers none. */
+  customActions?: MediaCustomAction[];
+  /** A short-lived message about a command that failed (Spotify needs Premium, ...); absent or "" otherwise. */
+  notice?: string;
 };
 
 export const DEFAULT_MEDIA_STATE: MediaControllerState = {
@@ -113,6 +128,13 @@ export interface MediaControllerBridge {
   getAlbumArt(maxSize: number): GrayImage | null;
   /** The player's queue (playlist), empty when the player exposes none. */
   getQueue(): MediaQueueItem[];
+  /** Run one of the state's customActions. */
+  sendCustomAction?(action: string): Promise<void>;
+  /**
+   * Re-read the player now, for one-off readers (the assistant) when no
+   * listener keeps the state current; absent when snapshots are always live.
+   */
+  refresh?(): Promise<void>;
 }
 
 export type MediaBrowserApp = {

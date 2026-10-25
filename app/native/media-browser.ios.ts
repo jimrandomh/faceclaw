@@ -6,6 +6,9 @@ import {
   type MediaBrowserApp,
   type MediaBrowserBridge,
 } from "./media-types";
+import { spotifyService } from "./spotify.ios";
+import type { SpotifyLibrary } from "./spotify-library";
+import { SPOTIFY_PACKAGE } from "./spotify-player";
 
 export type { MediaBrowseItem, MediaBrowserApp } from "./media-types";
 
@@ -30,7 +33,7 @@ export class AppleMusicBrowserBridge implements MediaBrowserBridge {
 
   connect(app: MediaBrowserApp): Promise<string> {
     this.disconnect();
-    if (app.packageName !== APPLE_MUSIC_PACKAGE) return Promise.reject(new Error("Only Apple Music can be browsed on iOS"));
+    if (app.packageName !== APPLE_MUSIC_PACKAGE) return Promise.reject(new Error("Not an Apple Music library"));
     if (!FaceclawAppleMusic.shared().hasPermission()) return Promise.reject(new Error("Apple Music access is not allowed"));
     this.connected = true;
     return Promise.resolve("root");
@@ -67,4 +70,42 @@ export class AppleMusicBrowserBridge implements MediaBrowserBridge {
   }
 }
 
-export const mediaBrowserBridge: MediaBrowserBridge = new AppleMusicBrowserBridge();
+/** Apple Music's library, plus the Spotify library once signed in. */
+export class IosMediaBrowserBridge implements MediaBrowserBridge {
+  private current: MediaBrowserBridge | null = null;
+
+  constructor(
+    private readonly appleMusic: AppleMusicBrowserBridge,
+    private readonly spotify: () => SpotifyLibrary | null,
+  ) {}
+
+  listBrowsableApps(): MediaBrowserApp[] {
+    return [...this.appleMusic.listBrowsableApps(), ...(this.spotify()?.listBrowsableApps() ?? [])];
+  }
+
+  connect(app: MediaBrowserApp): Promise<string> {
+    this.disconnect();
+    const library = app.packageName === SPOTIFY_PACKAGE ? this.spotify() : this.appleMusic;
+    if (!library) return Promise.reject(new Error(`${app.appName} can't be browsed`));
+    this.current = library;
+    return library.connect(app);
+  }
+
+  browse(parentId: string): Promise<MediaBrowseItem[]> {
+    return this.current ? this.current.browse(parentId) : Promise.reject(new Error("Not connected"));
+  }
+
+  playFromMediaId(mediaId: string): void {
+    this.current?.playFromMediaId(mediaId);
+  }
+
+  disconnect(): void {
+    this.current?.disconnect();
+    this.current = null;
+  }
+}
+
+export const mediaBrowserBridge: MediaBrowserBridge = new IosMediaBrowserBridge(
+  new AppleMusicBrowserBridge(),
+  () => spotifyService()?.library ?? null,
+);

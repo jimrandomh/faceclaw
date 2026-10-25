@@ -153,6 +153,20 @@ Apple's on iOS) for the name of the place.
   Open-Meteo: https://open-meteo.com/en/terms
 
 
+## Spotify
+
+On iOS, the Music app, Glanceboard and the voice assistant can show and
+control Spotify through Spotify's Web API, once the user has created their own
+Spotify developer app and signed in. Signing in happens on Spotify's website in
+the system's sign-in sheet; Faceclaw never sees the password, and stores the
+resulting sign-in tokens on the phone. While Spotify is shown or used,
+Faceclaw requests the user's playback state, queue, library and search results
+from Spotify and sends it playback commands, directly from the phone. This is
+subject to Spotify's privacy policy.
+
+  Spotify: https://www.spotify.com/legal/privacy-policy/
+
+
 ## EvenHub
 
 The EvenHub app store is subject to Even Realities' privacy policy:

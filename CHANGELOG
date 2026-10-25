@@ -7,7 +7,7 @@
 * Use Open-Meteo for weather in regions that the US National Weather Service doesn't cover
 * Android: Show pictures attached to notifications (such as Dexcom's glucose graph) in the notification view
 * Add an Apple Music integration on iOS
-* Add a Spotify integration on iOS
+* Add a Spotify integration on iOS by voice (needs your own Spotify developer client ID and Spotify Premium)
 * Add a Translate app
 
 ### Bug fixes
