@@ -14,13 +14,15 @@ export type ContinuousCaptureOptions = {
   /** Names a WAV of the captured audio in Downloads (iOS, when Save Transcribe audio is on). */
   recordAs?: string;
   /**
-   * Transcribe with this provider instead of the Transcription Provider
-   * setting, letting it detect the spoken language (Translate). While any
-   * client asks for one, every capture uses it, and a shared capture running
-   * another provider restarts on it.
+   * Transcribe with this provider, expecting this spoken language (ISO 639-1,
+   * or "" for the provider to detect it), instead of the Transcription
+   * Provider setting (Translate). While any client asks for one, every
+   * capture uses it, and a shared capture running another restarts on it.
    */
-  multilingualProvider?: VoiceProvider;
+  transcription?: TranscriptionChoice;
 };
+
+export type TranscriptionChoice = { provider: VoiceProvider; language: string };
 
 export type LayerActions = {
   /** Ask for a dashboard repaint+transmit, e.g. when async data arrives. */

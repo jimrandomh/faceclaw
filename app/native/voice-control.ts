@@ -4,6 +4,7 @@ import { type CloudSttTranscriptEvent, CloudSttClient } from "./cloud-stt";
 import { createCloudSttClient, transcriptionKey } from "./cloud-stt-provider";
 import { SpeechPauseDetector } from "./speech-pause";
 import { toUint8Array } from "../util/array-util";
+import { pcmLevel } from "../util/audio-level";
 
 declare const com: any;
 
@@ -56,8 +57,9 @@ export type PushToTalkOptions = {
   sonioxApiKey: string;
   whisperServerUrl?: string;
   whisperServerModel?: string;
-  whisperServerLanguage?: string;
   whisperServerApiKey?: string;
+  /** Spoken language for cloud providers (see VoiceProviderSelection.language). */
+  language?: string;
   saveRecording: boolean;
   /**
    * Watch the mic and fire onSpeechEnd when the speaker stops. For hands-free
@@ -138,6 +140,7 @@ export class FaceclawVoiceControlBridge {
   // stopped for its duration.
   private readonly rawPcmListeners = new Set<RawPcmListener>();
   private readonly frameMetaListeners = new Set<FrameMetaListener>();
+  private readonly micLevelListeners = new Set<(level: number) => void>();
   private rawActive = false;
   // Who wants the raw tap. It runs while any owner does, so one owner letting
   // go (an EvenHub app backgrounding) doesn't silence another.
@@ -235,6 +238,16 @@ export class FaceclawVoiceControlBridge {
   onRawPcm(listener: RawPcmListener): () => void {
     this.rawPcmListeners.add(listener);
     return () => this.rawPcmListeners.delete(listener);
+  }
+
+  /**
+   * Subscribe to the mic level (meter position in [0,1], see pcmLevel) of
+   * each decoded audio chunk, about every 50 ms, from any capture: STT in
+   * every mode, or the raw tap.
+   */
+  onMicLevel(listener: (level: number) => void): () => void {
+    this.micLevelListeners.add(listener);
+    return () => this.micLevelListeners.delete(listener);
   }
 
   /** Subscribe to per-packet firmware DSP metadata (DOA angle + SSR). */
@@ -538,6 +551,10 @@ export class FaceclawVoiceControlBridge {
         }
         if (this.rawPcmListeners.size > 0) {
           this.rawPcmListeners.forEach((listener) => listener(bytes));
+        }
+        if (this.micLevelListeners.size > 0) {
+          const level = pcmLevel(bytes);
+          this.micLevelListeners.forEach((listener) => listener(level));
         }
       },
       onFrameMeta: (angleDegrees: number, ssr: number) => {

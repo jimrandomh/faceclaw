@@ -1,6 +1,12 @@
 import { TranslateLayer } from "./translate";
 import { resolveTranslationModel } from "./translate-llm";
-import { resolveTranslateProvider, translateProviderSetting, translateShowOriginalSetting } from "./translate-settings";
+import {
+  resolveTranslateLanguage,
+  resolveTranslateProvider,
+  translateLanguageSetting,
+  translateProviderSetting,
+  translateShowOriginalSetting,
+} from "./translate-settings";
 import { MIC_ICON } from "../transcribe/transcribe-app";
 import { transcriptTimestamp } from "../transcribe/transcribe";
 import { type ContinuousCaptureOptions } from "../../ui/layers";
@@ -38,8 +44,9 @@ export type TranslateAppOptions = InProcessAppOptions & {
  * provider (Translate settings), which a shared capture switches to.
  */
 export function createTranslateAppWindow(options: TranslateAppOptions): InProcessWindow {
-  // Checks the setup and (re)starts capture with the chosen provider: at
-  // launch, when the provider setting changes, and on a tap after a problem.
+  // Checks the setup and (re)starts capture with the chosen provider and
+  // language: at launch, when either setting changes, and on a tap after a
+  // problem.
   const startCapture = () => {
     const provider = resolveTranslateProvider();
     const problem = !provider ? NO_PROVIDER_PROBLEM : !resolveTranslationModel() ? NO_MODEL_PROBLEM : null;
@@ -49,7 +56,7 @@ export function createTranslateAppWindow(options: TranslateAppOptions): InProces
       shell.setTrayIcon(TRAY_ICON_ID, null);
       return;
     }
-    options.startContinuousVoiceCapture({ multilingualProvider: provider });
+    options.startContinuousVoiceCapture({ transcription: { provider, language: resolveTranslateLanguage() } });
     shell.setTrayIcon(TRAY_ICON_ID, MIC_ICON);
   };
   const layer = new TranslateLayer(transcriptTimestamp(), startCapture);
@@ -75,6 +82,7 @@ export function createTranslateAppWindow(options: TranslateAppOptions): InProces
         onSelect: (ctx) => {
           ctx.stack.pop();
           openSettingsSubMenu(ctx, "Translate settings", [
+            enumSettingMenuItem(translateLanguageSetting, { onChange: startCapture }),
             enumSettingMenuItem(translateProviderSetting, { onChange: startCapture }),
             toggleSettingMenuItem(translateShowOriginalSetting),
           ]);
@@ -93,7 +101,7 @@ export function createTranslateAppWindow(options: TranslateAppOptions): InProces
   });
   // Wire async state changes to this window's renderer, rather than the
   // controller action from which the window-specific actions were derived.
-  layer.start(app.requestRender);
+  layer.start(app.requestRender, () => shell.isWindowVisible(TRANSLATE_WINDOW_ID));
   startCapture();
   return app;
 }

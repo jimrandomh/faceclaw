@@ -64,6 +64,7 @@ import { analyzeLine, searchableMetadata } from "./sentiment";
 import { generateSessionInsights } from "./speaker-insights";
 import { speakerRegistry, type SpeakerMatch } from "./speakers";
 import { postAmbientCard } from "../../ui/shell/ambient-cards";
+import { pcmLevel, rmsToLevel } from "../../util/audio-level";
 import { formatRelativeTime } from "../../util/date-util";
 import { deviceLanguage, identifyLanguage, translateText } from "./translate";
 
@@ -1669,29 +1670,10 @@ function wireConfig(config: MicConfig): MicConfig {
   return { ...config, channelMask: 0b11 };
 }
 
-function pcmLevel(pcm: Uint8Array): number {
-  let sumSquares = 0;
-  const count = pcm.length / 2;
-  if (count === 0) return 0;
-  for (let i = 0; i < count; i++) {
-    let value = pcm[i * 2]! | (pcm[i * 2 + 1]! << 8);
-    if (value >= 0x8000) value -= 0x10000;
-    sumSquares += value * value;
-  }
-  return rmsToLevel(Math.sqrt(sumSquares / count) / 32768);
-}
-
 function floatLevel(samples: Float32Array): number {
   let sumSquares = 0;
   for (let i = 0; i < samples.length; i++) sumSquares += samples[i]! * samples[i]!;
   return rmsToLevel(Math.sqrt(sumSquares / Math.max(1, samples.length)));
-}
-
-/** Map RMS in [0,1] to a meter position with a log-ish curve (mic peaks ~0.1 FS). */
-function rmsToLevel(rms: number): number {
-  if (rms <= 0) return 0;
-  const db = 20 * Math.log10(rms);
-  return Math.max(0, Math.min(1, (db + 60) / 60));
 }
 
 function floatToPcm16(samples: Float32Array): Uint8Array {

@@ -50,6 +50,8 @@ export class SonioxSttClient implements CloudSttClient {
             sample_rate: CLOUD_STT_SAMPLE_RATE,
             num_channels: 1,
             enable_speaker_diarization: true,
+            // A hint, not a restriction: other languages are still recognized.
+            ...(this.options.language ? { language_hints: [this.options.language] } : {}),
           }),
         );
         if (this.closed) return;

@@ -149,11 +149,12 @@ export class IosPreviewController {
   private logLines: string[] = []
   private logTimer: ReturnType<typeof setTimeout> | null = null
   // Windows that want continuous capture, and what each needs of it (a
-  // recording, a multilingual provider). They share one capture, which runs
+  // recording, a provider and language). They share one capture, which runs
   // while any of them wants it.
   private readonly continuousClients = new Map<string, ContinuousCaptureOptions>()
-  // transcriptionKey of the running continuous capture's provider; one that no
-  // longer matches what its windows need is drained and restarted.
+  // transcriptionKey of the running continuous capture (provider and
+  // language); one that no longer matches what its windows need is drained
+  // and restarted.
   private continuousTranscription = ''
   // Continuous capture should (re)start once audio is available: a window
   // asked, the glasses connected or disconnected, or the glasses lock or the
@@ -1058,15 +1059,17 @@ export class IosPreviewController {
   }
   /**
    * The transcription provider setting and the keys the cloud ones need. A
-   * window that needs a multilingual provider (Translate) sets it for every
-   * capture while it is open, with Whisper left to detect the language.
+   * window that needs its own provider and language (Translate) sets them for
+   * every capture while it is open; otherwise only Whisper server is told a
+   * language (its own setting).
    */
   private voiceProvider(): VoiceProviderSelection {
-    const multilingual = [...this.continuousClients.values()].find(options => options.multilingualProvider)?.multilingualProvider
-    return { provider: multilingual ?? voiceProviderSetting.get(), elevenLabsApiKey: elevenLabsApiKeySetting.get(),
-      openAiApiKey: openAiApiKeySetting.get(), sonioxApiKey: sonioxApiKeySetting.get(),
+    const choice = [...this.continuousClients.values()].find(options => options.transcription)?.transcription
+    const provider = choice?.provider ?? voiceProviderSetting.get()
+    return { provider, language: choice ? choice.language : provider === 'whisper-server' ? whisperServerLanguageSetting.get() : '',
+      elevenLabsApiKey: elevenLabsApiKeySetting.get(), openAiApiKey: openAiApiKeySetting.get(), sonioxApiKey: sonioxApiKeySetting.get(),
       whisperServerUrl: whisperServerUrlSetting.get(), whisperServerModel: whisperServerModelSetting.get(),
-      whisperServerLanguage: multilingual ? '' : whisperServerLanguageSetting.get(), whisperServerApiKey: whisperServerApiKeySetting.get() }
+      whisperServerApiKey: whisperServerApiKeySetting.get() }
   }
   private logBluetooth(message: string): void {
     const line = `${new Date().toISOString()} [${this.active ? 'foreground' : 'background'}${UIApplication.sharedApplication.protectedDataAvailable ? '' : ',protected-data-unavailable'}] ${message}`

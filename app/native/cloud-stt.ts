@@ -17,6 +17,8 @@ export type CloudSttTranscriptEvent = {
 
 export type CloudSttOptions = {
   apiKey: string;
+  /** Spoken language to expect (ISO 639-1); empty or absent lets the provider detect it. */
+  language?: string;
   onTranscript: (event: CloudSttTranscriptEvent) => void;
   onStatus: (status: string) => void;
   onError: (message: string) => void;

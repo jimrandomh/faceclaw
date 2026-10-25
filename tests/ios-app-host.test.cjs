@@ -348,7 +348,7 @@ test('iOS continuous capture is shared by windows and restarts after a disconnec
     get continuousActive() { return !!this.source || this.draining; },
     prepare: async () => true,
     startGlassesCapture: async (_session, voice, _log, _endpointing, continuous) => {
-      calls.push(['glasses', continuous]); providers.push(`${voice.provider}:${voice.whisperServerLanguage}`); bridge.source = 'glasses'; },
+      calls.push(['glasses', continuous]); providers.push(`${voice.provider}:${voice.language}`); bridge.source = 'glasses'; },
     startPhoneCapture: async (_voice, _log, _endpointing, continuous) => { calls.push(['phone', continuous]); bridge.source = 'phone'; },
     drain() { if (this.source) { this.source = null; this.draining = true; } },
     stopContinuousCapture: async () => { calls.push(['stop']); bridge.drain(); },
@@ -361,7 +361,7 @@ test('iOS continuous capture is shared by windows and restarts after a disconnec
   const { IosPreviewController } = load('app/g2/ios-preview-controller.ts', {
     require: id => id === '../native/ios-voice-input' ? { iosVoiceInput: bridge } : id === '../ui/dashboard-settings' ? settings
       : id === '../ui/shell/voice-activity' ? { voiceActivity: { setActive: (active, holder) => claims.push([active, holder]) } }
-      : id === '../native/cloud-stt-provider' ? { transcriptionKey: voice => `${voice.provider}:${voice.whisperServerLanguage}` } : {},
+      : id === '../native/cloud-stt-provider' ? { transcriptionKey: voice => `${voice.provider}:${voice.language}` } : {},
   });
   const host = Object.create(IosPreviewController.prototype);
   Object.assign(host, { active: true, glassesLocked: false, communicator: {}, state: { phase: 'connected' }, sessionConnected: true,
@@ -381,14 +381,17 @@ test('iOS continuous capture is shared by windows and restarts after a disconnec
   host.stopContinuousVoiceCapture('calculator');
   assert.deepEqual(calls, [['glasses', true]], 'closing one window keeps the other listening');
 
-  // Translate needs a multilingual provider: the shared capture drains and
-  // restarts on it (Whisper left to detect the language), and moves back to
-  // the main provider once Translate closes.
-  calls.length = 0; host.startContinuousVoiceCapture('translate', { multilingualProvider: 'soniox' }); await settle();
+  // Translate needs its own provider and language: the shared capture drains
+  // and restarts on them, again when only the language changes, and moves
+  // back to the main provider (and Whisper's own language) once Translate closes.
+  calls.length = 0; host.startContinuousVoiceCapture('translate', { transcription: { provider: 'soniox', language: '' } }); await settle();
   assert.deepEqual(calls, [['stop']]);
   drained(); await settle();
   assert.deepEqual(calls, [['stop'], ['glasses', true]]);
   assert.deepEqual(providers.slice(-2), ['whisper-server:en', 'soniox:']);
+  calls.length = 0; host.startContinuousVoiceCapture('translate', { transcription: { provider: 'soniox', language: 'ja' } }); drained(); await settle();
+  assert.deepEqual(calls, [['stop'], ['glasses', true]]);
+  assert.equal(providers.at(-1), 'soniox:ja');
   calls.length = 0; host.stopContinuousVoiceCapture('translate'); drained(); await settle();
   assert.deepEqual(calls, [['stop'], ['glasses', true]]);
   assert.equal(providers.at(-1), 'whisper-server:en');

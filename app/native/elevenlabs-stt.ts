@@ -33,7 +33,10 @@ export class ElevenLabsSttClient {
 
   start(): void {
     if (this.closed || this.ws) return;
-    const url = `${WS_URL}?model_id=${MODEL_ID}&audio_format=pcm_${SAMPLE_RATE}&commit_strategy=manual`;
+    // Without language_code the model detects the language, which can go
+    // badly wrong on short or noisy segments (Japanese heard as Russian).
+    const language = this.options.language ? `&language_code=${encodeURIComponent(this.options.language)}` : "";
+    const url = `${WS_URL}?model_id=${MODEL_ID}&audio_format=pcm_${SAMPLE_RATE}&commit_strategy=manual${language}`;
     const listener = {
       onOpen: () => {
         if (this.closed) return;

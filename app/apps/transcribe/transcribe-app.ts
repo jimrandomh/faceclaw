@@ -78,7 +78,7 @@ export function createTranscribeAppWindow(options: TranscribeAppOptions): InProc
   });
   // Wire async state changes to this window's renderer, rather than the
   // controller action from which the window-specific actions were derived.
-  layer.start(app.requestRender);
+  layer.start(app.requestRender, () => shell.isWindowVisible(TRANSCRIBE_WINDOW_ID));
   options.startContinuousVoiceCapture({ recordAs: `transcribe-${stamp}` });
   shell.setTrayIcon(TRAY_ICON_ID, MIC_ICON);
   return app;

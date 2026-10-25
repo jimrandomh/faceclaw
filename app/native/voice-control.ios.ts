@@ -3,6 +3,7 @@ import type { CloudSttTranscriptEvent } from './cloud-stt'
 import type { ReconnectingSttClient } from './reconnecting-stt'
 import { createCloudSttClient, usesCloudStt, type VoiceProviderSelection } from './cloud-stt-provider'
 import { WavRecorder } from './wav-recorder.ios'
+import { pcmLevel } from '../util/audio-level'
 
 declare const FaceclawSpeech: any
 export type IosMicrophoneSession = {
@@ -24,6 +25,7 @@ export class IosVoiceControlBridge {
   private readonly statuses = new Set<(state: VoiceControlState) => void>()
   private readonly transcripts = new Set<(event: VoiceTranscriptEvent) => void>()
   private readonly ends = new Set<() => void>()
+  private readonly levels = new Set<(level: number) => void>()
   private status = 'Voice input ready.'
   private generation = 0
   private session: IosMicrophoneSession | null = null
@@ -60,6 +62,8 @@ export class IosVoiceControlBridge {
   }
   onSpeechEnd(listener: () => void): () => void { this.ends.add(listener); return () => { this.ends.delete(listener) } }
   onSpeechPause(_listener: () => void): () => void { return () => {} }
+  /** The mic level (see pcmLevel) of each PCM chunk; only cloud captures supply PCM. */
+  onMicLevel(listener: (level: number) => void): () => void { this.levels.add(listener); return () => { this.levels.delete(listener) } }
   private setStatus(status: string): void { this.status = status; for (const fn of [...this.statuses]) fn({ status, listening: this.capturing, detail: '' }) }
   private ensureNative(): any {
     if (!this.native) {
@@ -69,6 +73,7 @@ export class IosVoiceControlBridge {
         const bytes = new Uint8Array(interop.bufferFromData(pcm))
         this.cloud?.acceptPcm(bytes)
         if (this.continuous) this.record(bytes)
+        if (this.levels.size) { const level = pcmLevel(bytes); for (const fn of [...this.levels]) fn(level) }
       }
     }
     return this.native

@@ -29,6 +29,8 @@ export function resolveTranslationModel(): ResolvedAssistantModel | null {
 export type TranslationRequest = {
   speech: string;
   context: TranslationTurn[];
+  /** English name of the spoken language when the user set one, else "". */
+  language: string;
   onProgress: (textSoFar: string) => void;
   onDone: (translation: string) => void;
   onError: (message: string) => void;
@@ -41,7 +43,7 @@ export function streamTranslation(model: ResolvedAssistantModel, request: Transl
     system: TRANSLATE_SYSTEM_PROMPT,
     effort: model.effort,
     maxTokens: 1024,
-    messages: [{ role: "user", content: buildTranslateUserMessage(request.speech, request.context) }],
+    messages: [{ role: "user", content: buildTranslateUserMessage(request.speech, request.context, request.language) }],
     onTextDelta: (_delta, textSoFar) => request.onProgress(cleanTranslation(textSoFar)),
     onDone: (result) => {
       if (result.stopReason === "refusal") request.onError("The model declined to translate this.");

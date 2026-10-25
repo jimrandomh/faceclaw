@@ -12,13 +12,17 @@ import { normalizeWhisperServerUrl, WHISPER_SERVER_FINAL_TIMEOUT_MS, WhisperServ
  */
 export type VoiceProviderSelection = {
   provider: VoiceProviderKind;
+  /**
+   * Spoken language the provider should expect (ISO 639-1); empty lets it
+   * detect the language. Cloud providers only.
+   */
+  language?: string;
   elevenLabsApiKey: string;
   openAiApiKey: string;
   sonioxApiKey: string;
   /** Self-hosted Whisper ("whisper-server"); the key is optional there. */
   whisperServerUrl?: string;
   whisperServerModel?: string;
-  whisperServerLanguage?: string;
   whisperServerApiKey?: string;
 };
 
@@ -58,7 +62,7 @@ const CLOUD_PROVIDERS: Partial<Record<VoiceProviderKind, CloudProvider>> = {
     create: (options, selection) => new WhisperServerSttClient(options, {
       baseUrl: selection.whisperServerUrl ?? "",
       model: selection.whisperServerModel ?? "",
-      language: selection.whisperServerLanguage ?? "",
+      language: selection.language ?? "",
     }),
     finalTimeoutMs: WHISPER_SERVER_FINAL_TIMEOUT_MS,
   },
@@ -69,14 +73,11 @@ function isConfigured(provider: CloudProvider, selection: VoiceProviderSelection
 }
 
 /**
- * What a capture transcribes with: the provider, and for Whisper server the
- * language it is told to expect. A running capture is shared only by holders
- * asking for the same.
+ * What a capture transcribes with: the provider and the language it is told
+ * to expect. A running capture is shared only by holders asking for the same.
  */
-export function transcriptionKey(selection: Pick<VoiceProviderSelection, "provider" | "whisperServerLanguage">): string {
-  return selection.provider === "whisper-server"
-    ? `whisper-server:${(selection.whisperServerLanguage ?? "").trim().toLowerCase()}`
-    : selection.provider;
+export function transcriptionKey(selection: Pick<VoiceProviderSelection, "provider" | "language">): string {
+  return `${selection.provider}:${(selection.language ?? "").trim().toLowerCase()}`;
 }
 
 /** Whether createCloudSttClient would return a cloud client for this selection. */
@@ -105,7 +106,7 @@ export function createCloudSttClient(
   const apiKey = provider.apiKey(selection).trim();
   return new ReconnectingSttClient(
     (clientOptions) => provider.create(clientOptions, selection),
-    { ...options, apiKey },
+    { ...options, apiKey, language: (selection.language ?? "").trim() },
     continuous,
     provider.finalTimeoutMs,
   );
