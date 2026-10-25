@@ -5,7 +5,6 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.graphics.Bitmap
 import android.graphics.Canvas
-import android.graphics.Color
 import android.graphics.drawable.BitmapDrawable
 import android.graphics.drawable.Drawable
 import android.graphics.drawable.Icon
@@ -30,16 +29,7 @@ import org.json.JSONObject
 class FaceclawMediaNotificationListenerService : NotificationListenerService() {
     companion object {
         private const val TAG = "FaceclawNotify"
-        private const val NOTIFICATION_ICON_GAMMA = 1.6
-        /** Alpha at or below this is treated as cut out when classifying an icon. */
-        private const val TEMPLATE_ALPHA_FLOOR = 32
-        /** Spread between an icon pixel's brightest and darkest channel that reads as hue. */
-        private const val TEMPLATE_CHROMA_THRESHOLD = 24
         private const val EXTRA_SUBSTITUTE_APP_NAME = "android.substName"
-
-        /** Set once the debug-icon directory has been cleaned for this process. */
-        @Volatile
-        private var debugIconsPruned = false
 
         @Volatile
         private var activeService: FaceclawMediaNotificationListenerService? = null
@@ -136,15 +126,16 @@ class FaceclawMediaNotificationListenerService : NotificationListenerService() {
                 if (dedupeGroupKey != null && emittedGroupKeys.contains(dedupeGroupKey)) {
                     continue
                 }
-                val drawable = loadNotificationIcon(service, statusBarNotification.notification)
-                if (drawable == null) {
-                    Log.i(TAG, "icon skipped (no drawable): " + statusBarNotification.packageName)
+                val icon = NotificationIconLoader.iconFor(service, statusBarNotification, size) {
+                    getNotificationAppName(service, statusBarNotification)
+                }
+                if (icon == null) {
+                    Log.i(TAG, "icon skipped (nothing to draw): " + statusBarNotification.packageName)
                     continue
                 }
                 Log.i(TAG, "icon[" + emitted + "] pkg=" + statusBarNotification.packageName
-                    + " drawable=" + drawable.javaClass.simpleName
-                    + " intrinsic=" + drawable.intrinsicWidth + "x" + drawable.intrinsicHeight)
-                appendIconGrayBytes(drawable, size, out, service, emitted, statusBarNotification.packageName)
+                    + " source=" + icon.source + " kind=" + icon.art.kind)
+                out.write(icon.art.gray)
                 keysOut?.add(statusBarNotification.key ?: "")
                 if (dedupeGroupKey != null) {
                     emittedGroupKeys.add(dedupeGroupKey)
@@ -174,13 +165,10 @@ class FaceclawMediaNotificationListenerService : NotificationListenerService() {
             if (statusBarNotification == null || statusBarNotification.notification == null) {
                 return ByteArray(0)
             }
-            val drawable = loadNotificationIcon(service, statusBarNotification.notification)
-            if (drawable == null) {
-                return ByteArray(0)
+            val icon = NotificationIconLoader.iconFor(service, statusBarNotification, size) {
+                getNotificationAppName(service, statusBarNotification)
             }
-            val out = ByteArrayOutputStream(size * size)
-            appendIconGrayBytes(drawable, size, out, service, -1, statusBarNotification.packageName)
-            return out.toByteArray()
+            return icon?.art?.gray ?: ByteArray(0)
         }
 
         /**
@@ -442,133 +430,6 @@ class FaceclawMediaNotificationListenerService : NotificationListenerService() {
             return groupKey
         }
 
-        private fun loadNotificationIcon(service: FaceclawMediaNotificationListenerService, notification: Notification): Drawable? {
-            try {
-                val smallIcon: Icon? = notification.smallIcon
-                if (smallIcon != null) {
-                    val drawable: Drawable? = smallIcon.loadDrawable(service)
-                    if (drawable != null) {
-                        // Template or not is decided from the rendered pixels
-                        // (see iconIsAlphaTemplate): apps also ship filled color
-                        // bitmaps as their small icon, and tinting one of those
-                        // white keeps the alpha while discarding the shape that
-                        // the colors carried, leaving a solid block.
-                        drawable.mutate()
-                        if (drawable is BitmapDrawable) {
-                            drawable.setFilterBitmap(true)
-                        }
-                        return drawable
-                    }
-                }
-            } catch (t: Throwable) {
-                Log.w(TAG, "failed to load small notification icon", t)
-            }
-            try {
-                // Large icons are real color images (avatars, album art); keep color.
-                val largeIcon: Icon? = notification.getLargeIcon()
-                if (largeIcon != null) {
-                    return largeIcon.loadDrawable(service)
-                }
-            } catch (t: Throwable) {
-                Log.w(TAG, "failed to load large notification icon", t)
-            }
-            return null
-        }
-
-        private fun appendIconGrayBytes(drawable: Drawable, size: Int, out: ByteArrayOutputStream,
-                                        service: FaceclawMediaNotificationListenerService, index: Int, packageName: String?) {
-            val bitmap = renderIconScaled(drawable, size)
-            val template = iconIsAlphaTemplate(bitmap)
-            dumpIconDebugPng(service, index, packageName, bitmap)
-            for (y in 0 until size) {
-                for (x in 0 until size) {
-                    val color = bitmap.getPixel(x, y)
-                    val alpha = Color.alpha(color)
-                    val grayLinear = if (template) {
-                        alpha / 255.0
-                    } else {
-                        (0.2126 * Color.red(color) + 0.7152 * Color.green(color) + 0.0722 * Color.blue(color)) * alpha / (255.0 * 255.0)
-                    }
-                    val gray = Math.round(255.0 * Math.pow(Math.max(0.0, Math.min(1.0, grayLinear)), NOTIFICATION_ICON_GAMMA)).toInt()
-                    out.write(gray and 0xff)
-                }
-            }
-            bitmap.recycle()
-        }
-
-        /**
-         * Whether a rendered icon is an alpha template: a shape the platform
-         * draws by tinting, where alpha alone carries the outline.
-         *
-         * Small icons are meant to be templates, but plenty of apps put a filled
-         * color bitmap there instead. Tinting one of those white keeps its alpha
-         * and throws away the only thing that carried the shape, so the glasses
-         * got a blank block where the icon should be.
-         *
-         * Hue settles it: an icon with color is color artwork. A colorless icon is
-         * a template only when its alpha is actually cut out, and a colorless
-         * icon with solid alpha is a flat image its own brightness has to carry.
-         */
-        private fun iconIsAlphaTemplate(bitmap: Bitmap): Boolean {
-            var opaque = 0
-            var transparent = 0
-            var colored = 0
-            for (y in 0 until bitmap.height) {
-                for (x in 0 until bitmap.width) {
-                    val color = bitmap.getPixel(x, y)
-                    val alpha = Color.alpha(color)
-                    if (alpha < TEMPLATE_ALPHA_FLOOR) {
-                        transparent += 1
-                        continue
-                    }
-                    opaque += 1
-                    val red = Color.red(color)
-                    val green = Color.green(color)
-                    val blue = Color.blue(color)
-                    val high = Math.max(red, Math.max(green, blue))
-                    val low = Math.min(red, Math.min(green, blue))
-                    if (high - low >= TEMPLATE_CHROMA_THRESHOLD) colored += 1
-                }
-            }
-            if (opaque == 0) return false
-            // A quarter of the icon carrying hue is color artwork, whatever its alpha does.
-            if (colored * 4 >= opaque) return false
-            // Otherwise it is a template only if there is something cut out of it.
-            return transparent * 20 >= opaque + transparent
-        }
-
-        /**
-         * Render a drawable at the target size with proper downscaling. Detailed
-         * sources (e.g. avatar bitmaps used as notification icons) are rendered at
-         * native resolution and reduced by repeated halving: a single filtered pass
-         * from, say, 126px to 24px samples too sparsely and turns fine detail into
-         * speckle that reads as a garbled icon.
-         */
-        private fun renderIconScaled(drawable: Drawable, size: Int): Bitmap {
-            val renderW = Math.max(size, drawable.intrinsicWidth)
-            val renderH = Math.max(size, drawable.intrinsicHeight)
-            var bitmap = Bitmap.createBitmap(renderW, renderH, Bitmap.Config.ARGB_8888)
-            val canvas = Canvas(bitmap)
-            drawable.setBounds(0, 0, renderW, renderH)
-            drawable.draw(canvas)
-            while (bitmap.width >= size * 2 && bitmap.height >= size * 2) {
-                val halved = Bitmap.createScaledBitmap(bitmap, bitmap.width / 2, bitmap.height / 2, true)
-                bitmap.recycle()
-                bitmap = halved
-            }
-            if (bitmap.width != size || bitmap.height != size) {
-                val scaled = Bitmap.createScaledBitmap(bitmap, size, size, true)
-                bitmap.recycle()
-                bitmap = scaled
-            }
-            return bitmap
-        }
-
-        private fun isDebuggable(service: FaceclawMediaNotificationListenerService): Boolean {
-            val flags = service.applicationInfo.flags
-            return (flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0
-        }
-
         /** Whether a notification carries a picture for loadNotificationPicture, without loading it. */
         @Suppress("DEPRECATION")
         private fun hasNotificationPicture(extras: Bundle): Boolean {
@@ -627,7 +488,7 @@ class FaceclawMediaNotificationListenerService : NotificationListenerService() {
          * Halve a picture while it is still at least twice the size it will
          * be shown at, leaving the last (under 2x) step of fitting it into
          * maxWidth x maxHeight to bitmapToGrayPacket. As with icons
-         * (renderIconScaled), one filtered pass from a much larger source
+         * (NotificationIconLoader.renderArgb), one filtered pass from a much larger source
          * samples too sparsely: a graph's thin lines break up into dots.
          */
         private fun halveToward(source: Bitmap, maxWidth: Int, maxHeight: Int): Bitmap {
@@ -640,40 +501,6 @@ class FaceclawMediaNotificationListenerService : NotificationListenerService() {
                 bitmap = halved
             }
             return bitmap
-        }
-
-        /**
-         * Debug aid for garbled-icon reports: saves each rendered icon to
-         * <externalFilesDir>/debug-icons/ (adb-pullable) so extraction problems can
-         * be told apart from downstream compositing/transmission problems. Cheap:
-         * runs at most once per icon-cache refresh on tiny bitmaps.
-         */
-        private fun dumpIconDebugPng(service: FaceclawMediaNotificationListenerService, index: Int, packageName: String?, bitmap: Bitmap) {
-            if (index < 0) {
-                return
-            }
-            // Debug aid only. Nobody can pull these files out of a release build,
-            // and the directory kept one file per icon per index forever.
-            if (!isDebuggable(service)) {
-                return
-            }
-            try {
-                val dir = java.io.File(service.getExternalFilesDir(null), "debug-icons")
-                if (!dir.exists() && !dir.mkdirs()) {
-                    return
-                }
-                if (!debugIconsPruned) {
-                    debugIconsPruned = true
-                    dir.listFiles()?.forEach { stale -> stale.delete() }
-                }
-                val safeName = if (packageName == null) "unknown" else packageName.replace(Regex("[^A-Za-z0-9._-]"), "_")
-                val file = java.io.File(dir, "icon-$index-$safeName.png")
-                java.io.FileOutputStream(file).use { stream ->
-                    bitmap.compress(Bitmap.CompressFormat.PNG, 100, stream)
-                }
-            } catch (t: Throwable) {
-                Log.w(TAG, "failed to dump debug icon", t)
-            }
         }
 
         private fun findActiveNotificationByKey(service: FaceclawMediaNotificationListenerService?, key: String?): StatusBarNotification? {
