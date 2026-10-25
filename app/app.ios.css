@@ -56,6 +56,9 @@ Page.main-page {
   color: #222222;
   padding: 16;
 }
+/* The modal stays light in dark mode; outgun the theme's `.ns-dark .h2`
+ * (white) so the title doesn't go white-on-light-gray. */
+.main-page .system-name-modal .h2 { color: #222222; }
 .main-page .system-name-modal TextView {
   margin: 0;
   padding: 4;
