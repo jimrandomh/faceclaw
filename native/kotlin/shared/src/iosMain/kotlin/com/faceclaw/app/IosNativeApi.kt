@@ -195,6 +195,28 @@ class IosProtocol {
 
     fun png(data: NSData, width: Int, height: Int): NSData =
         SharedScreenshots.encode4BitGrayPng(data.byteArray(), width, height).data()
+
+    /**
+     * A [widthLo, widthHi, heightLo, heightHi, B, G, R, A...] packet (little-endian ARGB words,
+     * as CoreGraphics draws them) to the gray packet Android's ImageFileLoader returns, with the
+     * same tone curve and dither. Malformed packets give empty data (no image) rather than an
+     * exception, which would terminate the app on its way into Objective-C.
+     */
+    fun grayPacket(bgra: NSData, gamma: Float, dither: Boolean): NSData {
+        val bytes = bgra.byteArray()
+        if (bytes.size < GrayPacket.HEADER_SIZE) return NSData()
+        val width = (bytes[0].toInt() and 0xff) or ((bytes[1].toInt() and 0xff) shl 8)
+        val height = (bytes[2].toInt() and 0xff) or ((bytes[3].toInt() and 0xff) shl 8)
+        if (width <= 0 || height <= 0 || bytes.size != GrayPacket.HEADER_SIZE + width * height * 4) return NSData()
+        val pixels = IntArray(width * height) { i ->
+            val at = GrayPacket.HEADER_SIZE + i * 4
+            (bytes[at].toInt() and 0xff) or
+                ((bytes[at + 1].toInt() and 0xff) shl 8) or
+                ((bytes[at + 2].toInt() and 0xff) shl 16) or
+                ((bytes[at + 3].toInt() and 0xff) shl 24)
+        }
+        return GrayPacket.fromArgb(pixels, width, height, gamma, dither).data()
+    }
 }
 
 /** iOS retains/coalesces surface updates in the same compositor Android uses. */

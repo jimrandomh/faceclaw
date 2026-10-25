@@ -1,6 +1,6 @@
 import { ensureLocationPermission, hasLocationPermission } from "../../native/location-permissions";
 import { weatherBridge } from "../../native/weather";
-import { toggleSettingMenuItem } from "../../ui/dashboard-settings";
+import { onAnySettingChanged, toggleSettingMenuItem } from "../../ui/dashboard-settings";
 import { openSettingsSubMenu } from "../../ui/dashboard/settings-panel";
 import { WeatherLayer } from "./weather";
 import { weatherShowInStatusBarSetting, weatherShowOnSystemCardSetting } from "./weather-settings";
@@ -19,6 +19,7 @@ export function createWeatherAppWindow(options: InProcessAppOptions): InProcessW
   let closed = false;
   let requestingPermission = false;
   let unsubscribe: (() => void) | null = null;
+  let unsubscribeSettings: (() => void) | null = null;
 
   const requestUpdate = () => {
     if (closed || requestingPermission) return;
@@ -81,11 +82,15 @@ export function createWeatherAppWindow(options: InProcessAppOptions): InProcessW
       closed = true;
       unsubscribe?.();
       unsubscribe = null;
+      unsubscribeSettings?.();
+      unsubscribeSettings = null;
       weatherBridge.stop();
       options.onClosed();
     },
   });
   unsubscribe = weatherBridge.onStateChange(() => app.requestRender());
+  // Repaint for a temperature-unit change made in the Settings app.
+  unsubscribeSettings = onAnySettingChanged(() => app.requestRender());
   requestUpdate();
   return app;
 }

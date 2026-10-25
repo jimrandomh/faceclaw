@@ -34,6 +34,41 @@ class GraphicsCoresTest {
     }
 
     @Test
+    fun lightBackgroundsInvertBeforeTheToneCurve() {
+        val white = 0xffffffff.toInt()
+        val black = 0xff000000.toInt()
+        // A white chart with a black stroke and a fully transparent corner.
+        val chart = IntArray(10 * 10) { white }
+        chart[55] = black
+        chart[0] = 0x00ffffff
+        assertTrue(GrayPacket.hasLightBackground(chart, 10, 10))
+        val inverted = GrayPacket.fromArgb(chart, 10, 10, 2.2f, false, true)
+        assertEquals(0, inverted[4 + 1].toInt() and 0xff) // background goes black
+        assertEquals(255, inverted[4 + 55].toInt() and 0xff) // stroke goes white
+        assertEquals(0, inverted[4 + 0].toInt() and 0xff) // transparent stays black
+        // Mid-gray inverts to its sRGB complement, then takes the tone curve.
+        chart[56] = 0xff404040.toInt()
+        val curve = GrayPacket.toneCurve(2.2f)
+        assertEquals(curve[255 - 0x40], GrayPacket.fromArgb(chart, 10, 10, 2.2f, false, true)[4 + 56].toInt() and 0xff)
+        // Without the flag the conversion is unchanged.
+        assertContentEquals(GrayPacket.fromArgb(chart, 10, 10, 2.2f, false), GrayPacket.fromArgb(chart, 10, 10, 2.2f, false, false))
+    }
+
+    @Test
+    fun darkBackgroundsAndPhotosKeepTheirTones() {
+        // A black chart with a white stroke: already light-on-dark.
+        val dark = IntArray(10 * 10) { 0xff000000.toInt() }
+        dark[55] = 0xffffffff.toInt()
+        assertTrue(!GrayPacket.hasLightBackground(dark, 10, 10))
+        assertContentEquals(GrayPacket.fromArgb(dark, 10, 10, 1f, false), GrayPacket.fromArgb(dark, 10, 10, 1f, false, true))
+        // A photo-like spread of tones, even a bright one, has no background to invert.
+        val ramp = IntArray(16 * 16) { i -> val v = 64 + (i * 191) / 255; 0xff000000.toInt() or (v shl 16) or (v shl 8) or v }
+        assertTrue(!GrayPacket.hasLightBackground(ramp, 16, 16))
+        // A mid-gray background is not light enough to be worth inverting.
+        assertTrue(!GrayPacket.hasLightBackground(IntArray(8 * 8) { 0xff808080.toInt() }, 8, 8))
+    }
+
+    @Test
     fun toneCurveDarkensMidtones() {
         val identity = GrayPacket.toneCurve(1f)
         assertEquals((0..255).toList(), identity.toList())

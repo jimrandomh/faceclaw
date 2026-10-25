@@ -46,6 +46,17 @@ def faceclawNdkHostTag = {
   return "linux-x86_64"
 }
 
+// Host tools carry .exe on Windows. Call the binaries themselves: the NDK's
+// target-prefixed clang wrappers are bash scripts (or .cmd files) that only add
+// --target.
+def faceclawHostExecutable = { File dir, String name ->
+  return file("$dir/$name${Os.isFamily(Os.FAMILY_WINDOWS) ? ".exe" : ""}")
+}
+
+def faceclawNdkTool = { File ndkRoot, String name ->
+  return faceclawHostExecutable(file("$ndkRoot/toolchains/llvm/prebuilt/${faceclawNdkHostTag()}/bin"), name)
+}
+
 def faceclawFindNdkRoot = {
   def explicitNdk = System.getenv("ANDROID_NDK_HOME")
   if (explicitNdk != null && file(explicitNdk).exists()) {
@@ -111,12 +122,7 @@ tasks.register("prepareFaceclawNativeLibs") {
     if (ndkRoot == null || !ndkRoot.exists()) {
       throw new GradleException("Android NDK is required to build libfaceclaw_lc3.so")
     }
-    // The NDK ships the clang driver twice: extensionless (a Unix shell script)
-    // and as .cmd (the CreateProcess-launchable one Windows needs).
-    def clangBin = "$ndkRoot/toolchains/llvm/prebuilt/${faceclawNdkHostTag()}/bin/aarch64-linux-android24-clang"
-    def clang = Os.isFamily(Os.FAMILY_WINDOWS)
-      ? file("${clangBin}.cmd")
-      : file(clangBin)
+    def clang = faceclawNdkTool(ndkRoot, "clang")
     if (!clang.exists()) {
       throw new GradleException("Could not find Android clang at $clang")
     }
@@ -130,6 +136,7 @@ tasks.register("prepareFaceclawNativeLibs") {
     exec {
       commandLine([
         clang.absolutePath,
+        "--target=aarch64-linux-android24",
         "-shared",
         "-fPIC",
         "-O3",
@@ -197,8 +204,8 @@ tasks.register("prepareFaceclawLlama") {
     if (cmakeDir == null) {
       throw new GradleException("Android SDK cmake package is required to build libfaceclaw_llama.so")
     }
-    def cmake = file("$cmakeDir/bin/cmake")
-    def ninja = file("$cmakeDir/bin/ninja")
+    def cmake = faceclawHostExecutable(file("$cmakeDir/bin"), "cmake")
+    def ninja = faceclawHostExecutable(file("$cmakeDir/bin"), "ninja")
     def march = "-march=armv8.2-a+dotprod+fp16"
 
     // Configure once; afterwards the ninja no-op build keeps this cheap while
@@ -232,18 +239,13 @@ tasks.register("prepareFaceclawLlama") {
     }
     // The static-linked lib carries llama.cpp's full debug info (~50MB);
     // strip it so the APK only pays for the code (~8MB).
-    def ndkRootForStrip = faceclawFindNdkRoot()
-    if (ndkRootForStrip != null) {
-      // Windows wants llvm-strip.exe; the extensionless file is a Unix script.
-      def llvmStripBin = "$ndkRootForStrip/toolchains/llvm/prebuilt/${faceclawNdkHostTag()}/bin/llvm-strip"
-      def llvmStrip = Os.isFamily(Os.FAMILY_WINDOWS) && file("${llvmStripBin}.exe").exists()
-        ? file("${llvmStripBin}.exe")
-        : file(llvmStripBin)
-      if (llvmStrip.exists()) {
-        exec {
-          commandLine([llvmStrip.absolutePath, "--strip-unneeded", llamaSo.absolutePath])
-        }
+    def llvmStrip = faceclawNdkTool(ndkRoot, "llvm-strip")
+    if (llvmStrip.exists()) {
+      exec {
+        commandLine([llvmStrip.absolutePath, "--strip-unneeded", llamaSo.absolutePath])
       }
+    } else {
+      logger.warn("Could not find llvm-strip at $llvmStrip; packaging an unstripped libfaceclaw_llama.so (~50MB)")
     }
   }
 }

@@ -7,6 +7,8 @@ export type AndroidNotification = {
   actions: AndroidNotificationAction[]; dismissLabel?: string;
   /** Posted by a foreground service (Android): a "this app is working" status notification. */
   foregroundService?: boolean;
+  /** Carries a picture (Android BigPictureStyle), fetched separately by readNotificationPicture. */
+  hasPicture?: boolean;
   /** Full message size reported by iOS, even when the fetched text is bounded. */
   messageSize?: number;
 };

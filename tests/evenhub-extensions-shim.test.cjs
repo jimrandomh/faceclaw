@@ -7,7 +7,7 @@ const vm = require('node:vm');
 // The injected shim (app/apps/evenhub/session.ts) and the published types
 // (evenhub-extensions/src/index.ts) describe the same API from two sides.
 const source = fs.readFileSync(path.join(__dirname, '../app/apps/evenhub/session.ts'), 'utf8');
-const template = source.match(/export function buildFaceclawExtensionsScript[^`]*`([\s\S]*?)`;\r?\n}/)[1];
+const template = source.match(/export function buildFaceclawExtensionsScript[^`]*`([\s\S]*?)`;\n}/)[1];
 const shim = template.replace('${JSON.stringify(versionString)}', JSON.stringify('Faceclaw/9.9.9'));
 const types = fs.readFileSync(path.join(__dirname, '../evenhub-extensions/src/index.ts'), 'utf8');
 
@@ -29,6 +29,16 @@ function page() {
   const fc = win.getFaceclawExtensions();
   return { win, fc, posted };
 }
+
+test('the package helper returns the shim, and treats unversioned 0.8.0-0.8.2 hosts as absent', () => {
+  const { loader } = require('./helpers/load-typescript.cjs');
+  const helper = (window) => loader(window === undefined ? {} : { window })('evenhub-extensions/src/index.ts').getFaceclawExtensions();
+  const { win, fc } = page();
+  assert.equal(helper(win), fc);
+  assert.equal(helper({ getFaceclawExtensions: () => ({ getVersion: () => 'Faceclaw/0.8.2' }) }), null);
+  assert.equal(helper({}), null);
+  assert.equal(helper(undefined), null);
+});
 
 test('the shim implements exactly the members the package declares', () => {
   const { fc } = page();

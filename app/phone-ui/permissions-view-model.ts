@@ -15,6 +15,7 @@ import { ensureCalendarPermission, hasCalendarPermission } from "../native/calen
 import { isIgnoringBatteryOptimizations, requestIgnoreBatteryOptimizations } from "../native/battery-optimization";
 import { hasAllFilesAccess, requestAllFilesAccess } from "../native/file-access";
 import { isNotificationListenerEnabled, requestNotificationListenerAccess } from "../native/notification-access";
+import { mediaControllerBridge } from "../native/media-controller";
 
 type PermissionDefinition = {
   id: string;
@@ -112,6 +113,12 @@ const PERMISSIONS: PermissionDefinition[] = global.isIOS ? [{
   optional: true,
   isGranted: hasCalendarPermission,
   request: ensureCalendarPermission,
+}, {
+  id: "apple-music", title: "Apple Music",
+  description: "Optional: show and control what's playing in Apple Music, and play your music library, from the glasses.",
+  optional: true,
+  isGranted: () => mediaControllerBridge.hasAccess(),
+  request: () => mediaControllerBridge.requestAccess(),
 }] : ANDROID_PERMISSIONS;
 
 /** One Repeater card: the permission's copy plus the display-only fields the XML binds. */
@@ -168,7 +175,7 @@ export class PermissionsViewModel extends Observable {
   }
 
   get instructions(): string {
-    if (global.isIOS) return "Faceclaw uses Bluetooth to communicate with your smart glasses. Calendar access is optional. Tap a card to allow access; a checkmark means it is ready.";
+    if (global.isIOS) return "Faceclaw uses Bluetooth to communicate with your smart glasses. Calendar and Apple Music access are optional. Tap a card to allow access; a checkmark means it is ready.";
     return this.onboarding
       ? `Faceclaw uses these ${global.isIOS ? "iOS" : "Android"} permissions. Tap a card to grant one; a checkmark means it is already granted. ` +
           "Optional permissions can also be granted later, from the Permissions item in the main-screen menu."

@@ -42,7 +42,7 @@ carry them out.
 
 | Property | Modifier | Type | Description |
 | ------ | ------ | ------ | ------ |
-| <a id="property-apiversion"></a> `apiVersion` | `readonly` | `number` | The extension API level the host implements. It is `1` for the API described here, and increases by one each time members are added. Members added later are documented with the level that introduced them, so an app can check for them before calling: `if (fc.apiVersion >= 2) fc.someNewerMethod();` |
+| <a id="property-apiversion"></a> `apiVersion` | `readonly` | `number` | The extension API level the host implements. It is `1` for the API described here (Faceclaw 0.8.3 and later), and increases by one each time members are added. Members added later are documented with the level that introduced them, so an app can check for them before calling: `if (fc.apiVersion >= 2) fc.someNewerMethod();` |
 
 #### Methods
 
@@ -165,7 +165,9 @@ firmware's per-message limit of 48 steps are split and paced automatically.
 `Promise`\<`void`\>
 
 A promise that resolves once every part of the sequence has been
-  queued on the glasses, which can be before it finishes playing.
+  queued on the glasses, which can be before it finishes playing. It
+  rejects if sending to the glasses fails. If the glasses aren't
+  connected, the sequence is dropped and the promise still resolves.
 
 ##### addCompassListener()
 
@@ -250,6 +252,9 @@ setAssistantTools(tools): void;
 
 Declare the app's voice-assistant tools, replacing any set earlier. Each
 tool's `handler` runs in the app when the assistant calls it.
+
+Faceclaw skips a tool whose `name` or `parameters` break the rules in
+[AssistantTool](#assistanttool), and logs a warning to the app's console saying why.
 
 ###### Parameters
 
@@ -435,6 +440,10 @@ Return the Faceclaw extension API if the app is running inside Faceclaw, or
 `null` otherwise (in the stock Even app, a browser, a simulator, or Node).
 Safe to call anywhere, at any time; Faceclaw installs the API before any page
 script runs.
+
+It also returns `null` in Faceclaw 0.8.0–0.8.2, which had an incomplete,
+unversioned preview of the API. Whenever it returns the API, every member
+of API level 1 is present.
 
 #### Returns
 
@@ -878,8 +887,8 @@ The assistant sees the tool namespaced by the app's package name, as
 
 | Property | Type | Default value | Description |
 | ------ | ------ | ------ | ------ |
-| <a id="property-name"></a> `name` | `string` | `undefined` | Bare tool name (no package prefix), for example `"set_color"`. |
+| <a id="property-name"></a> `name` | `string` | `undefined` | Bare tool name (no package prefix), for example `"set_color"`: 1–64 letters, digits, underscores or hyphens. |
 | <a id="property-description"></a> `description` | `string` | `undefined` | What the tool does. The assistant reads this to decide when to call it. |
-| <a id="property-parameters"></a> `parameters?` | [`JsonSchema`](#jsonschema) | `{ type: "object", properties: {} }` | JSON Schema for the arguments object the assistant will pass to `handler`. |
+| <a id="property-parameters"></a> `parameters?` | [`JsonSchema`](#jsonschema) | `{ type: "object", properties: {} }` | JSON Schema for the arguments object the assistant will pass to `handler`. It must describe an object (`type: "object"`), with any `properties` an object and any `required` an array of names, and must not use `oneOf`, `anyOf` or `allOf` at the top level. These are the schemas the assistant's model providers accept. |
 | <a id="property-availability"></a> `availability?` | `"open"` \| `"foreground"` | `"foreground"` | When the tool can be called: `"foreground"` only while the app owns the visible window, or `"open"` any time the app is running, including in the background. |
-| <a id="property-handler"></a> `handler` | (`args`) => `unknown` | `undefined` | Called when the assistant invokes the tool. Return a string, or any JSON-serializable value, to report back to the assistant. Throw (or reject) to report an error. May be async. |
+| <a id="property-handler"></a> `handler` | (`args`) => `unknown` | `undefined` | Called when the assistant invokes the tool. Return a string, or any JSON-serializable value, to report back to the assistant. Throw (or reject) to report an error. May be async, but must finish within 10 seconds, or the assistant is told the tool timed out. |

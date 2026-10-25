@@ -3,7 +3,7 @@ TARGETED_DEVICE_FAMILY = 1;
 CODE_SIGN_STYLE = Automatic;
 
 // Set IOS_TEAM_ID in build_paths.sh (or pass --teamId) to choose the signing team.
-OTHER_LDFLAGS = $(inherited) -framework CoreBluetooth -framework CoreLocation -framework CoreText -framework Speech -framework AVFoundation -framework WebKit -framework SafariServices -framework UniformTypeIdentifiers -framework ImageIO -framework EventKit
+OTHER_LDFLAGS = $(inherited) -framework CoreBluetooth -framework CoreLocation -framework CoreText -framework Speech -framework AVFoundation -framework WebKit -framework SafariServices -framework UniformTypeIdentifiers -framework ImageIO -framework EventKit -framework MediaPlayer
 
 ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 

@@ -7,6 +7,7 @@ import { type Layer, type LayerContext } from "../../ui/layers";
 import { Menu, type MenuDrawArgs } from "../../ui/menu-core";
 import { centeredTextY, lineStep, tightRowHeight } from "../../ui/metrics";
 import { renderWeatherIcon } from "./weather-icons";
+import { formatTemperature, widestTemperatureSample } from "./temperature-format";
 
 const PAGE_X = 18;
 const HEADER_Y = 8;
@@ -115,7 +116,7 @@ export class WeatherLayer implements Layer {
     const large = getDefaultLargeFont();
     const medium = getDefaultMediumFont();
     const small = getDefaultSmallFont();
-    const temperature = current.temperatureF === null ? "--°" : `${Math.round(current.temperatureF)}°F`;
+    const temperature = current.temperatureF === null ? "--°" : formatTemperature(current.temperatureF);
     const temperatureY = CURRENT_TOP + 8;
     let temperatureX = PAGE_X;
     if (current.condition) {
@@ -182,7 +183,7 @@ export class WeatherLayer implements Layer {
       ...forecast.map((period) => font.measureText(period.name)),
     );
     const tempX = PAGE_X + nameWidth + FORECAST_COL_GAP;
-    const precipX = tempX + Math.max(font.measureText("Temp"), font.measureText("100°F")) + FORECAST_COL_GAP;
+    const precipX = tempX + Math.max(font.measureText("Temp"), font.measureText(widestTemperatureSample())) + FORECAST_COL_GAP;
     const summaryX = precipX + Math.max(font.measureText("Rain"), font.measureText("100%")) + FORECAST_COL_GAP;
 
     image.drawText(font, PAGE_X, FORECAST_HEADER_Y, "Upcoming", 150);
@@ -209,7 +210,7 @@ export class WeatherLayer implements Layer {
     const shade = selected ? 245 : 190;
     const textY = centeredTextY(font, y, height);
     image.drawText(font, x + columns.name, textY, period.name, shade);
-    image.drawText(font, x + columns.temp, textY, period.temperatureF === null ? "--" : `${Math.round(period.temperatureF)}°F`, shade);
+    image.drawText(font, x + columns.temp, textY, period.temperatureF === null ? "--" : formatTemperature(period.temperatureF), shade);
     image.drawText(font, x + columns.precip, textY, period.precipitationPercent === null ? "--" : `${Math.round(period.precipitationPercent)}%`, selected ? 220 : 155);
     // The summary stops PAGE_X short of the viewport's right edge, as the name starts PAGE_X in from the left.
     const summaryWidth = width - columns.summary - columns.name;

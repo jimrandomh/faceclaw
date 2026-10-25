@@ -21,7 +21,7 @@ export function registerSystemTools(registry: ToolRegistry = toolRegistry): void
   registered = true;
 
   // Keep a media listener warm so "what's playing" works without opening Music.
-  if (!global.isIOS) void mediaControllerBridge.start();
+  void mediaControllerBridge.start();
 
   registry.registerSystemTool(
     {
@@ -86,9 +86,6 @@ export function registerSystemTools(registry: ToolRegistry = toolRegistry): void
     },
   );
 
-  // Phone media and Android notification tools are still platform-specific.
-  if (global.isIOS) return;
-
   registry.registerSystemTool(
     {
       name: "media.now_playing",
@@ -126,6 +123,9 @@ export function registerSystemTools(registry: ToolRegistry = toolRegistry): void
       return ok("Skipped to the next track.");
     },
   );
+
+  // Android notification tools are still platform-specific.
+  if (global.isIOS) return;
 
   registry.registerSystemTool(
     {
@@ -181,7 +181,7 @@ function describeState(): string {
 
 function describeNowPlaying(): string {
   const state = mediaControllerBridge.snapshot();
-  if (!state.accessEnabled) return "Notification access isn't granted, so media state is unavailable.";
+  if (!state.accessEnabled) return `Media state is unavailable (${mediaControllerBridge.accessLabel.toLowerCase()}).`;
   if (state.playbackState === "playing" || state.playbackState === "paused") {
     const verb = state.playbackState === "playing" ? "Playing" : "Paused";
     const title = state.title || "(unknown title)";

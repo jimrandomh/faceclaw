@@ -260,3 +260,40 @@ test('EvenHub buzzer RPC uses the host action on iOS and chunks and paces long s
   assert.equal(played.length, 2);
   h.session.close();
 });
+
+test('EvenHub buzzer RPC rejects the app promise when sending fails', async () => {
+  const sounds = loader()('app/ui/sound-effects.ts');
+  const h = sessionHarness({ '../../ui/sound-effects': sounds }, () => Promise.reject(new Error('link lost')));
+  await assert.rejects(h.session.dispatchExtension('playBuzzer', [[{ freq: 880, ms: 50 }]]), /link lost/);
+  h.session.close();
+});
+
+test('EvenHub assistant tools skip malformed names and schemas with a warning in the app console', () => {
+  const offered = [];
+  const h = sessionHarness({ '../../assistant/tool-registry': { toolRegistry: { setAppTools: provider => offered.push(provider), removeAppTools() {} } } });
+  const warnings = [];
+  h.web.console = { warn: message => warnings.push(message) };
+  const object = { type: 'object', properties: { n: { type: 'number' } }, required: ['n'] };
+  h.session.dispatchExtension('setAssistantTools', [[
+    { name: 'ok', description: 'fine', parameters: object },
+    { name: 'no_params', description: 'defaults' },
+    { name: 'has space', parameters: object },
+    { name: 'x'.repeat(65), parameters: object },
+    { name: 'untyped', parameters: { properties: {} } },
+    { name: 'string', parameters: { type: 'string' } },
+    { name: 'union', parameters: { type: 'object', anyOf: [object] } },
+    { name: 'bad_props', parameters: { type: 'object', properties: [] } },
+    { name: 'bad_required', parameters: { type: 'object', required: 'n' } },
+  ]]);
+  // Through JSON: the default schema is built in the session's realm.
+  assert.deepEqual(JSON.parse(JSON.stringify(offered[0].specs.map(spec => [spec.name, spec.inputSchema]))), [
+    ['ok', object],
+    ['no_params', { type: 'object', properties: {} }],
+  ]);
+  assert.equal(warnings.length, 7);
+  assert.ok(warnings.every(message => message.startsWith('Faceclaw: setAssistantTools: skipped tool')));
+  assert.match(warnings[0], /"has space": name must be/);
+  assert.match(warnings[2], /"untyped": parameters must be a JSON Schema with type "object"/);
+  assert.match(warnings[4], /"union": parameters can't use oneOf, anyOf or allOf/);
+  h.session.close();
+});

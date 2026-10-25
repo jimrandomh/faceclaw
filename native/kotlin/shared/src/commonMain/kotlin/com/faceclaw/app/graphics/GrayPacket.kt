@@ -1,5 +1,6 @@
 package com.faceclaw.app
 
+import kotlin.jvm.JvmOverloads
 import kotlin.jvm.JvmStatic
 import kotlin.math.pow
 import kotlin.math.roundToInt
@@ -23,26 +24,81 @@ object GrayPacket {
      * (BmpUtil.GRAY_TO_NIBBLE) instead of leaving each pixel to round on its own, which turns
      * smooth gradients into visible bands. Dithered output is already quantized: every byte is
      * a level times 16, which BmpUtil re-quantizes back to exactly that level.
+     *
+     * invertLightBackground converts a picture drawn on a light background (hasLightBackground)
+     * as its negative, so a chart or screenshot made for a light theme shows light-on-dark: the
+     * display lights what is light, so a light background is a glaring panel, while black is
+     * see-through. The colors are inverted, not their alpha, before the tone curve, where the
+     * sRGB-encoded values are roughly perceptually even; inverting the curve's output instead
+     * would turn dim strokes into ones barely darker than the background.
      */
     @JvmStatic
-    fun fromArgb(pixels: IntArray, width: Int, height: Int, gamma: Float, dither: Boolean): ByteArray {
+    @JvmOverloads
+    fun fromArgb(
+        pixels: IntArray, width: Int, height: Int, gamma: Float, dither: Boolean, invertLightBackground: Boolean = false,
+    ): ByteArray {
         require(width > 0 && height > 0 && pixels.size >= width * height) { "bad pixel plane" }
         val out = ByteArray(HEADER_SIZE + width * height)
         writeHeader(out, width, height)
         val tone = toneCurve(gamma)
+        val invert = invertLightBackground && hasLightBackground(pixels, width, height)
         for (i in 0 until width * height) {
             val p = pixels[i]
-            val a = (p ushr 24) and 0xff
-            val r = (p shr 16) and 0xff
-            val g = (p shr 8) and 0xff
-            val b = p and 0xff
-            out[HEADER_SIZE + i] = tone[((r * 299 + g * 587 + b * 114) / 1000) * a / 255].toByte()
+            val luma = luma(p)
+            out[HEADER_SIZE + i] = tone[(if (invert) 255 - luma else luma) * alpha(p) / 255].toByte()
         }
         if (dither) {
             ditherToDisplayLevels(out, HEADER_SIZE, width, height)
         }
         return out
     }
+
+    /** Grays within this span of each other count as one background (compression noise, faint shading). */
+    private const val BACKGROUND_SPAN = 16
+    /** The share of the pixels a background covers; a photo's tones mostly spread wider than this. */
+    private const val BACKGROUND_MIN_SHARE = 0.4f
+    /** A background at least this light (source gray, before the tone curve) counts as light. */
+    private const val LIGHT_BACKGROUND_MIN_GRAY = 160
+
+    /**
+     * Whether a picture is drawn on a light background: the most populous span of
+     * BACKGROUND_SPAN adjacent grays (as displayed: composited over black, before the tone
+     * curve) covers BACKGROUND_MIN_SHARE of the picture and is light. The flat backgrounds of
+     * charts, screenshots and documents qualify; photographs mostly don't, though a large
+     * blown-out sky can.
+     */
+    @JvmStatic
+    fun hasLightBackground(pixels: IntArray, width: Int, height: Int): Boolean {
+        val count = width * height
+        val histogram = IntArray(256)
+        for (i in 0 until count) {
+            val p = pixels[i]
+            histogram[luma(p) * alpha(p) / 255] += 1
+        }
+        var window = 0
+        var best = 0
+        var bestStart = 0
+        for (v in 0 until 256) {
+            window += histogram[v]
+            if (v >= BACKGROUND_SPAN) {
+                window -= histogram[v - BACKGROUND_SPAN]
+            }
+            if (window > best) {
+                best = window
+                bestStart = maxOf(0, v - BACKGROUND_SPAN + 1)
+            }
+        }
+        return best >= BACKGROUND_MIN_SHARE * count && bestStart + BACKGROUND_SPAN / 2 >= LIGHT_BACKGROUND_MIN_GRAY
+    }
+
+    private fun luma(p: Int): Int {
+        val r = (p shr 16) and 0xff
+        val g = (p shr 8) and 0xff
+        val b = p and 0xff
+        return (r * 299 + g * 587 + b * 114) / 1000
+    }
+
+    private fun alpha(p: Int): Int = (p ushr 24) and 0xff
 
     @JvmStatic
     fun writeHeader(out: ByteArray, width: Int, height: Int) {

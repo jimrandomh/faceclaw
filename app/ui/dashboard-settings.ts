@@ -35,6 +35,7 @@ export type BatteryDisplayMode = "icon" | "percentage" | "stacked" | "stacked-pe
 /** When a top-bar battery indicator is shown: always, only below 50%, or never. */
 export type BatteryIndicatorVisibility = "always" | "low" | "never";
 export type TimeFormat = "24h" | "12h";
+export type TemperatureUnit = "fahrenheit" | "celsius";
 export type ScreenTimeoutSetting = "15s" | "30s" | "1m" | "3m" | "never";
 // Auto runs Faceclaw's light curve. Numeric values use the calibrated firmware
 // scale, clamped to 2–100; 2 is also the endpoint for screen fades.
@@ -328,6 +329,16 @@ export const timeFormatSetting = new ConfigSettingEnum<TimeFormat>({
   values: ["24h", "12h"],
   formatValue: timeFormatLabel,
   description: "Whether the top-bar clock shows 24-hour or 12-hour time.",
+});
+
+export const temperatureUnitSetting = new ConfigSettingEnum<TemperatureUnit>({
+  id: "temperatureUnit",
+  label: "Temperature unit",
+  storageKey: "display.temperatureUnit",
+  defaultValue: "fahrenheit",
+  values: ["fahrenheit", "celsius"],
+  formatValue: (value) => value === "celsius" ? "Celsius" : "Fahrenheit",
+  description: "Whether the Weather app, its top-bar indicator, and the Glanceboard's system card show temperatures in Fahrenheit or Celsius.",
 });
 
 /**
