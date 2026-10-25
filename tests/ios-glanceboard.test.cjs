@@ -25,6 +25,7 @@ function fixture() {
   const observers = new Map(), phoneState = { protectedDataAvailable: true };
   let settingsChanged, remoteHost, controller, bridge = null;
   let now = 1000, nextTask = 0, screenOn = true, shellOptions;
+  const battery = {};
   const tasks = new Map(), sent = [], previews = [], received = [], errors = [];
   const boardStats = { starts: 0, stops: 0, paints: 0 };
   const settings = { lock: true, enabled: true, tap: true, hold: true, tilt: true, duration: 3000, depth: 0 };
@@ -47,7 +48,7 @@ function fixture() {
     wake: () => { screenOn = true; shellOptions.onScreenStateChanged(true); },
     sleep: () => { screenOn = false; shellOptions.onScreenStateChanged(false); },
     isScreenOn: () => screenOn, getWindows: () => [window], foregroundWindow: () => window,
-    setBatteryLevels() {}, underlayDim: () => 1, getFocus: () => 'app', hasOverlay: () => false,
+    setBatteryLevels: levels => Object.assign(battery, levels), underlayDim: () => 1, getFocus: () => 'app', hasOverlay: () => false,
     describeInputTarget: () => 'test app',
     paintScene: () => new Uint8Array([0, 0]), paintSurface: () => [{ image: new images.GrayImage(640, 480, 0), x: 0, y: 0 }],
     receiveInput: async input => {
@@ -105,13 +106,14 @@ function fixture() {
     constructor() { super(); bridge = this; }
     on(kind, fn) { this.listeners[kind] = fn; return () => { if (this.listeners[kind] === fn) delete this.listeners[kind]; }; }
     onStateChange(fn) { return this.on('state', fn); } onRingEvent(fn) { return this.on('ring', fn); }
-    onWearState(fn) { return this.on('wear', fn); } onBatteryState() { return noop(); } onFirmwareInfo() { return noop(); }
-    onFrameMetrics() { return noop(); } addCompassListener() { return noop(); } onAncsRelayFrame() { return noop(); }
+    onWearState(fn) { return this.on('wear', fn); } onBatteryState(fn) { return this.on('battery', fn); } onFirmwareInfo() { return noop(); }
+    onFrameMetrics() { return noop(); } onPreviewAnimationFrame() { return noop(); } addCompassListener() { return noop(); } onAncsRelayFrame() { return noop(); }
     onAncsAuthorization() { return noop(); } setRequiresAncs() {} rightWriteLimit() { return 20; } onPhoneLockSignal() {}
     async writeRawToRight() {} async configureBrightness() {} async setBrightness() {} async enableWearDetectionAndRequestState() {} async playBuzzerSequence() {} async close() {}
     emitState(phase, status = phase) { if (phase === 'connected' || phase === 'disconnected') this.phase = phase; this.listeners.state?.({ phase, status }); }
     emitRing(input) { this.listeners.ring?.(input); }
     emitWear(wearing) { this.listeners.wear?.(wearing); }
+    emitBattery(state) { this.listeners.battery?.(state); }
     async start() { this.emitState('connected', 'Connected.'); }
     async disconnect() { this.emitState('disconnected', 'Disconnected.'); }
     waitForFrameFinished() { return Promise.resolve('sent'); }
@@ -160,7 +162,7 @@ function fixture() {
     '../apps/all-apps': { ALL_APPS: [{ appId: 'glanceboard', glanceboard: provider }] },
     '../apps/onboarding/onboarding-progress': { claimGlassesOnboardingAutoLaunch: () => false },
     '../ui/shell/worker-window': {}, '../ui/shell/in-process-window': {},
-    '../ui/dashboard-settings': { brightnessSetting: { get: () => 'auto' }, brightnessSettingToLevel: () => null, getBrightnessPreferences: () => ({ auto: true, level: 50, minimum: 2, maximum: 100, curve: '0:0,1000:100', fadeMs: 280 }), lockScreenEnabledSetting: { get: () => settings.lock }, onAnySettingChanged: fn => { settingsChanged = fn; return () => {}; }, previewColorSetting: { get: () => 'white' } },
+    '../ui/dashboard-settings': { brightnessSetting: { get: () => 'auto' }, brightnessSettingToLevel: () => null, getBrightnessPreferences: () => ({ auto: true, level: 50, minimum: 2, maximum: 100, curve: '0:0,1000:100', fadeMs: 280 }), lockScreenEnabledSetting: { get: () => settings.lock }, ringConnectionModeSetting: { get: () => 'glasses' }, onAnySettingChanged: fn => { settingsChanged = fn; return () => {}; }, previewColorSetting: { get: () => 'white' } },
     '../native/phone-battery': { readPhoneBatteryState: () => ({ battery: 80, charging: false }) },
     '../apps/ios-availability': { iosAppUnavailableReason: () => null },
     '../graphics/glyph-wire': { prepareFrameDraws: () => null },
@@ -202,7 +204,7 @@ function fixture() {
   }
   async function phone(type, origin = 'ring') { controller.gesture(type, origin); await render(); }
   async function connect() { await controller.connect(); await render(); }
-  return { controller, shell, remoteHost, keyboardChanged: session => shellOptions.onKeyboardInputChanged(session), settings, phoneState, observers,
+  return { controller, shell, battery, remoteHost, keyboardChanged: session => shellOptions.onKeyboardInputChanged(session), settings, phoneState, observers,
     get bridge() { return bridge; }, connect, wear: wearing => bridge.emitWear(wearing), settingsChanged: () => settingsChanged(), sent, previews, received, boardStats, hardware, phone, advance, render };
 }
 const assertBlank = pixels => assert.ok(pixels.every(p => p === 0));
@@ -242,3 +244,17 @@ test('keyboard sessions cannot deliver text after the glasses lock or phone leav
   editor.discard(); assert.deepEqual(calls.at(-1), ['discard']);
 });
 
+
+test('ring battery reported through the glasses reaches the shell while connected', async () => {
+  const f = fixture();
+  await f.connect();
+  f.bridge.emitBattery({ battery: 70, chargingStatus: 0, ringBattery: 55, ringChargingStatus: 1 });
+  assert.deepEqual([f.battery.headset, f.battery.ring, f.battery.ringCharging], [70, 55, true]);
+  // An unavailable ring reading clears the indicator; the headset keeps its last level.
+  f.bridge.emitBattery({ battery: -1, chargingStatus: 0, ringBattery: -1, ringChargingStatus: -1 });
+  assert.deepEqual([f.battery.headset, f.battery.ring, f.battery.ringCharging], [70, null, null]);
+  f.bridge.emitBattery({ battery: 70, chargingStatus: 0, ringBattery: 40, ringChargingStatus: 0 });
+  assert.deepEqual([f.battery.ring, f.battery.ringCharging], [40, false]);
+  await f.controller.disconnect(); await f.render();
+  assert.deepEqual([f.battery.ring, f.battery.ringCharging], [null, null]);
+});

@@ -65,7 +65,7 @@ const FRAME_TRANSMIT_BACKPRESSURE_TIMEOUT_MS = 2000
 
 export type SessionPhase = 'disconnected' | 'connecting' | 'connected' | 'retrying' | 'disconnecting' | 'error'
 export type SessionState = { phase: SessionPhase; status: string; battery: number | null; charging: boolean | null;
-  ring: boolean; frames: number; capabilities: string; leftVersion: string; rightVersion: string;
+  ring: boolean; ringBattery: number | null; ringCharging: boolean | null; frames: number; capabilities: string; leftVersion: string; rightVersion: string;
   /** Why the connected firmware can't run Faceclaw (firmware-compat.ts), or '' when it can or is unknown. */
   firmwareWarning: string }
 
@@ -84,7 +84,7 @@ export class IosPreviewController {
   private communicator: FaceclawCommunicatorBridge | null = null
   private readonly startedCommunicators = new WeakSet<FaceclawCommunicatorBridge>()
   state: SessionState = { phase: 'disconnected', status: 'Preview only', battery: null, charging: null, ring: false,
-    frames: 0, capabilities: '', leftVersion: '', rightVersion: '', firmwareWarning: '' }
+    ringBattery: null, ringCharging: null, frames: 0, capabilities: '', leftVersion: '', rightVersion: '', firmwareWarning: '' }
   private notifications: AncsClient | null = null
   private readonly sessionOffs: (() => void)[] = []
   private stopping: Promise<void> | null = null
@@ -741,11 +741,17 @@ export class IosPreviewController {
     if (this.state.phase !== 'connected' && this.state.phase !== 'connecting') this.glassesWorn = null
     if (this.state.phase !== 'connected') iosVoiceInput.handleSessionEnded()
     this.syncContinuousSession()
-    shell.setBatteryLevels({ headset: this.state.battery, headsetCharging: this.state.charging })
+    this.pushBatteryLevels()
     this.syncPresence()
     this.syncRuntime()
     if (this.active) this.onConnectionState({ ...this.state })
     this.requestShellRender()
+  }
+  /** The ring level arrives through the glasses, so like Android it is shown only while connected. */
+  private pushBatteryLevels(): void {
+    const connected = this.state.phase === 'connected'
+    shell.setBatteryLevels({ headset: this.state.battery, headsetCharging: this.state.charging,
+      ring: connected ? this.state.ringBattery : null, ringCharging: connected ? this.state.ringCharging : null })
   }
   async connect(): Promise<void> {
     if (!this.active || this.connecting || this.stopping) return
@@ -755,7 +761,8 @@ export class IosPreviewController {
     this.connecting = true
     this.sessionCreated = true
     try {
-      this.state = { ...this.state, capabilities: '', leftVersion: '', rightVersion: '', firmwareWarning: '', battery: null, charging: null, ring: false }
+      this.state = { ...this.state, capabilities: '', leftVersion: '', rightVersion: '', firmwareWarning: '', battery: null, charging: null, ring: false,
+        ringBattery: null, ringCharging: null }
       this.firmwareCompatible = false
       this.update('connecting', 'Finding configured devices…')
       let identifiers
@@ -803,10 +810,14 @@ export class IosPreviewController {
       communicator.onRingEvent(input => this.handleRingEvent(input)),
       communicator.onBatteryState(state => {
         if (this.communicator !== communicator) return
+        // Unlike the headset level, an unavailable ring reading (-1: ring away or old
+        // firmware) clears the indicator, as on Android.
+        const ringBattery = state.ringBattery ?? -1, hasRingBattery = Number.isInteger(ringBattery) && ringBattery >= 0 && ringBattery <= 100
         this.state = { ...this.state, battery: state.battery >= 0 && state.battery <= 100 ? state.battery : this.state.battery,
           charging: state.chargingStatus >= 0 ? state.chargingStatus > 0 : this.state.charging,
-          ring: (state.ringBattery ?? -1) >= 0 || this.state.ring }
-        shell.setBatteryLevels({ headset: this.state.battery, headsetCharging: this.state.charging })
+          ring: hasRingBattery || this.state.ring,
+          ringBattery: hasRingBattery ? ringBattery : null, ringCharging: hasRingBattery ? state.ringChargingStatus === 1 : null }
+        this.pushBatteryLevels()
         if (this.active) this.onConnectionState({ ...this.state })
         this.requestShellRender()
       }),
