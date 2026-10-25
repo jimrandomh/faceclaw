@@ -366,7 +366,7 @@ test('iOS preview voice uses the phone microphone, while connected capture stays
 test('iOS continuous capture is shared by windows and restarts after a disconnect, a lock or backgrounding', async () => {
   const calls = [], claims = [], providers = [];
   // Models the bridge's continuous state: listening on a source, or draining after a stop.
-  const bridge = { source: null, draining: false, recording: '',
+  const bridge = { source: null, draining: false, recording: '', rawSession: undefined,
     supportsContinuous: voice => voice.provider !== 'onboard',
     get continuousSource() { return this.source; },
     get continuousActive() { return !!this.source || this.draining; },
@@ -378,7 +378,8 @@ test('iOS continuous capture is shared by windows and restarts after a disconnec
     stopContinuousCapture: async () => { calls.push(['stop']); bridge.drain(); },
     handleSessionEnded() { if (bridge.source === 'glasses') bridge.drain(); },
     stopPhoneCapture() { if (bridge.source === 'phone') bridge.drain(); },
-    recordTo: name => { bridge.recording = name; } };
+    recordTo: name => { bridge.recording = name; },
+    setRawSession: session => { bridge.rawSession = session; } };
   const settings = { ...voiceSettings, voiceProviderSetting: { get: () => 'whisper-server' },
     whisperServerUrlSetting: { get: () => 'http://whisper.local:8000' }, whisperServerLanguageSetting: { get: () => 'en' },
     saveTranscribeAudioSetting: { get: () => true } };
@@ -427,11 +428,13 @@ test('iOS continuous capture is shared by windows and restarts after a disconnec
   session('connected'); await settle();
   assert.deepEqual(calls, [['glasses', true]]);
 
-  // Locking drains; unlocking resumes.
+  // Locking drains; unlocking resumes. EvenHub apps' raw mic tap follows the lock too.
   calls.length = 0; host.setGlassesLocked(true); drained(); await settle();
   assert.deepEqual(calls, []);
+  assert.equal(bridge.rawSession, null, 'locking unbinds the raw mic session');
   host.setGlassesLocked(false); await settle();
   assert.deepEqual(calls, [['glasses', true]]);
+  assert.equal(bridge.rawSession, host.communicator, 'unlocking rebinds it to the connected session');
 
   // A failed capture is not retried in a loop, only on the next session.
   calls.length = 0; bridge.source = null; drained(); await settle();
