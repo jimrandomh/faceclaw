@@ -103,6 +103,15 @@ export interface Layer {
   paintParts?(): Plane[];
   readonly paintOverBase?: boolean;
   /**
+   * True when this layer stands in for `below`, a stacked layer directly
+   * beneath it (or beneath another layer it stands in for): when this layer
+   * calls paintBelow, the stack skips `below` and paints what is under it
+   * instead. A submenu replacing the menu it opened from uses this, so the
+   * hidden menu costs no plane and its dimUnderneath doesn't dim the content
+   * a second time; popping the submenu still returns to it.
+   */
+  replacesLayerBelow?(below: Layer): boolean;
+  /**
    * Dim everything painted beneath this layer: a 0..1 brightness factor
    * applied to the pixels and glyphs of every plane below it in the stack
    * (only meaningful for layers that call paintBelow). false, the default,
@@ -326,7 +335,9 @@ export class LayerStack {
       return [ownPlane];
     }
     const dim = layer.dimUnderneath || 1;
-    const below = this.paintLayer(layer.paintOverBase ? 0 : index - 1, dimSoFar * dim, raw);
+    let belowIndex = layer.paintOverBase ? 0 : index - 1;
+    while (belowIndex > 0 && layer.replacesLayerBelow?.(this.layers[belowIndex]!)) belowIndex--;
+    const below = this.paintLayer(belowIndex, dimSoFar * dim, raw);
     return [...(!raw && dim < 1 ? dimPlanes(below, dim) : below), ownPlane];
   }
 }

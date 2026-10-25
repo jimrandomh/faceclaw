@@ -192,12 +192,13 @@ export function createInProcessWindow(options: InProcessWindowOptions): InProces
     drawIcon: options.drawIcon ?? windowIcon(options.icon, options.iconLetter),
     handleInput: async (event, frameId) => {
       // The shell opened its system menu over this window; close our own
-      // context menu so the two never stack. Never forwarded to app layers.
+      // context menu (and any window submenus open from it) so the two never
+      // stack. Never forwarded to app layers.
       if (event.type === "system-menu-opened") {
         options.onSystemMenuOpened?.();
-        if (stack.popIfTop((layer) => layer instanceof WindowMenuLayer)) {
-          requestRender();
-        }
+        let closedMenu = false;
+        while (stack.popIfTop((layer) => layer instanceof WindowMenuLayer)) closedMenu = true;
+        if (closedMenu) requestRender();
         return;
       }
       // The default tap-then-hold response: the window menu (or the system
