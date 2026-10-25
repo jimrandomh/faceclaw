@@ -41,7 +41,7 @@ import { flattenPlanesWithDraws, planesFingerprint, type Plane } from '../graphi
 import { prepareFrameDraws } from '../graphics/glyph-wire'
 import { G2_LENS_WIDTH, G2_LENS_HEIGHT } from '../graphics/image'
 import { makeInputEvent, type InputEvent, type InputEventPayload } from '../ui/gestures'
-import { noopLayerActions, type LayerActions } from '../ui/layers'
+import { noopLayerActions, type ContinuousCaptureOptions, type LayerActions } from '../ui/layers'
 import { TextViewerLayer } from '../apps/files/text-viewer'
 import { shell, rawInputEventToInputEvent, type ShellWindow } from '../ui/shell/shell'
 import { appViewportRect, isOnSwitcherEdge, sidebarStripVisible, type ScreenRect } from '../ui/shell/geometry'
@@ -51,7 +51,7 @@ import { onAnySettingChanged,
   nightscoutSiteUrlSetting, nightscoutApiTokenSetting, voiceProviderSetting, elevenLabsApiKeySetting,
   openAiApiKeySetting, sonioxApiKeySetting, whisperServerApiKeySetting, whisperServerLanguageSetting,
   whisperServerModelSetting, whisperServerUrlSetting, ringConnectionModeSetting, saveTranscribeAudioSetting } from '../ui/dashboard-settings'
-import type { VoiceProviderSelection } from '../native/cloud-stt-provider'
+import { transcriptionKey, type VoiceProviderSelection } from '../native/cloud-stt-provider'
 import type { PhoneGesture } from '../phone-ui/phone-gestures'
 import { claimGlassesOnboardingAutoLaunch, ONBOARDING_APP_ID } from '../apps/onboarding/onboarding-progress'
 
@@ -148,9 +148,13 @@ export class IosPreviewController {
   private acknowledgedFrames = 0
   private logLines: string[] = []
   private logTimer: ReturnType<typeof setTimeout> | null = null
-  // Windows that want continuous capture, each with the recording it asked for
-  // ('' for none). They share one capture, which runs while any of them wants it.
-  private readonly continuousClients = new Map<string, string>()
+  // Windows that want continuous capture, and what each needs of it (a
+  // recording, a multilingual provider). They share one capture, which runs
+  // while any of them wants it.
+  private readonly continuousClients = new Map<string, ContinuousCaptureOptions>()
+  // transcriptionKey of the running continuous capture's provider; one that no
+  // longer matches what its windows need is drained and restarted.
+  private continuousTranscription = ''
   // Continuous capture should (re)start once audio is available: a window
   // asked, the glasses connected or disconnected, or the glasses lock or the
   // app lifecycle cut it short. A capture that fails doesn't set it, so a
@@ -165,7 +169,7 @@ export class IosPreviewController {
     disconnect: () => this.disconnect(),
     startVoiceCapture: endpointing => this.startVoiceCapture(endpointing),
     stopVoiceCapture: () => iosVoiceInput.stopPushToTalk(),
-    startContinuousVoiceCapture: (client, options) => this.startContinuousVoiceCapture(client, options?.recordAs),
+    startContinuousVoiceCapture: (client, options) => this.startContinuousVoiceCapture(client, options),
     stopContinuousVoiceCapture: client => this.stopContinuousVoiceCapture(client),
     startTextSettingEdit: async setting => { await this.editSetting(setting) },
     startTextSettingsEdit: async (settings, title, finished, toggle, cancelled) => {
@@ -965,15 +969,17 @@ export class IosPreviewController {
   }
   /**
    * Continuous capture on behalf of `client` (one id per window: Transcribe,
-   * Teleprompter, Calculator); it runs while any client wants it, as on Android.
-   * `recordAs` names a WAV of the audio in Downloads when Save Transcribe audio is on.
+   * Translate, Teleprompter, Calculator); it runs while any client wants it, as
+   * on Android. `recordAs` names a WAV of the audio in Downloads when Save
+   * Transcribe audio is on.
    */
-  private startContinuousVoiceCapture(client: string, recordAs = ''): void {
+  private startContinuousVoiceCapture(client: string, options: ContinuousCaptureOptions = {}): void {
+    this.continuousClients.set(client, options)
     if (!iosVoiceInput.supportsContinuous(this.voiceProvider())) {
+      this.continuousClients.delete(client)
       this.onError('Transcribe on iOS needs a cloud or Whisper server transcription provider (Settings > Voice > Transcription Provider).')
       return
     }
-    this.continuousClients.set(client, recordAs)
     this.syncContinuousRecording()
     // A listening capture is shared as it is; otherwise start one (after any drain).
     if (!iosVoiceInput.continuousSource) this.continuousPending = true
@@ -982,7 +988,8 @@ export class IosPreviewController {
   private stopContinuousVoiceCapture(client: string): void {
     if (!this.continuousClients.delete(client)) return
     this.syncContinuousRecording()
-    if (this.continuousClients.size > 0) return
+    // The window that needed its own provider may be the one that left.
+    if (this.continuousClients.size > 0) { this.syncContinuousCapture(); return }
     // A start still awaiting permission or the mic backs off.
     ++this.continuousCaptureToken
     this.continuousPending = false
@@ -1009,8 +1016,10 @@ export class IosPreviewController {
     const glassesReady = !!this.communicator && this.state.phase === 'connected'
     if (iosVoiceInput.continuousActive) {
       // Draining or listening already. A phone capture from before the glasses
-      // connected is drained here, and its end restarts it on the glasses.
-      if (glassesReady && iosVoiceInput.continuousSource === 'phone') {
+      // connected is drained here, and its end restarts it on the glasses; so
+      // is one transcribing with another provider than its windows now need.
+      const retarget = this.continuousTranscription !== transcriptionKey(this.voiceProvider())
+      if (iosVoiceInput.continuousSource && (retarget || glassesReady && iosVoiceInput.continuousSource === 'phone')) {
         this.continuousPending = true
         void iosVoiceInput.stopContinuousCapture()
       }
@@ -1023,6 +1032,7 @@ export class IosPreviewController {
   private async beginContinuousCapture(): Promise<void> {
     const voice = this.voiceProvider()
     if (!iosVoiceInput.supportsContinuous(voice)) return
+    this.continuousTranscription = transcriptionKey(voice)
     // A stop during an await below bumps the token; this start then backs off.
     const token = ++this.continuousCaptureToken
     const current = () => token === this.continuousCaptureToken
@@ -1043,15 +1053,20 @@ export class IosPreviewController {
   }
   /** Record to the first client's requested name while Save Transcribe audio is on. */
   private syncContinuousRecording(): void {
-    const name = saveTranscribeAudioSetting.get() ? [...this.continuousClients.values()].find(Boolean) ?? '' : ''
+    const name = saveTranscribeAudioSetting.get() ? [...this.continuousClients.values()].map(options => options.recordAs).find(Boolean) ?? '' : ''
     iosVoiceInput.recordTo(name)
   }
-  /** The transcription provider setting and the keys the cloud ones need. */
+  /**
+   * The transcription provider setting and the keys the cloud ones need. A
+   * window that needs a multilingual provider (Translate) sets it for every
+   * capture while it is open, with Whisper left to detect the language.
+   */
   private voiceProvider(): VoiceProviderSelection {
-    return { provider: voiceProviderSetting.get(), elevenLabsApiKey: elevenLabsApiKeySetting.get(),
+    const multilingual = [...this.continuousClients.values()].find(options => options.multilingualProvider)?.multilingualProvider
+    return { provider: multilingual ?? voiceProviderSetting.get(), elevenLabsApiKey: elevenLabsApiKeySetting.get(),
       openAiApiKey: openAiApiKeySetting.get(), sonioxApiKey: sonioxApiKeySetting.get(),
       whisperServerUrl: whisperServerUrlSetting.get(), whisperServerModel: whisperServerModelSetting.get(),
-      whisperServerLanguage: whisperServerLanguageSetting.get(), whisperServerApiKey: whisperServerApiKeySetting.get() }
+      whisperServerLanguage: multilingual ? '' : whisperServerLanguageSetting.get(), whisperServerApiKey: whisperServerApiKeySetting.get() }
   }
   private logBluetooth(message: string): void {
     const line = `${new Date().toISOString()} [${this.active ? 'foreground' : 'background'}${UIApplication.sharedApplication.protectedDataAvailable ? '' : ',protected-data-unavailable'}] ${message}`

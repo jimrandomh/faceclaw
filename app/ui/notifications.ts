@@ -10,6 +10,7 @@ import {
   invokeNotificationAction,
   readActiveNotifications,
   readNotificationIconByKey,
+  readNotificationPicture,
   type AndroidNotification,
   type AndroidNotificationAction,
 } from "../native/notification-icons";
@@ -44,6 +45,13 @@ const DETAIL_TITLE_Y = 21;
 /** Gaps below the title's line box and below the icon/app-name header row. */
 const DETAIL_HEADER_GAP = 3;
 const DETAIL_BODY_GAP = 4;
+/** Text lines an attached picture leaves room for above it (when there are that many); it takes the rest. */
+const DETAIL_PICTURE_TEXT_LINES = 2;
+/** Gap between the text and an attached picture, and the space kept below the picture. */
+const DETAIL_PICTURE_GAP = 6;
+const DETAIL_PICTURE_BOTTOM_MARGIN = 12;
+/** An attached picture with less height than this to fit in (a large UI font) is left out. */
+const DETAIL_PICTURE_MIN_HEIGHT = 32;
 // Disable-source confirmation: actions on top, the explanation below them.
 const CONFIRM_X = 24;
 const CONFIRM_Y = 8;
@@ -57,6 +65,16 @@ function iconForNotification(key: string): GrayImage | null {
     noteStaleDataUsed();
   }
   return icon;
+}
+
+/** Attached picture for a paint pass, fitting maxWidth x maxHeight; allow-stale like iconForNotification. */
+function pictureForNotification(notification: AndroidNotification, maxWidth: number, maxHeight: number): GrayImage | null {
+  if (!notification.hasPicture || maxHeight < DETAIL_PICTURE_MIN_HEIGHT) return null;
+  const { picture, stale } = readNotificationPicture(notification, maxWidth, maxHeight, renderPassAllowsStaleData());
+  if (stale) {
+    noteStaleDataUsed();
+  }
+  return picture;
 }
 
 type CardLayout = {
@@ -422,23 +440,46 @@ function drawDetailContent(
   const bodyTop = drawNotificationHeader(image, font, icon, `${notification.appName || notification.packageName}  ${formatRelativeTime(notification.postTime)}`);
 
   const lines: string[] = [];
-  lines.push(...wrapText(font, notification.title || "(untitled)", contentWidth));
+  // A picture can be the whole notification (Dexcom's has no text), so it
+  // stands in for the "(untitled)" placeholder.
+  const hasTitle = Boolean(notification.title) || !notification.hasPicture;
+  if (hasTitle) {
+    lines.push(...wrapText(font, notification.title || "(untitled)", contentWidth));
+  }
   const body = detailNotificationBody(notification);
   if (body) {
-    lines.push("");
+    if (lines.length) lines.push("");
     lines.push(...wrapText(font, body, contentWidth));
   }
   const meta = [notification.subText, notification.infoText, notification.summaryText].filter(Boolean).join("  ");
   if (meta) {
-    lines.push("");
+    if (lines.length) lines.push("");
     lines.push(...wrapText(font, meta, contentWidth));
   }
 
   const step = lineStep(font);
+  const textValue = (index: number) => index === 0 && hasTitle ? 230 : 190;
+  const reservedTextHeight = Math.min(lines.length, DETAIL_PICTURE_TEXT_LINES) * step;
+  const picture = pictureForNotification(notification, contentWidth,
+    height - DETAIL_PICTURE_BOTTOM_MARGIN - bodyTop - reservedTextHeight - (reservedTextHeight ? DETAIL_PICTURE_GAP : 0));
+  if (picture) {
+    // The text gets whatever the picture leaves, above it, with its last
+    // shown line marked when some is cut off.
+    const roomForText = height - DETAIL_PICTURE_BOTTOM_MARGIN - picture.height - DETAIL_PICTURE_GAP - bodyTop;
+    const shownLines = Math.min(lines.length, Math.max(0, (roomForText / step) | 0));
+    for (let index = 0; index < shownLines; index++) {
+      const line = index === shownLines - 1 && lines.length > shownLines
+        ? truncateText(font, lines[index] + "...", contentWidth) : lines[index]!;
+      image.drawText(font, contentX, bodyTop + index * step, line, textValue(index));
+    }
+    image.bitBlt(picture, contentX, bodyTop + shownLines * step + (shownLines ? DETAIL_PICTURE_GAP : 0));
+    return;
+  }
+
   const maxLines = Math.max(1, ((height - bodyTop - step) / step) | 0);
   for (let index = 0; index < Math.min(lines.length, maxLines); index++) {
     const line = lines[index]!;
-    image.drawText(font, contentX, bodyTop + index * step, line, index === 0 ? 230 : 190);
+    image.drawText(font, contentX, bodyTop + index * step, line, textValue(index));
   }
   if (lines.length > maxLines) {
     image.drawText(font, contentX, height - 24, "...", 140);

@@ -30,6 +30,8 @@
   <string>Faceclaw reads your upcoming calendar events to display them in Calendar and Glanceboard on your glasses.</string>
   <key>NSCalendarsFullAccessUsageDescription</key>
   <string>Faceclaw reads your upcoming calendar events to display them in Calendar and Glanceboard on your glasses.</string>
+  <key>NSAppleMusicUsageDescription</key>
+  <string>Faceclaw shows what is playing in Apple Music on your glasses, controls playback, and lets you browse and play your music library from the glasses.</string>
   <key>NSLocationWhenInUseUsageDescription</key>
   <string>Faceclaw uses your location for local weather, turn-by-turn navigation, and true north on the glasses compass.</string>
   <key>NSLocationTemporaryUsageDescriptionDictionary</key>

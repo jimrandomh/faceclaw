@@ -23,6 +23,21 @@ class IosNativeApiTest {
     }
 
     @Test
+    fun bgraPacketsConvertWithTheSharedGrayTone() {
+        // 2x1: opaque orange, half-transparent white (B, G, R, A in memory).
+        val bgra = byteArrayOf(2, 0, 1, 0, 0x20, 0x80.toByte(), 0xff.toByte(), 0xff.toByte(),
+            0xff.toByte(), 0xff.toByte(), 0xff.toByte(), 0x80.toByte())
+        val argb = intArrayOf(0xffff8020.toInt(), 0x80ffffff.toInt())
+        val protocol = IosProtocol()
+        for (dither in listOf(false, true)) {
+            assertContentEquals(GrayPacket.fromArgb(argb, 2, 1, 2.2f, dither),
+                protocol.grayPacket(bgra.data(), 2.2f, dither).byteArray())
+        }
+        assertEquals(0UL, protocol.grayPacket(bgra.copyOf(10).data(), 1f, false).length)
+        assertEquals(0UL, protocol.grayPacket(byteArrayOf(0, 0, 1, 0).data(), 1f, false).length)
+    }
+
+    @Test
     fun compassFacadePreservesTheEndOfTheCrcFreePayload() {
         val protocol = IosProtocol()
         val payload = byteArrayOf(8, 15, 16, 0, 82, 3, 8, -25, 2).data()

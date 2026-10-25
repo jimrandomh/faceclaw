@@ -1,22 +1,11 @@
 import { Utils } from "@nativescript/core";
 import { ignoredMediaPackages, isMediaAppEnabled, MEDIA_APPS_KEY, rememberMediaApps } from "./media-apps";
 import { onSettingsStoreChanged } from "./settings-store";
+import { parseMediaBrowseItems, type MediaBrowseItem, type MediaBrowserApp, type MediaBrowserBridge } from "./media-types";
 
 declare const com: any;
 
-export type MediaBrowserApp = {
-  packageName: string;
-  serviceClass: string;
-  appName: string;
-};
-
-export type MediaBrowseItem = {
-  mediaId: string;
-  title: string;
-  subtitle: string;
-  browsable: boolean;
-  playable: boolean;
-};
+export type { MediaBrowseItem, MediaBrowserApp } from "./media-types";
 
 type PendingRequest<T> = {
   resolve: (value: T) => void;
@@ -29,7 +18,7 @@ type PendingRequest<T> = {
  * start playback, including starting a player that is not currently running.
  * Holds at most one connection at a time.
  */
-export class FaceclawMediaBrowserBridge {
+export class FaceclawMediaBrowserBridge implements MediaBrowserBridge {
   private browser: any = null;
   private listenerProxy: any = null;
   private nextRequestId = 1;
@@ -155,22 +144,7 @@ export class FaceclawMediaBrowserBridge {
           return;
         }
         try {
-          const raw = JSON.parse(json) as Array<{
-            mediaId?: string;
-            title?: string;
-            subtitle?: string;
-            browsable?: boolean;
-            playable?: boolean;
-          }>;
-          pending.resolve(
-            raw.map((item) => ({
-              mediaId: String(item.mediaId ?? ""),
-              title: String(item.title ?? ""),
-              subtitle: String(item.subtitle ?? ""),
-              browsable: Boolean(item.browsable),
-              playable: Boolean(item.playable),
-            })),
-          );
+          pending.resolve(parseMediaBrowseItems(json));
         } catch (parseError) {
           pending.reject(new Error(`Browse result parse failed: ${parseError}`));
         }
@@ -183,4 +157,4 @@ export class FaceclawMediaBrowserBridge {
   }
 }
 
-export const mediaBrowserBridge = new FaceclawMediaBrowserBridge();
+export const mediaBrowserBridge: MediaBrowserBridge = new FaceclawMediaBrowserBridge();

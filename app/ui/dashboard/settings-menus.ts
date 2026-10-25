@@ -76,6 +76,7 @@ import {
   saveVoiceRecordingsSetting,
   showBleBandwidthSetting,
   suspendEvenHubWhenScreenOffSetting,
+  temperatureUnitSetting,
   textSettingMenuItem,
   timeFormatSetting,
   toggleSettingMenuItem,
@@ -289,6 +290,8 @@ function customizationRows(): () => MenuItem[] {
     animationsMenuItem(),
     // Controls the top-bar clock (24-hour vs 12-hour).
     enumSettingMenuItem(timeFormatSetting),
+    // Fahrenheit or Celsius, wherever weather temperatures show.
+    enumSettingMenuItem(temperatureUnitSetting),
   ];
   const bottomRows = [font, position, depth, statusBar, ...rest];
   const popupRows = [font, position, depth, statusBar, statusBarVisibility, windowBorder, ...rest];

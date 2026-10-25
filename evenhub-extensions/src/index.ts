@@ -489,12 +489,19 @@ export type JsonSchema = Record<string, unknown>;
  * @group Assistant tools
  */
 export interface AssistantTool<Args = any> {
-  /** Bare tool name (no package prefix), for example `"set_color"`. */
+  /**
+   * Bare tool name (no package prefix), for example `"set_color"`: 1–64
+   * letters, digits, underscores or hyphens.
+   */
   name: string;
   /** What the tool does. The assistant reads this to decide when to call it. */
   description: string;
   /**
    * JSON Schema for the arguments object the assistant will pass to `handler`.
+   * It must describe an object (`type: "object"`), with any `properties` an
+   * object and any `required` an array of names, and must not use `oneOf`,
+   * `anyOf` or `allOf` at the top level. These are the schemas the
+   * assistant's model providers accept.
    * @defaultValue { type: "object", properties: {} }
    */
   parameters?: JsonSchema;
@@ -508,7 +515,8 @@ export interface AssistantTool<Args = any> {
   /**
    * Called when the assistant invokes the tool. Return a string, or any
    * JSON-serializable value, to report back to the assistant. Throw (or reject)
-   * to report an error. May be async.
+   * to report an error. May be async, but must finish within 10 seconds, or
+   * the assistant is told the tool timed out.
    */
   handler: (args: Args) => unknown;
 }
@@ -525,9 +533,9 @@ export interface AssistantTool<Args = any> {
 export interface FaceclawExtensions {
   /**
    * The extension API level the host implements. It is `1` for the API
-   * described here, and increases by one each time members are added. Members
-   * added later are documented with the level that introduced them, so an app
-   * can check for them before calling:
+   * described here (Faceclaw 0.8.3 and later), and increases by one each time
+   * members are added. Members added later are documented with the level that
+   * introduced them, so an app can check for them before calling:
    *
    * ```ts
    * if (fc.apiVersion >= 2) fc.someNewerMethod();
@@ -587,7 +595,9 @@ export interface FaceclawExtensions {
    * firmware's per-message limit of 48 steps are split and paced automatically.
    *
    * @returns A promise that resolves once every part of the sequence has been
-   *   queued on the glasses, which can be before it finishes playing.
+   *   queued on the glasses, which can be before it finishes playing. It
+   *   rejects if sending to the glasses fails. If the glasses aren't
+   *   connected, the sequence is dropped and the promise still resolves.
    */
   playBuzzer(steps: BuzzerStep[]): Promise<void>;
 
@@ -631,6 +641,9 @@ export interface FaceclawExtensions {
   /**
    * Declare the app's voice-assistant tools, replacing any set earlier. Each
    * tool's `handler` runs in the app when the assistant calls it.
+   *
+   * Faceclaw skips a tool whose `name` or `parameters` break the rules in
+   * {@link AssistantTool}, and logs a warning to the app's console saying why.
    *
    * @param tools - The tools to offer. Pass `[]` to remove them all.
    */
@@ -718,7 +731,9 @@ declare global {
     /**
      * Injected by Faceclaw before any page script runs. `undefined` in the
      * stock Even app and other hosts. Prefer {@link getFaceclawExtensions},
-     * which checks for it.
+     * which checks for it. If you call it directly, check that the result's
+     * `apiVersion` is a number: Faceclaw 0.8.0–0.8.2 returned an incomplete
+     * preview without one.
      */
     getFaceclawExtensions?: (() => FaceclawExtensions) | null;
   }
@@ -730,9 +745,17 @@ declare global {
  * Safe to call anywhere, at any time; Faceclaw installs the API before any page
  * script runs.
  *
+ * It also returns `null` in Faceclaw 0.8.0–0.8.2, which had an incomplete,
+ * unversioned preview of the API. Whenever it returns the API, every member
+ * of API level 1 is present.
+ *
  * @group Entry point
  */
 export function getFaceclawExtensions(): FaceclawExtensions | null {
   const getter = typeof window !== "undefined" ? window.getFaceclawExtensions : null;
-  return typeof getter === "function" ? getter() : null;
+  if (typeof getter !== "function") return null;
+  const extensions = getter();
+  // Faceclaw 0.8.0–0.8.2 injected an unversioned preview with only some of
+  // the level-1 members; treat it as absent.
+  return extensions && typeof extensions.apiVersion === "number" ? extensions : null;
 }

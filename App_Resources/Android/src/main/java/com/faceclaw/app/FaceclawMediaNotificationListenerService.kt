@@ -6,10 +6,10 @@ import android.app.PendingIntent
 import android.content.ComponentName
 import android.graphics.Bitmap
 import android.graphics.Canvas
-import android.graphics.Color
 import android.graphics.drawable.BitmapDrawable
 import android.graphics.drawable.Drawable
 import android.graphics.drawable.Icon
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -30,7 +30,6 @@ import org.json.JSONObject
 class FaceclawMediaNotificationListenerService : NotificationListenerService() {
     companion object {
         private const val TAG = "FaceclawNotify"
-        private const val NOTIFICATION_ICON_GAMMA = 1.6
         /** First delay before asking the system to rebind after a disconnect. */
         private const val REBIND_BASE_DELAY_MS = 1000
         /** Rebinds back off from the base delay by this many doublings, then stay there. */
@@ -132,15 +131,16 @@ class FaceclawMediaNotificationListenerService : NotificationListenerService() {
                 if (dedupeGroupKey != null && emittedGroupKeys.contains(dedupeGroupKey)) {
                     continue
                 }
-                val drawable = loadNotificationIcon(service, statusBarNotification.notification)
-                if (drawable == null) {
-                    Log.i(TAG, "icon skipped (no drawable): " + statusBarNotification.packageName)
+                val icon = NotificationIconLoader.iconFor(service, statusBarNotification, size) {
+                    getNotificationAppName(service, statusBarNotification)
+                }
+                if (icon == null) {
+                    Log.i(TAG, "icon skipped (nothing to draw): " + statusBarNotification.packageName)
                     continue
                 }
                 Log.i(TAG, "icon[" + emitted + "] pkg=" + statusBarNotification.packageName
-                    + " drawable=" + drawable.javaClass.simpleName
-                    + " intrinsic=" + drawable.intrinsicWidth + "x" + drawable.intrinsicHeight)
-                appendIconGrayBytes(drawable, size, out, service, emitted, statusBarNotification.packageName)
+                    + " source=" + icon.source + " kind=" + icon.art.kind)
+                out.write(icon.art.gray)
                 keysOut?.add(statusBarNotification.key ?: "")
                 if (dedupeGroupKey != null) {
                     emittedGroupKeys.add(dedupeGroupKey)
@@ -170,13 +170,37 @@ class FaceclawMediaNotificationListenerService : NotificationListenerService() {
             if (statusBarNotification == null || statusBarNotification.notification == null) {
                 return ByteArray(0)
             }
-            val drawable = loadNotificationIcon(service, statusBarNotification.notification)
-            if (drawable == null) {
+            val icon = NotificationIconLoader.iconFor(service, statusBarNotification, size) {
+                getNotificationAppName(service, statusBarNotification)
+            }
+            return icon?.art?.gray ?: ByteArray(0)
+        }
+
+        /**
+         * The picture attached to one active notification (BigPictureStyle: a
+         * photo, a screenshot, Dexcom's glucose graph), scaled to fit
+         * maxWidth x maxHeight as a gray packet with the tone handling (and
+         * light-background inversion) of ImageFileLoader.bitmapToGrayPacket;
+         * empty when the notification or its picture is unavailable.
+         */
+        @JvmStatic
+        fun getNotificationPictureGray(
+            key: String?, maxWidth: Int, maxHeight: Int, gamma: Float, dither: Boolean, invertLightBackground: Boolean,
+        ): ByteArray {
+            val service = activeService
+            if (service == null || maxWidth <= 0 || maxHeight <= 0) {
                 return ByteArray(0)
             }
-            val out = ByteArrayOutputStream(size * size)
-            appendIconGrayBytes(drawable, size, out, service, -1, statusBarNotification.packageName)
-            return out.toByteArray()
+            val statusBarNotification = findActiveNotificationByKey(service, key)
+            if (statusBarNotification == null || statusBarNotification.notification == null) {
+                return ByteArray(0)
+            }
+            val picture = loadNotificationPicture(service, statusBarNotification.notification)
+            if (picture == null) {
+                return ByteArray(0)
+            }
+            return ImageFileLoader.bitmapToGrayPacket(
+                halveToward(picture, maxWidth, maxHeight), maxWidth, maxHeight, gamma, dither, invertLightBackground)
         }
 
         @JvmStatic
@@ -417,107 +441,77 @@ class FaceclawMediaNotificationListenerService : NotificationListenerService() {
             return groupKey
         }
 
-        private fun loadNotificationIcon(service: FaceclawMediaNotificationListenerService, notification: Notification): Drawable? {
+        /** Whether a notification carries a picture for loadNotificationPicture, without loading it. */
+        @Suppress("DEPRECATION")
+        private fun hasNotificationPicture(extras: Bundle): Boolean {
+            return extras.get(Notification.EXTRA_PICTURE) != null
+                || (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && extras.get(Notification.EXTRA_PICTURE_ICON) != null)
+        }
+
+        /**
+         * A notification's attached picture: BigPictureStyle's bitmap
+         * (EXTRA_PICTURE) or, from Android 12, its Icon (EXTRA_PICTURE_ICON).
+         * Newer releases swap large pictures for a content URI to a bitmap
+         * the system has offloaded (Dexcom's graph arrives that way); the
+         * offload provider lets enabled notification listeners open those.
+         */
+        @Suppress("DEPRECATION")
+        private fun loadNotificationPicture(service: FaceclawMediaNotificationListenerService, notification: Notification): Bitmap? {
+            val extras: Bundle = notification.extras ?: return null
             try {
-                val smallIcon: Icon? = notification.smallIcon
-                if (smallIcon != null) {
-                    val drawable: Drawable? = smallIcon.loadDrawable(service)
-                    if (drawable != null) {
-                        // Status-bar small icons are alpha templates: the platform
-                        // draws them tinted and ignores their color channels, which
-                        // apps may fill with garbage (Discord ships noise there).
-                        // Tint white so the shape comes from alpha alone, matching
-                        // how the status bar renders them.
-                        drawable.mutate()
-                        drawable.setTint(Color.WHITE)
-                        if (drawable is BitmapDrawable) {
-                            drawable.setFilterBitmap(true)
-                        }
-                        return drawable
-                    }
+                val picture: Bitmap? = extras.getParcelable(Notification.EXTRA_PICTURE)
+                if (picture != null) {
+                    return softwareBitmap(picture)
                 }
             } catch (t: Throwable) {
-                Log.w(TAG, "failed to load small notification icon", t)
+                Log.w(TAG, "failed to read notification picture", t)
+            }
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
+                return null
             }
             try {
-                // Large icons are real color images (avatars, album art); keep color.
-                val largeIcon: Icon? = notification.getLargeIcon()
-                if (largeIcon != null) {
-                    return largeIcon.loadDrawable(service)
+                val icon: Icon? = extras.getParcelable(Notification.EXTRA_PICTURE_ICON)
+                val drawable: Drawable? = icon?.loadDrawable(service)
+                if (drawable is BitmapDrawable && drawable.bitmap != null) {
+                    return softwareBitmap(drawable.bitmap)
+                }
+                if (drawable != null && drawable.intrinsicWidth > 0 && drawable.intrinsicHeight > 0) {
+                    val bitmap = Bitmap.createBitmap(drawable.intrinsicWidth, drawable.intrinsicHeight, Bitmap.Config.ARGB_8888)
+                    drawable.setBounds(0, 0, bitmap.width, bitmap.height)
+                    drawable.draw(Canvas(bitmap))
+                    return bitmap
                 }
             } catch (t: Throwable) {
-                Log.w(TAG, "failed to load large notification icon", t)
+                Log.w(TAG, "failed to load notification picture icon", t)
             }
             return null
         }
 
-        private fun appendIconGrayBytes(drawable: Drawable, size: Int, out: ByteArrayOutputStream,
-                                        service: FaceclawMediaNotificationListenerService, index: Int, packageName: String?) {
-            val bitmap = renderIconScaled(drawable, size)
-            dumpIconDebugPng(service, index, packageName, bitmap)
-            for (y in 0 until size) {
-                for (x in 0 until size) {
-                    val color = bitmap.getPixel(x, y)
-                    val alpha = Color.alpha(color)
-                    val grayLinear = (0.2126 * Color.red(color) + 0.7152 * Color.green(color) + 0.0722 * Color.blue(color)) * alpha / (255.0 * 255.0)
-                    val gray = Math.round(255.0 * Math.pow(Math.max(0.0, Math.min(1.0, grayLinear)), NOTIFICATION_ICON_GAMMA)).toInt()
-                    out.write(gray and 0xff)
-                }
-            }
-            bitmap.recycle()
-        }
-
-
-        /**
-         * Render a drawable at the target size with proper downscaling. Detailed
-         * sources (e.g. avatar bitmaps used as notification icons) are rendered at
-         * native resolution and reduced by repeated halving: a single filtered pass
-         * from, say, 126px to 24px samples too sparsely and turns fine detail into
-         * speckle that reads as a garbled icon.
-         */
-        private fun renderIconScaled(drawable: Drawable, size: Int): Bitmap {
-            val renderW = Math.max(size, drawable.intrinsicWidth)
-            val renderH = Math.max(size, drawable.intrinsicHeight)
-            var bitmap = Bitmap.createBitmap(renderW, renderH, Bitmap.Config.ARGB_8888)
-            val canvas = Canvas(bitmap)
-            drawable.setBounds(0, 0, renderW, renderH)
-            drawable.draw(canvas)
-            while (bitmap.width >= size * 2 && bitmap.height >= size * 2) {
-                val halved = Bitmap.createScaledBitmap(bitmap, bitmap.width / 2, bitmap.height / 2, true)
-                bitmap.recycle()
-                bitmap = halved
-            }
-            if (bitmap.width != size || bitmap.height != size) {
-                val scaled = Bitmap.createScaledBitmap(bitmap, size, size, true)
-                bitmap.recycle()
-                bitmap = scaled
+        /** Hardware bitmaps can't be read back pixel by pixel or drawn on a software canvas; copy those. */
+        private fun softwareBitmap(bitmap: Bitmap): Bitmap {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && bitmap.config == Bitmap.Config.HARDWARE) {
+                return bitmap.copy(Bitmap.Config.ARGB_8888, false)
             }
             return bitmap
         }
 
         /**
-         * Debug aid for garbled-icon reports: saves each rendered icon to
-         * <externalFilesDir>/debug-icons/ (adb-pullable) so extraction problems can
-         * be told apart from downstream compositing/transmission problems. Cheap:
-         * runs at most once per icon-cache refresh on tiny bitmaps.
+         * Halve a picture while it is still at least twice the size it will
+         * be shown at, leaving the last (under 2x) step of fitting it into
+         * maxWidth x maxHeight to bitmapToGrayPacket. As with icons
+         * (NotificationIconLoader.renderArgb), one filtered pass from a much larger source
+         * samples too sparsely: a graph's thin lines break up into dots.
          */
-        private fun dumpIconDebugPng(service: FaceclawMediaNotificationListenerService, index: Int, packageName: String?, bitmap: Bitmap) {
-            if (index < 0) {
-                return
-            }
-            try {
-                val dir = java.io.File(service.getExternalFilesDir(null), "debug-icons")
-                if (!dir.exists() && !dir.mkdirs()) {
-                    return
+        private fun halveToward(source: Bitmap, maxWidth: Int, maxHeight: Int): Bitmap {
+            var bitmap = source
+            while ((bitmap.width >= maxWidth * 2 || bitmap.height >= maxHeight * 2) && bitmap.width >= 2 && bitmap.height >= 2) {
+                val halved = Bitmap.createScaledBitmap(bitmap, bitmap.width / 2, bitmap.height / 2, true)
+                if (bitmap !== source) {
+                    bitmap.recycle()
                 }
-                val safeName = if (packageName == null) "unknown" else packageName.replace(Regex("[^A-Za-z0-9._-]"), "_")
-                val file = java.io.File(dir, "icon-$index-$safeName.png")
-                java.io.FileOutputStream(file).use { stream ->
-                    bitmap.compress(Bitmap.CompressFormat.PNG, 100, stream)
-                }
-            } catch (t: Throwable) {
-                Log.w(TAG, "failed to dump debug icon", t)
+                bitmap = halved
             }
+            return bitmap
         }
 
         private fun findActiveNotificationByKey(service: FaceclawMediaNotificationListenerService?, key: String?): StatusBarNotification? {
@@ -575,8 +569,10 @@ class FaceclawMediaNotificationListenerService : NotificationListenerService() {
                     }
                 }
                 out.put("lines", lines)
+                out.put("hasPicture", hasNotificationPicture(extras))
             } else {
                 out.put("lines", JSONArray())
+                out.put("hasPicture", false)
             }
 
             val actionsJson = JSONArray()

@@ -57,9 +57,9 @@ export function musicSettingsMenuItems(): MenuItem[] {
 
 /**
  * Now playing: album art (unless turned off), title/artist/album and a
- * progress bar for the active Android media session, the Music app's header
- * at card size. The media bridge runs for the whole session; the widget
- * subscribes and ticks once a second only while something is playing.
+ * progress bar for the active media session (Apple Music on iOS), the Music
+ * app's header at card size. The media bridge runs for the whole session; the
+ * widget subscribes and ticks once a second only while something is playing.
  */
 export class MusicWidget implements GlanceWidget {
   private media: MediaControllerState = mediaControllerBridge.snapshot();
@@ -105,7 +105,7 @@ export class MusicWidget implements GlanceWidget {
       if (!media.accessEnabled) {
         // Actionable, so it stays as text.
         image.drawText(small, PAD, PAD, "Music", 150);
-        image.drawText(small, PAD, PAD + small.lineHeight + 6, "Notification access needed", 140);
+        image.drawText(small, PAD, PAD + small.lineHeight + 6, mediaControllerBridge.accessLabel, 140);
         return;
       }
       // Nothing playing: a dim note, centred, and nothing else.

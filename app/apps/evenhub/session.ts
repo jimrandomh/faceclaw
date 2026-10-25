@@ -1055,6 +1055,12 @@ export class EvenHubSession implements EvenHubMicClient, EvenHubImuClient, EvenH
     );
   }
 
+  /** Log a problem with the app's own calls where its developer will see it: the app's console. */
+  private warnApp(message: string): void {
+    this.log(`evenhub: ${message}`);
+    this.webViewHandle?.evaluateJs(`window.console && console.warn(${JSON.stringify(`Faceclaw: ${message}`)})`);
+  }
+
   /** Deliver an extension event to the app (e.g. windowLifecycle). */
   private pushExtEvent(name: string, data: unknown): void {
     this.webViewHandle?.evaluateJs(
@@ -1266,12 +1272,16 @@ export class EvenHubSession implements EvenHubMicClient, EvenHubImuClient, EvenH
     for (const raw of rawSpecs) {
       const record = asRecord(raw);
       const name = readString(record, "name", "");
-      if (!name) continue;
+      const problem = appToolProblem(name, record.parameters);
+      if (problem) {
+        this.warnApp(`setAssistantTools: skipped tool ${JSON.stringify(name)}: ${problem}`);
+        continue;
+      }
       const availability = record.availability === "open" ? "open" : "foreground";
       specs.push({
         name,
         description: readString(record, "description", ""),
-        inputSchema: asRecord(record.parameters),
+        inputSchema: record.parameters == null ? { type: "object", properties: {} } : asRecord(record.parameters),
         availability,
       });
     }
@@ -1362,13 +1372,8 @@ export class EvenHubSession implements EvenHubMicClient, EvenHubImuClient, EvenH
     if (steps.length === 0) return;
     for (let i = 0; i < steps.length; i += CFW_SEQ_MAX) {
       const chunk = steps.slice(i, i + CFW_SEQ_MAX);
-      const payload = buildSoundSequencePayload(chunk);
-      try {
-        await this.sendBuzzerSequence(payload);
-      } catch (error) {
-        this.log(`evenhub: playBuzzer failed: ${error}`);
-        return;
-      }
+      // A send failure rejects the app's promise (handleExtensionCall logs it).
+      await this.sendBuzzerSequence(buildSoundSequencePayload(chunk));
       if (i + CFW_SEQ_MAX < steps.length) await delay(phraseDurationMs(chunk));
     }
   }
@@ -1509,6 +1514,35 @@ function apiKeyValue(id: string): string {
 /** Service ids the user has actually configured (non-empty key), names only. */
 function configuredApiKeyServices(): string[] {
   return API_KEY_SERVICES.filter((service) => service.setting.get().trim()).map((service) => service.id);
+}
+
+/** App assistant-tool names: what every model provider accepts in a tool name. */
+const APP_TOOL_NAME = /^[A-Za-z0-9_-]{1,64}$/;
+
+/**
+ * Why an app's assistant tool can't be offered, or null if it can. Provider
+ * APIs reject a whole request over one bad tool definition, so offering it
+ * would break every assistant turn while the app runs.
+ */
+function appToolProblem(name: string, parameters: unknown): string | null {
+  if (!APP_TOOL_NAME.test(name)) return "name must be 1-64 letters, digits, underscores or hyphens";
+  if (parameters == null) return null;
+  const schema = parameters as Record<string, unknown>;
+  if (typeof parameters !== "object" || Array.isArray(parameters) || schema.type !== "object") {
+    return 'parameters must be a JSON Schema with type "object"';
+  }
+  if ("oneOf" in schema || "anyOf" in schema || "allOf" in schema) {
+    return "parameters can't use oneOf, anyOf or allOf at the top level";
+  }
+  const properties = schema.properties;
+  if (properties !== undefined && (!properties || typeof properties !== "object" || Array.isArray(properties))) {
+    return "parameters.properties must be an object";
+  }
+  const required = schema.required;
+  if (required !== undefined && !(Array.isArray(required) && required.every((key) => typeof key === "string"))) {
+    return "parameters.required must be an array of property names";
+  }
+  return null;
 }
 
 /** Coerce an app-supplied buzzer step list into validated {freq, ms, duty?}. */

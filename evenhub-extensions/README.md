@@ -51,8 +51,9 @@ if (!fc) {
 }
 ```
 
-`getFaceclawExtensions()` returns `null` everywhere except inside Faceclaw:
-in the stock Even app, in the EvenHub simulator, in a browser, and in Node.
+`getFaceclawExtensions()` returns `null` everywhere except inside Faceclaw
+0.8.3 or later: in the stock Even app, in the EvenHub simulator, in a browser,
+and in Node.
 Faceclaw installs the API before any page script runs, so you can call it at
 startup. You don't need to wait for the bridge first.
 
@@ -81,7 +82,12 @@ if (fc && fc.apiVersion >= 2) {
 }
 ```
 
-Everything in this release is API level 1.
+Everything in this release is API level 1, which Faceclaw 0.8.3 and later
+implement. Faceclaw 0.8.0–0.8.2 injected an incomplete, unversioned preview of
+the API; `getFaceclawExtensions()` returns `null` there, so whenever it returns
+the API, every level-1 member is present. If you use
+`window.getFaceclawExtensions` directly, check that `apiVersion` is a number
+before relying on it.
 
 ## TypeScript
 
@@ -284,9 +290,16 @@ fc.setAssistantTools([
 
 The assistant sees each tool under your package name, as
 `app.<packageName>.set_bpm`. Whatever the handler returns is reported back to
-the assistant. If it throws, the assistant gets the error message. Tools are
-removed when the app closes; call `setAssistantTools([])` to remove them
-sooner.
+the assistant. If it throws, the assistant gets the error message. A handler
+has 10 seconds to finish before the assistant is told the tool timed out.
+Tools are removed when the app closes; call `setAssistantTools([])` to remove
+them sooner.
+
+Tool names are 1–64 letters, digits, underscores or hyphens. `parameters`
+must be an object schema (`type: "object"`) without a top-level `oneOf`,
+`anyOf` or `allOf`, since that is what the assistant's model providers accept.
+Faceclaw skips a tool that breaks these rules and logs a warning to the app's
+console.
 
 ### API keys
 

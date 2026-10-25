@@ -5,10 +5,13 @@
 ### Features
 
 * Use Open-Meteo for weather in regions that the US National Weather Service doesn't cover
+* Android: Show pictures attached to notifications (such as Dexcom's glucose graph) in the notification view
+* Add an Apple Music integration on iOS
 
 ### Bug fixes
 
 * Inverting Android notification-icons to indicate selectionis now gamma-correct
+* Android notification icons that are full-color pictures rather than shapes no longer show as blank blocks
 
 ## 0.8.4 - 2026-10-17
 

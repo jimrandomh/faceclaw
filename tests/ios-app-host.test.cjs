@@ -88,7 +88,7 @@ test('iOS host forwards hands-free capture mode to the voice bridge', async () =
     ? { iosVoiceInput: { startGlassesCapture: (_session, _voice, _log, endpointing) => captures.push(endpointing) } }
     : id === '../ui/dashboard-settings' ? voiceSettings : {} });
   const host = Object.create(IosPreviewController.prototype);
-  host.communicator = {}; host.state = { phase: 'connected' };
+  host.communicator = {}; host.state = { phase: 'connected' }; host.continuousClients = new Map();
   await host.startVoiceCapture(true);
   await host.startVoiceCapture();
   assert.deepEqual(captures, [true, false]);
@@ -327,6 +327,7 @@ test('iOS preview voice uses the phone microphone, while connected capture stays
   });
   const host = Object.create(IosPreviewController.prototype);
   host.active = true; host.glassesLocked = false; host.communicator = null; host.state = { phase: 'disconnected' };
+  host.continuousClients = new Map();
   assert.equal(await host.prepareVoiceCapture(), true);
   await host.startVoiceCapture(true);
   assert.deepEqual(calls, [['prepare', true, true, 'onboard'], ['prepare', true, true, 'onboard'], ['phone', 'onboard', true]]);
@@ -339,14 +340,15 @@ test('iOS preview voice uses the phone microphone, while connected capture stays
 });
 
 test('iOS continuous capture is shared by windows and restarts after a disconnect, a lock or backgrounding', async () => {
-  const calls = [], claims = [];
+  const calls = [], claims = [], providers = [];
   // Models the bridge's continuous state: listening on a source, or draining after a stop.
   const bridge = { source: null, draining: false, recording: '',
     supportsContinuous: voice => voice.provider !== 'onboard',
     get continuousSource() { return this.source; },
     get continuousActive() { return !!this.source || this.draining; },
     prepare: async () => true,
-    startGlassesCapture: async (_session, _voice, _log, _endpointing, continuous) => { calls.push(['glasses', continuous]); bridge.source = 'glasses'; },
+    startGlassesCapture: async (_session, voice, _log, _endpointing, continuous) => {
+      calls.push(['glasses', continuous]); providers.push(`${voice.provider}:${voice.whisperServerLanguage}`); bridge.source = 'glasses'; },
     startPhoneCapture: async (_voice, _log, _endpointing, continuous) => { calls.push(['phone', continuous]); bridge.source = 'phone'; },
     drain() { if (this.source) { this.source = null; this.draining = true; } },
     stopContinuousCapture: async () => { calls.push(['stop']); bridge.drain(); },
@@ -354,10 +356,12 @@ test('iOS continuous capture is shared by windows and restarts after a disconnec
     stopPhoneCapture() { if (bridge.source === 'phone') bridge.drain(); },
     recordTo: name => { bridge.recording = name; } };
   const settings = { ...voiceSettings, voiceProviderSetting: { get: () => 'whisper-server' },
-    whisperServerUrlSetting: { get: () => 'http://whisper.local:8000' }, saveTranscribeAudioSetting: { get: () => true } };
+    whisperServerUrlSetting: { get: () => 'http://whisper.local:8000' }, whisperServerLanguageSetting: { get: () => 'en' },
+    saveTranscribeAudioSetting: { get: () => true } };
   const { IosPreviewController } = load('app/g2/ios-preview-controller.ts', {
     require: id => id === '../native/ios-voice-input' ? { iosVoiceInput: bridge } : id === '../ui/dashboard-settings' ? settings
-      : id === '../ui/shell/voice-activity' ? { voiceActivity: { setActive: (active, holder) => claims.push([active, holder]) } } : {},
+      : id === '../ui/shell/voice-activity' ? { voiceActivity: { setActive: (active, holder) => claims.push([active, holder]) } }
+      : id === '../native/cloud-stt-provider' ? { transcriptionKey: voice => `${voice.provider}:${voice.whisperServerLanguage}` } : {},
   });
   const host = Object.create(IosPreviewController.prototype);
   Object.assign(host, { active: true, glassesLocked: false, communicator: {}, state: { phase: 'connected' }, sessionConnected: true,
@@ -369,13 +373,25 @@ test('iOS continuous capture is shared by windows and restarts after a disconnec
   const drained = () => { bridge.draining = false; host.syncContinuousCapture(); };
   const session = phase => { host.state = { phase }; if (phase !== 'connected') bridge.handleSessionEnded(); host.syncContinuousSession(); };
 
-  host.startContinuousVoiceCapture('transcribe', 'transcribe-1'); await settle();
+  host.startContinuousVoiceCapture('transcribe', { recordAs: 'transcribe-1' }); await settle();
   host.startContinuousVoiceCapture('calculator'); await settle();
   assert.deepEqual(calls, [['glasses', true]], 'the second window shares the capture');
   assert.equal(bridge.recording, 'transcribe-1');
   assert.deepEqual(claims.at(-1), [true, 'continuous-capture']);
   host.stopContinuousVoiceCapture('calculator');
   assert.deepEqual(calls, [['glasses', true]], 'closing one window keeps the other listening');
+
+  // Translate needs a multilingual provider: the shared capture drains and
+  // restarts on it (Whisper left to detect the language), and moves back to
+  // the main provider once Translate closes.
+  calls.length = 0; host.startContinuousVoiceCapture('translate', { multilingualProvider: 'soniox' }); await settle();
+  assert.deepEqual(calls, [['stop']]);
+  drained(); await settle();
+  assert.deepEqual(calls, [['stop'], ['glasses', true]]);
+  assert.deepEqual(providers.slice(-2), ['whisper-server:en', 'soniox:']);
+  calls.length = 0; host.stopContinuousVoiceCapture('translate'); drained(); await settle();
+  assert.deepEqual(calls, [['stop'], ['glasses', true]]);
+  assert.equal(providers.at(-1), 'whisper-server:en');
 
   // A reconnect drains the capture, waits for the glasses, and resumes on them.
   calls.length = 0; session('retrying'); drained(); await settle();

@@ -68,6 +68,17 @@ function isConfigured(provider: CloudProvider, selection: VoiceProviderSelection
   return provider.configured ? provider.configured(selection) : Boolean(provider.apiKey(selection).trim());
 }
 
+/**
+ * What a capture transcribes with: the provider, and for Whisper server the
+ * language it is told to expect. A running capture is shared only by holders
+ * asking for the same.
+ */
+export function transcriptionKey(selection: Pick<VoiceProviderSelection, "provider" | "whisperServerLanguage">): string {
+  return selection.provider === "whisper-server"
+    ? `whisper-server:${(selection.whisperServerLanguage ?? "").trim().toLowerCase()}`
+    : selection.provider;
+}
+
 /** Whether createCloudSttClient would return a cloud client for this selection. */
 export function usesCloudStt(selection: VoiceProviderSelection): boolean {
   const provider = CLOUD_PROVIDERS[selection.provider];
