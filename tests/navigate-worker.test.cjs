@@ -13,7 +13,7 @@ const route = { coordinates: [[-122.4, 37.7], [-122.4, 37.71]], distanceMeters: 
 const fix = latitude => ({ latitude, longitude: -122.4, timestampMs: Date.now(), bearingDeg: 0, speedMps: 1.5, accuracyMeters: 5 });
 function fixture() {
   const messages = [], timers = new Set(), timeouts = new Set(), holds = [], maps = [], errors = [], requests = [];
-  let callbacks, compass, delayRoute = null, delayMap = null, routeError = null;
+  let callbacks, compass, delayRoute = null, delayMap = null, routeError = null, distanceUnit = 'miles', timeFormat = '24h';
   const routeMath = loader()('app/apps/navigate/route-follower.ts');
   const tracker = { running: false, isRunning() { return this.running; }, start() { this.running = true; }, stop() { this.running = false; } };
   const sensor = { LocationTracker: function (value) { callbacks = value; return tracker; }, COMPASS_CHANGED: 15,
@@ -24,6 +24,8 @@ function fixture() {
     '@nativescript/core/globals': {},
     '../../graphics/bdffont': { getFont: () => ({}) }, '../../graphics/ui-fonts': { getDefaultSmallFont: () => ({}) },
     '../../native/settings-store': { onSettingsStoreChanged() {} },
+    '../../ui/dashboard-settings': { distanceUnitSetting: { get: () => distanceUnit } },
+    '../../ui/clock-format': loader({}, { './dashboard-settings': { timeFormatSetting: { get: () => timeFormat } } })('app/ui/clock-format.ts'),
     './navigation-sensors': sensor,
     './route-follower': routeMath,
     './destinations': { findSavedDestinationByName: () => null, rememberRecentDestination() {},
@@ -59,6 +61,8 @@ function fixture() {
     tick: () => { for (const callback of timers) callback(); },
     expireFix: () => { for (const callback of timeouts) callback(); timeouts.clear(); },
     failRoute: () => { routeError = new Error('Route unavailable'); },
+    setDistanceUnit: value => { distanceUnit = value; },
+    setTimeFormat: value => { timeFormat = value; },
     fix: latitude => send({ type: 'navigation-sensors', event: { kind: 'location', location: fix(latitude), id: 1 } }),
     heading: value => compass?.({ command: 15, headingDegrees: value }),
     holdMap: () => { let resolve, reject; delayMap = new Promise((done, fail) => { resolve = done; reject = fail; });
@@ -75,6 +79,20 @@ test('shared Navigate worker follows streamed GPS, uses calibrated true heading 
   h.fix(37.705); assert.ok(h.state().progress.remainingMeters < 600);
   h.fix(37.71); assert.equal(h.state().phase, 'arrived'); assert.equal(h.tracker.running, false);
   assert.equal(h.timers.size, 0); assert.deepEqual(h.errors, []);
+});
+
+test('route distances follow the distance unit setting', async () => {
+  const h = fixture(); const starting = h.startNavigation('Test park', 'walking');
+  h.fix(37.7); assert.match(await starting, /: 0\.7 mi, about 10 minutes/);
+  h.fix(37.705); assert.match(h.describeRouteStatus(), /in 0\.3 mi\. 0\.3 mi and/);
+  h.setDistanceUnit('kilometers'); assert.match(h.describeRouteStatus(), /in 550 m\. 550 m and/);
+});
+
+test('arrival times follow the time format setting', async () => {
+  const h = fixture(); const starting = h.startNavigation('Test park', 'walking');
+  h.fix(37.7); assert.match(await starting, /arriving \d{1,2}:\d{2}\./);
+  h.fix(37.705); assert.match(h.describeRouteStatus(), /ETA \d{1,2}:\d{2}\.$/);
+  h.setTimeFormat('12h'); assert.match(h.describeRouteStatus(), /ETA \d{1,2}:\d{2} [AP]M\.$/);
 });
 
 test('closing Navigate while a route request is pending cannot restart guidance or GPS', async () => {

@@ -28,6 +28,7 @@ import { WindowMenu, WindowMenuLayer } from "../../ui/window-menu";
 import type { LayerContext } from "../../ui/layers";
 import { truncateText, wrapText } from "../../graphics/textwrap";
 import { onSettingsStoreChanged } from "../../native/settings-store";
+import { formatClockTime } from "../../ui/clock-format";
 import { openUrlOnPhone } from "../../native/open-url";
 import {
   navigateDestinationAddressDraftSetting,
@@ -35,6 +36,9 @@ import {
   navigateRememberRecentSetting,
   navigateDisplayLayoutSetting,
   mapboxApiKeySetting,
+  distanceUnitSetting,
+  DISTANCE_UNIT_SETTING_KEY,
+  TIME_FORMAT_SETTING_KEY,
   enumSettingMenuItem,
   type ConfigSettingString,
 } from "../../ui/dashboard-settings";
@@ -266,8 +270,15 @@ function post(message: WorkerAppReply): void {
 // the edit screen live.
 onSettingsStoreChanged((key) => {
   // The token key repaints too: the phone editor writes it live during
-  // Edit token, and the idle page changes shape once one is set.
-  if (key.startsWith("navigate.") || key === MAPBOX_TOKEN_SETTING_KEY) render();
+  // Edit token, and the idle page changes shape once one is set. So do the
+  // distance unit and time format (Settings > Customization), for the
+  // guidance panel.
+  if (
+    key.startsWith("navigate.") ||
+    key === MAPBOX_TOKEN_SETTING_KEY ||
+    key === DISTANCE_UNIT_SETTING_KEY ||
+    key === TIME_FORMAT_SETTING_KEY
+  ) render();
 });
 
 // The host queues messages until this arrives: posts to a worker whose bundle
@@ -1569,15 +1580,33 @@ function drawFooter(image: GrayImage, text: string, x = 16): void {
 }
 
 // ---------------------------------------------------------------------------
-// Formatting (imperial; matches the rest of the UI)
+// Formatting (distances and clock times follow Settings > Customization)
+
+function metricDistances(): boolean {
+  return distanceUnitSetting.get() === "kilometers";
+}
+
+/** Under a kilometer: 10 m steps up to 100 m, then 50 m steps. */
+function formatMeters(meters: number): string {
+  const step = meters < 100 ? 10 : 50;
+  return `${Math.max(0, Math.round(meters / step) * step)} m`;
+}
 
 function formatDistanceShort(meters: number): string {
+  if (metricDistances()) {
+    return meters < 950 ? formatMeters(meters) : `${(meters / 1000).toFixed(1)} km`;
+  }
   const feet = meters * 3.28084;
   if (feet < 900) return `${Math.max(0, Math.round(feet / 50) * 50)} ft`;
   return `${(feet / 5280).toFixed(1)} mi`;
 }
 
 function formatDistance(meters: number): string {
+  if (metricDistances()) {
+    if (meters < 950) return formatMeters(meters);
+    const km = meters / 1000;
+    return km >= 10 ? `${Math.round(km)} km` : `${km.toFixed(1)} km`;
+  }
   const feet = meters * 3.28084;
   if (feet < 1000) return `${Math.max(0, Math.round(feet / 50) * 50)} ft`;
   const miles = feet / 5280;
@@ -1597,14 +1626,9 @@ function formatDurationLong(seconds: number): string {
   return `${hours}h ${minutes % 60}m`;
 }
 
+/** "14:05" / "2:05 PM", as the top-bar clock shows it. */
 function formatClock(timestampMs: number): string {
-  const date = new Date(timestampMs);
-  let hours = date.getHours();
-  const minutes = String(date.getMinutes()).padStart(2, "0");
-  const meridiem = hours >= 12 ? "PM" : "AM";
-  hours = hours % 12;
-  if (hours === 0) hours = 12;
-  return `${hours}:${minutes} ${meridiem}`;
+  return formatClockTime(new Date(timestampMs));
 }
 
 // ---------------------------------------------------------------------------

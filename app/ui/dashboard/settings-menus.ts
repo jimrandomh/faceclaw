@@ -49,6 +49,7 @@ import {
   autoBrightnessMaxSetting,
   autoBrightnessCurveSetting,
   dataCollectionSetting,
+  distanceUnitSetting,
   glassesBatteryVisibilitySetting,
   phoneBatteryVisibilitySetting,
   ringBatteryVisibilitySetting,
@@ -292,6 +293,8 @@ function customizationRows(): () => MenuItem[] {
     enumSettingMenuItem(timeFormatSetting),
     // Fahrenheit or Celsius, wherever weather temperatures show.
     enumSettingMenuItem(temperatureUnitSetting),
+    // Miles or kilometers: Weather's wind speed and Navigate's distances.
+    enumSettingMenuItem(distanceUnitSetting),
   ];
   const bottomRows = [font, position, depth, statusBar, ...rest];
   const popupRows = [font, position, depth, statusBar, statusBarVisibility, windowBorder, ...rest];

@@ -37,6 +37,7 @@ export type BatteryDisplayMode = "icon" | "percentage" | "stacked" | "stacked-pe
 export type BatteryIndicatorVisibility = "always" | "low" | "never";
 export type TimeFormat = "24h" | "12h";
 export type TemperatureUnit = "fahrenheit" | "celsius";
+export type DistanceUnit = "miles" | "kilometers";
 export type ScreenTimeoutSetting = "15s" | "30s" | "1m" | "3m" | "never";
 // Auto runs Faceclaw's light curve. Numeric values use the calibrated firmware
 // scale, clamped to 2–100; 2 is also the endpoint for screen fades.
@@ -322,14 +323,17 @@ export function batteryIndicatorSettingsKey(): string {
   ].join("|");
 }
 
+/** Exported so the Navigate worker can repaint when it changes. */
+export const TIME_FORMAT_SETTING_KEY = "display.timeFormat";
+
 export const timeFormatSetting = new ConfigSettingEnum<TimeFormat>({
   id: "timeFormat",
   label: "Time format",
-  storageKey: "display.timeFormat",
+  storageKey: TIME_FORMAT_SETTING_KEY,
   defaultValue: "24h",
   values: ["24h", "12h"],
   formatValue: timeFormatLabel,
-  description: "Whether the top-bar clock shows 24-hour or 12-hour time.",
+  description: "Whether the top-bar clock and other times of day, such as Navigate's arrival time, show 24-hour or 12-hour time.",
 });
 
 export const temperatureUnitSetting = new ConfigSettingEnum<TemperatureUnit>({
@@ -340,6 +344,19 @@ export const temperatureUnitSetting = new ConfigSettingEnum<TemperatureUnit>({
   values: ["fahrenheit", "celsius"],
   formatValue: (value) => value === "celsius" ? "Celsius" : "Fahrenheit",
   description: "Whether the Weather app, its top-bar indicator, and the Glanceboard's system card show temperatures in Fahrenheit or Celsius.",
+});
+
+/** Exported so the Navigate worker can repaint when it changes. */
+export const DISTANCE_UNIT_SETTING_KEY = "display.distanceUnit";
+
+export const distanceUnitSetting = new ConfigSettingEnum<DistanceUnit>({
+  id: "distanceUnit",
+  label: "Distance unit",
+  storageKey: DISTANCE_UNIT_SETTING_KEY,
+  defaultValue: "miles",
+  values: ["miles", "kilometers"],
+  formatValue: (value) => value === "kilometers" ? "Kilometers" : "Miles",
+  description: "Whether the Weather app shows wind speed in mph or km/h, and the Navigate app shows distances in miles and feet or kilometers and meters.",
 });
 
 /**
