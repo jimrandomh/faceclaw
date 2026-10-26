@@ -14,6 +14,9 @@ import {
 const MESSAGE_SIZES = [250, 500, 1000, 2000, 3800];
 const WINDOW_SIZES = [1, 2, 3, 4, 6];
 const LINK_MODES = ["Current", "Request HIGH", "Request 2M", "HIGH + 2M"];
+// CoreBluetooth has no connection-priority or PHY request API (iOS's
+// prepareBenchmarkLink is a no-op), so iOS always runs on the current link.
+const LINK_REQUESTS_SUPPORTED = !global.isIOS;
 const DURATION_MS = 15_000;
 // After painting the "running" screen, wait for that frame to reach the
 // glasses before the benchmark blocks normal image sends — otherwise the
@@ -40,7 +43,7 @@ type ConfigRow = "size" | "window" | "link" | "start";
 export class BandwidthBenchmarkLayer implements Layer {
   private phase: Phase = "config";
   private readonly menu = new Menu<ConfigRow>({
-    items: ["size", "window", "link", "start"],
+    items: LINK_REQUESTS_SUPPORTED ? ["size", "window", "link", "start"] : ["size", "window", "start"],
     wrap: false,
     rowGap: 1,
     highlight: { radius: 4 },
@@ -134,7 +137,8 @@ export class BandwidthBenchmarkLayer implements Layer {
         font,
         LIST_X,
         HEADER_HEIGHT + 30,
-        `${MESSAGE_SIZES[this.sizeIndex]} B, window ${WINDOW_SIZES[this.windowIndex]}, ${LINK_MODES[this.linkModeIndex]}`,
+        `${MESSAGE_SIZES[this.sizeIndex]} B, window ${WINDOW_SIZES[this.windowIndex]}`
+          + (LINK_REQUESTS_SUPPORTED ? `, ${LINK_MODES[this.linkModeIndex]}` : ""),
         150,
       );
       image.drawText(font, LIST_X, HEADER_HEIGHT + 52, "Display updates pause until the run finishes.", 110);
@@ -161,8 +165,8 @@ export class BandwidthBenchmarkLayer implements Layer {
         `Throughput: ${(payloadRate / 1024).toFixed(2)} KB/s payload (${(wireRate / 1024).toFixed(2)} KB/s wire)`,
         `Messages: ${r.messagesAcked}/${r.messagesSent} acked, ${r.timeouts} timeouts`,
         `Elapsed: ${seconds.toFixed(1)} s` + (r.aborted ? "  (aborted early)" : ""),
-        `Link request: ${LINK_MODES[r.linkMode] ?? "Current"}`,
       ];
+      if (LINK_REQUESTS_SUPPORTED) lines.push(`Link request: ${LINK_MODES[r.linkMode] ?? "Current"}`);
       for (const line of lines) {
         image.drawText(font, LIST_X, y, line, 190);
         y += 20;

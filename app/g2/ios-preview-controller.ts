@@ -14,6 +14,7 @@ import { registerNavigateTools } from '../assistant/navigate-tools'
 import { registerRoamTools } from '../assistant/roam-tools'
 import { IosNavigationSensors } from '../native/ios-navigation-sensors'
 import { bindCompassSession, receiveCompassEvent } from '../native/compass.ios'
+import { bindBandwidthBenchmarkSession } from '../native/bandwidth-benchmark.ios'
 import { Dialogs, File, knownFolders, path, Utils, type ImageSource } from '@nativescript/core'
 import { iosVoiceInput } from '../native/ios-voice-input'
 import { voiceActivity } from '../ui/shell/voice-activity'
@@ -832,6 +833,7 @@ export class IosPreviewController {
     this.notifications = notifications
     bindIosNotifications(notifications)
     bindCompassSession(communicator)
+    bindBandwidthBenchmarkSession(communicator)
     communicator.setRequiresAncs(true)
     this.sessionOffs.push(
       communicator.onStateChange(state => this.handleSessionState(communicator, state)),
@@ -974,6 +976,7 @@ export class IosPreviewController {
     for (const off of this.sessionOffs.splice(0)) off()
     this.notifications = null
     this.communicator = null
+    bindBandwidthBenchmarkSession(null)
     // Releases an EvenHub app's mic before the session closes.
     this.syncRawMicSession()
     this.glance.reset()

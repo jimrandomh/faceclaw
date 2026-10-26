@@ -663,6 +663,21 @@ export class FaceclawCommunicatorBridge {
     return () => { this.communicator.removeCompassListenerListener(proxy); };
   }
 
+  /** Developer > Debug tests > BLE bandwidth; see app/native/bandwidth-benchmark.ios.ts. */
+  startBandwidthBenchmark(messageSize: number, windowSize: number, durationMs: number, linkMode: number): boolean {
+    return Boolean(this.communicator.startBandwidthBenchmarkWithLinkModeMessageSizeWindowSizeDurationMsLinkMode(
+      messageSize, windowSize, durationMs, linkMode));
+  }
+
+  cancelBandwidthBenchmark(): void {
+    this.communicator.cancelBandwidthBenchmark();
+  }
+
+  /** Status/results of the current or most recent run, as JSON. */
+  getBandwidthBenchmarkStatus(): string {
+    return String(this.communicator.getBandwidthBenchmarkStatus());
+  }
+
   /**
    * Serialized glasses microphone enable/disable (the voice bridge's
    * IosMicrophoneSession contract). A release while an enable awaits its ACK
