@@ -64,6 +64,22 @@ test('context menu surface and selected row both use +4 without changing the app
   assert.deepEqual(closed.image.pixels,base.pixels);
   assert.deepEqual(wire.presentationRecords(prepareFrameDraws(closed.draws)),[]);
 });
+test('a submenu that replaces its parent menu skips the parent plane and dims the content once',()=>{
+  const base=new graphics.GrayImage(100,90,200);
+  const stack=new LayerStack({paint:()=>base},noopLayerActions,{width:100,height:90});
+  const layout={x:10,y:8,width:80,minHeight:70,maxHeight:70,dimUnderneath:0.5};
+  class SubmenuLayer extends MenuLayer { replacesLayerBelow(below) { return below instanceof MenuLayer; } }
+  const parent=new MenuLayer('PARENT',[{label:'SUB',onSelect(){}}],layout);
+  stack.push(parent);
+  stack.push(new SubmenuLayer('CHILD',[{label:'ITEM',onSelect(){}}],layout));
+  stack.push(new SubmenuLayer('GRANDCHILD',[{label:'ITEM',onSelect(){}}],layout));
+  const painted=stack.paint();
+  assert.equal(painted.length,2);
+  assert.equal(painted[0].image.pixels[0],100);
+  assert.equal(stack.baseDim(),0.5);
+  stack.pop();stack.pop();
+  assert.equal(stack.paint().length,2);
+});
 test('text page paints at the stack size, not the lens size',()=>{
   // An app window's stack is its viewport; a lens-sized plane is rejected by
   // the compositor as larger than the window surface.

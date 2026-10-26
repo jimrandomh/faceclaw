@@ -131,6 +131,8 @@ export class IosPreviewController {
   private clockMinute = -1
   private shellRenderInProgress = false
   private shellRenderQueued = false
+  /** The shell woke; the next shell render unblanks the compositor after submitting. */
+  private unblankAfterShellRender = false
   private nextFrameId = 1
   private nextWorkerFrame = 0
   private inputQueue: Promise<void> = Promise.resolve()
@@ -199,6 +201,9 @@ export class IosPreviewController {
         send: () => { if (this.active && !this.glassesLocked) session.send() },
         sendTo: id => { if (this.active && !this.glassesLocked) session.sendTo(id) },
         discard: () => session.discard(),
+        get visibility() { return session.visibility },
+        setVisibility: visibility => { if (this.active && !this.glassesLocked) session.setVisibility(visibility) },
+        get history() { return session.history },
       } : null),
       prepareVoiceCapture: () => this.prepareVoiceCapture(),
       getScreenTimeoutMs: () => null,
@@ -211,7 +216,12 @@ export class IosPreviewController {
       },
       onScreenStateChanged: on => {
         if (on) this.glance.dismiss()
-        void this.display?.setScreenBlanked(!on).catch(error => this.fail(error))
+        // A wake unblanks only once the next shell render has staged an awake
+        // scene: unblanking composites the retained one, painted while asleep
+        // with no chrome and depth 0, and that first frame is the one the
+        // brightness fade-in starts on.
+        this.unblankAfterShellRender = on
+        if (!on) void this.display?.setScreenBlanked(true).catch(error => this.fail(error))
         this.requestShellRender()
       },
     })
@@ -521,10 +531,19 @@ export class IosPreviewController {
     await this.displayReady
     const display = this.display
     if (!display) return
-    const startedAt = Date.now()
-    const bytes = shell.paintScene()
+    // Taken with the paint, so a render that painted before the wake can't unblank.
+    const unblank = this.unblankAfterShellRender
+    this.unblankAfterShellRender = false
     const frameId = this.allocateFrameId()
-    await display.submitShellScene(bytes, Date.now() - startedAt, frameId)
+    try {
+      const startedAt = Date.now()
+      const bytes = shell.paintScene()
+      await display.submitShellScene(bytes, Date.now() - startedAt, frameId)
+    } finally {
+      // Even if the render failed, so the screen doesn't stay dark; not if it
+      // went back to sleep meanwhile (that sleep re-blanked).
+      if (unblank && shell.isScreenOn()) await display.setScreenBlanked(false)
+    }
     // Backpressure: the next shell render waits for this one to reach the
     // glasses (the preview target resolves immediately; nothing transmits).
     await display.waitForFrameFinished(frameId, FRAME_TRANSMIT_BACKPRESSURE_TIMEOUT_MS)

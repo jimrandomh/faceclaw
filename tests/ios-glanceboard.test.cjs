@@ -140,7 +140,7 @@ function fixture() {
     "../native/compass.ios": { bindCompassSession() {}, receiveCompassEvent() {} },
     '@nativescript/core': { File: { fromPath: () => ({ writeTextSync() {} }) },
       knownFolders: { documents: () => ({ path: '/tmp' }) }, path },
-    '../native/ios-voice-input': { iosVoiceInput: { handleSessionEnded() {}, stopPhoneCapture() {}, onSpeechEnd: () => () => {} } },
+    '../native/ios-voice-input': { iosVoiceInput: { handleSessionEnded() {}, stopPhoneCapture() {}, setRawSession() {}, onSpeechEnd: () => () => {} } },
     '../native/cloud-stt-provider': { transcriptionKey: voice => voice.provider },
     '../ui/shell/voice-activity': { voiceActivity: { setActive() {}, isActive: () => false, subscribe: () => () => {} } },
     '../native/faceclaw-communicator.ios': { FaceclawCommunicatorBridge, resolveIosPeripherals: async addresses => addresses },

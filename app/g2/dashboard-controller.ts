@@ -124,12 +124,10 @@ export type DashboardSnapshot = {
   activeTextEditorToggleValue: boolean;
   activeTextEditorToggleVisible: boolean;
   /**
-   * The keyboard dialog is up on the glasses (opened by the phone's keyboard
-   * button): the phone shows its typing panel, with a send button per
-   * destination in the glasses menu's row order.
+   * The keyboard dialog is open (opened by the phone's keyboard button): the
+   * phone shows its typing panel, driven by keyboardInputSession.
    */
   keyboardInputActive: boolean;
-  keyboardInputTargets: ReadonlyArray<{ id: string; label: string }>;
   evenAppConflictMessage: string;
   evenAppConflictWarningVisible: boolean;
   firmwareWarningMessage: string;
@@ -1122,7 +1120,6 @@ class DashboardController {
       activeTextEditorToggleValue: this.activeTextEditorToggle?.setting.get() ?? false,
       activeTextEditorToggleVisible: this.activeTextEditorToggle !== null,
       keyboardInputActive: this.keyboardInput !== null,
-      keyboardInputTargets: this.keyboardInput?.targets ?? [],
       evenAppConflictMessage: this.evenAppConflictMessage,
       evenAppConflictWarningVisible: this.evenAppConflictMessage.length > 0,
       firmwareWarningMessage: this.firmwareWarningMessage,
@@ -1321,23 +1318,9 @@ class DashboardController {
     shell.startKeyboardInput();
   }
 
-  /** The phone's typing panel changed: mirror the text on the glasses. */
-  setKeyboardInputText(text: string): void {
-    shell.noteUserActivity();
-    this.keyboardInput?.setText(text);
-  }
-
-  /** Send to one destination, or (no id: the IME's send key) the one highlighted on the glasses. */
-  sendKeyboardInput(targetId?: string): void {
-    if (targetId) {
-      this.keyboardInput?.sendTo(targetId);
-    } else {
-      this.keyboardInput?.send();
-    }
-  }
-
-  discardKeyboardInput(): void {
-    this.keyboardInput?.discard();
+  /** The open keyboard dialog, for the phone's typing panel (KeyboardInputViewModel). */
+  get keyboardInputSession(): KeyboardInputSession | null {
+    return this.keyboardInput;
   }
 
   setActiveTextEditorToggleValue(value: boolean): void {

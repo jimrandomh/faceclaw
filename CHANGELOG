@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.8.5 - Future
+## 0.8.5 - 2026-10-25
 
 ### Features
 
@@ -18,6 +18,7 @@
 * Fix a bug on iOS that would cause corrupted installs of EvenHub apps
 * EvenHub apps can use the glasses microphone on iOS (such as Chess's voice moves, which said "Mic unavailable")
 * EvenHub apps on iOS should now be able to use the mic
+* Fix a bug that caused fade-in on wake to be shown at the wrong depth on iOS
 
 ## 0.8.4 - 2026-10-17
 
