@@ -18,6 +18,8 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+import java.util.concurrent.ScheduledExecutorService
+import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
 
@@ -26,6 +28,10 @@ class FaceclawBleManager(context: Context) {
     companion object {
         private const val TAG = "FaceclawBle"
         private val WRITE_RETRY_DELAYS_MS = intArrayOf(1, 1, 1, 2, 4, 8, 12, 20, 35, 100, 200)
+
+        // Gap after each LE 2M PHY request before checking whether it landed and asking
+        // again; the request gives up once these run out (see requestLe2mPhy).
+        private val PHY_RETRY_DELAYS_MS = longArrayOf(1_000, 2_000, 4_000, 8_000, 15_000)
 
         // Handed to an operation waiter whose link dropped before its completion
         // callback arrived; never a real GATT status.
@@ -45,6 +51,19 @@ class FaceclawBleManager(context: Context) {
         // monitor's holder may itself be waiting for.
         private val callbackExecutor: ExecutorService = Executors.newSingleThreadExecutor { runnable ->
             Thread(runnable, "FaceclawBleCallbacks").apply { isDaemon = true }
+        }
+
+        // Runs the LE 2M PHY request loops. Each step takes the global lock, so it must not
+        // run on the binder thread or the callback executor.
+        private val phyScheduler: ScheduledExecutorService = Executors.newSingleThreadScheduledExecutor { runnable ->
+            Thread(runnable, "FaceclawBlePhy").apply { isDaemon = true }
+        }
+
+        private fun phyName(phy: Int): String = when (phy) {
+            BluetoothDevice.PHY_LE_1M -> "1M"
+            BluetoothDevice.PHY_LE_2M -> "2M"
+            BluetoothDevice.PHY_LE_CODED -> "Coded"
+            else -> "?"
         }
 
         // Process-wide outbound-traffic totals, sampled by the phone UI's BLE
@@ -76,6 +95,16 @@ class FaceclawBleManager(context: Context) {
         @Volatile var gatt: BluetoothGatt? = null
         @Volatile var connected = false
         val connectLatch = CountDownLatch(1)
+
+        // The PHY pair Android last reported for this connection (BluetoothDevice.PHY_LE_*),
+        // 0 until a report arrives.
+        @Volatile var txPhy = 0
+        @Volatile var rxPhy = 0
+
+        // The 2M request loop's next step; only touched on phyScheduler.
+        var phyStep: ScheduledFuture<*>? = null
+
+        fun on2mPhy(): Boolean = txPhy == BluetoothDevice.PHY_LE_2M && rxPhy == BluetoothDevice.PHY_LE_2M
     }
 
     private enum class OpKind { MTU, SERVICES, DESCRIPTOR, WRITE }
@@ -236,13 +265,72 @@ class FaceclawBleManager(context: Context) {
                 val accepted = gatt.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH)
                 Log.i(TAG, "benchmark HIGH address=$address submitted=$accepted")
             }
-            if ((mode and 2) != 0) {
-                Log.i(TAG, "benchmark request 2M address=$address")
-                gatt.setPreferredPhy(BluetoothDevice.PHY_LE_2M_MASK,
-                    BluetoothDevice.PHY_LE_2M_MASK, BluetoothDevice.PHY_OPTION_NO_PREFERRED)
-            }
             gatt.readPhy()
         }
+        if ((mode and 2) != 0) {
+            Log.i(TAG, "benchmark request 2M address=$address")
+            requestLe2mPhy(address)
+        }
+    }
+
+    /**
+     * Ask for the LE 2M PHY in both directions, then keep checking and re-asking until it
+     * lands or [PHY_RETRY_DELAYS_MS] runs out. A single request is unreliable: right after
+     * connecting, Android can reject it as unsupported before it has read the peer's feature
+     * bits, and an on-air PHY update can lose a collision with the peer's own
+     * connection-parameter request. Our preference stays 2M-only, so a granted 2M link
+     * shouldn't drift back; the loop ends with the connection.
+     */
+    fun requestLe2mPhy(address: String) {
+        val link = links[address] ?: return
+        phyScheduler.execute {
+            link.phyStep?.cancel(false)
+            runPhyStep(address, link, 0)
+        }
+    }
+
+    private fun runPhyStep(address: String, link: GattLink, attempt: Int) {
+        link.phyStep = null
+        if (links[address] !== link || !link.connected) {
+            return
+        }
+        if (link.on2mPhy()) {
+            Log.i(TAG, "LE 2M PHY active: address=$address requests=$attempt")
+            return
+        }
+        if (attempt >= PHY_RETRY_DELAYS_MS.size) {
+            Log.w(TAG, "LE 2M PHY not granted after $attempt requests: address=$address"
+                + " tx=${phyName(link.txPhy)} rx=${phyName(link.rxPhy)}")
+            return
+        }
+        synchronized(bluetoothApiLock) {
+            val gatt = link.gatt
+            if (links[address] !== link || !link.connected || gatt == null) {
+                return
+            }
+            Log.i(TAG, "requesting LE 2M PHY: address=$address attempt=${attempt + 1}")
+            gatt.setPreferredPhy(BluetoothDevice.PHY_LE_2M_MASK,
+                BluetoothDevice.PHY_LE_2M_MASK, BluetoothDevice.PHY_OPTION_NO_PREFERRED)
+            // The update-complete event can be skipped when nothing changes; a read always
+            // reports, so the next step sees the PHY even then.
+            gatt.readPhy()
+        }
+        link.phyStep = phyScheduler.schedule(
+            { runPhyStep(address, link, attempt + 1) },
+            PHY_RETRY_DELAYS_MS[attempt],
+            TimeUnit.MILLISECONDS
+        )
+    }
+
+    /** The link's PHY for diagnostics: "2M", "1M", "tx/rx" when they differ, "?" before a report; null when not connected. */
+    fun describePhy(address: String): String? {
+        val link = links[address]
+        if (link == null || !link.connected) {
+            return null
+        }
+        val tx = link.txPhy
+        val rx = link.rxPhy
+        return if (tx == rx) phyName(tx) else phyName(tx) + "/" + phyName(rx)
     }
 
     fun getNegotiatedMtu(address: String): Int {
@@ -557,11 +645,23 @@ class FaceclawBleManager(context: Context) {
         override fun onPhyRead(gatt: BluetoothGatt, txPhy: Int, rxPhy: Int, status: Int) {
             Log.i(TAG, "onPhyRead: address=" + gatt.device.address
                 + " txPhy=" + txPhy + " rxPhy=" + rxPhy + " status=" + status)
+            recordPhy(gatt, txPhy, rxPhy, status)
         }
 
         override fun onPhyUpdate(gatt: BluetoothGatt, txPhy: Int, rxPhy: Int, status: Int) {
             Log.i(TAG, "onPhyUpdate: address=" + gatt.device.address
                 + " txPhy=" + txPhy + " rxPhy=" + rxPhy + " status=" + status)
+            recordPhy(gatt, txPhy, rxPhy, status)
+        }
+
+        private fun recordPhy(gatt: BluetoothGatt, txPhy: Int, rxPhy: Int, status: Int) {
+            // A failed request reports the PHYs it asked for, not the ones in use.
+            if (status != BluetoothGatt.GATT_SUCCESS) return
+            val link = links[gatt.device.address] ?: return
+            val current = link.gatt
+            if (current != null && current !== gatt) return
+            link.txPhy = txPhy
+            link.rxPhy = rxPhy
         }
 
         override fun onDescriptorWrite(gatt: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int) {

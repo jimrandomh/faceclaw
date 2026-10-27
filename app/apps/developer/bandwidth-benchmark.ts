@@ -166,7 +166,10 @@ export class BandwidthBenchmarkLayer implements Layer {
         `Messages: ${r.messagesAcked}/${r.messagesSent} acked, ${r.timeouts} timeouts`,
         `Elapsed: ${seconds.toFixed(1)} s` + (r.aborted ? "  (aborted early)" : ""),
       ];
-      if (LINK_REQUESTS_SUPPORTED) lines.push(`Link request: ${LINK_MODES[r.linkMode] ?? "Current"}`);
+      if (LINK_REQUESTS_SUPPORTED) {
+        const phy = r.leftPhy || r.rightPhy ? `; PHY L ${r.leftPhy ?? "?"}, R ${r.rightPhy ?? "?"}` : "";
+        lines.push(`Link request: ${LINK_MODES[r.linkMode] ?? "Current"}${phy}`);
+      }
       for (const line of lines) {
         image.drawText(font, LIST_X, y, line, 190);
         y += 20;

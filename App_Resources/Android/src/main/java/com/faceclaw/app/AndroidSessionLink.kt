@@ -14,6 +14,10 @@ class AndroidSessionLink(private val bleManager: FaceclawBleManager) : SessionLi
         bleManager.requestConnectionPriority(address, BluetoothGatt.CONNECTION_PRIORITY_HIGH)
     }
 
+    override fun requestLe2mPhy(address: String) = bleManager.requestLe2mPhy(address)
+
+    override fun describePhy(address: String): String? = bleManager.describePhy(address)
+
     override fun requestMtu(address: String, mtu: Int, timeoutMs: Int): Boolean =
         bleManager.requestMtu(address, mtu, timeoutMs)
 
