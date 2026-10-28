@@ -6,6 +6,7 @@ import { GESTURE_CLICK, type InputEvent } from "../../ui/gestures";
 import { type Layer, type LayerContext } from "../../ui/layers";
 import { Menu, type MenuDrawArgs } from "../../ui/menu-core";
 import { centeredTextY, lineStep, tightRowHeight } from "../../ui/metrics";
+import { distanceUnitSetting } from "../../ui/dashboard-settings";
 import { renderWeatherIcon } from "./weather-icons";
 import { formatTemperature, widestTemperatureSample } from "./temperature-format";
 
@@ -142,7 +143,7 @@ export class WeatherLayer implements Layer {
     const details: string[] = [];
     if (current.humidityPercent !== null) details.push(`Humidity ${Math.round(current.humidityPercent)}%`);
     if (current.windSpeedMph !== null) {
-      details.push(`Wind ${current.windDirection ? `${current.windDirection} ` : ""}${Math.round(current.windSpeedMph)} mph`);
+      details.push(`Wind ${current.windDirection ? `${current.windDirection} ` : ""}${formatWindSpeed(current.windSpeedMph)}`);
     }
     image.drawText(small, textX, cy, details.join("   ") || "Current forecast", 170);
     cy += lineStep(small);
@@ -245,6 +246,11 @@ function showsForecast(weather: WeatherState): boolean {
 /** Forecast row pitch, including the gap between selection boxes. */
 function forecastRowHeight(font: UiFont): number {
   return Math.max(FORECAST_MIN_ROW_HEIGHT, tightRowHeight(font) + 3);
+}
+
+/** A wind speed (weather data is kept in mph) in the Distance unit setting's speed unit: "12 mph" / "19 km/h". */
+function formatWindSpeed(mph: number): string {
+  return distanceUnitSetting.get() === "kilometers" ? `${Math.round(mph * 1.609344)} km/h` : `${Math.round(mph)} mph`;
 }
 
 function formatAge(ageMs: number): string {
