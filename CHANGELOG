@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.8.6 - Future
+
++ Add a distance unit option
++ Make BLE benchmark work on iOS
++ Ensure connection is re-set to 2M on reconnect
+
 ## 0.8.5 - 2026-10-25
 
 ### Features
