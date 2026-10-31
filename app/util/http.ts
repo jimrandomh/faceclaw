@@ -33,7 +33,13 @@ export interface TextResponse {
  */
 export async function fetchTextWithUserAgent(
   url: string,
-  init?: { method?: string; headers?: HeadersInit; body?: string },
+  init?: {
+    method?: string;
+    headers?: HeadersInit;
+    body?: string;
+    timeoutMs?: number;
+    dontFollowRedirects?: boolean;
+  },
 ): Promise<TextResponse> {
   // Required lazily so the Node test harness can load this module (via
   // fetchWithUserAgent's users) without mocking @nativescript/core. Only the
@@ -46,6 +52,8 @@ export async function fetchTextWithUserAgent(
     method: init?.method ?? "GET",
     headers: withUserAgent(init?.headers),
     content: init?.body,
+    timeout: init?.timeoutMs,
+    dontFollowRedirects: init?.dontFollowRedirects,
   });
   const status = response.statusCode;
   let body: string | undefined;

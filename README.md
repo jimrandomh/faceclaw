@@ -109,7 +109,10 @@ In **Settings > Assistant**, set:
 2. **Compatible model ID** — the exact model identifier accepted by the server.
 3. **Compatible API key** — optional; when set, it is sent only to the configured
    compatible endpoint as a Bearer token, not to OpenAI's Whisper service.
-4. **Assistant model** — choose **OpenAI-compatible**. Auto never selects it.
+4. Optional: choose **Discover models**, then pick a model from the server catalog.
+   The picker shows tool capability when advertised and hides offline models by
+   default. Refresh never changes the saved model by itself.
+5. **Assistant model** — choose **OpenAI-compatible**. Auto never selects it.
 
 Provider examples:
 
@@ -120,7 +123,9 @@ Provider examples:
 
 You may paste the full `/chat/completions` endpoint instead; Faceclaw removes
 that suffix. It otherwise preserves the path you enter and does not guess `/v1`
-or `/api`. There is no automatic model discovery in this version.
+or `/api`. Discovery requests `{API root}/models` only when you choose it; there
+is no background discovery or automatic model selection. Manual model entry
+remains available for servers without a compatible model-list endpoint.
 
 The same provider can supply Calculator's rewrite fallback and Translate.
 Actual tool calling depends on the selected model and server. Use HTTPS where

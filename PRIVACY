@@ -131,7 +131,9 @@ assistant system prompt, conversation history, available tool definitions, and
 tool results needed to answer. Its URL, model ID, and optional API key are
 stored on the phone. Faceclaw does not operate that server and cannot make
 representations about its logging or retention; for a private Open WebUI
-server, the server's operator controls those policies.
+server, the server's operator controls those policies. If you choose Discover
+models, Faceclaw also requests that server's model catalog using the same
+configured URL and optional API key.
 
 AI conversation histories and memory files may be stored on your phone.
 Faceclaw does not transmit voice-assistant prompts or responses to any party

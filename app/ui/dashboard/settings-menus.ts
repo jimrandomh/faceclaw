@@ -97,6 +97,7 @@ import {
 import { wearBridge } from "../../native/wear-bridge";
 import { openSettingsSubMenu, SettingsPanelLayer, type SettingsSection } from "./settings-panel";
 import { uiFontPickerMenuItem } from "../font-picker";
+import { compatibleModelDiscoveryMenuItem } from "../openai-compatible-model-picker";
 
 /** The Settings app's master-detail panel (sections on the left, contents on the right). */
 export function createSettingsPanelLayer(): SettingsPanelLayer {
@@ -152,8 +153,14 @@ function settingsSections(): SettingsSection[] {
         textSettingMenuItem(assistantHermesUrlSetting),
         textSettingMenuItem(assistantHermesKeySetting),
         textSettingMenuItem(assistantOpenAiCompatibleUrlSetting),
-        textSettingMenuItem(assistantOpenAiCompatibleModelSetting),
         textSettingMenuItem(assistantOpenAiCompatibleKeySetting),
+        compatibleModelDiscoveryMenuItem({
+          getBaseUrl: () => assistantOpenAiCompatibleUrlSetting.get(),
+          getApiKey: () => assistantOpenAiCompatibleKeySetting.get(),
+          getModel: () => assistantOpenAiCompatibleModelSetting.get(),
+          setModel: (model) => assistantOpenAiCompatibleModelSetting.set(model),
+        }, assistantOpenAiCompatibleModelSetting),
+        textSettingMenuItem(assistantOpenAiCompatibleModelSetting),
         ...(!global.isIOS ? [localModelMenuItem()] : []),
         toggleSettingMenuItem(assistantSkipConfirmationSetting),
         // iOS has no local LLM or agent bridge yet.
