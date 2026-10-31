@@ -7,6 +7,7 @@ import { truncateText } from "../../graphics/textwrap";
 import { activeAmbientCards } from "./ambient-cards";
 import { BATTERY_ICON_WIDTH, DENSE_BATTERY_BLOCK_HEIGHT, drawBattery, drawDenseBatteries, type BatteryDevice } from "../../graphics/battery";
 import { ALL_NOTIFICATIONS, readActiveNotificationIcons } from "../../native/notification-icons";
+import { NOTIFICATION_ICON_SIZE } from "../../native/notification-types";
 import { readPhoneBatteryState } from "../../native/phone-battery";
 import { noteStaleDataUsed, renderPassAllowsStaleData } from "../../util/render-freshness";
 import { renderIcon, renderIconWithGlyph, type IconActivity, type IconName } from "../../graphics/icons";
@@ -430,7 +431,6 @@ function statusBarPlacement(state: ShellChromeState): StatusBarPlacement | null 
   return { left, right, top, contentTop: atBottom ? top + 1 : top, divider };
 }
 
-const NOTIFICATION_ICON_SIZE = 24;
 const NOTIFICATION_ICON_STEP = NOTIFICATION_ICON_SIZE + 4;
 // Notification icons' top, in the top bar's layout (where any status icon's
 // selection box starts, a row above).

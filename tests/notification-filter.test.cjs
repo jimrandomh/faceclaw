@@ -82,6 +82,7 @@ function ui(fontSize = 12) {
     '~/util/date-util': { formatRelativeTime: () => '' },
     '../native/notification-icons': native,
     '../native/notification-sources': prefs,
+    '../native/notification-types': require('../.test-build/app/native/notification-types.js'),
     '../native/notification-access': { isNotificationListenerEnabled: () => true },
     '../util/render-freshness': { renderPassAllowsStaleData: () => false },
     './menu-highlight-motion': require('../.test-build/app/ui/menu-highlight-motion.js'), '../graphics/menu-scroll-list': require('../.test-build/app/graphics/menu-scroll-list.js'), './menu-scroll-motion': require('../.test-build/app/ui/menu-scroll-motion.js'), '../graphics/draw-expression': require('../.test-build/app/graphics/draw-expression.js'),

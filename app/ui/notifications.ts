@@ -18,6 +18,7 @@ import {
   type NotificationImageResult,
 } from "../native/notification-icons";
 import { setNotificationSourceEnabled } from "../native/notification-sources";
+import { NOTIFICATION_ICON_SIZE } from "../native/notification-types";
 import { notificationEmptyMessage } from "../native/notification-access";
 import { noteStaleDataUsed, renderPassAllowsStaleData } from "../util/render-freshness";
 import { type InputEvent } from "./gestures";
@@ -29,7 +30,7 @@ const TITLE_X = 18;
 const TITLE_Y = 10;
 const LIST_TOP = 38;
 const CARD_X = 20;
-const ICON_SIZE = 24;
+const ICON_SIZE = NOTIFICATION_ICON_SIZE;
 const ICON_TEXT_GAP = 8;
 const CARD_TEXT_X = 10 + ICON_SIZE + ICON_TEXT_GAP;
 const CARD_GAP = 6;

@@ -3,11 +3,12 @@ import { logCurrent, spanCurrent } from "./frame-timings";
 import { toUint8Array } from "../util/array-util";
 import { rememberNotificationSources } from "./notification-sources";
 import { PHOTO_TONE, grayImageFromPacket } from "./image-files";
+import { NOTIFICATION_ICON_SIZE } from "./notification-types";
 
 declare const com: any;
 declare const java: any;
 
-const ICON_SIZE = 24;
+const ICON_SIZE = NOTIFICATION_ICON_SIZE;
 /** Ask the native listener for every active source, including those below the list's display limit. */
 export const ALL_NOTIFICATIONS = 0x7fffffff;
 // Backstop TTL only: the icon caches are invalidated eagerly whenever a

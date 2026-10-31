@@ -1,4 +1,13 @@
 /** Shared notification model; Android names are retained for existing callers. */
+
+/**
+ * Side of a notification's (square) source icon wherever one is drawn: the
+ * status bar, notification cards and views, the Glanceboard. 25 is the size
+ * of the Pebble icons iPhone notifications use (app/graphics/pebble-icons.ts),
+ * which are drawn on that pixel grid; Android's icons render at any size.
+ */
+export const NOTIFICATION_ICON_SIZE = 25;
+
 export type AndroidNotificationAction = { index: number; title: string; enabled: boolean };
 export type AndroidNotification = {
   key: string; packageName: string; appName: string; title: string; text: string;

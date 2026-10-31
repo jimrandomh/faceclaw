@@ -13,6 +13,13 @@ and others who contributed to documenting the G2's bluetooth protocol and firmwa
 
 G2 microphone LC3 decoding uses Google's liblc3: https://github.com/google/liblc3
 
+iPhone notification icons are Pebble's notification and timeline icons, from
+https://github.com/pebble-dev/iconography: the original Pebble Technology icons
+and Rebble community additions. They are licensed under the Apache License 2.0;
+see app/graphics/pebble-icons.LICENSE. Faceclaw's table of the iPhone apps they
+stand for builds on the one in the PebbleOS firmware,
+https://github.com/coredevices/PebbleOS (also Apache License 2.0).
+
 Weather data outside the US is by Open-Meteo.com: https://open-meteo.com/. It is
 licensed under CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/).
 
