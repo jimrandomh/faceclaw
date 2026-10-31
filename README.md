@@ -32,7 +32,8 @@ walk you through pairing with the glasses and installing custom firmware.
 
 For the NativeScript iOS port, see [iOS development](notes/ios-development.md).
 Use `scripts/pull_config_ios.sh` and `scripts/push_config_ios.sh` to transfer iPhone
-settings; see [iOS config transfer](scripts/ios-config.md) for options and Android XML support.
+settings. Android and iOS share one JSON config format, so a config pulled from either
+platform can be pushed to the other; see [config transfer](scripts/config-transfer.md).
 The instructions below build the Android app.
 
 If you want to customize faceclaw, the best way to do it is to download the
@@ -54,7 +55,7 @@ port into your computer, authorize access on the phone, and run
 Note that if you have installed a signed release build, you will have to
 uninstall it before installing a customized version. Use scripts/pull_config.sh
 to export a copy of your configuration first, and scripts/push_config.sh to
-import it into the new version.
+import it into the new version (see [config transfer](scripts/config-transfer.md)).
 
 
 ## Features

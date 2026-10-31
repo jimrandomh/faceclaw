@@ -25,13 +25,23 @@ class FaceclawSettings private constructor(context: Context) {
     private val prefs: SharedPreferences = context.applicationContext
         .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
     private val hub = SettingsChangeHub(object : SettingsStorage {
-        override fun getString(key: String?, defaultValue: String?): String? = prefs.getString(key, defaultValue)
+        // An imported or hand-edited config can store a setting as a different type than the
+        // app reads it as (iOS is lenient about this); read it as text rather than crash.
+        override fun getString(key: String?, defaultValue: String?): String? = try {
+            prefs.getString(key, defaultValue)
+        } catch (_: ClassCastException) {
+            prefs.all[key]?.toString() ?: defaultValue
+        }
 
         override fun putString(key: String?, value: String?) {
             prefs.edit().putString(key, value).apply()
         }
 
-        override fun getBoolean(key: String?, defaultValue: Boolean): Boolean = prefs.getBoolean(key, defaultValue)
+        override fun getBoolean(key: String?, defaultValue: Boolean): Boolean = try {
+            prefs.getBoolean(key, defaultValue)
+        } catch (_: ClassCastException) {
+            prefs.all[key]?.toString()?.toBooleanStrictOrNull() ?: defaultValue
+        }
 
         override fun putBoolean(key: String?, value: Boolean) {
             prefs.edit().putBoolean(key, value).apply()
