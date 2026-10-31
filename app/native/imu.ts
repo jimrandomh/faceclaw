@@ -12,7 +12,9 @@ declare const com: any;
  * static, so it works from any isolate without threading the bridge through.
  */
 
-export type ImuReading = { x: number; y: number; z: number; source: number };
+import { type ImuReading } from "./imu-types";
+
+export * from "./imu-types";
 
 function activeCommunicator(): any {
   if (!global.isAndroid) return null;
@@ -51,18 +53,4 @@ export function addImuListener(listener: (reading: ImuReading) => void): () => v
       // The instance may be gone after a disconnect; nothing to clean up.
     }
   };
-}
-
-/** Map an IMU sample's EventSource to a short label. */
-export function imuSourceLabel(source: number): string {
-  switch (source) {
-    case 1:
-      return "R arm";
-    case 2:
-      return "ring";
-    case 3:
-      return "L arm";
-    default:
-      return "device";
-  }
 }

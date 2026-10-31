@@ -32,7 +32,8 @@ function harness(refused = new Set()) {
     NSObject, NativeClass: () => cls => cls, setTimeout: (fn, delay) => { timers.push({ fn, delay }); return timers.length; }, clearTimeout: id => { timers[id - 1].cleared = true; },
     FaceclawKitIosGlassesSession: { alloc: () => ({ initWithRightAddressLeftAddressRingAddress: () => session }) },
     FaceclawKitFaceclawBleCommunicatorListener: {}, FaceclawKitIosAncsListener: {}, FaceclawKitIosAudioPacketListener: {},
-    FaceclawKitFaceclawCompassListener: {}, console: { log() {}, warn() {} },
+    FaceclawKitFaceclawCompassListener: {}, FaceclawKitFaceclawImuListener: {}, FaceclawKitIosAmbientLightListener: {},
+    FaceclawKitIosMicStatusListener: {}, console: { log() {}, warn() {} },
   }, {
     '@nativescript/core': { File: {}, knownFolders: {}, path: {} },
     '../g2/firmware-compat': { REQUIRED_FACECLAW_FIRMWARE_VERSION: 37 },

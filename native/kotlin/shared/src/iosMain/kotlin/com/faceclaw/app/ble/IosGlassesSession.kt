@@ -24,6 +24,16 @@ interface IosAudioPacketListener {
     fun onNsDataAudioPacket(data: NSData, arm: String, arrivalMs: Long)
 }
 
+/** CFW ambient-light reports (the raw field-105 record) as NSData. Main queue. Named apart like [IosAudioPacketListener]. */
+interface IosAmbientLightListener {
+    fun onNsDataAmbientLight(body: NSData)
+}
+
+/** CFW mic_control status records (the raw field-104 record) as NSData, with the temple: "L", "R" or "?". Main queue. */
+interface IosMicStatusListener {
+    fun onNsDataMicStatus(body: NSData, arm: String)
+}
+
 /**
  * ObjC-facing facade over the shared [GlassesSessionCore] for the NativeScript app: the iOS
  * counterpart of Android's FaceclawBleCommunicator with the same method names. GATT goes
@@ -187,6 +197,39 @@ class IosGlassesSession internal constructor(
 
     fun sendFaceclawMicControl(record: NSData?, label: String, rightTemple: Boolean, leftTemple: Boolean): Boolean =
         core.sendFaceclawMicControl(record?.byteArray(), label, rightTemple, leftTemple)
+
+    // NSData twins of the ByteArray listeners above (a Kotlin ByteArray crosses into JavaScript one
+    // byte per call). The core already delivers these on the main queue. Each returns the adapter it
+    // registered: pass that to the matching remove* method to unsubscribe.
+
+    fun addAmbientLightListenerNsData(listener: IosAmbientLightListener): FaceclawAmbientLightListener {
+        val adapter = object : FaceclawAmbientLightListener {
+            override fun onAmbientLight(body: ByteArray?) = listener.onNsDataAmbientLight((body ?: ByteArray(0)).data())
+        }
+        core.addAmbientLightListener(adapter)
+        return adapter
+    }
+
+    fun addMicStatusListenerNsData(listener: IosMicStatusListener): FaceclawMicStatusListener {
+        val adapter = object : FaceclawMicStatusListener {
+            override fun onMicStatus(body: ByteArray?, arm: String?) =
+                listener.onNsDataMicStatus((body ?: ByteArray(0)).data(), arm ?: "?")
+        }
+        core.addMicStatusListener(adapter)
+        return adapter
+    }
+
+    /** Every audio-characteristic packet, whether or not a capture is active (passive; sends nothing). */
+    fun addAudioMonitorListenerNsData(listener: IosAudioPacketListener): FaceclawAudioPacketListener {
+        val adapter = object : FaceclawAudioPacketListener {
+            override fun onAudioPacket(data: ByteArray?, arm: String?, arrivalMs: Long) =
+                listener.onNsDataAudioPacket((data ?: ByteArray(0)).data(), arm ?: "?", arrivalMs)
+        }
+        core.addAudioMonitorListener(adapter)
+        return adapter
+    }
+
+    fun removeAudioMonitorListener(listener: FaceclawAudioPacketListener?) = core.removeAudioMonitorListener(listener)
 
     fun startG2AudioForwarding(listener: FaceclawAudioPacketListener?): Boolean =
         core.startG2AudioForwarding(listener?.let { MainQueueAudioListener(it) })

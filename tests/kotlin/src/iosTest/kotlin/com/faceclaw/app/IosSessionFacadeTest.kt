@@ -198,6 +198,52 @@ class IosSessionFacadeTest {
     }
 
     @Test
+    fun nsDataSensorListenersDeliverOnMainAndUnsubscribeByTheirHandles() {
+        val session = IosGlassesSession(FakeIosLink(), null, IosSessionHost(threadName = "test-session-sensors"), RIGHT, LEFT, "", IosProtocolPlatform)
+        val core = session.coreForTests()
+        val light = ArrayList<List<Byte>>()
+        val status = ArrayList<Pair<List<Byte>, String>>()
+        val audio = ArrayList<Triple<List<Byte>, String, Long>>()
+        var offMain = 0
+        val lightHandle = session.addAmbientLightListenerNsData(object : IosAmbientLightListener {
+            override fun onNsDataAmbientLight(body: platform.Foundation.NSData) {
+                if (!NSThread.isMainThread) offMain++
+                light.add(body.byteArray().toList())
+            }
+        })
+        val statusHandle = session.addMicStatusListenerNsData(object : IosMicStatusListener {
+            override fun onNsDataMicStatus(body: platform.Foundation.NSData, arm: String) {
+                if (!NSThread.isMainThread) offMain++
+                status.add(body.byteArray().toList() to arm)
+            }
+        })
+        val audioHandle = session.addAudioMonitorListenerNsData(object : IosAudioPacketListener {
+            override fun onNsDataAudioPacket(data: platform.Foundation.NSData, arm: String, arrivalMs: Long) {
+                if (!NSThread.isMainThread) offMain++
+                audio.add(Triple(data.byteArray().toList(), arm, arrivalMs))
+            }
+        })
+        val report = byteArrayOf(0x41, 0x4c, 1, 2)
+        val record = byteArrayOf(0x4d, 0x43, 1)
+        val packet = byteArrayOf(9, 8, 7)
+        core.emitAmbientLight(report)
+        core.emitMicStatus(record, LEFT)
+        core.emitAudioMonitorPacket(packet, "R", 1234L)
+        assertTrue(pumpMainUntil(2_000) { light.size == 1 && status.size == 1 && audio.size == 1 })
+        assertEquals(report.toList(), light[0])
+        assertEquals(record.toList() to "L", status[0])
+        assertEquals(Triple(packet.toList(), "R", 1234L), audio[0])
+        assertEquals(0, offMain)
+        session.removeAmbientLightListener(lightHandle)
+        session.removeMicStatusListener(statusHandle)
+        session.removeAudioMonitorListener(audioHandle)
+        core.emitAmbientLight(report)
+        core.emitMicStatus(record, RIGHT)
+        core.emitAudioMonitorPacket(packet, "L", 5678L)
+        assertFalse(pumpMainUntil(200) { light.size > 1 || status.size > 1 || audio.size > 1 })
+    }
+
+    @Test
     fun hostDispatchesToTheCallingQueueAndRunsTheWorker() {
         val host = IosSessionHost(threadName = "test-host")
         var onMain = false

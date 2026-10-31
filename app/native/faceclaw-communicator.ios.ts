@@ -2,6 +2,7 @@ import type { RingInput } from "../g2/ring-input";
 import { File, knownFolders, path, type ImageSource } from "@nativescript/core";
 import { REQUIRED_FACECLAW_FIRMWARE_VERSION, type FirmwareInfo } from "../g2/firmware-compat";
 import { type CompassEvent } from "./compass-types";
+import { type ImuReading } from "./imu-types";
 import { fromData, toData } from "./kotlin-data";
 import { previewPixels } from "./ios-graphics";
 import { iosBluetooth } from "./ios-bluetooth";
@@ -14,6 +15,9 @@ declare const FaceclawKitFaceclawBleCommunicatorListener: any;
 declare const FaceclawKitIosAncsListener: any;
 declare const FaceclawKitIosAudioPacketListener: any;
 declare const FaceclawKitFaceclawCompassListener: any;
+declare const FaceclawKitFaceclawImuListener: any;
+declare const FaceclawKitIosAmbientLightListener: any;
+declare const FaceclawKitIosMicStatusListener: any;
 
 
 export type CommunicatorPhase =
@@ -164,6 +168,29 @@ class CompassListener extends NSObject {
   }
 }
 
+@NativeClass()
+class ImuListener extends NSObject {
+  static ObjCProtocols = [FaceclawKitFaceclawImuListener];
+  handler!: (reading: ImuReading) => void;
+  onImuDataXYZEventSource(x: number, y: number, z: number, eventSource: number): void {
+    this.handler({ x: Number(x), y: Number(y), z: Number(z), source: Number(eventSource) });
+  }
+}
+
+@NativeClass()
+class AmbientLightListener extends NSObject {
+  static ObjCProtocols = [FaceclawKitIosAmbientLightListener];
+  handler!: (body: Uint8Array) => void;
+  onNsDataAmbientLightBody(body: NSData): void { this.handler(fromData(body)); }
+}
+
+@NativeClass()
+class MicStatusListener extends NSObject {
+  static ObjCProtocols = [FaceclawKitIosMicStatusListener];
+  handler!: (body: Uint8Array, arm: string) => void;
+  onNsDataMicStatusBodyArm(body: NSData, arm: string): void { this.handler(fromData(body), String(arm ?? "")); }
+}
+
 /**
  * The iOS twin of the Android communicator bridge: the same public API over
  * the shared Kotlin session (FaceclawKitIosGlassesSession, CoreBluetooth
@@ -173,6 +200,8 @@ class CompassListener extends NSObject {
  * Android so callers never re-enter the bridge from a Kotlin frame.
  */
 export class FaceclawCommunicatorBridge {
+  // The started, not yet closed bridge (see getActive).
+  private static active: FaceclawCommunicatorBridge | null = null;
   private readonly communicator: any;
   private readonly listenerProxy: SessionListener;
   private ancsProxy: AncsListener | null = null;
@@ -200,6 +229,17 @@ export class FaceclawCommunicatorBridge {
   private audioListener: AudioPacketListener | null = null;
   private microphoneWork: Promise<void> = Promise.resolve();
   private microphoneToken = 0;
+  private closed = false;
+
+  /**
+   * The bridge whose session is running, for modules that reach the glasses
+   * without the bridge threaded through (imu, ambient-light, audio-monitor):
+   * the iOS stand-in for Android's FaceclawBleCommunicator.getActive().
+   * Set by start(), cleared by close().
+   */
+  static getActive(): FaceclawCommunicatorBridge | null {
+    return FaceclawCommunicatorBridge.active;
+  }
 
   constructor(addresses: { right: string; left: string; ring?: string }) {
     this.communicator = FaceclawKitIosGlassesSession.alloc().initWithRightAddressLeftAddressRingAddress(
@@ -450,7 +490,9 @@ export class FaceclawCommunicatorBridge {
   // ----- session ---------------------------------------------------------------------
 
   async start(): Promise<void> {
-    await this.enqueueNativeCall(() => { this.communicator.start(); });
+    await this.enqueueNativeCall(() => {
+      if (this.communicator.start() && !this.closed) FaceclawCommunicatorBridge.active = this;
+    });
   }
 
   async setG2ScreenOn(screenOn: boolean): Promise<void> {
@@ -640,6 +682,8 @@ export class FaceclawCommunicatorBridge {
   }
 
   async close(): Promise<void> {
+    this.closed = true;
+    if (FaceclawCommunicatorBridge.active === this) FaceclawCommunicatorBridge.active = null;
     this.setAncsListeners(false);
     this.previewAnimationListeners.clear();
     await this.enqueueNativeCall(() => {
@@ -676,6 +720,70 @@ export class FaceclawCommunicatorBridge {
   /** Status/results of the current or most recent run, as JSON. */
   getBandwidthBenchmarkStatus(): string {
     return String(this.communicator.getBandwidthBenchmarkStatus());
+  }
+
+  // ----- sensors and passive audio, for the developer demos -----------------------------
+  // Fire-and-forget, so they skip the native-call queue like the compass controls do.
+
+  /** Enable/disable the accelerometer report stream (an ImuReportPace code, 100..1000). */
+  setImuReportEnabled(enable: boolean, reportFrq: number): void {
+    this.communicator.setImuReportEnabledEnableReportFrq(Boolean(enable), Math.max(0, Math.round(reportFrq)));
+  }
+
+  /** Accelerometer samples, delivered on the main queue. */
+  addImuListener(listener: (reading: ImuReading) => void): () => void {
+    const proxy = ImuListener.new() as ImuListener;
+    proxy.handler = listener;
+    this.communicator.addImuListenerListener(proxy);
+    return () => { this.communicator.removeImuListenerListener(proxy); };
+  }
+
+  /** Ask the CFW for one ambient-light report (delivered to the ambient-light listeners). */
+  queryAmbientLight(): void {
+    this.communicator.queryAmbientLight();
+  }
+
+  setAmbientLightPolling(enable: boolean, intervalMs: number, minDelta: number, heartbeatMs: number, bindToLease: boolean): void {
+    this.communicator.setAmbientLightPollingEnableIntervalMsMinDeltaHeartbeatMsBindToLease(Boolean(enable),
+      Math.round(intervalMs), Math.round(minDelta), Math.round(heartbeatMs), Boolean(bindToLease));
+  }
+
+  /** Raw field-105 ambient-light records, delivered on the main queue. */
+  addAmbientLightListener(listener: (body: Uint8Array) => void): () => void {
+    const proxy = AmbientLightListener.new() as AmbientLightListener;
+    proxy.handler = listener;
+    const handle = this.communicator.addAmbientLightListenerNsDataListener(proxy);
+    return () => { this.communicator.removeAmbientLightListenerListener(handle); };
+  }
+
+  /** Raw field-104 mic_control status records and their temple ("L", "R" or "?"), on the main queue. */
+  addMicStatusListener(listener: (body: Uint8Array, arm: string) => void): () => void {
+    const proxy = MicStatusListener.new() as MicStatusListener;
+    proxy.handler = listener;
+    const handle = this.communicator.addMicStatusListenerNsDataListener(proxy);
+    return () => { this.communicator.removeMicStatusListenerListener(handle); };
+  }
+
+  /** Queue a CFW mic_control record for the chosen temples; false when nothing was queued. */
+  sendFaceclawMicControl(record: Uint8Array, label: string, rightTemple: boolean, leftTemple: boolean): boolean {
+    return Boolean(this.communicator.sendFaceclawMicControlRecordLabelRightTempleLeftTemple(
+      toData(new Uint8Array(record)), label, Boolean(rightTemple), Boolean(leftTemple)));
+  }
+
+  /**
+   * Every audio-characteristic packet, whatever enabled the mics, on the
+   * main queue. Passive: sends nothing and doesn't affect capture.
+   */
+  addAudioMonitorListener(listener: (packet: Uint8Array, arm: string, arrivalMs: number) => void): () => void {
+    const proxy = AudioPacketListener.new() as AudioPacketListener;
+    proxy.handler = listener;
+    const handle = this.communicator.addAudioMonitorListenerNsDataListener(proxy);
+    return () => { this.communicator.removeAudioMonitorListenerListener(handle); };
+  }
+
+  /** True while Faceclaw itself is forwarding glasses audio (speech capture or an app's mic). */
+  isAudioCaptureActive(): boolean {
+    return Boolean(this.communicator.isAudioCaptureActive());
   }
 
   /**
