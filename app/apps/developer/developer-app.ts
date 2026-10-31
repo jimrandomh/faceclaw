@@ -114,8 +114,6 @@ export function createDeveloperAppWindow(appContext: AppContext, options: InProc
       },
       {
         label: "Show resource usage",
-        disabled: global.isIOS,
-        description: global.isIOS ? "Not available on iOS yet." : undefined,
         onSelect: (ctx) => {
           ctx.stack.push(new ResourceUsageLayer(DEVELOPER_WINDOW_ID, ctx.actions.requestRender));
         },

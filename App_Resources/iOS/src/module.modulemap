@@ -13,5 +13,6 @@ module FaceclawGraphics {
   header "FaceclawQrScanner.h"
   header "FaceclawLoopbackRedirect.h"
   header "FaceclawWebSignIn.h"
+  header "FaceclawResourceUsage.h"
   export *
 }
