@@ -18,6 +18,7 @@ import {
 } from "~/assistant/models";
 import { isLocalModelReady } from "../native/llama";
 import { normalizeWhisperServerUrl } from "../native/whisper-server-stt";
+import { normalizeOpenAiCompatibleUrl } from "../native/openai-chat";
 import { isValidSpotifyClientId, SPOTIFY_CLIENT_ID_KEY } from "../native/spotify-auth";
 import { drawRightValueMenuItem, drawToggleMenuItem, MenuItem, openModalMenu } from "./menu";
 import { ANIMATION_SPEEDS, animationSpeedLabel, scaleAnimationDuration, type AnimationSpeed } from "./animation-speed";
@@ -942,7 +943,7 @@ export const assistantBackendSetting = new ConfigSettingEnum<AssistantBackendKin
   values: global.isIOS ? ["direct"] : ["direct", "external"],
   formatValue: (value) => assistantBackendLabels[value] ?? value,
   description:
-    global.isIOS ? "Cloud models called with your OpenAI or Anthropic API key. Add your key in Settings > API Keys." : "Who answers assistant queries: an LLM called from the phone (a cloud API with your key, or the downloaded on-phone model), or your own long-running agent (e.g. OpenClaw) reached through the faceclaw-agent-bridge plugin.",
+    global.isIOS ? "Cloud models called through OpenAI, Anthropic, or your configured OpenAI-compatible API." : "Who answers assistant queries: an LLM called from the phone (a cloud API with your key, or the downloaded on-phone model), or your own long-running agent (e.g. OpenClaw) reached through the faceclaw-agent-bridge plugin.",
 });
 
 export const assistantHermesUrlSetting = new ConfigSettingString({
@@ -1006,6 +1007,40 @@ export const assistantAllowProactiveSetting = new ConfigSettingBoolean({
   defaultValue: true,
   description:
     "Let the external agent use glasses tools outside of a conversation, e.g. showing an alert when a long-running job finishes. Rate-limited; only tools marked proactive-safe are allowed.",
+});
+
+export const assistantOpenAiCompatibleUrlSetting = new ConfigSettingString({
+  id: "assistant-openai-compatible-url",
+  label: "Compatible API URL",
+  storageKey: "assistant.openAiCompatibleUrl",
+  defaultValue: "",
+  editorTitle: "OpenAI-compatible API root",
+  glassesEditTitle: "Edit compatible API URL",
+  formatValue: (value) => value || "(not set)",
+  validate: (value) => (!value.trim() || normalizeOpenAiCompatibleUrl(value) ? null : "Enter an http:// or https:// API root."),
+  description: "Explicit API root for the OpenAI-compatible Chat Completions assistant. Venice: https://api.venice.ai/api/v1. Open WebUI: https://your-host/api. The provider's path is not guessed.",
+});
+
+export const assistantOpenAiCompatibleKeySetting = new ConfigSettingString({
+  id: "assistant-openai-compatible-key",
+  label: "Compatible API key",
+  storageKey: "assistant.openAiCompatibleKey",
+  defaultValue: "",
+  editorTitle: "OpenAI-compatible API key (optional)",
+  glassesEditTitle: "Edit compatible API key",
+  formatValue: (value) => (value ? `${value.slice(0, 6)}...` : "(none)"),
+  description: "Bearer key sent only to the compatible assistant URL above. Optional for private servers that do not require authentication.",
+});
+
+export const assistantOpenAiCompatibleModelSetting = new ConfigSettingString({
+  id: "assistant-openai-compatible-model",
+  label: "Compatible model ID",
+  storageKey: "assistant.openAiCompatibleModel",
+  defaultValue: "",
+  editorTitle: "OpenAI-compatible model ID",
+  glassesEditTitle: "Edit compatible model ID",
+  formatValue: (value) => value || "(not set)",
+  description: "Exact model ID sent to the compatible provider. For glasses tools, choose a model that supports function calling.",
 });
 
 export const elevenLabsApiKeySetting = new ConfigSettingString({
@@ -1112,11 +1147,12 @@ export const assistantModelSetting = new ConfigSettingEnum<AssistantModel>({
     if (provider === "anthropic") return anthropicApiKeySetting.get().trim().length === 0;
     if (provider === "openai") return openAiApiKeySetting.get().trim().length === 0;
     if (provider === "local") return !isLocalModelReady();
+    if (provider === "openai-compatible") return !assistantOpenAiCompatibleUrlSetting.get().trim() || !assistantOpenAiCompatibleModelSetting.get().trim();
     if (provider === "hermes") return assistantHermesUrlSetting.get().trim().length === 0;
     return false;
   },
   description:
-    global.isIOS ? "Model used by the voice assistant. Auto prefers Terra with an OpenAI key, then Sonnet with an Anthropic key." : "Model used by the voice assistant. Auto prefers Terra when an OpenAI key is set, then Sonnet when an Anthropic key is set, then the downloaded on-phone model.",
+    global.isIOS ? "Model used by the assistant. OpenAI-compatible uses the URL, model ID, and optional key below. Auto only considers the built-in providers." : "Model used by the assistant. OpenAI-compatible uses the URL, model ID, and optional key below. Auto only considers the built-in providers.",
 });
 
 export const mapboxApiKeySetting = new ConfigSettingString({

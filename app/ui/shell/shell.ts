@@ -38,6 +38,9 @@ import {
   assistantBridgePortSetting,
   assistantBridgeTokenSetting,
   assistantModelSetting,
+  assistantOpenAiCompatibleKeySetting,
+  assistantOpenAiCompatibleModelSetting,
+  assistantOpenAiCompatibleUrlSetting,
   assistantSkipConfirmationSetting,
   batteryIndicatorSettingsKey,
   brightnessSetting,
@@ -1720,6 +1723,9 @@ class Shell {
       openai: openAiApiKeySetting.get(),
       hermesUrl: assistantHermesUrlSetting.get(),
       hermesKey: assistantHermesKeySetting.get(),
+      openAiCompatibleUrl: assistantOpenAiCompatibleUrlSetting.get(),
+      openAiCompatibleKey: assistantOpenAiCompatibleKeySetting.get(),
+      openAiCompatibleModel: assistantOpenAiCompatibleModelSetting.get(),
     });
     if (llm && reasoning !== "default" && llm.effort) llm.effort = reasoning;
     return llm ? { kind: "direct", llm } : null;
@@ -1749,7 +1755,7 @@ class Shell {
       this.showAlert(
         assistantBackendSetting.get() === "external"
           ? "Configure the agent bridge host and token in Settings."
-          : global.isIOS ? "Set an OpenAI or Anthropic API key in Settings." : "Set an API key or download the on-phone model in Settings.",
+          : global.isIOS ? "Configure an assistant model in Settings." : "Set an API key or download the on-phone model in Settings.",
       );
       return;
     }

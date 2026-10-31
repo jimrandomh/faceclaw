@@ -2,6 +2,7 @@ import { streamAnthropicMessage } from "../native/anthropic";
 import { streamHermesChat } from "../native/hermes";
 import { streamLocalQwen } from "../native/llama";
 import { streamOpenAiResponse } from "../native/openai";
+import { streamOpenAiCompatibleChat } from "../native/openai-chat";
 import type {
   LlmContentBlock,
   LlmMessage,
@@ -143,6 +144,8 @@ export class DirectAssistantBackend {
       streamHandle =
         options.provider === "hermes"
           ? streamHermesChat({ ...streamOptions, baseUrl: options.baseUrl ?? "", sessionId: options.sessionId ?? "" })
+          : options.provider === "openai-compatible"
+          ? streamOpenAiCompatibleChat({ ...streamOptions, baseUrl: options.baseUrl ?? "" })
           : options.provider === "openai"
           ? streamOpenAiResponse(streamOptions)
           : options.provider === "local"

@@ -70,11 +70,13 @@
     </ul>
     <p>Third party data retention and privacy policies may differ based on the API key provided. API keys are part of a relationship between the user and the API provider; Faceclaw does not manage accounts or process billing information.</p>
     <h2>AI Assistant Transcripts</h2>
-    <p>Faceclaw has a builtin AI voice assistant. Using the voice assistant requires providing an API key for a model provider such as Anthropic or OpenAI. Prompts and responses are subject to that model provider's privacy policy:</p>
+    <p>Faceclaw has a builtin AI voice assistant. Using a cloud model requires providing an API key for a model provider such as Anthropic, OpenAI, or Venice, or configuring an OpenAI-compatible endpoint such as a private Open WebUI server. Prompts and responses are subject to the selected provider or server operator's privacy policy:</p>
     <ul class="links">
       <li>OpenAI: <a href="https://openai.com/policies/row-privacy-policy/">https://openai.com/policies/row-privacy-policy/</a></li>
       <li>Anthropic: <a href="https://www.anthropic.com/legal/privacy">https://www.anthropic.com/legal/privacy</a></li>
+      <li>Venice: <a href="https://venice.ai/privacy">https://venice.ai/privacy</a></li>
     </ul>
+    <p>With an OpenAI-compatible provider, the configured server receives the assistant system prompt, conversation history, available tool definitions, and tool results needed to answer. Its URL, model ID, and optional API key are stored on the phone. Faceclaw does not operate that server and cannot make representations about its logging or retention; for a private Open WebUI server, the server's operator controls those policies.</p>
     <p>AI conversation histories and memory files may be stored on your phone. Faceclaw does not transmit voice-assistant prompts or responses to any party other than a user-selected AI model provider. The voice assistant is given tools with which it is able to access most things on the user's phone, including all content displayed on the glasses, location, notifications, and content accessible through the Terminal app.</p>
     <p>The AI assistant can take actions on the user's behalf, including sharing any information it has access to. The user is responsible for any instructions they give it.</p>
     <h2>Location</h2>
@@ -82,7 +84,15 @@
     <ul class="links">
       <li>Mapbox: <a href="https://www.mapbox.com/legal/privacy">https://www.mapbox.com/legal/privacy</a></li>
     </ul>
-    <p>The Weather app will retrieve the user's coarse location, and will use it to query a third-party weather information provider: the US National Weather Service, then <a href="https://open-meteo.com/en/terms">Open-Meteo</a> if the location is outside the US. Outside the US, it also asks the phone's built-in geocoder (Google's on most Android phones, Apple's on iOS) for the name of the place.</p>
+    <p>The Weather app will retrieve the user's coarse location, and will use it to query a third-party weather information provider: the US National Weather Service, then Open-Meteo if the location is outside the US. Outside the US, it also asks the phone's built-in geocoder (Google's on most Android phones, Apple's on iOS) for the name of the place.</p>
+    <ul class="links">
+      <li>Open-Meteo: <a href="https://open-meteo.com/en/terms">https://open-meteo.com/en/terms</a></li>
+    </ul>
+    <h2>Spotify</h2>
+    <p>On iOS, the Music app, Glanceboard and the voice assistant can show and control Spotify through Spotify's Web API, once the user has created their own Spotify developer app and signed in. Signing in happens on Spotify's website in the system's sign-in sheet; Faceclaw never sees the password, and stores the resulting sign-in tokens on the phone. While Spotify is shown or used, Faceclaw requests the user's playback state, queue, library and search results from Spotify and sends it playback commands, directly from the phone. This is subject to Spotify's privacy policy.</p>
+    <ul class="links">
+      <li>Spotify: <a href="https://www.spotify.com/legal/privacy-policy/">https://www.spotify.com/legal/privacy-policy/</a></li>
+    </ul>
     <h2>EvenHub</h2>
     <p>The EvenHub app store is subject to Even Realities' privacy policy: <a href="https://support.evenrealities.com/hc/en-us/articles/14127464826511-Privacy-Policy">https://support.evenrealities.com/hc/en-us/articles/14127464826511-Privacy-Policy</a>. Apps downloaded from the EvenHub app store come with their own privacy policies.</p>
     <h2>Wear OS Watch</h2>

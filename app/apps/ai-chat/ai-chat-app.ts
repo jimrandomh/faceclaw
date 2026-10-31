@@ -4,7 +4,7 @@ import { truncateText, wrapText } from "../../graphics/textwrap";
 import { ASSISTANT_MODEL_CHOICES, assistantModelLabel, resolveAssistantModel } from "../../assistant/models";
 import type { AssistantTranscriptEntry } from "../../assistant/session";
 import type { AssistantConversations, ReasoningLevel } from "../../assistant/conversations";
-import { anthropicApiKeySetting, assistantBackendSetting, openAiApiKeySetting } from "../../ui/dashboard-settings";
+import { anthropicApiKeySetting, assistantBackendSetting, assistantOpenAiCompatibleKeySetting, assistantOpenAiCompatibleModelSetting, assistantOpenAiCompatibleUrlSetting, openAiApiKeySetting } from "../../ui/dashboard-settings";
 import { GESTURE_CLICK, GESTURE_DOUBLE_CLICK, GESTURE_LONG_PRESS, gestureHints, type InputEvent } from "../../ui/gestures";
 import type { Layer, LayerContext } from "../../ui/layers";
 import type { MenuItem } from "../../ui/menu";
@@ -102,7 +102,7 @@ class AiChatLayer implements Layer {
       }
       case "long-press":
         if (!this.conversations.current().session?.isTurnActive()) {
-          if (!shell.isAssistantAvailable()) { shell.showAlert(global.isIOS ? "Set an OpenAI or Anthropic API key in Settings." : "Set an API key or download the on-phone model in Settings."); return; }
+          if (!shell.isAssistantAvailable()) { shell.showAlert(global.isIOS ? "Configure an assistant model in Settings." : "Set an API key or download the on-phone model in Settings."); return; }
           void this.draft.start();
         }
         return;
@@ -133,7 +133,12 @@ class AiChatLayer implements Layer {
           onSelect: (pickCtx) => { if (this.conversations.configure(model, record.reasoning)) pickCtx.stack.clearToBase(); },
         }))) },
       { label: `Reasoning: ${record.reasoning}`, disabled: () => {
-        const llm = resolveAssistantModel(record.model, { anthropic: anthropicApiKeySetting.get(), openai: openAiApiKeySetting.get() });
+        const llm = resolveAssistantModel(record.model, {
+          anthropic: anthropicApiKeySetting.get(), openai: openAiApiKeySetting.get(),
+          openAiCompatibleUrl: assistantOpenAiCompatibleUrlSetting.get(),
+          openAiCompatibleKey: assistantOpenAiCompatibleKeySetting.get(),
+          openAiCompatibleModel: assistantOpenAiCompatibleModelSetting.get(),
+        });
         return external || busy() || !llm?.effort;
       }, onSelect: (ctx) => submenu(ctx, "Reasoning", (["default", "low", "medium", "high"] as ReasoningLevel[]).map((reasoning) => ({
         label: `${reasoning === record.reasoning ? "✓ " : ""}${reasoning === "default" ? "Model default" : reasoning}`,
