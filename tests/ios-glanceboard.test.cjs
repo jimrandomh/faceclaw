@@ -28,6 +28,7 @@ function fixture() {
   const battery = {};
   const tasks = new Map(), sent = [], previews = [], received = [], errors = [];
   const boardStats = { starts: 0, stops: 0, paints: 0 };
+  const registered = [], inProcessApps = [];
   const settings = { lock: true, enabled: true, tap: true, hold: true, tilt: true, duration: 3000, depth: 0 };
   const clock = { Date: class extends Date { static now() { return now; } },
     setTimeout: (fn, ms) => { tasks.set(++nextTask, { fn, at: now + ms }); return nextTask; },
@@ -44,7 +45,7 @@ function fixture() {
     // The launcher repaints into whichever display target the controller has after a switch.
     requestRender() { void controller?.displayReady.then(() => controller.display?.submitSurfaceFrame('launcher', launcherPixels, fullRect, 'launcher')); }, setScreenOn() {} };
   const shell = {
-    configure: options => { shellOptions = options; }, registerWindow() {}, focusWindow() {},
+    configure: options => { shellOptions = options; }, registerWindow: window => registered.push(window), focusWindow() {},
     wake: () => { screenOn = true; shellOptions.onScreenStateChanged(true); },
     sleep: () => { screenOn = false; shellOptions.onScreenStateChanged(false); },
     isScreenOn: () => screenOn, getWindows: () => [window], foregroundWindow: () => window,
@@ -138,6 +139,7 @@ function fixture() {
     '../native/notification-icons.ios': { bindIosNotifications() {}, iosNotificationsChanged() {}, onIosNotificationPopup: () => () => {}, readActiveNotifications: () => [] },
     '../native/notification-sources': { shouldShowNotificationOnGlasses: () => true },
     "../native/compass.ios": { bindCompassSession() {}, receiveCompassEvent() {} },
+    '../native/bandwidth-benchmark.ios': { bindBandwidthBenchmarkSession() {} },
     '@nativescript/core': { File: { fromPath: () => ({ writeTextSync() {} }) },
       knownFolders: { documents: () => ({ path: '/tmp' }) }, path },
     '../native/ios-voice-input': { iosVoiceInput: { handleSessionEnded() {}, stopPhoneCapture() {}, setRawSession() {}, onSpeechEnd: () => () => {} } },
@@ -159,6 +161,12 @@ function fixture() {
     '../apps/evenhub/installed-apps': {}, '../apps/evenhub/manager': { onPhoneShownChanged: () => () => {}, phoneUiButton: () => null },
     '../apps/evenhub/updates': {}, '../apps/evenhub': {},
     '../apps/launcher/launcher-app': { createLauncherWindow: () => window, LAUNCHER_SURFACE_ID: 'launcher' },
+    '../apps/notifications/notifications-app': { NOTIFICATIONS_SURFACE_ID: 'window:notifications', NOTIFICATIONS_WINDOW_ID: 'notifications',
+      createNotificationsAppWindow: options => {
+        const app = { options, window: { windowId: 'notifications', surfaceId: 'window:notifications', appId: 'notifications', heightMode: 'min' } };
+        inProcessApps.push(app);
+        return app;
+      } },
     '../apps/all-apps': { ALL_APPS: [{ appId: 'glanceboard', glanceboard: provider }] },
     '../apps/onboarding/onboarding-progress': { claimGlassesOnboardingAutoLaunch: () => false },
     '../ui/shell/worker-window': {}, '../ui/shell/in-process-window': {},
@@ -205,6 +213,7 @@ function fixture() {
   async function phone(type, origin = 'ring') { controller.gesture(type, origin); await render(); }
   async function connect() { await controller.connect(); await render(); }
   return { controller, shell, battery, remoteHost, keyboardChanged: session => shellOptions.onKeyboardInputChanged(session), settings, phoneState, observers,
+    get shellOptions() { return shellOptions; }, registered, inProcessApps,
     get bridge() { return bridge; }, connect, wear: wearing => bridge.emitWear(wearing), settingsChanged: () => settingsChanged(), sent, previews, received, boardStats, hardware, phone, advance, render };
 }
 const assertBlank = pixels => assert.ok(pixels.every(p => p === 0));
@@ -257,4 +266,33 @@ test('ring battery reported through the glasses reaches the shell while connecte
   assert.deepEqual([f.battery.ring, f.battery.ringCharging], [40, false]);
   await f.controller.disconnect(); await f.render();
   assert.deepEqual([f.battery.ring, f.battery.ringCharging], [null, null]);
+});
+
+test('the switcher can open the Notifications window in the background, once, with a live surface', async () => {
+  const f = fixture();
+  await f.render();
+  const opened = f.shellOptions.openNotificationsWindow();
+  assert.equal(opened.opened, true);
+  const [app] = f.inProcessApps;
+  assert.equal(opened.window, app);
+  assert.ok(f.registered.includes(app.window), 'registered with the shell for the switcher to foreground');
+  // A frame painted at once (the shell foregrounds and repaints the window
+  // straight away) lands on the surface configured ahead of it.
+  void app.options.submitFrame([{ image: new images.GrayImage(640, 480, 90), x: 0, y: 0 }], 0, 1);
+  await f.render();
+  const surface = f.controller.display.surfaces.get('window:notifications');
+  assert.ok(surface, 'surface configured');
+  assert.equal(surface.pixels[0], 90);
+  assert.equal(surface.visible, false, 'stays hidden until the shell foregrounds it');
+  // Already open: the same window, nothing new created or registered.
+  const registeredBefore = f.registered.length;
+  const again = f.shellOptions.openNotificationsWindow();
+  assert.deepEqual([again.opened, again.window, f.inProcessApps.length, f.registered.length], [false, app, 1, registeredBefore]);
+  // Closed (the selection moved on): frames stop, and the next open makes a new window.
+  app.options.removeSurface(); app.options.onClosed();
+  void app.options.submitFrame([{ image: new images.GrayImage(640, 480, 90), x: 0, y: 0 }], 0, 2);
+  await f.render();
+  assert.equal(f.controller.display.surfaces.has('window:notifications'), false);
+  assert.equal(f.shellOptions.openNotificationsWindow().opened, true);
+  assert.equal(f.inProcessApps.length, 2);
 });

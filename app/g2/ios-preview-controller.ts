@@ -32,6 +32,7 @@ import { firmwareIncompatibilityMessage, hasCompatibleFirmware } from './firmwar
 import { isHaltedSessionPhase, suppressAutoReconnect } from './reconnect-policy'
 import { deviceAddressError } from './ios-peripheral-identity'
 import { createLauncherWindow, LAUNCHER_SURFACE_ID } from '../apps/launcher/launcher-app'
+import { createNotificationsAppWindow, NOTIFICATIONS_SURFACE_ID, NOTIFICATIONS_WINDOW_ID } from '../apps/notifications/notifications-app'
 import { ALL_APPS } from '../apps/all-apps'
 import type { AppContext, AppDefinition, AppLaunchParams } from '../apps/app-definition'
 import { WorkerAppHost } from '../ui/shell/worker-window'
@@ -210,6 +211,8 @@ export class IosPreviewController {
       getScreenTimeoutMs: () => null,
       requestShellRender: () => this.requestShellRender(),
       onWindowsChanged: () => { this.requestShellRender(); this.syncEvenHubPhoneUi() },
+      openNotificationsWindow: () =>
+        this.openInProcessAppInBackground(NOTIFICATIONS_WINDOW_ID, NOTIFICATIONS_SURFACE_ID, createNotificationsAppWindow),
       onSwitcherBarHeightChanged: () => {
         this.relayout()
         shell.foregroundWindow()?.requestRender()
@@ -623,6 +626,7 @@ export class IosPreviewController {
     const { nx, ny } = mirrorToPanelFraction(this.previewCrop, mirrorNx, mirrorNy)
     const x = Math.max(0, Math.min(639, Math.floor(nx * 640)))
     const y = Math.max(0, Math.min(479, Math.floor(ny * 480)))
+    if (!shell.hasOverlay() && shell.focusStatusItemAt(x, y)) { this.requestShellRender(); return }
     const window = shell.foregroundWindow()
     if (!shell.hasOverlay() && sidebarStripVisible(shell.getFocus(), window?.appId)
       && isOnSwitcherEdge(x, y, window?.heightMode ?? 'min', window?.appId)) {
@@ -684,6 +688,7 @@ export class IosPreviewController {
       appId: app.appId, apps: ALL_APPS, actions: this.actions,
       launchApp: (id, params) => this.launchApp(id, params), uninstallApp: id => this.uninstallApp(id),
       launchInProcessApp: (id, surface, create) => this.launchInProcessApp(id, surface, create),
+      openInProcessAppInBackground: (id, surface, create) => this.openInProcessAppInBackground(id, surface, create),
       ensureWorkerHost: create => this.ensureWorkerHost(app.appId, create),
       submitWindowFrame: (id, planes) => this.submit(id, planes),
       setWindowSurfaceVisible: (id, visible) => this.setWindowSurfaceVisible(id, visible),
@@ -695,14 +700,44 @@ export class IosPreviewController {
     create: (options: InProcessAppOptions) => InProcessWindow): Promise<void> {
     const existing = this.inProcessApps.get(windowId)
     if (existing) { shell.focusWindow(windowId); existing.requestRender(); this.requestShellRender(); return }
-    // Apps can request a render while their factory runs (Nightscout's tray
-    // subscription does). The surface only exists once the factory returns.
-    // The explicit render below supplies a fresh frame after configuration.
-    let surfaceReady = false
+    const { app, surface } = this.createInProcessApp(windowId, surfaceId, create)
+    await this.configureWindow(app.window)
+    surface.ready = true
+    shell.registerWindow(app.window); shell.focusWindow(windowId)
+    app.requestRender(); this.requestShellRender()
+  }
+  /**
+   * An in-process singleton app's window, opened in the background (neither
+   * foregrounded nor focused) unless it is open already, for the shell to
+   * bring forward itself: the Notifications window under a notification
+   * selected in the switcher, or an app widget's window under the widget.
+   * Display calls run in order and frames wait on displayReady before
+   * queueing, so the surface configure queued here lands ahead of any frame
+   * and of the shell foregrounding the window, which it may do at once.
+   */
+  private openInProcessAppInBackground(windowId: string, surfaceId: string,
+    create: (options: InProcessAppOptions) => InProcessWindow): { window: InProcessWindow; opened: boolean } {
+    const existing = this.inProcessApps.get(windowId)
+    if (existing) return { window: existing, opened: false }
+    const { app, surface } = this.createInProcessApp(windowId, surfaceId, create)
+    void this.configureWindow(app.window).catch(error => this.fail(error))
+    surface.ready = true
+    shell.registerWindow(app.window)
+    return { window: app, opened: true }
+  }
+  /**
+   * Create an in-process singleton app's window (not yet registered with the
+   * shell). Its frames reach the compositor only while `surface.ready`: apps
+   * can request a render while their factory runs (Nightscout's tray
+   * subscription does), before the caller has configured the surface.
+   */
+  private createInProcessApp(windowId: string, surfaceId: string,
+    create: (options: InProcessAppOptions) => InProcessWindow): { app: InProcessWindow; surface: { ready: boolean } } {
+    const surface = { ready: false }
     const app = create({
-      actions: this.actions, submitFrame: planes => surfaceReady ? this.submit(surfaceId, planes, () => surfaceReady) : Promise.resolve(),
+      actions: this.actions, submitFrame: planes => surface.ready ? this.submit(surfaceId, planes, () => surface.ready) : Promise.resolve(),
       setSurfaceVisible: visible => this.setWindowSurfaceVisible(surfaceId, visible),
-      removeSurface: () => { surfaceReady = false; this.removeWindowSurface(surfaceId) },
+      removeSurface: () => { surface.ready = false; this.removeWindowSurface(surfaceId) },
       reconfigureSurface: () => {
         const window = shell.getWindows().find(w => w.windowId === windowId)
         if (window) void this.configureWindow(window).catch(error => this.fail(error))
@@ -711,10 +746,7 @@ export class IosPreviewController {
       onClosed: () => { this.inProcessApps.delete(windowId) },
     })
     this.inProcessApps.set(windowId, app)
-    await this.configureWindow(app.window)
-    surfaceReady = true
-    shell.registerWindow(app.window); shell.focusWindow(windowId)
-    app.requestRender(); this.requestShellRender()
+    return { app, surface }
   }
   private ensureWorkerHost(appId: string, create: () => Worker): WorkerAppHost {
     const existing = this.appHosts.get(appId)

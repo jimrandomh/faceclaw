@@ -6,6 +6,7 @@
 * Make BLE benchmark work on iOS
 * Ensure connection is re-set to 2M on reconnect
 * Add support for embedded icons and custom layouts in Android notifications
+* iOS: Notifications are selectable via the task switcher
 
 ## 0.8.5 - 2026-10-25
 
