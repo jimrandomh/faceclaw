@@ -9,6 +9,15 @@ export type AndroidNotification = {
   foregroundService?: boolean;
   /** Carries a picture (Android BigPictureStyle), fetched separately by readNotificationPicture. */
   hasPicture?: boolean;
+  /** Carries a large icon (Android: a sender's avatar or logo), fetched separately by readNotificationLargeIcon. */
+  hasLargeIcon?: boolean;
+  /** Has its own layout (Android RemoteViews), drawn by readNotificationCustomView. */
+  hasCustomView?: boolean;
+  /**
+   * The custom layout's text, one entry per text view, when the notification has no title or
+   * text of its own (Dexcom's glucose reading and units).
+   */
+  customText?: string[];
   /** Full message size reported by iOS, even when the fetched text is bounded. */
   messageSize?: number;
 };

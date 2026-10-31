@@ -2,9 +2,10 @@
 
 ## 0.8.6 - Future
 
-+ Add a distance unit option
-+ Make BLE benchmark work on iOS
-+ Ensure connection is re-set to 2M on reconnect
+* Add a distance unit option
+* Make BLE benchmark work on iOS
+* Ensure connection is re-set to 2M on reconnect
+* Add support for embedded icons and custom layouts in Android notifications
 
 ## 0.8.5 - 2026-10-25
 

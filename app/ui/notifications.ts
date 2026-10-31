@@ -9,10 +9,13 @@ import {
   dismissNotification,
   invokeNotificationAction,
   readActiveNotifications,
+  readNotificationCustomView,
   readNotificationIconByKey,
+  readNotificationLargeIcon,
   readNotificationPicture,
   type AndroidNotification,
   type AndroidNotificationAction,
+  type NotificationImageResult,
 } from "../native/notification-icons";
 import { setNotificationSourceEnabled } from "../native/notification-sources";
 import { notificationEmptyMessage } from "../native/notification-access";
@@ -45,13 +48,18 @@ const DETAIL_TITLE_Y = 21;
 /** Gaps below the title's line box and below the icon/app-name header row. */
 const DETAIL_HEADER_GAP = 3;
 const DETAIL_BODY_GAP = 4;
-/** Text lines an attached picture leaves room for above it (when there are that many); it takes the rest. */
+/** Untitled text lines that attached images (custom layout, picture) leave room for above them, when there are that many; they take the rest. */
 const DETAIL_PICTURE_TEXT_LINES = 2;
 /** Gap between the text and an attached picture, and the space kept below the picture. */
 const DETAIL_PICTURE_GAP = 6;
 const DETAIL_PICTURE_BOTTOM_MARGIN = 12;
 /** An attached picture with less height than this to fit in (a large UI font) is left out. */
 const DETAIL_PICTURE_MIN_HEIGHT = 32;
+/** Likewise a custom layout; Dexcom's reading is about 40 high. */
+const DETAIL_CUSTOM_VIEW_MIN_HEIGHT = 16;
+/** A large icon (sender's avatar, site's logo): at the right of a list card, left of the detail view's title. */
+const LARGE_ICON_SIZE = 32;
+const LARGE_ICON_GAP = 8;
 // Disable-source confirmation: actions on top, the explanation below them.
 const CONFIRM_X = 24;
 const CONFIRM_Y = 8;
@@ -67,14 +75,27 @@ function iconForNotification(key: string): GrayImage | null {
   return icon;
 }
 
-/** Attached picture for a paint pass, fitting maxWidth x maxHeight; allow-stale like iconForNotification. */
-function pictureForNotification(notification: AndroidNotification, maxWidth: number, maxHeight: number): GrayImage | null {
-  if (!notification.hasPicture || maxHeight < DETAIL_PICTURE_MIN_HEIGHT) return null;
-  const { picture, stale } = readNotificationPicture(notification, maxWidth, maxHeight, renderPassAllowsStaleData());
-  if (stale) {
+/** A notification image read for a paint pass (allow-stale like iconForNotification). */
+function imageForPaint(
+  read: (allowStale: boolean) => NotificationImageResult,
+): NotificationImageResult {
+  const result = read(renderPassAllowsStaleData());
+  if (result.stale) {
     noteStaleDataUsed();
   }
-  return picture;
+  return result;
+}
+
+/** Attached picture for a paint pass, fitting maxWidth x maxHeight. */
+function pictureForNotification(notification: AndroidNotification, maxWidth: number, maxHeight: number): GrayImage | null {
+  if (!notification.hasPicture || maxHeight < DETAIL_PICTURE_MIN_HEIGHT) return null;
+  return imageForPaint((allowStale) => readNotificationPicture(notification, maxWidth, maxHeight, allowStale)).image;
+}
+
+/** Large icon for a paint pass, LARGE_ICON_SIZE square at most. */
+function largeIconForNotification(notification: AndroidNotification): GrayImage | null {
+  if (!notification.hasLargeIcon) return null;
+  return imageForPaint((allowStale) => readNotificationLargeIcon(notification, LARGE_ICON_SIZE, allowStale)).image;
 }
 
 type CardLayout = {
@@ -152,7 +173,8 @@ export class NotificationsListLayer implements Layer {
         // Icons are only resolved for cards actually drawn, so a long list
         // does not fetch icons for everything below the fold.
         const icon = iconForNotification(layout.notification.key);
-        drawNotificationCard(image, font, layout, CARD_X, cursorY, cardWidth, index === selectedIndex, focused, icon);
+        const largeIcon = largeIconForNotification(layout.notification);
+        drawNotificationCard(image, font, layout, CARD_X, cursorY, cardWidth, index === selectedIndex, focused, icon, largeIcon);
       }
       cursorY += layout.height + CARD_GAP;
       if (cursorY > listBottom + 80) break;
@@ -356,8 +378,10 @@ function buildNotificationCardLayout(
   font: UiFont,
   notification: AndroidNotification,
   selected: boolean,
-  cardTextWidth: number,
+  fullTextWidth: number,
 ): CardLayout {
+  // The large icon sits at the card's right, beside all its text.
+  const cardTextWidth = notification.hasLargeIcon ? fullTextWidth - LARGE_ICON_SIZE - LARGE_ICON_GAP : fullTextWidth;
   const lines: string[] = [];
   const time = formatRelativeTime(notification.postTime);
   const title = notificationTitle(notification);
@@ -383,7 +407,7 @@ function buildNotificationCardLayout(
   return {
     notification,
     lines,
-    height: Math.max(ICON_SIZE + 18, 12 + lines.length * lineStep(font)),
+    height: Math.max(ICON_SIZE + 18, notification.hasLargeIcon ? LARGE_ICON_SIZE + 16 : 0, 12 + lines.length * lineStep(font)),
   };
 }
 
@@ -397,6 +421,7 @@ function drawNotificationCard(
   selected: boolean,
   focused: boolean,
   icon: GrayImage | null,
+  largeIcon: GrayImage | null,
 ): void {
   // Match the shared menu highlight: faint border + black fill when
   // unselected; bright border when selected; the non-black fill only appears
@@ -407,6 +432,9 @@ function drawNotificationCard(
   image.drawRoundedRect(x, y, width, layout.height, stroke, 8);
   if (icon) {
     image.bitBlt(icon, x + 10, y + 8, { transparentZero: true });
+  }
+  if (largeIcon) {
+    image.bitBlt(largeIcon, x + width - 10 - LARGE_ICON_SIZE + ((LARGE_ICON_SIZE - largeIcon.width) >> 1), y + 8);
   }
   for (let index = 0; index < layout.lines.length; index++) {
     const value = index === 0 ? 140 : selected ? 235 : 185;
@@ -437,18 +465,35 @@ function drawDetailContent(
 ): void {
   const contentX = NOTIFICATION_CONTENT_X;
   const contentWidth = notificationContentWidth(width);
-  const bodyTop = drawNotificationHeader(image, font, icon, `${notification.appName || notification.packageName}  ${formatRelativeTime(notification.postTime)}`);
+  const step = lineStep(font);
+  const bottom = height - DETAIL_PICTURE_BOTTOM_MARGIN;
+  let top = drawNotificationHeader(image, font, icon, `${notification.appName || notification.packageName}  ${formatRelativeTime(notification.postTime)}`);
+
+  // The title, beside the large icon (a sender's avatar, a site's logo) when
+  // there is one. A picture or custom layout can be the whole notification
+  // (Dexcom's has no text), so either stands in for the "(untitled)" placeholder.
+  const hasImages = Boolean(notification.hasPicture || notification.hasCustomView);
+  const title = notification.title || (hasImages ? "" : "(untitled)");
+  const avatarSize = notification.hasLargeIcon ? LARGE_ICON_SIZE : 0;
+  const titleX = avatarSize ? contentX + avatarSize + LARGE_ICON_GAP : contentX;
+  const titleWidth = contentX + contentWidth - titleX;
+  const titleLines = title ? wrapText(font, title, titleWidth) : [];
+  let titleHeight = 0;
+  if (avatarSize) {
+    const avatar = largeIconForNotification(notification);
+    if (avatar) image.bitBlt(avatar, contentX + ((avatarSize - avatar.width) >> 1), top + ((avatarSize - avatar.height) >> 1));
+    titleHeight = avatarSize;
+  }
+  if (titleLines.length) {
+    // A title shorter than the avatar is centered on it.
+    const titleTop = top + Math.max(0, (avatarSize - titleLines.length * step) >> 1);
+    const shown = drawClippedLines(image, font, titleLines, titleX, titleTop, titleWidth, ((bottom - top) / step) | 0, 230);
+    titleHeight = Math.max(titleHeight, shown * step);
+  }
 
   const lines: string[] = [];
-  // A picture can be the whole notification (Dexcom's has no text), so it
-  // stands in for the "(untitled)" placeholder.
-  const hasTitle = Boolean(notification.title) || !notification.hasPicture;
-  if (hasTitle) {
-    lines.push(...wrapText(font, notification.title || "(untitled)", contentWidth));
-  }
   const body = detailNotificationBody(notification);
   if (body) {
-    if (lines.length) lines.push("");
     lines.push(...wrapText(font, body, contentWidth));
   }
   const meta = [notification.subText, notification.infoText, notification.summaryText].filter(Boolean).join("  ");
@@ -456,34 +501,63 @@ function drawDetailContent(
     if (lines.length) lines.push("");
     lines.push(...wrapText(font, meta, contentWidth));
   }
+  // Text follows the title after a blank line (just a gap beside an avatar); images after a gap.
+  if (titleHeight) {
+    top += titleHeight + (lines.length && !avatarSize ? step : DETAIL_PICTURE_GAP);
+  }
 
-  const step = lineStep(font);
-  const textValue = (index: number) => index === 0 && hasTitle ? 230 : 190;
-  const reservedTextHeight = Math.min(lines.length, DETAIL_PICTURE_TEXT_LINES) * step;
-  const picture = pictureForNotification(notification, contentWidth,
-    height - DETAIL_PICTURE_BOTTOM_MARGIN - bodyTop - reservedTextHeight - (reservedTextHeight ? DETAIL_PICTURE_GAP : 0));
-  if (picture) {
-    // The text gets whatever the picture leaves, above it, with its last
-    // shown line marked when some is cut off.
-    const roomForText = height - DETAIL_PICTURE_BOTTOM_MARGIN - picture.height - DETAIL_PICTURE_GAP - bodyTop;
-    const shownLines = Math.min(lines.length, Math.max(0, (roomForText / step) | 0));
-    for (let index = 0; index < shownLines; index++) {
-      const line = index === shownLines - 1 && lines.length > shownLines
-        ? truncateText(font, lines[index] + "...", contentWidth) : lines[index]!;
-      image.drawText(font, contentX, bodyTop + index * step, line, textValue(index));
+  // The custom layout, then the picture, take what is left below the title,
+  // or below the first few lines of text when there is no title.
+  const reservedTextHeight = titleHeight ? 0 : Math.min(lines.length, DETAIL_PICTURE_TEXT_LINES) * step;
+  const roomForImages = bottom - top - (reservedTextHeight ? reservedTextHeight + DETAIL_PICTURE_GAP : 0);
+  let customView: GrayImage | null = null;
+  if (notification.hasCustomView && roomForImages >= DETAIL_CUSTOM_VIEW_MIN_HEIGHT) {
+    const result = imageForPaint((allowStale) => readNotificationCustomView(notification, contentWidth, roomForImages, allowStale));
+    customView = result.image;
+    if (!customView && !result.stale && notification.customText?.length) {
+      // It couldn't be drawn: its text is better than nothing.
+      lines.unshift(...wrapText(font, notification.customText.join(" "), contentWidth), ...(lines.length ? [""] : []));
     }
-    image.bitBlt(picture, contentX, bodyTop + shownLines * step + (shownLines ? DETAIL_PICTURE_GAP : 0));
-    return;
   }
+  const picture = pictureForNotification(notification, contentWidth,
+    roomForImages - (customView ? customView.height + DETAIL_PICTURE_GAP : 0));
 
-  const maxLines = Math.max(1, ((height - bodyTop - step) / step) | 0);
-  for (let index = 0; index < Math.min(lines.length, maxLines); index++) {
-    const line = lines[index]!;
-    image.drawText(font, contentX, bodyTop + index * step, line, textValue(index));
+  // The text gets whatever the images leave, above them, with its last shown
+  // line marked when some is cut off.
+  const imagesHeight = (customView ? customView.height : 0) + (picture ? picture.height : 0)
+    + (customView && picture ? DETAIL_PICTURE_GAP : 0);
+  const roomForText = bottom - top - (imagesHeight ? imagesHeight + DETAIL_PICTURE_GAP : 0);
+  const shownLines = drawClippedLines(image, font, lines, contentX, top, contentWidth, (roomForText / step) | 0, 190);
+  let imageTop = top + shownLines * step + (shownLines ? DETAIL_PICTURE_GAP : 0);
+  if (customView) {
+    image.bitBlt(customView, contentX, imageTop);
+    imageTop += customView.height + DETAIL_PICTURE_GAP;
   }
-  if (lines.length > maxLines) {
-    image.drawText(font, contentX, height - 24, "...", 140);
+  if (picture) {
+    image.bitBlt(picture, contentX, imageTop);
   }
+}
+
+/**
+ * Draw up to maxLines of lines from (x, y), marking the last one drawn with
+ * "..." when some are left out. Returns how many were drawn.
+ */
+function drawClippedLines(
+  image: GrayImage,
+  font: UiFont,
+  lines: string[],
+  x: number,
+  y: number,
+  width: number,
+  maxLines: number,
+  value: number,
+): number {
+  const shown = Math.min(lines.length, Math.max(0, maxLines));
+  for (let index = 0; index < shown; index++) {
+    const line = index === shown - 1 && lines.length > shown ? truncateText(font, lines[index] + "...", width) : lines[index]!;
+    image.drawText(font, x, y + index * lineStep(font), line, value);
+  }
+  return shown;
 }
 
 /** Left edge of a notification detail view's content column. */
@@ -577,5 +651,6 @@ function detailNotificationBody(notification: AndroidNotification): string {
 }
 
 function notificationTitle(notification: AndroidNotification): string {
-  return notification.title || notification.text || notification.summaryText || notification.appName || notification.packageName || "(untitled)";
+  return notification.title || notification.text || notification.customText?.join(" ") || notification.summaryText
+    || notification.appName || notification.packageName || "(untitled)";
 }

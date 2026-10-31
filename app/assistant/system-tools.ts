@@ -244,8 +244,8 @@ function formatEvent(event: CalendarEvent): string {
   return `- ${event.title || "(untitled)"} — ${when}${location}`;
 }
 
-function formatNotification(notification: { key: string; appName: string; title: string; text: string }): string {
-  const title = notification.title || "(no title)";
+function formatNotification(notification: { key: string; appName: string; title: string; text: string; customText?: string[] }): string {
+  const title = notification.title || notification.customText?.join(" ") || "(no title)";
   const body = notification.text ? `: ${notification.text}` : "";
   return `- [${notification.appName}] ${title}${body} (key: ${notification.key})`;
 }

@@ -91,6 +91,63 @@ object GrayPacket {
         return best >= BACKGROUND_MIN_SHARE * count && bestStart + BACKGROUND_SPAN / 2 >= LIGHT_BACKGROUND_MIN_GRAY
     }
 
+    /** Pixels at least this opaque count as drawn, for inkBounds. */
+    private const val INK_MIN_ALPHA = 16
+
+    /**
+     * The bounds of what translucent artwork draws (pixels at least INK_MIN_ALPHA opaque), as
+     * [left, top, right, bottom] with right and bottom exclusive; null when nothing is drawn.
+     * Used to trim a rendered layout's empty margins.
+     */
+    @JvmStatic
+    fun inkBounds(pixels: IntArray, width: Int, height: Int): IntArray? {
+        var left = width
+        var top = height
+        var right = 0
+        var bottom = 0
+        for (y in 0 until height) {
+            val row = y * width
+            for (x in 0 until width) {
+                if (alpha(pixels[row + x]) >= INK_MIN_ALPHA) {
+                    if (x < left) left = x
+                    if (x >= right) right = x + 1
+                    if (y < top) top = y
+                    bottom = y + 1
+                }
+            }
+        }
+        return if (right > left && bottom > top) intArrayOf(left, top, right, bottom) else null
+    }
+
+    /**
+     * Turns dark ink light, in place, for translucent artwork drawn with no background of its
+     * own (a notification's custom layout): returns whether it did. Ink whose average gray,
+     * weighted by alpha, is below mid-gray was drawn for a light background, like Dexcom's
+     * dark-gray text for a light-theme shade, and would vanish against the glasses' black;
+     * inverting its colors (not its alpha) shows it as it would look on white, as a negative.
+     * That is what invertLightBackground would make of the artwork composited on white, but
+     * it doesn't depend on the background covering enough of the picture to be detected.
+     */
+    @JvmStatic
+    fun lightenDarkInk(pixels: IntArray, width: Int, height: Int): Boolean {
+        val count = width * height
+        var weight = 0L
+        var sum = 0L
+        for (i in 0 until count) {
+            val p = pixels[i]
+            val a = alpha(p)
+            weight += a
+            sum += luma(p).toLong() * a
+        }
+        if (weight == 0L || sum * 2 >= weight * 255) {
+            return false
+        }
+        for (i in 0 until count) {
+            pixels[i] = pixels[i] xor 0x00ffffff
+        }
+        return true
+    }
+
     private fun luma(p: Int): Int {
         val r = (p shr 16) and 0xff
         val g = (p shr 8) and 0xff
