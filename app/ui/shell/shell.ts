@@ -42,6 +42,7 @@ import {
   assistantOpenAiCompatibleModelSetting,
   assistantOpenAiCompatibleUrlSetting,
   assistantSkipConfirmationSetting,
+  veniceWebSearchSetting,
   batteryIndicatorSettingsKey,
   brightnessSetting,
   onAnySettingChanged,
@@ -1726,6 +1727,7 @@ class Shell {
       openAiCompatibleUrl: assistantOpenAiCompatibleUrlSetting.get(),
       openAiCompatibleKey: assistantOpenAiCompatibleKeySetting.get(),
       openAiCompatibleModel: assistantOpenAiCompatibleModelSetting.get(),
+      veniceWebSearch: veniceWebSearchSetting.get(),
     });
     if (llm && reasoning !== "default" && llm.effort) llm.effort = reasoning;
     return llm ? { kind: "direct", llm } : null;

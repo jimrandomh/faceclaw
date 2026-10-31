@@ -5,10 +5,17 @@ import type {
 } from "../assistant/llm-protocol";
 import { openSseRequest, type SseListener } from "./sse";
 
+/** True only for Venice's official API root, never for lookalike hosts. */
+export function isVeniceApiBaseUrl(input: string): boolean {
+  return normalizeOpenAiCompatibleUrl(input) === "https://api.venice.ai/api/v1";
+}
+
 /** Streaming client for OpenAI-compatible Chat Completions APIs. */
 export type OpenAiCompatibleStreamOptions = LlmStreamOptions & {
   /** Explicit API root, for example https://api.venice.ai/api/v1 or https://host/api. */
   baseUrl: string;
+  /** Venice-only web search; never sent to other compatible providers. */
+  webSearch?: boolean;
 };
 
 type PendingToolCall = {
@@ -116,6 +123,11 @@ export function streamOpenAiCompatibleChat(options: OpenAiCompatibleStreamOption
         parameters: tool.input_schema,
       },
     }));
+  }
+  // Provider-specific parameters must never leak to another endpoint, even
+  // when a saved Venice preference is still enabled.
+  if (options.webSearch === true && isVeniceApiBaseUrl(baseUrl)) {
+    body.venice_parameters = { enable_web_search: "on" };
   }
   // Do not send provider-specific reasoning fields by default. Compatible
   // servers vary widely; advanced reasoning controls can be added separately.

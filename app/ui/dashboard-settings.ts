@@ -1043,6 +1043,14 @@ export const assistantOpenAiCompatibleModelSetting = new ConfigSettingString({
   description: "Exact model ID sent to the compatible provider. For glasses tools, choose a model that supports function calling.",
 });
 
+export const veniceWebSearchSetting = new ConfigSettingBoolean({
+  id: "venice-web-search",
+  label: "Venice web search",
+  storageKey: "assistant.veniceWebSearch",
+  defaultValue: false,
+  description: "Allow supported Venice models to search the web for current information. Shown only for the official Venice API URL. Search queries are processed by Venice's search service and may incur additional charges.",
+});
+
 export const elevenLabsApiKeySetting = new ConfigSettingString({
   id: "elevenlabs-api-key",
   label: "ElevenLabs key",

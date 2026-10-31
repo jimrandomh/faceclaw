@@ -135,6 +135,12 @@ server, the server's operator controls those policies. If you choose Discover
 models, Faceclaw also requests that server's model catalog using the same
 configured URL and optional API key.
 
+If you enable **Venice web search** for the official Venice API URL, supported
+models may generate web-search queries from your assistant conversation. Those
+queries and their results are processed by Venice's search service and are
+subject to Venice's privacy policy and any applicable charges. This setting is
+off by default and is never sent to Open WebUI or other compatible providers.
+
 AI conversation histories and memory files may be stored on your phone.
 Faceclaw does not transmit voice-assistant prompts or responses to any party
 other than a user-selected AI model provider. The voice assistant is given

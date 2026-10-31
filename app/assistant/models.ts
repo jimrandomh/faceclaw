@@ -1,4 +1,5 @@
 import { isLocalModelReady, LOCAL_MODEL } from "../native/llama";
+import { isVeniceApiBaseUrl } from "../native/openai-chat";
 
 export const ASSISTANT_MODEL_VALUES = [
   "auto",
@@ -33,6 +34,8 @@ export type AssistantApiKeys = {
   openAiCompatibleUrl?: string;
   openAiCompatibleKey?: string;
   openAiCompatibleModel?: string;
+  /** Venice web search, applied only when the resolved root is Venice. */
+  veniceWebSearch?: boolean;
 };
 
 export type ResolvedAssistantModel = {
@@ -43,6 +46,8 @@ export type ResolvedAssistantModel = {
   effort?: "low" | "medium" | "high";
   /** API root for Hermes or an OpenAI-compatible provider. */
   baseUrl?: string;
+  /** Whether Venice web search is enabled for this interactive assistant turn. */
+  webSearch?: boolean;
 };
 
 type ModelDefinition = {
@@ -121,6 +126,7 @@ export function resolveAssistantModel(
       model,
       apiKey: keys.openAiCompatibleKey?.trim() ?? "",
       baseUrl,
+      webSearch: isVeniceApiBaseUrl(baseUrl) && keys.veniceWebSearch === true,
     };
   }
   if (definition.provider === "local") {

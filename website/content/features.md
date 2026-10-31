@@ -6,7 +6,7 @@
   Inline markdown supported by the sync script: **bold**, [text](url), `code`.
 -->
 
-- **A voice assistant** that wakes up when you say "Hey Even", transcribes text with an on-device model, OpenAI Whisper, ElevenLabs, or Soniox API, and responds to queries and commands using an onboard model (Qwen3 4B, slow) or with an Anthropic, OpenAI, or OpenAI-compatible Chat Completions model (including Venice and private Open WebUI servers; model ID and usually an API key required), or using your own long-running OpenClaw agent.
+- **A voice assistant** that wakes up when you say "Hey Even", transcribes text with an on-device model, OpenAI Whisper, ElevenLabs, or Soniox API, and responds to queries and commands using an onboard model (Qwen3 4B, slow) or with an Anthropic, OpenAI, or OpenAI-compatible Chat Completions model (including Venice and private Open WebUI servers; model ID and usually an API key required), with optional Venice web search for supported models, or using your own long-running OpenClaw agent.
 - **Multitasking**, with an app-switcher sidebar and app launcher.
 - **Glanceboard**, a dashboard with widgets that you can quickly view with a
 - **Mostly-compatible with EvenHub.** Install and runapps from the Even app store.

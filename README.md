@@ -66,8 +66,8 @@ import it into the new version.
    and responds to queries and commands using an onboard model (Qwen3 4B,
    slow) or with an Anthropic, OpenAI, or OpenAI-compatible Chat Completions
    model (including Venice and private Open WebUI servers; model ID and
-   usually an API key required), or using your own long-running OpenClaw
-   agent.
+   usually an API key required), with optional Venice web search for supported
+   models, or using your own long-running OpenClaw agent.
  * **Multitasking**, with an app-switcher sidebar and app launcher.
  * **Glanceboard**, a dashboard with widgets that you can quickly view with a
  * **Mostly-compatible with EvenHub.** Install and runapps from the Even app
@@ -126,6 +126,12 @@ that suffix. It otherwise preserves the path you enter and does not guess `/v1`
 or `/api`. Discovery requests `{API root}/models` only when you choose it; there
 is no background discovery or automatic model selection. Manual model entry
 remains available for servers without a compatible model-list endpoint.
+
+For the official Venice URL, **Settings > Assistant** also shows **Venice web
+search**. It is off by default and visible only for that URL. When enabled,
+supported Venice models may search the web for current information; the search
+model must support the feature. Open WebUI and other compatible servers never
+receive Venice-specific parameters, including after an endpoint switch.
 
 The same provider can supply Calculator's rewrite fallback and Translate.
 Actual tool calling depends on the selected model and server. Use HTTPS where

@@ -198,6 +198,7 @@ export class AssistantSession {
       model: llm.model,
       effort: llm.effort,
       baseUrl: llm.baseUrl,
+      webSearch: llm.webSearch,
       sessionId: this.hermesSessionId,
       system: llm.provider === "hermes" ? HERMES_SYSTEM_PROMPT
         : isLocal ? ASSISTANT_SYSTEM_PROMPT_BASE : buildAssistantSystemPrompt(ctx),

@@ -80,6 +80,40 @@ test('compatible provider sends full history, nested tools, the exact API root a
   noKey.session.cancel();
 });
 
+test('Venice web search is opt-in and never leaks to other compatible providers', () => {
+  const defaultOff = assistant({ baseUrl: 'https://api.venice.ai/api/v1' });
+  defaultOff.send('Current weather');
+  assert.equal('venice_parameters' in defaultOff.requests[0].body, false);
+  defaultOff.session.cancel();
+
+  const { isVeniceApiBaseUrl } = defaultOff.load('app/native/openai-chat.ts');
+  assert.equal(isVeniceApiBaseUrl(' https://api.venice.ai/api/v1/ '), true);
+  assert.equal(isVeniceApiBaseUrl('https://api.venice.ai/api/v1/chat/completions'), true);
+  assert.equal(isVeniceApiBaseUrl('http://api.venice.ai/api/v1'), false);
+  assert.equal(isVeniceApiBaseUrl('https://api.venice.ai.evil.example/api/v1'), false);
+  assert.equal(isVeniceApiBaseUrl('https://openwebui.example/api'), false);
+
+  const enabled = assistant({ baseUrl: 'https://api.venice.ai/api/v1' });
+  enabled.session.configure({ kind: 'direct', llm: {
+    selection: 'openai-compatible', provider: 'openai-compatible', model: 'fixture-model',
+    apiKey: 'fixture-key', baseUrl: 'https://api.venice.ai/api/v1', webSearch: true,
+  } });
+  enabled.send('Current weather');
+  assert.deepEqual(JSON.parse(JSON.stringify(enabled.requests[0].body.venice_parameters)), {
+    enable_web_search: 'on',
+  });
+  enabled.session.cancel();
+
+  const openWebUi = assistant({ baseUrl: 'https://openwebui.example/api' });
+  openWebUi.session.configure({ kind: 'direct', llm: {
+    selection: 'openai-compatible', provider: 'openai-compatible', model: 'fixture-model',
+    apiKey: 'fixture-key', baseUrl: 'https://openwebui.example/api', webSearch: true,
+  } });
+  openWebUi.send('Current weather');
+  assert.equal('venice_parameters' in openWebUi.requests[0].body, false);
+  openWebUi.session.cancel();
+});
+
 test('Venice and Open WebUI roots are preserved; only a complete endpoint suffix is removed', () => {
   const { normalizeOpenAiCompatibleUrl } = assistant().load('app/native/openai-chat.ts');
   assert.equal(normalizeOpenAiCompatibleUrl(' https://api.venice.ai/api/v1/ '), 'https://api.venice.ai/api/v1');
