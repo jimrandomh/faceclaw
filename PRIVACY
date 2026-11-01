@@ -116,12 +116,30 @@ provider; Faceclaw does not manage accounts or process billing information.
 
 ## AI Assistant Transcripts
 
-Faceclaw has a builtin AI voice assistant. Using the voice assistant requires
-providing an API key for a model provider such as Anthropic or OpenAI. Prompts
-and responses are subject to that model provider's privacy policy:
+Faceclaw has a builtin AI voice assistant. Using a cloud model requires
+providing an API key for a model provider such as Anthropic, OpenAI, or Venice,
+or configuring an OpenAI-compatible endpoint such as a private Open WebUI
+server. Prompts and responses are subject to the selected provider or server
+operator's privacy policy:
 
   OpenAI: https://openai.com/policies/row-privacy-policy/
   Anthropic: https://www.anthropic.com/legal/privacy
+  Venice: https://venice.ai/privacy
+
+With an OpenAI-compatible provider, the configured server receives the
+assistant system prompt, conversation history, available tool definitions, and
+tool results needed to answer. Its URL, model ID, and optional API key are
+stored on the phone. Faceclaw does not operate that server and cannot make
+representations about its logging or retention; for a private Open WebUI
+server, the server's operator controls those policies. If you choose Discover
+models, Faceclaw also requests that server's model catalog using the same
+configured URL and optional API key.
+
+If you enable **Venice web search** for the official Venice API URL, supported
+models may generate web-search queries from your assistant conversation. Those
+queries and their results are processed by Venice's search service and are
+subject to Venice's privacy policy and any applicable charges. This setting is
+off by default and is never sent to Open WebUI or other compatible providers.
 
 AI conversation histories and memory files may be stored on your phone.
 Faceclaw does not transmit voice-assistant prompts or responses to any party

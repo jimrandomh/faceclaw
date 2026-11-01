@@ -42,7 +42,11 @@ import {
   assistantBridgePortSetting,
   assistantBridgeTokenSetting,
   assistantModelSetting,
+  assistantOpenAiCompatibleKeySetting,
+  assistantOpenAiCompatibleModelSetting,
+  assistantOpenAiCompatibleUrlSetting,
   assistantSkipConfirmationSetting,
+  veniceWebSearchSetting,
   batteryDisplayModeSetting,
   brightnessSetting,
   autoBrightnessMinSetting,
@@ -94,6 +98,8 @@ import {
 import { wearBridge } from "../../native/wear-bridge";
 import { openSettingsSubMenu, SettingsPanelLayer, type SettingsSection } from "./settings-panel";
 import { uiFontPickerMenuItem } from "../font-picker";
+import { compatibleModelDiscoveryMenuItem } from "../openai-compatible-model-picker";
+import { isVeniceApiBaseUrl } from "../../native/openai-chat";
 
 /** The Settings app's master-detail panel (sections on the left, contents on the right). */
 export function createSettingsPanelLayer(): SettingsPanelLayer {
@@ -142,22 +148,36 @@ function settingsSections(): SettingsSection[] {
     },
     {
       label: "Assistant",
-      items: [
-        // iOS's on-phone model is Apple Intelligence; Android downloads one. Only Android has the bridge.
-        enumSettingMenuItem(assistantBackendSetting),
-        enumSettingMenuItem(assistantModelSetting),
-        textSettingMenuItem(assistantHermesUrlSetting),
-        textSettingMenuItem(assistantHermesKeySetting),
-        global.isIOS ? systemModelMenuItem() : localModelMenuItem(),
-        toggleSettingMenuItem(assistantSkipConfirmationSetting),
-        // iOS has no agent bridge yet.
-        ...(!global.isIOS ? [
-          textSettingMenuItem(assistantBridgeHostSetting),
-          textSettingMenuItem(assistantBridgePortSetting),
-          textSettingMenuItem(assistantBridgeTokenSetting),
-          toggleSettingMenuItem(assistantAllowProactiveSetting),
-        ] : []),
-      ],
+      // Re-read on every paint so the Venice-only row follows URL edits.
+      get items() {
+        return [
+          // iOS's on-phone model is Apple Intelligence; Android downloads one. Only Android has the bridge.
+          enumSettingMenuItem(assistantBackendSetting),
+          enumSettingMenuItem(assistantModelSetting),
+          textSettingMenuItem(assistantHermesUrlSetting),
+          textSettingMenuItem(assistantHermesKeySetting),
+          textSettingMenuItem(assistantOpenAiCompatibleUrlSetting),
+          textSettingMenuItem(assistantOpenAiCompatibleKeySetting),
+          compatibleModelDiscoveryMenuItem({
+            getBaseUrl: () => assistantOpenAiCompatibleUrlSetting.get(),
+            getApiKey: () => assistantOpenAiCompatibleKeySetting.get(),
+            getModel: () => assistantOpenAiCompatibleModelSetting.get(),
+            setModel: (model) => assistantOpenAiCompatibleModelSetting.set(model),
+          }, assistantOpenAiCompatibleModelSetting),
+          textSettingMenuItem(assistantOpenAiCompatibleModelSetting),
+          ...(isVeniceApiBaseUrl(assistantOpenAiCompatibleUrlSetting.get())
+            ? [toggleSettingMenuItem(veniceWebSearchSetting)] : []),
+          global.isIOS ? systemModelMenuItem() : localModelMenuItem(),
+          toggleSettingMenuItem(assistantSkipConfirmationSetting),
+          // iOS has no agent bridge yet.
+          ...(!global.isIOS ? [
+            textSettingMenuItem(assistantBridgeHostSetting),
+            textSettingMenuItem(assistantBridgePortSetting),
+            textSettingMenuItem(assistantBridgeTokenSetting),
+            toggleSettingMenuItem(assistantAllowProactiveSetting),
+          ] : []),
+        ];
+      },
     },
     {
       label: "API Keys",

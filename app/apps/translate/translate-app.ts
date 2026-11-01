@@ -28,8 +28,8 @@ const TRAY_ICON_ID = "translate";
 const NO_PROVIDER_PROBLEM =
   "Translate needs a transcription provider that understands any language: add an ElevenLabs, OpenAI, or Soniox API key (Settings > API Keys), or a Whisper server URL (Settings > Voice).";
 const NO_MODEL_PROBLEM = global.isIOS
-  ? "Translate needs a language model: add an Anthropic or OpenAI API key (Settings > API Keys)."
-  : "Translate needs a language model: add an Anthropic or OpenAI API key (Settings > API Keys), or download the on-phone model (Settings > Assistant).";
+  ? "Translate needs a language model: configure a cloud or OpenAI-compatible model in Settings > Assistant."
+  : "Translate needs a language model: configure one in Settings > Assistant, or download the on-phone model.";
 
 export type TranslateAppOptions = InProcessAppOptions & {
   /** Begin (or retarget) continuous mic capture, kept on while the window is open. */

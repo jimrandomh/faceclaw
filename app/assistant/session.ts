@@ -95,14 +95,20 @@ export class AssistantSession {
     // original model. Preserve visible conversation when switching engines.
     if (this.config.kind !== config.kind ||
         (this.config.kind === "direct" && config.kind === "direct" &&
-         (this.config.llm.model !== config.llm.model || this.config.llm.provider !== config.llm.provider))) {
+         (this.config.llm.model !== config.llm.model || this.config.llm.provider !== config.llm.provider ||
+          (this.config.llm.baseUrl ?? "") !== (config.llm.baseUrl ?? "")))) {
       this.rebuildTextHistory();
     }
     this.config = config;
   }
 
   private engine(): string {
-    return this.config.kind === "direct" ? `${this.config.llm.provider}:${this.config.llm.model}` : "external";
+    if (this.config.kind !== "direct") return "external";
+    const llm = this.config.llm;
+    // Keep the legacy engine ID for built-in providers so upgrading does not
+    // discard their opaque history. Custom endpoints need endpoint isolation.
+    const endpoint = llm.provider === "openai-compatible" ? `:${llm.baseUrl ?? ""}` : "";
+    return `${llm.provider}:${llm.model}${endpoint}`;
   }
 
   private rebuildTextHistory(): void {
@@ -192,6 +198,7 @@ export class AssistantSession {
       model: llm.model,
       effort: llm.effort,
       baseUrl: llm.baseUrl,
+      webSearch: llm.webSearch,
       sessionId: this.hermesSessionId,
       system: llm.provider === "hermes" ? HERMES_SYSTEM_PROMPT
         : isLocal ? ASSISTANT_SYSTEM_PROMPT_BASE : buildAssistantSystemPrompt(ctx),

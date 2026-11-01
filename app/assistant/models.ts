@@ -1,4 +1,5 @@
 import { isLocalModelReady, isLocalModelSupported, LOCAL_MODEL } from "../native/local-llm";
+import { isVeniceApiBaseUrl } from "../native/openai-chat";
 
 export const ASSISTANT_MODEL_VALUES = [
   "auto",
@@ -11,6 +12,7 @@ export const ASSISTANT_MODEL_VALUES = [
   "sol",
   "qwen",
   "hermes",
+  "openai-compatible",
 ] as const;
 
 /**
@@ -26,7 +28,7 @@ export function supportedAssistantModel(value: AssistantModel): AssistantModel {
   return value === "qwen" && !isLocalModelSupported() ? "auto" : value;
 }
 
-export type AssistantProvider = "anthropic" | "openai" | "local" | "hermes";
+export type AssistantProvider = "anthropic" | "openai" | "local" | "hermes" | "openai-compatible";
 
 export type AssistantApiKeys = {
   anthropic: string;
@@ -34,6 +36,11 @@ export type AssistantApiKeys = {
   /** A Hermes Agent API server; only the voice assistant passes these. */
   hermesUrl?: string;
   hermesKey?: string;
+  openAiCompatibleUrl?: string;
+  openAiCompatibleKey?: string;
+  openAiCompatibleModel?: string;
+  /** Venice web search, applied only when the resolved root is Venice. */
+  veniceWebSearch?: boolean;
 };
 
 export type ResolvedAssistantModel = {
@@ -42,8 +49,10 @@ export type ResolvedAssistantModel = {
   model: string;
   apiKey: string;
   effort?: "low" | "medium" | "high";
-  /** API root for providers that are not fixed services (Hermes). */
+  /** API root for Hermes or an OpenAI-compatible provider. */
   baseUrl?: string;
+  /** Whether Venice web search is enabled for this interactive assistant turn. */
+  webSearch?: boolean;
 };
 
 type ModelDefinition = {
@@ -69,6 +78,7 @@ const MODEL_DEFINITIONS: Record<Exclude<AssistantModel, "auto">, ModelDefinition
   qwen: { label: `${LOCAL_MODEL.label} (on-phone)`, provider: "local", model: LOCAL_MODEL.id },
   // Your own Hermes Agent (its API server), with its own tools and memory.
   hermes: { label: "Hermes agent", provider: "hermes", model: "hermes-agent" },
+  "openai-compatible": { label: "OpenAI-compatible", provider: "openai-compatible", model: "custom" },
 };
 
 export function assistantModelLabel(value: AssistantModel): string {
@@ -111,6 +121,19 @@ export function resolveAssistantModel(
     const baseUrl = keys.hermesUrl?.trim() ?? "";
     if (!baseUrl) return null;
     return { selection, provider: "hermes", model: definition.model, apiKey: keys.hermesKey?.trim() ?? "", baseUrl };
+  }
+  if (definition.provider === "openai-compatible") {
+    const baseUrl = keys.openAiCompatibleUrl?.trim() ?? "";
+    const model = keys.openAiCompatibleModel?.trim() ?? "";
+    if (!baseUrl || !model) return null;
+    return {
+      selection,
+      provider: definition.provider,
+      model,
+      apiKey: keys.openAiCompatibleKey?.trim() ?? "",
+      baseUrl,
+      webSearch: isVeniceApiBaseUrl(baseUrl) && keys.veniceWebSearch === true,
+    };
   }
   if (definition.provider === "local") {
     if (!isLocalModelReady()) return null;
