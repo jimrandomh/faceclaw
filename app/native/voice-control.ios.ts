@@ -2,6 +2,7 @@ import type { VoiceControlState, VoiceTranscriptEvent } from './voice-control'
 import type { CloudSttTranscriptEvent } from './cloud-stt'
 import type { ReconnectingSttClient } from './reconnecting-stt'
 import { createCloudSttClient, usesCloudStt, type VoiceProviderSelection } from './cloud-stt-provider'
+import { createSpeechAnalyzerClient, speechAnalyzerSupported } from './speech-analyzer-stt.ios'
 import { WavRecorder } from './wav-recorder.ios'
 import { pcmLevel } from '../util/audio-level'
 
@@ -18,10 +19,12 @@ const RAW_RETRY_LIMIT = 5
 /** iOS implementation of the shared voice dialog's event bridge. Audio comes
  * from the glasses when connected, or the default phone input in preview mode,
  * and is transcribed by Apple's on-device recognizer or a cloud provider.
- * Continuous capture (Transcribe, Teleprompter) needs a cloud provider: only
- * the PCM capture runs open-ended, and pauses commit its segments. When the
- * session or the app lifecycle cuts one short it is drained, not discarded;
- * restarting it is the controller's call.
+ * Continuous capture (Transcribe, Teleprompter) runs on the PCM capture, which
+ * is open-ended and has pauses commit its segments, so it needs a cloud
+ * provider or, on-device, SpeechAnalyzer (iOS 26+): FaceclawSpeech's
+ * recognizer only handles short dictations. When the session or the app
+ * lifecycle cuts one short it is drained, not discarded; restarting it is the
+ * controller's call.
  */
 export class IosVoiceControlBridge {
   private native: any = null
@@ -40,10 +43,13 @@ export class IosVoiceControlBridge {
   private audioTimer: ReturnType<typeof setTimeout> | null = null
   private packets = 0
   private log: (message: string) => void = () => {}
-  // Non-null while a cloud provider owns the transcript; FaceclawSpeech then
+  // Non-null while a PCM transcriber (a cloud provider, or SpeechAnalyzer for
+  // on-device continuous capture) owns the transcript; FaceclawSpeech then
   // only supplies PCM. cloudEndStatus is set once the audio has ended and the
   // provider was asked to finalize; it is the status shown when it does.
   private cloud: ReconnectingSttClient | null = null
+  // What transcribes the current capture, for the log.
+  private recognition = 'on-device'
   private cloudEndStatus: string | null = null
   private cloudTimer: ReturnType<typeof setTimeout> | null = null
   // Open-ended capture: runs until stopContinuousCapture, and push-to-talk
@@ -137,7 +143,7 @@ export class IosVoiceControlBridge {
         this.native.acceptPacket(NSData.dataWithBytesLength(interop.handleof(copy.buffer), copy.byteLength))
       })
       if (generation !== this.generation || !this.capturing) return
-      log(`Voice: glasses microphone enabled; using ${this.cloud ? 'cloud' : 'on-device'} recognition`)
+      log(`Voice: glasses microphone enabled; using ${this.recognition} recognition`)
       this.audioTimer = setTimeout(() => {
         this.audioTimer = null
         if (generation === this.generation && this.capturing && !this.packets) {
@@ -158,18 +164,27 @@ export class IosVoiceControlBridge {
     this.completion = new Promise(resolve => { this.resolveCompletion = resolve })
     const error = this.startNative(voice, endpointing, true)
     if (error) { this.stop(); this.setStatus(error); this.emitEnd(); return }
-    log(`Voice: phone default microphone enabled; using ${this.cloud ? 'cloud' : 'on-device'} recognition`)
+    log(`Voice: phone default microphone enabled; using ${this.recognition} recognition`)
   }
   /** Starts the native capture for the chosen provider; returns an actionable error, or ''. */
   private startNative(voice: VoiceProviderSelection, endpointing: boolean, phone: boolean): string {
     const native = this.ensureNative()
     const generation = this.generation
     const current = () => generation === this.generation
-    const cloud = createCloudSttClient(voice, {
-      onTranscript: event => { if (current()) this.receiveCloudTranscript(event) },
-      onStatus: status => { if (current()) this.setStatus(status) },
-      onError: message => { if (current()) { this.stop(); this.setStatus(message); this.emitEnd() } },
-    }, () => this.continuous)
+    const options = {
+      language: voice.language,
+      onTranscript: (event: CloudSttTranscriptEvent) => { if (current()) this.receiveCloudTranscript(event) },
+      onStatus: (status: string) => { if (current()) this.setStatus(status) },
+      onError: (message: string) => { if (current()) { this.stop(); this.setStatus(message); this.emitEnd() } },
+    }
+    const continuous = () => this.continuous
+    let cloud = createCloudSttClient(voice, options, continuous)
+    this.recognition = cloud ? 'cloud' : 'on-device'
+    // Continuous capture outlasts FaceclawSpeech's recognizer; SpeechAnalyzer takes the PCM instead.
+    if (!cloud && this.continuous && speechAnalyzerSupported()) {
+      cloud = createSpeechAnalyzerClient(options, continuous)
+      this.recognition = 'on-device (SpeechAnalyzer)'
+    }
     if (!cloud) return String((phone ? native.startPhoneWithEndpointing(endpointing) : native.startWithEndpointing(endpointing)) ?? '')
     const error = String(native.startPcmCaptureWithEndpointingPhone(endpointing, phone) ?? '')
     if (error) return error
@@ -182,8 +197,11 @@ export class IosVoiceControlBridge {
     if (this.continuous) { if (this.capturing) void this.finalizeCapture('Paused while Faceclaw is in the background.'); return }
     this.stop(); this.setStatus('Phone voice input stopped.'); this.emitEnd()
   }
-  /** Whether continuous capture can run with this provider (Apple's recognizer can't). */
-  supportsContinuous(voice: VoiceProviderSelection): boolean { return usesCloudStt(voice) }
+  /**
+   * Whether continuous capture can run with this provider: a cloud one, or
+   * on-device with SpeechAnalyzer (FaceclawSpeech's recognizer can't).
+   */
+  supportsContinuous(voice: VoiceProviderSelection): boolean { return usesCloudStt(voice) || speechAnalyzerSupported() }
   get continuousActive(): boolean { return this.continuous && (this.capturing || this.finalizing) }
   /** Where a listening continuous capture gets its audio; null when none is listening. */
   get continuousSource(): 'glasses' | 'phone' | null { return this.continuous && this.capturing ? this.source : null }

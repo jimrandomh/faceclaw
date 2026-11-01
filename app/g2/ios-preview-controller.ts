@@ -1054,7 +1054,7 @@ export class IosPreviewController {
     this.continuousClients.set(client, options)
     if (!iosVoiceInput.supportsContinuous(this.voiceProvider())) {
       this.continuousClients.delete(client)
-      this.onError('Transcribe on iOS needs a cloud or Whisper server transcription provider (Settings > Voice > Transcription Provider).')
+      this.onError('On-device transcription for Transcribe needs iOS 26 or later; before that, choose a cloud or Whisper server transcription provider (Settings > Voice > Transcription Provider).')
       return
     }
     this.syncContinuousRecording()
