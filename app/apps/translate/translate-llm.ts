@@ -4,7 +4,7 @@
  * TranslationModel for how stretches are batched and given context.
  */
 import { streamAnthropicMessage } from "../../native/anthropic";
-import { streamLocalQwen } from "../../native/llama";
+import { streamLocalModel } from "../../native/local-llm";
 import { streamOpenAiResponse } from "../../native/openai";
 import { resolveAssistantModel, type ResolvedAssistantModel } from "../../assistant/models";
 import { type LlmStreamHandle, type LlmStreamOptions } from "../../assistant/llm-protocol";
@@ -55,7 +55,7 @@ export function streamTranslation(model: ResolvedAssistantModel, request: Transl
     case "openai":
       return streamOpenAiResponse(options);
     case "local":
-      return streamLocalQwen(options);
+      return streamLocalModel(options);
     default:
       return streamAnthropicMessage(options);
   }

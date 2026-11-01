@@ -1,4 +1,4 @@
-import { isLocalModelReady, LOCAL_MODEL } from "../native/llama";
+import { isLocalModelReady, isLocalModelSupported, LOCAL_MODEL } from "../native/local-llm";
 
 export const ASSISTANT_MODEL_VALUES = [
   "auto",
@@ -13,12 +13,17 @@ export const ASSISTANT_MODEL_VALUES = [
   "hermes",
 ] as const;
 
+/**
+ * "qwen" is the on-phone model, whatever it is on this platform: Qwen3-4B on
+ * Android, the Apple Intelligence system model on iOS (the ID predates iOS
+ * support and stays for saved settings and conversations).
+ */
 export type AssistantModel = (typeof ASSISTANT_MODEL_VALUES)[number];
 /** Keep saved model IDs portable, while offering only supported choices. */
 export const ASSISTANT_MODEL_CHOICES: readonly AssistantModel[] =
-  global.isIOS ? ASSISTANT_MODEL_VALUES.filter(value => value !== "qwen") : ASSISTANT_MODEL_VALUES;
+  isLocalModelSupported() ? ASSISTANT_MODEL_VALUES : ASSISTANT_MODEL_VALUES.filter(value => value !== "qwen");
 export function supportedAssistantModel(value: AssistantModel): AssistantModel {
-  return global.isIOS && value === "qwen" ? "auto" : value;
+  return value === "qwen" && !isLocalModelSupported() ? "auto" : value;
 }
 
 export type AssistantProvider = "anthropic" | "openai" | "local" | "hermes";
@@ -58,8 +63,9 @@ const MODEL_DEFINITIONS: Record<Exclude<AssistantModel, "auto">, ModelDefinition
   luna: { label: "Luna", provider: "openai", model: "gpt-5.6-luna", effort: "low" },
   terra: { label: "Terra", provider: "openai", model: "gpt-5.6-terra", effort: "low" },
   sol: { label: "Sol", provider: "openai", model: "gpt-5.6-sol", effort: "low" },
-  // Runs on the phone itself (llama.cpp); needs the downloaded model file,
-  // not an API key. The default for users who haven't set any key.
+  // Runs on the phone itself (Android: llama.cpp with the downloaded model
+  // file; iOS: Apple Intelligence), not an API key. The default for users who
+  // haven't set any key.
   qwen: { label: `${LOCAL_MODEL.label} (on-phone)`, provider: "local", model: LOCAL_MODEL.id },
   // Your own Hermes Agent (its API server), with its own tools and memory.
   hermes: { label: "Hermes agent", provider: "hermes", model: "hermes-agent" },
@@ -76,8 +82,8 @@ export function assistantModelProvider(value: AssistantModel): AssistantProvider
 /**
  * Resolve Auto and attach the credential needed by the chosen provider.
  * Auto intentionally prefers Terra over Sonnet when both keys are available,
- * and falls back to the on-phone model when no key is set but the model file
- * has been downloaded.
+ * and falls back to the on-phone model when no key is set but that model is
+ * ready (downloaded on Android; Apple Intelligence on and ready on iOS).
  */
 export function resolveAssistantModel(
   selection: AssistantModel,

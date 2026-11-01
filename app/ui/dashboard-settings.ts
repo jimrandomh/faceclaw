@@ -16,7 +16,7 @@ import {
   assistantModelProvider,
   type AssistantModel,
 } from "~/assistant/models";
-import { isLocalModelReady } from "../native/llama";
+import { isLocalModelReady } from "../native/local-llm";
 import { normalizeWhisperServerUrl } from "../native/whisper-server-stt";
 import { isValidSpotifyClientId, SPOTIFY_CLIENT_ID_KEY } from "../native/spotify-auth";
 import { drawRightValueMenuItem, drawToggleMenuItem, MenuItem, openModalMenu } from "./menu";
@@ -930,7 +930,7 @@ export const assistantSkipConfirmationSetting = new ConfigSettingBoolean({
 export type AssistantBackendKind = "direct" | "external";
 
 const assistantBackendLabels: Record<AssistantBackendKind, string> = {
-  direct: global.isIOS ? "Cloud API" : "On-phone",
+  direct: "On-phone",
   external: "My own agent (bridge)",
 };
 
@@ -942,7 +942,7 @@ export const assistantBackendSetting = new ConfigSettingEnum<AssistantBackendKin
   values: global.isIOS ? ["direct"] : ["direct", "external"],
   formatValue: (value) => assistantBackendLabels[value] ?? value,
   description:
-    global.isIOS ? "Cloud models called with your OpenAI or Anthropic API key. Add your key in Settings > API Keys." : "Who answers assistant queries: an LLM called from the phone (a cloud API with your key, or the downloaded on-phone model), or your own long-running agent (e.g. OpenClaw) reached through the faceclaw-agent-bridge plugin.",
+    global.isIOS ? "An LLM called from the phone: a cloud model with your OpenAI or Anthropic API key (Settings > API Keys), or Apple Intelligence's on-device model." : "Who answers assistant queries: an LLM called from the phone (a cloud API with your key, or the downloaded on-phone model), or your own long-running agent (e.g. OpenClaw) reached through the faceclaw-agent-bridge plugin.",
 });
 
 export const assistantHermesUrlSetting = new ConfigSettingString({
@@ -1116,7 +1116,7 @@ export const assistantModelSetting = new ConfigSettingEnum<AssistantModel>({
     return false;
   },
   description:
-    global.isIOS ? "Model used by the voice assistant. Auto prefers Terra with an OpenAI key, then Sonnet with an Anthropic key." : "Model used by the voice assistant. Auto prefers Terra when an OpenAI key is set, then Sonnet when an Anthropic key is set, then the downloaded on-phone model.",
+    global.isIOS ? "Model used by the voice assistant. Auto prefers Terra with an OpenAI key, then Sonnet with an Anthropic key, then Apple Intelligence's on-device model." : "Model used by the voice assistant. Auto prefers Terra when an OpenAI key is set, then Sonnet when an Anthropic key is set, then the downloaded on-phone model.",
 });
 
 export const mapboxApiKeySetting = new ConfigSettingString({

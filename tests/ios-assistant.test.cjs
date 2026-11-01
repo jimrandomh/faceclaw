@@ -12,7 +12,7 @@ function assistant(provider) {
       const request = { url, body: JSON.parse(body), headers, listener, cancelled: false };
       requests.push(request); return { cancel: () => { request.cancelled = true; } };
     } },
-    '../native/llama': { streamLocalQwen: () => assert.fail('iOS must not invoke a local LLM') },
+    '../native/local-llm': { streamLocalModel: () => assert.fail('cloud providers must not invoke the local LLM') },
     './bridge-client': { assistantBridge: {} }, './tool-registry': { toolRegistry: registry },
     '../prompts': { ASSISTANT_SYSTEM_PROMPT_BASE: 'test', buildAssistantSystemPrompt: () => 'test', describeAssistantContext: () => '' },
   });
@@ -100,8 +100,8 @@ test('iOS SSE adapter forwards the Kotlin stream events once and stops after can
   assert.deepEqual(seen.at(-1), 'http:429:slow down');
 });
 
-test('iOS only offers cloud assistant models and preserves old local-model conversations as Auto', () => {
-  const api = loader({ global: { isIOS: true } }, { '../native/llama': { LOCAL_MODEL: { label: 'Qwen', id: 'qwen' }, isLocalModelReady: () => false } })('app/assistant/models.ts');
+test('iOS without Apple Intelligence support only offers cloud assistant models and preserves old local-model conversations as Auto', () => {
+  const api = loader({ global: { isIOS: true } }, { '../native/local-llm': { LOCAL_MODEL: { label: 'Apple Intelligence', id: 'apple-foundation-model' }, isLocalModelReady: () => false, isLocalModelSupported: () => false } })('app/assistant/models.ts');
   assert.equal(api.ASSISTANT_MODEL_CHOICES.includes('qwen'), false);
   assert.equal(api.supportedAssistantModel('qwen'), 'auto');
   assert.equal(api.resolveAssistantModel('auto', { openai: 'key', anthropic: '' }).provider, 'openai');
@@ -119,7 +119,7 @@ test('cancelling during a tool prevents subsequent tool side effects and a stall
   const calls = [], failures = [];
   const { DirectAssistantBackend } = loader({ setTimeout: fn => { deadline = fn; return 1; }, clearTimeout() {} }, {
     '../native/openai': { streamOpenAiResponse: options => { stream = options; return { cancel() {} }; } },
-    '../native/anthropic': {}, '../native/llama': {},
+    '../native/anthropic': {}, '../native/local-llm': {},
   })('app/assistant/direct-backend.ts');
   const backend = new DirectAssistantBackend();
   const options = { provider: 'openai', messages: [], buildTools: () => [], resolveToolName: name => name,

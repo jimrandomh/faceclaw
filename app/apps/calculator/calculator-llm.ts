@@ -7,7 +7,7 @@
  * surfacing a transport error.
  */
 import { streamAnthropicMessage } from "../../native/anthropic";
-import { streamLocalQwen } from "../../native/llama";
+import { streamLocalModel } from "../../native/local-llm";
 import { streamOpenAiResponse } from "../../native/openai";
 import { resolveAssistantModel } from "../../assistant/models";
 import { type LlmStreamOptions } from "../../assistant/llm-protocol";
@@ -41,7 +41,7 @@ export function rewriteSpokenProblem(spoken: string): Promise<string | null> {
         streamOpenAiResponse(options);
         break;
       case "local":
-        streamLocalQwen(options);
+        streamLocalModel(options);
         break;
       default:
         streamAnthropicMessage(options);

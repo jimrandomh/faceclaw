@@ -91,7 +91,7 @@ test('a restored conversation keeps its Hermes session, and Hermes turns get a l
       requests.push(request);
       return request;
     } },
-    '../native/llama': { streamLocalQwen: () => assert.fail('no local model') },
+    '../native/local-llm': { streamLocalModel: () => assert.fail('no local model') },
     './bridge-client': { assistantBridge: {} }, './tool-registry': { toolRegistry: {} },
     '../prompts': { ASSISTANT_SYSTEM_PROMPT_BASE: '', buildAssistantSystemPrompt: () => '', describeAssistantContext: () => '' },
   });
@@ -122,7 +122,7 @@ test('URL normalization adds /v1 to a bare host and drops the endpoint path', ()
 });
 
 test('the Hermes model resolves only with a URL, carrying the key and base URL', () => {
-  const load = loader({ global: { isIOS: true } }, { '../native/llama': { isLocalModelReady: () => false, LOCAL_MODEL: { id: 'q', label: 'Q' } } });
+  const load = loader({ global: { isIOS: true } }, { '../native/local-llm': { isLocalModelReady: () => false, isLocalModelSupported: () => true, LOCAL_MODEL: { id: 'q', label: 'Q' } } });
   const { resolveAssistantModel } = load('app/assistant/models.ts');
   assert.equal(resolveAssistantModel('hermes', { anthropic: '', openai: '' }), null);
   const resolved = resolveAssistantModel('hermes', { anthropic: '', openai: '', hermesUrl: ' http://hermes-host:8642 ', hermesKey: ' k ' });

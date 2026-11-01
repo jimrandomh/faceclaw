@@ -6,12 +6,14 @@ import type {
   LlmStreamOptions,
 } from "../assistant/llm-protocol";
 import { buildQwenPrompt } from "../assistant/qwen-prompt";
+import type { LocalModelState } from "./local-llm-types";
 
 declare const com: any;
 declare const java: any;
 
 /**
- * On-phone LLM backend: model download management plus a streaming client
+ * Android's on-phone LLM backend (reached through local-llm.ts; iOS uses
+ * local-llm.ios.ts instead): model download management plus a streaming client
  * with the same LlmStreamOptions surface as the Anthropic/OpenAI clients, so
  * the direct assistant loop can treat "local" as just another provider.
  * Inference is llama.cpp on the CPU (FaceclawLlamaRunner over JNI).
@@ -38,11 +40,7 @@ const TOP_K = 20;
 /** Free the ~3GB of model + KV this long after the last generation. */
 const IDLE_UNLOAD_MS = 2 * 60 * 1000;
 
-export type LocalModelState = {
-  status: "absent" | "downloading" | "ready";
-  bytesDownloaded: number;
-  totalBytes: number;
-};
+export type { LocalModelState } from "./local-llm-types";
 
 let runner: any = null;
 let downloader: any = null;

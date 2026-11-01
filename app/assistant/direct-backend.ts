@@ -1,6 +1,6 @@
 import { streamAnthropicMessage } from "../native/anthropic";
 import { streamHermesChat } from "../native/hermes";
-import { streamLocalQwen } from "../native/llama";
+import { streamLocalModel } from "../native/local-llm";
 import { streamOpenAiResponse } from "../native/openai";
 import type {
   LlmContentBlock,
@@ -146,7 +146,7 @@ export class DirectAssistantBackend {
           : options.provider === "openai"
           ? streamOpenAiResponse(streamOptions)
           : options.provider === "local"
-            ? streamLocalQwen(streamOptions)
+            ? streamLocalModel(streamOptions)
             : streamAnthropicMessage(streamOptions);
     };
 

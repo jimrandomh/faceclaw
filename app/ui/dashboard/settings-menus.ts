@@ -12,7 +12,7 @@ import {
   localModelState,
   onLocalModelStateChanged,
   startLocalModelDownload,
-} from "../../native/llama";
+} from "../../native/local-llm";
 import {
   ASR_MODELS,
   asrModelState,
@@ -143,14 +143,14 @@ function settingsSections(): SettingsSection[] {
     {
       label: "Assistant",
       items: [
-        // iOS offers cloud APIs; Android also supports local models and the bridge.
+        // iOS's on-phone model is Apple Intelligence; Android downloads one. Only Android has the bridge.
         enumSettingMenuItem(assistantBackendSetting),
         enumSettingMenuItem(assistantModelSetting),
         textSettingMenuItem(assistantHermesUrlSetting),
         textSettingMenuItem(assistantHermesKeySetting),
-        ...(!global.isIOS ? [localModelMenuItem()] : []),
+        global.isIOS ? systemModelMenuItem() : localModelMenuItem(),
         toggleSettingMenuItem(assistantSkipConfirmationSetting),
-        // iOS has no local LLM or agent bridge yet.
+        // iOS has no agent bridge yet.
         ...(!global.isIOS ? [
           textSettingMenuItem(assistantBridgeHostSetting),
           textSettingMenuItem(assistantBridgePortSetting),
@@ -397,6 +397,29 @@ function localModelStatusText(): string {
     return `${pct}% of ${LOCAL_MODEL_GB}`;
   }
   return "not downloaded";
+}
+
+/**
+ * iOS: the on-phone model is the Apple Intelligence system model, which iOS
+ * installs and manages; the row only reports whether it can be used.
+ */
+function systemModelMenuItem(): MenuItem {
+  const statusText = (): string => {
+    const state = localModelState();
+    return state.status === "ready" ? "ready" : state.detail ?? "unavailable";
+  };
+  return {
+    label: "On-phone model",
+    description:
+      "Apple Intelligence's on-device model answers assistant queries on the phone itself, with no API key or cloud service. " +
+      "Needs iOS 26 and an iPhone that supports Apple Intelligence, with Apple Intelligence turned on in iOS Settings. " +
+      "Faster and more private than the cloud models, but simpler, with a short memory. " +
+      "Used automatically when no API key is set.",
+    onSelect: () => {},
+    render: ({ image, x, y, width }) => {
+      drawRightValueMenuItem(image, getDefaultSmallFont(), x, y, width, "On-phone model", statusText());
+    },
+  };
 }
 
 /** Download/cancel/delete management for the on-phone assistant model. */

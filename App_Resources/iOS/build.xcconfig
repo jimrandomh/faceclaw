@@ -3,7 +3,9 @@ TARGETED_DEVICE_FAMILY = 1;
 CODE_SIGN_STYLE = Automatic;
 
 // Set IOS_TEAM_ID in build_paths.sh (or pass --teamId) to choose the signing team.
-OTHER_LDFLAGS = $(inherited) -framework CoreBluetooth -framework CoreLocation -framework CoreText -framework Speech -framework AVFoundation -framework WebKit -framework SafariServices -framework UniformTypeIdentifiers -framework ImageIO -framework EventKit -framework MediaPlayer -framework AuthenticationServices -framework Security
+// FoundationModels (the on-phone LLM, FaceclawSystemLanguageModel.swift) only exists on iOS 26+,
+// so it is weak-linked: the app still launches on older iOS and reports the model unavailable.
+OTHER_LDFLAGS = $(inherited) -framework CoreBluetooth -framework CoreLocation -framework CoreText -framework Speech -framework AVFoundation -framework WebKit -framework SafariServices -framework UniformTypeIdentifiers -framework ImageIO -framework EventKit -framework MediaPlayer -framework AuthenticationServices -framework Security -weak_framework FoundationModels
 
 ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 
