@@ -12,7 +12,7 @@ import {
   localModelState,
   onLocalModelStateChanged,
   startLocalModelDownload,
-} from "../../native/llama";
+} from "../../native/local-llm";
 import {
   ASR_MODELS,
   asrModelState,
@@ -42,13 +42,18 @@ import {
   assistantBridgePortSetting,
   assistantBridgeTokenSetting,
   assistantModelSetting,
+  assistantOpenAiCompatibleKeySetting,
+  assistantOpenAiCompatibleModelSetting,
+  assistantOpenAiCompatibleUrlSetting,
   assistantSkipConfirmationSetting,
+  veniceWebSearchSetting,
   batteryDisplayModeSetting,
   brightnessSetting,
   autoBrightnessMinSetting,
   autoBrightnessMaxSetting,
   autoBrightnessCurveSetting,
   dataCollectionSetting,
+  distanceUnitSetting,
   glassesBatteryVisibilitySetting,
   phoneBatteryVisibilitySetting,
   ringBatteryVisibilitySetting,
@@ -93,6 +98,8 @@ import {
 import { wearBridge } from "../../native/wear-bridge";
 import { openSettingsSubMenu, SettingsPanelLayer, type SettingsSection } from "./settings-panel";
 import { uiFontPickerMenuItem } from "../font-picker";
+import { compatibleModelDiscoveryMenuItem } from "../openai-compatible-model-picker";
+import { isVeniceApiBaseUrl } from "../../native/openai-chat";
 
 /** The Settings app's master-detail panel (sections on the left, contents on the right). */
 export function createSettingsPanelLayer(): SettingsPanelLayer {
@@ -141,22 +148,42 @@ function settingsSections(): SettingsSection[] {
     },
     {
       label: "Assistant",
-      items: [
-        // iOS offers cloud APIs; Android also supports local models and the bridge.
-        enumSettingMenuItem(assistantBackendSetting),
-        enumSettingMenuItem(assistantModelSetting),
-        textSettingMenuItem(assistantHermesUrlSetting),
-        textSettingMenuItem(assistantHermesKeySetting),
-        ...(!global.isIOS ? [localModelMenuItem()] : []),
-        toggleSettingMenuItem(assistantSkipConfirmationSetting),
-        // iOS has no local LLM or agent bridge yet.
-        ...(!global.isIOS ? [
-          textSettingMenuItem(assistantBridgeHostSetting),
-          textSettingMenuItem(assistantBridgePortSetting),
-          textSettingMenuItem(assistantBridgeTokenSetting),
-          toggleSettingMenuItem(assistantAllowProactiveSetting),
-        ] : []),
-      ],
+      // Re-read on every paint: provider-specific rows follow the selected
+      // model (and, for Venice, the compatible URL).
+      get items() {
+        const selectedModel = assistantModelSetting.get();
+        return [
+          // iOS's on-phone model is Apple Intelligence; Android downloads one. Only Android has the bridge.
+          enumSettingMenuItem(assistantBackendSetting),
+          enumSettingMenuItem(assistantModelSetting),
+          ...(selectedModel === "hermes" ? [
+            textSettingMenuItem(assistantHermesUrlSetting),
+            textSettingMenuItem(assistantHermesKeySetting),
+          ] : []),
+          ...(selectedModel === "openai-compatible" ? [
+            textSettingMenuItem(assistantOpenAiCompatibleUrlSetting),
+            textSettingMenuItem(assistantOpenAiCompatibleKeySetting),
+            compatibleModelDiscoveryMenuItem({
+              getBaseUrl: () => assistantOpenAiCompatibleUrlSetting.get(),
+              getApiKey: () => assistantOpenAiCompatibleKeySetting.get(),
+              getModel: () => assistantOpenAiCompatibleModelSetting.get(),
+              setModel: (model) => assistantOpenAiCompatibleModelSetting.set(model),
+            }, assistantOpenAiCompatibleModelSetting),
+            textSettingMenuItem(assistantOpenAiCompatibleModelSetting),
+            ...(isVeniceApiBaseUrl(assistantOpenAiCompatibleUrlSetting.get())
+              ? [toggleSettingMenuItem(veniceWebSearchSetting)] : []),
+          ] : []),
+          global.isIOS ? systemModelMenuItem() : localModelMenuItem(),
+          toggleSettingMenuItem(assistantSkipConfirmationSetting),
+          // iOS has no agent bridge yet.
+          ...(!global.isIOS ? [
+            textSettingMenuItem(assistantBridgeHostSetting),
+            textSettingMenuItem(assistantBridgePortSetting),
+            textSettingMenuItem(assistantBridgeTokenSetting),
+            toggleSettingMenuItem(assistantAllowProactiveSetting),
+          ] : []),
+        ];
+      },
     },
     {
       label: "API Keys",
@@ -292,6 +319,8 @@ function customizationRows(): () => MenuItem[] {
     enumSettingMenuItem(timeFormatSetting),
     // Fahrenheit or Celsius, wherever weather temperatures show.
     enumSettingMenuItem(temperatureUnitSetting),
+    // Miles or kilometers: Weather's wind speed and Navigate's distances.
+    enumSettingMenuItem(distanceUnitSetting),
   ];
   const bottomRows = [font, position, depth, statusBar, ...rest];
   const popupRows = [font, position, depth, statusBar, statusBarVisibility, windowBorder, ...rest];
@@ -394,6 +423,29 @@ function localModelStatusText(): string {
     return `${pct}% of ${LOCAL_MODEL_GB}`;
   }
   return "not downloaded";
+}
+
+/**
+ * iOS: the on-phone model is the Apple Intelligence system model, which iOS
+ * installs and manages; the row only reports whether it can be used.
+ */
+function systemModelMenuItem(): MenuItem {
+  const statusText = (): string => {
+    const state = localModelState();
+    return state.status === "ready" ? "ready" : state.detail ?? "unavailable";
+  };
+  return {
+    label: "On-phone model",
+    description:
+      "Apple Intelligence's on-device model answers assistant queries on the phone itself, with no API key or cloud service. " +
+      "Needs iOS 26 and an iPhone that supports Apple Intelligence, with Apple Intelligence turned on in iOS Settings. " +
+      "Faster and more private than the cloud models, but simpler, with a short memory. " +
+      "Used automatically when no API key is set.",
+    onSelect: () => {},
+    render: ({ image, x, y, width }) => {
+      drawRightValueMenuItem(image, getDefaultSmallFont(), x, y, width, "On-phone model", statusText());
+    },
+  };
 }
 
 /** Download/cancel/delete management for the on-phone assistant model. */

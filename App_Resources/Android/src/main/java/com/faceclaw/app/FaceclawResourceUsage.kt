@@ -13,7 +13,7 @@ class FaceclawResourceUsage private constructor() {
     companion object {
         /**
          * Returns elapsedMs, processCpuMs, rssKb, nativeHeapKb, javaHeapKb,
-         * javaHeapCommittedKb, and threadCount. Reading /proc/self/status avoids
+         * javaHeapCommittedKb, threadCount, and peakRssKb. Reading /proc/self/status avoids
          * the considerably heavier full Debug.MemoryInfo/PSS collection once per
          * second while still reporting the RSS that Android records at exit.
          */
@@ -30,30 +30,34 @@ class FaceclawResourceUsage private constructor() {
                 javaUsedBytes / 1024L,
                 runtime.totalMemory() / 1024L,
                 status[1],
+                status[2],
             )
         }
 
-        /** Returns {VmRSS in KiB, thread count}; unavailable values are zero. */
+        /** Returns {VmRSS in KiB, thread count, VmHWM in KiB}; unavailable values are zero. */
         private fun readProcessStatus(): LongArray {
             var rssKb = 0L
             var threadCount = 0L
+            var peakRssKb = 0L
             try {
                 BufferedReader(FileReader("/proc/self/status")).use { reader ->
                     var line: String?
                     while (reader.readLine().also { line = it } != null) {
                         val current = line!!
-                        if (current.startsWith("VmRSS:")) {
+                        if (current.startsWith("VmHWM:")) {
+                            peakRssKb = firstNumber(current)
+                        } else if (current.startsWith("VmRSS:")) {
                             rssKb = firstNumber(current)
                         } else if (current.startsWith("Threads:")) {
                             threadCount = firstNumber(current)
                         }
-                        if (rssKb > 0 && threadCount > 0) break
+                        if (rssKb > 0 && threadCount > 0 && peakRssKb > 0) break
                     }
                 }
             } catch (ignored: IOException) {
                 // The graph remains useful with the runtime heap counters alone.
             }
-            return longArrayOf(rssKb, threadCount)
+            return longArrayOf(rssKb, threadCount, peakRssKb)
         }
 
         private fun firstNumber(line: String): Long {

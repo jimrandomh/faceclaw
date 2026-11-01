@@ -76,9 +76,9 @@ import { type AppContext, type AppDefinition, type AppLaunchParams, type TextEdi
 import { type InProcessAppOptions, type InProcessWindow } from "../ui/shell/in-process-window";
 import { loadPersistedOpenApps, savePersistedOpenApps } from "../ui/shell/open-apps-persistence";
 import { appViewportRect, isOnSwitcherEdge, sidebarStripVisible, type ScreenRect, type WindowHeightMode } from "../ui/shell/geometry";
-import { type ContinuousCaptureOptions, type LayerActions, type TextSettingsEditToggle } from "../ui/layers";
+import { type ContinuousCaptureOptions, type LayerActions, type TextSettingsEditToggle, type TranscriptionChoice } from "../ui/layers";
 import { type KeyboardInputSession } from "../ui/shell/keyboard-input";
-import { appSwitcherPositionSetting, statusBarPositionSetting, statusBarVisibilitySetting, windowBorderSetting, assistantAllowProactiveSetting, assistantBackendSetting, assistantBridgeHostSetting, assistantBridgePortSetting, assistantBridgeTokenSetting, getBrightnessPreferences, displayLayoutSetting, navigateDisplayLayoutSetting, terminalDisplayLayoutSetting, elevenLabsApiKeySetting, getStringSettingById, openAiApiKeySetting, nightscoutApiTokenSetting, firmwareDebugFlagsSetting, whisperServerApiKeySetting, whisperServerLanguageSetting, whisperServerModelSetting, whisperServerUrlSetting, lockScreenEnabledSetting, nightscoutSiteUrlSetting, onAnySettingChanged, previewColorSetting, ringConnectionModeSetting, type RingConnectionMode, saveVoiceRecordingsSetting, sonioxApiKeySetting, screenTimeoutSetting, screenTimeoutSettingToMs, suspendEvenHubWhenScreenOffSetting, voiceProviderSetting, wakeWordActionSetting, type ConfigSettingString, type VoiceProvider } from "../ui/dashboard-settings";
+import { appSwitcherPositionSetting, statusBarPositionSetting, statusBarVisibilitySetting, windowBorderSetting, assistantAllowProactiveSetting, assistantBackendSetting, assistantBridgeHostSetting, assistantBridgePortSetting, assistantBridgeTokenSetting, getBrightnessPreferences, displayLayoutSetting, navigateDisplayLayoutSetting, terminalDisplayLayoutSetting, elevenLabsApiKeySetting, getStringSettingById, openAiApiKeySetting, nightscoutApiTokenSetting, firmwareDebugFlagsSetting, whisperServerApiKeySetting, whisperServerLanguageSetting, whisperServerModelSetting, whisperServerUrlSetting, lockScreenEnabledSetting, nightscoutSiteUrlSetting, onAnySettingChanged, previewColorSetting, ringConnectionModeSetting, type RingConnectionMode, saveVoiceRecordingsSetting, sonioxApiKeySetting, screenTimeoutSetting, screenTimeoutSettingToMs, suspendEvenHubWhenScreenOffSetting, voiceProviderSetting, wakeWordActionSetting, type ConfigSettingString } from "../ui/dashboard-settings";
 import { isIgnoringBatteryOptimizations, requestIgnoreBatteryOptimizations } from "../native/battery-optimization";
 import {
   getInstalledEvenHubAppById,
@@ -126,12 +126,10 @@ export type DashboardSnapshot = {
   activeTextEditorToggleValue: boolean;
   activeTextEditorToggleVisible: boolean;
   /**
-   * The keyboard dialog is up on the glasses (opened by the phone's keyboard
-   * button): the phone shows its typing panel, with a send button per
-   * destination in the glasses menu's row order.
+   * The keyboard dialog is open (opened by the phone's keyboard button): the
+   * phone shows its typing panel, driven by keyboardInputSession.
    */
   keyboardInputActive: boolean;
-  keyboardInputTargets: ReadonlyArray<{ id: string; label: string }>;
   evenAppConflictMessage: string;
   evenAppConflictWarningVisible: boolean;
   firmwareWarningMessage: string;
@@ -1148,7 +1146,6 @@ class DashboardController {
       activeTextEditorToggleValue: this.activeTextEditorToggle?.setting.get() ?? false,
       activeTextEditorToggleVisible: this.activeTextEditorToggle !== null,
       keyboardInputActive: this.keyboardInput !== null,
-      keyboardInputTargets: this.keyboardInput?.targets ?? [],
       evenAppConflictMessage: this.evenAppConflictMessage,
       evenAppConflictWarningVisible: this.evenAppConflictMessage.length > 0,
       firmwareWarningMessage: this.firmwareWarningMessage,
@@ -1347,23 +1344,9 @@ class DashboardController {
     shell.startKeyboardInput();
   }
 
-  /** The phone's typing panel changed: mirror the text on the glasses. */
-  setKeyboardInputText(text: string): void {
-    shell.noteUserActivity();
-    this.keyboardInput?.setText(text);
-  }
-
-  /** Send to one destination, or (no id: the IME's send key) the one highlighted on the glasses. */
-  sendKeyboardInput(targetId?: string): void {
-    if (targetId) {
-      this.keyboardInput?.sendTo(targetId);
-    } else {
-      this.keyboardInput?.send();
-    }
-  }
-
-  discardKeyboardInput(): void {
-    this.keyboardInput?.discard();
+  /** The open keyboard dialog, for the phone's typing panel (KeyboardInputViewModel). */
+  get keyboardInputSession(): KeyboardInputSession | null {
+    return this.keyboardInput;
   }
 
   setActiveTextEditorToggleValue(value: boolean): void {
@@ -2150,10 +2133,10 @@ class DashboardController {
     voiceControlBridge.retargetContinuousCapture(this.voiceCaptureOptions(this.communicator));
   }
 
-  /** The provider a continuous-capture window needs (Translate's multilingual one), if any. */
-  private multilingualProvider(): VoiceProvider | undefined {
+  /** The provider and language a continuous-capture window needs (Translate's), if any. */
+  private transcriptionChoice(): TranscriptionChoice | undefined {
     for (const options of this.continuousClients.values()) {
-      if (options.multilingualProvider) return options.multilingualProvider;
+      if (options.transcription) return options.transcription;
     }
     return undefined;
   }
@@ -2178,20 +2161,21 @@ class DashboardController {
    * stands in for the G2 mic.
    */
   private voiceCaptureOptions(communicator: FaceclawCommunicatorBridge | null) {
-    // A window that needs a multilingual provider sets it for every capture
-    // while it is open, so push-to-talk still shares its stream.
-    const multilingual = this.multilingualProvider();
+    // A window that needs its own provider and language sets them for every
+    // capture while it is open, so push-to-talk still shares its stream.
+    // Otherwise only Whisper server is told a language (its own setting).
+    const choice = this.transcriptionChoice();
+    const provider = choice?.provider ?? voiceProviderSetting.get();
     return {
       communicator: communicator?.getNativeCommunicator() ?? null,
       usePhoneMic: communicator === null,
-      provider: multilingual ?? voiceProviderSetting.get(),
+      provider,
+      language: choice ? choice.language : provider === "whisper-server" ? whisperServerLanguageSetting.get() : "",
       elevenLabsApiKey: elevenLabsApiKeySetting.get(),
       openAiApiKey: openAiApiKeySetting.get(),
       sonioxApiKey: sonioxApiKeySetting.get(),
       whisperServerUrl: whisperServerUrlSetting.get(),
       whisperServerModel: whisperServerModelSetting.get(),
-      // Whisper detects the language itself when the speech may be in any.
-      whisperServerLanguage: multilingual ? "" : whisperServerLanguageSetting.get(),
       whisperServerApiKey: whisperServerApiKeySetting.get(),
       saveRecording: saveVoiceRecordingsSetting.get(),
       // "My voice only" (Microphones app): verify command utterances

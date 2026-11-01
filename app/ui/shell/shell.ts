@@ -20,7 +20,7 @@ import {
 import { Layer, LayerActions, LayerContext, LayerStack, noopLayerActions } from "../layers";
 import { CONTEXT_MENU_DIM, MenuLayer, type MenuItem } from "../menu";
 import { VoiceInputLayer, type VoiceSendTarget } from "./voice-input";
-import { KeyboardInputLayer, type KeyboardInputSession } from "./keyboard-input";
+import { KeyboardInputLayer, type KeyboardInputSession, type KeyboardInputVisibility } from "./keyboard-input";
 import { voiceActivity } from "./voice-activity";
 import { AssistantLayer } from "./assistant";
 import { AssistantSession, type AssistantBackendConfig } from "../../assistant/session";
@@ -38,7 +38,11 @@ import {
   assistantBridgePortSetting,
   assistantBridgeTokenSetting,
   assistantModelSetting,
+  assistantOpenAiCompatibleKeySetting,
+  assistantOpenAiCompatibleModelSetting,
+  assistantOpenAiCompatibleUrlSetting,
   assistantSkipConfirmationSetting,
+  veniceWebSearchSetting,
   batteryIndicatorSettingsKey,
   brightnessSetting,
   onAnySettingChanged,
@@ -310,6 +314,9 @@ const noopActions: LayerActions = noopLayerActions;
  */
 const LONG_PRESS_ESCAPE_MENU_MS = 4000;
 
+/** Settings-store key for the keyboard dialog's last-chosen KeyboardInputVisibility. */
+const KEYBOARD_INPUT_VISIBILITY_KEY = "keyboardInput.visibility";
+
 /** Shell-surface overlay menu (the system menu); closing it returns focus to the sidebar. */
 class ShellOverlayMenuLayer extends MenuLayer {
   /**
@@ -455,6 +462,8 @@ class Shell {
   private readonly trayIcons = new Map<string, { icon: GrayImage; widget?: TrayWidget }>();
   private activeVoiceLayer: VoiceInputLayer | null = null;
   private activeKeyboardLayer: KeyboardInputLayer | null = null;
+  // Messages sent from keyboard dialogs, newest first; in memory only.
+  private readonly keyboardInputHistory: string[] = [];
   // App-posted notifications that are open or queued, by key.
   private readonly appNotifications = new Map<string, AppNotification>();
   private readonly notificationModals = new NotificationModalQueue<NotificationPopup>({
@@ -1194,7 +1203,7 @@ class Shell {
     const foreground = this.foregroundWindow()?.windowId ?? "none";
     if (!this.screenOn) return `fg=${foreground} target=screen-off`;
     if (this.activeVoiceLayer) return `fg=${foreground} target=voice`;
-    if (this.activeKeyboardLayer) return `fg=${foreground} target=keyboard`;
+    if (this.activeKeyboardLayer?.shownOnGlasses) return `fg=${foreground} target=keyboard`;
     if (!this.stack.isAtBase()) return `fg=${foreground} target=shell-overlay`;
     return `fg=${foreground} target=${this.focus}`;
   }
@@ -1583,12 +1592,16 @@ class Shell {
    * continues that conversation; otherwise it goes to the usual destinations
    * with Send to Assistant highlighted. Returns the session the phone types
    * into (the already-open one if there is one), or null while a voice
-   * dialog is up.
+   * dialog is up. The phone can keep the dialog off the glasses (see
+   * KeyboardInputVisibility); that choice persists across dialogs.
    */
   startKeyboardInput(): KeyboardInputSession | null {
     if (this.activeKeyboardLayer) return this.activeKeyboardLayer;
     if (this.activeVoiceLayer || this.foregroundWindow()?.isVoiceCapturing?.()) return null;
-    if (!this.screenOn) this.wake("sidebar");
+    const storedVisibility = getStringSetting(KEYBOARD_INPUT_VISIBILITY_KEY, "both");
+    const visibility: KeyboardInputVisibility =
+      storedVisibility === "phone" || storedVisibility === "glasses" ? storedVisibility : "both";
+    if (visibility !== "phone" && !this.screenOn) this.wake("sidebar");
     const assistantLayer = this.assistantLayer;
     const assistantSession = this.assistantSession;
     let targets: VoiceSendTarget[];
@@ -1598,7 +1611,15 @@ class Shell {
         {
           id: "assistant",
           label: "Send",
-          onSend: (text) => this.runAssistantTurn(assistantSession, assistantLayer, text),
+          // Phone-only, the overlay can close while the dialog is open; the
+          // text then starts a fresh overlay on the same conversation.
+          onSend: (text) => {
+            if (this.assistantLayer === assistantLayer) {
+              this.runAssistantTurn(assistantSession, assistantLayer, text);
+            } else {
+              this.sendToAssistant(text);
+            }
+          },
         },
       ];
     } else {
@@ -1616,16 +1637,29 @@ class Shell {
         }
       },
       dismiss: () => {
-        this.stack.popIfTop((top) => top === layer);
+        // Wherever it sits: a menu opened over the dialog stays open.
+        this.stack.remove(layer);
         // A send or discard from the phone side arrives outside the input
         // path, so nothing else asks for the repaint.
         this.config.requestShellRender();
       },
+      setShownOnGlasses: (shown) => {
+        if (shown) {
+          if (!this.screenOn) this.wake("sidebar");
+          this.stack.push(layer);
+        } else {
+          this.stack.remove(layer);
+        }
+        this.config.requestShellRender();
+      },
+      visibility,
+      onVisibilityChanged: (value) => setStringSetting(KEYBOARD_INPUT_VISIBILITY_KEY, value),
+      history: this.keyboardInputHistory,
       sendTargets: targets,
       defaultTargetIndex: defaultIndex,
     });
     this.activeKeyboardLayer = layer;
-    this.stack.push(layer);
+    if (layer.shownOnGlasses) this.stack.push(layer);
     this.config.onKeyboardInputChanged?.(layer);
     this.config.requestShellRender();
     return layer;
@@ -1634,6 +1668,15 @@ class Shell {
   isAssistantAvailable(): boolean {
     const current = this.getAssistantConversations().current();
     return this.resolveAssistantConfiguration(current.model, current.reasoning) !== null;
+  }
+
+  /** What to set up when isAssistantAvailable() is false. */
+  assistantSetupHint(): string {
+    if (assistantBackendSetting.get() === "external") return "Configure the agent bridge host and token in Settings.";
+    const model = this.getAssistantConversations().current().model;
+    if (model === "hermes") return "Set the Hermes URL in Settings > Assistant.";
+    if (model === "openai-compatible") return "Set the compatible API URL and model ID in Settings > Assistant.";
+    return global.isIOS ? "Configure an assistant model in Settings." : "Set an API key or download the on-phone model in Settings.";
   }
 
   /** Observe assistant turns (see AssistantActivityEvent). */
@@ -1690,6 +1733,10 @@ class Shell {
       openai: openAiApiKeySetting.get(),
       hermesUrl: assistantHermesUrlSetting.get(),
       hermesKey: assistantHermesKeySetting.get(),
+      openAiCompatibleUrl: assistantOpenAiCompatibleUrlSetting.get(),
+      openAiCompatibleKey: assistantOpenAiCompatibleKeySetting.get(),
+      openAiCompatibleModel: assistantOpenAiCompatibleModelSetting.get(),
+      veniceWebSearch: veniceWebSearchSetting.get(),
     });
     if (llm && reasoning !== "default" && llm.effort) llm.effort = reasoning;
     return llm ? { kind: "direct", llm } : null;
@@ -1716,11 +1763,7 @@ class Shell {
     if (!text) return;
     const session = this.ensureAssistantSession();
     if (!session) {
-      this.showAlert(
-        assistantBackendSetting.get() === "external"
-          ? "Configure the agent bridge host and token in Settings."
-          : global.isIOS ? "Set an OpenAI or Anthropic API key in Settings." : "Set an API key or download the on-phone model in Settings.",
-      );
+      this.showAlert(this.assistantSetupHint());
       return;
     }
     if (session.isTurnActive()) {

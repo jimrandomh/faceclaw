@@ -2,7 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { loader } = require('./helpers/load-typescript.cjs');
 
-function harness(provider = 'elevenlabs', continuous = true) {
+function harness(provider = 'elevenlabs', continuous = true, extraOptions = {}) {
   const timers = new Map();
   let timerId = 0;
   const sockets = [];
@@ -30,7 +30,7 @@ function harness(provider = 'elevenlabs', continuous = true) {
   const Provider = load(`app/native/${provider}-stt.ts`)[names[provider]];
   const { ReconnectingSttClient } = load('app/native/reconnecting-stt.ts');
   const client = new ReconnectingSttClient(options => new Provider(options), {
-    apiKey: 'test', onTranscript: event => events.push(event),
+    apiKey: 'test', ...extraOptions, onTranscript: event => events.push(event),
     onStatus: status => statuses.push(status), onError: error => errors.push(error),
   }, () => continuous);
   client.start();
@@ -203,7 +203,10 @@ test('provider selection falls back to on-device without a key and connects the 
       FaceclawWebSocket: class { constructor(url, _listener, header, value) { sockets.push({ url, header, value }); } },
     } } },
   }, { './cloud-stt': { CLOUD_STT_SAMPLE_RATE: 16000, encodeBase64: () => '', toJavaBytes: bytes => bytes } });
-  const { createCloudSttClient, usesCloudStt } = load('app/native/cloud-stt-provider.ts');
+  const { createCloudSttClient, usesCloudStt, transcriptionKey } = load('app/native/cloud-stt-provider.ts');
+  // A running capture is shared only on the same provider and language.
+  assert.equal(transcriptionKey({ provider: 'soniox', language: ' JA ' }), 'soniox:ja');
+  assert.notEqual(transcriptionKey({ provider: 'soniox' }), transcriptionKey({ provider: 'soniox', language: 'ja' }));
   const statuses = [];
   const options = { onTranscript() {}, onStatus: status => statuses.push(status), onError() {} };
   const selection = { provider: 'onboard', elevenLabsApiKey: '', openAiApiKey: ' ', sonioxApiKey: 'soniox-key' };
@@ -217,4 +220,23 @@ test('provider selection falls back to on-device without a key and connects the 
   createCloudSttClient({ ...selection, provider: 'elevenlabs', elevenLabsApiKey: ' xi ' }, options, () => false).start();
   assert.deepEqual(sockets.map(({ url, header, value }) => [new URL(url).host, header, value]),
     [['stt-rt.soniox.com', null, null], ['api.elevenlabs.io', 'xi-api-key', 'xi']]);
+  createCloudSttClient({ ...selection, provider: 'elevenlabs', elevenLabsApiKey: 'xi', language: ' ja ' }, options, () => false).start();
+  assert.equal(new URL(sockets.at(-1).url).searchParams.get('language_code'), 'ja');
+});
+
+test('a spoken-language hint reaches each provider on the wire, and is left out to auto-detect', () => {
+  for (const language of ['ja', '']) {
+    const elevenlabs = harness('elevenlabs', true, { language });
+    assert.equal(new URL(elevenlabs.sockets[0].url).searchParams.get('language_code'), language || null);
+
+    const soniox = harness('soniox', true, { language });
+    soniox.open();
+    assert.deepEqual(JSON.parse(soniox.sockets[0].sent[0]).language_hints, language ? ['ja'] : undefined);
+
+    const openai = harness('openai', true, { language });
+    openai.open();
+    const transcription = JSON.parse(openai.sockets[0].sent[0]).session.audio.input.transcription;
+    assert.equal(transcription.model, 'gpt-realtime-whisper');
+    assert.equal(transcription.language, language || undefined);
+  }
 });

@@ -1,6 +1,12 @@
 import { TranslateLayer } from "./translate";
 import { resolveTranslationModel } from "./translate-llm";
-import { resolveTranslateProvider, translateProviderSetting, translateShowOriginalSetting } from "./translate-settings";
+import {
+  resolveTranslateLanguage,
+  resolveTranslateProvider,
+  translateLanguageSetting,
+  translateProviderSetting,
+  translateShowOriginalSetting,
+} from "./translate-settings";
 import { MIC_ICON } from "../transcribe/transcribe-app";
 import { transcriptTimestamp } from "../transcribe/transcribe";
 import { type ContinuousCaptureOptions } from "../../ui/layers";
@@ -22,8 +28,8 @@ const TRAY_ICON_ID = "translate";
 const NO_PROVIDER_PROBLEM =
   "Translate needs a transcription provider that understands any language: add an ElevenLabs, OpenAI, or Soniox API key (Settings > API Keys), or a Whisper server URL (Settings > Voice).";
 const NO_MODEL_PROBLEM = global.isIOS
-  ? "Translate needs a language model: add an Anthropic or OpenAI API key (Settings > API Keys)."
-  : "Translate needs a language model: add an Anthropic or OpenAI API key (Settings > API Keys), or download the on-phone model (Settings > Assistant).";
+  ? "Translate needs a language model: configure a cloud or OpenAI-compatible model in Settings > Assistant."
+  : "Translate needs a language model: configure one in Settings > Assistant, or download the on-phone model.";
 
 export type TranslateAppOptions = InProcessAppOptions & {
   /** Begin (or retarget) continuous mic capture, kept on while the window is open. */
@@ -38,8 +44,9 @@ export type TranslateAppOptions = InProcessAppOptions & {
  * provider (Translate settings), which a shared capture switches to.
  */
 export function createTranslateAppWindow(options: TranslateAppOptions): InProcessWindow {
-  // Checks the setup and (re)starts capture with the chosen provider: at
-  // launch, when the provider setting changes, and on a tap after a problem.
+  // Checks the setup and (re)starts capture with the chosen provider and
+  // language: at launch, when either setting changes, and on a tap after a
+  // problem.
   const startCapture = () => {
     const provider = resolveTranslateProvider();
     const problem = !provider ? NO_PROVIDER_PROBLEM : !resolveTranslationModel() ? NO_MODEL_PROBLEM : null;
@@ -49,7 +56,7 @@ export function createTranslateAppWindow(options: TranslateAppOptions): InProces
       shell.setTrayIcon(TRAY_ICON_ID, null);
       return;
     }
-    options.startContinuousVoiceCapture({ multilingualProvider: provider });
+    options.startContinuousVoiceCapture({ transcription: { provider, language: resolveTranslateLanguage() } });
     shell.setTrayIcon(TRAY_ICON_ID, MIC_ICON);
   };
   const layer = new TranslateLayer(transcriptTimestamp(), startCapture);
@@ -75,6 +82,7 @@ export function createTranslateAppWindow(options: TranslateAppOptions): InProces
         onSelect: (ctx) => {
           ctx.stack.pop();
           openSettingsSubMenu(ctx, "Translate settings", [
+            enumSettingMenuItem(translateLanguageSetting, { onChange: startCapture }),
             enumSettingMenuItem(translateProviderSetting, { onChange: startCapture }),
             toggleSettingMenuItem(translateShowOriginalSetting),
           ]);
@@ -93,7 +101,7 @@ export function createTranslateAppWindow(options: TranslateAppOptions): InProces
   });
   // Wire async state changes to this window's renderer, rather than the
   // controller action from which the window-specific actions were derived.
-  layer.start(app.requestRender);
+  layer.start(app.requestRender, () => shell.isWindowVisible(TRANSLATE_WINDOW_ID));
   startCapture();
   return app;
 }

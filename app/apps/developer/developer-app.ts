@@ -51,24 +51,18 @@ function debugTestsMenu(openInputEvents: OpenPage, openMicrophones: OpenPage): M
       },
       {
         label: "Buzzer demo",
-        disabled: global.isIOS,
-        description: global.isIOS ? "Glasses sound playback is not available on iOS yet." : undefined,
         onSelect: (ctx) => {
           ctx.stack.push(new BuzzerDemoLayer());
         },
       },
       {
         label: "Accelerometer demo",
-        disabled: global.isIOS,
-        description: global.isIOS ? "Not available on iOS yet." : undefined,
         onSelect: (ctx) => {
           ctx.stack.push(new AccelerometerDemoLayer(DEVELOPER_WINDOW_ID, ctx.actions.requestRender));
         },
       },
       {
         label: "Light sensor",
-        disabled: global.isIOS,
-        description: global.isIOS ? "Not available on iOS yet." : undefined,
         onSelect: (ctx) => {
           ctx.stack.push(new LightSensorDemoLayer(DEVELOPER_WINDOW_ID, ctx.actions.requestRender));
         },
@@ -83,8 +77,6 @@ function debugTestsMenu(openInputEvents: OpenPage, openMicrophones: OpenPage): M
       },
       {
         label: "Microphones",
-        disabled: global.isIOS,
-        description: global.isIOS ? "Not available on iOS yet." : undefined,
         onSelect: openMicrophones,
       },
       {
@@ -131,8 +123,6 @@ export function createDeveloperAppWindow(appContext: AppContext, options: InProc
       },
       {
         label: "Show resource usage",
-        disabled: global.isIOS,
-        description: global.isIOS ? "Not available on iOS yet." : undefined,
         onSelect: (ctx) => {
           ctx.stack.push(new ResourceUsageLayer(DEVELOPER_WINDOW_ID, ctx.actions.requestRender));
         },

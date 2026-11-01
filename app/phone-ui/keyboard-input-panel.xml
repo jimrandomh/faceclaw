@@ -1,18 +1,40 @@
 <GridLayout rows="auto,*,auto" maxHeight="280" xmlns="http://schemas.nativescript.org/tns.xsd"
-    class="system-name-modal"
+    class="system-name-modal keyboard-input-panel"
     visibility="{{ keyboardInputVisibility }}"
     horizontalAlignment="stretch"
     verticalAlignment="bottom">
-    <Label row="0" text="Keyboard input" class="h2" />
+    <!-- Title, then the history button (recent sent messages) and the
+         visibility button, which cycles both / phone only / glasses only and
+         dims the half of its phone+glasses pair where the dialog is hidden.
+         rows="auto" on the grids: an implicit star row balloons in here. -->
+    <GridLayout row="0" rows="auto" columns="*,auto,auto">
+        <Label col="0" text="Keyboard input" class="h2" verticalAlignment="center" />
+        <GridLayout col="1" rows="auto" class="panel-icon-button" opacity="{{ keyboardInputHistoryOpacity }}"
+            accessible="true" accessibilityRole="button" accessibilityLabel="Recent inputs"
+            tap="{{ onKeyboardInputHistoryTap }}">
+            <Image src="res://ic_input_history" class="panel-icon" />
+        </GridLayout>
+        <StackLayout col="2" orientation="horizontal" class="panel-icon-button"
+            accessible="true" accessibilityRole="button" accessibilityLabel="{{ keyboardInputVisibilityDescription }}"
+            tap="{{ onKeyboardInputVisibilityTap }}">
+            <Image src="res://ic_show_phone" class="panel-icon" opacity="{{ keyboardInputPhoneIconOpacity }}" />
+            <Image src="res://ic_show_glasses" class="panel-icon" opacity="{{ keyboardInputGlassesIconOpacity }}" />
+        </StackLayout>
+    </GridLayout>
     <TextView row="1"
         id="keyboardInputField"
+        class="{{ keyboardInputFieldClass }}"
         text="{{ keyboardInputText }}"
         hint="Type a message"
         textChange="{{ onKeyboardInputTextChange }}" />
-    <!-- Wraps onto a second line when the labels don't fit side by side. -->
-    <FlexboxLayout row="2" flexWrap="wrap" class="m-t-8">
+    <Label row="1" text="Shown on the glasses only. Tap to type." textWrap="true"
+        class="keyboard-input-hidden-hint"
+        visibility="{{ keyboardInputGlassesOnlyVisibility }}"
+        tap="{{ onKeyboardInputGlassesOnlyHintTap }}" />
+    <!-- One strip: at most two destinations (assistant, app) plus Discard. -->
+    <FlexboxLayout row="2" flexWrap="nowrap" class="keyboard-input-buttons">
         <Button text="{{ keyboardInputPrimaryTargetLabel }}" tap="{{ onKeyboardInputPrimarySendTap }}" visibility="{{ keyboardInputPrimaryTargetVisibility }}" flexGrow="1" class="-primary" />
-        <Button text="{{ keyboardInputSecondaryTargetLabel }}" tap="{{ onKeyboardInputSecondarySendTap }}" visibility="{{ keyboardInputSecondaryTargetVisibility }}" flexGrow="1" />
-        <Button text="Discard" tap="{{ onKeyboardInputDiscardTap }}" flexGrow="1" />
+        <Button text="{{ keyboardInputSecondaryTargetLabel }}" tap="{{ onKeyboardInputSecondarySendTap }}" visibility="{{ keyboardInputSecondaryTargetVisibility }}" flexGrow="1" class="keyboard-input-gap" />
+        <Button text="Discard" tap="{{ onKeyboardInputDiscardTap }}" flexGrow="1" class="keyboard-input-gap" />
     </FlexboxLayout>
 </GridLayout>

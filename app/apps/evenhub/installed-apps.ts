@@ -176,6 +176,21 @@ export function readEvenHubPackageManifestBytes(bytes: Uint8Array): EvenHubManif
   }
 }
 
+/**
+ * Delete an installed EHPK that is all zeros, keeping its registry entry and
+ * icon so the store treats it as missing and offers Reinstall. iOS builds
+ * before the binary-http.ios.ts copy fix could store a large download that
+ * way. Returns whether the package was discarded.
+ */
+export function discardZeroedEvenHubPackage(packageId: string): boolean {
+  const path = installedEvenHubPackagePath(packageId);
+  const bytes = readBinaryFile(path);
+  if (!bytes || bytes.length === 0) return false;
+  for (let i = 0; i < bytes.length; i++) if (bytes[i] !== 0) return false;
+  deletePathRecursively(path);
+  return true;
+}
+
 /** Remove the stored EHPK, unpacked runtime files, and registry entry. */
 export function uninstallEvenHubPackage(packageId: string): boolean {
   const apps = getInstalledEvenHubApps();

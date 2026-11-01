@@ -1,6 +1,6 @@
 import { Utils } from "@nativescript/core";
 
-import { isLocalModelReady, streamLocalQwen } from "../../native/llama";
+import { isLocalModelReady, streamLocalModel } from "../../native/local-llm";
 import { speakerRegistry } from "./speakers";
 
 declare const com: any;
@@ -124,7 +124,7 @@ function generateForSpeaker(
     };
     const timer = setTimeout(() => finish(null), GENERATION_TIMEOUT_MS);
     try {
-      streamLocalQwen({
+      streamLocalModel({
         apiKey: "",
         model: "local",
         system:

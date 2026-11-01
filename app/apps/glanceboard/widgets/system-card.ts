@@ -9,6 +9,7 @@ import {
 import { type GrayImage, type UiFont } from "../../../graphics/image";
 import { ensureLocationPermission, hasLocationPermission } from "../../../native/location-permissions";
 import { onAndroidNotificationsChanged, readActiveNotificationIcons } from "../../../native/notification-icons";
+import { NOTIFICATION_ICON_SIZE } from "../../../native/notification-types";
 import { readPhoneBatteryState } from "../../../native/phone-battery";
 import { weatherBridge } from "../../../native/weather";
 import { formatClockDate, formatClockTime } from "../../../ui/clock-format";
@@ -37,7 +38,6 @@ import { glanceFont } from "../glance-font";
 import { type GlanceWidget } from "../widget";
 
 const PAD = 8;
-const NOTIFICATION_ICON_SIZE = 24;
 const NOTIFICATION_ICON_GAP = 4;
 const BATTERY_ITEM_GAP = 12;
 const BATTERY_LABEL_VALUE = 150;

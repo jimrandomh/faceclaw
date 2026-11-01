@@ -15,7 +15,7 @@ export type LlmContentBlock =
     }
   | { type: "tool_result"; tool_use_id: string; content: string; is_error?: boolean }
   /** Opaque state required to continue a provider's stateless conversation. */
-  | { type: "provider_item"; provider: "openai"; item: any };
+  | { type: "provider_item"; provider: "openai" | "openai-compatible"; item: any };
 
 export type LlmMessage = {
   role: "user" | "assistant";

@@ -1,4 +1,4 @@
-import { isLocalModelReady, streamLocalQwen } from "../../native/llama";
+import { isLocalModelReady, streamLocalModel } from "../../native/local-llm";
 import type { NameInference } from "./name-guess";
 
 /**
@@ -38,7 +38,7 @@ export function verifyIntroducedName(
     };
     const timer = setTimeout(() => finish(null), VERDICT_TIMEOUT_MS);
     try {
-      streamLocalQwen({
+      streamLocalModel({
         apiKey: "",
         model: "local",
         system:

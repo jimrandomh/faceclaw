@@ -32,7 +32,8 @@ walk you through pairing with the glasses and installing custom firmware.
 
 For the NativeScript iOS port, see [iOS development](notes/ios-development.md).
 Use `scripts/pull_config_ios.sh` and `scripts/push_config_ios.sh` to transfer iPhone
-settings; see [iOS config transfer](scripts/ios-config.md) for options and Android XML support.
+settings. Android and iOS share one JSON config format, so a config pulled from either
+platform can be pushed to the other; see [config transfer](scripts/config-transfer.md).
 The instructions below build the Android app.
 
 If you want to customize faceclaw, the best way to do it is to download the
@@ -54,7 +55,7 @@ port into your computer, authorize access on the phone, and run
 Note that if you have installed a signed release build, you will have to
 uninstall it before installing a customized version. Use scripts/pull_config.sh
 to export a copy of your configuration first, and scripts/push_config.sh to
-import it into the new version.
+import it into the new version (see [config transfer](scripts/config-transfer.md)).
 
 
 ## Features
@@ -64,8 +65,10 @@ import it into the new version.
  * **A voice assistant** that wakes up when you say "Hey Even", transcribes
    text with an on-device model, OpenAI Whisper, ElevenLabs, or Soniox API,
    and responds to queries and commands using an onboard model (Qwen3 4B,
-   slow) or with an Anthropic or OpenAI model (requires an API key), or using
-   your own long-running OpenClaw agent.
+   slow) or with an Anthropic, OpenAI, or OpenAI-compatible Chat Completions
+   model (including Venice and private Open WebUI servers; model ID and
+   usually an API key required), with optional Venice web search for supported
+   models, or using your own long-running OpenClaw agent.
  * **Multitasking**, with an app-switcher sidebar and app launcher.
  * **Glanceboard**, a dashboard with widgets that you can quickly view with a
  * **Mostly-compatible with EvenHub.** Install and runapps from the Even app
@@ -94,6 +97,51 @@ import it into the new version.
  * **On-phone screen mirroring**: Your phone screen shows the same contents as
    the glasses, and you can use the phone touchscreen as an input device..
 <!-- END GENERATED: features -->
+
+## OpenAI-compatible assistant providers (Venice / Open WebUI)
+
+The assistant can call an OpenAI-compatible **Chat Completions** endpoint directly
+from the phone. This uses the same conversation history and glasses tool loop as
+the built-in cloud providers; it does not require different glasses firmware.
+
+In **Settings > Assistant**:
+
+1. **Assistant model** — choose **OpenAI-compatible**. Auto never selects it.
+   The settings in steps 2–4 appear only while it is selected.
+2. **Compatible API URL** — the explicit API root.
+3. **Compatible API key** — optional; when set, it is sent only to the configured
+   compatible endpoint as a Bearer token, not to OpenAI's Whisper service.
+4. **Compatible model ID** — the exact model identifier accepted by the server.
+   Or choose **Discover models** and pick one from the server catalog. The
+   picker shows tool capability when advertised and hides offline models by
+   default. Refresh never changes the saved model by itself.
+
+Provider examples:
+
+| Provider | Compatible API URL | Notes |
+| --- | --- | --- |
+| Venice | `https://api.venice.ai/api/v1` | Use a current Venice model ID. Choose one with function-calling support if you want glasses tools. |
+| Open WebUI | `https://your-openwebui-host/api` | This produces `/api/chat/completions`. Use the model ID exposed by your server and an Open WebUI API key if required. |
+
+You may paste the full `/chat/completions` endpoint instead; Faceclaw removes
+that suffix. It otherwise preserves the path you enter and does not guess `/v1`
+or `/api`. Discovery requests `{API root}/models` only when you choose it; there
+is no background discovery or automatic model selection. Manual model entry
+remains available for servers without a compatible model-list endpoint.
+
+When **OpenAI-compatible** is the assistant model and its URL is the official
+Venice URL, **Settings > Assistant** also shows **Venice web search**. It is off
+by default and hidden otherwise. When enabled, supported Venice models may
+search the web for current information; the search model must support the
+feature. Open WebUI and other compatible servers never receive Venice-specific
+parameters, including after an endpoint switch.
+
+The same provider can supply Calculator's rewrite fallback and Translate.
+Actual tool calling depends on the selected model and server. Use HTTPS where
+possible; mobile cleartext policies may block plain HTTP. For a private server,
+make it reachable from the phone (for example through your tailnet) without
+exposing it publicly. Exported settings contain API keys and must be treated as
+secrets.
 
 ## Watch remote (Wear OS)
 

@@ -208,6 +208,9 @@ class BleProtocol {
         /** CFW's SysEvent for an R1 wire type it has no mapping for; diagnostics only. */
         const val EVENT_RING_UNKNOWN: Int = 127
 
+        /** Faceclaw/38: IMU head-down (the head returning after a lift), forwarded while a page is up. */
+        const val EVENT_HEAD_DOWN: Int = 15
+
         const val EVENT_SOURCE_GLASSES_R: Int = 1
 
         const val EVENT_SOURCE_RING: Int = 2

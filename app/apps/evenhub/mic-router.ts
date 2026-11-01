@@ -27,6 +27,7 @@ export type EvenHubMicClient = {
   deliverAudioPcm(pcm: Uint8Array): void;
 };
 
+/** Android's session for the raw tap; iOS binds its own to the bridge (setRawSession). */
 function activeCommunicator(): any {
   if (!global.isAndroid) return null;
   try {

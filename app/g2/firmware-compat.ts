@@ -26,7 +26,7 @@ export type FirmwareInfo = {
 };
 
 /** The Faceclaw firmware revision this build of the app needs. */
-export const REQUIRED_FACECLAW_FIRMWARE_VERSION = 37;
+export const REQUIRED_FACECLAW_FIRMWARE_VERSION = 38;
 
 const FACECLAW_PREFIX = "Faceclaw/";
 const LEGACY_PREFIX = "EVENCFW";
@@ -36,7 +36,7 @@ const LEGACY_PREFIX = "EVENCFW";
 // unrecognized (its layout may differ from what our patch set targets).
 export const BASE_STOCK_VERSION = [2, 3, 0, 24];
 export const BASE_STOCK_VERSION_TEXT = BASE_STOCK_VERSION.join(".");
-export const VALIDATED_STOCK_VERSION = [2, 3, 2, 14];
+export const VALIDATED_STOCK_VERSION = [2, 4, 0, 24];
 export const VALIDATED_STOCK_VERSION_TEXT = VALIDATED_STOCK_VERSION.join(".");
 
 export type FirmwareExtension =

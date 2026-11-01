@@ -3,6 +3,7 @@ package com.faceclaw.app
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
+import kotlin.test.assertNull
 import kotlin.test.assertSame
 import kotlin.test.assertTrue
 
@@ -66,6 +67,38 @@ class GraphicsCoresTest {
         assertTrue(!GrayPacket.hasLightBackground(ramp, 16, 16))
         // A mid-gray background is not light enough to be worth inverting.
         assertTrue(!GrayPacket.hasLightBackground(IntArray(8 * 8) { 0xff808080.toInt() }, 8, 8))
+    }
+
+    @Test
+    fun inkBoundsTrimTransparentMargins() {
+        val art = IntArray(8 * 6)
+        art[2 * 8 + 3] = 0xff000000.toInt()
+        art[4 * 8 + 5] = 0x80ffffff.toInt()
+        art[0] = 0x08ffffff // too faint to count
+        assertContentEquals(intArrayOf(3, 2, 6, 5), GrayPacket.inkBounds(art, 8, 6))
+        assertNull(GrayPacket.inkBounds(IntArray(4 * 4), 4, 4))
+    }
+
+    @Test
+    fun darkInkOnTransparentTurnsLight() {
+        val darkGray = 0xff202020.toInt()
+        val text = IntArray(10 * 10)
+        for (i in 40 until 50) text[i] = darkGray
+        text[55] = 0x80202020.toInt()
+        assertTrue(GrayPacket.lightenDarkInk(text, 10, 10))
+        assertEquals(0xffdfdfdf.toInt(), text[40])
+        assertEquals(0x80dfdfdf.toInt(), text[55]) // alpha kept
+        assertEquals(0, text[0] ushr 24) // still transparent
+        // Light ink, an empty layout, and a light opaque panel are left alone (the panel is
+        // invertLightBackground's to handle).
+        val light = IntArray(10 * 10)
+        light[40] = 0xffe0e0e0.toInt()
+        assertTrue(!GrayPacket.lightenDarkInk(light, 10, 10))
+        assertEquals(0xffe0e0e0.toInt(), light[40])
+        assertTrue(!GrayPacket.lightenDarkInk(IntArray(4), 2, 2))
+        val panel = IntArray(10 * 10) { 0xfff0f0f0.toInt() }
+        panel[5] = darkGray
+        assertTrue(!GrayPacket.lightenDarkInk(panel, 10, 10))
     }
 
     @Test

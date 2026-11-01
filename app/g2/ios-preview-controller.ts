@@ -4,7 +4,7 @@ import { acceptInput, resetRingInputFilter } from "../ui/input-monitor";
 import { bindIosNotifications, iosNotificationsChanged, onIosNotificationPopup, readActiveNotifications } from '../native/notification-icons.ios'
 import { shouldShowNotificationOnGlasses } from '../native/notification-sources'
 import { launcherEntries } from '../apps/launcher'
-import { getInstalledEvenHubAppById, installedEvenHubPackageId, uninstallEvenHubPackage } from '../apps/evenhub/installed-apps'
+import { discardZeroedEvenHubPackage, getInstalledEvenHubAppById, installedEvenHubPackageId, uninstallEvenHubPackage } from '../apps/evenhub/installed-apps'
 import { isInstalledPackagePresent } from '../apps/evenhub/updates'
 import { openEvenHubStoreForPackage } from '../apps/evenhub'
 import { launchInstalledPackage, closeRunningPackage, onPhoneShownChanged, phoneUiButton, showOnPhone, type PhoneUiButton } from '../apps/evenhub/manager'
@@ -14,6 +14,7 @@ import { registerNavigateTools } from '../assistant/navigate-tools'
 import { registerRoamTools } from '../assistant/roam-tools'
 import { IosNavigationSensors } from '../native/ios-navigation-sensors'
 import { bindCompassSession, receiveCompassEvent } from '../native/compass.ios'
+import { bindBandwidthBenchmarkSession } from '../native/bandwidth-benchmark.ios'
 import { Dialogs, File, knownFolders, path, Utils, type ImageSource } from '@nativescript/core'
 import { iosVoiceInput } from '../native/ios-voice-input'
 import { voiceActivity } from '../ui/shell/voice-activity'
@@ -31,6 +32,7 @@ import { firmwareIncompatibilityMessage, hasCompatibleFirmware } from './firmwar
 import { isHaltedSessionPhase, suppressAutoReconnect } from './reconnect-policy'
 import { deviceAddressError } from './ios-peripheral-identity'
 import { createLauncherWindow, LAUNCHER_SURFACE_ID } from '../apps/launcher/launcher-app'
+import { createNotificationsAppWindow, NOTIFICATIONS_SURFACE_ID, NOTIFICATIONS_WINDOW_ID } from '../apps/notifications/notifications-app'
 import { ALL_APPS } from '../apps/all-apps'
 import type { AppContext, AppDefinition, AppLaunchParams } from '../apps/app-definition'
 import { WorkerAppHost } from '../ui/shell/worker-window'
@@ -65,7 +67,7 @@ const FRAME_TRANSMIT_BACKPRESSURE_TIMEOUT_MS = 2000
 
 export type SessionPhase = 'disconnected' | 'connecting' | 'connected' | 'retrying' | 'disconnecting' | 'error'
 export type SessionState = { phase: SessionPhase; status: string; battery: number | null; charging: boolean | null;
-  ring: boolean; frames: number; capabilities: string; leftVersion: string; rightVersion: string;
+  ring: boolean; ringBattery: number | null; ringCharging: boolean | null; frames: number; capabilities: string; leftVersion: string; rightVersion: string;
   /** Why the connected firmware can't run Faceclaw (firmware-compat.ts), or '' when it can or is unknown. */
   firmwareWarning: string }
 
@@ -84,7 +86,7 @@ export class IosPreviewController {
   private communicator: FaceclawCommunicatorBridge | null = null
   private readonly startedCommunicators = new WeakSet<FaceclawCommunicatorBridge>()
   state: SessionState = { phase: 'disconnected', status: 'Preview only', battery: null, charging: null, ring: false,
-    frames: 0, capabilities: '', leftVersion: '', rightVersion: '', firmwareWarning: '' }
+    ringBattery: null, ringCharging: null, frames: 0, capabilities: '', leftVersion: '', rightVersion: '', firmwareWarning: '' }
   private notifications: AncsClient | null = null
   private readonly sessionOffs: (() => void)[] = []
   private stopping: Promise<void> | null = null
@@ -131,6 +133,8 @@ export class IosPreviewController {
   private clockMinute = -1
   private shellRenderInProgress = false
   private shellRenderQueued = false
+  /** The shell woke; the next shell render unblanks the compositor after submitting. */
+  private unblankAfterShellRender = false
   private nextFrameId = 1
   private nextWorkerFrame = 0
   private inputQueue: Promise<void> = Promise.resolve()
@@ -149,11 +153,12 @@ export class IosPreviewController {
   private logLines: string[] = []
   private logTimer: ReturnType<typeof setTimeout> | null = null
   // Windows that want continuous capture, and what each needs of it (a
-  // recording, a multilingual provider). They share one capture, which runs
+  // recording, a provider and language). They share one capture, which runs
   // while any of them wants it.
   private readonly continuousClients = new Map<string, ContinuousCaptureOptions>()
-  // transcriptionKey of the running continuous capture's provider; one that no
-  // longer matches what its windows need is drained and restarted.
+  // transcriptionKey of the running continuous capture (provider and
+  // language); one that no longer matches what its windows need is drained
+  // and restarted.
   private continuousTranscription = ''
   // Continuous capture should (re)start once audio is available: a window
   // asked, the glasses connected or disconnected, or the glasses lock or the
@@ -198,11 +203,16 @@ export class IosPreviewController {
         send: () => { if (this.active && !this.glassesLocked) session.send() },
         sendTo: id => { if (this.active && !this.glassesLocked) session.sendTo(id) },
         discard: () => session.discard(),
+        get visibility() { return session.visibility },
+        setVisibility: visibility => { if (this.active && !this.glassesLocked) session.setVisibility(visibility) },
+        get history() { return session.history },
       } : null),
       prepareVoiceCapture: () => this.prepareVoiceCapture(),
       getScreenTimeoutMs: () => null,
       requestShellRender: () => this.requestShellRender(),
       onWindowsChanged: () => { this.requestShellRender(); this.syncEvenHubPhoneUi() },
+      openNotificationsWindow: () =>
+        this.openInProcessAppInBackground(NOTIFICATIONS_WINDOW_ID, NOTIFICATIONS_SURFACE_ID, createNotificationsAppWindow),
       onSwitcherBarHeightChanged: () => {
         this.relayout()
         shell.foregroundWindow()?.requestRender()
@@ -210,7 +220,12 @@ export class IosPreviewController {
       },
       onScreenStateChanged: on => {
         if (on) this.glance.dismiss()
-        void this.display?.setScreenBlanked(!on).catch(error => this.fail(error))
+        // A wake unblanks only once the next shell render has staged an awake
+        // scene: unblanking composites the retained one, painted while asleep
+        // with no chrome and depth 0, and that first frame is the one the
+        // brightness fade-in starts on.
+        this.unblankAfterShellRender = on
+        if (!on) void this.display?.setScreenBlanked(true).catch(error => this.fail(error))
         this.requestShellRender()
       },
     })
@@ -442,6 +457,7 @@ export class IosPreviewController {
       iosVoiceInput.handleSessionEnded('Glasses locked. Unlock your phone to start voice input again.',
         'Glasses locked. Transcription resumes when you unlock your phone.')
     } else this.syncContinuousCapture()
+    this.syncRawMicSession()
     void (async () => {
       await this.displayReady
       const display = this.display
@@ -519,10 +535,19 @@ export class IosPreviewController {
     await this.displayReady
     const display = this.display
     if (!display) return
-    const startedAt = Date.now()
-    const bytes = shell.paintScene()
+    // Taken with the paint, so a render that painted before the wake can't unblank.
+    const unblank = this.unblankAfterShellRender
+    this.unblankAfterShellRender = false
     const frameId = this.allocateFrameId()
-    await display.submitShellScene(bytes, Date.now() - startedAt, frameId)
+    try {
+      const startedAt = Date.now()
+      const bytes = shell.paintScene()
+      await display.submitShellScene(bytes, Date.now() - startedAt, frameId)
+    } finally {
+      // Even if the render failed, so the screen doesn't stay dark; not if it
+      // went back to sleep meanwhile (that sleep re-blanked).
+      if (unblank && shell.isScreenOn()) await display.setScreenBlanked(false)
+    }
     // Backpressure: the next shell render waits for this one to reach the
     // glasses (the preview target resolves immediately; nothing transmits).
     await display.waitForFrameFinished(frameId, FRAME_TRANSMIT_BACKPRESSURE_TIMEOUT_MS)
@@ -601,6 +626,7 @@ export class IosPreviewController {
     const { nx, ny } = mirrorToPanelFraction(this.previewCrop, mirrorNx, mirrorNy)
     const x = Math.max(0, Math.min(639, Math.floor(nx * 640)))
     const y = Math.max(0, Math.min(479, Math.floor(ny * 480)))
+    if (!shell.hasOverlay() && shell.focusStatusItemAt(x, y)) { this.requestShellRender(); return }
     const window = shell.foregroundWindow()
     if (!shell.hasOverlay() && sidebarStripVisible(shell.getFocus(), window?.appId)
       && isOnSwitcherEdge(x, y, window?.heightMode ?? 'min', window?.appId)) {
@@ -624,9 +650,15 @@ export class IosPreviewController {
       const host = ALL_APPS.find(candidate => candidate.appId === 'evenhub')
       if (installed && host) {
         try {
-          if (isInstalledPackagePresent(installed.packageId))
-            await launchInstalledPackage(this.buildAppContext({ ...host, appId: id }), installed)
-          else await openEvenHubStoreForPackage(this.buildAppContext(host), installed)
+          if (isInstalledPackagePresent(installed.packageId)) {
+            try { await launchInstalledPackage(this.buildAppContext({ ...host, appId: id }), installed); return }
+            catch (error) {
+              // Checked only after a failure: it reads the whole package again.
+              if (!discardZeroedEvenHubPackage(installed.packageId)) throw error
+              console.log(`[ios-preview] Discarded zeroed package for ${installed.packageId}; opening store page`)
+            }
+          }
+          await openEvenHubStoreForPackage(this.buildAppContext(host), installed)
         }
         catch (error) { this.fail(error) }
       }
@@ -656,6 +688,7 @@ export class IosPreviewController {
       appId: app.appId, apps: ALL_APPS, actions: this.actions,
       launchApp: (id, params) => this.launchApp(id, params), uninstallApp: id => this.uninstallApp(id),
       launchInProcessApp: (id, surface, create) => this.launchInProcessApp(id, surface, create),
+      openInProcessAppInBackground: (id, surface, create) => this.openInProcessAppInBackground(id, surface, create),
       ensureWorkerHost: create => this.ensureWorkerHost(app.appId, create),
       submitWindowFrame: (id, planes) => this.submit(id, planes),
       setWindowSurfaceVisible: (id, visible) => this.setWindowSurfaceVisible(id, visible),
@@ -667,14 +700,44 @@ export class IosPreviewController {
     create: (options: InProcessAppOptions) => InProcessWindow): Promise<void> {
     const existing = this.inProcessApps.get(windowId)
     if (existing) { shell.focusWindow(windowId); existing.requestRender(); this.requestShellRender(); return }
-    // Apps can request a render while their factory runs (Nightscout's tray
-    // subscription does). The surface only exists once the factory returns.
-    // The explicit render below supplies a fresh frame after configuration.
-    let surfaceReady = false
+    const { app, surface } = this.createInProcessApp(windowId, surfaceId, create)
+    await this.configureWindow(app.window)
+    surface.ready = true
+    shell.registerWindow(app.window); shell.focusWindow(windowId)
+    app.requestRender(); this.requestShellRender()
+  }
+  /**
+   * An in-process singleton app's window, opened in the background (neither
+   * foregrounded nor focused) unless it is open already, for the shell to
+   * bring forward itself: the Notifications window under a notification
+   * selected in the switcher, or an app widget's window under the widget.
+   * Display calls run in order and frames wait on displayReady before
+   * queueing, so the surface configure queued here lands ahead of any frame
+   * and of the shell foregrounding the window, which it may do at once.
+   */
+  private openInProcessAppInBackground(windowId: string, surfaceId: string,
+    create: (options: InProcessAppOptions) => InProcessWindow): { window: InProcessWindow; opened: boolean } {
+    const existing = this.inProcessApps.get(windowId)
+    if (existing) return { window: existing, opened: false }
+    const { app, surface } = this.createInProcessApp(windowId, surfaceId, create)
+    void this.configureWindow(app.window).catch(error => this.fail(error))
+    surface.ready = true
+    shell.registerWindow(app.window)
+    return { window: app, opened: true }
+  }
+  /**
+   * Create an in-process singleton app's window (not yet registered with the
+   * shell). Its frames reach the compositor only while `surface.ready`: apps
+   * can request a render while their factory runs (Nightscout's tray
+   * subscription does), before the caller has configured the surface.
+   */
+  private createInProcessApp(windowId: string, surfaceId: string,
+    create: (options: InProcessAppOptions) => InProcessWindow): { app: InProcessWindow; surface: { ready: boolean } } {
+    const surface = { ready: false }
     const app = create({
-      actions: this.actions, submitFrame: planes => surfaceReady ? this.submit(surfaceId, planes, () => surfaceReady) : Promise.resolve(),
+      actions: this.actions, submitFrame: planes => surface.ready ? this.submit(surfaceId, planes, () => surface.ready) : Promise.resolve(),
       setSurfaceVisible: visible => this.setWindowSurfaceVisible(surfaceId, visible),
-      removeSurface: () => { surfaceReady = false; this.removeWindowSurface(surfaceId) },
+      removeSurface: () => { surface.ready = false; this.removeWindowSurface(surfaceId) },
       reconfigureSurface: () => {
         const window = shell.getWindows().find(w => w.windowId === windowId)
         if (window) void this.configureWindow(window).catch(error => this.fail(error))
@@ -683,10 +746,7 @@ export class IosPreviewController {
       onClosed: () => { this.inProcessApps.delete(windowId) },
     })
     this.inProcessApps.set(windowId, app)
-    await this.configureWindow(app.window)
-    surfaceReady = true
-    shell.registerWindow(app.window); shell.focusWindow(windowId)
-    app.requestRender(); this.requestShellRender()
+    return { app, surface }
   }
   private ensureWorkerHost(appId: string, create: () => Worker): WorkerAppHost {
     const existing = this.appHosts.get(appId)
@@ -738,13 +798,21 @@ export class IosPreviewController {
     this.pushBrightness()
     this.maybeLaunchOnboarding(this.state)
     if (this.state.phase !== 'connected' && this.state.phase !== 'connecting') this.glassesWorn = null
+    // Unbound first, so a speech capture ending below doesn't hand the mic back to the dead session.
+    this.syncRawMicSession()
     if (this.state.phase !== 'connected') iosVoiceInput.handleSessionEnded()
     this.syncContinuousSession()
-    shell.setBatteryLevels({ headset: this.state.battery, headsetCharging: this.state.charging })
+    this.pushBatteryLevels()
     this.syncPresence()
     this.syncRuntime()
     if (this.active) this.onConnectionState({ ...this.state })
     this.requestShellRender()
+  }
+  /** The ring level arrives through the glasses, so like Android it is shown only while connected. */
+  private pushBatteryLevels(): void {
+    const connected = this.state.phase === 'connected'
+    shell.setBatteryLevels({ headset: this.state.battery, headsetCharging: this.state.charging,
+      ring: connected ? this.state.ringBattery : null, ringCharging: connected ? this.state.ringCharging : null })
   }
   async connect(): Promise<void> {
     if (!this.active || this.connecting || this.stopping) return
@@ -754,7 +822,8 @@ export class IosPreviewController {
     this.connecting = true
     this.sessionCreated = true
     try {
-      this.state = { ...this.state, capabilities: '', leftVersion: '', rightVersion: '', firmwareWarning: '', battery: null, charging: null, ring: false }
+      this.state = { ...this.state, capabilities: '', leftVersion: '', rightVersion: '', firmwareWarning: '', battery: null, charging: null, ring: false,
+        ringBattery: null, ringCharging: null }
       this.firmwareCompatible = false
       this.update('connecting', 'Finding configured devices…')
       let identifiers
@@ -796,16 +865,21 @@ export class IosPreviewController {
     this.notifications = notifications
     bindIosNotifications(notifications)
     bindCompassSession(communicator)
+    bindBandwidthBenchmarkSession(communicator)
     communicator.setRequiresAncs(true)
     this.sessionOffs.push(
       communicator.onStateChange(state => this.handleSessionState(communicator, state)),
       communicator.onRingEvent(input => this.handleRingEvent(input)),
       communicator.onBatteryState(state => {
         if (this.communicator !== communicator) return
+        // Unlike the headset level, an unavailable ring reading (-1: ring away or old
+        // firmware) clears the indicator, as on Android.
+        const ringBattery = state.ringBattery ?? -1, hasRingBattery = Number.isInteger(ringBattery) && ringBattery >= 0 && ringBattery <= 100
         this.state = { ...this.state, battery: state.battery >= 0 && state.battery <= 100 ? state.battery : this.state.battery,
           charging: state.chargingStatus >= 0 ? state.chargingStatus > 0 : this.state.charging,
-          ring: (state.ringBattery ?? -1) >= 0 || this.state.ring }
-        shell.setBatteryLevels({ headset: this.state.battery, headsetCharging: this.state.charging })
+          ring: hasRingBattery || this.state.ring,
+          ringBattery: hasRingBattery ? ringBattery : null, ringCharging: hasRingBattery ? state.ringChargingStatus === 1 : null }
+        this.pushBatteryLevels()
         if (this.active) this.onConnectionState({ ...this.state })
         this.requestShellRender()
       }),
@@ -934,6 +1008,9 @@ export class IosPreviewController {
     for (const off of this.sessionOffs.splice(0)) off()
     this.notifications = null
     this.communicator = null
+    bindBandwidthBenchmarkSession(null)
+    // Releases an EvenHub app's mic before the session closes.
+    this.syncRawMicSession()
     this.glance.reset()
     await communicator.close().catch(error => this.logBluetooth(`Close: ${String(error)}`))
   }
@@ -977,7 +1054,7 @@ export class IosPreviewController {
     this.continuousClients.set(client, options)
     if (!iosVoiceInput.supportsContinuous(this.voiceProvider())) {
       this.continuousClients.delete(client)
-      this.onError('Transcribe on iOS needs a cloud or Whisper server transcription provider (Settings > Voice > Transcription Provider).')
+      this.onError('On-device transcription for Transcribe needs iOS 26 or later; before that, choose a cloud or Whisper server transcription provider (Settings > Voice > Transcription Provider).')
       return
     }
     this.syncContinuousRecording()
@@ -1047,6 +1124,15 @@ export class IosPreviewController {
     }
     if (current()) this.syncContinuousClaim()
   }
+  /**
+   * EvenHub apps' mic (the bridge's raw tap) listens through a connected,
+   * unlocked glasses session, as speech capture does; the EvenHub mic router
+   * decides which app hears it and when.
+   */
+  private syncRawMicSession(): void {
+    const ready = this.state.phase === 'connected' && !this.glassesLocked
+    iosVoiceInput.setRawSession(ready ? this.communicator : null, message => this.logBluetooth(message))
+  }
   /** Other mic users stand down while continuous capture really holds the mic, not merely while a window wants it. */
   private syncContinuousClaim(): void {
     voiceActivity.setActive(this.continuousClients.size > 0 && iosVoiceInput.continuousActive, CONTINUOUS_CAPTURE_HOLDER)
@@ -1058,15 +1144,17 @@ export class IosPreviewController {
   }
   /**
    * The transcription provider setting and the keys the cloud ones need. A
-   * window that needs a multilingual provider (Translate) sets it for every
-   * capture while it is open, with Whisper left to detect the language.
+   * window that needs its own provider and language (Translate) sets them for
+   * every capture while it is open; otherwise only Whisper server is told a
+   * language (its own setting).
    */
   private voiceProvider(): VoiceProviderSelection {
-    const multilingual = [...this.continuousClients.values()].find(options => options.multilingualProvider)?.multilingualProvider
-    return { provider: multilingual ?? voiceProviderSetting.get(), elevenLabsApiKey: elevenLabsApiKeySetting.get(),
-      openAiApiKey: openAiApiKeySetting.get(), sonioxApiKey: sonioxApiKeySetting.get(),
+    const choice = [...this.continuousClients.values()].find(options => options.transcription)?.transcription
+    const provider = choice?.provider ?? voiceProviderSetting.get()
+    return { provider, language: choice ? choice.language : provider === 'whisper-server' ? whisperServerLanguageSetting.get() : '',
+      elevenLabsApiKey: elevenLabsApiKeySetting.get(), openAiApiKey: openAiApiKeySetting.get(), sonioxApiKey: sonioxApiKeySetting.get(),
       whisperServerUrl: whisperServerUrlSetting.get(), whisperServerModel: whisperServerModelSetting.get(),
-      whisperServerLanguage: multilingual ? '' : whisperServerLanguageSetting.get(), whisperServerApiKey: whisperServerApiKeySetting.get() }
+      whisperServerApiKey: whisperServerApiKeySetting.get() }
   }
   private logBluetooth(message: string): void {
     const line = `${new Date().toISOString()} [${this.active ? 'foreground' : 'background'}${UIApplication.sharedApplication.protectedDataAvailable ? '' : ',protected-data-unavailable'}] ${message}`

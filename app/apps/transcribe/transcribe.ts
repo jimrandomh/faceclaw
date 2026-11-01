@@ -1,6 +1,7 @@
 import { GrayImage } from "../../graphics/image";
 import { getDefaultSmallFont } from "../../graphics/ui-fonts";
 import { lineStep } from "../../ui/metrics";
+import { MicLevelMeter, paintListeningHeader } from "../../ui/listening-header";
 import { writeTextToDownloads } from "../../native/file-access";
 import { voiceControlBridge } from "../../native/voice-control";
 import { Layer, type LayerContext } from "../../ui/layers";
@@ -18,6 +19,7 @@ export class TranscribeLayer implements Layer {
   private detail = "";
   private readonly transcript = new TranscriptModel();
   private readonly scroll = new TranscriptScroll();
+  private readonly meter = new MicLevelMeter();
   private saveNotice = "";
   private unsubscribeTranscript: (() => void) | null = null;
   private unsubscribePause: (() => void) | null = null;
@@ -26,7 +28,9 @@ export class TranscribeLayer implements Layer {
   /** `stamp` names the saved transcript, matching the session's audio recording. */
   constructor(private readonly stamp: string = transcriptTimestamp()) {}
 
-  start(requestRender: () => void): void {
+  /** `isVisible` says whether the window is on screen (the level meter repaints only then). */
+  start(requestRender: () => void, isVisible: () => boolean): void {
+    this.meter.start(requestRender, isVisible);
     this.unsubscribeTranscript = voiceControlBridge.onTranscript((event) => {
       this.transcript.accept(event);
       requestRender();
@@ -48,11 +52,8 @@ export class TranscribeLayer implements Layer {
     const text = this.transcript.text || (this.listening ? "Listening..." : this.detail);
     const wrapped = wrapTranscribeText((line) => font.measureText(line), text, width - 64);
 
-    image.drawText(font, 24, 20, "Transcribe", 200);
-    image.drawText(font, 24, 40, this.saveNotice || this.status, 110);
-
+    const bodyTop = paintListeningHeader(image, font, "Transcribe", this.saveNotice || this.status, this.listening ? this.meter : null);
     const step = lineStep(font) + 2;
-    const bodyTop = 62;
     const bodyLines = Math.max(1, Math.floor((height - 6 - bodyTop - font.lineHeight) / step) + 1);
     const firstLine = this.scroll.layout(wrapped.length, bodyLines);
     for (let index = firstLine; index < Math.min(wrapped.length, firstLine + bodyLines); index++) {
@@ -82,6 +83,7 @@ export class TranscribeLayer implements Layer {
   }
 
   onRemoved(): void {
+    this.meter.stop();
     this.unsubscribePause?.();
     this.unsubscribePause = null;
     this.unsubscribeTranscript?.();

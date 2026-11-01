@@ -4,11 +4,15 @@
  * TranslationModel for how stretches are batched and given context.
  */
 import { streamAnthropicMessage } from "../../native/anthropic";
-import { streamLocalQwen } from "../../native/llama";
+import { streamLocalModel } from "../../native/local-llm";
 import { streamOpenAiResponse } from "../../native/openai";
+import { streamOpenAiCompatibleChat } from "../../native/openai-chat";
 import { resolveAssistantModel, type ResolvedAssistantModel } from "../../assistant/models";
 import { type LlmStreamHandle, type LlmStreamOptions } from "../../assistant/llm-protocol";
-import { anthropicApiKeySetting, assistantModelSetting, openAiApiKeySetting } from "../../ui/dashboard-settings";
+import {
+  anthropicApiKeySetting, assistantModelSetting, assistantOpenAiCompatibleKeySetting,
+  assistantOpenAiCompatibleModelSetting, assistantOpenAiCompatibleUrlSetting, openAiApiKeySetting,
+} from "../../ui/dashboard-settings";
 import { TRANSLATE_SYSTEM_PROMPT, buildTranslateUserMessage } from "../../prompts";
 import { type TranslationTurn } from "./translation-model";
 
@@ -23,12 +27,17 @@ export function resolveTranslationModel(): ResolvedAssistantModel | null {
   return resolveAssistantModel(selection === "hermes" ? "auto" : selection, {
     anthropic: anthropicApiKeySetting.get(),
     openai: openAiApiKeySetting.get(),
+    openAiCompatibleUrl: assistantOpenAiCompatibleUrlSetting.get(),
+    openAiCompatibleKey: assistantOpenAiCompatibleKeySetting.get(),
+    openAiCompatibleModel: assistantOpenAiCompatibleModelSetting.get(),
   });
 }
 
 export type TranslationRequest = {
   speech: string;
   context: TranslationTurn[];
+  /** English name of the spoken language when the user set one, else "". */
+  language: string;
   onProgress: (textSoFar: string) => void;
   onDone: (translation: string) => void;
   onError: (message: string) => void;
@@ -41,7 +50,7 @@ export function streamTranslation(model: ResolvedAssistantModel, request: Transl
     system: TRANSLATE_SYSTEM_PROMPT,
     effort: model.effort,
     maxTokens: 1024,
-    messages: [{ role: "user", content: buildTranslateUserMessage(request.speech, request.context) }],
+    messages: [{ role: "user", content: buildTranslateUserMessage(request.speech, request.context, request.language) }],
     onTextDelta: (_delta, textSoFar) => request.onProgress(cleanTranslation(textSoFar)),
     onDone: (result) => {
       if (result.stopReason === "refusal") request.onError("The model declined to translate this.");
@@ -52,8 +61,10 @@ export function streamTranslation(model: ResolvedAssistantModel, request: Transl
   switch (model.provider) {
     case "openai":
       return streamOpenAiResponse(options);
+    case "openai-compatible":
+      return streamOpenAiCompatibleChat({ ...options, baseUrl: model.baseUrl ?? "" });
     case "local":
-      return streamLocalQwen(options);
+      return streamLocalModel(options);
     default:
       return streamAnthropicMessage(options);
   }

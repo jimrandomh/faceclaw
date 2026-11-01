@@ -14,13 +14,15 @@ export type ContinuousCaptureOptions = {
   /** Names a WAV of the captured audio in Downloads (iOS, when Save Transcribe audio is on). */
   recordAs?: string;
   /**
-   * Transcribe with this provider instead of the Transcription Provider
-   * setting, letting it detect the spoken language (Translate). While any
-   * client asks for one, every capture uses it, and a shared capture running
-   * another provider restarts on it.
+   * Transcribe with this provider, expecting this spoken language (ISO 639-1,
+   * or "" for the provider to detect it), instead of the Transcription
+   * Provider setting (Translate). While any client asks for one, every
+   * capture uses it, and a shared capture running another restarts on it.
    */
-  multilingualProvider?: VoiceProvider;
+  transcription?: TranscriptionChoice;
 };
+
+export type TranscriptionChoice = { provider: VoiceProvider; language: string };
 
 export type LayerActions = {
   /** Ask for a dashboard repaint+transmit, e.g. when async data arrives. */
@@ -100,6 +102,15 @@ export interface Layer {
   readonly depth?: number;
   paintParts?(): Plane[];
   readonly paintOverBase?: boolean;
+  /**
+   * True when this layer stands in for `below`, a stacked layer directly
+   * beneath it (or beneath another layer it stands in for): when this layer
+   * calls paintBelow, the stack skips `below` and paints what is under it
+   * instead. A submenu replacing the menu it opened from uses this, so the
+   * hidden menu costs no plane and its dimUnderneath doesn't dim the content
+   * a second time; popping the submenu still returns to it.
+   */
+  replacesLayerBelow?(below: Layer): boolean;
   /**
    * Dim everything painted beneath this layer: a 0..1 brightness factor
    * applied to the pixels and glyphs of every plane below it in the stack
@@ -324,7 +335,9 @@ export class LayerStack {
       return [ownPlane];
     }
     const dim = layer.dimUnderneath || 1;
-    const below = this.paintLayer(layer.paintOverBase ? 0 : index - 1, dimSoFar * dim, raw);
+    let belowIndex = layer.paintOverBase ? 0 : index - 1;
+    while (belowIndex > 0 && layer.replacesLayerBelow?.(this.layers[belowIndex]!)) belowIndex--;
+    const below = this.paintLayer(belowIndex, dimSoFar * dim, raw);
     return [...(!raw && dim < 1 ? dimPlanes(below, dim) : below), ownPlane];
   }
 }

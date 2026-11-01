@@ -25,6 +25,7 @@ import { EVENHUB_RUNTIME_FONT_FILENAME, isEvenHubFontAsset } from "../g2/firmwar
 import { lvglMetrics, lvglGlyph } from "../native/lvgl-font";
 import { GrayImage, grayToNibble, type FwTextFont, type PlacedFwText, type PlacedFwTextGlyph } from "./image";
 import { TtfFont } from "./ttf-font";
+import { decodeBase64 } from "../util/base64";
 
 const CJK_ASSET_PATH = "fonts/source-han-sans/SourceHanSansSC-Light-20.lvgl.bin";
 
@@ -54,25 +55,6 @@ type CjkGlyph = {
   record: GlyphRecord;
   bitmap: Uint8Array;
 };
-
-const BASE64_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
-function base64Decode(text: string): Uint8Array {
-  const clean = text.replace(/[^A-Za-z0-9+/]/g, "");
-  const out = new Uint8Array(Math.floor((clean.length * 3) / 4));
-  let bits = 0;
-  let bitCount = 0;
-  let outIndex = 0;
-  for (let i = 0; i < clean.length; i++) {
-    bits = (bits << 6) | BASE64_ALPHABET.indexOf(clean[i]!);
-    bitCount += 6;
-    if (bitCount >= 8) {
-      bitCount -= 8;
-      out[outIndex++] = (bits >> bitCount) & 0xff;
-    }
-  }
-  return out.subarray(0, outIndex);
-}
 
 /**
  * Codepoint ranges whose glyphs the font asset merged from the flash CJK
@@ -144,7 +126,7 @@ export class EvenHubFont implements FwTextFont {
     this.useTtfFallback = useTtfFallback;
     this.lineHeight = asset.lineHeight;
     this.baseline = asset.baseline;
-    this.bitmap = base64Decode(asset.bitmapBase64);
+    this.bitmap = decodeBase64(asset.bitmapBase64);
     this.glyphs = new Map();
     for (const key of Object.keys(asset.glyphs)) {
       this.glyphs.set(Number(key), asset.glyphs[key]!);

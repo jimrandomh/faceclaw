@@ -71,6 +71,30 @@ test('iOS installed apps launch, recover missing packages, and close before unin
   assert.deepEqual(calls, [['launch', 'installed', 'test.app'], ['reinstall', 'test.app'], ['close', 'test.app'], ['uninstall', 'test.app']]);
 });
 
+test('iOS launch failures on a zeroed package fall back to the store page; other failures still report', async () => {
+  const calls = [], failures = [], app = { packageId: 'test.app', name: 'Test' };
+  let zeroed = true;
+  const modules = {
+    "../ui/input-monitor": load("app/ui/input-monitor.ts", {}),
+    '../apps/all-apps': { ALL_APPS: [{ appId: 'evenhub' }] },
+    '../apps/evenhub/installed-apps': { getInstalledEvenHubAppById: () => app,
+      discardZeroedEvenHubPackage: id => { calls.push(['discard', id]); return zeroed; } },
+    '../apps/evenhub/updates': { isInstalledPackagePresent: () => true },
+    '../apps/evenhub': { openEvenHubStoreForPackage: (_ctx, value) => calls.push(['reinstall', value.packageId]) },
+    '../apps/evenhub/manager': { launchInstalledPackage: async () => { calls.push(['launch']); throw new Error('Could not read the EHPK manifest.'); } },
+  };
+  const { IosPreviewController } = load('app/g2/ios-preview-controller.ts', { require: id => modules[id] ?? {} });
+  const host = Object.create(IosPreviewController.prototype);
+  host.buildAppContext = app => app; host.fail = error => failures.push(error.message); host.requestShellRender = () => {};
+  await host.launchApp('installed');
+  assert.deepEqual(calls, [['launch'], ['discard', 'test.app'], ['reinstall', 'test.app']]);
+  assert.deepEqual(failures, []);
+  calls.length = 0; zeroed = false;
+  await host.launchApp('installed');
+  assert.deepEqual(calls, [['launch'], ['discard', 'test.app']]);
+  assert.deepEqual(failures, ['Could not read the EHPK manifest.']);
+});
+
 test('iOS settings prompts honor password input and report cancellation', async () => {
   const prompts = [], writes = [];
   const { IosPreviewController } = load('app/g2/ios-preview-controller.ts', { require: id => id === '@nativescript/core' ? {
@@ -342,26 +366,27 @@ test('iOS preview voice uses the phone microphone, while connected capture stays
 test('iOS continuous capture is shared by windows and restarts after a disconnect, a lock or backgrounding', async () => {
   const calls = [], claims = [], providers = [];
   // Models the bridge's continuous state: listening on a source, or draining after a stop.
-  const bridge = { source: null, draining: false, recording: '',
+  const bridge = { source: null, draining: false, recording: '', rawSession: undefined,
     supportsContinuous: voice => voice.provider !== 'onboard',
     get continuousSource() { return this.source; },
     get continuousActive() { return !!this.source || this.draining; },
     prepare: async () => true,
     startGlassesCapture: async (_session, voice, _log, _endpointing, continuous) => {
-      calls.push(['glasses', continuous]); providers.push(`${voice.provider}:${voice.whisperServerLanguage}`); bridge.source = 'glasses'; },
+      calls.push(['glasses', continuous]); providers.push(`${voice.provider}:${voice.language}`); bridge.source = 'glasses'; },
     startPhoneCapture: async (_voice, _log, _endpointing, continuous) => { calls.push(['phone', continuous]); bridge.source = 'phone'; },
     drain() { if (this.source) { this.source = null; this.draining = true; } },
     stopContinuousCapture: async () => { calls.push(['stop']); bridge.drain(); },
     handleSessionEnded() { if (bridge.source === 'glasses') bridge.drain(); },
     stopPhoneCapture() { if (bridge.source === 'phone') bridge.drain(); },
-    recordTo: name => { bridge.recording = name; } };
+    recordTo: name => { bridge.recording = name; },
+    setRawSession: session => { bridge.rawSession = session; } };
   const settings = { ...voiceSettings, voiceProviderSetting: { get: () => 'whisper-server' },
     whisperServerUrlSetting: { get: () => 'http://whisper.local:8000' }, whisperServerLanguageSetting: { get: () => 'en' },
     saveTranscribeAudioSetting: { get: () => true } };
   const { IosPreviewController } = load('app/g2/ios-preview-controller.ts', {
     require: id => id === '../native/ios-voice-input' ? { iosVoiceInput: bridge } : id === '../ui/dashboard-settings' ? settings
       : id === '../ui/shell/voice-activity' ? { voiceActivity: { setActive: (active, holder) => claims.push([active, holder]) } }
-      : id === '../native/cloud-stt-provider' ? { transcriptionKey: voice => `${voice.provider}:${voice.whisperServerLanguage}` } : {},
+      : id === '../native/cloud-stt-provider' ? { transcriptionKey: voice => `${voice.provider}:${voice.language}` } : {},
   });
   const host = Object.create(IosPreviewController.prototype);
   Object.assign(host, { active: true, glassesLocked: false, communicator: {}, state: { phase: 'connected' }, sessionConnected: true,
@@ -381,14 +406,17 @@ test('iOS continuous capture is shared by windows and restarts after a disconnec
   host.stopContinuousVoiceCapture('calculator');
   assert.deepEqual(calls, [['glasses', true]], 'closing one window keeps the other listening');
 
-  // Translate needs a multilingual provider: the shared capture drains and
-  // restarts on it (Whisper left to detect the language), and moves back to
-  // the main provider once Translate closes.
-  calls.length = 0; host.startContinuousVoiceCapture('translate', { multilingualProvider: 'soniox' }); await settle();
+  // Translate needs its own provider and language: the shared capture drains
+  // and restarts on them, again when only the language changes, and moves
+  // back to the main provider (and Whisper's own language) once Translate closes.
+  calls.length = 0; host.startContinuousVoiceCapture('translate', { transcription: { provider: 'soniox', language: '' } }); await settle();
   assert.deepEqual(calls, [['stop']]);
   drained(); await settle();
   assert.deepEqual(calls, [['stop'], ['glasses', true]]);
   assert.deepEqual(providers.slice(-2), ['whisper-server:en', 'soniox:']);
+  calls.length = 0; host.startContinuousVoiceCapture('translate', { transcription: { provider: 'soniox', language: 'ja' } }); drained(); await settle();
+  assert.deepEqual(calls, [['stop'], ['glasses', true]]);
+  assert.equal(providers.at(-1), 'soniox:ja');
   calls.length = 0; host.stopContinuousVoiceCapture('translate'); drained(); await settle();
   assert.deepEqual(calls, [['stop'], ['glasses', true]]);
   assert.equal(providers.at(-1), 'whisper-server:en');
@@ -400,11 +428,13 @@ test('iOS continuous capture is shared by windows and restarts after a disconnec
   session('connected'); await settle();
   assert.deepEqual(calls, [['glasses', true]]);
 
-  // Locking drains; unlocking resumes.
+  // Locking drains; unlocking resumes. EvenHub apps' raw mic tap follows the lock too.
   calls.length = 0; host.setGlassesLocked(true); drained(); await settle();
   assert.deepEqual(calls, []);
+  assert.equal(bridge.rawSession, null, 'locking unbinds the raw mic session');
   host.setGlassesLocked(false); await settle();
   assert.deepEqual(calls, [['glasses', true]]);
+  assert.equal(bridge.rawSession, host.communicator, 'unlocking rebinds it to the connected session');
 
   // A failed capture is not retried in a loop, only on the next session.
   calls.length = 0; bridge.source = null; drained(); await settle();

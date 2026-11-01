@@ -297,3 +297,35 @@ test('EvenHub assistant tools skip malformed names and schemas with a warning in
   assert.match(warnings[4], /"union": parameters can't use oneOf, anyOf or allOf/);
   h.session.close();
 });
+
+test('iOS binary downloads copy out of the response NSData, which bufferFromData does not retain', async () => {
+  const native = new Uint8Array([0x45, 0x48, 0x50, 0x4b, 1, 2, 3]);
+  const { downloadBinary } = loader({}, {
+    '@nativescript/core': { Http: { request: async () => ({ statusCode: 200, headers: {}, content: { toArrayBuffer: () => native.buffer } }) } },
+    '../util/http': { withUserAgent: headers => headers ?? {} },
+  })('app/native/binary-http.ios.ts');
+  const { bytes } = await downloadBinary('https://cdn.example/app.ehpk', 1000);
+  native.fill(0); // The released NSData's pages are reused or zeroed.
+  assert.deepEqual(Array.from(bytes), [0x45, 0x48, 0x50, 0x4b, 1, 2, 3]);
+});
+
+test('zeroed installed packages are discarded with their registry entry kept; real packages are left alone', () => {
+  const files = new Map(), deleted = [];
+  const installed = loader({}, {
+    fzstd: require('fzstd'),
+    '../../native/file-access': { readBinaryFile: path => files.get(path) ?? null, readTextFile() {}, writeBinaryFile() {},
+      appFilesDirPath: () => '/app', deletePathRecursively: path => { deleted.push(path); files.delete(path); } },
+    '../../native/settings-store': { getStringSetting: (_key, fallback) => fallback, setStringSetting() {} },
+    '../../native/icon-image': {}, '../../graphics/icons': {}, '../../graphics/image': {},
+  })('app/apps/evenhub/installed-apps.ts');
+  const path = installed.installedEvenHubPackagePath('test.app');
+  files.set(path, pack({ 'app.json': '{"package_id":"test.app"}' }));
+  assert.equal(installed.discardZeroedEvenHubPackage('test.app'), false);
+  files.set(path, new Uint8Array([...new Uint8Array(1000), 1]));
+  assert.equal(installed.discardZeroedEvenHubPackage('test.app'), false);
+  assert.equal(installed.discardZeroedEvenHubPackage('missing.app'), false);
+  assert.deepEqual(deleted, []);
+  files.set(path, new Uint8Array(4096));
+  assert.equal(installed.discardZeroedEvenHubPackage('test.app'), true);
+  assert.deepEqual(deleted, [path], 'only the EHPK goes; the icon and registry entry stay for Reinstall');
+});

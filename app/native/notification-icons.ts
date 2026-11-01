@@ -3,11 +3,12 @@ import { logCurrent, spanCurrent } from "./frame-timings";
 import { toUint8Array } from "../util/array-util";
 import { rememberNotificationSources } from "./notification-sources";
 import { PHOTO_TONE, grayImageFromPacket } from "./image-files";
+import { NOTIFICATION_ICON_SIZE } from "./notification-types";
 
 declare const com: any;
 declare const java: any;
 
-const ICON_SIZE = 24;
+const ICON_SIZE = NOTIFICATION_ICON_SIZE;
 /** Ask the native listener for every active source, including those below the list's display limit. */
 export const ALL_NOTIFICATIONS = 0x7fffffff;
 // Backstop TTL only: the icon caches are invalidated eagerly whenever a
@@ -23,11 +24,6 @@ let cachedKeys: string[] = [];
 let cachedAtMs = 0;
 const keyedIconCache = new Map<string, { icon: GrayImage | null; atMs: number }>();
 const KEYED_ICON_CACHE_MAX = 128;
-/** Pictures are the size of a detail view, not 24px icons: keep just the recently viewed few. */
-const pictureCache = new Map<string, {
-  postTime: number; maxWidth: number; maxHeight: number; picture: GrayImage | null; atMs: number;
-}>();
-const PICTURE_CACHE_MAX = 8;
 let notificationListenerProxy: any = null;
 const notificationPostedListeners = new Set<(notificationKey: string) => void>();
 const notificationRemovedListeners = new Set<(notificationKey: string) => void>();
@@ -159,48 +155,86 @@ export function readNotificationIconByKey(key: string, allowStale: boolean): Not
   return { icon: icon?.clone() ?? null, stale: false };
 }
 
-export type NotificationPictureResult = {
+export type NotificationImageResult = {
   /** Shared with the cache: blit it, don't draw on it. */
-  picture: GrayImage | null;
+  image: GrayImage | null;
   /** True when allowStale served an earlier fetch (or nothing) in place of a fetch for these arguments. */
   stale: boolean;
 };
 
 /**
+ * Images belonging to one notification (its picture, large icon or custom
+ * layout), fetched to fit a box, under the allow-stale contract of
+ * readNotificationIconByKey. Cached per post of the notification: an ongoing
+ * notification updated in place (Dexcom redraws its graph and reading every
+ * few minutes) fires no posted event, but its postTime moves. ICON_CACHE_MS
+ * is the backstop here too. Under allowStale an earlier fetch stands in, if
+ * it fits.
+ */
+class NotificationImageCache {
+  private readonly entries = new Map<string, {
+    postTime: number; maxWidth: number; maxHeight: number; image: GrayImage | null; atMs: number;
+  }>();
+
+  constructor(private readonly maxEntries: number, private readonly span: string) {}
+
+  read(
+    notification: AndroidNotification,
+    maxWidth: number,
+    maxHeight: number,
+    allowStale: boolean,
+    fetch: (width: number, height: number) => GrayImage | null,
+  ): NotificationImageResult {
+    const width = Math.round(maxWidth);
+    const height = Math.round(maxHeight);
+    if (!global.isAndroid || width <= 0 || height <= 0) return { image: null, stale: false };
+
+    const now = Date.now();
+    const cached = this.entries.get(notification.key);
+    if (
+      cached && cached.postTime === notification.postTime && cached.maxWidth === width
+      && cached.maxHeight === height && now - cached.atMs < ICON_CACHE_MS
+    ) {
+      return { image: cached.image, stale: false };
+    }
+    if (allowStale) {
+      const fits = cached?.image && cached.image.width <= width && cached.image.height <= height;
+      return { image: fits ? cached!.image : null, stale: true };
+    }
+
+    const image = spanCurrent(this.span, () => fetch(width, height));
+    this.entries.delete(notification.key);
+    this.entries.set(notification.key, { postTime: notification.postTime, maxWidth: width, maxHeight: height, image, atMs: now });
+    while (this.entries.size > this.maxEntries) {
+      const oldestKey = this.entries.keys().next().value;
+      if (oldestKey === undefined) break;
+      this.entries.delete(oldestKey);
+    }
+    return { image, stale: false };
+  }
+}
+
+/** Pictures and custom layouts are the size of a detail view, not icons: keep just the recently viewed few. */
+const pictureCache = new NotificationImageCache(8, "fetch-notification-picture");
+const customViewCache = new NotificationImageCache(8, "fetch-notification-custom-view");
+/** Large icons show on every list card drawn, so keep a screenful and then some. */
+const largeIconCache = new NotificationImageCache(32, "fetch-notification-large-icon");
+/** Avatars and logos: photographic tone, but undithered, which at icon size reads as noise. */
+const LARGE_ICON_TONE = { gamma: PHOTO_TONE.gamma, dither: false };
+
+/**
  * The picture attached to a notification (hasPicture), scaled to fit
  * maxWidth x maxHeight with the photo tone and inverted if it is drawn on a
- * light background (GrayPacket.hasLightBackground), under the allow-stale contract of
- * readNotificationIconByKey. Cached per post of the notification: an ongoing
- * notification updated in place (Dexcom redraws its graph every few minutes)
- * fires no posted event, but its postTime moves. ICON_CACHE_MS is the
- * backstop here too. Under allowStale an earlier fetch stands in, if it fits.
+ * light background (GrayPacket.hasLightBackground); see NotificationImageCache.
  */
 export function readNotificationPicture(
   notification: AndroidNotification,
   maxWidth: number,
   maxHeight: number,
   allowStale: boolean,
-): NotificationPictureResult {
-  const width = Math.round(maxWidth);
-  const height = Math.round(maxHeight);
-  if (!global.isAndroid || !notification.hasPicture || width <= 0 || height <= 0) {
-    return { picture: null, stale: false };
-  }
-
-  const now = Date.now();
-  const cached = pictureCache.get(notification.key);
-  if (
-    cached && cached.postTime === notification.postTime && cached.maxWidth === width
-    && cached.maxHeight === height && now - cached.atMs < ICON_CACHE_MS
-  ) {
-    return { picture: cached.picture, stale: false };
-  }
-  if (allowStale) {
-    const fits = cached?.picture && cached.picture.width <= width && cached.picture.height <= height;
-    return { picture: fits ? cached!.picture : null, stale: true };
-  }
-
-  const picture = spanCurrent("fetch-notification-picture", () =>
+): NotificationImageResult {
+  if (!notification.hasPicture) return { image: null, stale: false };
+  return pictureCache.read(notification, maxWidth, maxHeight, allowStale, (width, height) =>
     grayImageFromPacket(
       com.faceclaw.app.FaceclawMediaNotificationListenerService.getNotificationPictureGray(
         notification.key,
@@ -212,16 +246,56 @@ export function readNotificationPicture(
         // lit panel on the glasses: show it light-on-dark.
         true,
       ),
-    ),
-  );
-  pictureCache.delete(notification.key);
-  pictureCache.set(notification.key, { postTime: notification.postTime, maxWidth: width, maxHeight: height, picture, atMs: now });
-  while (pictureCache.size > PICTURE_CACHE_MAX) {
-    const oldestKey = pictureCache.keys().next().value;
-    if (oldestKey === undefined) break;
-    pictureCache.delete(oldestKey);
-  }
-  return { picture, stale: false };
+    ));
+}
+
+/**
+ * A notification's large icon (hasLargeIcon: a sender's avatar, a site's
+ * logo), scaled to fit size x size, a light background inverted as for
+ * pictures; see NotificationImageCache.
+ */
+export function readNotificationLargeIcon(
+  notification: AndroidNotification,
+  size: number,
+  allowStale: boolean,
+): NotificationImageResult {
+  if (!notification.hasLargeIcon) return { image: null, stale: false };
+  return largeIconCache.read(notification, size, size, allowStale, (width) =>
+    grayImageFromPacket(
+      com.faceclaw.app.FaceclawMediaNotificationListenerService.getNotificationLargeIconGray(
+        notification.key,
+        width,
+        LARGE_ICON_TONE.gamma,
+        LARGE_ICON_TONE.dither,
+      ),
+    ));
+}
+
+/**
+ * A notification's own layout (hasCustomView) drawn as the phone's shade
+ * draws it, at most a pixel per dp and trimmed to what it draws, so usually
+ * smaller than maxWidth x maxHeight; dark-on-light layouts come out
+ * light-on-dark. See NotificationCustomViews.renderGray and
+ * NotificationImageCache.
+ */
+export function readNotificationCustomView(
+  notification: AndroidNotification,
+  maxWidth: number,
+  maxHeight: number,
+  allowStale: boolean,
+): NotificationImageResult {
+  if (!notification.hasCustomView) return { image: null, stale: false };
+  return customViewCache.read(notification, maxWidth, maxHeight, allowStale, (width, height) =>
+    grayImageFromPacket(
+      // Flat UI tone: it is mostly text and icons.
+      com.faceclaw.app.FaceclawMediaNotificationListenerService.getNotificationCustomViewGray(
+        notification.key,
+        width,
+        height,
+        1,
+        false,
+      ),
+    ));
 }
 
 export function readActiveNotifications(maxNotifications = 50): AndroidNotification[] {
@@ -354,6 +428,9 @@ function normalizeNotification(value: any): AndroidNotification | null {
     actions,
     foregroundService: Boolean(value.foregroundService),
     hasPicture: Boolean(value.hasPicture),
+    hasLargeIcon: Boolean(value.hasLargeIcon),
+    hasCustomView: Boolean(value.hasCustomView),
+    customText: Array.isArray(value.customText) ? value.customText.map((text: unknown) => String(text)).filter(Boolean) : [],
   };
 }
 

@@ -36,6 +36,15 @@ interface SessionLink {
     /** Best effort; no completion point (see connectArm). */
     fun requestHighPriority(address: String)
 
+    /**
+     * Get the link onto the LE 2M PHY, re-asking in the background until it lands; returns
+     * without waiting. A no-op where the OS negotiates the PHY itself (CoreBluetooth).
+     */
+    fun requestLe2mPhy(address: String) {}
+
+    /** The link's current PHY for diagnostics ("2M", "1M", ...), or null when unknown. */
+    fun describePhy(address: String): String? = null
+
     fun requestMtu(address: String, mtu: Int, timeoutMs: Int): Boolean
 
     fun negotiatedMtu(address: String): Int

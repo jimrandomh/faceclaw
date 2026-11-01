@@ -33,6 +33,16 @@ export class WindowMenuLayer extends MenuLayer {
       ? { ...WINDOW_MENU_LAYOUT, footer: gestureHints([[GESTURE_SHORT_THEN_LONG_PRESS, "system menu"]]) }
       : WINDOW_MENU_LAYOUT);
   }
+
+  /**
+   * A window submenu (Settings, Spotify, ...) opens in place of the window
+   * menu it came from, which it would mostly cover anyway: the window content
+   * shows beneath it, dimmed once, rather than the parent menu dimming it a
+   * second time and costing a plane of its own.
+   */
+  replacesLayerBelow(below: Layer): boolean {
+    return below instanceof WindowMenuLayer;
+  }
 }
 
 export type WindowMenuOptions = {

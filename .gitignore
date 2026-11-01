@@ -44,9 +44,9 @@ __pycache__
 !.vscode/launch.json
 !.vscode/extensions.json
 
-# pull_config.sh output: the phone's live settings, including API keys
+# pull_config*.sh output: the phone's live settings, including API keys
 faceclaw_settings.xml
-faceclaw_settings.ios.json
+faceclaw_settings*.json
 
 # Developer configs
 build_paths.sh

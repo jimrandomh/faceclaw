@@ -56,6 +56,9 @@ Page.main-page {
   color: #222222;
   padding: 16;
 }
+/* The modal stays light in dark mode; outgun the theme's `.ns-dark .h2`
+ * (white) so the title doesn't go white-on-light-gray. */
+.main-page .system-name-modal .h2 { color: #222222; }
 .main-page .system-name-modal TextView {
   margin: 0;
   padding: 4;
@@ -67,3 +70,15 @@ Page.main-page {
 .main-landscape .system-name-modal { padding: 6 12; }
 .main-landscape .system-name-modal .h2 { visibility: collapse; }
 .main-landscape .system-name-modal Button { padding: 6 8; margin-top: 0; margin-bottom: 0; }
+
+/* Keyboard-input panel: the one-strip buttons and title-row icons (see app.css). */
+.main-page .system-name-modal.keyboard-input-panel { padding: 8 16 12 16; }
+.main-landscape .system-name-modal.keyboard-input-panel { padding: 6 12; }
+.main-page .keyboard-input-panel TextView { margin: 4 0 0 0; padding: 6; }
+.main-page .keyboard-input-panel TextView.keyboard-input-field-hidden { opacity: 0; height: 1; min-height: 0; margin: 0; padding: 0; }
+.main-page .keyboard-input-hidden-hint { color: #666666; padding: 8 0; }
+.main-page .keyboard-input-buttons { margin-top: 8; }
+.main-page .keyboard-input-panel Button { margin: 0; }
+.main-page .keyboard-input-panel Button.keyboard-input-gap { margin-left: 8; }
+.main-page .panel-icon-button { padding: 6 8; }
+.main-page .panel-icon { height: 20; tint-color: #333333; }

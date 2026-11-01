@@ -1,10 +1,11 @@
-import { GrayImage } from '../graphics/image'
-import { renderIcon, type IconName } from '../graphics/icons'
+import type { GrayImage } from '../graphics/image'
+import { pebbleIcon } from '../graphics/pebble-icons'
 import { AncsClient, ANCS_CONNECT_MESSAGE, type AncsState } from '../g2/ancs-client'
+import { notificationAppIcon, notificationCategoryIcon } from './notification-app-icons'
 import { rememberNotificationSources } from './notification-sources'
 import type { AndroidNotification } from './notification-types'
 export type { AndroidNotification, AndroidNotificationAction } from './notification-types'
-export type { NotificationIconsResult, NotificationIconResult, NotificationPictureResult } from './notification-icons'
+export type { NotificationIconsResult, NotificationIconResult, NotificationImageResult } from './notification-icons'
 
 export const ALL_NOTIFICATIONS = 0x7fffffff
 let active: AncsClient | null = null
@@ -32,36 +33,32 @@ export function onAndroidNotificationPosted(listener: (key: string) => void): ()
 // (they hear every change), and an open popup closes on the repaint that follows.
 export function onAndroidNotificationRemoved(_listener: (key: string) => void): () => void { return () => {} }
 export function onAndroidNotificationsChanged(listener: () => void): () => void { return onAndroidNotificationPosted(listener) }
-// ANCS does not provide app icons, so show one for the notification's ANCS
-// category; never fetch notification sources or content from a third-party
-// icon service. Indexed by CategoryID: Other, IncomingCall, MissedCall,
-// Voicemail, Social, Schedule, Email, News, HealthAndFitness,
-// BusinessAndFinance, Location, Entertainment.
-const CATEGORY_ICONS: readonly IconName[] = ['bell','phone-incoming','phone-missed','voicemail','message-circle',
-  'calendar','mail','newspaper','heart-pulse','briefcase','map-pin','tv']
-function categoryIcon(category: string): GrayImage {
-  return renderIcon(CATEGORY_ICONS[Number(category)] ?? 'bell',24)?.clone() ?? bell()
-}
-// Drawn fallback for when the SVG rasterizer fails.
-function bell(): GrayImage {
-  const image = new GrayImage(24,24,0)
-  image.fillRoundedRect(6,5,12,13,220,5)
-  image.fillRect(4,17,16,2,220)
-  image.fillRect(10,20,4,2,220)
-  return image
+// ANCS does not provide app icons, so show a bundled Pebble icon for the
+// source app (by bundle ID or display name), else for the notification's
+// ANCS category. Never fetch notification sources or content from a
+// third-party icon service.
+function notificationIcon(notification: AndroidNotification): GrayImage {
+  const name = notificationAppIcon(notification.packageName, notification.appName) ?? notificationCategoryIcon(notification.category)
+  return pebbleIcon(name).clone()
 }
 export function readActiveNotificationIcons(maxIcons: number, _allowStale: boolean) {
   // One icon per source, standing for its first notification.
   const sources = new Map<string, AndroidNotification>()
   for (const n of readActiveNotifications(ALL_NOTIFICATIONS)) if (!sources.has(n.packageName)) sources.set(n.packageName, n)
   const shown = Array.from(sources.values()).slice(0,Math.max(0,maxIcons))
-  return {icons: shown.map(n => categoryIcon(n.category)),keys: shown.map(n => n.key),stale:false}
+  return {icons: shown.map(notificationIcon),keys: shown.map(n => n.key),stale:false}
 }
 export function readNotificationIconByKey(key: string, _allowStale: boolean) {
   const notification = readActiveNotifications(ALL_NOTIFICATIONS).find(n => n.key === key)
-  return {icon: notification ? categoryIcon(notification.category) : null,stale:false}
+  return {icon: notification ? notificationIcon(notification) : null,stale:false}
 }
-// ANCS carries no attachments.
+// ANCS carries no attachments, avatars or custom layouts.
 export function readNotificationPicture(_notification: AndroidNotification, _maxWidth: number, _maxHeight: number, _allowStale: boolean) {
-  return {picture: null,stale:false}
+  return {image: null,stale:false}
+}
+export function readNotificationLargeIcon(_notification: AndroidNotification, _size: number, _allowStale: boolean) {
+  return {image: null,stale:false}
+}
+export function readNotificationCustomView(_notification: AndroidNotification, _maxWidth: number, _maxHeight: number, _allowStale: boolean) {
+  return {image: null,stale:false}
 }

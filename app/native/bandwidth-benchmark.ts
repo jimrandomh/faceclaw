@@ -22,6 +22,9 @@ export type BandwidthBenchmarkStatus = {
   payloadBytesAcked: number;
   wireBytesAcked: number;
   aborted: boolean;
+  /** Each arm's current PHY ("2M", "1M", ...); null when the platform doesn't report it. */
+  leftPhy?: string | null;
+  rightPhy?: string | null;
 };
 
 function activeCommunicator(): any {

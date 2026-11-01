@@ -7,7 +7,7 @@ function harness() {
   const native = { startWithEndpointing(endpointing) { this.endpointing = endpointing; return ''; }, startPhoneWithEndpointing(endpointing) { this.endpointing = endpointing; this.phone = true; return this.error ?? ''; },
     startPcmCaptureWithEndpointingPhone(endpointing, phone) { this.pcmCapture = { endpointing, phone }; return this.error ?? ''; },
     cancel() { this.cancels++; }, cancels: 0, finish() { this.finished = true; }, acceptPacket: p => audio.push(p) };
-  const audio = [], timers = new Map(), commands = [], text = [], clouds = [];
+  const audio = [], timers = new Map(), commands = [], text = [], clouds = [], analyzers = [];
   // Stands in for cloud-stt-provider: any provider but "onboard" is a keyed cloud one.
   const provider = {
     usesCloudStt: voice => voice.provider !== 'onboard',
@@ -17,6 +17,17 @@ function harness() {
         start() { this.started = true; }, acceptPcm(bytes) { this.pcm.push([...bytes]); },
         finish() { this.finished++; }, stop() { this.stopped = true; } };
       clouds.push(client); return client;
+    },
+  };
+  // Stands in for speech-analyzer-stt: SpeechAnalyzer (iOS 26+) when the test says the device has it.
+  let analyzerSupported = false;
+  const analyzer = {
+    speechAnalyzerSupported: () => analyzerSupported,
+    createSpeechAnalyzerClient(options, continuous) {
+      const client = { options, continuous, pcm: [], started: false, finished: 0, stopped: false,
+        start() { this.started = true; }, acceptPcm(bytes) { this.pcm.push([...bytes]); },
+        finish() { this.finished++; }, stop() { this.stopped = true; } };
+      analyzers.push(client); return client;
     },
   };
   const recordings = [];
@@ -32,7 +43,8 @@ function harness() {
     requestMicrophoneAuthorization: done => { microphoneRequests++; done(3); } },
     setTimeout: fn => { timers.set(fn, fn); return fn; }, clearTimeout: fn => timers.delete(fn),
     NSData: { dataWithBytesLength: (b, n) => Buffer.from(b, 0, n) }, interop: { handleof: b => b, bufferFromData: d => d },
-    require: name => name === './cloud-stt-provider' ? provider : name === './wav-recorder.ios' ? { WavRecorder: FakeRecorder } : {} };
+    require: name => name === './cloud-stt-provider' ? provider : name === './speech-analyzer-stt.ios' ? analyzer
+      : name === './wav-recorder.ios' ? { WavRecorder: FakeRecorder } : {} };
   vm.runInNewContext(ts.transpileModule(fs.readFileSync('app/native/voice-control.ios.ts', 'utf8'), {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 } }).outputText, sandbox);
   const bridge = new sandbox.exports.IosVoiceControlBridge();
@@ -43,7 +55,8 @@ function harness() {
     return Promise.resolve();
   } };
   const onboard = { provider: 'onboard', elevenLabsApiKey: '', openAiApiKey: '', sonioxApiKey: '' };
-  return { bridge, native, session, audio, commands, text, timers, clouds, recordings, release: () => release(),
+  return { bridge, native, session, audio, commands, text, timers, clouds, analyzers, recordings, release: () => release(),
+    analyzerSupported: value => { analyzerSupported = value; },
     onboard, cloud: { ...onboard, provider: 'soniox', sonioxApiKey: 'key' },
     microphoneAuthorization: value => { microphoneAuthorization = value; }, microphoneRequests: () => microphoneRequests,
     authorization: value => { authorization = value; }, permissionRequests: () => permissionRequests,
@@ -246,6 +259,38 @@ test('continuous capture needs a cloud provider, shares its mic with push-to-tal
   assert.deepEqual(h.text.map(event => event.text), ['First thought.', 'Second thought.', 'The tail.']);
   assert.equal(cloud.continuous(), false);
   assert.ok(ends >= 1);
+});
+
+test('on-device continuous capture runs on SpeechAnalyzer where supported; push-to-talk keeps the dictation recognizer', async () => {
+  const h = harness();
+  assert.equal(h.bridge.supportsContinuous(h.onboard), false, 'before iOS 26 on-device needs a cloud provider');
+  h.analyzerSupported(true);
+  assert.equal(h.bridge.supportsContinuous(h.onboard), true);
+  const start = h.bridge.startGlassesCapture(h.session, h.onboard, () => {}, false, true); h.release(); await start;
+  assert.deepEqual({ ...h.native.pcmCapture }, { endpointing: false, phone: false }, 'native only decodes PCM');
+  assert.equal(h.native.endpointing, undefined, "Apple's dictation recognizer stays idle");
+  const [analyzer] = h.analyzers;
+  assert.equal(analyzer.started, true); assert.equal(analyzer.continuous(), true);
+  assert.equal(h.clouds.length, 0);
+  h.native.pcmHandler(new Uint8Array([1, 2, 3, 4]));
+  assert.deepEqual(analyzer.pcm, [[1, 2, 3, 4]]);
+  analyzer.options.onTranscript({ text: 'First thought.', isFinal: true, paragraphBreakAfter: true });
+  const stopped = h.bridge.stopContinuousCapture();
+  h.event({ kind: 'ended', message: 'Transcription stopped.' });
+  assert.equal(analyzer.finished, 1);
+  analyzer.options.onTranscript({ text: 'The tail.', isFinal: true });
+  await stopped;
+  assert.equal(analyzer.stopped, true);
+  assert.deepEqual(h.text.map(event => event.text), ['First thought.', 'The tail.']);
+  // Push-to-talk (not continuous) still uses FaceclawSpeech's own recognizer.
+  const ptt = h.bridge.startGlassesCapture(h.session, h.onboard, () => {}); h.release(); await ptt;
+  assert.equal(h.analyzers.length, 1); assert.equal(h.native.endpointing, false);
+});
+
+test('a cloud provider keeps continuous capture even where SpeechAnalyzer is supported', async () => {
+  const h = harness(); h.analyzerSupported(true);
+  const start = h.bridge.startGlassesCapture(h.session, h.cloud, () => {}, false, true); h.release(); await start;
+  assert.equal(h.clouds.length, 1); assert.equal(h.analyzers.length, 0);
 });
 
 test('push-to-talk after Transcribe closed starts its own capture instead of joining the finalizing one', async () => {

@@ -1141,6 +1141,8 @@ class GlassesSessionCore(
                 status["payloadBytesAcked"] = benchmarkPayloadBytesAcked
                 status["wireBytesAcked"] = benchmarkWireBytesAcked
                 status["aborted"] = benchmarkAborted
+                status["leftPhy"] = link.describePhy(leftAddress)
+                status["rightPhy"] = link.describePhy(rightAddress)
                 return Json.write(status)
             } catch (e: Exception) {
                 return "{\"state\":\"idle\"}"
@@ -1940,6 +1942,14 @@ class GlassesSessionCore(
                     // deferred head-up wake produces from a dark display.
                     decoded = G2Event("display-wake", "", BleProtocol.EVENT_HEAD_UP, decoded.eventSource, 0)
                     logLine("head-up forwarded by CFW while page on screen")
+                } else if (decoded != null
+                        && "sys-event" == decoded.kind
+                        && decoded.eventType == BleProtocol.EVENT_HEAD_DOWN) {
+                    // Faceclaw/38 also forwards the head coming back down. Nothing
+                    // uses it yet; as an unknown input it would count as activity
+                    // and keep the screen awake, so drop it here.
+                    logLine("head-down forwarded by CFW (ignored)")
+                    decoded = null
                 }
                 event = decoded
                 if (decoded != null) {
@@ -2285,6 +2295,10 @@ class GlassesSessionCore(
         if (enableRenderNotify) {
             link.enableNotifications(address, BleProtocol.RENDER_NOTIFY_UUID, true, ConnectionOptions.DESCRIPTOR_TIMEOUT_MS)
         }
+        // The connectGatt PHY preference only covers the connection's establishment, so every
+        // connection comes up on 1M and has to ask for 2M (which the CFW enables). Asked last,
+        // once the stack has the glasses' feature bits; the link keeps retrying on its own.
+        link.requestLe2mPhy(address)
         monitor.withLock {
             if (address.equals(rightAddress, ignoreCase = true)) {
                 rightConnected = true

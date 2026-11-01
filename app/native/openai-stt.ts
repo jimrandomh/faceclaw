@@ -40,7 +40,7 @@ export class OpenAiRealtimeSttClient implements CloudSttClient {
       onOpen: () => {
         if (this.closed) return;
         this.open = true;
-        this.trySend(JSON.stringify(sessionConfig()));
+        this.trySend(JSON.stringify(sessionConfig(this.options.language ?? "")));
         for (const chunk of this.pendingChunks.splice(0)) {
           this.sendChunk(chunk);
         }
@@ -201,7 +201,7 @@ export class OpenAiRealtimeSttClient implements CloudSttClient {
 
 }
 
-function sessionConfig(): object {
+function sessionConfig(language: string): object {
   return {
     type: "session.update",
     session: {
@@ -209,7 +209,7 @@ function sessionConfig(): object {
       audio: {
         input: {
           format: { type: "audio/pcm", rate: TARGET_SAMPLE_RATE },
-          transcription: { model: MODEL_ID },
+          transcription: { model: MODEL_ID, ...(language ? { language } : {}) },
           // Push-to-talk owns the utterance boundary; no server VAD.
           turn_detection: null,
         },

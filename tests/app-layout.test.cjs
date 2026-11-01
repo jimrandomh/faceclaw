@@ -349,11 +349,13 @@ test('the mirror\'s crop follows Preview scaling, the Glanceboard and the lock, 
 
 // The real chrome layer over the given geometry, with platform pieces stubbed:
 // a 4px-per-character font that paints each character as a 2x6 block, up to
-// `notifications` 24px notification icons (keyed n0, n1, ...), and a phone
+// `notifications` notification icons (keyed n0, n1, ...), and a phone
 // battery at 80%.
 const graphics = require('../.test-build/app/graphics/image.js');
 const shellScene = require('../.test-build/app/graphics/shell-scene.js');
 const displayList = require('../.test-build/app/graphics/display-list.js');
+const notificationTypes = require('../.test-build/app/native/notification-types.js');
+const ICON = notificationTypes.NOTIFICATION_ICON_SIZE;
 function chromeLayer(g, { notifications = 0, phoneBattery = null, windows = 1, trayIcons = [] } = {}) {
   const font = { lineHeight: 12, ascent: 10, measureText: (text) => text.length * 4,
     drawText: (image, x, y, text, value) => { for (let i = 0; i < text.length; i++) image.fillRect(x + i * 4, y + 2, 2, 6, value); } };
@@ -369,9 +371,10 @@ function chromeLayer(g, { notifications = 0, phoneBattery = null, windows = 1, t
     '../../native/notification-icons': { ALL_NOTIFICATIONS: 0x7fffffff, readActiveNotificationIcons: (max) => {
       requested.push(max);
       const count = Math.min(max, notifications);
-      return { icons: Array.from({ length: count }, () => new graphics.GrayImage(24, 24, 200)),
+      return { icons: Array.from({ length: count }, () => new graphics.GrayImage(ICON, ICON, 200)),
         keys: Array.from({ length: count }, (_, index) => `n${index}`), stale: false };
     } },
+    '../../native/notification-types': notificationTypes,
     '../../native/phone-battery': { readPhoneBatteryState: () => ({ battery: phoneBattery, charging: false }) },
     '../../util/render-freshness': { renderPassAllowsStaleData: () => false },
     '../dashboard-settings': { batteryDisplayModeSetting: { get: () => 'icon' }, phoneBatteryVisibilitySetting: settings,
@@ -536,9 +539,9 @@ test('the switcher row lays out windows, free space, notifications, widgets, bat
   // Right to left from the row's end (x=608), centred under its separator
   // line (y=366): "Thu Oct 2 9:41" (56px) flush with it; the battery block (label
   // 20 + gap 5 + gauge 21) 16px before it; the 30px widget 10px before that;
-  // then the two notification icons, 8px clear of the widget. The surface
-  // starts 2px before them, room for a selection box round the first.
-  const clockX = 608 - 56, batteryLeft = clockX - 16 - 46, trayLeft = batteryLeft - 40, iconsLeft = trayLeft - 8 - 56 + 4;
+  // then the two notification icons (4px apart), 8px clear of the widget.
+  // The surface starts 2px before them, room for a selection box round the first.
+  const clockX = 608 - 56, batteryLeft = clockX - 16 - 46, trayLeft = batteryLeft - 40, iconsLeft = trayLeft - 8 - 2 * (ICON + 4) + 4;
   assert.deepEqual([status.x, status.y, status.image.width, status.image.height], [iconsLeft - 2, 367, 608 - iconsLeft + 2, 35]);
   const at = (p, x, y) => p.image.withDrawsBaked().pixels[(y - p.y) * p.image.width + x - p.x];
   // The clock's text runs 8 rows down the top bar's layout, which sits 5 rows into the row.
@@ -567,19 +570,20 @@ test('past two rows of windows, they scroll, and notification icons give way to 
   assert.equal(g.switcherRowHeight(), 72);
   assert.equal(heightChanges(), 1);
   assert.deepEqual([row.y, row.image.height], [366, 72]);
-  // Notification icons drop from the end until the two status rows leave
-  // three window slots a row (32 + 20 + 3 * 40 - 8, and the gap): 28 stay,
-  // 15 in the first row (416px) and 13 with the clock in the second (432px).
-  assert.equal(chrome.statusItems().length, 28);
-  assert.deepEqual([status.x, status.y, status.image.height], [608 - 432 - 2, 367, 71]);
+  // Notification icons (29px apart) drop from the end until the two status
+  // rows leave three window slots a row (32 + 20 + 3 * 40 - 8, and the gap):
+  // 27 stay, 15 in the first row (431px) and 12 with the clock in the second
+  // (416px).
+  assert.equal(chrome.statusItems().length, 27);
+  assert.deepEqual([status.x, status.y, status.image.height], [608 - 431 - 2, 367, 71]);
   const at = (p, x, y) => p.image.withDrawsBaked().pixels[(y - p.y) * p.image.width + x - p.x];
-  assert.deepEqual([at(status, 608 - 416, 366 + 5 + 2), at(status, 608 - 432, 366 + 36 + 5 + 2)], [200, 200]);
+  assert.deepEqual([at(status, 608 - 431, 366 + 5 + 2), at(status, 608 - 416, 366 + 36 + 5 + 2)], [200, 200]);
   // Three windows a row; the rest scroll, with the chevron after the second
   // row's, at the end of the windows rather than of the row.
   assert.equal(chrome.windowIndexAt(32 + 10 + 2 * 40 + 4, 380, 12), 2);
   assert.equal(chrome.windowIndexAt(32 + 10 + 3 * 40 + 4, 380, 12), null);
   assert.equal(chrome.windowIndexAt(32 + 10 + 2 * 40 + 4, 420, 12), 5);
-  const windowsRight = 608 - 432 - 8;
+  const windowsRight = 608 - 431 - 8;
   const chevron = row.image.pixels.findIndex((v) => v === 140);
   assert.deepEqual([chevron % row.image.width + row.x, Math.floor(chevron / row.image.width) + row.y], [windowsRight - 6, 366 + 36 + 18 - 5]);
 });
@@ -655,11 +659,11 @@ test('the status bar takes a second row of its own before the windows do', () =>
   chrome.paintParts();
   assert.equal(heightChanges(), 1, 'reported once');
   assert.deepEqual(g.rect('min'), before);
-  // Both rows right-aligned against the row's end: 8 icons (220px) over 6
-  // and the clock (236px), a top bar's height apart.
-  assert.deepEqual([status.x, status.y, status.image.height], [608 - 236 - 2, 367, 63]);
+  // Both rows right-aligned against the row's end: 8 icons (228px) over 6
+  // and the clock (242px), a top bar's height apart.
+  assert.deepEqual([status.x, status.y, status.image.height], [608 - 242 - 2, 367, 63]);
   const at = (p, x, y) => p.image.withDrawsBaked().pixels[(y - p.y) * p.image.width + x - p.x];
-  assert.deepEqual([at(status, 608 - 220, 371 + 2), at(status, 608 - 236, 371 + 28 + 2), at(status, 608 - 56, 371 + 28 + 8 + 2)],
+  assert.deepEqual([at(status, 608 - 228, 371 + 2), at(status, 608 - 242, 371 + 28 + 2), at(status, 608 - 56, 371 + 28 + 8 + 2)],
     [200, 200, 210]);
   assert.deepEqual(keysOf(chrome.statusItems()), Array.from({ length: 14 }, (_, i) => `n${i}`));
   // The windows keep one row, against the window.
@@ -673,19 +677,20 @@ test('windows past one row take a second, where a selected one sits in a box', (
   g.settings.appSwitcherPositionSetting.value = 'bottom';
   g.settings.statusBarPositionSetting.value = 'bottom';
   const { chrome, state } = chromeLayer(g, { notifications: 14, windows: 9 });
-  state.selectedIndex = 8;
+  state.selectedIndex = 7;
   const [row, status] = chrome.paintParts();
   assert.equal(g.switcherRowHeight(), 72);
-  // Eight slots a row (what the 236px status rows leave); the ninth window
+  // Seven slots a row (what the 242px status rows leave); the eighth window
   // starts the second row, under the first.
-  assert.deepEqual([chrome.windowIndexAt(31 + 7 * 40, 380, 9), chrome.windowIndexAt(31, 410, 9), chrome.windowIndexAt(71, 410, 9)], [7, 8, null]);
+  assert.deepEqual([chrome.windowIndexAt(31 + 6 * 40, 380, 9), chrome.windowIndexAt(31 + 7 * 40, 380, 9), chrome.windowIndexAt(31, 410, 9),
+    chrome.windowIndexAt(71, 410, 9), chrome.windowIndexAt(111, 410, 9)], [6, null, 7, 8, null]);
   const at = (p, x, y) => p.image.pixels[(y - p.y) * p.image.width + x - p.x];
   // Its selection is a box (as for a sidebar overflow column), and the
   // separator runs unbroken over the first row.
   assert.deepEqual([at(row, 31, 402 + 18), at(row, 31 + 5, 402 + 7)], [150, 120]);
   assert.equal(at(row, 50, 366), 40);
   // The status rows line up with the window rows.
-  assert.equal(status.image.withDrawsBaked().pixels[(366 + 36 + 5 + 2 - status.y) * status.image.width + 608 - 236 - status.x], 200);
+  assert.equal(status.image.withDrawsBaked().pixels[(366 + 36 + 5 + 2 - status.y) * status.image.width + 608 - 242 - status.x], 200);
 });
 
 test('a popup app switcher shows a box of window icons over the dimmed window while focused', () => {
@@ -777,13 +782,13 @@ test('a notification the switcher selects sits in a box, filled with its icon in
   Object.assign(state, { selectedIndex: -1, selectedStatusItem: notification('n1'), focus: 'sidebar' });
   let [row, status] = chrome.paintParts();
   assert.deepEqual(keysOf(chrome.statusItems()), ['n0', 'n1', 'n2']);
-  // Clock only: the icons end 8px before its 8px lead-in, 28px apart, each
-  // 7 rows into the row (the top bar's layout, 5 rows down).
-  const iconsLeft = 608 - 56 - 8 - 8 - 3 * 28 + 4, iconY = 366 + 7, n1 = iconsLeft + 28;
+  // Clock only: the icons end 8px before its 8px lead-in, 4px apart, each
+  // centred in the top bar's 28 rows (its layout 5 rows down the row).
+  const step = ICON + 4, iconsLeft = 608 - 56 - 8 - 8 - 3 * step + 4, iconY = 366 + 5 + ((28 - ICON) >> 1), n1 = iconsLeft + step;
   const at = (p, x, y) => p.image.withDrawsBaked().pixels[(y - p.y) * p.image.width + x - p.x];
   // The box: 2px either side of the icon, 1px above and below, white; the
   // icon inside it inverted (bright, so to black); its neighbours as ever.
-  assert.deepEqual([at(status, n1 - 2, iconY + 12), at(status, n1 + 25, iconY + 12), at(status, n1 + 12, iconY - 1)], [255, 255, 255]);
+  assert.deepEqual([at(status, n1 - 2, iconY + 12), at(status, n1 + ICON + 1, iconY + 12), at(status, n1 + 12, iconY - 1)], [255, 255, 255]);
   assert.equal(at(status, n1 + 12, iconY - 2), 1);
   assert.deepEqual([at(status, n1 + 5, iconY + 5), at(status, iconsLeft + 5, iconY + 5)], [1, 200]);
   // No window is selected: the separator runs unbroken over the windows.

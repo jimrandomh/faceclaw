@@ -1,4 +1,5 @@
-import { isLocalModelReady, LOCAL_MODEL } from "../native/llama";
+import { isLocalModelReady, isLocalModelSupported, LOCAL_MODEL } from "../native/local-llm";
+import { isVeniceApiBaseUrl } from "../native/openai-chat";
 
 export const ASSISTANT_MODEL_VALUES = [
   "auto",
@@ -11,17 +12,23 @@ export const ASSISTANT_MODEL_VALUES = [
   "sol",
   "qwen",
   "hermes",
+  "openai-compatible",
 ] as const;
 
+/**
+ * "qwen" is the on-phone model, whatever it is on this platform: Qwen3-4B on
+ * Android, the Apple Intelligence system model on iOS (the ID predates iOS
+ * support and stays for saved settings and conversations).
+ */
 export type AssistantModel = (typeof ASSISTANT_MODEL_VALUES)[number];
 /** Keep saved model IDs portable, while offering only supported choices. */
 export const ASSISTANT_MODEL_CHOICES: readonly AssistantModel[] =
-  global.isIOS ? ASSISTANT_MODEL_VALUES.filter(value => value !== "qwen") : ASSISTANT_MODEL_VALUES;
+  isLocalModelSupported() ? ASSISTANT_MODEL_VALUES : ASSISTANT_MODEL_VALUES.filter(value => value !== "qwen");
 export function supportedAssistantModel(value: AssistantModel): AssistantModel {
-  return global.isIOS && value === "qwen" ? "auto" : value;
+  return value === "qwen" && !isLocalModelSupported() ? "auto" : value;
 }
 
-export type AssistantProvider = "anthropic" | "openai" | "local" | "hermes";
+export type AssistantProvider = "anthropic" | "openai" | "local" | "hermes" | "openai-compatible";
 
 export type AssistantApiKeys = {
   anthropic: string;
@@ -29,6 +36,11 @@ export type AssistantApiKeys = {
   /** A Hermes Agent API server; only the voice assistant passes these. */
   hermesUrl?: string;
   hermesKey?: string;
+  openAiCompatibleUrl?: string;
+  openAiCompatibleKey?: string;
+  openAiCompatibleModel?: string;
+  /** Venice web search, applied only when the resolved root is Venice. */
+  veniceWebSearch?: boolean;
 };
 
 export type ResolvedAssistantModel = {
@@ -37,8 +49,10 @@ export type ResolvedAssistantModel = {
   model: string;
   apiKey: string;
   effort?: "low" | "medium" | "high";
-  /** API root for providers that are not fixed services (Hermes). */
+  /** API root for Hermes or an OpenAI-compatible provider. */
   baseUrl?: string;
+  /** Whether Venice web search is enabled for this interactive assistant turn. */
+  webSearch?: boolean;
 };
 
 type ModelDefinition = {
@@ -58,11 +72,13 @@ const MODEL_DEFINITIONS: Record<Exclude<AssistantModel, "auto">, ModelDefinition
   luna: { label: "Luna", provider: "openai", model: "gpt-5.6-luna", effort: "low" },
   terra: { label: "Terra", provider: "openai", model: "gpt-5.6-terra", effort: "low" },
   sol: { label: "Sol", provider: "openai", model: "gpt-5.6-sol", effort: "low" },
-  // Runs on the phone itself (llama.cpp); needs the downloaded model file,
-  // not an API key. The default for users who haven't set any key.
+  // Runs on the phone itself (Android: llama.cpp with the downloaded model
+  // file; iOS: Apple Intelligence), not an API key. The default for users who
+  // haven't set any key.
   qwen: { label: `${LOCAL_MODEL.label} (on-phone)`, provider: "local", model: LOCAL_MODEL.id },
   // Your own Hermes Agent (its API server), with its own tools and memory.
   hermes: { label: "Hermes agent", provider: "hermes", model: "hermes-agent" },
+  "openai-compatible": { label: "OpenAI-compatible", provider: "openai-compatible", model: "custom" },
 };
 
 export function assistantModelLabel(value: AssistantModel): string {
@@ -76,8 +92,8 @@ export function assistantModelProvider(value: AssistantModel): AssistantProvider
 /**
  * Resolve Auto and attach the credential needed by the chosen provider.
  * Auto intentionally prefers Terra over Sonnet when both keys are available,
- * and falls back to the on-phone model when no key is set but the model file
- * has been downloaded.
+ * and falls back to the on-phone model when no key is set but that model is
+ * ready (downloaded on Android; Apple Intelligence on and ready on iOS).
  */
 export function resolveAssistantModel(
   selection: AssistantModel,
@@ -105,6 +121,19 @@ export function resolveAssistantModel(
     const baseUrl = keys.hermesUrl?.trim() ?? "";
     if (!baseUrl) return null;
     return { selection, provider: "hermes", model: definition.model, apiKey: keys.hermesKey?.trim() ?? "", baseUrl };
+  }
+  if (definition.provider === "openai-compatible") {
+    const baseUrl = keys.openAiCompatibleUrl?.trim() ?? "";
+    const model = keys.openAiCompatibleModel?.trim() ?? "";
+    if (!baseUrl || !model) return null;
+    return {
+      selection,
+      provider: definition.provider,
+      model,
+      apiKey: keys.openAiCompatibleKey?.trim() ?? "",
+      baseUrl,
+      webSearch: isVeniceApiBaseUrl(baseUrl) && keys.veniceWebSearch === true,
+    };
   }
   if (definition.provider === "local") {
     if (!isLocalModelReady()) return null;

@@ -1,6 +1,6 @@
 import { Utils } from "@nativescript/core";
 
-import { isLocalModelReady, streamLocalQwen } from "../../native/llama";
+import { isLocalModelReady, streamLocalModel } from "../../native/local-llm";
 import type { LlmStreamHandle } from "../../assistant/llm-protocol";
 import { parseConversationQuery } from "../../phone-ui/conversation-search";
 
@@ -245,7 +245,7 @@ export function askConversations(
     setTimeout(() => callbacks.onError(`Could not read the conversation store: ${String(error)}`), 0);
     return { cancel: () => {} };
   }
-  return streamLocalQwen({
+  return streamLocalModel({
     apiKey: "",
     model: "local",
     system:

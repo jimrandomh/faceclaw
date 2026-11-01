@@ -726,7 +726,6 @@ export class EvenHubSession implements EvenHubMicClient, EvenHubImuClient, EvenH
    * flows (foreground + screen on + no assistant modal).
    */
   private audioControl(data: Record<string, unknown>): boolean {
-    if (global.isIOS) return false; // EvenHub PCM routing is not ported yet.
     if (!permissionsIncludeMicrophone(this.manifest.permissions)) {
       this.log("evenhub: audioControl denied (app declares no microphone permission)");
       return false;

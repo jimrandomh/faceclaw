@@ -1,4 +1,5 @@
 #import "FaceclawAppleMusic.h"
+#import "FaceclawGraphics.h"
 #import <AVFoundation/AVFoundation.h>
 #import <MediaPlayer/MediaPlayer.h>
 #import <UIKit/UIKit.h>
@@ -219,30 +220,7 @@ static NSDictionary *BrowseRow(NSString *mediaId, NSString *title, NSString *sub
 - (NSData *)albumArt:(NSInteger)maxSize {
     if (maxSize <= 0 || maxSize > 1024 || ![self hasPermission]) return nil;
     MPMediaItemArtwork *artwork = MPMusicPlayerController.systemMusicPlayer.nowPlayingItem.artwork;
-    UIImage *image = [artwork imageWithSize:CGSizeMake(maxSize, maxSize)];
-    CGImageRef source = image.CGImage;
-    if (!source) return nil;
-    double sourceWidth = CGImageGetWidth(source), sourceHeight = CGImageGetHeight(source);
-    if (sourceWidth <= 0 || sourceHeight <= 0) return nil;
-    double scale = MIN(1.0, MIN(maxSize / sourceWidth, maxSize / sourceHeight));
-    NSInteger width = MAX(1, lround(sourceWidth * scale)), height = MAX(1, lround(sourceHeight * scale));
-    NSMutableData *packet = [NSMutableData dataWithLength:4 + width * height * 4];
-    uint8_t *bytes = packet.mutableBytes;
-    bytes[0] = width & 255; bytes[1] = (width >> 8) & 255;
-    bytes[2] = height & 255; bytes[3] = (height >> 8) & 255;
-    uint8_t *pixels = bytes + 4;
-    CGColorSpaceRef space = CGColorSpaceCreateDeviceRGB();
-    // Memory order B, G, R, A: one little-endian ARGB word per pixel.
-    CGContextRef context = CGBitmapContextCreate(pixels, width, height, 8, width * 4, space,
-        kCGBitmapByteOrder32Little | (CGBitmapInfo)kCGImageAlphaPremultipliedFirst);
-    CGColorSpaceRelease(space);
-    if (!context) return nil;
-    CGContextSetInterpolationQuality(context, kCGInterpolationHigh);
-    CGContextDrawImage(context, CGRectMake(0, 0, width, height), source);
-    CGContextRelease(context);
-    // Composited over black (the display's see-through background); now opaque.
-    for (NSInteger i = 0; i < width * height; i++) pixels[i * 4 + 3] = 255;
-    return packet;
+    return [FaceclawGraphics bgraPacket:[artwork imageWithSize:CGSizeMake(maxSize, maxSize)].CGImage maxSize:maxSize];
 }
 
 #pragma mark - Queue

@@ -7,13 +7,17 @@
  * surfacing a transport error.
  */
 import { streamAnthropicMessage } from "../../native/anthropic";
-import { streamLocalQwen } from "../../native/llama";
+import { streamLocalModel } from "../../native/local-llm";
 import { streamOpenAiResponse } from "../../native/openai";
+import { streamOpenAiCompatibleChat } from "../../native/openai-chat";
 import { resolveAssistantModel } from "../../assistant/models";
 import { type LlmStreamOptions } from "../../assistant/llm-protocol";
 import {
   anthropicApiKeySetting,
   assistantModelSetting,
+  assistantOpenAiCompatibleKeySetting,
+  assistantOpenAiCompatibleModelSetting,
+  assistantOpenAiCompatibleUrlSetting,
   openAiApiKeySetting,
 } from "../../ui/dashboard-settings";
 import { CALCULATOR_REWRITE_SYSTEM_PROMPT, buildCalculatorRewriteUserMessage } from "../../prompts";
@@ -22,6 +26,9 @@ export function rewriteSpokenProblem(spoken: string): Promise<string | null> {
   const resolved = resolveAssistantModel(assistantModelSetting.get(), {
     anthropic: anthropicApiKeySetting.get(),
     openai: openAiApiKeySetting.get(),
+    openAiCompatibleUrl: assistantOpenAiCompatibleUrlSetting.get(),
+    openAiCompatibleKey: assistantOpenAiCompatibleKeySetting.get(),
+    openAiCompatibleModel: assistantOpenAiCompatibleModelSetting.get(),
   });
   if (!resolved) return Promise.resolve(null);
 
@@ -40,8 +47,11 @@ export function rewriteSpokenProblem(spoken: string): Promise<string | null> {
       case "openai":
         streamOpenAiResponse(options);
         break;
+      case "openai-compatible":
+        streamOpenAiCompatibleChat({ ...options, baseUrl: resolved.baseUrl ?? "" });
+        break;
       case "local":
-        streamLocalQwen(options);
+        streamLocalModel(options);
         break;
       default:
         streamAnthropicMessage(options);

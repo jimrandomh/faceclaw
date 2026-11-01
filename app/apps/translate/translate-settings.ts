@@ -47,6 +47,58 @@ export const translateProviderSetting = new ConfigSettingEnum<TranslateProvider>
     "Speech-to-text for Translate. Only cloud providers recognize any language (the on-device engines don't), so each needs its API key in Settings > API Keys, or a Whisper server URL in Settings > Voice. Auto uses the main Transcription Provider when it is one of these.",
 });
 
+/**
+ * Spoken languages Translate can be told to expect, by ISO 639-1 code (the
+ * form every multilingual provider accepts), in picker order.
+ */
+const SPOKEN_LANGUAGES = {
+  ar: "Arabic",
+  zh: "Chinese",
+  nl: "Dutch",
+  fr: "French",
+  de: "German",
+  el: "Greek",
+  he: "Hebrew",
+  hi: "Hindi",
+  id: "Indonesian",
+  it: "Italian",
+  ja: "Japanese",
+  ko: "Korean",
+  pl: "Polish",
+  pt: "Portuguese",
+  ru: "Russian",
+  es: "Spanish",
+  sv: "Swedish",
+  th: "Thai",
+  tr: "Turkish",
+  uk: "Ukrainian",
+  vi: "Vietnamese",
+} as const;
+
+export type SpokenLanguage = keyof typeof SPOKEN_LANGUAGES;
+
+export const translateLanguageSetting = new ConfigSettingEnum<"auto" | SpokenLanguage>({
+  id: "translate-language",
+  label: "Spoken language",
+  storageKey: "translate.language",
+  defaultValue: "auto",
+  values: ["auto", ...(Object.keys(SPOKEN_LANGUAGES) as SpokenLanguage[])],
+  formatValue: (value) => (value === "auto" ? "Auto-detect" : SPOKEN_LANGUAGES[value]),
+  description:
+    "The language being spoken. Auto-detect can mistake it, especially in short or noisy speech, and then transcribes nonsense in the wrong language; naming it makes transcription much more reliable. ElevenLabs then transcribes only that language.",
+});
+
+/** The language to tell the transcription provider (ISO 639-1), or "" to let it detect one. */
+export function resolveTranslateLanguage(): SpokenLanguage | "" {
+  const value = translateLanguageSetting.get();
+  return value === "auto" ? "" : value;
+}
+
+/** The English name of a spoken language, for the translation prompt. */
+export function spokenLanguageName(language: SpokenLanguage): string {
+  return SPOKEN_LANGUAGES[language];
+}
+
 export const translateShowOriginalSetting = new ConfigSettingBoolean({
   id: "translate-show-original",
   label: "Show original",

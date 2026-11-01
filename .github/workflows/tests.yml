@@ -18,12 +18,18 @@ jobs:
       - run: npm ci
       - run: npm test
 
-  # The shared Kotlin tests (tests/kotlin, on the JVM host). The runner image
-  # already carries the JDK 17 and Android SDK the build needs.
+  # The shared Kotlin tests (tests/kotlin, on the JVM host). Pinned to
+  # ubuntu-24.04 for the Android SDK its image carries; the JDK is pinned
+  # explicitly because Gradle 8.14 can't run on the JDK 25 that is the default
+  # on ubuntu-26.04 (now ubuntu-latest), failing with just "25.0.5".
   test-kotlin:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
       - run: npm ci
       - run: npm run test:kotlin
 

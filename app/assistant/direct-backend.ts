@@ -1,7 +1,8 @@
 import { streamAnthropicMessage } from "../native/anthropic";
 import { streamHermesChat } from "../native/hermes";
-import { streamLocalQwen } from "../native/llama";
+import { streamLocalModel } from "../native/local-llm";
 import { streamOpenAiResponse } from "../native/openai";
+import { streamOpenAiCompatibleChat } from "../native/openai-chat";
 import type {
   LlmContentBlock,
   LlmMessage,
@@ -40,6 +41,8 @@ export type DirectTurnOptions = {
   effort?: "low" | "medium" | "high";
   /** Hermes: the API root, and the server-side session this conversation maps to. */
   baseUrl?: string;
+  /** Venice-only web search for this interactive turn. */
+  webSearch?: boolean;
   sessionId?: string;
   system: string;
   /** Owned by the session; this loop appends assistant + tool_result messages. */
@@ -85,11 +88,12 @@ export class DirectAssistantBackend {
         return;
       }
 
-      const streamOptions: LlmStreamOptions = {
+      const streamOptions: LlmStreamOptions & { webSearch?: boolean } = {
         apiKey: options.apiKey,
         model: options.model,
         system: options.system,
         effort: options.effort,
+        webSearch: options.webSearch,
         messages: options.messages,
         // Hermes runs its own tools; Faceclaw's are not offered to it.
         tools: options.provider === "hermes" ? [] : options.buildTools(),
@@ -143,10 +147,12 @@ export class DirectAssistantBackend {
       streamHandle =
         options.provider === "hermes"
           ? streamHermesChat({ ...streamOptions, baseUrl: options.baseUrl ?? "", sessionId: options.sessionId ?? "" })
+          : options.provider === "openai-compatible"
+          ? streamOpenAiCompatibleChat({ ...streamOptions, baseUrl: options.baseUrl ?? "" })
           : options.provider === "openai"
           ? streamOpenAiResponse(streamOptions)
           : options.provider === "local"
-            ? streamLocalQwen(streamOptions)
+            ? streamLocalModel(streamOptions)
             : streamAnthropicMessage(streamOptions);
     };
 

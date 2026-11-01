@@ -1,6 +1,7 @@
 import { GrayImage } from "../../graphics/image";
 import { getDefaultSmallFont } from "../../graphics/ui-fonts";
 import { lineStep } from "../../ui/metrics";
+import { MicLevelMeter, paintListeningHeader } from "../../ui/listening-header";
 import { writeTextToDownloads } from "../../native/file-access";
 import { voiceControlBridge } from "../../native/voice-control";
 import { Layer, type LayerContext } from "../../ui/layers";
@@ -9,15 +10,16 @@ import { type LlmStreamHandle } from "../../assistant/llm-protocol";
 import { TranscriptScroll, wrapTranscribeText } from "../transcribe/transcript-model";
 import { TranslationModel, type TranslationJob, type TranslationLine } from "./translation-model";
 import { resolveTranslationModel, streamTranslation } from "./translate-llm";
-import { translateShowOriginalSetting } from "./translate-settings";
+import { resolveTranslateLanguage, spokenLanguageName, translateShowOriginalSetting } from "./translate-settings";
 
 const NO_MODEL_NOTICE = "No language model is set up.";
 
 /**
  * Live translation view. Continuous mic capture is owned by the app wrapper
- * (createTranslateAppWindow); this layer feeds finalized speech to the
- * assistant's model one stretch at a time, shows the English as it streams
- * in, and saves the session to Downloads from the app menu.
+ * (createTranslateAppWindow); this layer feeds speech to the assistant's
+ * model one block at a time (provisionally while a block is still being
+ * spoken), shows the English as it streams in, and saves the session to
+ * Downloads from the app menu.
  */
 export class TranslateLayer implements Layer {
   private status = "Starting microphone...";
@@ -30,7 +32,8 @@ export class TranslateLayer implements Layer {
   private problem: string | null = null;
   private readonly model = new TranslationModel();
   private readonly scroll = new TranscriptScroll();
-  private activeJob: TranslationJob | null = null;
+  private readonly meter = new MicLevelMeter();
+  // The request in flight (the model tracks which job it is).
   private activeHandle: LlmStreamHandle | null = null;
   private requestRender: () => void = () => {};
   private removed = false;
@@ -40,10 +43,16 @@ export class TranslateLayer implements Layer {
   /** `stamp` names the saved transcript; `retry` re-runs the app's setup check. */
   constructor(private readonly stamp: string, private readonly retry: () => void) {}
 
-  start(requestRender: () => void): void {
+  /** `isVisible` says whether the window is on screen (the level meter repaints only then). */
+  start(requestRender: () => void, isVisible: () => boolean): void {
     this.requestRender = requestRender;
+    this.meter.start(requestRender, isVisible);
     this.unsubscribeTranscript = voiceControlBridge.onTranscript((event) => {
-      this.model.accept(event);
+      if (this.model.accept(event)) {
+        // The request in flight translates text the transcript has replaced.
+        this.activeHandle?.cancel();
+        this.activeHandle = null;
+      }
       this.pump();
       requestRender();
     });
@@ -68,9 +77,9 @@ export class TranslateLayer implements Layer {
     const measure = (line: string) => font.measureText(line);
     const maxWidth = width - 64;
 
-    image.drawText(font, 24, 20, "Translate", 200);
     const status = this.problem ? "Setup needed" : this.translationError || this.status;
-    image.drawText(font, 24, 40, this.saveNotice || status, 110);
+    const meter = this.listening && !this.problem ? this.meter : null;
+    const bodyTop = paintListeningHeader(image, font, "Translate", this.saveNotice || status, meter);
 
     let lines: TranslationLine[];
     if (this.problem) {
@@ -84,7 +93,6 @@ export class TranslateLayer implements Layer {
     }
 
     const step = lineStep(font) + 2;
-    const bodyTop = 62;
     const bodyLines = Math.max(1, Math.floor((height - 6 - bodyTop - font.lineHeight) / step) + 1);
     const firstLine = this.scroll.layout(lines.length, bodyLines);
     for (let index = firstLine; index < Math.min(lines.length, firstLine + bodyLines); index++) {
@@ -119,7 +127,7 @@ export class TranslateLayer implements Layer {
 
   onRemoved(): void {
     this.removed = true;
-    this.activeJob = null;
+    this.meter.stop();
     this.activeHandle?.cancel();
     this.activeHandle = null;
     this.unsubscribeTranscript?.();
@@ -139,7 +147,10 @@ export class TranslateLayer implements Layer {
     this.saveNotice = path ? `Saved ${filename}` : "Save failed (check file access).";
   }
 
-  /** Start translating the next waiting stretch of speech, unless one is in flight. */
+  /**
+   * Start the next translation request (a final block, else the live block's
+   * provisional one), unless one is in flight.
+   */
   private pump(): void {
     if (this.removed) return;
     const job = this.model.nextJob();
@@ -147,36 +158,34 @@ export class TranslateLayer implements Layer {
     const llm = resolveTranslationModel();
     if (!llm) {
       // The model went away mid-session (a key was cleared): keep the original.
-      this.model.fail(job.segment);
+      this.model.fail(job);
       this.translationError = NO_MODEL_NOTICE;
       this.pump();
       return;
     }
-    this.activeJob = job;
+    const language = resolveTranslateLanguage();
     const handle = streamTranslation(llm, {
-      speech: job.segment.source,
+      speech: job.source,
       context: job.context,
+      language: language ? spokenLanguageName(language) : "",
       onProgress: (textSoFar) => {
-        if (this.activeJob !== job) return;
-        this.model.progress(job.segment, textSoFar);
-        this.requestRender();
+        if (this.model.progress(job, textSoFar)) this.requestRender();
       },
       onDone: (translation) => this.settle(job, () => {
-        this.model.complete(job.segment, translation);
+        this.model.complete(job, translation);
         this.translationError = "";
       }),
       onError: (message) => this.settle(job, () => {
-        this.model.fail(job.segment);
+        this.model.fail(job);
         this.translationError = `Translation failed: ${message}`;
       }),
     });
     // A provider that fails synchronously has already settled (and moved on).
-    if (this.activeJob === job) this.activeHandle = handle;
+    if (this.model.isActive(job)) this.activeHandle = handle;
   }
 
   private settle(job: TranslationJob, apply: () => void): void {
-    if (this.activeJob !== job) return;
-    this.activeJob = null;
+    if (!this.model.isActive(job)) return;
     this.activeHandle = null;
     apply();
     this.pump();

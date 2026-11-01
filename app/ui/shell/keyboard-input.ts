@@ -9,6 +9,16 @@ import { type VoiceSendTarget } from "./voice-input";
 type KeyboardMenuRow = InputDialogRow & { target?: VoiceSendTarget };
 
 /**
+ * Where the keyboard dialog shows: on both ends, only the phone's typing panel
+ * (the glasses carry on as if no dialog were open), or only the glasses (the
+ * phone hides its copy of the text but keeps the IME typing into it).
+ */
+export type KeyboardInputVisibility = "both" | "phone" | "glasses";
+
+/** Sent messages kept for the phone's history button. */
+const MAX_HISTORY = 20;
+
+/**
  * The phone side's handle on an open keyboard-input dialog: the phone types
  * into it and picks where the text goes. The layer itself implements this;
  * the controller hands it to the phone UI while the dialog is up.
@@ -25,6 +35,10 @@ export type KeyboardInputSession = {
   send(): void;
   sendTo(targetId: string): void;
   discard(): void;
+  readonly visibility: KeyboardInputVisibility;
+  setVisibility(visibility: KeyboardInputVisibility): void;
+  /** Messages sent from keyboard dialogs since the app started, newest first. */
+  readonly history: ReadonlyArray<string>;
 };
 
 export type KeyboardInputLayerOptions = {
@@ -33,6 +47,16 @@ export type KeyboardInputLayerOptions = {
   onClosed: () => void;
   /** Pop this layer off the shell stack. */
   dismiss: () => void;
+  /**
+   * Put the layer back on the shell stack, or take it off without ending the
+   * session (phone-only visibility; onRemoved is ignored while hiding).
+   */
+  setShownOnGlasses: (shown: boolean) => void;
+  /** Starting visibility; the shell pushes the layer only if it isn't "phone". */
+  visibility: KeyboardInputVisibility;
+  onVisibilityChanged: (visibility: KeyboardInputVisibility) => void;
+  /** Shared, newest-first list this layer adds its sent message to. */
+  history: string[];
   /** Ordered send destinations shown as the first menu rows. */
   sendTargets: VoiceSendTarget[];
   /** Which send target is highlighted by default (entry-point dependent). */
@@ -52,10 +76,16 @@ export class KeyboardInputLayer implements Layer, KeyboardInputSession {
   private text = "";
   private readonly menu: Menu<KeyboardMenuRow>;
   private closed = false;
+  private currentVisibility: KeyboardInputVisibility;
+  // Set while the shell takes the layer off the stack for phone-only typing.
+  private hiding = false;
 
   private readonly actions: LayerActions;
   private readonly onClosed: () => void;
   private readonly dismiss: () => void;
+  private readonly setShownOnGlasses: (shown: boolean) => void;
+  private readonly onVisibilityChanged: (visibility: KeyboardInputVisibility) => void;
+  private readonly sentHistory: string[];
   private readonly sendTargets: VoiceSendTarget[];
   private readonly defaultTargetIndex: number;
 
@@ -63,6 +93,10 @@ export class KeyboardInputLayer implements Layer, KeyboardInputSession {
     this.actions = options.actions;
     this.onClosed = options.onClosed;
     this.dismiss = options.dismiss;
+    this.setShownOnGlasses = options.setShownOnGlasses;
+    this.currentVisibility = options.visibility;
+    this.onVisibilityChanged = options.onVisibilityChanged;
+    this.sentHistory = options.history;
     this.sendTargets = options.sendTargets;
     const defaultIndex = options.defaultTargetIndex ?? 0;
     this.defaultTargetIndex = Math.min(Math.max(0, defaultIndex), Math.max(0, this.sendTargets.length - 1));
@@ -71,6 +105,33 @@ export class KeyboardInputLayer implements Layer, KeyboardInputSession {
 
   get targets(): ReadonlyArray<{ id: string; label: string }> {
     return this.sendTargets.map((target) => ({ id: target.id, label: target.label }));
+  }
+
+  get visibility(): KeyboardInputVisibility {
+    return this.currentVisibility;
+  }
+
+  get history(): ReadonlyArray<string> {
+    return this.sentHistory;
+  }
+
+  /** Whether the dialog is on the glasses (the shell stack) rather than phone-only. */
+  get shownOnGlasses(): boolean {
+    return this.currentVisibility !== "phone";
+  }
+
+  setVisibility(visibility: KeyboardInputVisibility): void {
+    if (this.closed || visibility === this.currentVisibility) return;
+    const wasShown = this.shownOnGlasses;
+    this.currentVisibility = visibility;
+    this.onVisibilityChanged(visibility);
+    if (this.shownOnGlasses === wasShown) return;
+    this.hiding = !this.shownOnGlasses;
+    try {
+      this.setShownOnGlasses(this.shownOnGlasses);
+    } finally {
+      this.hiding = false;
+    }
   }
 
   setText(text: string): void {
@@ -90,7 +151,23 @@ export class KeyboardInputLayer implements Layer, KeyboardInputSession {
   }
 
   discard(): void {
-    if (!this.closed) this.dismiss();
+    this.close();
+  }
+
+  private close(): void {
+    if (this.closed) return;
+    // Phone-only, there is no stack entry to pop; end the session directly.
+    if (this.shownOnGlasses) {
+      this.dismiss();
+    } else {
+      this.finish();
+    }
+  }
+
+  private finish(): void {
+    if (this.closed) return;
+    this.closed = true;
+    this.onClosed();
   }
 
   private sendToTarget(target: VoiceSendTarget): void {
@@ -99,7 +176,11 @@ export class KeyboardInputLayer implements Layer, KeyboardInputSession {
     // An empty message has nothing to deliver; the dialog stays up for the
     // phone to keep typing (the glasses row is drawn dim for the same reason).
     if (!text) return;
-    this.dismiss();
+    const previous = this.sentHistory.indexOf(text);
+    if (previous >= 0) this.sentHistory.splice(previous, 1);
+    this.sentHistory.unshift(text);
+    this.sentHistory.length = Math.min(this.sentHistory.length, MAX_HISTORY);
+    this.close();
     target.onSend(text);
   }
 
@@ -140,12 +221,12 @@ export class KeyboardInputLayer implements Layer, KeyboardInputSession {
         if (row.target) {
           this.sendToTarget(row.target);
         } else {
-          this.dismiss();
+          this.close();
         }
         return;
       }
       case "double-click":
-        this.dismiss();
+        this.close();
         return;
       default:
         return;
@@ -153,7 +234,8 @@ export class KeyboardInputLayer implements Layer, KeyboardInputSession {
   }
 
   onRemoved(): void {
-    this.closed = true;
-    this.onClosed();
+    // Taken off the glasses for phone-only typing: the session carries on.
+    if (this.hiding) return;
+    this.finish();
   }
 }

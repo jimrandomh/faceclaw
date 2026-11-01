@@ -85,15 +85,20 @@ export const TRANSLATE_SYSTEM_PROMPT =
   "Reply with the English translation only, with no preamble, quotes, notes, or transliteration. " +
   "If the speech is empty or meaningless noise, reply with nothing.";
 
-/** User message for the Translate app: earlier turns for context, then the speech to translate. */
+/**
+ * User message for the Translate app: earlier turns for context, then the
+ * speech to translate. `language` names the spoken language when the user set
+ * one (the transcription was told to expect it), else "".
+ */
 export function buildTranslateUserMessage(
   speech: string,
   context: ReadonlyArray<{ source: string; translation: string }>,
+  language = "",
 ): string {
   const earlier = context.length
     ? "Earlier in this conversation (already translated; context only):\n" +
       context.map((turn) => `<speech>${turn.source}</speech>\n<english>${turn.translation}</english>`).join("\n") +
       "\n\n"
     : "";
-  return `${earlier}Translate this speech into English:\n<speech>${speech}</speech>`;
+  return `${earlier}Translate this ${language ? `${language} ` : ""}speech into English:\n<speech>${speech}</speech>`;
 }
