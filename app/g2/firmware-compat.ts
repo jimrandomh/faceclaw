@@ -36,7 +36,7 @@ const LEGACY_PREFIX = "EVENCFW";
 // unrecognized (its layout may differ from what our patch set targets).
 export const BASE_STOCK_VERSION = [2, 3, 0, 24];
 export const BASE_STOCK_VERSION_TEXT = BASE_STOCK_VERSION.join(".");
-export const VALIDATED_STOCK_VERSION = [2, 3, 2, 14];
+export const VALIDATED_STOCK_VERSION = [2, 4, 0, 24];
 export const VALIDATED_STOCK_VERSION_TEXT = VALIDATED_STOCK_VERSION.join(".");
 
 export type FirmwareExtension =

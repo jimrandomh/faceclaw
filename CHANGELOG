@@ -10,6 +10,7 @@
 * iOS: Support Apple Intelligence as an on-device model for voice assistant/etc
 * iOS: Notifications are selectable via the task switcher
 * Android: Optionally sign in to Spotify's Web API for library browsing and other features
+* Mark stock firmware 2.4.0 as validated for installing custom firmware over
 
 ## 0.8.5 - 2026-10-25
 
