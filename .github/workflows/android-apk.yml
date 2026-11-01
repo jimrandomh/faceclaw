@@ -5,6 +5,10 @@ on:
   push:
     branches:
       - main
+      - fix/android-evenhub-file-picker
+  pull_request:
+    branches:
+      - main
 
 permissions:
   contents: read
