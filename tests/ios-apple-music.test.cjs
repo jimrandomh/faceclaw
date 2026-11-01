@@ -160,7 +160,7 @@ function browser(music = fakeMusic()) {
   const api = load('app/native/media-browser.ios.ts', {
     './media-types': types,
     './spotify.ios': { spotifyService: () => null },
-    './spotify-player': { SPOTIFY_PACKAGE: 'com.spotify.client' },
+    './spotify-player': { SPOTIFY_IOS_BUNDLE_ID: 'com.spotify.client' },
   }, {
     FaceclawAppleMusic: { shared: () => music },
   });

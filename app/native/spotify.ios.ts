@@ -3,6 +3,7 @@ import { downloadBinary } from "./binary-http.ios";
 import { grayImageFromPacket, PHOTO_TONE } from "./image-files";
 import { fromData, toData } from "./kotlin-data";
 import type { WebSignIn } from "./spotify-auth";
+import { SPOTIFY_IOS_BUNDLE_ID } from "./spotify-player";
 import { SpotifyService } from "./spotify-service";
 
 declare const FaceclawAppleMusic: any;
@@ -37,6 +38,7 @@ let service: SpotifyService | null = null;
 /** The Spotify service, created on first use (main thread only: it owns timers and the sign-in sheet). */
 export function spotifyService(): SpotifyService | null {
   service ??= new SpotifyService({
+    packageName: SPOTIFY_IOS_BUNDLE_ID,
     fetch: (url, init) => fetchTextWithUserAgent(url, init),
     webSignIn,
     download: async (url) => {

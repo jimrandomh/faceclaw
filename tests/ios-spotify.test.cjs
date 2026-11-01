@@ -235,6 +235,7 @@ function playerFixture({ routes = {}, settings = signedIn() } = {}) {
     ...routes });
   const downloads = []; const decodes = []; const system = { volume: 40, set: [] };
   const service = new s.service.SpotifyService({
+    packageName: 'com.spotify.client',
     fetch: f.fetch,
     webSignIn: { createPkce: () => ({}), randomState: () => '', open: async () => '', cancel: () => {} },
     download: async url => { downloads.push(url); return new Uint8Array([1, 2, 3]); },
@@ -242,7 +243,8 @@ function playerFixture({ routes = {}, settings = signedIn() } = {}) {
     systemVolume: { get: () => system.volume, set: value => system.set.push(value) },
   });
   // The player reads time from Date.now by default; give it the fake clock.
-  const player = new s.player.SpotifyPlayer({ client: service.client, isSignedIn: () => s.auth.readSpotifyAccount() !== null,
+  const player = new s.player.SpotifyPlayer({ client: service.client, packageName: 'com.spotify.client',
+    isSignedIn: () => s.auth.readSpotifyAccount() !== null,
     download: async url => { downloads.push(url); return new Uint8Array([1, 2, 3]); },
     decodeArt: (_bytes, size) => { decodes.push(size); return { size }; },
     systemVolume: { get: () => system.volume, set: value => system.set.push(value) }, now: timers.now });
@@ -381,7 +383,7 @@ test('the library tree lists owned playlists as browsable and plays tracks withi
       { track: track('a'), context: { uri: 'spotify:album:al' } }, { track: track('a'), context: null }, { track: track('b'), context: null }] } },
   });
   const plays = [];
-  const library = new s.library.SpotifyLibrary({ client: new s.api.SpotifyClient(f.fetch, tokens),
+  const library = new s.library.SpotifyLibrary({ client: new s.api.SpotifyClient(f.fetch, tokens), packageName: 'com.spotify.client',
     player: { startPlayback: async request => { plays.push(request); return true; } },
     isSignedIn: () => true, userId: () => 'jim' });
   const [app] = library.listBrowsableApps();

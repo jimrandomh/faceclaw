@@ -8,25 +8,31 @@ import { submenuItem, TextPageLayer, type MenuItem } from "../../ui/menu";
 import { WindowMenuLayer } from "../../ui/window-menu";
 import { TextViewerLayer } from "../files/text-viewer";
 
+const SETUP_INTRO = global.isIOS
+  ? "Faceclaw controls Spotify through Spotify's Web API, which needs a Spotify developer app of your own. Creating one is free; Spotify requires its owner to have Premium, and controlling playback needs Premium too."
+  : "Faceclaw already shows and controls Spotify on this phone, like any music app. Signing in to Spotify's Web API is optional and adds browsing your Spotify library, playing from Spotify by voice, shuffle / repeat / like, and Spotify playing on your other devices. It needs a Spotify developer app of your own: creating one is free, Spotify requires its owner to have Premium, and controlling playback through it needs Premium too.";
+
 const SETUP_HELP = [
-  "Faceclaw controls Spotify through Spotify's Web API, which needs a Spotify developer app of your own. Creating one is free; Spotify requires its owner to have Premium, and controlling playback needs Premium too.",
+  SETUP_INTRO,
   "",
   `1. On a computer, open ${SPOTIFY_DASHBOARD_URL.replace("https://", "")} and sign in with your Spotify account.`,
   "2. Create an app. Any name and description will do.",
   `3. Add this Redirect URI exactly: ${SPOTIFY_REDIRECT_URI}`,
   "4. Under \"Which API/SDKs are you planning to use?\", tick Web API, then save.",
   "5. Open the app's settings, copy its Client ID, and enter it as Client ID here.",
-  "6. Choose Sign in, then finish on your phone: Faceclaw opens Spotify's sign-in page there.",
+  "6. Choose Sign in, then finish on your phone: Faceclaw opens Spotify's sign-in page there (once Faceclaw is open on the phone, if it was in the background).",
   "",
   "Spotify plays on whichever of your devices is open (this phone, a computer, a speaker). To start music when nothing is playing, Spotify must be open on one of them.",
   "",
   "Others can sign in with your client ID once you add their Spotify email under User Management in the dashboard (up to five people).",
 ].join("\n");
 
-/** The Music app menu's Spotify row (iOS): sign in, sign out, client ID, setup help. */
+/** The Music app menu's Spotify row: sign in, sign out, client ID, setup help. */
 export function spotifyMenuItem(service: SpotifyService): MenuItem {
   return submenuItem("Spotify", (ctx) => ctx.stack.push(new SpotifyMenuLayer(service)), {
-    description: "Sign in to Spotify to show and control it from the glasses.",
+    description: global.isIOS
+      ? "Sign in to Spotify to show and control it from the glasses."
+      : "Optional: sign in to Spotify to browse its library and play from it by voice.",
   });
 }
 

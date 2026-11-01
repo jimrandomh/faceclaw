@@ -18,8 +18,10 @@ import {
 } from "./spotify-web-api";
 
 export const SPOTIFY_APP_NAME = "Spotify";
-/** The iOS app's bundle id; Spotify's Android package is com.spotify.music. */
-export const SPOTIFY_PACKAGE = "com.spotify.client";
+/** Spotify's iOS bundle id: the player's packageName in the media state on iOS. */
+export const SPOTIFY_IOS_BUNDLE_ID = "com.spotify.client";
+/** Spotify's Android package: its media session's owner, which the Web API player reports too. */
+export const SPOTIFY_ANDROID_PACKAGE = "com.spotify.music";
 
 /**
  * Poll intervals while something listens. The Web API has no push channel, so
@@ -46,6 +48,8 @@ const REPEAT_LABEL: Record<SpotifyRepeat, string> = { off: "Repeat: off", contex
 
 export type SpotifyPlayerDeps = {
   client: SpotifyClient;
+  /** The state's packageName: Spotify's app id on this platform. */
+  packageName: string;
   isSignedIn(): boolean;
   /** Fetch an album-art image's encoded bytes; null on failure. */
   download(url: string): Promise<Uint8Array | null>;
@@ -119,7 +123,7 @@ export class SpotifyPlayer implements MediaControllerBridge {
       return {
         ...DEFAULT_MEDIA_STATE,
         accessEnabled: true,
-        packageName: SPOTIFY_PACKAGE,
+        packageName: this.deps.packageName,
         appName: SPOTIFY_APP_NAME,
         status: "Nothing is playing on Spotify.",
         notice,
@@ -131,7 +135,7 @@ export class SpotifyPlayer implements MediaControllerBridge {
     const state: MediaControllerState = {
       available: true,
       accessEnabled: true,
-      packageName: SPOTIFY_PACKAGE,
+      packageName: this.deps.packageName,
       appName: spotifyAppName(playback.device),
       playbackState: playback.playing ? "playing" : "paused",
       title: item?.name ?? (playback.playingType === "ad" ? "Advertisement" : ""),

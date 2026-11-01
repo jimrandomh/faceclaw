@@ -12,11 +12,14 @@ import {
   type MediaPlaybackState,
   type MediaQueueItem,
 } from "./media-types";
+import { spotifyService } from "./spotify";
+import { SPOTIFY_ANDROID_PACKAGE, type SpotifyPlayer } from "./spotify-player";
 
 declare const com: any;
 
 export type { MediaControllerState, MediaPlaybackState, MediaQueueItem } from "./media-types";
 
+/** Android media sessions (any player that publishes one), through FaceclawMediaController. */
 export class FaceclawMediaControllerBridge implements MediaControllerBridge {
   readonly accessPrompt = "Notification access is required to control Android media sessions. Tap to open settings.";
   readonly accessLabel = "Notification access needed";
@@ -215,4 +218,251 @@ function normalizePlaybackState(value: string): MediaPlaybackState {
   }
 }
 
-export const mediaControllerBridge: MediaControllerBridge = new FaceclawMediaControllerBridge();
+export type AndroidMediaSource = "session" | "spotify";
+
+/**
+ * Which to follow: the media session (any player, Spotify included when it
+ * runs on this phone) or Spotify's Web API player (signed in; it also sees
+ * Spotify playing on a computer or speaker). The one playing; with both
+ * playing, the session when it is Spotify's own (the same playback), else the
+ * current choice (no flapping); with neither, a Spotify session, then the one
+ * that played last, then whichever has something. Without notification
+ * access the session shows its access prompt unless Spotify has something.
+ */
+export function chooseAndroidMediaSource(
+  current: AndroidMediaSource,
+  session: MediaControllerState,
+  spotify: MediaControllerState | null,
+  sessionLastPlayingAtMs: number,
+  spotifyLastPlayingAtMs: number,
+): AndroidMediaSource {
+  if (!spotify?.accessEnabled) return "session";
+  if (!session.accessEnabled) return spotify.available ? "spotify" : "session";
+  const sessionIsSpotify = session.packageName === SPOTIFY_ANDROID_PACKAGE;
+  const sessionPlaying = session.playbackState === "playing";
+  const spotifyPlaying = spotify.playbackState === "playing";
+  if (sessionPlaying && spotifyPlaying) return sessionIsSpotify ? "session" : current;
+  if (sessionPlaying) return "session";
+  if (spotifyPlaying) return "spotify";
+  if (sessionIsSpotify && session.available) return "session";
+  if (sessionLastPlayingAtMs !== spotifyLastPlayingAtMs) {
+    return spotifyLastPlayingAtMs > sessionLastPlayingAtMs ? "spotify" : "session";
+  }
+  return session.available || !spotify.available ? "session" : "spotify";
+}
+
+/**
+ * The Android Music bridge: media sessions, plus Spotify's Web API once
+ * signed in (optional). Spotify playing on this phone stays the session's:
+ * its state, art, queue and transport come from the session (instant, no
+ * quota), and the Web API adds what the session lacks: shuffle / repeat /
+ * like rows and the volume of a Spotify Connect speaker or computer. Spotify
+ * playing on another device, with no session here, follows the Web API player.
+ */
+export class AndroidMediaControllerBridge implements MediaControllerBridge {
+  readonly accessPrompt: string;
+  readonly accessLabel: string;
+  readonly accessAction: string;
+  private source: AndroidMediaSource = "session";
+  private sessionLastPlayingAtMs = 0;
+  private readonly listeners = new Set<(state: MediaControllerState) => void>();
+  private unsubscribeSources: Array<() => void> = [];
+  /** The source and its artVersion the composite artVersion was bumped for. */
+  private artKey = "";
+  private artVersion = 0;
+  /** The player the last getQueue listed, so a jump goes to the same one. */
+  private queueSource: MediaControllerBridge | null = null;
+  /** A Spotify session's item and play state, to re-read the Web API when they change. */
+  private spotifySessionKey = "";
+
+  constructor(
+    private readonly session: MediaControllerBridge,
+    private readonly spotify: () => SpotifyPlayer | null,
+    private readonly now: () => number = Date.now,
+  ) {
+    this.accessPrompt = session.accessPrompt;
+    this.accessLabel = session.accessLabel;
+    this.accessAction = session.accessAction;
+  }
+
+  get skipRebuildsQueue(): boolean {
+    return (this.queueSource ?? this.active()).skipRebuildsQueue;
+  }
+
+  onStateChange(listener: (state: MediaControllerState) => void): () => void {
+    if (!this.listeners.size) {
+      const spotify = this.spotify();
+      this.unsubscribeSources = [
+        this.session.onStateChange((state) => this.sessionChanged(state)),
+        ...(spotify ? [spotify.onStateChange(() => this.emit())] : []),
+      ];
+    }
+    this.listeners.add(listener);
+    listener(this.snapshot());
+    return () => {
+      this.listeners.delete(listener);
+      if (this.listeners.size) return;
+      for (const unsubscribe of this.unsubscribeSources) unsubscribe();
+      this.unsubscribeSources = [];
+    };
+  }
+
+  snapshot(): MediaControllerState {
+    const session = this.session.snapshot();
+    const spotify = this.spotify()?.snapshot() ?? null;
+    this.select(session, spotify);
+    const state = this.source === "spotify" && spotify ? spotify : withSpotifyExtras(session, spotify);
+    // Changes with the source as well as with that source's art.
+    const artKey = `${this.source}:${state.artVersion}`;
+    if (artKey !== this.artKey) {
+      this.artKey = artKey;
+      this.artVersion++;
+    }
+    return {
+      ...state,
+      artVersion: this.artVersion,
+      // A Spotify command can fail while the session is the one shown (playing from the Spotify library).
+      notice: spotify?.notice || state.notice || "",
+    };
+  }
+
+  async start(): Promise<void> {
+    await this.session.start();
+  }
+
+  async stop(): Promise<void> {
+    await this.session.stop();
+  }
+
+  playPause(): Promise<void> {
+    return this.active().playPause();
+  }
+
+  skipNext(): Promise<void> {
+    return this.active().skipNext();
+  }
+
+  skipPrevious(): Promise<void> {
+    return this.active().skipPrevious();
+  }
+
+  /** Notification access (what requestAccess opens); Spotify signs in from the Music menu. */
+  hasAccess(): boolean {
+    return this.session.hasAccess();
+  }
+
+  requestAccess(): Promise<boolean> {
+    return this.session.requestAccess();
+  }
+
+  skipToQueueItem(id: number): Promise<void> {
+    return (this.queueSource ?? this.active()).skipToQueueItem(id);
+  }
+
+  /** Spotify's own volume logic (a Connect device's volume, else this phone's) whenever Spotify is shown. */
+  getMediaVolumePercent(): number {
+    return this.volumeSource().getMediaVolumePercent();
+  }
+
+  setMediaVolumePercent(volumePercent: number): void {
+    this.volumeSource().setMediaVolumePercent(volumePercent);
+  }
+
+  getAlbumArt(maxSize: number): GrayImage | null {
+    return this.active().getAlbumArt(maxSize);
+  }
+
+  /** The session's queue; for a Spotify session that lists none, the Web API's. */
+  getQueue(): MediaQueueItem[] {
+    const active = this.active();
+    const queue = active.getQueue();
+    const spotify = this.spotifyExtras();
+    if (queue.length || active !== this.session || !spotify) {
+      this.queueSource = active;
+      return queue;
+    }
+    this.queueSource = spotify;
+    return spotify.getQueue();
+  }
+
+  /** Spotify's actions (shown with a Spotify session too) go to the Web API player; any others to the session. */
+  async sendCustomAction(action: string): Promise<void> {
+    const spotify = this.spotify();
+    if (spotify && spotify.snapshot().customActions?.some((custom) => custom.action === action)) {
+      await spotify.sendCustomAction(action);
+    } else {
+      await this.session.sendCustomAction?.(action);
+    }
+  }
+
+  async refresh(): Promise<void> {
+    await this.spotify()?.refresh();
+  }
+
+  private active(): MediaControllerBridge {
+    const spotify = this.spotify();
+    this.select(this.session.snapshot(), spotify?.snapshot() ?? null);
+    return this.source === "spotify" && spotify ? spotify : this.session;
+  }
+
+  /** The signed-in Web API player when it describes what the session shows (Spotify's own session); else null. */
+  private spotifyExtras(): SpotifyPlayer | null {
+    const spotify = this.spotify();
+    if (!spotify || this.session.snapshot().packageName !== SPOTIFY_ANDROID_PACKAGE) return null;
+    return spotify.snapshot().available ? spotify : null;
+  }
+
+  private volumeSource(): MediaControllerBridge {
+    const active = this.active();
+    return active === this.session ? this.spotifyExtras() ?? this.session : active;
+  }
+
+  private select(session: MediaControllerState, spotify: MediaControllerState | null): void {
+    if (session.playbackState === "playing") this.sessionLastPlayingAtMs = this.now();
+    this.source = chooseAndroidMediaSource(this.source, session, spotify, this.sessionLastPlayingAtMs,
+      this.spotify()?.lastPlayingAtMs ?? 0);
+  }
+
+  private sessionChanged(state: MediaControllerState): void {
+    // Spotify's session changed track or started / stopped: re-read the Web
+    // API now, so its rows (like this song, shuffle) follow at once rather
+    // than at the next poll. Signed out, the player skips the request.
+    const key = state.packageName === SPOTIFY_ANDROID_PACKAGE ? `${state.title}\n${state.playbackState}` : "";
+    if (key !== this.spotifySessionKey) {
+      this.spotifySessionKey = key;
+      if (key) void this.spotify()?.refresh();
+    }
+    this.emit();
+  }
+
+  /** Forward every source update: each drops its own repeats, and Spotify also signals queue changes. */
+  private emit(): void {
+    if (!this.listeners.size) return;
+    const state = this.snapshot();
+    for (const listener of this.listeners) listener(state);
+  }
+}
+
+/**
+ * Spotify's session state plus what only the Web API knows: its custom rows
+ * and, when it plays elsewhere, the device ("Spotify · Kitchen"). "Like
+ * song" names the Web API's current item, so it is left out until both agree
+ * on the track (the API lags a skip by up to a poll).
+ */
+export function withSpotifyExtras(session: MediaControllerState, spotify: MediaControllerState | null): MediaControllerState {
+  if (!spotify?.available || session.packageName !== SPOTIFY_ANDROID_PACKAGE) return session;
+  const sameItem = spotify.title === session.title;
+  const actions = (spotify.customActions ?? []).filter((custom) => sameItem || custom.action !== "like");
+  return {
+    ...session,
+    appName: sameItem ? spotify.appName : session.appName,
+    customActions: [...(session.customActions ?? []), ...actions],
+  };
+}
+
+const sessionBridge = new FaceclawMediaControllerBridge();
+
+export const mediaControllerBridge: MediaControllerBridge = new AndroidMediaControllerBridge(
+  sessionBridge,
+  () => spotifyService()?.player ?? null,
+);

@@ -91,6 +91,9 @@ function bridges() {
     './image-files': {},
     './notification-access': { isNotificationListenerEnabled: () => true },
     './media-types': load('app/native/media-types.ts', () => { throw new Error('media-types has no imports'); }),
+    // Signed out of Spotify's Web API: the bridges are the native session and browser services alone.
+    './spotify': { spotifyService: () => null },
+    './spotify-player': { SPOTIFY_ANDROID_PACKAGE: 'com.spotify.music' },
   };
   const globals = { global: { isAndroid: true }, com: { faceclaw: { app: {
     FaceclawMediaBrowser: NativeBrowser,

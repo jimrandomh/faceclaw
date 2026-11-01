@@ -17,8 +17,10 @@ import { SpotifyClient, type SpotifyFetch, type SpotifySearchType } from "./spot
 /** Give up on a sign-in nobody finished on the phone. */
 const SIGN_IN_TIMEOUT_MS = 10 * 60_000;
 
-/** What the platform supplies (spotify.ios.ts). */
+/** What the platform supplies (spotify.ios.ts, spotify.ts). */
 export type SpotifyPlatform = {
+  /** Spotify's app id on this platform (SPOTIFY_IOS_BUNDLE_ID / SPOTIFY_ANDROID_PACKAGE). */
+  packageName: string;
   fetch: SpotifyFetch;
   webSignIn: WebSignIn;
   download(url: string): Promise<Uint8Array | null>;
@@ -48,6 +50,7 @@ export class SpotifyService {
     this.client = new SpotifyClient(platform.fetch, new SpotifySession(platform.fetch));
     this.player = new SpotifyPlayer({
       client: this.client,
+      packageName: platform.packageName,
       isSignedIn,
       download: (url) => platform.download(url),
       decodeArt: (bytes, maxSize) => platform.decodeArt(bytes, maxSize),
@@ -55,6 +58,7 @@ export class SpotifyService {
     });
     this.library = new SpotifyLibrary({
       client: this.client,
+      packageName: platform.packageName,
       player: this.player,
       isSignedIn,
       userId: () => readSpotifyAccount()?.userId ?? "",
