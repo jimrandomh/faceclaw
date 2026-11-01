@@ -8,6 +8,7 @@
 * Add support for embedded icons and custom layouts in Android notifications
 * Port the Developer app's resource-usage monitor and various test pages to iOS
 * iOS: Notifications are selectable via the task switcher
+* Android: Open the system file picker for file uploads from hosted Even Hub apps
 * Android: Optionally sign in to Spotify's Web API for library browsing and other features
 
 ## 0.8.5 - 2026-10-25

@@ -171,6 +171,12 @@
 			android:showWhenLocked="true"
 			android:turnScreenOn="true"
 			android:theme="@android:style/Theme.Material.NoActionBar" />
+		<!-- File chooser trampoline for upload controls in hosted Even Hub apps. -->
+		<activity
+			android:name="com.faceclaw.app.FaceclawFilePickerActivity"
+			android:exported="false"
+			android:excludeFromRecents="true"
+			android:theme="@android:style/Theme.Translucent.NoTitleBar" />
 		<!-- adb-only settings export/import (see FaceclawSettingsPortReceiver).
 		     DUMP is a development permission: the adb shell holds it, other
 		     apps cannot get it granted without adb, so this stays reachable
