@@ -1570,6 +1570,14 @@ class GlassesSessionCore(
                     // deferred head-up wake produces from a dark display.
                     decoded = G2Event("display-wake", "", BleProtocol.EVENT_HEAD_UP, decoded.eventSource, 0)
                     logLine("head-up forwarded by CFW while page on screen")
+                } else if (decoded != null
+                        && "sys-event" == decoded.kind
+                        && decoded.eventType == BleProtocol.EVENT_HEAD_DOWN) {
+                    // Faceclaw/38 also forwards the head coming back down. Nothing
+                    // uses it yet; as an unknown input it would count as activity
+                    // and keep the screen awake, so drop it here.
+                    logLine("head-down forwarded by CFW (ignored)")
+                    decoded = null
                 }
                 event = decoded
                 if (decoded != null) {

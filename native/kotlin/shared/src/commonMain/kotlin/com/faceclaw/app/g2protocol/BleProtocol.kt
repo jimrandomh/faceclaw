@@ -164,6 +164,9 @@ class BleProtocol {
 
         const val EVENT_HEAD_UP: Int = 12
 
+        /** Faceclaw/38: IMU head-down (the head returning after a lift), forwarded while a page is up. */
+        const val EVENT_HEAD_DOWN: Int = 15
+
         const val EVENT_SOURCE_GLASSES_R: Int = 1
 
         const val EVENT_SOURCE_RING: Int = 2
