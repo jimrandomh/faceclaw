@@ -136,6 +136,13 @@ Button.-primary {
   text-align: center;
 }
 
+/* Battery levels under the mirror (main-page.xml). */
+.battery-line {
+  font-size: 14;
+  text-align: center;
+  padding: 12 16 0 16;
+}
+
 .system-name-modal {
   margin: 16;
   padding: 16;

@@ -103,6 +103,8 @@ type ConnectionPhase = "disconnected" | "connecting" | "connected" | "charging" 
 
 export type DashboardSnapshot = {
   phase: ConnectionPhase;
+  /** Last-known battery levels: the glasses, their charging case, the R1 ring and a Wear OS watch. */
+  batteries: ReturnType<typeof shell.getBatteryLevels>;
   status: string;
   displayPreview: ImageSource | null;
   /**
@@ -333,6 +335,7 @@ class DashboardController {
   private offState: (() => void) | null = null;
   private offRing: (() => void) | null = null;
   private offBattery: (() => void) | null = null;
+  private offCaseBattery: (() => void) | null = null;
   private offSilentMode: (() => void) | null = null;
   private offWearState: (() => void) | null = null;
   private offPhoneLockState: (() => void) | null = null;
@@ -1130,6 +1133,7 @@ class DashboardController {
       alarmReliabilityMessage: this.alarmReliabilityMessage,
       previewMode: this.isPreviewDisplayActive(),
       evenHubPhoneUi: phoneUiButton(),
+      batteries: shell.getBatteryLevels(),
     };
   }
 
@@ -1584,6 +1588,12 @@ class DashboardController {
         // the watch state, so refresh both consumers on every report.
         this.emit();
       });
+      this.offCaseBattery = communicator.onCaseState((state) => {
+        // Kept across disconnects: the case only reports while the glasses are
+        // docked and only drains while charging them, so the last level holds.
+        shell.setBatteryLevels({ case: state.battery, caseCharging: state.charging });
+        this.emit();
+      });
       this.offEvenAppConflict = communicator.onEvenAppConflict((message) => {
         this.refreshEvenAppStatus();
         if (!this.evenNotificationActive) {
@@ -1704,6 +1714,8 @@ class DashboardController {
       this.offRing = null;
       this.offBattery?.();
       this.offBattery = null;
+      this.offCaseBattery?.();
+      this.offCaseBattery = null;
       this.offSilentMode?.();
       this.offSilentMode = null;
       this.offWearState?.();
@@ -1816,6 +1828,8 @@ class DashboardController {
     this.offRing = null;
     this.offBattery?.();
     this.offBattery = null;
+    this.offCaseBattery?.();
+    this.offCaseBattery = null;
     this.offSilentMode?.();
     this.offSilentMode = null;
     this.offWearState?.();

@@ -14,7 +14,7 @@ import {
   type TouchGestureEventData,
   type View,
 } from "@nativescript/core";
-import { dashboardController, type MirrorTouchKind } from "../g2/dashboard-controller";
+import { dashboardController, type DashboardSnapshot, type MirrorTouchKind } from "../g2/dashboard-controller";
 import {
   mirrorTouchSetting,
   onAnySettingChanged,
@@ -32,8 +32,26 @@ const LENS_ASPECT_RATIO = G2_LENS_WIDTH / G2_LENS_HEIGHT;
 
 type LayoutOrientation = "portrait" | "landscape";
 
+/**
+ * The line under the mirror: each device whose level is known, e.g.
+ * "G2 100% · Case 98% ⚡ · R1 72%" (⚡ = charging). The case level is the last
+ * one the glasses relayed; it only reports while they are docked.
+ */
+function formatBatteryLine(levels: DashboardSnapshot["batteries"]): string {
+  const devices: Array<[string, number | null, boolean | null]> = [
+    ["G2", levels.headset, levels.headsetCharging],
+    ["Case", levels.case, levels.caseCharging],
+    ["R1", levels.ring, levels.ringCharging],
+  ];
+  return devices
+    .filter(([, level]) => level !== null)
+    .map(([label, level, charging]) => `${label} ${level}%${charging ? " ⚡" : ""}`)
+    .join("  ·  ");
+}
+
 export class MainViewModel extends RemoteControlsViewModel {
   private _status = "Disconnected.";
+  private _batteryLine = "";
   private _displayPreview: ImageSource | null = null;
   private _displayPreviewMessage = "";
   private _layoutOrientation: LayoutOrientation = this.readLayoutOrientation();
@@ -90,6 +108,7 @@ export class MainViewModel extends RemoteControlsViewModel {
       this.displayPreview = snapshot.displayPreview;
       this.displayPreviewMessage = snapshot.displayPreviewMessage;
       this.phase = snapshot.phase;
+      this.batteryLine = formatBatteryLine(snapshot.batteries);
       this.activeTextSettingId = snapshot.activeTextSettingId;
       this.activeTextEditorTitle = snapshot.activeTextEditorTitle;
       this.activeTextSettingTitle = snapshot.activeTextSettingTitle;
@@ -149,6 +168,21 @@ export class MainViewModel extends RemoteControlsViewModel {
    * (which can be a sentence, e.g. a failure reason) stays available by
    * tapping the indicator.
    */
+  get batteryLine(): string {
+    return this._batteryLine;
+  }
+
+  set batteryLine(value: string) {
+    if (this._batteryLine === value) return;
+    this._batteryLine = value;
+    this.notifyPropertyChange("batteryLine", value);
+    this.notifyPropertyChange("batteryLineVisibility", this.batteryLineVisibility);
+  }
+
+  get batteryLineVisibility(): "visible" | "collapse" {
+    return this._batteryLine ? "visible" : "collapse";
+  }
+
   get connectionStatusLabel(): string {
     switch (this._phase) {
       case "connected":

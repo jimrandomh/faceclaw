@@ -19,7 +19,7 @@
     </ActionBar>
 
     <GridLayout>
-        <GridLayout rows="auto,*" visibility="{{ portraitLayoutVisibility }}">
+        <GridLayout rows="auto,auto,*" visibility="{{ portraitLayoutVisibility }}">
             <StackLayout row="0" visibility="{{ displayPreviewVisibility }}">
                 <Image src="{{ displayPreview }}" stretch="fill" height="{{ displayPreviewHeight }}"
                     tap="{{ onMirrorTap }}" doubleTap="{{ onMirrorDoubleTap }}" longPress="{{ onMirrorLongPress }}" swipe="{{ onMirrorSwipe }}" />
@@ -31,9 +31,10 @@
                 visibility="{{ displayPreviewMessageVisibility }}">
                 <Label text="{{ displayPreviewMessage }}" textWrap="true" horizontalAlignment="center" verticalAlignment="center" />
             </GridLayout>
+            <Label row="1" text="{{ batteryLine }}" visibility="{{ batteryLineVisibility }}" class="battery-line" />
             <!-- The controls get the whole star row so the active tab's
                  content can center in the leftover height. -->
-            <GridLayout row="1" rows="*,auto" class="p-20">
+            <GridLayout row="2" rows="*,auto" class="p-20">
                 <rc:remote-controls row="0" visibility="{{ controlsVisibility }}" />
                 <Button row="1" text="Stop recording" tap="{{ onStopRecordingTap }}" visibility="{{ stopRecordingButtonVisibility }}" />
             </GridLayout>
@@ -60,9 +61,10 @@
                         <Label text="{{ displayPreviewMessage }}" textWrap="true" horizontalAlignment="center" verticalAlignment="center" />
                     </GridLayout>
                 </GridLayout>
-                <GridLayout col="1" rows="*,auto">
-                    <rc:remote-controls row="0" visibility="{{ controlsVisibility }}" />
-                    <Button row="1" text="Stop recording" tap="{{ onStopRecordingTap }}" visibility="{{ stopRecordingButtonVisibility }}" />
+                <GridLayout col="1" rows="auto,*,auto">
+                    <Label row="0" text="{{ batteryLine }}" visibility="{{ batteryLineVisibility }}" class="battery-line" />
+                    <rc:remote-controls row="1" visibility="{{ controlsVisibility }}" />
+                    <Button row="2" text="Stop recording" tap="{{ onStopRecordingTap }}" visibility="{{ stopRecordingButtonVisibility }}" />
                 </GridLayout>
             </GridLayout>
         </GridLayout>
