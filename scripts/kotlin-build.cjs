@@ -62,7 +62,14 @@ async function buildKotlin(platform, configuration = 'debug') {
     if (files.length !== 1) throw new Error(`Expected one Kotlin AAR, found: ${files.join(', ')}`);
     const source = path.join(output, files[0]);
     const aar = path.join(destination, 'faceclaw-shared.aar');
-    if (!sameContents(source, aar)) cpSync(source, aar);
+    if (!sameContents(source, aar)) {
+      cpSync(source, aar);
+      // NativeScript's buildMetadata task tracks dependency jars by path, not
+      // contents, so a new AAR at the same path leaves the JS metadata stale:
+      // a method added in Kotlin is then "not a function" at runtime. Removing
+      // the task's outputs makes Gradle run it again.
+      rmSync(path.join(root, 'platforms/android/app/src/main/assets/metadata'), { recursive: true, force: true });
+    }
   } else {
     const framework = path.join(destination, 'FaceclawKit.xcframework');
     const source = path.join(kotlin, `shared/build/XCFrameworks/${configuration}/FaceclawKit.xcframework`);

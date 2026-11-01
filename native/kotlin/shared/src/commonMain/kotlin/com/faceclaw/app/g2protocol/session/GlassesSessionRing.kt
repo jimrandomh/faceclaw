@@ -87,6 +87,39 @@ private const val RING_HEALTH_ABORTED_RETRY_LIMIT = 2
  */
 private const val RING_HEALTH_ABORTED_RETRY_GAP_MS = 60L * 1000L
 
+/**
+ * Direct mode: floor between health windows (see beginRingHealthWindowLocked).
+ * A window costs the user ring gestures for the length of two reconnects and a
+ * pull, so opening and closing the Health app must not keep bouncing the link.
+ * The aligned :01/:31 pulls are well outside it.
+ */
+private const val RING_HEALTH_WINDOW_MIN_INTERVAL_MS = 5L * 60L * 1000L
+
+/**
+ * Direct mode: how long a health window waits for its phone-role link to be
+ * up before giving up and handing the link back to the glasses role. Bounds
+ * only the connect; a pull that has started runs to completion on the ring
+ * worker before the deadline is looked at again.
+ */
+private const val RING_HEALTH_WINDOW_CONNECT_TIMEOUT_MS = 60_000L
+
+/**
+ * Direct mode: a requested health window waits until the ring has been idle
+ * this long, so it does not take the ring away in the middle of a gesture
+ * sequence. The request stays pending meanwhile.
+ */
+private const val RING_HEALTH_WINDOW_INPUT_IDLE_MS = 5_000L
+
+/**
+ * Pause between dropping the direct link and reconnecting it in another role.
+ * The ring frees a role when the connection ends, but Android keeps the LE
+ * link up for a moment after the last client closes, and a new client
+ * registered in that moment reuses it - the ring would then see the old
+ * role's handle ask for the other role, which stock firmware treats as a
+ * fatal assertion (openCFW CONNECTION-ROLE-ASSIGNMENT-CORRELATION.md).
+ */
+private const val RING_ROLE_SWITCH_SETTLE_MS = 3_000L
+
 /** First pause after a failed ring write; doubles per consecutive failure. See [writeRingFrame]. */
 private const val RING_WRITE_BACKOFF_MS = 1_000L
 private const val RING_WRITE_BACKOFF_MAX_MS = 15_000L
@@ -130,6 +163,7 @@ class RingHealthBatch internal constructor(
 internal fun GlassesSessionCore.runRingWorker() {
     while (running) {
         try {
+            expireRingHealthWindow()
             restartRingLinkForRoleChange()
             if (shouldAttemptRingConnect()) tryConnectRing("ring worker")
             if (!running) break
@@ -314,27 +348,143 @@ internal fun GlassesSessionCore.journalRingFrame(frame: RingProtocol.Frame): Boo
  * Ring worker only (blocking).
  */
 internal fun GlassesSessionCore.onRingDataChannelReady() {
-    // The handshake mirrors what Even's own app repeats on every one
-    // of its sync bursts (confirmed in the reference capture), so
-    // sending it on every reconnect matches known-working behavior.
-    // The actual health pull is throttled separately below - see
-    // ringHealthLastRequestedAtMs and requestRingHealth()'s own
-    // race-condition warning for why.
-    sendRingHandshake()
-    val now = now()
-    val dueForHealthPull: Boolean
-    val lastRequestedAtMs: Long
-    monitor.withLock {
-        lastRequestedAtMs = ringHealthLastRequestedAtMs
-        dueForHealthPull = ringHealthPullDueLocked(now)
-        if (dueForHealthPull) {
-            ringHealthLastRequestedAtMs = now
+    try {
+        // The handshake mirrors what Even's own app repeats on every one
+        // of its sync bursts (confirmed in the reference capture), so
+        // sending it on every reconnect matches known-working behavior.
+        // The actual health pull is throttled separately below - see
+        // ringHealthLastRequestedAtMs and requestRingHealth()'s own
+        // race-condition warning for why.
+        sendRingHandshake()
+        val now = now()
+        val dueForHealthPull: Boolean
+        val lastRequestedAtMs: Long
+        monitor.withLock {
+            lastRequestedAtMs = ringHealthLastRequestedAtMs
+            // A health window was opened for exactly this pull, and its own
+            // floor was applied when it opened.
+            dueForHealthPull = ringHealthWindowActive || ringHealthPullDueLocked(now)
+            if (dueForHealthPull) {
+                ringHealthLastRequestedAtMs = now
+            }
         }
+        if (dueForHealthPull) {
+            runRingHealthPull()
+        } else {
+            logLine("ring health: pull skipped, last one was " + ((now - lastRequestedAtMs) / 1000) + "s ago")
+        }
+    } finally {
+        // Completed, aborted or threw: either way the link goes back to the
+        // glasses role, so a failed pull never costs the user gestures for
+        // longer than the attempt.
+        monitor.withLock { endRingHealthWindowLocked("pull finished") }
     }
-    if (dueForHealthPull) {
-        runRingHealthPull()
-    } else {
-        logLine("ring health: pull skipped, last one was " + ((now - lastRequestedAtMs) / 1000) + "s ago")
+}
+
+/**
+ * The direct link's role for its next setup: the configured one, except the
+ * phone role while a health window is open. Caller holds `monitor`.
+ */
+internal fun GlassesSessionCore.effectiveRingRoleLocked(): String =
+    if (ringHealthWindowActive) DIRECT_RING_ROLE_PHONE else directRingRole
+
+/**
+ * Direct mode's health sync. Caller holds `monitor`.
+ *
+ * In Direct mode the direct link holds the ring's glasses role (gestures,
+ * battery), and the ring answers system requests - health included - only to
+ * its phone role. One link cannot hold both: the stock role setter treats the
+ * same connection asking for the second role as a fatal assertion, and live
+ * "both" links died every ~6 s (notes/ring-link-control.md). So a pull borrows
+ * the phone role: drop the link, reconnect it with only the data CCCD (the
+ * health-mode setup, which runs the handshake and the pull), then drop it
+ * again and reconnect in the glasses role. Ring gestures stop for that long,
+ * typically well under a minute; the glasses' own touch input is unaffected.
+ *
+ * Every exit returns the link to the glasses role: the pull finishing
+ * ([onRingDataChannelReady]), the connect deadline ([expireRingHealthWindow]),
+ * or a role change ([GlassesSessionCore.setDirectRingRole]).
+ *
+ * Not yet hardware-tested: whether the ring restores the bonded peer's legacy
+ * CCCD on the phone-role reconnect and assigns the glasses role from it. If it
+ * does, the phone-role pairAuth would be refused or the link dropped, the pull
+ * would abort, and the window would close; look for "health window" in the log.
+ */
+internal fun GlassesSessionCore.beginRingHealthWindowLocked(now: Long, reason: String) {
+    ringHealthWindowActive = true
+    ringHealthWindowDeadlineMs = now + RING_HEALTH_WINDOW_CONNECT_TIMEOUT_MS
+    // Counts as the attempt for the window floor whether or not it succeeds,
+    // so a ring that never comes up in the phone role is retried at most
+    // once per floor.
+    ringHealthLastRequestedAtMs = now
+    // A link already set up in the glasses role has to be dropped. One that
+    // is still connecting sets up in the phone role when it lands.
+    if (ringNotificationsReady) {
+        ringRoleReconnectPending = true
+    }
+    monitor.signalAll()
+    logLine("ring health: opening a health window ($reason): direct link to the phone role for one pull")
+}
+
+/** Close a health window and put the link back in the glasses role. Caller holds `monitor`. */
+internal fun GlassesSessionCore.endRingHealthWindowLocked(reason: String) {
+    if (!ringHealthWindowActive) return
+    ringHealthWindowActive = false
+    ringHealthWindowDeadlineMs = 0L
+    // Only a link that finished its phone-role setup has to be dropped; one
+    // still connecting picks up the glasses role when it sets up.
+    if (directRingRole == DIRECT_RING_ROLE_GLASSES && ringNotificationsReady) {
+        ringRoleReconnectPending = true
+    }
+    monitor.signalAll()
+    logLine("ring health: closing the health window ($reason); direct link back to the glasses role")
+}
+
+/** Ring-worker tick: give up on a health window whose phone-role link never came up. */
+internal fun GlassesSessionCore.expireRingHealthWindow() {
+    monitor.withLock {
+        if (!ringHealthWindowActive || now() < ringHealthWindowDeadlineMs) return
+        lastRingHealthPullResult = "not run: phone-role link did not come up"
+        lastRingHealthPullAtMs = now()
+        endRingHealthWindowLocked("phone-role link not up after "
+            + (RING_HEALTH_WINDOW_CONNECT_TIMEOUT_MS / 1000L) + "s")
+    }
+}
+
+/**
+ * Direct mode's on-demand pull: open a health window for an explicit request
+ * (Health app opened, aligned :01/:31 tick), and once per session without one
+ * so the first pull does not wait for the next aligned tick. Ring worker only.
+ */
+private fun GlassesSessionCore.startRequestedRingHealthWindow() {
+    val now = now()
+    monitor.withLock {
+        if (!host.supportsRingHealth()) {
+            ringHealthPullRequested = false
+            return
+        }
+        if (ringHealthWindowActive) {
+            // The open window pulls as soon as its link is up.
+            ringHealthPullRequested = false
+            return
+        }
+        val firstThisSession = ringHealthLastRequestedAtMs == 0L
+        if (!ringHealthPullRequested && !firstThisSession) return
+        // The ring is only dialed once the glasses session is up
+        // (shouldAttemptRingConnect); opening sooner would spend the
+        // window's connect deadline waiting on the glasses.
+        if (!running || !sessionReady) return
+        if (!firstThisSession && now - ringHealthLastRequestedAtMs < RING_HEALTH_WINDOW_MIN_INTERVAL_MS) {
+            ringHealthPullRequested = false
+            logLine("ring health: health window skipped, last pull attempt was "
+                + ((now - ringHealthLastRequestedAtMs) / 1000) + "s ago")
+            return
+        }
+        if (lastDirectRingInputAtMs != 0L && now - lastDirectRingInputAtMs < RING_HEALTH_WINDOW_INPUT_IDLE_MS) {
+            return  // the ring is in use; try again on a later tick
+        }
+        ringHealthPullRequested = false
+        beginRingHealthWindowLocked(now, if (firstThisSession) "first pull this session" else "requested")
     }
 }
 
@@ -362,8 +512,12 @@ internal fun GlassesSessionCore.ringHealthPullDueLocked(now: Long): Boolean {
  * definition of "aborted".
  */
 internal fun GlassesSessionCore.runRingHealthPull() {
+    val pagesBefore = monitor.withLock { ringHealthPageCounter }
     val completed = requestRingHealth()
     monitor.withLock {
+        val pages = ringHealthPageCounter - pagesBefore
+        lastRingHealthPullResult = (if (completed) "completed" else "aborted") + ", $pages pages"
+        lastRingHealthPullAtMs = now()
         if (completed) {
             ringHealthAbortedRetries = 0
         } else if (ringHealthAbortedRetries < RING_HEALTH_ABORTED_RETRY_LIMIT) {
@@ -393,6 +547,8 @@ internal fun GlassesSessionCore.resumeAbortedRingHealthPull() {
         if (ringHealthAbortedRetries == 0) {
             return
         }
+        // Direct mode does not resume here: a retry would mean another pair
+        // of role switches, so the next requested or aligned window retries.
         if (!ringConnected || !ringNotificationsReady || directRingRole == DIRECT_RING_ROLE_GLASSES) {
             return
         }
@@ -407,6 +563,12 @@ internal fun GlassesSessionCore.resumeAbortedRingHealthPull() {
 
 /** Ring-worker side of [GlassesSessionCore.requestRingHealthNow]. */
 internal fun GlassesSessionCore.runRequestedRingHealthPull() {
+    if (monitor.withLock { directRingRole == DIRECT_RING_ROLE_GLASSES }) {
+        // Direct mode used to drop every request here, so the Health app
+        // never got data; the pull has to borrow the phone role instead.
+        startRequestedRingHealthWindow()
+        return
+    }
     val now = now()
     monitor.withLock {
         if (!ringHealthPullRequested) {
@@ -415,10 +577,6 @@ internal fun GlassesSessionCore.runRequestedRingHealthPull() {
         ringHealthPullRequested = false
         if (!ringConnected || !ringNotificationsReady) {
             logLine("ring health: on-demand pull skipped, ring not ready")
-            return
-        }
-        if (directRingRole == DIRECT_RING_ROLE_GLASSES) {
-            logLine("ring health: on-demand pull skipped, direct link holds the glasses role")
             return
         }
         if (ringHealthLastRequestedAtMs != 0L
@@ -1033,17 +1191,22 @@ internal fun GlassesSessionCore.recordRingConfigResponse(frame: RingProtocol.Fra
     logLine("ring command $label answered: $result " + frame.describe())
 }
 
-/** Apply a [GlassesSessionCore.setDirectRingRole] change by reconnecting the direct link. Ring worker only. */
+/**
+ * Apply a role change (a [GlassesSessionCore.setDirectRingRole] change, or a
+ * health window opening or closing) by reconnecting the direct link. Ring
+ * worker only.
+ */
 internal fun GlassesSessionCore.restartRingLinkForRoleChange() {
     val role = monitor.withLock {
         if (!ringRoleReconnectPending) return
         ringRoleReconnectPending = false
         ringConnected = false
         ringNotificationsReady = false
-        ringReconnectAfterMs = 0
+        // Let the old connection end before dialing again; see RING_ROLE_SWITCH_SETTLE_MS.
+        ringReconnectAfterMs = now() + RING_ROLE_SWITCH_SETTLE_MS
         ringOutbound.clear()
         dropRingConfigCommandsLocked("role change")
-        directRingRole
+        effectiveRingRoleLocked()
     }
     logLine("direct ring: reconnecting to take the $role role")
     link.disconnect(ringAddress)

@@ -31,6 +31,8 @@ public final class RingProtocolSelfTest {
         testStepsDecode();
         testSleepDecodeAndIdentities();
         testDailyWireLayouts();
+        testFirmware23Trailer();
+        testFrameJournalReplay();
         testDeviceStatus();
 
         System.out.println();
@@ -379,8 +381,96 @@ public final class RingProtocolSelfTest {
         byte[] activity = stepsBody(anchor, buckets);
         expect("eight-bucket activity frame is 80 bytes", dataFrame(5, activity).raw.length == 80);
         expect("activity decodes without footer", RingProtocol.decodeSteps(dataFrame(5, activity), 0).buckets.length == 8);
-        expect("trailing garbage rejected", RingProtocol.decodeSteps(dataFrame(5,
-            Arrays.copyOf(activity, activity.length + 4)), 0) == null);
+        // Four extra bytes are firmware 2.3.x's trailer (testFirmware23Trailer); other lengths are garbage.
+        for (int extra : new int[] {1, 3, 5, 7}) {
+            expect("activity with " + extra + " trailing bytes rejected", RingProtocol.decodeSteps(dataFrame(5,
+                Arrays.copyOf(activity, activity.length + extra)), 0) == null);
+        }
+    }
+
+    /** Firmware 2.3.x appends four bytes to every health page; 2.0.7 did not. */
+    private static void testFirmware23Trailer() {
+        section("firmware 2.3.x four-byte page trailer");
+        long anchor = 1793520000L; // 2026-11-01 00:00 PST, the anchor 2.3.2.0008 sent
+        byte[] trailer = {(byte) 0xad, 0x5e, 0x00, 0x00};
+
+        byte[] hr = withTrailer(hourlyBody(2, anchor, 24037L, 77, 1,
+            new int[][] {{13, 74, 80, 69}, {14, 74, 81, 68}}), trailer);
+        expect("two-hour HR page with trailer is 41 bytes", dataFrame(1, hr).raw.length == 41);
+        RingProtocol.HourlyRecord heart = RingProtocol.decodeHourly(dataFrame(1, hr), 0);
+        expect("HR with trailer decodes", heart != null && heart.groups.length == 2
+            && heart.current == 77 && heart.anchorUnixSeconds == anchor
+            && heart.groups[1].hourIndex == 14 && heart.groups[1].max == 81 && heart.groups[1].min == 68);
+
+        byte[] hrv = withTrailer(hourlyBody(2, anchor, 21676L, 54, 2,
+            new int[][] {{13, 65, 65, 65}, {14, 54, 300, 54}}), trailer);
+        expect("two-hour HRV page with trailer is 48 bytes", dataFrame(4, hrv).raw.length == 48);
+        RingProtocol.HourlyRecord variability = RingProtocol.decodeHourly(dataFrame(4, hrv), 0);
+        expect("HRV with trailer keeps two-byte values", variability != null && variability.valueWidth == 2
+            && variability.current == 54 && variability.groups[1].max == 300);
+
+        byte[] spo2 = withTrailer(hourlyBody(1, anchor, anchor + 70344L, 97, 1,
+            new int[][] {{19, 97, 97, 97}}), trailer);
+        expect("one-hour SpO2 page with trailer is 37 bytes", dataFrame(2, spo2).raw.length == 37);
+        RingProtocol.HourlyRecord oxygen = RingProtocol.decodeHourly(dataFrame(2, spo2), 0);
+        expect("SpO2 with trailer decodes", oxygen != null && oxygen.groups[0].hourIndex == 19 && oxygen.groups[0].avg == 97);
+
+        // No latest-reading prefix, plus the trailer: 9 + 4 bytes around the groups.
+        byte[] offline = new byte[9 + 4 + 4];
+        System.arraycopy(spo2, 0, offline, 0, 9);
+        System.arraycopy(spo2, 14, offline, 9, 4);
+        System.arraycopy(trailer, 0, offline, 13, 4);
+        RingProtocol.HourlyRecord past = RingProtocol.decodeHourly(dataFrame(2, offline), 0);
+        expect("page without latest reading, with trailer, decodes", past != null
+            && past.current == -1 && past.groups[0].hourIndex == 19);
+        expect("HR with one stray byte rejected",
+            RingProtocol.decodeHourly(dataFrame(1, Arrays.copyOf(hr, hr.length + 1)), 0) == null);
+
+        int[][] buckets = new int[8][4];
+        for (int i = 0; i < buckets.length; i++) buckets[i] = new int[] {80 + i, i * 11, i, 2 * i};
+        byte[] activity = withTrailer(stepsBody(anchor, buckets), trailer);
+        expect("eight-bucket activity page with trailer is 84 bytes", dataFrame(5, activity).raw.length == 84);
+        RingProtocol.StepsRecord steps = RingProtocol.decodeSteps(dataFrame(5, activity), 0);
+        expect("activity with trailer decodes", steps != null && steps.buckets.length == 8
+            && steps.buckets[7].index == 87 && steps.buckets[7].steps == 77);
+
+        byte[] sleep = withTrailer(sleepBody(1, 1000L, 1000L + 120, 60, 60, 0, 60, 0,
+            new int[][] {{0, 2}, {2, 2}}), trailer);
+        RingProtocol.SleepRecord night = RingProtocol.decodeSleep(dataFrame(6, sleep), 0);
+        expect("sleep with trailer decodes", night != null && night.isRealRecord() && night.segments.length == 2);
+    }
+
+    private static void testFrameJournalReplay() {
+        section("frame journal replay");
+        long anchor = 1793520000L;
+        byte[] hr = withTrailer(hourlyBody(1, anchor, 1L, 70, 1, new int[][] {{13, 70, 75, 65}}),
+            new byte[] {0, 0, 0, 0});
+        byte[] page = dataFrame(1, hr).raw;
+        byte[] rsp = RingProtocol.buildFrame(RingProtocol.CHAN_HEALTH, RingProtocol.KIND_RSP, 1,
+            RingProtocol.CMD_LO_HEALTH, 3, new byte[] {0, 0});
+        byte[] battery = RingProtocol.buildFrame(RingProtocol.CHAN_DEVICE, RingProtocol.KIND_RSP, 0, 1, 4,
+            new byte[] {0x11, 0x22, 82, 2, 1, 0, 0, 0, 0});
+        // The writer's own shape: a blank line, the record, a newline.
+        String journal = "\n{\"receivedAtMs\":100,\"raw\":\"" + RingProtocol.hex(page) + "\"}\n"
+            + "\n{\"receivedAtMs\":200,\"raw\":\"" + RingProtocol.hex(rsp) + "\"}\n"
+            + "\n{\"receivedAtMs\":300,\"raw\":\"" + RingProtocol.hex(battery) + "\"}\n"
+            + "{\"receivedAtMs\":350,\"raw\":\"zz\"}\n"
+            + "half a line from a failed app{\"receivedAtMs\":\n"
+            + "\n{\"receivedAtMs\":400,\"raw\":\"" + RingProtocol.hex(page) + "\"}\n";
+        List<RingProtocol.HealthRecord> all = RingProtocol.decodeFrameJournal(journal, 0L);
+        expect("only health DATA pages come back", all.size() == 2);
+        expect("each keeps its journaled receive time",
+            all.get(0).receivedAtMs == 100L && all.get(1).receivedAtMs == 400L);
+        expect("decoded as heart rate", all.get(0) instanceof RingProtocol.HourlyRecord
+            && ((RingProtocol.HourlyRecord) all.get(0)).groups[0].avg == 70);
+        List<RingProtocol.HealthRecord> later = RingProtocol.decodeFrameJournal(journal, 100L);
+        expect("cursor skips what was already replayed", later.size() == 1 && later.get(0).receivedAtMs == 400L);
+    }
+
+    private static byte[] withTrailer(byte[] body, byte[] trailer) {
+        byte[] out = Arrays.copyOf(body, body.length + trailer.length);
+        System.arraycopy(trailer, 0, out, body.length, trailer.length);
+        return out;
     }
 
     private static void testDeviceStatus() {

@@ -7,7 +7,7 @@ const ts = require("typescript");
 
 // Run the actual live ingest, seed and file-backend modules with NativeScript
 // files and the Java communicator replaced at their platform boundaries.
-function liveEnvironment() {
+function liveEnvironment({ ringProtocol } = {}) {
   const files = new Map();
   const cache = new Map();
   const faults = { append: null, remove: null, write: null };
@@ -63,12 +63,12 @@ function liveEnvironment() {
       module, exports: module.exports, Date,
       require: (name) => name === "@nativescript/core" ? native : load(path.resolve(path.dirname(filename), name)),
       console: { log() {}, warn() {} },
-      com: { faceclaw: { app: { FaceclawBleCommunicator: { getActive: () => communicator } } } },
+      com: { faceclaw: { app: { FaceclawBleCommunicator: { getActive: () => communicator }, RingProtocol: ringProtocol } } },
     }, { filename });
     return module.exports;
   }
   return {
-    files, faults, start, consumed: () => consumed,
+    files, faults, start, record, consumed: () => consumed,
     load: (name) => load(path.join(__dirname, "../app/health", name)),
   };
 }
@@ -146,4 +146,67 @@ test("a failed fixture append stays labelled and is purged before live ingest", 
   env.load("health-live").syncLiveRecords();
   assert.equal(seed.isFixtureData(), false);
   assert.equal(env.load("health-store-files").healthStore().sleepSessions().length, 0);
+});
+
+test("journaled pages are replayed once, before the live batch, and again after a decoder upgrade", () => {
+  const calls = [];
+  let journalRecords = [];
+  const ringProtocol = {
+    decodeFrameJournal: (text, after) => {
+      calls.push({ text, after });
+      const list = journalRecords.filter((r) => r.receivedAtMs > after);
+      return { size: () => list.length, get: (i) => list[i] };
+    },
+  };
+  const env = liveEnvironment({ ringProtocol });
+  const seed = env.load("health-seed");
+  seed.seedFixturesIfNeeded(2);
+  env.files.set("/health/ring-frames.jsonl", "journal text");
+  // A page the ring sent an hour earlier, never decoded at the time.
+  journalRecords = [{ ...env.record, groups: [{ hourIndex: 1, min: 50, max: 60, avg: 55 }], receivedAtMs: 1000 }];
+  const live = env.load("health-live");
+  const store = env.load("health-store-files").healthStore();
+
+  live.syncLiveRecords();
+  assert.deepEqual(calls.map((c) => [c.text, c.after]), [["journal text", 0]]);
+  assert.equal(seed.isFixtureData(), false);
+  // A wide range: on a DST-change day the fixture record's hour 0 falls before local midnight.
+  const avgs = Array.from(store.samplesInRange(env.start - 86400000, env.start + 2 * 86400000), (s) => s.avg).sort();
+  assert.deepEqual(avgs, [45, 55]);
+  assert.deepEqual(JSON.parse(env.files.get("/health/journal-replay.json")),
+    { version: 2, throughReceivedAtMs: 1000 });
+
+  // Once per process.
+  live.syncLiveRecords();
+  assert.equal(calls.length, 1);
+
+  // The next process resumes after the cursor...
+  const next = liveEnvironment({ ringProtocol });
+  for (const [name, text] of env.files) next.files.set(name, text);
+  next.load("health-live").syncLiveRecords();
+  assert.equal(calls.at(-1).after, 1000);
+
+  // ...unless the cursor came from an older decoder, which may have skipped pages.
+  const upgraded = liveEnvironment({ ringProtocol });
+  for (const [name, text] of env.files) upgraded.files.set(name, text);
+  upgraded.files.set("/health/journal-replay.json", JSON.stringify({ version: 1, throughReceivedAtMs: 1000 }));
+  upgraded.load("health-live").syncLiveRecords();
+  assert.equal(calls.at(-1).after, 0);
+});
+
+test("a failed journal replay is retried on the next sync and never blocks the live batch", () => {
+  let failures = 1;
+  const ringProtocol = {
+    decodeFrameJournal: () => {
+      if (failures-- > 0) throw new Error("decode blew up");
+      return { size: () => 0, get: () => null };
+    },
+  };
+  const env = liveEnvironment({ ringProtocol });
+  env.files.set("/health/ring-frames.jsonl", "journal text");
+  const live = env.load("health-live");
+  assert.equal(live.syncLiveRecords().samplesWritten, 1);
+  assert.equal(env.consumed(), true);
+  live.syncLiveRecords();
+  assert.equal(failures, -1, "replay was not retried");
 });

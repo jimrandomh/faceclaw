@@ -227,6 +227,18 @@ class GlassesSessionCore(
      */
     internal var ringHealthAbortedRetries = 0
     /**
+     * Direct mode (configured role "glasses") only: the direct link has been
+     * handed to the phone role for one health pull, and returns to the glasses
+     * role when that pull ends, or at [ringHealthWindowDeadlineMs] if the
+     * phone-role link never comes up. See beginRingHealthWindowLocked.
+     * Guarded by `monitor`.
+     */
+    internal var ringHealthWindowActive = false
+    internal var ringHealthWindowDeadlineMs = 0L
+    /** Outcome of the last health pull, for the Ring status page. Guarded by `monitor`. */
+    internal var lastRingHealthPullResult = ""
+    internal var lastRingHealthPullAtMs = 0L
+    /**
      * Timeout waiting for a health REQ's own RSP. In the reference capture
      * (a real successful Even sync) RSPs land within ~150ms; this only needs
      * to bound the pathological "ring stopped answering entirely" case.
@@ -1021,6 +1033,10 @@ class GlassesSessionCore(
             status["lastCommandResultR"] = lastRingLinkResultR
             status["lastCommandResultL"] = lastRingLinkResultL
             status["directRole"] = directRingRole
+            status["healthWindowActive"] = ringHealthWindowActive
+            status["lastHealthPull"] = lastRingHealthPullResult
+            status["lastHealthPullAgeMs"] = age(lastRingHealthPullAtMs)
+            status["heldHealthRecords"] = ringHealthRecords.size
             status["directGlassesAuth"] = directGlassesAuth
             status["directGlassesAuthAgeMs"] = age(directGlassesAuthAtMs)
             status["lastRingCommand"] = lastRingConfigCommand
@@ -1040,8 +1056,10 @@ class GlassesSessionCore(
      *   with only the data CCCD, like Even's app. The glasses keep the ring.
      * - "glasses": act as the ring's glasses (legacy CCCD, legacy pair-auth,
      *   touch source on; see runRingGlassesSetup) and take the ring over from
-     *   the glasses when they still hold it. No health sync: the ring answers
-     *   system requests only on a phone-role link.
+     *   the glasses when they still hold it. The ring answers system requests
+     *   (health included) only on a phone-role link, so each health pull
+     *   briefly reconnects the link in the phone role and then returns it
+     *   (see beginRingHealthWindowLocked).
      * Asking for both on one link (the old behavior) made the ring drop the
      * link every ~6 s while the glasses held it. A change while the direct
      * link is up reconnects it.
@@ -1051,6 +1069,8 @@ class GlassesSessionCore(
         monitor.withLock {
             if (normalized == directRingRole) return
             directRingRole = normalized
+            // A health window only exists to borrow the phone role from the glasses role.
+            ringHealthWindowActive = false
             if (ringConnected || ringNotificationsReady) {
                 ringRoleReconnectPending = true
                 monitor.signalAll()
@@ -2406,7 +2426,11 @@ class GlassesSessionCore(
         // service events 6/7), and the ring sends gestures (00 09 61 00 ...)
         // only to that role. The direct ring
         // role setting decides which CCCDs we enable; see setDirectRingRole.
-        val role = monitor.withLock { directRingRole }
+        val configuredRole: String
+        val role = monitor.withLock {
+            configuredRole = directRingRole
+            effectiveRingRoleLocked()
+        }
         val legacyNotify = role == DIRECT_RING_ROLE_GLASSES
             && enableRingNotification(BleProtocol.R1_LEGACY_NOTIFY_CHAR_UUID)
         val dataNotify = enableRingNotification(BleProtocol.R1_NOTIFY_CHAR_UUID)
@@ -2433,10 +2457,13 @@ class GlassesSessionCore(
             directGlassesAuthAtMs = 0L
             directGlassesAuthRetried = false
         }
-        logLine("direct ring ready role=$role legacyNotify=$legacyNotify dataNotify=$dataNotify")
+        logLine("direct ring ready role=$role legacyNotify=$legacyNotify dataNotify=$dataNotify"
+            + (if (role != configuredRole) " (health window; configured role $configuredRole)" else ""))
 
         // The glasses role means no pairAuth (it would ask for the phone role
-        // on the same link) and therefore no health sync.
+        // on the same link) and therefore no health sync. Direct mode gets its
+        // health through a temporary phone-role connection instead (see
+        // beginRingHealthWindowLocked), which takes this branch.
         if (dataNotify && host.supportsRingHealth() && role == DIRECT_RING_ROLE_PHONE) {
             onRingDataChannelReady()
         }

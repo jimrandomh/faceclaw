@@ -1502,8 +1502,9 @@ class DashboardController {
         right: addresses.right,
         left: addresses.left,
         ring: ringAddress,
-        // Direct mode acts as the ring's glasses (gestures, battery); health
-        // sync needs the phone role instead.
+        // Direct mode acts as the ring's glasses (gestures, battery). Health
+        // sync needs the phone role, which the session borrows briefly for
+        // each pull (GlassesSessionRing.beginRingHealthWindowLocked).
         ringRole: ringMode === "direct" ? "glasses" : "phone",
       });
       this.communicator = communicator;

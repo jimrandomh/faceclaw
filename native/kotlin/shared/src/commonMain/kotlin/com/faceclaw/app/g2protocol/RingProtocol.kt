@@ -107,6 +107,20 @@ class RingProtocol private constructor() {
         /** Returned by anchor/timestamp accessors when the value is not known. */
         const val UNKNOWN_TIME: Long = -1L
 
+        /**
+         * Bytes R1 firmware 2.3.x appends to every health DATA page, after the
+         * last group/bucket. Seen on 2.3.0.0005 and 2.3.2.0008: every one of
+         * the 30 hourly and activity pages journaled 2026-10-06..11-01 carries
+         * it (values `6e050000`, `00000000`, `ad5e0000`; meaning unknown).
+         * Firmware 2.0.7.0003 sent none (notes/ring-health-live-validation.md),
+         * so the decoders accept a page with or without it. The group or
+         * bucket count is explicit, so the two lengths cannot be confused.
+         */
+        const val HEALTH_PAGE_TRAILER_LEN: Int = 4
+
+        private val JOURNAL_RECEIVED_AT = Regex("\"receivedAtMs\":(\\d+)")
+        private val JOURNAL_RAW = Regex("\"raw\":\"([0-9a-fA-F]+)\"")
+
         private val EMPTY = ByteArray(0)
 
         // ------------------------------------------------------------------
@@ -433,13 +447,41 @@ class RingProtocol private constructor() {
         }
 
         /**
+         * Decode the health DATA pages in a ring frame journal - the JSON lines
+         * `{"receivedAtMs":N,"raw":"<hex>"}` the session writes before
+         * acknowledging each frame - received after [afterReceivedAtMs], in
+         * file order. Anything that is not a decodable health DATA page is
+         * skipped. Lets pages the ring will never send again (it counts an
+         * acknowledged page as synced) be stored after a decoder fix.
+         */
+        @JvmStatic
+        fun decodeFrameJournal(text: String, afterReceivedAtMs: Long): List<HealthRecord> {
+            val records = ArrayList<HealthRecord>()
+            for (line in text.lineSequence()) {
+                val receivedAtMs = JOURNAL_RECEIVED_AT.find(line)?.groupValues?.get(1)?.toLongOrNull() ?: continue
+                if (receivedAtMs <= afterReceivedAtMs) continue
+                val raw = JOURNAL_RAW.find(line)?.groupValues?.get(1) ?: continue
+                if (raw.length % 2 != 0) continue
+                val bytes = ByteArray(raw.length / 2) { raw.substring(it * 2, it * 2 + 2).toInt(16).toByte() }
+                val record = try {
+                    decode(parse(bytes), receivedAtMs)
+                } catch (_: Throwable) {
+                    null
+                } ?: continue
+                records.add(record)
+            }
+            return records
+        }
+
+        /**
          * Heart rate / SpO2 / HRV: an hourly `[index][avg][max][min]` series.
          *
          * Layout follows openR1 r1_health_encode_daily_u8/u16 in r1_health.c:
          * count, signed timezone minutes, day start, optional latest timestamp/value,
-         * then count groups. There is no footer. HR/SpO2 values are one byte; HRV
-         * values are two. Subtracting a supposed four-byte footer misdecoded a
-         * one-group HRV page as one-byte values and rejected real HR/SpO2 pages.
+         * then count groups, then (firmware 2.3.x only) [HEALTH_PAGE_TRAILER_LEN]
+         * trailing bytes. HR/SpO2 values are one byte; HRV values are two; the
+         * width comes from the command, never from the length, which is what
+         * once misdecoded a one-group HRV page as one-byte values.
          */
         @JvmStatic
         fun decodeHourly(frame: Frame, receivedAtMs: Long): HourlyRecord? {
@@ -451,7 +493,11 @@ class RingProtocol private constructor() {
             val anchor = anchorUnixSeconds(pay)
             val width = if (frame.cmdHi == CMD_HI_HRV) 2 else 1
             val groupBytes = count * (1 + 3 * width)
-            val prefixLength = pay.size - groupBytes
+            val nonGroupBytes = pay.size - groupBytes
+            // 9 or 13+width without the trailer; 13 or 17+width with it. All distinct.
+            val trailer = if (nonGroupBytes == 9 + HEALTH_PAGE_TRAILER_LEN
+                || nonGroupBytes == 13 + width + HEALTH_PAGE_TRAILER_LEN) HEALTH_PAGE_TRAILER_LEN else 0
+            val prefixLength = nonGroupBytes - trailer
             val hasLatest = prefixLength == 13 + width
             if (count > 24 || (!hasLatest && prefixLength != 9)) return null
             val tag = if (hasLatest) readUInt32Le(pay, 9) else UNKNOWN_TIME
@@ -488,7 +534,8 @@ class RingProtocol private constructor() {
                 return null
             }
             val count = pay[2].toInt() and 0xff
-            if (count > 144 || pay.size != 9 + count * 7) {
+            val bucketsEnd = 9 + count * 7
+            if (count > 144 || (pay.size != bucketsEnd && pay.size != bucketsEnd + HEALTH_PAGE_TRAILER_LEN)) {
                 return null
             }
             val anchor = anchorUnixSeconds(pay)
@@ -539,7 +586,10 @@ class RingProtocol private constructor() {
             val lightTime = readUInt16Le(pay, 28)
             val deepTime = readUInt16Le(pay, 30)
             val segmentCount = readUInt16Le(pay, 32)
-            if (pay.size != 34 + segmentCount * 3) {
+            // The 2.3.x trailer is assumed here too: no sleep DATA page has been
+            // seen from that firmware yet.
+            val segmentsEnd = 34 + segmentCount * 3
+            if (pay.size != segmentsEnd && pay.size != segmentsEnd + HEALTH_PAGE_TRAILER_LEN) {
                 return null
             }
             var offset = 34

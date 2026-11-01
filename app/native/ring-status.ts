@@ -39,6 +39,13 @@ export type RingSessionStatus = {
   lastCommandResultL: string;
   /** Which ring role the direct link claims: "phone" or "glasses". */
   directRole: string;
+  /** Glasses role only: the link is temporarily in the phone role for a health pull. */
+  healthWindowActive: boolean;
+  /** Outcome of the last health pull ("completed, 12 pages", "aborted, 0 pages", ...), "" if none. */
+  lastHealthPull: string;
+  lastHealthPullAgeMs: number;
+  /** Decoded health records not yet stored by the TypeScript ingest. */
+  heldHealthRecords: number;
   /** Glasses role only: what the ring made of our legacy pair-auth this connection ("" = not sent). */
   directGlassesAuth: string;
   directGlassesAuthAgeMs: number;

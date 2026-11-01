@@ -45,7 +45,7 @@ import {
   type WireStepsRecord,
 } from "./health-ingest";
 import { markLiveData, purgeFixtureData } from "./health-seed";
-import { healthStore } from "./health-store-files";
+import { checkedFileOperation, healthStore } from "./health-store-files";
 import { startOfLocalDay, type SleepSegment } from "./health-types";
 import { File, knownFolders } from "@nativescript/core";
 
@@ -381,7 +381,128 @@ function consumeUpTo(communicator: any, watermark: number): void {
   }
 }
 
+/** The communicator's `java.util.List` of `RingProtocol.HealthRecord`s. */
+type JavaRecordList = { size(): number; get(index: number): any };
+
+type StoreResult = Omit<LiveSyncResult, "seen">;
+
+/**
+ * Convert decoded records and store them durably. Throws if a store write
+ * fails, so the caller keeps whatever it would otherwise mark as consumed.
+ * Shared by the live batch and the journal replay.
+ */
+function storeRecords(records: JavaRecordList): StoreResult {
+  const wire: WireRecord[] = [];
+  const size = records.size();
+  for (let i = 0; i < size; i++) {
+    try {
+      const converted = toWire(records.get(i));
+      if (converted) wire.push(converted);
+    } catch (error) {
+      console.warn("health live: skipped an undecodable record", error);
+    }
+  }
+  if (wire.length === 0) return { samplesWritten: 0, sleepWritten: 0, skipped: [] };
+
+  const { samples, sleep, skipped } = convertRecords(wire);
+  if (samples.length === 0 && sleep.length === 0) {
+    return { samplesWritten: 0, sleepWritten: 0, skipped };
+  }
+
+  // First real data wins the store outright — see the header.
+  purgeFixtureData();
+
+  const store = healthStore();
+  const samplesWritten = store.ingestSamples(samples);
+  const sleepWritten = store.ingestSleep(sleep);
+  // Also mark on a retry whose samples were already appended before a later
+  // write failed. Otherwise opening Health could seed fixtures over real data.
+  markLiveData();
+  return { samplesWritten, sleepWritten, skipped };
+}
+
+/**
+ * Bump when the Kotlin decoders learn a layout they used to reject. The
+ * replay cursor records the version it ran under, and a cursor from an older
+ * decoder replays the whole journal: the frames it skipped are only on disk.
+ *
+ * 2: R1 firmware 2.3.x's four-byte page trailer (2026-11-01). Before it,
+ *    every page that firmware sent was journaled, acknowledged and dropped.
+ */
+const JOURNAL_DECODER_VERSION = 2;
+
+type ReplayCursor = { version: number; throughReceivedAtMs: number };
+
+function healthFilePath(name: string): string {
+  return `${knownFolders.documents().getFolder("health").path}/${name}`;
+}
+
+function readReplayCursor(): ReplayCursor | null {
+  try {
+    const path = healthFilePath("journal-replay.json");
+    if (!File.exists(path)) return null;
+    const parsed = JSON.parse(File.fromPath(path).readTextSync()) as ReplayCursor;
+    return typeof parsed?.version === "number" && typeof parsed.throughReceivedAtMs === "number" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+let journalReplayed = false;
+
+/**
+ * Store the health pages in the communicator's frame journal
+ * (`ring-frames.jsonl`, written before each page is acknowledged) that have
+ * not been replayed under the current decoder. Once per process, before any
+ * live batch, so pages land oldest first and a newer live value is never
+ * overwritten by an older replayed one.
+ *
+ * The ring counts an acknowledged page as synced and does not send it again,
+ * so a page the decoder could not read at the time exists nowhere else. The
+ * store and the steps ledger are idempotent, so re-storing a page that was
+ * already ingested live is a no-op.
+ */
+function replayFrameJournalOnce(): void {
+  if (journalReplayed) return;
+  let ringProtocol: any;
+  try {
+    ringProtocol = (com as any).faceclaw.app.RingProtocol;
+  } catch {
+    ringProtocol = null;
+  }
+  const journalPath = healthFilePath("ring-frames.jsonl");
+  if (!ringProtocol || !File.exists(journalPath)) {
+    journalReplayed = true;
+    return;
+  }
+  const cursor = readReplayCursor();
+  const after = cursor?.version === JOURNAL_DECODER_VERSION ? cursor.throughReceivedAtMs : 0;
+  const records: JavaRecordList = ringProtocol.decodeFrameJournal(File.fromPath(journalPath).readTextSync(), after);
+  const size = records.size();
+  if (size > 0) {
+    const result = storeRecords(records);
+    let through = after;
+    for (let i = 0; i < size; i++) through = Math.max(through, Number(records.get(i).receivedAtMs));
+    const next: ReplayCursor = { version: JOURNAL_DECODER_VERSION, throughReceivedAtMs: through };
+    checkedFileOperation((onError) =>
+      File.fromPath(healthFilePath("journal-replay.json")).writeTextSync(JSON.stringify(next), onError),
+    );
+    console.log(
+      `health live: replayed ${size} journaled pages -> ${result.samplesWritten} samples, ` +
+        `${result.sleepWritten} sleep` + (result.skipped.length ? `, ${result.skipped.length} skipped` : ""),
+    );
+  }
+  journalReplayed = true;
+}
+
 export function syncLiveRecords(): LiveSyncResult {
+  try {
+    replayFrameJournalOnce();
+  } catch (error) {
+    // Not marked done: the next sync retries it, ahead of the live batch.
+    console.warn("health live: frame journal replay failed", error);
+  }
+
   const communicator = activeCommunicator();
   if (!communicator) return EMPTY;
 
@@ -399,33 +520,9 @@ export function syncLiveRecords(): LiveSyncResult {
   // what keeps a page landing mid-ingest from being dropped.
   const watermark = Number(batch.getWatermark());
   if (!records || !records.size || records.size() === 0) return EMPTY;
-
-  const wire: WireRecord[] = [];
   const size = records.size();
-  for (let i = 0; i < size; i++) {
-    try {
-      const converted = toWire(records.get(i));
-      if (converted) wire.push(converted);
-    } catch (error) {
-      console.warn("health live: skipped an undecodable record", error);
-    }
-  }
-  if (wire.length === 0) return { ...EMPTY, seen: size };
 
-  const { samples, sleep, skipped } = convertRecords(wire);
-  if (samples.length === 0 && sleep.length === 0) {
-    return { seen: size, samplesWritten: 0, sleepWritten: 0, skipped };
-  }
-
-  // First real data wins the store outright — see the header.
-  purgeFixtureData();
-
-  const store = healthStore();
-  const samplesWritten = store.ingestSamples(samples);
-  const sleepWritten = store.ingestSleep(sleep);
-  // Also mark on a retry whose samples were already appended before a later
-  // write failed. Otherwise opening Health could seed fixtures over real data.
-  markLiveData();
+  const { samplesWritten, sleepWritten, skipped } = storeRecords(records);
 
   // ONLY here. Both store writes have returned, so the records are durable.
   // If either threw, or the process died above this line, nothing is cleared
@@ -433,6 +530,8 @@ export function syncLiveRecords(): LiveSyncResult {
   // ingest (a no-op, the store refuses identical re-writes) instead of losing
   // a night. Note `samplesWritten === 0` is NOT a failure: it means the store
   // already held all of it, which is the steady state this change creates.
+  // Records that converted to nothing are consumed too: holding them would
+  // only re-run the same conversion every tick.
   consumeUpTo(communicator, watermark);
 
   console.log(

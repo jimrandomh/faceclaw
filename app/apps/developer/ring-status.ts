@@ -165,6 +165,13 @@ export class RingStatusLayer implements Layer {
         value: s.directGlassesAuth ? `${s.directGlassesAuth} ${formatAge(s.directGlassesAuthAgeMs)} ago` : "not sent yet",
       });
     }
+    if (s.directEnabled) {
+      const pull = s.healthWindowActive ? "pulling now (phone role)"
+        : s.lastHealthPull ? `${s.lastHealthPull} ${formatAge(s.lastHealthPullAgeMs)} ago`
+        : "no pull yet";
+      const held = s.heldHealthRecords > 0 ? `, ${s.heldHealthRecords} records unstored` : "";
+      rows.push({ label: "Health sync", value: pull + held });
+    }
     rows.push({ label: "Direct input", value: describeInput(s.lastDirectInputAgeMs, s.lastDirectInput) });
     if (s.directEnabled) {
       rows.push({ label: "Direct pkts", value: describeAge(s.lastDirectNotifyAgeMs) });

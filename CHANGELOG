@@ -2,6 +2,8 @@
 
 ## 0.8.6 - Future
 
+* Connect directly to the R1 ring rather than indirectly via the glasses
+* Add a Health app and glanceboard card for viewing R1 ring data
 * Add a distance unit option
 * Make BLE benchmark work on iOS
 * Ensure connection is re-set to 2M on reconnect
@@ -11,6 +13,7 @@
 * iOS: Notifications are selectable via the task switcher
 * Android: Optionally sign in to Spotify's Web API for library browsing and other features
 * Mark stock firmware 2.4.0 as validated for installing custom firmware over
+
 
 ## 0.8.5 - 2026-10-25
 

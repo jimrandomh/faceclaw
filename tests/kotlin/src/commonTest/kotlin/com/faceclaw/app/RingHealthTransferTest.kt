@@ -18,6 +18,7 @@ private class FakeRingLink(private val platform: ProtocolPlatform) : SessionLink
     lateinit var core: GlassesSessionCore
     private val lock = platform.createLock()
     private val writesList = ArrayList<String>()
+    private val subscribedList = ArrayList<String>()
     @Volatile var failAck = false
     @Volatile var answer = true
     @Volatile var delayRsp = false
@@ -25,6 +26,12 @@ private class FakeRingLink(private val platform: ProtocolPlatform) : SessionLink
 
     val writes: List<String>
         get() = lock.withLock { writesList.toList() }
+
+    /** Every CCCD enabled, in order, across connections. */
+    val subscribed: List<String>
+        get() = lock.withLock { subscribedList.toList() }
+
+    @Volatile var disconnects = 0
 
     private fun deliver(frame: ByteArray) = core.onNotification(RING, BleProtocol.R1_NOTIFY_CHAR_UUID, frame)
 
@@ -83,9 +90,14 @@ private class FakeRingLink(private val platform: ProtocolPlatform) : SessionLink
 
     override fun discoverServices(address: String, timeoutMs: Int): Boolean = true
 
-    override fun enableNotifications(address: String, characteristicUuid: String, enable: Boolean, timeoutMs: Int): Boolean = true
+    override fun enableNotifications(address: String, characteristicUuid: String, enable: Boolean, timeoutMs: Int): Boolean {
+        lock.withLock { subscribedList.add(characteristicUuid) }
+        return true
+    }
 
-    override fun disconnect(address: String) {}
+    override fun disconnect(address: String) {
+        disconnects++
+    }
 
     override fun close() {}
 
@@ -257,5 +269,107 @@ class RingHealthTransferTest {
         val record = rest.single() as RingProtocol.HourlyRecord
         assertEquals(60, record.groups.single().avg)
         assertEquals(1000L + 2 * 3600L, record.groups.single().unixSeconds)
+    }
+    /** A Direct-mode (glasses-role) session whose direct link is up. */
+    private fun directSession(): RingSession {
+        val s = RingSession()
+        s.core.monitor.withLock {
+            s.core.directRingRole = DIRECT_RING_ROLE_GLASSES
+            s.core.sessionReady = true
+        }
+        return s
+    }
+
+    @Test fun directModePullBorrowsThePhoneRoleAndHandsItBack() {
+        val s = directSession()
+        // Not the first pull this session, so only the request opens the window.
+        s.core.monitor.withLock { s.core.ringHealthLastRequestedAtMs = s.core.now() - 10 * 60_000L }
+        s.core.runRequestedRingHealthPull()
+        assertFalse(s.core.monitor.withLock { s.core.ringHealthWindowActive }, "opened without a request")
+
+        s.core.requestRingHealthNow()
+        s.core.runRequestedRingHealthPull()
+        s.core.monitor.withLock {
+            assertTrue(s.core.ringHealthWindowActive, "request did not open a health window")
+            assertTrue(s.core.ringRoleReconnectPending, "glasses-role link was not dropped")
+            assertEquals(DIRECT_RING_ROLE_PHONE, s.core.effectiveRingRoleLocked())
+        }
+        s.core.restartRingLinkForRoleChange()
+        assertEquals(1, s.link.disconnects)
+        s.core.monitor.withLock {
+            assertFalse(s.core.ringNotificationsReady)
+            assertTrue(s.core.ringReconnectAfterMs > s.core.now(), "redialed before the old link could end")
+        }
+
+        // Phone-role setup: data CCCD only, then the handshake and the pull.
+        s.core.connectRing()
+        assertEquals(listOf(BleProtocol.R1_NOTIFY_CHAR_UUID), s.link.subscribed, "phone role took the legacy CCCD")
+        val requests = RingProtocol.HEALTH_COMMANDS.map { "req:$it" }
+        assertEquals(requests, s.link.writes.filter { it.startsWith("req:") }, "pull did not run")
+        s.core.monitor.withLock {
+            assertFalse(s.core.ringHealthWindowActive, "window left open after the pull")
+            assertTrue(s.core.ringRoleReconnectPending, "link not handed back to the glasses role")
+            assertTrue(s.core.lastRingHealthPullResult.startsWith("completed"), s.core.lastRingHealthPullResult)
+        }
+        // Back in the glasses role: legacy CCCD again, and no further health traffic.
+        s.core.restartRingLinkForRoleChange()
+        s.core.connectRing()
+        assertEquals(listOf(BleProtocol.R1_LEGACY_NOTIFY_CHAR_UUID, BleProtocol.R1_NOTIFY_CHAR_UUID),
+            s.link.subscribed.drop(1), "glasses role not restored")
+        assertEquals(requests, s.link.writes.filter { it.startsWith("req:") }, "glasses-role link pulled")
+    }
+
+    @Test fun directModeWindowWaitsForAnIdleRingAndRespectsItsFloor() {
+        val s = directSession()
+        s.core.monitor.withLock {
+            s.core.ringHealthLastRequestedAtMs = s.core.now() - 10 * 60_000L
+            s.core.lastDirectRingInputAtMs = s.core.now()
+        }
+        s.core.requestRingHealthNow()
+        s.core.runRequestedRingHealthPull()
+        s.core.monitor.withLock {
+            assertFalse(s.core.ringHealthWindowActive, "took the ring away mid-gesture")
+            assertTrue(s.core.ringHealthPullRequested, "deferred request was dropped")
+            s.core.lastDirectRingInputAtMs = s.core.now() - 60_000L
+        }
+        s.core.runRequestedRingHealthPull()
+        assertTrue(s.core.monitor.withLock { s.core.ringHealthWindowActive }, "idle ring did not open a window")
+
+        // A second request inside the floor is dropped rather than bouncing the link again.
+        s.core.monitor.withLock { s.core.endRingHealthWindowLocked("test") }
+        s.core.requestRingHealthNow()
+        s.core.runRequestedRingHealthPull()
+        s.core.monitor.withLock {
+            assertFalse(s.core.ringHealthWindowActive, "window floor ignored")
+            assertFalse(s.core.ringHealthPullRequested, "request inside the floor stayed pending")
+        }
+    }
+
+    @Test fun directModeFirstPullWaitsForTheGlassesAndGivesUpOnAnUnreachableRing() {
+        val s = directSession()
+        s.core.monitor.withLock {
+            s.core.ringConnected = false
+            s.core.ringNotificationsReady = false
+            s.core.sessionReady = false
+        }
+        s.core.runRequestedRingHealthPull()
+        assertFalse(s.core.monitor.withLock { s.core.ringHealthWindowActive }, "opened before the glasses session")
+        s.core.monitor.withLock { s.core.sessionReady = true }
+        s.core.runRequestedRingHealthPull()
+        s.core.monitor.withLock {
+            assertTrue(s.core.ringHealthWindowActive, "no first pull this session")
+            // Nothing set up to drop: the next connection sets up in the phone role.
+            assertFalse(s.core.ringRoleReconnectPending)
+            s.core.ringHealthWindowDeadlineMs = s.core.now() - 1
+        }
+        s.core.expireRingHealthWindow()
+        s.core.monitor.withLock {
+            assertFalse(s.core.ringHealthWindowActive, "window outlived its deadline")
+            assertEquals(DIRECT_RING_ROLE_GLASSES, s.core.effectiveRingRoleLocked())
+            assertTrue(s.core.lastRingHealthPullResult.startsWith("not run"), s.core.lastRingHealthPullResult)
+        }
+        // Not retried until something asks for it.
+        s.core.runRequestedRingHealthPull()
+        assertFalse(s.core.monitor.withLock { s.core.ringHealthWindowActive }, "retried without a request")
     }
 }
