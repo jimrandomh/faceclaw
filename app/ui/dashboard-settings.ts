@@ -1130,7 +1130,7 @@ export const mapboxApiKeySetting = new ConfigSettingString({
   description: "Mapbox public token (pk. prefix), used by the Navigate app for maps, geocoding, and directions.",
 });
 
-/** Edited from the Music app's Spotify menu (iOS); a sign-in is tied to the client ID it was made with. */
+/** Edited from the Music app's Spotify menu; a sign-in is tied to the client ID it was made with. */
 export const spotifyClientIdSetting = new ConfigSettingString({
   id: "spotify-client-id",
   label: "Client ID",

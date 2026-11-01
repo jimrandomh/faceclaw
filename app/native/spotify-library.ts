@@ -1,8 +1,6 @@
 import type { MediaBrowseItem, MediaBrowserApp, MediaBrowserBridge } from "./media-types";
-import { SPOTIFY_APP_NAME, SPOTIFY_PACKAGE, type SpotifyPlayer } from "./spotify-player";
+import { SPOTIFY_APP_NAME, type SpotifyPlayer } from "./spotify-player";
 import type { SpotifyClient, SpotifyItem, SpotifyPlayRequest } from "./spotify-web-api";
-
-export const SPOTIFY_BROWSER_APP: MediaBrowserApp = { packageName: SPOTIFY_PACKAGE, serviceClass: "", appName: SPOTIFY_APP_NAME };
 
 const ROOT_ROWS: MediaBrowseItem[] = [
   { mediaId: "recent", title: "Recently played", subtitle: "", browsable: true, playable: false },
@@ -17,6 +15,8 @@ const TRACK_CONTEXT_SEPARATOR = "|";
 
 export type SpotifyLibraryDeps = {
   client: SpotifyClient;
+  /** Spotify's app id on this platform, which names the library in the browse picker. */
+  packageName: string;
   player: SpotifyPlayer;
   isSignedIn(): boolean;
   /** The signed-in user's id (Liked Songs' context URI names it). */
@@ -39,15 +39,20 @@ export class SpotifyLibrary implements MediaBrowserBridge {
   /** Bumped on every connect/disconnect; answers to older requests are dropped. */
   private generation = 0;
 
-  constructor(private readonly deps: SpotifyLibraryDeps) {}
+  /** This library's row in the browse picker. */
+  readonly app: MediaBrowserApp;
+
+  constructor(private readonly deps: SpotifyLibraryDeps) {
+    this.app = { packageName: deps.packageName, serviceClass: "", appName: SPOTIFY_APP_NAME };
+  }
 
   listBrowsableApps(): MediaBrowserApp[] {
-    return this.deps.isSignedIn() ? [SPOTIFY_BROWSER_APP] : [];
+    return this.deps.isSignedIn() ? [this.app] : [];
   }
 
   connect(app: MediaBrowserApp): Promise<string> {
     this.disconnect();
-    if (app.packageName !== SPOTIFY_PACKAGE) return Promise.reject(new Error("Not a Spotify library"));
+    if (app.packageName !== this.app.packageName) return Promise.reject(new Error("Not a Spotify library"));
     if (!this.deps.isSignedIn()) return Promise.reject(new Error("Sign in under Spotify in the Music app menu first."));
     this.connected = true;
     return Promise.resolve("root");

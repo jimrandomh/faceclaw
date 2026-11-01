@@ -8,7 +8,7 @@ import {
 } from "./media-types";
 import { spotifyService } from "./spotify.ios";
 import type { SpotifyLibrary } from "./spotify-library";
-import { SPOTIFY_PACKAGE } from "./spotify-player";
+import { SPOTIFY_IOS_BUNDLE_ID } from "./spotify-player";
 
 export type { MediaBrowseItem, MediaBrowserApp } from "./media-types";
 
@@ -85,7 +85,7 @@ export class IosMediaBrowserBridge implements MediaBrowserBridge {
 
   connect(app: MediaBrowserApp): Promise<string> {
     this.disconnect();
-    const library = app.packageName === SPOTIFY_PACKAGE ? this.spotify() : this.appleMusic;
+    const library = app.packageName === SPOTIFY_IOS_BUNDLE_ID ? this.spotify() : this.appleMusic;
     if (!library) return Promise.reject(new Error(`${app.appName} can't be browsed`));
     this.current = library;
     return library.connect(app);

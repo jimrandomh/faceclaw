@@ -6,8 +6,9 @@
 * Make BLE benchmark work on iOS
 * Ensure connection is re-set to 2M on reconnect
 * Add support for embedded icons and custom layouts in Android notifications
-* iOS: Notifications are selectable via the task switcher
 * Port the Developer app's resource-usage monitor and various test pages to iOS
+* iOS: Notifications are selectable via the task switcher
+* Android: Optionally sign in to Spotify's Web API for library browsing and other features
 
 ## 0.8.5 - 2026-10-25
 

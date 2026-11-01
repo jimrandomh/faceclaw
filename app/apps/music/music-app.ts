@@ -53,7 +53,9 @@ type FocusColumn = "actions" | "playlist";
 /**
  * Music controller app: metadata + album art + transport controls for the
  * active Android media session (any player that publishes one) or, on iOS,
- * the Apple Music system player or Spotify (signed in from the window menu),
+ * the Apple Music system player; on both, Spotify through its Web API once
+ * signed in from the window menu (optional on Android, where it adds
+ * library browsing, shuffle / repeat / like and Spotify on other devices),
  * plus the player's queue when it exposes one
  * (scroll to a track, click to jump). With no session, the front page lists
  * the apps whose library can be browsed (click one to open its
@@ -525,19 +527,21 @@ export function createMusicAppWindow(options: InProcessAppOptions): InProcessWin
     iconLetter: "M",
     icon: "music",
     closeable: true,
-    // Music settings choose among Android media apps; iOS has Apple Music, plus Spotify's sign-in here.
+    // Music settings choose among Android media apps (iOS has Apple Music
+    // alone); Spotify's sign-in is optional on Android, where its media
+    // session works without it.
     menuItems: () => {
-      if (!global.isIOS) {
-        return [{
+      const spotify = spotifyService();
+      return [
+        ...(global.isIOS ? [] : [{
           label: "Music settings",
-          onSelect: (ctx) => {
+          onSelect: (ctx: LayerContext) => {
             ctx.stack.pop();
             ctx.stack.push(new MusicSettingsLayer());
           },
-        }];
-      }
-      const spotify = spotifyService();
-      return spotify ? [spotifyMenuItem(spotify)] : [];
+        }]),
+        ...(spotify ? [spotifyMenuItem(spotify)] : []),
+      ];
     },
     actions: options.actions,
     baseLayer: new MusicRootLayer(musicLayer),

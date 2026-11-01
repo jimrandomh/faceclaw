@@ -3,8 +3,8 @@ import type { GrayImage } from "../graphics/image";
 /**
  * Shapes shared by the media bridges: media-controller.ts / media-browser.ts
  * drive Android media sessions and MediaBrowserServices; their .ios.ts
- * counterparts drive Apple Music through the MediaPlayer framework and
- * Spotify through its Web API.
+ * counterparts drive Apple Music through the MediaPlayer framework. Both
+ * add Spotify through its Web API once signed in (spotify-*.ts).
  */
 
 /** The player behind the iOS bridges: the system Music app. */
