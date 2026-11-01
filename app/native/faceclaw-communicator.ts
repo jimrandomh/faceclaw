@@ -29,6 +29,9 @@ export type HeadsetBatteryState = {
   ringChargingStatus?: number;
 };
 
+/** The charging case's level (0..100) and whether it is itself charging, as the glasses relay it. */
+export type CaseBatteryState = { battery: number; charging: boolean };
+
 export type FrameMetrics = {
   paintMs: number;
   transmitMs: number;
@@ -151,6 +154,7 @@ export class FaceclawCommunicatorBridge {
   private readonly stateListeners = new Set<(state: CommunicatorState) => void>();
   private readonly ringListeners = new Set<(event: RawInputEvent) => void>();
   private readonly batteryListeners = new Set<(state: HeadsetBatteryState) => void>();
+  private readonly caseListeners = new Set<(state: CaseBatteryState) => void>();
   private readonly silentModeListeners = new Set<(silent: boolean) => void>();
   private readonly wearStateListeners = new Set<(wearing: boolean) => void>();
   private readonly phoneLockStateListeners = new Set<(locked: boolean) => void>();
@@ -211,6 +215,9 @@ export class FaceclawCommunicatorBridge {
           ringChargingStatus: Number(ringCharging),
         };
         this.emitAsync(this.batteryListeners, state);
+      },
+      onCaseState: (caseBattery: number, caseCharging: number) => {
+        this.emitAsync(this.caseListeners, { battery: Number(caseBattery), charging: Number(caseCharging) === 1 });
       },
       onSilentMode: (silent: boolean) => {
         this.emitAsync(this.silentModeListeners, Boolean(silent));
@@ -330,6 +337,12 @@ export class FaceclawCommunicatorBridge {
   onBatteryState(listener: (state: HeadsetBatteryState) => void): () => void {
     this.batteryListeners.add(listener);
     return () => this.batteryListeners.delete(listener);
+  }
+
+  /** Charging-case readings: read on docking, then pushed by the glasses on every change. */
+  onCaseState(listener: (state: CaseBatteryState) => void): () => void {
+    this.caseListeners.add(listener);
+    return () => this.caseListeners.delete(listener);
   }
 
   /**

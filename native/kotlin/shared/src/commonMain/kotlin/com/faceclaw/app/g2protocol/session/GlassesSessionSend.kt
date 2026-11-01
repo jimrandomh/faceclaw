@@ -1099,6 +1099,9 @@ internal fun GlassesSessionCore.updateChargingModeLocked(charging: Boolean, batt
     if (charging) {
         chargingMode = true
         clearAllMessagesLocked("glasses charging")
+        // Clearing may have dropped the session-start case read; docked is
+        // when the case reports, so read it again.
+        pendingMessages.addLast(messageBuilder.caseInfoQuery())
         fixedLayoutCreated = false
         startupProbePending = false
         displayedFingerprint = ""

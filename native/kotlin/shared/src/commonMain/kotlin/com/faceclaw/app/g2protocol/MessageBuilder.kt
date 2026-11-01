@@ -246,6 +246,21 @@ class MessageBuilder {
         )
     }
 
+    fun caseInfoQuery(): OutboundMessage {
+        val magic: Int = magicPool.allocate()
+        return OutboundMessage(
+            "case-info",
+            "case info",
+            BleProtocol.SID_GLASSES_CASE,
+            BleProtocol.FLAG_REQUEST,
+            magic,
+            BleProtocol.buildCaseInfoQuery(magic),
+            ACK_TIMEOUT_MS,
+            -1,
+            false,
+        )
+    }
+
     fun faceclawWakeControl(operation: Int, nonce: Int, leftArm: Boolean): OutboundMessage {
         return OutboundMessage(
             "wake-lease-control",

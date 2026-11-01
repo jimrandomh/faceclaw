@@ -230,6 +230,9 @@ class GlassesSessionCore(
     internal var headsetCharging = -1
     internal var ringBattery = -1
     internal var ringCharging = -1
+    // Last charging-case level and charge state reported to the listener.
+    internal var caseBattery = -1
+    internal var caseCharging = -1
     // Silent mode: 1 = on, 0 = off, -1 = not yet known. See updateSilentModeLocked.
     internal var silentMode = -1
     internal var wearState = -1
@@ -1547,6 +1550,11 @@ class GlassesSessionCore(
                     return
                 }
             }
+            if (frame.ok && frame.sid == BleProtocol.SID_GLASSES_CASE) {
+                // Read replies and the glasses' own pushes (flag 0x01, which
+                // skips the ack path below) carry the same reading.
+                BleProtocol.parseCaseInfo(frame.pb)?.let { updateCaseInfoLocked(it) }
+            }
             if (!faceclawWakeNotification
                     && decodedWearState < 0
                     && frame.ok
@@ -1834,6 +1842,10 @@ class GlassesSessionCore(
                 lastBatteryRefreshAtMs = now()
                 pendingMessages.addLast(createBatteryQueryMessageLocked())
                 logLine("queue settings query for firmware info")
+                // The case reports only while the glasses are docked, possibly
+                // fully charged and so not in charging mode; out of the case
+                // this read comes back empty. Later changes are pushed.
+                pendingMessages.addLast(messageBuilder.caseInfoQuery())
             }
             tryConnectRing("initial")
         } catch (t: Throwable) {
