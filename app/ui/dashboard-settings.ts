@@ -1048,7 +1048,7 @@ export const veniceWebSearchSetting = new ConfigSettingBoolean({
   label: "Venice web search",
   storageKey: "assistant.veniceWebSearch",
   defaultValue: false,
-  description: "Allow supported Venice models to search the web for current information. Shown only for the official Venice API URL. Search queries are processed by Venice's search service and may incur additional charges.",
+  description: "Allow supported Venice models to search the web for current information. Shown only when OpenAI-compatible is the assistant model and its URL is the official Venice API. Search queries are processed by Venice's search service and may incur additional charges.",
 });
 
 export const elevenLabsApiKeySetting = new ConfigSettingString({
@@ -1155,12 +1155,12 @@ export const assistantModelSetting = new ConfigSettingEnum<AssistantModel>({
     if (provider === "anthropic") return anthropicApiKeySetting.get().trim().length === 0;
     if (provider === "openai") return openAiApiKeySetting.get().trim().length === 0;
     if (provider === "local") return !isLocalModelReady();
-    if (provider === "openai-compatible") return !assistantOpenAiCompatibleUrlSetting.get().trim() || !assistantOpenAiCompatibleModelSetting.get().trim();
-    if (provider === "hermes") return assistantHermesUrlSetting.get().trim().length === 0;
+    // Hermes and OpenAI-compatible stay selectable before they're configured:
+    // their rows only appear in Settings once one is the selected model.
     return false;
   },
   description:
-    global.isIOS ? "Model used by the assistant. Auto prefers Terra with an OpenAI key, then Sonnet with an Anthropic key, then Apple Intelligence's on-device model. OpenAI-compatible uses the URL, model ID, and optional key below; Auto never picks it." : "Model used by the assistant. Auto prefers Terra when an OpenAI key is set, then Sonnet when an Anthropic key is set, then the downloaded on-phone model. OpenAI-compatible uses the URL, model ID, and optional key below; Auto never picks it.",
+    global.isIOS ? "Model used by the assistant. Auto prefers Terra with an OpenAI key, then Sonnet with an Anthropic key, then Apple Intelligence's on-device model; it never picks OpenAI-compatible or Hermes agent. Choosing either of those shows its settings below." : "Model used by the assistant. Auto prefers Terra when an OpenAI key is set, then Sonnet when an Anthropic key is set, then the downloaded on-phone model; it never picks OpenAI-compatible or Hermes agent. Choosing either of those shows its settings below.",
 });
 
 export const mapboxApiKeySetting = new ConfigSettingString({

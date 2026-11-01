@@ -2,8 +2,9 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { loader } = require('./helpers/load-typescript.cjs');
 
-function settingsEnv(initialUrl = '') {
+function settingsEnv(initialUrl = '', initialModel = 'openai-compatible') {
   let url = initialUrl;
+  let model = initialModel;
   let webSearch = false;
   const dummySetting = {
     id: 'setting', label: 'Setting', get: () => '', set() {}, displayValue: () => '',
@@ -12,6 +13,10 @@ function settingsEnv(initialUrl = '') {
     id: 'compatible-url', label: 'Compatible API URL', get: () => url, set: value => { url = value; },
     displayValue: () => url,
   };
+  const modelSetting = {
+    id: 'assistant-model', label: 'Assistant model', get: () => model, set: value => { model = value; },
+    displayValue: () => model,
+  };
   const searchSetting = {
     id: 'venice-web-search', label: 'Venice web search', get: () => webSearch,
     set: value => { webSearch = value; }, toggle: () => { webSearch = !webSearch; },
@@ -19,7 +24,12 @@ function settingsEnv(initialUrl = '') {
   };
   const row = setting => ({ label: setting.label, description: setting.description, onSelect() {} });
   const dashboardSettings = new Proxy({
+    assistantModelSetting: modelSetting,
     assistantOpenAiCompatibleUrlSetting: urlSetting,
+    assistantOpenAiCompatibleKeySetting: { ...dummySetting, id: 'compatible-key', label: 'Compatible API key' },
+    assistantOpenAiCompatibleModelSetting: { ...dummySetting, id: 'compatible-model', label: 'Compatible model ID' },
+    assistantHermesUrlSetting: { ...dummySetting, id: 'assistant-hermes-url', label: 'Hermes URL' },
+    assistantHermesKeySetting: { ...dummySetting, id: 'assistant-hermes-key', label: 'Hermes key' },
     veniceWebSearchSetting: searchSetting,
     enumSettingMenuItem: row,
     textSettingMenuItem: row,
@@ -75,6 +85,7 @@ function settingsEnv(initialUrl = '') {
     section,
     labels: () => section.items.map(item => item.label),
     setUrl: value => { url = value; },
+    setModel: value => { model = value; },
     searchSetting,
   };
 }
@@ -99,4 +110,41 @@ test('Venice web search row follows the current URL and never appears for other 
 
   env.setUrl('http://api.venice.ai/api/v1');
   assert.equal(env.labels().includes('Venice web search'), false);
+});
+
+test('Venice web search row also requires the OpenAI-compatible model to be selected', () => {
+  const env = settingsEnv('https://api.venice.ai/api/v1', 'sonnet');
+  assert.equal(env.labels().includes('Venice web search'), false);
+  env.setModel('hermes');
+  assert.equal(env.labels().includes('Venice web search'), false);
+  env.setModel('openai-compatible');
+  assert.equal(env.labels().includes('Venice web search'), true);
+});
+
+test('Hermes URL and key rows appear only while Hermes agent is the selected model', () => {
+  const env = settingsEnv('', 'auto');
+  // Labels come from the module's VM realm; compare by value.
+  const hermesRows = () => JSON.stringify(env.labels().filter(label => label.startsWith('Hermes')));
+  assert.equal(hermesRows(), '[]');
+  env.setModel('openai-compatible');
+  assert.equal(hermesRows(), '[]');
+  env.setModel('hermes');
+  assert.equal(hermesRows(), JSON.stringify(['Hermes URL', 'Hermes key']));
+  const labels = env.labels();
+  assert.equal(labels.indexOf('Hermes URL'), labels.indexOf('Assistant model') + 1, 'Hermes rows follow the model row');
+});
+
+test('OpenAI-compatible rows appear only while OpenAI-compatible is the selected model', () => {
+  const env = settingsEnv('https://api.venice.ai/api/v1', 'auto');
+  const compatibleRows = () => JSON.stringify(env.labels().filter(label =>
+    label.startsWith('Compatible') || label === 'Discover models' || label === 'Venice web search'));
+  assert.equal(compatibleRows(), '[]');
+  env.setModel('hermes');
+  assert.equal(compatibleRows(), '[]');
+  env.setModel('openai-compatible');
+  assert.equal(compatibleRows(), JSON.stringify([
+    'Compatible API URL', 'Compatible API key', 'Discover models', 'Compatible model ID', 'Venice web search',
+  ]));
+  const labels = env.labels();
+  assert.equal(labels.indexOf('Compatible API URL'), labels.indexOf('Assistant model') + 1, 'compatible rows follow the model row');
 });

@@ -104,16 +104,17 @@ The assistant can call an OpenAI-compatible **Chat Completions** endpoint direct
 from the phone. This uses the same conversation history and glasses tool loop as
 the built-in cloud providers; it does not require different glasses firmware.
 
-In **Settings > Assistant**, set:
+In **Settings > Assistant**:
 
-1. **Compatible API URL** — the explicit API root.
-2. **Compatible model ID** — the exact model identifier accepted by the server.
+1. **Assistant model** — choose **OpenAI-compatible**. Auto never selects it.
+   The settings in steps 2–4 appear only while it is selected.
+2. **Compatible API URL** — the explicit API root.
 3. **Compatible API key** — optional; when set, it is sent only to the configured
    compatible endpoint as a Bearer token, not to OpenAI's Whisper service.
-4. Optional: choose **Discover models**, then pick a model from the server catalog.
-   The picker shows tool capability when advertised and hides offline models by
+4. **Compatible model ID** — the exact model identifier accepted by the server.
+   Or choose **Discover models** and pick one from the server catalog. The
+   picker shows tool capability when advertised and hides offline models by
    default. Refresh never changes the saved model by itself.
-5. **Assistant model** — choose **OpenAI-compatible**. Auto never selects it.
 
 Provider examples:
 
@@ -128,11 +129,12 @@ or `/api`. Discovery requests `{API root}/models` only when you choose it; there
 is no background discovery or automatic model selection. Manual model entry
 remains available for servers without a compatible model-list endpoint.
 
-For the official Venice URL, **Settings > Assistant** also shows **Venice web
-search**. It is off by default and visible only for that URL. When enabled,
-supported Venice models may search the web for current information; the search
-model must support the feature. Open WebUI and other compatible servers never
-receive Venice-specific parameters, including after an endpoint switch.
+When **OpenAI-compatible** is the assistant model and its URL is the official
+Venice URL, **Settings > Assistant** also shows **Venice web search**. It is off
+by default and hidden otherwise. When enabled, supported Venice models may
+search the web for current information; the search model must support the
+feature. Open WebUI and other compatible servers never receive Venice-specific
+parameters, including after an endpoint switch.
 
 The same provider can supply Calculator's rewrite fallback and Translate.
 Actual tool calling depends on the selected model and server. Use HTTPS where

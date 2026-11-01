@@ -189,6 +189,32 @@ test('streamed tool calls execute through Faceclaw, results continue the turn, a
   assert.equal(h.requests[2].cancelled, true);
 });
 
+test('reasoning_details streamed in fragments are reassembled by index before replay', async () => {
+  const h = assistant();
+  h.send('Set a one-minute timer');
+  const first = h.requests[0];
+  h.chunk(first, { reasoning_details: [
+    { type: 'reasoning.text', text: 'Need a ', signature: null, format: 'anthropic-claude-v1', index: 0 },
+  ] });
+  h.chunk(first, { reasoning_details: [{ type: 'reasoning.text', text: 'timer.', index: 0 }] });
+  h.chunk(first, { reasoning_details: [
+    { type: 'reasoning.text', signature: 'sig-after-text', index: 0 },
+    { type: 'reasoning.encrypted', data: 'abc', index: 1 },
+  ] });
+  h.chunk(first, { reasoning_details: [{ type: 'reasoning.encrypted', data: 'def', index: 1 }] });
+  h.chunk(first, { tool_calls: [{ index: 0, id: 'call-1', function: { name: 'timer_set', arguments: '{"seconds":60}' } }] });
+  h.finish(first, 'tool_calls');
+  await flush();
+  const assistantMessage = h.requests[1].body.messages.find(m => m.role === 'assistant' && m.tool_calls);
+  assert.deepEqual(assistantMessage.reasoning_details, [
+    { type: 'reasoning.text', text: 'Need a timer.', signature: 'sig-after-text', format: 'anthropic-claude-v1', index: 0 },
+    { type: 'reasoning.encrypted', data: 'abcdef', index: 1 },
+  ]);
+  h.chunk(h.requests[1], { content: 'Timer set.' });
+  h.finish(h.requests[1]);
+  assert.deepEqual(h.errors, []);
+});
+
 test('changing the API endpoint preserves visible history but drops provider-specific state', () => {
   const h = assistant();
   const original = h.session.config;

@@ -148,25 +148,31 @@ function settingsSections(): SettingsSection[] {
     },
     {
       label: "Assistant",
-      // Re-read on every paint so the Venice-only row follows URL edits.
+      // Re-read on every paint: provider-specific rows follow the selected
+      // model (and, for Venice, the compatible URL).
       get items() {
+        const selectedModel = assistantModelSetting.get();
         return [
           // iOS's on-phone model is Apple Intelligence; Android downloads one. Only Android has the bridge.
           enumSettingMenuItem(assistantBackendSetting),
           enumSettingMenuItem(assistantModelSetting),
-          textSettingMenuItem(assistantHermesUrlSetting),
-          textSettingMenuItem(assistantHermesKeySetting),
-          textSettingMenuItem(assistantOpenAiCompatibleUrlSetting),
-          textSettingMenuItem(assistantOpenAiCompatibleKeySetting),
-          compatibleModelDiscoveryMenuItem({
-            getBaseUrl: () => assistantOpenAiCompatibleUrlSetting.get(),
-            getApiKey: () => assistantOpenAiCompatibleKeySetting.get(),
-            getModel: () => assistantOpenAiCompatibleModelSetting.get(),
-            setModel: (model) => assistantOpenAiCompatibleModelSetting.set(model),
-          }, assistantOpenAiCompatibleModelSetting),
-          textSettingMenuItem(assistantOpenAiCompatibleModelSetting),
-          ...(isVeniceApiBaseUrl(assistantOpenAiCompatibleUrlSetting.get())
-            ? [toggleSettingMenuItem(veniceWebSearchSetting)] : []),
+          ...(selectedModel === "hermes" ? [
+            textSettingMenuItem(assistantHermesUrlSetting),
+            textSettingMenuItem(assistantHermesKeySetting),
+          ] : []),
+          ...(selectedModel === "openai-compatible" ? [
+            textSettingMenuItem(assistantOpenAiCompatibleUrlSetting),
+            textSettingMenuItem(assistantOpenAiCompatibleKeySetting),
+            compatibleModelDiscoveryMenuItem({
+              getBaseUrl: () => assistantOpenAiCompatibleUrlSetting.get(),
+              getApiKey: () => assistantOpenAiCompatibleKeySetting.get(),
+              getModel: () => assistantOpenAiCompatibleModelSetting.get(),
+              setModel: (model) => assistantOpenAiCompatibleModelSetting.set(model),
+            }, assistantOpenAiCompatibleModelSetting),
+            textSettingMenuItem(assistantOpenAiCompatibleModelSetting),
+            ...(isVeniceApiBaseUrl(assistantOpenAiCompatibleUrlSetting.get())
+              ? [toggleSettingMenuItem(veniceWebSearchSetting)] : []),
+          ] : []),
           global.isIOS ? systemModelMenuItem() : localModelMenuItem(),
           toggleSettingMenuItem(assistantSkipConfirmationSetting),
           // iOS has no agent bridge yet.

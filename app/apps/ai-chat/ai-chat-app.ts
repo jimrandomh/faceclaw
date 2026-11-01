@@ -102,7 +102,7 @@ class AiChatLayer implements Layer {
       }
       case "long-press":
         if (!this.conversations.current().session?.isTurnActive()) {
-          if (!shell.isAssistantAvailable()) { shell.showAlert(global.isIOS ? "Configure an assistant model in Settings." : "Set an API key or download the on-phone model in Settings."); return; }
+          if (!shell.isAssistantAvailable()) { shell.showAlert(shell.assistantSetupHint()); return; }
           void this.draft.start();
         }
         return;

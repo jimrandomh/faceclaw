@@ -40,6 +40,7 @@ export function streamOpenAiCompatibleChat(options: OpenAiCompatibleStreamOption
   let finishReason: string | null = null;
   const toolCalls = new Map<number, PendingToolCall>();
   const providerMetadata: Record<string, any> = {};
+  const reasoningDetails = new ReasoningDetailsAccumulator();
 
   const fail = (message: string) => {
     if (settled) return;
@@ -63,6 +64,8 @@ export function streamOpenAiCompatibleChat(options: OpenAiCompatibleStreamOption
 
     const content: LlmContentBlock[] = [];
     if (text) content.push({ type: "text", text });
+    const details = reasoningDetails.entries();
+    if (details.length) providerMetadata.reasoning_details = details;
     if (Object.keys(providerMetadata).length) {
       content.push({ type: "provider_item", provider: "openai-compatible", item: providerMetadata });
     }
@@ -164,7 +167,7 @@ export function streamOpenAiCompatibleChat(options: OpenAiCompatibleStreamOption
       }
       // Reasoning is not displayed. Preserve provider metadata for replay in
       // multi-turn tool loops when the service supplies it.
-      if (delta.reasoning_details !== undefined) providerMetadata.reasoning_details = delta.reasoning_details;
+      if (Array.isArray(delta.reasoning_details)) reasoningDetails.add(delta.reasoning_details);
       if (delta.thought_signature !== undefined) providerMetadata.thought_signature = delta.thought_signature;
       if (Array.isArray(delta.tool_calls)) {
         delta.tool_calls.forEach((call: any, position: number) => {
@@ -200,6 +203,49 @@ export function streamOpenAiCompatibleChat(options: OpenAiCompatibleStreamOption
       try { request?.cancel(); } catch { /* ignore */ }
     },
   };
+}
+
+/** String fields of a reasoning_details entry that stream in pieces. */
+const REASONING_DETAIL_TEXT_FIELDS = ["text", "summary", "data"];
+
+/**
+ * Rebuilds the complete reasoning_details array (OpenRouter's format) from
+ * streamed deltas. Each delta carries fragments; fragments with the same
+ * `index` belong to one entry, so their text, summary, and data concatenate
+ * and their other fields (e.g. a signature that arrives after the text) fill
+ * in. Entries without an index are kept as sent. The replayed array must
+ * match what the model produced, so it is reassembled whole rather than
+ * replaying only the latest chunk.
+ */
+class ReasoningDetailsAccumulator {
+  private readonly ordered: Record<string, any>[] = [];
+  private readonly byIndex = new Map<number, Record<string, any>>();
+
+  add(fragments: any[]): void {
+    for (const fragment of fragments) {
+      if (!fragment || typeof fragment !== "object" || Array.isArray(fragment)) continue;
+      const index = Number.isInteger(fragment.index) ? Number(fragment.index) : null;
+      const existing = index === null ? undefined : this.byIndex.get(index);
+      if (!existing) {
+        const entry = { ...fragment };
+        this.ordered.push(entry);
+        if (index !== null) this.byIndex.set(index, entry);
+        continue;
+      }
+      for (const [key, value] of Object.entries(fragment)) {
+        if (value === undefined || value === null) continue;
+        if (REASONING_DETAIL_TEXT_FIELDS.includes(key) && typeof value === "string" && typeof existing[key] === "string") {
+          existing[key] += value;
+        } else if (existing[key] === undefined || existing[key] === null) {
+          existing[key] = value;
+        }
+      }
+    }
+  }
+
+  entries(): Record<string, any>[] {
+    return this.ordered;
+  }
 }
 
 /** Convert neutral conversation history to Chat Completions messages. */

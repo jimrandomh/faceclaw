@@ -1670,6 +1670,15 @@ class Shell {
     return this.resolveAssistantConfiguration(current.model, current.reasoning) !== null;
   }
 
+  /** What to set up when isAssistantAvailable() is false. */
+  assistantSetupHint(): string {
+    if (assistantBackendSetting.get() === "external") return "Configure the agent bridge host and token in Settings.";
+    const model = this.getAssistantConversations().current().model;
+    if (model === "hermes") return "Set the Hermes URL in Settings > Assistant.";
+    if (model === "openai-compatible") return "Set the compatible API URL and model ID in Settings > Assistant.";
+    return global.isIOS ? "Configure an assistant model in Settings." : "Set an API key or download the on-phone model in Settings.";
+  }
+
   /** Observe assistant turns (see AssistantActivityEvent). */
   onAssistantActivity(listener: (event: AssistantActivityEvent) => void): () => void {
     this.assistantActivityListeners.add(listener);
@@ -1754,11 +1763,7 @@ class Shell {
     if (!text) return;
     const session = this.ensureAssistantSession();
     if (!session) {
-      this.showAlert(
-        assistantBackendSetting.get() === "external"
-          ? "Configure the agent bridge host and token in Settings."
-          : global.isIOS ? "Configure an assistant model in Settings." : "Set an API key or download the on-phone model in Settings.",
-      );
+      this.showAlert(this.assistantSetupHint());
       return;
     }
     if (session.isTurnActive()) {
