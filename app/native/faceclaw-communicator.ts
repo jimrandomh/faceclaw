@@ -735,6 +735,14 @@ export class FaceclawCommunicatorBridge {
   }
 
   /**
+   * Whether the glasses' own wake word reaches Faceclaw: on a RayNeo iO, its
+   * "Hey RayNeo" switch (G2 glasses use the wake lease above instead).
+   */
+  async setVoiceWakeEnabled(enabled: boolean): Promise<void> {
+    await this.enqueueJavaCall(() => this.communicator.setVoiceWakeEnabled(enabled));
+  }
+
+  /**
    * Resolve only once the recreated layout and retained frame
    * are visible. CFW's deferred-dashboard READY is emitted from this barrier.
    */

@@ -52,6 +52,23 @@ internal class IoSessionState {
     /** Last `screen_status` push: 1 on, 0 off, -1 unknown. */
     var screenStatus = -1
 
+    /** Whether Faceclaw answers "Hey RayNeo" (null until the dashboard says); what this link was last told. */
+    var voiceWakeWanted: Boolean? = null
+    var voiceWakeSent = -1
+    /** The stock assistant opened a session (wake word): end it, it must not take the display. */
+    var voiceAbortPending = false
+    /** Ask for the launcher's general settings (logged: the wake-word preferences among them). */
+    var settingsRequestPending = true
+    /** When a wake was last reported: one phrase can wake twice (fast and second stage). */
+    var lastVoiceWakeAtMs = 0L
+
+    /** A capture wants the remote mic stream; whether this link was asked to open it, and when. */
+    var micWanted = false
+    var micStreamOpen = false
+    var micStartSentAtMs = 0L
+    var micPackets = 0L
+    var lastMicPacketAtMs = 0L
+
     fun resetLink() {
         reassembler.reset()
         versionReply = null
@@ -65,6 +82,11 @@ internal class IoSessionState {
         brightnessSentLevel = -1
         lastBrightnessAtMs = 0
         screenStatus = -1
+        voiceWakeSent = -1
+        voiceAbortPending = false
+        settingsRequestPending = true
+        micStreamOpen = false
+        micStartSentAtMs = 0
     }
 }
 
@@ -83,6 +105,10 @@ internal object IoTimings {
     const val PAGE_REASON_USER = 4
     /** While Faceclaw shows content, re-assert the screen this often (the stock auto-off is short). */
     const val SCREEN_REFRESH_MS = 5_000L
+    /** A wanted mic stream that hasn't delivered a packet this long is asked for again. */
+    const val MIC_RETRY_MS = 3_000L
+    /** Wakes this close to a reported one are the same phrase (fast stage, then second stage). */
+    const val VOICE_WAKE_DEDUP_MS = 3_000L
 }
 
 /** The glasses hung up at the version request: bound to another phone id, or not in pairing mode. */
@@ -341,9 +367,38 @@ internal fun GlassesSessionCore.ioMaintain() {
     var ctrl = -1
     var status = false
     var brightness = -1
+    var wakeword = -1
+    var micRc = -1
+    var abortVoice = false
+    var settings = false
     monitor.withLock {
         if (!sessionReady) return
         val now = now()
+        val wake = io.voiceWakeWanted
+        if (wake != null && io.voiceWakeSent != (if (wake) 1 else 0)) {
+            wakeword = if (wake) 1 else 0
+            io.voiceWakeSent = wakeword
+            // Read back what the switch did.
+            io.settingsRequestPending = true
+        }
+        if (io.settingsRequestPending) {
+            settings = true
+            io.settingsRequestPending = false
+        }
+        if (io.voiceAbortPending) {
+            abortVoice = true
+            io.voiceAbortPending = false
+        }
+        if (io.micWanted && (!io.micStreamOpen
+                || (io.lastMicPacketAtMs < io.micStartSentAtMs && now - io.micStartSentAtMs >= IoTimings.MIC_RETRY_MS))) {
+            // Not yet asked on this link, a voice session took the recorder, or the ask was lost.
+            micRc = RayNeoIoProtocol.VOICE_RC_START
+            io.micStreamOpen = true
+            io.micStartSentAtMs = now
+        } else if (!io.micWanted && io.micStreamOpen) {
+            micRc = RayNeoIoProtocol.VOICE_RC_STOP
+            io.micStreamOpen = false
+        }
         if (io.pageWanted && !fixedLayoutCreated && now - io.pageRequestSentAtMs >= IoTimings.PAGE_RETRY_MS) {
             ctrl = RayNeoIoProtocol.CTRL_PAGE_OPEN
             io.pageRequestSentAtMs = now
@@ -374,6 +429,60 @@ internal fun GlassesSessionCore.ioMaintain() {
     }
     if (status) ioRequestStatus()
     if (brightness > 0) ioWriteLauncher(RayNeoIoProtocol.LAUNCHER_BRIGHTNESS, RayNeoIoProtocol.launcherBrightness(brightness))
+    if (wakeword >= 0) {
+        logLine("RayNeo iO: wake word " + (if (wakeword == 1) "on" else "off"))
+        ioWriteLauncher(RayNeoIoProtocol.LAUNCHER_AI_VOICE_WAKEUP, RayNeoIoProtocol.launcherSetAiVoiceWakeup(wakeword == 1))
+    }
+    if (settings) ioWriteLauncher(RayNeoIoProtocol.LAUNCHER_GENERAL_SETTINGS, RayNeoIoProtocol.GENERAL_SETTINGS_REQUEST)
+    if (abortVoice) {
+        // As Glassly does: decline the stock session, then abort it, so its page goes.
+        ioWriteFrame(RayNeoIoProtocol.BUSINESS_VOICE, RayNeoIoProtocol.voiceRc(RayNeoIoProtocol.VOICE_RC, RayNeoIoProtocol.VOICE_RC_STOP))
+        ioWriteFrame(RayNeoIoProtocol.BUSINESS_VOICE, RayNeoIoProtocol.voiceRc(RayNeoIoProtocol.VOICE_ABORT, RayNeoIoProtocol.VOICE_RC_START))
+    }
+    if (micRc > 0) {
+        logLine("RayNeo iO mic: " + (if (micRc == RayNeoIoProtocol.VOICE_RC_START) "open" else "close") + " the remote audio stream")
+        ioWriteFrame(RayNeoIoProtocol.BUSINESS_VOICE, RayNeoIoProtocol.voiceRc(RayNeoIoProtocol.VOICE_STREAM_CONTROL, micRc))
+    }
+}
+
+/**
+ * The glasses' mic for a voice capture: the remote audio stream (16 kHz mono Opus packets to
+ * [listener]), which needs IDENT_FLAG_MIC firmware. ioMaintain sends the open (and repeats it
+ * while no packet comes); a voice session or a call can take the recorder meanwhile.
+ */
+internal fun GlassesSessionCore.ioStartAudioCapture(listener: FaceclawAudioPacketListener): Boolean {
+    monitor.withLock {
+        if (!running || !sessionReady || shutdownRequested) {
+            logLine("skip RayNeo iO mic: session not ready")
+            return false
+        }
+        if (io.ident?.micStream != true) {
+            logLine("skip RayNeo iO mic: the firmware has no remote audio stream (IDENT flag 0x20)")
+            return false
+        }
+        audioPacketListener = listener
+        audioCaptureActive = true
+        io.micWanted = true
+        io.micStreamOpen = false
+        io.micPackets = 0
+    }
+    interruptibleSleep.interrupt()
+    return true
+}
+
+internal fun GlassesSessionCore.ioStopAudioCapture() {
+    monitor.withLock {
+        audioPacketListener = null
+        audioCaptureActive = false
+        io.micWanted = false
+    }
+    interruptibleSleep.interrupt()
+}
+
+/** Whether "Hey RayNeo" should reach Faceclaw (the launcher's wake-word switch). */
+internal fun GlassesSessionCore.ioSetVoiceWakeEnabled(enabled: Boolean) {
+    monitor.withLock { io.voiceWakeWanted = enabled }
+    interruptibleSleep.interrupt()
 }
 
 /** Stop drawing and close the page, keeping the BLE link (the EvenHub suspend analogue). */
@@ -421,6 +530,7 @@ internal fun GlassesSessionCore.ioOnNotification(address: String, characteristic
                 monitor.signalAll()
             }
             RayNeoIoProtocol.BUSINESS_LAUNCHER -> ioHandleLauncher(frame.payload)
+            RayNeoIoProtocol.BUSINESS_VOICE -> ioHandleVoice(frame.payload)
             RayNeoIoProtocol.BUSINESS_OTA -> {
                 val envelope = RayNeoIoProtocol.decodeEnvelope(frame.payload) ?: continue
                 if (envelope.type != RayNeoIoProtocol.OTA_VERSION) continue
@@ -450,7 +560,11 @@ private fun GlassesSessionCore.ioHandleLauncher(payload: ByteArray) {
         return
     }
     val battery = RayNeoIoProtocol.batteryFromLauncherJson(envelope.json)
-    if (battery < 0) return
+    if (battery < 0) {
+        // Replies to our commands and settings (the wake word's among them): logged for now.
+        logLine("RayNeo iO launcher type " + envelope.type + ": " + envelope.json.take(400))
+        return
+    }
     val charging = if (envelope.json.contains("\"isCharging\":true")) 1 else if (envelope.json.contains("\"isCharging\":false")) 0 else -1
     var changed = false
     monitor.withLock {
@@ -462,6 +576,73 @@ private fun GlassesSessionCore.ioHandleLauncher(payload: ByteArray) {
         }
     }
     if (changed) emitBatteryState(headsetBattery, headsetCharging)
+}
+
+/** The voice channel (business 13): mic packets, and the stock assistant's wake word. */
+private fun GlassesSessionCore.ioHandleVoice(payload: ByteArray) {
+    val envelope = RayNeoIoProtocol.decodeEnvelope(payload) ?: return
+    when (envelope.type) {
+        RayNeoIoProtocol.VOICE_STREAM_AUDIO, RayNeoIoProtocol.VOICE_AUDIO -> {
+            val opus = envelope.binary ?: return
+            val arrivalMs = now()
+            var first = false
+            val listener = monitor.withLock {
+                lastIncomingAtMs = arrivalMs
+                io.micPackets++
+                first = io.micPackets == 1L
+                io.lastMicPacketAtMs = arrivalMs
+                if (audioCaptureActive) audioPacketListener else null
+            }
+            if (first) logLine("RayNeo iO mic: first audio packet (type " + envelope.type + ", " + opus.size + " bytes)")
+            if (listener == null) return
+            try {
+                listener.onAudioPacket(opus, "R", arrivalMs)
+            } catch (t: Throwable) {
+                logLine("RayNeo iO mic packet listener failed: " + safeMessage(t))
+            }
+        }
+        RayNeoIoProtocol.VOICE_WAKE -> {
+            // The stock assistant heard "Hey RayNeo" and opened its session. Faceclaw's own
+            // assistant answers instead: end the stock one, and report the wake word as the
+            // G2's (sid 0x07 EVEN_AI_WAKE_UP), which the dashboard routes to its wake action.
+            var repeat = false
+            val forward = monitor.withLock {
+                val now = now()
+                io.voiceAbortPending = true
+                lastIncomingAtMs = now
+                lastConnectionOrInputAtMs = now
+                repeat = io.lastVoiceWakeAtMs != 0L && now - io.lastVoiceWakeAtMs < IoTimings.VOICE_WAKE_DEDUP_MS
+                val wanted = io.voiceWakeWanted == true && sessionReady
+                if (wanted && !repeat) {
+                    io.lastVoiceWakeAtMs = now
+                    ioReclaimPageOnInputLocked()
+                }
+                wanted && !repeat
+            }
+            interruptibleSleep.interrupt()
+            logLine("RayNeo iO: voice wake " + envelope.json + when {
+                forward -> ""
+                repeat -> " (same phrase as the last wake)"
+                else -> " (not forwarded: wake word off)"
+            })
+            if (!forward) return
+            val event = G2Event("even-ai", "", BleProtocol.EVEN_AI_STATUS_WAKE_UP, 0, 0)
+            val frameId = frameTimings.startFrame("input:even-ai wake")
+            frameTimings.log(frameId, "wake word from the RayNeo iO's voice channel")
+            emitRingEvent(event, frameId)
+        }
+        RayNeoIoProtocol.VOICE_EXITED -> {
+            // A voice session that held the recorder ended: ask for the stream again.
+            val reopen = monitor.withLock {
+                if (io.micWanted) io.micStreamOpen = false
+                io.micWanted
+            }
+            if (reopen) interruptibleSleep.interrupt()
+            logLine("RayNeo iO: voice session exited " + envelope.json + (if (reopen) "; reopening the mic stream" else ""))
+        }
+        RayNeoIoProtocol.VOICE_VAD -> logDebug("RayNeo iO: voice VAD " + envelope.json)
+        else -> logLine("RayNeo iO: voice message type " + envelope.type + " " + envelope.json.take(160))
+    }
 }
 
 private fun GlassesSessionCore.ioHandleCfw(address: String, frame: RayNeoIoProtocol.Frame) {

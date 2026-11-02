@@ -114,7 +114,9 @@ class FaceclawVoiceController(context: Context) {
             }
         }
 
-        override fun createPacketDecoder(): AudioPacketDecoder = AndroidSpeechEngines.Lc3DecoderAdapter()
+        override fun createPacketDecoder(): AudioPacketDecoder =
+            if (communicator?.isRayNeoIo() == true) AndroidSpeechEngines.OpusDecoderAdapter()
+            else AndroidSpeechEngines.Lc3DecoderAdapter()
 
         override fun openPhoneMic(): PcmAudioSource? = AndroidSpeechEngines.openPhoneMic(PHONE_MIC_CHUNK_SAMPLES)
 

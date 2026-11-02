@@ -468,6 +468,7 @@ class DashboardController {
       this.pushFirmwareDebugFlags();
       this.pushBrightness();
       this.syncEvenHubScreenOffSetting();
+      this.syncVoiceWake();
       // Display mode size first: a reflow repositions every surface too, so
       // the band-position check after it then has nothing left to do.
       this.applyDisplayModeIfChanged();
@@ -928,6 +929,24 @@ class DashboardController {
       this.faceclawWakeLeaseState = applied || !enabled ? enabled : null;
     }
     return applied;
+  }
+
+  /** What the communicator was last told about the glasses' own wake word (null: not yet). */
+  private voiceWakeSent: boolean | null = null;
+
+  /**
+   * The glasses' own wake word follows the wake action: on a RayNeo iO, its
+   * "Hey RayNeo" switch (G2 glasses use the wake lease, syncFaceclawWakeLease).
+   */
+  private syncVoiceWake(communicator = this.communicator): void {
+    if (!communicator) return;
+    const enabled = wakeWordActionSetting.get() !== "off";
+    if (this.voiceWakeSent === enabled) return;
+    this.voiceWakeSent = enabled;
+    void communicator.setVoiceWakeEnabled(enabled).catch((error) => {
+      this.voiceWakeSent = null;
+      this.appendLog(`wake word sync failed: ${this.formatError(error)}`);
+    });
   }
 
   private syncEvenHubScreenOffSetting(): void {
@@ -1537,6 +1556,8 @@ class DashboardController {
       // The paired glasses' screen: the G2's 640x480 or the RayNeo iO's 540x220.
       await communicator.configureCompositorScreen(screenWidth(), screenHeight());
       await communicator.configureBrightness(getBrightnessPreferences());
+      this.voiceWakeSent = null;
+      this.syncVoiceWake(communicator);
       this.offState = communicator.onStateChange((state) => {
         if (state.phase !== "connected") resetRingInputFilter();
         if (isHaltedSessionPhase(state.phase)) {

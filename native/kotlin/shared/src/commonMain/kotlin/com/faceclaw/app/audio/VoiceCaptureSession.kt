@@ -449,9 +449,10 @@ class VoiceCaptureSession(
     }
 
     private fun processG2Audio() {
-        val pcm = ShortArray(PACKET_SAMPLES)
+        var pcm = ShortArray(PACKET_SAMPLES)
         while (started) {
             val currentDecoder = packetDecoder ?: return
+            if (pcm.size < currentDecoder.maxSamplesPerPacket) pcm = ShortArray(currentDecoder.maxSamplesPerPacket)
             val packet = takeAudioPacket()
             if (packet == null) {
                 continue
@@ -474,7 +475,7 @@ class VoiceCaptureSession(
                 maybeEmitAudioStats(false)
                 continue
             }
-            processPcmChunk(pcm, count, angleDegrees, ssr, true)
+            processPcmChunk(pcm, count, angleDegrees, ssr, currentDecoder.hasFrameMeta)
             maybeEmitAudioStats(false)
         }
     }

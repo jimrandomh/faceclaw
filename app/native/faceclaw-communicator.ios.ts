@@ -679,6 +679,9 @@ export class FaceclawCommunicatorBridge {
     return this.enqueueNativeCall(() => Boolean(this.communicator.setFaceclawWakeLeaseEnabledEnabled(Boolean(enabled))));
   }
 
+  /** The RayNeo iO's wake word; iOS doesn't drive an iO, so nothing to do. */
+  async setVoiceWakeEnabled(_enabled: boolean): Promise<void> {}
+
   async awaitEvenHubSessionReady(timeoutMs: number): Promise<boolean> {
     return this.enqueueNativeCall(() => Boolean(this.communicator.awaitEvenHubSessionReadyTimeoutMs(Math.round(nonNegativeNumber(timeoutMs)))));
   }

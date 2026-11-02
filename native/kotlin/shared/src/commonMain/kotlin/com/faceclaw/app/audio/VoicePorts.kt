@@ -39,9 +39,18 @@ fun interface RecordingSink {
     fun save(pcm16le: ByteArray, sampleRate: Int)
 }
 
-/** A G2 microphone packet decoder (the shared [Lc3PacketFramer] over a platform LC3 codec). */
+/**
+ * A glasses microphone packet decoder to 16 kHz mono PCM: the G2's LC3 (the shared
+ * [Lc3PacketFramer] over a platform LC3 codec) or the RayNeo iO's Opus.
+ */
 interface AudioPacketDecoder {
     fun decodePacket(packet: ByteArray?, pcmOut: ShortArray?): Int
+
+    /** The most samples one packet decodes to: the size [decodePacket]'s pcmOut needs. */
+    val maxSamplesPerPacket: Int get() = Lc3PacketFramer.SAMPLES_PER_PACKET
+
+    /** Whether packets carry the G2 firmware's DSP metadata ([lastAngleDegrees], [lastSsr]). */
+    val hasFrameMeta: Boolean get() = true
 
     val lastAngleDegrees: Int
     val lastSsr: Int

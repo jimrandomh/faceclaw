@@ -254,6 +254,9 @@ class FaceclawBleCommunicator(context: Context, rightAddress: String?, leftAddre
 
     fun setFaceclawWakeLeaseEnabled(enabled: Boolean): Boolean = core.setFaceclawWakeLeaseEnabled(enabled)
 
+    /** See [GlassesSessionCore.setVoiceWakeEnabled]. */
+    fun setVoiceWakeEnabled(enabled: Boolean) = core.setVoiceWakeEnabled(enabled)
+
     fun awaitEvenHubSessionReady(timeoutMs: Int): Boolean = core.awaitEvenHubSessionReady(timeoutMs)
 
     fun setImuReportEnabled(enable: Boolean, reportFrq: Int) = core.setImuReportEnabled(enable, reportFrq)

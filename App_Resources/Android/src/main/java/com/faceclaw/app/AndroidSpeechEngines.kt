@@ -95,6 +95,44 @@ internal object AndroidSpeechEngines {
     }
 
     /**
+     * The RayNeo iO's microphone: one 16 kHz mono Opus packet per BLE message (its remote
+     * audio stream, GlassesSessionIo), decoded with Concentus. No G2 DSP metadata; packets
+     * carry no counter, so "missing" stays 0 and a lost one is just a gap.
+     */
+    class OpusDecoderAdapter : AudioPacketDecoder {
+        private val decoder = io.github.jaredmdobson.OpusDecoder(RayNeoIoProtocol.VOICE_SAMPLE_RATE, 1)
+        private var packets = 0L
+        private var errors = 0L
+
+        override fun decodePacket(packet: ByteArray?, pcmOut: ShortArray?): Int {
+            if (packet == null || packet.isEmpty() || pcmOut == null) return 0
+            return try {
+                val count = decoder.decode(packet, 0, packet.size, pcmOut, 0, pcmOut.size, false)
+                packets++
+                count
+            } catch (e: io.github.jaredmdobson.OpusException) {
+                errors++
+                if (errors == 1L || errors % 100 == 0L) {
+                    android.util.Log.w("FaceclawVoice", "Opus decode error ($errors so far): ${e.message}")
+                }
+                0
+            }
+        }
+
+        /** 120 ms, Opus's longest frame. */
+        override val maxSamplesPerPacket: Int get() = RayNeoIoProtocol.VOICE_SAMPLE_RATE * 120 / 1000
+        override val hasFrameMeta: Boolean get() = false
+        override val lastAngleDegrees: Int get() = 0
+        override val lastSsr: Int get() = 0
+        override val realPackets: Long get() = packets
+        override val duplicatePackets: Long get() = 0
+        override val missingPackets: Long get() = 0
+        override val decodeErrors: Long get() = errors
+
+        override fun close() = decoder.resetState()
+    }
+
+    /**
      * Open the phone's own microphone at the pipeline's native format (16 kHz
      * mono PCM16), or null when it cannot start — the permission is missing
      * (SecurityException) or the device refuses the configuration.

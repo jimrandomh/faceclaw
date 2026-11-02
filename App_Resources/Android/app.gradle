@@ -19,6 +19,9 @@ dependencies {
   // app's captions (translation models download on demand, per language).
   implementation 'com.google.mlkit:language-id:17.0.6'
   implementation 'com.google.mlkit:translate:17.0.3'
+  // Pure-Java Opus decoder for the RayNeo iO's microphone (16 kHz mono Opus over
+  // BLE); the same one Glassly uses. See AndroidSpeechEngines.OpusDecoderAdapter.
+  implementation 'io.github.jaredmdobson:concentus:1.0.1'
 }
 
 def faceclawSherpaOnnxVersion = "1.13.0"

@@ -40,6 +40,7 @@ object RayNeoIoBle {
 
 object RayNeoIoProtocol {
     const val BUSINESS_OTA = 9
+    const val BUSINESS_VOICE = 13
     const val BUSINESS_LAUNCHER = 15
     const val BUSINESS_HANDSHAKE = 0x10
     const val BUSINESS_CFW = 0xf0
@@ -248,8 +249,46 @@ object RayNeoIoProtocol {
     const val MODE_REPLY = 2
     const val LAUNCHER_GENERAL_STATUS = 1
     const val LAUNCHER_BRIGHTNESS = 2
+    const val LAUNCHER_GENERAL_SETTINGS = 4
+    const val LAUNCHER_AI_VOICE_WAKEUP = 16
     const val OTA_VERSION = 1
     const val GENERAL_STATUS_REQUEST = """{"cmd":"request_general_status","payload":{"data":"","mode":0,"value":0}}"""
+    /** The reply (type 4) carries `generalSettings`, among them the wake-word preferences. */
+    const val GENERAL_SETTINGS_REQUEST = """{"cmd":"request_general_settings","payload":{"value":0,"mode":0,"data":""}}"""
+
+    /**
+     * The launcher's wake-word switch. Every `set_ai_*` handler takes the new value from
+     * `mode` and ignores `value` (RnLinkMsgProcessor::handleAssistantSettingCommand, see
+     * notes/rayneo-io-wakeword-re.md): mode 1 on, 0 off.
+     */
+    @JvmStatic
+    fun launcherSetAiVoiceWakeup(enabled: Boolean): String =
+        """{"cmd":"set_ai_voice_wakeup","payload":{"value":0,"mode":${if (enabled) 1 else 0},"data":""}}"""
+
+    // ---- Voice assistant (business 13), as Glassly's RayNeoIOProtocol maps it ----
+    // The stock assistant: the wake word (or a temple long/double press) opens a session
+    // and sends VOICE_WAKE; the phone answers VOICE_RC {"rc":1} for Opus as VOICE_AUDIO,
+    // or {"rc":2} plus VOICE_ABORT to end it; VOICE_EXITED reports it gone. The remote
+    // stream (VOICE_STREAM_CONTROL {"rc":1|2}, packets as VOICE_STREAM_AUDIO) needs
+    // IDENT_FLAG_MIC firmware and runs without a session or its page, until a session,
+    // a call, SCO or a recording takes the recorder. Packets are 16 kHz mono Opus in
+    // the envelope's bytes field.
+
+    const val VOICE_WAKE = 1
+    const val VOICE_RC = 2
+    const val VOICE_AUDIO = 3
+    const val VOICE_VAD = 4
+    const val VOICE_ABORT = 7
+    const val VOICE_EXITED = 8
+    const val VOICE_STREAM_CONTROL = 58
+    const val VOICE_STREAM_AUDIO = 59
+    const val VOICE_RC_START = 1
+    const val VOICE_RC_STOP = 2
+    const val VOICE_SAMPLE_RATE = 16_000
+
+    /** A voice-channel message: `{"rc":n}` as [type] (VOICE_RC, VOICE_STREAM_CONTROL or VOICE_ABORT). */
+    @JvmStatic
+    fun voiceRc(type: Int, rc: Int): ByteArray = encodeEnvelope(Envelope(type, """{"rc":$rc}"""))
 
     class Envelope(
         @JvmField val type: Int,
@@ -415,6 +454,8 @@ object RayNeoIoProtocol {
 
     const val IDENT_FLAG_ZLIB = 0x01
     const val IDENT_FLAG_STEREO = 0x08
+    /** The assistant's remote audio stream (type 58/59 below) is allowed (CFW revision 10). */
+    const val IDENT_FLAG_MIC = 0x20
     const val IDENT_FLAG_FACECLAW = 0x80
 
     class Ident(
@@ -428,6 +469,7 @@ object RayNeoIoProtocol {
         @JvmField val faceclawRevision: Int,
     ) {
         val acceptsCompressed: Boolean get() = flags and IDENT_FLAG_ZLIB != 0
+        val micStream: Boolean get() = flags and IDENT_FLAG_MIC != 0
         val faceclaw: Boolean get() = flags and IDENT_FLAG_FACECLAW != 0 && faceclawRevision > 0
     }
 

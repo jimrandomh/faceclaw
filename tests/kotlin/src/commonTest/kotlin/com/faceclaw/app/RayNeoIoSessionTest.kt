@@ -44,6 +44,13 @@ private class FakeIoGlasses(platform: ProtocolPlatform) : SessionLink {
     private val messagesList = ArrayList<ByteArray>()
     private val launcherList = ArrayList<String>()
     val launcher: List<String> get() = lock.withLock { launcherList.toList() }
+    /** Voice-channel (business 13) messages from the phone: type to JSON. */
+    private val voiceList = ArrayList<Pair<Int, String>>()
+    val voice: List<Pair<Int, String>> get() = lock.withLock { voiceList.toList() }
+
+    /** A voice-channel message from the glasses. */
+    fun voiceNotify(type: Int, json: String = "{}", binary: ByteArray? = null) =
+        notify(13, RayNeoIoProtocol.encodeEnvelope(RayNeoIoProtocol.Envelope(type, json, binary)))
     private val records = ArrayList<ByteArray>()
     private var current = ByteArray(0)
     private val inbound = RayNeoIoProtocol.FrameReassembler()
@@ -133,6 +140,10 @@ private class FakeIoGlasses(platform: ProtocolPlatform) : SessionLink {
                 """{"generalStatus":{"battery":77,"isCharging":false}}""", sequence = RayNeoIoProtocol.decodeEnvelope(p)!!.sequence, mode = 2)))
             }
             9 -> notify(9, RayNeoIoProtocol.encodeEnvelope(RayNeoIoProtocol.Envelope(1, """{"OsVersion":"Strix OS 1.0.4.12"}""")))
+            13 -> {
+                val envelope = RayNeoIoProtocol.decodeEnvelope(p)!!
+                lock.withLock { voiceList.add(envelope.type to envelope.json) }
+            }
             0xf0 -> cfw(p)
         }
     }
@@ -435,6 +446,72 @@ class RayNeoIoSessionTest {
             s.glasses.ringNotify(BleProtocol.R1_LEGACY_NOTIFY_CHAR_UUID, byteArrayOf(0x00, 0x09, 0x61, 0x00, 0x01, 0x00, 0x00, 0x10, 0xcc.toByte(), 0x00, 0x00))
             s.core.interruptibleSleep.interrupt()
             assertTrue(awaitTrue(5_000) { s.pageUp() }, "ring input did not reopen:\n" + s.tail())
+        } finally {
+            s.core.close()
+        }
+    }
+
+    @Test
+    fun theWakeWordAndTheMicStream() {
+        val s = IoSession()
+        s.core.configureCompositorScreen(540, 220)
+        val lock = s.platform.createLock()
+        val packets = ArrayList<ByteArray>()
+        val listener = object : FaceclawAudioPacketListener {
+            override fun onAudioPacket(data: ByteArray?, arm: String?, arrivalMs: Long) {
+                lock.withLock { packets.add(data!!) }
+            }
+        }
+        val count = { lock.withLock { packets.size } }
+        fun sent(type: Int, json: String) = s.glasses.voice.count { it == type to json }
+        val start = """{"rc":1}"""
+        val stop = """{"rc":2}"""
+        try {
+            assertTrue(s.core.start())
+            assertTrue(awaitTrue(5_000) { s.pageUp() }, s.tail())
+
+            // "Hey RayNeo" goes to Faceclaw: the launcher's switch on, then each wake ends the
+            // stock session (declined, then aborted) and arrives as the G2's EVEN_AI_WAKE_UP.
+            s.core.setVoiceWakeEnabled(true)
+            // The firmware reads the switch from "mode", not "value".
+            assertTrue(awaitTrue(3_000) { s.glasses.launcher.any { "set_ai_voice_wakeup" in it && "\"mode\":1" in it } }, s.tail())
+            s.glasses.voiceNotify(RayNeoIoProtocol.VOICE_WAKE, """{"rc":2,"mode":2,"linkType":0}""")
+            assertTrue(awaitTrue(2_000) { "even-ai:${BleProtocol.EVEN_AI_STATUS_WAKE_UP}:0" in s.listener.events }, s.listener.events.toString())
+            // The same phrase's second-stage wake is not a second wake.
+            s.glasses.voiceNotify(RayNeoIoProtocol.VOICE_WAKE, """{"rc":2,"mode":3,"linkType":0}""")
+            sleepMs(200)
+            assertEquals(1, s.listener.events.count { it.startsWith("even-ai:") })
+            assertTrue(awaitTrue(2_000) {
+                sent(RayNeoIoProtocol.VOICE_RC, stop) >= 1 && sent(RayNeoIoProtocol.VOICE_ABORT, start) >= 1
+            }, s.glasses.voice.toString())
+
+            // The mic: capture opens the remote stream, its Opus packets go to the listener as
+            // they came, and stopping closes it.
+            assertTrue(s.core.startG2AudioCapture(listener))
+            assertTrue(awaitTrue(2_000) { sent(RayNeoIoProtocol.VOICE_STREAM_CONTROL, start) == 1 }, s.tail())
+            s.glasses.voiceNotify(RayNeoIoProtocol.VOICE_STREAM_AUDIO, binary = byteArrayOf(0x78, 1, 2, 3))
+            assertTrue(awaitTrue(2_000) { count() == 1 })
+            assertTrue(lock.withLock { packets[0] }.contentEquals(byteArrayOf(0x78, 1, 2, 3)))
+            assertTrue(s.core.isAudioCaptureActive())
+            // A voice session that took the recorder ended: the stream is asked for again.
+            s.glasses.voiceNotify(RayNeoIoProtocol.VOICE_EXITED)
+            assertTrue(awaitTrue(2_000) { sent(RayNeoIoProtocol.VOICE_STREAM_CONTROL, start) == 2 }, s.tail())
+            s.core.stopG2AudioCapture()
+            assertTrue(awaitTrue(2_000) { sent(RayNeoIoProtocol.VOICE_STREAM_CONTROL, stop) == 1 }, s.tail())
+            assertFalse(s.core.isAudioCaptureActive())
+            s.glasses.voiceNotify(RayNeoIoProtocol.VOICE_STREAM_AUDIO, binary = byteArrayOf(9))
+            sleepMs(200)
+            assertEquals(1, count())
+
+            // With the wake action off: the switch follows, and a wake is ended but not reported.
+            s.core.setVoiceWakeEnabled(false)
+            assertTrue(awaitTrue(3_000) { s.glasses.launcher.any { "set_ai_voice_wakeup" in it && "\"mode\":0" in it } }, s.tail())
+            val events = s.listener.events.size
+            val aborts = sent(RayNeoIoProtocol.VOICE_ABORT, start)
+            s.platform.offsetMs += 5_000
+            s.glasses.voiceNotify(RayNeoIoProtocol.VOICE_WAKE)
+            assertTrue(awaitTrue(2_000) { sent(RayNeoIoProtocol.VOICE_ABORT, start) > aborts }, s.glasses.voice.toString())
+            assertEquals(events, s.listener.events.size)
         } finally {
             s.core.close()
         }

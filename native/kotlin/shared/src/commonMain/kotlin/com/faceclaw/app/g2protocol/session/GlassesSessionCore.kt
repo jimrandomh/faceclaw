@@ -670,6 +670,8 @@ class GlassesSessionCore(
         if (listener == null) {
             throw IllegalArgumentException("listener is required")
         }
+        // The iO's packets are Opus from its remote audio stream (see ioStartAudioCapture).
+        if (isIo) return ioStartAudioCapture(listener)
         var magic = 0
         monitor.withLock {
             if (!running || !sessionReady || shutdownRequested || !fixedLayoutCreated) {
@@ -687,6 +689,7 @@ class GlassesSessionCore(
     }
 
     fun stopG2AudioCapture() {
+        if (isIo) return ioStopAudioCapture()
         var magic = 0
         monitor.withLock {
             audioPacketListener = null
@@ -794,6 +797,15 @@ class GlassesSessionCore(
      * that track a capture across those events must check this rather than
      * assume their earlier enable still holds.
      */
+    /**
+     * Whether the glasses' own wake word should reach Faceclaw (its configured wake action).
+     * RayNeo iO: the launcher's "Hey RayNeo" switch, and the stock session it opens is
+     * ended in favor of Faceclaw's. G2 glasses use the wake lease instead (no-op here).
+     */
+    fun setVoiceWakeEnabled(enabled: Boolean) {
+        if (isIo) ioSetVoiceWakeEnabled(enabled)
+    }
+
     fun isAudioCaptureActive(): Boolean {
         monitor.withLock {
             return running && sessionReady && !shutdownRequested && audioCaptureActive
@@ -810,6 +822,8 @@ class GlassesSessionCore(
         val generation: Int
         monitor.withLock {
             faceclawWakeLeaseEnabled = enabled
+            // A G2 firmware lease; the iO's wake word is setVoiceWakeEnabled.
+            if (isIo) return true
             if (!running || !sessionReady) {
                 return !enabled
             }
