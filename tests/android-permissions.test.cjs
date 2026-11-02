@@ -8,9 +8,10 @@ const RECORD_AUDIO = 'android.permission.RECORD_AUDIO';
 
 /**
  * app/g2/android-permissions.ts against a stubbed Android: `granted` is the set
- * of permissions already held, `activity` the foreground/start Activity (null
- * when Android started the process in the background, e.g. for a home-widget
- * update, and the app has not been opened yet).
+ * of permissions already held, `activity` the foreground/start Activity. It is
+ * null once the app's Activity is destroyed (swiped away in Recents) while the
+ * foreground service keeps the process and the glasses session running:
+ * NativeScript then clears both foregroundActivity and startActivity.
  */
 function permissions({ granted = [], activity = null } = {}) {
   const held = new Set(granted);
@@ -45,7 +46,7 @@ function permissions({ granted = [], activity = null } = {}) {
   return { api: load('app/g2/android-permissions.ts'), requests };
 }
 
-test('a granted permission needs no Activity, so voice works after a background start', async () => {
+test('a granted permission needs no Activity, so voice works after the app is swiped away', async () => {
   const { api, requests } = permissions({ granted: [RECORD_AUDIO], activity: null });
   await api.ensureVoicePermissions();
   assert.equal(requests.length, 0);

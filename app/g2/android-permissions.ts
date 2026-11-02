@@ -69,10 +69,10 @@ async function ensurePermissions(
 
   if (missing.length === 0) return;
 
-  // Only a request needs an Activity. Checking must not: Android can start
-  // the app in the background (a home-widget update, a notification-listener
-  // rebind) with none, and the glasses session and voice input run from
-  // there until the app is opened.
+  // Only a request needs an Activity. Checking must not: the glasses session
+  // outlives it (swiping the app away in Recents destroys the Activity while
+  // the foreground service keeps the process running), and voice input
+  // checks the microphone permission on every start.
   const activity = getActivity();
 
   await new Promise<void>((resolve, reject) => {
