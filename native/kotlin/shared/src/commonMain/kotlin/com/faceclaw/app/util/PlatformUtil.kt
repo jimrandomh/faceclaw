@@ -19,6 +19,12 @@ expect fun currentTimeMillis(): Long
 /** Formats [epochMs] in local time with a Unicode/SimpleDateFormat-style [pattern] (e.g. "yyyyMMdd-HHmmss-SSS"). */
 expect fun formatLocalTime(epochMs: Long, pattern: String): String
 
+/** The local time zone's offset from UTC at [epochMs], in milliseconds (DST included). */
+expect fun localUtcOffsetMs(epochMs: Long): Int
+
+/** The local time zone's identifier (e.g. "America/Los_Angeles"), for logs. */
+expect fun localTimeZoneId(): String
+
 expect object PlatformLog {
     fun i(tag: String, message: String)
 

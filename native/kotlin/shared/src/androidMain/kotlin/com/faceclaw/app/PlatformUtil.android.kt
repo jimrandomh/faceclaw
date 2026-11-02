@@ -28,6 +28,10 @@ actual fun formatLocalTime(epochMs: Long, pattern: String): String {
     return format.format(Date(epochMs))
 }
 
+actual fun localUtcOffsetMs(epochMs: Long): Int = java.util.TimeZone.getDefault().getOffset(epochMs)
+
+actual fun localTimeZoneId(): String = java.util.TimeZone.getDefault().id
+
 actual object PlatformLog {
     actual fun i(tag: String, message: String) {
         android.util.Log.i(tag, message)

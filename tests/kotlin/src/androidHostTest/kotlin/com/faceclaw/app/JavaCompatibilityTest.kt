@@ -11,6 +11,8 @@ class JavaCompatibilityTest {
     @Test fun gestures() = FaceclawGestureEventTest.main(emptyArray())
 
     @Test fun resourceCache() = ResourceCacheProtocolTest.main(emptyArray())
+
+    @Test fun ringHealthProtocol() = RingProtocolSelfTest.main(emptyArray())
 }
 
 class AndroidByteReaderTest {

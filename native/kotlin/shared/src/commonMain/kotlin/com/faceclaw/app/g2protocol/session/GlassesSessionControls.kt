@@ -501,6 +501,8 @@ internal fun GlassesSessionCore.scheduleReconnectLocked(sessionWasReady: Boolean
 internal fun GlassesSessionCore.resetSessionStateLocked() {
     ringBattery = -1
     ringCharging = -1
+    directRingBattery = -1
+    directRingCharging = -1
     sessionReady = false
     shutdownRequested = false
     fixedLayoutCreated = false
@@ -709,8 +711,11 @@ internal fun GlassesSessionCore.emitPhoneLockStateIfChanged(force: Boolean) {
 }
 
 internal fun GlassesSessionCore.emitBatteryState(headsetBattery: Int, headsetCharging: Int) {
-    val reportedRingBattery = ringBattery
-    val reportedRingCharging = ringCharging
+    // A missing glasses-side report must not erase a verified direct
+    // reading. Fall back to the glasses cache when the direct link drops.
+    val useDirect = ringConnected && directRingBattery >= 0
+    val reportedRingBattery = if (useDirect) directRingBattery else ringBattery
+    val reportedRingCharging = if (useDirect) directRingCharging else ringCharging
     val current = listener ?: return
     host.postToMain {
         try {

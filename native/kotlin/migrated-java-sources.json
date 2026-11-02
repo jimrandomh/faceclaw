@@ -406,5 +406,9 @@
   {
     "java": "com/faceclaw/app/util/InterruptibleSleep.java",
     "kotlin": "native/kotlin/shared/src/commonMain/kotlin/com/faceclaw/app/util/Concurrency.kt"
+  },
+  {
+    "java": "com/faceclaw/app/g2protocol/RingProtocol.java",
+    "kotlin": "native/kotlin/shared/src/commonMain/kotlin/com/faceclaw/app/g2protocol/RingProtocol.kt"
   }
 ]

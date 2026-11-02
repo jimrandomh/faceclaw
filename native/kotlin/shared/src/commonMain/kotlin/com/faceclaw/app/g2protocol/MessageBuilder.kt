@@ -43,6 +43,22 @@ class MessageBuilder {
         )
     }
 
+    /** A sid-0x80 DevCfgDataPackage ring command (see BleProtocol.buildRingConnectRequest). */
+    fun ringLinkCommand(label: String, leftArm: Boolean, build: (Int) -> ByteArray): OutboundMessage {
+        var magic: Int = magicPool.allocate()
+        return OutboundMessage(
+            "ring-link",
+            (label + (if (leftArm) " L" else " R")),
+            BleProtocol.SID_SECURITY_AUTH,
+            BleProtocol.FLAG_SECURITY_AUTH,
+            magic,
+            build(magic),
+            ACK_TIMEOUT_MS,
+            -1,
+            leftArm,
+        )
+    }
+
     fun shutdown(exitMode: Int): OutboundMessage {
         var magic: Int = magicPool.allocate()
         return OutboundMessage(

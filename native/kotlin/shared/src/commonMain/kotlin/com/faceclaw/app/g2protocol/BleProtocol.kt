@@ -22,9 +22,35 @@ class BleProtocol {
 
         const val RENDER_NOTIFY_UUID: String = "00002760-08c2-11e1-9073-0e8ac72e6402"
 
-        const val R1_PHONE_NOTIFY_CHAR_UUID: String = "bae80011-4f05-4503-8e65-3af1f7329d1f"
+        // R1 ring, vendor service bae80001-4f05-4503-8e65-3af1f7329d1f. The service
+        // holds two write/notify pairs: bae80010 (write) + bae80011 (notify), and
+        // bae80012 (write) + bae80013 (notify). The health-data protocol
+        // (RingProtocol) rides the SECOND pair. The first is the legacy channel
+        // the glasses use: enabling its CCCD gives a link the ring's glasses
+        // role, and the ring sends gestures and battery there (RingProtocol's
+        // legacy-channel section).
+        const val R1_LEGACY_NOTIFY_CHAR_UUID: String = "bae80011-4f05-4503-8e65-3af1f7329d1f"
+
+        /** Legacy-channel writes (write without response), e.g. the glasses' 00 35 88 00. */
+        const val R1_LEGACY_WRITE_CHAR_UUID: String = "bae80010-4f05-4503-8e65-3af1f7329d1f"
 
         const val R1_NOTIFY_CHAR_UUID: String = "bae80013-4f05-4503-8e65-3af1f7329d1f"
+
+        /**
+         * Where health-data requests and page ACKs are written. Properties are
+         * 0x04 (write without response), so writes use ConnectionOptions.WRITE_MODE
+         * (WITHOUT_RESPONSE) — which is also what the reference capture shows
+         * (ATT opcode 0x52 Write Command, never 0x12 Write Request).
+         *
+         * Resolved from the phone's own cached GATT database, not guessed: the
+         * bugreport taken alongside the capture contains a [gatt_cache_c73eb8f9c7c5]
+         * block (keyed by the ring's MAC C7:3E:B8:F9:C7:C5) listing
+         *   Characteristic: declaration_handle=0x0014, value_handle=0x0015,
+         *                   uuid=bae80012-4f05-4503-8e65-3af1f7329d1f, prop=0x04
+         * and 0x0015 is exactly the ATT handle every protocol write in the capture
+         * targets. See knowledge/staging/faceclaw-ring-protocol-implement-return.md.
+         */
+        const val R1_WRITE_CHAR_UUID: String = "bae80012-4f05-4503-8e65-3af1f7329d1f"
 
         const val PRELUDE_ACK_SID: Int = 0x01
 
@@ -41,6 +67,18 @@ class BleProtocol {
         const val FLAG_SECURITY_AUTH: Int = 0x00
 
         private const val SECURITY_AUTH_CMD: Int = 4
+
+        // DevCfgDataPackage ring commands on sid 0x80 (dev_config_protocol /
+        // dev_pair_manager). Wire shapes from g2-kit-unofficial's generated
+        // protos; handler behavior only from openCFW's decompilation
+        // (pb_service_pair_mgr.c) - not captured from the Even app and not
+        // hardware-verified.
+        private const val DEV_CFG_RING_CONNECT_INFO_CMD: Int = 6
+        private const val DEV_CFG_DISCONNECT_INFO_CMD: Int = 8
+        private const val DEV_CFG_UNPAIR_INFO_CMD: Int = 9
+
+        /** sid 0x91 RingDataPackage: glasses-side ring events (g2.ring). */
+        const val SID_RING_DATA: Int = 0x91
 
         const val SID_APP_LAUNCH: Int = 0x01
 
@@ -169,6 +207,12 @@ class BleProtocol {
         const val EVENT_SHORT_THEN_LONG_PRESS: Int = 11
 
         const val EVENT_HEAD_UP: Int = 12
+
+        /** Faceclaw/18: R1 touch-down, before the gesture is known (R1 2.3.0+, wire type 10). */
+        const val EVENT_RING_PRESS: Int = 14
+
+        /** CFW's SysEvent for an R1 wire type it has no mapping for; diagnostics only. */
+        const val EVENT_RING_UNKNOWN: Int = 127
 
         /** Faceclaw/38: IMU head-down (the head returning after a lift), forwarded while a page is up. */
         const val EVENT_HEAD_DOWN: Int = 15
@@ -489,6 +533,99 @@ class BleProtocol {
                     encodeMessageField(3, auth),
                 )
             )
+        }
+
+        /**
+         * DISCONNECT_INFO(8) with DisconnectInfo{dev=RING(0), ringMac}: ask the glasses to drop
+         * their link to the ring. In openCFW's decompilation the handler ignores the payload,
+         * resets the ring retry counter and posts the ring-disconnect event, leaving the stored
+         * ring target alone (unlike RING_CONNECT_INFO, which overwrites it).
+         */
+        @JvmStatic
+        fun buildRingDisconnectRequest(magic: Int, ringMac: ByteArray): ByteArray {
+            return concat(
+                CollectionUtils.listOf(
+                    encodeVarintField(1, DEV_CFG_DISCONNECT_INFO_CMD),
+                    encodeVarintField(2, magic),
+                    encodeMessageField(7, concat(CollectionUtils.listOf(
+                        encodeVarintField(1, 0),
+                        encodeBytesField(2, ringMac),
+                    ))),
+                )
+            )
+        }
+
+        /**
+         * UNPAIR_INFO(9) with UnpairInfo{dev=RING(0), ringMac}: the glasses forget their stored ring
+         * pairing. Never dev=RING_GLASSES(2): openCFW's decompilation shows that also enters OTA
+         * mode and unpairs the phone from the glasses. The handler uses the MAC only when it is
+         * exactly 6 bytes; whether it compares it against the stored ring is unknown.
+         */
+        @JvmStatic
+        fun buildRingUnpairRequest(magic: Int, ringMac: ByteArray): ByteArray {
+            return concat(
+                CollectionUtils.listOf(
+                    encodeVarintField(1, DEV_CFG_UNPAIR_INFO_CMD),
+                    encodeVarintField(2, magic),
+                    encodeMessageField(8, concat(CollectionUtils.listOf(
+                        encodeVarintField(1, 0),
+                        encodeBytesField(2, ringMac),
+                    ))),
+                )
+            )
+        }
+
+        /**
+         * RING_CONNECT_INFO(6) with RingInfo{connectRing, ringMac, ringName}. connectRing is
+         * declared `bytes` but read by the firmware as one byte. Every call overwrites the glasses'
+         * ring target with ringMac/ringName, so pass the target the glasses themselves reported
+         * when one is known. Only the ring-owning temple acts on connect=true; the firmware
+         * ignores connect requests closer than ~20 s apart.
+         */
+        @JvmStatic
+        fun buildRingConnectRequest(magic: Int, connect: Boolean, ringMac: ByteArray, ringName: ByteArray): ByteArray {
+            return concat(
+                CollectionUtils.listOf(
+                    encodeVarintField(1, DEV_CFG_RING_CONNECT_INFO_CMD),
+                    encodeVarintField(2, magic),
+                    encodeMessageField(5, concat(CollectionUtils.listOf(
+                        encodeBytesField(1, byteArrayOf(if (connect) 1 else 0)),
+                        encodeBytesField(2, ringMac),
+                        encodeBytesField(3, ringName),
+                    ))),
+                )
+            )
+        }
+
+        /** A RingInfo (from RING_CONNECT_INFO) or RingEvent (from sid 0x91) the glasses sent. */
+        class GlassesRingReport(
+            @JvmField val source: String,
+            @JvmField val ringMac: ByteArray?,
+            @JvmField val ringName: String,
+            /** connRet for RingInfo (0 = connected, 90 = timeout), eventId for RingEvent; -1 absent. */
+            @JvmField val code: Int,
+        )
+
+        /** Decode a sid-0x80 RING_CONNECT_INFO frame (notification or ack), else null. */
+        @JvmStatic
+        fun parseRingConnectInfo(pb: ByteArray?): GlassesRingReport? {
+            if (pb == null) return null
+            val root = stripTrailingCrc(pb)
+            if (readVarintFieldValue(root, 1, -1) != DEV_CFG_RING_CONNECT_INFO_CMD) return null
+            val info = readFieldBytes(root, 5) ?: return null
+            val name = readFieldBytes(info, 3)
+            return GlassesRingReport("connect-info", readFieldBytes(info, 2),
+                if (name == null) "" else name.decodeToString(), readVarintFieldValue(info, 4, -1))
+        }
+
+        /** Decode a sid-0x91 RingDataPackage EVENT(1) frame, else null. */
+        @JvmStatic
+        fun parseRingDataEvent(pb: ByteArray?): GlassesRingReport? {
+            if (pb == null) return null
+            val root = stripTrailingCrc(pb)
+            if (readVarintFieldValue(root, 1, -1) != 1) return null
+            val event = readFieldBytes(root, 3) ?: return null
+            return GlassesRingReport("ring-event", readFieldBytes(event, 1), "", readVarintFieldValue(event, 2, -1))
         }
 
         /**

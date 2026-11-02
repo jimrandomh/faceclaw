@@ -8,6 +8,7 @@ import { BandwidthBenchmarkLayer } from "./bandwidth-benchmark";
 import { LightSensorDemoLayer } from "./light-sensor-demo";
 import { MicrophonesMonitorLayer } from "./microphones-monitor";
 import { ResourceUsageLayer } from "./resource-usage";
+import { RingStatusLayer } from "./ring-status";
 import { LoadAppFromQrLayer, LoadAppFromUrlLayer } from "./load-app";
 import { unicodeTestMenu } from "./unicode-test";
 import { type AppContext } from "../app-definition";
@@ -64,6 +65,14 @@ function debugTestsMenu(openInputEvents: OpenPage, openMicrophones: OpenPage): M
         label: "Light sensor",
         onSelect: (ctx) => {
           ctx.stack.push(new LightSensorDemoLayer(DEVELOPER_WINDOW_ID, ctx.actions.requestRender));
+        },
+      },
+      {
+        label: "Ring status",
+        disabled: global.isIOS,
+        description: global.isIOS ? "Not available on iOS yet." : undefined,
+        onSelect: (ctx) => {
+          ctx.stack.push(new RingStatusLayer(DEVELOPER_WINDOW_ID, ctx.actions.requestRender));
         },
       },
       {

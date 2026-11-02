@@ -6,6 +6,7 @@ import { NightscoutWidget } from "./nightscout-widget";
 import { SystemCardWidget, systemCardSettingsMenuItems } from "./system-card";
 import { T3CodeWidget } from "./t3code-widget";
 import { TerminalWidget } from "./terminal-widget";
+import { HealthWidget } from "./health-widget";
 
 /** Every widget a board slot can hold. */
 export const GLANCE_WIDGETS: readonly GlanceWidgetDefinition[] = [
@@ -16,6 +17,7 @@ export const GLANCE_WIDGETS: readonly GlanceWidgetDefinition[] = [
   { id: "nightscout", label: "Nightscout", create: () => new NightscoutWidget() },
   { id: "compass", label: "Compass", create: () => new CompassWidget() },
   { id: "music", label: "Music", settingsMenuItems: musicSettingsMenuItems, create: () => new MusicWidget() },
+  { id: "health", label: "Health", create: () => new HealthWidget() },
 ];
 
 export function findGlanceWidget(id: GlanceWidgetId | (string & {})): GlanceWidgetDefinition | null {

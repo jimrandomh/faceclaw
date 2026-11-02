@@ -177,6 +177,12 @@ class IosGlassesSession internal constructor(
     fun cancelBandwidthBenchmark() = core.cancelBandwidthBenchmark()
 
     fun getBandwidthBenchmarkStatus(): String = core.getBandwidthBenchmarkStatus()
+    fun getRingStatus(): String = core.getRingStatus()
+    fun setGlassesRingLink(action: String, fallbackAddress: String?, fallbackName: String?): Boolean =
+        core.setGlassesRingLink(action, fallbackAddress, fallbackName)
+    fun sendRingConfigCommand(action: String, fallbackAddress: String?, fallbackName: String?): String =
+        core.sendRingConfigCommand(action, fallbackAddress, fallbackName)
+    fun setDirectRingRole(role: String?) = core.setDirectRingRole(role)
 
     fun addImuListener(listener: FaceclawImuListener?) = core.addImuListener(listener)
 

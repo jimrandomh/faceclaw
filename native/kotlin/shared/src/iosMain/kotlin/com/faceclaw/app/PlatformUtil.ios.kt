@@ -21,6 +21,8 @@ import platform.Foundation.NSDateFormatter
 import platform.Foundation.NSLocale
 import platform.Foundation.NSLog
 import platform.Foundation.NSThread
+import platform.Foundation.NSTimeZone
+import platform.Foundation.localTimeZone
 import platform.Foundation.dateWithTimeIntervalSince1970
 import platform.Foundation.timeIntervalSince1970
 import platform.posix.F_OK
@@ -61,6 +63,11 @@ actual fun formatLocalTime(epochMs: Long, pattern: String): String {
     formatter.dateFormat = pattern
     return formatter.stringFromDate(NSDate.dateWithTimeIntervalSince1970(epochMs / 1000.0))
 }
+
+actual fun localUtcOffsetMs(epochMs: Long): Int =
+    NSTimeZone.localTimeZone.secondsFromGMTForDate(NSDate.dateWithTimeIntervalSince1970(epochMs / 1000.0)).toInt() * 1000
+
+actual fun localTimeZoneId(): String = NSTimeZone.localTimeZone.name
 
 actual object PlatformLog {
     // NSLog's vararg bridge cannot take a Kotlin String (it segfaults), so the message becomes

@@ -67,3 +67,6 @@ native/kotlin/plugin/platforms/ios/
 tests/kotlin/.gradle/
 tests/kotlin/.kotlin/
 tests/kotlin/build/
+
+# tools/health-preview.cjs output (rendered PNGs, regenerate with the tool)
+preview/

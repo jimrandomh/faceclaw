@@ -1,6 +1,6 @@
 {
   "name": "@faceclaw/evenhub-extensions",
-  "version": "0.1.0",
+  "version": "0.8.6",
   "description": "Types and a helper for EvenHub apps to detect Faceclaw and use its extension APIs on the Even Realities G2 glasses.",
   "license": "MIT",
   "repository": {

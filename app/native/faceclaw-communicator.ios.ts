@@ -248,7 +248,7 @@ export class FaceclawCommunicatorBridge {
     return FaceclawCommunicatorBridge.active;
   }
 
-  constructor(addresses: { right: string; left: string; ring?: string }) {
+  constructor(addresses: { right: string; left: string; ring?: string; ringRole?: string }) {
     this.communicator = FaceclawKitIosGlassesSession.alloc().initWithRightAddressLeftAddressRingAddress(
       String(addresses.right ?? "").toUpperCase(),
       String(addresses.left ?? "").toUpperCase(),
@@ -256,6 +256,10 @@ export class FaceclawCommunicatorBridge {
     );
     // The shared session halts on any other firmware ("incompatible-firmware").
     this.communicator.setRequiredFirmwareRevisionRevision(REQUIRED_FACECLAW_FIRMWARE_VERSION);
+    // Guarded: an older framework build may not export it yet.
+    if (addresses.ringRole && typeof this.communicator.setDirectRingRoleRole === "function") {
+      this.communicator.setDirectRingRoleRole(addresses.ringRole);
+    }
     this.listenerProxy = SessionListener.new() as SessionListener;
     this.listenerProxy.bridge = this;
     this.communicator.setListenerListener(this.listenerProxy);

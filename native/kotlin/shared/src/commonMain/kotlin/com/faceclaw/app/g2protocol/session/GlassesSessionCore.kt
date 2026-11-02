@@ -145,6 +145,115 @@ class GlassesSessionCore(
     internal var leftConnected = false
     internal var ringConnected = false
     internal var ringNotificationsReady = false
+    // Ring connect/write/health waits must never park the glasses sender; they
+    // run on their own worker (see GlassesSessionRing.kt). The link serializes
+    // GATT operations per device address. Counted down when that worker exits.
+    @Volatile internal var ringWorkerDone: Latch? = null
+    // R1 health-data protocol (RingProtocol). The reassembler and the outbound
+    // queue are both guarded by `monitor`. Page ACKs are queued rather than
+    // written inline because notifications arrive on the GATT callback thread
+    // and link.writeFrames() blocks waiting for the write callback, which that
+    // same thread has to deliver — writing there would deadlock until the
+    // write timeout. The ring worker drains the queue instead.
+    internal val ringReassembler = RingProtocol.Reassembler()
+    internal val ringOutbound = ArrayDeque<ByteArray>()
+    /**
+     * Ring-write backoff after a failed write (see writeRingFrame). Every ring
+     * write shares the platform's GATT pipeline with the glasses, and a failing
+     * one can hold it for the whole write timeout, so failures must not be
+     * retried at ring-worker tick rate. Reset on each ring connect. Guarded by
+     * `monitor`.
+     */
+    internal var ringWriteBlockedUntilMs = 0L
+    internal var ringWriteFailures = 0
+    /** Consecutive failed direct-ring connect attempts; stretches the retry delay. Guarded by `monitor`. */
+    internal var ringConnectFailures = 0
+    internal val ringHealthRecords = ArrayList<RingProtocol.HealthRecord>()
+    /**
+     * Total records ever appended to [ringHealthRecords], including every
+     * one already consumed or evicted. Never reset.
+     *
+     * This is the identity behind the ingest watermark. Record N is the Nth
+     * ever decoded this session, so a consumer that has durably stored
+     * everything below some N can ask for exactly that much to be dropped
+     * without racing the pages still arriving above it - see
+     * [takeRingHealthBatch] and [clearRingHealthRecordsBelow]. A plain "clear
+     * the list" could not do that: a page landing between the read and the
+     * clear would be thrown away having never been ingested. Guarded by
+     * `monitor`.
+     */
+    internal var ringHealthTotalAdded = 0L
+    /**
+     * The phone-side sequence counter. One counter shared by BOTH ring channels
+     * (measured: 78 phone-to-ring writes in the reference capture step by
+     * exactly +1 regardless of channel, restarting at 1 on a new connection).
+     */
+    internal var ringSeq = 0
+    internal var ringNonce = 0
+    /**
+     * Response-driven health-pull state (2026-09-11). Set from
+     * handleRingHealthNotification (GATT callback thread), waited on from
+     * requestRingHealth (ring worker), both guarded by `monitor`. Replaces a
+     * blind fixed-sleep loop - see requestRingHealth's own doc for why: a real
+     * successful Even sync (extracted from `/tmp/btsnoop_fresh.log` on
+     * bazzite-desktop, 2026-09-11) is response-paced, not sleep-paced, and
+     * ACKs each DATA page immediately rather than after the whole run.
+     */
+    internal var ringHealthRspSeen = false
+    /** Bumped once per decoded health DATA page (any type) so a waiter can
+     * detect "a page just arrived" without polling ringHealthRecords. */
+    internal var ringHealthPageCounter = 0
+    /**
+     * now() of the last time requestRingHealth() was attempted, or 0 if never.
+     * Health data updates hourly at the source (heart rate/HRV/SpO2) or
+     * slower, but a ring reconnect can happen far more often than that (BLE
+     * drops, Doze, app restarts - live testing saw reconnects every few
+     * seconds under load). Pulling on every reconnect would be pure waste even
+     * ignoring the risk below; given the race condition documented on
+     * requestRingHealth() - a request that loses its race may silently discard
+     * real backlog rather than just delay it - it is actively worse than
+     * waste, so this is throttled.
+     */
+    internal var ringHealthLastRequestedAtMs = 0L
+    /**
+     * Set by [requestRingHealthNow] from whatever thread the UI is on;
+     * cleared by the ring worker, which is the only thread allowed to run the
+     * pull. Guarded by `monitor`.
+     */
+    internal var ringHealthPullRequested = false
+    /**
+     * Aborted-pull retries spent since the last pull that COMPLETED its
+     * sequence. Guarded by `monitor`. See RING_HEALTH_ABORTED_RETRY_LIMIT.
+     */
+    internal var ringHealthAbortedRetries = 0
+    /**
+     * Direct mode (configured role "glasses") only: the direct link has been
+     * handed to the phone role for one health pull, and returns to the glasses
+     * role when that pull ends, or at [ringHealthWindowDeadlineMs] if the
+     * phone-role link never comes up. See beginRingHealthWindowLocked.
+     * Guarded by `monitor`.
+     */
+    internal var ringHealthWindowActive = false
+    internal var ringHealthWindowDeadlineMs = 0L
+    /** Outcome of the last health pull, for the Ring status page. Guarded by `monitor`. */
+    internal var lastRingHealthPullResult = ""
+    internal var lastRingHealthPullAtMs = 0L
+    /**
+     * Timeout waiting for a health REQ's own RSP. In the reference capture
+     * (a real successful Even sync) RSPs land within ~150ms; this only needs
+     * to bound the pathological "ring stopped answering entirely" case.
+     * Variable only so tests can shorten it.
+     */
+    internal var ringHealthRspTimeoutMs = 3000L
+    /**
+     * How long to keep waiting after the most recent DATA page for a health
+     * type before deciding its transfer is over (or that there was never
+     * going to be one). Chosen from the same reference capture: consecutive
+     * pages for one type land well under a second apart, so 1.5s covers
+     * that with real margin while still moving on quickly when a type
+     * genuinely has nothing new. Variable only so tests can shorten it.
+     */
+    internal var ringHealthDataIdleMs = 1500L
     internal var sessionReady = false
     internal var fixedLayoutCreated = false
     internal var shutdownRequested = false
@@ -230,6 +339,55 @@ class GlassesSessionCore(
     internal var headsetCharging = -1
     internal var ringBattery = -1
     internal var ringCharging = -1
+    // Battery read over the direct ring link (device-channel 00:01); preferred
+    // over the glasses-relayed ringBattery while the ring is connected.
+    internal var directRingBattery = -1
+    internal var directRingCharging = -1
+    // Ring diagnostics for the Developer > Ring status page (now() clock, 0 = never).
+    internal var lastDirectRingNotifyAtMs = 0L
+    internal var lastDirectRingInputAtMs = 0L
+    internal var lastDirectRingInputLabel = ""
+    internal var lastGlassesRingInputAtMs = 0L
+    internal var lastGlassesRingInputLabel = ""
+    internal var lastGlassesRingBatteryAtMs = 0L
+    internal var ringConnectedChangedAtMs = 0L
+    internal var ringConnectCount = 0
+    internal var lastDirectRingError = ""
+    // What the glasses themselves said about their ring link (sid 0x80
+    // RING_CONNECT_INFO / sid 0x91 ring events). The MAC is kept in wire byte
+    // order so a reconnect can echo it back without guessing the order.
+    internal var glassesRingMac: ByteArray? = null
+    internal var glassesRingName = ""
+    internal var lastGlassesRingReport = ""
+    internal var lastGlassesRingReportAtMs = 0L
+    // The last glasses ring-link command we sent, and how each temple answered.
+    internal var lastRingLinkCommand = ""
+    internal var lastRingLinkCommandAtMs = 0L
+    internal var lastRingLinkResultR = ""
+    internal var lastRingLinkResultL = ""
+    // Which of the ring's two roles the direct link claims; see setDirectRingRole.
+    internal var directRingRole = DIRECT_RING_ROLE_PHONE
+    internal var ringRoleReconnectPending = false
+    // Glasses-role direct link: the per-connection setup (legacy pair-auth +
+    // touch source on) still to be written, what the ring made of the
+    // pair-auth, and the once-per-connection target clear after a rejection.
+    internal var ringGlassesSetupPending = false
+    internal var directGlassesAuth = ""
+    internal var directGlassesAuthAtMs = 0L
+    internal var directGlassesAuthRetried = false
+    // Last time we asked the glasses to unpair the ring for the direct link.
+    internal var lastRingReleaseAtMs = 0L
+    // Ring-side binding commands (system channel) waiting for the ring worker,
+    // the one written and not yet answered, and the last one's outcome.
+    internal val ringConfigQueue = ArrayDeque<RingConfigCommand>()
+    internal var ringConfigAwaiting: RingConfigCommand? = null
+    internal var lastRingConfigCommand = ""
+    internal var lastRingConfigCommandAtMs = 0L
+    internal var lastRingConfigResult = ""
+    // Last direct-link notification nothing decoded (e.g. legacy-channel
+    // frames while claiming the glasses role).
+    internal var lastDirectRingRaw = ""
+    internal var lastDirectRingRawAtMs = 0L
     // Last charging-case reading reported to the listener (-1 = none yet this
     // connection). See updateCaseInfoLocked.
     internal var caseBattery = -1
@@ -405,6 +563,17 @@ class GlassesSessionCore(
             incompatibleFirmware = null
             shutdownRequested = false
             host.startWorker { run() }
+            if (hasRingAddress()) {
+                val done = Latch(1, platform)
+                ringWorkerDone = done
+                host.startRingWorker {
+                    try {
+                        runRingWorker()
+                    } finally {
+                        done.countDown()
+                    }
+                }
+            }
             return true
         }
     }
@@ -424,10 +593,15 @@ class GlassesSessionCore(
             running = false
             audioCaptureActive = false
             audioPacketListener = null
+            monitor.signalAll()
         }
         setStateDisplay("disconnecting", "Disconnecting...")
         interruptibleSleep.interrupt()
+        val ringDone = ringWorkerDone
+        if (ringDone != null) host.interruptRingWorker()
         host.joinWorker(5_000)
+        ringDone?.await(5_000)
+        ringWorkerDone = null
         monitor.withLock {
             resetSessionStateLocked()
             clearAllMessagesLocked("disconnect")
@@ -501,6 +675,82 @@ class GlassesSessionCore(
         interruptibleSleep.interrupt()
         if (magic != 0) {
             waitForAudioControlAck(magic, "disable")
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // Direct ring health (see GlassesSessionRing.kt)
+
+    /**
+     * Ask for a health pull as soon as the ring worker can run one. Safe to
+     * call from any thread; returns immediately without blocking.
+     *
+     * Called when the health app opens, so a glance shows something current
+     * rather than whatever the last automatic pull happened to catch. Subject
+     * to a one-minute on-demand floor; a request inside that window is dropped
+     * rather than queued, because a stale duplicate pull has no value and
+     * every pull carries the discard risk documented on requestRingHealth().
+     */
+    fun requestRingHealthNow() {
+        monitor.withLock {
+            ringHealthPullRequested = true
+            monitor.signalAll()
+        }
+        interruptibleSleep.interrupt()
+    }
+
+    /**
+     * Snapshot of everything the ring has pushed and not yet been consumed,
+     * with the watermark needed to hand it back as consumed.
+     */
+    fun takeRingHealthBatch(): RingHealthBatch {
+        monitor.withLock {
+            return RingHealthBatch(ArrayList(ringHealthRecords), ringHealthTotalAdded)
+        }
+    }
+
+    /**
+     * Drop every held record whose identity is below [watermark] - that is,
+     * everything the caller has durably stored.
+     *
+     * "Cut and paste instead of copy paste. If you didn't receive the pull
+     * then it should not delete yet." Call this ONLY after the store write has
+     * succeeded; a caller that dies before calling it simply sees the same
+     * records again, which is a no-op at the store.
+     *
+     * Records that arrived after the snapshot sit above the watermark and
+     * are left alone, so a page landing during an ingest is never lost. If the
+     * buffer evicted its oldest in the meantime the arithmetic accounts for it
+     * via ringHealthTotalAdded rather than clearing the wrong end.
+     *
+     * @return how many records were actually removed.
+     */
+    fun clearRingHealthRecordsBelow(watermark: Long): Int {
+        monitor.withLock {
+            val firstHeldIndex = ringHealthTotalAdded - ringHealthRecords.size
+            var toRemove = watermark - firstHeldIndex
+            if (toRemove <= 0) {
+                return 0
+            }
+            if (toRemove > ringHealthRecords.size) {
+                toRemove = ringHealthRecords.size.toLong()
+            }
+            ringHealthRecords.subList(0, toRemove.toInt()).clear()
+            return toRemove.toInt()
+        }
+    }
+
+    /**
+     * Snapshot of everything the ring has pushed this session, WITHOUT
+     * consuming it.
+     *
+     * Kept for callers that only want to look. The ingest path must use
+     * [takeRingHealthBatch] instead - a pure copy is what let the buffer grow
+     * unbounded and every tick re-process the whole session.
+     */
+    fun getRingHealthRecords(): List<RingProtocol.HealthRecord> {
+        monitor.withLock {
+            return ArrayList(ringHealthRecords)
         }
     }
 
@@ -754,6 +1004,147 @@ class GlassesSessionCore(
             finishBenchmarkLocked(true, "cancelled")
         }
         interruptibleSleep.interrupt()
+    }
+
+    /**
+     * Ring connection/input diagnostics as JSON. Times are reported as ages
+     * in ms (-1 = never) so the caller needs no access to this clock.
+     */
+    fun getRingStatus(): String {
+        monitor.withLock {
+            val now = now()
+            fun age(atMs: Long): Long = if (atMs == 0L) -1L else maxOf(0L, now - atMs)
+            val status = linkedMapOf<String, Any?>()
+            status["directEnabled"] = hasRingAddress()
+            status["ringAddress"] = ringAddress
+            status["glassesConnected"] = rightConnected && leftConnected
+            status["sessionReady"] = sessionReady
+            status["directConnected"] = ringConnected
+            status["directNotificationsReady"] = ringNotificationsReady
+            status["directConnectCount"] = ringConnectCount
+            status["directStateAgeMs"] = age(ringConnectedChangedAtMs)
+            status["directBattery"] = directRingBattery
+            status["lastDirectNotifyAgeMs"] = age(lastDirectRingNotifyAtMs)
+            status["lastDirectInputAgeMs"] = age(lastDirectRingInputAtMs)
+            status["lastDirectInput"] = lastDirectRingInputLabel
+            status["glassesRingBattery"] = ringBattery
+            status["glassesRingBatteryAgeMs"] = age(lastGlassesRingBatteryAtMs)
+            status["lastGlassesInputAgeMs"] = age(lastGlassesRingInputAtMs)
+            status["lastGlassesInput"] = lastGlassesRingInputLabel
+            status["lastDirectError"] = lastDirectRingError
+            status["glassesRingMac"] = glassesRingMac?.let { hex(it) } ?: ""
+            status["glassesRingName"] = glassesRingName
+            status["lastGlassesReport"] = lastGlassesRingReport
+            status["lastGlassesReportAgeMs"] = age(lastGlassesRingReportAtMs)
+            status["lastCommand"] = lastRingLinkCommand
+            status["lastCommandAgeMs"] = age(lastRingLinkCommandAtMs)
+            status["lastCommandResultR"] = lastRingLinkResultR
+            status["lastCommandResultL"] = lastRingLinkResultL
+            status["directRole"] = directRingRole
+            status["healthWindowActive"] = ringHealthWindowActive
+            status["lastHealthPull"] = lastRingHealthPullResult
+            status["lastHealthPullAgeMs"] = age(lastRingHealthPullAtMs)
+            status["heldHealthRecords"] = ringHealthRecords.size
+            status["directGlassesAuth"] = directGlassesAuth
+            status["directGlassesAuthAgeMs"] = age(directGlassesAuthAtMs)
+            status["lastRingCommand"] = lastRingConfigCommand
+            status["lastRingCommandAgeMs"] = age(lastRingConfigCommandAtMs)
+            status["lastRingCommandResult"] = lastRingConfigResult
+            status["lastDirectRaw"] = lastDirectRingRaw
+            status["lastDirectRawAgeMs"] = age(lastDirectRingRawAtMs)
+            return try { Json.write(status) } catch (e: Exception) { "{}" }
+        }
+    }
+
+    /**
+     * Which ring role the direct link claims. The R1 holds one phone role and
+     * one glasses role, on separate links, and sends gestures and battery
+     * pushes only to the glasses role:
+     * - "phone" (default): pairAuth on the system channel and health sync,
+     *   with only the data CCCD, like Even's app. The glasses keep the ring.
+     * - "glasses": act as the ring's glasses (legacy CCCD, legacy pair-auth,
+     *   touch source on; see runRingGlassesSetup) and take the ring over from
+     *   the glasses when they still hold it. The ring answers system requests
+     *   (health included) only on a phone-role link, so each health pull
+     *   briefly reconnects the link in the phone role and then returns it
+     *   (see beginRingHealthWindowLocked).
+     * Asking for both on one link (the old behavior) made the ring drop the
+     * link every ~6 s while the glasses held it. A change while the direct
+     * link is up reconnects it.
+     */
+    fun setDirectRingRole(role: String?) {
+        val normalized = if (role == DIRECT_RING_ROLE_GLASSES) DIRECT_RING_ROLE_GLASSES else DIRECT_RING_ROLE_PHONE
+        monitor.withLock {
+            if (normalized == directRingRole) return
+            directRingRole = normalized
+            // A health window only exists to borrow the phone role from the glasses role.
+            ringHealthWindowActive = false
+            if (ringConnected || ringNotificationsReady) {
+                ringRoleReconnectPending = true
+                monitor.signalAll()
+            }
+        }
+        logLine("direct ring role set to $normalized")
+    }
+
+    /**
+     * EXPERIMENTAL: ring-side binding commands over the direct link, plus the
+     * two combined flows. Returns a one-line outcome for the UI. Actions:
+     * "pair-auth", "targets-glasses", "targets-clear", "touch-on",
+     * "touch-off", "remove-ring" (see [queueRingConfigCommandLocked]);
+     * "bind" = advStart(our glasses), then after the ring answers the glasses
+     * RING_CONNECT_INFO connect=1 (the official app's order); "unbind" = the
+     * glasses' UNPAIR_INFO, then removeRingNotify to the ring.
+     * `fallbackAddress`/`fallbackName` are the ring's, for the glasses side.
+     */
+    fun sendRingConfigCommand(action: String, fallbackAddress: String?, fallbackName: String?): String {
+        val outcome = monitor.withLock {
+            if (!running || !sessionReady) return "not sent: no glasses session"
+            val directReady = ringNotificationsReady
+            when (action) {
+                "bind" -> {
+                    if (!directReady) return "not sent: direct ring link not ready"
+                    queueRingConfigCommandLocked("targets-glasses", "connect", fallbackAddress ?: "", fallbackName ?: "")
+                }
+                "unbind" -> {
+                    val glasses = queueGlassesRingLinkCommandLocked("unpair", fallbackAddress ?: "", fallbackName ?: "")
+                    val ring = directReady && queueRingConfigCommandLocked("remove-ring", null, "", "") == null
+                    when {
+                        glasses && ring -> null
+                        glasses -> "glasses unpair sent; ring part skipped (direct link not ready)"
+                        ring -> "ring part sent; glasses unpair skipped (no ring address)"
+                        else -> "not sent: no ring address and no direct link"
+                    }
+                }
+                else -> {
+                    if (!directReady) return "not sent: direct ring link not ready"
+                    queueRingConfigCommandLocked(action, null, "", "")
+                }
+            }
+        }
+        interruptibleSleep.interrupt()
+        return outcome ?: "sent"
+    }
+
+    /**
+     * EXPERIMENTAL: ask the glasses to drop, forget or re-establish their own
+     * link to the ring, so the phone can take the ring over directly and later
+     * hand it back. `action` is "disconnect", "release", "unpair" or "connect"; see
+     * [queueGlassesRingLinkCommandLocked]. `fallbackAddress` ("AA:BB:..") and
+     * `fallbackName` are used only when the glasses have not reported their
+     * ring target this session. False when no session is up.
+     */
+    fun setGlassesRingLink(action: String, fallbackAddress: String?, fallbackName: String?): Boolean {
+        monitor.withLock {
+            if (!running || !sessionReady) {
+                logLine("skip glasses ring link command; session not ready")
+                return false
+            }
+            val ok = queueGlassesRingLinkCommandLocked(action, fallbackAddress ?: "", fallbackName ?: "")
+            if (!ok) return false
+        }
+        interruptibleSleep.interrupt()
+        return true
     }
 
     /** Status/results of the current or most recent benchmark run, as JSON. */
@@ -1348,11 +1739,6 @@ class GlassesSessionCore(
                     continue
                 }
 
-                if (shouldAttemptRingConnect()) {
-                    tryConnectRing("retry")
-                    continue
-                }
-
                 val sleepMs = driveSession()
                 if (sleepMs > 0) {
                     interruptibleSleep.sleep(sleepMs)
@@ -1443,6 +1829,10 @@ class GlassesSessionCore(
                 wearState = decodedWearState
                 emitWearState = true
             }
+            if (frame.ok
+                    && (frame.sid == BleProtocol.SID_SECURITY_AUTH || frame.sid == BleProtocol.SID_RING_DATA)) {
+                recordGlassesRingReportLocked(frame, address)
+            }
             var faceclawWakeNotification = false
             if (shutdownRequested
                     && frame.ok
@@ -1522,7 +1912,9 @@ class GlassesSessionCore(
                     if (ring != null) {
                         ringBattery = ring.battery
                         ringCharging = ring.charging
+                        lastGlassesRingBatteryAtMs = now()
                         emitBatteryState(headsetBattery, headsetCharging)
+                        if (ring.battery >= 0) releaseRingFromGlassesLocked("glasses report the ring connected")
                     }
                 }
                 // CFW mic status (field 104) rides both standalone pushes and
@@ -1600,6 +1992,11 @@ class GlassesSessionCore(
                         && decoded.eventType == BleProtocol.EVENT_IMU_DATA_REPORT
                     if (!pureImuSample) {
                         lastConnectionOrInputAtMs = lastIncomingAtMs
+                        if (decoded.eventSource == BleProtocol.EVENT_SOURCE_RING) {
+                            lastGlassesRingInputAtMs = lastIncomingAtMs
+                            lastGlassesRingInputLabel = decoded.kind + " type=" + decoded.eventType
+                            releaseRingFromGlassesLocked("ring input relayed by the glasses")
+                        }
                     }
                     if ("list-click" == decoded.kind || "text-click" == decoded.kind) {
                         // Container-routed touchpad input reached us, so the
@@ -1671,8 +2068,19 @@ class GlassesSessionCore(
     }
 
     internal fun handleDirectRingNotification(characteristicUuid: String, data: ByteArray) {
+        monitor.withLock { lastDirectRingNotifyAtMs = now() }
+        if (handleRingHealthNotification(characteristicUuid, data)) {
+            return
+        }
+        if (handleRingLegacyControl(data)) {
+            return
+        }
         val decoded = FaceclawRingEventDecoder.decode(data)
         if (decoded == null) {
+            monitor.withLock {
+                lastDirectRingRaw = characteristicUuid.take(8) + " " + hex(data.copyOf(minOf(data.size, 24)))
+                lastDirectRingRawAtMs = now()
+            }
             logDebug("direct ring notify ignored: characteristicUuid=" + characteristicUuid + " raw=" + hex(data))
             return
         }
@@ -1682,6 +2090,8 @@ class GlassesSessionCore(
         monitor.withLock {
             lastIncomingAtMs = arrivalMs
             lastConnectionOrInputAtMs = arrivalMs
+            lastDirectRingInputAtMs = arrivalMs
+            lastDirectRingInputLabel = decoded.label + " " + decoded.detail
         }
         logLine("direct ring " + decoded.label + " " + decoded.detail + " raw=" + hex(data))
         val frameId = frameTimings.startFrame("input:ring:" + decoded.label)
@@ -1715,6 +2125,8 @@ class GlassesSessionCore(
         }
         if (isConfiguredRingAddress(address)) {
             monitor.withLock {
+                if (connected != ringConnected) ringConnectedChangedAtMs = now()
+                if (connected && !ringConnected) ringConnectCount++
                 ringConnected = connected
                 if (connected) {
                     // A background connect landed: finish setting it up right away.
@@ -1722,11 +2134,20 @@ class GlassesSessionCore(
                 } else {
                     ringNotificationsReady = false
                     ringReconnectAfterMs = now() + ConnectionOptions.RING_RECONNECT_DELAY_MS
+                    // Half-received fragments and unsent ACKs do not survive the
+                    // link; the sequence counter restarts on the next connect.
+                    ringReassembler.reset()
+                    ringOutbound.clear()
+                    dropRingConfigCommandsLocked("direct link dropped")
+                    directRingBattery = -1
+                    directRingCharging = -1
+                    emitBatteryState(headsetBattery, headsetCharging)
                 }
+                // Wakes the ring worker, which owns ring connect/setup.
+                monitor.signalAll()
             }
             ConnectionCounters.increment(if (connected) "ring.direct.connect" else "ring.direct.disconnect")
             logLine(if (connected) "direct ring BLE connected" else "direct ring BLE disconnected")
-            interruptibleSleep.interrupt()
             return
         }
         var lostSession = false
@@ -1858,7 +2279,8 @@ class GlassesSessionCore(
                 // drive loop sends it once the layout is up.
                 caseInfoReadPending = true
             }
-            tryConnectRing("initial")
+            // Wake the ring worker; it owns the (blocking) ring connect.
+            monitor.signalAll()
         } catch (t: Throwable) {
             logLine("connect failed: " + safeMessage(t))
             val unpairedArm = firstUnpairedArm()
@@ -1939,8 +2361,6 @@ class GlassesSessionCore(
                 && sessionReady
                 && !ringNotificationsReady
                 && now >= ringReconnectAfterMs
-                && pendingMessages.isEmpty()
-                && inFlightMessages.isEmpty()
         }
     }
 
@@ -1949,10 +2369,11 @@ class GlassesSessionCore(
             return
         }
         try {
-            // The ring is often out of range or bound to the glasses. Rather than block this
-            // worker (and every frame and heartbeat behind it) on a timed connect, keep a
-            // low-duty background connection pending; its callback wakes us to finish setup.
-            // The periodic recheck re-arms it if the attempt died without a callback.
+            // The ring is often out of range or bound to the glasses. Rather than block the
+            // ring worker (and the health ACKs behind it) on a timed connect, keep a
+            // low-duty background connection pending; its callback wakes the worker to
+            // finish setup. The periodic recheck re-arms it if the attempt died without a
+            // callback.
             if (!link.isConnected(ringAddress) && link.beginConnect(ringAddress, true)) {
                 monitor.withLock {
                     ringReconnectAfterMs = now() + ConnectionOptions.RING_RECONNECT_DELAY_MS
@@ -1961,12 +2382,21 @@ class GlassesSessionCore(
             }
             connectRing()
         } catch (t: Throwable) {
-            monitor.withLock {
+            // Back off exponentially: each attempt's setup steps hold the
+            // GATT pipeline the glasses share, and an unreachable ring (e.g.
+            // held by the glasses) fails the same way every time.
+            val retryDelayMs = monitor.withLock {
+                val delay = minOf(ConnectionOptions.RING_RECONNECT_MAX_DELAY_MS,
+                    ConnectionOptions.RING_RECONNECT_DELAY_MS.toLong() shl minOf(ringConnectFailures, 5))
+                ringConnectFailures++
                 ringConnected = false
                 ringNotificationsReady = false
-                ringReconnectAfterMs = now() + ConnectionOptions.RING_RECONNECT_DELAY_MS
+                ringReconnectAfterMs = now() + delay
+                lastDirectRingError = "connect failed: " + safeMessage(t)
+                delay
             }
-            logLine("direct ring connect failed (" + reason + "): " + safeMessage(t))
+            logLine("direct ring connect failed (" + reason + "): " + safeMessage(t)
+                + "; retry in " + (retryDelayMs / 1000) + "s")
             // Start the next attempt from a fresh connection rather than retrying setup on
             // one that just failed it.
             link.disconnect(ringAddress)
@@ -1975,20 +2405,59 @@ class GlassesSessionCore(
 
     internal fun connectRing() {
         logLine("connecting direct ring $ringAddress")
-        if (!link.connect(ringAddress, ConnectionOptions.CONNECT_TIMEOUT_MS)) {
+        // autoConnect=true (see SessionLink.connect's 3-arg overload) -
+        // matches what Even's own app does for this device specifically.
+        // Direct connect (false, the default used for the glasses) was
+        // measured dying ~5s into an otherwise-idle ring connection,
+        // repeatedly, with nothing else competing for it.
+        if (!link.connect(ringAddress, ConnectionOptions.RING_CONNECT_TIMEOUT_MS, true)) {
             throw IllegalStateException("connect failed: $ringAddress")
         }
 
-        link.requestHighPriority(ringAddress)
+        // Deliberately NOT requesting CONNECTION_PRIORITY_HIGH here (2026-09-11).
+        // Even's own app never requests any priority for the ring at all - it
+        // logs no requestConnectionPriority/onConnectionUpdated call anywhere -
+        // and just runs on whatever Android's default (BALANCED) parameters are.
+        // HIGH negotiated interval=12 (15ms) / timeout=500 (5000ms) here, and a
+        // live test found the ring-only connection reliably dying at
+        // 5.5-5.7s, matching that 5000ms supervision timeout almost exactly,
+        // on every attempt, with nothing else competing for the ring. If the
+        // ring's firmware occasionally needs more than 5s of headroom after a
+        // burst of writes, HIGH priority's short timeout would kill the link
+        // while Even's default (longer) one wouldn't - untested but the timing
+        // match is exact, not approximate. Leaving default priority for the
+        // ring only; the glasses' own HIGH-priority request is untouched.
         link.requestMtu(ringAddress, ConnectionOptions.RING_DESIRED_MTU, ConnectionOptions.CONNECT_TIMEOUT_MS)
 
         if (!link.discoverServices(ringAddress, ConnectionOptions.SERVICES_TIMEOUT_MS)) {
             throw IllegalStateException("discoverServices failed: $ringAddress")
         }
 
-        val phoneNotify = enableRingNotification(BleProtocol.R1_PHONE_NOTIFY_CHAR_UUID)
+        // Even's app subscribes only to the health-data notify CCCD (ATT
+        // handle 24) and never touches the phone-notify one (handle 19). That
+        // difference was briefly suspected on 2026-09-11 of causing the ring's
+        // total silence and this call was dropped to match - it changed
+        // nothing, and the real cause turned out to be the malformed 00:08
+        // frame (see sendRingHandshake). Restored, because the phone-notify
+        // channel is plausibly what carries ring-as-remote gesture events,
+        // which are a daily-driver feature; matching Even byte-for-byte here
+        // buys nothing and risks breaking them.
+        //
+        // Per openCFW's R1 decompilation, the "phone-notify" characteristic
+        // (bae80011) is really the legacy channel the glasses use. Enabling its
+        // CCCD appears to be what assigns a link the ring's glasses role (BAE8
+        // service events 6/7), and the ring sends gestures (00 09 61 00 ...)
+        // only to that role. The direct ring
+        // role setting decides which CCCDs we enable; see setDirectRingRole.
+        val configuredRole: String
+        val role = monitor.withLock {
+            configuredRole = directRingRole
+            effectiveRingRoleLocked()
+        }
+        val legacyNotify = role == DIRECT_RING_ROLE_GLASSES
+            && enableRingNotification(BleProtocol.R1_LEGACY_NOTIFY_CHAR_UUID)
         val dataNotify = enableRingNotification(BleProtocol.R1_NOTIFY_CHAR_UUID)
-        if (!phoneNotify && !dataNotify) {
+        if (!legacyNotify && !dataNotify) {
             throw IllegalStateException("no R1 notify characteristic subscribed")
         }
 
@@ -1996,8 +2465,31 @@ class GlassesSessionCore(
             ringConnected = true
             ringNotificationsReady = true
             ringReconnectAfterMs = 0
+            // The ring's sequence counter restarts with the connection.
+            ringSeq = 0
+            ringNonce = 0
+            ringReassembler.reset()
+            ringOutbound.clear()
+            ringWriteBlockedUntilMs = 0L
+            ringWriteFailures = 0
+            ringConnectFailures = 0
+            // The ring forgets touch-source state with the link, so every
+            // glasses-role connection repeats the setup (runRingGlassesSetup).
+            ringGlassesSetupPending = role == DIRECT_RING_ROLE_GLASSES
+            directGlassesAuth = ""
+            directGlassesAuthAtMs = 0L
+            directGlassesAuthRetried = false
         }
-        logLine("direct ring ready phoneNotify=$phoneNotify dataNotify=$dataNotify")
+        logLine("direct ring ready role=$role legacyNotify=$legacyNotify dataNotify=$dataNotify"
+            + (if (role != configuredRole) " (health window; configured role $configuredRole)" else ""))
+
+        // The glasses role means no pairAuth (it would ask for the phone role
+        // on the same link) and therefore no health sync. Direct mode gets its
+        // health through a temporary phone-role connection instead (see
+        // beginRingHealthWindowLocked), which takes this branch.
+        if (dataNotify && host.supportsRingHealth() && role == DIRECT_RING_ROLE_PHONE) {
+            onRingDataChannelReady()
+        }
     }
 
     internal fun enableRingNotification(characteristicUuid: String): Boolean {
@@ -2138,7 +2630,7 @@ class GlassesSessionCore(
         if (!isConfiguredRingAddress(address) || characteristicUuid == null) {
             return false
         }
-        return BleProtocol.R1_PHONE_NOTIFY_CHAR_UUID == characteristicUuid
+        return BleProtocol.R1_LEGACY_NOTIFY_CHAR_UUID == characteristicUuid
             || BleProtocol.R1_NOTIFY_CHAR_UUID == characteristicUuid
     }
 
