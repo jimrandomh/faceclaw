@@ -721,18 +721,35 @@ internal fun GlassesSessionCore.emitBatteryState(headsetBattery: Int, headsetCha
     }
 }
 
-/** Report a charging-case reading when it carries a level that differs from the last one. */
+/**
+ * Report a charging-case reading when it differs from the last one. Docked, a reading counts
+ * only once it carries a level (docking pushes {inCaseStatus=1} first and the level about 0.7 s
+ * later). Undocked -- the empty reply to a read, or an undock push -- it is reported even without
+ * a level, so the listener learns the case's charge state is no longer known.
+ */
 internal fun GlassesSessionCore.updateCaseInfoLocked(info: BleProtocol.CaseInfoSnapshot) {
-    if (!info.hasLevel() || (info.soc == caseBattery && info.chargeStatus == caseCharging)) {
+    if (info.errorCode != 0) {
         return
     }
-    caseBattery = info.soc
-    caseCharging = info.chargeStatus
+    val docked = info.isDocked()
+    if (docked && !info.hasLevel()) {
+        return
+    }
+    val level = if (info.hasLevel()) info.soc else -1
+    // Out of the case the glasses can't see the case's USB state.
+    val charging = if (docked && info.isCaseCharging()) 1 else 0
+    val dockedState = if (docked) 1 else 0
+    if (level == caseBattery && charging == caseCharging && dockedState == caseDocked) {
+        return
+    }
+    caseBattery = level
+    caseCharging = charging
+    caseDocked = dockedState
     logLine("charging case: $info")
     val current = listener ?: return
     host.postToMain {
         try {
-            current.onCaseState(info.soc, info.chargeStatus)
+            current.onCaseState(level, charging, docked)
         } catch (t: Throwable) {
             logWarn("listener onCaseState failed", t)
         }

@@ -488,7 +488,9 @@ export type ShellChromeState = {
     watchCharging: boolean | null;
     /**
      * The glasses' charging case, last known (it only reports while the
-     * glasses are docked); null until it does. Shown on the phone, not here.
+     * glasses are docked); null until it does. caseCharging is null while the
+     * glasses are out of the case, where they can't see whether it is on USB.
+     * Shown on the phone, not here.
      */
     case: number | null;
     caseCharging: boolean | null;

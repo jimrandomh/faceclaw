@@ -34,13 +34,17 @@ type LayoutOrientation = "portrait" | "landscape";
 
 /**
  * The line under the mirror: each device whose level is known, e.g.
- * "G2 100% · Case 98% ⚡ · R1 72%" (⚡ = charging). The case level is the last
- * one the glasses relayed; it only reports while they are docked.
+ * "G2 100% · Case 98% ⚡ · R1 72%" (⚡ = charging). Levels are the last known
+ * ones (the case only reports while the glasses are docked), so ⚡ appears only
+ * while it is live: with a link to the glasses, and for the case only while
+ * they are docked (caseCharging is null otherwise).
  */
-function formatBatteryLine(levels: DashboardSnapshot["batteries"]): string {
+function formatBatteryLine(snapshot: Pick<DashboardSnapshot, "batteries" | "phase">): string {
+  const levels = snapshot.batteries;
+  const live = snapshot.phase === "connected" || snapshot.phase === "charging";
   const devices: Array<[string, number | null, boolean | null]> = [
-    ["G2", levels.headset, levels.headsetCharging],
-    ["Case", levels.case, levels.caseCharging],
+    ["G2", levels.headset, live && levels.headsetCharging],
+    ["Case", levels.case, live && levels.caseCharging],
     ["R1", levels.ring, levels.ringCharging],
   ];
   return devices
@@ -108,7 +112,7 @@ export class MainViewModel extends RemoteControlsViewModel {
       this.displayPreview = snapshot.displayPreview;
       this.displayPreviewMessage = snapshot.displayPreviewMessage;
       this.phase = snapshot.phase;
-      this.batteryLine = formatBatteryLine(snapshot.batteries);
+      this.batteryLine = formatBatteryLine(snapshot);
       this.activeTextSettingId = snapshot.activeTextSettingId;
       this.activeTextEditorTitle = snapshot.activeTextEditorTitle;
       this.activeTextSettingTitle = snapshot.activeTextSettingTitle;
@@ -163,11 +167,6 @@ export class MainViewModel extends RemoteControlsViewModel {
     }
   }
 
-  /**
-   * Short connection indicator for the action bar. The full status string
-   * (which can be a sentence, e.g. a failure reason) stays available by
-   * tapping the indicator.
-   */
   get batteryLine(): string {
     return this._batteryLine;
   }
@@ -183,6 +182,11 @@ export class MainViewModel extends RemoteControlsViewModel {
     return this._batteryLine ? "visible" : "collapse";
   }
 
+  /**
+   * Short connection indicator for the action bar. The full status string
+   * (which can be a sentence, e.g. a failure reason) stays available by
+   * tapping the indicator.
+   */
   get connectionStatusLabel(): string {
     switch (this._phase) {
       case "connected":

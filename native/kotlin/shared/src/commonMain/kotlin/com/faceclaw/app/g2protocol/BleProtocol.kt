@@ -782,7 +782,8 @@ class BleProtocol {
 
         /**
          * The GlassesCaseInfo (field 3) of a sid-0x81 CASE_INFO reply or push, or null when there
-         * is none or it is empty.
+         * is none. Out of the case the glasses answer with an empty one, which parses as
+         * not docked and without a level.
          */
         @JvmStatic
         fun parseCaseInfo(pb: ByteArray?): CaseInfoSnapshot? {
@@ -794,9 +795,6 @@ class BleProtocol {
                 return null
             }
             val info: ByteArray = readFieldBytes(root, 3) ?: return null
-            if (info.isEmpty()) {
-                return null
-            }
             return CaseInfoSnapshot(
                 readVarintFieldValue(info, 1, -1),
                 readVarintFieldValue(info, 2, 0),
@@ -1508,7 +1506,7 @@ class BleProtocol {
     data class CaseInfoSnapshot(
         /** State of charge, 1..100; -1 when the message left it out. */
         @JvmField val soc: Int,
-        /** 1 = the case itself is charging (on USB). */
+        /** 1 = the case itself is charging (on USB); only 0 and 1 have been seen. */
         @JvmField val chargeStatus: Int,
         /** 1 = lid closed, 0 = open. */
         @JvmField val lidStatus: Int,
@@ -1518,6 +1516,10 @@ class BleProtocol {
         @JvmField val errorCode: Int,
     ) {
         fun hasLevel(): Boolean = errorCode == 0 && soc in 0..100
+
+        fun isDocked(): Boolean = inCaseStatus > 0
+
+        fun isCaseCharging(): Boolean = chargeStatus > 0
     }
 
     class FirmwareInfo {

@@ -23,8 +23,12 @@ interface FaceclawBleCommunicatorListener {
         ringCharging: Int,
     ): Unit
 
-    /** A new charging-case level (0..100) or charge state; caseCharging 1 = the case is on USB. */
-    fun onCaseState(caseBattery: Int, caseCharging: Int): Unit
+    /**
+     * A new charging-case reading. caseBattery is 0..100, or -1 when the reading has no level
+     * (the glasses are out of the case; keep the last one). caseCharging 1 = the case is on
+     * USB, known only while caseDocked (0 otherwise).
+     */
+    fun onCaseState(caseBattery: Int, caseCharging: Int, caseDocked: Boolean): Unit
 
     fun onSilentMode(silent: Boolean): Unit
 

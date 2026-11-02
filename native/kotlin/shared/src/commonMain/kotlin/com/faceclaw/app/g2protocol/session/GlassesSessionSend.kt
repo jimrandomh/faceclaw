@@ -166,6 +166,14 @@ internal fun GlassesSessionCore.driveSession(): Long {
                 }
 
                 if (messageToPrewrite == null && !shutdownRequested && fixedLayoutCreated
+                        && caseInfoReadPending
+                        && pendingMessages.isEmpty() && inFlightMessages.isEmpty()) {
+                    caseInfoReadPending = false
+                    logLine("enqueueing case info read")
+                    pendingMessages.addLast(messageBuilder.caseInfoQuery())
+                }
+
+                if (messageToPrewrite == null && !shutdownRequested && fixedLayoutCreated
                         && (if (compassOwners.isEmpty()) 0 else 1) != compassControlLastSent
                         && pendingMessages.isEmpty() && inFlightMessages.isEmpty()) {
                     val wanted = compassOwners.isNotEmpty()
@@ -1099,8 +1107,9 @@ internal fun GlassesSessionCore.updateChargingModeLocked(charging: Boolean, batt
     if (charging) {
         chargingMode = true
         clearAllMessagesLocked("glasses charging")
-        // Clearing may have dropped the session-start case read; docked is
-        // when the case reports, so read it again.
+        // Docked is when the case reports. No layout is created while
+        // charging, so this read stands in for the session-start one.
+        caseInfoReadPending = false
         pendingMessages.addLast(messageBuilder.caseInfoQuery())
         fixedLayoutCreated = false
         startupProbePending = false

@@ -230,9 +230,14 @@ class GlassesSessionCore(
     internal var headsetCharging = -1
     internal var ringBattery = -1
     internal var ringCharging = -1
-    // Last charging-case level and charge state reported to the listener.
+    // Last charging-case reading reported to the listener (-1 = none yet this
+    // connection). See updateCaseInfoLocked.
     internal var caseBattery = -1
     internal var caseCharging = -1
+    internal var caseDocked = -1
+    // The session-start case read is still to be sent. It waits for the layout
+    // (see the drive loop), so a firmware that ignores it can't delay the first frame.
+    internal var caseInfoReadPending = false
     // Silent mode: 1 = on, 0 = off, -1 = not yet known. See updateSilentModeLocked.
     internal var silentMode = -1
     internal var wearState = -1
@@ -1773,6 +1778,11 @@ class GlassesSessionCore(
             // reconnect; forget ours too, or the new session's first report
             // (the CFW query reply) is deduped away and TS never relearns it.
             wearState = -1
+            // Same for the case: the glasses may have left it while the link
+            // was down, and the new session's read should reach TS either way.
+            caseBattery = -1
+            caseCharging = -1
+            caseDocked = -1
         }
         setStateDisplay("connecting", "Connecting to the glasses...")
         ConnectionCounters.increment("g2.connect-attempt")
@@ -1844,8 +1854,9 @@ class GlassesSessionCore(
                 logLine("queue settings query for firmware info")
                 // The case reports only while the glasses are docked, possibly
                 // fully charged and so not in charging mode; out of the case
-                // this read comes back empty. Later changes are pushed.
-                pendingMessages.addLast(messageBuilder.caseInfoQuery())
+                // this read comes back empty. Later changes are pushed. The
+                // drive loop sends it once the layout is up.
+                caseInfoReadPending = true
             }
             tryConnectRing("initial")
         } catch (t: Throwable) {

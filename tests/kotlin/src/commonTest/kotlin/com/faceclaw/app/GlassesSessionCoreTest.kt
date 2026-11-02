@@ -72,6 +72,8 @@ private class FakeLink(private val platform: ProtocolPlatform) : SessionLink {
     @Volatile var firmwareExtension: String? = null
     /** The GlassesCaseInfo body case-info queries are answered with; null answers without one. */
     @Volatile var caseInfo: ByteArray? = null
+    /** Settings READ acks report the glasses charging in their case (80%). */
+    @Volatile var headsetCharging = false
     @Volatile var connects = 0
     var seq = 0
 
@@ -125,12 +127,14 @@ private class FakeLink(private val platform: ProtocolPlatform) : SessionLink {
         val extension = firmwareExtension
         val body = if (sid == BleProtocol.SID_SECURITY_AUTH)
             BleProtocol.encodeVarintField(1, 4) + BleProtocol.encodeVarintField(2, magic) + byteArrayOf(0x1a, 0x00)
-        else if (kind == "battery" && extension != null)
+        else if (kind == "battery" && (extension != null || headsetCharging))
             BleProtocol.encodeVarintField(1, 1) + BleProtocol.encodeVarintField(2, magic) +
                 BleProtocol.encodeBytesField(4,
-                    BleProtocol.encodeBytesField(5, STOCK_VERSION.encodeToByteArray()) +
-                        BleProtocol.encodeBytesField(6, STOCK_VERSION.encodeToByteArray())) +
-                (if (extension.isEmpty()) ByteArray(0) else BleProtocol.encodeBytesField(100, extension.encodeToByteArray()))
+                    (if (extension == null) ByteArray(0) else
+                        BleProtocol.encodeBytesField(5, STOCK_VERSION.encodeToByteArray()) +
+                            BleProtocol.encodeBytesField(6, STOCK_VERSION.encodeToByteArray())) +
+                        (if (headsetCharging) BleProtocol.encodeVarintField(12, 80) + BleProtocol.encodeVarintField(13, 1) else ByteArray(0))) +
+                (if (extension.isNullOrEmpty()) ByteArray(0) else BleProtocol.encodeBytesField(100, extension.encodeToByteArray()))
         else if (kind == "case-info")
             casePackage(magic, caseInfo)
         else
@@ -256,8 +260,8 @@ private class FakeListener : FaceclawBleCommunicatorListener {
 
     val cases = ArrayList<String>()
 
-    override fun onCaseState(caseBattery: Int, caseCharging: Int) {
-        cases.add("$caseBattery/$caseCharging")
+    override fun onCaseState(caseBattery: Int, caseCharging: Int, caseDocked: Boolean) {
+        cases.add("$caseBattery/$caseCharging/" + (if (caseDocked) "docked" else "out"))
     }
 
     override fun onSilentMode(silent: Boolean) {}
@@ -722,53 +726,93 @@ class GlassesSessionCoreTest {
         // Through a real frame, so the trailing CRC is present as it is on the wire.
         fun parse(pb: ByteArray) = BleProtocol.parseCaseInfo(
             BleProtocol.parseFrame(BleProtocol.framePb(pb, BleProtocol.SID_GLASSES_CASE, 0x00, 3)[0]).pb)
-        assertEquals(BleProtocol.CaseInfoSnapshot(64, 1, 1, 1, 0), parse(casePackage(7, caseInfoBody(64, charge = 1, lid = 1, inCase = 1))))
+        val full = parse(casePackage(7, caseInfoBody(64, charge = 1, lid = 1, inCase = 1)))!!
+        assertEquals(BleProtocol.CaseInfoSnapshot(64, 1, 1, 1, 0), full)
+        assertTrue(full.hasLevel() && full.isDocked() && full.isCaseCharging())
         assertFalse(parse(casePackage(7, caseInfoBody(80, error = 7)))!!.hasLevel())
-        // No data, an all-default body, or another command is not a reading.
+        // An empty caseInfo is a reading: not docked, no level.
+        val out = parse(casePackage(7, ByteArray(0)))!!
+        assertEquals(BleProtocol.CaseInfoSnapshot(-1, 0, 0, 0, 0), out)
+        assertFalse(out.isDocked() || out.hasLevel())
+        // No caseInfo at all, or another command, is not.
         assertEquals(null, parse(casePackage(7, null)))
-        assertEquals(null, parse(casePackage(7, ByteArray(0))))
         assertEquals(null, parse(BleProtocol.encodeVarintField(2, 7) + BleProtocol.encodeBytesField(3, caseInfoBody(50))))
         assertEquals(null, BleProtocol.parseCaseInfo(null))
         // Captured from G2 2.3.0.24 / Faceclaw/38 (CRC stripped). Out of the case the reply is empty;
         // docking pushes inCase alone (proto3 dropped soc: no level, not 0%), then the level.
-        assertEquals(null, parse(hex("08011086011a00")))
+        assertEquals(out, parse(hex("08011086011a00")))
         val docked = parse(hex("08011a022001"))!!
         assertEquals(BleProtocol.CaseInfoSnapshot(-1, 0, 0, 1, 0), docked)
+        assertTrue(docked.isDocked())
         assertFalse(docked.hasLevel())
         assertEquals(BleProtocol.CaseInfoSnapshot(88, 0, 0, 1, 0), parse(hex("080110011a0408582001")))
     }
 
     @Test
-    fun theCaseIsReadAtSessionStartAndOnDockingThenPushesCarryIt() {
+    fun theCaseIsReadAfterTheLayoutAndOnDockingThenPushesCarryIt() {
         val s = Session()
         try {
-            // Out of the case the session-start read answers without a caseInfo.
+            // Out of the case the session-start read answers with an empty caseInfo,
+            // which reports "not docked" once.
+            s.link.caseInfo = ByteArray(0)
             s.startAndAwaitLayout()
             fun queries() = s.link.writes.filter { it.kind == "case-info" }
             assertTrue(waitUntil(5_000) { queries().size == 1 })
-            assertEquals(listOf<String>(), s.listener.cases)
+            assertTrue(waitUntil(5_000) { s.listener.cases.isNotEmpty() })
+            assertEquals(listOf("-1/0/out"), s.listener.cases)
+            // It waits for the layout, so a firmware that ignores it can't delay the first frame.
+            assertTrue(s.link.writes.indexOf(queries()[0]) > s.link.writes.indexOfFirst { it.kind == "create-layout" })
             s.link.caseInfo = caseInfoBody(64, charge = 1, inCase = 1)
             s.core.monitor.withLock { s.core.updateChargingModeLocked(true, 80) }
             s.core.interruptibleSleep.interrupt()
-            assertTrue(waitUntil(5_000) { s.listener.cases.isNotEmpty() }, s.host.logs().takeLast(10).toString())
-            assertEquals(listOf("64/1"), s.listener.cases)
+            assertTrue(waitUntil(5_000) { s.listener.cases.size == 2 }, s.host.logs().takeLast(10).toString())
+            assertEquals("64/1/docked", s.listener.cases.last())
             assertEquals(listOf(RIGHT, RIGHT), queries().map { it.address })
             // Pushes (flag 0x01, the glasses' own magic) update it without being taken for acks.
             fun push(info: ByteArray) = s.core.onNotification(RIGHT, BleProtocol.NOTIFY_CHAR_UUID,
                 BleProtocol.framePb(casePackage(200, info), BleProtocol.SID_GLASSES_CASE, BleProtocol.FLAG_NOTIFY, 99)[0])
             push(caseInfoBody(63, lid = 1, inCase = 1))
-            assertEquals("63/0", s.listener.cases.last())
-            // Unchanged level and charge, no level yet, or a failed read: nothing to report.
+            assertEquals("63/0/docked", s.listener.cases.last())
+            // Unchanged level and charge, docked with no level yet, or a failed read: nothing to report.
             push(caseInfoBody(63, inCase = 1))
             push(caseInfoBody(0, inCase = 1))
             push(caseInfoBody(70, inCase = 1, error = 3))
-            assertEquals(2, s.listener.cases.size)
+            assertEquals(3, s.listener.cases.size)
             assertFalse(s.host.hasLog("unexpected"), s.host.logs().filter { it.contains("unexpected") }.toString())
             // Later charging-mode battery polls do not read the case again.
             s.platform.offsetMs += 2L * ConnectionOptions.CHARGING_BATTERY_POLL_MS
             s.core.interruptibleSleep.interrupt()
             sleepMs(300)
             assertEquals(2, queries().size)
+            // Leaving the case is reported even with the same level, and without one.
+            push(caseInfoBody(63))
+            assertEquals("63/0/out", s.listener.cases.last())
+            push(ByteArray(0))
+            assertEquals("-1/0/out", s.listener.cases.last())
+            push(ByteArray(0))
+            assertEquals(5, s.listener.cases.size)
+        } finally {
+            s.core.close()
+        }
+    }
+
+    @Test
+    fun glassesChargingAtConnectReadTheCaseOnce() {
+        val s = Session()
+        s.link.headsetCharging = true
+        s.link.caseInfo = caseInfoBody(90, charge = 1, lid = 1, inCase = 1)
+        try {
+            assertTrue(s.core.start())
+            assertTrue(waitUntil(5_000) { s.listener.cases.isNotEmpty() }, s.host.logs().takeLast(10).toString())
+            assertEquals(listOf("90/1/docked"), s.listener.cases)
+            // Charging mode skips the layout, and with it the session-start read;
+            // the charging-mode read is the only one.
+            s.platform.offsetMs += 2L * ConnectionOptions.CHARGING_BATTERY_POLL_MS
+            s.core.interruptibleSleep.interrupt()
+            sleepMs(300)
+            assertEquals(1, s.link.writes.count { it.kind == "case-info" })
+            assertEquals(0, s.link.writes.count { it.kind == "create-layout" })
+            assertFalse(s.host.hasLog("late ACK"), s.host.logs().filter { it.contains("late ACK") }.toString())
         } finally {
             s.core.close()
         }

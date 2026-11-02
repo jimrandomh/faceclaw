@@ -221,6 +221,12 @@ function describeState(): string {
     const charging = battery.headsetCharging ? ", charging" : "";
     parts.push(`Headset battery: ${battery.headset}%${charging}.`);
   }
+  if (battery.case !== null) {
+    // caseCharging is null while the glasses are out of the case: the level is the last one seen.
+    const detail = battery.caseCharging === null ? " (last reading, glasses not in the case)"
+      : battery.caseCharging ? ", charging" : "";
+    parts.push(`Charging case battery: ${battery.case}%${detail}.`);
+  }
   parts.push(`Local time: ${formatDateTime(new Date())}.`);
   return parts.join(" ");
 }

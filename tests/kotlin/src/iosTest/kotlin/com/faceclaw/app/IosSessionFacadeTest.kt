@@ -130,7 +130,7 @@ private class MainThreadListener : FaceclawBleCommunicatorListener {
         if (!NSThread.isMainThread) offMainCallbacks++
     }
 
-    override fun onCaseState(caseBattery: Int, caseCharging: Int) {
+    override fun onCaseState(caseBattery: Int, caseCharging: Int, caseDocked: Boolean) {
         if (!NSThread.isMainThread) offMainCallbacks++
     }
 

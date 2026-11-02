@@ -1589,9 +1589,14 @@ class DashboardController {
         this.emit();
       });
       this.offCaseBattery = communicator.onCaseState((state) => {
-        // Kept across disconnects: the case only reports while the glasses are
+        // The level is kept when a reading has none (the glasses left the case)
+        // and across disconnects: the case only reports while the glasses are
         // docked and only drains while charging them, so the last level holds.
-        shell.setBatteryLevels({ case: state.battery, caseCharging: state.charging });
+        // Whether the case is on USB is only known while they are docked.
+        shell.setBatteryLevels({
+          ...(state.battery !== null ? { case: state.battery } : {}),
+          caseCharging: state.docked ? state.charging : null,
+        });
         this.emit();
       });
       this.offEvenAppConflict = communicator.onEvenAppConflict((message) => {
