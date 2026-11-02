@@ -199,6 +199,14 @@ export class FaceclawVoiceControlBridge {
     );
   }
 
+  /**
+   * Capture could not be started for a reason other than a denied permission.
+   * Without this the dialog keeps showing the idle "Voice control stopped."
+   */
+  reportStartFailed(reason: string): void {
+    this.setStatus("Voice input couldn't start.", reason);
+  }
+
   /** Begin push-to-talk capture (momentary; released with stopPushToTalk). */
   startPushToTalk(options: PushToTalkOptions): void {
     this.acquireCapture("ptt", options);
