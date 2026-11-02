@@ -14,7 +14,7 @@ timeout, window lifecycle events, voice-assistant tools, and the user's API keys
 (with their consent). In the stock Even app the extensions are absent, and the
 app runs as usual.
 
-- [API reference](docs/api/README.md)
+- [API reference](https://github.com/jimrandomh/faceclaw/blob/main/evenhub-extensions/docs/api/README.md)
 
 ## Install
 
@@ -104,7 +104,7 @@ If you use the global directly and never import the package, add it to
 
 ## API overview
 
-The [API reference](docs/api/README.md) documents every member in full.
+The [API reference](https://github.com/jimrandomh/faceclaw/blob/main/evenhub-extensions/docs/api/README.md) documents every member in full.
 
 | Member | What it does |
 | --- | --- |
