@@ -15,6 +15,7 @@ import {
   type View,
 } from "@nativescript/core";
 import { dashboardController, type MirrorTouchKind } from "../g2/dashboard-controller";
+import { formatBatteryLine } from "../g2/glasses-display-state";
 import {
   mirrorTouchSetting,
   onAnySettingChanged,
@@ -90,6 +91,10 @@ export class MainViewModel extends RemoteControlsViewModel {
       this.displayPreview = snapshot.displayPreview;
       this.displayPreviewMessage = snapshot.displayPreviewMessage;
       this.phase = snapshot.phase;
+      this.batteryLine = formatBatteryLine(
+        snapshot.batteries,
+        snapshot.phase === "connected" || snapshot.phase === "charging",
+      );
       this.activeTextSettingId = snapshot.activeTextSettingId;
       this.activeTextEditorTitle = snapshot.activeTextEditorTitle;
       this.activeTextSettingTitle = snapshot.activeTextSettingTitle;
@@ -1068,10 +1073,16 @@ export class MainViewModel extends RemoteControlsViewModel {
     return dashboardController.glassesDisplayAsleep();
   }
 
+  override get padDetailLine(): string {
+    return dashboardController.glassesDisplayDetail();
+  }
+
   private refreshPadFocusLine(): void {
     this.notifyPropertyChange("padFocusLine", this.padFocusLine);
     this.notifyPropertyChange("padFocusClass", this.padFocusClass);
     this.notifyPropertyChange("padWakeHintVisibility", this.padWakeHintVisibility);
+    this.notifyPropertyChange("padDetailLine", this.padDetailLine);
+    this.notifyPropertyChange("padDetailVisibility", this.padDetailVisibility);
   }
 
   async onPadTap(): Promise<void> {

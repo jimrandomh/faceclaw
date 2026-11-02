@@ -90,6 +90,12 @@ class BleProtocol {
 
         const val SID_ONBOARDING: Int = 0x10
 
+        /** Charging case (UX_GLASSES_CASE_APP_ID): GlassesCaseDataPackage, see [CaseInfoSnapshot]. */
+        const val SID_GLASSES_CASE: Int = 0x81
+
+        /** eGlassesCaseCommandId.CASE_INFO. */
+        const val GLASSES_CASE_CMD_CASE_INFO: Int = 1
+
         /** G2SettingPackage.commandId for device-initiated pushes (vs. 2 = app read). */
         const val SETTINGS_CMD_DEVICE_SEND_TO_APP: Int = 3
 
@@ -899,6 +905,42 @@ class BleProtocol {
             return BatterySnapshot(battery, charging, silentMode)
         }
 
+        /** GlassesCaseDataPackage{commandId=CASE_INFO, magicRandom, caseInfo={}}, as the Even app sends it. */
+        @JvmStatic
+        fun buildCaseInfoQuery(magic: Int): ByteArray {
+            return concat(
+                CollectionUtils.listOf(
+                    encodeVarintField(1, GLASSES_CASE_CMD_CASE_INFO),
+                    encodeVarintField(2, magic),
+                    encodeMessageField(3, ByteArray(0)),
+                )
+            )
+        }
+
+        /**
+         * The GlassesCaseInfo (field 3) of a sid-0x81 CASE_INFO reply or push, or null when there
+         * is none. Out of the case the glasses answer with an empty one, which parses as
+         * not docked and without a level.
+         */
+        @JvmStatic
+        fun parseCaseInfo(pb: ByteArray?): CaseInfoSnapshot? {
+            if (pb == null) {
+                return null
+            }
+            val root: ByteArray = stripTrailingCrc(pb)
+            if (readVarintFieldValue(root, 1, -1) != GLASSES_CASE_CMD_CASE_INFO) {
+                return null
+            }
+            val info: ByteArray = readFieldBytes(root, 3) ?: return null
+            return CaseInfoSnapshot(
+                readVarintFieldValue(info, 1, -1),
+                readVarintFieldValue(info, 2, 0),
+                readVarintFieldValue(info, 3, 0),
+                readVarintFieldValue(info, 4, 0),
+                readVarintFieldValue(info, 5, 0),
+            )
+        }
+
         /**
          * Silent mode from an unsolicited settings push. The wearer toggles silent mode by
          * long-pressing both touchpads at once; the firmware then sends
@@ -1588,6 +1630,33 @@ class BleProtocol {
             this.charging = charging
             this.silentMode = silentMode
         }
+    }
+
+    /**
+     * GlassesCaseInfo {soc=1, chargeStatus=2, lidStatus=3, inCaseStatus=4, errorCode=5}. As seen
+     * on G2 2.3.0.24 / Faceclaw/38: docked, the right temple pushes one (flag 0x01, its own
+     * magic) on every change -- docking, lid, USB, each 1% -- and answers a CASE_INFO read with
+     * full data; out of the case it answers with an empty caseInfo. Docking pushes
+     * {inCaseStatus=1} first and the level about 0.7 s later; proto3 drops zero fields, so a
+     * missing soc reads as -1 ("no level"), never 0%.
+     */
+    data class CaseInfoSnapshot(
+        /** State of charge, 1..100; -1 when the message left it out. */
+        @JvmField val soc: Int,
+        /** 1 = the case itself is charging (on USB); only 0 and 1 have been seen. */
+        @JvmField val chargeStatus: Int,
+        /** 1 = lid closed, 0 = open. */
+        @JvmField val lidStatus: Int,
+        /** 1 = glasses docked. */
+        @JvmField val inCaseStatus: Int,
+        /** g2.common.eErrorCode; 0 = SUCCESS. */
+        @JvmField val errorCode: Int,
+    ) {
+        fun hasLevel(): Boolean = errorCode == 0 && soc in 0..100
+
+        fun isDocked(): Boolean = inCaseStatus > 0
+
+        fun isCaseCharging(): Boolean = chargeStatus > 0
     }
 
     class FirmwareInfo {

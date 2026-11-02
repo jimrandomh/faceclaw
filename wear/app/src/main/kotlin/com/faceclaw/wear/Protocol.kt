@@ -95,6 +95,10 @@ data class PhoneState(
     /** Current or last-known G2 charge percentage. */
     val battery: Int?,
     val charging: Boolean,
+    /** Last-known charging-case percentage; live only while the glasses are docked. */
+    val caseBattery: Int?,
+    /** The case is on USB; null while the glasses are out of the case. */
+    val caseCharging: Boolean?,
     val silentMode: Boolean,
     val foreground: AppEntry?,
     val windows: List<WindowEntry>,
@@ -123,6 +127,8 @@ data class PhoneState(
                     listening = o.optBoolean("listening", false),
                     battery = if (o.isNull("battery")) null else o.optInt("battery", -1).takeIf { it in 0..100 },
                     charging = o.optBoolean("charging", false),
+                    caseBattery = if (o.isNull("caseBattery")) null else o.optInt("caseBattery", -1).takeIf { it in 0..100 },
+                    caseCharging = if (o.isNull("caseCharging")) null else o.optBoolean("caseCharging"),
                     silentMode = o.optBoolean("silentMode", false),
                     foreground = foreground?.let {
                         AppEntry(it.optString("appId", ""), it.optString("title", ""))

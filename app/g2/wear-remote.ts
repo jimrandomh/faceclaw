@@ -263,6 +263,8 @@ export class WearRemote {
       listening: voiceActivity.isActive(),
       battery: state.lastHeadsetBattery,
       charging: state.phase === "charging" || battery.headsetCharging === true,
+      caseBattery: battery.case,
+      caseCharging: battery.caseCharging,
       silentMode: state.silentMode,
       foreground: foreground ? { appId: foreground.appId, title: foreground.title } : null,
       windows: shell.getWindows().map((window) => ({

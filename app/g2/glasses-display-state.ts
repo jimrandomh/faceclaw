@@ -3,6 +3,13 @@ export type GlassesDisplayState = {
   silentMode: boolean;
   screenOn: boolean;
   battery: number | null;
+  /**
+   * The charging case's last-known level, and whether it is on USB (null
+   * while the glasses are out of the case). Shown only while charging, when
+   * the glasses are docked and the case reading is live.
+   */
+  caseBattery: number | null;
+  caseCharging: boolean | null;
   foregroundTitle: string | null;
   /** The headless preview display is standing in for a connection (preview-only mode). */
   previewMode: boolean;
@@ -30,6 +37,20 @@ export function glassesDisplayLabel(state: GlassesDisplayState): string {
 }
 
 /**
+ * The smaller line under that label on the watch face, or "": the case
+ * level while the glasses charge in it.
+ */
+export function glassesDisplayDetail(state: GlassesDisplayState): string {
+  if (state.phase !== "charging") return "";
+  return validBatteryLevel(state.caseBattery) ? batteryEntry("Case", state.caseBattery, state.caseCharging) : "";
+}
+
+/** The phone mirror's stand-in while charging: the label and its detail on one line. */
+export function chargingPreviewMessage(state: GlassesDisplayState): string {
+  return [glassesDisplayLabel(state), glassesDisplayDetail(state)].filter(Boolean).join(" · ");
+}
+
+/**
  * True when the label reads "Display off": the screen is dark but the glasses
  * (or the preview standing in for them) would light it on a wake gesture.
  */
@@ -44,6 +65,40 @@ export function glassesDisplayAsleep(state: GlassesDisplayState): boolean {
 
 export function chargingDisplayLabel(battery: number | null): string {
   return validBatteryLevel(battery) ? `Charging · G2 ${battery}%` : "Charging";
+}
+
+/** The shell's last-known battery levels (ShellChromeState["battery"]), as far as the phone shows them. */
+export type BatteryLevels = {
+  headset: number | null;
+  headsetCharging: boolean | null;
+  case: number | null;
+  caseCharging: boolean | null;
+  ring: number | null;
+  ringCharging: boolean | null;
+};
+
+/**
+ * The phone Settings tab's battery row: each device whose level is known,
+ * e.g. "G2 100%  ·  Case 98% ⚡  ·  R1 72%" (⚡ = charging), or "" when none
+ * is. Levels are the last known ones (the case only reports while the glasses
+ * are docked), so ⚡ appears only while it is live: G2 and Case only with a
+ * link to the glasses (`glassesLinked`: connected or charging), and Case only
+ * while they are docked (caseCharging is null otherwise).
+ */
+export function formatBatteryLine(levels: BatteryLevels, glassesLinked: boolean): string {
+  const devices: Array<[string, number | null, boolean | null]> = [
+    ["G2", levels.headset, glassesLinked && levels.headsetCharging],
+    ["Case", levels.case, glassesLinked && levels.caseCharging],
+    ["R1", levels.ring, levels.ringCharging],
+  ];
+  return devices
+    .filter((device): device is [string, number, boolean | null] => validBatteryLevel(device[1]))
+    .map(([label, level, charging]) => batteryEntry(label, level, charging))
+    .join("  ·  ");
+}
+
+function batteryEntry(label: string, level: number, charging: boolean | null): string {
+  return `${label} ${level}%${charging ? " ⚡" : ""}`;
 }
 
 function validBatteryLevel(battery: number | null): battery is number {

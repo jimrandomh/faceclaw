@@ -883,6 +883,13 @@ export class IosPreviewController {
         if (this.active) this.onConnectionState({ ...this.state })
         this.requestShellRender()
       }),
+      communicator.onCaseState(state => {
+        if (this.communicator !== communicator) return
+        // As on Android: keep the last level when a reading has none (out of the case);
+        // the case's own charging is only known while the glasses are docked.
+        shell.setBatteryLevels({ ...(state.battery !== null ? { case: state.battery } : {}),
+          caseCharging: state.docked ? state.charging : null })
+      }),
       communicator.onFirmwareInfo(info => {
         if (this.communicator !== communicator) return
         this.logBluetooth(`Firmware: L=${info.leftVersion || '?'} R=${info.rightVersion || '?'}` +

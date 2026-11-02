@@ -57,6 +57,16 @@ internal fun GlassesSessionCore.driveSession(): Long {
                 return 0
             }
             drainCfwAcknowledgementsLocked()
+            if (dockedBatteryCheckAtMs != 0L && now >= dockedBatteryCheckAtMs) {
+                // Queued rather than polled: pending messages still go out while
+                // the display is suspended, which the regular poll waits out.
+                dockedBatteryCheckAtMs = 0L
+                if (sessionReady && !chargingMode && !hasPendingOrInflightKindLocked("battery")) {
+                    lastBatteryRefreshAtMs = now
+                    pendingMessages.addLast(createBatteryQueryMessageLocked())
+                    logLine("queue battery query: glasses docked")
+                }
+            }
             if (cfwCleanupDelivered) {
                 /* Successful mode 11 must be the last Faceclaw write. Drop
                  * anything a late external producer attempted to enqueue
@@ -163,6 +173,14 @@ internal fun GlassesSessionCore.driveSession(): Long {
                         && pendingMessages.isEmpty() && inFlightMessages.isEmpty()) {
                     logLine("enqueueing firmware debug flags " + (if (firmwareDebugFlagsEnabled) "show" else "hide"))
                     enqueueFirmwareDebugFlagsLocked()
+                }
+
+                if (messageToPrewrite == null && !shutdownRequested && fixedLayoutCreated
+                        && caseInfoReadPending
+                        && pendingMessages.isEmpty() && inFlightMessages.isEmpty()) {
+                    caseInfoReadPending = false
+                    logLine("enqueueing case info read")
+                    pendingMessages.addLast(messageBuilder.caseInfoQuery())
                 }
 
                 if (messageToPrewrite == null && !shutdownRequested && fixedLayoutCreated
@@ -1100,6 +1118,10 @@ internal fun GlassesSessionCore.updateChargingModeLocked(charging: Boolean, batt
     if (charging) {
         chargingMode = true
         clearAllMessagesLocked("glasses charging")
+        // Docked is when the case reports. No layout is created while
+        // charging, so this read stands in for the session-start one.
+        caseInfoReadPending = false
+        pendingMessages.addLast(messageBuilder.caseInfoQuery())
         fixedLayoutCreated = false
         startupProbePending = false
         displayedFingerprint = ""

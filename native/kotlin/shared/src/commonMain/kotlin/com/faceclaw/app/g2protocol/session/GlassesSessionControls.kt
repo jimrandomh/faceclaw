@@ -726,6 +726,50 @@ internal fun GlassesSessionCore.emitBatteryState(headsetBattery: Int, headsetCha
     }
 }
 
+/**
+ * Report a charging-case reading when it differs from the last one. Docked, a reading counts
+ * only once it carries a level (docking pushes {inCaseStatus=1} first and the level about 0.7 s
+ * later). Undocked -- the empty reply to a read, or an undock push -- it is reported even without
+ * a level, so the listener learns the case's charge state is no longer known.
+ */
+internal fun GlassesSessionCore.updateCaseInfoLocked(info: BleProtocol.CaseInfoSnapshot) {
+    if (info.errorCode != 0) {
+        return
+    }
+    val docked = info.isDocked()
+    if (docked && !info.hasLevel()) {
+        return
+    }
+    val level = if (info.hasLevel()) info.soc else -1
+    // Out of the case the glasses can't see the case's USB state.
+    val charging = if (docked && info.isCaseCharging()) 1 else 0
+    val dockedState = if (docked) 1 else 0
+    if (level == caseBattery && charging == caseCharging && dockedState == caseDocked) {
+        return
+    }
+    val wasOutOfCase = caseDocked == 0
+    caseBattery = level
+    caseCharging = charging
+    caseDocked = dockedState
+    logLine("charging case: $info")
+    if (docked && wasOutOfCase && !chargingMode) {
+        // The glasses just went into the case. Only the battery reply says
+        // they are charging, and the regular poll is minutes away (and skipped
+        // altogether while the display is suspended, as it is once they come
+        // off the face), so read it shortly: charging mode then follows.
+        dockedBatteryCheckAtMs = now() + ConnectionOptions.DOCKED_BATTERY_CHECK_DELAY_MS
+        logLine("glasses docked; battery check scheduled")
+    }
+    val current = listener ?: return
+    host.postToMain {
+        try {
+            current.onCaseState(level, charging, docked)
+        } catch (t: Throwable) {
+            logWarn("listener onCaseState failed", t)
+        }
+    }
+}
+
 internal fun GlassesSessionCore.emitFirmwareInfo(info: BleProtocol.FirmwareInfo) {
     val current = listener ?: return
     host.postToMain {

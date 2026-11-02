@@ -388,6 +388,17 @@ class GlassesSessionCore(
     // frames while claiming the glasses role).
     internal var lastDirectRingRaw = ""
     internal var lastDirectRingRawAtMs = 0L
+    // Last charging-case reading reported to the listener (-1 = none yet this
+    // connection). See updateCaseInfoLocked.
+    internal var caseBattery = -1
+    internal var caseCharging = -1
+    internal var caseDocked = -1
+    // The session-start case read is still to be sent. It waits for the layout
+    // (see the drive loop), so a firmware that ignores it can't delay the first frame.
+    internal var caseInfoReadPending = false
+    // When to read the battery after the case reported the glasses docking
+    // (0 = not scheduled). See updateCaseInfoLocked and the drive loop.
+    internal var dockedBatteryCheckAtMs = 0L
     // Silent mode: 1 = on, 0 = off, -1 = not yet known. See updateSilentModeLocked.
     internal var silentMode = -1
     internal var wearState = -1
@@ -1939,6 +1950,11 @@ class GlassesSessionCore(
                     return
                 }
             }
+            if (frame.ok && frame.sid == BleProtocol.SID_GLASSES_CASE) {
+                // Read replies and the glasses' own pushes (flag 0x01, which
+                // skips the ack path below) carry the same reading.
+                BleProtocol.parseCaseInfo(frame.pb)?.let { updateCaseInfoLocked(it) }
+            }
             if (!faceclawWakeNotification
                     && decodedWearState < 0
                     && frame.ok
@@ -2186,6 +2202,11 @@ class GlassesSessionCore(
             // reconnect; forget ours too, or the new session's first report
             // (the CFW query reply) is deduped away and TS never relearns it.
             wearState = -1
+            // Same for the case: the glasses may have left it while the link
+            // was down, and the new session's read should reach TS either way.
+            caseBattery = -1
+            caseCharging = -1
+            caseDocked = -1
         }
         setStateDisplay("connecting", "Connecting to the glasses...")
         ConnectionCounters.increment("g2.connect-attempt")
@@ -2217,6 +2238,7 @@ class GlassesSessionCore(
                 lastConnectionOrInputAtMs = lastAckAtMs
                 lastSessionReadyAtMs = lastAckAtMs
                 lastBatteryRefreshAtMs = 0
+                dockedBatteryCheckAtMs = 0
                 imageRetryAfterMs = 0
                 lastHeartbeatSentAtMs = 0
                 lastHeartbeatAckedAtMs = 0
@@ -2255,6 +2277,11 @@ class GlassesSessionCore(
                 lastBatteryRefreshAtMs = now()
                 pendingMessages.addLast(createBatteryQueryMessageLocked())
                 logLine("queue settings query for firmware info")
+                // The case reports only while the glasses are docked, possibly
+                // fully charged and so not in charging mode; out of the case
+                // this read comes back empty. Later changes are pushed. The
+                // drive loop sends it once the layout is up.
+                caseInfoReadPending = true
             }
             // Wake the ring worker; it owns the (blocking) ring connect.
             monitor.signalAll()

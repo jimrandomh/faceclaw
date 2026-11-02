@@ -36,7 +36,6 @@ import androidx.compose.ui.platform.LocalViewConfiguration
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
@@ -307,13 +306,10 @@ fun RemoteScreen(
             modifier = Modifier.align(Alignment.Center).offset(y = 46.dp),
         ) {
             val pad = padLine(state, linkStatus)
-            Text(
-                text = pad.text,
-                style = MaterialTheme.typography.title3,
+            PadStatusText(
+                pad = pad,
                 color = if (pad.tone == StatusTone.GOOD) MaterialTheme.colors.onSurface else pad.tone.color(),
-                textAlign = TextAlign.Center,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
+                detailColor = MaterialTheme.colors.onSurfaceVariant,
                 modifier = Modifier.padding(horizontal = 42.dp),
             )
         }
