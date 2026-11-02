@@ -1792,12 +1792,13 @@ class GlassesSessionCore(
             return
         }
         val uuid = characteristicUuid.lowercase()
-        if (isIo) {
-            ioOnNotification(address, uuid, data)
-            return
-        }
+        // The phone's own R1 link, beside either glasses (the iO's ring is always direct).
         if (isDirectRingNotification(address, uuid)) {
             handleDirectRingNotification(uuid, data)
+            return
+        }
+        if (isIo) {
+            ioOnNotification(address, uuid, data)
             return
         }
         if (BleProtocol.RENDER_NOTIFY_UUID == uuid) {
@@ -2100,6 +2101,7 @@ class GlassesSessionCore(
             lastConnectionOrInputAtMs = arrivalMs
             lastDirectRingInputAtMs = arrivalMs
             lastDirectRingInputLabel = decoded.label + " " + decoded.detail
+            if (isIo) ioReclaimPageOnInputLocked()
         }
         logLine("direct ring " + decoded.label + " " + decoded.detail + " raw=" + hex(data))
         val frameId = frameTimings.startFrame("input:ring:" + decoded.label)

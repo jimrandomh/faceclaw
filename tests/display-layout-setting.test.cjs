@@ -85,3 +85,16 @@ test('a RayNeo iO defaults the app switcher to the left, and keeps a chosen posi
   api.glassesTypeSetting.set('rayneo-io');
   assert.equal(api.appSwitcherPositionSetting.get(), 'left');
 });
+
+test('a RayNeo iO always takes the R1 directly, leaving the G2\'s ring connection setting alone', () => {
+  const store = new Map();
+  const api = settingsFixture(store);
+  assert.equal(api.effectiveRingConnectionMode(), 'glasses');
+  api.ringConnectionModeSetting.set('health');
+  assert.equal(api.effectiveRingConnectionMode(), 'health');
+  api.glassesTypeSetting.set('rayneo-io');
+  assert.equal(api.effectiveRingConnectionMode(), 'direct');
+  assert.equal(api.ringConnectionModeSetting.get(), 'health');
+  api.glassesTypeSetting.set('g2');
+  assert.equal(api.effectiveRingConnectionMode(), 'health');
+});

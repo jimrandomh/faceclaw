@@ -7,6 +7,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 private const val IO = "00:6A:5E:5F:33:C2"
+private const val RING = "FF:AA:F1:F6:7E:28"
 private val PHONE_ID = byteArrayOf(1, 2, 3, 4, 5, 6)
 
 private class IoClock(private val base: ProtocolPlatform) : ProtocolPlatform by base {
@@ -50,6 +51,14 @@ private class FakeIoGlasses(platform: ProtocolPlatform) : SessionLink {
 
     val controls: List<Int> get() = lock.withLock { controlsList.toList() }
     val messages: List<ByteArray> get() = lock.withLock { messagesList.toList() }
+    /** Writes to the R1 on [RING] (characteristic, bytes), and the CCCDs the session enabled on it. */
+    private val ringWritesList = ArrayList<Pair<String, ByteArray>>()
+    private val ringCccdsList = ArrayList<String>()
+    val ringWrites: List<Pair<String, ByteArray>> get() = lock.withLock { ringWritesList.toList() }
+    val ringCccds: List<String> get() = lock.withLock { ringCccdsList.toList() }
+
+    /** A notification from the R1, as its link delivers it. */
+    fun ringNotify(characteristicUuid: String, data: ByteArray) = core.onNotification(RING, characteristicUuid, data)
 
     fun notify(business: Int, payload: ByteArray) {
         val frame = lock.withLock { RayNeoIoProtocol.encodeFrame(number++, business, payload) }
@@ -70,10 +79,19 @@ private class FakeIoGlasses(platform: ProtocolPlatform) : SessionLink {
 
     override fun discoverServices(address: String, timeoutMs: Int): Boolean = true
 
-    override fun enableNotifications(address: String, characteristicUuid: String, enable: Boolean, timeoutMs: Int): Boolean =
-        characteristicUuid == RayNeoIoBle.NOTIFY_CHAR_UUID
+    override fun enableNotifications(address: String, characteristicUuid: String, enable: Boolean, timeoutMs: Int): Boolean {
+        if (address == RING) {
+            lock.withLock { ringCccdsList.add(characteristicUuid) }
+            return true
+        }
+        return characteristicUuid == RayNeoIoBle.NOTIFY_CHAR_UUID
+    }
 
     override fun writeFrames(address: String, characteristicUuid: String, frames: List<ByteArray>, mode: GattWriteMode, timeoutMs: Int): Boolean {
+        if (address == RING) {
+            lock.withLock { for (frame in frames) ringWritesList.add(characteristicUuid to frame) }
+            return true
+        }
         assertEquals(RayNeoIoBle.WRITE_CHAR_UUID, characteristicUuid)
         assertTrue(frames.all { it.size <= 185 - 3 }, "writes must fit the MTU")
         val decoded = lock.withLock { frames.flatMap { inbound.ingest(it) } }
@@ -170,6 +188,7 @@ private class IoListener : FaceclawBleCommunicatorListener {
     @Volatile var lastStatus = ""
     val events = ArrayList<String>()
     val batteries = ArrayList<String>()
+    val ringBatteries = ArrayList<String>()
     val firmware = ArrayList<String>()
 
     override fun onStateChange(phase: String?, status: String?) {
@@ -183,6 +202,7 @@ private class IoListener : FaceclawBleCommunicatorListener {
 
     override fun onBatteryState(headsetBattery: Int, headsetCharging: Int, ringBattery: Int, ringCharging: Int) {
         batteries.add("$headsetBattery/$headsetCharging")
+        if (ringBattery >= 0) ringBatteries.add("$ringBattery/$ringCharging")
     }
 
     override fun onSilentMode(silent: Boolean) {}
@@ -202,7 +222,8 @@ private class IoListener : FaceclawBleCommunicatorListener {
     }
 }
 
-private class IoSession {
+/** An iO session; with [ring], also the phone's own link to an R1 in the glasses role (Direct). */
+private class IoSession(ring: String = "") {
     val platform = IoClock(testPlatform())
     val glasses = FakeIoGlasses(platform)
     private val host = object : SessionHost {
@@ -243,13 +264,14 @@ private class IoSession {
         }
     }
     val listener = IoListener()
-    val core = GlassesSessionCore(glasses, host, FrameTimingsCore(platform), platform, IO, IO, "")
+    val core = GlassesSessionCore(glasses, host, FrameTimingsCore(platform), platform, IO, IO, ring)
 
     init {
         glasses.core = core
         core.setListener(listener)
         core.setRequiredFirmwareRevision(38)
         core.useRayNeoIo(PHONE_ID, "Pixel", "Google", "Pixel 11")
+        if (ring.isNotEmpty()) core.setDirectRingRole("glasses")
     }
 
     fun pageUp(): Boolean = core.monitor.withLock { core.sessionReady && core.fixedLayoutCreated }
@@ -373,6 +395,46 @@ class RayNeoIoSessionTest {
             s.glasses.notify(0xf0, byteArrayOf(7, 0, 1, 0, 0, 0, 0))
             s.core.interruptibleSleep.interrupt()
             assertTrue(awaitTrue(5_000) { s.pageUp() }, "touch did not reopen:\n" + s.tail())
+        } finally {
+            s.core.close()
+        }
+    }
+
+    @Test
+    fun anR1BesideTheIoIsTheSessionsOwnRingInput() {
+        val s = IoSession(RING)
+        s.core.configureCompositorScreen(540, 220)
+        try {
+            assertTrue(s.core.start())
+            assertTrue(awaitTrue(5_000) { s.pageUp() }, s.tail())
+            // The phone takes the ring's glasses role itself: legacy CCCD, the glasses
+            // pair-auth, then the touch source on, all on the ring's link.
+            assertTrue(awaitTrue(5_000) { s.glasses.ringWrites.size >= 2 }, "ring setup not sent:\n" + s.tail())
+            assertTrue(BleProtocol.R1_LEGACY_NOTIFY_CHAR_UUID in s.glasses.ringCccds)
+            val (authChar, auth) = s.glasses.ringWrites[0]
+            assertEquals(BleProtocol.R1_LEGACY_WRITE_CHAR_UUID, authChar)
+            assertTrue(auth.contentEquals(RingProtocol.LEGACY_GLASSES_PAIR_AUTH))
+
+            // Its battery and gestures reach the listener as they do beside a G2,
+            // not the iO's protocol parser.
+            s.glasses.ringNotify(BleProtocol.R1_LEGACY_NOTIFY_CHAR_UUID, byteArrayOf(0x00, 0x09, 0x8b.toByte(), 0x00, 64, 1))
+            assertTrue(awaitTrue(2_000) { "64/1" in s.listener.ringBatteries }, s.listener.ringBatteries.toString())
+            val swipe = byteArrayOf(0x00, 0x09, 0x61, 0x00, 0x04, 0x35, 0x00, 0x09, 0xcc.toByte(), 0x00, 0x00)
+            s.glasses.ringNotify(BleProtocol.R1_LEGACY_NOTIFY_CHAR_UUID, swipe)
+            assertTrue(awaitTrue(2_000) { s.listener.events.isNotEmpty() }, s.tail())
+            val expected = FaceclawRingEventDecoder.decode(swipe)!!.event
+            assertEquals("${expected.kind}:${expected.eventType}:${expected.eventSource}", s.listener.events.single())
+
+            // The wearer closed the page: a ring gesture takes it back, as a temple touch does.
+            s.glasses.pageOpen = false
+            s.glasses.page(0, 4)
+            s.platform.offsetMs += 4_000
+            s.core.interruptibleSleep.interrupt()
+            sleepMs(300)
+            assertFalse(s.pageUp())
+            s.glasses.ringNotify(BleProtocol.R1_LEGACY_NOTIFY_CHAR_UUID, byteArrayOf(0x00, 0x09, 0x61, 0x00, 0x01, 0x00, 0x00, 0x10, 0xcc.toByte(), 0x00, 0x00))
+            s.core.interruptibleSleep.interrupt()
+            assertTrue(awaitTrue(5_000) { s.pageUp() }, "ring input did not reopen:\n" + s.tail())
         } finally {
             s.core.close()
         }

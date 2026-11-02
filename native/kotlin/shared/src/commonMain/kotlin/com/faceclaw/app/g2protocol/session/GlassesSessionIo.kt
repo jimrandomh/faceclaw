@@ -519,6 +519,17 @@ private fun GlassesSessionCore.ioHandlePage(payload: ByteArray) {
     interruptibleSleep.interrupt()
 }
 
+/**
+ * The wearer gave input (a temple touch, or the R1's) after closing our page:
+ * take it back. Caller holds `monitor`.
+ */
+internal fun GlassesSessionCore.ioReclaimPageOnInputLocked() {
+    if (io.pageWanted || !sessionReady) return
+    io.pageWanted = true
+    shutdownRequested = false
+    io.pageRequestSentAtMs = 0
+}
+
 private fun GlassesSessionCore.ioHandleGesture(gesture: RayNeoIoProtocol.Gesture) {
     val event: G2Event? = when (gesture.eventType) {
         // Same numbering as the G2's OsEventTypeList; head up wakes like the G2 CFW's forward.
@@ -529,12 +540,7 @@ private fun GlassesSessionCore.ioHandleGesture(gesture: RayNeoIoProtocol.Gesture
     monitor.withLock {
         lastIncomingAtMs = now()
         if (event != null) lastConnectionOrInputAtMs = lastIncomingAtMs
-        if (event != null && "sys-event" == event.kind && !io.pageWanted && sessionReady) {
-            // The wearer touched the glasses after closing our page: take it back.
-            io.pageWanted = true
-            shutdownRequested = false
-            io.pageRequestSentAtMs = 0
-        }
+        if (event != null && "sys-event" == event.kind) ioReclaimPageOnInputLocked()
     }
     logLine("RayNeo iO gesture type=" + gesture.eventType + " source=" + gesture.source + (if (event == null) " (ignored)" else ""))
     if (event == null) return

@@ -68,7 +68,7 @@ export class PairingViewModel extends Observable {
   private _ringRows: PairingRowItem[] = [];
   private selectedPair: GlassesPairCandidate | null = null;
   private selectedRing: RingCandidate | null = null;
-  /** A RayNeo iO instead of a G2 pair (the two are exclusive). */
+  /** A RayNeo iO instead of a G2 pair (the two are exclusive; either takes a ring). */
   private selectedIo: RayNeoCandidate | null = null;
   private readonly previouslyPairedSerial: string | null;
   private readonly previouslyPairedRing: string;
@@ -186,7 +186,7 @@ export class PairingViewModel extends Observable {
 
   get instructions(): string {
     return (
-      "Select your G2 glasses and R1 ring, or your RayNeo iO, below. Wear the glasses or take them out of the case, " +
+      "Select your G2 glasses or RayNeo iO, and your R1 ring if you have one, below. Wear the glasses or take them out of the case, " +
       "and keep the glasses and phone nearby. If your glasses are not detected, make sure no other " +
       "apps are connected."
     );
@@ -298,10 +298,7 @@ export class PairingViewModel extends Observable {
     if (row.kind === "rayneo-io") {
       const io = this.aggregator.rayneos().find((candidate) => candidate.id === row.id) ?? null;
       this.selectedIo = this.selectedIo?.id === io?.id ? null : io;
-      if (this.selectedIo) {
-        this.selectedPair = null;
-        this.selectedRing = null;
-      }
+      if (this.selectedIo) this.selectedPair = null;
     } else if (row.kind === "glasses") {
       const pair = this.aggregator.pairs().find((candidate) => candidate.id === row.id) ?? null;
       if (!pair) return;
@@ -314,17 +311,24 @@ export class PairingViewModel extends Observable {
     } else {
       const ring = this.aggregator.rings().find((candidate) => candidate.id === row.id) ?? null;
       this.selectedRing = this.selectedRing?.id === ring?.id ? null : ring;
-      if (this.selectedRing) this.selectedIo = null;
     }
     this.refresh();
   };
 
   onPrimaryTap(): void {
     const io = this.selectedIo;
+    const pair = this.selectedPair;
+    const ring = this.selectedRing;
+    const existing = loadDeviceAddresses();
+    // Glasses saved without a ring selected keep the ring paired before.
+    const ringAddress = ring?.advertisement.address ?? existing.ring;
+    const ringName = ring?.advertisement.name ??
+      (ringAddress === existing.ring ? (loadPairedGlassesIdentity()?.ringName ?? "") : "");
     if (io) {
-      // One link: the same address stands for both arms; no ring.
+      // One link: the same address stands for both arms. The iO can't relay a
+      // ring, so the session connects to it directly (Direct ring mode).
       const address = io.advertisement.address;
-      saveDeviceAddresses({ right: address, left: address, ring: "" });
+      saveDeviceAddresses({ right: address, left: address, ring: ringAddress });
       glassesTypeSetting.set("rayneo-io");
       savePairedGlassesIdentity({
         serial: io.advertisement.embeddedMac ?? address,
@@ -332,8 +336,8 @@ export class PairingViewModel extends Observable {
         rightName: io.advertisement.name,
         leftAddress: address,
         rightAddress: address,
-        ringName: "",
-        ringAddress: "",
+        ringName,
+        ringAddress,
         pairedAtMs: Date.now(),
       });
       this.dispose();
@@ -343,18 +347,15 @@ export class PairingViewModel extends Observable {
       finishOnboardingNavigation();
       return;
     }
-    const pair = this.selectedPair;
-    const ring = this.selectedRing;
     if (!pair && !ring) return;
     // refresh() drops a selection whose pair regressed below complete, but the
     // tap can race a prune: never fall back to previously stored addresses for
     // a missing arm — that silently welds together arms of two different pairs.
     if (pair && (!pair.left || !pair.right)) return;
-    const existing = loadDeviceAddresses();
     const addresses = {
       right: pair ? pair.right!.address : existing.right,
       left: pair ? pair.left!.address : existing.left,
-      ring: ring?.advertisement.address ?? existing.ring,
+      ring: ringAddress,
     };
     saveDeviceAddresses(addresses);
     if (pair) glassesTypeSetting.set("g2");
@@ -365,8 +366,8 @@ export class PairingViewModel extends Observable {
         rightName: pair.right!.name,
         leftAddress: pair.left!.address,
         rightAddress: pair.right!.address,
-        ringName: ring?.advertisement.name ?? (addresses.ring === existing.ring ? (loadPairedGlassesIdentity()?.ringName ?? "") : ""),
-        ringAddress: addresses.ring,
+        ringName,
+        ringAddress,
         pairedAtMs: Date.now(),
       });
     } else if (ring) {

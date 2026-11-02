@@ -971,6 +971,13 @@ internal fun macWireBytes(address: String): ByteArray? {
 internal fun GlassesSessionCore.queueGlassesRingLinkCommandLocked(
     action: String, fallbackAddress: String, fallbackName: String,
 ): Boolean {
+    if (isIo) {
+        // A RayNeo iO has no ring link of its own; the phone holds the ring directly.
+        lastRingLinkCommand = "$action: not applicable (RayNeo iO)"
+        lastRingLinkCommandAtMs = now()
+        logLine("glasses ring $action skipped: RayNeo iO glasses have no ring link")
+        return false
+    }
     val reported = glassesRingMac
     val mac = reported ?: macWireBytes(fallbackAddress)
     if (mac == null) {
@@ -1091,6 +1098,9 @@ internal fun GlassesSessionCore.queueRingConfigCommandLocked(
             frame = RingProtocol.buildPairAuth(seq)
         }
         "targets-glasses" -> {
+            // The iO never connects to the ring: naming it would make the ring drop
+            // the phone's glasses-role link (the advStart check, ~20 s later).
+            if (isIo) return "not sent: RayNeo iO glasses don't hold the ring"
             val right = macWireBytes(rightAddress)
             val left = macWireBytes(leftAddress)
             if (right == null || left == null) return "not sent: glasses addresses unparseable"

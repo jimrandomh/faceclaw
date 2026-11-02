@@ -874,8 +874,17 @@ export const ringConnectionModeSetting = new ConfigSettingEnum<RingConnectionMod
   formatValue: (value) =>
     value === "direct" ? "Direct to phone" : value === "health" ? "Via glasses + health sync" : "Only via glasses",
   description:
-    "How the R1 ring reaches the phone. Only via glasses: the glasses relay the ring's gestures and the phone never connects to it. Via glasses + health sync: the same, plus the phone connects to the ring to sync health data. Direct to phone (experimental): the phone takes the ring over from the glasses and gets its gestures and battery itself; the glasses lose ring input. Health still syncs, but each sync (on opening Health, and at :01 and :31) pauses ring gestures for up to a minute while the phone briefly reconnects to the ring in its health role. Leaving Direct hands the ring back to the glasses. Takes effect on the next connection to the glasses.",
+    "How the R1 ring reaches the phone. Only via glasses: the glasses relay the ring's gestures and the phone never connects to it. Via glasses + health sync: the same, plus the phone connects to the ring to sync health data. Direct to phone (experimental): the phone takes the ring over from the glasses and gets its gestures and battery itself; the glasses lose ring input. Health still syncs, but each sync (on opening Health, and at :01 and :31) pauses ring gestures for up to a minute while the phone briefly reconnects to the ring in its health role. Leaving Direct hands the ring back to the glasses. A RayNeo iO has no ring link of its own, so with one the phone always connects to the ring directly. Takes effect on the next connection to the glasses.",
 });
+
+/**
+ * The ring connection in effect: the setting with G2 glasses; Direct with a
+ * RayNeo iO, which cannot relay a ring, so the phone holds the ring's
+ * glasses role itself (gestures, battery; health in brief phone-role windows).
+ */
+export function effectiveRingConnectionMode(): RingConnectionMode {
+  return glassesTypeSetting.get() === "rayneo-io" ? "direct" : ringConnectionModeSetting.get();
+}
 
 // "whisper" (no "onboard-" prefix) is OpenAI's CLOUD realtime model
 // (gpt-realtime-whisper); "onboard-whisper" is the on-device sherpa-onnx

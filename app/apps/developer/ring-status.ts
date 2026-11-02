@@ -4,7 +4,7 @@ import { type InputEvent } from "../../ui/gestures";
 import { Layer, type LayerContext } from "../../ui/layers";
 import { shell } from "../../ui/shell/shell";
 import { MenuLayer, type MenuItem } from "../../ui/menu";
-import { ringConnectionModeSetting } from "../../ui/dashboard-settings";
+import { effectiveRingConnectionMode, ringConnectionModeSetting } from "../../ui/dashboard-settings";
 import { loadDeviceAddresses } from "../../g2/device-addresses";
 import {
   getRingSessionStatus,
@@ -146,7 +146,7 @@ export class RingStatusLayer implements Layer {
     }
 
     if (!s.directEnabled) {
-      const pending = ringConnectionModeSetting.get() !== "glasses";
+      const pending = effectiveRingConnectionMode() !== "glasses";
       rows.push({ label: "Direct link", value: pending ? "on after glasses reconnect" : "off (only via glasses)", dim: true });
     } else {
       const state = s.directNotificationsReady ? "subscribed"

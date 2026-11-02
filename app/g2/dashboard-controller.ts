@@ -78,7 +78,7 @@ import { loadPersistedOpenApps, savePersistedOpenApps } from "../ui/shell/open-a
 import { appViewportRect, isOnSwitcherEdge, screenHeight, screenWidth, sidebarStripVisible, type ScreenRect, type WindowHeightMode } from "../ui/shell/geometry";
 import { type ContinuousCaptureOptions, type LayerActions, type TextSettingsEditToggle, type TranscriptionChoice } from "../ui/layers";
 import { type KeyboardInputSession } from "../ui/shell/keyboard-input";
-import { appSwitcherPositionSetting, glassesTypeSetting, statusBarPositionSetting, statusBarVisibilitySetting, windowBorderSetting, assistantAllowProactiveSetting, assistantBackendSetting, assistantBridgeHostSetting, assistantBridgePortSetting, assistantBridgeTokenSetting, getBrightnessPreferences, displayLayoutSetting, navigateDisplayLayoutSetting, terminalDisplayLayoutSetting, elevenLabsApiKeySetting, getStringSettingById, openAiApiKeySetting, nightscoutApiTokenSetting, firmwareDebugFlagsSetting, whisperServerApiKeySetting, whisperServerLanguageSetting, whisperServerModelSetting, whisperServerUrlSetting, lockScreenEnabledSetting, nightscoutSiteUrlSetting, onAnySettingChanged, previewColorSetting, ringConnectionModeSetting, type RingConnectionMode, saveVoiceRecordingsSetting, sonioxApiKeySetting, screenTimeoutSetting, screenTimeoutSettingToMs, suspendEvenHubWhenScreenOffSetting, voiceProviderSetting, wakeWordActionSetting, type ConfigSettingString } from "../ui/dashboard-settings";
+import { appSwitcherPositionSetting, glassesTypeSetting, statusBarPositionSetting, statusBarVisibilitySetting, windowBorderSetting, assistantAllowProactiveSetting, assistantBackendSetting, assistantBridgeHostSetting, assistantBridgePortSetting, assistantBridgeTokenSetting, getBrightnessPreferences, displayLayoutSetting, navigateDisplayLayoutSetting, terminalDisplayLayoutSetting, elevenLabsApiKeySetting, getStringSettingById, openAiApiKeySetting, nightscoutApiTokenSetting, firmwareDebugFlagsSetting, whisperServerApiKeySetting, whisperServerLanguageSetting, whisperServerModelSetting, whisperServerUrlSetting, lockScreenEnabledSetting, nightscoutSiteUrlSetting, onAnySettingChanged, previewColorSetting, effectiveRingConnectionMode, type RingConnectionMode, saveVoiceRecordingsSetting, sonioxApiKeySetting, screenTimeoutSetting, screenTimeoutSettingToMs, suspendEvenHubWhenScreenOffSetting, voiceProviderSetting, wakeWordActionSetting, type ConfigSettingString } from "../ui/dashboard-settings";
 import { isIgnoringBatteryOptimizations, requestIgnoreBatteryOptimizations } from "../native/battery-optimization";
 import {
   getInstalledEvenHubAppById,
@@ -1047,9 +1047,11 @@ class DashboardController {
 
   /**
    * A Direct-mode session may have unpaired the R1 from the glasses (see
-   * GlassesSessionRing.releaseRingFromGlassesLocked). The first session in
-   * another mode asks the glasses to connect to it again; the ring's own
-   * glasses targets were cleared, so it accepts them. Called on connect.
+   * GlassesSessionRing.releaseRingFromGlassesLocked), and a RayNeo iO
+   * session (always Direct) may have cleared the ring's glasses targets.
+   * The first G2 session in another mode asks the glasses to connect to it
+   * again; the ring's own glasses targets were cleared, so it accepts them.
+   * Called on connect.
    */
   private handRingBackToGlassesIfNeeded(): void {
     if (this.ringModeAtConnect === "direct" || !getBooleanSetting(RING_TAKEN_FROM_GLASSES_KEY, false)) return;
@@ -1488,20 +1490,21 @@ class DashboardController {
     this.refreshEvenAppStatus();
     this.setPhase("connecting");
     this.setStatus("Connecting to the glasses...");
-    // "Only via glasses" (the default) means the phone never opens its own
-    // link to the ring: the glasses relay its gestures to us anyway. An empty
-    // address disables every direct-ring code path in the communicator.
-    const ringMode = ringConnectionModeSetting.get();
+    // "Only via glasses" (the G2's default) means the phone never opens its
+    // own link to the ring: the glasses relay its gestures to us anyway. An
+    // empty address disables every direct-ring code path in the communicator.
+    // A RayNeo iO (one link, its address in both arm slots) can't relay a
+    // ring, so with one the phone always takes the ring directly.
+    const ringMode = effectiveRingConnectionMode();
     this.ringModeAtConnect = ringMode;
-    // A RayNeo iO is one link (its address in both arm slots) and has no ring.
     const glassesType = glassesTypeSetting.get();
-    const ringAddress = ringMode !== "glasses" && glassesType === "g2" ? addresses.ring : "";
+    const ringAddress = ringMode !== "glasses" ? addresses.ring : "";
     // Direct mode may unpair the ring from the glasses; remember to hand it
     // back once a later session runs in another mode.
     if (ringMode === "direct" && ringAddress) setBooleanSetting(RING_TAKEN_FROM_GLASSES_KEY, true);
-    this.appendLog(glassesType === "rayneo-io"
+    this.appendLog((glassesType === "rayneo-io"
       ? `Using configured RayNeo iO: ${addresses.right}`
-      : `Using configured arms: R=${addresses.right} L=${addresses.left}${ringAddress ? ` ring=${ringAddress}` : ""}`,
+      : `Using configured arms: R=${addresses.right} L=${addresses.left}`) + (ringAddress ? ` ring=${ringAddress}` : ""),
     );
 
     let communicator: FaceclawCommunicatorBridge | null = null;

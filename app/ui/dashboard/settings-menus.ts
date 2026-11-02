@@ -67,6 +67,7 @@ import {
   previewScalingSetting,
   phoneRotationSetting,
   ringConnectionModeSetting,
+  glassesTypeSetting,
   sonioxApiKeySetting,
   saveTranscribeAudioSetting,
   whisperServerApiKeySetting,
@@ -224,7 +225,7 @@ function settingsSections(): SettingsSection[] {
       items: [
         // Whether and how the phone opens its own BLE link to the R1 ring.
         // Applied at connect time.
-        enumSettingMenuItem(ringConnectionModeSetting),
+        ringConnectionMenuItem(),
         toggleSettingMenuItem(saveVoiceRecordingsSetting),
         toggleSettingMenuItem(firmwareDebugFlagsSetting),
         toggleSettingMenuItem(suspendEvenHubWhenScreenOffSetting),
@@ -596,6 +597,24 @@ function readBundledDoc(fileName: string): string {
   } catch {
     return `(${fileName} is missing from this build)`;
   }
+}
+
+/**
+ * Developer > Ring connection: the setting, except with a RayNeo iO, which
+ * always takes the ring directly (effectiveRingConnectionMode): then a fixed,
+ * disabled "Direct" row, the stored choice kept for G2 glasses.
+ */
+function ringConnectionMenuItem(): MenuItem {
+  const item = enumSettingMenuItem(ringConnectionModeSetting);
+  const io = () => glassesTypeSetting.get() === "rayneo-io";
+  return {
+    ...item,
+    disabled: io,
+    render: (args) => {
+      if (!io()) return item.render?.(args);
+      drawRightValueMenuItem(args.image, getDefaultSmallFont(), args.x, args.y, args.width, item.label, "Direct (RayNeo iO)");
+    },
+  };
 }
 
 function renderWatchStatus(args: { image: GrayImage; x: number; y: number; width: number }): number {
