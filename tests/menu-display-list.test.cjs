@@ -141,3 +141,25 @@ test('shell crop widens a fractional rect (TTF-measured status bar) to whole pix
   assert.deepEqual([crop.x,crop.y,crop.image.width,crop.image.height],[400,250,176,15]);
   assert.ok(crop.image.pixels.every(v=>v===7));
 });
+
+test('a stack without its own size follows the screen when the glasses type changes',()=>{
+  // The shell's stack is built once per process; re-pairing a G2 after a
+  // RayNeo iO must not leave its overlays painting on a 540x220 canvas.
+  const screen={width:540,height:220};
+  const {LayerStack}=load('app/ui/layers.ts',{
+    '../graphics/image':graphics,'../graphics/plane':planes,'../native/frame-timings':{spanCurrent:(_name,fn)=>fn()},
+    '../graphics/screen-size':{screenWidth:()=>screen.width,screenHeight:()=>screen.height},'./gestures':{},
+  });
+  const stack=new LayerStack({paint:()=>new graphics.GrayImage(screen.width,screen.height,0)},noopLayerActions);
+  stack.push({paint:(_ctx,below)=>below(),handleInput:async()=>{}});
+  // JSON: the stack's arrays and objects come from the vm's realm.
+  const sizes=()=>JSON.parse(JSON.stringify(stack.paint().map(p=>[p.image.width,p.image.height])));
+  assert.deepEqual(sizes(),[[540,220],[540,220]]);
+  screen.width=640;screen.height=480;
+  assert.deepEqual({...stack.getBaseSize()},{width:640,height:480});
+  assert.deepEqual(sizes(),[[640,480],[640,480]]);
+  // An explicit size (a window's viewport, the modal's interior) stays put.
+  const sized=new LayerStack({paint:()=>new graphics.GrayImage(100,90,0)},noopLayerActions,{width:100,height:90});
+  screen.width=540;screen.height=220;
+  assert.deepEqual({...sized.getBaseSize()},{width:100,height:90});
+});

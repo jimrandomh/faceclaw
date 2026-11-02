@@ -154,8 +154,12 @@ export class LayerStack {
   }
   private readonly shellKeys = new WeakMap<Layer, number>();
   private readonly ctx: LayerContext;
-  private baseWidth: number;
-  private baseHeight: number;
+  /**
+   * The base viewport's size, or null to follow the paired glasses' screen
+   * as it is now: the shell's own stack lives for the whole process, and
+   * re-pairing with the other glasses type changes the screen under it.
+   */
+  private baseSize: { width: number; height: number } | null;
   private readonly focusedFn: () => boolean;
   private lastBaseDim: number | false = 1;
 
@@ -173,8 +177,7 @@ export class LayerStack {
       stack: this,
       actions,
     };
-    this.baseWidth = baseSize?.width ?? screenWidth();
-    this.baseHeight = baseSize?.height ?? screenHeight();
+    this.baseSize = baseSize ? { width: baseSize.width, height: baseSize.height } : null;
     this.focusedFn = isFocused;
   }
 
@@ -245,13 +248,12 @@ export class LayerStack {
   }
 
   getBaseSize(): { width: number; height: number } {
-    return { width: this.baseWidth, height: this.baseHeight };
+    return this.baseSize ? { ...this.baseSize } : { width: screenWidth(), height: screenHeight() };
   }
 
   /** Resize the base viewport (e.g. an EvenHub window switching to the tall canvas). */
   setBaseSize(size: { width: number; height: number }): void {
-    this.baseWidth = size.width;
-    this.baseHeight = size.height;
+    this.baseSize = { width: size.width, height: size.height };
   }
 
   setActions(actions: Partial<LayerActions>): void {
@@ -322,7 +324,8 @@ export class LayerStack {
       layer.paint(this.ctx, () => {
         belowRequested = true;
         if (!canvas) {
-          canvas = new GrayImage(this.baseWidth, this.baseHeight, 0);
+          const { width, height } = this.getBaseSize();
+          canvas = new GrayImage(width, height, 0);
         }
         return canvas;
       }),
