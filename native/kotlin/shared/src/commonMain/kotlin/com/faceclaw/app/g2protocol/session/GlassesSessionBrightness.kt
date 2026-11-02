@@ -4,6 +4,11 @@ package com.faceclaw.app
  * queued state and sensor freshness do not. Private commands are ordered with
  * frames, so wake starts on the intended PRESENT, never on an older black frame. */
 internal fun GlassesSessionCore.enqueueBrightnessLocked(frameVisible: Boolean? = null) {
+    if (isIo) {
+        // The iO has no CFW brightness; ioMaintain drives the launcher's (and the screen) instead.
+        ioNoteFrameVisibleLocked(frameVisible)
+        return
+    }
     if (!customFirmwareDetected || !sessionReady || !fixedLayoutCreated || shutdownRequested) return
     val visible = frameVisible ?: brightnessSentVisible ?: return
     val target = brightnessPolicy.target

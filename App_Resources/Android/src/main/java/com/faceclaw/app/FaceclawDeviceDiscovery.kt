@@ -129,13 +129,19 @@ class FaceclawDeviceDiscovery(context: Context) {
                     && manufacturerData[0] == 0x45.toByte() && manufacturerData[1] == 0x52.toByte()) {
                 return true
             }
+            // RayNeo iO: manufacturer company 0x5716 ([07][MAC]...) outside pairing mode;
+            // in pairing mode only the "RayNeo iO-xxxx" name identifies it.
+            if (manufacturerData != null && manufacturerData.size >= 2
+                    && manufacturerData[0] == 0x16.toByte() && manufacturerData[1] == 0x57.toByte()) {
+                return true
+            }
             if (name == null) {
                 return false
             }
             val upper = name.uppercase()
             // A bare "R1" substring also matches unrelated hardware ("Oppo Enco
             // R1"), and TS only classifies rings from the stock name prefix.
-            return upper.contains("G2") || upper.startsWith("EVEN R1")
+            return upper.contains("G2") || upper.startsWith("EVEN R1") || upper.startsWith("RAYNEO")
         }
 
         private fun buildJson(

@@ -13,6 +13,11 @@ and others who contributed to documenting the G2's bluetooth protocol and firmwa
 
 G2 microphone LC3 decoding uses Google's liblc3: https://github.com/google/liblc3
 
+RayNeo iO support builds on the Glassly SDK and custom firmware by Tetramo, Inc.
+and Mentra Labs, Inc. (MIT License): https://github.com/tetramo-labs/glassly and
+https://github.com/tetramo-labs/glassly-rayneo-cfw. The iO wire codecs in
+native/kotlin/shared/.../rayneo/RayNeoIoProtocol.kt follow their protocol work.
+
 iPhone notification icons are Pebble's notification and timeline icons, from
 https://github.com/pebble-dev/iconography: the original Pebble Technology icons
 and Rebble community additions. They are licensed under the Apache License 2.0;

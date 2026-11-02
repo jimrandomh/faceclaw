@@ -64,3 +64,17 @@ test('Full Screen is offered only with a bottom or popup app switcher', () => {
   assert.deepEqual(Array.from(api.DISPLAY_LAYOUT_VALUES, (value) => api.displayLayoutLabel(value)),
     ['Band · Top', 'Band · High', 'Band · Middle', 'Band · Low', 'Band · Bottom', 'Tall', 'Full Screen']);
 });
+
+test('a RayNeo iO pins the band to the top and the switcher to the right, leaving the stored choice alone', () => {
+  const store = new Map([['display.layout', 'band-middle'], ['display.appSwitcherPosition', 'bottom']]);
+  const api = settingsFixture(store);
+  assert.equal(api.displayLayoutSetting.get(), 'band-middle');
+  assert.equal(api.appSwitcherPositionSetting.get(), 'bottom');
+  api.glassesTypeSetting.set('rayneo-io');
+  assert.equal(api.displayLayoutSetting.get(), 'band-top');
+  assert.equal(api.appSwitcherPositionSetting.get(), 'right');
+  assert.equal(store.get('display.layout'), 'band-middle');
+  api.glassesTypeSetting.set('g2');
+  assert.equal(api.displayLayoutSetting.get(), 'band-middle');
+  assert.equal(api.appSwitcherPositionSetting.get(), 'bottom');
+});

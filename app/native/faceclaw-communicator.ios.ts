@@ -1,3 +1,4 @@
+import type { GlassesType } from "../ui/dashboard-settings";
 import type { RingInput } from "../g2/ring-input";
 import { File, knownFolders, path, type ImageSource } from "@nativescript/core";
 import { REQUIRED_FACECLAW_FIRMWARE_VERSION, type FirmwareInfo } from "../g2/firmware-compat";
@@ -241,7 +242,10 @@ export class FaceclawCommunicatorBridge {
     return FaceclawCommunicatorBridge.active;
   }
 
-  constructor(addresses: { right: string; left: string; ring?: string; ringRole?: string }) {
+  constructor(addresses: { right: string; left: string; ring?: string; ringRole?: string; glassesType?: GlassesType }) {
+    if (addresses.glassesType === "rayneo-io") {
+      throw new Error("RayNeo iO glasses are not supported on iOS yet.");
+    }
     this.communicator = FaceclawKitIosGlassesSession.alloc().initWithRightAddressLeftAddressRingAddress(
       String(addresses.right ?? "").toUpperCase(),
       String(addresses.left ?? "").toUpperCase(),

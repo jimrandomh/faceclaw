@@ -189,6 +189,25 @@ class FaceclawBleCommunicator(context: Context, rightAddress: String?, leftAddre
 
     fun setRequiredFirmwareRevision(revision: Int) = core.setRequiredFirmwareRevision(revision)
 
+    /**
+     * Drive a RayNeo iO (constructed with its address as both arms and no ring). The phone's
+     * protocol identity is derived from ANDROID_ID so it survives reinstalls: the glasses bind
+     * to the first identity that authenticates and refuse others until put in pairing mode.
+     */
+    fun useRayNeoIo() {
+        val androidId = try {
+            android.provider.Settings.Secure.getString(appContext.contentResolver, android.provider.Settings.Secure.ANDROID_ID)
+        } catch (_: Exception) {
+            null
+        }
+        val seed = "faceclaw-rayneo-phone-id:" + (androidId ?: android.os.Build.FINGERPRINT)
+        val phoneId = java.security.MessageDigest.getInstance("SHA-256").digest(seed.toByteArray(Charsets.UTF_8)).copyOf(6)
+        val model = android.os.Build.MODEL ?: "Android"
+        core.useRayNeoIo(phoneId, model, android.os.Build.MANUFACTURER ?: "Android", model)
+    }
+
+    fun isRayNeoIo(): Boolean = core.isRayNeoIo()
+
     fun start() {
         if (core.start()) {
             activeInstance = this

@@ -162,3 +162,21 @@ test("a bare R1 substring is not a ring — only the stock EVEN R1 prefix is", (
   const ad = classifyAdvertisement(raw({ address: "DA:7F:D2:B5:6E:E2", name: "EVEN R1_B56EE2", manufacturerData: "" }));
   assert.equal(ad.role, "ring");
 });
+
+// RayNeo iO-2229 as captured 2026-11-01: company 0x5716 + [07][MAC]; pairing mode omits the data.
+test("RayNeo iO advertisements classify as one device with its MAC", () => {
+  const io = classifyAdvertisement(raw({
+    address: "00:6A:5E:5F:33:C2",
+    name: "RayNeo iO-2229",
+    manufacturerData: "1657" + "07006a5e5f33c2130000000000000001",
+  }));
+  assert.equal(io.role, "rayneo-io");
+  assert.equal(io.embeddedMac, "00:6A:5E:5F:33:C2");
+  assert.equal(io.embeddedMacMismatch, false);
+  assert.equal(io.serial, null);
+  const pairing = classifyAdvertisement(raw({ address: "00:6A:5E:5F:33:C2", name: "RayNeo iO-2229", manufacturerData: "" }));
+  assert.equal(pairing.role, "rayneo-io");
+  assert.equal(pairing.embeddedMac, null);
+  // G2 advertisements are untouched
+  assert.equal(classifyAdvertisement(raw({})).role, "left");
+});

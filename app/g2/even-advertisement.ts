@@ -30,7 +30,7 @@ export { bytesToHex, hexToBytes };
 /** Even Realities' manufacturer-data company identifier (`"ER"` read little-endian). */
 export const EVEN_COMPANY_IDENTIFIER = 0x5245;
 
-export type EvenDeviceRole = "left" | "right" | "ring";
+export type EvenDeviceRole = "left" | "right" | "ring" | "rayneo-io";
 
 /** True when the manufacturer data opens with Even's `"ER"` marker. */
 export function hasEvenManufacturerSignature(mfg: Uint8Array): boolean {
@@ -69,6 +69,14 @@ export function extractG2Mac(mfg: Uint8Array): string | null {
 export function extractG2AdvertisementFlag(mfg: Uint8Array): number | null {
   if (mfg.length < 23 || !hasEvenManufacturerSignature(mfg)) return null;
   return mfg[22]!;
+}
+
+/** RayNeo iO manufacturer data (company 0x5716, little-endian first): `[07][MAC x6]...`, outside pairing mode. */
+export const RAYNEO_COMPANY_IDENTIFIER = 0x5716;
+
+export function extractRayNeoMac(mfg: Uint8Array): string | null {
+  if (mfg.length < 9 || mfg[0] !== 0x16 || mfg[1] !== 0x57 || mfg[2] !== 0x07) return null;
+  return Array.from(mfg.subarray(3, 9), (byte) => byte.toString(16).padStart(2, "0").toUpperCase()).join(":");
 }
 
 /**
@@ -230,8 +238,32 @@ export function classifyAdvertisement(raw: RawAdvertisement): EvenAdvertisement 
   const hasSignature = hasEvenManufacturerSignature(mfg);
   const looksLikeRing = /^EVEN R1([_ ]|$)/.test(upper);
   const looksLikeG2 = upper.includes("G2");
+  const rayneoMac = extractRayNeoMac(mfg);
+  const looksLikeRayNeo = upper.startsWith("RAYNEO") || rayneoMac !== null;
 
-  if (!looksLikeRing && !looksLikeG2 && !hasSignature) return null;
+  if (!looksLikeRing && !looksLikeG2 && !hasSignature && !looksLikeRayNeo) return null;
+
+  if (looksLikeRayNeo && !hasSignature) {
+    const address = normalizeMacAddress(raw.address);
+    return {
+      address,
+      name,
+      role: "rayneo-io",
+      serial: null,
+      embeddedMac: rayneoMac,
+      embeddedMacMismatch: !!rayneoMac && rayneoMac !== address,
+      flag: null,
+      ringSerialSuffix: null,
+      rssi: raw.rssi,
+      txPower: raw.txPower,
+      connectable: raw.connectable,
+      bonded: raw.bonded,
+      source: raw.source,
+      seenAtMs: raw.seenAtMs,
+      manufacturerData: raw.manufacturerData ?? "",
+      note: null,
+    };
+  }
 
   const base = {
     address: normalizeMacAddress(raw.address),

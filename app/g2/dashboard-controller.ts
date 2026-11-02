@@ -56,7 +56,7 @@ import { claimGlassesOnboardingAutoLaunch, ONBOARDING_APP_ID } from "../apps/onb
 import { beginRenderPass, endRenderPass } from "../util/render-freshness";
 import { voiceControlBridge } from "../native/voice-control";
 import { voiceActivity } from "../ui/shell/voice-activity";
-import { G2_LENS_HEIGHT, G2_LENS_WIDTH, GrayImage } from "../graphics/image";
+import { G2_LENS_HEIGHT, G2_LENS_WIDTH, GrayImage, RAYNEO_IO_HEIGHT, RAYNEO_IO_WIDTH } from "../graphics/image";
 import { flattenPlanesWithDraws, planesFingerprint, type Plane } from "../graphics/plane";
 import { prepareFrameDraws } from "../graphics/glyph-wire";
 import { createLockScreenImage, LOCK_SCREEN_SURFACE_ID } from "./lock-screen";
@@ -78,7 +78,7 @@ import { loadPersistedOpenApps, savePersistedOpenApps } from "../ui/shell/open-a
 import { appViewportRect, isOnSwitcherEdge, sidebarStripVisible, type ScreenRect, type WindowHeightMode } from "../ui/shell/geometry";
 import { type ContinuousCaptureOptions, type LayerActions, type TextSettingsEditToggle, type TranscriptionChoice } from "../ui/layers";
 import { type KeyboardInputSession } from "../ui/shell/keyboard-input";
-import { appSwitcherPositionSetting, statusBarPositionSetting, statusBarVisibilitySetting, windowBorderSetting, assistantAllowProactiveSetting, assistantBackendSetting, assistantBridgeHostSetting, assistantBridgePortSetting, assistantBridgeTokenSetting, getBrightnessPreferences, displayLayoutSetting, navigateDisplayLayoutSetting, terminalDisplayLayoutSetting, elevenLabsApiKeySetting, getStringSettingById, openAiApiKeySetting, nightscoutApiTokenSetting, firmwareDebugFlagsSetting, whisperServerApiKeySetting, whisperServerLanguageSetting, whisperServerModelSetting, whisperServerUrlSetting, lockScreenEnabledSetting, nightscoutSiteUrlSetting, onAnySettingChanged, previewColorSetting, ringConnectionModeSetting, type RingConnectionMode, saveVoiceRecordingsSetting, sonioxApiKeySetting, screenTimeoutSetting, screenTimeoutSettingToMs, suspendEvenHubWhenScreenOffSetting, voiceProviderSetting, wakeWordActionSetting, type ConfigSettingString } from "../ui/dashboard-settings";
+import { appSwitcherPositionSetting, glassesTypeSetting, statusBarPositionSetting, statusBarVisibilitySetting, windowBorderSetting, assistantAllowProactiveSetting, assistantBackendSetting, assistantBridgeHostSetting, assistantBridgePortSetting, assistantBridgeTokenSetting, getBrightnessPreferences, displayLayoutSetting, navigateDisplayLayoutSetting, terminalDisplayLayoutSetting, elevenLabsApiKeySetting, getStringSettingById, openAiApiKeySetting, nightscoutApiTokenSetting, firmwareDebugFlagsSetting, whisperServerApiKeySetting, whisperServerLanguageSetting, whisperServerModelSetting, whisperServerUrlSetting, lockScreenEnabledSetting, nightscoutSiteUrlSetting, onAnySettingChanged, previewColorSetting, ringConnectionModeSetting, type RingConnectionMode, saveVoiceRecordingsSetting, sonioxApiKeySetting, screenTimeoutSetting, screenTimeoutSettingToMs, suspendEvenHubWhenScreenOffSetting, voiceProviderSetting, wakeWordActionSetting, type ConfigSettingString } from "../ui/dashboard-settings";
 import { isIgnoringBatteryOptimizations, requestIgnoreBatteryOptimizations } from "../native/battery-optimization";
 import {
   getInstalledEvenHubAppById,
@@ -1479,12 +1479,15 @@ class DashboardController {
     // address disables every direct-ring code path in the communicator.
     const ringMode = ringConnectionModeSetting.get();
     this.ringModeAtConnect = ringMode;
-    const ringAddress = ringMode !== "glasses" ? addresses.ring : "";
+    // A RayNeo iO is one link (its address in both arm slots) and has no ring.
+    const glassesType = glassesTypeSetting.get();
+    const ringAddress = ringMode !== "glasses" && glassesType === "g2" ? addresses.ring : "";
     // Direct mode may unpair the ring from the glasses; remember to hand it
     // back once a later session runs in another mode.
     if (ringMode === "direct" && ringAddress) setBooleanSetting(RING_TAKEN_FROM_GLASSES_KEY, true);
-    this.appendLog(
-      `Using configured arms: R=${addresses.right} L=${addresses.left}${ringAddress ? ` ring=${ringAddress}` : ""}`,
+    this.appendLog(glassesType === "rayneo-io"
+      ? `Using configured RayNeo iO: ${addresses.right}`
+      : `Using configured arms: R=${addresses.right} L=${addresses.left}${ringAddress ? ` ring=${ringAddress}` : ""}`,
     );
 
     let communicator: FaceclawCommunicatorBridge | null = null;
@@ -1506,6 +1509,7 @@ class DashboardController {
         // sync needs the phone role, which the session borrows briefly for
         // each pull (GlassesSessionRing.beginRingHealthWindowLocked).
         ringRole: ringMode === "direct" ? "glasses" : "phone",
+        glassesType,
       });
       this.communicator = communicator;
       // Size the compositor before anything else is awaited: windows opened
@@ -1513,7 +1517,10 @@ class DashboardController {
       // configure their surfaces through this.communicator, and the Java call
       // queue is FIFO, so enqueuing the screen size first guarantees it lands
       // ahead of them. Mirrors ensurePreviewDisplay.
-      await communicator.configureCompositorScreen(G2_LENS_WIDTH, G2_LENS_HEIGHT);
+      // The iO shows 540x220: the layout stays the G2's and is cropped at the right and
+      // bottom (geometry.ts pins the band to the top-left while an iO is configured).
+      if (glassesType === "rayneo-io") await communicator.configureCompositorScreen(RAYNEO_IO_WIDTH, RAYNEO_IO_HEIGHT);
+      else await communicator.configureCompositorScreen(G2_LENS_WIDTH, G2_LENS_HEIGHT);
       await communicator.configureBrightness(getBrightnessPreferences());
       this.offState = communicator.onStateChange((state) => {
         if (state.phase !== "connected") resetRingInputFilter();

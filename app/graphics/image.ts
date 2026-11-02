@@ -6,6 +6,9 @@ import { wrapText } from "./textwrap";
 
 export const G2_LENS_WIDTH = 640;
 export const G2_LENS_HEIGHT = 480;
+/** RayNeo iO screen (per eye) with the Faceclaw firmware: 540x220. */
+export const RAYNEO_IO_WIDTH = 540;
+export const RAYNEO_IO_HEIGHT = 220;
 const DEFAULT_CORNER_RADIUS = 8;
 
 /**

@@ -44,6 +44,7 @@ internal fun GlassesSessionCore.driveSession(): Long {
                 benchmarkReadyAtMs = now() + 1_000
             }
         }
+        if (isIo) ioMaintain()
         var messageToWrite: OutboundMessage? = null
         var messageToPrewrite: OutboundMessage? = null
         var heartbeatToWrite: OutboundMessage? = null
@@ -64,7 +65,7 @@ internal fun GlassesSessionCore.driveSession(): Long {
                 clearPendingMessagesLocked("after CFW cleanup")
                 return 250
             }
-            if (sessionReady
+            if (sessionReady && !isIo
                     && now - lastFaceclawFramebufferLeaseQueuedAtMs >= FACECLAW_WAKE_LEASE_RENEW_MS
                     && !hasPendingOrInflightKindLocked("framebuffer-lease-control")) {
                 enqueueFaceclawFramebufferControlLocked(
@@ -73,7 +74,7 @@ internal fun GlassesSessionCore.driveSession(): Long {
                 )
             }
             if (faceclawWakeLeaseEnabled
-                    && sessionReady
+                    && sessionReady && !isIo
                     && now - lastFaceclawWakeLeaseQueuedAtMs >= FACECLAW_WAKE_LEASE_RENEW_MS
                     && !hasPendingOrInflightKindLocked("wake-lease-control")) {
                 enqueueFaceclawWakeControlLocked(
@@ -148,6 +149,7 @@ internal fun GlassesSessionCore.driveSession(): Long {
                 }
             } else {
                 if (messageToPrewrite == null
+                        && !isIo // the iO's page lease is ioMaintain's
                         && !shutdownRequested
                         && !fixedLayoutCreated
                         && pendingMessages.isEmpty()
@@ -158,14 +160,14 @@ internal fun GlassesSessionCore.driveSession(): Long {
                     // Prewrite outside the lock; the logical message remains pending until
                     // its final BLE frame is sent after the current protocol ACK.
                 }
-                if (messageToPrewrite == null && !shutdownRequested && fixedLayoutCreated
+                if (messageToPrewrite == null && !isIo && !shutdownRequested && fixedLayoutCreated
                         && (if (firmwareDebugFlagsEnabled) 2 else 1) != firmwareDebugFlagsLastSent
                         && pendingMessages.isEmpty() && inFlightMessages.isEmpty()) {
                     logLine("enqueueing firmware debug flags " + (if (firmwareDebugFlagsEnabled) "show" else "hide"))
                     enqueueFirmwareDebugFlagsLocked()
                 }
 
-                if (messageToPrewrite == null && !shutdownRequested && fixedLayoutCreated
+                if (messageToPrewrite == null && !isIo && !shutdownRequested && fixedLayoutCreated
                         && (if (compassOwners.isEmpty()) 0 else 1) != compassControlLastSent
                         && pendingMessages.isEmpty() && inFlightMessages.isEmpty()) {
                     val wanted = compassOwners.isNotEmpty()
@@ -176,7 +178,7 @@ internal fun GlassesSessionCore.driveSession(): Long {
                 if (benchmarkActive) {
                     maintainBenchmarkLocked(now)
                 }
-                if (!benchmarkActive) maintainBrightnessLocked(now)
+                if (!benchmarkActive && !isIo) maintainBrightnessLocked(now)
 
                 // Up to WINDOW_SIZE messages may be in flight at once (full
                 // pipelining); a slot frees when an ack arrives. An active
@@ -319,6 +321,7 @@ internal enum class HeartbeatStep {
 }
 
 internal fun GlassesSessionCore.heartbeatStepLocked(imageWaiting: Boolean): HeartbeatStep {
+    if (isIo) return HeartbeatStep.NONE
     val now = now()
     val heartbeatEligible = !shutdownRequested && fixedLayoutCreated
     val heartbeatPending = heartbeatEligible && hasPendingOrInflightKindLocked("heartbeat")
@@ -369,6 +372,12 @@ internal fun GlassesSessionCore.createHeartbeatMessage(): OutboundMessage {
 }
 
 internal fun GlassesSessionCore.writeMessage(message: OutboundMessage): Boolean {
+    if (isIo && !ioSupportsMessage(message)) {
+        // G2-only traffic (EvenHub/settings frames, the G2 hardware CFW modes) that a feature
+        // queued anyway: the iO would NACK it into the replay limit, so it never goes out.
+        ioDropUnsupported(message)
+        return true
+    }
     val now = now()
     message.writeStartedAtMs = now
     message.sentAtMs = now
@@ -398,6 +407,8 @@ internal fun GlassesSessionCore.writeMessage(message: OutboundMessage): Boolean 
         frames = listOf(prewrittenFrames[prewrittenFrames.size - 1])
         prewrittenMessage = null
         prewrittenFrames = emptyList()
+    } else if (isIo) {
+        frames = ioCfwWrites(message, link.negotiatedMtu(writeAddress))
     } else if (message.sid == CfwTransport.SID) {
         if (message.cfwRetries > 0) cfwTransports[if (message.isLeftArmMessage) 0 else 1].reset()
         frames = cfwTransports[if (message.isLeftArmMessage) 0 else 1].encode(
@@ -413,9 +424,9 @@ internal fun GlassesSessionCore.writeMessage(message: OutboundMessage): Boolean 
     }
     val result = link.writeFrames(
         writeAddress,
-        BleProtocol.WRITE_CHAR_UUID,
+        if (isIo) RayNeoIoBle.WRITE_CHAR_UUID else BleProtocol.WRITE_CHAR_UUID,
         frames,
-        ConnectionOptions.WRITE_MODE,
+        if (isIo) GattWriteMode.WITHOUT_RESPONSE else ConnectionOptions.WRITE_MODE,
         ConnectionOptions.WRITE_TIMEOUT_MS
     )
 
@@ -1019,7 +1030,8 @@ internal fun GlassesSessionCore.createAudioControlMessageLocked(enable: Boolean)
 }
 
 internal fun GlassesSessionCore.shouldPollBatteryLocked(now: Long): Boolean {
-    return !shutdownRequested
+    return !isIo // the iO's status polls are ioMaintain's
+            && !shutdownRequested
             && sessionReady
             && pendingMessages.isEmpty()
             && inFlightMessages.isEmpty()

@@ -28,7 +28,18 @@ class CfwTransport(private val platform: ProtocolPlatform) {
     fun encode(message: ByteArray?, streamId: Int, lenses: Int, mtu: Int): List<ByteArray> =
         lock.withLock {
             validate(message, streamId, lenses, mtu)
-            val input = message!!
+            g2Packets(encodeRecord(message!!, lenses), streamId, mtu)
+        }
+
+    /**
+     * One record, `[flags][wire length u16][decoded CRC u16][body]`, compressed with this
+     * transport's persistent context. The packet envelope is the caller's: [encode] wraps it
+     * in G2 TPL packets, [RayNeoIoProtocol.cfwPackets] in RayNeo iO business-0xF0 packets.
+     */
+    fun encodeRecord(message: ByteArray, lenses: Int): ByteArray =
+        lock.withLock {
+            require(message.size <= MAX_MESSAGE && lenses in 1..BOTH) { "invalid CFW record parameters" }
+            val input = message
             if (previousLenses != lenses) reset()
             val reset = resetPending
             val encoder = deflater ?: platform.createDeflater().also { deflater = it }
@@ -44,7 +55,7 @@ class CfwTransport(private val platform: ProtocolPlatform) {
                 resetPending = false
                 previousLenses = lenses
             }
-            frameRecord(body, crc(input), streamId, flags, mtu)
+            record(body, crc(input), flags)
         }
 
     companion object {
@@ -71,18 +82,12 @@ class CfwTransport(private val platform: ProtocolPlatform) {
         @JvmStatic
         fun frame(message: ByteArray?, streamId: Int, lenses: Int, mtu: Int): List<ByteArray> {
             validate(message, streamId, lenses, mtu)
-            return frameRecord(message!!, crc(message), streamId, lenses or RESET_CONTEXT, mtu)
+            return g2Packets(record(message!!, crc(message), lenses or RESET_CONTEXT), streamId, mtu)
         }
 
-        private fun frameRecord(
-            body: ByteArray,
-            checksum: Int,
-            streamId: Int,
-            flags: Int,
-            mtu: Int,
-        ): List<ByteArray> {
-            val lenses = flags and BOTH
-            val capacity = minOf(252, mtu - 14)
+        /** `[flags][wire length u16][decoded CRC u16][body]`, shared by every packet envelope. */
+        @JvmStatic
+        fun record(body: ByteArray, checksum: Int, flags: Int): ByteArray {
             val stream = ByteArray(body.size + 5)
             stream[0] = flags.toByte()
             stream[1] = body.size.toByte()
@@ -90,6 +95,13 @@ class CfwTransport(private val platform: ProtocolPlatform) {
             stream[3] = checksum.toByte()
             stream[4] = (checksum ushr 8).toByte()
             body.copyInto(stream, 5)
+            return stream
+        }
+
+        /** G2 TPL packets (SID 0xf0) carrying one record: options byte = lenses | RESET | END. */
+        private fun g2Packets(stream: ByteArray, streamId: Int, mtu: Int): List<ByteArray> {
+            val lenses = stream[0].toInt() and BOTH
+            val capacity = minOf(252, mtu - 14)
             val packets = mutableListOf<ByteArray>()
             for (offset in stream.indices step capacity) {
                 val count = minOf(capacity, stream.size - offset)

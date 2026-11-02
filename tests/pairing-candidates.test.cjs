@@ -12,6 +12,7 @@ const {
   isPreviouslyPaired,
   glassesRow,
   ringRow,
+  rayneoRow,
   DEFAULT_STALE_AFTER_MS,
 } = require("../.test-build/app/g2/pairing-candidates.js");
 const { requiredArtworkFileNames, glassesImagePath, GENERIC_G2_IMAGE_PATH } = require("../.test-build/app/g2/glasses-artwork.js");
@@ -288,4 +289,20 @@ test("every artwork file the resolver claims is bundled exists on disk", () => {
   for (const name of requiredArtworkFileNames()) {
     assert.ok(fs.existsSync(path.join(dir, name)), `missing app/images/glasses/${name}`);
   }
+});
+
+test("a RayNeo iO is its own candidate, never half of a G2 pair", () => {
+  const aggregator = new DiscoveryAggregator();
+  aggregator.ingest({
+    address: "00:6A:5E:5F:33:C2", name: "RayNeo iO-2229", manufacturerData: "1657" + "07006a5e5f33c2130000000000000001",
+    rssi: -50, txPower: null, connectable: true, bonded: false, source: "scan", seenAtMs: 1000,
+  });
+  assert.equal(aggregator.pairs().length, 0);
+  assert.equal(aggregator.rings().length, 0);
+  const found = aggregator.rayneos();
+  assert.equal(found.length, 1);
+  const row = rayneoRow(found[0], { pairedAddress: "00:6a:5e:5f:33:c2" });
+  assert.equal(row.kind, "rayneo-io");
+  assert.equal(row.canSelect, true);
+  assert.equal(row.isPreviouslyPaired, true);
 });

@@ -345,6 +345,8 @@ internal fun GlassesSessionCore.releaseFaceclawFramebufferLease(): Boolean {
 
 /** The address of a configured arm the OS no longer holds a bond for, or null. */
 internal fun GlassesSessionCore.firstUnpairedArm(): String? {
+    // The iO identifies the phone by its protocol id, not an OS bond.
+    if (isIo) return null
     if (!link.isBonded(rightAddress)) return rightAddress
     if (!link.isBonded(leftAddress)) return leftAddress
     return null

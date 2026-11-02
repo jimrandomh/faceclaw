@@ -21,7 +21,7 @@ import {
   type ProximityZone,
 } from "./ble-proximity";
 import { classifyAdvertisement, normalizeMacAddress, type EvenAdvertisement, type RawAdvertisement } from "./even-advertisement";
-import { glassesImagePath, R1_IMAGE_PATH } from "./glasses-artwork";
+import { GENERIC_G2_IMAGE_PATH, glassesImagePath, R1_IMAGE_PATH } from "./glasses-artwork";
 import {
   colorwayDisplayName,
   colorwaySwatchHex,
@@ -54,6 +54,15 @@ export type GlassesPairCandidate = {
    * Grouping is by serial, so the mismatch can only show up across groups.
    */
   mismatchWarning: string | null;
+};
+
+/** A RayNeo iO: one device, one address (no arms to join). */
+export type RayNeoCandidate = {
+  id: string;
+  advertisement: EvenAdvertisement;
+  rssi: number | null;
+  proximity: ProximityEstimate | null;
+  lastSeenMs: number;
 };
 
 export type RingCandidate = {
@@ -176,7 +185,7 @@ export class DiscoveryAggregator {
   pairs(): GlassesPairCandidate[] {
     const groups = new Map<string, { left: (EvenAdvertisement & { smoothedRssi: number | null }) | null; right: (EvenAdvertisement & { smoothedRssi: number | null }) | null }>();
     for (const record of this.byAddress.values()) {
-      if (record.role === "ring") continue;
+      if (record.role === "ring" || record.role === "rayneo-io") continue;
       const canonical = serialKey(record.serial);
       const key = canonical ? `serial:${canonical}` : `arm:${record.address}`;
       const group = groups.get(key) ?? { left: null, right: null };
@@ -225,6 +234,22 @@ export class DiscoveryAggregator {
   }
 
   /** Every R1 ring seen, closest first. */
+  rayneos(): RayNeoCandidate[] {
+    const found: RayNeoCandidate[] = [];
+    for (const record of this.byAddress.values()) {
+      if (record.role !== "rayneo-io") continue;
+      const rssi = record.smoothedRssi != null ? Math.round(record.smoothedRssi) : null;
+      found.push({
+        id: `rayneo:${record.address}`,
+        advertisement: stripSmoothing(record),
+        rssi,
+        proximity: estimateProximity(rssi, GLASSES_CALIBRATION),
+        lastSeenMs: record.seenAtMs,
+      });
+    }
+    return sortedByProximity(found, (candidate) => candidate.proximity, (candidate) => candidate.id);
+  }
+
   rings(): RingCandidate[] {
     const rings: RingCandidate[] = [];
     for (const record of this.byAddress.values()) {
@@ -281,7 +306,7 @@ export function isPreviouslyPaired(name: string | null | undefined, pairedSerial
 
 export type PairingRowPresentation = {
   id: string;
-  kind: "glasses" | "ring";
+  kind: "glasses" | "ring" | "rayneo-io";
   /** "Even G2 B" / "Even R1" / fallback product name. */
   modelTitle: string;
   /** The serial (glasses) or local name (ring). */
@@ -412,6 +437,28 @@ export function ringRow(ring: RingCandidate, context: RowContext = {}): PairingR
     // "Advertising" told the wearer nothing (a listed ring is advertising by
     // definition); only the bonded state is worth a line.
     armsSummary: ad.bonded ? "Paired with this phone" : "",
+    canSelect: true,
+  };
+}
+
+export function rayneoRow(candidate: RayNeoCandidate, context: { pairedAddress?: string; nearestId?: string | null } = {}): PairingRowPresentation {
+  const ad = candidate.advertisement;
+  const isPaired = !!context.pairedAddress && normalizeMacAddress(context.pairedAddress) === ad.address;
+  const isNearest = !!context.nearestId && context.nearestId === candidate.id;
+  const warnings: string[] = [];
+  if (ad.embeddedMacMismatch) warnings.push(`It advertises ${ad.embeddedMac} but was heard as ${ad.address}.`);
+  return {
+    id: candidate.id,
+    kind: "rayneo-io",
+    modelTitle: "RayNeo iO",
+    deviceName: ad.name || ad.address,
+    variantSummary: null,
+    colorway: null,
+    swatchHex: null,
+    imagePath: GENERIC_G2_IMAGE_PATH,
+    hasVariantImage: false,
+    ...presentationBase(candidate.proximity, isNearest, isPaired, warnings),
+    armsSummary: "Needs the Faceclaw custom firmware. First time: put it in pairing mode (on the charger, hold the button ~5 s until the light blinks blue).",
     canSelect: true,
   };
 }

@@ -153,15 +153,19 @@ type ConfigSettingEnumOptions<TValue extends string, TId extends string> = Confi
   normalize?: (value: string | null | undefined) => TValue;
   /** Dynamic availability check used by enum picker rows. */
   isDisabled?: (value: TValue) => boolean;
+  /** A value forced regardless of storage while it returns one (stored choice untouched). */
+  pinned?: () => TValue | undefined;
 };
 
 export class ConfigSettingEnum<TValue extends string, TId extends string = string> extends ConfigSetting<TValue, TId> {
   readonly values: readonly TValue[];
   private readonly normalizer: (value: string | null | undefined) => TValue;
   private readonly disabledPredicate: (value: TValue) => boolean;
+  protected readonly pinned: (() => TValue | undefined) | undefined;
 
   constructor(options: ConfigSettingEnumOptions<TValue, TId>) {
     super(options);
+    this.pinned = options.pinned;
     if (options.reportInAnalytics !== false) fixedChoiceSettings.set(options.storageKey, this);
     this.values = options.values;
     this.disabledPredicate = options.isDisabled ?? (() => false);
@@ -177,6 +181,8 @@ export class ConfigSettingEnum<TValue extends string, TId extends string = strin
   }
 
   get(): TValue {
+    const pinned = this.pinned?.();
+    if (pinned !== undefined) return pinned;
     return this.normalizer(getStringSetting(this.storageKey, this.defaultValue));
   }
 
@@ -367,6 +373,18 @@ export const distanceUnitSetting = new ConfigSettingEnum<DistanceUnit>({
  */
 export type AppSwitcherPosition = "left" | "right" | "bottom" | "popup";
 
+/** Which glasses the saved addresses belong to (set by pairing; see g2/device-addresses.ts). */
+export type GlassesType = "g2" | "rayneo-io";
+
+export const glassesTypeSetting = new ConfigSettingEnum<GlassesType>({
+  id: "glasses-type",
+  label: "Glasses",
+  storageKey: "deviceType",
+  defaultValue: "g2",
+  values: ["g2", "rayneo-io"],
+  reportInAnalytics: false,
+});
+
 const APP_SWITCHER_POSITION_LABELS: Record<AppSwitcherPosition, string> = {
   left: "Left",
   right: "Right",
@@ -380,6 +398,8 @@ export const appSwitcherPositionSetting = new ConfigSettingEnum<AppSwitcherPosit
   storageKey: "display.appSwitcherPosition",
   defaultValue: "bottom",
   values: ["left", "right", "bottom", "popup"],
+  // RayNeo iO, until its own layout: windows at x=0, the strip past the 540 px it shows.
+  pinned: () => (glassesTypeSetting.get() === "rayneo-io" ? "right" : undefined),
   formatValue: (value) => APP_SWITCHER_POSITION_LABELS[value] ?? value,
   description:
     "Where the open-app icons go. Left and right take a column beside windows; bottom puts a row beneath the window, which makes full-height windows a little shorter; popup shows them only while you're in the app switcher, in a box over the dimmed window. Bottom and popup leave room at the sides to set the display's depth. Open apps reopen at their new size when a change resizes windows.",
@@ -395,6 +415,8 @@ class ConfigSettingEnumWithLegacy<TValue extends string> extends ConfigSettingEn
   }
 
   get(): TValue {
+    const pinned = this.pinned?.();
+    if (pinned !== undefined) return pinned;
     return getStringSetting(this.storageKey, "") === "" ? this.legacyValue() : super.get();
   }
 }
@@ -456,6 +478,8 @@ export const displayLayoutSetting = new ConfigSettingEnumWithLegacy<DisplayLayou
   storageKey: "display.layout",
   defaultValue: "band-middle",
   values: DISPLAY_LAYOUT_VALUES,
+  // RayNeo iO, until its own layout: the band at the top, where its 220 rows look.
+  pinned: () => (glassesTypeSetting.get() === "rayneo-io" ? "band-top" : undefined),
   formatValue: displayLayoutLabel,
   isDisabled: (value) => value === "fullscreen" && !fullScreenAvailable(),
   description:
