@@ -11,19 +11,22 @@ function setting(value, values) {
     writes: [], displayValue: (v) => v[0].toUpperCase() + v.slice(1) };
 }
 
-function harness() {
+// The onboarding pages over G2 glasses (640x480), or a RayNeo iO's 540x220 screen.
+function harness(glasses = 'g2') {
+  const screen = glasses === 'rayneo-io' ? { width: 540, height: 220 } : { width: 640, height: 480 };
   const settings = {
+    glassesTypeSetting: setting(glasses, ['g2', 'rayneo-io']),
     appSwitcherPositionSetting: setting('bottom', ['left', 'right', 'bottom', 'popup']),
     statusBarPositionSetting: setting('bottom', ['top', 'bottom']),
     uiDepthSetting: setting('48', ['-62', '-48', '-32', '-16', '0', '16', '32', '48', '62']),
   };
   const load = loader({}, {
     './onboarding-fonts': { onboardingFont: font },
-    '../../graphics/image': { G2_LENS_WIDTH: 640 },
     '../../ui/dashboard-settings': settings,
-    '../../ui/shell/geometry': { MIN_WINDOW_HEIGHT: 288, SIDEBAR_WIDTH: 64, SWITCHER_ROW_HEIGHT: 36, TOP_BAR_HEIGHT: 28 },
+    '../../ui/shell/geometry': { MIN_WINDOW_HEIGHT: 288, SIDEBAR_WIDTH: 64, SWITCHER_ROW_HEIGHT: 36, TOP_BAR_HEIGHT: 28,
+      screenWidth: () => screen.width, screenHeight: () => screen.height },
   });
-  return { settings, load };
+  return { settings, screen, load };
 }
 
 /** An image that records what is drawn, checking it all lands on the image. */
@@ -111,7 +114,7 @@ test('the text size page offers 12 to 18px, starts on the recommended 16px, and 
     './onboarding-fonts': { onboardingFont: font },
     '../../graphics/installed-fonts': { installedFontPath: (file) => `/fonts/${file}` },
     '../../graphics/ttf-font': { TtfFont: { load: (path, size) => font(size === 12 ? 'title' : 'detail') } },
-    '../../graphics/ui-fonts': { fontSelectionLabel: () => 'Terminus', getDefaultSmallFont: () => font('detail'),
+    '../../graphics/ui-fonts': { defaultUiFontSize: () => 16, fontSelectionLabel: () => 'Terminus', getDefaultSmallFont: () => font('detail'),
       getUiFontSelection: () => selection, setUiFontSelection: (value) => { selection = value; saved.push(value.size); },
       uiFontSizeAllowed: (path, size) => size !== 13 },
     '../../ui/font-picker': { FONT_SIZE_CHOICES: [8, 10, 11, 12, 13, 14, 15, 16, 17, 18, 20, 24] },
@@ -146,6 +149,51 @@ test('the text size page offers 12 to 18px, starts on the recommended 16px, and 
   assert.deepEqual(saved, [15]);
   page.enter();
   assert.equal(menu.selectedItem, 15);
+});
+
+test('on a RayNeo iO the text size page recommends and starts on 14px, its default', () => {
+  const menu = { selected: null, items: [], setItems(items, index) { this.items = items; this.selected = index; },
+    get selectedItem() { return this.items[this.selected] ?? null; }, paint(image, box) { this.box = box; } };
+  let menuOptions;
+  const load = loader({}, {
+    './onboarding-fonts': { onboardingFont: font },
+    '../../graphics/installed-fonts': { installedFontPath: (file) => `/fonts/${file}` },
+    '../../graphics/ttf-font': { TtfFont: { load: () => font('detail') } },
+    '../../graphics/ui-fonts': { defaultUiFontSize: () => 14, fontSelectionLabel: () => 'Terminus', getDefaultSmallFont: () => font('detail'),
+      getUiFontSelection: () => ({ kind: 'ttf', file: 'Roboto-Light.ttf', size: 14 }), setUiFontSelection: () => assert.fail('nothing to save'),
+      uiFontSizeAllowed: () => true },
+    '../../ui/font-picker': { FONT_SIZE_CHOICES: [8, 10, 11, 12, 13, 14, 15, 16, 17, 18, 20, 24] },
+    '../../ui/menu-core': { Menu: class { constructor(options) { menuOptions = options; return menu; } } },
+    '../../ui/metrics': { LIST_ROW_TEXT_INSET: 4, listRowHeight: (f) => f.lineHeight + 8 },
+  });
+  const { TextSizePage } = load('app/apps/onboarding/text-size-page.ts');
+  const page = new TextSizePage();
+  page.enter();
+  assert.equal(menu.selectedItem, 14);
+  const notes = menu.items.filter((size) => {
+    const row = recorder(200, 32);
+    menuOptions.draw({ image: row, item: size, x: 0, y: 0, width: 200, height: 32, selected: false });
+    return row.calls.some((call) => call.text === 'Recommended');
+  });
+  assert.deepEqual(notes, [14]);
+  // Taking the default leaves the size unset, so it keeps following the glasses.
+  page.handleInput({ type: 'click' }, { next: () => {} });
+});
+
+test('on a RayNeo iO the layout page recommends and starts on Left, and fits the 540x220 screen', () => {
+  const { load, settings } = harness('rayneo-io');
+  const { LayoutPage, recommendedLayout } = load('app/apps/onboarding/layout-page.ts');
+  assert.equal(recommendedLayout(), 'left');
+  const page = new LayoutPage();
+  const image = recorder(540, 220);
+  page.paint(image, true);
+  const captions = image.calls.filter((call) => call.kind === 'text').map((call) => call.text);
+  assert.ok(captions.includes('Left (Recommended)'));
+  assert.ok(captions.includes('Bottom'));
+  page.handleInput({ type: 'click' }, { next() {} });
+  assert.deepEqual(settings.appSwitcherPositionSetting.writes, ['left']);
+  // The G2 still recommends Bottom.
+  assert.equal(harness().load('app/apps/onboarding/layout-page.ts').recommendedLayout(), 'bottom');
 });
 
 test('the depth page follows layouts that have depth, sits in the layout, and applies depth as it scrolls', () => {

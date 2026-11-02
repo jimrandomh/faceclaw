@@ -8,7 +8,11 @@ import { appViewportRect, SHELL_OPAQUE_BLACK } from "./geometry";
 
 const DIALOG_WIDTH = 272;
 const BAR_WIDTH = 12;
+/** The bar's height where the window has room (the G2's); it shrinks to fit a shorter one, down to MIN_BAR_HEIGHT. */
 const BAR_HEIGHT = 100;
+const MIN_BAR_HEIGHT = 24;
+/** Clear space kept above and below the dialog in the window. */
+const MARGIN_Y = 4;
 
 /** Manual brightness changes apply immediately so the wearer can judge the level. */
 export class BrightnessPickerLayer implements Layer {
@@ -22,7 +26,9 @@ export class BrightnessPickerLayer implements Layer {
     const image = paintBelow();
     const font = getDefaultSmallFont();
     const viewport = appViewportRect("min");
-    const height = BAR_HEIGHT + 3 * font.lineHeight + 56;
+    const chrome = 3 * font.lineHeight + 56;
+    const barHeight = clamp(viewport.height - 2 * MARGIN_Y - chrome, MIN_BAR_HEIGHT, BAR_HEIGHT);
+    const height = barHeight + chrome;
     const left = viewport.x + Math.round((viewport.width - DIALOG_WIDTH) / 2);
     const top = viewport.y + Math.round((viewport.height - height) / 2);
     image.fillRect(left, top, DIALOG_WIDTH, height, SHELL_OPAQUE_BLACK);
@@ -35,14 +41,14 @@ export class BrightnessPickerLayer implements Layer {
     const barX = left + Math.round((DIALOG_WIDTH - BAR_WIDTH) / 2);
     const barY = top + font.lineHeight + 24;
     const level = brightnessSettingToLevel(brightnessSetting.get());
-    image.drawRect(barX - 2, barY - 2, BAR_WIDTH + 4, BAR_HEIGHT + 4, 150);
-    const filledHeight = Math.round(BAR_HEIGHT * (level ?? 0) / 100);
-    image.fillRect(barX, barY + BAR_HEIGHT - filledHeight, BAR_WIDTH, filledHeight, 255);
-    image.drawText(font, barX + BAR_WIDTH + 12, barY + Math.round((BAR_HEIGHT - font.lineHeight) / 2),
+    image.drawRect(barX - 2, barY - 2, BAR_WIDTH + 4, barHeight + 4, 150);
+    const filledHeight = Math.round(barHeight * (level ?? 0) / 100);
+    image.fillRect(barX, barY + barHeight - filledHeight, BAR_WIDTH, filledHeight, 255);
+    image.drawText(font, barX + BAR_WIDTH + 12, barY + Math.round((barHeight - font.lineHeight) / 2),
       level === null ? "Auto" : `${level}%`, 235);
-    centeredText(gestureHints([[GESTURE_SCROLL, "adjust"]]), barY + BAR_HEIGHT + 12, 150);
+    centeredText(gestureHints([[GESTURE_SCROLL, "adjust"]]), barY + barHeight + 12, 150);
     centeredText(gestureHints([[`${GESTURE_CLICK} / ${GESTURE_DOUBLE_CLICK}`, "confirm"]]),
-      barY + BAR_HEIGHT + font.lineHeight + 16, 150);
+      barY + barHeight + font.lineHeight + 16, 150);
     return image;
   }
 

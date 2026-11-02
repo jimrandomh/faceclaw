@@ -1,4 +1,4 @@
-import { G2_LENS_HEIGHT, G2_LENS_WIDTH } from "../../graphics/image";
+import { screenHeight, screenWidth } from "../../graphics/screen-size";
 import {
   appSwitcherPositionSetting,
   type AppSwitcherPosition,
@@ -11,6 +11,9 @@ import {
   uiDepthSetting,
   windowBorderSetting,
 } from "../dashboard-settings";
+
+/** The paired glasses' screen, which the shell lays out in (graphics/screen-size.ts). */
+export { screenHeight, screenWidth };
 
 /** Top bar: 24px notification icons plus a little padding. */
 export const TOP_BAR_HEIGHT = 28;
@@ -174,15 +177,15 @@ export function switcherRect(heightMode: WindowHeightMode, appId?: string): { x:
       const height = reserved || switcherBarHeights.overlay;
       return {
         x: appViewportLeft(appId),
-        y: reserved > 0 ? windowTop(heightMode, appId) + windowBandHeight(heightMode, appId) : G2_LENS_HEIGHT - height,
+        y: reserved > 0 ? windowTop(heightMode, appId) + windowBandHeight(heightMode, appId) : screenHeight() - height,
         width: appViewportWidth(appId),
         height,
       };
     }
     case "right":
-      return { x: G2_LENS_WIDTH - SIDEBAR_WIDTH, y: minWindowTop(appId), width: SIDEBAR_WIDTH, height: MIN_WINDOW_HEIGHT };
+      return { x: screenWidth() - SIDEBAR_WIDTH, y: minWindowTop(appId), width: SIDEBAR_WIDTH, height: minWindowHeight(appId) };
     default:
-      return { x: 0, y: minWindowTop(appId), width: SIDEBAR_WIDTH, height: MIN_WINDOW_HEIGHT };
+      return { x: 0, y: minWindowTop(appId), width: SIDEBAR_WIDTH, height: minWindowHeight(appId) };
   }
 }
 
@@ -293,15 +296,15 @@ export function isOnSwitcherEdge(x: number, y: number, heightMode: WindowHeightM
     case "bottom":
       return y >= switcherRect(heightMode, appId).y;
     case "right":
-      return x >= G2_LENS_WIDTH - SIDEBAR_WIDTH;
+      return x >= screenWidth() - SIDEBAR_WIDTH;
     default:
       return x < SIDEBAR_WIDTH;
   }
 }
 
-/** Width of app windows: the panel's when Full Screen or immersive, else 576 (see SIDEBAR_WIDTH). */
+/** Width of app windows: the screen's when Full Screen or immersive, else SIDEBAR_WIDTH less (576 on the G2). */
 function appViewportWidth(appId?: string): number {
-  return fullWidth(appId) ? G2_LENS_WIDTH : G2_LENS_WIDTH - SIDEBAR_WIDTH;
+  return fullWidth(appId) ? screenWidth() : screenWidth() - SIDEBAR_WIDTH;
 }
 
 /**
@@ -353,7 +356,7 @@ export function effectiveHeightMode(mode: WindowHeightMode, appId?: string): Win
  * rather than use the viewport's own centre.
  */
 export function screenCenterInViewportX(): number {
-  return Math.round(G2_LENS_WIDTH / 2) - appViewportLeft();
+  return Math.round(screenWidth() / 2) - appViewportLeft();
 }
 
 /**
@@ -374,15 +377,23 @@ export const SHELL_OPAQUE_BLACK = 1;
  */
 export type WindowHeightMode = "min" | "medium" | "max";
 
-/** Total height (header + content) of a min-height window. */
+/** Total height (header + content) of a min-height window on a screen with room for it: the G2's stock band. */
 export const MIN_WINDOW_HEIGHT = 288;
+
+/**
+ * Total height of a min-height window here: the stock 288px band, or the
+ * whole window area on a screen too short for it (the RayNeo iO's 220 rows).
+ */
+export function minWindowHeight(appId?: string): number {
+  return Math.min(MIN_WINDOW_HEIGHT, windowAreaHeight(appId));
+}
 
 /**
  * Height of the screen area windows are placed in: the whole screen, less
  * a bottom switcher's height.
  */
 function windowAreaHeight(appId?: string): number {
-  return G2_LENS_HEIGHT - switcherRowHeight(appId);
+  return screenHeight() - switcherRowHeight(appId);
 }
 
 /** Total height (header + content + footer) of a window's band in the given mode. */
@@ -391,9 +402,9 @@ export function windowBandHeight(mode: WindowHeightMode, appId?: string): number
     case "max":
       return windowAreaHeight(appId);
     case "medium":
-      return MIN_WINDOW_HEIGHT + windowHeaderHeight(appId) + windowFooterHeight(appId);
+      return Math.min(windowAreaHeight(appId), minWindowHeight(appId) + windowHeaderHeight(appId) + windowFooterHeight(appId));
     default:
-      return MIN_WINDOW_HEIGHT;
+      return minWindowHeight(appId);
   }
 }
 
@@ -425,7 +436,7 @@ export function minWindowTop(appId?: string): number {
  */
 export function windowTop(mode: WindowHeightMode, appId?: string): number {
   const band = windowBandHeight(mode, appId);
-  const oneRowArea = G2_LENS_HEIGHT - (switcherRowHeight(appId) > 0 ? SWITCHER_ROW_HEIGHT : 0);
+  const oneRowArea = screenHeight() - (switcherRowHeight(appId) > 0 ? SWITCHER_ROW_HEIGHT : 0);
   const top = Math.round((oneRowArea - band) * verticalPositionFraction(appId));
   return Math.min(top, windowAreaHeight(appId) - band);
 }
@@ -473,13 +484,13 @@ function unionRect(a: ScreenRect, b: ScreenRect): ScreenRect {
  * the whole panel. The phone mirror's Scaled preview zooms to this.
  */
 export function usedScreenRect(heightMode: WindowHeightMode, appId?: string): ScreenRect {
-  if (isImmersive(appId)) return { x: 0, y: 0, width: G2_LENS_WIDTH, height: G2_LENS_HEIGHT };
+  if (isImmersive(appId)) return { x: 0, y: 0, width: screenWidth(), height: screenHeight() };
   const frame = windowFramed(appId) ? 1 : 0;
   const x = appViewportLeft(appId) - frame;
   const width = appViewportWidth(appId) + 2 * frame;
   let used = unionRect(
     { x, y: windowTop(heightMode, appId), width, height: windowBandHeight(heightMode, appId) },
-    { x, y: minWindowTop(appId), width, height: MIN_WINDOW_HEIGHT },
+    { x, y: minWindowTop(appId), width, height: minWindowHeight(appId) },
   );
   if (switcherPosition() !== "popup") used = unionRect(used, switcherRect(heightMode, appId));
   return used;
@@ -487,15 +498,18 @@ export function usedScreenRect(heightMode: WindowHeightMode, appId?: string): Sc
 
 /**
  * The screen area the phone mirror shows to present `used` as large as it
- * fits, centred, at the panel's own 4:3 aspect (so the mirror keeps its
- * shape whatever the display mode): `used` grown along one axis, past the
- * panel's edges if need be (the mirror shows black there).
+ * fits, centred, at the screen's own aspect (4:3 on the G2, 27:11 on the iO),
+ * so the mirror keeps its shape whatever the display mode: `used` grown along
+ * one axis, past the screen's edges if need be (the mirror shows black there).
  */
 export function phonePreviewRect(used: ScreenRect): ScreenRect {
-  // Whole 4:3 units, so the aspect is exact.
-  const units = Math.ceil(Math.max(used.width / 4, used.height / 3));
-  const width = units * 4;
-  const height = units * 3;
+  // Whole aspect units, so the aspect is exact.
+  const gcd = (a: number, b: number): number => (b ? gcd(b, a % b) : a);
+  const unit = gcd(screenWidth(), screenHeight());
+  const aspectW = screenWidth() / unit, aspectH = screenHeight() / unit;
+  const units = Math.ceil(Math.max(used.width / aspectW, used.height / aspectH));
+  const width = units * aspectW;
+  const height = units * aspectH;
   return {
     x: Math.round(used.x + (used.width - width) / 2),
     y: Math.round(used.y + (used.height - height) / 2),

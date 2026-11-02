@@ -13,6 +13,7 @@ import { getFont } from "../graphics/bdffont";
 import { GrayImage, type UiFont } from "../graphics/image";
 import { TtfFont } from "../graphics/ttf-font";
 import { listInstalledFonts, type InstalledFont } from "../graphics/installed-fonts";
+import { wrapText } from "../graphics/textwrap";
 import {
   fontSelectionLabel,
   getDefaultSmallFont,
@@ -140,18 +141,40 @@ export class FontPickerLayer implements Layer {
     const rowWidth = width - 2 * rowX;
     const rowHeight = listRowHeight(font);
     const rowsTop = 24 + font.lineHeight;
-    this.menu.paint(image, { x: rowX - 10, y: rowsTop, width: rowWidth + 20, height: ROWS.length * rowHeight }, focused);
-
-    // Preview: a separator, then the sample line in the draft font.
-    const previewTop = rowsTop + ROWS.length * rowHeight + 10;
-    image.drawLine(rowX - 10, previewTop, rowX + rowWidth + 10, previewTop, 60);
+    const rowsHeight = ROWS.length * rowHeight;
     const preview = this.previewFont();
-    const sample =
-      preview.measureText(PREVIEW_TEXT) <= rowWidth + 20 ? PREVIEW_TEXT : "The quick brown fox 0123";
-    preview.drawText(image, rowX - 4, previewTop + 8, sample, 230);
     const info = `Line height: ${preview.lineHeight}px`;
-    image.drawText(font, rowX - 4, previewTop + 8 + preview.lineHeight + 6, info, 110);
 
+    // Preview under the rows, where its sample line and the info line fit
+    // (the G2's window): a separator, then the sample line in the draft font.
+    const previewTop = rowsTop + rowsHeight + 10;
+    if (previewTop + 8 + preview.lineHeight + 6 + font.lineHeight <= height) {
+      this.menu.paint(image, { x: rowX - 10, y: rowsTop, width: rowWidth + 20, height: rowsHeight }, focused);
+      image.drawLine(rowX - 10, previewTop, rowX + rowWidth + 10, previewTop, 60);
+      const sample =
+        preview.measureText(PREVIEW_TEXT) <= rowWidth + 20 ? PREVIEW_TEXT : "The quick brown fox 0123";
+      preview.drawText(image, rowX - 4, previewTop + 8, sample, 230);
+      image.drawText(font, rowX - 4, previewTop + 8 + preview.lineHeight + 6, info, 110);
+      return image;
+    }
+
+    // Else beside them (a short window, as on the RayNeo iO), the sample
+    // wrapped to the column, as many lines as fit above the info line.
+    const columnWidth = Math.round(rowWidth / 2);
+    const bottom = height - 8;
+    this.menu.paint(image, { x: rowX - 10, y: rowsTop, width: columnWidth + 20, height: Math.min(rowsHeight, bottom - rowsTop) }, focused);
+    const dividerX = rowX + columnWidth + 20;
+    image.drawLine(dividerX, rowsTop, dividerX, Math.min(rowsTop + rowsHeight, bottom), 60);
+    const previewX = dividerX + 12;
+    const lines = wrapText(preview, PREVIEW_TEXT, width - previewX - 12);
+    const infoY = bottom - font.lineHeight;
+    let y = rowsTop + 4;
+    for (const line of lines) {
+      if (y + preview.lineHeight > infoY - 6) break;
+      preview.drawText(image, previewX, y, line, 230);
+      y += preview.lineHeight;
+    }
+    image.drawText(font, previewX, Math.min(infoY, y + 6), info, 110);
     return image;
   }
 

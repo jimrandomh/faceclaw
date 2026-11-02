@@ -56,7 +56,7 @@ import { claimGlassesOnboardingAutoLaunch, ONBOARDING_APP_ID } from "../apps/onb
 import { beginRenderPass, endRenderPass } from "../util/render-freshness";
 import { voiceControlBridge } from "../native/voice-control";
 import { voiceActivity } from "../ui/shell/voice-activity";
-import { G2_LENS_HEIGHT, G2_LENS_WIDTH, GrayImage, RAYNEO_IO_HEIGHT, RAYNEO_IO_WIDTH } from "../graphics/image";
+import { GrayImage } from "../graphics/image";
 import { flattenPlanesWithDraws, planesFingerprint, type Plane } from "../graphics/plane";
 import { prepareFrameDraws } from "../graphics/glyph-wire";
 import { createLockScreenImage, LOCK_SCREEN_SURFACE_ID } from "./lock-screen";
@@ -75,7 +75,7 @@ import { ALL_APPS } from "../apps/all-apps";
 import { type AppContext, type AppDefinition, type AppLaunchParams, type TextEditorHost } from "../apps/app-definition";
 import { type InProcessAppOptions, type InProcessWindow } from "../ui/shell/in-process-window";
 import { loadPersistedOpenApps, savePersistedOpenApps } from "../ui/shell/open-apps-persistence";
-import { appViewportRect, isOnSwitcherEdge, sidebarStripVisible, type ScreenRect, type WindowHeightMode } from "../ui/shell/geometry";
+import { appViewportRect, isOnSwitcherEdge, screenHeight, screenWidth, sidebarStripVisible, type ScreenRect, type WindowHeightMode } from "../ui/shell/geometry";
 import { type ContinuousCaptureOptions, type LayerActions, type TextSettingsEditToggle, type TranscriptionChoice } from "../ui/layers";
 import { type KeyboardInputSession } from "../ui/shell/keyboard-input";
 import { appSwitcherPositionSetting, glassesTypeSetting, statusBarPositionSetting, statusBarVisibilitySetting, windowBorderSetting, assistantAllowProactiveSetting, assistantBackendSetting, assistantBridgeHostSetting, assistantBridgePortSetting, assistantBridgeTokenSetting, getBrightnessPreferences, displayLayoutSetting, navigateDisplayLayoutSetting, terminalDisplayLayoutSetting, elevenLabsApiKeySetting, getStringSettingById, openAiApiKeySetting, nightscoutApiTokenSetting, firmwareDebugFlagsSetting, whisperServerApiKeySetting, whisperServerLanguageSetting, whisperServerModelSetting, whisperServerUrlSetting, lockScreenEnabledSetting, nightscoutSiteUrlSetting, onAnySettingChanged, previewColorSetting, ringConnectionModeSetting, type RingConnectionMode, saveVoiceRecordingsSetting, sonioxApiKeySetting, screenTimeoutSetting, screenTimeoutSettingToMs, suspendEvenHubWhenScreenOffSetting, voiceProviderSetting, wakeWordActionSetting, type ConfigSettingString } from "../ui/dashboard-settings";
@@ -191,8 +191,8 @@ const EVEN_APP_DETECTED_MESSAGE =
 const LAUNCHABLE_APPS = ALL_APPS.filter((app) => app.showInLauncher !== false);
 
 /**
- * The global settings window viewport sizes depend on: the display mode's
- * size (a band's position only moves windows), whether the app switcher
+ * The global settings window viewport sizes depend on: the paired glasses'
+ * screen, the display mode's size (a band's position only moves windows), whether the app switcher
  * takes width beside windows, height below them or neither (a popup), and
  * the chrome rows each window loses to it: below them, whether the status
  * bar joins the row (dropping the top bar); with a popup, whether the
@@ -205,7 +205,7 @@ function viewportSizesKey(): string {
     : position === "popup" ? `popup|${statusBarVisibilitySetting.get()}|${windowBorderSetting.get()}`
     : "strip";
   const layout = displayLayoutSetting.get();
-  return `${layout.startsWith("band-") ? "band" : layout}|${switcher}`;
+  return `${screenWidth()}x${screenHeight()}|${layout.startsWith("band-") ? "band" : layout}|${switcher}`;
 }
 
 /** The global settings that move window surfaces without resizing them. */
@@ -214,7 +214,7 @@ function windowPlacementKey(): string {
 }
 
 function createInitialDisplayPreview(): ImageSource | null {
-  return grayImageToPreviewSource(new GrayImage(G2_LENS_WIDTH, G2_LENS_HEIGHT, 0));
+  return grayImageToPreviewSource(new GrayImage(screenWidth(), screenHeight(), 0));
 }
 
 /** Echo the controller's appendLog() trace to the console. */
@@ -609,14 +609,28 @@ class DashboardController {
    * are. Windows that can't resize keep the surface they have, the switcher
    * covering any of it that it now overlaps, rather than being relaunched
    * for it.
+   *
+   * A window is judged by its own size as well as its surface's rect: other
+   * paths (connect, a launch) configure surfaces from the geometry without
+   * resizing windows, so a window laid out before the row's height was known
+   * (restored at startup, at the default height) can sit behind a surface
+   * that already matches, and its frames would not fit it.
    */
   private applySwitcherBarHeight(): void {
     void (async () => {
       for (const window of Array.from(shell.getWindows())) {
-        const rect = JSON.stringify(appViewportRect(window.heightMode, window.appId));
-        if (!window.relayout || this.windowSurfaceRects.get(window.surfaceId) === rect) continue;
-        window.relayout();
-        await this.configureWindowSurface(window.surfaceId, this.isForegroundWindow(window.windowId), window.heightMode);
+        if (!window.relayout) continue;
+        const rect = appViewportRect(window.heightMode, window.appId);
+        const size = window.layoutSize?.();
+        const resized = !!size && (size.width !== rect.width || size.height !== rect.height);
+        if (!resized && this.windowSurfaceRects.get(window.surfaceId) === JSON.stringify(rect)) continue;
+        try {
+          window.relayout();
+          await this.configureWindowSurface(window.surfaceId, this.isForegroundWindow(window.windowId), window.heightMode);
+        } catch (error) {
+          // The rest still need to follow the row.
+          this.appendLog(`switcher height change failed for ${window.windowId}: ${this.formatError(error)}`);
+        }
       }
       shell.foregroundWindow()?.requestRender();
       this.requestShellRender();
@@ -807,8 +821,8 @@ class DashboardController {
     await communicator.configureSurface(LOCK_SCREEN_SURFACE_ID, {
       x: 0,
       y: 0,
-      width: G2_LENS_WIDTH,
-      height: G2_LENS_HEIGHT,
+      width: screenWidth(),
+      height: screenHeight(),
       zOrder: 1000,
       transparency: "opaque",
     });
@@ -1386,12 +1400,12 @@ class DashboardController {
     // is in place before any real render can reach the compositor.
     this.previewTarget = target;
     try {
-      await target.configureCompositorScreen(G2_LENS_WIDTH, G2_LENS_HEIGHT);
+      await target.configureCompositorScreen(screenWidth(), screenHeight());
       await target.configureSurface(SHELL_SURFACE_ID, {
         x: 0,
         y: 0,
-        width: G2_LENS_WIDTH,
-        height: G2_LENS_HEIGHT,
+        width: screenWidth(),
+        height: screenHeight(),
         zOrder: SHELL_SURFACE_Z_ORDER,
         transparency: "color-key",
       });
@@ -1517,10 +1531,8 @@ class DashboardController {
       // configure their surfaces through this.communicator, and the Java call
       // queue is FIFO, so enqueuing the screen size first guarantees it lands
       // ahead of them. Mirrors ensurePreviewDisplay.
-      // The iO shows 540x220: the layout stays the G2's and is cropped at the right and
-      // bottom (geometry.ts pins the band to the top-left while an iO is configured).
-      if (glassesType === "rayneo-io") await communicator.configureCompositorScreen(RAYNEO_IO_WIDTH, RAYNEO_IO_HEIGHT);
-      else await communicator.configureCompositorScreen(G2_LENS_WIDTH, G2_LENS_HEIGHT);
+      // The paired glasses' screen: the G2's 640x480 or the RayNeo iO's 540x220.
+      await communicator.configureCompositorScreen(screenWidth(), screenHeight());
       await communicator.configureBrightness(getBrightnessPreferences());
       this.offState = communicator.onStateChange((state) => {
         if (state.phase !== "connected") resetRingInputFilter();
@@ -1702,8 +1714,8 @@ class DashboardController {
       await communicator.configureSurface(SHELL_SURFACE_ID, {
         x: 0,
         y: 0,
-        width: G2_LENS_WIDTH,
-        height: G2_LENS_HEIGHT,
+        width: screenWidth(),
+        height: screenHeight(),
         zOrder: SHELL_SURFACE_Z_ORDER,
         transparency: "color-key",
       });
@@ -2006,8 +2018,8 @@ class DashboardController {
       return;
     }
     const at = mirrorToPanelFraction(this.displayPreviewCrop, nx, ny);
-    const x = Math.round(Math.min(1, Math.max(0, at.nx)) * G2_LENS_WIDTH);
-    const y = Math.round(Math.min(1, Math.max(0, at.ny)) * G2_LENS_HEIGHT);
+    const x = Math.round(Math.min(1, Math.max(0, at.nx)) * screenWidth());
+    const y = Math.round(Math.min(1, Math.max(0, at.ny)) * screenHeight());
     const foreground = shell.foregroundWindow();
     const stripShown = sidebarStripVisible(shell.getFocus(), foreground?.appId);
     this.appendLog(`mirror tap at ${x},${y}`);

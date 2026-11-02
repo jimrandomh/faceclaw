@@ -1,7 +1,7 @@
 import { shellCrop } from "../../graphics/shell-scene";
 import type { Plane } from "../../graphics/plane";
 import { DrawOp, type ListCall, type ListClip } from "../../graphics/display-list";
-import { G2_LENS_HEIGHT, G2_LENS_WIDTH, GrayImage, grayToNibble } from "../../graphics/image";
+import { GrayImage, grayToNibble } from "../../graphics/image";
 import { getDefaultMediumFont, getDefaultSmallFont } from "../../graphics/ui-fonts";
 import { truncateText } from "../../graphics/textwrap";
 import { activeAmbientCards } from "./ambient-cards";
@@ -29,7 +29,9 @@ import { lineStep } from "../metrics";
 import {
   appViewportRect,
   isImmersive,
-  MIN_WINDOW_HEIGHT,
+  minWindowHeight,
+  screenHeight,
+  screenWidth,
   minWindowTop,
   setSwitcherBarHeight,
   SHELL_OPAQUE_BLACK,
@@ -68,7 +70,10 @@ const TWO_COLUMN: SidebarVariant = { columns: 2, columnWidth: 32, iconSize: 28 }
 const ICON_SPACING = 8;
 /** Icon list top/bottom margins within the sidebar band, below the top bar (and a bottom row's end margins). */
 const LIST_MARGIN = 10;
-const LIST_HEIGHT = MIN_WINDOW_HEIGHT - TOP_BAR_HEIGHT - 2 * LIST_MARGIN;
+/** Height of the sidebar's icon list: the min-height band less its top bar and margins. */
+function listHeight(appId?: string): number {
+  return minWindowHeight(appId) - TOP_BAR_HEIGHT - 2 * LIST_MARGIN;
+}
 
 /** Bottom-row icons: one tall tab's worth of row, the icon inset 2px all round. */
 const ROW_ICON_SIZE = SWITCHER_ROW_HEIGHT - 4;
@@ -123,7 +128,7 @@ const POPUP_DIM = 0.5;
 
 /** Icon rows that fit in one sidebar column. */
 function rowsPerColumn(variant: SidebarVariant): number {
-  return Math.max(1, ((LIST_HEIGHT + ICON_SPACING) / (variant.iconSize + ICON_SPACING)) | 0);
+  return Math.max(1, ((listHeight() + ICON_SPACING) / (variant.iconSize + ICON_SPACING)) | 0);
 }
 
 function sidebarVariant(windowCount: number): SidebarVariant {
@@ -136,7 +141,7 @@ function sidebarVariant(windowCount: number): SidebarVariant {
  */
 function columnLeft(variant: SidebarVariant, column: number, position: AppSwitcherPosition): number {
   return position === "right"
-    ? G2_LENS_WIDTH - SIDEBAR_WIDTH + column * variant.columnWidth
+    ? screenWidth() - SIDEBAR_WIDTH + column * variant.columnWidth
     : SIDEBAR_WIDTH - (column + 1) * variant.columnWidth;
 }
 
@@ -382,7 +387,7 @@ export function sidebarContentSpan(windowCount: number): { left: number; right: 
   const variant = sidebarVariant(windowCount);
   const width = variant.columns * variant.columnWidth;
   return switcherPosition() === "right"
-    ? { left: G2_LENS_WIDTH - SIDEBAR_WIDTH, right: G2_LENS_WIDTH - SIDEBAR_WIDTH + width }
+    ? { left: screenWidth() - SIDEBAR_WIDTH, right: screenWidth() - SIDEBAR_WIDTH + width }
     : { left: SIDEBAR_WIDTH - width, right: SIDEBAR_WIDTH };
 }
 
@@ -396,7 +401,7 @@ function topBarSpan(state: ShellChromeState): { left: number; right: number } {
   if (sidebarStripVisible(state.focus, state.foregroundAppId)) {
     const position = switcherPosition();
     if (position === "left") left = Math.max(left, SIDEBAR_WIDTH);
-    if (position === "right") right = Math.min(right, G2_LENS_WIDTH - SIDEBAR_WIDTH);
+    if (position === "right") right = Math.min(right, screenWidth() - SIDEBAR_WIDTH);
   }
   return { left, right };
 }
@@ -624,7 +629,7 @@ export class ShellChromeLayer implements Layer {
   ) {}
 
   paint(): GrayImage {
-    const image = new GrayImage(G2_LENS_WIDTH, G2_LENS_HEIGHT, 0);
+    const image = new GrayImage(screenWidth(), screenHeight(), 0);
     const state = this.getState();
     this.statusEntries = [];
     this.bottomBar = this.layoutBottomBar(state);
@@ -651,7 +656,7 @@ export class ShellChromeLayer implements Layer {
     this.statusEntries = [];
     this.bottomBar = this.layoutBottomBar(state);
     const statusInRow = statusInSwitcherRow(state.foregroundAppId);
-    const canvas = new GrayImage(G2_LENS_WIDTH, G2_LENS_HEIGHT, 0);
+    const canvas = new GrayImage(screenWidth(), screenHeight(), 0);
     const span = topBarSpan(state);
     const bar = statusBarPlacement(state);
     if (bar) {
@@ -664,7 +669,7 @@ export class ShellChromeLayer implements Layer {
       return parts;
     }
     if (switcherShown) {
-      const stripCanvas = new GrayImage(G2_LENS_WIDTH, G2_LENS_HEIGHT, 0);
+      const stripCanvas = new GrayImage(screenWidth(), screenHeight(), 0);
       const statusLeft = this.drawSidebar(stripCanvas, state, statusInRow ? canvas : undefined);
       // The window frame rides on the switcher row, whose top edge is its
       // bottom side, and so replays after any top bar, whose bottom row is
@@ -704,14 +709,14 @@ export class ShellChromeLayer implements Layer {
       // to be sent at all, so the frame rides on one at its top-left corner,
       // outside its curve, which it paints black anyway. As in the bottom
       // row's case, it plays at the screen's own depth.
-      const frameCanvas = new GrayImage(G2_LENS_WIDTH, G2_LENS_HEIGHT, 0);
+      const frameCanvas = new GrayImage(screenWidth(), screenHeight(), 0);
       frameCanvas.fillRect(frame.x, frame.y, 1, 1, SHELL_OPAQUE_BLACK);
       drawWindowFrame(frameCanvas, frame, false, true);
       parts.push(shellCrop(frameCanvas, frame.x, frame.y, 1, 1, 1));
     }
     drawAmbientCards(canvas, topBarSpan(state).right, parts);
     if (!switcherShown) return;
-    const popupCanvas = new GrayImage(G2_LENS_WIDTH, G2_LENS_HEIGHT, 0);
+    const popupCanvas = new GrayImage(screenWidth(), screenHeight(), 0);
     const box = this.drawPopup(popupCanvas, state);
     this.popupKey ??= LayerStack.allocateShellKey();
     parts.push({ ...shellCrop(popupCanvas, box.x, box.y, box.width, box.height, this.popupKey), depth: POPUP_DEPTH });
@@ -892,8 +897,8 @@ export class ShellChromeLayer implements Layer {
     const batteries = batteryItems(state);
     if (batteries.length) {
       // Measured by drawing it: each battery style lays itself out as it draws.
-      const scratch = new GrayImage(G2_LENS_WIDTH, TOP_BAR_HEIGHT, 0);
-      const width = G2_LENS_WIDTH - BATTERY_BLOCK_RIGHT_MARGIN - drawBatteryBlock(scratch, batteries, 0, G2_LENS_WIDTH);
+      const scratch = new GrayImage(screenWidth(), TOP_BAR_HEIGHT, 0);
+      const width = screenWidth() - BATTERY_BLOCK_RIGHT_MARGIN - drawBatteryBlock(scratch, batteries, 0, screenWidth());
       // The block keeps its usual right margin inside the edge it's given.
       items.push({ kind: "batteries", width,
         draw: (image, x, top) => drawBatteryBlock(image, batteries, top, x + width + BATTERY_BLOCK_RIGHT_MARGIN) });
@@ -1237,7 +1242,7 @@ function drawAmbientCards(image: GrayImage, right: number, parts?: Plane[]): voi
   if (!cards.length) return;
   const font = getDefaultSmallFont();
   const bandTop = minWindowTop();
-  const bandBottom = bandTop + MIN_WINDOW_HEIGHT - windowFooterHeight();
+  const bandBottom = bandTop + minWindowHeight() - windowFooterHeight();
   // Right-aligned with the top bar: clear of a right-hand sidebar.
   const x = right - AMBIENT_CARD_WIDTH - AMBIENT_CARD_MARGIN;
   const textWidth = AMBIENT_CARD_WIDTH - 2 * AMBIENT_CARD_PADDING_X;

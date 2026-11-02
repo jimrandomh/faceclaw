@@ -25,10 +25,13 @@ import { isValidMacAddress, loadDeviceAddresses } from "../g2/device-addresses";
 import { isAutoReconnectSuppressed, resumeAutoReconnect } from "../g2/reconnect-policy";
 import { isPreviewOnlyMode } from "./onboarding-state";
 import { formatErrorMessage } from "../util/format-error";
-import { G2_LENS_HEIGHT, G2_LENS_WIDTH } from "../graphics/image";
+import { screenHeight, screenWidth } from "../ui/shell/geometry";
 import { type PhoneUiButton } from "../apps/evenhub/manager";
 
-const LENS_ASPECT_RATIO = G2_LENS_WIDTH / G2_LENS_HEIGHT;
+/** The paired glasses' screen aspect (4:3 on the G2, 27:11 on the RayNeo iO). */
+function lensAspectRatio(): number {
+  return screenWidth() / screenHeight();
+}
 
 type LayoutOrientation = "portrait" | "landscape";
 
@@ -228,7 +231,7 @@ export class MainViewModel extends RemoteControlsViewModel {
   }
 
   get displayPreviewHeight(): number {
-    return Screen.mainScreen.widthDIPs / LENS_ASPECT_RATIO;
+    return Screen.mainScreen.widthDIPs / lensAspectRatio();
   }
 
   get landscapeDisplayPreviewWidth(): number {
@@ -244,8 +247,8 @@ export class MainViewModel extends RemoteControlsViewModel {
     // and controls, and updates for rotation, split-screen, and the keyboard.
     const { width, height } = args.object.getActualSize();
     if (width <= 0 || height <= 0) return;
-    const previewHeight = Math.min(height, width / LENS_ASPECT_RATIO);
-    const previewWidth = previewHeight * LENS_ASPECT_RATIO;
+    const previewHeight = Math.min(height, width / lensAspectRatio());
+    const previewWidth = previewHeight * lensAspectRatio();
     if (previewWidth === this._landscapePreviewWidth && previewHeight === this._landscapePreviewHeight) return;
     this._landscapePreviewWidth = previewWidth;
     this._landscapePreviewHeight = previewHeight;

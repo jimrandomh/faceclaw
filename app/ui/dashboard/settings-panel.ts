@@ -36,6 +36,8 @@ const ROW_GAP = 2;
 /** Horizontal inset of row text (and custom row content) from its selection box. */
 const ROW_TEXT_X = 10;
 const MAX_DESCRIPTION_LINES = 3;
+/** Rows a section's list keeps beside its detail while focus is in it (see detailCrowdsList). */
+const MIN_LIST_ROWS = 3;
 // A throwaway menu to satisfy MenuItem.onSelect's second parameter; the
 // settings items never use it (they act via ctx only).
 const NO_MENU = new MenuLayer(null, []);
@@ -134,7 +136,7 @@ export class SettingsPanelLayer implements Layer {
     const rightX = divX + 14;
     const rightW = width - rightX - PAD;
     let rightTop = top;
-    if (section.renderDetail) {
+    if (section.renderDetail && !this.detailCrowdsList(section, ctx, font, { x: rightX, y: top, width: rightW, height: listBottom - top })) {
       const used = section.renderDetail({ image, x: rightX, y: top, width: rightW, height: listBottom - top, ctx });
       rightTop = typeof used === "number" ? Math.min(top + used, listBottom) : listBottom;
     }
@@ -155,6 +157,28 @@ export class SettingsPanelLayer implements Layer {
     }
 
     return image;
+  }
+
+  /**
+   * Whether the section's detail (About's blurb, the watch status) would
+   * leave its rows less than MIN_LIST_ROWS while focus is in them, as on a
+   * short screen (the RayNeo iO's): the list then takes the whole pane, the
+   * detail staying in the preview. Measured by drawing the detail on a
+   * scratch image.
+   */
+  private detailCrowdsList(
+    section: SettingsSection,
+    ctx: LayerContext,
+    font: UiFont,
+    pane: { x: number; y: number; width: number; height: number },
+  ): boolean {
+    if (this.focus !== "right" || !section.items.length || !section.renderDetail) return false;
+    const scratch = new GrayImage(pane.x + pane.width, pane.y + pane.height, 0);
+    const used = section.renderDetail({ image: scratch, ...pane, ctx });
+    if (typeof used !== "number") return false;
+    const rows = Math.min(MIN_LIST_ROWS, section.items.length);
+    const room = pane.height - used - this.descriptionHeight(font, pane.width);
+    return room < rows * (listRowHeight(font) + ROW_GAP);
   }
 
   /** The selected item's wrapped help text, or [] when none applies. */

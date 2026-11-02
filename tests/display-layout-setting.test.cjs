@@ -65,16 +65,23 @@ test('Full Screen is offered only with a bottom or popup app switcher', () => {
     ['Band · Top', 'Band · High', 'Band · Middle', 'Band · Low', 'Band · Bottom', 'Tall', 'Full Screen']);
 });
 
-test('a RayNeo iO pins the band to the top and the switcher to the right, leaving the stored choice alone', () => {
-  const store = new Map([['display.layout', 'band-middle'], ['display.appSwitcherPosition', 'bottom']]);
+test('a RayNeo iO defaults the app switcher to the left, and keeps a chosen position and the band', () => {
+  const store = new Map();
   const api = settingsFixture(store);
-  assert.equal(api.displayLayoutSetting.get(), 'band-middle');
   assert.equal(api.appSwitcherPositionSetting.get(), 'bottom');
   api.glassesTypeSetting.set('rayneo-io');
-  assert.equal(api.displayLayoutSetting.get(), 'band-top');
-  assert.equal(api.appSwitcherPositionSetting.get(), 'right');
-  assert.equal(store.get('display.layout'), 'band-middle');
-  api.glassesTypeSetting.set('g2');
+  assert.equal(api.appSwitcherPositionSetting.get(), 'left');
   assert.equal(api.displayLayoutSetting.get(), 'band-middle');
+  assert.equal(store.has('display.appSwitcherPosition'), false);
+  // A stored position is the user's, on either glasses.
+  api.appSwitcherPositionSetting.set('right');
+  assert.equal(api.appSwitcherPositionSetting.get(), 'right');
+  api.glassesTypeSetting.set('g2');
+  assert.equal(api.appSwitcherPositionSetting.get(), 'right');
+  store.delete('display.appSwitcherPosition');
   assert.equal(api.appSwitcherPositionSetting.get(), 'bottom');
+  // An unknown stored value falls back to the glasses' default.
+  store.set('display.appSwitcherPosition', 'sideways');
+  api.glassesTypeSetting.set('rayneo-io');
+  assert.equal(api.appSwitcherPositionSetting.get(), 'left');
 });

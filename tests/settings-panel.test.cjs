@@ -22,7 +22,7 @@ const font = BdfFont.parse(fs.readFileSync(path.join(__dirname, '../app/fonts/te
 const textwrap = load('app/graphics/textwrap.ts', {});
 const fonts = { getDefaultSmallFont: () => font };
 const menu = load('app/ui/menu.ts', {
-  './menu-animation-pref': require('../.test-build/app/ui/menu-animation-pref.js'), './animation-speed': require('../.test-build/app/ui/animation-speed.js'), '../native/settings-store': { getStringSetting: (_key, fallback) => fallback },
+  './menu-animation-pref': require('../.test-build/app/ui/menu-animation-pref.js'), './animation-speed': require('../.test-build/app/ui/animation-speed.js'), '../native/settings-store': { getStringSetting: (_key, fallback) => fallback }, '../graphics/screen-size': { screenWidth: () => 640, screenHeight: () => 480 },
   '../graphics/image': graphics, '../graphics/textwrap': textwrap, '../graphics/ui-fonts': fonts,
   '../util/numeric-util': { clamp: (n, lo, hi) => Math.max(lo, Math.min(hi, n)) }, './gestures': {},
   './metrics': metrics, './menu-core': menuCore,
@@ -110,4 +110,26 @@ test('the selected row stays clear of its description band', async () => {
   assert.ok(bandTop > 0, 'the band is drawn');
   assert.ok(row.y + row.source.height <= bandTop, `row ends at ${row.y + row.source.height}, band starts at ${bandTop}`);
   assert.ok(row.y + row.source.height > bandTop - 30, 'the last item scrolled down to just above the band');
+});
+
+test('a section\'s detail gives its rows the pane while focus is in them, where the two don\'t fit (a RayNeo iO\'s window)', async () => {
+  const docs = ['README', 'License', 'Privacy policy', 'Acknowledgements'];
+  const detailDraws = [];
+  // About's blurb under its 72px logo: about 145px.
+  const about = { label: 'About', items: docs.map((label) => ({ label, onSelect() {} })),
+    renderDetail: ({ image, x, y }) => { detailDraws.push(image); image.fillRect(x, y, 72, 72, 90); return 145; } };
+  for (const [size, keeps] of [[{ width: 576, height: 260 }, true], [{ width: 476, height: 192 }, false], [{ width: 476, height: 155 }, false]]) {
+    const layer = new SettingsPanelLayer([about]);
+    const ctx = { stack: { getBaseSize: () => size, isFocused: () => true } };
+    const paint = () => { detailDraws.length = 0; const image = layer.paint(ctx); return { image, drawn: detailDraws.includes(image) }; };
+    // The preview (focus in the left column) always shows the detail.
+    assert.equal(paint().drawn, true, `preview at ${size.height}`);
+    await layer.handleInput({ type: 'click', timestampMs: 0 }, ctx);
+    const { image, drawn } = paint();
+    assert.equal(drawn, keeps, `focused at ${size.height}`);
+    const row = selections(image)[1];
+    if (keeps) assert.ok(row.y >= 8 + 145, 'the rows under the detail');
+    else assert.equal(row.y, 8, 'the first row at the top of the pane');
+    assert.ok(row.y + row.source.height <= size.height - 8);
+  }
 });

@@ -13,6 +13,7 @@ import type { UiFont } from "./image";
 import { TtfFont } from "./ttf-font";
 import { ensurePreinstalledFonts, getInstalledFont, installedFontPath } from "./installed-fonts";
 import { getStringSetting, onSettingsStoreChanged, setStringSetting } from "../native/settings-store";
+import { GLASSES_TYPE_KEY, isRayNeoIoConfigured } from "./screen-size";
 
 export type BitmapFace = "terminus" | "terminusv";
 
@@ -72,8 +73,18 @@ export function parseFontSelection(raw: string): UiFontSelection | null {
   return null;
 }
 
-/** Default UI font when the user has never picked one. */
-const DEFAULT_UI_FONT: UiFontSelection = { kind: "ttf", file: "Roboto-Light.ttf", size: 16 };
+/**
+ * The default UI font's size, which onboarding recommends: 16, or 14 on the
+ * RayNeo iO, whose 540x220 screen fits fewer rows.
+ */
+export function defaultUiFontSize(): number {
+  return isRayNeoIoConfigured() ? 14 : 16;
+}
+
+/** Default UI font when the user has never picked one: Roboto Light at the default size. */
+function defaultUiFont(): UiFontSelection {
+  return { kind: "ttf", file: "Roboto-Light.ttf", size: defaultUiFontSize() };
+}
 
 export function getUiFontSelection(): UiFontSelection {
   const parsed = parseFontSelection(getStringSetting(UI_FONT_SELECTION_KEY, ""));
@@ -84,7 +95,7 @@ export function getUiFontSelection(): UiFontSelection {
   if (legacy === "terminus" || legacy === "terminusv") {
     return { kind: "bitmap", face: legacy };
   }
-  return DEFAULT_UI_FONT;
+  return defaultUiFont();
 }
 
 export function setUiFontSelection(selection: UiFontSelection): void {
@@ -113,7 +124,8 @@ export function fontSelectionLabel(selection: UiFontSelection): string {
 
 type UiFontRole = "small" | "medium" | "large";
 
-const UI_FONT_KEYS: readonly string[] = [UI_FONT_SELECTION_KEY, LEGACY_UI_FONT_KEY];
+/** Keys whose change re-resolves the UI fonts (the glasses type picks the default size). */
+const UI_FONT_KEYS: readonly string[] = [UI_FONT_SELECTION_KEY, LEGACY_UI_FONT_KEY, GLASSES_TYPE_KEY];
 
 /**
  * The three role fonts for one selection source, resolved lazily and cached

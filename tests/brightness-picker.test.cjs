@@ -25,9 +25,10 @@ const fonts = { getDefaultSmallFont: () => font };
 const layers = load('app/ui/layers.ts', {
   '../graphics/image': graphics, '../graphics/plane': plane, './gestures': gestures,
   '../native/frame-timings': { spanCurrent: (_name, paint) => paint() },
+  '../graphics/screen-size': { screenWidth: () => 640, screenHeight: () => 480 },
 });
 const menu = load('app/ui/menu.ts', {
-  './menu-animation-pref': require('../.test-build/app/ui/menu-animation-pref.js'), './animation-speed': require('../.test-build/app/ui/animation-speed.js'), '../native/settings-store': { getStringSetting: (_key, fallback) => fallback },
+  './menu-animation-pref': require('../.test-build/app/ui/menu-animation-pref.js'), './animation-speed': require('../.test-build/app/ui/animation-speed.js'), '../native/settings-store': { getStringSetting: (_key, fallback) => fallback }, '../graphics/screen-size': { screenWidth: () => 640, screenHeight: () => 480 },
   './menu-highlight-motion': require('../.test-build/app/ui/menu-highlight-motion.js'), '../graphics/menu-scroll-list': require('../.test-build/app/graphics/menu-scroll-list.js'), './menu-scroll-motion': require('../.test-build/app/ui/menu-scroll-motion.js'), '../graphics/draw-expression': require('../.test-build/app/graphics/draw-expression.js'),
   '../graphics/image': graphics, '../graphics/ui-fonts': fonts, '../graphics/textwrap': textwrap,
   '../util/numeric-util': numeric, './gestures': gestures, './metrics': load('app/ui/metrics.ts'),
@@ -105,6 +106,22 @@ test('the thin bar fills upward in proportion to brightness in each viewport', (
         assert.equal(image.getPixel(bottom.x, bottom.y + 2), 150);
       }
     }
+  }
+});
+
+test('in a short window (a RayNeo iO\'s) the bar shrinks so the dialog stays inside it', () => {
+  for (const viewport of [{ x: 64, y: 28, width: 476, height: 192 }, { x: 32, y: 1, width: 476, height: 155 }]) {
+    const f = fixture('100', viewport);
+    const image = f.stack.paint().at(-1).image;
+    // The dialog's border (110) and the full bar (255), all within the window.
+    let top = Infinity, bottom = -1, fill = 0;
+    for (let y = 0; y < image.height; y++) for (let x = 0; x < image.width; x++) {
+      const value = image.getPixel(x, y);
+      if (value === 110) { top = Math.min(top, y); bottom = Math.max(bottom, y); }
+      if (value === 255) fill++;
+    }
+    assert.ok(top >= viewport.y && bottom < viewport.y + viewport.height, `dialog ${top}..${bottom} in ${JSON.stringify(viewport)}`);
+    assert.ok(fill > 0 && fill < 12 * 100, 'a shorter bar, still drawn');
   }
 });
 

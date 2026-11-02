@@ -258,6 +258,7 @@ function shellEnv({ wakeAction = 'voice-input', skipConfirmation = false } = {})
   const layers = load('app/ui/layers.ts', {
     '../graphics/image': images, '../graphics/plane': { dimPlanes: (planes) => planes },
     '../native/frame-timings': timings, './gestures': gestures,
+    '../graphics/screen-size': { screenWidth: () => 640, screenHeight: () => 480 },
   });
   class Menu {
     constructor(title, items) { this.title = title; this.items = items; this.selectedIndex = 0; }
@@ -285,6 +286,7 @@ function shellEnv({ wakeAction = 'voice-input', skipConfirmation = false } = {})
     '../../native/notification-icons': {}, '../../native/notification-sources': {},
     '../../assistant/tool-registry': {}, './geometry': {
       sidebarWidth: () => 64, minWindowTop: () => 96, switcherPosition: () => 'left', uiDepth: () => 0,
+      screenWidth: () => 640, screenHeight: () => 480,
       appViewportRect: () => ({ x: 64, y: 124, width: 576, height: 260 }),
     },
   });

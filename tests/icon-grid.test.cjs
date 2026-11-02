@@ -65,6 +65,7 @@ function loadIconGrid({ lastInputWasWatch = false } = {}) {
     './menu-animation-pref': build('ui/menu-animation-pref'),
     './animation-speed': build('ui/animation-speed'),
     '../native/settings-store': { getStringSetting: (_key, fallback) => fallback },
+    '../graphics/screen-size': { screenWidth: () => 640, screenHeight: () => 480 },
   });
   const grid = load('app/ui/icon-grid.ts', {
     ...common,

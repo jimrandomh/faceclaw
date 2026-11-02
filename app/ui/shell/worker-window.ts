@@ -445,12 +445,13 @@ export class WorkerAppHost {
     const surfaceId = `window:${spec.windowId}`;
     const heightMode = spec.heightMode ?? "min";
     this.openWindows.add(spec.windowId);
+    let viewport = appViewportSize(heightMode, this.options.appId);
     this.post({
       type: "open-window",
       windowId: spec.windowId,
       surfaceId,
       title: spec.title,
-      viewport: appViewportSize(heightMode, this.options.appId),
+      viewport,
     });
     const window: ShellWindow = {
       appId: this.options.appId,
@@ -463,7 +464,11 @@ export class WorkerAppHost {
       // Every app worker resizes its live content in place, keeping its state
       // (a game in progress, a route): the bottom switcher's height changes
       // with what it holds, and full-height windows give way to it.
-      relayout: () => this.post({ type: "resize-window", windowId: spec.windowId, viewport: appViewportSize(heightMode, this.options.appId) }),
+      relayout: () => {
+        viewport = appViewportSize(heightMode, this.options.appId);
+        this.post({ type: "resize-window", windowId: spec.windowId, viewport });
+      },
+      layoutSize: () => viewport,
       hasAppMenu: () => this.windowGestures.get(spec.windowId)?.hasAppMenu ?? false,
       claimsLongPress: () => this.windowGestures.get(spec.windowId)?.claimsLongPress ?? false,
       close: () => {

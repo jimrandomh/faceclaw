@@ -1,4 +1,5 @@
-import { G2_LENS_HEIGHT, GrayImage, type UiFont } from "../graphics/image";
+import { GrayImage, type UiFont } from "../graphics/image";
+import { screenHeight } from "../graphics/screen-size";
 import { wrapText } from "../graphics/textwrap";
 import { getDefaultSmallFont } from "../graphics/ui-fonts";
 import { getStringSetting } from "../native/settings-store";
@@ -18,9 +19,14 @@ setMenuAnimationReader(() => normalizeAnimationSpeed(getStringSetting(MENU_ANIMA
 const DEFAULT_MENU_X = 8;
 const DEFAULT_MENU_Y = 8;
 const DEFAULT_MENU_WIDTH = 272;
+/** Windows shorter than this (the RayNeo iO's, not the G2's) get tighter modal margins. */
+const SHORT_WINDOW_HEIGHT = 200;
 // Menus grow with their item count, from half the screen (matching the old
 // fixed quarter-screen-era look) up to the full screen, then scroll.
-const DEFAULT_MENU_MIN_HEIGHT = G2_LENS_HEIGHT / 2 - 2 * DEFAULT_MENU_Y;
+/** Half the screen, less the menu's top and bottom offsets. */
+function defaultMenuMinHeight(): number {
+  return screenHeight() / 2 - 2 * DEFAULT_MENU_Y;
+}
 const MENU_BODY_PADDING = 8;
 /** Gap between the last item row and a footer hint line. */
 const MENU_FOOTER_GAP = 8;
@@ -302,7 +308,7 @@ export class MenuLayer implements Layer {
     const { y, width } = this.layout;
     const x = this.layout.x === "center" ? ((image.width - width) / 2) | 0 : this.layout.x;
     const chromeTop = (this.title ? menuTitleHeight(font) : 0) + MENU_BODY_PADDING;
-    const minHeight = this.layout.minHeight ?? DEFAULT_MENU_MIN_HEIGHT;
+    const minHeight = this.layout.minHeight ?? defaultMenuMinHeight();
     // Cap to the surface being painted on: a window's stack image may be much
     // shorter than the full screen (min-height windows).
     const maxHeight = Math.min(
@@ -376,7 +382,10 @@ export function openModalMenu(
   const font = getDefaultSmallFont();
   const menuWidth = Math.min(320, width - 40);
   const naturalHeight = menuTitleHeight(font) + 2 * MENU_BODY_PADDING + items.length * listRowHeight(font);
-  const menuHeight = Math.min(naturalHeight, height - 40);
+  // 20px clear above and below, or 8 in a short window (the RayNeo iO's),
+  // where those rows are worth more than the margin.
+  const marginY = height < SHORT_WINDOW_HEIGHT ? 8 : 20;
+  const menuHeight = Math.min(naturalHeight, height - 2 * marginY);
   const layout: MenuLayout = {
     x: ((width - menuWidth) / 2) | 0,
     y: ((height - menuHeight) / 2) | 0,

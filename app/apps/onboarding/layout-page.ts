@@ -1,9 +1,9 @@
-import { G2_LENS_WIDTH, type GrayImage, type UiFont } from "../../graphics/image";
-import { appSwitcherPositionSetting, type AppSwitcherPosition } from "../../ui/dashboard-settings";
+import type { GrayImage, UiFont } from "../../graphics/image";
+import { appSwitcherPositionSetting, glassesTypeSetting, type AppSwitcherPosition } from "../../ui/dashboard-settings";
 import type { InputEvent } from "../../ui/gestures";
 import { MENU_HIGHLIGHT_FILL, MENU_HIGHLIGHT_STROKE } from "../../ui/menu-core";
-import { MIN_WINDOW_HEIGHT } from "../../ui/shell/geometry";
-import { AREA_OUTLINE, Diagram, drawLayout, LAYOUT_AREA_HEIGHT } from "./layout-diagram";
+import { screenWidth } from "../../ui/shell/geometry";
+import { AREA_OUTLINE, Diagram, diagramBandHeight, drawLayout, layoutAreaHeight } from "./layout-diagram";
 import { onboardingFont } from "./onboarding-fonts";
 import { drawPageHeading, type OnboardingNav, type OnboardingPage } from "./onboarding-page";
 
@@ -19,8 +19,13 @@ const ROW_GAP = 6;
 const DEPTH_SUBTITLE = "Customizable Depth";
 /** Grid order, in rows of two: the layouts with depth on top. */
 const LAYOUT_ORDER: readonly AppSwitcherPosition[] = ["bottom", "popup", "left", "right"];
-/** Selected on the first visit, and marked. */
-const RECOMMENDED_LAYOUT: AppSwitcherPosition = "bottom";
+/**
+ * Selected on the first visit, and marked: Bottom on the G2, whose 480 rows
+ * leave room for the row; a side strip on the RayNeo iO, whose 220 can't.
+ */
+export function recommendedLayout(): AppSwitcherPosition {
+  return glassesTypeSetting.get() === "rayneo-io" ? "left" : "bottom";
+}
 
 /** Whether a layout leaves the side margins the display's stereo depth shifts into (geometry.ts uiDepth). */
 export function layoutHasDepth(position: AppSwitcherPosition): boolean {
@@ -29,7 +34,7 @@ export function layoutHasDepth(position: AppSwitcherPosition): boolean {
 
 /**
  * The app switcher position, as a 2×2 grid of captioned diagrams of each
- * layout, Bottom (recommended, and selected at first) and Popup on top;
+ * layout, Bottom and Popup on top, the recommended one selected at first;
  * swipes move through them in reading order, a tap saves the selected one.
  * The page is immersive, so the diagrams get 40% of the display's width
  * each. Choosing a layout reflows open windows (the dashboard controller
@@ -38,7 +43,7 @@ export function layoutHasDepth(position: AppSwitcherPosition): boolean {
 export class LayoutPage implements OnboardingPage {
   readonly immersive = true;
   /** Kept across visits, so going back returns to the last choice. */
-  private selected = LAYOUT_ORDER.indexOf(RECOMMENDED_LAYOUT);
+  private selected = LAYOUT_ORDER.indexOf(recommendedLayout());
 
   paint(image: GrayImage, focused: boolean): void {
     const top = drawPageHeading(
@@ -53,11 +58,11 @@ export class LayoutPage implements OnboardingPage {
     // Short of DIAGRAM_SCALE only where two rows of cells wouldn't fit.
     const scale = Math.min(
       DIAGRAM_SCALE,
-      ((available - ROW_GAP) / 2 - 2 * CELL_PADDING - captionHeight) / LAYOUT_AREA_HEIGHT,
-      ((image.width - COLUMN_GAP) / 2 - 2 * CELL_PADDING) / G2_LENS_WIDTH,
+      ((available - ROW_GAP) / 2 - 2 * CELL_PADDING - captionHeight) / layoutAreaHeight(),
+      ((image.width - COLUMN_GAP) / 2 - 2 * CELL_PADDING) / screenWidth(),
     );
-    const diagramWidth = Math.round(G2_LENS_WIDTH * scale);
-    const diagramHeight = Math.round(LAYOUT_AREA_HEIGHT * scale);
+    const diagramWidth = Math.round(screenWidth() * scale);
+    const diagramHeight = Math.round(layoutAreaHeight() * scale);
     const cellWidth = diagramWidth + 2 * CELL_PADDING;
     const cellHeight = diagramHeight + 2 * CELL_PADDING + captionHeight;
     const left = Math.round((image.width - 2 * cellWidth - COLUMN_GAP) / 2);
@@ -75,7 +80,7 @@ export class LayoutPage implements OnboardingPage {
         image.drawText(font, x + Math.round((cellWidth - font.measureText(text)) / 2), textY, text, value);
       const captionTop = y + CELL_PADDING + diagramHeight + CAPTION_GAP;
       const name = appSwitcherPositionSetting.displayValue(position);
-      const caption = position === RECOMMENDED_LAYOUT ? `${name} (Recommended)` : name;
+      const caption = position === recommendedLayout() ? `${name} (Recommended)` : name;
       centre(caption, title, captionTop, selected ? 255 : 190);
       if (layoutHasDepth(position)) {
         centre(DEPTH_SUBTITLE, subtitle, captionTop + title.lineHeight, selected ? 210 : 150);
@@ -103,12 +108,14 @@ export class LayoutPage implements OnboardingPage {
 }
 
 /**
- * A layout's diagram: the 288px band, with the popup switcher open. Only a
- * bottom switcher row takes rows under the band; without one, the band sits
- * centred in their place, as the band and row share the screen's slack.
+ * A layout's diagram: the min-height band, with the popup switcher open.
+ * Only a bottom switcher row takes rows under the band; without one, the
+ * band sits centred in their place, as the band and row share the screen's
+ * slack (none on a screen as short as the RayNeo iO's: the band fills it).
  */
 function drawLayoutDiagram(d: Diagram, position: AppSwitcherPosition): void {
-  d.outline(0, 0, G2_LENS_WIDTH, LAYOUT_AREA_HEIGHT, AREA_OUTLINE, 12);
-  const top = position === "bottom" ? 0 : (LAYOUT_AREA_HEIGHT - MIN_WINDOW_HEIGHT) / 2;
-  drawLayout(d, position, { top, height: MIN_WINDOW_HEIGHT, fullWidth: false }, true);
+  d.outline(0, 0, screenWidth(), layoutAreaHeight(), AREA_OUTLINE, 12);
+  const height = diagramBandHeight(position);
+  const top = position === "bottom" ? 0 : (layoutAreaHeight() - height) / 2;
+  drawLayout(d, position, { top, height, fullWidth: false }, true);
 }

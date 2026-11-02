@@ -1,5 +1,5 @@
 import { encodeShellScene } from "../../graphics/shell-scene";
-import { G2_LENS_HEIGHT, G2_LENS_WIDTH, GrayImage } from "../../graphics/image";
+import { GrayImage } from "../../graphics/image";
 import { singlePlane, type Plane } from "../../graphics/plane";
 import { getDefaultSmallFont } from "../../graphics/ui-fonts";
 import { EvenAIStatus, EventSourceType, OsEventTypeList, WatchGestureType } from "../../g2/events";
@@ -82,6 +82,8 @@ import {
   windowFramed,
   windowTop,
   type WindowHeightMode,
+  screenHeight,
+  screenWidth,
 } from "./geometry";
 import type { AppSwitcherPosition } from "../dashboard-settings";
 
@@ -163,6 +165,12 @@ export type ShellWindow = {
    * they opened with when the bottom switcher changes height.
    */
   relayout?: () => void;
+  /**
+   * The viewport size the window is laid out at (it changes on relayout), so
+   * the controller can tell a window whose size fell behind the geometry from
+   * one whose surface merely moved.
+   */
+  layoutSize?: () => { width: number; height: number };
   /**
    * A touch from the phone's mirror at (x, y) in app-viewport coordinates.
    * True if the window acted on it; otherwise the controller sends a select.
@@ -354,7 +362,10 @@ class ShellOverlayMenuLayer extends MenuLayer {
 /** How long a show_alert popup stays before auto-dismissing. */
 const ALERT_DISMISS_MS = 6000;
 const ALERT_X = 40;
-const ALERT_W = G2_LENS_WIDTH - 80;
+/** Alert width: the screen less ALERT_X on each side. */
+function alertW(): number {
+  return screenWidth() - 2 * ALERT_X;
+}
 const ALERT_Y = 96;
 const ALERT_H = 96;
 
@@ -378,14 +389,14 @@ class ShellAlertLayer implements Layer {
     const font = getDefaultSmallFont();
     // Positioned within the min-height window band, like the other shell overlays.
     const alertY = minWindowTop() + ALERT_Y;
-    image.fillRect(ALERT_X, alertY, ALERT_W, ALERT_H, 1);
-    image.drawRect(ALERT_X, alertY, ALERT_W, ALERT_H, 90);
+    image.fillRect(ALERT_X, alertY, alertW(), ALERT_H, 1);
+    image.drawRect(ALERT_X, alertY, alertW(), ALERT_H, 90);
     image.drawText(font, ALERT_X + 16, alertY + 12, "Assistant", 200);
     image.drawTextWrapped({
       font,
       x: ALERT_X + 16,
       y: alertY + 18 + font.lineHeight + 4,
-      width: ALERT_W - 32,
+      width: alertW() - 32,
       text: this.text,
       value: 235,
     });
@@ -965,7 +976,7 @@ class Shell {
 
   paintSurface(): Plane[] {
     if (!this.screenOn) {
-      return singlePlane(new GrayImage(G2_LENS_WIDTH, G2_LENS_HEIGHT, 0));
+      return singlePlane(new GrayImage(screenWidth(), screenHeight(), 0));
     }
     return this.stack.paint();
   }

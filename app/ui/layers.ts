@@ -1,4 +1,5 @@
-import { G2_LENS_HEIGHT, G2_LENS_WIDTH, GrayImage } from "../graphics/image";
+import { GrayImage } from "../graphics/image";
+import { screenHeight, screenWidth } from "../graphics/screen-size";
 import { dimPlanes, type Plane } from "../graphics/plane";
 import { spanCurrent } from "../native/frame-timings";
 import { type ConfigSettingBoolean, type ConfigSettingString, type VoiceProvider } from "./dashboard-settings";
@@ -172,8 +173,8 @@ export class LayerStack {
       stack: this,
       actions,
     };
-    this.baseWidth = baseSize?.width ?? G2_LENS_WIDTH;
-    this.baseHeight = baseSize?.height ?? G2_LENS_HEIGHT;
+    this.baseWidth = baseSize?.width ?? screenWidth();
+    this.baseHeight = baseSize?.height ?? screenHeight();
     this.focusedFn = isFocused;
   }
 

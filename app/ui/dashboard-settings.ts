@@ -153,37 +153,40 @@ type ConfigSettingEnumOptions<TValue extends string, TId extends string> = Confi
   normalize?: (value: string | null | undefined) => TValue;
   /** Dynamic availability check used by enum picker rows. */
   isDisabled?: (value: TValue) => boolean;
-  /** A value forced regardless of storage while it returns one (stored choice untouched). */
-  pinned?: () => TValue | undefined;
+  /** The default while nothing is stored, when it depends on context (else `defaultValue`). */
+  dynamicDefault?: () => TValue | undefined;
 };
 
 export class ConfigSettingEnum<TValue extends string, TId extends string = string> extends ConfigSetting<TValue, TId> {
   readonly values: readonly TValue[];
   private readonly normalizer: (value: string | null | undefined) => TValue;
   private readonly disabledPredicate: (value: TValue) => boolean;
-  protected readonly pinned: (() => TValue | undefined) | undefined;
+  private readonly dynamicDefault: (() => TValue | undefined) | undefined;
 
   constructor(options: ConfigSettingEnumOptions<TValue, TId>) {
     super(options);
-    this.pinned = options.pinned;
+    this.dynamicDefault = options.dynamicDefault;
     if (options.reportInAnalytics !== false) fixedChoiceSettings.set(options.storageKey, this);
     this.values = options.values;
     this.disabledPredicate = options.isDisabled ?? (() => false);
     if (options.normalize) {
       this.normalizer = (value: string | null | undefined) => {
         const normalized = options.normalize(value) as TValue|undefined;
-        if (normalized === undefined) return this.defaultValue;
+        if (normalized === undefined) return this.currentDefault();
         return normalized;
       }
     } else {
-      this.normalizer = (value) => this.values.includes(value as TValue) ? value as TValue : this.defaultValue;
+      this.normalizer = (value) => this.values.includes(value as TValue) ? value as TValue : this.currentDefault();
     }
   }
 
+  /** What an unset (or invalid) value reads as now. */
+  protected currentDefault(): TValue {
+    return this.dynamicDefault?.() ?? this.defaultValue;
+  }
+
   get(): TValue {
-    const pinned = this.pinned?.();
-    if (pinned !== undefined) return pinned;
-    return this.normalizer(getStringSetting(this.storageKey, this.defaultValue));
+    return this.normalizer(getStringSetting(this.storageKey, this.currentDefault()));
   }
 
   set(value: TValue): TValue {
@@ -379,7 +382,7 @@ export type GlassesType = "g2" | "rayneo-io";
 export const glassesTypeSetting = new ConfigSettingEnum<GlassesType>({
   id: "glasses-type",
   label: "Glasses",
-  storageKey: "deviceType",
+  storageKey: "deviceType", // graphics/screen-size.ts GLASSES_TYPE_KEY reads it directly
   defaultValue: "g2",
   values: ["g2", "rayneo-io"],
   reportInAnalytics: false,
@@ -398,8 +401,8 @@ export const appSwitcherPositionSetting = new ConfigSettingEnum<AppSwitcherPosit
   storageKey: "display.appSwitcherPosition",
   defaultValue: "bottom",
   values: ["left", "right", "bottom", "popup"],
-  // RayNeo iO, until its own layout: windows at x=0, the strip past the 540 px it shows.
-  pinned: () => (glassesTypeSetting.get() === "rayneo-io" ? "right" : undefined),
+  // The RayNeo iO's 220 rows can't spare a bottom row: a side strip by default there.
+  dynamicDefault: () => (glassesTypeSetting.get() === "rayneo-io" ? "left" : undefined),
   formatValue: (value) => APP_SWITCHER_POSITION_LABELS[value] ?? value,
   description:
     "Where the open-app icons go. Left and right take a column beside windows; bottom puts a row beneath the window, which makes full-height windows a little shorter; popup shows them only while you're in the app switcher, in a box over the dimmed window. Bottom and popup leave room at the sides to set the display's depth. Open apps reopen at their new size when a change resizes windows.",
@@ -415,8 +418,6 @@ class ConfigSettingEnumWithLegacy<TValue extends string> extends ConfigSettingEn
   }
 
   get(): TValue {
-    const pinned = this.pinned?.();
-    if (pinned !== undefined) return pinned;
     return getStringSetting(this.storageKey, "") === "" ? this.legacyValue() : super.get();
   }
 }
@@ -478,8 +479,6 @@ export const displayLayoutSetting = new ConfigSettingEnumWithLegacy<DisplayLayou
   storageKey: "display.layout",
   defaultValue: "band-middle",
   values: DISPLAY_LAYOUT_VALUES,
-  // RayNeo iO, until its own layout: the band at the top, where its 220 rows look.
-  pinned: () => (glassesTypeSetting.get() === "rayneo-io" ? "band-top" : undefined),
   formatValue: displayLayoutLabel,
   isDisabled: (value) => value === "fullscreen" && !fullScreenAvailable(),
   description:
@@ -1683,11 +1682,17 @@ export class EditTextSettingLayer implements Layer {
     for (let index = 0; index < message.length; index++) {
       image.drawText(font, 22, messageTop + index * step, message[index]!, 200);
     }
-    image.drawText(font, 22, messageTop + (message.length + 2) * step, truncateSetting(this.setting.get(), 52), 220);
+    const valueY = messageTop + (message.length + 2) * step;
+    image.drawText(font, 22, valueY, truncateSetting(this.setting.get(), 52), 220);
     const error = this.setting.validationError();
-    if (error) wrapText(font, error, width - 48).forEach((line, index) =>
+    const errorLines = error ? wrapText(font, error, width - 48) : [];
+    errorLines.forEach((line, index) =>
       image.drawText(font, 22, messageTop + (message.length + 4 + index) * step, line, 180));
-    image.drawText(font, 22, height - 24 - font.lineHeight, `${GESTURE_DOUBLE_CLICK} back`, 110);
+    // The back hint at the bottom, unless a short window (the RayNeo iO's)
+    // leaves it no room under the value and error.
+    const contentBottom = errorLines.length ? messageTop + (message.length + 4 + errorLines.length) * step : valueY + step;
+    const hintY = height - 24 - font.lineHeight;
+    if (hintY >= contentBottom) image.drawText(font, 22, hintY, `${GESTURE_DOUBLE_CLICK} back`, 110);
     return image;
   }
 

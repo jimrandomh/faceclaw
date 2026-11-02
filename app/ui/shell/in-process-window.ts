@@ -226,6 +226,7 @@ export function createInProcessWindow(options: InProcessWindowOptions): InProces
       options.reconfigureSurface?.(heightMode);
       requestRender();
     },
+    layoutSize: () => stack.getBaseSize(),
     hitTest: async (x, y) => {
       const handled = await stack.hitTest(x, y);
       if (handled) requestRender();
