@@ -797,6 +797,44 @@ class GlassesSessionCoreTest {
     }
 
     @Test
+    fun dockingReadsTheBatteryEvenWithTheDisplaySuspended() {
+        val s = Session()
+        s.link.caseInfo = ByteArray(0)
+        try {
+            s.startAndAwaitLayout()
+            assertTrue(waitUntil(5_000) { s.listener.cases == listOf("-1/0/out") }, s.listener.cases.toString())
+            // Off the face the display is suspended, which stops the regular battery poll.
+            s.core.monitor.withLock { s.core.shutdownRequested = true }
+            fun batteryQueries() = s.link.writes.count { it.kind == "battery" }
+            val before = batteryQueries()
+            val wait = ConnectionOptions.DOCKED_BATTERY_CHECK_DELAY_MS + 1_000L
+            s.platform.offsetMs += wait
+            s.core.interruptibleSleep.interrupt()
+            sleepMs(300)
+            assertEquals(before, batteryQueries())
+            // Docking: the case push schedules a battery read a few seconds later.
+            s.core.onNotification(RIGHT, BleProtocol.NOTIFY_CHAR_UUID, BleProtocol.framePb(
+                casePackage(200, caseInfoBody(98, inCase = 1)), BleProtocol.SID_GLASSES_CASE, BleProtocol.FLAG_NOTIFY, 99)[0])
+            assertEquals("98/0/docked", s.listener.cases.last())
+            s.core.interruptibleSleep.interrupt()
+            sleepMs(300)
+            assertEquals(before, batteryQueries(), "not before the delay")
+            s.platform.offsetMs += wait
+            s.core.interruptibleSleep.interrupt()
+            assertTrue(waitUntil(5_000) { batteryQueries() == before + 1 }, s.host.logs().takeLast(10).toString())
+            // It reads once; the docking push is not repeated for later level changes.
+            s.core.onNotification(RIGHT, BleProtocol.NOTIFY_CHAR_UUID, BleProtocol.framePb(
+                casePackage(201, caseInfoBody(97, inCase = 1)), BleProtocol.SID_GLASSES_CASE, BleProtocol.FLAG_NOTIFY, 100)[0])
+            s.platform.offsetMs += wait
+            s.core.interruptibleSleep.interrupt()
+            sleepMs(300)
+            assertEquals(before + 1, batteryQueries())
+        } finally {
+            s.core.close()
+        }
+    }
+
+    @Test
     fun glassesChargingAtConnectReadTheCaseOnce() {
         val s = Session()
         s.link.headsetCharging = true

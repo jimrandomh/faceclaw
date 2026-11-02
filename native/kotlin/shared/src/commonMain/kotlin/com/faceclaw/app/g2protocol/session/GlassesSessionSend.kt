@@ -57,6 +57,16 @@ internal fun GlassesSessionCore.driveSession(): Long {
                 return 0
             }
             drainCfwAcknowledgementsLocked()
+            if (dockedBatteryCheckAtMs != 0L && now >= dockedBatteryCheckAtMs) {
+                // Queued rather than polled: pending messages still go out while
+                // the display is suspended, which the regular poll waits out.
+                dockedBatteryCheckAtMs = 0L
+                if (sessionReady && !chargingMode && !hasPendingOrInflightKindLocked("battery")) {
+                    lastBatteryRefreshAtMs = now
+                    pendingMessages.addLast(createBatteryQueryMessageLocked())
+                    logLine("queue battery query: glasses docked")
+                }
+            }
             if (cfwCleanupDelivered) {
                 /* Successful mode 11 must be the last Faceclaw write. Drop
                  * anything a late external producer attempted to enqueue

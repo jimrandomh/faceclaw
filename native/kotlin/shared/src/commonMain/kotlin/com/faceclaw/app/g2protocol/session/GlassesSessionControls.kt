@@ -747,10 +747,19 @@ internal fun GlassesSessionCore.updateCaseInfoLocked(info: BleProtocol.CaseInfoS
     if (level == caseBattery && charging == caseCharging && dockedState == caseDocked) {
         return
     }
+    val wasOutOfCase = caseDocked == 0
     caseBattery = level
     caseCharging = charging
     caseDocked = dockedState
     logLine("charging case: $info")
+    if (docked && wasOutOfCase && !chargingMode) {
+        // The glasses just went into the case. Only the battery reply says
+        // they are charging, and the regular poll is minutes away (and skipped
+        // altogether while the display is suspended, as it is once they come
+        // off the face), so read it shortly: charging mode then follows.
+        dockedBatteryCheckAtMs = now() + ConnectionOptions.DOCKED_BATTERY_CHECK_DELAY_MS
+        logLine("glasses docked; battery check scheduled")
+    }
     val current = listener ?: return
     host.postToMain {
         try {

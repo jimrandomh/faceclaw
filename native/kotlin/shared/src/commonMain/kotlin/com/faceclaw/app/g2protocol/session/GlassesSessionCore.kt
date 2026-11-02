@@ -396,6 +396,9 @@ class GlassesSessionCore(
     // The session-start case read is still to be sent. It waits for the layout
     // (see the drive loop), so a firmware that ignores it can't delay the first frame.
     internal var caseInfoReadPending = false
+    // When to read the battery after the case reported the glasses docking
+    // (0 = not scheduled). See updateCaseInfoLocked and the drive loop.
+    internal var dockedBatteryCheckAtMs = 0L
     // Silent mode: 1 = on, 0 = off, -1 = not yet known. See updateSilentModeLocked.
     internal var silentMode = -1
     internal var wearState = -1
@@ -2235,6 +2238,7 @@ class GlassesSessionCore(
                 lastConnectionOrInputAtMs = lastAckAtMs
                 lastSessionReadyAtMs = lastAckAtMs
                 lastBatteryRefreshAtMs = 0
+                dockedBatteryCheckAtMs = 0
                 imageRetryAfterMs = 0
                 lastHeartbeatSentAtMs = 0
                 lastHeartbeatAckedAtMs = 0
