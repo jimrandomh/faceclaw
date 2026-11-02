@@ -14,6 +14,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -59,8 +60,11 @@ fun NoticeOverlay(notice: Notice?) {
     }
 }
 
-/** The pad's single indicator line, with a tone that picks its colour. */
-data class StatusLine(val text: String, val tone: StatusTone)
+/**
+ * The pad's indicator line, with a tone that picks its colour, and an
+ * optional smaller line under it (the charging case's level while charging).
+ */
+data class StatusLine(val text: String, val tone: StatusTone, val detail: String? = null)
 
 enum class StatusTone { GOOD, BUSY, OFF, PROBLEM }
 
@@ -76,7 +80,8 @@ fun padLine(state: PhoneState?, link: LinkStatus): StatusLine = when {
     state == null -> StatusLine("Waiting for phone", StatusTone.BUSY)
     state.remoteEnabled == false -> StatusLine("Watch control off", StatusTone.PROBLEM)
     state.connected -> when {
-        state.charging || state.phase == "charging" -> StatusLine(chargingLine(state.battery), StatusTone.BUSY)
+        state.charging || state.phase == "charging" ->
+            StatusLine(chargingLine(state.battery), StatusTone.BUSY, caseLine(state))
         state.silentMode -> StatusLine("Silent mode", StatusTone.OFF)
         state.locked -> StatusLine("Locked", StatusTone.OFF)
         !state.screenOn -> StatusLine("●● Wake", StatusTone.OFF)
@@ -90,6 +95,56 @@ fun padLine(state: PhoneState?, link: LinkStatus): StatusLine = when {
 
 private fun chargingLine(battery: Int?): String =
     if (battery != null) "Charging · G2 $battery%" else "Charging"
+
+/**
+ * "Case 64%", with ⚡ while the case is on USB; null when the level is
+ * unknown. Matches the phone's watch face (glassesDisplayDetail). The case is
+ * only reported while the glasses are docked, so the line is only drawn while
+ * they charge.
+ */
+private fun caseLine(state: PhoneState): String? =
+    state.caseBattery?.let { "Case $it%" + if (state.caseCharging == true) " ⚡" else "" }
+
+/**
+ * [pad]'s status line, with its detail (if any) drawn under it. Only the
+ * status line counts toward the measured height, so a caller that centres
+ * this keeps the status line in the same place whether or not a detail shows.
+ */
+@Composable
+fun PadStatusText(pad: StatusLine, color: Color, detailColor: Color, modifier: Modifier = Modifier) {
+    Layout(
+        modifier = modifier,
+        content = {
+            Text(
+                text = pad.text,
+                style = MaterialTheme.typography.title3,
+                color = color,
+                textAlign = TextAlign.Center,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            pad.detail?.let { detail ->
+                Text(
+                    text = detail,
+                    style = MaterialTheme.typography.caption1,
+                    color = detailColor,
+                    textAlign = TextAlign.Center,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        },
+    ) { measurables, constraints ->
+        val placeables = measurables.map { it.measure(constraints.copy(minWidth = 0, minHeight = 0)) }
+        val status = placeables.first()
+        val width = placeables.maxOf { it.width }.coerceIn(constraints.minWidth, constraints.maxWidth)
+        val height = status.height.coerceIn(constraints.minHeight, constraints.maxHeight)
+        layout(width, height) {
+            status.placeRelative((width - status.width) / 2, 0)
+            placeables.getOrNull(1)?.let { it.placeRelative((width - it.width) / 2, status.height) }
+        }
+    }
+}
 
 fun StatusTone.color(): Color = when (this) {
     StatusTone.GOOD -> Color(0xFF7BD88F)

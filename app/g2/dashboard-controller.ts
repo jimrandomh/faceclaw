@@ -98,7 +98,13 @@ import { createNotificationsAppWindow, NOTIFICATIONS_SURFACE_ID, NOTIFICATIONS_W
 import { isInstalledPackagePresent } from "../apps/evenhub/updates";
 import { wearerVerificationOptions } from "../apps/microphones/speakers";
 import { micSession } from "../apps/microphones/mic-session";
-import { glassesDisplayAsleep, glassesDisplayLabel, type GlassesDisplayState } from "./glasses-display-state";
+import {
+  chargingPreviewMessage,
+  glassesDisplayAsleep,
+  glassesDisplayDetail,
+  glassesDisplayLabel,
+  type GlassesDisplayState,
+} from "./glasses-display-state";
 import { PreviewDisplayTarget, type DisplayTarget } from "../native/preview-display";
 
 type ConnectionPhase = "disconnected" | "connecting" | "connected" | "charging" | "disconnecting";
@@ -1177,7 +1183,7 @@ class DashboardController {
    */
   private displayPreviewMessage(): string {
     if (this.phase === "charging") {
-      return this.glassesDisplayLabel();
+      return chargingPreviewMessage(this.glassesDisplayState());
     }
     if (this.silentMode && this.phase === "connected") {
       // Say how to leave it. Silent mode is entered and exited only by the
@@ -1209,17 +1215,25 @@ class DashboardController {
     return glassesDisplayLabel(this.glassesDisplayState());
   }
 
+  /** The smaller line the watch face shows under that one, or "" (the case level while charging). */
+  glassesDisplayDetail(): string {
+    return glassesDisplayDetail(this.glassesDisplayState());
+  }
+
   /** Whether that line reads "Display off" (the watch face adds a wake hint under it). */
   glassesDisplayAsleep(): boolean {
     return glassesDisplayAsleep(this.glassesDisplayState());
   }
 
   private glassesDisplayState(): GlassesDisplayState {
+    const batteries = shell.getBatteryLevels();
     return {
       phase: this.phase,
       silentMode: this.silentMode,
       screenOn: shell.isScreenOn(),
       battery: this.lastHeadsetBattery,
+      caseBattery: batteries.case,
+      caseCharging: batteries.caseCharging,
       foregroundTitle: shell.getForegroundApp()?.title ?? null,
       previewMode: this.isPreviewDisplayActive(),
     };

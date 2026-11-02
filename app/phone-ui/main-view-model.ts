@@ -14,7 +14,8 @@ import {
   type TouchGestureEventData,
   type View,
 } from "@nativescript/core";
-import { dashboardController, type DashboardSnapshot, type MirrorTouchKind } from "../g2/dashboard-controller";
+import { dashboardController, type MirrorTouchKind } from "../g2/dashboard-controller";
+import { formatBatteryLine } from "../g2/glasses-display-state";
 import {
   mirrorTouchSetting,
   onAnySettingChanged,
@@ -32,30 +33,8 @@ const LENS_ASPECT_RATIO = G2_LENS_WIDTH / G2_LENS_HEIGHT;
 
 type LayoutOrientation = "portrait" | "landscape";
 
-/**
- * The line under the mirror: each device whose level is known, e.g.
- * "G2 100% · Case 98% ⚡ · R1 72%" (⚡ = charging). Levels are the last known
- * ones (the case only reports while the glasses are docked), so ⚡ appears only
- * while it is live: with a link to the glasses, and for the case only while
- * they are docked (caseCharging is null otherwise).
- */
-function formatBatteryLine(snapshot: Pick<DashboardSnapshot, "batteries" | "phase">): string {
-  const levels = snapshot.batteries;
-  const live = snapshot.phase === "connected" || snapshot.phase === "charging";
-  const devices: Array<[string, number | null, boolean | null]> = [
-    ["G2", levels.headset, live && levels.headsetCharging],
-    ["Case", levels.case, live && levels.caseCharging],
-    ["R1", levels.ring, levels.ringCharging],
-  ];
-  return devices
-    .filter(([, level]) => level !== null)
-    .map(([label, level, charging]) => `${label} ${level}%${charging ? " ⚡" : ""}`)
-    .join("  ·  ");
-}
-
 export class MainViewModel extends RemoteControlsViewModel {
   private _status = "Disconnected.";
-  private _batteryLine = "";
   private _displayPreview: ImageSource | null = null;
   private _displayPreviewMessage = "";
   private _layoutOrientation: LayoutOrientation = this.readLayoutOrientation();
@@ -112,7 +91,10 @@ export class MainViewModel extends RemoteControlsViewModel {
       this.displayPreview = snapshot.displayPreview;
       this.displayPreviewMessage = snapshot.displayPreviewMessage;
       this.phase = snapshot.phase;
-      this.batteryLine = formatBatteryLine(snapshot);
+      this.batteryLine = formatBatteryLine(
+        snapshot.batteries,
+        snapshot.phase === "connected" || snapshot.phase === "charging",
+      );
       this.activeTextSettingId = snapshot.activeTextSettingId;
       this.activeTextEditorTitle = snapshot.activeTextEditorTitle;
       this.activeTextSettingTitle = snapshot.activeTextSettingTitle;
@@ -165,21 +147,6 @@ export class MainViewModel extends RemoteControlsViewModel {
       this.notifyPropertyChange("status", value);
       this.notifyPropertyChange("connectionStatusLabel", this.connectionStatusLabel);
     }
-  }
-
-  get batteryLine(): string {
-    return this._batteryLine;
-  }
-
-  set batteryLine(value: string) {
-    if (this._batteryLine === value) return;
-    this._batteryLine = value;
-    this.notifyPropertyChange("batteryLine", value);
-    this.notifyPropertyChange("batteryLineVisibility", this.batteryLineVisibility);
-  }
-
-  get batteryLineVisibility(): "visible" | "collapse" {
-    return this._batteryLine ? "visible" : "collapse";
   }
 
   /**
@@ -1106,10 +1073,16 @@ export class MainViewModel extends RemoteControlsViewModel {
     return dashboardController.glassesDisplayAsleep();
   }
 
+  override get padDetailLine(): string {
+    return dashboardController.glassesDisplayDetail();
+  }
+
   private refreshPadFocusLine(): void {
     this.notifyPropertyChange("padFocusLine", this.padFocusLine);
     this.notifyPropertyChange("padFocusClass", this.padFocusClass);
     this.notifyPropertyChange("padWakeHintVisibility", this.padWakeHintVisibility);
+    this.notifyPropertyChange("padDetailLine", this.padDetailLine);
+    this.notifyPropertyChange("padDetailVisibility", this.padDetailVisibility);
   }
 
   async onPadTap(): Promise<void> {
