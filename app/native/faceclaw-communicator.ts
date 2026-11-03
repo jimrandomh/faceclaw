@@ -30,6 +30,13 @@ export type HeadsetBatteryState = {
   ringChargingStatus?: number;
 };
 
+/**
+ * A charging-case reading, as the glasses relay it. battery is 0..100, or null when the reading
+ * has none (the glasses are out of the case). charging (the case is on USB) is only known while
+ * docked.
+ */
+export type CaseBatteryState = { battery: number | null; charging: boolean; docked: boolean };
+
 export type FrameMetrics = {
   paintMs: number;
   transmitMs: number;
@@ -152,6 +159,7 @@ export class FaceclawCommunicatorBridge {
   private readonly stateListeners = new Set<(state: CommunicatorState) => void>();
   private readonly ringListeners = new Set<(event: RawInputEvent) => void>();
   private readonly batteryListeners = new Set<(state: HeadsetBatteryState) => void>();
+  private readonly caseListeners = new Set<(state: CaseBatteryState) => void>();
   private readonly silentModeListeners = new Set<(silent: boolean) => void>();
   private readonly wearStateListeners = new Set<(wearing: boolean) => void>();
   private readonly phoneLockStateListeners = new Set<(locked: boolean) => void>();
@@ -216,6 +224,14 @@ export class FaceclawCommunicatorBridge {
           ringChargingStatus: Number(ringCharging),
         };
         this.emitAsync(this.batteryListeners, state);
+      },
+      onCaseState: (caseBattery: number, caseCharging: number, caseDocked: boolean) => {
+        const battery = Number(caseBattery);
+        this.emitAsync(this.caseListeners, {
+          battery: Number.isInteger(battery) && battery >= 0 && battery <= 100 ? battery : null,
+          charging: Number(caseCharging) > 0,
+          docked: Boolean(caseDocked),
+        });
       },
       onSilentMode: (silent: boolean) => {
         this.emitAsync(this.silentModeListeners, Boolean(silent));
@@ -335,6 +351,15 @@ export class FaceclawCommunicatorBridge {
   onBatteryState(listener: (state: HeadsetBatteryState) => void): () => void {
     this.batteryListeners.add(listener);
     return () => this.batteryListeners.delete(listener);
+  }
+
+  /**
+   * Charging-case readings: read at session start and on docking, then pushed by the glasses
+   * on every change, including leaving the case.
+   */
+  onCaseState(listener: (state: CaseBatteryState) => void): () => void {
+    this.caseListeners.add(listener);
+    return () => this.caseListeners.delete(listener);
   }
 
   /**

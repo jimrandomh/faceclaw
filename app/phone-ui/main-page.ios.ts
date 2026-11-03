@@ -10,6 +10,8 @@ import { sampleBleTraffic } from '../native/ble-traffic'
 import { onAnySettingChanged, mirrorTouchSetting, showBleBandwidthSetting } from '../ui/dashboard-settings'
 import { loadDeviceAddresses } from '../g2/device-addresses'
 import { deviceAddressError } from '../g2/ios-peripheral-identity'
+import { formatBatteryLine } from '../g2/glasses-display-state'
+import { shell } from '../ui/shell/shell'
 
 export function createMainPage(): Page {
   const page = new Page()
@@ -70,6 +72,10 @@ export function createMainPage(): Page {
   keyboardPanel.bindingContext = keyboardModel
   GridLayout.setRow(keyboardPanel, 1); root.addChild(keyboardPanel)
   let focusTimer: ReturnType<typeof setTimeout> | null = null
+  // The Settings tab's battery row. iOS reports charging sessions as
+  // connected, so "connected" is the whole live-link condition here.
+  let glassesLinked = false
+  const refreshBatteryLine = () => { model.batteryLine = formatBatteryLine(shell.getBatteryLevels(), glassesLinked) }
   const keyboardField = () => keyboardPanel.getViewById<TextView>('keyboardInputField')
   const controller = new IosPreviewController((image, label) => {
     mirror.imageSource = image; model.set('padFocusLine', label)
@@ -79,6 +85,7 @@ export function createMainPage(): Page {
     state.text = ({ connected: 'Connected', disconnected: 'Preview', connecting: 'Connecting',
       retrying: 'Reconnecting', disconnecting: 'Disconnecting', error: 'Failed' })[connection.phase]
     warning.visibility = connection.firmwareWarning ? 'visible' : 'collapse'
+    glassesLinked = connection.phase === 'connected'; refreshBatteryLine()
   }, session => {
     keyboardModel.setSession(session)
     controls.visibility = session ? 'collapse' : 'visible'
@@ -256,6 +263,7 @@ export function createMainPage(): Page {
   const resume = () => { foreground = true; controller.resume(); syncBandwidth() }
   let keyboardObserver: any = null
   let offSettings: (() => void) | null = null
+  let offBattery: (() => void) | null = null
   page.on('loaded', () => {
     if (!keyboardObserver) keyboardObserver = NSNotificationCenter.defaultCenter.addObserverForNameObjectQueueUsingBlock(
       UIKeyboardWillChangeFrameNotification, null, NSOperationQueue.mainQueue, notification => {
@@ -266,14 +274,15 @@ export function createMainPage(): Page {
       })
     Application.on(Application.suspendEvent, pause); Application.on(Application.resumeEvent, resume)
     offSettings?.(); offSettings = onAnySettingChanged(() => { model.refreshDisplayControls(); syncBandwidth() })
-    model.refreshDisplayControls(); resume()
+    offBattery?.(); offBattery = shell.onBatteryLevelsChanged(refreshBatteryLine)
+    model.refreshDisplayControls(); refreshBatteryLine(); resume()
     if (!isPreviewOnlyMode() && !isAutoReconnectSuppressed() && !deviceAddressError(loadDeviceAddresses())) void controller.connect()
   })
   page.on('unloaded', () => {
     if (keyboardObserver) NSNotificationCenter.defaultCenter.removeObserver(keyboardObserver)
     keyboardObserver = null
     root.paddingBottom = 0
-    pause(); offSettings?.(); offSettings = null
+    pause(); offSettings?.(); offSettings = null; offBattery?.(); offBattery = null
     Application.off(Application.suspendEvent, pause); Application.off(Application.resumeEvent, resume)
   })
   return page

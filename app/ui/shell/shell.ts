@@ -463,6 +463,7 @@ class Shell {
   private lastInput: InputEvent | null = null;
   private battery: ShellChromeState["battery"] = {
     headset: null, headsetCharging: null, ring: null, ringCharging: null, watch: null, watchCharging: null,
+    case: null, caseCharging: null,
   };
   private readonly batteryListeners = new Set<() => void>();
   private attention = new Map<string, boolean>();

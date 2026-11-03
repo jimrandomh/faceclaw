@@ -65,10 +65,15 @@ async function ensurePermissions(
 ): Promise<void> {
   if (!global.isAndroid) return;
 
-  const activity = getActivity();
   const missing = permissions.filter((permission) => !isPermissionGranted(permission));
 
   if (missing.length === 0) return;
+
+  // Only a request needs an Activity. Checking must not: the glasses session
+  // outlives it (swiping the app away in Recents destroys the Activity while
+  // the foreground service keeps the process running), and voice input
+  // checks the microphone permission on every start.
+  const activity = getActivity();
 
   await new Promise<void>((resolve, reject) => {
     const callback = (args: {

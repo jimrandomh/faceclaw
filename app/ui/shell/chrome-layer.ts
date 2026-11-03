@@ -491,6 +491,14 @@ export type ShellChromeState = {
     /** The Wear OS watch (app/g2/wear-remote.ts); null when no watch is reachable. */
     watch: number | null;
     watchCharging: boolean | null;
+    /**
+     * The glasses' charging case, last known (it only reports while the
+     * glasses are docked); null until it does. caseCharging is null while the
+     * glasses are out of the case, where they can't see whether it is on USB.
+     * Shown on the phone, not here.
+     */
+    case: number | null;
+    caseCharging: boolean | null;
   };
   /** App-provided tray images, drawn between notification icons and batteries. */
   trayIcons: ShellChromeTrayIcon[];

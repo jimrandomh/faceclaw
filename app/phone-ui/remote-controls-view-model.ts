@@ -8,6 +8,7 @@ let lastControlsTab: ControlsTab = 'watch';
 /** Shared state and actions for remote-controls.xml; transport stays in the host. */
 export class RemoteControlsViewModel extends Observable {
   private _controlsTab: ControlsTab = lastControlsTab;
+  private _batteryLine = "";
 
   get settingsTabVisibility(): "visible" | "collapse" {
     return this._controlsTab === "settings" ? "visible" : "collapse";
@@ -50,6 +51,19 @@ export class RemoteControlsViewModel extends Observable {
     return this.padDisplayAsleep ? "visible" : "collapse";
   }
 
+  /**
+   * A smaller line under the watch face's status line, or "" to hide it: the
+   * charging case's level while the glasses charge in it. The host overrides
+   * this and notifies padDetailLine and padDetailVisibility when it changes.
+   */
+  get padDetailLine(): string {
+    return "";
+  }
+
+  get padDetailVisibility(): "visible" | "collapse" {
+    return this.padDetailLine ? "visible" : "collapse";
+  }
+
   onSettingsTabTap(): void {
     this.setControlsTab("settings");
   }
@@ -76,7 +90,23 @@ export class RemoteControlsViewModel extends Observable {
     this.notifyPropertyChange("ringTabClass", this.ringTabClass);
   }
 
-  // ---- display mode and brightness, on the Settings tab ----
+  // ---- display mode, brightness and battery levels, on the Settings tab ----
+
+  /** The Settings tab's battery row (formatBatteryLine), or "" to hide it; set by the host. */
+  get batteryLine(): string {
+    return this._batteryLine;
+  }
+
+  set batteryLine(value: string) {
+    if (this._batteryLine === value) return;
+    this._batteryLine = value;
+    this.notifyPropertyChange("batteryLine", value);
+    this.notifyPropertyChange("batteryLineVisibility", this.batteryLineVisibility);
+  }
+
+  get batteryLineVisibility(): "visible" | "collapse" {
+    return this._batteryLine ? "visible" : "collapse";
+  }
 
   get displayModeLabel(): string {
     return displayLayoutSetting.displayValue() + " ▾";

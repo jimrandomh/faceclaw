@@ -12,7 +12,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -64,13 +63,10 @@ fun AmbientScreen(link: PhoneLink, ambient: AmbientMode) {
             maxLines = 1,
             modifier = Modifier.align(Alignment.Center),
         )
-        Text(
-            text = padLine(state, linkStatus).text,
-            style = MaterialTheme.typography.title3,
+        PadStatusText(
+            pad = padLine(state, linkStatus),
             color = statusColor,
-            textAlign = TextAlign.Center,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
+            detailColor = statusColor,
             modifier = Modifier
                 .align(Alignment.Center)
                 .offset(y = 46.dp)

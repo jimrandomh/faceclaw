@@ -42,6 +42,9 @@ class ConnectionOptions {
         // Poll cadence while in charging mode; also bounds how quickly we notice
         // the glasses coming back out of the case.
         const val CHARGING_BATTERY_POLL_MS = 30_000
+        // After the case reports the glasses docking, read the battery this
+        // soon (rather than at the next refresh) so charging mode follows.
+        const val DOCKED_BATTERY_CHECK_DELAY_MS = 3_000
         const val IMAGE_FRAGMENT_SIZE = 3800
         const val IMAGE_RETRY_DELAY_MS = 2_000
         const val MAX_CONSECUTIVE_ACK_TIMEOUTS = 8

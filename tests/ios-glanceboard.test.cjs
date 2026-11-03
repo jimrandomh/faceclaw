@@ -107,7 +107,7 @@ function fixture() {
     constructor() { super(); bridge = this; }
     on(kind, fn) { this.listeners[kind] = fn; return () => { if (this.listeners[kind] === fn) delete this.listeners[kind]; }; }
     onStateChange(fn) { return this.on('state', fn); } onRingEvent(fn) { return this.on('ring', fn); }
-    onWearState(fn) { return this.on('wear', fn); } onBatteryState(fn) { return this.on('battery', fn); } onFirmwareInfo() { return noop(); }
+    onWearState(fn) { return this.on('wear', fn); } onBatteryState(fn) { return this.on('battery', fn); } onCaseState(fn) { return this.on('case', fn); } onFirmwareInfo() { return noop(); }
     onFrameMetrics() { return noop(); } onPreviewAnimationFrame() { return noop(); } addCompassListener() { return noop(); } onAncsRelayFrame() { return noop(); }
     onAncsAuthorization() { return noop(); } setRequiresAncs() {} rightWriteLimit() { return 20; } onPhoneLockSignal() {}
     async writeRawToRight() {} async configureBrightness() {} async setBrightness() {} async enableWearDetectionAndRequestState() {} async playBuzzerSequence() {} async close() {}
@@ -115,6 +115,7 @@ function fixture() {
     emitRing(input) { this.listeners.ring?.(input); }
     emitWear(wearing) { this.listeners.wear?.(wearing); }
     emitBattery(state) { this.listeners.battery?.(state); }
+    emitCase(state) { this.listeners.case?.(state); }
     async start() { this.emitState('connected', 'Connected.'); }
     async disconnect() { this.emitState('disconnected', 'Disconnected.'); }
     waitForFrameFinished() { return Promise.resolve('sent'); }
@@ -266,6 +267,16 @@ test('ring battery reported through the glasses reaches the shell while connecte
   assert.deepEqual([f.battery.ring, f.battery.ringCharging], [40, false]);
   await f.controller.disconnect(); await f.render();
   assert.deepEqual([f.battery.ring, f.battery.ringCharging], [null, null]);
+});
+
+test('the charging case reading reaches the shell and keeps its level once the glasses leave the case', async () => {
+  const f = fixture();
+  await f.connect();
+  f.bridge.emitCase({ battery: 64, charging: true, docked: true });
+  assert.deepEqual([f.battery.case, f.battery.caseCharging], [64, true]);
+  // Out of the case there is no level, and whether the case is on USB is unknown.
+  f.bridge.emitCase({ battery: null, charging: false, docked: false });
+  assert.deepEqual([f.battery.case, f.battery.caseCharging], [64, null]);
 });
 
 test('the switcher can open the Notifications window in the background, once, with a live surface', async () => {
