@@ -209,8 +209,8 @@ function settingsSections(): SettingsSection[] {
     },
     {
       label: "Watch",
-      // Wear OS remote (wear/); the status line above the items says whether
-      // a watch running the companion app is currently reachable.
+      // Watch remote (wear/, apple-watch/); the status line above the items says
+      // whether a watch running the companion app is currently reachable.
       items: [
         toggleSettingMenuItem(watchRemoteEnabledSetting),
         toggleSettingMenuItem(watchCrownClockwiseNextSetting),
@@ -272,17 +272,12 @@ function settingsSections(): SettingsSection[] {
     },
   ];
   if (!global.isIOS) return sections;
-  const deferred = new Set(["Watch"]);
   return sections.map(section => {
     if (section.label === "Developer") return { ...section, items: [enumSettingMenuItem(ringConnectionModeSetting),
       toggleSettingMenuItem(showBleBandwidthSetting)] };
     // No downloadable on-device models: iOS's on-device option is Apple's recognizer.
     if (section.label === "Voice") return { label: "Voice", items: [enumSettingMenuItem(wakeWordActionSetting),
       enumSettingMenuItem(voiceProviderSetting), toggleSettingMenuItem(saveTranscribeAudioSetting), ...whisperServerMenuItems()] };
-    if (deferred.has(section.label)) return { label: section.label, items: [{
-      label: "Not available on iOS yet", disabled: true, onSelect: () => {},
-      description: `${section.label} integration has not been ported to iOS.`,
-    }] };
     if (section.label === "Display") return { ...section, items: section.items.filter(item =>
       item.label !== screenTimeoutSetting.label) };
     return section;
@@ -360,7 +355,7 @@ function batteryIndicatorsMenuItem(): MenuItem {
   return {
     label: "Battery indicators",
     description:
-      "Top-bar battery indicators for the phone, Wear OS watch, glasses, and ring: their style, and whether each shows always, only when low, or never.",
+      "Top-bar battery indicators for the phone, watch, glasses, and ring: their style, and whether each shows always, only when low, or never.",
     onSelect: (ctx) => {
       openSettingsSubMenu(ctx, "Battery indicators", [
         enumSettingMenuItem(batteryDisplayModeSetting),
@@ -603,12 +598,21 @@ function renderWatchStatus(args: { image: GrayImage; x: number; y: number; width
   const font = getDefaultSmallFont();
   let status: string;
   if (!wearBridge.isAvailable()) {
-    status = "Google Play services is unavailable on this phone, so no watch can connect.";
+    status = global.isIOS
+      ? "This device can't pair with an Apple Watch."
+      : "Google Play services is unavailable on this phone, so no watch can connect.";
   } else {
     const connection = wearBridge.getWatchConnection();
-    status = connection.reachable
-      ? `Connected to ${connection.watchName || "a watch"}.`
-      : "No watch connected. Install the Faceclaw watch app (wear/ in the source tree) on a Wear OS watch paired with this phone.";
+    if (global.isIOS) {
+      // iOS only says whether the app is installed; it may not be running.
+      status = connection.reachable
+        ? "The Faceclaw app is installed on your Apple Watch."
+        : "No watch connected. Install the Faceclaw watch app (apple-watch/ in the source tree) on an Apple Watch paired with this iPhone.";
+    } else {
+      status = connection.reachable
+        ? `Connected to ${connection.watchName || "a watch"}.`
+        : "No watch connected. Install the Faceclaw watch app (wear/ in the source tree) on a Wear OS watch paired with this phone.";
+    }
   }
   const lines = wrapText(font, status, width);
   for (let i = 0; i < lines.length; i++) {

@@ -11,4 +11,9 @@
 # iOS bundle ID; set one your signing team owns to sideload alongside the
 # official build (default com.faceclaw.app). Also used by the iOS config scripts.
 #export IOS_BUNDLE_ID=
+# Embed the Apple Watch app in the iOS app. Its link to the phone needs this, and
+# signing it needs a watch registered to your team, so it's off by default.
+#export FACECLAW_EMBED_WATCH=1
+# Which Apple Watch build_apple_watch.sh --install targets (default: the first found)
+#export APPLE_WATCH_DEVICE_ID=
 

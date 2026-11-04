@@ -14,5 +14,6 @@ module FaceclawGraphics {
   header "FaceclawLoopbackRedirect.h"
   header "FaceclawWebSignIn.h"
   header "FaceclawResourceUsage.h"
+  header "FaceclawWatchBridge.h"
   export *
 }

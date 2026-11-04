@@ -163,6 +163,9 @@ section has the phone-side switches. See [wear/README.md](wear/README.md) for
 building and installing it; it is a separate Gradle build, sideloaded over
 adb, and needs no Play Store. The phone side requires Google Play services.
 
+The iOS app has the same remote for Apple Watch, with the same pad and screens;
+see [apple-watch/README.md](apple-watch/README.md).
+
 ## Connecting an external agent (OpenClaw)
 
 Instead of calling an LLM API directly from the phone, the voice assistant

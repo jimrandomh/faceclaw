@@ -2,9 +2,9 @@ import type { RingInput } from "../g2/ring-input";
 
 /**
  * Where an input came from. The ring and the glasses' arms are the stock
- * sources; "watch" is the Wear OS remote, which components may treat with a
- * richer scheme (see isWatchInput) — the ring's semantics are never changed
- * by it.
+ * sources; "watch" is the watch remote (Wear OS or Apple Watch), which
+ * components may treat with a richer scheme (see isWatchInput) — the ring's
+ * semantics are never changed by it.
  */
 export type InputSource = "ring" | "left-arm" | "right-arm" | "watch";
 
@@ -80,7 +80,7 @@ export function makeInputEvent(payload: InputEventPayload): InputEvent {
   return { ...payload, timestampMs: Date.now() };
 }
 
-/** True for input from the Wear OS remote (any type that carries a source). */
+/** True for input from the watch remote (any type that carries a source). */
 export function isWatchInput(event: InputEvent): boolean {
   return "source" in event && event.source === "watch";
 }

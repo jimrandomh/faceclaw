@@ -13,7 +13,14 @@ remote that drives Faceclaw over the Wearable Data Layer. Its phone-side
 counterparts are FaceclawWearBridge.kt, app/native/wear-bridge.ts and
 app/g2/wear-remote.ts; the message format is in wear/PROTOCOL.md.
 
-`build.sh` and `build_wear.sh` build the Android and Wear OS apps respectively.
+apple-watch/ is the same remote for Apple Watch (Swift + SwiftUI), driving the iOS
+app over WatchConnectivity. Its phone-side counterparts are
+App_Resources/iOS/src/FaceclawWatchBridge.m, app/native/wear-bridge.ios.ts and the
+same app/g2/wear-remote.ts. It only links to a phone app that embeds it
+(FACECLAW_EMBED_WATCH=1); see apple-watch/README.md.
+
+`build.sh`, `build_wear.sh` and `build_apple_watch.sh` build the Android, Wear OS
+and Apple Watch apps respectively.
 `build_and_run.sh` builds the Android app then also installs it on a phone
 paired with `adb`. Building may require configuring environment variables
 (JAVA_HOME, ANDROID_HOME, PATH, ANDROID_KEYSTORE, ANDROID_KEYSTORE) to point at

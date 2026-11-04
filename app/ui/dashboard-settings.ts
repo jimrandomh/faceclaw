@@ -298,7 +298,7 @@ export const glassesBatteryVisibilitySetting = batteryVisibilitySetting(
 export const ringBatteryVisibilitySetting = batteryVisibilitySetting(
   "ringBatteryVisibility", "R1", "display.battery.ringVisibility",
 );
-/** The Wear OS watch; the indicator only exists while a watch is reachable. */
+/** The watch; the indicator only exists while a watch is reachable. */
 export const watchBatteryVisibilitySetting = batteryVisibilitySetting(
   "watchBatteryVisibility", "Watch", "display.battery.watchVisibility",
 );
@@ -679,7 +679,7 @@ export const mirrorTouchSetting = new ConfigSettingBoolean({
     "Let touches on the phone's mirror act on the glasses UI: tap selects what it lands on, double-tap goes back, a hold opens the menu, swipes navigate.",
 });
 
-// Wear OS watch remote (app/g2/wear-remote.ts, wear/). All three are read on
+// Watch remote (app/g2/wear-remote.ts, wear/, apple-watch/). All three are read on
 // every watch message, so a change applies immediately.
 export const watchRemoteEnabledSetting = new ConfigSettingBoolean({
   id: "watch-remote-enabled",
@@ -687,7 +687,7 @@ export const watchRemoteEnabledSetting = new ConfigSettingBoolean({
   storageKey: "watch.remoteEnabled",
   defaultValue: true,
   description:
-    "Accept input from the Faceclaw Wear OS app: spatial swipes, taps, holds, crown, voice queries and app commands. The ring's scheme is unaffected. Turn off to ignore the watch.",
+    "Accept input from the Faceclaw watch app: spatial swipes, taps, holds, crown, voice queries and app commands. The ring's scheme is unaffected. Turn off to ignore the watch.",
 });
 
 export const watchCanUnlockSetting = new ConfigSettingBoolean({
