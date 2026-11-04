@@ -37,6 +37,8 @@ import {
   watchCrownClockwiseNextSetting,
   watchMirrorAssistantSetting,
   watchRemoteEnabledSetting,
+  watchSoundEffectsSetting,
+  watchVibrateOnInputSetting,
 } from "../ui/dashboard-settings";
 import { shell, type AssistantActivityEvent } from "../ui/shell/shell";
 import { voiceActivity } from "../ui/shell/voice-activity";
@@ -308,6 +310,8 @@ export class WearRemote {
       apps: this.listApps(),
       remoteEnabled: watchRemoteEnabledSetting.get(),
       crownClockwiseNext: watchCrownClockwiseNextSetting.get(),
+      vibrateOnInput: watchVibrateOnInputSetting.get(),
+      soundEffects: watchSoundEffectsSetting.get(),
       canUnlock: watchCanUnlockSetting.get(),
       mirrorAssistant: watchMirrorAssistantSetting.get(),
       assistantAvailable: shell.isAssistantAvailable(),

@@ -22,33 +22,44 @@ enum CrownSensitivity: String, CaseIterable {
     }
 }
 
-/** Watch-local preferences (nothing here is synced to the phone). */
+/**
+ Crown sensitivity is the watch's own. Vibration and sound follow Settings > Watch on
+ the glasses, through the mirrored state, which the application context keeps for
+ when the phone is out of reach.
+ */
 @MainActor
 @Observable
 final class WatchPrefs {
-    /** Buzz on every gesture sent, and tick on crown detents. */
-    var haptics: Bool {
-        didSet { store.set(haptics, forKey: Keys.haptics) }
-    }
+    /** Confirm each gesture sent, and tick on crown detents. */
+    var haptics: Bool { link.state?.vibrateOnInput ?? true }
+
+    /** Give each gesture its own cue, sound included; see Haptics. */
+    var soundEffects: Bool { link.state?.soundEffects ?? false }
 
     var crownSensitivity: CrownSensitivity {
         didSet { store.set(crownSensitivity.rawValue, forKey: Keys.crown) }
     }
 
+    @ObservationIgnored private let link: PhoneLink
     @ObservationIgnored private let store = UserDefaults.standard
 
     private enum Keys {
-        static let haptics = "haptics"
         static let crown = "crownSensitivity"
     }
 
-    init() {
-        haptics = store.object(forKey: Keys.haptics) as? Bool ?? true
+    init(link: PhoneLink) {
+        self.link = link
         crownSensitivity = store.string(forKey: Keys.crown).flatMap(CrownSensitivity.init(rawValue:)) ?? .normal
     }
 }
 
-/** The wrist's confirmation of what was sent. */
+/**
+ The wrist's confirmation of what was sent. watchOS has no call that plays only a
+ vibration or only a sound: every WKHapticType is both, and only the watch's own Silent
+ Mode mutes the sound. So sound effects on means the full set of cues, which vibrate
+ whatever the vibrate setting says, and off means `.click` for everything. Whether
+ `.click` is truly silent is unconfirmed; see notes/apple-watch-followups.md.
+ */
 @MainActor
 struct Haptics {
     let prefs: WatchPrefs
@@ -62,10 +73,28 @@ struct Haptics {
     /** A reply finished arriving. */
     func done() { play(.success) }
 
-    /** The phone refused or did not answer; always plays. */
-    func error() { WKInterfaceDevice.current().play(.failure) }
-
-    private func play(_ type: WKHapticType) {
-        if prefs.haptics { WKInterfaceDevice.current().play(type) }
+    /** The phone refused or did not answer; always plays, and never feels like a sent gesture. */
+    func error() {
+        let device = WKInterfaceDevice.current()
+        if prefs.soundEffects {
+            device.play(.failure)
+            return
+        }
+        device.play(.click)
+        Task {
+            try? await Task.sleep(nanoseconds: Self.errorTapGapNanos)
+            device.play(.click)
+        }
     }
+
+    private func play(_ cue: WKHapticType) {
+        if prefs.soundEffects {
+            WKInterfaceDevice.current().play(cue)
+        } else if prefs.haptics {
+            WKInterfaceDevice.current().play(.click)
+        }
+    }
+
+    /** Apple's documentation asks for at least 100 ms between haptics. */
+    private static let errorTapGapNanos: UInt64 = 150_000_000
 }

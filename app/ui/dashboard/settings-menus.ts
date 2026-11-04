@@ -94,6 +94,8 @@ import {
   watchCrownClockwiseNextSetting,
   watchMirrorAssistantSetting,
   watchRemoteEnabledSetting,
+  watchSoundEffectsSetting,
+  watchVibrateOnInputSetting,
 } from "../dashboard-settings";
 import { wearBridge } from "../../native/wear-bridge";
 import { openSettingsSubMenu, SettingsPanelLayer, type SettingsSection } from "./settings-panel";
@@ -213,7 +215,12 @@ function settingsSections(): SettingsSection[] {
       // whether a watch running the companion app is currently reachable.
       items: [
         toggleSettingMenuItem(watchRemoteEnabledSetting),
-        toggleSettingMenuItem(watchCrownClockwiseNextSetting),
+        ...(global.isIOS ? [
+          toggleSettingMenuItem(watchVibrateOnInputSetting),
+          toggleSettingMenuItem(watchSoundEffectsSetting),
+        ] : [
+          toggleSettingMenuItem(watchCrownClockwiseNextSetting),
+        ]),
         toggleSettingMenuItem(watchCanUnlockSetting),
         toggleSettingMenuItem(watchMirrorAssistantSetting),
       ],

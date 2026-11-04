@@ -171,8 +171,8 @@ final class PadController {
         let steps = Int(crownRemainder.rounded(.towardZero))
         guard steps != 0 else { return }
         crownRemainder -= Double(steps)
-        let clockwiseNext = link.state?.crownClockwiseNext == true
-        let gesture: RingGesture = (steps > 0) == clockwiseNext ? .scrollDown : .scrollUp
+        // Clockwise moves to the previous item.
+        let gesture: RingGesture = steps > 0 ? .scrollUp : .scrollDown
         guard gestureAllowed(gesture) else { return }
         // Capped low: a fast twirl otherwise outruns the display. The crown's
         // own detent haptics are the feedback, so there's no buzz here.

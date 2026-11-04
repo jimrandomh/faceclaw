@@ -17,7 +17,7 @@ standalone app: without Faceclaw on the iPhone it only tells you to install it.
 | press and hold | the system menu: Focus app switcher, Voice input, Close window (held until you lift your finger; games that use a long press as a move get it instead) |
 | tap, then press and hold | the app's context menu |
 | swipe ↑ ↓ ← → | **spatial navigation**: the launcher moves one app by a row or a column, the settings panel moves between its columns and down its lists, the sidebar moves up and down, Music skips tracks. Right goes *into* things and left comes back *out*. Anywhere without a spatial meaning, up/down scroll, right selects and left goes back. One step per swipe. |
-| turn the crown | previous / next. Clockwise is previous by default; reverse it in the on-glasses Settings > Watch section. Sensitivity is in the watch's own settings. |
+| turn the crown | previous / next; clockwise is previous. Don't count on it: on a real watch the crown has triggered watchOS's own actions instead of reaching the app. Sensitivity is in the watch's own settings. |
 | the Double Tap hand gesture (Series 9, Ultra 2, SE 3 and later, watchOS 11) | select |
 
 Swipe up from the bottom edge to reveal the buttons, and down from them to hide them:
@@ -32,7 +32,8 @@ Swipe up from the bottom edge to reveal the buttons, and down from them to hide 
 - **Status** — connection, display on/off, lock/unlock, whether Faceclaw is
   answering on the iPhone, and the watch's settings.
 
-Phone-side switches live in Faceclaw's Settings > Watch. While the glasses display
+Phone-side switches live in Faceclaw's Settings > Watch, including vibration and
+sound effects. While the glasses display
 is off, a double-tap wakes it and a tap or hold shows the Glanceboard; other gestures
 do nothing. The watch buzzes differently when the phone refuses or doesn't answer a
 gesture, and the pill at the bottom says why.
@@ -46,6 +47,10 @@ These come from what watchOS allows apps to do:
 
 - **No two-finger gestures.** SwiftUI on watchOS only reports one finger.
 - **No side buttons.** The crown press and side button belong to the system.
+- **Vibration and sound come as a pair.** watchOS has no call that plays only one, and
+  only the watch's own Silent Mode mutes the sound. With sound effects off, every input
+  gets a light tap rather than its own cue; with them on, inputs vibrate even if
+  Vibrate on input is off.
 - **The display can't be kept on.** To keep the remote open between glances, set
   Settings > General > Return to Clock > Faceclaw on the watch to a longer time.
 - **The tap that wakes the display does nothing.** The system consumes it, and an
@@ -69,6 +74,7 @@ The watch app is its own Xcode project, so it can be opened and previewed alone:
 ./build_apple_watch.sh             # simulator build, no signing
 ./build_apple_watch.sh --device    # signed build for a real watch
 ./build_apple_watch.sh --install   # as --device, then installs on the paired watch
+npm run install:apple-watch        # the same as --install
 ```
 
 **It only works with a phone app that embeds it.** The system links the two apps

@@ -115,8 +115,9 @@ struct PhoneState: Equatable {
     var windows: [WindowEntry] = []
     var apps: [AppEntry] = []
     var remoteEnabled = true
-    /** False by default: clockwise moves to the previous item. */
-    var crownClockwiseNext = false
+    /** Settings > Watch on the glasses; WatchPrefs and Haptics say what they do. */
+    var vibrateOnInput = true
+    var soundEffects = false
     var canUnlock = true
     var mirrorAssistant = true
     var assistantAvailable = false
@@ -155,7 +156,8 @@ struct PhoneState: Equatable {
         }
         state.apps = (o["apps"] as? [[String: Any]] ?? []).map(appEntry)
         state.remoteEnabled = o["remoteEnabled"] as? Bool ?? true
-        state.crownClockwiseNext = o["crownClockwiseNext"] as? Bool ?? false
+        state.vibrateOnInput = o["vibrateOnInput"] as? Bool ?? true
+        state.soundEffects = o["soundEffects"] as? Bool ?? false
         state.canUnlock = o["canUnlock"] as? Bool ?? true
         state.mirrorAssistant = o["mirrorAssistant"] as? Bool ?? true
         state.assistantAvailable = o["assistantAvailable"] as? Bool ?? false

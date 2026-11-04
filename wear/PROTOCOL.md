@@ -68,6 +68,7 @@ dashboard state, re-sent whenever it changes (and at least every 30 s):
   "windows": [{"windowId": "…", "title": "…", "appId": "…", "focused": true, "closeable": true, "acceptsText": false}],
   "apps": [{"appId": "timer", "title": "Timer"}],
   "remoteEnabled": true, "crownClockwiseNext": false,
+  "vibrateOnInput": true, "soundEffects": false,
   "canUnlock": true, "mirrorAssistant": true,
   "assistantAvailable": true
 }
@@ -86,7 +87,13 @@ The watch shows the case level under the charging line.
 `protocol` is reserved for incompatible revisions of this format (nothing
 checks it yet). `crownClockwiseNext` mirrors the
 on-glasses Settings > Watch toggle; when false (the default), clockwise crown
-rotation sends previous/up, and when true it sends next/down.
+rotation sends previous/up, and when true it sends next/down. Only Wear OS reads
+it, and the toggle only appears on Android; on Apple Watch, clockwise is always
+previous/up.
+
+`vibrateOnInput` and `soundEffects` mirror the Settings > Watch toggles that appear
+on iOS, and only the Apple Watch app reads them. Wear OS keeps its vibration setting
+on the watch and has no sounds.
 
 `apps` is the launcher grid plus installed EvenHub packages, i.e. exactly what
 the assistant's `apps.launch` tool accepts.

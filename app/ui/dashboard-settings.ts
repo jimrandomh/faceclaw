@@ -699,6 +699,7 @@ export const watchCanUnlockSetting = new ConfigSettingBoolean({
     "Let the watch unlock the glasses' lock screen (which otherwise waits for the phone to be unlocked). Your watch is on your wrist; turn this off if you would rather it stay a phone-only unlock.",
 });
 
+// Wear OS only: the Apple Watch's crown doesn't reach the app, so iOS doesn't offer this.
 export const watchCrownClockwiseNextSetting = new ConfigSettingBoolean({
   id: "watch-crown-clockwise-next",
   label: "Clockwise crown = next",
@@ -706,6 +707,26 @@ export const watchCrownClockwiseNextSetting = new ConfigSettingBoolean({
   defaultValue: false,
   description:
     "Choose which crown direction moves to the next item. Off: clockwise moves to the previous item. On: clockwise moves to the next item.",
+});
+
+// Apple Watch only: Wear OS has no sounds, and keeps its vibration setting on the watch.
+// The watch reads these from the mirrored state (apple-watch/Faceclaw/WatchPrefs.swift).
+export const watchVibrateOnInputSetting = new ConfigSettingBoolean({
+  id: "watch-vibrate-on-input",
+  label: "Vibrate on input",
+  storageKey: "watch.vibrateOnInput",
+  defaultValue: true,
+  description:
+    "Adds a slight vibration with each watch input",
+});
+
+export const watchSoundEffectsSetting = new ConfigSettingBoolean({
+  id: "watch-sound-effects",
+  label: "Sound effects",
+  storageKey: "watch.soundEffects",
+  defaultValue: false,
+  description:
+    "On: each input gets its own watchOS feedback, a sound with a vibration (watchOS can't play one alone, so this vibrates even with Vibrate on input off). Off: a light tap for every input. Only Silent Mode on the watch guarantees no sound.",
 });
 
 export const watchMirrorAssistantSetting = new ConfigSettingBoolean({

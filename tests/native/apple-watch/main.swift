@@ -123,7 +123,7 @@ do {
      "screenOn":true,"locked":false,"worn":null,"listening":false,"battery":78,"charging":false,"silentMode":false,
      "caseBattery":64,"caseCharging":null,"foreground":{"appId":"music","title":"Music"},
      "windows":[{"windowId":"w1","title":"Music","appId":"music","focused":true,"closeable":false,"acceptsText":true}],
-     "apps":[{"appId":"timer","title":"Timer"}],"remoteEnabled":true,"crownClockwiseNext":true,"canUnlock":false,
+     "apps":[{"appId":"timer","title":"Timer"}],"remoteEnabled":true,"vibrateOnInput":false,"soundEffects":true,"canUnlock":false,
      "mirrorAssistant":true,"assistantAvailable":true}
     """
     let state = PhoneState.parse(json, updatedAt: 42)
@@ -134,7 +134,7 @@ do {
     check(state?.foreground == AppEntry(appId: "music", title: "Music"), "foreground")
     check(state?.windows.first?.acceptsText == true && state?.windows.first?.closeable == false, "window flags")
     check(state?.apps.map(\.appId) == ["timer"], "apps")
-    check(state?.crownClockwiseNext == true && state?.canUnlock == false, "settings")
+    check(state?.vibrateOnInput == false && state?.soundEffects == true && state?.canUnlock == false, "settings")
     check(state?.updatedAt == 42, "updatedAt")
 }
 
@@ -143,6 +143,7 @@ do {
     let state = PhoneState.parse("{\"battery\":140,\"unknownField\":[1,2]}", updatedAt: 0)
     check(state?.battery == nil, "out-of-range percentage is unknown")
     check(state?.remoteEnabled == true && state?.canUnlock == true, "permissive defaults")
+    check(state?.vibrateOnInput == true && state?.soundEffects == false, "feedback defaults")
     check(state?.phase == "disconnected" && state?.takesInput == false, "disconnected default")
     check(PhoneState.parse("not json", updatedAt: 0) == nil, "garbage is rejected")
     check(PhoneState.parse("[1]", updatedAt: 0) == nil, "a non-object is rejected")

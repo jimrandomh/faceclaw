@@ -7,7 +7,7 @@ struct FaceclawWatchApp: App {
 
     init() {
         link = PhoneLink()
-        prefs = WatchPrefs()
+        prefs = WatchPrefs(link: link)
         // Here rather than in a view: a background launch never builds one.
         link.start()
     }

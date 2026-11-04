@@ -340,20 +340,23 @@ struct StatusScreen: View {
 
 // MARK: - Settings
 
-/** Watch-local preferences: feel of the pad and crown. */
+/** Watch-local preferences: feel of the crown. */
 struct SettingsScreen: View {
     @Environment(WatchPrefs.self) private var prefs
 
     var body: some View {
-        @Bindable var prefs = prefs
         ScrollView {
             VStack(spacing: 4) {
-                Toggle("Vibrate on input", isOn: $prefs.haptics)
                 Button {
                     prefs.crownSensitivity = prefs.crownSensitivity.next
                 } label: {
                     RowLabel(title: "Crown sensitivity", detail: prefs.crownSensitivity.rawValue)
                 }
+                Text("Vibration and sound effects are in Settings > Watch on the glasses.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.top, 6)
                 Text("To keep the remote open between glances, set Settings > General > Return to Clock > Faceclaw on the watch.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)

@@ -127,6 +127,7 @@ function loadRemote({ phase = 'disconnected', preview = false, now = 1_800_000_0
       '../ui/dashboard-settings': {
         onAnySettingChanged() {}, watchCanUnlockSetting: setting(true), watchCrownClockwiseNextSetting: setting(false),
         watchMirrorAssistantSetting: setting(true), watchRemoteEnabledSetting: setting(true),
+        watchVibrateOnInputSetting: setting(true), watchSoundEffectsSetting: setting(false),
       },
       '../ui/shell/shell': { shell },
       '../ui/shell/voice-activity': { voiceActivity: { subscribe() {}, isActive: () => false } },
@@ -205,6 +206,12 @@ test('a watch that does not know its battery shows no level, not an empty one', 
   deliver('/faceclaw/battery', { battery: null, charging: false });
   await settle();
   assert.equal(levels.watch, null);
+});
+
+test('the mirrored state carries the Apple Watch feedback settings', () => {
+  const state = loadRemote({ preview: true }).remote.buildState();
+  assert.equal(state.vibrateOnInput, true);
+  assert.equal(state.soundEffects, false);
 });
 
 test('the mirrored state says when gestures are landing on the preview', () => {
