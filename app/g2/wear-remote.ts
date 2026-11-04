@@ -1,5 +1,6 @@
 /**
- * The Wear OS watch as an input device and status mirror for the glasses.
+ * The watch (Wear OS or Apple Watch) as an input device and status mirror for
+ * the glasses.
  *
  * Inbound, the watch sends ring-style gestures (tap, double-tap, hold,
  * swipe/crown scrolls, "Hey Even") which feed the exact synthetic-ring path
@@ -17,11 +18,14 @@
  * The watch's own battery flows the other way for the glasses' top-bar and
  * Glanceboard indicators: the phone polls it (the watch answers from a
  * listener service even while its app is closed) and the open watch app
- * pushes changes unprompted. The level lives in shell.getBatteryLevels()
- * beside the G2 and R1 ones and is cleared when no watch is reachable.
+ * pushes changes unprompted. An Apple Watch app can't be woken to answer, so
+ * it reports when it can instead (see wear/PROTOCOL.md). The level lives in
+ * shell.getBatteryLevels() beside the G2 and R1 ones and is cleared when no
+ * watch is reachable or the last report has gone stale.
  *
- * Transport is app/native/wear-bridge.ts (Java FaceclawWearBridge); the
- * message shapes are documented in wear/PROTOCOL.md.
+ * Transport is app/native/wear-bridge.ts (Java FaceclawWearBridge) or
+ * wear-bridge.ios.ts (FaceclawWatchBridge); the message shapes are documented
+ * in wear/PROTOCOL.md.
  */
 import { flagAnalyticsEvent } from "../analytics/analytics";
 import { type AppDefinition } from "../apps/app-definition";
@@ -33,6 +37,8 @@ import {
   watchCrownClockwiseNextSetting,
   watchMirrorAssistantSetting,
   watchRemoteEnabledSetting,
+  watchSoundEffectsSetting,
+  watchVibrateOnInputSetting,
 } from "../ui/dashboard-settings";
 import { shell, type AssistantActivityEvent } from "../ui/shell/shell";
 import { voiceActivity } from "../ui/shell/voice-activity";
@@ -102,6 +108,10 @@ const WATCH_BATTERY_POLL_INTERVAL_MS = 5 * 60_000;
 // glasses connecting) would otherwise trigger back to back.
 const WATCH_BATTERY_POLL_MIN_GAP_MS = 20_000;
 const WATCH_BATTERY_URGENT_POLL_LIMIT = 3;
+// Wear OS answers every poll. A closed Apple Watch app only reports when the
+// system gives it background time, which can be hours apart, so a level this
+// old says more about the watch being gone than about its charge.
+const WATCH_BATTERY_MAX_AGE_MS = 4 * 60 * 60_000;
 
 /** What the dashboard controller lends the watch remote. */
 export type WearRemoteHost = {
@@ -113,6 +123,11 @@ export type WearRemoteHost = {
   disconnect: () => Promise<void>;
   setGlassesLocked: (locked: boolean, reason: string) => void;
   requestShellRender: () => void;
+  /**
+   * The shell is running on the phone's preview with no glasses involved, so
+   * gestures have somewhere to go even though nothing is connected.
+   */
+  previewInputActive?: () => boolean;
   getState: () => {
     phase: string;
     status: string;
@@ -136,6 +151,7 @@ export class WearRemote {
   private lastAssistantSentAtMs = 0;
   private lastWatchBatteryPollAtMs = 0;
   private watchBatteryKnown = false;
+  private watchBatteryReportedAtMs = 0;
   // Urgent polls that got no answer; a watch app too old to answer them
   // must not be poked every publish, so after a few the cadence drops back.
   private watchBatteryPollsUnanswered = 0;
@@ -143,7 +159,7 @@ export class WearRemote {
   constructor(private readonly host: WearRemoteHost) {
     this.active = wearBridge.isAvailable();
     if (!this.active) {
-      host.appendLog("watch: Google Play services unavailable; watch remote disabled");
+      host.appendLog(`watch: ${global.isIOS ? "WatchConnectivity" : "Google Play services"} unavailable; watch remote disabled`);
       return;
     }
     wearBridge.onMessage((message) => {
@@ -183,8 +199,23 @@ export class WearRemote {
     // Catch-all refresh for state the controller does not announce (cheap:
     // identical states are dropped on the Java side).
     setInterval(() => this.schedulePublish(), STATE_REFRESH_INTERVAL_MS);
-    setInterval(() => this.pollWatchBattery(false), WATCH_BATTERY_POLL_INTERVAL_MS);
+    setInterval(() => {
+      this.expireWatchBattery();
+      this.pollWatchBattery(false);
+    }, WATCH_BATTERY_POLL_INTERVAL_MS);
     this.schedulePublish();
+  }
+
+  /** Gestures have a display to act on: the glasses, or the phone's preview without them. */
+  private takesInput(): boolean {
+    const phase = this.host.getState().phase;
+    return phase === "connected" || phase === "charging" || this.host.previewInputActive?.() === true;
+  }
+
+  private expireWatchBattery(): void {
+    if (this.watchBatteryKnown && Date.now() - this.watchBatteryReportedAtMs > WATCH_BATTERY_MAX_AGE_MS) {
+      this.setWatchBattery(null, null);
+    }
   }
 
   /**
@@ -257,6 +288,7 @@ export class WearRemote {
       phase: state.phase,
       status: state.status,
       connected: state.phase === "connected" || state.phase === "charging",
+      preview: this.host.previewInputActive?.() === true,
       screenOn: shell.isScreenOn(),
       locked: state.glassesLocked,
       worn: state.glassesWorn,
@@ -278,6 +310,8 @@ export class WearRemote {
       apps: this.listApps(),
       remoteEnabled: watchRemoteEnabledSetting.get(),
       crownClockwiseNext: watchCrownClockwiseNextSetting.get(),
+      vibrateOnInput: watchVibrateOnInputSetting.get(),
+      soundEffects: watchSoundEffectsSetting.get(),
       canUnlock: watchCanUnlockSetting.get(),
       mirrorAssistant: watchMirrorAssistantSetting.get(),
       assistantAvailable: shell.isAssistantAvailable(),
@@ -307,7 +341,11 @@ export class WearRemote {
       // acked (the watch sends it fire-and-forget, without a seq).
       this.watchBatteryPollsUnanswered = 0;
       const battery = readNumber(message.payload.battery, -1);
-      const valid = Number.isInteger(battery) && battery >= 0 && battery <= 100;
+      // A report the watch left behind earlier says when it was taken; a live one is current.
+      const reportedAtMs = readNumber(message.payload.at, Date.now());
+      const valid = Number.isInteger(battery) && battery >= 0 && battery <= 100 &&
+        Date.now() - reportedAtMs <= WATCH_BATTERY_MAX_AGE_MS;
+      this.watchBatteryReportedAtMs = reportedAtMs;
       this.setWatchBattery(valid ? battery : null, valid ? message.payload.charging === true : null);
       return;
     }
@@ -315,8 +353,7 @@ export class WearRemote {
       // Touch-down ahead of the gesture that follows it. Fire-and-forget like
       // the battery (no seq, never acked): wherever that gesture would be
       // refused, the press is dropped silently and the gesture's ack says why.
-      const phase = this.host.getState().phase;
-      if (watchRemoteEnabledSetting.get() && (phase === "connected" || phase === "charging")) {
+      if (watchRemoteEnabledSetting.get() && this.takesInput()) {
         await this.host.injectInput("ring-press");
       }
       return;
@@ -378,8 +415,7 @@ export class WearRemote {
       return;
     }
     const kind = gesture as WearRemoteInputKind;
-    const state = this.host.getState();
-    if (state.phase !== "connected" && state.phase !== "charging") {
+    if (!this.takesInput()) {
       ack(false, "The glasses are not connected.");
       return;
     }
@@ -422,7 +458,7 @@ export class WearRemote {
       default:
         break;
     }
-    if (!connected) {
+    if (!this.takesInput()) {
       ack(false, "The glasses are not connected.");
       return;
     }
@@ -561,6 +597,8 @@ export class WearRemote {
 }
 
 function readNumber(value: unknown, fallback: number): number {
+  // Number(null) is 0: a watch reporting an unknown battery would read as empty.
+  if (value === null) return fallback;
   const numeric = typeof value === "number" ? value : Number(value);
   return Number.isFinite(numeric) ? numeric : fallback;
 }

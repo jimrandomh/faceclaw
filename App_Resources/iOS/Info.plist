@@ -57,6 +57,26 @@
   <string>Faceclaw connects to the terminal servers and developer app URLs you configure on your local network.</string>
   <key>UILaunchScreen</key>
   <dict/>
+  <!-- Required: an app built with the iOS 27 SDK crashes at launch without the scene
+       life cycle. @nativescript/core switches to it when it sees this key. Its side effect:
+       the root page only loads once a scene connects, not on a background launch. -->
+  <key>UIApplicationSceneManifest</key>
+  <dict>
+    <key>UIApplicationSupportsMultipleScenes</key>
+    <false/>
+    <key>UISceneConfigurations</key>
+    <dict>
+      <key>UIWindowSceneSessionRoleApplication</key>
+      <array>
+        <dict>
+          <key>UISceneConfigurationName</key>
+          <string>Default Configuration</string>
+          <key>UISceneDelegateClassName</key>
+          <string>SceneDelegate</string>
+        </dict>
+      </array>
+    </dict>
+  </dict>
   <key>UISupportedInterfaceOrientations</key>
   <array>
     <string>UIInterfaceOrientationPortrait</string>

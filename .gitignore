@@ -70,3 +70,9 @@ tests/kotlin/build/
 
 # tools/health-preview.cjs output (rendered PNGs, regenerate with the tool)
 preview/
+
+# Apple Watch app: build output, and the settings build_apple_watch.sh writes from build_paths.sh
+apple-watch/build/
+apple-watch/Local.xcconfig
+App_Resources/iOS/watchapp/
+xcuserdata/

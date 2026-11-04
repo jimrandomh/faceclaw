@@ -307,7 +307,7 @@ export const glassesBatteryVisibilitySetting = batteryVisibilitySetting(
 export const ringBatteryVisibilitySetting = batteryVisibilitySetting(
   "ringBatteryVisibility", "R1", "display.battery.ringVisibility",
 );
-/** The Wear OS watch; the indicator only exists while a watch is reachable. */
+/** The watch; the indicator only exists while a watch is reachable. */
 export const watchBatteryVisibilitySetting = batteryVisibilitySetting(
   "watchBatteryVisibility", "Watch", "display.battery.watchVisibility",
 );
@@ -702,7 +702,7 @@ export const mirrorTouchSetting = new ConfigSettingBoolean({
     "Let touches on the phone's mirror act on the glasses UI: tap selects what it lands on, double-tap goes back, a hold opens the menu, swipes navigate.",
 });
 
-// Wear OS watch remote (app/g2/wear-remote.ts, wear/). All three are read on
+// Watch remote (app/g2/wear-remote.ts, wear/, apple-watch/). All three are read on
 // every watch message, so a change applies immediately.
 export const watchRemoteEnabledSetting = new ConfigSettingBoolean({
   id: "watch-remote-enabled",
@@ -710,7 +710,7 @@ export const watchRemoteEnabledSetting = new ConfigSettingBoolean({
   storageKey: "watch.remoteEnabled",
   defaultValue: true,
   description:
-    "Accept input from the Faceclaw Wear OS app: spatial swipes, taps, holds, crown, voice queries and app commands. The ring's scheme is unaffected. Turn off to ignore the watch.",
+    "Accept input from the Faceclaw watch app: spatial swipes, taps, holds, crown, voice queries and app commands. The ring's scheme is unaffected. Turn off to ignore the watch.",
 });
 
 export const watchCanUnlockSetting = new ConfigSettingBoolean({
@@ -722,6 +722,7 @@ export const watchCanUnlockSetting = new ConfigSettingBoolean({
     "Let the watch unlock the glasses' lock screen (which otherwise waits for the phone to be unlocked). Your watch is on your wrist; turn this off if you would rather it stay a phone-only unlock.",
 });
 
+// Wear OS only: the Apple Watch's crown doesn't reach the app, so iOS doesn't offer this.
 export const watchCrownClockwiseNextSetting = new ConfigSettingBoolean({
   id: "watch-crown-clockwise-next",
   label: "Clockwise crown = next",
@@ -729,6 +730,26 @@ export const watchCrownClockwiseNextSetting = new ConfigSettingBoolean({
   defaultValue: false,
   description:
     "Choose which crown direction moves to the next item. Off: clockwise moves to the previous item. On: clockwise moves to the next item.",
+});
+
+// Apple Watch only: Wear OS has no sounds, and keeps its vibration setting on the watch.
+// The watch reads these from the mirrored state (apple-watch/Faceclaw/WatchPrefs.swift).
+export const watchVibrateOnInputSetting = new ConfigSettingBoolean({
+  id: "watch-vibrate-on-input",
+  label: "Vibrate on input",
+  storageKey: "watch.vibrateOnInput",
+  defaultValue: true,
+  description:
+    "Adds a slight vibration with each watch input",
+});
+
+export const watchSoundEffectsSetting = new ConfigSettingBoolean({
+  id: "watch-sound-effects",
+  label: "Sound effects",
+  storageKey: "watch.soundEffects",
+  defaultValue: false,
+  description:
+    "On: each input gets its own watchOS feedback, a sound with a vibration (watchOS can't play one alone, so this vibrates even with Vibrate on input off). Off: a light tap for every input. Only Silent Mode on the watch guarantees no sound.",
 });
 
 export const watchMirrorAssistantSetting = new ConfigSettingBoolean({

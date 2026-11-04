@@ -29,7 +29,8 @@ import { OsEventTypeList } from './events'
 import { loadDeviceAddresses } from './device-addresses'
 import { updateGlassesPresence } from './glasses-presence'
 import { firmwareIncompatibilityMessage, hasCompatibleFirmware } from './firmware-compat'
-import { isHaltedSessionPhase, suppressAutoReconnect } from './reconnect-policy'
+import { isHaltedSessionPhase, resumeAutoReconnect, suppressAutoReconnect } from './reconnect-policy'
+import { WearRemote, type WearRemoteInputKind } from './wear-remote'
 import { deviceAddressError } from './ios-peripheral-identity'
 import { createLauncherWindow, LAUNCHER_SURFACE_ID } from '../apps/launcher/launcher-app'
 import { createNotificationsAppWindow, NOTIFICATIONS_SURFACE_ID, NOTIFICATIONS_WINDOW_ID } from '../apps/notifications/notifications-app'
@@ -167,6 +168,8 @@ export class IosPreviewController {
   private continuousPending = false
   private continuousCaptureToken = 0
   private sessionConnected = false
+  /** The Apple Watch remote; constructed last so it sees a fully wired shell. */
+  private wearRemote: WearRemote | null = null
   private readonly actions: LayerActions = {
     ...noopLayerActions,
     playBuzzerSequence: payload => this.communicator?.playBuzzerSequence(payload),
@@ -210,7 +213,7 @@ export class IosPreviewController {
       prepareVoiceCapture: () => this.prepareVoiceCapture(),
       getScreenTimeoutMs: () => null,
       requestShellRender: () => this.requestShellRender(),
-      onWindowsChanged: () => { this.requestShellRender(); this.syncEvenHubPhoneUi() },
+      onWindowsChanged: () => { this.requestShellRender(); this.syncEvenHubPhoneUi(); this.wearRemote?.schedulePublish() },
       openNotificationsWindow: () =>
         this.openInProcessAppInBackground(NOTIFICATIONS_WINDOW_ID, NOTIFICATIONS_SURFACE_ID, createNotificationsAppWindow),
       onSwitcherBarHeightChanged: () => {
@@ -227,6 +230,7 @@ export class IosPreviewController {
         this.unblankAfterShellRender = on
         if (!on) void this.display?.setScreenBlanked(true).catch(error => this.fail(error))
         this.requestShellRender()
+        this.wearRemote?.schedulePublish()
       },
     })
     const launcher = createLauncherWindow({
@@ -275,6 +279,20 @@ export class IosPreviewController {
     // Every capture end (drained, failed, replaced) may leave continuous capture to restart.
     iosVoiceInput.onSpeechEnd(() => this.syncContinuousCapture())
     for (const app of ALL_APPS) if (app.appId !== 'launcher' && !iosAppUnavailableReason(app.appId)) app.boot?.(this.buildAppContext(app))
+    this.wearRemote = new WearRemote({
+      apps: ALL_APPS.filter(app => app.showInLauncher !== false && !iosAppUnavailableReason(app.appId)),
+      injectInput: kind => this.injectWatchInput(kind),
+      launchApp: id => this.launchApp(id),
+      // The watch's Connect/Disconnect are explicit user choices, like the phone's own buttons.
+      connect: () => { resumeAutoReconnect(); return this.connect(true) },
+      disconnect: () => { suppressAutoReconnect(); return this.disconnect() },
+      setGlassesLocked: locked => this.setGlassesLocked(locked),
+      requestShellRender: () => this.requestShellRender(),
+      previewInputActive: () => !this.communicator && this.runtimeRunning,
+      getState: () => ({ phase: this.state.phase, status: this.state.status, glassesLocked: this.glassesLocked,
+        glassesWorn: this.glassesWorn, silentMode: false, lastHeadsetBattery: this.state.battery }),
+      appendLog: line => this.logBluetooth(line),
+    })
   }
 
   /** The compositor frames go to: the live session, else the headless preview. */
@@ -443,6 +461,7 @@ export class IosPreviewController {
     // a session's first snapshot) wakes the screen, to the lock notice if locked.
     const putOn = wearing && this.glassesWorn === false
     this.glassesWorn = wearing
+    this.wearRemote?.schedulePublish()
     this.syncPresence()
     this.logBluetooth(`Glasses wear state: ${wearing ? 'ON_HEAD' : 'OFF_HEAD'}`)
     if (!wearing && this.phoneLocked && this.lockEnabled) this.setGlassesLocked(true)
@@ -451,6 +470,7 @@ export class IosPreviewController {
   private setGlassesLocked(locked: boolean): void {
     if (locked === this.glassesLocked) return
     this.glassesLocked = locked
+    this.wearRemote?.schedulePublish()
     if (locked) {
       this.glance.dismiss()
       if (iosVoiceInput.continuousSource === 'glasses') this.continuousPending = true
@@ -599,7 +619,25 @@ export class IosPreviewController {
       console.log(`[ios-preview] ${origin} ${gesture}: ${shell.describeInputTarget()}`)
     }).catch(error => this.fail(error))
   }
+  /** Input from the Apple Watch: shares the controller queue with physical input. */
+  private injectWatchInput(kind: WearRemoteInputKind): Promise<void> {
+    const task = this.inputQueue.then(async () => {
+      this.onActivity()
+      // As on Android, and because the watch may be acting on a stale state snapshot: a dark
+      // display takes a double-click (wake) or a tap/hold (Glanceboard), and scrolls mean nothing.
+      if (!shell.isScreenOn() && (kind === 'scroll-up' || kind === 'scroll-down' || kind === 'short-then-long-press')) return
+      // A real hold releases when the finger lifts; a discrete long-press releases at once.
+      const type = kind === 'long-press-start' ? 'long-press' : kind
+      await this.receiveInput(makeInputEvent({ type, source: 'watch' } as InputEventPayload))
+      if (kind === 'long-press') await this.receiveInput(makeInputEvent({ type: 'long-press-release', source: 'watch' }))
+      console.log(`[ios-preview] apple-watch ${kind}: ${shell.describeInputTarget()}`)
+    })
+    this.inputQueue = task.catch(error => this.fail(error))
+    return task
+  }
   private async receiveInput(event: InputEvent, headTilt = false): Promise<void> {
+    // Input can change the foreground app or the display state, and the shell doesn't announce those.
+    this.wearRemote?.schedulePublish()
     if (!acceptInput(event)) return
     if (this.glassesLocked) {
       // Preserve the locked display's sleep/wake controls without dispatching
@@ -807,6 +845,7 @@ export class IosPreviewController {
     this.syncRuntime()
     if (this.active) this.onConnectionState({ ...this.state })
     this.requestShellRender()
+    this.wearRemote?.schedulePublish()
   }
   /** The ring level arrives through the glasses, so like Android it is shown only while connected. */
   private pushBatteryLevels(): void {
@@ -814,11 +853,16 @@ export class IosPreviewController {
     shell.setBatteryLevels({ headset: this.state.battery, headsetCharging: this.state.charging,
       ring: connected ? this.state.ringBattery : null, ringCharging: connected ? this.state.ringCharging : null })
   }
-  async connect(): Promise<void> {
-    if (!this.active || this.connecting || this.stopping) return
+  /** `fromBackground`: the watch asked, and the phone may be in a pocket with the app suspended. */
+  async connect(fromBackground = false): Promise<void> {
+    if ((!this.active && !fromBackground) || this.connecting || this.stopping) return
     if (this.communicator && ['connecting', 'connected', 'retrying', 'disconnecting'].includes(this.state.phase)) return
     const addresses = loadDeviceAddresses(), error = deviceAddressError(addresses)
-    if (error) { this.onError(error); return }
+    if (error) {
+      if (this.active) this.onError(error)
+      else this.logBluetooth(error)
+      return
+    }
     this.connecting = true
     this.sessionCreated = true
     try {
@@ -882,6 +926,7 @@ export class IosPreviewController {
         this.pushBatteryLevels()
         if (this.active) this.onConnectionState({ ...this.state })
         this.requestShellRender()
+        this.wearRemote?.schedulePublish()
       }),
       communicator.onCaseState(state => {
         if (this.communicator !== communicator) return
@@ -889,6 +934,7 @@ export class IosPreviewController {
         // the case's own charging is only known while the glasses are docked.
         shell.setBatteryLevels({ ...(state.battery !== null ? { case: state.battery } : {}),
           caseCharging: state.docked ? state.charging : null })
+        this.wearRemote?.schedulePublish()
       }),
       communicator.onFirmwareInfo(info => {
         if (this.communicator !== communicator) return

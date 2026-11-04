@@ -1,5 +1,10 @@
 # Watch ⇄ phone protocol
 
+The Wear OS and Apple Watch apps speak the same messages over different
+transports, and `app/g2/wear-remote.ts` gives them their meaning on both phones.
+This document describes the messages and the Wear OS transport; see "Apple Watch
+transport" at the end for what differs there.
+
 Transport: the Wearable Data Layer (Google Play services). Both apps share the
 `com.faceclaw.app` application id and, for release builds, the signing key —
 the Data Layer routes only between matching apps. Payloads are UTF-8 JSON
@@ -55,7 +60,7 @@ dashboard state, re-sent whenever it changes (and at least every 30 s):
 ```json
 {
   "protocol": 1, "version": "…",
-  "phase": "connected", "status": "…", "connected": true,
+  "phase": "connected", "status": "…", "connected": true, "preview": false,
   "screenOn": true, "locked": false, "worn": true, "listening": false,
   "battery": 78, "charging": false, "silentMode": false,
   "caseBattery": 64, "caseCharging": true,
@@ -63,6 +68,7 @@ dashboard state, re-sent whenever it changes (and at least every 30 s):
   "windows": [{"windowId": "…", "title": "…", "appId": "…", "focused": true, "closeable": true, "acceptsText": false}],
   "apps": [{"appId": "timer", "title": "Timer"}],
   "remoteEnabled": true, "crownClockwiseNext": false,
+  "vibrateOnInput": true, "soundEffects": false,
   "canUnlock": true, "mirrorAssistant": true,
   "assistantAvailable": true
 }
@@ -81,7 +87,47 @@ The watch shows the case level under the charging line.
 `protocol` is reserved for incompatible revisions of this format (nothing
 checks it yet). `crownClockwiseNext` mirrors the
 on-glasses Settings > Watch toggle; when false (the default), clockwise crown
-rotation sends previous/up, and when true it sends next/down.
+rotation sends previous/up, and when true it sends next/down. Only Wear OS reads
+it, and the toggle only appears on Android; on Apple Watch, clockwise is always
+previous/up.
+
+`vibrateOnInput` and `soundEffects` mirror the Settings > Watch toggles that appear
+on iOS, and only the Apple Watch app reads them. Wear OS keeps its vibration setting
+on the watch and has no sounds.
 
 `apps` is the launcher grid plus installed EvenHub packages, i.e. exactly what
 the assistant's `apps.launch` tool accepts.
+
+`preview` says gestures are landing on the phone's own display preview, with no
+glasses involved: `connected` stays false, but input isn't refused. Only the iOS
+app sets it for now.
+
+## Apple Watch transport
+
+Transport: WatchConnectivity. Phone side:
+`App_Resources/iOS/src/FaceclawWatchBridge.m` (transport),
+`app/native/wear-bridge.ios.ts` (JS wrapper). Watch side:
+`apple-watch/Faceclaw/PhoneLink.swift`, `Protocol.swift`.
+
+The system only links the two apps when the watch app's
+`WKCompanionAppBundleIdentifier` names the phone app, its bundle ID begins with
+the phone app's, **and the phone app's bundle embeds it in `Watch/`**; installing
+each app separately leaves both sides reporting the other as not installed. See
+`apple-watch/README.md`.
+
+A message is a dictionary `{path, json}`, where `json` is the JSON payload above;
+every path and payload is unchanged. `sendMessage` is used with no reply handler,
+and acks are ordinary `/faceclaw/ack` messages. What differs follows from one fact:
+**the phone can't wake the watch app, and the app is suspended whenever the wrist
+drops.** The watch can wake the phone app, and does so with any message.
+
+| Wear OS | Apple Watch |
+| --- | --- |
+| `/faceclaw/state` is a Data Layer item | The application context, `{json, updatedAt}`, for the app's next wake. While the app is in front it's also sent live as `{path: "/faceclaw/state", json, updatedAt}`, since context delivery can lag. Whichever `updatedAt` is newer wins. |
+| `/faceclaw/event` is lost if the app is closed | Also sent live, with `at`. All but `streaming` snapshots also stay in the context as `{event, eventAt}`, so a reply that finished with the wrist down is there on the next raise. The watch drops anything not newer than the last `at`, and ignores a stale context event (assistant after 10 minutes, alert after 1). |
+| `/faceclaw/battery/request` wakes a listener service | Only reaches an app in front. The app reports on open, every minute while open, and when the system grants it background time (asked for every 30 minutes), leaving `{battery: <json>}` in its own context for the phone to find. The payload adds `at` (ms), and the phone treats a level over 4 hours old as unknown. |
+| "Reachable" is a capability query | `isPaired && isWatchAppInstalled`, whether or not the app is running. Live reachability changes also fire the connection callback, which is what pushes fresh state to an app coming to the front. |
+| `nodeId` routes acks | Unused: a session has one counterpart. |
+
+`isReachable` lags a moment behind a wrist raise, so the watch holds gestures for up
+to 1.5 s rather than failing them. Touch-downs (`/faceclaw/press`) are never held.
