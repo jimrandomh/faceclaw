@@ -196,7 +196,7 @@ internal fun GlassesSessionCore.driveSession(): Long {
                 if (benchmarkActive) {
                     maintainBenchmarkLocked(now)
                 }
-                if (!benchmarkActive && !isIo) maintainBrightnessLocked(now)
+                if (!benchmarkActive && (!isIo || ioFirmwareOwnsBrightness)) maintainBrightnessLocked(now)
 
                 // Up to WINDOW_SIZE messages may be in flight at once (full
                 // pipelining); a slot frees when an ack arrives. An active
@@ -1363,6 +1363,7 @@ internal fun GlassesSessionCore.clearAllMessagesLocked(reason: String) {
     brightnessSentVisible = null
     brightnessSentLevel = -1
     brightnessAlsStartedAt = -2000
+    io.alsIntervalSent = -1
     clearPendingMessagesLocked(reason)
     clearInFlightMessagesLocked(reason)
     // The image pipeline is gone: drop the pipelined delta base so the next
@@ -1384,6 +1385,7 @@ internal fun GlassesSessionCore.clearAllMessagesPreservingWakeLeaseLocked(reason
     brightnessSentVisible = null
     brightnessSentLevel = -1
     brightnessAlsStartedAt = -2000
+    io.alsIntervalSent = -1
     val pendingIterator = pendingMessages.iterator()
     while (pendingIterator.hasNext()) {
         val message = pendingIterator.next()

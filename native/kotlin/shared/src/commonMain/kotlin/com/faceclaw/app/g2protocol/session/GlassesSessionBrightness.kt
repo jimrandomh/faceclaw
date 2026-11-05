@@ -5,9 +5,9 @@ package com.faceclaw.app
  * frames, so wake starts on the intended PRESENT, never on an older black frame. */
 internal fun GlassesSessionCore.enqueueBrightnessLocked(frameVisible: Boolean? = null) {
     if (isIo) {
-        // The iO has no CFW brightness; ioMaintain drives the launcher's (and the screen) instead.
         ioNoteFrameVisibleLocked(frameVisible)
-        return
+        // Older iO firmware has no message 30; ioMaintain drives the launcher's (and the screen) instead.
+        if (!ioFirmwareOwnsBrightness) return
     }
     if (!customFirmwareDetected || !sessionReady || !fixedLayoutCreated || shutdownRequested) return
     val visible = frameVisible ?: brightnessSentVisible ?: return
@@ -30,18 +30,22 @@ internal fun GlassesSessionCore.enqueueBrightnessLocked(frameVisible: Boolean? =
     pendingMessages.addLast(message)
     brightnessSentLevel = target
     brightnessSentVisible = visible
+    if (isIo) io.lastBrightnessAtMs = now()
 }
 
 internal fun GlassesSessionCore.maintainBrightnessLocked(now: Long) {
     if (!customFirmwareDetected || !sessionReady || !fixedLayoutCreated || shutdownRequested) return
     // Passive polling owns stock ALS even in manual mode. Slower manual polling
     // keeps stock from writing the panel without needlessly streaming samples.
-    if (now - brightnessAlsStartedAt >= 2000 && !hasPendingOrInflightKindLocked("als-control")) {
-        val interval = if (brightnessDemoPolling) 250 else if (brightnessPolicy.automatic) 500 else 5000
+    val interval = if (brightnessDemoPolling) 250 else if (brightnessPolicy.automatic) 500 else 5000
+    // The G2's stock can close the sensor, so it hears this again; the iO's polling lasts as long as the page.
+    val alsDue = if (isIo) interval != io.alsIntervalSent else now - brightnessAlsStartedAt >= 2000
+    if (alsDue && !hasPendingOrInflightKindLocked("als-control")) {
         val payload = byteArrayOf(CFW_MSG_AMBIENT_LIGHT.toByte(), 1, 1,
             interval.toByte(), (interval shr 8).toByte(), 0, 0, 0xe8.toByte(), 3)
         enqueueAmbientLightControlLocked(payload, "brightness passive ALS", false)
         brightnessAlsStartedAt = now
+        if (isIo) io.alsIntervalSent = interval
     }
     enqueueBrightnessLocked()
 }

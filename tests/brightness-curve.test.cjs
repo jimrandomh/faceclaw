@@ -1,6 +1,6 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { normalizeBrightnessCurve, brightnessCurveError, DEFAULT_BRIGHTNESS_CURVE } = require('../.test-build/app/g2/brightness-curve.js');
+const { normalizeBrightnessCurve, brightnessCurveError, DEFAULT_BRIGHTNESS_CURVE, RAYNEO_IO_BRIGHTNESS_CURVE } = require('../.test-build/app/g2/brightness-curve.js');
 test('brightness curve accepts monotone knots and canonicalizes spacing', () => {
   assert.equal(normalizeBrightnessCurve(' 0:0, 2.5:20,1000:100 '), '0:0,2.5:20,1000:100');
 });
@@ -42,6 +42,18 @@ test('the screen fade speed scales the 280 ms on/off fade, or makes it instant',
   assert.equal(api.getBrightnessPreferences().fadeMs, 280);
   const fadeAt = (speed) => { api.screenFadeSetting.set(speed); return api.getBrightnessPreferences().fadeMs; };
   assert.deepEqual(['very-fast', 'fast', 'normal', 'slow', 'disabled'].map(fadeAt), [56, 140, 280, 560, 0]);
+});
+test('an unset curve follows the paired glasses; a chosen one stays', () => {
+  const store = new Map();
+  const api = settingsFixture(store);
+  assert.equal(api.getBrightnessPreferences().curve, DEFAULT_BRIGHTNESS_CURVE);
+  store.set('deviceType', 'rayneo-io');
+  assert.equal(api.getBrightnessPreferences().curve, RAYNEO_IO_BRIGHTNESS_CURVE);
+  assert.equal(brightnessCurveError(RAYNEO_IO_BRIGHTNESS_CURVE), null);
+  api.autoBrightnessCurveSetting.set('0:0,2:50,8:100');
+  assert.equal(api.getBrightnessPreferences().curve, '0:0,2:50,8:100');
+  store.set('deviceType', 'g2');
+  assert.equal(api.getBrightnessPreferences().curve, '0:0,2:50,8:100');
 });
 test('curve drafts preview exactly while brightness keeps the previous valid saved curve', () => {
   const store = new Map([['display.autoBrightnessCurve', '0:0,2:50,8:100']]);

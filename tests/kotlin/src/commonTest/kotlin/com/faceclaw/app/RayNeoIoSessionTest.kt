@@ -38,6 +38,8 @@ private class FakeIoGlasses(platform: ProtocolPlatform) : SessionLink {
     /** The phone id the glasses accept; null = pairing mode (they bind to the next one). */
     @Volatile var boundTo: ByteArray? = null
     @Volatile var faceclaw = true
+    /** Firmware with message 30 and the light sensor (IDENT's features string). */
+    @Volatile var brightnessFirmware = false
     @Volatile var pageOpen = false
     @Volatile var hangUps = 0
     private val controlsList = ArrayList<Int>()
@@ -169,7 +171,9 @@ private class FakeIoGlasses(platform: ProtocolPlatform) : SessionLink {
         } ?: return
         val message = lock.withLock { inflateRecords(records).last() }
         val crc = (complete[3].toInt() and 255) or ((complete[4].toInt() and 255) shl 8)
-        val ok = pageOpen && CfwTransport.crc(message) == crc && ioSupportsCfwType(message[0].toInt() and 255)
+        val type = message[0].toInt() and 255
+        val ok = pageOpen && CfwTransport.crc(message) == crc &&
+            (ioSupportsCfwType(type) || (brightnessFirmware && (type == CFW_MSG_BRIGHTNESS || type == CFW_MSG_AMBIENT_LIGHT)))
         if (ok) lock.withLock { messagesList.add(message) }
         for (lens in 1..2) {
             notify(0xf0, byteArrayOf(if (ok) 1 else 3, stream.toByte(), 0, 0, lens.toByte(),
@@ -180,7 +184,22 @@ private class FakeIoGlasses(platform: ProtocolPlatform) : SessionLink {
     private fun ident(): ByteArray {
         val name = "GLASSLYCFW-IO/13".encodeToByteArray()
         return byteArrayOf(0x11, 13, 0x1c, 0x02, 0xdc.toByte(), 0x00, 0xf0.toByte(), 0x00, 0x00, 0x01, 0x0d, 0x00, 0xff.toByte()) +
-            name + byteArrayOf(0, 25) + "Faceclaw/38".encodeToByteArray() + byteArrayOf(0)
+            name + byteArrayOf(0, 25) + "Faceclaw/38".encodeToByteArray() + byteArrayOf(0) +
+            (if (brightnessFirmware) "bright30 als16".encodeToByteArray() + byteArrayOf(0) else ByteArray(0))
+    }
+
+    /** RPL_ALS as the firmware sends it: a poll of [tenths] of a lux from a healthy sensor. */
+    fun alsPoll(tenths: Int) {
+        val report = ByteArray(25)
+        report[0] = 0x1f
+        report[1] = 65
+        report[2] = 76
+        report[3] = 1
+        report[4] = 2       // poll
+        report[5] = 0x0b    // opened, passive, read ok
+        report[6] = 3
+        for (i in 0..3) report[7 + i] = (tenths ushr (8 * i)).toByte()
+        notify(0xf0, report)
     }
 
     override fun disconnect(address: String) {}
@@ -221,6 +240,8 @@ private class IoListener : FaceclawBleCommunicatorListener {
     override fun onWearState(wearing: Boolean) {}
 
     override fun onPhoneLockState(locked: Boolean) {}
+
+    override fun onCaseState(caseBattery: Int, caseCharging: Int, caseDocked: Boolean) {}
 
     override fun onEvenAppConflict(message: String?) {}
 
@@ -333,6 +354,74 @@ class RayNeoIoSessionTest {
         }
         // disconnect closes the page so the glasses go back to their own UI at once
         assertEquals(RayNeoIoProtocol.CTRL_PAGE_CLOSE, s.glasses.controls.last())
+    }
+
+    @Test
+    fun firmwareWithBrightnessControlGetsTheG2Messages() {
+        val s = IoSession()
+        s.glasses.brightnessFirmware = true
+        s.core.configureBrightness(false, 70, 2, 100, "0:0,1000:100", 280)
+        s.core.configureCompositorScreen(540, 220)
+        s.core.configureSurface("s", 0, 0, 64, 32, 0, SurfaceCompositor.TRANSPARENCY_OPAQUE)
+        val reportLock = s.platform.createLock()
+        val reports = ArrayList<ByteArray>()
+        s.core.addAmbientLightListener(object : FaceclawAmbientLightListener {
+            override fun onAmbientLight(body: ByteArray?) { reportLock.withLock { reports.add(body!!) } }
+        })
+        fun ofType(type: Int) = s.glasses.messages.filter { (it[0].toInt() and 255) == type }
+        try {
+            assertTrue(s.core.start())
+            assertTrue(awaitTrue(5_000) { s.pageUp() }, "page never opened:\n" + s.tail())
+            s.submitFrame(0x7f, 1)
+            assertTrue(awaitTrue(5_000) { s.displayedMatchesDesired() }, "frame never displayed:\n" + s.tail())
+
+            // visible at 70%, fading over the configured 280 ms, ahead of the frame it fades in
+            val wake = byteArrayOf(30, 1, 70, 1, 0x18, 0x01)
+            assertTrue(awaitTrue(3_000) { ofType(CFW_MSG_BRIGHTNESS).isNotEmpty() }, s.tail())
+            assertTrue(ofType(CFW_MSG_BRIGHTNESS).first().contentEquals(wake))
+            val order = s.glasses.messages.map { it[0].toInt() and 255 }
+            assertTrue(order.indexOf(CFW_MSG_BRIGHTNESS) < order.indexOf(CFW_MSG_PRESENT), order.toString())
+            // the launcher's command writes preferences and loses to stock auto: not used
+            assertTrue(s.glasses.launcher.none { "brightness_change" in it }, s.glasses.launcher.toString())
+
+            // the light sensor, at the manual rate; the iO needs telling only once
+            assertTrue(awaitTrue(3_000) { ofType(CFW_MSG_AMBIENT_LIGHT).isNotEmpty() }, s.tail())
+            val poll = ofType(CFW_MSG_AMBIENT_LIGHT).first()
+            assertEquals(listOf(16, 1), poll.take(2).map { it.toInt() })
+            assertEquals(5000, (poll[3].toInt() and 255) or ((poll[4].toInt() and 255) shl 8))
+
+            // each 5 s the same command, as the screen keepalive
+            val sent = ofType(CFW_MSG_BRIGHTNESS).size
+            s.platform.offsetMs += IoTimings.SCREEN_REFRESH_MS + 1
+            assertTrue(awaitTrue(3_000) { ofType(CFW_MSG_BRIGHTNESS).size > sent }, s.tail())
+            assertTrue(ofType(CFW_MSG_BRIGHTNESS).last().let { it[2].toInt() == 70 && it[3].toInt() == 1 })
+            assertEquals(1, ofType(CFW_MSG_AMBIENT_LIGHT).size)
+
+            // Auto: reports reach the policy and listeners, the sample rate follows, a target goes out
+            s.core.configureBrightness(true, 70, 20, 100, "0:0,100:100", 280)
+            assertTrue(awaitTrue(3_000) { ofType(CFW_MSG_AMBIENT_LIGHT).size == 2 }, s.tail())
+            assertEquals(500, ofType(CFW_MSG_AMBIENT_LIGHT).last().let { (it[3].toInt() and 255) or ((it[4].toInt() and 255) shl 8) })
+            s.glasses.alsPoll(1000)   // 100 lux, the curve's top
+            assertTrue(awaitTrue(3_000) { ofType(CFW_MSG_BRIGHTNESS).last()[2].toInt() == 100 }, s.tail())
+            assertTrue(awaitTrue(1_000) { reportLock.withLock { reports.isNotEmpty() } })
+            assertEquals(65, reportLock.withLock { reports.first()[0].toInt() })
+
+            // A request dropped with the queue before it was written goes out again
+            s.core.monitor.withLock { s.core.clearAllMessagesLocked("test") }
+            val queued = ofType(CFW_MSG_AMBIENT_LIGHT).size
+            s.glasses.alsPoll(1000)
+            assertTrue(awaitTrue(3_000) { ofType(CFW_MSG_AMBIENT_LIGHT).size > queued }, s.tail())
+
+            // A reopened page starts over: the firmware gave brightness back when it closed
+            val before = ofType(CFW_MSG_AMBIENT_LIGHT).size
+            s.glasses.pageOpen = false
+            s.glasses.page(0, 3)
+            assertTrue(awaitTrue(5_000) { s.glasses.pageOpen && s.pageUp() }, s.tail())
+            s.submitFrame(0x30, 2)
+            assertTrue(awaitTrue(5_000) { ofType(CFW_MSG_AMBIENT_LIGHT).size > before }, s.tail())
+        } finally {
+            s.core.close()
+        }
     }
 
     @Test

@@ -1,6 +1,6 @@
 import { normalizeNightscoutThreshold, type NightscoutThresholds } from "../apps/nightscout/nightscout-alerts";
 import { GESTURE_DOUBLE_CLICK, InputEvent } from "./gestures";
-import { DEFAULT_BRIGHTNESS_CURVE, normalizeBrightnessCurve, brightnessCurveError } from "../g2/brightness-curve";
+import { DEFAULT_BRIGHTNESS_CURVE, RAYNEO_IO_BRIGHTNESS_CURVE, normalizeBrightnessCurve, brightnessCurveError } from "../g2/brightness-curve";
 import {
   getBooleanSetting,
   getStringSetting,
@@ -215,6 +215,8 @@ type ConfigSettingStringOptions<TId extends string> = ConfigSettingOptions<strin
   inputKind?: "text" | "email" | "password";
   normalize?: (value: string | null | undefined) => string;
   validate?: (value: string) => string | null;
+  /** The default while nothing is stored, when it depends on context (else `defaultValue`). */
+  dynamicDefault?: () => string | undefined;
 };
 
 // Every string setting by id, so isolates that can only pass an id over a
@@ -232,6 +234,7 @@ export class ConfigSettingString<TId extends string = string> extends ConfigSett
   readonly inputKind: "text" | "email" | "password";
   private readonly normalizer: (value: string | null | undefined) => string;
   private readonly validator?: (value: string) => string | null;
+  private readonly dynamicDefault: (() => string | undefined) | undefined;
 
   constructor(options: ConfigSettingStringOptions<TId>) {
     super(options);
@@ -240,11 +243,16 @@ export class ConfigSettingString<TId extends string = string> extends ConfigSett
     this.inputKind = options.inputKind ?? "text";
     this.normalizer = options.normalize ?? ((value) => value ?? "");
     this.validator = options.validate;
+    this.dynamicDefault = options.dynamicDefault;
     stringSettingsById.set(this.id, this);
   }
 
+  private currentDefault(): string {
+    return this.dynamicDefault?.() ?? this.defaultValue;
+  }
+
   get(): string {
-    return this.normalizer(getStringSetting(this.storageKey, this.defaultValue));
+    return this.normalizer(getStringSetting(this.storageKey, this.currentDefault()));
   }
 
   set(value: string): string {
@@ -263,8 +271,8 @@ export class ConfigSettingString<TId extends string = string> extends ConfigSett
   getValidValue(): string {
     const value = this.get();
     if (!this.validationError(value)) return value;
-    const saved = this.normalizer(getStringSetting(this.storageKey + ".valid", this.defaultValue));
-    return this.validationError(saved) ? this.defaultValue : saved;
+    const saved = this.normalizer(getStringSetting(this.storageKey + ".valid", this.currentDefault()));
+    return this.validationError(saved) ? this.currentDefault() : saved;
   }
 }
 
@@ -592,6 +600,7 @@ export const autoBrightnessMaxSetting = new ConfigSettingEnum({
 export const autoBrightnessCurveSetting = new ConfigSettingString({
   id: "autoBrightnessCurve", label: "Auto light curve", storageKey: "display.autoBrightnessCurve",
   defaultValue: DEFAULT_BRIGHTNESS_CURVE, normalize: normalizeBrightnessCurve, validate: brightnessCurveError,
+  dynamicDefault: () => (glassesTypeSetting.get() === "rayneo-io" ? RAYNEO_IO_BRIGHTNESS_CURVE : undefined),
   description: "2–16 lux:percent pairs, separated by commas. Percent is within your minimum–maximum range. Start at 0:0, end at 100%, and increase lux without decreasing percent. Incomplete edits stay in the preview; brightness keeps using the last valid curve.",
 });
 /** The screen on/off fade at Normal speed. */

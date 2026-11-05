@@ -112,6 +112,21 @@ class RayNeoIoProtocolTest {
         val fc = RayNeoIoProtocol.parseIdent(hex("110d1c02dc00f00000010d00ff474c4153534c594346572d494f2f3133001946616365636c61772f333800"))!!
         assertTrue(fc.faceclaw)
         assertEquals(38, fc.faceclawRevision)
+        assertFalse(fc.brightnessControl)
+        val bright = RayNeoIoProtocol.parseIdent(hex("110d1c02dc00f00000010d00ff474c4153534c594346572d494f2f3133001946616365636c61772f33380062726967687433302061" + "6c73313600"))!!
+        assertEquals(listOf("bright30", "als16"), bright.features)
+        assertEquals(38, bright.faceclawRevision)
+        assertTrue(bright.brightnessControl)
+        // a Glassly build with no display lists has no brightness control, whatever else it says
+        assertFalse(RayNeoIoProtocol.Ident(540, 220, 240, 13, 0x7f, "x", -1, listOf("bright30", "als16")).brightnessControl)
+
+        val als = ByteArray(25)
+        als[0] = 0x1f; als[1] = 65; als[2] = 76; als[3] = 1
+        assertEquals(24, RayNeoIoProtocol.parseAlsReport(als)!!.size)
+        assertEquals(65, RayNeoIoProtocol.parseAlsReport(als)!![0].toInt())
+        assertNull(RayNeoIoProtocol.parseAlsReport(als.copyOf(24)))
+        assertNull(RayNeoIoProtocol.parseAlsReport(als.copyOf().also { it[3] = 2 }))
+        assertNull(RayNeoIoProtocol.parseAlsReport(als.copyOf().also { it[0] = 0x15 }))
 
         assertEquals(1, RayNeoIoProtocol.parsePageState(hex("130100")))
         val g = RayNeoIoProtocol.parseGesture(hex("0703010a000000"))!!

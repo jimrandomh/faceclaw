@@ -49,6 +49,8 @@ internal class IoSessionState {
     var displayVisible = false
     var brightnessSentLevel = -1
     var lastBrightnessAtMs = 0L
+    /** The light sensor poll interval this page was last asked for ([ioFirmwareOwnsBrightness]), -1 none. */
+    var alsIntervalSent = -1
     /** Last `screen_status` push: 1 on, 0 off, -1 unknown. */
     var screenStatus = -1
 
@@ -81,6 +83,7 @@ internal class IoSessionState {
         lastStatusAtMs = 0
         brightnessSentLevel = -1
         lastBrightnessAtMs = 0
+        alsIntervalSent = -1
         screenStatus = -1
         voiceWakeSent = -1
         voiceAbortPending = false
@@ -122,9 +125,29 @@ internal fun ioSupportsCfwType(type: Int): Boolean =
 
 internal val GlassesSessionCore.isIo: Boolean get() = glassesType == GlassesType.RAYNEO_IO
 
-/** Messages the iO cannot take (stock EvenHub/settings traffic, the G2's hardware CFW modes). */
-internal fun GlassesSessionCore.ioSupportsMessage(message: OutboundMessage): Boolean =
-    message.sid == CfwTransport.SID && message.message.isNotEmpty() && ioSupportsCfwType(message.message[0].toInt() and 255)
+/**
+ * The firmware runs message 30 and the light sensor (faceclaw-rayneo-cfw bright.c), with the G2's
+ * wire formats, so the shared brightness code drives it. Older firmware gets the launcher's
+ * brightness command, which is all it has (see [ioMaintain]).
+ */
+internal val GlassesSessionCore.ioFirmwareOwnsBrightness: Boolean get() = io.ident?.brightnessControl == true
+
+/** Messages the iO cannot take (stock EvenHub/settings traffic, the G2's other hardware CFW modes). */
+internal fun GlassesSessionCore.ioSupportsMessage(message: OutboundMessage): Boolean {
+    if (message.sid != CfwTransport.SID || message.message.isEmpty()) return false
+    val type = message.message[0].toInt() and 255
+    return ioSupportsCfwType(type) ||
+        (ioFirmwareOwnsBrightness && (type == CFW_MSG_BRIGHTNESS || type == CFW_MSG_AMBIENT_LIGHT))
+}
+
+/** A page opened (or reopened): the firmware gave brightness back when the last one closed. */
+private fun GlassesSessionCore.ioResetBrightnessLocked() {
+    brightnessSentVisible = null
+    brightnessSentLevel = -1
+    brightnessAlsStartedAt = -2000
+    brightnessPolicy.resetSamples()
+    io.alsIntervalSent = -1
+}
 
 // ---------------------------------------------------------------------------------------------
 // Writes
@@ -333,6 +356,7 @@ internal fun GlassesSessionCore.ioConnectLoopOnce() {
             for (transport in cfwTransports) transport.reset()
             io.lastKeepaliveAtMs = lastAckAtMs
             io.lastStatusAtMs = lastAckAtMs
+            ioResetBrightnessLocked()
         }
         setStateDisplay("connected", "Connected.")
         ConnectionCounters.increment("io.session-ready")
@@ -415,12 +439,21 @@ internal fun GlassesSessionCore.ioMaintain() {
         }
         // Faceclaw decides when the display is dark (blanked frames); while it shows
         // content, keep the iO's screen on and at Faceclaw's brightness.
-        val level = RayNeoIoProtocol.brightnessLevel(brightnessPolicy.target)
-        if (fixedLayoutCreated && io.pageWanted && io.displayVisible && !shutdownRequested
-                && (level != io.brightnessSentLevel || now - io.lastBrightnessAtMs >= IoTimings.SCREEN_REFRESH_MS)) {
-            brightness = level
-            io.brightnessSentLevel = level
-            io.lastBrightnessAtMs = now
+        val showing = fixedLayoutCreated && io.pageWanted && io.displayVisible && !shutdownRequested
+        if (ioFirmwareOwnsBrightness) {
+            // Repeating message 30 starts no fade; visible=1 is what holds the screen on.
+            if (showing && now - io.lastBrightnessAtMs >= IoTimings.SCREEN_REFRESH_MS) {
+                io.lastBrightnessAtMs = now
+                brightnessSentLevel = -1
+                enqueueBrightnessLocked()
+            }
+        } else {
+            val level = RayNeoIoProtocol.brightnessLevel(brightnessPolicy.target)
+            if (showing && (level != io.brightnessSentLevel || now - io.lastBrightnessAtMs >= IoTimings.SCREEN_REFRESH_MS)) {
+                brightness = level
+                io.brightnessSentLevel = level
+                io.lastBrightnessAtMs = now
+            }
         }
     }
     if (ctrl >= 0) {
@@ -660,6 +693,15 @@ private fun GlassesSessionCore.ioHandleCfw(address: String, frame: RayNeoIoProto
             io.ident = RayNeoIoProtocol.parseIdent(payload)
             monitor.signalAll()
         }
+        RayNeoIoProtocol.KIND_ALS -> {
+            val body = RayNeoIoProtocol.parseAlsReport(payload) ?: return
+            monitor.withLock {
+                lastIncomingAtMs = now()
+                brightnessPolicy.sample(body, lastIncomingAtMs)
+            }
+            emitAmbientLight(body)
+            interruptibleSleep.interrupt()
+        }
         RayNeoIoProtocol.KIND_PAGE -> ioHandlePage(payload)
         RayNeoIoProtocol.KIND_GESTURE -> ioHandleGesture(RayNeoIoProtocol.parseGesture(payload) ?: return)
         else -> logDebug("RayNeo iO: CFW reply kind " + (payload[0].toInt() and 255) + " " + hex(payload.copyOf(minOf(payload.size, 24))))
@@ -683,6 +725,7 @@ private fun GlassesSessionCore.ioHandlePage(payload: ByteArray) {
                 imageRetryAfterMs = 0
                 io.lastKeepaliveAtMs = now()
                 io.lastBrightnessAtMs = 0
+                ioResetBrightnessLocked()
             }
         } else if (state == 0 && fixedLayoutCreated) {
             // The page closed under us (lease, the wearer's long press): the firmware freed

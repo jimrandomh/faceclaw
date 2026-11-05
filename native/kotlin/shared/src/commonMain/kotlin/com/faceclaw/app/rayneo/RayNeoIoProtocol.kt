@@ -362,6 +362,8 @@ object RayNeoIoProtocol {
      * Set the launcher's brightness (1..8). The stock handler also turns the screen on
      * (BrightnessMonitor::setBrightness -> turnOnScreenForSetting), which is how the phone
      * wakes the iO's display and keeps the stock auto-off from blanking a static page.
+     * Only for firmware without [Ident.brightnessControl]: stock auto-brightness soon
+     * replaces the level, and each one writes the glasses' preferences.
      */
     @JvmStatic
     fun launcherBrightness(level: Int): String =
@@ -440,6 +442,7 @@ object RayNeoIoProtocol {
     const val KIND_IDENT = 0x11
     const val KIND_PAGE = 0x13
     const val KIND_DIAG = 0x15
+    const val KIND_ALS = 0x1f
 
     /** `[01|03][stream][ordinal u16][lens][size u16][crc u16]`: the G2 ACK body, one per lens. */
     @JvmStatic
@@ -457,6 +460,10 @@ object RayNeoIoProtocol {
     /** The assistant's remote audio stream (type 58/59 below) is allowed (CFW revision 10). */
     const val IDENT_FLAG_MIC = 0x20
     const val IDENT_FLAG_FACECLAW = 0x80
+    /** Message 30: the firmware sets the panel level and runs fades, with stock auto-brightness off. */
+    const val FEATURE_BRIGHTNESS = "bright30"
+    /** Message 16: the firmware reads the light sensor and sends [KIND_ALS] reports. */
+    const val FEATURE_ALS = "als16"
 
     class Ident(
         @JvmField val width: Int,
@@ -467,13 +474,17 @@ object RayNeoIoProtocol {
         @JvmField val name: String,
         /** "Faceclaw/<n>" -> n when the firmware runs the Faceclaw display lists, else -1. */
         @JvmField val faceclawRevision: Int,
+        /** What the firmware adds to the display lists (a third string in IDENT). */
+        @JvmField val features: List<String> = emptyList(),
     ) {
         val acceptsCompressed: Boolean get() = flags and IDENT_FLAG_ZLIB != 0
         val micStream: Boolean get() = flags and IDENT_FLAG_MIC != 0
         val faceclaw: Boolean get() = flags and IDENT_FLAG_FACECLAW != 0 && faceclawRevision > 0
+        /** Faceclaw owns brightness and the light sensor, as on the G2 custom firmware. */
+        val brightnessControl: Boolean get() = faceclaw && FEATURE_BRIGHTNESS in features && FEATURE_ALS in features
     }
 
-    /** `[11][ver][w u16][h u16][maxChunk u16][storeKiB u16][rev u16][flags]name\0[lineHeight]["Faceclaw/n"\0]`. */
+    /** `[11][ver][w u16][h u16][maxChunk u16][storeKiB u16][rev u16][flags]name\0[lineHeight]["Faceclaw/n"\0["features"\0]]`. */
     @JvmStatic
     fun parseIdent(payload: ByteArray): Ident? {
         if (payload.size < 13 || payload[0].toInt() != KIND_IDENT) return null
@@ -482,14 +493,32 @@ object RayNeoIoProtocol {
         while (end < payload.size && payload[end].toInt() != 0) end++
         val name = payload.copyOfRange(13, end).decodeToString()
         var faceclaw = -1
+        var features = emptyList<String>()
         val extra = end + 2 // NUL, line height
         if (extra < payload.size) {
             var e = extra
             while (e < payload.size && payload[e].toInt() != 0) e++
             val text = payload.copyOfRange(extra, e).decodeToString()
             if (text.startsWith("Faceclaw/")) faceclaw = text.removePrefix("Faceclaw/").toIntOrNull() ?: -1
+            val more = e + 1
+            if (more < payload.size) {
+                var f = more
+                while (f < payload.size && payload[f].toInt() != 0) f++
+                features = payload.copyOfRange(more, f).decodeToString().split(' ').filter { it.isNotEmpty() }
+            }
         }
-        return Ident(u16(2), u16(4), u16(6), u16(10), payload[12].toInt() and 255, name, faceclaw)
+        return Ident(u16(2), u16(4), u16(6), u16(10), payload[12].toInt() and 255, name, faceclaw, features)
+    }
+
+    /**
+     * `[1f]` + the 24-byte `['A','L',1,reason,...]` body the G2 custom firmware sends as settings
+     * field 105 (value in tenths of a lux), or null. The body goes to the same consumers.
+     */
+    @JvmStatic
+    fun parseAlsReport(payload: ByteArray): ByteArray? {
+        if (payload.size < 25 || (payload[0].toInt() and 255) != KIND_ALS) return null
+        val body = payload.copyOfRange(1, 25)
+        return if (body[0].toInt() == 65 && body[1].toInt() == 76 && body[2].toInt() == 1) body else null
     }
 
     /** PAGE `[13][state][reason]`: state 1 open. */
