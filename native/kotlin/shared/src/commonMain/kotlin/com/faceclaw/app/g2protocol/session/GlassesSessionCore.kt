@@ -350,6 +350,18 @@ class GlassesSessionCore(
     internal var lastGlassesRingInputAtMs = 0L
     internal var lastGlassesRingInputLabel = ""
     internal var lastGlassesRingBatteryAtMs = 0L
+    // Head-up (look-up wake) state from settings reads: -1 switch = not read yet.
+    internal var headUpSwitch = -1
+    internal var headUpAngle = 0
+    internal var headUpCalibration = 0
+    internal var headUpReadAtMs = 0L
+    // The trigger pitch TS asked for (degrees, 1..90), or -1 to leave the glasses'
+    // own setting alone. Reapplied after every read that disagrees with it.
+    internal var desiredHeadUpTrigger = -1
+    // Set after queueing a correction so the next settings read comes right away to
+    // confirm it; cleared by that read, so a firmware that refuses the value is
+    // retried on the normal poll cadence, not in a loop.
+    internal var headUpVerifyPending = false
     internal var ringConnectedChangedAtMs = 0L
     internal var ringConnectCount = 0
     internal var lastDirectRingError = ""
@@ -943,6 +955,41 @@ class GlassesSessionCore(
             logLine("queue wear detection enable + current-state query")
         }
         interruptibleSleep.interrupt()
+    }
+
+    /**
+     * Set the pitch (degrees, 1..90) at which looking up wakes the display, or 0 to stop
+     * managing it. Kept for the life of this object and reapplied on every connection: the
+     * next settings read supplies the glasses' calibration, then the switch and angle are
+     * written (see reconcileHeadUpLocked) and a follow-up read confirms them.
+     */
+    fun setHeadUpTrigger(degrees: Int) {
+        monitor.withLock {
+            desiredHeadUpTrigger = if (degrees in 1..90) degrees else -1
+            logLine(if (desiredHeadUpTrigger > 0) "head-up trigger requested: ${desiredHeadUpTrigger}°"
+                else "head-up trigger: left to the glasses")
+            if (!running || !sessionReady || desiredHeadUpTrigger <= 0) return
+            if (headUpSwitch >= 0) {
+                queueHeadUpWritesLocked(desiredHeadUpTrigger - headUpCalibration)
+            } else {
+                // Calibration unknown: read the settings first; the ack applies the trigger.
+                lastBatteryRefreshAtMs = 0L
+            }
+        }
+        interruptibleSleep.interrupt()
+    }
+
+    /** Head-up settings as last read, as JSON (switch -1 = not read on this connection). */
+    fun getHeadUpStatus(): String {
+        monitor.withLock {
+            val status = linkedMapOf<String, Any?>()
+            status["switch"] = headUpSwitch
+            status["angle"] = headUpAngle
+            status["calibration"] = headUpCalibration
+            status["desired"] = desiredHeadUpTrigger
+            status["readAgeMs"] = if (headUpReadAtMs == 0L) -1L else maxOf(0L, now() - headUpReadAtMs)
+            return try { Json.write(status) } catch (e: Exception) { "{}" }
+        }
     }
 
     // ---------------------------------------------------------------------
@@ -1981,11 +2028,10 @@ class GlassesSessionCore(
                 } else if (decoded != null
                         && "sys-event" == decoded.kind
                         && decoded.eventType == BleProtocol.EVENT_HEAD_DOWN) {
-                    // Faceclaw/38 also forwards the head coming back down. Nothing
-                    // uses it yet; as an unknown input it would count as activity
-                    // and keep the screen awake, so drop it here.
-                    logLine("head-down forwarded by CFW (ignored)")
-                    decoded = null
+                    // Faceclaw/38 also forwards the head coming back down. TS uses
+                    // it to end a head-tilt Glanceboard and otherwise drops it
+                    // before the shell, so it never counts as activity.
+                    logLine("head-down forwarded by CFW")
                 }
                 event = decoded
                 if (decoded != null) {

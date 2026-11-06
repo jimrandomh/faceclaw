@@ -73,7 +73,7 @@ export const glanceTapDurationSetting = new ConfigSettingEnum<GlanceTapDuration>
   values: ["off", "3s", "5s", "7s", "10s"],
   formatValue: (value) => (value === "off" ? "Disabled" : value.replace("s", " s")),
   description:
-    "How long a single tap (or a head-tilt) keeps the Glanceboard on screen. Disabled: a single tap does not show the Glanceboard.",
+    "How long a single tap keeps the Glanceboard on screen. Disabled: a single tap does not show the Glanceboard.",
 });
 
 /** Whether a single tap while asleep shows the board. */
@@ -102,8 +102,34 @@ export const glanceShowOnHeadTiltSetting = new ConfigSettingBoolean({
   label: "Show on head tilt",
   storageKey: "glanceboard.showOnHeadTilt",
   defaultValue: true,
-  description: "Tilting your head up while asleep shows the Glanceboard instead of waking the regular UI.",
+  description: "Tilting your head up while asleep shows the Glanceboard instead of waking the regular UI. It stays up until you look back down.",
 });
+
+const GLANCE_ANGLE_VALUES = ["glasses", "5", "10", "15", "20", "25", "30", "35", "40", "45", "50", "55", "60"] as const;
+export type GlanceAngle = (typeof GLANCE_ANGLE_VALUES)[number];
+
+/**
+ * How far the head must tilt up for a head-tilt wake, as the glasses' own
+ * pitch reading (degrees). "glasses" leaves whatever the glasses already have
+ * (set by the Even app or its calibration). A number is written to the
+ * glasses' head-up setting on every connection (glasses-controls.ts).
+ */
+export const glanceAngleSetting = new ConfigSettingEnum<GlanceAngle>({
+  id: "glanceboard-head-tilt-angle",
+  label: "Head tilt angle",
+  storageKey: "glanceboard.headTiltAngle",
+  defaultValue: "glasses",
+  values: GLANCE_ANGLE_VALUES,
+  formatValue: (value) => (value === "glasses" ? "Glasses default" : `${value}°`),
+  description:
+    "How far you tilt your head up to wake the display. Glasses default keeps the angle already stored on the glasses.",
+});
+
+/** The trigger in degrees, or 0 when the glasses keep their own. */
+export function glanceAngleDegrees(): number {
+  const value = glanceAngleSetting.get();
+  return value === "glasses" ? 0 : Number(value);
+}
 
 const DEPTH_VALUES = ["-64", "-48", "-32", "-16", "0", "16", "32", "48", "64"] as const;
 export type GlanceDepth = (typeof DEPTH_VALUES)[number];

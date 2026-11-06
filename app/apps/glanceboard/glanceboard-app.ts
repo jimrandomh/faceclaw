@@ -5,7 +5,8 @@ import { enumSettingMenuItem, onAnySettingChanged, toggleSettingMenuItem } from 
 import { uiFontOverridePickerMenuItem } from "../../ui/font-picker";
 import { type InputEvent } from "../../ui/gestures";
 import { type Layer, type LayerContext } from "../../ui/layers";
-import { drawSelectionHighlight, isMenuItemDisabled, MenuLayer, openModalMenu, submenuItem, type MenuItem } from "../../ui/menu";
+import { drawRightValueMenuItem, drawSelectionHighlight, isMenuItemDisabled, MenuLayer, openModalMenu, submenuItem, type MenuItem } from "../../ui/menu";
+import { applyGlanceAngle, glassesHeadUpTrigger, setGlanceAngleFromHead } from "../../g2/head-angle";
 import { Menu } from "../../ui/menu-core";
 import { LIST_ROW_TEXT_INSET, lineStep, listRowHeight } from "../../ui/metrics";
 import { createInProcessWindow, type InProcessAppOptions, type InProcessWindow } from "../../ui/shell/in-process-window";
@@ -19,6 +20,7 @@ import {
   glanceLayout,
   glanceLayoutSetting,
   glanceShowLinesSetting,
+  glanceAngleSetting,
   glanceShowOnHeadTiltSetting,
   glanceShowOnLongPressSetting,
   glanceSlotChoiceLabel,
@@ -312,6 +314,8 @@ function openGlanceSettings(ctx: LayerContext): void {
     enumSettingMenuItem(glanceTapDurationSetting),
     toggleSettingMenuItem(glanceShowOnLongPressSetting),
     toggleSettingMenuItem(glanceShowOnHeadTiltSetting),
+    enumSettingMenuItem(glanceAngleSetting, { onChange: () => { applyGlanceAngle(); } }),
+    headAngleCaptureMenuItem(),
     toggleSettingMenuItem(glanceShowLinesSetting),
     uiFontOverridePickerMenuItem(glanceFont, {
       title: "Glanceboard font",
@@ -323,6 +327,33 @@ function openGlanceSettings(ctx: LayerContext): void {
   ];
   const layer = new MenuLayer("Glanceboard settings", items(), pageMenuLayout(ctx.stack.getBaseSize().width));
   ctx.stack.push(layer);
+}
+
+/**
+ * "Set to current head angle": measure the head's tilt from the glasses'
+ * accelerometer, round it to the nearest 5°, store it as the Head tilt angle
+ * and send it to the glasses. The row's value shows the result, or the
+ * glasses' current trigger before the first use.
+ */
+let headAngleCaptureStatus = "";
+
+function headAngleCaptureMenuItem(): MenuItem {
+  const label = "Set to current head angle";
+  return {
+    label,
+    description:
+      "Tilt your head to where the display should wake, keep still, and select. " +
+      "Faceclaw reads the glasses' angle for about a second, rounds it to the nearest 5°, and saves it as the Head tilt angle.",
+    onSelect: async () => {
+      headAngleCaptureStatus = "Measuring...";
+      headAngleCaptureStatus = await setGlanceAngleFromHead();
+    },
+    render: ({ image, x, y, width }) => {
+      const current = glassesHeadUpTrigger();
+      const value = headAngleCaptureStatus || (current === null ? "" : current === 0 ? "glasses: off" : `glasses: ${current}°`);
+      drawRightValueMenuItem(image, getDefaultSmallFont(), x, y, width, label, value);
+    },
+  };
 }
 
 /**

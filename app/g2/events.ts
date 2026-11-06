@@ -79,6 +79,12 @@ export const OsEventTypeList = {
   HEAD_UP_EVENT: 12,
   /** Faceclaw/18: R1 touch-down, before click/hold/slide recognition. */
   RING_PRESS_EVENT: 14,
+  /**
+   * Faceclaw/38: the IMU head-down (the head back below the head-up
+   * threshold minus 20 degrees), forwarded while a page is up. Ends a
+   * head-tilt Glanceboard; nothing else uses it.
+   */
+  HEAD_DOWN_EVENT: 15,
 } as const;
 
 export const OsEventTypeName: Record<number, string> = {
@@ -96,4 +102,5 @@ export const OsEventTypeName: Record<number, string> = {
   11: "SHORT_THEN_LONG_PRESS_EVENT",
   12: "HEAD_UP_EVENT",
   14: "RING_PRESS_EVENT",
+  15: "HEAD_DOWN_EVENT",
 };

@@ -1045,6 +1045,46 @@ internal fun GlassesSessionCore.shouldPollBatteryLocked(now: Long): Boolean {
             && (lastBatteryRefreshAtMs == 0L || now - lastBatteryRefreshAtMs >= ConnectionOptions.BATTERY_REFRESH_INTERVAL_MS)
 }
 
+/**
+ * Bring the glasses' head-up trigger to [GlassesSessionCore.desiredHeadUpTrigger] after a settings
+ * read: switch on, then angle = trigger - calibration (the firmware adds its stored calibration).
+ */
+internal fun GlassesSessionCore.reconcileHeadUpLocked(ackPayload: ByteArray?) {
+    val verifying = headUpVerifyPending
+    headUpVerifyPending = false
+    val headUp = if (ackPayload == null) null else BleProtocol.parseSettingsHeadUp(ackPayload)
+    if (headUp != null) {
+        headUpSwitch = headUp[0]
+        headUpAngle = headUp[1]
+        headUpCalibration = headUp[2]
+        headUpReadAtMs = now()
+    }
+    val desired = desiredHeadUpTrigger
+    if (desired <= 0 || headUpSwitch < 0 || !sessionReady) return
+    val wantAngle = desired - headUpCalibration
+    if (headUpSwitch == 1 && headUpAngle == wantAngle) {
+        if (verifying) logLine("head-up trigger confirmed: ${desired}° (angle $wantAngle + calibration $headUpCalibration)")
+        return
+    }
+    if (verifying) {
+        logLine("head-up trigger not applied yet (switch=$headUpSwitch angle=$headUpAngle); retrying on next poll")
+    }
+    queueHeadUpWritesLocked(wantAngle)
+}
+
+internal fun GlassesSessionCore.queueHeadUpWritesLocked(angle: Int) {
+    clearMessagesOfKindLocked("head-up-control")
+    val on = messageBuilder.setHeadUp(BleProtocol.HEAD_UP_FIELD_SWITCH, 1)
+    on.onTimeout = MessageCallback { logLine("head-up switch ack timeout") }
+    val set = messageBuilder.setHeadUp(BleProtocol.HEAD_UP_FIELD_ANGLE, angle)
+    set.onTimeout = MessageCallback { logLine("head-up angle ack timeout") }
+    pendingMessages.addLast(on)
+    pendingMessages.addLast(set)
+    headUpVerifyPending = true
+    lastBatteryRefreshAtMs = 0L
+    logLine("queue head-up switch on + angle $angle (trigger ${desiredHeadUpTrigger}°, calibration $headUpCalibration)")
+}
+
 internal fun GlassesSessionCore.createBatteryQueryMessageLocked(): OutboundMessage {
     val message = messageBuilder.batteryQuery()
     message.onAck = MessageCallback {
@@ -1053,6 +1093,7 @@ internal fun GlassesSessionCore.createBatteryQueryMessageLocked(): OutboundMessa
         ringBattery = if (ring == null) -1 else ring.battery
         ringCharging = if (ring == null) -1 else ring.charging
         if (ringBattery >= 0) releaseRingFromGlassesLocked("glasses report the ring connected")
+        reconcileHeadUpLocked(message.ackPayload)
         val snapshot = BleProtocol.parseSettingsBattery(message.ackPayload)
         if (snapshot != null) {
             headsetBattery = snapshot.battery

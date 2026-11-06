@@ -20,6 +20,8 @@ import { shouldShowNotificationOnGlasses } from "../native/notification-sources"
 import { watchNotificationListenerBinding } from "../native/notification-access";
 import { openEvenAppSettings, readEvenAppNotificationState } from "../native/even-app-conflict";
 import { defaultRingName, setGlassesRingLink } from "../native/ring-status";
+import { applyGlanceAngle } from "./head-angle";
+import { glanceAngleDegrees } from "../apps/glanceboard/glanceboard-settings";
 import { getBooleanSetting, setBooleanSetting } from "../native/settings-store";
 import { grayImageToPreviewSource } from "../native/gray-image-preview";
 import { firmwareIncompatibilityMessage, hasCompatibleFirmware } from "./firmware-compat";
@@ -333,6 +335,7 @@ class DashboardController {
   private evenHubResumePromise: Promise<boolean> | null = null;
   /** Faceclaw's firmware at the required revision reported in; its extensions can be used. */
   private customFirmwareConfirmed = false;
+  private lastGlanceAngleDegrees = glanceAngleDegrees();
   private faceclawWakeLeaseState: boolean | null = null;
   /** Ring connection mode the current session was started with (it applies per connection). */
   private ringModeAtConnect: RingConnectionMode = "glasses";
@@ -484,6 +487,7 @@ class DashboardController {
       this.applyAppLayoutsIfChanged();
       this.syncAssistantBridgeIfChanged();
       this.syncLockScreenSettingIfChanged();
+      this.applyGlanceAngleIfChanged();
       // A Preview color or scaling change should show on the mirror at once,
       // not at the next composited frame (cheap: floor-limited, dedup'd on
       // the Java side).
@@ -1591,6 +1595,8 @@ class DashboardController {
         if (mappedPhase === "connected") {
           this.syncEvenHubScreenOffSetting();
           this.ensureWearStateTracking();
+          // The session reapplies it on reconnects; restate it for a new session.
+          applyGlanceAngle();
           this.maybeWakeAfterChargingReconnect();
         } else if (mappedPhase !== "charging") {
           this.cancelEvenHubSuspendTimer();
@@ -2386,6 +2392,16 @@ class DashboardController {
     frameTimings.logFrame(frameId, `TS input handler start: ${event.kind} ${eventLabel(event.kind, event.eventType)}`);
     let frameOwned = false;
     try {
+      if (event.kind === "sys-event" && event.eventType === OsEventTypeList.HEAD_DOWN_EVENT) {
+        // Only the Glanceboard cares (it ends a head-tilt showing); never
+        // shell input, so it can't count as activity or wake anything.
+        const glanceEvent = this.glance.eventForGesture("head-down");
+        if (glanceEvent) {
+          await this.glance.handleEvent(glanceEvent, frameId);
+          frameOwned = true;
+        }
+        return;
+      }
       const inputEvent = rawInputEventToInputEvent(event);
       if (!acceptInput(inputEvent)) return;
       // The gesture, plus which app is on screen and whether input goes to it,
@@ -2502,6 +2518,14 @@ class DashboardController {
         frameTimings.finishFrame(frameId, "discarded: input did not trigger a render");
       }
     }
+  }
+
+  /** Re-send the head-tilt angle when the setting changed (from either settings UI). */
+  private applyGlanceAngleIfChanged(): void {
+    const degrees = glanceAngleDegrees();
+    if (degrees === this.lastGlanceAngleDegrees) return;
+    this.lastGlanceAngleDegrees = degrees;
+    applyGlanceAngle();
   }
 
   /**

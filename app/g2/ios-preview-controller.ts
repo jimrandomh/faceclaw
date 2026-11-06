@@ -961,6 +961,13 @@ export class IosPreviewController {
   private handleRingEvent(input: RawInputEvent): void {
     this.inputQueue = this.inputQueue.then(async () => {
       if (this.state.phase !== 'connected') return
+      if (input.kind === 'sys-event' && input.eventType === OsEventTypeList.HEAD_DOWN_EVENT) {
+        // As on Android: only the Glanceboard uses it (it ends a head-tilt
+        // showing); it never reaches the shell or counts as activity.
+        const glanceEvent = this.glance.eventForGesture('head-down')
+        if (glanceEvent) await this.glance.handleEvent(glanceEvent, 0)
+        return
+      }
       this.onActivity()
       if (input.ringInput) this.state = { ...this.state, ring: true }
       await this.receiveInput(rawInputEventToInputEvent(input),

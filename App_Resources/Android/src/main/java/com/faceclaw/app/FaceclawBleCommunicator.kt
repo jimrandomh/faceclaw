@@ -265,6 +265,10 @@ class FaceclawBleCommunicator(context: Context, rightAddress: String?, leftAddre
     /** See [GlassesSessionCore.getRingStatus]. */
     fun getRingStatus(): String = core.getRingStatus()
 
+    fun setHeadUpTrigger(degrees: Int) = core.setHeadUpTrigger(degrees)
+
+    fun getHeadUpStatus(): String = core.getHeadUpStatus()
+
     /** See [GlassesSessionCore.setGlassesRingLink]. */
     fun setGlassesRingLink(action: String, fallbackAddress: String?, fallbackName: String?): Boolean =
         core.setGlassesRingLink(action, fallbackAddress, fallbackName)
