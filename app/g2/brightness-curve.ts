@@ -8,6 +8,12 @@ const PREVIOUS_DEFAULT_CURVE = "0:0,1:10,10:30,100:65,1000:100";
  */
 export const RAYNEO_IO_BRIGHTNESS_CURVE = "0:0,3:11,10:26,200:26,300:41,600:56,1000:70,4000:93,5000:100";
 
+/**
+ * An Even G1's OPT3007 also reads lux (centilux on the wire). These knots are the stock firmware's table: levels 0, 10, 25,
+ * 41 and 42 of 42 at 0, 50, 200, 1000 and 2000 lux (g1_firmware/docs/VM.md §6.7).
+ */
+export const G1_BRIGHTNESS_CURVE = "0:0,50:24,200:60,1000:98,2000:100";
+
 /** Percent of the configured range; defaults (20–100) give 20/26/46/100. */
 export function brightnessCurveError(value: string): string | null {
   const pairs = value.split(",").map(part => part.trim().split(":"));

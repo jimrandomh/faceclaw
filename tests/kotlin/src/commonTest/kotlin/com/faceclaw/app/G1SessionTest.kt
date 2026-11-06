@@ -119,6 +119,11 @@ private class FakeG1Arm(val left: Boolean) {
     var bonded = false
     var inCase = 0
     var battery = 80
+    val props = HashMap<Int, Int>()
+    val propSets = ArrayList<Pair<Int, Int>>()
+    val micRequests = ArrayList<Int>()
+    var micStatus = 0
+    var benchmarkMessages = 0
 }
 
 private class FakeG1Glasses(platform: ProtocolPlatform) : SessionLink {
@@ -139,6 +144,18 @@ private class FakeG1Glasses(platform: ProtocolPlatform) : SessionLink {
         data[0] = type.toByte()
         core.onNotification(address, G1Ble.EVT_CHAR_UUID, data)
     }
+
+    /** `MIC_DATA` from the right arm: [count] frames, each filled with its counter's low byte. */
+    fun micData(first: Int, count: Int) {
+        val body = ByteArray(3 + count * 40)
+        body[0] = first.toByte()
+        body[1] = (first ushr 8).toByte()
+        body[2] = count.toByte()
+        for (i in 0 until count) body.fill((first + i).toByte(), 3 + i * 40, 3 + (i + 1) * 40)
+        event(RIGHT, G1Protocol.EV_MIC_DATA, body)
+    }
+
+    fun notice(address: String, kind: Int, vararg body: Byte) = event(address, G1Protocol.EV_NOTICE, byteArrayOf(kind.toByte()) + body)
 
     fun input(address: String, trigger: Int, value: Int) {
         val body = ByteArray(7)
@@ -203,6 +220,7 @@ private class FakeG1Glasses(platform: ProtocolPlatform) : SessionLink {
                 body[3] = 62
                 body[4] = (if (a.left) 1 else 0).toByte()
                 body[5] = (2 or 64).toByte()
+                body[6] = (if (a.left) 0 else 4).toByte()
                 reply(address, op, tag, 0, body)
             }
             G1Protocol.OP_FC_INFO -> if (hasDisplayPath) {
@@ -219,10 +237,34 @@ private class FakeG1Glasses(platform: ProtocolPlatform) : SessionLink {
                 reply(address, op, tag, 0, ByteArray(1))
             }
             G1Protocol.OP_PROPS -> {
-                val values = lock.withLock { intArrayOf(a.battery, 0, a.inCase, 1) }
+                val ids = f.drop(2).map { it.toInt() and 255 }
+                val values = lock.withLock {
+                    ids.map {
+                        when (it) {
+                            G1Protocol.PROP_BATT_PCT -> a.battery
+                            G1Protocol.PROP_CHARGE -> 0
+                            G1Protocol.PROP_IN_CASE -> a.inCase
+                            G1Protocol.PROP_WORN -> 1
+                            else -> a.props[it] ?: G1Protocol.UNKNOWN
+                        }
+                    }
+                }
                 val body = ByteArray(4 * values.size)
                 for (i in values.indices) for (b in 0..3) body[4 * i + b] = (values[i] ushr (8 * b)).toByte()
                 reply(address, op, tag, 0, body)
+            }
+            G1Protocol.OP_PROP_SET -> {
+                val id = f[2].toInt() and 255
+                val value = (f[3].toInt() and 255) or ((f[4].toInt() and 255) shl 8)
+                lock.withLock {
+                    a.propSets.add(id to value)
+                    a.props[id] = value
+                }
+                reply(address, op, tag, 0)
+            }
+            G1Protocol.OP_MIC -> {
+                lock.withLock { a.micRequests.add(f[2].toInt()) }
+                reply(address, op, tag, a.micStatus)
             }
             else -> reply(address, op, tag, 2)
         }
@@ -276,6 +318,7 @@ private class FakeG1Glasses(platform: ProtocolPlatform) : SessionLink {
                 if (a.visible && m[3].toInt() == 0) a.panelOn = false
                 a.visible = m[3].toInt() != 0
             }
+            CFW_MSG_DIAGNOSTICS -> a.benchmarkMessages++
             else -> throw AssertionError("message type $type must not reach a G1")
         }
     }
@@ -620,7 +663,203 @@ class G1SessionTest {
     }
 }
 
+private class G1AudioSink(platform: ProtocolPlatform) : FaceclawAudioPacketListener {
+    private val lock = platform.createLock()
+    private val list = ArrayList<Pair<ByteArray, String>>()
+    val packets get() = lock.withLock { list.toList() }
+
+    override fun onAudioPacket(data: ByteArray?, arm: String?, arrivalMs: Long) {
+        lock.withLock { list.add(data!! to arm!!) }
+    }
+}
+
+class G1FeaturesTest {
+    private fun ready(): G1Session {
+        val s = G1Session()
+        assertTrue(s.core.start())
+        assertTrue(awaitTrue(5_000) { s.ready() }, s.tail())
+        return s
+    }
+
+    private fun requests(s: G1Session) = s.glasses.lock.withLock { s.glasses.rightArm.micRequests.toList() }
+
+    @Test
+    fun theMicIsRenewedAndItsFramesBecomeG2Packets() {
+        val s = ready()
+        try {
+            val sink = G1AudioSink(s.platform)
+            assertTrue(s.core.startG2AudioCapture(sink))
+            assertTrue(s.core.isAudioCaptureActive())
+            assertTrue(awaitTrue(2_000) { requests(s).contains(1) }, s.tail())
+            assertTrue(awaitTrue(3_000) { requests(s).count { it == 1 } >= 2 }, "the lease must be renewed:\n" + s.tail())
+            assertEquals(emptyList(), s.glasses.lock.withLock { s.glasses.leftArm.micRequests.toList() }, "the left arm has no mic")
+
+            s.glasses.micData(100, 5)
+            s.glasses.micData(105, 5)
+            val packets = sink.packets
+            assertEquals(2, packets.size)
+            for ((packet, arm) in packets) {
+                assertEquals("R", arm)
+                assertEquals(Lc3PacketFramer.PACKET_BYTES, packet.size)
+            }
+            assertEquals(20, packets[0].first[Lc3PacketFramer.COUNTER_OFFSET].toInt())
+            assertEquals(21, packets[1].first[Lc3PacketFramer.COUNTER_OFFSET].toInt())
+            assertEquals(104.toByte(), packets[0].first[199], "the frames in order")
+            assertEquals(0.toByte(), packets[0].first[Lc3PacketFramer.SSR_OFFSET])
+
+            s.core.stopG2AudioCapture()
+            assertFalse(s.core.isAudioCaptureActive())
+            assertTrue(awaitTrue(2_000) { requests(s).last() == 0 }, requests(s).toString())
+            s.glasses.micData(110, 5)
+            assertEquals(2, sink.packets.size, "nothing reaches a stopped capture")
+        } finally {
+            s.core.disconnect()
+        }
+    }
+
+    @Test
+    fun aRefusedOrFaultedMicEndsTheCaptureAndALateRenewalDoesNot() {
+        val s = ready()
+        try {
+            val sink = G1AudioSink(s.platform)
+            assertTrue(s.core.startG2AudioCapture(sink))
+            assertTrue(awaitTrue(2_000) { requests(s).isNotEmpty() }, s.tail())
+            val before = requests(s).size
+            s.glasses.notice(RIGHT, G1Protocol.NOTICE_MIC_STOPPED, G1Protocol.MIC_STOPPED_LEASE.toByte())
+            assertTrue(s.core.isAudioCaptureActive())
+            assertTrue(awaitTrue(900) { requests(s).size > before }, "asked again at once")
+            s.glasses.notice(RIGHT, G1Protocol.NOTICE_MIC_STOPPED, 2)
+            assertFalse(s.core.isAudioCaptureActive(), "a capture fault ends it")
+
+            s.glasses.lock.withLock { s.glasses.rightArm.micStatus = 12 }
+            assertTrue(s.core.startG2AudioCapture(sink))
+            assertTrue(awaitTrue(2_000) { !s.core.isAudioCaptureActive() }, s.tail())
+        } finally {
+            s.core.disconnect()
+        }
+    }
+
+    @Test
+    fun lightReadingsDriveTheBrightnessPolicy() {
+        val s = ready()
+        try {
+            s.core.configureBrightness(true, 50, 20, 100, "0:0,50:24,200:60,1000:98,2000:100", 280)
+            s.submit(1, 1)
+            assertTrue(awaitTrue(5_000) { s.displayedMatchesDesired() }, s.tail())
+            // 1000 lux on the right arm's sensor, reported in 0.01 lux; the policy filters it towards the curve's top.
+            s.glasses.lock.withLock { s.glasses.rightArm.props[G1Protocol.PROP_LIGHT] = 100_000 }
+            assertTrue(awaitTrue(6_000) { s.glasses.lock.withLock { s.glasses.rightArm.brightness > 60 && s.glasses.leftArm.brightness > 60 } },
+                "both eyes follow: " + s.glasses.lock.withLock { s.glasses.rightArm.brightness } + "\n" + s.tail())
+            // In the dark, a lower level, again on both.
+            s.glasses.lock.withLock { s.glasses.rightArm.props[G1Protocol.PROP_LIGHT] = 500 }
+            assertTrue(awaitTrue(12_000) { s.glasses.lock.withLock { s.glasses.rightArm.brightness < 50 && s.glasses.leftArm.brightness < 50 } },
+                "brightness " + s.glasses.lock.withLock { s.glasses.rightArm.brightness } + "\n" + s.tail())
+        } finally {
+            s.core.disconnect()
+        }
+    }
+
+    @Test
+    fun onePanelGuardsCapHoldsBothEyes() {
+        val s = ready()
+        try {
+            s.glasses.notice(RIGHT, G1Protocol.NOTICE_GUARD, 12, 12)
+            assertTrue(awaitTrue(2_000) { s.glasses.lock.withLock { s.glasses.leftArm.props[G1Protocol.PROP_BRIGHTNESS_MAX] == 12 } }, s.tail())
+            assertEquals(G1Protocol.BRIGHTNESS_LEVEL_MAX, s.glasses.lock.withLock { s.glasses.rightArm.props[G1Protocol.PROP_BRIGHTNESS_MAX] },
+                "only the other eye: the arm's own cap already holds it")
+            s.glasses.notice(RIGHT, G1Protocol.NOTICE_GUARD, 42, 21)
+            assertTrue(awaitTrue(2_000) { s.glasses.lock.withLock { s.glasses.leftArm.props[G1Protocol.PROP_BRIGHTNESS_MAX] == 42 } }, s.tail())
+        } finally {
+            s.core.disconnect()
+        }
+    }
+
+    @Test
+    fun imuSamplesArePolledWhileWanted() {
+        val s = ready()
+        try {
+            val lock = s.platform.createLock()
+            val readings = ArrayList<List<Double>>()
+            s.core.addImuListener(object : FaceclawImuListener {
+                override fun onImuData(x: Double, y: Double, z: Double, eventSource: Int) {
+                    lock.withLock { readings.add(listOf(x, y, z, eventSource.toDouble())) }
+                }
+            })
+            s.glasses.lock.withLock {
+                s.glasses.rightArm.props[G1Protocol.PROP_ACC_X] = 100
+                s.glasses.rightArm.props[G1Protocol.PROP_ACC_Y] = -1000
+                s.glasses.rightArm.props[G1Protocol.PROP_ACC_Z] = 250
+            }
+            s.core.setImuReportEnabled(true, 200)
+            assertTrue(awaitTrue(3_000) { lock.withLock { readings.size >= 5 } }, "samples: " + lock.withLock { readings.size } + "\n" + s.tail())
+            assertEquals(listOf(0.1, -1.0, 0.25, BleProtocol.EVENT_SOURCE_GLASSES_R.toDouble()), lock.withLock { readings.first() })
+            assertTrue(awaitTrue(1_000) { s.glasses.lock.withLock { s.glasses.rightArm.props[G1Protocol.PROP_IMU_RATE] == G1Protocol.IMU_RATE_STREAM } })
+            s.core.setImuReportEnabled(false, 0)
+            assertTrue(awaitTrue(1_000) { s.glasses.lock.withLock { s.glasses.rightArm.props[G1Protocol.PROP_IMU_RATE] == G1Protocol.IMU_RATE_IDLE } })
+            sleepMs(200)
+            val count = lock.withLock { readings.size }
+            sleepMs(300)
+            assertEquals(count, lock.withLock { readings.size }, "the polling stops")
+        } finally {
+            s.core.disconnect()
+        }
+    }
+
+    @Test
+    fun theBandwidthBenchmarkRunsOverBothArms() {
+        val s = ready()
+        try {
+            s.submit(1, 1)
+            assertTrue(awaitTrue(5_000) { s.displayedMatchesDesired() }, s.tail())
+            assertTrue(s.core.startBandwidthBenchmarkWithLinkMode(1000, 3, 1_000, 0))
+            assertTrue(awaitTrue(8_000) { !s.core.monitor.withLock { s.core.benchmarkActive } }, s.tail())
+            assertTrue(s.core.monitor.withLock { !s.core.benchmarkAborted && s.core.benchmarkMessagesAcked > 2 && s.core.benchmarkTimeouts == 0 },
+                s.core.getBandwidthBenchmarkStatus() + "\n" + s.tail())
+            val left = s.glasses.lock.withLock { s.glasses.leftArm.benchmarkMessages }
+            val right = s.glasses.lock.withLock { s.glasses.rightArm.benchmarkMessages }
+            assertTrue(left > 0 && kotlin.math.abs(left - right) <= 1, "left $left right $right")
+        } finally {
+            s.core.disconnect()
+        }
+    }
+}
+
 class G1ProtocolTest {
+    @Test
+    fun micFramesFillPacketsAcrossEventsAndAGapDropsTheRemainder() {
+        fun frames(first: Int, count: Int) = ByteArray(count * 40) { (first + it / 40).toByte() }
+        val out = ArrayList<ByteArray>()
+        val a = G1MicAssembler()
+        // MTU too small for five frames an event: two, two, then one completes a packet.
+        a.ingest(10, 2, frames(10, 2), 0) { out.add(it) }
+        a.ingest(12, 2, frames(12, 2), 0) { out.add(it) }
+        assertTrue(out.isEmpty())
+        a.ingest(14, 3, frames(14, 3), 0) { out.add(it) }
+        assertEquals(1, out.size)
+        assertEquals(2, out[0][Lc3PacketFramer.COUNTER_OFFSET].toInt(), "frame 10's packet")
+        assertEquals(14.toByte(), out[0][160])
+        // 15 and 16 are waiting; 20 comes next, so they are gone and a new packet starts there.
+        a.ingest(20, 5, frames(20, 5), 0) { out.add(it) }
+        assertEquals(2, out.size)
+        assertEquals(4, out[1][Lc3PacketFramer.COUNTER_OFFSET].toInt())
+        assertEquals(20.toByte(), out[1][0])
+    }
+
+    @Test
+    fun aLightReadingBecomesAReportThePolicyTakes() {
+        val report = G1Protocol.alsReport(123_400, 40, 5000)
+        assertEquals(24, report.size)
+        val policy = BrightnessPolicy()
+        policy.configure(true, 50, 2, 100, "0:0,1000:100", 280)
+        policy.sample(report, 1000)
+        assertTrue(policy.target > 90, "1234 lux on this curve: ${policy.target}")
+    }
+
+    @Test
+    fun aPropertySetIsIdAndLittleEndianValue() {
+        assertTrue(byteArrayOf(0x29, 42, 0, 0, 0).contentEquals(G1Protocol.propSet(G1Protocol.PROP_BRIGHTNESS_MAX, 42)))
+    }
+
     @Test
     fun packetsCarryARecordWithinTheMtu() {
         val record = ByteArray(1000) { it.toByte() }
@@ -678,8 +917,10 @@ class G1ProtocolTest {
         body[3] = 62
         body[4] = 1
         body[5] = (2 or 64 or 128).toByte()
+        body[6] = 4
         val hello = assertNotNull(G1Protocol.parseHello(body))
         assertEquals("0.5.62", hello.version)
+        assertTrue(hello.mic)
         assertTrue(hello.leftArm && hello.panelOk && hello.encrypted && hello.inCase)
         assertFalse(hello.safeMode)
         body[0] = 4

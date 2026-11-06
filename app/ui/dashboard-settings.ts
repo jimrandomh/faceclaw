@@ -1,6 +1,6 @@
 import { normalizeNightscoutThreshold, type NightscoutThresholds } from "../apps/nightscout/nightscout-alerts";
 import { GESTURE_DOUBLE_CLICK, InputEvent } from "./gestures";
-import { DEFAULT_BRIGHTNESS_CURVE, RAYNEO_IO_BRIGHTNESS_CURVE, normalizeBrightnessCurve, brightnessCurveError } from "../g2/brightness-curve";
+import { DEFAULT_BRIGHTNESS_CURVE, G1_BRIGHTNESS_CURVE, RAYNEO_IO_BRIGHTNESS_CURVE, normalizeBrightnessCurve, brightnessCurveError } from "../g2/brightness-curve";
 import {
   getBooleanSetting,
   getStringSetting,
@@ -600,7 +600,10 @@ export const autoBrightnessMaxSetting = new ConfigSettingEnum({
 export const autoBrightnessCurveSetting = new ConfigSettingString({
   id: "autoBrightnessCurve", label: "Auto light curve", storageKey: "display.autoBrightnessCurve",
   defaultValue: DEFAULT_BRIGHTNESS_CURVE, normalize: normalizeBrightnessCurve, validate: brightnessCurveError,
-  dynamicDefault: () => (glassesTypeSetting.get() === "rayneo-io" ? RAYNEO_IO_BRIGHTNESS_CURVE : undefined),
+  dynamicDefault: () => {
+    const glasses = glassesTypeSetting.get();
+    return glasses === "rayneo-io" ? RAYNEO_IO_BRIGHTNESS_CURVE : glasses === "g1" ? G1_BRIGHTNESS_CURVE : undefined;
+  },
   description: "2–16 lux:percent pairs, separated by commas. Percent is within your minimum–maximum range. Start at 0:0, end at 100%, and increase lux without decreasing percent. Incomplete edits stay in the preview; brightness keeps using the last valid curve.",
 });
 /** The screen on/off fade at Normal speed. */

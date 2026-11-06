@@ -1,6 +1,6 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { normalizeBrightnessCurve, brightnessCurveError, DEFAULT_BRIGHTNESS_CURVE, RAYNEO_IO_BRIGHTNESS_CURVE } = require('../.test-build/app/g2/brightness-curve.js');
+const { normalizeBrightnessCurve, brightnessCurveError, DEFAULT_BRIGHTNESS_CURVE, G1_BRIGHTNESS_CURVE, RAYNEO_IO_BRIGHTNESS_CURVE } = require('../.test-build/app/g2/brightness-curve.js');
 test('brightness curve accepts monotone knots and canonicalizes spacing', () => {
   assert.equal(normalizeBrightnessCurve(' 0:0, 2.5:20,1000:100 '), '0:0,2.5:20,1000:100');
 });
@@ -50,6 +50,9 @@ test('an unset curve follows the paired glasses; a chosen one stays', () => {
   store.set('deviceType', 'rayneo-io');
   assert.equal(api.getBrightnessPreferences().curve, RAYNEO_IO_BRIGHTNESS_CURVE);
   assert.equal(brightnessCurveError(RAYNEO_IO_BRIGHTNESS_CURVE), null);
+  store.set('deviceType', 'g1');
+  assert.equal(api.getBrightnessPreferences().curve, G1_BRIGHTNESS_CURVE);
+  assert.equal(brightnessCurveError(G1_BRIGHTNESS_CURVE), null);
   api.autoBrightnessCurveSetting.set('0:0,2:50,8:100');
   assert.equal(api.getBrightnessPreferences().curve, '0:0,2:50,8:100');
   store.set('deviceType', 'g2');

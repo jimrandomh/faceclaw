@@ -41,6 +41,20 @@ internal class G1SessionState {
     /** The panel may be blank: the next update ends in PRESENT even with no pixels to send. */
     var presentPending = false
 
+    /** What a PROPS request asked for, by arm and tag: a reply doesn't repeat it. */
+    val propRequests = HashMap<Int, IntArray>()
+    /** `PROP_SET`s for the worker thread to write: arm to body. */
+    val pendingPropSets = ArrayList<Pair<Int, ByteArray>>()
+    var lastLightAtMs = 0L
+    /** The last reading that made it to the log, in 0.01 lux. */
+    var loggedLight = -1
+    /** IMU samples are polled this often while someone wants them; 0: nobody does. */
+    var imuPeriodMs = 0L
+    var lastImuAtMs = 0L
+    var micOn = false
+    var lastMicRenewAtMs = 0L
+    val mic = G1MicAssembler()
+
     fun nextTag(): Int {
         tag = tag % 255 + 1
         return tag
@@ -51,6 +65,13 @@ internal class G1SessionState {
         replies.clear()
         lastPropsAtMs = 0
         presentPending = true
+        propRequests.clear()
+        pendingPropSets.clear()
+        lastLightAtMs = 0
+        lastImuAtMs = 0
+        micOn = false
+        lastMicRenewAtMs = 0
+        mic.reset()
     }
 }
 
@@ -60,11 +81,22 @@ internal object G1Timings {
     /** The OS may be showing its pairing dialog. */
     const val PAIRING_MS = 30_000
     const val PROPS_MS = 60_000L
+    /** Well inside the arm's 2 s lease. */
+    const val MIC_RENEW_MS = 1_000L
+    /** The sensor converts in 800 ms. */
+    const val LIGHT_DEMO_MS = 800L
+    const val LIGHT_AUTO_MS = 1_000L
+    const val LIGHT_MANUAL_MS = 5_000L
+    /** The G2's IMU rate is a pace code with no meaning here, and a poll is one round trip. */
+    const val IMU_POLL_MS = 50L
+    const val IDLE_WAKE_MS = 500L
     const val LENS_LEFT = 1
     const val LENS_RIGHT = 2
 }
 
 private val G1_PROPS = intArrayOf(G1Protocol.PROP_BATT_PCT, G1Protocol.PROP_CHARGE, G1Protocol.PROP_IN_CASE, G1Protocol.PROP_WORN)
+private val G1_LIGHT = intArrayOf(G1Protocol.PROP_LIGHT)
+private val G1_IMU = intArrayOf(G1Protocol.PROP_ACC_X, G1Protocol.PROP_ACC_Y, G1Protocol.PROP_ACC_Z)
 
 internal val GlassesSessionCore.isG1: Boolean get() = glassesType == GlassesType.G1
 
@@ -75,6 +107,8 @@ internal fun g1SupportsMessage(message: OutboundMessage): Boolean {
     if (message.sid != CfwTransport.SID || message.message.isEmpty()) return false
     return when (message.message[0].toInt() and CFW_MSG_TYPE_MASK) {
         CFW_MSG_DRAW_CALLS, CFW_MSG_PRESENT, CFW_MSG_BRIGHTNESS -> true
+        // The bandwidth benchmark's no-op: the firmware acknowledges what it doesn't know.
+        CFW_MSG_DIAGNOSTICS -> message.kind == "bandwidth"
         else -> false
     }
 }
@@ -123,23 +157,121 @@ private fun GlassesSessionCore.g1Control(arm: Int, op: Int, body: ByteArray = By
     throw IllegalStateException("no reply to control $op from the " + (if (arm == 0) "left" else "right") + " arm")
 }
 
-private fun GlassesSessionCore.g1RequestProps(arm: Int) {
-    val tag = monitor.withLock { g1.nextTag() }
-    g1WriteControl(g1ArmAddress(arm), G1Protocol.OP_PROPS, tag, ByteArray(G1_PROPS.size) { G1_PROPS[it].toByte() })
+private fun GlassesSessionCore.g1RequestProps(arm: Int, ids: IntArray) {
+    val tag = monitor.withLock {
+        val tag = g1.nextTag()
+        g1.propRequests[arm * 256 + tag] = ids
+        tag
+    }
+    g1WriteControl(g1ArmAddress(arm), G1Protocol.OP_PROPS, tag, ByteArray(ids.size) { ids[it].toByte() })
 }
 
-/** Nothing here keeps a lease; this only refreshes the battery. Worker thread, outside the monitor. */
+/**
+ * The firmware keeps no session of its own for most of this: the worker polls what it wants to know, keeps the
+ * microphone's lease and writes the properties that were asked for. Worker thread, outside the monitor.
+ */
 internal fun GlassesSessionCore.g1Maintain() {
-    val due = monitor.withLock {
+    var status = false
+    var mic: Boolean? = null
+    var light = false
+    var imu = false
+    var sets: List<Pair<Int, ByteArray>> = emptyList()
+    monitor.withLock {
+        if (!sessionReady) return
         val now = now()
-        val due = sessionReady && now - g1.lastPropsAtMs >= G1Timings.PROPS_MS
-        if (due) g1.lastPropsAtMs = now
-        due
+        if (now - g1.lastPropsAtMs >= G1Timings.PROPS_MS) {
+            status = true
+            g1.lastPropsAtMs = now
+        }
+        if (audioCaptureActive) {
+            if (now - g1.lastMicRenewAtMs >= G1Timings.MIC_RENEW_MS) {
+                mic = true
+                g1.micOn = true
+                g1.lastMicRenewAtMs = now
+            }
+        } else if (g1.micOn) {
+            mic = false
+            g1.micOn = false
+        }
+        // The sensor only reads while the panel is on; a dark panel keeps the last filtered value.
+        val interval = if (brightnessDemoPolling) G1Timings.LIGHT_DEMO_MS
+            else if (brightnessPolicy.automatic) G1Timings.LIGHT_AUTO_MS else G1Timings.LIGHT_MANUAL_MS
+        if (brightnessSentVisible == true && !chargingMode && !shutdownRequested && now - g1.lastLightAtMs >= interval) {
+            light = true
+            g1.lastLightAtMs = now
+        }
+        if (g1.imuPeriodMs > 0 && now - g1.lastImuAtMs >= g1.imuPeriodMs) {
+            imu = true
+            g1.lastImuAtMs = now
+        }
+        if (g1.pendingPropSets.isNotEmpty()) {
+            sets = g1.pendingPropSets.toList()
+            g1.pendingPropSets.clear()
+        }
     }
-    if (due) {
-        g1RequestProps(0)
-        g1RequestProps(1)
+    if (status) {
+        g1RequestProps(0, G1_PROPS)
+        g1RequestProps(1, G1_PROPS)
     }
+    mic?.let { on ->
+        val tag = monitor.withLock { g1.nextTag() }
+        g1WriteControl(rightAddress, G1Protocol.OP_MIC, tag, G1Protocol.micRequest(on))
+    }
+    if (light) g1RequestProps(1, G1_LIGHT)
+    if (imu) g1RequestProps(1, G1_IMU)
+    for ((arm, body) in sets) {
+        val tag = monitor.withLock { g1.nextTag() }
+        g1WriteControl(g1ArmAddress(arm), G1Protocol.OP_PROP_SET, tag, body)
+    }
+}
+
+/** The longest the session worker may sleep and keep up with [g1Maintain]. */
+internal fun GlassesSessionCore.g1MaxSleepMs(): Long =
+    monitor.withLock { if (g1.imuPeriodMs > 0) g1.imuPeriodMs else G1Timings.IDLE_WAKE_MS }
+
+/**
+ * The right arm's microphone: 16 kHz mono LC3, in the packets the G2's decoder takes. The arm stops it 2 s after the last
+ * renewal and at a disconnection; meanwhile it shows its indicator in a corner of the panel (VM.md §6.5).
+ */
+internal fun GlassesSessionCore.g1StartAudioCapture(listener: FaceclawAudioPacketListener): Boolean {
+    monitor.withLock {
+        if (!running || !sessionReady || shutdownRequested) {
+            logLine("skip G1 mic: session not ready")
+            return false
+        }
+        if (g1.arms[1].hello?.mic != true) {
+            logLine("skip G1 mic: this arm has no capture")
+            return false
+        }
+        g1.mic.reset()
+        audioPacketListener = listener
+        audioCaptureActive = true
+        g1.lastMicRenewAtMs = 0
+    }
+    interruptibleSleep.interrupt()
+    return true
+}
+
+internal fun GlassesSessionCore.g1StopAudioCapture() {
+    monitor.withLock {
+        audioPacketListener = null
+        audioCaptureActive = false
+    }
+    interruptibleSleep.interrupt()
+}
+
+/**
+ * There is no magnetometer on a G1, only the accelerometer and gyroscope: x, y, z in g, head frame, from the right arm.
+ * [enable] raises the sample rate and polls it; [g1MaxSleepMs] follows.
+ */
+internal fun GlassesSessionCore.g1SetImuReport(enable: Boolean) {
+    monitor.withLock {
+        g1.imuPeriodMs = if (enable) G1Timings.IMU_POLL_MS else 0
+        g1.lastImuAtMs = 0
+        g1.pendingPropSets.add(1 to G1Protocol.propSet(G1Protocol.PROP_IMU_RATE,
+            if (enable) G1Protocol.IMU_RATE_STREAM else G1Protocol.IMU_RATE_IDLE))
+    }
+    interruptibleSleep.interrupt()
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -378,6 +510,8 @@ internal fun GlassesSessionCore.g1ConnectLoopOnce() {
             if (events.status != 0) throw IllegalStateException("EVENTS refused: " + events.status)
             // The arm counts a boot healthy only after a host has said so (VM.md §6.4, safe mode).
             g1Control(arm, G1Protocol.OP_HEALTH_OK)
+            // A limit the last session left, when the other eye's panel guard had capped it.
+            g1Control(arm, G1Protocol.OP_PROP_SET, G1Protocol.propSet(G1Protocol.PROP_BRIGHTNESS_MAX, G1Protocol.BRIGHTNESS_LEVEL_MAX))
         }
         monitor.withLock {
             sessionReady = true
@@ -439,11 +573,22 @@ internal fun GlassesSessionCore.g1OnNotification(address: String, characteristic
             interruptibleSleep.interrupt()
         }
         G1Protocol.EV_INPUT -> g1HandleInput(arm, G1Protocol.parseInput(data) ?: return)
+        G1Protocol.EV_MIC_DATA -> g1HandleMicData(address, data)
+        G1Protocol.EV_NOTICE -> g1HandleNotice(arm, G1Protocol.parseNotice(data) ?: return)
         else -> if (type >= 0x80) {
             val reply = G1Protocol.parseReply(data) ?: return
             if (reply.op == G1Protocol.OP_PROPS) {
-                if (reply.status == 0) G1Protocol.parseProps(reply.body, G1_PROPS.size)?.let { g1HandleProps(arm, it) }
+                val ids = monitor.withLock { g1.propRequests.remove(arm * 256 + reply.tag) } ?: return
+                val values = if (reply.status == 0) G1Protocol.parseProps(reply.body, ids.size) else null
+                if (values != null) g1HandlePropsReply(arm, ids, values)
                 return
+            }
+            if (reply.op == G1Protocol.OP_MIC) {
+                if (reply.status != 0) g1MicRefused(reply.status)
+                return
+            }
+            if (reply.op == G1Protocol.OP_PROP_SET && reply.status != 0) {
+                logLine("G1 PROP_SET refused: " + reply.status + " (firmware before 0.5.63?)")
             }
             monitor.withLock {
                 lastIncomingAtMs = now()
@@ -452,6 +597,73 @@ internal fun GlassesSessionCore.g1OnNotification(address: String, characteristic
             }
         }
     }
+}
+
+private fun GlassesSessionCore.g1HandleMicData(address: String, data: ByteArray) {
+    val (first, count, start) = G1Protocol.micFrames(data) ?: return
+    val packets = ArrayList<ByteArray>(1)
+    monitor.withLock { g1.mic.ingest(first, count, data, start) { packets.add(it) } }
+    for (packet in packets) handleRenderNotification(address, packet)
+}
+
+private fun GlassesSessionCore.g1MicRefused(status: Int) {
+    logWarn("G1 mic refused: status $status (12: no capture, or the link isn't encrypted)")
+    monitor.withLock {
+        audioCaptureActive = false
+        audioPacketListener = null
+        g1.micOn = false
+    }
+}
+
+private fun GlassesSessionCore.g1HandleNotice(arm: Int, notice: G1Protocol.Notice) {
+    when (notice.kind) {
+        G1Protocol.NOTICE_MIC_STOPPED -> {
+            val reason = if (notice.body.isNotEmpty()) notice.body[0].toInt() and 255 else 0
+            logLine("G1 mic stopped by the arm: reason $reason")
+            if (reason == G1Protocol.MIC_STOPPED_LEASE) {
+                // A renewal came late: ask again, the capture still wants it.
+                monitor.withLock { g1.lastMicRenewAtMs = 0 }
+                interruptibleSleep.interrupt()
+            } else {
+                g1MicRefused(reason)
+            }
+        }
+        G1Protocol.NOTICE_GUARD -> {
+            if (notice.body.isEmpty()) return
+            // This arm's panel guard capped its level (a mostly white screen): keep the eyes matched.
+            val cap = notice.body[0].toInt() and 255
+            logLine("G1 panel guard on the " + (if (arm == 0) "left" else "right") + " arm: cap $cap")
+            monitor.withLock { g1.pendingPropSets.add((1 - arm) to G1Protocol.propSet(G1Protocol.PROP_BRIGHTNESS_MAX, cap)) }
+            interruptibleSleep.interrupt()
+        }
+    }
+}
+
+private fun GlassesSessionCore.g1HandlePropsReply(arm: Int, ids: IntArray, values: IntArray) {
+    when {
+        ids === G1_PROPS -> g1HandleProps(arm, values)
+        ids === G1_LIGHT -> if (values[0] != G1Protocol.UNKNOWN) g1HandleLight(values[0])
+        ids === G1_IMU -> if (values.none { it == G1Protocol.UNKNOWN }) {
+            emitImuData(values[0] / 1000.0, values[1] / 1000.0, values[2] / 1000.0, BleProtocol.EVENT_SOURCE_GLASSES_R)
+        }
+    }
+}
+
+/** A reading in the shape of the G2's report, so the brightness policy and the Developer app need nothing new. */
+private fun GlassesSessionCore.g1HandleLight(centilux: Int) {
+    val report = monitor.withLock {
+        val logged = g1.loggedLight
+        if (logged < 0 || kotlin.math.abs(centilux - logged) > maxOf(100, logged / 2)) {
+            g1.loggedLight = centilux
+            logLine("G1 light: " + centilux / 100 + " lux")
+        }
+        val report = G1Protocol.alsReport(centilux, brightnessPolicy.target, now())
+        lastIncomingAtMs = now()
+        brightnessPolicy.sample(report, lastIncomingAtMs)
+        report
+    }
+    emitAmbientLight(report)
+    interruptibleSleep.interrupt()
 }
 
 private fun GlassesSessionCore.g1HandleInput(arm: Int, input: G1Protocol.Input) {
@@ -498,7 +710,10 @@ private fun GlassesSessionCore.g1HandleProps(arm: Int, values: IntArray, battery
         if (values[0] != G1Protocol.UNKNOWN) state.battery = values[0]
         if (values[1] != G1Protocol.UNKNOWN) state.charge = values[1]
         if (values[2] != G1Protocol.UNKNOWN) state.inCase = values[2]
-        if (values[3] != G1Protocol.UNKNOWN) state.worn = values[3]
+        if (values[3] != G1Protocol.UNKNOWN) {
+            if (values[3] != state.worn) logLine("G1 " + (if (arm == 0) "left" else "right") + " arm: worn " + values[3])
+            state.worn = values[3]
+        }
 
         val batteries = g1.arms.map { it.battery }.filter { it >= 0 }
         val battery = if (batteries.isEmpty()) -1 else batteries.min()

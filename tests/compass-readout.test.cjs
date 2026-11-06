@@ -23,7 +23,7 @@ const font = (size) => BdfFont.parse(fs.readFileSync(path.join(__dirname, `../ap
 const small = font(18), large = font(32);
 const diagnostics = { magneticAccuracy: 3, magneticAnomalies: 2, orientationSource: 3, flags: 0x8c, sampleTimeMs: 1234 };
 
-function compass(width = 576, height = 260) {
+function compass(width = 576, height = 260, glasses = 'g2') {
   let listener, window;
   class RecordingImage extends graphics.GrayImage {
     texts = [];
@@ -55,6 +55,7 @@ function compass(width = 576, height = 260) {
     },
     '../../ui/shell/shell': { shell: { isWindowVisible: () => true } },
     '../../native/location-permissions': { hasLocationPermission: () => false },
+    '../../ui/dashboard-settings': { glassesTypeSetting: { get: () => glasses } },
     './calibration': calibration,
     './calibration-layer': {}, './declination': { onDeclinationChanged: () => () => {} },
     './heading': { getNorthReference: () => 'magnetic', resolveHeading: (v) => ({ displayDegrees: v }) },
@@ -63,6 +64,7 @@ function compass(width = 576, height = 260) {
   app.createCompassAppWindow({ onClosed() {} });
   return { menu: () => window.menuItems(),
     paint: () => window.baseLayer.paint(ctx),
+    tap: () => window.baseLayer.handleInput({ type: 'click' }, ctx),
     heading: (info) => listener({ command: 15, headingDegrees: 359, diagnostics: info }) };
 }
 
@@ -109,4 +111,14 @@ test('calibration readout fits the viewport without overlapping the heading or s
       ]));
     }
   }
+});
+
+test('glasses without a magnetometer say so and offer no calibration', () => {
+  const app = compass(576, 260, 'g1');
+  const image = app.paint();
+  assert.ok(image.texts.some((t) => t.text === 'These glasses have no compass sensor'));
+  assert.equal(calibrationText(image), undefined);
+  assert.equal(app.menu().length, 0);
+  // ctx.stack has no push or topMatches here, so opening calibration would throw.
+  app.tap();
 });

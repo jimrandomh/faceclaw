@@ -438,6 +438,7 @@ class GlassesSessionCore(
     internal var benchmarkLastAckAtMs = 0L
     internal var benchmarkEndAtMs = 0L       // 0 while running; set when the run drains
     internal var benchmarkMessagesSent = 0
+    internal var benchmarkMessageCounter = 0
     internal var benchmarkMessagesAcked = 0
     internal var benchmarkTimeouts = 0
     internal var benchmarkPayloadBytesAcked = 0L
@@ -693,10 +694,7 @@ class GlassesSessionCore(
         }
         // The iO's packets are Opus from its remote audio stream (see ioStartAudioCapture).
         if (isIo) return ioStartAudioCapture(listener)
-        if (isG1) {
-            logLine("skip G1 mic: not in this version")
-            return false
-        }
+        if (isG1) return g1StartAudioCapture(listener)
         var magic = 0
         monitor.withLock {
             if (!running || !sessionReady || shutdownRequested || !fixedLayoutCreated) {
@@ -715,7 +713,7 @@ class GlassesSessionCore(
 
     fun stopG2AudioCapture() {
         if (isIo) return ioStopAudioCapture()
-        if (isG1) return
+        if (isG1) return g1StopAudioCapture()
         var magic = 0
         monitor.withLock {
             audioPacketListener = null
@@ -918,6 +916,7 @@ class GlassesSessionCore(
      * (ignored on disable).
      */
     fun setImuReportEnabled(enable: Boolean, reportFrq: Int) {
+        if (isG1) return g1SetImuReport(enable)
         monitor.withLock {
             if (!running || !sessionReady) {
                 logLine("skip IMU " + (if (enable) "enable" else "disable") + "; session not ready")
@@ -1275,6 +1274,11 @@ class GlassesSessionCore(
     /** Request one CFW ambient-light report (image-handler mode 16 op 0). */
     fun queryAmbientLight() {
         monitor.withLock {
+            if (isG1) {
+                g1.lastLightAtMs = 0
+                interruptibleSleep.interrupt()
+                return
+            }
             enqueueAmbientLightControlLocked(byteArrayOf(CFW_MSG_AMBIENT_LIGHT.toByte(), 0.toByte()), "als query", false)
         }
         interruptibleSleep.interrupt()
@@ -1357,7 +1361,7 @@ class GlassesSessionCore(
      * queued (no session, or a malformed record).
      */
     fun sendFaceclawMicControl(record: ByteArray?, label: String, rightTemple: Boolean, leftTemple: Boolean): Boolean {
-        if (record == null || record.size < 4) {
+        if (!isG2 || record == null || record.size < 4) {
             return false
         }
         monitor.withLock {
@@ -1825,7 +1829,7 @@ class GlassesSessionCore(
 
                 val sleepMs = driveSession()
                 if (sleepMs > 0) {
-                    interruptibleSleep.sleep(sleepMs)
+                    interruptibleSleep.sleep(if (isG1) minOf(sleepMs, g1MaxSleepMs()) else sleepMs)
                 }
             } catch (t: Throwable) {
                 if (!running) {
