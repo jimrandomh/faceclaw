@@ -1059,30 +1059,69 @@ internal fun GlassesSessionCore.reconcileHeadUpLocked(ackPayload: ByteArray?) {
         headUpCalibration = headUp[2]
         headUpReadAtMs = now()
     }
+    if (headUpSwitch < 0 || !sessionReady) return
+    applyHeadUpLocked(verifying)
+}
+
+/**
+ * Compare the last read with what is wanted (the trigger, or the glasses' original values
+ * while a restore is pending) and queue writes when they differ. After a verifying read
+ * that still disagrees nothing is queued: the next regular poll retries, so a firmware
+ * that clamps or refuses the value costs one attempt per poll interval, not a write loop.
+ */
+internal fun GlassesSessionCore.applyHeadUpLocked(verifying: Boolean) {
     val desired = desiredHeadUpTrigger
-    if (desired <= 0 || headUpSwitch < 0 || !sessionReady) return
-    val wantAngle = desired - headUpCalibration
-    if (headUpSwitch == 1 && headUpAngle == wantAngle) {
-        if (verifying) logLine("head-up trigger confirmed: ${desired}° (angle $wantAngle + calibration $headUpCalibration)")
+    val wantSwitch: Int
+    val wantAngle: Int
+    if (desired > 0) {
+        wantSwitch = 1
+        wantAngle = desired - headUpCalibration
+    } else if (headUpRestorePending) {
+        wantSwitch = headUpOriginalSwitch
+        wantAngle = headUpOriginalAngle
+    } else {
+        return
+    }
+    if (headUpSwitch == wantSwitch && headUpAngle == wantAngle) {
+        if (desired > 0) {
+            if (verifying) logLine("head-up trigger confirmed: ${desired}° (angle $wantAngle + calibration $headUpCalibration)")
+        } else {
+            logLine("head-up setting restored (switch=$wantSwitch angle=$wantAngle)")
+            headUpRestorePending = false
+            headUpOriginalSwitch = -1
+            headUpOriginalAngle = 0
+        }
         return
     }
     if (verifying) {
-        logLine("head-up trigger not applied yet (switch=$headUpSwitch angle=$headUpAngle); retrying on next poll")
+        logLine("head-up setting not applied yet (switch=$headUpSwitch angle=$headUpAngle); retrying on next poll")
+        return
     }
-    queueHeadUpWritesLocked(wantAngle)
+    if (desired > 0 && headUpOriginalSwitch < 0) {
+        headUpOriginalSwitch = headUpSwitch
+        headUpOriginalAngle = headUpAngle
+        logLine("head-up original saved (switch=$headUpSwitch angle=$headUpAngle)")
+    }
+    queueHeadUpWritesLocked(wantSwitch, wantAngle)
 }
 
-internal fun GlassesSessionCore.queueHeadUpWritesLocked(angle: Int) {
+internal fun GlassesSessionCore.queueHeadUpWritesLocked(switch: Int, angle: Int) {
     clearMessagesOfKindLocked("head-up-control")
-    val on = messageBuilder.setHeadUp(BleProtocol.HEAD_UP_FIELD_SWITCH, 1)
-    on.onTimeout = MessageCallback { logLine("head-up switch ack timeout") }
+    val sw = messageBuilder.setHeadUp(BleProtocol.HEAD_UP_FIELD_SWITCH, switch)
+    sw.onTimeout = MessageCallback { logLine("head-up switch ack timeout") }
     val set = messageBuilder.setHeadUp(BleProtocol.HEAD_UP_FIELD_ANGLE, angle)
     set.onTimeout = MessageCallback { logLine("head-up angle ack timeout") }
-    pendingMessages.addLast(on)
-    pendingMessages.addLast(set)
+    // Switch on before the angle; when switching off, the angle goes first.
+    if (switch == 1) {
+        pendingMessages.addLast(sw)
+        pendingMessages.addLast(set)
+    } else {
+        pendingMessages.addLast(set)
+        pendingMessages.addLast(sw)
+    }
     headUpVerifyPending = true
     lastBatteryRefreshAtMs = 0L
-    logLine("queue head-up switch on + angle $angle (trigger ${desiredHeadUpTrigger}°, calibration $headUpCalibration)")
+    logLine("queue head-up switch $switch + angle $angle (trigger ${desiredHeadUpTrigger}°, calibration $headUpCalibration)")
 }
 
 internal fun GlassesSessionCore.createBatteryQueryMessageLocked(): OutboundMessage {

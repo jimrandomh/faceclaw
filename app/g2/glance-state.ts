@@ -1,9 +1,10 @@
 /**
  * The Glanceboard's visibility rules, as a pure reducer so they can be tested
  * without the display plumbing. The board is an alternate sleep-time display:
- * while the shell is asleep a press (single tap, or a head-tilt wake) shows it
- * for a short while, a hold (long-press or short-then-long-press) shows it until release,
- * and a double-tap dismisses it in favour of the regular UI. GlanceHost feeds
+ * while the shell is asleep a press (single tap) shows it for a short while, a
+ * head-tilt wake shows it until the head comes back down, a hold (long-press or
+ * short-then-long-press) shows it until release, and a double-tap dismisses it
+ * in favour of the regular UI. GlanceHost feeds
  * these events in and applies the resulting visibility to the compositor.
  *
  * No NativeScript imports: this module is compiled and run under plain node
@@ -20,15 +21,38 @@ export const GLANCE_TIMEOUT_MS = 3000;
  */
 export const GLANCE_TILT_MAX_MS = 60_000;
 
+/**
+ * The firmware reports head-down once the pitch falls 20° below the head-up
+ * trigger (a fixed hysteresis in DRV_IMUCheckHeadUpEvent). Under this trigger,
+ * looking level again does not get below that, so the head-down may never come.
+ */
+export const GLANCE_LOW_TILT_TRIGGER_DEGREES = 25;
+
+/**
+ * How long a head-tilt showing may last without a head-down. The full cap,
+ * except when the head-down is unlikely to arrive, where the tap duration is
+ * used instead: a tilt that woke a suspended EvenHub session (the head-down
+ * is only forwarded once the page is back, so a quick glance can end before
+ * that), or a trigger too low for a level gaze to count as looking down.
+ * triggerDegrees is the glasses' trigger, or null when not known.
+ */
+export function glanceTiltMaxMs(options: { resumedSession: boolean; triggerDegrees: number | null; tapTimeoutMs: number }): number {
+  const lowTrigger =
+    options.triggerDegrees !== null && options.triggerDegrees > 0 && options.triggerDegrees < GLANCE_LOW_TILT_TRIGGER_DEGREES;
+  return options.resumedSession || lowTrigger ? options.tapTimeoutMs : GLANCE_TILT_MAX_MS;
+}
+
 export type GlanceState = {
   visible: boolean;
   /** A long-press is holding the board up; the timer does not run meanwhile. */
   holding: boolean;
   /**
    * A head-tilt is holding the board up: it stays until the firmware reports
-   * the head back down (or GLANCE_TILT_MAX_MS passes).
+   * the head back down (or tiltMaxMs passes).
    */
   tilted: boolean;
+  /** The current head-tilt's cap (0 when not tilted); a hold ending mid-tilt re-arms it. */
+  tiltMaxMs: number;
   /** When the board hides on its own (epoch ms), or null while held / hidden. */
   hideAtMs: number | null;
 };
@@ -36,8 +60,8 @@ export type GlanceState = {
 export type GlanceEvent =
   /** Single tap: show, and (re)start the auto-hide timer. */
   | { type: "press" }
-  /** Head-tilt (IMU head-up): show until the head comes back down. */
-  | { type: "tilt" }
+  /** Head-tilt (IMU head-up): show until the head comes back down, or maxMs (default GLANCE_TILT_MAX_MS). */
+  | { type: "tilt"; maxMs?: number }
   /** The IMU reported the head back down: ends a head-tilt showing. */
   | { type: "head-down" }
   /** Long-press: show and keep showing until the release. */
@@ -49,7 +73,7 @@ export type GlanceEvent =
   /** Double-tap (or any other wake of the regular UI): hide now. */
   | { type: "dismiss" };
 
-export const GLANCE_HIDDEN: GlanceState = Object.freeze({ visible: false, holding: false, tilted: false, hideAtMs: null });
+export const GLANCE_HIDDEN: GlanceState = Object.freeze({ visible: false, holding: false, tilted: false, tiltMaxMs: 0, hideAtMs: null });
 
 export function reduceGlance(
   state: GlanceState,
@@ -61,20 +85,24 @@ export function reduceGlance(
     case "press":
       // A tap during a hold or a head-tilt changes nothing: those decide when it ends.
       if (state.holding || state.tilted) return state;
-      return { visible: true, holding: false, tilted: false, hideAtMs: nowMs + timeoutMs };
-    case "tilt":
-      return { visible: true, holding: state.holding, tilted: true, hideAtMs: state.holding ? null : nowMs + GLANCE_TILT_MAX_MS };
+      return { visible: true, holding: false, tilted: false, tiltMaxMs: 0, hideAtMs: nowMs + timeoutMs };
+    case "tilt": {
+      const maxMs = event.maxMs ?? GLANCE_TILT_MAX_MS;
+      return { visible: true, holding: state.holding, tilted: true, tiltMaxMs: maxMs, hideAtMs: state.holding ? null : nowMs + maxMs };
+    }
     case "head-down":
       // Only a head-tilt showing ends with the head; a tap's timer or a hold keeps running.
       if (!state.tilted) return state;
-      return state.holding ? { ...state, tilted: false } : GLANCE_HIDDEN;
+      return state.holding ? { ...state, tilted: false, tiltMaxMs: 0 } : GLANCE_HIDDEN;
     case "hold":
-      return { visible: true, holding: true, tilted: state.tilted, hideAtMs: null };
+      return { visible: true, holding: true, tilted: state.tilted, tiltMaxMs: state.tiltMaxMs, hideAtMs: null };
     case "release":
       // Releases delivered late or after a disabled hold gesture mean nothing here.
       if (!state.holding) return state;
       // Head still up: the board stays, as if the tilt had just shown it.
-      return state.tilted ? { visible: true, holding: false, tilted: true, hideAtMs: nowMs + GLANCE_TILT_MAX_MS } : GLANCE_HIDDEN;
+      return state.tilted
+        ? { visible: true, holding: false, tilted: true, tiltMaxMs: state.tiltMaxMs, hideAtMs: nowMs + state.tiltMaxMs }
+        : GLANCE_HIDDEN;
     case "timeout":
       if (!state.visible || state.holding || state.hideAtMs === null || nowMs < state.hideAtMs) return state;
       return GLANCE_HIDDEN;

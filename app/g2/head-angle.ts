@@ -1,6 +1,8 @@
 import { addImuListener, setImuReportEnabled, type ImuReading } from "../native/imu";
 import { getHeadUpStatus, setHeadUpTrigger, type HeadUpStatus } from "../native/glasses-controls";
-import { glanceAngleDegrees, glanceAngleSetting, type GlanceAngle } from "../apps/glanceboard/glanceboard-settings";
+import { getStringSetting, setStringSetting } from "../native/settings-store";
+import { glanceAngleSetting, glanceAngleTriggerDegrees, type GlanceAngle } from "../apps/glanceboard/glanceboard-settings";
+import { angleBetweenDegrees, glanceAngleForTilt, meanVector, type Vec3 } from "./head-tilt-math";
 
 // Same ImuReportPace code the accelerometer demo uses (not literal Hz).
 const IMU_REPORT_PACE = 200;
@@ -9,27 +11,14 @@ const SAMPLE_WINDOW_MS = 1_200;
 /** Give up when the glasses send nothing for this long. */
 const FIRST_SAMPLE_TIMEOUT_MS = 3_000;
 const MIN_SAMPLES = 3;
-/** The setting's range; the firmware itself accepts 1..90. */
-export const MIN_GLANCE_ANGLE = 5;
-export const MAX_GLANCE_ANGLE = 60;
-
-/** degrees/rounded are set on success; reason on failure. */
-export type HeadAngleResult = { ok: boolean; degrees?: number; rounded?: number; reason?: string };
+/** The level reading is used for a tilt reading taken within this long. */
+const LEVEL_READING_VALID_MS = 60_000;
 
 /**
- * Measure how far the head is tilted up right now, from the glasses'
- * accelerometer stream (the same IMU whose pitch the firmware compares with
- * its head-up threshold).
- *
- * The temple's sensor axes are not documented, so this does not assume which
- * axis points forward. When worn, gravity lies mostly along the sensor's
- * vertical axis, and tilting the head up turns it toward the forward axis; the
- * angle between gravity and the dominant axis is therefore the tilt, whichever
- * axis that is and whichever sign it has. Head roll adds to it, so the wearer
- * should keep the head level side to side. Past 45° the dominant axis swaps,
- * which is why the setting stops at 60° and readings are clamped there.
+ * Average the glasses' accelerometer (gravity) over about a second, with the
+ * report stream on only for that long.
  */
-export async function measureHeadTilt(): Promise<HeadAngleResult> {
+async function measureGravity(): Promise<{ ok: true; gravity: Vec3 } | { ok: false; reason: string }> {
   const samples: ImuReading[] = [];
   let firstAt = 0;
   const unsubscribe = addImuListener((reading) => {
@@ -55,46 +44,104 @@ export async function measureHeadTilt(): Promise<HeadAngleResult> {
   if (samples.length < MIN_SAMPLES) {
     return { ok: false, reason: samples.length === 0 ? "no sensor data" : "too few samples" };
   }
-  let x = 0, y = 0, z = 0;
-  for (const s of samples) {
-    x += s.x;
-    y += s.y;
-    z += s.z;
-  }
-  x /= samples.length;
-  y /= samples.length;
-  z /= samples.length;
-  const magnitude = Math.hypot(x, y, z);
-  if (!(magnitude > 1e-6)) return { ok: false, reason: "sensor reads zero" };
-  const dominant = Math.max(Math.abs(x), Math.abs(y), Math.abs(z));
-  const degrees = (Math.acos(Math.min(1, dominant / magnitude)) * 180) / Math.PI;
-  return { ok: true, degrees, rounded: roundGlanceAngle(degrees) };
+  const gravity = meanVector(samples);
+  return gravity ? { ok: true, gravity } : { ok: false, reason: "sensor reads zero" };
 }
 
-/** Nearest multiple of 5, kept within the setting's range. */
-export function roundGlanceAngle(degrees: number): number {
-  const rounded = Math.round(degrees / 5) * 5;
-  return Math.min(MAX_GLANCE_ANGLE, Math.max(MIN_GLANCE_ANGLE, rounded));
+let levelReading: { gravity: Vec3; atMs: number } | null = null;
+let measuring = false;
+
+/** Which reading the next capture takes: the level one, or the tilted one after it. */
+export function headAngleCaptureStep(): "level" | "tilt" {
+  return levelReading && Date.now() - levelReading.atMs < LEVEL_READING_VALID_MS ? "tilt" : "level";
+}
+
+export function headAngleCaptureRunning(): boolean {
+  return measuring;
 }
 
 /**
- * Measure, store the rounded angle in the Head tilt angle setting, and send
- * it to the glasses. Returns a short status for the menu row.
+ * One step of "Set to current head angle". The first call reads the head
+ * level; the next (within a minute) reads it tilted up, stores the angle
+ * between the two, rounded to 5°, as the Head tilt angle, and the
+ * controller's settings listener sends it to the glasses. Returns a short
+ * status for the menu row, or null when a capture is already running.
  */
-export async function setGlanceAngleFromHead(): Promise<string> {
-  const result = await measureHeadTilt();
-  if (!result.ok) return `Failed: ${result.reason}`;
-  glanceAngleSetting.set(String(result.rounded) as GlanceAngle);
-  const sent = applyGlanceAngle();
-  return sent ? `Set to ${result.rounded}°` : `Saved ${result.rounded}° (glasses offline)`;
+export async function captureHeadAngleStep(): Promise<string | null> {
+  if (measuring) return null;
+  measuring = true;
+  try {
+    const step = headAngleCaptureStep();
+    const result = await measureGravity();
+    if (result.ok === false) return `Failed: ${result.reason}`;
+    if (step === "level") {
+      levelReading = { gravity: result.gravity, atMs: Date.now() };
+      return "Now tilt up, select";
+    }
+    const level = levelReading!.gravity;
+    levelReading = null;
+    const angle = glanceAngleForTilt(angleBetweenDegrees(level, result.gravity));
+    if (angle.ok === false) return `Failed: ${angle.reason}`;
+    glanceAngleSetting.set(String(angle.rounded) as GlanceAngle);
+    return getHeadUpStatus() ? `Set to ${angle.rounded}°` : `Saved ${angle.rounded}° (offline)`;
+  } finally {
+    measuring = false;
+  }
 }
 
-/** Push the Head tilt angle setting to the session (on change and on each connect). */
+/** Forget a level reading (the settings menu was reopened). */
+export function resetHeadAngleCapture(): void {
+  if (!measuring) levelReading = null;
+}
+
+// The glasses' own head-up switch and angle from before Faceclaw first changed
+// them, as "switch,angle", or "" when none is held. Kept here (not only in the
+// session) so "Glasses default" can still restore them after an app restart.
+const ORIGINAL_KEY = "glanceboard.headTiltOriginal";
+
+function savedOriginal(): { switch: number; angle: number } | null {
+  const [sw, angle] = getStringSetting(ORIGINAL_KEY, "").split(",").map(Number);
+  return (sw === 0 || sw === 1) && Number.isInteger(angle) ? { switch: sw, angle } : null;
+}
+
+/**
+ * Push the wanted trigger to the session (on change and on each connect):
+ * the Head tilt angle while the Glanceboard is enabled, else none, which
+ * writes back the glasses' own values if Faceclaw changed them.
+ */
 export function applyGlanceAngle(): boolean {
-  return setHeadUpTrigger(glanceAngleDegrees());
+  const sent = setHeadUpTrigger(glanceAngleTriggerDegrees(), savedOriginal());
+  syncGlanceAngleOriginal();
+  return sent;
 }
 
-/** The glasses' current head-up trigger (angle + calibration), or null when not read yet. */
+/**
+ * Keep the persisted original in step with the session: save the values the
+ * session captured before its first write, and drop them once a read shows
+ * them restored. Called on apply, from the controller's periodic refresh, and
+ * when the settings row draws.
+ */
+export function syncGlanceAngleOriginal(status: HeadUpStatus | null = getHeadUpStatus()): void {
+  if (!status) return;
+  const saved = savedOriginal();
+  if (!saved) {
+    if (status.originalSwitch === 0 || status.originalSwitch === 1) {
+      setStringSetting(ORIGINAL_KEY, `${status.originalSwitch},${status.originalAngle}`);
+    }
+    return;
+  }
+  if (
+    glanceAngleTriggerDegrees() === 0 &&
+    status.desired < 0 &&
+    !status.restorePending &&
+    status.switch === saved.switch &&
+    status.angle === saved.angle
+  ) {
+    setStringSetting(ORIGINAL_KEY, "");
+  }
+}
+
+/** The glasses' current head-up trigger (angle + calibration), 0 when off, or null when not read yet. */
 export function glassesHeadUpTrigger(status: HeadUpStatus | null = getHeadUpStatus()): number | null {
   if (!status || status.switch < 0) return null;
   return status.switch === 1 ? status.angle + status.calibration : 0;

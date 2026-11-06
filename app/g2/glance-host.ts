@@ -82,7 +82,7 @@ export class GlanceHost {
    * The glance event a sleep-time gesture means under the board's settings,
    * or null when the shell should see the input as usual: nothing while the
    * board is disabled, no press from a tap when "Show on tap" is disabled,
-   * no hold when "Show on long press" is off, no press from a head-tilt when
+   * no hold when "Show on long press" is off, no tilt from a head-tilt when
    * "Show on head tilt" is off (it then wakes the regular UI). A release
    * always passes so a hold in progress can end.
    */

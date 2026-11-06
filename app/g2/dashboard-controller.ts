@@ -20,8 +20,9 @@ import { shouldShowNotificationOnGlasses } from "../native/notification-sources"
 import { watchNotificationListenerBinding } from "../native/notification-access";
 import { openEvenAppSettings, readEvenAppNotificationState } from "../native/even-app-conflict";
 import { defaultRingName, setGlassesRingLink } from "../native/ring-status";
-import { applyGlanceAngle } from "./head-angle";
-import { glanceAngleDegrees } from "../apps/glanceboard/glanceboard-settings";
+import { applyGlanceAngle, glassesHeadUpTrigger, syncGlanceAngleOriginal } from "./head-angle";
+import { glanceAngleTriggerDegrees, glanceTapTimeoutMs } from "../apps/glanceboard/glanceboard-settings";
+import { glanceTiltMaxMs } from "./glance-state";
 import { getBooleanSetting, setBooleanSetting } from "../native/settings-store";
 import { grayImageToPreviewSource } from "../native/gray-image-preview";
 import { firmwareIncompatibilityMessage, hasCompatibleFirmware } from "./firmware-compat";
@@ -335,7 +336,7 @@ class DashboardController {
   private evenHubResumePromise: Promise<boolean> | null = null;
   /** Faceclaw's firmware at the required revision reported in; its extensions can be used. */
   private customFirmwareConfirmed = false;
-  private lastGlanceAngleDegrees = glanceAngleDegrees();
+  private lastGlanceAngleDegrees = glanceAngleTriggerDegrees();
   private faceclawWakeLeaseState: boolean | null = null;
   /** Ring connection mode the current session was started with (it applies per connection). */
   private ringModeAtConnect: RingConnectionMode = "glasses";
@@ -1758,6 +1759,7 @@ class DashboardController {
         this.requestShellRender();
         this.updateCompositePreview();
         this.updateConnectedForegroundNotification();
+        syncGlanceAngleOriginal();
       }, SHELL_REFRESH_INTERVAL_MS);
       this.previewTimer = setInterval(() => this.updateCompositePreview(), PREVIEW_INTERVAL_MS);
       this.screenTimeoutTimer = setInterval(() => {
@@ -2520,9 +2522,9 @@ class DashboardController {
     }
   }
 
-  /** Re-send the head-tilt angle when the setting changed (from either settings UI). */
+  /** Re-send the head-tilt angle when it changed (the setting, from either settings UI, or the Glanceboard toggle). */
   private applyGlanceAngleIfChanged(): void {
-    const degrees = glanceAngleDegrees();
+    const degrees = glanceAngleTriggerDegrees();
     if (degrees === this.lastGlanceAngleDegrees) return;
     this.lastGlanceAngleDegrees = degrees;
     applyGlanceAngle();
@@ -2531,12 +2533,20 @@ class DashboardController {
   /**
    * The Glanceboard event a sleep-time input means, or null when the shell
    * should see the input as usual. A display-wake carries the head-tilt
-   * gesture (HEAD_UP_EVENT) as a press; the double-tap display-wake stays the
-   * regular UI's wake.
+   * gesture (HEAD_UP_EVENT) as a tilt, which lasts until the head-down; the
+   * double-tap display-wake stays the regular UI's wake.
    */
   private glanceEventFor(inputEvent: InputEvent, event: RawInputEvent): GlanceEvent | null {
     if (inputEvent.type === "display-wake") {
-      return event.eventType === OsEventTypeList.HEAD_UP_EVENT ? this.glance.eventForGesture("head-tilt") : null;
+      if (event.eventType !== OsEventTypeList.HEAD_UP_EVENT) return null;
+      const glanceEvent = this.glance.eventForGesture("head-tilt");
+      if (glanceEvent?.type !== "tilt") return glanceEvent;
+      const maxMs = glanceTiltMaxMs({
+        resumedSession: this.evenHubSessionSuspended || this.evenHubResumePromise !== null,
+        triggerDegrees: glassesHeadUpTrigger() ?? (glanceAngleTriggerDegrees() || null),
+        tapTimeoutMs: glanceTapTimeoutMs(),
+      });
+      return { type: "tilt", maxMs };
     }
     return this.glance.eventForGesture(inputEvent.type);
   }

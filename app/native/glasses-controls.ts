@@ -3,9 +3,14 @@ declare const com: any;
 /**
  * Head-up (look-up wake) trigger on the active glasses session
  * (GlassesSessionCore.setHeadUpTrigger / getHeadUpStatus). Android only for
- * now: on iOS, or with no session, the setter does nothing and the getter
- * returns null.
+ * now (headUpControlsAvailable): on iOS, or with no session, the setter does
+ * nothing and the getter returns null.
  */
+
+/** Whether this platform can change the glasses' head-up setting at all. */
+export function headUpControlsAvailable(): boolean {
+  return Boolean(global.isAndroid);
+}
 
 /** GlassesSessionCore.getHeadUpStatus. switch -1 = not read on this connection. */
 export type HeadUpStatus = {
@@ -15,6 +20,11 @@ export type HeadUpStatus = {
   /** The trigger Faceclaw is maintaining, or -1 when it leaves the glasses' own setting. */
   desired: number;
   readAgeMs: number;
+  /** The glasses' own switch and angle from before Faceclaw changed them (switch -1 = none held). */
+  originalSwitch: number;
+  originalAngle: number;
+  /** Those originals are being written back. */
+  restorePending: boolean;
 };
 
 function activeCommunicator(): any {
@@ -26,12 +36,16 @@ function activeCommunicator(): any {
   }
 }
 
-/** Ask the session to keep the head-up trigger at `degrees` (1..90); 0 stops managing it. */
-export function setHeadUpTrigger(degrees: number): boolean {
+/**
+ * Ask the session to keep the head-up trigger at `degrees` (1..90); 0 stops
+ * managing it and writes back `original` (or what the session saved itself)
+ * if Faceclaw changed the glasses' values.
+ */
+export function setHeadUpTrigger(degrees: number, original: { switch: number; angle: number } | null = null): boolean {
   const active = activeCommunicator();
   if (!active) return false;
   try {
-    active.setHeadUpTrigger(Math.round(degrees));
+    active.setHeadUpTrigger(Math.round(degrees), original ? original.switch : -1, original ? Math.round(original.angle) : 0);
     return true;
   } catch (error) {
     console.warn(`setHeadUpTrigger failed: ${error}`);

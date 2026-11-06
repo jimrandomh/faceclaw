@@ -6,6 +6,7 @@ const {
   GLANCE_TIMEOUT_MS,
   GLANCE_TILT_MAX_MS,
   glanceEventForGesture,
+  glanceTiltMaxMs,
   reduceGlance,
 } = require("../.test-build/app/g2/glance-state.js");
 
@@ -13,7 +14,7 @@ const T0 = 1_000_000;
 
 test("a press shows the board and arms the auto-hide timer", () => {
   const shown = reduceGlance(GLANCE_HIDDEN, { type: "press" }, T0);
-  assert.deepEqual(shown, { visible: true, holding: false, tilted: false, hideAtMs: T0 + GLANCE_TIMEOUT_MS });
+  assert.deepEqual(shown, { visible: true, holding: false, tilted: false, tiltMaxMs: 0, hideAtMs: T0 + GLANCE_TIMEOUT_MS });
   // A timer firing early is ignored; on time it hides.
   assert.equal(reduceGlance(shown, { type: "timeout" }, T0 + GLANCE_TIMEOUT_MS - 1), shown);
   assert.deepEqual(reduceGlance(shown, { type: "timeout" }, T0 + GLANCE_TIMEOUT_MS), GLANCE_HIDDEN);
@@ -28,7 +29,7 @@ test("a further press renews the timer from the new press", () => {
 
 test("a hold shows the board without a timer and the release hides it", () => {
   const held = reduceGlance(GLANCE_HIDDEN, { type: "hold" }, T0);
-  assert.deepEqual(held, { visible: true, holding: true, tilted: false, hideAtMs: null });
+  assert.deepEqual(held, { visible: true, holding: true, tilted: false, tiltMaxMs: 0, hideAtMs: null });
   assert.equal(reduceGlance(held, { type: "timeout" }, T0 + 60_000), held);
   // A tap mid-hold neither hides nor starts a timer.
   assert.equal(reduceGlance(held, { type: "press" }, T0 + 500), held);
@@ -71,7 +72,7 @@ test("the press timeout is the host's when supplied", () => {
 
 test("a head-tilt shows the board until the head comes back down", () => {
   const up = reduceGlance(GLANCE_HIDDEN, { type: "tilt" }, T0);
-  assert.deepEqual(up, { visible: true, holding: false, tilted: true, hideAtMs: T0 + GLANCE_TILT_MAX_MS });
+  assert.deepEqual(up, { visible: true, holding: false, tilted: true, tiltMaxMs: GLANCE_TILT_MAX_MS, hideAtMs: T0 + GLANCE_TILT_MAX_MS });
   // The tap duration no longer applies, and taps change nothing.
   assert.equal(reduceGlance(up, { type: "timeout" }, T0 + GLANCE_TIMEOUT_MS), up);
   assert.equal(reduceGlance(up, { type: "press" }, T0 + 500), up);
@@ -89,10 +90,27 @@ test("head-down leaves a tap's or a hold's showing alone", () => {
 
 test("a hold and a head-tilt together: the board stays until both end", () => {
   const both = reduceGlance(reduceGlance(GLANCE_HIDDEN, { type: "tilt" }, T0), { type: "hold" }, T0 + 100);
-  assert.deepEqual(both, { visible: true, holding: true, tilted: true, hideAtMs: null });
+  assert.deepEqual(both, { visible: true, holding: true, tilted: true, tiltMaxMs: GLANCE_TILT_MAX_MS, hideAtMs: null });
   const released = reduceGlance(both, { type: "release" }, T0 + 200);
-  assert.deepEqual(released, { visible: true, holding: false, tilted: true, hideAtMs: T0 + 200 + GLANCE_TILT_MAX_MS });
+  assert.deepEqual(released, { visible: true, holding: false, tilted: true, tiltMaxMs: GLANCE_TILT_MAX_MS, hideAtMs: T0 + 200 + GLANCE_TILT_MAX_MS });
   const downWhileHeld = reduceGlance(both, { type: "head-down" }, T0 + 200);
-  assert.deepEqual(downWhileHeld, { visible: true, holding: true, tilted: false, hideAtMs: null });
+  assert.deepEqual(downWhileHeld, { visible: true, holding: true, tilted: false, tiltMaxMs: 0, hideAtMs: null });
   assert.deepEqual(reduceGlance(downWhileHeld, { type: "release" }, T0 + 300), GLANCE_HIDDEN);
+});
+
+test("a tilt with a shorter cap keeps it, also across a hold", () => {
+  const up = reduceGlance(GLANCE_HIDDEN, { type: "tilt", maxMs: 5000 }, T0);
+  assert.equal(up.hideAtMs, T0 + 5000);
+  assert.deepEqual(reduceGlance(up, { type: "timeout" }, T0 + 5000), GLANCE_HIDDEN);
+  const held = reduceGlance(up, { type: "hold" }, T0 + 100);
+  assert.equal(reduceGlance(held, { type: "release" }, T0 + 1000).hideAtMs, T0 + 1000 + 5000);
+});
+
+test("the tilt cap falls back to the tap duration where the head-down is unlikely", () => {
+  const tapTimeoutMs = 5000;
+  assert.equal(glanceTiltMaxMs({ resumedSession: false, triggerDegrees: 30, tapTimeoutMs }), GLANCE_TILT_MAX_MS);
+  assert.equal(glanceTiltMaxMs({ resumedSession: false, triggerDegrees: null, tapTimeoutMs }), GLANCE_TILT_MAX_MS);
+  assert.equal(glanceTiltMaxMs({ resumedSession: true, triggerDegrees: 30, tapTimeoutMs }), tapTimeoutMs);
+  assert.equal(glanceTiltMaxMs({ resumedSession: false, triggerDegrees: 20, tapTimeoutMs }), tapTimeoutMs);
+  assert.equal(glanceTiltMaxMs({ resumedSession: false, triggerDegrees: 25, tapTimeoutMs }), GLANCE_TILT_MAX_MS);
 });
