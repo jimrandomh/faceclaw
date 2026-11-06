@@ -129,6 +129,15 @@ export class IosBluetooth {
     })
     return result
   }
+  /** The peripheral last heard at this address, if it was on this side. */
+  peripheralIdentifier(address: string, role: string): string | null {
+    try {
+      const saved = JSON.parse(ApplicationSettings.getString(`ios.ble.peripheral.${address}`, '{}'))
+      return saved.role === role && typeof saved.identifier === 'string' ? saved.identifier : null
+    } catch {
+      return null
+    }
+  }
   forget(address: string): void { ApplicationSettings.remove(`ios.ble.peripheral.${address}`); this.devices.delete(address) }
 }
 let instance: IosBluetooth | null = null

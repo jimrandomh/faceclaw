@@ -461,6 +461,9 @@ class IosBleCentral(private val platform: ProtocolPlatform = IosProtocolPlatform
 
     override fun isBonded(address: String): Boolean = true
 
+    /** CoreBluetooth pairs by itself when an attribute needs it. */
+    override fun requestBond(address: String) {}
+
     override fun prepareBenchmarkLink(address: String, mode: Int) {}
 
     override fun recordDisplayFrameSent() {

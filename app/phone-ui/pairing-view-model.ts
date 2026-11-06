@@ -358,8 +358,7 @@ export class PairingViewModel extends Observable {
       ring: ringAddress,
     };
     saveDeviceAddresses(addresses);
-    const g1 = !!pair?.g1Firmware;
-    if (pair) glassesTypeSetting.set(g1 ? "g1" : "g2");
+    if (pair) glassesTypeSetting.set(pair.g1Firmware ? "g1" : "g2");
     if (pair) {
       savePairedGlassesIdentity({
         serial: pair.serial ?? "",
@@ -386,12 +385,6 @@ export class PairingViewModel extends Observable {
     this.dispose();
     if (this.onboarding) {
       setPreviewOnlyMode(false);
-      if (g1) {
-        // The G2 firmware check and flash pages don't apply: a G1's firmware is installed from a
-        // computer, and the session reports incompatible firmware if it lacks the display path.
-        finishOnboardingNavigation();
-        return;
-      }
       // Continue the onboarding chain: check the glasses' firmware next.
       Frame.topmost()?.navigate({ moduleName: "phone-ui/onboarding-firmware-check-page" });
       return;

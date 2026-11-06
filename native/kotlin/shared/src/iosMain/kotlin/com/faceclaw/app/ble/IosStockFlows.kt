@@ -171,3 +171,56 @@ class IosFirmwareFlasher(rightAddress: String, leftAddress: String, firmwarePath
         lock.withLock { listener }?.let(action)
     }
 }
+
+/** iOS host for the shared [G1ArmFlashFlow]: one G1 arm's install, or a question about what it runs. */
+class IosG1Flasher(address: String, side: String, firmwarePath: String, mode: String, connectWindowMs: Int) {
+    private val link = IosBleCentral()
+    private val lock = IosProtocolPlatform.createLock()
+    private var started = false
+    private var listener: FaceclawFirmwareFlasherListener? = null
+
+    private val flow = G1ArmFlashFlow(
+        link,
+        address,
+        side,
+        firmwarePath,
+        G1ArmFlashFlow.mode(mode),
+        connectWindowMs,
+        object : FaceclawFirmwareFlasherListener {
+            override fun onLog(line: String?) {
+                PlatformLog.i(G1ArmFlashFlow.TAG, line ?: "")
+                post { it.onLog(line) }
+            }
+
+            override fun onProgress(lens: String?, componentIndex: Int, componentCount: Int, blockIndex: Int, blockCount: Int, bytesSent: Long, bytesTotal: Long) =
+                post { it.onProgress(lens, componentIndex, componentCount, blockIndex, blockCount, bytesSent, bytesTotal) }
+
+            override fun onState(state: String?, detail: String?) = post { it.onState(state, detail ?: "") }
+
+            override fun onComplete(success: Boolean, detail: String?) = post { it.onComplete(success, detail ?: "") }
+        },
+    )
+
+    fun setListener(listener: FaceclawFirmwareFlasherListener?) {
+        lock.withLock { this.listener = listener }
+    }
+
+    fun start() {
+        lock.withLock {
+            if (started) return
+            started = true
+        }
+        runOnThread("faceclaw-g1-flash") { flow.run() }
+    }
+
+    fun cancel() = flow.cancel()
+
+    fun close() {
+        cancel()
+        runCatching { link.close() }
+    }
+
+    private fun post(action: (FaceclawFirmwareFlasherListener) -> Unit) = main {
+        lock.withLock { listener }?.let(action)
+    }
+}

@@ -18,10 +18,20 @@ import {
   type OnboardingFirmwareKind,
 } from "../g2/firmware-compat";
 import { DeviceInfoProbe, DeviceInfoState } from "../native/device-info-probe";
+import { G1Flasher } from "../native/g1-flasher";
+import { saveG1Pair } from "../g1/addresses";
+import { G1ArmScanner } from "../g1/arm-scanner";
+import { G1V0_IMAGE } from "../g1/firmware/g1v0-image";
+import { G1_CASE_INSTRUCTIONS, G1_INSTALL_NOTICE, g1FirmwareState, type G1FlashResult, type G1Side } from "../g1/flash-plan";
+import { loadPairedGlassesIdentity } from "../g2/device-addresses";
+import { glassesTypeSetting } from "../ui/dashboard-settings";
 import { setOnboardingCompleted, setPreviewOnlyMode } from "./onboarding-state";
 import { formatErrorMessage } from "../util/format-error";
 
 type CheckPhase = "checking" | "fonts" | "custom" | "flashable" | "newer-validated" | "newer" | "error";
+
+const G1_LOCATE_MS = 30_000;
+const G1_CHECK_CONNECT_MS = 45_000;
 
 export class OnboardingFirmwareCheckViewModel extends Observable {
   private _phase: CheckPhase = "checking";
@@ -31,7 +41,7 @@ export class OnboardingFirmwareCheckViewModel extends Observable {
 
   private generation = 0;
 
-  private probeInstance: DeviceInfoProbe | null = null;
+  private probeInstance: { close(): void } | null = null;
 
   constructor() {
     super();
@@ -175,6 +185,10 @@ export class OnboardingFirmwareCheckViewModel extends Observable {
     try {
       await ensureBlePermissions();
       if (generation !== this.generation) return;
+      if (glassesTypeSetting.get() === "g1") {
+        await this.checkG1(generation);
+        return;
+      }
       const stored = loadDeviceAddresses();
       if (!isValidMacAddress(stored.right)) {
         this.toError("No glasses address is configured. Go back and set the device addresses.");
@@ -194,8 +208,69 @@ export class OnboardingFirmwareCheckViewModel extends Observable {
       this.applyClassification(kind, version, extension);
     } catch (error) {
       if (generation !== this.generation) return;
-      this.probeInstance = null;
       this.toError(this.formatError(error));
+    }
+  }
+
+  /**
+   * What each arm's name says first, as that needs no connection: Even's firmware can't be asked in the same way, and an
+   * arm that is about to be replaced shouldn't have to pair. Only arms on g1v0 are asked which version they run.
+   */
+  private async checkG1(generation: number): Promise<void> {
+    this.status = "Listening for your glasses...";
+    const scanner = new G1ArmScanner();
+    this.probeInstance = { close: () => scanner.stop() };
+    const stored = loadDeviceAddresses();
+    const pair = await scanner.waitForPair({ serial: loadPairedGlassesIdentity()?.serial, left: stored.left, right: stored.right }, G1_LOCATE_MS);
+    if (generation !== this.generation) return;
+    this.probeInstance = null;
+    if (!pair) {
+      this.toError(`Couldn't hear both arms of your glasses. ${G1_CASE_INSTRUCTIONS} Make sure no other app or phone is connected to them, then retry.`);
+      return;
+    }
+    saveG1Pair(pair);
+    const named = [pair.left!.g1Firmware, pair.right!.g1Firmware];
+    if (named.includes("stock")) {
+      this.showG1Install({ firmware: "stock" });
+      return;
+    }
+    if (named.includes("g1v0-safe")) {
+      this.showG1Install({ safeMode: true });
+      return;
+    }
+    const arms: G1FlashResult[] = [];
+    for (const side of ["left", "right"] as G1Side[]) {
+      const flasher = new G1Flasher({ address: pair[side]!.address, side, firmwarePath: "", mode: "probe", connectWindowMs: G1_CHECK_CONNECT_MS });
+      this.probeInstance = flasher;
+      flasher.onState((state) => {
+        if (generation !== this.generation) return;
+        if (state === "pairing") {
+          this.status = `Pairing with the ${side} arm. If your phone asks, accept it. A G1 pairs only in its case, with the lid open.`;
+        } else {
+          this.status = `Checking the ${side} arm...`;
+        }
+      });
+      arms.push(await flasher.run());
+      if (generation !== this.generation) return;
+      this.disposeProbe();
+    }
+    const state = g1FirmwareState(arms, G1V0_IMAGE.version);
+    if (state === "current") this.applyClassification("custom", arms[0]!.version ?? "", { kind: "none" });
+    else this.showG1Install(state === "stock" ? { firmware: "stock" } : state === "safe-mode" ? { safeMode: true } : arms.find((arm) => arm.version) ?? {});
+  }
+
+  private showG1Install(found: G1FlashResult): void {
+    this.busy = false;
+    this.setPhase("flashable");
+    if (found.firmware === "stock") {
+      this.headline = "Ready to Install";
+      this.status = `Your glasses run Even's firmware.\n\n${G1_CASE_INSTRUCTIONS}\n\n${G1_INSTALL_NOTICE}`;
+    } else if (found.safeMode) {
+      this.headline = "Firmware Needs Reinstalling";
+      this.status = `An arm of your glasses is in safe mode: its firmware restarted repeatedly. Installing it again usually fixes this.\n\n${G1_CASE_INSTRUCTIONS}`;
+    } else {
+      this.headline = "Firmware Update Available";
+      this.status = `Your glasses run Faceclaw's firmware ${found.version ?? ""}, and this version of Faceclaw comes with ${G1V0_IMAGE.version}.\n\n${G1_CASE_INSTRUCTIONS}`;
     }
   }
 
@@ -326,7 +401,7 @@ export class OnboardingFirmwareCheckViewModel extends Observable {
     this.busy = false;
     this.setPhase("custom");
     this.headline = extractedFonts ? "Fonts Ready" : "Custom Firmware Detected";
-    const details = [
+    const details = glassesTypeSetting.get() === "g1" ? [version].filter(Boolean) : [
       extension.kind === "faceclaw" ? `revision ${extension.version}` : "",
       version ? `based on stock ${version}` : "",
     ].filter(Boolean);

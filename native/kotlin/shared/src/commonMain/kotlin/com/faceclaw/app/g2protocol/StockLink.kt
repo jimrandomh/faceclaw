@@ -48,6 +48,12 @@ interface StockLink {
 
     fun bondState(address: String): BondState
 
+    /** The ATT MTU agreed on this link. */
+    fun negotiatedMtu(address: String): Int = 23
+
+    /** Ask the OS to pair with a connected device; a platform that pairs by itself on demand does nothing. */
+    fun requestBond(address: String) {}
+
     fun disconnect(address: String)
 
     fun close()

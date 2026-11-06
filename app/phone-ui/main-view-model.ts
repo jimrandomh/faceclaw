@@ -662,6 +662,14 @@ export class MainViewModel extends RemoteControlsViewModel {
    * auto-reconnect suppression right away.
    */
   async onPrepareFontsTap(): Promise<void> {
+    await this.openFirmwareCheck();
+  }
+
+  async onCheckFirmwareTap(): Promise<void> {
+    await this.openFirmwareCheck();
+  }
+
+  private async openFirmwareCheck(): Promise<void> {
     this.setWarningsModalVisible(false);
     if (this.phase === "connected" || this.phase === "charging" || this.phase === "connecting") {
       try {
@@ -909,8 +917,9 @@ export class MainViewModel extends RemoteControlsViewModel {
   }
 
   private async openFlashPage(mode: "install" | "uninstall"): Promise<void> {
-    // The flasher needs the glasses to itself, so drop the main connection first.
-    if (this.phase === "connected" || this.phase === "charging") {
+    // The flasher needs the glasses to itself, so drop the main connection first. That includes a session
+    // still retrying: an install brings arms back at the addresses it is dialling.
+    if (this.phase === "connected" || this.phase === "charging" || this.phase === "connecting") {
       try {
         await dashboardController.disconnect();
       } catch {

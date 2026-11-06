@@ -11,6 +11,19 @@ object G1Ble {
     /** Faceclaw's records (VM.md §6.11). */
     const val FC_CHAR_UUID = "f3da4d59-277a-4fc9-a1ed-41c9c22d4405"
     const val REQUESTED_MTU = 247
+    /** The oldest firmware this app works with: `PROP_SET` came in here. */
+    const val REQUIRED_FIRMWARE = "0.5.63"
+
+    /** Dotted versions, component by component. */
+    fun firmwareAtLeast(version: String, required: String = REQUIRED_FIRMWARE): Boolean {
+        val have = version.split(".").map { it.toIntOrNull() ?: 0 }
+        val want = required.split(".").map { it.toIntOrNull() ?: 0 }
+        for (i in 0 until maxOf(have.size, want.size)) {
+            val delta = have.getOrElse(i) { 0 } - want.getOrElse(i) { 0 }
+            if (delta != 0) return delta > 0
+        }
+        return true
+    }
 }
 
 /**

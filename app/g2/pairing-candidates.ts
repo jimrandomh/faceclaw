@@ -386,14 +386,16 @@ export function g1Row(pair: GlassesPairCandidate, context: RowContext = {}): Pai
   if (pair.mismatchWarning) warnings.push(pair.mismatchWarning);
   let armsSummary: string;
   let canSelect = false;
-  if (pair.g1Firmware === "stock") {
-    armsSummary = "Needs the Faceclaw firmware for the G1, which is installed from a computer";
-  } else if (pair.g1Firmware === "g1v0-safe") {
-    armsSummary = "In safe mode: the firmware restarted repeatedly. Reinstall it from a computer";
-  } else if (pair.completeness !== "complete") {
+  if (pair.completeness !== "complete") {
     armsSummary = pair.completeness === "left-only"
       ? "Only the left arm has been seen — waiting for the right"
       : "Only the right arm has been seen — waiting for the left";
+  } else if (pair.g1Firmware === "stock") {
+    armsSummary = "Runs Even's firmware. Faceclaw will install its own, with the glasses in the case";
+    canSelect = true;
+  } else if (pair.g1Firmware === "g1v0-safe") {
+    armsSummary = "In safe mode: the firmware restarted repeatedly. Faceclaw can install it again, with the glasses in the case";
+    canSelect = true;
   } else {
     armsSummary = "Left + right arms found. To pair, keep them in the case with the lid open";
     canSelect = true;

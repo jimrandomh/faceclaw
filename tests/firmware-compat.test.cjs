@@ -74,3 +74,17 @@ test("reportedFirmwareVersion picks the higher arm", () => {
   assert.equal(compat.reportedFirmwareVersion(info("", "", "2.2.9.22")), "2.2.9.22");
   assert.equal(compat.reportedFirmwareVersion(info("", "", "")), "");
 });
+
+test("a G1's report names what the arms run and offers the install, stock or too old", () => {
+  const stock = compat.firmwareIncompatibilityMessage(info("", "Even's firmware", "Even's firmware"));
+  assert.match(stock, /G1/);
+  assert.match(stock, /Even's firmware/);
+  assert.match(stock, /install/);
+  assert.doesNotMatch(stock, /revision/);
+  const older = compat.firmwareIncompatibilityMessage(info("", "g1v0 0.5.62", "g1v0 0.5.63"));
+  assert.match(older, /L=g1v0 0\.5\.62 R=g1v0 0\.5\.63/);
+  assert.match(older, /install/);
+  // A compatible G1 reports the extension, and a G2's stock report is unchanged.
+  assert.equal(compat.firmwareIncompatibilityMessage(info(`Faceclaw/${REQUIRED}`, "g1v0 0.5.63", "g1v0 0.5.63")), null);
+  assert.match(compat.firmwareIncompatibilityMessage(info("")), /stock firmware/);
+});

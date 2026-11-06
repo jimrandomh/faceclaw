@@ -332,7 +332,7 @@ test("G1 arms on g1v0 join on the frame serial and can be selected", () => {
   assert.match(row.armsSummary, /case/);
 });
 
-test("G1 arms on Even's firmware show up but can't be selected", () => {
+test("G1 arms on Even's firmware can be selected, to install on", () => {
   const aggregator = new DiscoveryAggregator();
   aggregator.ingest(g1Arm("Even G1_70_L_EF50E5", "C0:66:16:EF:50:E5", "02" + ascii(G1_SERIAL)));
   aggregator.ingest(g1Arm("Even G1_70_R_CBE689", "E4:46:BA:CB:E6:89", "01" + ascii(G1_SERIAL)));
@@ -340,16 +340,25 @@ test("G1 arms on Even's firmware show up but can't be selected", () => {
   assert.equal(pair.g1Firmware, "stock");
   assert.equal(pair.completeness, "complete");
   const row = glassesRow(pair);
-  assert.equal(row.canSelect, false);
-  assert.match(row.armsSummary, /computer/);
+  assert.equal(row.canSelect, true);
+  assert.match(row.armsSummary, /install/);
 });
 
-test("a G1 pair with one arm in safe mode can't be selected", () => {
+test("a G1 pair with one arm in safe mode can be selected, to install again", () => {
   const aggregator = new DiscoveryAggregator();
   aggregator.ingest(g1v0Arm("L", "F4:27:E9:CA:E8:3F"));
   aggregator.ingest(g1Arm("G1v0S_R", "CD:EB:89:BF:E9:EC", "ffff0104" + ascii(G1_SERIAL)));
   const [pair] = aggregator.pairs();
   assert.equal(pair.g1Firmware, "g1v0-safe");
+  assert.equal(glassesRow(pair).canSelect, true);
+});
+
+test("a G1 pair needs both arms heard, whatever it runs", () => {
+  const aggregator = new DiscoveryAggregator();
+  aggregator.ingest(g1Arm("Even G1_70_L_EF50E5", "C0:66:16:EF:50:E5", "02" + ascii(G1_SERIAL)));
+  const [pair] = aggregator.pairs();
+  assert.equal(pair.g1Firmware, "stock");
+  assert.equal(pair.completeness, "left-only");
   assert.equal(glassesRow(pair).canSelect, false);
 });
 

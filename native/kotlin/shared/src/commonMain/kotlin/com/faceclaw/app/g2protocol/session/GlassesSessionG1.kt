@@ -94,6 +94,8 @@ internal object G1Timings {
     const val LENS_RIGHT = 2
 }
 
+/** What the Install prompt says an arm runs when it isn't g1v0. */
+private const val G1_OTHER_FIRMWARE = "Even's firmware"
 private val G1_PROPS = intArrayOf(G1Protocol.PROP_BATT_PCT, G1Protocol.PROP_CHARGE, G1Protocol.PROP_IN_CASE, G1Protocol.PROP_WORN)
 private val G1_LIGHT = intArrayOf(G1Protocol.PROP_LIGHT)
 private val G1_IMU = intArrayOf(G1Protocol.PROP_ACC_X, G1Protocol.PROP_ACC_Y, G1Protocol.PROP_ACC_Z)
@@ -421,6 +423,9 @@ internal fun GlassesSessionCore.g1HideBeforeDisconnect() {
 // ---------------------------------------------------------------------------------------------
 // Connect (worker thread)
 
+/** The arm has no g1v0 service: it runs Even's firmware. */
+private class G1OtherFirmwareException : Exception("not g1v0 firmware")
+
 private fun GlassesSessionCore.g1ConnectArm(arm: Int, deadlineMs: Long) {
     val address = g1ArmAddress(arm)
     val timeoutMs = maxOf(deadlineMs - now(), ConnectionOptions.CONNECT_TIMEOUT_MS.toLong())
@@ -433,7 +438,8 @@ private fun GlassesSessionCore.g1ConnectArm(arm: Int, deadlineMs: Long) {
         throw IllegalStateException("discoverServices failed: $address")
     }
     if (!link.enableNotifications(address, G1Ble.EVT_CHAR_UUID, true, ConnectionOptions.DESCRIPTOR_TIMEOUT_MS)) {
-        throw IllegalStateException("no event characteristic on $address: not g1v0 firmware?")
+        if (!link.isConnected(address)) throw IllegalStateException("link lost: $address")
+        throw G1OtherFirmwareException()
     }
     link.requestLe2mPhy(address)
     monitor.withLock {
@@ -495,9 +501,9 @@ internal fun GlassesSessionCore.g1ConnectLoopOnce() {
             logLine("G1 " + (if (arm == 0) "left" else "right") + " arm: " + versions[arm]
                 + " display path " + fcVersion + " encrypted=" + hello.encrypted + " inCase=" + hello.inCase
                 + " panelOk=" + hello.panelOk + " phy=" + link.describePhy(g1ArmAddress(arm)))
-            compatible = compatible && fcVersion >= 1
+            compatible = compatible && fcVersion >= 1 && G1Ble.firmwareAtLeast(hello.version)
         }
-        // The firmware's own number, not the G2 custom firmware's: the path has one version so far, and TS compares this.
+        // Not the G2 custom firmware's revision: this firmware has its own version, compared here, and TS compares this.
         val firmware = BleProtocol.FirmwareInfo(versions[0], versions[1],
             if (compatible) BleProtocol.FirmwareInfo.FACECLAW_EXTENSION_PREFIX + requiredFirmwareRevision else "")
         emitFirmwareInfo(firmware)
@@ -533,6 +539,11 @@ internal fun GlassesSessionCore.g1ConnectLoopOnce() {
         }
         setStateDisplay("connected", "Connected.")
         interruptibleSleep.interrupt()
+    } catch (t: G1OtherFirmwareException) {
+        logLine("G1: an arm runs Even's firmware")
+        val firmware = BleProtocol.FirmwareInfo(G1_OTHER_FIRMWARE, G1_OTHER_FIRMWARE, "")
+        emitFirmwareInfo(firmware)
+        monitor.withLock { incompatibleFirmware = firmware }
     } catch (t: Throwable) {
         logLine("G1 connect failed: " + safeMessage(t))
         val unpaired = firstUnpairedArm()

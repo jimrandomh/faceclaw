@@ -30,7 +30,7 @@ const STEP_CONTENT: Record<OnboardingStep, StepContent> = {
   2: {
     headline: "Before You Continue",
     tagline: "",
-    body: "This software provides a custom user interface and functionality for the Even Realities G2 smart glasses. It is not created or supported by Even Realities. If this software somehow breaks your headset, this is not Even's fault and is not covered by the hardware's warranty. If this software doesn't break you headset, using this software may void the hardware's warranty anyways, at the sole discretion of Even Realities. This software is beta; don't rely on it for anything critically important." +
+    body: "This software provides a custom user interface and functionality for the Even Realities G2 and G1 smart glasses. It is not created or supported by Even Realities. If this software somehow breaks your headset, this is not Even's fault and is not covered by the hardware's warranty. If this software doesn't break you headset, using this software may void the hardware's warranty anyways, at the sole discretion of Even Realities. This software is beta; don't rely on it for anything critically important." +
       (global.isIOS ? "\n\niOS / TestFlight privacy\n\n" + IOS_PRIVACY_NOTICE : ""),
     primaryLabel: "Agree",
     secondaryLabel: "Back",
@@ -40,7 +40,7 @@ const STEP_CONTENT: Record<OnboardingStep, StepContent> = {
   3: {
     headline: "Custom Firmware Required",
     tagline: "",
-    body: "Faceclaw only runs on Even Realities G2 glasses that have Faceclaw's custom firmware installed. You have two choices:\n\n• Preview Only — explore Faceclaw's interface on your phone's screen without pairing any glasses. Nothing is written to a headset.\n\n• Flash Firmware — install the custom firmware on your glasses now, then use Faceclaw for real.\n\nFlashing replaces the official firmware. You can uninstall and return to the official firmware later, by reconnecting the official Even Realities app. Installing custom firmware is not covered by warranty.",
+    body: "Faceclaw only runs on Even Realities G2 or G1 glasses that have Faceclaw's custom firmware installed. You have two choices:\n\n• Preview Only — explore Faceclaw's interface on your phone's screen without pairing any glasses. Nothing is written to a headset.\n\n• Flash Firmware — install the custom firmware on your glasses now, then use Faceclaw for real.\n\nFlashing replaces the official firmware. On a G2 you can uninstall and return to the official firmware later, by reconnecting the official Even Realities app; on a G1 that takes a computer. Installing custom firmware is not covered by warranty.",
     primaryLabel: "Flash Firmware",
     secondaryLabel: "Preview Only",
     splash: false,

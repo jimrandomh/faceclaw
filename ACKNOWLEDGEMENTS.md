@@ -13,6 +13,11 @@ and others who contributed to documenting the G2's bluetooth protocol and firmwa
 
 G2 microphone LC3 decoding uses Google's liblc3: https://github.com/google/liblc3
 
+Even G1 support builds on ScouterKit (MIT License), by the ScouterKit authors:
+https://github.com/mafik/scouter_kit. The firmware Faceclaw installs on a G1 is a
+modified build of its g1v0, using the Zephyr RTOS and Nordic's nRF Connect SDK; the
+parts of it that are Even Realities' own are downloaded from Even, not shipped here.
+
 RayNeo iO support builds on the Glassly SDK and custom firmware by Tetramo, Inc.
 and Mentra Labs, Inc. (MIT License): https://github.com/tetramo-labs/glassly and
 https://github.com/tetramo-labs/glassly-rayneo-cfw. The iO wire codecs in

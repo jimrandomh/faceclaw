@@ -117,6 +117,11 @@ export function firmwareIncompatibilityMessage(info: FirmwareInfo): string | nul
   const versionsText = `L=${info.leftVersion || "unknown"} R=${info.rightVersion || "unknown"}`;
   const required = `Faceclaw firmware revision ${REQUIRED_FACECLAW_FIRMWARE_VERSION}`;
 
+  // A G1's session names what the arms run instead of a revision (GlassesSessionG1.kt).
+  if (extension.kind === "none" && reportedVersions.some((version) => /^(g1v0|Even's firmware)/.test(version))) {
+    return `These G1 glasses run ${versionsText}. This version of Faceclaw needs the firmware it comes with: install it to continue.`;
+  }
+
   switch (extension.kind) {
     case "faceclaw":
       if (extension.version >= REQUIRED_FACECLAW_FIRMWARE_VERSION) return null;

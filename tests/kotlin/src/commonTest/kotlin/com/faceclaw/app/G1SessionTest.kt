@@ -217,7 +217,7 @@ private class FakeG1Glasses(platform: ProtocolPlatform) : SessionLink {
                 body[0] = 5
                 body[1] = 0
                 body[2] = 5
-                body[3] = 62
+                body[3] = 63
                 body[4] = (if (a.left) 1 else 0).toByte()
                 body[5] = (2 or 64).toByte()
                 body[6] = (if (a.left) 0 else 4).toByte()
@@ -472,7 +472,7 @@ class G1SessionTest {
             assertEquals(G1Protocol.EVENTS_MASK, s.glasses.leftArm.eventsMask)
             assertEquals(G1Protocol.EVENTS_MASK, s.glasses.rightArm.eventsMask)
             assertEquals(1, s.glasses.leftArm.healthOk, "the boot is confirmed healthy")
-            assertTrue(s.listener.firmware.single().startsWith("g1v0 0.5.62|g1v0 0.5.62|Faceclaw/"), s.listener.firmware.toString())
+            assertTrue(s.listener.firmware.single().startsWith("g1v0 0.5.63|g1v0 0.5.63|Faceclaw/"), s.listener.firmware.toString())
 
             s.submit(1, 1)
             assertTrue(awaitTrue(5_000) { s.displayedMatchesDesired() }, "frame never displayed:\n" + s.tail())
