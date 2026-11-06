@@ -22,7 +22,7 @@ import { openEvenAppSettings, readEvenAppNotificationState } from "../native/eve
 import { defaultRingName, setGlassesRingLink } from "../native/ring-status";
 import { applyGlanceAngle, glassesHeadUpTrigger, syncGlanceAngleOriginal } from "./head-angle";
 import { glanceAngleTriggerDegrees, glanceTapTimeoutMs } from "../apps/glanceboard/glanceboard-settings";
-import { glanceTiltMaxMs } from "./glance-state";
+import { GLANCE_TILT_MAX_MS, glanceTiltMaxMs } from "./glance-state";
 import { getBooleanSetting, setBooleanSetting } from "../native/settings-store";
 import { grayImageToPreviewSource } from "../native/gray-image-preview";
 import { firmwareIncompatibilityMessage, hasCompatibleFirmware } from "./firmware-compat";
@@ -2542,6 +2542,7 @@ class DashboardController {
       const glanceEvent = this.glance.eventForGesture("head-tilt");
       if (glanceEvent?.type !== "tilt") return glanceEvent;
       const maxMs = glanceTiltMaxMs({
+        capMs: glanceEvent.maxMs === undefined ? GLANCE_TILT_MAX_MS : glanceEvent.maxMs,
         resumedSession: this.evenHubSessionSuspended || this.evenHubResumePromise !== null,
         triggerDegrees: glassesHeadUpTrigger() ?? (glanceAngleTriggerDegrees() || null),
         tapTimeoutMs: glanceTapTimeoutMs(),

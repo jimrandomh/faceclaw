@@ -106,11 +106,24 @@ test("a tilt with a shorter cap keeps it, also across a hold", () => {
   assert.equal(reduceGlance(held, { type: "release" }, T0 + 1000).hideAtMs, T0 + 1000 + 5000);
 });
 
-test("the tilt cap falls back to the tap duration where the head-down is unlikely", () => {
+test("the tilt cap is the Head tilt timeout, or the tap duration if shorter where the head-down is unlikely", () => {
   const tapTimeoutMs = 5000;
-  assert.equal(glanceTiltMaxMs({ resumedSession: false, triggerDegrees: 30, tapTimeoutMs }), GLANCE_TILT_MAX_MS);
-  assert.equal(glanceTiltMaxMs({ resumedSession: false, triggerDegrees: null, tapTimeoutMs }), GLANCE_TILT_MAX_MS);
-  assert.equal(glanceTiltMaxMs({ resumedSession: true, triggerDegrees: 30, tapTimeoutMs }), tapTimeoutMs);
-  assert.equal(glanceTiltMaxMs({ resumedSession: false, triggerDegrees: 20, tapTimeoutMs }), tapTimeoutMs);
-  assert.equal(glanceTiltMaxMs({ resumedSession: false, triggerDegrees: 25, tapTimeoutMs }), GLANCE_TILT_MAX_MS);
+  const cap = (capMs, resumedSession, triggerDegrees) => glanceTiltMaxMs({ capMs, resumedSession, triggerDegrees, tapTimeoutMs });
+  assert.equal(cap(60_000, false, 30), 60_000);
+  assert.equal(cap(15_000, false, null), 15_000);
+  assert.equal(cap(null, false, 30), null);
+  assert.equal(cap(60_000, true, 30), tapTimeoutMs);
+  assert.equal(cap(60_000, false, 20), tapTimeoutMs);
+  assert.equal(cap(null, false, 20), tapTimeoutMs);
+  assert.equal(cap(3000, true, 30), 3000);
+  assert.equal(cap(60_000, false, 25), 60_000);
+});
+
+test("a tilt with no timeout stays until the head-down, also across a hold", () => {
+  const up = reduceGlance(GLANCE_HIDDEN, { type: "tilt", maxMs: null }, T0);
+  assert.equal(up.hideAtMs, null);
+  assert.equal(reduceGlance(up, { type: "timeout" }, T0 + 3_600_000), up);
+  const held = reduceGlance(up, { type: "hold" }, T0 + 100);
+  assert.equal(reduceGlance(held, { type: "release" }, T0 + 1000).hideAtMs, null);
+  assert.deepEqual(reduceGlance(up, { type: "head-down" }, T0 + 9000), GLANCE_HIDDEN);
 });

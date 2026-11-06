@@ -107,6 +107,31 @@ export const glanceShowOnHeadTiltSetting = new ConfigSettingBoolean({
   description: "Tilting your head up while asleep shows the Glanceboard instead of waking the regular UI. It stays up until you look back down.",
 });
 
+export type GlanceTiltTimeout = "60s" | "30s" | "15s" | "10s" | "never";
+
+/**
+ * How long a head-tilt showing may last if the head-down never comes (the
+ * board normally hides when the head comes back down). "never" removes the
+ * limit; a double-tap still dismisses the board.
+ */
+export const glanceTiltTimeoutSetting = new ConfigSettingEnum<GlanceTiltTimeout>({
+  id: "glanceboard-head-tilt-timeout",
+  label: "Head tilt timeout",
+  storageKey: "glanceboard.headTiltTimeout",
+  defaultValue: "60s",
+  values: ["60s", "30s", "15s", "10s", "never"],
+  formatValue: (value) => (value === "never" ? "Never" : value.replace("s", " s")),
+  description:
+    "The longest a head-tilt keeps the Glanceboard up when looking back down is not detected. Never: it stays until you look down or double-tap. " +
+    "When looking down is unlikely to register (a low Head tilt angle, or the display was suspended), the tap duration applies if shorter.",
+});
+
+/** The Head tilt timeout in ms, or null for none. */
+export function glanceTiltTimeoutMs(): number | null {
+  const value = glanceTiltTimeoutSetting.get();
+  return value === "never" ? null : Number.parseInt(value, 10) * 1000;
+}
+
 const GLANCE_ANGLE_VALUES = ["glasses", "5", "10", "15", "20", "25", "30", "35", "40", "45", "50", "55", "60"] as const;
 export type GlanceAngle = (typeof GLANCE_ANGLE_VALUES)[number];
 

@@ -92,7 +92,8 @@ export class GlanceHost {
     if (gesture === "click" && !provider.showOnTap()) return null;
     if ((gesture === "long-press" || gesture === "short-then-long-press") && !provider.showOnLongPress()) return null;
     if (gesture === "head-tilt" && !provider.showOnHeadTilt()) return null;
-    return glanceEventForGesture(gesture, this.isVisible());
+    const event = glanceEventForGesture(gesture, this.isVisible());
+    return event?.type === "tilt" ? { type: "tilt", maxMs: provider.tiltTimeoutMs() } : event;
   }
 
   /**

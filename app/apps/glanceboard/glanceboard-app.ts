@@ -30,6 +30,7 @@ import {
   glanceShowLinesSetting,
   glanceAngleSetting,
   glanceShowOnHeadTiltSetting,
+  glanceTiltTimeoutSetting,
   glanceShowOnLongPressSetting,
   glanceSlotChoiceLabel,
   glanceSlotSettings,
@@ -322,6 +323,7 @@ function openGlanceSettings(ctx: LayerContext): void {
     enumSettingMenuItem(glanceTapDurationSetting),
     toggleSettingMenuItem(glanceShowOnLongPressSetting),
     toggleSettingMenuItem(glanceShowOnHeadTiltSetting),
+    enumSettingMenuItem(glanceTiltTimeoutSetting),
     // Only Android can change the glasses' head-up setting (glasses-controls.ts).
     // The controller's settings listener sends a new angle to the glasses.
     ...(headUpControlsAvailable() ? [enumSettingMenuItem(glanceAngleSetting), headAngleCaptureMenuItem()] : []),
