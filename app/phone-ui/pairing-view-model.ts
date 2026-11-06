@@ -186,9 +186,9 @@ export class PairingViewModel extends Observable {
 
   get instructions(): string {
     return (
-      "Select your G2 glasses or RayNeo iO, and your R1 ring if you have one, below. Wear the glasses or take them out of the case, " +
-      "and keep the glasses and phone nearby. If your glasses are not detected, make sure no other " +
-      "apps are connected."
+      "Select your G2 or G1 glasses or RayNeo iO, and your R1 ring if you have one, below. Wear the glasses or take them out of the case " +
+      "(a G1 pairs only in its case, with the lid open), and keep the glasses and phone nearby. If your glasses are not detected, " +
+      "make sure no other apps are connected."
     );
   }
 
@@ -358,7 +358,8 @@ export class PairingViewModel extends Observable {
       ring: ringAddress,
     };
     saveDeviceAddresses(addresses);
-    if (pair) glassesTypeSetting.set("g2");
+    const g1 = !!pair?.g1Firmware;
+    if (pair) glassesTypeSetting.set(g1 ? "g1" : "g2");
     if (pair) {
       savePairedGlassesIdentity({
         serial: pair.serial ?? "",
@@ -385,6 +386,12 @@ export class PairingViewModel extends Observable {
     this.dispose();
     if (this.onboarding) {
       setPreviewOnlyMode(false);
+      if (g1) {
+        // The G2 firmware check and flash pages don't apply: a G1's firmware is installed from a
+        // computer, and the session reports incompatible firmware if it lacks the display path.
+        finishOnboardingNavigation();
+        return;
+      }
       // Continue the onboarding chain: check the glasses' firmware next.
       Frame.topmost()?.navigate({ moduleName: "phone-ui/onboarding-firmware-check-page" });
       return;

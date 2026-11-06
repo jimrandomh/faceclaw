@@ -208,6 +208,9 @@ class FaceclawBleCommunicator(context: Context, rightAddress: String?, leftAddre
 
     fun isRayNeoIo(): Boolean = core.isRayNeoIo()
 
+    /** Drive an Even G1 on g1v0 (two arms, as a G2 pair's addresses). */
+    fun useG1() = core.useG1()
+
     fun start() {
         if (core.start()) {
             activeInstance = this

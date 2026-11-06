@@ -608,13 +608,13 @@ function readBundledDoc(fileName: string): string {
  */
 function ringConnectionMenuItem(): MenuItem {
   const item = enumSettingMenuItem(ringConnectionModeSetting);
-  const io = () => glassesTypeSetting.get() === "rayneo-io";
+  const io = () => glassesTypeSetting.get() !== "g2";
   return {
     ...item,
     disabled: io,
     render: (args) => {
       if (!io()) return item.render?.(args);
-      drawRightValueMenuItem(args.image, getDefaultSmallFont(), args.x, args.y, args.width, item.label, "Direct (RayNeo iO)");
+      drawRightValueMenuItem(args.image, getDefaultSmallFont(), args.x, args.y, args.width, item.label, glassesTypeSetting.get() === "g1" ? "Direct (Even G1)" : "Direct (RayNeo iO)");
     },
   };
 }

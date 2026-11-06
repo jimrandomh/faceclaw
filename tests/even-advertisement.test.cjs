@@ -180,3 +180,43 @@ test("RayNeo iO advertisements classify as one device with its MAC", () => {
   // G2 advertisements are untouched
   assert.equal(classifyAdvertisement(raw({})).role, "left");
 });
+
+// ---------------------------------------------------------------------------
+// Even G1
+// ---------------------------------------------------------------------------
+
+const g1Ascii = (text) => Array.from(text).map((c) => c.charCodeAt(0).toString(16).padStart(2, "0")).join("");
+const g1Raw = (name, manufacturerData, address = "F4:27:E9:CA:E8:3F") => ({
+  address,
+  name,
+  manufacturerData,
+  rssi: -50,
+  txPower: null,
+  connectable: true,
+  bonded: false,
+  source: "scan",
+  seenAtMs: 1000,
+});
+
+test("a G1 arm on Even's firmware: side from the name, serial after the side byte", () => {
+  const ad = classifyAdvertisement(g1Raw("Even G1_70_L_EF50E5", "02" + g1Ascii("S110LABC030139") + "0000000000"));
+  assert.equal(ad.role, "left");
+  assert.equal(ad.g1Firmware, "stock");
+  assert.equal(ad.serial, "S110LABC030139");
+  assert.equal(ad.embeddedMac, null);
+});
+
+test("a G1 arm on g1v0: the name says all, the serial is in the 0xFFFF record", () => {
+  const ad = classifyAdvertisement(g1Raw("G1v0_R", "ffff" + "01" + "04" + g1Ascii("S110LABC030139")));
+  assert.equal(ad.role, "right");
+  assert.equal(ad.g1Firmware, "g1v0");
+  assert.equal(ad.serial, "S110LABC030139");
+  assert.equal(classifyAdvertisement(g1Raw("G1v0S_L", "")).g1Firmware, "g1v0-safe");
+  assert.equal(classifyAdvertisement(g1Raw("G1v0S_L", "")).serial, null);
+});
+
+test("names that only look like a G1 are not admitted", () => {
+  for (const name of ["G1v0_X", "G1v0", "G1 Tracker", "Even G1", "Pixel G1v0_L"]) {
+    assert.equal(classifyAdvertisement(g1Raw(name, "")), null, name);
+  }
+});

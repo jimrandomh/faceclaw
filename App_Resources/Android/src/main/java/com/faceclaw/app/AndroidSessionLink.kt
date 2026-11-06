@@ -46,6 +46,8 @@ class AndroidSessionLink(private val bleManager: FaceclawBleManager) : SessionLi
 
     override fun isBonded(address: String): Boolean = bleManager.isBonded(address)
 
+    override fun requestBond(address: String) = bleManager.requestBond(address)
+
     override fun prepareBenchmarkLink(address: String, mode: Int) = bleManager.prepareBenchmarkLink(address, mode)
 
     override fun recordDisplayFrameSent() = FaceclawBleManager.recordDisplayFrameSent()

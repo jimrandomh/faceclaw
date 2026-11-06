@@ -18,6 +18,8 @@ class OutboundMessage(
     @JvmField
     val cfwChecksum: Int = if (sid == CfwTransport.SID) CfwTransport.crc(this.message) else 0
     @JvmField var cfwAckLenses = 0
+    /** The lenses that must ACK this attempt: both on a G2, whichever the message went to on a G1. */
+    @JvmField var cfwRequiredLenses = CfwTransport.BOTH
     @JvmField var cfwRetries = 0
     @JvmField var cfwRetryPending = false
     @JvmField var imageUpdateId = 0
@@ -47,8 +49,10 @@ class OutboundMessage(
         }
         if (message.size != ack.size || cfwChecksum != ack.checksum) return false
         cfwAckLenses = cfwAckLenses or ack.lens
-        return !cfwRetryPending && cfwAckLenses == CfwTransport.BOTH
+        return !cfwRetryPending && isCfwAcked
     }
+
+    val isCfwAcked: Boolean get() = cfwAckLenses and cfwRequiredLenses == cfwRequiredLenses
 
     /** Replace an attempt atomically under the communicator lock. */
     fun prepareCfwReplay(streamId: Int) {

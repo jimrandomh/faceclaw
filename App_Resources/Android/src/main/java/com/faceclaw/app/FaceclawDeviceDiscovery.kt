@@ -141,7 +141,9 @@ class FaceclawDeviceDiscovery(context: Context) {
             val upper = name.uppercase()
             // A bare "R1" substring also matches unrelated hardware ("Oppo Enco
             // R1"), and TS only classifies rings from the stock name prefix.
-            return upper.contains("G2") || upper.startsWith("EVEN R1") || upper.startsWith("RAYNEO")
+            // Even G1: its stock name, or g1v0's G1v0_L / G1v0S_R (safe mode).
+            return upper.contains("G2") || upper.startsWith("EVEN R1") || upper.startsWith("RAYNEO") ||
+                upper.startsWith("EVEN G1") || upper.startsWith("G1V0")
         }
 
         private fun buildJson(

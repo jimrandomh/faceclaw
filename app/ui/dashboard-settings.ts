@@ -385,14 +385,14 @@ export const distanceUnitSetting = new ConfigSettingEnum<DistanceUnit>({
 export type AppSwitcherPosition = "left" | "right" | "bottom" | "popup";
 
 /** Which glasses the saved addresses belong to (set by pairing; see g2/device-addresses.ts). */
-export type GlassesType = "g2" | "rayneo-io";
+export type GlassesType = "g2" | "rayneo-io" | "g1";
 
 export const glassesTypeSetting = new ConfigSettingEnum<GlassesType>({
   id: "glasses-type",
   label: "Glasses",
   storageKey: "deviceType", // graphics/screen-size.ts GLASSES_TYPE_KEY reads it directly
   defaultValue: "g2",
-  values: ["g2", "rayneo-io"],
+  values: ["g2", "rayneo-io", "g1"],
   reportInAnalytics: false,
 });
 
@@ -909,11 +909,11 @@ export const ringConnectionModeSetting = new ConfigSettingEnum<RingConnectionMod
 
 /**
  * The ring connection in effect: the setting with G2 glasses; Direct with a
- * RayNeo iO, which cannot relay a ring, so the phone holds the ring's
+ * RayNeo iO or Even G1, which cannot relay a ring, so the phone holds the ring's
  * glasses role itself (gestures, battery; health in brief phone-role windows).
  */
 export function effectiveRingConnectionMode(): RingConnectionMode {
-  return glassesTypeSetting.get() === "rayneo-io" ? "direct" : ringConnectionModeSetting.get();
+  return glassesTypeSetting.get() !== "g2" ? "direct" : ringConnectionModeSetting.get();
 }
 
 // "whisper" (no "onboard-" prefix) is OpenAI's CLOUD realtime model

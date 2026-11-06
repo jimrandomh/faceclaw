@@ -184,6 +184,8 @@ export class FaceclawCommunicatorBridge {
     this.communicator.setRequiredFirmwareRevision(REQUIRED_FACECLAW_FIRMWARE_VERSION);
     // RayNeo iO: one link (its address in both arm slots), its own handshake and page lease.
     if (addresses.glassesType === "rayneo-io") this.communicator.useRayNeoIo();
+    // Even G1 on g1v0: two links, like a G2's arms, but frames composed here and sent to each arm.
+    if (addresses.glassesType === "g1") this.communicator.useG1();
     // Which R1 role the direct ring link claims; only matters with a ring address.
     if (addresses.ringRole) this.communicator.setDirectRingRole(addresses.ringRole);
     this.listenerProxy = new com.faceclaw.app.FaceclawBleCommunicatorListener({

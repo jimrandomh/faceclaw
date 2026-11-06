@@ -19,15 +19,20 @@ internal fun GlassesSessionCore.enqueueBrightnessLocked(frameVisible: Boolean? =
         else if (brightnessPolicy.automatic) 1200 else 120
     val payload = byteArrayOf(CFW_MSG_BRIGHTNESS.toByte(), 1, target.toByte(),
         (if (visible) 1 else 0).toByte(), duration.toByte(), (duration shr 8).toByte())
-    val message = messageBuilder.customMessage("brightness-output", payload,
-        "brightness target=$target visible=$visible fade=$duration", -1, connectionOptions.sendImagesToLeft)
-    message.onTimeout = MessageCallback {
+    val label = "brightness target=$target visible=$visible fade=$duration"
+    val retry = MessageCallback {
         brightnessSentLevel = -1
         brightnessSentVisible = null
         // Retry with a PRESENT even if the scene did not change during recovery.
         lastEnqueuedFingerprint = ""
     }
-    pendingMessages.addLast(message)
+    if (isG1) {
+        g1EnqueueBrightnessLocked(payload, label, brightnessSentVisible != visible, retry)
+    } else {
+        val message = messageBuilder.customMessage("brightness-output", payload, label, -1, connectionOptions.sendImagesToLeft)
+        message.onTimeout = retry
+        pendingMessages.addLast(message)
+    }
     brightnessSentLevel = target
     brightnessSentVisible = visible
     if (isIo) io.lastBrightnessAtMs = now()

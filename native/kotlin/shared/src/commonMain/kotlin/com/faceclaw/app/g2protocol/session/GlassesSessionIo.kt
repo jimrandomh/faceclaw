@@ -5,7 +5,7 @@ import com.faceclaw.app.GlassesSessionCore.Companion.safeMessage
 import kotlin.random.Random
 
 /** Which glasses a session drives. Set before [GlassesSessionCore.start]; see [GlassesSessionCore.useRayNeoIo]. */
-enum class GlassesType { G2, RAYNEO_IO }
+enum class GlassesType { G2, RAYNEO_IO, G1 }
 
 /**
  * RayNeo iO session state ([GlassesSessionCore.io]); guarded by the core's monitor.
@@ -210,9 +210,9 @@ internal fun GlassesSessionCore.ioCfwWrites(message: OutboundMessage, mtu: Int):
 internal fun GlassesSessionCore.ioDropUnsupported(message: OutboundMessage) {
     monitor.withLock {
         inFlightMessages.remove(message)
-        if (message.magic != 0) magicPool.release(message.sid, message.magic, message.label, "unsupported on RayNeo iO")
+        if (message.magic != 0) magicPool.release(message.sid, message.magic, message.label, "unsupported on these glasses")
     }
-    logDebug("RayNeo iO: dropped unsupported message " + message.label + " sid=" + message.sid)
+    logDebug("dropped a message these glasses don't take: " + message.label + " sid=" + message.sid)
 }
 
 // ---------------------------------------------------------------------------------------------

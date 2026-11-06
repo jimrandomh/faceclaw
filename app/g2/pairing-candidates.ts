@@ -20,7 +20,7 @@ import {
   type ProximityEstimate,
   type ProximityZone,
 } from "./ble-proximity";
-import { classifyAdvertisement, normalizeMacAddress, type EvenAdvertisement, type RawAdvertisement } from "./even-advertisement";
+import { classifyAdvertisement, normalizeMacAddress, type EvenAdvertisement, type G1Firmware, type RawAdvertisement } from "./even-advertisement";
 import { GENERIC_G2_IMAGE_PATH, glassesImagePath, R1_IMAGE_PATH } from "./glasses-artwork";
 import {
   colorwayDisplayName,
@@ -48,6 +48,8 @@ export type GlassesPairCandidate = {
   rssi: number | null;
   proximity: ProximityEstimate | null;
   lastSeenMs: number;
+  /** An Even G1 pair: the arms' firmware, the "lower" of the two (stock, then safe mode). Absent on a G2. */
+  g1Firmware?: G1Firmware;
   /**
    * Set when this lone arm and a lone arm of the other side carry different
    * serials — the mixed-pair situation the serial check exists to name.
@@ -187,7 +189,8 @@ export class DiscoveryAggregator {
     for (const record of this.byAddress.values()) {
       if (record.role === "ring" || record.role === "rayneo-io") continue;
       const canonical = serialKey(record.serial);
-      const key = canonical ? `serial:${canonical}` : `arm:${record.address}`;
+      const family = record.g1Firmware ? "g1:" : "";
+      const key = canonical ? `${family}serial:${canonical}` : `arm:${record.address}`;
       const group = groups.get(key) ?? { left: null, right: null };
       const slot = record.role === "left" ? "left" : "right";
       const incumbent = group[slot];
@@ -208,7 +211,9 @@ export class DiscoveryAggregator {
       pairs.push({
         id: serialKey(serial) ?? `arm:${any.address}`,
         serial,
-        identity: GlassesHardwareIdentity.decode(serial),
+        // Even's G2 serial scheme; a G1's says nothing to it.
+        identity: any.g1Firmware ? null : GlassesHardwareIdentity.decode(serial),
+        ...(any.g1Firmware ? { g1Firmware: g1PairFirmware(left, right) } : {}),
         left: left ? stripSmoothing(left) : null,
         right: right ? stripSmoothing(right) : null,
         completeness: left && right ? "complete" : left ? "left-only" : "right-only",
@@ -367,7 +372,50 @@ function embeddedMacMismatchWarning(subject: string, ad: EvenAdvertisement | nul
   return `${subject} advertised address ${ad.embeddedMac} differs from its radio address ${ad.address}.`;
 }
 
+/** The pair can only do what its less capable arm can. */
+function g1PairFirmware(left: EvenAdvertisement | null, right: EvenAdvertisement | null): G1Firmware {
+  const firmwares = [left?.g1Firmware, right?.g1Firmware];
+  if (firmwares.includes("stock")) return "stock";
+  return firmwares.includes("g1v0-safe") ? "g1v0-safe" : "g1v0";
+}
+
+export function g1Row(pair: GlassesPairCandidate, context: RowContext = {}): PairingRowPresentation {
+  const isPreviouslyPairedRow = isPreviouslyPaired(pair.serial, context.pairedSerial);
+  const isNearest = !!context.nearestId && context.nearestId === pair.id;
+  const warnings: string[] = [];
+  if (pair.mismatchWarning) warnings.push(pair.mismatchWarning);
+  let armsSummary: string;
+  let canSelect = false;
+  if (pair.g1Firmware === "stock") {
+    armsSummary = "Needs the Faceclaw firmware for the G1, which is installed from a computer";
+  } else if (pair.g1Firmware === "g1v0-safe") {
+    armsSummary = "In safe mode: the firmware restarted repeatedly. Reinstall it from a computer";
+  } else if (pair.completeness !== "complete") {
+    armsSummary = pair.completeness === "left-only"
+      ? "Only the left arm has been seen — waiting for the right"
+      : "Only the right arm has been seen — waiting for the left";
+  } else {
+    armsSummary = "Left + right arms found. To pair, keep them in the case with the lid open";
+    canSelect = true;
+  }
+  return {
+    id: pair.id,
+    kind: "glasses",
+    modelTitle: "Even Realities G1",
+    deviceName: pair.serial ?? (pair.left ?? pair.right)!.name,
+    variantSummary: null,
+    colorway: null,
+    swatchHex: null,
+    imagePath: GENERIC_G2_IMAGE_PATH,
+    hasVariantImage: false,
+    ...presentationBase(pair.proximity, isNearest, isPreviouslyPairedRow, warnings),
+    armsSummary,
+    canSelect,
+  };
+}
+
 export function glassesRow(pair: GlassesPairCandidate, context: RowContext = {}): PairingRowPresentation {
+  if (pair.g1Firmware) return g1Row(pair, context);
   const identity = pair.identity;
   const imagePath = glassesImagePath(identity);
   const isPreviouslyPairedRow = isPreviouslyPaired(pair.serial, context.pairedSerial);

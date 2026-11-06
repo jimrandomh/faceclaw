@@ -68,6 +68,9 @@ interface SessionLink {
     /** Whether the OS still holds a pairing bond for the address (iOS: always true). */
     fun isBonded(address: String): Boolean
 
+    /** Ask the OS to bond with a connected device, without waiting. A no-op where it pairs on demand only (CoreBluetooth). */
+    fun requestBond(address: String) {}
+
     /** Bandwidth-benchmark link tuning; 0: current link, 1: HIGH priority, 2: 2M PHY, 3: both. */
     fun prepareBenchmarkLink(address: String, mode: Int)
 

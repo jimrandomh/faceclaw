@@ -160,6 +160,21 @@ class FaceclawBleManager(context: Context) {
         }
     }
 
+    /** Start bonding, without waiting: the OS may ask the user, and [isBonded] tells when it is done. */
+    fun requestBond(address: String?) {
+        if (address == null || address.trim().isEmpty()) {
+            return
+        }
+        try {
+            val device = bluetoothAdapter.getRemoteDevice(address)
+            if (device.bondState == BluetoothDevice.BOND_NONE) {
+                Log.i(TAG, "requestBond " + address + ": " + device.createBond())
+            }
+        } catch (t: Throwable) {
+            Log.w(TAG, "requestBond failed: " + address, t)
+        }
+    }
+
     /**
      * Android's bond state for this address (BluetoothDevice.BOND_NONE /
      * BOND_BONDING / BOND_BONDED), or -1 when it cannot be determined.

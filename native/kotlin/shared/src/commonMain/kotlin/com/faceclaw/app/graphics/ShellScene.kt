@@ -64,6 +64,21 @@ class ShellScene(val layers: List<Layer>, val selections: List<RetainedDrawing> 
         return output
     }
 
+    /** Whether the lenses differ: stereo depth somewhere in the scene. */
+    val hasStereoDepth: Boolean get() = screenDepth != 0 || layers.any { it.depth != 0 } || allSelections.isNotEmpty()
+
+    /**
+     * What one lens shows of [screen] (packed 4bpp) with this scene over it and every animation settled, for
+     * glasses that have no display lists (a G1). [screen] itself when there is no scene.
+     */
+    fun composed(screen: ByteArray, width: Int, height: Int, rightLens: Boolean): ByteArray {
+        if (layers.isEmpty() && selections.isEmpty() && screenDepth == 0) return screen
+        val output = ByteArray(screen.size)
+        DisplayListRenderer(rendererResources(width, height), rightLens = rightLens).render(511,
+            DisplayListRenderer.Target(screen, width, height), DisplayListRenderer.Target(output, width, height), SETTLED_MS)
+        return output
+    }
+
     /** Layer surfaces, then retained resources, by index, and the root list at 511. */
     private fun rendererResources(width: Int, height: Int): HashMap<Int, ByteArray> {
         val resources = HashMap<Int, ByteArray>()

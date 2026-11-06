@@ -260,6 +260,7 @@ export class FaceclawCommunicatorBridge {
     );
     // The shared session halts on any other firmware ("incompatible-firmware").
     this.communicator.setRequiredFirmwareRevisionRevision(REQUIRED_FACECLAW_FIRMWARE_VERSION);
+    if (addresses.glassesType === "g1") this.communicator.useG1();
     // Guarded: an older framework build may not export it yet.
     if (addresses.ringRole && typeof this.communicator.setDirectRingRoleRole === "function") {
       this.communicator.setDirectRingRoleRole(addresses.ringRole);

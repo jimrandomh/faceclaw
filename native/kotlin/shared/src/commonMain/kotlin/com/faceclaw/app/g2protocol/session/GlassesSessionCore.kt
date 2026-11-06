@@ -111,6 +111,8 @@ class GlassesSessionCore(
     @Volatile internal var glassesType = GlassesType.G2
     /** RayNeo iO link state (GlassesSessionIo.kt); guarded by [monitor]. */
     internal val io = IoSessionState()
+    /** Even G1 link state (GlassesSessionG1.kt); guarded by [monitor]. */
+    internal val g1 = G1SessionState()
 
     /**
      * Optional tap for relay frames the session does not interpret: notifications on the
@@ -578,6 +580,14 @@ class GlassesSessionCore(
         }
     }
 
+    /** Drive an Even G1 on g1v0 instead of a G2 (see [G1SessionState]). Before [start]. */
+    fun useG1() {
+        monitor.withLock { glassesType = GlassesType.G1 }
+    }
+
+    /** True when this session drives an Even G1. */
+    fun isEvenG1(): Boolean = isG1
+
     /** True when this session drives a RayNeo iO. */
     fun isRayNeoIo(): Boolean = isIo
 
@@ -613,7 +623,7 @@ class GlassesSessionCore(
          * quiescing its producers. Also cover direct/early close callers here;
          * a successful cleanup must remain the final BLE message. Older CFWs
          * fall back to the standalone framebuffer-lease release. */
-        if (!cfwCleanupDelivered && !sendCfwCleanup() && !isIo) {
+        if (!cfwCleanupDelivered && !sendCfwCleanup() && isG2) {
             releaseFaceclawFramebufferLease()
         }
         monitor.withLock {
@@ -683,6 +693,10 @@ class GlassesSessionCore(
         }
         // The iO's packets are Opus from its remote audio stream (see ioStartAudioCapture).
         if (isIo) return ioStartAudioCapture(listener)
+        if (isG1) {
+            logLine("skip G1 mic: not in this version")
+            return false
+        }
         var magic = 0
         monitor.withLock {
             if (!running || !sessionReady || shutdownRequested || !fixedLayoutCreated) {
@@ -701,6 +715,7 @@ class GlassesSessionCore(
 
     fun stopG2AudioCapture() {
         if (isIo) return ioStopAudioCapture()
+        if (isG1) return
         var magic = 0
         monitor.withLock {
             audioPacketListener = null
@@ -834,7 +849,7 @@ class GlassesSessionCore(
         monitor.withLock {
             faceclawWakeLeaseEnabled = enabled
             // A G2 firmware lease; the iO's wake word is setVoiceWakeEnabled.
-            if (isIo) return true
+            if (!isG2) return true
             if (!running || !sessionReady) {
                 return !enabled
             }
@@ -1594,6 +1609,7 @@ class GlassesSessionCore(
 
     fun sendShutdown(exitMode: Int): Boolean {
         if (isIo) return ioSuspend()
+        if (isG1) return g1Suspend()
         return sendShutdownInternal(exitMode, true)
     }
 
@@ -1604,6 +1620,17 @@ class GlassesSessionCore(
      * can use the legacy shutdown-and-lease-release path.
      */
     fun sendCfwCleanup(): Boolean {
+        if (isG1) {
+            // Fire and forget: the firmware keeps no session that could outlive the link.
+            monitor.withLock {
+                if (cfwCleanupDelivered) return true
+                shutdownRequested = true
+                cfwCleanupDelivered = true
+                clearPendingMessagesLocked("G1 cleanup")
+            }
+            g1HideBeforeDisconnect()
+            return true
+        }
         val magic: Int
         monitor.withLock {
             if (cfwCleanupDelivered) {
@@ -1686,6 +1713,7 @@ class GlassesSessionCore(
      */
     fun suspendEvenHubSession(): Boolean {
         if (isIo) return ioSuspend()
+        if (isG1) return g1Suspend()
         // Ending the plugin task releases the fb lease, which frees the
         // on-glasses resource cache; forget it phone-side either way (a lost
         // ack may still have taken effect).
@@ -1710,6 +1738,7 @@ class GlassesSessionCore(
      */
     fun resumeEvenHubSession(): Boolean {
         if (isIo) return ioResume()
+        if (isG1) return g1Resume()
         var claimGeneration = 0
         monitor.withLock {
             if (!running || !sessionReady || chargingMode) {
@@ -1790,7 +1819,7 @@ class GlassesSessionCore(
                         continue
                     }
                     logWarn("Attempting to connect")
-                    if (isIo) ioConnectLoopOnce() else connectLoopOnce()
+                    if (isIo) ioConnectLoopOnce() else if (isG1) g1ConnectLoopOnce() else connectLoopOnce()
                     continue
                 }
 
@@ -1824,6 +1853,10 @@ class GlassesSessionCore(
         }
         if (isIo) {
             ioOnNotification(address, uuid, data)
+            return
+        }
+        if (isG1) {
+            g1OnNotification(address, uuid, data)
             return
         }
         if (BleProtocol.RENDER_NOTIFY_UUID == uuid) {
