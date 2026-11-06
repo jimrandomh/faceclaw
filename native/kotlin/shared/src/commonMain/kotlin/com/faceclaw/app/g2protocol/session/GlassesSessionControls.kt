@@ -501,6 +501,9 @@ internal fun GlassesSessionCore.scheduleReconnectLocked(sessionWasReady: Boolean
 internal fun GlassesSessionCore.resetSessionStateLocked() {
     ringBattery = -1
     ringCharging = -1
+    headUpSwitch = -1
+    headUpReadAtMs = 0L
+    headUpVerifyPending = false
     directRingBattery = -1
     directRingCharging = -1
     sessionReady = false

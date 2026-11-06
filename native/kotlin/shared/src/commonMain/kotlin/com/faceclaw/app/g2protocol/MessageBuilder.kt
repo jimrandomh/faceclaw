@@ -188,6 +188,22 @@ class MessageBuilder {
         )
     }
 
+    /** One head-up setting field (see BleProtocol.buildSetHeadUp). */
+    fun setHeadUp(field: Int, value: Int): OutboundMessage {
+        var magic: Int = magicPool.allocate()
+        return OutboundMessage(
+            "head-up-control",
+            ("head-up field " + field + "=" + value),
+            BleProtocol.SID_UI_SETTING,
+            BleProtocol.FLAG_REQUEST,
+            magic,
+            BleProtocol.buildSetHeadUp(magic, field, value),
+            ACK_TIMEOUT_MS,
+            -1,
+            false,
+        )
+    }
+
     fun createLayout(): OutboundMessage {
         var magic: Int = magicPool.allocate()
         return OutboundMessage(

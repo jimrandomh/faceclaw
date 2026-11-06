@@ -350,6 +350,26 @@ class GlassesSessionCore(
     internal var lastGlassesRingInputAtMs = 0L
     internal var lastGlassesRingInputLabel = ""
     internal var lastGlassesRingBatteryAtMs = 0L
+    // Head-up (look-up wake) state from settings reads: -1 switch = not read yet.
+    internal var headUpSwitch = -1
+    internal var headUpAngle = 0
+    internal var headUpCalibration = 0
+    internal var headUpReadAtMs = 0L
+    // The trigger pitch TS asked for (degrees, 1..90), or -1 to leave the glasses'
+    // own setting alone. Reapplied after every read that disagrees with it.
+    internal var desiredHeadUpTrigger = -1
+    // The glasses' own switch and angle from before Faceclaw first changed them
+    // (switch -1 = unknown): captured before the first write, or handed back by TS,
+    // which persists them across app restarts. Written back while
+    // headUpRestorePending (TS stopped managing the trigger), then forgotten once a
+    // read confirms them.
+    internal var headUpOriginalSwitch = -1
+    internal var headUpOriginalAngle = 0
+    internal var headUpRestorePending = false
+    // Set after queueing a correction so the next settings read comes right away to
+    // confirm it; cleared by that read, so a firmware that refuses the value is
+    // retried on the normal poll cadence, not in a loop.
+    internal var headUpVerifyPending = false
     internal var ringConnectedChangedAtMs = 0L
     internal var ringConnectCount = 0
     internal var lastDirectRingError = ""
@@ -943,6 +963,61 @@ class GlassesSessionCore(
             logLine("queue wear detection enable + current-state query")
         }
         interruptibleSleep.interrupt()
+    }
+
+    /**
+     * Set the pitch (degrees, 1..90) at which looking up wakes the display, or 0 to stop
+     * managing it. Kept for the life of this object and reapplied on every connection: the
+     * next settings read supplies the glasses' calibration, then the switch and angle are
+     * written (see reconcileHeadUpLocked) and a follow-up read confirms them.
+     *
+     * [originalSwitch] (0/1, or -1 when unknown) and [originalAngle] are the glasses' own
+     * values from before Faceclaw changed them, as TS saved them from getHeadUpStatus; they
+     * take precedence over what this object captured. With degrees 0 they are written back.
+     */
+    fun setHeadUpTrigger(degrees: Int, originalSwitch: Int, originalAngle: Int) {
+        monitor.withLock {
+            if (originalSwitch in 0..1) {
+                headUpOriginalSwitch = originalSwitch
+                headUpOriginalAngle = originalAngle
+            }
+            // A change of mind drops writes still queued for the previous value.
+            clearMessagesOfKindLocked("head-up-control")
+            headUpVerifyPending = false
+            desiredHeadUpTrigger = if (degrees in 1..90) degrees else -1
+            headUpRestorePending = desiredHeadUpTrigger < 0 && headUpOriginalSwitch >= 0
+            logLine(when {
+                desiredHeadUpTrigger > 0 -> "head-up trigger requested: ${desiredHeadUpTrigger}°"
+                headUpRestorePending -> "head-up trigger: restore the glasses' own " +
+                    "(switch=$headUpOriginalSwitch angle=$headUpOriginalAngle)"
+                else -> "head-up trigger: left to the glasses"
+            })
+            if (!running || !sessionReady) return
+            if (desiredHeadUpTrigger <= 0 && !headUpRestorePending) return
+            if (headUpSwitch >= 0) {
+                applyHeadUpLocked(verifying = false)
+            } else {
+                // Calibration unknown: read the settings first; the ack applies the trigger.
+                lastBatteryRefreshAtMs = 0L
+            }
+        }
+        interruptibleSleep.interrupt()
+    }
+
+    /** Head-up settings as last read, as JSON (switch -1 = not read on this connection). */
+    fun getHeadUpStatus(): String {
+        monitor.withLock {
+            val status = linkedMapOf<String, Any?>()
+            status["switch"] = headUpSwitch
+            status["angle"] = headUpAngle
+            status["calibration"] = headUpCalibration
+            status["desired"] = desiredHeadUpTrigger
+            status["originalSwitch"] = headUpOriginalSwitch
+            status["originalAngle"] = headUpOriginalAngle
+            status["restorePending"] = headUpRestorePending
+            status["readAgeMs"] = if (headUpReadAtMs == 0L) -1L else maxOf(0L, now() - headUpReadAtMs)
+            return try { Json.write(status) } catch (e: Exception) { "{}" }
+        }
     }
 
     // ---------------------------------------------------------------------
@@ -1981,11 +2056,10 @@ class GlassesSessionCore(
                 } else if (decoded != null
                         && "sys-event" == decoded.kind
                         && decoded.eventType == BleProtocol.EVENT_HEAD_DOWN) {
-                    // Faceclaw/38 also forwards the head coming back down. Nothing
-                    // uses it yet; as an unknown input it would count as activity
-                    // and keep the screen awake, so drop it here.
-                    logLine("head-down forwarded by CFW (ignored)")
-                    decoded = null
+                    // Faceclaw/38 also forwards the head coming back down. TS uses
+                    // it to end a head-tilt Glanceboard and otherwise drops it
+                    // before the shell, so it never counts as activity.
+                    logLine("head-down forwarded by CFW")
                 }
                 event = decoded
                 if (decoded != null) {

@@ -5,7 +5,16 @@ import { enumSettingMenuItem, onAnySettingChanged, toggleSettingMenuItem } from 
 import { uiFontOverridePickerMenuItem } from "../../ui/font-picker";
 import { type InputEvent } from "../../ui/gestures";
 import { type Layer, type LayerContext } from "../../ui/layers";
-import { drawSelectionHighlight, isMenuItemDisabled, MenuLayer, openModalMenu, submenuItem, type MenuItem } from "../../ui/menu";
+import { drawRightValueMenuItem, drawSelectionHighlight, isMenuItemDisabled, MenuLayer, openModalMenu, submenuItem, type MenuItem } from "../../ui/menu";
+import {
+  captureHeadAngleStep,
+  glassesHeadUpTrigger,
+  headAngleCaptureRunning,
+  headAngleCaptureStep,
+  resetHeadAngleCapture,
+  syncGlanceAngleOriginal,
+} from "../../g2/head-angle";
+import { getHeadUpStatus, headUpControlsAvailable } from "../../native/glasses-controls";
 import { Menu } from "../../ui/menu-core";
 import { LIST_ROW_TEXT_INSET, lineStep, listRowHeight } from "../../ui/metrics";
 import { createInProcessWindow, type InProcessAppOptions, type InProcessWindow } from "../../ui/shell/in-process-window";
@@ -19,7 +28,9 @@ import {
   glanceLayout,
   glanceLayoutSetting,
   glanceShowLinesSetting,
+  glanceAngleSetting,
   glanceShowOnHeadTiltSetting,
+  glanceTiltTimeoutSetting,
   glanceShowOnLongPressSetting,
   glanceSlotChoiceLabel,
   glanceSlotSettings,
@@ -312,6 +323,10 @@ function openGlanceSettings(ctx: LayerContext): void {
     enumSettingMenuItem(glanceTapDurationSetting),
     toggleSettingMenuItem(glanceShowOnLongPressSetting),
     toggleSettingMenuItem(glanceShowOnHeadTiltSetting),
+    enumSettingMenuItem(glanceTiltTimeoutSetting),
+    // Only Android can change the glasses' head-up setting (glasses-controls.ts).
+    // The controller's settings listener sends a new angle to the glasses.
+    ...(headUpControlsAvailable() ? [enumSettingMenuItem(glanceAngleSetting), headAngleCaptureMenuItem()] : []),
     toggleSettingMenuItem(glanceShowLinesSetting),
     uiFontOverridePickerMenuItem(glanceFont, {
       title: "Glanceboard font",
@@ -321,8 +336,54 @@ function openGlanceSettings(ctx: LayerContext): void {
     enumSettingMenuItem(glanceDepthSetting),
     ...widgetSettingsMenuItems(),
   ];
+  resetHeadAngleCapture();
+  headAngleCapture = null;
   const layer = new MenuLayer("Glanceboard settings", items(), pageMenuLayout(ctx.stack.getBaseSize().width));
   ctx.stack.push(layer);
+}
+
+/**
+ * "Set to current head angle", in two selects: one with the head level, one
+ * tilted up to where the display should wake (head-angle.ts). The row shows
+ * the step or the last result; otherwise the glasses' current trigger. A
+ * result is shown only while the Head tilt angle still has the value it was
+ * shown with, and only until the menu is reopened.
+ */
+let headAngleCapture: { status: string; angleSetting: string } | null = null;
+
+function headAngleCaptureMenuItem(): MenuItem {
+  const label = "Set to current head angle";
+  const setStatus = (status: string) => {
+    headAngleCapture = { status, angleSetting: glanceAngleSetting.get() };
+  };
+  return {
+    label,
+    description:
+      "Two steps. Look straight ahead, keep still and select; then tilt your head up to where the display should wake, keep still and select again. " +
+      "Faceclaw reads the glasses' angle for about a second each time and saves the difference, rounded to 5°, as the Head tilt angle. Keep your head level side to side.",
+    onSelect: async (ctx) => {
+      // Selects during a measurement are ignored; it would share the IMU stream.
+      if (headAngleCaptureRunning()) return;
+      setStatus("Measuring...");
+      ctx.actions.requestRender();
+      const status = await captureHeadAngleStep();
+      if (status !== null) setStatus(status);
+      ctx.actions.requestRender();
+    },
+    render: ({ image, x, y, width }) => {
+      const status = getHeadUpStatus();
+      syncGlanceAngleOriginal(status);
+      let value: string;
+      if (headAngleCapture && headAngleCapture.angleSetting === glanceAngleSetting.get() &&
+          (headAngleCaptureRunning() || headAngleCaptureStep() === "tilt" || !headAngleCapture.status.startsWith("Now"))) {
+        value = headAngleCapture.status;
+      } else {
+        const current = glassesHeadUpTrigger(status);
+        value = current === null ? "" : current === 0 ? "glasses: off" : `glasses: ${current}°`;
+      }
+      drawRightValueMenuItem(image, getDefaultSmallFont(), x, y, width, label, value);
+    },
+  };
 }
 
 /**
