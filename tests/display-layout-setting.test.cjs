@@ -98,3 +98,14 @@ test('a RayNeo iO always takes the R1 directly, leaving the G2\'s ring connectio
   api.glassesTypeSetting.set('g2');
   assert.equal(api.effectiveRingConnectionMode(), 'health');
 });
+
+test('only a G2 has a compass', () => {
+  const api = settingsFixture();
+  assert.equal(api.glassesHaveCompass(), true);
+  api.glassesTypeSetting.set('g1');
+  assert.equal(api.glassesHaveCompass(), false);
+  api.glassesTypeSetting.set('rayneo-io');
+  assert.equal(api.glassesHaveCompass(), false);
+  api.glassesTypeSetting.set('g2');
+  assert.equal(api.glassesHaveCompass(), true);
+});

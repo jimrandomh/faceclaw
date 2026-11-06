@@ -396,6 +396,15 @@ export const glassesTypeSetting = new ConfigSettingEnum<GlassesType>({
   reportInAnalytics: false,
 });
 
+/**
+ * Whether the paired glasses can report a heading. A G1 has an accelerometer
+ * and a gyroscope but no magnetometer; the RayNeo iO's firmware has no compass
+ * messages.
+ */
+export function glassesHaveCompass(): boolean {
+  return glassesTypeSetting.get() === "g2";
+}
+
 const APP_SWITCHER_POSITION_LABELS: Record<AppSwitcherPosition, string> = {
   left: "Left",
   right: "Right",

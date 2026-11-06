@@ -195,8 +195,8 @@ const LOW_BATTERY_PERCENT = 5;
 const EVEN_APP_DETECTED_MESSAGE =
   "The Even Realities app appears to be running. If Faceclaw has trouble connecting, open its app settings and force stop it.";
 
-// The launcher grid's app list; also fixes the app ids apps.launch accepts.
-const LAUNCHABLE_APPS = ALL_APPS.filter((app) => app.showInLauncher !== false);
+// The launcher grid's app list for the paired glasses; also fixes the app ids apps.launch accepts.
+const launchableApps = () => ALL_APPS.filter((app) => app.showInLauncher !== false && app.isSupported?.() !== false);
 
 /**
  * The global settings window viewport sizes depend on: the paired glasses'
@@ -422,7 +422,7 @@ class DashboardController {
     registerRoamTools((appId) => this.launchApp(appId));
     // apps.* tools mirror the launcher grid and sidebar (launch, focus, close).
     registerWindowTools({
-      apps: LAUNCHABLE_APPS,
+      apps: launchableApps,
       launchApp: (appId) => this.launchApp(appId),
       requestShellRender: () => this.requestShellRender(),
     });
@@ -506,7 +506,7 @@ class DashboardController {
       assistant: text => shell.sendToAssistant(text),
     });
     this.wearRemote = new WearRemote({
-      apps: LAUNCHABLE_APPS,
+      apps: launchableApps,
       injectInput: (kind) => this.injectSyntheticRingInput(kind, "watch"),
       launchApp: (appId) => this.launchApp(appId),
       connect: () => this.connect(),

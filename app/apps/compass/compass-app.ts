@@ -10,7 +10,7 @@ import {
   type CompassDiagnostics,
 } from "../../native/compass";
 import { wrapText } from "../../graphics/textwrap";
-import { glassesTypeSetting } from "../../ui/dashboard-settings";
+import { glassesHaveCompass } from "../../ui/dashboard-settings";
 import { type InputEvent } from "../../ui/gestures";
 import { type Layer, type LayerContext } from "../../ui/layers";
 import { lineStep } from "../../ui/metrics";
@@ -152,7 +152,7 @@ class CompassLayer implements Layer {
   }
 
   private statusText(): string {
-    if (noCompassSensor()) return "These glasses have no compass sensor";
+    if (!glassesHaveCompass()) return "These glasses have no compass sensor";
     if (this.firmwareStatus !== null) return this.firmwareStatus;
     if (!this.enabled) return "Compass paused";
     if (this.rawHeading === null) return "Waiting for compass data…";
@@ -208,7 +208,7 @@ class CompassLayer implements Layer {
       image.drawText(small, Math.round(cx - small.measureText(line) / 2), y, line, 125);
       y += smallStep;
     }
-    if (!noCompassSensor()) {
+    if (glassesHaveCompass()) {
       const accuracyText = magneticAccuracyText(this.diagnostics);
       image.drawText(small, width - ACCURACY_RIGHT_PAD - small.measureText(accuracyText), ACCURACY_TOP_PAD, accuracyText, 175);
     }
@@ -220,13 +220,8 @@ class CompassLayer implements Layer {
   // "Uncalibrated" prompt advertises, and re-calibrating is a normal thing to
   // want once the glasses have been taken off and put back on.
   handleInput(event: InputEvent, ctx: LayerContext): void {
-    if (event.type === "click" && !noCompassSensor()) this.openCalibration(ctx);
+    if (event.type === "click" && glassesHaveCompass()) this.openCalibration(ctx);
   }
-}
-
-/** A G1 has an accelerometer and a gyroscope, but no magnetometer. */
-function noCompassSensor(): boolean {
-  return glassesTypeSetting.get() === "g1";
 }
 
 export function createCompassAppWindow(options: InProcessAppOptions): InProcessWindow {
@@ -240,7 +235,7 @@ export function createCompassAppWindow(options: InProcessAppOptions): InProcessW
     icon: "compass",
     closeable: true,
     actions: options.actions,
-    menuItems: () => noCompassSensor() ? [] : [
+    menuItems: () => !glassesHaveCompass() ? [] : [
       {
         label: "Calibrate",
         onSelect: (ctx) => {

@@ -11,7 +11,7 @@ import {
 export function launcherEntries(apps: readonly AppDefinition[]) {
   return [
     ...apps
-      .filter((app) => app.showInLauncher !== false)
+      .filter((app) => app.showInLauncher !== false && app.isSupported?.() !== false)
       .map((app) => ({
         appId: app.appId,
         label: app.title,

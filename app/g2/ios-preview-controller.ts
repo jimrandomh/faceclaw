@@ -272,7 +272,7 @@ export class IosPreviewController {
     // The header's EvenHub phone-UI button hides while that UI is showing.
     onPhoneShownChanged(() => this.syncEvenHubPhoneUi())
     registerSystemTools()
-    registerWindowTools({ apps: ALL_APPS.filter(app => !iosAppUnavailableReason(app.appId)),
+    registerWindowTools({ apps: () => ALL_APPS.filter(app => app.isSupported?.() !== false && !iosAppUnavailableReason(app.appId)),
       launchApp: id => this.launchApp(id), requestShellRender: () => this.requestShellRender() })
     registerNavigateTools(id => this.launchApp(id))
     registerRoamTools(id => this.launchApp(id))
@@ -280,7 +280,7 @@ export class IosPreviewController {
     iosVoiceInput.onSpeechEnd(() => this.syncContinuousCapture())
     for (const app of ALL_APPS) if (app.appId !== 'launcher' && !iosAppUnavailableReason(app.appId)) app.boot?.(this.buildAppContext(app))
     this.wearRemote = new WearRemote({
-      apps: ALL_APPS.filter(app => app.showInLauncher !== false && !iosAppUnavailableReason(app.appId)),
+      apps: () => ALL_APPS.filter(app => app.showInLauncher !== false && app.isSupported?.() !== false && !iosAppUnavailableReason(app.appId)),
       injectInput: kind => this.injectWatchInput(kind),
       launchApp: id => this.launchApp(id),
       // The watch's Connect/Disconnect are explicit user choices, like the phone's own buttons.

@@ -5,11 +5,11 @@
  * mirrors what the user can do from the launcher grid and the sidebar.
  *
  * The launchable set is the built-in launcher apps plus whatever EvenHub
- * packages are installed right now, matching the launcher grid. Installs and
- * uninstalls change that set at runtime, so the tools re-register (replacing
- * themselves by name) whenever it changes to keep the id enums and
- * descriptions current; register() fires the tools-changed broadcast that
- * propagates the new specs to the assistant backends.
+ * packages are installed right now, matching the launcher grid. Installs,
+ * uninstalls and pairing different glasses change that set at runtime, so the
+ * tools re-register (replacing themselves by name) whenever it changes to keep
+ * the id enums and descriptions current; register() fires the tools-changed
+ * broadcast that propagates the new specs to the assistant backends.
  */
 import { shell, type ShellWindow } from "../ui/shell/shell";
 import type { AppDefinition } from "../apps/app-definition";
@@ -30,8 +30,8 @@ import { onAnySettingChanged } from "../ui/dashboard-settings";
 import { toolRegistry, type ToolRegistry, type ToolResult } from "./tool-registry";
 
 export type WindowToolsOptions = {
-  /** The built-in launcher apps; installed EvenHub apps are added dynamically. */
-  apps: readonly AppDefinition[];
+  /** The built-in launcher apps for the paired glasses; installed EvenHub apps are added dynamically. */
+  apps: () => readonly AppDefinition[];
   /** Launch (or focus) an app exactly as the launcher grid would. */
   launchApp: (appId: string) => Promise<void> | void;
   /** Repaint the shell surface so the sidebar reflects a focus change. */
@@ -47,9 +47,11 @@ export function registerWindowTools(
   if (registered) return;
   registered = true;
   registerTools(options, registry);
-  let fingerprint = getInstalledEvenHubFingerprint();
+  const launchableFingerprint = () =>
+    `${getInstalledEvenHubFingerprint()}\n${options.apps().map((app) => app.appId).join()}`;
+  let fingerprint = launchableFingerprint();
   onAnySettingChanged(() => {
-    const current = getInstalledEvenHubFingerprint();
+    const current = launchableFingerprint();
     if (current === fingerprint) return;
     fingerprint = current;
     registerTools(options, registry);
@@ -58,7 +60,7 @@ export function registerWindowTools(
 
 function registerTools(options: WindowToolsOptions, registry: ToolRegistry): void {
   const installedApps = getInstalledEvenHubApps();
-  const apps = new Map(options.apps.map((app) => [app.appId, app.title]));
+  const apps = new Map(options.apps().map((app) => [app.appId, app.title]));
   for (const app of installedApps) {
     apps.set(installedEvenHubAppId(app.packageId), app.name);
   }

@@ -1,4 +1,4 @@
-import { ConfigSettingBoolean, ConfigSettingEnum } from "../../ui/dashboard-settings";
+import { ConfigSettingBoolean, ConfigSettingEnum, glassesHaveCompass } from "../../ui/dashboard-settings";
 import { QUADRANT_LAYOUT, SIX_SLOT_LAYOUT, slotsVerticallyAdjacent, type GlanceLayout } from "./layout";
 import { type GlanceWidgetId } from "./widget";
 import { glanceWidgetSpans } from "./widgets";
@@ -21,6 +21,11 @@ const SLOT_CHOICE_LABELS: Record<GlanceSlotChoice, string> = {
 
 export function glanceSlotChoiceLabel(choice: GlanceSlotChoice): string {
   return SLOT_CHOICE_LABELS[choice] ?? choice;
+}
+
+/** Whether the paired glasses can drive this widget; if not, it is left out of the slot picker. */
+function slotChoiceAvailable(choice: GlanceSlotChoice): boolean {
+  return choice !== "compass" || glassesHaveCompass();
 }
 
 /**
@@ -146,18 +151,26 @@ export const glanceShowLinesSetting = new ConfigSettingBoolean({
 export function glanceSlotSettings(layout: GlanceLayout = glanceLayout()): ConfigSettingEnum<GlanceSlotChoice>[] {
   const grid = layout === QUADRANT_LAYOUT || layout === SIX_SLOT_LAYOUT;
   const storageId = grid ? QUADRANT_LAYOUT.id : layout.id;
-  return layout.slots.map(
-    (slot, index) =>
-      new ConfigSettingEnum<GlanceSlotChoice>({
-        id: `glanceboard-${layout.id}-slot-${index}`,
-        label: slot.label,
-        storageKey: `glanceboard.${storageId}.slot.${index}`,
-        defaultValue: (grid ? DEFAULT_QUADRANT_CHOICES[index] : undefined) ?? "none",
-        values: SLOT_CHOICES,
-        formatValue: glanceSlotChoiceLabel,
-        description: `Which widget fills the ${slot.label.toLowerCase()} slot of the Glanceboard.`,
-      }),
-  );
+  return layout.slots.map((slot, index) => {
+    const defaultValue: GlanceSlotChoice = (grid ? DEFAULT_QUADRANT_CHOICES[index] : undefined) ?? "none";
+    return new ConfigSettingEnum<GlanceSlotChoice>({
+      id: `glanceboard-${layout.id}-slot-${index}`,
+      label: slot.label,
+      storageKey: `glanceboard.${storageId}.slot.${index}`,
+      defaultValue,
+      values: SLOT_CHOICES.filter(slotChoiceAvailable),
+      // A stored choice the glasses can't drive reads as Empty, not the slot's
+      // default (which could put a widget on the board twice). The stored value
+      // stays, so pairing glasses that can drive it brings it back.
+      normalize: (value) => {
+        const choice = value as GlanceSlotChoice;
+        if (!SLOT_CHOICES.includes(choice)) return defaultValue;
+        return slotChoiceAvailable(choice) ? choice : "none";
+      },
+      formatValue: glanceSlotChoiceLabel,
+      description: `Which widget fills the ${slot.label.toLowerCase()} slot of the Glanceboard.`,
+    });
+  });
 }
 
 /**

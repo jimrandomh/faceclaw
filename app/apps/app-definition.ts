@@ -30,6 +30,13 @@ export type AppDefinition = {
   boot?: (ctx: AppContext) => void;
   /** False for apps that must not appear in the launcher grid (the launcher itself). */
   showInLauncher?: boolean;
+  /**
+   * False while the paired glasses can't run the app (absent means they can).
+   * It then leaves the launcher grid and what mirrors it: the watch remote and
+   * the apps.launch tool. A window restored from before a re-pair still opens,
+   * so the app needs to say what's wrong rather than assume it never runs.
+   */
+  isSupported?: () => boolean;
   /** Present on the app that handles text shared via the Android share intent. */
   openSharedText?: (ctx: AppContext, title: string, text: string) => void;
   /**

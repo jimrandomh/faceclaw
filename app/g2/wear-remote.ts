@@ -115,8 +115,8 @@ const WATCH_BATTERY_MAX_AGE_MS = 4 * 60 * 60_000;
 
 /** What the dashboard controller lends the watch remote. */
 export type WearRemoteHost = {
-  /** The launcher-grid apps; installed EvenHub packages are added dynamically. */
-  apps: readonly AppDefinition[];
+  /** The launcher-grid apps for the paired glasses; installed EvenHub packages are added dynamically. */
+  apps: () => readonly AppDefinition[];
   injectInput: (kind: WearRemoteInputKind) => Promise<void>;
   launchApp: (appId: string) => Promise<void>;
   connect: () => Promise<void>;
@@ -320,7 +320,7 @@ export class WearRemote {
 
   /** Launchable apps, matching the launcher grid and the apps.launch tool. */
   private listApps(): Array<{ appId: string; title: string }> {
-    const apps = this.host.apps.map((app) => ({ appId: app.appId, title: app.title }));
+    const apps = this.host.apps().map((app) => ({ appId: app.appId, title: app.title }));
     for (const installed of getInstalledEvenHubApps()) {
       apps.push({ appId: installedEvenHubAppId(installed.packageId), title: installed.name });
     }

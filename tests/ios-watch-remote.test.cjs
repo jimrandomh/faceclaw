@@ -135,7 +135,7 @@ function loadRemote({ phase = 'disconnected', preview = false, now = 1_800_000_0
     })[id] ?? {},
   });
   const remote = new WearRemote({
-    apps: [{ appId: 'timer', title: 'Timer' }],
+    apps: () => [{ appId: 'timer', title: 'Timer' }],
     injectInput: async kind => { inputs.push(kind); },
     launchApp: async () => {}, connect: async () => {}, disconnect: async () => {},
     setGlassesLocked() {}, requestShellRender() {},

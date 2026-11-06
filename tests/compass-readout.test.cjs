@@ -55,7 +55,7 @@ function compass(width = 576, height = 260, glasses = 'g2') {
     },
     '../../ui/shell/shell': { shell: { isWindowVisible: () => true } },
     '../../native/location-permissions': { hasLocationPermission: () => false },
-    '../../ui/dashboard-settings': { glassesTypeSetting: { get: () => glasses } },
+    '../../ui/dashboard-settings': { glassesHaveCompass: () => glasses === 'g2' },
     './calibration': calibration,
     './calibration-layer': {}, './declination': { onDeclinationChanged: () => () => {} },
     './heading': { getNorthReference: () => 'magnetic', resolveHeading: (v) => ({ displayDegrees: v }) },

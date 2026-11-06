@@ -44,7 +44,7 @@ const compass = load('app/apps/compass/compass-app.ts', {
   '../../ui/shell/in-process-window': {},
   '../../ui/shell/shell': {},
   '../../native/location-permissions': {},
-  '../../ui/dashboard-settings': { glassesTypeSetting: { get: () => 'g2' } },
+  '../../ui/dashboard-settings': { glassesHaveCompass: () => true },
   './calibration': calibration,
   './calibration-layer': {},
   './compass-rose': rose,

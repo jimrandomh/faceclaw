@@ -20,18 +20,26 @@ function load(file, dependencies) {
 function harness() {
   const values = new Map();
   const listeners = new Set();
+  const live = new Set();
+  const glasses = { haveCompass: true };
   class Setting {
     constructor(options) { Object.assign(this, options); }
-    get() { return values.get(this.storageKey) ?? this.defaultValue; }
+    get() {
+      const value = values.get(this.storageKey) ?? this.defaultValue;
+      return this.normalize ? this.normalize(value) : value;
+    }
     set(value) { values.set(this.storageKey, value); }
   }
   const config = {
     ConfigSettingBoolean: Setting, ConfigSettingEnum: Setting,
+    glassesHaveCompass: () => glasses.haveCompass,
     onAnySettingChanged: (listener) => { listeners.add(listener); return () => listeners.delete(listener); },
   };
   const widgets = {
     glanceWidgetSpans: (choice) => choice === 'calendar' || choice === 'terminal',
-    findGlanceWidget: () => ({ create: () => ({ start() {}, stop() {}, paint() {} }) }),
+    findGlanceWidget: (choice) => ({ create: () => ({
+      start() { live.add(choice); }, stop() { live.delete(choice); }, paint() {},
+    }) }),
   };
   const settings = load('app/apps/glanceboard/glanceboard-settings.ts', {
     '../../ui/dashboard-settings': config, './layout': layout, './widgets': widgets,
@@ -45,7 +53,7 @@ function harness() {
     '../../graphics/image': { GrayImage }, '../../ui/dashboard-settings': config,
     './glanceboard-settings': settings, './layout': layout, './widgets': widgets,
   });
-  return { settings, GlanceBoard, values, listeners, notify: () => [...listeners].forEach((listener) => listener()) };
+  return { settings, GlanceBoard, values, listeners, live, glasses, notify: () => [...listeners].forEach((listener) => listener()) };
 }
 
 test('layout defaults to 2x2; expanding preserves stored slots and remembers the extra row', () => {
@@ -96,4 +104,39 @@ test('an active empty board resizes and requests a frame when the layout changes
   assert.equal(renders, 2);
   board.stop();
   assert.equal(h.listeners.size, 0);
+});
+
+test('glasses without a compass: no compass in the picker, and a stored one reads as Empty until a G2 returns', () => {
+  const h = harness();
+  h.values.set('glanceboard.quadrants.slot.0', 'compass');
+  assert.ok(h.settings.glanceSlotSettings()[0].values.includes('compass'));
+  assert.equal(h.settings.glanceSlotSettings()[0].get(), 'compass');
+
+  h.glasses.haveCompass = false;
+  const [slot] = h.settings.glanceSlotSettings();
+  assert.ok(!slot.values.includes('compass'));
+  // Empty, not the slot's default: System card may already be elsewhere on the board.
+  assert.equal(slot.get(), 'none');
+  assert.equal(h.values.get('glanceboard.quadrants.slot.0'), 'compass');
+
+  h.glasses.haveCompass = true;
+  assert.equal(h.settings.glanceSlotSettings()[0].get(), 'compass');
+});
+
+test('an unknown stored slot value still falls back to the slot default', () => {
+  const { settings: s, values } = harness();
+  values.set('glanceboard.quadrants.slot.0', 'removed-widget');
+  assert.equal(s.glanceSlotSettings()[0].get(), 'system-card');
+});
+
+test('a live board drops the compass widget when the paired glasses have no compass', () => {
+  const h = harness();
+  h.values.set('glanceboard.quadrants.slot.0', 'compass');
+  const board = new h.GlanceBoard(() => {});
+  board.start();
+  assert.ok(h.live.has('compass'));
+  h.glasses.haveCompass = false;
+  h.notify();
+  assert.ok(!h.live.has('compass'));
+  board.stop();
 });
