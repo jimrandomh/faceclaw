@@ -76,6 +76,16 @@ class FaceclawG1Flasher(context: Context, address: String?, side: String?, firmw
         }
     }
 
+    companion object {
+        /** The phone's pairing with an address these glasses no longer use. */
+        @JvmStatic
+        fun forgetPairing(context: Context, address: String?) {
+            if (address == null) return
+            val manager = context.applicationContext.getSystemService(Context.BLUETOOTH_SERVICE) as android.bluetooth.BluetoothManager
+            FaceclawBleManager.removeBond(manager.adapter.getRemoteDevice(address))
+        }
+    }
+
     private fun post(action: (FaceclawFirmwareFlasherListener) -> Unit) {
         mainHandler.post {
             val current = listener

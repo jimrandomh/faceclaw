@@ -153,6 +153,24 @@ test('the state of the two arms is that of the arm that needs the most', () => {
   assert.equal(state({ firmware: 'stock' }, on('0.5.63', { safeMode: true })), 'stock');
 });
 
+test('what the advertising alone says about the arms', () => {
+  const arm = (g1Firmware, g1Version) => ({ g1Firmware, g1Version });
+  const state = (left, right) => plan.g1StateFromAdvertising({ left, right }, '0.5.66');
+  assert.deepEqual(state(arm('g1v0', '0.5.66'), arm('g1v0', '0.5.66')), { state: 'current', version: '0.5.66' });
+  assert.deepEqual(state(arm('g1v0', '0.5.67'), arm('g1v0', '0.5.66')), { state: 'current', version: '0.5.66' });
+  assert.deepEqual(state(arm('g1v0', '0.5.66'), arm('g1v0', '0.5.100')), { state: 'current', version: '0.5.66' });
+  assert.deepEqual(state(arm('stock'), arm('g1v0', '0.5.66')), { state: 'stock', version: '' });
+  assert.deepEqual(state(arm('g1v0-safe', '0.5.66'), arm('g1v0', '0.5.66')), { state: 'safe-mode', version: '' });
+  // Firmware before 0.5.66, or a record that hasn't arrived: an arm has to be asked.
+  assert.equal(state(arm('g1v0'), arm('g1v0', '0.5.66')), null);
+  assert.equal(state(arm('g1v0'), arm('g1v0')), null);
+});
+
+test('an older arm wins over a newer one', () => {
+  const arm = (g1Version) => ({ g1Firmware: 'g1v0', g1Version });
+  assert.deepEqual(plan.g1StateFromAdvertising({ left: arm('0.5.67'), right: arm('0.5.65') }, '0.5.66'), { state: 'older', version: '0.5.65' });
+});
+
 test('the native flow\'s answer is read, and nonsense is no answer', () => {
   assert.deepEqual(plan.parseG1FlashResult('{"flashed":true,"version":"0.5.64"}'), { flashed: true, version: '0.5.64' });
   assert.deepEqual(plan.parseG1FlashResult('nonsense'), {});

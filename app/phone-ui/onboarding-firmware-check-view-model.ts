@@ -22,7 +22,15 @@ import { G1Flasher } from "../native/g1-flasher";
 import { saveG1Pair } from "../g1/addresses";
 import { G1ArmScanner } from "../g1/arm-scanner";
 import { G1V0_IMAGE } from "../g1/firmware/g1v0-image";
-import { G1_CASE_INSTRUCTIONS, G1_INSTALL_NOTICE, g1FirmwareState, type G1FlashResult, type G1Side } from "../g1/flash-plan";
+import {
+  G1_CASE_DELAY_HINT,
+  G1_CASE_INSTRUCTIONS,
+  G1_INSTALL_NOTICE,
+  g1FirmwareState,
+  g1StateFromAdvertising,
+  type G1FlashResult,
+  type G1Side,
+} from "../g1/flash-plan";
 import { loadPairedGlassesIdentity } from "../g2/device-addresses";
 import { glassesTypeSetting } from "../ui/dashboard-settings";
 import { setOnboardingCompleted, setPreviewOnlyMode } from "./onboarding-state";
@@ -213,8 +221,8 @@ export class OnboardingFirmwareCheckViewModel extends Observable {
   }
 
   /**
-   * What each arm's name says first, as that needs no connection: Even's firmware can't be asked in the same way, and an
-   * arm that is about to be replaced shouldn't have to pair. Only arms on g1v0 are asked which version they run.
+   * What the arms advertise first, as that needs no connection or pairing. Only firmware from before it advertised its
+   * version (0.5.66) has to be asked.
    */
   private async checkG1(generation: number): Promise<void> {
     this.status = "Listening for your glasses...";
@@ -229,13 +237,12 @@ export class OnboardingFirmwareCheckViewModel extends Observable {
       return;
     }
     saveG1Pair(pair);
-    const named = [pair.left!.g1Firmware, pair.right!.g1Firmware];
-    if (named.includes("stock")) {
-      this.showG1Install({ firmware: "stock" });
-      return;
-    }
-    if (named.includes("g1v0-safe")) {
-      this.showG1Install({ safeMode: true });
+    const advertised = g1StateFromAdvertising(pair, G1V0_IMAGE.version);
+    if (advertised) {
+      if (advertised.state === "current") this.applyClassification("custom", advertised.version, { kind: "none" });
+      else if (advertised.state === "stock") this.showG1Install({ firmware: "stock" });
+      else if (advertised.state === "safe-mode") this.showG1Install({ safeMode: true });
+      else this.showG1Install({ version: advertised.version });
       return;
     }
     const arms: G1FlashResult[] = [];
@@ -245,7 +252,7 @@ export class OnboardingFirmwareCheckViewModel extends Observable {
       flasher.onState((state) => {
         if (generation !== this.generation) return;
         if (state === "pairing") {
-          this.status = `Pairing with the ${side} arm. If your phone asks, accept it. A G1 pairs only in its case, with the lid open.`;
+          this.status = `Pairing with the ${side} arm. If your phone asks, accept it. A G1 pairs only in its case, with the lid open. ${G1_CASE_DELAY_HINT}`;
         } else {
           this.status = `Checking the ${side} arm...`;
         }

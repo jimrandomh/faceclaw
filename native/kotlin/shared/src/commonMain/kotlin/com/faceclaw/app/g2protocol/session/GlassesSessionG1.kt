@@ -57,6 +57,13 @@ internal class G1SessionState {
     /** The right arm's relay is there and this host listens to it. */
     var ancsRelay = false
 
+    /** When an arm dropped while the session carried on with the other; 0: its link is up. */
+    val armDownSinceMs = LongArray(2)
+    /** When to ask for a lost arm's link again. */
+    val armRetryAtMs = LongArray(2)
+    /** How long the session carries on with one arm before it starts over. */
+    var armRecoveryMs = G1Timings.ARM_RECOVERY_MS
+
     fun nextTag(): Int {
         tag = tag % 255 + 1
         return tag
@@ -75,6 +82,8 @@ internal class G1SessionState {
         lastMicRenewAtMs = 0
         mic.reset()
         ancsRelay = false
+        armDownSinceMs.fill(0)
+        armRetryAtMs.fill(0)
     }
 }
 
@@ -95,7 +104,17 @@ internal object G1Timings {
     const val IDLE_WAKE_MS = 500L
     const val LENS_LEFT = 1
     const val LENS_RIGHT = 2
+    const val ARM_RECOVERY_MS = 15_000L
+    const val ARM_RETRY_MS = 1_000L
+    /** With the other arm's traffic waiting behind it. */
+    const val ARM_RECOVERY_WRITE_MS = 5_000
+
+    /** An arm advertises fast for a minute after a disconnection, so most links are back at once. */
+    val RECONNECT_BACKOFF_MS = intArrayOf(500, 1_000, 2_000, 4_000, 8_000)
 }
+
+/** An arm bonds only once it knows it's in the case, and a full case only says so about every 5 minutes. */
+private const val G1_CASE_DELAY_HINT = "A fully charged arm can take up to 5 minutes to notice it's in the case."
 
 /** What the Install prompt says an arm runs when it isn't g1v0. */
 private const val G1_OTHER_FIRMWARE = "Even's firmware"
@@ -120,6 +139,8 @@ internal fun g1SupportsMessage(message: OutboundMessage): Boolean {
 
 private fun GlassesSessionCore.g1ArmAddress(arm: Int): String = if (arm == 0) leftAddress else rightAddress
 
+private fun g1Side(arm: Int): String = if (arm == 0) "left" else "right"
+
 private fun g1Lens(arm: Int): Int = if (arm == 0) G1Timings.LENS_LEFT else G1Timings.LENS_RIGHT
 
 // ---------------------------------------------------------------------------------------------
@@ -141,25 +162,32 @@ private fun GlassesSessionCore.g1WriteControl(address: String, op: Int, tag: Int
  * A control request and its reply; worker thread, outside the monitor. Writes on a link the arm doesn't yet obey
  * (out of the case, before encryption) are ignored and control requests can be lost, so it asks again.
  */
-private fun GlassesSessionCore.g1Control(arm: Int, op: Int, body: ByteArray = ByteArray(0)): G1Protocol.Reply {
+private fun GlassesSessionCore.g1Control(arm: Int, op: Int, body: ByteArray = ByteArray(0), tries: Int = G1Timings.CONTROL_TRIES): G1Protocol.Reply {
     val address = g1ArmAddress(arm)
-    repeat(G1Timings.CONTROL_TRIES) {
+    repeat(tries) {
         val tag = monitor.withLock { g1.nextTag() }
         val key = arm * 256 + tag
-        if (!g1WriteControl(address, op, tag, body)) throw IllegalStateException("control $op write failed")
+        val written = try {
+            g1WriteControl(address, op, tag, body)
+        } catch (e: IllegalStateException) {
+            false
+        }
+        if (!written) throw G1ConnectException(g1Side(arm) + " arm dropped", "The " + g1Side(arm) + " arm dropped the connection.")
         val deadline = now() + G1Timings.CONTROL_REPLY_MS
         monitor.withLock {
             while (true) {
                 g1.replies.remove(key)?.let { return it }
                 if (!running || userDisconnectRequested) throw IllegalStateException("stopped while waiting for control $op")
-                if (!(if (arm == 0) leftConnected else rightConnected)) throw IllegalStateException("link lost waiting for control $op")
+                if (!(if (arm == 0) leftConnected else rightConnected)) {
+                    throw G1ConnectException(g1Side(arm) + " arm dropped", "The " + g1Side(arm) + " arm dropped the connection.")
+                }
                 val remaining = deadline - now()
                 if (remaining <= 0) break
                 monitor.awaitMs(minOf(remaining, 100L))
             }
         }
     }
-    throw IllegalStateException("no reply to control $op from the " + (if (arm == 0) "left" else "right") + " arm")
+    throw G1ConnectException(g1Side(arm) + " arm silent", "The " + g1Side(arm) + " arm isn't answering.")
 }
 
 private fun GlassesSessionCore.g1RequestProps(arm: Int, ids: IntArray) {
@@ -176,19 +204,25 @@ private fun GlassesSessionCore.g1RequestProps(arm: Int, ids: IntArray) {
  * microphone's lease and writes the properties that were asked for. Worker thread, outside the monitor.
  */
 internal fun GlassesSessionCore.g1Maintain() {
+    g1RecoverArms()
     var status = false
     var mic: Boolean? = null
     var light = false
     var imu = false
     var sets: List<Pair<Int, ByteArray>> = emptyList()
+    val up = BooleanArray(2)
     monitor.withLock {
         if (!sessionReady) return
         val now = now()
+        for (arm in 0..1) up[arm] = g1.armDownSinceMs[arm] == 0L
         if (now - g1.lastPropsAtMs >= G1Timings.PROPS_MS) {
             status = true
             g1.lastPropsAtMs = now
         }
-        if (audioCaptureActive) {
+        // What only the right arm has waits for it to come back, which starts all of it again.
+        if (!up[1]) {
+            // Nothing to do here.
+        } else if (audioCaptureActive) {
             if (now - g1.lastMicRenewAtMs >= G1Timings.MIC_RENEW_MS) {
                 mic = true
                 g1.micOn = true
@@ -201,22 +235,21 @@ internal fun GlassesSessionCore.g1Maintain() {
         // The sensor only reads while the panel is on; a dark panel keeps the last filtered value.
         val interval = if (brightnessDemoPolling) G1Timings.LIGHT_DEMO_MS
             else if (brightnessPolicy.automatic) G1Timings.LIGHT_AUTO_MS else G1Timings.LIGHT_MANUAL_MS
-        if (brightnessSentVisible == true && !chargingMode && !shutdownRequested && now - g1.lastLightAtMs >= interval) {
+        if (up[1] && brightnessSentVisible == true && !chargingMode && !shutdownRequested && now - g1.lastLightAtMs >= interval) {
             light = true
             g1.lastLightAtMs = now
         }
-        if (g1.imuPeriodMs > 0 && now - g1.lastImuAtMs >= g1.imuPeriodMs) {
+        if (up[1] && g1.imuPeriodMs > 0 && now - g1.lastImuAtMs >= g1.imuPeriodMs) {
             imu = true
             g1.lastImuAtMs = now
         }
         if (g1.pendingPropSets.isNotEmpty()) {
-            sets = g1.pendingPropSets.toList()
+            sets = g1.pendingPropSets.filter { up[it.first] }
             g1.pendingPropSets.clear()
         }
     }
     if (status) {
-        g1RequestProps(0, G1_PROPS)
-        g1RequestProps(1, G1_PROPS)
+        for (arm in 0..1) if (up[arm]) g1RequestProps(arm, G1_PROPS)
     }
     mic?.let { on ->
         val tag = monitor.withLock { g1.nextTag() }
@@ -312,7 +345,10 @@ internal fun GlassesSessionCore.g1EnqueueFrameLocked(
         val left = scene.composed(packed, width, height, false)
         val right = if (scene.hasStereoDepth) scene.composed(packed, width, height, true) else left
         composed = arrayOf(left, right)
-        updates = List(2) { arm -> G1FramePlanner.plan(g1.arms[arm].frame, composed[arm], width, height) }
+        // An arm that's away gets all of this when it's back: its frame stays unknown until then.
+        updates = List(2) { arm ->
+            if (g1.armDownSinceMs[arm] != 0L) emptyList() else G1FramePlanner.plan(g1.arms[arm].frame, composed[arm], width, height)
+        }
     } catch (e: Exception) {
         // As in the G2's path: this frame would fail the same way after a reconnect (#42), so drop it.
         lastEnqueuedFingerprint = fingerprint
@@ -323,10 +359,12 @@ internal fun GlassesSessionCore.g1EnqueueFrameLocked(
     frameTimings.spanEnd(frameId, "compose-lenses")
     val force = g1.presentPending
     val queues = List(2) { arm ->
-        ArrayDeque(updates[arm]).also { if (it.isNotEmpty() || force) it.addLast(byteArrayOf(CFW_MSG_PRESENT.toByte())) }
+        ArrayDeque(updates[arm]).also {
+            if (g1.armDownSinceMs[arm] == 0L && (it.isNotEmpty() || force)) it.addLast(byteArrayOf(CFW_MSG_PRESENT.toByte()))
+        }
     }
     g1.presentPending = false
-    for (arm in 0..1) g1.arms[arm].frame = composed[arm]
+    for (arm in 0..1) if (g1.armDownSinceMs[arm] == 0L) g1.arms[arm].frame = composed[arm]
     lastEnqueuedFingerprint = fingerprint
     val messageCount = queues.sumOf { it.size }
     if (messageCount == 0) {
@@ -361,6 +399,7 @@ internal fun GlassesSessionCore.g1EnqueueFrameLocked(
 /** Message 30 for both arms, its visibility ordered with the frames around it. */
 internal fun GlassesSessionCore.g1EnqueueBrightnessLocked(payload: ByteArray, label: String, visibleChanged: Boolean, onTimeout: MessageCallback) {
     for (arm in 0..1) {
+        if (g1.armDownSinceMs[arm] != 0L) continue
         val message = messageBuilder.customMessage("brightness-output", payload, label, -1, arm == 0)
         message.cfwRequiredLenses = g1Lens(arm)
         message.onTimeout = onTimeout
@@ -429,6 +468,42 @@ internal fun GlassesSessionCore.g1HideBeforeDisconnect() {
 /** The arm has no g1v0 service: it runs Even's firmware. */
 private class G1OtherFirmwareException : Exception("not g1v0 firmware")
 
+/**
+ * A connection that failed in a way the wearer can be told: [reason] for the log and counters, [display] for the screen.
+ * [repairing]: a stale pairing was just removed, and the next attempt makes a new one.
+ */
+private class G1ConnectException(reason: String, val display: String, val repairing: Boolean = false) : Exception(reason)
+
+/**
+ * Subscribes to the arm's events, which is also where its firmware shows. An arm keeps its address across an install, and the
+ * OS may remember the services it had before: read them again before believing the table either way.
+ */
+private fun GlassesSessionCore.g1SubscribeEvents(arm: Int) {
+    val address = g1ArmAddress(arm)
+    val timeoutMs = ConnectionOptions.SERVICES_TIMEOUT_MS
+    if (!link.hasCharacteristic(address, G1Ble.EVT_CHAR_UUID)) {
+        logLine("G1 " + g1Side(arm) + " arm: no event characteristic, reading its services again")
+        link.refreshServices(address, timeoutMs)
+    }
+    if (!link.hasCharacteristic(address, G1Ble.EVT_CHAR_UUID)) {
+        if (!link.isConnected(address)) throw G1ConnectException(g1Side(arm) + " arm dropped", "The " + g1Side(arm) + " arm dropped the connection.")
+        throw G1OtherFirmwareException()
+    }
+    fun subscribe(): Boolean = try {
+        link.enableNotifications(address, G1Ble.EVT_CHAR_UUID, true, ConnectionOptions.DESCRIPTOR_TIMEOUT_MS)
+    } catch (e: IllegalStateException) {
+        false
+    }
+    if (subscribe()) return
+    if (link.isConnected(address)) {
+        // A table that lists it and an arm that refuses: the table may be old in the other direction.
+        link.refreshServices(address, timeoutMs)
+        if (!link.hasCharacteristic(address, G1Ble.EVT_CHAR_UUID)) throw G1OtherFirmwareException()
+        if (subscribe()) return
+    }
+    throw G1ConnectException(g1Side(arm) + " arm dropped", "The " + g1Side(arm) + " arm dropped the connection.")
+}
+
 private fun GlassesSessionCore.g1ConnectArm(arm: Int, deadlineMs: Long) {
     val address = g1ArmAddress(arm)
     val timeoutMs = maxOf(deadlineMs - now(), ConnectionOptions.CONNECT_TIMEOUT_MS.toLong())
@@ -438,12 +513,9 @@ private fun GlassesSessionCore.g1ConnectArm(arm: Int, deadlineMs: Long) {
     link.requestHighPriority(address)
     link.requestMtu(address, G1Ble.REQUESTED_MTU, ConnectionOptions.CONNECT_TIMEOUT_MS)
     if (!link.discoverServices(address, ConnectionOptions.SERVICES_TIMEOUT_MS)) {
-        throw IllegalStateException("discoverServices failed: $address")
+        throw G1ConnectException(g1Side(arm) + " arm dropped", "The " + g1Side(arm) + " arm dropped the connection.")
     }
-    if (!link.enableNotifications(address, G1Ble.EVT_CHAR_UUID, true, ConnectionOptions.DESCRIPTOR_TIMEOUT_MS)) {
-        if (!link.isConnected(address)) throw IllegalStateException("link lost: $address")
-        throw G1OtherFirmwareException()
-    }
+    g1SubscribeEvents(arm)
     link.requestLe2mPhy(address)
     monitor.withLock {
         if (arm == 0) leftConnected = true else rightConnected = true
@@ -455,10 +527,10 @@ private fun GlassesSessionCore.g1ConnectArm(arm: Int, deadlineMs: Long) {
  * through whatever the OS does (Android's dialog, iOS's); out of the case the arm refuses a new bond and the write fails.
  * Either way this is where the link is known to be encrypted, so the arm obeys everything that follows.
  */
-private fun GlassesSessionCore.g1Pair(arm: Int) {
+private fun GlassesSessionCore.g1Pair(arm: Int, writeTimeoutMs: Int = G1Timings.PAIRING_MS) {
     val address = g1ArmAddress(arm)
     if (!link.isBonded(address)) {
-        logLine("G1 " + (if (arm == 0) "left" else "right") + " arm: asking the OS to pair")
+        logLine("G1 " + g1Side(arm) + " arm: asking the OS to pair")
         setStateDisplay("connecting", "Pairing with the glasses...")
         link.requestBond(address)
         val deadline = now() + G1Timings.PAIRING_MS
@@ -467,8 +539,167 @@ private fun GlassesSessionCore.g1Pair(arm: Int) {
             if (!monitor.withLock { running && !userDisconnectRequested }) throw IllegalStateException("stopped while pairing")
         }
     }
-    if (!link.writeFrames(address, G1Ble.PAIR_CHAR_UUID, listOf(byteArrayOf(1)), GattWriteMode.WITH_RESPONSE, G1Timings.PAIRING_MS)) {
-        throw IllegalStateException("no encrypted link to the " + (if (arm == 0) "left" else "right") + " arm")
+    val encrypted = try {
+        link.writeFrames(address, G1Ble.PAIR_CHAR_UUID, listOf(byteArrayOf(1)), GattWriteMode.WITH_RESPONSE, writeTimeoutMs)
+    } catch (e: IllegalStateException) {
+        false
+    }
+    if (encrypted) return
+    if (!link.isConnected(address)) {
+        throw G1ConnectException(g1Side(arm) + " arm dropped", "The " + g1Side(arm) + " arm dropped the connection.")
+    }
+    // The link is up and the arm won't encrypt it. If the OS says this phone is bonded, the arm has lost its half: it has
+    // since paired on Even's firmware or with other hosts. Only an arm in the case can pair again, so that's the only time a
+    // bond is safe to give up. An unencrypted link gets an answer from nothing else, and this is the only way to ask.
+    if (link.isBonded(address) && g1InCaseWithoutEncryption(arm) && link.removeBond(address)) {
+        logLine("G1 " + g1Side(arm) + " arm: it lost this phone's pairing; removed it, pairing again")
+        throw G1ConnectException(g1Side(arm) + " arm pairing removed", "Pairing with the glasses again.", repairing = true)
+    }
+    throw G1ConnectException(g1Side(arm) + " arm stale pairing", "The glasses don't recognize this phone's pairing. Put them in their "
+        + "charging case with the lid open to pair again; if that doesn't help, remove them from this phone's Bluetooth settings. "
+        + G1_CASE_DELAY_HINT)
+}
+
+private fun GlassesSessionCore.g1InCaseWithoutEncryption(arm: Int): Boolean = try {
+    val hello = G1Protocol.parseHello(g1Control(arm, G1Protocol.OP_HELLO, tries = 1).body)
+    hello != null && hello.inCase && !hello.encrypted
+} catch (e: G1ConnectException) {
+    false
+}
+
+/** What an arm needs to hear each time its link comes up. */
+private fun GlassesSessionCore.g1StartArm(arm: Int) {
+    val events = g1Control(arm, G1Protocol.OP_EVENTS, G1Protocol.eventsRequest(G1Protocol.EVENTS_MASK))
+    if (events.status != 0) throw G1ConnectException(g1Side(arm) + " arm refused events", "The " + g1Side(arm) + " arm isn't answering.")
+    // The arm counts a boot healthy only after a host has said so (VM.md §6.4, safe mode).
+    g1Control(arm, G1Protocol.OP_HEALTH_OK)
+    // A limit the last session left, when the other eye's panel guard had capped it.
+    g1Control(arm, G1Protocol.OP_PROP_SET, G1Protocol.propSet(G1Protocol.PROP_BRIGHTNESS_MAX, G1Protocol.BRIGHTNESS_LEVEL_MAX))
+}
+
+// ---------------------------------------------------------------------------------------------
+// One arm lost
+
+/**
+ * The arms are independent links, and in crowded 2.4 GHz one often drops alone. Carry on with the other, and bring this one
+ * back by itself, instead of dropping both and showing the wearer a reconnect for a blip. Whatever was on its way to this
+ * arm is gone, and so is what the phone knew about its frame. False: the session can't go on without it. Under the monitor,
+ * on the BLE callback thread.
+ */
+internal fun GlassesSessionCore.g1CarryOnWithoutArmLocked(address: String): Boolean {
+    val arm = armIndex(address)
+    if (arm < 0 || !running || !sessionReady || userDisconnectRequested) return false
+    val otherUp = g1.armDownSinceMs[1 - arm] == 0L && (if (arm == 0) rightConnected else leftConnected)
+    if (!otherUp) return false
+    // The relay's client has to be told to start again, and only a new session tells it.
+    if (arm == 1 && g1.ancsRelay) return false
+    if (benchmarkActive) finishBenchmarkLocked(true, "an arm dropped")
+    g1.armDownSinceMs[arm] = now()
+    g1.armRetryAtMs[arm] = 0
+    g1DropArmMessagesLocked(arm)
+    logLine("G1 " + g1Side(arm) + " arm dropped: carrying on with the other while it comes back")
+    ConnectionCounters.increment("g1.arm-drop.carried-on")
+    return true
+}
+
+private fun GlassesSessionCore.g1DropArmMessagesLocked(arm: Int) {
+    val left = arm == 0
+    val reason = "the " + g1Side(arm) + " arm dropped"
+    val pending = pendingMessages.iterator()
+    while (pending.hasNext()) {
+        val message = pending.next()
+        if (message.sid != CfwTransport.SID || message.isLeftArmMessage != left) continue
+        pending.remove()
+        discardPrewriteIfMatchesLocked(message)
+        discardImageUpdateStatsLocked(message.imageUpdateId, reason)
+        magicPool.release(message.sid, message.magic, message.label, reason)
+    }
+    val inFlight = inFlightMessages.iterator()
+    while (inFlight.hasNext()) {
+        val message = inFlight.next()
+        if (message.sid != CfwTransport.SID || message.isLeftArmMessage != left) continue
+        inFlight.remove()
+        discardImageUpdateStatsLocked(message.imageUpdateId, reason)
+        magicPool.release(message.sid, message.magic, message.label, reason)
+    }
+    cfwTransports[arm].reset()
+    g1.arms[arm].frame = null
+    g1.presentPending = true
+    // What's displayed is no longer what the drive loop thinks; it gets another look.
+    lastEnqueuedFingerprint = ""
+    displayedFingerprint = ""
+}
+
+/** A message for an arm that's away would only fail the write or wait for an ACK that can't come. */
+internal fun GlassesSessionCore.g1ArmIsAway(message: OutboundMessage): Boolean =
+    monitor.withLock { g1.armDownSinceMs[if (message.isLeftArmMessage) 0 else 1] != 0L }
+
+/** Worker thread, outside the monitor. Blocks the other arm's traffic only for the setup, not while waiting for a link. */
+private fun GlassesSessionCore.g1RecoverArms() {
+    for (arm in 0..1) {
+        val address = g1ArmAddress(arm)
+        var downSince = 0L
+        var retryAt = 0L
+        var limit = 0L
+        monitor.withLock {
+            downSince = if (sessionReady) g1.armDownSinceMs[arm] else 0L
+            retryAt = g1.armRetryAtMs[arm]
+            limit = g1.armRecoveryMs
+        }
+        if (downSince == 0L) continue
+        val now = now()
+        if (now - downSince >= limit) {
+            handleTransportFailure(g1Side(arm) + " arm lost", "Can't reach the " + g1Side(arm) + " arm of the glasses.")
+            return
+        }
+        if (!link.isConnected(address)) {
+            if (now >= retryAt) {
+                monitor.withLock { g1.armRetryAtMs[arm] = now + G1Timings.ARM_RETRY_MS }
+                link.beginConnect(address, false)
+            }
+            continue
+        }
+        try {
+            // A missing bond isn't a blip: that goes to the full connect, which knows what to say and can wait for the OS.
+            if (!link.isBonded(address)) throw G1ConnectException(g1Side(arm) + " arm not bonded", "The glasses aren't paired.")
+            g1ConnectArm(arm, now + ConnectionOptions.CONNECT_TIMEOUT_MS)
+            g1Pair(arm, G1Timings.ARM_RECOVERY_WRITE_MS)
+            val hello = G1Protocol.parseHello(g1Control(arm, G1Protocol.OP_HELLO).body)
+                ?: throw G1ConnectException(g1Side(arm) + " arm bad hello", "The " + g1Side(arm) + " arm isn't answering.")
+            g1StartArm(arm)
+            monitor.withLock {
+                g1.arms[arm].hello = hello
+                logLine("G1 " + g1Side(arm) + " arm back after " + (now() - downSince) + " ms")
+                ConnectionCounters.increment("g1.arm-recovered")
+                g1.armDownSinceMs[arm] = 0
+                g1.armRetryAtMs[arm] = 0
+                cfwTransports[arm].reset()
+                g1.presentPending = true
+                // It's had no frames: all of it again, the brightness too. The drive loop sends the desired frame.
+                brightnessSentLevel = -1
+                brightnessSentVisible = null
+                displayedFingerprint = ""
+                lastEnqueuedFingerprint = ""
+                imageRetryAfterMs = 0
+                g1.lastPropsAtMs = 0
+                if (arm == 1) {
+                    g1.lastLightAtMs = 0
+                    g1.lastMicRenewAtMs = 0
+                    g1.mic.reset()
+                    g1.lastImuAtMs = 0
+                    if (g1.imuPeriodMs > 0) g1.pendingPropSets.add(1 to G1Protocol.propSet(G1Protocol.PROP_IMU_RATE, G1Protocol.IMU_RATE_STREAM))
+                }
+                monitor.signalAll()
+            }
+            interruptibleSleep.interrupt()
+        } catch (t: Exception) {
+            logLine("G1 " + g1Side(arm) + " arm not back yet: " + (t.message ?: t.toString()))
+            monitor.withLock { g1.armRetryAtMs[arm] = now() + G1Timings.ARM_RETRY_MS }
+            try {
+                link.disconnect(address)
+            } catch (ignored: Exception) {
+            }
+        }
     }
 }
 
@@ -493,7 +724,8 @@ internal fun GlassesSessionCore.g1ConnectLoopOnce() {
         var compatible = true
         for (arm in 0..1) {
             val reply = g1Control(arm, G1Protocol.OP_HELLO)
-            val hello = G1Protocol.parseHello(reply.body) ?: throw IllegalStateException("bad HELLO from arm $arm")
+            val hello = G1Protocol.parseHello(reply.body)
+                ?: throw G1ConnectException(g1Side(arm) + " arm bad hello", "The " + g1Side(arm) + " arm isn't answering.")
             monitor.withLock { g1.arms[arm].hello = hello }
             versions[arm] = "g1v0 " + hello.version + (if (hello.safeMode) " (safe mode)" else "")
             if (hello.leftArm != (arm == 0)) {
@@ -514,14 +746,7 @@ internal fun GlassesSessionCore.g1ConnectLoopOnce() {
             monitor.withLock { incompatibleFirmware = firmware }
             return
         }
-        for (arm in 0..1) {
-            val events = g1Control(arm, G1Protocol.OP_EVENTS, G1Protocol.eventsRequest(G1Protocol.EVENTS_MASK))
-            if (events.status != 0) throw IllegalStateException("EVENTS refused: " + events.status)
-            // The arm counts a boot healthy only after a host has said so (VM.md §6.4, safe mode).
-            g1Control(arm, G1Protocol.OP_HEALTH_OK)
-            // A limit the last session left, when the other eye's panel guard had capped it.
-            g1Control(arm, G1Protocol.OP_PROP_SET, G1Protocol.propSet(G1Protocol.PROP_BRIGHTNESS_MAX, G1Protocol.BRIGHTNESS_LEVEL_MAX))
-        }
+        for (arm in 0..1) g1StartArm(arm)
         g1ListenToAncsRelay()
         monitor.withLock {
             sessionReady = true
@@ -549,15 +774,16 @@ internal fun GlassesSessionCore.g1ConnectLoopOnce() {
         emitFirmwareInfo(firmware)
         monitor.withLock { incompatibleFirmware = firmware }
     } catch (t: Throwable) {
-        logLine("G1 connect failed: " + safeMessage(t))
-        val unpaired = firstUnpairedArm()
+        // The ways this is expected to fail have a reason of their own; the stack is for what isn't expected.
+        logLine("G1 connect failed: " + (if (t is G1ConnectException) t.message else safeMessage(t)))
+        val unpaired = if (t is G1ConnectException && t.repairing) null else firstUnpairedArm()
         if (unpaired != null) {
             logError("G1 connect failed and $unpaired is not paired; suspending reconnect")
             ConnectionCounters.increment("g1.unpaired")
             monitor.withLock { haltReconnectLocked("arm not paired: $unpaired") }
             if (!userDisconnectRequested) {
                 setStateDisplay("unpaired", "The glasses are not paired with this phone. Put them in their charging case"
-                    + " with the lid open, then connect: they only pair in the case.")
+                    + " with the lid open, then connect: they only pair in the case. " + G1_CASE_DELAY_HINT)
             }
             interruptibleSleep.interrupt()
         } else if (t is ArmUnreachableException) {
@@ -568,8 +794,10 @@ internal fun GlassesSessionCore.g1ConnectLoopOnce() {
             } else {
                 handleTransportFailure("glasses not found", "Can't find the glasses. They may be off or out of range.")
             }
+        } else if (t is G1ConnectException) {
+            handleTransportFailure(t.message, t.display)
         } else {
-            handleTransportFailure("connect failed")
+            handleTransportFailure("connect failed", "Couldn't connect to the glasses.")
         }
     }
 }
@@ -581,7 +809,8 @@ internal fun GlassesSessionCore.g1ConnectLoopOnce() {
  */
 private fun GlassesSessionCore.g1ListenToAncsRelay() {
     val wanted = rawFrameTap != null && monitor.withLock { g1.arms[1].hello?.ancs == true }
-    val listening = wanted && link.enableNotifications(rightAddress, G1Ble.ANCS_CHAR_UUID, true, ConnectionOptions.DESCRIPTOR_TIMEOUT_MS)
+    val listening = wanted && link.hasCharacteristic(rightAddress, G1Ble.ANCS_CHAR_UUID)
+        && link.enableNotifications(rightAddress, G1Ble.ANCS_CHAR_UUID, true, ConnectionOptions.DESCRIPTOR_TIMEOUT_MS)
     if (wanted && !listening) logWarn("G1: the right arm has a notification relay, but subscribing to it failed")
     monitor.withLock { g1.ancsRelay = listening }
 }

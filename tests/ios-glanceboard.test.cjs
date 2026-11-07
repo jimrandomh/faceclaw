@@ -21,6 +21,8 @@ const planes = load('app/graphics/plane.ts', { './image': images });
 const timings = load('app/native/frame-timings.ts', {});
 const LAUNCHER_GRAY = 75;
 
+let glassesType = 'g2';
+
 function fixture() {
   const relay = { available: true, starts: 0, client: null, message: undefined };
   const observers = new Map(), phoneState = { protectedDataAvailable: true };
@@ -105,7 +107,7 @@ function fixture() {
   const noop = () => () => {};
   class FaceclawCommunicatorBridge extends Display {
     phase = 'disconnected'; listeners = {};
-    constructor() { super(); bridge = this; }
+    constructor(addresses) { super(); bridge = this; this.addresses = addresses; }
     on(kind, fn) { this.listeners[kind] = fn; return () => { if (this.listeners[kind] === fn) delete this.listeners[kind]; }; }
     onStateChange(fn) { return this.on('state', fn); } onRingEvent(fn) { return this.on('ring', fn); }
     onWearState(fn) { return this.on('wear', fn); } onBatteryState(fn) { return this.on('battery', fn); } onCaseState(fn) { return this.on('case', fn); } onFirmwareInfo(fn) { return this.on('firmware', fn); }
@@ -176,7 +178,7 @@ function fixture() {
     '../apps/all-apps': { ALL_APPS: [{ appId: 'glanceboard', glanceboard: provider }] },
     '../apps/onboarding/onboarding-progress': { claimGlassesOnboardingAutoLaunch: () => false },
     '../ui/shell/worker-window': {}, '../ui/shell/in-process-window': {},
-    '../ui/dashboard-settings': { brightnessSetting: { get: () => 'auto' }, brightnessSettingToLevel: () => null, getBrightnessPreferences: () => ({ auto: true, level: 50, minimum: 2, maximum: 100, curve: '0:0,1000:100', fadeMs: 280 }), lockScreenEnabledSetting: { get: () => settings.lock }, ringConnectionModeSetting: { get: () => 'glasses' }, onAnySettingChanged: fn => { settingsChanged = fn; return () => {}; }, previewColorSetting: { get: () => 'white' } },
+    '../ui/dashboard-settings': { glassesTypeSetting: { get: () => glassesType }, brightnessSetting: { get: () => 'auto' }, brightnessSettingToLevel: () => null, getBrightnessPreferences: () => ({ auto: true, level: 50, minimum: 2, maximum: 100, curve: '0:0,1000:100', fadeMs: 280 }), lockScreenEnabledSetting: { get: () => settings.lock }, ringConnectionModeSetting: { get: () => 'glasses' }, onAnySettingChanged: fn => { settingsChanged = fn; return () => {}; }, previewColorSetting: { get: () => 'white' } },
     '../native/phone-battery': { readPhoneBatteryState: () => ({ battery: 80, charging: false }) },
     '../apps/ios-availability': { iosAppUnavailableReason: () => null },
     '../graphics/glyph-wire': { prepareFrameDraws: () => null },
@@ -222,6 +224,17 @@ function fixture() {
     get shellOptions() { return shellOptions; }, registered, inProcessApps,
     get bridge() { return bridge; }, connect, wear: wearing => bridge.emitWear(wearing), settingsChanged: () => settingsChanged(), sent, previews, received, boardStats, hardware, phone, advance, render };
 }
+test('the session is told which glasses it drives, as a G2 session gets nowhere on a G1', async () => {
+  for (const type of ['g1', 'g2']) {
+    glassesType = type;
+    const f = fixture();
+    await f.connect();
+    assert.equal(f.bridge.addresses.glassesType, type);
+    assert.ok('right' in f.bridge.addresses && 'left' in f.bridge.addresses, 'the arms still come with it');
+  }
+  glassesType = 'g2';
+});
+
 test('a link that comes back asks for the notification relay again; a G1 without one is told to update', async () => {
   const f = fixture();
   await f.connect();

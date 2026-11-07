@@ -168,6 +168,15 @@ object G1Smp {
     fun stockHeartbeat(seq: Int): ByteArray =
         byteArrayOf(0x25, 0x06, 0x00, seq.toByte(), 0x04, seq.toByte())
 
+    /** Even's firmware's battery query; its reply is `2C 66`, then the percentage. The bytes its real firmware answered in emulation. */
+    val STOCK_BATTERY_QUERY = byteArrayOf(0x2c, 0x04, 0x00, 0x00)
+
+    /** The percentage in a reply to [STOCK_BATTERY_QUERY]; null for anything else, or a value that can't be one. */
+    fun parseStockBattery(data: ByteArray): Int? {
+        if (data.size < 3 || data[0].toInt() != 0x2c || (data[1].toInt() and 0xff) != 0x66) return null
+        return (data[2].toInt() and 0xff).takeIf { it in 1..100 }
+    }
+
     fun frame(op: Int, group: Int, seq: Int, cmd: Int, payload: Map<String, Any?>): ByteArray {
         val body = G1Cbor.encode(payload)
         val out = ByteArray(HEADER + body.size)

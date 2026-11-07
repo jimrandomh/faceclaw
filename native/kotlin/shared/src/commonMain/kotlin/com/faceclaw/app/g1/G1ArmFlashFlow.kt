@@ -86,6 +86,12 @@ class G1ArmFlashFlow(
     private var controlLatch: Latch? = null
     private var nextControlTag = 0
 
+    private var stockBattery: Int? = null
+    private var stockBatteryLatch: Latch? = null
+
+    /** The OS's half of a stale pairing goes once per run: a second failure isn't that. */
+    private var bondRemoved = false
+
     private var linkLost = false
     private var heartbeats = 0
     private var nextHeartbeatAtMs = 0L
@@ -150,11 +156,11 @@ class G1ArmFlashFlow(
                 listener.onComplete(true, """{"flashed":false,"version":"$version"}""")
                 return
             }
-            val battery = batteryPercent()
-            if (battery != null && battery < MIN_BATTERY_PERCENT) {
-                throw IllegalStateException("The $side arm's battery is at $battery%, too low to install safely. " +
-                    "Charge both arms to at least $MIN_BATTERY_PERCENT% in the case, then try again.")
-            }
+            requireBattery(batteryPercent())
+        } else {
+            val battery = stockBatteryPercent()
+            log(if (battery == null) "battery unknown; going on, as the arm is in the case" else "battery $battery%")
+            requireBattery(battery)
         }
 
         val slots = retrying { images() }
@@ -187,6 +193,13 @@ class G1ArmFlashFlow(
         }
         listener.onState("rebooting", side)
         listener.onComplete(true, """{"flashed":true,"version":"$version"}""")
+    }
+
+    private fun requireBattery(percent: Int?) {
+        if (percent != null && percent < MIN_BATTERY_PERCENT) {
+            throw IllegalStateException("The $side arm's battery is at $percent%, too low to install safely. " +
+                "Charge both arms to at least $MIN_BATTERY_PERCENT% in the case, then try again.")
+        }
     }
 
     private fun holdsImage(slots: List<G1Smp.Slot>, hash: ByteArray): Boolean =
@@ -263,11 +276,9 @@ class G1ArmFlashFlow(
             log("connect attempt $attempt failed: $failure")
             quietly { link.disconnect(address) }
             if (now() >= deadline) {
-                throw IllegalStateException("Couldn't reach the $side arm: $failure." + if (mode == Mode.STOCK) {
-                    " If this phone was paired with these glasses before, remove them from its Bluetooth settings and try again."
-                } else {
-                    ""
-                })
+                throw IllegalStateException("Couldn't reach the $side arm: $failure. Keep the glasses in the case with the lid open; a fully " +
+                    "charged arm can take up to 5 minutes to notice it's in the case. If this phone was paired with these glasses before and " +
+                    "this keeps happening, remove them from its Bluetooth settings and try again.")
             }
             sleeper.sleep(timings.retryDelayMs.toLong())
         }
@@ -284,16 +295,20 @@ class G1ArmFlashFlow(
         if (mode == Mode.STOCK) {
             // Even's firmware serves its own service only on an encrypted link, and the heartbeat goes there.
             settleBond()
-            if (!link.enableNotifications(address, G1Smp.NUS_TX_UUID, timings.descriptorTimeoutMs)) {
+            if (!haveCharacteristic(G1Smp.NUS_TX_UUID)) throw IllegalStateException("no link to Even's service")
+            if (!subscribe(G1Smp.NUS_TX_UUID)) {
+                // Bonded and refused: Even's firmware keeps one bond and has lost this one. This run started in the case.
+                removeStaleBond()
                 throw IllegalStateException("no link to Even's service")
             }
             heartbeats = 0
             nextHeartbeatAtMs = 0
         } else {
-            if (!link.enableNotifications(address, G1Ble.EVT_CHAR_UUID, timings.descriptorTimeoutMs)) {
+            if (!haveCharacteristic(G1Ble.EVT_CHAR_UUID)) {
                 if (!link.isConnected(address)) throw LinkLostException("the link went down")
                 throw NotG1v0Exception()
             }
+            if (!subscribe(G1Ble.EVT_CHAR_UUID)) throw IllegalStateException("no events from the arm")
             // Out of the case the arm obeys only an encrypted link.
             settleBond()
             val paired = try {
@@ -301,11 +316,69 @@ class G1ArmFlashFlow(
             } catch (e: IllegalStateException) {
                 false
             }
-            if (!paired) throw IllegalStateException("no encrypted link: an arm pairs only in its case")
+            if (!paired) {
+                // The OS says bonded and the arm disagrees. Giving that up is safe only where a new bond can be made.
+                if (link.isConnected(address) && inCaseWithoutEncryption()) removeStaleBond()
+                throw IllegalStateException("no encrypted link: an arm pairs only in its case")
+            }
         }
-        if (mode != Mode.PROBE && !link.enableNotifications(address, G1Smp.SMP_CHAR_UUID, timings.descriptorTimeoutMs)) {
+        if (mode != Mode.PROBE && (!haveCharacteristic(G1Smp.SMP_CHAR_UUID) || !subscribe(G1Smp.SMP_CHAR_UUID))) {
             throw IllegalStateException("no update service")
         }
+    }
+
+    /** An arm keeps its address across an install, and the OS may remember the services it had before: look again before believing that. */
+    private fun haveCharacteristic(uuid: String): Boolean {
+        if (link.hasCharacteristic(address, uuid)) return true
+        log("no $uuid in the service table: reading it again")
+        link.refreshServices(address, timings.servicesTimeoutMs)
+        return link.hasCharacteristic(address, uuid)
+    }
+
+    private fun subscribe(uuid: String): Boolean = try {
+        link.enableNotifications(address, uuid, timings.descriptorTimeoutMs)
+    } catch (e: IllegalStateException) {
+        false
+    }
+
+    private fun removeStaleBond() {
+        if (bondRemoved || link.bondState(address) != BondState.BONDED) return
+        if (link.removeBond(address)) {
+            bondRemoved = true
+            log("the arm no longer has this phone's pairing: removed it, pairing again")
+        }
+    }
+
+    /** An unencrypted link gets an answer only from an arm in the case. */
+    private fun inCaseWithoutEncryption(): Boolean = try {
+        val hello = G1Protocol.parseHello(control(G1Protocol.OP_HELLO, tries = 1).body)
+        hello != null && hello.inCase && !hello.encrypted
+    } catch (e: Exception) {
+        false
+    }
+
+    /** Null when no answer came, which firmware that doesn't have the query also gives. */
+    private fun stockBatteryPercent(): Int? {
+        repeat(timings.controlTries) {
+            val latch = Latch(1, platform)
+            lock.withLock {
+                stockBattery = null
+                stockBatteryLatch = latch
+            }
+            try {
+                link.writeFrames(address, G1Smp.NUS_RX_UUID, listOf(G1Smp.STOCK_BATTERY_QUERY), GattWriteMode.WITHOUT_RESPONSE, timings.writeTimeoutMs)
+            } catch (e: IllegalStateException) {
+                return null
+            }
+            latch.await(timings.controlReplyMs.toLong())
+            throwIfCancelled()
+            val answer = lock.withLock {
+                stockBatteryLatch = null
+                stockBattery
+            }
+            if (answer != null) return answer
+        }
+        return null
     }
 
     /** Asks the OS to pair if it hasn't, and waits for that to end; a platform that doesn't say pairs by itself. */
@@ -377,8 +450,8 @@ class G1ArmFlashFlow(
         }
     }
 
-    private fun control(op: Int, body: ByteArray = ByteArray(0)): G1Protocol.Reply {
-        repeat(timings.controlTries) {
+    private fun control(op: Int, body: ByteArray = ByteArray(0), tries: Int = timings.controlTries): G1Protocol.Reply {
+        repeat(tries) {
             val tag = nextControlTag % 255 + 1
             nextControlTag = tag
             val latch = Latch(1, platform)
@@ -444,6 +517,12 @@ class G1ArmFlashFlow(
                         smpLatch?.countDown()
                     }
                 }
+            }
+        } else if (characteristicUuid.equals(G1Smp.NUS_TX_UUID, ignoreCase = true)) {
+            val percent = G1Smp.parseStockBattery(data) ?: return
+            lock.withLock {
+                stockBattery = percent
+                stockBatteryLatch?.countDown()
             }
         } else if (characteristicUuid.equals(G1Ble.EVT_CHAR_UUID, ignoreCase = true)) {
             val reply = G1Protocol.parseReply(data) ?: return

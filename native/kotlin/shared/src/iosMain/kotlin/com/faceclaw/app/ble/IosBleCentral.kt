@@ -464,6 +464,17 @@ class IosBleCentral(private val platform: ProtocolPlatform = IosProtocolPlatform
     /** CoreBluetooth pairs by itself when an attribute needs it. */
     override fun requestBond(address: String) {}
 
+    /** Only iOS Settings can remove a pairing. */
+    override fun removeBond(address: String): Boolean = false
+
+    override fun hasCharacteristic(address: String, characteristicUuid: String): Boolean {
+        val peer = connectedPeer(address) ?: return false
+        return cond.withLock { peer.characteristics.containsKey(characteristicUuid.lowercase()) }
+    }
+
+    /** CoreBluetooth follows Service Changed itself; discovering again is all there is. */
+    override fun refreshServices(address: String, timeoutMs: Int): Boolean = discoverServices(address, timeoutMs)
+
     override fun prepareBenchmarkLink(address: String, mode: Int) {}
 
     override fun recordDisplayFrameSent() {

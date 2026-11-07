@@ -72,6 +72,15 @@ private class FakeArm(private val image: ByteArray, var stock: Boolean = false) 
     var silentAtOffset = -1
     var onChunk: (() -> Unit)? = null
     var connects = 0
+    /** The OS remembers a table without g1v0's services, as after an install at the same address. */
+    var staleTable = false
+    var refreshes = 0
+    /** Android says bonded and the arm has lost its half. */
+    var staleBond = false
+    var removedBonds = 0
+    var inCase = false
+    /** Even's firmware's answer to its battery query; null: it says nothing. */
+    var stockBatteryReply: ByteArray? = null
 
     val wantHash = G1Smp.imageHash(image)
 
@@ -83,11 +92,29 @@ private class FakeArm(private val image: ByteArray, var stock: Boolean = false) 
     }
     override fun prepareLink(address: String, desiredMtu: Int, timeoutMs: Int) {}
     override fun discoverServices(address: String, timeoutMs: Int): Boolean = connected
+    /** As FaceclawBleManager: a characteristic the table lacks throws, a refused one (no encryption) returns false. */
     override fun enableNotifications(address: String, characteristicUuid: String, timeoutMs: Int): Boolean {
-        if (!connected) return false
-        if (stock && characteristicUuid == G1Ble.EVT_CHAR_UUID) return false
-        if (!stock && characteristicUuid == G1Smp.NUS_TX_UUID) return false
+        if (!connected) throw IllegalStateException("Not connected")
+        if (!hasCharacteristic(address, characteristicUuid)) throw IllegalStateException("Characteristic not found: $characteristicUuid")
+        if (stock && staleBond && characteristicUuid == G1Smp.NUS_TX_UUID) return false
         subscribed.add(characteristicUuid)
+        return true
+    }
+    override fun hasCharacteristic(address: String, characteristicUuid: String): Boolean = when (characteristicUuid) {
+        G1Ble.EVT_CHAR_UUID -> !stock && !staleTable
+        G1Smp.NUS_TX_UUID -> stock
+        else -> true
+    }
+    override fun refreshServices(address: String, timeoutMs: Int): Boolean {
+        refreshes++
+        staleTable = false
+        return connected
+    }
+    override fun removeBond(address: String): Boolean {
+        removedBonds++
+        bond = BondState.NONE
+        staleBond = false
+        connected = false
         return true
     }
     override fun isConnected(address: String): Boolean = connected
@@ -108,8 +135,15 @@ private class FakeArm(private val image: ByteArray, var stock: Boolean = false) 
     override fun writeFrames(address: String, characteristicUuid: String, frames: List<ByteArray>, mode: GattWriteMode, timeoutMs: Int): Boolean {
         if (!connected) throw IllegalStateException("Not connected")
         when (characteristicUuid) {
-            G1Smp.NUS_RX_UUID -> heartbeats.add(frames.single())
-            G1Ble.PAIR_CHAR_UUID -> return bond == BondState.BONDED
+            G1Smp.NUS_RX_UUID -> {
+                val frame = frames.single()
+                if (frame[0].toInt() == 0x2c) {
+                    stockBatteryReply?.let { inbound?.onNotification(ARM, G1Smp.NUS_TX_UUID, it) }
+                } else {
+                    heartbeats.add(frame)
+                }
+            }
+            G1Ble.PAIR_CHAR_UUID -> return bond == BondState.BONDED && !staleBond
             G1Ble.CTRL_CHAR_UUID -> control(frames.single())
             G1Smp.SMP_CHAR_UUID -> {
                 for (frame in frames) assertTrue(frame.size <= 97, "a write longer than the MTU allows")
@@ -126,7 +160,7 @@ private class FakeArm(private val image: ByteArray, var stock: Boolean = false) 
         val body = when (op) {
             G1Protocol.OP_HELLO -> {
                 val parts = runningVersion.split(".").map { it.toInt().toByte() }
-                val flags = (if (safeMode) 1 else 0) or 2 or 64
+                val flags = (if (safeMode) 1 else 0) or 2 or (if (staleBond) 0 else 64) or (if (inCase) 128 else 0)
                 byteArrayOf(5, parts[0], parts[1], parts[2], 1, flags.toByte(), 0)
             }
             G1Protocol.OP_PROPS -> byteArrayOf(battery.toByte(), 0, 0, 0)
@@ -229,6 +263,19 @@ private val FAST = G1FlashTimings(
     connectTimeoutMs = 50, servicesTimeoutMs = 50, descriptorTimeoutMs = 50, writeTimeoutMs = 50, pairingMs = 200, retryDelayMs = 1,
     controlReplyMs = 20, controlTries = 2, uploadReplyMs = 150, smpReplyMs = 150, resetReplyMs = 50, heartbeatMs = 30, pollMs = 5, uploadRetries = 5,
 )
+
+class G1SmpStockTest {
+    @Test
+    fun stocksBatteryReplyIsReadOnlyWhenItIsOne() {
+        // What the real firmware answered in emulation (g1-fw BLE_COMMAND_SET_REPORT), first bytes.
+        assertEquals(100, G1Smp.parseStockBattery(byteArrayOf(0x2c, 0x66, 0x64, 0x64, 0xf9.toByte(), 0x80.toByte())))
+        assertEquals(null, G1Smp.parseStockBattery(byteArrayOf(0x2c, 0x66, 0)))
+        assertEquals(null, G1Smp.parseStockBattery(byteArrayOf(0x2c, 0x66, 101)))
+        assertEquals(null, G1Smp.parseStockBattery(byteArrayOf(0x2c, 0xc9.toByte(), 50)))
+        assertEquals(null, G1Smp.parseStockBattery(byteArrayOf(0x25, 0x66, 50)))
+        assertEquals(null, G1Smp.parseStockBattery(byteArrayOf(0x2c, 0x66)))
+    }
+}
 
 class G1SmpTest {
     private val sha = ByteArray(32) { it.toByte() }
@@ -517,6 +564,75 @@ class G1ArmFlashFlowTest {
         assertEquals(false, listener.success)
         assertEquals(0, arm.bondRequests)
         assertTrue("an arm pairs only in its case" in listener.detail, listener.detail)
+    }
+
+    @Test
+    fun aStaleBondInTheCaseIsRemovedAndMadeAgain() {
+        val arm = FakeArm(image)
+        arm.staleBond = true
+        arm.inCase = true
+        val result = run(arm, G1ArmFlashFlow.Mode.UPDATE)
+        assertEquals(true, result.success, result.detail)
+        assertEquals(1, arm.removedBonds)
+        assertEquals(1, arm.bondRequests)
+        confirmIsLast(arm)
+    }
+
+    @Test
+    fun aBondIsNeverGivenUpOutOfTheCase() {
+        val arm = FakeArm(image)
+        arm.staleBond = true
+        arm.inCase = false
+        val result = run(arm, G1ArmFlashFlow.Mode.UPDATE, window = 1)
+        assertEquals(false, result.success)
+        assertEquals(0, arm.removedBonds, "no new bond can be made out of the case")
+    }
+
+    @Test
+    fun aStaleBondOnStockIsRemovedAndMadeAgain() {
+        val arm = FakeArm(image, stock = true)
+        arm.staleBond = true
+        val result = run(arm, G1ArmFlashFlow.Mode.STOCK)
+        assertEquals(true, result.success, result.detail)
+        assertEquals(1, arm.removedBonds)
+        assertEquals(1, arm.bondRequests)
+    }
+
+    @Test
+    fun anOldServiceTableIsReadAgainBeforeItIsBelieved() {
+        val arm = FakeArm(image)
+        arm.staleTable = true
+        val result = run(arm, G1ArmFlashFlow.Mode.PROBE)
+        assertEquals(true, result.success, result.detail)
+        assertEquals(1, arm.refreshes)
+        assertTrue("\"firmware\":\"g1v0\"" in result.detail, result.detail)
+    }
+
+    @Test
+    fun aLowBatteryOnStockStopsBeforeAnyUpload() {
+        val arm = FakeArm(image, stock = true)
+        arm.stockBatteryReply = byteArrayOf(0x2c, 0x66, 12, 12)
+        val result = run(arm, G1ArmFlashFlow.Mode.STOCK)
+        assertEquals(false, result.success)
+        assertTrue("12%" in result.detail, result.detail)
+        assertFalse("upload" in arm.calls)
+    }
+
+    @Test
+    fun aChargedArmOnStockGoesOn() {
+        val arm = FakeArm(image, stock = true)
+        arm.stockBatteryReply = byteArrayOf(0x2c, 0x66, 100, 100)
+        val result = run(arm, G1ArmFlashFlow.Mode.STOCK)
+        assertEquals(true, result.success, result.detail)
+        assertTrue(result.logs.any { "battery 100%" in it }, result.logs.toString())
+    }
+
+    @Test
+    fun aStockArmThatSaysNothingAboutItsBatteryGoesOn() {
+        val arm = FakeArm(image, stock = true)
+        val result = run(arm, G1ArmFlashFlow.Mode.STOCK)
+        assertEquals(true, result.success, result.detail)
+        assertTrue(result.logs.any { "battery unknown" in it }, result.logs.toString())
     }
 
     @Test

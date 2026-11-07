@@ -139,6 +139,19 @@ private class FakeG1Glasses(platform: ProtocolPlatform) : SessionLink {
     val ancsWrites = ArrayList<Pair<String, ByteArray>>()
     /** Out of the case, or the OS said no: no bond can be made. */
     @Volatile var pairingRefused = false
+    /** Both arms run Even's firmware: no g1v0 service. */
+    @Volatile var stockFirmware = false
+    /** The OS remembers a table without g1v0's services, as after an install at the same address. */
+    @Volatile var staleTable = false
+    @Volatile var refreshes = 0
+    @Volatile var removedBonds = 0
+    /** The OS says bonded and the arm has lost its half: PAIR fails with the link up. */
+    @Volatile var staleBond = false
+    @Volatile var helloInCase = false
+    /** An arm that won't connect, whatever it's asked. */
+    val away = HashSet<String>()
+    /** Links up. Everything stays up unless a test takes it down. */
+    private val up = hashSetOf(LEFT, RIGHT)
     private val out = ArrayList<Pair<String, ByteArray>>()
 
     private fun arm(address: String) = if (address == LEFT) leftArm else rightArm
@@ -169,9 +182,53 @@ private class FakeG1Glasses(platform: ProtocolPlatform) : SessionLink {
         event(address, G1Protocol.EV_INPUT, body)
     }
 
-    override fun connect(address: String, timeoutMs: Int): Boolean = true
+    /** The link drops, as the BLE callback thread reports it. */
+    fun drop(address: String) {
+        lock.withLock { up.remove(address) }
+        core.onConnectionStateChange(address, false)
+    }
 
-    override fun isConnected(address: String): Boolean = true
+    /** The arm comes back in range: the next connection attempt gets it. */
+    fun comeBack(address: String) {
+        lock.withLock { away.remove(address) }
+    }
+
+    override fun connect(address: String, timeoutMs: Int): Boolean = lock.withLock {
+        if (address in away) return@withLock false
+        up.add(address)
+        true
+    }
+
+    override fun beginConnect(address: String, background: Boolean): Boolean {
+        val connected = connect(address, 0)
+        if (connected) core.onConnectionStateChange(address, true)
+        return connected
+    }
+
+    override fun isConnected(address: String): Boolean = lock.withLock { address in up }
+
+    override fun hasCharacteristic(address: String, characteristicUuid: String): Boolean = when (characteristicUuid) {
+        G1Ble.EVT_CHAR_UUID -> !stockFirmware && !staleTable
+        G1Ble.ANCS_CHAR_UUID -> !ancsCharacteristicMissing
+        else -> true
+    }
+
+    override fun refreshServices(address: String, timeoutMs: Int): Boolean {
+        refreshes++
+        staleTable = false
+        return true
+    }
+
+    override fun removeBond(address: String): Boolean {
+        removedBonds++
+        lock.withLock {
+            arm(address).bonded = false
+            up.remove(address)
+        }
+        staleBond = false
+        core.onConnectionStateChange(address, false)
+        return true
+    }
 
     override fun requestHighPriority(address: String) {}
 
@@ -181,12 +238,12 @@ private class FakeG1Glasses(platform: ProtocolPlatform) : SessionLink {
 
     override fun discoverServices(address: String, timeoutMs: Int): Boolean = true
 
+    /** As FaceclawBleManager: a characteristic the table lacks throws, it doesn't return false. */
     override fun enableNotifications(address: String, characteristicUuid: String, enable: Boolean, timeoutMs: Int): Boolean {
-        if (characteristicUuid == G1Ble.ANCS_CHAR_UUID && !ancsCharacteristicMissing) {
-            lock.withLock { ancsSubscribed.add(address) }
-            return true
-        }
-        return characteristicUuid == G1Ble.EVT_CHAR_UUID
+        if (!isConnected(address)) throw IllegalStateException("Not connected: $address")
+        if (!hasCharacteristic(address, characteristicUuid)) throw IllegalStateException("Characteristic not found: $characteristicUuid")
+        if (characteristicUuid == G1Ble.ANCS_CHAR_UUID) lock.withLock { ancsSubscribed.add(address) }
+        return true
     }
 
     override fun requestBond(address: String) {
@@ -194,11 +251,12 @@ private class FakeG1Glasses(platform: ProtocolPlatform) : SessionLink {
     }
 
     override fun writeFrames(address: String, characteristicUuid: String, frames: List<ByteArray>, mode: GattWriteMode, timeoutMs: Int): Boolean {
+        if (!isConnected(address)) throw IllegalStateException("Not connected: $address")
         val a = arm(address)
         when (characteristicUuid) {
             G1Ble.PAIR_CHAR_UUID -> {
                 assertEquals(GattWriteMode.WITH_RESPONSE, mode, "only a write with response can make the OS pair")
-                if (pairingRefused) return false
+                if (pairingRefused || staleBond) return false
                 lock.withLock {
                     a.pairedWrites++
                     a.bonded = true
@@ -233,7 +291,7 @@ private class FakeG1Glasses(platform: ProtocolPlatform) : SessionLink {
                 body[2] = 5
                 body[3] = 63
                 body[4] = (if (a.left) 1 else 0).toByte()
-                body[5] = (2 or 64).toByte()
+                body[5] = (2 or (if (staleBond) 0 else 64) or (if (helloInCase) 128 else 0)).toByte()
                 body[6] = ((if (a.left) 0 else 4) or (if (hasAncsRelay) 8 else 0)).toByte()
                 reply(address, op, tag, 0, body)
             }
@@ -470,6 +528,199 @@ private class G1Session {
 
     fun shownOnBoth(picture: ByteArray): Boolean = glasses.lock.withLock {
         glasses.leftArm.panel.contentEquals(picture) && glasses.rightArm.panel.contentEquals(picture)
+    }
+}
+
+class G1LinkTest {
+    private fun started(s: G1Session, seed: Int = 1) {
+        s.core.monitor.withLock { s.core.g1.armRecoveryMs = 2_000 }
+        assertTrue(s.core.start())
+        assertTrue(awaitTrue(5_000) { s.ready() }, "never ready:\n" + s.tail())
+        s.submit(seed, seed)
+        assertTrue(awaitTrue(5_000) { s.displayedMatchesDesired() }, "frame never displayed:\n" + s.tail())
+    }
+
+    @Test
+    fun evensFirmwareSaysWhyInsteadOfRetrying() {
+        val s = G1Session()
+        try {
+            s.glasses.stockFirmware = true
+            assertTrue(s.core.start())
+            assertTrue(awaitTrue(5_000) { s.listener.firmware.isNotEmpty() }, "no firmware report:\n" + s.tail())
+            assertEquals("Even's firmware|Even's firmware|", s.listener.firmware.single())
+            assertTrue(s.glasses.refreshes >= 1, "the table is read again before it's believed")
+            assertFalse(s.ready())
+        } finally {
+            s.core.disconnect()
+        }
+    }
+
+    @Test
+    fun anOldServiceTableIsReadAgain() {
+        val s = G1Session()
+        try {
+            s.glasses.staleTable = true
+            assertTrue(s.core.start())
+            assertTrue(awaitTrue(5_000) { s.ready() }, "never ready:\n" + s.tail())
+            assertEquals(1, s.glasses.refreshes)
+            assertTrue(s.listener.firmware.single().endsWith("Faceclaw/38"), s.listener.firmware.toString())
+        } finally {
+            s.core.disconnect()
+        }
+    }
+
+    @Test
+    fun aStalePairingInTheCaseIsRemovedAndMadeAgain() {
+        val s = G1Session()
+        try {
+            s.glasses.leftArm.bonded = true
+            s.glasses.rightArm.bonded = true
+            s.glasses.staleBond = true
+            s.glasses.helloInCase = true
+            assertTrue(s.core.start())
+            assertTrue(awaitTrue(8_000) { s.ready() }, "never ready:\n" + s.tail())
+            assertEquals(1, s.glasses.removedBonds)
+            assertFalse("unpaired" in s.listener.phases, "this isn't for the wearer to fix: " + s.listener.phases)
+        } finally {
+            s.core.disconnect()
+        }
+    }
+
+    @Test
+    fun aStalePairingOutOfTheCaseIsKeptAndExplained() {
+        val s = G1Session()
+        try {
+            s.glasses.leftArm.bonded = true
+            s.glasses.rightArm.bonded = true
+            s.glasses.staleBond = true
+            assertTrue(s.core.start())
+            assertTrue(awaitTrue(8_000) { "charging case" in s.listener.lastStatus }, "status: " + s.listener.lastStatus + "\n" + s.tail())
+            assertEquals(0, s.glasses.removedBonds, "no new bond can be made out of the case")
+            assertFalse("Exception" in s.listener.lastStatus, s.listener.lastStatus)
+            assertFalse("unpaired" in s.listener.phases, s.listener.phases.toString())
+        } finally {
+            s.core.disconnect()
+        }
+    }
+
+    @Test
+    fun aFailedConnectSaysWhatHappened() {
+        val s = G1Session()
+        try {
+            s.glasses.leftArm.bonded = true
+            s.glasses.rightArm.bonded = true
+            s.core.start()
+            // An arm that goes away during setup, before the session is ready.
+            s.glasses.drop(RIGHT)
+            s.glasses.away.add(RIGHT)
+            assertTrue(awaitTrue(25_000) { "right arm" in s.listener.lastStatus || s.ready() }, "status: " + s.listener.lastStatus)
+            assertFalse("Exception" in s.listener.lastStatus, s.listener.lastStatus)
+        } finally {
+            s.core.disconnect()
+        }
+    }
+
+    @Test
+    fun oneArmDroppingLeavesTheSessionAndTheOtherEyeAlone() {
+        val s = G1Session()
+        try {
+            started(s)
+            val phasesBefore = s.listener.phases.size
+            val rightBefore = s.glasses.lock.withLock { s.glasses.rightArm.wireBytes }
+            s.glasses.away.add(LEFT)
+            s.glasses.drop(LEFT)
+            assertTrue(s.ready(), "the session goes on")
+
+            // The right eye keeps getting frames, and nothing waits for the left.
+            s.submit(2, 2)
+            assertTrue(awaitTrue(5_000) { s.glasses.lock.withLock { s.glasses.rightArm.panel.contentEquals(s.expected(2)) } },
+                "the right eye stopped:\n" + s.tail())
+            assertTrue(s.glasses.lock.withLock { s.glasses.rightArm.wireBytes } > rightBefore)
+            assertTrue(s.ready())
+            assertTrue(s.listener.phases.drop(phasesBefore).none { it == "retrying" || it == "connecting" },
+                "no reconnect shown for a blip: " + s.listener.phases.drop(phasesBefore))
+        } finally {
+            s.core.disconnect()
+        }
+    }
+
+    @Test
+    fun anArmThatComesBackCatchesUpByItself() {
+        val s = G1Session()
+        try {
+            started(s)
+            val leftEvents = s.glasses.lock.withLock { s.glasses.leftArm.healthOk }
+            val rightPairs = s.glasses.lock.withLock { s.glasses.rightArm.pairedWrites }
+            s.glasses.away.add(LEFT)
+            s.glasses.drop(LEFT)
+            s.submit(2, 2)
+            assertTrue(awaitTrue(5_000) { s.glasses.lock.withLock { s.glasses.rightArm.panel.contentEquals(s.expected(2)) } })
+
+            s.glasses.lock.withLock { s.glasses.leftArm.records.clear() }
+            s.glasses.comeBack(LEFT)
+            assertTrue(awaitTrue(5_000) { s.shownOnBoth(s.expected(2)) }, "the left eye never caught up:\n" + s.tail())
+            assertTrue(s.ready())
+            assertTrue(s.glasses.lock.withLock { s.glasses.leftArm.healthOk } > leftEvents, "it was set up again")
+            assertEquals(rightPairs, s.glasses.lock.withLock { s.glasses.rightArm.pairedWrites }, "the other arm wasn't touched")
+            assertEquals(CFW_MSG_PRESENT, s.glasses.lock.withLock { s.glasses.leftArm.messageTypes.last() })
+        } finally {
+            s.core.disconnect()
+        }
+    }
+
+    @Test
+    fun theRightArmComingBackStartsItsMicAgain() {
+        val s = G1Session()
+        try {
+            started(s)
+            val listener = object : FaceclawAudioPacketListener {
+                override fun onAudioPacket(data: ByteArray?, arm: String?, arrivalMs: Long) {}
+            }
+            assertTrue(s.core.g1StartAudioCapture(listener))
+            assertTrue(awaitTrue(3_000) { s.glasses.lock.withLock { s.glasses.rightArm.micRequests.isNotEmpty() } })
+            s.glasses.away.add(RIGHT)
+            s.glasses.drop(RIGHT)
+            val before = s.glasses.lock.withLock { s.glasses.rightArm.micRequests.size }
+            s.glasses.comeBack(RIGHT)
+            assertTrue(awaitTrue(5_000) { s.glasses.lock.withLock { s.glasses.rightArm.micRequests.size } > before }, s.tail())
+        } finally {
+            s.core.disconnect()
+        }
+    }
+
+    @Test
+    fun anArmThatStaysAwayEndsInAFullReconnect() {
+        val s = G1Session()
+        try {
+            started(s)
+            s.glasses.away.add(LEFT)
+            s.glasses.drop(LEFT)
+            assertTrue(awaitTrue(8_000) { "left arm" in s.listener.lastStatus }, "status: " + s.listener.lastStatus + "\n" + s.tail())
+            assertFalse("Exception" in s.listener.lastStatus, s.listener.lastStatus)
+            s.glasses.comeBack(LEFT)
+            assertTrue(awaitTrue(15_000) { s.ready() }, "never back:\n" + s.tail())
+            s.submit(3, 3)
+            assertTrue(awaitTrue(5_000) { s.shownOnBoth(s.expected(3)) }, s.tail())
+        } finally {
+            s.core.disconnect()
+        }
+    }
+
+    @Test
+    fun bothArmsDroppingIsAFullReconnectAndAFastOne() {
+        val s = G1Session()
+        try {
+            started(s)
+            s.glasses.drop(LEFT)
+            s.glasses.drop(RIGHT)
+            val droppedAt = s.platform.elapsedRealtimeMs()
+            assertTrue(awaitTrue(5_000) { s.ready() }, "never back:\n" + s.tail())
+            assertTrue(s.platform.elapsedRealtimeMs() - droppedAt < 3_000, "the first retry comes quickly")
+            s.submit(4, 4)
+            assertTrue(awaitTrue(5_000) { s.shownOnBoth(s.expected(4)) }, s.tail())
+        } finally {
+            s.core.disconnect()
+        }
     }
 }
 

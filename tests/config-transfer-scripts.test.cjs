@@ -41,6 +41,13 @@ with tempfile.TemporaryDirectory() as d:
     try: m.read_document(p)
     except (ValueError, m.ET.ParseError): pass
     else: raise AssertionError(f'accepted invalid config {invalid!r}')
+pulled = {'schema': 2, 'platform': 'ios', 'settings': {'onboarding.lookalike': True, 'display.timeFormat': '24h'}, 'platformSettings': {
+  'onboarding.complete': True, 'onboarding.previewOnly': False, 'onboarding.glassesFinishedVersion': '0.8.6', 'onboarding.step': 3, 'deviceAddress.left': 'AA'}}
+reset = json.loads(ios.onboarding_reset_document(json.dumps(pulled)))
+assert reset == {'schema': 2, 'platform': 'ios', 'settings': {}, 'platformSettings': {
+  'onboarding.complete': False, 'onboarding.glassesFinishedVersion': '', 'onboarding.step': 0}}, reset
+assert m.check_document(json.dumps(reset)) == (2, 'ios', 3)
+assert ios.onboarding_reset_document(json.dumps({**pulled, 'platformSettings': {'onboarding.complete': False, 'onboarding.glassesFinishedVersion': '', 'deviceAddress.left': 'AA'}})) is None
 `], { stdio: 'inherit' });
 });
 

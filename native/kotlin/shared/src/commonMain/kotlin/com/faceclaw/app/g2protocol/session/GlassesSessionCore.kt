@@ -2275,7 +2275,9 @@ class GlassesSessionCore(
                 return
             }
             if (!connected && isIo) io.reassembler.reset()
-            if (!connected) {
+            if (!connected && isG1 && g1CarryOnWithoutArmLocked(address)) {
+                // The session goes on; the worker brings this arm back.
+            } else if (!connected) {
                 // Before the session is ready, this is an attempt failing (or an arm
                 // dropping mid-setup): the connect sequence notices on its own and
                 // schedules the retry, so leave the backoff alone.

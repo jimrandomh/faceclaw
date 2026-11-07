@@ -27,6 +27,11 @@ import java.util.concurrent.atomic.AtomicLong
 class FaceclawBleManager(context: Context) {
     companion object {
         private const val TAG = "FaceclawBle"
+
+        /** Not public API, but long stable, and the only way short of sending the user to Settings. */
+        fun removeBond(device: BluetoothDevice): Boolean =
+            device.bondState == BluetoothDevice.BOND_NONE || device.javaClass.getMethod("removeBond").invoke(device) == true
+
         private val WRITE_RETRY_DELAYS_MS = intArrayOf(1, 1, 1, 2, 4, 8, 12, 20, 35, 100, 200)
 
         // Gap after each LE 2M PHY request before checking whether it landed and asking
@@ -157,6 +162,21 @@ class FaceclawBleManager(context: Context) {
             return device == null || device.bondState != BluetoothDevice.BOND_NONE
         } catch (t: Throwable) {
             return true
+        }
+    }
+
+    /**
+     * Remove this phone's half of a pairing the other side no longer has. False when the platform refused.
+     */
+    fun removeBond(address: String?): Boolean {
+        if (address == null || address.trim().isEmpty()) {
+            return false
+        }
+        return try {
+            removeBond(bluetoothAdapter.getRemoteDevice(address))
+        } catch (t: Throwable) {
+            Log.w(TAG, "removeBond failed: $address", t)
+            false
         }
     }
 
@@ -377,6 +397,31 @@ class FaceclawBleManager(context: Context) {
     fun discoverServices(address: String, timeoutMs: Int): Boolean {
         val status = runOp(address, OpKind.SERVICES, timeoutMs) { gatt -> gatt.discoverServices() }
         return status == BluetoothGatt.GATT_SUCCESS
+    }
+
+    /** After discovery: whether the service table has this characteristic. */
+    fun hasCharacteristic(address: String, characteristicUuid: String): Boolean {
+        synchronized(bluetoothApiLock) {
+            val gatt = links[address]?.gatt ?: return false
+            val target = UUID.fromString(characteristicUuid)
+            return gatt.services.any { it.getCharacteristic(target) != null }
+        }
+    }
+
+    /**
+     * Forget the service table Android remembers for a bonded device and read it again. A G1 arm keeps its address across an
+     * install that changes its services, and a cached table would make new firmware look like the old one.
+     */
+    fun refreshServices(address: String, timeoutMs: Int): Boolean {
+        synchronized(bluetoothApiLock) {
+            val gatt = links[address]?.gatt ?: return false
+            try {
+                gatt.javaClass.getMethod("refresh").invoke(gatt)
+            } catch (t: Throwable) {
+                Log.w(TAG, "refresh failed: $address", t)
+            }
+        }
+        return discoverServices(address, timeoutMs)
     }
 
     fun enableNotifications(address: String, characteristicUuid: String, enable: Boolean, timeoutMs: Int): Boolean {

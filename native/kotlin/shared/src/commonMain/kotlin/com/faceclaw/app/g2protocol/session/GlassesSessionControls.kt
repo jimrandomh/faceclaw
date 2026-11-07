@@ -496,7 +496,7 @@ internal fun GlassesSessionCore.scheduleReconnectLocked(sessionWasReady: Boolean
     if (sessionWasReady && now - lastSessionReadyAtMs >= ConnectionOptions.STABLE_SESSION_MS) {
         consecutiveReconnects = 0
     }
-    val schedule = ConnectionOptions.RECONNECT_BACKOFF_MS
+    val schedule = if (isG1) G1Timings.RECONNECT_BACKOFF_MS else ConnectionOptions.RECONNECT_BACKOFF_MS
     val delayMs = schedule[minOf(consecutiveReconnects, schedule.size - 1)].toLong()
     consecutiveReconnects++
     reconnectAfterMs = now + delayMs

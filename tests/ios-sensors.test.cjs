@@ -57,6 +57,16 @@ function alsRecord(alsValue) {
   return body;
 }
 
+test('only a G1 session runs the G1 connect path', () => {
+  for (const [glassesType, expected] of [['g1', 1], ['g2', 0], [undefined, 0]]) {
+    const { session, FaceclawCommunicatorBridge } = harness();
+    let used = 0;
+    session.useG1 = () => { used++; };
+    new FaceclawCommunicatorBridge({ right: 'r', left: 'l', glassesType });
+    assert.equal(used, expected, String(glassesType));
+  }
+});
+
 test('the bridge is the active session from start() until close()', async () => {
   const h = harness();
   const bridge = new h.FaceclawCommunicatorBridge({ right: 'r', left: 'l' });

@@ -7,6 +7,9 @@ export type { G1FlashMode, G1FlasherOptions } from './g1-flasher'
 
 declare const FaceclawKitIosG1Flasher: any, FaceclawKitFaceclawFirmwareFlasherListener: any
 
+/** CoreBluetooth has no way to remove a pairing; iOS Settings does it, and a stale one does no harm. */
+export function forgetG1Pairing(_address: string): void {}
+
 /**
  * iOS twin of the Android G1Flasher: the shared Kotlin G1ArmFlashFlow over a CoreBluetooth central. As with the G2's
  * flasher, the phone must stay in the foreground with the screen awake, and addresses are mapped to peripheral

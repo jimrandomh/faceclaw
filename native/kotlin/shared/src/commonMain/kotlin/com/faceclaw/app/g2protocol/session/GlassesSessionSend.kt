@@ -398,6 +398,10 @@ internal fun GlassesSessionCore.writeMessage(message: OutboundMessage): Boolean 
         ioDropUnsupported(message)
         return true
     }
+    if (isG1 && g1ArmIsAway(message)) {
+        ioDropUnsupported(message)
+        return true
+    }
     if (isIo && !ioSupportsMessage(message)) {
         // G2-only traffic (EvenHub/settings frames, the G2 hardware CFW modes) that a feature
         // queued anyway: the iO would NACK it into the replay limit, so it never goes out.

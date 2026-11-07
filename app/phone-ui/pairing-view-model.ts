@@ -383,9 +383,10 @@ export class PairingViewModel extends Observable {
       }
     }
     this.dispose();
-    if (this.onboarding) {
-      setPreviewOnlyMode(false);
-      // Continue the onboarding chain: check the glasses' firmware next.
+    if (this.onboarding) setPreviewOnlyMode(false);
+    // Onboarding checks the glasses' firmware next. So does choosing a G1 from anywhere: it may run Even's firmware,
+    // and whether it does is known without connecting.
+    if (this.onboarding || pair?.g1Firmware) {
       Frame.topmost()?.navigate({ moduleName: "phone-ui/onboarding-firmware-check-page" });
       return;
     }

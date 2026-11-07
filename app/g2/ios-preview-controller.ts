@@ -54,7 +54,7 @@ import { onAnySettingChanged,
   previewColorSetting, lockScreenEnabledSetting, getBrightnessPreferences, getStringSettingById,
   nightscoutSiteUrlSetting, nightscoutApiTokenSetting, voiceProviderSetting, elevenLabsApiKeySetting,
   openAiApiKeySetting, sonioxApiKeySetting, whisperServerApiKeySetting, whisperServerLanguageSetting,
-  whisperServerModelSetting, whisperServerUrlSetting, ringConnectionModeSetting, saveTranscribeAudioSetting } from '../ui/dashboard-settings'
+  whisperServerModelSetting, whisperServerUrlSetting, ringConnectionModeSetting, saveTranscribeAudioSetting, glassesTypeSetting } from '../ui/dashboard-settings'
 import { transcriptionKey, type VoiceProviderSelection } from '../native/cloud-stt-provider'
 import type { PhoneGesture } from '../phone-ui/phone-gestures'
 import { claimGlassesOnboardingAutoLaunch, ONBOARDING_APP_ID } from '../apps/onboarding/onboarding-progress'
@@ -881,7 +881,7 @@ export class IosPreviewController {
         return
       }
       if (this.communicator) await this.closeCommunicator()
-      const communicator = new FaceclawCommunicatorBridge(identifiers)
+      const communicator = new FaceclawCommunicatorBridge({ ...identifiers, glassesType: glassesTypeSetting.get() })
       this.teardownPreviewDisplay()
       this.communicator = communicator
       this.wearDetectionRequested = false

@@ -15,19 +15,20 @@
 #   scripts/resetOnboarding.sh --all           # full `pm clear` (wipes everything)
 #   scripts/resetOnboarding.sh -s <device-id>  # target a specific adb device
 #
-# The device id defaults to $FACECLAW_DEVICE_ID, then to the id used by
-# build_and_run.sh. adb is located the same way build.sh finds its tools.
+# The device id defaults to DEVICE_ID from build_paths.sh, the same device
+# build_and_run.sh targets. adb must be on PATH, or added to it in build_paths.sh.
+
+# Sourced ahead of strict mode, since the build scripts source it without one.
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+if [ -f "$ROOT/build_paths.sh" ]; then
+  source "$ROOT/build_paths.sh"
+fi
 
 set -euo pipefail
 
 PACKAGE="com.faceclaw.app"
 PREF_KEY_PREFIX="onboarding."
-DEVICE_ID="${FACECLAW_DEVICE_ID:-3A101JEHN12330}"
 WIPE_ALL=0
-
-# Match build.sh's tool locations so adb is on PATH even from a bare shell.
-export ANDROID_HOME="${ANDROID_HOME:-/Users/jbabcock/Library/Android/sdk}"
-export PATH="$ANDROID_HOME/platform-tools:$PATH"
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -44,7 +45,18 @@ done
 
 command -v adb >/dev/null 2>&1 || { echo "error: adb not found on PATH" >&2; exit 1; }
 
+if [ -z "${DEVICE_ID:-}" ]; then
+  echo "error: no adb device; set DEVICE_ID in build_paths.sh or pass -s <device-id>." >&2
+  exit 2
+fi
+
 ADB="adb -s $DEVICE_ID"
+
+# Network devices (host:port) need an explicit connect first. A failure here is
+# reported by the connected-device check below.
+case "$DEVICE_ID" in
+  *:*) adb connect "$DEVICE_ID" >/dev/null 2>&1 || true ;;
+esac
 
 # Confirm the device is actually there before doing anything.
 if ! $ADB get-state >/dev/null 2>&1; then

@@ -15,6 +15,12 @@ export type G1FlasherOptions = {
   connectWindowMs: number;
 };
 
+/** Removes the phone's pairing with an address the glasses no longer use. */
+export function forgetG1Pairing(address: string): void {
+  const context = Utils.android.getApplicationContext();
+  if (context) com.faceclaw.app.FaceclawG1Flasher.forgetPairing(context, address);
+}
+
 /** TS wrapper around FaceclawG1Flasher: one arm's install, or a question about what it runs. */
 export class G1Flasher {
   private readonly flasher: any;

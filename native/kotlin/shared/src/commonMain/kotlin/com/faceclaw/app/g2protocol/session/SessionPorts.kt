@@ -71,6 +71,15 @@ interface SessionLink {
     /** Ask the OS to bond with a connected device, without waiting. A no-op where it pairs on demand only (CoreBluetooth). */
     fun requestBond(address: String) {}
 
+    /** Remove this phone's half of a pairing; false where the platform can't or refused. */
+    fun removeBond(address: String): Boolean = false
+
+    /** After discovery: whether the service table has this characteristic. Enabling notifications on one it lacks may throw. */
+    fun hasCharacteristic(address: String, characteristicUuid: String): Boolean = true
+
+    /** Read the service table again, past whatever the OS cached for this address. */
+    fun refreshServices(address: String, timeoutMs: Int): Boolean = discoverServices(address, timeoutMs)
+
     /** Bandwidth-benchmark link tuning; 0: current link, 1: HIGH priority, 2: 2M PHY, 3: both. */
     fun prepareBenchmarkLink(address: String, mode: Int)
 

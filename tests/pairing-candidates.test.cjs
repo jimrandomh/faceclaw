@@ -332,6 +332,28 @@ test("G1 arms on g1v0 join on the frame serial and can be selected", () => {
   assert.match(row.armsSummary, /case/);
 });
 
+test("G1 arms on current firmware join on the serial, with the arm's own name", () => {
+  const record = (flags) => "ffff" + "02" + flags + "000542" + ascii(G1_SERIAL);
+  const aggregator = new DiscoveryAggregator();
+  aggregator.ingest(g1Arm("G1CFW_L_EF50E5", "C0:66:16:EF:50:E5", record("05")));
+  aggregator.ingest(g1Arm("G1CFW_R_CBE689", "E4:46:BA:CB:E6:89", record("04")));
+  const [pair] = aggregator.pairs();
+  assert.equal(pair.g1Firmware, "g1v0");
+  assert.equal(pair.completeness, "complete");
+  assert.equal(pair.left.g1Version, "0.5.66");
+  assert.equal(glassesRow(pair).canSelect, true);
+});
+
+test("a G1 pair halfway through an install is one pair, shown as needing it", () => {
+  const aggregator = new DiscoveryAggregator();
+  aggregator.ingest(g1Arm("G1CFW_L_EF50E5", "C0:66:16:EF:50:E5", "ffff" + "02" + "05" + "000542" + ascii(G1_SERIAL)));
+  aggregator.ingest(g1Arm("Even G1_70_R_CBE689", "E4:46:BA:CB:E6:89", "01" + ascii(G1_SERIAL)));
+  const pairs = aggregator.pairs();
+  assert.equal(pairs.length, 1);
+  assert.equal(pairs[0].g1Firmware, "stock");
+  assert.equal(glassesRow(pairs[0]).canSelect, true);
+});
+
 test("G1 arms on Even's firmware can be selected, to install on", () => {
   const aggregator = new DiscoveryAggregator();
   aggregator.ingest(g1Arm("Even G1_70_L_EF50E5", "C0:66:16:EF:50:E5", "02" + ascii(G1_SERIAL)));

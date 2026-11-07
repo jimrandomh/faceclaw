@@ -9,6 +9,10 @@ export const G1_SIDES: readonly G1Side[] = ["left", "right"];
 export const G1_CASE_INSTRUCTIONS =
   "Put the glasses in their charging case with the lid open, and plug the case in. Stay nearby, and leave Faceclaw open.";
 
+/** An arm bonds only once it knows it's in the case, and a full case only says so about every 5 minutes. */
+export const G1_CASE_DELAY_HINT =
+  "A fully charged arm can take up to 5 minutes to notice it's in the case, so this may take a while.";
+
 export const G1_INSTALL_NOTICE =
   "This replaces the firmware on both arms, about two minutes each. Going back to Even's firmware later takes a computer, and " +
   "may not be the version you have now. Installing custom firmware is not covered by warranty.";
@@ -79,6 +83,23 @@ export function g1FirmwareState(arms: readonly G1FlashResult[], shipped: string)
   if (arms.some((arm) => arm.firmware === "stock")) return "stock";
   if (arms.some((arm) => arm.safeMode)) return "safe-mode";
   return arms.some((arm) => compareG1Versions(arm.version ?? "", shipped) < 0) ? "older" : "current";
+}
+
+/**
+ * What the arms' advertising alone says about their firmware, or null when an arm has to be asked: firmware before 0.5.66
+ * doesn't advertise its version.
+ */
+export function g1StateFromAdvertising(
+  pair: Pick<GlassesPairCandidate, "left" | "right">,
+  shipped: string,
+): { state: G1FirmwareState; version: string } | null {
+  const arms = [pair.left, pair.right];
+  if (arms.some((arm) => arm?.g1Firmware === "stock")) return { state: "stock", version: "" };
+  if (arms.some((arm) => arm?.g1Firmware === "g1v0-safe")) return { state: "safe-mode", version: "" };
+  const versions = arms.map((arm) => arm?.g1Version);
+  if (!versions[0] || !versions[1]) return null;
+  const lowest = compareG1Versions(versions[0], versions[1]) <= 0 ? versions[0] : versions[1];
+  return { state: compareG1Versions(lowest, shipped) < 0 ? "older" : "current", version: lowest };
 }
 
 /** Each arm counts for half of the bar. */

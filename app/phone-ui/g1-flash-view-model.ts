@@ -4,13 +4,21 @@ import { G1ArmScanner } from "../g1/arm-scanner";
 import { G1V0_IMAGE } from "../g1/firmware/g1v0-image";
 import { buildG1Firmware, type BuiltG1Firmware, type G1BuildProgress } from "../g1/firmware-builder";
 import { saveG1Arm, saveG1Pair } from "../g1/addresses";
-import { G1_CASE_INSTRUCTIONS, G1_INSTALL_NOTICE, G1_SIDES, g1FlashPercent, type G1FlashResult, type G1Side } from "../g1/flash-plan";
+import {
+  G1_CASE_DELAY_HINT,
+  G1_CASE_INSTRUCTIONS,
+  G1_INSTALL_NOTICE,
+  G1_SIDES,
+  g1FlashPercent,
+  type G1FlashResult,
+  type G1Side,
+} from "../g1/flash-plan";
 import { loadDeviceAddresses, loadPairedGlassesIdentity } from "../g2/device-addresses";
 import { downloadAndExtractEvenHubFonts, hasExtractedEvenHubFonts } from "../g2/firmware-builder";
 import { type GlassesPairCandidate } from "../g2/pairing-candidates";
 import { resumeAutoReconnect, suppressAutoReconnect } from "../g2/reconnect-policy";
 import { ensureBlePermissions } from "../native/ble-permissions";
-import { G1Flasher, type G1FlasherOptions } from "../native/g1-flasher";
+import { forgetG1Pairing, G1Flasher, type G1FlasherOptions } from "../native/g1-flasher";
 import { formatErrorMessage } from "../util/format-error";
 import { finishOnboardingNavigation } from "./onboarding-navigation";
 import { setOnboardingCompleted, setPreviewOnlyMode } from "./onboarding-state";
@@ -190,11 +198,16 @@ export class G1FlashViewModel extends Observable {
         "open: an interrupted install finishes by itself. Then retry.");
     }
     saveG1Arm(side, back);
+    // Coming from firmware before 0.5.66, which had an address of its own: the phone needn't remember that one.
+    if (back.address !== arm.address) forgetG1Pairing(arm.address);
     if (back.g1Firmware === "g1v0-safe") {
       throw new Error(`The ${side} arm came back in safe mode: the new firmware restarted repeatedly. Retry to install it again.`);
     }
 
-    this.setStatus(`Pairing with the ${side} arm. If your phone asks, accept it.`);
+    this.setStatus(`Checking the ${side} arm. If your phone asks to pair, accept it. ${G1_CASE_DELAY_HINT}`);
+    // An arm at a new address has no bond yet (coming from Even's firmware the address is kept from 0.5.66 on, and so is the
+    // bond). It may refuse one for a while: it's installed either way, and the session pairs it later.
+    const newAddress = back.address !== arm.address;
     let running: G1FlashResult;
     try {
       running = await this.flash({
@@ -202,10 +215,10 @@ export class G1FlashViewModel extends Observable {
         side,
         firmwarePath: "",
         mode: "probe",
-        connectWindowMs: fromStock ? FIRST_PAIRING_MS : RETURN_MS,
+        connectWindowMs: newAddress ? FIRST_PAIRING_MS : RETURN_MS,
       });
     } catch (error) {
-      if (!fromStock || !live()) throw error;
+      if (!newAddress || !live()) throw error;
       // Installed, as its advertising shows; it just won't pair yet. The next connection pairs it.
       this.appendLog(`${side} arm not paired yet: ${formatErrorMessage(error)}`);
       this.unpairedArm = true;
