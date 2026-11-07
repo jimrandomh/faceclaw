@@ -4,7 +4,7 @@
             <StackLayout>
                 <Label text="Your Devices" class="h1 text-center m-t-24" textWrap="true" />
                 <Label
-                    text="Which devices do you have? The rest of setup will be tailored to them."
+                    text="Which devices do you have?"
                     class="body-text m-t-24" textWrap="true" />
 
                 <Label text="Glasses" class="h2 pairing-section m-t-24" />
@@ -37,7 +37,7 @@
 
         <GridLayout row="1" columns="*,*" class="m-t-20">
             <Button col="0" text="Back" tap="{{ onBackTap }}" />
-            <Button col="1" text="Next" tap="{{ onNextTap }}" class="-primary" />
+            <Button col="1" text="Next" tap="{{ onNextTap }}" class="-primary" isEnabled="{{ nextEnabled }}" />
         </GridLayout>
     </GridLayout>
 </Page>

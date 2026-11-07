@@ -1,16 +1,16 @@
 import { EventData, Frame, Observable, View } from "@nativescript/core";
 
 import { glassesTypeSetting, type GlassesType } from "../ui/dashboard-settings";
-import { isPreviewOnlyMode, ownsRing, ownsWatch, setOwnsRing, setOwnsWatch, setPreviewOnlyMode } from "./onboarding-state";
+import { ownsRing, ownsWatch, setOwnsRing, setOwnsWatch, setPreviewOnlyMode } from "./onboarding-state";
 
 /** A row in the glasses list: a kind of glasses, or no glasses at all. */
 type GlassesChoice = GlassesType | "preview";
 
 const GLASSES_OPTIONS: { choice: GlassesChoice; label: string; description?: string }[] = [
+  { choice: "preview", label: "Preview Only", description: "No glasses: explore Faceclaw on your phone's screen" },
   { choice: "g1", label: "Even G1" },
   { choice: "g2", label: "Even G2" },
   { choice: "rayneo-io", label: "RayNeo iO" },
-  { choice: "preview", label: "Preview Only", description: "No glasses: explore Faceclaw on your phone's screen" },
 ];
 
 /** Why this choice can't be made on this phone, or "" when it can. */
@@ -37,13 +37,17 @@ export type GlassesOptionItem = {
  * pages tailor themselves to. Pairing still has the last word on the glasses,
  * since it can tell what it heard.
  *
- * Preview Only is the persisted preview-only flag, and leaves the glasses type
- * alone; the Permissions page then finishes onboarding instead of moving on to
- * the firmware step.
+ * Nothing starts out selected, whatever an earlier run stored, and Next waits
+ * for a choice. A tap stores it straight away: Preview Only sets the persisted
+ * preview-only flag and leaves the glasses type alone, so the Permissions page
+ * finishes onboarding instead of moving on to the firmware step.
  */
 export class OnboardingDevicesViewModel extends Observable {
+  /** This visit's choice; the page keeps this model when you come Back to it. */
+  private selected: GlassesChoice | null = null;
+
   get glassesOptions(): GlassesOptionItem[] {
-    const selected: GlassesChoice = isPreviewOnlyMode() ? "preview" : glassesTypeSetting.get();
+    const selected = this.selected;
     return GLASSES_OPTIONS.map(({ choice, label, description }) => {
       const reason = unavailableReason(choice);
       const note = reason || description || "";
@@ -66,10 +70,16 @@ export class OnboardingDevicesViewModel extends Observable {
   readonly onGlassesRowTap = (args: EventData): void => {
     const item = (args.object as View).bindingContext as GlassesOptionItem | undefined;
     if (!item?.selectable) return;
+    this.selected = item.choice;
     setPreviewOnlyMode(item.choice === "preview");
     if (item.choice !== "preview") glassesTypeSetting.set(item.choice);
     this.notifyPropertyChange("glassesOptions", this.glassesOptions);
+    this.notifyPropertyChange("nextEnabled", this.nextEnabled);
   };
+
+  get nextEnabled(): boolean {
+    return this.selected !== null;
+  }
 
   get hasRing(): boolean {
     return ownsRing();
@@ -92,6 +102,7 @@ export class OnboardingDevicesViewModel extends Observable {
   }
 
   onNextTap(): void {
+    if (!this.nextEnabled) return;
     Frame.topmost()?.navigate({
       moduleName: "phone-ui/onboarding-page",
       context: { step: 2 },

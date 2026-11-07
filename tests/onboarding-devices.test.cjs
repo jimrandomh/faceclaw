@@ -67,7 +67,9 @@ test('the devices page sits between the splash and the disclaimer', () => {
   assert.equal(state.navigations.pop().moduleName, 'phone-ui/onboarding-devices-page');
 
   const { OnboardingDevicesViewModel } = loadPage('onboarding-devices-view-model');
-  new OnboardingDevicesViewModel().onNextTap();
+  const devices = new OnboardingDevicesViewModel();
+  tap(devices, 'g2');
+  devices.onNextTap();
   const next = state.navigations.pop();
   assert.equal(next.moduleName, 'phone-ui/onboarding-page');
   assert.equal(next.context.step, 2);
@@ -90,12 +92,18 @@ test('choosing glasses selects exactly one, and the accessories are stored', () 
   const { state, loadPage } = fixture();
   const { OnboardingDevicesViewModel } = loadPage('onboarding-devices-view-model');
   const model = new OnboardingDevicesViewModel();
-  assert.equal(model.glassesOptions.map(option => option.choice).join(), 'g1,g2,rayneo-io,preview');
-  assert.equal(selected(model), 'g2');
+  assert.equal(model.glassesOptions.map(option => option.choice).join(), 'preview,g1,g2,rayneo-io');
+
+  // Nothing is chosen until you choose, even with a stored glasses type, and Next waits for it.
+  assert.equal(selected(model), '');
+  assert.equal(model.nextEnabled, false);
+  model.onNextTap();
+  assert.equal(state.navigations.length, 0);
 
   tap(model, 'rayneo-io');
   assert.equal(state.glasses, 'rayneo-io');
   assert.equal(selected(model), 'rayneo-io');
+  assert.equal(model.nextEnabled, true);
 
   assert.equal(model.hasRing, false);
   model.hasRing = true;
@@ -117,6 +125,8 @@ test('the watch follows the platform, and iOS can\'t choose a RayNeo iO', () => 
   assert.equal(rowFor(onIos, 'rayneo-io').noteVisibility, 'visible');
   tap(onIos, 'rayneo-io');
   assert.equal(ios.state.glasses, 'g2');
+  assert.equal(selected(onIos), '');
+  assert.equal(onIos.nextEnabled, false);
 });
 
 test('the disclaimer and firmware steps name only the chosen glasses', () => {
@@ -160,7 +170,9 @@ test('Preview Only is a glasses choice that skips the firmware step', () => {
   assert.equal(state.previewOnly, true);
   assert.equal(state.glasses, 'rayneo-io');
   assert.equal(selected(devices), 'preview');
-  assert.equal(selected(new OnboardingDevicesViewModel()), 'preview');
+  assert.equal(devices.nextEnabled, true);
+  // A later visit (say, after restarting mid-setup) asks again.
+  assert.equal(selected(new OnboardingDevicesViewModel()), '');
 
   // The disclaimer can't name glasses nobody chose.
   const { OnboardingViewModel } = loadPage('onboarding-view-model');
