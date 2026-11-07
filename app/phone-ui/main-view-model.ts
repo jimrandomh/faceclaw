@@ -17,6 +17,7 @@ import {
 import { dashboardController, type MirrorTouchKind } from "../g2/dashboard-controller";
 import { formatBatteryLine } from "../g2/glasses-display-state";
 import {
+  glassesModelName,
   mirrorTouchSetting,
   onAnySettingChanged,
   showBleBandwidthSetting,
@@ -97,6 +98,7 @@ export class MainViewModel extends RemoteControlsViewModel {
       this.batteryLine = formatBatteryLine(
         snapshot.batteries,
         snapshot.phase === "connected" || snapshot.phase === "charging",
+        glassesModelName(),
       );
       this.activeTextSettingId = snapshot.activeTextSettingId;
       this.activeTextEditorTitle = snapshot.activeTextEditorTitle;

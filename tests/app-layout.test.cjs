@@ -429,8 +429,9 @@ const shellScene = require('../.test-build/app/graphics/shell-scene.js');
 const displayList = require('../.test-build/app/graphics/display-list.js');
 const notificationTypes = require('../.test-build/app/native/notification-types.js');
 const ICON = notificationTypes.NOTIFICATION_ICON_SIZE;
-function chromeLayer(g, { notifications = 0, phoneBattery = null, windows = 1, trayIcons = [] } = {}) {
-  const font = { lineHeight: 12, ascent: 10, measureText: (text) => text.length * 4,
+function chromeLayer(g, { notifications = 0, phoneBattery = null, windows = 1, trayIcons = [], glassesModel = 'G2' } = {}) {
+  const measuredText = [];
+  const font = { lineHeight: 12, ascent: 10, measureText: (text) => { measuredText.push(text); return text.length * 4; },
     drawText: (image, x, y, text, value) => { for (let i = 0; i < text.length; i++) image.fillRect(x + i * 4, y + 2, 2, 6, value); } };
   let nextKey = 100;
   const requested = [];
@@ -451,7 +452,7 @@ function chromeLayer(g, { notifications = 0, phoneBattery = null, windows = 1, t
     '../../native/phone-battery': { readPhoneBatteryState: () => ({ battery: phoneBattery, charging: false }) },
     '../../util/render-freshness': { renderPassAllowsStaleData: () => false },
     '../dashboard-settings': { batteryDisplayModeSetting: { get: () => 'icon' }, phoneBatteryVisibilitySetting: settings,
-      batteryIndicatorVisible: () => true },
+      glassesBatteryVisibilitySetting: settings, glassesModelName: () => glassesModel, batteryIndicatorVisible: () => true },
     '../clock-format': { formatClockDate: () => 'Thu Oct 2', formatClockTime: () => '9:41' },
     '../layers': { LayerStack: { allocateShellKey: () => nextKey++ } },
     // As in menu.ts.
@@ -469,10 +470,18 @@ function chromeLayer(g, { notifications = 0, phoneBattery = null, windows = 1, t
   };
   let heightChanges = 0;
   const chrome = new context.exports.ShellChromeLayer(() => state, () => heightChanges++);
-  return { chrome, state, requested, planBottomBar: context.exports.planBottomBar, heightChanges: () => heightChanges };
+  return { chrome, state, requested, measuredText, planBottomBar: context.exports.planBottomBar, heightChanges: () => heightChanges };
 }
 const notification = (key) => ({ kind: 'notification', key });
 const keysOf = (items) => Array.from(items, (item) => item.key);
+
+test('the top bar labels the glasses battery with the paired model', () => {
+  const { chrome, state, measuredText } = chromeLayer(geometry(), { glassesModel: 'G1' });
+  state.battery.headset = 72;
+  chrome.paintParts();
+  assert.ok(measuredText.includes('G1'));
+  assert.ok(!measuredText.includes('G2'));
+});
 
 test('a bottom app switcher frames the foreground window\'s content in a rounded border', () => {
   const g = geometry();

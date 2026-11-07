@@ -54,6 +54,7 @@ import {
   dataCollectionSetting,
   distanceUnitSetting,
   glassesBatteryVisibilitySetting,
+  glassesModelName,
   phoneBatteryVisibilitySetting,
   ringBatteryVisibilitySetting,
   watchBatteryVisibilitySetting,
@@ -387,7 +388,8 @@ function batteryIndicatorsMenuItem(): MenuItem {
         enumSettingMenuItem(batteryDisplayModeSetting),
         enumSettingMenuItem(phoneBatteryVisibilitySetting),
         enumSettingMenuItem(watchBatteryVisibilitySetting),
-        enumSettingMenuItem(glassesBatteryVisibilitySetting),
+        // Named as the top bar names this indicator.
+        enumSettingMenuItem(glassesBatteryVisibilitySetting, { label: glassesModelName() }),
         enumSettingMenuItem(ringBatteryVisibilitySetting),
       ]);
     },

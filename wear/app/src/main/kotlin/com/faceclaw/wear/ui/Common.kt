@@ -81,7 +81,7 @@ fun padLine(state: PhoneState?, link: LinkStatus): StatusLine = when {
     state.remoteEnabled == false -> StatusLine("Watch control off", StatusTone.PROBLEM)
     state.connected -> when {
         state.charging || state.phase == "charging" ->
-            StatusLine(chargingLine(state.battery), StatusTone.BUSY, caseLine(state))
+            StatusLine(chargingLine(state), StatusTone.BUSY, caseLine(state))
         state.silentMode -> StatusLine("Silent mode", StatusTone.OFF)
         state.locked -> StatusLine("Locked", StatusTone.OFF)
         !state.screenOn -> StatusLine("●● Wake", StatusTone.OFF)
@@ -93,8 +93,8 @@ fun padLine(state: PhoneState?, link: LinkStatus): StatusLine = when {
     else -> StatusLine("Disconnected", StatusTone.OFF)
 }
 
-private fun chargingLine(battery: Int?): String =
-    if (battery != null) "Charging · G2 $battery%" else "Charging"
+private fun chargingLine(state: PhoneState): String =
+    state.battery?.let { "Charging: ${state.glassesModel} $it%" } ?: "Charging"
 
 /**
  * "Case 64%", with ⚡ while the case is on USB; null when the level is

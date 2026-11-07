@@ -42,7 +42,7 @@ func padLine(state: PhoneState?, link: LinkStatus) -> StatusLine {
     if !state.remoteEnabled { return StatusLine(text: "Watch control off", tone: .problem) }
     if state.connected {
         if state.charging || state.phase == "charging" {
-            return StatusLine(text: chargingLine(state.battery), tone: .busy, detail: caseLine(state))
+            return StatusLine(text: chargingLine(state), tone: .busy, detail: caseLine(state))
         }
         if state.silentMode { return StatusLine(text: "Silent mode", tone: .off) }
         if state.locked { return StatusLine(text: "Locked", tone: .off) }
@@ -64,8 +64,8 @@ func padLine(state: PhoneState?, link: LinkStatus) -> StatusLine {
     return StatusLine(text: "Disconnected", tone: .off)
 }
 
-private func chargingLine(_ battery: Int?) -> String {
-    battery.map { "Charging · G2 \($0)%" } ?? "Charging"
+private func chargingLine(_ state: PhoneState) -> String {
+    state.battery.map { "Charging: \(state.glassesModel) \($0)%" } ?? "Charging"
 }
 
 /**

@@ -62,7 +62,7 @@ dashboard state, re-sent whenever it changes (and at least every 30 s):
   "protocol": 1, "version": "…",
   "phase": "connected", "status": "…", "connected": true, "preview": false,
   "screenOn": true, "locked": false, "worn": true, "listening": false,
-  "battery": 78, "charging": false, "silentMode": false,
+  "battery": 78, "glassesModel": "G2", "charging": false, "silentMode": false,
   "caseBattery": 64, "caseCharging": true,
   "foreground": {"appId": "music", "title": "Music"},
   "windows": [{"windowId": "…", "title": "…", "appId": "…", "focused": true, "closeable": true, "acceptsText": false}],
@@ -74,9 +74,11 @@ dashboard state, re-sent whenever it changes (and at least every 30 s):
 }
 ```
 
-`battery` is the current or last-known G2 percentage. `charging` and
-`silentMode` identify the two states in which the glasses display is not
-visible even though the BLE session remains available.
+`battery` is the glasses' current or last-known percentage, and `glassesModel`
+is what the charging line calls them: `G2`, `G1` or `iO` (a watch treats a
+missing one, from an older phone app, as `G2`). `charging` and `silentMode`
+identify the two states in which the glasses display is not visible even though
+the BLE session remains available.
 
 `caseBattery` is the last-known charging-case percentage, or null until the
 glasses have reported one; the case only reports while the glasses are docked,

@@ -15,6 +15,7 @@ import {
   batteryDisplayModeSetting,
   batteryIndicatorVisible,
   glassesBatteryVisibilitySetting,
+  glassesModelName,
   phoneBatteryVisibilitySetting,
   ringBatteryVisibilitySetting,
   watchBatteryVisibilitySetting,
@@ -1089,7 +1090,7 @@ function batteryItems(state: ShellChromeState): BatteryItem[] {
       Boolean(state.battery.watchCharging));
   }
   if (state.battery.headset !== null && Number.isFinite(state.battery.headset)) {
-    pushBatteryItem(items, glassesBatteryVisibilitySetting.get(), "G2", "glasses", state.battery.headset,
+    pushBatteryItem(items, glassesBatteryVisibilitySetting.get(), glassesModelName(), "glasses", state.battery.headset,
       Boolean(state.battery.headsetCharging));
   }
   if (state.battery.ring !== null && Number.isInteger(state.battery.ring)

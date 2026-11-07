@@ -293,7 +293,7 @@ export class PairingViewModel extends Observable {
     }
     if (this.selectedPair) {
       const identity = this.selectedPair.identity;
-      const label = identity ? identity.displayName : "Even Realities G2";
+      const label = identity ? identity.displayName : this.selectedPair.g1Firmware ? "Even Realities G1" : "Even Realities G2";
       parts.push(
         `${label} · serial ${this.selectedPair.serial ?? "unknown"}\n` +
           `Left ${this.selectedPair.left?.address ?? "?"} · Right ${this.selectedPair.right?.address ?? "?"}`,
