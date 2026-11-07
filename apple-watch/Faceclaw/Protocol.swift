@@ -103,8 +103,10 @@ struct PhoneState: Equatable {
     var locked = false
     var worn: Bool?
     var listening = false
-    /** Current or last-known G2 charge percentage. */
+    /** The glasses' current or last-known charge percentage. */
     var battery: Int?
+    /** The paired glasses' model, as the charging line names it. */
+    var glassesModel = "G2"
     var charging = false
     /** Last-known charging-case percentage; live only while the glasses are docked. */
     var caseBattery: Int?
@@ -139,6 +141,7 @@ struct PhoneState: Equatable {
         state.worn = o["worn"] as? Bool
         state.listening = o["listening"] as? Bool ?? false
         state.battery = percent(o["battery"])
+        state.glassesModel = o["glassesModel"] as? String ?? "G2"
         state.charging = o["charging"] as? Bool ?? false
         state.caseBattery = percent(o["caseBattery"])
         state.caseCharging = o["caseCharging"] as? Bool

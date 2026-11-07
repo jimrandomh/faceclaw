@@ -310,7 +310,7 @@ export const phoneBatteryVisibilitySetting = batteryVisibilitySetting(
   "phoneBatteryVisibility", "Phone", "display.battery.phoneVisibility",
 );
 export const glassesBatteryVisibilitySetting = batteryVisibilitySetting(
-  "glassesBatteryVisibility", "G2", "display.battery.glassesVisibility",
+  "glassesBatteryVisibility", "Glasses", "display.battery.glassesVisibility",
 );
 export const ringBatteryVisibilitySetting = batteryVisibilitySetting(
   "ringBatteryVisibility", "R1", "display.battery.ringVisibility",
@@ -403,6 +403,13 @@ export const glassesTypeSetting = new ConfigSettingEnum<GlassesType>({
  */
 export function glassesHaveCompass(): boolean {
   return glassesTypeSetting.get() === "g2";
+}
+
+const GLASSES_MODEL_NAMES: Record<GlassesType, string> = { g2: "G2", g1: "G1", "rayneo-io": "iO" };
+
+/** The paired glasses' model without the brand, short enough for battery labels and a watch's one-line charging status. */
+export function glassesModelName(): string {
+  return GLASSES_MODEL_NAMES[glassesTypeSetting.get()];
 }
 
 const APP_SWITCHER_POSITION_LABELS: Record<AppSwitcherPosition, string> = {

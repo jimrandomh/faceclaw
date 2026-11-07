@@ -125,6 +125,7 @@ function loadRemote({ phase = 'disconnected', preview = false, now = 1_800_000_0
       '../apps/evenhub/installed-apps': { getInstalledEvenHubApps: () => [], installedEvenHubAppId: id => id },
       '../native/wear-bridge': { wearBridge: bridge, WEAR_PATHS: types().WEAR_PATHS },
       '../ui/dashboard-settings': {
+        glassesModelName: () => 'G1',
         onAnySettingChanged() {}, watchCanUnlockSetting: setting(true), watchCrownClockwiseNextSetting: setting(false),
         watchMirrorAssistantSetting: setting(true), watchRemoteEnabledSetting: setting(true),
         watchVibrateOnInputSetting: setting(true), watchSoundEffectsSetting: setting(false),
@@ -212,6 +213,10 @@ test('the mirrored state carries the Apple Watch feedback settings', () => {
   const state = loadRemote({ preview: true }).remote.buildState();
   assert.equal(state.vibrateOnInput, true);
   assert.equal(state.soundEffects, false);
+});
+
+test('the mirrored state names the glasses for the charging line', () => {
+  assert.equal(loadRemote({ phase: 'charging' }).remote.buildState().glassesModel, 'G1');
 });
 
 test('the mirrored state says when gestures are landing on the preview', () => {

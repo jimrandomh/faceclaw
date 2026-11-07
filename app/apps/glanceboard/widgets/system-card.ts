@@ -18,6 +18,7 @@ import {
   batteryIndicatorVisible,
   ConfigSettingBoolean,
   glassesBatteryVisibilitySetting,
+  glassesModelName,
   onAnySettingChanged,
   phoneBatteryVisibilitySetting,
   ringBatteryVisibilitySetting,
@@ -328,7 +329,7 @@ function collectBatteryItems(): BatteryItem[] {
   push(phoneBatteryVisibilitySetting.get(), "Phone", "phone", phone.battery, phone.charging);
   const levels = shell.getBatteryLevels();
   push(watchBatteryVisibilitySetting.get(), "Watch", "watch", levels.watch, levels.watchCharging);
-  push(glassesBatteryVisibilitySetting.get(), "G2", "glasses", levels.headset, levels.headsetCharging);
+  push(glassesBatteryVisibilitySetting.get(), glassesModelName(), "glasses", levels.headset, levels.headsetCharging);
   if (levels.ring !== null && Number.isInteger(levels.ring) && levels.ring >= 0 && levels.ring <= 100) {
     push(ringBatteryVisibilitySetting.get(), "R1", "ring", levels.ring, levels.ringCharging);
   }

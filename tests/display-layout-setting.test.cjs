@@ -35,6 +35,14 @@ test('the display mode starts as the middle band, or carries over the old mode a
   assert.equal(api.displayLayoutSetting.get(), 'band-bottom');
 });
 
+test('the glasses model name follows the paired glasses type', () => {
+  const model = (entries) => settingsFixture(new Map(entries)).glassesModelName();
+  assert.equal(model([]), 'G2');
+  assert.equal(model([['deviceType', 'g2']]), 'G2');
+  assert.equal(model([['deviceType', 'g1']]), 'G1');
+  assert.equal(model([['deviceType', 'rayneo-io']]), 'iO');
+});
+
 test('per-app display modes carry over their old mode and position where the merged values can say it', () => {
   const app = (appId, entries) => settingsFixture(new Map(entries))[`${appId}DisplayLayoutSetting`].get();
   assert.equal(app('navigate', []), 'global');

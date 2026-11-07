@@ -3,6 +3,8 @@ export type GlassesDisplayState = {
   silentMode: boolean;
   screenOn: boolean;
   battery: number | null;
+  /** The paired glasses' model, e.g. "G2" (glassesModelName). */
+  glassesModel: string;
   /**
    * The charging case's last-known level, and whether it is on USB (null
    * while the glasses are out of the case). Shown only while charging, when
@@ -20,7 +22,7 @@ export function glassesDisplayLabel(state: GlassesDisplayState): string {
   // Charging wins over every session-local state: the glasses are in their
   // case, so neither the lock screen nor the foreground window is visible.
   if (state.phase === "charging") {
-    return chargingDisplayLabel(state.battery);
+    return chargingDisplayLabel(state.battery, state.glassesModel);
   }
   // Preview mode has a live (simulated) screen despite the disconnected
   // phase, so fall through to the screen-state/foreground labels.
@@ -63,8 +65,8 @@ export function glassesDisplayAsleep(state: GlassesDisplayState): boolean {
   );
 }
 
-export function chargingDisplayLabel(battery: number | null): string {
-  return validBatteryLevel(battery) ? `Charging · G2 ${battery}%` : "Charging";
+export function chargingDisplayLabel(battery: number | null, glassesModel: string): string {
+  return validBatteryLevel(battery) ? `Charging: ${glassesModel} ${battery}%` : "Charging";
 }
 
 /** The shell's last-known battery levels (ShellChromeState["battery"]), as far as the phone shows them. */
@@ -81,13 +83,13 @@ export type BatteryLevels = {
  * The phone Settings tab's battery row: each device whose level is known,
  * e.g. "G2 100%  ·  Case 98% ⚡  ·  R1 72%" (⚡ = charging), or "" when none
  * is. Levels are the last known ones (the case only reports while the glasses
- * are docked), so ⚡ appears only while it is live: G2 and Case only with a
- * link to the glasses (`glassesLinked`: connected or charging), and Case only
- * while they are docked (caseCharging is null otherwise).
+ * are docked), so ⚡ appears only while it is live: the glasses and Case only
+ * with a link to the glasses (`glassesLinked`: connected or charging), and Case
+ * only while they are docked (caseCharging is null otherwise).
  */
-export function formatBatteryLine(levels: BatteryLevels, glassesLinked: boolean): string {
+export function formatBatteryLine(levels: BatteryLevels, glassesLinked: boolean, glassesModel: string): string {
   const devices: Array<[string, number | null, boolean | null]> = [
-    ["G2", levels.headset, glassesLinked && levels.headsetCharging],
+    [glassesModel, levels.headset, glassesLinked && levels.headsetCharging],
     ["Case", levels.case, glassesLinked && levels.caseCharging],
     ["R1", levels.ring, levels.ringCharging],
   ];

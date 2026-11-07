@@ -32,6 +32,7 @@ import { type AppDefinition } from "../apps/app-definition";
 import { getInstalledEvenHubApps, installedEvenHubAppId } from "../apps/evenhub/installed-apps";
 import { WEAR_PATHS, wearBridge, type WearMessage } from "../native/wear-bridge";
 import {
+  glassesModelName,
   onAnySettingChanged,
   watchCanUnlockSetting,
   watchCrownClockwiseNextSetting,
@@ -294,6 +295,7 @@ export class WearRemote {
       worn: state.glassesWorn,
       listening: voiceActivity.isActive(),
       battery: state.lastHeadsetBattery,
+      glassesModel: glassesModelName(),
       charging: state.phase === "charging" || battery.headsetCharging === true,
       caseBattery: battery.case,
       caseCharging: battery.caseCharging,

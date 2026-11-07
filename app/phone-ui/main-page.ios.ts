@@ -7,7 +7,7 @@ import { IosPreviewController } from '../g2/ios-preview-controller'
 import { PhoneGestureRecognizer } from './phone-gestures'
 import { BleBandwidthMeter } from './ble-bandwidth-meter'
 import { sampleBleTraffic } from '../native/ble-traffic'
-import { onAnySettingChanged, mirrorTouchSetting, showBleBandwidthSetting } from '../ui/dashboard-settings'
+import { glassesModelName, onAnySettingChanged, mirrorTouchSetting, showBleBandwidthSetting } from '../ui/dashboard-settings'
 import { loadDeviceAddresses } from '../g2/device-addresses'
 import { deviceAddressError } from '../g2/ios-peripheral-identity'
 import { formatBatteryLine } from '../g2/glasses-display-state'
@@ -75,7 +75,7 @@ export function createMainPage(): Page {
   // The Settings tab's battery row. iOS reports charging sessions as
   // connected, so "connected" is the whole live-link condition here.
   let glassesLinked = false
-  const refreshBatteryLine = () => { model.batteryLine = formatBatteryLine(shell.getBatteryLevels(), glassesLinked) }
+  const refreshBatteryLine = () => { model.batteryLine = formatBatteryLine(shell.getBatteryLevels(), glassesLinked, glassesModelName()) }
   const keyboardField = () => keyboardPanel.getViewById<TextView>('keyboardInputField')
   const controller = new IosPreviewController((image, label) => {
     mirror.imageSource = image; model.set('padFocusLine', label)
