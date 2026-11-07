@@ -7,7 +7,6 @@ import { findSoundEffect, playSoundEffect } from "../../ui/sound-effects";
 import { DataCollectionPage } from "./data-collection-page";
 import { DepthPage } from "./depth-page";
 import { DisplayModePage } from "./display-mode-page";
-import { IosPrivacyPage } from "./ios-privacy-page";
 import { LayoutPage } from "./layout-page";
 import { markGlassesOnboardingFinished, ONBOARDING_APP_ID } from "./onboarding-progress";
 import type { OnboardingPage } from "./onboarding-page";
@@ -26,9 +25,7 @@ export const ONBOARDING_SURFACE_ID = "window:onboarding";
  */
 export function createOnboardingAppWindow(options: InProcessAppOptions): InProcessWindow {
   const pages: OnboardingPage[] = [
-    new WelcomePage(), new TextSizePage(),
-    ...(global.isIOS ? [new IosPrivacyPage()] : []),
-    new DataCollectionPage(), new LayoutPage(), new DepthPage(), new DisplayModePage(),
+    new WelcomePage(), new TextSizePage(), new DataCollectionPage(), new LayoutPage(), new DepthPage(), new DisplayModePage(),
   ];
   const app = createInProcessWindow({
     appId: ONBOARDING_APP_ID,

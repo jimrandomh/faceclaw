@@ -1,5 +1,4 @@
 import { Frame, Observable, Screen } from "@nativescript/core";
-import { IOS_PRIVACY_NOTICE } from "../analytics/privacy-disclosure";
 import { glassesTypeSetting, type GlassesType } from "../ui/dashboard-settings";
 
 import { isPreviewOnlyMode } from "./onboarding-state";
@@ -61,8 +60,7 @@ function stepContent(step: OnboardingStep, glasses: GlassesType, previewOnly: bo
       return {
         headline: "Before You Continue",
         tagline: "",
-        body: `This software provides a custom user interface and functionality for the ${product} smart glasses. It is not created or supported by ${maker}. If this software somehow breaks your headset, this is not ${makerPossessive} fault and is not covered by the hardware's warranty. If this software doesn't break your headset, using this software may void the hardware's warranty anyways, at the sole discretion of ${maker}. This software is beta; don't rely on it for anything critically important.` +
-          (global.isIOS ? "\n\niOS / TestFlight privacy\n\n" + IOS_PRIVACY_NOTICE : ""),
+        body: `This software provides a custom user interface and functionality for the ${product} smart glasses. It is not created or supported by ${maker}. If this software somehow breaks your headset, this is not ${makerPossessive} fault and is not covered by the hardware's warranty. If this software doesn't break your headset, using this software may void the hardware's warranty anyways, at the sole discretion of ${maker}. This software is beta; don't rely on it for anything critically important.`,
         primaryLabel: "Agree",
         secondaryLabel: "Back",
         splash: false,
