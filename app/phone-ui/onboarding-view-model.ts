@@ -1,9 +1,10 @@
-import { finishOnboardingNavigation } from "./onboarding-navigation";
 import { Frame, Observable, Screen } from "@nativescript/core";
 import { IOS_PRIVACY_NOTICE } from "../analytics/privacy-disclosure";
+import { glassesTypeSetting, type GlassesType } from "../ui/dashboard-settings";
 
-import { setOnboardingCompleted, setPreviewOnlyMode } from "./onboarding-state";
+import { isPreviewOnlyMode } from "./onboarding-state";
 
+/** Steps are separate pages in the flow; the devices page follows the splash. */
 type OnboardingStep = 1 | 2 | 3;
 
 type StepContent = {
@@ -17,52 +18,85 @@ type StepContent = {
   showSecondary: boolean;
 };
 
-const STEP_CONTENT: Record<OnboardingStep, StepContent> = {
-  1: {
-    headline: "Faceclaw",
-    tagline: "Perching on the faces of giants",
-    body: "",
-    primaryLabel: "Next",
-    secondaryLabel: "",
-    splash: true,
-    showSecondary: false,
-  },
-  2: {
-    headline: "Before You Continue",
-    tagline: "",
-    body: "This software provides a custom user interface and functionality for the Even Realities G2 and G1 smart glasses. It is not created or supported by Even Realities. If this software somehow breaks your headset, this is not Even's fault and is not covered by the hardware's warranty. If this software doesn't break you headset, using this software may void the hardware's warranty anyways, at the sole discretion of Even Realities. This software is beta; don't rely on it for anything critically important." +
-      (global.isIOS ? "\n\niOS / TestFlight privacy\n\n" + IOS_PRIVACY_NOTICE : ""),
-    primaryLabel: "Agree",
-    secondaryLabel: "Back",
-    splash: false,
-    showSecondary: true,
-  },
-  3: {
-    headline: "Custom Firmware Required",
-    tagline: "",
-    body: "Faceclaw only runs on Even Realities G2 or G1 glasses that have Faceclaw's custom firmware installed. You have two choices:\n\n• Preview Only — explore Faceclaw's interface on your phone's screen without pairing any glasses. Nothing is written to a headset.\n\n• Flash Firmware — install the custom firmware on your glasses now, then use Faceclaw for real.\n\nFlashing replaces the official firmware. On a G2 you can uninstall and return to the official firmware later, by reconnecting the official Even Realities app; on a G1 that takes a computer. Installing custom firmware is not covered by warranty.",
-    primaryLabel: "Flash Firmware",
-    secondaryLabel: "Preview Only",
-    splash: false,
-    showSecondary: true,
-  },
+type Makers = { product: string; maker: string; makerPossessive: string };
+
+const GLASSES_MAKER: Record<GlassesType, Makers> = {
+  g1: { product: "Even Realities G1", maker: "Even Realities", makerPossessive: "Even's" },
+  g2: { product: "Even Realities G2", maker: "Even Realities", makerPossessive: "Even's" },
+  "rayneo-io": { product: "RayNeo iO", maker: "RayNeo", makerPossessive: "RayNeo's" },
 };
 
+/** Preview Only: no particular glasses yet, so the disclaimer covers every kind Faceclaw supports. */
+const ANY_GLASSES_MAKER: Makers = { product: "Even Realities G1 and G2 and RayNeo iO", maker: "Even Realities or RayNeo", makerPossessive: "their" };
+
+const WARRANTY_NOTE = "Installing custom firmware is not covered by warranty.";
+// Preview Only is chosen on Your Devices, which is three pages back from here.
+const PREVIEW_HINT = "Not ready? Go back to Your Devices and choose Preview Only to explore Faceclaw on your phone's screen instead.";
+
+function firmwareBody(glasses: GlassesType): string {
+  // Pairing skips the firmware pages for an iO: the app has no flasher for it.
+  if (glasses === "rayneo-io") {
+    return `Faceclaw only runs on a RayNeo iO that has Faceclaw's custom firmware installed. This app can't install it on an iO, so that has to be done separately before you pair your glasses. ${WARRANTY_NOTE}\n\n${PREVIEW_HINT}`;
+  }
+  const restore = glasses === "g1"
+    ? "Returning to the official firmware later takes a computer."
+    : "You can uninstall and return to the official firmware later, by reconnecting the official Even Realities app.";
+  return `Faceclaw only runs on ${GLASSES_MAKER[glasses].product} glasses that have Faceclaw's custom firmware installed. Next, Faceclaw will pair with your glasses, check their firmware, and install the custom firmware if it isn't there yet.\n\nFlashing replaces the official firmware. ${restore} ${WARRANTY_NOTE}\n\n${PREVIEW_HINT}`;
+}
+
+function stepContent(step: OnboardingStep, glasses: GlassesType, previewOnly: boolean): StepContent {
+  const { product, maker, makerPossessive } = previewOnly ? ANY_GLASSES_MAKER : GLASSES_MAKER[glasses];
+  switch (step) {
+    case 1:
+      return {
+        headline: "Faceclaw",
+        tagline: "Perching on the faces of giants",
+        body: "",
+        primaryLabel: "Next",
+        secondaryLabel: "",
+        splash: true,
+        showSecondary: false,
+      };
+    case 2:
+      return {
+        headline: "Before You Continue",
+        tagline: "",
+        body: `This software provides a custom user interface and functionality for the ${product} smart glasses. It is not created or supported by ${maker}. If this software somehow breaks your headset, this is not ${makerPossessive} fault and is not covered by the hardware's warranty. If this software doesn't break your headset, using this software may void the hardware's warranty anyways, at the sole discretion of ${maker}. This software is beta; don't rely on it for anything critically important.` +
+          (global.isIOS ? "\n\niOS / TestFlight privacy\n\n" + IOS_PRIVACY_NOTICE : ""),
+        primaryLabel: "Agree",
+        secondaryLabel: "Back",
+        splash: false,
+        showSecondary: true,
+      };
+    case 3:
+      return {
+        headline: "Custom Firmware Required",
+        tagline: "",
+        body: firmwareBody(glasses),
+        primaryLabel: glasses === "rayneo-io" ? "Pair Glasses" : "Flash Firmware",
+        secondaryLabel: "Back",
+        splash: false,
+        showSecondary: true,
+      };
+  }
+}
+
 export class OnboardingViewModel extends Observable {
-  private _step: OnboardingStep = 1;
+  private readonly step: OnboardingStep;
+  private readonly content: StepContent;
 
   constructor(initialStep?: number) {
     super();
-    if (initialStep === 2 || initialStep === 3) this._step = initialStep;
-    this.publish();
+    this.step = initialStep === 2 || initialStep === 3 ? initialStep : 1;
+    this.content = stepContent(this.step, glassesTypeSetting.get(), isPreviewOnlyMode());
   }
 
   onPrimaryTap(): void {
-    if (this._step === 1) {
-      this.setStep(2);
+    if (this.step === 1) {
+      Frame.topmost()?.navigate({ moduleName: "phone-ui/onboarding-devices-page" });
       return;
     }
-    if (this._step === 2) {
+    if (this.step === 2) {
       // The Permissions screen sits between the disclaimer and the firmware
       // step; it navigates forward to a fresh onboarding page at step 3.
       Frame.topmost()?.navigate({
@@ -93,49 +127,47 @@ export class OnboardingViewModel extends Observable {
     });
   }
 
+  /** Back, on the disclaimer and firmware steps. */
   onSecondaryTap(): void {
-    if (this._step === 2) {
-      this.setStep(1);
+    const frame = Frame.topmost();
+    if (frame?.canGoBack()) {
+      frame.goBack();
       return;
     }
-    if (this._step === 3) {
-      // Step 3 secondary: skip flashing, use the on-phone preview only.
-      setPreviewOnlyMode(true);
-      setOnboardingCompleted(true);
-      finishOnboardingNavigation();
-    }
+    // The disconnect page's Back can open step 3 on a fresh history.
+    frame?.navigate({ moduleName: "phone-ui/onboarding-devices-page", clearHistory: true });
   }
 
   get headline(): string {
-    return STEP_CONTENT[this._step].headline;
+    return this.content.headline;
   }
 
   get tagline(): string {
-    return STEP_CONTENT[this._step].tagline;
+    return this.content.tagline;
   }
 
   get body(): string {
-    return STEP_CONTENT[this._step].body;
+    return this.content.body;
   }
 
   get primaryLabel(): string {
-    return STEP_CONTENT[this._step].primaryLabel;
+    return this.content.primaryLabel;
   }
 
   get secondaryLabel(): string {
-    return STEP_CONTENT[this._step].secondaryLabel;
+    return this.content.secondaryLabel;
   }
 
   get showSecondary(): boolean {
-    return STEP_CONTENT[this._step].showSecondary;
+    return this.content.showSecondary;
   }
 
   get splashVisibility(): "visible" | "collapse" {
-    return STEP_CONTENT[this._step].splash ? "visible" : "collapse";
+    return this.content.splash ? "visible" : "collapse";
   }
 
   get contentVisibility(): "visible" | "collapse" {
-    return STEP_CONTENT[this._step].splash ? "collapse" : "visible";
+    return this.content.splash ? "collapse" : "visible";
   }
 
   /**
@@ -153,25 +185,6 @@ export class OnboardingViewModel extends Observable {
 
   /** License and privacy-policy links, shown only under the disclaimer step. */
   get footerVisibility(): "visible" | "collapse" {
-    return this._step === 2 ? "visible" : "collapse";
-  }
-
-  private setStep(step: OnboardingStep): void {
-    if (this._step === step) return;
-    this._step = step;
-    this.publish();
-  }
-
-  private publish(): void {
-    this.notifyPropertyChange("headline", this.headline);
-    this.notifyPropertyChange("tagline", this.tagline);
-    this.notifyPropertyChange("body", this.body);
-    this.notifyPropertyChange("primaryLabel", this.primaryLabel);
-    this.notifyPropertyChange("secondaryLabel", this.secondaryLabel);
-    this.notifyPropertyChange("showSecondary", this.showSecondary);
-    this.notifyPropertyChange("splashVisibility", this.splashVisibility);
-    this.notifyPropertyChange("contentVisibility", this.contentVisibility);
-    this.notifyPropertyChange("secondaryVisibility", this.secondaryVisibility);
-    this.notifyPropertyChange("footerVisibility", this.footerVisibility);
+    return this.step === 2 ? "visible" : "collapse";
   }
 }

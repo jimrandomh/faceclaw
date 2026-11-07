@@ -45,29 +45,31 @@
                     </Repeater.itemTemplate>
                 </Repeater>
 
-                <Label text="Ring (optional)" class="h2 pairing-section m-t-16" />
-                <Label text="{{ emptyRingMessage }}" class="pairing-empty" textWrap="true" visibility="{{ emptyRingVisibility }}" />
-                <Repeater items="{{ ringRows }}">
-                    <Repeater.itemsLayout>
-                        <StackLayout />
-                    </Repeater.itemsLayout>
-                    <Repeater.itemTemplate>
-                        <GridLayout columns="84,*,auto" rows="auto" class="{{ rowClass }}" tap="{{ onRowTap }}">
-                            <Image col="0" src="{{ imagePath }}" stretch="aspectFit" width="56" height="30" class="pairing-art" />
-                            <StackLayout col="1" class="m-l-8">
-                                <GridLayout columns="auto,auto">
-                                    <Label col="0" text="{{ modelTitle }}" class="pairing-title" />
-                                    <Label col="1" text="{{ badge }}" class="pairing-badge m-l-6" visibility="{{ badgeVisibility }}" />
-                                </GridLayout>
-                                <Label text="{{ proximityLine }}" class="{{ proximityClass }}" />
-                                <Label text="{{ deviceName }}" class="pairing-serial" />
-                                <Label text="{{ armsSummary }}" class="pairing-arms" textWrap="true" visibility="{{ armsVisibility }}" />
-                                <Label text="{{ warning }}" class="pairing-warning" textWrap="true" visibility="{{ warningVisibility }}" />
-                            </StackLayout>
-                            <Label col="2" text="{{ chevron }}" class="pairing-chevron" verticalAlignment="center" />
-                        </GridLayout>
-                    </Repeater.itemTemplate>
-                </Repeater>
+                <StackLayout visibility="{{ ringSectionVisibility }}">
+                    <Label text="Ring (optional)" class="h2 pairing-section m-t-16" />
+                    <Label text="{{ emptyRingMessage }}" class="pairing-empty" textWrap="true" visibility="{{ emptyRingVisibility }}" />
+                    <Repeater items="{{ ringRows }}">
+                        <Repeater.itemsLayout>
+                            <StackLayout />
+                        </Repeater.itemsLayout>
+                        <Repeater.itemTemplate>
+                            <GridLayout columns="84,*,auto" rows="auto" class="{{ rowClass }}" tap="{{ onRowTap }}">
+                                <Image col="0" src="{{ imagePath }}" stretch="aspectFit" width="56" height="30" class="pairing-art" />
+                                <StackLayout col="1" class="m-l-8">
+                                    <GridLayout columns="auto,auto">
+                                        <Label col="0" text="{{ modelTitle }}" class="pairing-title" />
+                                        <Label col="1" text="{{ badge }}" class="pairing-badge m-l-6" visibility="{{ badgeVisibility }}" />
+                                    </GridLayout>
+                                    <Label text="{{ proximityLine }}" class="{{ proximityClass }}" />
+                                    <Label text="{{ deviceName }}" class="pairing-serial" />
+                                    <Label text="{{ armsSummary }}" class="pairing-arms" textWrap="true" visibility="{{ armsVisibility }}" />
+                                    <Label text="{{ warning }}" class="pairing-warning" textWrap="true" visibility="{{ warningVisibility }}" />
+                                </StackLayout>
+                                <Label col="2" text="{{ chevron }}" class="pairing-chevron" verticalAlignment="center" />
+                            </GridLayout>
+                        </Repeater.itemTemplate>
+                    </Repeater>
+                </StackLayout>
 
                 <StackLayout class="pairing-selection m-t-16" visibility="{{ selectionVisibility }}">
                     <Label text="Selected" class="h2 pairing-section" />

@@ -16,6 +16,8 @@ import { isIgnoringBatteryOptimizations, requestIgnoreBatteryOptimizations } fro
 import { hasAllFilesAccess, requestAllFilesAccess } from "../native/file-access";
 import { isNotificationListenerEnabled, requestNotificationListenerAccess } from "../native/notification-access";
 import { mediaControllerBridge } from "../native/media-controller";
+import { finishOnboardingNavigation } from "./onboarding-navigation";
+import { isPreviewOnlyMode, setOnboardingCompleted } from "./onboarding-state";
 
 type PermissionDefinition = {
   id: string;
@@ -227,6 +229,13 @@ export class PermissionsViewModel extends Observable {
           cancelButtonText: "Go Back",
         });
         if (!proceed) return;
+      }
+      if (isPreviewOnlyMode()) {
+        // Preview Only was chosen on Your Devices: with no glasses to set up,
+        // this is the last page.
+        setOnboardingCompleted(true);
+        finishOnboardingNavigation();
+        return;
       }
       // Continue the onboarding chain at the Custom Firmware Required step.
       Frame.topmost()?.navigate({

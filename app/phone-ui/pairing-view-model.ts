@@ -17,9 +17,9 @@ import {
   type RayNeoCandidate,
   type RingCandidate,
 } from "../g2/pairing-candidates";
-import { glassesTypeSetting } from "../ui/dashboard-settings";
+import { glassesTypeSetting, type GlassesType } from "../ui/dashboard-settings";
 import { DeviceDiscoveryBridge } from "../native/device-discovery";
-import { setPreviewOnlyMode } from "./onboarding-state";
+import { hasCompletedOnboarding, ownsRing, setPreviewOnlyMode } from "./onboarding-state";
 
 /** One Repeater row: the presentation plus the display-only fields the XML binds. */
 export type PairingRowItem = PairingRowPresentation & {
@@ -44,6 +44,12 @@ export type PairingRowItem = PairingRowPresentation & {
 
 const REFRESH_INTERVAL_MS = 500;
 const NO_RESULTS_HINT_AFTER_MS = 10_000;
+
+const SETUP_GLASSES_NAME: Record<GlassesType, string> = {
+  g1: "G1 glasses",
+  g2: "G2 glasses",
+  "rayneo-io": "RayNeo iO",
+};
 
 /**
  * Live pairing scan. Streams advertisements into a `DiscoveryAggregator`,
@@ -72,10 +78,21 @@ export class PairingViewModel extends Observable {
   private selectedIo: RayNeoCandidate | null = null;
   private readonly previouslyPairedSerial: string | null;
   private readonly previouslyPairedRing: string;
+  /**
+   * The glasses chosen on the Your Devices page, during first-run setup. Null
+   * otherwise: the main menu's "Pair glasses" also comes here with onboarding
+   * set, to pair whatever you've got now, so it offers everything. Only the
+   * wording follows this; any glasses heard are still listed, so a wrong choice
+   * can't strand anyone.
+   */
+  private readonly setupGlasses: GlassesType | null;
+  private readonly showRings: boolean;
 
   constructor(options?: { onboarding?: boolean }) {
     super();
     this.onboarding = options?.onboarding ?? false;
+    this.setupGlasses = this.onboarding && !hasCompletedOnboarding() ? glassesTypeSetting.get() : null;
+    this.showRings = !this.setupGlasses || ownsRing();
     this.previouslyPairedSerial = loadPairedGlassesIdentity()?.serial ?? null;
     this.previouslyPairedRing = loadDeviceAddresses().ring;
     // A backgrounded phone (Home, screen lock, a call) must not keep the
@@ -185,6 +202,14 @@ export class PairingViewModel extends Observable {
   }
 
   get instructions(): string {
+    if (this.setupGlasses) {
+      const name = SETUP_GLASSES_NAME[this.setupGlasses];
+      const ready = this.setupGlasses === "g1"
+        ? "Put the glasses in their case with the lid open"
+        : "Wear the glasses or take them out of the case";
+      return `Select your ${name}${this.showRings ? " and your R1 ring" : ""} below. ${ready}, and keep them near your phone. ` +
+        "If they are not detected, make sure no other apps are connected.";
+    }
     return (
       "Select your G2 or G1 glasses or RayNeo iO, and your R1 ring if you have one, below. Wear the glasses or take them out of the case " +
       "(a G1 pairs only in its case, with the lid open), and keep the glasses and phone nearby. If your glasses are not detected, " +
@@ -240,9 +265,13 @@ export class PairingViewModel extends Observable {
     const elapsed = Date.now() - this.startedAtMs;
     if (elapsed < NO_RESULTS_HINT_AFTER_MS) return "Listening for glasses…";
     return (
-      "No glasses heard yet. Make sure they are out of the case and not connected to another app. " +
+      `No glasses heard yet. Make sure they are ${this.setupGlasses === "g1" ? "in their case with the lid open" : "out of the case"} and not connected to another app. ` +
       "On Android 11 and older, Location must also be switched on for Bluetooth scanning to return results."
     );
+  }
+
+  get ringSectionVisibility(): "visible" | "collapse" {
+    return this.showRings ? "visible" : "collapse";
   }
 
   get emptyRingVisibility(): "visible" | "collapse" {
@@ -429,7 +458,7 @@ export class PairingViewModel extends Observable {
   private refresh(): void {
     this.aggregator.prune(Date.now(), DEFAULT_STALE_AFTER_MS);
     const pairs = this.aggregator.pairs();
-    const rings = this.aggregator.rings();
+    const rings = this.showRings ? this.aggregator.rings() : [];
     const rayneos = this.aggregator.rayneos();
     if (this.selectedIo) {
       this.selectedIo = rayneos.find((candidate) => candidate.id === this.selectedIo!.id) ?? null;

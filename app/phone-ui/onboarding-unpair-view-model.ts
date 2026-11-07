@@ -1,10 +1,28 @@
 import { Frame, Observable, Screen } from "@nativescript/core";
 
 import { openEvenAppSettings } from "../native/even-app-conflict";
+import { glassesTypeSetting } from "../ui/dashboard-settings";
+import { hasCompletedOnboarding } from "./onboarding-state";
 
 export class OnboardingUnpairViewModel extends Observable {
+  /**
+   * Setting up a RayNeo iO, so the Even app doesn't apply. Only during first-run
+   * setup: "Pair glasses" in the main menu also opens this page, and you may be
+   * pairing something other than the glasses you paired before.
+   */
+  private readonly settingUpIo = !hasCompletedOnboarding() && glassesTypeSetting.get() === "rayneo-io";
+
+  get otherAppsInstructions(): string {
+    const apps = this.settingUpIo ? "another app" : "another app (such as Even Realities or MentraOS)";
+    return `Your glasses can only be connected to one app or phone at a time. If they're connected to ${apps} or another phone, disconnect them there before continuing. If nothing else is connected, you can continue.`;
+  }
+
+  get evenAppVisibility(): "visible" | "collapse" {
+    return this.settingUpIo ? "collapse" : "visible";
+  }
+
   get settingsButtonVisibility(): "visible" | "collapse" {
-    return global.isAndroid ? "visible" : "collapse";
+    return global.isAndroid && !this.settingUpIo ? "visible" : "collapse";
   }
 
   get evenAppInstructions(): string {

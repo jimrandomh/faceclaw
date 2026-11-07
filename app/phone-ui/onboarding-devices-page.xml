@@ -1,0 +1,43 @@
+<Page xmlns="http://schemas.nativescript.org/tns.xsd" navigatingTo="navigatingTo" actionBarHidden="true">
+    <GridLayout rows="*,auto" class="p-20">
+        <ScrollView row="0">
+            <StackLayout>
+                <Label text="Your Devices" class="h1 text-center m-t-24" textWrap="true" />
+                <Label
+                    text="Which devices do you have? The rest of setup will be tailored to them."
+                    class="body-text m-t-24" textWrap="true" />
+
+                <Label text="Glasses" class="h2 pairing-section m-t-24" />
+                <Repeater items="{{ glassesOptions }}">
+                    <Repeater.itemsLayout>
+                        <StackLayout />
+                    </Repeater.itemsLayout>
+                    <Repeater.itemTemplate>
+                        <GridLayout columns="*,auto" rows="auto" class="{{ rowClass }}" tap="{{ onRowTap }}">
+                            <StackLayout col="0" verticalAlignment="center">
+                                <Label text="{{ label }}" class="pairing-title" />
+                                <Label text="{{ note }}" class="permissions-description" textWrap="true" visibility="{{ noteVisibility }}" />
+                            </StackLayout>
+                            <Label col="1" text="✓" class="permissions-check" verticalAlignment="center" visibility="{{ checkVisibility }}" />
+                        </GridLayout>
+                    </Repeater.itemTemplate>
+                </Repeater>
+
+                <Label text="Accessories" class="h2 pairing-section m-t-16" />
+                <GridLayout columns="*,auto" rows="auto" class="pairing-row">
+                    <Label col="0" text="Even R1 ring" class="pairing-title" verticalAlignment="center" />
+                    <Switch col="1" checked="{{ hasRing }}" verticalAlignment="center" margin="0" />
+                </GridLayout>
+                <GridLayout columns="*,auto" rows="auto" class="pairing-row">
+                    <Label col="0" text="{{ watchLabel }}" class="pairing-title" verticalAlignment="center" />
+                    <Switch col="1" checked="{{ hasWatch }}" verticalAlignment="center" margin="0" />
+                </GridLayout>
+            </StackLayout>
+        </ScrollView>
+
+        <GridLayout row="1" columns="*,*" class="m-t-20">
+            <Button col="0" text="Back" tap="{{ onBackTap }}" />
+            <Button col="1" text="Next" tap="{{ onNextTap }}" class="-primary" />
+        </GridLayout>
+    </GridLayout>
+</Page>
