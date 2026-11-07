@@ -4,6 +4,9 @@ import type { MenuHighlightAnimation } from "../ui/menu-highlight-motion";
 import { Glyph } from "./bdffont";
 import { wrapText } from "./textwrap";
 
+// This file is also built by tests/tsconfig.json, which has no DOM or Node types.
+declare const console: { warn(message: string): void };
+
 export const G2_LENS_WIDTH = 640;
 export const G2_LENS_HEIGHT = 480;
 /** RayNeo iO screen (per eye) with the Faceclaw firmware: 540x220. */
@@ -159,9 +162,15 @@ export class GrayImage {
   private memoizedSourceHash: number | null = null;
 
   constructor(width: number, height: number, fill = 0) {
-    this.width = width;
-    this.height = height;
-    this.pixels = new Uint8Array(width * height);
+    // A fractional width would put most rows' `y * width + x` between pixels,
+    // silently losing them. TTF text measures fractionally, so this is easy to
+    // hit; the stack is there because the size alone doesn't identify the caller.
+    if (!Number.isInteger(width) || !Number.isInteger(height)) {
+      console.warn(`GrayImage: rounding up non-integer size ${width}x${height}\n${new Error().stack}`);
+    }
+    this.width = Math.ceil(width);
+    this.height = Math.ceil(height);
+    this.pixels = new Uint8Array(this.width * this.height);
     if (fill !== 0) {
       this.clear(fill);
     }

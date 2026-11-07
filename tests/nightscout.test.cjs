@@ -125,14 +125,14 @@ test('overflow warning backgrounds cover graph pixels and deferred graph labels'
   assert.equal(baked.getPixel(200, 8), 56, 'uncovered graph remains visible');
 });
 
-function fixture(always = false) {
+function fixture(always = false, GrayImage = Image, uiFont = font) {
   let time = now, icon, tick, changed, notify, renders = 0;
   const state = { ...healthy, available: true, latest: { sgv: 100, timestampMs: now }, history: [], units: 'mg/dL', delta: 0, direction: '', iob: 1, cob: 0, pumpStatus: '0m ago', configurationMissing: false };
   const bridge = { snapshot: () => state, onStateChange(fn) { notify = fn; fn(state); } };
   const settings = { loadNightscoutThresholds: () => limits, nightscoutAlwaysShowInTopBarSetting: { get: () => always }, onAnySettingChanged(fn) { changed = fn; }, isNightscoutSettingsConfigured: () => true };
   const deps = {
-    '../../graphics/image': { GrayImage: Image },
-    '../../graphics/ui-fonts': { getDefaultSmallFont: () => font, getDefaultLargeFont: () => font },
+    '../../graphics/image': { GrayImage },
+    '../../graphics/ui-fonts': { getDefaultSmallFont: () => uiFont, getDefaultLargeFont: () => uiFont },
     '../../native/nightscout-bridge': { nightscoutBridge: bridge },
     '../../ui/dashboard-settings': settings,
     './nightscout-alerts': alerts,
@@ -179,6 +179,22 @@ test('tray is hidden by default and clears recovered measurement warnings immedi
   const second = f.app.createNightscoutAppWindow({ onClosed() {} });
   first.close(); assert.ok(f.icon());
   second.close(); assert.equal(f.icon(), null);
+});
+
+test('tray keeps every pixel row when a TTF font measures the reading fractionally', () => {
+  const { GrayImage } = require('../.test-build/app/graphics/image.js');
+  // 8.875 is Roboto-Light 16's digit advance under iOS Core Text.
+  const f = fixture(true, GrayImage, { ...font, measureText: text => text.length * 8.875, drawText() {} });
+  f.state.latest = { sgv: 142, timestampMs: now };
+  // Spans the graph's full 60..200 range, so its line crosses every row.
+  f.state.history = [{ timestampMs: now - 10 * 60_000, sgv: 200 }, { timestampMs: now, sgv: 60 }];
+  f.app.startNightscoutTrayIcon();
+  const icon = f.icon();
+  assert.ok(Number.isInteger(icon.width), `width ${icon.width}`);
+  for (let y = 0; y < icon.height; y++) {
+    const row = Array.from({ length: icon.width }, (_, x) => icon.getPixel(x, y));
+    assert.ok(row.some(value => value !== 0), `row ${y} of the graph is drawn`);
+  }
 });
 
 test('main page highlights only the breached field and removes highlights on recovery', () => {
