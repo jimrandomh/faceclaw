@@ -2,7 +2,7 @@
  * Maps Roam block trees (roam-api.ts) into the shared document model
  * (ui/document): parses the subset of Roam markup the glasses can render —
  * {{[[TODO]]}} / {{[[DONE]]}} markers, [[page]] / #tag / [text](url) links,
- * `inline code` and ```code blocks``` — and strips emphasis markers it can't.
+ * `inline code` and ```code blocks``` — and strips emphasis markers.
  * Also the block-lookup helpers the voice tools use.
  */
 import type { DocInline, DocNode, DocumentRoot } from "../../ui/document/document-model";
@@ -68,7 +68,7 @@ export function plainBlockText(text: string): string {
 // Inline markup
 
 export function parseInlineMarkup(text: string): DocInline[] {
-  // Emphasis renders no differently on the glasses; drop the markers.
+  // Emphasis isn't mapped onto the document model's bold/underline; drop the markers.
   const source = text.replace(/\*\*|__|\^\^|~~/g, "");
   const inlines: DocInline[] = [];
   let plain = "";

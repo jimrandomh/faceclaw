@@ -8,10 +8,10 @@
  * broadcast, matching the old getDefaultSmallFont pattern (these getters are
  * called per menu row per paint).
  */
-import { getFont, type BdfFont } from "./bdffont";
+import { BdfFont, getFont, getTerminusFont, TERMINUS_SIZES } from "./bdffont";
 import type { UiFont } from "./image";
 import { TtfFont } from "./ttf-font";
-import { ensurePreinstalledFonts, getInstalledFont, installedFontPath } from "./installed-fonts";
+import { boldSiblingFont, ensurePreinstalledFonts, getInstalledFont, installedFontPath } from "./installed-fonts";
 import { getStringSetting, onSettingsStoreChanged, setStringSetting } from "../native/settings-store";
 
 export type BitmapFace = "terminus" | "terminusv";
@@ -207,6 +207,52 @@ export function getDefaultMediumFont(): UiFont {
 }
 export function getDefaultLargeFont(): UiFont {
   return uiRoleFonts.get("large");
+}
+
+// --- Variants of a UI font, for styled text ---
+
+const fontVariants = new Map<string, UiFont>();
+
+/**
+ * `base` scaled in size and optionally in a heavier weight, for text styled
+ * within a body of `base` (headings, bold runs). Falls back to `base` when
+ * nothing else loads. Memoized, since base fonts are themselves singletons.
+ */
+export function uiFontVariant(base: UiFont, scale: number, bold: boolean): UiFont {
+  if (scale === 1 && !bold) return base;
+  const key = `${base.fingerprintId}:${scale}:${bold}`;
+  let variant = fontVariants.get(key);
+  if (!variant) {
+    variant = (base instanceof TtfFont ? ttfVariant(base, scale, bold) : terminusVariant(base, scale, bold)) ?? base;
+    fontVariants.set(key, variant);
+  }
+  return variant;
+}
+
+function ttfVariant(base: TtfFont, scale: number, bold: boolean): TtfFont | null {
+  const size = Math.round(base.sizePx * scale);
+  if (!bold) return TtfFont.load(base.path, size, base.gamma);
+  const sibling = boldSiblingFont(base.path);
+  // A face with nothing heavier installed (including one already the heaviest)
+  // is emboldened, so bold text still stands out from the body.
+  return (
+    (sibling ? TtfFont.load(sibling.path, size, base.gamma) : null) ??
+    TtfFont.load(base.path, size, base.gamma, true)
+  );
+}
+
+/**
+ * Bitmap UI fonts are all Terminus-derived. Terminus's 12px "bold" is the same
+ * as its normal face for all but a few glyphs, so bold at that size thickens
+ * the base font instead (which also keeps TerminusV proportional).
+ */
+function terminusVariant(base: UiFont, scale: number, bold: boolean): BdfFont | null {
+  const target = base.lineHeight * scale;
+  const size = TERMINUS_SIZES.reduce((best, candidate) =>
+    Math.abs(candidate - target) < Math.abs(best - target) ? candidate : best,
+  );
+  if (bold && size === 12 && base instanceof BdfFont) return base.emboldened();
+  return getTerminusFont(size, bold);
 }
 
 /**

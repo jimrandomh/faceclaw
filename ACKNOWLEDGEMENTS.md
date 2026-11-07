@@ -3,8 +3,9 @@ Acknowledgements
 
 Faceclaw is an open source project, at https://github.com/jimrandomh/faceclaw.
 Contributors include:
-    James Babcock <jimrandomh@gmail.com>
-    Kalani Helekunihi <i@am.guru>
+
+ * James Babcock <jimrandomh@gmail.com>
+ * Kalani Helekunihi <i@am.guru>
 
 
 Many thanks to g2-kit-unofficial: https://github.com/Commute773/g2-kit-unofficial/,

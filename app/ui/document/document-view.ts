@@ -1,57 +1,71 @@
 /**
- * Renders a DocumentRoot (document-model.ts) into a scrollable, selectable
- * region: nested nodes indent, todo nodes get checkboxes, links underline,
- * code blocks get a shaded box. Selection moves over nodes (a node's wrapped
- * lines highlight as one unit) and the scroll position follows it, matching
- * the house list style in ui/menu.ts.
+ * Renders a DocumentRoot (document-model.ts), as laid out by document-layout.ts,
+ * into a scrollable region: nested nodes indent, todo nodes get checkboxes,
+ * links and underlined text underline, bold text draws in a heavier weight,
+ * headings draw larger, code blocks get a shaded box, block quotes get a
+ * vertical bar.
+ *
+ * Two modes. As an outline (the default), selection moves over nodes (a node's
+ * wrapped lines highlight as one unit) and the scroll position follows it,
+ * matching the house list style in ui/menu.ts. As a reader, nothing is
+ * selectable and the document turns a page at a time (pageBy).
  */
 import { GrayImage, type UiFont } from "../../graphics/image";
-import { getDefaultMediumFont, getDefaultSmallFont } from "../../graphics/ui-fonts";
-import { wrapText } from "../../graphics/textwrap";
+import { getDefaultSmallFont, uiFontVariant } from "../../graphics/ui-fonts";
 import { clamp } from "../../util/numeric-util";
 import { drawListScrollbar, drawSelectionHighlight } from "../menu";
+import type { DocNode, DocumentRoot } from "./document-model";
 import {
-  docNodePlainText,
-  type DocInline,
-  type DocNode,
-  type DocumentRoot,
-} from "./document-model";
+  CODE_INSET,
+  layoutDocument,
+  pageStartLines,
+  RIGHT_PAD,
+  visibleLineCount,
+  type DocFontStyle,
+  type DocLine,
+  type DocSegment,
+} from "./document-layout";
 
-const INDENT_STEP = 18;
-const MARKER_GUTTER = 16;
-const RIGHT_PAD = 10;
-const CODE_INSET = 6;
+/** Heading size relative to body text, for levels 1, 2, 3; deeper levels are body-sized. */
+const HEADING_SCALES = [1.5, 1.3, 1.15];
 
-type SegmentStyle = "plain" | "link" | "code";
+const QUOTE_BAR_WIDTH = 2;
+const QUOTE_BAR_VALUE = 130;
+const RULE_VALUE = 100;
 
-type Segment = { text: string; x: number; style: SegmentStyle };
+/** All document fonts derive from the UI font; headings are always bold. */
+function documentFont(style: DocFontStyle): UiFont {
+  const base = getDefaultSmallFont();
+  if (style.headingLevel !== undefined) {
+    return uiFontVariant(base, HEADING_SCALES[style.headingLevel - 1] ?? 1, true);
+  }
+  return style.bold ? uiFontVariant(base, 1, true) : base;
+}
 
-type LayoutLine = {
-  node: DocNode;
-  /** Index into the selectable-node list, or -1 for unselectable filler. */
-  selectableIndex: number;
-  /** First wrapped line of its node (draws the bullet/checkbox marker). */
-  firstOfNode: boolean;
-  indentX: number;
-  textX: number;
-  height: number;
-  font: UiFont;
-  /** Line belongs to a code block (shaded background). */
-  codeBlock: boolean;
-  segments: Segment[];
+export type DocumentViewOptions = {
+  /** Read-only paged prose: no selection, no scrollbar, and turn pages with pageBy. */
+  reading?: boolean;
 };
 
 export class DocumentView {
   private root: DocumentRoot | null = null;
-  private lines: LayoutLine[] = [];
+  private lines: DocLine[] = [];
   private selectable: DocNode[] = [];
   private selectedIndex = 0;
   private scrollLine = 0;
+  /** The UI font the current layout was made with. */
+  private layoutFontId = 0;
+  /** Lazily computed for the current layout and size (reading mode). */
+  private pageStarts: number[] | null = null;
+  private readonly reading: boolean;
 
   constructor(
     private width: number,
     private height: number,
-  ) {}
+    options: DocumentViewOptions = {},
+  ) {
+    this.reading = !!options.reading;
+  }
 
   /** Re-wrap the document for a region of a new size, keeping the selection in view. */
   resize(width: number, height: number): void {
@@ -70,7 +84,12 @@ export class DocumentView {
       if (index >= 0) this.selectedIndex = index;
     }
     this.selectedIndex = clamp(this.selectedIndex, 0, Math.max(0, this.selectable.length - 1));
-    this.scrollLine = clamp(this.scrollLine, 0, this.maxScrollLine());
+    if (this.reading) {
+      const starts = this.getPageStarts();
+      this.scrollLine = starts[this.pageIndexOf(this.scrollLine, starts)]!;
+    } else {
+      this.scrollLine = clamp(this.scrollLine, 0, this.maxScrollLine());
+    }
     this.ensureSelectionVisible();
   }
 
@@ -97,8 +116,25 @@ export class DocumentView {
     return true;
   }
 
+  /** Turn pages (reading mode). False when already at that end of the document. */
+  pageBy(delta: number): boolean {
+    const starts = this.getPageStarts();
+    const next = clamp(this.pageIndexOf(this.scrollLine, starts) + delta, 0, starts.length - 1);
+    if (starts[next] === this.scrollLine) return false;
+    this.scrollLine = starts[next]!;
+    return true;
+  }
+
+  /** The current 1-based page and the page count (reading mode). */
+  pagePosition(): { page: number; pageCount: number } {
+    const starts = this.getPageStarts();
+    return { page: this.pageIndexOf(this.scrollLine, starts) + 1, pageCount: starts.length };
+  }
+
   /** Draw the document region onto `target` with its top-left at (x, y). */
   paint(target: GrayImage, x: number, y: number, focused: boolean): void {
+    // A font change (Settings is reachable with a document open) needs a re-wrap.
+    if (this.root && getDefaultSmallFont().fingerprintId !== this.layoutFontId) this.setDocument(this.root);
     const image = new GrayImage(this.width, this.height, 0);
     const selected = this.selectedNode();
     const visibleCount = this.visibleCountFrom(this.scrollLine);
@@ -135,6 +171,12 @@ export class DocumentView {
         image.fillRect(line.textX - CODE_INSET, lineY, this.width - line.textX - RIGHT_PAD + CODE_INSET, line.height, 16);
         image.drawLine(line.textX - CODE_INSET, lineY, line.textX - CODE_INSET, lineY + line.height - 1, 70);
       }
+      for (const barX of line.quoteBars) {
+        image.fillRect(barX, lineY, QUOTE_BAR_WIDTH, line.height, QUOTE_BAR_VALUE);
+      }
+      if (line.node.kind === "rule") {
+        image.fillRect(line.indentX, lineY + Math.floor(line.height / 2), this.width - line.indentX - RIGHT_PAD, 1, RULE_VALUE);
+      }
       if (line.firstOfNode) this.drawMarker(image, line, lineY);
       for (const segment of line.segments) {
         this.drawSegment(image, line, segment, lineY, isSelected);
@@ -142,13 +184,13 @@ export class DocumentView {
       lineY += line.height;
     }
 
-    if (this.lines.length > visibleCount) {
+    if (!this.reading && this.lines.length > visibleCount) {
       drawListScrollbar(image, this.width - 3, 0, this.height, this.scrollLine, visibleCount, this.lines.length);
     }
     target.bitBlt(image, x, y);
   }
 
-  private drawMarker(image: GrayImage, line: LayoutLine, lineY: number): void {
+  private drawMarker(image: GrayImage, line: DocLine, lineY: number): void {
     const node = line.node;
     if (node.kind === "todo") {
       const boxY = lineY + Math.max(0, Math.floor((line.height - 10) / 2)) - 1;
@@ -157,34 +199,46 @@ export class DocumentView {
         image.drawLine(line.indentX + 2, boxY + 5, line.indentX + 4, boxY + 7, 220);
         image.drawLine(line.indentX + 4, boxY + 7, line.indentX + 8, boxY + 2, 220);
       }
+    } else if (node.marker !== undefined) {
+      image.drawText(line.font, line.indentX, lineY + 1 + line.ascent - line.font.ascent, node.marker, 170);
     } else if (node.kind !== "heading" && node.kind !== "code" && node.bullet) {
       const dotY = lineY + Math.floor(line.height / 2) - 1;
       image.fillRect(line.indentX + 4, dotY, 3, 3, 130);
     }
   }
 
-  private drawSegment(image: GrayImage, line: LayoutLine, segment: Segment, lineY: number, selected: boolean): void {
+  private segmentValue(line: DocLine, segment: DocSegment, selected: boolean): number {
     const node = line.node;
-    const width = line.font.measureText(segment.text);
+    if (node.kind === "todo" && node.checked) return selected ? 150 : 110;
+    if (this.reading) {
+      if (node.kind === "heading" || segment.bold) return 255;
+      return line.codeBlock ? 200 : 230;
+    }
     let value: number;
     if (node.kind === "heading") {
       value = 225;
-    } else if (node.kind === "todo" && node.checked) {
-      value = 110;
     } else if (line.codeBlock) {
       value = 185;
-    } else if (segment.style === "link") {
+    } else if (segment.kind === "link" || segment.bold) {
       value = 220;
     } else {
       value = 195;
     }
-    if (selected) value = Math.min(250, value + 40);
-    if (segment.style === "code" && !line.codeBlock) {
+    return selected ? Math.min(250, value + 40) : value;
+  }
+
+  private drawSegment(image: GrayImage, line: DocLine, segment: DocSegment, lineY: number, selected: boolean): void {
+    const { font } = segment;
+    const width = font.measureText(segment.text);
+    const textY = lineY + 1 + line.ascent - font.ascent;
+    if (segment.kind === "code" && !line.codeBlock) {
       image.fillRect(segment.x - 1, lineY, width + 2, line.height, 25);
     }
-    image.drawText(line.font, segment.x, lineY + 1, segment.text, value);
-    if (segment.style === "link" && width > 0) {
-      image.drawLine(segment.x, lineY + line.height - 2, segment.x + width - 1, lineY + line.height - 2, node.kind === "todo" && node.checked ? 70 : 120);
+    image.drawText(font, segment.x, textY, segment.text, this.segmentValue(line, segment, selected));
+    if (segment.underline && width > 0) {
+      const underlineY = textY + font.ascent + Math.max(1, font.descent - 1);
+      const dimmed = line.node.kind === "todo" && line.node.checked;
+      image.drawLine(segment.x, underlineY, segment.x + width - 1, underlineY, dimmed ? 70 : this.reading ? 170 : 120);
     }
   }
 
@@ -192,80 +246,35 @@ export class DocumentView {
   // Layout
 
   private layout(): void {
-    this.lines = [];
-    this.selectable = [];
-    if (!this.root) return;
-    for (const node of this.root.nodes) this.layoutNode(node, 0);
+    this.pageStarts = null;
+    this.layoutFontId = getDefaultSmallFont().fingerprintId;
+    if (!this.root) {
+      this.lines = [];
+      this.selectable = [];
+      return;
+    }
+    const layout = layoutDocument(this.root, { width: this.width, reading: this.reading, fontFor: documentFont });
+    this.lines = layout.lines;
+    this.selectable = layout.selectable;
   }
 
-  private layoutNode(node: DocNode, depth: number): void {
-    const font = node.kind === "heading" ? getDefaultMediumFont() : getDefaultSmallFont();
-    const lineHeight = font.lineHeight + 2;
-    const indentX = 4 + depth * INDENT_STEP;
-    const textX = indentX + MARKER_GUTTER;
-    const textWidth = Math.max(40, this.width - textX - RIGHT_PAD);
-    const plainText = docNodePlainText(node);
-    const selectableIndex = plainText.trim().length > 0 ? this.selectable.length : -1;
-    if (selectableIndex >= 0) this.selectable.push(node);
+  private getPageStarts(): number[] {
+    this.pageStarts ??= pageStartLines(this.lines, this.height);
+    return this.pageStarts;
+  }
 
-    const base = {
-      node,
-      selectableIndex,
-      indentX,
-      textX,
-      height: lineHeight,
-      font,
-      codeBlock: node.kind === "code",
-    };
-
-    if (node.kind === "code") {
-      const codeLines = wrapText(font, node.codeText ?? "", textWidth - CODE_INSET, {
-        preserveLeadingWhitespace: true,
-        breakLongWords: true,
-      });
-      codeLines.forEach((text, index) => {
-        this.lines.push({
-          ...base,
-          firstOfNode: index === 0,
-          segments: [{ text, x: textX, style: "plain" }],
-        });
-      });
-    } else if (plainText.length === 0) {
-      this.lines.push({ ...base, firstOfNode: true, segments: [] });
-    } else {
-      const wrapped = wrapText(font, plainText, textWidth, { breakLongWords: true });
-      const spans = inlineSpans(node.inlines);
-      let cursor = 0;
-      wrapped.forEach((text, index) => {
-        let start = cursor;
-        if (text.length > 0) {
-          const found = plainText.indexOf(text, cursor);
-          start = found >= 0 ? found : cursor;
-          cursor = start + text.length;
-        }
-        this.lines.push({
-          ...base,
-          firstOfNode: index === 0,
-          segments: segmentLine(font, text, start, spans, textX),
-        });
-      });
-    }
-
-    for (const child of node.children) this.layoutNode(child, depth + 1);
+  /** The page showing `line`: the last page starting at or before it. */
+  private pageIndexOf(line: number, starts: readonly number[]): number {
+    let page = 0;
+    while (page + 1 < starts.length && starts[page + 1]! <= line) page++;
+    return page;
   }
 
   // -------------------------------------------------------------------------
   // Scrolling
 
   private visibleCountFrom(start: number): number {
-    let used = 0;
-    let count = 0;
-    for (let index = start; index < this.lines.length; index++) {
-      used += this.lines[index]!.height;
-      if (used > this.height) break;
-      count++;
-    }
-    return Math.max(1, count);
+    return visibleLineCount(this.lines, start, this.height);
   }
 
   private maxScrollLine(): number {
@@ -295,50 +304,4 @@ export class DocumentView {
     if (first < scroll) scroll = first;
     this.scrollLine = clamp(scroll, 0, this.maxScrollLine());
   }
-}
-
-type InlineSpan = { start: number; end: number; style: SegmentStyle };
-
-function inlineSpans(inlines: readonly DocInline[]): InlineSpan[] {
-  const spans: InlineSpan[] = [];
-  let offset = 0;
-  for (const inline of inlines) {
-    const end = offset + inline.text.length;
-    const style: SegmentStyle = inline.kind === "link" ? "link" : inline.kind === "code" ? "code" : "plain";
-    if (inline.text.length > 0) spans.push({ start: offset, end, style });
-    offset = end;
-  }
-  return spans;
-}
-
-/** Split one wrapped line (plainText[start..start+text.length)) at span boundaries. */
-function segmentLine(
-  font: UiFont,
-  text: string,
-  start: number,
-  spans: readonly InlineSpan[],
-  textX: number,
-): Segment[] {
-  if (text.length === 0) return [];
-  const end = start + text.length;
-  const segments: Segment[] = [];
-  let x = textX;
-  let cursor = start;
-  while (cursor < end) {
-    const span = spans.find((candidate) => candidate.start <= cursor && cursor < candidate.end);
-    const spanEnd = span ? Math.min(span.end, end) : nextSpanStart(spans, cursor, end);
-    const piece = text.slice(cursor - start, spanEnd - start);
-    segments.push({ text: piece, x, style: span?.style ?? "plain" });
-    x += font.measureText(piece);
-    cursor = spanEnd;
-  }
-  return segments;
-}
-
-function nextSpanStart(spans: readonly InlineSpan[], cursor: number, end: number): number {
-  let next = end;
-  for (const span of spans) {
-    if (span.start > cursor && span.start < next) next = span.start;
-  }
-  return next;
 }

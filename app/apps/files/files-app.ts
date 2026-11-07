@@ -10,7 +10,7 @@ import { FileInfoDialogLayer, type FileInfoAction } from "./file-info-dialog";
 import { type LayerContext } from "../../ui/layers";
 import { FontPreviewerLayer } from "./font-previewer";
 import { ImageViewerLayer } from "./image-viewer";
-import { TextViewerLayer } from "./text-viewer";
+import { textDocumentLayer } from "./text-viewer";
 import {
   createInProcessWindow,
   YieldAtRootLayer,
@@ -22,7 +22,7 @@ import { shell } from "../../ui/shell/shell";
 export const FILES_WINDOW_ID = "files";
 export const FILES_SURFACE_ID = "window:files";
 
-const TEXT_FILE = /\.(txt|md|log)$/i;
+const TEXT_FILE = /\.(txt|md|markdown|log)$/i;
 const EHPK_FILE = /\.ehpk$/i;
 
 export type FilesAppOptions = InProcessAppOptions & {
@@ -94,7 +94,7 @@ export function createTextDocumentWindow(
     icon: "file-text",
     closeable: true,
     actions: options.actions,
-    baseLayer: new YieldAtRootLayer(new TextViewerLayer(text, title)),
+    baseLayer: new YieldAtRootLayer(textDocumentLayer(text, title)),
     submitFrame: options.submitFrame,
     setSurfaceVisible: options.setSurfaceVisible,
     removeSurface: options.removeSurface,
@@ -183,7 +183,7 @@ function fileOpenActions(entry: DirectoryEntry, options: FilesAppOptions): FileI
         onSelect: (ctx) => {
           const text = readTextFile(entry.path);
           ctx.stack.pop();
-          ctx.stack.push(new TextViewerLayer(text ?? "(could not read file)", entry.name));
+          ctx.stack.push(textDocumentLayer(text ?? "(could not read file)", entry.name));
         },
       },
       {

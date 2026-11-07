@@ -31,6 +31,11 @@ const PREINSTALLED_FONT_FILES = [
   "RobotoMono-Bold.ttf",
 ] as const;
 
+/** Added to an italic face's weightOrder, so italics sort after all uprights. */
+const ITALIC_WEIGHT_OFFSET = 1000;
+/** The lightest weight that reads as bold (semibold). */
+const MIN_BOLD_WEIGHT = 600;
+
 export type InstalledFont = {
   /** Absolute path, loadable by TtfFont / FontFileRenderer. */
   path: string;
@@ -138,6 +143,23 @@ export function getInstalledFont(fileName: string): InstalledFont | null {
   return fontMetadata(path, fileName);
 }
 
+/**
+ * The installed face to use as bold for the upright face at `path`: the
+ * lightest in its family that's actually bold, or failing that its heaviest
+ * face that's still heavier. Null when the family has nothing heavier.
+ */
+export function boldSiblingFont(path: string): InstalledFont | null {
+  const current = getInstalledFont(path.slice(path.lastIndexOf("/") + 1));
+  if (!current) return null;
+  const heavier = listInstalledFonts().filter(
+    (font) =>
+      font.family === current.family &&
+      font.weightOrder > current.weightOrder &&
+      font.weightOrder < ITALIC_WEIGHT_OFFSET,
+  );
+  return heavier.find((font) => font.weightOrder >= MIN_BOLD_WEIGHT) ?? heavier[heavier.length - 1] ?? null;
+}
+
 const metadataCache = new Map<string, InstalledFont | null>();
 
 function fontMetadata(path: string, fileName: string): InstalledFont | null {
@@ -189,7 +211,7 @@ function styleWeightOrder(style: string): number {
     "heavy": 900,
   };
   const weight = weights[withoutItalic] ?? 400;
-  return /\bitalic\b/i.test(style) ? weight + 1000 : weight;
+  return /\bitalic\b/i.test(style) ? weight + ITALIC_WEIGHT_OFFSET : weight;
 }
 
 /**

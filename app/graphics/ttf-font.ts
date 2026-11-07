@@ -36,11 +36,14 @@ declare const global: any;
  */
 const DEFAULT_TTF_GAMMA = 1.0;
 
+/** How much an emboldened face thickens each glyph, and so widens its advance. */
+const EMBOLDEN_PX = 1;
+
 const loadedFonts = new Map<string, TtfFont | null>();
 
 export class TtfFont implements GlyphFont {
   readonly fingerprintId = allocateFontFingerprintId();
-  /** Stable cross-context atlas identity: face + size + gamma. */
+  /** Stable cross-context atlas identity: face + size + gamma + embolden. */
   readonly atlasKey: string;
   readonly ascent: number;
   readonly descent: number;
@@ -54,21 +57,27 @@ export class TtfFont implements GlyphFont {
     readonly gamma: number,
     ascent: number,
     descent: number,
+    private readonly embolden: boolean,
   ) {
     this.ascent = ascent;
     this.descent = descent;
     this.lineHeight = ascent + descent;
     const basename = path.slice(path.lastIndexOf("/") + 1).replace(/\.[^.]+$/, "");
-    this.atlasKey = `ttf:${basename}:${fnv32(path).toString(36)}@${sizePx}g${gamma}`;
+    this.atlasKey = `ttf:${basename}:${fnv32(path).toString(36)}@${sizePx}g${gamma}${embolden ? "b" : ""}`;
   }
 
   /**
    * Load (or return the memoized) font at a pixel size. Null when the font
    * file is missing/unloadable or the platform has no renderer — callers fall back to a BDF
    * face.
+   *
+   * `embolden` synthesizes a heavier weight for a face with no bold of its own.
+   * That thickens the glyph rasters rather than drawing text twice 1px apart:
+   * glyph draws overwrite pixels, so a second strike's faint antialiased edge
+   * would dim the first strike's solid stems.
    */
-  static load(path: string, sizePx: number, gamma = DEFAULT_TTF_GAMMA): TtfFont | null {
-    const key = `${path}@${sizePx}g${gamma}`;
+  static load(path: string, sizePx: number, gamma = DEFAULT_TTF_GAMMA, embolden = false): TtfFont | null {
+    const key = `${path}@${sizePx}g${gamma}${embolden ? "b" : ""}`;
     const cached = loadedFonts.get(key);
     if (cached !== undefined) return cached;
     let font: TtfFont | null = null;
@@ -79,7 +88,7 @@ export class TtfFont implements GlyphFont {
         if (parts.length === 3 && parts.every((part) => Number.isFinite(part))) {
           const [ascent, descent] = parts as [number, number, number];
           if (ascent + descent > 0 && ascent + descent <= 255) {
-            font = new TtfFont(path, sizePx, gamma, ascent, descent);
+            font = new TtfFont(path, sizePx, gamma, ascent, descent, embolden);
           }
         }
       } catch (error) {
@@ -185,7 +194,10 @@ export class TtfFont implements GlyphFont {
         ),
       );
       if (pair > 0) {
-        kern = pair - this.advanceOf(a) - this.advanceOf(b);
+        // The measurement is of the face as designed, so compare it to the
+        // advances as designed.
+        const widened = this.embolden ? 2 * EMBOLDEN_PX : 0;
+        kern = pair - (this.advanceOf(a) + this.advanceOf(b) - widened);
         // A kern larger than the em size means the decomposition failed
         // (e.g. the pair shaped into something we can't represent).
         if (!Number.isFinite(kern) || Math.abs(kern) > this.sizePx) kern = 0;
@@ -214,7 +226,7 @@ export class TtfFont implements GlyphFont {
       const value = u16(offset);
       return value & 0x8000 ? value - 0x10000 : value;
     };
-    const advance = u16(0) / 64;
+    const advance = u16(0) / 64 + (this.embolden ? EMBOLDEN_PX : 0);
     const bearingX = s16(2);
     const inkTop = s16(4);
     const width = u16(6);
@@ -244,13 +256,27 @@ export class TtfFont implements GlyphFont {
     if (!hasInk) return base;
     return {
       ...base,
-      bbxWidth: width,
+      bbxWidth: this.embolden ? width + EMBOLDEN_PX : width,
       bbxHeight: height,
       bbxX: bearingX,
       bbxY: this.ascent - inkTop - height,
-      coverage,
+      coverage: this.embolden ? thickenCoverage(coverage, width, height) : coverage,
     };
   }
+}
+
+/** Overlay a raster on itself shifted EMBOLDEN_PX right, keeping the stronger coverage. */
+function thickenCoverage(coverage: Uint8Array, width: number, height: number): Uint8Array {
+  const outWidth = width + EMBOLDEN_PX;
+  const thickened = new Uint8Array(outWidth * height);
+  for (let row = 0; row < height; row++) {
+    for (let col = 0; col < outWidth; col++) {
+      const here = col < width ? coverage[row * width + col]! : 0;
+      const shifted = col >= EMBOLDEN_PX ? coverage[row * width + col - EMBOLDEN_PX]! : 0;
+      thickened[row * outWidth + col] = Math.max(here, shifted);
+    }
+  }
+  return thickened;
 }
 
 function toCodePoints(text: string): number[] {

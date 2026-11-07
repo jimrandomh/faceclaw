@@ -158,6 +158,23 @@ export class BdfFont {
     return new BdfFont({ ascent, descent, defaultChar, glyphs, fallback: opts.fallback, atlasKey: opts.atlasKey });
   }
 
+  /**
+   * A synthesized heavier copy of this font: every glyph thickened 1px to the
+   * right and advancing 1px further. For faces with no usable bold of their own.
+   */
+  emboldened(): BdfFont {
+    const glyphs = new Map<number, Glyph>();
+    for (const [encoding, glyph] of this.glyphs) glyphs.set(encoding, thickenBitmapGlyph(glyph));
+    return new BdfFont({
+      ascent: this.ascent,
+      descent: this.descent,
+      defaultChar: this.defaultChar,
+      glyphs,
+      fallback: this.fallback?.emboldened(),
+      atlasKey: this.atlasKey ? `${this.atlasKey}+embolden` : undefined,
+    });
+  }
+
   /** Exact lookup for a single code point, with no default-char substitution. */
   private getExactGlyph(codePoint: number): Glyph | undefined {
     return this.glyphs.get(codePoint) ?? this.fallback?.getExactGlyph(codePoint);
@@ -202,6 +219,22 @@ export class BdfFont {
       cursorX += glyph.dwidthX;
     }
   }
+}
+
+/** Rows are left-aligned in whole bytes, so a wider glyph can need realigning. */
+function thickenBitmapGlyph(glyph: Glyph): Glyph {
+  if (glyph.bbxWidth === 0) return { ...glyph, dwidthX: glyph.dwidthX + 1 };
+  const rowBits = (width: number) => ((width + 7) >> 3) << 3;
+  const realign = rowBits(glyph.bbxWidth + 1) - rowBits(glyph.bbxWidth);
+  return {
+    ...glyph,
+    dwidthX: glyph.dwidthX + 1,
+    bbxWidth: glyph.bbxWidth + 1,
+    bitmapRows: glyph.bitmapRows.map((row) => {
+      const aligned = row << realign;
+      return aligned | (aligned >>> 1);
+    }),
+  };
 }
 
 const embeddedFonts = {

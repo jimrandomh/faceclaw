@@ -22,7 +22,7 @@ import {
   startAsrModelDownload,
   type AsrModelId,
 } from "../../native/asr-model";
-import { TextViewerLayer } from "../../apps/files/text-viewer";
+import { textDocumentLayer, TextViewerLayer } from "../../apps/files/text-viewer";
 import { IOS_PRIVACY_NOTICE } from "../../analytics/privacy-disclosure";
 import type { LayerContext } from "../layers";
 import { drawRightValueMenuItem, openModalMenu, submenuItem, type MenuItem } from "../menu";
@@ -579,12 +579,12 @@ function asrModelMenuItem(id: AsrModelId): MenuItem {
 }
 
 /** A row that opens one of the project docs (copied into the bundle under
- * about/ by webpack.config.js) in the paged text viewer. */
+ * about/ by webpack.config.js) in the paged viewer for its format. */
 function bundledDocMenuItem(fileName: string, label: string): MenuItem {
   return {
     label,
     onSelect: (ctx) => {
-      ctx.stack.push(new TextViewerLayer(readBundledDoc(fileName), label));
+      ctx.stack.push(textDocumentLayer(readBundledDoc(fileName), label, fileName));
     },
   };
 }

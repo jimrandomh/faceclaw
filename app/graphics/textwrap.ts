@@ -79,17 +79,40 @@ export function truncateLeft(font: WrapFont, text: string, maxWidth: number): st
   return `...${out}`;
 }
 
-function wrapParagraph(font: WrapFont, paragraph: string, targetWidth: number, opts: WrapTextOptions): string[] {
-  if (paragraph.length === 0) {
-    return [""];
-  }
+/** A wrapped line, as a [start, end) range of UTF-16 offsets into its paragraph. */
+export type WrapRange = { start: number; end: number };
 
-  const widths = measureOffsets(font, paragraph);
+/**
+ * Wrap one paragraph (no newlines) whose characters may be in different fonts,
+ * by the same rules as wrapText. `fontAt` gives the font of the character at
+ * an offset; it is called with ascending offsets.
+ */
+export function wrapStyledParagraph(
+  paragraph: string,
+  fontAt: (offset: number) => WrapFont,
+  targetWidth: number,
+  opts: WrapTextOptions = {},
+): WrapRange[] {
+  if (targetWidth <= 0) return [{ start: 0, end: paragraph.length }];
+  return wrapRanges(paragraph, measureOffsets(paragraph, fontAt), targetWidth, opts);
+}
+
+function wrapParagraph(font: WrapFont, paragraph: string, targetWidth: number, opts: WrapTextOptions): string[] {
+  return wrapRanges(paragraph, measureOffsets(paragraph, () => font), targetWidth, opts)
+    .map((range) => paragraph.slice(range.start, range.end));
+}
+
+function wrapRanges(
+  paragraph: string,
+  widths: Map<number, number>,
+  targetWidth: number,
+  opts: WrapTextOptions,
+): WrapRange[] {
   const wrapOffsets = findWrapOpportunities(paragraph);
   if (wrapOffsets[wrapOffsets.length - 1] !== paragraph.length) {
     wrapOffsets.push(paragraph.length);
   }
-  const lines: string[] = [];
+  const ranges: WrapRange[] = [];
   let start = opts.preserveLeadingWhitespace ? 0 : skipLeadingWhitespace(paragraph, 0);
 
   while (start < paragraph.length) {
@@ -117,24 +140,22 @@ function wrapParagraph(font: WrapFont, paragraph: string, targetWidth: number, o
       best = nextOffset(widths, start);
     }
 
-    const lineEnd = trimEndOffset(paragraph, best);
-    const line = paragraph.slice(start, lineEnd);
-    lines.push(line);
-    start = opts.preserveLeadingWhitespace && lines.length === 1 ? best : skipLeadingWhitespace(paragraph, best);
+    ranges.push({ start, end: Math.max(start, trimEndOffset(paragraph, best)) });
+    start = opts.preserveLeadingWhitespace && ranges.length === 1 ? best : skipLeadingWhitespace(paragraph, best);
   }
 
-  return lines.length ? lines : [""];
+  return ranges.length ? ranges : [{ start: 0, end: 0 }];
 }
 
-function measureOffsets(font: WrapFont, text: string): Map<number, number> {
+function measureOffsets(text: string, fontAt: (offset: number) => WrapFont): Map<number, number> {
   const widths = new Map<number, number>();
   let total = 0;
   widths.set(0, 0);
   for (let i = 0; i < text.length; ) {
     const codePoint = text.codePointAt(i) ?? 32;
     const char = String.fromCodePoint(codePoint);
+    total += fontAt(i).getGlyph(codePoint)?.dwidthX ?? 0;
     i += char.length;
-    total += font.getGlyph(codePoint)?.dwidthX ?? 0;
     widths.set(i, total);
   }
   return widths;
