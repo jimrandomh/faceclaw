@@ -1,0 +1,14 @@
+{
+  // Typechecks the browser demo against its own twins, as a bundler resolves
+  // them: `npx tsc -p app/web/tsconfig.json`. Worker twins sit outside the suffix
+  // list but still get checked, as plain files.
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "moduleSuffixes": [".web", ""],
+    "lib": ["ESNext", "dom", "dom.iterable", "webworker"]
+  },
+  "include": ["./**/*", "../**/*.web.ts", "../**/*.webworker.ts"],
+  "exclude": ["./page/**"],
+  "files": ["../../references.d.ts"]
+}

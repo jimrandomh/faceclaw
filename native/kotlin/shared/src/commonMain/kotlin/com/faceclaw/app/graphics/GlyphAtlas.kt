@@ -46,6 +46,18 @@ class GlyphAtlas {
             }
         }
 
+        /**
+         * Bind a font key to a caller-chosen id. The browser build needs this because its Web
+         * Workers can't reach this object to ask for an id synchronously, so every context derives
+         * the same id from the key (app/native/texture-atlas.web.ts). A key already bound keeps its id.
+         */
+        @JvmStatic
+        fun assignFontId(key: String, id: Int) {
+            lock.withLock {
+                if (!fontIds.containsKey(key)) fontIds.put(key, id)
+            }
+        }
+
         @JvmStatic
         fun get(fontId: Int, encoding: Int): Glyph? {
             lock.withLock {

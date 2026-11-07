@@ -15,6 +15,9 @@
     "doctor:ios": "scripts/ios.sh doctor ios",
     "install:apple-watch": "./build_apple_watch.sh --install",
     "build": "./build.sh",
+    "build:web": "node scripts/build-web.mjs",
+    "serve:web": "node scripts/build-web.mjs --serve",
+    "typecheck:web": "tsc -p app/web/tsconfig.json",
     "lint": "./lint.sh",
     "run": "./build_and_run.sh",
     "release": "scripts/release.sh",
@@ -41,6 +44,8 @@
     "@nativescript/ios": "9.0.3",
     "@nativescript/types": "~9.0.0",
     "@nativescript/webpack": "~5.0.25",
+    "esbuild": "^0.28.2",
+    "opentype.js": "^1.3.4",
     "oxlint": "^1.85.0",
     "oxlint-tsgolint": "^7.0.2003",
     "typescript": "~5.4.0"

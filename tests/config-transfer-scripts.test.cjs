@@ -62,6 +62,8 @@ test('settings stored outside FaceclawSettings are the ones the Android config p
     // iOS-only: NSUserDefaults holds every setting there.
     ['app/native/ios-bluetooth.ts', null],
     ['app/native/settings-store.ios.ts', null],
+    // The browser demo's NativeScript shim: localStorage, with no phone to transfer from.
+    ['app/web/nativescript-core.ts', null],
   ]);
   const users = [];
   const walk = (dir) => {

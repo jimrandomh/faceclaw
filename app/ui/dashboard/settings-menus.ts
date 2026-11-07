@@ -279,6 +279,12 @@ function settingsSections(): SettingsSection[] {
       ],
     },
   ];
+  // The browser demo has no voice, assistant, watch or firmware behind these sections.
+  if (global.isWeb) {
+    const hiddenDisplayRows = [autoBrightnessMenuItem().label, screenTimeoutSetting.label, lockScreenEnabledSetting.label];
+    return sections.filter(section => ["Display", "Customization", "Phone display", "About"].includes(section.label))
+      .map(section => section.label === "Display" ? { ...section, items: section.items.filter(item => !hiddenDisplayRows.includes(item.label)) } : section);
+  }
   if (!global.isIOS) return sections;
   return sections.map(section => {
     if (section.label === "Developer") return { ...section, items: [enumSettingMenuItem(ringConnectionModeSetting),

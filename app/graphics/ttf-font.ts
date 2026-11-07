@@ -72,7 +72,7 @@ export class TtfFont implements GlyphFont {
     const cached = loadedFonts.get(key);
     if (cached !== undefined) return cached;
     let font: TtfFont | null = null;
-    if ((global.isAndroid || global.isIOS) && Number.isFinite(sizePx) && sizePx > 0) {
+    if ((global.isAndroid || global.isIOS || global.isWeb) && Number.isFinite(sizePx) && sizePx > 0) {
       try {
         const raw = String(fontRenderer.getFontMetrics(path, sizePx) ?? "");
         const parts = raw.split(" ").map((part) => parseInt(part, 10));

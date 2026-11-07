@@ -9,6 +9,9 @@ platforms/
 # Release APKs from scripts/release.sh
 dist/
 
+# Browser demo build (scripts/build-web.mjs)
+dist-web/
+
 # CPU captures and source maps pulled from the installed app
 profiles/
 

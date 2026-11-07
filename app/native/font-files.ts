@@ -36,7 +36,7 @@ export const DEFAULT_FONT_GAMMA = 1.0;
 
 /** Whether the font file parses as a loadable font. */
 export function canLoadFontFile(path: string): boolean {
-  if (!global.isAndroid && !global.isIOS) return false;
+  if (!global.isAndroid && !global.isIOS && !global.isWeb) return false;
   try {
     return !!fontRenderer.canLoadFont(path);
   } catch {
@@ -49,7 +49,7 @@ export function canLoadFontFile(path: string): boolean {
  * unavailable (caller should fall back to the filename).
  */
 export function fontFileDisplayName(path: string): { family: string; style: string } | null {
-  if (!global.isAndroid && !global.isIOS) return null;
+  if (!global.isAndroid && !global.isIOS && !global.isWeb) return null;
   try {
     const raw = String(fontRenderer.getFontName(path) ?? "");
     if (!raw) return null;
@@ -63,7 +63,7 @@ export function fontFileDisplayName(path: string): { family: string; style: stri
 
 /** Line metrics at a pixel size; null when the font cannot be loaded. */
 export function fontFileMetrics(path: string, sizePx: number): FontFileMetrics | null {
-  if (!global.isAndroid && !global.isIOS) return null;
+  if (!global.isAndroid && !global.isIOS && !global.isWeb) return null;
   try {
     const raw = String(fontRenderer.getFontMetrics(path, sizePx) ?? "");
     const parts = raw.split(" ").map((part) => parseInt(part, 10));
@@ -85,7 +85,7 @@ export function renderFontFileText(
   sizePx: number,
   gamma = DEFAULT_FONT_GAMMA,
 ): GrayImage | null {
-  if (!global.isAndroid && !global.isIOS) return null;
+  if (!global.isAndroid && !global.isIOS && !global.isWeb) return null;
   try {
     return grayImageFromPacket(fontRenderer.renderText(path, text, sizePx, gamma));
   } catch (error) {
@@ -106,7 +106,7 @@ export function renderFontFileWrapped(opts: {
   maxLines: number;
   gamma?: number;
 }): GrayImage | null {
-  if (!global.isAndroid && !global.isIOS) return null;
+  if (!global.isAndroid && !global.isIOS && !global.isWeb) return null;
   try {
     return grayImageFromPacket(
       fontRenderer.renderWrapped(

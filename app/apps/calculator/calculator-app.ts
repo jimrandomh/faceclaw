@@ -58,7 +58,9 @@ const CALCULATOR_TOOLS: ToolSpec[] = [
 ];
 
 export function createCalculatorAppWindow(options: InProcessAppOptions): InProcessWindow {
-  const layer = new CalculatorLayer(coordinator, options.actions);
+  // The browser demo has no microphone: a tap opens the page's text box instead.
+  const textInput = global.isWeb ? async () => { shell.startKeyboardInput(); } : undefined;
+  const layer = new CalculatorLayer(coordinator, options.actions, textInput);
 
   const menuItems = (): MenuItem[] => [
     ...CALCULATOR_MODES.map(

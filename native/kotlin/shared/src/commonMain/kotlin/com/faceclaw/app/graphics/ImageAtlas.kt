@@ -23,6 +23,9 @@ class ImageAtlas {
 
         private val entries: MutableList<Entry> = ArrayList()
 
+        /** Entries registered under caller-chosen ids (ensureWithId). */
+        private val assigned: MutableMap<Int, Entry> = HashMap()
+
         /**
          * Register an image (8bpp grayscale pixels, width*height bytes, row-major) under a content
          * key, returning its id — or the existing id when the key is already registered (the pixels
@@ -60,10 +63,28 @@ class ImageAtlas {
             }
         }
 
+        /**
+         * Register an image under an id derived from its key by the caller; see
+         * GlyphAtlas.assignFontId for why the browser build needs this. Assigned ids must sit
+         * outside the sequential range [ensure] hands out, so a browser build gives them bit 30.
+         */
+        @JvmStatic
+        fun ensureWithId(key: String, id: Int, width: Int, height: Int, pixels8bpp: ByteReader) {
+            require(width in 1..255 && height in 1..255 && pixels8bpp.remaining() >= width * height) {
+                "bad image registration ${width}x$height"
+            }
+            lock.withLock {
+                if (ids.containsKey(key)) return
+                val nibbles = ByteArray(width * height) { BmpUtil.nibbleForGray(pixels8bpp.get(it) and 0xff).toByte() }
+                assigned.put(id, Entry(width, height, nibbles))
+                ids.put(key, id)
+            }
+        }
+
         @JvmStatic
         fun get(id: Int): Entry? {
             lock.withLock {
-                return (if (((id >= 1) && (id <= entries.size))) entries.get((id - 1)) else null)
+                return (if (((id >= 1) && (id <= entries.size))) entries.get((id - 1)) else assigned.get(id))
             }
         }
     }

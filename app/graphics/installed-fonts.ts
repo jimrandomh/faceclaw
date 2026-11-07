@@ -67,7 +67,7 @@ let preinstalledEnsured = false;
  * before every listing.
  */
 export function ensurePreinstalledFonts(): void {
-  if (preinstalledEnsured || (!global.isAndroid && !global.isIOS)) return;
+  if (preinstalledEnsured || (!global.isAndroid && !global.isIOS && !global.isWeb)) return;
   const assetsDir = nsPath.join(knownFolders.currentApp().path, "fonts/ttf");
   for (const fileName of PREINSTALLED_FONT_FILES) {
     const target = installedFontPath(fileName);
@@ -88,7 +88,7 @@ export function ensurePreinstalledFonts(): void {
  * same-named file). Returns an error message for the UI, or null on success.
  */
 export function installFontFile(sourcePath: string): string | null {
-  if ((!global.isAndroid && !global.isIOS)) return "Not available on this platform.";
+  if ((!global.isAndroid && !global.isIOS && !global.isWeb)) return "Not available on this platform.";
   if (!isFontFile(sourcePath)) return "Not a font file.";
   if (!canLoadFontFile(sourcePath)) return "This file could not be loaded as a font.";
   const fileName = sourcePath.slice(sourcePath.lastIndexOf("/") + 1);
@@ -113,7 +113,7 @@ export function isFontInstalled(sourcePath: string): boolean {
  * then weight. Unloadable files are skipped.
  */
 export function listInstalledFonts(): InstalledFont[] {
-  if ((!global.isAndroid && !global.isIOS)) return [];
+  if ((!global.isAndroid && !global.isIOS && !global.isWeb)) return [];
   ensurePreinstalledFonts();
   const fonts: InstalledFont[] = [];
   try {

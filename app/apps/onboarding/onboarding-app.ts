@@ -28,7 +28,9 @@ export function createOnboardingAppWindow(options: InProcessAppOptions): InProce
   const pages: OnboardingPage[] = [
     new WelcomePage(), new TextSizePage(),
     ...(global.isIOS ? [new IosPrivacyPage()] : []),
-    new DataCollectionPage(), new LayoutPage(), new DepthPage(), new DisplayModePage(),
+    // The browser demo collects nothing, so it has nothing to ask.
+    ...(global.isWeb ? [] : [new DataCollectionPage()]),
+    new LayoutPage(), new DepthPage(), new DisplayModePage(),
   ];
   const app = createInProcessWindow({
     appId: ONBOARDING_APP_ID,

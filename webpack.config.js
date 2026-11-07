@@ -1,5 +1,6 @@
 const webpack = require("@nativescript/webpack");
 const { resolve } = require("path");
+const { ContextExclusionPlugin } = require("webpack");
 
 module.exports = (env) => {
 	webpack.init(env);
@@ -15,6 +16,14 @@ module.exports = (env) => {
 			});
 		});
 	}
+
+	// The browser demo has its own build (scripts/build-web.mjs). Without this,
+	// the virtual entry's require.context would bundle its files into the app.
+	webpack.chainWebpack((config) => {
+		config
+			.plugin('ContextExclusionPlugin|web')
+			.use(ContextExclusionPlugin, [/^web$|\.web(worker)?\.ts$/]); // matched against each directory's entry names
+	});
 
 	// Learn how to customize:
 	// https://docs.nativescript.org/webpack

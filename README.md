@@ -34,6 +34,7 @@ For the NativeScript iOS port, see [iOS development](notes/ios-development.md).
 Use `scripts/pull_config_ios.sh` and `scripts/push_config_ios.sh` to transfer iPhone
 settings. Android and iOS share one JSON config format, so a config pulled from either
 platform can be pushed to the other; see [config transfer](scripts/config-transfer.md).
+The browser demo builds with `./build_web.sh`; see [its README](app/web/README.md).
 The instructions below build the Android app.
 
 If you want to customize faceclaw, the best way to do it is to download the

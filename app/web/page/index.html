@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Faceclaw demo</title>
+  <meta name="description" content="Try Faceclaw, an alternative operating system for Even Realities G2 glasses, in your browser.">
+  <link rel="icon" href="favicon.png">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body data-lens="dark">
+  <header class="masthead">
+    <div>
+      <h1>Faceclaw <span>browser demo</span></h1>
+      <p>The real app, running on simulated glasses. Your notifications, calendar and music here are made up.</p>
+    </div>
+    <a class="masthead-link" href="https://faceclaw.org/">About Faceclaw</a>
+  </header>
+
+  <main class="stage">
+    <section class="glasses" aria-label="Simulated glasses display">
+      <div class="lens">
+        <canvas id="display" width="640" height="480" tabindex="0" aria-label="The glasses display. Click, scroll or use the arrow keys."></canvas>
+      </div>
+      <p class="status" id="status" role="status">Starting…</p>
+    </section>
+
+    <aside class="controls">
+      <section>
+        <h2>The ring</h2>
+        <p class="hint">Faceclaw is driven by four gestures on a ring. Swipe on this pad, or use the buttons.</p>
+        <div class="ring-pad" id="ring-pad" role="application" aria-label="Ring touch pad: tap, double-tap, hold or swipe">
+          <span>tap · double-tap · hold · swipe</span>
+        </div>
+        <div class="ring-buttons">
+          <button type="button" data-input="scroll-up">Scroll up <kbd>↑</kbd></button>
+          <button type="button" data-input="scroll-down">Scroll down <kbd>↓</kbd></button>
+          <button type="button" data-input="click">Tap <kbd>Enter</kbd></button>
+          <button type="button" data-input="double-click">Double-tap <kbd>Esc</kbd></button>
+          <button type="button" data-input="long-press">Hold: system menu <kbd>hold Enter</kbd></button>
+          <button type="button" data-input="short-then-long-press">Tap, hold: app menu <kbd>M</kbd></button>
+        </div>
+        <p class="hint">Scrolling over the display works too. Clicking it is a tap: glasses have no pointer, so in a list it picks the highlighted row, while icons and the app switcher respond to where you click.</p>
+        <p class="hint">Double-tap until the display sleeps, then tap for the Glanceboard.</p>
+      </section>
+
+      <section>
+        <h2>Try</h2>
+        <div class="ring-buttons">
+          <button type="button" id="send-notification">Send a notification</button>
+          <button type="button" id="type-text">Type on the “phone”</button>
+        </div>
+        <div class="keyboard-panel" id="keyboard-panel" hidden>
+          <input type="text" autocomplete="off" placeholder="Type here; it shows on the glasses" aria-label="Text to send to the glasses">
+          <button type="button" data-send class="primary">Send</button>
+          <button type="button" data-discard>Discard</button>
+        </div>
+      </section>
+
+      <section>
+        <h2>View</h2>
+        <label class="row"><span>Behind the lens</span>
+          <select id="lens-background">
+            <option value="dark">Darkness</option>
+            <option value="dusk">A dusky street</option>
+            <option value="day">Bright daylight</option>
+          </select>
+        </label>
+        <label class="row"><span>Buzzer sounds</span><input type="checkbox" id="sound"></label>
+        <button type="button" class="quiet" id="reset-demo">Reset the demo</button>
+      </section>
+    </aside>
+  </main>
+  <noscript>This demo runs the app in your browser, so it needs JavaScript.</noscript>
+  <script src="faceclaw.js"></script>
+</body>
+</html>

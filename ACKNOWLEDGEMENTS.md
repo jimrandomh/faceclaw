@@ -30,6 +30,9 @@ see app/graphics/pebble-icons.LICENSE. Faceclaw's table of the iPhone apps they
 stand for builds on the one in the PebbleOS firmware,
 https://github.com/coredevices/PebbleOS (also Apache License 2.0).
 
+The browser demo draws its fonts with opentype.js (MIT License):
+https://github.com/opentypejs/opentype.js.
+
 Weather data outside the US is by Open-Meteo.com: https://open-meteo.com/. It is
 licensed under CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/).
 

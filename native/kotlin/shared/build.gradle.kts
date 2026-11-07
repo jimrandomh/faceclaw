@@ -21,6 +21,14 @@ kotlin {
         compilerOptions { jvmTarget.set(JvmTarget.JVM_17) }
         withHostTestBuilder {}.configure {}
     }
+    // The browser demo (app/web/): the compositor and display-list renderer, no BLE. Compiled by
+    // compileProductionExecutableKotlinJs; scripts/build-web.mjs bundles the output, so the Gradle
+    // plugin's own webpack run (and its Node download) never happens.
+    js {
+        browser()
+        binaries.executable()
+        useEsModules()
+    }
     val framework = XCFramework("FaceclawKit")
     listOf(iosArm64(), iosSimulatorArm64()).forEach { target ->
         target.binaries.framework {

@@ -34,6 +34,13 @@ entry points for atlases/composition now take `AndroidByteReader`, keeping the
 bulk buffer crossing without putting Java APIs in common code. iOS uses
 `IosByteReader` and `NSData`; binary bridges avoid per-element JS/native calls.
 
+`jsMain/kotlin` is the browser demo's target (see app/web/README.md): the same compositor,
+display-list renderer and atlases behind `@JsExport` facades in `WebNativeApi.kt`, with no BLE.
+Its actuals leave out what only the glasses link needs (zlib, threads, blocking waits), which
+throw if anything reaches them. `scripts/build-web.mjs` runs
+`:shared:compileProductionExecutableKotlinJs` and bundles the output; the Android and iOS
+builds never compile this target.
+
 ## Platform boundaries
 
 `ProtocolPlatform` supplies clocks, locks, persistent deflaters and condition

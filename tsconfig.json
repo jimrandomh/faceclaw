@@ -16,5 +16,5 @@
   },
   "include": ["app/**/*"],
   "files": ["./references.d.ts"],
-  "exclude": ["node_modules", "platforms"]
+  "exclude": ["node_modules", "platforms", "app/web", "app/**/*.web.ts", "app/**/*.webworker.ts"]
 }
