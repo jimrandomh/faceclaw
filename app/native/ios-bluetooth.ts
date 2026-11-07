@@ -7,6 +7,8 @@ declare const FaceclawKitIosBleCentral: any, FaceclawKitIosProtocolPlatform: any
 
 /** CBManagerState raw values reported by the Kotlin central. */
 export const BLE_STATE_UNSUPPORTED = 2, BLE_STATE_UNAUTHORIZED = 3, BLE_STATE_POWERED_OFF = 4, BLE_STATE_POWERED_ON = 5
+/** CBManagerAuthorization.allowedAlways. */
+const BLE_AUTHORIZATION_ALLOWED = 3
 
 export type BluetoothEvent =
   | { kind: 'state'; state: number; authorization: number }
@@ -50,17 +52,21 @@ export class IosBluetooth {
         }
       },
     })
-    this.native.setScanListenerListener(this.scanListener)
   }
   onEvent(listener: (event: BluetoothEvent) => void): () => void {
     this.listeners.add(listener); return () => { this.listeners.delete(listener) }
   }
   private emit(event: BluetoothEvent): void { for (const listener of [...this.listeners]) listener(event) }
+  /**
+   * Whether the user has allowed Bluetooth. Unlike `state` this is accurate before the
+   * central exists, and reading it never shows the permission prompt.
+   */
+  isAuthorized(): boolean { return Number(this.native.authorization()) === BLE_AUTHORIZATION_ALLOWED }
   /** Creates the central (first use shows the Bluetooth permission prompt) without blocking the JS thread. */
   private ensureCentral(): void {
-    // A zero timeout returns immediately after creating the central; the state arrives
-    // through the scan listener on the main queue.
-    this.native.waitForPoweredOnTimeoutMs(0)
+    // Registering the listener creates the central, or has an existing one re-report its
+    // state; the state arrives through the listener on the main queue.
+    this.native.setScanListenerListener(this.scanListener)
   }
   ensureReady(): Promise<void> {
     if (this.state === BLE_STATE_POWERED_ON) return Promise.resolve()

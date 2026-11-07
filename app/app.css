@@ -81,12 +81,6 @@ Button.-primary {
   font-size: 18;
 }
 
-/* The logo art is black-on-transparent; tint it light in dark mode so it
- * doesn't vanish into the dark page background. */
-.ns-dark .onboarding-logo {
-  tint-color: #e6e6e6;
-}
-
 /* License / privacy-policy links in the onboarding disclaimer footer. The
  * padding widens the tap target beyond the small text. */
 .footer-link {

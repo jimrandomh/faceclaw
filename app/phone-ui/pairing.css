@@ -236,3 +236,10 @@ Button.permissions-primary-dimmed {
 .ns-dark .permissions-check {
   color: #7bc47f;
 }
+
+/* Onboarding splash (phone-ui/onboarding-page). The logo art is
+ * black-on-transparent; tint it white in dark mode so it doesn't vanish into
+ * the dark page background. */
+.ns-dark .onboarding-logo {
+  tint-color: #ffffff;
+}
