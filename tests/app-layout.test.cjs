@@ -911,7 +911,7 @@ test('Terminal resize keeps the view identity, negotiates its grid and skips pos
     client: { stop: () => calls.push('stop'), setViewport: (...size) => calls.push(size) },
   };
   const resize = resizeHandler('app/apps/terminal/terminal-app.worker.ts', {
-    windows: new Map([['test', window]]), clearTimeout: (timer) => calls.push(timer),
+    windows: new Map([['test', window]]), pendingHeightChanges: new Map(), clearTimeout: (timer) => calls.push(timer),
     TerminalEmulator: class { constructor(cols, rows) { this.cols = cols; this.rows = rows; } },
     reconnectView: (view) => { assert.equal(view, window); calls.push('reconnect'); },
     scheduleRender: () => calls.push('paint'),

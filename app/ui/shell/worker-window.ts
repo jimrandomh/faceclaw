@@ -79,6 +79,16 @@ export type WorkerAppReply =
       /** Window height: the standard 288px band ("min", default) or full screen ("max"). */
       heightMode?: WindowHeightMode;
     }
+  | {
+      /**
+       * Move a window to another height band at runtime. The host resizes its
+       * surface and then always answers with resize-window, even if the size
+       * came out the same, so the worker can wait for the new viewport.
+       */
+      type: "set-height-mode";
+      windowId: string;
+      heightMode: WindowHeightMode;
+    }
   | { type: "set-title"; windowId: string; title: string }
   | { type: "set-attention"; windowId: string; attention: boolean }
   /** App-driven animation phase for sidebar icons that support an activity cursor. */
@@ -193,8 +203,12 @@ export type WorkerAppHostOptions = {
   navigationSensors?: { handle(request: NavigationSensorRequest): void; stop(): void };
   openUrl?: (url: string) => void;
   playBuzzerSequence?: (payload: Uint8Array) => Promise<void> | void;
-  /** Create/refresh a window surface on the compositor (no-op when disconnected). */
-  configureSurface: (surfaceId: string, visible: boolean, heightMode: WindowHeightMode) => Promise<void>;
+  /**
+   * Create/refresh a window surface on the compositor (no-op when disconnected).
+   * `visible` may be a function, read once the surface is configured, for a
+   * window that can lose the foreground in the meantime.
+   */
+  configureSurface: (surfaceId: string, visible: boolean | (() => boolean), heightMode: WindowHeightMode) => Promise<void>;
   setSurfaceVisible: (surfaceId: string, visible: boolean) => void;
   removeSurface: (surfaceId: string) => void;
   requestShellRender: () => void;
@@ -319,6 +333,9 @@ export class WorkerAppHost {
             focus: message.focus,
             heightMode: message.heightMode,
           });
+          break;
+        case "set-height-mode":
+          this.setWindowHeightMode(message.windowId, message.heightMode);
           break;
         case "set-attention":
           shell.setWindowAttention(message.windowId, message.attention);
@@ -463,7 +480,7 @@ export class WorkerAppHost {
       // Every app worker resizes its live content in place, keeping its state
       // (a game in progress, a route): the bottom switcher's height changes
       // with what it holds, and full-height windows give way to it.
-      relayout: () => this.post({ type: "resize-window", windowId: spec.windowId, viewport: appViewportSize(heightMode, this.options.appId) }),
+      relayout: () => this.post({ type: "resize-window", windowId: spec.windowId, viewport: appViewportSize(window.heightMode, this.options.appId) }),
       hasAppMenu: () => this.windowGestures.get(spec.windowId)?.hasAppMenu ?? false,
       claimsLongPress: () => this.windowGestures.get(spec.windowId)?.claimsLongPress ?? false,
       close: () => {
@@ -534,6 +551,24 @@ export class WorkerAppHost {
         console.error(`surface setup for ${spec.windowId} failed: ${error}`);
       });
     return window;
+  }
+
+  /** The worker asked for another height band (see set-height-mode). */
+  private setWindowHeightMode(windowId: string, heightMode: WindowHeightMode): void {
+    const window = this.openWindows.has(windowId) ? shell.getWindows().find((w) => w.windowId === windowId) : undefined;
+    if (!window) return;
+    window.heightMode = heightMode;
+    // Resize the surface first, so the frame answering resize-window fits it.
+    void this.options
+      .configureSurface(window.surfaceId, () => shell.foregroundWindow()?.windowId === windowId, heightMode)
+      .catch((error) => {
+        console.error(`surface resize for ${windowId} failed: ${error}`);
+      })
+      .then(() => {
+        window.relayout?.();
+        // The chrome (top bar, bottom switcher) follows the foreground's band.
+        this.options.requestShellRender();
+      });
   }
 
   /**

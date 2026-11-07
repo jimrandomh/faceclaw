@@ -801,7 +801,7 @@ export class IosPreviewController {
         const display = this.display
         if (!display) return
         await display.configureSurface(id, { ...appViewportRect(heightMode, appId), zOrder: 0, transparency: 'opaque' })
-        await display.setSurfaceVisible(id, visible)
+        await display.setSurfaceVisible(id, typeof visible === 'function' ? visible() : visible)
       },
       setSurfaceVisible: (id, visible) => this.setWindowSurfaceVisible(id, visible),
       removeSurface: id => this.removeWindowSurface(id),
