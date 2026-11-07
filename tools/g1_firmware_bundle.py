@@ -9,6 +9,7 @@ signature made at build time stays valid.
   tools/g1_firmware_bundle.py WORK/build/g1v0-v0563/zephyr/app_update.bin --firmware-dir ~/src/scouter_kit/g1_firmware
 
 --firmware-dir holds stock_images.txt and, under work/firmware/1.6.6/, Even's unpacked files (scripts/fetch_stock.sh).
+scripts/update_g1_firmware.sh builds the image in ScouterKit and runs this on it.
 """
 import argparse
 import base64
