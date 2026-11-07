@@ -3,34 +3,15 @@
  * Assistant). Each call translates one stretch of speech into English; see
  * TranslationModel for how stretches are batched and given context.
  */
-import { streamAnthropicMessage } from "../../native/anthropic";
-import { streamLocalModel } from "../../native/local-llm";
-import { streamOpenAiResponse } from "../../native/openai";
-import { streamOpenAiCompatibleChat } from "../../native/openai-chat";
-import { resolveAssistantModel, type ResolvedAssistantModel } from "../../assistant/models";
-import { type LlmStreamHandle, type LlmStreamOptions } from "../../assistant/llm-protocol";
-import {
-  anthropicApiKeySetting, assistantModelSetting, assistantOpenAiCompatibleKeySetting,
-  assistantOpenAiCompatibleModelSetting, assistantOpenAiCompatibleUrlSetting, openAiApiKeySetting,
-} from "../../ui/dashboard-settings";
+import { resolveFeatureModel, streamFeatureModel } from "../../assistant/feature-model";
+import { type ResolvedAssistantModel } from "../../assistant/models";
+import { type LlmStreamHandle } from "../../assistant/llm-protocol";
 import { TRANSLATE_SYSTEM_PROMPT, buildTranslateUserMessage } from "../../prompts";
 import { type TranslationTurn } from "./translation-model";
 
-/**
- * The model Translate uses, or null when none is configured. Hermes is an
- * agent with its own tools and memory rather than a translator (every
- * utterance would land in its session), so it falls back to Auto: the model
- * for whichever API key is set, else the on-phone model.
- */
+/** The model Translate uses, or null when none is configured. */
 export function resolveTranslationModel(): ResolvedAssistantModel | null {
-  const selection = assistantModelSetting.get();
-  return resolveAssistantModel(selection === "hermes" ? "auto" : selection, {
-    anthropic: anthropicApiKeySetting.get(),
-    openai: openAiApiKeySetting.get(),
-    openAiCompatibleUrl: assistantOpenAiCompatibleUrlSetting.get(),
-    openAiCompatibleKey: assistantOpenAiCompatibleKeySetting.get(),
-    openAiCompatibleModel: assistantOpenAiCompatibleModelSetting.get(),
-  });
+  return resolveFeatureModel();
 }
 
 export type TranslationRequest = {
@@ -44,11 +25,8 @@ export type TranslationRequest = {
 };
 
 export function streamTranslation(model: ResolvedAssistantModel, request: TranslationRequest): LlmStreamHandle {
-  const options: LlmStreamOptions = {
-    apiKey: model.apiKey,
-    model: model.model,
+  return streamFeatureModel(model, {
     system: TRANSLATE_SYSTEM_PROMPT,
-    effort: model.effort,
     maxTokens: 1024,
     messages: [{ role: "user", content: buildTranslateUserMessage(request.speech, request.context, request.language) }],
     onTextDelta: (_delta, textSoFar) => request.onProgress(cleanTranslation(textSoFar)),
@@ -57,17 +35,7 @@ export function streamTranslation(model: ResolvedAssistantModel, request: Transl
       else request.onDone(cleanTranslation(result.text));
     },
     onError: request.onError,
-  };
-  switch (model.provider) {
-    case "openai":
-      return streamOpenAiResponse(options);
-    case "openai-compatible":
-      return streamOpenAiCompatibleChat({ ...options, baseUrl: model.baseUrl ?? "" });
-    case "local":
-      return streamLocalModel(options);
-    default:
-      return streamAnthropicMessage(options);
-  }
+  });
 }
 
 /** The context turns are tagged <english>; a model may echo the tag around its reply. */

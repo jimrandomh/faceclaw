@@ -30,6 +30,12 @@ export type AppDefinition = {
   boot?: (ctx: AppContext) => void;
   /** False for apps that must not appear in the launcher grid (the launcher itself). */
   showInLauncher?: boolean;
+  /**
+   * False for apps that must not reopen on their own when Faceclaw restarts,
+   * though they were open when it stopped (Aside: it would start listening to
+   * the people nearby without being asked).
+   */
+  restoreOnRestart?: boolean;
   /** Present on the app that handles text shared via the Android share intent. */
   openSharedText?: (ctx: AppContext, title: string, text: string) => void;
   /**

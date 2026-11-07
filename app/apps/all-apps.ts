@@ -11,6 +11,7 @@ import nightscoutApp from "./nightscout";
 import healthApp from "./health";
 import transcribeApp from "./transcribe";
 import translateApp from "./translate";
+import asideApp from "./aside";
 import teleprompterApp from "./teleprompter";
 import microphonesApp from "./microphones";
 import notificationsApp from "./notifications";
@@ -48,6 +49,7 @@ export const ALL_APPS: readonly AppDefinition[] = [
   healthApp,
   transcribeApp,
   translateApp,
+  asideApp,
   teleprompterApp,
   microphonesApp,
   notificationsApp,

@@ -19,18 +19,28 @@ function sharedEnv() {
     openAiApiKeySetting: { get: () => '' },
   };
   const fail = provider => () => { unexpected.push(provider); };
+  const anthropic = { streamAnthropicMessage: fail('anthropic') };
+  const openai = { streamOpenAiResponse: fail('openai') };
+  const openaiChat = {
+    isVeniceApiBaseUrl: () => false,
+    streamOpenAiCompatibleChat: options => {
+      compatible.push(options);
+      return { cancel() {} };
+    },
+  };
   const load = loader({ global: { isIOS: false, isAndroid: true } }, {
-    '../../native/anthropic': { streamAnthropicMessage: fail('anthropic') },
-    '../../native/openai': { streamOpenAiResponse: fail('openai') },
+    // Calculator imports these from app/apps/calculator/, the shared
+    // feature-model helper from app/assistant/.
+    '../../native/anthropic': anthropic,
+    '../native/anthropic': anthropic,
+    '../../native/openai': openai,
+    '../native/openai': openai,
     '../../native/local-llm': localLlm,
     '../native/local-llm': localLlm,
-    '../../native/openai-chat': {
-      streamOpenAiCompatibleChat: options => {
-        compatible.push(options);
-        return { cancel() {} };
-      },
-    },
+    '../../native/openai-chat': openaiChat,
+    '../native/openai-chat': openaiChat,
     '../../ui/dashboard-settings': settings,
+    '../ui/dashboard-settings': settings,
     '../../prompts': {
       CALCULATOR_REWRITE_SYSTEM_PROMPT: 'calculator system',
       buildCalculatorRewriteUserMessage: spoken => `rewrite: ${spoken}`,

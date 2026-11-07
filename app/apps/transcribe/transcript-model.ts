@@ -16,6 +16,16 @@ export class TranscriptModel {
     return this.finalized && this.live ? this.finalized + this.separator + this.live : this.finalized || this.live;
   }
 
+  /** The committed text. It only ever grows, so a position in it stays valid. */
+  get finalText(): string {
+    return this.finalized;
+  }
+
+  /** The current utterance, which may still be revised. */
+  get liveText(): string {
+    return this.live;
+  }
+
   accept(event: TranscriptEvent): void {
     const text = (event.transcribeText ?? event.text).trim();
     if (!event.isFinal) {
@@ -40,7 +50,9 @@ export class TranscriptModel {
 export class TranscriptScroll {
   firstLine = 0;
   private maximum = 0;
-  private following = true;
+
+  /** `following: false` starts at the top, for text read from its beginning (until scrolled to the end). */
+  constructor(private following = true) {}
 
   layout(totalLines: number, visibleLines: number): number {
     this.maximum = Math.max(0, totalLines - visibleLines);

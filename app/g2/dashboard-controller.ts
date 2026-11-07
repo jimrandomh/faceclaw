@@ -2666,7 +2666,7 @@ class DashboardController {
     this.openAppsRestored = true;
     const saved = loadPersistedOpenApps();
     if (!saved.open.length) return;
-    const known = new Set(ALL_APPS.map((app) => app.appId));
+    const known = new Set(ALL_APPS.filter((app) => app.restoreOnRestart !== false).map((app) => app.appId));
     this.suppressOpenAppsPersist = true;
     try {
       for (const appId of saved.open) {

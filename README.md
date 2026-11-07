@@ -136,8 +136,8 @@ search the web for current information; the search model must support the
 feature. Open WebUI and other compatible servers never receive Venice-specific
 parameters, including after an endpoint switch.
 
-The same provider can supply Calculator's rewrite fallback and Translate.
-Actual tool calling depends on the selected model and server. Use HTTPS where
+The same provider can supply voice features like Translate and Aside. Actual
+tool calling depends on the selected model and server. Use HTTPS where
 possible; mobile cleartext policies may block plain HTTP. For a private server,
 make it reachable from the phone (for example through your tailnet) without
 exposing it publicly. Exported settings contain API keys and must be treated as

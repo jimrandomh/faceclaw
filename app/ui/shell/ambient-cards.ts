@@ -9,6 +9,13 @@
  * the shell subscribes to changes to request repaints.
  */
 
+export const AMBIENT_CARD_WIDTH = 230;
+export const AMBIENT_CARD_PADDING_X = 8;
+/** The width a card's lines have; longer ones are truncated, so wrap first. */
+export const AMBIENT_CARD_TEXT_WIDTH = AMBIENT_CARD_WIDTH - 2 * AMBIENT_CARD_PADDING_X;
+/** Lines a card shows after its title. */
+export const AMBIENT_MAX_LINES_PER_CARD = 3;
+
 export type AmbientCard = {
   /** Stable identity: posting the same id replaces the existing card. */
   id: string;

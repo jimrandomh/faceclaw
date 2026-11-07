@@ -4,7 +4,7 @@ import { DrawOp, type ListCall, type ListClip } from "../../graphics/display-lis
 import { G2_LENS_HEIGHT, G2_LENS_WIDTH, GrayImage, grayToNibble } from "../../graphics/image";
 import { getDefaultMediumFont, getDefaultSmallFont } from "../../graphics/ui-fonts";
 import { truncateText } from "../../graphics/textwrap";
-import { activeAmbientCards } from "./ambient-cards";
+import { activeAmbientCards, AMBIENT_CARD_PADDING_X, AMBIENT_CARD_TEXT_WIDTH, AMBIENT_CARD_WIDTH, AMBIENT_MAX_LINES_PER_CARD } from "./ambient-cards";
 import { BATTERY_ICON_WIDTH, DENSE_BATTERY_BLOCK_HEIGHT, drawBattery, drawDenseBatteries, type BatteryDevice } from "../../graphics/battery";
 import { ALL_NOTIFICATIONS, readActiveNotificationIcons } from "../../native/notification-icons";
 import { NOTIFICATION_ICON_SIZE } from "../../native/notification-types";
@@ -1226,12 +1226,9 @@ function drawStackedBatteries(image: GrayImage, items: BatteryItem[], barTop: nu
 // Ambient cards (encounter popups): compact and deliberately unobtrusive,
 // anchored to the bottom-right of the window band and stacking upward, clear
 // of the caption area's left-aligned text. Never interactive.
-const AMBIENT_CARD_WIDTH = 230;
 const AMBIENT_CARD_MARGIN = 6;
 const AMBIENT_CARD_GAP = 4;
-const AMBIENT_CARD_PADDING_X = 8;
 const AMBIENT_CARD_PADDING_Y = 4;
-const AMBIENT_MAX_LINES_PER_CARD = 3;
 
 /**
  * Paint the active ambient cards bottom-up: the oldest card sits at the very
@@ -1248,7 +1245,6 @@ function drawAmbientCards(image: GrayImage, right: number, parts?: Plane[]): voi
   const bandBottom = bandTop + MIN_WINDOW_HEIGHT - windowFooterHeight();
   // Right-aligned with the top bar: clear of a right-hand sidebar.
   const x = right - AMBIENT_CARD_WIDTH - AMBIENT_CARD_MARGIN;
-  const textWidth = AMBIENT_CARD_WIDTH - 2 * AMBIENT_CARD_PADDING_X;
   let bottom = bandBottom - AMBIENT_CARD_MARGIN;
   for (const card of cards) {
     const lines = [card.title, ...card.lines].slice(0, 1 + AMBIENT_MAX_LINES_PER_CARD);
@@ -1263,7 +1259,7 @@ function drawAmbientCards(image: GrayImage, right: number, parts?: Plane[]): voi
         font,
         x + AMBIENT_CARD_PADDING_X,
         y + AMBIENT_CARD_PADDING_Y + index * lineStep(font),
-        truncateText(font, lines[index]!, textWidth),
+        truncateText(font, lines[index]!, AMBIENT_CARD_TEXT_WIDTH),
         index === 0 ? 220 : 160,
       );
     }

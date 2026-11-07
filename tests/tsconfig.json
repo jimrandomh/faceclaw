@@ -56,6 +56,8 @@
     "../app/apps/evenhub/window-icon.ts",
     "../app/apps/timer/timer-model.ts",
     "../app/apps/teleprompter/script-tracker.ts",
+    "../app/apps/aside/aside-session.ts",
+    "../app/apps/aside/aside-reply.ts",
     "../app/apps/nightscout/nightscout-alerts.ts",
     "../app/apps/nightscout/missed-bolus-detector.ts",
     "../app/health/health-types.ts",
