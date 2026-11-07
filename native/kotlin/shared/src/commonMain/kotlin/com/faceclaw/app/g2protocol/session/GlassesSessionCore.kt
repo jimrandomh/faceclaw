@@ -526,7 +526,8 @@ class GlassesSessionCore(
     /**
      * Write one already-framed packet to an arm outside the message scheduler (the ANCS
      * relay client builds its own packets). Blocks like any link write; false when the
-     * arm is unknown, the link rejects the write, or the session is not running.
+     * arm is unknown, the link rejects the write, or the session is not running. A G1 has a
+     * characteristic for them, whose ATT errors say why a command was refused.
      */
     fun writeRawPacket(arm: String, packet: ByteArray): Boolean {
         val address = when (arm.uppercase()) {
@@ -537,8 +538,11 @@ class GlassesSessionCore(
         val active = monitor.withLock { running }
         if (!active) return false
         return try {
-            val result = link.writeFrames(address, BleProtocol.WRITE_CHAR_UUID, listOf(packet), ConnectionOptions.WRITE_MODE,
-                ConnectionOptions.WRITE_TIMEOUT_MS)
+            val result = if (isG1) {
+                link.writeFrames(address, G1Ble.ANCS_CHAR_UUID, listOf(packet), GattWriteMode.WITH_RESPONSE, ConnectionOptions.WRITE_TIMEOUT_MS)
+            } else {
+                link.writeFrames(address, BleProtocol.WRITE_CHAR_UUID, listOf(packet), ConnectionOptions.WRITE_MODE, ConnectionOptions.WRITE_TIMEOUT_MS)
+            }
             if (result) monitor.withLock { noteWriteCompletedLocked(address, now()) }
             result
         } catch (t: Throwable) {
@@ -588,6 +592,9 @@ class GlassesSessionCore(
 
     /** True when this session drives an Even G1. */
     fun isEvenG1(): Boolean = isG1
+
+    /** Whether the glasses can relay iPhone notifications, as far as the session knows: a G2's depends on its firmware revision, which TS checks. */
+    fun ancsRelayAvailable(): Boolean = !isG1 || monitor.withLock { g1.ancsRelay }
 
     /** True when this session drives a RayNeo iO. */
     fun isRayNeoIo(): Boolean = isIo

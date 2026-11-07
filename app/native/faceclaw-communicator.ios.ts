@@ -857,6 +857,11 @@ export class FaceclawCommunicatorBridge {
     return Boolean(this.communicator.isAncsAuthorized());
   }
 
+  /** False on a G1 whose firmware has no relay; a G2's depends on its firmware revision. */
+  ancsRelayAvailable(): boolean {
+    return Boolean(this.communicator.ancsRelayAvailable());
+  }
+
   onAncsAuthorization(listener: (authorized: boolean) => void): () => void {
     this.ancsAuthorizationListeners.add(listener);
     return () => this.ancsAuthorizationListeners.delete(listener);

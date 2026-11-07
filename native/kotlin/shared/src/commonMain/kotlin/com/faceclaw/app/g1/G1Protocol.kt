@@ -10,6 +10,8 @@ object G1Ble {
     const val PAIR_CHAR_UUID = "f3da4d59-277a-4fc9-a1ed-41c9c22d4404"
     /** Faceclaw's records (VM.md §6.11). */
     const val FC_CHAR_UUID = "f3da4d59-277a-4fc9-a1ed-41c9c22d4405"
+    /** The iPhone notification relay (VM.md §6.12): the G2's `AN` commands and frames, with this characteristic to itself. */
+    const val ANCS_CHAR_UUID = "f3da4d59-277a-4fc9-a1ed-41c9c22d4406"
     const val REQUESTED_MTU = 247
     /** The oldest firmware this app works with: `PROP_SET` came in here. */
     const val REQUIRED_FIRMWARE = "0.5.63"
@@ -188,13 +190,16 @@ object G1Protocol {
         @JvmField val inCase: Boolean,
         /** `MIC` captures here: the right arm. */
         @JvmField val mic: Boolean,
+        /** The iPhone notification relay answers here (0.5.65+). */
+        @JvmField val ancs: Boolean,
     )
 
     fun parseHello(body: ByteArray): Hello? {
         if (body.size < 7 || body[0].toInt() != 5) return null
         val flags = body[5].toInt() and 255
         return Hello("${body[1].toInt() and 255}.${body[2].toInt() and 255}.${body[3].toInt() and 255}",
-            body[4].toInt() == 1, flags and 1 != 0, flags and 2 != 0, flags and 64 != 0, flags and 128 != 0, body[6].toInt() and 4 != 0)
+            body[4].toInt() == 1, flags and 1 != 0, flags and 2 != 0, flags and 64 != 0, flags and 128 != 0, body[6].toInt() and 4 != 0,
+            body[6].toInt() and 8 != 0)
     }
 
     /** The display path's version, or -1 for a body that isn't FC_INFO's. */

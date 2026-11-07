@@ -23,6 +23,7 @@ import { weatherBridge } from '../native/weather'
 import { FaceclawCommunicatorBridge, resolveIosPeripherals, type CommunicatorState, type RawInputEvent } from '../native/faceclaw-communicator.ios'
 import { PreviewDisplayTarget, type DisplayTarget } from '../native/preview-display.ios'
 import { AncsClient, ANCS_FIRMWARE_VERSION } from './ancs-client'
+import { G1V0_IMAGE } from '../g1/firmware/g1v0-image'
 import { GlanceHost, type GlanceDisplay } from './glance-host'
 import { createLockScreenImage, LOCK_SCREEN_SURFACE_ID } from './lock-screen'
 import { OsEventTypeList } from './events'
@@ -984,6 +985,8 @@ export class IosPreviewController {
     // (or re-pairs / installs the custom firmware, which lift the suppression).
     if (isHaltedSessionPhase(state.phase)) suppressAutoReconnect()
     const phase: SessionPhase = state.phase === 'charging' ? 'connected' : isHaltedSessionPhase(state.phase) ? 'error' : state.phase
+    // The relay ends with the link, so a reconnected session has to ask for it again (syncNotifications).
+    if (phase !== 'connected' && this.notifications && this.notifications.state !== 'disconnected') this.notifications.stop()
     // Wear state is a per-transport snapshot: ask again on every new session.
     if (phase !== 'connected') this.wearDetectionRequested = false
     this.update(phase, state.status)
@@ -1025,6 +1028,11 @@ export class IosPreviewController {
     if (!notifications || this.state.phase !== 'connected') return
     if (!ancsCapable(this.state.capabilities)) {
       if (this.state.capabilities) notifications.stop(`Update glasses to Faceclaw firmware ${ANCS_FIRMWARE_VERSION} or newer for iPhone notifications.`)
+      return
+    }
+    // A G1 reports no revision that says so: its session knows from what the right arm answered.
+    if (!communicator.ancsRelayAvailable()) {
+      notifications.stop(`Update the glasses to Faceclaw's firmware ${G1V0_IMAGE.version} for iPhone notifications, then reconnect.`)
       return
     }
     if (notifications.state !== 'disconnected') return

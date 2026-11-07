@@ -54,6 +54,8 @@ internal class G1SessionState {
     var micOn = false
     var lastMicRenewAtMs = 0L
     val mic = G1MicAssembler()
+    /** The right arm's relay is there and this host listens to it. */
+    var ancsRelay = false
 
     fun nextTag(): Int {
         tag = tag % 255 + 1
@@ -72,6 +74,7 @@ internal class G1SessionState {
         micOn = false
         lastMicRenewAtMs = 0
         mic.reset()
+        ancsRelay = false
     }
 }
 
@@ -519,6 +522,7 @@ internal fun GlassesSessionCore.g1ConnectLoopOnce() {
             // A limit the last session left, when the other eye's panel guard had capped it.
             g1Control(arm, G1Protocol.OP_PROP_SET, G1Protocol.propSet(G1Protocol.PROP_BRIGHTNESS_MAX, G1Protocol.BRIGHTNESS_LEVEL_MAX))
         }
+        g1ListenToAncsRelay()
         monitor.withLock {
             sessionReady = true
             shutdownRequested = false
@@ -570,10 +574,31 @@ internal fun GlassesSessionCore.g1ConnectLoopOnce() {
     }
 }
 
+/**
+ * Only a host with a relay client listens, and the arm does nothing until that client says START. An arm updated just now
+ * may still look old to the OS, which keeps the GATT layout it last saw until it hears otherwise: not worth failing the
+ * session, and the next connection sees it.
+ */
+private fun GlassesSessionCore.g1ListenToAncsRelay() {
+    val wanted = rawFrameTap != null && monitor.withLock { g1.arms[1].hello?.ancs == true }
+    val listening = wanted && link.enableNotifications(rightAddress, G1Ble.ANCS_CHAR_UUID, true, ConnectionOptions.DESCRIPTOR_TIMEOUT_MS)
+    if (wanted && !listening) logWarn("G1: the right arm has a notification relay, but subscribing to it failed")
+    monitor.withLock { g1.ancsRelay = listening }
+}
+
 // ---------------------------------------------------------------------------------------------
 // Inbound (BLE callback thread)
 
 internal fun GlassesSessionCore.g1OnNotification(address: String, characteristicUuid: String, data: ByteArray) {
+    if (G1Ble.ANCS_CHAR_UUID == characteristicUuid) {
+        val tap = rawFrameTap
+        if (tap != null && data.size >= 2 && data[0] == GlassesSessionCore.RELAY_TAG_A && data[1] == GlassesSessionCore.RELAY_TAG_N
+                && address.equals(rightAddress, ignoreCase = true)) {
+            monitor.withLock { lastIncomingAtMs = now() }
+            tap(data.copyOf())
+        }
+        return
+    }
     if (G1Ble.EVT_CHAR_UUID != characteristicUuid) return
     val arm = armIndex(address)
     if (arm < 0) return

@@ -132,6 +132,11 @@ private class FakeG1Glasses(platform: ProtocolPlatform) : SessionLink {
     val leftArm = FakeG1Arm(true)
     val rightArm = FakeG1Arm(false)
     @Volatile var hasDisplayPath = true
+    /** HELLO's bit for the notification relay, the characteristic behind it, and what reaches it. */
+    @Volatile var hasAncsRelay = false
+    @Volatile var ancsCharacteristicMissing = false
+    val ancsSubscribed = ArrayList<String>()
+    val ancsWrites = ArrayList<Pair<String, ByteArray>>()
     /** Out of the case, or the OS said no: no bond can be made. */
     @Volatile var pairingRefused = false
     private val out = ArrayList<Pair<String, ByteArray>>()
@@ -176,8 +181,13 @@ private class FakeG1Glasses(platform: ProtocolPlatform) : SessionLink {
 
     override fun discoverServices(address: String, timeoutMs: Int): Boolean = true
 
-    override fun enableNotifications(address: String, characteristicUuid: String, enable: Boolean, timeoutMs: Int): Boolean =
-        characteristicUuid == G1Ble.EVT_CHAR_UUID
+    override fun enableNotifications(address: String, characteristicUuid: String, enable: Boolean, timeoutMs: Int): Boolean {
+        if (characteristicUuid == G1Ble.ANCS_CHAR_UUID && !ancsCharacteristicMissing) {
+            lock.withLock { ancsSubscribed.add(address) }
+            return true
+        }
+        return characteristicUuid == G1Ble.EVT_CHAR_UUID
+    }
 
     override fun requestBond(address: String) {
         if (!pairingRefused) lock.withLock { arm(address).bonded = true }
@@ -200,6 +210,10 @@ private class FakeG1Glasses(platform: ProtocolPlatform) : SessionLink {
                 assertTrue(frames.all { it.size <= 182 }, "writes must fit the MTU")
                 for (f in frames) packet(address, a, f)
             }
+            G1Ble.ANCS_CHAR_UUID -> {
+                assertEquals(GattWriteMode.WITH_RESPONSE, mode, "the arm's refusals come back as ATT errors")
+                lock.withLock { for (f in frames) ancsWrites.add(address to f) }
+            }
             else -> throw AssertionError("write to $characteristicUuid")
         }
         return true
@@ -220,7 +234,7 @@ private class FakeG1Glasses(platform: ProtocolPlatform) : SessionLink {
                 body[3] = 63
                 body[4] = (if (a.left) 1 else 0).toByte()
                 body[5] = (2 or 64).toByte()
-                body[6] = (if (a.left) 0 else 4).toByte()
+                body[6] = ((if (a.left) 0 else 4) or (if (hasAncsRelay) 8 else 0)).toByte()
                 reply(address, op, tag, 0, body)
             }
             G1Protocol.OP_FC_INFO -> if (hasDisplayPath) {
@@ -485,6 +499,79 @@ class G1SessionTest {
             }
         } finally {
             s.core.disconnect()
+        }
+    }
+
+    @Test
+    fun aRelayFirmwareIsListenedToOnTheRightArmOnly() {
+        val s = G1Session()
+        val frames = ArrayList<ByteArray>()
+        val lock = testPlatform().createLock()
+        s.glasses.hasAncsRelay = true
+        s.core.setRawFrameTap { frame -> lock.withLock { frames.add(frame) } }
+        try {
+            assertTrue(s.core.start())
+            assertTrue(awaitTrue(5_000) { s.ready() }, s.tail())
+            assertTrue(s.core.ancsRelayAvailable())
+            assertEquals(listOf(RIGHT), s.glasses.lock.withLock { s.glasses.ancsSubscribed.toList() })
+
+            // A command goes to the relay's characteristic; a G2's would go to its command characteristic.
+            val start = byteArrayOf(0x41, 0x4e, 1, 0, 9, 0, 0, 0)
+            assertTrue(s.core.writeRawPacket("R", start))
+            val written = s.glasses.lock.withLock { s.glasses.ancsWrites.single() }
+            assertEquals(RIGHT, written.first)
+            assertTrue(written.second.contentEquals(start))
+
+            // A frame reaches the client untouched, and isn't taken for an event; a stray one doesn't reach it.
+            val frame = byteArrayOf(0x41, 0x4e, 1, 0, 9, 0, 0, 0, 0, 0, 3, 1)
+            s.core.onNotification(RIGHT, G1Ble.ANCS_CHAR_UUID, frame)
+            s.core.onNotification(LEFT, G1Ble.ANCS_CHAR_UUID, frame)
+            s.core.onNotification(RIGHT, G1Ble.ANCS_CHAR_UUID, byteArrayOf(1, 2, 3))
+            s.core.onNotification(RIGHT, G1Ble.EVT_CHAR_UUID.uppercase(), byteArrayOf(0x41, 0x4e, 1, 0, 9, 0, 0, 0, 0, 0, 3))
+            lock.withLock {
+                assertEquals(1, frames.size, "only the right arm's relay frames")
+                assertTrue(frames[0].contentEquals(frame))
+            }
+        } finally {
+            s.core.disconnect()
+        }
+    }
+
+    @Test
+    fun theRelayIsAvailableOnlyWithFirmwareAHostThatListensAndTheCharacteristic() {
+        // Android: no client, so nothing to subscribe for, whatever the firmware has.
+        val android = G1Session()
+        android.glasses.hasAncsRelay = true
+        try {
+            assertTrue(android.core.start())
+            assertTrue(awaitTrue(5_000) { android.ready() }, android.tail())
+            assertFalse(android.core.ancsRelayAvailable())
+            assertEquals(emptyList(), android.glasses.lock.withLock { android.glasses.ancsSubscribed.toList() })
+        } finally {
+            android.core.disconnect()
+        }
+        // Firmware before the relay still runs Faceclaw, and doesn't get a subscription it can't answer.
+        val old = G1Session()
+        old.core.setRawFrameTap { }
+        try {
+            assertTrue(old.core.start())
+            assertTrue(awaitTrue(5_000) { old.ready() }, old.tail())
+            assertFalse(old.core.ancsRelayAvailable())
+            assertEquals(emptyList(), old.glasses.lock.withLock { old.glasses.ancsSubscribed.toList() })
+        } finally {
+            old.core.disconnect()
+        }
+        // The OS still has the layout from before the update: the session goes on without it.
+        val stale = G1Session()
+        stale.glasses.hasAncsRelay = true
+        stale.glasses.ancsCharacteristicMissing = true
+        stale.core.setRawFrameTap { }
+        try {
+            assertTrue(stale.core.start())
+            assertTrue(awaitTrue(5_000) { stale.ready() }, stale.tail())
+            assertFalse(stale.core.ancsRelayAvailable())
+        } finally {
+            stale.core.disconnect()
         }
     }
 
@@ -921,7 +1008,11 @@ class G1ProtocolTest {
         val hello = assertNotNull(G1Protocol.parseHello(body))
         assertEquals("0.5.62", hello.version)
         assertTrue(hello.mic)
+        assertFalse(hello.ancs, "firmware before the relay")
         assertTrue(hello.leftArm && hello.panelOk && hello.encrypted && hello.inCase)
+        body[6] = 8
+        assertTrue(assertNotNull(G1Protocol.parseHello(body)).ancs)
+        assertFalse(assertNotNull(G1Protocol.parseHello(body)).mic)
         assertFalse(hello.safeMode)
         body[0] = 4
         assertNull(G1Protocol.parseHello(body), "protocol 4 is not this firmware")

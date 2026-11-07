@@ -22,6 +22,7 @@ const timings = load('app/native/frame-timings.ts', {});
 const LAUNCHER_GRAY = 75;
 
 function fixture() {
+  const relay = { available: true, starts: 0, client: null, message: undefined };
   const observers = new Map(), phoneState = { protectedDataAvailable: true };
   let settingsChanged, remoteHost, controller, bridge = null;
   let now = 1000, nextTask = 0, screenOn = true, shellOptions;
@@ -107,9 +108,9 @@ function fixture() {
     constructor() { super(); bridge = this; }
     on(kind, fn) { this.listeners[kind] = fn; return () => { if (this.listeners[kind] === fn) delete this.listeners[kind]; }; }
     onStateChange(fn) { return this.on('state', fn); } onRingEvent(fn) { return this.on('ring', fn); }
-    onWearState(fn) { return this.on('wear', fn); } onBatteryState(fn) { return this.on('battery', fn); } onCaseState(fn) { return this.on('case', fn); } onFirmwareInfo() { return noop(); }
+    onWearState(fn) { return this.on('wear', fn); } onBatteryState(fn) { return this.on('battery', fn); } onCaseState(fn) { return this.on('case', fn); } onFirmwareInfo(fn) { return this.on('firmware', fn); }
     onFrameMetrics() { return noop(); } onPreviewAnimationFrame() { return noop(); } addCompassListener() { return noop(); } onAncsRelayFrame() { return noop(); }
-    onAncsAuthorization() { return noop(); } setRequiresAncs() {} rightWriteLimit() { return 20; } onPhoneLockSignal() {}
+    onAncsAuthorization() { return noop(); } setRequiresAncs() {} ancsRelayAvailable() { return relay.available; } rightWriteLimit() { return 20; } onPhoneLockSignal() {}
     async writeRawToRight() {} async configureBrightness() {} async setBrightness() {} async enableWearDetectionAndRequestState() {} async playBuzzerSequence() {} async close() {}
     emitState(phase, status = phase) { if (phase === 'connected' || phase === 'disconnected') this.phase = phase; this.listeners.state?.({ phase, status }); }
     emitRing(input) { this.listeners.ring?.(input); }
@@ -148,7 +149,10 @@ function fixture() {
     '../ui/shell/voice-activity': { voiceActivity: { setActive() {}, isActive: () => false, subscribe: () => () => {} } },
     '../native/faceclaw-communicator.ios': { FaceclawCommunicatorBridge, resolveIosPeripherals: async addresses => addresses },
     '../native/preview-display.ios': { PreviewDisplayTarget },
-    './ancs-client': { ANCS_FIRMWARE_VERSION: 16, AncsClient: class { state = 'disconnected'; start() {} stop() {} stopCommand() { return new Uint8Array(); } receive() { return false; } } },
+    '../g1/firmware/g1v0-image': { G1V0_IMAGE: { version: '0.5.65' } },
+    './ancs-client': { ANCS_FIRMWARE_VERSION: 16, AncsClient: class { state = 'disconnected'; constructor() { relay.client = this; }
+      start() { this.state = 'starting'; relay.starts++; } stop(message) { this.state = 'disconnected'; relay.message = message; }
+      stopCommand() { return new Uint8Array(); } receive() { return false; } } },
     '../native/nightscout-bridge': { nightscoutBridge: { async start() {}, async stop() {} } },
     '../native/weather': { weatherBridge: { setSessionActive() {} } },
     './glance-host': { GlanceHost }, './events': events,
@@ -214,10 +218,30 @@ function fixture() {
   }
   async function phone(type, origin = 'ring') { controller.gesture(type, origin); await render(); }
   async function connect() { await controller.connect(); await render(); }
-  return { controller, shell, battery, remoteHost, keyboardChanged: session => shellOptions.onKeyboardInputChanged(session), settings, phoneState, observers,
+  return { relay, controller, shell, battery, remoteHost, keyboardChanged: session => shellOptions.onKeyboardInputChanged(session), settings, phoneState, observers,
     get shellOptions() { return shellOptions; }, registered, inProcessApps,
     get bridge() { return bridge; }, connect, wear: wearing => bridge.emitWear(wearing), settingsChanged: () => settingsChanged(), sent, previews, received, boardStats, hardware, phone, advance, render };
 }
+test('a link that comes back asks for the notification relay again; a G1 without one is told to update', async () => {
+  const f = fixture();
+  await f.connect();
+  const firmware = { leftVersion: 'g1v0 0.5.65', rightVersion: 'g1v0 0.5.65', extension: 'Faceclaw/38' };
+  f.bridge.listeners.firmware(firmware);
+  assert.equal(f.relay.starts, 1);
+  // Connected and running: nothing to do.
+  f.bridge.emitState('connected');
+  assert.equal(f.relay.starts, 1);
+  // The firmware's relay ended with the link, so the client must not go on thinking it's ready.
+  f.bridge.emitState('retrying', 'Reconnecting');
+  assert.equal(f.relay.client.state, 'disconnected');
+  f.bridge.emitState('connected');
+  assert.equal(f.relay.starts, 2);
+  f.bridge.emitState('retrying', 'Reconnecting');
+  f.relay.available = false;
+  f.bridge.emitState('connected');
+  assert.equal(f.relay.starts, 2);
+  assert.match(f.relay.message, /firmware 0\.5\.65/);
+});
 const assertBlank = pixels => assert.ok(pixels.every(p => p === 0));
 const assertBoard = pixels => {
   assert.equal(pixels[48 * 640 + 270], 200);

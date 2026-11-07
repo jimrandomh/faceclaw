@@ -108,6 +108,8 @@ class IosGlassesSession internal constructor(
 
     fun isAncsAuthorized(): Boolean = central?.isAncsAuthorized(rightIdentifier) ?: false
 
+    fun ancsRelayAvailable(): Boolean = core.ancsRelayAvailable()
+
     fun setAncsListener(listener: IosAncsListener?) {
         if (listener == null) {
             core.setRawFrameTap(null)
