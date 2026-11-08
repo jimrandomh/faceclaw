@@ -231,7 +231,7 @@ test('the flow switches immersive mode per page and skips pages that do not appl
   const load = loader({}, {
     '../../graphics/image': { GrayImage: class {} },
     '../../ui/shell/in-process-window': {}, '../../ui/shell/shell': { shell }, '../../ui/sound-effects': {},
-    './data-collection-page': {}, './depth-page': {}, './display-mode-page': {}, './ios-privacy-page': {}, './layout-page': {},
+    './data-collection-page': {}, './depth-page': {}, './display-mode-page': {}, './layout-page': {},
     './onboarding-progress': {}, './text-size-page': {}, './welcome-page': {},
   });
   const { OnboardingLayer } = load('app/apps/onboarding/onboarding-app.ts');

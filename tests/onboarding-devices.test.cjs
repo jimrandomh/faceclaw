@@ -33,7 +33,7 @@ function fixture({ glasses = 'g2', ios = false, completed = false, ring = false,
   const modules = {
     '@nativescript/core': core, './onboarding-state': onboardingState, '../ui/dashboard-settings': settings,
     './onboarding-navigation': { finishOnboardingNavigation: () => state.navigations.push('finish') },
-    '../analytics/privacy-disclosure': { IOS_PRIVACY_NOTICE: 'privacy' },
+    '../g1/even-firmware': { EVEN_G1_RESTORE: { version: '1.6.6' } },
     '../native/even-app-conflict': { openEvenAppSettings() {} },
     '../native/ble-permissions': { ensureBlePermissions: async () => {} },
     '../g2/device-addresses': {
@@ -143,8 +143,8 @@ test('the disclaimer and firmware steps name only the chosen glasses', () => {
   assert.doesNotMatch(io.disclaimer.body, /Even/);
 
   assert.match(g2.firmware.body, /reconnecting the official Even Realities app/);
-  assert.doesNotMatch(g2.firmware.body, /computer|G1/);
-  assert.match(g1.firmware.body, /takes a computer/);
+  assert.doesNotMatch(g2.firmware.body, /from Faceclaw|1\.6\.6|G1/);
+  assert.match(g1.firmware.body, /return to the official firmware later from Faceclaw, as version 1\.6\.6\./);
   assert.doesNotMatch(g1.firmware.body, /reconnecting|G2/);
   assert.equal(g2.firmware.primaryLabel, 'Flash Firmware');
   assert.equal(g1.firmware.primaryLabel, 'Flash Firmware');

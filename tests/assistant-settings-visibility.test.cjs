@@ -60,7 +60,6 @@ function settingsEnv(initialUrl = '', initialModel = 'openai-compatible') {
       deleteAsrModel() {}, startAsrModelDownload() {}, onAsrModelStateChanged: () => () => {},
     },
     '../../apps/files/text-viewer': { TextViewerLayer: class {} },
-    '../../analytics/privacy-disclosure': { IOS_PRIVACY_NOTICE: '' },
     '../menu': {
       drawRightValueMenuItem() {}, openModalMenu() {},
       submenuItem: label => ({ label, onSelect() {} }),
