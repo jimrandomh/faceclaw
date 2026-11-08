@@ -1,4 +1,5 @@
 import { Frame, Observable, Screen } from "@nativescript/core";
+import { EVEN_G1_RESTORE } from "../g1/even-firmware";
 import { glassesTypeSetting, type GlassesType } from "../ui/dashboard-settings";
 
 import { isPreviewOnlyMode } from "./onboarding-state";
@@ -38,7 +39,7 @@ function firmwareBody(glasses: GlassesType): string {
     return `Faceclaw only runs on a RayNeo iO that has Faceclaw's custom firmware installed. This app can't install it on an iO, so that has to be done separately before you pair your glasses. ${WARRANTY_NOTE}\n\n${PREVIEW_HINT}`;
   }
   const restore = glasses === "g1"
-    ? "Returning to the official firmware later takes a computer."
+    ? `You can return to the official firmware later from Faceclaw, as version ${EVEN_G1_RESTORE.version}.`
     : "You can uninstall and return to the official firmware later, by reconnecting the official Even Realities app.";
   return `Faceclaw only runs on ${GLASSES_MAKER[glasses].product} glasses that have Faceclaw's custom firmware installed. Next, Faceclaw will pair with your glasses, check their firmware, and install the custom firmware if it isn't there yet.\n\nFlashing replaces the official firmware. ${restore} ${WARRANTY_NOTE}\n\n${PREVIEW_HINT}`;
 }

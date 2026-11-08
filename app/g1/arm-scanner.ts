@@ -1,6 +1,7 @@
 /**
  * Finding a G1's arms by listening for them. That's how an install knows what each arm runs before connecting to it,
- * and how it finds an arm again afterwards: an arm coming off Even's firmware has a new address.
+ * and how it finds an arm again afterwards, when it advertises what it runs now (and, coming from g1v0 before 0.5.66, at
+ * a new address).
  */
 import { classifyAdvertisement, type EvenAdvertisement } from "../g2/even-advertisement";
 import { DiscoveryAggregator, type GlassesPairCandidate } from "../g2/pairing-candidates";
@@ -27,11 +28,21 @@ export class G1ArmScanner {
 
   /** Resolves when an arm of this side on g1v0 is heard, or null after [timeoutMs]. */
   waitForG1v0Arm(side: G1Side, serial: string | null | undefined, timeoutMs: number): Promise<EvenAdvertisement | null> {
+    return this.waitForArm(side, serial, timeoutMs, (arm) => arm.g1Firmware !== "stock");
+  }
+
+  /** Resolves when an arm of this side is heard that [accept] takes, on any firmware, or null after [timeoutMs]. */
+  waitForArm(
+    side: G1Side,
+    serial: string | null | undefined,
+    timeoutMs: number,
+    accept: (arm: EvenAdvertisement) => boolean,
+  ): Promise<EvenAdvertisement | null> {
     const startedAt = Date.now();
     const others = new Map<string, EvenAdvertisement>();
     return this.listen<EvenAdvertisement>(timeoutMs, (raw, done) => {
       const arm = classifyAdvertisement(raw);
-      if (!arm || arm.role !== side || !arm.g1Firmware || arm.g1Firmware === "stock") return;
+      if (!arm || arm.role !== side || !arm.g1Firmware || !accept(arm)) return;
       if (!serial || sameG1Serial(arm.serial, serial)) {
         done(arm);
         return;

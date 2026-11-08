@@ -1,10 +1,14 @@
 /** What installing firmware on a G1 has to decide. No I/O. */
 import type { GlassesPairCandidate } from "../g2/pairing-candidates";
+import { EVEN_G1_RESTORE } from "./even-firmware";
 
 export type G1Side = "left" | "right";
 
 /** Left first: a right arm on g1v0 next to a left arm on Even's firmware would leave the left eye dark. */
 export const G1_SIDES: readonly G1Side[] = ["left", "right"];
+
+/** Going back, right first, for the same reason: halfway, the pair is as halfway through an install. */
+export const G1_UNINSTALL_SIDES: readonly G1Side[] = ["right", "left"];
 
 export const G1_CASE_INSTRUCTIONS =
   "Put the glasses in their charging case with the lid open, and plug the case in. Stay nearby, and leave Faceclaw open.";
@@ -14,13 +18,20 @@ export const G1_CASE_DELAY_HINT =
   "A fully charged arm can take up to 5 minutes to notice it's in the case, so this may take a while.";
 
 export const G1_INSTALL_NOTICE =
-  "This replaces the firmware on both arms, about two minutes each. Going back to Even's firmware later takes a computer, and " +
-  "may not be the version you have now. Installing custom firmware is not covered by warranty.";
+  "This replaces the firmware on both arms, about two minutes each. Faceclaw can put Even's firmware back later, but as version " +
+  `${EVEN_G1_RESTORE.version}, which may not be the version you have now. Installing custom firmware is not covered by warranty.`;
+
+export const G1_UNINSTALL_NOTICE =
+  `This puts Even's official firmware ${EVEN_G1_RESTORE.version} back on both arms, Bluetooth controller included, a few minutes ` +
+  "each. It may not be the version they came with. Afterwards they work with Even's app again, and not with Faceclaw until you " +
+  "install its firmware again.";
 
 /** What the native flow says when it finishes (G1ArmFlashFlow). */
 export type G1FlashResult = {
   flashed?: boolean;
   firmware?: "g1v0" | "stock";
+  /** A restore erased g1v0's asset store, where Even's fonts and pictures were. */
+  wiped?: boolean;
   version?: string;
   safeMode?: boolean;
   inCase?: boolean;
@@ -102,8 +113,8 @@ export function g1StateFromAdvertising(
   return { state: compareG1Versions(lowest, shipped) < 0 ? "older" : "current", version: lowest };
 }
 
-/** Each arm counts for half of the bar. */
-export function g1FlashPercent(side: G1Side, bytesSent: number, bytesTotal: number): number {
+/** Each arm counts for half of the bar, in the order they're done. */
+export function g1FlashPercent(side: G1Side, bytesSent: number, bytesTotal: number, order: readonly G1Side[] = G1_SIDES): number {
   const within = bytesTotal > 0 ? Math.min(1, bytesSent / bytesTotal) : 0;
-  return ((side === "right" ? 1 + within : within) / 2) * 100;
+  return ((order.indexOf(side) + within) / 2) * 100;
 }

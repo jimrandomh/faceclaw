@@ -197,17 +197,28 @@ object G1Smp {
         return (frame.indices step size).map { frame.copyOfRange(it, minOf(it + size, frame.size)) }
     }
 
-    /** The first chunk also says what is coming, which lets the arm resume an upload of the same file. */
-    fun uploadRequest(image: ByteArray, offset: Int, fileSha256: ByteArray): Map<String, Any?> {
+    /** MCUboot's image numbers on an nRF5340: the application core, and the network core (the Bluetooth controller). */
+    const val IMAGE_APP = 0
+    const val IMAGE_NET_CORE = 1
+
+    /**
+     * The first chunk also says what is coming, which lets the arm resume an upload of the same file, and which image it
+     * is: each has its own second slot.
+     */
+    fun uploadRequest(image: ByteArray, offset: Int, fileSha256: ByteArray, imageIndex: Int = IMAGE_APP): Map<String, Any?> {
         val data = image.copyOfRange(offset, minOf(offset + UPLOAD_CHUNK, image.size))
         return if (offset == 0) {
-            mapOf("image" to 0, "len" to image.size, "off" to 0, "sha" to fileSha256, "data" to data, "upgrade" to false)
+            mapOf("image" to imageIndex, "len" to image.size, "off" to 0, "sha" to fileSha256, "data" to data, "upgrade" to false)
         } else {
             mapOf("off" to offset, "data" to data)
         }
     }
 
-    fun confirmRequest(imageHash: ByteArray): Map<String, Any?> = mapOf("hash" to imageHash, "confirm" to true)
+    /**
+     * Marks the image with this hash for MCUboot's next boot. [permanent] false is a test install, which is what Even's app
+     * and g1v0's own network-core fallback ask for on image 1; the network core has no copy to go back to either way.
+     */
+    fun confirmRequest(imageHash: ByteArray, permanent: Boolean = true): Map<String, Any?> = mapOf("hash" to imageHash, "confirm" to permanent)
 
     /** Joins notifications into replies; [feed] gives each complete one as sequence number and body. */
     class Assembler {

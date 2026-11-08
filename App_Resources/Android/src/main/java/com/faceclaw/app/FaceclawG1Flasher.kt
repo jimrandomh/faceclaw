@@ -5,10 +5,18 @@ import android.os.Handler
 import android.os.Looper
 
 /**
- * Android host for the shared [G1ArmFlashFlow]: owns the GATT link and the worker thread for one G1 arm's install, or a
- * question about what it runs, and delivers listener callbacks on the main thread. For app/native/g1-flasher.ts.
+ * Android host for the shared [G1ArmFlashFlow]: owns the GATT link and the worker thread for one G1 arm's install, its
+ * restore to Even's firmware, or a question about what it runs, and delivers listener callbacks on the main thread. For app/native/g1-flasher.ts.
  */
-class FaceclawG1Flasher(context: Context, address: String?, side: String?, firmwarePath: String?, mode: String?, connectWindowMs: Int) {
+class FaceclawG1Flasher(
+    context: Context,
+    address: String?,
+    side: String?,
+    firmwarePath: String?,
+    netCorePath: String?,
+    mode: String?,
+    connectWindowMs: Int,
+) {
     private val link = AndroidStockLink(context.applicationContext)
     private val mainHandler = Handler(Looper.getMainLooper())
     private val lock = Any()
@@ -25,6 +33,7 @@ class FaceclawG1Flasher(context: Context, address: String?, side: String?, firmw
             address ?: "",
             side ?: "",
             firmwarePath ?: "",
+            netCorePath ?: "",
             G1ArmFlashFlow.mode(mode ?: ""),
             connectWindowMs,
             object : FaceclawFirmwareFlasherListener {

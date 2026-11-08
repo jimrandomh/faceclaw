@@ -39,8 +39,16 @@ object G1Protocol {
     const val OP_PROPS = 0x0A
     const val OP_MIC = 0x13
     const val OP_EVENTS = 0x14
+    const val OP_ASSET_INFO = 0x17
+    const val OP_ASSET_FORMAT = 0x1B
+    const val OP_FLASH_CRC = 0x1C
     const val OP_FC_INFO = 0x1D
     const val OP_PROP_SET = 0x1E
+
+    /** Control statuses (VM.md §1). */
+    const val STATUS_SAFE_MODE = 7
+    /** A store request: a job runs, no space, no store. */
+    const val STATUS_ASSET = 13
 
     const val EV_NOTICE = 0x05
     const val EV_MIC_DATA = 0x06
@@ -65,6 +73,18 @@ object G1Protocol {
     const val NOTICE_MIC_STOPPED = 5
     const val MIC_STOPPED_LEASE = 3
     const val NOTICE_GUARD = 7
+    /** A store job ended (VM.md §6.10). */
+    const val NOTICE_STORE_JOB = 8
+
+    const val STORE_JOB_FORMAT = 3
+    const val STORE_JOB_CRC = 4
+    /** `ASSET_INFO`'s job states. */
+    const val STORE_IDLE = 0
+    const val STORE_DONE = 4
+    const val STORE_FAILED = 5
+    /** The asset store's partition in the arm's QSPI flash, where Even's fonts and pictures were; its first two sectors hold its directory. */
+    const val STORE_ADDRESS = 0x140000
+    const val STORE_DIRECTORY_BYTES = 2 * 4096
 
     const val PROP_BATT_PCT = 0x11
     const val PROP_CHARGE = 0x12
@@ -155,6 +175,50 @@ object G1Protocol {
         if (eventType(data) != EV_NOTICE || data.size < EVENT_HEADER + 1) return null
         return Notice(data[EVENT_HEADER].toInt() and 255, data.copyOfRange(EVENT_HEADER + 1, data.size))
     }
+
+    /** `ASSET_FORMAT` frees the whole store; with [wipe] it also erases every sector that isn't erased already. */
+    fun assetFormatRequest(wipe: Boolean): ByteArray =
+        le32(0x534B4153) + if (wipe) le32(0x50570000) else ByteArray(0)
+
+    /** `FLASH_CRC`: a read-only fingerprint of flash bytes address…address + n - 1, given in `NOTICE` 8. */
+    fun flashCrcRequest(address: Int, n: Int): ByteArray = le32(address) + le32(n)
+
+    class AssetInfo(
+        @JvmField val assets: Int,
+        @JvmField val state: Int,
+        @JvmField val lastError: Int,
+        /** Without a usable flash there is no store, and nothing was ever written to it. */
+        @JvmField val available: Boolean,
+        /** The directory's commit count: 0 for a store that is empty and never was written, or was formatted since. */
+        @JvmField val seq: Long,
+    ) {
+        val running: Boolean get() = state in 1..3
+    }
+
+    fun parseAssetInfo(body: ByteArray): AssetInfo? {
+        if (body.size < 20) return null
+        return AssetInfo(body[12].toInt() and 255, body[13].toInt() and 255, body[14].toInt() and 255, body[15].toInt() and 1 != 0,
+            u32(body, 16).toLong() and 0xffffffffL)
+    }
+
+    class StoreNotice(
+        @JvmField val job: Int,
+        @JvmField val result: Int,
+        /** A crc job's range, crc32 and how many of its bytes are not 0xFF; 0 for the other jobs. */
+        @JvmField val address: Int,
+        @JvmField val n: Int,
+        @JvmField val nonErased: Long,
+    )
+
+    fun parseStoreNotice(data: ByteArray): StoreNotice? {
+        val notice = parseNotice(data) ?: return null
+        val body = notice.body
+        if (notice.kind != NOTICE_STORE_JOB || body.size < 18) return null
+        return StoreNotice(body[0].toInt() and 255, body[1].toInt() and 255, u32(body, 2), u32(body, 6), u32(body, 14).toLong() and 0xffffffffL)
+    }
+
+    private fun le32(value: Int): ByteArray =
+        byteArrayOf(value.toByte(), (value ushr 8).toByte(), (value ushr 16).toByte(), (value ushr 24).toByte())
 
     /**
      * What the arm's light reading looks like to [BrightnessPolicy] and the Developer app: a live passive poll in the

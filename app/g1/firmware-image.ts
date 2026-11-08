@@ -4,6 +4,7 @@
  */
 import { inflate, inflateRaw } from "pako";
 
+import type { EvenG1Release } from "./even-firmware";
 import type { G1FirmwareImage } from "./firmware/g1v0-image";
 
 export class G1FirmwareError extends Error {}
@@ -39,6 +40,31 @@ export function readZipEntry(zip: Uint8Array, name: string): Uint8Array {
     at += 46 + nameLength + extraLength + commentLength;
   }
   throw new G1FirmwareError(`The firmware download has no ${name}.`);
+}
+
+/**
+ * The two images of Even's release from its download, each checked by its own SHA-256 as well as the zip's, so what
+ * goes to the arms is byte for byte what Even published.
+ */
+export function extractEvenG1Images(
+  zip: Uint8Array,
+  release: EvenG1Release,
+  sha256: (bytes: Uint8Array) => string,
+): { app: Uint8Array; netCore: Uint8Array } {
+  const zipHash = sha256(zip);
+  if (zipHash !== release.zipSha256) {
+    throw new G1FirmwareError(`Even's firmware download failed verification.\nexpected ${release.zipSha256}\ngot      ${zipHash}`);
+  }
+  const checked = (name: string, want: string) => {
+    const bytes = readZipEntry(zip, name);
+    const got = sha256(bytes);
+    if (got !== want) throw new G1FirmwareError(`${name} in Even's download failed verification.\nexpected ${want}\ngot      ${got}`);
+    return bytes;
+  };
+  return {
+    app: checked("app_update.bin", release.appSha256),
+    netCore: checked("net_core_app_update.bin", release.netCoreSha256),
+  };
 }
 
 export function decodeG1OwnBytes(base64: string, decode: (text: string) => Uint8Array): Uint8Array {

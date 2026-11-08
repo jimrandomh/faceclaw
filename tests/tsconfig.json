@@ -46,6 +46,7 @@
     "../app/g1/pako.d.ts",
     "../app/g1/firmware-image.ts",
     "../app/g1/flash-plan.ts",
+    "../app/g1/even-firmware.ts",
     "../app/g1/firmware/g1v0-image.ts",
     "../app/g1/firmware/g1v0-own-bytes.ts",
     "../app/apps/calculator/math/*.ts",

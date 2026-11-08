@@ -3,7 +3,8 @@ const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
 const zlib = require('node:zlib');
 
-const { readZipEntry, assembleG1Image, decodeG1OwnBytes, G1FirmwareError } = require('../.test-build/app/g1/firmware-image.js');
+const { readZipEntry, assembleG1Image, decodeG1OwnBytes, extractEvenG1Images, G1FirmwareError } = require('../.test-build/app/g1/firmware-image.js');
+const { EVEN_G1_RESTORE } = require('../.test-build/app/g1/even-firmware.js');
 const plan = require('../.test-build/app/g1/flash-plan.js');
 const { G1V0_IMAGE } = require('../.test-build/app/g1/firmware/g1v0-image.js');
 const { G1V0_OWN_BYTES_BASE64 } = require('../.test-build/app/g1/firmware/g1v0-own-bytes.js');
@@ -176,6 +177,38 @@ test('the native flow\'s answer is read, and nonsense is no answer', () => {
   assert.deepEqual(plan.parseG1FlashResult('nonsense'), {});
   assert.deepEqual(plan.parseG1FlashResult(''), {});
   assert.deepEqual(plan.parseG1FlashResult('null'), {});
+});
+
+test('an uninstall goes right first, and its bar follows that order', () => {
+  assert.deepEqual([...plan.G1_UNINSTALL_SIDES], ['right', 'left']);
+  assert.equal(plan.g1FlashPercent('right', 0, 100, plan.G1_UNINSTALL_SIDES), 0);
+  assert.equal(plan.g1FlashPercent('right', 100, 100, plan.G1_UNINSTALL_SIDES), 50);
+  assert.equal(plan.g1FlashPercent('left', 50, 100, plan.G1_UNINSTALL_SIDES), 75);
+});
+
+test('Even\'s two images come out of its download only when each is the one published', () => {
+  const app = noise(9000, 7);
+  const netCore = noise(4000, 8);
+  const zip = zipOf([
+    { name: 'app_update.bin', data: app },
+    { name: 'net_core_app_update.bin', data: netCore, deflate: true },
+    { name: 'manifest.json', data: noise(100, 9) },
+  ]);
+  const release = { version: '9.9.9', zipUrl: 'u', zipSha256: sha(zip), appSha256: sha(app), netCoreSha256: sha(netCore) };
+  const out = extractEvenG1Images(zip, release, sha);
+  assert.deepEqual(Buffer.from(out.app), Buffer.from(app));
+  assert.deepEqual(Buffer.from(out.netCore), Buffer.from(netCore));
+  assert.throws(() => extractEvenG1Images(zip, { ...release, zipSha256: sha(app) }, sha), (e) => e instanceof G1FirmwareError && /download failed/.test(e.message));
+  assert.throws(() => extractEvenG1Images(zip, { ...release, netCoreSha256: sha(app) }, sha), /net_core_app_update\.bin in Even's download/);
+});
+
+test('the release an uninstall puts back is the one the bundled firmware was built from', () => {
+  // g1v0 embeds Even's network core from this same download, which the bundle's manifest checks by hash.
+  assert.equal(EVEN_G1_RESTORE.version, G1V0_IMAGE.stockVersion);
+  assert.equal(EVEN_G1_RESTORE.zipUrl, G1V0_IMAGE.stockZipUrl);
+  assert.equal(EVEN_G1_RESTORE.zipSha256, G1V0_IMAGE.stockZipSha256);
+  const net = G1V0_IMAGE.parts.find((part) => part.file === 'net_core_app_update.bin' && part.fileOffset === 0);
+  assert.equal(net?.sha256, EVEN_G1_RESTORE.netCoreSha256);
 });
 
 test('each arm counts for half of the bar', () => {

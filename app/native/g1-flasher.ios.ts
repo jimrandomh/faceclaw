@@ -7,8 +7,10 @@ export type { G1FlashMode, G1FlasherOptions } from './g1-flasher'
 
 declare const FaceclawKitIosG1Flasher: any, FaceclawKitFaceclawFirmwareFlasherListener: any
 
-/** CoreBluetooth has no way to remove a pairing; iOS Settings does it, and a stale one does no harm. */
-export function forgetG1Pairing(_address: string): void {}
+/** CoreBluetooth has no way to remove a pairing; iOS Settings does it. */
+export function forgetG1Pairing(_address: string): boolean {
+  return false
+}
 
 /**
  * iOS twin of the Android G1Flasher: the shared Kotlin G1ArmFlashFlow over a CoreBluetooth central. As with the G2's
@@ -47,8 +49,8 @@ export class G1Flasher {
     return new Promise<G1FlashResult>((resolve, reject) => {
       const identifier = iosBluetooth().peripheralIdentifier(this.options.address, this.options.side)
       if (!identifier) throw new Error(`Could not find the ${this.options.side} arm. Keep the glasses in the case with the lid open.`)
-      this.flasher = FaceclawKitIosG1Flasher.alloc().initWithAddressSideFirmwarePathModeConnectWindowMs(
-        identifier, this.options.side, this.options.firmwarePath, this.options.mode, this.options.connectWindowMs)
+      this.flasher = FaceclawKitIosG1Flasher.alloc().initWithAddressSideFirmwarePathNetCorePathModeConnectWindowMs(
+        identifier, this.options.side, this.options.firmwarePath, this.options.netCorePath ?? '', this.options.mode, this.options.connectWindowMs)
       this.listenerProxy = kotlinListener(FaceclawKitFaceclawFirmwareFlasherListener, {
         onLogLine: (line: string) => this.logListener?.(String(line ?? '')),
         onProgressLensComponentIndexComponentCountBlockIndexBlockCountBytesSentBytesTotal: (

@@ -4,24 +4,30 @@ import { parseG1FlashResult, type G1FlashResult, type G1Side } from "../g1/flash
 
 declare const com: any;
 
-export type G1FlashMode = "stock" | "update" | "probe";
+/** "restore": Even's firmware back on an arm running g1v0, both of its images. */
+export type G1FlashMode = "stock" | "update" | "probe" | "restore";
 
 export type G1FlasherOptions = {
   address: string;
   side: G1Side;
+  /** The application core's image. */
   firmwarePath: string;
+  /** A restore's network-core image. */
+  netCorePath?: string;
   mode: G1FlashMode;
   /** How long to keep trying to reach the arm and pair with it. */
   connectWindowMs: number;
 };
 
-/** Removes the phone's pairing with an address the glasses no longer use. */
-export function forgetG1Pairing(address: string): void {
+/** Removes the phone's pairing with an address, which the glasses no longer use or no longer share. False: this phone can't. */
+export function forgetG1Pairing(address: string): boolean {
   const context = Utils.android.getApplicationContext();
-  if (context) com.faceclaw.app.FaceclawG1Flasher.forgetPairing(context, address);
+  if (!context) return false;
+  com.faceclaw.app.FaceclawG1Flasher.forgetPairing(context, address);
+  return true;
 }
 
-/** TS wrapper around FaceclawG1Flasher: one arm's install, or a question about what it runs. */
+/** TS wrapper around FaceclawG1Flasher: one arm's install, its restore to Even's firmware, or a question about what it runs. */
 export class G1Flasher {
   private readonly flasher: any;
   private readonly listenerProxy: any;
@@ -34,7 +40,7 @@ export class G1Flasher {
     const context = Utils.android.getApplicationContext();
     if (!context) throw new Error("Android application context unavailable");
     this.flasher = new com.faceclaw.app.FaceclawG1Flasher(
-      context, options.address, options.side, options.firmwarePath, options.mode, options.connectWindowMs,
+      context, options.address, options.side, options.firmwarePath, options.netCorePath ?? "", options.mode, options.connectWindowMs,
     );
     this.listenerProxy = new com.faceclaw.app.FaceclawFirmwareFlasherListener({
       onLog: (line: string) => this.logListener?.(String(line)),

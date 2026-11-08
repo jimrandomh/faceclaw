@@ -42,10 +42,11 @@ private fun testImage(version: Triple<Int, Int, Int> = Triple(0, 5, 64), payload
 }
 
 /**
- * One arm behind the StockLink port: MCUmgr's image and OS groups as flash.py meets them on real arms, and g1v0's HELLO
- * and PROPS. Requests are answered synchronously, from the write.
+ * One arm behind the StockLink port: MCUmgr's image and OS groups as flash.py meets them on real arms, and g1v0's HELLO,
+ * PROPS and asset store. Requests are answered synchronously, from the write. [netImage] is what a restore puts in image
+ * 1's slot.
  */
-private class FakeArm(private val image: ByteArray, var stock: Boolean = false) : StockLink {
+private class FakeArm(private val image: ByteArray, var stock: Boolean = false, private val netImage: ByteArray? = null) : StockLink {
     var inbound: StockLinkListener? = null
     var connected = false
     var bond = BondState.BONDED
@@ -59,13 +60,44 @@ private class FakeArm(private val image: ByteArray, var stock: Boolean = false) 
     var safeMode = false
     var battery = 80
 
-    var slot1Hash: ByteArray? = null
+    /** The hash in each image's second slot. */
+    val slotHashes = HashMap<Int, ByteArray>()
+    var slot1Hash: ByteArray?
+        get() = slotHashes[0]
+        set(value) {
+            if (value == null) slotHashes.remove(0) else slotHashes[0] = value
+        }
+    /** Images marked for the next boot, and whether permanently. */
+    val pending = HashMap<Int, Boolean>()
+    val confirms = ArrayList<Pair<Int, Boolean>>()
+    /** The image of the upload in progress, and what each image's last whole upload was. */
+    var uploadImage = -1
+    val uploads = HashMap<Int, ByteArray>()
     var uploaded = ByteArray(0)
     var uploadOffset = 0
     var uploadRefusal = 0
     /** After the upload the list shows this instead of the image's hash. */
     var corruptAfterUpload = false
     var confirmRefusal = 0
+    /** Only this image's confirm is refused; -1: any. */
+    var confirmRefusalImage = -1
+    /** This image's confirm is answered, and the list doesn't show it pending. */
+    var unmarkedImage = -1
+
+    /** No `ASSET_INFO`, as before 0.5.56. */
+    var storeSupported = true
+    var storeAvailable = true
+    var storeAssets = 0
+    var storeSeq = 0L
+    var storeState = 0
+    var storeError = 0
+    /** Bytes that aren't 0xFF in the store's directory sectors: Even's data, until a format. */
+    var directoryNonErased = 4096L
+    /** The format's NOTICE 8 never comes. */
+    var loseStoreNotice = false
+    /** The arm restarts during the wipe: no notice, and the job state back to idle. */
+    var wipeInterrupted = false
+    val formats = ArrayList<Boolean>()
     var dropAtOffset = -1
     var silentRequests = 0
     /** The chunk at this offset gets no answer, once. */
@@ -157,6 +189,9 @@ private class FakeArm(private val image: ByteArray, var stock: Boolean = false) 
     private fun control(request: ByteArray) {
         val op = request[0].toInt() and 0xff
         val tag = request[1]
+        val args = request.copyOfRange(2, request.size)
+        var status = 0
+        var after: (() -> Unit)? = null
         val body = when (op) {
             G1Protocol.OP_HELLO -> {
                 val parts = runningVersion.split(".").map { it.toInt().toByte() }
@@ -164,11 +199,67 @@ private class FakeArm(private val image: ByteArray, var stock: Boolean = false) 
                 byteArrayOf(5, parts[0], parts[1], parts[2], 1, flags.toByte(), 0)
             }
             G1Protocol.OP_PROPS -> byteArrayOf(battery.toByte(), 0, 0, 0)
+            G1Protocol.OP_ASSET_INFO -> {
+                if (!storeSupported) {
+                    status = 2
+                    ByteArray(0)
+                } else {
+                    ByteArray(12) + byteArrayOf(storeAssets.toByte(), storeState.toByte(), storeError.toByte(), if (storeAvailable) 1 else 0) +
+                        le32(storeSeq.toInt())
+                }
+            }
+            G1Protocol.OP_FLASH_CRC -> {
+                calls.add("crc")
+                assertContentEquals(G1Protocol.flashCrcRequest(G1Protocol.STORE_ADDRESS, G1Protocol.STORE_DIRECTORY_BYTES), args)
+                if (safeMode) {
+                    status = 7
+                } else {
+                    after = { storeNotice(G1Protocol.STORE_JOB_CRC, 0, args + le32(0x1234) + le32(directoryNonErased.toInt())) }
+                }
+                ByteArray(0)
+            }
+            G1Protocol.OP_ASSET_FORMAT -> {
+                calls.add("format")
+                assertContentEquals(G1Protocol.assetFormatRequest(wipe = true), args)
+                when {
+                    safeMode -> status = 7
+                    storeState in 1..3 -> status = 13
+                    else -> {
+                        formats.add(true)
+                        storeAssets = 0
+                        storeSeq = 0
+                        directoryNonErased = 0
+                        if (wipeInterrupted) {
+                            storeState = 0
+                        } else {
+                            storeState = 4
+                            storeError = 0
+                            if (!loseStoreNotice) after = { storeNotice(G1Protocol.STORE_JOB_FORMAT, 0, ByteArray(16)) }
+                        }
+                    }
+                }
+                ByteArray(0)
+            }
             else -> ByteArray(0)
         }
-        val event = ByteArray(9) + byteArrayOf(tag, 0) + body
+        val event = ByteArray(9) + byteArrayOf(tag, status.toByte()) + body
         event[0] = (0x80 or op).toByte()
         inbound?.onNotification(ARM, G1Ble.EVT_CHAR_UUID, event)
+        after?.invoke()
+    }
+
+    private fun storeNotice(job: Int, result: Int, detail: ByteArray) {
+        val event = ByteArray(9) + byteArrayOf(G1Protocol.NOTICE_STORE_JOB.toByte(), job.toByte(), result.toByte()) + detail
+        event[0] = G1Protocol.EV_NOTICE.toByte()
+        inbound?.onNotification(ARM, G1Ble.EVT_CHAR_UUID, event)
+    }
+
+    private fun le32(value: Int): ByteArray = byteArrayOf(value.toByte(), (value ushr 8).toByte(), (value ushr 16).toByte(), (value ushr 24).toByte())
+
+    private fun imageOf(index: Int): ByteArray = when (index) {
+        0 -> image
+        1 -> netImage ?: throw AssertionError("an upload to image 1")
+        else -> throw AssertionError("an upload to image $index")
     }
 
     private fun smp(frame: ByteArray) {
@@ -191,17 +282,26 @@ private class FakeArm(private val image: ByteArray, var stock: Boolean = false) 
                     return
                 }
                 if (uploadRefusal != 0) return reply(op, group, seq, cmd, mapOf("rc" to uploadRefusal))
-                if (off == uploadOffset) {
-                    val data = body["data"] as ByteArray
-                    if (off == 0) {
-                        assertEquals(image.size.toLong(), body["len"])
-                        assertContentEquals(sha256(image), body["sha"] as ByteArray)
-                        assertEquals(0L, body["image"])
+                if (off == 0) {
+                    // A first chunk names the image; the same file again resumes where it stopped, as MCUmgr does.
+                    val index = (body["image"] as Long).toInt()
+                    val expected = imageOf(index)
+                    assertEquals(expected.size.toLong(), body["len"])
+                    assertContentEquals(sha256(expected), body["sha"] as ByteArray)
+                    if (index != uploadImage || uploadOffset >= expected.size) {
+                        uploadImage = index
+                        uploadOffset = 0
                         uploaded = ByteArray(0)
                     }
+                }
+                if (off == uploadOffset) {
+                    val data = body["data"] as ByteArray
                     uploaded += data
                     uploadOffset += data.size
-                    if (uploadOffset == image.size) slot1Hash = if (corruptAfterUpload) ByteArray(32) else G1Smp.imageHash(uploaded)
+                    if (uploadOffset == imageOf(uploadImage).size) {
+                        uploads[uploadImage] = uploaded
+                        slotHashes[uploadImage] = if (corruptAfterUpload) ByteArray(32) else G1Smp.imageHash(uploaded)
+                    }
                 }
                 if (uploadOffset >= dropAtOffset && dropAtOffset >= 0) {
                     dropAtOffset = -1
@@ -214,14 +314,31 @@ private class FakeArm(private val image: ByteArray, var stock: Boolean = false) 
                 calls.add("list")
                 val images = ArrayList<Map<String, Any?>>()
                 images.add(mapOf("image" to 0, "slot" to 0, "version" to runningVersion, "hash" to ByteArray(32), "active" to true, "confirmed" to true, "bootable" to true))
-                slot1Hash?.let { images.add(mapOf("image" to 0, "slot" to 1, "version" to "0.5.64", "hash" to it, "bootable" to true)) }
+                for ((index, hash) in slotHashes.toSortedMap()) {
+                    val marked = pending[index]
+                    val entry = mutableMapOf<String, Any?>("image" to index, "slot" to 1, "version" to "0.5.64", "hash" to hash, "bootable" to true)
+                    if (marked != null && index != unmarkedImage) {
+                        entry["pending"] = true
+                        if (marked) entry["permanent"] = true
+                    }
+                    images.add(entry)
+                }
                 reply(op, group, seq, cmd, mapOf("images" to images))
             }
             group == 1 && cmd == 0 -> {
                 calls.add("confirm")
-                assertEquals(true, body["confirm"])
-                assertContentEquals(wantHash, body["hash"] as ByteArray)
-                reply(op, group, seq, cmd, mapOf("rc" to confirmRefusal))
+                val hash = body["hash"] as ByteArray
+                val index = slotHashes.entries.firstOrNull { it.value.contentEquals(hash) }?.key
+                assertNotNull(index, "a confirm for a hash no slot holds")
+                if (index == 0 && netImage == null) {
+                    assertEquals(true, body["confirm"])
+                    assertContentEquals(wantHash, hash)
+                }
+                val permanent = body["confirm"] as Boolean
+                confirms.add(index to permanent)
+                val refused = if (confirmRefusalImage < 0 || confirmRefusalImage == index) confirmRefusal else 0
+                if (refused == 0) pending[index] = permanent
+                reply(op, group, seq, cmd, mapOf("rc" to refused))
             }
             group == 0 && cmd == 5 -> {
                 calls.add("reset")
@@ -262,6 +379,7 @@ private class Recorder : FaceclawFirmwareFlasherListener {
 private val FAST = G1FlashTimings(
     connectTimeoutMs = 50, servicesTimeoutMs = 50, descriptorTimeoutMs = 50, writeTimeoutMs = 50, pairingMs = 200, retryDelayMs = 1,
     controlReplyMs = 20, controlTries = 2, uploadReplyMs = 150, smpReplyMs = 150, resetReplyMs = 50, heartbeatMs = 30, pollMs = 5, uploadRetries = 5,
+    storePollMs = 10, wipeMs = 2_000, crcMs = 200,
 )
 
 class G1SmpStockTest {
@@ -370,7 +488,7 @@ class G1ArmFlashFlowTest {
     private val image = testImage()
 
     private fun flow(arm: FakeArm, listener: Recorder, mode: G1ArmFlashFlow.Mode, window: Int = 100) =
-        G1ArmFlashFlow(arm, ARM, "left", "image.bin", mode, window, listener, FAST, testPlatform(), { image })
+        G1ArmFlashFlow(arm, ARM, "left", "image.bin", "", mode, window, listener, FAST, testPlatform(), { image })
 
     private fun run(arm: FakeArm, mode: G1ArmFlashFlow.Mode, window: Int = 100): Recorder {
         val listener = Recorder()
@@ -464,7 +582,7 @@ class G1ArmFlashFlowTest {
     fun aDamagedImageFailsBeforeTheLinkIsTouched() {
         val listener = Recorder()
         val arm = FakeArm(image)
-        G1ArmFlashFlow(arm, ARM, "left", "image.bin", G1ArmFlashFlow.Mode.UPDATE, 100, listener, FAST, testPlatform(), { ByteArray(100) }).run()
+        G1ArmFlashFlow(arm, ARM, "left", "image.bin", "", G1ArmFlashFlow.Mode.UPDATE, 100, listener, FAST, testPlatform(), { ByteArray(100) }).run()
         assertEquals(false, listener.success)
         assertEquals(0, arm.connects)
     }
@@ -473,7 +591,7 @@ class G1ArmFlashFlowTest {
     fun anUnreadableImageIsAClearFailure() {
         val listener = Recorder()
         val arm = FakeArm(image)
-        G1ArmFlashFlow(arm, ARM, "left", "image.bin", G1ArmFlashFlow.Mode.STOCK, 100, listener, FAST, testPlatform(), { throw IllegalStateException("gone") }).run()
+        G1ArmFlashFlow(arm, ARM, "left", "image.bin", "", G1ArmFlashFlow.Mode.STOCK, 100, listener, FAST, testPlatform(), { throw IllegalStateException("gone") }).run()
         assertEquals(false, listener.success)
         assertTrue("could not read the firmware" in listener.detail, listener.detail)
     }
@@ -653,6 +771,169 @@ class G1ArmFlashFlowTest {
         assertEquals(0, arm.bondRequests)
     }
 
+    // ---- back to Even's firmware ----
+
+    private val evenApp = testImage(Triple(0, 0, 0), payloadSize = 7000)
+    private val evenNet = testImage(Triple(0, 0, 1), payloadSize = 3000)
+
+    private fun restoreArm(): FakeArm = FakeArm(evenApp, netImage = evenNet).also { it.runningVersion = "0.5.66" }
+
+    private fun restore(arm: FakeArm, window: Int = 100): Recorder {
+        val listener = Recorder()
+        G1ArmFlashFlow(arm, ARM, "right", "app.bin", "net.bin", G1ArmFlashFlow.Mode.RESTORE, window, listener, FAST, testPlatform(), { path ->
+            when (path) {
+                "app.bin" -> evenApp
+                "net.bin" -> evenNet
+                else -> throw IllegalStateException("no $path")
+            }
+        }).run()
+        assertNotNull(listener.success, "the flow must always finish")
+        return listener
+    }
+
+    @Test
+    fun aRestoreUploadsBothImagesThenMarksTheNetworkCoreFirst() {
+        val arm = restoreArm()
+        val result = restore(arm)
+        assertEquals(true, result.success, result.detail)
+        assertEquals("""{"flashed":true,"firmware":"stock","wiped":false}""", result.detail)
+        assertContentEquals(evenNet, arm.uploads[1])
+        assertContentEquals(evenApp, arm.uploads[0])
+        // Image 1 as a test install, as Even's app and g1v0's fallback do; the application for good.
+        assertEquals(listOf(1 to false, 0 to true), arm.confirms)
+        assertEquals(listOf("confirm", "confirm", "list", "reset"), arm.calls.takeLast(4))
+        assertEquals((evenApp.size + evenNet.size).toLong(), result.total)
+        assertEquals(result.total, result.progress)
+        assertTrue("rebooting" in result.states)
+    }
+
+    @Test
+    fun aStoreNeverWrittenKeepsEvensData() {
+        val arm = restoreArm()
+        val result = restore(arm)
+        assertEquals(true, result.success, result.detail)
+        assertEquals(listOf("crc"), arm.calls.filter { it == "crc" || it == "format" })
+        assertTrue(arm.formats.isEmpty())
+        assertFalse("wiping" in result.states)
+    }
+
+    @Test
+    fun aStoreThatHoldsAssetsIsWipedBeforeAnyUpload() {
+        val arm = restoreArm()
+        arm.storeAssets = 2
+        arm.storeSeq = 5
+        val result = restore(arm)
+        assertEquals(true, result.success, result.detail)
+        assertEquals("""{"flashed":true,"firmware":"stock","wiped":true}""", result.detail)
+        assertEquals(listOf(true), arm.formats)
+        assertTrue(arm.calls.indexOf("format") < arm.calls.indexOf("upload"))
+        assertFalse("crc" in arm.calls, "a store with assets needs no fingerprint")
+        assertTrue("wiping" in result.states)
+    }
+
+    @Test
+    fun anEmptyStoreWhoseDirectoryWasErasedIsWiped() {
+        // A format resets the commit count, and erased the two directory sectors over Even's data.
+        val arm = restoreArm()
+        arm.directoryNonErased = 0
+        val result = restore(arm)
+        assertEquals(true, result.success, result.detail)
+        assertEquals(listOf("crc", "format"), arm.calls.filter { it == "crc" || it == "format" })
+    }
+
+    @Test
+    fun firmwareWithoutTheStoreIsNotWiped() {
+        val arm = restoreArm()
+        arm.storeSupported = false
+        val result = restore(arm)
+        assertEquals(true, result.success, result.detail)
+        assertFalse("crc" in arm.calls)
+        assertFalse("format" in arm.calls)
+    }
+
+    @Test
+    fun aLostWipeNoticeIsReadFromTheStoreState() {
+        val arm = restoreArm()
+        arm.storeAssets = 1
+        arm.storeSeq = 1
+        arm.loseStoreNotice = true
+        val result = restore(arm)
+        assertEquals(true, result.success, result.detail)
+        assertTrue("\"wiped\":true" in result.detail, result.detail)
+    }
+
+    @Test
+    fun anArmThatRestartsDuringTheWipeGetsNothingInstalled() {
+        val arm = restoreArm()
+        arm.storeAssets = 1
+        arm.storeSeq = 1
+        arm.wipeInterrupted = true
+        val result = restore(arm)
+        assertEquals(false, result.success)
+        assertTrue("restarted while erasing" in result.detail, result.detail)
+        assertFalse("upload" in arm.calls)
+        assertFalse("confirm" in arm.calls)
+    }
+
+    @Test
+    fun safeModeWithAWrittenStoreInstallsNothing() {
+        val arm = restoreArm()
+        arm.safeMode = true
+        arm.storeAssets = 1
+        arm.storeSeq = 1
+        val result = restore(arm)
+        assertEquals(false, result.success)
+        assertTrue("safe mode" in result.detail, result.detail)
+        assertFalse("format" in arm.calls)
+        assertFalse("upload" in arm.calls)
+    }
+
+    @Test
+    fun aLowBatteryStopsARestoreBeforeTheWipe() {
+        val arm = restoreArm()
+        arm.battery = 12
+        arm.storeAssets = 1
+        arm.storeSeq = 1
+        val result = restore(arm)
+        assertEquals(false, result.success)
+        assertTrue("12%" in result.detail, result.detail)
+        assertFalse("format" in arm.calls)
+        assertFalse("upload" in arm.calls)
+    }
+
+    @Test
+    fun aRefusedNetworkCoreNeverLeavesTheApplicationMarked() {
+        val arm = restoreArm()
+        arm.confirmRefusal = 3
+        arm.confirmRefusalImage = 1
+        val result = restore(arm)
+        assertEquals(false, result.success)
+        assertEquals(listOf(1 to false), arm.confirms)
+        assertFalse(0 in arm.pending)
+        assertFalse("reset" in arm.calls)
+        assertTrue("network core" in result.detail, result.detail)
+    }
+
+    @Test
+    fun anImageTheArmDidNotMarkIsNoReset() {
+        val arm = restoreArm()
+        arm.unmarkedImage = 0
+        val result = restore(arm)
+        assertEquals(false, result.success)
+        assertFalse("reset" in arm.calls)
+        assertTrue("didn't mark" in result.detail, result.detail)
+    }
+
+    @Test
+    fun aLostLinkResumesARestoreUpload() {
+        val arm = restoreArm()
+        arm.dropAtOffset = 2048
+        val result = restore(arm)
+        assertEquals(true, result.success, result.detail)
+        assertContentEquals(evenNet, arm.uploads[1])
+        assertContentEquals(evenApp, arm.uploads[0])
+    }
+
     @Test
     fun cancellingDuringTheUploadStopsBeforeTheConfirm() {
         val arm = FakeArm(image)
@@ -663,5 +944,43 @@ class G1ArmFlashFlowTest {
         assertEquals(false, listener.success)
         assertEquals("Cancelled.", listener.detail)
         assertFalse("confirm" in arm.calls)
+    }
+}
+
+class G1StoreProtocolTest {
+    /** The bytes of scouter_kit's tools/g1host.py: `struct.pack("<II", FORMAT_MAGIC, WIPE_MAGIC)`. */
+    @Test
+    fun requestsMatchThePythonTool() {
+        assertEquals("53414b5300005750", BinaryEncoding.bytesToHex(G1Protocol.assetFormatRequest(wipe = true)))
+        assertEquals("53414b53", BinaryEncoding.bytesToHex(G1Protocol.assetFormatRequest(wipe = false)))
+        assertEquals("0000140000200000", BinaryEncoding.bytesToHex(G1Protocol.flashCrcRequest(0x140000, 8192)))
+    }
+
+    @Test
+    fun assetInfoIsRead() {
+        // data 10, free 20, largest 30, 2 assets, state 4, error 0, flags 1, seq 0x01020304
+        val info = G1Protocol.parseAssetInfo(hex("0a000000140000001e00000002040001" + "04030201"))
+        assertNotNull(info)
+        assertEquals(2, info.assets)
+        assertEquals(4, info.state)
+        assertTrue(info.available)
+        assertFalse(info.running)
+        assertEquals(0x01020304L, info.seq)
+        assertEquals(null, G1Protocol.parseAssetInfo(ByteArray(19)))
+    }
+
+    @Test
+    fun aStoreJobsNoticeIsRead() {
+        val crc = hex("05" + "0000000000000000" + "08" + "0400" + "00001400" + "00200000" + "78563412" + "00100000")
+        val notice = G1Protocol.parseStoreNotice(crc)
+        assertNotNull(notice)
+        assertEquals(G1Protocol.STORE_JOB_CRC, notice.job)
+        assertEquals(0, notice.result)
+        assertEquals(0x140000, notice.address)
+        assertEquals(8192, notice.n)
+        assertEquals(4096L, notice.nonErased)
+        // Another notice kind, or a short one, is none.
+        assertEquals(null, G1Protocol.parseStoreNotice(hex("05" + "0000000000000000" + "07" + "2a2a")))
+        assertEquals(null, G1Protocol.parseStoreNotice(hex("05" + "0000000000000000" + "08" + "0300")))
     }
 }

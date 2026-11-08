@@ -172,8 +172,8 @@ class IosFirmwareFlasher(rightAddress: String, leftAddress: String, firmwarePath
     }
 }
 
-/** iOS host for the shared [G1ArmFlashFlow]: one G1 arm's install, or a question about what it runs. */
-class IosG1Flasher(address: String, side: String, firmwarePath: String, mode: String, connectWindowMs: Int) {
+/** iOS host for the shared [G1ArmFlashFlow]: one G1 arm's install, its restore to Even's firmware, or a question about what it runs. */
+class IosG1Flasher(address: String, side: String, firmwarePath: String, netCorePath: String, mode: String, connectWindowMs: Int) {
     private val link = IosBleCentral()
     private val lock = IosProtocolPlatform.createLock()
     private var started = false
@@ -184,6 +184,7 @@ class IosG1Flasher(address: String, side: String, firmwarePath: String, mode: St
         address,
         side,
         firmwarePath,
+        netCorePath,
         G1ArmFlashFlow.mode(mode),
         connectWindowMs,
         object : FaceclawFirmwareFlasherListener {
