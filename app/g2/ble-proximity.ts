@@ -27,7 +27,7 @@
  *
  * It is **not** a measurement. A hand over the temple, a pocket, or a body
  * between phone and glasses moves the estimate by metres. The wearer therefore
- * only ever sees a coarse zone (glyph + label), never a number in metres they
+ * only ever sees a coarse zone (a signal-strength glyph), never a number in metres they
  * might over-trust; the metres value exists purely to rank and bucket.
  *
  * This module is pure (no NativeScript imports) so it can run under node tests.
@@ -73,19 +73,6 @@ export function zoneFromMeters(meters: number): ProximityZone {
   if (meters < 3) return "near";
   if (meters < 10) return "far";
   return "distant";
-}
-
-export function zoneLabel(zone: ProximityZone): string {
-  switch (zone) {
-    case "immediate":
-      return "In your hand";
-    case "near":
-      return "Nearby";
-    case "far":
-      return "Across the room";
-    case "distant":
-      return "Far away";
-  }
 }
 
 /** A glyph for the zone; SF Symbols have no Android equivalent, so plain text. */

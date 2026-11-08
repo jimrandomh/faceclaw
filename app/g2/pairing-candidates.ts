@@ -16,7 +16,6 @@ import {
   RING_CALIBRATION,
   sortedByProximity,
   zoneGlyph,
-  zoneLabel,
   type ProximityEstimate,
   type ProximityZone,
 } from "./ble-proximity";
@@ -329,7 +328,6 @@ export type PairingRowPresentation = {
   isPreviouslyPaired: boolean;
   /** "Yours" / "Closest" / "". */
   badge: string;
-  proximitySummary: string;
   proximityGlyph: string;
   zone: ProximityZone | null;
   /** "Left + right arms found", "Only the left arm has been seen", …; "" when there is nothing worth a line (an unbonded ring). */
@@ -355,12 +353,11 @@ function presentationBase(
   isNearest: boolean,
   isPaired: boolean,
   warnings: readonly string[],
-): Pick<PairingRowPresentation, "isNearest" | "isPreviouslyPaired" | "badge" | "proximitySummary" | "proximityGlyph" | "zone" | "warning"> {
+): Pick<PairingRowPresentation, "isNearest" | "isPreviouslyPaired" | "badge" | "proximityGlyph" | "zone" | "warning"> {
   return {
     isNearest,
     isPreviouslyPaired: isPaired,
     badge: isPaired ? "Yours" : isNearest ? "Closest" : "",
-    proximitySummary: proximity ? zoneLabel(proximity.zone) : "Signal unknown",
     proximityGlyph: proximity ? zoneGlyph(proximity.zone) : "○○○○",
     zone: proximity?.zone ?? null,
     warning: warnings.join(" "),

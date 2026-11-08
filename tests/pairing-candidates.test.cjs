@@ -189,7 +189,7 @@ test("scan row carries the decoded variant, artwork, and proximity", () => {
   assert.equal(row.colorway, "brown");
   assert.equal(row.imagePath, "~/images/glasses/glasses_g2_b_brown.png");
   assert.equal(row.hasVariantImage, true);
-  assert.match(row.proximitySummary, /In your hand|Nearby/);
+  assert.match(row.proximityGlyph, /^●●●[●○]$/);
   assert.match(row.armsSummary, /serials match/);
   assert.equal(row.canSelect, true);
   assert.equal(row.isNearest, false);

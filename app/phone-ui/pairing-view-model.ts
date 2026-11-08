@@ -504,22 +504,12 @@ export class PairingViewModel extends Observable {
       ),
     );
 
-    const complete = pairs.filter((pair) => pair.completeness === "complete").length;
-    const partial = pairs.length - complete;
     if (this.scanFailure) {
       this.status = `Scan failed: ${this.scanFailure}`;
     } else if (!this._scanning) {
       this.status = "Scan paused.";
-    } else if (!pairs.length && !rings.length && !rayneos.length) {
-      this.status = "Scanning…";
     } else {
-      const bits = [
-        complete ? `${complete} ${complete === 1 ? "pair" : "pairs"} ready` : null,
-        partial ? `${partial} with one arm heard` : null,
-        rings.length ? `${rings.length} ${rings.length === 1 ? "ring" : "rings"}` : null,
-        rayneos.length ? `${rayneos.length} RayNeo iO` : null,
-      ].filter(Boolean);
-      this.status = `Scanning… ${bits.join(" · ")}. Tap a pair to select it.`;
+      this.status = "Scanning…";
     }
 
     for (const property of [
@@ -554,7 +544,7 @@ function toRowItem(row: PairingRowPresentation, selected: boolean, onRowTap: (ar
     colorwayLabel: colorwayLabel(row.colorway),
     badgeVisibility: row.badge ? "visible" : "collapse",
     variantVisibility: row.variantSummary ? "visible" : "collapse",
-    proximityLine: `${row.proximityGlyph}  ${row.proximitySummary}`,
+    proximityLine: row.proximityGlyph,
     proximityClass: row.zone === "immediate" ? "pairing-proximity pairing-proximity-immediate" : "pairing-proximity",
     armsVisibility: row.armsSummary ? "visible" : "collapse",
     warningVisibility: row.warning ? "visible" : "collapse",
