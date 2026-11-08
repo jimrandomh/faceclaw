@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.9.0 - Future
+
+### Major Features
+
+* Add support for the Even Realities G1
+* Add support for the Apple Watch
+
+### Minor Features
+* Show charging case battery for the G2
+* Terminals now default to opening in the same window rather than opening a new window
+* Better rendering of color emojis
+* Inrease the max timeout for glanceboard show-on-tap display
+* Fix some minor issues in the oboarding flow
+* Add option to auto-close notification popups after a delay
+
+### Bug Fixes
+
+* Fix an issue that would cause microphone permission check to fail if you swiped away the Android Activity
+* Fix an issue that broke the Nightscout widget on the status bar on iOS
+* Fix an issue were EvenHub app texet containers weren't indented correctly
+
 ## 0.8.6 - 2026-11-01
 
 * Connect directly to the R1 ring rather than indirectly via the glasses
