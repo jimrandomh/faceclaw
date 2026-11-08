@@ -1,17 +1,11 @@
-import { getDefaultSmallFont } from "../../graphics/ui-fonts";
-import { GrayImage } from "../../graphics/image";
 import { truncateText, wrapText } from "../../graphics/textwrap";
-import { type InputEvent } from "../../ui/gestures";
-import { Layer, type LayerContext, type PaintBelow } from "../../ui/layers";
-import { drawListScrollbar, drawSelectionHighlight } from "../../ui/menu";
+import { type LayerContext } from "../../ui/layers";
 import { permissionDetail, permissionLabel, type EvenHubPermission } from "./permissions";
 import { openPrivacyPolicyOnPhone } from "./privacy-policy";
-import { lineStep, listRowHeight } from "../../ui/metrics";
+import { lineStep } from "../../ui/metrics";
+import { ScrollingDialogLayer, type DialogBody, type DialogRow } from "./scrolling-dialog";
 
-/** Minimum gap between the dialog and the edges of the window it's centered in. */
-const DIALOG_MARGIN = 8;
 const DIALOG_WIDTH = 320;
-const PADDING = 10;
 const PERM_GAP = 4;
 
 /**
@@ -20,59 +14,26 @@ const PERM_GAP = 4;
  * Cancel (or double-click) backs out. A privacy-policy-only app still reaches
  * this dialog so the user can review the policy before allowing first run.
  *
- * When the list overflows the viewport the dialog scrolls a page at a time,
- * keeping one line of overlap (the last line of one page is the first of the
- * next), and only once the bottom is fully visible do further scrolls move the
- * action selection. The actions are inert until then (a click just pages
- * down), so the user can't Allow without having had the whole list on screen.
+ * A long list scrolls a page at a time, and Allow stays inert until the
+ * bottom has been reached (see ScrollingDialogLayer), so the user can't
+ * Allow without having had the whole list on screen.
  */
-export class EvenHubPermissionDialogLayer implements Layer {
-  /** Floats in front of the window content, like the context menus. */
-  readonly depth = 2;
-  /** Starts on Allow; the optional privacy-policy action is inserted after it. */
-  private selectedIndex = 0;
-  /** First content row drawn; rows above it are scrolled off. */
-  private firstRow = 0;
-  /** Scroll position at which the last row is fully visible; set by paint. */
-  private maxFirstRow = 0;
-  /** Heights of the content rows and of the viewport they scroll in, as last painted (for paging). */
-  private rowHeights: number[] = [];
-  private visibleHeight = 0;
-  private resolved = false;
-
+export class EvenHubPermissionDialogLayer extends ScrollingDialogLayer {
   constructor(
     private readonly appName: string,
     private readonly permissions: EvenHubPermission[],
     private readonly privacyPolicyUrl: string,
     private readonly onConfirm: () => void,
     private readonly onCancel: () => void,
-  ) {}
-
-  /** Whether the dialog is scrolled to the bottom, making the actions live. */
-  private atBottom(): boolean {
-    return this.firstRow >= this.maxFirstRow;
+  ) {
+    super(DIALOG_WIDTH);
   }
 
-  paint(ctx: LayerContext, paintBelow: PaintBelow): GrayImage {
-    const font = getDefaultSmallFont();
-    const { width: viewportWidth, height: viewportHeight } = ctx.stack.getBaseSize();
-    const image = paintBelow();
-    const dialogWidth = Math.min(DIALOG_WIDTH, viewportWidth - 2 * DIALOG_MARGIN);
-    const dialogX = ((viewportWidth - dialogWidth) / 2) | 0;
-    const textWidth = dialogWidth - 2 * PADDING - 4;
-    const left = dialogX + PADDING + 2;
-
+  protected bodyRows({ image, font, left, textWidth }: DialogBody): DialogRow[] {
     const headerStep = lineStep(font) + 2;
     const permLabelStep = lineStep(font) + 1;
     const permDetailStep = lineStep(font) - 1;
-    const actionRowH = listRowHeight(font);
-    const actions = this.actions();
-    const focused = ctx.stack.isFocused();
-
-    // The dialog body as scrollable rows; each row's height includes the gap
-    // below it, so scrolling and visibility checks work on whole rows.
-    type Row = { height: number; draw: (top: number) => void };
-    const rows: Row[] = [];
+    const rows: DialogRow[] = [];
     const heading = this.permissions.length ? `${this.appName} needs:` : `${this.appName} is ready to run`;
     rows.push({
       height: headerStep + 6,
@@ -101,138 +62,28 @@ export class EvenHubPermissionDialogLayer implements Layer {
         });
       }
     }
-    for (let index = 0; index < actions.length; index++) {
-      rows.push({
-        height: actionRowH,
-        draw: (top) => {
-          const selected = this.atBottom() && index === this.selectedIndex;
-          if (selected) {
-            drawSelectionHighlight(image, dialogX + 12, top, dialogWidth - 24, actionRowH - 1, focused, 8);
-          }
-          image.drawText(font, dialogX + 22, top + 3, actions[index]!, selected ? 255 : 200);
-        },
-      });
-    }
-
-    const contentHeight = rows.reduce((sum, row) => sum + row.height, 0);
-    const height = Math.min(contentHeight + 2 * PADDING, viewportHeight - 2 * DIALOG_MARGIN);
-    const dialogY = ((viewportHeight - height) / 2) | 0;
-    const visibleHeight = height - 2 * PADDING;
-
-    // The bottommost scroll position: the largest suffix of rows that fits.
-    let maxFirstRow = rows.length;
-    for (let suffixHeight = 0; maxFirstRow > 0; maxFirstRow--) {
-      const rowHeight = rows[maxFirstRow - 1]!.height;
-      if (suffixHeight + rowHeight > visibleHeight) break;
-      suffixHeight += rowHeight;
-    }
-    this.maxFirstRow = maxFirstRow;
-    this.firstRow = Math.max(0, Math.min(this.firstRow, maxFirstRow));
-    this.rowHeights = rows.map((row) => row.height);
-    this.visibleHeight = visibleHeight;
-
-    // Fill 1 (transparent color key is 0), outline for the dialog edge.
-    image.fillRoundedRect(dialogX, dialogY, dialogWidth, height, 1);
-    image.drawRoundedRect(dialogX, dialogY, dialogWidth, height, 72);
-
-    let y = dialogY + PADDING;
-    for (let index = this.firstRow; index < rows.length; index++) {
-      const row = rows[index]!;
-      if (y + row.height > dialogY + PADDING + visibleHeight) break;
-      row.draw(y);
-      y += row.height;
-    }
-
-    if (maxFirstRow > 0) {
-      drawListScrollbar(
-        image,
-        dialogX + dialogWidth - 7,
-        dialogY + PADDING,
-        visibleHeight,
-        this.firstRow,
-        rows.length - maxFirstRow,
-        rows.length,
-      );
-    }
-    return image;
+    return rows;
   }
 
-  handleInput(event: InputEvent, ctx: LayerContext): void {
-    const actions = this.actions();
-    switch (event.type) {
-      case "scroll-up":
-        if (this.atBottom() && this.selectedIndex > 0) {
-          this.selectedIndex -= 1;
-        } else if (this.firstRow > 0) {
-          this.pageUp();
-        }
-        return;
-      case "scroll-down":
-        if (!this.atBottom()) {
-          this.pageDown();
-        } else {
-          this.selectedIndex = Math.min(actions.length - 1, this.selectedIndex + 1);
-        }
-        return;
-      case "click":
-        if (!this.atBottom()) {
-          this.pageDown();
-          return;
-        }
-        if (actions[this.selectedIndex] === "Privacy policy") {
-          openPrivacyPolicyOnPhone(this.privacyPolicyUrl, this.appName);
-        } else {
-          this.resolve(ctx, actions[this.selectedIndex] === "Allow");
-        }
-        return;
-      case "double-click":
-        this.resolve(ctx, false);
-        return;
-      default:
-        return;
-    }
-  }
-
-  /** Scroll so the last fully visible row becomes the first (one row of overlap). */
-  private pageDown(): void {
-    let y = 0;
-    let lastVisible = this.firstRow;
-    for (let index = this.firstRow; index < this.rowHeights.length; index++) {
-      y += this.rowHeights[index]!;
-      if (y > this.visibleHeight) break;
-      lastVisible = index;
-    }
-    this.firstRow = Math.min(this.maxFirstRow, Math.max(this.firstRow + 1, lastVisible));
-  }
-
-  /** Scroll so the current first row becomes the last fully visible one (one row of overlap). */
-  private pageUp(): void {
-    let first = this.firstRow;
-    let y = this.rowHeights[first] ?? 0;
-    while (first > 0 && y + this.rowHeights[first - 1]! <= this.visibleHeight) {
-      first -= 1;
-      y += this.rowHeights[first]!;
-    }
-    this.firstRow = Math.max(0, Math.min(this.firstRow - 1, first));
-  }
-
-  onRemoved(): void {
-    // Dismissed some other way (window closed, back button): treat as cancel.
-    if (!this.resolved) {
-      this.resolved = true;
-      this.onCancel();
-    }
-  }
-
-  private resolve(ctx: LayerContext, confirmed: boolean): void {
-    if (this.resolved) return;
-    this.resolved = true;
-    ctx.stack.pop();
-    if (confirmed) this.onConfirm();
-    else this.onCancel();
-  }
-
-  private actions(): string[] {
+  protected actions(): string[] {
     return this.privacyPolicyUrl ? ["Allow", "Privacy policy", "Cancel"] : ["Allow", "Cancel"];
+  }
+
+  protected activate(action: string, ctx: LayerContext): void {
+    if (action === "Privacy policy") {
+      openPrivacyPolicyOnPhone(this.privacyPolicyUrl, this.appName);
+    } else if (action === "Allow") {
+      this.close(ctx, () => this.onConfirm());
+    } else {
+      this.close(ctx, () => this.onCancel());
+    }
+  }
+
+  protected backedOut(): void {
+    this.onCancel();
+  }
+
+  protected abandoned(): void {
+    this.onCancel();
   }
 }

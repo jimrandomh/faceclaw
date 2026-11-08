@@ -62,6 +62,7 @@ const loadStoreLayer = ({ configured = false, api = {} } = {}) => {
     './store-detail-layer': { EvenHubStoreDetailLayer: class { constructor(_app, options) { detailOptions.push(options); } } },
     './store-install': { cleanError: (error) => String(error?.message ?? error), installStoreApp: async () => {} },
     './updates': { checkForEvenHubUpdates: async () => [], describeUpdate: () => '' },
+    './glasses-compat': { isEvenHubStoreAvailable: () => true },
   });
   const { EvenHubStoreLayer } = load('app/apps/evenhub/store-layer.ts');
   return { EvenHubStoreLayer, email, password, drawn, detailOptions };

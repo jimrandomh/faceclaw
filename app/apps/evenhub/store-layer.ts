@@ -14,6 +14,7 @@ import { EvenHubStoreDetailLayer, type EvenHubStoreDetailOptions } from "./store
 import { cleanError, installStoreApp } from "./store-install";
 import { checkForEvenHubUpdates, describeUpdate, type EvenHubAppUpdate } from "./updates";
 import { lineStep } from "../../ui/metrics";
+import { isEvenHubStoreAvailable } from "./glasses-compat";
 
 const LIST_X = 18;
 /** Horizontal gap between tab labels. */
@@ -145,6 +146,11 @@ export type EvenHubStoreLayerOptions = {
  * missing). The tab row is its own focus level above the list: double-click
  * in the list focuses the tabs, scrolling (or a watch swipe in any direction)
  * there switches tabs, and a click returns to the list.
+ *
+ * With glasses that can't use the store (a RayNeo iO; see glasses-compat.ts)
+ * it shows only a notice saying so, and loads nothing. That is checked on
+ * every paint and input, so a window open across a re-pair follows the
+ * glasses either way.
  */
 export class EvenHubStoreLayer implements Layer {
   /** Swipes left/right switch tabs on the tab strip; elsewhere they get the usual fallback. */
@@ -168,12 +174,15 @@ export class EvenHubStoreLayer implements Layer {
   private updatingAll = false;
   /** An app page requested while the login form was up; opened once signed in. */
   private pendingPackage: InstalledEvenHubApp | null = null;
+  /** An app page requested while the store was unavailable, named on its notice. */
+  private unavailablePackageName: string | null = null;
 
   constructor(private readonly options: EvenHubStoreLayerOptions) {
     if (this.showingLogin) resetEvenHubLoginForm();
   }
 
   paint(ctx: LayerContext): GrayImage {
+    if (!isEvenHubStoreAvailable()) return this.paintUnavailable(ctx);
     if (!this.started) {
       this.started = true;
       // Do NOT open the phone credential editor here. This runs on the first
@@ -230,6 +239,23 @@ export class EvenHubStoreLayer implements Layer {
       listFocused,
     );
     menu.drawScrollbar(image, width - 5, headerH, visibleRows * rowH - 3);
+    return image;
+  }
+
+  /** The notice that replaces the store when the paired glasses can't use it. */
+  private paintUnavailable(ctx: LayerContext): GrayImage {
+    const font = getDefaultSmallFont();
+    const { width, height } = ctx.stack.getBaseSize();
+    const image = new GrayImage(width, height, 0);
+    image.drawText(font, LIST_X, 8, "EvenHub", 220);
+    if (this.unavailablePackageName) {
+      const status = `${this.unavailablePackageName}'s package is missing.`;
+      image.drawText(font, LIST_X, 8 + lineStep(font), truncateText(font, status, width - LIST_X * 2), 125);
+    }
+    const message = "Using the Even Realities app store requires Even Realities glasses.";
+    for (const [index, line] of wrapText(font, message, width - LIST_X * 2).entries()) {
+      image.drawText(font, LIST_X, headerHeight(font) + 16 + index * lineStep(font), line, 190);
+    }
     return image;
   }
 
@@ -294,6 +320,10 @@ export class EvenHubStoreLayer implements Layer {
   }
 
   async handleInput(rawEvent: InputEvent, ctx: LayerContext): Promise<void> {
+    if (!isEvenHubStoreAvailable()) {
+      if (directionalFallback(rawEvent).type === "double-click") shell.yieldFocusToSidebar();
+      return;
+    }
     const tabSwipe = !this.showingLogin && this.focus === "tabs"
       && (rawEvent.type === "swipe-left" || rawEvent.type === "swipe-right");
     const event = isDirectionalInput(rawEvent) && !tabSwipe ? directionalFallback(rawEvent) : rawEvent;
@@ -396,6 +426,12 @@ export class EvenHubStoreLayer implements Layer {
    * placeholder built from the registry entry stands in.
    */
   showInstalledPackage(stack: LayerStack, installed: InstalledEvenHubApp): void {
+    if (!isEvenHubStoreAvailable()) {
+      this.unavailablePackageName = installed.name;
+      stack.clearToBase();
+      return;
+    }
+    this.unavailablePackageName = null;
     if (this.showingLogin) {
       this.pendingPackage = installed;
       return;
@@ -407,7 +443,7 @@ export class EvenHubStoreLayer implements Layer {
 
   /** Dictated text becomes a search (the shell's "Type Into App" / voice input). */
   receiveTextInput(text: string, ctx: LayerContext): void {
-    if (this.showingLogin) return;
+    if (this.showingLogin || !isEvenHubStoreAvailable()) return;
     const query = evenHubSearchQuerySetting.set(text);
     if (!query) return;
     this.closePhoneEditor(ctx.actions, "search");
@@ -417,7 +453,7 @@ export class EvenHubStoreLayer implements Layer {
   }
 
   buildMenuItems(): MenuItem[] {
-    if (this.showingLogin) return [];
+    if (this.showingLogin || !isEvenHubStoreAvailable()) return [];
     const items: MenuItem[] = [];
     if (this.activeTab === "search") {
       items.push({

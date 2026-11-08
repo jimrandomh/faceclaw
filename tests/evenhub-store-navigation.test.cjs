@@ -86,6 +86,7 @@ const loadStore = ({ updates = [] } = {}) => {
       checkForEvenHubUpdates: async () => updates,
       describeUpdate: () => ({ updateAvailable: false, packageMissing: false }),
     },
+    './glasses-compat': { isEvenHubStoreAvailable: () => true },
   });
   const { EvenHubStoreLayer } = load('app/apps/evenhub/store-layer.ts');
   const layer = new EvenHubStoreLayer({ launchApp: async () => {}, appendLog: () => {} });

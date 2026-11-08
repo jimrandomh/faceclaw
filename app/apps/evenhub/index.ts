@@ -5,6 +5,9 @@
  * a phone WebView (its runtime + phone UI) and a 576x288 glasses window
  * composited by Faceclaw instead of the stock firmware.
  *
+ * With a RayNeo iO paired the store is unavailable and sideloaded apps warn
+ * on first run that they won't display correctly; see glasses-compat.ts.
+ *
  * Design notes: notes/evenhub_compatibility.txt.
  */
 import { type AppContext, type AppDefinition } from "../app-definition";
@@ -15,6 +18,7 @@ import { createInProcessWindow, type InProcessWindow } from "../../ui/shell/in-p
 import { renderEvenRealitiesLogo } from "../../graphics/even-realities-logo";
 import { makeImageWindowIcon, windowIcon } from "../../ui/shell/chrome-layer";
 import { type InstalledEvenHubApp } from "./installed-apps";
+import { isEvenHubStoreAvailable } from "./glasses-compat";
 
 const EVENHUB_STORE_WINDOW_ID = "evenhub:store";
 const EVENHUB_STORE_SURFACE_ID = "window:evenhub:store";
@@ -104,8 +108,17 @@ const evenhubApp: AppDefinition = {
   title: "EvenHub",
   icon: "package",
   renderIcon: renderEvenRealitiesLogo,
+  // Off the launcher with a RayNeo iO paired. A store window that opens
+  // anyway (restored from before a re-pair, or the launcher's route for an
+  // installed app whose package is missing) says why instead of loading.
+  isSupported: isEvenHubStoreAvailable,
   launch: async (ctx) => {
-    await ensureStoreWindow(ctx);
+    const { window } = await ensureStoreWindow(ctx);
+    if (!isEvenHubStoreAvailable()) {
+      // Store pages opened while Even glasses were paired would cover the notice.
+      window.stack.clearToBase();
+      window.requestRender();
+    }
   },
 };
 
