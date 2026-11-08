@@ -61,9 +61,28 @@ export const glanceboardEnabledSetting = new ConfigSettingBoolean({
     "While the display is asleep, a tap, a long-press or a head-tilt shows the Glanceboard instead of the regular UI. Double-tap still wakes the regular UI.",
 });
 
-export type GlanceTapDuration = "off" | "3s" | "5s" | "7s" | "10s";
+const TAP_DURATION_SECONDS = {
+  "3s": 3,
+  "5s": 5,
+  "7s": 7,
+  "10s": 10,
+  "20s": 20,
+  "30s": 30,
+  "1min": 60,
+} as const;
 
-const DEFAULT_TAP_DURATION: GlanceTapDuration = "5s";
+type GlanceTapDurationTimed = keyof typeof TAP_DURATION_SECONDS;
+export type GlanceTapDuration = "off" | GlanceTapDurationTimed;
+
+const TAP_DURATION_VALUES: readonly GlanceTapDuration[] = ["off", ...(Object.keys(TAP_DURATION_SECONDS) as GlanceTapDurationTimed[])];
+
+const DEFAULT_TAP_DURATION: GlanceTapDurationTimed = "5s";
+
+function formatTapDuration(value: GlanceTapDuration): string {
+  if (value === "off") return "Disabled";
+  const seconds = TAP_DURATION_SECONDS[value];
+  return seconds % 60 === 0 ? `${seconds / 60} min` : `${seconds} s`;
+}
 
 /**
  * How long a tap (or head-tilt) keeps the board up; each further tap restarts
@@ -75,8 +94,8 @@ export const glanceTapDurationSetting = new ConfigSettingEnum<GlanceTapDuration>
   label: "Show on tap",
   storageKey: "glanceboard.tapDuration",
   defaultValue: DEFAULT_TAP_DURATION,
-  values: ["off", "3s", "5s", "7s", "10s"],
-  formatValue: (value) => (value === "off" ? "Disabled" : value.replace("s", " s")),
+  values: TAP_DURATION_VALUES,
+  formatValue: formatTapDuration,
   description:
     "How long a single tap (or a head-tilt) keeps the Glanceboard on screen. Disabled: a single tap does not show the Glanceboard.",
 });
@@ -88,8 +107,7 @@ export function glanceShowOnTap(): boolean {
 
 export function glanceTapTimeoutMs(): number {
   const duration = glanceTapDurationSetting.get();
-  const seconds = duration === "off" ? DEFAULT_TAP_DURATION : duration;
-  return Number.parseInt(seconds, 10) * 1000;
+  return TAP_DURATION_SECONDS[duration === "off" ? DEFAULT_TAP_DURATION : duration] * 1000;
 }
 
 /** A long-press holds the board up until the press is released. */
