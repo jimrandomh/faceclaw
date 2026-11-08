@@ -13,6 +13,9 @@ const GLASSES_OPTIONS: { choice: GlassesChoice; label: string; description?: str
   { choice: "rayneo-io", label: "RayNeo iO" },
 ];
 
+/** RayNeo iO support isn't ready to offer in a release yet; set this to show its row again. */
+const OFFER_RAYNEO_IO = false;
+
 /** Why this choice can't be made on this phone, or "" when it can. */
 function unavailableReason(choice: GlassesChoice): string {
   // FaceclawCommunicatorBridge refuses to start a session with one on iOS.
@@ -48,7 +51,8 @@ export class OnboardingDevicesViewModel extends Observable {
 
   get glassesOptions(): GlassesOptionItem[] {
     const selected = this.selected;
-    return GLASSES_OPTIONS.map(({ choice, label, description }) => {
+    const options = OFFER_RAYNEO_IO ? GLASSES_OPTIONS : GLASSES_OPTIONS.filter(({ choice }) => choice !== "rayneo-io");
+    return options.map(({ choice, label, description }) => {
       const reason = unavailableReason(choice);
       const note = reason || description || "";
       const isSelected = choice === selected;
