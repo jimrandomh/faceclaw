@@ -38,7 +38,11 @@ import {
 import { EvenHubApiKeyDialogLayer } from "./api-key-dialog";
 import {
   asRecord,
+  clampToStockLimits,
+  containerById,
   declaredMenuItems,
+  PAGE_CREATE_INVALID,
+  stockPageFailure,
   eventCaptureContainer,
   parsePage,
   readNumber,
@@ -50,9 +54,13 @@ import {
   type EvenHubContainer,
   type EvenHubMenuItem,
   type EvenHubPage,
+  type EvenHubTextContainer,
 } from "./containers";
-import { compositePage } from "./compositor";
+import { compositePage, layoutText } from "./compositor";
 import { describeImageUpdate, describePage, describeTextUpgrade } from "./layout-debug";
+import { IMAGE_SEND_FAILED, IMAGE_SUCCESS, prepareImageUpdate } from "./image-pipeline";
+import { stockPayloadError } from "./payload-validation";
+import { decodeImageRgba } from "../../native/image-rgba";
 import { stepListSelection } from "./list-menu";
 import { type EvenHubManifest } from "./ehpk";
 import { permissionsIncludeMicrophone, permissionsInclude } from "./permissions";
@@ -75,7 +83,6 @@ import { parseWindowIcon, WindowIconRenderer } from "./window-icon";
 import { availableFontFamilies, containerFace, measureContainerText } from "./fonts";
 import { parseFontSpec } from "./font-spec";
 
-const UPNG = require("upng-js");
 
 /**
  * Page layouts and container updates go to logcat at debug level (see
@@ -93,11 +100,19 @@ const SCROLL_BOTTOM_EVENT = 2;
 const DOUBLE_CLICK_EVENT = 3;
 const FOREGROUND_ENTER_EVENT = 4;
 const FOREGROUND_EXIT_EVENT = 5;
+const ABNORMAL_EXIT_EVENT = 6;
 const SYSTEM_EXIT_EVENT = 7;
 const IMU_DATA_REPORT_EVENT = 8;
 /** SDK 0.0.14: the press gesture, delivered like any other list/text/sys event. */
 const LONG_PRESS_EVENT = 9;
 const LONG_PRESS_RELEASE_EVENT = 10;
+
+/** After a failed rebuild, how long the app gets to hear ABNORMAL_EXIT before it is closed. */
+const ABNORMAL_EXIT_CLOSE_DELAY_MS = 200;
+
+/** Stock text scrolling: one step per swipe, and "at an end" within this tolerance. */
+const TEXT_SCROLL_STEP_PX = 28;
+const TEXT_SCROLL_EDGE_PX = 3;
 
 /**
  * Injected into every served HTML document at document start (before any app
@@ -426,6 +441,8 @@ export class EvenHubSession implements EvenHubMicClient, EvenHubImuClient, EvenH
 
   private page: EvenHubPage | null = null;
   private pageCreated = false;
+  /** The page came from Faceclaw's extended layout API, which isn't held to stock limits. */
+  private extendedLayout = false;
   private webViewHandle: EvenHubWebViewHandle | null = null;
   private windowHooks: EvenHubWindowHooks | null = null;
   private closed = false;
@@ -606,6 +623,8 @@ export class EvenHubSession implements EvenHubMicClient, EvenHubImuClient, EvenH
         const eventType = event.type === "scroll-up" ? SCROLL_TOP_EVENT : SCROLL_BOTTOM_EVENT;
         if (capture?.kind === "list") {
           this.scrollList(capture, eventType, inputSource);
+        } else if (capture?.kind === "text") {
+          this.scrollText(capture, eventType, inputSource);
         } else {
           this.emitSysEvent(eventType, 0, inputSource);
         }
@@ -628,6 +647,25 @@ export class EvenHubSession implements EvenHubMicClient, EvenHubImuClient, EvenH
   /** The user picked one of the app's contextual-menu entries. */
   selectContextMenuItem(itemID: number): void {
     this.pushMessage("evenHubEvent", { type: "menuItemClickEvent", jsonData: { itemID } });
+  }
+
+  /**
+   * Stock scrolls a capture text container that overflows by itself, a 28px
+   * step per swipe, and tells the app only at the ends (a textEvent naming the
+   * container). Text that fits reports every swipe as reaching an end.
+   */
+  private scrollText(text: EvenHubTextContainer, eventType: number, inputSource?: ExtensionInputSource): void {
+    const { maxScroll } = layoutText(text);
+    const forward = eventType === SCROLL_BOTTOM_EVENT;
+    const atEnd = forward ? maxScroll - text.scrollY < TEXT_SCROLL_EDGE_PX : text.scrollY < TEXT_SCROLL_EDGE_PX;
+    if (maxScroll === 0 || atEnd) {
+      this.emitTextEvent(text, eventType, inputSource);
+      return;
+    }
+    text.scrollY = forward
+      ? Math.min(maxScroll, text.scrollY + TEXT_SCROLL_STEP_PX)
+      : Math.max(0, text.scrollY - TEXT_SCROLL_STEP_PX);
+    this.windowHooks?.requestRender();
   }
 
   private scrollList(list: EvenHubListContainer, eventType: number, inputSource?: ExtensionInputSource): void {
@@ -818,7 +856,8 @@ export class EvenHubSession implements EvenHubMicClient, EvenHubImuClient, EvenH
   deliverImu(reading: ImuReading): void {
     this.pushEvenHubEvent("sysEvent", {
       eventType: IMU_DATA_REPORT_EVENT,
-      imuData: { x: reading.x, y: reading.y, z: reading.z },
+      // The Even app's field name (protobuf IMU_Data); the SDK reads it as imuData.
+      iMUData: { x: reading.x, y: reading.y, z: reading.z },
     });
   }
 
@@ -868,7 +907,8 @@ export class EvenHubSession implements EvenHubMicClient, EvenHubImuClient, EvenH
         const first = args[0];
         const message = asRecord(typeof first === "string" ? JSON.parse(first) : first);
         const method = readString(message, "method", "");
-        const data = asRecord(message.data);
+        // As the Even app: `data`, else `payload`.
+        const data = asRecord(message.data ?? message.payload);
         result = await this.dispatch(method, data);
       } catch (error) {
         this.log(`evenhub bridge call failed: ${error}`);
@@ -930,11 +970,25 @@ export class EvenHubSession implements EvenHubMicClient, EvenHubImuClient, EvenH
       await delay(DUPLICATE_CREATE_DELAY_MS);
       return 1;
     }
+    // The Even app refuses some payloads without sending them; then the
+    // firmware may fail to build the page.
+    const payloadError = stockPayloadError("create", data);
+    if (payloadError) {
+      this.layoutLog(() => [`createStartUpPageContainer refused, as the Even app would: ${payloadError}`]);
+      return PAGE_CREATE_INVALID;
+    }
     const page = parsePage(data);
-    this.warnOnInvalidPage(page, data);
+    const failure = stockPageFailure(page);
+    if (failure) {
+      this.layoutLog(() => [`createStartUpPageContainer failed, as the firmware would: ${failure.reason}`]);
+      return failure.code;
+    }
+    clampToStockLimits(page);
+    this.warnOnDroppedMenuItems(page, data);
     this.layoutLog(() => describePage("createStartUpPageContainer", page, data));
     this.page = page;
     this.pageCreated = true;
+    this.extendedLayout = false;
     // The launch focus arrived before the page existed; deliver the ENTER now.
     if (this.foreground && !this.launchEnterSent) {
       this.launchEnterSent = true;
@@ -945,17 +999,39 @@ export class EvenHubSession implements EvenHubMicClient, EvenHubImuClient, EvenH
   }
 
   private rebuildPage(data: Record<string, unknown>): boolean {
-    // Also serves as create for apps that fall back to rebuild-on-error.
+    // Only createStartUpPageContainer starts an EvenHub page on the glasses.
+    if (!this.pageCreated) {
+      this.layoutLog(() => ["rebuildPageContainer before createStartUpPageContainer: no page to rebuild"]);
+      return false;
+    }
+    const payloadError = stockPayloadError("rebuild", data);
+    if (payloadError) {
+      this.layoutLog(() => [`rebuildPageContainer refused, as the Even app would: ${payloadError}`]);
+      return false;
+    }
     const page = parsePage(data);
-    this.warnOnInvalidPage(page, data);
+    const failure = stockPageFailure(page);
+    if (failure) {
+      // The firmware has already torn the old page down; it reports an
+      // abnormal exit and the Even app closes the app.
+      this.layoutLog(() => [`rebuildPageContainer failed, as the firmware would: ${failure.reason}; closing the app`]);
+      this.page = { containers: [], menuItems: [] };
+      this.windowHooks?.requestRender();
+      this.emitSysEvent(ABNORMAL_EXIT_EVENT, 0);
+      this.systemExitSent = true;
+      setTimeout(() => this.close(), ABNORMAL_EXIT_CLOSE_DELAY_MS);
+      return false;
+    }
+    clampToStockLimits(page);
+    this.warnOnDroppedMenuItems(page, data);
     this.layoutLog(() => describePage("rebuildPageContainer", page, data));
     this.page = page;
-    this.pageCreated = true;
+    this.extendedLayout = false;
     this.windowHooks?.requestRender();
     return true;
   }
 
-  private warnOnInvalidPage(page: EvenHubPage, data: Record<string, unknown>): void {
+  private warnOnDroppedMenuItems(page: EvenHubPage, data: Record<string, unknown>): void {
     const declaredMenuCount = declaredMenuItems(data).length;
     if (declaredMenuCount > page.menuItems.length) {
       this.log(
@@ -963,77 +1039,86 @@ export class EvenHubSession implements EvenHubMicClient, EvenHubImuClient, EvenH
           "items (max 10, itemID must be non-zero and unique, itemName at most 32 UTF-8 bytes)",
       );
     }
-    // Stock rejects these outright; we accept-and-log until rejection is
-    // proven necessary for compatibility.
-    const captures = page.containers.filter((c) => c.kind !== "image" && c.isEventCapture).length;
-    if (captures !== 1) this.log(`evenhub: page has ${captures} event-capture containers (stock requires exactly 1)`);
-    const texts = page.containers.filter((c) => c.kind === "text").length;
-    const images = page.containers.filter((c) => c.kind === "image").length;
-    if (texts > 8 || images > 4) this.log(`evenhub: page exceeds stock limits (${texts} text, ${images} image)`);
   }
 
   private textUpgrade(data: Record<string, unknown>): boolean {
-    const id = readNumber(data, "containerID", -1);
-    // containerID is the identity; containerName is optional in the wild (e.g.
-    // level-even-g2 omits it). Match by id, enforcing the name only when the app
-    // actually supplies a non-empty one. (updateImage already matches by id.)
+    const id = readNumber(data, "containerID", 0);
     const name = readString(data, "containerName", "");
-    const container = this.page?.containers.find(
-      (c) => c.kind === "text" && c.id === id && (name === "" || c.name === name),
-    );
     const content = readString(data, "content", "");
     const offset = readOptionalNumber(data, "contentOffset");
-    if (!container || container.kind !== "text") {
+    const payloadError = stockPayloadError("textUpgrade", data);
+    if (payloadError) {
+      this.layoutLog(() => [`textContainerUpgrade refused, as the Even app would: ${payloadError}`]);
+      return false;
+    }
+    // The firmware finds the container by id alone (its first container with
+    // that id, of any kind); the name isn't checked anywhere.
+    const target = containerById(this.page, id);
+    if (!target) {
       this.layoutLog(() => [describeTextUpgrade(id, name, null, offset, content.length)]);
       return false;
     }
-    // (contentLength is intentionally ignored — see below.)
-    // Stock semantics are "write `content` at contentOffset and truncate the
-    // rest" (a null-terminating strcpy(buf+offset, content)), NOT a splice that
-    // keeps the old tail after offset+contentLength. Keeping the tail left stray
-    // trailing text when an app (e.g. g2oom) shrank a string with an
-    // under-sized contentLength; dropping it matches stock and still supports
-    // suffix rewrites (offset>0) and full replaces (offset 0 / omitted).
-    if (offset !== undefined && offset > 0) {
-      container.content = container.content.slice(0, offset) + content;
-    } else {
-      container.content = content;
+    // Aimed at a list or image, the firmware writes into it as if it were
+    // text and reports success; nothing we could show.
+    if (target.kind !== "text") return true;
+    // The content replaces the whole text: stock ignores contentOffset and
+    // contentLength (firmware 2.2.9.22 in the emulator showed "XY" alone for
+    // every offset/length tried). The firmware re-sets the label, scrolled
+    // back to the top, only for non-empty text, so emptying a container
+    // leaves its old text showing (apps send " " to clear one).
+    if (content !== "") {
+      target.content = content;
+      target.scrollY = 0;
     }
     // SDK 0.0.14: textColor on an incremental update sets the container's
     // brightness; omitting it keeps whatever level the container has.
     const brightness = readTextBrightness(data);
-    if (brightness !== undefined) container.textColor = brightness;
-    this.layoutLog(() => [describeTextUpgrade(id, name, container, offset, content.length)]);
+    if (brightness !== undefined) target.textColor = brightness;
+    this.layoutLog(() => [describeTextUpgrade(id, name, target, offset, content.length)]);
     this.windowHooks?.requestRender();
     return true;
   }
 
-  /** BleEhSendImageResult: 0 success, 1 imageException, 2 sizeInvalid, 3 sendFailed. */
+  /** EhImageUpdateResult: 0 success, 1 imageException, 2 sizeInvalid, 3 toGray4Failed, 4 sendFailed. */
   private updateImage(data: Record<string, unknown>): number {
-    const id = readNumber(data, "containerID", -1);
-    const found = this.page?.containers.find((c) => c.kind === "image" && c.id === id);
-    const container = found?.kind === "image" ? found : null;
-    const raw = data.imageData ?? data.rawData ?? data.mapRawData;
-    const bytes = container ? imagePayloadBytes(raw) : null;
-    const decoded = container && bytes && bytes.length > 0 ? decodeImageBytes(bytes, container) : null;
-    const result = !container ? 3 : !decoded ? 1 : 0;
-    this.layoutLog(() =>
-      describeImageUpdate({
-        page: this.page,
-        sentId: id,
-        sentName: readString(data, "containerName", ""),
-        container,
-        raw,
-        bytes,
-        decoded,
-        result,
-      }),
-    );
-    if (!container || !decoded) return result;
-    container.pixels = decoded.pixels;
-    container.pixelsWidth = decoded.width;
-    container.pixelsHeight = decoded.height;
-    this.windowHooks?.requestRender();
+    const id = readNumber(data, "containerID", 0);
+    const name = readString(data, "containerName", "");
+    const raw = data.imageData;
+    // Before the page exists (and after shutdown) the Even app fails it outright.
+    if (!this.pageCreated || !this.page) {
+      this.layoutLog(() => [`updateImageRawData id=${id}: no page yet, sendFailed`]);
+      return IMAGE_SEND_FAILED;
+    }
+    // The Even app sizes the bitmap from the image container it finds by id,
+    // then by trimmed name.
+    const images = this.page.containers.filter((c): c is EvenHubImageContainer => c.kind === "image");
+    const geometry = (id > 0 ? images.find((c) => c.id === id) : undefined) ??
+      (name.trim() ? images.find((c) => c.name.trim() === name.trim()) : undefined);
+    const prepared = prepareImageUpdate({
+      imageData: raw,
+      compressMode: readNumber(data, "compressMode", 0),
+      requestWidth: readNumber(data, "width", 0),
+      requestHeight: readNumber(data, "height", 0),
+      geometry: geometry ?? null,
+      decodeNative: decodeImageRgba,
+      stockLimits: !this.extendedLayout,
+    });
+    // The firmware takes the transfer only for an id whose first container is
+    // an image, and then shows the bitmap only if it's exactly that size.
+    const target = containerById(this.page, id);
+    let result = prepared.result;
+    let shown = false;
+    if (result === IMAGE_SUCCESS && target?.kind !== "image") {
+      result = IMAGE_SEND_FAILED;
+    } else if (result === IMAGE_SUCCESS && target?.kind === "image" && prepared.levels &&
+        prepared.width === target.width && prepared.height === target.height) {
+      target.pixels = prepared.levels.map((level) => level * 17);
+      target.pixelsWidth = prepared.width;
+      target.pixelsHeight = prepared.height;
+      shown = true;
+      this.windowHooks?.requestRender();
+    }
+    this.layoutLog(() => describeImageUpdate({ sentId: id, sentName: name, raw, target, prepared, shown, result }));
     return result;
   }
 
@@ -1119,6 +1204,15 @@ export class EvenHubSession implements EvenHubMicClient, EvenHubImuClient, EvenH
 
   private emitSysEvent(eventType: number, eventSource: number, inputSource?: ExtensionInputSource): void {
     this.pushEvenHubEvent("sysEvent", { eventType, eventSource, [INPUT_SOURCE_FIELD]: inputSource });
+  }
+
+  private emitTextEvent(text: EvenHubTextContainer, eventType: number, inputSource?: ExtensionInputSource): void {
+    this.pushEvenHubEvent("textEvent", {
+      containerID: text.id,
+      containerName: text.name,
+      eventType,
+      [INPUT_SOURCE_FIELD]: inputSource,
+    });
   }
 
   private emitListEvent(list: EvenHubListContainer, eventType: number, inputSource?: ExtensionInputSource): void {
@@ -1301,6 +1395,7 @@ export class EvenHubSession implements EvenHubMicClient, EvenHubImuClient, EvenH
     this.layoutLog(() => describePage("extension layout", page, data));
     this.page = page;
     this.pageCreated = true;
+    this.extendedLayout = true;
     // The extended layout uses the taller app area.
     this.windowHooks?.setTallCanvas(true);
     if (this.foreground && !this.launchEnterSent) {
@@ -1607,82 +1702,6 @@ function normalizeBuzzerSteps(raw: unknown[]): Step[] {
 }
 
 /**
- * Decode an uncompressed Windows BMP ('BM', BI_RGB) to 8bpp grayscale. Handles
- * 1/4/8-bit paletted and 24/32-bit BGR(A), top-down or bottom-up. Returns null
- * for compressed or unsupported variants. Apps like EvenChess send 1-bit BMPs
- * (black/white palette) for full-board refreshes.
- */
-function decodeBmp(bytes: Uint8Array): { pixels: Uint8Array; width: number; height: number } | null {
-  if (bytes.length < 54 || bytes[0] !== 0x42 || bytes[1] !== 0x4d) return null;
-  const u16 = (o: number) => bytes[o]! | (bytes[o + 1]! << 8);
-  const u32 = (o: number) => (bytes[o]! | (bytes[o + 1]! << 8) | (bytes[o + 2]! << 16) | (bytes[o + 3]! << 24)) >>> 0;
-  const i32 = (o: number) => bytes[o]! | (bytes[o + 1]! << 8) | (bytes[o + 2]! << 16) | (bytes[o + 3]! << 24);
-
-  const pixelOffset = u32(10);
-  const dibSize = u32(14);
-  const width = i32(18);
-  const heightRaw = i32(22);
-  const bitCount = u16(28);
-  const compression = u32(30);
-  if (compression !== 0) return null; // only BI_RGB (uncompressed)
-  if (width <= 0 || width > 4096) return null;
-  const topDown = heightRaw < 0;
-  const height = Math.abs(heightRaw);
-  if (height === 0 || height > 4096) return null;
-
-  // Palette (grayscale per index) for <=8bpp; each entry is 4 bytes BGRA.
-  let palette: Uint8Array | null = null;
-  if (bitCount <= 8) {
-    let numColors = u32(46);
-    if (numColors === 0 || numColors > (1 << bitCount)) numColors = 1 << bitCount;
-    const palOffset = 14 + dibSize;
-    palette = new Uint8Array(numColors);
-    for (let i = 0; i < numColors; i++) {
-      const o = palOffset + i * 4;
-      if (o + 2 >= bytes.length) break;
-      palette[i] = luminance(bytes[o + 2]!, bytes[o + 1]!, bytes[o]!);
-    }
-  }
-
-  const stride = (((width * bitCount + 31) >> 5) << 2); // rows are 4-byte aligned
-  const pixels = new Uint8Array(width * height);
-  for (let y = 0; y < height; y++) {
-    const srcY = topDown ? y : height - 1 - y;
-    const rowStart = pixelOffset + srcY * stride;
-    if (rowStart >= bytes.length) break;
-    const dstRow = y * width;
-    for (let x = 0; x < width; x++) {
-      let gray: number;
-      if (bitCount === 1) {
-        const bit = ((bytes[rowStart + (x >> 3)] ?? 0) >> (7 - (x & 7))) & 1;
-        gray = palette?.[bit] ?? (bit ? 255 : 0);
-      } else if (bitCount === 4) {
-        const byte = bytes[rowStart + (x >> 1)] ?? 0;
-        const nib = (x & 1) === 0 ? byte >> 4 : byte & 0x0f;
-        gray = palette?.[nib] ?? nib * 17;
-      } else if (bitCount === 8) {
-        const idx = bytes[rowStart + x] ?? 0;
-        gray = palette?.[idx] ?? idx;
-      } else if (bitCount === 24) {
-        const o = rowStart + x * 3;
-        gray = luminance(bytes[o + 2] ?? 0, bytes[o + 1] ?? 0, bytes[o] ?? 0);
-      } else if (bitCount === 32) {
-        const o = rowStart + x * 4;
-        gray = luminance(bytes[o + 2] ?? 0, bytes[o + 1] ?? 0, bytes[o] ?? 0);
-      } else {
-        return null;
-      }
-      pixels[dstRow + x] = gray;
-    }
-  }
-  return { pixels, width, height };
-}
-
-function luminance(r: number, g: number, b: number): number {
-  return Math.round(0.2126 * r + 0.7152 * g + 0.0722 * b);
-}
-
-/**
  * Input-device names in the extension API: the touchDown event's source, and
  * the `faceclawInputSource` field added to stock gesture events.
  */
@@ -1733,97 +1752,3 @@ function elideZeroFields(obj: Record<string, unknown>): Record<string, unknown> 
   return out;
 }
 
-/** Accept the payload forms seen on the wire: number[], JSON-ified typed
- * array ({"0": 1, ...}), or base64 string. */
-function imagePayloadBytes(raw: unknown): Uint8Array | null {
-  if (Array.isArray(raw)) {
-    const out = new Uint8Array(raw.length);
-    for (let i = 0; i < raw.length; i++) out[i] = Number(raw[i]) & 0xff;
-    return out;
-  }
-  if (typeof raw === "string") return base64Decode(raw);
-  if (raw && typeof raw === "object") {
-    const record = raw as Record<string, unknown>;
-    const keys = Object.keys(record);
-    const out = new Uint8Array(keys.length);
-    for (let i = 0; i < keys.length; i++) {
-      const value = record[String(i)];
-      if (typeof value !== "number") return null;
-      out[i] = value & 0xff;
-    }
-    return out;
-  }
-  return null;
-}
-
-const BASE64_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
-function base64Decode(text: string): Uint8Array | null {
-  const clean = text.replace(/[\s=]+$/g, "").replace(/\s+/g, "");
-  const out = new Uint8Array(Math.floor((clean.length * 3) / 4));
-  let bits = 0;
-  let bitCount = 0;
-  let outIndex = 0;
-  for (const char of clean) {
-    const value = BASE64_ALPHABET.indexOf(char);
-    if (value < 0) return null;
-    bits = (bits << 6) | value;
-    bitCount += 6;
-    if (bitCount >= 8) {
-      bitCount -= 8;
-      out[outIndex++] = (bits >> bitCount) & 0xff;
-    }
-  }
-  return out.subarray(0, outIndex);
-}
-
-/**
- * Decode an image payload: PNG or BMP (both are sent by real apps — EvenChess
- * force-refreshes as 1-bit BMP but streams live moves as PNG, so a host that
- * only did PNG dropped the initial board), or raw grayscale sized to the
- * container (8bpp, or 4bpp packed two pixels per byte, high nibble first).
- */
-function decodeImageBytes(
-  bytes: Uint8Array,
-  container: EvenHubImageContainer,
-): { pixels: Uint8Array; width: number; height: number } | null {
-  if (bytes.length > 2 && bytes[0] === 0x42 && bytes[1] === 0x4d) {
-    const bmp = decodeBmp(bytes);
-    if (bmp) return bmp;
-  }
-  if (bytes.length > 4 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) {
-    try {
-      const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
-      const decoded = UPNG.decode(buffer);
-      const frames = UPNG.toRGBA8(decoded) as ArrayBuffer[];
-      if (!frames.length) return null;
-      const rgba = new Uint8Array(frames[0]!);
-      const pixels = new Uint8Array(decoded.width * decoded.height);
-      for (let i = 0; i < pixels.length; i++) {
-        const offset = i * 4;
-        const alpha = (rgba[offset + 3] ?? 0) / 255;
-        pixels[i] = Math.round(
-          (0.2126 * (rgba[offset] ?? 0) + 0.7152 * (rgba[offset + 1] ?? 0) + 0.0722 * (rgba[offset + 2] ?? 0)) * alpha,
-        );
-      }
-      return { pixels, width: decoded.width, height: decoded.height };
-    } catch (error) {
-      console.warn(`evenhub: PNG decode failed: ${error}`);
-      return null;
-    }
-  }
-  const area = container.width * container.height;
-  if (bytes.length === area) {
-    return { pixels: Uint8Array.from(bytes), width: container.width, height: container.height };
-  }
-  if (bytes.length === Math.ceil(area / 2)) {
-    const pixels = new Uint8Array(area);
-    for (let i = 0; i < area; i++) {
-      const byte = bytes[i >> 1]!;
-      const nibble = i % 2 === 0 ? byte >> 4 : byte & 0x0f;
-      pixels[i] = nibble * 17;
-    }
-    return { pixels, width: container.width, height: container.height };
-  }
-  return null;
-}

@@ -87,7 +87,8 @@ function sessionHarness(overrides = {}, playBuzzer = () => {}, { packageId = 'te
     '../../ui/dashboard-settings': {}, '../../ui/sound-effects': {}, './api-key-dialog': {},
     './mic-router': { evenHubMicRouter: {} }, './imu-router': { evenHubImuRouter: {} },
     './compass-router': { evenHubCompassRouter: {} }, '../../assistant/tool-registry': {},
-    '../../native/location': {}, '../../native/location-tracker': {}, '../../native/location-permissions': {}, ...overrides,
+    '../../native/location': {}, '../../native/location-tracker': {}, '../../native/location-permissions': {},
+    '../../native/image-rgba': { decodeImageRgba: () => null }, ...overrides,
   });
   const api = load('app/apps/evenhub/session.ts');
   const session = new api.EvenHubSession({ name: 'Probe', packageId, permissions: [] }, '/test/dist', line => logs.push(line), '', playBuzzer);
@@ -105,10 +106,12 @@ function sessionHarness(overrides = {}, playBuzzer = () => {}, { packageId = 'te
 test('injected EvenHub RPC creates, updates and composites an image page with no Android globals', async () => {
   const h = sessionHarness();
   assert.equal(await h.call('createStartUpPageContainer', { containerTotalNum: 1,
-    imageObject: [{ containerID: 1, containerName: 'board', xPosition: 0, yPosition: 0, width: 2, height: 2 }] }), 0);
-  assert.equal(await h.call('updateImageRawData', { containerID: 1, containerName: 'board', imageData: [0, 80, 160, 255] }), 0);
+    imageObject: [{ containerID: 1, containerName: 'board', xPosition: 0, yPosition: 0, width: 20, height: 20 }] }), 0);
+  // Raw 8-bit grey as the SDK sends it (compressMode 2), quantized to 4-bit levels as the Even app does.
+  const raw = new Array(400).fill(0); raw.splice(0, 4, 0, 80, 160, 255);
+  assert.equal(await h.call('updateImageRawData', { containerID: 1, containerName: 'board', imageData: raw, compressMode: 2 }), 0);
   const painted = h.session.paint({ width: 576, height: 288 }, true);
-  assert.deepEqual([painted.pixels[0], painted.pixels[1], painted.pixels[576], painted.pixels[577]], [0, 80, 160, 255]);
+  assert.deepEqual(Array.from(painted.pixels.slice(0, 4)), [0, 5 * 17, 9 * 17, 255]);
   assert.equal(await h.call('setLocalStorage', { key: 'score', value: '42' }), true);
   assert.equal(await h.call('getLocalStorage', { key: 'score' }), '42');
   const events = [];

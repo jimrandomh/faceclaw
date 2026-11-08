@@ -108,6 +108,64 @@ class ImageFileLoader private constructor() {
             }
         }
 
+        /** Longest side decodeRgbaFromBytes decodes at; larger images are subsampled. */
+        private const val MAX_RGBA_SIDE = 4096
+
+        /**
+         * Decode encoded image bytes (JPEG, PNG, WebP, GIF's first frame, BMP)
+         * to [widthLo, widthHi, heightLo, heightHi, R, G, B, A, ...] at native
+         * size, not premultiplied, so a transparent pixel keeps its colour;
+         * empty when undecodable. The EvenHub host converts these to grey the
+         * way the Even app does (app/apps/evenhub/image-pipeline.ts).
+         */
+        @JvmStatic
+        fun decodeRgbaFromBytes(buffer: java.nio.ByteBuffer?): ByteArray {
+            if (buffer == null) return ByteArray(0)
+            try {
+                val source = buffer.duplicate()
+                source.rewind()
+                val data = ByteArray(source.remaining())
+                source.get(data)
+                if (data.isEmpty()) return ByteArray(0)
+                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                BitmapFactory.decodeByteArray(data, 0, data.size, bounds)
+                if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return ByteArray(0)
+                var sample = 1
+                while (maxOf(bounds.outWidth, bounds.outHeight) / sample > MAX_RGBA_SIDE) sample *= 2
+                val options = BitmapFactory.Options().apply {
+                    inPreferredConfig = Bitmap.Config.ARGB_8888
+                    inPremultiplied = false
+                    inSampleSize = sample
+                }
+                val bitmap = BitmapFactory.decodeByteArray(data, 0, data.size, options) ?: return ByteArray(0)
+                val width = bitmap.width
+                val height = bitmap.height
+                val argb = IntArray(width * height)
+                bitmap.getPixels(argb, 0, width, 0, 0, width, height)
+                bitmap.recycle()
+                val packet = ByteArray(4 + argb.size * 4)
+                packet[0] = (width and 0xff).toByte()
+                packet[1] = ((width shr 8) and 0xff).toByte()
+                packet[2] = (height and 0xff).toByte()
+                packet[3] = ((height shr 8) and 0xff).toByte()
+                for (i in argb.indices) {
+                    val pixel = argb[i]
+                    val o = 4 + i * 4
+                    packet[o] = (pixel shr 16).toByte()
+                    packet[o + 1] = (pixel shr 8).toByte()
+                    packet[o + 2] = pixel.toByte()
+                    packet[o + 3] = (pixel ushr 24).toByte()
+                }
+                return packet
+            } catch (e: Exception) {
+                Log.w(TAG, "RGBA image decode failed", e)
+                return ByteArray(0)
+            } catch (e: OutOfMemoryError) {
+                Log.w(TAG, "RGBA image decode failed", e)
+                return ByteArray(0)
+            }
+        }
+
         /**
          * Scale a bitmap to fit within maxWidth x maxHeight (preserving aspect,
          * never upscaling) and convert it to the grayscale packet format.

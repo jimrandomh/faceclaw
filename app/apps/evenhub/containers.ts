@@ -6,6 +6,7 @@
  * reads go through loose key matching (the SDK's pickLoose behavior).
  */
 import { mergeFontSpecs, parseFontSpec, type EvenHubFontSpec } from "./font-spec";
+import { inStockImageRange } from "./image-pipeline";
 
 export type EvenHubTextContainer = {
   kind: "text";
@@ -16,6 +17,8 @@ export type EvenHubTextContainer = {
   width: number;
   height: number;
   borderWidth: number;
+  /** Firmware border color index 0..16; see borderGrey. */
+  borderColor: number;
   borderRadius: number;
   paddingLength: number;
   isEventCapture: boolean;
@@ -27,6 +30,11 @@ export type EvenHubTextContainer = {
   textColor: number | undefined;
   /** Extended-layout font (merged with the layout's default); undefined is the stock font. */
   font: EvenHubFontSpec | undefined;
+  /**
+   * How far the text is scrolled up, in pixels. Host-local like a list's
+   * selection: stock scrolls an overflowing capture container itself.
+   */
+  scrollY: number;
 };
 
 export type EvenHubImageContainer = {
@@ -54,6 +62,8 @@ export type EvenHubListContainer = {
   width: number;
   height: number;
   borderWidth: number;
+  /** Firmware border color index 0..16; see borderGrey. */
+  borderColor: number;
   borderRadius: number;
   paddingLength: number;
   isEventCapture: boolean;
@@ -80,7 +90,7 @@ export type EvenHubMenuItem = {
 };
 
 export type EvenHubPage = {
-  /** In declaration order (lists, images, texts); z-sorted at paint time. */
+  /** Lists, then texts, then images, each in declaration order (stock's container list order); z-sorted at paint time. */
   containers: EvenHubContainer[];
   /**
    * The page's contextual-menu entries (SDK 0.0.14 `menuObject`). Empty when
@@ -91,6 +101,26 @@ export type EvenHubPage = {
 
 /** Stock draws at most a 5px border; wider requests are clamped. */
 const MAX_BORDER_WIDTH = 5;
+
+/**
+ * Stock firmware limits for list and text containers (common_text_create /
+ * common_list_create clamp to these), from the evenRealities-openCFW
+ * reconstruction. Extended layouts are exempt: they have their own canvas.
+ */
+const STOCK_SCREEN_WIDTH = 576;
+const STOCK_SCREEN_HEIGHT = 288;
+const STOCK_MAX_BORDER_COLOR = 16;
+const STOCK_MAX_BORDER_RADIUS = 10;
+const STOCK_MAX_PADDING = 32;
+const STOCK_MAX_LIST_ITEMS = 20;
+
+/**
+ * The border color index's grey: indices 0..15 step by 0x11 (0 is black, so a
+ * border without a color is invisible) and 16 is white.
+ */
+export function borderGrey(index: number): number {
+  return index >= 0 && index < 16 ? index * 0x11 : 0xff;
+}
 
 /** Firmware brightness levels for text; 4 is the device default. */
 const MIN_TEXT_BRIGHTNESS = 0;
@@ -154,6 +184,11 @@ function readBorderWidth(json: Record<string, unknown>): number {
   return Math.max(0, Math.min(MAX_BORDER_WIDTH, readNumber(json, "borderWidth", 0)));
 }
 
+/** A protobuf field, so an omitted borderColor is 0 (black). */
+function readBorderColor(json: Record<string, unknown>): number {
+  return Math.max(0, readNumber(json, "borderColor", 0));
+}
+
 /** A container's font: its own `font` over the layout-wide default. */
 function readFont(json: Record<string, unknown>, layoutFont: EvenHubFontSpec | undefined): EvenHubFontSpec | undefined {
   return mergeFontSpecs(layoutFont, parseFontSpec(pickLoose(json, "font")));
@@ -169,6 +204,7 @@ function parseTextContainer(json: Record<string, unknown>, layoutFont: EvenHubFo
     width: readNumber(json, "width", 0),
     height: readNumber(json, "height", 0),
     borderWidth: readBorderWidth(json),
+    borderColor: readBorderColor(json),
     borderRadius: readNumber(json, "borderRadius", 0),
     paddingLength: readNumber(json, "paddingLength", 0),
     isEventCapture: readFlag(json, "isEventCapture"),
@@ -177,6 +213,7 @@ function parseTextContainer(json: Record<string, unknown>, layoutFont: EvenHubFo
     content: readString(json, "content", ""),
     textColor: readTextBrightness(json),
     font: readFont(json, layoutFont),
+    scrollY: 0,
   };
 }
 
@@ -262,6 +299,7 @@ function parseListContainer(json: Record<string, unknown>, layoutFont: EvenHubFo
     width: readNumber(json, "width", 0),
     height: readNumber(json, "height", 0),
     borderWidth: readBorderWidth(json),
+    borderColor: readBorderColor(json),
     borderRadius: readNumber(json, "borderRadius", 0),
     paddingLength: readNumber(json, "paddingLength", 0),
     isEventCapture: readFlag(json, "isEventCapture"),
@@ -277,9 +315,8 @@ function parseListContainer(json: Record<string, unknown>, layoutFont: EvenHubFo
 
 /**
  * Parse a CreateStartUpPageContainer / RebuildPageContainer payload into a
- * page. Containers keep declaration order within and across the three arrays
- * (lists, then images, then texts — texts last so info panels and capture
- * containers sit above image tiles when no zOrderIndex is given).
+ * page. Containers are kept in stock's container-list order: lists, then
+ * texts, then images, each in declaration order (evenhub_build_container_list).
  *
  * The whole page is replaced on rebuild, which is also what gives an omitted
  * menuObject its documented meaning: the previous contextual menu goes away.
@@ -292,42 +329,100 @@ export function parsePage(data: Record<string, unknown>): EvenHubPage {
   if (Array.isArray(lists)) {
     for (const item of lists) containers.push(parseListContainer(asRecord(item), layoutFont));
   }
-  const images = pickLoose(data, "imageObject");
-  if (Array.isArray(images)) {
-    for (const item of images) containers.push(parseImageContainer(asRecord(item)));
-  }
   const texts = pickLoose(data, "textObject");
   if (Array.isArray(texts)) {
     for (const item of texts) containers.push(parseTextContainer(asRecord(item), layoutFont));
+  }
+  const images = pickLoose(data, "imageObject");
+  if (Array.isArray(images)) {
+    for (const item of images) containers.push(parseImageContainer(asRecord(item)));
   }
   return { containers, menuItems: parseMenuItems(data) };
 }
 
 /**
- * Bottom-to-top paint order for a page's containers.
- *
- * With zOrderIndex, larger values render closer to the front (painted later).
- * Stock honors it only when every container has one (the SDK enforces that
- * app-side); we sort whenever any container has one, treating a missing index
- * as 0.
- *
- * Without it, image containers sit below lists and text, keeping declaration
- * order within each group. That is our choice, and it may not match stock:
- * the evenRealities-openCFW firmware reconstruction builds the container list
- * as lists, then texts, then images, which would put images on top. Not yet
- * checked on hardware; layout-debug.ts logs where the two orders differ.
+ * Clamp a stock page's containers the way the firmware does when it creates
+ * them: positions and sizes to the 576x288 screen (images keep their size,
+ * which a separate check rejects instead), border color, radius and padding to
+ * their maxima, and lists to 20 items. Not for extended layouts.
  */
-export function paintOrder(containers: readonly EvenHubContainer[]): EvenHubContainer[] {
-  const anyZ = containers.some((c) => c.zOrderIndex !== undefined);
-  if (anyZ) return [...containers].sort((a, b) => (a.zOrderIndex ?? 0) - (b.zOrderIndex ?? 0));
-  const images = containers.filter((c) => c.kind === "image");
-  const rest = containers.filter((c) => c.kind !== "image");
-  return [...images, ...rest];
+export function clampToStockLimits(page: EvenHubPage): void {
+  for (const c of page.containers) {
+    c.x = Math.min(c.x, STOCK_SCREEN_WIDTH);
+    c.y = Math.min(c.y, STOCK_SCREEN_HEIGHT);
+    if (c.kind === "image") continue;
+    c.width = Math.min(c.width, STOCK_SCREEN_WIDTH);
+    c.height = Math.min(c.height, STOCK_SCREEN_HEIGHT);
+    c.borderColor = Math.min(c.borderColor, STOCK_MAX_BORDER_COLOR);
+    c.borderRadius = Math.min(c.borderRadius, STOCK_MAX_BORDER_RADIUS);
+    c.paddingLength = Math.min(c.paddingLength, STOCK_MAX_PADDING);
+    if (c.kind === "list" && c.itemNames.length > STOCK_MAX_LIST_ITEMS) {
+      c.itemNames = c.itemNames.slice(0, STOCK_MAX_LIST_ITEMS);
+    }
+  }
 }
 
-/** The container that owns gesture events (exactly one per valid page). */
-export function eventCaptureContainer(page: EvenHubPage): EvenHubContainer | undefined {
-  return page.containers.find(
-    (container) => container.kind !== "image" && container.isEventCapture,
-  );
+/** The firmware's fixed protobuf arrays: more containers than this fail to decode. */
+const STOCK_MAX_LISTS = 4;
+const STOCK_MAX_TEXTS = 8;
+const STOCK_MAX_IMAGES = 4;
+
+/** EhStartUpPageCreateResult values for a page the firmware can't build. */
+export const PAGE_CREATE_INVALID = 1;
+export const PAGE_CREATE_OUT_OF_MEMORY = 3;
+
+/**
+ * Why the stock firmware would fail to build this page, with the create result
+ * the app gets, or null when it builds. Too many containers overflow the
+ * firmware's protobuf arrays, so decoding fails (it replies with the code the
+ * phone app maps to outOfMemory). An image container outside 20..288 x 20..144
+ * fails to create (invalid container).
+ */
+export function stockPageFailure(page: EvenHubPage): { code: number; reason: string } | null {
+  const count = (kind: EvenHubContainer["kind"]) => page.containers.filter((c) => c.kind === kind).length;
+  const [lists, texts, images] = [count("list"), count("text"), count("image")];
+  if (lists > STOCK_MAX_LISTS || texts > STOCK_MAX_TEXTS || images > STOCK_MAX_IMAGES) {
+    return {
+      code: PAGE_CREATE_OUT_OF_MEMORY,
+      reason: `${lists} list, ${texts} text and ${images} image containers (at most ${STOCK_MAX_LISTS}, ${STOCK_MAX_TEXTS} and ${STOCK_MAX_IMAGES})`,
+    };
+  }
+  for (const c of page.containers) {
+    if (c.kind === "image" && !inStockImageRange(c.width, c.height)) {
+      return { code: PAGE_CREATE_INVALID, reason: `image container ${JSON.stringify(c.name)} is ${c.width}x${c.height}, outside 20..288 x 20..144` };
+    }
+  }
+  return null;
+}
+
+/**
+ * Bottom-to-top paint order, as stock stacks its containers: the container
+ * list order (lists, texts, images), stably sorted by zOrderIndex (larger is
+ * closer to the front) only when every container has one and there are at
+ * least two. So without z-order, images are drawn over text.
+ */
+export function paintOrder(containers: readonly EvenHubContainer[]): EvenHubContainer[] {
+  const allHaveZ = containers.every((c) => c.zOrderIndex !== undefined);
+  if (!allHaveZ || containers.length < 2) return [...containers];
+  return [...containers].sort((a, b) => (a.zOrderIndex ?? 0) - (b.zOrderIndex ?? 0));
+}
+
+/**
+ * The container that owns gesture events. Stock binds the first list or text
+ * container with isEventCapture in paint order and ignores any later ones.
+ */
+export function eventCaptureContainer(page: EvenHubPage): EvenHubTextContainer | EvenHubListContainer | undefined {
+  for (const c of paintOrder(page.containers)) {
+    if (c.kind !== "image" && c.isEventCapture) return c;
+  }
+  return undefined;
+}
+
+/**
+ * The container stock resolves an id to: the first one with that id in paint
+ * order, whatever its kind, so an update aimed at a later container that
+ * shares the id never reaches it.
+ */
+export function containerById(page: EvenHubPage | null, id: number): EvenHubContainer | undefined {
+  return page ? paintOrder(page.containers).find((c) => c.id === id) : undefined;
 }

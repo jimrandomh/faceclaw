@@ -1,45 +1,35 @@
-// EvenHub text-container wrapping (app/graphics/lvgl-wrap.ts): pretext's
-// breaks, except that leading spaces survive at the start of the text and
-// after '\n' — apps indent with them to clear icons placed beside the text.
+// EvenHub text-container wrapping (app/graphics/lvgl-wrap.ts), against what
+// stock firmware 2.2.9.22 drew in the g2-firmware-emulator: spaces are kept
+// everywhere, including ones that overflow onto a soft-wrapped line.
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
 const { wrapLvglText } = require("../.test-build/app/graphics/lvgl-wrap.js");
 
-// Spaces are 4px like the stock 20px font; everything else 10px.
-const fixed = (cp) => (cp === 32 ? 4 : 10);
+// The stock 20px font's advances for these: H 12px, E 11px, space 5px.
+const ADVANCES = { H: 12, E: 11, " ": 5 };
+const advance = (cp) => ADVANCES[String.fromCodePoint(cp)] ?? 10;
 
-test("indentation after a newline is kept (Iris Pro's icon-clearing indent)", () => {
-  const content = " \n           R E C O R D\n           Conversation";
-  const lines = wrapLvglText(content, 248, fixed);
-  assert.deepEqual(lines, [" ", "           R E C O R D", "           Conversation"]);
+test("indentation after a newline and at the start is kept (Iris Pro's icon-clearing indent)", () => {
+  assert.deepEqual(wrapLvglText(" \n           R E C O R D", 248, advance), [" ", "           R E C O R D"]);
+  assert.deepEqual(wrapLvglText("AB\n    CD", 248, advance), ["AB", "    CD"]);
+  assert.deepEqual(wrapLvglText("    EF", 248, advance), ["    EF"]);
 });
 
-test("indentation at the very start of the text is kept", () => {
-  assert.deepEqual(wrapLvglText("      55°", 248, fixed), ["      55°"]);
+test("spaces that overflow a line start the next one (emulator Q3)", () => {
+  const text = "HHHHHHHH    EEEE";
+  assert.deepEqual(wrapLvglText(text, 100, advance), ["HHHHHHHH", "    EEEE"]);
+  assert.deepEqual(wrapLvglText(text, 110, advance), ["HHHHHHHH  ", "  EEEE"]);
+  assert.deepEqual(wrapLvglText(text, 120, advance), ["HHHHHHHH    ", "EEEE"]);
 });
 
-test("a soft-wrapped continuation line drops its leading spaces", () => {
-  // "aaaa" (40px) fits; the space after it overflows at width 40 and is
-  // discarded, and the next space would lead the continuation line.
-  assert.deepEqual(wrapLvglText("aaaa  bbbb", 40, fixed), ["aaaa", "bbbb"]);
-  // Wrapping at an earlier break opportunity.
-  assert.deepEqual(wrapLvglText("aa bb cc", 54, fixed), ["aa bb", "cc"]);
+test("a word that overflows wraps after the last space or hyphen", () => {
+  assert.deepEqual(wrapLvglText("HH EEEEEEEE", 100, advance), ["HH ", "EEEEEEEE"]);
+  assert.deepEqual(wrapLvglText("HH-EEEEEEEE", 100, advance), ["HH-", "EEEEEEEE"]);
 });
 
-test("unindented text breaks exactly where pretext's measureTextWrap says", async () => {
-  const pretext = await import("@evenrealities/pretext");
-  const advance = (a, b) => (b ? pretext.getTextWidth(String.fromCodePoint(a, b)) - pretext.getTextWidth(String.fromCodePoint(b)) : pretext.getTextWidth(String.fromCodePoint(a)));
-  const samples = [
-    "Market moving from feature flex to everyday integration",
-    "No one owns human, calm intelligence\nConversation likely becomes next differentiation layer",
-    "Supercalifragilisticexpialidocious-and-then-some words that will not fit on one line at all",
-    "short\n\nlines\nhere",
-  ];
-  for (const text of samples) {
-    for (let width = 40; width <= 560; width += 7) {
-      const ours = wrapLvglText(text, width, advance);
-      assert.equal(ours.length, pretext.measureTextWrap(text, width).lineCount, `${JSON.stringify(text)} at ${width}px`);
-    }
-  }
+test("a run with no break opportunity breaks before the overflowing character", () => {
+  assert.deepEqual(wrapLvglText("HHHHHHHHHH", 50, advance), ["HHHH", "HHHH", "HH"]);
+  // A character wider than the line still gets one to itself.
+  assert.deepEqual(wrapLvglText("HH", 5, advance), ["H", "H"]);
 });

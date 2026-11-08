@@ -57,6 +57,8 @@
     "../app/apps/microphones/name-guess.ts",
     "../app/apps/evenhub/containers.ts",
     "../app/apps/evenhub/layout-debug.ts",
+    "../app/apps/evenhub/image-pipeline.ts",
+    "../app/apps/evenhub/payload-validation.ts",
     "../app/apps/evenhub/list-menu.ts",
     "../app/apps/evenhub/device-status.ts",
     "../app/apps/evenhub/font-spec.ts",

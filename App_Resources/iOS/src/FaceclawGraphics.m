@@ -158,4 +158,26 @@
     CGImageRelease(image);
     return packet;
 }
++ (NSData *)rgbaPacketFromImageData:(NSData *)data {
+    if (!data.length) return nil;
+    CGImageSourceRef source = CGImageSourceCreateWithData((__bridge CFDataRef)data, NULL);
+    if (!source) return nil;
+    CGImageRef image = CGImageSourceCreateImageAtIndex(source, 0, NULL);
+    CFRelease(source);
+    if (!image) return nil;
+    size_t width = CGImageGetWidth(image), height = CGImageGetHeight(image);
+    if (width == 0 || height == 0 || width > 4096 || height > 4096) { CGImageRelease(image); return nil; }
+    uint8_t dimensions[] = { width & 255, (width >> 8) & 255, height & 255, (height >> 8) & 255 };
+    NSMutableData *packet = [NSMutableData dataWithBytes:dimensions length:4];
+    [packet increaseLengthBy:width * height * 4];
+    CGColorSpaceRef space = CGColorSpaceCreateDeviceRGB();
+    CGContextRef context = CGBitmapContextCreate((uint8_t *)packet.mutableBytes + 4, width, height, 8, width * 4, space,
+        kCGBitmapByteOrder32Big | (CGBitmapInfo)kCGImageAlphaPremultipliedLast);
+    CGColorSpaceRelease(space);
+    if (!context) { CGImageRelease(image); return nil; }
+    CGContextDrawImage(context, CGRectMake(0, 0, width, height), image);
+    CGContextRelease(context);
+    CGImageRelease(image);
+    return packet;
+}
 @end
