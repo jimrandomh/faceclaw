@@ -224,12 +224,12 @@
 				INFOPLIST_KEY_CFBundleDisplayName = Faceclaw;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
 				INFOPLIST_KEY_WKCompanionAppBundleIdentifier = "$(FACECLAW_IOS_BUNDLE_ID)";
-				INFOPLIST_KEY_WKRunsIndependentlyOfCompanionApp = YES;
+				INFOPLIST_KEY_WKRunsIndependentlyOfCompanionApp = NO;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = "$(FACECLAW_IOS_BUNDLE_ID).watchkitapp";
+				PRODUCT_BUNDLE_IDENTIFIER = "$(FACECLAW_IOS_BUNDLE_ID).watchremote";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -245,12 +245,12 @@
 				INFOPLIST_KEY_CFBundleDisplayName = Faceclaw;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
 				INFOPLIST_KEY_WKCompanionAppBundleIdentifier = "$(FACECLAW_IOS_BUNDLE_ID)";
-				INFOPLIST_KEY_WKRunsIndependentlyOfCompanionApp = YES;
+				INFOPLIST_KEY_WKRunsIndependentlyOfCompanionApp = NO;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = "$(FACECLAW_IOS_BUNDLE_ID).watchkitapp";
+				PRODUCT_BUNDLE_IDENTIFIER = "$(FACECLAW_IOS_BUNDLE_ID).watchremote";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -261,7 +261,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				GENERATE_INFOPLIST_FILE = YES;
-				PRODUCT_BUNDLE_IDENTIFIER = "$(FACECLAW_IOS_BUNDLE_ID).watchkitapp.uitests";
+				PRODUCT_BUNDLE_IDENTIFIER = "$(FACECLAW_IOS_BUNDLE_ID).watchremote.uitests";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = NO;
 				TEST_TARGET_NAME = Faceclaw;
@@ -272,7 +272,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				GENERATE_INFOPLIST_FILE = YES;
-				PRODUCT_BUNDLE_IDENTIFIER = "$(FACECLAW_IOS_BUNDLE_ID).watchkitapp.uitests";
+				PRODUCT_BUNDLE_IDENTIFIER = "$(FACECLAW_IOS_BUNDLE_ID).watchremote.uitests";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = NO;
 				TEST_TARGET_NAME = Faceclaw;

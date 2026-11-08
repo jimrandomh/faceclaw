@@ -26,10 +26,14 @@ function embedEnabled() {
 /** Xcode's own builds of the watch project read this too, so they sign the same way. */
 function writeLocalConfig() {
   const version = /FACECLAW_VERSION = "(.*)"/.exec(fs.readFileSync(path.join(root, 'app/version.ts'), 'utf8'))[1];
+  const build = execFileSync('/usr/libexec/PlistBuddy', [
+    '-c', 'Print :CFBundleVersion', path.join(root, 'App_Resources/iOS/Info.plist'),
+  ], { encoding: 'utf8' }).trim();
   const lines = [
     `FACECLAW_IOS_BUNDLE_ID = ${process.env.IOS_BUNDLE_ID || 'com.faceclaw.app'}`,
     // An embedded watch app has to carry the phone app's version.
     `MARKETING_VERSION = ${version}`,
+    `CURRENT_PROJECT_VERSION = ${build}`,
   ];
   if (process.env.IOS_TEAM_ID) lines.push(`DEVELOPMENT_TEAM = ${process.env.IOS_TEAM_ID}`);
   fs.writeFileSync(path.join(root, 'apple-watch/Local.xcconfig'), `${lines.join('\n')}\n`);

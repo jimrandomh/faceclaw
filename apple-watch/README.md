@@ -112,8 +112,36 @@ xcrun devicectl device capture screenshot --device <watch-udid> --destination wa
 
 A hook (`scripts/apple-watch-embed.cjs`) adds the watch project to the generated iOS
 project after each prepare, and takes it back out if the setting is removed. The
-bundle ID follows `IOS_BUNDLE_ID` (the watch app's is `<that>.watchkitapp`) and the
+bundle ID follows `IOS_BUNDLE_ID` (the watch app's is `<that>.watchremote`) and the
 version follows `app/version.ts`.
+
+### TestFlight releases
+
+Build the iPhone release with embedding enabled:
+
+```bash
+FACECLAW_EMBED_WATCH=1 npm run build:ios -- --release
+```
+
+Keep `FACECLAW_EMBED_WATCH=1` in `build_paths.sh` if that file sets the option.
+Distribute the resulting `platforms/ios/build/Release-iphoneos/faceclaw.xcarchive`
+through Xcode Organizer using App Store Connect. The watch companion travels inside
+the iOS archive; do not upload the standalone watch development build.
+
+Before uploading, check that `Products/Applications/faceclaw.app/Watch/Faceclaw.app`
+exists in the archive. Its bundle ID must be `com.faceclaw.app.watchremote` for the
+public release, with `WKCompanionAppBundleIdentifier` set to `com.faceclaw.app`.
+Both apps must have the same version and build number; the hook copies the build
+number from `App_Resources/iOS/Info.plist`. The watch app is dependent on the phone
+app, and includes its own privacy manifest for preferences and gesture timing.
+
+Include UUID-matching debug symbols for both apps and their embedded frameworks in
+the archive's `dSYMs` directory. Name the watch symbol bundle
+`FaceclawWatch.app.dSYM` when copying it from `Release-watchos/Faceclaw.app.dSYM`,
+so it doesn't overwrite the phone's `faceclaw.app.dSYM` on a case-insensitive disk.
+After Apple processes the upload, verify that
+TestFlight's build metadata recognizes the Apple Watch companion before adding it
+to Public Beta.
 
 ## Testing
 

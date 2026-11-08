@@ -199,7 +199,7 @@ do {
     state.battery = 50
     state.caseBattery = 64
     state.caseCharging = true
-    check(padLine(state: state, link: up) == StatusLine(text: "Charging · G2 50%", tone: .busy, detail: "Case 64% ⚡"), "charging")
+    check(padLine(state: state, link: up) == StatusLine(text: "Charging: G2 50%", tone: .busy, detail: "Case 64% ⚡"), "charging")
 
     var off = PhoneState()
     check(padLine(state: off, link: up).text == "Disconnected", "disconnected")
