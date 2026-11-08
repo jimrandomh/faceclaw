@@ -39,6 +39,7 @@
     "../app/g2/glance-state.ts",
     "../app/ui/shell/notification-modal-queue.ts",
     "../app/ui/shell/notification-popup-delay.ts",
+    "../app/ui/shell/notification-popup-timeout.ts",
     "../app/apps/glanceboard/layout.ts",
     "../app/apps/files/video-layout.ts",
     "../app/g2/pairing-candidates.ts",

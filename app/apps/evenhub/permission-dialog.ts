@@ -20,11 +20,11 @@ const PERM_GAP = 4;
  * Cancel (or double-click) backs out. A privacy-policy-only app still reaches
  * this dialog so the user can review the policy before allowing first run.
  *
- * When the list overflows the viewport the dialog scrolls: scroll events move
- * through the content row by row, and only once the bottom is fully visible do
- * further scrolls move the action selection. The actions are inert until then
- * (a click just scrolls), so the user can't Allow without having had the whole
- * list on screen.
+ * When the list overflows the viewport the dialog scrolls a page at a time,
+ * keeping one line of overlap (the last line of one page is the first of the
+ * next), and only once the bottom is fully visible do further scrolls move the
+ * action selection. The actions are inert until then (a click just pages
+ * down), so the user can't Allow without having had the whole list on screen.
  */
 export class EvenHubPermissionDialogLayer implements Layer {
   /** Floats in front of the window content, like the context menus. */
@@ -35,6 +35,9 @@ export class EvenHubPermissionDialogLayer implements Layer {
   private firstRow = 0;
   /** Scroll position at which the last row is fully visible; set by paint. */
   private maxFirstRow = 0;
+  /** Heights of the content rows and of the viewport they scroll in, as last painted (for paging). */
+  private rowHeights: number[] = [];
+  private visibleHeight = 0;
   private resolved = false;
 
   constructor(
@@ -125,6 +128,8 @@ export class EvenHubPermissionDialogLayer implements Layer {
     }
     this.maxFirstRow = maxFirstRow;
     this.firstRow = Math.max(0, Math.min(this.firstRow, maxFirstRow));
+    this.rowHeights = rows.map((row) => row.height);
+    this.visibleHeight = visibleHeight;
 
     // Fill 1 (transparent color key is 0), outline for the dialog edge.
     image.fillRoundedRect(dialogX, dialogY, dialogWidth, height, 1);
@@ -159,19 +164,19 @@ export class EvenHubPermissionDialogLayer implements Layer {
         if (this.atBottom() && this.selectedIndex > 0) {
           this.selectedIndex -= 1;
         } else if (this.firstRow > 0) {
-          this.firstRow -= 1;
+          this.pageUp();
         }
         return;
       case "scroll-down":
         if (!this.atBottom()) {
-          this.firstRow += 1;
+          this.pageDown();
         } else {
           this.selectedIndex = Math.min(actions.length - 1, this.selectedIndex + 1);
         }
         return;
       case "click":
         if (!this.atBottom()) {
-          this.firstRow += 1;
+          this.pageDown();
           return;
         }
         if (actions[this.selectedIndex] === "Privacy policy") {
@@ -186,6 +191,29 @@ export class EvenHubPermissionDialogLayer implements Layer {
       default:
         return;
     }
+  }
+
+  /** Scroll so the last fully visible row becomes the first (one row of overlap). */
+  private pageDown(): void {
+    let y = 0;
+    let lastVisible = this.firstRow;
+    for (let index = this.firstRow; index < this.rowHeights.length; index++) {
+      y += this.rowHeights[index]!;
+      if (y > this.visibleHeight) break;
+      lastVisible = index;
+    }
+    this.firstRow = Math.min(this.maxFirstRow, Math.max(this.firstRow + 1, lastVisible));
+  }
+
+  /** Scroll so the current first row becomes the last fully visible one (one row of overlap). */
+  private pageUp(): void {
+    let first = this.firstRow;
+    let y = this.rowHeights[first] ?? 0;
+    while (first > 0 && y + this.rowHeights[first - 1]! <= this.visibleHeight) {
+      first -= 1;
+      y += this.rowHeights[first]!;
+    }
+    this.firstRow = Math.max(0, Math.min(this.firstRow - 1, first));
   }
 
   onRemoved(): void {

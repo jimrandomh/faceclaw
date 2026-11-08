@@ -45,8 +45,11 @@ import {
   veniceWebSearchSetting,
   batteryIndicatorSettingsKey,
   brightnessSetting,
+  newNotificationDisplaySetting,
+  newNotificationDisplayTimeoutMs,
   onAnySettingChanged,
   openAiApiKeySetting,
+  shouldPopUpNewNotification,
   statusBarPositionSetting,
   statusBarVisibilitySetting,
   timeFormatSetting,
@@ -65,8 +68,8 @@ import {
 } from "./chrome-layer";
 import { ShellModalLayer } from "./modal-layer";
 import { NotificationModalQueue } from "./notification-modal-queue";
+import { NotificationPopupTimeout } from "./notification-popup-timeout";
 import { ALL_NOTIFICATIONS, readActiveNotifications } from "../../native/notification-icons";
-import { shouldShowNotificationOnGlasses } from "../../native/notification-sources";
 import { ToolDebugMenuLayer } from "./tool-debug-layer";
 import type { InProcessWindow } from "./in-process-window";
 import { BrightnessPickerLayer } from "./brightness-picker-layer";
@@ -483,7 +486,7 @@ class Shell {
     isAvailable: (notificationKey) => {
       if (this.appNotifications.has(notificationKey)) return true;
       const notification = readActiveNotifications(ALL_NOTIFICATIONS).find((item) => item.key === notificationKey);
-      return !!notification && shouldShowNotificationOnGlasses(notification.packageName);
+      return !!notification && shouldPopUpNewNotification(notification.packageName);
     },
     sleep: () => this.sleep(),
   });
@@ -929,18 +932,36 @@ class Shell {
     const content = appNotification
       ? null
       : new SingleNotificationLayer(notificationKey, { origin: "new-notification-modal", onClose: close });
+    // A phone notification's popup closes once left untouched for the
+    // "Display new notifications" time, as if closed by hand: the notification
+    // stays on the phone and in the status bar. An app's own notification
+    // (e.g. a Nightscout alert) is nowhere else to be found, so it stays up.
+    const timeout = new NotificationPopupTimeout(
+      appNotification ? null : newNotificationDisplayTimeoutMs(newNotificationDisplaySetting.get()),
+      () => {
+        // Something over the popup (a voice dialog, the system menu) is in
+        // use; count that as interaction rather than closing underneath it.
+        if (this.stack.topMatches((layer) => layer === popup.modal)) close();
+        else timeout.restart();
+      },
+    );
     const popup: NotificationPopup = {
       content,
       modal: new ShellModalLayer(
         appNotification ? appNotification.createLayer(close) : content!,
         this.config.actions,
-        () => {
-          this.appNotifications.delete(notificationKey);
-          this.notificationModals.removed(popup, this.screenOn);
+        {
+          removed: () => {
+            timeout.stop();
+            this.appNotifications.delete(notificationKey);
+            this.notificationModals.removed(popup, this.screenOn);
+          },
+          input: () => timeout.restart(),
         },
       ),
     };
     this.stack.push(popup.modal);
+    timeout.restart();
     return popup;
   }
 

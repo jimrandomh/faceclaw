@@ -1,7 +1,7 @@
 import { getDefaultSmallFont } from "../../graphics/ui-fonts";
 import { GrayImage, type UiFont } from "../../graphics/image";
 import { truncateText, wrapText } from "../../graphics/textwrap";
-import { GESTURE_CLICK, type InputEvent } from "../../ui/gestures";
+import { directionalFallback, GESTURE_CLICK, isDirectionalInput, type InputEvent } from "../../ui/gestures";
 import { type Layer, type LayerActions, type LayerContext, type LayerStack } from "../../ui/layers";
 import { drawSelectionHighlight, type MenuItem } from "../../ui/menu";
 import { Menu } from "../../ui/menu-core";
@@ -55,7 +55,32 @@ type StoreRow =
   /** The Search tab's first row: shows the query and opens the phone editor. */
   | { kind: "search-query" }
   /** A registry entry whose package is gone and which the store no longer lists. */
-  | { kind: "orphan"; update: EvenHubAppUpdate };
+  | { kind: "orphan"; update: EvenHubAppUpdate }
+  /** The Updates tab's first row while any update is installable; `busy` while Update All runs. */
+  | { kind: "update-all"; count: number; busy: boolean };
+
+type AppRow = Extract<StoreRow, { kind: "app" }>;
+
+/** An Updates row that installing the store's version would satisfy. */
+function isUpdatableRow(row: StoreRow): row is AppRow {
+  return row.kind === "app" && row.update !== undefined;
+}
+
+/** An Updates row for one installed app (not the Update All row). */
+function isInstalledAppRow(row: StoreRow): boolean {
+  return row.kind === "app" || row.kind === "orphan";
+}
+
+function rowPackageId(row: StoreRow): string | undefined {
+  switch (row.kind) {
+    case "app":
+      return row.app.packageId;
+    case "orphan":
+      return row.update.installed.packageId;
+    default:
+      return undefined;
+  }
+}
 
 type TabState = {
   rows: StoreRow[];
@@ -118,10 +143,13 @@ export type EvenHubStoreLayerOptions = {
  * The EvenHub storefront: Top (leaderboard), New (by first publication),
  * Search, and Updates (installed apps that are stale or whose package is
  * missing). The tab row is its own focus level above the list: double-click
- * in the list focuses the tabs, scrolling there switches tabs, and a click
- * returns to the list.
+ * in the list focuses the tabs, scrolling (or a watch swipe in any direction)
+ * there switches tabs, and a click returns to the list.
  */
 export class EvenHubStoreLayer implements Layer {
+  /** Swipes left/right switch tabs on the tab strip; elsewhere they get the usual fallback. */
+  readonly acceptsDirectional = true;
+
   private readonly tabs: Record<StoreTab, TabState> = {
     top: emptyTab(),
     new: emptyTab(),
@@ -229,7 +257,7 @@ export class EvenHubStoreLayer implements Layer {
     const label = TABS.find((entry) => entry.id === tab)!.label;
     if (tab !== "updates") return label;
     const updates = this.tabs.updates;
-    const count = updates.rows.filter((row) => row.kind !== "search-query").length;
+    const count = updates.rows.filter(isInstalledAppRow).length;
     return updates.loaded && count > 0 ? `${label} (${count})` : label;
   }
 
@@ -245,9 +273,11 @@ export class EvenHubStoreLayer implements Layer {
         if (!state.query) return "Search public apps";
         return results === 1 ? `1 result for "${state.query}"` : `${results} results for "${state.query}"`;
       }
-      case "updates":
+      case "updates": {
         if (!state.loaded) return "Installed apps with newer versions";
-        return count === 0 ? "All installed apps are up to date" : count === 1 ? "1 app needs attention" : `${count} apps need attention`;
+        const apps = state.rows.filter(isInstalledAppRow).length;
+        return apps === 0 ? "All installed apps are up to date" : apps === 1 ? "1 app needs attention" : `${apps} apps need attention`;
+      }
     }
   }
 
@@ -263,7 +293,10 @@ export class EvenHubStoreLayer implements Layer {
     }
   }
 
-  async handleInput(event: InputEvent, ctx: LayerContext): Promise<void> {
+  async handleInput(rawEvent: InputEvent, ctx: LayerContext): Promise<void> {
+    const tabSwipe = !this.showingLogin && this.focus === "tabs"
+      && (rawEvent.type === "swipe-left" || rawEvent.type === "swipe-right");
+    const event = isDirectionalInput(rawEvent) && !tabSwipe ? directionalFallback(rawEvent) : rawEvent;
     if (this.showingLogin) {
       if (event.type === "click" && !this.loginBusy) {
         this.openCredentialEditor(ctx);
@@ -301,9 +334,11 @@ export class EvenHubStoreLayer implements Layer {
     const index = TABS.findIndex((tab) => tab.id === this.activeTab);
     switch (event.type) {
       case "scroll-up":
+      case "swipe-left":
         this.switchTab(ctx, TABS[Math.max(0, index - 1)]!.id);
         return;
       case "scroll-down":
+      case "swipe-right":
         this.switchTab(ctx, TABS[Math.min(TABS.length - 1, index + 1)]!.id);
         return;
       case "click":
@@ -332,6 +367,9 @@ export class EvenHubStoreLayer implements Layer {
     switch (row.kind) {
       case "search-query":
         this.openSearchEditor(ctx);
+        return;
+      case "update-all":
+        void this.updateAll(ctx);
         return;
       case "orphan": {
         // Nothing can be reinstalled; the only useful action is to drop the
@@ -532,8 +570,7 @@ export class EvenHubStoreLayer implements Layer {
       const rows: StoreRow[] = updates.map((update) =>
         update.latest ? { kind: "app", app: update.latest, update } : { kind: "orphan", update },
       );
-      state.rows = rows;
-      state.menu.setItems(rows, 0);
+      this.setUpdateRows(state, rows, 0);
       state.menu.scrollTop = 0;
       state.status = "";
       state.exhausted = true;
@@ -548,10 +585,20 @@ export class EvenHubStoreLayer implements Layer {
     }
   }
 
-  private updatableRows(): Extract<StoreRow, { kind: "app" }>[] {
-    return this.tabs.updates.rows.filter(
-      (row): row is Extract<StoreRow, { kind: "app" }> => row.kind === "app" && row.update !== undefined,
-    );
+  private updatableRows(): AppRow[] {
+    return this.tabs.updates.rows.filter(isUpdatableRow);
+  }
+
+  /**
+   * Replace the Updates rows, putting an Update All row on top while any of
+   * them can be installed (and dropping it once none can).
+   */
+  private setUpdateRows(state: TabState, entries: readonly StoreRow[], selectedIndex?: number): void {
+    const rows = entries.filter(isInstalledAppRow);
+    const count = rows.filter(isUpdatableRow).length;
+    if (count > 0) rows.unshift({ kind: "update-all", count, busy: this.updatingAll });
+    state.rows = rows;
+    state.menu.setItems(rows, selectedIndex);
   }
 
   /** Install every pending update in turn; a declined permission dialog skips that app. */
@@ -559,6 +606,7 @@ export class EvenHubStoreLayer implements Layer {
     if (this.updatingAll) return;
     this.updatingAll = true;
     const state = this.tabs.updates;
+    this.setUpdateRows(state, state.rows);
     const pending = this.updatableRows();
     let installed = 0;
     const failures: string[] = [];
@@ -593,6 +641,7 @@ export class EvenHubStoreLayer implements Layer {
         : installed === 1 ? "Updated 1 app." : `Updated ${installed} apps.`;
     } finally {
       this.updatingAll = false;
+      this.setUpdateRows(this.tabs.updates, this.tabs.updates.rows);
       if (!this.closed) ctx.actions.requestRender();
     }
   }
@@ -609,10 +658,7 @@ export class EvenHubStoreLayer implements Layer {
 
   private removeUpdateRow(packageId: string): void {
     const state = this.tabs.updates;
-    state.rows = state.rows.filter((row) =>
-      row.kind === "search-query" ? true : row.kind === "app" ? row.app.packageId !== packageId : row.update.installed.packageId !== packageId,
-    );
-    state.menu.setItems(state.rows);
+    this.setUpdateRows(state, state.rows.filter((row) => rowPackageId(row) !== packageId));
   }
 
   // ---- login and phone editors --------------------------------------------
@@ -751,6 +797,14 @@ function rowText(row: StoreRow): { title: string; detail: string; titleValue: nu
         titleValue: 200,
       };
     }
+    case "update-all":
+      return {
+        title: row.busy ? "Updating..." : "Update All",
+        detail: row.busy
+          ? "Installing updates; progress is shown above."
+          : row.count === 1 ? "Install the 1 available update" : `Install all ${row.count} available updates`,
+        titleValue: row.busy ? 150 : 230,
+      };
     case "orphan":
       return {
         title: row.update.installed.name,

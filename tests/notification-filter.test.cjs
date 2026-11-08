@@ -23,6 +23,41 @@ function store(settings = new Map()) {
 }
 const mail = { packageName: 'com.mail', appName: 'Mail' };
 
+/** dashboard-settings.ts over the same in-memory store, with `prefs` as its notification-sources. */
+function dashboardSettings(settings, prefs) {
+  return evaluate(source('app/ui/dashboard-settings.ts'), (id) => {
+    if (id.includes('settings-store')) return {
+      onSettingsStoreChanged() {}, getStringSetting: (key, fallback) => settings.get(key) ?? fallback,
+      setStringSetting: (key, value) => settings.set(key, value),
+      getBooleanSetting: (key, fallback) => settings.get(key) ?? fallback, setBooleanSetting: (key, value) => settings.set(key, value),
+    };
+    if (id.includes('notification-sources')) return prefs;
+    if (id.includes('brightness-curve')) return require('../.test-build/app/g2/brightness-curve.js');
+    if (id.includes('animation-speed')) return require('../.test-build/app/ui/animation-speed.js');
+    return { Layer: class {}, ASSISTANT_MODEL_CHOICES: [] };
+  }, { global: { isIOS: false } });
+}
+
+test('"Display new notifications" defaults to 15s; Off stops every popup, the filter still mutes single apps', () => {
+  const settings = new Map();
+  const prefs = store(settings);
+  const api = dashboardSettings(settings, prefs);
+  assert.equal(api.newNotificationDisplaySetting.get(), '15s');
+  // Array.from: the module's arrays come from its own VM realm.
+  const values = Array.from(api.newNotificationDisplaySetting.values);
+  assert.deepEqual(values.map((value) => api.newNotificationDisplaySetting.displayValue(value)),
+    ['Off', 'Until dismissed', '5s', '15s', '1min']);
+  assert.deepEqual(values.map(api.newNotificationDisplayTimeoutMs), [null, null, 5_000, 15_000, 60_000]);
+  assert.equal(api.shouldPopUpNewNotification(mail.packageName), true);
+  prefs.setNotificationSourceEnabled(mail, false);
+  assert.equal(api.shouldPopUpNewNotification(mail.packageName), false);
+  assert.equal(api.shouldPopUpNewNotification('com.other'), true);
+  api.newNotificationDisplaySetting.set('off');
+  assert.equal(api.shouldPopUpNewNotification('com.other'), false);
+  api.newNotificationDisplaySetting.set('until-dismissed');
+  assert.equal(api.shouldPopUpNewNotification('com.other'), true);
+});
+
 test('sources default on and retain per-package choices and names across restart and rediscovery', () => {
   const settings = new Map();
   let prefs = store(settings);
@@ -194,14 +229,16 @@ test('controller filters before waking or opening a popup, and still refreshes t
   const members = ['handleAndroidNotificationPosted', 'handleAndroidNotificationRemoved', 'popUpAndroidNotification']
     .map((name) => controller.members.find((node) => node.name?.getText(file) === name).getText(file));
   const { NotificationPopupDelay, notificationPopupDelayMs } = require('../.test-build/app/ui/shell/notification-popup-delay.js');
-  const prefs = store();
+  const settings = new Map();
+  const prefs = store(settings);
+  const { newNotificationDisplaySetting, shouldPopUpNewNotification } = dashboardSettings(settings, prefs);
   let active = [{ ...mail, key: 'key' }];
   let wakes = 0, popups = 0, renders = 0;
   const removed = [];
   const { Harness } = evaluate(`export class Harness { ${members.join('\n')} }`, null, {
     ALL_NOTIFICATIONS: 0x7fffffff,
     readActiveNotifications: () => active,
-    shouldShowNotificationOnGlasses: prefs.shouldShowNotificationOnGlasses,
+    shouldPopUpNewNotification,
     notificationPopupDelayMs,
     shell: {
       isScreenOn: () => false,
@@ -252,5 +289,17 @@ test('controller filters before waking or opening a popup, and still refreshes t
   instance.handleAndroidNotificationPosted('key');
   prefs.setNotificationSourceEnabled(mail, false);
   elapse();
+  assert.equal(popups, 1);
+
+  // "Display new notifications: Off" holds back every app's popup, also once the delay is over.
+  prefs.setNotificationSourceEnabled(mail, true);
+  newNotificationDisplaySetting.set('off');
+  instance.handleAndroidNotificationPosted('key');
+  elapse();
+  newNotificationDisplaySetting.set('15s');
+  instance.handleAndroidNotificationPosted('key');
+  newNotificationDisplaySetting.set('off');
+  elapse();
+  assert.equal(wakes, 1);
   assert.equal(popups, 1);
 });

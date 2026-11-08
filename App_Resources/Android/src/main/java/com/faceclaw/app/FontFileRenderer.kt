@@ -167,6 +167,7 @@ class FontFileRenderer private constructor() {
          *   [width u16][height u16]
          *   [width*height coverage bytes, gamma-mapped]
          * An ink-free glyph (space) has width = height = 0 but a valid advance.
+         * A color glyph (emoji) carries its ColorGlyphArt shade as its coverage.
          * Empty array when the font cannot be loaded or the render fails.
          */
         @JvmStatic
@@ -196,11 +197,16 @@ class FontFileRenderer private constructor() {
                 }
                 val penX = pad - bounds.left
                 val baselineY = pad - bounds.top
-                val bitmap = Bitmap.createBitmap(bw, bh, Bitmap.Config.ALPHA_8)
+                // Drawn in color: an emoji the system fallback supplies from a color font
+                // would keep only its silhouette in an alpha-only bitmap. ColorGlyphArt shades
+                // color glyphs and passes white ones through as their alpha.
+                val bitmap = Bitmap.createBitmap(bw, bh, Bitmap.Config.ARGB_8888)
                 val canvas = Canvas(bitmap)
                 canvas.drawText(text, penX.toFloat(), baselineY.toFloat(), paint)
-                val pixels = alpha8Pixels(bitmap, bw, bh)
+                val argb = IntArray(bw * bh)
+                bitmap.getPixels(argb, 0, bw, 0, 0, bw, bh)
                 bitmap.recycle()
+                val pixels = ColorGlyphArt.coverage(argb)
 
                 // Trim to the tight ink box; bearing/inkTop become pen- and
                 // line-relative inside the shared packer.

@@ -17,6 +17,8 @@ const setting = (initial = '') => {
 
 class AuthError extends Error {}
 
+const gestures = loader({}, {})('app/ui/gestures.ts');
+
 /**
  * Load the store layer, by default with a signed-out account and no stored
  * credentials. `api` overrides evenHubApi methods; text the layer paints is
@@ -34,7 +36,7 @@ const loadStoreLayer = ({ configured = false, api = {} } = {}) => {
     '../../graphics/image': { GrayImage: class { drawText(_f, _x, _y, text) { drawn.push(text); } fillRect() {} } },
     '../../graphics/textwrap': { truncateText: (_f, text) => text, wrapText: (_f, text) => [text] },
     '../../util/numeric-util': { clamp: (v, lo, hi) => Math.min(hi, Math.max(lo, v)) },
-    '../../ui/gestures': { GESTURE_CLICK: 'click' },
+    '../../ui/gestures': { ...gestures, GESTURE_CLICK: 'click' },
     '../../ui/menu': { drawSelectionHighlight() {} },
     '../../ui/menu-core': require('../.test-build/app/ui/menu-core.js'),
     '../../ui/shell/shell': { shell: { yieldFocusToSidebar() {} } },
