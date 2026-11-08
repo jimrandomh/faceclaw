@@ -17,6 +17,7 @@ import {
   type AssistantModel,
 } from "~/assistant/models";
 import { isLocalModelReady } from "../native/local-llm";
+import { shouldShowNotificationOnGlasses } from "../native/notification-sources";
 import { normalizeWhisperServerUrl } from "../native/whisper-server-stt";
 import { normalizeOpenAiCompatibleUrl } from "../native/openai-chat";
 import { isValidSpotifyClientId, SPOTIFY_CLIENT_ID_KEY } from "../native/spotify-auth";
@@ -40,6 +41,8 @@ export type TimeFormat = "24h" | "12h";
 export type TemperatureUnit = "fahrenheit" | "celsius";
 export type DistanceUnit = "miles" | "kilometers";
 export type ScreenTimeoutSetting = "15s" | "30s" | "1m" | "3m" | "never";
+/** Whether new phone notifications pop up on the glasses, and for how long without interaction. */
+export type NewNotificationDisplay = "off" | "until-dismissed" | "5s" | "15s" | "1m";
 // Auto runs Faceclaw's light curve. Numeric values use the calibrated firmware
 // scale, clamped to 2–100; 2 is also the endpoint for screen fades.
 export const BRIGHTNESS_VALUES = ["auto", "2", "10", "20", "30", "40", "50", "60", "70", "80", "90", "100"] as const;
@@ -662,6 +665,23 @@ export const screenTimeoutSetting = new ConfigSettingEnum<ScreenTimeoutSetting>(
   formatValue: screenTimeoutLabel,
   description: "How long the display stays on after the last input before turning itself off. \"Never\" keeps it on until turned off manually.",
 });
+
+export const newNotificationDisplaySetting = new ConfigSettingEnum<NewNotificationDisplay>({
+  id: "new-notification-display",
+  label: "Display new notifications",
+  storageKey: "notifications.newNotificationDisplay",
+  defaultValue: "15s",
+  values: ["off", "until-dismissed", "5s", "15s", "1m"],
+  formatValue: newNotificationDisplayLabel,
+  description:
+    "Pop up new phone notifications on the glasses. A timed popup closes once left untouched that long; " +
+    "the notification stays on the phone and in the status bar.",
+});
+
+/** Whether a newly posted phone notification from this app pops up on the glasses (the global setting, then the app's filter toggle). */
+export function shouldPopUpNewNotification(packageName: string): boolean {
+  return newNotificationDisplaySetting.get() !== "off" && shouldShowNotificationOnGlasses(packageName);
+}
 
 export const lockScreenEnabledSetting = new ConfigSettingBoolean({
   id: "lock-screen-enabled",
@@ -1568,6 +1588,34 @@ export function screenTimeoutSettingToMs(value: ScreenTimeoutSetting): number | 
       return 180_000;
     case "never":
       return null;
+  }
+}
+
+/** How long an untouched new-notification popup stays up; null keeps it until dismissed (and for "off", which never opens one). */
+export function newNotificationDisplayTimeoutMs(value: NewNotificationDisplay): number | null {
+  switch (value) {
+    case "5s":
+      return 5_000;
+    case "15s":
+      return 15_000;
+    case "1m":
+      return 60_000;
+    case "off":
+    case "until-dismissed":
+      return null;
+  }
+}
+
+export function newNotificationDisplayLabel(value: NewNotificationDisplay): string {
+  switch (value) {
+    case "off":
+      return "Off";
+    case "until-dismissed":
+      return "Until dismissed";
+    case "1m":
+      return "1min";
+    default:
+      return value;
   }
 }
 

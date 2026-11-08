@@ -78,6 +78,7 @@ import {
   firmwareDebugFlagsSetting,
   lockScreenEnabledSetting,
   menuAnimationSetting,
+  newNotificationDisplaySetting,
   saveVoiceRecordingsSetting,
   showBleBandwidthSetting,
   suspendEvenHubWhenScreenOffSetting,
@@ -100,8 +101,12 @@ import {
 import { wearBridge } from "../../native/wear-bridge";
 import { openSettingsSubMenu, SettingsPanelLayer, type SettingsSection } from "./settings-panel";
 import { uiFontPickerMenuItem } from "../font-picker";
+import { NotificationFilterLayer } from "../notification-filter";
 import { compatibleModelDiscoveryMenuItem } from "../openai-compatible-model-picker";
 import { isVeniceApiBaseUrl } from "../../native/openai-chat";
+
+/** The Settings section the Notifications app's "Settings" menu item opens. */
+export const NOTIFICATIONS_SETTINGS_SECTION = "Notifications";
 
 /** The Settings app's master-detail panel (sections on the left, contents on the right). */
 export function createSettingsPanelLayer(): SettingsPanelLayer {
@@ -137,6 +142,14 @@ function settingsSections(): SettingsSection[] {
       get items() {
         return customizationItems();
       },
+    },
+    {
+      // Also opened from the Notifications app's menu (deep link by label).
+      label: NOTIFICATIONS_SETTINGS_SECTION,
+      items: [
+        enumSettingMenuItem(newNotificationDisplaySetting),
+        notificationFilterMenuItem(),
+      ],
     },
     {
       label: "Voice",
@@ -332,6 +345,17 @@ function customizationRows(): () => MenuItem[] {
         return sideRows;
     }
   };
+}
+
+/** Notifications > Notification filter: per-app toggles for which notifications pop up. */
+function notificationFilterMenuItem(): MenuItem {
+  return submenuItem(
+    "Notification filter",
+    (ctx) => {
+      ctx.stack.push(new NotificationFilterLayer());
+    },
+    { description: "Choose which apps' new notifications pop up on the glasses. All of them still appear in the Notifications app." },
+  );
 }
 
 function autoBrightnessMenuItem(): MenuItem {

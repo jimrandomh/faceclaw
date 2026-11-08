@@ -73,6 +73,7 @@ function settingsEnv(initialUrl = '', initialModel = 'openai-compatible') {
       openSettingsSubMenu() {},
     },
     '../font-picker': { uiFontPickerMenuItem: () => ({ label: 'Font' }) },
+    '../notification-filter': { NotificationFilterLayer: class {} },
     '../openai-compatible-model-picker': {
       compatibleModelDiscoveryMenuItem: () => ({ label: 'Discover models' }),
     },

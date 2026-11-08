@@ -27,7 +27,7 @@ export function notificationPopupDelayMs(notification: { foregroundService?: boo
 /** Runs `run` after `delayMs`; returns a function that cancels it. */
 export type ScheduleFn = (run: () => void, delayMs: number) => () => void;
 
-const scheduleTimeout: ScheduleFn = (run, delayMs) => {
+export const scheduleTimeout: ScheduleFn = (run, delayMs) => {
   const timer = setTimeout(run, delayMs);
   return () => clearTimeout(timer);
 };

@@ -40,12 +40,21 @@ export function modalRect(): { x: number; y: number; width: number; height: numb
 export class ShellModalLayer implements Layer {
   private readonly stack: LayerStack;
 
-  constructor(baseLayer: Layer, actions: LayerActions, private readonly removed?: () => void) {
+  constructor(
+    baseLayer: Layer,
+    actions: LayerActions,
+    private readonly hooks: {
+      /** The modal left the shell stack, however it went. */
+      removed?: () => void;
+      /** Input reached the modal (before its inner stack handles it). */
+      input?: (event: InputEvent) => void;
+    } = {},
+  ) {
     this.stack = new LayerStack(baseLayer, actions, modalInterior());
   }
 
   onRemoved(): void {
-    this.removed?.();
+    this.hooks.removed?.();
   }
 
   paint(_ctx: LayerContext, paintBelow: PaintBelow): GrayImage {
@@ -73,6 +82,7 @@ export class ShellModalLayer implements Layer {
   }
 
   async handleInput(event: InputEvent, _ctx: LayerContext): Promise<void> {
+    this.hooks.input?.(event);
     await this.stack.handleInput(event);
   }
 }

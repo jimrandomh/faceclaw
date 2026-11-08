@@ -16,7 +16,6 @@ import { mediaControllerBridge } from "../native/media-controller";
 import { nightscoutBridge } from "../native/nightscout-bridge";
 import { weatherBridge } from "../native/weather";
 import { ALL_NOTIFICATIONS, onAndroidNotificationPosted, onAndroidNotificationRemoved, readActiveNotifications } from "../native/notification-icons";
-import { shouldShowNotificationOnGlasses } from "../native/notification-sources";
 import { watchNotificationListenerBinding } from "../native/notification-access";
 import { openEvenAppSettings, readEvenAppNotificationState } from "../native/even-app-conflict";
 import { defaultRingName, setGlassesRingLink } from "../native/ring-status";
@@ -78,7 +77,7 @@ import { loadPersistedOpenApps, savePersistedOpenApps } from "../ui/shell/open-a
 import { appViewportRect, isOnSwitcherEdge, screenHeight, screenWidth, sidebarStripVisible, type ScreenRect, type WindowHeightMode } from "../ui/shell/geometry";
 import { type ContinuousCaptureOptions, type LayerActions, type TextSettingsEditToggle, type TranscriptionChoice } from "../ui/layers";
 import { type KeyboardInputSession } from "../ui/shell/keyboard-input";
-import { appSwitcherPositionSetting, glassesTypeSetting, statusBarPositionSetting, statusBarVisibilitySetting, windowBorderSetting, assistantAllowProactiveSetting, assistantBackendSetting, assistantBridgeHostSetting, assistantBridgePortSetting, assistantBridgeTokenSetting, getBrightnessPreferences, displayLayoutSetting, navigateDisplayLayoutSetting, terminalDisplayLayoutSetting, elevenLabsApiKeySetting, getStringSettingById, openAiApiKeySetting, nightscoutApiTokenSetting, firmwareDebugFlagsSetting, whisperServerApiKeySetting, whisperServerLanguageSetting, whisperServerModelSetting, whisperServerUrlSetting, lockScreenEnabledSetting, nightscoutSiteUrlSetting, onAnySettingChanged, previewColorSetting, effectiveRingConnectionMode, type RingConnectionMode, saveVoiceRecordingsSetting, sonioxApiKeySetting, screenTimeoutSetting, screenTimeoutSettingToMs, suspendEvenHubWhenScreenOffSetting, voiceProviderSetting, wakeWordActionSetting, type ConfigSettingString } from "../ui/dashboard-settings";
+import { appSwitcherPositionSetting, glassesTypeSetting, statusBarPositionSetting, statusBarVisibilitySetting, windowBorderSetting, assistantAllowProactiveSetting, assistantBackendSetting, assistantBridgeHostSetting, assistantBridgePortSetting, assistantBridgeTokenSetting, getBrightnessPreferences, displayLayoutSetting, navigateDisplayLayoutSetting, terminalDisplayLayoutSetting, elevenLabsApiKeySetting, getStringSettingById, openAiApiKeySetting, nightscoutApiTokenSetting, firmwareDebugFlagsSetting, whisperServerApiKeySetting, whisperServerLanguageSetting, whisperServerModelSetting, whisperServerUrlSetting, lockScreenEnabledSetting, nightscoutSiteUrlSetting, onAnySettingChanged, previewColorSetting, effectiveRingConnectionMode, type RingConnectionMode, saveVoiceRecordingsSetting, sonioxApiKeySetting, screenTimeoutSetting, screenTimeoutSettingToMs, shouldPopUpNewNotification, suspendEvenHubWhenScreenOffSetting, voiceProviderSetting, wakeWordActionSetting, type ConfigSettingString } from "../ui/dashboard-settings";
 import { isIgnoringBatteryOptimizations, requestIgnoreBatteryOptimizations } from "../native/battery-optimization";
 import {
   getInstalledEvenHubAppById,
@@ -449,7 +448,8 @@ class DashboardController {
         this.emit();
       },
       openNotificationsWindow: () =>
-        this.openInProcessAppInBackground(NOTIFICATIONS_WINDOW_ID, NOTIFICATIONS_SURFACE_ID, createNotificationsAppWindow),
+        this.openInProcessAppInBackground(NOTIFICATIONS_WINDOW_ID, NOTIFICATIONS_SURFACE_ID,
+          (options) => createNotificationsAppWindow(options, (section) => this.openSettings(section))),
       onSwitcherBarHeightChanged: () => this.applySwitcherBarHeight(),
       onScreenStateChanged: (on) => {
         // Any wake of the regular UI replaces a showing Glanceboard.
@@ -2644,11 +2644,7 @@ class DashboardController {
       setSurfaceVisible: (surfaceId, visible) => this.setWindowSurfaceVisible(surfaceId, visible),
       removeSurface: (surfaceId) => this.removeWindowSurface(surfaceId),
       requestShellRender: () => this.requestShellRender(),
-      openSettings: (section) => {
-        void this.launchApp("settings", { section }).catch((error) => {
-          this.appendLog(`settings launch failed: ${this.formatError(error)}`);
-        });
-      },
+      openSettings: (section) => this.openSettings(section),
       startTextSettingEdit: (settingId) => {
         const setting = getStringSettingById(settingId);
         if (setting) {
@@ -2730,6 +2726,13 @@ class DashboardController {
     // Re-save the canonical post-restore state (drops apps that failed to open).
     this.persistOpenApps();
     this.requestShellRender();
+  }
+
+  /** Open or focus the Settings app, optionally on a section (by label). */
+  private openSettings(section?: string): void {
+    void this.launchApp("settings", { section }).catch((error) => {
+      this.appendLog(`settings launch failed: ${this.formatError(error)}`);
+    });
   }
 
   /**
@@ -2948,7 +2951,7 @@ class DashboardController {
     // The tray shows the notification at once; its popup waits out a short
     // delay, so one withdrawn right away (see NotificationPopupDelay) never shows.
     const notification = readActiveNotifications(ALL_NOTIFICATIONS).find((item) => item.key === notificationKey);
-    if (notification && shouldShowNotificationOnGlasses(notification.packageName)) {
+    if (notification && shouldPopUpNewNotification(notification.packageName)) {
       this.notificationPopups.post(notificationKey, notificationPopupDelayMs(notification));
     }
     this.requestShellRender();
@@ -2970,7 +2973,7 @@ class DashboardController {
   private popUpAndroidNotification(notificationKey: string): void {
     try {
       const notification = readActiveNotifications(ALL_NOTIFICATIONS).find((item) => item.key === notificationKey);
-      if (!notification || !shouldShowNotificationOnGlasses(notification.packageName)) return;
+      if (!notification || !shouldPopUpNewNotification(notification.packageName)) return;
       // New notifications open a shell modal over the app viewport; if the
       // screen was off, wake for it and go back to sleep when it is closed.
       // Waking while already on would steal focus, so only wake from sleep.

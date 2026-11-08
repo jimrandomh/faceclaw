@@ -2,7 +2,6 @@ import { startRemoteInput } from "../remote/service"
 import type { KeyboardInputSession } from '../ui/shell/keyboard-input'
 import { acceptInput, resetRingInputFilter } from "../ui/input-monitor";
 import { bindIosNotifications, iosNotificationsChanged, onIosNotificationPopup, readActiveNotifications } from '../native/notification-icons.ios'
-import { shouldShowNotificationOnGlasses } from '../native/notification-sources'
 import { launcherEntries } from '../apps/launcher'
 import { discardZeroedEvenHubPackage, getInstalledEvenHubAppById, installedEvenHubPackageId, uninstallEvenHubPackage } from '../apps/evenhub/installed-apps'
 import { isInstalledPackagePresent } from '../apps/evenhub/updates'
@@ -54,7 +53,7 @@ import { onAnySettingChanged,
   previewColorSetting, lockScreenEnabledSetting, getBrightnessPreferences, getStringSettingById,
   nightscoutSiteUrlSetting, nightscoutApiTokenSetting, voiceProviderSetting, elevenLabsApiKeySetting,
   openAiApiKeySetting, sonioxApiKeySetting, whisperServerApiKeySetting, whisperServerLanguageSetting,
-  whisperServerModelSetting, whisperServerUrlSetting, ringConnectionModeSetting, saveTranscribeAudioSetting, glassesTypeSetting } from '../ui/dashboard-settings'
+  whisperServerModelSetting, whisperServerUrlSetting, ringConnectionModeSetting, saveTranscribeAudioSetting, glassesTypeSetting, shouldPopUpNewNotification } from '../ui/dashboard-settings'
 import { transcriptionKey, type VoiceProviderSelection } from '../native/cloud-stt-provider'
 import type { PhoneGesture } from '../phone-ui/phone-gestures'
 import { claimGlassesOnboardingAutoLaunch, ONBOARDING_APP_ID } from '../apps/onboarding/onboarding-progress'
@@ -216,7 +215,8 @@ export class IosPreviewController {
       requestShellRender: () => this.requestShellRender(),
       onWindowsChanged: () => { this.requestShellRender(); this.syncEvenHubPhoneUi(); this.wearRemote?.schedulePublish() },
       openNotificationsWindow: () =>
-        this.openInProcessAppInBackground(NOTIFICATIONS_WINDOW_ID, NOTIFICATIONS_SURFACE_ID, createNotificationsAppWindow),
+        this.openInProcessAppInBackground(NOTIFICATIONS_WINDOW_ID, NOTIFICATIONS_SURFACE_ID,
+          options => createNotificationsAppWindow(options, section => { void this.launchApp('settings', { section }) })),
       onSwitcherBarHeightChanged: () => {
         this.relayout()
         shell.foregroundWindow()?.requestRender()
@@ -248,7 +248,7 @@ export class IosPreviewController {
     shell.focusWindow(launcher.windowId)
     onIosNotificationPopup(key => {
       const notification = readActiveNotifications(128).find(n => n.key === key)
-      if (this.glassesLocked || !notification || !shouldShowNotificationOnGlasses(notification.packageName)) return
+      if (this.glassesLocked || !notification || !shouldPopUpNewNotification(notification.packageName)) return
       const woke = !shell.isScreenOn() && shell.wake('sidebar')
       shell.openNotificationModal(key, woke)
       this.requestShellRender()
