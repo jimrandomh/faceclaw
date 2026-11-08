@@ -16,7 +16,7 @@
 import { GrayImage } from "../../graphics/image";
 import { containerFace } from "./fonts";
 import {
-  type EvenHubContainer,
+  paintOrder,
   type EvenHubImageContainer,
   type EvenHubListContainer,
   type EvenHubPage,
@@ -93,22 +93,6 @@ function paintImageContainer(image: GrayImage, container: EvenHubImageContainer)
 function paintListContainer(image: GrayImage, container: EvenHubListContainer, focused: boolean): void {
   paintBorder(image, container);
   paintListItems(image, container, containerFace(container.font), focused);
-}
-
-/** Bottom-to-top paint order for a page's containers. */
-function paintOrder(containers: EvenHubContainer[]): EvenHubContainer[] {
-  const anyZ = containers.some((c) => c.zOrderIndex !== undefined);
-  if (anyZ) {
-    // Explicit z-order: larger zOrderIndex renders closer to the front, i.e.
-    // painted later. (Stock requires all-or-nothing + unique values.)
-    return [...containers].sort((a, b) => (a.zOrderIndex ?? 0) - (b.zOrderIndex ?? 0));
-  }
-  // Default (no z-order): image containers sit below lists and text. Cross-type
-  // order isn't defined by the wire format (separate object arrays), so this is
-  // our choice, matching stock. Order within each group is preserved.
-  const images = containers.filter((c) => c.kind === "image");
-  const rest = containers.filter((c) => c.kind !== "image");
-  return [...images, ...rest];
 }
 
 /** Render a page into a fresh app-viewport image (positioned by the shell). */

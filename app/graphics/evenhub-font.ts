@@ -12,7 +12,8 @@
  *  - Text SIZING / KERNING / WRAPPING: @evenrealities/pretext, whose advance
  *    tables the bitmaps were validated against. Using pretext for measurement
  *    means our line breaks match exactly where EvenHub apps (which measure
- *    with the same library) expect them.
+ *    with the same library) expect them. The one exception is leading spaces
+ *    after a '\n', which stock keeps and pretext drops (see lvgl-wrap.ts).
  *
  * Bitmaps are 4bpp, high-nibble-first, row stride floor(boxW/2)+1. The UI
  * fonts are effectively 1-bit (nibbles 0 or 0xF); we keep the nibble value so
@@ -23,6 +24,7 @@ import { File, knownFolders } from "@nativescript/core";
 import { getTextWidth } from "@evenrealities/pretext";
 import { EVENHUB_RUNTIME_FONT_FILENAME, isEvenHubFontAsset } from "../g2/firmware-fonts";
 import { lvglMetrics, lvglGlyph } from "../native/lvgl-font";
+import { wrapLvglText } from "./lvgl-wrap";
 import { GrayImage, grayToNibble, type FwTextFont, type PlacedFwText, type PlacedFwTextGlyph } from "./image";
 import { TtfFont } from "./ttf-font";
 import { decodeBase64 } from "../util/base64";
@@ -200,63 +202,11 @@ export class EvenHubFont implements FwTextFont {
   }
 
   /**
-   * Wrap text to a pixel width, returning the actual line strings. Ports
-   * pretext's measureTextWrap (LVGL lv_text_get_next_line semantics) so the
-   * breaks land exactly where the measurement library reports them.
+   * Wrap text to a pixel width, returning the actual line strings: pretext's
+   * breaks, but keeping leading spaces after a '\n' (see lvgl-wrap.ts).
    */
   wrap(text: string, maxWidth: number): string[] {
-    if (!text) return [""];
-    const cps = Array.from(text).map((c) => c.codePointAt(0)!);
-    const lines: string[] = [];
-    let line: number[] = [];
-    let lineWidth = 0;
-    let lastBreak = -1; // index within `line` after which we may wrap
-
-    for (let i = 0; i < cps.length; i++) {
-      const cp = cps[i]!;
-      if (cp === 10) {
-        lines.push(String.fromCodePoint(...line));
-        line = [];
-        lineWidth = 0;
-        lastBreak = -1;
-        continue;
-      }
-      // LVGL drops leading spaces at the start of a wrapped line.
-      if (line.length === 0 && cp === 32) continue;
-      const adv = this.advanceOf(cp, cps[i + 1] ?? 0);
-      if (lineWidth + adv > maxWidth) {
-        if (cp === 32) {
-          // The overflowing char is a space: break here, discard it.
-          lines.push(String.fromCodePoint(...line));
-          line = [];
-          lineWidth = 0;
-          lastBreak = -1;
-        } else if (lastBreak !== -1) {
-          // Wrap at the last break opportunity; carry the remainder forward.
-          const carry = line.slice(lastBreak + 1);
-          line = line.slice(0, lastBreak + 1);
-          const trimmed = line[line.length - 1] === 32 ? line.slice(0, -1) : line;
-          lines.push(String.fromCodePoint(...trimmed));
-          line = carry;
-          lineWidth = carry.reduce((sum, c, j) => sum + this.advanceOf(c, carry[j + 1] ?? 0), 0);
-          lastBreak = -1;
-          line.push(cp);
-          lineWidth += adv;
-        } else {
-          // No break opportunity: hard break before the overflowing char.
-          lines.push(String.fromCodePoint(...line));
-          line = [cp];
-          lineWidth = adv;
-          lastBreak = -1;
-        }
-      } else {
-        line.push(cp);
-        lineWidth += adv;
-        if (isBreakable(cp)) lastBreak = line.length - 1;
-      }
-    }
-    lines.push(String.fromCodePoint(...line));
-    return lines;
+    return wrapLvglText(text, maxWidth, kernedAdvance);
   }
 
   /**
@@ -446,8 +396,3 @@ export class EvenHubFont implements FwTextFont {
   }
 }
 
-function isBreakable(cp: number): boolean {
-  if (cp === 32 || cp === 45) return true; // space, hyphen
-  // CJK ranges (pretext parity) — breakable between any two ideographs.
-  return (cp >= 0x2e80 && cp <= 0x9fff) || (cp >= 0xf900 && cp <= 0xfaff) || (cp >= 0xac00 && cp <= 0xd7af);
-}

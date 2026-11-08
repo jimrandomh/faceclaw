@@ -52,6 +52,7 @@ import {
   type EvenHubPage,
 } from "./containers";
 import { compositePage } from "./compositor";
+import { describeImageUpdate, describePage, describeTextUpgrade } from "./layout-debug";
 import { stepListSelection } from "./list-menu";
 import { type EvenHubManifest } from "./ehpk";
 import { permissionsIncludeMicrophone, permissionsInclude } from "./permissions";
@@ -75,6 +76,15 @@ import { availableFontFamilies, containerFace, measureContainerText } from "./fo
 import { parseFontSpec } from "./font-spec";
 
 const UPNG = require("upng-js");
+
+/**
+ * Page layouts and container updates go to logcat at debug level (see
+ * layout-debug.ts): `adb logcat -s FaceclawEvenHubLayout:D`. Android only.
+ */
+const LAYOUT_LOG_TAG = "FaceclawEvenHubLayout";
+const LAYOUT_LOG_ENABLED = !!global.isAndroid;
+/** Logcat truncates entries around 4 KB; split longer lines below that. */
+const LOGCAT_CHUNK_CHARS = 3000;
 
 /** OsEventTypeList values (PB ordinals). */
 const CLICK_EVENT = 0;
@@ -916,11 +926,13 @@ export class EvenHubSession implements EvenHubMicClient, EvenHubImuClient, EvenH
   private async createStartUpPage(data: Record<string, unknown>): Promise<number> {
     if (this.pageCreated) {
       // One-shot per session on stock: a second call blocks ~2s, then fails.
+      this.layoutLog(() => ["createStartUpPageContainer: repeated call, rejected as stock does"]);
       await delay(DUPLICATE_CREATE_DELAY_MS);
       return 1;
     }
     const page = parsePage(data);
     this.warnOnInvalidPage(page, data);
+    this.layoutLog(() => describePage("createStartUpPageContainer", page, data));
     this.page = page;
     this.pageCreated = true;
     // The launch focus arrived before the page existed; deliver the ENTER now.
@@ -936,6 +948,7 @@ export class EvenHubSession implements EvenHubMicClient, EvenHubImuClient, EvenH
     // Also serves as create for apps that fall back to rebuild-on-error.
     const page = parsePage(data);
     this.warnOnInvalidPage(page, data);
+    this.layoutLog(() => describePage("rebuildPageContainer", page, data));
     this.page = page;
     this.pageCreated = true;
     this.windowHooks?.requestRender();
@@ -968,9 +981,12 @@ export class EvenHubSession implements EvenHubMicClient, EvenHubImuClient, EvenH
     const container = this.page?.containers.find(
       (c) => c.kind === "text" && c.id === id && (name === "" || c.name === name),
     );
-    if (!container || container.kind !== "text") return false;
     const content = readString(data, "content", "");
     const offset = readOptionalNumber(data, "contentOffset");
+    if (!container || container.kind !== "text") {
+      this.layoutLog(() => [describeTextUpgrade(id, name, null, offset, content.length)]);
+      return false;
+    }
     // (contentLength is intentionally ignored — see below.)
     // Stock semantics are "write `content` at contentOffset and truncate the
     // rest" (a null-terminating strcpy(buf+offset, content)), NOT a splice that
@@ -987,6 +1003,7 @@ export class EvenHubSession implements EvenHubMicClient, EvenHubImuClient, EvenH
     // brightness; omitting it keeps whatever level the container has.
     const brightness = readTextBrightness(data);
     if (brightness !== undefined) container.textColor = brightness;
+    this.layoutLog(() => [describeTextUpgrade(id, name, container, offset, content.length)]);
     this.windowHooks?.requestRender();
     return true;
   }
@@ -994,20 +1011,49 @@ export class EvenHubSession implements EvenHubMicClient, EvenHubImuClient, EvenH
   /** BleEhSendImageResult: 0 success, 1 imageException, 2 sizeInvalid, 3 sendFailed. */
   private updateImage(data: Record<string, unknown>): number {
     const id = readNumber(data, "containerID", -1);
-    const container = this.page?.containers.find((c) => c.kind === "image" && c.id === id);
-    if (!container || container.kind !== "image") return 3;
-    const bytes = imagePayloadBytes(data.imageData ?? data.rawData ?? asRecord(data).mapRawData);
-    if (!bytes || bytes.length === 0) return 1;
-    const decoded = decodeImageBytes(bytes, container);
-    if (!decoded) return 1;
+    const found = this.page?.containers.find((c) => c.kind === "image" && c.id === id);
+    const container = found?.kind === "image" ? found : null;
+    const raw = data.imageData ?? data.rawData ?? data.mapRawData;
+    const bytes = container ? imagePayloadBytes(raw) : null;
+    const decoded = container && bytes && bytes.length > 0 ? decodeImageBytes(bytes, container) : null;
+    const result = !container ? 3 : !decoded ? 1 : 0;
+    this.layoutLog(() =>
+      describeImageUpdate({
+        page: this.page,
+        sentId: id,
+        sentName: readString(data, "containerName", ""),
+        container,
+        raw,
+        bytes,
+        decoded,
+        result,
+      }),
+    );
+    if (!container || !decoded) return result;
     container.pixels = decoded.pixels;
     container.pixelsWidth = decoded.width;
     container.pixelsHeight = decoded.height;
     this.windowHooks?.requestRender();
-    return 0;
+    return result;
+  }
+
+  /** Debug-level logcat for layouts and updates; `describe` runs only when logging is on. */
+  private layoutLog(describe: () => string[]): void {
+    if (!LAYOUT_LOG_ENABLED) return;
+    try {
+      const prefix = `[${this.manifest.packageId}] `;
+      for (const line of describe()) {
+        for (let i = 0; i < line.length; i += LOGCAT_CHUNK_CHARS) {
+          android.util.Log.d(LAYOUT_LOG_TAG, prefix + line.slice(i, i + LOGCAT_CHUNK_CHARS));
+        }
+      }
+    } catch (error) {
+      console.warn(`evenhub: layout log failed: ${error}`);
+    }
   }
 
   private shutDown(exitMode: number): boolean {
+    this.layoutLog(() => [`shutDownPageContainer exitMode=${exitMode}`]);
     if (exitMode === 1) {
       // The app asked to quit (stock would pop an on-glasses confirm). We
       // decline and hand focus to the app switcher instead, leaving the app
@@ -1252,6 +1298,7 @@ export class EvenHubSession implements EvenHubMicClient, EvenHubImuClient, EvenH
     for (const container of page.containers) {
       if (container.preserve) preserveContent(container, previous);
     }
+    this.layoutLog(() => describePage("extension layout", page, data));
     this.page = page;
     this.pageCreated = true;
     // The extended layout uses the taller app area.

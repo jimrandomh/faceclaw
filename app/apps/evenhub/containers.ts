@@ -303,6 +303,28 @@ export function parsePage(data: Record<string, unknown>): EvenHubPage {
   return { containers, menuItems: parseMenuItems(data) };
 }
 
+/**
+ * Bottom-to-top paint order for a page's containers.
+ *
+ * With zOrderIndex, larger values render closer to the front (painted later).
+ * Stock honors it only when every container has one (the SDK enforces that
+ * app-side); we sort whenever any container has one, treating a missing index
+ * as 0.
+ *
+ * Without it, image containers sit below lists and text, keeping declaration
+ * order within each group. That is our choice, and it may not match stock:
+ * the evenRealities-openCFW firmware reconstruction builds the container list
+ * as lists, then texts, then images, which would put images on top. Not yet
+ * checked on hardware; layout-debug.ts logs where the two orders differ.
+ */
+export function paintOrder(containers: readonly EvenHubContainer[]): EvenHubContainer[] {
+  const anyZ = containers.some((c) => c.zOrderIndex !== undefined);
+  if (anyZ) return [...containers].sort((a, b) => (a.zOrderIndex ?? 0) - (b.zOrderIndex ?? 0));
+  const images = containers.filter((c) => c.kind === "image");
+  const rest = containers.filter((c) => c.kind !== "image");
+  return [...images, ...rest];
+}
+
 /** The container that owns gesture events (exactly one per valid page). */
 export function eventCaptureContainer(page: EvenHubPage): EvenHubContainer | undefined {
   return page.containers.find(
