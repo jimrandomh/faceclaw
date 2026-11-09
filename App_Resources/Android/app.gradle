@@ -264,15 +264,21 @@ if (faceclawVersionFile.exists()) {
     faceclawVersionName = faceclawVersionMatch.group(1)
   }
 }
+def faceclawBuildRevision = System.getenv("FACECLAW_ANDROID_BUILD_REVISION") ?: "0"
+if (!(faceclawBuildRevision ==~ /[0-4]/)) {
+  throw new GradleException("FACECLAW_ANDROID_BUILD_REVISION must be an integer from 0 to 4")
+}
 def faceclawVersionCode = {
   // Prerelease labels belong in versionName, not the numeric versionCode.
   def parts = (faceclawVersionName.split('-')[0].tokenize('.') + ["0", "0"]).take(3)*.toInteger()
-  return parts[0] * 10000 + parts[1] * 100 + parts[2]
+  // Last digit: build revision * 2, plus form factor (phone 0, Wear OS 1).
+  // Play requires distinct version codes even on separate form-factor tracks.
+  return (parts[0] * 10000 + parts[1] * 100 + parts[2]) * 10 + faceclawBuildRevision.toInteger() * 2
 }()
 
 android {
-  compileSdkVersion 35
-  buildToolsVersion "35"
+  compileSdkVersion 36
+  buildToolsVersion "36.0.0"
   // ndkVersion ""
 
   sourceSets.main {
@@ -282,7 +288,7 @@ android {
 
   defaultConfig {
     minSdkVersion 24
-    targetSdkVersion 35
+    targetSdkVersion 36
     ndk {
       // The NativeScript platform build.gradle has already added all four
       // ABIs by the time app.gradle is applied, and abiFilters is additive,

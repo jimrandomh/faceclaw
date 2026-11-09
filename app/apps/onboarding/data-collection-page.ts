@@ -32,9 +32,9 @@ export class DataCollectionPage implements OnboardingPage {
   paint(image: GrayImage, focused: boolean): void {
     const top = drawPageHeading(
       image,
-      "Data Sharing",
-      (global.isIOS ? "If using TestFlight, crash/usage reports cannot be disabled here. " : "") +
-        "Choose how much data you want to share. Change later in Settings > Privacy.",
+      "Faceclaw Statistics",
+      (global.isIOS ? "TestFlight reports are separate. " : "Google ML Kit diagnostics are separate. ") +
+        "Choose Faceclaw statistics below. Details and controls: Settings > Privacy.",
       3,
     ) + CONTENT_GAP;
     const body = onboardingFont("body");

@@ -39,7 +39,7 @@ The instructions below build the Android app.
 If you want to customize faceclaw, the best way to do it is to download the
 source code and using a coding agent such as Codex or Claude Code.
 
-To compile, you will need an Android SDK environment with SDK version 35
+To compile, you will need an Android SDK environment with SDK version 36
 installed and licenses accepted, and the ANDROID_HOME pointing to the install.
 You will need Nativescript installed, and a JDK environment (v21), with the
 JAVA_HOME environment variable pointed at it. You will also need a reasonably

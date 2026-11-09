@@ -4,9 +4,21 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+// Match the phone's marketing version, with a distinct Play upload code.
+val faceclawVersionName = Regex("""FACECLAW_VERSION = "([^"]+)"""")
+    .find(rootProject.file("../app/version.ts").readText())?.groupValues?.get(1)
+    ?: error("Could not read FACECLAW_VERSION from app/version.ts")
+val faceclawVersionParts = (faceclawVersionName.substringBefore('-').split('.') + listOf("0", "0"))
+    .take(3).map { it.toInt() }
+val faceclawBuildRevision = System.getenv("FACECLAW_ANDROID_BUILD_REVISION") ?: "0"
+require(faceclawBuildRevision.matches(Regex("[0-4]"))) {
+    "FACECLAW_ANDROID_BUILD_REVISION must be an integer from 0 to 4"
+}
+val faceclawVersionCode = (faceclawVersionParts[0] * 10000 + faceclawVersionParts[1] * 100 + faceclawVersionParts[2]) * 10 + faceclawBuildRevision.toInt() * 2 + 1
+
 android {
     namespace = "com.faceclaw.wear"
-    compileSdk = 35
+    compileSdk = 36
 
     defaultConfig {
         // Must equal the phone app's id (nativescript.config.ts): the Wearable
@@ -14,9 +26,9 @@ android {
         // signing key.
         applicationId = "com.faceclaw.app"
         minSdk = 30
-        targetSdk = 35
-        versionCode = 1
-        versionName = "1.0.0"
+        targetSdk = 36
+        versionCode = faceclawVersionCode
+        versionName = faceclawVersionName
     }
 
     buildTypes {

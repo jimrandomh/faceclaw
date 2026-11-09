@@ -5,6 +5,8 @@ collects and shares information when you use an iOS TestFlight build, even
 when Faceclaw statistics are set to None. Information you voluntarily send
 us, such as feedback, may also identify you. This policy describes these
 separate channels and the third-party services you can choose to use.
+On Android, Google ML Kit also collects SDK diagnostics separately from
+Faceclaw statistics, as described below.
 
 
 ## Usage Statistics
@@ -16,7 +18,8 @@ your choice at any time in Settings > Privacy > Faceclaw statistics. Until
 you choose, it is None. This setting controls only Faceclaw's own statistics.
 
 With None, Faceclaw sends and stores none of its own usage statistics. This
-does not disable Apple's TestFlight reports or services you choose to use.
+does not disable Apple's TestFlight reports, Google ML Kit diagnostics, or
+services you choose to use.
 
 With Minimal, Faceclaw keeps counts on your phone and sends them about once a
 day to stats.faceclaw.org, a server run by Faceclaw's developers:
@@ -46,6 +49,27 @@ statistics on, which links your reports to each other but not to you.
 Turning statistics off deletes that identifier and everything kept on the
 phone, and stops all reports; turning them back on starts a new identifier.
 The statistics server doesn't record the IP addresses reports come from.
+
+
+## Android and Google ML Kit
+
+Android translation and language identification use Google ML Kit. The
+developer QR-code scanner uses Google's code scanner. Text and scanner
+images are processed on-device, but the SDKs send Google diagnostic and
+usage metrics over HTTPS: device/app details, installation identifiers,
+timings, errors, feature events, input/output sizes, and detected or
+configured languages. Translation also uses Firebase installation and
+remote-configuration services. This reporting is separate from the
+Faceclaw statistics setting; selecting None does not turn it off. Faceclaw
+does not provide a switch to disable these SDK diagnostics.
+
+These metrics do not include the text being translated or scanned images.
+Cloud transcription and assistant providers are separate, as described below.
+For Google's handling of SDK metrics, see:
+
+  https://developers.google.com/ml-kit/android-data-disclosure
+  https://developers.google.com/ml-kit/terms
+  https://policies.google.com/privacy
 
 
 ## iOS and TestFlight

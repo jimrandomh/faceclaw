@@ -4,3 +4,6 @@
  */
 export const IOS_PRIVACY_SUMMARY =
   "With TestFlight, crash/usage reports continue even with None. See Privacy policy for details.";
+
+export const ANDROID_PRIVACY_SUMMARY =
+  "Google ML Kit diagnostics for translation and QR scanning are separate from this setting. See Privacy policy for details.";
