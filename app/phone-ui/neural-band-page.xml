@@ -1,0 +1,69 @@
+<Page xmlns="http://schemas.nativescript.org/tns.xsd" navigatingTo="navigatingTo" loaded="loaded" unloaded="unloaded">
+    <ActionBar title="Neural Band" />
+
+    <ScrollView>
+        <StackLayout class="p-16">
+            <Label text="{{ statusLine }}" class="body-text" textWrap="true" />
+            <Label text="{{ notice }}" class="pairing-warning" textWrap="true" visibility="{{ noticeVisibility }}" />
+
+            <!-- The remembered band. -->
+            <StackLayout class="pairing-row m-t-12" visibility="{{ bandVisibility }}">
+                <Label text="{{ bandTitle }}" class="pairing-title" />
+                <Label text="{{ bandDetail }}" class="pairing-serial" textWrap="true" />
+                <Button text="{{ handLabel }}" tap="{{ onHandTap }}" visibility="{{ handVisibility }}" class="m-t-8" />
+                <GridLayout columns="*,*" class="m-t-8">
+                    <Button col="0" text="Reconnect" tap="{{ onReconnectTap }}" visibility="{{ reconnectVisibility }}" />
+                    <Button col="1" text="Forget band" tap="{{ onForgetTap }}" />
+                </GridLayout>
+            </StackLayout>
+
+            <StackLayout visibility="{{ supportedVisibility }}">
+                <!-- Meta account: needed once, to claim a band. -->
+                <Label text="Meta account" class="h2 pairing-section m-t-16" />
+                <Label text="{{ metaLabel }}" class="pairing-title" />
+                <Label text="{{ metaDetail }}" class="pairing-arms m-t-4" textWrap="true" />
+                <Button text="{{ metaButtonLabel }}" tap="{{ onMetaTap }}" class="m-t-8" />
+
+                <!-- Pairing. -->
+                <Label text="Pair a band" class="h2 pairing-section m-t-16" />
+                <Label class="pairing-arms" textWrap="true"
+                    text="1. If the band was set up with Meta glasses, factory reset it first: hold its button for about 16 seconds. Claiming it here unlinks it from Meta's app and glasses (a factory reset undoes that).&#10;2. Put the band in pairing mode: hold its button for about 3 seconds until it pulses.&#10;3. Scan, then tap your band. The first connection claims it for this phone and can take a minute." />
+                <Button text="{{ scanLabel }}" tap="{{ onScanTap }}" class="-primary m-t-8" />
+                <Label text="{{ statusLine }}" class="pairing-arms m-t-4" textWrap="true" visibility="{{ pairStatusVisibility }}" />
+                <Label text="{{ notice }}" class="pairing-warning" textWrap="true" visibility="{{ noticeVisibility }}" />
+                <Label text="Looking for bands in pairing mode…" class="pairing-empty" visibility="{{ emptyScanVisibility }}" />
+                <Repeater items="{{ discoveredRows }}">
+                    <Repeater.itemsLayout>
+                        <StackLayout />
+                    </Repeater.itemsLayout>
+                    <Repeater.itemTemplate>
+                        <StackLayout class="pairing-row" tap="{{ onTap }}">
+                            <Label text="{{ name }}" class="pairing-title" />
+                            <Label text="{{ detail }}" class="pairing-serial" />
+                        </StackLayout>
+                    </Repeater.itemTemplate>
+                </Repeater>
+
+                <!-- Settings (also in the glasses' Settings > Neural Band). -->
+                <Label text="Settings" class="h2 pairing-section m-t-16" />
+                <GridLayout columns="*,auto" class="m-t-4">
+                    <Label col="0" text="Use the band" textWrap="true" verticalAlignment="center" />
+                    <Switch col="1" checked="{{ enabled }}" verticalAlignment="center" margin="0" />
+                </GridLayout>
+                <GridLayout columns="*,auto" class="m-t-4">
+                    <Label col="0" text="Pinch and twist to scroll (streams the band's gyroscope; uses more battery)" textWrap="true" verticalAlignment="center" />
+                    <Switch col="1" checked="{{ twistScroll }}" verticalAlignment="center" margin="0" />
+                </GridLayout>
+                <GridLayout columns="*,auto" class="m-t-4">
+                    <Label col="0" text="Band vibrates on gestures" textWrap="true" verticalAlignment="center" />
+                    <Switch col="1" checked="{{ haptics }}" verticalAlignment="center" margin="0" />
+                </GridLayout>
+
+                <Label text="Gestures" class="h2 pairing-section m-t-16" />
+                <Label text="{{ gestureHelp }}" class="pairing-arms" textWrap="true" />
+                <Label class="pairing-empty m-t-8" textWrap="true"
+                    text="The Neural Band link is unofficial (it follows the protocol work of the kinesis and Glassly projects): Meta publishes no API for it, and a band firmware update may change how it works." />
+            </StackLayout>
+        </StackLayout>
+    </ScrollView>
+</Page>

@@ -12,6 +12,7 @@
         <ActionItem text="{{ buttonLabel }}" tap="{{ onTap }}" isEnabled="{{ connectItemEnabled }}" visibility="{{ glassesMenuItemsVisibility }}" android.position="popup" />
         <ActionItem text="Pair glasses" tap="{{ onPairGlassesTap }}" isEnabled="{{ canRun }}" android.position="popup" />
         <ActionItem text="Permissions" tap="{{ onPermissionsTap }}" android.position="popup" />
+        <ActionItem text="Neural Band" tap="{{ onNeuralBandTap }}" visibility="{{ neuralBandMenuVisibility }}" android.position="popup" />
         <ActionItem text="Conversations" tap="{{ onConversationsTap }}" android.position="popup" />
         <ActionItem text="Take screenshot" tap="{{ onTakeScreenshotTap }}" android.position="popup" />
         <ActionItem text="Record screen" tap="{{ onRecordScreenTap }}" android.position="popup" />

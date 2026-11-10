@@ -23,6 +23,13 @@ and Mentra Labs, Inc. (MIT License): https://github.com/tetramo-labs/glassly and
 https://github.com/tetramo-labs/glassly-rayneo-cfw. The iO wire codecs in
 native/kotlin/shared/.../rayneo/RayNeoIoProtocol.kt follow their protocol work.
 
+Meta Neural Band support is ported from Glassly's Neural Band driver (MIT License,
+Tetramo, Inc. and Mentra Labs, Inc.), whose protocol core comes from callbacked's
+kinesis (MIT License) and whose Android transport builds on beyondlevi's rokid-lumen
+(MIT License). The protocol is in native/kotlin/shared/src/androidMain/.../neuralband/
+(license notice in LICENSE-MIT.txt there); the transport, Meta sign-in and claim
+client are App_Resources/Android/.../FaceclawNeuralBand*.kt and FaceclawMeta*.kt.
+
 iPhone notification icons are Pebble's notification and timeline icons, from
 https://github.com/pebble-dev/iconography: the original Pebble Technology icons
 and Rebble community additions. They are licensed under the Apache License 2.0;

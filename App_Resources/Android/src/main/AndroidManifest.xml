@@ -171,6 +171,13 @@
 			android:showWhenLocked="true"
 			android:turnScreenOn="true"
 			android:theme="@android:style/Theme.Material.NoActionBar" />
+		<!-- The Meta account sign-in a Neural Band claim needs (FaceclawNeuralBand). -->
+		<activity
+			android:name="com.faceclaw.app.FaceclawMetaSignInActivity"
+			android:exported="false"
+			android:configChanges="keyboard|keyboardHidden|orientation|screenSize|smallestScreenSize|screenLayout|uiMode"
+			android:windowSoftInputMode="adjustResize"
+			android:theme="@android:style/Theme.Material.NoActionBar" />
 		<!-- adb-only settings export/import (see FaceclawSettingsPortReceiver).
 		     DUMP is a development permission: the adb shell holds it, other
 		     apps cannot get it granted without adb, so this stays reachable

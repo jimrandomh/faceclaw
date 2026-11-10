@@ -23,6 +23,7 @@ import {
   showBleBandwidthSetting,
 } from "../ui/dashboard-settings";
 import { sampleBleTraffic } from "../native/ble-traffic";
+import { neuralBand } from "../native/neural-band";
 import { isValidMacAddress, loadDeviceAddresses } from "../g2/device-addresses";
 import { isAutoReconnectSuppressed, resumeAutoReconnect } from "../g2/reconnect-policy";
 import { isPreviewOnlyMode } from "./onboarding-state";
@@ -862,6 +863,16 @@ export class MainViewModel extends RemoteControlsViewModel {
       moduleName: "phone-ui/permissions-page",
       context: { onboarding: false },
     });
+  }
+
+  /** Pair and set up a Meta Neural Band (app/phone-ui/neural-band-page); works without glasses. */
+  onNeuralBandTap(): void {
+    Frame.topmost()?.navigate("phone-ui/neural-band-page");
+  }
+
+  /** Only phones that can host the band (Android 10+) offer it. */
+  get neuralBandMenuVisibility(): "visible" | "collapse" {
+    return neuralBand.isSupported() ? "visible" : "collapse";
   }
 
   /** Review saved caption sessions; works without a glasses connection. */

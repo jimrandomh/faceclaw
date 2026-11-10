@@ -98,8 +98,13 @@ import {
   watchRemoteEnabledSetting,
   watchSoundEffectsSetting,
   watchVibrateOnInputSetting,
+  neuralBandEnabledSetting,
+  neuralBandHapticsSetting,
+  neuralBandTwistScrollSetting,
 } from "../dashboard-settings";
 import { wearBridge } from "../../native/wear-bridge";
+import { neuralBand } from "../../native/neural-band";
+import { neuralBandStatusLine } from "../../g2/neural-band-core";
 import { openSettingsSubMenu, SettingsPanelLayer, type SettingsSection } from "./settings-panel";
 import { uiFontPickerMenuItem } from "../font-picker";
 import { NotificationFilterLayer } from "../notification-filter";
@@ -240,6 +245,16 @@ function settingsSections(): SettingsSection[] {
       ],
       renderDetail: renderWatchStatus,
     },
+    ...(neuralBand.isSupported() ? [{
+      label: "Neural Band",
+      // Meta Neural Band (app/g2/neural-band.ts); paired from the phone app's Neural Band page.
+      items: [
+        toggleSettingMenuItem(neuralBandEnabledSetting),
+        toggleSettingMenuItem(neuralBandTwistScrollSetting),
+        toggleSettingMenuItem(neuralBandHapticsSetting),
+      ],
+      renderDetail: renderNeuralBandStatus,
+    }] : []),
     {
       label: "Developer",
       items: [
@@ -661,6 +676,16 @@ function renderWatchStatus(args: { image: GrayImage; x: number; y: number; width
     }
   }
   const lines = wrapText(font, status, width);
+  for (let i = 0; i < lines.length; i++) {
+    image.drawText(font, x, y + i * font.lineHeight, lines[i]!, 170);
+  }
+  return lines.length * font.lineHeight + 10;
+}
+
+function renderNeuralBandStatus(args: { image: GrayImage; x: number; y: number; width: number }): number {
+  const { image, x, y, width } = args;
+  const font = getDefaultSmallFont();
+  const lines = wrapText(font, neuralBandStatusLine(neuralBand.getStatus()), width);
   for (let i = 0; i < lines.length; i++) {
     image.drawText(font, x, y + i * font.lineHeight, lines[i]!, 170);
   }
