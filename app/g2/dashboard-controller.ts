@@ -202,14 +202,16 @@ const launchableApps = () => ALL_APPS.filter((app) => app.showInLauncher !== fal
  * screen, the display mode's size (a band's position only moves windows), whether the app switcher
  * takes width beside windows, height below them or neither (a popup), and
  * the chrome rows each window loses to it: below them, whether the status
- * bar joins the row (dropping the top bar); with a popup, whether the
- * status bar keeps rows of its own and the window frame (where the status
- * bar goes only moves windows).
+ * bar joins the row (dropping the top bar, for the window frame's top row
+ * if it has a frame); with a popup, whether the status bar keeps rows of its
+ * own and the window frame (where the status bar goes only moves windows).
  */
 function viewportSizesKey(): string {
   const position = appSwitcherPositionSetting.get();
-  const switcher = position === "bottom" ? `row|${statusBarPositionSetting.get()}`
-    : position === "popup" ? `popup|${statusBarVisibilitySetting.get()}|${windowBorderSetting.get()}`
+  const statusBar = statusBarPositionSetting.get();
+  const framed = windowBorderSetting.get() === "all";
+  const switcher = position === "bottom" ? `row|${statusBar}|${statusBar === "bottom" && framed}`
+    : position === "popup" ? `popup|${statusBarVisibilitySetting.get()}|${framed}`
     : "strip";
   const layout = displayLayoutSetting.get();
   return `${screenWidth()}x${screenHeight()}|${layout.startsWith("band-") ? "band" : layout}|${switcher}`;

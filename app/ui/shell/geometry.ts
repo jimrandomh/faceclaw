@@ -9,6 +9,7 @@ import {
   statusBarPositionSetting,
   statusBarVisibilitySetting,
   uiDepthSetting,
+  type WindowBorder,
   windowBorderSetting,
 } from "../dashboard-settings";
 
@@ -190,25 +191,56 @@ export function switcherRect(heightMode: WindowHeightMode, appId?: string): { x:
 }
 
 /**
+ * Which lines the chrome draws round the foreground window (Settings >
+ * Customization > Border): all of them, only the one between the window and
+ * the status bar, or none. The choice is a bottom or popup switcher's; a
+ * side strip always has its lines.
+ */
+function windowBorder(): WindowBorder {
+  return sideStrip() ? "all" : windowBorderSetting.get();
+}
+
+/**
  * Whether the foreground window's content gets a rounded frame (drawn by
- * the chrome layer). Its left and right sides take the pixel just outside
- * the 576-wide window; there's no room around a Full Screen or immersive
- * window, nor need beside a side strip. With a reserved bottom switcher row
- * it otherwise always has one: the row's top edge is the frame's bottom side, as the window
- * header's last row is its top. With a popup switcher it's the Window
- * border setting's choice, and its top and bottom take a header or footer
- * row of their own, except where the status bar's row next to the window
- * serves.
+ * the chrome layer): with every border line on (windowBorder), where
+ * there's room. Its left and right sides take the pixel just outside the
+ * 576-wide window; there's no room around a Full Screen or immersive
+ * window, nor need beside a side strip. With a reserved bottom switcher
+ * row, the row's top edge is the frame's bottom side, as the window
+ * header's last row is its top. With a popup switcher, its top and bottom
+ * take a header or footer row of their own, except where the status bar's
+ * row next to the window serves.
  */
 export function windowFramed(appId?: string): boolean {
+  if (fullWidth(appId) || windowBorder() !== "all") return false;
   switch (switcherPosition()) {
     case "bottom":
-      return switcherRowHeight(appId) > 0 && !fullWidth(appId);
+      return switcherRowHeight(appId) > 0;
     case "popup":
-      return !fullWidth(appId) && windowBorderSetting.get();
+      return true;
     default:
       return false;
   }
+}
+
+/**
+ * Whether a line divides a status bar with rows of its own (the top bar, or
+ * a popup switcher's at the bottom) from the window. A window frame's side
+ * is that line where there is one (chrome-layer.ts statusBarPlacement).
+ */
+export function statusBarDivider(): boolean {
+  return windowBorder() !== "none";
+}
+
+/**
+ * Whether a line runs along a bottom switcher's top edge, between it and
+ * the window: a window frame's bottom side, or straight across where the
+ * window has no room for a frame. As the status line alone, only where the
+ * status bar shares the row.
+ */
+export function switcherRowDivider(appId?: string): boolean {
+  const border = windowBorder();
+  return border === "all" || (border === "status" && statusInSwitcherRow(appId));
 }
 
 /**

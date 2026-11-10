@@ -581,18 +581,36 @@ export const statusBarVisibilitySetting = new ConfigSettingEnum<StatusBarVisibil
 });
 
 /**
- * Whether the foreground window gets a rounded border with a popup app
- * switcher (geometry.ts windowFramed); without one, a line divides the
- * window from the status bar.
+ * Which lines the shell draws round the foreground window with a bottom or
+ * popup app switcher: a rounded border all round it (geometry.ts
+ * windowFramed), only a straight line between it and the status bar, or
+ * none at all.
  */
-export const windowBorderSetting = new ConfigSettingBoolean({
+export type WindowBorder = "all" | "status" | "none";
+
+const WINDOW_BORDER_LABELS: Record<WindowBorder, string> = {
+  all: "All around",
+  status: "Status line",
+  none: "None",
+};
+
+// Until 2026-11-09 this was a toggle that only a popup app switcher had,
+// between the rounded border and the status line; a bottom row's windows
+// always had the border.
+function legacyWindowBorder(): WindowBorder {
+  return appSwitcherPositionSetting.get() === "popup" && !getBooleanSetting("display.windowBorder", true) ? "status" : "all";
+}
+
+export const windowBorderSetting = new ConfigSettingEnumWithLegacy<WindowBorder>({
   id: "window-border",
-  label: "Window border",
-  storageKey: "display.windowBorder",
-  defaultValue: true,
+  label: "Border",
+  storageKey: "display.border",
+  defaultValue: "all",
+  values: ["all", "status", "none"],
+  formatValue: (value) => WINDOW_BORDER_LABELS[value] ?? value,
   description:
-    "Draw a rounded border around the window. Without it, a line separates the window from the status bar. Available with a popup app switcher. Changing it reopens open apps in the new size.",
-});
+    "All around draws a rounded border around the window. Status line draws only a straight line between the window and the status bar. None draws no lines. Available with the app switcher at the bottom or as a popup. Open apps reopen at their new size when a change resizes windows.",
+}, legacyWindowBorder);
 
 export const brightnessSetting = new ConfigSettingEnum<BrightnessSetting>({
   id: "brightness",

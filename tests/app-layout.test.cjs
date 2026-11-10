@@ -14,7 +14,7 @@ function geometry(screen = { width: 640, height: 480 }) {
   const settings = Object.fromEntries(Object.entries({
     displayLayoutSetting: 'band-middle', navigateDisplayLayoutSetting: 'global', terminalDisplayLayoutSetting: 'default',
     appSwitcherPositionSetting: 'left', uiDepthSetting: '0', statusBarPositionSetting: 'top',
-    statusBarVisibilitySetting: 'always', windowBorderSetting: true,
+    statusBarVisibilitySetting: 'always', windowBorderSetting: 'all',
   }).map(([name, value]) => [name, { value, get() { return this.value; } }]));
   const context = { exports: {}, require: (name) => {
     if (name === '../../graphics/screen-size') return { screenWidth: () => screen.width, screenHeight: () => screen.height };
@@ -99,18 +99,22 @@ test('Full Screen widens Tall windows to the panel and drops depth, beside a bot
 test('all display modes and layouts stay within the display and align content below the bar', () => {
   const g = geometry();
   g.settings.uiDepthSetting.value = '48';
-  const combos = [['left', 'top'], ['right', 'top'], ['bottom', 'top'], ['bottom', 'bottom'], ['left', 'bottom']];
+  // A side strip has no choice of border: the setting doesn't reach it.
+  const combos = [['left', 'top'], ['right', 'top'], ['left', 'bottom'], ['right', 'top', 'always', 'none']];
   for (const statusBar of ['top', 'bottom']) {
-    for (const visibility of ['always', 'switcher']) {
-      for (const border of [true, false]) combos.push(['popup', statusBar, visibility, border]);
+    for (const border of ['all', 'status', 'none']) {
+      combos.push(['bottom', statusBar, 'always', border]);
+      for (const visibility of ['always', 'switcher']) combos.push(['popup', statusBar, visibility, border]);
     }
   }
-  for (const [switcher, statusBar, visibility = 'always', border = true] of combos) {
+  for (const [switcher, statusBar, visibility = 'always', border = 'all'] of combos) {
     g.settings.appSwitcherPositionSetting.value = switcher;
     g.settings.statusBarPositionSetting.value = statusBar;
     g.settings.statusBarVisibilitySetting.value = visibility;
     g.settings.windowBorderSetting.value = border;
     const side = switcher === 'left' || switcher === 'right';
+    // Only no border at all drops the line between a status bar and the window.
+    assert.equal(g.statusBarDivider(), side || border !== 'none');
     for (const globalMode of LAYOUTS) {
       g.settings.displayLayoutSetting.value = globalMode;
       for (const appId of ['navigate', 'terminal']) {
@@ -127,15 +131,18 @@ test('all display modes and layouts stay within the display and align content be
             if (switcher === 'popup') {
               // Each edge has the status bar's rows (unless it only
               // overlays), else the frame's side, else nothing.
-              assert.equal(g.windowFramed(appId), border && !wide);
+              assert.equal(g.windowFramed(appId), border === 'all' && !wide);
               const edge = (side) => visibility === 'always' && statusBar === side ? g.TOP_BAR_HEIGHT : g.windowFramed(appId) ? 1 : 0;
               assert.deepEqual([header, footer], [edge('top'), edge('bottom')]);
               // The status bar's rows lie within the band, at its edge.
               const top = g.windowTop(heightMode, appId), band = g.windowBandHeight(heightMode, appId);
               assert.equal(g.statusBarTop(heightMode, appId), statusBar === 'top' ? top : top + band - g.TOP_BAR_HEIGHT);
             } else {
-              assert.equal(g.windowFramed(appId), switcher === 'bottom' && !wide);
+              assert.equal(g.windowFramed(appId), switcher === 'bottom' && border === 'all' && !wide);
               assert.deepEqual([header, footer], [!g.statusInSwitcherRow(appId) ? g.TOP_BAR_HEIGHT : g.windowFramed(appId) ? 1 : 0, 0]);
+              // A bottom row's top edge is a line with every border, or as
+              // the status line where the status bar is in the row.
+              if (switcher === 'bottom') assert.equal(g.switcherRowDivider(appId), border === 'all' || (border === 'status' && statusBar === 'bottom'));
             }
             assert.equal(rect.y, g.windowTop(heightMode, appId) + header);
             assert.equal(rect.height + header + footer, g.windowBandHeight(heightMode, appId));
@@ -196,13 +203,16 @@ test('a popup app switcher centres 576-wide windows, whose edges the status bar 
   assert.deepEqual(g.rect('min'), { x: 32, y: 97, width: 576, height: 286 });
   assert.deepEqual(g.rect('max', 'terminal'), { x: 32, y: 1, width: 576, height: 478 });
   assert.equal(g.statusBarTop('min'), 356);
-  // Without the frame too, windows have no chrome rows at all.
-  g.settings.windowBorderSetting.value = false;
-  assert.equal(g.windowFramed(), false);
-  assert.deepEqual(g.rect('max', 'terminal'), { x: 32, y: 0, width: 576, height: 480 });
-  assert.deepEqual(g.rect('medium'), { x: 32, y: 96, width: 576, height: 288 });
+  // Without the frame too (just the status line, or no border), windows
+  // have no chrome rows at all.
+  for (const border of ['status', 'none']) {
+    g.settings.windowBorderSetting.value = border;
+    assert.equal(g.windowFramed(), false);
+    assert.deepEqual(g.rect('max', 'terminal'), { x: 32, y: 0, width: 576, height: 480 });
+    assert.deepEqual(g.rect('medium'), { x: 32, y: 96, width: 576, height: 288 });
+  }
   // Full Screen: the status bar keeps its edge, but there's no room for a frame.
-  g.settings.windowBorderSetting.value = true;
+  g.settings.windowBorderSetting.value = 'all';
   g.settings.statusBarVisibilitySetting.value = 'always';
   g.settings.displayLayoutSetting.value = 'fullscreen';
   assert.equal(g.windowFramed(), false);
@@ -844,9 +854,9 @@ test('a popup switcher\'s status bar can sit at the bottom, show only in the swi
   g.settings.statusBarPositionSetting.value = 'bottom';
   [bar] = chrome.paintParts();
   assert.deepEqual([bar.y, at(bar, 300, 356), at(bar, 300, 383)], [356, 40, 1]);
-  // Always shown without a frame, a divider still separates bar and window.
+  // Always shown with only the status line, a divider still separates bar and window.
   g.settings.statusBarVisibilitySetting.value = 'always';
-  g.settings.windowBorderSetting.value = false;
+  g.settings.windowBorderSetting.value = 'status';
   state.focus = 'window';
   const parts = chrome.paintParts();
   assert.deepEqual(Array.from(parts, (p) => p.shellKey), [2]);
@@ -854,6 +864,70 @@ test('a popup switcher\'s status bar can sit at the bottom, show only in the swi
   g.settings.statusBarPositionSetting.value = 'top';
   [bar] = chrome.paintParts();
   assert.deepEqual([bar.y, at(bar, 300, 123)], [96, 40]);
+  // With no border the bar is all there is, at either edge.
+  g.settings.windowBorderSetting.value = 'none';
+  [bar] = chrome.paintParts();
+  assert.deepEqual([bar.y, at(bar, 300, 123)], [96, 1]);
+  g.settings.statusBarPositionSetting.value = 'bottom';
+  assert.deepEqual(Array.from(chrome.paintParts(), (p) => [p.shellKey, p.y, at(p, 300, 356)]), [[2, 356, 1]]);
+});
+
+test('a bottom app switcher\'s border can be just the line by the status bar, or nothing', () => {
+  const g = geometry();
+  g.settings.appSwitcherPositionSetting.value = 'bottom';
+  g.settings.statusBarPositionSetting.value = 'bottom';
+  g.settings.windowBorderSetting.value = 'status';
+  const { chrome, state } = chromeLayer(g, { windows: 2 });
+  state.selectedIndex = 1;
+  const frames = (parts) => parts.flatMap((p) => p.image.draws.filter((d) => d.presentation?.displayList));
+  const at = (p, x, y) => p.image.pixels[(y - p.y) * p.image.width + x - p.x];
+  // With the status bar in the row, the line is the row's top edge, straight
+  // across the window's width; no frame, so the content takes the header's
+  // row and the row's surface is no wider than the window.
+  assert.deepEqual(g.rect('min'), { x: 32, y: 78, width: 576, height: 288 });
+  let parts = chrome.paintParts();
+  let [row] = parts;
+  assert.equal(frames(parts).length, 0);
+  assert.deepEqual([row.x, row.y, row.image.width], [32, 366, 576]);
+  assert.deepEqual([at(row, 32, 366), at(row, 300, 366), at(row, 607, 366)], [40, 40, 40]);
+  // The cells keep their margin from the row's end, and the selection is
+  // still a tab diverting the line.
+  assert.deepEqual([chrome.windowIndexAt(39, 380, 2), chrome.windowIndexAt(40, 380, 2), chrome.windowIndexAt(80, 380, 2)], [null, 0, 1]);
+  assert.deepEqual([at(row, 79, 366), at(row, 80, 366), at(row, 98, 366), at(row, 80, 380)], [40, 150, 1, 150]);
+  // The flat paint has no frame either.
+  assert.equal(chrome.paint().draws.filter((d) => d.presentation?.displayList).length, 0);
+  // With the status bar on top, the line is the top bar's divider, and the
+  // row has none: its selection is a box, as in a second row.
+  g.settings.statusBarPositionSetting.value = 'top';
+  assert.deepEqual(g.rect('min'), { x: 32, y: 106, width: 576, height: 260 });
+  parts = chrome.paintParts();
+  let bar;
+  [bar, row] = parts;
+  assert.deepEqual([Array.from(parts, (p) => p.shellKey), frames(parts).length], [[2, 1], 0]);
+  assert.deepEqual([at(bar, 32, 105), at(bar, 607, 105)], [40, 40]);
+  assert.deepEqual([at(row, 32, 366), at(row, 300, 366)], [1, 1]);
+  assert.deepEqual([at(row, 98, 366), at(row, 80, 380), at(row, 98, 401)], [150, 150, 150]);
+  // Focused, the box fills round the icon.
+  state.focus = 'sidebar';
+  [, row] = chrome.paintParts();
+  assert.deepEqual([at(row, 81, 380), at(row, 98, 380)], [255, 120]);
+  state.focus = 'window';
+  // No border: neither line, wherever the status bar is.
+  g.settings.windowBorderSetting.value = 'none';
+  [bar, row] = chrome.paintParts();
+  assert.deepEqual([at(bar, 300, 105), at(row, 300, 366), at(row, 98, 366)], [1, 1, 150]);
+  g.settings.statusBarPositionSetting.value = 'bottom';
+  parts = chrome.paintParts();
+  [row] = parts;
+  assert.deepEqual([frames(parts).length, at(row, 32, 366), at(row, 300, 366), at(row, 98, 366)], [0, 1, 1, 150]);
+  assert.deepEqual(g.rect('min'), { x: 32, y: 78, width: 576, height: 288 });
+  // All around, a Full Screen window has no room for a frame and keeps its
+  // straight lines, as beside a side strip.
+  g.settings.windowBorderSetting.value = 'all';
+  g.settings.statusBarPositionSetting.value = 'top';
+  g.settings.displayLayoutSetting.value = 'fullscreen';
+  [bar, row] = chrome.paintParts();
+  assert.deepEqual([at(bar, 300, 27), at(row, 0, 444), at(row, 639, 444)], [40, 40, 40]);
 });
 
 test('a notification the switcher selects sits in a box, filled with its icon inverted while the switcher has focus', () => {

@@ -38,6 +38,7 @@ import {
   SHELL_OPAQUE_BLACK,
   SIDEBAR_WIDTH,
   sidebarStripVisible,
+  statusBarDivider,
   statusBarEdge,
   statusBarOverlays,
   statusBarTop,
@@ -45,6 +46,7 @@ import {
   SWITCHER_ROW_HEIGHT,
   switcherPosition,
   switcherRect,
+  switcherRowDivider,
   TOP_BAR_HEIGHT,
   windowFooterHeight,
   windowFramed,
@@ -188,8 +190,11 @@ function switcherLayout(windowCount: number, heightMode: WindowHeightMode, appId
     // tab there carries the side straight down (drawWindowFrame squares that
     // corner for it). Scrolled past it, the cells keep the margin the left
     // chevron needs. The count of slots stays the same either way. Only the
-    // first row's cells touch the separator; a second row's lines up under it.
+    // first row's cells touch the separator; a second row's lines up under
+    // it. Where the row has no separator line (geometry.ts
+    // switcherRowDivider) none do, and every selection is a box.
     const first = windowFramed(appId) && scrollRow === 0 ? row.x - 1 : row.x + LIST_MARGIN - 2;
+    const divided = switcherRowDivider(appId);
     return {
       position,
       iconSize: ROW_ICON_SIZE,
@@ -198,7 +203,7 @@ function switcherLayout(windowCount: number, heightMode: WindowHeightMode, appId
         const line = (slot / columns) | 0;
         return {
           x: first + (slot % columns) * ROW_STEP, y: row.y + line * SWITCHER_ROW_HEIGHT,
-          width: ROW_ICON_SIZE + 4, height: SWITCHER_ROW_HEIGHT, atSeparator: line === 0,
+          width: ROW_ICON_SIZE + 4, height: SWITCHER_ROW_HEIGHT, atSeparator: divided && line === 0,
         };
       },
     };
@@ -413,7 +418,8 @@ function topBarSpan(state: ShellChromeState): { left: number; right: number } {
  * bar's layout starts in them: a row lower at the window's bottom, where
  * the bar's first row is the one next to the window. `divider` is the row
  * of the line between bar and window, or null where the window frame's side
- * runs along it instead.
+ * runs along it instead, or the Border setting leaves the line out
+ * (geometry.ts statusBarDivider).
  */
 type StatusBarPlacement = { left: number; right: number; top: number; contentTop: number; divider: number | null };
 
@@ -433,7 +439,8 @@ function statusBarPlacement(state: ShellChromeState): StatusBarPlacement | null 
   const { left, right } = topBarSpan(state);
   const top = statusBarTop(state.foregroundHeightMode, appId);
   const atBottom = statusBarEdge() === "bottom";
-  const divider = windowFramed(appId) && !overlays ? null : atBottom ? top : top + TOP_BAR_HEIGHT - 1;
+  const framedSide = windowFramed(appId) && !overlays;
+  const divider = framedSide || !statusBarDivider() ? null : atBottom ? top : top + TOP_BAR_HEIGHT - 1;
   return { left, right, top, contentTop: atBottom ? top + 1 : top, divider };
 }
 
@@ -1001,7 +1008,8 @@ export class ShellChromeLayer implements Layer {
     // stops at the strip.
     const { left: barLeft, right: barRight } = bar;
     image.fillRect(barLeft, bar.top, barRight - barLeft, TOP_BAR_HEIGHT, SHELL_OPAQUE_BLACK);
-    // A framed window's frame draws this line as its side (drawWindowFrame).
+    // A framed window's frame draws this line as its side (drawWindowFrame);
+    // without any border there is none.
     if (bar.divider !== null) {
       image.drawLine(barLeft, bar.divider, barRight - 1, bar.divider, BORDER_VALUE);
     }
@@ -1369,7 +1377,9 @@ const TAB_STROKE = 150;
 
 /**
  * Draw the switcher/main separator line along the strip's inner edge, with
- * a gap where the selection tab `gap` diverts it.
+ * a gap where the selection tab `gap` diverts it. A bottom row has the line
+ * only where the Border setting gives it one (geometry.ts
+ * switcherRowDivider).
  */
 function drawSeparator(
   image: GrayImage,
@@ -1378,6 +1388,7 @@ function drawSeparator(
   gap: SwitcherCell | null,
 ): void {
   if (switcherPosition() === "bottom") {
+    if (!switcherRowDivider(state.foregroundAppId)) return;
     // Along the row's top edge: the full width of the row, or between the
     // corners of the window frame, whose bottom side this is.
     // A selection tab at the frame's left side squares that corner (see
