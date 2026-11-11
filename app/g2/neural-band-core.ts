@@ -52,6 +52,19 @@ export function neuralBandInputFor(gesture: string, finger: number | undefined):
   }
 }
 
+/**
+ * The band's entry in the shell's battery levels: its level while connected, null otherwise
+ * (so the indicator disappears with the band, as the watch's does). Charging stays null until
+ * the band has said, which only its own status query does (the standard battery service doesn't).
+ */
+export function neuralBandBatteryLevel(status: NeuralBandStatus): { band: number | null; bandCharging: boolean | null } {
+  const level = status.battery;
+  if (status.state !== "connected" || !Number.isInteger(level) || level < 0 || level > 100) {
+    return { band: null, bandCharging: null };
+  }
+  return { band: level, bandCharging: status.charging };
+}
+
 /** The band's name, or a generic one before it has said. */
 export function neuralBandName(status: NeuralBandStatus): string {
   return status.name || "Neural Band";

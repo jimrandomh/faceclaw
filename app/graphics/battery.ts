@@ -125,12 +125,34 @@ const RING_ICON = imageFromAsciiArt(
   },
 );
 
+/** The Meta Neural Band: a wristband seen at an angle, its sensor pod bright on top. */
+const BAND_ICON = imageFromAsciiArt(
+  [
+    "   ######   ",
+    "  ########  ",
+    " /+      +/ ",
+    "/+        +/",
+    "+          +",
+    "+          +",
+    "/+        +/",
+    " /+      +/ ",
+    "  /++++++/  ",
+    "            ",
+  ], {
+    "#": 255,
+    "+": 170,
+    "/": 80,
+    " ": 0,
+  },
+);
+
 /** A device with a battery indicator, for the dense style's icon labels. */
-export type BatteryDevice = "phone" | "watch" | "glasses" | "ring";
+export type BatteryDevice = "phone" | "watch" | "band" | "glasses" | "ring";
 
 const DEVICE_ICONS: Readonly<Record<BatteryDevice, GrayImage>> = {
   phone: PHONE_ICON,
   watch: WATCH_ICON,
+  band: BAND_ICON,
   glasses: GLASSES_ICON,
   ring: RING_ICON,
 };

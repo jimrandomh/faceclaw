@@ -127,6 +127,12 @@ class FaceclawNeuralBand private constructor(appContext: Context) {
     @Volatile private var gestureHaptics = true
 
     private var nextBatteryStatus = 0.0
+    /**
+     * The band's own battery query has answered on this link. It also says whether the band is
+     * charging, so from then on the standard battery service's level (which can round apart from
+     * it) is ignored rather than alternated with.
+     */
+    @Volatile private var sessionBattery = false
     private var lastSensorRead = 0.0
     private var lastStatusQuery = 0.0
 
@@ -549,7 +555,7 @@ class FaceclawNeuralBand private constructor(appContext: Context) {
         private fun onBatteryLevel(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, value: ByteArray) {
             if (gatt != this@FaceclawNeuralBand.gatt || characteristic.uuid != BATTERY_LEVEL) return
             val level = value.singleOrNull()?.toInt()?.and(0xff) ?: return
-            if (level <= 100) applyBattery(level, null)
+            if (level <= 100 && !sessionBattery) applyBattery(level, null, "battery service")
         }
     }
 
@@ -769,7 +775,10 @@ class FaceclawNeuralBand private constructor(appContext: Context) {
                 main.post { sendStatus() }
             }
             is BandEvent.Payload.HandednessFailure -> main.post { logLine("Neural Band: ${payload.message}") }
-            is BandEvent.Payload.BatteryStatus -> payload.status?.let { applyBattery(it.level, it.charging) }
+            is BandEvent.Payload.BatteryStatus -> payload.status?.let {
+                sessionBattery = true
+                applyBattery(it.level, it.charging, "band status")
+            }
             is BandEvent.Payload.CeremonyStage -> {
                 claimStage = payload.stage
                 main.post {
@@ -821,11 +830,13 @@ class FaceclawNeuralBand private constructor(appContext: Context) {
         }
     }
 
-    private fun applyBattery(level: Int, charging: Boolean?) {
+    private fun applyBattery(level: Int, charging: Boolean?, source: String) {
         val changed = battery != level || (charging != null && this.charging != charging)
         battery = level
         if (charging != null) this.charging = charging
-        if (changed) sendStatus()
+        if (!changed) return
+        Log.i(TAG, "battery $level%${when (this.charging) { true -> ", charging"; false -> ", not charging"; null -> "" }} ($source)")
+        sendStatus()
     }
 
     private fun markConnected() {
@@ -1034,6 +1045,11 @@ class FaceclawNeuralBand private constructor(appContext: Context) {
             for ((_, finger) in pinches.releaseAll()) emitGesture("release", finger)
             dialEngaged = false
         }
+        // The next link reads the battery afresh (both sources, at once).
+        sessionBattery = false
+        nextBatteryStatus = 0.0
+        battery = -1
+        charging = null
         if (state == "connected") setState(if (wanted) "connecting" else "disconnected", "")
     }
 

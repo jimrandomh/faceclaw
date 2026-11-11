@@ -85,3 +85,18 @@ test('no indicators draws nothing', () => {
   assert.equal(drawDenseBatteries(image, [], RIGHT, TOP), RIGHT);
   assert.ok(image.pixels.every((value) => value === 0));
 });
+
+test('the Neural Band has its own dense-style icon', () => {
+  const draw = (device) => {
+    const image = new GrayImage(RIGHT + 8, 32, 0);
+    drawDenseBatteries(image, [{ device, percent: 50, charging: false }], RIGHT, TOP);
+    return image;
+  };
+  const band = draw('band');
+  const gauge = gaugeAt(band, 50);
+  // An icon sits left of the gauge, and it isn't any other device's.
+  assert.ok(hasInk(band, 0, gauge.x, TOP, TOP + DENSE_BATTERY_BLOCK_HEIGHT));
+  for (const other of ['phone', 'watch', 'glasses', 'ring']) {
+    assert.notDeepEqual(Array.from(draw(other).pixels), Array.from(band.pixels), `band icon differs from ${other}`);
+  }
+});

@@ -77,11 +77,14 @@ export type BatteryLevels = {
   caseCharging: boolean | null;
   ring: number | null;
   ringCharging: boolean | null;
+  /** The Meta Neural Band, while it is connected. */
+  band?: number | null;
+  bandCharging?: boolean | null;
 };
 
 /**
  * The phone Settings tab's battery row: each device whose level is known,
- * e.g. "G2 100%  ·  Case 98% ⚡  ·  R1 72%" (⚡ = charging), or "" when none
+ * e.g. "G2 100%  ·  Case 98% ⚡  ·  R1 72%  ·  Band 64%" (⚡ = charging), or "" when none
  * is. Levels are the last known ones (the case only reports while the glasses
  * are docked), so ⚡ appears only while it is live: the glasses and Case only
  * with a link to the glasses (`glassesLinked`: connected or charging), and Case
@@ -92,6 +95,7 @@ export function formatBatteryLine(levels: BatteryLevels, glassesLinked: boolean,
     [glassesModel, levels.headset, glassesLinked && levels.headsetCharging],
     ["Case", levels.case, glassesLinked && levels.caseCharging],
     ["R1", levels.ring, levels.ringCharging],
+    ["Band", levels.band ?? null, levels.bandCharging ?? null],
   ];
   return devices
     .filter((device): device is [string, number, boolean | null] => validBatteryLevel(device[1]))

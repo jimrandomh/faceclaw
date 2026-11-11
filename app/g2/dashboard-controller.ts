@@ -531,6 +531,11 @@ class DashboardController {
       injectInput: (kind) => this.injectSyntheticRingInput(kind, "watch"),
       takesInput: () => this.phase === "connected" || this.phase === "charging" || this.isPreviewDisplayActive(),
       appendLog: (line) => this.appendLog(line),
+      batteryChanged: () => {
+        // The top bar and Glanceboard draw it; the phone's battery line reads it from the snapshot.
+        if (this.phase === "connected" || this.phase === "charging" || this.isPreviewDisplayActive()) this.requestShellRender();
+        this.emit();
+      },
     });
   }
 

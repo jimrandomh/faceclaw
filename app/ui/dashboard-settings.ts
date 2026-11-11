@@ -322,6 +322,10 @@ export const ringBatteryVisibilitySetting = batteryVisibilitySetting(
 export const watchBatteryVisibilitySetting = batteryVisibilitySetting(
   "watchBatteryVisibility", "Watch", "display.battery.watchVisibility",
 );
+/** The Meta Neural Band; the indicator only exists while the band is connected. */
+export const bandBatteryVisibilitySetting = batteryVisibilitySetting(
+  "bandBatteryVisibility", "Neural Band", "display.battery.bandVisibility",
+);
 
 /** Whether an indicator with this visibility setting shows at the given charge. */
 export function batteryIndicatorVisible(visibility: BatteryIndicatorVisibility, percent: number): boolean {
@@ -341,6 +345,7 @@ export function batteryIndicatorSettingsKey(): string {
     glassesBatteryVisibilitySetting.get(),
     ringBatteryVisibilitySetting.get(),
     watchBatteryVisibilitySetting.get(),
+    bandBatteryVisibilitySetting.get(),
   ].join("|");
 }
 

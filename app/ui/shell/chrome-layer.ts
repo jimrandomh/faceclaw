@@ -19,6 +19,7 @@ import {
   phoneBatteryVisibilitySetting,
   ringBatteryVisibilitySetting,
   watchBatteryVisibilitySetting,
+  bandBatteryVisibilitySetting,
   type AppSwitcherPosition,
   type BatteryIndicatorVisibility,
 } from "../dashboard-settings";
@@ -492,6 +493,12 @@ export type ShellChromeState = {
     /** The Wear OS watch (app/g2/wear-remote.ts); null when no watch is reachable. */
     watch: number | null;
     watchCharging: boolean | null;
+    /**
+     * The Meta Neural Band (app/g2/neural-band.ts); null unless it is connected and has
+     * reported. bandCharging is null until the band's own status query has said.
+     */
+    band: number | null;
+    bandCharging: boolean | null;
     /**
      * The glasses' charging case, last known (it only reports while the
      * glasses are docked); null until it does. caseCharging is null while the
@@ -1088,6 +1095,10 @@ function batteryItems(state: ShellChromeState): BatteryItem[] {
   if (state.battery.watch !== null && Number.isFinite(state.battery.watch)) {
     pushBatteryItem(items, watchBatteryVisibilitySetting.get(), "Watch", "watch", state.battery.watch,
       Boolean(state.battery.watchCharging));
+  }
+  if (state.battery.band !== null && Number.isFinite(state.battery.band)) {
+    pushBatteryItem(items, bandBatteryVisibilitySetting.get(), "Band", "band", state.battery.band,
+      Boolean(state.battery.bandCharging));
   }
   if (state.battery.headset !== null && Number.isFinite(state.battery.headset)) {
     pushBatteryItem(items, glassesBatteryVisibilitySetting.get(), glassesModelName(), "glasses", state.battery.headset,

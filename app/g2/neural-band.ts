@@ -16,7 +16,8 @@ import {
   neuralBandTwistScrollSetting,
   onAnySettingChanged,
 } from "../ui/dashboard-settings";
-import { neuralBandInputFor } from "./neural-band-core";
+import { shell } from "../ui/shell/shell";
+import { neuralBandBatteryLevel, neuralBandInputFor } from "./neural-band-core";
 import type { WearRemoteInputKind } from "./wear-remote";
 
 export type NeuralBandRemoteHost = {
@@ -24,6 +25,8 @@ export type NeuralBandRemoteHost = {
   /** Gestures have a display to act on: the glasses, or the phone's preview without them. */
   takesInput: () => boolean;
   appendLog: (line: string) => void;
+  /** The band's level in shell.getBatteryLevels() changed: repaint the indicators that show it. */
+  batteryChanged: () => void;
 };
 
 export class NeuralBandRemote {
@@ -77,6 +80,7 @@ export class NeuralBandRemote {
           this.host.appendLog(`Neural Band: ${status.state}${status.message ? ` (${status.message})` : ""}`);
           if (status.state !== "connected") this.releaseHolds();
         }
+        this.updateBattery(status);
         return;
       }
       case "log":
@@ -105,6 +109,21 @@ export class NeuralBandRemote {
     }
     const kind = neuralBandInputFor(gesture, finger);
     if (kind && this.takesInput()) this.inject(kind);
+  }
+
+  /**
+   * The band's level in the shell's battery levels, beside the glasses', ring's and watch's
+   * (top bar, Glanceboard, phone). Like the watch's, it exists only while the band is there.
+   */
+  private updateBattery(status: NeuralBandStatus): void {
+    const { band, bandCharging } = neuralBandBatteryLevel(status);
+    const current = shell.getBatteryLevels();
+    if (current.band === band && current.bandCharging === bandCharging) return;
+    const wasKnown = current.band !== null;
+    shell.setBatteryLevels({ band, bandCharging });
+    if (band !== null) this.host.appendLog(`Neural Band: battery ${band}%${bandCharging ? " (charging)" : ""}`);
+    else if (wasKnown) this.host.appendLog("Neural Band: battery unknown");
+    this.host.batteryChanged();
   }
 
   private releaseHolds(): void {

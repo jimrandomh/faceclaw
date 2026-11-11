@@ -98,6 +98,7 @@ import {
   watchRemoteEnabledSetting,
   watchSoundEffectsSetting,
   watchVibrateOnInputSetting,
+  bandBatteryVisibilitySetting,
   neuralBandEnabledSetting,
   neuralBandHapticsSetting,
   neuralBandTwistScrollSetting,
@@ -397,12 +398,13 @@ function batteryIndicatorsMenuItem(): MenuItem {
   return {
     label: "Battery indicators",
     description:
-      "Top-bar battery indicators for the phone, watch, glasses, and ring: their style, and whether each shows always, only when low, or never.",
+      "Top-bar battery indicators for the phone, watch, Neural Band, glasses, and ring: their style, and whether each shows always, only when low, or never.",
     onSelect: (ctx) => {
       openSettingsSubMenu(ctx, "Battery indicators", [
         enumSettingMenuItem(batteryDisplayModeSetting),
         enumSettingMenuItem(phoneBatteryVisibilitySetting),
         enumSettingMenuItem(watchBatteryVisibilitySetting),
+        ...(neuralBand.isSupported() ? [enumSettingMenuItem(bandBatteryVisibilitySetting)] : []),
         // Named as the top bar names this indicator.
         enumSettingMenuItem(glassesBatteryVisibilitySetting, { label: glassesModelName() }),
         enumSettingMenuItem(ringBatteryVisibilitySetting),

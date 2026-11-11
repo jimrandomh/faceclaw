@@ -83,3 +83,13 @@ test("the Settings battery line names the paired glasses", () => {
   assert.equal(formatBatteryLine({ ...levels, case: null, ring: null }, true, "G1"), "G1 87% ⚡");
   assert.equal(formatBatteryLine({ ...levels, case: null, ring: null }, true, "iO"), "iO 87% ⚡");
 });
+
+test("the Settings battery line adds the Neural Band while it is connected", () => {
+  assert.equal(
+    formatBatteryLine({ ...levels, case: null, band: 64, bandCharging: false }, true, "G2"),
+    "G2 87% ⚡  ·  R1 72%  ·  Band 64%",
+  );
+  // The band reports its own charging, glasses link or not.
+  assert.equal(formatBatteryLine({ ...levels, case: null, ring: null, band: 30, bandCharging: true }, false, "G2"), "G2 87%  ·  Band 30% ⚡");
+  assert.equal(formatBatteryLine({ ...levels, case: null, ring: null, band: null, bandCharging: null }, true, "G2"), "G2 87% ⚡");
+});

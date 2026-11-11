@@ -227,6 +227,9 @@ function describeState(): string {
       : battery.caseCharging ? ", charging" : "";
     parts.push(`Charging case battery: ${battery.case}%${detail}.`);
   }
+  if (battery.band !== null) {
+    parts.push(`Meta Neural Band battery: ${battery.band}%${battery.bandCharging ? ", charging" : ""}.`);
+  }
   parts.push(`Local time: ${formatDateTime(new Date())}.`);
   return parts.join(" ");
 }

@@ -2,6 +2,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 
 const {
+  neuralBandBatteryLevel,
   neuralBandBatteryText,
   neuralBandInputFor,
   neuralBandStatusLine,
@@ -59,4 +60,14 @@ test("native events parse, and a status fills in fields an older native side lea
   assert.deepEqual(parseNeuralBandEvent('{"type":"gesture","gesture":"tap","finger":1}'), { type: "gesture", gesture: "tap", finger: 1 });
   assert.equal(parseNeuralBandEvent("{"), null);
   assert.equal(parseNeuralBandEvent('{"type":"mystery"}'), null);
+});
+
+test("the battery indicator follows the band: a level only while connected and reported", () => {
+  assert.deepEqual(neuralBandBatteryLevel(status({ state: "connected", battery: 64, charging: false })), { band: 64, bandCharging: false });
+  // Charging stays unknown until the band's own status query has said.
+  assert.deepEqual(neuralBandBatteryLevel(status({ state: "connected", battery: 64, charging: null })), { band: 64, bandCharging: null });
+  assert.deepEqual(neuralBandBatteryLevel(status({ state: "connected", battery: -1 })), { band: null, bandCharging: null });
+  // A disconnected band takes its indicator with it, whatever it last said.
+  assert.deepEqual(neuralBandBatteryLevel(status({ state: "connecting", battery: 64, charging: true })), { band: null, bandCharging: null });
+  assert.deepEqual(neuralBandBatteryLevel(status({ state: "connected", battery: 101 })), { band: null, bandCharging: null });
 });
