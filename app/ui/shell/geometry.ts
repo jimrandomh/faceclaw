@@ -196,7 +196,7 @@ export function switcherRect(heightMode: WindowHeightMode, appId?: string): { x:
  * the status bar, or none. The choice is a bottom or popup switcher's; a
  * side strip always has its lines.
  */
-function windowBorder(): WindowBorder {
+export function windowBorder(): WindowBorder {
   return sideStrip() ? "all" : windowBorderSetting.get();
 }
 

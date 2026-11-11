@@ -48,6 +48,7 @@ import {
   switcherRect,
   switcherRowDivider,
   TOP_BAR_HEIGHT,
+  windowBorder,
   windowFooterHeight,
   windowFramed,
   windowHeaderHeight,
@@ -188,12 +189,18 @@ function switcherLayout(windowCount: number, heightMode: WindowHeightMode, appId
     // Under a framed window the first window's cell (the launcher's) starts
     // at the frame's left side, one pixel outside the window, so a selection
     // tab there carries the side straight down (drawWindowFrame squares that
-    // corner for it). Scrolled past it, the cells keep the margin the left
-    // chevron needs. The count of slots stays the same either way. Only the
-    // first row's cells touch the separator; a second row's lines up under
-    // it. Where the row has no separator line (geometry.ts
-    // switcherRowDivider) none do, and every selection is a box.
-    const first = windowFramed(appId) && scrollRow === 0 ? row.x - 1 : row.x + LIST_MARGIN - 2;
+    // corner for it). With a border that isn't all around (geometry.ts
+    // windowBorder) it starts at the row's own end, in line with the
+    // window's edge. Scrolled past it, and under an unframed window whose
+    // border is all around (Full Screen, immersive), the cells keep the
+    // margin the left chevron needs. The count of slots stays the same
+    // either way. Only the first row's cells touch the separator; a second
+    // row's lines up under it. Where the row has no separator line
+    // (geometry.ts switcherRowDivider) none do, and every selection is a box.
+    const first = scrollRow > 0 ? row.x + LIST_MARGIN - 2
+      : windowFramed(appId) ? row.x - 1
+      : windowBorder() !== "all" ? row.x
+      : row.x + LIST_MARGIN - 2;
     const divided = switcherRowDivider(appId);
     return {
       position,

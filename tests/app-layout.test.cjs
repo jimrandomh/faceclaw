@@ -890,10 +890,15 @@ test('a bottom app switcher\'s border can be just the line by the status bar, or
   assert.equal(frames(parts).length, 0);
   assert.deepEqual([row.x, row.y, row.image.width], [32, 366, 576]);
   assert.deepEqual([at(row, 32, 366), at(row, 300, 366), at(row, 607, 366)], [40, 40, 40]);
-  // The cells keep their margin from the row's end, and the selection is
-  // still a tab diverting the line.
-  assert.deepEqual([chrome.windowIndexAt(39, 380, 2), chrome.windowIndexAt(40, 380, 2), chrome.windowIndexAt(80, 380, 2)], [null, 0, 1]);
-  assert.deepEqual([at(row, 79, 366), at(row, 80, 366), at(row, 98, 366), at(row, 80, 380)], [40, 150, 1, 150]);
+  // The first cell (the launcher's) starts at the row's end, in line with
+  // the window's edge, and the selection is still a tab diverting the line.
+  assert.deepEqual([chrome.windowIndexAt(31, 380, 2), chrome.windowIndexAt(32, 380, 2), chrome.windowIndexAt(72, 380, 2)], [null, 0, 1]);
+  assert.deepEqual([at(row, 71, 366), at(row, 72, 366), at(row, 90, 366), at(row, 72, 380)], [40, 150, 1, 150]);
+  // The launcher's own tab runs down the window's edge from the line's start.
+  state.selectedIndex = 0;
+  [row] = chrome.paintParts();
+  assert.deepEqual([at(row, 32, 366), at(row, 32, 380), at(row, 50, 366), at(row, 68, 366)], [150, 150, 1, 40]);
+  state.selectedIndex = 1;
   // The flat paint has no frame either.
   assert.equal(chrome.paint().draws.filter((d) => d.presentation?.displayList).length, 0);
   // With the status bar on top, the line is the top bar's divider, and the
@@ -906,21 +911,27 @@ test('a bottom app switcher\'s border can be just the line by the status bar, or
   assert.deepEqual([Array.from(parts, (p) => p.shellKey), frames(parts).length], [[2, 1], 0]);
   assert.deepEqual([at(bar, 32, 105), at(bar, 607, 105)], [40, 40]);
   assert.deepEqual([at(row, 32, 366), at(row, 300, 366)], [1, 1]);
-  assert.deepEqual([at(row, 98, 366), at(row, 80, 380), at(row, 98, 401)], [150, 150, 150]);
+  assert.deepEqual([at(row, 90, 366), at(row, 72, 380), at(row, 90, 401)], [150, 150, 150]);
   // Focused, the box fills round the icon.
   state.focus = 'sidebar';
   [, row] = chrome.paintParts();
-  assert.deepEqual([at(row, 81, 380), at(row, 98, 380)], [255, 120]);
+  assert.deepEqual([at(row, 73, 380), at(row, 90, 380)], [255, 120]);
   state.focus = 'window';
   // No border: neither line, wherever the status bar is.
   g.settings.windowBorderSetting.value = 'none';
   [bar, row] = chrome.paintParts();
-  assert.deepEqual([at(bar, 300, 105), at(row, 300, 366), at(row, 98, 366)], [1, 1, 150]);
+  assert.deepEqual([at(bar, 300, 105), at(row, 300, 366), at(row, 90, 366)], [1, 1, 150]);
   g.settings.statusBarPositionSetting.value = 'bottom';
   parts = chrome.paintParts();
   [row] = parts;
-  assert.deepEqual([frames(parts).length, at(row, 32, 366), at(row, 300, 366), at(row, 98, 366)], [0, 1, 1, 150]);
+  assert.deepEqual([frames(parts).length, at(row, 32, 366), at(row, 300, 366), at(row, 90, 366)], [0, 1, 1, 150]);
   assert.deepEqual(g.rect('min'), { x: 32, y: 78, width: 576, height: 288 });
+  assert.deepEqual([chrome.windowIndexAt(31, 380, 2), chrome.windowIndexAt(32, 380, 2)], [null, 0]);
+  // A Full Screen window's row starts its cells at the screen's edge.
+  g.settings.displayLayoutSetting.value = 'fullscreen';
+  chrome.paintParts();
+  assert.deepEqual([chrome.windowIndexAt(0, 460, 2), chrome.windowIndexAt(40, 460, 2)], [0, 1]);
+  g.settings.displayLayoutSetting.value = 'band-middle';
   // All around, a Full Screen window has no room for a frame and keeps its
   // straight lines, as beside a side strip.
   g.settings.windowBorderSetting.value = 'all';
@@ -928,6 +939,18 @@ test('a bottom app switcher\'s border can be just the line by the status bar, or
   g.settings.displayLayoutSetting.value = 'fullscreen';
   [bar, row] = chrome.paintParts();
   assert.deepEqual([at(bar, 300, 27), at(row, 0, 444), at(row, 639, 444)], [40, 40, 40]);
+  // Its cells keep their margin from the row's end.
+  assert.deepEqual([chrome.windowIndexAt(7, 460, 2), chrome.windowIndexAt(8, 460, 2)], [null, 0]);
+  // Scrolled past the launcher, a row without the frame keeps the left
+  // chevron's margin too.
+  const narrow = geometry();
+  narrow.settings.appSwitcherPositionSetting.value = 'bottom';
+  narrow.settings.windowBorderSetting.value = 'none';
+  const scrolled = chromeLayer(narrow, { windows: 40 });
+  scrolled.state.selectedIndex = 39;
+  scrolled.chrome.paintParts();
+  assert.equal(scrolled.chrome.windowIndexAt(35, 380, 40), null);
+  assert.notEqual(scrolled.chrome.windowIndexAt(41, 380, 40), null);
 });
 
 test('a notification the switcher selects sits in a box, filled with its icon inverted while the switcher has focus', () => {
