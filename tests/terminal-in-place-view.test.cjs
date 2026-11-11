@@ -1,10 +1,12 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { loader } = require('./helpers/load-typescript.cjs');
+const { bordered, unbordered } = require('./helpers/viewport.cjs');
 
 const HUB = 'terminal:hub';
-const MIN = { width: 552, height: 260 };
-const MAX = { width: 552, height: 452 };
+// Framed windows: the shell's messages carry what each edge touches and its padding.
+const MIN = bordered(552, 260);
+const MAX = bordered(552, 452);
 const font = { lineHeight: 12, measureText: (text) => text.length * 6, getGlyph: () => null };
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -15,9 +17,10 @@ function fakeImageModule() {
       this.width = width;
       this.height = height;
       this.texts = [];
+      this.positions = [];
       return new Proxy(this, { get: (target, key) => (key in target ? target[key] : () => {}) });
     }
-    drawText(_font, _x, _y, text) { this.texts.push(text); }
+    drawText(_font, x, y, text) { this.texts.push(text); this.positions.push([text, x, y]); }
     drawMenuSelection(row) { this.texts.push(...row.texts.map((text) => `[${text}]`)); }
   }
   return { GrayImage };
@@ -94,8 +97,8 @@ function terminal({ sessions = ['vim', 'top'], presets = '', bellWake = true } =
     '../../graphics/image': image,
     '../graphics/image': image,
     '../../graphics/plane': {
-      planesFingerprint: (planes) => JSON.stringify([planes[0].width, planes[0].height, planes[0].texts]),
-      flattenPlanesWithDraws: (planes) => ({ image: { ...planes[0], width: planes[0].width, height: planes[0].height, texts: planes[0].texts, to8bppBuffer: () => ({ buffer: planes[0].texts }) }, draws: [] }),
+      planesFingerprint: (planes) => JSON.stringify([planes[0].width, planes[0].height, planes[0].texts, planes[0].positions]),
+      flattenPlanesWithDraws: (planes) => ({ image: { ...planes[0], width: planes[0].width, height: planes[0].height, texts: planes[0].texts, to8bppBuffer: () => ({ buffer: planes[0] }) }, draws: [] }),
     },
     '../../graphics/glyph-wire': { prepareFrameDraws: () => null },
     '../../graphics/ui-fonts': {
@@ -109,7 +112,7 @@ function terminal({ sessions = ['vim', 'top'], presets = '', bellWake = true } =
     },
     '../../native/active-display': {
       getActiveDisplay: () => ({
-        submitSurfaceFrame: (texts, surfaceId, _x, _y, width, height) => frames.push({ surfaceId, width, height, texts }),
+        submitSurfaceFrame: ({ texts, positions }, surfaceId, _x, _y, width, height) => frames.push({ surfaceId, width, height, texts, positions }),
       }),
     },
     '../../ui/gestures': { GESTURE_DOUBLE_CLICK: 'double-tap' },
@@ -148,6 +151,8 @@ function terminal({ sessions = ['vim', 'top'], presets = '', bellWake = true } =
   return {
     clients, frames, replies, menus, send, input, openWindow, repliesOf,
     lastFrame: () => frames[frames.length - 1],
+    // Where the last frame drew a line of text, as [x, y].
+    textAt: (text) => frames[frames.length - 1].positions.find((entry) => entry[0] === text).slice(1),
     clearReplies: () => { replies.length = 0; },
     openMenu: (windowId = HUB) => input('short-then-long-press', windowId),
     menuLabels: () => Array.from(menus.find((menu) => menu.isOpen()).opened, (item) => item.label),
@@ -399,12 +404,47 @@ test('closing the window while it shows a session stops that session', () => {
 
 test('a later resize of a session in place reconnects at the new grid, and the list then gets its own size', () => {
   const t = hubShowingSession();
-  t.answerHeight({ width: 552, height: 400 });
+  t.answerHeight(bordered(552, 400));
   assert.equal(t.clients[1].stopped, false);
   assert.deepEqual(t.clients[1].viewport, [92, 33]);
   t.input('double-click');
-  t.answerHeight({ width: 552, height: 240 });
+  t.answerHeight(bordered(552, 240));
   assert.equal(t.lastFrame().height, 240);
+});
+
+test('the list lays out inside the padding of its window\'s bordered edges, and follows a change in them', async () => {
+  const t = terminal();
+  t.openWindow(HUB, MIN);
+  // The title lines up with the rows' text: 6px inside their boxes, which start at the left padding.
+  assert.deepEqual(t.textAt('Terminal'), [8 + 6, 8 + 2]);
+  assert.deepEqual(t.textAt('Connected.'), [8 + 6 + 'Terminal'.length * 6 + 16, 8 + 2]);
+  // The window menu's stack gets the whole viewport, for the pages it shows.
+  const plain = (value) => JSON.parse(JSON.stringify(value));
+  assert.deepEqual(plain(t.menus[0].options.size), plain(MIN));
+
+  // Same size, nothing bordering it any more (Border: None): a repaint with no padding.
+  const painted = t.frames.length;
+  t.send({ type: 'resize-window', windowId: HUB, viewport: unbordered(552, 260) });
+  await new Promise((resolve) => setTimeout(resolve, 80));
+  assert.equal(t.frames.length, painted + 1);
+  assert.deepEqual(t.textAt('Terminal'), [6, 2]);
+  assert.deepEqual(plain(t.menus[0].options.size), plain(unbordered(552, 260)));
+});
+
+test('a session keeps its connection and grid when only its window\'s edges change', async () => {
+  const t = hubShowingSession();
+  const painted = t.frames.length;
+  t.send({ type: 'resize-window', windowId: HUB, viewport: unbordered(552, 452) });
+  await new Promise((resolve) => setTimeout(resolve, 80));
+  assert.equal(t.clients[1].stopped, false);
+  assert.equal(t.clients[1].viewport, undefined, 'no new grid negotiated');
+  assert.equal(t.clients.length, 2);
+  assert.equal(t.frames.length, painted);
+
+  // Back in the list, the hub takes the padding the shell answers with.
+  t.input('double-click');
+  t.answerHeight(unbordered(552, 260));
+  assert.deepEqual(t.textAt('Terminal'), [6, 2]);
 });
 
 test('the shell host resizes the surface before answering with the new viewport', async () => {
@@ -417,7 +457,7 @@ test('the shell host resizes the surface before answering with the new viewport'
     '../../graphics/image': {},
     './chrome-layer': { windowIcon() {} },
     '../../assistant/tool-registry': { toolRegistry: { removeAppTools() {} } },
-    './geometry': { appViewportSize: (mode) => (mode === 'max' ? MAX : MIN) },
+    './geometry': { appViewport: (mode) => (mode === 'max' ? MAX : MIN) },
     '../../native/frame-timings': {},
     './worker-state': {},
     './shell': { shell: {

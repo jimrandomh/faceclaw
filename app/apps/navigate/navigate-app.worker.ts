@@ -59,6 +59,7 @@ import {
   type SavedDestination,
 } from "./destinations";
 import type { WorkerAppMessage, WorkerAppReply } from "../../ui/shell/worker-window";
+import { sameViewport, type Viewport } from "../../ui/viewport";
 import type { ToolSpec, ToolResult } from "../../assistant/tool-registry";
 import {
   GESTURE_CLICK,
@@ -95,7 +96,11 @@ import { drawManeuverGlyph } from "./maneuver-icons";
 declare const global: any;
 
 const MAP_SIZE = 260;
+/** The guidance panel's region beside the map pane, and how far in its content starts. */
 const PANEL_X = MAP_SIZE + 10;
+const PANEL_INSET = 8;
+/** Clear space between the footer hint line and what ends above it (the idle list, the map-mode map). */
+const FOOTER_GAP = 8;
 /** Map refetch policy knobs (design doc: never per-fix, only when stale). */
 const BEARING_BUCKET_DEG = 15;
 const MOVE_REFRESH_FRACTION = 0.15;
@@ -132,6 +137,13 @@ type NavWindow = {
   title: string;
   viewportWidth: number;
   viewportHeight: number;
+  /**
+   * The viewport as the shell last sent it: besides the size above, what each
+   * edge touches and the padding suggested there. The maps fill their panes
+   * whatever the edges touch; text, the idle list and the footer hints keep
+   * the padding.
+   */
+  viewport: Viewport;
   foreground: boolean;
   focused: boolean;
   menu: WindowMenu | null;
@@ -306,6 +318,7 @@ global.onmessage = (event: { data: WorkerAppMessage }) => {
         title: message.title,
         viewportWidth: message.viewport.width,
         viewportHeight: message.viewport.height,
+        viewport: message.viewport,
         foreground: false,
         focused: false,
         menu: null,
@@ -313,19 +326,29 @@ global.onmessage = (event: { data: WorkerAppMessage }) => {
       };
       post({ type: "set-tools", windowId: message.windowId, tools: NAVIGATE_TOOLS });
       break;
-    case "resize-window":
+    case "resize-window": {
       if (!window || window.windowId !== message.windowId) break;
-      if (window.viewportWidth === message.viewport.width && window.viewportHeight === message.viewport.height) break;
+      // The layout follows the padding as well as the size, so a change to
+      // what the edges touch alone is laid out and painted again too.
+      if (sameViewport(window.viewport, message.viewport)) break;
+      const mapSize = phase === "map" ? mapDimensions() : null;
       window.viewportWidth = message.viewport.width;
       window.viewportHeight = message.viewport.height;
+      window.viewport = message.viewport;
       window.menu?.resize(message.viewport);
       window.lastSubmittedFingerprint = "";
-      if (phase === "map") {
-        resetMapState();
-        maybeRefreshMap();
+      // The map is fetched at the size it is shown at: only a change to that
+      // needs a new one.
+      if (mapSize) {
+        const resized = mapDimensions();
+        if (resized.width !== mapSize.width || resized.height !== mapSize.height) {
+          resetMapState();
+          maybeRefreshMap();
+        }
       }
       render();
       break;
+    }
     case "close-window":
       if (editing) {
         // Window closed mid-edit: shut the phone editor down.
@@ -826,9 +849,13 @@ function maybeRefreshMap(): void {
     });
 }
 
+/**
+ * The map's size: the pane beside the guidance panel, or in map mode the
+ * whole window down to the footer hint.
+ */
 function mapDimensions(): { width: number; height: number } {
   return phase === "map" && window
-    ? { width: window.viewportWidth, height: Math.max(1, window.viewportHeight - 30) }
+    ? { width: window.viewportWidth, height: Math.max(1, footerY(window.viewport) - FOOTER_GAP) }
     : { width: MAP_SIZE, height: MAP_SIZE };
 }
 
@@ -1212,10 +1239,11 @@ function idleEntries(): IdleEntry[] {
   return entries;
 }
 
-/** Horizontal inset of the idle list's selection boxes. */
-const IDLE_LIST_X = 20;
 /** Pixels between consecutive idle rows' selection boxes. */
 const IDLE_ROW_GAP = 2;
+/** The idle list's scrollbar, and the gap its rows leave before it. */
+const IDLE_SCROLLBAR_WIDTH = 3;
+const IDLE_SCROLLBAR_GAP = 4;
 
 function idleList(): Menu<IdleEntry> {
   idleMenu ??= new Menu<IdleEntry>({
@@ -1260,7 +1288,7 @@ function windowMenu(win: NavWindow): WindowMenu {
       post,
       title: () => win.title,
       items: () => windowMenuItems(),
-      size: { width: win.viewportWidth, height: win.viewportHeight },
+      size: win.viewport,
       paintBase: () => paintContent(win),
       isFocused: () => win.focused,
     });
@@ -1342,12 +1370,28 @@ function paint(win: NavWindow): Plane[] {
   return windowMenu(win).paint();
 }
 
+/**
+ * Page text (a title, hints, status messages) starts this far inside the
+ * padding suggested for the window's sides, which is where the idle list's
+ * selection boxes and the footer hints start.
+ */
+const TEXT_INSET = 4;
+/** How far below a page's title (at the top padding) its text starts: the idle page's hint, the edit screen's message. */
+const IDLE_HINT_DROP = 36;
+const EDIT_MESSAGE_DROP = 48;
+
+/** Where a page's text starts and how wide it may run. */
+function pageText(viewport: Viewport): { x: number; width: number } {
+  const { width, padding } = viewport;
+  return { x: padding.left + TEXT_INSET, width: width - padding.left - padding.right - 2 * TEXT_INSET };
+}
+
 function paintContent(win: NavWindow): GrayImage {
   const image = new GrayImage(win.viewportWidth, win.viewportHeight, 0);
   if (editing) {
-    paintEdit(image, editing);
+    paintEdit(image, win, editing);
   } else if (phase === "map") {
-    paintMap(image);
+    paintMap(image, win);
   } else if (phase === "idle" || phase === "acquiring" || phase === "routing") {
     paintIdle(image, win);
   } else {
@@ -1357,27 +1401,31 @@ function paintContent(win: NavWindow): GrayImage {
 }
 
 /** The "type on the phone" screen for a destination name/address edit. */
-function paintEdit(image: GrayImage, edit: DestinationEdit): void {
+function paintEdit(image: GrayImage, win: NavWindow, edit: DestinationEdit): void {
+  const { padding } = win.viewport;
+  const text = pageText(win.viewport);
   const step = smallFont.lineHeight + 2;
-  image.drawText(mediumFont, 24, 16, edit.title, 245);
-  const messageY = 64;
-  const lines = wrapText(smallFont, "Type the value in the phone app, or use voice input.", image.width - 48);
+  image.drawText(mediumFont, text.x, padding.top, edit.title, 245);
+  const messageY = padding.top + EDIT_MESSAGE_DROP;
+  const lines = wrapText(smallFont, "Type the value in the phone app, or use voice input.", text.width);
   for (let index = 0; index < lines.length; index++) {
-    image.drawText(smallFont, 24, messageY + index * step, lines[index]!, 190);
+    image.drawText(smallFont, text.x, messageY + index * step, lines[index]!, 190);
   }
   const value = edit.setting.get();
   image.drawText(
     smallFont,
-    24,
+    text.x,
     messageY + (lines.length + 1) * step,
-    truncateText(smallFont, value || "(empty)", image.width - 48),
+    truncateText(smallFont, value || "(empty)", text.width),
     value ? 225 : 130,
   );
-  drawFooter(image, `${GESTURE_CLICK} done   ${GESTURE_DOUBLE_CLICK} cancel`);
+  drawFooter(image, win.viewport, `${GESTURE_CLICK} done   ${GESTURE_DOUBLE_CLICK} cancel`);
 }
 
 function paintIdle(image: GrayImage, win: NavWindow): void {
-  image.drawText(mediumFont, 24, 16, "Navigate", 245);
+  const { padding } = win.viewport;
+  const text = pageText(win.viewport);
+  image.drawText(mediumFont, text.x, padding.top, "Navigate", 245);
   const busy = phase !== "idle";
   const entries = busy ? [] : idleEntries();
   const configured = isMapboxConfigured();
@@ -1386,16 +1434,17 @@ function paintIdle(image: GrayImage, win: NavWindow): void {
     : entries.length
       ? "View the map or pick a destination below. Use Voice input (system menu, long-press) to say a destination."
       : "Ask the voice assistant to navigate somewhere, or pick Voice input from the system menu (long-press) to say a destination. Save Home, Work and other places from the app menu.";
-  const hintLines = wrapText(smallFont, hint, image.width - 48);
+  const hintLines = wrapText(smallFont, hint, text.width);
   const hintStep = smallFont.lineHeight + 2;
+  const hintY = padding.top + IDLE_HINT_DROP;
   for (let index = 0; index < hintLines.length; index++) {
-    image.drawText(smallFont, 24, 52 + index * hintStep, hintLines[index]!, 170);
+    image.drawText(smallFont, text.x, hintY + index * hintStep, hintLines[index]!, 170);
   }
-  let y = 52 + hintLines.length * hintStep + 6;
+  let y = hintY + hintLines.length * hintStep + 6;
   if (statusMessage) {
-    const statusLines = wrapText(smallFont, statusMessage, image.width - 48);
+    const statusLines = wrapText(smallFont, statusMessage, text.width);
     for (let index = 0; index < statusLines.length; index++) {
-      image.drawText(smallFont, 24, y + index * hintStep, statusLines[index]!, busy ? 220 : 190);
+      image.drawText(smallFont, text.x, y + index * hintStep, statusLines[index]!, busy ? 220 : 190);
     }
     y += statusLines.length * hintStep + 6;
   }
@@ -1403,23 +1452,34 @@ function paintIdle(image: GrayImage, win: NavWindow): void {
     paintIdleList(image, win, entries, y);
     drawFooter(
       image,
+      win.viewport,
       `${GESTURE_SCROLL} select   ${GESTURE_CLICK} ${configured ? "go" : "choose"}   ${GESTURE_SHORT_THEN_LONG_PRESS} app menu   ${GESTURE_DOUBLE_CLICK} back`,
     );
   } else {
-    drawFooter(image, `${GESTURE_SHORT_THEN_LONG_PRESS} app menu   ${GESTURE_DOUBLE_CLICK} back`);
+    drawFooter(image, win.viewport, `${GESTURE_SHORT_THEN_LONG_PRESS} app menu   ${GESTURE_DOUBLE_CLICK} back`);
   }
 }
 
-/** Map action, saved destinations, then recent places, one selectable row each. */
+/**
+ * Map action, saved destinations, then recent places, one selectable row
+ * each. The list scrolls between the page's text above it and the footer
+ * hint, both of which stay put, so it needs no padding of its own at its
+ * top and bottom; its selection boxes span the window between the padding
+ * suggested for the sides.
+ */
 function paintIdleList(image: GrayImage, win: NavWindow, entries: IdleEntry[], top: number): void {
+  const { width, padding } = win.viewport;
   const rowHeight = listRowHeight(smallFont);
-  const listBottom = image.height - 30;
+  const listBottom = footerY(win.viewport) - FOOTER_GAP;
   const visibleRows = Math.max(1, Math.floor((listBottom - top) / rowHeight));
-  const rowWidth = image.width - 40 - (entries.length > visibleRows ? 10 : 0);
+  const listHeight = visibleRows * rowHeight - IDLE_ROW_GAP;
+  // The scrollbar hugs the right padding; the rows give way to it only when there is one.
+  const right = width - padding.right;
+  const scrollbar = entries.length > visibleRows ? IDLE_SCROLLBAR_GAP + IDLE_SCROLLBAR_WIDTH : 0;
   const list = idleList();
   list.setItems(entries);
-  list.paint(image, { x: IDLE_LIST_X, y: top, width: rowWidth, height: visibleRows * rowHeight - IDLE_ROW_GAP }, win.focused);
-  list.drawScrollbar(image, IDLE_LIST_X + rowWidth + 4, top, visibleRows * rowHeight - 2);
+  list.paint(image, { x: padding.left, y: top, width: right - scrollbar - padding.left, height: listHeight }, win.focused);
+  list.drawScrollbar(image, right - IDLE_SCROLLBAR_WIDTH, top, listHeight);
 }
 
 /** Two columns: the entry's name, then its detail (action hint, address or place). */
@@ -1444,6 +1504,22 @@ function drawIdleRow({ image, item: entry, x, y, width, selected }: MenuDrawArgs
   image.drawText(smallFont, detailX, textY, truncateText(smallFont, detail, x + width - 6 - detailX), selected ? 170 : 130);
 }
 
+// The guidance panel's head, measured from the maneuver glyph's top-left
+// corner (the panel's content x, at the window's top padding).
+const GLYPH_SIZE = 56;
+/** Text beside the glyph: the distance to the maneuver, or "Arrived". */
+const GLYPH_CAPTION_X = 68;
+const DISTANCE_Y = 10;
+const ARRIVED_Y = 12;
+/** A roundabout's exit number, inside its glyph. */
+const EXIT_NUMBER_X = 22;
+const EXIT_NUMBER_Y = 32;
+/** The instruction (or the destination's name) under the glyph. */
+const INSTRUCTION_Y = 70;
+/** Clear space under the panel's status line (above the footer hint) and under its ETA line (above the status). */
+const PANEL_STATUS_GAP = 10;
+const PANEL_ETA_GAP = 6;
+
 function paintNavigating(image: GrayImage, win: NavWindow): void {
   // Map pane (left).
   if (mapImage) {
@@ -1460,72 +1536,87 @@ function paintNavigating(image: GrayImage, win: NavWindow): void {
     image.drawText(smallFont, 24, MAP_SIZE / 2 - 8, text, 120);
   }
 
-  // Guidance panel (right) — its own region so text deltas never overlap the map's.
-  const panelWidth = win.viewportWidth - PANEL_X;
+  // Guidance panel (right) — its own region so text deltas never overlap the
+  // map's. Its left side is placed from the map pane; its top, right and
+  // bottom keep the padding suggested for the window's edges.
+  const { padding } = win.viewport;
+  const x = PANEL_X + PANEL_INSET;
+  const top = padding.top;
+  const textWidth = win.viewportWidth - padding.right - x;
   if (phase === "arrived") {
-    drawManeuverGlyph(image, PANEL_X + 8, 14, 56, "arrive", "", 245);
-    image.drawText(mediumFont, PANEL_X + 76, 26, "Arrived", 245);
+    drawManeuverGlyph(image, x, top, GLYPH_SIZE, "arrive", "", 245);
+    image.drawText(mediumFont, x + GLYPH_CAPTION_X, top + ARRIVED_Y, "Arrived", 245);
     image.drawTextWrapped({
       font: smallFont,
-      x: PANEL_X + 8,
-      y: 84,
-      width: panelWidth - 16,
+      x,
+      y: top + INSTRUCTION_Y,
+      width: textWidth,
       text: destinationName,
       value: 200,
     });
-    drawFooter(image, `${GESTURE_CLICK} done   ${GESTURE_DOUBLE_CLICK} back`);
+    drawFooter(image, win.viewport, `${GESTURE_CLICK} done   ${GESTURE_DOUBLE_CLICK} back`);
     return;
   }
 
+  // The status and ETA lines stack above the footer hint.
+  const statusY = footerY(win.viewport) - smallFont.lineHeight - PANEL_STATUS_GAP;
   const step = follower && progress ? follower.route.steps[progress.nextStepIndex] : null;
   if (step && progress) {
-    drawManeuverGlyph(image, PANEL_X + 8, 14, 56, step.maneuverType, step.maneuverModifier, 245);
+    drawManeuverGlyph(image, x, top, GLYPH_SIZE, step.maneuverType, step.maneuverModifier, 245);
     if (step.exit !== null && (step.maneuverType === "roundabout" || step.maneuverType === "rotary")) {
-      image.drawText(smallFont, PANEL_X + 30, 46, String(step.exit), 245);
+      image.drawText(smallFont, x + EXIT_NUMBER_X, top + EXIT_NUMBER_Y, String(step.exit), 245);
     }
-    image.drawText(largeFont, PANEL_X + 76, 24, formatDistanceShort(progress.metersToNextManeuver), 250);
+    image.drawText(largeFont, x + GLYPH_CAPTION_X, top + DISTANCE_Y, formatDistanceShort(progress.metersToNextManeuver), 250);
     image.drawTextWrapped({
       font: mediumFont,
-      x: PANEL_X + 8,
-      y: 84,
-      width: panelWidth - 16,
+      x,
+      y: top + INSTRUCTION_Y,
+      width: textWidth,
       text: step.instruction || step.name || step.maneuverType,
       value: 220,
     });
     const eta = `${formatDistance(progress.remainingMeters)} · ${formatDurationShort(progress.remainingSec)} · ${formatClock(
       Date.now() + progress.remainingSec * 1000,
     )}`;
-    image.drawText(smallFont, PANEL_X + 8, win.viewportHeight - 62, eta, 170);
+    image.drawText(smallFont, x, statusY - smallFont.lineHeight - PANEL_ETA_GAP, eta, 170);
   } else {
     image.drawTextWrapped({
       font: mediumFont,
-      x: PANEL_X + 8,
-      y: 24,
-      width: panelWidth - 16,
+      x,
+      y: top,
+      width: textWidth,
       text: `Waiting for GPS...`,
       value: 200,
     });
   }
   if (statusMessage) {
-    image.drawText(smallFont, PANEL_X + 8, win.viewportHeight - 44, statusMessage, 200);
+    image.drawText(smallFont, x, statusY, truncateText(smallFont, statusMessage, textWidth), 200);
   }
   const modeHint = mapMode === "follow" ? "overview" : "follow";
-  drawFooter(image, `${GESTURE_SCROLL} zoom   ${GESTURE_CLICK} ${modeHint}   ${GESTURE_DOUBLE_CLICK} back`, PANEL_X + 8);
+  drawFooter(image, win.viewport, `${GESTURE_SCROLL} zoom   ${GESTURE_CLICK} ${modeHint}   ${GESTURE_DOUBLE_CLICK} back`, x);
 }
 
-function paintMap(image: GrayImage): void {
+/** Clear space under the text of the map-mode status banner. */
+const STATUS_BANNER_GAP = 4;
+
+function paintMap(image: GrayImage, win: NavWindow): void {
+  const { padding } = win.viewport;
   const { width, height } = mapDimensions();
   if (mapImage) {
     image.bitBlt(mapImage, 0, 0);
     drawChevron(image, width / 2, height / 2, headHeadingDeg ?? 0);
   } else {
-    image.drawText(smallFont, 24, height / 2 - 8, mapLastError ? "Map unavailable; retrying..." : "Loading map...", 170);
+    const text = mapLastError ? "Map unavailable; retrying..." : "Loading map...";
+    image.drawText(smallFont, pageText(win.viewport).x, height / 2 - 8, text, 170);
   }
   if (statusMessage) {
-    image.fillRect(0, 0, width, smallFont.lineHeight + 8, 0);
-    image.drawText(smallFont, 16, 4, truncateText(smallFont, statusMessage, width - 32), 200);
+    // A banner across the map's top: the strip runs edge to edge, and its
+    // text keeps the padding suggested for the edges it lies along.
+    image.fillRect(0, 0, width, padding.top + smallFont.lineHeight + STATUS_BANNER_GAP, 0);
+    image.drawText(smallFont, padding.left, padding.top,
+      truncateText(smallFont, statusMessage, width - padding.left - padding.right), 200);
   }
-  drawFooter(image, `${GESTURE_SCROLL} zoom   ${GESTURE_CLICK} destinations   ${GESTURE_DOUBLE_CLICK} back`);
+  drawFooter(image, win.viewport, `${GESTURE_SCROLL} zoom   ${GESTURE_CLICK} destinations   ${GESTURE_DOUBLE_CLICK} back`);
 }
 
 /**
@@ -1575,8 +1666,15 @@ function fillTriangle(image: GrayImage, x0: number, y0: number, x1: number, y1: 
   }
 }
 
-function drawFooter(image: GrayImage, text: string, x = 16): void {
-  image.drawText(smallFont, x, image.height - 22, text, 115);
+/** Top of the footer hint line, which rests on the padding suggested for the window's bottom edge. */
+function footerY(viewport: Viewport): number {
+  return viewport.height - viewport.padding.bottom - smallFont.lineHeight;
+}
+
+/** Draw the footer hint line from `x` (default: the left padding), cut short at the right padding. */
+function drawFooter(image: GrayImage, viewport: Viewport, text: string, x = viewport.padding.left): void {
+  const maxWidth = viewport.width - viewport.padding.right - x;
+  image.drawText(smallFont, x, footerY(viewport), truncateText(smallFont, text, maxWidth), 115);
 }
 
 // ---------------------------------------------------------------------------

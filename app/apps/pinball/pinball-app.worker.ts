@@ -37,6 +37,7 @@ import { loadSoundEnabled, saveSoundEnabled } from "../../ui/sound-setting";
 import { type MenuItem } from "../../ui/menu";
 import { WindowMenu } from "../../ui/window-menu";
 import type { WorkerAppMessage, WorkerAppReply } from "../../ui/shell/worker-window";
+import type { Viewport } from "../../ui/viewport";
 import {
   directionalFallback,
   GESTURE_CLICK,
@@ -250,6 +251,13 @@ type PinballWindow = {
   title: string;
   viewportWidth: number;
   viewportHeight: number;
+  /**
+   * The viewport as the shell last sent it: besides the size above, what each
+   * edge touches and the padding suggested there. The window menu's layers
+   * lay out by it; the table and its panel are fixed art, drawn at the
+   * coordinates the physics runs in (see LAYOUT_HEIGHT).
+   */
+  viewport: Viewport;
   foreground: boolean;
   /** Whether this window is the shell's input target (pushed with each message). */
   focused: boolean;
@@ -314,6 +322,7 @@ global.onmessage = (event: { data: WorkerAppMessage }) => {
         title: message.title,
         viewportWidth: message.viewport.width,
         viewportHeight: message.viewport.height,
+        viewport: message.viewport,
         foreground: false,
         focused: false,
         menu: null,
@@ -416,7 +425,8 @@ global.onmessage = (event: { data: WorkerAppMessage }) => {
       if (!window) break;
       window.viewportWidth = message.viewport.width;
       window.viewportHeight = message.viewport.height;
-      window.menu?.resize({ width: window.viewportWidth, height: window.viewportHeight });
+      window.viewport = message.viewport;
+      window.menu?.resize(message.viewport);
       window.lastSubmittedFingerprint = "";
       if (window.foreground) renderAndSubmit(window, 0);
       break;
@@ -507,7 +517,7 @@ function windowMenu(window: PinballWindow): WindowMenu {
       post,
       title: () => window.title,
       items: () => (window.phase === "playing" ? [] : windowMenuItems(window)),
-      size: { width: window.viewportWidth, height: window.viewportHeight },
+      size: window.viewport,
       paintBase: () => paintContent(window),
       isFocused: () => window.focused,
     });

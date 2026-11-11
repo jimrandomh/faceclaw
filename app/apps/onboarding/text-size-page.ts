@@ -14,11 +14,11 @@ import { FONT_SIZE_CHOICES } from "../../ui/font-picker";
 import type { InputEvent } from "../../ui/gestures";
 import { Menu, type MenuBox, type MenuDrawArgs } from "../../ui/menu-core";
 import { LIST_ROW_TEXT_INSET, listRowHeight } from "../../ui/metrics";
+import type { Edges } from "../../ui/viewport";
 import { onboardingFont } from "./onboarding-fonts";
-import { drawPageHeading, PAGE_X, type OnboardingNav, type OnboardingPage } from "./onboarding-page";
+import { drawPageHeading, PAGE_TEXT_INSET, type OnboardingNav, type OnboardingPage } from "./onboarding-page";
 
 const CONTENT_GAP = 10;
-const BOTTOM_MARGIN = 8;
 const COLUMN_GAP = 12;
 const PREVIEW_PADDING = 10;
 const ROW_GAP = 2;
@@ -75,39 +75,40 @@ export class TextSizePage implements OnboardingPage {
     this.face = { kind: "fixed", label: selection.kind === "bitmap" ? fontSelectionLabel(selection) : "Terminus" };
   }
 
-  paint(image: GrayImage, focused: boolean): void {
+  paint(image: GrayImage, focused: boolean, padding: Edges<number>): void {
+    // The preview's frame keeps inside the padding of the window's edges.
+    const right = image.width - padding.right;
+    const bottom = image.height - padding.bottom;
     if (this.face.kind === "fixed") {
       const top = drawPageHeading(
         image,
+        padding,
         "Text size",
         `Your UI font, ${this.face.label}, comes in one size. To choose a size, pick a different font in ` +
           "Settings > Customization. Tap to continue.",
         3,
       ) + CONTENT_GAP;
-      drawPreview(image, getDefaultSmallFont(), {
-        x: PAGE_X - 10,
-        y: top,
-        width: image.width - 2 * (PAGE_X - 10),
-        height: image.height - top - BOTTOM_MARGIN,
-      });
+      drawPreview(image, getDefaultSmallFont(), { x: padding.left, y: top, width: right - padding.left, height: bottom - top });
       return;
     }
     const top = drawPageHeading(
       image,
+      padding,
       "Text size",
       "Swipe to choose a size, then tap to continue. The typeface and weight can be changed in Settings.",
     ) + CONTENT_GAP;
-    const height = image.height - top - BOTTOM_MARGIN;
     const body = onboardingFont("body");
     // TTF widths are fractional; the menu's row images need whole pixels.
-    const columnWidth = Math.ceil(20 + Math.max(...this.face.sizes.map((size) => body.measureText(sizeLabel(size)))) +
+    const columnWidth = Math.ceil(2 * PAGE_TEXT_INSET + Math.max(...this.face.sizes.map((size) => body.measureText(sizeLabel(size)))) +
       NOTE_GAP + onboardingFont("detail").measureText(RECOMMENDED_NOTE));
-    const menuBox = { x: PAGE_X - 10, y: top, width: columnWidth, height };
+    // The list scrolls, so it runs to the window's bottom edge, with that
+    // edge's padding after its last row.
+    const menuBox = { x: padding.left, y: top, width: columnWidth, height: Math.max(0, image.height - top), padBottom: padding.bottom };
     this.sizeMenu.paint(image, menuBox, focused);
     const previewX = menuBox.x + menuBox.width + COLUMN_GAP;
     const size = this.sizeMenu.selectedItem;
     const font = (size !== null ? TtfFont.load(this.face.path, size) : null) ?? getDefaultSmallFont();
-    drawPreview(image, font, { x: previewX, y: top, width: image.width - (PAGE_X - 10) - previewX, height });
+    drawPreview(image, font, { x: previewX, y: top, width: right - previewX, height: bottom - top });
   }
 
   handleInput(event: InputEvent, nav: OnboardingNav): void {
@@ -136,11 +137,11 @@ export class TextSizePage implements OnboardingPage {
   private drawSizeRow({ image, item: size, x, y, height, selected }: MenuDrawArgs<number>): void {
     const body = onboardingFont("body");
     const label = sizeLabel(size);
-    image.drawText(body, x + 10, y + LIST_ROW_TEXT_INSET, label, selected ? 255 : 190);
+    image.drawText(body, x + PAGE_TEXT_INSET, y + LIST_ROW_TEXT_INSET, label, selected ? 255 : 190);
     if (size !== defaultUiFontSize()) return;
     const detail = onboardingFont("detail");
     const noteY = y + Math.round((height - detail.lineHeight) / 2);
-    image.drawText(detail, x + 10 + body.measureText(label) + NOTE_GAP, noteY, RECOMMENDED_NOTE, selected ? 210 : 150);
+    image.drawText(detail, x + PAGE_TEXT_INSET + body.measureText(label) + NOTE_GAP, noteY, RECOMMENDED_NOTE, selected ? 210 : 150);
   }
 }
 

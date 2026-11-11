@@ -1,6 +1,5 @@
 import { imageFromAsciiArt } from "../../graphics/image";
 import { getDefaultSmallFont } from "../../graphics/ui-fonts";
-import { appViewportSize } from "../../ui/shell/geometry";
 import {
   MenuLayer,
   TextPageLayer,
@@ -62,15 +61,7 @@ const TRAY_ICON = imageFromAsciiArt(
   { "#": 220 },
 );
 
-const MENU_LAYOUT = {
-  x: 8,
-  y: 8,
-  width: 292,
-  showBorder: false,
-  minHeight: 0,
-  maxHeight: appViewportSize("min").height - 16,
-  opaque: true,
-};
+const MENU_LAYOUT = { page: true, width: 268 } as const;
 
 /** Persist a config change; the running session applies it live. */
 function updateMicConfig(mutate: (config: MicConfig) => MicConfig): void {

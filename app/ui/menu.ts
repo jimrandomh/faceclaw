@@ -34,6 +34,11 @@ const MENU_FOOTER_GAP = 8;
 const MENU_ROW_INSET = 12;
 /** Horizontal inset of row text from the row box. */
 const MENU_ROW_TEXT_INSET = 10;
+/** A page menu's title: how far below the window's top padding, and the gap under its band. */
+const PAGE_TITLE_OFFSET_Y = 2;
+const PAGE_TITLE_GAP = 4;
+/** Room a page menu keeps right of its rows for the scrollbar. */
+const PAGE_SCROLLBAR_GUTTER = 6;
 
 export type MenuLayout = {
   /** Stereo depth of the menu surface, including the selected row. */
@@ -62,6 +67,23 @@ export type MenuLayout = {
    */
   opaque?: boolean;
   squareCorners?: boolean;
+};
+
+/**
+ * A menu laid out as a page of its window rather than a box floating over
+ * it (an app's root menu, a settings sub-screen): opaque, with no outline.
+ * Its rows start at the padding suggested for the window's left edge
+ * (viewport.ts) and its title lines up with their text. The title and a
+ * footer stay put, inside the top and bottom padding; the rows scroll
+ * between them, or right to the window's top or bottom edge where there is
+ * none, with that edge's padding inside the list.
+ */
+export type MenuPageLayout = {
+  page: true;
+  /** Width of the rows. Default (and at most): the window's, inside its side padding. */
+  width?: number;
+  /** Dim hint line pinned above the window's bottom padding, below the rows. */
+  footer?: string;
 };
 
 export type MenuItemRenderArgs = {
@@ -231,16 +253,16 @@ export class MenuLayer implements Layer {
   /** The context of the paint in progress, handed to item render callbacks. */
   private paintCtx: LayerContext | null = null;
 
-  get depth(): number { return this.layout.depth ?? 0; }
+  get depth(): number { return "page" in this.layout ? 0 : this.layout.depth ?? 0; }
 
   get dimUnderneath(): false | number {
-    return this.layout.dimUnderneath ?? false;
+    return "page" in this.layout ? false : this.layout.dimUnderneath ?? false;
   }
 
   constructor(
     private readonly title: string | null,
     private items: MenuItem[],
-    private readonly layout: MenuLayout = {
+    private readonly layout: MenuLayout | MenuPageLayout = {
       x: DEFAULT_MENU_X,
       y: DEFAULT_MENU_Y,
       width: DEFAULT_MENU_WIDTH,
@@ -301,22 +323,24 @@ export class MenuLayer implements Layer {
   }
 
   paint(ctx: LayerContext, paintBelow: PaintBelow): GrayImage {
+    if ("page" in this.layout) return this.paintPage(ctx, this.layout);
+    const layout = this.layout;
     const font = getDefaultSmallFont();
     const rowHeight = listRowHeight(font);
     const base = ctx.stack.getBaseSize();
-    const image = this.layout.opaque ? new GrayImage(base.width, base.height, 0) : paintBelow();
-    const { y, width } = this.layout;
-    const x = this.layout.x === "center" ? ((image.width - width) / 2) | 0 : this.layout.x;
+    const image = layout.opaque ? new GrayImage(base.width, base.height, 0) : paintBelow();
+    const { y, width } = layout;
+    const x = layout.x === "center" ? ((image.width - width) / 2) | 0 : layout.x;
     const chromeTop = (this.title ? menuTitleHeight(font) : 0) + MENU_BODY_PADDING;
-    const minHeight = this.layout.minHeight ?? defaultMenuMinHeight();
+    const minHeight = layout.minHeight ?? defaultMenuMinHeight();
     // Cap to the surface being painted on: a window's stack image may be much
     // shorter than the full screen (min-height windows).
     const maxHeight = Math.min(
-      this.layout.maxHeight ?? image.height - y - DEFAULT_MENU_Y,
+      layout.maxHeight ?? image.height - y - DEFAULT_MENU_Y,
       image.height - y,
-      (this.layout.squareCorners || this.depth !== 0) ? Math.floor(65530 / Math.ceil(width / 2)) : Infinity,
+      (layout.squareCorners || this.depth !== 0) ? Math.floor(65530 / Math.ceil(width / 2)) : Infinity,
     );
-    const footerHeight = this.layout.footer ? MENU_FOOTER_GAP + lineStep(font) : 0;
+    const footerHeight = layout.footer ? MENU_FOOTER_GAP + lineStep(font) : 0;
     const contentHeight = chromeTop + this.items.length * rowHeight + footerHeight + MENU_BODY_PADDING;
     const height = clamp(contentHeight, Math.min(minHeight, maxHeight), maxHeight);
     const visibleRowCount = Math.max(
@@ -326,17 +350,17 @@ export class MenuLayer implements Layer {
 
     // Fill 1, not 0: identical after 4bpp quantization, but 0 is the
     // transparent color key when a menu paints on the shell surface.
-    if (this.layout.squareCorners) image.fillRect(x, y, width, height, 1);
+    if (layout.squareCorners) image.fillRect(x, y, width, height, 1);
     else image.fillRoundedRect(x, y, width, height, 1);
-    if (this.layout.showBorder !== false) {
-      if (this.layout.squareCorners) image.drawRect(x, y, width, height, 72);
+    if (layout.showBorder !== false) {
+      if (layout.squareCorners) image.drawRect(x, y, width, height, 72);
       else image.drawRoundedRect(x, y, width, height, 72);
     }
     if (this.title) {
       image.drawText(font, x + 12, y + 8, this.title, 220);
     }
-    if (this.layout.footer) {
-      image.drawText(font, x + 22, y + height - MENU_BODY_PADDING - font.lineHeight, this.layout.footer, 110);
+    if (layout.footer) {
+      image.drawText(font, x + 22, y + height - MENU_BODY_PADDING - font.lineHeight, layout.footer, 110);
     }
 
     const bodyY = y + chromeTop;
@@ -349,6 +373,42 @@ export class MenuLayer implements Layer {
       this.paintCtx = null;
     }
     this.menu.drawScrollbar(image, x + width - 7, bodyY, listHeight - 4);
+    return image;
+  }
+
+  /** Paint as a page of the window (see MenuPageLayout). */
+  private paintPage(ctx: LayerContext, layout: MenuPageLayout): GrayImage {
+    const font = getDefaultSmallFont();
+    const { width, height, padding } = ctx.stack.getBaseSize();
+    const image = new GrayImage(width, height, 0);
+    const x = padding.left;
+    const available = Math.max(0, width - padding.left - padding.right - PAGE_SCROLLBAR_GUTTER);
+    const rowsWidth = Math.min(layout.width ?? available, available);
+    // Fixed parts keep inside the window's padding; the list's box runs to
+    // an edge nothing fixed stands before, taking that edge's padding as its own.
+    let top = 0;
+    let fixedTop = padding.top;
+    if (this.title) {
+      const titleY = padding.top + PAGE_TITLE_OFFSET_Y;
+      image.drawText(font, x + MENU_ROW_TEXT_INSET, titleY, this.title, 220);
+      top = fixedTop = titleY + menuTitleHeight(font) + PAGE_TITLE_GAP;
+    }
+    let bottom = height;
+    let fixedBottom = height - padding.bottom;
+    if (layout.footer) {
+      const footerY = height - padding.bottom - font.lineHeight;
+      image.drawText(font, x + MENU_ROW_TEXT_INSET, footerY, layout.footer, 110);
+      bottom = fixedBottom = footerY - MENU_FOOTER_GAP;
+    }
+    if (bottom <= top) return image;
+    this.paintCtx = ctx;
+    try {
+      this.menu.paint(image, { x, y: top, width: rowsWidth, height: bottom - top, padTop: fixedTop - top, padBottom: bottom - fixedBottom },
+        ctx.stack.isFocused());
+    } finally {
+      this.paintCtx = null;
+    }
+    this.menu.drawScrollbar(image, x + rowsWidth + PAGE_SCROLLBAR_GUTTER - 3, fixedTop, Math.max(0, fixedBottom - fixedTop));
     return image;
   }
 
@@ -413,20 +473,23 @@ export class TextPageLayer implements Layer {
     // Size to the stack, not the lens: in an app window the stack is the
     // window's viewport, and the compositor rejects a frame larger than its
     // surface (leaving the previous frame on screen).
-    const { width, height } = ctx.stack.getBaseSize();
+    const { width, height, padding } = ctx.stack.getBaseSize();
     const image = new GrayImage(width, height, 0);
-    image.drawText(font, 18, 14, this.title, 220);
-    image.drawRect(12, 12, width - 24, height - 24, 52);
+    // The page's own outline sits at the padding suggested for each window
+    // edge; everything else is placed from it.
+    const box = { x: padding.left, y: padding.top, width: width - padding.left - padding.right, height: height - padding.top - padding.bottom };
+    image.drawText(font, box.x + 6, box.y + 2, this.title, 220);
+    image.drawRect(box.x, box.y, box.width, box.height, 52);
 
-    const wrapped = wrapText(font, this.body, width - 60);
+    const wrapped = wrapText(font, this.body, box.width - 36);
     const step = lineStep(font);
-    const bodyTop = 28 + font.lineHeight;
-    const footerY = height - 48;
+    const bodyTop = box.y + 16 + font.lineHeight;
+    const footerY = box.y + box.height - 36;
     const maxBodyLines = Math.max(0, Math.floor((footerY - bodyTop - 8) / step));
     for (let index = 0; index < Math.min(wrapped.length, maxBodyLines); index++) {
-      image.drawText(font, 24, bodyTop + index * step, wrapped[index]!, 190);
+      image.drawText(font, box.x + 12, bodyTop + index * step, wrapped[index]!, 190);
     }
-    image.drawText(font, 24, footerY, `${GESTURE_DOUBLE_CLICK} back`, 110);
+    image.drawText(font, box.x + 12, footerY, `${GESTURE_DOUBLE_CLICK} back`, 110);
     return image;
   }
 

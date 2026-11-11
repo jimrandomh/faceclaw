@@ -3,7 +3,9 @@
  * region: nested nodes indent, todo nodes get checkboxes, links underline,
  * code blocks get a shaded box. Selection moves over nodes (a node's wrapped
  * lines highlight as one unit) and the scroll position follows it, matching
- * the house list style in ui/menu.ts.
+ * the house list style in ui/menu.ts. Scrolling is by whole lines: the
+ * region's top always shows the start of a line (or the padding before the
+ * first one), and a line that would be cut off at its bottom is left out.
  */
 import { GrayImage, type UiFont } from "../../graphics/image";
 import { getDefaultMediumFont, getDefaultSmallFont } from "../../graphics/ui-fonts";
@@ -21,6 +23,16 @@ const INDENT_STEP = 18;
 const MARKER_GUTTER = 16;
 const RIGHT_PAD = 10;
 const CODE_INSET = 6;
+
+/**
+ * The size of the region a DocumentView scrolls in. padTop and padBottom are
+ * blank space inside the scrolled content, before the first line and after
+ * the last (default none), which scrolls away with the lines. A view whose
+ * region runs to a window's top or bottom edge passes the padding suggested
+ * for that edge (viewport.ts): its end lines then keep clear of a border
+ * line there, while lines scrolled past them use the room up to the edge.
+ */
+export type DocumentViewSize = { width: number; height: number; padTop?: number; padBottom?: number };
 
 type SegmentStyle = "plain" | "link" | "code";
 
@@ -46,18 +58,29 @@ export class DocumentView {
   private lines: LayoutLine[] = [];
   private selectable: DocNode[] = [];
   private selectedIndex = 0;
+  /** Index of the line at the region's top; at 0 the top padding shows above it. */
   private scrollLine = 0;
+  private width: number;
+  private height: number;
+  private padTop: number;
+  private padBottom: number;
 
-  constructor(
-    private width: number,
-    private height: number,
-  ) {}
+  constructor(size: DocumentViewSize) {
+    this.width = size.width;
+    this.height = size.height;
+    this.padTop = size.padTop ?? 0;
+    this.padBottom = size.padBottom ?? 0;
+  }
 
   /** Re-wrap the document for a region of a new size, keeping the selection in view. */
-  resize(width: number, height: number): void {
-    if (width === this.width && height === this.height) return;
-    this.width = width;
-    this.height = height;
+  resize(size: DocumentViewSize): void {
+    const padTop = size.padTop ?? 0;
+    const padBottom = size.padBottom ?? 0;
+    if (size.width === this.width && size.height === this.height && padTop === this.padTop && padBottom === this.padBottom) return;
+    this.width = size.width;
+    this.height = size.height;
+    this.padTop = padTop;
+    this.padBottom = padBottom;
     if (this.root) this.setDocument(this.root);
   }
 
@@ -101,6 +124,7 @@ export class DocumentView {
   paint(target: GrayImage, x: number, y: number, focused: boolean): void {
     const image = new GrayImage(this.width, this.height, 0);
     const selected = this.selectedNode();
+    const firstLineY = this.leadAt(this.scrollLine);
     const visibleCount = this.visibleCountFrom(this.scrollLine);
     const lastVisible = Math.min(this.lines.length, this.scrollLine + visibleCount);
 
@@ -109,7 +133,7 @@ export class DocumentView {
       let top: number | null = null;
       let bottom = 0;
       let indentX = 0;
-      let lineY = 0;
+      let lineY = firstLineY;
       for (let index = this.scrollLine; index < lastVisible; index++) {
         const line = this.lines[index]!;
         if (line.node === selected) {
@@ -127,7 +151,7 @@ export class DocumentView {
       }
     }
 
-    let lineY = 0;
+    let lineY = firstLineY;
     for (let index = this.scrollLine; index < lastVisible; index++) {
       const line = this.lines[index]!;
       const isSelected = line.node === selected;
@@ -143,7 +167,9 @@ export class DocumentView {
     }
 
     if (this.lines.length > visibleCount) {
-      drawListScrollbar(image, this.width - 3, 0, this.height, this.scrollLine, visibleCount, this.lines.length);
+      // The track keeps inside the padding, as the document's end lines do.
+      const trackHeight = Math.max(0, this.height - this.padTop - this.padBottom);
+      drawListScrollbar(image, this.width - 3, this.padTop, trackHeight, this.scrollLine, visibleCount, this.lines.length);
     }
     target.bitBlt(image, x, y);
   }
@@ -257,8 +283,14 @@ export class DocumentView {
   // -------------------------------------------------------------------------
   // Scrolling
 
+  /** Blank space above the line at the region's top: the top padding, until it scrolls away. */
+  private leadAt(scrollLine: number): number {
+    return scrollLine === 0 ? this.padTop : 0;
+  }
+
+  /** How many whole lines the region shows when scrolled to `start` (never fewer than one). */
   private visibleCountFrom(start: number): number {
-    let used = 0;
+    let used = this.leadAt(start);
     let count = 0;
     for (let index = start; index < this.lines.length; index++) {
       used += this.lines[index]!.height;
@@ -268,11 +300,22 @@ export class DocumentView {
     return Math.max(1, count);
   }
 
+  /**
+   * Whether the region, scrolled to `start`, shows the lines through `end`
+   * whole, and after the document's last line the bottom padding too.
+   */
+  private showsThrough(start: number, end: number): boolean {
+    let used = this.leadAt(start) + (end === this.lines.length - 1 ? this.padBottom : 0);
+    for (let index = start; index <= end && used <= this.height; index++) used += this.lines[index]!.height;
+    return used <= this.height;
+  }
+
+  /** The furthest the view scrolls: the first line from which the rest fits, bottom padding included. */
   private maxScrollLine(): number {
-    let used = 0;
+    let used = this.padBottom;
     for (let index = this.lines.length - 1; index >= 0; index--) {
       used += this.lines[index]!.height;
-      if (used > this.height) return index + 1;
+      if (used + this.leadAt(index) > this.height) return Math.min(index + 1, this.lines.length - 1);
     }
     return 0;
   }
@@ -289,9 +332,15 @@ export class DocumentView {
       }
     }
     if (first < 0) return;
+    // Lines no selection reaches belong with the end node next to them:
+    // selecting the first node shows the document's start, and the last its
+    // end, with the padding there, when that fits along with the node.
+    const end = this.lines.length - 1;
+    if (this.selectedIndex === 0 && this.showsThrough(0, last)) first = 0;
+    if (this.selectedIndex === this.selectable.length - 1 && this.showsThrough(first, end)) last = end;
     let scroll = this.scrollLine;
     // Scroll down the minimum needed; a node taller than the view pins its top.
-    while (last >= scroll + this.visibleCountFrom(scroll) && scroll < first) scroll++;
+    while (scroll < first && !this.showsThrough(scroll, last)) scroll++;
     if (first < scroll) scroll = first;
     this.scrollLine = clamp(scroll, 0, this.maxScrollLine());
   }

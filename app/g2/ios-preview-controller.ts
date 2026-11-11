@@ -47,7 +47,7 @@ import { makeInputEvent, type InputEvent, type InputEventPayload } from '../ui/g
 import { noopLayerActions, type ContinuousCaptureOptions, type LayerActions } from '../ui/layers'
 import { TextViewerLayer } from '../apps/files/text-viewer'
 import { shell, rawInputEventToInputEvent, type ShellWindow } from '../ui/shell/shell'
-import { appViewportRect, isOnSwitcherEdge, sidebarStripVisible, type ScreenRect } from '../ui/shell/geometry'
+import { appViewportRect, isOnSwitcherEdge, sidebarStripVisible, windowEdges, type ScreenRect } from '../ui/shell/geometry'
 import { mirrorToPanelFraction, phonePreviewCrop } from './phone-preview-crop'
 import { onAnySettingChanged,
   previewColorSetting, lockScreenEnabledSetting, getBrightnessPreferences, getStringSettingById,
@@ -504,7 +504,9 @@ export class IosPreviewController {
     await target.setSurfaceVisible(window.surfaceId, shell.foregroundWindow()?.windowId === window.windowId)
   }
   private relayout(): void {
-    const layout = shell.getWindows().map(window => JSON.stringify(appViewportRect(window.heightMode, window.appId))).join(";")
+    // Each window's rect, and what its edges touch (which sets its padding).
+    const layout = shell.getWindows().map(window =>
+      JSON.stringify([appViewportRect(window.heightMode, window.appId), windowEdges(window.appId)])).join(";")
     if (layout === this.lastLayout) return
     this.lastLayout = layout
     for (const window of shell.getWindows()) {

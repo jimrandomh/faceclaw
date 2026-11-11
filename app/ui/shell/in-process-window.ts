@@ -8,7 +8,7 @@ import { type MenuItem } from "../menu";
 import { WindowMenuLayer } from "../window-menu";
 import { windowIcon } from "./chrome-layer";
 import { type IconName } from "../../graphics/icons";
-import { appViewportSize, setAppImmersive, type WindowHeightMode } from "./geometry";
+import { appViewport, setAppImmersive, type WindowHeightMode } from "./geometry";
 import { shell, type ShellWindow } from "./shell";
 
 /**
@@ -111,7 +111,7 @@ export function createInProcessWindow(options: InProcessWindowOptions): InProces
   const requestRender = () => renderInNewFrame(0);
   let heightMode = options.heightMode ?? "min";
   setAppImmersive(options.appId, options.immersive ?? false);
-  const viewportSize = () => appViewportSize(heightMode, options.appId);
+  const viewportSize = () => appViewport(heightMode, options.appId);
   const stack = new LayerStack(
     options.baseLayer,
     { ...options.actions, requestRender },

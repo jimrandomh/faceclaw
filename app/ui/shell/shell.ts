@@ -89,6 +89,7 @@ import {
   screenWidth,
 } from "./geometry";
 import type { AppSwitcherPosition } from "../dashboard-settings";
+import type { Viewport } from "../viewport";
 
 /**
  * The shell: owns the window registry, focus, screen on/off, and the shell
@@ -169,11 +170,11 @@ export type ShellWindow = {
    */
   relayout?: () => void;
   /**
-   * The viewport size the window is laid out at (it changes on relayout), so
-   * the controller can tell a window whose size fell behind the geometry from
-   * one whose surface merely moved.
+   * The viewport the window is laid out at (it changes on relayout), so the
+   * controller can tell a window whose size, or whose edges, fell behind the
+   * geometry from one whose surface merely moved.
    */
-  layoutSize?: () => { width: number; height: number };
+  layoutSize?: () => Viewport;
   /**
    * A touch from the phone's mirror at (x, y) in app-viewport coordinates.
    * True if the window acted on it; otherwise the controller sends a select.

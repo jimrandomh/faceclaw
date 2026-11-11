@@ -45,7 +45,7 @@ import { GrayImage, type UiFont } from "../../graphics/image";
 import { flattenPlanesWithDraws, planesFingerprint, type Plane } from "../../graphics/plane";
 import { prepareFrameDraws } from "../../graphics/glyph-wire";
 import { getDefaultSmallFont, getTerminalFontConfig } from "../../graphics/ui-fonts";
-import { HUB_TITLE_X, layoutHubHeader } from "./hub-header";
+import { HUB_TITLE_INSET_X, layoutHubHeader } from "./hub-header";
 import { TERMINAL_ICON_GLYPHS, type IconActivity } from "../../graphics/icons";
 import {
   drawSessionRow,
@@ -76,6 +76,7 @@ import { Menu, type MenuDrawArgs } from "../../ui/menu-core";
 import { centeredTextY, lineStep, listRowHeight, textInkHeight } from "../../ui/metrics";
 import { WindowMenu, WindowMenuLayer } from "../../ui/window-menu";
 import { appViewportSize, type WindowHeightMode } from "../../ui/shell/geometry";
+import type { EdgeKind, Edges, Viewport } from "../../ui/viewport";
 import type { WorkerAppMessage, WorkerAppReply } from "../../ui/shell/worker-window";
 import type { ToolResult, ToolSpec } from "../../assistant/tool-registry";
 
@@ -123,6 +124,13 @@ type BaseWindow = {
   /** Content viewport from the shell's open-window message; grid = viewport / cell. */
   viewportWidth: number;
   viewportHeight: number;
+  /**
+   * What the viewport's edges touch and the padding suggested for them
+   * (viewport.ts), as of the last open or resize message. The hub's pages lay
+   * out inside the padding; a session's grid fills the window regardless.
+   */
+  edges: Edges<EdgeKind>;
+  padding: Edges<number>;
   gridCols: number;
   gridRows: number;
   foreground: boolean;
@@ -215,8 +223,6 @@ type PendingView = {
   /** Client options captured when the view was requested from a live control. */
   options: G2MirrorClientOptions;
 };
-
-type Viewport = { width: number; height: number };
 
 const windows = new Map<string, TerminalWindow>();
 const pendingViews = new Map<string, PendingView>();
@@ -364,11 +370,22 @@ global.onmessage = (event: { data: WorkerAppMessage }) => {
         break;
       }
       const window = windows.get(message.windowId);
-      if (!window || (window.viewportWidth === message.viewport.width && window.viewportHeight === message.viewport.height)) break;
+      if (!window) break;
+      const resized = window.viewportWidth !== message.viewport.width || window.viewportHeight !== message.viewport.height;
       window.viewportWidth = message.viewport.width;
       window.viewportHeight = message.viewport.height;
+      window.edges = message.viewport.edges;
+      window.padding = message.viewport.padding;
       window.menu?.resize(message.viewport);
-      window.lastSubmittedFingerprint = "";
+      // A resize at the same size says what the window's edges touch has
+      // changed. The hub's pages move with their padding; a session's grid
+      // does not, so it keeps its connection, and only a menu page open over
+      // it (which lays out in the padding) has anything to repaint.
+      if (window.kind === "view" && !resized) {
+        if (window.menu?.isOpen()) scheduleRender(window);
+        break;
+      }
+      if (resized) window.lastSubmittedFingerprint = "";
       if (window.kind === "view") {
         window.gridCols = Math.floor(window.viewportWidth / window.cellWidth);
         window.gridRows = Math.floor(window.viewportHeight / window.cellHeight);
@@ -531,7 +548,7 @@ function cancelPendingReconnects(): void {
   }
 }
 
-function openWindow(windowId: string, surfaceId: string, title: string, viewport: { width: number; height: number }): void {
+function openWindow(windowId: string, surfaceId: string, title: string, viewport: Viewport): void {
   const pendingView = pendingViews.get(windowId);
   if (pendingView) {
     pendingViews.delete(windowId);
@@ -548,6 +565,8 @@ function openWindow(windowId: string, surfaceId: string, title: string, viewport
     title,
     viewportWidth: viewport.width,
     viewportHeight: viewport.height,
+    edges: viewport.edges,
+    padding: viewport.padding,
     gridCols: Math.floor(viewport.width / hubCell.cellWidth),
     gridRows: Math.floor(viewport.height / hubCell.cellHeight),
     foreground: false,
@@ -914,7 +933,7 @@ function createViewWindow(
   windowId: string,
   surfaceId: string,
   title: string,
-  viewport: { width: number; height: number },
+  viewport: Viewport,
   view: PendingView,
 ): ViewWindow {
   const { connectionId, socket, label, glyph } = view;
@@ -933,6 +952,8 @@ function createViewWindow(
     title,
     viewportWidth: viewport.width,
     viewportHeight: viewport.height,
+    edges: viewport.edges,
+    padding: viewport.padding,
     gridCols,
     gridRows,
     font: cell.font,
@@ -1067,7 +1088,7 @@ function windowMenu(window: TerminalWindow): WindowMenu {
       post,
       title: () => window.title,
       items: () => windowMenuItems(window),
-      size: { width: window.viewportWidth, height: window.viewportHeight },
+      size: { width: window.viewportWidth, height: window.viewportHeight, edges: window.edges, padding: window.padding },
       paintBase: () => paintContent(window),
       isFocused: () => window.focused,
     });
@@ -1308,12 +1329,20 @@ type HubItem = {
 
 /** Vertical offset of a row's text line from the top of its selection box. */
 const HUB_ROW_TEXT_INSET = 4;
-/** Left edge of the list's selection boxes. */
-const HUB_LIST_LEFT = 12;
-/** Right inset of the selection boxes, clear of the scrollbar. */
-const HUB_LIST_RIGHT = 20;
-/** Left padding of unindented (heading and top-level) row text inside its selection box. */
-const HUB_TOP_LEVEL_TEXT_X = 6;
+/** How far the first selection box starts above the list's first text line. */
+const HUB_LIST_LEAD = 2;
+/** The list's scrollbar (Menu.drawScrollbar's bar), and the gap the selection boxes keep from it. */
+const HUB_SCROLLBAR_WIDTH = 3;
+const HUB_SCROLLBAR_GAP = 10;
+/** How far the scrollbar's track stops short of the rows' span at each end. */
+const HUB_SCROLLBAR_INSET = 2;
+/**
+ * Left padding of unindented (heading and top-level) row text inside its
+ * selection box; the hub's title starts in the same column.
+ */
+const HUB_TOP_LEVEL_TEXT_X = HUB_TITLE_INSET_X;
+/** A page of text's body, indented under its title. */
+const PAGE_BODY_INDENT = 6;
 
 /** The hub window's list, created on first use so openWindow stays free of paint dependencies. */
 function hubMenu(window: HubWindow): Menu<HubItem> {
@@ -1725,6 +1754,8 @@ function returnToHub(view: ViewWindow, then?: () => void): void {
     if (activeViewId === view.windowId) activeViewId = null;
     hub.viewportWidth = viewport.width;
     hub.viewportHeight = viewport.height;
+    hub.edges = viewport.edges;
+    hub.padding = viewport.padding;
     hub.menu?.resize(viewport);
     const items = hubItems(hub);
     const row = items.findIndex(
@@ -1833,54 +1864,71 @@ function paintHub(window: HubWindow): GrayImage {
   if (window.mode === "add") {
     return paintAddConnection(window);
   }
-  const image = new GrayImage(window.viewportWidth, window.viewportHeight, 0);
+  const { viewportWidth: width, viewportHeight: height, padding } = window;
+  const image = new GrayImage(width, height, 0);
   const font = chromeFont();
   const step = lineStep(font);
-  // No border box: the shell chrome (top bar + sidebar) already frames the app.
-  // Long statuses get a wrapped block and move the list below it.
+  // The header stays put inside the window's top padding, its title in line
+  // with the rows' text. Long statuses get a wrapped block and move the list
+  // below it.
   const title = window.mode === "connections" ? "Terminal - Connections" : "Terminal";
-  image.drawText(font, HUB_TITLE_X, 10, title, 220);
-  const header = layoutHubHeader(font, title, hubStatusLine(window), window.viewportWidth, step);
+  const header = layoutHubHeader(font, title, hubStatusLine(window), { width, padding }, step);
+  image.drawText(font, header.titleX, header.titleY, title, 220);
   header.lines.forEach((line, index) => image.drawText(font, header.x, header.y + index * step, line, 170));
 
   let listTop = header.listTop;
   if (window.mode === "sessions" && controls.size === 0) {
-    image.drawText(font, HUB_TITLE_X + 6, listTop, "Add a g2mirror:// connection to get started, see:", 150);
-    image.drawText(font, HUB_TITLE_X + 6, listTop + step, "https://github.com/jimrandomh/g2mirror", 190);
+    image.drawText(font, header.titleX, listTop, "Add a g2mirror:// connection to get started, see:", 150);
+    image.drawText(font, header.titleX, listTop + step, "https://github.com/jimrandomh/g2mirror", 190);
     listTop += 2 * step + 6;
   }
 
   const list = hubMenu(window);
   list.setItems(hubItems(window));
-  // Selection boxes start above the text line; the menu fills the selected
-  // box only while this window has focus (an outline alone means the sidebar
-  // owns input), matching the shell convention.
-  const listHeight = window.viewportHeight - 6 - listTop;
+  // Selection boxes start at the left padding, above the text line; the menu
+  // fills the selected box only while this window has focus (an outline alone
+  // means the sidebar owns input), matching the shell convention. The list
+  // scrolls, so under the header it runs to the window's bottom edge with
+  // that edge's padding inside it, after the last row: rows scrolled past the
+  // end are cut off at the edge itself. The scrollbar hugs the right padding.
+  const boxTop = listTop - HUB_LIST_LEAD;
+  const scrollbarX = width - padding.right - HUB_SCROLLBAR_WIDTH;
   list.paint(
     image,
-    { x: HUB_LIST_LEFT, y: listTop - 2, width: window.viewportWidth - HUB_LIST_LEFT - HUB_LIST_RIGHT, height: listHeight },
+    {
+      x: padding.left,
+      y: boxTop,
+      width: Math.max(0, scrollbarX - HUB_SCROLLBAR_GAP - padding.left),
+      height: Math.max(0, height - boxTop),
+      padBottom: padding.bottom,
+    },
     window.focused,
   );
-  list.drawScrollbar(image, window.viewportWidth - 10, listTop, listHeight - 4);
+  const trackTop = boxTop + HUB_SCROLLBAR_INSET;
+  list.drawScrollbar(image, scrollbarX, trackTop, Math.max(0, height - padding.bottom - HUB_SCROLLBAR_INSET - trackTop));
 
   return image;
 }
 
 function paintAddConnection(window: HubWindow): GrayImage {
-  const image = new GrayImage(window.viewportWidth, window.viewportHeight, 0);
+  const { viewportWidth: width, viewportHeight: height, padding } = window;
+  const image = new GrayImage(width, height, 0);
   const font = chromeFont();
   const step = lineStep(font);
-  image.drawText(font, 18, 10, "Add connection", 220);
-  const instructionsY = 20 + step;
-  image.drawText(font, 24, instructionsY, "Type the g2mirror://token@host string in the", 170);
-  image.drawText(font, 24, instructionsY + step, "phone app (or use voice input from the menu).", 170);
+  // A page of text: its title sits at the window's top and left padding, the
+  // body indented under it, and the hint line on the bottom padding.
+  image.drawText(font, padding.left, padding.top, "Add connection", 220);
+  const bodyX = padding.left + PAGE_BODY_INDENT;
+  const instructionsY = padding.top + 10 + step;
+  image.drawText(font, bodyX, instructionsY, "Type the g2mirror://token@host string in the", 170);
+  image.drawText(font, bodyX, instructionsY + step, "phone app (or use voice input from the menu).", 170);
   const draftY = instructionsY + 3 * step;
   const draft = terminalNewConnectionSetting.get();
-  image.drawText(font, 24, draftY, truncateLabel(draft || "(empty)", 52), 220);
+  image.drawText(font, bodyX, draftY, truncateLabel(draft || "(empty)", 52), 220);
   if (window.addError) {
-    image.drawText(font, 24, draftY + step + 6, window.addError, 150);
+    image.drawText(font, bodyX, draftY + step + 6, window.addError, 150);
   }
-  image.drawText(font, 24, window.viewportHeight - font.lineHeight - 12, `click save  ${GESTURE_DOUBLE_CLICK} cancel`, 110);
+  image.drawText(font, bodyX, height - padding.bottom - font.lineHeight, `click save  ${GESTURE_DOUBLE_CLICK} cancel`, 110);
   return image;
 }
 

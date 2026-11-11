@@ -33,6 +33,7 @@ import { loadSoundEnabled, saveSoundEnabled } from "../../ui/sound-setting";
 import { WindowMenu } from "../../ui/window-menu";
 import type { MenuItem } from "../../ui/menu";
 import type { WorkerAppMessage, WorkerAppReply } from "../../ui/shell/worker-window";
+import type { Viewport } from "../../ui/viewport";
 import { directionalFallback, GESTURE_CLICK, GESTURE_DOUBLE_CLICK, GESTURE_LONG_PRESS, type InputEvent } from "../../ui/gestures";
 
 declare const global: any;
@@ -61,8 +62,16 @@ function isRed(card: number): boolean {
 
 const CARD_W = 60;
 const CARD_H = 36;
-const TOP_Y = 4;
-const CASCADE_Y = 48;
+/** How far outside the card or cascade it marks the cursor's outline is drawn. */
+const CURSOR_OUTSET = 3;
+/** Gap between the top row (free cells and foundations) and the cascades. */
+const ROW_GAP = 8;
+/** The most of a buried cascade card left showing: enough for its label. */
+const MAX_STRIP = 16;
+/** Least column pitch that keeps the cursor's outline round one column off the next column's cards. */
+const MIN_PITCH = CARD_W + CURSOR_OUTSET;
+/** Height of the longest cascade of a fresh deal (7 cards) fanned at MAX_STRIP. */
+const DEALT_CASCADE_H = 6 * MAX_STRIP + CARD_H;
 
 /**
  * Cursor locations, in scroll order: free cells 0-3, foundations 0-3 (the
@@ -106,6 +115,12 @@ type FreecellWindow = {
   title: string;
   viewportWidth: number;
   viewportHeight: number;
+  /**
+   * The viewport as the shell last sent it: besides the size above, what each
+   * edge touches and the padding suggested there, which the board is laid
+   * out inside (see layoutFor).
+   */
+  viewport: Viewport;
   foreground: boolean;
   /** Whether this window is the shell's input target (pushed with each message). */
   focused: boolean;
@@ -155,6 +170,7 @@ global.onmessage = (event: { data: WorkerAppMessage }) => {
         title: message.title,
         viewportWidth: message.viewport.width,
         viewportHeight: message.viewport.height,
+        viewport: message.viewport,
         foreground: false,
         focused: false,
         menu: null,
@@ -210,7 +226,8 @@ global.onmessage = (event: { data: WorkerAppMessage }) => {
       if (!window) break;
       window.viewportWidth = message.viewport.width;
       window.viewportHeight = message.viewport.height;
-      window.menu?.resize({ width: window.viewportWidth, height: window.viewportHeight });
+      window.viewport = message.viewport;
+      window.menu?.resize(message.viewport);
       window.lastSubmittedFingerprint = "";
       if (window.foreground) renderAndSubmit(window, 0);
       break;
@@ -286,7 +303,7 @@ function windowMenu(window: FreecellWindow): WindowMenu {
       post,
       title: () => window.title,
       items: () => windowMenuItems(window),
-      size: { width: window.viewportWidth, height: window.viewportHeight },
+      size: window.viewport,
       paintBase: () => paintContent(window),
       isFocused: () => window.focused,
     });
@@ -706,21 +723,67 @@ function checkWin(window: FreecellWindow): void {
 // Painting
 
 type Layout = {
+  /** Distance between the left edges of neighboring columns. */
   pitch: number;
+  /** Left edge of the first column's cards. */
   marginX: number;
+  /** Top of the free cells and foundations. */
+  topY: number;
+  /** Top of the cascades. */
+  cascadeY: number;
   /** Vertical pixels per buried cascade card (its visible label strip). */
   strip: (cascadeLength: number) => number;
 };
 
+/**
+ * The eight columns across a window of the given width, keeping the given
+ * padding at its left and right edges: spread as far apart as a whole-pixel
+ * pitch allows, with what is left over split between the two sides.
+ */
+function columnLayout(width: number, padLeft: number, padRight: number): Pick<Layout, "pitch" | "marginX"> {
+  const left = padLeft + CURSOR_OUTSET;
+  const slack = width - padRight - CURSOR_OUTSET - left - CARD_W;
+  const pitch = Math.floor(slack / 7);
+  return { pitch, marginX: left + Math.floor((slack - pitch * 7) / 2) };
+}
+
+/**
+ * The two rows down a window of the given height, keeping the given padding
+ * at its top and bottom edges, and the height that leaves a cascade to fan
+ * out in.
+ */
+function rowLayout(
+  height: number,
+  padTop: number,
+  padBottom: number,
+): Pick<Layout, "topY" | "cascadeY"> & { cascadeH: number } {
+  const topY = padTop + CURSOR_OUTSET;
+  const cascadeY = topY + CARD_H + ROW_GAP;
+  return { topY, cascadeY, cascadeH: height - padBottom - CURSOR_OUTSET - cascadeY };
+}
+
+/**
+ * Lay the board out in the window. The cursor's outline is the outermost
+ * thing drawn toward every edge (CURSOR_OUTSET outside whatever it marks), so
+ * it is what sits at the padding suggested for the edge; the columns spread
+ * across the width inside it, and the cascades fan down the height. A
+ * window too small for that (the RayNeo iO's) is short of room for the cards
+ * as it is, so along the axis where they would crowd, they take the
+ * padding's room too.
+ */
 function layoutFor(window: FreecellWindow): Layout {
-  const pitch = Math.floor((window.viewportWidth - 12) / 8);
-  const marginX = Math.floor((window.viewportWidth - (pitch * 8 - (pitch - CARD_W))) / 2);
-  const available = window.viewportHeight - CASCADE_Y - 2;
+  const { padding } = window.viewport;
+  let columns = columnLayout(window.viewportWidth, padding.left, padding.right);
+  if (columns.pitch < MIN_PITCH) columns = columnLayout(window.viewportWidth, 0, 0);
+  let rows = rowLayout(window.viewportHeight, padding.top, padding.bottom);
+  if (rows.cascadeH < DEALT_CASCADE_H) rows = rowLayout(window.viewportHeight, 0, 0);
+  const { topY, cascadeY, cascadeH } = rows;
   return {
-    pitch,
-    marginX,
+    ...columns,
+    topY,
+    cascadeY,
     strip: (cascadeLength: number) =>
-      cascadeLength <= 1 ? 0 : Math.min(16, Math.floor((available - CARD_H) / (cascadeLength - 1))),
+      cascadeLength <= 1 ? 0 : Math.min(MAX_STRIP, Math.floor((cascadeH - CARD_H) / (cascadeLength - 1))),
   };
 }
 
@@ -743,25 +806,26 @@ function paintContent(window: FreecellWindow): GrayImage {
   const image = new GrayImage(window.viewportWidth, window.viewportHeight, 0);
   const layout = layoutFor(window);
   const colX = (i: number) => layout.marginX + i * layout.pitch;
+  const { topY } = layout;
 
   // Top row: free cells then foundations, with a divider between the groups.
   for (let i = 0; i < 4; i++) {
     const card = window.cells[i]!;
     if (card === null) {
-      image.drawRoundedRect(colX(i), TOP_Y, CARD_W, CARD_H, 70, 4);
+      image.drawRoundedRect(colX(i), topY, CARD_W, CARD_H, 70, 4);
     } else {
-      paintCard(image, colX(i), TOP_Y, card, window.selected === LOC_CELL0 + i, true);
+      paintCard(image, colX(i), topY, card, window.selected === LOC_CELL0 + i, true);
     }
   }
-  image.drawLine(colX(4) - 4, TOP_Y + 4, colX(4) - 4, TOP_Y + CARD_H - 4, 70);
+  image.drawLine(colX(4) - 4, topY + 4, colX(4) - 4, topY + CARD_H - 4, 70);
   for (let i = 0; i < 4; i++) {
     const x = colX(4 + i);
     const card = window.foundations[i]!;
     if (card === null) {
-      image.drawRoundedRect(x, TOP_Y, CARD_W, CARD_H, 70, 4);
-      image.drawText(labelFont, x + Math.round((CARD_W - labelFont.measureText("A")) / 2), TOP_Y + 10, "A", 70);
+      image.drawRoundedRect(x, topY, CARD_W, CARD_H, 70, 4);
+      image.drawText(labelFont, x + Math.round((CARD_W - labelFont.measureText("A")) / 2), topY + 10, "A", 70);
     } else {
-      paintCard(image, x, TOP_Y, card, window.selected === LOC_FOUNDATION0 + i, true);
+      paintCard(image, x, topY, card, window.selected === LOC_FOUNDATION0 + i, true);
     }
   }
 
@@ -777,7 +841,7 @@ function paintCascade(image: GrayImage, window: FreecellWindow, layout: Layout, 
   const x = layout.marginX + index * layout.pitch;
   const cascade = window.cascades[index]!;
   if (cascade.length === 0) {
-    image.drawRoundedRect(x, CASCADE_Y, CARD_W, CARD_H, 45, 4);
+    image.drawRoundedRect(x, layout.cascadeY, CARD_W, CARD_H, 45, 4);
     return;
   }
   const strip = layout.strip(cascade.length);
@@ -788,7 +852,7 @@ function paintCascade(image: GrayImage, window: FreecellWindow, layout: Layout, 
     highlightFrom = cascade.length - run;
   }
   for (let i = 0; i < cascade.length; i++) {
-    paintCard(image, x, CASCADE_Y + i * strip, cascade[i]!, i >= highlightFrom, i === cascade.length - 1);
+    paintCard(image, x, layout.cascadeY + i * strip, cascade[i]!, i >= highlightFrom, i === cascade.length - 1);
   }
 }
 
@@ -831,17 +895,18 @@ function paintCursor(image: GrayImage, window: FreecellWindow, layout: Layout): 
   let height: number;
   if (window.cursor < LOC_CASCADE0) {
     x = layout.marginX + (window.cursor % 8) * layout.pitch;
-    y = TOP_Y;
+    y = layout.topY;
     height = CARD_H;
   } else {
     const index = window.cursor - LOC_CASCADE0;
     const cascade = window.cascades[index]!;
     x = layout.marginX + index * layout.pitch;
-    y = CASCADE_Y;
+    y = layout.cascadeY;
     height = cascade.length === 0 ? CARD_H : (cascade.length - 1) * layout.strip(cascade.length) + CARD_H;
   }
-  image.drawRect(x - 3, y - 3, CARD_W + 6, height + 6, 255);
-  image.drawRect(x - 2, y - 2, CARD_W + 4, height + 4, 255);
+  for (const outset of [CURSOR_OUTSET, CURSOR_OUTSET - 1]) {
+    image.drawRect(x - outset, y - outset, CARD_W + 2 * outset, height + 2 * outset, 255);
+  }
 }
 
 function paintWinOverlay(image: GrayImage, window: FreecellWindow): void {

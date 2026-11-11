@@ -13,9 +13,12 @@ import {
   type SoundEffect,
 } from "../../ui/sound-effects";
 
-const HEADER_HEIGHT = 30;
-const LIST_X = 20;
-const FOOTER_HEIGHT = 0;
+/** The title band: the list starts this far below the top edge's padding. */
+const HEADER_HEIGHT = 22;
+/** Horizontal inset of a row's text from its highlight box; the title lines up with it. */
+const ROW_TEXT_INSET = 6;
+/** The status text ends this far short of the rows' right edge. */
+const STATUS_INSET = 10;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -39,19 +42,26 @@ export class BuzzerDemoLayer implements Layer {
 
   paint(ctx: LayerContext): GrayImage {
     const font = getDefaultSmallFont();
-    const { width, height } = ctx.stack.getBaseSize();
+    const { width, height, padding } = ctx.stack.getBaseSize();
     const image = new GrayImage(width, height, 0);
 
-    image.drawText(font, 20, 8, "Buzzer demo", 220);
+    image.drawText(font, padding.left + ROW_TEXT_INSET, padding.top, "Buzzer demo", 220);
     const status = this.playing ? `Playing: ${this.playing}` : `${GESTURE_CLICK} play`;
-    image.drawText(font, width - 24 - font.measureText(status), 8, status, 140);
+    image.drawText(font, width - padding.right - STATUS_INSET - font.measureText(status), padding.top, status, 140);
 
-    const listHeight = height - HEADER_HEIGHT - FOOTER_HEIGHT;
-    this.menu.paint(
-      image,
-      { x: LIST_X - 6, y: HEADER_HEIGHT - 1, width: width - 2 * LIST_X + 12, height: listHeight },
-      ctx.stack.isFocused(),
-    );
+    // The title line stays put, so the list starts right under it with no
+    // padding of its own there. It scrolls, so it runs to the window's
+    // bottom edge with the padding suggested for that edge inside it, after
+    // the last row.
+    const listTop = padding.top + HEADER_HEIGHT - 1;
+    if (height > listTop) {
+      this.menu.paint(
+        image,
+        { x: padding.left, y: listTop, width: Math.max(0, width - padding.left - padding.right), height: height - listTop,
+          padTop: 0, padBottom: padding.bottom },
+        ctx.stack.isFocused(),
+      );
+    }
 
     return image;
   }
@@ -104,6 +114,6 @@ export class BuzzerDemoLayer implements Layer {
 function drawEffectRow({ image, item: effect, x, y, height, selected }: MenuDrawArgs<SoundEffect>): void {
   const font = getDefaultSmallFont();
   const textY = centeredTextY(font, y, height);
-  image.drawText(font, x + 6, textY, effect.name, selected ? 255 : 200);
-  image.drawText(font, x + 6 + 110, textY, effect.desc, selected ? 180 : 120);
+  image.drawText(font, x + ROW_TEXT_INSET, textY, effect.name, selected ? 255 : 200);
+  image.drawText(font, x + ROW_TEXT_INSET + 110, textY, effect.desc, selected ? 180 : 120);
 }

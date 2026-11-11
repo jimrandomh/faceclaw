@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const ts = require('typescript');
+const { bordered, unbordered, edged, sameViewport } = require('./helpers/viewport.cjs');
 const read = (file) => fs.readFileSync(path.join(__dirname, '..', file), 'utf8');
 const js = (source) => ts.transpileModule(source, {
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 },
@@ -18,6 +19,7 @@ function geometry(screen = { width: 640, height: 480 }) {
   }).map(([name, value]) => [name, { value, get() { return this.value; } }]));
   const context = { exports: {}, require: (name) => {
     if (name === '../../graphics/screen-size') return { screenWidth: () => screen.width, screenHeight: () => screen.height };
+    if (name === '../viewport') return require('../.test-build/app/ui/viewport.js');
     assert.equal(name, '../dashboard-settings');
     return settings;
   } };
@@ -343,6 +345,96 @@ test('on a RayNeo iO the chrome paints the screen\'s size, its strip and row wit
     // And it draws something there.
     const lit = (x0, y0, w, h) => { for (let y = y0; y < y0 + h; y++) for (let x = x0; x < x0 + w; x++) if (image.pixels[y * 540 + x]) return true; return false; };
     assert.ok(lit(0, 0, 540, 220), position);
+  }
+});
+
+test('each window edge is labelled by whether a border line runs along it, with padding only there', () => {
+  const g = geometry();
+  // top, right, bottom, left: B = a border line right outside it, o = nothing.
+  const edges = (appId) => {
+    const e = g.windowEdges(appId);
+    return [e.top, e.right, e.bottom, e.left].map((kind) => (kind === 'border' ? 'B' : 'o')).join('');
+  };
+  const set = (switcher, statusBar = 'top', border = 'all', visibility = 'always') => {
+    g.settings.appSwitcherPositionSetting.value = switcher;
+    g.settings.statusBarPositionSetting.value = statusBar;
+    g.settings.windowBorderSetting.value = border;
+    g.settings.statusBarVisibilitySetting.value = visibility;
+  };
+  // A side strip: the top bar's divider and the strip's separator; the
+  // other side and the bottom are the screen's edge or blank. The Border
+  // setting doesn't reach it.
+  set('left');
+  assert.equal(edges(), 'BooB');
+  set('right', 'top', 'none');
+  assert.equal(edges(), 'BBoo');
+  // A bottom row: the frame all round; with only the status line, the edge
+  // the status bar is past; with no border, nothing.
+  set('bottom');
+  assert.equal(edges(), 'BBBB');
+  set('bottom', 'bottom');
+  assert.equal(edges(), 'BBBB');
+  set('bottom', 'top', 'status');
+  assert.equal(edges(), 'Booo');
+  set('bottom', 'bottom', 'status');
+  assert.equal(edges(), 'ooBo');
+  set('bottom', 'top', 'none');
+  assert.equal(edges(), 'oooo');
+  set('bottom', 'bottom', 'none');
+  assert.equal(edges(), 'oooo');
+  // A popup: the frame, or the line by a status bar with rows of its own
+  // (one that only overlays has none).
+  set('popup');
+  assert.equal(edges(), 'BBBB');
+  set('popup', 'bottom', 'status');
+  assert.equal(edges(), 'ooBo');
+  set('popup', 'top', 'status');
+  assert.equal(edges(), 'Booo');
+  set('popup', 'top', 'status', 'switcher');
+  assert.equal(edges(), 'oooo');
+  set('popup', 'top', 'all', 'switcher');
+  assert.equal(edges(), 'BBBB');
+  set('popup', 'top', 'none');
+  assert.equal(edges(), 'oooo');
+  // Full Screen has no room for the frame's sides: the status bar's divider
+  // and the switcher row's separator are the lines left.
+  g.settings.displayLayoutSetting.value = 'fullscreen';
+  set('bottom');
+  assert.equal(edges(), 'BoBo');
+  set('bottom', 'bottom');
+  assert.equal(edges(), 'ooBo');
+  set('bottom', 'top', 'status');
+  assert.equal(edges(), 'Booo');
+  set('popup');
+  assert.equal(edges(), 'Booo');
+  set('popup', 'bottom');
+  assert.equal(edges(), 'ooBo');
+  // An immersive window has the whole panel.
+  g.settings.displayLayoutSetting.value = 'band-middle';
+  set('bottom');
+  g.setAppImmersive('onboarding', true);
+  assert.equal(edges('onboarding'), 'oooo');
+  assert.equal(edges('launcher'), 'BBBB');
+  set('left');
+  assert.equal(edges('onboarding'), 'oooo');
+  g.setAppImmersive('onboarding', false);
+
+  // The viewport a window lays out in carries the labels and the padding
+  // suggested for them: 8px beside a line, none beside blank space.
+  const plain = (value) => JSON.parse(JSON.stringify(value));
+  set('left');
+  assert.deepEqual(plain(g.appViewport('min')), {
+    width: 576, height: 260,
+    edges: { top: 'border', right: 'offscreen', bottom: 'offscreen', left: 'border' },
+    padding: { top: 8, right: 0, bottom: 0, left: 8 },
+  });
+  set('bottom', 'bottom', 'none');
+  assert.deepEqual(plain(g.appViewport('min').padding), { top: 0, right: 0, bottom: 0, left: 0 });
+  set('bottom', 'bottom');
+  assert.deepEqual(plain(g.appViewport('min').padding), { top: 8, right: 8, bottom: 8, left: 8 });
+  for (const mode of ['min', 'medium', 'max']) {
+    const { width, height } = g.appViewport(mode, 'terminal');
+    assert.deepEqual({ width, height }, { ...g.appViewportSize(mode, 'terminal') });
   }
 });
 
@@ -1053,33 +1145,42 @@ test('with the selection out on a notification, the windows stay scrolled as the
 });
 
 // Exercise the real worker message handler with platform work stubbed out.
-function resizeHandler(file, globals) {
+// `own` names the worker's own functions and constants the handler runs with.
+function resizeHandler(file, globals, own = []) {
   const source = ts.createSourceFile(file, read(file), ts.ScriptTarget.Latest, true);
   const handler = source.statements.find((s) => ts.isExpressionStatement(s)
     && ts.isBinaryExpression(s.expression) && s.expression.left.getText(source) === 'global.onmessage');
   assert.ok(handler);
+  const named = source.statements.filter((s) => ts.isFunctionDeclaration(s) && own.includes(s.name?.text)
+    || ts.isVariableStatement(s) && s.declarationList.declarations.some((d) => own.includes(d.name.getText(source))));
+  assert.equal(named.length, own.length);
   const context = { global: {}, ...globals };
-  vm.runInNewContext(js(handler.getText(source)), context);
+  vm.runInNewContext(js([...named, handler].map((s) => s.getText(source)).join('\n')), context);
   return (viewport) => context.global.onmessage({ data: { type: 'resize-window', windowId: 'test', viewport } });
 }
 
 test('Navigate resize preserves its active route and window, and remeasures an open menu', () => {
   let paints = 0;
   let menuSize;
-  const window = { windowId: 'test', viewportWidth: 640, viewportHeight: 452,
+  const window = { windowId: 'test', viewportWidth: 640, viewportHeight: 452, viewport: bordered(640, 452),
     menu: { resize: (size) => { menuSize = size; } }, lastSubmittedFingerprint: 'old' };
   const route = { destination: 'Home' };
   const resize = resizeHandler('app/apps/navigate/navigate-app.worker.ts', {
-    window, route, phase: 'navigating', render: () => { paints++; },
+    window, route, phase: 'navigating', render: () => { paints++; }, sameViewport,
   });
-  resize({ width: 576, height: 260 });
+  resize(bordered(576, 260));
   assert.equal(window.viewportHeight, 260);
   assert.equal(window.viewportWidth, 576);
+  assert.deepEqual(window.viewport, bordered(576, 260));
   assert.equal(window.lastSubmittedFingerprint, '');
   assert.equal(route.destination, 'Home');
-  assert.deepEqual(menuSize, { width: 576, height: 260 });
-  resize({ width: 576, height: 260 });
+  assert.deepEqual(menuSize, bordered(576, 260));
+  resize(bordered(576, 260));
   assert.equal(paints, 1);
+  // What the edges touch changing is a new layout too, at the same size.
+  resize(edged(576, 260, 'top'));
+  assert.equal(paints, 2);
+  assert.deepEqual(menuSize, edged(576, 260, 'top'));
 });
 
 test('Terminal resize keeps the view identity, negotiates its grid and skips position-only changes', () => {
@@ -1123,13 +1224,17 @@ test('the games and Roam resize in place, keeping their state, and repaint when 
   }
   let paints = 0, viewSize;
   const window = { windowId: 'test', viewportWidth: 576, viewportHeight: 443, menu: null, lastSubmittedFingerprint: 'old',
-    view: { resize: (...size) => { viewSize = size; } } };
-  const resize = resizeHandler('app/apps/roam/roam-app.worker.ts', {
-    window, render: () => paints++, DOC_MARGIN: 6, HEADER_HEIGHT: 30, BOTTOM_MARGIN: 6,
-  });
-  resize({ width: 576, height: 415 });
-  // The document re-wraps for the region under its header.
-  assert.deepEqual([window.viewportHeight, viewSize, window.lastSubmittedFingerprint, paints], [415, [564, 379], '', 1]);
+    view: { resize: (size) => { viewSize = { ...size }; } } };
+  const resize = resizeHandler('app/apps/roam/roam-app.worker.ts', { window, render: () => paints++ },
+    ['HEADER_HEIGHT', 'headerBottom', 'documentBox']);
+  resize(bordered(576, 415));
+  // The document re-wraps for the region under its header: between the side
+  // padding and down to the window's bottom edge, whose padding goes inside it.
+  assert.deepEqual([window.viewportHeight, viewSize, window.lastSubmittedFingerprint, paints],
+    [415, { x: 8, y: 32, width: 560, height: 383, padBottom: 8 }, '', 1]);
+  assert.deepEqual(window.viewport, bordered(576, 415));
+  resize(unbordered(576, 415));
+  assert.deepEqual(viewSize, { x: 0, y: 24, width: 576, height: 391, padBottom: 0 });
 });
 
 test('resizing a terminal reconnects with the new grid and ignores callbacks from the old socket', () => {

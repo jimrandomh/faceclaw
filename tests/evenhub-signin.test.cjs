@@ -9,6 +9,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { loader } = require('./helpers/load-typescript.cjs');
+const { bordered } = require('./helpers/viewport.cjs');
 
 const setting = (initial = '') => {
   let value = initial;
@@ -74,7 +75,7 @@ const makeCtx = () => {
   const stack = {
     cleared: 0,
     pushed: [],
-    getBaseSize: () => ({ width: 576, height: 136 }),
+    getBaseSize: () => bordered(576, 136),
     isFocused: () => true,
     clearToBase() { stack.cleared++; stack.pushed.length = 0; },
     push(layer) { stack.pushed.push(layer); },

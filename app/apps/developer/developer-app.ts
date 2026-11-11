@@ -12,7 +12,6 @@ import { RingStatusLayer } from "./ring-status";
 import { LoadAppFromQrLayer, LoadAppFromUrlLayer } from "./load-app";
 import { unicodeTestMenu } from "./unicode-test";
 import { type AppContext } from "../app-definition";
-import { appViewportSize } from "../../ui/shell/geometry";
 import {
   createInProcessWindow,
   YieldAtRootLayer,
@@ -23,17 +22,9 @@ import {
 export const DEVELOPER_WINDOW_ID = "developer";
 export const DEVELOPER_SURFACE_ID = "window:developer";
 
-const MENU_LAYOUT = {
-  x: 8,
-  y: 8,
-  width: 272,
-  showBorder: false,
-  minHeight: 0,
-  maxHeight: appViewportSize("min").height - 16,
-  // These menus are pages, not popups: "Debug tests" replaces the root menu
-  // visually instead of letting the taller root show through beneath it.
-  opaque: true,
-};
+// These menus are pages, not popups: "Debug tests" replaces the root menu
+// visually instead of letting the taller root show through beneath it.
+const MENU_LAYOUT = { page: true, width: 248 } as const;
 
 type OpenPage = (ctx: Parameters<MenuItem["onSelect"]>[0]) => void;
 

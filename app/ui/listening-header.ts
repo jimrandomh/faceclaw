@@ -2,9 +2,8 @@ import { type GrayImage, type UiFont } from "../graphics/image";
 import { truncateText } from "../graphics/textwrap";
 import { voiceControlBridge } from "../native/voice-control";
 import { lineStep } from "./metrics";
+import type { Edges } from "./viewport";
 
-const HEADER_X = 24;
-const HEADER_Y = 20;
 const TITLE_GRAY = 200;
 const STATUS_GRAY = 110;
 
@@ -66,8 +65,9 @@ export class MicLevelMeter {
 /**
  * The one-line header of the listening views (Transcribe, Translate):
  * "Title · status", the status truncated to fit, then the mic level meter at
- * the line's end when one is given (while listening). Returns the y at which
- * the view's body starts.
+ * the line's end when one is given (while listening). It spans the image
+ * inside `padding`, the padding suggested for the window's edges
+ * (viewport.ts). Returns the y at which the view's body starts.
  */
 export function paintListeningHeader(
   image: GrayImage,
@@ -75,18 +75,20 @@ export function paintListeningHeader(
   title: string,
   status: string,
   meter: MicLevelMeter | null,
+  padding: Edges<number>,
 ): number {
-  let textRight = image.width - HEADER_X;
+  const x = padding.left, y = padding.top;
+  let textRight = image.width - padding.right;
   if (meter) {
     const meterX = textRight - meter.width;
     // Roughly cap height, sitting on the text's baseline.
-    meter.paint(image, meterX, HEADER_Y + font.ascent, Math.max(4, Math.round(font.ascent * 0.6)));
+    meter.paint(image, meterX, y + font.ascent, Math.max(4, Math.round(font.ascent * 0.6)));
     textRight = meterX - METER_GAP;
   }
-  image.drawText(font, HEADER_X, HEADER_Y, title, TITLE_GRAY);
+  image.drawText(font, x, y, title, TITLE_GRAY);
   if (status) {
-    const statusX = HEADER_X + Math.ceil(font.measureText(title));
-    image.drawText(font, statusX, HEADER_Y, truncateText(font, ` · ${status}`, textRight - statusX), STATUS_GRAY);
+    const statusX = x + Math.ceil(font.measureText(title));
+    image.drawText(font, statusX, y, truncateText(font, ` · ${status}`, textRight - statusX), STATUS_GRAY);
   }
-  return HEADER_Y + lineStep(font) + 2;
+  return y + lineStep(font) + 2;
 }

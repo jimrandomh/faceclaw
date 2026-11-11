@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const ts = require('typescript');
+const { bordered, unbordered, edged } = require('./helpers/viewport.cjs');
 
 function load(file, deps, globals = {}) {
   const exports = {};
@@ -256,6 +257,7 @@ function shellEnv({ wakeAction = 'voice-input', skipConfirmation = false } = {})
   const timings = { spanCurrent: (_, fn) => fn(), span: (_, __, fn) => fn(), spanAsync: (_, __, fn) => fn(),
     startFrame: () => 0, annotateFrame() {}, finishFrame() {}, runWithFrame: (_, fn) => fn() };
   const layers = load('app/ui/layers.ts', {
+    './viewport': require('../.test-build/app/ui/viewport.js'),
     '../graphics/image': images, '../graphics/plane': { dimPlanes: (planes) => planes },
     '../native/frame-timings': timings, './gestures': gestures,
     '../graphics/screen-size': { screenWidth: () => 640, screenHeight: () => 480 },
@@ -295,7 +297,7 @@ function shellEnv({ wakeAction = 'voice-input', skipConfirmation = false } = {})
     '../../graphics/image': images, '../../native/frame-timings': timings,
     '../../util/render-freshness': { beginRenderPass() {}, endRenderPass: () => false },
     '../layers': layers, '../window-menu': { WindowMenuLayer: Menu },
-    './chrome-layer': { windowIcon: () => () => null }, './geometry': { appViewportSize: () => ({ width: 576, height: 260 }), setAppImmersive: () => false },
+    './chrome-layer': { windowIcon: () => () => null }, './geometry': { appViewport: () => ({ width: 576, height: 260 }), setAppImmersive: () => false },
     './shell': { shell },
   });
   const input = [], menus = [];
@@ -399,7 +401,9 @@ function chatLayerEnv() {
   });
   createAiChatWindow({ actions: {}, setSurfaceVisible() {}, onClosed() {} });
   const layer = windowOptions.baseLayer;
-  return { ...env, layer, paint: (width = 576, height = 260) => layer.paint({ stack: { getBaseSize: () => ({ width, height }) } }) };
+  // A framed window (8px of padding all round) unless a viewport says otherwise.
+  return { ...env, layer, paint: (width = 576, height = 260, viewport = bordered(width, height)) =>
+    layer.paint({ stack: { getBaseSize: () => viewport } }) };
 }
 
 test('scrollback stays anchored during streaming, follows at the bottom and resets on session switch', () => {
@@ -439,5 +443,37 @@ test('chat paints at both window heights with pending speech pinned beneath hist
       const png = require('upng-js').encode([rgba.buffer], width, height, 0);
       fs.writeFileSync(path.join(process.env.FACECLAW_CHAT_RENDER_DIR, `chat-${width}x${height}.png`), Buffer.from(png));
     }
+  }
+});
+
+test('chat keeps inside the padding of the edges a border runs along, and uses the room where there is none', () => {
+  const env = chatLayerEnv();
+  const session = env.store.ensureSession();
+  for (let i = 0; i < 30; i++) session.transcript.push({ role: i % 2 ? 'assistant' : 'user', text: `Message ${i}: sample conversation text.` });
+  // The rows and columns holding any ink, text included.
+  const inkBounds = (image) => {
+    const baked = image.withDrawsBaked();
+    const bounds = { left: Infinity, top: Infinity, right: -1, bottom: -1 };
+    for (let y = 0; y < baked.height; y++) for (let x = 0; x < baked.width; x++) {
+      if (!baked.getPixel(x, y)) continue;
+      bounds.left = Math.min(bounds.left, x); bounds.right = Math.max(bounds.right, x);
+      bounds.top = Math.min(bounds.top, y); bounds.bottom = Math.max(bounds.bottom, y);
+    }
+    return bounds;
+  };
+  for (const viewport of [
+    bordered(576, 260), unbordered(576, 260), edged(576, 260, 'top', 'left'), edged(576, 452, 'bottom', 'right'),
+    bordered(476, 155), unbordered(476, 155), edged(640, 480, 'bottom'),
+  ]) {
+    const { width, height, padding } = viewport;
+    const where = JSON.stringify(viewport);
+    const ink = inkBounds(env.paint(width, height, viewport));
+    assert.ok(env.layer.maxFirstLine > 0, where);
+    // The footer's rule starts right at the left padding and the scrollbar hugs the right.
+    assert.equal(ink.left, padding.left, where);
+    assert.equal(ink.right, width - padding.right - 1, where);
+    // The title's line starts at the top padding and the footer's last line ends at the bottom.
+    assert.ok(ink.top >= padding.top && ink.top < padding.top + 12, where);
+    assert.ok(ink.bottom < height - padding.bottom && ink.bottom >= height - padding.bottom - 12, where);
   }
 });

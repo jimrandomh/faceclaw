@@ -75,6 +75,40 @@ test('scrolling keeps the selection and its neighbors visible and aligns the vie
   assert.equal(menu.scrollTop, 0);
 });
 
+test('padTop and padBottom are blank rows inside the scrolled content, shown only at its ends', async () => {
+  // A box that runs to a window's edges: 8px of padding scrolls with the rows.
+  const box = { x: 10, y: 5, width: 80, height: 60, padTop: 8, padBottom: 8 };
+  const { menu, paint, image } = stringMenu();
+  const step = async (type) => { await menu.handleInput({ type }); paint(true, box); return menu.scrollTop; };
+  const rows = paint(true, box);
+  assert.equal(menu.scrollTop, 0);
+  assert.equal(rows[1].y, 5 + 8 + 20, 'rows start below the padding');
+  assert.equal(menu.indexAt(5 + 4), null, 'the padding is no row');
+  assert.equal(menu.indexAt(5 + 8), 0);
+  assert.equal(menu.overflows, true);
+  // Rows scrolled off are cut at the box's edge: the viewport rests on a row
+  // top, without the padding, until the first row comes back.
+  assert.equal(await step('scroll-down'), 0);
+  assert.equal(await step('scroll-down'), 28, 'b sits right at the top edge');
+  assert.equal(menu.indexAt(5), 1);
+  assert.equal(await step('scroll-down'), 28);
+  assert.equal(await step('scroll-down'), 68, 'the last row shows with the padding under it');
+  assert.equal(menu.selectedIndex, 4);
+  assert.equal(await step('scroll-up'), 68);
+  assert.equal(await step('scroll-up'), 28);
+  assert.equal(await step('scroll-up'), 28);
+  assert.equal(await step('scroll-up'), 0, 'back at the first row, its padding shows again');
+  // Content that fits just sits below the top padding.
+  const short = stringMenu({ items: ['a', 'b'] });
+  const drawn = short.paint(true, box);
+  assert.equal(short.menu.overflows, false);
+  assert.equal(drawn[1].y, 5 + 8 + 20);
+  // A scrollbar spans the padded content.
+  const before = image.pixels.slice();
+  menu.drawScrollbar(image, 95, 5, 60);
+  assert.ok(image.pixels.some((value, index) => value !== before[index]));
+});
+
 test('without wrap the ends call the exit callbacks and hold the selection', async () => {
   const { menu, exits } = stringMenu();
   await menu.handleInput({ type: 'scroll-up' });

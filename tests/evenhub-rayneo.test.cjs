@@ -5,6 +5,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { loader } = require('./helpers/load-typescript.cjs');
+const { bordered } = require('./helpers/viewport.cjs');
 
 const gestures = loader({}, {})('app/ui/gestures.ts');
 const font = { lineHeight: 10, measureText: (text) => text.length * 6 };
@@ -74,7 +75,7 @@ const loadStore = () => {
   const stackCalls = { push: 0, clearToBase: 0 };
   const ctx = {
     stack: {
-      getBaseSize: () => ({ width: 476, height: 180 }),
+      getBaseSize: () => bordered(476, 180),
       isFocused: () => true,
       clearToBase() { stackCalls.clearToBase++; },
       push() { stackCalls.push++; },
@@ -159,7 +160,7 @@ const loadWarning = () => {
   // The real stack calls onRemoved as it pops.
   const ctx = {
     stack: {
-      getBaseSize: () => ({ width: 476, height: 180 }),
+      getBaseSize: () => bordered(476, 180),
       isFocused: () => true,
       pop() { outcome.popped++; dialog.onRemoved(); },
     },

@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const ts = require('typescript');
+const { bordered, unbordered, edged } = require('./helpers/viewport.cjs');
 const alerts = require('../.test-build/app/apps/nightscout/nightscout-alerts.js');
 const detector = require('../.test-build/app/apps/nightscout/missed-bolus-detector.js');
 const now = 1_800_000_000_000;
@@ -53,6 +54,7 @@ class Image {
   drawText(font, ...args) { this.draws.push(['text', ...args]); }
   drawLine(...args) { this.draws.push(['line', ...args]); }
   fillRect(...args) { this.draws.push(['rect', ...args]); }
+  drawRect(...args) { this.draws.push(['frame', ...args]); }
 }
 const font = { measureText: text => text.length * 6, lineHeight: 12, hasGlyph: () => true };
 
@@ -197,17 +199,22 @@ test('tray keeps every pixel row when a TTF font measures the reading fractional
   }
 });
 
-test('main page highlights only the breached field and removes highlights on recovery', () => {
-  const f = fixture();
-  const page = load('app/apps/nightscout/nightscout.ts', {
+/** nightscout.ts (the app window's page) over a fixture's bridge and settings. */
+function loadMainPage(f) {
+  return load('app/apps/nightscout/nightscout.ts', {
     ...f.deps,
     '../../graphics/textwrap': { truncateText: (font, text) => text },
     '../../ui/gestures': {}, '../../ui/layers': {}, '../../ui/menu': {},
     '../../ui/dashboard/settings-panel': {}, '../../ui/metrics': { lineStep: () => 16 },
     '~/util/date-util': { formatAgeShortFromTimestamp: () => '1m', formatTimestamp: () => '12:00' },
   }, { Date: { now: () => now } });
+}
+
+test('main page highlights only the breached field and removes highlights on recovery', () => {
+  const f = fixture();
+  const page = loadMainPage(f);
   const layer = new page.NightscoutLayer();
-  const paint = () => layer.paint({ stack: { getBaseSize: () => ({ width: 576, height: 260 }) } });
+  const paint = () => layer.paint({ stack: { getBaseSize: () => bordered(576, 260) } });
   for (const [field, value, label] of [['reservoirUnits', 10, '10U'], ['batteryVoltage', 1, '1.00V'], ['cageTimestampMs', now - 73 * 3_600_000, 'CAGE 1m'], ['loopTimestampMs', now - 16 * 60_000, 'Loop 1m']]) {
     f.state[field] = value;
     const image = paint();
@@ -217,6 +224,37 @@ test('main page highlights only the breached field and removes highlights on rec
     f.state[field] = healthy[field];
     assert.equal(paint().draws.filter(d => d[0] === 'text' && d.at(-1) === 0).length, 0);
   }
+});
+
+test('main page puts its title, readout and graph at the padding suggested for each edge', () => {
+  const f = fixture();
+  Object.assign(f.state, { history: [{ timestampMs: now - 60_000, sgv: 120 }], basal: [], carbs: [], boluses: [] });
+  const layer = new (loadMainPage(f).NightscoutLayer)();
+  const paint = viewport => layer.paint({ stack: { getBaseSize: () => viewport } }).draws;
+  const texts = draws => draws.filter(d => d[0] === 'text');
+  const graph = draws => draws.find(d => d[0] === 'frame').slice(1, 5);
+
+  // A border on every edge: 8px in from each. The caption is the last line above the bottom padding.
+  const framed = paint(bordered(576, 260));
+  assert.deepEqual(texts(framed)[0].slice(1, 4), [8, 8, 'Nightscout']);
+  assert.deepEqual(texts(framed)[1].slice(1, 4), [8, 64, '100'], 'readout, centered between the title (to y=20) and the graph (from y=120)');
+  assert.deepEqual(graph(framed), [8, 120, 560, 114]);
+  assert.deepEqual(texts(framed).at(-1).slice(1, 3), [8, 240]);
+
+  // No borders: the page runs to the window's edges and the graph takes the room.
+  const bare = paint(unbordered(576, 260));
+  assert.deepEqual(texts(bare)[0].slice(1, 3), [0, 0]);
+  assert.deepEqual(graph(bare), [0, 112, 576, 130]);
+  assert.deepEqual(texts(bare).at(-1).slice(1, 3), [0, 248]);
+
+  // Each edge is padded on its own.
+  assert.deepEqual(graph(paint(edged(576, 260, 'top', 'left'))), [8, 120, 568, 122]);
+  assert.deepEqual(graph(paint(edged(576, 260, 'bottom', 'right'))), [0, 112, 568, 122]);
+
+  // A window too short for the graph and its caption gives the graph the caption's room, inside the image.
+  const short = paint(bordered(476, 155));
+  assert.deepEqual(graph(short), [8, 120, 460, 27]);
+  assert.ok(!texts(short).some(d => /glucose history/.test(d[3])));
 });
 
 test('bridge exposes numeric measurements and treats absent values as unknown', async () => {

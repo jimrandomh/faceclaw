@@ -5,6 +5,7 @@ const vm = require('node:vm');
 const ts = require('typescript');
 const path = require('node:path');
 const { loader } = require('./helpers/load-typescript.cjs');
+const { bordered, unbordered, edged } = require('./helpers/viewport.cjs');
 const flush = () => new Promise(resolve => setImmediate(resolve));
 
 const route = { coordinates: [[-122.4, 37.7], [-122.4, 37.71]], distanceMeters: 1112, durationSec: 600,
@@ -13,7 +14,7 @@ const route = { coordinates: [[-122.4, 37.7], [-122.4, 37.71]], distanceMeters: 
 const fix = latitude => ({ latitude, longitude: -122.4, timestampMs: Date.now(), bearingDeg: 0, speedMps: 1.5, accuracyMeters: 5 });
 function fixture() {
   const messages = [], timers = new Set(), timeouts = new Set(), holds = [], maps = [], errors = [], requests = [];
-  let callbacks, compass, delayRoute = null, delayMap = null, routeError = null, distanceUnit = 'miles', timeFormat = '24h';
+  let callbacks, compass, delayRoute = null, delayMap = null, routeError = null, distanceUnit = 'miles', timeFormat = '24h', paints = 0;
   const routeMath = loader()('app/apps/navigate/route-follower.ts');
   const tracker = { running: false, isRunning() { return this.running; }, start() { this.running = true; }, stop() { this.running = false; } };
   const sensor = { LocationTracker: function (value) { callbacks = value; return tracker; }, COMPASS_CHANGED: 15,
@@ -22,7 +23,8 @@ function fixture() {
     handleNavigationSensorEvent: event => { if (event.kind === 'location') callbacks.onLocation(event.location); } };
   const modules = {
     '@nativescript/core/globals': {},
-    '../../graphics/bdffont': { getFont: () => ({}) }, '../../graphics/ui-fonts': { getDefaultSmallFont: () => ({}) },
+    // The footer hint's line height sets how much of the window the map-mode map gets.
+    '../../graphics/bdffont': { getFont: () => ({}) }, '../../graphics/ui-fonts': { getDefaultSmallFont: () => ({ lineHeight: 12 }) },
     '../../native/settings-store': { onSettingsStoreChanged() {} },
     '../../ui/dashboard-settings': { distanceUnitSetting: { get: () => distanceUnit } },
     '../../ui/clock-format': loader({}, { './dashboard-settings': { timeFormatSetting: { get: () => timeFormat } } })('app/ui/clock-format.ts'),
@@ -34,7 +36,8 @@ function fixture() {
     '../../native/frame-timings': { startFrame: () => 1, finishFrame() {}, logFrame() {}, span: (_id, _name, fn) => fn(), runWithFrame: (_id, fn) => fn() },
     '../../native/active-display': { getActiveDisplay: () => null },
     '../../ui/menu-core': require('../.test-build/app/ui/menu-core.js'),
-    '../../ui/window-menu': { WindowMenu: class { paint() { return []; } isOpen() { return false; } resize() {} } },
+    '../../ui/window-menu': { WindowMenu: class { paint() { paints++; return []; } isOpen() { return false; } resize() {} } },
+    '../../ui/viewport': require('../.test-build/app/ui/viewport.js'),
     '../../graphics/plane': { planesFingerprint: () => 'frame' },
     '../../native/mapbox': {
       isMapboxConfigured: () => true,
@@ -54,9 +57,9 @@ function fixture() {
     console: { log() {}, warn() {}, error: error => errors.push(error) }, require: id => modules[id] ?? {},
   });
   const send = data => global.onmessage({ data });
-  send({ type: 'open-window', windowId: 'navigate:main', surfaceId: 'window:navigate:main', title: 'Navigate', viewport: { width: 576, height: 480 } });
+  send({ type: 'open-window', windowId: 'navigate:main', surfaceId: 'window:navigate:main', title: 'Navigate', viewport: bordered(576, 480) });
   send({ type: 'foreground', windowId: 'navigate:main', foreground: true, focused: true });
-  return { ...exports.probe, send, timers, holds, maps, errors, tracker, requests,
+  return { ...exports.probe, send, timers, holds, maps, errors, tracker, requests, paints: () => paints,
     input: type => send({ type: 'input', windowId: 'navigate:main', focused: true, frameId: 1, event: { type } }),
     tick: () => { for (const callback of timers) callback(); },
     expireFix: () => { for (const callback of timeouts) callback(); timeouts.clear(); },
@@ -114,8 +117,9 @@ test('front page map entry follows location without routing, supports zoom and r
   h.fix(37.7); await flush();
   assert.equal(h.state().phase, 'map');
   assert.deepEqual(h.requests, []);
+  // The map fills the window down to the footer hint, which rests on the bottom padding.
   assert.equal(h.maps.at(-1).width, 576);
-  assert.equal(h.maps.at(-1).height, 450);
+  assert.equal(h.maps.at(-1).height, 452);
   assert.equal(h.maps.at(-1).routePath, undefined);
   assert.equal(h.maps.at(-1).camera.latitude, 37.7);
   assert.equal(h.maps.at(-1).camera.bearingDeg, 0);
@@ -147,9 +151,20 @@ test('map suspends fetching and compass while hidden and resizes to the viewport
   assert.equal(h.holds.at(-1), false);
   h.send({ type: 'screen', on: true }); await flush();
   assert.equal(h.maps.at(-1).camera.latitude, 37.71);
-  h.send({ type: 'resize-window', windowId: 'navigate:main', viewport: { width: 540, height: 260 } }); await flush();
+  const resize = async viewport => { h.send({ type: 'resize-window', windowId: 'navigate:main', viewport }); await flush(); };
+  await resize(bordered(540, 260));
   assert.equal(h.maps.at(-1).width, 540);
-  assert.equal(h.maps.at(-1).height, 230);
+  assert.equal(h.maps.at(-1).height, 232);
+  // With no border below, the footer hint moves down to the edge and the map follows it.
+  await resize(edged(540, 260, 'top', 'left'));
+  assert.equal(h.maps.at(-1).height, 240);
+  // A change to the other edges lays the window out again, but keeps the map it has.
+  const fetched = h.maps.length, painted = h.paints();
+  await resize(unbordered(540, 260));
+  assert.equal(h.maps.length, fetched);
+  assert.equal(h.paints(), painted + 1);
+  await resize(unbordered(540, 260));
+  assert.equal(h.paints(), painted + 1);
   h.send({ type: 'close-window' });
   assert.equal(h.tracker.running, false);
   assert.equal(h.timers.size, 0);

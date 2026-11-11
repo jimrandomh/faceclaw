@@ -1797,26 +1797,29 @@ export class EditTextSettingLayer implements Layer {
     const font = getDefaultSmallFont();
     // Sized to the hosting stack (full lens in the dashboard window, app
     // viewport in the settings app).
-    const { width, height } = ctx.stack.getBaseSize();
+    const { width, height, padding } = ctx.stack.getBaseSize();
     const image = new GrayImage(width, height, 0);
     const step = lineStep(font);
-    image.drawText(font, 22, 16, this.setting.glassesEditTitle, 220);
-    const messageTop = 24 + 2 * font.lineHeight;
-    const message = wrapText(font, "Look at the phone app to type a value.", width - 48);
+    // A text column inside the padding suggested for each window edge.
+    const x = padding.left;
+    const textWidth = width - padding.left - padding.right;
+    image.drawText(font, x, padding.top, this.setting.glassesEditTitle, 220);
+    const messageTop = padding.top + 8 + 2 * font.lineHeight;
+    const message = wrapText(font, "Look at the phone app to type a value.", textWidth);
     for (let index = 0; index < message.length; index++) {
-      image.drawText(font, 22, messageTop + index * step, message[index]!, 200);
+      image.drawText(font, x, messageTop + index * step, message[index]!, 200);
     }
     const valueY = messageTop + (message.length + 2) * step;
-    image.drawText(font, 22, valueY, truncateSetting(this.setting.get(), 52), 220);
+    image.drawText(font, x, valueY, truncateSetting(this.setting.get(), 52), 220);
     const error = this.setting.validationError();
-    const errorLines = error ? wrapText(font, error, width - 48) : [];
+    const errorLines = error ? wrapText(font, error, textWidth) : [];
     errorLines.forEach((line, index) =>
-      image.drawText(font, 22, messageTop + (message.length + 4 + index) * step, line, 180));
+      image.drawText(font, x, messageTop + (message.length + 4 + index) * step, line, 180));
     // The back hint at the bottom, unless a short window (the RayNeo iO's)
     // leaves it no room under the value and error.
     const contentBottom = errorLines.length ? messageTop + (message.length + 4 + errorLines.length) * step : valueY + step;
-    const hintY = height - 24 - font.lineHeight;
-    if (hintY >= contentBottom) image.drawText(font, 22, hintY, `${GESTURE_DOUBLE_CLICK} back`, 110);
+    const hintY = height - padding.bottom - font.lineHeight;
+    if (hintY >= contentBottom) image.drawText(font, x, hintY, `${GESTURE_DOUBLE_CLICK} back`, 110);
     return image;
   }
 

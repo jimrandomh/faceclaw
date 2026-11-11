@@ -8,14 +8,25 @@ import { GESTURE_CLICK, type InputEvent } from "../../ui/gestures";
 import { hasCalendarPermission } from "../../native/calendar-permissions";
 import { type Layer, type LayerContext } from "../../ui/layers";
 import { lineStep } from "../../ui/metrics";
+import type { Viewport } from "../../ui/viewport";
 
-// Title position, shared with the other list apps (terminal, notifications).
-const TITLE_X = 18;
-const TITLE_Y = 10;
-const LIST_TOP = 38;
-const ROW_X = 16;
+/** How far a row's text sits inside its selection box; the title lines up with it. */
+const ROW_TEXT_INSET = 10;
+/**
+ * The title's drop below the window's top padding (the position shared with
+ * the other list apps: terminal, notifications), and the distance from its
+ * top to the first row.
+ */
+const TITLE_OFFSET_Y = 2;
+const TITLE_BAND = 28;
 const ROW_GAP = 4;
 const MAX_EVENTS = 50;
+/**
+ * The message shown in place of the list (no permission, nothing to show):
+ * its indent from the title, and its drop below the window's top padding.
+ */
+const MESSAGE_INDENT = 6;
+const MESSAGE_OFFSET_Y = 64;
 
 /** Height of the day header band above a row that starts a new day. */
 function dayHeaderHeight(font: UiFont): number {
@@ -46,20 +57,25 @@ export class CalendarLayer implements Layer {
 
   paint(ctx: LayerContext): GrayImage {
     const font = getDefaultSmallFont();
-    const { width, height } = ctx.stack.getBaseSize();
+    const viewport = ctx.stack.getBaseSize();
+    const { width, height, padding } = viewport;
     const image = new GrayImage(width, height, 0);
+    // Rows' selection boxes sit at the padding suggested for the window's
+    // side edges; the title lines up with their text.
+    const titleX = padding.left + ROW_TEXT_INSET;
+    const titleY = padding.top + TITLE_OFFSET_Y;
 
     if (!hasCalendarPermission()) {
-      image.drawText(font, TITLE_X, TITLE_Y, "Calendar", 220);
-      this.paintPermissionPrompt(image, font, width, height);
+      image.drawText(font, titleX, titleY, "Calendar", 220);
+      this.paintPermissionPrompt(image, font, viewport);
       return image;
     }
 
     const events = readUpcomingEvents(MAX_EVENTS);
     if (!events.length) {
-      image.drawText(font, TITLE_X, TITLE_Y, "Calendar", 220);
+      image.drawText(font, titleX, titleY, "Calendar", 220);
       const state = getCalendarReadState();
-      image.drawText(font, 24, 72, state === "loading" ? "Loading calendar..."
+      image.drawText(font, titleX + MESSAGE_INDENT, padding.top + MESSAGE_OFFSET_Y, state === "loading" ? "Loading calendar..."
         : state === "error" ? "Calendar unavailable. Try again shortly." : "No upcoming events.", 190);
       return image;
     }
@@ -67,22 +83,26 @@ export class CalendarLayer implements Layer {
     const rows = buildEventRows(font, events);
     this.selectedIndex = clamp(this.selectedIndex, 0, rows.length - 1);
 
-    const listBottom = height;
-    const scrollY = scrollForSelected(rows, this.selectedIndex, listBottom - LIST_TOP);
+    // The agenda scrolls, so it runs to the window's top and bottom edges
+    // and rows scrolled past an end are cut off right at the edge. The
+    // padding suggested for those edges is inside the scrolled content
+    // instead: above the title and below the last row.
+    const listTop = titleY + TITLE_BAND;
+    const scrollY = scrollForSelected(rows, this.selectedIndex, height - listTop, padding.bottom);
     // The title scrolls away with the list; row text is deferred glyphs
     // (composited above raster fills), so a fixed title would show through
     // rows scrolled over it.
-    if (TITLE_Y - scrollY + font.lineHeight > 0) {
-      image.drawText(font, TITLE_X, TITLE_Y - scrollY, "Calendar", 220);
+    if (titleY - scrollY + font.lineHeight > 0) {
+      image.drawText(font, titleX, titleY - scrollY, "Calendar", 220);
     }
-    let cursorY = LIST_TOP - scrollY;
-    for (let index = 0; index < rows.length; index++) {
+    const rowWidth = width - padding.left - padding.right;
+    let cursorY = listTop - scrollY;
+    for (let index = 0; index < rows.length && cursorY < height; index++) {
       const row = rows[index]!;
-      if (cursorY + row.height >= LIST_TOP && cursorY <= listBottom) {
-        drawEventRow(image, font, row, ROW_X, cursorY, width, index === this.selectedIndex);
+      if (cursorY + row.height > 0) {
+        drawEventRow(image, font, row, padding.left, cursorY, rowWidth, index === this.selectedIndex);
       }
       cursorY += row.height + ROW_GAP;
-      if (cursorY > listBottom + 80) break;
     }
     return image;
   }
@@ -102,13 +122,21 @@ export class CalendarLayer implements Layer {
     }
   }
 
-  private paintPermissionPrompt(image: GrayImage, font: UiFont, width: number, height: number): void {
+  private paintPermissionPrompt(image: GrayImage, font: UiFont, viewport: Viewport): void {
+    const { width, height, padding } = viewport;
     const message = "Grant calendar permission on your phone to see your events on the glasses.";
-    const lines = wrapText(font, message, width - 48);
-    for (let index = 0; index < lines.length; index++) {
-      image.drawText(font, 24, 72 + index * lineStep(font), lines[index]!, 190);
+    // Indented under the title, and as far short of the right padding.
+    const indent = ROW_TEXT_INSET + MESSAGE_INDENT;
+    const x = padding.left + indent;
+    const lines = wrapText(font, message, width - padding.left - padding.right - 2 * indent);
+    // The hint rests on the bottom padding; the message keeps to the lines that fit above it.
+    const hintY = height - padding.bottom - font.lineHeight;
+    const top = padding.top + MESSAGE_OFFSET_Y;
+    const maxLines = Math.max(1, Math.floor((hintY - top) / lineStep(font)));
+    for (let index = 0; index < Math.min(lines.length, maxLines); index++) {
+      image.drawText(font, x, top + index * lineStep(font), lines[index]!, 190);
     }
-    image.drawText(font, 24, height - 36, `${GESTURE_CLICK} request`, 110);
+    image.drawText(font, x, hintY, `${GESTURE_CLICK} request`, 110);
   }
 }
 
@@ -137,6 +165,7 @@ function buildEventRows(font: UiFont, events: CalendarEvent[]): EventRow[] {
   return rows;
 }
 
+/** Draw a row whose selection box spans `width` from `x`; its day header and text sit ROW_TEXT_INSET inside that. */
 function drawEventRow(
   image: GrayImage,
   font: UiFont,
@@ -146,30 +175,38 @@ function drawEventRow(
   width: number,
   selected: boolean,
 ): void {
+  const textX = x + ROW_TEXT_INSET;
   let cursorY = y;
   if (row.dayHeader) {
-    image.drawText(font, x, cursorY + 2, row.dayHeader, 150);
+    image.drawText(font, textX, cursorY + 2, row.dayHeader, 150);
     cursorY += dayHeaderHeight(font);
   }
   const bodyHeight = row.lines.length * lineStep(font) + 4;
   if (selected) {
-    image.fillRoundedRect(x - 6, cursorY, width - 2 * (x - 6), bodyHeight, 15, 6);
-    image.drawRoundedRect(x - 6, cursorY, width - 2 * (x - 6), bodyHeight, 90, 6);
+    image.fillRoundedRect(x, cursorY, width, bodyHeight, 15, 6);
+    image.drawRoundedRect(x, cursorY, width, bodyHeight, 90, 6);
   }
-  const maxTextWidth = width - 2 * x;
+  const maxTextWidth = width - 2 * ROW_TEXT_INSET;
   for (let index = 0; index < row.lines.length; index++) {
     const value = index === 0 ? (selected ? 235 : 205) : 160;
-    image.drawText(font, x, cursorY + 3 + index * lineStep(font), truncateText(font, row.lines[index]!, maxTextWidth), value);
+    image.drawText(font, textX, cursorY + 3 + index * lineStep(font), truncateText(font, row.lines[index]!, maxTextWidth), value);
   }
 }
 
-function scrollForSelected(rows: EventRow[], selectedIndex: number, viewportHeight: number): number {
+/**
+ * The scroll offset that centers the selected row in `viewportHeight`, the
+ * room below the title's resting place, within the ends of what scrolls
+ * there: the rows, then `padBottom` after the last of them. So the first
+ * row rests with the title and the padding above it in view, and the last
+ * with the padding below it.
+ */
+function scrollForSelected(rows: EventRow[], selectedIndex: number, viewportHeight: number, padBottom: number): number {
   let selectedTop = 0;
   for (let index = 0; index < selectedIndex; index++) {
     selectedTop += rows[index]!.height + ROW_GAP;
   }
   const selectedBottom = selectedTop + rows[selectedIndex]!.height;
-  const contentHeight = rows.reduce((sum, row) => sum + row.height + ROW_GAP, 0);
+  const contentHeight = rows.reduce((sum, row) => sum + row.height + ROW_GAP, -ROW_GAP) + padBottom;
   const maxScroll = Math.max(0, contentHeight - viewportHeight);
   const centered = selectedTop - Math.max(0, (viewportHeight - (selectedBottom - selectedTop)) / 2);
   return clamp(centered | 0, 0, maxScroll);

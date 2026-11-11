@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const ts = require('typescript');
+const { bordered, unbordered } = require('./helpers/viewport.cjs');
 const read = (file) => fs.readFileSync(path.join(__dirname, '..', file), 'utf8');
 const js = (source) => ts.transpileModule(source, {
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 },
@@ -103,8 +104,16 @@ test('Input events captures while visible, pauses for history, and unsubscribes 
   });
   let visible = true, renders = 0, removed = 0, pops = 0;
   const layer = new InputEventsLayer(() => renders++, () => visible, () => removed++);
-  const ctx = { stack: { getBaseSize: () => ({ width: 576, height: 260 }),
+  let viewport = bordered(576, 260);
+  const ctx = { stack: { getBaseSize: () => viewport,
     pop: () => pops++, popThrough: (page) => { assert.equal(page, layer); page.onRemoved(); } } };
+  const inBounds = (image) => {
+    for (const text of image.texts) {
+      assert.ok(text.x >= 0 && text.x + text.width <= image.width, text.text);
+      assert.ok(text.y >= 0 && text.y + text.height <= image.height, text.text);
+    }
+  };
+  const at = (image, start) => image.texts.find(t => t.text.startsWith(start));
   try {
     for (const type of ['ring-press','click','ring-press','ring-press','double-click','long-press','long-press-release','short-then-long-press']) {
       const e = { ...event(type, 1000 + renders * 75), ringInput: { tick: 4294967200 + renders, type: 1, aux:0, speed:0 } };
@@ -117,10 +126,19 @@ test('Input events captures while visible, pauses for history, and unsubscribes 
     assert.ok(image.texts.some(t => t.text.startsWith("*")));
     layer.menuItems()[2].onSelect(ctx);
     assert.ok(layer.paint(ctx).texts.some(t => t.text.startsWith("Phone receive time")));
-    for (const text of image.texts) {
-      assert.ok(text.x >= 0 && text.x + text.width <= image.width, text.text);
-      assert.ok(text.y >= 0 && text.y + text.height <= image.height, text.text);
-    }
+    inBounds(image);
+    // Framed: the title and the hint line sit at the padding; the log is between them.
+    assert.deepEqual([at(image, 'Input events').x, at(image, 'Input events').y], [8, 8]);
+    assert.equal(at(image, 'Unfiltered').y + font.lineHeight, 260 - 8);
+    assert.ok(Math.max(...image.texts.map(t => t.x + t.width)) <= 576 - 8, 'nothing runs into the right padding');
+    // Nothing bordering the window: the same lines run to its edges.
+    viewport = unbordered(576, 260);
+    const bare = layer.paint(ctx);
+    inBounds(bare);
+    assert.deepEqual([at(bare, 'Input events').x, at(bare, 'Input events').y], [0, 0]);
+    assert.equal(at(bare, 'Unfiltered').y + font.lineHeight, 260);
+    assert.ok(bare.texts.length >= image.texts.length, 'the log has no less room');
+    viewport = bordered(576, 260);
     if (process.env.INPUT_EVENTS_PREVIEW) fs.writeFileSync(process.env.INPUT_EVENTS_PREVIEW, Buffer.concat([
       Buffer.from(`P5\n${image.width} ${image.height}\n255\n`), Buffer.from(image.withDrawsBaked().pixels),
     ]));

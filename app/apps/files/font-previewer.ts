@@ -5,10 +5,8 @@ import { canLoadFontFile, fontFileDisplayName, fontFileMetrics, renderFontFileTe
 import { GESTURE_CLICK, GESTURE_DOUBLE_CLICK, GESTURE_SCROLL, gestureHints, type InputEvent } from "../../ui/gestures";
 import { Layer, type LayerContext } from "../../ui/layers";
 
-const MARGIN_X = 18;
-const TITLE_Y = 8;
-const BODY_TOP = 26;
-const FOOTER_MARGIN = 20;
+/** From the title's top to the first sample's. */
+const TITLE_BAND = 18;
 const SAMPLE_GAP = 4;
 
 const SIZES = [8,9,10,11, 12, 13, 14, 16, 18, 20, 24, 28, 32, 40, 48] as const;
@@ -48,36 +46,41 @@ export class FontPreviewerLayer implements Layer {
 
   paint(ctx: LayerContext): GrayImage {
     const font = getDefaultSmallFont();
-    const { width, height } = ctx.stack.getBaseSize();
+    const { width, height, padding } = ctx.stack.getBaseSize();
     const out = new GrayImage(width, height, 0);
     const size = SIZES[this.sizeIndex]!;
     const gamma = GAMMAS[this.gammaIndex]!;
+    // Everything keeps inside the padding suggested for the window's edges:
+    // the title line at the top, the samples across the width, the hint
+    // line at the bottom.
+    const left = padding.left;
+    const bodyWidth = Math.max(0, width - padding.left - padding.right);
+    const bodyTop = padding.top + TITLE_BAND;
 
     const status = `${size}px  γ ${gamma.toFixed(1)}`;
     const statusWidth = font.measureText(status);
-    const title = truncateText(font, this.getDisplayName(), width - 2 * MARGIN_X - statusWidth - 12);
-    out.drawText(font, MARGIN_X, TITLE_Y, title, 220);
-    out.drawText(font, width - MARGIN_X - statusWidth, TITLE_Y, status, 150);
+    const title = truncateText(font, this.getDisplayName(), bodyWidth - statusWidth - 12);
+    out.drawText(font, left, padding.top, title, 220);
+    out.drawText(font, left + bodyWidth - statusWidth, padding.top, status, 150);
 
     if (this.loadable === null) {
       this.loadable = canLoadFontFile(this.path);
     }
-    const footerY = height - FOOTER_MARGIN;
+    const footerY = height - padding.bottom - font.lineHeight;
     if (!this.loadable) {
-      out.drawText(font, MARGIN_X, BODY_TOP + 16, "(could not load font)", 160);
-      out.drawText(font, MARGIN_X, footerY, gestureHints([[GESTURE_DOUBLE_CLICK, "back"]]), 110);
+      out.drawText(font, left, bodyTop + 16, "(could not load font)", 160);
+      out.drawText(font, left, footerY, gestureHints([[GESTURE_DOUBLE_CLICK, "back"]]), 110);
       return out;
     }
 
-    const bodyWidth = width - 2 * MARGIN_X;
-    let y = BODY_TOP;
+    let y = bodyTop;
     for (const [id, text] of [
       ["pangram", PANGRAM],
       ["charset", CHARSET],
     ] as const) {
       const line = this.getCached(id, () => renderFontFileText(this.path, text, size, gamma));
       if (!line) continue;
-      out.bitBlt(line, MARGIN_X, y, { width: bodyWidth });
+      out.bitBlt(line, left, y, { width: bodyWidth });
       y += line.height + SAMPLE_GAP;
     }
 
@@ -97,13 +100,13 @@ export class FontPreviewerLayer implements Layer {
         }),
       );
       if (paragraph) {
-        out.bitBlt(paragraph, MARGIN_X, y + SAMPLE_GAP);
+        out.bitBlt(paragraph, left, y + SAMPLE_GAP);
       }
     }
 
     out.drawText(
       font,
-      MARGIN_X,
+      left,
       footerY,
       gestureHints([
         [GESTURE_SCROLL, "size"],

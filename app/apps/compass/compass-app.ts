@@ -41,17 +41,8 @@ export const COMPASS_SURFACE_ID = "window:compass";
 const RECONCILE_INTERVAL_MS = 400;
 /** Vertical breathing room between the readout, the status line and the rose. */
 const STACK_GAP = 8;
-/** Padding above the readout and below the rose's near edge. */
-const TOP_PAD = 2;
-const BOTTOM_PAD = 4;
-/** Clearance between the rose's widest point and the viewport edge. */
-const EDGE_PAD = 8;
-/** Inset of the top-right magnetometer calibration readout from the window edges. */
-const ACCURACY_TOP_PAD = TOP_PAD + 4;
-const ACCURACY_RIGHT_PAD = EDGE_PAD + 4;
 /** Cap on the rose's radius, so a tall window doesn't get a comical one. */
 const MAX_ROSE_RADIUS = 98;
-
 
 class CompassLayer implements Layer {
   private rawHeading: number | null = null;
@@ -161,35 +152,41 @@ class CompassLayer implements Layer {
   }
 
   paint(ctx: LayerContext): GrayImage {
-    const { width, height } = ctx.stack.getBaseSize();
+    const { width, height, padding } = ctx.stack.getBaseSize();
     const small = getDefaultSmallFont();
     const large = getDefaultLargeFont();
     const heading = this.rawHeading === null ? null : resolveHeading(this.rawHeading).displayDegrees;
     const headingText = heading === null ? "--°" : `${Math.round(heading)}° ${cardinalDirection(heading)}`;
-    const statusLines = wrapText(small, this.statusText(), width - STACK_GAP * 2);
+    // Text and the rose keep inside the padding suggested for the window's edges.
+    const textWidth = Math.max(0, width - padding.left - padding.right);
+    const statusLines = wrapText(small, this.statusText(), textWidth);
     const smallStep = lineStep(small);
-    const headingFont = large.measureText(headingText) <= width - EDGE_PAD * 2 ? large : small;
+    const headingFont = large.measureText(headingText) <= textWidth ? large : small;
     const readoutWidth = headingFont.measureText(headingText);
     const readoutHeight = headingFont.lineHeight;
 
     // One column centred on the display's true centre, so the rose sits where
     // the wearer is looking rather than 32px beside it (with a side strip).
     const cx = screenCenterInViewportX();
+    // A line of that column: centred there, short of leaving the padded width.
+    const lineX = (lineWidth: number) =>
+      Math.round(Math.max(padding.left, Math.min(width - padding.right - lineWidth, cx - lineWidth / 2)));
 
     // The rose is sized and placed first — it hangs off the bottom edge — and
-    // the readout then floats in whatever room is left above it.
+    // the readout then floats in whatever room is left above it. Its far
+    // edges land on the last row and column inside the padding.
     const textHeight = readoutHeight + 4 + statusLines.length * smallStep;
     const { cy, radius, ringTop } = layoutCompassRose({
       width,
       height,
       cx,
-      topClearance: TOP_PAD + textHeight + STACK_GAP,
-      bottomPad: BOTTOM_PAD,
-      edgePad: EDGE_PAD,
+      topClearance: padding.top + textHeight + STACK_GAP,
+      bottomPad: padding.bottom + 1,
+      edgePad: { left: padding.left, right: padding.right + 1 },
       maxRadius: MAX_ROSE_RADIUS,
     });
 
-    let y = Math.max(TOP_PAD, Math.round((ringTop - TICK_HEIGHT - textHeight) / 2));
+    let y = Math.max(padding.top, Math.round((ringTop - TICK_HEIGHT - textHeight) / 2));
     const fade = heading === null ? 0.45 : 1;
     const clipY = y + textHeight + 6;
     const backgroundKey = [width, height, cx, cy, radius, clipY, fade].join(",");
@@ -201,16 +198,16 @@ class CompassLayer implements Layer {
     }
     const image = this.background.image.clone();
     drawCompassRose(image, cx, cy, radius, heading);
-    const readoutX = Math.round(Math.max(EDGE_PAD, Math.min(width - EDGE_PAD - readoutWidth, cx - readoutWidth / 2)));
-    image.drawText(headingFont, readoutX, y, headingText, heading === null ? 150 : 255);
+    image.drawText(headingFont, lineX(readoutWidth), y, headingText, heading === null ? 150 : 255);
     y += readoutHeight + 4;
     for (const line of statusLines) {
-      image.drawText(small, Math.round(cx - small.measureText(line) / 2), y, line, 125);
+      image.drawText(small, lineX(small.measureText(line)), y, line, 125);
       y += smallStep;
     }
     if (glassesHaveCompass()) {
+      // The magnetometer calibration readout sits in the window's top-right corner.
       const accuracyText = magneticAccuracyText(this.diagnostics);
-      image.drawText(small, width - ACCURACY_RIGHT_PAD - small.measureText(accuracyText), ACCURACY_TOP_PAD, accuracyText, 175);
+      image.drawText(small, width - padding.right - small.measureText(accuracyText), padding.top, accuracyText, 175);
     }
 
     return image;

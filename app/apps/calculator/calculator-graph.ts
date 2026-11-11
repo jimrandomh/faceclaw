@@ -35,25 +35,27 @@ export function drawGraph(
   const clampX = (x: number): number => Math.max(rect.x, Math.min(rect.x + rect.width - 1, x));
   const clampY = (y: number): number => Math.max(rect.y, Math.min(rect.y + rect.height - 1, y));
 
-  // Tick grid first so the curve and axes draw over it.
+  // Tick grid first so the curve and axes draw over it. A tick or axis at
+  // the viewport's far limit lands on the frame's last column or row, not
+  // past it: the caller may have run the rect to the window's edge.
   for (const tick of graph.xAxis.ticks) {
     if (tick < viewport.xMin || tick > viewport.xMax) continue;
-    const x = Math.round(px(tick));
+    const x = Math.round(clampX(px(tick)));
     image.drawLine(x, rect.y, x, rect.y + rect.height - 1, GRID_VALUE);
   }
   for (const tick of graph.yAxis.ticks) {
     if (tick < viewport.yMin || tick > viewport.yMax) continue;
-    const y = Math.round(py(tick));
+    const y = Math.round(clampY(py(tick)));
     image.drawLine(rect.x, y, rect.x + rect.width - 1, y, GRID_VALUE);
   }
 
   // Axes.
   if (viewport.yMin <= 0 && viewport.yMax >= 0) {
-    const y = Math.round(py(0));
+    const y = Math.round(clampY(py(0)));
     image.drawLine(rect.x, y, rect.x + rect.width - 1, y, AXIS_VALUE);
   }
   if (viewport.xMin <= 0 && viewport.xMax >= 0) {
-    const x = Math.round(px(0));
+    const x = Math.round(clampX(px(0)));
     image.drawLine(x, rect.y, x, rect.y + rect.height - 1, AXIS_VALUE);
   }
 

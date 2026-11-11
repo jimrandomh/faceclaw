@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const ts = require('typescript');
+const { bordered, unbordered } = require('./helpers/viewport.cjs');
 
 function load(file, modules = {}, extra = '', globals = {}) {
   const source = fs.readFileSync(path.join(__dirname, '..', file), 'utf8') + extra;
@@ -124,7 +125,8 @@ test('heading updates reuse the texture; brightness, layout and clipping changes
   const layer = new compass.CompassLayer(() => {});
   layer.enabled = true;
   let height = 260;
-  const ctx = { stack: { getBaseSize: () => ({ width: viewportWidth, height }) } };
+  let viewport = bordered;
+  const ctx = { stack: { getBaseSize: () => viewport(viewportWidth, height) } };
   const texture = () => layer.paint(ctx).draws.find((draw) => draw.kind === 'image').source;
   const waiting = texture();
   layer.rawHeading = 0;
@@ -143,7 +145,11 @@ test('heading updates reuse the texture; brightness, layout and clipping changes
   const wide = texture();
   assert.notEqual(wide, tall);
   layer.firmwareStatus = 'Calibration status '.repeat(12);
-  assert.notEqual(texture(), wide);
+  const wrapped = texture();
+  assert.notEqual(wrapped, wide);
+  // Losing the borders moves the rose toward the edges, at the same size.
+  viewport = unbordered;
+  assert.notEqual(texture(), wrapped);
   viewportWidth = 576;
 });
 

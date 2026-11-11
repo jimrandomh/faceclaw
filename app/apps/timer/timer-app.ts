@@ -40,6 +40,7 @@ import { Menu, type MenuDrawArgs } from "../../ui/menu-core";
 import { LIST_ROW_TEXT_INSET, lineStep, listRowHeight } from "../../ui/metrics";
 import { createInProcessWindow, type InProcessAppOptions, type InProcessWindow } from "../../ui/shell/in-process-window";
 import { shell, type TrayWidget } from "../../ui/shell/shell";
+import type { Viewport } from "../../ui/viewport";
 import { WindowMenuLayer } from "../../ui/window-menu";
 import { clamp } from "../../util/numeric-util";
 import {
@@ -85,16 +86,27 @@ import {
 export const TIMER_WINDOW_ID = "timer";
 export const TIMER_SURFACE_ID = "window:timer";
 
-/** Width of the list column, as a share of the viewport, and its bounds. */
+/**
+ * Width of the list column (its rows and the scrollbar's gutter), as a share
+ * of the viewport's width inside its side padding, and its bounds.
+ */
 const LIST_SHARE = 0.4;
 const LIST_MIN_WIDTH = 190;
 const LIST_MAX_WIDTH = 240;
-const LIST_TOP = 6;
 /** Pixels between consecutive list rows' selection boxes. */
 const LIST_ROW_GAP = 1;
-const STAGE_X = 10;
+/**
+ * Room the list column keeps right of its rows for the scrollbar, which
+ * hugs the column's right edge: the gap before it, and its own 3 columns.
+ */
+const LIST_SCROLLBAR_GAP = 5;
+const LIST_SCROLLBAR_GUTTER = LIST_SCROLLBAR_GAP + 3;
+/** Gap between the list's divider and its rows. */
+const LIST_DIVIDER_GAP = 7;
 /** Gap between the stage's right edge and the list's divider. */
-const STAGE_LIST_GAP = 14;
+const STAGE_LIST_GAP = 18;
+/** How far the stage's small-font content is indented from its title, and ends short of the stage's right edge. */
+const STAGE_BODY_INSET = 2;
 /** Brightness factor for the list while a picker owns the stage. */
 const LIST_DIM = 0.4;
 /** Big-digit sizes tried largest first until the text fits the stage. */
@@ -198,8 +210,8 @@ export class TimersLayer implements Layer {
     isSelectable: (row) => row.kind !== "header",
     draw: (args) => this.drawListRow(args),
   });
-  /** Per-paint inputs to drawListRow. */
-  private listPaint = { dim: 1, now: 0 };
+  /** Per-paint inputs to drawListRow, and the padding the last paint put above the list's first row. */
+  private listPaint = { dim: 1, now: 0, padTop: 0 };
   private mode: Mode = { kind: "list" };
   /** Which of the ringing stage's two buttons is highlighted. */
   private ringButton = 0;
@@ -247,7 +259,9 @@ export class TimersLayer implements Layer {
     let index = rows.findIndex((row) => row.key === this.selectionKey);
     if (index < 0) {
       // The row went away (a dismissed timer, a deleted alarm): stay in place.
-      const firstVisibleRow = Math.floor(this.list.scrollTop / listRowHeight(smallFont()));
+      // Rows start below the list's top padding, which scrolls with them.
+      const rowsScrolled = Math.max(0, this.list.scrollTop - this.listPaint.padTop) / listRowHeight(smallFont());
+      const firstVisibleRow = Math.floor(rowsScrolled);
       index = clamp(firstVisibleRow, 0, rows.length - 1);
       while (index < rows.length && rows[index]!.kind === "header") index++;
       if (index >= rows.length) index = rows.findIndex((row) => row.kind !== "header");
@@ -579,9 +593,7 @@ export class TimersLayer implements Layer {
   /** A mirror touch: on the list, select the row under it. */
   hitTest(x: number, y: number, ctx: LayerContext): boolean {
     if (this.mode.kind !== "list") return false;
-    const { width } = ctx.stack.getBaseSize();
-    const listX = width - listWidthFor(width);
-    if (x < listX) return false;
+    if (x < columnsFor(ctx.stack.getBaseSize()).listX) return false;
     const rows = this.buildRows(Date.now());
     this.syncList(rows);
     const index = this.list.indexAt(y);
@@ -874,18 +886,17 @@ export class TimersLayer implements Layer {
   paint(ctx: LayerContext): GrayImage {
     timerEngine.check();
     const now = Date.now();
-    const { width, height } = ctx.stack.getBaseSize();
+    const viewport = ctx.stack.getBaseSize();
+    const { width, height, padding } = viewport;
     const image = new GrayImage(width, height, 0);
     const rows = this.buildRows(now);
     const selectedIndex = this.reconcileSelection(rows);
-    const listWidth = listWidthFor(width);
-    const listX = width - listWidth;
+    const { dividerX, stage } = columnsFor(viewport);
     const picking = this.mode.kind !== "list";
 
-    this.paintList(image, rows, selectedIndex, listX, listWidth, height, ctx.stack.isFocused(), picking ? LIST_DIM : 1, now);
-    image.drawLine(listX - 7, 8, listX - 7, height - 8, picking ? 20 : 40);
+    this.paintList(image, rows, selectedIndex, viewport, ctx.stack.isFocused(), picking ? LIST_DIM : 1, now);
+    image.drawLine(dividerX, padding.top, dividerX, height - padding.bottom, picking ? 20 : 40);
 
-    const stage = { x: STAGE_X, y: 0, width: listX - 7 - STAGE_LIST_GAP - STAGE_X, height };
     switch (this.mode.kind) {
       case "dial":
         this.paintDial(image, stage, this.mode, now);
@@ -906,21 +917,23 @@ export class TimersLayer implements Layer {
     image: GrayImage,
     rows: Row[],
     selectedIndex: number,
-    listX: number,
-    listWidth: number,
-    height: number,
+    viewport: Viewport,
     focused: boolean,
     dim: number,
     now: number,
   ): void {
-    const rowHeight = listRowHeight(smallFont());
-    const visible = Math.max(1, Math.floor((height - 2 * LIST_TOP) / rowHeight));
-    this.listPaint = { dim, now };
+    const { height, padding } = viewport;
+    const { listX, rowsWidth, scrollbarX } = columnsFor(viewport);
+    this.listPaint = { dim, now, padTop: padding.top };
     // While a picker owns the stage the list has no live selection, so no
     // highlight; drawListRow still brightens the selected row by key.
     this.list.setItems(rows, dim === 1 ? selectedIndex : null);
-    this.list.paint(image, { x: listX, y: LIST_TOP, width: listWidth - 12, height: visible * rowHeight - LIST_ROW_GAP }, focused);
-    this.list.drawScrollbar(image, listX + listWidth - 7, LIST_TOP, visible * rowHeight - 4);
+    // The list scrolls, so it runs to the window's top and bottom edges,
+    // with the padding suggested for them inside it (before the first row,
+    // after the last): rows scrolled past an end are cut off at the edge.
+    // The scrollbar stays put, so it keeps inside that padding.
+    this.list.paint(image, { x: listX, y: 0, width: rowsWidth, height, padTop: padding.top, padBottom: padding.bottom }, focused);
+    this.list.drawScrollbar(image, scrollbarX, padding.top, Math.max(0, height - padding.top - padding.bottom));
   }
 
   private drawListRow({ image, item: row, x, y, width, height }: MenuDrawArgs<Row>): void {
@@ -1137,7 +1150,13 @@ export class TimersLayer implements Layer {
 // ---------------------------------------------------------------------------
 // Stage layout helpers
 
-type StageRect = { x: number; y: number; width: number; height: number };
+/**
+ * The stage's box: its title's left edge and top, and the bottom of its
+ * hints. `centerX` is what its centred content (the big digits, the picker
+ * fields) centres on: the middle of the stage's column, from the window's
+ * left edge to the divider, whatever padding the box keeps inside that.
+ */
+type StageRect = { x: number; y: number; width: number; height: number; centerX: number };
 
 /**
  * Lays the stage out top to bottom: a title line, the big digits, then
@@ -1149,13 +1168,28 @@ class StageBlock {
   private readonly hintsTop: number;
 
   constructor(private readonly rect: StageRect) {
-    this.cursorY = rect.y + 12;
-    this.hintsTop = rect.y + rect.height - 10 - lineStep(smallFont());
+    this.cursorY = rect.y;
+    this.hintsTop = rect.y + rect.height - smallFont().lineHeight;
+  }
+
+  /** The stage's small-font content: its left edge and width. */
+  private get bodyX(): number {
+    return this.rect.x + STAGE_BODY_INSET;
+  }
+
+  private get bodyWidth(): number {
+    return this.rect.width - 2 * STAGE_BODY_INSET;
+  }
+
+  /** Where content `width` wide sits to be centred on the stage's column, kept inside the stage. */
+  private centeredX(width: number): number {
+    const { x, width: stageWidth, centerX } = this.rect;
+    return clamp(Math.floor(centerX - width / 2), x, Math.max(x, x + stageWidth - width));
   }
 
   title(image: GrayImage, text: string, value: number): void {
     const font = mediumFont();
-    image.drawText(font, this.rect.x + 4, this.cursorY, truncateText(font, text, this.rect.width - 8), value);
+    image.drawText(font, this.rect.x, this.cursorY, truncateText(font, text, this.rect.width), value);
     this.cursorY += font.lineHeight + 10;
   }
 
@@ -1163,9 +1197,9 @@ class StageBlock {
   digits(image: GrayImage, text: string, value: number, suffix = ""): void {
     const suffixFont = mediumFont();
     const suffixWidth = suffix ? suffixFont.measureText(suffix) + 10 : 0;
-    const font = fittingDigitFont(text, this.rect.width - 8 - suffixWidth);
+    const font = fittingDigitFont(text, this.rect.width - suffixWidth);
     const textWidth = font.measureText(text);
-    const x = this.rect.x + Math.max(0, Math.floor((this.rect.width - textWidth - suffixWidth) / 2));
+    const x = this.centeredX(textWidth + suffixWidth);
     image.drawText(font, x, this.cursorY, text, value);
     if (suffix) {
       image.drawText(suffixFont, x + textWidth + 10, this.cursorY + font.ascent - suffixFont.ascent, suffix, Math.round(value * 0.8));
@@ -1174,8 +1208,8 @@ class StageBlock {
   }
 
   progress(image: GrayImage, fraction: number, value: number): void {
-    const x = this.rect.x + 6;
-    const width = this.rect.width - 12;
+    const x = this.bodyX;
+    const width = this.bodyWidth;
     image.fillRoundedRect(x, this.cursorY, width, 6, 40, 3);
     const filled = Math.round(width * clamp(fraction, 0, 1));
     if (filled > 0) image.fillRoundedRect(x, this.cursorY, Math.max(6, filled), 6, value, 3);
@@ -1185,7 +1219,7 @@ class StageBlock {
   line(image: GrayImage, text: string, value: number): void {
     if (!text) return;
     const font = smallFont();
-    image.drawText(font, this.rect.x + 6, this.cursorY, truncateText(font, text, this.rect.width - 12), value);
+    image.drawText(font, this.bodyX, this.cursorY, truncateText(font, text, this.bodyWidth), value);
     this.cursorY += lineStep(font);
   }
 
@@ -1197,8 +1231,8 @@ class StageBlock {
   /** A three-column row (lap table). */
   columns(image: GrayImage, font: UiFont, cells: string[], value: number): void {
     if (this.cursorY + font.lineHeight > this.hintsTop - 4) return;
-    const x = this.rect.x + 6;
-    const width = this.rect.width - 12;
+    const x = this.bodyX;
+    const width = this.bodyWidth;
     const columnWidth = Math.floor(width / cells.length);
     for (let index = 0; index < cells.length; index++) {
       const text = cells[index]!;
@@ -1215,8 +1249,8 @@ class StageBlock {
       this.line(image, "Once", Math.round(value * 0.7));
       return;
     }
-    const step = Math.min(26, Math.floor((this.rect.width - 12) / 7));
-    const x = this.rect.x + 6;
+    const step = Math.min(26, Math.floor(this.bodyWidth / 7));
+    const x = this.bodyX;
     for (let index = 0; index < 7; index++) {
       const on = (mask & DAY_BITS[index]!) !== 0;
       const letter = DAY_LETTERS[index]!;
@@ -1236,7 +1270,7 @@ class StageBlock {
     const widths = values.map((value) => font.measureText(value) + 2 * padX);
     const sepWidths = separators.map((separator) => (separator ? sepFont.measureText(separator) + 8 : 6));
     const total = widths.reduce((sum, width) => sum + width, 0) + sepWidths.reduce((sum, width) => sum + width, 0);
-    let x = this.rect.x + Math.max(0, Math.floor((this.rect.width - total) / 2));
+    let x = this.centeredX(total);
     const boxHeight = font.lineHeight + 4;
     for (let index = 0; index < values.length; index++) {
       const width = widths[index]!;
@@ -1267,10 +1301,10 @@ class StageBlock {
     const font = smallFont();
     const gap = 12;
     const height = font.lineHeight + 14;
-    const width = Math.floor((this.rect.width - 12 - gap * (labels.length - 1)) / labels.length);
+    const width = Math.floor((this.bodyWidth - gap * (labels.length - 1)) / labels.length);
     const y = Math.max(this.cursorY + 4, this.hintsTop - 10 - height);
     for (let index = 0; index < labels.length; index++) {
-      const x = this.rect.x + 6 + index * (width + gap);
+      const x = this.bodyX + index * (width + gap);
       const active = index === selected;
       if (active) {
         image.fillRoundedRect(x, y, width, height, focused ? 40 : 15, 8);
@@ -1285,12 +1319,35 @@ class StageBlock {
   }
 
   hints(image: GrayImage, pairs: Array<[string, string]>): void {
-    image.drawText(smallFont(), this.rect.x + 6, this.hintsTop, gestureHints(pairs), 110);
+    image.drawText(smallFont(), this.bodyX, this.hintsTop, gestureHints(pairs), 110);
   }
 }
 
-function listWidthFor(viewportWidth: number): number {
-  return clamp(Math.round(viewportWidth * LIST_SHARE), LIST_MIN_WIDTH, LIST_MAX_WIDTH);
+/**
+ * The screen's columns in a viewport. Fixed content keeps the padding
+ * suggested for the window's edges: the stage's box sits inside it on the
+ * left, top and bottom, and the list column (rows, then the scrollbar's
+ * gutter) ends at it on the right. The divider stands between the two.
+ */
+function columnsFor(viewport: Viewport): { listX: number; rowsWidth: number; scrollbarX: number; dividerX: number; stage: StageRect } {
+  const { width, height, padding } = viewport;
+  const listRight = width - padding.right;
+  const listWidth = clamp(Math.round((listRight - padding.left) * LIST_SHARE), LIST_MIN_WIDTH, LIST_MAX_WIDTH);
+  const listX = listRight - listWidth;
+  const dividerX = listX - LIST_DIVIDER_GAP;
+  return {
+    listX,
+    rowsWidth: listWidth - LIST_SCROLLBAR_GUTTER,
+    scrollbarX: listRight - LIST_SCROLLBAR_GUTTER + LIST_SCROLLBAR_GAP,
+    dividerX,
+    stage: {
+      x: padding.left,
+      y: padding.top,
+      width: Math.max(0, dividerX - STAGE_LIST_GAP - padding.left),
+      height: Math.max(0, height - padding.top - padding.bottom),
+      centerX: dividerX / 2,
+    },
+  };
 }
 
 function drawPauseMark(image: GrayImage, x: number, y: number, value: number): void {

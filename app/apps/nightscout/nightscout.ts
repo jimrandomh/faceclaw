@@ -30,6 +30,19 @@ export const NIGHTSCOUT_STALE_MS = 15 * 60 * 1000;
 const NIGHTSCOUT_GRAPH_WINDOW_MS = 2 * 60 * 60 * 1000;
 const NIGHTSCOUT_GRAPH_TIME_QUANTUM_MS = 60 * 1000;
 
+/**
+ * The app page's fixed parts, placed from the title at the window's top and
+ * left padding: a status message and the graph, down from the title's top,
+ * and the status lines' column, right of the readout's left edge.
+ */
+const PAGE_MESSAGE_OFFSET_Y = 28;
+const PAGE_GRAPH_OFFSET_Y = 112;
+const PAGE_STATUS_OFFSET_X = 148;
+/** Gap between the page's graph and the caption under it. */
+const PAGE_CAPTION_GAP = 6;
+/** The shortest graph the page draws above its caption; with less room the graph takes the caption's. */
+const PAGE_MIN_GRAPH_HEIGHT = 40;
+
 /** Draws the trend indicator; returns its width. */
 export function drawDirectionIndicator(
   image: GrayImage,
@@ -298,36 +311,44 @@ function drawNightscoutReferenceLine(
 export class NightscoutLayer implements Layer {
   paint(ctx: LayerContext): GrayImage {
     const font = getDefaultSmallFont();
-    // Sized to the hosting stack (the Nightscout app viewport).
-    const { width, height } = ctx.stack.getBaseSize();
+    // Sized to the hosting stack (the Nightscout app viewport). Nothing here
+    // scrolls, so the page keeps inside the padding suggested for each of
+    // the viewport's edges: the title, the readout and the graph start at
+    // the left padding, and the graph and its caption end at the bottom's.
+    const { width, height, padding } = ctx.stack.getBaseSize();
     const image = new GrayImage(width, height, 0);
     const nightscout = nightscoutBridge.snapshot();
     const nowMs = Date.now();
     const step = lineStep(font);
-    image.drawText(font, 22, 16, "Nightscout", 220);
+    const left = padding.left;
+    const top = padding.top;
+    const right = width - padding.right;
+    const bottom = height - padding.bottom;
+    image.drawText(font, left, top, "Nightscout", 220);
 
+    const messageY = top + PAGE_MESSAGE_OFFSET_Y;
     if (!isNightscoutSettingsConfigured() || nightscout.configurationMissing) {
-      image.drawText(font, 22, 44, "Nightscout needs configuration.", 180);
-      image.drawText(font, 22, 44 + step, "Long-press for the menu, then pick Settings to set", 140);
-      image.drawText(font, 22, 44 + 2 * step, "the site URL and API token.", 140);
+      image.drawText(font, left, messageY, "Nightscout needs configuration.", 180);
+      image.drawText(font, left, messageY + step, "Long-press for the menu, then pick Settings to set", 140);
+      image.drawText(font, left, messageY + 2 * step, "the site URL and API token.", 140);
       return image;
     }
 
     if (!nightscout.available || !nightscout.latest) {
-      image.drawText(font, 22, 44, "No Nightscout data available.", 180);
-      image.drawText(font, 22, 44 + step, truncateLine(nightscout.status, 60), 140);
+      image.drawText(font, left, messageY, "No Nightscout data available.", 180);
+      image.drawText(font, left, messageY + step, truncateLine(nightscout.status, 60), 140);
       return image;
     }
 
     // Two-column header above the graph: title + current glucose on the
     // left, the status lines bottom-aligned on the right.
-    const graphTop = 128;
+    const graphTop = top + PAGE_GRAPH_OFFSET_Y;
     const latest = nightscout.latest;
     const glucoseText = `${latest.sgv}`;
-    const glucoseX = 22;
+    const glucoseX = left;
     const glucoseWidth = nightscoutLargeFont.measureText(glucoseText);
     // Glucose value vertically centered between the title and the graph.
-    const titleBottom = 16 + font.lineHeight;
+    const titleBottom = top + font.lineHeight;
     const glucoseY = Math.round((titleBottom + graphTop - nightscoutLargeFont.lineHeight) / 2);
     image.drawText(nightscoutLargeFont, glucoseX, glucoseY, glucoseText, 230);
     if (isNightscoutPointStale(latest, nowMs)) {
@@ -335,8 +356,8 @@ export class NightscoutLayer implements Layer {
     }
     image.drawText(font, glucoseX + glucoseWidth + 8, glucoseY + nightscoutLargeFont.lineHeight - font.lineHeight, nightscout.units, 140);
 
-    const statusX = 170;
-    const statusWidth = width - 22 - statusX;
+    const statusX = left + PAGE_STATUS_OFFSET_X;
+    const statusWidth = right - statusX;
     const alerts = evaluateNightscoutAlerts(nightscout, loadNightscoutThresholds(), nowMs);
     const statusLines: { text: string; shade: number; direction?: string; fields?: { text: string; warning?: boolean }[] }[] = [
       { text: `Delta ${formatDelta(nightscout.delta)}  Trend `, shade: 180, direction: nightscout.direction },
@@ -382,10 +403,14 @@ export class NightscoutLayer implements Layer {
       statusY += step;
     }
 
-    const captionY = height - font.lineHeight - 6;
-    const graphHeight = Math.max(40, captionY - 6 - graphTop);
-    drawNightscoutGraph(image, { x: 22, y: graphTop, width: width - 44, height: graphHeight }, nightscout, nowMs, font);
-    image.drawText(font, 22, captionY, "2-hour glucose history with basal / carbs / boluses", 130);
+    // The graph spans the padded width, down to the caption on the last
+    // line above the bottom padding. A window too short for both gives the
+    // caption's room to the graph.
+    const captionY = bottom - font.lineHeight;
+    const captioned = captionY - PAGE_CAPTION_GAP - graphTop >= PAGE_MIN_GRAPH_HEIGHT;
+    const graphBottom = captioned ? captionY - PAGE_CAPTION_GAP : bottom;
+    drawNightscoutGraph(image, { x: left, y: graphTop, width: right - left, height: graphBottom - graphTop }, nightscout, nowMs, font);
+    if (captioned) image.drawText(font, left, captionY, "2-hour glucose history with basal / carbs / boluses", 130);
     return image;
   }
 

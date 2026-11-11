@@ -33,6 +33,7 @@ import { loadSoundEnabled, saveSoundEnabled } from "../../ui/sound-setting";
 import { type MenuItem } from "../../ui/menu";
 import { WindowMenu } from "../../ui/window-menu";
 import type { WorkerAppMessage, WorkerAppReply } from "../../ui/shell/worker-window";
+import type { Viewport } from "../../ui/viewport";
 import {
   directionalFallback,
   GESTURE_CLICK,
@@ -53,9 +54,10 @@ const smallFont = getDefaultSmallFont();
 const COLS = 12;
 const ROWS = 9;
 const CELL = 26;
-const BOARD_X = 14;
-const BOARD_Y = 14;
-const PANEL_X = BOARD_X + COLS * CELL + 28;
+/** How far outside its cells the board's frame is drawn. */
+const BOARD_FRAME = 2;
+/** Gap between the board's cells and the panel to their right. */
+const PANEL_GAP = 28;
 
 const DIFFICULTIES = [
   { name: "Easy", mines: 14 },
@@ -107,6 +109,12 @@ type MinesweeperWindow = {
   title: string;
   viewportWidth: number;
   viewportHeight: number;
+  /**
+   * The viewport as the shell last sent it: besides the size above, what each
+   * edge touches and the padding suggested there, which places the board
+   * (see boardOrigin).
+   */
+  viewport: Viewport;
   foreground: boolean;
   /** Whether this window is the shell's input target (pushed with each message). */
   focused: boolean;
@@ -166,6 +174,7 @@ global.onmessage = (event: { data: WorkerAppMessage }) => {
         title: message.title,
         viewportWidth: message.viewport.width,
         viewportHeight: message.viewport.height,
+        viewport: message.viewport,
         foreground: false,
         focused: false,
         menu: null,
@@ -255,7 +264,8 @@ global.onmessage = (event: { data: WorkerAppMessage }) => {
       if (!window) break;
       window.viewportWidth = message.viewport.width;
       window.viewportHeight = message.viewport.height;
-      window.menu?.resize({ width: window.viewportWidth, height: window.viewportHeight });
+      window.viewport = message.viewport;
+      window.menu?.resize(message.viewport);
       window.lastSubmittedFingerprint = "";
       if (window.foreground) renderAndSubmit(window, 0);
       break;
@@ -352,7 +362,7 @@ function windowMenu(window: MinesweeperWindow): WindowMenu {
       title: () => window.title,
       items: () => windowMenuItems(window),
       claimsLongPress: () => window.phase === "playing",
-      size: { width: window.viewportWidth, height: window.viewportHeight },
+      size: window.viewport,
       paintBase: () => paintContent(window),
       isFocused: () => window.focused,
     });
@@ -666,46 +676,67 @@ function paint(window: MinesweeperWindow): Plane[] {
   return windowMenu(window).paint();
 }
 
+/** Top-left corner of the board's cells, in viewport coordinates. */
+type BoardOrigin = { x: number; y: number };
+
+/**
+ * Where the board goes: its frame, the outermost thing drawn toward the
+ * window's top and left edges, sits at the padding suggested for them. The
+ * board is a fixed size and the panel hangs off its right side, so the whole
+ * layout moves with it and nothing is placed from the other two edges.
+ */
+function boardOrigin(window: MinesweeperWindow): BoardOrigin {
+  const { padding } = window.viewport;
+  return { x: padding.left + BOARD_FRAME, y: padding.top + BOARD_FRAME };
+}
+
 function paintContent(window: MinesweeperWindow): GrayImage {
   const image = new GrayImage(window.viewportWidth, window.viewportHeight, 0);
-  image.drawRect(BOARD_X - 2, BOARD_Y - 2, COLS * CELL + 4, ROWS * CELL + 4, 120);
+  const board = boardOrigin(window);
+  image.drawRect(
+    board.x - BOARD_FRAME,
+    board.y - BOARD_FRAME,
+    COLS * CELL + 2 * BOARD_FRAME,
+    ROWS * CELL + 2 * BOARD_FRAME,
+    120,
+  );
   if (window.phase === "paused") {
     // Hide the board so pausing can't be used to study it off the clock.
-    drawCenteredIn(image, mediumFont, BOARD_X, COLS * CELL, BOARD_Y + 80, "PAUSED", 230);
-    drawCenteredIn(image, smallFont, BOARD_X, COLS * CELL, BOARD_Y + 120, `${GESTURE_CLICK} resume`, 150);
-    drawCenteredIn(image, smallFont, BOARD_X, COLS * CELL, BOARD_Y + 140, `${GESTURE_DOUBLE_CLICK} leave`, 150);
+    drawCenteredIn(image, mediumFont, board.x, COLS * CELL, board.y + 80, "PAUSED", 230);
+    drawCenteredIn(image, smallFont, board.x, COLS * CELL, board.y + 120, `${GESTURE_CLICK} resume`, 150);
+    drawCenteredIn(image, smallFont, board.x, COLS * CELL, board.y + 140, `${GESTURE_DOUBLE_CLICK} leave`, 150);
   } else {
-    paintBoard(image, window);
+    paintBoard(image, window, board);
   }
-  paintPanel(image, window);
+  paintPanel(image, window, board);
   return image;
 }
 
-function paintBoard(image: GrayImage, window: MinesweeperWindow): void {
+function paintBoard(image: GrayImage, window: MinesweeperWindow, board: BoardOrigin): void {
   for (let y = 0; y < ROWS; y++) {
     for (let x = 0; x < COLS; x++) {
-      paintCell(image, window, x, y);
+      paintCell(image, window, board, x, y);
     }
   }
   // Cursor: a double bright outline so it stays visible over any cell. In
   // row-select it spans the whole selected row; in column-select it marks the
   // cell (games over show neither).
   if (window.phase !== "playing") return;
-  const cx = BOARD_X + window.cursorX * CELL;
-  const cy = BOARD_Y + window.cursorY * CELL;
+  const cx = board.x + window.cursorX * CELL;
+  const cy = board.y + window.cursorY * CELL;
   if (window.selectMode === "row") {
-    image.drawRect(BOARD_X - 1, cy - 1, COLS * CELL + 1, CELL + 1, 255);
-    image.drawRect(BOARD_X, cy, COLS * CELL - 1, CELL - 1, 255);
+    image.drawRect(board.x - 1, cy - 1, COLS * CELL + 1, CELL + 1, 255);
+    image.drawRect(board.x, cy, COLS * CELL - 1, CELL - 1, 255);
   } else {
     image.drawRect(cx - 1, cy - 1, CELL + 1, CELL + 1, 255);
     image.drawRect(cx, cy, CELL - 1, CELL - 1, 255);
   }
 }
 
-function paintCell(image: GrayImage, window: MinesweeperWindow, x: number, y: number): void {
+function paintCell(image: GrayImage, window: MinesweeperWindow, board: BoardOrigin, x: number, y: number): void {
   const index = y * COLS + x;
-  const cx = BOARD_X + x * CELL;
-  const cy = BOARD_Y + y * CELL;
+  const cx = board.x + x * CELL;
+  const cy = board.y + y * CELL;
   const state = window.cellState[index]!;
   const isMine = window.mines[index] === 1;
   const gameOver = window.phase === "lost";
@@ -757,21 +788,23 @@ function drawMine(image: GrayImage, cx: number, cy: number, shade: number): void
   image.drawLine(centerX - 7, centerY + 7, centerX + 7, centerY - 7, shade);
 }
 
-function paintPanel(image: GrayImage, window: MinesweeperWindow): void {
-  drawStat(image, PANEL_X, BOARD_Y, "Mines", String(mineCount(window) - window.flagCount));
-  drawStat(image, PANEL_X, BOARD_Y + 62, "Time", formatElapsed(elapsedMs(window)));
-  image.drawText(smallFont, PANEL_X, BOARD_Y + 126, DIFFICULTIES[window.difficultyIndex]!.name, 140);
+/** The stats and gesture hints beside the board, laid out down from its top. */
+function paintPanel(image: GrayImage, window: MinesweeperWindow, board: BoardOrigin): void {
+  const x = board.x + COLS * CELL + PANEL_GAP;
+  drawStat(image, x, board.y, "Mines", String(mineCount(window) - window.flagCount));
+  drawStat(image, x, board.y + 62, "Time", formatElapsed(elapsedMs(window)));
+  image.drawText(smallFont, x, board.y + 126, DIFFICULTIES[window.difficultyIndex]!.name, 140);
 
   if (window.phase === "won" || window.phase === "lost") {
-    image.drawText(mediumFont, PANEL_X, BOARD_Y + 152, window.phase === "won" ? "CLEARED!" : "BOOM!", 250);
-    image.drawText(smallFont, PANEL_X, BOARD_Y + 178, `${GESTURE_CLICK} new game`, 150);
-    image.drawText(smallFont, PANEL_X, BOARD_Y + 198, `${GESTURE_LONG_PRESS} menu`, 150);
+    image.drawText(mediumFont, x, board.y + 152, window.phase === "won" ? "CLEARED!" : "BOOM!", 250);
+    image.drawText(smallFont, x, board.y + 178, `${GESTURE_CLICK} new game`, 150);
+    image.drawText(smallFont, x, board.y + 198, `${GESTURE_LONG_PRESS} menu`, 150);
   } else if (window.selectMode === "row") {
-    image.drawText(smallFont, PANEL_X, 200, `${GESTURE_SCROLL} row   ${GESTURE_CLICK} pick`, 115);
-    image.drawText(smallFont, PANEL_X, 222, `${GESTURE_DOUBLE_CLICK} pause`, 115);
+    image.drawText(smallFont, x, board.y + 186, `${GESTURE_SCROLL} row   ${GESTURE_CLICK} pick`, 115);
+    image.drawText(smallFont, x, board.y + 208, `${GESTURE_DOUBLE_CLICK} pause`, 115);
   } else {
-    image.drawText(smallFont, PANEL_X, 200, `${GESTURE_SCROLL} cell   ${GESTURE_CLICK} dig`, 115);
-    image.drawText(smallFont, PANEL_X, 222, `${GESTURE_LONG_PRESS} flag   ${GESTURE_DOUBLE_CLICK} rows`, 115);
+    image.drawText(smallFont, x, board.y + 186, `${GESTURE_SCROLL} cell   ${GESTURE_CLICK} dig`, 115);
+    image.drawText(smallFont, x, board.y + 208, `${GESTURE_LONG_PRESS} flag   ${GESTURE_DOUBLE_CLICK} rows`, 115);
   }
 }
 

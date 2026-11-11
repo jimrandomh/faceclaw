@@ -19,13 +19,21 @@ import {
 import { directionalFallback, type InputEvent } from "../../ui/gestures";
 import { Layer, type LayerContext } from "../../ui/layers";
 
-const LIST_X = 20;
 /** List view: the selection box extends this far left and right of the row text. */
 const LIST_HIGHLIGHT_PAD = 6;
+/** Header text: how far in from the rows' sides, which lines it up with list-row text. */
+const HEADER_INSET_X = LIST_HIGHLIGHT_PAD;
+/** Between the header's title and the path after it. */
+const HEADER_PATH_GAP = 14;
+/** Under the header's line, before the rows. */
+const HEADER_GAP = 2;
 
-/** Header: one line holding both the title and the current path. */
-function headerHeight(font: UiFont): number {
-  return 10 + font.lineHeight;
+/**
+ * Bottom of the header: one line holding both the title and the current
+ * path, below the padding suggested for the window's top edge.
+ */
+function headerBottom(font: UiFont, paddingTop: number): number {
+  return paddingTop + font.lineHeight + HEADER_GAP;
 }
 
 export type FilesViewMode = "icons" | "list";
@@ -147,33 +155,35 @@ export class FileBrowserLayer implements Layer {
 
   paint(ctx: LayerContext): GrayImage {
     const font = getDefaultSmallFont();
-    const { width, height } = ctx.stack.getBaseSize();
+    const { width, height, padding } = ctx.stack.getBaseSize();
     const image = new GrayImage(width, height, 0);
+    // The rows (grid bands, list selection boxes) span the window inside the
+    // padding suggested for its sides.
+    const rowsX = padding.left;
+    const rowsWidth = Math.max(0, width - padding.left - padding.right);
 
-    image.drawText(font, 20, 8, "Files", 220);
+    const titleX = rowsX + HEADER_INSET_X;
+    image.drawText(font, titleX, padding.top, "Files", 220);
     const pathLabel = this.location === null ? "Places" : this.location;
-    const pathX = 20 + font.measureText("Files") + 14;
-    image.drawText(font, pathX, 8, truncateLeft(font, pathLabel, width - pathX - 20), 130);
+    const pathX = titleX + font.measureText("Files") + HEADER_PATH_GAP;
+    image.drawText(font, pathX, padding.top, truncateLeft(font, pathLabel, rowsX + rowsWidth - HEADER_INSET_X - pathX), 130);
 
-    if (filesViewModeSetting.get() === "list") {
-      this.paintList(image, font, ctx);
+    // The header stays put and the rows scroll under it, as far as the
+    // window's bottom edge: the padding suggested for that edge goes inside
+    // the scrolled content, so the last row keeps clear of a border there
+    // and a row cut off for scrolling meets it rather than a blank strip.
+    const listView = filesViewModeSetting.get() === "list";
+    const headerEnd = headerBottom(font, padding.top);
+    // List row boxes start one pixel above the header's bottom edge.
+    const top = listView ? headerEnd - 1 : headerEnd;
+    const box = { x: rowsX, y: top, width: rowsWidth, height: Math.max(0, height - top), padTop: 0, padBottom: padding.bottom };
+    if (listView) {
+      this.listMenu.setItems(this.flatRows());
+      this.listMenu.paint(image, box, ctx.stack.isFocused());
     } else {
-      const headerH = headerHeight(font);
-      this.grid.paint(image, { x: 0, y: headerH, width, height: height - headerH - 6 }, ctx.stack.isFocused());
+      this.grid.paint(image, box, ctx.stack.isFocused());
     }
     return image;
-  }
-
-  private paintList(image: GrayImage, font: UiFont, ctx: LayerContext): void {
-    const { width, height } = ctx.stack.getBaseSize();
-    const headerH = headerHeight(font);
-    this.listMenu.setItems(this.flatRows());
-    // Row boxes start one pixel above the header's bottom edge.
-    this.listMenu.paint(
-      image,
-      { x: LIST_X - LIST_HIGHLIGHT_PAD, y: headerH - 1, width: width - 2 * LIST_X + 2 * LIST_HIGHLIGHT_PAD, height: height - headerH - 4 },
-      ctx.stack.isFocused(),
-    );
   }
 
   private drawListRow({ image, item, x, y, width, height, selected }: MenuDrawArgs<BrowserItem>): void {

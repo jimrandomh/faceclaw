@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const ts = require('typescript');
+const { bordered, unbordered } = require('./helpers/viewport.cjs');
 
 function load(file, modules = {}, globals = {}) {
   const sandbox = { exports: {}, require: id => {
@@ -150,9 +151,9 @@ function screenFixture() {
   const f = provider(), timers = new Map(); let nextTimer = 0;
   const font = { lineHeight: 12, measureText: text => text.length * 6 };
   class Image {
-    constructor(width = 300, height = 288) { this.width = width; this.height = height; this.text = []; }
-    drawText(_font, _x, _y, text) { this.text.push(text); }
-    fillRoundedRect() {} drawRoundedRect() {}
+    constructor(width = 300, height = 288) { this.width = width; this.height = height; this.text = []; this.at = {}; this.boxes = []; }
+    drawText(_font, x, y, text) { this.text.push(text); this.at[text] = [x, y]; }
+    fillRoundedRect(x, y, width, height) { this.boxes.push([x, y, width, height]); } drawRoundedRect() {}
   }
   const common = {
     'graphics/image': { GrayImage: Image }, 'graphics/ui-fonts': { getDefaultSmallFont: () => font, getDefaultMediumFont: () => font },
@@ -173,7 +174,8 @@ function screenFixture() {
 test('Calendar and Glanceboard show permission, loading, error and event states with widget cleanup', () => {
   const f = screenFixture(); let renders = 0, requests = 0;
   const widget = new f.CalendarWidget(), layer = new f.CalendarLayer(() => requests++);
-  const ctx = { stack: { getBaseSize: () => ({ width: 300, height: 288 }) } };
+  let viewport = bordered(300, 288);
+  const ctx = { stack: { getBaseSize: () => viewport } };
   const paintWidget = () => { const image = new f.Image(); widget.paint(image); return image.text.join(' '); };
   widget.start(() => renders++); widget.start(() => renders++); assert.equal(f.timers.size, 1);
   f.permission(false); assert.match(layer.paint(ctx).text.join(' '), /Grant calendar permission/);
@@ -187,6 +189,16 @@ test('Calendar and Glanceboard show permission, loading, error and event states 
   f.reads[1].done(JSON.stringify([f.event('event')]), null);
   assert.match(layer.paint(ctx).text.join(' '), /Meeting/);
   assert.match(paintWidget(), /Meeting/);
+  // Beside border lines the selection box keeps the suggested padding and the
+  // title lines up with row text; with nothing past the edges they run to them.
+  const framed = layer.paint(ctx);
+  assert.deepEqual(framed.at.Calendar, [18, 10]);
+  assert.deepEqual(framed.boxes[0], [8, 54, 284, 32]);
+  assert.equal(framed.at.Office[0], 18);
+  viewport = unbordered(300, 288);
+  const bare = layer.paint(ctx);
+  assert.deepEqual(bare.at.Calendar, [10, 2]);
+  assert.deepEqual(bare.boxes[0], [0, 46, 300, 32]);
   widget.stop(); const before = renders; f.bridge.changeHandler();
   assert.equal(renders, before); assert.equal(f.timers.size, 0);
 });

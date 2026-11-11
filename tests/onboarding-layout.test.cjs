@@ -1,6 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { loader } = require('./helpers/load-typescript.cjs');
+const { bordered, unbordered } = require('./helpers/viewport.cjs');
 
 // Roboto's line heights at the onboarding sizes, and a fixed advance.
 const FONTS = { title: 31, body: 24, detail: 19, hero: 52 };
@@ -53,7 +54,8 @@ test('the layout page fits four 40%-wide diagrams with captions on the immersive
   const page = new LayoutPage();
   assert.equal(page.immersive, true);
   const image = recorder(640, 480);
-  page.paint(image, true);
+  // An immersive page's edges are the screen's: no padding.
+  page.paint(image, true, unbordered(640, 480).padding);
   // Each diagram's outline spans the display's width at 40%.
   const areas = image.calls.filter((call) => call.kind === 'outline' && call.w === 256);
   assert.equal(areas.length, 4);
@@ -79,6 +81,16 @@ test('the layout page fits four 40%-wide diagrams with captions on the immersive
   // Bottom, recommended, is the selected cell at first, filled while focused.
   const box = image.calls.find((call) => call.kind === 'fill' && call.value === 15);
   assert.ok(box.x <= areas[0].x && box.y <= areas[0].y && box.y + box.h >= bottom.y);
+  // With nothing bordering the page, its title sits 10px in (where list rows' text starts) and 2px down.
+  const title = text('Layout')[0];
+  assert.deepEqual([title.x, title.y], [10, 2]);
+  // Beside border lines the heading keeps their padding, and the grid stays centred.
+  const framed = recorder(640, 480);
+  page.paint(framed, true, bordered(640, 480).padding);
+  const framedTitle = framed.calls.find((call) => call.kind === 'text' && call.text === 'Layout');
+  assert.deepEqual([framedTitle.x, framedTitle.y], [18, 10]);
+  const framedAreas = framed.calls.filter((call) => call.kind === 'outline' && call.w === 256);
+  assert.deepEqual(framedAreas.map((area) => area.x), areas.map((area) => area.x));
 });
 
 test('the layout page starts on Bottom whatever is set, swipes in reading order, and a tap saves the choice', () => {
@@ -137,12 +149,24 @@ test('the text size page offers 12 to 18px, starts on the recommended 16px, and 
   assert.deepEqual(rows.filter((texts) => texts.length > 1).length, 1);
   // The size column holds the note; the preview is paragraphs of text, no menu.
   const image = recorder(640, 480);
-  page.paint(image, true);
+  page.paint(image, true, unbordered(640, 480).padding);
   assert.ok(menu.box.width >= 10 + '16 px'.length * 8 + 8 + 'Recommended'.length * 8);
   const preview = image.calls.filter((call) => call.kind === 'text' && call.x > menu.box.x + menu.box.width);
   assert.equal(preview[0].text.startsWith('This is how text will look'), true);
   assert.ok(preview.length > 3);
   assert.equal(image.calls.some((call) => call.kind === 'text' && call.text === 'Timers'), false);
+  // Unpadded, the size list starts at the window's left edge and the preview's frame reaches its right and bottom edges.
+  const frame = image.calls.find((call) => call.kind === 'outline');
+  assert.equal(menu.box.x, 0);
+  assert.deepEqual([frame.x + frame.w, frame.y + frame.h], [640, 480]);
+  // The list scrolls, so it runs to the bottom edge whatever borders it, the edge's padding inside it.
+  assert.deepEqual([menu.box.y + menu.box.height, menu.box.padBottom], [480, 0]);
+  const framed = recorder(640, 480);
+  page.paint(framed, true, bordered(640, 480).padding);
+  const paddedFrame = framed.calls.find((call) => call.kind === 'outline');
+  assert.equal(menu.box.x, 8);
+  assert.deepEqual([paddedFrame.x + paddedFrame.w, paddedFrame.y + paddedFrame.h], [632, 472]);
+  assert.deepEqual([menu.box.y + menu.box.height, menu.box.padBottom], [480, 8]);
   // A tap saves; coming back keeps the size chosen.
   page.handleInput({ type: 'scroll-up' }, { next: () => {} });
   page.handleInput({ type: 'click' }, { next: () => {} });
@@ -186,7 +210,7 @@ test('on a RayNeo iO the layout page recommends and starts on Left, and fits the
   assert.equal(recommendedLayout(), 'left');
   const page = new LayoutPage();
   const image = recorder(540, 220);
-  page.paint(image, true);
+  page.paint(image, true, unbordered(540, 220).padding);
   const captions = image.calls.filter((call) => call.kind === 'text').map((call) => call.text);
   assert.ok(captions.includes('Left (Recommended)'));
   assert.ok(captions.includes('Bottom'));
@@ -289,9 +313,19 @@ test('the display mode page offers Full Screen only where the layout allows it, 
   assert.equal(menu.selectedItem, 'fullscreen');
   // The selected mode's description sits beside the list, within the window (a band's).
   const image = recorder(576, 260);
-  page.paint(image, true);
+  page.paint(image, true, bordered(576, 260).padding);
   const description = image.calls.filter((call) => call.kind === 'text' && call.x >= menu.box.x + menu.box.width);
   assert.match(description.map((call) => call.text).join(' '), /Depth is turned off/);
+  // Beside border lines: the title at the UI-wide (18, 10), the list's rows from the padding, the list to the bottom edge.
+  const title = (calls) => calls.find((call) => call.kind === 'text' && call.text === 'Display mode');
+  assert.deepEqual([title(image.calls).x, title(image.calls).y], [18, 10]);
+  assert.deepEqual([menu.box.x, menu.box.y + menu.box.height, menu.box.padBottom], [8, 260, 8]);
+  assert.ok(description.every((call) => call.x + call.text.length * 8 <= 576 - 18 && call.y + FONTS.detail <= 260 - 8));
+  // With no border on the left or bottom, the page runs to those edges.
+  const open = recorder(576, 260);
+  page.paint(open, true, { top: 8, right: 8, bottom: 0, left: 0 });
+  assert.deepEqual([title(open.calls).x, title(open.calls).y], [10, 10]);
+  assert.deepEqual([menu.box.x, menu.box.y + menu.box.height, menu.box.padBottom], [0, 260, 0]);
   let next = 0;
   const nav = { next: () => next++ };
   page.handleInput({ type: 'scroll-up' }, nav);

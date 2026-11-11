@@ -4,7 +4,6 @@ import { readTextFile, type DirectoryEntry } from "../../native/file-access";
 import { LIST_ROW_TEXT_INSET } from "../../ui/metrics";
 import { MenuLayer, type MenuItem } from "../../ui/menu";
 import { type Layer, type LayerContext } from "../../ui/layers";
-import { appViewportSize } from "../../ui/shell/geometry";
 import {
   createInProcessWindow,
   YieldAtRootLayer,
@@ -28,15 +27,7 @@ export const TELEPROMPTER_SURFACE_ID = "window:teleprompter";
 
 const SCRIPT_FILE = /\.(txt|md|markdown|text|log)$/i;
 
-const HOME_LAYOUT = {
-  x: 8,
-  y: 8,
-  width: 272,
-  showBorder: false,
-  minHeight: 0,
-  maxHeight: appViewportSize("min").height - 16,
-  opaque: true,
-};
+const HOME_LAYOUT = { page: true, width: 248 } as const;
 
 export type TeleprompterAppOptions = InProcessAppOptions & {
   /** Hold continuous mic capture while a script is being tracked. */

@@ -5,6 +5,16 @@ import { Layer, type LayerContext } from "../../ui/layers";
 import { micSession, type MicSessionState } from "./mic-session";
 import { dotBrightness } from "./radar-dots";
 
+/** Room above the plot's ring for its "front" label. */
+const FRONT_LABEL_BAND = 14;
+/** Gap between the ring and the hint line under it. */
+const RING_FOOTER_GAP = 10;
+/** The least the ring keeps clear of the window's sides, which leaves the readout panel its corner. */
+const RING_SIDE_CLEARANCE = 90;
+/** The readout panel: the least its column is wide, and its drop below the title's top. */
+const PANEL_MIN_WIDTH = 104;
+const PANEL_OFFSET_Y = 20;
+
 /**
  * The Sonic Radar: a top-down view around the wearer's head. The shaded
  * wedge is the listening beam (scroll rotates it, click locks it onto the
@@ -14,6 +24,10 @@ import { dotBrightness } from "./radar-dots";
  * scene is world-anchored (an N tick marks north and dots stay put as the
  * head turns); dots glow full-bright while their speaker is talking and fade
  * with the time since they last spoke.
+ *
+ * The plot is centred on the window, between the title row and the hint
+ * line; those and the readout panel keep to the padding suggested for the
+ * window's edges.
  */
 export class RadarLayer implements Layer {
   private state: MicSessionState = micSession.getState();
@@ -28,17 +42,20 @@ export class RadarLayer implements Layer {
 
   paint(ctx: LayerContext): GrayImage {
     const font = getDefaultSmallFont();
-    const { width, height } = ctx.stack.getBaseSize();
+    const { width, height, padding } = ctx.stack.getBaseSize();
     const image = new GrayImage(width, height, 0);
     const state = this.state;
 
+    const footerY = height - padding.bottom - font.lineHeight;
+    const ringTop = padding.top + FRONT_LABEL_BAND;
+    const ringBottom = footerY - RING_FOOTER_GAP;
     const centerX = (width / 2) | 0;
-    const centerY = ((height - 24) / 2 + 6) | 0;
-    const radius = Math.min(centerX - 90, ((height - 40) / 2) | 0);
+    const centerY = ((ringTop + ringBottom) / 2) | 0;
+    const radius = Math.max(0, Math.min(centerX - RING_SIDE_CLEARANCE, ((ringBottom - ringTop) / 2) | 0));
 
-    image.drawText(font, 12, 6, "Sonic Radar", 220);
+    image.drawText(font, padding.left, padding.top, "Sonic Radar", 220);
     const modeText = state.mode === "extended" ? "4-mic array" : "firmware DoA";
-    image.drawText(font, width - font.measureText(modeText) - 12, 6, modeText, 110);
+    image.drawText(font, width - padding.right - font.measureText(modeText), padding.top, modeText, 110);
 
     // Beam wedge (device frame; the head is the reference for display).
     const beamDeviceDeg = this.deviceBeamDeg(state);
@@ -70,7 +87,7 @@ export class RadarLayer implements Layer {
     // Radar rings.
     drawCircle(image, centerX, centerY, radius, 60);
     drawCircle(image, centerX, centerY, (radius / 2) | 0, 30);
-    image.drawText(font, centerX - (font.measureText("front") / 2) | 0, centerY - radius - 14, "front", 90);
+    image.drawText(font, centerX - (font.measureText("front") / 2) | 0, centerY - radius - FRONT_LABEL_BAND, "front", 90);
 
     // Compass north tick: anchors the world frame visually as the head turns.
     if (state.headingDeg !== null) {
@@ -127,37 +144,31 @@ export class RadarLayer implements Layer {
       }
       const label = dot.name;
       const labelValue = Math.max(90, value - 50);
-      const labelX = dotX + 8 + font.measureText(label) > width ? dotX - font.measureText(label) - 8 : dotX + 8;
+      const labelX = dotX + 8 + font.measureText(label) > width - padding.right ? dotX - font.measureText(label) - 8 : dotX + 8;
       image.drawText(font, labelX, dotY - 6, label, labelValue);
     }
 
-    // Side panel: beam + level readouts.
-    const panelX = width - 116;
-    let panelY = 26;
-    image.drawText(
-      font,
-      panelX,
-      panelY,
-      state.headingDeg !== null ? `Heading ${Math.round(state.headingDeg)}°` : "No compass",
-      state.headingDeg !== null ? 150 : 90,
-    );
-    panelY += 16;
-    image.drawText(font, panelX, panelY, `Beam ${Math.round(state.beamWorldDeg)}°`, 170);
-    panelY += 16;
-    image.drawText(font, panelX, panelY, `Width ${Math.round(state.beamWidthDeg)}°`, 130);
-    panelY += 16;
-    image.drawText(font, panelX, panelY, state.beamLocked ? "Locked on talker" : "Manual aim", 130);
-    panelY += 16;
-    if (state.doaDeviceDeg !== null) {
-      image.drawText(font, panelX, panelY, `Heard ${Math.round(state.doaDeviceDeg)}°`, 200);
+    // Side panel: beam + level readouts, in a column that ends at the right
+    // edge's padding and is wide enough for its longest line.
+    const panelLines: Array<[text: string, value: number]> = [
+      state.headingDeg !== null ? [`Heading ${Math.round(state.headingDeg)}°`, 150] : ["No compass", 90],
+      [`Beam ${Math.round(state.beamWorldDeg)}°`, 170],
+      [`Width ${Math.round(state.beamWidthDeg)}°`, 130],
+      [state.beamLocked ? "Locked on talker" : "Manual aim", 130],
+    ];
+    if (state.doaDeviceDeg !== null) panelLines.push([`Heard ${Math.round(state.doaDeviceDeg)}°`, 200]);
+    panelLines.push([state.beamFilterOn ? "Filter: beam only" : "Filter: off", 130]);
+    const panelWidth = Math.max(PANEL_MIN_WIDTH, ...panelLines.map(([text]) => Math.ceil(font.measureText(text))));
+    const panelX = width - padding.right - panelWidth;
+    let panelY = padding.top + PANEL_OFFSET_Y;
+    for (const [text, value] of panelLines) {
+      image.drawText(font, panelX, panelY, text, value);
       panelY += 16;
     }
-    image.drawText(font, panelX, panelY, state.beamFilterOn ? "Filter: beam only" : "Filter: off", 130);
 
-    const footerY = height - font.lineHeight - 4;
     image.drawText(
       font,
-      12,
+      padding.left,
       footerY,
       `${GESTURE_SCROLL} aim   ${GESTURE_CLICK} lock   ${GESTURE_DOUBLE_CLICK} back`,
       110,

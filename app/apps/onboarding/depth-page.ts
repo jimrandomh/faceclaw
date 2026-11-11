@@ -3,12 +3,12 @@ import { appSwitcherPositionSetting, uiDepthSetting, type UiDepth } from "../../
 import type { InputEvent } from "../../ui/gestures";
 import { Menu, type MenuDrawArgs } from "../../ui/menu-core";
 import { LIST_ROW_TEXT_INSET, listRowHeight } from "../../ui/metrics";
+import type { Edges } from "../../ui/viewport";
 import { layoutHasDepth } from "./layout-page";
 import { onboardingFont } from "./onboarding-fonts";
-import { drawPageHeading, PAGE_X, type OnboardingNav, type OnboardingPage } from "./onboarding-page";
+import { drawPageHeading, PAGE_TEXT_INSET, type OnboardingNav, type OnboardingPage } from "./onboarding-page";
 
 const CONTENT_GAP = 10;
-const BOTTOM_MARGIN = 8;
 const COLUMN_WIDTH = 220;
 
 /**
@@ -35,15 +35,21 @@ export class DepthPage implements OnboardingPage {
     this.menu.select(uiDepthSetting.values.indexOf(uiDepthSetting.get()));
   }
 
-  paint(image: GrayImage, focused: boolean): void {
+  paint(image: GrayImage, focused: boolean, padding: Edges<number>): void {
     const top = drawPageHeading(
       image,
+      padding,
       "Depth",
       "Swipe to move the display nearer or farther away, then tap to continue. Change later in Settings > Customization.",
     ) + CONTENT_GAP;
+    // The list scrolls, so it runs to the window's bottom edge, with that
+    // edge's padding after its last row.
     this.menu.paint(
       image,
-      { x: PAGE_X - 10, y: top, width: COLUMN_WIDTH, height: image.height - top - BOTTOM_MARGIN },
+      {
+        x: padding.left, y: top, width: Math.min(COLUMN_WIDTH, Math.max(0, image.width - padding.left - padding.right)),
+        height: Math.max(0, image.height - top), padBottom: padding.bottom,
+      },
       focused,
     );
   }
@@ -66,6 +72,6 @@ export class DepthPage implements OnboardingPage {
   }
 
   private drawRow({ image, item: depth, x, y, selected }: MenuDrawArgs<UiDepth>): void {
-    image.drawText(onboardingFont("body"), x + 10, y + LIST_ROW_TEXT_INSET, uiDepthSetting.displayValue(depth), selected ? 255 : 190);
+    image.drawText(onboardingFont("body"), x + PAGE_TEXT_INSET, y + LIST_ROW_TEXT_INSET, uiDepthSetting.displayValue(depth), selected ? 255 : 190);
   }
 }

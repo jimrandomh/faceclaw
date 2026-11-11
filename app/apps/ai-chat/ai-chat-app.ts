@@ -13,6 +13,10 @@ import { createInProcessWindow, type InProcessAppOptions, type InProcessWindow }
 import { shell } from "../../ui/shell/shell";
 import { VoiceDraft } from "./voice-draft";
 
+/** The transcript's scrollbar, hugging the window's right padding, and the gap the text keeps from it. */
+const SCROLLBAR_WIDTH = 2;
+const SCROLLBAR_GAP = 11;
+
 class AiChatLayer implements Layer {
   readonly acceptsDirectional = true;
   private firstLine: number | null = null; // null follows the streaming tail
@@ -38,24 +42,30 @@ class AiChatLayer implements Layer {
   }
   paint(ctx: LayerContext): GrayImage {
     const size = ctx.stack.getBaseSize();
+    const { padding } = size;
     const image = new GrayImage(size.width, size.height);
     const font = getDefaultSmallFont();
     const step = font.lineHeight + 3;
-    const left = 12;
-    const width = size.width - 28;
+    // The title, and the footer under the transcript, stay put inside the
+    // padding suggested for the window's edges; the transcript scrolls
+    // between them. Text runs from the left padding to the gutter kept for
+    // the scrollbar.
+    const left = padding.left;
+    const scrollbarX = size.width - padding.right - SCROLLBAR_WIDTH;
+    const width = Math.max(0, scrollbarX - SCROLLBAR_GAP - left);
     const record = this.conversations.current();
     if (this.selectedId !== record.id) { this.selectedId = record.id; this.firstLine = null; }
     const transcript = record.session?.transcript ?? record.history?.transcript ?? [];
     const title = this.conversations.title();
-    image.drawText(font, left, 6, truncateText(font, title, width), 180);
+    image.drawText(font, left, padding.top, truncateText(font, title, width), 180);
     const label = assistantBackendSetting.get() === "external" ? "External agent" :
       `${assistantModelLabel(record.model)} · ${record.reasoning === "default" ? "default reasoning" : record.reasoning}`;
     const footer = wrapText(font, `${label}   ${gestureHints([
       [GESTURE_CLICK, "menu"], [GESTURE_DOUBLE_CLICK, "back"], [GESTURE_LONG_PRESS, "hold to talk"],
     ])}`, width);
-    const footerY = size.height - step * footer.length;
+    const footerY = size.height - padding.bottom - font.lineHeight - step * (footer.length - 1);
     const footerTop = footerY - step * 3 - 12;
-    const historyTop = step + 16;
+    const historyTop = padding.top + step + 10;
     const visible = Math.max(1, Math.floor((footerTop - historyTop - 8) / step));
     const lines: { text: string; color: number }[] = [];
     for (const entry of transcript) {
@@ -82,7 +92,7 @@ class AiChatLayer implements Layer {
     if (this.maxFirstLine > 0) {
       const track = visible * step;
       const thumb = Math.max(8, Math.floor(track * visible / lines.length));
-      image.fillRect(size.width - 5, historyTop + Math.floor((track - thumb) * first / this.maxFirstLine), 2, thumb, 110);
+      image.fillRect(scrollbarX, historyTop + Math.floor((track - thumb) * first / this.maxFirstLine), SCROLLBAR_WIDTH, thumb, 110);
     }
     image.fillRect(left, footerTop, width, 1, 65);
     const state = this.draft.active ? this.draft.status : record.session?.status || this.draft.status;

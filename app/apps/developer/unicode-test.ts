@@ -3,7 +3,7 @@ import { fontSelectionLabel, getDefaultSmallFont, getUiFontSelection } from "../
 import { GrayImage, type UiFont } from "../../graphics/image";
 import { type InputEvent } from "../../ui/gestures";
 import { Layer, type LayerContext } from "../../ui/layers";
-import { MenuLayer, type MenuLayout } from "../../ui/menu";
+import { MenuLayer, type MenuPageLayout } from "../../ui/menu";
 
 /**
  * Unicode test: sample texts chosen to exercise text-rendering features that
@@ -175,9 +175,6 @@ export const UNICODE_SAMPLES: readonly UnicodeSample[] = [
   },
 ];
 
-const MARGIN_X = 18;
-const TITLE_Y = 8;
-const FOOTER_MARGIN = 20;
 const BODY_GAP = 6;
 
 /**
@@ -196,32 +193,36 @@ export class UnicodeSampleLayer implements Layer {
 
   paint(ctx: LayerContext): GrayImage {
     const font = getDefaultSmallFont();
-    const { width, height } = ctx.stack.getBaseSize();
+    // The title and note stay put at the top and the footer line at the
+    // bottom, inside the padding suggested for the window's edges; the text
+    // pages between them, so it needs no padding of its own.
+    const { width, height, padding } = ctx.stack.getBaseSize();
     const image = new GrayImage(width, height, 0);
-    const textWidth = width - 2 * MARGIN_X;
+    const left = padding.left;
+    const textWidth = Math.max(0, width - padding.left - padding.right);
 
-    image.drawText(font, MARGIN_X, TITLE_Y, truncateText(font, this.sample.label, textWidth), 220);
-    const noteY = TITLE_Y + font.lineHeight;
+    image.drawText(font, left, padding.top, truncateText(font, this.sample.label, textWidth), 220);
+    const noteY = padding.top + font.lineHeight;
     const noteLines = wrapText(font, this.sample.exercises, textWidth);
     for (let i = 0; i < noteLines.length; i++) {
-      image.drawText(font, MARGIN_X, noteY + i * font.lineHeight, noteLines[i]!, 120);
+      image.drawText(font, left, noteY + i * font.lineHeight, noteLines[i]!, 120);
     }
 
     const bodyY = noteY + noteLines.length * font.lineHeight + BODY_GAP;
-    const footerY = height - FOOTER_MARGIN;
+    const footerY = height - padding.bottom - font.lineHeight;
     this.bodyLineCount = Math.max(1, Math.floor((footerY - bodyY) / font.lineHeight));
 
     const lines = this.getLines(font, textWidth);
     this.clampScroll(lines.length);
     const visible = lines.slice(this.firstLine, this.firstLine + this.bodyLineCount);
     for (let i = 0; i < visible.length; i++) {
-      image.drawText(font, MARGIN_X, bodyY + i * font.lineHeight, visible[i]!, 235);
+      image.drawText(font, left, bodyY + i * font.lineHeight, visible[i]!, 235);
     }
 
     const page = Math.floor(this.firstLine / this.pageStep()) + 1;
-    image.drawText(font, MARGIN_X, footerY, `Page ${page}/${this.pageCount(lines.length)}`, 110);
+    image.drawText(font, left, footerY, `Page ${page}/${this.pageCount(lines.length)}`, 110);
     const fontLabel = fontSelectionLabel(getUiFontSelection());
-    image.drawText(font, width - MARGIN_X - font.measureText(fontLabel), footerY, fontLabel, 110);
+    image.drawText(font, width - padding.right - font.measureText(fontLabel), footerY, fontLabel, 110);
     return image;
   }
 
@@ -271,7 +272,7 @@ export class UnicodeSampleLayer implements Layer {
 }
 
 /** The language list; selecting a row opens its sample. */
-export function unicodeTestMenu(layout: MenuLayout): MenuLayer {
+export function unicodeTestMenu(layout: MenuPageLayout): MenuLayer {
   return new MenuLayer(
     "Unicode test",
     UNICODE_SAMPLES.map((sample) => ({

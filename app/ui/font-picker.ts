@@ -35,6 +35,11 @@ import type { Layer, LayerContext } from "./layers";
 /** Pixel sizes offered for TTF faces (also by the onboarding's text-size page). */
 export const FONT_SIZE_CHOICES = [8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 20, 22, 24, 26, 28] as const;
 const DEFAULT_TTF_SIZE = 16;
+/** Row text (and the title, in line with it) from the rows' highlight boxes. */
+const ROW_TEXT_INSET = 10;
+/** The title: below the window's top padding, and the gap under its line. */
+const TITLE_OFFSET_Y = 2;
+const TITLE_GAP = 10;
 const PREVIEW_TEXT = "The quick brown fox jumps over 0123456789";
 const INHERIT_UI_FONT_LABEL = "Same as UI font";
 const UI_BITMAP_FACES: FontPickerOptions["bitmapFaces"] = [
@@ -132,27 +137,31 @@ export class FontPickerLayer implements Layer {
 
   paint(ctx: LayerContext): GrayImage {
     const font = getDefaultSmallFont();
-    const { width, height } = ctx.stack.getBaseSize();
+    const { width, height, padding } = ctx.stack.getBaseSize();
     const image = new GrayImage(width, height, 0);
     const focused = ctx.stack.isFocused();
-    image.drawText(font, 22, 14, this.options.title, 220);
+    // The rows' highlight boxes span the window inside the padding suggested
+    // for its sides; the title and the rows' text sit ROW_TEXT_INSET in.
+    const rowX = padding.left + ROW_TEXT_INSET;
+    const rowWidth = width - padding.left - padding.right - 2 * ROW_TEXT_INSET;
+    const titleY = padding.top + TITLE_OFFSET_Y;
+    image.drawText(font, rowX, titleY, this.options.title, 220);
 
-    const rowX = 22;
-    const rowWidth = width - 2 * rowX;
     const rowHeight = listRowHeight(font);
-    const rowsTop = 24 + font.lineHeight;
+    const rowsTop = titleY + font.lineHeight + TITLE_GAP;
     const rowsHeight = ROWS.length * rowHeight;
+    const bottom = height - padding.bottom;
     const preview = this.previewFont();
     const info = `Line height: ${preview.lineHeight}px`;
 
     // Preview under the rows, where its sample line and the info line fit
     // (the G2's window): a separator, then the sample line in the draft font.
     const previewTop = rowsTop + rowsHeight + 10;
-    if (previewTop + 8 + preview.lineHeight + 6 + font.lineHeight <= height) {
-      this.menu.paint(image, { x: rowX - 10, y: rowsTop, width: rowWidth + 20, height: rowsHeight }, focused);
-      image.drawLine(rowX - 10, previewTop, rowX + rowWidth + 10, previewTop, 60);
+    if (previewTop + 8 + preview.lineHeight + 6 + font.lineHeight <= bottom) {
+      this.menu.paint(image, { x: rowX - ROW_TEXT_INSET, y: rowsTop, width: rowWidth + 2 * ROW_TEXT_INSET, height: rowsHeight }, focused);
+      image.drawLine(rowX - ROW_TEXT_INSET, previewTop, rowX + rowWidth + ROW_TEXT_INSET, previewTop, 60);
       const sample =
-        preview.measureText(PREVIEW_TEXT) <= rowWidth + 20 ? PREVIEW_TEXT : "The quick brown fox 0123";
+        preview.measureText(PREVIEW_TEXT) <= rowWidth + 2 * ROW_TEXT_INSET ? PREVIEW_TEXT : "The quick brown fox 0123";
       preview.drawText(image, rowX - 4, previewTop + 8, sample, 230);
       image.drawText(font, rowX - 4, previewTop + 8 + preview.lineHeight + 6, info, 110);
       return image;
@@ -161,12 +170,11 @@ export class FontPickerLayer implements Layer {
     // Else beside them (a short window, as on the RayNeo iO), the sample
     // wrapped to the column, as many lines as fit above the info line.
     const columnWidth = Math.round(rowWidth / 2);
-    const bottom = height - 8;
-    this.menu.paint(image, { x: rowX - 10, y: rowsTop, width: columnWidth + 20, height: Math.min(rowsHeight, bottom - rowsTop) }, focused);
-    const dividerX = rowX + columnWidth + 20;
+    this.menu.paint(image, { x: rowX - ROW_TEXT_INSET, y: rowsTop, width: columnWidth + 2 * ROW_TEXT_INSET, height: Math.min(rowsHeight, bottom - rowsTop) }, focused);
+    const dividerX = rowX + columnWidth + 2 * ROW_TEXT_INSET;
     image.drawLine(dividerX, rowsTop, dividerX, Math.min(rowsTop + rowsHeight, bottom), 60);
     const previewX = dividerX + 12;
-    const lines = wrapText(preview, PREVIEW_TEXT, width - previewX - 12);
+    const lines = wrapText(preview, PREVIEW_TEXT, width - padding.right - previewX);
     const infoY = bottom - font.lineHeight;
     let y = rowsTop + 4;
     for (const line of lines) {
@@ -178,11 +186,11 @@ export class FontPickerLayer implements Layer {
     return image;
   }
 
-  /** Row box = highlight box; text sits 10px in from its left edge and 10px from its right. */
+  /** Row box = highlight box; text sits ROW_TEXT_INSET in from its left and right edges. */
   private drawRow({ image, item: row, x, y, width, selected }: MenuDrawArgs<RowId>): void {
     const font = getDefaultSmallFont();
-    const textX = x + 10;
-    const textWidth = width - 20;
+    const textX = x + ROW_TEXT_INSET;
+    const textWidth = width - 2 * ROW_TEXT_INSET;
     if (row === "save") {
       image.drawText(font, textX, y + LIST_ROW_TEXT_INSET, "Save", selected ? 255 : 200);
       return;

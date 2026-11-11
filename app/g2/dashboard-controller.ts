@@ -74,7 +74,8 @@ import { ALL_APPS } from "../apps/all-apps";
 import { type AppContext, type AppDefinition, type AppLaunchParams, type TextEditorHost } from "../apps/app-definition";
 import { type InProcessAppOptions, type InProcessWindow } from "../ui/shell/in-process-window";
 import { loadPersistedOpenApps, savePersistedOpenApps } from "../ui/shell/open-apps-persistence";
-import { appViewportRect, isOnSwitcherEdge, screenHeight, screenWidth, sidebarStripVisible, type ScreenRect, type WindowHeightMode } from "../ui/shell/geometry";
+import { appViewportRect, isOnSwitcherEdge, screenHeight, screenWidth, sidebarStripVisible, windowEdges, type ScreenRect, type WindowHeightMode } from "../ui/shell/geometry";
+import { sameEdges } from "../ui/viewport";
 import { type ContinuousCaptureOptions, type LayerActions, type TextSettingsEditToggle, type TranscriptionChoice } from "../ui/layers";
 import { type KeyboardInputSession } from "../ui/shell/keyboard-input";
 import { appSwitcherPositionSetting, glassesModelName, glassesTypeSetting, statusBarPositionSetting, statusBarVisibilitySetting, windowBorderSetting, assistantAllowProactiveSetting, assistantBackendSetting, assistantBridgeHostSetting, assistantBridgePortSetting, assistantBridgeTokenSetting, getBrightnessPreferences, displayLayoutSetting, navigateDisplayLayoutSetting, terminalDisplayLayoutSetting, elevenLabsApiKeySetting, getStringSettingById, openAiApiKeySetting, nightscoutApiTokenSetting, firmwareDebugFlagsSetting, whisperServerApiKeySetting, whisperServerLanguageSetting, whisperServerModelSetting, whisperServerUrlSetting, lockScreenEnabledSetting, nightscoutSiteUrlSetting, onAnySettingChanged, previewColorSetting, effectiveRingConnectionMode, type RingConnectionMode, saveVoiceRecordingsSetting, sonioxApiKeySetting, screenTimeoutSetting, screenTimeoutSettingToMs, shouldPopUpNewNotification, suspendEvenHubWhenScreenOffSetting, voiceProviderSetting, wakeWordActionSetting, type ConfigSettingString } from "../ui/dashboard-settings";
@@ -482,9 +483,11 @@ class DashboardController {
       this.syncVoiceWake();
       // Display mode size first: a reflow repositions every surface too, so
       // the band-position check after it then has nothing left to do.
-      this.applyDisplayModeIfChanged();
+      const resized = this.applyDisplayModeIfChanged();
       this.applyVerticalPositionIfChanged();
-      this.applyAppLayoutsIfChanged();
+      const appsResized = this.applyAppLayoutsIfChanged();
+      // Either reflow hands windows their new edges along with their size.
+      if (!resized && !appsResized) this.applyWindowEdgesIfChanged();
       this.syncAssistantBridgeIfChanged();
       this.syncLockScreenSettingIfChanged();
       // A Preview color or scaling change should show on the mirror at once,
@@ -578,9 +581,9 @@ class DashboardController {
    * that support resizing receive the new viewport. Other worker windows are
    * closed and launched again at the new size.
    */
-  private applyDisplayModeIfChanged(): void {
+  private applyDisplayModeIfChanged(): boolean {
     const sizes = viewportSizesKey();
-    if (sizes === this.lastViewportSizes) return;
+    if (sizes === this.lastViewportSizes) return false;
     this.lastViewportSizes = sizes;
     // The reflow below reconfigures every surface, covering any move too.
     this.lastWindowPlacement = windowPlacementKey();
@@ -612,6 +615,22 @@ class DashboardController {
     })().catch((error) => {
       this.appendLog(`display mode change failed: ${this.formatError(error)}`);
     });
+    return true;
+  }
+
+  /**
+   * A setting changed what some windows' edges touch (geometry.ts
+   * windowEdges: a border line, or blank space) without resizing them, as
+   * the Border setting does under a top status bar: those windows lay out
+   * again with the padding their new edges suggest. Their surfaces stay as
+   * they are.
+   */
+  private applyWindowEdgesIfChanged(): void {
+    for (const window of Array.from(shell.getWindows())) {
+      const laidOut = window.layoutSize?.();
+      if (!laidOut || !window.relayout || sameEdges(laidOut.edges, windowEdges(window.appId))) continue;
+      window.relayout();
+    }
   }
 
   /**
@@ -660,10 +679,10 @@ class DashboardController {
     };
   }
 
-  private applyAppLayoutsIfChanged(): void {
+  private applyAppLayoutsIfChanged(): boolean {
     const layouts = this.appLayouts();
     const changed = Object.keys(layouts).filter((appId) => layouts[appId] !== this.lastAppLayouts[appId]);
-    if (!changed.length) return;
+    if (!changed.length) return false;
     this.lastAppLayouts = layouts;
     void (async () => {
       for (const window of Array.from(shell.getWindows())) {
@@ -674,6 +693,7 @@ class DashboardController {
       shell.foregroundWindow()?.requestRender();
       this.requestShellRender();
     })().catch((error) => this.appendLog(`app layout change failed: ${this.formatError(error)}`));
+    return true;
   }
 
   private applyVerticalPositionIfChanged(): void {

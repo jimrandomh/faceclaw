@@ -24,12 +24,17 @@ import { noteStaleDataUsed, renderPassAllowsStaleData } from "../util/render-fre
 import { type InputEvent } from "./gestures";
 import { type Layer, type LayerContext, type PaintBelow } from "./layers";
 import { Menu, type MenuBox } from "./menu-core";
+import type { Viewport } from "./viewport";
 
-// Title position, shared with the other list apps (terminal, calendar).
-const TITLE_X = 18;
-const TITLE_Y = 10;
-const LIST_TOP = 38;
-const CARD_X = 20;
+// The list's title, as in the other list apps (terminal, calendar): this far
+// in from the cards' left edge (in line with their icons) and below the
+// window's top padding; the first card starts LIST_TOP_GAP under its top.
+const TITLE_INSET_X = 10;
+const TITLE_OFFSET_Y = 2;
+const LIST_TOP_GAP = 28;
+/** The empty-list message: indented from the title, and this far under its top. */
+const EMPTY_MESSAGE_INDENT = 6;
+const EMPTY_MESSAGE_GAP = 62;
 const ICON_SIZE = NOTIFICATION_ICON_SIZE;
 const ICON_TEXT_GAP = 8;
 const CARD_TEXT_X = 10 + ICON_SIZE + ICON_TEXT_GAP;
@@ -37,23 +42,19 @@ const CARD_GAP = 6;
 const MAX_NOTIFICATIONS = 50;
 // Right-hand action menu of the detail view.
 const DETAIL_MENU_WIDTH = 148;
-/** Top of the action menu's first row box, and the space kept below its last. */
-const DETAIL_MENU_TOP = 22;
-const DETAIL_MENU_BOTTOM_MARGIN = 17;
+/** Gap between the content column and the action menu's row boxes. */
+const DETAIL_MENU_GAP = 12;
 const DETAIL_MENU_ROW_GAP = 3;
 /** Row text inset from the row box: horizontal, then vertical. */
 const DETAIL_MENU_TEXT_X = 8;
 const DETAIL_MENU_TEXT_Y = 4;
-const DETAIL_CONTENT_X = 24;
-const DETAIL_TITLE_Y = 21;
 /** Gaps below the title's line box and below the icon/app-name header row. */
 const DETAIL_HEADER_GAP = 3;
 const DETAIL_BODY_GAP = 4;
 /** Untitled text lines that attached images (custom layout, picture) leave room for above them, when there are that many; they take the rest. */
 const DETAIL_PICTURE_TEXT_LINES = 2;
-/** Gap between the text and an attached picture, and the space kept below the picture. */
+/** Gap between the text and an attached picture. */
 const DETAIL_PICTURE_GAP = 6;
-const DETAIL_PICTURE_BOTTOM_MARGIN = 12;
 /** An attached picture with less height than this to fit in (a large UI font) is left out. */
 const DETAIL_PICTURE_MIN_HEIGHT = 32;
 /** Likewise a custom layout; Dexcom's reading is about 40 high. */
@@ -62,8 +63,6 @@ const DETAIL_CUSTOM_VIEW_MIN_HEIGHT = 16;
 const LARGE_ICON_SIZE = 32;
 const LARGE_ICON_GAP = 8;
 // Disable-source confirmation: actions on top, the explanation below them.
-const CONFIRM_X = 24;
-const CONFIRM_Y = 8;
 const CONFIRM_TEXT_X = 10;
 const CONFIRM_PROMPT_GAP = 16;
 
@@ -137,10 +136,14 @@ export class NotificationsListLayer implements Layer {
 
   paint(ctx: LayerContext): GrayImage {
     const font = getDefaultSmallFont();
-    const { width, height } = ctx.stack.getBaseSize();
+    const { width, height, padding } = ctx.stack.getBaseSize();
     const image = new GrayImage(width, height, 0);
-    const cardWidth = width - 2 * CARD_X;
+    // Cards span the window between the padding suggested for its sides.
+    const cardX = padding.left;
+    const cardWidth = width - padding.left - padding.right;
     const cardTextWidth = cardWidth - CARD_TEXT_X - 14;
+    const titleX = cardX + TITLE_INSET_X;
+    const titleY = padding.top + TITLE_OFFSET_Y;
     const notifications = readActiveNotifications(MAX_NOTIFICATIONS);
     const selectedIndex = this.resolveSelectedIndex(notifications);
     const layouts = notifications.map((notification, index) =>
@@ -148,37 +151,41 @@ export class NotificationsListLayer implements Layer {
     );
 
     if (!notifications.length) {
-      image.drawText(font, TITLE_X, TITLE_Y, "Notifications", 220);
+      image.drawText(font, titleX, titleY, "Notifications", 220);
       const message = notificationEmptyMessage();
-      const messageLines = wrapText(font, message, width - 48);
+      const messageX = titleX + EMPTY_MESSAGE_INDENT;
+      const messageLines = wrapText(font, message, width - padding.right - messageX);
       for (let index = 0; index < messageLines.length; index++) {
-        image.drawText(font, 24, 72 + index * lineStep(font), messageLines[index]!, 190);
+        image.drawText(font, messageX, titleY + EMPTY_MESSAGE_GAP + index * lineStep(font), messageLines[index]!, 190);
       }
       return image;
     }
 
     const focused = ctx.stack.isFocused();
-    const listBottom = height;
-    const scrollY = scrollForSelected(layouts, selectedIndex, listBottom - LIST_TOP);
-    // The title scrolls away with the list. Card text is drawn as deferred
-    // glyphs (always composited above raster fills), so a fixed title would
-    // show through cards scrolled over it; moving it with the content keeps
-    // it above the first card instead.
-    if (TITLE_Y - scrollY + font.lineHeight > 0) {
-      image.drawText(font, TITLE_X, TITLE_Y - scrollY, "Notifications", 220);
+    // The whole window scrolls, title and all, so cards scrolled past either
+    // end are cut off at the window's own edges; the padding suggested for
+    // the top and bottom edges lies inside the scrolled content, above the
+    // title and below the last card.
+    const listTop = titleY + LIST_TOP_GAP;
+    const scrollY = scrollForSelected(layouts, selectedIndex, height - listTop, padding.bottom);
+    // Card text is drawn as deferred glyphs (always composited above raster
+    // fills), so a fixed title would show through cards scrolled over it;
+    // moving it with the content keeps it above the first card instead.
+    if (titleY - scrollY + font.lineHeight > 0) {
+      image.drawText(font, titleX, titleY - scrollY, "Notifications", 220);
     }
-    let cursorY = LIST_TOP - scrollY;
+    let cursorY = listTop - scrollY;
     for (let index = 0; index < layouts.length; index++) {
       const layout = layouts[index]!;
-      if (cursorY + layout.height >= LIST_TOP && cursorY <= listBottom) {
+      if (cursorY + layout.height > 0 && cursorY < height) {
         // Icons are only resolved for cards actually drawn, so a long list
         // does not fetch icons for everything below the fold.
         const icon = iconForNotification(layout.notification.key);
         const largeIcon = largeIconForNotification(layout.notification);
-        drawNotificationCard(image, font, layout, CARD_X, cursorY, cardWidth, index === selectedIndex, focused, icon, largeIcon);
+        drawNotificationCard(image, font, layout, cardX, cursorY, cardWidth, index === selectedIndex, focused, icon, largeIcon);
       }
       cursorY += layout.height + CARD_GAP;
-      if (cursorY > listBottom + 80) break;
+      if (cursorY > height + 80) break;
     }
 
     return image;
@@ -250,8 +257,8 @@ export class SingleNotificationLayer implements Layer {
   paint(ctx: LayerContext, paintBelow: PaintBelow): GrayImage {
     if (this.confirmation) return this.paintConfirmation(ctx);
     const font = getDefaultSmallFont();
-    const { width, height } = ctx.stack.getBaseSize();
-    const image = new GrayImage(width, height, 0);
+    const viewport = ctx.stack.getBaseSize();
+    const image = new GrayImage(viewport.width, viewport.height, 0);
     const notification = readActiveNotifications(ALL_NOTIFICATIONS).find((item) => item.key === this.notificationKey);
 
     if (!notification) {
@@ -259,8 +266,9 @@ export class SingleNotificationLayer implements Layer {
     }
 
     this.detailMenu.setItems(buildDetailMenu(notification, this.options.origin));
-    drawDetailContent(image, font, notification, iconForNotification(notification.key), width, height);
-    this.detailMenu.paint(image, notificationActionMenuBox(width, height), ctx.stack.isFocused());
+    const layout = notificationDetailLayout(viewport);
+    drawDetailContent(image, font, notification, iconForNotification(notification.key), layout);
+    this.detailMenu.paint(image, layout.menuBox, ctx.stack.isFocused());
     this.lastImage = image;
     return image;
   }
@@ -330,24 +338,28 @@ export class SingleNotificationLayer implements Layer {
   private paintConfirmation(ctx: LayerContext): GrayImage {
     const { source, menu } = this.confirmation!;
     const font = getDefaultSmallFont();
-    const { width, height } = ctx.stack.getBaseSize();
+    const { width, height, padding } = ctx.stack.getBaseSize();
     const image = new GrayImage(width, height, 0);
+    const contentWidth = width - padding.left - padding.right;
     // Put actions first so they remain reachable even with a large UI font.
     const menuBox: MenuBox = {
-      x: CONFIRM_X,
-      y: CONFIRM_Y,
-      width: width - 2 * CONFIRM_X,
-      height: Math.min(menu.items.length * listRowHeight(font), height - CONFIRM_Y),
+      x: padding.left,
+      y: padding.top,
+      width: contentWidth,
+      height: Math.min(menu.items.length * listRowHeight(font), height - padding.top),
     };
     menu.paint(image, menuBox, ctx.stack.isFocused());
     const top = menuBox.y + menuBox.height + CONFIRM_PROMPT_GAP;
     const prompt = `Turn off notification popups from ${source.appName || source.packageName}? You can turn them back on in the Notifications app's Notification filter.`;
-    const lines = wrapText(font, prompt, width - 2 * CONFIRM_X);
-    const maxLines = Math.max(1, Math.floor((height - top - 12) / lineStep(font)));
+    // In line with the actions' labels.
+    const promptX = menuBox.x + CONFIRM_TEXT_X;
+    const promptWidth = contentWidth - 2 * CONFIRM_TEXT_X;
+    const lines = wrapText(font, prompt, promptWidth);
+    const maxLines = Math.max(1, Math.floor((height - padding.bottom - top) / lineStep(font)));
     for (let index = 0; index < Math.min(lines.length, maxLines); index++) {
       const text = index === maxLines - 1 && lines.length > maxLines
-        ? truncateText(font, lines[index] + "...", width - 2 * CONFIRM_X) : lines[index]!;
-      image.drawText(font, CONFIRM_X, top + index * lineStep(font), text, 210);
+        ? truncateText(font, lines[index] + "...", promptWidth) : lines[index]!;
+      image.drawText(font, promptX, top + index * lineStep(font), text, 210);
     }
     return image;
   }
@@ -443,14 +455,20 @@ function drawNotificationCard(
   }
 }
 
-function scrollForSelected(layouts: CardLayout[], selectedIndex: number, viewportHeight: number): number {
+/**
+ * How far the list is scrolled to centre the selected card in the rows from
+ * the first card's resting top to the window's bottom (`viewportHeight` of
+ * them), without scrolling past the last card and the `bottomPadding` kept
+ * under it.
+ */
+function scrollForSelected(layouts: CardLayout[], selectedIndex: number, viewportHeight: number, bottomPadding: number): number {
   if (selectedIndex < 0) return 0;
   let selectedTop = 0;
   for (let index = 0; index < selectedIndex; index++) {
     selectedTop += layouts[index]!.height + CARD_GAP;
   }
   const selectedBottom = selectedTop + layouts[selectedIndex]!.height;
-  const contentHeight = layouts.reduce((sum, layout) => sum + layout.height + CARD_GAP, 0);
+  const contentHeight = layouts.reduce((sum, layout) => sum + layout.height + CARD_GAP, -CARD_GAP) + bottomPadding;
   const maxScroll = Math.max(0, contentHeight - viewportHeight);
   const centered = selectedTop - Math.max(0, (viewportHeight - (selectedBottom - selectedTop)) / 2);
   return clamp(centered | 0, 0, maxScroll);
@@ -461,14 +479,12 @@ function drawDetailContent(
   font: UiFont,
   notification: AndroidNotification,
   icon: GrayImage | null,
-  width: number,
-  height: number,
+  layout: NotificationDetailLayout,
 ): void {
-  const contentX = NOTIFICATION_CONTENT_X;
-  const contentWidth = notificationContentWidth(width);
+  const { contentX, contentWidth, bottom } = layout;
   const step = lineStep(font);
-  const bottom = height - DETAIL_PICTURE_BOTTOM_MARGIN;
-  let top = drawNotificationHeader(image, font, icon, `${notification.appName || notification.packageName}  ${formatRelativeTime(notification.postTime)}`);
+  let top = drawNotificationHeader(image, font, icon,
+    `${notification.appName || notification.packageName}  ${formatRelativeTime(notification.postTime)}`, layout);
 
   // The title, beside the large icon (a sender's avatar, a site's logo) when
   // there is one. A picture or custom layout can be the whole notification
@@ -561,24 +577,44 @@ function drawClippedLines(
   return shown;
 }
 
-/** Left edge of a notification detail view's content column. */
-export const NOTIFICATION_CONTENT_X = DETAIL_CONTENT_X;
+/**
+ * Where a notification detail view's parts go in its viewport: a content
+ * column from the padding suggested for the left edge, and an action column
+ * of DETAIL_MENU_WIDTH ending at the right edge's. The content keeps inside
+ * the top and bottom padding (`top`, `bottom`). The action menu scrolls, so
+ * its box runs to the top and bottom edges with their padding inside it.
+ */
+export type NotificationDetailLayout = {
+  contentX: number;
+  contentWidth: number;
+  top: number;
+  bottom: number;
+  menuBox: MenuBox;
+};
 
-/** Width of a notification detail view's content column, left of the action column. */
-export function notificationContentWidth(width: number): number {
-  return width - DETAIL_MENU_WIDTH - 24 - NOTIFICATION_CONTENT_X - 20;
+export function notificationDetailLayout(viewport: Viewport): NotificationDetailLayout {
+  const { width, height, padding } = viewport;
+  const menuX = width - padding.right - DETAIL_MENU_WIDTH;
+  return {
+    contentX: padding.left,
+    contentWidth: menuX - DETAIL_MENU_GAP - padding.left,
+    top: padding.top,
+    bottom: height - padding.bottom,
+    menuBox: { x: menuX, y: 0, width: DETAIL_MENU_WIDTH, height, padTop: padding.top, padBottom: padding.bottom },
+  };
 }
 
 /**
  * The top of a notification detail view: the "Notification" title, then the
  * source's icon and label. Returns the y where the body starts.
  */
-export function drawNotificationHeader(image: GrayImage, font: UiFont, icon: GrayImage | null, sourceLabel: string): number {
-  const contentX = NOTIFICATION_CONTENT_X;
-  image.drawText(font, contentX, DETAIL_TITLE_Y, "Notification", 220);
+export function drawNotificationHeader(image: GrayImage, font: UiFont, icon: GrayImage | null, sourceLabel: string,
+    layout: NotificationDetailLayout): number {
+  const { contentX, top } = layout;
+  image.drawText(font, contentX, top, "Notification", 220);
   // The header row (icon + app name) and the body stack below the title's
   // line box, so a large UI font pushes them down instead of overlapping.
-  const headerTop = DETAIL_TITLE_Y + font.lineHeight + DETAIL_HEADER_GAP;
+  const headerTop = top + font.lineHeight + DETAIL_HEADER_GAP;
   const headerHeight = Math.max(ICON_SIZE, font.lineHeight);
   let sourceX = contentX;
   if (icon) {
@@ -614,16 +650,6 @@ export function createNotificationActionMenu<T extends { label: string }>(wraps:
       }
     },
   });
-}
-
-/** The action column's row boxes: right of the content, from DETAIL_MENU_TOP to the bottom margin. */
-export function notificationActionMenuBox(width: number, height: number): MenuBox {
-  return {
-    x: width - DETAIL_MENU_WIDTH - 32,
-    y: DETAIL_MENU_TOP,
-    width: DETAIL_MENU_WIDTH,
-    height: height - DETAIL_MENU_TOP - DETAIL_MENU_BOTTOM_MARGIN,
-  };
 }
 
 function buildDetailMenu(notification: AndroidNotification, origin: SingleNotificationLayerOrigin): DetailMenuItem[] {

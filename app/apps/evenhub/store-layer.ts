@@ -14,15 +14,37 @@ import { EvenHubStoreDetailLayer, type EvenHubStoreDetailOptions } from "./store
 import { cleanError, installStoreApp } from "./store-install";
 import { checkForEvenHubUpdates, describeUpdate, type EvenHubAppUpdate } from "./updates";
 import { lineStep } from "../../ui/metrics";
+import type { Viewport } from "../../ui/viewport";
 import { isEvenHubStoreAvailable } from "./glasses-compat";
 
-const LIST_X = 18;
+/** Horizontal inset of a row's text from its highlight box; the header's text lines up with it. */
+const ROW_TEXT_INSET = 6;
 /** Horizontal gap between tab labels. */
 const TAB_GAP = 18;
+/** How far a focused tab's highlight box reaches past its label, sideways and above/below. */
+const TAB_HIGHLIGHT_PAD_X = 6;
+const TAB_HIGHLIGHT_PAD_Y = 3;
+/** Room kept right of the rows for the scrollbar, and the bar's own width. */
+const SCROLLBAR_GUTTER = 6;
+const SCROLLBAR_WIDTH = 3;
 
-/** Header: title + tabs line, then the status/subtitle line, then a small gap. */
-function headerHeight(font: UiFont): number {
-  return 8 + lineStep(font) + font.lineHeight + 6;
+/**
+ * Where the header sits in a viewport. Its text shares a column with the
+ * rows' text, whose highlight boxes start at the left edge's padding. The
+ * outermost thing it draws toward the top is a focused tab's highlight box,
+ * so that box sits at the top edge's padding and the title line follows
+ * from it. `bottom` is where the header ends: title + tabs line, then the
+ * status/subtitle line, then a small gap.
+ */
+function headerLayout(viewport: Viewport, font: UiFont): { textX: number; textWidth: number; titleY: number; bottom: number } {
+  const { width, padding } = viewport;
+  const titleY = padding.top + TAB_HIGHLIGHT_PAD_Y;
+  return {
+    textX: padding.left + ROW_TEXT_INSET,
+    textWidth: Math.max(0, width - padding.left - padding.right - 2 * ROW_TEXT_INSET),
+    titleY,
+    bottom: titleY + lineStep(font) + font.lineHeight + 6,
+  };
 }
 
 /** Row pitch of the two-line app list (title + detail), including the 2px gap between highlights. */
@@ -119,8 +141,8 @@ function emptyTab(): TabState {
       draw: ({ image, item, x, y, width }) => {
         const font = getDefaultSmallFont();
         const { title, detail, titleValue } = rowText(item);
-        const textX = x + 6;
-        const textW = width - 12;
+        const textX = x + ROW_TEXT_INSET;
+        const textW = width - 2 * ROW_TEXT_INSET;
         image.drawText(font, textX, y + 2, truncateText(font, title, textW), titleValue);
         image.drawText(font, textX, y + 2 + lineStep(font), truncateText(font, detail, textW), 115);
       },
@@ -198,83 +220,93 @@ export class EvenHubStoreLayer implements Layer {
     }
 
     const font = getDefaultSmallFont();
-    const { width, height } = ctx.stack.getBaseSize();
+    const viewport = ctx.stack.getBaseSize();
+    const { width, height, padding } = viewport;
     const image = new GrayImage(width, height, 0);
-    const headerH = headerHeight(font);
-    image.drawText(font, LIST_X, 8, "EvenHub", 220);
+    const { textX, textWidth, titleY, bottom: headerBottom } = headerLayout(viewport, font);
+    image.drawText(font, textX, titleY, "EvenHub", 220);
 
     if (this.showingLogin) {
-      image.drawText(font, LIST_X, 8 + lineStep(font), truncateText(font, this.loginStatus, width - LIST_X * 2), 125);
+      image.drawText(font, textX, titleY + lineStep(font), truncateText(font, this.loginStatus, textWidth), 125);
       const message = this.loginBusy
         ? "Signing in..."
         : "Enter your Even account email and password in the phone app.";
-      for (const [index, line] of wrapText(font, message, width - LIST_X * 2).entries()) {
-        image.drawText(font, LIST_X, headerH + 16 + index * lineStep(font), line, 190);
+      for (const [index, line] of wrapText(font, message, textWidth).entries()) {
+        image.drawText(font, textX, headerBottom + 16 + index * lineStep(font), line, 190);
       }
-      image.drawText(font, LIST_X, height - font.lineHeight - 4, `${GESTURE_CLICK} log in`, 105);
+      image.drawText(font, textX, height - padding.bottom - font.lineHeight, `${GESTURE_CLICK} log in`, 105);
       return image;
     }
 
-    this.paintTabs(image, font, ctx);
+    this.paintTabs(image, font, ctx, textX, titleY);
 
     const tab = this.tabs[this.activeTab];
     const subtitle = tab.status || this.subtitle(this.activeTab, tab);
-    image.drawText(font, LIST_X, 8 + lineStep(font), truncateText(font, subtitle, width - LIST_X * 2), 125);
+    image.drawText(font, textX, titleY + lineStep(font), truncateText(font, subtitle, textWidth), 125);
 
     if (tab.rows.length === 0) {
       const message = tab.loading ? "Loading..." : this.emptyMessage(this.activeTab, tab);
-      for (const [index, line] of wrapText(font, message, width - LIST_X * 2).slice(0, 3).entries()) {
-        image.drawText(font, LIST_X, headerH + 22 + index * lineStep(font), line, 190);
+      for (const [index, line] of wrapText(font, message, textWidth).slice(0, 3).entries()) {
+        image.drawText(font, textX, headerBottom + 22 + index * lineStep(font), line, 190);
       }
       return image;
     }
+    if (height <= headerBottom) return image;
 
-    const rowH = storeRowHeight(font);
-    const visibleRows = Math.max(1, Math.floor((height - headerH - 4) / rowH));
+    // The header stays put, so the list starts right under it with no
+    // padding of its own there. It scrolls, so it runs to the window's
+    // bottom edge, the padding suggested for that edge inside it: the last
+    // row keeps clear of a border there, and a row cut off for scrolling
+    // meets the edge rather than a blank strip. The scrollbar keeps inside
+    // the padding, in a gutter the rows leave free.
     const listFocused = ctx.stack.isFocused() && this.focus === "list";
     const menu = tabMenu(tab);
+    const rowsWidth = Math.max(0, width - padding.left - padding.right - SCROLLBAR_GUTTER);
     menu.paint(
       image,
-      { x: LIST_X - 6, y: headerH, width: width - LIST_X * 2 + 12, height: visibleRows * rowH - 2 },
+      { x: padding.left, y: headerBottom, width: rowsWidth, height: height - headerBottom, padTop: 0, padBottom: padding.bottom },
       listFocused,
     );
-    menu.drawScrollbar(image, width - 5, headerH, visibleRows * rowH - 3);
+    menu.drawScrollbar(image, width - padding.right - SCROLLBAR_WIDTH, headerBottom,
+      Math.max(0, height - padding.bottom - headerBottom));
     return image;
   }
 
   /** The notice that replaces the store when the paired glasses can't use it. */
   private paintUnavailable(ctx: LayerContext): GrayImage {
     const font = getDefaultSmallFont();
-    const { width, height } = ctx.stack.getBaseSize();
-    const image = new GrayImage(width, height, 0);
-    image.drawText(font, LIST_X, 8, "EvenHub", 220);
+    const viewport = ctx.stack.getBaseSize();
+    const image = new GrayImage(viewport.width, viewport.height, 0);
+    const { textX, textWidth, titleY, bottom: headerBottom } = headerLayout(viewport, font);
+    image.drawText(font, textX, titleY, "EvenHub", 220);
     if (this.unavailablePackageName) {
       const status = `${this.unavailablePackageName}'s package is missing.`;
-      image.drawText(font, LIST_X, 8 + lineStep(font), truncateText(font, status, width - LIST_X * 2), 125);
+      image.drawText(font, textX, titleY + lineStep(font), truncateText(font, status, textWidth), 125);
     }
     const message = "Using the Even Realities app store requires Even Realities glasses.";
-    for (const [index, line] of wrapText(font, message, width - LIST_X * 2).entries()) {
-      image.drawText(font, LIST_X, headerHeight(font) + 16 + index * lineStep(font), line, 190);
+    for (const [index, line] of wrapText(font, message, textWidth).entries()) {
+      image.drawText(font, textX, headerBottom + 16 + index * lineStep(font), line, 190);
     }
     return image;
   }
 
-  /** Tab labels to the right of the title; the active one is bright and underlined. */
-  private paintTabs(image: GrayImage, font: UiFont, ctx: LayerContext): void {
+  /** Tab labels to the right of the title (at titleX, titleY); the active one is bright and underlined. */
+  private paintTabs(image: GrayImage, font: UiFont, ctx: LayerContext, titleX: number, titleY: number): void {
     const tabsFocused = ctx.stack.isFocused() && this.focus === "tabs";
-    let x = LIST_X + font.measureText("EvenHub") + 28;
+    let x = titleX + font.measureText("EvenHub") + 28;
     for (const tab of TABS) {
       const label = this.tabLabel(tab.id);
       const w = font.measureText(label);
       const active = tab.id === this.activeTab;
       if (active) {
         if (tabsFocused) {
-          drawSelectionHighlight(image, x - 6, 5, w + 12, font.lineHeight + 6, true, 4);
+          drawSelectionHighlight(image, x - TAB_HIGHLIGHT_PAD_X, titleY - TAB_HIGHLIGHT_PAD_Y,
+            w + 2 * TAB_HIGHLIGHT_PAD_X, font.lineHeight + 2 * TAB_HIGHLIGHT_PAD_Y, true, 4);
         } else {
-          image.fillRect(x, 8 + font.lineHeight + 1, w, 1, 150);
+          image.fillRect(x, titleY + font.lineHeight + 1, w, 1, 150);
         }
       }
-      image.drawText(font, x, 8, label, active ? 235 : 120);
+      image.drawText(font, x, titleY, label, active ? 235 : 120);
       x += w + TAB_GAP;
     }
   }

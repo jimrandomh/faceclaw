@@ -7,7 +7,7 @@ import { voiceControlBridge } from "../../native/voice-control";
 import { Layer, type LayerContext } from "../../ui/layers";
 import { type InputEvent } from "../../ui/gestures";
 import { type LlmStreamHandle } from "../../assistant/llm-protocol";
-import { TranscriptScroll, wrapTranscribeText } from "../transcribe/transcript-model";
+import { TranscriptScroll, transcriptLayout, wrapTranscribeText } from "../transcribe/transcript-model";
 import { TranslationModel, type TranslationJob, type TranslationLine } from "./translation-model";
 import { resolveTranslationModel, streamTranslation } from "./translate-llm";
 import { resolveTranslateLanguage, spokenLanguageName, translateShowOriginalSetting } from "./translate-settings";
@@ -72,14 +72,16 @@ export class TranslateLayer implements Layer {
 
   paint(ctx: LayerContext): GrayImage {
     const font = getDefaultSmallFont();
-    const { width, height } = ctx.stack.getBaseSize();
-    const image = new GrayImage(width, height, 0);
+    const viewport = ctx.stack.getBaseSize();
+    const image = new GrayImage(viewport.width, viewport.height, 0);
     const measure = (line: string) => font.measureText(line);
-    const maxWidth = width - 64;
 
     const status = this.problem ? "Setup needed" : this.translationError || this.status;
     const meter = this.listening && !this.problem ? this.meter : null;
-    const bodyTop = paintListeningHeader(image, font, "Translate", this.saveNotice || status, meter);
+    const bodyTop = paintListeningHeader(image, font, "Translate", this.saveNotice || status, meter, viewport.padding);
+    const step = lineStep(font) + 2;
+    const layout = transcriptLayout(viewport, bodyTop, font.lineHeight, step);
+    const maxWidth = layout.textWidth;
 
     let lines: TranslationLine[];
     if (this.problem) {
@@ -92,20 +94,18 @@ export class TranslateLayer implements Layer {
       }
     }
 
-    const step = lineStep(font) + 2;
-    const bodyLines = Math.max(1, Math.floor((height - 6 - bodyTop - font.lineHeight) / step) + 1);
-    const firstLine = this.scroll.layout(lines.length, bodyLines);
-    for (let index = firstLine; index < Math.min(lines.length, firstLine + bodyLines); index++) {
+    const firstLine = this.scroll.layout(lines.length, layout.pageLines);
+    for (let index = firstLine; index < Math.min(lines.length, firstLine + layout.drawnLines); index++) {
       const y = bodyTop + (index - firstLine) * step;
-      image.drawText(font, 32, y, lines[index]!.text, lines[index]!.gray);
+      image.drawText(font, layout.textX, y, lines[index]!.text, lines[index]!.gray);
     }
 
-    if (lines.length > bodyLines) {
-      const trackHeight = height - bodyTop - 6;
-      const thumbHeight = Math.max(8, Math.round(trackHeight * bodyLines / lines.length));
-      const thumbY = bodyTop + Math.round((trackHeight - thumbHeight) * firstLine / (lines.length - bodyLines));
-      image.fillRect(width - 14, bodyTop, 2, trackHeight, 45);
-      image.fillRect(width - 14, thumbY, 2, thumbHeight, 140);
+    if (lines.length > layout.pageLines) {
+      const track = layout.scrollbar;
+      const thumbHeight = Math.max(8, Math.round(track.height * layout.pageLines / lines.length));
+      const thumbY = track.y + Math.round((track.height - thumbHeight) * firstLine / (lines.length - layout.pageLines));
+      image.fillRect(track.x, track.y, track.width, track.height, 45);
+      image.fillRect(track.x, thumbY, track.width, thumbHeight, 140);
     }
     return image;
   }

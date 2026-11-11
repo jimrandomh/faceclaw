@@ -53,9 +53,11 @@ export const videoMonochromeSetting = new ConfigSettingBoolean({
 
 /** How far one ring scroll seeks. */
 const SEEK_STEP_MS = 10_000;
-const MARGIN_X = 18;
-const TITLE_Y = 10;
+/** The settings panel's rows: at most this wide, their text this far inside their selection box. */
 const PANEL_WIDTH = 340;
+const PANEL_ROW_TEXT_INSET = 10;
+/** The panel's title: how far below the window's top padding. */
+const TITLE_OFFSET_Y = 2;
 
 /**
  * One opened video: its probe result, the native player, and the window
@@ -202,7 +204,9 @@ type PanelRow = { kind: "size" } | { kind: "audio" } | { kind: "monochrome" } | 
 /**
  * The pre-play settings panel (the window's root): picture size, audio and
  * monochrome, all remembered for the next video, then Play (or Resume plus
- * Play from start once a position is kept).
+ * Play from start once a position is kept). The rows' selection boxes start
+ * at the padding suggested for the window's left edge, and the title and
+ * the lines under it line up with the rows' text.
  */
 class VideoSettingsLayer implements Layer {
   private readonly menu = new Menu<PanelRow>({
@@ -224,11 +228,16 @@ class VideoSettingsLayer implements Layer {
 
   paint(ctx: LayerContext): GrayImage {
     const font = getDefaultSmallFont();
-    const { width, height } = ctx.stack.getBaseSize();
+    const { width, height, padding } = ctx.stack.getBaseSize();
     const image = new GrayImage(width, height, 0);
-    image.drawText(font, MARGIN_X, TITLE_Y, truncateText(font, this.session.title, width - 2 * MARGIN_X), 220);
+    const rowsX = padding.left;
+    const available = Math.max(0, width - padding.left - padding.right);
+    const textX = rowsX + PANEL_ROW_TEXT_INSET;
+    const textWidth = available - 2 * PANEL_ROW_TEXT_INSET;
+    const titleY = padding.top + TITLE_OFFSET_Y;
+    image.drawText(font, textX, titleY, truncateText(font, this.session.title, textWidth), 220);
     const step = lineStep(font);
-    let y = TITLE_Y + step;
+    let y = titleY + step;
 
     const info = this.session.info;
     const errors: string[] = [];
@@ -236,12 +245,12 @@ class VideoSettingsLayer implements Layer {
     if (this.session.error) errors.push(`Playback stopped: ${this.session.error}`);
     if (info) {
       const facts = [`${info.width}x${info.height}`, formatMediaTime(info.durationMs), info.hasAudio ? "sound" : "no sound"];
-      image.drawText(font, MARGIN_X, y, facts.join(" · "), 130);
+      image.drawText(font, textX, y, facts.join(" · "), 130);
       y += step;
     }
     for (const error of errors) {
-      for (const line of wrapText(font, error, width - 2 * MARGIN_X, { breakLongWords: true }).slice(0, 3)) {
-        image.drawText(font, MARGIN_X, y, line, 200);
+      for (const line of wrapText(font, error, textWidth, { breakLongWords: true }).slice(0, 3)) {
+        image.drawText(font, textX, y, line, 200);
         y += step;
       }
     }
@@ -253,9 +262,10 @@ class VideoSettingsLayer implements Layer {
     // Land on Resume/Play by default: the settings usually stay as they were.
     const playIndex = rows.findIndex((row) => row.kind === "play");
     this.menu.setItems(rows, index >= 0 ? index : playIndex >= 0 ? playIndex : undefined);
-    const panelWidth = Math.min(PANEL_WIDTH, width - 2 * (MARGIN_X - 6));
-    this.menu.paint(image, { x: MARGIN_X - 6, y, width: panelWidth, height: Math.max(0, height - y - 4) },
-      ctx.stack.isFocused());
+    // The rows scroll under the fixed lines above, as far as the window's
+    // bottom edge, with the padding suggested for that edge inside the list.
+    this.menu.paint(image, { x: rowsX, y, width: Math.min(PANEL_WIDTH, available), height: Math.max(0, height - y),
+      padTop: 0, padBottom: padding.bottom }, ctx.stack.isFocused());
     return image;
   }
 
@@ -294,8 +304,8 @@ class VideoSettingsLayer implements Layer {
 
   private drawRow({ image, item, x, y, width, selected }: MenuDrawArgs<PanelRow>): void {
     const font = getDefaultSmallFont();
-    const textX = x + 10;
-    const textWidth = width - 20;
+    const textX = x + PANEL_ROW_TEXT_INSET;
+    const textWidth = width - 2 * PANEL_ROW_TEXT_INSET;
     switch (item.kind) {
       case "size": {
         const size = videoSizeSetting.get();

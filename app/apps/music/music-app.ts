@@ -14,26 +14,41 @@ import { MusicSettingsLayer } from "./music-settings";
 import { spotifyMenuItem } from "./spotify-menu";
 import { Layer, type LayerContext, type PaintBelow } from "../../ui/layers";
 import { createInProcessWindow, YieldAtRootLayer, type InProcessAppOptions, type InProcessWindow } from "../../ui/shell/in-process-window";
+import type { Viewport } from "../../ui/viewport";
 
 export const MUSIC_WINDOW_ID = "music";
 export const MUSIC_SURFACE_ID = "window:music";
 
 const ART_SIZE = 112;
-const ART_X = 8; // left margin matches the top margin
-const ART_Y = 8;
-const META_X = ART_X + ART_SIZE + 14;
-const PROGRESS_BAR_Y = ART_Y + 116;
+/**
+ * The outline hugging the album art. It is the outermost thing the
+ * now-playing page draws toward the window's top and left edges, so it sits
+ * at the padding suggested for them and the art just inside it.
+ */
+const ART_FRAME = 1;
+/** Gap between the art and the metadata column. */
+const META_GAP = 14;
+/** The metadata's first line, the progress bar and the lists, down from the art's top. */
+const META_OFFSET_Y = 2;
+const PROGRESS_BAR_OFFSET_Y = 116;
+const LIST_OFFSET_Y = 128;
 /** Clear rows between the time labels' baseline (digits have no descenders) and the bar. */
 const PROGRESS_TIME_GAP = 3;
-const LIST_TOP = 136;
-/** Gap between the menus' last row band and the viewport bottom. */
-const LIST_BOTTOM_MARGIN = 4;
-const ACTION_X = 22;
 const ACTION_WIDTH = 154;
-const COLUMN_DIVIDER_X = 190;
-const QUEUE_X = 204;
 /** Horizontal inset of row text from its selection box. */
 const LIST_TEXT_INSET = 6;
+/** The actions column's selection boxes, which start at the window's left padding. */
+const ACTION_BOX_WIDTH = ACTION_WIDTH + 2 * LIST_TEXT_INSET - 4;
+/** The column divider and the queue's selection boxes, right of the actions column's left edge. */
+const COLUMN_DIVIDER_OFFSET_X = 174;
+const QUEUE_OFFSET_X = 182;
+/** Width of the bar Menu.drawScrollbar draws, and the room kept for it right of a list's rows. */
+const SCROLLBAR_WIDTH = 3;
+const SCROLLBAR_GUTTER = 6;
+/** How far the setup prompt's text is indented from its hint line. */
+const PROMPT_INDENT = 4;
+/** Gap between the no-session page's status line, its prompt and its list. */
+const SECTION_GAP = 6;
 const PLAYLIST_ACTION_INDEX = 1;
 /** Minimum room for the dim artist after a queue row's title; less and it is left off. */
 const QUEUE_SUBTITLE_MIN_WIDTH = 40;
@@ -102,107 +117,111 @@ class MusicAppLayer implements Layer {
 
   paint(ctx: LayerContext): GrayImage {
     const font = getDefaultSmallFont();
-    const { width, height } = ctx.stack.getBaseSize();
+    const viewport = ctx.stack.getBaseSize();
+    const { width, height, padding } = viewport;
     const image = new GrayImage(width, height, 0);
     const media = mediaControllerBridge.snapshot();
 
     if (!media.accessEnabled) {
-      const lines = wrapText(font, mediaControllerBridge.accessPrompt, width - 48);
+      // The hint line sits at the window's left and bottom padding; the
+      // prompt is indented from it, as far from the right padding as the left.
+      const lines = wrapText(font, mediaControllerBridge.accessPrompt, width - padding.left - padding.right - 2 * PROMPT_INDENT);
       for (let index = 0; index < lines.length; index++) {
-        image.drawText(font, 24, 16 + index * lineStep(font), lines[index]!, 180);
+        image.drawText(font, padding.left + PROMPT_INDENT, padding.top + index * lineStep(font), lines[index]!, 180);
       }
-      image.drawText(font, 20, height - 16, `${GESTURE_CLICK} ${mediaControllerBridge.accessAction}`, 110);
+      image.drawText(font, padding.left, height - padding.bottom - font.lineHeight, `${GESTURE_CLICK} ${mediaControllerBridge.accessAction}`, 110);
       return image;
     }
+
+    // Lists' selection boxes start at the window's left padding and stop
+    // short of the scrollbar, which hugs the right padding.
+    const listX = padding.left;
+    const rowsRight = width - padding.right - SCROLLBAR_GUTTER;
+    const focused = ctx.stack.isFocused();
 
     if (!media.available) {
       const apps = mediaBrowserBridge.listBrowsableApps(!this.libraryAppsFresh);
       this.libraryAppsFresh = true;
       this.libraryMenu.setItems(apps);
-      image.drawText(font, 24, 16, global.isIOS ? media.status || "Nothing is playing." : "No active media session.", 180);
+      // The text lines up with the picker's row text.
+      const textX = listX + LIST_TEXT_INSET;
+      const textWidth = rowsRight - listX - 2 * LIST_TEXT_INSET;
+      image.drawText(font, textX, padding.top, global.isIOS ? media.status || "Nothing is playing." : "No active media session.", 180);
       const prompt = global.isIOS
         ? "Browse your library, or start playback on the phone."
         : apps.length
           ? "Browse a music app's library, or start playback on the phone."
           : "Start playback in another app on the phone.";
-      let y = 22 + lineStep(font);
-      for (const line of wrapText(font, prompt, width - 48)) {
-        image.drawText(font, 24, y, line, 150);
+      let y = padding.top + lineStep(font) + SECTION_GAP;
+      for (const line of wrapText(font, prompt, textWidth)) {
+        image.drawText(font, textX, y, line, 150);
         y += lineStep(font);
       }
       // Why the last command failed (e.g. playing from the Spotify library with no device open).
-      for (const line of media.notice ? wrapText(font, media.notice, width - 48) : []) {
-        image.drawText(font, 24, y, line, 200);
+      for (const line of media.notice ? wrapText(font, media.notice, textWidth) : []) {
+        image.drawText(font, textX, y, line, 200);
         y += lineStep(font);
       }
       if (apps.length) {
-        const listTop = y + 6;
-        const listHeight = height - listTop - LIST_BOTTOM_MARGIN;
-        this.libraryMenu.paint(
-          image,
-          { x: 24 - LIST_TEXT_INSET, y: listTop - 1, width: width - 48 + 2 * LIST_TEXT_INSET - 4, height: listHeight },
-          ctx.stack.isFocused(),
-        );
-        this.libraryMenu.drawScrollbar(image, width - 12, listTop, listHeight - 4);
+        paintListToBottomEdge(image, this.libraryMenu, { x: listX, top: y + SECTION_GAP, width: rowsRight - listX }, viewport, focused, true);
       }
       return image;
     }
     this.libraryAppsFresh = false;
 
-    this.drawArt(image, media);
+    const artX = padding.left + ART_FRAME;
+    const artY = padding.top + ART_FRAME;
+    this.drawArt(image, media, artX, artY);
 
-    const metaWidth = width - META_X - 24;
+    // The metadata column and the progress bar end at the window's right padding.
+    const metaX = artX + ART_SIZE + META_GAP;
+    const metaWidth = width - padding.right - metaX;
     const metaStep = lineStep(font) + 1;
-    const metaTop = ART_Y + 2;
+    const metaTop = artY + META_OFFSET_Y;
+    const progressBarY = artY + PROGRESS_BAR_OFFSET_Y;
     // Line budget above the progress-bar time line: the layout is five slots
     // (title, second title line, artist, album, player app); when the font is
     // too large for all five, the title gets one truncated line instead of
     // wrapping to two, and the rest shift up a slot.
-    const maxLines = Math.floor((progressTimeY(font) - metaTop - 4 - font.lineHeight) / metaStep) + 1;
+    const maxLines = Math.floor((progressTimeY(font, progressBarY) - metaTop - 4 - font.lineHeight) / metaStep) + 1;
     const titleSlots = maxLines >= 5 ? 2 : 1;
     const title = media.title || "Unknown title";
     const titleLines =
       titleSlots === 2 ? wrapText(font, title, metaWidth).slice(0, 2) : [truncateText(font, title, metaWidth)];
     for (let index = 0; index < titleLines.length; index++) {
-      image.drawText(font, META_X, metaTop + index * metaStep, titleLines[index]!, 230);
+      image.drawText(font, metaX, metaTop + index * metaStep, titleLines[index]!, 230);
     }
-    image.drawText(font, META_X, metaTop + 4 + titleSlots * metaStep, media.artist || "Unknown artist", 180);
+    image.drawText(font, metaX, metaTop + 4 + titleSlots * metaStep, media.artist || "Unknown artist", 180);
     if (media.album) {
-      image.drawText(font, META_X, metaTop + 4 + (titleSlots + 1) * metaStep, truncateText(font, media.album, metaWidth), 150);
+      image.drawText(font, metaX, metaTop + 4 + (titleSlots + 1) * metaStep, truncateText(font, media.album, metaWidth), 150);
     }
     // The player line, or for a few seconds why a command failed.
     image.drawText(
       font,
-      META_X,
+      metaX,
       metaTop + 4 + (titleSlots + 2) * metaStep,
       truncateText(font, media.notice || media.appName || media.packageName, metaWidth),
       media.notice ? 200 : 110,
     );
-    this.drawProgress(image, media, metaWidth);
+    this.drawProgress(image, media, metaX, progressBarY, metaWidth);
 
     const queue = mediaControllerBridge.getQueue();
     const actions = this.buildActions(media, queue);
     this.reconcileSelection(actions, queue);
-    const listHeight = height - LIST_TOP - LIST_BOTTOM_MARGIN;
-    const focused = ctx.stack.isFocused();
-    // Row boxes start one pixel above LIST_TOP, level with the column divider.
-    this.actionsMenu.paint(
-      image,
-      { x: ACTION_X - LIST_TEXT_INSET, y: LIST_TOP - 1, width: ACTION_WIDTH + 2 * LIST_TEXT_INSET - 4, height: listHeight },
-      focused && this.focusColumn === "actions",
-    );
+    const listTop = artY + LIST_OFFSET_Y;
+    paintListToBottomEdge(image, this.actionsMenu, { x: listX, top: listTop, width: ACTION_BOX_WIDTH }, viewport,
+      focused && this.focusColumn === "actions");
 
-    image.drawLine(COLUMN_DIVIDER_X, LIST_TOP - 3, COLUMN_DIVIDER_X, height - LIST_BOTTOM_MARGIN - 3, 45);
+    // The divider is fixed, so it stops at the window's bottom padding.
+    const dividerX = listX + COLUMN_DIVIDER_OFFSET_X;
+    const dividerBottom = height - padding.bottom - 1;
+    if (dividerBottom > listTop) image.drawLine(dividerX, listTop - 3, dividerX, dividerBottom, 45);
+    const queueX = listX + QUEUE_OFFSET_X;
     if (!queue.length) {
-      image.drawText(font, QUEUE_X, LIST_TOP + 1, "Playlist unavailable", 90);
+      image.drawText(font, queueX + LIST_TEXT_INSET, listTop + 1, "Playlist unavailable", 90);
     } else {
-      const queueWidth = width - QUEUE_X - 20;
-      this.queueMenu.paint(
-        image,
-        { x: QUEUE_X - LIST_TEXT_INSET, y: LIST_TOP - 1, width: queueWidth + 2 * LIST_TEXT_INSET - 4, height: listHeight },
-        focused && this.focusColumn === "playlist",
-      );
-      this.queueMenu.drawScrollbar(image, width - 12, LIST_TOP, listHeight - 4);
+      paintListToBottomEdge(image, this.queueMenu, { x: queueX, top: listTop, width: rowsRight - queueX }, viewport,
+        focused && this.focusColumn === "playlist", true);
     }
 
     return image;
@@ -386,22 +405,23 @@ class MusicAppLayer implements Layer {
     }
   }
 
-  private drawProgress(image: GrayImage, media: MediaControllerState, width: number): void {
+  /** The elapsed/duration labels and, under them, the bar at (x, barY), `width` wide. */
+  private drawProgress(image: GrayImage, media: MediaControllerState, x: number, barY: number, width: number): void {
     if (media.durationMs <= 0 || media.positionMs < 0) return;
     const font = getDefaultSmallFont();
     const elapsed = formatMediaTime(media.positionMs);
     const duration = formatMediaTime(media.durationMs);
-    const timeY = progressTimeY(font);
-    image.drawText(font, META_X, timeY, elapsed, 140);
-    image.drawText(font, META_X + width - font.measureText(duration), timeY, duration, 140);
+    const timeY = progressTimeY(font, barY);
+    image.drawText(font, x, timeY, elapsed, 140);
+    image.drawText(font, x + width - font.measureText(duration), timeY, duration, 140);
 
-    const barY = PROGRESS_BAR_Y;
-    image.drawRect(META_X, barY, width, 5, 55);
+    image.drawRect(x, barY, width, 5, 55);
     const progress = clamp(media.positionMs / media.durationMs, 0, 1);
-    image.fillRect(META_X + 1, barY + 1, Math.round((width - 2) * progress), 3, 170);
+    image.fillRect(x + 1, barY + 1, Math.round((width - 2) * progress), 3, 170);
   }
 
-  private drawArt(image: GrayImage, media: MediaControllerState): void {
+  /** The album art, or a placeholder, in the ART_SIZE box at (artX, artY), with its outline around it. */
+  private drawArt(image: GrayImage, media: MediaControllerState, artX: number, artY: number): void {
     // Keyed on artVersion, not the strings: players (e.g. Spotify) publish
     // metadata before the art bitmap is downloaded, or with the previous
     // track's bitmap after a quick double skip, then re-emit the same
@@ -412,17 +432,18 @@ class MusicAppLayer implements Layer {
     }
     if (this.art) {
       // Center within the art box.
-      const dx = ART_X + Math.max(0, ((ART_SIZE - this.art.width) / 2) | 0);
-      const dy = ART_Y + Math.max(0, ((ART_SIZE - this.art.height) / 2) | 0);
+      const dx = artX + Math.max(0, ((ART_SIZE - this.art.width) / 2) | 0);
+      const dy = artY + Math.max(0, ((ART_SIZE - this.art.height) / 2) | 0);
       image.bitBlt(this.art, dx, dy);
-      image.drawRect(dx - 1, dy - 1, this.art.width + 2, this.art.height + 2, 60);
+      image.drawRect(dx - ART_FRAME, dy - ART_FRAME, this.art.width + 2 * ART_FRAME, this.art.height + 2 * ART_FRAME, 60);
     } else {
-      image.drawRect(ART_X, ART_Y, ART_SIZE, ART_SIZE, 60);
+      // The placeholder's outline is where a full-size cover's would be.
+      image.drawRect(artX - ART_FRAME, artY - ART_FRAME, ART_SIZE + 2 * ART_FRAME, ART_SIZE + 2 * ART_FRAME, 60);
       const font = getDefaultSmallFont();
       image.drawText(
         font,
-        ART_X + Math.round((ART_SIZE - font.measureText("no art")) / 2),
-        ART_Y + Math.round((ART_SIZE - font.lineHeight) / 2),
+        artX + Math.round((ART_SIZE - font.measureText("no art")) / 2),
+        artY + Math.round((ART_SIZE - font.lineHeight) / 2),
         "no art",
         90,
       );
@@ -567,12 +588,37 @@ export function createMusicAppWindow(options: InProcessAppOptions): InProcessWin
 }
 
 /**
- * Line top of the elapsed/duration labels: their baseline sits a fixed gap
- * above the progress bar, so the labels hug the bar whatever the font's
- * height (a taller face grows upward into the metadata's line budget).
+ * Paint a list that scrolls under fixed content: from `top` down to the
+ * window's bottom edge, where a row cut off for scrolling meets the edge,
+ * with that edge's padding inside the list after its last row. Selection
+ * boxes start one pixel above `top`. The scrollbar, when asked for, stays
+ * inside the window's right and bottom padding.
  */
-function progressTimeY(font: UiFont): number {
-  return PROGRESS_BAR_Y - PROGRESS_TIME_GAP - font.ascent;
+function paintListToBottomEdge<T>(
+  image: GrayImage,
+  menu: Menu<T>,
+  rows: { x: number; top: number; width: number },
+  viewport: Viewport,
+  focused: boolean,
+  scrollbar = false,
+): void {
+  const { width, height, padding } = viewport;
+  const boxTop = rows.top - 1;
+  if (boxTop >= height || rows.width <= 0) return;
+  menu.paint(image, { x: rows.x, y: boxTop, width: rows.width, height: height - boxTop, padBottom: padding.bottom }, focused);
+  const trackHeight = height - padding.bottom - rows.top;
+  if (scrollbar && trackHeight > 0) {
+    menu.drawScrollbar(image, width - padding.right - SCROLLBAR_WIDTH, rows.top, trackHeight);
+  }
+}
+
+/**
+ * Line top of the elapsed/duration labels: their baseline sits a fixed gap
+ * above the progress bar (at barY), so the labels hug the bar whatever the
+ * font's height (a taller face grows upward into the metadata's line budget).
+ */
+function progressTimeY(font: UiFont, barY: number): number {
+  return barY - PROGRESS_TIME_GAP - font.ascent;
 }
 
 function formatMediaTime(milliseconds: number): string {

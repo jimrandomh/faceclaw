@@ -1,3 +1,5 @@
+import type { Viewport } from "../../ui/viewport";
+
 type TranscriptEvent = {
   text: string;
   isFinal: boolean;
@@ -52,6 +54,50 @@ export class TranscriptScroll {
     this.firstLine = Math.max(0, Math.min(this.maximum, this.firstLine + delta));
     this.following = this.firstLine === this.maximum;
   }
+}
+
+/** The scrollbar, and the room the transcript's lines leave for it at their right. */
+const SCROLLBAR_WIDTH = 2;
+const SCROLLBAR_GUTTER = 8;
+
+export type TranscriptLayout = {
+  /** The text column: its left, and the width its lines wrap to. */
+  textX: number;
+  textWidth: number;
+  /** Lines the view scrolls by: as many as fit above the bottom padding. */
+  pageLines: number;
+  /** Lines to draw from the first one shown: as many as fit above the window's bottom edge. */
+  drawnLines: number;
+  /** The scrollbar's track, for a transcript longer than a page. */
+  scrollbar: { x: number; y: number; width: number; height: number };
+};
+
+/**
+ * Where a listening view (Transcribe, Translate) puts its transcript, under
+ * a fixed header that ends at `top`. The text column starts at the padding
+ * suggested for the window's left edge (viewport.ts), in line with the
+ * header's title, and stops short of the right edge's by the scrollbar's
+ * gutter; the scrollbar stands in that, against the padding. The lines
+ * scroll, so they run to the window's bottom edge: the view scrolls by the
+ * lines that fit above that edge's padding, which rests the transcript's
+ * last line clear of a border there, and while more lines follow it draws
+ * as many as fit above the edge itself.
+ */
+export function transcriptLayout(viewport: Viewport, top: number, lineHeight: number, step: number): TranscriptLayout {
+  const { width, height, padding } = viewport;
+  const linesAbove = (bottom: number) => Math.max(1, Math.floor((bottom - top - lineHeight) / step) + 1);
+  return {
+    textX: padding.left,
+    textWidth: Math.max(0, width - padding.left - padding.right - SCROLLBAR_GUTTER),
+    pageLines: linesAbove(height - padding.bottom),
+    drawnLines: linesAbove(height),
+    scrollbar: {
+      x: width - padding.right - SCROLLBAR_WIDTH,
+      y: top,
+      width: SCROLLBAR_WIDTH,
+      height: Math.max(0, height - padding.bottom - top),
+    },
+  };
 }
 
 export function wrapTranscribeText(measure: (text: string) => number, text: string, maxWidth: number): string[] {

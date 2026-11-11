@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const ts = require('typescript');
+const { bordered, unbordered, edged } = require('./helpers/viewport.cjs');
 
 function load(file, modules = {}, globals = {}) {
   const source = fs.readFileSync(path.join(__dirname, '..', file), 'utf8');
@@ -23,7 +24,7 @@ const font = (size) => BdfFont.parse(fs.readFileSync(path.join(__dirname, `../ap
 const small = font(18), large = font(32);
 const diagnostics = { magneticAccuracy: 3, magneticAnomalies: 2, orientationSource: 3, flags: 0x8c, sampleTimeMs: 1234 };
 
-function compass(width = 576, height = 260, glasses = 'g2') {
+function compass(width = 576, height = 260, glasses = 'g2', viewport = bordered(width, height)) {
   let listener, window;
   class RecordingImage extends graphics.GrayImage {
     texts = [];
@@ -60,7 +61,7 @@ function compass(width = 576, height = 260, glasses = 'g2') {
     './calibration-layer': {}, './declination': { onDeclinationChanged: () => () => {} },
     './heading': { getNorthReference: () => 'magnetic', resolveHeading: (v) => ({ displayDegrees: v }) },
   }, { setInterval: () => 1, clearInterval() {} });
-  const ctx = { stack: { getBaseSize: () => ({ width, height }), pop() {} } };
+  const ctx = { stack: { getBaseSize: () => viewport, pop() {} } };
   app.createCompassAppWindow({ onClosed() {} });
   return { menu: () => window.menuItems(),
     paint: () => window.baseLayer.paint(ctx),
@@ -96,21 +97,38 @@ test('calibration dots track firmware magnetic accuracy and never go stale', () 
 });
 
 test('calibration readout fits the viewport without overlapping the heading or status', () => {
-  for (const [width, height] of [[240, 260], [320, 260], [576, 260], [640, 260], [576, 288], [576, 140]]) {
-    const app = compass(width, height); app.heading({ ...diagnostics, magneticAccuracy: 2 });
-    const image = app.paint();
-    const label = calibrationText(image);
-    assert.ok(label.x >= 0 && label.y >= 0, `${width}x${height}`);
-    assert.ok(label.x + label.width <= width && label.y + label.height <= image.height, `${width}x${height}`);
-    for (const other of image.texts.filter((t) => t !== label)) {
-      assert.ok(!overlaps(label, other), `${width}x${height}: overlaps "${other.text}"`);
-    }
-    if (process.env.COMPASS_PREVIEW && width === 576 && height === 260) {
-      fs.writeFileSync(process.env.COMPASS_PREVIEW, Buffer.concat([
-        Buffer.from(`P5\n${image.width} ${image.height}\n255\n`), Buffer.from(image.withDrawsBaked().pixels),
-      ]));
+  for (const [width, height] of [[240, 260], [320, 260], [576, 260], [640, 260], [576, 288], [576, 140], [476, 155]]) {
+    for (const viewport of [bordered(width, height), unbordered(width, height), edged(width, height, 'top', 'left'), edged(width, height, 'bottom')]) {
+      const where = `${width}x${height} ${JSON.stringify(viewport.padding)}`;
+      const app = compass(width, height, 'g2', viewport); app.heading({ ...diagnostics, magneticAccuracy: 2 });
+      const image = app.paint();
+      const label = calibrationText(image);
+      const { padding } = viewport;
+      // Every line of text keeps inside the padding of the window's edges.
+      for (const text of image.texts) {
+        assert.ok(text.x >= padding.left && text.y >= padding.top, `${where}: "${text.text}"`);
+        assert.ok(text.x + text.width <= width - padding.right && text.y + text.height <= height - padding.bottom, `${where}: "${text.text}"`);
+      }
+      for (const other of image.texts.filter((t) => t !== label)) {
+        assert.ok(!overlaps(label, other), `${where}: overlaps "${other.text}"`);
+      }
+      if (process.env.COMPASS_PREVIEW && width === 576 && height === 260 && viewport.padding.top && viewport.padding.right) {
+        fs.writeFileSync(process.env.COMPASS_PREVIEW, Buffer.concat([
+          Buffer.from(`P5\n${image.width} ${image.height}\n255\n`), Buffer.from(image.withDrawsBaked().pixels),
+        ]));
+      }
     }
   }
+});
+
+test('the calibration readout sits in the top-right corner, at the padding of those edges', () => {
+  const corner = (viewport) => {
+    const label = calibrationText(compass(576, 260, 'g2', viewport).paint());
+    return [label.x + label.width, label.y];
+  };
+  assert.deepEqual(corner(bordered(576, 260)), [568, 8]);
+  assert.deepEqual(corner(unbordered(576, 260)), [576, 0]);
+  assert.deepEqual(corner(edged(576, 260, 'top')), [576, 8]);
 });
 
 test('glasses without a magnetometer say so and offer no calibration', () => {

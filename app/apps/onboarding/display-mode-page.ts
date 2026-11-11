@@ -4,11 +4,11 @@ import { displayLayoutSetting, type DisplayLayout } from "../../ui/dashboard-set
 import type { InputEvent } from "../../ui/gestures";
 import { Menu, type MenuDrawArgs } from "../../ui/menu-core";
 import { LIST_ROW_TEXT_INSET, listRowHeight } from "../../ui/metrics";
+import type { Edges } from "../../ui/viewport";
 import { onboardingFont } from "./onboarding-fonts";
-import { drawPageHeading, PAGE_X, type OnboardingNav, type OnboardingPage } from "./onboarding-page";
+import { drawPageHeading, PAGE_TEXT_INSET, type OnboardingNav, type OnboardingPage } from "./onboarding-page";
 
 const CONTENT_GAP = 10;
-const BOTTOM_MARGIN = 8;
 const COLUMN_GAP = 16;
 
 const DESCRIPTIONS = {
@@ -41,24 +41,29 @@ export class DisplayModePage implements OnboardingPage {
     this.menu.setItems(values, index >= 0 ? index : values.indexOf("tall"));
   }
 
-  paint(image: GrayImage, focused: boolean): void {
+  paint(image: GrayImage, focused: boolean, padding: Edges<number>): void {
     const top = drawPageHeading(
       image,
+      padding,
       "Display mode",
       "Swipe to choose how much of the display windows use; it changes as you go. Tap to continue.",
     ) + CONTENT_GAP;
     const body = onboardingFont("body");
     // TTF widths are fractional; the menu's row images need whole pixels.
-    const columnWidth = Math.ceil(20 + Math.max(...this.menu.items.map((value) => body.measureText(displayLayoutSetting.displayValue(value)))));
-    const menuBox = { x: PAGE_X - 10, y: top, width: columnWidth, height: image.height - top - BOTTOM_MARGIN };
+    const columnWidth = Math.ceil(2 * PAGE_TEXT_INSET +
+      Math.max(...this.menu.items.map((value) => body.measureText(displayLayoutSetting.displayValue(value)))));
+    // The list scrolls, so it runs to the window's bottom edge, with that
+    // edge's padding after its last row.
+    const menuBox = { x: padding.left, y: top, width: columnWidth, height: Math.max(0, image.height - top), padBottom: padding.bottom };
     this.menu.paint(image, menuBox, focused);
     const layout = this.menu.selectedItem;
     if (layout === null) return;
+    // The description stays put beside the list, inside the right and bottom padding.
     const detail = onboardingFont("detail");
     const left = menuBox.x + columnWidth + COLUMN_GAP;
     let y = top + LIST_ROW_TEXT_INSET;
-    for (const line of wrapText(detail, description(layout), image.width - PAGE_X - left)) {
-      if (y + detail.lineHeight > image.height - BOTTOM_MARGIN) break;
+    for (const line of wrapText(detail, description(layout), image.width - padding.right - PAGE_TEXT_INSET - left)) {
+      if (y + detail.lineHeight > image.height - padding.bottom) break;
       image.drawText(detail, left, y, line, 170);
       y += detail.lineHeight;
     }
@@ -86,7 +91,7 @@ export class DisplayModePage implements OnboardingPage {
   }
 
   private drawRow({ image, item: layout, x, y, selected }: MenuDrawArgs<DisplayLayout>): void {
-    image.drawText(onboardingFont("body"), x + 10, y + LIST_ROW_TEXT_INSET, displayLayoutSetting.displayValue(layout), selected ? 255 : 190);
+    image.drawText(onboardingFont("body"), x + PAGE_TEXT_INSET, y + LIST_ROW_TEXT_INSET, displayLayoutSetting.displayValue(layout), selected ? 255 : 190);
   }
 }
 

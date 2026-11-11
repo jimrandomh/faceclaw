@@ -18,8 +18,10 @@ import {
 } from "../../native/ring-status";
 
 const POLL_INTERVAL_MS = 1_000;
-const LEFT_X = 16;
-const VALUE_X = 130;
+/** The title sits this far in from the left edge of the rows and buttons under it. */
+const TITLE_INDENT = 2;
+/** A row's value column, from its label's left edge. */
+const VALUE_OFFSET_X = 114;
 const BUTTON_GAP = 8;
 
 type Row = { label: string; value: string; dim?: boolean };
@@ -102,26 +104,31 @@ export class RingStatusLayer implements Layer {
 
   paint(ctx: LayerContext): GrayImage {
     const font = getDefaultSmallFont();
-    const { width, height } = ctx.stack.getBaseSize();
+    const { width, height, padding } = ctx.stack.getBaseSize();
     const image = new GrayImage(width, height, 0);
     const lineStep = font.lineHeight + 2;
     const buttonHeight = font.lineHeight + 8;
-    const buttonTop = height - buttonHeight - 6;
+    // The rows and the button strip span the window inside the padding
+    // suggested for its side edges; the title sits at the top edge's and the
+    // buttons' outlines at the bottom edge's.
+    const left = padding.left;
+    const buttonTop = height - padding.bottom - buttonHeight;
 
-    image.drawText(font, 18, 10, "Ring status", 230);
-    let y = 10 + lineStep + 4;
+    image.drawText(font, left + TITLE_INDENT, padding.top, "Ring status", 230);
+    let y = padding.top + lineStep + 4;
     const rows = this.rows();
     if (this.notice) rows.push({ label: "", value: this.notice });
     for (const row of rows) {
       if (y + font.lineHeight > buttonTop - 4) break;
-      image.drawText(font, LEFT_X, y, row.label, row.dim ? 100 : 150);
-      image.drawText(font, VALUE_X, y, row.value, row.dim ? 120 : 220);
+      image.drawText(font, left, y, row.label, row.dim ? 100 : 150);
+      image.drawText(font, left + VALUE_OFFSET_X, y, row.value, row.dim ? 120 : 220);
       y += lineStep;
     }
 
-    const buttonWidth = Math.floor((width - 2 * LEFT_X - BUTTON_GAP * (BUTTONS.length - 1)) / BUTTONS.length);
+    const buttonWidth = Math.max(0,
+      Math.floor((width - padding.left - padding.right - BUTTON_GAP * (BUTTONS.length - 1)) / BUTTONS.length));
     BUTTONS.forEach((button, index) => {
-      const x = LEFT_X + index * (buttonWidth + BUTTON_GAP);
+      const x = left + index * (buttonWidth + BUTTON_GAP);
       const selected = index === this.selected;
       if (selected) image.fillRoundedRect(x, buttonTop, buttonWidth, buttonHeight, 40, 4);
       image.drawRoundedRect(x, buttonTop, buttonWidth, buttonHeight, selected ? 200 : 70, 4);

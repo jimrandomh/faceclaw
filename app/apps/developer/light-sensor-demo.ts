@@ -22,6 +22,10 @@ const RECONCILE_INTERVAL_MS = 400;
 // Length of the on-screen trace.
 const HISTORY_MS = 30_000;
 const MAX_SAMPLES = Math.ceil(HISTORY_MS / 100) + 2;
+/** The readout under the title sits this far in from the title's left edge. */
+const BODY_INDENT = 2;
+/** Gap between the trace's box and the footer line under it. */
+const CHART_FOOTER_GAP = 18;
 
 type Sample = { atMs: number; value: number; peak: number };
 
@@ -102,39 +106,47 @@ export class LightSensorDemoLayer implements Layer {
   paint(ctx: LayerContext): GrayImage {
     const small = getDefaultSmallFont();
     const medium = getDefaultMediumFont();
-    const { width, height } = ctx.stack.getBaseSize();
+    const { width, height, padding } = ctx.stack.getBaseSize();
     const image = new GrayImage(width, height, 0);
+    // The title line, the trace's box and the footer line sit at the padding
+    // suggested for the edges they reach; the rest is placed from them.
+    const left = padding.left;
+    const top = padding.top;
+    const right = width - padding.right;
+    const bodyX = left + BODY_INDENT;
+    const footerY = height - padding.bottom - small.lineHeight;
 
-    image.drawText(small, 20, 8, "Light sensor", 220);
+    image.drawText(small, left, top, "Light sensor", 220);
     const status = this.enabled ? "polling" : "paused";
-    image.drawText(small, width - 20 - small.measureText(status), 8, status, 150);
+    image.drawText(small, right - small.measureText(status), top, status, 150);
 
     const report = this.report;
     if (!report) {
       const message = this.enabled ? "Waiting for a report…" : "Paused (page not visible).";
-      image.drawText(small, 22, 44, message, 190);
-      image.drawText(small, 22, 66, "Needs Faceclaw's custom firmware.", 120);
-      image.drawText(small, 20, height - 16, `${GESTURE_DOUBLE_CLICK} back`, 110);
+      image.drawText(small, bodyX, top + 36, message, 190);
+      image.drawText(small, bodyX, top + 58, "Needs Faceclaw's custom firmware.", 120);
+      image.drawText(small, left, footerY, `${GESTURE_DOUBLE_CLICK} back`, 110);
       return image;
     }
 
     // Headline reading. The stock driver's unit is roughly a tenth of a lux.
     const lux = (report.alsValue / 10).toFixed(1);
-    image.drawText(medium, 22, 30, `${lux} lux`, 245);
+    image.drawText(medium, bodyX, top + 22, `${lux} lux`, 245);
     const peakText = `peak ${(report.peak / 10).toFixed(1)}`;
-    image.drawText(small, 22 + medium.measureText(`${lux} lux`) + 14, 36, peakText, 170);
+    image.drawText(small, bodyX + medium.measureText(`${lux} lux`) + 14, top + 28, peakText, 170);
 
     const flags: string[] = [];
     if (!report.opened) flags.push("sensor closed");
     if (report.passive) flags.push("passive");
     if (report.autoBrightness) flags.push("auto on");
     if (report.passive && !report.readOk) flags.push("read failed");
-    image.drawText(small, 22, 58, flags.join("  ") || "stock polling", 150);
+    image.drawText(small, bodyX, top + 50, flags.join("  ") || "stock polling", 150);
 
+    const statsY = top + 68;
     image.drawText(
       small,
-      22,
-      76,
+      bodyX,
+      statsY,
       `brightness ${report.brightness}   stock target ${report.stockTarget}   gear ${report.gear}   scale ${(report.scaleQ10 / 1024).toFixed(2)}`,
       170,
     );
@@ -142,16 +154,17 @@ export class LightSensorDemoLayer implements Layer {
     // 30 s trace of the reading (bright) and the driver's 5-sample peak (dim).
     // The axis label sits between the stats line and the chart, so the chart
     // starts a full text line lower than the stats.
-    const chartTop = 76 + small.lineHeight * 2 + 4;
-    const bounds = { x: 20, y: chartTop, width: width - 40, height: height - chartTop - 34 };
+    const chartTop = statsY + small.lineHeight * 2 + 4;
+    const bounds = { x: left, y: chartTop, width: right - left, height: footerY - CHART_FOOTER_GAP - chartTop };
     const maxValue = Math.max(...this.samples.map((sample) => Math.max(sample.value, sample.peak)), 10);
     const scale = roundUpScale(maxValue * 1.08);
     image.drawText(small, bounds.x, bounds.y - small.lineHeight - 2, `0–${(scale / 10).toFixed(0)} lux, last 30 s`, 120);
-    drawTrace(image, this.samples, Date.now(), bounds, scale);
+    // A window too short for the trace (a large font on the RayNeo iO) goes without.
+    if (bounds.width > 1 && bounds.height > 1) drawTrace(image, this.samples, Date.now(), bounds, scale);
 
-    image.drawText(small, 20, height - 16, `reports: ${this.reportCount}`, 110);
+    image.drawText(small, left, footerY, `reports: ${this.reportCount}`, 110);
     const back = `${GESTURE_DOUBLE_CLICK} back`;
-    image.drawText(small, width - 20 - small.measureText(back), height - 16, back, 110);
+    image.drawText(small, right - small.measureText(back), footerY, back, 110);
     return image;
   }
 

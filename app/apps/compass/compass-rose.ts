@@ -78,17 +78,19 @@ export function layoutCompassRose(options: {
   /** Lowest y already used above the rose (readout text, its gap). */
   topClearance: number;
   bottomPad: number;
-  edgePad: number;
+  /** Clearance between the rose's widest point and the box's sides: one figure for both, or each side's. */
+  edgePad: number | { left: number; right: number };
   maxRadius: number;
   minRadius?: number;
 }): { cx: number; cy: number; radius: number; ringTop: number } {
   const { width, height, cx } = options;
+  const sidePad = typeof options.edgePad === "number" ? { left: options.edgePad, right: options.edgePad } : options.edgePad;
   const radius = Math.max(
     options.minRadius ?? 24,
     Math.min(
       options.maxRadius,
       Math.floor((height - options.bottomPad - options.topClearance - TICK_HEIGHT) / (RING_HEIGHT_PER_RADIUS + DISC_DEPTH)),
-      Math.floor((Math.min(cx, width - cx) - options.edgePad) / RING_HALF_WIDTH_PER_RADIUS),
+      Math.floor(Math.min(cx - sidePad.left, width - cx - sidePad.right) / RING_HALF_WIDTH_PER_RADIUS),
     ),
   );
   // The wall hangs below the rim, so the near rim sits a wall's depth up

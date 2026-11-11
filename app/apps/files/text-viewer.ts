@@ -5,11 +5,9 @@ import { GrayImage, type UiFont } from "../../graphics/image";
 import { type InputEvent } from "../../ui/gestures";
 import { Layer, type LayerContext } from "../../ui/layers";
 
-const MARGIN_X = 18;
-const TITLE_Y = 16;
-const BODY_X = 18;
-const BODY_Y = 44;
-const FOOTER_MARGIN = 36;
+/** The title: how far right of the body's column, and from its top to the first body line's. */
+const TITLE_INSET_X = 4;
+const TITLE_BAND = 28;
 
 /** Line step for a bitmap face (the 12px font plus leading, as before). */
 const BDF_LINE_STEP = 14;
@@ -24,8 +22,11 @@ function lineStepOf(font: UiFont): number {
 }
 
 /**
- * Paged text viewer for a document. Sized to its hosting stack (a Files
- * document window, or pushed over the file browser for view-in-place).
+ * Paged text viewer for a document: a title line, the page's lines, and a
+ * page-number line, all inside the padding suggested for the window's edges
+ * (the title and page number stay put, so the lines page between them).
+ * Sized to its hosting stack (a Files document window, or pushed over the
+ * file browser for view-in-place).
  */
 export class TextViewerLayer implements Layer {
   private lines: string[] | null = null;
@@ -42,20 +43,23 @@ export class TextViewerLayer implements Layer {
   paint(ctx: LayerContext): GrayImage {
     const font = getViewerFont();
     const lineStep = lineStepOf(font);
-    const { width, height } = ctx.stack.getBaseSize();
+    const { width, height, padding } = ctx.stack.getBaseSize();
     const image = new GrayImage(width, height, 0);
-    const footerY = height - FOOTER_MARGIN;
-    this.bodyLineCount = Math.max(1, Math.floor((footerY - BODY_Y) / lineStep));
-    image.drawText(font, MARGIN_X + 4, TITLE_Y, truncateText(font, this.title, width - 2 * MARGIN_X - 8), 220);
+    const bodyX = padding.left;
+    const bodyWidth = Math.max(0, width - padding.left - padding.right);
+    const bodyY = padding.top + TITLE_BAND;
+    const footerY = height - padding.bottom - font.lineHeight;
+    this.bodyLineCount = Math.max(1, Math.floor((footerY - bodyY) / lineStep));
+    image.drawText(font, bodyX + TITLE_INSET_X, padding.top, truncateText(font, this.title, bodyWidth - 2 * TITLE_INSET_X), 220);
 
-    const lines = this.getLines(font, width);
+    const lines = this.getLines(font, bodyWidth);
     const visibleLines = lines.slice(this.firstLine, this.firstLine + this.bodyLineCount);
     for (let index = 0; index < visibleLines.length; index++) {
-      image.drawText(font, BODY_X, BODY_Y + index * lineStep, visibleLines[index]!, 230);
+      image.drawText(font, bodyX, bodyY + index * lineStep, visibleLines[index]!, 230);
     }
 
     const currentPage = Math.floor(this.firstLine / this.pageStep()) + 1;
-    image.drawText(font, BODY_X, footerY, `Page ${currentPage}/${this.totalPageCount(lines.length)}`, 110);
+    image.drawText(font, bodyX, footerY, `Page ${currentPage}/${this.totalPageCount(lines.length)}`, 110);
     return image;
   }
 
@@ -89,14 +93,15 @@ export class TextViewerLayer implements Layer {
     this.firstLine = Math.max(0, Math.min(maxFirstLine, this.firstLine + delta));
   }
 
-  private getLines(font: UiFont, width: number): string[] {
-    if (this.lines === null || this.wrappedForWidth !== width || this.wrappedWithFont !== font.fingerprintId) {
+  /** The document wrapped to the body column's width; cached per width and font. */
+  private getLines(font: UiFont, bodyWidth: number): string[] {
+    if (this.lines === null || this.wrappedForWidth !== bodyWidth || this.wrappedWithFont !== font.fingerprintId) {
       const normalized = this.documentText.replace(/\t/g, "    ").replace(/\r/g, "");
-      this.lines = wrapText(font, normalized, width - BODY_X - 12, {
+      this.lines = wrapText(font, normalized, bodyWidth, {
         preserveLeadingWhitespace: true,
         breakLongWords: true,
       });
-      this.wrappedForWidth = width;
+      this.wrappedForWidth = bodyWidth;
       this.wrappedWithFont = font.fingerprintId;
     }
     return this.lines;

@@ -281,7 +281,13 @@ function writePng(name, image) {
 }
 
 // --- the glasses: 640x480, the G2 lens ------------------------------------
-const LENS = { width: 640, height: 480 };
+// As a window with a border line along every edge: the padding the shell
+// suggests there (app/ui/viewport.ts BORDER_EDGE_PADDING).
+const EDGE_PADDING = 8;
+const LENS = {
+  width: 640, height: 480,
+  padding: { top: EDGE_PADDING, right: EDGE_PADDING, bottom: EDGE_PADDING, left: EDGE_PADDING },
+};
 GLANCE_PAGES.forEach((page, index) => {
   const name =
     page.kind === "overview" ? "overview" : page.kind === "sleep" ? "sleep" : page.metric;

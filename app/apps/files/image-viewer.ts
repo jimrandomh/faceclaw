@@ -5,9 +5,9 @@ import { loadImageFileAsGray, PHOTO_TONE } from "../../native/image-files";
 import { GESTURE_DOUBLE_CLICK, type InputEvent } from "../../ui/gestures";
 import { Layer, type LayerContext } from "../../ui/layers";
 
-const MARGIN_X = 18;
-const TITLE_Y = 8;
-const BODY_TOP = 24;
+/** From the title's top to the image area's. */
+const TITLE_BAND = 16;
+/** How far the image area keeps from the window's sides and bottom. */
 const BODY_MARGIN = 2;
 
 /**
@@ -19,7 +19,8 @@ const BODY_MARGIN = 2;
  */
 export class ImageViewerLayer implements Layer {
   private image: GrayImage | null = null;
-  private loadAttempted = false;
+  /** The image area ("WxH") the file was last decoded to fit; null before the first load. */
+  private fittedTo: string | null = null;
 
   constructor(
     private readonly path: string,
@@ -28,24 +29,31 @@ export class ImageViewerLayer implements Layer {
 
   paint(ctx: LayerContext): GrayImage {
     const font = getDefaultSmallFont();
-    const { width, height } = ctx.stack.getBaseSize();
+    const { width, height, padding } = ctx.stack.getBaseSize();
     const out = new GrayImage(width, height, 0);
-    out.drawText(font, MARGIN_X, TITLE_Y, truncateText(font, this.title, width - 2 * MARGIN_X), 220);
+    // The title line keeps inside the padding suggested for the window's
+    // edges; the image fills the rest of the window whatever its edges touch.
+    out.drawText(font, padding.left, padding.top, truncateText(font, this.title, width - padding.left - padding.right), 220);
 
-    const bodyHeight = height - BODY_TOP - BODY_MARGIN;
-    if (!this.loadAttempted) {
-      this.loadAttempted = true;
-      this.image = loadImageFileAsGray(this.path, width - 2 * BODY_MARGIN, bodyHeight, PHOTO_TONE);
+    const bodyTop = padding.top + TITLE_BAND;
+    const bodyWidth = width - 2 * BODY_MARGIN;
+    const bodyHeight = height - bodyTop - BODY_MARGIN;
+    // The area moves with the window's size and its top padding, so the
+    // file is decoded again whenever it changes rather than once.
+    const fit = `${bodyWidth}x${bodyHeight}`;
+    if (this.fittedTo !== fit) {
+      this.fittedTo = fit;
+      this.image = loadImageFileAsGray(this.path, bodyWidth, bodyHeight, PHOTO_TONE);
     }
     if (!this.image) {
-      out.drawText(font, MARGIN_X, BODY_TOP + 16, "(could not load image)", 160);
-      out.drawText(font, MARGIN_X, height - 16, `${GESTURE_DOUBLE_CLICK} back`, 110);
+      out.drawText(font, padding.left, bodyTop + 16, "(could not load image)", 160);
+      out.drawText(font, padding.left, height - padding.bottom - font.lineHeight, `${GESTURE_DOUBLE_CLICK} back`, 110);
       return out;
     }
     out.bitBlt(
       this.image,
       Math.round((width - this.image.width) / 2),
-      BODY_TOP + Math.round((bodyHeight - this.image.height) / 2),
+      bodyTop + Math.round((bodyHeight - this.image.height) / 2),
     );
     return out;
   }

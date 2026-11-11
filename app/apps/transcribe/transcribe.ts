@@ -6,7 +6,7 @@ import { writeTextToDownloads } from "../../native/file-access";
 import { voiceControlBridge } from "../../native/voice-control";
 import { Layer, type LayerContext } from "../../ui/layers";
 import { type InputEvent } from "../../ui/gestures";
-import { TranscriptModel, TranscriptScroll, wrapTranscribeText } from "./transcript-model";
+import { TranscriptModel, TranscriptScroll, transcriptLayout, wrapTranscribeText } from "./transcript-model";
 
 /**
  * Live transcription view. Continuous mic capture is owned by the app wrapper
@@ -47,26 +47,28 @@ export class TranscribeLayer implements Layer {
 
   paint(ctx: LayerContext): GrayImage {
     const font = getDefaultSmallFont();
-    const { width, height } = ctx.stack.getBaseSize();
-    const image = new GrayImage(width, height, 0);
-    const text = this.transcript.text || (this.listening ? "Listening..." : this.detail);
-    const wrapped = wrapTranscribeText((line) => font.measureText(line), text, width - 64);
+    const viewport = ctx.stack.getBaseSize();
+    const image = new GrayImage(viewport.width, viewport.height, 0);
 
-    const bodyTop = paintListeningHeader(image, font, "Transcribe", this.saveNotice || this.status, this.listening ? this.meter : null);
+    const bodyTop = paintListeningHeader(image, font, "Transcribe", this.saveNotice || this.status, this.listening ? this.meter : null,
+      viewport.padding);
     const step = lineStep(font) + 2;
-    const bodyLines = Math.max(1, Math.floor((height - 6 - bodyTop - font.lineHeight) / step) + 1);
-    const firstLine = this.scroll.layout(wrapped.length, bodyLines);
-    for (let index = firstLine; index < Math.min(wrapped.length, firstLine + bodyLines); index++) {
+    const layout = transcriptLayout(viewport, bodyTop, font.lineHeight, step);
+    const text = this.transcript.text || (this.listening ? "Listening..." : this.detail);
+    const wrapped = wrapTranscribeText((line) => font.measureText(line), text, layout.textWidth);
+
+    const firstLine = this.scroll.layout(wrapped.length, layout.pageLines);
+    for (let index = firstLine; index < Math.min(wrapped.length, firstLine + layout.drawnLines); index++) {
       const y = bodyTop + (index - firstLine) * step;
-      image.drawText(font, 32, y, wrapped[index]!, 230);
+      image.drawText(font, layout.textX, y, wrapped[index]!, 230);
     }
 
-    if (wrapped.length > bodyLines) {
-      const trackHeight = height - bodyTop - 6;
-      const thumbHeight = Math.max(8, Math.round(trackHeight * bodyLines / wrapped.length));
-      const thumbY = bodyTop + Math.round((trackHeight - thumbHeight) * firstLine / (wrapped.length - bodyLines));
-      image.fillRect(width - 14, bodyTop, 2, trackHeight, 45);
-      image.fillRect(width - 14, thumbY, 2, thumbHeight, 140);
+    if (wrapped.length > layout.pageLines) {
+      const track = layout.scrollbar;
+      const thumbHeight = Math.max(8, Math.round(track.height * layout.pageLines / wrapped.length));
+      const thumbY = track.y + Math.round((track.height - thumbHeight) * firstLine / (wrapped.length - layout.pageLines));
+      image.fillRect(track.x, track.y, track.width, track.height, 45);
+      image.fillRect(track.x, thumbY, track.width, thumbHeight, 140);
     }
     return image;
   }

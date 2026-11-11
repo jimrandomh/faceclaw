@@ -1,5 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const { bordered } = require('./helpers/viewport.cjs');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -177,7 +178,7 @@ test('Music settings keeps toggles and selection when a new app arrives and supp
   };
   const { MusicSettingsLayer } = load('app/apps/music/music-settings.ts', (name) => uiDeps[name]);
   const layer = new MusicSettingsLayer();
-  const ctx = { stack: { getBaseSize: () => ({ width: 540, height: 224 }), isFocused: () => true, pop: () => closes++ } };
+  const ctx = { stack: { getBaseSize: () => bordered(540, 224), isFocused: () => true, pop: () => closes++ } };
   const paint = () => layer.paint(ctx, () => new RecordingImage(540, 224));
   const input = (type) => layer.handleInput({ type }, ctx);
   assert.equal(refreshes, 1);

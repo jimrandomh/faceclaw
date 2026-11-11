@@ -81,20 +81,23 @@ test('the header puts title and status on one line, truncated before the meter',
   const h = harness();
   const meter = new h.MicLevelMeter();
   const image = fakeImage(300);
-  const bodyTop = h.paintListeningHeader(image, font, 'Translate', 'Listening (ElevenLabs)...', meter);
-  assert.equal(bodyTop, 20 + 18 + 2);
-  assert.deepEqual(image.texts.map(({ x, y, gray }) => [x, y, gray]), [[24, 20, 200], [24 + 54, 20, 110]]);
+  // Inside the padding suggested for the window's edges: here a border at
+  // the top and left, blank space at the right.
+  const padding = { top: 8, right: 0, bottom: 8, left: 8 };
+  const bodyTop = h.paintListeningHeader(image, font, 'Translate', 'Listening (ElevenLabs)...', meter, padding);
+  assert.equal(bodyTop, 8 + 18 + 2);
+  assert.deepEqual(image.texts.map(({ x, y, gray }) => [x, y, gray]), [[8, 8, 200], [8 + 54, 8, 110]]);
   assert.equal(image.texts[0].text, 'Translate');
   const status = image.texts[1].text;
   assert.ok(status.startsWith(' · Listening') && status.endsWith('...'), status);
   const meterX = Math.min(...image.rects.map(rect => rect.x));
-  assert.equal(meterX, 300 - 24 - meter.width);
-  assert.ok(24 + 54 + status.length * 6 <= meterX - 10, 'status stops short of the meter');
+  assert.equal(meterX, 300 - meter.width, 'the meter ends at the unpadded right edge');
+  assert.ok(8 + 54 + status.length * 6 <= meterX - 10, 'status stops short of the meter');
   // Segments sit on the text baseline.
-  assert.ok(image.rects.every(rect => rect.y + rect.h === 20 + font.ascent));
+  assert.ok(image.rects.every(rect => rect.y + rect.h === 8 + font.ascent));
 
   const idle = fakeImage(300);
-  h.paintListeningHeader(idle, font, 'Transcribe', 'Starting microphone...', null);
+  h.paintListeningHeader(idle, font, 'Transcribe', 'Starting microphone...', null, padding);
   assert.equal(idle.rects.length, 0);
   assert.equal(idle.texts[1].text, ' · Starting microphone...');
 });

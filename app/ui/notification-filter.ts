@@ -10,11 +10,10 @@ import { drawToggleMenuItem, MenuLayer, type MenuItem } from "./menu";
 /** Refresh rows as new sources arrive, keeping the current selection by package. */
 export class NotificationFilterLayer implements Layer {
   private menu: MenuLayer | null = null;
-  private menuWidth = 0;
   /** The package behind each current row, parallel to the menu's items. */
   private packages: string[] = [];
 
-  private currentMenu(ctx: LayerContext): MenuLayer {
+  private currentMenu(): MenuLayer {
     readActiveNotifications(ALL_NOTIFICATIONS);
     const sources = readNotificationSources().sort((a, b) =>
       a.appName.localeCompare(b.appName) || a.packageName.localeCompare(b.packageName));
@@ -32,14 +31,8 @@ export class NotificationFilterLayer implements Layer {
     const index = sources.findIndex((source) => source.packageName === selectedPackage);
     this.packages = sources.map((source) => source.packageName);
 
-    const width = ctx.stack.getBaseSize().width;
-    if (!this.menu || width !== this.menuWidth) {
-      this.menuWidth = width;
-      this.menu = new MenuLayer("Notification filter", items, {
-        x: 8, y: 8, width: width - 16,
-        opaque: true, showBorder: false,
-        footer: "On = show popups on glasses",
-      }).selectItem(Math.max(0, index));
+    if (!this.menu) {
+      this.menu = new MenuLayer("Notification filter", items, { page: true, footer: "On = show popups on glasses" }).selectItem(Math.max(0, index));
     } else {
       this.menu.setItems(items, index >= 0 ? index : undefined);
     }
@@ -47,10 +40,10 @@ export class NotificationFilterLayer implements Layer {
   }
 
   paint(ctx: LayerContext, paintBelow: PaintBelow): GrayImage {
-    return this.currentMenu(ctx).paint(ctx, paintBelow);
+    return this.currentMenu().paint(ctx, paintBelow);
   }
 
   async handleInput(event: InputEvent, ctx: LayerContext): Promise<void> {
-    await this.currentMenu(ctx).handleInput(event, ctx);
+    await this.currentMenu().handleInput(event, ctx);
   }
 }
