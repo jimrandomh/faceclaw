@@ -53,7 +53,7 @@ import { onAnySettingChanged,
   previewColorSetting, lockScreenEnabledSetting, getBrightnessPreferences, getStringSettingById,
   nightscoutSiteUrlSetting, nightscoutApiTokenSetting, voiceProviderSetting, elevenLabsApiKeySetting,
   openAiApiKeySetting, sonioxApiKeySetting, whisperServerApiKeySetting, whisperServerLanguageSetting,
-  whisperServerModelSetting, whisperServerUrlSetting, ringConnectionModeSetting, saveTranscribeAudioSetting, glassesTypeSetting, shouldPopUpNewNotification } from '../ui/dashboard-settings'
+  whisperServerModelSetting, whisperServerUrlSetting, ringConnectionModeSetting, saveRecordingSetting, glassesTypeSetting, shouldPopUpNewNotification } from '../ui/dashboard-settings'
 import { transcriptionKey, type VoiceProviderSelection } from '../native/cloud-stt-provider'
 import type { PhoneGesture } from '../phone-ui/phone-gestures'
 import { claimGlassesOnboardingAutoLaunch, ONBOARDING_APP_ID } from '../apps/onboarding/onboarding-progress'
@@ -418,6 +418,7 @@ export class IosPreviewController {
     this.logBluetooth(`Phone battery ${phone.battery ?? "unknown"}% charging=${phone.charging}`)
     this.offSettings = onAnySettingChanged(() => {
       this.syncLockSetting()
+      this.syncContinuousRecording()
       this.pushBrightness()
       this.relayout()
       shell.foregroundWindow()?.requestRender()
@@ -1109,7 +1110,7 @@ export class IosPreviewController {
    * Continuous capture on behalf of `client` (one id per window: Transcribe,
    * Translate, Teleprompter, Calculator); it runs while any client wants it, as
    * on Android. `recordAs` names a WAV of the audio in Downloads when Save
-   * Transcribe audio is on.
+   * Recording is on.
    */
   private startContinuousVoiceCapture(client: string, options: ContinuousCaptureOptions = {}): void {
     this.continuousClients.set(client, options)
@@ -1198,9 +1199,12 @@ export class IosPreviewController {
   private syncContinuousClaim(): void {
     voiceActivity.setActive(this.continuousClients.size > 0 && iosVoiceInput.continuousActive, CONTINUOUS_CAPTURE_HOLDER)
   }
-  /** Record to the first client's requested name while Save Transcribe audio is on. */
+  /**
+   * Record to the first client's requested name while Save Recording is on (it is
+   * toggled from those windows' menus, so this also runs when a setting changes).
+   */
   private syncContinuousRecording(): void {
-    const name = saveTranscribeAudioSetting.get() ? [...this.continuousClients.values()].map(options => options.recordAs).find(Boolean) ?? '' : ''
+    const name = saveRecordingSetting.get() ? [...this.continuousClients.values()].map(options => options.recordAs).find(Boolean) ?? '' : ''
     iosVoiceInput.recordTo(name)
   }
   /**

@@ -11,6 +11,7 @@ import { ensureLocationPermission, hasLocationPermission } from "../../../native
 import { onAndroidNotificationsChanged, readActiveNotificationIcons } from "../../../native/notification-icons";
 import { NOTIFICATION_ICON_SIZE } from "../../../native/notification-types";
 import { readPhoneBatteryState } from "../../../native/phone-battery";
+import { voiceControlBridge } from "../../../native/voice-control";
 import { weatherBridge } from "../../../native/weather";
 import { formatClockDate, formatClockTime } from "../../../ui/clock-format";
 import {
@@ -26,6 +27,7 @@ import {
   watchBatteryVisibilitySetting,
   type BatteryIndicatorVisibility,
 } from "../../../ui/dashboard-settings";
+import { RECORDING_ICON } from "../../../ui/listening-header";
 import { type MenuItem } from "../../../ui/menu";
 import { shell } from "../../../ui/shell/shell";
 import { noteStaleDataUsed, renderPassAllowsStaleData } from "../../../util/render-freshness";
@@ -149,13 +151,16 @@ function requestWeatherLocationAccess(): void {
  * off, and the layout mirrored either way, in the card's submenu of
  * Glanceboard > Settings. Battery style and per-device visibility follow
  * Settings > Customization > Battery indicators, so the card agrees with
- * the bar. Countdowns tick once a second only while one is running.
+ * the bar. Countdowns tick once a second only while one is running. While
+ * Transcribe or Translate is saving the mic's audio (their Save Recording),
+ * the recording circle sits under the batteries and weather.
  */
 export class SystemCardWidget implements GlanceWidget {
   private requestRender: (() => void) | null = null;
   private minuteTimer: ReturnType<typeof setTimeout> | null = null;
   private secondTimer: ReturnType<typeof setInterval> | null = null;
   private unsubscribeNotifications: (() => void) | null = null;
+  private unsubscribeRecording: (() => void) | null = null;
   private unsubscribeSettings: (() => void) | null = null;
   private unsubscribeTimers: (() => void) | null = null;
   private unsubscribeWeather: (() => void) | null = null;
@@ -164,6 +169,7 @@ export class SystemCardWidget implements GlanceWidget {
     this.requestRender = requestRender;
     this.scheduleMinuteTick();
     this.unsubscribeNotifications = onAndroidNotificationsChanged(() => this.requestRender?.());
+    this.unsubscribeRecording = voiceControlBridge.onRecordingChange(() => this.requestRender?.());
     this.unsubscribeSettings = onAnySettingChanged(() => this.requestRender?.());
     this.unsubscribeTimers = timerEngine.onChange(() => {
       this.syncSecondTick();
@@ -182,6 +188,8 @@ export class SystemCardWidget implements GlanceWidget {
     this.secondTimer = null;
     this.unsubscribeNotifications?.();
     this.unsubscribeNotifications = null;
+    this.unsubscribeRecording?.();
+    this.unsubscribeRecording = null;
     this.unsubscribeSettings?.();
     this.unsubscribeSettings = null;
     this.unsubscribeTimers?.();
@@ -237,6 +245,8 @@ export class SystemCardWidget implements GlanceWidget {
     if (batteryItems.length) sideBlocks.push(batteryBlock(small, batteryItems));
     const weather = weatherShowOnSystemCardSetting.get() ? weatherBlock(medium, now.getTime()) : null;
     if (weather) sideBlocks.push(weather);
+    // Last, so it comes and goes without moving the others.
+    if (voiceControlBridge.recording) sideBlocks.push(RECORDING_BLOCK);
     const side: Rect[] = [];
     let sideOffset = PAD;
     for (const block of sideBlocks) {
@@ -381,6 +391,13 @@ function batteryBlock(font: UiFont, items: readonly BatteryItem[]): SideBlock {
     },
   };
 }
+
+/** The recording circle: the mic's audio is being saved (see RECORDING_ICON). */
+const RECORDING_BLOCK: SideBlock = {
+  width: RECORDING_ICON.width,
+  height: RECORDING_ICON.height,
+  draw: (image, left, top) => image.drawImage(RECORDING_ICON, left, top),
+};
 
 /** The current weather's condition icon and temperature, or null without a fresh reading. */
 function weatherBlock(font: UiFont, nowMs: number): SideBlock | null {

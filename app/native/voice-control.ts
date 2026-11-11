@@ -3,6 +3,7 @@ import { Utils } from "@nativescript/core";
 import { type CloudSttTranscriptEvent, CloudSttClient } from "./cloud-stt";
 import { createCloudSttClient, transcriptionKey } from "./cloud-stt-provider";
 import { SpeechPauseDetector } from "./speech-pause";
+import { WavRecorder } from "./wav-recorder";
 import { toUint8Array } from "../util/array-util";
 import { pcmLevel } from "../util/audio-level";
 
@@ -60,7 +61,6 @@ export type PushToTalkOptions = {
   whisperServerApiKey?: string;
   /** Spoken language for cloud providers (see VoiceProviderSelection.language). */
   language?: string;
-  saveRecording: boolean;
   /**
    * Watch the mic and fire onSpeechEnd when the speaker stops. For hands-free
    * ("Hey Even") capture, which has no button release to end the utterance.
@@ -150,6 +150,14 @@ export class FaceclawVoiceControlBridge {
   // the bridge swallow it.
   private verificationActive = false;
   private verificationRejected = false;
+  // Continuous captures' audio goes to Downloads/<recordingName>.wav while it is
+  // set. The file outlives a capture, so a restarted one keeps appending to it,
+  // and it is created by the first audio, so a failed start leaves no file.
+  private recordingName = "";
+  private recorder: WavRecorder | null = null;
+  // The file could not be created: one attempt per recording, not one per packet.
+  private recordingFailure = false;
+  private readonly recordingListeners = new Set<() => void>();
 
   onStatus(listener: (state: VoiceControlState) => void): () => void {
     this.statusListeners.add(listener);
@@ -242,6 +250,56 @@ export class FaceclawVoiceControlBridge {
     this.acquireCapture("continuous", options);
   }
 
+  /**
+   * Record continuous captures' audio to Downloads/<name>.wav, across restarts,
+   * until called with another name or "".
+   */
+  recordTo(name: string): void {
+    if (name === this.recordingName) return;
+    this.recorder?.close();
+    this.recorder = null;
+    this.setRecording(name, false);
+  }
+
+  /** Whether continuous captures' audio is being saved (see recordTo). */
+  get recording(): boolean {
+    return this.recordingName !== "" && !this.recordingFailure;
+  }
+
+  /** Whether the recording asked for could not be saved (its file could not be created). */
+  get recordingFailed(): boolean {
+    return this.recordingFailure;
+  }
+
+  /** `recording` or `recordingFailed` changed. */
+  onRecordingChange(listener: () => void): () => void {
+    this.recordingListeners.add(listener);
+    return () => this.recordingListeners.delete(listener);
+  }
+
+  private setRecording(name: string, failed: boolean): void {
+    const wasRecording = this.recording;
+    const hadFailed = this.recordingFailure;
+    this.recordingName = name;
+    this.recordingFailure = failed;
+    if (wasRecording === this.recording && hadFailed === failed) return;
+    for (const listener of Array.from(this.recordingListeners)) listener();
+  }
+
+  /** `pcm` is the controller's Java byte[], handed to the recorder as it came. */
+  private record(pcm: any): void {
+    if (!this.recording) return;
+    if (!this.recorder) {
+      this.recorder = WavRecorder.open(this.recordingName);
+      if (!this.recorder) {
+        this.setRecording(this.recordingName, true);
+        return;
+      }
+      console.log(`Voice: recording audio to ${this.recorder.path}`);
+    }
+    this.recorder.append(pcm);
+  }
+
   /** Subscribe to decoded raw mic PCM (16 kHz mono S16LE). */
   onRawPcm(listener: RawPcmListener): () => void {
     this.rawPcmListeners.add(listener);
@@ -305,7 +363,6 @@ export class FaceclawVoiceControlBridge {
     // The raw tap is strictly the G2 stream; clear any phone-mic flag a
     // preview-mode capture may have left on the shared controller.
     this.controller?.setUsePhoneMic(false);
-    this.controller?.setSaveRecordings(false);
     this.controller?.setEndpointing(false);
     // Raw means raw: the Microphones session (and EvenHub apps) get the
     // unprocessed stream and run their own beam/suppression processing.
@@ -354,7 +411,6 @@ export class FaceclawVoiceControlBridge {
     this.ensureController();
     this.controller?.setCommunicator(options.communicator);
     this.controller?.setUsePhoneMic(Boolean(options.usePhoneMic));
-    this.controller?.setSaveRecordings(options.saveRecording);
     this.controller?.setEndpointing(Boolean(options.endpointing));
     this.captureEndpointing = Boolean(options.endpointing);
     this.controller?.setNoiseSuppression(Boolean(options.noiseSuppression));
@@ -554,6 +610,8 @@ export class FaceclawVoiceControlBridge {
       onPcm: (pcm: any) => {
         const bytes = toUint8Array(pcm);
         this.cloudClient?.acceptPcm(bytes);
+        // Push-to-talk on a capture of its own is not recorded.
+        if (this.captureHolders.has("continuous")) this.record(pcm);
         if (!this.cloudClient && this.captureHolders.has("continuous") && this.speechPause.accept(bytes)) {
           for (const listener of this.speechPauseListeners) listener();
         }

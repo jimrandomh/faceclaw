@@ -1,7 +1,7 @@
 import { GrayImage } from "../../graphics/image";
 import { getDefaultSmallFont } from "../../graphics/ui-fonts";
 import { lineStep } from "../../ui/metrics";
-import { MicLevelMeter, paintListeningHeader } from "../../ui/listening-header";
+import { MicLevelMeter, paintListeningHeader, RECORDING_FAILED_NOTICE } from "../../ui/listening-header";
 import { writeTextToDownloads } from "../../native/file-access";
 import { voiceControlBridge } from "../../native/voice-control";
 import { Layer, type LayerContext } from "../../ui/layers";
@@ -77,9 +77,11 @@ export class TranslateLayer implements Layer {
     const measure = (line: string) => font.measureText(line);
     const maxWidth = width - 64;
 
-    const status = this.problem ? "Setup needed" : this.translationError || this.status;
+    const status = this.problem
+      ? "Setup needed"
+      : voiceControlBridge.recordingFailed ? RECORDING_FAILED_NOTICE : this.translationError || this.status;
     const meter = this.listening && !this.problem ? this.meter : null;
-    const bodyTop = paintListeningHeader(image, font, "Translate", this.saveNotice || status, meter);
+    const bodyTop = paintListeningHeader(image, font, "Translate", this.saveNotice || status, meter, voiceControlBridge.recording);
 
     let lines: TranslationLine[];
     if (this.problem) {

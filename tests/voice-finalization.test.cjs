@@ -158,11 +158,11 @@ test('cloud fallback and a synchronous final still send exactly once', () => {
 });
 
 /** The Android voice bridge over a fake native controller (on-device recognition only). */
-function androidBridge() {
+function androidBridge(modules = {}) {
   const controller = {
     starts: 0,
     setListener(listener) { this.listener = listener; },
-    setCommunicator() {}, setUsePhoneMic() {}, setSaveRecordings() {}, setEndpointing() {},
+    setCommunicator() {}, setUsePhoneMic() {}, setEndpointing() {},
     setNoiseSuppression() {}, setBeamFilter() {}, clearSpeakerVerification() {}, setOnboardModelKind() {},
     start(_mode, id) { this.captureId = id; this.active = true; this.starts++; },
     stop() { this.active = false; },
@@ -172,6 +172,7 @@ function androidBridge() {
     '@nativescript/core': { Utils: { android: { getApplicationContext: () => ({}) } } },
     './speech-pause': { SpeechPauseDetector: class { reset() {} } },
     './cloud-stt-provider': { createCloudSttClient: () => null, transcriptionKey: options => options.provider },
+    ...modules,
   }, { global: { isAndroid: true }, com: { faceclaw: { app: {
     FaceclawVoiceController: function () { return controller; },
     FaceclawVoiceControllerListener: function (listener) { return listener; },
@@ -214,4 +215,59 @@ test('a shared capture restarts for a holder that needs another provider, and is
   bridge.stopContinuousCapture();
   assert.equal(controller.active, true);
   assert.equal(bridge.holdsCapture('ptt'), true);
+});
+
+test('Android continuous captures record to the requested WAV, and report one that cannot be created', () => {
+  const recordings = [];
+  let fail = false, attempts = 0;
+  class FakeRecorder {
+    static open(name) {
+      attempts++;
+      if (fail) return null;
+      const r = new FakeRecorder(); r.name = name; r.path = `/Download/${name}.wav`; r.pcm = []; r.closed = false; recordings.push(r); return r;
+    }
+    append(pcm) { this.pcm.push(...pcm); }
+    close() { this.closed = true; }
+  }
+  const { bridge, controller } = androidBridge({
+    './wav-recorder': { WavRecorder: FakeRecorder },
+    './speech-pause': { SpeechPauseDetector: class { reset() {} accept() { return false; } } },
+    '../util/array-util': { toUint8Array: pcm => Uint8Array.from(pcm) },
+    '../util/audio-level': { pcmLevel: () => 0 },
+  });
+  const options = { provider: 'onboard' };
+  let changes = 0; bridge.onRecordingChange(() => changes++);
+  bridge.recordTo('transcribe-1');
+  assert.deepEqual([bridge.recording, bridge.recordingFailed, changes], [true, false, 1]);
+  // Push-to-talk on a capture of its own is not recorded, and the file waits for audio to save.
+  bridge.startPushToTalk(options);
+  controller.listener.onPcm([9, 9]);
+  assert.equal(attempts, 0);
+  bridge.startContinuousCapture(options);
+  controller.listener.onPcm([1, 2]);
+  controller.listener.onPcm([3, 4]);
+  assert.deepEqual(recordings.map(r => [r.name, r.pcm, r.closed]), [['transcribe-1', [1, 2, 3, 4], false]]);
+  // The file outlives a capture: one restarted after the glasses reconnect keeps appending to it.
+  bridge.handleSessionEnded();
+  bridge.resumeCapture(options);
+  controller.listener.onPcm([5]);
+  assert.deepEqual(recordings.map(r => [r.pcm, r.closed]), [[[1, 2, 3, 4, 5], false]]);
+  bridge.recordTo('');
+  assert.deepEqual([recordings[0].closed, bridge.recording, changes], [true, false, 2]);
+  controller.listener.onPcm([6]);
+  assert.equal(recordings[0].pcm.length, 5);
+
+  // One attempt per recording, not one per packet; another recording is a fresh attempt.
+  fail = true; attempts = 0;
+  bridge.recordTo('transcribe-2');
+  controller.listener.onPcm([7]); controller.listener.onPcm([8]);
+  assert.deepEqual([bridge.recording, bridge.recordingFailed, changes, attempts], [false, true, 4, 1]);
+  bridge.recordTo('transcribe-2');
+  controller.listener.onPcm([9]);
+  assert.equal(attempts, 1);
+  fail = false;
+  bridge.recordTo('');
+  bridge.recordTo('transcribe-2');
+  controller.listener.onPcm([10]);
+  assert.deepEqual([bridge.recording, bridge.recordingFailed, recordings.at(-1).pcm], [true, false, [10]]);
 });

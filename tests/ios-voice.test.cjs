@@ -31,8 +31,13 @@ function harness() {
     },
   };
   const recordings = [];
+  let failRecordings = false, recordingAttempts = 0;
   class FakeRecorder {
-    static open(name) { const r = new FakeRecorder(); r.name = name; r.path = `/Downloads/${name}.wav`; r.pcm = []; r.closed = false; recordings.push(r); return r; }
+    static open(name) {
+      recordingAttempts++;
+      if (failRecordings) return null;
+      const r = new FakeRecorder(); r.name = name; r.path = `/Downloads/${name}.wav`; r.pcm = []; r.closed = false; recordings.push(r); return r;
+    }
     append(bytes) { this.pcm.push(...bytes); }
     close() { this.closed = true; }
   }
@@ -56,6 +61,7 @@ function harness() {
   } };
   const onboard = { provider: 'onboard', elevenLabsApiKey: '', openAiApiKey: '', sonioxApiKey: '' };
   return { bridge, native, session, audio, commands, text, timers, clouds, analyzers, recordings, release: () => release(),
+    failRecordings: value => { failRecordings = value; }, recordingAttempts: () => recordingAttempts,
     analyzerSupported: value => { analyzerSupported = value; },
     onboard, cloud: { ...onboard, provider: 'soniox', sonioxApiKey: 'key' },
     microphoneAuthorization: value => { microphoneAuthorization = value; }, microphoneRequests: () => microphoneRequests,
@@ -307,7 +313,10 @@ test('push-to-talk after Transcribe closed starts its own capture instead of joi
 
 test('continuous captures record to the requested WAV, created by their first audio and kept across restarts', async () => {
   const h = harness();
+  let changes = 0; h.bridge.onRecordingChange(() => changes++);
+  assert.equal(h.bridge.recording, false);
   h.bridge.recordTo('transcribe-2026-10-17-120000');
+  assert.deepEqual([h.bridge.recording, h.bridge.recordingFailed, changes], [true, false, 1]);
   // A start that fails before any audio leaves no file behind.
   h.native.error = 'No phone microphone is available.';
   await h.bridge.startPhoneCapture(h.cloud, () => {}, false, true);
@@ -334,6 +343,30 @@ test('continuous captures record to the requested WAV, created by their first au
   assert.deepEqual(h.recordings[0].pcm, [1, 2, 3, 4, 5, 6, 7]);
   h.bridge.recordTo('');
   assert.equal(h.recordings[0].closed, true);
+  assert.deepEqual([h.bridge.recording, changes], [false, 2]);
+});
+
+test('a recording whose file cannot be created is reported, and not retried per packet', async () => {
+  const h = harness();
+  let changes = 0; h.bridge.onRecordingChange(() => changes++);
+  h.failRecordings(true);
+  h.bridge.recordTo('transcribe-1');
+  const start = h.bridge.startGlassesCapture(h.session, h.cloud, () => {}, false, true); h.release(); await start;
+  h.native.pcmHandler(new Uint8Array([1, 2]));
+  h.native.pcmHandler(new Uint8Array([3, 4]));
+  assert.deepEqual([h.bridge.recording, h.bridge.recordingFailed, changes, h.recordingAttempts()], [false, true, 2, 1]);
+  // Asking for the same recording again changes nothing; another one (Save Recording
+  // switched off and on) is a fresh attempt.
+  h.bridge.recordTo('transcribe-1');
+  h.native.pcmHandler(new Uint8Array([5]));
+  assert.equal(h.recordingAttempts(), 1);
+  h.failRecordings(false);
+  h.bridge.recordTo('');
+  assert.deepEqual([h.bridge.recording, h.bridge.recordingFailed, changes], [false, false, 3]);
+  h.bridge.recordTo('transcribe-1');
+  h.native.pcmHandler(new Uint8Array([6]));
+  assert.deepEqual([h.bridge.recording, h.bridge.recordingFailed, changes], [true, false, 4]);
+  assert.deepEqual(h.recordings[0].pcm, [6]);
 });
 
 test('a glasses session ending drains continuous capture instead of discarding what it heard', async () => {

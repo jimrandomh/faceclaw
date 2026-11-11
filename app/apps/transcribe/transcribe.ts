@@ -1,7 +1,7 @@
 import { GrayImage } from "../../graphics/image";
 import { getDefaultSmallFont } from "../../graphics/ui-fonts";
 import { lineStep } from "../../ui/metrics";
-import { MicLevelMeter, paintListeningHeader } from "../../ui/listening-header";
+import { MicLevelMeter, paintListeningHeader, RECORDING_FAILED_NOTICE } from "../../ui/listening-header";
 import { writeTextToDownloads } from "../../native/file-access";
 import { voiceControlBridge } from "../../native/voice-control";
 import { Layer, type LayerContext } from "../../ui/layers";
@@ -52,7 +52,10 @@ export class TranscribeLayer implements Layer {
     const text = this.transcript.text || (this.listening ? "Listening..." : this.detail);
     const wrapped = wrapTranscribeText((line) => font.measureText(line), text, width - 64);
 
-    const bodyTop = paintListeningHeader(image, font, "Transcribe", this.saveNotice || this.status, this.listening ? this.meter : null);
+    const status = voiceControlBridge.recordingFailed ? RECORDING_FAILED_NOTICE : this.status;
+    const bodyTop = paintListeningHeader(
+      image, font, "Transcribe", this.saveNotice || status, this.listening ? this.meter : null, voiceControlBridge.recording,
+    );
     const step = lineStep(font) + 2;
     const bodyLines = Math.max(1, Math.floor((height - 6 - bodyTop - font.lineHeight) / step) + 1);
     const firstLine = this.scroll.layout(wrapped.length, bodyLines);
