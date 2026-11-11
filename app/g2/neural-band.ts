@@ -8,6 +8,9 @@
  * The mapping itself (neuralBandInputFor) is in neural-band-core.ts. A held pinch on either
  * finger is a long-press that lasts until the pinch lets go (the system menu); a held index
  * pinch that turned into the dial is not a hold (the native side never reports it).
+ *
+ * It is also the shell's handwriting source (Shell.startHandwritingInput): the band's own
+ * handwriting model, switched on only while the Handwriting dialog is open.
  */
 import { neuralBand, type NeuralBandEvent, type NeuralBandStatus } from "../native/neural-band";
 import {
@@ -16,8 +19,10 @@ import {
   neuralBandTwistScrollSetting,
   onAnySettingChanged,
 } from "../ui/dashboard-settings";
+import { type HandwritingListener, type HandwritingSource } from "../ui/shell/handwriting-input";
 import { shell } from "../ui/shell/shell";
-import { neuralBandBatteryLevel, neuralBandInputFor } from "./neural-band-core";
+import { formatErrorMessage } from "../util/format-error";
+import { handwritingDialogPhase, neuralBandBatteryLevel, neuralBandInputFor, suppressedWhileWriting } from "./neural-band-core";
 import type { WearRemoteInputKind } from "./wear-remote";
 
 export type NeuralBandRemoteHost = {
@@ -29,7 +34,11 @@ export type NeuralBandRemoteHost = {
   batteryChanged: () => void;
 };
 
-export class NeuralBandRemote {
+export class NeuralBandRemote implements HandwritingSource {
+  readonly name = "Neural Band";
+  /** The open Handwriting dialog, while the band's handwriting model is ours. */
+  private handwritingListener: HandwritingListener | null = null;
+  private lastCharacterAtMs = 0;
   /** Fingers whose pinch became a hold, so their release ends a long-press. */
   private readonly holding = new Set<number>();
   /** Gestures are delivered in order: a press must reach the shell before the click it began. */
@@ -48,6 +57,43 @@ export class NeuralBandRemote {
 
   getStatus(): NeuralBandStatus {
     return this.status;
+  }
+
+  /**
+   * The handwriting source for the shell: the band, while it is connected and in use, unless
+   * its firmware is known to have no handwriting (the phone's Neural Band page says so).
+   */
+  handwritingSource(): HandwritingSource | null {
+    return this.status.state === "connected" && neuralBandEnabledSetting.get() && !this.status.handwritingUnsupported
+      ? this : null;
+  }
+
+  start(listener: HandwritingListener): string | null {
+    if (this.status.state !== "connected") return "Connect the Neural Band first.";
+    try {
+      neuralBand.setHandwriting(true);
+    } catch (error) {
+      return formatErrorMessage(error);
+    }
+    this.handwritingListener = listener;
+    this.lastCharacterAtMs = 0;
+    this.host.appendLog("Neural Band: handwriting on");
+    return null;
+  }
+
+  setText(text: string): void {
+    if (this.handwritingListener) neuralBand.setHandwritingText(text);
+  }
+
+  stop(): void {
+    if (!this.handwritingListener) return;
+    this.handwritingListener = null;
+    this.host.appendLog("Neural Band: handwriting off");
+    try {
+      neuralBand.setHandwriting(false);
+    } catch {
+      // Disconnected meanwhile: the next connection puts the band's model back.
+    }
   }
 
   /** Push changed settings to the band, and connect or disconnect it to match "enabled". */
@@ -89,6 +135,22 @@ export class NeuralBandRemote {
       case "gesture":
         this.handleGesture(event.gesture, event.finger);
         return;
+      case "handwriting":
+        // What someone writes is never logged.
+        if (!this.handwritingListener) return;
+        this.lastCharacterAtMs = Date.now();
+        this.handwritingListener.text(event.text);
+        return;
+      case "handwriting-state": {
+        if (event.problem) this.host.appendLog(`Neural Band: handwriting ${event.phase}: ${event.problem}`);
+        const listener = this.handwritingListener;
+        if (!listener) return;
+        const dialog = handwritingDialogPhase(event.phase, event.problem);
+        listener.phase(dialog.phase, dialog.message);
+        // The band ended it on its own (a refused setting, silence, a dropped link).
+        if (dialog.phase === "stopped") this.handwritingListener = null;
+        return;
+      }
       default:
         return;
     }
@@ -96,6 +158,7 @@ export class NeuralBandRemote {
 
   private handleGesture(gesture: string, finger: number | undefined): void {
     if (!neuralBandEnabledSetting.get()) return;
+    if (suppressedWhileWriting(gesture, this.handwritingListener !== null, Date.now() - this.lastCharacterAtMs)) return;
     if (gesture === "hold" && finger !== undefined) {
       if (!this.takesInput()) return;
       this.holding.add(finger);

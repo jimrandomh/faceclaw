@@ -1,8 +1,8 @@
 // Ported from callbacked/kinesis (MIT, Copyright (c) 2026 callbacked): Sources/KinesisCore/BandSession.swift,
 // by way of tetramo-labs/glassly (MIT) at 11c0697d10. Faceclaw keeps the handshake, the ownership
-// ceremony, enrolled trust, the input subscription, hand, battery, motion and haptics; it drops
-// glassly's raw EMG readings, band-model (handwriting) capture and firmware updates, which share
-// the configuration channels but no state with what is kept.
+// ceremony, enrolled trust, the input subscription, hand, battery, motion, haptics and the
+// band-model (handwriting) capture; it drops glassly's raw EMG readings and firmware updates,
+// which share the configuration channels but no state with what is kept.
 package com.faceclaw.app.neuralband
 
 import java.io.ByteArrayOutputStream
@@ -96,7 +96,9 @@ class BandSession(
     val motionStreams: MotionStreams get() = motion
     private val streamChannel = 0x8005
     private val configurationChannel = 0x8006
+    private val configServiceChannel = 0x8007
     private val batteryChannel = 0x8008
+    private var configServiceOpened = false
     private var batteryChannelOpened = false
     private var batteryRequestID: ULong = 0uL
     private var batteryRequest: BatteryRequest? = null
@@ -123,6 +125,65 @@ class BandSession(
     private var hapticsRequest: Pair<ULong, Double>? = null
     private var wantedGestureHaptics: Boolean? = null
     private var startupFrames = 0
+    private val modelCapture = BandModelCapture()
+    private var modelControlOpened = false
+    val modelCaptureActive: Boolean get() = modelCapture.status.active
+
+    /**
+     * The current model operation has sent a settings write: until a restore is confirmed, the
+     * band may be left in the handwriting model. Before the first write it is untouched.
+     */
+    var modelSettingsWritten = false
+        private set
+
+    /**
+     * Switch the band to its handwriting model and stream its output (or put it back). The
+     * requests go out from [flushModelCapture]; progress arrives as ModelCaptureState events.
+     */
+    fun setModelCaptureEnabled(enabled: Boolean, time: Double) {
+        if (enabled) {
+            if (!streamsEnabled || stopping) throw BandProtocolError("Connect the band before recording its model")
+            modelCapture.start(time)
+            modelSettingsWritten = false
+        } else {
+            modelCapture.restore(time)
+        }
+    }
+
+    /** Write the band's normal model settings back, for a capture an earlier connection left running. */
+    fun recoverNormalModelMode(time: Double) {
+        if (!streamsEnabled || stopping) throw BandProtocolError("Connect the band before restoring its model")
+        modelCapture.recoverNormalMode(time)
+        modelSettingsWritten = false
+    }
+
+    fun flushModelCapture(time: Double): FeedResult {
+        var outgoing = ByteArray(0)
+        val request = if (!stopping && motionRequest == null) modelCapture.next(time) else null
+        if (request != null) {
+            if (request.operation is BandModelCapture.Operation.Write) modelSettingsWritten = true
+            val opened: Boolean
+            when (request.channel) {
+                streamChannel -> opened = true
+                configServiceChannel -> {
+                    opened = configServiceOpened
+                    configServiceOpened = true
+                }
+                else -> {
+                    opened = modelControlOpened
+                    modelControlOpened = true
+                }
+            }
+            outgoing = encrypt(
+                BandWire.frame(
+                    request.channel,
+                    if (opened) emptyList() else listOf(0x8100ce56u, 0x02000314u),
+                    request.payload(streamControl(motion)),
+                ),
+            )
+        }
+        return FeedResult(outgoing, modelCapture.drainEvents())
+    }
 
     fun request(): ByteArray =
         BandWire.frame(
@@ -283,9 +344,15 @@ class BandSession(
     }
 
     /** Every stream field, on or off explicitly, so no field is left to the band's default. */
-    private fun streamControl(motion: MotionStreams): ByteArray =
-        BandWire.field(3, 1uL) + BandWire.field(6, if (motion.gyro) 1uL else 0uL) +
+    private fun streamControl(motion: MotionStreams): ByteArray {
+        var control = BandWire.field(3, 1uL) + BandWire.field(6, if (motion.gyro) 1uL else 0uL) +
             BandWire.field(8, if (motion.orientation) 1uL else 0uL)
+        // A motion change must not undo (or start) the model capture's streams.
+        if (modelCapture.streamTouched) {
+            for (field in listOf(4, 22, 23)) control += BandWire.field(field, if (modelCapture.streamWanted) 1uL else 0uL)
+        }
+        return control
+    }
 
     /**
      * Asks for these motion streams. Before the subscription it only changes what
@@ -323,7 +390,7 @@ class BandSession(
             wantedMotion = null
             return ByteArray(0)
         }
-        if (!streamsEnabled) return ByteArray(0)
+        if (!streamsEnabled || modelCapture.pending != null) return ByteArray(0)
         streamRequestID += 1uL
         motionRequest = MotionRequest(streamRequestID, wanted, time)
         return encrypt(
@@ -621,7 +688,8 @@ class BandSession(
         val control = when (enabled) {
             true -> streamControl(motion)
             // Stopping turns every stream off, whichever were on.
-            false -> ALL_STREAM_FIELDS.fold(ByteArray(0)) { off, field -> off + BandWire.field(field, 0uL) }
+            false -> (ALL_STREAM_FIELDS + (if (modelCapture.streamTouched) listOf(4, 22, 23) else emptyList()))
+                .fold(ByteArray(0)) { off, field -> off + BandWire.field(field, 0uL) }
             null -> ByteArray(0)
         }
         return encrypt(
@@ -649,6 +717,21 @@ class BandSession(
             channelTypes[frame.channel] = latest
         }
         val kind = channelTypes[frame.channel] ?: return emptyList()
+        if (kind == 0x02000315u && modelCapture.receive(frame.channel, frame.payload, time)) {
+            return modelCapture.drainEvents()
+        }
+        if (kind == 0x0200020cu && setupStage == SetupStage.INPUT && !stopping && modelCapture.status.active) {
+            // A malformed frame is skipped: failing the connection here would leave the band
+            // in the recording's model until the next reconnect.
+            val sample = try {
+                BandInferenceSample(frame.payload)
+            } catch (e: Exception) {
+                log.error("Skipped a malformed band model frame on channel ${frame.channel}")
+                return modelCapture.drainEvents()
+            }
+            modelCapture.receive(sample, time)
+            return listOf(BandEvent(BandEvent.Payload.InferenceFrame(sample), time)) + modelCapture.drainEvents()
+        }
         if (!streaming && startupFrames < 16) {
             startupFrames += 1
             log.info(

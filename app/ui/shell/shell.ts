@@ -21,6 +21,7 @@ import { Layer, LayerActions, LayerContext, LayerStack, noopLayerActions } from 
 import { CONTEXT_MENU_DIM, MenuLayer, type MenuItem } from "../menu";
 import { VoiceInputLayer, type VoiceSendTarget } from "./voice-input";
 import { KeyboardInputLayer, type KeyboardInputSession, type KeyboardInputVisibility } from "./keyboard-input";
+import { HandwritingInputLayer, type HandwritingSource } from "./handwriting-input";
 import { voiceActivity } from "./voice-activity";
 import { AssistantLayer } from "./assistant";
 import { AssistantSession, type AssistantBackendConfig } from "../../assistant/session";
@@ -223,6 +224,11 @@ export type ShellConfig = {
    * closed (null) by any path; the phone UI shows/hides its typing panel.
    */
   onKeyboardInputChanged?: (session: KeyboardInputSession | null) => void;
+  /**
+   * Something that can recognize handwriting right now (a connected Meta Neural Band), or
+   * null. While it returns one, the system menu offers Handwriting.
+   */
+  handwritingSource?: () => HandwritingSource | null;
   /** Screen on/off changed: the controller blanks/unblanks the compositor. */
   onScreenStateChanged: (on: boolean) => void;
   /** Window registered/removed or foreground changed (persists the open-app list). */
@@ -477,6 +483,7 @@ class Shell {
   private readonly trayIcons = new Map<string, { icon: GrayImage; widget?: TrayWidget }>();
   private activeVoiceLayer: VoiceInputLayer | null = null;
   private activeKeyboardLayer: KeyboardInputLayer | null = null;
+  private activeHandwritingLayer: HandwritingInputLayer | null = null;
   // Messages sent from keyboard dialogs, newest first; in memory only.
   private readonly keyboardInputHistory: string[] = [];
   // App-posted notifications that are open or queued, by key.
@@ -1630,7 +1637,7 @@ class Shell {
    */
   startKeyboardInput(): KeyboardInputSession | null {
     if (this.activeKeyboardLayer) return this.activeKeyboardLayer;
-    if (this.activeVoiceLayer || this.foregroundWindow()?.isVoiceCapturing?.()) return null;
+    if (this.activeVoiceLayer || this.activeHandwritingLayer || this.foregroundWindow()?.isVoiceCapturing?.()) return null;
     const storedVisibility = getStringSetting(KEYBOARD_INPUT_VISIBILITY_KEY, "both");
     const visibility: KeyboardInputVisibility =
       storedVisibility === "phone" || storedVisibility === "glasses" ? storedVisibility : "both";
@@ -1696,6 +1703,48 @@ class Shell {
     this.config.onKeyboardInputChanged?.(layer);
     this.config.requestShellRender();
     return layer;
+  }
+
+  /**
+   * Open the handwriting dialog aimed at the foreground window: the voice
+   * dialog's twin, with text written with a finger and recognized by the
+   * host's handwriting source (a Meta Neural Band). The source runs only while
+   * the dialog is open. Like the system menu's Voice input, Type Into App is
+   * highlighted when the window takes text. Returns false when it can't open
+   * now (no source, screen off, another dialog or overlay up).
+   */
+  startHandwritingInput(): boolean {
+    const source = this.config.handwritingSource?.();
+    if (!source || !this.screenOn || this.activeVoiceLayer || this.activeKeyboardLayer || this.activeHandwritingLayer) return false;
+    if (!this.stack.isAtBase()) return false;
+    this.focus = "window";
+    const targets = this.buildVoiceSendTargets();
+    const appIndex = targets.findIndex((target) => target.id === "app");
+    const layer = new HandwritingInputLayer({
+      actions: this.config.actions,
+      source,
+      onClosed: () => {
+        if (this.activeHandwritingLayer === layer) {
+          this.activeHandwritingLayer = null;
+          this.noteUserActivity();
+        }
+      },
+      dismiss: () => {
+        this.stack.remove(layer);
+        this.config.requestShellRender();
+      },
+      sendTargets: targets,
+      defaultTargetIndex: this.foregroundWindow()?.receiveTextInput && appIndex >= 0 ? appIndex : 0,
+    });
+    this.activeHandwritingLayer = layer;
+    this.stack.push(layer);
+    this.config.requestShellRender();
+    return true;
+  }
+
+  /** Whether the system menu would offer Handwriting (a source is connected). */
+  isHandwritingAvailable(): boolean {
+    return this.config.handwritingSource?.() != null;
   }
 
   isAssistantAvailable(): boolean {
@@ -1990,6 +2039,15 @@ class Shell {
           this.startVoiceInput();
         },
       }]),
+      ...(this.isHandwritingAvailable() ? [{
+        label: "Handwriting",
+        onSelect: (ctx: LayerContext) => {
+          // Aimed at the foreground window, like Voice input.
+          layer.keepWindowFocus = true;
+          ctx.stack.pop();
+          this.startHandwritingInput();
+        },
+      }] : []),
     );
     if (brightnessSetting.get() !== "auto") {
       items.push({

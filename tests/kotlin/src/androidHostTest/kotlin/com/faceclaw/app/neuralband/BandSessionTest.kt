@@ -1,10 +1,11 @@
 // Ported from callbacked/kinesis (MIT, Copyright (c) 2026 callbacked): Tests/KinesisCoreTests/BandSessionTests.swift,
-// by way of tetramo-labs/glassly (MIT). Faceclaw drops the raw EMG, band-model and recorded-capture tests
+// by way of tetramo-labs/glassly (MIT). Faceclaw drops the raw EMG and recorded-capture tests
 // along with those features.
 package com.faceclaw.app.neuralband
 
 import com.faceclaw.app.neuralband.BandEvent.Payload as P
 import kotlin.math.abs
+import kotlin.math.ln
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -721,4 +722,98 @@ class BandSessionTest {
         assertTrue(onAsk.gyro == 1uL && onAsk.orientation == 0uL)
     }
 
+    @Test
+    fun nativeModelCaptureUsesExistingSubscriptionAndEmitsAuthenticatedSamples() {
+        val peer = Peer()
+        val baseline = field(3, 1uL) + field(6, 1uL) + field(8, 1uL)
+        peer.exchange(5, 0x02000315u, field(1, 3uL) + field(2, 1uL) + field(5, baseline))
+        peer.session.setModelCaptureEnabled(true, 100.0)
+        val modelFlags = field(4, 1uL) + field(22, 1uL) + field(23, 1uL)
+        val bodies = listOf(
+            field(5, baseline + modelFlags),
+            field(14, field(1, field(1, 38uL))),
+            field(14, field(2, field(3, "data-collection".toByteArray()) + field(4, 27uL))),
+            field(14, field(2, field(3, "data-collection-model".toByteArray()) + field(4, 28uL))),
+            // The band's own values, read before anything is written: collection off, model 2.
+            field(14, field(3, field(1, 27uL) + field(8, EMPTY))),
+            field(14, field(3, field(1, 28uL) + field(11, field(1, 2uL)))),
+            // Write acknowledgements have no data arm. Separate reads supply the values.
+            field(14, field(3, field(1, 27uL) + field(2, 1uL))),
+            field(14, field(3, field(1, 28uL) + field(2, 1uL))),
+            field(14, field(3, field(1, 27uL) + field(8, field(1, 1uL)))),
+            field(14, field(3, field(1, 28uL) + field(11, field(1, 5uL)))),
+            field(6, field(46, field(3, 2uL) + field(5, 9uL))),
+        )
+        val channels = ArrayList<Int>()
+        for ((index, body) in bodies.withIndex()) {
+            val now = 100 + index * 0.1
+            val sent = peer.session.flushModelCapture(now)
+            val request = peer.requests(sent.outgoing).first()
+            channels.add(request.channel)
+            val fields = ProtoFields(request.payload)
+            if (index == 0) {
+                val control = ProtoFields(fields.bytes(4))
+                for (flag in listOf(3, 4, 6, 8, 22, 23)) assertEquals(1uL, control.integer(flag))
+                // Update the existing stream, don't open another subscription.
+                assertTrue(request.words.isEmpty())
+            }
+            val id = fields.requiredInteger(1)
+            peer.exchange(request.channel and 0x7fff, 0x02000315u, field(1, id) + field(2, 1uL) + body, now = index * 0.1 + 0.01)
+        }
+        assertEquals(
+            listOf(0x8005, 0x8001, 0x8001, 0x8001, 0x8001, 0x8001, 0x8001, 0x8001, 0x8001, 0x8001, 0x8007),
+            channels,
+        )
+        var scores = EMPTY
+        repeat(100) { scores += (-ln(100.0)).toFloat().le() }
+        for (index in 0 until 5) {
+            val payload = field(1, index.toULong()) + field(2, 1_000_000uL + index.toULong() * 156_250uL) +
+                field(3, scores) + field(10, 3uL)
+            val result = peer.exchange(0x8011, 0x0200020cu, payload, now = 1.0)
+            val sample = result.events.payloads<P.InferenceFrame>().first().sample
+            assertTrue(sample.payload.contentEquals(payload) && sample.pipeline == 3uL && sample.values.size == 100)
+        }
+        assertTrue(peer.session.modelSettingsWritten)
+        val ready = peer.session.flushModelCapture(101.1)
+        assertTrue(
+            ready.events.payloads<P.ModelCaptureState>().any { it.status.phase == BandModelCaptureStatus.Phase.READY },
+        )
+        // An ordinary motion update must preserve the model streams.
+        val update = peer.requests(peer.session.setMotionStreams(MotionStreams.NONE, 101.2)).first()
+        val flags = ProtoFields(ProtoFields(update.payload).bytes(4))
+        for (flag in listOf(3, 4, 22, 23)) assertEquals(1uL, flags.integer(flag))
+        assertTrue(flags.integer(6) == 0uL && flags.integer(8) == 0uL)
+    }
+
+    /** Faceclaw: a band whose firmware lacks the model controls (seen on firmware 770435744). */
+    @Test
+    fun aBandWithoutModelControlsFailsBeforeWritingAnySetting() {
+        val peer = Peer()
+        val baseline = field(3, 1uL) + field(6, 1uL) + field(8, 1uL)
+        peer.exchange(5, 0x02000315u, field(1, 3uL) + field(2, 1uL) + field(5, baseline))
+        peer.session.setModelCaptureEnabled(true, 100.0)
+        val modelFlags = field(4, 1uL) + field(22, 1uL) + field(23, 1uL)
+        // Streams on, then the claim: the band offers only 20 settings.
+        val replies = listOf(field(5, baseline + modelFlags), field(14, field(1, field(1, 20uL))))
+        for ((index, body) in replies.withIndex()) {
+            val now = 100 + index * 0.1
+            val request = peer.requests(peer.session.flushModelCapture(now).outgoing).first()
+            val id = ProtoFields(request.payload).requiredInteger(1)
+            peer.exchange(request.channel and 0x7fff, 0x02000315u, field(1, id) + field(2, 1uL) + body, now = index * 0.1 + 0.01)
+        }
+        // The restore only turns the model streams back off.
+        val restore = peer.requests(peer.session.flushModelCapture(100.3).outgoing).first()
+        assertEquals(0x8005, restore.channel)
+        val flags = ProtoFields(ProtoFields(restore.payload).bytes(4))
+        for (flag in listOf(4, 22, 23)) assertEquals(0uL, flags.integer(flag))
+        assertEquals(1uL, flags.integer(3))
+        val id = ProtoFields(restore.payload).requiredInteger(1)
+        peer.exchange(5, 0x02000315u, field(1, id) + field(2, 1uL) + field(5, baseline), now = 0.4)
+        val finished = peer.session.flushModelCapture(100.5).events.payloads<P.ModelCaptureState>().last().status
+        assertEquals(BandModelCaptureStatus.Phase.FINISHED, finished.phase)
+        assertEquals(BAND_NO_MODEL_CONTROLS, finished.problem)
+        assertTrue(finished.restorationVerified)
+        assertFalse(peer.session.modelSettingsWritten)
+        assertFalse(peer.session.modelCaptureActive)
+    }
 }

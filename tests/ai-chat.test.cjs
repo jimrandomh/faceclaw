@@ -278,7 +278,7 @@ function shellEnv({ wakeAction = 'voice-input', skipConfirmation = false } = {})
       constructor(options) { this.options = options; voiceDialogs.push(options); }
       startCapture() {}
       onRemoved() { this.options.onClosed(); }
-    } }, './keyboard-input': {}, './voice-activity': { voiceActivity: { setActive() {} } }, './assistant': {},
+    } }, './keyboard-input': {}, './handwriting-input': {}, './voice-activity': { voiceActivity: { setActive() {} } }, './assistant': {},
     '../../assistant/conversations': {}, '../../assistant/models': {}, '../../native/settings-store': {},
     '../notifications': {}, '../dashboard-settings': settings, './ambient-cards': {},
     './chrome-layer': { ShellChromeLayer: class {} }, './modal-layer': {}, './tool-debug-layer': {},

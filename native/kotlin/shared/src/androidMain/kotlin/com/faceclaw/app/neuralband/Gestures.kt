@@ -1,5 +1,5 @@
 // Ported from callbacked/kinesis (MIT, Copyright (c) 2026 callbacked): Sources/KinesisCore/Gestures.swift,
-// by way of tetramo-labs/glassly (MIT). Faceclaw drops the raw EMG, band-model and firmware-update events.
+// by way of tetramo-labs/glassly (MIT). Faceclaw drops the raw EMG and firmware-update events.
 package com.faceclaw.app.neuralband
 
 import kotlin.math.abs
@@ -85,6 +85,9 @@ class BandEvent(val payload: Payload, val receivedAt: Double = uptimeSeconds()) 
         data class HandednessFailure(val message: String) : Payload()
         data class CeremonyHTTP(val request: CeremonyHTTPRequest) : Payload()
         data class CeremonyStage(val stage: String) : Payload()
+        class InferenceFrame(val sample: BandInferenceSample) : Payload()
+        class InferenceConfiguration(val payload: ByteArray) : Payload()
+        data class ModelCaptureState(val status: BandModelCaptureStatus) : Payload()
 
         /** The input channel read is waiting on a system Bluetooth pairing request. */
         object SystemPairingPending : Payload()

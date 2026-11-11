@@ -2,10 +2,14 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 
 const {
+  HANDWRITING_GESTURE_QUIET_MS,
+  NO_HANDWRITING_FIRMWARE,
+  handwritingDialogPhase,
   neuralBandBatteryLevel,
   neuralBandBatteryText,
   neuralBandInputFor,
   neuralBandStatusLine,
+  suppressedWhileWriting,
 } = require("../.test-build/app/g2/neural-band-core.js");
 const { UNSUPPORTED_STATUS, parseNeuralBandEvent } = require("../.test-build/app/native/neural-band-types.js");
 
@@ -70,4 +74,25 @@ test("the battery indicator follows the band: a level only while connected and r
   // A disconnected band takes its indicator with it, whatever it last said.
   assert.deepEqual(neuralBandBatteryLevel(status({ state: "connecting", battery: 64, charging: true })), { band: null, bandCharging: null });
   assert.deepEqual(neuralBandBatteryLevel(status({ state: "connected", battery: 101 })), { band: null, bandCharging: null });
+});
+
+test("while writing, gestures right after a recognized character are dropped, except releases", () => {
+  assert.equal(suppressedWhileWriting("tap", true, 100), true);
+  assert.equal(suppressedWhileWriting("swipe-right", true, HANDWRITING_GESTURE_QUIET_MS - 1), true);
+  assert.equal(suppressedWhileWriting("release", true, 0), false);
+  assert.equal(suppressedWhileWriting("tap", true, HANDWRITING_GESTURE_QUIET_MS), false);
+  assert.equal(suppressedWhileWriting("tap", false, 0), false);
+});
+
+test("the handwriting dialog follows the band model's phases", () => {
+  assert.equal(handwritingDialogPhase("preparing").phase, "starting");
+  assert.deepEqual(handwritingDialogPhase("ready"), { phase: "ready", message: "" });
+  assert.deepEqual(handwritingDialogPhase("restoring", "the band did not answer a model request"),
+    { phase: "stopped", message: "Handwriting stopped: the band did not answer a model request" });
+  assert.deepEqual(handwritingDialogPhase("idle"), { phase: "stopped", message: "Handwriting stopped." });
+});
+
+test("a band without handwriting controls gets a plain explanation", () => {
+  assert.deepEqual(handwritingDialogPhase("finished", "model controls are unavailable on this band"),
+    { phase: "stopped", message: NO_HANDWRITING_FIRMWARE });
 });

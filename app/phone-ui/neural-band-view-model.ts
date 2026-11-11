@@ -131,6 +131,7 @@ export class NeuralBandViewModel extends Observable {
     const battery = neuralBandBatteryText(this.status);
     if (battery) parts.push(`battery ${battery}`);
     if (this.status.firmware) parts.push(`firmware ${this.status.firmware}`);
+    if (this.status.handwritingUnsupported) parts.push("no handwriting on this firmware");
     parts.push(this.status.claimed ? "claimed by this phone" : "not claimed yet");
     return parts.join(" · ");
   }
@@ -306,6 +307,7 @@ export class NeuralBandViewModel extends Observable {
       "Hold a pinch: the system menu",
       "Thumb swipe: move up, down, left or right",
       "Pinch and twist (if on): scroll",
+      "Handwriting: hold a pinch for the system menu, then Handwriting. While writing, swipe left to erase and right for a space.",
     ].join("\n");
   }
 }

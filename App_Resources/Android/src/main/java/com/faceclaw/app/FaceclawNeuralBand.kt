@@ -33,10 +33,13 @@ import com.faceclaw.app.neuralband.BandGesture
 import com.faceclaw.app.neuralband.BandHand
 import com.faceclaw.app.neuralband.BandIdentityMismatchError
 import com.faceclaw.app.neuralband.BandLog
+import com.faceclaw.app.neuralband.BAND_NO_MODEL_CONTROLS
+import com.faceclaw.app.neuralband.BandModelCaptureStatus
 import com.faceclaw.app.neuralband.BandProtocolError
 import com.faceclaw.app.neuralband.BandSession
 import com.faceclaw.app.neuralband.CeremonyHTTPRequest
 import com.faceclaw.app.neuralband.DialRouter
+import com.faceclaw.app.neuralband.ExperimentalHandwritingDecoder
 import com.faceclaw.app.neuralband.GestureRouter
 import com.faceclaw.app.neuralband.MotionStreams
 import com.faceclaw.app.neuralband.NeuralBandPinch
@@ -125,6 +128,31 @@ class FaceclawNeuralBand private constructor(appContext: Context) {
     private var dialEngaged = false
     @Volatile private var motion = MotionStreams.NONE
     @Volatile private var gestureHaptics = true
+
+    /** Turns the handwriting model's per-frame output into text (see setHandwriting). */
+    private var handwriting = ExperimentalHandwritingDecoder()
+    /** A disconnect is waiting for the band's normal model to be written back first. */
+    @Volatile private var stopAfterModelCapture = false
+    /** The band carries a handwriting model (device info lists an hw_ model). Informational. */
+    @Volatile private var handwritingModel = false
+    /** BandModelCaptureStatus.Phase, lowercased: idle, preparing, ready, restoring, finished. */
+    @Volatile private var handwritingPhase = "idle"
+
+    /** Mirrors KEY_MODEL_DIRTY: a handwriting session wrote the band's model settings and no restore was confirmed. */
+    @Volatile private var modelDirty = prefs.getBoolean(KEY_MODEL_DIRTY, false)
+
+    private fun setModelDirty(dirty: Boolean) {
+        if (modelDirty == dirty) return
+        modelDirty = dirty
+        prefs.edit().putBoolean(KEY_MODEL_DIRTY, dirty).apply()
+    }
+
+    /** The connected band's firmware is the one found without handwriting controls (KEY_NO_HANDWRITING). */
+    private val handwritingUnsupported: Boolean
+        get() = firmware.isNotEmpty() && prefs.getString(KEY_NO_HANDWRITING, null) == firmware
+
+    /** Input stops reaching the app while a disconnect drains (streams stopping, model restoring). */
+    private val draining get() = stopping || stopAfterModelCapture
 
     private var nextBatteryStatus = 0.0
     /**
@@ -280,6 +308,30 @@ class FaceclawNeuralBand private constructor(appContext: Context) {
         drain()
     }
 
+    /**
+     * Run the band's handwriting model (true) or put the band's normal model back (false).
+     * While it runs, "handwriting" events carry the whole text written so far, and
+     * "handwriting-state" events its progress. The model streams a frame per inference step
+     * whether or not anything is written, so it should run only while text is wanted.
+     * Throws when the band isn't connected or a model operation is already running.
+     */
+    fun setHandwriting(enabled: Boolean) {
+        synchronized(lock) {
+            val session = session
+            if (session == null || draining) throw BandProtocolError("Connect the band before writing with it.")
+            if (enabled) {
+                if (handwritingUnsupported) throw BandProtocolError(NO_HANDWRITING_HINT)
+                handwriting = ExperimentalHandwritingDecoder()
+                session.setModelCaptureEnabled(true, now())
+            } else {
+                session.setModelCaptureEnabled(false, now())
+            }
+        }
+    }
+
+    /** Replace the handwriting text (edits made outside the band), so later writing continues from it. */
+    fun setHandwritingText(text: String) = synchronized(lock) { handwriting.resetText(text) }
+
     fun requestBattery() {
         send { session -> if (session.streamsEnabled) session.queryBatteryStatus(now()) else null }
     }
@@ -302,6 +354,9 @@ class FaceclawNeuralBand private constructor(appContext: Context) {
         .put("hand", hand?.rawValue ?: JSONObject.NULL)
         .put("firmware", firmware)
         .put("scanning", pairingScan)
+        .put("handwritingModel", handwritingModel)
+        .put("handwritingPhase", handwritingPhase)
+        .put("handwritingUnsupported", handwritingUnsupported)
 
     private fun emit(json: JSONObject) {
         val (target, handler) = synchronized(lock) { listener to listenerHandler }
@@ -723,8 +778,18 @@ class FaceclawNeuralBand private constructor(appContext: Context) {
                         throw BandLinkError(PAIRING_MODE_HINT)
                     }
                     session.tick(time).forEach { handle(it, time) }
-                    if (!stopping && wanted) pinches.flush(time).forEach { pinchEdge(it.first, it.second) }
+                    if (!draining && wanted) pinches.flush(time).forEach { pinchEdge(it.first, it.second) }
                     taps.flush(time).forEach { emitRecognized(it) }
+                    val capture = session.flushModelCapture(time)
+                    bytes.add(capture.outgoing)
+                    // From the first settings write until a confirmed restore, a crash or a dropped
+                    // link would leave the band in the handwriting model: the next connection restores it.
+                    if (session.modelSettingsWritten) setModelDirty(true)
+                    capture.events.forEach { handle(it, time) }
+                    if (stopAfterModelCapture && !session.modelCaptureActive) {
+                        stopAfterModelCapture = false
+                        main.post { stop() }
+                    }
                     bytes.add(session.flushMotion(time))
                     bytes.add(session.flushGestureHaptics(time))
                     if (session.streamsEnabled && time >= nextBatteryStatus) {
@@ -752,7 +817,7 @@ class FaceclawNeuralBand private constructor(appContext: Context) {
 
     private fun handle(event: BandEvent, time: Double) {
         when (val payload = event.payload) {
-            is BandEvent.Payload.Connected -> if (!stopping) {
+            is BandEvent.Payload.Connected -> if (!draining) {
                 failures = 0
                 gestures = GestureRouter()
                 taps.reset()
@@ -760,13 +825,18 @@ class FaceclawNeuralBand private constructor(appContext: Context) {
                 dial = DialRouter()
                 dialEngaged = false
                 session?.setGestureHaptics(gestureHaptics)
+                if (modelDirty) {
+                    Log.i(TAG, "a handwriting session wasn't wound down; restoring the band's normal model")
+                    runCatching { session?.recoverNormalModelMode(time) }
+                        .onFailure { Log.w(TAG, "couldn't start the model recovery: ${it.message}") }
+                }
                 val attempt = generation
                 main.post { if (attempt == generation && wanted && !stopping) markConnected() }
             }
             is BandEvent.Payload.DataSeen -> lastSensorRead = time
-            is BandEvent.Payload.Gesture -> if (!stopping) handleGesture(payload.gesture, time)
+            is BandEvent.Payload.Gesture -> if (!draining) handleGesture(payload.gesture, time)
             is BandEvent.Payload.DialState -> dialEngaged = payload.engaged
-            is BandEvent.Payload.DialTurn -> if (!stopping) {
+            is BandEvent.Payload.DialTurn -> if (!draining) {
                 val steps = dial.turn(payload.delta, 1.0, time)
                 if (steps != 0) emitGesture(if (steps > 0) "dial-up" else "dial-down")
             }
@@ -790,7 +860,37 @@ class FaceclawNeuralBand private constructor(appContext: Context) {
             is BandEvent.Payload.DeviceInfo -> {
                 val info = payload.info
                 firmware = info.software.ifEmpty { info.firmware }
-                Log.i(TAG, "firmware $firmware, hardware ${info.hardware}")
+                handwritingModel = info.handwriting
+                Log.i(TAG, "firmware $firmware, hardware ${info.hardware}, models ${info.models.joinToString(",")}")
+            }
+            is BandEvent.Payload.ModelCaptureState -> {
+                val status = payload.status
+                handwritingPhase = status.phase.name.lowercase()
+                Log.i(TAG, "handwriting: ${status.phase.name.lowercase()}: ${status.message}${status.problem?.let { " ($it)" } ?: ""}")
+                if (status.phase == BandModelCaptureStatus.Phase.FINISHED) {
+                    if (status.problem?.contains(BAND_NO_MODEL_CONTROLS) == true) {
+                        // No controls means nothing was (or could have been) switched. Remember the
+                        // firmware so Handwriting isn't offered again until the band's firmware changes.
+                        setModelDirty(false)
+                        if (firmware.isNotEmpty()) prefs.edit().putString(KEY_NO_HANDWRITING, firmware).apply()
+                        main.post {
+                            logLine("Neural Band: firmware $firmware has no handwriting controls")
+                            sendStatus()
+                        }
+                    } else if (status.restorationVerified && session?.modelSettingsWritten == true) {
+                        setModelDirty(false)
+                    }
+                }
+                val json = JSONObject().put("type", "handwriting-state").put("phase", handwritingPhase)
+                    .put("message", status.message).put("verified", status.restorationVerified)
+                status.problem?.let { json.put("problem", it) }
+                emit(json)
+            }
+            is BandEvent.Payload.InferenceFrame -> if (!draining) {
+                // What someone writes is never logged.
+                if (handwriting.consume(payload.sample) != null) {
+                    emit(JSONObject().put("type", "handwriting").put("text", handwriting.text))
+                }
             }
             else -> {}
         }
@@ -898,11 +998,23 @@ class FaceclawNeuralBand private constructor(appContext: Context) {
 
     // MARK: - Lifecycle
 
-    /** Stops the streams, then disconnects. */
+    /**
+     * Stops the streams, then disconnects. A running handwriting session is wound down first:
+     * the band's normal model goes back before the link does (the tick loop calls this again).
+     */
     private fun stop() {
         val bytes = synchronized(lock) {
             val session = session ?: run { teardown(); return }
             if (stopping) return
+            if (session.modelCaptureActive) {
+                if (!stopAfterModelCapture) {
+                    stopAfterModelCapture = true
+                    runCatching { session.setModelCaptureEnabled(false, now()) }
+                    val attempt = generation
+                    main.postDelayed({ if (attempt == generation) teardown() }, MODEL_RESTORE_WAIT_MS)
+                }
+                return
+            }
             stopping = true
             runCatching { session.stop() }.getOrNull()
         }
@@ -1030,6 +1142,12 @@ class FaceclawNeuralBand private constructor(appContext: Context) {
     private fun teardown() {
         generation++
         stopping = false
+        stopAfterModelCapture = false
+        if (handwritingPhase != "idle" && handwritingPhase != "finished") {
+            // The link went with the model still switched: KEY_MODEL_DIRTY restores it next time.
+            handwritingPhase = "idle"
+            emit(JSONObject().put("type", "handwriting-state").put("phase", "idle").put("message", "the band disconnected").put("verified", false))
+        }
         main.removeCallbacksAndMessages(null)
         stopConnectScan()
         runCatching { socket?.close() }
@@ -1069,6 +1187,12 @@ class FaceclawNeuralBand private constructor(appContext: Context) {
         private const val KEY_ADDRESS = "address"
         private const val KEY_NAME = "name"
         private const val KEY_SCHEME = "scheme"
+        /** A handwriting session switched the band's model and hasn't confirmed restoring it. */
+        private const val KEY_MODEL_DIRTY = "modelDirty"
+        /** The band firmware version found without handwriting controls. */
+        private const val KEY_NO_HANDWRITING = "noHandwritingFirmware"
+        const val NO_HANDWRITING_HINT =
+            "This band's firmware has no handwriting controls. A newer band firmware may add them."
 
         /**
          * The stored identity belongs to the one remembered band, not to an address: the band's
@@ -1112,6 +1236,8 @@ class FaceclawNeuralBand private constructor(appContext: Context) {
         const val MAX_RETRY_MS = 30_000L
         const val PAIRING_SCAN_MS = 20_000L
         const val STOP_WAIT_MS = 3_000L
+        /** Restoring the model is up to five request/answer pairs; this bounds it before a disconnect. */
+        const val MODEL_RESTORE_WAIT_MS = 10_000L
         const val BATTERY_POLL_MS = 60_000L
 
         /** The tick while the band talks, how long after its last message that lasts, and the idle tick. */

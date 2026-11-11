@@ -29,7 +29,15 @@ export type NeuralBandStatus = {
   firmware: string;
   /** A pairing scan is running. */
   scanning: boolean;
+  /** The band says it carries a handwriting model. Informational: the capture checks for itself. */
+  handwritingModel: boolean;
+  /** The handwriting model's state (BandModelCaptureStatus.Phase). */
+  handwritingPhase: NeuralBandHandwritingPhase;
+  /** The connected band's firmware was found to have no handwriting controls. */
+  handwritingUnsupported: boolean;
 };
+
+export type NeuralBandHandwritingPhase = "idle" | "preparing" | "ready" | "restoring" | "finished";
 
 /**
  * One gesture. `press`/`hold`/`release` are pinch edges (a hold is a pinch that has lasted
@@ -46,7 +54,10 @@ export type NeuralBandEvent =
   | ({ type: "status" } & NeuralBandStatus)
   | { type: "gesture"; gesture: NeuralBandGesture; finger?: number }
   | { type: "discovered"; name: string; address: string; rssi: number }
-  | { type: "log"; text: string };
+  | { type: "log"; text: string }
+  /** The whole text written since handwriting started (it shrinks when the writer erases). */
+  | { type: "handwriting"; text: string }
+  | { type: "handwriting-state"; phase: NeuralBandHandwritingPhase; message: string; problem?: string; verified: boolean };
 
 export const UNSUPPORTED_STATUS: NeuralBandStatus = {
   supported: false,
@@ -63,6 +74,9 @@ export const UNSUPPORTED_STATUS: NeuralBandStatus = {
   hand: null,
   firmware: "",
   scanning: false,
+  handwritingModel: false,
+  handwritingPhase: "idle",
+  handwritingUnsupported: false,
 };
 
 /** Parse one event from the native side; null for anything malformed. */
@@ -76,6 +90,7 @@ export function parseNeuralBandEvent(json: string): NeuralBandEvent | null {
   if (!value || typeof value !== "object") return null;
   const event = value as { type?: unknown };
   if (event.type === "status") return { ...UNSUPPORTED_STATUS, ...(value as object), type: "status" } as NeuralBandEvent;
-  if (event.type === "gesture" || event.type === "discovered" || event.type === "log") return value as NeuralBandEvent;
+  if (event.type === "gesture" || event.type === "discovered" || event.type === "log" ||
+      event.type === "handwriting" || event.type === "handwriting-state") return value as NeuralBandEvent;
   return null;
 }

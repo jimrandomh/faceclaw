@@ -143,6 +143,16 @@ class NeuralBandBridge {
     this.getJava()?.setGestureHaptics(enabled);
   }
 
+  /** Run the band's handwriting model, or restore its normal one. Throws when the band can't now. */
+  setHandwriting(enabled: boolean): void {
+    this.getJava()?.setHandwriting(enabled);
+  }
+
+  /** Replace the handwriting text (the dialog's own edits), so later writing continues from it. */
+  setHandwritingText(text: string): void {
+    this.getJava()?.setHandwritingText(text);
+  }
+
   /** Throws (from the native side) until the band is connected and has reported its wrist. */
   setHand(hand: "left" | "right"): void {
     this.getJava()?.setHand(hand === "left");

@@ -11,6 +11,9 @@ data class BandDeviceInfo(
     val model: String,
     val models: List<String>,
 ) {
+    /** The band carries a handwriting model (the one BandModelCapture switches to). */
+    val handwriting: Boolean get() = models.any { it.startsWith("hw_") }
+
     internal companion object {
         fun find(fields: ProtoFields, depth: Int = 0): BandDeviceInfo? {
             val serial = fields.text(6)?.takeIf { it.length in 4..64 && it.all { c -> c in 'a'..'z' || c in 'A'..'Z' || c in '0'..'9' } }

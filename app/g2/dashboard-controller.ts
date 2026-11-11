@@ -431,6 +431,8 @@ class DashboardController {
     // The action bar's EvenHub phone-UI button hides while that UI is showing.
     onPhoneShownChanged(() => this.emit());
     shell.configure({
+      // A connected Neural Band offers the Handwriting dialog (see app/g2/neural-band.ts).
+      handwritingSource: () => this.neuralBandRemote?.handwritingSource() ?? null,
       actions: {
         ...sharedActions,
         // Shell overlays (voice dialog, long-press menu) live on the shell

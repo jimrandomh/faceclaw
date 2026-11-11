@@ -65,6 +65,41 @@ export function neuralBandBatteryLevel(status: NeuralBandStatus): { band: number
   return { band: level, bandCharging: status.charging };
 }
 
+/** How long after the band last recognized a character its other gestures are ignored. */
+export const HANDWRITING_GESTURE_QUIET_MS = 700;
+
+/**
+ * Whether a gesture should be dropped as a by-product of writing: while handwriting runs, a
+ * finger tracing letters can also read as a tap or a swipe, and in the handwriting dialog a
+ * tap sends. Releases always pass, so a hold that began before can end.
+ */
+export function suppressedWhileWriting(gesture: string, handwritingActive: boolean, sinceLastCharacterMs: number): boolean {
+  return handwritingActive && gesture !== "release" && sinceLastCharacterMs < HANDWRITING_GESTURE_QUIET_MS;
+}
+
+/**
+ * The handwriting dialog's view of the band model's state: switching on, writing, or stopped
+ * (with why, when the band ended it on its own: a refused setting, silence, a dropped link).
+ */
+export function handwritingDialogPhase(
+  phase: "idle" | "preparing" | "ready" | "restoring" | "finished",
+  problem: string | undefined,
+): { phase: "starting" | "ready" | "stopped"; message: string } {
+  switch (phase) {
+    case "preparing":
+      return { phase: "starting", message: "Switching the band to handwriting…" };
+    case "ready":
+      return { phase: "ready", message: "" };
+    default:
+      if (problem?.includes(NO_MODEL_CONTROLS)) return { phase: "stopped", message: NO_HANDWRITING_FIRMWARE };
+      return { phase: "stopped", message: problem ? `Handwriting stopped: ${problem}` : "Handwriting stopped." };
+  }
+}
+
+/** BAND_NO_MODEL_CONTROLS (BandModelCapture.kt): the band's firmware has no handwriting controls. */
+const NO_MODEL_CONTROLS = "model controls are unavailable on this band";
+export const NO_HANDWRITING_FIRMWARE = "This band's firmware has no handwriting controls. A newer band firmware may add them.";
+
 /** The band's name, or a generic one before it has said. */
 export function neuralBandName(status: NeuralBandStatus): string {
   return status.name || "Neural Band";

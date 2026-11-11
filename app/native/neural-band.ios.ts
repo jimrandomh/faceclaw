@@ -38,6 +38,8 @@ class NeuralBandBridge {
   forget(): void {}
   setTwistScroll(_enabled: boolean): void {}
   setGestureHaptics(_enabled: boolean): void {}
+  setHandwriting(_enabled: boolean): void {}
+  setHandwritingText(_text: string): void {}
   setHand(_hand: "left" | "right"): void {}
 }
 
