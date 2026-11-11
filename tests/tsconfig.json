@@ -37,6 +37,7 @@
     "../app/g2/glasses-artwork.ts",
     "../app/g2/glasses-display-state.ts",
     "../app/g2/glance-state.ts",
+    "../app/g2/head-tilt-math.ts",
     "../app/ui/shell/notification-modal-queue.ts",
     "../app/ui/shell/notification-popup-delay.ts",
     "../app/ui/shell/notification-popup-timeout.ts",

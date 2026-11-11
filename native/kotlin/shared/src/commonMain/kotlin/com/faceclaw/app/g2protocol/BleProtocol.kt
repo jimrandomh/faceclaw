@@ -497,6 +497,70 @@ class BleProtocol {
             )
         }
 
+        // Field numbers from g2_setting.proto (package g2.g2_setting; see g2-kit-unofficial
+        // ble/gen/g2_setting_pb.ts), named after the schema fields.
+
+        /** G2SettingPackage.commandId */
+        private const val G2_SETTING_PACKAGE_COMMAND_ID: Int = 1
+
+        /** G2SettingPackage.magicRandom */
+        private const val G2_SETTING_PACKAGE_MAGIC_RANDOM: Int = 2
+
+        /** G2SettingPackage.deviceReceiveInfoFromApp */
+        private const val G2_SETTING_PACKAGE_DEVICE_RECEIVE_INFO_FROM_APP: Int = 3
+
+        /** G2SettingPackage.deviceReceiveRequestFromApp (the settings-read reply) */
+        private const val G2_SETTING_PACKAGE_DEVICE_RECEIVE_REQUEST_FROM_APP: Int = 4
+
+        /** g2_settingCommandId.DeviceReceiveInfo */
+        private const val G2_SETTING_COMMAND_DEVICE_RECEIVE_INFO: Int = 1
+
+        /** DeviceReceiveInfoFromAPP.deviceReceiveHeadUpSetting */
+        private const val DEVICE_RECEIVE_INFO_HEAD_UP_SETTING: Int = 4
+
+        /** DeviceReceiveRequestFromAPP.headUpSwitchRestored */
+        private const val DEVICE_RECEIVE_REQUEST_HEAD_UP_SWITCH_RESTORED: Int = 7
+
+        /** DeviceReceiveRequestFromAPP.headUpAngleRestored */
+        private const val DEVICE_RECEIVE_REQUEST_HEAD_UP_ANGLE_RESTORED: Int = 8
+
+        /** DeviceReceiveRequestFromAPP.headUpAngleCalibrationRestored */
+        private const val DEVICE_RECEIVE_REQUEST_HEAD_UP_CALIBRATION_RESTORED: Int = 9
+
+        /**
+         * One head-up (look-up wake) setting: DeviceReceiveInfoFromAPP.deviceReceiveHeadUpSetting,
+         * a DeviceReceive_Head_UP_Setting carrying one of headUpSwitch, headUpAngle,
+         * headUpCalibrationSwitch or headUpCalibration ([field] is one of the HEAD_UP_FIELD_*).
+         * The firmware treats that submessage as a oneof: setting_handle_head_up_setting
+         * (2.3.0.24, 0x46c39a) receives a single {field, value} and applies it, so the switch and
+         * the angle go out as separate packages. headUpCalibration is not stored from the
+         * phone; it is the pitch the glasses measured on their own calibration screen. The
+         * effective trigger pitch is angle + calibration, clamped to -90..90 and accepted only in
+         * 1..90 (SVC_Settings_HeadUpConfig 0x470580, DRV_IMUHUDParameterConfig). The angle is a
+         * uint32 on the wire but used as a signed int, so a negative offset is sent as its
+         * 32-bit two's complement.
+         */
+        @JvmStatic
+        fun buildSetHeadUp(magic: Int, field: Int, value: Int): ByteArray {
+            var headUp: ByteArray = concat(CollectionUtils.listOf(encodeKey(field, 0), encodeUint32(value)))
+            return concat(
+                CollectionUtils.listOf(
+                    encodeVarintField(G2_SETTING_PACKAGE_COMMAND_ID, G2_SETTING_COMMAND_DEVICE_RECEIVE_INFO),
+                    encodeVarintField(G2_SETTING_PACKAGE_MAGIC_RANDOM, magic),
+                    encodeMessageField(
+                        G2_SETTING_PACKAGE_DEVICE_RECEIVE_INFO_FROM_APP,
+                        encodeMessageField(DEVICE_RECEIVE_INFO_HEAD_UP_SETTING, headUp),
+                    ),
+                )
+            )
+        }
+
+        /** DeviceReceive_Head_UP_Setting.headUpSwitch */
+        const val HEAD_UP_FIELD_SWITCH: Int = 1
+
+        /** DeviceReceive_Head_UP_Setting.headUpAngle */
+        const val HEAD_UP_FIELD_ANGLE: Int = 2
+
         /** Enable the firmware's wear detector (DeviceReceiveInfoFromAPP field 5). */
         @JvmStatic
         fun buildSetWearDetection(magic: Int, enabled: Boolean): ByteArray {
@@ -905,6 +969,26 @@ class BleProtocol {
             return BatterySnapshot(battery, charging, silentMode)
         }
 
+        /**
+         * The head-up settings in a settings READ ack: deviceReceiveRequestFromApp (field 4)
+         * headUpSwitchRestored=7, headUpAngleRestored=8, headUpAngleCalibrationRestored=9.
+         * Returns null when the ack has no request submessage. Absent fields (proto3 drops
+         * zeros) read as 0; angle and calibration are signed ints carried as uint32.
+         */
+        @JvmStatic
+        fun parseSettingsHeadUp(pb: ByteArray): IntArray? {
+            var root: ByteArray = stripTrailingCrc(pb)
+            var request: ByteArray? = readFieldBytes(root, G2_SETTING_PACKAGE_DEVICE_RECEIVE_REQUEST_FROM_APP)
+            if ((request == null)) {
+                return null
+            }
+            return intArrayOf(
+                readVarintFieldValue(request, DEVICE_RECEIVE_REQUEST_HEAD_UP_SWITCH_RESTORED, 0),
+                readVarintFieldValue(request, DEVICE_RECEIVE_REQUEST_HEAD_UP_ANGLE_RESTORED, 0),
+                readVarintFieldValue(request, DEVICE_RECEIVE_REQUEST_HEAD_UP_CALIBRATION_RESTORED, 0),
+            )
+        }
+
         /** GlassesCaseDataPackage{commandId=CASE_INFO, magicRandom, caseInfo={}}, as the Even app sends it. */
         @JvmStatic
         fun buildCaseInfoQuery(magic: Int): ByteArray {
@@ -1086,6 +1170,18 @@ class BleProtocol {
                 v = (v ushr 7)
             }
             out.write(v)
+            return out.toByteArray()
+        }
+
+        /** A varint of the value's 32-bit two's complement (encodeVarint stops short on negatives). */
+        private fun encodeUint32(value: Int): ByteArray {
+            var out: ByteSink = ByteSink()
+            var v: Long = (value.toLong() and 0xffffffffL)
+            while ((v >= 0x80L)) {
+                out.write((((v and 0x7fL).toInt()) or 0x80))
+                v = (v ushr 7)
+            }
+            out.write(v.toInt())
             return out.toByteArray()
         }
 

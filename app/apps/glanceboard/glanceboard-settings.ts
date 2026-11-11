@@ -49,8 +49,9 @@ export function glanceLayout(): GlanceLayout {
 
 /**
  * Whether sleep-time gestures show the board at all. Off restores the plain
- * behaviour: a tap, hold or head-tilt while asleep does nothing (a head-tilt
- * wakes the regular UI), double-tap wakes.
+ * behaviour: a tap or hold while asleep does nothing, a head-tilt wakes the
+ * regular UI, double-tap wakes; and the head-up angle goes back to the glasses'
+ * own.
  */
 export const glanceboardEnabledSetting = new ConfigSettingBoolean({
   id: "glanceboard-enabled",
@@ -85,9 +86,10 @@ function formatTapDuration(value: GlanceTapDuration): string {
 }
 
 /**
- * How long a tap (or head-tilt) keeps the board up; each further tap restarts
- * it. "off" means a single tap does not show the board at all; a head-tilt
- * then uses the default duration.
+ * How long a tap keeps the board up; each further tap restarts it. "off"
+ * means a single tap does not show the board at all. A head-tilt showing
+ * lasts until the head comes back down, falling back to this duration (the
+ * default one when "off") where the head-down is unlikely to arrive.
  */
 export const glanceTapDurationSetting = new ConfigSettingEnum<GlanceTapDuration>({
   id: "glanceboard-tap-duration",
@@ -97,7 +99,7 @@ export const glanceTapDurationSetting = new ConfigSettingEnum<GlanceTapDuration>
   values: TAP_DURATION_VALUES,
   formatValue: formatTapDuration,
   description:
-    "How long a single tap (or a head-tilt) keeps the Glanceboard on screen. Disabled: a single tap does not show the Glanceboard.",
+    "How long a single tap keeps the Glanceboard on screen. Disabled: a single tap does not show the Glanceboard.",
 });
 
 /** Whether a single tap while asleep shows the board. */
@@ -119,14 +121,70 @@ export const glanceShowOnLongPressSetting = new ConfigSettingBoolean({
   description: "A long-press or short-then-long-press while asleep shows the Glanceboard until the press is released.",
 });
 
-/** The head-tilt wake shows the board (for the tap duration) instead of the regular UI. */
+/** The head-tilt wake shows the board (until the head comes back down) instead of the regular UI. */
 export const glanceShowOnHeadTiltSetting = new ConfigSettingBoolean({
   id: "glanceboard-show-on-head-tilt",
   label: "Show on head tilt",
   storageKey: "glanceboard.showOnHeadTilt",
   defaultValue: true,
-  description: "Tilting your head up while asleep shows the Glanceboard instead of waking the regular UI.",
+  description: "Tilting your head up while asleep shows the Glanceboard instead of waking the regular UI. It stays up until you look back down.",
 });
+
+export type GlanceTiltTimeout = "60s" | "30s" | "15s" | "10s" | "never";
+
+/**
+ * How long a head-tilt showing may last if the head-down never comes (the
+ * board normally hides when the head comes back down). "never" removes the
+ * limit; a double-tap still dismisses the board.
+ */
+export const glanceTiltTimeoutSetting = new ConfigSettingEnum<GlanceTiltTimeout>({
+  id: "glanceboard-head-tilt-timeout",
+  label: "Head tilt timeout",
+  storageKey: "glanceboard.headTiltTimeout",
+  defaultValue: "60s",
+  values: ["60s", "30s", "15s", "10s", "never"],
+  formatValue: (value) => (value === "never" ? "Never" : value.replace("s", " s")),
+  description:
+    "The longest a head-tilt keeps the Glanceboard up when looking back down is not detected. Never: it stays until you look down or double-tap. " +
+    "When looking down is unlikely to register (a low Head tilt angle, or the display was suspended), the tap duration applies if shorter.",
+});
+
+/** The Head tilt timeout in ms, or null for none. */
+export function glanceTiltTimeoutMs(): number | null {
+  const value = glanceTiltTimeoutSetting.get();
+  return value === "never" ? null : Number.parseInt(value, 10) * 1000;
+}
+
+const GLANCE_ANGLE_VALUES = ["glasses", "5", "10", "15", "20", "25", "30", "35", "40", "45", "50", "55", "60"] as const;
+export type GlanceAngle = (typeof GLANCE_ANGLE_VALUES)[number];
+
+/**
+ * How far the head must tilt up for a head-tilt wake, as the glasses' own
+ * pitch reading (degrees). "glasses" keeps the glasses' own setting (from the
+ * Even app), writing back their original values if Faceclaw changed them. A
+ * number is written to the glasses' head-up setting on every connection while
+ * the Glanceboard is enabled (head-angle.ts). Android only.
+ */
+export const glanceAngleSetting = new ConfigSettingEnum<GlanceAngle>({
+  id: "glanceboard-head-tilt-angle",
+  label: "Head tilt angle",
+  storageKey: "glanceboard.headTiltAngle",
+  defaultValue: "glasses",
+  values: GLANCE_ANGLE_VALUES,
+  formatValue: (value) => (value === "glasses" ? "Glasses default" : `${value}°`),
+  description:
+    "How far you tilt your head up to wake the display. Glasses default uses the glasses' own setting from the Even app. " +
+    "The board hides when your head drops 20° below this angle; under 25°, looking straight ahead may not count, so it hides after the tap duration instead.",
+});
+
+/**
+ * The trigger Faceclaw should maintain, in degrees: the Head tilt angle while
+ * the Glanceboard is enabled, else 0 (the glasses' own setting).
+ */
+export function glanceAngleTriggerDegrees(): number {
+  const value = glanceAngleSetting.get();
+  return value === "glasses" || !glanceboardEnabledSetting.get() ? 0 : Number(value);
+}
 
 const DEPTH_VALUES = ["-64", "-48", "-32", "-16", "0", "16", "32", "48", "64"] as const;
 export type GlanceDepth = (typeof DEPTH_VALUES)[number];
