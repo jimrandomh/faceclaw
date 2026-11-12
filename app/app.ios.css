@@ -1,5 +1,6 @@
 @import '@nativescript/theme/css/core.css';
 @import './phone-ui/remote-controls.css';
+@import './phone-ui/settings-page.css';
 @import './phone-ui/pairing.css';
 
 .body-text { font-size: 18; }
@@ -36,8 +37,6 @@ Page.main-page {
 .main-page .action-bar-title { font-size: 18; font-weight: bold; color: #ffffff; }
 .main-page .action-bar-status { font-size: 14; color: #ffffff; margin-right: 12; }
 .main-page .action-bar-warning { font-size: 18; padding: 4 6; }
-/* Matches Android's 32x32 padded icon; the Image inside is 21x21. */
-.main-page .action-bar-app-icon { width: 32; height: 32; margin-right: 8; }
 .main-page .overflow-button {
   background-color: transparent;
   color: #ffffff;
@@ -47,9 +46,6 @@ Page.main-page {
   margin: 0;
   padding: 0;
 }
-/* Match Android's button layout boxes, including the inset around each tile. */
-.main-page Button.tab-button { height: 48; margin-top: 6; margin-bottom: 6; }
-.main-page .mode-button { background-color: #e2e2e2; color: #333333; border-radius: 6; }
 .main-page .ble-bandwidth-indicator { color: #777777; font-size: 12; padding: 2 8; }
 
 .main-page .system-name-modal {

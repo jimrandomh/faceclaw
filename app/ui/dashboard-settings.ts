@@ -768,6 +768,21 @@ export const mirrorTouchSetting = new ConfigSettingBoolean({
     "Let touches on the phone's mirror act on the glasses UI: tap selects what it lands on, double-tap goes back, a hold opens the menu, swipes navigate.",
 });
 
+/** Which input device the touchpad on the phone's main screen imitates. */
+export type PhoneInputStyle = "watch" | "ring";
+
+export const phoneInputStyleSetting = new ConfigSettingEnum<PhoneInputStyle>({
+  id: "phone-input-style",
+  label: "Phone input style",
+  storageKey: "phone.inputStyle",
+  defaultValue: "watch",
+  values: ["watch", "ring"],
+  formatValue: (value) => (value === "ring" ? "Ring" : "Watch"),
+  description:
+    "Which device the touchpad on the phone's main screen imitates. Watch: swipes navigate, tap selects, double-tap or two fingers goes back, a hold opens the menu. " +
+    "Ring: vertical swipes scroll; tap, double-tap and hold are the ring's click, double-click and long-press.",
+});
+
 // Watch remote (app/g2/wear-remote.ts, wear/, apple-watch/). All three are read on
 // every watch message, so a change applies immediately.
 export const watchRemoteEnabledSetting = new ConfigSettingBoolean({

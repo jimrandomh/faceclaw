@@ -15,9 +15,7 @@ import {
   type View,
 } from "@nativescript/core";
 import { dashboardController, type MirrorTouchKind } from "../g2/dashboard-controller";
-import { formatBatteryLine } from "../g2/glasses-display-state";
 import {
-  glassesModelName,
   mirrorTouchSetting,
   onAnySettingChanged,
   showBleBandwidthSetting,
@@ -28,7 +26,6 @@ import { isAutoReconnectSuppressed, resumeAutoReconnect } from "../g2/reconnect-
 import { isPreviewOnlyMode } from "./onboarding-state";
 import { formatErrorMessage } from "../util/format-error";
 import { screenHeight, screenWidth } from "../ui/shell/geometry";
-import { type PhoneUiButton } from "../apps/evenhub/manager";
 
 /** The paired glasses' screen aspect (4:3 on the G2, 27:11 on the RayNeo iO). */
 function lensAspectRatio(): number {
@@ -68,7 +65,6 @@ export class MainViewModel extends RemoteControlsViewModel {
   private _alarmReliabilityMessage = "";
   private _warningsModalVisible = false;
   private _previewMode = false;
-  private _evenHubPhoneUi: PhoneUiButton | null = null;
   private _phase: "disconnected" | "connecting" | "connected" | "charging" | "disconnecting" = "disconnected";
 
   // A new view model is built on every navigation to the main page; these
@@ -78,6 +74,7 @@ export class MainViewModel extends RemoteControlsViewModel {
 
   constructor() {
     super();
+    this.showEvenHubPhoneUi = (windowId) => dashboardController.showEvenHubPhoneUi(windowId);
     this.attach();
   }
 
@@ -95,11 +92,6 @@ export class MainViewModel extends RemoteControlsViewModel {
       this.displayPreview = snapshot.displayPreview;
       this.displayPreviewMessage = snapshot.displayPreviewMessage;
       this.phase = snapshot.phase;
-      this.batteryLine = formatBatteryLine(
-        snapshot.batteries,
-        snapshot.phase === "connected" || snapshot.phase === "charging",
-        glassesModelName(),
-      );
       this.activeTextSettingId = snapshot.activeTextSettingId;
       this.activeTextEditorTitle = snapshot.activeTextEditorTitle;
       this.activeTextSettingTitle = snapshot.activeTextSettingTitle;
@@ -126,9 +118,11 @@ export class MainViewModel extends RemoteControlsViewModel {
       this.evenHubPhoneUi = snapshot.evenHubPhoneUi;
       this.refreshPadFocusLine();
     }));
-    // Brightness / display mode can change from the glasses' Settings app too.
+    // The input style can change from the glasses' Settings app too, and the
+    // subscription delivers no snapshot of its own: catch up on a re-attach.
+    this.refreshInputStyle();
     this.unsubscribers.push(onAnySettingChanged(() => {
-      this.refreshDisplayControls();
+      this.refreshInputStyle();
       this.syncBleBandwidthPolling();
     }));
     this.syncBleBandwidthPolling();
@@ -330,7 +324,7 @@ export class MainViewModel extends RemoteControlsViewModel {
       this.notifyPropertyChange("activeTextSettingId", value);
       this.notifyPropertyChange("textSettingEditorVisibility", this.textSettingEditorVisibility);
       this.notifyPropertyChange("isTextSettingEditorActive", this.isTextSettingEditorActive);
-      // Keyboard-input mode: the tabbed controls make way for the editor.
+      // Keyboard-input mode: the controls make way for the editor.
       this.notifyPropertyChange("controlsVisibility", this.controlsVisibility);
     }
   }
@@ -501,7 +495,7 @@ export class MainViewModel extends RemoteControlsViewModel {
     return this.isTextSettingEditorActive ? "visible" : "collapse";
   }
 
-  // ---- keyboard-input panel (the keyboard button beside the mic button) ----
+  // ---- keyboard-input panel (the keyboard button under the mirror) ----
   //
   // The dialog lives on the glasses (ui/shell/keyboard-input.ts); the panel
   // is the phone's end of it, bound to keyboardInputModel (shared with iOS).
@@ -729,28 +723,6 @@ export class MainViewModel extends RemoteControlsViewModel {
 
   get warningsModalVisibility(): "visible" | "collapse" {
     return this._warningsModalVisible ? "visible" : "collapse";
-  }
-
-  set evenHubPhoneUi(value: PhoneUiButton | null) {
-    const current = this._evenHubPhoneUi;
-    if (current?.windowId === value?.windowId && current?.icon === value?.icon) return;
-    this._evenHubPhoneUi = value;
-    this.notifyPropertyChange("evenHubPhoneUiIcon", this.evenHubPhoneUiIcon);
-    this.notifyPropertyChange("evenHubPhoneUiVisibility", this.evenHubPhoneUiVisibility);
-  }
-
-  /** The foreground EvenHub app's icon, which opens its phone UI when tapped. */
-  get evenHubPhoneUiIcon(): ImageSource | null {
-    return this._evenHubPhoneUi?.icon ?? null;
-  }
-
-  get evenHubPhoneUiVisibility(): "visible" | "collapse" {
-    return this._evenHubPhoneUi?.icon ? "visible" : "collapse";
-  }
-
-  onEvenHubPhoneUiTap(): void {
-    const windowId = this._evenHubPhoneUi?.windowId;
-    if (windowId) dashboardController.showEvenHubPhoneUi(windowId);
   }
 
   onWarningIconTap(): void {
@@ -1069,7 +1041,7 @@ export class MainViewModel extends RemoteControlsViewModel {
   // ---- the phone's own controller: touchpad, d-pad, mirror touch ----
   //
   // Everything here is the watch scheme (origin "watch"): spatial swipes,
-  // tap = select, double-tap / two fingers = back, hold = menu. The ring row
+  // tap = select, double-tap / two fingers = back, hold = menu. The ring pad
   // above stays on the ring's own scheme.
 
   private padTwoFingerDown = false;
@@ -1200,11 +1172,11 @@ export class MainViewModel extends RemoteControlsViewModel {
     return this.mirrorGesture(swipeKind(args.direction), args);
   }
 
-  // ---- the tabbed controls area below the mirror ----
+  // ---- the controls area below the mirror ----
   //
-  // Three tabs: Settings (screen size + brightness), Watch (the simulated
-  // watch face), Ring (simulated R1 inputs). The whole area collapses while a
-  // text setting is being edited so the editor gets the space instead.
+  // The button bar and the touchpad (remote-controls.xml). The whole area
+  // collapses while a text setting is being edited or the keyboard dialog is
+  // up, so the editor gets the space instead.
 
   get controlsVisibility(): "visible" | "collapse" {
     return this.isTextSettingEditorActive || this._keyboardInputActive ? "collapse" : "visible";
@@ -1213,7 +1185,7 @@ export class MainViewModel extends RemoteControlsViewModel {
   // ---- BLE bandwidth indicator (Settings > Developer > Show BLE bandwidth usage) ----
   //
   // A running total of outbound BLE messages/bytes, overlaid at the bottom of
-  // the page on every tab. Polled from the Java-side counters while enabled.
+  // the page. Polled from the Java-side counters while enabled.
 
   private _bleBandwidthLabel = "";
   private bleBandwidthTimer: ReturnType<typeof setInterval> | null = null;

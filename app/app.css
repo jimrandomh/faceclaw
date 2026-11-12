@@ -1,6 +1,7 @@
 @import '@nativescript/theme/css/core.css';
 @import '@nativescript/theme/css/default.css';
 @import './phone-ui/remote-controls.css';
+@import './phone-ui/settings-page.css';
 @import './phone-ui/pairing.css';
 
 Page {
@@ -17,9 +18,8 @@ ActionItem {
   color: #ffffff;
 }
 
-/* The main page's custom titleView: title left; the EvenHub app icon,
- * connection status and the warning triangle right-aligned beside the
- * overflow menu. */
+/* The main page's custom titleView: title left; connection status and the
+ * warning triangle right-aligned beside the overflow menu. */
 .action-bar-title {
   color: #ffffff;
   font-size: 18;
@@ -31,16 +31,6 @@ ActionItem {
   color: #ffffff;
   font-size: 14;
   margin-right: 12;
-  vertical-align: center;
-}
-
-/* The foreground EvenHub app's icon (opens its phone UI); the padding widens
- * the tap target. */
-.action-bar-app-icon {
-  width: 32;
-  height: 32;
-  padding: 5.5;
-  margin-right: 8;
   vertical-align: center;
 }
 

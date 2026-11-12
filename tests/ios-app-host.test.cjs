@@ -212,15 +212,12 @@ test('iOS bandwidth footer toggles live, polls only in foreground and resets its
     './phone-gestures': { PhoneGestureRecognizer: class { cancel() {} } },
     './ble-bandwidth-meter': require('../.test-build/app/phone-ui/ble-bandwidth-meter.js'),
     '../native/ble-traffic': { sampleBleTraffic: () => totals },
-    '../ui/dashboard-settings': { brightnessSetting: { get: () => 'auto' }, displayLayoutSetting: { displayValue: () => 'Tall' }, showBleBandwidthSetting: { get: () => enabled }, glassesModelName: () => 'G2',
+    '../ui/dashboard-settings': { phoneInputStyleSetting: { get: () => 'watch' }, showBleBandwidthSetting: { get: () => enabled },
       onAnySettingChanged: fn => { settingListeners.add(fn); return () => settingListeners.delete(fn); } },
     '../g2/device-addresses': { loadDeviceAddresses: () => ({}) },
     '../g2/ios-peripheral-identity': { deviceAddressError: () => 'no test devices' },
     './onboarding-state': { isPreviewOnlyMode: () => false },
     '../g2/reconnect-policy': { isAutoReconnectSuppressed: () => false },
-    '../g2/glasses-display-state': require('../.test-build/app/g2/glasses-display-state.js'),
-    '../ui/shell/shell': { shell: { onBatteryLevelsChanged: () => () => {}, getBatteryLevels: () => ({
-      headset: null, headsetCharging: null, case: null, caseCharging: null, ring: null, ringCharging: null }) } },
   };
   modules['./keyboard-input-view-model'] = load('app/phone-ui/keyboard-input-view-model.ts', { require: id => modules[id] });
   modules['./remote-controls-view-model'] = load('app/phone-ui/remote-controls-view-model.ts', { require: id => modules[id] });

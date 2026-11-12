@@ -20,4 +20,6 @@ global.registerModule('phone-ui/document-page', () => require('./document-page')
 global.registerModule('phone-ui/document-page.xml', () => require('./document-page.xml'));
 global.registerModule('phone-ui/main-page', () => require('./main-page.ios'));
 global.registerModule('phone-ui/remote-controls.xml', () => require('./remote-controls.xml'));
+global.registerModule('phone-ui/settings-page', () => require('./settings-page'));
+global.registerModule('phone-ui/settings-page.xml', () => require('./settings-page.xml'));
 global.registerModule('phone-ui/keyboard-input-panel.xml', () => require('./keyboard-input-panel.xml'));

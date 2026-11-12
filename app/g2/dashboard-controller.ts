@@ -111,8 +111,6 @@ type ConnectionPhase = "disconnected" | "connecting" | "connected" | "charging" 
 
 export type DashboardSnapshot = {
   phase: ConnectionPhase;
-  /** Last-known battery levels: the glasses, their charging case, the R1 ring and a Wear OS watch. */
-  batteries: ReturnType<typeof shell.getBatteryLevels>;
   status: string;
   displayPreview: ImageSource | null;
   /**
@@ -155,7 +153,7 @@ export type DashboardSnapshot = {
   previewMode: boolean;
   /**
    * The foreground glasses window's EvenHub phone UI, when it can be opened
-   * (the action bar's app-icon button); null otherwise.
+   * (the app-icon button under the mirror); null otherwise.
    */
   evenHubPhoneUi: PhoneUiButton | null;
 };
@@ -428,7 +426,7 @@ class DashboardController {
       launchApp: (appId) => this.launchApp(appId),
       requestShellRender: () => this.requestShellRender(),
     });
-    // The action bar's EvenHub phone-UI button hides while that UI is showing.
+    // The main page's EvenHub phone-UI button hides while that UI is showing.
     onPhoneShownChanged(() => this.emit());
     shell.configure({
       actions: {
@@ -1222,11 +1220,10 @@ class DashboardController {
       alarmReliabilityMessage: this.alarmReliabilityMessage,
       previewMode: this.isPreviewDisplayActive(),
       evenHubPhoneUi: phoneUiButton(),
-      batteries: shell.getBatteryLevels(),
     };
   }
 
-  /** Overlay an EvenHub app's phone UI (the action bar's app-icon button). */
+  /** Overlay an EvenHub app's phone UI (the app-icon button under the mirror). */
   showEvenHubPhoneUi(windowId: string): void {
     showEvenHubPhoneUi(windowId);
   }

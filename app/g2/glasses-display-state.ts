@@ -80,7 +80,7 @@ export type BatteryLevels = {
 };
 
 /**
- * The phone Settings tab's battery row: each device whose level is known,
+ * The phone settings page's battery row: each device whose level is known,
  * e.g. "G2 100%  ·  Case 98% ⚡  ·  R1 72%" (⚡ = charging), or "" when none
  * is. Levels are the last known ones (the case only reports while the glasses
  * are docked), so ⚡ appears only while it is live: the glasses and Case only

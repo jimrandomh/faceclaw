@@ -1,0 +1,54 @@
+<!--
+  The phone's settings page: the glasses' display mode and brightness, the
+  main page's input style (which touchpad it shows) and battery levels.
+  Opened by the gear button under the mirror; binds to a SettingsViewModel on
+  both platforms. Styles are in settings-page.css.
+-->
+<Page xmlns="http://schemas.nativescript.org/tns.xsd" navigatingTo="navigatingTo" loaded="loaded" unloaded="unloaded" class="settings-page">
+    <ActionBar title="Settings">
+        <NavigationButton android.systemIcon="ic_menu_back" tap="{{ onBackTap }}" />
+    </ActionBar>
+
+    <ScrollView>
+        <!-- rows="auto" on every grid: a rows-less GridLayout's implicit row
+             acts as star and would stretch in the ScrollView's StackLayout. -->
+        <StackLayout class="settings-form">
+            <GridLayout rows="auto" columns="*,auto" class="settings-form-row">
+                <Label col="0" text="Display mode" class="settings-form-label" verticalAlignment="center" />
+                <Button col="1" text="{{ displayModeLabel }}" textWrap="false" tap="{{ onDisplayModeTap }}" class="settings-picker-button" />
+            </GridLayout>
+
+            <StackLayout class="settings-form-row">
+                <GridLayout rows="auto" columns="*,auto,auto">
+                    <Label col="0" text="Brightness" class="settings-form-label" verticalAlignment="center" />
+                    <Label col="1" text="Auto" class="settings-form-value settings-form-switch-label" verticalAlignment="center" />
+                    <Switch col="2" checked="{{ brightnessAuto }}" checkedChange="{{ onBrightnessAutoChange }}" verticalAlignment="center" class="settings-form-switch" />
+                </GridLayout>
+                <GridLayout rows="auto" columns="auto,*">
+                    <Label col="0" text="☀" class="brightness-icon" verticalAlignment="center" />
+                    <Slider col="1" width="100%" minValue="2" maxValue="100" value="{{ brightnessPercent }}" valueChange="{{ onBrightnessChange }}" isEnabled="{{ brightnessSliderEnabled }}" class="settings-form-slider" />
+                </GridLayout>
+            </StackLayout>
+
+            <!-- Which touchpad the main page shows under the mirror. -->
+            <StackLayout class="settings-form-row">
+                <GridLayout rows="auto" columns="*,auto,auto">
+                    <Label col="0" text="Phone input style" class="settings-form-label" verticalAlignment="center" />
+                    <Button col="1" text="Watch" textWrap="false" tap="{{ onWatchStyleTap }}" class="{{ watchStyleClass }}" />
+                    <Button col="2" text="Ring" textWrap="false" tap="{{ onRingStyleTap }}" class="{{ ringStyleClass }}" />
+                </GridLayout>
+                <Label text="{{ phoneInputStyleHint }}" textWrap="true" class="settings-form-hint" />
+            </StackLayout>
+
+            <!-- Last-known levels of the glasses, their charging case and the
+                 R1; collapsed until one is known. Last so its appearing
+                 doesn't move the controls above. -->
+            <GridLayout rows="auto" columns="auto,*" class="settings-form-row" visibility="{{ batteryLineVisibility }}">
+                <Label col="0" text="Battery" class="settings-form-label" verticalAlignment="center" />
+                <Label col="1" text="{{ batteryLine }}" textWrap="true" class="settings-form-value settings-battery-line" verticalAlignment="center" />
+            </GridLayout>
+
+            <Label text="More settings are in the Settings app on the glasses." textWrap="true" class="settings-form-hint settings-form-footer" />
+        </StackLayout>
+    </ScrollView>
+</Page>

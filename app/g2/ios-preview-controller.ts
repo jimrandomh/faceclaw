@@ -360,7 +360,7 @@ export class IosPreviewController {
     this.logBluetooth(`Phone background; glasses ${this.state.phase}`)
     this.flushBluetoothLog()
   }
-  /** Overlay an EvenHub app's phone UI (the header's app-icon button). */
+  /** Overlay an EvenHub app's phone UI (the app-icon button under the mirror). */
   showEvenHubPhoneUi(windowId: string): void {
     showOnPhone(windowId)
   }

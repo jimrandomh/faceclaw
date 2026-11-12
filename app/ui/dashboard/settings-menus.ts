@@ -65,6 +65,7 @@ import {
   openAiApiKeySetting,
   previewColorSetting,
   previewScalingSetting,
+  phoneInputStyleSetting,
   phoneRotationSetting,
   ringConnectionModeSetting,
   glassesTypeSetting,
@@ -222,6 +223,8 @@ function settingsSections(): SettingsSection[] {
         enumSettingMenuItem(previewColorSetting),
         enumSettingMenuItem(previewScalingSetting),
         toggleSettingMenuItem(mirrorTouchSetting),
+        // Watch or Ring: which touchpad the main page shows under the mirror.
+        enumSettingMenuItem(phoneInputStyleSetting),
       ],
     },
     {
