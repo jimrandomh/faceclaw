@@ -35,14 +35,11 @@ interface VoiceCaptureHost {
 
     /** The speaker-embedding model at [modelPath] (may be shared/cached across sessions). */
     fun speakerEmbedder(modelPath: String): SpeakerEmbedder
-
-    /** Where a saved recording goes, or null when recordings cannot be stored. */
-    fun recordingSink(): RecordingSink?
 }
 
 /**
  * Voice-input capture pipeline shared by both platforms: LC3 packet queue with drop/late
- * accounting, firmware-DoA beam gate, per-chunk processing (suppression, recording, speaker
+ * accounting, firmware-DoA beam gate, per-chunk processing (suppression, speaker
  * verification buffer, endpointing, PCM emit), the segmented on-device transcript machine with
  * REPLACE-semantics partials, and speaker verification at session end. The session owns its
  * worker thread (started through the shared [startThread]); listener callbacks go through the
@@ -158,11 +155,8 @@ class VoiceCaptureSession(
     private var lastTranscriptDecodeAtMs: Long = 0
     private var lastTranscript = ""
     @Volatile
-    private var saveRecordings = false
-    @Volatile
     private var endpointing = false
     private val endpointDetector = VoiceEndpointDetector()
-    private var recordingPcm: ByteSink? = null
     @Volatile
     private var verifySpeakerModelPath: String? = null
     @Volatile
@@ -197,10 +191,6 @@ class VoiceCaptureSession(
 
     fun setUsePhoneMic(usePhoneMic: Boolean) {
         this.usePhoneMic = usePhoneMic
-    }
-
-    fun setSaveRecordings(saveRecordings: Boolean) {
-        this.saveRecordings = saveRecordings
     }
 
     fun setOnboardModelKind(kind: String?) {
@@ -363,7 +353,6 @@ class VoiceCaptureSession(
             }
             endpointDetector.reset()
             suppressor?.reset()
-            recordingPcm = if (saveRecordings) ByteSink(SAMPLE_RATE * 2 * 4) else null
             val verifying = verifySpeakerModelPath != null && verifyWearerEmbedding != null
             verifyBuffer = if (verifying) ShortArray(VERIFY_MAX_SAMPLES) else null
             verifyCount = 0
@@ -404,7 +393,6 @@ class VoiceCaptureSession(
             emitStatus("Voice control failed: " + error.message)
         } finally {
             stopG2Audio()
-            writeRecordingIfAny()
             releaseRecognizer()
             releaseDecoder()
             lock.withLock {
@@ -415,25 +403,6 @@ class VoiceCaptureSession(
             }
             emitStopped(captureId)
             finished.countDown()
-        }
-    }
-
-    private fun appendRecording(pcm: ShortArray, count: Int) {
-        val out = recordingPcm ?: return
-        out.write(AudioSegmentation.pcm16ToLittleEndian(pcm, 0, count))
-    }
-
-    private fun writeRecordingIfAny() {
-        val out = recordingPcm
-        recordingPcm = null
-        if (out == null || out.size() == 0) {
-            return
-        }
-        val sink = host.recordingSink() ?: return
-        try {
-            sink.save(out.toByteArray(), SAMPLE_RATE)
-        } catch (t: Throwable) {
-            logWarn("failed to save voice recording (${t.message})")
         }
     }
 
@@ -488,9 +457,6 @@ class VoiceCaptureSession(
     internal fun processPcmChunk(pcm: ShortArray, count: Int, angleDegrees: Int, ssr: Int, hasFrameMeta: Boolean) {
         if (suppressionEnabled) {
             applySuppression(pcm, count)
-        }
-        if (recordingPcm != null) {
-            appendRecording(pcm, count)
         }
         val verifyBuffer = this.verifyBuffer
         if (verifyBuffer != null && verifyCount < VERIFY_MAX_SAMPLES) {

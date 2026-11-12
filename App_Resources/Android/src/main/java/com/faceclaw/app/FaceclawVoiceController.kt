@@ -136,8 +136,6 @@ class FaceclawVoiceController(context: Context) {
                 override fun release() {}
             }
         }
-
-        override fun recordingSink(): RecordingSink = RecordingSink { pcmBytes, sampleRate -> saveRecording(pcmBytes, sampleRate) }
     }
 
     private val session = VoiceCaptureSession(host)
@@ -153,11 +151,6 @@ class FaceclawVoiceController(context: Context) {
     /** Source the next capture from the phone microphone (no glasses paired). */
     fun setUsePhoneMic(usePhoneMic: Boolean) {
         session.setUsePhoneMic(usePhoneMic)
-    }
-
-    /** When true, the decoded mic PCM for each session is saved as a WAV. */
-    fun setSaveRecordings(saveRecordings: Boolean) {
-        session.setSaveRecordings(saveRecordings)
     }
 
     /**
@@ -231,29 +224,6 @@ class FaceclawVoiceController(context: Context) {
 
     fun close() {
         stop()
-    }
-
-    /** Save the session's decoded mic PCM as a 16 kHz mono 16-bit WAV. */
-    private fun saveRecording(pcmBytes: ByteArray, sampleRate: Int) {
-        try {
-            val dir = File(appContext.getExternalFilesDir(null), "voice-recordings")
-            if (!dir.exists() && !dir.mkdirs()) {
-                Log.w(TAG, "could not create voice-recordings dir")
-                return
-            }
-            val stamp = java.text.SimpleDateFormat("yyyyMMdd-HHmmss-SSS", java.util.Locale.US)
-                .format(java.util.Date())
-            val file = File(dir, "voice-$stamp.wav")
-            java.io.FileOutputStream(file).use { fos ->
-                fos.write(BinaryEncoding.wavHeader(pcmBytes.size, sampleRate, 1))
-                fos.write(pcmBytes)
-            }
-            Log.i(TAG, "saved voice recording " + file.absolutePath
-                + " samples=" + (pcmBytes.size / 2)
-                + " sec=" + String.format(java.util.Locale.US, "%.2f", pcmBytes.size / 2.0 / sampleRate))
-        } catch (t: Throwable) {
-            Log.w(TAG, "failed to save voice recording", t)
-        }
     }
 
     /**

@@ -1045,20 +1045,16 @@ export const wakeWordActionSetting = new ConfigSettingEnum<WakeWordAction>({
   description: "What saying \"Hey Even\" does: start voice input, just turn the screen on, or nothing.",
 });
 
-export const saveTranscribeAudioSetting = new ConfigSettingBoolean({
-  id: "save-transcribe-audio",
-  label: "Save Transcribe audio",
-  storageKey: "voice.saveTranscribeAudio",
-  defaultValue: true,
-  description: "Record each Transcribe session's audio as a WAV file in Downloads (about 2 MB per minute), named like its transcript. Recordings are kept until you delete them.",
-});
-
-export const saveVoiceRecordingsSetting = new ConfigSettingBoolean({
-  id: "save-voice-recordings",
-  label: "Save voice recordings",
-  storageKey: "developer.saveVoiceRecordings",
+/**
+ * Toggled from the Transcribe and Translate apps' menus. One setting for
+ * both: they share the mic stream, so its audio is either being saved or not.
+ */
+export const saveRecordingSetting = new ConfigSettingBoolean({
+  id: "save-recording",
+  label: "Save Recording",
+  storageKey: "voice.saveRecording",
   defaultValue: false,
-  description: "Keep a copy of captured voice audio on the phone, for debugging transcription problems.",
+  description: "Record the audio of Transcribe and Translate sessions as WAV files in Downloads (about 2 MB per minute), named after the app and the session's start time. Recordings are kept until you delete them.",
 });
 
 export const assistantSkipConfirmationSetting = new ConfigSettingBoolean({

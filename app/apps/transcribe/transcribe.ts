@@ -1,7 +1,7 @@
 import { GrayImage } from "../../graphics/image";
 import { getDefaultSmallFont } from "../../graphics/ui-fonts";
 import { lineStep } from "../../ui/metrics";
-import { MicLevelMeter, paintListeningHeader } from "../../ui/listening-header";
+import { MicLevelMeter, paintListeningHeader, RECORDING_FAILED_NOTICE } from "../../ui/listening-header";
 import { writeTextToDownloads } from "../../native/file-access";
 import { voiceControlBridge } from "../../native/voice-control";
 import { Layer, type LayerContext } from "../../ui/layers";
@@ -50,8 +50,11 @@ export class TranscribeLayer implements Layer {
     const viewport = ctx.stack.getBaseSize();
     const image = new GrayImage(viewport.width, viewport.height, 0);
 
-    const bodyTop = paintListeningHeader(image, font, "Transcribe", this.saveNotice || this.status, this.listening ? this.meter : null,
-      viewport.padding);
+    const status = voiceControlBridge.recordingFailed ? RECORDING_FAILED_NOTICE : this.status;
+    const bodyTop = paintListeningHeader(
+      image, font, "Transcribe", this.saveNotice || status, this.listening ? this.meter : null, viewport.padding,
+      voiceControlBridge.recording,
+    );
     const step = lineStep(font) + 2;
     const layout = transcriptLayout(viewport, bodyTop, font.lineHeight, step);
     const text = this.transcript.text || (this.listening ? "Listening..." : this.detail);

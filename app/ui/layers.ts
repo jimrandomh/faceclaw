@@ -13,7 +13,7 @@ export type TextSettingsEditToggle = {
 
 /** A continuous-capture client's needs (see LayerActions.startContinuousVoiceCapture). */
 export type ContinuousCaptureOptions = {
-  /** Names a WAV of the captured audio in Downloads (iOS, when Save Transcribe audio is on). */
+  /** Names a WAV of the captured audio in Downloads, written while Save Recording is on. */
   recordAs?: string;
   /**
    * Transcribe with this provider, expecting this spoken language (ISO 639-1,

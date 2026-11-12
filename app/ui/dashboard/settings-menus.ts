@@ -70,7 +70,6 @@ import {
   ringConnectionModeSetting,
   glassesTypeSetting,
   sonioxApiKeySetting,
-  saveTranscribeAudioSetting,
   whisperServerApiKeySetting,
   whisperServerLanguageSetting,
   whisperServerModelSetting,
@@ -81,7 +80,6 @@ import {
   lockScreenEnabledSetting,
   menuAnimationSetting,
   newNotificationDisplaySetting,
-  saveVoiceRecordingsSetting,
   showBleBandwidthSetting,
   suspendEvenHubWhenScreenOffSetting,
   temperatureUnitSetting,
@@ -250,7 +248,6 @@ function settingsSections(): SettingsSection[] {
         // Whether and how the phone opens its own BLE link to the R1 ring.
         // Applied at connect time.
         ringConnectionMenuItem(),
-        toggleSettingMenuItem(saveVoiceRecordingsSetting),
         toggleSettingMenuItem(firmwareDebugFlagsSetting),
         toggleSettingMenuItem(suspendEvenHubWhenScreenOffSetting),
         toggleSettingMenuItem(useMicControlSetting),
@@ -297,7 +294,7 @@ function settingsSections(): SettingsSection[] {
       toggleSettingMenuItem(showBleBandwidthSetting)] };
     // No downloadable on-device models: iOS's on-device option is Apple's recognizer.
     if (section.label === "Voice") return { label: "Voice", items: [enumSettingMenuItem(wakeWordActionSetting),
-      enumSettingMenuItem(voiceProviderSetting), toggleSettingMenuItem(saveTranscribeAudioSetting), ...whisperServerMenuItems()] };
+      enumSettingMenuItem(voiceProviderSetting), ...whisperServerMenuItems()] };
     if (section.label === "Display") return { ...section, items: section.items.filter(item =>
       item.label !== screenTimeoutSetting.label) };
     return section;

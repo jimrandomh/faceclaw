@@ -34,11 +34,6 @@ fun interface CallbackDispatcher {
     fun post(action: () -> Unit)
 }
 
-/** Receives the session's decoded PCM once capture ends (Android saves a WAV file). */
-fun interface RecordingSink {
-    fun save(pcm16le: ByteArray, sampleRate: Int)
-}
-
 /**
  * A glasses microphone packet decoder to 16 kHz mono PCM: the G2's LC3 (the shared
  * [Lc3PacketFramer] over a platform LC3 codec) or the RayNeo iO's Opus.

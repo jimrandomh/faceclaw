@@ -78,7 +78,7 @@ import { appViewportRect, isOnSwitcherEdge, screenHeight, screenWidth, sidebarSt
 import { sameEdges } from "../ui/viewport";
 import { type ContinuousCaptureOptions, type LayerActions, type TextSettingsEditToggle, type TranscriptionChoice } from "../ui/layers";
 import { type KeyboardInputSession } from "../ui/shell/keyboard-input";
-import { appSwitcherPositionSetting, glassesModelName, glassesTypeSetting, statusBarPositionSetting, statusBarVisibilitySetting, windowBorderSetting, assistantAllowProactiveSetting, assistantBackendSetting, assistantBridgeHostSetting, assistantBridgePortSetting, assistantBridgeTokenSetting, getBrightnessPreferences, displayLayoutSetting, navigateDisplayLayoutSetting, terminalDisplayLayoutSetting, elevenLabsApiKeySetting, getStringSettingById, openAiApiKeySetting, nightscoutApiTokenSetting, firmwareDebugFlagsSetting, whisperServerApiKeySetting, whisperServerLanguageSetting, whisperServerModelSetting, whisperServerUrlSetting, lockScreenEnabledSetting, nightscoutSiteUrlSetting, onAnySettingChanged, previewColorSetting, effectiveRingConnectionMode, type RingConnectionMode, saveVoiceRecordingsSetting, sonioxApiKeySetting, screenTimeoutSetting, screenTimeoutSettingToMs, shouldPopUpNewNotification, suspendEvenHubWhenScreenOffSetting, voiceProviderSetting, wakeWordActionSetting, type ConfigSettingString } from "../ui/dashboard-settings";
+import { appSwitcherPositionSetting, glassesModelName, glassesTypeSetting, statusBarPositionSetting, statusBarVisibilitySetting, windowBorderSetting, assistantAllowProactiveSetting, assistantBackendSetting, assistantBridgeHostSetting, assistantBridgePortSetting, assistantBridgeTokenSetting, getBrightnessPreferences, displayLayoutSetting, navigateDisplayLayoutSetting, terminalDisplayLayoutSetting, elevenLabsApiKeySetting, getStringSettingById, openAiApiKeySetting, nightscoutApiTokenSetting, firmwareDebugFlagsSetting, whisperServerApiKeySetting, whisperServerLanguageSetting, whisperServerModelSetting, whisperServerUrlSetting, lockScreenEnabledSetting, nightscoutSiteUrlSetting, onAnySettingChanged, previewColorSetting, effectiveRingConnectionMode, type RingConnectionMode, saveRecordingSetting, sonioxApiKeySetting, screenTimeoutSetting, screenTimeoutSettingToMs, shouldPopUpNewNotification, suspendEvenHubWhenScreenOffSetting, voiceProviderSetting, wakeWordActionSetting, type ConfigSettingString } from "../ui/dashboard-settings";
 import { isIgnoringBatteryOptimizations, requestIgnoreBatteryOptimizations } from "../native/battery-optimization";
 import {
   getInstalledEvenHubAppById,
@@ -488,6 +488,7 @@ class DashboardController {
       if (!resized && !appsResized) this.applyWindowEdgesIfChanged();
       this.syncAssistantBridgeIfChanged();
       this.syncLockScreenSettingIfChanged();
+      this.syncContinuousRecording();
       // A Preview color or scaling change should show on the mirror at once,
       // not at the next composited frame (cheap: floor-limited, dedup'd on
       // the Java side).
@@ -2194,12 +2195,14 @@ class DashboardController {
 
   private startContinuousVoiceCapture(client: string, options: ContinuousCaptureOptions = {}): void {
     this.continuousClients.set(client, options);
+    this.syncContinuousRecording();
     this.retargetContinuousCapture();
     this.ensureContinuousCapture(true);
   }
 
   private stopContinuousVoiceCapture(client: string): void {
     if (!this.continuousClients.delete(client)) return;
+    this.syncContinuousRecording();
     if (this.continuousClients.size > 0) {
       // The window that needed its own provider may be the one that left.
       this.retargetContinuousCapture();
@@ -2223,6 +2226,18 @@ class DashboardController {
     if (!force && this.continuousAttemptedOn === this.communicator) return;
     this.continuousAttemptedOn = this.communicator;
     void this.beginVoiceCapture("continuous").finally(() => this.syncContinuousClaim());
+  }
+
+  /**
+   * Record to the first client's requested name while Save Recording is on
+   * (it is toggled from those windows' menus, so this also runs when a
+   * setting changes).
+   */
+  private syncContinuousRecording(): void {
+    const name = saveRecordingSetting.get()
+      ? Array.from(this.continuousClients.values(), (options) => options.recordAs).find(Boolean) ?? ""
+      : "";
+    voiceControlBridge.recordTo(name);
   }
 
   /** Move a running continuous capture onto the provider its windows now call for. */
@@ -2274,7 +2289,6 @@ class DashboardController {
       whisperServerUrl: whisperServerUrlSetting.get(),
       whisperServerModel: whisperServerModelSetting.get(),
       whisperServerApiKey: whisperServerApiKeySetting.get(),
-      saveRecording: saveVoiceRecordingsSetting.get(),
       // "My voice only" (Microphones app): verify command utterances
       // against the enrolled wearer voice-print; non-matching speakers'
       // finals are suppressed by the bridge.

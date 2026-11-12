@@ -7,11 +7,12 @@ import {
   translateProviderSetting,
   translateShowOriginalSetting,
 } from "./translate-settings";
-import { MIC_ICON } from "../transcribe/transcribe-app";
+import { micTrayIcon } from "../transcribe/transcribe-app";
 import { transcriptTimestamp } from "../transcribe/transcribe";
+import { voiceControlBridge } from "../../native/voice-control";
 import { type ContinuousCaptureOptions } from "../../ui/layers";
 import { openSettingsSubMenu } from "../../ui/dashboard/settings-panel";
-import { enumSettingMenuItem, toggleSettingMenuItem } from "../../ui/dashboard-settings";
+import { enumSettingMenuItem, saveRecordingSetting, toggleSettingMenuItem } from "../../ui/dashboard-settings";
 import {
   createInProcessWindow,
   YieldAtRootLayer,
@@ -44,6 +45,11 @@ export type TranslateAppOptions = InProcessAppOptions & {
  * provider (Translate settings), which a shared capture switches to.
  */
 export function createTranslateAppWindow(options: TranslateAppOptions): InProcessWindow {
+  // One timestamp per session names both the audio recording and a saved transcript.
+  const stamp = transcriptTimestamp();
+  // Whether the mic tray icon is up (capture was asked for).
+  let trayIconShown = false;
+  const syncTrayIcon = () => shell.setTrayIcon(TRAY_ICON_ID, trayIconShown ? micTrayIcon(voiceControlBridge.recording) : null);
   // Checks the setup and (re)starts capture with the chosen provider and
   // language: at launch, when either setting changes, and on a tap after a
   // problem.
@@ -51,15 +57,18 @@ export function createTranslateAppWindow(options: TranslateAppOptions): InProces
     const provider = resolveTranslateProvider();
     const problem = !provider ? NO_PROVIDER_PROBLEM : !resolveTranslationModel() ? NO_MODEL_PROBLEM : null;
     layer.setProblem(problem);
-    if (!provider || problem) {
+    trayIconShown = Boolean(provider) && !problem;
+    if (provider && !problem) {
+      options.startContinuousVoiceCapture({
+        recordAs: `translate-${stamp}`,
+        transcription: { provider, language: resolveTranslateLanguage() },
+      });
+    } else {
       options.stopContinuousVoiceCapture();
-      shell.setTrayIcon(TRAY_ICON_ID, null);
-      return;
     }
-    options.startContinuousVoiceCapture({ transcription: { provider, language: resolveTranslateLanguage() } });
-    shell.setTrayIcon(TRAY_ICON_ID, MIC_ICON);
+    syncTrayIcon();
   };
-  const layer = new TranslateLayer(transcriptTimestamp(), startCapture);
+  const layer = new TranslateLayer(stamp, startCapture);
   const app = createInProcessWindow({
     appId: "translate",
     windowId: TRANSLATE_WINDOW_ID,
@@ -77,6 +86,8 @@ export function createTranslateAppWindow(options: TranslateAppOptions): InProces
           layer.saveTranscript();
         },
       },
+      // The controller starts and stops the recording as the setting changes.
+      toggleSettingMenuItem(saveRecordingSetting),
       {
         label: "Translate settings",
         onSelect: (ctx) => {
@@ -94,6 +105,7 @@ export function createTranslateAppWindow(options: TranslateAppOptions): InProces
     removeSurface: options.removeSurface,
     onClosed: () => {
       layer.onRemoved();
+      unsubscribeRecording();
       options.stopContinuousVoiceCapture();
       shell.setTrayIcon(TRAY_ICON_ID, null);
       options.onClosed();
@@ -102,6 +114,10 @@ export function createTranslateAppWindow(options: TranslateAppOptions): InProces
   // Wire async state changes to this window's renderer, rather than the
   // controller action from which the window-specific actions were derived.
   layer.start(app.requestRender, () => shell.isWindowVisible(TRANSLATE_WINDOW_ID));
+  const unsubscribeRecording = voiceControlBridge.onRecordingChange(() => {
+    syncTrayIcon();
+    app.requestRender();
+  });
   startCapture();
   return app;
 }
