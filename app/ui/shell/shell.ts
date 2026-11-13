@@ -90,6 +90,7 @@ import {
   screenWidth,
 } from "./geometry";
 import type { AppSwitcherPosition } from "../dashboard-settings";
+import type { Viewport } from "../viewport";
 
 /**
  * The shell: owns the window registry, focus, screen on/off, and the shell
@@ -151,6 +152,13 @@ export type ShellWindow = {
    * draws this window's top bar.
    */
   heightMode: WindowHeightMode;
+  /**
+   * False for a window that must not bring its app back when Faceclaw
+   * restarts (the controller's open-apps restore relaunches apps, not
+   * windows): one that shows something a plain launch of its app would not,
+   * where the relaunch would do something else in its place.
+   */
+  restoresApp?: boolean;
   /** App-side cleanup when the shell closes the window (worker notification, surface removal). */
   close?: () => void;
   drawIcon: ShellChromeWindow["drawIcon"];
@@ -170,11 +178,11 @@ export type ShellWindow = {
    */
   relayout?: () => void;
   /**
-   * The viewport size the window is laid out at (it changes on relayout), so
-   * the controller can tell a window whose size fell behind the geometry from
-   * one whose surface merely moved.
+   * The viewport the window is laid out at (it changes on relayout), so the
+   * controller can tell a window whose size, or whose edges, fell behind the
+   * geometry from one whose surface merely moved.
    */
-  layoutSize?: () => { width: number; height: number };
+  layoutSize?: () => Viewport;
   /**
    * A touch from the phone's mirror at (x, y) in app-viewport coordinates.
    * True if the window acted on it; otherwise the controller sends a select.

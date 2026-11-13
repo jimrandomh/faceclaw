@@ -6,13 +6,14 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { loader } = require('./helpers/load-typescript.cjs');
+const { bordered, unbordered, edged } = require('./helpers/viewport.cjs');
 
 const gestures = loader({}, {})('app/ui/gestures.ts');
 const font = { lineHeight: 10, measureText: (text) => text.length * 6 };
 
-/** Records drawn text; every other drawing call is a no-op. */
+/** Records drawn text (and where, in `drawn.positions`); every other drawing call is a no-op. */
 const makeImageClass = (drawn) => class {
-  drawText(_font, _x, _y, text) { drawn.push(text); }
+  drawText(_font, x, y, text) { drawn.push(text); (drawn.positions ??= new Map()).set(text, { x, y }); }
   fillRect() {}
   fillRoundedRect() {}
   drawRoundedRect() {}
@@ -20,6 +21,8 @@ const makeImageClass = (drawn) => class {
 
 /** Stand-in for ui/menu-core's Menu: draws every row in order, scrolls the selection by one. */
 class FakeMenu {
+  /** The box and scrollbar track of the latest paint, whichever tab's menu it was. */
+  static painted = { box: null, scrollbar: null };
   constructor(options) {
     this.options = options;
     this.items = options.items;
@@ -37,9 +40,10 @@ class FakeMenu {
     if (event.type === 'scroll-up') this.selectedIndex = Math.max(0, this.selectedIndex - 1);
   }
   paint(image, box) {
+    FakeMenu.painted.box = box;
     this.items.forEach((item, index) => this.options.draw({ image, item, index, x: box.x, y: box.y, width: box.width }));
   }
-  drawScrollbar() {}
+  drawScrollbar(_image, x, y, height) { FakeMenu.painted.scrollbar = { x, y, height }; }
 }
 
 const storeApp = (packageId, name, version) => ({
@@ -93,9 +97,9 @@ const loadStore = ({ updates = [] } = {}) => {
   return { layer, drawn, installs };
 };
 
-const makeCtx = () => ({
+const makeCtx = (viewport = bordered(576, 288)) => ({
   stack: {
-    getBaseSize: () => ({ width: 576, height: 288 }),
+    getBaseSize: () => viewport,
     isFocused: () => true,
     clearToBase() {},
     push() {},
@@ -191,6 +195,47 @@ test('the Updates tab has no Update All row when nothing can be installed', asyn
   assert.ok(!painted.includes('Update All'));
 });
 
+test('the list scrolls to the window\'s bottom edge under the fixed header, inside the side padding', async () => {
+  const updates = [{ installed: { packageId: 'c', name: 'Gamma', version: '1' } }];
+  const layout = async (viewport) => {
+    const { layer, drawn } = loadStore({ updates });
+    const ctx = makeCtx(viewport);
+    await openUpdatesTab(layer, ctx);
+    repaint(layer, drawn, ctx);
+    return { ...FakeMenu.painted, title: drawn.positions.get('EvenHub'), row: drawn.positions.get('Gamma') };
+  };
+
+  // Framed: rows start at the left padding and stop short of the scrollbar,
+  // which hugs the right padding. The header keeps the top padding; the list
+  // box runs to the bottom edge with that edge's padding inside it.
+  const framed = await layout(bordered(576, 288));
+  assert.equal(framed.box.x, 8);
+  assert.equal(framed.box.x + framed.box.width, 576 - 8 - 6);
+  assert.equal(framed.box.y + framed.box.height, 288, 'the box reaches the bottom edge');
+  assert.equal(framed.box.padTop, 0, 'no padding under the fixed header');
+  assert.equal(framed.box.padBottom, 8);
+  assert.deepEqual(framed.title, { x: 14, y: 11 }, 'a focused tab\'s highlight, 3px above the title line, sits at the padding');
+  assert.equal(framed.row.x, framed.title.x, 'the title lines up with the row text');
+  assert.deepEqual(framed.scrollbar, { x: 576 - 8 - 3, y: framed.box.y, height: 288 - 8 - framed.box.y });
+
+  // Nothing bordering the window: content runs to every edge.
+  const bare = await layout(unbordered(576, 288));
+  assert.equal(bare.box.x, 0);
+  assert.equal(bare.box.padBottom, 0);
+  assert.equal(bare.box.y + bare.box.height, 288);
+  assert.deepEqual(bare.title, { x: 6, y: 3 });
+  assert.equal(bare.box.y, framed.box.y - 8, 'the header moves up by the top padding');
+  assert.equal(bare.scrollbar.x, 576 - 3, 'the scrollbar stays clear of the rows');
+  assert.ok(bare.box.x + bare.box.width <= bare.scrollbar.x);
+
+  // Each edge follows its own padding.
+  const mixed = await layout(edged(576, 288, 'top', 'left'));
+  assert.equal(mixed.box.x, 8);
+  assert.equal(mixed.box.x + mixed.box.width, 576 - 6);
+  assert.equal(mixed.box.y, framed.box.y);
+  assert.equal(mixed.box.padBottom, 0);
+});
+
 // ---- permission dialog ---------------------------------------------------
 
 const loadDialog = (detailLines) => {
@@ -216,7 +261,7 @@ const loadDialog = (detailLines) => {
     () => { outcome.confirmed = true; },
     () => { outcome.confirmed = false; },
   );
-  const ctx = { stack: { getBaseSize: () => ({ width: 576, height: 136 }), isFocused: () => true, pop() {} } };
+  const ctx = { stack: { getBaseSize: () => bordered(576, 136), isFocused: () => true, pop() {} } };
   const paint = () => {
     drawn.length = 0;
     dialog.paint(ctx, () => new ImageClass());

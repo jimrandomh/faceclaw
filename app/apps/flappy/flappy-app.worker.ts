@@ -41,6 +41,7 @@ import { loadSoundEnabled, saveSoundEnabled } from "../../ui/sound-setting";
 import { type MenuItem } from "../../ui/menu";
 import { WindowMenu } from "../../ui/window-menu";
 import type { WorkerAppMessage, WorkerAppReply } from "../../ui/shell/worker-window";
+import type { Viewport } from "../../ui/viewport";
 import {
   directionalFallback,
   GESTURE_CLICK,
@@ -95,6 +96,12 @@ const RENDER_TICK_MS = 30;
 /** Physics steps per wing frame while flying. */
 const WING_STEPS_PER_FRAME = 6;
 
+// --- HUD (pixels below the top line's y) --------------------------------------
+/** The title: a shorter font than the score's, centered on the same line. */
+const HUD_TITLE_DROP = 4;
+/** The best score, under the title. */
+const HUD_BEST_DROP = 34;
+
 const SFX_FLAP: Step[] = [{ freq: 880, duty: 40, ms: 20 }, { freq: 1175, duty: 40, ms: 25 }];
 const SFX_SCORE: Step[] = [{ freq: 1568, duty: 40, ms: 40 }, { freq: 2093, duty: 40, ms: 60 }];
 const SFX_HIT: Step[] = [{ freq: 220, duty: 55, ms: 80 }, { freq: 165, duty: 55, ms: 120 }];
@@ -135,6 +142,13 @@ type FlappyWindow = {
   title: string;
   viewportWidth: number;
   viewportHeight: number;
+  /**
+   * The viewport as the shell last sent it: besides the size above, what each
+   * edge touches and the padding suggested there. The playfield fills the
+   * window whatever its edges touch; only the HUD's top line keeps the
+   * padding (see paintHud).
+   */
+  viewport: Viewport;
   foreground: boolean;
   /** Whether this window is the shell's input target (pushed with each message). */
   focused: boolean;
@@ -198,6 +212,7 @@ global.onmessage = (event: { data: WorkerAppMessage }) => {
         title: message.title,
         viewportWidth: message.viewport.width,
         viewportHeight: message.viewport.height,
+        viewport: message.viewport,
         foreground: false,
         focused: false,
         menu: null,
@@ -225,7 +240,8 @@ global.onmessage = (event: { data: WorkerAppMessage }) => {
       if (!window) break;
       window.viewportWidth = message.viewport.width;
       window.viewportHeight = message.viewport.height;
-      window.menu?.resize({ width: window.viewportWidth, height: window.viewportHeight });
+      window.viewport = message.viewport;
+      window.menu?.resize(message.viewport);
       if (window.foreground) renderAndSubmit(window, 0);
       break;
     }
@@ -372,7 +388,7 @@ function windowMenu(window: FlappyWindow): WindowMenu {
       post,
       title: () => window.title,
       items: () => windowMenuItems(window),
-      size: { width: window.viewportWidth, height: window.viewportHeight },
+      size: window.viewport,
       paintBase: () => paintContent(window),
       isFocused: () => window.focused,
     });
@@ -712,14 +728,18 @@ function birdWingFrame(window: FlappyWindow): number {
 
 function paintHud(image: GrayImage, window: FlappyWindow): void {
   const width = window.viewportWidth;
+  // The top line (the score, or the title before the first flap) is the
+  // only thing here placed from a window edge: it keeps the padding
+  // suggested for the top, and the best score hangs under it.
+  const top = window.viewport.padding.top;
   if (window.phase !== "ready") {
-    drawCenteredIn(image, largeFont, 0, width, 10, String(window.score), 245);
+    drawCenteredIn(image, largeFont, 0, width, top, String(window.score), 245);
   }
   switch (window.phase) {
     case "ready":
-      drawCenteredIn(image, mediumFont, 0, width, 14, "FLAPPY", 245);
+      drawCenteredIn(image, mediumFont, 0, width, top + HUD_TITLE_DROP, "FLAPPY", 245);
       if (window.highScore > 0) {
-        drawCenteredIn(image, smallFont, 0, width, 44, `best ${window.highScore}`, 150);
+        drawCenteredIn(image, smallFont, 0, width, top + HUD_BEST_DROP, `best ${window.highScore}`, 150);
       }
       drawCenteredIn(image, smallFont, 0, width, groundTop(window) - 26, "Touch ring / swipe to flap", 150);
       break;

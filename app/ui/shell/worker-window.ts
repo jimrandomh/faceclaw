@@ -3,7 +3,8 @@ import { GrayImage } from "../../graphics/image";
 import { windowIcon } from "./chrome-layer";
 import { type IconActivity, type IconName } from "../../graphics/icons";
 import { toolRegistry, type ToolResult, type ToolSpec } from "../../assistant/tool-registry";
-import { appViewportSize, type WindowHeightMode } from "./geometry";
+import { appViewport, type WindowHeightMode } from "./geometry";
+import { type Viewport } from "../viewport";
 import * as frameTimings from "../../native/frame-timings";
 import { shell, type ShellWindow } from "./shell";
 import { publishWorkerState } from "./worker-state";
@@ -20,8 +21,10 @@ export type WorkerAppMessage =
   /** Release app-wide resources, then acknowledge with worker-stopped. */
   | { type: "shutdown" }
   | { type: "navigation-sensors"; event: NavigationSensorEvent }
-  | { type: "open-window"; windowId: string; surfaceId: string; title: string; viewport: { width: number; height: number } }
-  | { type: "resize-window"; windowId: string; viewport: { width: number; height: number } }
+  /** `viewport` carries what the window's edges touch and the padding suggested for them (viewport.ts). */
+  | { type: "open-window"; windowId: string; surfaceId: string; title: string; viewport: Viewport }
+  /** The window's size changed, or what its edges touch did (so its padding). */
+  | { type: "resize-window"; windowId: string; viewport: Viewport }
   | { type: "close-window"; windowId: string }
   | { type: "input"; windowId: string; event: unknown; frameId: number; focused: boolean }
   | { type: "text-input"; windowId: string; text: string; submit?: boolean }
@@ -462,7 +465,7 @@ export class WorkerAppHost {
     const surfaceId = `window:${spec.windowId}`;
     const heightMode = spec.heightMode ?? "min";
     this.openWindows.add(spec.windowId);
-    let viewport = appViewportSize(heightMode, this.options.appId);
+    let viewport = appViewport(heightMode, this.options.appId);
     this.post({
       type: "open-window",
       windowId: spec.windowId,
@@ -482,7 +485,7 @@ export class WorkerAppHost {
       // (a game in progress, a route): the bottom switcher's height changes
       // with what it holds, and full-height windows give way to it.
       relayout: () => {
-        viewport = appViewportSize(window.heightMode, this.options.appId);
+        viewport = appViewport(window.heightMode, this.options.appId);
         this.post({ type: "resize-window", windowId: spec.windowId, viewport });
       },
       layoutSize: () => viewport,

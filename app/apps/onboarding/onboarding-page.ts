@@ -1,6 +1,7 @@
 import type { GrayImage } from "../../graphics/image";
 import { wrapText } from "../../graphics/textwrap";
 import type { InputEvent } from "../../ui/gestures";
+import type { Edges } from "../../ui/viewport";
 import { onboardingFont } from "./onboarding-fonts";
 
 /** Page-to-flow navigation, handed to a page's input handler. */
@@ -25,13 +26,31 @@ export interface OnboardingPage {
   applies?(): boolean;
   /** The page became current, going forward or back. */
   enter?(): void;
-  paint(image: GrayImage, focused: boolean): void;
+  /**
+   * Paint the page over the whole image, the window's viewport. `padding`
+   * is the padding suggested for each of its edges (viewport.ts): none on an
+   * immersive page, whose edges are the screen's.
+   */
+  paint(image: GrayImage, focused: boolean, padding: Edges<number>): void;
   handleInput(event: InputEvent, nav: OnboardingNav): void | Promise<void>;
 }
 
-/** Left margin and title position shared by the pages (the UI-wide (18, 10) title spot). */
-export const PAGE_X = 18;
-export const TITLE_Y = 10;
+/**
+ * How far a page's text (its title and explanation, a list row's label)
+ * sits inside the side padding. A list's selection boxes start at the
+ * padding itself, so the title lines up with the rows' text.
+ */
+export const PAGE_TEXT_INSET = 10;
+/** The title's drop below the top padding. */
+const TITLE_OFFSET_Y = 2;
+
+/**
+ * The x that centres something `width` wide in the window, short of
+ * entering either side's padding.
+ */
+export function centredX(image: GrayImage, padding: Edges<number>, width: number): number {
+  return Math.max(padding.left, Math.min(image.width - padding.right - width, Math.round((image.width - width) / 2)));
+}
 
 /**
  * Draw a page's title and its wrapped explanation (at most `maxLines`
@@ -39,17 +58,21 @@ export const TITLE_Y = 10;
  */
 export function drawPageHeading(
   image: GrayImage,
+  padding: Edges<number>,
   title: string,
   explanation: string,
   maxLines = 2,
 ): number {
   const titleFont = onboardingFont("title");
   const detailFont = onboardingFont("detail");
-  image.drawText(titleFont, PAGE_X, TITLE_Y, title, 230);
-  let y = TITLE_Y + titleFont.lineHeight + 2;
-  const lines = wrapText(detailFont, explanation, image.width - 2 * PAGE_X).slice(0, maxLines);
+  const x = padding.left + PAGE_TEXT_INSET;
+  const textWidth = Math.max(0, image.width - padding.left - padding.right - 2 * PAGE_TEXT_INSET);
+  const titleY = padding.top + TITLE_OFFSET_Y;
+  image.drawText(titleFont, x, titleY, title, 230);
+  let y = titleY + titleFont.lineHeight + 2;
+  const lines = wrapText(detailFont, explanation, textWidth).slice(0, maxLines);
   for (const line of lines) {
-    image.drawText(detailFont, PAGE_X, y, line, 160);
+    image.drawText(detailFont, x, y, line, 160);
     y += detailFont.lineHeight;
   }
   return y;

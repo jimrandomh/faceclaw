@@ -47,13 +47,13 @@ import { makeInputEvent, type InputEvent, type InputEventPayload } from '../ui/g
 import { noopLayerActions, type ContinuousCaptureOptions, type LayerActions } from '../ui/layers'
 import { TextViewerLayer } from '../apps/files/text-viewer'
 import { shell, rawInputEventToInputEvent, type ShellWindow } from '../ui/shell/shell'
-import { appViewportRect, isOnSwitcherEdge, sidebarStripVisible, type ScreenRect } from '../ui/shell/geometry'
+import { appViewportRect, isOnSwitcherEdge, sidebarStripVisible, windowEdges, type ScreenRect } from '../ui/shell/geometry'
 import { mirrorToPanelFraction, phonePreviewCrop } from './phone-preview-crop'
 import { onAnySettingChanged,
   previewColorSetting, lockScreenEnabledSetting, getBrightnessPreferences, getStringSettingById,
   nightscoutSiteUrlSetting, nightscoutApiTokenSetting, voiceProviderSetting, elevenLabsApiKeySetting,
   openAiApiKeySetting, sonioxApiKeySetting, whisperServerApiKeySetting, whisperServerLanguageSetting,
-  whisperServerModelSetting, whisperServerUrlSetting, ringConnectionModeSetting, saveTranscribeAudioSetting, glassesTypeSetting, shouldPopUpNewNotification } from '../ui/dashboard-settings'
+  whisperServerModelSetting, whisperServerUrlSetting, ringConnectionModeSetting, saveRecordingSetting, glassesTypeSetting, shouldPopUpNewNotification } from '../ui/dashboard-settings'
 import { transcriptionKey, type VoiceProviderSelection } from '../native/cloud-stt-provider'
 import type { PhoneGesture } from '../phone-ui/phone-gestures'
 import { claimGlassesOnboardingAutoLaunch, ONBOARDING_APP_ID } from '../apps/onboarding/onboarding-progress'
@@ -360,7 +360,7 @@ export class IosPreviewController {
     this.logBluetooth(`Phone background; glasses ${this.state.phase}`)
     this.flushBluetoothLog()
   }
-  /** Overlay an EvenHub app's phone UI (the header's app-icon button). */
+  /** Overlay an EvenHub app's phone UI (the app-icon button under the mirror). */
   showEvenHubPhoneUi(windowId: string): void {
     showOnPhone(windowId)
   }
@@ -418,6 +418,7 @@ export class IosPreviewController {
     this.logBluetooth(`Phone battery ${phone.battery ?? "unknown"}% charging=${phone.charging}`)
     this.offSettings = onAnySettingChanged(() => {
       this.syncLockSetting()
+      this.syncContinuousRecording()
       this.pushBrightness()
       this.relayout()
       shell.foregroundWindow()?.requestRender()
@@ -504,7 +505,9 @@ export class IosPreviewController {
     await target.setSurfaceVisible(window.surfaceId, shell.foregroundWindow()?.windowId === window.windowId)
   }
   private relayout(): void {
-    const layout = shell.getWindows().map(window => JSON.stringify(appViewportRect(window.heightMode, window.appId))).join(";")
+    // Each window's rect, and what its edges touch (which sets its padding).
+    const layout = shell.getWindows().map(window =>
+      JSON.stringify([appViewportRect(window.heightMode, window.appId), windowEdges(window.appId)])).join(";")
     if (layout === this.lastLayout) return
     this.lastLayout = layout
     for (const window of shell.getWindows()) {
@@ -1108,8 +1111,8 @@ export class IosPreviewController {
   /**
    * Continuous capture on behalf of `client` (one id per window: Transcribe,
    * Translate, Teleprompter, Calculator); it runs while any client wants it, as
-   * on Android. `recordAs` names a WAV of the audio in Downloads when Save
-   * Transcribe audio is on.
+   * on Android. `recordAs` names a recording (.mka) of the audio in Downloads
+   * when Save Recording is on.
    */
   private startContinuousVoiceCapture(client: string, options: ContinuousCaptureOptions = {}): void {
     this.continuousClients.set(client, options)
@@ -1198,9 +1201,12 @@ export class IosPreviewController {
   private syncContinuousClaim(): void {
     voiceActivity.setActive(this.continuousClients.size > 0 && iosVoiceInput.continuousActive, CONTINUOUS_CAPTURE_HOLDER)
   }
-  /** Record to the first client's requested name while Save Transcribe audio is on. */
+  /**
+   * Record to the first client's requested name while Save Recording is on (it is
+   * toggled from those windows' menus, so this also runs when a setting changes).
+   */
   private syncContinuousRecording(): void {
-    const name = saveTranscribeAudioSetting.get() ? [...this.continuousClients.values()].map(options => options.recordAs).find(Boolean) ?? '' : ''
+    const name = saveRecordingSetting.get() ? [...this.continuousClients.values()].map(options => options.recordAs).find(Boolean) ?? '' : ''
     iosVoiceInput.recordTo(name)
   }
   /**

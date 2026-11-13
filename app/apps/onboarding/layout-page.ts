@@ -3,12 +3,12 @@ import { appSwitcherPositionSetting, glassesTypeSetting, type AppSwitcherPositio
 import type { InputEvent } from "../../ui/gestures";
 import { MENU_HIGHLIGHT_FILL, MENU_HIGHLIGHT_STROKE } from "../../ui/menu-core";
 import { screenWidth } from "../../ui/shell/geometry";
+import type { Edges } from "../../ui/viewport";
 import { AREA_OUTLINE, Diagram, diagramBandHeight, drawLayout, layoutAreaHeight } from "./layout-diagram";
 import { onboardingFont } from "./onboarding-fonts";
-import { drawPageHeading, type OnboardingNav, type OnboardingPage } from "./onboarding-page";
+import { centredX, drawPageHeading, type OnboardingNav, type OnboardingPage } from "./onboarding-page";
 
 const CONTENT_GAP = 10;
-const BOTTOM_MARGIN = 8;
 /** Diagram width as a fraction of the display's: the most a diagram is drawn at. */
 const DIAGRAM_SCALE = 0.4;
 /** Padding inside a cell's selection box, round the diagram and its caption. */
@@ -37,35 +37,39 @@ export function layoutHasDepth(position: AppSwitcherPosition): boolean {
  * layout, Bottom and Popup on top, the recommended one selected at first;
  * swipes move through them in reading order, a tap saves the selected one.
  * The page is immersive, so the diagrams get 40% of the display's width
- * each. Choosing a layout reflows open windows (the dashboard controller
- * watches the setting).
+ * each. The grid is centred in the window, its cells' selection boxes
+ * keeping inside the padding of the window's edges. Choosing a layout
+ * reflows open windows (the dashboard controller watches the setting).
  */
 export class LayoutPage implements OnboardingPage {
   readonly immersive = true;
   /** Kept across visits, so going back returns to the last choice. */
   private selected = LAYOUT_ORDER.indexOf(recommendedLayout());
 
-  paint(image: GrayImage, focused: boolean): void {
+  paint(image: GrayImage, focused: boolean, padding: Edges<number>): void {
     const top = drawPageHeading(
       image,
+      padding,
       "Layout",
       "Swipe to choose where the app switcher goes, then tap to continue.",
     ) + CONTENT_GAP;
     const title = onboardingFont("body");
     const subtitle = onboardingFont("detail");
     const captionHeight = CAPTION_GAP + title.lineHeight + subtitle.lineHeight;
-    const available = image.height - top - BOTTOM_MARGIN;
+    const available = image.height - top - padding.bottom;
+    const availableWidth = image.width - padding.left - padding.right;
+    // The most a diagram can take for two rows and two columns of cells to
+    // fit, in whole pixels, so rounding its size can't push the grid past
+    // the window's padding.
+    const maxDiagramHeight = Math.floor((available - ROW_GAP) / 2 - 2 * CELL_PADDING - captionHeight);
+    const maxDiagramWidth = Math.floor((availableWidth - COLUMN_GAP) / 2 - 2 * CELL_PADDING);
     // Short of DIAGRAM_SCALE only where two rows of cells wouldn't fit.
-    const scale = Math.min(
-      DIAGRAM_SCALE,
-      ((available - ROW_GAP) / 2 - 2 * CELL_PADDING - captionHeight) / layoutAreaHeight(),
-      ((image.width - COLUMN_GAP) / 2 - 2 * CELL_PADDING) / screenWidth(),
-    );
+    const scale = Math.max(0, Math.min(DIAGRAM_SCALE, maxDiagramHeight / layoutAreaHeight(), maxDiagramWidth / screenWidth()));
     const diagramWidth = Math.round(screenWidth() * scale);
     const diagramHeight = Math.round(layoutAreaHeight() * scale);
     const cellWidth = diagramWidth + 2 * CELL_PADDING;
     const cellHeight = diagramHeight + 2 * CELL_PADDING + captionHeight;
-    const left = Math.round((image.width - 2 * cellWidth - COLUMN_GAP) / 2);
+    const left = centredX(image, padding, 2 * cellWidth + COLUMN_GAP);
     const gridTop = top + Math.max(0, Math.round((available - 2 * cellHeight - ROW_GAP) / 2));
     LAYOUT_ORDER.forEach((position, index) => {
       const x = left + (index % 2) * (cellWidth + COLUMN_GAP);

@@ -40,6 +40,10 @@ constructor(
     private var file: RandomAccessFile?
     private var dataBytes = 0L
 
+    // The PCM bytes the header on disk accounts for. It is rewritten about once a second of
+    // audio, so a process death mid-recording still leaves a playable file.
+    private var headerDataBytes = 0L
+
     init {
         val parent = File(path).parentFile
         if (parent != null && !parent.exists() && !parent.mkdirs())
@@ -58,9 +62,24 @@ constructor(
         try {
             current.write(pcm16le)
             dataBytes += pcm16le.size
+            if (dataBytes - headerDataBytes >= sampleRate * channels * 2L) writeHeader(current)
         } catch (e: IOException) {
             Log.w("FaceclawWavRecorder", "append failed", e)
         }
+    }
+
+    /** Rewrite the header to cover the PCM written so far, leaving the position at the end. */
+    private fun writeHeader(target: RandomAccessFile) {
+        val header =
+            BinaryEncoding.wavHeader(
+                minOf(dataBytes, Int.MAX_VALUE.toLong()).toInt(),
+                sampleRate,
+                channels,
+            )
+        target.seek(0)
+        target.write(header)
+        target.seek(header.size + dataBytes)
+        headerDataBytes = dataBytes
     }
 
     @Synchronized fun getDurationMs(): Long = dataBytes * 1000L / (sampleRate * channels * 2L)
@@ -72,16 +91,7 @@ constructor(
         val current = file ?: return dataBytes
         file = null
         try {
-            current.use {
-                it.seek(0)
-                it.write(
-                    BinaryEncoding.wavHeader(
-                        minOf(dataBytes, Int.MAX_VALUE.toLong()).toInt(),
-                        sampleRate,
-                        channels,
-                    )
-                )
-            }
+            current.use { writeHeader(it) }
         } catch (e: IOException) {
             Log.w("FaceclawWavRecorder", "finish failed", e)
         }

@@ -8,11 +8,9 @@ import { type InputEvent } from "../../ui/gestures";
 import { type Layer, type LayerContext } from "../../ui/layers";
 import { lineStep } from "../../ui/metrics";
 import {
-  NOTIFICATION_CONTENT_X,
   createNotificationActionMenu,
   drawNotificationHeader,
-  notificationActionMenuBox,
-  notificationContentWidth,
+  notificationDetailLayout,
 } from "../../ui/notifications";
 import { type GlucoseRise } from "./missed-bolus-detector";
 import {
@@ -25,7 +23,6 @@ import {
 
 const ICON_SIZE = 24;
 const GRAPH_GAP = 6;
-const GRAPH_BOTTOM_MARGIN = 12;
 const MIN_GRAPH_HEIGHT = 32;
 
 type ActionItem = { label: string; run: () => void };
@@ -56,13 +53,15 @@ export class MissedBolusNotificationLayer implements Layer {
   paint(ctx: LayerContext): GrayImage {
     const font = getDefaultSmallFont();
     const step = lineStep(font);
-    const { width, height } = ctx.stack.getBaseSize();
-    const image = new GrayImage(width, height, 0);
-    const contentX = NOTIFICATION_CONTENT_X;
-    const contentWidth = notificationContentWidth(width);
+    const viewport = ctx.stack.getBaseSize();
+    const image = new GrayImage(viewport.width, viewport.height, 0);
+    // The same columns as a notification's detail view, inside the padding
+    // suggested for the edges of whatever hosts this (the shell's modal).
+    const layout = notificationDetailLayout(viewport);
+    const { contentX, contentWidth } = layout;
     const nowMs = Date.now();
 
-    let y = drawNotificationHeader(image, font, renderIcon("nightscout", ICON_SIZE), `Nightscout  ${formatRelativeTime(this.postedAtMs)}`);
+    let y = drawNotificationHeader(image, font, renderIcon("nightscout", ICON_SIZE), `Nightscout  ${formatRelativeTime(this.postedAtMs)}`, layout);
     image.drawText(font, contentX, y, "Missed bolus?", 230);
     y += step;
     const minutes = Math.round((this.rise.latestMs - this.rise.onsetMs) / 60_000);
@@ -90,12 +89,12 @@ export class MissedBolusNotificationLayer implements Layer {
       y += step;
     }
     const graphTop = y + GRAPH_GAP;
-    const graphHeight = height - GRAPH_BOTTOM_MARGIN - graphTop;
+    const graphHeight = layout.bottom - graphTop;
     if (graphHeight >= MIN_GRAPH_HEIGHT) {
       drawNightscoutGraph(image, { x: contentX, y: graphTop, width: contentWidth, height: graphHeight }, nightscout, nowMs, font);
     }
 
-    this.menu.paint(image, notificationActionMenuBox(width, height), ctx.stack.isFocused());
+    this.menu.paint(image, layout.menuBox, ctx.stack.isFocused());
     return image;
   }
 

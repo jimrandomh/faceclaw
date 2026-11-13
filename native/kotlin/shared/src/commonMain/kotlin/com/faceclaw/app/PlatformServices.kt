@@ -20,3 +20,33 @@ expect fun fileLength(path: String): Long
 expect fun deleteFile(path: String): Boolean
 
 expect fun renameFile(from: String, to: String): Boolean
+
+/** A file being written front to back whose earlier bytes can still be patched (container headers). */
+interface SeekableOutput {
+    /** Bytes appended so far. */
+    val size: Long
+
+    /** Appends [length] bytes of [bytes] from [offset]. */
+    fun write(bytes: ByteArray, offset: Int, length: Int)
+
+    /** Overwrites bytes already written, at [position]; later appends still go to the end. */
+    fun writeAt(position: Long, bytes: ByteArray)
+
+    fun close()
+}
+
+/** A file read at arbitrary positions without loading it whole. */
+interface SeekableInput {
+    val length: Long
+
+    /** Reads up to [length] bytes at [position] into [buffer]; returns the count read (short only at the end). */
+    fun readAt(position: Long, buffer: ByteArray, offset: Int, length: Int): Int
+
+    fun close()
+}
+
+/** Creates (or truncates) [path] for writing; parent directories must exist. Throws when it cannot. */
+expect fun openFileOutput(path: String): SeekableOutput
+
+/** Opens [path] for reading. Throws when it cannot. */
+expect fun openFileInput(path: String): SeekableInput

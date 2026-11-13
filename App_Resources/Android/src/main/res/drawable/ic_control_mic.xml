@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Microphone icon for the main page's tab-bar wakeword button.
+<!-- Microphone icon for the main page's voice-input (wakeword) button.
      Converted from ~/Downloads/noun-microphone-1368757.svg (Noun Project
-     icon #1368757); base fill is overridden by tint-color in app.css. -->
+     icon #1368757); base fill is overridden by tint-color in remote-controls.css. -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="24dp"
     android:height="24dp"

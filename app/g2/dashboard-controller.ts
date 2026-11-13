@@ -54,7 +54,7 @@ import { type GlanceEvent } from "./glance-state";
 import { isPreviewOnlyMode } from "../phone-ui/onboarding-state";
 import { claimGlassesOnboardingAutoLaunch, ONBOARDING_APP_ID } from "../apps/onboarding/onboarding-progress";
 import { beginRenderPass, endRenderPass } from "../util/render-freshness";
-import { voiceControlBridge } from "../native/voice-control";
+import { VoiceReplay, voiceControlBridge } from "../native/voice-control";
 import { voiceActivity } from "../ui/shell/voice-activity";
 import { GrayImage } from "../graphics/image";
 import { flattenPlanesWithDraws, planesFingerprint, type Plane } from "../graphics/plane";
@@ -75,10 +75,11 @@ import { ALL_APPS } from "../apps/all-apps";
 import { type AppContext, type AppDefinition, type AppLaunchParams, type TextEditorHost } from "../apps/app-definition";
 import { type InProcessAppOptions, type InProcessWindow } from "../ui/shell/in-process-window";
 import { loadPersistedOpenApps, savePersistedOpenApps } from "../ui/shell/open-apps-persistence";
-import { appViewportRect, isOnSwitcherEdge, screenHeight, screenWidth, sidebarStripVisible, type ScreenRect, type WindowHeightMode } from "../ui/shell/geometry";
-import { type ContinuousCaptureOptions, type LayerActions, type TextSettingsEditToggle, type TranscriptionChoice } from "../ui/layers";
+import { appViewportRect, isOnSwitcherEdge, screenHeight, screenWidth, sidebarStripVisible, windowEdges, type ScreenRect, type WindowHeightMode } from "../ui/shell/geometry";
+import { sameEdges } from "../ui/viewport";
+import { type ContinuousCaptureOptions, type LayerActions, type MicCount, type TextSettingsEditToggle, type TranscriptionChoice } from "../ui/layers";
 import { type KeyboardInputSession } from "../ui/shell/keyboard-input";
-import { appSwitcherPositionSetting, glassesModelName, glassesTypeSetting, statusBarPositionSetting, statusBarVisibilitySetting, windowBorderSetting, assistantAllowProactiveSetting, assistantBackendSetting, assistantBridgeHostSetting, assistantBridgePortSetting, assistantBridgeTokenSetting, getBrightnessPreferences, displayLayoutSetting, navigateDisplayLayoutSetting, terminalDisplayLayoutSetting, elevenLabsApiKeySetting, getStringSettingById, openAiApiKeySetting, nightscoutApiTokenSetting, firmwareDebugFlagsSetting, whisperServerApiKeySetting, whisperServerLanguageSetting, whisperServerModelSetting, whisperServerUrlSetting, lockScreenEnabledSetting, nightscoutSiteUrlSetting, onAnySettingChanged, previewColorSetting, effectiveRingConnectionMode, type RingConnectionMode, saveVoiceRecordingsSetting, sonioxApiKeySetting, screenTimeoutSetting, screenTimeoutSettingToMs, shouldPopUpNewNotification, suspendEvenHubWhenScreenOffSetting, voiceProviderSetting, wakeWordActionSetting, type ConfigSettingString } from "../ui/dashboard-settings";
+import { appSwitcherPositionSetting, glassesModelName, glassesTypeSetting, statusBarPositionSetting, statusBarVisibilitySetting, windowBorderSetting, assistantAllowProactiveSetting, assistantBackendSetting, assistantBridgeHostSetting, assistantBridgePortSetting, assistantBridgeTokenSetting, getBrightnessPreferences, displayLayoutSetting, navigateDisplayLayoutSetting, terminalDisplayLayoutSetting, elevenLabsApiKeySetting, getStringSettingById, openAiApiKeySetting, nightscoutApiTokenSetting, firmwareDebugFlagsSetting, whisperServerApiKeySetting, whisperServerLanguageSetting, whisperServerModelSetting, whisperServerUrlSetting, lockScreenEnabledSetting, nightscoutSiteUrlSetting, onAnySettingChanged, previewColorSetting, effectiveRingConnectionMode, type RingConnectionMode, saveRecordingSetting, sonioxApiKeySetting, screenTimeoutSetting, screenTimeoutSettingToMs, shouldPopUpNewNotification, suspendEvenHubWhenScreenOffSetting, voiceProviderSetting, wakeWordActionSetting, type ConfigSettingString } from "../ui/dashboard-settings";
 import { isIgnoringBatteryOptimizations, requestIgnoreBatteryOptimizations } from "../native/battery-optimization";
 import {
   getInstalledEvenHubAppById,
@@ -98,6 +99,8 @@ import { createNotificationsAppWindow, NOTIFICATIONS_SURFACE_ID, NOTIFICATIONS_W
 import { isInstalledPackagePresent } from "../apps/evenhub/updates";
 import { wearerVerificationOptions } from "../apps/microphones/speakers";
 import { micSession } from "../apps/microphones/mic-session";
+import { micArrayCaptureConfig, micControlSupported } from "../apps/microphones/mic-control";
+import { encodeMicControl } from "../apps/microphones/mic-protocol";
 import {
   chargingPreviewMessage,
   glassesDisplayAsleep,
@@ -111,8 +114,6 @@ type ConnectionPhase = "disconnected" | "connecting" | "connected" | "charging" 
 
 export type DashboardSnapshot = {
   phase: ConnectionPhase;
-  /** Last-known battery levels: the glasses, their charging case, the R1 ring and a Wear OS watch. */
-  batteries: ReturnType<typeof shell.getBatteryLevels>;
   status: string;
   displayPreview: ImageSource | null;
   /**
@@ -155,7 +156,7 @@ export type DashboardSnapshot = {
   previewMode: boolean;
   /**
    * The foreground glasses window's EvenHub phone UI, when it can be opened
-   * (the action bar's app-icon button); null otherwise.
+   * (the app-icon button under the mirror); null otherwise.
    */
   evenHubPhoneUi: PhoneUiButton | null;
 };
@@ -203,14 +204,16 @@ const launchableApps = () => ALL_APPS.filter((app) => app.showInLauncher !== fal
  * screen, the display mode's size (a band's position only moves windows), whether the app switcher
  * takes width beside windows, height below them or neither (a popup), and
  * the chrome rows each window loses to it: below them, whether the status
- * bar joins the row (dropping the top bar); with a popup, whether the
- * status bar keeps rows of its own and the window frame (where the status
- * bar goes only moves windows).
+ * bar joins the row (dropping the top bar, for the window frame's top row
+ * if it has a frame); with a popup, whether the status bar keeps rows of its
+ * own and the window frame (where the status bar goes only moves windows).
  */
 function viewportSizesKey(): string {
   const position = appSwitcherPositionSetting.get();
-  const switcher = position === "bottom" ? `row|${statusBarPositionSetting.get()}`
-    : position === "popup" ? `popup|${statusBarVisibilitySetting.get()}|${windowBorderSetting.get()}`
+  const statusBar = statusBarPositionSetting.get();
+  const framed = windowBorderSetting.get() === "all";
+  const switcher = position === "bottom" ? `row|${statusBar}|${statusBar === "bottom" && framed}`
+    : position === "popup" ? `popup|${statusBarVisibilitySetting.get()}|${framed}`
     : "strip";
   const layout = displayLayoutSetting.get();
   return `${screenWidth()}x${screenHeight()}|${layout.startsWith("band-") ? "band" : layout}|${switcher}`;
@@ -412,6 +415,7 @@ class DashboardController {
       startContinuousVoiceCapture: (client: string, options?: ContinuousCaptureOptions) =>
         this.startContinuousVoiceCapture(client, options),
       stopContinuousVoiceCapture: (client: string) => this.stopContinuousVoiceCapture(client),
+      openVoiceReplay: (path: string) => this.openVoiceReplay(path),
       playBuzzerSequence: (payload: Uint8Array) => this.playBuzzerSequence(payload),
     };
     this.sharedActions = sharedActions;
@@ -428,7 +432,7 @@ class DashboardController {
       launchApp: (appId) => this.launchApp(appId),
       requestShellRender: () => this.requestShellRender(),
     });
-    // The action bar's EvenHub phone-UI button hides while that UI is showing.
+    // The main page's EvenHub phone-UI button hides while that UI is showing.
     onPhoneShownChanged(() => this.emit());
     shell.configure({
       // A connected Neural Band offers the Handwriting dialog (see app/g2/neural-band.ts).
@@ -485,11 +489,14 @@ class DashboardController {
       this.syncVoiceWake();
       // Display mode size first: a reflow repositions every surface too, so
       // the band-position check after it then has nothing left to do.
-      this.applyDisplayModeIfChanged();
+      const resized = this.applyDisplayModeIfChanged();
       this.applyVerticalPositionIfChanged();
-      this.applyAppLayoutsIfChanged();
+      const appsResized = this.applyAppLayoutsIfChanged();
+      // Either reflow hands windows their new edges along with their size.
+      if (!resized && !appsResized) this.applyWindowEdgesIfChanged();
       this.syncAssistantBridgeIfChanged();
       this.syncLockScreenSettingIfChanged();
+      this.syncContinuousRecording();
       // A Preview color or scaling change should show on the mirror at once,
       // not at the next composited frame (cheap: floor-limited, dedup'd on
       // the Java side).
@@ -592,9 +599,9 @@ class DashboardController {
    * that support resizing receive the new viewport. Other worker windows are
    * closed and launched again at the new size.
    */
-  private applyDisplayModeIfChanged(): void {
+  private applyDisplayModeIfChanged(): boolean {
     const sizes = viewportSizesKey();
-    if (sizes === this.lastViewportSizes) return;
+    if (sizes === this.lastViewportSizes) return false;
     this.lastViewportSizes = sizes;
     // The reflow below reconfigures every surface, covering any move too.
     this.lastWindowPlacement = windowPlacementKey();
@@ -626,6 +633,22 @@ class DashboardController {
     })().catch((error) => {
       this.appendLog(`display mode change failed: ${this.formatError(error)}`);
     });
+    return true;
+  }
+
+  /**
+   * A setting changed what some windows' edges touch (geometry.ts
+   * windowEdges: a border line, or blank space) without resizing them, as
+   * the Border setting does under a top status bar: those windows lay out
+   * again with the padding their new edges suggest. Their surfaces stay as
+   * they are.
+   */
+  private applyWindowEdgesIfChanged(): void {
+    for (const window of Array.from(shell.getWindows())) {
+      const laidOut = window.layoutSize?.();
+      if (!laidOut || !window.relayout || sameEdges(laidOut.edges, windowEdges(window.appId))) continue;
+      window.relayout();
+    }
   }
 
   /**
@@ -674,10 +697,10 @@ class DashboardController {
     };
   }
 
-  private applyAppLayoutsIfChanged(): void {
+  private applyAppLayoutsIfChanged(): boolean {
     const layouts = this.appLayouts();
     const changed = Object.keys(layouts).filter((appId) => layouts[appId] !== this.lastAppLayouts[appId]);
-    if (!changed.length) return;
+    if (!changed.length) return false;
     this.lastAppLayouts = layouts;
     void (async () => {
       for (const window of Array.from(shell.getWindows())) {
@@ -688,6 +711,7 @@ class DashboardController {
       shell.foregroundWindow()?.requestRender();
       this.requestShellRender();
     })().catch((error) => this.appendLog(`app layout change failed: ${this.formatError(error)}`));
+    return true;
   }
 
   private applyVerticalPositionIfChanged(): void {
@@ -1216,11 +1240,10 @@ class DashboardController {
       alarmReliabilityMessage: this.alarmReliabilityMessage,
       previewMode: this.isPreviewDisplayActive(),
       evenHubPhoneUi: phoneUiButton(),
-      batteries: shell.getBatteryLevels(),
     };
   }
 
-  /** Overlay an EvenHub app's phone UI (the action bar's app-icon button). */
+  /** Overlay an EvenHub app's phone UI (the app-icon button under the mirror). */
   showEvenHubPhoneUi(windowId: string): void {
     showEvenHubPhoneUi(windowId);
   }
@@ -2191,12 +2214,14 @@ class DashboardController {
 
   private startContinuousVoiceCapture(client: string, options: ContinuousCaptureOptions = {}): void {
     this.continuousClients.set(client, options);
+    this.syncContinuousRecording();
     this.retargetContinuousCapture();
     this.ensureContinuousCapture(true);
   }
 
   private stopContinuousVoiceCapture(client: string): void {
     if (!this.continuousClients.delete(client)) return;
+    this.syncContinuousRecording();
     if (this.continuousClients.size > 0) {
       // The window that needed its own provider may be the one that left.
       this.retargetContinuousCapture();
@@ -2222,6 +2247,18 @@ class DashboardController {
     void this.beginVoiceCapture("continuous").finally(() => this.syncContinuousClaim());
   }
 
+  /**
+   * Record to the first client's requested name while Save Recording is on
+   * (it is toggled from those windows' menus, so this also runs when a
+   * setting changes).
+   */
+  private syncContinuousRecording(): void {
+    const name = saveRecordingSetting.get()
+      ? Array.from(this.continuousClients.values(), (options) => options.recordAs).find(Boolean) ?? ""
+      : "";
+    voiceControlBridge.recordTo(name);
+  }
+
   /** Move a running continuous capture onto the provider its windows now call for. */
   private retargetContinuousCapture(): void {
     voiceControlBridge.retargetContinuousCapture(this.voiceCaptureOptions(this.communicator));
@@ -2233,6 +2270,30 @@ class DashboardController {
       if (options.transcription) return options.transcription;
     }
     return undefined;
+  }
+
+  /**
+   * How many of the glasses' microphones the continuous-capture windows call
+   * for (the most any asks for), where the glasses can stream them
+   * separately: G2 with the microphone channel in use. Otherwise 1, the
+   * mixed stream.
+   */
+  private continuousMics(): MicCount {
+    if (glassesTypeSetting.get() !== "g2" || !micControlSupported()) return 1;
+    let mics: MicCount = 1;
+    for (const options of this.continuousClients.values()) {
+      if ((options.mics ?? 1) > mics) mics = options.mics!;
+    }
+    return mics;
+  }
+
+  /**
+   * A recording as a capture of its own (see VoiceReplay), transcribed with
+   * the provider and processing settings a microphone capture would get.
+   * "My voice only" is left out: a recording is of whoever spoke.
+   */
+  private openVoiceReplay(path: string): VoiceReplay {
+    return new VoiceReplay(path, () => ({ ...this.voiceCaptureOptions(null), speakerVerification: undefined }));
   }
 
   /**
@@ -2260,9 +2321,26 @@ class DashboardController {
     // Otherwise only Whisper server is told a language (its own setting).
     const choice = this.transcriptionChoice();
     const provider = choice?.provider ?? voiceProviderSetting.get();
+    // Separate microphones only come from connected glasses.
+    const mics = communicator ? this.continuousMics() : 1;
+    const micConfig = mics === 1 ? null : micArrayCaptureConfig(mics);
     return {
       communicator: communicator?.getNativeCommunicator() ?? null,
       usePhoneMic: communicator === null,
+      micArray: micConfig ? { configure: encodeMicControl("configure", micConfig) } : null,
+      // Stored in a recording of the capture (see Save Recording).
+      captureInfo: {
+        glasses: communicator ? glassesModelName() : null,
+        mics,
+        micConfig: micConfig && {
+          source: micConfig.source,
+          channelMask: micConfig.channelMask,
+          codec: micConfig.codec,
+          format: micConfig.format,
+          sampleRateHz: micConfig.sampleRateHz,
+          directionDetection: micConfig.beamform,
+        },
+      },
       provider,
       language: choice ? choice.language : provider === "whisper-server" ? whisperServerLanguageSetting.get() : "",
       elevenLabsApiKey: elevenLabsApiKeySetting.get(),
@@ -2271,7 +2349,6 @@ class DashboardController {
       whisperServerUrl: whisperServerUrlSetting.get(),
       whisperServerModel: whisperServerModelSetting.get(),
       whisperServerApiKey: whisperServerApiKeySetting.get(),
-      saveRecording: saveVoiceRecordingsSetting.get(),
       // "My voice only" (Microphones app): verify command utterances
       // against the enrolled wearer voice-print; non-matching speakers'
       // finals are suppressed by the bridge.
@@ -2704,10 +2781,11 @@ class DashboardController {
     if (!this.openAppsRestored || this.suppressOpenAppsPersist) return;
     const open: string[] = [];
     for (const window of shell.getWindows()) {
-      if (window.appId === "launcher") continue;
+      if (window.appId === "launcher" || window.restoresApp === false) continue;
       if (!open.includes(window.appId)) open.push(window.appId);
     }
-    savePersistedOpenApps({ open, foreground: shell.foregroundWindow()?.appId ?? null });
+    const foreground = shell.foregroundWindow();
+    savePersistedOpenApps({ open, foreground: foreground && foreground.restoresApp !== false ? foreground.appId : null });
   }
 
   /**

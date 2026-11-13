@@ -35,6 +35,25 @@ test('the display mode starts as the middle band, or carries over the old mode a
   assert.equal(api.displayLayoutSetting.get(), 'band-bottom');
 });
 
+test('the border starts all around, or as the status line a popup switcher\'s old Window border toggle left', () => {
+  const border = (entries) => settingsFixture(new Map(entries)).windowBorderSetting.get();
+  assert.equal(border([]), 'all');
+  assert.equal(border([['display.appSwitcherPosition', 'popup']]), 'all');
+  assert.equal(border([['display.appSwitcherPosition', 'popup'], ['display.windowBorder', true]]), 'all');
+  assert.equal(border([['display.appSwitcherPosition', 'popup'], ['display.windowBorder', false]]), 'status');
+  // A bottom row's windows had the border whatever the toggle said.
+  assert.equal(border([['display.windowBorder', false]]), 'all');
+  // Once set, the setting is its own, for either switcher.
+  const store = new Map([['display.appSwitcherPosition', 'popup'], ['display.windowBorder', false]]);
+  const api = settingsFixture(store);
+  assert.equal(api.windowBorderSetting.displayValue(), 'Status line');
+  api.windowBorderSetting.set('none');
+  assert.equal(store.get('display.border'), 'none');
+  api.appSwitcherPositionSetting.set('bottom');
+  assert.equal(api.windowBorderSetting.get(), 'none');
+  assert.deepEqual(Array.from(api.windowBorderSetting.values, (value) => api.windowBorderSetting.displayValue(value)), ['All around', 'Status line', 'None']);
+});
+
 test('the glasses model name follows the paired glasses type', () => {
   const model = (entries) => settingsFixture(new Map(entries)).glassesModelName();
   assert.equal(model([]), 'G2');

@@ -22,6 +22,7 @@ import type { MenuItem } from "../../ui/menu";
 import { WindowMenu } from "../../ui/window-menu";
 import { DatePickerLayer } from "../../ui/date-picker";
 import type { WorkerAppMessage, WorkerAppReply } from "../../ui/shell/worker-window";
+import type { Viewport } from "../../ui/viewport";
 import type { ToolResult, ToolSpec } from "../../assistant/tool-registry";
 import { GESTURE_CLICK, type InputEvent } from "../../ui/gestures";
 import {
@@ -29,7 +30,7 @@ import {
   roamGraphNameSetting,
   type ConfigSettingString,
 } from "../../ui/dashboard-settings";
-import { DocumentView } from "../../ui/document/document-view";
+import { DocumentView, type DocumentViewSize } from "../../ui/document/document-view";
 import { docNodePageLink, type DocNode } from "../../ui/document/document-model";
 import {
   createBlock,
@@ -56,9 +57,18 @@ import {
 
 declare const global: any;
 
-const HEADER_HEIGHT = 30;
-const BOTTOM_MARGIN = 6;
-const DOC_MARGIN = 6;
+/**
+ * The fixed header, measured down from the padding suggested for the
+ * window's top edge: the rule under its title line, and its bottom, where
+ * the page's body starts.
+ */
+const HEADER_RULE_Y = 20;
+const HEADER_HEIGHT = 24;
+/** The header's title starts this far right of the rule's left end. */
+const TITLE_INSET = 2;
+/** Message text (the body messages, the setting-edit screen): its indent from the padding at each side, and its drop below the header. */
+const MESSAGE_INSET = 12;
+const MESSAGE_DROP = 16;
 /** Reload the shown page when it is foregrounded and older than this. */
 const STALE_AFTER_MS = 60_000;
 
@@ -70,6 +80,12 @@ type RoamWindow = {
   title: string;
   viewportWidth: number;
   viewportHeight: number;
+  /**
+   * The viewport as the shell last sent it: besides the size above, what each
+   * edge touches and the padding suggested there, which the header and the
+   * document are placed by (see documentBox).
+   */
+  viewport: Viewport;
   foreground: boolean;
   focused: boolean;
   menu: WindowMenu | null;
@@ -181,13 +197,11 @@ global.onmessage = (event: { data: WorkerAppMessage }) => {
         title: message.title,
         viewportWidth: message.viewport.width,
         viewportHeight: message.viewport.height,
+        viewport: message.viewport,
         foreground: false,
         focused: false,
         menu: null,
-        view: new DocumentView(
-          message.viewport.width - DOC_MARGIN * 2,
-          message.viewport.height - HEADER_HEIGHT - BOTTOM_MARGIN,
-        ),
+        view: new DocumentView(documentBox(message.viewport)),
         lastSubmittedFingerprint: "",
       };
       post({ type: "set-tools", windowId: message.windowId, tools: ROAM_TOOLS });
@@ -258,7 +272,8 @@ global.onmessage = (event: { data: WorkerAppMessage }) => {
       if (!window || window.windowId !== message.windowId) break;
       window.viewportWidth = message.viewport.width;
       window.viewportHeight = message.viewport.height;
-      window.view.resize(message.viewport.width - DOC_MARGIN * 2, message.viewport.height - HEADER_HEIGHT - BOTTOM_MARGIN);
+      window.viewport = message.viewport;
+      window.view.resize(documentBox(message.viewport));
       window.menu?.resize(message.viewport);
       window.lastSubmittedFingerprint = "";
       render();
@@ -357,7 +372,7 @@ function windowMenu(win: RoamWindow): WindowMenu {
       post,
       title: () => win.title,
       items: () => menuItems(),
-      size: { width: win.viewportWidth, height: win.viewportHeight },
+      size: win.viewport,
       paintBase: () => paintContent(win),
       isFocused: () => win.focused,
     });
@@ -631,65 +646,97 @@ function paint(win: RoamWindow): Plane[] {
   );
 }
 
+/** Bottom of the fixed header, where the page's body starts. */
+function headerBottom(viewport: Viewport): number {
+  return viewport.padding.top + HEADER_HEIGHT;
+}
+
+/**
+ * The document's region: from the header down to the window's bottom edge,
+ * between the padding suggested for its sides. The document scrolls, so the
+ * bottom edge's padding goes inside it, after its last line, and lines
+ * scrolled past use the room right up to the edge.
+ */
+function documentBox(viewport: Viewport): DocumentViewSize & { x: number; y: number } {
+  const { width, height, padding } = viewport;
+  const y = headerBottom(viewport);
+  return {
+    x: padding.left,
+    y,
+    width: Math.max(0, width - padding.left - padding.right),
+    height: Math.max(0, height - y),
+    padBottom: padding.bottom,
+  };
+}
+
+/** Where message text starts and how wide it may run. */
+function messageText(viewport: Viewport): { x: number; width: number } {
+  const { width, padding } = viewport;
+  return { x: padding.left + MESSAGE_INSET, width: width - padding.left - padding.right - 2 * MESSAGE_INSET };
+}
+
+/**
+ * The header's title, at the padding suggested for the window's top edge,
+ * and the rule under it, which spans the window between the side padding.
+ */
+function drawHeader(image: GrayImage, viewport: Viewport, title: string): void {
+  const { width, padding } = viewport;
+  image.drawText(smallFont, padding.left + TITLE_INSET, padding.top, title, 225);
+  const ruleY = padding.top + HEADER_RULE_Y;
+  image.drawLine(padding.left, ruleY, width - padding.right - 1, ruleY, 40);
+}
+
 /** The "type on the phone" screen shown while a Roam setting is being edited. */
 function paintSettingEdit(win: RoamWindow, setting: ConfigSettingString): GrayImage {
+  const { height, padding } = win.viewport;
   const image = new GrayImage(win.viewportWidth, win.viewportHeight, 0);
   const step = smallFont.lineHeight + 2;
-  image.drawText(smallFont, DOC_MARGIN + 2, 6, setting.glassesEditTitle, 225);
-  image.drawLine(DOC_MARGIN, HEADER_HEIGHT - 4, win.viewportWidth - DOC_MARGIN, HEADER_HEIGHT - 4, 40);
-  const messageY = HEADER_HEIGHT + 16;
-  const lines = wrapText(smallFont, "Type the value in the phone app, or use voice input.", win.viewportWidth - DOC_MARGIN * 2 - 24);
+  drawHeader(image, win.viewport, setting.glassesEditTitle);
+  const text = messageText(win.viewport);
+  const messageY = headerBottom(win.viewport) + MESSAGE_DROP;
+  const lines = wrapText(smallFont, "Type the value in the phone app, or use voice input.", text.width);
   for (let index = 0; index < lines.length; index++) {
-    image.drawText(smallFont, DOC_MARGIN + 12, messageY + index * step, lines[index]!, 190);
+    image.drawText(smallFont, text.x, messageY + index * step, lines[index]!, 190);
   }
   // The live value, unmasked so the user can check what they typed.
   const value = setting.get();
   const valueY = messageY + (lines.length + 1) * step;
-  image.drawText(
-    smallFont,
-    DOC_MARGIN + 12,
-    valueY,
-    truncateText(smallFont, value || "(empty)", win.viewportWidth - DOC_MARGIN * 2 - 24),
-    value ? 225 : 130,
-  );
-  image.drawText(smallFont, DOC_MARGIN + 12, win.viewportHeight - smallFont.lineHeight - 12, `${GESTURE_CLICK} done`, 110);
+  image.drawText(smallFont, text.x, valueY, truncateText(smallFont, value || "(empty)", text.width), value ? 225 : 130);
+  // The hint line rests on the padding suggested for the window's bottom edge.
+  image.drawText(smallFont, text.x, height - padding.bottom - smallFont.lineHeight, `${GESTURE_CLICK} done`, 110);
   return image;
 }
 
 function paintContent(win: RoamWindow): GrayImage {
+  const { width, padding } = win.viewport;
   const image = new GrayImage(win.viewportWidth, win.viewportHeight, 0);
   const title = currentRef?.title ?? "Roam";
   const status = loading ? "Loading..." : pageMissing ? "(new page)" : "";
   const statusWidth = status ? smallFont.measureText(status) + 12 : 0;
-  image.drawText(
-    smallFont,
-    DOC_MARGIN + 2,
-    6,
-    truncateText(smallFont, title, win.viewportWidth - DOC_MARGIN * 2 - statusWidth - 4),
-    225,
-  );
+  const titleWidth = width - padding.left - padding.right - statusWidth - 2 * TITLE_INSET;
+  drawHeader(image, win.viewport, truncateText(smallFont, title, titleWidth));
   if (status) {
-    image.drawText(smallFont, win.viewportWidth - DOC_MARGIN - smallFont.measureText(status), 6, status, 130);
+    image.drawText(smallFont, width - padding.right - smallFont.measureText(status), padding.top, status, 130);
   }
-  image.drawLine(DOC_MARGIN, HEADER_HEIGHT - 4, win.viewportWidth - DOC_MARGIN, HEADER_HEIGHT - 4, 40);
 
   if (!isRoamConfigured()) {
-    drawBodyMessage(image, win, "Set the Roam graph name and API token: tap, then hold, for the menu; pick Set graph name and Set API token.");
+    drawBodyMessage(image, win.viewport, "Set the Roam graph name and API token: tap, then hold, for the menu; pick Set graph name and Set API token.");
   } else if (errorMessage) {
-    drawBodyMessage(image, win, `${errorMessage}\n\n${GESTURE_CLICK} retry`);
+    drawBodyMessage(image, win.viewport, `${errorMessage}\n\n${GESTURE_CLICK} retry`);
   } else if (currentPage && currentPage.children.length === 0 && !loading) {
-    drawBodyMessage(image, win, "Nothing here yet. Use voice input to add a todo.");
+    drawBodyMessage(image, win.viewport, "Nothing here yet. Use voice input to add a todo.");
   } else {
-    win.view.paint(image, DOC_MARGIN, HEADER_HEIGHT, win.focused);
+    const box = documentBox(win.viewport);
+    win.view.paint(image, box.x, box.y, win.focused);
   }
   return image;
 }
 
-function drawBodyMessage(image: GrayImage, win: RoamWindow, message: string): void {
-  const lines = wrapText(smallFont, message, win.viewportWidth - DOC_MARGIN * 2 - 24);
-  let y = HEADER_HEIGHT + 16;
-  for (const line of lines) {
-    image.drawText(smallFont, DOC_MARGIN + 12, y, line, 190);
+function drawBodyMessage(image: GrayImage, viewport: Viewport, message: string): void {
+  const text = messageText(viewport);
+  let y = headerBottom(viewport) + MESSAGE_DROP;
+  for (const line of wrapText(smallFont, message, text.width)) {
+    image.drawText(smallFont, text.x, y, line, 190);
     y += smallFont.lineHeight + 2;
   }
 }

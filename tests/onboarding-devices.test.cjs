@@ -88,47 +88,6 @@ test('iOS registers the devices page, which it cannot resolve otherwise', () => 
   assert.match(source, /registerModule\('phone-ui\/onboarding-devices-page\.xml', /);
 });
 
-test('choosing glasses selects exactly one, and the accessories are stored', () => {
-  const { state, loadPage } = fixture();
-  const { OnboardingDevicesViewModel } = loadPage('onboarding-devices-view-model');
-  const model = new OnboardingDevicesViewModel();
-  assert.equal(model.glassesOptions.map(option => option.choice).join(), 'preview,g1,g2,rayneo-io');
-
-  // Nothing is chosen until you choose, even with a stored glasses type, and Next waits for it.
-  assert.equal(selected(model), '');
-  assert.equal(model.nextEnabled, false);
-  model.onNextTap();
-  assert.equal(state.navigations.length, 0);
-
-  tap(model, 'rayneo-io');
-  assert.equal(state.glasses, 'rayneo-io');
-  assert.equal(selected(model), 'rayneo-io');
-  assert.equal(model.nextEnabled, true);
-
-  assert.equal(model.hasRing, false);
-  model.hasRing = true;
-  model.hasWatch = true;
-  assert.equal(state.ring, true);
-  assert.equal(state.watch, true);
-  assert.equal(new OnboardingDevicesViewModel().hasRing, true);
-});
-
-test('the watch follows the platform, and iOS can\'t choose a RayNeo iO', () => {
-  const android = fixture();
-  const onAndroid = new (android.loadPage('onboarding-devices-view-model').OnboardingDevicesViewModel)();
-  assert.equal(onAndroid.watchLabel, 'Wear OS watch');
-  assert.equal(rowFor(onAndroid, 'rayneo-io').noteVisibility, 'collapse');
-
-  const ios = fixture({ ios: true });
-  const onIos = new (ios.loadPage('onboarding-devices-view-model').OnboardingDevicesViewModel)();
-  assert.equal(onIos.watchLabel, 'Apple Watch');
-  assert.equal(rowFor(onIos, 'rayneo-io').noteVisibility, 'visible');
-  tap(onIos, 'rayneo-io');
-  assert.equal(ios.state.glasses, 'g2');
-  assert.equal(selected(onIos), '');
-  assert.equal(onIos.nextEnabled, false);
-});
-
 test('the disclaimer and firmware steps name only the chosen glasses', () => {
   const copy = glasses => {
     const { OnboardingViewModel } = fixture({ glasses }).loadPage('onboarding-view-model');

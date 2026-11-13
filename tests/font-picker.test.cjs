@@ -1,5 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const { bordered, unbordered, edged } = require('./helpers/viewport.cjs');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
@@ -55,7 +56,9 @@ const glyphRuns = (image, f) => image.draws.filter((d) => d.kind === 'glyph' && 
 
 test('the font picker previews under its rows where they fit, else beside them, on the window either way', () => {
   // At 192 rows either fits, by the font's metrics: only the bounds are checked.
-  for (const [size, beside] of [[{ width: 576, height: 260 }, false], [{ width: 476, height: 192 }, null], [{ width: 476, height: 155 }, true]]) {
+  // Framed windows, and ones nothing borders (so no padding: the rows reach the edges).
+  for (const [size, beside] of [[bordered(576, 260), false], [bordered(476, 192), null], [bordered(476, 155), true],
+    [unbordered(576, 260), false], [unbordered(476, 155), true], [edged(576, 260, 'top', 'left'), false]]) {
     const { layers, ctx } = stackOf(size);
     picker.uiFontPickerMenuItem().onSelect(ctx);
     const image = layers[0].paint(ctx);
@@ -71,6 +74,8 @@ test('the font picker previews under its rows where they fit, else beside them, 
     const rowsRight = Math.max(...rows.map((d) => d.x)), rowsBottom = Math.max(...rows.map((d) => d.y));
     if (beside === true) assert.ok(Math.min(...sample.map((d) => d.x)) > rowsRight, 'the sample right of the rows');
     if (beside === false) assert.ok(Math.min(...sample.map((d) => d.y)) > rowsBottom, 'the sample under the rows');
+    // The rows' text keeps the same inset from wherever the padding puts their boxes.
+    assert.equal(Math.min(...rows.map((d) => d.x)), size.padding.left + 10);
   }
 });
 

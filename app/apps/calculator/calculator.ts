@@ -63,6 +63,24 @@ const CONTINUOUS_CLIENT = "calculator";
 const DICTATION_HOLDER = "calculator-dictation";
 
 // ---------------------------------------------------------------------------
+// Layout
+
+/**
+ * The column the view is laid out in: the window's width inside the padding
+ * suggested for its side edges (viewport.ts). Tabs, text, the plot and the
+ * footer all start at its left; centred text is centred in it.
+ */
+type Column = { x: number; width: number };
+
+/** Below the tabs' text top: their underline, and where the body starts. */
+const TAB_UNDERLINE_OFFSET = 20;
+const BODY_TOP_OFFSET = 31;
+/** Indent, on both sides, of wrapped body text (a failure's reason, a step's detail, an answer). */
+const BODY_INDENT = 8;
+/** The same for the prompt of an empty view, which keeps well clear of the sides. */
+const PROMPT_INDENT = 24;
+
+// ---------------------------------------------------------------------------
 // Layer
 
 export class CalculatorLayer implements Layer {
@@ -380,14 +398,17 @@ export class CalculatorLayer implements Layer {
   // Paint
 
   paint(ctx: LayerContext): GrayImage {
-    const { width, height } = ctx.stack.getBaseSize();
+    const { width, height, padding } = ctx.stack.getBaseSize();
     const image = new GrayImage(width, height, 0);
     const small = getDefaultSmallFont();
+    const column: Column = { x: padding.left, width: Math.max(0, width - padding.left - padding.right) };
 
-    this.paintTabs(image, small, width);
+    // The tabs sit at the top edge's padding and the footer at the bottom's;
+    // the body is what lies between.
+    this.paintTabs(image, small, column, padding.top);
 
-    const footerY = height - small.lineHeight - 6;
-    const bodyTop = 46;
+    const footerY = height - padding.bottom - small.lineHeight;
+    const bodyTop = padding.top + BODY_TOP_OFFSET;
     let bodyBottom = footerY - 4;
 
     // A standing offer or a running deep pass takes the rows just above the
@@ -395,35 +416,36 @@ export class CalculatorLayer implements Layer {
     const offer = this.coordinator.pendingLongRun;
     const progress = this.coordinator.longRunProgress;
     if (offer || progress) {
-      bodyBottom = this.paintLongRunPanel(image, small, width, bodyBottom, offer, progress);
+      bodyBottom = this.paintLongRunPanel(image, small, column, bodyBottom, offer, progress);
     }
 
     if (this.working) {
-      this.drawCentered(image, small, Math.round((bodyTop + bodyBottom) / 2) - 8, "Working…", 180);
+      this.drawCentered(image, small, column, Math.round((bodyTop + bodyBottom) / 2) - 8, "Working…", 180);
     } else if (this.lastFailure !== null) {
-      this.paintFailure(image, small, width, bodyTop, bodyBottom);
+      this.paintFailure(image, small, column, bodyTop, bodyBottom);
     } else if (this.mode === "explain" && this.coordinator.stepPosition !== null) {
-      this.paintExplain(image, width, bodyTop, bodyBottom);
+      this.paintExplain(image, column, bodyTop, bodyBottom);
     } else if (this.mode === "graph" && this.coordinator.lastGraph) {
-      this.paintGraph(image, small, width, bodyTop, bodyBottom);
+      this.paintGraph(image, small, column, bodyTop, bodyBottom);
     } else if (this.lastAnswer) {
-      this.paintAnswer(image, width, bodyTop, bodyBottom);
+      this.paintAnswer(image, column, bodyTop, bodyBottom);
     } else {
-      this.paintEmpty(image, small, width, bodyTop, bodyBottom);
+      this.paintEmpty(image, small, column, bodyTop, bodyBottom);
     }
 
-    image.drawText(small, 24, footerY, this.footerHints(), 110);
+    image.drawText(small, column.x, footerY, this.footerHints(), 110);
     return image;
   }
 
-  /** The three modes as tabs, plus the deg/listening status chips. */
-  private paintTabs(image: GrayImage, font: UiFont, width: number): void {
-    let x = 24;
+  /** The three modes as tabs from `y` down, plus the deg/listening status chips. */
+  private paintTabs(image: GrayImage, font: UiFont, column: Column, y: number): void {
+    let x = column.x;
+    const underlineY = y + TAB_UNDERLINE_OFFSET;
     for (const mode of CALCULATOR_MODES) {
       const label = modeLabel(mode);
       const active = mode === this.mode;
-      image.drawText(font, x, 15, label, active ? 245 : 105);
-      image.drawLine(x, 35, x + font.measureText(label), 35, active ? 200 : 30);
+      image.drawText(font, x, y, label, active ? 245 : 105);
+      image.drawLine(x, underlineY, x + font.measureText(label), underlineY, active ? 200 : 30);
       x += font.measureText(label) + 18;
     }
 
@@ -433,28 +455,28 @@ export class CalculatorLayer implements Layer {
     else if (this.continuousActive && this.foreground) chips.push("mic on");
     if (chips.length > 0) {
       const text = chips.join(" · ");
-      image.drawText(font, width - 24 - font.measureText(text), 15, text, this.dictating ? 220 : 110);
+      image.drawText(font, column.x + column.width - font.measureText(text), y, text, this.dictating ? 220 : 110);
     }
   }
 
   private paintFailure(
     image: GrayImage,
     font: UiFont,
-    width: number,
+    column: Column,
     bodyTop: number,
     bodyBottom: number,
   ): void {
-    this.paintHeardLine(image, font, width, bodyTop);
+    this.paintHeardLine(image, font, column, bodyTop);
     const top = this.lastInput ? bodyTop + lineStep(font) + 6 : bodyTop + 8;
-    const lines = wrapText(font, this.lastFailure ?? "", width - 64);
+    const lines = wrapText(font, this.lastFailure ?? "", column.width - 2 * BODY_INDENT);
     const step = lineStep(font);
     const maxLines = Math.max(1, Math.floor((bodyBottom - top) / step));
     for (let index = 0; index < Math.min(lines.length, maxLines); index++) {
-      image.drawText(font, 32, top + index * step, lines[index]!, 200);
+      image.drawText(font, column.x + BODY_INDENT, top + index * step, lines[index]!, 200);
     }
   }
 
-  private paintExplain(image: GrayImage, width: number, bodyTop: number, bodyBottom: number): void {
+  private paintExplain(image: GrayImage, column: Column, bodyTop: number, bodyBottom: number): void {
     const small = getDefaultSmallFont();
     const medium = getDefaultMediumFont();
     const position = this.coordinator.stepPosition;
@@ -463,63 +485,65 @@ export class CalculatorLayer implements Layer {
     if (!position || !step) return;
 
     let y = bodyTop + 2;
-    image.drawText(small, 24, y, `Step ${position.index + 1} of ${position.total}`, 130);
+    image.drawText(small, column.x, y, `Step ${position.index + 1} of ${position.total}`, 130);
     y += lineStep(small) + 2;
-    image.drawText(medium, 24, y, truncateText(medium, step.title, width - 48), 245);
+    image.drawText(medium, column.x, y, truncateText(medium, step.title, column.width), 245);
     y += lineStep(medium) + 2;
-    image.drawText(medium, 24, y, truncateText(medium, plain(step.expression), width - 48), 220);
+    image.drawText(medium, column.x, y, truncateText(medium, plain(step.expression), column.width), 220);
     y += lineStep(medium) + 6;
 
-    const detailLines = wrapText(small, step.detail, width - 64);
+    const detailLines = wrapText(small, step.detail, column.width - 2 * BODY_INDENT);
     const stepPitch = lineStep(small);
     const maxLines = Math.max(0, Math.floor((bodyBottom - y) / stepPitch));
     for (let index = 0; index < Math.min(detailLines.length, maxLines); index++) {
-      image.drawText(small, 32, y + index * stepPitch, detailLines[index]!, 150);
+      image.drawText(small, column.x + BODY_INDENT, y + index * stepPitch, detailLines[index]!, 150);
     }
   }
 
   private paintGraph(
     image: GrayImage,
     font: UiFont,
-    width: number,
+    column: Column,
     bodyTop: number,
     bodyBottom: number,
   ): void {
     const graph = this.coordinator.lastGraph;
     if (!graph) return;
     const headline = this.lastAnswer.split("\n")[0] ?? "";
-    image.drawText(font, 24, bodyTop, truncateText(font, headline, width - 48), 200);
+    image.drawText(font, column.x, bodyTop, truncateText(font, headline, column.width), 200);
+    // The plot's frame spans the column, so it meets the side padding itself.
     const plotTop = bodyTop + lineStep(font) + 4;
     drawGraph(image, graph, {
-      x: 18,
+      x: column.x,
       y: plotTop,
-      width: width - 36,
+      width: column.width,
       height: Math.max(2, bodyBottom - plotTop),
     });
   }
 
-  private paintAnswer(image: GrayImage, width: number, bodyTop: number, bodyBottom: number): void {
+  private paintAnswer(image: GrayImage, column: Column, bodyTop: number, bodyBottom: number): void {
     const small = getDefaultSmallFont();
-    this.paintHeardLine(image, small, width, bodyTop);
+    this.paintHeardLine(image, small, column, bodyTop);
     const top = this.lastInput ? bodyTop + lineStep(small) + 4 : bodyTop;
 
     // A short single-line answer earns the large font; anything longer drops
     // to the medium font and wraps.
     const lines = this.lastAnswer.split("\n");
     const large = getDefaultLargeFont();
-    if (lines.length === 1 && large.measureText(lines[0]!) <= width - 64) {
+    const maxWidth = column.width - 2 * BODY_INDENT;
+    if (lines.length === 1 && large.measureText(lines[0]!) <= maxWidth) {
       const y = Math.round((top + bodyBottom - large.lineHeight) / 2);
-      this.drawCentered(image, large, y, lines[0]!, 245);
+      this.drawCentered(image, large, column, y, lines[0]!, 245);
       return;
     }
     const medium = getDefaultMediumFont();
-    const wrapped = lines.flatMap((line) => wrapText(medium, line, width - 64));
+    const wrapped = lines.flatMap((line) => wrapText(medium, line, maxWidth));
     const step = lineStep(medium);
     const maxLines = Math.max(1, Math.floor((bodyBottom - top) / step));
     const shown = wrapped.slice(0, maxLines);
     let y = Math.max(top, Math.round((top + bodyBottom - shown.length * step) / 2));
     for (const line of shown) {
-      this.drawCentered(image, medium, y, line, 235);
+      this.drawCentered(image, medium, column, y, line, 235);
       y += step;
     }
   }
@@ -527,7 +551,7 @@ export class CalculatorLayer implements Layer {
   private paintEmpty(
     image: GrayImage,
     font: UiFont,
-    width: number,
+    column: Column,
     bodyTop: number,
     bodyBottom: number,
   ): void {
@@ -536,31 +560,32 @@ export class CalculatorLayer implements Layer {
       : this.listening === "continuous"
         ? `Say a problem, then "${modeLabel(this.mode).toLowerCase()} it"`
         : "Tap to say a problem — or use Voice input to type one";
-    const lines = wrapText(font, prompt, width - 96);
+    const lines = wrapText(font, prompt, column.width - 2 * PROMPT_INDENT);
     const step = lineStep(font);
     let y = Math.round((bodyTop + bodyBottom - lines.length * step) / 2);
     for (const line of lines) {
-      this.drawCentered(image, font, y, line, 150);
+      this.drawCentered(image, font, column, y, line, 150);
       y += step;
     }
   }
 
-  private paintHeardLine(image: GrayImage, font: UiFont, width: number, y: number): void {
+  private paintHeardLine(image: GrayImage, font: UiFont, column: Column, y: number): void {
     if (!this.lastInput) return;
     const label = this.textInput ? "Entered" : "Heard";
-    image.drawText(font, 24, y, label, 110);
-    const x = 24 + font.measureText(label) + 10;
-    image.drawText(font, x, y, truncateText(font, this.lastInput, width - x - 24), 160);
+    image.drawText(font, column.x, y, label, 110);
+    const x = column.x + font.measureText(label) + 10;
+    image.drawText(font, x, y, truncateText(font, this.lastInput, column.x + column.width - x), 160);
   }
 
   /**
    * The standing offer, or the live progress of an accepted run, in the two
-   * rows above the footer. Returns the new body bottom.
+   * rows above the footer, under a rule across the column. Returns the new
+   * body bottom.
    */
   private paintLongRunPanel(
     image: GrayImage,
     font: UiFont,
-    width: number,
+    column: Column,
     bodyBottom: number,
     offer: LongRunOffer | null,
     progress: LongRunProgress | null,
@@ -572,9 +597,9 @@ export class CalculatorLayer implements Layer {
         ? offerGlassesPrompt(offer).split("\n")
         : [];
     const panelTop = bodyBottom - lines.length * step - 6;
-    image.drawLine(16, panelTop, width - 16, panelTop, 40);
+    if (column.width > 0) image.drawLine(column.x, panelTop, column.x + column.width - 1, panelTop, 40);
     for (let index = 0; index < lines.length; index++) {
-      image.drawText(font, 24, panelTop + 4 + index * step, truncateText(font, lines[index]!, width - 48), 190);
+      image.drawText(font, column.x, panelTop + 4 + index * step, truncateText(font, lines[index]!, column.width), 190);
     }
     return panelTop - 2;
   }
@@ -604,8 +629,8 @@ export class CalculatorLayer implements Layer {
     ]);
   }
 
-  private drawCentered(image: GrayImage, font: UiFont, y: number, text: string, value: number): void {
-    const x = Math.max(0, Math.round((image.width - font.measureText(text)) / 2));
+  private drawCentered(image: GrayImage, font: UiFont, column: Column, y: number, text: string, value: number): void {
+    const x = column.x + Math.max(0, Math.round((column.width - font.measureText(text)) / 2));
     image.drawText(font, x, y, text, value);
   }
 }

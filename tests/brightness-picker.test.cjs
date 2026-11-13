@@ -23,6 +23,7 @@ const { BdfFont } = load('app/graphics/bdffont.ts');
 const font = BdfFont.parse(fs.readFileSync(path.join(__dirname, '../app/fonts/terminus/ter-u18n.bdf'), 'utf8'));
 const fonts = { getDefaultSmallFont: () => font };
 const layers = load('app/ui/layers.ts', {
+  './viewport': require('../.test-build/app/ui/viewport.js'),
   '../graphics/image': graphics, '../graphics/plane': plane, './gestures': gestures,
   '../native/frame-timings': { spanCurrent: (_name, paint) => paint() },
   '../graphics/screen-size': { screenWidth: () => 640, screenHeight: () => 480 },

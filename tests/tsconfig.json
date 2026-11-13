@@ -26,6 +26,7 @@
     "../app/graphics/plane.ts",
     "../app/graphics/shell-scene.ts",
     "../app/ui/metrics.ts",
+    "../app/ui/viewport.ts",
     "../app/ui/menu-core.ts",
     "../app/phone-ui/phone-gestures.ts",
     "../app/native/java-direct-buffer.ts",

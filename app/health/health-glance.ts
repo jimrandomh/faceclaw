@@ -23,6 +23,7 @@
 import { GrayImage, type UiFont } from "../graphics/image";
 import { lineStep } from "../ui/metrics";
 import { GESTURE_SCROLL } from "../ui/gestures";
+import type { Edges } from "../ui/viewport";
 import {
   drawSleepLanes,
   drawMetricChart,
@@ -47,10 +48,11 @@ import {
 } from "./health-types";
 import { stageLabel, type SleepStageName } from "./sleep-stages";
 
-const MARGIN = 10;
 const GUTTER = 14;
-/** Below this the two columns stack instead. */
-const TWO_COLUMN_MIN_WIDTH = 380;
+/** Below this content width the two columns stack instead. */
+const TWO_COLUMN_MIN_WIDTH = 360;
+/** Clear space between a page's content and its footer hint. */
+const FOOTER_GAP = 16;
 
 export type GlanceFonts = { small: UiFont; large: UiFont };
 
@@ -108,7 +110,30 @@ export type GlanceData = {
   fixture: boolean;
 };
 
-export type GlanceSize = { width: number; height: number };
+/**
+ * The window a page is painted for: its size, and the padding suggested for
+ * each of its edges (`ui/viewport.ts`), which is how far in the page's
+ * outermost content sits. A size with no padding is a window nothing borders.
+ */
+export type GlanceSize = { width: number; height: number; padding?: Edges<number> };
+
+/** The rect a page lays out in: the window inside its edge padding. */
+type Frame = { left: number; top: number; right: number; bottom: number };
+
+function frameOf(size: GlanceSize): Frame {
+  const { padding } = size;
+  return {
+    left: padding?.left ?? 0,
+    top: padding?.top ?? 0,
+    right: size.width - (padding?.right ?? 0),
+    bottom: size.height - (padding?.bottom ?? 0),
+  };
+}
+
+/** Height the footer hint takes off the bottom of a page's content: its line and the gap above it. */
+function footerHeight(fonts: GlanceFonts): number {
+  return fonts.small.lineHeight + FOOTER_GAP;
+}
 
 /** Paint whichever page the cursor is on. */
 export function drawGlancePage(
@@ -165,10 +190,11 @@ function drawHeader(
   right: string,
 ): number {
   const { small } = fonts;
-  image.drawText(small, MARGIN, MARGIN, title, INK.title);
-  drawTextRight(image, small, size.width - MARGIN, MARGIN, right, INK.label);
-  const bottom = MARGIN + small.lineHeight + 3;
-  image.drawLine(MARGIN, bottom, size.width - MARGIN, bottom, INK.axis);
+  const frame = frameOf(size);
+  image.drawText(small, frame.left, frame.top, title, INK.title);
+  drawTextRight(image, small, frame.right, frame.top, right, INK.label);
+  const bottom = frame.top + small.lineHeight + 3;
+  image.drawLine(frame.left, bottom, frame.right - 1, bottom, INK.axis);
   return bottom;
 }
 
@@ -186,8 +212,8 @@ function drawFooter(
   hint: string,
 ): void {
   const { small } = fonts;
-  const y = size.height - small.lineHeight - 2;
-  image.drawText(small, MARGIN, y, hint, INK.faint);
+  const frame = frameOf(size);
+  image.drawText(small, frame.left, frame.bottom - small.lineHeight, hint, INK.faint);
 }
 
 // ===========================================================================
@@ -220,24 +246,24 @@ function drawOverview(
 ): void {
   const { small, large } = fonts;
   const step = lineStep(small);
+  const frame = frameOf(size);
   const headerBottom = drawHeader(image, size, fonts, "HEALTH", shortDate(data.nowMs));
   const summary = data.summary;
 
   if (!summary) {
-    image.drawText(small, MARGIN, headerBottom + step, "Waiting for ring data...", INK.dim);
+    image.drawText(small, frame.left, headerBottom + step, "Waiting for ring data...", INK.dim);
     drawFooter(image, size, fonts, "");
     return;
   }
 
-  const twoColumn = size.width >= TWO_COLUMN_MIN_WIDTH;
-  const columnWidth = twoColumn
-    ? Math.floor((size.width - MARGIN * 2 - GUTTER) / 2)
-    : size.width - MARGIN * 2;
-  const rightX = twoColumn ? MARGIN + columnWidth + GUTTER : MARGIN;
+  const contentWidth = frame.right - frame.left;
+  const twoColumn = contentWidth >= TWO_COLUMN_MIN_WIDTH;
+  const columnWidth = twoColumn ? Math.floor((contentWidth - GUTTER) / 2) : contentWidth;
+  const rightX = twoColumn ? frame.left + columnWidth + GUTTER : frame.left;
   const top = headerBottom + 6;
 
   const todayBottom = drawTodayColumn(image, summary, {
-    x: MARGIN,
+    x: frame.left,
     y: top,
     width: columnWidth,
     fonts,
@@ -259,7 +285,7 @@ function drawOverview(
     // artefact instead of as structure. It also matters more than it looks: on
     // the glasses an unlit pixel is TRANSPARENT, so every line drawn past the
     // content is one more thing between the wearer and the world.
-    const divider = MARGIN + columnWidth + Math.floor(GUTTER / 2);
+    const divider = frame.left + columnWidth + Math.floor(GUTTER / 2);
     image.drawLine(divider, top, divider, Math.max(todayBottom, nightBottom), INK.faint);
   }
 
@@ -371,6 +397,7 @@ function drawMetricDetail(
 ): void {
   const { small, large } = fonts;
   const step = lineStep(small);
+  const frame = frameOf(size);
   const headerBottom = drawHeader(
     image,
     size,
@@ -388,12 +415,12 @@ function drawMetricDetail(
     // headline is the day's total rather than a range.
     const total = metric === "steps" ? data.summary?.steps ?? 0 : data.summary?.calories ?? 0;
     const text = total > 0 ? total.toLocaleString() : "--";
-    image.drawText(large, MARGIN, y, text, INK.title);
+    image.drawText(large, frame.left, y, text, INK.title);
     const width = large.measureText(text);
     if (unit) {
       image.drawText(
         small,
-        MARGIN + width + 6,
+        frame.left + width + 6,
         y + large.lineHeight - small.lineHeight - 1,
         unit,
         INK.label,
@@ -401,17 +428,16 @@ function drawMetricDetail(
     }
     y += large.lineHeight + 6;
   } else {
-    image.drawText(small, MARGIN, y, rangeAverageText(summary, unit), INK.line);
+    image.drawText(small, frame.left, y, rangeAverageText(summary, unit), INK.line);
     y += step + 4;
   }
 
   const points = data.hourly[metric] ?? [];
-  const footerHeight = small.lineHeight + 8;
-  const chartHeight = size.height - y - MARGIN - footerHeight;
+  const chartHeight = frame.bottom - footerHeight(fonts) - y;
   if (chartHeight >= 40) {
     drawMetricChart(
       image,
-      { x: MARGIN, y, width: size.width - MARGIN * 2, height: chartHeight },
+      { x: frame.left, y, width: frame.right - frame.left, height: chartHeight },
       {
         metric,
         points,
@@ -482,35 +508,35 @@ function drawSleepDetail(
   const { small, large } = fonts;
   const step = lineStep(small);
   const sleep = data.summary?.sleep ?? null;
+  const frame = frameOf(size);
   const headerBottom = drawHeader(image, size, fonts, "SLEEP", "last night");
   let y = headerBottom + 6;
 
   if (!sleep) {
-    image.drawText(small, MARGIN, y, "No sleep record", INK.dim);
+    image.drawText(small, frame.left, y, "No sleep record", INK.dim);
     drawFooter(image, size, fonts, `${GESTURE_SCROLL} Calories · Summary`);
     return;
   }
 
   // Total and efficiency on one line, so the lanes get the height.
   const totalText = formatDuration(sleep.totalSec);
-  image.drawText(large, MARGIN, y, totalText, INK.title);
+  image.drawText(large, frame.left, y, totalText, INK.title);
   drawTextRight(
     image,
     small,
-    size.width - MARGIN,
+    frame.right,
     y + large.lineHeight - small.lineHeight - 1,
     `${Math.round(sleep.efficiencyPercent)}% efficiency`,
     INK.label,
   );
   y += large.lineHeight + 6;
 
-  const footerHeight = small.lineHeight + 8;
   const captionHeight = step;
-  const laneHeight = size.height - y - MARGIN - footerHeight - captionHeight;
+  const laneHeight = frame.bottom - footerHeight(fonts) - captionHeight - y;
   if (laneHeight >= 40) {
     drawSleepLanes(
       image,
-      { x: MARGIN, y, width: size.width - MARGIN * 2, height: laneHeight },
+      { x: frame.left, y, width: frame.right - frame.left, height: laneHeight },
       {
         bands: data.stageBands,
         font: small,
@@ -523,6 +549,6 @@ function drawSleepDetail(
     y += laneHeight;
   }
 
-  image.drawText(small, MARGIN, y, hypnogramCaptionShort(), INK.faint);
+  image.drawText(small, frame.left, y, hypnogramCaptionShort(), INK.faint);
   drawFooter(image, size, fonts, `${GESTURE_SCROLL} Calories · Summary`);
 }

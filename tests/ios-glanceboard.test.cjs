@@ -191,7 +191,10 @@ function fixture() {
         : ({ 0: 'click', 1: 'scroll-up', 2: 'scroll-down', 3: 'double-click', 9: 'long-press',
           10: 'long-press-release', 11: 'short-then-long-press' })[event.eventType] ?? 'unknown', source: 'ring',
     }) },
-    '../ui/shell/geometry': { appViewportRect: () => ({ x: 0, y: 0, width: 640, height: 480 }) },
+    '../ui/shell/geometry': {
+      appViewportRect: () => ({ x: 0, y: 0, width: 640, height: 480 }),
+      windowEdges: () => ({ top: 'offscreen', right: 'offscreen', bottom: 'offscreen', left: 'offscreen' }),
+    },
   };
   const { IosPreviewController } = load('app/g2/ios-preview-controller.ts', modules, {
     ...clock, console: { log() {}, warn() {}, error: text => errors.push(text) },

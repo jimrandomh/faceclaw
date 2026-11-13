@@ -16,6 +16,14 @@ const HISTORY_MS = 60_000;
 const MAX_SAMPLES = Math.ceil(HISTORY_MS / SAMPLE_INTERVAL_MS) + 2;
 /** Line brightness per memory series, headline first. */
 const MEMORY_SHADES = [240, 155, 80];
+/** The charts' heights where the window has room for them. */
+const MEMORY_CHART_HEIGHT = 70;
+const CPU_CHART_HEIGHT = 60;
+/** Between the charts: a gap, then the CPU chart's label line. */
+const CHART_GAP = 10;
+const CHART_LABEL_HEIGHT = 16;
+/** Least gap between the CPU chart and the footer line. */
+const CHART_FOOTER_GAP = 4;
 
 type ChartSample = ResourceSample & { cpuPercent: number };
 
@@ -56,20 +64,26 @@ export class ResourceUsageLayer implements Layer {
 
   paint(ctx: LayerContext): GrayImage {
     const font = getDefaultSmallFont();
-    const { width, height } = ctx.stack.getBaseSize();
+    const { width, height, padding } = ctx.stack.getBaseSize();
     const image = new GrayImage(width, height, 0);
     const latest = this.samples[this.samples.length - 1];
+    // The title line, the charts and the footer line span the window inside
+    // the padding suggested for its edges; the rest is placed from the top.
+    const left = padding.left;
+    const top = padding.top;
+    const right = width - padding.right;
+    const footerY = height - padding.bottom - font.lineHeight;
 
-    image.drawText(font, 16, 5, "Resource usage — last minute", 230);
+    image.drawText(font, left, top, "Resource usage — last minute", 230);
     if (!latest) {
-      image.drawText(font, 16, 30, this.sampleError || "Waiting for first sample…", 170);
-      image.drawText(font, 16, height - 16, `${GESTURE_DOUBLE_CLICK} back`, 110);
+      image.drawText(font, left, top + 25, this.sampleError || "Waiting for first sample…", 170);
+      image.drawText(font, left, footerY, `${GESTURE_DOUBLE_CLICK} back`, 110);
       return image;
     }
 
     const cpuText = `CPU ${formatPercent(latest.cpuPercent)}  ${latest.threads} threads`;
-    image.drawText(font, width - 16 - font.measureText(cpuText), 5, cpuText, 200);
-    image.drawText(font, 16, 21, this.sampleError || latest.status, this.sampleError ? 170 : 140);
+    image.drawText(font, right - font.measureText(cpuText), top, cpuText, 200);
+    image.drawText(font, left, top + 16, this.sampleError || latest.status, this.sampleError ? 170 : 140);
 
     const memorySeries = MEMORY_SERIES.map((label, index) => ({
       label,
@@ -78,34 +92,44 @@ export class ResourceUsageLayer implements Layer {
     }));
     const memoryPeak = Math.max(...this.samples.flatMap((sample) => sample.memoryMb), 64);
     const memoryScale = roundUp(memoryPeak * 1.08, 64);
+    const legendY = top + 43;
     const legendLeft = drawLegend(
       image,
       font,
-      width,
-      48,
+      right,
+      legendY,
       memorySeries.map((series) => [`${series.label} ${formatMb(series.value(latest))}`, series.shade] as const),
     );
     const scaleLabel = `Memory 0–${formatMb(memoryScale)}`;
     const shortScaleLabel = `0–${formatMb(memoryScale)}`;
     image.drawText(
       font,
-      16,
-      48,
-      16 + font.measureText(scaleLabel) + 8 <= legendLeft ? scaleLabel : shortScaleLabel,
+      left,
+      legendY,
+      left + font.measureText(scaleLabel) + 8 <= legendLeft ? scaleLabel : shortScaleLabel,
       140,
     );
-    drawChart(image, this.samples, latest.atMs, { x: 16, y: 64, width: width - 32, height: 70 }, memoryScale, memorySeries);
+    // The charts shrink together where the window is too short for both
+    // above the footer line (the RayNeo iO's).
+    const chartsTop = legendY + CHART_LABEL_HEIGHT;
+    const room = footerY - CHART_FOOTER_GAP - chartsTop - CHART_GAP - CHART_LABEL_HEIGHT;
+    const fit = clamp(room / (MEMORY_CHART_HEIGHT + CPU_CHART_HEIGHT), 0, 1);
+    const memoryHeight = Math.floor(MEMORY_CHART_HEIGHT * fit);
+    const chartWidth = Math.max(0, right - left);
+    drawChart(image, this.samples, latest.atMs, { x: left, y: chartsTop, width: chartWidth, height: memoryHeight }, memoryScale, memorySeries);
 
     const cpuPeak = Math.max(...this.samples.map((sample) => sample.cpuPercent), 100);
     const cpuScale = roundUp(cpuPeak * 1.08, 25);
-    image.drawText(font, 16, 144, `CPU 0–${Math.round(cpuScale)}% (one core)`, 140);
-    drawChart(image, this.samples, latest.atMs, { x: 16, y: 160, width: width - 32, height: 60 }, cpuScale, [
-      { value: (sample) => sample.cpuPercent, shade: 220 },
-    ]);
+    const cpuLabelY = chartsTop + memoryHeight + CHART_GAP;
+    image.drawText(font, left, cpuLabelY, `CPU 0–${Math.round(cpuScale)}% (one core)`, 140);
+    drawChart(image, this.samples, latest.atMs,
+      { x: left, y: cpuLabelY + CHART_LABEL_HEIGHT, width: chartWidth, height: Math.floor(CPU_CHART_HEIGHT * fit) }, cpuScale, [
+        { value: (sample) => sample.cpuPercent, shade: 220 },
+      ]);
 
-    image.drawText(font, 16, height - 16, `-60s`, 80);
+    image.drawText(font, left, footerY, `-60s`, 80);
     const nowLabel = `now`;
-    image.drawText(font, width - 16 - font.measureText(nowLabel), height - 16, nowLabel, 110);
+    image.drawText(font, right - font.measureText(nowLabel), footerY, nowLabel, 110);
     return image;
   }
 
@@ -148,6 +172,7 @@ function drawChart(
   scale: number,
   series: readonly Series[],
 ): void {
+  if (bounds.width < 2 || bounds.height < 2) return;
   image.drawRect(bounds.x, bounds.y, bounds.width, bounds.height, 45);
   const midY = bounds.y + Math.round((bounds.height - 1) / 2);
   image.drawLine(bounds.x + 1, midY, bounds.x + bounds.width - 2, midY, 24);
@@ -167,16 +192,16 @@ function drawChart(
   }
 }
 
-/** Right-aligned legend of line swatches and labels; returns its left edge. */
+/** Legend of line swatches and labels, right-aligned to end at `right`; returns its left edge. */
 function drawLegend(
   image: GrayImage,
   font: ReturnType<typeof getDefaultSmallFont>,
-  width: number,
+  right: number,
   y: number,
   entries: ReadonlyArray<readonly [string, number]>,
 ): number {
   const totalWidth = entries.reduce((sum, [label]) => sum + font.measureText(label) + 14, 0);
-  const left = width - 16 - totalWidth;
+  const left = right - totalWidth;
   let x = left;
   for (const [label, shade] of entries) {
     image.drawLine(x, y + 6, x + 8, y + 6, shade);

@@ -212,15 +212,12 @@ test('iOS bandwidth footer toggles live, polls only in foreground and resets its
     './phone-gestures': { PhoneGestureRecognizer: class { cancel() {} } },
     './ble-bandwidth-meter': require('../.test-build/app/phone-ui/ble-bandwidth-meter.js'),
     '../native/ble-traffic': { sampleBleTraffic: () => totals },
-    '../ui/dashboard-settings': { brightnessSetting: { get: () => 'auto' }, displayLayoutSetting: { displayValue: () => 'Tall' }, showBleBandwidthSetting: { get: () => enabled }, glassesModelName: () => 'G2',
+    '../ui/dashboard-settings': { phoneInputStyleSetting: { get: () => 'watch' }, showBleBandwidthSetting: { get: () => enabled },
       onAnySettingChanged: fn => { settingListeners.add(fn); return () => settingListeners.delete(fn); } },
     '../g2/device-addresses': { loadDeviceAddresses: () => ({}) },
     '../g2/ios-peripheral-identity': { deviceAddressError: () => 'no test devices' },
     './onboarding-state': { isPreviewOnlyMode: () => false },
     '../g2/reconnect-policy': { isAutoReconnectSuppressed: () => false },
-    '../g2/glasses-display-state': require('../.test-build/app/g2/glasses-display-state.js'),
-    '../ui/shell/shell': { shell: { onBatteryLevelsChanged: () => () => {}, getBatteryLevels: () => ({
-      headset: null, headsetCharging: null, case: null, caseCharging: null, ring: null, ringCharging: null }) } },
   };
   modules['./keyboard-input-view-model'] = load('app/phone-ui/keyboard-input-view-model.ts', { require: id => modules[id] });
   modules['./remote-controls-view-model'] = load('app/phone-ui/remote-controls-view-model.ts', { require: id => modules[id] });
@@ -368,6 +365,7 @@ test('iOS preview voice uses the phone microphone, while connected capture stays
 
 test('iOS continuous capture is shared by windows and restarts after a disconnect, a lock or backgrounding', async () => {
   const calls = [], claims = [], providers = [];
+  let saveRecording = false;
   // Models the bridge's continuous state: listening on a source, or draining after a stop.
   const bridge = { source: null, draining: false, recording: '', rawSession: undefined,
     supportsContinuous: voice => voice.provider !== 'onboard',
@@ -385,7 +383,7 @@ test('iOS continuous capture is shared by windows and restarts after a disconnec
     setRawSession: session => { bridge.rawSession = session; } };
   const settings = { ...voiceSettings, voiceProviderSetting: { get: () => 'whisper-server' },
     whisperServerUrlSetting: { get: () => 'http://whisper.local:8000' }, whisperServerLanguageSetting: { get: () => 'en' },
-    saveTranscribeAudioSetting: { get: () => true } };
+    saveRecordingSetting: { get: () => saveRecording } };
   const { IosPreviewController } = load('app/g2/ios-preview-controller.ts', {
     require: id => id === '../native/ios-voice-input' ? { iosVoiceInput: bridge } : id === '../ui/dashboard-settings' ? settings
       : id === '../ui/shell/voice-activity' ? { voiceActivity: { setActive: (active, holder) => claims.push([active, holder]) } }
@@ -404,7 +402,15 @@ test('iOS continuous capture is shared by windows and restarts after a disconnec
   host.startContinuousVoiceCapture('transcribe', { recordAs: 'transcribe-1' }); await settle();
   host.startContinuousVoiceCapture('calculator'); await settle();
   assert.deepEqual(calls, [['glasses', true]], 'the second window shares the capture');
+  // Save Recording (in the window's menu) starts and stops the recording while it is open.
+  assert.equal(bridge.recording, '');
+  saveRecording = true; host.syncContinuousRecording();
   assert.equal(bridge.recording, 'transcribe-1');
+  saveRecording = false; host.syncContinuousRecording();
+  assert.equal(bridge.recording, '');
+  saveRecording = true; host.syncContinuousRecording();
+  assert.equal(bridge.recording, 'transcribe-1');
+  assert.deepEqual(calls, [['glasses', true]], 'without touching the capture');
   assert.deepEqual(claims.at(-1), [true, 'continuous-capture']);
   host.stopContinuousVoiceCapture('calculator');
   assert.deepEqual(calls, [['glasses', true]], 'closing one window keeps the other listening');

@@ -2,6 +2,7 @@ import { readTextFile, type DirectoryEntry } from "../../native/file-access";
 import { isFontFile } from "../../native/font-files";
 import { installFontFile, isFontInstalled } from "../../graphics/installed-fonts";
 import { isDecodableImageFile } from "../../native/image-files";
+import { isMicRecordingFile } from "../../native/mic-recording";
 import { isPlayableVideoFile } from "../../native/video-player";
 import { readEvenHubPackageManifest } from "../evenhub/installed-apps";
 import { EvenHubPermissionDialogLayer } from "../evenhub/permission-dialog";
@@ -38,6 +39,8 @@ export type FilesAppOptions = InProcessAppOptions & {
   openFontWindow: (title: string, path: string) => void;
   /** Open a video file's player (settings panel first) as its own shell window. */
   openVideoWindow: (title: string, path: string) => void;
+  /** Replay a recording (.mka) through Transcribe, in a window of its own. */
+  openRecordingInTranscribe: (title: string, path: string) => void;
 };
 
 /**
@@ -50,7 +53,7 @@ export function createFilesAppWindow(options: FilesAppOptions): InProcessWindow 
   const browser = new FileBrowserLayer({
     isSupportedFile: (name) =>
       TEXT_FILE.test(name) || isFontFile(name) || EHPK_FILE.test(name) ||
-      (!global.isIOS && (isDecodableImageFile(name) || isPlayableVideoFile(name))),
+      (!global.isIOS && (isDecodableImageFile(name) || isPlayableVideoFile(name) || isMicRecordingFile(name))),
     // The browser handles double-click itself (up a level), so it is not
     // wrapped in YieldAtRootLayer; it yields explicitly from the top level.
     onLeave: () => shell.yieldFocusToSidebar(),
@@ -231,6 +234,17 @@ function fileOpenActions(entry: DirectoryEntry, options: FilesAppOptions): FileI
         onSelect: (ctx) => {
           ctx.stack.pop();
           options.openImageWindow(entry.name, entry.path);
+        },
+      },
+    ];
+  }
+  if (isMicRecordingFile(entry.name)) {
+    return [
+      {
+        label: "Open in Transcribe",
+        onSelect: (ctx) => {
+          ctx.stack.pop();
+          options.openRecordingInTranscribe(entry.name, entry.path);
         },
       },
     ];

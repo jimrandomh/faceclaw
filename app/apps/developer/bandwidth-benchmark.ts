@@ -27,9 +27,12 @@ const POLL_INTERVAL_MS = 500;
 // timeout drain + slack).
 const POLL_DEADLINE_MS = DURATION_MS + 15_000;
 
-const HEADER_HEIGHT = 30;
-const LIST_X = 20;
-const VALUE_X = 150;
+/** The title band: the rows and the run's text start this far below the top edge's padding. */
+const HEADER_HEIGHT = 22;
+/** Horizontal inset of a row's text from its highlight box; the title and the text under the rows line up with it. */
+const ROW_TEXT_INSET = 6;
+/** A row's value column, from its label's left edge. */
+const VALUE_OFFSET_X = 130;
 
 type Phase = "config" | "arming" | "running" | "done";
 type ConfigRow = "size" | "window" | "link" | "start";
@@ -126,36 +129,43 @@ export class BandwidthBenchmarkLayer implements Layer {
 
   paint(ctx: LayerContext): GrayImage {
     const font = getDefaultSmallFont();
-    const { width, height } = ctx.stack.getBaseSize();
+    const { width, height, padding } = ctx.stack.getBaseSize();
     const image = new GrayImage(width, height, 0);
+    // The rows' highlight boxes span the window inside the padding suggested
+    // for its side edges, and the title sits at the top edge's; the page's
+    // text shares the rows' text column.
+    const textX = padding.left + ROW_TEXT_INSET;
+    const bodyTop = padding.top + HEADER_HEIGHT;
 
-    image.drawText(font, 20, 8, "BLE bandwidth", 220);
+    image.drawText(font, textX, padding.top, "BLE bandwidth", 220);
 
     if (this.phase === "arming" || this.phase === "running") {
-      image.drawText(font, LIST_X, HEADER_HEIGHT + 8, "Running: streaming no-op packets for 15 s...", 200);
+      image.drawText(font, textX, bodyTop + 8, "Running: streaming no-op packets for 15 s...", 200);
       image.drawText(
         font,
-        LIST_X,
-        HEADER_HEIGHT + 30,
+        textX,
+        bodyTop + 30,
         `${MESSAGE_SIZES[this.sizeIndex]} B, window ${WINDOW_SIZES[this.windowIndex]}`
           + (LINK_REQUESTS_SUPPORTED ? `, ${LINK_MODES[this.linkModeIndex]}` : ""),
         150,
       );
-      image.drawText(font, LIST_X, HEADER_HEIGHT + 52, "Display updates pause until the run finishes.", 110);
+      image.drawText(font, textX, bodyTop + 52, "Display updates pause until the run finishes.", 110);
       return image;
     }
 
+    // The rows all fit their box, so it is a fixed block under the title
+    // rather than a scroller that would run to the window's bottom edge.
     const rowH = tightRowHeight(font) + 4;
     const rowCount = this.menu.items.length;
     this.menu.paint(
       image,
-      { x: LIST_X - 6, y: HEADER_HEIGHT - 1, width: width - 2 * LIST_X + 12, height: rowCount * rowH },
+      { x: padding.left, y: bodyTop - 1, width: Math.max(0, width - padding.left - padding.right), height: rowCount * rowH },
       ctx.stack.isFocused(),
     );
 
-    let y = HEADER_HEIGHT + rowCount * rowH + 10;
+    let y = bodyTop + rowCount * rowH + 10;
     if (this.error) {
-      image.drawText(font, LIST_X, y, this.error, 180);
+      image.drawText(font, textX, y, this.error, 180);
     } else if (this.result) {
       const r = this.result;
       const seconds = r.elapsedMs / 1000;
@@ -171,7 +181,9 @@ export class BandwidthBenchmarkLayer implements Layer {
         lines.push(`Link request: ${LINK_MODES[r.linkMode] ?? "Current"}${phy}`);
       }
       for (const line of lines) {
-        image.drawText(font, LIST_X, y, line, 190);
+        // A window too short for every line (the RayNeo iO's) shows the first ones.
+        if (y + font.lineHeight > height) break;
+        image.drawText(font, textX, y, line, 190);
         y += 20;
       }
     }
@@ -187,10 +199,9 @@ export class BandwidthBenchmarkLayer implements Layer {
       : item === "link" ? ["Link request", LINK_MODES[this.linkModeIndex]!]
       : [this.phase === "done" ? "Run again" : "Start", ""];
     const textY = centeredTextY(font, y, height);
-    // Text sits 6px in from the row box (LIST_X), values at VALUE_X.
-    image.drawText(font, x + 6, textY, label, selected ? 255 : 200);
+    image.drawText(font, x + ROW_TEXT_INSET, textY, label, selected ? 255 : 200);
     if (value) {
-      image.drawText(font, x + 6 + VALUE_X - LIST_X, textY, value, selected ? 235 : 160);
+      image.drawText(font, x + ROW_TEXT_INSET + VALUE_OFFSET_X, textY, value, selected ? 235 : 160);
     }
   }
 

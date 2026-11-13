@@ -37,6 +37,8 @@ const STOCK_COUNTER_OFFSET = 204;
 // Counter gaps at or beyond this are late/duplicate copies, not losses.
 const STOCK_LATE_GAP = 128;
 const LEVEL_FLOOR_DB = -90;
+/** Gap between the two temples' columns. */
+const COLUMN_GAP = 16;
 
 // wallMs (JS receipt time) windows the rates; arrivalMs (the session core's
 // elapsed-realtime stamp, taken on the BLE thread) measures gaps without the
@@ -229,39 +231,45 @@ export class MicrophonesMonitorLayer implements Layer {
   paint(ctx: LayerContext): GrayImage {
     const font = getDefaultSmallFont();
     const line = font.lineHeight;
-    const { width, height } = ctx.stack.getBaseSize();
+    const { width, height, padding } = ctx.stack.getBaseSize();
     const image = new GrayImage(width, height, 0);
     const nowMs = Date.now();
+    // The title line, the two columns and the footer line span the window
+    // inside the padding suggested for its edges.
+    const left = padding.left;
+    const titleY = padding.top;
+    const right = width - padding.right;
+    const footerY = height - padding.bottom - line;
 
-    image.drawText(font, 16, 5, "Microphones (passive)", 230);
+    image.drawText(font, left, titleY, "Microphones (passive)", 230);
     const capture = isFaceclawAudioCaptureActive() ? "Faceclaw capture: on" : "Faceclaw capture: off";
-    image.drawText(font, width - 16 - font.measureText(capture), 5, capture, 170);
+    image.drawText(font, right - font.measureText(capture), titleY, capture, 170);
 
     if (!this.communicator) {
-      image.drawText(font, 16, 5 + line * 2, "Glasses not connected.", 190);
-      image.drawText(font, 16, height - 16, `${GESTURE_DOUBLE_CLICK} back`, 110);
+      image.drawText(font, left, titleY + line * 2, "Glasses not connected.", 190);
+      image.drawText(font, left, footerY, `${GESTURE_DOUBLE_CLICK} back`, 110);
       return image;
     }
 
-    const gutter = 16;
-    const columnWidth = Math.floor((width - gutter * 3) / 2);
+    const columnWidth = Math.max(0, Math.floor((right - left - COLUMN_GAP) / 2));
+    const rightColumnX = left + columnWidth + COLUMN_GAP;
     const stripHeight = 22;
-    const top = 5 + line + 6;
-    const bottom = height - 16 - stripHeight - 8;
-    this.paintArm(image, "L", "Left", gutter, top, columnWidth, bottom, nowMs);
-    this.paintArm(image, "R", "Right", gutter * 2 + columnWidth, top, columnWidth, bottom, nowMs);
+    const top = titleY + line + 6;
+    const bottom = footerY - stripHeight - 8;
+    this.paintArm(image, "L", "Left", left, top, columnWidth, bottom, nowMs);
+    this.paintArm(image, "R", "Right", rightColumnX, top, columnWidth, bottom, nowMs);
 
-    const stripY = height - 16 - stripHeight - 4;
+    const stripY = footerY - stripHeight - 4;
     const stripMax = Math.max(1, ...this.stats.L.buckets, ...this.stats.R.buckets);
-    drawStrip(image, this.stats.L.buckets, gutter, stripY, columnWidth, stripHeight, stripMax);
-    drawStrip(image, this.stats.R.buckets, gutter * 2 + columnWidth, stripY, columnWidth, stripHeight, stripMax);
+    drawStrip(image, this.stats.L.buckets, left, stripY, columnWidth, stripHeight, stripMax);
+    drawStrip(image, this.stats.R.buckets, rightColumnX, stripY, columnWidth, stripHeight, stripMax);
 
     const footer = this.unknownArmPackets > 0
       ? `last ${HISTORY_MS / 1000} s   unattributed packets ${this.unknownArmPackets}`
       : `packets per ${BUCKET_MS} ms, last ${HISTORY_MS / 1000} s`;
-    image.drawText(font, gutter, height - 16, footer, 110);
+    image.drawText(font, left, footerY, footer, 110);
     const back = `${GESTURE_DOUBLE_CLICK} back   tap reset`;
-    image.drawText(font, width - gutter - font.measureText(back), height - 16, back, 110);
+    image.drawText(font, right - font.measureText(back), footerY, back, 110);
     return image;
   }
 

@@ -21,4 +21,31 @@ class WavRecorderRepairTest {
             file.delete()
         }
     }
+
+    @Test
+    fun keepsTheHeaderCurrentWhileRecording() {
+        val file = File.createTempFile("recording", ".wav")
+        try {
+            val recorder = FaceclawWavRecorder(file.path, 16000, 1)
+            // Under a second of audio: still the empty header from the start.
+            recorder.append(ByteArray(16000))
+            assertEquals(BinaryEncoding.wavHeader(0, 16000, 1).toList(), file.readBytes().copyOf(44).toList())
+            // Past a second the header covers what is on disk, without waiting for finish(), and
+            // later audio still lands at the end.
+            recorder.append(ByteArray(16000) { 1 })
+            recorder.append(ByteArray(100) { 2 })
+            var bytes = file.readBytes()
+            assertEquals(44 + 32100, bytes.size)
+            assertEquals(BinaryEncoding.wavHeader(32000, 16000, 1).toList(), bytes.copyOf(44).toList())
+            assertEquals(0.toByte(), bytes[44])
+            assertEquals(1.toByte(), bytes[44 + 16000])
+            assertEquals(2.toByte(), bytes.last())
+            assertEquals(32100L, recorder.finish())
+            bytes = file.readBytes()
+            assertEquals(44 + 32100, bytes.size)
+            assertEquals(BinaryEncoding.wavHeader(32100, 16000, 1).toList(), bytes.copyOf(44).toList())
+        } finally {
+            file.delete()
+        }
+    }
 }

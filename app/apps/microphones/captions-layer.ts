@@ -5,11 +5,19 @@ import { GESTURE_DOUBLE_CLICK, GESTURE_SCROLL, type InputEvent } from "../../ui/
 import { Layer, type LayerContext } from "../../ui/layers";
 import { micSession, type CaptionLine, type MicSessionState } from "./mic-session";
 
+/** From the title's top to the first caption row. */
+const BODY_TOP_OFFSET = 20;
+/** Indent of the caption rows under the title. */
+const ROW_INDENT = 4;
+
 /**
  * On-glasses captions: each line is prefixed with the speaker's name (their
  * id until tagged); foreign-language lines show the translation directly
  * beneath the recognized original. Scroll reviews recent lines; the view
  * snaps back to live on new speech.
+ *
+ * The title and the hint line stay put, at the padding suggested for the
+ * window's top and bottom edges; the caption rows scroll between the two.
  */
 export class CaptionsLayer implements Layer {
   private state: MicSessionState = micSession.getState();
@@ -33,19 +41,21 @@ export class CaptionsLayer implements Layer {
 
   paint(ctx: LayerContext): GrayImage {
     const font = getDefaultSmallFont();
-    const { width, height } = ctx.stack.getBaseSize();
+    const { width, height, padding } = ctx.stack.getBaseSize();
     const image = new GrayImage(width, height, 0);
     const state = this.state;
+    const left = padding.left;
+    const rowX = left + ROW_INDENT;
+    const bodyTop = padding.top + BODY_TOP_OFFSET;
 
-    image.drawText(font, 12, 4, "Captions", 220);
+    image.drawText(font, left, padding.top, "Captions", 220);
     if (!state.captionsActive) {
-      image.drawText(font, 12, 26, state.captionsNote, 130);
+      image.drawText(font, left, bodyTop + 2, state.captionsNote, 130);
     }
 
-    const rows = this.buildRows(font, width - 36, state.captionLines);
+    const rows = this.buildRows(font, Math.max(0, width - padding.right - rowX), state.captionLines);
     const step = lineStep(font) + 1;
-    const bodyTop = 24;
-    const footerY = height - font.lineHeight - 4;
+    const footerY = height - padding.bottom - font.lineHeight;
     const visibleRows = Math.max(1, Math.floor((footerY - bodyTop) / step));
     const maxScrollback = Math.max(0, rows.length - visibleRows);
     this.scrollback = Math.min(this.scrollback, maxScrollback);
@@ -54,16 +64,16 @@ export class CaptionsLayer implements Layer {
       const row = rows[index]!;
       const y = bodyTop + (index - firstRow) * step;
       if (row.prefix) {
-        image.drawText(font, 16, y, row.prefix, row.prefixValue);
-        image.drawText(font, 16 + font.measureText(row.prefix), y, row.text, row.value);
+        image.drawText(font, rowX, y, row.prefix, row.prefixValue);
+        image.drawText(font, rowX + font.measureText(row.prefix), y, row.text, row.value);
       } else {
-        image.drawText(font, 16 + row.indent, y, row.text, row.value);
+        image.drawText(font, rowX + row.indent, y, row.text, row.value);
       }
     }
 
     image.drawText(
       font,
-      12,
+      left,
       footerY,
       `${GESTURE_SCROLL} history   ${GESTURE_DOUBLE_CLICK} back` +
         (this.scrollback > 0 ? `   (${this.scrollback} back)` : ""),

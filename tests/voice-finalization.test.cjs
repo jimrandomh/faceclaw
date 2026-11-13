@@ -158,12 +158,14 @@ test('cloud fallback and a synchronous final still send exactly once', () => {
 });
 
 /** The Android voice bridge over a fake native controller (on-device recognition only). */
-function androidBridge() {
+function androidBridge(modules = {}) {
   const controller = {
     starts: 0,
     setListener(listener) { this.listener = listener; },
-    setCommunicator() {}, setUsePhoneMic() {}, setSaveRecordings() {}, setEndpointing() {},
+    setCommunicator() {}, setUsePhoneMic() {}, setEndpointing() {},
     setNoiseSuppression() {}, setBeamFilter() {}, clearSpeakerVerification() {}, setOnboardModelKind() {},
+    setMicArray() {}, setReplay() {}, setRecordingEnabled(enabled) { this.recordingEnabled = enabled; },
+    noteRecordingEvent(json) { (this.recordingEvents ??= []).push(JSON.parse(json)); },
     start(_mode, id) { this.captureId = id; this.active = true; this.starts++; },
     stop() { this.active = false; },
     isCapturing() { return this.active; },
@@ -172,6 +174,7 @@ function androidBridge() {
     '@nativescript/core': { Utils: { android: { getApplicationContext: () => ({}) } } },
     './speech-pause': { SpeechPauseDetector: class { reset() {} } },
     './cloud-stt-provider': { createCloudSttClient: () => null, transcriptionKey: options => options.provider },
+    ...modules,
   }, { global: { isAndroid: true }, com: { faceclaw: { app: {
     FaceclawVoiceController: function () { return controller; },
     FaceclawVoiceControllerListener: function (listener) { return listener; },
@@ -214,4 +217,62 @@ test('a shared capture restarts for a holder that needs another provider, and is
   bridge.stopContinuousCapture();
   assert.equal(controller.active, true);
   assert.equal(bridge.holdsCapture('ptt'), true);
+});
+
+test('Android continuous captures record to the requested file, and report one that cannot be created', () => {
+  const recordings = [];
+  let fail = false, attempts = 0;
+  const { bridge, controller } = androidBridge({
+    './mic-recording': { newRecordingPath: name => `/Download/${name}.mka` },
+    './speech-pause': { SpeechPauseDetector: class { reset() {} accept() { return false; } } },
+    '../util/array-util': { toUint8Array: pcm => Uint8Array.from(pcm) },
+    '../util/audio-level': { pcmLevel: () => 0 },
+  });
+  // The controller writes the file itself, from the capture's own thread.
+  controller.startRecording = (path, json) => {
+    attempts++;
+    if (fail) return false;
+    recordings.push({ path, info: JSON.parse(json), closed: false });
+    return true;
+  };
+  controller.stopRecording = () => { recordings.at(-1).closed = true; return 0; };
+  const options = { provider: 'onboard' };
+  let changes = 0; bridge.onRecordingChange(() => changes++);
+  bridge.recordTo('transcribe-1');
+  assert.deepEqual([bridge.recording, bridge.recordingFailed, changes], [true, false, 1]);
+  // Push-to-talk on a capture of its own is not recorded, and the file waits for audio to save.
+  bridge.startPushToTalk(options);
+  controller.listener.onPcm([9, 9]);
+  assert.deepEqual([attempts, controller.recordingEnabled], [0, false]);
+  bridge.startContinuousCapture(options);
+  controller.listener.onPcm([1, 2]);
+  controller.listener.onPcm([3, 4]);
+  assert.deepEqual(recordings.map(r => [r.path, r.info.recording, r.closed]), [['/Download/transcribe-1.mka', 'transcribe-1', false]]);
+  assert.deepEqual([attempts, controller.recordingEnabled], [1, true]);
+  // The file outlives a capture: one restarted after the glasses reconnect goes on in it,
+  // with the restart noted, and nothing is recorded while no capture holds the mic.
+  bridge.handleSessionEnded();
+  assert.equal(controller.recordingEnabled, false);
+  bridge.resumeCapture(options);
+  controller.listener.onPcm([5]);
+  assert.deepEqual([attempts, recordings[0].closed, controller.recordingEnabled], [1, false, true]);
+  assert.deepEqual(controller.recordingEvents.map(event => [event.event, event.recording]), [['capture', 'transcribe-1']]);
+  bridge.recordTo('');
+  assert.deepEqual([recordings[0].closed, bridge.recording, changes], [true, false, 2]);
+  controller.listener.onPcm([6]);
+  assert.equal(attempts, 1);
+
+  // One attempt per recording, not one per packet; another recording is a fresh attempt.
+  fail = true; attempts = 0;
+  bridge.recordTo('transcribe-2');
+  controller.listener.onPcm([7]); controller.listener.onPcm([8]);
+  assert.deepEqual([bridge.recording, bridge.recordingFailed, changes, attempts], [false, true, 4, 1]);
+  bridge.recordTo('transcribe-2');
+  controller.listener.onPcm([9]);
+  assert.equal(attempts, 1);
+  fail = false;
+  bridge.recordTo('');
+  bridge.recordTo('transcribe-2');
+  controller.listener.onPcm([10]);
+  assert.deepEqual([bridge.recording, bridge.recordingFailed, recordings.at(-1).path], [true, false, '/Download/transcribe-2.mka']);
 });

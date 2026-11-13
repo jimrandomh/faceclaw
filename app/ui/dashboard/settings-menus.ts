@@ -65,11 +65,11 @@ import {
   openAiApiKeySetting,
   previewColorSetting,
   previewScalingSetting,
+  phoneInputStyleSetting,
   phoneRotationSetting,
   ringConnectionModeSetting,
   glassesTypeSetting,
   sonioxApiKeySetting,
-  saveTranscribeAudioSetting,
   whisperServerApiKeySetting,
   whisperServerLanguageSetting,
   whisperServerModelSetting,
@@ -80,7 +80,6 @@ import {
   lockScreenEnabledSetting,
   menuAnimationSetting,
   newNotificationDisplaySetting,
-  saveVoiceRecordingsSetting,
   showBleBandwidthSetting,
   suspendEvenHubWhenScreenOffSetting,
   temperatureUnitSetting,
@@ -144,8 +143,9 @@ function settingsSections(): SettingsSection[] {
     },
     {
       label: "Customization",
-      // Depth only applies (and only shows) with the app switcher at the
-      // bottom; the panel re-reads the rows each paint.
+      // Depth, the status bar's place and the border only apply (and only
+      // show) with the app switcher at the bottom or a popup; the panel
+      // re-reads the rows each paint.
       get items() {
         return customizationItems();
       },
@@ -227,6 +227,8 @@ function settingsSections(): SettingsSection[] {
         enumSettingMenuItem(previewColorSetting),
         enumSettingMenuItem(previewScalingSetting),
         toggleSettingMenuItem(mirrorTouchSetting),
+        // Watch or Ring: which touchpad the main page shows under the mirror.
+        enumSettingMenuItem(phoneInputStyleSetting),
       ],
     },
     {
@@ -262,7 +264,6 @@ function settingsSections(): SettingsSection[] {
         // Whether and how the phone opens its own BLE link to the R1 ring.
         // Applied at connect time.
         ringConnectionMenuItem(),
-        toggleSettingMenuItem(saveVoiceRecordingsSetting),
         toggleSettingMenuItem(firmwareDebugFlagsSetting),
         toggleSettingMenuItem(suspendEvenHubWhenScreenOffSetting),
         toggleSettingMenuItem(useMicControlSetting),
@@ -309,7 +310,7 @@ function settingsSections(): SettingsSection[] {
       toggleSettingMenuItem(showBleBandwidthSetting)] };
     // No downloadable on-device models: iOS's on-device option is Apple's recognizer.
     if (section.label === "Voice") return { label: "Voice", items: [enumSettingMenuItem(wakeWordActionSetting),
-      enumSettingMenuItem(voiceProviderSetting), toggleSettingMenuItem(saveTranscribeAudioSetting), ...whisperServerMenuItems()] };
+      enumSettingMenuItem(voiceProviderSetting), ...whisperServerMenuItems()] };
     if (section.label === "Display") return { ...section, items: section.items.filter(item =>
       item.label !== screenTimeoutSetting.label) };
     return section;
@@ -334,9 +335,12 @@ function customizationRows(): () => MenuItem[] {
   // resizes or moves windows on change.
   const statusBar = enumSettingMenuItem(statusBarPositionSetting);
   // Popup switcher only: whether the status bar shows only in the switcher
-  // (windows then grow into its rows), and the foreground window's border.
+  // (windows then grow into its rows).
   const statusBarVisibility = enumSettingMenuItem(statusBarVisibilitySetting);
-  const windowBorder = toggleSettingMenuItem(windowBorderSetting);
+  // The lines round the foreground window: a rounded border all around, only
+  // the line between it and the status bar, or none; the dashboard
+  // controller resizes windows when the border's rows come or go.
+  const windowBorder = enumSettingMenuItem(windowBorderSetting);
   const rest = [
     // Submenu: top-bar battery indicator style plus per-device visibility.
     batteryIndicatorsMenuItem(),
@@ -349,7 +353,7 @@ function customizationRows(): () => MenuItem[] {
     // Miles or kilometers: Weather's wind speed and Navigate's distances.
     enumSettingMenuItem(distanceUnitSetting),
   ];
-  const bottomRows = [font, position, depth, statusBar, ...rest];
+  const bottomRows = [font, position, depth, statusBar, windowBorder, ...rest];
   const popupRows = [font, position, depth, statusBar, statusBarVisibility, windowBorder, ...rest];
   const sideRows = [font, position, ...rest];
   return () => {

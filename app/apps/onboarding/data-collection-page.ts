@@ -4,11 +4,11 @@ import { dataCollectionSetting, dataCollectionSummary, type DataCollectionLevel 
 import type { InputEvent } from "../../ui/gestures";
 import { Menu, type MenuDrawArgs } from "../../ui/menu-core";
 import { LIST_ROW_TEXT_INSET, listRowHeight } from "../../ui/metrics";
+import type { Edges } from "../../ui/viewport";
 import { onboardingFont } from "./onboarding-fonts";
-import { drawPageHeading, PAGE_X, type OnboardingNav, type OnboardingPage } from "./onboarding-page";
+import { drawPageHeading, PAGE_TEXT_INSET, type OnboardingNav, type OnboardingPage } from "./onboarding-page";
 
 const CONTENT_GAP = 10;
-const BOTTOM_MARGIN = 8;
 const LABEL_GAP = 24;
 
 /** None / Minimal / Full, each with a one-line summary; a tap saves the selected level. */
@@ -29,9 +29,10 @@ export class DataCollectionPage implements OnboardingPage {
     this.menu.select(dataCollectionSetting.values.indexOf(dataCollectionSetting.get()));
   }
 
-  paint(image: GrayImage, focused: boolean): void {
+  paint(image: GrayImage, focused: boolean, padding: Edges<number>): void {
     const top = drawPageHeading(
       image,
+      padding,
       "Faceclaw Statistics",
       (global.isIOS ? "TestFlight reports are separate. " : "Google ML Kit diagnostics are separate. ") +
         "Choose Faceclaw statistics below. Details and controls: Settings > Privacy.",
@@ -41,9 +42,14 @@ export class DataCollectionPage implements OnboardingPage {
     this.labelColumnWidth =
       Math.max(...dataCollectionSetting.values.map((level) => body.measureText(dataCollectionSetting.displayValue(level)))) +
       LABEL_GAP;
+    // The list scrolls, so it runs to the window's bottom edge, with that
+    // edge's padding after its last row.
     this.menu.paint(
       image,
-      { x: PAGE_X - 10, y: top, width: image.width - 2 * (PAGE_X - 10), height: image.height - top - BOTTOM_MARGIN },
+      {
+        x: padding.left, y: top, width: Math.max(0, image.width - padding.left - padding.right), height: Math.max(0, image.height - top),
+        padBottom: padding.bottom,
+      },
       focused,
     );
   }
@@ -68,9 +74,9 @@ export class DataCollectionPage implements OnboardingPage {
   private drawRow({ image, item: level, x, y, width, height, selected }: MenuDrawArgs<DataCollectionLevel>): void {
     const body = onboardingFont("body");
     const detail = onboardingFont("detail");
-    image.drawText(body, x + 10, y + LIST_ROW_TEXT_INSET, dataCollectionSetting.displayValue(level), selected ? 255 : 200);
-    const summaryX = x + 10 + this.labelColumnWidth;
-    const summary = truncateText(detail, dataCollectionSummary(level), x + width - 10 - summaryX);
+    image.drawText(body, x + PAGE_TEXT_INSET, y + LIST_ROW_TEXT_INSET, dataCollectionSetting.displayValue(level), selected ? 255 : 200);
+    const summaryX = x + PAGE_TEXT_INSET + this.labelColumnWidth;
+    const summary = truncateText(detail, dataCollectionSummary(level), x + width - PAGE_TEXT_INSET - summaryX);
     image.drawText(detail, summaryX, y + Math.round((height - detail.lineHeight) / 2), summary, selected ? 210 : 150);
   }
 }

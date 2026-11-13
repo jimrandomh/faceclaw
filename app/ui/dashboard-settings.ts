@@ -586,18 +586,36 @@ export const statusBarVisibilitySetting = new ConfigSettingEnum<StatusBarVisibil
 });
 
 /**
- * Whether the foreground window gets a rounded border with a popup app
- * switcher (geometry.ts windowFramed); without one, a line divides the
- * window from the status bar.
+ * Which lines the shell draws round the foreground window with a bottom or
+ * popup app switcher: a rounded border all round it (geometry.ts
+ * windowFramed), only a straight line between it and the status bar, or
+ * none at all.
  */
-export const windowBorderSetting = new ConfigSettingBoolean({
+export type WindowBorder = "all" | "status" | "none";
+
+const WINDOW_BORDER_LABELS: Record<WindowBorder, string> = {
+  all: "All around",
+  status: "Status line",
+  none: "None",
+};
+
+// Until 2026-11-09 this was a toggle that only a popup app switcher had,
+// between the rounded border and the status line; a bottom row's windows
+// always had the border.
+function legacyWindowBorder(): WindowBorder {
+  return appSwitcherPositionSetting.get() === "popup" && !getBooleanSetting("display.windowBorder", true) ? "status" : "all";
+}
+
+export const windowBorderSetting = new ConfigSettingEnumWithLegacy<WindowBorder>({
   id: "window-border",
-  label: "Window border",
-  storageKey: "display.windowBorder",
-  defaultValue: true,
+  label: "Border",
+  storageKey: "display.border",
+  defaultValue: "all",
+  values: ["all", "status", "none"],
+  formatValue: (value) => WINDOW_BORDER_LABELS[value] ?? value,
   description:
-    "Draw a rounded border around the window. Without it, a line separates the window from the status bar. Available with a popup app switcher. Changing it reopens open apps in the new size.",
-});
+    "All around draws a rounded border around the window. Status line draws only a straight line between the window and the status bar. None draws no lines. Available with the app switcher at the bottom or as a popup. Open apps reopen at their new size when a change resizes windows.",
+}, legacyWindowBorder);
 
 export const brightnessSetting = new ConfigSettingEnum<BrightnessSetting>({
   id: "brightness",
@@ -753,6 +771,21 @@ export const mirrorTouchSetting = new ConfigSettingBoolean({
   defaultValue: true,
   description:
     "Let touches on the phone's mirror act on the glasses UI: tap selects what it lands on, double-tap goes back, a hold opens the menu, swipes navigate.",
+});
+
+/** Which input device the touchpad on the phone's main screen imitates. */
+export type PhoneInputStyle = "watch" | "ring";
+
+export const phoneInputStyleSetting = new ConfigSettingEnum<PhoneInputStyle>({
+  id: "phone-input-style",
+  label: "Phone input style",
+  storageKey: "phone.inputStyle",
+  defaultValue: "watch",
+  values: ["watch", "ring"],
+  formatValue: (value) => (value === "ring" ? "Ring" : "Watch"),
+  description:
+    "Which device the touchpad on the phone's main screen imitates. Watch: swipes navigate, tap selects, double-tap or two fingers goes back, a hold opens the menu. " +
+    "Ring: vertical swipes scroll; tap, double-tap and hold are the ring's click, double-click and long-press.",
 });
 
 // Watch remote (app/g2/wear-remote.ts, wear/, apple-watch/). All three are read on
@@ -947,7 +980,7 @@ export const useMicControlSetting = new ConfigSettingBoolean({
   storageKey: "developer.useMicControl",
   defaultValue: true,
   description:
-    "Use the custom firmware's per-temple mic-control channel for the Microphones app's array capture. When off, use the standard single mixed stream.",
+    "Use the custom firmware's per-temple mic-control channel for capturing the microphones separately (the Microphones app's array capture, and Transcribe's Microphones option). When off, use the standard single mixed stream.",
 });
 
 export const showBleBandwidthSetting = new ConfigSettingBoolean({
@@ -1045,20 +1078,18 @@ export const wakeWordActionSetting = new ConfigSettingEnum<WakeWordAction>({
   description: "What saying \"Hey Even\" does: start voice input, just turn the screen on, or nothing.",
 });
 
-export const saveTranscribeAudioSetting = new ConfigSettingBoolean({
-  id: "save-transcribe-audio",
-  label: "Save Transcribe audio",
-  storageKey: "voice.saveTranscribeAudio",
-  defaultValue: true,
-  description: "Record each Transcribe session's audio as a WAV file in Downloads (about 2 MB per minute), named like its transcript. Recordings are kept until you delete them.",
-});
-
-export const saveVoiceRecordingsSetting = new ConfigSettingBoolean({
-  id: "save-voice-recordings",
-  label: "Save voice recordings",
-  storageKey: "developer.saveVoiceRecordings",
+/**
+ * Toggled from the Transcribe and Translate apps' menus. One setting for
+ * both: they share the mic stream, so its audio is either being saved or not.
+ */
+export const saveRecordingSetting = new ConfigSettingBoolean({
+  id: "save-recording",
+  label: "Save Recording",
+  storageKey: "voice.saveRecording",
   defaultValue: false,
-  description: "Keep a copy of captured voice audio on the phone, for debugging transcription problems.",
+  description: global.isIOS
+    ? "Record the audio of Transcribe and Translate sessions as Matroska audio (.mka) files in Downloads (about 2 MB per minute), named after the app and the session's start time. Recordings are kept until you delete them."
+    : "Record the audio of Transcribe and Translate sessions as Matroska audio (.mka) files in Downloads: about 2 MB per minute, or 10 MB with all four microphones. Named after the app and the session's start time, and kept until you delete them. Transcribe can replay one: pick it in the Files app.",
 });
 
 export const assistantSkipConfirmationSetting = new ConfigSettingBoolean({
@@ -1812,26 +1843,29 @@ export class EditTextSettingLayer implements Layer {
     const font = getDefaultSmallFont();
     // Sized to the hosting stack (full lens in the dashboard window, app
     // viewport in the settings app).
-    const { width, height } = ctx.stack.getBaseSize();
+    const { width, height, padding } = ctx.stack.getBaseSize();
     const image = new GrayImage(width, height, 0);
     const step = lineStep(font);
-    image.drawText(font, 22, 16, this.setting.glassesEditTitle, 220);
-    const messageTop = 24 + 2 * font.lineHeight;
-    const message = wrapText(font, "Look at the phone app to type a value.", width - 48);
+    // A text column inside the padding suggested for each window edge.
+    const x = padding.left;
+    const textWidth = width - padding.left - padding.right;
+    image.drawText(font, x, padding.top, this.setting.glassesEditTitle, 220);
+    const messageTop = padding.top + 8 + 2 * font.lineHeight;
+    const message = wrapText(font, "Look at the phone app to type a value.", textWidth);
     for (let index = 0; index < message.length; index++) {
-      image.drawText(font, 22, messageTop + index * step, message[index]!, 200);
+      image.drawText(font, x, messageTop + index * step, message[index]!, 200);
     }
     const valueY = messageTop + (message.length + 2) * step;
-    image.drawText(font, 22, valueY, truncateSetting(this.setting.get(), 52), 220);
+    image.drawText(font, x, valueY, truncateSetting(this.setting.get(), 52), 220);
     const error = this.setting.validationError();
-    const errorLines = error ? wrapText(font, error, width - 48) : [];
+    const errorLines = error ? wrapText(font, error, textWidth) : [];
     errorLines.forEach((line, index) =>
-      image.drawText(font, 22, messageTop + (message.length + 4 + index) * step, line, 180));
+      image.drawText(font, x, messageTop + (message.length + 4 + index) * step, line, 180));
     // The back hint at the bottom, unless a short window (the RayNeo iO's)
     // leaves it no room under the value and error.
     const contentBottom = errorLines.length ? messageTop + (message.length + 4 + errorLines.length) * step : valueY + step;
-    const hintY = height - 24 - font.lineHeight;
-    if (hintY >= contentBottom) image.drawText(font, 22, hintY, `${GESTURE_DOUBLE_CLICK} back`, 110);
+    const hintY = height - padding.bottom - font.lineHeight;
+    if (hintY >= contentBottom) image.drawText(font, x, hintY, `${GESTURE_DOUBLE_CLICK} back`, 110);
     return image;
   }
 

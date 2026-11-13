@@ -30,7 +30,7 @@ export function grayImageToPreviewSource(image: GrayImage): ImageSource | null {
 
 /**
  * A glasses icon as a white-on-transparent phone image (gray becomes alpha),
- * for the dark action bar.
+ * which the phone UI tints to suit its background.
  */
 export function grayImageToWhiteIconSource(image: GrayImage): ImageSource | null {
   if (!global.isAndroid) {

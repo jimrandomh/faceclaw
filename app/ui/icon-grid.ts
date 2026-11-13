@@ -22,12 +22,11 @@ const DEFAULT_COLUMNS = 5;
 const DEFAULT_LABEL_VALUE = 210;
 /** Wide rows: text inset from the grid's left and right edges. */
 const WIDE_TEXT_X = 20;
-/** The scrollbar's columns at the right edge, which animations leave alone. */
+/** Columns a grid with a scrollbar keeps for it at the box's right edge, clear of its rows. */
 const SCROLLBAR_GUTTER = 5;
-/** How far a row-mode highlight band is inset from the box's left and right edges. */
-export const ICON_GRID_BAND_INSET_X = 4;
+const SCROLLBAR_WIDTH = 3;
 /** How far a grid row's highlight (band or cell) is inset from the row's top and bottom. */
-export const ICON_GRID_HIGHLIGHT_INSET_Y = 2;
+const HIGHLIGHT_INSET_Y = 2;
 
 export type IconGridCell = {
   label: string;
@@ -69,7 +68,10 @@ export type IconGridOptions<T> = {
    * always uses), even if the host reset the selection while navigating.
    */
   onBack: (ctx: LayerContext) => boolean | void;
-  /** Draw a scrollbar at the right edge when rows overflow. Default false. */
+  /**
+   * Draw a scrollbar at the box's right edge when rows overflow; the rows
+   * then always keep its few columns free. Default false.
+   */
   scrollbar?: boolean;
 };
 
@@ -79,7 +81,16 @@ type GridRow<T> =
 
 type GridMode = "row" | "item";
 
-type GridLayout = { box: MenuBox; rowH: number; colW: number };
+/**
+ * `lead` is the blank space before the first row, inside the scrolled
+ * content (see paint); `scrollOffset` is the content offset of the box's top.
+ */
+type GridLayout = { box: MenuBox; rowH: number; colW: number; lead: number; scrollOffset: number };
+
+/** The part of a grid's box its rows take: all of it, less a scrollbar's gutter. */
+function rowsBox(box: MenuBox, scrollbar: boolean): MenuBox {
+  return scrollbar ? { ...box, width: Math.max(0, box.width - SCROLLBAR_GUTTER) } : box;
+}
 
 /**
  * The selection highlight in image coordinates. `key` names what is
@@ -100,6 +111,12 @@ type Highlight = { key: number; x: number; y: number; width: number; height: num
  * box, which would make the padding jump whenever a font step changed how
  * many rows fit. Space left below the last full row shows the top of the
  * next row, cut off at the box's edge, as a hint that there is more to scroll to.
+ *
+ * The box is the scroll viewport, and a row-mode highlight band spans its
+ * width: a host insets it from a window's sides by the padding suggested
+ * for them (viewport.ts), and runs it to the window's top and bottom edges,
+ * giving their padding as the box's padTop and padBottom, which the grid
+ * keeps inside the scrolled content.
  *
  * Ring input navigates on two levels, halving the scrolls to reach an item:
  * in row mode scroll picks a row and a click drops into item mode on it,
@@ -196,21 +213,34 @@ export class IconGrid<T> {
     }
   }
 
-  paint(image: GrayImage, box: MenuBox, focused: boolean): void {
+  /**
+   * Paint the grid into `box`, its scroll viewport. The box's padTop keeps
+   * the first row's highlight that far below the box's top while the grid
+   * is scrolled to its start, and padBottom keeps the last row's that far
+   * above its bottom at the end; rows scrolled past either are cut off at
+   * the box's edge itself.
+   */
+  paint(image: GrayImage, viewportBox: MenuBox, focused: boolean): void {
     const font = getDefaultSmallFont();
     const rows = this.buildRows();
     this.clampSelection(rows);
+    const box = rowsBox(viewportBox, !!this.options.scrollbar);
     const rowH = iconGridMinRowHeight(font, ICON_GRID_ICON_SIZE, LABEL_GAP);
-    const fullRows = Math.max(1, Math.floor(box.height / rowH));
+    // A row's highlight already sits HIGHLIGHT_INSET_Y inside it.
+    const lead = Math.max(0, (box.padTop ?? 0) - HIGHLIGHT_INSET_Y);
+    const tail = Math.max(0, (box.padBottom ?? 0) - HIGHLIGHT_INSET_Y);
+    // Rows that fit whole wherever the grid is scrolled to: the rest of the
+    // box shows the next row cut off.
+    const fullRows = Math.max(1, Math.floor((box.height - lead - tail) / rowH));
     // Scroll to keep the selected row among the fully-visible rows.
     this.scrollRow = scrollToKeepSelectionVisible(this.scrollRow, this.selectedRow, fullRows, rows.length);
-    const layout: GridLayout = { box, rowH, colW: box.width / this.columns };
+    const layout: GridLayout = { box, rowH, colW: box.width / this.columns, lead, scrollOffset: scrollOffsetFor(this.scrollRow, rowH, lead) };
     this.layout = layout;
 
     const highlight = this.highlight(rows, layout, font, focused);
     const bottom = box.y + box.height;
     for (let rowIndex = this.scrollRow; rowIndex < rows.length; rowIndex++) {
-      const y = box.y + (rowIndex - this.scrollRow) * rowH;
+      const y = rowTop(layout, rowIndex);
       if (y >= bottom) break;
       if (highlight && rowIndex === this.selectedRow) {
         drawSelectionHighlight(image, highlight.x, highlight.y, highlight.width, highlight.height, focused, highlight.radius);
@@ -218,11 +248,13 @@ export class IconGrid<T> {
       this.drawRow(image, rows[rowIndex]!, rowIndex, box.x, y, layout, font, bottom);
     }
 
-    const scrollbar = !!this.options.scrollbar && rows.length > fullRows;
-    if (scrollbar) {
-      drawListScrollbar(image, box.x + box.width - SCROLLBAR_GUTTER, box.y, box.height, this.scrollRow, fullRows, rows.length);
+    if (this.options.scrollbar && rows.length > fullRows) {
+      // Fixed, unlike the rows: it keeps inside the box's padding.
+      const trackTop = box.y + (box.padTop ?? 0);
+      const trackHeight = box.height - (box.padTop ?? 0) - (box.padBottom ?? 0);
+      drawListScrollbar(image, viewportBox.x + viewportBox.width - SCROLLBAR_WIDTH, trackTop, trackHeight, this.scrollRow, fullRows, rows.length);
     }
-    this.paintMotion(image, rows, layout, font, focused, highlight, scrollbar);
+    this.paintMotion(image, rows, layout, font, focused, highlight);
   }
 
   async handleInput(event: InputEvent, ctx: LayerContext): Promise<void> {
@@ -240,10 +272,10 @@ export class IconGrid<T> {
    */
   async hitTest(x: number, y: number, ctx: LayerContext): Promise<boolean> {
     if (!this.layout) return false;
-    const { box, rowH, colW } = this.layout;
+    const { box, rowH, colW, lead, scrollOffset } = this.layout;
     if (x < box.x || x >= box.x + box.width || y < box.y || y >= box.y + box.height) return false;
-    const rowIndex = this.scrollRow + Math.floor((y - box.y) / rowH);
-    const row = this.buildRows()[rowIndex];
+    const rowIndex = Math.floor((y - box.y + scrollOffset - lead) / rowH);
+    const row = rowIndex >= 0 ? this.buildRows()[rowIndex] : undefined;
     if (!row) return false;
     if (row.kind === "cells") {
       const col = Math.floor((x - box.x) / colW);
@@ -269,19 +301,18 @@ export class IconGrid<T> {
     const row = rows[this.selectedRow];
     if (!row) return null;
     const { box, rowH, colW } = layout;
-    const y = box.y + (this.selectedRow - this.scrollRow) * rowH;
+    const y = rowTop(layout, this.selectedRow);
     if (row.kind === "wide") {
       const textY = y + wideTextOffset(rowH, font);
       return { key: row.firstIndex, x: box.x + WIDE_TEXT_X - 6, y: textY - 2,
         width: box.width - 2 * WIDE_TEXT_X + 12, height: font.lineHeight + 4, radius: 4 };
     }
-    const insetY = ICON_GRID_HIGHLIGHT_INSET_Y;
+    const insetY = HIGHLIGHT_INSET_Y;
     if (this.mode === "item" || (!focused && shell.lastInputWasWatch())) {
       return { key: row.firstIndex + this.selectedCol, x: Math.round(box.x + this.selectedCol * colW) + 6, y: y + insetY,
         width: Math.round(colW) - 12, height: rowH - 2 * insetY, radius: 6 };
     }
-    return { key: -1 - this.selectedRow, x: box.x + ICON_GRID_BAND_INSET_X, y: y + insetY,
-      width: box.width - 2 * ICON_GRID_BAND_INSET_X, height: rowH - 2 * insetY, radius: 6 };
+    return { key: -1 - this.selectedRow, x: box.x, y: y + insetY, width: box.width, height: rowH - 2 * insetY, radius: 6 };
   }
 
   /**
@@ -325,16 +356,16 @@ export class IconGrid<T> {
    * moving, retain the display list that animates them over the static paint.
    */
   private paintMotion(image: GrayImage, rows: readonly GridRow<T>[], layout: GridLayout, font: UiFont,
-      focused: boolean, highlight: Highlight | null, scrollbar: boolean): void {
+      focused: boolean, highlight: Highlight | null): void {
     const now = Date.now();
-    const scrollOffset = this.scrollRow * layout.rowH;
+    const { scrollOffset } = layout;
     const scroll = this.scrollMotion.paint(scrollOffset, layout.box, now);
     const slide = highlight
       ? this.highlightMotion.paint(highlight.key, scrollOffset, highlight.x, highlight.y, highlight.width, highlight.height, now, !!scroll)
       : undefined;
     if (!scroll && !slide) return;
     const { box } = layout;
-    const clip: ListClip = { x: 0, y: 0, width: box.width - (scrollbar ? SCROLLBAR_GUTTER : 0), height: box.height };
+    const clip: ListClip = { x: 0, y: 0, width: box.width, height: box.height };
     const list = this.motionList(rows, layout, font, focused, highlight, clip, scroll, slide);
     if (!list) {
       this.scrollMotion.cancel();
@@ -353,11 +384,10 @@ export class IconGrid<T> {
   private motionList(rows: readonly GridRow<T>[], layout: GridLayout, font: UiFont, focused: boolean,
       highlight: Highlight | null, clip: ListClip, scroll: MenuScrollAnimation | undefined,
       slide: MenuHighlightAnimation | undefined): DisplayList | null {
-    const { box, rowH } = layout;
-    const scrollOffset = this.scrollRow * rowH;
+    const { box, rowH, lead, scrollOffset } = layout;
     const offsets = scroll ? [scroll.from, scroll.to, scroll.peak ?? scroll.to] : [scrollOffset];
-    const firstRow = Math.max(0, Math.floor(Math.min(...offsets) / rowH));
-    const lastRow = Math.min(rows.length, Math.ceil((Math.max(...offsets) + box.height) / rowH));
+    const firstRow = Math.max(0, Math.floor((Math.min(...offsets) - lead) / rowH));
+    const lastRow = Math.min(rows.length, Math.ceil((Math.max(...offsets) + box.height - lead) / rowH));
     const content = new GrayImage(box.width, Math.max(1, (lastRow - firstRow) * rowH));
     for (let rowIndex = firstRow; rowIndex < lastRow; rowIndex++) {
       this.drawRow(content, rows[rowIndex]!, rowIndex, 0, (rowIndex - firstRow) * rowH, layout, font);
@@ -380,7 +410,7 @@ export class IconGrid<T> {
         background: focused ? q(MENU_HIGHLIGHT_FILL) : 0, border: q(MENU_HIGHLIGHT_STROKE), clip });
     }
     // Without a scroll the rows stay put; a literal keeps every compiled call small.
-    const rowsY = scroll ? E.i32(firstRow * rowH).sub(offset) : (firstRow - this.scrollRow) * rowH;
+    const rowsY = scroll ? E.i32(lead + firstRow * rowH).sub(offset) : lead + firstRow * rowH - scrollOffset;
     calls.push({ op: DrawOp.DRAWS, x: 0, y: rowsY, records: replay.records, count: replay.count, source: content, clip });
     return { resources: [], timeline: { token: timeline.token, startedAt: timeline.startedAt }, calls };
   }
@@ -567,6 +597,20 @@ export class IconGrid<T> {
     }
     return rows;
   }
+}
+
+/**
+ * Content offset of the box's top with `scrollRow` as the first row shown:
+ * that row's top, or for the first row the content's, so the space before
+ * it shows too.
+ */
+function scrollOffsetFor(scrollRow: number, rowH: number, lead: number): number {
+  return scrollRow === 0 ? 0 : lead + scrollRow * rowH;
+}
+
+/** Image y of a row's top in the layout's box as scrolled. */
+function rowTop(layout: GridLayout, rowIndex: number): number {
+  return layout.box.y + layout.lead + rowIndex * layout.rowH - layout.scrollOffset;
 }
 
 function rowLength<T>(row: GridRow<T>): number {

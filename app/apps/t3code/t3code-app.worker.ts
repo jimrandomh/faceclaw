@@ -43,6 +43,7 @@ import { drawSubmenuIndicator, submenuItem, type MenuItem } from "../../ui/menu"
 import { Menu, type MenuDrawArgs } from "../../ui/menu-core";
 import { LIST_ROW_TEXT_INSET, lineStep, listRowHeight } from "../../ui/metrics";
 import { WindowMenu, WindowMenuLayer } from "../../ui/window-menu";
+import type { Viewport } from "../../ui/viewport";
 import type { WorkerAppMessage, WorkerAppReply } from "../../ui/shell/worker-window";
 import type { ToolResult, ToolSpec } from "../../assistant/tool-registry";
 import { GESTURE_CLICK, GESTURE_DOUBLE_CLICK, type InputEvent } from "../../ui/gestures";
@@ -131,12 +132,27 @@ const VISIT_THROTTLE_MS = 10_000;
 /** How long a transient status ("Sent", an error) stays in a footer. */
 const NOTICE_MS = 6_000;
 const SETTLED_SHOWN = 25;
-const LIST_LEFT = 12;
-const LIST_RIGHT = 20;
-const TITLE_X = 18;
-const TITLE_Y = 10;
-const BODY_LEFT = 14;
-const BODY_RIGHT = 18;
+// Every screen lays out inside the padding suggested for its window's edges
+// (viewport.ts); these are offsets from it.
+/**
+ * A list screen's title: how far right of the rows' selection boxes, which
+ * start at the left padding (so it lines up with their text), and how far
+ * below the top padding.
+ */
+const LIST_TITLE_INSET_X = 6;
+const LIST_TITLE_OFFSET_Y = 2;
+/** Between a title and a status that shares its row. */
+const TITLE_STATUS_GAP = 16;
+/** Below a title's line: the gap before the list's first text line, and how far above that line its selection box starts. */
+const LIST_TITLE_GAP = 8;
+const LIST_LEAD = 2;
+/** A list's scrollbar (Menu.drawScrollbar's bar), hugging the right padding, and the gap the rows keep from it. */
+const LIST_SCROLLBAR_WIDTH = 3;
+const LIST_SCROLLBAR_GAP = 10;
+/** How far a list's scrollbar track stops short of the rows' span at each end. */
+const LIST_SCROLLBAR_INSET = 2;
+/** Between a list and lines of text pinned under it. */
+const LIST_FOOTER_GAP = 6;
 
 function font(): UiFont {
   return getDefaultSmallFont();
@@ -155,8 +171,8 @@ type Screen =
 type AppWindow = {
   windowId: string;
   surfaceId: string;
-  viewportWidth: number;
-  viewportHeight: number;
+  /** The window's size, what its edges touch and their padding, as of the last open or resize message. */
+  viewport: Viewport;
   foreground: boolean;
   focused: boolean;
   menu: WindowMenu | null;
@@ -365,8 +381,7 @@ global.onmessage = (event: { data: WorkerAppMessage }) => {
       window = {
         windowId: message.windowId,
         surfaceId: message.surfaceId,
-        viewportWidth: message.viewport.width,
-        viewportHeight: message.viewport.height,
+        viewport: message.viewport,
         foreground: false,
         focused: false,
         menu: null,
@@ -379,8 +394,9 @@ global.onmessage = (event: { data: WorkerAppMessage }) => {
       break;
     case "resize-window":
       if (!window || window.windowId !== message.windowId) break;
-      window.viewportWidth = message.viewport.width;
-      window.viewportHeight = message.viewport.height;
+      // A new size, or the same size with different edges (so padding):
+      // either way every screen lays out again.
+      window.viewport = message.viewport;
       window.menu?.resize(message.viewport);
       window.lastSubmittedFingerprint = "";
       render();
@@ -760,7 +776,7 @@ function windowMenu(win: AppWindow): WindowMenu {
     post,
     title: () => (screen.kind === "thread" ? threadTitle() : APP_TITLE),
     items: () => menuItems(),
-    size: { width: win.viewportWidth, height: win.viewportHeight },
+    size: win.viewport,
     paintBase: () => paintContent(win),
     isFocused: () => win.focused,
   });
@@ -1886,49 +1902,110 @@ function listStatusLine(): string {
   return glanceSummary({ needsYou: needs, working });
 }
 
+/**
+ * Paint a list screen's title, and a dim status beside it, inside the
+ * window's top padding. Returns the title's x (other text on the screen
+ * lines up with it) and the y of the first text line below it.
+ */
+function paintListTitle(image: GrayImage, viewport: Viewport, title: string, status: string): { x: number; listTop: number } {
+  const f = font();
+  const { width, padding } = viewport;
+  const x = padding.left + LIST_TITLE_INSET_X;
+  const y = padding.top + LIST_TITLE_OFFSET_Y;
+  image.drawText(f, x, y, title, 220);
+  if (status) {
+    const statusX = x + f.measureText(title) + TITLE_STATUS_GAP;
+    image.drawText(f, statusX, y, truncateText(f, status, width - padding.right - statusX), 150);
+  }
+  return { x, listTop: y + lineStep(f) + LIST_TITLE_GAP };
+}
+
+/** Where a list's scrollbar starts: it hugs the window's right padding. */
+function listScrollbarX(viewport: Viewport): number {
+  return viewport.width - viewport.padding.right - LIST_SCROLLBAR_WIDTH;
+}
+
+/** Width of a list's rows, from the window's left padding to the scrollbar's gutter. */
+function listRowsWidth(viewport: Viewport): number {
+  return Math.max(0, listScrollbarX(viewport) - LIST_SCROLLBAR_GAP - viewport.padding.left);
+}
+
+/**
+ * Paint the list from just above the text line at `listTop` down to the
+ * window's bottom edge, or to above the text pinned under it at `footerTop`.
+ * The list scrolls, so at the window's edge it takes that edge's padding
+ * inside it, after its last row: the row rests clear of a border there, and
+ * rows scrolled past the end are cut off at the edge itself.
+ */
+function paintListRows(win: AppWindow, image: GrayImage, menu: Menu<ListItem>, listTop: number, footerTop?: number): void {
+  const { height, padding } = win.viewport;
+  const toEdge = footerTop === undefined;
+  const boxTop = listTop - LIST_LEAD;
+  const boxBottom = toEdge ? height : footerTop - LIST_FOOTER_GAP;
+  // Where the last row ends once scrolled to it.
+  const rowsBottom = toEdge ? height - padding.bottom : boxBottom;
+  menu.paint(
+    image,
+    { x: padding.left, y: boxTop, width: listRowsWidth(win.viewport), height: Math.max(0, boxBottom - boxTop), padBottom: toEdge ? padding.bottom : 0 },
+    win.focused,
+  );
+  const trackTop = boxTop + LIST_SCROLLBAR_INSET;
+  menu.drawScrollbar(image, listScrollbarX(win.viewport), trackTop, Math.max(0, rowsBottom - LIST_SCROLLBAR_INSET - trackTop));
+}
+
 function paintList(win: AppWindow, mode: "list" | "environments"): GrayImage {
-  const image = new GrayImage(win.viewportWidth, win.viewportHeight, 0);
+  const { width, height, padding } = win.viewport;
+  const image = new GrayImage(width, height, 0);
   const f = font();
   const step = lineStep(f);
   const title = mode === "environments" ? "T3 Code - Environments" : APP_TITLE;
-  image.drawText(f, TITLE_X, TITLE_Y, title, 220);
   const status = mode === "list" ? listStatusLine() : notice?.text ?? "";
-  if (status) {
-    const statusX = TITLE_X + f.measureText(title) + 16;
-    image.drawText(f, statusX, TITLE_Y, truncateText(f, status, win.viewportWidth - statusX - 14), 150);
-  }
-  let listTop = TITLE_Y + step + 8;
+  const header = paintListTitle(image, win.viewport, title, status);
+  let listTop = header.listTop;
   if (mode === "list" && clients.size === 0) {
     const help = wrapText(
       f,
       "Run `t3 pair` on the computer running T3 Code (serve it on your network with `t3 serve --host 0.0.0.0`, or use Tailscale), then pick Pair below and paste the link into the phone app.",
-      win.viewportWidth - TITLE_X * 2,
+      width - padding.right - header.x,
     );
-    help.forEach((line, index) => image.drawText(f, TITLE_X, listTop + index * step, line, 160));
+    help.forEach((line, index) => image.drawText(f, header.x, listTop + index * step, line, 160));
     listTop += help.length * step + 8;
   }
   const items = mode === "environments" ? environmentItems() : listItems();
   const menu = list();
   menu.setItems(items, selectionIndex(items));
   listSelectionKey = menu.selectedItem?.key ?? listSelectionKey;
-  const listHeight = win.viewportHeight - 6 - listTop;
-  menu.paint(image, { x: LIST_LEFT, y: listTop - 2, width: win.viewportWidth - LIST_LEFT - LIST_RIGHT, height: listHeight }, win.focused);
-  menu.drawScrollbar(image, win.viewportWidth - 10, listTop, listHeight - 4);
+  paintListRows(win, image, menu, listTop);
   return image;
 }
 
-const THREAD_HEADER_HEIGHT = 28;
+/** The thread screen's header, below its title's top: the rule under the title, and the transcript's first line. */
+const THREAD_RULE_OFFSET = 18;
+const THREAD_BODY_OFFSET = 26;
+/** How far the thread screen's text sits inside the ends of its header rule. */
+const THREAD_TEXT_INSET = 2;
+/** The transcript's scrollbar, hugging the window's right padding, and the gap the header rule keeps from it. */
+const THREAD_SCROLLBAR_WIDTH = 2;
+const THREAD_SCROLLBAR_GAP = 8;
+/** Between the transcript and the footer under it. */
+const THREAD_FOOTER_GAP = 4;
 
+/** The transcript's top: its header stays put above it, inside the window's top padding. */
 function threadBodyTop(): number {
-  return THREAD_HEADER_HEIGHT + 4;
+  return (window?.viewport.padding.top ?? 0) + THREAD_BODY_OFFSET;
 }
 
-/** Body height above the footer (hint line, plus a plan line when there is one). */
+/**
+ * Body height above the footer (hint line, plus a plan line when there is
+ * one), whose last line rests on the window's bottom padding.
+ */
 function threadBodyHeight(): number {
   if (!window) return 0;
-  const step = lineStep(font());
+  const f = font();
+  const { height, padding } = window.viewport;
   const footerLines = threadView?.handle.model.todoList() && currentShellThread() && threadStatus(currentShellThread()!) === "working" ? 2 : 1;
-  return window.viewportHeight - threadBodyTop() - footerLines * step - 8;
+  const footerTop = height - padding.bottom - f.lineHeight - (footerLines - 1) * lineStep(f);
+  return footerTop - THREAD_FOOTER_GAP - threadBodyTop();
 }
 
 function threadFooterHint(): { text: string; value: number } {
@@ -1948,18 +2025,28 @@ function threadFooterHint(): { text: string; value: number } {
 }
 
 function paintThread(win: AppWindow): GrayImage {
-  const image = new GrayImage(win.viewportWidth, win.viewportHeight, 0);
+  const { width: windowWidth, height, padding } = win.viewport;
+  const image = new GrayImage(windowWidth, height, 0);
   const view = threadView;
   const f = font();
   const step = lineStep(f);
-  const width = win.viewportWidth - BODY_LEFT - BODY_RIGHT;
+  // The header rule runs from the window's left padding to the gutter kept
+  // for the scrollbar, which hugs the right padding; text sits just inside
+  // the rule's ends.
+  const scrollbarX = windowWidth - padding.right - THREAD_SCROLLBAR_WIDTH;
+  const ruleLeft = padding.left;
+  const ruleRight = scrollbarX - THREAD_SCROLLBAR_GAP;
+  const left = ruleLeft + THREAD_TEXT_INSET;
+  const right = ruleRight - THREAD_TEXT_INSET;
+  const width = Math.max(0, right - left);
   if (!view) return image;
   const shell = currentShellThread();
   const status = shell ? threadStatusLabel(threadStatus(shell)) : "";
   const statusWidth = status ? f.measureText(status) + 12 : 0;
-  image.drawText(f, BODY_LEFT, 6, truncateText(f, threadTitle(), width - statusWidth), 225);
-  if (status) image.drawText(f, win.viewportWidth - BODY_RIGHT - f.measureText(status), 6, status, 150);
-  image.drawLine(BODY_LEFT - 2, THREAD_HEADER_HEIGHT - 4, win.viewportWidth - BODY_RIGHT + 2, THREAD_HEADER_HEIGHT - 4, 40);
+  const titleY = padding.top;
+  image.drawText(f, left, titleY, truncateText(f, threadTitle(), width - statusWidth), 225);
+  if (status) image.drawText(f, right - f.measureText(status), titleY, status, 150);
+  image.drawLine(ruleLeft, titleY + THREAD_RULE_OFFSET, ruleRight, titleY + THREAD_RULE_OFFSET, 40);
 
   const model = view.handle.model;
   const bodyTop = threadBodyTop();
@@ -1967,9 +2054,9 @@ function paintThread(win: AppWindow): GrayImage {
   const visible = Math.max(1, Math.floor(bodyHeight / step));
   if (model.sequence === null) {
     const client = clients.get(view.envId);
-    image.drawText(f, BODY_LEFT, bodyTop, client?.ready ? "Loading…" : client?.status || "Not connected", 150);
+    image.drawText(f, left, bodyTop, client?.ready ? "Loading…" : client?.status || "Not connected", 150);
   } else if (model.deleted) {
-    image.drawText(f, BODY_LEFT, bodyTop, "This thread was deleted.", 150);
+    image.drawText(f, left, bodyTop, "This thread was deleted.", 150);
   } else {
     const lines = view.layout.layout(timelineEntries(model), f, width);
     if (model.hasMoreHistory) lines.unshift({ text: "(earlier messages on the computer)", value: 90, indent: 0 }, { text: "", value: 0, indent: 0 });
@@ -1978,21 +2065,22 @@ function paintThread(win: AppWindow): GrayImage {
     const first = view.firstLine ?? view.maxFirstLine;
     for (let row = 0; row < visible; row++) {
       const line = lines[first + row];
-      if (line?.text) image.drawText(f, BODY_LEFT + line.indent, bodyTop + row * step, line.text, line.value);
+      if (line?.text) image.drawText(f, left + line.indent, bodyTop + row * step, line.text, line.value);
     }
     if (view.maxFirstLine > 0) {
       const track = visible * step;
       const thumb = Math.max(8, Math.floor((track * visible) / lines.length));
-      image.fillRect(win.viewportWidth - 8, bodyTop + Math.floor(((track - thumb) * first) / view.maxFirstLine), 2, thumb, 110);
+      image.fillRect(scrollbarX, bodyTop + Math.floor(((track - thumb) * first) / view.maxFirstLine), THREAD_SCROLLBAR_WIDTH, thumb, 110);
     }
   }
 
-  // Footer: the agent's plan progress while it works, then the hint/status line.
-  let footerY = win.viewportHeight - step - 4;
+  // Footer: the agent's plan progress while it works, then the hint/status
+  // line, resting on the window's bottom padding.
+  let footerY = height - padding.bottom - f.lineHeight;
   const hint = threadFooterHint();
   if (hint.text) {
     const text = truncateText(f, hint.text, width);
-    image.drawText(f, win.viewportWidth - BODY_RIGHT - f.measureText(text), footerY, text, hint.value);
+    image.drawText(f, right - f.measureText(text), footerY, text, hint.value);
   }
   const todo = model.todoList();
   if (todo && shell && threadStatus(shell) === "working") {
@@ -2001,28 +2089,38 @@ function paintThread(win: AppWindow): GrayImage {
     const done = steps.filter((entry) => entry.status === "completed").length;
     const current = steps.find((entry) => entry.status === "running") ?? steps.find((entry) => entry.status === "pending");
     const text = `Plan ${done}/${steps.length}${current ? ` · ${plainMarkdown(current.text)}` : ""}`;
-    image.drawText(f, BODY_LEFT, footerY, truncateText(f, text, width), 160);
+    image.drawText(f, left, footerY, truncateText(f, text, width), 160);
   }
   return image;
 }
 
+/**
+ * A screen of text: a title, paragraphs wrapped to the window, and a hint
+ * line. With no rows to line up with, the text sits right at the window's
+ * padding on every side.
+ */
 function paintMessageScreen(win: AppWindow, title: string, paragraphs: Array<{ text: string; value: number }>, footer: string): GrayImage {
-  const image = new GrayImage(win.viewportWidth, win.viewportHeight, 0);
+  const { width: windowWidth, height, padding } = win.viewport;
+  const image = new GrayImage(windowWidth, height, 0);
   const f = font();
   const step = lineStep(f);
-  const width = win.viewportWidth - TITLE_X * 2;
-  image.drawText(f, TITLE_X, TITLE_Y, title, 220);
-  let y = TITLE_Y + step + 10;
+  const x = padding.left;
+  const width = windowWidth - padding.left - padding.right;
+  image.drawText(f, x, padding.top, title, 220);
+  let y = padding.top + step + 10;
+  const footerY = height - padding.bottom - f.lineHeight;
+  // Paragraph lines stop above the hint line, or at the bottom padding when there is none.
+  const bodyBottom = footer ? footerY : height - padding.bottom;
   for (const paragraph of paragraphs) {
     if (!paragraph.text) continue;
     for (const line of wrapText(f, paragraph.text, width)) {
-      if (y > win.viewportHeight - 2 * step) break;
-      image.drawText(f, TITLE_X, y, line, paragraph.value);
+      if (y + f.lineHeight > bodyBottom) break;
+      image.drawText(f, x, y, line, paragraph.value);
       y += step;
     }
     y += 6;
   }
-  if (footer) image.drawText(f, TITLE_X, win.viewportHeight - step - 6, footer, 110);
+  if (footer) image.drawText(f, x, footerY, footer, 110);
   return image;
 }
 
@@ -2050,32 +2148,26 @@ function paintPair(win: AppWindow): GrayImage {
 function paintCompose(win: AppWindow): GrayImage {
   const target = composeTarget();
   if (!target) return paintMessageScreen(win, "New thread", [{ text: "That project is no longer available.", value: 170 }], "");
-  const image = new GrayImage(win.viewportWidth, win.viewportHeight, 0);
+  const { width, height, padding } = win.viewport;
+  const image = new GrayImage(width, height, 0);
   const f = font();
   const step = lineStep(f);
-  const title = "New thread";
-  image.drawText(f, TITLE_X, TITLE_Y, title, 220);
-  const status = busyText || notice?.text || "";
-  if (status) {
-    const statusX = TITLE_X + f.measureText(title) + 16;
-    image.drawText(f, statusX, TITLE_Y, truncateText(f, status, win.viewportWidth - statusX - 14), 150);
-  }
-  // Below the list: an error, or why nothing can start here.
+  const header = paintListTitle(image, win.viewport, "New thread", busyText || notice?.text || "");
+  // Below the list: an error, or why nothing can start here. Its lines stay
+  // put, the last resting on the window's bottom padding, and the list ends
+  // above them.
   const resolved = composeResolved(target);
   const problem = screenError || (resolved.model ? "" : (resolved.blocker ?? ""));
-  const problemLines = problem ? wrapText(f, problem, win.viewportWidth - TITLE_X * 2).slice(0, 3) : [];
-  const listTop = TITLE_Y + step + 8;
-  const listWidth = win.viewportWidth - LIST_LEFT - LIST_RIGHT;
-  const listHeight = win.viewportHeight - 6 - listTop - (problemLines.length ? problemLines.length * step + 6 : 0);
+  const problemLines = problem ? wrapText(f, problem, width - padding.right - header.x).slice(0, 3) : [];
+  const problemTop = height - padding.bottom - f.lineHeight - (problemLines.length - 1) * step;
   const items = composeItems();
   const widest = Math.max(0, ...items.filter((item) => item.kind === "field").map((item) => f.measureText(item.label)));
-  composeValueColumn = Math.min(widest + 16, Math.floor(listWidth * 0.4));
+  composeValueColumn = Math.min(widest + 16, Math.floor(listRowsWidth(win.viewport) * 0.4));
   const menu = list();
   menu.setItems(items, selectionIndex(items));
   composeSelectionKey = menu.selectedItem?.key ?? composeSelectionKey;
-  menu.paint(image, { x: LIST_LEFT, y: listTop - 2, width: listWidth, height: listHeight }, win.focused);
-  menu.drawScrollbar(image, win.viewportWidth - 10, listTop, listHeight - 4);
-  problemLines.forEach((line, index) => image.drawText(f, TITLE_X, listTop + listHeight + 4 + index * step, line, 230));
+  paintListRows(win, image, menu, header.listTop, problemLines.length ? problemTop : undefined);
+  problemLines.forEach((line, index) => image.drawText(f, header.x, problemTop + index * step, line, 230));
   return image;
 }
 

@@ -1,5 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const { bordered } = require('./helpers/viewport.cjs');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
@@ -133,7 +134,7 @@ function ui(fontSize = 12) {
   dependencies['./menu'] = load('app/ui/menu.ts', requireModule);
   const { SingleNotificationLayer } = load('app/ui/notifications.ts', requireModule);
   const { NotificationFilterLayer } = load('app/ui/notification-filter.ts', requireModule);
-  const ctx = { stack: { getBaseSize: () => ({ width: 540, height: 224 }), isFocused: () => true, pop: () => closes++ } };
+  const ctx = { stack: { getBaseSize: () => bordered(540, 224), isFocused: () => true, pop: () => closes++ } };
   const popup = new SingleNotificationLayer('key', { origin: 'new-notification-modal', onClose: () => closes++ });
   const trayCloses = [];
   const tray = new SingleNotificationLayer('key', { origin: 'notification-tray', onClose: (_ctx, gone) => trayCloses.push(gone) });

@@ -124,18 +124,53 @@ function shown(image, at) {
   return withClock(at, () => Array.from(image.withDrawsBaked().pixels, (v) => Math.min(15, (v + 8) >> 4)));
 }
 
-test('a box topped at the band inset less the highlight inset pads the first row band evenly', () => {
-  // The launcher's root grid (launcher-app.ts ROOT_GRID_TOP) relies on this.
-  const { grid } = makeGrid();
-  const { ICON_GRID_BAND_INSET_X: insetX, ICON_GRID_HIGHLIGHT_INSET_Y: insetY } = loadIconGrid();
-  const image = paint(grid, 1000, { x: 0, y: insetX - insetY, width: 500, height: 190 });
+/** Bounds of the selection highlight's stroke in a painted image: [top, left, right margin]. */
+function bandBounds(image) {
   const stroke = build('ui/menu-core').MENU_HIGHLIGHT_STROKE;
   let left = 500, right = -1, top = 200;
   image.pixels.forEach((v, i) => {
     if (v !== stroke) return;
     left = Math.min(left, i % 500); right = Math.max(right, i % 500); top = Math.min(top, (i / 500) | 0);
   });
-  assert.deepEqual([top, left, 500 - 1 - right], [insetX, insetX, insetX]);
+  return [top, left, 500 - 1 - right];
+}
+
+test('a box inset at the sides, with as much padTop, pads the first row band evenly', () => {
+  // The launcher's grid (launcher-app.ts) relies on this: its box runs to the
+  // window's top edge, with the edge's suggested padding as padTop.
+  const pad = 8;
+  const image = paint(makeGrid().grid, 1000, { x: pad, y: 0, width: 500 - 2 * pad, height: 190, padTop: pad });
+  assert.deepEqual(bandBounds(image), [pad, pad, pad]);
+  // Beside blank space there is no padding: the band spans the box, its own
+  // 2px inside its row.
+  assert.deepEqual(bandBounds(paint(makeGrid().grid, 1000, { x: 0, y: 0, width: 500, height: 190 })), [2, 0, 0]);
+});
+
+test('padTop scrolls away with the first row, and the scroll still animates to the static paint', async () => {
+  const box = { x: 0, y: 0, width: 500, height: 180, padTop: 8, padBottom: 8 };
+  const { grid } = makeGrid({ items: Array.from({ length: 20 }, (_, i) => `item${i}`) });
+  const iconYs = (image) => [...new Set(image.draws.filter((d) => d.kind === 'image' && !d.presentation).map((d) => d.y))];
+  // The first row starts below the padding (less the band's own 2px inset).
+  assert.deepEqual(iconYs(paint(grid, 500, box)), [6 + 4, 6 + 4 + ROW_H]);
+  await grid.handleInput(ring('scroll-down'), null);
+  paint(grid, 1000, box);
+  // Once the band's slide onto the second row is over.
+  const settledBefore = paint(grid, 2000, box);
+  await grid.handleInput(ring('scroll-down'), null);
+  const moving = paint(grid, 3000, box);
+  assert.ok(animation(moving), 'the scroll is retained as a display list');
+  assert.deepEqual(shown(moving, 3000), shown(settledBefore, 2000));
+  const end = 3000 + MENU_HIGHLIGHT_DURATION_MS;
+  const settled = paint(grid, end, box);
+  // Scrolled, the rows run from the box's top edge.
+  assert.deepEqual(iconYs(settled), [4, 4 + ROW_H]);
+  assert.deepEqual(shown(moving, end), shown(settled, end));
+  // A touch lands on the row under it either way.
+  const { grid: touched, log } = makeGrid();
+  paint(touched, 1000, box);
+  assert.equal(await touched.hitTest(50, 3, null), false, 'the padding is no row');
+  assert.equal(await touched.hitTest(50, 6 + ROW_H + 10, null), true);
+  assert.deepEqual(log.activated.map((a) => a.index), [5]);
 });
 
 test('rows keep their content height instead of stretching, and the next row peeks clipped', () => {
@@ -203,8 +238,9 @@ test('item selection slides the highlight between cells without redrawing past t
   assert.equal(list.calls[0].clip.width, 495, 'the scrollbar gutter is left to the static paint');
   const rect = list.calls[1];
   const { evaluate } = build('graphics/draw-expression');
-  assert.equal(evaluate(rect.x, 0).value, 200 + 6, 'starts on the middle cell');
-  assert.equal(evaluate(rect.x, MENU_HIGHLIGHT_DURATION_MS).value, 300 + 6, 'rests on the next cell');
+  // The rows keep clear of the gutter: five 99px columns in the 495 left of it.
+  assert.equal(evaluate(rect.x, 0).value, 198 + 6, 'starts on the middle cell');
+  assert.equal(evaluate(rect.x, MENU_HIGHLIGHT_DURATION_MS).value, 297 + 6, 'rests on the next cell');
   assert.deepEqual(shown(moving, 2000), shown(before, 1000));
   const end = 2000 + MENU_HIGHLIGHT_DURATION_MS;
   assert.deepEqual(shown(moving, end), shown(paint(grid, end), end));

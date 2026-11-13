@@ -13,6 +13,12 @@ import { shell } from "../../ui/shell/shell";
 const IMU_REPORT_PACE = 200;
 // How often to reconcile the IMU on/off state with window visibility.
 const RECONCILE_INTERVAL_MS = 400;
+/** The readout under the title sits this far in from the title's left edge. */
+const BODY_INDENT = 2;
+/** An axis row, from the readout's left edge: its value, then its bar, which stops this short of the right edge's padding. */
+const VALUE_OFFSET_X = 22;
+const BAR_OFFSET_X = 96;
+const BAR_RIGHT_INSET = 4;
 
 /**
  * Accelerometer demo: turns the IMU stream on while this page is visible (the
@@ -77,12 +83,17 @@ export class AccelerometerDemoLayer implements Layer {
   paint(ctx: LayerContext): GrayImage {
     const small = getDefaultSmallFont();
     const medium = getDefaultMediumFont();
-    const { width, height } = ctx.stack.getBaseSize();
+    const { width, height, padding } = ctx.stack.getBaseSize();
     const image = new GrayImage(width, height, 0);
+    // The title line sits at the padding suggested for the top, left and
+    // right edges; everything under it is placed from there.
+    const top = padding.top;
+    const right = width - padding.right;
+    const bodyX = padding.left + BODY_INDENT;
 
-    image.drawText(small, 20, 8, "Accelerometer", 220);
+    image.drawText(small, padding.left, top, "Accelerometer", 220);
     const status = this.enabled ? "IMU on" : "IMU off";
-    image.drawText(small, width - 20 - small.measureText(status), 8, status, 150);
+    image.drawText(small, right - small.measureText(status), top, status, 150);
 
     if (this.reading) {
       const axes: Array<[string, number]> = [
@@ -90,19 +101,19 @@ export class AccelerometerDemoLayer implements Layer {
         ["Y", this.reading.y],
         ["Z", this.reading.z],
       ];
-      const barX = 118;
-      const barW = width - barX - 24;
+      const barX = bodyX + BAR_OFFSET_X;
+      const barW = Math.max(0, right - BAR_RIGHT_INSET - barX);
       const scale = Math.max(this.peak, 1e-6);
-      let y = 40;
+      let y = top + 32;
       for (const [label, value] of axes) {
-        image.drawText(medium, 22, y, label, 210);
-        image.drawText(medium, 44, y, value.toFixed(3), 235);
+        image.drawText(medium, bodyX, y, label, 210);
+        image.drawText(medium, bodyX + VALUE_OFFSET_X, y, value.toFixed(3), 235);
         drawCenteredBar(image, barX, y + 2, barW, 12, clamp(value / scale, -1, 1));
         y += 30;
       }
       image.drawText(
         small,
-        22,
+        bodyX,
         y + 6,
         `source: ${imuSourceLabel(this.reading.source)}    samples: ${this.sampleCount}`,
         130,
@@ -111,9 +122,9 @@ export class AccelerometerDemoLayer implements Layer {
       const message = this.enabled
         ? "Waiting for IMU data…"
         : "Paused (page not visible).";
-      image.drawText(small, 22, 44, message, 190);
-      image.drawText(small, 22, 66, "The firmware may not report the", 120);
-      image.drawText(small, 22, 82, "accelerometer at all — experimental.", 120);
+      image.drawText(small, bodyX, top + 36, message, 190);
+      image.drawText(small, bodyX, top + 58, "The firmware may not report the", 120);
+      image.drawText(small, bodyX, top + 74, "accelerometer at all — experimental.", 120);
     }
 
     return image;

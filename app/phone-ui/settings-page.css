@@ -1,0 +1,99 @@
+/*
+ * The phone's settings page (phone-ui/settings-page.xml), opened by the gear
+ * button under the main page's mirror. Imported by both app.css and
+ * app.ios.css (iOS loads the latter instead of the former), so every Button
+ * here sets its whole look rather than leaning on either platform's default.
+ *
+ * The controls' rules are scoped under .settings-form on purpose: the theme
+ * gives Buttons, Switches and Sliders wide per-platform margins with
+ * selectors like `.ns-android Button`, which outrank a lone class.
+ */
+.settings-form {
+  padding: 4 16 16 16;
+}
+.settings-form-row {
+  padding: 12 0;
+  border-bottom-width: 1;
+  border-bottom-color: #e0e0e0;
+}
+.settings-form-label {
+  font-size: 16;
+}
+.settings-form-value {
+  font-size: 15;
+  color: #555555;
+}
+.settings-form-switch-label {
+  margin-right: 8;
+}
+.settings-form .settings-form-switch {
+  margin: 0;
+}
+.settings-form .settings-form-slider {
+  margin: 10 0 2 0;
+}
+/* Explanatory text under a row's control, and the page's closing note. */
+.settings-form-hint {
+  font-size: 13;
+  color: #666666;
+  margin-top: 8;
+}
+.settings-form-footer {
+  margin-top: 16;
+}
+.brightness-icon {
+  font-size: 16;
+  margin: 0 4 0 0;
+  color: #444444;
+}
+/* Right-aligned beside its label; long lines (three devices) wrap. */
+.settings-battery-line {
+  text-align: right;
+  margin-left: 12;
+}
+/* A value that opens a list of choices when tapped. The theme makes every
+ * Button 52 tall; these sit in a row beside a label. */
+.settings-form .settings-picker-button {
+  font-size: 14;
+  height: 40;
+  padding: 0 12;
+  margin: 0;
+  border-radius: 6;
+  background-color: #e2e2e2;
+  color: #333333;
+}
+/* A two-way choice as a pair of buttons, the chosen one filled in. */
+.settings-form .segment-button {
+  font-size: 14;
+  height: 40;
+  padding: 0 14;
+  margin: 0 0 0 6;
+  border-radius: 6;
+  background-color: #e2e2e2;
+  color: #333333;
+}
+.settings-form .segment-button-selected {
+  background-color: #424242;
+  color: #ffffff;
+}
+.ns-dark .settings-form-row {
+  border-bottom-color: #3a3a3a;
+}
+.ns-dark .settings-form-value {
+  color: #b8b8b8;
+}
+.ns-dark .settings-form-hint {
+  color: #a0a0a0;
+}
+.ns-dark .brightness-icon {
+  color: #cccccc;
+}
+.ns-dark .settings-form .settings-picker-button,
+.ns-dark .settings-form .segment-button {
+  background-color: #444444;
+  color: #dddddd;
+}
+.ns-dark .settings-form .segment-button-selected {
+  background-color: #e2e2e2;
+  color: #222222;
+}

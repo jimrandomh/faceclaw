@@ -7,29 +7,75 @@ import { type Layer, type LayerContext } from "../../ui/layers";
 import { Menu, type MenuDrawArgs } from "../../ui/menu-core";
 import { centeredTextY, lineStep, tightRowHeight } from "../../ui/metrics";
 import { distanceUnitSetting } from "../../ui/dashboard-settings";
+import type { Viewport } from "../../ui/viewport";
 import { renderWeatherIcon } from "./weather-icons";
 import { formatTemperature, widestTemperatureSample } from "./temperature-format";
 
-const PAGE_X = 18;
-const HEADER_Y = 8;
-const CURRENT_TOP = 34;
-/** Minimum x of the description column right of the temperature. */
-const CURRENT_TEXT_X = 112;
+/**
+ * How far the page's text (title, current conditions, forecast names) starts
+ * right of the forecast rows' selection boxes, which span the padding
+ * suggested for the window's side edges.
+ */
+const PAGE_TEXT_INSET = 7;
+/**
+ * The page's fixed parts, down from the title line at the window's top
+ * padding: the temperature, the description column's first line, the rule
+ * above the forecast, the forecast's column headings, and its first row's text.
+ */
+const TEMPERATURE_OFFSET_Y = 34;
+const CURRENT_TEXT_OFFSET_Y = 22;
+const FORECAST_RULE_OFFSET_Y = 90;
+const FORECAST_HEADER_OFFSET_Y = 97;
+const FORECAST_OFFSET_Y = 116;
+/** Minimum distance of the description column from the page text's left edge. */
+const CURRENT_TEXT_MIN_OFFSET_X = 94;
 /** The current-conditions icon, left of the temperature. */
 const CURRENT_ICON_SIZE = 40;
 const CURRENT_ICON_GAP = 10;
 /** Gap between the temperature and the description column. */
 const CURRENT_TEXT_GAP = 16;
-const FORECAST_HEADER_Y = 105;
-const FORECAST_TOP = 124;
 /** Forecast rows hold a 20px icon; grow with the font past that. */
 const FORECAST_MIN_ROW_HEIGHT = 23;
 /** Gap between forecast columns. */
 const FORECAST_COL_GAP = 14;
-/** Left edge of the forecast rows' selection boxes. */
-const FORECAST_BOX_X = PAGE_X - 7;
 /** Pixels between consecutive forecast rows' selection boxes. */
 const FORECAST_ROW_GAP = 2;
+/** A full-page message: its indent from the page text, and the least it sits below the title line. */
+const MESSAGE_INDENT = 6;
+const MESSAGE_MIN_OFFSET_Y = 44;
+
+/**
+ * Where the page's parts go in a viewport. The forecast rows' selection
+ * boxes are the outermost thing toward the window's sides, so they sit at
+ * the padding suggested there, and the page's text is placed from them.
+ */
+type PageLayout = {
+  width: number;
+  height: number;
+  /** The forecast rows' selection boxes. */
+  boxX: number;
+  boxWidth: number;
+  /** The span of the page's text: the title starts at textX, the location name ends at textRight. */
+  textX: number;
+  textRight: number;
+  /** The title line's top, at the window's top padding. */
+  top: number;
+  /** The window's bottom padding, kept under a footer line and inside the forecast list. */
+  padBottom: number;
+};
+
+function pageLayout({ width, height, padding }: Viewport): PageLayout {
+  return {
+    width,
+    height,
+    boxX: padding.left,
+    boxWidth: width - padding.left - padding.right,
+    textX: padding.left + PAGE_TEXT_INSET,
+    textRight: width - padding.right - PAGE_TEXT_INSET,
+    top: padding.top,
+    padBottom: padding.bottom,
+  };
+}
 
 /** Forecast column x offsets from the row box's left edge. */
 type ForecastColumns = { name: number; temp: number; precip: number; summary: number };
@@ -54,26 +100,20 @@ export class WeatherLayer implements Layer {
 
   paint(ctx: LayerContext): GrayImage {
     const font = getDefaultSmallFont();
-    const { width, height } = ctx.stack.getBaseSize();
-    const image = new GrayImage(width, height, 0);
+    const page = pageLayout(ctx.stack.getBaseSize());
+    const image = new GrayImage(page.width, page.height, 0);
     const weather = this.state();
-    image.drawText(font, PAGE_X, HEADER_Y, "Weather", 225);
+    image.drawText(font, page.textX, page.top, "Weather", 225);
     if (weather.locationName) {
-      image.drawText(
-        font,
-        width - PAGE_X - font.measureText(truncateText(font, weather.locationName, 220)),
-        HEADER_Y,
-        truncateText(font, weather.locationName, 220),
-        150,
-      );
+      const locationName = truncateText(font, weather.locationName, 220);
+      image.drawText(font, page.textRight - font.measureText(locationName), page.top, locationName, 150);
     }
 
     if (weather.phase === "permission-required") {
       this.drawMessage(
         image,
         font,
-        width,
-        height,
+        page,
         "Allow approximate location on your phone to get local weather.",
         `${GESTURE_CLICK} request`,
       );
@@ -81,16 +121,16 @@ export class WeatherLayer implements Layer {
     }
     // A refresh with earlier data in hand keeps showing that data.
     if ((weather.phase === "locating" || weather.phase === "loading") && !weather.current) {
-      this.drawMessage(image, font, width, height, weather.status);
+      this.drawMessage(image, font, page, weather.status);
       return image;
     }
     if (weather.phase === "error") {
-      this.drawMessage(image, font, width, height, weather.status, `${GESTURE_CLICK} retry`);
+      this.drawMessage(image, font, page, weather.status, `${GESTURE_CLICK} retry`);
       return image;
     }
 
-    this.drawCurrent(image, weather, width);
-    this.drawForecast(image, weather.forecast, ctx, width, height);
+    this.drawCurrent(image, weather, page);
+    this.drawForecast(image, weather.forecast, ctx, page);
     return image;
   }
 
@@ -111,31 +151,34 @@ export class WeatherLayer implements Layer {
     }
   }
 
-  private drawCurrent(image: GrayImage, weather: WeatherState, width: number): void {
+  private drawCurrent(image: GrayImage, weather: WeatherState, page: PageLayout): void {
     const current = weather.current;
     if (!current) return;
     const large = getDefaultLargeFont();
     const medium = getDefaultMediumFont();
     const small = getDefaultSmallFont();
     const temperature = current.temperatureF === null ? "--°" : formatTemperature(current.temperatureF);
-    const temperatureY = CURRENT_TOP + 8;
-    let temperatureX = PAGE_X;
+    const temperatureY = page.top + TEMPERATURE_OFFSET_Y;
+    let temperatureX = page.textX;
     if (current.condition) {
       const icon = renderWeatherIcon(current.condition, current.isDaytime, CURRENT_ICON_SIZE);
-      if (icon) image.drawImage(icon, PAGE_X, temperatureY + (((large.lineHeight - icon.height) / 2) | 0));
+      if (icon) image.drawImage(icon, page.textX, temperatureY + (((large.lineHeight - icon.height) / 2) | 0));
       temperatureX += CURRENT_ICON_SIZE + CURRENT_ICON_GAP;
     }
     image.drawText(large, temperatureX, temperatureY, temperature, 245);
-    const textX = Math.max(CURRENT_TEXT_X, temperatureX + Math.ceil(large.measureText(temperature)) + CURRENT_TEXT_GAP);
+    const textX = Math.max(
+      page.textX + CURRENT_TEXT_MIN_OFFSET_X,
+      temperatureX + Math.ceil(large.measureText(temperature)) + CURRENT_TEXT_GAP,
+    );
     // Description / details / source stack compactly from just below the
     // header line, so at large font sizes they stay clear of the forecast
     // table instead of running into it.
-    let cy = 30;
+    let cy = page.top + CURRENT_TEXT_OFFSET_Y;
     image.drawText(
       medium,
       textX,
       cy,
-      truncateText(medium, current.description || "Current conditions", width - textX - PAGE_X),
+      truncateText(medium, current.description || "Current conditions", page.textRight - textX),
       220,
     );
     cy += medium.lineHeight + 2;
@@ -153,29 +196,22 @@ export class WeatherLayer implements Layer {
     const age = current.timestampMs ? formatAge(Date.now() - current.timestampMs) : "";
     const updating = weather.phase === "locating" || weather.phase === "loading" ? " · updating" : "";
     image.drawText(small, textX, cy, `${source}${age ? ` ${age}` : ""}${updating}`, 105);
-    image.drawLine(PAGE_X, FORECAST_HEADER_Y - 7, width - PAGE_X, FORECAST_HEADER_Y - 7, 40);
+    const ruleY = page.top + FORECAST_RULE_OFFSET_Y;
+    image.drawLine(page.textX, ruleY, page.textRight - 1, ruleY, 40);
   }
 
   private drawForecast(
     image: GrayImage,
     forecast: ForecastPeriod[],
     ctx: LayerContext,
-    width: number,
-    height: number,
+    page: PageLayout,
   ): void {
     const font = getDefaultSmallFont();
+    const forecastTop = page.top + FORECAST_OFFSET_Y;
     if (!forecast.length) {
-      image.drawText(font, PAGE_X, FORECAST_TOP, "No upcoming forecast periods.", 160);
+      image.drawText(font, page.textX, forecastTop, "No upcoming forecast periods.", 160);
       return;
     }
-    const rowH = forecastRowHeight(font);
-    // The last row only needs its text line (not a full row pitch of
-    // clearance below), which usually fits one more row before the bottom.
-    // The menu only draws rows whose whole selection box fits, so the box
-    // holds that many rows, cut at the image's bottom edge.
-    const visibleRows = Math.max(1, 1 + Math.floor((height - FORECAST_TOP - (font.lineHeight + 4)) / rowH));
-    const boxTop = FORECAST_TOP - 2;
-    const boxHeight = Math.min(visibleRows * rowH - FORECAST_ROW_GAP, height - boxTop);
 
     // Columns are sized to the widest period name so names ("Wednesday
     // Night") never truncate; the summary column absorbs what's left.
@@ -183,24 +219,30 @@ export class WeatherLayer implements Layer {
       font.measureText("Upcoming"),
       ...forecast.map((period) => font.measureText(period.name)),
     );
-    const tempX = PAGE_X + nameWidth + FORECAST_COL_GAP;
+    const tempX = page.textX + nameWidth + FORECAST_COL_GAP;
     const precipX = tempX + Math.max(font.measureText("Temp"), font.measureText(widestTemperatureSample())) + FORECAST_COL_GAP;
     const summaryX = precipX + Math.max(font.measureText("Rain"), font.measureText("100%")) + FORECAST_COL_GAP;
 
-    image.drawText(font, PAGE_X, FORECAST_HEADER_Y, "Upcoming", 150);
-    image.drawText(font, tempX, FORECAST_HEADER_Y, "Temp", 105);
-    image.drawText(font, precipX, FORECAST_HEADER_Y, "Rain", 105);
+    const headerY = page.top + FORECAST_HEADER_OFFSET_Y;
+    image.drawText(font, page.textX, headerY, "Upcoming", 150);
+    image.drawText(font, tempX, headerY, "Temp", 105);
+    image.drawText(font, precipX, headerY, "Rain", 105);
 
     this.columns = {
-      name: PAGE_X - FORECAST_BOX_X,
-      temp: tempX - FORECAST_BOX_X,
-      precip: precipX - FORECAST_BOX_X,
-      summary: summaryX - FORECAST_BOX_X,
+      name: page.textX - page.boxX,
+      temp: tempX - page.boxX,
+      precip: precipX - page.boxX,
+      summary: summaryX - page.boxX,
     };
     this.forecastMenu.setItems(forecast);
+    // The rows scroll under the fixed column headings, down to the window's
+    // bottom edge, where a row cut off for scrolling meets the edge; that
+    // edge's padding goes inside the list, after its last row.
+    const boxTop = forecastTop - 2;
+    if (boxTop >= page.height) return;
     this.forecastMenu.paint(
       image,
-      { x: FORECAST_BOX_X, y: boxTop, width: width - 2 * FORECAST_BOX_X, height: boxHeight },
+      { x: page.boxX, y: boxTop, width: page.boxWidth, height: page.height - boxTop, padBottom: page.padBottom },
       ctx.stack.isFocused(),
     );
   }
@@ -213,7 +255,7 @@ export class WeatherLayer implements Layer {
     image.drawText(font, x + columns.name, textY, period.name, shade);
     image.drawText(font, x + columns.temp, textY, period.temperatureF === null ? "--" : formatTemperature(period.temperatureF), shade);
     image.drawText(font, x + columns.precip, textY, period.precipitationPercent === null ? "--" : `${Math.round(period.precipitationPercent)}%`, selected ? 220 : 155);
-    // The summary stops PAGE_X short of the viewport's right edge, as the name starts PAGE_X in from the left.
+    // The summary stops as far short of the selection box's right edge as the name starts in from its left.
     const summaryWidth = width - columns.summary - columns.name;
     image.drawText(font, x + columns.summary, textY, truncateText(font, period.shortForecast, summaryWidth), selected ? 220 : 165);
   }
@@ -221,18 +263,18 @@ export class WeatherLayer implements Layer {
   private drawMessage(
     image: GrayImage,
     font: UiFont,
-    width: number,
-    height: number,
+    page: PageLayout,
     message: string,
     footer?: string,
   ): void {
-    const lines = wrapText(font, message, width - 2 * (PAGE_X + 6));
-    const top = Math.max(52, Math.round((height - lines.length * 15) / 2) - 8);
+    const lines = wrapText(font, message, page.textRight - page.textX - 2 * MESSAGE_INDENT);
+    // Centered in the window, but never up into the title line.
+    const top = Math.max(page.top + MESSAGE_MIN_OFFSET_Y, Math.round((page.height - lines.length * 15) / 2) - 8);
     for (let index = 0; index < lines.length; index++) {
-      image.drawText(font, PAGE_X + 6, top + index * 15, lines[index]!, 185);
+      image.drawText(font, page.textX + MESSAGE_INDENT, top + index * 15, lines[index]!, 185);
     }
     if (footer) {
-      image.drawText(font, PAGE_X, height - 20, footer, 110);
+      image.drawText(font, page.textX, page.height - page.padBottom - font.lineHeight, footer, 110);
     }
   }
 }

@@ -84,9 +84,9 @@ export class OnboardingLayer implements Layer {
   }
 
   paint(ctx: LayerContext): GrayImage {
-    const { width, height } = ctx.stack.getBaseSize();
+    const { width, height, padding } = ctx.stack.getBaseSize();
     const image = new GrayImage(width, height, 0);
-    this.pages[this.index]!.paint(image, ctx.stack.isFocused());
+    this.pages[this.index]!.paint(image, ctx.stack.isFocused(), padding);
     return image;
   }
 

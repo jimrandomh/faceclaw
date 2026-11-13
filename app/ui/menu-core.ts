@@ -18,8 +18,15 @@ const MAX_SCROLL_STRIP_BYTES = 65536;
 export const BOUNCE_FRACTION = 0.4;
 export const MAX_BOUNCE = 24;
 
-/** A rectangle in image coordinates. */
-export type MenuBox = { x: number; y: number; width: number; height: number };
+/**
+ * A rectangle in image coordinates. padTop and padBottom are blank rows
+ * inside the scrolled content, before the first row and after the last
+ * (default none): they scroll away with the rows. A list whose box runs to
+ * a window's top or bottom edge passes the padding suggested for that edge
+ * (viewport.ts), so its end rows keep clear of a border line there while
+ * rows scrolled past them are cut off right at the edge.
+ */
+export type MenuBox = { x: number; y: number; width: number; height: number; padTop?: number; padBottom?: number };
 
 export type MenuDrawArgs<T> = {
   /**
@@ -73,6 +80,7 @@ export type MenuOptions<T> = {
   highlight?: MenuHighlightStyle | false;
 };
 
+/** Row tops and pitches in content coordinates; `total` includes the box's padTop and padBottom. */
 type MenuLayout = { tops: number[]; heights: number[]; total: number };
 
 /**
@@ -144,7 +152,7 @@ export class Menu<T> {
   /** True when the content did not fit the box given to the last paint. */
   get overflows(): boolean {
     if (!this.lastBox) return false;
-    return this.layout(this.lastBox.width).total > this.lastBox.height;
+    return this.layout(this.lastBox).total > this.lastBox.height;
   }
 
   /**
@@ -154,15 +162,15 @@ export class Menu<T> {
    * viewport keeps the selected row at the same on-screen position when it can.
    */
   setItems(items: readonly T[], selectedIndex?: number | null): void {
-    const width = this.lastBox?.width;
-    const before = this.selected !== null && width !== undefined
-      ? this.layout(width).tops[this.selected]! - this.scrollY
+    const box = this.lastBox;
+    const before = this.selected !== null && box
+      ? this.layout(box).tops[this.selected]! - this.scrollY
       : null;
     this.itemList = items;
     if (selectedIndex !== undefined) this.deselected = selectedIndex === null;
     this.selected = this.settle(selectedIndex === undefined ? this.selected : selectedIndex);
-    if (before !== null && this.selected !== null && width !== undefined) {
-      this.scrollY = Math.max(0, this.layout(width).tops[this.selected]! - before);
+    if (before !== null && this.selected !== null && box) {
+      this.scrollY = Math.max(0, this.layout(box).tops[this.selected]! - before);
     }
   }
 
@@ -197,7 +205,7 @@ export class Menu<T> {
         this.selected = wrapped;
         this.deselected = false;
       } else if (from === null && this.lastBox) {
-        this.scrollY = delta > 0 ? 0 : this.maxScroll(this.layout(this.lastBox.width), this.lastBox.height);
+        this.scrollY = delta > 0 ? 0 : this.maxScroll(this.layout(this.lastBox), this.lastBox.height);
       }
       return;
     }
@@ -234,7 +242,7 @@ export class Menu<T> {
   indexAt(y: number): number | null {
     const box = this.lastBox;
     if (!box || y < box.y || y >= box.y + box.height) return null;
-    const layout = this.layout(box.width);
+    const layout = this.layout(box);
     const contentY = y - box.y + this.scrollY;
     for (let index = 0; index < this.itemList.length; index++) {
       if (contentY >= layout.tops[index]! && contentY < layout.tops[index]! + layout.heights[index]!) {
@@ -247,7 +255,7 @@ export class Menu<T> {
   paint(image: GrayImage, box: MenuBox, focused: boolean): void {
     this.lastBox = box;
     this.reconcile();
-    const layout = this.layout(box.width);
+    const layout = this.layout(box);
     this.ensureVisible(layout, box.height);
     const now = Date.now();
     const scroll = this.scrollMotion.paint(this.scrollY, box, now);
@@ -297,7 +305,7 @@ export class Menu<T> {
   drawScrollbar(image: GrayImage, x: number, y: number, height: number): void {
     const box = this.lastBox;
     if (!box) return;
-    const layout = this.layout(box.width);
+    const layout = this.layout(box);
     if (layout.total <= box.height) return;
     const maxScroll = this.maxScroll(layout, box.height);
     const thumbHeight = Math.max(SCROLLBAR_MIN_THUMB, (height * box.height / layout.total) | 0);
@@ -378,7 +386,7 @@ export class Menu<T> {
   private bounce(delta: -1 | 1): void {
     const count = this.itemList.length;
     if (!this.lastBox || !count) return;
-    const layout = this.layout(this.lastBox.width);
+    const layout = this.layout(this.lastBox);
     const pitch = layout.heights[delta > 0 ? count - 1 : 0]!;
     const amount = Math.min(MAX_BOUNCE, Math.round(pitch * BOUNCE_FRACTION));
     if (amount > 0) this.scrollMotion.bounce(delta * amount);
@@ -417,18 +425,28 @@ export class Menu<T> {
     this.selected = this.settle(this.selected);
   }
 
-  private layout(width: number): MenuLayout {
+  private layout(box: MenuBox): MenuLayout {
     const tops: number[] = [];
     const heights: number[] = [];
-    let total = 0;
+    let total = Math.max(0, (box.padTop ?? 0) | 0);
     for (const item of this.itemList) {
-      const height = Math.max(0, this.options.getHeight(item, width) | 0);
+      const height = Math.max(0, this.options.getHeight(item, box.width) | 0);
       tops.push(total);
       heights.push(height);
       total += height;
     }
     if (this.itemList.length) total -= this.options.rowGap ?? 0;
+    total += Math.max(0, (box.padBottom ?? 0) | 0);
     return { tops, heights, total };
+  }
+
+  /**
+   * Where the viewport's top rests to show row `index` from its start: the
+   * row's top, or for the first row the content's, so the padding above it
+   * shows too.
+   */
+  private restTop(layout: MenuLayout, index: number): number {
+    return index === 0 ? 0 : layout.tops[index]!;
   }
 
   private maxScroll(layout: MenuLayout, viewportHeight: number): number {
@@ -443,16 +461,21 @@ export class Menu<T> {
     }
     const gap = this.options.rowGap ?? 0;
     const selected = this.selected;
+    const last = this.itemList.length - 1;
     const top = layout.tops[selected]!;
     const bottom = top + layout.heights[selected]! - gap;
+    // The content's padding counts as part of its end rows: showing the
+    // first row shows the padding above it, and the last the padding below.
+    const startOf = (index: number) => this.restTop(layout, index);
+    const endOf = (index: number) => index === last ? layout.total : layout.tops[index]! + layout.heights[index]! - gap;
     // Keep the neighbors in view too when all three fit, so the user sees
     // what the next step will reach.
-    const contextTop = selected > 0 ? layout.tops[selected - 1]! : top;
-    const contextBottom = selected + 1 < this.itemList.length
-      ? layout.tops[selected + 1]! + layout.heights[selected + 1]! - gap : bottom;
+    const contextTop = startOf(Math.max(0, selected - 1));
+    const contextBottom = endOf(Math.min(last, selected + 1));
+    const paddedFits = endOf(selected) - startOf(selected) <= viewportHeight;
     const fits = contextBottom - contextTop <= viewportHeight;
-    const wantTop = fits ? contextTop : top;
-    const wantBottom = fits ? contextBottom : bottom;
+    const wantTop = fits ? contextTop : paddedFits ? startOf(selected) : top;
+    const wantBottom = fits ? contextBottom : paddedFits ? endOf(selected) : bottom;
     let target = this.scrollY;
     if (wantTop < target) {
       target = wantTop;
@@ -462,8 +485,8 @@ export class Menu<T> {
       // Snap to the first row that starts inside the viewport: the wanted
       // rows still fit (their bottom is within viewportHeight of that top).
       for (let index = 0; index <= selected; index++) {
-        if (layout.tops[index]! >= target) {
-          target = layout.tops[index]!;
+        if (startOf(index) >= target) {
+          target = startOf(index);
           break;
         }
       }
@@ -474,7 +497,7 @@ export class Menu<T> {
     // the list. The selected row stays visible, since it ends by the list's end.
     const maxScroll = this.maxScroll(layout, viewportHeight);
     if (target > maxScroll) {
-      const aligned = layout.tops.find((rowTop) => rowTop >= maxScroll);
+      const aligned = layout.tops.map((_, index) => startOf(index)).find((rowTop) => rowTop >= maxScroll);
       target = aligned !== undefined && aligned <= target ? aligned : maxScroll;
     }
     this.scrollY = Math.max(0, target);
@@ -483,16 +506,17 @@ export class Menu<T> {
   /** With nothing selectable, up/down page the content by rows. Returns false at the end being scrolled past. */
   private scrollContent(delta: -1 | 1): boolean {
     if (!this.lastBox) return false;
-    const layout = this.layout(this.lastBox.width);
+    const layout = this.layout(this.lastBox);
     const maxScroll = this.maxScroll(layout, this.lastBox.height);
+    const stops = layout.tops.map((_, index) => this.restTop(layout, index));
     if (delta > 0) {
       if (this.scrollY >= maxScroll) return false;
-      const next = layout.tops.find((top) => top > this.scrollY);
+      const next = stops.find((top) => top > this.scrollY);
       this.scrollY = Math.min(maxScroll, next ?? maxScroll);
     } else {
       if (this.scrollY <= 0) return false;
       let previous = 0;
-      for (const top of layout.tops) if (top < this.scrollY) previous = top;
+      for (const top of stops) if (top < this.scrollY) previous = top;
       this.scrollY = Math.max(0, previous);
     }
     return true;

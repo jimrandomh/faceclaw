@@ -10,6 +10,7 @@ import { Menu } from "../../ui/menu-core";
 import { LIST_ROW_TEXT_INSET, lineStep, listRowHeight } from "../../ui/metrics";
 import { createInProcessWindow, type InProcessAppOptions, type InProcessWindow } from "../../ui/shell/in-process-window";
 import { shell } from "../../ui/shell/shell";
+import type { Viewport } from "../../ui/viewport";
 import { GlanceBoard } from "./board";
 import { glanceFont } from "./glance-font";
 import {
@@ -33,17 +34,20 @@ import { findGlanceWidget, glanceWidgetSpans } from "./widgets";
 export const GLANCEBOARD_WINDOW_ID = "glanceboard";
 export const GLANCEBOARD_SURFACE_ID = "window:glanceboard";
 
-const TITLE_X = 18;
-const TITLE_Y = 10;
-const PARAGRAPH_X = 24;
-/** The entry page splits at the middle: menu left, slot preview right. */
+/** The entry page's title: its drop below the top padding. It lines up with the menu rows' text. */
+const TITLE_OFFSET_Y = 2;
+/** Indent of the intro paragraph under the title, and how far short of the middle it wraps. */
+const PARAGRAPH_INDENT = 6;
+const PARAGRAPH_RIGHT_GAP = 12;
+/** The entry page splits at the middle: menu left, slot preview right, this far from the split. */
 const PREVIEW_MARGIN = 8;
+/** The preview's outline, drawn just outside the scaled board. */
+const PREVIEW_OUTLINE = 1;
 const PREVIEW_MIN_LINE_VALUE = 20;
 const PREVIEW_LINE_VALUE = 100;
-/** The entry menu's row boxes: left inset, gap below the paragraph, and inset from the page's bottom. */
-const HOME_MENU_X = 20;
+/** The entry menu's row boxes: gap below the paragraph, and how far short of the middle they end. */
 const HOME_MENU_TOP_GAP = 12;
-const HOME_MENU_BOTTOM_MARGIN = 8;
+const HOME_MENU_RIGHT_GAP = 20;
 /** Horizontal inset of row text (and custom row content) from its selection box. */
 const HOME_ROW_TEXT_X = 10;
 // A throwaway menu to satisfy MenuItem.onSelect's second parameter; the
@@ -56,9 +60,7 @@ const INTRO =
   "long-press-and-hold. It will close automatically.";
 
 /** Full-page list layout shared by the sub-screens. */
-function pageMenuLayout(width: number) {
-  return { x: 8, y: 8, width: width - 16, opaque: true, showBorder: false } as const;
-}
+const PAGE_MENU_LAYOUT = { page: true } as const;
 
 /**
  * The Glanceboard app's entry page. Left half: title, a short description
@@ -67,6 +69,10 @@ function pageMenuLayout(width: number) {
  * name of the widget in each. "Select Contents" moves focus into that
  * preview, where scroll picks a slot and a tap opens the picker for it;
  * a double-tap returns focus to the menu.
+ *
+ * The menu's row boxes and the preview's outline sit at the padding
+ * suggested for the window's edges (viewport.ts). The menu scrolls, so it
+ * runs to the bottom edge itself, with that edge's padding after its last row.
  */
 class GlanceboardHomeLayer implements Layer {
   private readonly menu: Menu<MenuItem>;
@@ -125,17 +131,23 @@ class GlanceboardHomeLayer implements Layer {
     });
   }
 
-  /** Where the scaled board sits: the right half, board aspect, vertically centred. */
-  private previewRect(width: number, height: number): { x: number; y: number; width: number; height: number } {
-    const half = (width / 2) | 0;
-    const availableWidth = width - half - 2 * PREVIEW_MARGIN;
+  /**
+   * Where the scaled board sits: board aspect, centred in the right half's
+   * room inside the window's padding, which its outline may reach.
+   */
+  private previewRect(viewport: Viewport): { x: number; y: number; width: number; height: number } {
+    const { width, height, padding } = viewport;
+    const left = ((width / 2) | 0) + PREVIEW_MARGIN;
+    const top = padding.top + PREVIEW_OUTLINE;
+    const availableWidth = Math.max(0, width - padding.right - PREVIEW_OUTLINE - left);
+    const availableHeight = Math.max(0, height - padding.bottom - PREVIEW_OUTLINE - top);
     const layout = glanceLayout();
-    const scale = Math.min(availableWidth / layout.width, (height - 2 * PREVIEW_MARGIN) / layout.height);
+    const scale = Math.min(availableWidth / layout.width, availableHeight / layout.height);
     const previewWidth = Math.round(layout.width * scale);
     const previewHeight = Math.round(layout.height * scale);
     return {
-      x: half + PREVIEW_MARGIN + (((availableWidth - previewWidth) / 2) | 0),
-      y: ((height - previewHeight) / 2) | 0,
+      x: left + (((availableWidth - previewWidth) / 2) | 0),
+      y: top + (((availableHeight - previewHeight) / 2) | 0),
       width: previewWidth,
       height: previewHeight,
     };
@@ -143,32 +155,37 @@ class GlanceboardHomeLayer implements Layer {
 
   paint(ctx: LayerContext): GrayImage {
     const font = getDefaultSmallFont();
-    const { width, height } = ctx.stack.getBaseSize();
+    const viewport = ctx.stack.getBaseSize();
+    const { width, height, padding } = viewport;
     const image = new GrayImage(width, height, 0);
     const half = (width / 2) | 0;
-    image.drawText(font, TITLE_X, TITLE_Y, "Glanceboard", 220);
+    const menuX = padding.left;
+    const titleX = menuX + HOME_ROW_TEXT_X;
+    const titleY = padding.top + TITLE_OFFSET_Y;
+    image.drawText(font, titleX, titleY, "Glanceboard", 220);
     const step = lineStep(font);
-    let y = TITLE_Y + step + 6;
-    for (const line of wrapText(font, INTRO, half - PARAGRAPH_X - 12)) {
-      image.drawText(font, PARAGRAPH_X, y, line, 160);
+    const paragraphX = titleX + PARAGRAPH_INDENT;
+    let y = titleY + step + 6;
+    for (const line of wrapText(font, INTRO, half - PARAGRAPH_RIGHT_GAP - paragraphX)) {
+      image.drawText(font, paragraphX, y, line, 160);
       y += step;
     }
     // The menu sits below the paragraph in the left half. While the preview
     // has focus the menu keeps its outline-only selection.
     const menuTop = y + HOME_MENU_TOP_GAP;
-    const menuWidth = half - 2 * HOME_MENU_X;
-    const menuHeight = Math.max(0, height - menuTop - HOME_MENU_BOTTOM_MARGIN);
+    const menuWidth = Math.max(0, half - HOME_MENU_RIGHT_GAP - menuX);
+    const menuHeight = Math.max(0, height - menuTop);
     this.paintCtx = ctx;
     try {
-      this.menu.paint(image, { x: HOME_MENU_X, y: menuTop, width: menuWidth, height: menuHeight },
+      this.menu.paint(image, { x: menuX, y: menuTop, width: menuWidth, height: menuHeight, padBottom: padding.bottom },
         ctx.stack.isFocused() && this.focus === "menu");
     } finally {
       this.paintCtx = null;
     }
-    this.menu.drawScrollbar(image, HOME_MENU_X + menuWidth + 5, menuTop, menuHeight - 4);
+    this.menu.drawScrollbar(image, menuX + menuWidth + 5, menuTop, Math.max(0, menuHeight - padding.bottom - 4));
 
     this.selectedSlot = Math.min(this.selectedSlot, glanceLayout().slots.length - 1);
-    const preview = this.previewRect(width, height);
+    const preview = this.previewRect(viewport);
     drawSlotPreview(image, preview, {
       selectedSlot: this.selectedSlot,
       selectionFocused: ctx.stack.isFocused() && this.focus === "preview",
@@ -238,7 +255,7 @@ function drawSlotPreview(
     height: Math.round(r.height * sy),
   });
 
-  image.drawRect(rect.x - 1, rect.y - 1, rect.width + 2, rect.height + 2, 72);
+  image.drawRect(rect.x - PREVIEW_OUTLINE, rect.y - PREVIEW_OUTLINE, rect.width + 2 * PREVIEW_OUTLINE, rect.height + 2 * PREVIEW_OUTLINE, 72);
   const selected = scaled(layout.slots[options.selectedSlot]!.rect);
   drawSelectionHighlight(image, selected.x + 1, selected.y + 1, selected.width - 2, selected.height - 2, options.selectionFocused, 4);
 
@@ -321,7 +338,7 @@ function openGlanceSettings(ctx: LayerContext): void {
     enumSettingMenuItem(glanceDepthSetting),
     ...widgetSettingsMenuItems(),
   ];
-  const layer = new MenuLayer("Glanceboard settings", items(), pageMenuLayout(ctx.stack.getBaseSize().width));
+  const layer = new MenuLayer("Glanceboard settings", items(), PAGE_MENU_LAYOUT);
   ctx.stack.push(layer);
 }
 
@@ -341,7 +358,7 @@ function widgetSettingsMenuItems(): MenuItem[] {
       return { label: widget.label, description: `${widget.label} has no settings.`, disabled: true, onSelect: () => {} };
     }
     return submenuItem(widget.label, (ctx) => {
-      ctx.stack.push(new MenuLayer(`${widget.label} settings`, settingsMenuItems(), pageMenuLayout(ctx.stack.getBaseSize().width)));
+      ctx.stack.push(new MenuLayer(`${widget.label} settings`, settingsMenuItems(), PAGE_MENU_LAYOUT));
     }, { description: `Settings for the ${widget.label} widget.` });
   });
 }
