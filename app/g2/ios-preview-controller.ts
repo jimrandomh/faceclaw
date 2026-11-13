@@ -1111,8 +1111,8 @@ export class IosPreviewController {
   /**
    * Continuous capture on behalf of `client` (one id per window: Transcribe,
    * Translate, Teleprompter, Calculator); it runs while any client wants it, as
-   * on Android. `recordAs` names a WAV of the audio in Downloads when Save
-   * Recording is on.
+   * on Android. `recordAs` names a recording (.mka) of the audio in Downloads
+   * when Save Recording is on.
    */
   private startContinuousVoiceCapture(client: string, options: ContinuousCaptureOptions = {}): void {
     this.continuousClients.set(client, options)

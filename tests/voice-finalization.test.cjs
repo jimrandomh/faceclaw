@@ -164,6 +164,8 @@ function androidBridge(modules = {}) {
     setListener(listener) { this.listener = listener; },
     setCommunicator() {}, setUsePhoneMic() {}, setEndpointing() {},
     setNoiseSuppression() {}, setBeamFilter() {}, clearSpeakerVerification() {}, setOnboardModelKind() {},
+    setMicArray() {}, setReplay() {}, setRecordingEnabled(enabled) { this.recordingEnabled = enabled; },
+    noteRecordingEvent(json) { (this.recordingEvents ??= []).push(JSON.parse(json)); },
     start(_mode, id) { this.captureId = id; this.active = true; this.starts++; },
     stop() { this.active = false; },
     isCapturing() { return this.active; },
@@ -217,24 +219,23 @@ test('a shared capture restarts for a holder that needs another provider, and is
   assert.equal(bridge.holdsCapture('ptt'), true);
 });
 
-test('Android continuous captures record to the requested WAV, and report one that cannot be created', () => {
+test('Android continuous captures record to the requested file, and report one that cannot be created', () => {
   const recordings = [];
   let fail = false, attempts = 0;
-  class FakeRecorder {
-    static open(name) {
-      attempts++;
-      if (fail) return null;
-      const r = new FakeRecorder(); r.name = name; r.path = `/Download/${name}.wav`; r.pcm = []; r.closed = false; recordings.push(r); return r;
-    }
-    append(pcm) { this.pcm.push(...pcm); }
-    close() { this.closed = true; }
-  }
   const { bridge, controller } = androidBridge({
-    './wav-recorder': { WavRecorder: FakeRecorder },
+    './mic-recording': { newRecordingPath: name => `/Download/${name}.mka` },
     './speech-pause': { SpeechPauseDetector: class { reset() {} accept() { return false; } } },
     '../util/array-util': { toUint8Array: pcm => Uint8Array.from(pcm) },
     '../util/audio-level': { pcmLevel: () => 0 },
   });
+  // The controller writes the file itself, from the capture's own thread.
+  controller.startRecording = (path, json) => {
+    attempts++;
+    if (fail) return false;
+    recordings.push({ path, info: JSON.parse(json), closed: false });
+    return true;
+  };
+  controller.stopRecording = () => { recordings.at(-1).closed = true; return 0; };
   const options = { provider: 'onboard' };
   let changes = 0; bridge.onRecordingChange(() => changes++);
   bridge.recordTo('transcribe-1');
@@ -242,20 +243,24 @@ test('Android continuous captures record to the requested WAV, and report one th
   // Push-to-talk on a capture of its own is not recorded, and the file waits for audio to save.
   bridge.startPushToTalk(options);
   controller.listener.onPcm([9, 9]);
-  assert.equal(attempts, 0);
+  assert.deepEqual([attempts, controller.recordingEnabled], [0, false]);
   bridge.startContinuousCapture(options);
   controller.listener.onPcm([1, 2]);
   controller.listener.onPcm([3, 4]);
-  assert.deepEqual(recordings.map(r => [r.name, r.pcm, r.closed]), [['transcribe-1', [1, 2, 3, 4], false]]);
-  // The file outlives a capture: one restarted after the glasses reconnect keeps appending to it.
+  assert.deepEqual(recordings.map(r => [r.path, r.info.recording, r.closed]), [['/Download/transcribe-1.mka', 'transcribe-1', false]]);
+  assert.deepEqual([attempts, controller.recordingEnabled], [1, true]);
+  // The file outlives a capture: one restarted after the glasses reconnect goes on in it,
+  // with the restart noted, and nothing is recorded while no capture holds the mic.
   bridge.handleSessionEnded();
+  assert.equal(controller.recordingEnabled, false);
   bridge.resumeCapture(options);
   controller.listener.onPcm([5]);
-  assert.deepEqual(recordings.map(r => [r.pcm, r.closed]), [[[1, 2, 3, 4, 5], false]]);
+  assert.deepEqual([attempts, recordings[0].closed, controller.recordingEnabled], [1, false, true]);
+  assert.deepEqual(controller.recordingEvents.map(event => [event.event, event.recording]), [['capture', 'transcribe-1']]);
   bridge.recordTo('');
   assert.deepEqual([recordings[0].closed, bridge.recording, changes], [true, false, 2]);
   controller.listener.onPcm([6]);
-  assert.equal(recordings[0].pcm.length, 5);
+  assert.equal(attempts, 1);
 
   // One attempt per recording, not one per packet; another recording is a fresh attempt.
   fail = true; attempts = 0;
@@ -269,5 +274,5 @@ test('Android continuous captures record to the requested WAV, and report one th
   bridge.recordTo('');
   bridge.recordTo('transcribe-2');
   controller.listener.onPcm([10]);
-  assert.deepEqual([bridge.recording, bridge.recordingFailed, recordings.at(-1).pcm], [true, false, [10]]);
+  assert.deepEqual([bridge.recording, bridge.recordingFailed, recordings.at(-1).path], [true, false, '/Download/transcribe-2.mka']);
 });

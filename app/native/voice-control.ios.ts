@@ -3,7 +3,7 @@ import type { CloudSttTranscriptEvent } from './cloud-stt'
 import type { ReconnectingSttClient } from './reconnecting-stt'
 import { createCloudSttClient, usesCloudStt, type VoiceProviderSelection } from './cloud-stt-provider'
 import { createSpeechAnalyzerClient, speechAnalyzerSupported } from './speech-analyzer-stt.ios'
-import { WavRecorder } from './wav-recorder.ios'
+import { MicRecorder } from './mic-recorder.ios'
 import { pcmLevel } from '../util/audio-level'
 
 declare const FaceclawSpeech: any
@@ -57,11 +57,11 @@ export class IosVoiceControlBridge {
   private continuous = false
   // Shown instead of the native "ended" status once a drain the bridge started completes.
   private drainStatus: string | null = null
-  // Continuous captures' audio goes to Downloads/<recordingName>.wav while it is
+  // Continuous captures' audio goes to Downloads/<recordingName>.mka while it is
   // set. The file outlives a capture, so a restarted one keeps appending to it,
   // and it is created by the first audio, so a failed start leaves no file.
   private recordingName = ''
-  private recorder: WavRecorder | null = null
+  private recorder: MicRecorder | null = null
   // The file could not be created: one attempt per recording, not one per packet.
   private recordingFailure = false
   private readonly recordingListeners = new Set<() => void>()
@@ -209,7 +209,7 @@ export class IosVoiceControlBridge {
   /** Where a listening continuous capture gets its audio; null when none is listening. */
   get continuousSource(): 'glasses' | 'phone' | null { return this.continuous && this.capturing ? this.source : null }
   /**
-   * Record continuous captures' audio to Downloads/<name>.wav, across restarts,
+   * Record continuous captures' audio to Downloads/<name>.mka, across restarts,
    * until called with another name or ''. Only cloud captures supply PCM.
    */
   recordTo(name: string): void {
@@ -232,7 +232,10 @@ export class IosVoiceControlBridge {
   private record(pcm: Uint8Array): void {
     if (!this.recording) return
     if (!this.recorder) {
-      this.recorder = WavRecorder.open(this.recordingName)
+      this.recorder = MicRecorder.open(this.recordingName, {
+        recording: this.recordingName, startedAt: new Date().toISOString(), platform: 'ios',
+        source: this.source === 'phone' ? 'phone' : 'glasses', mics: 1,
+      })
       this.log(this.recorder ? `Voice: recording audio to ${this.recorder.path}` : 'Voice: could not create the audio recording')
       if (!this.recorder) { this.setRecording(this.recordingName, true); return }
     }

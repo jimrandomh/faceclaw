@@ -29,6 +29,8 @@ class VoiceCaptureSessionTest {
         override fun onFrameMeta(angleDegrees: Int, ssr: Int) { frameMeta.add(angleDegrees to ssr) }
         override fun onSpeechEnd() { speechEnds++ }
         override fun onSpeakerVerified(isWearer: Boolean, similarity: Float) { verified = isWearer to similarity }
+        val replay = mutableListOf<Pair<String?, Long>>()
+        override fun onReplay(event: String?, positionMs: Long, durationMs: Long) { replay.add(event to positionMs) }
     }
 
     /** Scripted phone mic: each entry is a chunk amplitude; after the script the read fails (-1). */

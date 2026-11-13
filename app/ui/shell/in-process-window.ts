@@ -48,6 +48,8 @@ export type InProcessWindowOptions = {
   setScreenOn?: ShellWindow["setScreenOn"];
   /** See ShellWindow.keepsScreenOn. */
   keepsScreenOn?: ShellWindow["keepsScreenOn"];
+  /** See ShellWindow.restoresApp. */
+  restoresApp?: boolean;
   /** The window came to or left the foreground (after its surface visibility follows). */
   onForegroundChanged?: (foreground: boolean) => void;
   /** Shared actions; requestRender is rebound to this window's render. */
@@ -177,6 +179,7 @@ export function createInProcessWindow(options: InProcessWindowOptions): InProces
     holdToTalk: options.holdToTalk,
     isVoiceCapturing: options.isVoiceCapturing,
     keepsScreenOn: options.keepsScreenOn,
+    restoresApp: options.restoresApp,
     setScreenOn: options.setScreenOn,
     heightMode,
     hasAppMenu: () => appMenuItems().length > 0,

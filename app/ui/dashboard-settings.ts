@@ -947,7 +947,7 @@ export const useMicControlSetting = new ConfigSettingBoolean({
   storageKey: "developer.useMicControl",
   defaultValue: true,
   description:
-    "Use the custom firmware's per-temple mic-control channel for the Microphones app's array capture. When off, use the standard single mixed stream.",
+    "Use the custom firmware's per-temple mic-control channel for capturing the microphones separately (the Microphones app's array capture, and Transcribe's Microphones option). When off, use the standard single mixed stream.",
 });
 
 export const showBleBandwidthSetting = new ConfigSettingBoolean({
@@ -1054,7 +1054,9 @@ export const saveRecordingSetting = new ConfigSettingBoolean({
   label: "Save Recording",
   storageKey: "voice.saveRecording",
   defaultValue: false,
-  description: "Record the audio of Transcribe and Translate sessions as WAV files in Downloads (about 2 MB per minute), named after the app and the session's start time. Recordings are kept until you delete them.",
+  description: global.isIOS
+    ? "Record the audio of Transcribe and Translate sessions as Matroska audio (.mka) files in Downloads (about 2 MB per minute), named after the app and the session's start time. Recordings are kept until you delete them."
+    : "Record the audio of Transcribe and Translate sessions as Matroska audio (.mka) files in Downloads: about 2 MB per minute, or 10 MB with all four microphones. Named after the app and the session's start time, and kept until you delete them. Transcribe can replay one: pick it in the Files app.",
 });
 
 export const assistantSkipConfirmationSetting = new ConfigSettingBoolean({

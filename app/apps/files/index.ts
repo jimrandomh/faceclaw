@@ -14,6 +14,7 @@ import {
   FILES_WINDOW_ID,
 } from "./files-app";
 import { createVideoPlayerWindow } from "./video-window";
+import { openRecordingInTranscribe } from "../transcribe";
 
 // Document windows are closeable and non-singleton; the serial keeps their
 // windowIds unique.
@@ -91,6 +92,9 @@ const filesApp: AppDefinition = {
         },
         openFontWindow: (title, path) => openFontDocumentWindow(ctx, title, path),
         openVideoWindow: (title, path) => openVideoWindow(ctx, title, path),
+        openRecordingInTranscribe: (title, path) => {
+          openRecordingInTranscribe(ctx, path, title);
+        },
       }),
     ),
   // A document arriving via Android's Share intent opens as its own window.

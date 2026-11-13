@@ -69,3 +69,41 @@ actual fun fileLength(path: String): Long = java.io.File(path).let { if (it.exis
 actual fun deleteFile(path: String): Boolean = java.io.File(path).delete()
 
 actual fun renameFile(from: String, to: String): Boolean = java.io.File(from).renameTo(java.io.File(to))
+
+actual fun openFileOutput(path: String): SeekableOutput = object : SeekableOutput {
+    private val file = java.io.RandomAccessFile(path, "rw").also { it.setLength(0) }
+    override var size = 0L
+        private set
+
+    override fun write(bytes: ByteArray, offset: Int, length: Int) {
+        file.write(bytes, offset, length)
+        size += length
+    }
+
+    override fun writeAt(position: Long, bytes: ByteArray) {
+        require(position >= 0 && position + bytes.size <= size)
+        file.seek(position)
+        file.write(bytes)
+        file.seek(size)
+    }
+
+    override fun close() = file.close()
+}
+
+actual fun openFileInput(path: String): SeekableInput = object : SeekableInput {
+    private val file = java.io.RandomAccessFile(path, "r")
+    override val length = file.length()
+
+    override fun readAt(position: Long, buffer: ByteArray, offset: Int, length: Int): Int {
+        file.seek(position)
+        var total = 0
+        while (total < length) {
+            val read = file.read(buffer, offset + total, length - total)
+            if (read <= 0) break
+            total += read
+        }
+        return total
+    }
+
+    override fun close() = file.close()
+}

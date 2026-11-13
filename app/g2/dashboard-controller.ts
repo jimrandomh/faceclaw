@@ -53,7 +53,7 @@ import { type GlanceEvent } from "./glance-state";
 import { isPreviewOnlyMode } from "../phone-ui/onboarding-state";
 import { claimGlassesOnboardingAutoLaunch, ONBOARDING_APP_ID } from "../apps/onboarding/onboarding-progress";
 import { beginRenderPass, endRenderPass } from "../util/render-freshness";
-import { voiceControlBridge } from "../native/voice-control";
+import { VoiceReplay, voiceControlBridge } from "../native/voice-control";
 import { voiceActivity } from "../ui/shell/voice-activity";
 import { GrayImage } from "../graphics/image";
 import { flattenPlanesWithDraws, planesFingerprint, type Plane } from "../graphics/plane";
@@ -76,7 +76,7 @@ import { type InProcessAppOptions, type InProcessWindow } from "../ui/shell/in-p
 import { loadPersistedOpenApps, savePersistedOpenApps } from "../ui/shell/open-apps-persistence";
 import { appViewportRect, isOnSwitcherEdge, screenHeight, screenWidth, sidebarStripVisible, windowEdges, type ScreenRect, type WindowHeightMode } from "../ui/shell/geometry";
 import { sameEdges } from "../ui/viewport";
-import { type ContinuousCaptureOptions, type LayerActions, type TextSettingsEditToggle, type TranscriptionChoice } from "../ui/layers";
+import { type ContinuousCaptureOptions, type LayerActions, type MicCount, type TextSettingsEditToggle, type TranscriptionChoice } from "../ui/layers";
 import { type KeyboardInputSession } from "../ui/shell/keyboard-input";
 import { appSwitcherPositionSetting, glassesModelName, glassesTypeSetting, statusBarPositionSetting, statusBarVisibilitySetting, windowBorderSetting, assistantAllowProactiveSetting, assistantBackendSetting, assistantBridgeHostSetting, assistantBridgePortSetting, assistantBridgeTokenSetting, getBrightnessPreferences, displayLayoutSetting, navigateDisplayLayoutSetting, terminalDisplayLayoutSetting, elevenLabsApiKeySetting, getStringSettingById, openAiApiKeySetting, nightscoutApiTokenSetting, firmwareDebugFlagsSetting, whisperServerApiKeySetting, whisperServerLanguageSetting, whisperServerModelSetting, whisperServerUrlSetting, lockScreenEnabledSetting, nightscoutSiteUrlSetting, onAnySettingChanged, previewColorSetting, effectiveRingConnectionMode, type RingConnectionMode, saveRecordingSetting, sonioxApiKeySetting, screenTimeoutSetting, screenTimeoutSettingToMs, shouldPopUpNewNotification, suspendEvenHubWhenScreenOffSetting, voiceProviderSetting, wakeWordActionSetting, type ConfigSettingString } from "../ui/dashboard-settings";
 import { isIgnoringBatteryOptimizations, requestIgnoreBatteryOptimizations } from "../native/battery-optimization";
@@ -98,6 +98,8 @@ import { createNotificationsAppWindow, NOTIFICATIONS_SURFACE_ID, NOTIFICATIONS_W
 import { isInstalledPackagePresent } from "../apps/evenhub/updates";
 import { wearerVerificationOptions } from "../apps/microphones/speakers";
 import { micSession } from "../apps/microphones/mic-session";
+import { micArrayCaptureConfig, micControlSupported } from "../apps/microphones/mic-control";
+import { encodeMicControl } from "../apps/microphones/mic-protocol";
 import {
   chargingPreviewMessage,
   glassesDisplayAsleep,
@@ -410,6 +412,7 @@ class DashboardController {
       startContinuousVoiceCapture: (client: string, options?: ContinuousCaptureOptions) =>
         this.startContinuousVoiceCapture(client, options),
       stopContinuousVoiceCapture: (client: string) => this.stopContinuousVoiceCapture(client),
+      openVoiceReplay: (path: string) => this.openVoiceReplay(path),
       playBuzzerSequence: (payload: Uint8Array) => this.playBuzzerSequence(payload),
     };
     this.sharedActions = sharedActions;
@@ -2254,6 +2257,30 @@ class DashboardController {
   }
 
   /**
+   * How many of the glasses' microphones the continuous-capture windows call
+   * for (the most any asks for), where the glasses can stream them
+   * separately: G2 with the microphone channel in use. Otherwise 1, the
+   * mixed stream.
+   */
+  private continuousMics(): MicCount {
+    if (glassesTypeSetting.get() !== "g2" || !micControlSupported()) return 1;
+    let mics: MicCount = 1;
+    for (const options of this.continuousClients.values()) {
+      if ((options.mics ?? 1) > mics) mics = options.mics!;
+    }
+    return mics;
+  }
+
+  /**
+   * A recording as a capture of its own (see VoiceReplay), transcribed with
+   * the provider and processing settings a microphone capture would get.
+   * "My voice only" is left out: a recording is of whoever spoke.
+   */
+  private openVoiceReplay(path: string): VoiceReplay {
+    return new VoiceReplay(path, () => ({ ...this.voiceCaptureOptions(null), speakerVerification: undefined }));
+  }
+
+  /**
    * Continuous capture's claim on the mic (the Microphones app and EvenHub
    * mic apps stand down while it is held) follows whether the capture really
    * holds the mic, not merely whether a window asked: a start that never
@@ -2278,9 +2305,26 @@ class DashboardController {
     // Otherwise only Whisper server is told a language (its own setting).
     const choice = this.transcriptionChoice();
     const provider = choice?.provider ?? voiceProviderSetting.get();
+    // Separate microphones only come from connected glasses.
+    const mics = communicator ? this.continuousMics() : 1;
+    const micConfig = mics === 1 ? null : micArrayCaptureConfig(mics);
     return {
       communicator: communicator?.getNativeCommunicator() ?? null,
       usePhoneMic: communicator === null,
+      micArray: micConfig ? { configure: encodeMicControl("configure", micConfig) } : null,
+      // Stored in a recording of the capture (see Save Recording).
+      captureInfo: {
+        glasses: communicator ? glassesModelName() : null,
+        mics,
+        micConfig: micConfig && {
+          source: micConfig.source,
+          channelMask: micConfig.channelMask,
+          codec: micConfig.codec,
+          format: micConfig.format,
+          sampleRateHz: micConfig.sampleRateHz,
+          directionDetection: micConfig.beamform,
+        },
+      },
       provider,
       language: choice ? choice.language : provider === "whisper-server" ? whisperServerLanguageSetting.get() : "",
       elevenLabsApiKey: elevenLabsApiKeySetting.get(),
@@ -2721,10 +2765,11 @@ class DashboardController {
     if (!this.openAppsRestored || this.suppressOpenAppsPersist) return;
     const open: string[] = [];
     for (const window of shell.getWindows()) {
-      if (window.appId === "launcher") continue;
+      if (window.appId === "launcher" || window.restoresApp === false) continue;
       if (!open.includes(window.appId)) open.push(window.appId);
     }
-    savePersistedOpenApps({ open, foreground: shell.foregroundWindow()?.appId ?? null });
+    const foreground = shell.foregroundWindow();
+    savePersistedOpenApps({ open, foreground: foreground && foreground.restoresApp !== false ? foreground.appId : null });
   }
 
   /**

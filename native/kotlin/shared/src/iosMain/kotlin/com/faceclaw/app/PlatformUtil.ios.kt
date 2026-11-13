@@ -114,3 +114,54 @@ actual fun fileLength(path: String): Long = memScoped {
 actual fun deleteFile(path: String): Boolean = unlink(path) == 0
 
 actual fun renameFile(from: String, to: String): Boolean = rename(from, to) == 0
+
+actual fun openFileOutput(path: String): SeekableOutput {
+    val file = fopen(path, "wb+") ?: error("Cannot write $path")
+    return object : SeekableOutput {
+        override var size = 0L
+            private set
+
+        private fun put(bytes: ByteArray, offset: Int, length: Int) {
+            if (length == 0) return
+            bytes.usePinned {
+                check(fwrite(it.addressOf(offset), 1u, length.convert(), file) == length.convert<platform.posix.size_t>()) { "Short write to $path" }
+            }
+        }
+
+        override fun write(bytes: ByteArray, offset: Int, length: Int) {
+            put(bytes, offset, length)
+            size += length
+            // Each write is a complete element; hand it to the OS so a crash keeps it.
+            platform.posix.fflush(file)
+        }
+
+        override fun writeAt(position: Long, bytes: ByteArray) {
+            require(position >= 0 && position + bytes.size <= size)
+            check(platform.posix.fseek(file, position, platform.posix.SEEK_SET) == 0)
+            put(bytes, 0, bytes.size)
+            check(platform.posix.fseek(file, size, platform.posix.SEEK_SET) == 0)
+            platform.posix.fflush(file)
+        }
+
+        override fun close() {
+            fclose(file)
+        }
+    }
+}
+
+actual fun openFileInput(path: String): SeekableInput {
+    val file = fopen(path, "rb") ?: error("Cannot read $path")
+    val fileSize = fileLength(path)
+    return object : SeekableInput {
+        override val length = fileSize
+
+        override fun readAt(position: Long, buffer: ByteArray, offset: Int, length: Int): Int {
+            if (length == 0 || platform.posix.fseek(file, position, platform.posix.SEEK_SET) != 0) return 0
+            return buffer.usePinned { platform.posix.fread(it.addressOf(offset), 1u, length.convert(), file).toInt() }
+        }
+
+        override fun close() {
+            fclose(file)
+        }
+    }
+}

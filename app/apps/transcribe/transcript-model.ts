@@ -36,6 +36,18 @@ export class TranscriptModel {
     if (this.live) this.breakAfterLive = true;
     else if (this.finalized) this.separator = "\n";
   }
+
+  /**
+   * A line of its own (where a replay jumped to), ending whatever was in
+   * progress: what follows it starts a new paragraph.
+   */
+  mark(label: string): void {
+    const before = this.text;
+    this.finalized = before ? `${before}\n${label}` : label;
+    this.live = "";
+    this.separator = "\n";
+    this.breakAfterLive = false;
+  }
 }
 
 /** An absolute history position, with an explicit follow-tail mode. */

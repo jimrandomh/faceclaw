@@ -3,6 +3,7 @@ import { screenHeight, screenWidth } from "../graphics/screen-size";
 import { dimPlanes, type Plane } from "../graphics/plane";
 import { spanCurrent } from "../native/frame-timings";
 import { type ConfigSettingBoolean, type ConfigSettingString, type VoiceProvider } from "./dashboard-settings";
+import { type VoiceReplay } from "../native/voice-control";
 import { directionalFallback, isDirectionalInput, type InputEvent } from "./gestures";
 import { toViewport, type Viewport, type ViewportSize } from "./viewport";
 
@@ -13,8 +14,17 @@ export type TextSettingsEditToggle = {
 
 /** A continuous-capture client's needs (see LayerActions.startContinuousVoiceCapture). */
 export type ContinuousCaptureOptions = {
-  /** Names a WAV of the captured audio in Downloads, written while Save Recording is on. */
+  /** Names a recording (.mka) of the captured audio in Downloads, written while Save Recording is on. */
   recordAs?: string;
+  /**
+   * How many of the glasses' microphones to capture: 1 is their own mixed
+   * stream; 2 (one per temple) and 4 (both of each temple) stream the
+   * microphones separately through the custom firmware, for recording and
+   * array processing. While any client asks for more than one, every capture
+   * uses the most asked for. Glasses without the microphone channel, and the
+   * phone's microphone, give 1 whatever is asked.
+   */
+  mics?: MicCount;
   /**
    * Transcribe with this provider, expecting this spoken language (ISO 639-1,
    * or "" for the provider to detect it), instead of the Transcription
@@ -25,6 +35,8 @@ export type ContinuousCaptureOptions = {
 };
 
 export type TranscriptionChoice = { provider: VoiceProvider; language: string };
+
+export type MicCount = 1 | 2 | 4;
 
 export type LayerActions = {
   /** Ask for a dashboard repaint+transmit, e.g. when async data arrives. */
@@ -55,6 +67,12 @@ export type LayerActions = {
    */
   startContinuousVoiceCapture: (client: string, options?: ContinuousCaptureOptions) => Promise<void> | void;
   stopContinuousVoiceCapture: (client: string) => Promise<void> | void;
+  /**
+   * Open a recording (.mka) for playing back through transcription in place
+   * of the microphone; the caller starts and closes it. Absent, or null,
+   * where recordings can't be replayed.
+   */
+  openVoiceReplay?: (path: string) => VoiceReplay | null;
   /** Play a CFW tone-sequencer payload (see sound-effects.ts). */
   playBuzzerSequence: (payload: Uint8Array) => Promise<void> | void;
 };

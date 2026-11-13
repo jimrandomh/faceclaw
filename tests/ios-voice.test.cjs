@@ -36,7 +36,7 @@ function harness() {
     static open(name) {
       recordingAttempts++;
       if (failRecordings) return null;
-      const r = new FakeRecorder(); r.name = name; r.path = `/Downloads/${name}.wav`; r.pcm = []; r.closed = false; recordings.push(r); return r;
+      const r = new FakeRecorder(); r.name = name; r.path = `/Downloads/${name}.mka`; r.pcm = []; r.closed = false; recordings.push(r); return r;
     }
     append(bytes) { this.pcm.push(...bytes); }
     close() { this.closed = true; }
@@ -49,7 +49,7 @@ function harness() {
     setTimeout: fn => { timers.set(fn, fn); return fn; }, clearTimeout: fn => timers.delete(fn),
     NSData: { dataWithBytesLength: (b, n) => Buffer.from(b, 0, n) }, interop: { handleof: b => b, bufferFromData: d => d },
     require: name => name === './cloud-stt-provider' ? provider : name === './speech-analyzer-stt.ios' ? analyzer
-      : name === './wav-recorder.ios' ? { WavRecorder: FakeRecorder } : {} };
+      : name === './mic-recorder.ios' ? { MicRecorder: FakeRecorder } : {} };
   vm.runInNewContext(ts.transpileModule(fs.readFileSync('app/native/voice-control.ios.ts', 'utf8'), {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 } }).outputText, sandbox);
   const bridge = new sandbox.exports.IosVoiceControlBridge();

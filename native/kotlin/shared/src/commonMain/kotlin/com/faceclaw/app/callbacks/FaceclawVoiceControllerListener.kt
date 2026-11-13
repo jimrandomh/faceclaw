@@ -41,4 +41,13 @@ interface FaceclawVoiceControllerListener {
      * speaker model could not be loaded.
      */
     fun onSpeakerVerified(isWearer: Boolean, similarity: Float): Unit
+
+    /**
+     * Progress of a capture that replays a recording (see VoiceCaptureSession.setReplay):
+     * "start" once the file is open, "position" about once per second of it played, "seek" after
+     * a jump took effect (the transcript of what played before it has been emitted as final),
+     * "end" when the file ran out, and "error" when it could not be opened (the status says
+     * why). Positions are milliseconds into the file.
+     */
+    fun onReplay(event: String?, positionMs: Long, durationMs: Long): Unit
 }

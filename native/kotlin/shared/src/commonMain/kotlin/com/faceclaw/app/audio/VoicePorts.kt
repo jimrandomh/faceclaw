@@ -67,6 +67,24 @@ interface PacketAudioSource {
     fun isActive(): Boolean
 }
 
+/**
+ * The custom firmware's mic_control channel on a glasses session: each temple streams its own
+ * microphones as 'SM' frames (see [MicArrayProtocol]) on the characteristic the stock mixed
+ * stream uses, while it holds a configuration that the phone keeps renewing.
+ */
+interface MicArrayLink {
+    /** Deliver the audio characteristic's packets to [listener]; false when no session is up. */
+    fun startForwarding(listener: FaceclawAudioPacketListener): Boolean
+
+    fun stopForwarding()
+
+    /** Whether forwarding still holds: it lives in the glasses session, which can drop it. */
+    fun isForwarding(): Boolean
+
+    /** Queue a control record for the chosen temples; false when nothing was queued. */
+    fun sendControl(record: ByteArray, label: String, rightTemple: Boolean, leftTemple: Boolean): Boolean
+}
+
 /** The phone's own microphone delivering 16 kHz mono PCM16 in blocking reads. */
 interface PcmAudioSource {
     /** Blocking read into [pcm]; returns samples read, 0 to retry, or a negative error. */

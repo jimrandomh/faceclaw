@@ -11,7 +11,8 @@ local `@faceclaw/kotlin` plugin. Generated binaries and Gradle caches are ignore
   callback interfaces. Since 2026-09-22 also the platform-neutral cores behind
   the Android adapters: `util/` (Json codec, FrameTimingsCore, concurrency
   primitives, sha256/clock/log/file expects), `g2protocol/FirmwareImage`,
-  `audio/` (Lc3PacketFramer, AudioSegmentation, VoicePrint, WavPcmReader),
+  `audio/` (Lc3PacketFramer, AudioSegmentation, VoicePrint, WavPcmReader, the Matroska
+  writer/reader and the MicRecording capture format built on it, MicArrayProtocol),
   `graphics/` (GrayPacket, PreviewPalette, StatusIconArt, NotificationIconArt,
   ColorGlyphArt, GlyphPacket, OpenTypeNames, SvgIconSource), `net/` (HttpIdentity, SseStream,
   ResumableDownload, RemoteInputSession), `evenhub/EvenHubAssetServer`,

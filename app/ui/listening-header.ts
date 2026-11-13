@@ -1,6 +1,6 @@
 import { GrayImage, imageFromAsciiArt, type UiFont } from "../graphics/image";
 import { truncateText } from "../graphics/textwrap";
-import { voiceControlBridge } from "../native/voice-control";
+import { voiceControlBridge, type VoiceEventSource } from "../native/voice-control";
 import { lineStep } from "./metrics";
 import type { Edges } from "./viewport";
 
@@ -68,8 +68,9 @@ export class MicLevelMeter {
   private timer: ReturnType<typeof setInterval> | null = null;
   private unsubscribe: (() => void) | null = null;
 
-  start(requestRender: () => void, isVisible: () => boolean): void {
-    this.unsubscribe = voiceControlBridge.onMicLevel((level) => {
+  /** `source` is the capture whose level to show: the microphone's unless given. */
+  start(requestRender: () => void, isVisible: () => boolean, source: VoiceEventSource = voiceControlBridge): void {
+    this.unsubscribe = source.onMicLevel((level) => {
       this.peak = Math.max(this.peak, level);
     });
     this.timer = setInterval(() => {

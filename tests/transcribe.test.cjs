@@ -4,6 +4,7 @@ const { loader } = require('./helpers/load-typescript.cjs');
 const load = loader();
 const { TranscriptModel, TranscriptScroll, transcriptLayout, wrapTranscribeText } = load('app/apps/transcribe/transcript-model.ts');
 const { SpeechPauseDetector } = load('app/native/speech-pause.ts');
+const { formatReplayTime, stepReplaySeconds } = load('app/apps/transcribe/replay-time.ts');
 const { TimedTranscript } = load('app/native/transcript-format.ts');
 const { bordered, unbordered, edged } = require('./helpers/viewport.cjs');
 
@@ -127,4 +128,34 @@ test('pause detector uses 1.5 seconds of PCM, fires once per pause, and ignores 
   for (let i = 0; i < 60; i++) assert.equal(d.accept(pcm(0)), false);
   d.accept(pcm(3000));
   assert.equal(d.accept(pcm(0, 1500)), true);
+});
+
+test('a replay jump leaves its time on a line of its own and starts a new paragraph', () => {
+  const m = new TranscriptModel();
+  m.mark('[0:30]');
+  assert.equal(m.text, '[0:30]');
+  m.accept({ text: 'After the jump', isFinal: false });
+  assert.equal(m.text, '[0:30]\nAfter the jump');
+  // What was still being spoken when the replay jumped is kept, ahead of the mark.
+  m.mark('[1:15]');
+  m.accept({ text: 'Later.', isFinal: true });
+  m.accept({ text: 'More.', isFinal: true });
+  assert.equal(m.text, '[0:30]\nAfter the jump\n[1:15]\nLater. More.');
+});
+
+test('replay times read as m:ss, with hours from an hour on', () => {
+  assert.equal(formatReplayTime(0), '0:00');
+  assert.equal(formatReplayTime(83_999), '1:23');
+  assert.equal(formatReplayTime(3_600_000), '1:00:00');
+  assert.equal(formatReplayTime(83_000, true), '0:01:23');
+  assert.equal(formatReplayTime(-5), '0:00');
+});
+
+test('the time picker steps carry between fields and stay inside the recording', () => {
+  assert.equal(stepReplaySeconds(59, 'seconds', 1, 600), 60);
+  assert.equal(stepReplaySeconds(60, 'seconds', -1, 600), 59);
+  assert.equal(stepReplaySeconds(30, 'minutes', 2, 600), 150);
+  assert.equal(stepReplaySeconds(590, 'minutes', 1, 600), 600);
+  assert.equal(stepReplaySeconds(30, 'minutes', -1, 600), 0);
+  assert.equal(stepReplaySeconds(100, 'hours', 1, 7300), 3700);
 });

@@ -151,6 +151,13 @@ export type ShellWindow = {
    * draws this window's top bar.
    */
   heightMode: WindowHeightMode;
+  /**
+   * False for a window that must not bring its app back when Faceclaw
+   * restarts (the controller's open-apps restore relaunches apps, not
+   * windows): one that shows something a plain launch of its app would not,
+   * where the relaunch would do something else in its place.
+   */
+  restoresApp?: boolean;
   /** App-side cleanup when the shell closes the window (worker notification, surface removal). */
   close?: () => void;
   drawIcon: ShellChromeWindow["drawIcon"];

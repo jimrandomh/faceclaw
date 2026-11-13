@@ -114,6 +114,21 @@ class FaceclawVoiceController(context: Context) {
             }
         }
 
+        override fun micArrayLink(): MicArrayLink? {
+            val currentCommunicator = communicator ?: return null
+            return object : MicArrayLink {
+                override fun startForwarding(listener: FaceclawAudioPacketListener): Boolean =
+                    currentCommunicator.startG2AudioForwarding(listener)
+
+                override fun stopForwarding() = currentCommunicator.stopG2AudioForwarding()
+
+                override fun isForwarding(): Boolean = currentCommunicator.isAudioCaptureActive()
+
+                override fun sendControl(record: ByteArray, label: String, rightTemple: Boolean, leftTemple: Boolean): Boolean =
+                    currentCommunicator.sendFaceclawMicControl(record, label, rightTemple, leftTemple)
+            }
+        }
+
         override fun createPacketDecoder(): AudioPacketDecoder =
             if (communicator?.isRayNeoIo() == true) AndroidSpeechEngines.OpusDecoderAdapter()
             else AndroidSpeechEngines.Lc3DecoderAdapter()
@@ -139,6 +154,11 @@ class FaceclawVoiceController(context: Context) {
     }
 
     private val session = VoiceCaptureSession(host)
+
+    // The recording of this controller's live captures (see startRecording). It outlives any one
+    // capture, and is only handed to the session while recording is enabled.
+    private var recording: MicRecordingWriter? = null
+    private var recordingEnabled = true
 
     fun setListener(listener: FaceclawVoiceControllerListener?) {
         session.setListener(listener)
@@ -199,6 +219,88 @@ class FaceclawVoiceController(context: Context) {
      */
     fun setBeamFilter(enabled: Boolean, centerDeg: Int, halfWidthDeg: Int) {
         session.setBeamFilter(enabled, centerDeg, halfWidthDeg)
+    }
+
+    /**
+     * Capture glasses sessions from the temples' own microphones (the custom firmware's
+     * mic_control stream) instead of the stock mixed stream. [configureRecord] is the CONFIGURE
+     * record to arm both temples with; null goes back to the mixed stream. Must be set before
+     * {@link #start}.
+     */
+    fun setMicArray(configureRecord: ByteArray?) {
+        session.setMicArray(configureRecord)
+    }
+
+    /**
+     * Have the next {@link #start} play the recording at [path] (a .mka file) from [startMs] in
+     * place of any microphone; null goes back to the microphones. Progress arrives through the
+     * listener's onReplay.
+     */
+    fun setReplay(path: String?, startMs: Long) {
+        session.setReplay(path, startMs)
+    }
+
+    /** Continue the running replay from [positionMs] into its recording. */
+    fun seekReplay(positionMs: Long) {
+        session.seekReplay(positionMs)
+    }
+
+    fun setReplayPaused(paused: Boolean) {
+        session.setReplayPaused(paused)
+    }
+
+    /**
+     * Record live captures to a new Matroska audio file at [path], from now until
+     * {@link #stopRecording}, across however many captures run in between: every source's audio
+     * as it arrives, before any processing. [configJson] describes the capture and is stored in
+     * the file. Returns false when the file cannot be created.
+     */
+    @Synchronized
+    fun startRecording(path: String, configJson: String?): Boolean {
+        stopRecording()
+        return try {
+            val parent = File(path).parentFile
+            if (parent != null && !parent.exists()) parent.mkdirs()
+            recording = MicRecordingWriter(openFileOutput(path), configJson, System.currentTimeMillis())
+            session.setRecorder(if (recordingEnabled) recording else null)
+            true
+        } catch (t: Throwable) {
+            Log.w(TAG, "could not create recording $path", t)
+            recording = null
+            false
+        }
+    }
+
+    /**
+     * Whether captures are written to the recording right now: off while the capture running
+     * isn't one that is to be recorded.
+     */
+    @Synchronized
+    fun setRecordingEnabled(enabled: Boolean) {
+        recordingEnabled = enabled
+        session.setRecorder(if (enabled) recording else null)
+    }
+
+    /** Whether a recording is open and still being written (false once writing to it failed). */
+    @Synchronized
+    fun isRecording(): Boolean = recording?.failed == false
+
+    /**
+     * Note a change in what is being captured (a JSON object) at the recording's current
+     * position; the audio after it is placed afresh on the recording's timeline.
+     */
+    @Synchronized
+    fun noteRecordingEvent(json: String) {
+        recording?.event(json)
+    }
+
+    /** Complete the recording's file. Returns its length in ms, or -1 when none was open. */
+    @Synchronized
+    fun stopRecording(): Long {
+        val current = recording ?: return -1
+        recording = null
+        session.setRecorder(null)
+        return current.finish()
     }
 
     fun start(requestedMode: String?) {

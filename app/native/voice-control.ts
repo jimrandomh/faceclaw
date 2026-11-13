@@ -1,9 +1,9 @@
 import { Utils } from "@nativescript/core";
 
-import { type CloudSttTranscriptEvent, CloudSttClient } from "./cloud-stt";
+import { type CloudSttTranscriptEvent, CloudSttClient, toJavaBytes } from "./cloud-stt";
 import { createCloudSttClient, transcriptionKey } from "./cloud-stt-provider";
+import { newRecordingPath } from "./mic-recording";
 import { SpeechPauseDetector } from "./speech-pause";
-import { WavRecorder } from "./wav-recorder";
 import { toUint8Array } from "../util/array-util";
 import { pcmLevel } from "../util/audio-level";
 
@@ -84,6 +84,49 @@ export type PushToTalkOptions = {
    * frame). Null/absent leaves the mic omnidirectional.
    */
   beamFilter?: { centerDeg: number; halfWidthDeg: number } | null;
+  /**
+   * Capture from the temples' own microphones (the custom firmware's
+   * mic_control stream) instead of the glasses' mixed stream. Each temple
+   * streams its microphones on its own link and clock; the phone mixes them
+   * into the mono feed that is transcribed. Null/absent keeps the mixed
+   * stream; ignored with usePhoneMic.
+   */
+  micArray?: MicArrayCapture | null;
+  /**
+   * Play this recording (a .mka file from Save Recording) in real time in
+   * place of any microphone. The capture needs no glasses, and ends by
+   * itself when the recording does.
+   */
+  replay?: { path: string; startMs: number } | null;
+  /** What the caller knows of the capture, for the description stored in a recording of it. */
+  captureInfo?: Record<string, unknown>;
+};
+
+export type MicArrayCapture = {
+  /** The mic_control CONFIGURE record both temples are armed with (see mic-protocol.ts). */
+  configure: Uint8Array;
+};
+
+/** Progress of a capture that replays a recording; positions are ms into it. */
+export type VoiceReplayEvent = {
+  /**
+   * `start` once the file is open, `position` about once per second played,
+   * `seek` when a jump took effect, `end` when the recording ran out, and
+   * `error` when it could not be opened (the status says why).
+   */
+  kind: "start" | "position" | "seek" | "end" | "error";
+  positionMs: number;
+  durationMs: number;
+};
+
+/** What a listening view (Transcribe, Translate) takes from a capture: the microphone's, or a replay's. */
+export type VoiceEventSource = {
+  onStatus(listener: (state: VoiceControlState) => void): () => void;
+  onTranscript(listener: (event: VoiceTranscriptEvent) => void): () => void;
+  onSpeechPause(listener: () => void): () => void;
+  onMicLevel(listener: (level: number) => void): () => void;
+  readonly recording: boolean;
+  readonly recordingFailed: boolean;
 };
 
 /** Who currently wants the mic running. */
@@ -130,9 +173,13 @@ export class FaceclawVoiceControlBridge {
   private captureEndpointing = false;
   // Non-null while a cloud provider owns the transcript; Java only decodes PCM.
   private cloudClient: CloudSttClient | null = null;
-  // What the running STT stream transcribes with (transcriptionKey); a holder
-  // asking for something else restarts the stream rather than sharing it.
+  // What the running STT stream captures from and transcribes with
+  // (streamKey); a holder asking for something else restarts the stream
+  // rather than sharing it.
   private streamProvider: string | null = null;
+  // The options of the running stream, for the description of a recording of it.
+  private streamOptions: PushToTalkOptions | null = null;
+  private readonly replayListeners = new Set<(event: VoiceReplayEvent) => void>();
   // Raw-PCM tap (EvenHub mic apps, the Microphones app): when active, the
   // controller runs in the decode-only "cloud" mode and every decoded PCM
   // frame is broadcast to these listeners. STT capture preempts it — a live
@@ -150,11 +197,14 @@ export class FaceclawVoiceControlBridge {
   // the bridge swallow it.
   private verificationActive = false;
   private verificationRejected = false;
-  // Continuous captures' audio goes to Downloads/<recordingName>.wav while it is
-  // set. The file outlives a capture, so a restarted one keeps appending to it,
-  // and it is created by the first audio, so a failed start leaves no file.
+  // Continuous captures' audio goes to Downloads/<recordingName>.mka while it is
+  // set: every source's chunks as they arrive, before any processing, written
+  // by the controller. The file outlives a capture, so a restarted one keeps
+  // adding to it, and it is created by the first audio, so a failed start
+  // leaves no file.
   private recordingName = "";
-  private recorder: WavRecorder | null = null;
+  // The file is open in the controller.
+  private recordingOpen = false;
   // The file could not be created: one attempt per recording, not one per packet.
   private recordingFailure = false;
   private readonly recordingListeners = new Set<() => void>();
@@ -251,14 +301,53 @@ export class FaceclawVoiceControlBridge {
   }
 
   /**
-   * Record continuous captures' audio to Downloads/<name>.wav, across restarts,
+   * End the continuous capture as an utterance: stop it and have the
+   * transcript of its last audio come as a final. For a capture whose audio
+   * ran out by itself (a replay).
+   */
+  finishContinuousCapture(): void {
+    this.releaseCapture("continuous", true);
+  }
+
+  /** Progress of a capture that replays a recording (PushToTalkOptions.replay). */
+  onReplay(listener: (event: VoiceReplayEvent) => void): () => void {
+    this.replayListeners.add(listener);
+    return () => this.replayListeners.delete(listener);
+  }
+
+  /** Continue the running replay from `positionMs` into its recording. */
+  seekReplay(positionMs: number): void {
+    this.controller?.seekReplay(Math.max(0, Math.round(positionMs)));
+  }
+
+  /** Hold the running replay where it is, or let it go on. */
+  setReplayPaused(paused: boolean): void {
+    this.controller?.setReplayPaused(paused);
+  }
+
+  /** Whether a capture is running and still has audio coming (a replay stops being so at its end). */
+  isCaptureLive(): boolean {
+    return this.micIsLive();
+  }
+
+  /**
+   * Record continuous captures' audio to Downloads/<name>.mka, across restarts,
    * until called with another name or "".
    */
   recordTo(name: string): void {
     if (name === this.recordingName) return;
-    this.recorder?.close();
-    this.recorder = null;
+    this.closeRecording();
     this.setRecording(name, false);
+  }
+
+  private closeRecording(): void {
+    if (!this.recordingOpen) return;
+    this.recordingOpen = false;
+    try {
+      this.controller?.stopRecording();
+    } catch (error) {
+      console.warn(`Voice: closing the recording failed: ${error}`);
+    }
   }
 
   /** Whether continuous captures' audio is being saved (see recordTo). */
@@ -286,18 +375,48 @@ export class FaceclawVoiceControlBridge {
     for (const listener of Array.from(this.recordingListeners)) listener();
   }
 
-  /** `pcm` is the controller's Java byte[], handed to the recorder as it came. */
-  private record(pcm: any): void {
-    if (!this.recording) return;
-    if (!this.recorder) {
-      this.recorder = WavRecorder.open(this.recordingName);
-      if (!this.recorder) {
-        this.setRecording(this.recordingName, true);
-        return;
-      }
-      console.log(`Voice: recording audio to ${this.recorder.path}`);
+  /**
+   * Audio arrived for a continuous capture: open the recording asked for, if
+   * it isn't open yet. The controller writes it from then on, as the audio
+   * arrives on its own thread.
+   */
+  private ensureRecording(): void {
+    if (!this.recording || this.recordingOpen) return;
+    const path = newRecordingPath(this.recordingName);
+    let opened = false;
+    try {
+      opened = path !== null && Boolean(this.controller?.startRecording(path, JSON.stringify(this.describeCapture())));
+    } catch (error) {
+      console.warn(`Voice: could not create the recording: ${error}`);
     }
-    this.recorder.append(pcm);
+    if (!opened) {
+      this.setRecording(this.recordingName, true);
+      return;
+    }
+    this.recordingOpen = true;
+    console.log(`Voice: recording audio to ${path}`);
+  }
+
+  /** Only captures a continuous holder has a part in are recorded: push-to-talk on its own is not. */
+  private syncRecordingEnabled(): void {
+    this.controller?.setRecordingEnabled(this.captureHolders.has("continuous"));
+  }
+
+  /** The running capture, as the JSON stored in a recording of it. */
+  private describeCapture(): Record<string, unknown> {
+    const options = this.streamOptions;
+    return {
+      recording: this.recordingName,
+      startedAt: new Date().toISOString(),
+      source: options?.usePhoneMic ? "phone" : "glasses",
+      micArray: Boolean(options?.micArray) && !options?.usePhoneMic,
+      transcription: { provider: options?.provider ?? "", language: options?.language ?? "" },
+      processing: {
+        noiseSuppression: Boolean(options?.noiseSuppression),
+        beamFilter: options?.beamFilter ?? null,
+      },
+      ...options?.captureInfo,
+    };
   }
 
   /** Subscribe to decoded raw mic PCM (16 kHz mono S16LE). */
@@ -364,6 +483,8 @@ export class FaceclawVoiceControlBridge {
     // preview-mode capture may have left on the shared controller.
     this.controller?.setUsePhoneMic(false);
     this.controller?.setEndpointing(false);
+    this.controller?.setMicArray(null);
+    this.controller?.setReplay(null, 0);
     // Raw means raw: the Microphones session (and EvenHub apps) get the
     // unprocessed stream and run their own beam/suppression processing.
     this.controller?.setNoiseSuppression(false);
@@ -399,18 +520,33 @@ export class FaceclawVoiceControlBridge {
     const micLive = this.micIsLive();
     this.suspendedHolders.delete(holder);
     this.captureHolders.add(holder);
-    if (micLive && this.streamProvider === transcriptionKey(options)) {
+    if (micLive && this.streamProvider === streamKey(options)) {
       // Mic already running; the new holder just shares the existing stream
       // (transcripts are already broadcast to its listeners).
+      this.syncRecordingEnabled();
       return;
     }
-    // Any leftover capture is dead, or transcribes with another provider than
+    // Any leftover capture is dead, or captures or transcribes otherwise than
     // this holder needs; drop it before starting the new one.
     if (this.started) this.teardownCapture();
-    this.streamProvider = transcriptionKey(options);
+    this.streamProvider = streamKey(options);
+    this.streamOptions = options;
     this.ensureController();
+    this.syncRecordingEnabled();
+    // A recording under way carries on into this capture: note what changed.
+    if (this.recordingOpen) {
+      try {
+        this.controller?.noteRecordingEvent(JSON.stringify({ event: "capture", ...this.describeCapture() }));
+      } catch (error) {
+        console.warn(`Voice: recording event failed: ${error}`);
+      }
+    }
     this.controller?.setCommunicator(options.communicator);
     this.controller?.setUsePhoneMic(Boolean(options.usePhoneMic));
+    this.controller?.setMicArray(
+      options.micArray && !options.usePhoneMic && !options.replay ? toJavaBytes(options.micArray.configure) : null,
+    );
+    this.controller?.setReplay(options.replay?.path ?? null, Math.max(0, Math.round(options.replay?.startMs ?? 0)));
     this.controller?.setEndpointing(Boolean(options.endpointing));
     this.captureEndpointing = Boolean(options.endpointing);
     this.controller?.setNoiseSuppression(Boolean(options.noiseSuppression));
@@ -435,7 +571,7 @@ export class FaceclawVoiceControlBridge {
     this.speechPause.reset();
     // Replaces whatever the last capture left behind ("Listening...", an
     // error, the permission prompt) until the controller reports progress.
-    this.setStatus("Starting microphone...");
+    this.setStatus(options.replay ? "Opening the recording..." : "Starting microphone...");
     // A previous push-to-talk commit may still be awaiting its final result.
     this.cloudClient?.stop();
     const cloudClient = this.createCloudClient(options);
@@ -480,6 +616,7 @@ export class FaceclawVoiceControlBridge {
       if (commit) this.cloudClient?.finish();
       return;
     }
+    this.syncRecordingEnabled();
     if (this.captureHolders.size > 0) {
       // Another holder still wants the mic; keep it running.
       return;
@@ -504,6 +641,7 @@ export class FaceclawVoiceControlBridge {
     this.captureHolders.clear();
     this.suspendedHolders.clear();
     this.suspendedRaw = false;
+    this.syncRecordingEnabled();
     this.teardownCapture();
     this.setStatus("Voice control stopped.");
   }
@@ -521,6 +659,7 @@ export class FaceclawVoiceControlBridge {
       this.suspendedHolders.add(holder);
     }
     this.captureHolders.clear();
+    this.syncRecordingEnabled();
     this.suspendedRaw = this.rawActive;
     this.teardownCapture();
     if (this.suspendedHolders.size > 0) {
@@ -578,6 +717,7 @@ export class FaceclawVoiceControlBridge {
   private teardownCapture(): void {
     this.rawActive = false;
     this.streamProvider = null;
+    this.streamOptions = null;
     if (global.isAndroid) {
       this.controller?.stop();
     }
@@ -611,7 +751,7 @@ export class FaceclawVoiceControlBridge {
         const bytes = toUint8Array(pcm);
         this.cloudClient?.acceptPcm(bytes);
         // Push-to-talk on a capture of its own is not recorded.
-        if (this.captureHolders.has("continuous")) this.record(pcm);
+        if (this.captureHolders.has("continuous")) this.ensureRecording();
         if (!this.cloudClient && this.captureHolders.has("continuous") && this.speechPause.accept(bytes)) {
           for (const listener of this.speechPauseListeners) listener();
         }
@@ -641,6 +781,10 @@ export class FaceclawVoiceControlBridge {
             `Ignored — not your enrolled voice (match ${Math.round(Number(similarity) * 100)}%).`,
           );
         }
+      },
+      onReplay: (kind: string, positionMs: number, durationMs: number) => {
+        const event = { kind: String(kind) as VoiceReplayEvent["kind"], positionMs: Number(positionMs), durationMs: Number(durationMs) };
+        for (const listener of Array.from(this.replayListeners)) listener(event);
       },
     });
     this.controller.setListener(this.listenerProxy);
@@ -678,6 +822,21 @@ export class FaceclawVoiceControlBridge {
   }
 }
 
+/**
+ * What a capture reads and transcribes with. A running capture is shared only
+ * by holders asking for the same: the provider and language, the microphones
+ * (the mixed stream, or the temples' own under a given configuration), or the
+ * recording it replays.
+ */
+function streamKey(options: PushToTalkOptions): string {
+  const source = options.replay
+    ? `replay:${options.replay.path}`
+    : options.micArray && !options.usePhoneMic
+      ? `array:${Array.from(options.micArray.configure).join(",")}`
+      : "mixed";
+  return `${transcriptionKey(options)}|${source}`;
+}
+
 function toJavaFloats(values: Float32Array): any {
   const javaFloats = Array.create("float", values.length);
   for (let i = 0; i < values.length; i++) {
@@ -687,3 +846,136 @@ function toJavaFloats(values: Float32Array): any {
 }
 
 export const voiceControlBridge = new FaceclawVoiceControlBridge();
+
+export type VoiceReplayState = "opening" | "playing" | "paused" | "ended" | "failed";
+
+/**
+ * A recording played back as a capture of its own: transcribed by the same
+ * pipeline as the microphone, with the same settings, on a bridge and native
+ * controller separate from the microphone's. Nothing here touches the mic,
+ * so voice input and a live Transcribe window carry on beside a replay.
+ */
+export class VoiceReplay {
+  private readonly bridge = new FaceclawVoiceControlBridge();
+  private readonly listeners = new Set<(jumpedToMs?: number) => void>();
+  private readonly offReplay: () => void;
+  private position = 0;
+  private duration = 0;
+  private current: VoiceReplayState = "opening";
+  private closed = false;
+
+  /**
+   * `options` gives the capture options (provider, keys, processing) each
+   * time the replay starts, so a restart picks up changed settings.
+   */
+  constructor(readonly path: string, private readonly options: () => PushToTalkOptions) {
+    this.offReplay = this.bridge.onReplay((event) => this.handle(event));
+  }
+
+  /** The replay's status, transcript and level events. */
+  get events(): VoiceEventSource {
+    return this.bridge;
+  }
+
+  /** Milliseconds into the recording. */
+  get positionMs(): number {
+    return this.position;
+  }
+
+  /** The recording's length in ms; 0 until it has been opened. */
+  get durationMs(): number {
+    return this.duration;
+  }
+
+  get state(): VoiceReplayState {
+    return this.current;
+  }
+
+  /**
+   * The position, duration or state changed. `jumpedToMs` is given when
+   * playback moved there other than by playing on: a jump, or a start
+   * part-way in. It comes after the transcript of what played before.
+   */
+  onChange(listener: (jumpedToMs?: number) => void): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+
+  /** Play from `positionMs` into the recording. */
+  start(positionMs = 0): void {
+    if (this.closed) return;
+    this.position = Math.max(0, positionMs);
+    this.set("opening");
+    this.bridge.startContinuousCapture({
+      ...this.options(),
+      communicator: null,
+      usePhoneMic: false,
+      micArray: null,
+      replay: { path: this.path, startMs: this.position },
+    });
+  }
+
+  /** Continue from `positionMs`: a jump while playing, a fresh start once the replay has ended. */
+  jumpTo(positionMs: number): void {
+    if (this.closed) return;
+    const target = Math.max(0, this.duration > 0 ? Math.min(positionMs, this.duration) : positionMs);
+    if ((this.current === "playing" || this.current === "paused") && this.bridge.isCaptureLive()) {
+      this.bridge.seekReplay(target);
+      this.position = target;
+      this.notify();
+      return;
+    }
+    this.start(target);
+  }
+
+  setPaused(paused: boolean): void {
+    if (this.closed || (this.current !== "playing" && this.current !== "paused")) return;
+    this.bridge.setReplayPaused(paused);
+    this.set(paused ? "paused" : "playing");
+  }
+
+  /** Stop for good and release the capture. */
+  close(): void {
+    if (this.closed) return;
+    this.closed = true;
+    this.offReplay();
+    this.listeners.clear();
+    this.bridge.stop();
+  }
+
+  private handle(event: VoiceReplayEvent): void {
+    this.duration = event.durationMs;
+    switch (event.kind) {
+      case "start":
+        this.position = event.positionMs;
+        this.current = "playing";
+        this.notify(event.positionMs > 0 ? event.positionMs : undefined);
+        return;
+      case "seek":
+        this.position = event.positionMs;
+        this.notify(event.positionMs);
+        return;
+      case "end":
+        this.position = event.durationMs;
+        // Its last audio is still to be transcribed (a cloud provider's final).
+        this.bridge.finishContinuousCapture();
+        this.set("ended");
+        return;
+      case "error":
+        this.set("failed");
+        return;
+      default:
+        this.position = event.positionMs;
+        this.notify();
+    }
+  }
+
+  private set(state: VoiceReplayState): void {
+    this.current = state;
+    this.notify();
+  }
+
+  private notify(jumpedToMs?: number): void {
+    for (const listener of Array.from(this.listeners)) listener(jumpedToMs);
+  }
+}

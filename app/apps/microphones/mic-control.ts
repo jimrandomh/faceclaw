@@ -56,6 +56,27 @@ export function saveMicConfig(config: MicConfig): void {
   setStringSetting(CONFIG_SETTING_KEY, JSON.stringify(config));
 }
 
+/**
+ * The configuration a capture of the temples' own microphones arms them
+ * with: `mics` of 2 is one microphone per temple (the front one), 4 is both
+ * of each. The front end and direction detection follow Microphone setup
+ * (the Microphones app), except that both of a temple's microphones only
+ * come through the codec front end. Always raw PCM16 at 16 kHz, which is
+ * what the firmware streams and transcription takes.
+ */
+export function micArrayCaptureConfig(mics: 2 | 4): MicConfig {
+  const base = loadMicConfig();
+  return {
+    ...base,
+    source: mics === 4 ? "codec" : base.source,
+    channelMask: mics === 4 ? 0b11 : 0b01,
+    codec: "raw",
+    format: "pcm16",
+    sampleRateHz: 16_000,
+    armHardware: true,
+  };
+}
+
 class MicArrayController {
   private readonly statusListeners = new Set<(statuses: MicArrayStatuses) => void>();
   private statuses: MicArrayStatuses = { left: null, right: null };
