@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import vm from 'node:vm';
 import * as model from '../lib/model.js';
+import * as feedback from '../lib/feedback.js';
 
 export const sampleState = {
   protocol: 1, version: '0.1.0', phase: 'connected', connected: true, preview: false,
@@ -18,7 +19,7 @@ export const sampleState = {
 export function watchFixture({ fixedFrameworkState = true } = {}) {
   const code = fs.readFileSync(new URL('../page/index.js', import.meta.url), 'utf8').replace(/^import .*;\n/gm, '');
   let page, key, crown, gesture, screenListener, screenStatus = 1, now = 1760545800000;
-  const calls = [], pending = [], widgets = [], timers = new Map(); let timer = 0, exits = 0;
+  const calls = [], requests = [], pending = [], widgets = [], timers = new Map(); let timer = 0, exits = 0;
   const frameworkState = { messaging: Object.freeze({ frameworkTransport: true }) };
   const setTimer = (fn, delay) => { timers.set(++timer, { fn, at: now + delay }); return timer; };
   const clearTimer = id => timers.delete(id);
@@ -39,8 +40,9 @@ export function watchFixture({ fixedFrameworkState = true } = {}) {
     },
   };
   vm.runInNewContext(code, {
-    ...model, ui, display: { setPageBrightTime() {}, pauseDropWristScreenOff() {}, resetPageBrightTime() {}, resetDropWristScreenOff() {} },
+    ...model, ...feedback, ui, display: { setPageBrightTime() {}, pauseDropWristScreenOff() {}, resetPageBrightTime() {}, resetDropWristScreenOff() {} },
     createTouchpad: emit => model.createTouchpad(emit, { setTimeout: setTimer, clearTimeout: clearTimer }),
+    createCommandFeedback: onChange => feedback.createCommandFeedback(onChange, { now: () => now, setTimeout: setTimer, clearTimeout: clearTimer }),
     exit: () => { exits++; },
     Screen: class { getStatus() { return screenStatus; } onChange(callback) { screenListener = callback; } offChange() { screenListener = null; } },
     Page: value => {
@@ -57,11 +59,11 @@ export function watchFixture({ fixedFrameworkState = true } = {}) {
     Date: class extends Date { constructor(...args) { super(...(args.length ? args : [now])); } static now() { return now; } },
     setTimeout: setTimer, clearTimeout: clearTimer,
   });
-  page.request = req => { calls.push(req.operation); return new Promise((resolve, reject) => pending.push({ resolve, reject })); };
+  page.request = req => { requests.push(req); calls.push(req.operation); return new Promise((resolve, reject) => pending.push({ resolve, reject })); };
   page.build();
   const flush = () => new Promise(resolve => setImmediate(resolve));
   return {
-    page, calls, widgets, timers, ui, exits: () => exits,
+    page, calls, requests, widgets, timers, ui, exits: () => exits,
     key: (code = 1, event = 4) => key(code, event),
     crown: (degree = -24, elapsed = 350) => { now += elapsed; crown(1, degree); },
     gesture: value => gesture(value),

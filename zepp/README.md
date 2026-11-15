@@ -31,6 +31,21 @@ To quit from any screen, press the **lower side button** once. This also works w
 
 This is a port of the supported remote controls, not every Wear OS feature: no microphone assistant, keyboard, motion-sensor pinch taps, multitouch, ambient clock, or held/released input stream. Hold sends the completed long-press gesture when released. Opening the watch does not synthesize a click or launch an app on the glasses.
 
+## Command feedback
+
+A two-line banner immediately names the recognized gesture or command. It shows
+**Sending**, then **Phone received** when Zepp acknowledges receipt, and
+**Faceclaw accepted** when Faceclaw replies successfully. The best-effort phone
+receipt can be skipped. Elapsed time stays visible while waiting.
+This confirms phone handling; check the glasses for the
+visible effect.
+
+A swipe during another request shows **Busy · Not sent**. Sleeping or locked
+glasses show the applicable reason. A pending crown step expires visibly with
+**Turn crown again**. A timeout, transport loss, or malformed reply shows
+**Result unknown**; commands are never automatically retried. New input,
+navigation, and sleep prevent stale replies from restoring older feedback.
+
 ## Development
 
 Node 24 or later:
@@ -46,7 +61,7 @@ npm run preview -- --app-id YOUR_APP_ID
 npm run bridge -- --app-id YOUR_APP_ID
 ```
 
-`npm run build` with no ID creates a verification package using placeholder `99999999`. Preview/bridge require a real registered ID. `FACECLAW_ZEPP_APP_ID` also supplies the ID. The packaging wrapper uses a temporary project and leaves the checked-in manifest unchanged. Packaged files are copied to `dist/`. Device IDs: `8519936`, `8519937`, `8519939`; minimum/target API level 3.0; version 0.1.3, package version code 17.
+`npm run build` with no ID creates a verification package using placeholder `99999999`. Preview/bridge require a real registered ID. `FACECLAW_ZEPP_APP_ID` also supplies the ID. The packaging wrapper uses a temporary project and leaves the checked-in manifest unchanged. Packaged files are copied to `dist/`. Device IDs: `8519936`, `8519937`, `8519939`; minimum/target API level 3.0; version 0.1.4, package version code 18.
 
 `npm run render -- /path/to/playwright` renders sample states from the real watch widget code and checks for text overflow and circular-screen clipping. These are **layout previews**, not hardware screenshots.
 
@@ -65,3 +80,8 @@ page’s `state` field, so the phone snapshot is now stored separately in
 Version 0.1.3 removes phone-response waits from local list scrolling and avoids
 an extra status round trip after each crown step on the glasses touchpad. Crown
 sensitivity remains unchanged.
+
+Version 0.1.4 adds immediate recognition feedback and correlated command progress,
+including visible blocked-input and uncertain-delivery outcomes. Progress uses
+one best-effort receipt per command and local elapsed-time updates; polling
+adds no progress messages.

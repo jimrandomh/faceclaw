@@ -4,12 +4,13 @@ import { Screen } from '@zos/sensor';
 import { exit } from '@zos/router';
 import { onDigitalCrown, offDigitalCrown, onKey, offKey, onGesture, offGesture, KEY_HOME, KEY_SELECT, KEY_BACK, KEY_SHORTCUT, KEY_EVENT_CLICK, GESTURE_UP, GESTURE_DOWN, GESTURE_RIGHT } from '@zos/interaction';
 import { BasePage } from '@zeppos/zml/base-page';
+import { createCommandFeedback } from '../lib/feedback.js';
 import { COLORS, appRows, statusRows, padStatus, moveSelection, createCrownNavigation, createTouchpad } from '../lib/model.js';
 
 Page(BasePage({
   build() {
     // Zepp owns Page.state; keep the phone snapshot in an app-specific field.
-    this.alive = true; this.awake = true; this.phoneState = null; this.stateTime = 0; this.busy = false; this.busyKind = ''; this.pendingCrown = null;
+    this.alive = true; this.awake = true; this.phoneState = null; this.stateTime = 0; this.busy = false; this.busyKind = ''; this.pendingCrown = null; this.pendingCrownTimer = null; this.navigationEpoch = 0;
     this.screen = 'remote'; this.tray = false; this.selected = 0; this.linkError = ''; this.notice = ''; this.noticeError = false;
     this.groups = { remote: [], list: [], help: [], details: [] }; this.rows = []; this.crown = createCrownNavigation();
     this.pollTimer = null; this.noticeTimer = null; this.clockTimer = null;
@@ -30,11 +31,11 @@ Page(BasePage({
     this.pad = make(ui.widget.FILL_RECT, { x: 0, y: 0, w: 480, h: 480, color: COLORS.background }, 'remote');
     this.touch = createTouchpad((gesture, info) => {
       if (!this.alive || !this.awake || this.screen !== 'remote') return;
-      if (gesture === 'swipe-up' && info && info.startY >= 410 && !this.tray) { this.pendingCrown = null; this.tray = true; this.render(); return; }
-      if (gesture === 'swipe-down' && info && info.startY >= 350 && this.tray) { this.pendingCrown = null; this.tray = false; this.render(); return; }
+      if (gesture === 'swipe-up' && info && info.startY >= 410 && !this.tray) { this.cancelPendingCrown(); this.tray = true; this.render(); return; }
+      if (gesture === 'swipe-down' && info && info.startY >= 350 && this.tray) { this.cancelPendingCrown(); this.tray = false; this.render(); return; }
       this.gesture(gesture);
     });
-    this.pad.addEventListener(ui.event.CLICK_DOWN, info => { this.pendingCrown = null; this.touch.down(info.x, info.y, Date.now()); });
+    this.pad.addEventListener(ui.event.CLICK_DOWN, info => { this.cancelPendingCrown(); this.touch.down(info.x, info.y, Date.now()); });
     this.pad.addEventListener(ui.event.MOVE, info => this.touch.move(info.x, info.y));
     this.pad.addEventListener(ui.event.CLICK_UP, info => this.touch.up(info.x, info.y, Date.now()));
     this.pad.addEventListener(ui.event.MOVE_OUT, () => this.touch.reset());
@@ -43,7 +44,7 @@ Page(BasePage({
     this.padTitle = text(55, 274, 370, 46, 32, COLORS.text, 'remote');
     this.padDetail = text(62, 320, 356, 36, 24, COLORS.muted, 'remote');
     this.reveal = button(110, 384, 260, 54, 'Apps & status', () => {
-      this.pendingCrown = null;
+      this.cancelPendingCrown();
       if (this.linkError) { this.navigate('details'); return; }
       this.touch.reset(); this.tray = true; this.render();
     }, 'remote', 26);
@@ -74,9 +75,10 @@ Page(BasePage({
     this.noticeBg = make(ui.widget.FILL_RECT, { x: 54, y: 98, w: 372, h: 68, radius: 18, color: COLORS.notice });
     this.noticeBg.setEnable(false);
     this.noticeText = text(64, 100, 352, 64, 24, COLORS.text);
+    this.commandFeedback = createCommandFeedback(() => this.renderFeedback());
 
     onDigitalCrown({ callback: (_key, degree) => {
-      if (!this.alive || !this.awake) { this.pendingCrown = null; this.crown.clearPending(); return; }
+      if (!this.alive || !this.awake) { this.cancelPendingCrown(); this.crown.clearPending(); return; }
       this.touch.reset(); this.keepAwake();
       const step = this.crown.step(degree, Date.now());
       if (!step) return;
@@ -91,7 +93,7 @@ Page(BasePage({
       // Retain KEY_BACK as a compatibility path; the crown stays HOME/SELECT.
       if (key === KEY_SHORTCUT || key === KEY_BACK) { this.quitWatch(); return true; }
       if (key !== KEY_HOME && key !== KEY_SELECT) return false;
-      this.pendingCrown = null; this.touch.reset(); this.keepAwake();
+      this.cancelPendingCrown(); this.touch.reset(); this.keepAwake();
       if (this.screen === 'remote') {
         if (this.linkError || !this.phoneState) this.refresh(); else this.gesture('click');
       } else if (this.screen === 'help') this.navigate('remote'); else if (this.screen === 'details') this.refresh(); else this.activate();
@@ -111,8 +113,8 @@ Page(BasePage({
     this.screenSensor = new Screen();
     this.screenChanged = () => {
       if (!this.alive) return;
-      this.awake = this.screenSensor.getStatus() === 1;
-      this.pendingCrown = null; this.touch.reset(); this.crown.reset(); this.cancelPoll();
+      this.awake = this.screenSensor.getStatus() === 1; this.navigationEpoch++;
+      this.cancelPendingCrown(); this.commandFeedback.clear(); this.clearNotice(); this.touch.reset(); this.crown.reset(); this.cancelPoll();
       if (this.awake) { this.updateClock(); this.refresh(); } // Never synthesize a glasses tap on wake.
     };
     this.screenSensor.onChange(this.screenChanged);
@@ -139,14 +141,20 @@ Page(BasePage({
   },
   navigate(screen) {
     if (!this.alive) return;
-    this.pendingCrown = null; this.touch.reset(); this.crown.reset(); this.keepAwake();
-    this.screen = screen; this.selected = 0; this.notice = ''; this.render();
+    this.navigationEpoch++;
+    this.cancelPendingCrown(); this.commandFeedback.clear(); this.touch.reset(); this.crown.reset(); this.keepAwake();
+    this.screen = screen; this.selected = 0; this.clearNotice(); this.render();
     if (screen === 'apps' || screen === 'status') this.refresh();
   },
   select(index, resetCrown = true) {
-    this.pendingCrown = null;
+    this.cancelPendingCrown();
     if (resetCrown) this.crown.reset();
     this.touch.reset(); this.keepAwake(); this.selected = index; this.notice = ''; this.render();
+  },
+  clearNotice() {
+    if (this.noticeTimer !== null) clearTimeout(this.noticeTimer);
+    this.noticeTimer = null; this.notice = '';
+    this.renderFeedback();
   },
   setNotice(message, error = false) {
     if (!this.alive) return;
@@ -155,75 +163,140 @@ Page(BasePage({
     this.noticeTimer = setTimeout(() => { if (this.alive) { this.notice = ''; this.render(); } }, error ? 9000 : 2600);
     this.render();
   },
-  canControl(allowDisconnected = false) {
+  onCall(message) {
+    if (!this.alive || !this.awake || !this.commandFeedback || !message || message.method !== 'FACECLAW_PROGRESS') return;
+    const params = message.params;
+    if (params && params.stage === 'phone-received' && typeof params.requestId === 'string') {
+      this.commandFeedback.update(params.requestId, 'phone-received');
+    }
+  },
+  feedbackIsCurrent(id) {
+    const feedback = this.commandFeedback && this.commandFeedback.snapshot();
+    return !!(feedback && feedback.id === id);
+  },
+  cancelPendingCrown(detail = 'Not sent') {
+    if (this.pendingCrownTimer !== null) clearTimeout(this.pendingCrownTimer);
+    this.pendingCrownTimer = null;
+    const pending = this.pendingCrown; this.pendingCrown = null;
+    if (pending && this.commandFeedback) this.commandFeedback.finish(pending.id, 'skipped', detail);
+  },
+  canControl(allowDisconnected = false, feedbackId = null) {
     if (!this.phoneState || this.linkError || Date.now() - this.stateTime > 15000) {
+      if (feedbackId) this.commandFeedback.finish(feedbackId, 'blocked', 'Refresh phone first');
       this.setNotice('Refresh the phone connection first.', true); this.refresh(); return false;
     }
-    if (!this.phoneState.remoteEnabled) { this.setNotice('Enable watch control in Faceclaw.', true); return false; }
-    if (!allowDisconnected && !this.phoneState.connected) { this.setNotice('Connect glasses in Status.', true); return false; }
+    if (!this.phoneState.remoteEnabled) {
+      if (feedbackId) this.commandFeedback.finish(feedbackId, 'blocked', 'Watch control is off');
+      this.setNotice('Enable watch control in Faceclaw.', true); return false;
+    }
+    if (!allowDisconnected && !this.phoneState.connected) {
+      if (feedbackId) this.commandFeedback.finish(feedbackId, 'blocked', 'Glasses disconnected');
+      this.setNotice('Connect glasses in Status.', true); return false;
+    }
     return true;
   },
   scrollCrown(gesture) {
     if (!this.alive || !this.awake || this.screen !== 'remote') return;
-    if (!this.canControl() || !this.phoneState.screenOn || this.phoneState.locked) { this.pendingCrown = null; return; }
+    this.cancelPendingCrown(); this.notice = '';
+    const operation = { kind: 'gesture', gesture };
+    const id = this.commandFeedback.begin(operation, this.busy ? 'queued' : 'sending');
+    if (!this.canControl(false, id)) return;
+    if (!this.phoneState.screenOn || this.phoneState.locked) {
+      this.commandFeedback.finish(id, 'blocked', this.phoneState.locked ? 'Glasses are locked' : 'Double tap to wake'); return;
+    }
     if (this.busy) {
-      // Keep only a fresh, unsent step behind a poll or another crown request.
-      // A launch/tap/close may change what a later scroll would target.
-      this.pendingCrown = this.busyKind === 'state' || this.busyKind === 'crown'
-        ? { gesture, at: Date.now() } : null;
+      // Keep one unsent step; it expires visibly instead of silently disappearing.
+      if (this.busyKind !== 'state' && this.busyKind !== 'crown') {
+        this.commandFeedback.finish(id, 'blocked', 'Busy · Not sent'); return;
+      }
+      this.pendingCrown = { gesture, at: Date.now(), id };
+      this.pendingCrownTimer = setTimeout(() => {
+        if (this.pendingCrown && this.pendingCrown.id === id) this.cancelPendingCrown('Turn crown again');
+      }, 350);
       return;
     }
-    this.pendingCrown = null;
-    this.perform({ kind: 'gesture', gesture }, false, true);
+    this.perform(operation, false, true, id);
   },
   drainCrown() {
     const pending = this.pendingCrown;
-    this.pendingCrown = null;
-    if (!pending || this.busy || !this.alive || !this.awake || this.screen !== 'remote') return;
+    if (this.pendingCrownTimer !== null) clearTimeout(this.pendingCrownTimer);
+    this.pendingCrownTimer = null; this.pendingCrown = null;
+    if (!pending) return;
+    if (this.busy || !this.alive || !this.awake || this.screen !== 'remote') {
+      this.commandFeedback.finish(pending.id, 'skipped', 'Not sent'); return;
+    }
     const age = Date.now() - pending.at;
-    if (age < 0 || age > 350) return; // Never build up scrolling after the hand stops.
-    if (!this.canControl() || !this.phoneState.screenOn || this.phoneState.locked) return;
-    this.perform({ kind: 'gesture', gesture: pending.gesture }, false, true);
+    if (age < 0 || age > 350) { this.commandFeedback.finish(pending.id, 'skipped', 'Turn crown again'); return; }
+    if (!this.canControl(false, pending.id)) return;
+    if (!this.phoneState.screenOn || this.phoneState.locked) {
+      this.commandFeedback.finish(pending.id, 'blocked', this.phoneState.locked ? 'Glasses are locked' : 'Double tap to wake'); return;
+    }
+    this.commandFeedback.update(pending.id, 'sending');
+    this.perform({ kind: 'gesture', gesture: pending.gesture }, false, true, pending.id);
   },
   gesture(gesture) {
-    this.pendingCrown = null;
-    if (this.busy || !this.awake || !this.canControl()) return;
-    if (!this.phoneState.screenOn && ['click', 'double-click', 'long-press'].indexOf(gesture) < 0) return;
-    this.perform({ kind: 'gesture', gesture });
+    if (!this.alive || !this.awake) return;
+    this.cancelPendingCrown(); this.notice = '';
+    const operation = { kind: 'gesture', gesture }, id = this.commandFeedback.begin(operation);
+    if (this.busy) { this.commandFeedback.finish(id, 'blocked', 'Busy · Not sent'); return; }
+    if (!this.canControl(false, id)) return;
+    if (this.phoneState.locked && gesture !== 'double-click') {
+      this.commandFeedback.finish(id, 'blocked', 'Glasses are locked'); return;
+    }
+    const wakeGesture = ['click', 'double-click', 'long-press'].indexOf(gesture) >= 0;
+    if (!wakeGesture && !this.phoneState.screenOn) {
+      this.commandFeedback.finish(id, 'blocked', 'Double tap to wake'); return;
+    }
+    this.perform(operation, false, false, id);
   },
   activate() {
-    this.pendingCrown = null;
-    if (this.busy || !this.alive) return;
+    this.cancelPendingCrown();
+    if (!this.alive || !this.awake) return;
     const row = this.rows[this.selected];
     if (!row) { this.refresh(); return; }
     if (row.operation.kind === 'help') { this.navigate('help'); return; }
     if (row.operation.kind === 'state') { this.refresh(); return; }
-    if (row.enabled === false) { this.setNotice(row.detail || 'Unavailable right now.', true); return; }
-    if (!this.canControl(row.operation.command === 'connect' || row.operation.command === 'disconnect')) return;
-    this.perform(row.operation, this.screen === 'apps');
+    this.notice = '';
+    const id = this.commandFeedback.begin(row.operation);
+    if (this.busy) { this.commandFeedback.finish(id, 'blocked', 'Busy · Not sent'); return; }
+    if (row.enabled === false) { this.commandFeedback.finish(id, 'blocked', 'Unavailable now'); this.setNotice(row.detail || 'Unavailable right now.', true); return; }
+    if (!this.canControl(row.operation.command === 'connect' || row.operation.command === 'disconnect', id)) return;
+    this.perform(row.operation, this.screen === 'apps', false, id);
   },
   closeSelected() {
-    this.pendingCrown = null;
-    if (this.busy || !this.alive || this.screen !== 'apps' || !this.canControl()) return;
+    this.cancelPendingCrown();
+    if (!this.alive || !this.awake || this.screen !== 'apps') return;
     const row = this.rows[this.selected];
-    if (row && row.close) this.perform(row.close, false);
+    if (!row || !row.close) return;
+    this.notice = '';
+    const id = this.commandFeedback.begin(row.close);
+    if (this.busy) { this.commandFeedback.finish(id, 'blocked', 'Busy · Not sent'); return; }
+    if (this.canControl(false, id)) this.perform(row.close, false, false, id);
   },
-  async exchange(operation, crownScroll = false) {
+  async exchange(operation, crownScroll = false, feedbackId = null) {
     this.busy = true; this.busyKind = operation.kind === 'state' ? 'state' : crownScroll ? 'crown' : 'action';
     this.cancelPoll();
     if (this.screen === 'remote' && operation.kind !== 'state') this.crown.clearPending();
     this.render();
+    let explicitRejection = false;
     try {
-      const result = await this.request({ method: 'FACECLAW', operation }, { timeout: 11000 });
-      if (!result || !result.ok) throw new Error(result && result.error || 'No reply. Check the phone.');
+      const result = await this.request({ method: 'FACECLAW', operation, ...(feedbackId ? { requestId: feedbackId } : {}) }, { timeout: 11000 });
+      if (!result || result.ok !== true) {
+        explicitRejection = !!(result && result.ok === false);
+        throw new Error(result && result.error || 'No valid reply. Check the phone.');
+      }
       return result;
     } catch (error) {
-      this.pendingCrown = null;
+      this.cancelPendingCrown('Not sent');
       const raw = String(error && error.message || 'No phone reply.');
-      const message = operation.kind !== 'state' && /timeout|timed out/i.test(raw) ? 'Result unknown. Check the glasses before trying again.' : raw;
+      // Losing transport or receiving a malformed reply cannot establish whether it ran.
+      const unknown = operation.kind !== 'state' && (!explicitRejection || /unknown|timeout|timed out/i.test(raw));
+      const message = unknown ? 'Result unknown. Check the glasses before trying again.' : raw;
+      const currentIntent = !feedbackId || this.feedbackIsCurrent(feedbackId);
+      if (feedbackId) this.commandFeedback.finish(feedbackId, unknown ? 'unknown' : 'failed');
       if (this.alive) {
         if (operation.kind === 'state') this.linkError = message.slice(0, 180);
-        this.setNotice(message.slice(0, 120), true);
+        if (this.awake && currentIntent) this.setNotice(message.slice(0, 120), true);
       }
       return null;
     } finally {
@@ -245,15 +318,21 @@ Page(BasePage({
     this.render();
     this.drainCrown();
   },
-  async perform(operation, returnToPad = false, crownScroll = false) {
-    if (!crownScroll) this.pendingCrown = null;
+  async perform(operation, returnToPad = false, crownScroll = false, feedbackId = null) {
+    if (!crownScroll) this.cancelPendingCrown();
     if (this.busy || !this.alive || !this.awake) return;
+    const id = feedbackId || this.commandFeedback.begin(operation), epoch = this.navigationEpoch;
     this.keepAwake(); this.touch.reset();
-    const result = await this.exchange(operation, crownScroll);
+    const result = await this.exchange(operation, crownScroll, id);
     if (!this.alive) return;
-    if (result) {
-      if (returnToPad) { this.screen = 'remote'; this.tray = false; this.selected = 0; }
-      if (operation.kind !== 'gesture') this.setNotice(result.message || 'Sent to Faceclaw');
+    if (result && this.awake) {
+      // A blocked second press must not cancel the first launch's normal return.
+      // Actual navigation or a sleep/wake cycle does cancel that screen change.
+      if (returnToPad && epoch === this.navigationEpoch) { this.screen = 'remote'; this.tray = false; this.selected = 0; }
+      if (this.feedbackIsCurrent(id)) {
+        this.commandFeedback.finish(id, 'accepted');
+        if (operation.kind !== 'gesture') this.setNotice(result.message || 'Sent to Faceclaw');
+      }
     }
     if (result && crownScroll) {
       // A second status roundtrip used to block every crown step. Normal polling
@@ -307,9 +386,16 @@ Page(BasePage({
       this.empty.setProperty(ui.prop.TEXT, this.linkError ? 'Phone unavailable.\nOpen Connection details on the touchpad.' : 'No app list yet.\nOpen Faceclaw on the phone and connect the glasses.');
       this.listHint.setProperty(ui.prop.TEXT, this.busy ? 'Waiting for phone…' : this.screen === 'status' && selected ? this.fit(selected.detail, 350, 24) : 'Turn crown · Press to open');
     }
-    this.noticeBg.setProperty(ui.prop.VISIBLE, !!this.notice && this.screen !== 'details'); this.noticeText.setProperty(ui.prop.VISIBLE, !!this.notice && this.screen !== 'details');
-    this.noticeBg.setProperty(ui.prop.COLOR, this.noticeError ? COLORS.errorBg : COLORS.notice);
-    this.noticeText.setProperty(ui.prop.TEXT, this.notice.length > 62 ? this.notice.slice(0, 61) + '…' : this.notice);
+    this.renderFeedback();
+  },
+  renderFeedback() {
+    if (!this.alive || !this.noticeText) return;
+    const feedback = this.commandFeedback && this.commandFeedback.snapshot();
+    const message = feedback ? feedback.text : this.notice;
+    const visible = !!message && this.screen !== 'details';
+    this.noticeBg.setProperty(ui.prop.VISIBLE, visible); this.noticeText.setProperty(ui.prop.VISIBLE, visible);
+    this.noticeBg.setProperty(ui.prop.COLOR, feedback ? feedback.error ? COLORS.errorBg : feedback.pending ? 0x40351b : 0x18352b : this.noticeError ? COLORS.errorBg : COLORS.notice);
+    this.noticeText.setProperty(ui.prop.TEXT, message.length > 62 ? message.slice(0, 61) + '…' : message);
   },
   quitWatch() {
     if (!this.alive) return;
@@ -320,7 +406,7 @@ Page(BasePage({
   },
   dispose() {
     if (!this.alive) return;
-    this.alive = false; this.pendingCrown = null; this.cancelPoll(); this.crown.reset(); this.touch.reset();
+    this.alive = false; this.cancelPendingCrown(); this.commandFeedback.clear(); this.cancelPoll(); this.crown.reset(); this.touch.reset();
     if (this.clockTimer !== null) clearTimeout(this.clockTimer);
     if (this.noticeTimer !== null) clearTimeout(this.noticeTimer);
     if (this.screenSensor) this.screenSensor.offChange(this.screenChanged);

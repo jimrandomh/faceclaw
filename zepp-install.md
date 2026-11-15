@@ -217,10 +217,10 @@ commands, and you do not need to restart it each time you use the remote.
 
 ### Updating an installed watch app
 
-Version **0.1.3 (code 17)** fixes an incorrect “Watch control off” warning on
-Balance when Faceclaw already has watch control enabled. It also keeps local
-list scrolling responsive during phone checks and removes the extra status wait
-after each crown step on the glasses. Install the updated
+Version **0.1.4 (code 18)** adds immediate feedback for recognized gestures and
+shows command progress while waiting for the phone. It includes the earlier
+fixes for an incorrect “Watch control off” warning, local list scrolling during
+phone checks, and the extra status wait after crown steps. Install the updated
 watch package using the same App ID, then leave Faceclaw Remote with the lower
 side button and reopen it. The existing phone APK and input token remain valid.
 
@@ -274,6 +274,20 @@ guarantee that every Android/Zepp version permits localhost HTTP or keeps its
 side service active when locked. Complete this check on your phone before
 treating the setup as ready for everyday use. A successful build or simulator
 session is not a substitute for this check.
+
+## Read command progress
+
+Version 0.1.4 shows the gesture or command as soon as it is recognized, with a
+banner that advances from **Sending** to **Phone received** to **Faceclaw
+accepted**. The phone receipt is best effort, so that stage can be skipped.
+The elapsed time helps distinguish a slow reply from an undetected
+swipe. Phone acceptance does not establish that a glasses frame was displayed.
+
+**Busy · Not sent** means the new gesture was detected but was not sent while
+another request was pending. **Result unknown** means the reply was lost or
+invalid; check the glasses before trying again. A queued crown step that expires
+shows **Turn crown again**. Navigation, watch sleep, or quitting clear feedback
+from the old interaction.
 
 ## Keep the two phone apps running
 

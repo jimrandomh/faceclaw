@@ -17,6 +17,16 @@ const root = path.resolve(__dirname, '..');
   w.page.navigate('status'); await w.reply(); snapshots.push(snapshot('Glasses & phone'));
   w.page.navigate('remote'); w.page.tray = false; w.page.phoneState = null; w.page.linkError = 'Add your input token in Zepp → Faceclaw Remote settings.'; w.page.navigate('details'); snapshots.push(snapshot('Setup needed'));
   w.page.navigate('help'); snapshots.push(snapshot('Controls & exit'));
+  w.page.navigate('remote'); w.page.linkError = ''; w.page.refresh(); await w.reply();
+  w.touch('down', 280, 260); w.touch('up', 170, 260, 120);
+  snapshots.push(snapshot('Swipe detected · Sending'));
+  const progressId = w.requests.at(-1).requestId;
+  w.advance(1000);
+  w.page.onCall({ method: 'FACECLAW_PROGRESS', params: { requestId: progressId, stage: 'phone-received' } });
+  snapshots.push(snapshot('Phone received'));
+  await w.reply({ ok: true }); snapshots.push(snapshot('Faceclaw accepted')); await w.reply();
+  w.page.refresh(); w.page.gesture('swipe-right'); snapshots.push(snapshot('Busy · Not sent')); await w.reply();
+  w.page.gesture('swipe-down'); await w.reject('timeout'); snapshots.push(snapshot('Result unknown')); await w.reply();
   w.page.onDestroy();
   const browser = await chromium.launch({ headless: true });
   try {
@@ -45,6 +55,6 @@ const root = path.resolve(__dirname, '..');
     await tab.screenshot({ path: path.join(root, 'docs/watch-preview.png'), fullPage: true });
     for (let i = 0; i < snapshots.length; i++) await tab.locator('.watch').nth(i).screenshot({ path: path.join(root, 'docs/watch-' + i + '.png') });
     if (overflow.length || clipped.length) throw new Error('Text overflow: ' + overflow.join('; ') + '. Round-screen clipping: ' + clipped.join('; '));
-    console.log('Seven watch layouts checked: no text overflow or circular-screen text clipping.');
+    console.log(snapshots.length + ' watch layouts checked: no text overflow or circular-screen text clipping.');
   } finally { await browser.close(); }
 })().catch(error => { console.error(error); process.exitCode = 1; });

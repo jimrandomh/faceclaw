@@ -16,6 +16,9 @@ function userError(message) {
   const error = new Error(message); error.userVisible = true; return error;
 }
 
+const UNKNOWN_RESULT = 'Result unknown. Check the glasses before trying again.';
+const REJECTED_ERRORS = ['unauthorized', 'forbidden', 'unavailable', 'bad_request', 'locked'];
+
 export function requestBody(operation, token) {
   if (!cleanToken(token)) throw userError('Add your input token in Zepp → Faceclaw Remote settings.');
   const body = { version: 1, token: cleanToken(token) };
@@ -68,21 +71,34 @@ export function normalizeState(value) {
 // unanswered launch/input may have executed and must never be replayed.
 export async function phoneRequest(fetcher, operation, token, options = {}) {
   const body = requestBody(operation, token);
+  const isState = operation.kind === 'state';
   const start = options.setTimeout || setTimeout, stop = options.clearTimeout || clearTimeout;
   let timer;
   try {
     const response = await Promise.race([
       fetcher({ url: ENDPOINT, method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }),
-      new Promise((_, reject) => { timer = start(() => reject(userError(operation.kind === 'state'
+      new Promise((_, reject) => { timer = start(() => reject(userError(isState
         ? 'No phone reply. Open Faceclaw and check Zepp.'
-        : 'Result unknown. Check the glasses before trying again.')), options.timeout || 8000); }),
+        : UNKNOWN_RESULT)), options.timeout || 8000); }),
     ]);
-    if (response.status === 504) throw userError(operation.kind === 'state'
+    if (response.status === 504) throw userError(isState
       ? 'No phone reply. Open Faceclaw and check Zepp.'
-      : 'Result unknown. Check the glasses before trying again.');
+      : UNKNOWN_RESULT);
     let result;
     try { result = typeof response.body === 'string' ? JSON.parse(response.body) : response.body; }
-    catch (_) { throw userError('Unexpected phone reply. Update Faceclaw.'); }
+    catch (_) { throw userError(isState ? 'Unexpected phone reply. Update Faceclaw.' : UNKNOWN_RESULT); }
+    if (!isState) {
+      // A damaged reply or server exception may follow an executed command.
+      // Only a valid success or an explicit, recognized rejection resolves it.
+      const objectReply = result && typeof result === 'object' && !Array.isArray(result);
+      const validStatus = response.status === undefined || Number.isInteger(response.status) && response.status >= 200 && response.status < 600;
+      const successStatus = response.status === undefined || validStatus && response.status < 300;
+      const accepted = objectReply && successStatus && result.ok === true && (result.error === undefined || result.error === null);
+      const rejected = objectReply && validStatus && result.ok === false && REJECTED_ERRORS.indexOf(result.error) >= 0;
+      const httpRejected = objectReply && [401, 403, 404].indexOf(response.status) >= 0 &&
+        (result.ok === undefined || result.ok === false) && result.error !== 'failed' && result.error !== 'timeout';
+      if (!accepted && !rejected && !httpRejected) throw userError(UNKNOWN_RESULT);
+    }
     if (response.status === 401 || response.status === 403) throw userError('Check the input token and its Provide input permission.');
     if (!result || result.ok !== true) {
       if (result && result.error === 'unauthorized') throw userError('Input token expired or revoked. Copy a new token from Faceclaw into Zepp settings.');
@@ -92,10 +108,10 @@ export async function phoneRequest(fetcher, operation, token, options = {}) {
       throw userError('Faceclaw refused the command. Check the phone.');
     }
     if (response.status && (response.status < 200 || response.status >= 300)) throw userError('Faceclaw request failed. Check the phone.');
-    return operation.kind === 'state' ? { ok: true, state: normalizeState(result.state) } : { ok: true, message: title(result.message) || 'Sent to Faceclaw' };
+    return isState ? { ok: true, state: normalizeState(result.state) } : { ok: true, message: title(result.message) || 'Sent to Faceclaw' };
   } catch (error) {
     // Never include transport internals (which may contain the token/body).
     if (error && error.userVisible === true) throw error;
-    throw userError(operation.kind === 'state' ? 'Open Faceclaw on the phone. Check Zepp is connected.' : 'No reply. Result unknown; check the glasses.');
+    throw userError(isState ? 'Open Faceclaw on the phone. Check Zepp is connected.' : 'No reply. Result unknown; check the glasses.');
   } finally { if (timer !== undefined) stop(timer); }
 }

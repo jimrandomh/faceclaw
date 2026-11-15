@@ -2,14 +2,14 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
-import { cleanToken, phoneRequest, TOKEN_KEY } from '../lib/protocol.js';
+import { cleanToken, phoneRequest, requestBody, TOKEN_KEY } from '../lib/protocol.js';
 import { sampleState } from './fixture.mjs';
 
 test('side service keeps authentication on the phone and rejects overlapping commands', async () => {
   const token = 'fc1_' + 'b'.repeat(64), requests = []; let side, finish;
   const code = fs.readFileSync(new URL('../app-side/index.js', import.meta.url), 'utf8').replace(/^import .*;\n/gm, '');
   vm.runInNewContext(code, {
-    cleanToken, phoneRequest, TOKEN_KEY,
+    cleanToken, phoneRequest, requestBody, TOKEN_KEY,
     AppSideService: value => side = value, BaseSideService: value => value,
     settingsLib: { getItem: key => { assert.equal(key, TOKEN_KEY); return '"' + token + '"'; } },
     fetch: request => { requests.push(request); return new Promise(resolve => finish = resolve); },
@@ -30,9 +30,85 @@ test('invalid token stops at the phone settings boundary', async () => {
   let side, fetched = false;
   const code = fs.readFileSync(new URL('../app-side/index.js', import.meta.url), 'utf8').replace(/^import .*;\n/gm, '');
   vm.runInNewContext(code, {
-    cleanToken, phoneRequest, TOKEN_KEY, AppSideService: value => side = value, BaseSideService: value => value,
+    cleanToken, phoneRequest, requestBody, TOKEN_KEY, AppSideService: value => side = value, BaseSideService: value => value,
     settingsLib: { getItem: () => 'not-a-token' }, fetch: () => { fetched = true; },
   });
   const result = await new Promise(resolve => side.onRequest({ method: 'FACECLAW', operation: { kind: 'state' } }, (_, result) => resolve(result)));
   assert.equal(result.ok, false); assert.match(result.error, /input token/); assert.equal(fetched, false);
+});
+
+function progressFixture(options = {}) {
+  const token = 'fc1_' + 'c'.repeat(64), requests = [], events = [];
+  let side;
+  const code = fs.readFileSync(new URL('../app-side/index.js', import.meta.url), 'utf8').replace(/^import .*;\n/gm, '');
+  vm.runInNewContext(code, {
+    cleanToken, phoneRequest, requestBody, TOKEN_KEY,
+    AppSideService: value => side = value, BaseSideService: value => value,
+    settingsLib: { getItem: () => token },
+    fetch: request => {
+      requests.push(request);
+      return options.fetch ? options.fetch(request) : Promise.resolve({ status: 200, body: { ok: true, state: sampleState } });
+    },
+  });
+  side.call = payload => {
+    events.push(JSON.parse(JSON.stringify(payload)));
+    return options.call?.(payload);
+  };
+  const send = (operation, requestId, method = 'FACECLAW') =>
+    new Promise(resolve => side.onRequest({ method, operation, requestId }, (_, result) => resolve(result)));
+  return { token, requests, events, send };
+}
+
+test('command receipt is correlated and sent before HTTP without awaiting progress delivery', async () => {
+  const order = []; let finish;
+  const f = progressFixture({
+    call: () => { order.push('progress'); return new Promise(() => {}); },
+    fetch: () => { order.push('fetch'); return new Promise(resolve => finish = resolve); },
+  });
+  const pending = f.send({ kind: 'gesture', gesture: 'swipe-up' }, 'fc-session-1');
+  assert.deepEqual(order, ['progress', 'fetch']);
+  assert.deepEqual(f.events, [{ method: 'FACECLAW_PROGRESS', params: { requestId: 'fc-session-1', stage: 'phone-received' } }]);
+  assert.equal(JSON.stringify(f.events).includes(f.token), false);
+  assert.equal(JSON.stringify(f.events).includes('swipe-up'), false);
+  finish({ status: 200, body: { ok: true } });
+  assert.equal((await pending).ok, true);
+  assert.equal(f.requests.length, 1);
+});
+
+test('absent or malformed progress IDs preserve command compatibility without emitting progress', async () => {
+  const f = progressFixture();
+  const operation = { kind: 'command', command: 'close-window', windowId: 'notes:2' };
+  for (const id of [undefined, null, '', 1, {}, 'fc-', 'FC-session-1', 'fc-session_1', 'fc-session-1\n', 'fc-' + 'a'.repeat(93)]) {
+    assert.equal((await f.send(operation, id)).ok, true);
+  }
+  assert.deepEqual(f.events, []);
+  assert.equal(f.requests.length, 10);
+  assert.equal((await f.send(operation, 'fc-' + 'a'.repeat(92))).ok, true);
+  assert.equal(f.events.length, 1, 'a valid 95-character ID is accepted');
+});
+
+test('polling, rejected busy requests, and unsupported requests do not emit progress', async () => {
+  let finish;
+  const f = progressFixture({ fetch: () => new Promise(resolve => finish = resolve) });
+  const first = f.send({ kind: 'command', command: 'wake' }, 'fc-session-1');
+  assert.match((await f.send({ kind: 'gesture', gesture: 'click' }, 'fc-session-2')).error, /busy/);
+  assert.equal(f.events.length, 1); assert.equal(f.requests.length, 1);
+  finish({ status: 200, body: { ok: true } }); await first;
+  const poll = f.send({ kind: 'state' }, 'fc-session-3');
+  assert.equal(f.events.length, 1);
+  finish({ status: 200, body: { ok: true, state: sampleState } }); await poll;
+  assert.equal((await f.send({ kind: 'command', command: 'unknown' }, 'fc-session-4')).ok, false);
+  assert.equal((await f.send({ kind: 'command', command: 'launch-app' }, 'fc-session-5')).ok, false);
+  assert.equal((await f.send({ kind: 'gesture', gesture: 'click' }, 'fc-session-6', 'UNKNOWN')).ok, false);
+  assert.equal(f.events.length, 1); assert.equal(f.requests.length, 2);
+});
+
+for (const failure of ['throw', 'reject']) test('progress delivery ' + failure + ' never fails or repeats the command', async () => {
+  const f = progressFixture({ call: () => {
+    if (failure === 'throw') throw new Error('Progress unavailable');
+    return Promise.reject(new Error('Progress unavailable'));
+  } });
+  assert.equal((await f.send({ kind: 'gesture', gesture: 'swipe-left' }, 'fc-session-1')).ok, true);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(f.events.length, 1); assert.equal(f.requests.length, 1);
 });
