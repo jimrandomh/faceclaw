@@ -133,6 +133,7 @@ function loadRemote({ phase = 'disconnected', preview = false, now = 1_800_000_0
       '../ui/shell/shell': { shell },
       '../ui/shell/voice-activity': { voiceActivity: { subscribe() {}, isActive: () => false } },
       '../version': { FACECLAW_VERSION: 'test' },
+      '../remote/protocol': require('../.test-build/app/remote/protocol.js'),
     })[id] ?? {},
   });
   const remote = new WearRemote({

@@ -99,6 +99,10 @@ internal fun GlassesSessionCore.driveSession(): Long {
                 val oldest = inFlightMessages.firstOrNull()
                 val replay = CfwMessageWindow.replayWindow(inFlightMessages, now)
                 if (!replay.isEmpty()) {
+                    if (replay.any { shouldUsePhoneRenderer(it) }) {
+                        enablePhoneRendererLocked()
+                        return 0
+                    }
                     ConnectionCounters.increment("g2.cfw-replay")
                     logLine("CFW recovery: replay " + replay.size
                             + " unresolved message(s) from id=" + replay[0].magic)
@@ -832,6 +836,36 @@ internal fun GlassesSessionCore.enqueueAmbientLightControlLocked(payload: ByteAr
     logLine("queue $label")
 }
 
+internal fun GlassesSessionCore.shouldUsePhoneRenderer(message: OutboundMessage): Boolean =
+    isG2 && !phoneRenderedFrames && message.sid == CfwTransport.SID && message.kind == "resources" &&
+        message.cfwRetryPending && message.cfwRetries >= CfwMessageWindow.MAX_RETRIES &&
+        message.cfwNackAttempts > 1 &&
+        (message.message.firstOrNull()?.toInt() == CFW_MSG_UPLOAD_RESOURCE ||
+            message.message.firstOrNull()?.toInt() == CFW_MSG_CREATE_SURFACE)
+
+/** Keep the healthy link and controls; replace only display commands dependent on the rejected cache. */
+internal fun GlassesSessionCore.enablePhoneRendererLocked() {
+    phoneRenderedFrames = true
+    // The last queued frame may be the current desired frame. Transfer its completion tracking
+    // to the replacement, so recovery reports a real presentation instead of a discarded frame.
+    val latestUpdateId = nextImageUpdateId - 1
+    val latestStats = imageUpdateStats[latestUpdateId]
+    desiredTilesLock.locked {
+        if (latestStats != null && desiredFrameId == 0 && desiredFingerprint == lastEnqueuedFingerprint) {
+            desiredFrameId = latestStats.frameId
+            imageUpdateStats.remove(latestUpdateId)
+        }
+    }
+    clearMessagesOfKindLocked("resources")
+    clearMessagesOfKindLocked("image")
+    resourceCache.reset()
+    for (transport in cfwTransports) transport.reset()
+    displayedFingerprint = ""
+    imageRetryAfterMs = 0
+    logLine("G2 resource cache repeatedly rejected; switching to phone-rendered frames " +
+        "(stereo depth and retained animations disabled)")
+}
+
 internal fun GlassesSessionCore.enqueueDesiredImageLocked() {
     val fingerprint: String
     val graySnapshot: ByteArray?
@@ -867,7 +901,10 @@ internal fun GlassesSessionCore.enqueueDesiredImageLocked() {
     }
     if (customFirmwareDetected && packedFrame.size > 0) {
         val rendered = try {
-            scenePlanner.plan(packedFrame, width, height, draws, scene, nextImageFrameId,
+            if (isG2 && phoneRenderedFrames)
+                scenePlanner.planPixels(packedFrame, width, height, scene, nextImageFrameId,
+                    connectionOptions.INCREMENTAL_FRAMES)
+            else scenePlanner.plan(packedFrame, width, height, draws, scene, nextImageFrameId,
                 connectionOptions.TEXTURE_CACHE_FRAMES, connectionOptions.INCREMENTAL_FRAMES,
                 connectionOptions.MULTI_RECT_FRAMES, ConnectionOptions.MULTI_RECT_MAX_RECTS)
         } catch (e: Exception) {

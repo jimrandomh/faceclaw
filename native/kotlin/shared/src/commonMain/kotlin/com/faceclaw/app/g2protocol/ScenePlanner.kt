@@ -16,6 +16,34 @@ class ScenePlanner(private val cache: ResourceCacheState) {
     private var screenHeight = 0
     private var epoch = -1
     private var root = -1
+    private var pixelOnly = false
+
+    /**
+     * Resource-free G2 recovery path. The phone flattens every shell layer and retained drawing;
+     * both lenses receive the same pixels, without stereo depth or retained animations.
+     */
+    fun planPixels(screen: ByteArray, width: Int, height: Int, scene: ShellScene, firstId: Int, incremental: Boolean = true): Plan {
+        prepareFrame(screen, width, height, true)
+        val flat = scene.flatten(screen, width, height, scene.layers.size)
+        val commands = ArrayList<ByteArray>()
+        // Retire any cached root left by a partially accepted resource frame before drawing.
+        commands.add(DrawProtocol.root(DrawProtocol.SCREEN))
+        commands.addAll(DrawProtocol.messages(pixelCalls(if (incremental) previous else null, flat, width, height, null)))
+        commands.add(byteArrayOf(DrawProtocol.PRESENT.toByte()))
+        previous = flat
+        root = DrawProtocol.SCREEN
+        return Plan(commands, firstId)
+    }
+
+    private fun prepareFrame(screen: ByteArray, width: Int, height: Int, pixelsOnly: Boolean) {
+        require(width in 1..640 && height in 1..480)
+        require(screen.size == ((width + 1) / 2) * height)
+        if (epoch != cache.generation || pixelOnly != pixelsOnly) {
+            previous = null; pixels.clear(); root = -1; epoch = cache.generation
+        }
+        if (width != screenWidth || height != screenHeight) previous = null
+        screenWidth = width; screenHeight = height; pixelOnly = pixelsOnly
+    }
 
     /**
      * When the shell's surfaces and retained drawings don't all fit the resource budget, the frame
@@ -26,11 +54,7 @@ class ScenePlanner(private val cache: ResourceCacheState) {
      */
     @JvmOverloads
     fun plan(screen: ByteArray, width: Int, height: Int, draws: Array<SurfaceCompositor.ScreenDraw>?, scene: ShellScene, firstId: Int, textures: Boolean = true, incremental: Boolean = true, multiRect: Boolean = true, maxRects: Int = 6): Plan {
-        require(width in 1..640 && height in 1..480)
-        if (epoch != cache.generation) { previous = null; pixels.clear(); root = -1; epoch = cache.generation }
-        require(screen.size == ((width + 1) / 2) * height)
-        if (width != screenWidth || height != screenHeight) previous = null
-        screenWidth = width; screenHeight = height
+        prepareFrame(screen, width, height, false)
         val rollback = cache.checkpoint()
         try {
             planScene(screen, width, height, draws, scene, firstId, textures, incremental, multiRect, maxRects)?.let { return it }

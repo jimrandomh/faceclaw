@@ -1,0 +1,7 @@
+node_modules/
+dist/
+build/
+.zeus*
+.package-lock
+.package-manifest-backup
+docs/*.png

@@ -492,6 +492,9 @@ class GlassesSessionCore(
     // cheap safe assumption is an empty cache (glyphs re-upload lazily).
     internal val resourceCache = ResourceCacheState()
     internal val scenePlanner = ScenePlanner(resourceCache)
+    // A rejected resource arena can survive a BLE reconnect. Keep the resource-free renderer
+    // for this communicator's lifetime instead of repeating the same recovery/disconnect loop.
+    internal var phoneRenderedFrames = false
     internal var desiredShellScene: ShellScene = ShellScene.EMPTY
 
     internal val pendingMessages = ArrayDeque<OutboundMessage>()

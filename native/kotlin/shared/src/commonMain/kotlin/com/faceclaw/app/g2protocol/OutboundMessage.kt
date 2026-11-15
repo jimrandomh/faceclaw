@@ -22,6 +22,8 @@ class OutboundMessage(
     @JvmField var cfwRequiredLenses = CfwTransport.BOTH
     @JvmField var cfwRetries = 0
     @JvmField var cfwRetryPending = false
+    /** Attempts explicitly rejected by a lens, excluding duplicate NACKs and ordered-tail replays. */
+    @JvmField var cfwNackAttempts = 0
     @JvmField var imageUpdateId = 0
     @JvmField var imageMessageNumber = 0
     @JvmField var imageMessageCount = 0
@@ -44,6 +46,7 @@ class OutboundMessage(
         )
             return false
         if (ack.nack) {
+            if (!cfwRetryPending) cfwNackAttempts++
             cfwRetryPending = true
             return false
         }

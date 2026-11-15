@@ -29,3 +29,9 @@ add_subdirectory(${LLAMA_CPP_SOURCE_DIR} llama.cpp-build EXCLUDE_FROM_ALL)
 
 add_library(faceclaw_llama SHARED faceclaw_llama.cpp)
 target_link_libraries(faceclaw_llama PRIVATE llama android log)
+
+# NDK r27 still defaults to 4 KB ELF alignment. Keep this JNI library loadable
+# on both 4 KB and 16 KB Android devices, matching the other packaged libraries.
+target_link_options(faceclaw_llama PRIVATE
+    "-Wl,-z,max-page-size=16384"
+    "-Wl,-z,common-page-size=16384")

@@ -508,6 +508,10 @@ class DashboardController {
       text: (text, submit) => { if (!shell.isScreenOn()) shell.wake("window"); shell.sendTextToForegroundWindow(text, { submit }); this.requestShellRender(); },
       assistantAvailable: () => shell.isAssistantAvailable(),
       assistant: text => shell.sendToAssistant(text),
+      watchState: () => this.wearRemote?.buildState(),
+      watchControlEnabled: () => this.wearRemote?.controlEnabled() ?? false,
+      watchCommand: request => this.wearRemote?.executeCommand(request) ??
+        Promise.resolve({ ok: false, message: "Open Faceclaw on the phone first." }),
     });
     this.wearRemote = new WearRemote({
       apps: launchableApps,

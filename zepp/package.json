@@ -1,0 +1,24 @@
+{
+  "name": "faceclaw-zepp",
+  "version": "0.1.3",
+  "private": true,
+  "type": "module",
+  "description": "Faceclaw remote for Amazfit Balance",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "build": "node tools/package.cjs build",
+    "preview": "node tools/package.cjs preview",
+    "bridge": "node tools/package.cjs bridge",
+    "login": "node tools/zeus.cjs login",
+    "render": "node tools/render-preview.cjs"
+  },
+  "devDependencies": {
+    "@zeppos/zeus-cli": "1.9.3"
+  },
+  "dependencies": {
+    "@zeppos/zml": "0.0.43"
+  }
+}

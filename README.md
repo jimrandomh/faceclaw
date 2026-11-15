@@ -166,6 +166,14 @@ adb, and needs no Play Store. The phone side requires Google Play services.
 The iOS app has the same remote for Apple Watch, with the same pad and screens;
 see [apple-watch/README.md](apple-watch/README.md).
 
+The `zepp/` directory adds **Faceclaw Remote for the original Amazfit Balance**.
+It uses the Android Zepp app to reach Faceclaw's token-protected local input
+server, with Remote, Apps and Status screens. See [Zepp installation](zepp-install.md)
+for the custom Android build, developer registration, watch installation and
+phone-lock checks. Existing G2 Connect users can reuse their registered App ID
+and replace the previous watch app. It controls apps running in Faceclaw and
+needs no separate relay APK or persistent computer connection.
+
 ## Connecting an external agent (OpenClaw)
 
 Instead of calling an LLM API directly from the phone, the voice assistant

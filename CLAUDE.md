@@ -19,6 +19,18 @@ App_Resources/iOS/src/FaceclawWatchBridge.m, app/native/wear-bridge.ios.ts and t
 same app/g2/wear-remote.ts. It only links to a phone app that embeds it
 (FACECLAW_EMBED_WATCH=1); see apple-watch/README.md.
 
+zepp/ is the Zepp OS remote for the original Amazfit Balance (480x480). Its
+app-side runs inside Zepp on Android and sends authenticated HTTP requests to
+Faceclaw's existing local input listener at 127.0.0.1:8791/v1/request. It reuses
+the app/window controls in app/g2/wear-remote.ts. See zepp-install.md for setup;
+do not commit personal Zepp App IDs or input tokens. The Zepp side-service fetch
+API takes one options object and may return response.body as a string or object.
+zepp/tools/package.cjs runs Zeus in a temporary project with the personal App ID;
+it never rewrites the source manifest and copies only dist/ artifacts back.
+On Balance, the native Page wrapper owns `this.state` and ignores replacement.
+Keep app data such as the phone snapshot in `this.phoneState`; do not replace
+ZML’s framework state. The watch fixture models this native behavior.
+
 `build.sh`, `build_wear.sh` and `build_apple_watch.sh` build the Android, Wear OS
 and Apple Watch apps respectively.
 `build_and_run.sh` builds the Android app then also installs it on a phone

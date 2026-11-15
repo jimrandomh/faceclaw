@@ -372,6 +372,56 @@ class DisplayListTest {
             assertContentEquals(BmpUtil.pack4bppFromGray8(fits.preview(gray, 640, 480, glasses.right), 640, 480), glasses.composition)
         }
     }
+    @Test fun phoneRenderedFramesComposeMenusAndLayersAndRepaintAfterRecovery() {
+        val cache = ResourceCacheState(); val planner = ScenePlanner(cache)
+        val lenses = listOf(Glasses(), Glasses(true))
+        val app = ByteArray(640 * 480 / 2) { 0x99.toByte() }
+        fun selected(x: Int) = MenuSelection(x,8,8,4,1,4,9,6,hex("00ff0000000000000000000000000000"))
+        val scene = ShellScene(listOf(ShellScene.Layer(1,-1,20,3,3,128,hex("fff0fff0fff0"),listOf(selected(30)),4)),listOf(selected(10)),8)
+        val cached = planner.plan(app,640,480,null,scene,1)
+        for (glasses in lenses) { glasses.apply(cached.commands); glasses.screen.fill(0) }
+        val first = planner.planPixels(app,640,480,scene,1)
+        assertTrue(first.commands.all { it[0].toInt() in listOf(26,27,28) })
+        assertContentEquals(DrawProtocol.root(DrawProtocol.SCREEN),first.commands.first())
+        for (glasses in lenses) {
+            glasses.apply(first.commands)
+            val pixels = DisplayListRenderer.Target(glasses.composition,640,480)
+            assertEquals(15,pixels.get(0,20)) // clipped white layer, with its stereo depth dropped
+            assertEquals(8,pixels.get(12,8)) // selected text is included before the dimming layer
+            assertEquals(15,pixels.get(32,8)) // retained drawing above the layer remains bright
+            assertEquals(0x54,glasses.composition[100].toInt() and 255)
+            assertContentEquals(scene.flatten(app,640,480,scene.layers.size),glasses.composition)
+        }
+        val movedScene = ShellScene(emptyList(),listOf(selected(50)))
+        val moved = planner.planPixels(app,640,480,movedScene,1)
+        for (glasses in lenses) {
+            glasses.apply(moved.commands)
+            val pixels = DisplayListRenderer.Target(glasses.composition,640,480)
+            assertEquals(9,pixels.get(12,8)); assertEquals(9,pixels.get(0,20))
+            assertEquals(15,pixels.get(52,8))
+        }
+        val newer = app.copyOf().also { it[0] = 0x22 }
+        val closed = planner.planPixels(newer,640,480,ShellScene.EMPTY,1)
+        for (glasses in lenses) { glasses.apply(closed.commands); assertContentEquals(newer,glasses.composition) }
+        assertFalse(planner.planPixels(newer,640,480,ShellScene.EMPTY,1).commands.any { it[0].toInt() == 26 })
+        cache.reset()
+        val reconnect = planner.planPixels(newer,640,480,ShellScene.EMPTY,1)
+        for (glasses in lenses) {
+            glasses.screen.fill(0); glasses.apply(reconnect.commands)
+            assertContentEquals(newer,glasses.composition)
+        }
+    }
+
+    @Test fun phoneRenderedNoisyFramesFitTheTransportWithoutResources() {
+        val planner = ScenePlanner(ResourceCacheState()); val glasses = Glasses()
+        val app = Random(71).nextBytes(640 * 480 / 2)
+        val plan = planner.planPixels(app,640,480,ShellScene.EMPTY,1)
+        assertTrue(plan.commands.all { it.size <= 65535 && it[0].toInt() in listOf(26,27,28) })
+        glasses.apply(plan.commands)
+        assertTrue(glasses.resources.isEmpty())
+        assertContentEquals(app,glasses.screen); assertContentEquals(app,glasses.composition)
+    }
+
     @Test fun noisyFramesRemainBoundedAndResourceBudgetIs192KiB() {
         val cache=ResourceCacheState();val planner=ScenePlanner(cache);val glasses=Glasses()
         val app=ByteArray(640*480/2){(it*37).toByte()}

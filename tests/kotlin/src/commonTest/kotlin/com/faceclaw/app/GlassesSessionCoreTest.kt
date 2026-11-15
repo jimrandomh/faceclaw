@@ -70,6 +70,8 @@ private class FakeLink(private val platform: ProtocolPlatform) : SessionLink {
      * arms ("" is stock firmware, which omits the field), or null for an ack without firmware info.
      */
     @Volatile var firmwareExtension: String? = null
+    /** Simulate one lens explicitly refusing a resource allocation, while all other traffic works. */
+    @Volatile var rejectedCfwMode = -1
     /** The GlassesCaseInfo body case-info queries are answered with; null answers without one. */
     @Volatile var caseInfo: ByteArray? = null
     /** Settings READ acks report the glasses charging in their case (80%). */
@@ -115,7 +117,9 @@ private class FakeLink(private val platform: ProtocolPlatform) : SessionLink {
         lock.withLock { writesList.add(write) }
         if (inFlight != null && inFlight.kind !in muted) {
             if (sid == CfwTransport.SID) {
-                for (lens in 1..2) core.onNotification(address, BleProtocol.NOTIFY_CHAR_UUID, cfwAck(magic, lens, inFlight.message.size, inFlight.cfwChecksum))
+                for (lens in 1..2) core.onNotification(address, BleProtocol.NOTIFY_CHAR_UUID,
+                    cfwAck(magic, lens, inFlight.message.size, inFlight.cfwChecksum,
+                        lens == 2 && inFlight.message.firstOrNull()?.toInt() == rejectedCfwMode))
             } else {
                 core.onNotification(address, BleProtocol.NOTIFY_CHAR_UUID, ackFrame(sid, magic, inFlight.kind))
             }
@@ -173,7 +177,7 @@ private fun caseInfoBody(soc: Int, charge: Int = 0, lid: Int = 0, inCase: Int = 
         .filter { it.value != 0 }
         .fold(ByteArray(0)) { acc, field -> acc + BleProtocol.encodeVarintField(field.index + 1, field.value) }
 
-private fun cfwAck(streamId: Int, lens: Int, size: Int, checksum: Int): ByteArray {
+private fun cfwAck(streamId: Int, lens: Int, size: Int, checksum: Int, nack: Boolean = false): ByteArray {
     val packet = ByteArray(19)
     packet[0] = 0xaa.toByte()
     packet[1] = 0x12
@@ -181,7 +185,7 @@ private fun cfwAck(streamId: Int, lens: Int, size: Int, checksum: Int): ByteArra
     packet[4] = 1
     packet[5] = 1
     packet[6] = CfwTransport.SID.toByte()
-    packet[8] = 1
+    packet[8] = if (nack) 3 else 1
     packet[9] = streamId.toByte()
     packet[12] = lens.toByte()
     packet[13] = size.toByte()
@@ -507,6 +511,109 @@ class GlassesSessionCoreTest {
         assertEquals(1, message.cfwRetries)
         assertContentEquals(first.message, second.message)
         s.core.disconnect()
+    }
+
+    @Test
+    fun repeatedResourceNacksSwitchToPhoneRenderingWithoutDisconnecting() {
+        for (rejectedMode in listOf(CFW_MSG_UPLOAD_RESOURCE, CFW_MSG_CREATE_SURFACE)) {
+            val s = Session()
+            s.link.firmwareExtension = "Faceclaw/38"
+            s.link.rejectedCfwMode = rejectedMode
+            s.core.configureCompositorScreen(64,32)
+            s.core.configureSurface("s",0,0,64,32,0,SurfaceCompositor.TRANSPARENCY_OPAQUE)
+            if (rejectedMode == CFW_MSG_CREATE_SURFACE) {
+                val layer = listOf(1,1,10,10,2,2,128,0,4).fold(ByteArray(0)) { bytes, value -> bytes + DrawProtocol.word(value) }
+                s.core.submitShellScene(ArrayByteReader(layer + byteArrayOf(-1,-1,-1,-1) + DrawProtocol.word(0)),0,0)
+            }
+            s.submitFrame(3,0x70,1)
+            try {
+                s.startAndAwaitLayout()
+                assertTrue(waitUntil(5_000) { s.displayedMatchesDesired() && s.core.monitor.withLock { s.core.phoneRenderedFrames } },s.host.logs().takeLast(30).toString())
+                assertEquals(CfwMessageWindow.MAX_RETRIES + 1,s.link.writes.count { it.message?.firstOrNull()?.toInt() == rejectedMode })
+                assertTrue(s.link.disconnected.isEmpty())
+                assertEquals(2,s.link.connects)
+                assertTrue(s.listener.finished.contains("1:sent"),s.listener.finished.toString())
+                assertFalse(s.listener.finished.any { it.startsWith("1:discarded") })
+                val rejectedIndex = s.link.writes.indexOfLast { it.message?.firstOrNull()?.toInt() == rejectedMode }
+                val recovered = s.link.writes.drop(rejectedIndex + 1).mapNotNull { it.message }
+                assertTrue(recovered.any { it.contentEquals(DrawProtocol.root(DrawProtocol.SCREEN)) })
+                assertTrue(recovered.any { it.firstOrNull()?.toInt() == 26 })
+                assertFalse(recovered.any { it.firstOrNull()?.toInt() in listOf(21,22,29) })
+                s.submitFrame(5,0x30,2)
+                assertTrue(waitUntil(5_000) { s.displayedMatchesDesired() && s.listener.finished.contains("2:sent") })
+                assertEquals(1,s.host.logs().count { it.contains("switching to phone-rendered frames") })
+                // Reconnection keeps the fallback but clears its pixel base, even for the same scene.
+                val beforeReconnect = s.link.writes.size
+                s.core.handleTransportFailure("test drop")
+                s.platform.offsetMs += 10_000
+                s.core.interruptibleSleep.interrupt()
+                assertTrue(waitUntil(5_000) { s.layoutCreated() && s.displayedMatchesDesired() },s.host.logs().takeLast(20).toString())
+                val afterReconnect = s.link.writes.drop(beforeReconnect).mapNotNull { it.message }
+                assertTrue(afterReconnect.any { it.firstOrNull()?.toInt() == 26 })
+                assertFalse(afterReconnect.any { it.firstOrNull()?.toInt() in listOf(21,22,29) })
+            } finally { s.core.close() }
+        }
+    }
+
+    @Test
+    fun resourceFallbackRequiresRepeatedDirectNacksAndDoesNotApplyToOtherGlasses() {
+        val core = Session().core
+        fun resource(mode: Int = 21, kind: String = "resources") =
+            OutboundMessage(kind,"allocation",CfwTransport.SID,0,100,byteArrayOf(mode.toByte()),3000,0,true)
+        fun nack(message: OutboundMessage, lens: Int = 2) =
+            message.acceptCfwAck(CfwTransport.parseAck(cfwAck(message.magic,lens,0,0,true)))
+        val upload = resource().also { it.cfwRetries = CfwMessageWindow.MAX_RETRIES }
+        assertFalse(core.shouldUsePhoneRenderer(upload)) // only timeouts/ordered-tail replay
+        nack(upload); nack(upload); nack(upload,1)
+        assertEquals(1,upload.cfwNackAttempts) // redundant lens records are still one attempt
+        assertFalse(core.shouldUsePhoneRenderer(upload))
+        upload.prepareCfwReplay(101)
+        assertFalse(core.shouldUsePhoneRenderer(upload))
+        nack(upload)
+        assertEquals(2,upload.cfwNackAttempts)
+        assertTrue(core.shouldUsePhoneRenderer(upload))
+        for (type in listOf(GlassesType.G1,GlassesType.RAYNEO_IO)) {
+            core.glassesType = type
+            assertFalse(core.shouldUsePhoneRenderer(upload))
+        }
+        core.glassesType = GlassesType.G2
+        for (other in listOf(resource(26),resource(21,"brightness-output"))) {
+            other.cfwRetries = 3; other.cfwNackAttempts = 4; other.cfwRetryPending = true
+            assertFalse(core.shouldUsePhoneRenderer(other))
+        }
+        core.phoneRenderedFrames = true
+        assertFalse(core.shouldUsePhoneRenderer(upload))
+        core.close()
+    }
+
+    @Test
+    fun fallbackPreservesControlsAndIgnoresLateDiscardedDisplayAcks() {
+        val s = Session(); var controlAcked = false
+        val control = s.core.messageBuilder.customMessage("als-control",byteArrayOf(16,0),"light query",0,true)
+        val queuedControl = s.core.messageBuilder.customMessage("wake-lease-control",byteArrayOf(12,1),"wake",0,true)
+        val resource = s.core.messageBuilder.customMessage("resources",byteArrayOf(21,0,0),"resource",0,true)
+        val present = s.core.messageBuilder.customMessage("image",byteArrayOf(28),"present",0,true)
+        control.onAck = MessageCallback { controlAcked = true }
+        s.core.monitor.withLock {
+            s.core.inFlightMessages.addLast(resource)
+            s.core.inFlightMessages.addLast(control)
+            s.core.pendingMessages.addLast(present)
+            s.core.pendingMessages.addLast(queuedControl)
+            s.core.enablePhoneRendererLocked()
+            assertEquals(listOf(control),s.core.inFlightMessages.toList())
+            assertEquals(listOf(queuedControl),s.core.pendingMessages.toList())
+            assertNotNull(s.core.magicPool.getReleaseRecord(resource.sid,resource.magic))
+            assertNotNull(s.core.magicPool.getReleaseRecord(present.sid,present.magic))
+        }
+        for (message in listOf(resource,present)) for (lens in 1..2)
+            s.core.onNotification(LEFT,BleProtocol.NOTIFY_CHAR_UUID,cfwAck(message.magic,lens,message.message.size,message.cfwChecksum))
+        assertFalse(controlAcked)
+        for (lens in 1..2)
+            s.core.onNotification(LEFT,BleProtocol.NOTIFY_CHAR_UUID,cfwAck(control.magic,lens,control.message.size,control.cfwChecksum))
+        assertTrue(controlAcked)
+        assertTrue(s.core.monitor.withLock { s.core.inFlightMessages.isEmpty() && s.core.pendingMessages.contains(queuedControl) })
+        assertTrue(s.link.disconnected.isEmpty())
+        s.core.close()
     }
 
     @Test

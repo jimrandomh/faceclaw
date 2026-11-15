@@ -44,6 +44,7 @@ import {
 import { shell, type AssistantActivityEvent } from "../ui/shell/shell";
 import { voiceActivity } from "../ui/shell/voice-activity";
 import { FACECLAW_VERSION } from "../version";
+import { WATCH_COMMANDS, type WatchCommandRequest, type WatchCommandReply } from "../remote/protocol";
 
 /** Protocol revision carried in the state item; bump on incompatible changes. */
 export const WEAR_PROTOCOL_VERSION = 1;
@@ -81,19 +82,7 @@ const INPUT_KINDS: readonly WearRemoteInputKind[] = [
   "swipe-down",
 ];
 
-const COMMANDS = [
-  "launch-app",
-  "focus-window",
-  "close-window",
-  "sidebar",
-  "wake",
-  "sleep",
-  "lock",
-  "unlock",
-  "connect",
-  "disconnect",
-  "close-assistant",
-] as const;
+const COMMANDS = WATCH_COMMANDS;
 type WearCommand = (typeof COMMANDS)[number];
 
 const MAX_SCROLL_STEPS = 12;
@@ -278,7 +267,8 @@ export class WearRemote {
     if (phase === "connected" || phase === "charging") this.pollWatchBattery(true);
   }
 
-  private buildState(): Record<string, unknown> {
+  /** Snapshot shared with the Zepp companion; independent of the Wear OS transport. */
+  buildState(): Record<string, unknown> {
     const state = this.host.getState();
     const battery = shell.getBatteryLevels();
     const foregroundId = shell.foregroundWindow()?.windowId ?? null;
@@ -319,6 +309,31 @@ export class WearRemote {
       assistantAvailable: shell.isAssistantAvailable(),
     };
   }
+
+  /** Token-authenticated transports use the same validation and lock rules as Wear OS. */
+  async executeCommand(payload: WatchCommandRequest): Promise<WatchCommandReply> {
+    if (!watchRemoteEnabledSetting.get()) {
+      return { ok: false, message: "Watch control is turned off in Faceclaw's Settings > Watch." };
+    }
+    return new Promise(resolve => {
+      let acknowledged = false;
+      const finish = (ok: boolean, message = "") => {
+        if (acknowledged) return;
+        acknowledged = true;
+        resolve({ ok, message });
+      };
+      // Connect/disconnect acknowledge immediately, before their asynchronous BLE work.
+      // Return that same acknowledgement to HTTP without blocking the serial request drain.
+      void this.handleCommand(payload, finish).then(() => {
+        finish(false, "Command did not complete.");
+      }).catch(error => {
+        this.host.appendLog(`watch: command failed: ${formatError(error)}`);
+        finish(false, "Faceclaw could not complete the command.");
+      });
+    });
+  }
+
+  controlEnabled(): boolean { return watchRemoteEnabledSetting.get(); }
 
   /** Launchable apps, matching the launcher grid and the apps.launch tool. */
   private listApps(): Array<{ appId: string; title: string }> {

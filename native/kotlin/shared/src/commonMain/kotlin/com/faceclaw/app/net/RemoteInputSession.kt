@@ -49,9 +49,9 @@ data class InterfaceAddress(
 
 /**
  * Explicit-address, bounded local input port shared by Android (java.net) and iOS (POSIX).
- * Exactly one request is in flight: a client sends one newline-terminated UTF-8 frame of at most
- * 64 KiB, the session publishes it as a pending JSON request, notifies the app through
- * [dispatch] (which must run the callback on the app's UI thread, outside the lock), and blocks
+ * Exactly one request is in flight: a client sends a newline-terminated UTF-8 frame or an HTTP
+ * POST /v1/request with a bounded JSON body. Both publish the same request and notify the app through
+ * [dispatch] (which must run the callback on the app's UI thread, outside the lock). The session blocks
  * the serving thread until [complete] supplies the reply or the request deadline passes.
  */
 class RemoteInputSession(
@@ -64,6 +64,7 @@ class RemoteInputSession(
     private val readTimeoutMs: Long = READ_TIMEOUT_MS,
 ) {
     private val condition = platform.createCondition()
+    private val readClock = platform::elapsedRealtimeMs
     private var server: RemoteInputListener? = null
     private var client: RemoteInputConnection? = null
     private var pending: String? = null
@@ -150,30 +151,35 @@ class RemoteInputSession(
                     if (server !== listener) return
                     client = connection
                 }
-                val text = readFrame(connection) ?: continue
+                val request = readRequest(connection) ?: continue
                 val id = condition.withLock {
                     if (server !== listener) return
                     requestId = ++nextId
                     deadline = wallClock() + requestTimeoutMs
                     reply = null
-                    pending = Json.write(linkedMapOf("id" to requestId, "expiresAt" to deadline, "body" to text))
+                    pending = Json.write(linkedMapOf("id" to requestId, "expiresAt" to deadline, "body" to request.body))
                     requestId
                 }
                 notifyRequestReady(id)
-                val response: String = condition.withLock {
+                val response = condition.withLock {
                     if (server !== listener) return
                     while (reply == null && requestId == id && server === listener && wallClock() < deadline) {
                         condition.awaitMs(maxOf(1L, deadline - wallClock()))
                     }
-                    val result = reply ?: TIMEOUT_RESPONSE
-                    if (server === listener) {
-                        pending = null
-                        reply = null
-                        requestId = 0
-                    }
+                    if (server !== listener || requestId != id) return
+                    val result = WireResponse(reply ?: TIMEOUT_RESPONSE, reply == null)
+                    pending = null
+                    reply = null
+                    requestId = 0
                     result
                 }
-                connection.write((response + "\n").encodeToByteArray())
+                if (request.http) {
+                    writeHttp(connection, if (response.timedOut) 504 else 200, response.body)
+                } else {
+                    connection.write((response.body + "\n").encodeToByteArray())
+                }
+            } catch (error: HttpError) {
+                try { writeHttp(connection, error.status, error.body) } catch (ignored: Exception) {}
             } catch (ignored: Exception) {
                 // Never log request bodies: they contain credentials and possibly private text.
             } finally {
@@ -183,28 +189,171 @@ class RemoteInputSession(
         }
     }
 
-    /** One newline-terminated frame, or null when the client hung up, stalled or overflowed. */
-    private fun readFrame(connection: RemoteInputConnection): String? {
-        val readDeadline = wallClock() + readTimeoutMs
-        val body = ByteSink()
+    private data class WireRequest(val body: String, val http: Boolean)
+    private data class WireResponse(val body: String, val timedOut: Boolean)
+
+    private class HttpError(val status: Int, code: String, message: String) : Exception() {
+        val body = Json.write(linkedMapOf("ok" to false, "error" to code, "message" to message))
+    }
+
+    /** Recognize an HTTP request target; existing JSON-line clients keep their exact framing. */
+    private fun readRequest(connection: RemoteInputConnection): WireRequest? {
+        val readDeadline = readClock() + readTimeoutMs
+        val first = ByteSink()
+        var http = false
         while (true) {
-            val remaining = readDeadline - wallClock()
-            if (remaining <= 0) return null
+            val remaining = readDeadline - readClock()
+            if (remaining <= 0) {
+                if (http) throw incompleteHttp(readDeadline)
+                return null
+            }
             val b = connection.readByte(remaining)
-            if (b == -1) return null
+            if (readClock() >= readDeadline) {
+                if (http) throw incompleteHttp(readDeadline)
+                return null
+            }
+            if (b == -1) {
+                if (http) throw incompleteHttp(readDeadline)
+                return null
+            }
+            // An HTTP origin-form target starts with "/" (or "*" for OPTIONS). Requiring
+            // that target avoids treating an incomplete legacy frame such as "no newline"
+            // as HTTP. Detect before LF so the smaller header limit bounds the request line.
+            if (!http && (b == '/'.code || b == '*'.code) && first.size() in 2..33) {
+                val prefix = first.toByteArray()
+                http = prefix.last() == ' '.code.toByte() &&
+                    prefix.dropLast(1).all { isHttpToken(it.toInt() and 255) }
+            }
             if (b == '\n'.code) break
-            if (body.size() >= MAX_FRAME_BYTES) return null
-            body.write(b)
+            if (first.size() >= if (http) MAX_HTTP_HEADER_BYTES - 1 else MAX_FRAME_BYTES) {
+                if (http) throw HttpError(431, "headers_too_large", "Request headers are too large.")
+                return null
+            }
+            first.write(b)
         }
-        return try {
-            body.toByteArray().decodeToString(throwOnInvalidSequence = true)
-        } catch (e: Exception) {
-            null
+        val bytes = first.toByteArray()
+        if (!http) {
+            return try { WireRequest(bytes.decodeToString(throwOnInvalidSequence = true), false) }
+            catch (ignored: Exception) { null }
         }
+        if (bytes.isEmpty() || bytes.last() != '\r'.code.toByte() ||
+            bytes.dropLast(1).any { it.toInt() !in 32..126 }) {
+            throw HttpError(400, "invalid_request", "Use an HTTP request line ending in CRLF.")
+        }
+        return readHttp(connection, bytes.decodeToString().dropLast(1), bytes.size + 1, readDeadline)
+    }
+
+    private fun incompleteHttp(readDeadline: Long): HttpError =
+        if (readClock() >= readDeadline) HttpError(408, "read_timeout", "Request was not received in time.")
+        else HttpError(400, "incomplete_request", "Request ended before its declared length.")
+
+    private fun readHttp(connection: RemoteInputConnection, requestLine: String, firstBytes: Int, readDeadline: Long): WireRequest {
+        val parts = requestLine.split(' ')
+        if (parts.size != 3 || parts[0].isEmpty() || !parts[0].all { isHttpToken(it.code) }) {
+            throw HttpError(400, "invalid_request", "Invalid HTTP request line.")
+        }
+        if (parts[2] != "HTTP/1.1" && parts[2] != "HTTP/1.0") {
+            throw HttpError(505, "unsupported_version", "Use HTTP/1.1 or HTTP/1.0.")
+        }
+        if (parts[0] != "POST") throw HttpError(405, "method_not_allowed", "Use POST /v1/request.")
+        if (parts[1] != "/v1/request") throw HttpError(404, "not_found", "Unknown input endpoint.")
+
+        var headerBytes = firstBytes
+        fun nextByte(): Int {
+            val remaining = readDeadline - readClock()
+            if (remaining <= 0) throw incompleteHttp(readDeadline)
+            val value = connection.readByte(remaining)
+            if (readClock() >= readDeadline) throw incompleteHttp(readDeadline)
+            if (value == -1) throw incompleteHttp(readDeadline)
+            return value
+        }
+        fun headerByte(): Int {
+            if (++headerBytes > MAX_HTTP_HEADER_BYTES) {
+                throw HttpError(431, "headers_too_large", "Request headers are too large.")
+            }
+            return nextByte()
+        }
+        fun headerLine(): String = buildString {
+            while (true) {
+                val value = headerByte()
+                if (value == '\r'.code) {
+                    if (headerByte() != '\n'.code) throw HttpError(400, "invalid_headers", "Headers must end in CRLF.")
+                    break
+                }
+                if (value != '\t'.code && value !in 32..126) {
+                    throw HttpError(400, "invalid_headers", "Invalid header character.")
+                }
+                append(value.toChar())
+            }
+        }
+        val headers = mutableMapOf<String, String>()
+        while (true) {
+            val line = headerLine()
+            if (line.isEmpty()) break
+            if (headers.size >= MAX_HTTP_HEADERS) throw HttpError(431, "headers_too_large", "Too many request headers.")
+            val colon = line.indexOf(':')
+            if (colon <= 0 || !line.take(colon).all { isHttpToken(it.code) }) {
+                throw HttpError(400, "invalid_headers", "Invalid header name or folded header.")
+            }
+            val name = line.take(colon).lowercase()
+            if (headers.containsKey(name)) throw HttpError(400, "duplicate_header", "Duplicate headers are not supported.")
+            headers[name] = line.substring(colon + 1).trim(' ', '\t')
+        }
+        // Native phone clients do not send browser-origin headers. Reject even Origin:null;
+        // this control endpoint never grants CORS access or supports browser preflight.
+        if (headers.containsKey("origin") || headers.keys.any { it.startsWith("sec-fetch-") }) {
+            throw HttpError(403, "browser_not_allowed", "Browser requests are not allowed.")
+        }
+        if (headers.containsKey("transfer-encoding") || headers.containsKey("trailer") || headers.containsKey("upgrade")) {
+            throw HttpError(400, "unsupported_framing", "Use one Content-Length body without transfer encoding or upgrades.")
+        }
+        if (headers.containsKey("expect")) throw HttpError(417, "expectation_failed", "Expect headers are not supported.")
+        if (parts[2] == "HTTP/1.1" && headers["host"].isNullOrEmpty()) {
+            throw HttpError(400, "missing_host", "HTTP/1.1 requires a Host header.")
+        }
+        if (headers.containsKey("content-encoding") || !jsonContentType.matches(headers["content-type"]?.lowercase() ?: "")) {
+            throw HttpError(415, "unsupported_media_type", "Send uncompressed application/json in UTF-8.")
+        }
+        val sizeText = headers["content-length"] ?: throw HttpError(411, "length_required", "Content-Length is required.")
+        if (sizeText.isEmpty() || !sizeText.all { it in '0'..'9' }) {
+            throw HttpError(400, "invalid_length", "Content-Length must be a positive decimal byte count.")
+        }
+        val size = sizeText.toLongOrNull()
+        if (size == null || size > MAX_FRAME_BYTES) throw HttpError(413, "body_too_large", "Request body exceeds 64 KiB.")
+        if (size == 0L) throw HttpError(400, "empty_body", "A JSON request body is required.")
+        val body = ByteArray(size.toInt()) { nextByte().toByte() }
+        val text = try { body.decodeToString(throwOnInvalidSequence = true) }
+            catch (ignored: Exception) { throw HttpError(400, "invalid_encoding", "Request body must be valid UTF-8.") }
+        return WireRequest(text, true)
+    }
+
+    private fun writeHttp(connection: RemoteInputConnection, status: Int, body: String) {
+        val bytes = body.encodeToByteArray()
+        val phrase = when (status) {
+            200 -> "OK"; 400 -> "Bad Request"; 403 -> "Forbidden"; 404 -> "Not Found"
+            405 -> "Method Not Allowed"; 408 -> "Request Timeout"; 411 -> "Length Required"
+            413 -> "Content Too Large"; 415 -> "Unsupported Media Type"; 417 -> "Expectation Failed"
+            431 -> "Request Header Fields Too Large"; 504 -> "Gateway Timeout"; 505 -> "HTTP Version Not Supported"
+            else -> "Error"
+        }
+        val headers = "HTTP/1.1 $status $phrase\r\n" +
+            "Content-Type: application/json; charset=utf-8\r\n" +
+            "Content-Length: ${bytes.size}\r\n" +
+            "Connection: close\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\n" +
+            (if (status == 405) "Allow: POST\r\n" else "") + "\r\n"
+        connection.write(headers.encodeToByteArray() + bytes)
     }
 
     companion object {
         const val MAX_FRAME_BYTES = 65536
+        const val MAX_HTTP_HEADER_BYTES = 8192
+        const val MAX_HTTP_HEADERS = 64
+
+        private fun isHttpToken(value: Int): Boolean =
+            value in '0'.code..'9'.code || value in 'A'.code..'Z'.code || value in 'a'.code..'z'.code ||
+                value.toChar() in "!#$%&'*+-.^_`|~"
+
+        private val jsonContentType = Regex("application/json(?:\\s*;\\s*charset\\s*=\\s*(?:utf-8|\"utf-8\"))?")
         const val REQUEST_TIMEOUT_MS = 5000L
         const val READ_TIMEOUT_MS = 5000L
 

@@ -1,0 +1,62 @@
+{
+  "configVersion": "v3",
+  "app": {
+    "appId": 99999999,
+    "appName": "Faceclaw Remote",
+    "appType": "app",
+    "version": {
+      "code": 17,
+      "name": "0.1.3"
+    },
+    "icon": "icon.png",
+    "vender": "Faceclaw contributors",
+    "description": "Faceclaw touchpad and app launcher for Amazfit Balance."
+  },
+  "permissions": [],
+  "runtime": {
+    "apiVersion": {
+      "compatible": "3.0",
+      "target": "3.0",
+      "minVersion": "3.0"
+    }
+  },
+  "targets": {
+    "balance": {
+      "module": {
+        "page": {
+          "pages": [
+            "page/index"
+          ]
+        },
+        "app-side": {
+          "path": "app-side/index"
+        },
+        "setting": {
+          "path": "setting/index"
+        }
+      },
+      "platforms": [
+        {
+          "name": "Amazfit Balance",
+          "deviceSource": 8519936
+        },
+        {
+          "name": "Amazfit Balance",
+          "deviceSource": 8519937
+        },
+        {
+          "name": "Amazfit Balance",
+          "deviceSource": 8519939
+        }
+      ],
+      "designWidth": 480
+    }
+  },
+  "i18n": {
+    "en-US": {
+      "appName": "Faceclaw Remote"
+    }
+  },
+  "defaultLanguage": "en-US",
+  "debug": false
+}
