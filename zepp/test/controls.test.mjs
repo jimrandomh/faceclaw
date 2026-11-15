@@ -9,7 +9,8 @@ test('crown accumulates deliberate rotation, caps repeated turns and discards ex
   for (let t = 80; t < 340; t += 20) assert.equal(crown.step(-120, t), 0);
   assert.equal(crown.step(-6, 340), 0); assert.equal(crown.step(-18, 360), 1);
   assert.equal(crown.step(-720, 800), 1);
-  assert.equal(crown.step(24, 820), -1); // Immediate deliberate reversal.
+  assert.equal(crown.step(24, 820), 0); // A quick sign reversal is filtered too.
+  assert.equal(crown.step(24, 1100), -1);
   crown.reset(); assert.equal(crown.step(-18, 900), 0); assert.equal(crown.step(-6, 1300), 0);
   for (const value of [NaN, Infinity, 0, '24']) assert.equal(crown.step(value, 1400), 0);
 });
@@ -19,6 +20,43 @@ test('discarding input while phone is busy retains the repeat-rate limit', () =>
   assert.equal(crown.step(-24, 1000), 1); crown.clearPending();
   assert.equal(crown.step(-24, 1100), 0);
   assert.equal(crown.step(-24, 1300), 1);
+});
+
+test('rapid direction jitter cannot bypass the crown rate limit or create deferred steps', () => {
+  const crown = createCrownNavigation();
+  assert.equal(crown.step(-24, 0), 1);
+  for (let time = 20; time < 280; time += 20) assert.equal(crown.step(time % 40 ? 720 : -720, time), 0);
+  assert.equal(crown.step(24, 280), -1);
+  assert.equal(crown.step(-24, 300), 0);
+  assert.equal(crown.step(-24, 560), 1);
+});
+
+test('reversed crown direction applies to local lists and remote controls', async t => {
+  for (const clockwiseNext of [false, true]) {
+    const w = watchFixture(); t.after(() => w.page.onDestroy());
+    await w.reply({ ok: true, state: { ...sampleState, crownClockwiseNext: clockwiseNext } });
+    w.crown(-24, 10); assert.equal(w.calls.at(-1).gesture, clockwiseNext ? 'scroll-up' : 'scroll-down');
+    await w.reply({ ok: true });
+    w.crown(24, 300); assert.equal(w.calls.at(-1).gesture, clockwiseNext ? 'scroll-down' : 'scroll-up');
+    await w.reply({ ok: true });
+    w.page.navigate('apps'); await w.reply(); w.page.select(2);
+    w.crown(24, 300); assert.equal(w.page.selected, 3);
+    w.crown(-24, 300); assert.equal(w.page.selected, 2);
+    w.page.navigate('status'); await w.reply(); w.page.select(2);
+    w.crown(24, 300); assert.equal(w.page.selected, 3);
+    w.crown(-24, 300); assert.equal(w.page.selected, 2);
+  }
+});
+
+test('list crown turns update selection without a full native page render', async t => {
+  const w = watchFixture(); t.after(() => w.page.onDestroy()); await w.reply();
+  w.page.navigate('apps'); await w.reply();
+  w.page.render = () => { throw new Error('A crown step must not redraw the full page'); };
+  w.crown(24, 300); assert.equal(w.page.selected, 1);
+  w.crown(-24, 10); assert.equal(w.page.selected, 1, 'quick reversal is filtered');
+  w.crown(720, 300); assert.equal(w.page.selected, 2, 'large rotation produces one step');
+  assert.equal(w.page.rowButtons[1].props.text, 'Launcher');
+  assert.equal(w.calls.filter(c => c.kind !== 'state').length, 0);
 });
 
 test('window identity and app identity remain distinct, close only exists for closeable windows', () => {
@@ -113,13 +151,13 @@ test('exiting while a command is pending sends no follow-up', async () => {
 
 test('crown on pad respects direction and rate limit without an extra status roundtrip', async () => {
   const w = watchFixture(); await w.reply();
-  w.crown(-24, 10); assert.equal(w.calls.at(-1).gesture, 'scroll-up');
+  w.crown(-24, 10); assert.equal(w.calls.at(-1).gesture, 'scroll-down');
   await w.reply({ ok: true }); assert.equal(w.calls.length, 2);
   w.crown(-720, 50); assert.equal(w.calls.length, 2);
-  w.crown(-24, 300); assert.equal(w.calls.at(-1).gesture, 'scroll-up');
+  w.crown(-24, 300); assert.equal(w.calls.at(-1).gesture, 'scroll-down');
   await w.reply({ ok: true });
   w.page.refresh(); await w.reply({ ok: true, state: { ...sampleState, crownClockwiseNext: true } });
-  w.crown(-24, 300); assert.equal(w.calls.at(-1).gesture, 'scroll-down');
+  w.crown(-24, 300); assert.equal(w.calls.at(-1).gesture, 'scroll-up');
   w.page.onDestroy(); await w.reply({ ok: true });
 });
 
@@ -137,28 +175,28 @@ test('local crown, swipe and neighbor selection work during polls and retain the
 
 test('a status poll does not discard a partly turned local crown', async () => {
   const w = watchFixture(); await w.reply(); w.page.navigate('apps'); await w.reply();
-  w.crown(-18, 100); assert.equal(w.page.selected, 0);
-  w.page.refresh(); w.crown(-6, 100); assert.equal(w.page.selected, 1);
+  w.crown(18, 100); assert.equal(w.page.selected, 0);
+  w.page.refresh(); w.crown(6, 100); assert.equal(w.page.selected, 1);
   await w.reply(); assert.equal(w.page.selected, 1); w.page.onDestroy();
 });
 
-test('busy crown input keeps one latest direction without a backlog or per-step status read', async () => {
+test('busy crown input discards excess rotation without queueing, vibrating or replacing progress', async () => {
   const w = watchFixture(); await w.reply();
-  w.crown(-24, 10);
-  w.crown(-24, 300); w.crown(-720, 300); w.crown(24, 10);
-  assert.equal(w.calls.length, 2);
-  await w.reply({ ok: true });
-  assert.equal(w.calls.length, 3); assert.equal(w.calls.at(-1).gesture, 'scroll-down');
-  await w.reply({ ok: true }); assert.equal(w.calls.length, 3);
-  w.advance(3000); assert.equal(w.calls.at(-1).kind, 'state');
-  await w.reply(); assert.equal(w.calls.filter(call => call.kind === 'gesture').length, 2);
-  w.page.onDestroy();
+  w.crown(-24, 10); const first = w.page.commandFeedback.snapshot();
+  w.crown(-24, 300); w.crown(-720, 300); w.crown(24, 300);
+  assert.equal(w.calls.length, 2); assert.equal(w.page.pendingCrown, null);
+  assert.equal(w.page.commandFeedback.snapshot().id, first.id);
+  assert.equal(w.vibrationCalls.filter(([kind]) => kind === 'start').length, 0);
+  await w.reply({ ok: true }); assert.equal(w.calls.length, 2);
+  w.advance(1000); assert.equal(w.calls.length, 2, 'no delayed crown replay after stopping');
+  w.crown(-24, 300); assert.equal(w.calls.length, 3); assert.equal(w.calls.at(-1).gesture, 'scroll-down');
+  await w.reply({ ok: true }); w.page.onDestroy();
 });
 
 test('a fresh crown step waits for the state reply before it is sent', async () => {
   const w = watchFixture(); await w.reply(); w.page.refresh();
   w.crown(-24, 10); assert.equal(w.calls.length, 2);
-  await w.reply(); assert.equal(w.calls.length, 3); assert.equal(w.calls.at(-1).gesture, 'scroll-up');
+  await w.reply(); assert.equal(w.calls.length, 3); assert.equal(w.calls.at(-1).gesture, 'scroll-down');
   await w.reply({ ok: true }); assert.equal(w.calls.length, 3); w.page.onDestroy();
 });
 
@@ -191,7 +229,7 @@ test('non-scroll interactions cancel pending crown input and actions never queue
   w.page.gesture('click'); await w.reply({ ok: true });
   assert.equal(w.calls.length, 2); // The click was not queued behind the scroll.
   w.page.gesture('click'); w.crown(-24, 300); await w.reply({ ok: true }); await w.reply();
-  assert.deepEqual(w.calls.filter(call => call.kind === 'gesture').map(call => call.gesture), ['scroll-up', 'click']);
+  assert.deepEqual(w.calls.filter(call => call.kind === 'gesture').map(call => call.gesture), ['scroll-down', 'click']);
   w.page.onDestroy();
 });
 
@@ -207,7 +245,7 @@ test('stale phone status cannot send or queue crown input before a fresh reply',
   const w = watchFixture(); await w.reply(); w.advance(15001); w.crown(-24, 10);
   assert.equal(w.calls.length, 2); assert.equal(w.calls.at(-1).kind, 'state');
   await w.reply(); assert.equal(w.calls.length, 2);
-  w.crown(-24, 300); assert.equal(w.calls.at(-1).gesture, 'scroll-up');
+  w.crown(-24, 300); assert.equal(w.calls.at(-1).gesture, 'scroll-down');
   w.page.onDestroy(); await w.reply({ ok: true });
 });
 

@@ -198,7 +198,7 @@ test('regular action and crown pending slots are mutually exclusive', async t =>
   const crownLast = await ready(t); crownLast.page.refresh(); swipe(crownLast); const swipeId = assertQueued(crownLast).id;
   crownLast.crown(-24, 10); const crownId = feedback(crownLast).id; assert.notEqual(crownId, swipeId);
   await crownLast.reply();
-  assert.equal(commands(crownLast).length, 1); assert.equal(commands(crownLast)[0].operation.gesture, 'scroll-up');
+  assert.equal(commands(crownLast).length, 1); assert.equal(commands(crownLast)[0].operation.gesture, 'scroll-down');
   assert.equal(commands(crownLast)[0].requestId, crownId);
   const tapLast = await ready(t); tapLast.page.refresh(); tapLast.crown(-24, 10);
   tapLast.touch('down', 240, 230); tapLast.touch('up', 240, 230, 50); tapLast.advance(300);

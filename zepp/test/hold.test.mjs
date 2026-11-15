@@ -65,7 +65,7 @@ test('leaving the pad, navigating, sleeping, and quitting cancel an unrecognized
 test('using the crown cancels a pending hold without leaving a delayed tap', async t => {
   const w = await ready(t); w.touch('down', 240, 230); w.advance(300);
   w.crown(-24, 0); w.advance(400); w.touch('up', 240, 230); w.advance(300);
-  assert.deepEqual(gestures(w).map(request => request.operation.gesture), ['scroll-up']);
+  assert.deepEqual(gestures(w).map(request => request.operation.gesture), ['scroll-down']);
 });
 
 test('a hold blocked by a sent action is not retried when the finger is released', async t => {

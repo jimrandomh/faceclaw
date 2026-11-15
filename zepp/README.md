@@ -23,7 +23,7 @@ The opening screen has a black touchpad, central clock, glasses status, and sepa
 | Swipe right in a list / tap **Touchpad** | Return to touchpad |
 | Press the **lower side button** once | Leave the watch app and return to the watch app list; glasses apps stay open |
 
-The list groups **On screen**, **Also open**, and **Launch**, like Wear OS. A list crown movement requires 24 degrees and repeats at most every 280ms. Excess rotation is discarded. List selection responds locally even while the phone is answering a status check. The watch display stays on for up to two minutes after interaction; polling stops when the watch screen turns off or the app exits.
+The list groups **On screen**, **Also open**, and **Launch**, like Wear OS. Crown direction is reversed from 0.1.10 in both local lists and glasses controls. A list crown movement requires 24 degrees and repeats at most every 280ms, including direction reversals. Excess rotation is discarded. List selection responds locally even while the phone is answering a status check. The watch display stays on for up to two minutes after interaction; polling stops when the watch screen turns off or the app exits.
 
 Keep your finger still for the hold threshold. Dragging before the threshold
 cancels hold recognition. Once a hold is recognized, lifting your finger sends
@@ -48,12 +48,11 @@ If a status check is already running, one gesture or app action can show
 **Waiting** for up to one second before it is sent. It is canceled if the state,
 target, selection, or screen context changes. **Busy · Not sent** still appears
 while a tap, hold, app action, or legacy-phone request is awaiting its reply.
-With the updated phone APK, directional swipes and crown steps use a burst of up
-to four requests, each with its own reply ID. The phone sends one HTTP request
+With the updated phone APK, touch swipes use a burst of up to four requests, each with its own reply ID. Physical crown turns admit one command at a time: extra rotation during any in-flight mutation is quietly discarded without creating a gesture, replacing progress, or vibrating. The phone sends one HTTP request
 at a time, and waiting directions expire after one second. A fifth outstanding
 input shows **Too many swipes · Not sent**. Taps, holds and app commands stay
 exclusive so they cannot overtake navigation. Sleeping or locked glasses show the applicable reason. A pending crown
-step expires visibly with **Turn crown again**. A timeout, transport loss, or
+step waiting behind a read expires quietly with **Turn crown again**. A timeout, transport loss, or
 malformed reply shows **Result unknown**; commands are never automatically
 retried. Navigation, watch sleep, and exit clear pending input and old feedback.
 
@@ -72,7 +71,7 @@ npm run preview -- --app-id YOUR_APP_ID
 npm run bridge -- --app-id YOUR_APP_ID
 ```
 
-`npm run build` with no ID creates a verification package using placeholder `99999999`. Preview/bridge require a real registered ID. `FACECLAW_ZEPP_APP_ID` also supplies the ID. The packaging wrapper uses a temporary project and leaves the checked-in manifest unchanged. Packaged files are copied to `dist/`. Device IDs: `8519936`, `8519937`, `8519939`; minimum/target API level 3.0; version 0.1.10, package version code 24.
+`npm run build` with no ID creates a verification package using placeholder `99999999`. Preview/bridge require a real registered ID. `FACECLAW_ZEPP_APP_ID` also supplies the ID. The packaging wrapper uses a temporary project and leaves the checked-in manifest unchanged. Packaged files are copied to `dist/`. Device IDs: `8519936`, `8519937`, `8519939`; minimum/target API level 3.0; version 0.1.11, package version code 25.
 
 `npm run render -- /path/to/playwright` renders sample states from the real watch widget code and checks for text overflow and circular-screen clipping. These are **layout previews**, not hardware screenshots.
 
@@ -117,7 +116,7 @@ One unsent gesture or app action may wait up to one second behind a status check
 It is revalidated against the reply and discarded if its state, target, selection,
 or context changed, or the watch slept or exited. Outside the navigation burst path it never waits behind an action
 already being sent. Crown scrolling separately retains at most the latest unsent
-step for 350ms behind a status check or crown request. Expired input is discarded;
+step for 350ms behind a status check. It never waits behind a sent crown request. Expired unsent crown intent is quietly discarded;
 sent commands use one POST and are never replayed. A timeout means the result is
 unknown; check the glasses before trying again. A success reply confirms Faceclaw
 accepted the command, not that a glasses frame was displayed.
@@ -188,3 +187,5 @@ reported multi-second delays with the watch showing Sending. This points toward
 the watch/Zepp path, but does not establish the exact cause. Subsequent hardware checks on 0.1.9 were smooth with Zepp foregrounded, backgrounded and Developer Bridge disabled. A captured run acknowledged 31 swipes in 136–275ms; this does not rule out intermittent delays.
 
 Version 0.1.10 adds failure vibration and two-decimal durations on the watch, with direct Apps/Status buttons. The corresponding Android build changes watch crown input in icon grids to reading-order traversal across rows; directional swipes retain their spatial meaning. Ring row/item modes remain unchanged. Vibration uses [Zepp's API 2.0 notification scene](https://docs.zepp.com/docs/reference/device-app-api/newAPI/sensor/Vibrator/), followed by stop, with teardown on sleep/navigation/exit. It does not require a newer Balance API level.
+
+Version 0.1.11 is watch-only. It reverses crown direction in both local lists and glasses controls, rate-limits rapid reversals, and sends at most one physical crown command at a time. Extra turns are dropped before command feedback begins, without queueing or error haptics. A status read may hold the newest crown intent for up to 350ms; expiration stays visible but does not vibrate. A crown command that was sent and fails or has an unknown outcome still vibrates. Touch swipes retain the four-request burst. Local selection redraws only the list, and elapsed-time ticks update only changed feedback properties.

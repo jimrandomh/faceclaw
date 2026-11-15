@@ -19,6 +19,7 @@ Page(BasePage({
     this.screen = 'remote'; this.selected = 0; this.linkError = ''; this.notice = ''; this.noticeError = false;
     this.groups = { remote: [], list: [], help: [], details: [] }; this.rows = []; this.crown = createCrownNavigation();
     this.pollTimer = null; this.noticeTimer = null; this.clockTimer = null;
+    this.feedbackVisible = null; this.feedbackColor = null; this.feedbackText = null;
     this.failureVibrationTimer = null; this.failureVibrator = null;
     try { this.failureVibrator = new Vibrator(); } catch (_) {}
     const make = (type, props, group) => {
@@ -82,7 +83,7 @@ Page(BasePage({
     onDigitalCrown({ callback: (_key, degree) => {
       if (!this.alive || !this.awake) { this.cancelPendingInput(); this.cancelPendingCrown(); this.crown.clearPending(); return; }
       this.cancelPendingInput(); this.touching = false; this.touch.reset(); this.noteActivity();
-      const step = this.crown.step(degree, Date.now());
+      const step = -this.crown.step(degree, Date.now());
       if (!step) return;
       if (this.screen === 'remote') {
         const next = this.phoneState && this.phoneState.crownClockwiseNext;
@@ -181,7 +182,8 @@ Page(BasePage({
   select(index, resetCrown = true) {
     this.cancelPendingInput(); this.cancelPendingCrown(); this.touching = false;
     if (resetCrown) this.crown.reset();
-    this.touch.reset(); this.noteActivity(); this.selected = index; this.notice = ''; this.render();
+    this.touch.reset(); this.noteActivity(); this.selected = index; this.notice = '';
+    this.renderList(); this.renderFeedback();
   },
   clearNotice() {
     if (this.noticeTimer !== null) clearTimeout(this.noticeTimer);
@@ -206,11 +208,11 @@ Page(BasePage({
     const feedback = this.commandFeedback && this.commandFeedback.snapshot();
     return !!(feedback && feedback.id === id);
   },
-  cancelPendingCrown(detail = 'Not sent', silent = true) {
+  cancelPendingCrown(detail = 'Not sent') {
     if (this.pendingCrownTimer !== null) clearTimeout(this.pendingCrownTimer);
     this.pendingCrownTimer = null;
     const pending = this.pendingCrown; this.pendingCrown = null;
-    if (pending && this.commandFeedback) this.commandFeedback.finish(pending.id, 'skipped', detail, { silent });
+    if (pending && this.commandFeedback) this.commandFeedback.finish(pending.id, 'skipped', detail, { silent: true });
   },
   cancelPendingInput(detail = 'Not sent') {
     if (this.pendingInputTimer !== null) clearTimeout(this.pendingInputTimer);
@@ -279,6 +281,9 @@ Page(BasePage({
   },
   scrollCrown(gesture) {
     if (!this.alive || !this.awake || this.screen !== 'remote') return;
+    // Crown movement has no backlog. While a mutation is in flight, consume
+    // excess rotation quietly, preserving that command's progress and haptic.
+    if (this.busy && this.busyKind !== 'state') { this.crown.clearPending(); return; }
     this.cancelPendingInput(); this.cancelPendingCrown(); this.notice = '';
     const operation = { kind: 'gesture', gesture };
     const id = this.commandFeedback.begin(operation, this.busy ? 'queued' : 'sending');
@@ -286,15 +291,12 @@ Page(BasePage({
     if (!this.phoneState.screenOn || this.phoneState.locked) {
       this.commandFeedback.finish(id, 'blocked', this.phoneState.locked ? 'Glasses are locked' : 'Double tap to wake'); return;
     }
-    if (this.phoneState.navigationSupported && (!this.busy || this.busyKind === 'navigation')) { this.sendNavigation(operation, id); return; }
+    if (this.phoneState.navigationSupported && !this.busy) { this.sendNavigation(operation, id); return; }
     if (this.busy) {
-      // Keep one unsent step; it expires visibly instead of silently disappearing.
-      if (this.busyKind !== 'state' && this.busyKind !== 'crown') {
-        this.commandFeedback.finish(id, 'blocked', 'Busy · Not sent'); return;
-      }
+      // A read-only status poll may retain just the latest fresh crown intent.
       this.pendingCrown = { gesture, at: Date.now(), id };
       this.pendingCrownTimer = setTimeout(() => {
-        if (this.pendingCrown && this.pendingCrown.id === id) this.cancelPendingCrown('Turn crown again', false);
+        if (this.pendingCrown && this.pendingCrown.id === id) this.cancelPendingCrown('Turn crown again');
       }, 350);
       return;
     }
@@ -309,7 +311,7 @@ Page(BasePage({
       this.commandFeedback.finish(pending.id, 'skipped', 'Not sent'); return;
     }
     const age = Date.now() - pending.at;
-    if (age < 0 || age > 350) { this.commandFeedback.finish(pending.id, 'skipped', 'Turn crown again'); return; }
+    if (age < 0 || age > 350) { this.commandFeedback.finish(pending.id, 'skipped', 'Turn crown again', { silent: true }); return; }
     if (!this.canControl(false, pending.id)) return;
     if (!this.phoneState.screenOn || this.phoneState.locked) {
       this.commandFeedback.finish(pending.id, 'blocked', this.phoneState.locked ? 'Glasses are locked' : 'Double tap to wake'); return;
@@ -520,6 +522,11 @@ Page(BasePage({
     this.padTitle.setProperty(ui.prop.COLOR, pad.tone === COLORS.good ? COLORS.text : pad.tone);
     this.padDetail.setProperty(ui.prop.TEXT, this.fit(pad.detail, 356, 24));
     this.errorDetails.setProperty(ui.prop.TEXT, this.linkError || 'Phone connected.');
+    this.renderList();
+    this.renderFeedback();
+  },
+  renderList() {
+    if (!this.alive) return;
     if (this.screen === 'apps' || this.screen === 'status') {
       this.rows = this.screen === 'apps' ? appRows(this.phoneState) : statusRows(this.phoneState);
       this.selected = moveSelection(this.selected, this.rows.length, 0);
@@ -542,16 +549,19 @@ Page(BasePage({
       this.empty.setProperty(ui.prop.TEXT, this.linkError ? 'Phone unavailable.\nTap Status on the touchpad for details.' : 'No app list yet.\nOpen Faceclaw on the phone and connect the glasses.');
       this.listHint.setProperty(ui.prop.TEXT, this.busy ? 'Waiting for phone…' : this.screen === 'status' && selected ? this.fit(selected.detail, 350, 24) : 'Turn crown · Press to open');
     }
-    this.renderFeedback();
   },
   renderFeedback() {
     if (!this.alive || !this.noticeText) return;
     const feedback = this.commandFeedback && this.commandFeedback.snapshot();
     const message = feedback ? feedback.text : this.notice;
     const visible = !!message && this.screen !== 'details';
-    this.noticeBg.setProperty(ui.prop.VISIBLE, visible); this.noticeText.setProperty(ui.prop.VISIBLE, visible);
-    this.noticeBg.setProperty(ui.prop.COLOR, feedback ? feedback.error ? COLORS.errorBg : feedback.pending ? 0x40351b : 0x18352b : this.noticeError ? COLORS.errorBg : COLORS.notice);
-    this.noticeText.setProperty(ui.prop.TEXT, message.length > 62 ? message.slice(0, 61) + '…' : message);
+    const color = feedback ? feedback.error ? COLORS.errorBg : feedback.pending ? 0x40351b : 0x18352b : this.noticeError ? COLORS.errorBg : COLORS.notice;
+    const text = message.length > 62 ? message.slice(0, 61) + '…' : message;
+    if (visible !== this.feedbackVisible) {
+      this.noticeBg.setProperty(ui.prop.VISIBLE, visible); this.noticeText.setProperty(ui.prop.VISIBLE, visible); this.feedbackVisible = visible;
+    }
+    if (color !== this.feedbackColor) { this.noticeBg.setProperty(ui.prop.COLOR, color); this.feedbackColor = color; }
+    if (text !== this.feedbackText) { this.noticeText.setProperty(ui.prop.TEXT, text); this.feedbackText = text; }
   },
   quitWatch() {
     if (!this.alive) return;

@@ -130,31 +130,28 @@ test('known ignored taps and holds on locked glasses report blocked without send
   }
 });
 
-test('an expired queued crown step stays visibly skipped after the older command succeeds', async t => {
-  const w = await ready(t); w.crown(-24, 10);
-  const sentId = snapshot(w).id;
-  w.crown(24, 300); const waiting = visibleFeedback(w, 'queued', /^Scroll down\nWaiting · 0\.00s$/);
-  assert.notEqual(waiting.id, sentId); assert.equal(commands(w).length, 1);
-  receipt(w, sentId); assert.equal(snapshot(w).phase, 'queued');
+test('an expired crown step behind a read stays skipped after the read completes', async t => {
+  const w = await ready(t); w.page.refresh();
+  w.crown(-24, 10); const waiting = visibleFeedback(w, 'queued', /^Scroll down\nWaiting · 0\.00s$/);
   w.advance(351); const skipped = visibleFeedback(w, 'skipped', /^Scroll down\nTurn crown again$/);
   assert.equal(w.page.pendingCrown, null); assert.equal(w.page.pendingCrownTimer, null);
-  await w.reply({ ok: true }); receipt(w, sentId); receipt(w, waiting.id);
-  assert.deepEqual(snapshot(w), skipped); assert.equal(commands(w).length, 1);
+  await w.reply(); receipt(w, waiting.id);
+  assert.deepEqual(snapshot(w), skipped); assert.equal(commands(w).length, 0);
 });
 
-test('only the newest queued crown intent can be sent or accepted', async t => {
-  const w = await ready(t); w.crown(-24, 10); const firstId = snapshot(w).id;
-  w.crown(-24, 300); const replacedId = snapshot(w).id;
-  w.crown(24, 10); const newestId = snapshot(w).id;
-  assert.notEqual(newestId, replacedId); receipt(w, replacedId); receipt(w, firstId);
-  visibleFeedback(w, 'queued', /^Scroll down\n/);
-  await w.reply({ ok: true });
-  assert.equal(commands(w).length, 2); assert.equal(commands(w)[1].requestId, newestId);
-  visibleFeedback(w, 'sending', /^Scroll down\n/);
-  receipt(w, firstId); receipt(w, replacedId); assert.equal(snapshot(w).phase, 'sending');
+test('only the newest crown intent waiting behind a read can be sent or accepted', async t => {
+  const w = await ready(t); w.page.refresh();
+  w.crown(-24, 10); const replacedId = snapshot(w).id;
+  w.crown(24, 300); const newestId = snapshot(w).id;
+  assert.notEqual(newestId, replacedId); receipt(w, replacedId);
+  visibleFeedback(w, 'queued', /^Scroll up\n/);
+  await w.reply();
+  assert.equal(commands(w).length, 1); assert.equal(commands(w)[0].requestId, newestId);
+  visibleFeedback(w, 'sending', /^Scroll up\n/);
+  receipt(w, replacedId); assert.equal(snapshot(w).phase, 'sending');
   receipt(w, newestId); visibleFeedback(w, 'phone-received');
   await w.reply({ ok: true });
-  assert.equal(snapshot(w).id, newestId); visibleFeedback(w, 'accepted', /^Scroll down\n/);
+  assert.equal(snapshot(w).id, newestId); visibleFeedback(w, 'accepted', /^Scroll up\n/);
 });
 
 test('timeout is visibly unknown and status recovery never retries the gesture', async t => {

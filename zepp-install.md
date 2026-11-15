@@ -226,6 +226,16 @@ commands, and you do not need to restart it each time you use the remote.
 
 ### Updating an installed watch app
 
+Version **0.1.11 (code 25)** reverses the crown in both glasses controls and the
+watch's Apps/Status lists. Crown movement admits one command at a time, with
+excess rotation quietly discarded while a mutation is pending. This prevents
+crown input from building a burst of delayed moves. Rapid reversals share the
+280ms repeat limit, and local list browsing updates only the list widgets.
+A crown intent waiting behind a status read may expire without vibration; a
+sent command that fails still vibrates. Touch swipes keep their existing burst.
+Install only the watch update; Android build 9008 and your token remain valid.
+The new behavior still needs a physical check after installing.
+
 Version **0.1.10 (code 24)** adds an error vibration for failed, blocked, expired
 or uncertain gestures, including crown steps. Apps and Status now open directly
 from separate buttons on the touchpad. Successful gestures and inputs
@@ -343,8 +353,7 @@ banner that advances from **Sending** to **Phone received** to **Accepted**.
 The phone receipt is best effort, so that stage can be skipped.
 The elapsed time helps distinguish a slow reply from an undetected
 swipe. Phone acceptance does not establish that a glasses frame was displayed.
-The watch vibrates when a gesture is rejected, blocked or expired, or its result
-is unknown. It stays silent for successful gestures, background status reads,
+The watch vibrates when a sent gesture fails or expires, or its result is unknown; unavailable touch gestures also vibrate. Excess physical crown rotation is quietly filtered before creating a command, and a crown intent that expires while waiting behind a read stays silent. It stays silent for successful gestures, background status reads,
 and inputs intentionally canceled by a newer input or leaving the screen.
 
 **Waiting** means a recognized gesture or app action is waiting for a status

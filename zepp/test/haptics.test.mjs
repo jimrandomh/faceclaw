@@ -45,11 +45,14 @@ test('successful gestures, status checks and failed app commands do not vibrate'
   assert.equal(starts(w).length, 0);
 });
 
-test('replacing queued crown intent is silent but letting it expire vibrates', async t => {
-  const w = await ready(t); w.crown(-24, 10); w.crown(-24, 300); w.crown(24, 10);
+test('replaced or expired crown input waiting behind a status read is quietly skipped', async t => {
+  const w = await ready(t); w.page.refresh();
+  w.crown(-24, 10); w.crown(-24, 300); w.crown(24, 300);
   assert.equal(starts(w).length, 0);
-  w.advance(351); assert.equal(starts(w).length, 1);
-  await w.reply({ ok: true }); assert.equal(starts(w).length, 1);
+  w.advance(351); assert.equal(starts(w).length, 0);
+  assert.equal(w.page.commandFeedback.snapshot().phase, 'skipped');
+  await w.reply(); assert.equal(starts(w).length, 0);
+  assert.equal(w.calls.filter(c => c.kind === 'gesture').length, 0);
 });
 
 test('sleep, navigation and exit stop vibration and suppress late gesture failures', async t => {
@@ -71,4 +74,12 @@ test('unavailable vibration hardware cannot interfere with command failure or re
   assert.equal(w.page.commandFeedback.snapshot().phase, 'unknown');
   assert.equal(w.calls.at(-1).kind, 'state');
   assert.equal(w.page.failureVibrationTimer, null);
+});
+
+test('a sent crown command with an unknown result still vibrates once despite excess rotation', async t => {
+  const w = await ready(t, navigationState);
+  w.crown(-24, 10); w.crown(-720, 300); w.crown(720, 300);
+  await w.reject('timeout');
+  assert.equal(starts(w).length, 1); assert.equal(w.page.commandFeedback.snapshot().phase, 'unknown');
+  assert.equal(w.calls.filter(c => c.kind === 'gesture').length, 1);
 });

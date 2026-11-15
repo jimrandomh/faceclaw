@@ -48,13 +48,13 @@ export function padStatus(state, linkError) {
   return { text: state.listening ? 'Listening…' : state.foreground && state.foreground.title || 'Launcher', detail: state.preview ? 'Phone preview' : state.battery === null ? 'Connected' : 'G2 · ' + state.battery + '%', tone: COLORS.good };
 }
 
-// Positive Zepp degrees are counterclockwise. Clockwise advances a watch
-// list; the glasses pad separately respects Faceclaw's crown direction.
+// Positive Zepp degrees are counterclockwise. Return clockwise-positive steps;
+// the page applies its direction preference consistently at the input boundary.
 // Discard the excess: no queue or delayed scrolling after the hand stops.
 export function createCrownNavigation() {
   const stepDegrees = 24, repeatMs = 280, idleMs = 350;
-  let pending = 0, lastEvent = null, lastStep = null, lastDirection = 0;
-  function reset() { pending = 0; lastEvent = null; lastStep = null; lastDirection = 0; }
+  let pending = 0, lastEvent = null, lastStep = null;
+  function reset() { pending = 0; lastEvent = null; lastStep = null; }
   return {
     reset,
     clearPending() { pending = 0; lastEvent = null; },
@@ -64,10 +64,12 @@ export function createCrownNavigation() {
       lastEvent = now;
       const direction = degree < 0 ? 1 : -1;
       if (pending * degree < 0) pending = 0;
-      if (lastStep !== null && direction === lastDirection && now - lastStep < repeatMs) { pending = 0; return 0; }
+      // A sign change can be mechanical bounce, not a second deliberate step.
+      // Rate-limit reversals too, without saving excess movement for later.
+      if (lastStep !== null && now - lastStep < repeatMs) { pending = 0; return 0; }
       pending += degree;
       if (Math.abs(pending) < stepDegrees) return 0;
-      pending = 0; lastStep = now; lastDirection = direction;
+      pending = 0; lastStep = now;
       return direction;
     },
   };

@@ -116,6 +116,30 @@ test('watch sends four directional requests immediately using one session and di
   for (let i = 0; i < 4; i++) await w.reply(success);
   assert.equal(w.page.busy, false); assert.equal(w.requests.length, 5);
 });
+
+test('crown navigation admits one command and discards rapid turns without haptics or later replay', async t => {
+  const w = await watch(t);
+  w.crown(-24, 10); const id = w.page.commandFeedback.snapshot().id;
+  for (let i = 0; i < 8; i++) w.crown(i % 2 ? -720 : 720, 300);
+  assert.equal(directions(w).length, 1); assert.equal(w.page.navRequests.size, 1);
+  assert.equal(w.page.commandFeedback.snapshot().id, id); assert.equal(w.page.pendingCrown, null);
+  assert.equal(w.vibrationCalls.filter(([kind]) => kind === 'start').length, 0);
+  await w.reply(success); assert.equal(directions(w).length, 1);
+  w.advance(1000); assert.equal(directions(w).length, 1);
+  w.crown(24, 300); assert.equal(directions(w).length, 2);
+  assert.deepEqual(directions(w).map(item => item.navigation.sequence), [1, 2]);
+  await w.reply(success);
+});
+
+test('turning crown during a touch-swipe burst cannot fill or overtake the existing queue', async t => {
+  const w = await watch(t); w.page.gesture('swipe-up'); w.page.gesture('swipe-down');
+  const id = w.page.commandFeedback.snapshot().id;
+  for (let i = 0; i < 6; i++) w.crown(-720, 300);
+  assert.equal(directions(w).length, 2); assert.equal(w.page.commandFeedback.snapshot().id, id);
+  assert.equal(w.vibrationCalls.filter(([kind]) => kind === 'start').length, 0);
+  await w.reply(success); await w.reply(success);
+  assert.equal(directions(w).length, 2);
+});
 test('taps and app commands cannot overtake a directional burst', async t => {
   const w = await watch(t); w.page.gesture('swipe-up'); w.page.gesture('click');
   assert.equal(w.requests.length, 2); assert.match(w.page.commandFeedback.snapshot().text, /Not sent/);

@@ -77,7 +77,7 @@ export function watchFixture({ fixedFrameworkState = true, vibrationError = fals
   return {
     page, calls, requests, widgets, timers, ui, sessionEvents, displayCalls, vibrationCalls, exits: () => exits,
     key: (code = 1, event = 4) => key(code, event),
-    crown: (degree = -24, elapsed = 350) => { now += elapsed; crown(1, degree); },
+    crown: (degree = 24, elapsed = 350) => { now += elapsed; crown(1, degree); },
     gesture: value => gesture(value),
     touch: (event, x, y, elapsed = 0) => { now += elapsed; page.pad.events[event]({ x, y }); },
     advance(ms) {
