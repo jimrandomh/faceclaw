@@ -76,7 +76,7 @@ async function manual(t, patch = {}) {
 
 test('one crown press explicitly wakes an off display; an on display keeps select and scroll', async t => {
   for (const key of [1, 2]) {
-    const w = await manual(t); w.key(key);
+    const w = await manual(t); assert.equal(w.page.padTitle.props.text, 'Press crown'); w.key(key);
     assert.equal(wakes(w).length, 1); assert.equal(mutations(w).length, 1);
     await w.reply({ ok: true }); await w.reply({ ok: true, state: { ...sampleState } });
     w.crown(24, 500); assert.equal(w.requests.at(-1).operation.gesture, 'scroll-up');
