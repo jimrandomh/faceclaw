@@ -20,6 +20,7 @@ export function watchFixture({ fixedFrameworkState = true } = {}) {
   const code = fs.readFileSync(new URL('../page/index.js', import.meta.url), 'utf8').replace(/^import .*;\n/gm, '');
   let page, key, crown, gesture, screenListener, screenStatus = 1, now = 1760545800000;
   const calls = [], requests = [], pending = [], widgets = [], timers = new Map(); let timer = 0, exits = 0;
+  const sessionEvents = [];
   const frameworkState = { messaging: Object.freeze({ frameworkTransport: true }) };
   const setTimer = (fn, delay) => { timers.set(++timer, { fn, at: now + delay }); return timer; };
   const clearTimer = id => timers.delete(id);
@@ -43,6 +44,11 @@ export function watchFixture({ fixedFrameworkState = true } = {}) {
     ...model, ...feedback, ui, display: { setPageBrightTime() {}, pauseDropWristScreenOff() {}, resetPageBrightTime() {}, resetDropWristScreenOff() {} },
     createTouchpad: emit => model.createTouchpad(emit, { setTimeout: setTimer, clearTimeout: clearTimer }),
     createCommandFeedback: onChange => feedback.createCommandFeedback(onChange, { now: () => now, setTimeout: setTimer, clearTimeout: clearTimer }),
+    createMessagingSession: () => ({
+      setAwake(value) { sessionEvents.push(['awake', value]); },
+      invalidate(reason) { sessionEvents.push(['invalidate', reason]); },
+      dispose() { sessionEvents.push(['dispose']); },
+    }),
     exit: () => { exits++; },
     Screen: class { getStatus() { return screenStatus; } onChange(callback) { screenListener = callback; } offChange() { screenListener = null; } },
     Page: value => {
@@ -63,7 +69,7 @@ export function watchFixture({ fixedFrameworkState = true } = {}) {
   page.build();
   const flush = () => new Promise(resolve => setImmediate(resolve));
   return {
-    page, calls, requests, widgets, timers, ui, exits: () => exits,
+    page, calls, requests, widgets, timers, ui, sessionEvents, exits: () => exits,
     key: (code = 1, event = 4) => key(code, event),
     crown: (degree = -24, elapsed = 350) => { now += elapsed; crown(1, degree); },
     gesture: value => gesture(value),
@@ -75,7 +81,7 @@ export function watchFixture({ fixedFrameworkState = true } = {}) {
     },
     screen: value => { screenStatus = value; screenListener?.(); },
     reply: async (result = { ok: true, state: sampleState }) => { if (!pending.length) throw new Error('No pending request'); pending.shift().resolve(result); await flush(); },
-    reject: async message => { pending.shift().reject(new Error(message)); await flush(); },
+    reject: async message => { pending.shift().reject(message instanceof Error ? message : new Error(message)); await flush(); },
     now: () => now,
   };
 }

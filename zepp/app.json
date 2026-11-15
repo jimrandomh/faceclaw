@@ -5,8 +5,8 @@
     "appName": "Faceclaw Remote",
     "appType": "app",
     "version": {
-      "code": 20,
-      "name": "0.1.6"
+      "code": 21,
+      "name": "0.1.7"
     },
     "icon": "icon.png",
     "vender": "Faceclaw contributors",

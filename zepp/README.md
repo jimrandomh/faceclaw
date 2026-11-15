@@ -69,7 +69,7 @@ npm run preview -- --app-id YOUR_APP_ID
 npm run bridge -- --app-id YOUR_APP_ID
 ```
 
-`npm run build` with no ID creates a verification package using placeholder `99999999`. Preview/bridge require a real registered ID. `FACECLAW_ZEPP_APP_ID` also supplies the ID. The packaging wrapper uses a temporary project and leaves the checked-in manifest unchanged. Packaged files are copied to `dist/`. Device IDs: `8519936`, `8519937`, `8519939`; minimum/target API level 3.0; version 0.1.6, package version code 20.
+`npm run build` with no ID creates a verification package using placeholder `99999999`. Preview/bridge require a real registered ID. `FACECLAW_ZEPP_APP_ID` also supplies the ID. The packaging wrapper uses a temporary project and leaves the checked-in manifest unchanged. Packaged files are copied to `dist/`. Device IDs: `8519936`, `8519937`, `8519939`; minimum/target API level 3.0; version 0.1.7, package version code 21.
 
 `npm run render -- /path/to/playwright` renders sample states from the real watch widget code and checks for text overflow and circular-screen clipping. These are **layout previews**, not hardware screenshots.
 
@@ -77,10 +77,29 @@ npm run bridge -- --app-id YOUR_APP_ID
 
 Watch → Zepp Side Service → `POST http://127.0.0.1:8791/v1/request` → Faceclaw's existing watch/input dispatch → glasses. Every request carries an existing `fc1_` input token with **Provide input** permission. The token stays in Zepp's phone settings and is not sent to the watch. The endpoint accepts `watch-state`, `watch-command`, and `input`; there are no arbitrary URL or command fields.
 
-The watch's messaging session stays open for the app's lifetime over its existing
-Zepp connection. It does not re-pair for each command. ZML still checks that the
-phone-side service is ready before each request; this release keeps that
-supported transport behavior.
+The watch uses its existing Zepp Bluetooth connection; Faceclaw maintains a
+separate connection to the glasses. Version 0.1.7 reuses the phone-side readiness
+handshake while the watch screen is awake. Sequential requests use the proven
+session instead of a new handshake each time. Readiness is invalidated on watch
+sleep/exit, Bluetooth changes, or a failed request; the next request establishes
+it again. A successful status round trip is required before controls can use
+the recovered session. No uncertain command is automatically repeated.
+
+This uses a project-owned adapter for the pinned ZML 0.0.43 transport, preserving
+ZML's message format and BasePage response delivery. The adapter and lifecycle
+behavior are covered by tests against the installed ZML bundles and page tests.
+An unexpected transport shape keeps ZML's original behavior. Zepp's
+[official connection guide](https://docs.zepp.com/docs/guides/best-practice/bluetooth-communication/)
+supports connecting once and exchanging subsequent messages, but does not promise
+that Android will keep the Side Service alive indefinitely. If the phone service
+silently restarts, a request can still fail before readiness is re-established.
+The normal idle status checks also exercise the session.
+
+Reusing readiness removes a round trip; it does not make slow commands concurrent.
+The watch still allows one command at a time. **Busy · Not sent** means the prior
+command is awaiting its reply, not that Bluetooth is pairing again. Device latency
+and recovery after sleep, service restart, and Bluetooth loss require hardware
+verification.
 
 Background status checks normally run 3 seconds after a request completes while
 the screen is on, or after 6 seconds following a connection failure. They defer
@@ -122,3 +141,9 @@ Version 0.1.6 recognizes hold and tap-then-hold after 0.6 seconds of contact,
 without waiting for release. Dragging before the threshold cancels the hold;
 release after recognition sends no duplicate. The existing phone APK and token
 remain valid, and the 0.1.5 scheduling improvements remain included.
+
+Version 0.1.7 reuses a successful phone readiness handshake while the watch is
+awake. Sleep, connection changes and request failures invalidate the session;
+commands waiting to be sent are canceled across a lifecycle change. It retains
+command acknowledgements, bounded pending input, and the no-retry policy. The
+existing phone APK and token remain valid.

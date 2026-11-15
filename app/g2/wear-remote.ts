@@ -315,7 +315,7 @@ export class WearRemote {
     if (!watchRemoteEnabledSetting.get()) {
       return { ok: false, message: "Watch control is turned off in Faceclaw's Settings > Watch." };
     }
-    return new Promise(resolve => {
+    return new Promise((resolve, reject) => {
       let acknowledged = false;
       const finish = (ok: boolean, message = "") => {
         if (acknowledged) return;
@@ -325,10 +325,12 @@ export class WearRemote {
       // Connect/disconnect acknowledge immediately, before their asynchronous BLE work.
       // Return that same acknowledgement to HTTP without blocking the serial request drain.
       void this.handleCommand(payload, finish).then(() => {
-        finish(false, "Command did not complete.");
+        if (!acknowledged) throw new Error("Command did not complete.");
       }).catch(error => {
         this.host.appendLog(`watch: command failed: ${formatError(error)}`);
-        finish(false, "Faceclaw could not complete the command.");
+        // An unexpected failure can follow side effects. Let the transport classify it
+        // as ambiguous; only an explicit handler acknowledgement is a definite refusal.
+        if (!acknowledged) { acknowledged = true; reject(new Error("Faceclaw could not complete the command.")); }
       });
     });
   }

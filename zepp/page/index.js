@@ -5,13 +5,15 @@ import { exit } from '@zos/router';
 import { onDigitalCrown, offDigitalCrown, onKey, offKey, onGesture, offGesture, KEY_HOME, KEY_SELECT, KEY_BACK, KEY_SHORTCUT, KEY_EVENT_CLICK, GESTURE_UP, GESTURE_DOWN, GESTURE_RIGHT } from '@zos/interaction';
 import { BasePage } from '@zeppos/zml/base-page';
 import { createCommandFeedback } from '../lib/feedback.js';
+import { createMessagingSession } from '../lib/session.js';
 import { COLORS, appRows, statusRows, padStatus, moveSelection, createCrownNavigation, createTouchpad } from '../lib/model.js';
 
 Page(BasePage({
   build() {
     // Zepp owns Page.state; keep the phone snapshot in an app-specific field.
     this.alive = true; this.awake = true; this.phoneState = null; this.stateTime = 0; this.busy = false; this.busyKind = ''; this.pendingCrown = null; this.pendingCrownTimer = null; this.navigationEpoch = 0;
-    this.pendingInput = null; this.pendingInputTimer = null; this.touching = false; this.lastInputAt = 0;
+    this.pendingInput = null; this.pendingInputTimer = null; this.touching = false; this.lastInputAt = 0; this.wakeEpoch = 0;
+    this.linkSession = createMessagingSession(this.messaging);
     this.screen = 'remote'; this.tray = false; this.selected = 0; this.linkError = ''; this.notice = ''; this.noticeError = false;
     this.groups = { remote: [], list: [], help: [], details: [] }; this.rows = []; this.crown = createCrownNavigation();
     this.pollTimer = null; this.noticeTimer = null; this.clockTimer = null;
@@ -116,13 +118,15 @@ Page(BasePage({
     this.screenSensor = new Screen();
     this.screenChanged = () => {
       if (!this.alive) return;
-      this.awake = this.screenSensor.getStatus() === 1; this.navigationEpoch++;
+      this.awake = this.screenSensor.getStatus() === 1; this.navigationEpoch++; this.wakeEpoch++;
+      this.linkSession.setAwake(this.awake);
       this.touching = false; this.lastInputAt = Date.now();
       this.cancelPendingInput(); this.cancelPendingCrown(); this.commandFeedback.clear(); this.clearNotice(); this.touch.reset(); this.crown.reset(); this.cancelPoll();
       if (this.awake) { this.updateClock(); this.refresh(); } // Never synthesize a glasses tap on wake.
     };
     this.screenSensor.onChange(this.screenChanged);
     this.awake = this.screenSensor.getStatus() === 1;
+    this.linkSession.setAwake(this.awake);
     this.keepAwake(); this.updateClock(); this.render(); this.refresh();
   },
   keepAwake() {
@@ -361,14 +365,16 @@ Page(BasePage({
       }
       return result;
     } catch (error) {
+      this.linkSession.invalidate('Request failed');
       this.cancelPendingInput('Not sent');
       this.cancelPendingCrown('Not sent');
       const raw = String(error && error.message || 'No phone reply.');
       // Losing transport or receiving a malformed reply cannot establish whether it ran.
-      const unknown = operation.kind !== 'state' && (!explicitRejection || /unknown|timeout|timed out/i.test(raw));
+      const notSent = !!(error && error.notSent === true);
+      const unknown = operation.kind !== 'state' && !notSent && (!explicitRejection || /unknown|timeout|timed out/i.test(raw));
       const message = unknown ? 'Result unknown. Check the glasses before trying again.' : raw;
       const currentIntent = !feedbackId || this.feedbackIsCurrent(feedbackId);
-      if (feedbackId) this.commandFeedback.finish(feedbackId, unknown ? 'unknown' : 'failed');
+      if (feedbackId) this.commandFeedback.finish(feedbackId, unknown ? 'unknown' : notSent ? 'blocked' : 'failed', notSent ? 'Not sent · Refresh phone' : undefined);
       if (this.alive) {
         if (operation.kind === 'state') this.linkError = message.slice(0, 180);
         if (this.awake && currentIntent) this.setNotice(message.slice(0, 120), true);
@@ -381,8 +387,12 @@ Page(BasePage({
   },
   async refresh() {
     if (this.busy || !this.alive || !this.awake) return;
+    const wakeEpoch = this.wakeEpoch;
     const result = await this.exchange({ kind: 'state' });
-    if (!this.alive || !result) return;
+    if (!this.alive) return;
+    // A reply begun before sleep cannot establish current readiness on wake.
+    if (!this.awake || wakeEpoch !== this.wakeEpoch) { if (this.awake) this.refresh(); return; }
+    if (!result) return;
     // Local list navigation remains live while polling; preserve the latest selection.
     const key = this.rows[this.selected] && this.rows[this.selected].key;
     this.phoneState = result.state; this.stateTime = Date.now(); this.linkError = '';
@@ -482,6 +492,7 @@ Page(BasePage({
   },
   dispose() {
     if (!this.alive) return;
+    this.linkSession.dispose();
     this.alive = false; this.touching = false; this.cancelPendingInput(); this.cancelPendingCrown(); this.commandFeedback.clear(); this.cancelPoll(); this.crown.reset(); this.touch.reset();
     if (this.clockTimer !== null) clearTimeout(this.clockTimer);
     if (this.noticeTimer !== null) clearTimeout(this.noticeTimer);

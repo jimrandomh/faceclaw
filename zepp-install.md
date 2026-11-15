@@ -42,7 +42,10 @@ and troubleshooting may use a computer.
 While Faceclaw Remote is open, it keeps its messaging session over the existing
 Zepp connection. You do not need to pair again for each action. The watch screen
 stays on for up to two minutes after interaction; when it turns off, status
-polling pauses. This does not keep the screen or phone service awake indefinitely.
+polling pauses. Version 0.1.7 reuses the readiness handshake while the watch
+screen is awake, establishing readiness again after sleep, connection changes or
+request failure. This does not keep the screen or phone service awake indefinitely.
+It removes a round trip, but a command must still finish before another is sent.
 
 ## 1. Install this branch's Android build
 
@@ -222,8 +225,14 @@ commands, and you do not need to restart it each time you use the remote.
 
 ### Updating an installed watch app
 
-Version **0.1.6 (code 20)** recognizes a hold after **0.6 seconds while your finger
-is still down**. For tap-then-hold, tap once, touch again within **0.3 seconds**,
+Version **0.1.7 (code 21)** reuses the phone messaging session while the watch
+screen is awake instead of handshaking before every command. It establishes
+readiness again after sleep, connection changes or a failed request. It does not
+retry an uncertain command, and **Busy · Not sent** can still appear while the
+previous command is awaiting its reply.
+
+The 0.1.6 hold improvements remain: a hold triggers after **0.6 seconds while your
+finger is still down**. For tap-then-hold, tap once, touch again within **0.3 seconds**,
 and hold that second contact for **0.6 seconds**. Dragging before the threshold
 cancels the hold. Lifting after recognition sends no extra event.
 
@@ -278,6 +287,14 @@ voice and motion features are not implied.
    remains the select/open button.
 7. Lock the **phone**, wait at least a minute, and repeat opening, scrolling and
    closing. Repeat after several minutes and after reconnecting the watch.
+8. Let the **watch** screen sleep, then wake it and check that status refreshes
+   before sending another gesture. Test reconnecting Bluetooth and restarting
+   Zepp as well: recovery should restore status without repeating a prior action.
+   A silent phone-service restart may cause one failed request before recovery.
+9. Swipe several times with the watch awake and check the progress banner. Each
+   accepted command should have one effect. A swipe marked **Busy · Not sent**
+   must not run later. Compare responsiveness with the prior build; automated
+   transport tests do not establish the physical watch's latency.
 
 Phone lock and **Faceclaw's glasses security lock** are different. The server can
 run while the phone screen is locked, but a locked glasses session intentionally
@@ -345,7 +362,7 @@ settings do not require Developer Bridge to remain running.
 | Token missing/unauthorized | Open the clearly labelled token field in Zepp, paste the complete token, save, and reopen the watch app. A revoked token needs replacement. |
 | Permission denied | In Faceclaw, check the token's **Provide input** permission and **Settings → Watch**. Check glasses lock separately. |
 | Faceclaw cannot be reached | Open Faceclaw, check **Input tokens → Connection information** for `127.0.0.1:8791`, and confirm this branch's APK is installed. Both phone apps must run on the same Android phone. Do not change the address to the watch's or computer's IP. |
-| Frequent “Busy · Not sent” | Install watch version 0.1.6. It includes the status-check improvements from 0.1.5, but another action must still finish before the next one is sent. Watch the progress banner; re-pairing or leaving Developer Bridge open does not remove that wait. |
+| Frequent “Busy · Not sent” | Install watch version 0.1.7. It reuses phone readiness while awake and includes the earlier status-check improvements, but another action must still finish before the next one is sent. Watch the progress banner; re-pairing or leaving Developer Bridge open does not remove that wait. |
 | Works unlocked, stops after locking the phone | Check background limits for both apps; repeat the locked-phone test. If unresolved, report the phone/Android/Zepp versions and the exact error. Do not assume keeping USB or Bridge connected is the fix. |
 | App is listed but glasses stay blank | Open that app directly in Faceclaw. Check glasses connection/display/lock and that app's Faceclaw compatibility before retrying the watch. |
 | Faceclaw repeatedly reports “CFW recovery retry limit” | Install this branch's updated Android APK. If G2 repeatedly rejects display-resource allocations, it switches automatically to rendering the complete screen on the phone. App controls remain available; stereoscopic depth and retained glasses-side animations are disabled for that connection. Other transport failures still require diagnosis from the logs. Firmware version `2.3.0.24` alone does not identify incompatibility; Faceclaw checks its separate firmware revision. |

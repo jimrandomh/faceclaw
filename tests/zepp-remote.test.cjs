@@ -59,7 +59,7 @@ function fixture() {
     watchControlEnabled: () => remote.controlEnabled(),
     watchState: () => remote.buildState(), watchCommand: payload => remote.executeCommand(payload) };
   const request = payload => protocol.handleRequest(JSON.stringify({ version: 1, token, ...payload }), tokens, host);
-  return { calls, state, preferences, windows, remote, wearHost, tokens, record, request };
+  return { calls, state, preferences, windows, remote, wearHost, tokens, token, record, request };
 }
 
 test('Zepp retrieves built-in and installed app IDs and exact running window IDs without Wear OS', async () => {
@@ -119,6 +119,34 @@ test('connect acknowledges immediately even when BLE connection is still pending
   ]);
   assert.equal(reply.ok, true);
   assert.equal(reply.message, 'Connecting...');
+});
+
+test('a watch command exception after side effects stays unknown without retrying', async () => {
+  const f = fixture();
+  f.wearHost.launchApp = async id => {
+    f.calls.push(['launch', id]);
+    throw new Error('failure after opening the window');
+  };
+  const { phoneRequest } = await import('../zepp/lib/protocol.js');
+  let posts = 0;
+  await assert.rejects(phoneRequest(async request => {
+    posts++;
+    const reply = await f.request(JSON.parse(request.body));
+    assert.equal(reply.ok, false);
+    assert.equal(reply.error, 'failed');
+    return { status: 200, body: reply };
+  }, { kind: 'command', command: 'launch-app', appId: 'transcribe' }, f.token), /Result unknown/);
+  assert.equal(posts, 1);
+  assert.deepEqual(f.calls, [['wake'], ['launch', 'transcribe']]);
+});
+
+test('an explicit watch command refusal remains a definite rejection', async () => {
+  const f = fixture();
+  const reply = await f.request({ action: 'watch-command', command: 'launch-app', appId: 'missing' });
+  assert.equal(reply.ok, false);
+  assert.equal(reply.error, 'unavailable');
+  assert.match(reply.message, /Unknown app/);
+  assert.deepEqual(f.calls, []);
 });
 
 test('the Watch setting does not disable explicitly authorized ring-source input', async () => {
