@@ -71,7 +71,7 @@ npm run preview -- --app-id YOUR_APP_ID
 npm run bridge -- --app-id YOUR_APP_ID
 ```
 
-`npm run build` with no ID creates a verification package using placeholder `99999999`. Preview/bridge require a real registered ID. `FACECLAW_ZEPP_APP_ID` also supplies the ID. The packaging wrapper uses a temporary project and leaves the checked-in manifest unchanged. Packaged files are copied to `dist/`. Device IDs: `8519936`, `8519937`, `8519939`; minimum/target API level 3.0; version 0.1.11, package version code 25.
+`npm run build` with no ID creates a verification package using placeholder `99999999`. Preview/bridge require a real registered ID. `FACECLAW_ZEPP_APP_ID` also supplies the ID. The packaging wrapper uses a temporary project and leaves the checked-in manifest unchanged. Packaged files are copied to `dist/`. Device IDs: `8519936`, `8519937`, `8519939`; minimum/target API level 3.0; version 0.1.12, package version code 26.
 
 `npm run render -- /path/to/playwright` renders sample states from the real watch widget code and checks for text overflow and circular-screen clipping. These are **layout previews**, not hardware screenshots.
 
@@ -111,6 +111,15 @@ during active touch and recent input. Successful directional swipes and scrollin
 skip the extra immediate status request. Taps, double taps, holds, and commands
 still refresh status, including after a double tap wakes the display. Status
 after directional navigation is updated by the next idle check.
+
+While successful directional input keeps the idle check deferred, same-target
+navigation replies renew a separate 15-second readiness window from send time.
+This keeps continuous scrolling usable without treating the app/status snapshot
+as freshly read. Taps, holds and app/status commands still need a recent status
+read. An expired snapshot or missing navigation context starts an automatic
+read, shows **Syncing · Try again**, and silently skips that input. Repeat it
+after sync; it is never replayed automatically. Sleep, session/target changes,
+rejection and unknown results require fresh state before navigation resumes.
 
 One unsent gesture or app action may wait up to one second behind a status check.
 It is revalidated against the reply and discarded if its state, target, selection,
@@ -189,3 +198,9 @@ the watch/Zepp path, but does not establish the exact cause. Subsequent hardware
 Version 0.1.10 adds failure vibration and two-decimal durations on the watch, with direct Apps/Status buttons. The corresponding Android build changes watch crown input in icon grids to reading-order traversal across rows; directional swipes retain their spatial meaning. Ring row/item modes remain unchanged. Vibration uses [Zepp's API 2.0 notification scene](https://docs.zepp.com/docs/reference/device-app-api/newAPI/sensor/Vibrator/), followed by stop, with teardown on sleep/navigation/exit. It does not require a newer Balance API level.
 
 Version 0.1.11 is watch-only. It reverses crown direction in both local lists and glasses controls, rate-limits rapid reversals, and sends at most one physical crown command at a time. Extra turns are dropped before command feedback begins, without queueing or error haptics. A status read may hold the newest crown intent for up to 350ms; expiration stays visible but does not vibrate. A crown command that was sent and fails or has an unknown outcome still vibrates. Touch swipes retain the four-request burst. Local selection redraws only the list, and elapsed-time ticks update only changed feedback properties.
+
+Version 0.1.12 fixes false **Refresh phone first** failures after 15 seconds of
+continuous successful navigation. Same-session, same-target acknowledgements
+renew only directional readiness. Other actions retain full status freshness
+checks. Necessary automatic preparation shows **Syncing · Try again** without
+failure vibration or replay. The existing Android build and token remain valid.

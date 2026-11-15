@@ -264,11 +264,19 @@ Page(BasePage({
     this.commandFeedback.update(pending.id, 'sending');
     this.perform(operation, pending.returnToPad, false, pending.id);
   },
-  canControl(allowDisconnected = false, feedbackId = null) {
-    if (!this.phoneState || this.linkError || Date.now() - this.stateTime > 15000) {
-      if (feedbackId) this.commandFeedback.finish(feedbackId, 'blocked', 'Refresh phone first');
-      this.setNotice('Refresh the phone connection first.', true); this.refresh(); return false;
-    }
+  refreshBeforeInput(feedbackId) {
+    // Preparation is not a failed gesture. Refresh automatically, but never
+    // replay an input that was recognized against an old snapshot/context.
+    if (feedbackId) this.commandFeedback.finish(feedbackId, 'skipped', 'Syncing · Try again', { silent: true });
+    this.refresh(); return false;
+  },
+  canControl(allowDisconnected = false, feedbackId = null, navigation = false) {
+    // A same-target navigation ACK renews only directional readiness. Taps,
+    // holds and app/status commands still require a recent full state read.
+    const time = navigation && this.phoneState && this.phoneState.navigationSupported && !this.navNeedsRefresh
+      ? Math.max(this.stateTime, this.navigationTime) : this.stateTime;
+    const age = Date.now() - time;
+    if (!this.phoneState || this.linkError || age < 0 || age > 15000) return this.refreshBeforeInput(feedbackId);
     if (!this.phoneState.remoteEnabled) {
       if (feedbackId) this.commandFeedback.finish(feedbackId, 'blocked', 'Watch control is off');
       this.setNotice('Enable watch control in Faceclaw.', true); return false;
@@ -287,7 +295,7 @@ Page(BasePage({
     this.cancelPendingInput(); this.cancelPendingCrown(); this.notice = '';
     const operation = { kind: 'gesture', gesture };
     const id = this.commandFeedback.begin(operation, this.busy ? 'queued' : 'sending');
-    if (!this.canControl(false, id)) return;
+    if (!this.canControl(false, id, true)) return;
     if (!this.phoneState.screenOn || this.phoneState.locked) {
       this.commandFeedback.finish(id, 'blocked', this.phoneState.locked ? 'Glasses are locked' : 'Double tap to wake'); return;
     }
@@ -312,7 +320,7 @@ Page(BasePage({
     }
     const age = Date.now() - pending.at;
     if (age < 0 || age > 350) { this.commandFeedback.finish(pending.id, 'skipped', 'Turn crown again', { silent: true }); return; }
-    if (!this.canControl(false, pending.id)) return;
+    if (!this.canControl(false, pending.id, true)) return;
     if (!this.phoneState.screenOn || this.phoneState.locked) {
       this.commandFeedback.finish(pending.id, 'blocked', this.phoneState.locked ? 'Glasses are locked' : 'Double tap to wake'); return;
     }
@@ -325,7 +333,7 @@ Page(BasePage({
     const polling = this.busy && this.busyKind === 'state';
     const operation = { kind: 'gesture', gesture }, id = this.commandFeedback.begin(operation, polling ? 'queued' : 'sending');
     if (this.phoneState && this.phoneState.navigationSupported && /^(swipe|scroll)-/.test(gesture) && (!this.busy || this.busyKind === 'navigation')) {
-      if (!this.canControl(false, id) || !this.canGesture(gesture, id)) return;
+      if (!this.canControl(false, id, true) || !this.canGesture(gesture, id)) return;
       this.sendNavigation(operation, id); return;
     }
     if (this.busy && !polling) { this.commandFeedback.finish(id, 'blocked', 'Busy · Not sent'); return; }
@@ -376,7 +384,7 @@ Page(BasePage({
   resetNavigation() {
     if (this.navSession) this.linkSession.cancelNavigation(this.navSession);
     this.navSession = 'nav-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10);
-    this.navSequence = 0; this.navNeedsRefresh = true;
+    this.navSequence = 0; this.navNeedsRefresh = true; this.navigationTime = 0;
     if (this.phoneState) this.phoneState.navigationSupported = false;
   },
   async sendNavigation(operation, id) {
@@ -384,10 +392,10 @@ Page(BasePage({
       this.commandFeedback.finish(id, 'blocked', 'Finish current action'); return;
     }
     if (this.navNeedsRefresh || !this.phoneState.navigationContext) {
-      this.commandFeedback.finish(id, 'blocked', 'Refresh phone first'); this.refresh(); return;
+      this.refreshBeforeInput(id); return;
     }
     if (this.navRequests.size >= 4) { this.commandFeedback.finish(id, 'blocked', 'Too many swipes · Not sent'); return; }
-    const sessionId = this.navSession, context = this.phoneState.navigationContext;
+    const sessionId = this.navSession, context = this.phoneState.navigationContext, sentAt = Date.now();
     this.navRequests.set(id, { context }); this.busy = true; this.busyKind = 'navigation';
     // Feedback already updated the small progress pill. Avoid native layout and
     // visibility writes on the touchpad's hot path before handing off the input.
@@ -408,7 +416,11 @@ Page(BasePage({
     }
     if (result && result.ok === true) {
       this.commandFeedback.finish(id, 'accepted');
-      if (!result.navigation || result.navigation.context !== context) this.navNeedsRefresh = true;
+      if (!result.navigation || result.navigation.version !== 1 || result.navigation.context !== context) this.navNeedsRefresh = true;
+      // The phone rechecks permission, lock, connection, target and expiry for
+      // each direction. Use send time so a delayed ACK cannot inflate the lease;
+      // another failed/context-changing reply in this burst must keep it closed.
+      else if (!this.navNeedsRefresh) this.navigationTime = Math.max(this.navigationTime, sentAt);
     } else if (result && result.notSent === true || failure && failure.notSent === true) {
       this.commandFeedback.finish(id, 'skipped', result && result.code === 'expired' ? 'Swipe expired · Not sent' : 'Not sent · Refresh phone');
       this.navNeedsRefresh = true;

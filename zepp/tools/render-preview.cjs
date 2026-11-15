@@ -32,6 +32,8 @@ const root = path.resolve(__dirname, '..');
   w.touch('down', 240, 230); w.touch('up', 240, 230, 50); w.advance(150);
   w.touch('down', 240, 230); w.advance(600); snapshots.push(snapshot('Tap then hold at 0.6s'));
   w.touch('up', 240, 230); await w.reply({ ok: true }); await w.reply();
+  for (let i = 0; i < 32; i++) { w.advance(500); w.page.noteActivity(); }
+  w.crown(24, 0); snapshots.push(snapshot('Automatic sync · Turn again')); await w.reply();
   w.page.onDestroy();
   const browser = await chromium.launch({ headless: true });
   try {

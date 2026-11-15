@@ -226,6 +226,15 @@ commands, and you do not need to restart it each time you use the remote.
 
 ### Updating an installed watch app
 
+Version **0.1.12 (code 26)** fixes false **Refresh phone first** failures during
+continuous successful crown/swipe navigation. Same-target replies keep navigation
+ready while the idle status check is deferred. Taps, holds and app/status
+commands still require recent status. When a read is needed, the watch refreshes
+automatically and shows **Syncing · Try again**, without vibrating. Repeat that
+input after sync; it was not sent and will not replay. Install only the watch
+update; Android build 9008 and your token remain valid. Hardware confirmation of
+the fix is pending.
+
 Version **0.1.11 (code 25)** reverses the crown in both glasses controls and the
 watch's Apps/Status lists. Crown movement admits one command at a time, with
 excess rotation quietly discarded while a mutation is pending. This prevents
@@ -353,7 +362,7 @@ banner that advances from **Sending** to **Phone received** to **Accepted**.
 The phone receipt is best effort, so that stage can be skipped.
 The elapsed time helps distinguish a slow reply from an undetected
 swipe. Phone acceptance does not establish that a glasses frame was displayed.
-The watch vibrates when a sent gesture fails or expires, or its result is unknown; unavailable touch gestures also vibrate. Excess physical crown rotation is quietly filtered before creating a command, and a crown intent that expires while waiting behind a read stays silent. It stays silent for successful gestures, background status reads,
+The watch vibrates when a sent gesture fails or expires, or its result is unknown; unavailable touch gestures also vibrate. Automatic preparation (**Syncing · Try again**) is silent and never replays the skipped input. Excess physical crown rotation is quietly filtered before creating a command, and a crown intent that expires while waiting behind a read stays silent. It stays silent for successful gestures, background status reads,
 and inputs intentionally canceled by a newer input or leaving the screen.
 
 **Waiting** means a recognized gesture or app action is waiting for a status

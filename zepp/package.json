@@ -1,6 +1,6 @@
 {
   "name": "faceclaw-zepp",
-  "version": "0.1.11",
+  "version": "0.1.12",
   "private": true,
   "type": "module",
   "description": "Faceclaw remote for Amazfit Balance",
