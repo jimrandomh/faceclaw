@@ -22,9 +22,69 @@ export type RemoteHost = {
   watchState?(): Record<string, unknown> | undefined;
   watchCommand?(request: WatchCommandRequest): Promise<WatchCommandReply>;
   watchControlEnabled?(): boolean;
+  /** Null means navigation cannot safely act on the current glasses display. */
+  navigationContext?(): string | null;
 };
-export type Reply = { ok: true; state?: Record<string, unknown>; message?: string } | { ok: false; error: string; message: string };
+export type NavigationState = { version: 1; context: string | null };
+export type Reply = { ok: true; state?: Record<string, unknown>; message?: string; navigation?: NavigationState } | { ok: false; error: string; message: string };
 const error = (code: string, message: string): Reply => ({ ok: false, error: code, message });
+const NAVIGATION_GESTURES: readonly RemoteGesture[] = ['scroll-up', 'scroll-down', 'swipe-up', 'swipe-down', 'swipe-left', 'swipe-right'];
+const NAVIGATION_MAX_FUTURE_MS = 2000;
+const NAVIGATION_MAX_RECORDS = 128;
+type NavigationRecord = { pending: boolean; until: number };
+// Shared by all listeners using this token store. Never evict a live record to
+// make room: doing so could let a delayed duplicate execute a second time.
+const navigationRecords = new WeakMap<TokenStore, Map<string, NavigationRecord>>();
+
+function validNavigationContext(value: unknown): value is string {
+  return typeof value === 'string' && value.trim().length > 0 && value.length <= 256 && !/[\x00-\x1f\x7f]/.test(value);
+}
+
+function navigationState(host: RemoteHost): NavigationState {
+  const context = host.navigationContext?.();
+  return { version: 1, context: validNavigationContext(context) ? context : null };
+}
+
+async function handleWatchNavigation(request: Record<string, unknown>, token: TokenRecord, tokens: TokenStore, host: RemoteHost): Promise<Reply> {
+  if (!token.permissions.includes('input')) return error('forbidden', 'Token lacks input permission.');
+  const { requestId, expiresAt, context, gesture } = request;
+  if (typeof requestId !== 'string' || requestId.length >= 96 || !/^fc-[a-z0-9-]+$/.test(requestId) ||
+      typeof expiresAt !== 'number' || !Number.isSafeInteger(expiresAt) || !validNavigationContext(context) ||
+      typeof gesture !== 'string' || !NAVIGATION_GESTURES.includes(gesture as RemoteGesture) ||
+      (request.source !== undefined && request.source !== 'watch')) {
+    return error('bad_request', 'Invalid watch navigation request.');
+  }
+  const now = Date.now();
+  let records = navigationRecords.get(tokens);
+  if (!records) { records = new Map(); navigationRecords.set(tokens, records); }
+  for (const [key, record] of records) if (!record.pending && record.until <= now) records.delete(key);
+  const key = `${token.hash}:${requestId}`;
+  // A duplicate may refer to an input still running, or to one whose reply was
+  // lost. It is not evidence that the original input failed or was not sent.
+  if (records.has(key)) return error('duplicate', 'Navigation was already received; its original result may be unknown.');
+  if (expiresAt <= now) return error('expired', 'Navigation expired before it was sent to the glasses.');
+  if (expiresAt > now + NAVIGATION_MAX_FUTURE_MS) return error('bad_request', 'Navigation expiry is too far in the future.');
+  if (records.size >= NAVIGATION_MAX_RECORDS) return error('busy', 'Navigation is busy. This input was not sent.');
+  if (!host.navigationContext) return error('unavailable', 'Watch navigation is unavailable in this build.');
+  if (host.watchControlEnabled?.() !== true) return error('forbidden', "Watch control is turned off in Faceclaw's Settings > Watch.");
+  if (!host.ready()) return error('unavailable', 'Faceclaw is not ready for input.');
+  if (host.locked()) return error('locked', 'The glasses are locked.');
+  if (navigationState(host).context !== context) return error('context_changed', 'The glasses target changed. This input was not sent.');
+  // There is no await between this last expiry/context check, reserving the ID,
+  // and dispatch. A request delayed in the native socket backlog cannot revive.
+  if (Date.now() >= expiresAt) return error('expired', 'Navigation expired before it was sent to the glasses.');
+  const record = { pending: true, until: Math.max(expiresAt, now + NAVIGATION_MAX_FUTURE_MS) };
+  records.set(key, record);
+  try {
+    await host.input(gesture as RemoteGesture, 'watch');
+    return { ok: true, navigation: navigationState(host) };
+  } catch {
+    return error('failed', 'Faceclaw could not complete navigation. Its result may be unknown.');
+  } finally {
+    record.pending = false;
+    record.until = Math.max(record.until, Date.now() + NAVIGATION_MAX_FUTURE_MS);
+  }
+}
 
 export class TokenStore {
   constructor(private readonly read: () => string, private readonly write: (json: string) => void,
@@ -74,7 +134,7 @@ export async function handleRequest(body: string, tokens: TokenStore, host: Remo
   if (!request || typeof request !== 'object' || Array.isArray(request)) return error('bad_request', 'Expected a JSON object.');
   const token = tokens.authenticate(request.token);
   if (!token) return error('unauthorized', 'Invalid or revoked token.');
-  const watchRequest = request.action === 'watch-state' || request.action === 'watch-command';
+  const watchRequest = request.action === 'watch-state' || request.action === 'watch-command' || request.action === 'watch-navigation';
   if (request.version !== 1 || (request.action !== 'ping' && !watchRequest && !PERMISSIONS.includes(request.action))) return error('bad_request', 'Expected version 1 and a supported action.');
   if (request.action === 'ping') {
     if (request.permission !== undefined && !PERMISSIONS.includes(request.permission)) return error('bad_request', 'Invalid permission.');
@@ -86,9 +146,10 @@ export async function handleRequest(body: string, tokens: TokenStore, host: Remo
   if (watchRequest) {
     if (!token.permissions.includes('input')) return error('forbidden', 'Token lacks input permission.');
     try {
+      if (request.action === 'watch-navigation') return await handleWatchNavigation(request, token, tokens, host);
       if (request.action === 'watch-state') {
         const state = host.watchState?.();
-        return state ? { ok: true, state } : error('unavailable', 'Open Faceclaw on the phone first.');
+        return state ? { ok: true, state, ...(host.navigationContext ? { navigation: navigationState(host) } : {}) } : error('unavailable', 'Open Faceclaw on the phone first.');
       }
       if (!WATCH_COMMANDS.includes(request.command)) return error('bad_request', 'Unknown watch command.');
       const field = request.command === 'launch-app' ? 'appId' :

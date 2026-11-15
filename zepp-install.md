@@ -225,7 +225,15 @@ commands, and you do not need to restart it each time you use the remote.
 
 ### Updating an installed watch app
 
-Version **0.1.7 (code 21)** reuses the phone messaging session while the watch
+Version **0.1.8 (code 22)** adds rapid directional navigation. Install the updated
+Android APK first, then the watch package. After opening the watch app, it can
+send up to four swipes/crown steps without waiting for each full reply. The phone
+processes them in order; waiting input expires after one second and is canceled
+if the target changes or an earlier result is uncertain. Taps, holds and app
+commands remain exclusive. A fifth outstanding direction is visibly not sent.
+Older phone APKs keep the previous one-request behavior.
+
+Version 0.1.7's connection improvement remains: it reuses the phone messaging session while the watch
 screen is awake instead of handshaking before every command. It establishes
 readiness again after sleep, connection changes or a failed request. It does not
 retry an uncertain command, and **Busy · Not sent** can still appear while the
@@ -241,8 +249,7 @@ held/released input stream, hold-to-talk, or game escape controls. Version 0.1.5
 reduced status-check interruptions and other earlier fixes remain included.
 
 Install the updated watch package using the same App ID, then leave Faceclaw
-Remote with the lower side button and reopen it. The existing phone APK and input
-token remain valid. The update also includes the earlier command-progress,
+Remote with the lower side button and reopen it. This update needs the new phone APK; your existing input token remains valid. The update also includes the earlier command-progress,
 local-list-scrolling, and “Watch control off” fixes.
 
 ## 6. Paste the token in Zepp
@@ -319,8 +326,11 @@ swipe. Phone acceptance does not establish that a glasses frame was displayed.
 **Waiting** means a recognized gesture or app action is waiting for a status
 check, for at most one second. It is sent only if the latest state and selection
 still match. Changing selection, navigating, sleeping, or quitting cancels it.
-**Busy · Not sent** means an actual action is still awaiting its reply; the new
-action was not queued. **Result unknown** means the reply was lost or invalid;
+**Busy · Not sent** means an exclusive action is still awaiting its reply, or
+the installed phone APK does not support navigation bursts. With both 0.1.8
+components installed, up to four directions can be outstanding. **Too many
+swipes · Not sent** means that limit was reached; **Swipe expired · Not sent**
+means a waiting direction became more than one second old. **Result unknown** means the reply was lost or invalid;
 check the glasses before trying again. A queued crown step that expires shows
 **Turn crown again**. Commands are never automatically retried.
 
@@ -362,7 +372,7 @@ settings do not require Developer Bridge to remain running.
 | Token missing/unauthorized | Open the clearly labelled token field in Zepp, paste the complete token, save, and reopen the watch app. A revoked token needs replacement. |
 | Permission denied | In Faceclaw, check the token's **Provide input** permission and **Settings → Watch**. Check glasses lock separately. |
 | Faceclaw cannot be reached | Open Faceclaw, check **Input tokens → Connection information** for `127.0.0.1:8791`, and confirm this branch's APK is installed. Both phone apps must run on the same Android phone. Do not change the address to the watch's or computer's IP. |
-| Frequent “Busy · Not sent” | Install watch version 0.1.7. It reuses phone readiness while awake and includes the earlier status-check improvements, but another action must still finish before the next one is sent. Watch the progress banner; re-pairing or leaving Developer Bridge open does not remove that wait. |
+| Frequent “Busy · Not sent” | Install watch version 0.1.8 and the matching Android APK. They pipeline up to four directions over the warm session. Taps/holds/app commands remain exclusive. Waiting directions expire after one second; slow transport can still drop input visibly. Watch the progress banner; re-pairing or leaving Developer Bridge open does not remove that wait. |
 | Works unlocked, stops after locking the phone | Check background limits for both apps; repeat the locked-phone test. If unresolved, report the phone/Android/Zepp versions and the exact error. Do not assume keeping USB or Bridge connected is the fix. |
 | App is listed but glasses stay blank | Open that app directly in Faceclaw. Check glasses connection/display/lock and that app's Faceclaw compatibility before retrying the watch. |
 | Faceclaw repeatedly reports “CFW recovery retry limit” | Install this branch's updated Android APK. If G2 repeatedly rejects display-resource allocations, it switches automatically to rendering the complete screen on the phone. App controls remain available; stereoscopic depth and retained glasses-side animations are disabled for that connection. Other transport failures still require diagnosis from the logs. Firmware version `2.3.0.24` alone does not identify incompatibility; Faceclaw checks its separate firmware revision. |

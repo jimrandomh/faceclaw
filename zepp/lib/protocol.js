@@ -17,7 +17,7 @@ function userError(message) {
 }
 
 const UNKNOWN_RESULT = 'Result unknown. Check the glasses before trying again.';
-const REJECTED_ERRORS = ['unauthorized', 'forbidden', 'unavailable', 'bad_request', 'locked'];
+const REJECTED_ERRORS = ['unauthorized', 'forbidden', 'unavailable', 'bad_request', 'locked', 'expired', 'context_changed', 'busy'];
 
 export function requestBody(operation, token) {
   if (!cleanToken(token)) throw userError('Add your input token in Zepp → Faceclaw Remote settings.');
@@ -71,6 +71,15 @@ export function normalizeState(value) {
 // unanswered launch/input may have executed and must never be replayed.
 export async function phoneRequest(fetcher, operation, token, options = {}) {
   const body = requestBody(operation, token);
+  if (options.navigation) {
+    const nav = options.navigation;
+    if (operation.kind !== 'gesture' || !/^(swipe-(up|down|left|right)|scroll-(up|down))$/.test(operation.gesture) ||
+        typeof nav.requestId !== 'string' || nav.requestId.length >= 96 || !/^fc-[a-z0-9-]+$/.test(nav.requestId) ||
+        !Number.isSafeInteger(nav.expiresAt) || typeof nav.context !== 'string' || !nav.context || nav.context.length > 256) {
+      throw userError('Invalid navigation request.');
+    }
+    Object.assign(body, { action: 'watch-navigation', requestId: nav.requestId, expiresAt: nav.expiresAt, context: nav.context });
+  }
   const isState = operation.kind === 'state';
   const start = options.setTimeout || setTimeout, stop = options.clearTimeout || clearTimeout;
   let timer;
@@ -99,6 +108,9 @@ export async function phoneRequest(fetcher, operation, token, options = {}) {
         (result.ok === undefined || result.ok === false) && result.error !== 'failed' && result.error !== 'timeout';
       if (!accepted && !rejected && !httpRejected) throw userError(UNKNOWN_RESULT);
     }
+    if (options.navigation && result && result.ok === false && REJECTED_ERRORS.indexOf(result.error) >= 0) {
+      return { ok: false, notSent: true, code: result.error, error: title(result.message) || 'Navigation was not sent.' };
+    }
     if (response.status === 401 || response.status === 403) throw userError('Check the input token and its Provide input permission.');
     if (!result || result.ok !== true) {
       if (result && result.error === 'unauthorized') throw userError('Input token expired or revoked. Copy a new token from Faceclaw into Zepp settings.');
@@ -108,7 +120,11 @@ export async function phoneRequest(fetcher, operation, token, options = {}) {
       throw userError('Faceclaw refused the command. Check the phone.');
     }
     if (response.status && (response.status < 200 || response.status >= 300)) throw userError('Faceclaw request failed. Check the phone.');
-    return isState ? { ok: true, state: normalizeState(result.state) } : { ok: true, message: title(result.message) || 'Sent to Faceclaw' };
+    if (isState) return { ok: true, state: { ...normalizeState(result.state),
+      navigationSupported: !!(result.navigation && result.navigation.version === 1),
+      navigationContext: result.navigation && typeof result.navigation.context === 'string' ? result.navigation.context : null } };
+    return { ok: true, message: title(result.message) || 'Sent to Faceclaw',
+      ...(options.navigation ? { navigation: { version: 1, context: result.navigation && typeof result.navigation.context === 'string' ? result.navigation.context : null } } : {}) };
   } catch (error) {
     // Never include transport internals (which may contain the token/body).
     if (error && error.userVisible === true) throw error;

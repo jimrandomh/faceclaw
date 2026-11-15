@@ -48,8 +48,12 @@ visible effect.
 If a status check is already running, one gesture or app action can show
 **Waiting** for up to one second before it is sent. It is canceled if the state,
 target, selection, or screen context changes. **Busy · Not sent** still appears
-while an actual action is awaiting its reply; taps, swipes, and app actions do not
-queue behind sent actions. Sleeping or locked glasses show the applicable reason. A pending crown
+while a tap, hold, app action, or legacy-phone request is awaiting its reply.
+With the updated phone APK, directional swipes and crown steps use a burst of up
+to four requests, each with its own reply ID. The phone sends one HTTP request
+at a time, and waiting directions expire after one second. A fifth outstanding
+input shows **Too many swipes · Not sent**. Taps, holds and app commands stay
+exclusive so they cannot overtake navigation. Sleeping or locked glasses show the applicable reason. A pending crown
 step expires visibly with **Turn crown again**. A timeout, transport loss, or
 malformed reply shows **Result unknown**; commands are never automatically
 retried. Navigation, watch sleep, and exit clear pending input and old feedback.
@@ -69,7 +73,7 @@ npm run preview -- --app-id YOUR_APP_ID
 npm run bridge -- --app-id YOUR_APP_ID
 ```
 
-`npm run build` with no ID creates a verification package using placeholder `99999999`. Preview/bridge require a real registered ID. `FACECLAW_ZEPP_APP_ID` also supplies the ID. The packaging wrapper uses a temporary project and leaves the checked-in manifest unchanged. Packaged files are copied to `dist/`. Device IDs: `8519936`, `8519937`, `8519939`; minimum/target API level 3.0; version 0.1.7, package version code 21.
+`npm run build` with no ID creates a verification package using placeholder `99999999`. Preview/bridge require a real registered ID. `FACECLAW_ZEPP_APP_ID` also supplies the ID. The packaging wrapper uses a temporary project and leaves the checked-in manifest unchanged. Packaged files are copied to `dist/`. Device IDs: `8519936`, `8519937`, `8519939`; minimum/target API level 3.0; version 0.1.8, package version code 22.
 
 `npm run render -- /path/to/playwright` renders sample states from the real watch widget code and checks for text overflow and circular-screen clipping. These are **layout previews**, not hardware screenshots.
 
@@ -96,8 +100,10 @@ silently restarts, a request can still fail before readiness is re-established.
 The normal idle status checks also exercise the session.
 
 Reusing readiness removes a round trip; it does not make slow commands concurrent.
-The watch still allows one command at a time. **Busy · Not sent** means the prior
-command is awaiting its reply, not that Bluetooth is pairing again. Device latency
+Version 0.1.8 pipelines directional inputs through the same warm session. The
+phone forwards one input at a time without waiting for its reply to return over
+Bluetooth before receiving the next input. **Busy · Not sent** remains for
+exclusive commands and older phone builds. Device latency
 and recovery after sleep, service restart, and Bluetooth loss require hardware
 verification.
 
@@ -110,7 +116,7 @@ after directional navigation is updated by the next idle check.
 
 One unsent gesture or app action may wait up to one second behind a status check.
 It is revalidated against the reply and discarded if its state, target, selection,
-or context changed, or the watch slept or exited. It never waits behind an action
+or context changed, or the watch slept or exited. Outside the navigation burst path it never waits behind an action
 already being sent. Crown scrolling separately retains at most the latest unsent
 step for 350ms behind a status check or crown request. Expired input is discarded;
 sent commands use one POST and are never replayed. A timeout means the result is
@@ -147,3 +153,22 @@ awake. Sleep, connection changes and request failures invalidate the session;
 commands waiting to be sent are canceled across a lifecycle change. It retains
 command acknowledgements, bounded pending input, and the no-retry policy. The
 existing phone APK and token remain valid.
+
+Version 0.1.8 removes the full watch round-trip wait between directional gestures
+when the phone advertises navigation support. It requires the corresponding
+Android update; older phones retain the single-request behavior. `watch-state`
+advertises a navigation version and input target. The Zepp service registers a
+watch session, admits up to four numbered directions, and serializes HTTP before
+socket creation. It forwards a phone-clock deadline and unique request ID to
+`watch-navigation`. The phone rechecks token permission, watch control, display,
+lock, connection, target and expiry immediately before input, and reserves IDs
+before execution to reject duplicates. Sidebar preview changes keep a stable
+sidebar target; changing windows or overlays ends a burst. This is a target
+check, not a revision of every selection or page inside an app.
+
+Waiting input expires after one second. Context changes or uncertain outcomes
+flush unsent work. Sleep/navigation/exit send a best-effort cancellation for the
+old watch session, with short expiry as the fallback if cancellation is lost.
+An already dispatched action cannot be retracted. No concurrent POSTs or retries
+are used. Replies carry queue/HTTP durations for diagnosis; acceptance still does
+not prove a visible glasses frame. Device latency must be verified on hardware.

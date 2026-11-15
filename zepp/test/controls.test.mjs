@@ -199,7 +199,7 @@ test('navigation, watch sleep and exit discard queued crown input', async () => 
   for (const cancel of [w => w.page.navigate('apps'), w => w.screen(2), w => w.key(8)]) {
     const w = watchFixture(); await w.reply(); w.page.refresh(); w.crown(-24, 10);
     cancel(w); await w.reply();
-    assert.equal(w.calls.length, 2); assert.equal(w.page.pendingCrown, null); w.page.onDestroy();
+    assert.ok(w.calls.every(call => call.kind === 'state')); assert.equal(w.page.pendingCrown, null); w.page.onDestroy();
   }
 });
 

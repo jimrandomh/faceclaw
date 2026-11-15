@@ -21,7 +21,7 @@ export function createMessagingSession(messaging) {
   if (!compatible(messaging)) {
     // A different ZML release retains its original transport, without guessing
     // at internals. The dependency/version regression test prevents silent drift.
-    return { supported: false, setAwake() {}, invalidate() {}, dispose() {},
+    return { supported: false, cancelNavigation() {}, setAwake() {}, invalidate() {}, dispose() {},
       snapshot: () => ({ supported: false, ready: false, validated: false }) };
   }
   const t = messaging.transport;
@@ -157,6 +157,12 @@ export function createMessagingSession(messaging) {
   });
   const controller = {
     supported: true,
+    cancelNavigation(sessionId) {
+      // Best effort cancellation uses only an already-ready port, with no async
+      // handshake that could later send on behalf of a sleeping page.
+      if (!readyNow() || typeof sessionId !== 'string') return;
+      try { original.sendJson.call(t, { json: { jsonrpc: 'hmrpcv1', method: 'FACECLAW_NAV_CANCEL', params: { sessionId } }, type: 3, contentType: 2, dataType: 0 }); } catch (_) {}
+    },
     setAwake(value) {
       const next = !!value;
       if (next === awake || disposed) return;

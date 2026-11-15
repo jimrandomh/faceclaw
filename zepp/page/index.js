@@ -14,6 +14,8 @@ Page(BasePage({
     this.alive = true; this.awake = true; this.phoneState = null; this.stateTime = 0; this.busy = false; this.busyKind = ''; this.pendingCrown = null; this.pendingCrownTimer = null; this.navigationEpoch = 0;
     this.pendingInput = null; this.pendingInputTimer = null; this.touching = false; this.lastInputAt = 0; this.wakeEpoch = 0;
     this.linkSession = createMessagingSession(this.messaging);
+    this.navSession = ''; this.navSequence = 0; this.navRequests = new Map(); this.navNeedsRefresh = false;
+    this.resetNavigation();
     this.screen = 'remote'; this.tray = false; this.selected = 0; this.linkError = ''; this.notice = ''; this.noticeError = false;
     this.groups = { remote: [], list: [], help: [], details: [] }; this.rows = []; this.crown = createCrownNavigation();
     this.pollTimer = null; this.noticeTimer = null; this.clockTimer = null;
@@ -119,7 +121,7 @@ Page(BasePage({
     this.screenChanged = () => {
       if (!this.alive) return;
       this.awake = this.screenSensor.getStatus() === 1; this.navigationEpoch++; this.wakeEpoch++;
-      this.linkSession.setAwake(this.awake);
+      this.resetNavigation(); this.linkSession.setAwake(this.awake);
       this.touching = false; this.lastInputAt = Date.now();
       this.cancelPendingInput(); this.cancelPendingCrown(); this.commandFeedback.clear(); this.clearNotice(); this.touch.reset(); this.crown.reset(); this.cancelPoll();
       if (this.awake) { this.updateClock(); this.refresh(); } // Never synthesize a glasses tap on wake.
@@ -158,7 +160,7 @@ Page(BasePage({
   },
   navigate(screen) {
     if (!this.alive) return;
-    this.navigationEpoch++;
+    this.navigationEpoch++; this.resetNavigation();
     this.cancelPendingInput(); this.cancelPendingCrown(); this.commandFeedback.clear(); this.touching = false; this.touch.reset(); this.crown.reset(); this.noteActivity();
     this.screen = screen; this.selected = 0; this.clearNotice(); this.render();
     if (screen === 'apps' || screen === 'status') this.refresh();
@@ -271,6 +273,7 @@ Page(BasePage({
     if (!this.phoneState.screenOn || this.phoneState.locked) {
       this.commandFeedback.finish(id, 'blocked', this.phoneState.locked ? 'Glasses are locked' : 'Double tap to wake'); return;
     }
+    if (this.phoneState.navigationSupported && (!this.busy || this.busyKind === 'navigation')) { this.sendNavigation(operation, id); return; }
     if (this.busy) {
       // Keep one unsent step; it expires visibly instead of silently disappearing.
       if (this.busyKind !== 'state' && this.busyKind !== 'crown') {
@@ -306,6 +309,10 @@ Page(BasePage({
     this.cancelPendingInput(); this.cancelPendingCrown(); this.notice = ''; this.noteActivity();
     const polling = this.busy && this.busyKind === 'state';
     const operation = { kind: 'gesture', gesture }, id = this.commandFeedback.begin(operation, polling ? 'queued' : 'sending');
+    if (this.phoneState && this.phoneState.navigationSupported && /^(swipe|scroll)-/.test(gesture) && (!this.busy || this.busyKind === 'navigation')) {
+      if (!this.canControl(false, id) || !this.canGesture(gesture, id)) return;
+      this.sendNavigation(operation, id); return;
+    }
     if (this.busy && !polling) { this.commandFeedback.finish(id, 'blocked', 'Busy · Not sent'); return; }
     if (!this.canControl(false, id)) return;
     if (!this.canGesture(gesture, id)) return;
@@ -351,6 +358,55 @@ Page(BasePage({
     if (polling) { this.queueInput(row.close, id); return; }
     this.perform(row.close, false, false, id);
   },
+  resetNavigation() {
+    if (this.navSession) this.linkSession.cancelNavigation(this.navSession);
+    this.navSession = 'nav-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10);
+    this.navSequence = 0; this.navNeedsRefresh = true;
+    if (this.phoneState) this.phoneState.navigationSupported = false;
+  },
+  async sendNavigation(operation, id) {
+    if (this.busy && this.busyKind !== 'navigation') {
+      this.commandFeedback.finish(id, 'blocked', 'Finish current action'); return;
+    }
+    if (this.navNeedsRefresh || !this.phoneState.navigationContext) {
+      this.commandFeedback.finish(id, 'blocked', 'Refresh phone first'); this.refresh(); return;
+    }
+    if (this.navRequests.size >= 4) { this.commandFeedback.finish(id, 'blocked', 'Too many swipes · Not sent'); return; }
+    const sessionId = this.navSession, context = this.phoneState.navigationContext;
+    this.navRequests.set(id, { context }); this.busy = true; this.busyKind = 'navigation';
+    this.cancelPoll(); this.keepAwake(); this.render();
+    let result, failure;
+    try {
+      result = await this.request({ method: 'FACECLAW', operation, requestId: id,
+        navigation: { sessionId, sequence: ++this.navSequence, context } }, { timeout: 11000 });
+    } catch (error) { failure = error; }
+    this.navRequests.delete(id);
+    if (!this.alive) return;
+    if (sessionId !== this.navSession) {
+      if (!this.navRequests.size && this.busyKind === 'navigation') {
+        this.busy = false; this.busyKind = ''; if (this.awake) this.refresh();
+      }
+      return;
+    }
+    if (result && result.ok === true) {
+      this.commandFeedback.finish(id, 'accepted');
+      if (!result.navigation || result.navigation.context !== context) this.navNeedsRefresh = true;
+    } else if (result && result.notSent === true || failure && failure.notSent === true) {
+      this.commandFeedback.finish(id, 'skipped', result && result.code === 'expired' ? 'Swipe expired · Not sent' : 'Not sent · Refresh phone');
+      this.navNeedsRefresh = true;
+    } else {
+      this.commandFeedback.finish(id, 'unknown');
+      this.setNotice('Result unknown. Check the glasses before trying again.', true);
+      this.linkSession.cancelNavigation(sessionId); this.linkSession.invalidate('Navigation failed'); this.resetNavigation();
+      if (!this.navRequests.size) { this.busy = false; this.busyKind = ''; this.refresh(); }
+      return;
+    }
+    if (this.navNeedsRefresh) this.linkSession.cancelNavigation(sessionId);
+    if (!this.navRequests.size) {
+      this.busy = false; this.busyKind = ''; this.render();
+      if (this.navNeedsRefresh) { this.resetNavigation(); this.refresh(); } else this.schedulePoll();
+    }
+  },
   async exchange(operation, crownScroll = false, feedbackId = null) {
     this.busy = true; this.busyKind = operation.kind === 'state' ? 'state' : crownScroll ? 'crown' : 'action';
     this.cancelPoll();
@@ -358,7 +414,7 @@ Page(BasePage({
     this.render();
     let explicitRejection = false;
     try {
-      const result = await this.request({ method: 'FACECLAW', operation, ...(feedbackId ? { requestId: feedbackId } : {}) }, { timeout: 11000 });
+      const result = await this.request({ method: 'FACECLAW', operation, ...(operation.kind === 'state' ? { navSession: this.navSession } : {}), ...(feedbackId ? { requestId: feedbackId } : {}) }, { timeout: 11000 });
       if (!result || result.ok !== true) {
         explicitRejection = !!(result && result.ok === false);
         throw new Error(result && result.error || 'No valid reply. Check the phone.');
@@ -387,15 +443,15 @@ Page(BasePage({
   },
   async refresh() {
     if (this.busy || !this.alive || !this.awake) return;
-    const wakeEpoch = this.wakeEpoch;
+    const wakeEpoch = this.wakeEpoch, navSession = this.navSession;
     const result = await this.exchange({ kind: 'state' });
     if (!this.alive) return;
     // A reply begun before sleep cannot establish current readiness on wake.
-    if (!this.awake || wakeEpoch !== this.wakeEpoch) { if (this.awake) this.refresh(); return; }
+    if (!this.awake || wakeEpoch !== this.wakeEpoch || navSession !== this.navSession) { if (this.awake) this.refresh(); return; }
     if (!result) return;
     // Local list navigation remains live while polling; preserve the latest selection.
     const key = this.rows[this.selected] && this.rows[this.selected].key;
-    this.phoneState = result.state; this.stateTime = Date.now(); this.linkError = '';
+    this.phoneState = result.state; this.navNeedsRefresh = false; this.stateTime = Date.now(); this.linkError = '';
     if (this.screen === 'details') { this.screen = 'remote'; this.tray = false; }
     this.rows = this.screen === 'apps' ? appRows(this.phoneState) : statusRows(this.phoneState);
     const index = this.rows.findIndex(row => row.key === key);
@@ -408,7 +464,9 @@ Page(BasePage({
     if (!crownScroll) this.cancelPendingCrown();
     if (this.busy || !this.alive || !this.awake) return;
     const id = feedbackId || this.commandFeedback.begin(operation), epoch = this.navigationEpoch;
+    if (operation.kind === 'gesture' && /^(swipe|scroll)-/.test(operation.gesture) && this.phoneState.navigationSupported) { this.sendNavigation(operation, id); return; }
     this.keepAwake(); this.touch.reset();
+    if (operation.kind !== 'state') this.resetNavigation();
     const result = await this.exchange(operation, crownScroll, id);
     if (!this.alive) return;
     if (result && this.awake) {
@@ -492,7 +550,7 @@ Page(BasePage({
   },
   dispose() {
     if (!this.alive) return;
-    this.linkSession.dispose();
+    this.resetNavigation(); this.linkSession.dispose();
     this.alive = false; this.touching = false; this.cancelPendingInput(); this.cancelPendingCrown(); this.commandFeedback.clear(); this.cancelPoll(); this.crown.reset(); this.touch.reset();
     if (this.clockTimer !== null) clearTimeout(this.clockTimer);
     if (this.noticeTimer !== null) clearTimeout(this.noticeTimer);

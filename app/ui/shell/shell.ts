@@ -1227,6 +1227,13 @@ class Shell {
     return { x: left, y, width: right - left, height: bottom - y };
   }
 
+  /** Stable while navigating sidebar previews; a window/overlay change ends a burst. */
+  describeNavigationTarget(): string {
+    if (this.screenOn && !this.activeVoiceLayer && !this.activeKeyboardLayer?.shownOnGlasses &&
+        this.stack.isAtBase() && this.focus === "sidebar") return "target=sidebar";
+    return this.describeInputTarget();
+  }
+
   /**
    * Compact description of where input is currently going, for the frame
    * timing export: "which app was drawing" is usually the first thing you need

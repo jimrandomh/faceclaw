@@ -49,7 +49,7 @@ function fixture({ adapted = true } = {}) {
     port1: 20, port2: port, appId: 12345, extra: 0, payload });
   const deliver = bytes => receive(0, bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength), bytes.byteLength);
   const parsed = () => packets.map(bytes => transport.readBin(bytes));
-  const requests = () => parsed().filter(packet => packet.type === 4).map(packet => {
+  const requests = () => parsed().filter(packet => packet.type === 4 && transport.readPayload(packet.payload).payloadType === 1).map(packet => {
     const payload = transport.readPayload(packet.payload);
     return { ...payload, body: JSON.parse(payload.payload.toString('utf8')), port: packet.port2 };
   });
@@ -234,4 +234,21 @@ test('a request while BLE is already off leaves no handshake timer and reconnect
   await assert.rejects(w.state(), /failed|disconnect/); await flush();
   assert.equal(w.timers.size, 0); assert.equal(w.requests().length, 0); assert.equal(w.shakes(), 0);
   w.ble(true); await w.ready(); assert.equal(w.shakes(), 1); assert.equal(w.session.snapshot().validated, true);
+});
+
+test('three rapid requests reuse one handshake and correlate responses arriving out of order', async () => {
+  const w = fixture(); await w.ready();
+  const first = w.command(), second = w.command(), third = w.command(); await flush();
+  const ids = w.mutations().map(request => request.traceId);
+  assert.equal(ids.length, 3); assert.equal(w.shakes(), 1);
+  w.reply({ ok: true, label: 'second' }, ids[1]); w.reply({ ok: true, label: 'first' }, ids[0]); w.reply({ ok: true, label: 'third' }, ids[2]);
+  assert.equal((await first).label, 'first'); assert.equal((await second).label, 'second'); assert.equal((await third).label, 'third');
+  await flush(); assert.equal(w.transport.handlers.size, 0); assert.equal(w.timers.size, 0);
+});
+
+test('cancel navigation uses a ready session without another handshake and cannot run after sleep', async () => {
+  const w = fixture(); await w.ready();
+  w.session.cancelNavigation('nav-session'); assert.equal(w.shakes(), 1);
+  w.session.setAwake(false); w.session.cancelNavigation('nav-session'); assert.equal(w.shakes(), 1);
+  assert.equal(w.mutations().length, 0);
 });

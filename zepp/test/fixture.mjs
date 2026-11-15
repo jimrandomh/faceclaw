@@ -45,6 +45,7 @@ export function watchFixture({ fixedFrameworkState = true } = {}) {
     createTouchpad: emit => model.createTouchpad(emit, { setTimeout: setTimer, clearTimeout: clearTimer }),
     createCommandFeedback: onChange => feedback.createCommandFeedback(onChange, { now: () => now, setTimeout: setTimer, clearTimeout: clearTimer }),
     createMessagingSession: () => ({
+      cancelNavigation(id) { sessionEvents.push(['cancelNavigation', id]); },
       setAwake(value) { sessionEvents.push(['awake', value]); },
       invalidate(reason) { sessionEvents.push(['invalidate', reason]); },
       dispose() { sessionEvents.push(['dispose']); },

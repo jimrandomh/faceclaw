@@ -3,13 +3,14 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
 import { cleanToken, phoneRequest, requestBody, TOKEN_KEY } from '../lib/protocol.js';
+import { createNavigationSide } from '../lib/navigation-side.js';
 import { sampleState } from './fixture.mjs';
 
 test('side service keeps authentication on the phone and rejects overlapping commands', async () => {
   const token = 'fc1_' + 'b'.repeat(64), requests = []; let side, finish;
   const code = fs.readFileSync(new URL('../app-side/index.js', import.meta.url), 'utf8').replace(/^import .*;\n/gm, '');
   vm.runInNewContext(code, {
-    cleanToken, phoneRequest, requestBody, TOKEN_KEY,
+    createNavigationSide, cleanToken, phoneRequest, requestBody, TOKEN_KEY,
     AppSideService: value => side = value, BaseSideService: value => value,
     settingsLib: { getItem: key => { assert.equal(key, TOKEN_KEY); return '"' + token + '"'; } },
     fetch: request => { requests.push(request); return new Promise(resolve => finish = resolve); },
@@ -30,7 +31,7 @@ test('invalid token stops at the phone settings boundary', async () => {
   let side, fetched = false;
   const code = fs.readFileSync(new URL('../app-side/index.js', import.meta.url), 'utf8').replace(/^import .*;\n/gm, '');
   vm.runInNewContext(code, {
-    cleanToken, phoneRequest, requestBody, TOKEN_KEY, AppSideService: value => side = value, BaseSideService: value => value,
+    createNavigationSide, cleanToken, phoneRequest, requestBody, TOKEN_KEY, AppSideService: value => side = value, BaseSideService: value => value,
     settingsLib: { getItem: () => 'not-a-token' }, fetch: () => { fetched = true; },
   });
   const result = await new Promise(resolve => side.onRequest({ method: 'FACECLAW', operation: { kind: 'state' } }, (_, result) => resolve(result)));
@@ -42,7 +43,7 @@ function progressFixture(options = {}) {
   let side;
   const code = fs.readFileSync(new URL('../app-side/index.js', import.meta.url), 'utf8').replace(/^import .*;\n/gm, '');
   vm.runInNewContext(code, {
-    cleanToken, phoneRequest, requestBody, TOKEN_KEY,
+    createNavigationSide, cleanToken, phoneRequest, requestBody, TOKEN_KEY,
     AppSideService: value => side = value, BaseSideService: value => value,
     settingsLib: { getItem: () => token },
     fetch: request => {
@@ -111,4 +112,29 @@ for (const failure of ['throw', 'reject']) test('progress delivery ' + failure +
   assert.equal((await f.send({ kind: 'gesture', gesture: 'swipe-left' }, 'fc-session-1')).ok, true);
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(f.events.length, 1); assert.equal(f.requests.length, 1);
+});
+
+test('side service registers capability, serializes rapid navigation, and cancels unsent work', async () => {
+  let side; const token = 'fc1_' + 'd'.repeat(64), posts = [], waiting = [];
+  const code = fs.readFileSync(new URL('../app-side/index.js', import.meta.url), 'utf8').replace(/^import .*;\n/gm, '');
+  vm.runInNewContext(code, { createNavigationSide, cleanToken, phoneRequest, requestBody, TOKEN_KEY,
+    AppSideService: value => side = value, BaseSideService: value => value,
+    settingsLib: { getItem: () => token },
+    fetch: request => { posts.push(JSON.parse(request.body)); return new Promise(resolve => waiting.push(resolve)); },
+  });
+  side.call = () => Promise.resolve();
+  const send = request => new Promise(resolve => side.onRequest({ method: 'FACECLAW', ...request }, (_, result) => resolve(result)));
+  const state = send({ operation: { kind: 'state' }, navSession: 'test-session' });
+  waiting.shift()({ status: 200, body: { ok: true, state: sampleState, navigation: { version: 1, context: 'window:a' } } });
+  assert.equal((await state).state.navigationSupported, true);
+  const navigation = sequence => send({ operation: { kind: 'gesture', gesture: 'swipe-up' }, requestId: 'fc-burst-' + sequence,
+    navigation: { sessionId: 'test-session', sequence, context: 'window:a' } });
+  const first = navigation(1), second = navigation(2), third = navigation(3);
+  assert.equal(posts.length, 2); assert.equal(posts[1].action, 'watch-navigation'); assert.equal(posts[1].token, token);
+  assert.ok(Number.isSafeInteger(posts[1].expiresAt));
+  assert.match((await send({ operation: { kind: 'gesture', gesture: 'click' } })).error, /busy/);
+  side.onCall({ method: 'FACECLAW_NAV_CANCEL', params: { sessionId: 'test-session' } });
+  assert.equal((await second).notSent, true); assert.equal((await third).notSent, true);
+  waiting.shift()({ status: 200, body: { ok: true, navigation: { version: 1, context: 'window:a' } } });
+  assert.equal((await first).ok, true); assert.equal(posts.length, 2);
 });

@@ -143,3 +143,18 @@ test('malformed read-only state replies preserve setup and compatibility guidanc
     });
   }
 });
+
+test('navigation sends only bounded metadata and preserves expiry, capability, and rejection semantics', async () => {
+  const navigation = { requestId: 'fc-nav-1', expiresAt: 20000, context: 'window:a', token: 'must-not-override' };
+  let body;
+  const operation = { kind: 'gesture', gesture: 'swipe-up' };
+  const accepted = await phoneRequest(async request => { body = JSON.parse(request.body); return { status: 200, body: { ok: true, navigation: { version: 1, context: 'window:a' } } }; }, operation, token, { navigation });
+  assert.equal(body.action, 'watch-navigation'); assert.equal(body.token, token); assert.equal(body.expiresAt, 20000);
+  assert.equal(accepted.navigation.context, 'window:a');
+  const rejected = await phoneRequest(async () => ({ status: 200, body: { ok: false, error: 'expired', message: 'Expired' } }), operation, token, { navigation });
+  assert.equal(rejected.notSent, true); assert.equal(rejected.code, 'expired');
+  await assert.rejects(phoneRequest(async () => ({ status: 200, body: { ok: false, error: 'duplicate' } }), operation, token, { navigation }), /Result unknown/);
+  await assert.rejects(phoneRequest(async () => ({}), { kind: 'gesture', gesture: 'click' }, token, { navigation }), /Invalid navigation/);
+  const result = await phoneRequest(async () => ({ status: 200, body: { ok: true, state: sampleState, navigation: { version: 1, context: 'window:a' } } }), { kind: 'state' }, token);
+  assert.equal(result.state.navigationSupported, true); assert.equal(result.state.navigationContext, 'window:a');
+});

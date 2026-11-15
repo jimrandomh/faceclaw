@@ -510,6 +510,8 @@ class DashboardController {
       assistant: text => shell.sendToAssistant(text),
       watchState: () => this.wearRemote?.buildState(),
       watchControlEnabled: () => this.wearRemote?.controlEnabled() ?? false,
+      navigationContext: () => (this.phase === "connected" || this.phase === "charging") &&
+        !this.glassesLocked && shell.isScreenOn() ? shell.describeNavigationTarget() : null,
       watchCommand: request => this.wearRemote?.executeCommand(request) ??
         Promise.resolve({ ok: false, message: "Open Faceclaw on the phone first." }),
     });
