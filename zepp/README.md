@@ -11,7 +11,7 @@ The opening screen follows Faceclaw's Wear OS remote: a black touchpad, central 
 | Input | Action |
 | --- | --- |
 | Tap pad / press crown on pad | Select on glasses |
-| Double tap pad | Back / wake glasses |
+| Double tap pad | Back inside an app; sleep at the app switcher; wake an off display |
 | Hold pad, then release | Long press |
 | Tap then hold and release | Short-then-long press |
 | Swipe pad | Spatial navigation |
@@ -40,11 +40,14 @@ receipt can be skipped. Elapsed time stays visible while waiting.
 This confirms phone handling; check the glasses for the
 visible effect.
 
-A swipe during another request shows **Busy · Not sent**. Sleeping or locked
-glasses show the applicable reason. A pending crown step expires visibly with
-**Turn crown again**. A timeout, transport loss, or malformed reply shows
-**Result unknown**; commands are never automatically retried. New input,
-navigation, and sleep prevent stale replies from restoring older feedback.
+If a status check is already running, one gesture or app action can show
+**Waiting** for up to one second before it is sent. It is canceled if the state,
+target, selection, or screen context changes. **Busy · Not sent** still appears
+while an actual action is awaiting its reply; taps, swipes, and app actions do not
+queue behind sent actions. Sleeping or locked glasses show the applicable reason. A pending crown
+step expires visibly with **Turn crown again**. A timeout, transport loss, or
+malformed reply shows **Result unknown**; commands are never automatically
+retried. Navigation, watch sleep, and exit clear pending input and old feedback.
 
 ## Development
 
@@ -61,7 +64,7 @@ npm run preview -- --app-id YOUR_APP_ID
 npm run bridge -- --app-id YOUR_APP_ID
 ```
 
-`npm run build` with no ID creates a verification package using placeholder `99999999`. Preview/bridge require a real registered ID. `FACECLAW_ZEPP_APP_ID` also supplies the ID. The packaging wrapper uses a temporary project and leaves the checked-in manifest unchanged. Packaged files are copied to `dist/`. Device IDs: `8519936`, `8519937`, `8519939`; minimum/target API level 3.0; version 0.1.4, package version code 18.
+`npm run build` with no ID creates a verification package using placeholder `99999999`. Preview/bridge require a real registered ID. `FACECLAW_ZEPP_APP_ID` also supplies the ID. The packaging wrapper uses a temporary project and leaves the checked-in manifest unchanged. Packaged files are copied to `dist/`. Device IDs: `8519936`, `8519937`, `8519939`; minimum/target API level 3.0; version 0.1.5, package version code 19.
 
 `npm run render -- /path/to/playwright` renders sample states from the real watch widget code and checks for text overflow and circular-screen clipping. These are **layout previews**, not hardware screenshots.
 
@@ -69,7 +72,26 @@ npm run bridge -- --app-id YOUR_APP_ID
 
 Watch → Zepp Side Service → `POST http://127.0.0.1:8791/v1/request` → Faceclaw's existing watch/input dispatch → glasses. Every request carries an existing `fc1_` input token with **Provide input** permission. The token stays in Zepp's phone settings and is not sent to the watch. The endpoint accepts `watch-state`, `watch-command`, and `input`; there are no arbitrary URL or command fields.
 
-State is polled 3 seconds after a request completes while the screen is on, or after 6 seconds following a connection failure. Successful crown scrolling skips an extra immediate status request. While a poll or crown request is pending, only the latest unsent crown step is retained for up to 350ms; stale steps and steps pending when a request fails, another action is taken, or the screen/app closes are discarded. Commands use one POST and are never automatically replayed. A timeout means the result is unknown; check the glasses before trying again. A success reply confirms Faceclaw accepted the command; it is not independent proof of a rendered frame.
+The watch's messaging session stays open for the app's lifetime over its existing
+Zepp connection. It does not re-pair for each command. ZML still checks that the
+phone-side service is ready before each request; this release keeps that
+supported transport behavior.
+
+Background status checks normally run 3 seconds after a request completes while
+the screen is on, or after 6 seconds following a connection failure. They defer
+during active touch and recent input. Successful directional swipes and scrolling
+skip the extra immediate status request. Taps, double taps, holds, and commands
+still refresh status, including after a double tap wakes the display. Status
+after directional navigation is updated by the next idle check.
+
+One unsent gesture or app action may wait up to one second behind a status check.
+It is revalidated against the reply and discarded if its state, target, selection,
+or context changed, or the watch slept or exited. It never waits behind an action
+already being sent. Crown scrolling separately retains at most the latest unsent
+step for 350ms behind a status check or crown request. Expired input is discarded;
+sent commands use one POST and are never replayed. A timeout means the result is
+unknown; check the glasses before trying again. A success reply confirms Faceclaw
+accepted the command, not that a glasses frame was displayed.
 
 Requires the Faceclaw build containing this local endpoint, Faceclaw watch control enabled, and Zepp/Faceclaw background operation allowed. Stock Even app launch/exit is outside this integration. The actual Balance → Zepp → Faceclaw path and locked-phone/background behavior require the hardware acceptance checks in the installation guide.
 
@@ -85,3 +107,8 @@ Version 0.1.4 adds immediate recognition feedback and correlated command progres
 including visible blocked-input and uncertain-delivery outcomes. Progress uses
 one best-effort receipt per command and local elapsed-time updates; polling
 adds no progress messages.
+
+Version 0.1.5 reduces interruptions from status checks during input, removes the
+extra status wait after directional swipes, and lets one fresh action briefly
+wait for an ongoing status check. It preserves display/lock refreshes and never
+retries a sent command. The existing phone APK and token remain valid.

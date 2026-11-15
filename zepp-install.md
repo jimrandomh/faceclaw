@@ -39,6 +39,11 @@ the watch directly to the glasses. Everyday use does not need Glassly, Termux,
 a separate relay APK, a computer, Developer Bridge, or USB debugging. Installation
 and troubleshooting may use a computer.
 
+While Faceclaw Remote is open, it keeps its messaging session over the existing
+Zepp connection. You do not need to pair again for each action. The watch screen
+stays on for up to two minutes after interaction; when it turns off, status
+polling pauses. This does not keep the screen or phone service awake indefinitely.
+
 ## 1. Install this branch's Android build
 
 Use an Android APK built from this branch. An upstream Faceclaw release predating
@@ -217,12 +222,15 @@ commands, and you do not need to restart it each time you use the remote.
 
 ### Updating an installed watch app
 
-Version **0.1.4 (code 18)** adds immediate feedback for recognized gestures and
-shows command progress while waiting for the phone. It includes the earlier
-fixes for an incorrect “Watch control off” warning, local list scrolling during
-phone checks, and the extra status wait after crown steps. Install the updated
-watch package using the same App ID, then leave Faceclaw Remote with the lower
-side button and reopen it. The existing phone APK and input token remain valid.
+Version **0.1.5 (code 19)** reduces **Busy** interruptions from status checks and
+removes the extra status wait after directional swipes. One fresh gesture or app
+action can briefly wait for a status check to finish. Display and lock changes
+still trigger a refresh, and sent commands are never retried.
+
+Install the updated watch package using the same App ID, then leave Faceclaw
+Remote with the lower side button and reopen it. The existing phone APK and input
+token remain valid. The update also includes the earlier command-progress,
+local-list-scrolling, and “Watch control off” fixes.
 
 ## 6. Paste the token in Zepp
 
@@ -255,7 +263,8 @@ voice and motion features are not implied.
    that can be closed. Confirm that the window disappears on the glasses;
    closing it does not uninstall the app.
 5. Test the Remote pad's select/back/scroll controls and check **Status** for
-   connection or permission errors.
+   connection or permission errors. Double tap goes back inside an app, puts the
+   display to sleep at the app switcher, and wakes an off display.
 6. To leave the watch app, press the **lower side button once** from any screen.
    This returns to the watch's app list. It does not close the app on the glasses
    or disconnect Faceclaw, and works without a phone connection. The upper crown
@@ -277,17 +286,24 @@ session is not a substitute for this check.
 
 ## Read command progress
 
-Version 0.1.4 shows the gesture or command as soon as it is recognized, with a
+The watch shows the gesture or command as soon as it is recognized, with a
 banner that advances from **Sending** to **Phone received** to **Faceclaw
 accepted**. The phone receipt is best effort, so that stage can be skipped.
 The elapsed time helps distinguish a slow reply from an undetected
 swipe. Phone acceptance does not establish that a glasses frame was displayed.
 
-**Busy · Not sent** means the new gesture was detected but was not sent while
-another request was pending. **Result unknown** means the reply was lost or
-invalid; check the glasses before trying again. A queued crown step that expires
-shows **Turn crown again**. Navigation, watch sleep, or quitting clear feedback
-from the old interaction.
+**Waiting** means a recognized gesture or app action is waiting for a status
+check, for at most one second. It is sent only if the latest state and selection
+still match. Changing selection, navigating, sleeping, or quitting cancels it.
+**Busy · Not sent** means an actual action is still awaiting its reply; the new
+action was not queued. **Result unknown** means the reply was lost or invalid;
+check the glasses before trying again. A queued crown step that expires shows
+**Turn crown again**. Commands are never automatically retried.
+
+Status checks defer while you are touching the pad or have just used a control.
+Directional swipes and crown scrolling skip an immediate extra status check.
+Taps, double taps, holds, and commands still refresh display and lock information,
+so waking the glasses does not leave the watch using an old “display off” state.
 
 ## Keep the two phone apps running
 
@@ -322,6 +338,7 @@ settings do not require Developer Bridge to remain running.
 | Token missing/unauthorized | Open the clearly labelled token field in Zepp, paste the complete token, save, and reopen the watch app. A revoked token needs replacement. |
 | Permission denied | In Faceclaw, check the token's **Provide input** permission and **Settings → Watch**. Check glasses lock separately. |
 | Faceclaw cannot be reached | Open Faceclaw, check **Input tokens → Connection information** for `127.0.0.1:8791`, and confirm this branch's APK is installed. Both phone apps must run on the same Android phone. Do not change the address to the watch's or computer's IP. |
+| Frequent “Busy · Not sent” | Install watch version 0.1.5. It reduces interference from status checks, but another action must still finish before the next one is sent. Watch the progress banner; re-pairing or leaving Developer Bridge open does not remove that wait. |
 | Works unlocked, stops after locking the phone | Check background limits for both apps; repeat the locked-phone test. If unresolved, report the phone/Android/Zepp versions and the exact error. Do not assume keeping USB or Bridge connected is the fix. |
 | App is listed but glasses stay blank | Open that app directly in Faceclaw. Check glasses connection/display/lock and that app's Faceclaw compatibility before retrying the watch. |
 | Faceclaw repeatedly reports “CFW recovery retry limit” | Install this branch's updated Android APK. If G2 repeatedly rejects display-resource allocations, it switches automatically to rendering the complete screen on the phone. App controls remain available; stereoscopic depth and retained glasses-side animations are disabled for that connection. Other transport failures still require diagnosis from the logs. Firmware version `2.3.0.24` alone does not identify incompatibility; Faceclaw checks its separate firmware revision. |

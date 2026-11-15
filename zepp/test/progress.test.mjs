@@ -50,13 +50,14 @@ test('elapsed progress, correlated phone receipt and acceptance identify the sam
   const result = visibleFeedback(w, 'accepted', /Faceclaw accepted · 1\.2s$/);
   assert.equal(result.id, id); assert.equal(result.pending, false);
   assert.doesNotMatch(result.text, /shown|displayed|rendered/i);
-  assert.equal(w.calls.at(-1).kind, 'state');
+  assert.equal(w.calls.at(-1).kind, 'gesture'); assert.equal(w.page.busy, false);
 });
 
 test('status replies and ordinary notice updates cannot overwrite current command feedback', async t => {
   const w = await ready(t); swipeLeft(w);
   await w.reply({ ok: true });
   const result = snapshot(w);
+  w.page.refresh();
   await w.reply({ ok: true, state: { ...sampleState, foreground: { appId: 'notes', title: 'Notes' } } });
   assert.equal(w.page.padTitle.props.text, 'Notes');
   assert.deepEqual(snapshot(w), result); assert.equal(w.page.noticeText.props.text, result.text);
@@ -67,7 +68,7 @@ test('status replies and ordinary notice updates cannot overwrite current comman
 test('wrong, older, malformed and late receipts never replace newer or terminal feedback', async t => {
   const w = await ready(t); swipeLeft(w);
   const oldId = snapshot(w).id;
-  await w.reply({ ok: true }); await w.reply();
+  await w.reply({ ok: true });
   w.page.gesture('double-click'); const id = snapshot(w).id;
   receipt(w, oldId); receipt(w, 'fc-wrong-1'); receipt(w, id, 'unsupported');
   w.page.onCall({ method: 'OTHER', params: { requestId: id, stage: 'phone-received' } });
@@ -90,11 +91,13 @@ test('a busy swipe reports that it was not sent and the older success cannot acc
   await w.reply(); assert.deepEqual(snapshot(w), blocked);
 });
 
-test('busy status polling, dark glasses, locks and unavailable control give visible blocking feedback', async t => {
+test('status polling gives waiting feedback; dark glasses, locks and unavailable control stay blocked', async t => {
   const polling = await ready(t); polling.page.refresh();
-  swipeLeft(polling); visibleFeedback(polling, 'blocked', /Busy · Not sent/);
+  swipeLeft(polling); visibleFeedback(polling, 'queued', /Waiting/);
   assert.equal(commands(polling).length, 0);
-  await polling.reply(); visibleFeedback(polling, 'blocked', /Busy · Not sent/);
+  await polling.reply(); visibleFeedback(polling, 'sending', /Sending/);
+  assert.equal(commands(polling).length, 1);
+  await polling.reply({ ok: true });
   for (const [patch, detail] of [
     [{ screenOn: false }, /Double tap to wake/], [{ locked: true }, /Glasses are locked/],
     [{ screenOn: false, locked: true }, /Glasses are locked/],
