@@ -227,6 +227,9 @@ global.onmessage = (event: { data: WorkerAppMessage }) => {
       frameTimings.logFrame(message.frameId, `input received in ${message.windowId} worker`);
       handleInput(window, message.event as InputEvent, message.frameId);
       break;
+    case "key":
+      // Only windows opened with acceptsKeys are sent keys.
+      break;
     case "text-input":
       if (editingSetting) {
         // Voice input as an alternative to the phone keyboard.

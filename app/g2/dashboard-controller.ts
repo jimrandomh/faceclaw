@@ -22,6 +22,8 @@ import { defaultRingName, setGlassesRingLink } from "../native/ring-status";
 import { getBooleanSetting, setBooleanSetting } from "../native/settings-store";
 import { grayImageToPreviewSource } from "../native/gray-image-preview";
 import { firmwareIncompatibilityMessage, hasCompatibleFirmware } from "./firmware-compat";
+import { keyboardService } from "./keyboard/service";
+import { navigationGestureForKey, type KeyEvent } from "./keyboard/keys";
 import { hasExtractedEvenHubFonts } from "./firmware-builder";
 import { isHaltedSessionPhase, resumeAutoReconnect, suppressAutoReconnect } from "./reconnect-policy";
 import { WearRemote, type WearRemoteInputKind } from "./wear-remote";
@@ -460,6 +462,7 @@ class DashboardController {
         if (on) this.glance.dismiss();
         this.handleScreenStateChanged(on);
         if (on) this.requestShellRender();
+        if (on) keyboardService.retryNow();
         this.emit();
       },
     });
@@ -511,6 +514,16 @@ class DashboardController {
       text: (text, submit) => { if (!shell.isScreenOn()) shell.wake("window"); shell.sendTextToForegroundWindow(text, { submit }); this.requestShellRender(); },
       assistantAvailable: () => shell.isAssistantAvailable(),
       assistant: text => shell.sendToAssistant(text),
+    });
+    // A keyboard paired through the glasses (CFW keyboard bridge). Its keys
+    // go to the focused window when that takes keys, else act as navigation.
+    keyboardService.setHost({
+      onKey: (event) => this.handleKeyboardKey(event),
+      log: (line) => this.appendLog(line),
+      // A keyboard that is switched off would otherwise keep the glasses'
+      // radio looking for it around the clock. One still connected when the
+      // display sleeps stays connected, and its next key wakes the display.
+      shouldReconnect: () => this.phase === "connected" && shell.isScreenOn(),
     });
     this.wearRemote = new WearRemote({
       apps: launchableApps,
@@ -1766,6 +1779,7 @@ class DashboardController {
             this.appendLog(`wake takeover lease sync failed: ${this.formatError(error)}`);
           });
           this.ensureWearStateTracking();
+          this.syncKeyboardLink();
         }
         // The shared session halts on incompatible firmware by itself
         // ("incompatible-firmware" phase); this only explains why.
@@ -2626,6 +2640,52 @@ class DashboardController {
   }
 
   /**
+   * Tell the keyboard bridge whether the session can host a keyboard: a G2
+   * on firmware with the bridge, connected and in use. While the glasses
+   * charge in their case the link stays up but nobody is typing, so the
+   * firmware is told to let the keyboard go.
+   */
+  private syncKeyboardLink(): void {
+    const up =
+      this.phase === "connected" &&
+      this.customFirmwareConfirmed &&
+      glassesTypeSetting.get() === "g2";
+    // Charging, or a disconnect the user asked for: the link is still up, so
+    // the DISABLE gets out ahead of everything the teardown sends.
+    if (up) keyboardService.linkReady();
+    else keyboardService.linkLost(this.phase === "charging" || this.phase === "disconnecting");
+  }
+
+  /**
+   * A key from the keyboard paired through the glasses. A window that takes
+   * keys (a terminal session) gets it as a key; everywhere else the few
+   * navigation keys act as the ring gestures they stand for. A dark display
+   * takes no typing: the first press only wakes it, as the ring's double tap
+   * would, and a locked one stays locked.
+   */
+  private handleKeyboardKey(event: KeyEvent): void {
+    if (this.phase !== "connected") return;
+    if (this.glassesLocked || !shell.isScreenOn()) {
+      if (event.phase !== "down" || event.repeat || shell.isScreenOn()) return;
+      void this.handleInputEvent({
+        kind: "display-wake",
+        containerName: "",
+        eventType: OsEventTypeList.DOUBLE_CLICK_EVENT,
+        eventSource: EventSourceType.TOUCH_EVENT_FORM_DUMMY_NULL,
+        systemExitReasonCode: 0,
+        frameId: 0,
+      }).catch((error) => this.appendLog(`keyboard wake failed: ${this.formatError(error)}`));
+      return;
+    }
+    if (shell.receiveKeyEvent(event)) return;
+    const gesture = navigationGestureForKey(event);
+    if (!gesture) return;
+    void this.injectSyntheticRingInput(gesture).catch((error) =>
+      this.appendLog(`keyboard navigation failed: ${this.formatError(error)}`),
+    );
+  }
+
+  /**
    * The Glanceboard event a sleep-time input means, or null when the shell
    * should see the input as usual. A display-wake carries the head-tilt
    * gesture (HEAD_UP_EVENT) as a press; the double-tap display-wake stays the
@@ -3097,6 +3157,7 @@ class DashboardController {
   private setPhase(phase: ConnectionPhase): void {
     if (this.phase === phase) return;
     this.phase = phase;
+    this.syncKeyboardLink();
     if (phase !== "connected" && phase !== "charging") {
       shell.setBatteryLevels({ ring: null, ringCharging: null });
     }

@@ -28,6 +28,8 @@ export type WorkerAppMessage =
   | { type: "close-window"; windowId: string }
   | { type: "input"; windowId: string; event: unknown; frameId: number; focused: boolean }
   | { type: "text-input"; windowId: string; text: string; submit?: boolean }
+  /** A hardware-keyboard key (a KeyEvent), for windows opened with acceptsKeys. */
+  | { type: "key"; windowId: string; event: unknown; focused: boolean }
   | { type: "render"; windowId: string; focused: boolean }
   | { type: "foreground"; windowId: string; foreground: boolean; focused: boolean }
   /**
@@ -81,6 +83,8 @@ export type WorkerAppReply =
       focus?: boolean;
       /** Window height: the standard 288px band ("min", default) or full screen ("max"). */
       heightMode?: WindowHeightMode;
+      /** Send the window hardware-keyboard keys (see WorkerWindowSpec). */
+      acceptsKeys?: boolean;
     }
   | {
       /**
@@ -196,6 +200,13 @@ export type WorkerWindowSpec = {
    * of all four directions in every window state (see ShellWindow).
    */
   acceptsDirectional?: boolean;
+  /**
+   * Deliver hardware-keyboard keys to the worker as "key" messages while the
+   * window has input focus, instead of the navigation-gesture fallback. The
+   * worker then owns what every key means in every window state, navigation
+   * included (see ShellWindow.handleKeyEvent).
+   */
+  acceptsKeys?: boolean;
 };
 
 export type WorkerAppHostOptions = {
@@ -335,6 +346,7 @@ export class WorkerAppHost {
             iconGlyph: message.iconGlyph,
             focus: message.focus,
             heightMode: message.heightMode,
+            acceptsKeys: message.acceptsKeys,
           });
           break;
         case "set-height-mode":
@@ -522,6 +534,13 @@ export class WorkerAppHost {
       receiveTextInput: (text, options) => {
         this.post({ type: "text-input", windowId: spec.windowId, text, ...(options?.submit === undefined ? {} : { submit: options.submit }) });
       },
+      ...(spec.acceptsKeys
+        ? {
+            handleKeyEvent: (event) => {
+              this.post({ type: "key", windowId: spec.windowId, event, focused: shell.isWindowFocused(spec.windowId) });
+            },
+          }
+        : {}),
       setForeground: (foreground) => {
         this.options.setSurfaceVisible(surfaceId, foreground);
         if (foreground) {

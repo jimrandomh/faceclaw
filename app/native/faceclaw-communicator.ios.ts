@@ -19,6 +19,7 @@ declare const FaceclawKitFaceclawCompassListener: any;
 declare const FaceclawKitFaceclawImuListener: any;
 declare const FaceclawKitIosAmbientLightListener: any;
 declare const FaceclawKitIosMicStatusListener: any;
+declare const FaceclawKitIosKeyboardEventListener: any;
 
 
 export type CommunicatorPhase =
@@ -196,6 +197,13 @@ class MicStatusListener extends NSObject {
   static ObjCProtocols = [FaceclawKitIosMicStatusListener];
   handler!: (body: Uint8Array, arm: string) => void;
   onNsDataMicStatusBodyArm(body: NSData, arm: string): void { this.handler(fromData(body), String(arm ?? "")); }
+}
+
+@NativeClass()
+class KeyboardEventListener extends NSObject {
+  static ObjCProtocols = [FaceclawKitIosKeyboardEventListener];
+  handler!: (body: Uint8Array) => void;
+  onNsDataKeyboardEventBody(body: NSData): void { this.handler(fromData(body)); }
 }
 
 /**
@@ -801,6 +809,19 @@ export class FaceclawCommunicatorBridge {
   sendFaceclawMicControl(record: Uint8Array, label: string, rightTemple: boolean, leftTemple: boolean): boolean {
     return Boolean(this.communicator.sendFaceclawMicControlRecordLabelRightTempleLeftTemple(
       toData(new Uint8Array(record)), label, Boolean(rightTemple), Boolean(leftTemple)));
+  }
+
+  /** Raw field-131 keyboard-bridge records, in arrival order, on the main queue. */
+  addKeyboardEventListener(listener: (body: Uint8Array) => void): () => void {
+    const proxy = KeyboardEventListener.new() as KeyboardEventListener;
+    proxy.handler = listener;
+    const handle = this.communicator.addKeyboardEventListenerNsDataListener(proxy);
+    return () => { this.communicator.removeKeyboardEventListenerListener(handle); };
+  }
+
+  /** Queue a CFW keyboard-bridge control for the right temple; false when nothing was queued. */
+  sendFaceclawKeyboardControl(record: Uint8Array, label: string): boolean {
+    return Boolean(this.communicator.sendFaceclawKeyboardControlRecordLabel(toData(new Uint8Array(record)), label));
   }
 
   /**

@@ -305,6 +305,7 @@ global.onmessage = (event: { data: WorkerAppMessage }) => {
       break;
     case "navigation-sensors":
     case "text-input":
+    case "key":
     case "tool-call":
       break;
   }

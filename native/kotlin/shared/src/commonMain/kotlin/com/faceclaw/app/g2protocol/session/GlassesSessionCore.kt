@@ -131,6 +131,7 @@ class GlassesSessionCore(
     internal val compassSubscriptions = CopyOnWriteList<CompassSubscription>(platform)
     internal val ambientLightListeners = CopyOnWriteList<FaceclawAmbientLightListener>(platform)
     internal val micStatusListeners = CopyOnWriteList<FaceclawMicStatusListener>(platform)
+    internal val keyboardEventListeners = CopyOnWriteList<FaceclawKeyboardEventListener>(platform)
     internal val audioMonitorListeners = CopyOnWriteList<FaceclawAudioPacketListener>(platform)
     @Volatile internal var running = false
     @Volatile internal var userDisconnectRequested = false
@@ -1388,6 +1389,39 @@ class GlassesSessionCore(
         return true
     }
 
+    fun addKeyboardEventListener(listener: FaceclawKeyboardEventListener?) {
+        if (listener != null) {
+            keyboardEventListeners.add(listener)
+        }
+    }
+
+    fun removeKeyboardEventListener(listener: FaceclawKeyboardEventListener?) {
+        if (listener != null) {
+            keyboardEventListeners.remove(listener)
+        }
+    }
+
+    /**
+     * Queue a CFW keyboard-bridge control (['K','B',ver,op,request,epoch,...]) as a settings
+     * field-130 write to the right temple. Fire-and-forget: the firmware answers with field-131
+     * records, which arrive through addKeyboardEventListener. Returns false when nothing was
+     * queued (not a G2, no session, or a malformed record).
+     */
+    fun sendFaceclawKeyboardControl(record: ByteArray?, label: String): Boolean {
+        if (!isG2 || record == null || record.size < 8) {
+            return false
+        }
+        monitor.withLock {
+            if (!running || !sessionReady) {
+                logLine("skip keyboard control ($label); session not ready")
+                return false
+            }
+            pendingMessages.addLast(messageBuilder.faceclawKeyboardControl(record, label))
+        }
+        interruptibleSleep.interrupt()
+        return true
+    }
+
     /**
      * Forward render-characteristic audio packets to the listener WITHOUT
      * sending the stock EvenHub audio-control enable. Used for the CFW
@@ -1894,6 +1928,18 @@ class GlassesSessionCore(
         }
         logDebug("onNotification: address=" + address + " characteristicUuid=" + characteristicUuid + " data.length=" + data.size)
         val frame = BleProtocol.parseFrame(data)
+        if (frame.ok && frame.sid == BleProtocol.SID_UI_SETTING) {
+            // CFW keyboard-bridge records (field 131) come from whichever temple hosts the
+            // keyboard. They are their own stream: neither an ACK nor glasses input, and the
+            // once-a-second status record among them must not count as user activity (which
+            // would hold off battery polling).
+            val keyboardEvent = BleProtocol.parseFaceclawKeyboardEvent(frame.pb)
+            if (keyboardEvent != null) {
+                monitor.withLock { lastIncomingAtMs = now() }
+                emitKeyboardEvent(keyboardEvent)
+                return
+            }
+        }
         val decodedWearState = BleProtocol.parseWearState(frame)
         val compassEvent = if (address.equals(rightAddress, ignoreCase = true))
             BleProtocol.parseCompassEvent(frame)

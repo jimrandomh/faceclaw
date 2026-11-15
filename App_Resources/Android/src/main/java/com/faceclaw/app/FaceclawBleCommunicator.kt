@@ -322,6 +322,13 @@ class FaceclawBleCommunicator(context: Context, rightAddress: String?, leftAddre
     fun sendFaceclawMicControl(record: ByteArray?, label: String, rightTemple: Boolean, leftTemple: Boolean): Boolean =
         core.sendFaceclawMicControl(record, label, rightTemple, leftTemple)
 
+    fun addKeyboardEventListener(listener: FaceclawKeyboardEventListener?) = core.addKeyboardEventListener(listener)
+
+    fun removeKeyboardEventListener(listener: FaceclawKeyboardEventListener?) = core.removeKeyboardEventListener(listener)
+
+    fun sendFaceclawKeyboardControl(record: ByteArray?, label: String): Boolean =
+        core.sendFaceclawKeyboardControl(record, label)
+
     fun startG2AudioForwarding(listener: FaceclawAudioPacketListener?): Boolean = core.startG2AudioForwarding(listener)
 
     fun stopG2AudioForwarding() = core.stopG2AudioForwarding()

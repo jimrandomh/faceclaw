@@ -103,6 +103,7 @@ import { openSettingsSubMenu, SettingsPanelLayer, type SettingsSection } from ".
 import { uiFontPickerMenuItem } from "../font-picker";
 import { NotificationFilterLayer } from "../notification-filter";
 import { compatibleModelDiscoveryMenuItem } from "../openai-compatible-model-picker";
+import { keyboardSettingsMenuItem } from "../keyboard-settings";
 import { isVeniceApiBaseUrl } from "../../native/openai-chat";
 
 /** The Settings section the Notifications app's "Settings" menu item opens. */
@@ -241,6 +242,14 @@ function settingsSections(): SettingsSection[] {
         toggleSettingMenuItem(watchMirrorAssistantSetting),
       ],
       renderDetail: renderWatchStatus,
+    },
+    // A Bluetooth keyboard paired with the glasses themselves (the G2's
+    // custom firmware hosts it; app/g2/keyboard/). Hidden rather than left
+    // out: the Settings window can be open across a change of glasses.
+    {
+      label: "Keyboard",
+      items: [keyboardSettingsMenuItem()],
+      hidden: () => glassesTypeSetting.get() !== "g2",
     },
     {
       label: "Developer",

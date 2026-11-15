@@ -583,6 +583,22 @@ internal fun GlassesSessionCore.emitMicStatus(body: ByteArray, address: String) 
     }
 }
 
+internal fun GlassesSessionCore.emitKeyboardEvent(body: ByteArray) {
+    if (keyboardEventListeners.isEmpty()) {
+        return
+    }
+    val copy = body.copyOf()
+    host.postToMain {
+        for (keyboardListener in keyboardEventListeners) {
+            try {
+                keyboardListener.onKeyboardEvent(copy)
+            } catch (t: Throwable) {
+                logWarn("keyboard event listener failed", t)
+            }
+        }
+    }
+}
+
 internal fun GlassesSessionCore.emitAudioMonitorPacket(data: ByteArray, arm: String, arrivalMs: Long) {
     if (audioMonitorListeners.isEmpty()) {
         return

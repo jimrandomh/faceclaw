@@ -17,6 +17,7 @@ import {
   isWatchInput,
   makeInputEvent,
 } from "../gestures";
+import type { KeyEvent } from "../../g2/keyboard/keys";
 import { Layer, LayerActions, LayerContext, LayerStack, noopLayerActions } from "../layers";
 import { CONTEXT_MENU_DIM, MenuLayer, type MenuItem } from "../menu";
 import { VoiceInputLayer, type VoiceSendTarget } from "./voice-input";
@@ -192,6 +193,14 @@ export type ShellWindow = {
    * only windows that consume typed text (the terminal) implement it.
    */
   receiveTextInput?: (text: string, options?: { submit?: boolean }) => void;
+  /**
+   * Take a key from a hardware keyboard (app/g2/keyboard) as a key. Optional:
+   * only windows that give keys a meaning of their own (the terminal)
+   * implement it, and they get every key while they have input focus,
+   * presses and releases alike. For the rest the controller turns the few
+   * navigation keys into ring gestures (navigationGestureForKey).
+   */
+  handleKeyEvent?: (event: KeyEvent) => void;
   /** Foreground state changed: this window's surface is (not) the visible one. */
   setForeground?: (foreground: boolean) => void;
   /**
@@ -1604,6 +1613,21 @@ class Shell {
   /** Deliver a text string to the foreground window (e.g. finalized voice input). */
   sendTextToForegroundWindow(text: string, options?: { submit?: boolean }): void {
     this.foregroundWindow()?.receiveTextInput?.(text, options);
+  }
+
+  /**
+   * Offer a hardware-keyboard key to the window that has input focus. True
+   * when that window takes keys (ShellWindow.handleKeyEvent) and got this
+   * one; false when the key is the caller's to interpret: the screen is off,
+   * the sidebar or a shell overlay has focus, or the window has no use for
+   * keys. Typing counts as activity for the screen timeout.
+   */
+  receiveKeyEvent(event: KeyEvent): boolean {
+    const window = this.inputTargetWindow();
+    if (!window?.handleKeyEvent) return false;
+    if (event.phase === "down") this.lastInputAtMs = Date.now();
+    window.handleKeyEvent(event);
+    return true;
   }
 
   /**

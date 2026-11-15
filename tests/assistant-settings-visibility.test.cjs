@@ -2,7 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { loader } = require('./helpers/load-typescript.cjs');
 
-function settingsEnv(initialUrl = '', initialModel = 'openai-compatible') {
+function settingsEnv(initialUrl = '', initialModel = 'openai-compatible', glassesType = 'g2') {
   let url = initialUrl;
   let model = initialModel;
   let webSearch = false;
@@ -31,6 +31,7 @@ function settingsEnv(initialUrl = '', initialModel = 'openai-compatible') {
     assistantHermesUrlSetting: { ...dummySetting, id: 'assistant-hermes-url', label: 'Hermes URL' },
     assistantHermesKeySetting: { ...dummySetting, id: 'assistant-hermes-key', label: 'Hermes key' },
     veniceWebSearchSetting: searchSetting,
+    glassesTypeSetting: { ...dummySetting, id: 'glasses-type', get: () => (typeof glassesType === 'function' ? glassesType() : glassesType) },
     enumSettingMenuItem: row,
     textSettingMenuItem: row,
     toggleSettingMenuItem: row,
@@ -73,6 +74,7 @@ function settingsEnv(initialUrl = '', initialModel = 'openai-compatible') {
     },
     '../font-picker': { uiFontPickerMenuItem: () => ({ label: 'Font' }) },
     '../notification-filter': { NotificationFilterLayer: class {} },
+    '../keyboard-settings': { keyboardSettingsMenuItem: () => ({ label: 'Bluetooth keyboard' }) },
     '../openai-compatible-model-picker': {
       compatibleModelDiscoveryMenuItem: () => ({ label: 'Discover models' }),
     },
@@ -83,6 +85,7 @@ function settingsEnv(initialUrl = '', initialModel = 'openai-compatible') {
   assert.ok(section);
   return {
     section,
+    sections: panel.sections,
     labels: () => section.items.map(item => item.label),
     setUrl: value => { url = value; },
     setModel: value => { model = value; },
@@ -147,4 +150,22 @@ test('OpenAI-compatible rows appear only while OpenAI-compatible is the selected
   ]));
   const labels = env.labels();
   assert.equal(labels.indexOf('Compatible API URL'), labels.indexOf('Assistant model') + 1, 'compatible rows follow the model row');
+});
+
+test('the Keyboard section, with its pairing row, follows the glasses type while Settings stays open', () => {
+  let glassesType = 'g1';
+  const sections = settingsEnv('', 'openai-compatible', () => glassesType).sections;
+  const labels = sections.map(section => section.label);
+  // Always in the list, between the other input devices and the developer
+  // options; whether it shows is asked again on every paint.
+  assert.equal(labels.indexOf('Keyboard'), labels.indexOf('Watch') + 1);
+  const keyboard = sections.find(section => section.label === 'Keyboard');
+  assert.equal(keyboard.items.map(item => item.label).join(), 'Bluetooth keyboard');
+  assert.equal(keyboard.hidden(), true);
+  glassesType = 'rayneo-io';
+  assert.equal(keyboard.hidden(), true);
+  glassesType = 'g2';
+  assert.equal(keyboard.hidden(), false);
+  // Nothing else is conditional this way.
+  assert.equal(sections.filter(section => section.hidden).length, 1);
 });

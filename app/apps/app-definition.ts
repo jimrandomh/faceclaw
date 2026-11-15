@@ -187,6 +187,8 @@ export async function launchWorkerAppWindow(
     matchExistingBy?: "appId" | "windowId";
     /** Deliver watch swipes raw instead of the fallback (see WorkerWindowSpec). */
     acceptsDirectional?: boolean;
+    /** Deliver hardware-keyboard keys as keys (see WorkerWindowSpec). */
+    acceptsKeys?: boolean;
   },
 ): Promise<void> {
   const existing = shell
@@ -207,6 +209,7 @@ export async function launchWorkerAppWindow(
     icon: options.icon,
     focus: true,
     acceptsDirectional: options.acceptsDirectional,
+    acceptsKeys: options.acceptsKeys,
   });
   ctx.appendLog(`launched ${options.windowId}`);
 }

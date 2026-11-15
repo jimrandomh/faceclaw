@@ -157,3 +157,39 @@ test('the columns keep the padding suggested for each window edge, and scroll ri
   const lit = (y) => { for (let x = 180; x < 560; x++) if (image.getPixel(x, y) > 40) return true; return false; };
   assert.ok([0, 1, 2, 3, 4, 5, 6, 7].some(lit), 'rows show in the top padding once scrolled');
 });
+
+test('a hidden section comes and goes while the panel stays open', async () => {
+  let hidden = true;
+  const selected = [];
+  const item = (label) => ({ label, onSelect: () => selected.push(label) });
+  const layer = new SettingsPanelLayer([
+    { label: 'Display', items: [item('Brightness')] },
+    { label: 'Keyboard', items: [item('Pair')], hidden: () => hidden },
+    { label: 'About', items: [item('License')] },
+  ]);
+  const ctx = { stack: { getBaseSize: () => bordered(576, 260), isFocused: () => true } };
+  const input = (type) => layer.handleInput({ type, timestampMs: 0 }, ctx);
+  const enter = async () => { await input('click'); await input('click'); await input('double-click'); };
+
+  // Hidden: the row below Display is About.
+  await input('scroll-down'); await enter();
+  assert.deepEqual(selected, ['License']);
+  layer.focusSection('Keyboard');
+  await enter();
+  assert.deepEqual(selected, ['License', 'License'], 'a hidden section is no deep-link target either');
+
+  // Shown, with no new panel: the highlight stays on About, and Keyboard is the row above it.
+  hidden = false;
+  layer.paint(ctx);
+  await enter();
+  assert.deepEqual(selected.slice(2), ['License']);
+  await input('scroll-up'); await enter();
+  assert.deepEqual(selected.slice(3), ['Pair']);
+
+  // Hidden again from inside it: focus comes back out to the top of the list.
+  await input('click');
+  hidden = true;
+  layer.paint(ctx);
+  await enter();
+  assert.deepEqual(selected.slice(4), ['Brightness']);
+});
