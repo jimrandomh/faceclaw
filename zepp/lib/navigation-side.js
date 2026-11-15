@@ -3,7 +3,7 @@ export function createNavigationSide({ send, now = Date.now, start = setTimeout,
   let session = null, sequence = 0, context = null, active = null, queue = [], retired = [];
   const validSession = id => typeof id === 'string' && id.length > 0 && id.length <= 96 && /^[a-zA-Z0-9_-]+$/.test(id);
   const reject = (code, error) => ({ ok: false, notSent: true, code, error });
-  const finish = (item, result) => { if (item.done) return; item.done = true; stop(item.timer); item.resolve(result); };
+  const finish = (item, result) => { if (item.done) return; item.done = true; stop(item.timer); if (item.receiptTimer !== null) stop(item.receiptTimer); item.resolve(result); };
   const flush = (code, error) => { for (const item of queue) finish(item, reject(code, error)); queue = []; };
   function cancel(id) {
     if (!validSession(id)) return;
@@ -19,6 +19,11 @@ export function createNavigationSide({ send, now = Date.now, start = setTimeout,
       if (item.session !== session || item.context !== context) { finish(item, reject('context_changed', 'Glasses screen changed · Not sent')); continue; }
       if (now() >= item.expiresAt) { finish(item, reject('expired', 'Swipe expired · Not sent')); continue; }
       active = item; stop(item.timer);
+      // Fast local HTTP replies are already acknowledgements. Send an extra
+      // progress packet only for slower work, leaving BLE capacity for inputs.
+      if (typeof item.progress === 'function') item.receiptTimer = start(() => {
+        if (!item.done && item.session === session) { try { Promise.resolve(item.progress()).catch(() => {}); } catch (_) {} }
+      }, 100);
       const at = now(); let result;
       try { result = await send(item.operation, item.requestId, { requestId: item.requestId, expiresAt: item.expiresAt, context: item.context }); }
       catch (_) { result = { ok: false, notSent: false, code: 'unknown', error: 'Result unknown. Check the glasses.' }; }
@@ -43,7 +48,7 @@ export function createNavigationSide({ send, now = Date.now, start = setTimeout,
       context = typeof nextContext === 'string' ? nextContext : null; return true;
     },
     cancel,
-    enqueue(request) {
+    enqueue(request, progress) {
       const nav = request.navigation || {}, id = request.requestId;
       if (nav.sessionId !== session || !session) return Promise.resolve(reject('session_changed', 'Refresh phone before swiping'));
       if (!Number.isSafeInteger(nav.sequence) || nav.sequence !== sequence + 1) return Promise.resolve(reject('out_of_order', 'Navigation order changed · Refresh phone'));
@@ -52,7 +57,7 @@ export function createNavigationSide({ send, now = Date.now, start = setTimeout,
       if (!context || nav.context !== context) return Promise.resolve(reject('context_changed', 'Glasses screen changed · Not sent'));
       if ((active ? 1 : 0) + queue.length >= 4) return Promise.resolve(reject('busy', 'Too many swipes · Not sent'));
       return new Promise(resolve => {
-        const at = now(); const item = { operation: request.operation, requestId: id, session, context, at, expiresAt: at + 1000, resolve, timer: null, done: false };
+        const at = now(); const item = { operation: request.operation, requestId: id, session, context, at, expiresAt: at + 1000, resolve, timer: null, receiptTimer: null, done: false, progress };
         item.timer = start(() => {
           finish(item, reject('expired', 'Swipe expired · Not sent')); queue = queue.filter(value => value !== item);
         }, 1000);

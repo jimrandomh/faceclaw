@@ -120,7 +120,7 @@ Page(BasePage({
     this.screenSensor = new Screen();
     this.screenChanged = () => {
       if (!this.alive) return;
-      this.awake = this.screenSensor.getStatus() === 1; this.navigationEpoch++; this.wakeEpoch++;
+      this.awake = this.screenSensor.getStatus() === 1; this.navigationEpoch++; this.wakeEpoch++; this.brightLeaseAt = 0;
       this.resetNavigation(); this.linkSession.setAwake(this.awake);
       this.touching = false; this.lastInputAt = Date.now();
       this.cancelPendingInput(); this.cancelPendingCrown(); this.commandFeedback.clear(); this.clearNotice(); this.touch.reset(); this.crown.reset(); this.cancelPoll();
@@ -133,6 +133,9 @@ Page(BasePage({
   },
   keepAwake() {
     if (!this.alive || !this.awake) return;
+    const now = Date.now();
+    if (this.brightLeaseAt && now >= this.brightLeaseAt && now - this.brightLeaseAt < 30000) return;
+    this.brightLeaseAt = now;
     try { display.setPageBrightTime({ brightTime: 120000 }); } catch (_) {}
     try { display.pauseDropWristScreenOff({ duration: 120000 }); } catch (_) {}
   },
@@ -374,7 +377,9 @@ Page(BasePage({
     if (this.navRequests.size >= 4) { this.commandFeedback.finish(id, 'blocked', 'Too many swipes · Not sent'); return; }
     const sessionId = this.navSession, context = this.phoneState.navigationContext;
     this.navRequests.set(id, { context }); this.busy = true; this.busyKind = 'navigation';
-    this.cancelPoll(); this.keepAwake(); this.render();
+    // Feedback already updated the small progress pill. Avoid native layout and
+    // visibility writes on the touchpad's hot path before handing off the input.
+    this.cancelPoll(); this.keepAwake();
     let result, failure;
     try {
       result = await this.request({ method: 'FACECLAW', operation, requestId: id,
@@ -403,7 +408,7 @@ Page(BasePage({
     }
     if (this.navNeedsRefresh) this.linkSession.cancelNavigation(sessionId);
     if (!this.navRequests.size) {
-      this.busy = false; this.busyKind = ''; this.render();
+      this.busy = false; this.busyKind = '';
       if (this.navNeedsRefresh) { this.resetNavigation(); this.refresh(); } else this.schedulePoll();
     }
   },
@@ -414,7 +419,9 @@ Page(BasePage({
     this.render();
     let explicitRejection = false;
     try {
-      const result = await this.request({ method: 'FACECLAW', operation, ...(operation.kind === 'state' ? { navSession: this.navSession } : {}), ...(feedbackId ? { requestId: feedbackId } : {}) }, { timeout: 11000 });
+      const result = await this.request({ method: 'FACECLAW', operation,
+        ...(operation.kind === 'state' ? { navSession: this.navSession, stateScope: this.screen === 'apps' ? 'full' : 'compact' } : {}),
+        ...(feedbackId ? { requestId: feedbackId } : {}) }, { timeout: 11000 });
       if (!result || result.ok !== true) {
         explicitRejection = !!(result && result.ok === false);
         throw new Error(result && result.error || 'No valid reply. Check the phone.');

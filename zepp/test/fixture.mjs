@@ -20,7 +20,7 @@ export function watchFixture({ fixedFrameworkState = true } = {}) {
   const code = fs.readFileSync(new URL('../page/index.js', import.meta.url), 'utf8').replace(/^import .*;\n/gm, '');
   let page, key, crown, gesture, screenListener, screenStatus = 1, now = 1760545800000;
   const calls = [], requests = [], pending = [], widgets = [], timers = new Map(); let timer = 0, exits = 0;
-  const sessionEvents = [];
+  const sessionEvents = [], displayCalls = [];
   const frameworkState = { messaging: Object.freeze({ frameworkTransport: true }) };
   const setTimer = (fn, delay) => { timers.set(++timer, { fn, at: now + delay }); return timer; };
   const clearTimer = id => timers.delete(id);
@@ -41,7 +41,7 @@ export function watchFixture({ fixedFrameworkState = true } = {}) {
     },
   };
   vm.runInNewContext(code, {
-    ...model, ...feedback, ui, display: { setPageBrightTime() {}, pauseDropWristScreenOff() {}, resetPageBrightTime() {}, resetDropWristScreenOff() {} },
+    ...model, ...feedback, ui, display: { setPageBrightTime() { displayCalls.push('bright'); }, pauseDropWristScreenOff() { displayCalls.push('wrist'); }, resetPageBrightTime() {}, resetDropWristScreenOff() {} },
     createTouchpad: emit => model.createTouchpad(emit, { setTimeout: setTimer, clearTimeout: clearTimer }),
     createCommandFeedback: onChange => feedback.createCommandFeedback(onChange, { now: () => now, setTimeout: setTimer, clearTimeout: clearTimer }),
     createMessagingSession: () => ({
@@ -70,7 +70,7 @@ export function watchFixture({ fixedFrameworkState = true } = {}) {
   page.build();
   const flush = () => new Promise(resolve => setImmediate(resolve));
   return {
-    page, calls, requests, widgets, timers, ui, sessionEvents, exits: () => exits,
+    page, calls, requests, widgets, timers, ui, sessionEvents, displayCalls, exits: () => exits,
     key: (code = 1, event = 4) => key(code, event),
     crown: (degree = -24, elapsed = 350) => { now += elapsed; crown(1, degree); },
     gesture: value => gesture(value),

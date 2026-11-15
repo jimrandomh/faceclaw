@@ -55,10 +55,24 @@ function progressFixture(options = {}) {
     events.push(JSON.parse(JSON.stringify(payload)));
     return options.call?.(payload);
   };
-  const send = (operation, requestId, method = 'FACECLAW') =>
-    new Promise(resolve => side.onRequest({ method, operation, requestId }, (_, result) => resolve(result)));
+  const send = (operation, requestId, method = 'FACECLAW', extra = {}) =>
+    new Promise(resolve => side.onRequest({ method, operation, requestId, ...extra }, (_, result) => resolve(result)));
   return { token, requests, events, send };
 }
+
+test('touchpad status omits the catalog but preserves the exact focused window; Apps and old clients get full lists', async () => {
+  const state = { ...sampleState, apps: Array.from({ length: 29 }, (_, i) => ({ appId: 'example-' + i, title: 'Example application ' + i })) };
+  const f = progressFixture({ fetch: () => Promise.resolve({ status: 200, body: { ok: true, state } }) });
+  const compact = await f.send({ kind: 'state' }, undefined, 'FACECLAW', { stateScope: 'compact' });
+  const full = await f.send({ kind: 'state' }, undefined, 'FACECLAW', { stateScope: 'full' });
+  const legacy = await f.send({ kind: 'state' });
+  assert.equal(compact.state.apps.length, 0);
+  assert.deepEqual(compact.state.windows, full.state.windows.filter(window => window.focused));
+  assert.deepEqual(full.state.apps, legacy.state.apps); assert.equal(full.state.apps.length, 29);
+  assert.equal(full.state.windows.length, sampleState.windows.length);
+  assert.ok(JSON.stringify(compact).length < JSON.stringify(full).length * 0.4);
+  assert.equal(f.events.length, 0);
+});
 
 test('command receipt is correlated and sent before HTTP without awaiting progress delivery', async () => {
   const order = []; let finish;

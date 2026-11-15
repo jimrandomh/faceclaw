@@ -18,10 +18,8 @@ AppSideService(BaseSideService({
         response(null, { ok: false, notSent: true, code: 'busy', error: 'Finish the current action first' }); return;
       }
       try {
-        const pending = navigation.enqueue(request);
-        if (typeof request.requestId === 'string' && request.requestId.length < 96 && /^fc-[a-z0-9-]+$/.test(request.requestId)) {
-          try { Promise.resolve(this.call({ method: 'FACECLAW_PROGRESS', params: { requestId: request.requestId, stage: 'phone-received' } })).catch(() => {}); } catch (_) {}
-        }
+        const pending = navigation.enqueue(request, () => this.call({ method: 'FACECLAW_PROGRESS',
+          params: { requestId: request.requestId, stage: 'phone-received' } }));
         response(null, await pending);
       } catch (_) { response(null, { ok: false, code: 'unknown', error: 'Result unknown. Check the glasses.' }); }
       return;
@@ -43,6 +41,13 @@ AppSideService(BaseSideService({
       const result = await phoneRequest(fetch, request.operation, token);
       if (request.operation.kind === 'state' && result.ok && result.state.navigationSupported) {
         result.state.navigationSupported = navigation.register(request.navSession, result.state.navigationContext);
+      }
+      if (request.operation.kind === 'state' && result.ok && request.stateScope === 'compact') {
+        // The touchpad/status screens need no app catalog. Retain the focused
+        // window's ID so queued input still detects switches between windows of
+        // the same app. Full app/window lists travel only when Apps is opened.
+        result.state.apps = [];
+        result.state.windows = result.state.windows.filter(window => window.focused);
       }
       response(null, result);
     } catch (error) {

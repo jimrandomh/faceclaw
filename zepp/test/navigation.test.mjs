@@ -9,7 +9,7 @@ function sideFixture() {
   const side = createNavigationSide({ now: () => now, start: (fn, ms) => { timers.set(++timer, { fn, at: now + ms }); return timer; }, stop: id => timers.delete(id),
     send: (operation, id, metadata) => { sent.push({ operation, id, metadata }); return new Promise((resolve, reject) => waiting.push({ resolve, reject })); } });
   side.register('session1', 'window:a');
-  const enqueue = (sequence, gesture = 'swipe-down', context = 'window:a') => side.enqueue({ operation: { kind: 'gesture', gesture }, requestId: 'fc-test-' + sequence, navigation: { sessionId: 'session1', sequence, context } });
+  const enqueue = (sequence, gesture = 'swipe-down', context = 'window:a', progress) => side.enqueue({ operation: { kind: 'gesture', gesture }, requestId: 'fc-test-' + sequence, navigation: { sessionId: 'session1', sequence, context } }, progress);
   return { side, sent, enqueue,
     advance(ms) { now += ms; for (const [id, value] of timers) if (value.at <= now && timers.delete(id)) value.fn(); },
     async reply(result = { ok: true, navigation: { version: 1, context: 'window:a' } }) { waiting.shift().resolve(result); await flush(); },
@@ -51,10 +51,60 @@ test('duplicate and reordered sequences cannot execute twice', async () => {
   await f.reply(); await first;
   const second = f.enqueue(2); await f.reply(); await second; assert.equal(f.sent.length, 2);
 });
+test('fast navigation replies skip extra BLE progress packets; slower work keeps progress', async () => {
+  const f = sideFixture(); let receipts = 0;
+  const fast = f.enqueue(1, 'swipe-down', 'window:a', () => receipts++);
+  f.advance(25); await f.reply(); await fast; f.advance(100);
+  assert.equal(receipts, 0);
+  const slow = f.enqueue(2, 'swipe-down', 'window:a', () => receipts++);
+  f.advance(99); assert.equal(receipts, 0); f.advance(1); assert.equal(receipts, 1);
+  await f.reply(); await slow; f.advance(1000); assert.equal(receipts, 1);
+});
+test('canceled or expired directions never emit delayed progress or delay HTTP', async () => {
+  const f = sideFixture(); let receipts = 0;
+  const first = f.enqueue(1, 'swipe-down', 'window:a', () => receipts++);
+  const queued = f.enqueue(2, 'swipe-down', 'window:a', () => receipts++);
+  assert.equal(f.sent.length, 1);
+  f.side.cancel('session1'); f.advance(1000);
+  assert.equal(receipts, 0); assert.equal((await queued).notSent, true);
+  await f.reply(); await first;
+});
 const state = { ...sampleState, navigationSupported: true, navigationContext: 'window:a' };
 async function watch(t) { const w = watchFixture(); t.after(() => w.page.onDestroy()); await w.reply({ ok: true, state: { ...state } }); return w; }
 const directions = w => w.requests.filter(item => item.navigation);
 const success = { ok: true, navigation: { version: 1, context: 'window:a' } };
+test('direction dispatch and replies never require a full native watch layout update', async t => {
+  const w = await watch(t);
+  w.page.render = () => { throw new Error('Full layout blocks the input path'); };
+  w.page.gesture('swipe-up'); w.page.gesture('swipe-down');
+  assert.equal(directions(w).length, 2);
+  await w.reply(success); await w.reply(success);
+  assert.equal(w.page.busy, false);
+  assert.equal(w.page.commandFeedback.snapshot().phase, 'accepted');
+  // Restore rendering for normal teardown.
+  w.page.render = () => {};
+});
+test('only the Apps screen requests a full catalog, including after navigation during a poll', async t => {
+  const w = await watch(t);
+  assert.equal(w.requests[0].stateScope, 'compact');
+  w.page.refresh(); w.page.navigate('apps');
+  await w.reply({ ok: true, state: { ...state, apps: [] } });
+  assert.equal(w.requests.at(-1).stateScope, 'full');
+  await w.reply({ ok: true, state: { ...state } });
+  w.page.navigate('status'); assert.equal(w.requests.at(-1).stateScope, 'compact');
+  await w.reply({ ok: true, state: { ...state } });
+});
+test('rapid touch activity renews the display lease at most every 30 seconds and wake resets it', async t => {
+  const w = await watch(t); const initial = w.displayCalls.length;
+  for (let i = 0; i < 20; i++) w.page.noteActivity();
+  assert.equal(w.displayCalls.length, initial);
+  w.advance(30000); w.page.noteActivity();
+  assert.equal(w.displayCalls.length, initial + 2);
+  // Finish the idle status poll before exercising sleep/wake.
+  await w.reply({ ok: true, state: { ...state } });
+  w.screen(2); w.screen(1); w.page.keepAwake();
+  assert.equal(w.displayCalls.length, initial + 4);
+});
 test('watch sends four directional requests immediately using one session and distinct sequences', async t => {
   const w = await watch(t);
   for (const gesture of ['swipe-up', 'swipe-down', 'swipe-left', 'swipe-right']) w.page.gesture(gesture);

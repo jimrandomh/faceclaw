@@ -73,7 +73,7 @@ npm run preview -- --app-id YOUR_APP_ID
 npm run bridge -- --app-id YOUR_APP_ID
 ```
 
-`npm run build` with no ID creates a verification package using placeholder `99999999`. Preview/bridge require a real registered ID. `FACECLAW_ZEPP_APP_ID` also supplies the ID. The packaging wrapper uses a temporary project and leaves the checked-in manifest unchanged. Packaged files are copied to `dist/`. Device IDs: `8519936`, `8519937`, `8519939`; minimum/target API level 3.0; version 0.1.8, package version code 22.
+`npm run build` with no ID creates a verification package using placeholder `99999999`. Preview/bridge require a real registered ID. `FACECLAW_ZEPP_APP_ID` also supplies the ID. The packaging wrapper uses a temporary project and leaves the checked-in manifest unchanged. Packaged files are copied to `dist/`. Device IDs: `8519936`, `8519937`, `8519939`; minimum/target API level 3.0; version 0.1.9, package version code 23.
 
 `npm run render -- /path/to/playwright` renders sample states from the real watch widget code and checks for text overflow and circular-screen clipping. These are **layout previews**, not hardware screenshots.
 
@@ -172,3 +172,20 @@ old watch session, with short expiry as the fallback if cancellation is lost.
 An already dispatched action cannot be retracted. No concurrent POSTs or retries
 are used. Replies carry queue/HTTP durations for diagnosis; acceptance still does
 not prove a visible glasses frame. Device latency must be verified on hardware.
+
+Version 0.1.9 reduces work on the watch/Zepp path without raising the burst
+limit. Touchpad and Status reads omit the catalog and keep only the focused
+window's identity; opening Apps still fetches full lists. This preserves queued
+input's exact-window check. Direction dispatch and acceptance update the progress
+pill without rewriting the complete native layout. The 120-second display lease
+is renewed at most every 30 seconds of activity and resets on sleep/wake.
+Navigation emits a separate phone-received packet only when HTTP is still
+pending after 100 ms; fast commands use their final acknowledgement instead.
+The existing navigation-capable phone APK and input token remain valid.
+
+The device report captured before this update showed 139 ms median and 386 ms
+maximum input-to-display latency after input reached Faceclaw, while the user
+reported multi-second delays with the watch showing Sending. This points toward
+the watch/Zepp path, but does not establish the exact cause. The 0.1.9 changes
+reduce native UI calls and BLE traffic; their physical latency still needs
+confirmation.

@@ -225,6 +225,14 @@ commands, and you do not need to restart it each time you use the remote.
 
 ### Updating an installed watch app
 
+Version **0.1.9 (code 23)** reduces status traffic and watch UI work before
+directional inputs. Only opening Apps transfers the full app/window lists;
+routine checks use a compact snapshot. Rapid directions update the progress
+indicator without rewriting the entire watch layout, and fast phone responses
+skip the redundant receipt packet. The burst limit stays at four. If you already
+installed the Android APK for 0.1.8, update only the watch and keep your token.
+These changes still require a physical latency check.
+
 Version **0.1.8 (code 22)** adds rapid directional navigation. Install the updated
 Android APK first, then the watch package. After opening the watch app, it can
 send up to four swipes/crown steps without waiting for each full reply. The phone
@@ -372,7 +380,7 @@ settings do not require Developer Bridge to remain running.
 | Token missing/unauthorized | Open the clearly labelled token field in Zepp, paste the complete token, save, and reopen the watch app. A revoked token needs replacement. |
 | Permission denied | In Faceclaw, check the token's **Provide input** permission and **Settings → Watch**. Check glasses lock separately. |
 | Faceclaw cannot be reached | Open Faceclaw, check **Input tokens → Connection information** for `127.0.0.1:8791`, and confirm this branch's APK is installed. Both phone apps must run on the same Android phone. Do not change the address to the watch's or computer's IP. |
-| Frequent “Busy · Not sent” | Install watch version 0.1.8 and the matching Android APK. They pipeline up to four directions over the warm session. Taps/holds/app commands remain exclusive. Waiting directions expire after one second; slow transport can still drop input visibly. Watch the progress banner; re-pairing or leaving Developer Bridge open does not remove that wait. |
+| Frequent “Busy · Not sent” | Install watch version 0.1.9 with the navigation-capable Android APK introduced for 0.1.8. They pipeline up to four directions over the warm session; 0.1.9 also reduces status traffic and UI work. Taps/holds/app commands remain exclusive. Waiting directions expire after one second; slow transport can still drop input visibly. Watch the progress banner; re-pairing or leaving Developer Bridge open does not remove that wait. |
 | Works unlocked, stops after locking the phone | Check background limits for both apps; repeat the locked-phone test. If unresolved, report the phone/Android/Zepp versions and the exact error. Do not assume keeping USB or Bridge connected is the fix. |
 | App is listed but glasses stay blank | Open that app directly in Faceclaw. Check glasses connection/display/lock and that app's Faceclaw compatibility before retrying the watch. |
 | Faceclaw repeatedly reports “CFW recovery retry limit” | Install this branch's updated Android APK. If G2 repeatedly rejects display-resource allocations, it switches automatically to rendering the complete screen on the phone. App controls remain available; stereoscopic depth and retained glasses-side animations are disabled for that connection. Other transport failures still require diagnosis from the logs. Firmware version `2.3.0.24` alone does not identify incompatibility; Faceclaw checks its separate firmware revision. |
