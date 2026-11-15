@@ -41,7 +41,7 @@ Page(BasePage({
     });
     this.pad.addEventListener(ui.event.MOVE, info => { if (this.touching) this.noteActivity(); this.touch.move(info.x, info.y); });
     this.pad.addEventListener(ui.event.CLICK_UP, info => { this.touching = false; this.noteActivity(); this.touch.up(info.x, info.y, Date.now()); });
-    this.pad.addEventListener(ui.event.MOVE_OUT, () => { this.touching = false; this.touch.reset(); this.noteActivity(); });
+    this.pad.addEventListener(ui.event.MOVE_OUT, () => { this.cancelPendingInput(); this.touching = false; this.touch.reset(); this.noteActivity(); });
     text(110, 44, 260, 40, 28, COLORS.muted, 'remote', 'Faceclaw');
     this.clock = text(70, 170, 340, 94, 78, COLORS.text, 'remote');
     this.padTitle = text(55, 274, 370, 46, 32, COLORS.text, 'remote');
@@ -68,7 +68,7 @@ Page(BasePage({
     this.position = text(350, 78, 62, 28, 20, COLORS.muted, 'list');
 
     text(80, 52, 320, 44, 30, COLORS.primary, 'help', 'Faceclaw Remote');
-    text(54, 108, 372, 250, 27, COLORS.secondary, 'help', 'Tap: select\nDouble tap: back / sleep / wake\nHold: long press\nSwipe: navigate\nCrown: scroll\nApps: press crown to open\nLower side button: quit');
+    text(54, 108, 372, 250, 27, COLORS.secondary, 'help', 'Tap: select\nDouble tap: back/sleep/wake\nHold 0.6s: long press\nTap + hold 0.6s: app menu\nSwipe/crown: navigate\nApps: press crown to open\nLower side button: quit');
     button(105, 366, 270, 58, 'Back to touchpad', () => this.navigate('remote'), 'help', 26);
     text(90, 56, 300, 44, 32, COLORS.problem, 'details', 'Connection details');
     this.errorDetails = text(66, 118, 348, 232, 29, COLORS.secondary, 'details');

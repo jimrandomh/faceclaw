@@ -222,10 +222,14 @@ commands, and you do not need to restart it each time you use the remote.
 
 ### Updating an installed watch app
 
-Version **0.1.5 (code 19)** reduces **Busy** interruptions from status checks and
-removes the extra status wait after directional swipes. One fresh gesture or app
-action can briefly wait for a status check to finish. Display and lock changes
-still trigger a refresh, and sent commands are never retried.
+Version **0.1.6 (code 20)** recognizes a hold after **0.6 seconds while your finger
+is still down**. For tap-then-hold, tap once, touch again within **0.3 seconds**,
+and hold that second contact for **0.6 seconds**. Dragging before the threshold
+cancels the hold. Lifting after recognition sends no extra event.
+
+This uses the existing discrete gestures. It does not add a continuous
+held/released input stream, hold-to-talk, or game escape controls. Version 0.1.5's
+reduced status-check interruptions and other earlier fixes remain included.
 
 Install the updated watch package using the same App ID, then leave Faceclaw
 Remote with the lower side button and reopen it. The existing phone APK and input
@@ -264,7 +268,10 @@ voice and motion features are not implied.
    closing it does not uninstall the app.
 5. Test the Remote pad's select/back/scroll controls and check **Status** for
    connection or permission errors. Double tap goes back inside an app, puts the
-   display to sleep at the app switcher, and wakes an off display.
+   display to sleep at the app switcher, and wakes an off display. To test a hold,
+   keep a finger still on the pad for 0.6 seconds and check for **Long press**
+   before lifting. For **Tap then hold**, start a second contact within 0.3 seconds
+   after a tap and hold it for 0.6 seconds. Release should not repeat the gesture.
 6. To leave the watch app, press the **lower side button once** from any screen.
    This returns to the watch's app list. It does not close the app on the glasses
    or disconnect Faceclaw, and works without a phone connection. The upper crown
@@ -338,7 +345,7 @@ settings do not require Developer Bridge to remain running.
 | Token missing/unauthorized | Open the clearly labelled token field in Zepp, paste the complete token, save, and reopen the watch app. A revoked token needs replacement. |
 | Permission denied | In Faceclaw, check the token's **Provide input** permission and **Settings → Watch**. Check glasses lock separately. |
 | Faceclaw cannot be reached | Open Faceclaw, check **Input tokens → Connection information** for `127.0.0.1:8791`, and confirm this branch's APK is installed. Both phone apps must run on the same Android phone. Do not change the address to the watch's or computer's IP. |
-| Frequent “Busy · Not sent” | Install watch version 0.1.5. It reduces interference from status checks, but another action must still finish before the next one is sent. Watch the progress banner; re-pairing or leaving Developer Bridge open does not remove that wait. |
+| Frequent “Busy · Not sent” | Install watch version 0.1.6. It includes the status-check improvements from 0.1.5, but another action must still finish before the next one is sent. Watch the progress banner; re-pairing or leaving Developer Bridge open does not remove that wait. |
 | Works unlocked, stops after locking the phone | Check background limits for both apps; repeat the locked-phone test. If unresolved, report the phone/Android/Zepp versions and the exact error. Do not assume keeping USB or Bridge connected is the fix. |
 | App is listed but glasses stay blank | Open that app directly in Faceclaw. Check glasses connection/display/lock and that app's Faceclaw compatibility before retrying the watch. |
 | Faceclaw repeatedly reports “CFW recovery retry limit” | Install this branch's updated Android APK. If G2 repeatedly rejects display-resource allocations, it switches automatically to rendering the complete screen on the phone. App controls remain available; stereoscopic depth and retained glasses-side animations are disabled for that connection. Other transport failures still require diagnosis from the logs. Firmware version `2.3.0.24` alone does not identify incompatibility; Faceclaw checks its separate firmware revision. |

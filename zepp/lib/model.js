@@ -73,24 +73,47 @@ export function createCrownNavigation() {
   };
 }
 
-// Zepp gives single-finger coordinates. A hold is sent on release because
-// the local API accepts the completed long-press gesture, not a held state.
+// Zepp gives single-finger coordinates. Holds emit the same discrete gesture
+// at 600ms; no held/released stream or extra gesture is sent on finger-up.
 export function createTouchpad(emit, options = {}) {
   const startTimer = options.setTimeout || setTimeout, stopTimer = options.clearTimeout || clearTimeout;
-  let down = null, tapTimer = null, previousTap = null, moved = false;
+  let down = null, holdTimer = null, tapTimer = null, previousTap = null, downSerial = 0;
+  const clearHold = () => { if (holdTimer !== null) stopTimer(holdTimer); holdTimer = null; };
   const clearTap = () => { if (tapTimer !== null) stopTimer(tapTimer); tapTimer = null; previousTap = null; };
+  const reset = () => { down = null; clearHold(); clearTap(); };
+  const hold = press => {
+    if (down !== press || press.moved) return;
+    // emit may synchronously call reset or begin another contact.
+    reset();
+    emit(press.second ? 'short-then-long-press' : 'long-press');
+  };
   return {
-    reset() { down = null; moved = false; clearTap(); },
+    reset,
     down(x, y, now) {
-      if (![x, y, now].every(Number.isFinite)) return;
-      const second = previousTap !== null && now - previousTap >= 0 && now - previousTap <= 300;
-      if (second) { if (tapTimer !== null) stopTimer(tapTimer); tapTimer = null; }
-      down = { x, y, time: now, second }; moved = false;
+      const serial = ++downSerial;
+      if (![x, y, now].every(Number.isFinite)) { reset(); return; }
+      const gap = previousTap === null ? null : now - previousTap.time;
+      const second = gap !== null && gap >= 0 && gap <= 300;
+      const overdueTap = gap !== null && gap > 300;
+      reset();
+      // If a delayed click timer has not run, settle that completed contact
+      // before installing this one. It must never fire into the new hold.
+      if (overdueTap) emit('click');
+      if (serial !== downSerial) return;
+      const press = { x, y, time: now, second, moved: false };
+      down = press;
+      holdTimer = startTimer(() => hold(press), 600);
     },
-    move(x, y) { if (down && Math.hypot(x - down.x, y - down.y) > 30) moved = true; },
+    move(x, y) {
+      if (![x, y].every(Number.isFinite)) { reset(); return; }
+      if (down && Math.hypot(x - down.x, y - down.y) > 30) {
+        down.moved = true; clearHold();
+      }
+    },
     up(x, y, now) {
-      if (!down || ![x, y, now].every(Number.isFinite)) { down = null; return; }
-      const press = down; down = null;
+      if (![x, y, now].every(Number.isFinite)) { reset(); return; }
+      if (!down) return;
+      const press = down; down = null; clearHold();
       const dx = x - press.x, dy = y - press.y, duration = now - press.time;
       if (duration < 0) { clearTap(); return; }
       if (Math.max(Math.abs(dx), Math.abs(dy)) >= 40) {
@@ -98,11 +121,17 @@ export function createTouchpad(emit, options = {}) {
         const gesture = Math.abs(dy) >= Math.abs(dx) ? (dy < 0 ? 'swipe-up' : 'swipe-down') : (dx < 0 ? 'swipe-left' : 'swipe-right');
         emit(gesture, { startY: press.y }); return;
       }
-      if (moved) { clearTap(); return; }
+      if (press.moved || Math.hypot(dx, dy) > 30) { clearTap(); return; }
+      // Preserve a fallback when the event loop delayed the hold timer.
       if (duration >= 600) { clearTap(); emit(press.second ? 'short-then-long-press' : 'long-press'); return; }
       if (press.second) { clearTap(); emit('double-click'); return; }
-      previousTap = now;
-      tapTimer = startTimer(() => { tapTimer = null; previousTap = null; emit('click'); }, 300);
+      const tap = { time: now };
+      previousTap = tap;
+      tapTimer = startTimer(() => {
+        if (previousTap !== tap) return;
+        clearTap();
+        emit('click');
+      }, 300);
     },
   };
 }

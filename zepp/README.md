@@ -12,8 +12,8 @@ The opening screen follows Faceclaw's Wear OS remote: a black touchpad, central 
 | --- | --- |
 | Tap pad / press crown on pad | Select on glasses |
 | Double tap pad | Back inside an app; sleep at the app switcher; wake an off display |
-| Hold pad, then release | Long press |
-| Tap then hold and release | Short-then-long press |
+| Hold pad for 0.6 seconds | Long press, recognized before lifting |
+| Tap, then touch again within 0.3 seconds and hold for 0.6 seconds | Short-then-long press, recognized before lifting |
 | Swipe pad | Spatial navigation |
 | Turn crown on pad | Scroll, respecting Faceclaw's crown direction |
 | Apps → turn crown | Select a window or app in the watch list |
@@ -25,11 +25,16 @@ The opening screen follows Faceclaw's Wear OS remote: a black touchpad, central 
 
 The list groups **On screen**, **Also open**, and **Launch**, like Wear OS. A list crown movement requires 24 degrees and repeats at most every 280ms. Excess rotation is discarded. List selection responds locally even while the phone is answering a status check. The watch display stays on for up to two minutes after interaction; polling stops when the watch screen turns off or the app exits.
 
+Keep your finger still for the hold threshold. Dragging before the threshold
+cancels hold recognition. Once a hold is recognized, lifting your finger sends
+no extra tap or hold. For tap-then-hold, the second contact must begin within
+0.3 seconds after the first tap, then remain down for 0.6 seconds.
+
 If the phone cannot be reached or the token needs attention, tap **Connection details** on the touchpad to read the error. **Retry** (or a crown press on that screen) only refreshes status; it does not repeat a prior command.
 
 To quit from any screen, press the **lower side button** once. This also works while the phone is unavailable or a command is waiting. It cancels pending watch input and status polling; it does not send a close command to the glasses. The crown keeps its select/open behavior. Zepp documents the lower button of its two-button layout as `KEY_SHORTCUT`; `KEY_BACK` is also accepted for compatibility.
 
-This is a port of the supported remote controls, not every Wear OS feature: no microphone assistant, keyboard, motion-sensor pinch taps, multitouch, ambient clock, or held/released input stream. Hold sends the completed long-press gesture when released. Opening the watch does not synthesize a click or launch an app on the glasses.
+This is a port of the supported remote controls, not every Wear OS feature: no microphone assistant, keyboard, motion-sensor pinch taps, multitouch, ambient clock, or held/released input stream. A hold sends the existing discrete gesture once at the threshold; it does not add continuous hold-to-talk or game escape behavior. Opening the watch does not synthesize a click or launch an app on the glasses.
 
 ## Command feedback
 
@@ -64,7 +69,7 @@ npm run preview -- --app-id YOUR_APP_ID
 npm run bridge -- --app-id YOUR_APP_ID
 ```
 
-`npm run build` with no ID creates a verification package using placeholder `99999999`. Preview/bridge require a real registered ID. `FACECLAW_ZEPP_APP_ID` also supplies the ID. The packaging wrapper uses a temporary project and leaves the checked-in manifest unchanged. Packaged files are copied to `dist/`. Device IDs: `8519936`, `8519937`, `8519939`; minimum/target API level 3.0; version 0.1.5, package version code 19.
+`npm run build` with no ID creates a verification package using placeholder `99999999`. Preview/bridge require a real registered ID. `FACECLAW_ZEPP_APP_ID` also supplies the ID. The packaging wrapper uses a temporary project and leaves the checked-in manifest unchanged. Packaged files are copied to `dist/`. Device IDs: `8519936`, `8519937`, `8519939`; minimum/target API level 3.0; version 0.1.6, package version code 20.
 
 `npm run render -- /path/to/playwright` renders sample states from the real watch widget code and checks for text overflow and circular-screen clipping. These are **layout previews**, not hardware screenshots.
 
@@ -112,3 +117,8 @@ Version 0.1.5 reduces interruptions from status checks during input, removes the
 extra status wait after directional swipes, and lets one fresh action briefly
 wait for an ongoing status check. It preserves display/lock refreshes and never
 retries a sent command. The existing phone APK and token remain valid.
+
+Version 0.1.6 recognizes hold and tap-then-hold after 0.6 seconds of contact,
+without waiting for release. Dragging before the threshold cancels the hold;
+release after recognition sends no duplicate. The existing phone APK and token
+remain valid, and the 0.1.5 scheduling improvements remain included.

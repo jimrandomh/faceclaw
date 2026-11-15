@@ -69,7 +69,7 @@ test('the 300ms single-tap recognition delay is not interrupted by an idle poll'
 
 test('touch cancellation releases polling after a fresh idle interval', async t => {
   const w = await ready(t); w.advance(2900); w.touch('down', 240, 230);
-  w.advance(3000); assert.equal(reads(w).length, 1);
+  w.advance(300); assert.equal(reads(w).length, 1); // Cancel before it becomes a hold.
   w.touch('cancel', 240, 230); w.advance(2999); assert.equal(reads(w).length, 1);
   w.advance(1); assert.equal(reads(w).length, 2); assert.equal(commands(w).length, 0);
 });

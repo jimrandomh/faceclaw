@@ -28,6 +28,11 @@ const root = path.resolve(__dirname, '..');
   w.page.refresh(); w.page.gesture('swipe-right'); snapshots.push(snapshot('Waiting for status')); await w.reply(); await w.reply({ ok: true });
   w.page.gesture('click'); w.page.gesture('swipe-right'); snapshots.push(snapshot('Busy · Not sent')); await w.reply({ ok: true }); await w.reply();
   w.page.gesture('swipe-down'); await w.reject('timeout'); snapshots.push(snapshot('Result unknown')); await w.reply();
+  w.touch('down', 240, 230); w.advance(600); snapshots.push(snapshot('Hold detected at 0.6s'));
+  w.touch('up', 240, 230); await w.reply({ ok: true }); await w.reply();
+  w.touch('down', 240, 230); w.touch('up', 240, 230, 50); w.advance(150);
+  w.touch('down', 240, 230); w.advance(600); snapshots.push(snapshot('Tap then hold at 0.6s'));
+  w.touch('up', 240, 230); await w.reply({ ok: true }); await w.reply();
   w.page.onDestroy();
   const browser = await chromium.launch({ headless: true });
   try {
