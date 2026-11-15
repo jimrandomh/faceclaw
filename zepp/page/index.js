@@ -12,7 +12,7 @@ Page(BasePage({
   build() {
     // Zepp owns Page.state; keep the phone snapshot in an app-specific field.
     this.alive = true; this.awake = true; this.phoneState = null; this.stateTime = 0; this.busy = false; this.busyKind = ''; this.pendingCrown = null; this.pendingCrownTimer = null; this.navigationEpoch = 0;
-    this.pendingInput = null; this.pendingInputTimer = null; this.touching = false; this.lastInputAt = 0; this.wakeEpoch = 0;
+    this.pendingInput = null; this.pendingInputTimer = null; this.touching = false; this.lastInputAt = 0; this.wakeEpoch = 0; this.wakeGlassesOnOpen = true;
     this.linkSession = createMessagingSession(this.messaging);
     this.navSession = ''; this.navSequence = 0; this.navRequests = new Map(); this.navNeedsRefresh = false;
     this.resetNavigation();
@@ -68,7 +68,7 @@ Page(BasePage({
     this.position = text(350, 78, 62, 28, 20, COLORS.muted, 'list');
 
     text(80, 52, 320, 44, 30, COLORS.primary, 'help', 'Faceclaw Remote');
-    text(54, 108, 372, 250, 27, COLORS.secondary, 'help', 'Tap: select\nDouble tap: back/sleep/wake\nHold 0.6s: long press\nTap + hold 0.6s: app menu\nSwipe/crown: navigate\nApps: press crown to open\nLower side button: quit');
+    text(54, 108, 372, 250, 27, COLORS.secondary, 'help', 'Tap/crown: select or wake\nDouble tap: back/sleep/wake\nHold 0.6s: long press\nTap + hold 0.6s: app menu\nSwipe/crown: navigate\nApps: press crown to open\nLower side button: quit');
     button(105, 366, 270, 58, 'Back to touchpad', () => this.navigate('remote'), 'help', 26);
     text(90, 56, 300, 44, 32, COLORS.problem, 'details', 'Connection details');
     this.errorDetails = text(66, 118, 348, 232, 29, COLORS.secondary, 'details');
@@ -98,7 +98,9 @@ Page(BasePage({
       if (key !== KEY_HOME && key !== KEY_SELECT) return false;
       this.cancelPendingInput(); this.cancelPendingCrown(); this.touching = false; this.touch.reset(); this.noteActivity();
       if (this.screen === 'remote') {
-        if (this.linkError || !this.phoneState) this.refresh(); else this.gesture('click');
+        if (this.linkError || !this.phoneState) this.refresh();
+        else if (!this.phoneState.screenOn) this.wakeGlasses();
+        else this.gesture('click');
       } else if (this.screen === 'help') this.navigate('remote'); else if (this.screen === 'details') this.refresh(); else this.activate();
       return true;
     } });
@@ -117,6 +119,7 @@ Page(BasePage({
     this.screenChanged = () => {
       if (!this.alive) return;
       this.awake = this.screenSensor.getStatus() === 1; this.navigationEpoch++; this.wakeEpoch++; this.brightLeaseAt = 0;
+      this.wakeGlassesOnOpen = false;
       this.resetNavigation(); this.linkSession.setAwake(this.awake);
       this.stopFailureVibration();
       this.touching = false; this.lastInputAt = Date.now();
@@ -159,6 +162,7 @@ Page(BasePage({
   },
   cancelPoll() { if (this.pollTimer !== null) clearTimeout(this.pollTimer); this.pollTimer = null; },
   noteActivity() {
+    this.wakeGlassesOnOpen = false; // A user action supersedes opening-time automation.
     this.lastInputAt = Date.now(); this.keepAwake(); this.schedulePoll();
   },
   schedulePoll() {
@@ -253,12 +257,18 @@ Page(BasePage({
       if (this.phoneState.locked && ['connect', 'disconnect', 'lock', 'unlock'].indexOf(operation.command) < 0) {
         this.commandFeedback.finish(pending.id, 'blocked', 'Glasses are locked'); return;
       }
-      // Revalidate the exact target and action; a status toggle may have reversed.
-      const row = this.rows[this.selected];
-      const current = row && (operation.command === 'close-window' ? row.close : row.operation);
-      if (!row || row.key !== pending.rowKey || row.enabled === false || !current ||
-        current.command !== operation.command || current.appId !== operation.appId || current.windowId !== operation.windowId) {
-        this.commandFeedback.finish(pending.id, 'skipped', 'List changed · Try again'); return;
+      if (operation.command === 'wake' && pending.screen === 'remote') {
+        if (this.phoneState.screenOn || pending.context !== this.inputContext()) {
+          this.commandFeedback.finish(pending.id, 'skipped', 'Display changed · Try again'); return;
+        }
+      } else {
+        // Revalidate the exact target and action; a status toggle may have reversed.
+        const row = this.rows[this.selected];
+        const current = row && (operation.command === 'close-window' ? row.close : row.operation);
+        if (!row || row.key !== pending.rowKey || row.enabled === false || !current ||
+          current.command !== operation.command || current.appId !== operation.appId || current.windowId !== operation.windowId) {
+          this.commandFeedback.finish(pending.id, 'skipped', 'List changed · Try again'); return;
+        }
       }
     }
     this.commandFeedback.update(pending.id, 'sending');
@@ -297,7 +307,7 @@ Page(BasePage({
     const id = this.commandFeedback.begin(operation, this.busy ? 'queued' : 'sending');
     if (!this.canControl(false, id, true)) return;
     if (!this.phoneState.screenOn || this.phoneState.locked) {
-      this.commandFeedback.finish(id, 'blocked', this.phoneState.locked ? 'Glasses are locked' : 'Double tap to wake'); return;
+      this.commandFeedback.finish(id, 'blocked', this.phoneState.locked ? 'Glasses are locked' : 'Press crown to wake'); return;
     }
     if (this.phoneState.navigationSupported && !this.busy) { this.sendNavigation(operation, id); return; }
     if (this.busy) {
@@ -322,7 +332,7 @@ Page(BasePage({
     if (age < 0 || age > 350) { this.commandFeedback.finish(pending.id, 'skipped', 'Turn crown again', { silent: true }); return; }
     if (!this.canControl(false, pending.id, true)) return;
     if (!this.phoneState.screenOn || this.phoneState.locked) {
-      this.commandFeedback.finish(pending.id, 'blocked', this.phoneState.locked ? 'Glasses are locked' : 'Double tap to wake'); return;
+      this.commandFeedback.finish(pending.id, 'blocked', this.phoneState.locked ? 'Glasses are locked' : 'Press crown to wake'); return;
     }
     this.commandFeedback.update(pending.id, 'sending');
     this.perform({ kind: 'gesture', gesture: pending.gesture }, false, true, pending.id);
@@ -348,9 +358,19 @@ Page(BasePage({
     }
     const wakeGesture = ['click', 'double-click', 'long-press'].indexOf(gesture) >= 0;
     if (!wakeGesture && !this.phoneState.screenOn) {
-      this.commandFeedback.finish(id, 'blocked', 'Double tap to wake'); return false;
+      this.commandFeedback.finish(id, 'blocked', 'Press crown to wake'); return false;
     }
     return true;
+  },
+  wakeGlasses() {
+    if (!this.alive || !this.awake) return;
+    const polling = this.busy && this.busyKind === 'state';
+    const operation = { kind: 'command', command: 'wake' }, id = this.commandFeedback.begin(operation, polling ? 'queued' : 'sending');
+    if (this.busy && !polling) { this.commandFeedback.finish(id, 'blocked', 'Busy · Not sent'); return; }
+    if (!this.canControl(false, id)) return;
+    if (this.phoneState.locked) { this.commandFeedback.finish(id, 'blocked', 'Glasses are locked'); return; }
+    if (polling) { this.queueInput(operation, id); return; }
+    this.perform(operation, false, false, id);
   },
   activate() {
     this.cancelPendingInput(); this.cancelPendingCrown(); this.noteActivity();
@@ -480,6 +500,7 @@ Page(BasePage({
     if (!this.alive) return;
     // A reply begun before sleep cannot establish current readiness on wake.
     if (!this.awake || wakeEpoch !== this.wakeEpoch || navSession !== this.navSession) { if (this.awake) this.refresh(); return; }
+    const wakeGlasses = this.wakeGlassesOnOpen; this.wakeGlassesOnOpen = false;
     if (!result) return;
     // Local list navigation remains live while polling; preserve the latest selection.
     const key = this.rows[this.selected] && this.rows[this.selected].key;
@@ -489,6 +510,11 @@ Page(BasePage({
     const index = this.rows.findIndex(row => row.key === key);
     this.selected = index < 0 ? moveSelection(this.selected, this.rows.length, 0) : index;
     this.render();
+    // One explicit, non-toggle wake on app launch, after a fresh phone read.
+    // Do not reconnect/unlock, wake on later watch-screen resumes, or retry.
+    if (wakeGlasses && this.phoneState.remoteEnabled && this.phoneState.connected && !this.phoneState.locked && !this.phoneState.screenOn) {
+      this.wakeGlasses(); return;
+    }
     this.drainInput();
     this.drainCrown();
   },

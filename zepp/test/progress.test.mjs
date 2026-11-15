@@ -5,6 +5,8 @@ import { sampleState, watchFixture } from './fixture.mjs';
 async function ready(t, state = sampleState) {
   const watch = watchFixture();
   t.after(() => watch.page.onDestroy());
+  // These tests exercise manual input; activity supersedes opening-time wake.
+  if (!state.screenOn) watch.page.noteActivity();
   await watch.reply({ ok: true, state });
   return watch;
 }
@@ -99,7 +101,7 @@ test('status polling gives waiting feedback; dark glasses, locks and unavailable
   assert.equal(commands(polling).length, 1);
   await polling.reply({ ok: true });
   for (const [patch, detail] of [
-    [{ screenOn: false }, /Double tap to wake/], [{ locked: true }, /Glasses are locked/],
+    [{ screenOn: false }, /Press crown to wake/], [{ locked: true }, /Glasses are locked/],
     [{ screenOn: false, locked: true }, /Glasses are locked/],
     [{ remoteEnabled: false }, /Watch control is off/], [{ connected: false }, /Glasses disconnected/],
   ]) {

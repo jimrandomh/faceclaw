@@ -44,7 +44,7 @@ export function padStatus(state, linkError) {
   if (state.charging) return { text: 'Charging' + (state.battery === null ? '' : ' · ' + state.battery + '%'), detail: state.caseBattery === null ? 'Glasses in case' : 'Case ' + state.caseBattery + '%', tone: COLORS.good };
   if (state.silentMode) return { text: 'Silent mode', detail: 'Use the phone to change', tone: COLORS.muted };
   if (state.locked) return { text: 'Locked', detail: state.canUnlock ? 'Open Status to unlock' : 'Unlock on the phone', tone: COLORS.muted };
-  if (!state.screenOn) return { text: 'Double tap to wake', detail: 'Glasses display off', tone: COLORS.muted };
+  if (!state.screenOn) return { text: 'Press crown to wake', detail: 'Glasses display off', tone: COLORS.muted };
   return { text: state.listening ? 'Listening…' : state.foreground && state.foreground.title || 'Launcher', detail: state.preview ? 'Phone preview' : state.battery === null ? 'Connected' : 'G2 · ' + state.battery + '%', tone: COLORS.good };
 }
 

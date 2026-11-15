@@ -8,6 +8,12 @@ Follow [the installation guide](../zepp-install.md) for phone and watch setup. T
 
 The opening screen has a black touchpad, central clock, glasses status, and separate **Apps** and **Status** buttons. Both buttons open their screen directly, without an intermediate menu.
 
+Opening the watch app wakes an off glasses display once, after fresh phone
+status confirms connected, unlocked glasses with watch control enabled. On the
+touchpad, a crown press also sends **Wake** when the display is off; when it is
+on, the press selects normally and crown turns scroll. Neither action unlocks
+or reconnects the glasses. Waking only the watch screen does not auto-wake them.
+
 | Input | Action |
 | --- | --- |
 | Tap pad / press crown on pad | Select on glasses |
@@ -71,7 +77,7 @@ npm run preview -- --app-id YOUR_APP_ID
 npm run bridge -- --app-id YOUR_APP_ID
 ```
 
-`npm run build` with no ID creates a verification package using placeholder `99999999`. Preview/bridge require a real registered ID. `FACECLAW_ZEPP_APP_ID` also supplies the ID. The packaging wrapper uses a temporary project and leaves the checked-in manifest unchanged. Packaged files are copied to `dist/`. Device IDs: `8519936`, `8519937`, `8519939`; minimum/target API level 3.0; version 0.1.12, package version code 26.
+`npm run build` with no ID creates a verification package using placeholder `99999999`. Preview/bridge require a real registered ID. `FACECLAW_ZEPP_APP_ID` also supplies the ID. The packaging wrapper uses a temporary project and leaves the checked-in manifest unchanged. Packaged files are copied to `dist/`. Device IDs: `8519936`, `8519937`, `8519939`; minimum/target API level 3.0; version 0.1.13, package version code 27.
 
 `npm run render -- /path/to/playwright` renders sample states from the real watch widget code and checks for text overflow and circular-screen clipping. These are **layout previews**, not hardware screenshots.
 
@@ -204,3 +210,15 @@ continuous successful navigation. Same-session, same-target acknowledgements
 renew only directional readiness. Other actions retain full status freshness
 checks. Necessary automatic preparation shows **Syncing · Try again** without
 failure vibration or replay. The existing Android build and token remain valid.
+
+Version 0.1.13 wakes the glasses once when the watch app opens, after its first
+successful phone status read shows connected, unlocked glasses with the display
+off and watch control enabled. It uses the explicit **Wake** command, never a
+double-tap toggle. It does not auto-connect or unlock. User interaction, leaving
+the app, watch sleep, or a failed initial read cancels opening-time automation.
+Later polls and watch-screen resumes do not auto-wake; a failed/uncertain wake
+is never retried. This is watch-only and includes the 0.1.12 freshness fix.
+A crown press on the touchpad also sends explicit **Wake** when fresh status
+shows an off display, retaining normal select while it is on. A crown press
+may wait up to one second behind a status read, with fresh target/display/lock
+validation before sending. It never queues behind an already-sent action.

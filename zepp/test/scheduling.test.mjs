@@ -4,6 +4,8 @@ import { sampleState, watchFixture } from './fixture.mjs';
 
 async function ready(t, state = sampleState) {
   const w = watchFixture(); t.after(() => w.page.onDestroy());
+  // Test manual input after activity has superseded opening-time auto-wake.
+  if (!state.screenOn) w.page.noteActivity();
   await w.reply({ ok: true, state });
   return w;
 }

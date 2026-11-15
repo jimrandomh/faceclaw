@@ -9,7 +9,7 @@ const root = path.resolve(__dirname, '..');
 (async () => {
   const { watchFixture, sampleState } = await import(pathToFileURL(path.join(root, 'test/fixture.mjs')));
   const w = watchFixture(); await w.reply();
-  const snapshot = label => ({ label, widgets: JSON.parse(JSON.stringify(w.widgets)) });
+  const snapshot = (label, watch = w) => ({ label, widgets: JSON.parse(JSON.stringify(watch.widgets)) });
   const snapshots = [snapshot('Touchpad')];
   w.page.navigate('apps'); await w.reply(); snapshots.push(snapshot('Open windows'));
   w.page.select(4); snapshots.push(snapshot('Launch apps'));
@@ -35,6 +35,9 @@ const root = path.resolve(__dirname, '..');
   for (let i = 0; i < 32; i++) { w.advance(500); w.page.noteActivity(); }
   w.crown(24, 0); snapshots.push(snapshot('Automatic sync · Turn again')); await w.reply();
   w.page.onDestroy();
+  const opening = watchFixture(); await opening.reply({ ok: true, state: { ...sampleState, screenOn: false } });
+  snapshots.push(snapshot('Opening remote · Wake glasses', opening));
+  await opening.reply({ ok: true }); await opening.reply(); opening.page.onDestroy();
   const browser = await chromium.launch({ headless: true });
   try {
     const tab = await browser.newPage({ viewport: { width: 1552, height: 1204 }, deviceScaleFactor: 1 });

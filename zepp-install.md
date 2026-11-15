@@ -226,6 +226,21 @@ commands, and you do not need to restart it each time you use the remote.
 
 ### Updating an installed watch app
 
+Version **0.1.13 (code 27)** wakes a sleeping glasses display when you open the
+watch app. The first phone reply must show connected, unlocked glasses and
+enabled watch control. It sends one explicit **Wake** command, which cannot
+toggle the display off. It does not reconnect or unlock automatically. Touching
+the controls before the first reply, leaving, watch sleep or a failed initial
+read cancels that opening-time wake. Later status checks and watch-screen
+resumes do not wake the glasses. Failed commands are never retried. This
+watch-only update includes the 0.1.12 refresh fix; keep Android build 9008 and
+your token. Confirm the wake behavior on your glasses after installation.
+A single crown press on the touchpad also wakes an off display. After it turns
+on, turn the crown to scroll; press again to select. If the watch is syncing,
+the press may wait up to one second for status, then sends only if the display
+and target are unchanged and still allow waking. An expired snapshot shows
+**Syncing · Try again**. Wake never queues behind an already-sent action.
+
 Version **0.1.12 (code 26)** fixes false **Refresh phone first** failures during
 continuous successful crown/swipe navigation. Same-target replies keep navigation
 ready while the idle status check is deferred. Taps, holds and app/status
@@ -311,6 +326,13 @@ The initial screens are **Remote**, **Apps** and **Status**, using the same
 remote/app-list/status organization as the Wear OS version. Only controls
 actually present in the Zepp app are supported; the Wear OS companion's keyboard,
 voice and motion features are not implied.
+
+To test opening-time wake, leave Faceclaw connected and the glasses unlocked,
+switch the glasses display off, quit the watch app using its lower side button,
+then reopen it without touching the controls. Confirm **Wake glasses** appears
+and the display turns on. To test manual wake while the watch app is already
+open, let the glasses display turn off, press the crown once on the touchpad,
+then turn it to scroll after the display wakes.
 
 1. Start with the phone unlocked, Faceclaw connected, glasses worn/unlocked and
    the glasses display awake.
