@@ -47,34 +47,47 @@ test('begin reports synchronously, ticks elapsed time and produces page-specific
   const f = fixture(), other = fixture();
   const id = f.feedback.begin(swipe), otherId = other.feedback.begin(swipe);
   assert.match(id, /^fc-[a-z0-9]+-[a-z0-9]+$/); assert.ok(id.length <= 96); assert.notEqual(id, otherId);
-  assert.deepEqual(f.changes, [{ id, text: 'Swipe left\nSending · 0s', error: false, pending: true, phase: 'sending' }]);
+  assert.deepEqual(f.changes, [{ id, text: 'Swipe left\nSending · 0.00s', error: false, pending: true, phase: 'sending' }]);
   f.advance(2100);
-  assert.equal(f.changes.length, 3); assert.equal(f.changes.at(-1).text, 'Swipe left\nSending · 2s');
+  assert.equal(f.changes.length, 22); assert.equal(f.changes.at(-1).text, 'Swipe left\nSending · 2.10s');
   assert.equal(f.timers.size, 1);
   f.feedback.clear(); other.feedback.clear();
 });
 
 test('queued progress advances monotonically without resetting its elapsed timer', () => {
   const f = fixture(), id = f.feedback.begin(swipe, 'waiting');
-  assert.equal(f.feedback.snapshot().phase, 'queued'); assert.equal(f.feedback.snapshot().text, 'Swipe left\nWaiting · 0s');
+  assert.equal(f.feedback.snapshot().phase, 'queued'); assert.equal(f.feedback.snapshot().text, 'Swipe left\nWaiting · 0.00s');
   f.advance(1200); f.feedback.update(id, 'sending');
-  assert.equal(f.feedback.snapshot().text, 'Swipe left\nSending · 1s');
+  assert.equal(f.feedback.snapshot().text, 'Swipe left\nSending · 1.20s');
   f.feedback.update(id, 'phone-received'); const count = f.changes.length;
   f.feedback.update(id, 'sending'); f.feedback.update(id, 'queued'); f.feedback.update(id, 'phone-received'); f.feedback.update(id, 'unsupported');
-  assert.equal(f.changes.length, count); assert.equal(f.feedback.snapshot().text, 'Swipe left\nPhone received · 1s');
-  f.advance(800); assert.equal(f.feedback.snapshot().text, 'Swipe left\nPhone received · 2s');
+  assert.equal(f.changes.length, count); assert.equal(f.feedback.snapshot().text, 'Swipe left\nPhone received · 1.20s');
+  f.advance(800); assert.equal(f.feedback.snapshot().text, 'Swipe left\nPhone received · 2.00s');
   f.feedback.clear();
 });
 
 test('accepted feedback is terminal, times the whole request and expires after three seconds', () => {
   const f = fixture(), id = f.feedback.begin(swipe, 'queued');
   f.advance(1200); f.feedback.finish(id, 'accepted');
-  assert.deepEqual(f.feedback.snapshot(), { id, text: 'Swipe left\nFaceclaw accepted · 1.2s', error: false, pending: false, phase: 'accepted' });
+  assert.deepEqual(f.feedback.snapshot(), { id, text: 'Swipe left\nAccepted · 1.20s', error: false, pending: false, phase: 'accepted' });
   const count = f.changes.length;
   f.feedback.update(id, 'phone-received'); f.feedback.finish(id, 'failed');
   assert.equal(f.changes.length, count);
   f.advance(2999); assert.equal(f.changes.length, count); assert.equal(f.feedback.snapshot().phase, 'accepted');
   f.advance(1); assert.equal(f.feedback.snapshot(), null); assert.equal(f.changes.at(-1), null); assert.equal(f.timers.size, 0);
+});
+
+test('send and completion durations retain two decimals and completion stops the clock', () => {
+  const f = fixture(), id = f.feedback.begin(swipe);
+  f.advance(137);
+  assert.equal(f.feedback.snapshot().text, 'Swipe left\nSending · 0.14s');
+  f.feedback.update(id, 'phone-received');
+  assert.equal(f.feedback.snapshot().text, 'Swipe left\nPhone received · 0.14s');
+  f.advance(100); f.feedback.finish(id, 'accepted');
+  assert.equal(f.feedback.snapshot().text, 'Swipe left\nAccepted · 0.24s');
+  f.advance(500);
+  assert.equal(f.feedback.snapshot().text, 'Swipe left\nAccepted · 0.24s');
+  f.feedback.clear();
 });
 
 test('failure and unknown remain distinct, use error styling and expire after five seconds', () => {
@@ -131,8 +144,8 @@ test('clear is synchronous and prevents every delayed or late progress event', (
 test('snapshots cannot mutate internal state and elapsed time cannot run backward', () => {
   const f = fixture(), id = f.feedback.begin(swipe);
   f.advance(1200); const snapshot = f.feedback.snapshot(); snapshot.phase = 'failed'; snapshot.text = 'corrupt';
-  f.setTime(1100); assert.equal(f.feedback.snapshot().text, 'Swipe left\nSending · 1s');
-  f.feedback.finish(id, 'accepted'); assert.equal(f.feedback.snapshot().text, 'Swipe left\nFaceclaw accepted · 1.2s');
+  f.setTime(1100); assert.equal(f.feedback.snapshot().text, 'Swipe left\nSending · 1.20s');
+  f.feedback.finish(id, 'accepted'); assert.equal(f.feedback.snapshot().text, 'Swipe left\nAccepted · 1.20s');
   f.feedback.clear();
 });
 

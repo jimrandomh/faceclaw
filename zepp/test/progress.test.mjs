@@ -34,7 +34,7 @@ test('swipe recognition is visible immediately on release while its request is u
   w.touch('down', 260, 230); w.touch('move', 160, 230, 20);
   assert.equal(snapshot(w), null);
   w.touch('up', 160, 230, 40);
-  const feedback = visibleFeedback(w, 'sending', /^Swipe left\nSending · 0s$/);
+  const feedback = visibleFeedback(w, 'sending', /^Swipe left\nSending · 0\.00s$/);
   assert.equal(commands(w).length, 1);
   assert.equal(commands(w)[0].requestId, feedback.id);
   assert.equal(commands(w)[0].operation.gesture, 'swipe-left');
@@ -44,10 +44,10 @@ test('swipe recognition is visible immediately on release while its request is u
 test('elapsed progress, correlated phone receipt and acceptance identify the same command', async t => {
   const w = await ready(t); swipeLeft(w);
   const id = snapshot(w).id;
-  w.advance(1200); visibleFeedback(w, 'sending', /Sending · 1s$/);
-  receipt(w, id); visibleFeedback(w, 'phone-received', /Phone received · 1s$/);
+  w.advance(1200); visibleFeedback(w, 'sending', /Sending · 1\.20s$/);
+  receipt(w, id); visibleFeedback(w, 'phone-received', /Phone received · 1\.20s$/);
   await w.reply({ ok: true });
-  const result = visibleFeedback(w, 'accepted', /Faceclaw accepted · 1\.2s$/);
+  const result = visibleFeedback(w, 'accepted', /Accepted · 1\.20s$/);
   assert.equal(result.id, id); assert.equal(result.pending, false);
   assert.doesNotMatch(result.text, /shown|displayed|rendered/i);
   assert.equal(w.calls.at(-1).kind, 'gesture'); assert.equal(w.page.busy, false);
@@ -133,7 +133,7 @@ test('known ignored taps and holds on locked glasses report blocked without send
 test('an expired queued crown step stays visibly skipped after the older command succeeds', async t => {
   const w = await ready(t); w.crown(-24, 10);
   const sentId = snapshot(w).id;
-  w.crown(24, 300); const waiting = visibleFeedback(w, 'queued', /^Scroll down\nWaiting · 0s$/);
+  w.crown(24, 300); const waiting = visibleFeedback(w, 'queued', /^Scroll down\nWaiting · 0\.00s$/);
   assert.notEqual(waiting.id, sentId); assert.equal(commands(w).length, 1);
   receipt(w, sentId); assert.equal(snapshot(w).phase, 'queued');
   w.advance(351); const skipped = visibleFeedback(w, 'skipped', /^Scroll down\nTurn crown again$/);
@@ -239,12 +239,24 @@ test('sleep and wake before an old timeout cannot revive its command feedback or
   assert.equal(w.page.noticeText.props.visible, false); assert.equal(commands(w).length, 1);
 });
 
-test('local tray swipes do not display remote progress or send a glasses command', async t => {
+test('bottom-edge touchpad swipes remain gestures without a hidden action tray', async t => {
   const w = await ready(t);
   w.touch('down', 240, 440); w.touch('move', 240, 340, 20); w.touch('up', 240, 340, 40);
-  assert.equal(w.page.tray, true); assert.equal(snapshot(w), null); assert.equal(commands(w).length, 0);
+  assert.equal(commands(w).length, 1); assert.equal(commands(w)[0].operation.gesture, 'swipe-up');
+  await w.reply({ ok: true });
   w.touch('down', 240, 370); w.touch('move', 240, 440, 20); w.touch('up', 240, 440, 40);
-  assert.equal(w.page.tray, false); assert.equal(snapshot(w), null); assert.equal(commands(w).length, 0);
+  assert.equal(commands(w).length, 2); assert.equal(commands(w)[1].operation.gesture, 'swipe-down');
+});
+
+test('Apps and Status are directly available and browsing sends no glasses gesture', async t => {
+  const w = await ready(t);
+  assert.equal(w.page.appsButton.props.visible, true); assert.equal(w.page.statusButton.props.visible, true);
+  assert.equal(w.widgets.some(widget => widget.props.text === 'Apps & status'), false);
+  w.page.appsButton.props.click_func(); assert.equal(w.page.screen, 'apps');
+  assert.equal(w.page.appsButton.props.visible, false); assert.equal(w.page.statusButton.props.visible, false);
+  await w.reply(); w.page.navigate('remote');
+  w.page.statusButton.props.click_func(); assert.equal(w.page.screen, 'status');
+  assert.equal(commands(w).length, 0);
 });
 
 

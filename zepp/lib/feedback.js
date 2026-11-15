@@ -32,6 +32,9 @@ export function createCommandFeedback(onChange, options = {}) {
   // A page-specific nonce keeps delayed receipts from an earlier page out.
   const nonce = Date.now().toString(36) + Math.random().toString(36).slice(2, 8) + (++instanceCounter).toString(36);
   let current = null, timer = null, counter = 0;
+  // Keep in-flight directions until completion, even when a newer gesture owns
+  // the visible pill. An older failure still needs one haptic notification.
+  const pending = new Map();
   const readNow = () => { const value = now(); return Number.isFinite(value) ? value : 0; };
   const cancelTimer = () => { if (timer !== null) stopTimer(timer); timer = null; };
   const elapsed = record => {
@@ -42,10 +45,10 @@ export function createCommandFeedback(onChange, options = {}) {
     if (!current) return null;
     const record = current, seconds = elapsed(record) / 1000;
     let detail;
-    if (record.phase === 'queued') detail = 'Waiting · ' + Math.floor(seconds) + 's';
-    else if (record.phase === 'sending') detail = 'Sending · ' + Math.floor(seconds) + 's';
-    else if (record.phase === 'phone-received') detail = 'Phone received · ' + Math.floor(seconds) + 's';
-    else if (record.phase === 'accepted') detail = 'Faceclaw accepted · ' + seconds.toFixed(1) + 's';
+    if (record.phase === 'queued') detail = 'Waiting · ' + seconds.toFixed(2) + 's';
+    else if (record.phase === 'sending') detail = 'Sending · ' + seconds.toFixed(2) + 's';
+    else if (record.phase === 'phone-received') detail = 'Phone received · ' + seconds.toFixed(2) + 's';
+    else if (record.phase === 'accepted') detail = 'Accepted · ' + seconds.toFixed(2) + 's';
     else if (record.phase === 'failed') detail = 'Not accepted';
     else if (record.phase === 'unknown') detail = 'Result unknown';
     else if (record.phase === 'blocked') detail = record.detail || 'Unavailable right now';
@@ -59,15 +62,15 @@ export function createCommandFeedback(onChange, options = {}) {
       timer = null;
       tick(record);
       emit();
-    }, 1000);
+    }, 100);
   };
   return {
     begin(operation, stage = 'sending') {
       cancelTimer();
       const requested = stageName(stage), phase = Object.prototype.hasOwnProperty.call(STAGES, requested) ? requested : 'sending';
       const record = { id: 'fc-' + nonce + '-' + (++counter).toString(36), label: operationLabel(operation),
-        phase, started: readNow(), elapsed: 0, pending: true, error: false, detail: '' };
-      current = record;
+        phase, started: readNow(), elapsed: 0, pending: true, error: false, detail: '', gesture: operation && operation.kind === 'gesture' };
+      current = record; pending.set(record.id, record);
       tick(record);
       emit();
       return record.id;
@@ -79,12 +82,17 @@ export function createCommandFeedback(onChange, options = {}) {
       current.phase = phase;
       emit();
     },
-    finish(id, phase, detail) {
-      if (!current || current.id !== id || !current.pending || TERMINAL.indexOf(phase) < 0) return;
-      const record = current;
+    finish(id, phase, detail, { silent = false } = {}) {
+      const record = pending.get(id);
+      if (!record || TERMINAL.indexOf(phase) < 0) return;
+      pending.delete(id);
       elapsed(record);
       record.pending = false; record.phase = phase; record.detail = detailLine(detail);
       record.error = phase === 'failed' || phase === 'unknown' || phase === 'blocked';
+      if (record.gesture && phase !== 'accepted' && !silent && typeof options.onFailure === 'function') {
+        try { options.onFailure(); } catch (_) {} // Haptics must not affect command handling.
+      }
+      if (current !== record) return;
       cancelTimer();
       timer = startTimer(() => {
         if (current !== record || record.pending) return;
@@ -92,7 +100,7 @@ export function createCommandFeedback(onChange, options = {}) {
       }, record.error ? 5000 : 3000);
       emit();
     },
-    clear() { cancelTimer(); current = null; emit(); },
+    clear() { cancelTimer(); pending.clear(); current = null; emit(); },
     snapshot,
   };
 }

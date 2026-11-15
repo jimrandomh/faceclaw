@@ -220,7 +220,7 @@ test('disabled remote and disconnected state do not send app or gesture commands
 
 test('connection details keep the full setup error readable and Retry sends only state', async () => {
   const w = watchFixture(); await w.reply({ ok: false, error: 'Add your input token in Zepp → Faceclaw Remote settings.' });
-  w.page.reveal.props.click_func(); assert.equal(w.page.screen, 'details');
+  w.page.statusButton.props.click_func(); assert.equal(w.page.screen, 'details');
   assert.match(w.page.errorDetails.props.text, /Faceclaw Remote settings/);
   w.key(); assert.equal(w.calls.at(-1).kind, 'state'); await w.reply();
   assert.equal(w.page.screen, 'remote'); assert.equal(w.page.linkError, ''); w.page.onDestroy();

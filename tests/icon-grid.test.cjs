@@ -317,6 +317,45 @@ test('watch: four-way cells, left from the first column backs out and stays in i
   assert.deepEqual(log.activated, [{ item: 'only', index: 0 }]);
 });
 
+test('watch crown traverses every cell in reading order and reverses across row boundaries', async () => {
+  const { grid, log } = makeGrid();
+  grid.onFocus(watch('scroll-down'));
+  assert.equal(grid.selectedItem, 'item0');
+  for (let i = 1; i < 12; i++) {
+    await grid.handleInput(watch('scroll-down'), null);
+    assert.equal(grid.selectedItem, `item${i}`);
+  }
+  await grid.handleInput(watch('scroll-down'), null);
+  assert.equal(grid.selectedItem, 'item11', 'the last partial row stops at its final cell');
+  for (let i = 10; i >= 0; i--) {
+    await grid.handleInput(watch('scroll-up'), null);
+    assert.equal(grid.selectedItem, `item${i}`);
+  }
+  await grid.handleInput(watch('scroll-up'), null);
+  assert.equal(grid.selectedItem, 'item0'); assert.equal(log.backs, 0);
+  await grid.handleInput(watch('click'), null);
+  assert.deepEqual(log.activated, [{ item: 'item0', index: 0 }]);
+});
+
+test('watch crown crosses wide rows, handles a changed list and keeps swipes spatial', async () => {
+  const { grid, data } = makeGrid({ items: ['a', 'b', 'wide', 'c', 'd'], isWide: item => item === 'wide' });
+  grid.onFocus(watch('click'));
+  for (const item of ['b', 'wide', 'c', 'd']) {
+    await grid.handleInput(watch('scroll-down'), null);
+    assert.equal(grid.selectedItem, item);
+  }
+  for (const item of ['c', 'wide', 'b', 'a']) {
+    await grid.handleInput(watch('scroll-up'), null);
+    assert.equal(grid.selectedItem, item);
+  }
+  await grid.handleInput(watch('swipe-down'), null);
+  assert.equal(grid.selectedItem, 'wide', 'touch swipes still move by rows');
+  data.items = ['only'];
+  await grid.handleInput(watch('scroll-down'), null); assert.equal(grid.selectedItem, 'only');
+  data.items = [];
+  await grid.handleInput(watch('scroll-up'), null); assert.equal(grid.selectedItem, null);
+});
+
 test('activating or backing out of the grid returns it to row mode', async () => {
   const { grid } = makeGrid({ onActivate: async () => true, onBack: () => true });
   await grid.handleInput(watch('swipe-right'), null);

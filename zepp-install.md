@@ -45,7 +45,8 @@ stays on for up to two minutes after interaction; when it turns off, status
 polling pauses. Version 0.1.7 reuses the readiness handshake while the watch
 screen is awake, establishing readiness again after sleep, connection changes or
 request failure. This does not keep the screen or phone service awake indefinitely.
-It removes a round trip, but a command must still finish before another is sent.
+Directional navigation can have up to four outstanding requests with current
+phone/watch builds. Taps, holds and app commands remain exclusive.
 
 ## 1. Install this branch's Android build
 
@@ -225,6 +226,18 @@ commands, and you do not need to restart it each time you use the remote.
 
 ### Updating an installed watch app
 
+Version **0.1.10 (code 24)** adds an error vibration for failed, blocked, expired
+or uncertain gestures, including crown steps. Apps and Status now open directly
+from separate buttons on the touchpad. Successful gestures and inputs
+canceled by leaving the screen do not vibrate. Send/receipt/acceptance durations
+show seconds to two decimal places, for example **Sending · 0.12s** and
+**Accepted · 0.24s**. Pending durations refresh every tenth of a second; the
+final duration is captured when the reply arrives and then stops counting.
+The updated Android APK also makes the crown traverse the glasses' icon grids
+left to right, continuing onto the next row (and reversing onto the preceding
+row). Touch swipes retain four-way navigation. Install both the phone APK and
+watch update for all changes; keep your existing input token.
+
 Version **0.1.9 (code 23)** reduces status traffic and watch UI work before
 directional inputs. Only opening Apps transfers the full app/window lists;
 routine checks use a compact snapshot. Rapid directions update the progress
@@ -326,10 +339,13 @@ session is not a substitute for this check.
 ## Read command progress
 
 The watch shows the gesture or command as soon as it is recognized, with a
-banner that advances from **Sending** to **Phone received** to **Faceclaw
-accepted**. The phone receipt is best effort, so that stage can be skipped.
+banner that advances from **Sending** to **Phone received** to **Accepted**.
+The phone receipt is best effort, so that stage can be skipped.
 The elapsed time helps distinguish a slow reply from an undetected
 swipe. Phone acceptance does not establish that a glasses frame was displayed.
+The watch vibrates when a gesture is rejected, blocked or expired, or its result
+is unknown. It stays silent for successful gestures, background status reads,
+and inputs intentionally canceled by a newer input or leaving the screen.
 
 **Waiting** means a recognized gesture or app action is waiting for a status
 check, for at most one second. It is sent only if the latest state and selection

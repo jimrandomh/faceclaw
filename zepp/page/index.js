@@ -1,6 +1,6 @@
 import * as ui from '@zos/ui';
 import * as display from '@zos/display';
-import { Screen } from '@zos/sensor';
+import { Screen, Vibrator, VIBRATOR_SCENE_NOTIFICATION } from '@zos/sensor';
 import { exit } from '@zos/router';
 import { onDigitalCrown, offDigitalCrown, onKey, offKey, onGesture, offGesture, KEY_HOME, KEY_SELECT, KEY_BACK, KEY_SHORTCUT, KEY_EVENT_CLICK, GESTURE_UP, GESTURE_DOWN, GESTURE_RIGHT } from '@zos/interaction';
 import { BasePage } from '@zeppos/zml/base-page';
@@ -16,9 +16,11 @@ Page(BasePage({
     this.linkSession = createMessagingSession(this.messaging);
     this.navSession = ''; this.navSequence = 0; this.navRequests = new Map(); this.navNeedsRefresh = false;
     this.resetNavigation();
-    this.screen = 'remote'; this.tray = false; this.selected = 0; this.linkError = ''; this.notice = ''; this.noticeError = false;
+    this.screen = 'remote'; this.selected = 0; this.linkError = ''; this.notice = ''; this.noticeError = false;
     this.groups = { remote: [], list: [], help: [], details: [] }; this.rows = []; this.crown = createCrownNavigation();
     this.pollTimer = null; this.noticeTimer = null; this.clockTimer = null;
+    this.failureVibrationTimer = null; this.failureVibrator = null;
+    try { this.failureVibrator = new Vibrator(); } catch (_) {}
     const make = (type, props, group) => {
       const widget = ui.createWidget(type, props);
       if (group) this.groups[group].push(widget);
@@ -34,10 +36,8 @@ Page(BasePage({
     }, group);
     make(ui.widget.FILL_RECT, { x: 0, y: 0, w: 480, h: 480, color: COLORS.background });
     this.pad = make(ui.widget.FILL_RECT, { x: 0, y: 0, w: 480, h: 480, color: COLORS.background }, 'remote');
-    this.touch = createTouchpad((gesture, info) => {
+    this.touch = createTouchpad(gesture => {
       if (!this.alive || !this.awake || this.screen !== 'remote') return;
-      if (gesture === 'swipe-up' && info && info.startY >= 410 && !this.tray) { this.cancelPendingCrown(); this.tray = true; this.render(); return; }
-      if (gesture === 'swipe-down' && info && info.startY >= 350 && this.tray) { this.cancelPendingCrown(); this.tray = false; this.render(); return; }
       this.gesture(gesture);
     });
     this.pad.addEventListener(ui.event.CLICK_DOWN, info => {
@@ -50,13 +50,8 @@ Page(BasePage({
     this.clock = text(70, 170, 340, 94, 78, COLORS.text, 'remote');
     this.padTitle = text(55, 274, 370, 46, 32, COLORS.text, 'remote');
     this.padDetail = text(62, 320, 356, 36, 24, COLORS.muted, 'remote');
-    this.reveal = button(110, 384, 260, 54, 'Apps & status', () => {
-      this.cancelPendingInput(); this.cancelPendingCrown(); this.touching = false; this.noteActivity();
-      if (this.linkError) { this.navigate('details'); return; }
-      this.touch.reset(); this.tray = true; this.render();
-    }, 'remote', 26);
-    this.appsButton = button(120, 368, 112, 68, 'Apps', () => this.navigate('apps'), 'remote');
-    this.statusButton = button(248, 368, 112, 68, 'Status', () => this.navigate('status'), 'remote');
+    this.appsButton = button(110, 368, 124, 68, 'Apps', () => this.navigate('apps'), 'remote');
+    this.statusButton = button(246, 368, 124, 68, 'Status', () => this.navigate(this.linkError ? 'details' : 'status'), 'remote');
 
     this.smallClock = text(140, 16, 200, 36, 26, COLORS.secondary, 'list');
     this.listHeading = text(80, 60, 320, 40, 28, COLORS.primary, 'list');
@@ -78,11 +73,11 @@ Page(BasePage({
     this.errorDetails = text(66, 118, 348, 232, 29, COLORS.secondary, 'details');
     button(136, 364, 208, 56, 'Retry', () => this.refresh(), 'details', 28);
     button(160, 426, 160, 36, 'Touchpad', () => this.navigate('remote'), 'details', 24);
-    // Two-line pill, above the action tray and within the round display.
+    // Two-line pill, above the touchpad and within the round display.
     this.noticeBg = make(ui.widget.FILL_RECT, { x: 54, y: 98, w: 372, h: 68, radius: 18, color: COLORS.notice });
     this.noticeBg.setEnable(false);
     this.noticeText = text(64, 100, 352, 64, 24, COLORS.text);
-    this.commandFeedback = createCommandFeedback(() => this.renderFeedback());
+    this.commandFeedback = createCommandFeedback(() => this.renderFeedback(), { onFailure: () => this.vibrateFailure() });
 
     onDigitalCrown({ callback: (_key, degree) => {
       if (!this.alive || !this.awake) { this.cancelPendingInput(); this.cancelPendingCrown(); this.crown.clearPending(); return; }
@@ -122,6 +117,7 @@ Page(BasePage({
       if (!this.alive) return;
       this.awake = this.screenSensor.getStatus() === 1; this.navigationEpoch++; this.wakeEpoch++; this.brightLeaseAt = 0;
       this.resetNavigation(); this.linkSession.setAwake(this.awake);
+      this.stopFailureVibration();
       this.touching = false; this.lastInputAt = Date.now();
       this.cancelPendingInput(); this.cancelPendingCrown(); this.commandFeedback.clear(); this.clearNotice(); this.touch.reset(); this.crown.reset(); this.cancelPoll();
       if (this.awake) { this.updateClock(); this.refresh(); } // Never synthesize a glasses tap on wake.
@@ -138,6 +134,19 @@ Page(BasePage({
     this.brightLeaseAt = now;
     try { display.setPageBrightTime({ brightTime: 120000 }); } catch (_) {}
     try { display.pauseDropWristScreenOff({ duration: 120000 }); } catch (_) {}
+  },
+  stopFailureVibration() {
+    if (this.failureVibrationTimer !== null) clearTimeout(this.failureVibrationTimer);
+    this.failureVibrationTimer = null;
+    try { if (this.failureVibrator) this.failureVibrator.stop(); } catch (_) {}
+  },
+  vibrateFailure() {
+    if (!this.alive || !this.awake || !this.failureVibrator) return;
+    this.stopFailureVibration();
+    try {
+      this.failureVibrator.start({ mode: VIBRATOR_SCENE_NOTIFICATION });
+      this.failureVibrationTimer = setTimeout(() => this.stopFailureVibration(), 1000);
+    } catch (_) {}
   },
   updateClock() {
     if (this.clockTimer !== null) clearTimeout(this.clockTimer);
@@ -163,6 +172,7 @@ Page(BasePage({
   },
   navigate(screen) {
     if (!this.alive) return;
+    this.stopFailureVibration();
     this.navigationEpoch++; this.resetNavigation();
     this.cancelPendingInput(); this.cancelPendingCrown(); this.commandFeedback.clear(); this.touching = false; this.touch.reset(); this.crown.reset(); this.noteActivity();
     this.screen = screen; this.selected = 0; this.clearNotice(); this.render();
@@ -196,17 +206,17 @@ Page(BasePage({
     const feedback = this.commandFeedback && this.commandFeedback.snapshot();
     return !!(feedback && feedback.id === id);
   },
-  cancelPendingCrown(detail = 'Not sent') {
+  cancelPendingCrown(detail = 'Not sent', silent = true) {
     if (this.pendingCrownTimer !== null) clearTimeout(this.pendingCrownTimer);
     this.pendingCrownTimer = null;
     const pending = this.pendingCrown; this.pendingCrown = null;
-    if (pending && this.commandFeedback) this.commandFeedback.finish(pending.id, 'skipped', detail);
+    if (pending && this.commandFeedback) this.commandFeedback.finish(pending.id, 'skipped', detail, { silent });
   },
   cancelPendingInput(detail = 'Not sent') {
     if (this.pendingInputTimer !== null) clearTimeout(this.pendingInputTimer);
     this.pendingInputTimer = null;
     const pending = this.pendingInput; this.pendingInput = null;
-    if (pending && this.commandFeedback) this.commandFeedback.finish(pending.id, 'skipped', detail);
+    if (pending && this.commandFeedback) this.commandFeedback.finish(pending.id, 'skipped', detail, { silent: true });
   },
   inputContext() {
     const state = this.phoneState;
@@ -284,7 +294,7 @@ Page(BasePage({
       }
       this.pendingCrown = { gesture, at: Date.now(), id };
       this.pendingCrownTimer = setTimeout(() => {
-        if (this.pendingCrown && this.pendingCrown.id === id) this.cancelPendingCrown('Turn crown again');
+        if (this.pendingCrown && this.pendingCrown.id === id) this.cancelPendingCrown('Turn crown again', false);
       }, 350);
       return;
     }
@@ -388,6 +398,7 @@ Page(BasePage({
     this.navRequests.delete(id);
     if (!this.alive) return;
     if (sessionId !== this.navSession) {
+      this.commandFeedback.finish(id, 'skipped', 'Not sent', { silent: true });
       if (!this.navRequests.size && this.busyKind === 'navigation') {
         this.busy = false; this.busyKind = ''; if (this.awake) this.refresh();
       }
@@ -459,7 +470,7 @@ Page(BasePage({
     // Local list navigation remains live while polling; preserve the latest selection.
     const key = this.rows[this.selected] && this.rows[this.selected].key;
     this.phoneState = result.state; this.navNeedsRefresh = false; this.stateTime = Date.now(); this.linkError = '';
-    if (this.screen === 'details') { this.screen = 'remote'; this.tray = false; }
+    if (this.screen === 'details') this.screen = 'remote';
     this.rows = this.screen === 'apps' ? appRows(this.phoneState) : statusRows(this.phoneState);
     const index = this.rows.findIndex(row => row.key === key);
     this.selected = index < 0 ? moveSelection(this.selected, this.rows.length, 0) : index;
@@ -479,11 +490,9 @@ Page(BasePage({
     if (result && this.awake) {
       // A blocked second press must not cancel the first launch's normal return.
       // Actual navigation or a sleep/wake cycle does cancel that screen change.
-      if (returnToPad && epoch === this.navigationEpoch) { this.screen = 'remote'; this.tray = false; this.selected = 0; }
-      if (this.feedbackIsCurrent(id)) {
-        this.commandFeedback.finish(id, 'accepted');
-        if (operation.kind !== 'gesture') this.setNotice(result.message || 'Sent to Faceclaw');
-      }
+      if (returnToPad && epoch === this.navigationEpoch) { this.screen = 'remote'; this.selected = 0; }
+      this.commandFeedback.finish(id, 'accepted');
+      if (this.feedbackIsCurrent(id) && operation.kind !== 'gesture') this.setNotice(result.message || 'Sent to Faceclaw');
     }
     if (result && operation.kind === 'gesture' && /^(swipe|scroll)-/.test(operation.gesture) && epoch === this.navigationEpoch) {
       // Directional navigation needs no second request before the next step.
@@ -511,10 +520,6 @@ Page(BasePage({
     this.padTitle.setProperty(ui.prop.COLOR, pad.tone === COLORS.good ? COLORS.text : pad.tone);
     this.padDetail.setProperty(ui.prop.TEXT, this.fit(pad.detail, 356, 24));
     this.errorDetails.setProperty(ui.prop.TEXT, this.linkError || 'Phone connected.');
-    this.reveal.setProperty(ui.prop.MORE, { x: 110, y: 384, w: 260, h: 54, text: this.linkError ? 'Connection details' : 'Apps & status' });
-    this.reveal.setProperty(ui.prop.VISIBLE, this.screen === 'remote' && !this.tray);
-    this.appsButton.setProperty(ui.prop.VISIBLE, this.screen === 'remote' && this.tray);
-    this.statusButton.setProperty(ui.prop.VISIBLE, this.screen === 'remote' && this.tray);
     if (this.screen === 'apps' || this.screen === 'status') {
       this.rows = this.screen === 'apps' ? appRows(this.phoneState) : statusRows(this.phoneState);
       this.selected = moveSelection(this.selected, this.rows.length, 0);
@@ -534,7 +539,7 @@ Page(BasePage({
       });
       this.closeButton.setProperty(ui.prop.VISIBLE, !!(selected && selected.close));
       this.empty.setProperty(ui.prop.VISIBLE, !this.rows.length);
-      this.empty.setProperty(ui.prop.TEXT, this.linkError ? 'Phone unavailable.\nOpen Connection details on the touchpad.' : 'No app list yet.\nOpen Faceclaw on the phone and connect the glasses.');
+      this.empty.setProperty(ui.prop.TEXT, this.linkError ? 'Phone unavailable.\nTap Status on the touchpad for details.' : 'No app list yet.\nOpen Faceclaw on the phone and connect the glasses.');
       this.listHint.setProperty(ui.prop.TEXT, this.busy ? 'Waiting for phone…' : this.screen === 'status' && selected ? this.fit(selected.detail, 350, 24) : 'Turn crown · Press to open');
     }
     this.renderFeedback();
@@ -557,6 +562,7 @@ Page(BasePage({
   },
   dispose() {
     if (!this.alive) return;
+    this.stopFailureVibration();
     this.resetNavigation(); this.linkSession.dispose();
     this.alive = false; this.touching = false; this.cancelPendingInput(); this.cancelPendingCrown(); this.commandFeedback.clear(); this.cancelPoll(); this.crown.reset(); this.touch.reset();
     if (this.clockTimer !== null) clearTimeout(this.clockTimer);

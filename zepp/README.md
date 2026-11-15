@@ -6,7 +6,7 @@ Follow [the installation guide](../zepp-install.md) for phone and watch setup. T
 
 ## Controls
 
-The opening screen follows Faceclaw's Wear OS remote: a black touchpad, central clock, glasses status, and an action tray. Tap **Apps & status** or swipe up from the bottom edge for the tray.
+The opening screen has a black touchpad, central clock, glasses status, and separate **Apps** and **Status** buttons. Both buttons open their screen directly, without an intermediate menu.
 
 | Input | Action |
 | --- | --- |
@@ -15,7 +15,7 @@ The opening screen follows Faceclaw's Wear OS remote: a black touchpad, central 
 | Hold pad for 0.6 seconds | Long press, recognized before lifting |
 | Tap, then touch again within 0.3 seconds and hold for 0.6 seconds | Short-then-long press, recognized before lifting |
 | Swipe pad | Spatial navigation |
-| Turn crown on pad | Scroll, respecting Faceclaw's crown direction |
+| Turn crown on pad | Scroll, respecting Faceclaw's crown direction; icon grids traverse left to right, then the next row |
 | Apps → turn crown | Select a window or app in the watch list |
 | Apps → press crown / tap selected row | Focus a window or launch an app, then return to pad |
 | Apps → select open window → **×** | Close that exact window, when Faceclaw permits it |
@@ -30,7 +30,7 @@ cancels hold recognition. Once a hold is recognized, lifting your finger sends
 no extra tap or hold. For tap-then-hold, the second contact must begin within
 0.3 seconds after the first tap, then remain down for 0.6 seconds.
 
-If the phone cannot be reached or the token needs attention, tap **Connection details** on the touchpad to read the error. **Retry** (or a crown press on that screen) only refreshes status; it does not repeat a prior command.
+If the phone cannot be reached or the token needs attention, tap **Status** on the touchpad to read the error. **Retry** (or a crown press on that screen) only refreshes status; it does not repeat a prior command.
 
 To quit from any screen, press the **lower side button** once. This also works while the phone is unavailable or a command is waiting. It cancels pending watch input and status polling; it does not send a close command to the glasses. The crown keeps its select/open behavior. Zepp documents the lower button of its two-button layout as `KEY_SHORTCUT`; `KEY_BACK` is also accepted for compatibility.
 
@@ -40,10 +40,9 @@ This is a port of the supported remote controls, not every Wear OS feature: no m
 
 A two-line banner immediately names the recognized gesture or command. It shows
 **Sending**, then **Phone received** when Zepp acknowledges receipt, and
-**Faceclaw accepted** when Faceclaw replies successfully. The best-effort phone
-receipt can be skipped. Elapsed time stays visible while waiting.
-This confirms phone handling; check the glasses for the
-visible effect.
+**Accepted** when Faceclaw replies successfully. The best-effort phone
+receipt can be skipped. Durations use seconds to two decimal places, for example **Sending · 0.12s** and **Accepted · 0.24s**. Pending time refreshes every 100ms; completion captures and freezes the elapsed time on reply.
+This confirms phone handling; check the glasses for the visible effect. Failed, blocked, expired or uncertain gestures vibrate once. Successful input, status polling and deliberately canceled input stay silent. Late results after sleep, navigation or exit cannot vibrate.
 
 If a status check is already running, one gesture or app action can show
 **Waiting** for up to one second before it is sent. It is canceled if the state,
@@ -73,7 +72,7 @@ npm run preview -- --app-id YOUR_APP_ID
 npm run bridge -- --app-id YOUR_APP_ID
 ```
 
-`npm run build` with no ID creates a verification package using placeholder `99999999`. Preview/bridge require a real registered ID. `FACECLAW_ZEPP_APP_ID` also supplies the ID. The packaging wrapper uses a temporary project and leaves the checked-in manifest unchanged. Packaged files are copied to `dist/`. Device IDs: `8519936`, `8519937`, `8519939`; minimum/target API level 3.0; version 0.1.9, package version code 23.
+`npm run build` with no ID creates a verification package using placeholder `99999999`. Preview/bridge require a real registered ID. `FACECLAW_ZEPP_APP_ID` also supplies the ID. The packaging wrapper uses a temporary project and leaves the checked-in manifest unchanged. Packaged files are copied to `dist/`. Device IDs: `8519936`, `8519937`, `8519939`; minimum/target API level 3.0; version 0.1.10, package version code 24.
 
 `npm run render -- /path/to/playwright` renders sample states from the real watch widget code and checks for text overflow and circular-screen clipping. These are **layout previews**, not hardware screenshots.
 
@@ -186,6 +185,6 @@ The existing navigation-capable phone APK and input token remain valid.
 The device report captured before this update showed 139 ms median and 386 ms
 maximum input-to-display latency after input reached Faceclaw, while the user
 reported multi-second delays with the watch showing Sending. This points toward
-the watch/Zepp path, but does not establish the exact cause. The 0.1.9 changes
-reduce native UI calls and BLE traffic; their physical latency still needs
-confirmation.
+the watch/Zepp path, but does not establish the exact cause. Subsequent hardware checks on 0.1.9 were smooth with Zepp foregrounded, backgrounded and Developer Bridge disabled. A captured run acknowledged 31 swipes in 136–275ms; this does not rule out intermittent delays.
+
+Version 0.1.10 adds failure vibration and two-decimal durations on the watch, with direct Apps/Status buttons. The corresponding Android build changes watch crown input in icon grids to reading-order traversal across rows; directional swipes retain their spatial meaning. Ring row/item modes remain unchanged. Vibration uses [Zepp's API 2.0 notification scene](https://docs.zepp.com/docs/reference/device-app-api/newAPI/sensor/Vibrator/), followed by stop, with teardown on sleep/navigation/exit. It does not require a newer Balance API level.

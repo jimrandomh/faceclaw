@@ -16,11 +16,11 @@ export const sampleState = {
   apps: [{ appId: 'timer', title: 'Timer' }, { appId: 'navigation', title: 'Navigation' }, { appId: 'translator', title: 'Translation' }],
 };
 
-export function watchFixture({ fixedFrameworkState = true } = {}) {
+export function watchFixture({ fixedFrameworkState = true, vibrationError = false } = {}) {
   const code = fs.readFileSync(new URL('../page/index.js', import.meta.url), 'utf8').replace(/^import .*;\n/gm, '');
   let page, key, crown, gesture, screenListener, screenStatus = 1, now = 1760545800000;
   const calls = [], requests = [], pending = [], widgets = [], timers = new Map(); let timer = 0, exits = 0;
-  const sessionEvents = [], displayCalls = [];
+  const sessionEvents = [], displayCalls = [], vibrationCalls = [];
   const frameworkState = { messaging: Object.freeze({ frameworkTransport: true }) };
   const setTimer = (fn, delay) => { timers.set(++timer, { fn, at: now + delay }); return timer; };
   const clearTimer = id => timers.delete(id);
@@ -43,7 +43,7 @@ export function watchFixture({ fixedFrameworkState = true } = {}) {
   vm.runInNewContext(code, {
     ...model, ...feedback, ui, display: { setPageBrightTime() { displayCalls.push('bright'); }, pauseDropWristScreenOff() { displayCalls.push('wrist'); }, resetPageBrightTime() {}, resetDropWristScreenOff() {} },
     createTouchpad: emit => model.createTouchpad(emit, { setTimeout: setTimer, clearTimeout: clearTimer }),
-    createCommandFeedback: onChange => feedback.createCommandFeedback(onChange, { now: () => now, setTimeout: setTimer, clearTimeout: clearTimer }),
+    createCommandFeedback: (onChange, options) => feedback.createCommandFeedback(onChange, { ...options, now: () => now, setTimeout: setTimer, clearTimeout: clearTimer }),
     createMessagingSession: () => ({
       cancelNavigation(id) { sessionEvents.push(['cancelNavigation', id]); },
       setAwake(value) { sessionEvents.push(['awake', value]); },
@@ -52,6 +52,11 @@ export function watchFixture({ fixedFrameworkState = true } = {}) {
     }),
     exit: () => { exits++; },
     Screen: class { getStatus() { return screenStatus; } onChange(callback) { screenListener = callback; } offChange() { screenListener = null; } },
+    Vibrator: class {
+      start(options) { if (vibrationError) throw new Error('Vibration unavailable'); vibrationCalls.push(['start', options.mode]); }
+      stop() { vibrationCalls.push(['stop']); }
+    },
+    VIBRATOR_SCENE_NOTIFICATION: 7,
     Page: value => {
       page = value;
       // The Balance retains this framework-owned object: replacing page.state is ignored.
@@ -70,7 +75,7 @@ export function watchFixture({ fixedFrameworkState = true } = {}) {
   page.build();
   const flush = () => new Promise(resolve => setImmediate(resolve));
   return {
-    page, calls, requests, widgets, timers, ui, sessionEvents, displayCalls, exits: () => exits,
+    page, calls, requests, widgets, timers, ui, sessionEvents, displayCalls, vibrationCalls, exits: () => exits,
     key: (code = 1, event = 4) => key(code, event),
     crown: (degree = -24, elapsed = 350) => { now += elapsed; crown(1, degree); },
     gesture: value => gesture(value),

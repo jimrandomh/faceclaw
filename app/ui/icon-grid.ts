@@ -124,8 +124,9 @@ type Highlight = { key: number; x: number; y: number; width: number; height: num
  * linearly (continuing onto adjacent rows) and a click opens the item.
  * Double-click backs out: item mode to row mode, then onBack. A wide row is
  * opened by a click in either mode. Watch input skips row mode and moves one
- * cell at a time in four directions: up/down (and the crown) between rows
- * keeping the column, right/left within the row, and left from the first
+ * cell at a time in four directions: up/down between rows keeping the column,
+ * right/left within the row. Crown scroll traverses cells in reading order,
+ * continuing onto adjacent rows, like ring item mode. Left from the first
  * column (or a wide row) backs out, as does the watch's back.
  *
  * Navigation animates on the glasses as menus do: the highlight slides to
@@ -485,11 +486,15 @@ export class IconGrid<T> {
     const from = this.selectionKey(rows);
     const back = () => this.settleAfter(this.options.onBack(ctx) === true, true);
     switch (event.type) {
-      case "swipe-up":
-      case "swipe-down":
       case "scroll-up":
-      case "scroll-down": {
-        const delta = event.type === "swipe-down" || event.type === "scroll-down" ? 1 : -1;
+      case "scroll-down":
+        // Crown input uses ring item traversal, with watch single-item focus.
+        // Directional swipes below retain their spatial navigation semantics.
+        await this.handleRingInput(event, ctx);
+        return;
+      case "swipe-up":
+      case "swipe-down": {
+        const delta = event.type === "swipe-down" ? 1 : -1;
         const next = this.selectedRow + delta;
         if (next < 0 || next >= rows.length) {
           this.bounce(delta);
