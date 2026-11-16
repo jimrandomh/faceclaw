@@ -58,6 +58,8 @@ native/kotlin/.kotlin/
 native/kotlin/build/
 native/kotlin/shared/build/
 native/kotlin/local.properties
+# Go SSH transport build outputs (scripts/go-ssh-build.cjs)
+native/ssh/build/
 native/kotlin/plugin/platforms/android/*.aar
 native/kotlin/plugin/platforms/ios/
 !native/kotlin/plugin/platforms/

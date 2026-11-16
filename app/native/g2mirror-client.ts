@@ -1,5 +1,6 @@
-import { openSocket } from "./socket";
+import { openSocket, type SocketConnection, type SocketListener } from "./socket";
 import { toUint8Array } from "../util/array-util";
+import type { G2MirrorHistoryReply, G2MirrorPhase, G2MirrorSession, G2MirrorState } from "./terminal-session-types";
 
 declare const android: any;
 declare const java: any;
@@ -19,54 +20,7 @@ const LAUNCH_REPLY_TIMEOUT_MS = 10_000;
 // otherwise treat the "\r" as a pasted newline instead of the Enter key.
 const SUBMIT_DELAY_MS = 150;
 
-export type G2MirrorSession = {
-  socket: string;
-  pid: number;
-  cwdHint: string;
-  /** Unix epoch ms of the terminal's last bell, or null if none observed. */
-  lastBellAt: number | null;
-  /**
-   * Unix epoch ms (host clock) of the app's last output, or null if none
-   * observed. Fresh to within the wrapper's 2s activity reporting interval
-   * while we're connected; compare against other host timestamps, not the
-   * phone clock (see the worker's local-receive-time activity tracking).
-   */
-  lastOutputAt: number | null;
-  /** Window title the app last set (xterm OSC 0/2), or null if none observed. */
-  title: string | null;
-};
-
-export type G2MirrorPhase =
-  | "idle"
-  | "connecting"
-  | "connected" // handshake accepted; can list/attach
-  | "attached" // relaying to one session
-  | "failed";
-
-export type G2MirrorState = {
-  phase: G2MirrorPhase;
-  status: string;
-  sessions: G2MirrorSession[];
-  attachedCommand: string;
-  /**
-   * server_name from the init success reply: a human-readable name for the
-   * machine the server runs on. "" until the handshake succeeds (or when an
-   * older server omits the field).
-   */
-  serverName: string;
-};
-
-/** A page of archived scrollback lines (see PROTOCOL.md "Scrollback history"). */
-export type G2MirrorHistoryReply = {
-  /** Absolute index of lines[0]; the page covers [start, start + lines.length). */
-  start: number;
-  /** Oldest index still retained by the wrapper (older requests return nothing). */
-  oldest: number;
-  /** Current splice point (next line to be archived). */
-  next: number;
-  /** Plain text, ANSI-stripped, oldest-to-newest. */
-  lines: string[];
-};
+export type { G2MirrorHistoryReply, G2MirrorPhase, G2MirrorSession, G2MirrorState };
 
 export type G2MirrorClientOptions = {
   /** TLS (g2mirrors:// → wss) vs plain (g2mirror:// → ws). */
@@ -77,6 +31,12 @@ export type G2MirrorClientOptions = {
   deviceName: string;
   cols: number;
   rows: number;
+  /**
+   * Opens the websocket some other way than dialing host:port directly
+   * (e.g. through an SSH tunnel); `label` then names the endpoint in status
+   * lines instead of host:port.
+   */
+  transport?: { open: (listener: SocketListener) => SocketConnection; label: string };
 };
 
 type TerminalDataKind = "snapshot" | "output";
@@ -180,7 +140,8 @@ export class G2MirrorClient {
     this.stopped = false;
     const generation = ++this.connectionGeneration;
     const url = `${this.options.secure ? "wss" : "ws"}://${this.options.host}:${this.options.port}`;
-    this.setState("connecting", `Connecting to ${this.options.host}:${this.options.port}...`);
+    const transport = this.options.transport;
+    this.setState("connecting", `Connecting to ${transport ? transport.label : `${this.options.host}:${this.options.port}`}...`);
     this.listenerProxy = {
       onOpen: () => {
         if (this.stopped || generation !== this.connectionGeneration) return;
@@ -208,7 +169,7 @@ export class G2MirrorClient {
       },
     };
     try {
-      this.ws = openSocket(url, this.listenerProxy);
+      this.ws = transport ? transport.open(this.listenerProxy!) : openSocket(url, this.listenerProxy);
     } catch (error) {
       this.ws = null;
       this.handleConnectionLost(`Connection failed: ${shortenError(String((error as Error)?.message ?? error))}`);

@@ -80,8 +80,10 @@ import it into the new version (see [config transfer](scripts/config-transfer.md
  * **Integration with Android notifications**: shows the same notification
    icons your phone does, and popups when notifications arrive.
  * **Terminal mirroring.** Mirror terminal apps such as Claude Code or Codex
-   CLI with [g2mirror](https://github.com/jimrandomh/g2mirror), view them on
-   the glasses, and send them inputs with the voice assistant.
+   CLI with [g2mirror](https://github.com/jimrandomh/g2mirror), or attach to
+   tmux sessions over SSH (no server-side setup beyond tmux 3.2+), view them
+   on the glasses, and send them inputs with the voice assistant. g2mirror
+   can also be tunnelled over SSH instead of a VPN.
  * **Media player controls** including playlist and media library navigation,
    compatible with most Android media players.
  * **Turn-by-turn directions** (requires a Mapbox API token).

@@ -1340,9 +1340,26 @@ export const terminalNewConnectionSetting = new ConfigSettingString({
   label: "New connection",
   storageKey: "terminal.newConnectionDraft",
   defaultValue: "",
-  editorTitle: "g2mirror connection string (g2mirror://token@host)",
+  editorTitle: "Connection (ssh://user@host or g2mirror://token@host)",
   glassesEditTitle: "Add connection",
   normalize: (value) => (value ?? "").replace(/[\x00-\x1f]+/g, "").trim(),
+});
+
+/**
+ * Staging buffer for the Terminal app's SSH password prompt: the worker opens
+ * the phone's (masked) text editor on it, then moves what was typed into the
+ * platform keystore (app/native/ssh) and clears it as soon as the user
+ * confirms or cancels on the glasses. Not listed in the Settings app.
+ */
+export const terminalSshPasswordSetting = new ConfigSettingString({
+  id: "terminal-ssh-password",
+  label: "SSH password",
+  storageKey: "terminal.sshPasswordDraft",
+  defaultValue: "",
+  inputKind: "password",
+  editorTitle: "SSH password",
+  glassesEditTitle: "SSH password",
+  normalize: (value) => (value ?? "").replace(/[\r\n]+/g, ""),
 });
 
 /**
