@@ -1724,9 +1724,18 @@ type SettingsMenuOptions<T> = {
   label?: string
 }
 
+type EnumSettingMenuOptions<T> = SettingsMenuOptions<T> & {
+  /**
+   * A live line under the picker's values, such as a sensor reading to pick
+   * by. open() runs as the picker opens, with a function that repaints it,
+   * and returns what to run when the picker closes.
+   */
+  pickerFooter?: { text: () => string; open: (repaint: () => void) => () => void }
+}
+
 export function enumSettingMenuItem<TValue extends string, TId extends string = string>(
   setting: ConfigSettingEnum<TValue, TId>,
-  opts?: SettingsMenuOptions<TValue>
+  opts?: EnumSettingMenuOptions<TValue>
 ): MenuItem {
   const label = opts?.label ?? setting.label;
   return {
@@ -1754,7 +1763,11 @@ export function enumSettingMenuItem<TValue extends string, TId extends string = 
           );
         },
       }));
-      openModalMenu(ctx, label, items, Math.max(0, setting.values.indexOf(current)));
+      const footer = opts?.pickerFooter;
+      openModalMenu(ctx, label, items, Math.max(0, setting.values.indexOf(current)), {
+        footer: footer?.text,
+        onClosed: footer?.open(() => ctx.actions.requestRender()),
+      });
     },
     render: ({ image, x, y, width }) => {
       drawRightValueMenuItem(image, getDefaultSmallFont(), x, y, width, label, setting.displayValue(setting.get()));

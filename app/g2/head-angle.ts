@@ -1,97 +1,100 @@
-import { addImuListener, setImuReportEnabled, type ImuReading } from "../native/imu";
+import { addImuListener, imuPitchDegrees, setImuReportEnabled, type ImuReading } from "../native/imu";
 import { getHeadUpStatus, setHeadUpTrigger, type HeadUpStatus } from "../native/glasses-controls";
 import { getStringSetting, setStringSetting } from "../native/settings-store";
-import { glanceAngleSetting, glanceAngleTriggerDegrees, type GlanceAngle } from "../apps/glanceboard/glanceboard-settings";
-import { angleBetweenDegrees, glanceAngleForTilt, meanVector, type Vec3 } from "./head-tilt-math";
+import { glanceAngleTriggerDegrees } from "../apps/glanceboard/glanceboard-settings";
 
 // Same ImuReportPace code the accelerometer demo uses (not literal Hz).
 const IMU_REPORT_PACE = 200;
-/** How long to average once samples start arriving. */
-const SAMPLE_WINDOW_MS = 1_200;
-/** Give up when the glasses send nothing for this long. */
-const FIRST_SAMPLE_TIMEOUT_MS = 3_000;
-const MIN_SAMPLES = 3;
-/** The level reading is used for a tilt reading taken within this long. */
-const LEVEL_READING_VALID_MS = 60_000;
+/** How often the live reading checks visibility and repaints a changed value. */
+const LIVE_TICK_MS = 250;
+/** Weight of each new sample in the smoothed pitch. */
+const LIVE_SMOOTHING = 0.3;
+/** A reading older than this (or none this long after the stream started) is shown as missing. */
+const LIVE_STALE_MS = 3_000;
 
 /**
- * Average the glasses' accelerometer (gravity) over about a second, with the
- * report stream on only for that long.
+ * The head's pitch, live, for the Head tilt angle picker. The IMU report
+ * stream runs while `visible()` holds (checked every tick, so it stops while
+ * the screen is off or the window is in the background) and until stop().
+ * text() is the footer line; a changed value repaints at most once a tick.
  */
-async function measureGravity(): Promise<{ ok: true; gravity: Vec3 } | { ok: false; reason: string }> {
-  const samples: ImuReading[] = [];
-  let firstAt = 0;
-  const unsubscribe = addImuListener((reading) => {
+class LiveHeadPitch {
+  private pitch: number | null = null;
+  private lastSampleAt = 0;
+  private streaming = false;
+  private streamingSince = 0;
+  private shown = "";
+  private readonly unsubscribe: () => void;
+  private readonly timer: ReturnType<typeof setInterval>;
+
+  constructor(
+    private readonly visible: () => boolean,
+    private readonly repaint: () => void,
+  ) {
+    this.unsubscribe = addImuListener((reading) => this.onReading(reading));
+    this.timer = setInterval(() => this.tick(), LIVE_TICK_MS);
+    this.tick();
+  }
+
+  text(): string {
+    return this.shown;
+  }
+
+  stop(): void {
+    clearInterval(this.timer);
+    this.unsubscribe();
+    if (this.streaming) setImuReportEnabled(false, IMU_REPORT_PACE);
+    this.streaming = false;
+  }
+
+  private onReading(reading: ImuReading): void {
     // Glasses temples only (1 right, 3 left, 0 unspecified); the ring is 2.
-    if (reading.source === 2) return;
-    if (!Number.isFinite(reading.x) || !Number.isFinite(reading.y) || !Number.isFinite(reading.z)) return;
-    if (firstAt === 0) firstAt = Date.now();
-    samples.push(reading);
-  });
-  setImuReportEnabled(true, IMU_REPORT_PACE);
-  try {
-    const start = Date.now();
-    while (true) {
-      await delay(100);
-      const now = Date.now();
-      if (firstAt === 0 && now - start >= FIRST_SAMPLE_TIMEOUT_MS) break;
-      if (firstAt !== 0 && now - firstAt >= SAMPLE_WINDOW_MS) break;
+    if (!this.streaming || reading.source === 2) return;
+    if (!(Math.hypot(reading.x, reading.y, reading.z) > 1e-6)) return;
+    const pitch = imuPitchDegrees(reading);
+    this.pitch = this.pitch === null ? pitch : this.pitch + LIVE_SMOOTHING * (pitch - this.pitch);
+    this.lastSampleAt = Date.now();
+  }
+
+  private tick(): void {
+    const now = Date.now();
+    const visible = this.visible();
+    if (visible !== this.streaming) {
+      setImuReportEnabled(visible, IMU_REPORT_PACE);
+      this.streaming = visible;
+      this.streamingSince = now;
+      this.pitch = null;
     }
-  } finally {
-    setImuReportEnabled(false, IMU_REPORT_PACE);
-    unsubscribe();
+    const text = this.format(now);
+    if (text !== this.shown) {
+      this.shown = text;
+      this.repaint();
+    }
   }
-  if (samples.length < MIN_SAMPLES) {
-    return { ok: false, reason: samples.length === 0 ? "no sensor data" : "too few samples" };
+
+  private format(now: number): string {
+    if (this.pitch !== null && now - this.lastSampleAt < LIVE_STALE_MS) return `Head now: ${Math.round(this.pitch)}°`;
+    return now - Math.max(this.streamingSince, this.lastSampleAt) < LIVE_STALE_MS ? "Head now: …" : "Head now: no data";
   }
-  const gravity = meanVector(samples);
-  return gravity ? { ok: true, gravity } : { ok: false, reason: "sensor reads zero" };
-}
-
-let levelReading: { gravity: Vec3; atMs: number } | null = null;
-let measuring = false;
-
-/** Which reading the next capture takes: the level one, or the tilted one after it. */
-export function headAngleCaptureStep(): "level" | "tilt" {
-  return levelReading && Date.now() - levelReading.atMs < LEVEL_READING_VALID_MS ? "tilt" : "level";
-}
-
-export function headAngleCaptureRunning(): boolean {
-  return measuring;
 }
 
 /**
- * One step of "Set to current head angle". The first call reads the head
- * level; the next (within a minute) reads it tilted up, stores the angle
- * between the two, rounded to 5°, as the Head tilt angle, and the
- * controller's settings listener sends it to the glasses. Returns a short
- * status for the menu row, or null when a capture is already running.
+ * The Head tilt angle picker's footer: the head's current pitch, read while
+ * the picker is open and `visible()` holds (enumSettingMenuItem pickerFooter).
  */
-export async function captureHeadAngleStep(): Promise<string | null> {
-  if (measuring) return null;
-  measuring = true;
-  try {
-    const step = headAngleCaptureStep();
-    const result = await measureGravity();
-    if (result.ok === false) return `Failed: ${result.reason}`;
-    if (step === "level") {
-      levelReading = { gravity: result.gravity, atMs: Date.now() };
-      return "Now tilt up, select";
-    }
-    const level = levelReading!.gravity;
-    levelReading = null;
-    const angle = glanceAngleForTilt(angleBetweenDegrees(level, result.gravity));
-    if (angle.ok === false) return `Failed: ${angle.reason}`;
-    glanceAngleSetting.set(String(angle.rounded) as GlanceAngle);
-    return getHeadUpStatus() ? `Set to ${angle.rounded}°` : `Saved ${angle.rounded}° (offline)`;
-  } finally {
-    measuring = false;
-  }
-}
-
-/** Forget a level reading (the settings menu was reopened). */
-export function resetHeadAngleCapture(): void {
-  if (!measuring) levelReading = null;
+export function liveHeadPitchFooter(visible: () => boolean): { text: () => string; open: (repaint: () => void) => () => void } {
+  let reader: LiveHeadPitch | null = null;
+  return {
+    text: () => reader?.text() ?? "",
+    open: (repaint) => {
+      const opened = new LiveHeadPitch(visible, repaint);
+      reader = opened;
+      return () => {
+        opened.stop();
+        if (reader === opened) reader = null;
+      };
+    },
+  };
 }
 
 // The glasses' own head-up switch and angle from before Faceclaw first changed
@@ -145,8 +148,4 @@ export function syncGlanceAngleOriginal(status: HeadUpStatus | null = getHeadUpS
 export function glassesHeadUpTrigger(status: HeadUpStatus | null = getHeadUpStatus()): number | null {
   if (!status || status.switch < 0) return null;
   return status.switch === 1 ? status.angle + status.calibration : 0;
-}
-
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }

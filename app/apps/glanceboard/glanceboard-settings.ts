@@ -173,7 +173,7 @@ export const glanceAngleSetting = new ConfigSettingEnum<GlanceAngle>({
   values: GLANCE_ANGLE_VALUES,
   formatValue: (value) => (value === "glasses" ? "Glasses default" : `${value}°`),
   description:
-    "How far you tilt your head up to wake the display. Glasses default uses the glasses' own setting from the Even app. " +
+    "How far you tilt your head up to wake the display; the list shows your head's angle now. Glasses default uses the glasses' own setting from the Even app. " +
     "The board hides when your head drops 20° below this angle; under 25°, looking straight ahead may not count, so it hides after the tap duration instead.",
 });
 

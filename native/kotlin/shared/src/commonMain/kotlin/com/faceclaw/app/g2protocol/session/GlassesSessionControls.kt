@@ -653,14 +653,16 @@ internal fun GlassesSessionCore.finishFrame(frameId: Int, outcome: String) {
     }
 }
 
+/** [x], [y], [z] as the hardware reports them; listeners get them in [ImuOrientation]'s frame. */
 internal fun GlassesSessionCore.emitImuData(x: Double, y: Double, z: Double, eventSource: Int) {
     if (imuListeners.isEmpty()) {
         return
     }
+    val (cx, cy, cz) = ImuOrientation.toCanonical(glassesType, x, y, z)
     host.postToMain {
         for (imuListener in imuListeners) {
             try {
-                imuListener.onImuData(x, y, z, eventSource)
+                imuListener.onImuData(cx, cy, cz, eventSource)
             } catch (t: Throwable) {
                 logWarn("listener onImuData failed", t)
             }
