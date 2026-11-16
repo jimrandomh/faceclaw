@@ -59,6 +59,16 @@ export type WorkerAppReply =
     }
   | { type: "yield-focus"; windowId: string }
   | {
+      /**
+       * A "key" message the window had no use for as a key (a terminal
+       * showing its session list rather than a session). The host gives it
+       * the keyboard's navigation meaning instead.
+       */
+      type: "key-unhandled";
+      windowId: string;
+      event: unknown;
+    }
+  | {
       /** Foreground and focus one of the app's existing windows. */
       type: "focus-window";
       windowId: string;
@@ -202,9 +212,9 @@ export type WorkerWindowSpec = {
   acceptsDirectional?: boolean;
   /**
    * Deliver hardware-keyboard keys to the worker as "key" messages while the
-   * window has input focus, instead of the navigation-gesture fallback. The
-   * worker then owns what every key means in every window state, navigation
-   * included (see ShellWindow.handleKeyEvent).
+   * window has input focus (see ShellWindow.handleKeyEvent). The worker
+   * answers "key-unhandled" for a key it doesn't want as a key just then,
+   * which gets the keyboard's navigation meaning instead.
    */
   acceptsKeys?: boolean;
 };
@@ -234,6 +244,8 @@ export type WorkerAppHostOptions = {
   startTextSettingEdit: (settingId: string) => void;
   /** Close the phone text editor opened by startTextSettingEdit. */
   endTextSettingEdit: () => void;
+  /** A key a window was sent and handed back (the "key-unhandled" reply); a KeyEvent. */
+  unhandledKey?: (event: unknown) => void;
 };
 
 /**
@@ -322,6 +334,10 @@ export class WorkerAppHost {
           if (shell.foregroundWindow()?.windowId === message.windowId) {
             shell.yieldFocusToSidebar();
           }
+          break;
+        case "key-unhandled":
+          // Stale once focus has moved on: the key was meant for that window.
+          if (shell.isWindowFocused(message.windowId)) this.options.unhandledKey?.(message.event);
           break;
         case "focus-window":
           if (this.openWindows.has(message.windowId)) {

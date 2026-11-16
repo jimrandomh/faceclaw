@@ -104,6 +104,7 @@ import { uiFontPickerMenuItem } from "../font-picker";
 import { NotificationFilterLayer } from "../notification-filter";
 import { compatibleModelDiscoveryMenuItem } from "../openai-compatible-model-picker";
 import { keyboardSettingsMenuItem } from "../keyboard-settings";
+import { keybindingsMenuItem } from "../keybinding-settings";
 import { isVeniceApiBaseUrl } from "../../native/openai-chat";
 
 /** The Settings section the Notifications app's "Settings" menu item opens. */
@@ -248,7 +249,7 @@ function settingsSections(): SettingsSection[] {
     // out: the Settings window can be open across a change of glasses.
     {
       label: "Keyboard",
-      items: [keyboardSettingsMenuItem()],
+      items: [keyboardSettingsMenuItem(), keybindingsMenuItem()],
       hidden: () => glassesTypeSetting.get() !== "g2",
     },
     {

@@ -283,33 +283,3 @@ export class KeyTranslator {
     this.repeating = null;
   }
 }
-
-/** The ring gestures a keyboard can stand in for. */
-export type KeyNavigationGesture = "scroll-up" | "scroll-down" | "click" | "double-click";
-
-/**
- * What a key does where nothing takes keys as keys: the ring's vocabulary,
- * with the same reading of left and right as a watch swipe (right selects,
- * left backs out). Held arrows keep scrolling; Enter and Escape act once per
- * press. Chords and every other key do nothing. This is a deliberately small
- * default, not a button-mapping scheme.
- */
-export function navigationGestureForKey(event: KeyEvent): KeyNavigationGesture | null {
-  if (event.phase !== "down") return null;
-  const { ctrl, alt, meta } = event.modifiers;
-  if (ctrl || alt || meta) return null;
-  switch (event.key) {
-    case "ArrowUp":
-      return "scroll-up";
-    case "ArrowDown":
-      return "scroll-down";
-    case "Enter":
-    case "ArrowRight":
-      return event.repeat ? null : "click";
-    case "Escape":
-    case "ArrowLeft":
-      return event.repeat ? null : "double-click";
-    default:
-      return null;
-  }
-}

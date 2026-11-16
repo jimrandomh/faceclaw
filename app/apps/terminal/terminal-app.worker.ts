@@ -55,7 +55,7 @@ import {
 import * as frameTimings from "../../native/frame-timings";
 import { getActiveDisplay } from "../../native/active-display";
 import { GESTURE_DOUBLE_CLICK, type InputEvent } from "../../ui/gestures";
-import { navigationGestureForKey, type KeyEvent } from "../../g2/keyboard/keys";
+import type { KeyEvent } from "../../g2/keyboard/keys";
 import { encodeTerminalKey, terminalScrollbackKey } from "./terminal-keys";
 import { G2MirrorClient, type G2MirrorClientOptions, type G2MirrorSession, type G2MirrorState } from "../../native/g2mirror-client";
 import { onSettingsStoreChanged } from "../../native/settings-store";
@@ -1270,11 +1270,12 @@ function handleInput(window: TerminalWindow, event: InputEvent, frameId: number)
 }
 
 /**
- * A key from a hardware keyboard (the glasses' keyboard bridge). A session
- * with nothing over it gets the key as its terminal would, every key
- * included: Escape and the arrows belong to the program, so leaving is still
- * the ring's double tap. Anywhere else (the hub's lists, an open menu) the
- * navigation keys act as the ring gestures they stand for.
+ * A key from a hardware keyboard (the glasses' keyboard bridge) that no
+ * keybinding claimed. A session with nothing over it gets the key as its
+ * terminal would: Escape and the arrows belong to the program, and the way
+ * out is Escape with Shift, Ctrl or Alt, which never arrives here (it is a
+ * built-in keybinding for "back"). Anywhere else (the hub's lists, an open
+ * menu) the key is handed back, to act as navigation.
  */
 function handleKey(window: TerminalWindow, event: KeyEvent): void {
   if (window.kind === "view" && !window.menu?.isOpen()) {
@@ -1294,8 +1295,7 @@ function handleKey(window: TerminalWindow, event: KeyEvent): void {
     window.client.sendInput(bytes);
     return;
   }
-  const gesture = navigationGestureForKey(event);
-  if (gesture) handleInput(window, { type: gesture, source: "ring", timestampMs: event.timestampMs }, 0);
+  post({ type: "key-unhandled", windowId: window.windowId, event });
 }
 
 /** Top visible absolute line index when following the live bottom. */

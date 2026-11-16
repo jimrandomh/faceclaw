@@ -1,13 +1,29 @@
 /**
  * The keyboard bridge as the app uses it: one KeyboardBridge for the life of
  * the app, fed by whichever glasses session is live, its remembered keyboard
- * kept in the settings store, and its key transitions turned into KeyEvents.
- * The dashboard controller reports the link coming and going and takes the
- * keys; the Settings app drives pairing through `bridge`.
+ * and the custom keybindings kept in the settings store, and its key
+ * transitions turned into KeyEvents and routed. The platform's controller
+ * reports the link coming and going and performs the gestures keys stand
+ * for; the Settings app drives pairing through `bridge` and edits the
+ * keybindings.
  */
 import { addKeyboardEventListener, keyboardLinkSession, sendKeyboardControlRecord } from "../../native/keyboard-link";
 import { getStringSetting, setStringSetting } from "../../native/settings-store";
+import { shell } from "../../ui/shell/shell";
+import {
+  MAX_KEY_BINDINGS,
+  chordId,
+  keyBindingMap,
+  parseKeyBindings,
+  serializeKeyBindings,
+  type GestureOrigin,
+  type KeyAction,
+  type KeyBinding,
+  type KeyChord,
+  type KeyGesture,
+} from "./bindings";
 import { KeyboardBridge, type KeyboardBridgeSnapshot, type SavedKeyboard } from "./bridge";
+import { KeyRouter } from "./key-router";
 import { KeyTranslator, type KeyEvent } from "./keys";
 
 declare const java: any;
@@ -15,9 +31,18 @@ declare const arc4random_uniform: ((bound: number) => number) | undefined;
 
 /** JSON of the remembered keyboard ({ address, addressType, name }), or "" for none. */
 const SAVED_KEYBOARD_KEY = "keyboard.saved";
+/** JSON list of the custom keybindings ({ key, action }); see bindings.ts. */
+const KEY_BINDINGS_KEY = "keyboard.bindings";
 
+/** What the platform's controller does for the keyboard. */
 export type KeyboardServiceHost = {
-  onKey(event: KeyEvent): void;
+  /** Connected to glasses that are in use (not charging in their case). */
+  ready(): boolean;
+  locked(): boolean;
+  /** Turn a dark display on, and nothing else (a locked display stays locked). */
+  wake(): void;
+  /** Perform a gesture as if it came from the ring or the watch. */
+  gesture(gesture: KeyGesture, origin: GestureOrigin): Promise<void>;
   /** Routine lines only (failed background reconnects); the rest go to the device log directly. */
   log(line: string): void;
   /** Whether an absent keyboard is worth looking for now (see KeyboardBridgeHost). */
@@ -52,7 +77,21 @@ class KeyboardService {
   private session: unknown = null;
   private offEvents: (() => void) | null = null;
   private readonly listeners = new Set<() => void>();
-  private readonly translator = new KeyTranslator({ emit: (event) => this.host?.onKey(event) });
+  private bindings: KeyBinding[] = parseKeyBindings(getStringSetting(KEY_BINDINGS_KEY, ""));
+  private bindingMap = keyBindingMap(this.bindings);
+
+  private readonly router = new KeyRouter({
+    ready: () => this.host?.ready() ?? false,
+    locked: () => this.host?.locked() ?? false,
+    screenOn: () => shell.isScreenOn(),
+    wake: () => this.host?.wake(),
+    offerToWindow: (event) => shell.receiveKeyEvent(event),
+    gesture: (gesture, origin) => this.host?.gesture(gesture, origin) ?? Promise.resolve(),
+    bindings: () => this.bindingMap,
+    noteActivity: () => shell.noteUserActivity(),
+    log: (line) => console.log(`[keyboard] ${line}`),
+  });
+  private readonly translator = new KeyTranslator({ emit: (event) => this.router.handleKey(event) });
 
   readonly bridge = new KeyboardBridge({
     send: (record) => {
@@ -67,7 +106,10 @@ class KeyboardService {
     loadSaved: loadSavedKeyboard,
     storeSaved: (saved) => setStringSetting(SAVED_KEYBOARD_KEY, saved ? JSON.stringify(saved) : ""),
     onKeys: (events) => this.translator.handle(events),
-    onKeyboardGone: () => this.translator.reset(),
+    onKeyboardGone: () => {
+      this.translator.reset();
+      this.router.reset();
+    },
     onChanged: () => {
       for (const listener of [...this.listeners]) listener();
     },
@@ -125,6 +167,49 @@ class KeyboardService {
     this.offEvents?.();
     this.offEvents = null;
     this.session = null;
+  }
+
+  /** A key a worker's window was sent and had no use for (the "key-unhandled" reply). */
+  handleUnhandledKey(event: KeyEvent): void {
+    this.router.handleUnhandledKey(event);
+  }
+
+  // ---------- Custom keybindings ----------
+
+  /** The custom keybindings, in the order they were added. */
+  keyBindings(): readonly KeyBinding[] {
+    return this.bindings;
+  }
+
+  /** Bind a chord, replacing what it was bound to. False when the list is full. */
+  setKeyBinding(chord: KeyChord, action: KeyAction): boolean {
+    const id = chordId(chord);
+    const index = this.bindings.findIndex((binding) => chordId(binding.chord) === id);
+    if (index < 0 && this.bindings.length >= MAX_KEY_BINDINGS) return false;
+    const next = [...this.bindings];
+    if (index < 0) next.push({ chord, action });
+    else next[index] = { chord, action };
+    this.storeBindings(next);
+    return true;
+  }
+
+  removeKeyBinding(chord: KeyChord): void {
+    const id = chordId(chord);
+    this.storeBindings(this.bindings.filter((binding) => chordId(binding.chord) !== id));
+  }
+
+  /**
+   * Take the next key pressed on the keyboard instead of acting on it. Returns
+   * a function that calls the capture off.
+   */
+  captureNextKey(onChord: (chord: KeyChord) => void): () => void {
+    return this.router.captureNextKey(onChord);
+  }
+
+  private storeBindings(bindings: KeyBinding[]): void {
+    this.bindings = bindings;
+    this.bindingMap = keyBindingMap(bindings);
+    setStringSetting(KEY_BINDINGS_KEY, serializeKeyBindings(bindings));
   }
 }
 

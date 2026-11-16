@@ -196,9 +196,10 @@ export type ShellWindow = {
   /**
    * Take a key from a hardware keyboard (app/g2/keyboard) as a key. Optional:
    * only windows that give keys a meaning of their own (the terminal)
-   * implement it, and they get every key while they have input focus,
-   * presses and releases alike. For the rest the controller turns the few
-   * navigation keys into ring gestures (navigationGestureForKey).
+   * implement it. They get the keys no keybinding claimed while they have
+   * input focus, presses and releases alike; the rest of the time, and for
+   * every other window, the navigation keys act as gestures (see
+   * app/g2/keyboard/bindings.ts).
    */
   handleKeyEvent?: (event: KeyEvent) => void;
   /** Foreground state changed: this window's surface is (not) the visible one. */

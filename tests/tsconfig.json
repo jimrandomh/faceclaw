@@ -21,6 +21,8 @@
     "../app/g2/keyboard/client.ts",
     "../app/g2/keyboard/bridge.ts",
     "../app/g2/keyboard/keys.ts",
+    "../app/g2/keyboard/bindings.ts",
+    "../app/g2/keyboard/key-router.ts",
     "../app/apps/terminal/terminal-keys.ts",
     "../app/phone-ui/ble-bandwidth-meter.ts",
     "../app/apps/terminal/hub-header.ts",

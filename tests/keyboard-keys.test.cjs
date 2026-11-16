@@ -1,6 +1,6 @@
 const test = require('node:test')
 const assert = require('node:assert/strict')
-const { KeyTranslator, translateUsage, navigationGestureForKey } = require('../.test-build/app/g2/keyboard/keys.js')
+const { KeyTranslator, translateUsage } = require('../.test-build/app/g2/keyboard/keys.js')
 const { encodeTerminalKey, terminalScrollbackKey } = require('../.test-build/app/apps/terminal/terminal-keys.js')
 
 const K = 7
@@ -96,19 +96,6 @@ test('reset forgets held keys and modifiers without emitting, and stops the repe
   assert.equal(events.length, count); assert.equal(timers.size, 0)
   t.handle([down(A)])
   assert.deepEqual([events.at(-1).key, events.at(-1).modifiers.shift], ['a', false])
-})
-
-test('navigation keys stand in for ring gestures; everything else does nothing', () => {
-  const gesture = (k, extra = {}) => navigationGestureForKey(key({ key: k, text: undefined, ...extra }))
-  assert.equal(gesture('ArrowUp'), 'scroll-up'); assert.equal(gesture('ArrowDown'), 'scroll-down')
-  assert.equal(gesture('Enter'), 'click'); assert.equal(gesture('ArrowRight'), 'click')
-  assert.equal(gesture('Escape'), 'double-click'); assert.equal(gesture('ArrowLeft'), 'double-click')
-  // Holding an arrow keeps scrolling; holding Enter or Escape acts once.
-  assert.equal(gesture('ArrowDown', { repeat: true }), 'scroll-down')
-  assert.equal(gesture('Enter', { repeat: true }), null); assert.equal(gesture('Escape', { repeat: true }), null)
-  assert.equal(gesture('Enter', { phase: 'up' }), null)
-  assert.equal(gesture('Enter', { modifiers: { ctrl: true } }), null)
-  assert.equal(gesture('a'), null); assert.equal(gesture(' '), null); assert.equal(gesture('Backspace'), null)
 })
 
 test('terminal: printable keys, Enter, Tab, Backspace, Escape', () => {

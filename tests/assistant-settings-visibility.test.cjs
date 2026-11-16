@@ -75,6 +75,7 @@ function settingsEnv(initialUrl = '', initialModel = 'openai-compatible', glasse
     '../font-picker': { uiFontPickerMenuItem: () => ({ label: 'Font' }) },
     '../notification-filter': { NotificationFilterLayer: class {} },
     '../keyboard-settings': { keyboardSettingsMenuItem: () => ({ label: 'Bluetooth keyboard' }) },
+    '../keybinding-settings': { keybindingsMenuItem: () => ({ label: 'Keybindings' }) },
     '../openai-compatible-model-picker': {
       compatibleModelDiscoveryMenuItem: () => ({ label: 'Discover models' }),
     },
@@ -160,7 +161,7 @@ test('the Keyboard section, with its pairing row, follows the glasses type while
   // options; whether it shows is asked again on every paint.
   assert.equal(labels.indexOf('Keyboard'), labels.indexOf('Watch') + 1);
   const keyboard = sections.find(section => section.label === 'Keyboard');
-  assert.equal(keyboard.items.map(item => item.label).join(), 'Bluetooth keyboard');
+  assert.equal(keyboard.items.map(item => item.label).join(), 'Bluetooth keyboard,Keybindings');
   assert.equal(keyboard.hidden(), true);
   glassesType = 'rayneo-io';
   assert.equal(keyboard.hidden(), true);

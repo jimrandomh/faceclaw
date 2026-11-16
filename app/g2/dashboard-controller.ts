@@ -23,7 +23,7 @@ import { getBooleanSetting, setBooleanSetting } from "../native/settings-store";
 import { grayImageToPreviewSource } from "../native/gray-image-preview";
 import { firmwareIncompatibilityMessage, hasCompatibleFirmware } from "./firmware-compat";
 import { keyboardService } from "./keyboard/service";
-import { navigationGestureForKey, type KeyEvent } from "./keyboard/keys";
+import type { KeyEvent } from "./keyboard/keys";
 import { hasExtractedEvenHubFonts } from "./firmware-builder";
 import { isHaltedSessionPhase, resumeAutoReconnect, suppressAutoReconnect } from "./reconnect-policy";
 import { WearRemote, type WearRemoteInputKind } from "./wear-remote";
@@ -515,10 +515,23 @@ class DashboardController {
       assistantAvailable: () => shell.isAssistantAvailable(),
       assistant: text => shell.sendToAssistant(text),
     });
-    // A keyboard paired through the glasses (CFW keyboard bridge). Its keys
-    // go to the focused window when that takes keys, else act as navigation.
+    // A keyboard paired through the glasses (CFW keyboard bridge). The
+    // service decides what each key means (app/g2/keyboard/key-router.ts);
+    // this is how it reaches the display and the input pipeline.
     keyboardService.setHost({
-      onKey: (event) => this.handleKeyboardKey(event),
+      ready: () => this.phase === "connected",
+      locked: () => this.glassesLocked,
+      wake: () => {
+        void this.handleInputEvent({
+          kind: "display-wake",
+          containerName: "",
+          eventType: OsEventTypeList.DOUBLE_CLICK_EVENT,
+          eventSource: EventSourceType.TOUCH_EVENT_FORM_DUMMY_NULL,
+          systemExitReasonCode: 0,
+          frameId: 0,
+        }).catch((error) => this.appendLog(`keyboard wake failed: ${this.formatError(error)}`));
+      },
+      gesture: (gesture, origin) => this.injectSyntheticRingInput(gesture, origin),
       log: (line) => this.appendLog(line),
       // A keyboard that is switched off would otherwise keep the glasses'
       // radio looking for it around the clock. One still connected when the
@@ -2657,35 +2670,6 @@ class DashboardController {
   }
 
   /**
-   * A key from the keyboard paired through the glasses. A window that takes
-   * keys (a terminal session) gets it as a key; everywhere else the few
-   * navigation keys act as the ring gestures they stand for. A dark display
-   * takes no typing: the first press only wakes it, as the ring's double tap
-   * would, and a locked one stays locked.
-   */
-  private handleKeyboardKey(event: KeyEvent): void {
-    if (this.phase !== "connected") return;
-    if (this.glassesLocked || !shell.isScreenOn()) {
-      if (event.phase !== "down" || event.repeat || shell.isScreenOn()) return;
-      void this.handleInputEvent({
-        kind: "display-wake",
-        containerName: "",
-        eventType: OsEventTypeList.DOUBLE_CLICK_EVENT,
-        eventSource: EventSourceType.TOUCH_EVENT_FORM_DUMMY_NULL,
-        systemExitReasonCode: 0,
-        frameId: 0,
-      }).catch((error) => this.appendLog(`keyboard wake failed: ${this.formatError(error)}`));
-      return;
-    }
-    if (shell.receiveKeyEvent(event)) return;
-    const gesture = navigationGestureForKey(event);
-    if (!gesture) return;
-    void this.injectSyntheticRingInput(gesture).catch((error) =>
-      this.appendLog(`keyboard navigation failed: ${this.formatError(error)}`),
-    );
-  }
-
-  /**
    * The Glanceboard event a sleep-time input means, or null when the shell
    * should see the input as usual. A display-wake carries the head-tilt
    * gesture (HEAD_UP_EVENT) as a press; the double-tap display-wake stays the
@@ -2792,6 +2776,7 @@ class DashboardController {
         }
       },
       endTextSettingEdit: () => this.endTextSettingEdit(),
+      unhandledKey: (event) => keyboardService.handleUnhandledKey(event as KeyEvent),
     });
     this.appHosts.set(appId, host);
     return host;
