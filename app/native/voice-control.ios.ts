@@ -3,7 +3,7 @@ import type { CloudSttTranscriptEvent } from './cloud-stt'
 import type { ReconnectingSttClient } from './reconnecting-stt'
 import { createCloudSttClient, usesCloudStt, type VoiceProviderSelection } from './cloud-stt-provider'
 import { createSpeechAnalyzerClient, speechAnalyzerSupported } from './speech-analyzer-stt.ios'
-import { WavRecorder } from './wav-recorder.ios'
+import { MicRecorder } from './mic-recorder.ios'
 import { pcmLevel } from '../util/audio-level'
 
 declare const FaceclawSpeech: any
@@ -57,11 +57,14 @@ export class IosVoiceControlBridge {
   private continuous = false
   // Shown instead of the native "ended" status once a drain the bridge started completes.
   private drainStatus: string | null = null
-  // Continuous captures' audio goes to Downloads/<recordingName>.wav while it is
+  // Continuous captures' audio goes to Downloads/<recordingName>.mka while it is
   // set. The file outlives a capture, so a restarted one keeps appending to it,
   // and it is created by the first audio, so a failed start leaves no file.
   private recordingName = ''
-  private recorder: WavRecorder | null = null
+  private recorder: MicRecorder | null = null
+  // The file could not be created: one attempt per recording, not one per packet.
+  private recordingFailure = false
+  private readonly recordingListeners = new Set<() => void>()
   // Raw-PCM tap (EvenHub mic apps): decode-only glasses audio, broadcast to
   // rawListeners while any owner wants it, from the session setRawSession
   // bound. It shares the one glasses mic with speech capture, which preempts
@@ -206,22 +209,37 @@ export class IosVoiceControlBridge {
   /** Where a listening continuous capture gets its audio; null when none is listening. */
   get continuousSource(): 'glasses' | 'phone' | null { return this.continuous && this.capturing ? this.source : null }
   /**
-   * Record continuous captures' audio to Downloads/<name>.wav, across restarts,
+   * Record continuous captures' audio to Downloads/<name>.mka, across restarts,
    * until called with another name or ''. Only cloud captures supply PCM.
    */
   recordTo(name: string): void {
     if (name === this.recordingName) return
     this.recorder?.close(); this.recorder = null
-    this.recordingName = name
+    this.setRecording(name, false)
+  }
+  /** Whether continuous captures' audio is being saved (see recordTo). */
+  get recording(): boolean { return this.recordingName !== '' && !this.recordingFailure }
+  /** Whether the recording asked for could not be saved (its file could not be created). */
+  get recordingFailed(): boolean { return this.recordingFailure }
+  /** `recording` or `recordingFailed` changed. */
+  onRecordingChange(listener: () => void): () => void { this.recordingListeners.add(listener); return () => { this.recordingListeners.delete(listener) } }
+  private setRecording(name: string, failed: boolean): void {
+    const wasRecording = this.recording, hadFailed = this.recordingFailure
+    this.recordingName = name; this.recordingFailure = failed
+    if (wasRecording === this.recording && hadFailed === failed) return
+    for (const fn of [...this.recordingListeners]) fn()
   }
   private record(pcm: Uint8Array): void {
-    if (!this.recorder && this.recordingName) {
-      this.recorder = WavRecorder.open(this.recordingName)
+    if (!this.recording) return
+    if (!this.recorder) {
+      this.recorder = MicRecorder.open(this.recordingName, {
+        recording: this.recordingName, startedAt: new Date().toISOString(), platform: 'ios',
+        source: this.source === 'phone' ? 'phone' : 'glasses', mics: 1,
+      })
       this.log(this.recorder ? `Voice: recording audio to ${this.recorder.path}` : 'Voice: could not create the audio recording')
-      // One attempt per recording, not one per packet.
-      if (!this.recorder) this.recordingName = ''
+      if (!this.recorder) { this.setRecording(this.recordingName, true); return }
     }
-    this.recorder?.append(pcm)
+    this.recorder.append(pcm)
   }
   /** End continuous capture, transcribing the audio since the last pause. */
   stopContinuousCapture(): Promise<void> {

@@ -1,4 +1,4 @@
-import { ConfigSettingBoolean, ConfigSettingEnum } from "../../ui/dashboard-settings";
+import { ConfigSettingBoolean, ConfigSettingEnum, glassesHaveCompass } from "../../ui/dashboard-settings";
 import { QUADRANT_LAYOUT, SIX_SLOT_LAYOUT, slotsVerticallyAdjacent, type GlanceLayout } from "./layout";
 import { type GlanceWidgetId } from "./widget";
 import { glanceWidgetSpans } from "./widgets";
@@ -21,6 +21,11 @@ const SLOT_CHOICE_LABELS: Record<GlanceSlotChoice, string> = {
 
 export function glanceSlotChoiceLabel(choice: GlanceSlotChoice): string {
   return SLOT_CHOICE_LABELS[choice] ?? choice;
+}
+
+/** Whether the paired glasses can drive this widget; if not, it is left out of the slot picker. */
+function slotChoiceAvailable(choice: GlanceSlotChoice): boolean {
+  return choice !== "compass" || glassesHaveCompass();
 }
 
 /**
@@ -57,9 +62,28 @@ export const glanceboardEnabledSetting = new ConfigSettingBoolean({
     "While the display is asleep, a tap, a long-press or a head-tilt shows the Glanceboard instead of the regular UI. Double-tap still wakes the regular UI.",
 });
 
-export type GlanceTapDuration = "off" | "3s" | "5s" | "7s" | "10s";
+const TAP_DURATION_SECONDS = {
+  "3s": 3,
+  "5s": 5,
+  "7s": 7,
+  "10s": 10,
+  "20s": 20,
+  "30s": 30,
+  "1min": 60,
+} as const;
 
-const DEFAULT_TAP_DURATION: GlanceTapDuration = "5s";
+type GlanceTapDurationTimed = keyof typeof TAP_DURATION_SECONDS;
+export type GlanceTapDuration = "off" | GlanceTapDurationTimed;
+
+const TAP_DURATION_VALUES: readonly GlanceTapDuration[] = ["off", ...(Object.keys(TAP_DURATION_SECONDS) as GlanceTapDurationTimed[])];
+
+const DEFAULT_TAP_DURATION: GlanceTapDurationTimed = "5s";
+
+function formatTapDuration(value: GlanceTapDuration): string {
+  if (value === "off") return "Disabled";
+  const seconds = TAP_DURATION_SECONDS[value];
+  return seconds % 60 === 0 ? `${seconds / 60} min` : `${seconds} s`;
+}
 
 /**
  * How long a tap keeps the board up; each further tap restarts it. "off"
@@ -72,8 +96,8 @@ export const glanceTapDurationSetting = new ConfigSettingEnum<GlanceTapDuration>
   label: "Show on tap",
   storageKey: "glanceboard.tapDuration",
   defaultValue: DEFAULT_TAP_DURATION,
-  values: ["off", "3s", "5s", "7s", "10s"],
-  formatValue: (value) => (value === "off" ? "Disabled" : value.replace("s", " s")),
+  values: TAP_DURATION_VALUES,
+  formatValue: formatTapDuration,
   description:
     "How long a single tap keeps the Glanceboard on screen. Disabled: a single tap does not show the Glanceboard.",
 });
@@ -85,8 +109,7 @@ export function glanceShowOnTap(): boolean {
 
 export function glanceTapTimeoutMs(): number {
   const duration = glanceTapDurationSetting.get();
-  const seconds = duration === "off" ? DEFAULT_TAP_DURATION : duration;
-  return Number.parseInt(seconds, 10) * 1000;
+  return TAP_DURATION_SECONDS[duration === "off" ? DEFAULT_TAP_DURATION : duration] * 1000;
 }
 
 /** A long-press holds the board up until the press is released. */
@@ -204,18 +227,26 @@ export const glanceShowLinesSetting = new ConfigSettingBoolean({
 export function glanceSlotSettings(layout: GlanceLayout = glanceLayout()): ConfigSettingEnum<GlanceSlotChoice>[] {
   const grid = layout === QUADRANT_LAYOUT || layout === SIX_SLOT_LAYOUT;
   const storageId = grid ? QUADRANT_LAYOUT.id : layout.id;
-  return layout.slots.map(
-    (slot, index) =>
-      new ConfigSettingEnum<GlanceSlotChoice>({
-        id: `glanceboard-${layout.id}-slot-${index}`,
-        label: slot.label,
-        storageKey: `glanceboard.${storageId}.slot.${index}`,
-        defaultValue: (grid ? DEFAULT_QUADRANT_CHOICES[index] : undefined) ?? "none",
-        values: SLOT_CHOICES,
-        formatValue: glanceSlotChoiceLabel,
-        description: `Which widget fills the ${slot.label.toLowerCase()} slot of the Glanceboard.`,
-      }),
-  );
+  return layout.slots.map((slot, index) => {
+    const defaultValue: GlanceSlotChoice = (grid ? DEFAULT_QUADRANT_CHOICES[index] : undefined) ?? "none";
+    return new ConfigSettingEnum<GlanceSlotChoice>({
+      id: `glanceboard-${layout.id}-slot-${index}`,
+      label: slot.label,
+      storageKey: `glanceboard.${storageId}.slot.${index}`,
+      defaultValue,
+      values: SLOT_CHOICES.filter(slotChoiceAvailable),
+      // A stored choice the glasses can't drive reads as Empty, not the slot's
+      // default (which could put a widget on the board twice). The stored value
+      // stays, so pairing glasses that can drive it brings it back.
+      normalize: (value) => {
+        const choice = value as GlanceSlotChoice;
+        if (!SLOT_CHOICES.includes(choice)) return defaultValue;
+        return slotChoiceAvailable(choice) ? choice : "none";
+      },
+      formatValue: glanceSlotChoiceLabel,
+      description: `Which widget fills the ${slot.label.toLowerCase()} slot of the Glanceboard.`,
+    });
+  });
 }
 
 /**

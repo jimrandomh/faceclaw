@@ -119,6 +119,19 @@ class BleProtocol {
          */
         const val FACECLAW_ALS_REPORT_FIELD: Int = 105
 
+        /**
+         * CFW keyboard bridge (Faceclaw/39): the master temple hosts one BLE HID keyboard. The
+         * host writes ['K','B',ver,op,request,epoch,...] controls as settings field 130; results,
+         * pairing prompts and the keyboard's raw input reports come back as commandId=3 pushes
+         * carrying field 131 (['K','B',ver,kind,...], decoded in app/g2/keyboard/protocol.ts).
+         */
+        const val FACECLAW_KEYBOARD_CONTROL_FIELD: Int = 130
+
+        const val FACECLAW_KEYBOARD_EVENT_FIELD: Int = 131
+
+        /** Fixed header of a field-131 record; fragments follow it. */
+        const val FACECLAW_KEYBOARD_EVENT_HEADER: Int = 24
+
         const val FACECLAW_WAKE_OP_ACQUIRE: Int = 1
 
         const val FACECLAW_WAKE_OP_RELEASE: Int = 2
@@ -782,6 +795,42 @@ class BleProtocol {
             if (
                 ((((body == null) || (body.size < 3)) || (body[0].toInt() != 77)) ||
                     (body[1].toInt() != 67))
+            ) {
+                return null
+            }
+            return body
+        }
+
+        /**
+         * Wrap an already-encoded ['K','B',ver,op,...] keyboard control as a settings write
+         * carrying CFW field 130. Magic zero, like the other private controls: the answer is a
+         * field-131 record naming the control's request id, not the settings ACK.
+         */
+        @JvmStatic
+        fun buildFaceclawKeyboardControl(record: ByteArray): ByteArray {
+            return concat(
+                CollectionUtils.listOf(
+                    encodeVarintField(1, 1),
+                    encodeVarintField(2, 0),
+                    encodeBytesField(FACECLAW_KEYBOARD_CONTROL_FIELD, record),
+                )
+            )
+        }
+
+        /**
+         * Extract a CFW keyboard record (field 131) from a settings frame, or null when the frame
+         * carries none. Only the ['K','B'] prelude and the fixed header's length are checked
+         * here; the TS side validates the version and decodes the rest.
+         */
+        @JvmStatic
+        fun parseFaceclawKeyboardEvent(pb: ByteArray?): ByteArray? {
+            if (pb == null) {
+                return null
+            }
+            val body = readFieldBytes(stripTrailingCrc(pb), FACECLAW_KEYBOARD_EVENT_FIELD)
+            if (
+                body == null || body.size < FACECLAW_KEYBOARD_EVENT_HEADER ||
+                    body[0].toInt() != 75 || body[1].toInt() != 66
             ) {
                 return null
             }

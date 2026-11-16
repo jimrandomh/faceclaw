@@ -32,6 +32,17 @@ test('receives fragmented UTF-8 notifications; pre-existing and modified items d
  x.source(8,0,4);x.feed(3,[]);x.details(8);x.feed(3,[]);x.metadata(8);assert.equal(x.changed.at(-1)[1],false)
  assert.ok(x.sent.every(p=>p.length<=20))
 })
+test('a phone that is not sharing ANCS says so and is asked again, and an unknown status restarts',t=>{
+ const x=setup(t);x.client.stop()
+ const sent=[],c=new AncsClient(async b=>sent.push([...b]),()=>{})
+ t.after(()=>c.stop());c.start(5,20)
+ c.receive(new Uint8Array([65,78,1,0,...le(5),0,0,3,0]))
+ c.receive(new Uint8Array([65,78,1,0,...le(5),1,0,3,3]))
+ assert.equal(c.state,'unavailable');assert.match(c.statusMessage,/Share System Notifications/)
+ const d=new AncsClient(async()=>{},()=>{});t.after(()=>d.stop());d.start(6,20)
+ d.receive(new Uint8Array([65,78,1,0,...le(6),0,0,3,4]))
+ assert.equal(d.state,'unavailable');assert.doesNotMatch(d.statusMessage,/Share System Notifications/)
+})
 test('removal during retrieval cannot resurrect notification',t=>{
  const x=setup(t);x.source(7);x.source(7,2);x.details(7);x.feed(3,[])
  assert.deepEqual(x.client.read(),[])

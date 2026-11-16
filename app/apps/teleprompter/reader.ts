@@ -9,8 +9,6 @@ import { lineStep } from "../../ui/metrics";
 import { clamp } from "../../util/numeric-util";
 import { ScriptTracker, tokenizeScript, type TokenizedScript } from "./script-tracker";
 
-const MARGIN_X = 18;
-const BODY_TOP = 6;
 /** Gap between the last body line and the footer. */
 const FOOTER_GAP = 4;
 /** Lines per ring scroll tick. */
@@ -41,6 +39,11 @@ export type ReaderHooks = {
  * and re-anchor the tracker to what is now at the anchor row, so scrolling
  * doubles as "I'm here now". Click pauses/resumes tracking; double-click
  * goes back to the file list.
+ *
+ * The script's column and the footer line keep inside the padding suggested
+ * for the window's edges. The lines scroll, so they run from the window's
+ * top edge itself: only the script's first line keeps that edge's padding
+ * above it.
  */
 export class TeleprompterReaderLayer implements Layer {
   private readonly script: TokenizedScript;
@@ -116,13 +119,18 @@ export class TeleprompterReaderLayer implements Layer {
     const font = getDefaultMediumFont();
     const smallFont = getDefaultSmallFont();
     const step = lineStep(font);
-    const { width, height } = ctx.stack.getBaseSize();
+    const { width, height, padding } = ctx.stack.getBaseSize();
     const image = new GrayImage(width, height, 0);
+    const bodyX = padding.left;
+    const bodyWidth = Math.max(0, width - padding.left - padding.right);
 
-    const footerY = height - smallFont.lineHeight - 4;
-    this.visibleRows = Math.max(1, Math.floor((footerY - FOOTER_GAP - BODY_TOP) / step));
+    const footerY = height - padding.bottom - smallFont.lineHeight;
+    const bodyBottom = footerY - FOOTER_GAP;
+    // Rows that fit wherever the script is scrolled to, which is what
+    // scrolling and the anchor row go by.
+    this.visibleRows = Math.max(1, Math.floor((bodyBottom - padding.top) / step));
     this.anchorRow = Math.floor(this.visibleRows / 3);
-    const lines = this.layout(font, width - 2 * MARGIN_X);
+    const lines = this.layout(font, bodyWidth);
 
     if (this.autoScrollPending) {
       this.autoScrollPending = false;
@@ -133,20 +141,24 @@ export class TeleprompterReaderLayer implements Layer {
 
     const position = this.tracker.position;
     const nextToken = position < this.script.words.length ? this.script.wordTokens[position]! : this.script.tokens.length;
-    const lastLine = Math.min(lines.length, this.firstLine + this.visibleRows);
+    // Scrolled past the script's start, the lines begin at the window's top
+    // edge and the top padding's room may hold one more of them.
+    const bodyTop = this.firstLine === 0 ? padding.top : 0;
+    const shownRows = Math.max(1, Math.floor((bodyBottom - bodyTop) / step));
+    const lastLine = Math.min(lines.length, this.firstLine + shownRows);
     for (let lineIndex = this.firstLine; lineIndex < lastLine; lineIndex++) {
-      const y = BODY_TOP + (lineIndex - this.firstLine) * step;
+      const y = bodyTop + (lineIndex - this.firstLine) * step;
       for (const span of lines[lineIndex]!.spans) {
         const isNext = span.tokenIndex === nextToken;
         const value = isNext ? NEXT_VALUE : span.tokenIndex < nextToken ? PAST_VALUE : UPCOMING_VALUE;
-        image.drawText(font, MARGIN_X + span.x, y, span.text, value);
+        image.drawText(font, bodyX + span.x, y, span.text, value);
         if (isNext) {
-          image.fillRect(MARGIN_X + span.x, y + font.lineHeight - 2, span.width, 2, NEXT_VALUE);
+          image.fillRect(bodyX + span.x, y + font.lineHeight - 2, span.width, 2, NEXT_VALUE);
         }
       }
     }
 
-    this.paintFooter(image, smallFont, width, footerY);
+    this.paintFooter(image, smallFont, bodyX, bodyWidth, footerY);
     return image;
   }
 
@@ -169,15 +181,16 @@ export class TeleprompterReaderLayer implements Layer {
     }
   }
 
-  private paintFooter(image: GrayImage, font: UiFont, width: number, y: number): void {
+  /** The footer line across [x, x + width): the script's name at its left, status and progress at its right. */
+  private paintFooter(image: GrayImage, font: UiFont, x: number, width: number, y: number): void {
     const total = this.script.words.length;
     const percent = total === 0 ? 0 : Math.round((100 * this.tracker.position) / total);
     const right = `${this.tracking ? this.status || "Listening" : "Paused"}   ${percent}%`;
     const rightWidth = font.measureText(right);
-    image.drawText(font, width - MARGIN_X - rightWidth, y, right, 110);
-    const titleMax = width - 2 * MARGIN_X - rightWidth - 12;
+    image.drawText(font, x + width - rightWidth, y, right, 110);
+    const titleMax = width - rightWidth - 12;
     if (titleMax > 20) {
-      image.drawText(font, MARGIN_X, y, truncateText(font, this.title, titleMax), 110);
+      image.drawText(font, x, y, truncateText(font, this.title, titleMax), 110);
     }
   }
 

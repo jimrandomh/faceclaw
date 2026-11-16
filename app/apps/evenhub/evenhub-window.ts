@@ -16,6 +16,8 @@ import { shell } from "../../ui/shell/shell";
 import { makeImageWindowIcon, windowIcon } from "../../ui/shell/chrome-layer";
 import { EvenHubSession } from "./session";
 import { renderInstalledEvenHubIcon } from "./installed-apps";
+import { markDisplayWarningShown, needsDisplayWarning } from "./glasses-compat";
+import { EvenHubDisplayWarningLayer } from "./display-warning-dialog";
 
 class EvenHubAppLayer implements Layer {
   /**
@@ -148,6 +150,17 @@ export function createEvenHubWindow(
     baseSetScreenOn?.(on);
     session.setScreenOn(on);
   };
+
+  // The app's first run with a RayNeo iO paired: warn, over the app itself,
+  // that it won't display correctly there.
+  const packageId = session.manifest.packageId;
+  if (needsDisplayWarning(packageId)) {
+    created.stack.push(new EvenHubDisplayWarningLayer(
+      session.manifest.name,
+      () => markDisplayWarningShown(packageId),
+      () => shell.closeWindow(windowId),
+    ));
+  }
 
   return created;
 }

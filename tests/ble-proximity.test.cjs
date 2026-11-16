@@ -12,7 +12,6 @@ const {
   MINIMUM_METERS,
   MAXIMUM_METERS,
   zoneFromMeters,
-  zoneLabel,
   sortedByProximity,
 } = require("../.test-build/app/g2/ble-proximity.js");
 
@@ -59,7 +58,6 @@ test("zones and their boundaries", () => {
   assert.equal(zoneFromMeters(3), "far");
   assert.equal(zoneFromMeters(9.9), "far");
   assert.equal(zoneFromMeters(10), "distant");
-  assert.equal(zoneLabel("immediate"), "In your hand");
 });
 
 test("weak signals carry lower confidence", () => {

@@ -123,11 +123,12 @@ class HealthLayer implements Layer {
   }
 
   paint(ctx: LayerContext): GrayImage {
-    const { width, height } = ctx.stack.getBaseSize();
+    // The pages lay out inside the padding suggested for the window's edges.
+    const { width, height, padding } = ctx.stack.getBaseSize();
     const image = new GrayImage(width, height, 0);
     drawGlancePage(
       image,
-      { width, height },
+      { width, height, padding },
       { small: getDefaultSmallFont(), large: getDefaultLargeFont() },
       GLANCE_PAGES[this.pageIndex] ?? GLANCE_PAGES[0]!,
       {

@@ -3,9 +3,9 @@
  * page: to scale in real-display pixels, simplified, and drawn brighter
  * than the real chrome, which they shrink to a few pixels.
  */
-import { G2_LENS_WIDTH, type GrayImage } from "../../graphics/image";
+import type { GrayImage } from "../../graphics/image";
 import { statusBarPositionSetting, type AppSwitcherPosition } from "../../ui/dashboard-settings";
-import { SIDEBAR_WIDTH, SWITCHER_ROW_HEIGHT, MIN_WINDOW_HEIGHT, TOP_BAR_HEIGHT } from "../../ui/shell/geometry";
+import { MIN_WINDOW_HEIGHT, screenHeight, screenWidth, SIDEBAR_WIDTH, SWITCHER_ROW_HEIGHT, TOP_BAR_HEIGHT } from "../../ui/shell/geometry";
 
 export const AREA_OUTLINE = 30;
 const CHROME_LINE = 100;
@@ -80,14 +80,14 @@ export function drawLayout(d: Diagram, position: AppSwitcherPosition, band: Diag
   switch (position) {
     case "left":
     case "right": {
-      const stripLeft = position === "left" ? 0 : G2_LENS_WIDTH - SIDEBAR_WIDTH;
+      const stripLeft = position === "left" ? 0 : screenWidth() - SIDEBAR_WIDTH;
       const contentLeft = position === "left" ? SIDEBAR_WIDTH : 0;
-      const windowWidth = G2_LENS_WIDTH - SIDEBAR_WIDTH;
+      const windowWidth = screenWidth() - SIDEBAR_WIDTH;
       drawStatusBar(d, contentLeft, top, windowWidth, TOP_BAR_HEIGHT - 1);
       drawContent(d, contentLeft, top + TOP_BAR_HEIGHT, windowWidth, height - TOP_BAR_HEIGHT, 1);
-      // The strip keeps to the 288px band's height, even beside taller windows.
+      // The strip keeps to the min band's height (288px, or the whole short screen), even beside taller windows.
       const separator = position === "left" ? SIDEBAR_WIDTH - 1 : stripLeft;
-      d.vline(separator, top + TOP_BAR_HEIGHT, MIN_WINDOW_HEIGHT - TOP_BAR_HEIGHT, CHROME_LINE);
+      d.vline(separator, top + TOP_BAR_HEIGHT, diagramBandHeight("left") - TOP_BAR_HEIGHT, CHROME_LINE);
       // One column of icons against the separator.
       const column = position === "left" ? SIDEBAR_WIDTH - 36 : stripLeft;
       for (let slot = 0; slot < 4; slot++) drawIcon(d, column + 2, top + TOP_BAR_HEIGHT + 10 + slot * 40, slot === 0);
@@ -131,11 +131,11 @@ export function drawLayout(d: Diagram, position: AppSwitcherPosition, band: Diag
   }
 }
 
-/** A bottom row or popup layout's window: centred at 576 wide and framed, or the panel's width without a frame. */
+/** A bottom row or popup layout's window: centred, SIDEBAR_WIDTH narrower, framed; or the screen's width without a frame. */
 function windowSpan(band: DiagramBand): { left: number; width: number; framed: boolean } {
   return band.fullWidth
-    ? { left: 0, width: G2_LENS_WIDTH, framed: false }
-    : { left: SIDEBAR_WIDTH / 2, width: G2_LENS_WIDTH - SIDEBAR_WIDTH, framed: true };
+    ? { left: 0, width: screenWidth(), framed: false }
+    : { left: SIDEBAR_WIDTH / 2, width: screenWidth() - SIDEBAR_WIDTH, framed: true };
 }
 
 /**
@@ -173,5 +173,16 @@ function drawContent(d: Diagram, x: number, y: number, width: number, height: nu
   }
 }
 
-/** Real-display rows the Layout page's diagrams cover: a 288px band and a bottom switcher row under it. */
-export const LAYOUT_AREA_HEIGHT = MIN_WINDOW_HEIGHT + SWITCHER_ROW_HEIGHT;
+/**
+ * Real-display rows the Layout page's diagrams cover: a 288px band and a
+ * bottom switcher row under it, or the whole screen where that is shorter
+ * (the RayNeo iO's 220 rows).
+ */
+export function layoutAreaHeight(): number {
+  return Math.min(MIN_WINDOW_HEIGHT + SWITCHER_ROW_HEIGHT, screenHeight());
+}
+
+/** A layout's min-height band within the diagram area: 288px, less a bottom row where the screen is short. */
+export function diagramBandHeight(position: AppSwitcherPosition): number {
+  return Math.min(MIN_WINDOW_HEIGHT, layoutAreaHeight() - (position === "bottom" ? SWITCHER_ROW_HEIGHT : 0));
+}

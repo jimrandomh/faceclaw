@@ -14,4 +14,10 @@
 + (NSData *)bgraPacket:(CGImageRef)image maxSize:(NSInteger)maxSize;
 /** bgraPacket of encoded image bytes (JPEG, PNG, ...); nil when undecodable. */
 + (NSData *)bgraPacketFromImageData:(NSData *)data maxSize:(NSInteger)maxSize;
+/**
+ * [widthLo, widthHi, heightLo, heightHi, RGBA...] of encoded image bytes at native size
+ * (at most 4096 px a side), first frame only; nil when undecodable. CoreGraphics
+ * premultiplies, so transparent pixels come out black. For the EvenHub image pipeline.
+ */
++ (NSData *)rgbaPacketFromImageData:(NSData *)data;
 @end

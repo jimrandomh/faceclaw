@@ -11,7 +11,7 @@ function fixture() {
   const load = loader({ global: {}, setTimeout: (fn, ms) => { timers.set(fn, ms); return fn; }, clearTimeout: fn => timers.delete(fn) }, {
     '../../graphics/image': {}, './chrome-layer': { windowIcon() {} },
     '../../assistant/tool-registry': { toolRegistry: { removeAppTools() {} } },
-    './geometry': { appViewportSize: () => ({ width: 576, height: 288 }) },
+    './geometry': { appViewport: () => ({ width: 576, height: 288 }) },
     '../../native/frame-timings': {}, './worker-state': { publishWorkerState: (...args) => published.push(args) },
     './shell': { shell: { registerWindow: w => shellWindows.set(w.windowId, w), setTrayIcon() {},
       focusWindow: id => focused.push(id), isWindowFocused: () => false } },

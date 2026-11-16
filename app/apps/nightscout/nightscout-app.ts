@@ -84,7 +84,8 @@ function buildNightscoutTrayIcon(state: NightscoutState): GrayImage {
   const font = getDefaultSmallFont();
   const nowMs = Date.now();
   const label = state.latest ? `${state.latest.sgv}` : "--";
-  const labelWidth = font.measureText(label);
+  // A TTF face measures fractionally; the icon's size and layout need whole pixels.
+  const labelWidth = Math.ceil(font.measureText(label));
   const warning = evaluateNightscoutAlerts(state, loadNightscoutThresholds(), nowMs).any;
   const graphEnd = labelWidth + 4 + TRAY_GRAPH_WIDTH;
   const image = new GrayImage(graphEnd + (warning ? 24 : 0), TRAY_HEIGHT, 0);

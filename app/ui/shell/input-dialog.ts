@@ -1,9 +1,9 @@
-import { G2_LENS_WIDTH, GrayImage, type UiFont } from "../../graphics/image";
+import { GrayImage, type UiFont } from "../../graphics/image";
 import { wrapText, truncateText } from "../../graphics/textwrap";
 import { getDefaultSmallFont } from "../../graphics/ui-fonts";
 import { Menu, type MenuDrawArgs } from "../menu-core";
 import { listRowHeight, textInkBounds } from "../metrics";
-import { MIN_WINDOW_HEIGHT, minWindowTop } from "./geometry";
+import { minWindowHeight, minWindowTop, screenWidth } from "./geometry";
 
 /**
  * The shared look of the shell's text dialogs (voice input, phone keyboard
@@ -13,17 +13,26 @@ import { MIN_WINDOW_HEIGHT, minWindowTop } from "./geometry";
  */
 
 const DIALOG_X = 40;
-const DIALOG_W = G2_LENS_WIDTH - 80;
+/** The screen less DIALOG_X on each side. */
+function dialogW(): number {
+  return screenWidth() - 2 * DIALOG_X;
+}
 // The dialog fits inside the min-height window band (like the other shell
 // overlays), wherever the vertical position setting puts it.
 const DIALOG_MARGIN_Y = 28;
-const DIALOG_H = MIN_WINDOW_HEIGHT - 2 * DIALOG_MARGIN_Y;
-const TEXT_MAX_WIDTH = DIALOG_W - 32;
+function dialogH(): number {
+  return minWindowHeight() - 2 * DIALOG_MARGIN_Y;
+}
+function textMaxWidth(): number {
+  return dialogW() - 32;
+}
 const TEXT_LEFT = DIALOG_X + 16;
 // Menu row boxes: 4px left of the text column, 2px shorter than the row
 // pitch, with each row's label inset 8px / 4px into its box.
 const MENU_X = TEXT_LEFT - 4;
-const MENU_W = DIALOG_W - 24;
+function menuW(): number {
+  return dialogW() - 24;
+}
 const MENU_ROW_GAP = 2;
 const MENU_LABEL_INSET_X = 8;
 const MENU_LABEL_INSET_Y = 4;
@@ -89,28 +98,28 @@ export function paintInputDialog<T extends InputDialogRow>(image: GrayImage, con
 
   // Solid dialog box over the underlying UI. Fill 1, not 0: identical after
   // 4bpp quantization, but 0 is transparent on the color-key shell surface.
-  image.fillRect(DIALOG_X, top, DIALOG_W, DIALOG_H, 1);
-  image.drawRect(DIALOG_X, top, DIALOG_W, DIALOG_H, 90);
+  image.fillRect(DIALOG_X, top, dialogW(), dialogH(), 1);
+  image.drawRect(DIALOG_X, top, dialogW(), dialogH(), 90);
 
   // Title and status share one header line, the status in the space after the title.
   const left = TEXT_LEFT;
   const headerY = top + 12;
   image.drawText(font, left, headerY, content.title, 220);
   const statusLeft = left + Math.ceil(font.measureText(content.title)) + HEADER_STATUS_GAP;
-  const statusWidth = TEXT_LEFT + TEXT_MAX_WIDTH - statusLeft;
+  const statusWidth = TEXT_LEFT + textMaxWidth() - statusLeft;
   image.drawText(font, statusLeft, headerY, truncateText(font, content.status, statusWidth), content.statusValue ?? 130);
 
   const menu = content.menu;
   const rowCount = menu?.items.length ?? 0;
   // Reserve space for the actual number of rows this menu has, or one row for the hint.
   const reservedRows = rowCount > 0 ? rowCount : content.hint ? 1 : 0;
-  const textBottom = top + DIALOG_H - reservedRows * menuRowH - 8;
+  const textBottom = top + dialogH() - reservedRows * menuRowH - 8;
   const textTop = headerY + font.lineHeight + 12;
   const maxLines = Math.max(1, ((textBottom - textTop) / 16) | 0);
 
   // The tail of a long message stays in view: it is what was said last (or
   // where the phone keyboard is typing).
-  const wrapped = wrapText(font, content.text, TEXT_MAX_WIDTH);
+  const wrapped = wrapText(font, content.text, textMaxWidth());
   const firstLine = Math.max(0, wrapped.length - maxLines);
   for (let index = firstLine; index < wrapped.length; index++) {
     image.drawText(font, left, textTop + (index - firstLine) * 16, wrapped[index]!, 235);
@@ -118,11 +127,11 @@ export function paintInputDialog<T extends InputDialogRow>(image: GrayImage, con
 
   if (menu && rowCount > 0) {
     // Row boxes are one pitch apart, the last ending 6px above the dialog's bottom edge.
-    const menuTop = top + DIALOG_H - rowCount * menuRowH - 4;
-    menu.paint(image, { x: MENU_X, y: menuTop, width: MENU_W, height: rowCount * menuRowH - MENU_ROW_GAP }, true);
+    const menuTop = top + dialogH() - rowCount * menuRowH - 4;
+    menu.paint(image, { x: MENU_X, y: menuTop, width: menuW(), height: rowCount * menuRowH - MENU_ROW_GAP }, true);
   } else if (content.hint) {
     // On the line the last menu row's label would occupy, floating in front of the dialog.
-    drawDepthText(image, font, truncateText(font, content.hint, TEXT_MAX_WIDTH), left, top + DIALOG_H - menuRowH, HINT_VALUE, HINT_DEPTH);
+    drawDepthText(image, font, truncateText(font, content.hint, textMaxWidth()), left, top + dialogH() - menuRowH, HINT_VALUE, HINT_DEPTH);
   }
 }
 

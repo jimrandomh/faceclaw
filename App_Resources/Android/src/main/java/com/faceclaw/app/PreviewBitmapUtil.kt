@@ -62,7 +62,7 @@ class PreviewBitmapUtil private constructor() {
         /**
          * A white-on-transparent bitmap of an 8bpp glasses icon (gray becomes
          * alpha; black, which the glasses show as unlit, is transparent), for
-         * showing glasses artwork on the phone's dark action bar.
+         * showing glasses artwork in the phone UI, which tints it to suit.
          */
         @JvmStatic
         fun whiteIconFromGray(gray: ByteBuffer?, width: Int, height: Int): Bitmap {

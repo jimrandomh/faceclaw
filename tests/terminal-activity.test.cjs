@@ -15,8 +15,8 @@ function worker() {
   const messages = [];
   const file = 'app/apps/terminal/terminal-app.worker.ts';
   const source = ts.createSourceFile(file, read(file), ts.ScriptTarget.Latest, true);
-  const functions = new Set(['recencyKey', 'post', 'renderHubWindows', 'isSessionActive', 'isWindowSessionActive', 'hubAnimationShouldRun', 'syncWindowIconActivity', 'updateHubAnimation', 'noteSessionActivity', 'openWindow', 'closeWindow']);
-  const variables = new Set(['windows', 'pendingViews', 'activeViewId', 'sessionRecency', 'sessionActivity', 'ACTIVITY_ACTIVE_MS', 'HUB_ANIMATION_STEP_MS', 'hubAnimationPhase', 'hubAnimationTimer', 'windowIconActivity', 'screenOn']);
+  const functions = new Set(['recencyKey', 'post', 'stopViewConnection', 'renderHubWindows', 'isSessionActive', 'isWindowSessionActive', 'hubAnimationShouldRun', 'syncWindowIconActivity', 'updateHubAnimation', 'noteSessionActivity', 'openWindow', 'closeWindow']);
+  const variables = new Set(['windows', 'pendingViews', 'pendingHeightChanges', 'activeViewId', 'sessionRecency', 'sessionActivity', 'ACTIVITY_ACTIVE_MS', 'HUB_ANIMATION_STEP_MS', 'hubAnimationPhase', 'hubAnimationTimer', 'windowIconActivity', 'screenOn']);
   const selected = source.statements.filter(s =>
     ts.isFunctionDeclaration(s) && functions.has(s.name?.text) ||
     ts.isVariableStatement(s) && s.declarationList.declarations.some(d => variables.has(d.name.getText(source))) ||
@@ -149,7 +149,7 @@ test('host applies activity only to its own open windows and cleans up on close'
     '../../graphics/image': { GrayImage: Image },
     './chrome-layer': { windowIcon: (icon, letter, glyph, phase) => phase },
     '../../assistant/tool-registry': { toolRegistry: { removeAppTools() {} } },
-    './geometry': { appViewportSize: () => ({ width: 576, height: 260 }) },
+    './geometry': { appViewport: () => ({ width: 576, height: 260 }) },
     '../../native/frame-timings': {},
     './worker-state': {},
     './shell': { shell: { registerWindow: w => shellWindows.set(w.windowId, w) } },

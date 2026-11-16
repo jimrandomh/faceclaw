@@ -15,6 +15,7 @@ function load(file, modules) {
 }
 
 const graphics = require('../.test-build/app/graphics/image.js');
+const { bordered, unbordered } = require('./helpers/viewport.cjs');
 const metrics = require('../.test-build/app/ui/metrics.js');
 const menuCore = require('../.test-build/app/ui/menu-core.js');
 const { BdfFont } = load('app/graphics/bdffont.ts', { '@nativescript/core': {} });
@@ -22,7 +23,7 @@ const font = BdfFont.parse(fs.readFileSync(path.join(__dirname, '../app/fonts/te
 const textwrap = load('app/graphics/textwrap.ts', {});
 const fonts = { getDefaultSmallFont: () => font };
 const menu = load('app/ui/menu.ts', {
-  './menu-animation-pref': require('../.test-build/app/ui/menu-animation-pref.js'), './animation-speed': require('../.test-build/app/ui/animation-speed.js'), '../native/settings-store': { getStringSetting: (_key, fallback) => fallback },
+  './menu-animation-pref': require('../.test-build/app/ui/menu-animation-pref.js'), './animation-speed': require('../.test-build/app/ui/animation-speed.js'), '../native/settings-store': { getStringSetting: (_key, fallback) => fallback }, '../graphics/screen-size': { screenWidth: () => 640, screenHeight: () => 480 },
   '../graphics/image': graphics, '../graphics/textwrap': textwrap, '../graphics/ui-fonts': fonts,
   '../util/numeric-util': { clamp: (n, lo, hi) => Math.max(lo, Math.min(hi, n)) }, './gestures': {},
   './metrics': metrics, './menu-core': menuCore,
@@ -34,8 +35,8 @@ const { SettingsPanelLayer } = load('app/ui/dashboard/settings-panel.ts', {
   '../shell/shell': { shell: { yieldFocusToSidebar: () => yields++ } },
 });
 
-/** A panel over three sections; records which item callbacks fire. */
-function panel() {
+/** A panel over three sections, in a framed window unless given another; records which item callbacks fire. */
+function panel(viewport = bordered(576, 260)) {
   const selected = [];
   const item = (label, extra = {}) => ({ label, onSelect: () => selected.push(label), ...extra });
   const layer = new SettingsPanelLayer([
@@ -43,7 +44,7 @@ function panel() {
     { label: 'Voice', items: Array.from({ length: 20 }, (_, i) => item(`Voice ${i}`, { description: 'Help text for this option.' })) },
     { label: 'About', items: [], renderDetail: () => {} },
   ]);
-  const ctx = { stack: { getBaseSize: () => ({ width: 576, height: 260 }), isFocused: () => true } };
+  const ctx = { stack: { getBaseSize: () => viewport, isFocused: () => true } };
   const input = (type) => layer.handleInput({ type, timestampMs: 0 }, ctx);
   return { layer, input, paint: () => layer.paint(ctx), selected };
 }
@@ -104,10 +105,91 @@ test('the selected row stays clear of its description band', async () => {
   await p.input('scroll-up');
   const row = selections(p.paint())[1];
   const overlay = new graphics.GrayImage(576, 260);
-  p.layer.paintDescriptionOverlay(overlay, { stack: { getBaseSize: () => ({ width: 576, height: 260 }) } });
+  p.layer.paintDescriptionOverlay(overlay, { stack: { getBaseSize: () => bordered(576, 260) } });
   let bandTop = -1;
   for (let y = 0; y < 260 && bandTop < 0; y++) if (overlay.getPixel(300, y) !== 0) bandTop = y;
   assert.ok(bandTop > 0, 'the band is drawn');
   assert.ok(row.y + row.source.height <= bandTop, `row ends at ${row.y + row.source.height}, band starts at ${bandTop}`);
   assert.ok(row.y + row.source.height > bandTop - 30, 'the last item scrolled down to just above the band');
+});
+
+test('a section\'s detail gives its rows the pane while focus is in them, where the two don\'t fit (a RayNeo iO\'s window)', async () => {
+  const docs = ['README', 'License', 'Privacy policy', 'Acknowledgements'];
+  const detailDraws = [];
+  // About's blurb under its 72px logo: about 145px.
+  const about = { label: 'About', items: docs.map((label) => ({ label, onSelect() {} })),
+    renderDetail: ({ image, x, y }) => { detailDraws.push(image); image.fillRect(x, y, 72, 72, 90); return 145; } };
+  for (const [size, keeps] of [[bordered(576, 260), true], [bordered(476, 192), false], [bordered(476, 155), false]]) {
+    const layer = new SettingsPanelLayer([about]);
+    const ctx = { stack: { getBaseSize: () => size, isFocused: () => true } };
+    const paint = () => { detailDraws.length = 0; const image = layer.paint(ctx); return { image, drawn: detailDraws.includes(image) }; };
+    // The preview (focus in the left column) always shows the detail.
+    assert.equal(paint().drawn, true, `preview at ${size.height}`);
+    await layer.handleInput({ type: 'click', timestampMs: 0 }, ctx);
+    const { image, drawn } = paint();
+    assert.equal(drawn, keeps, `focused at ${size.height}`);
+    const row = selections(image)[1];
+    if (keeps) assert.ok(row.y >= 8 + 145, 'the rows under the detail');
+    else assert.equal(row.y, 8, 'the first row at the top of the pane');
+    assert.ok(row.y + row.source.height <= size.height - 8);
+  }
+});
+
+test('the columns keep the padding suggested for each window edge, and scroll right up to the top and bottom', async () => {
+  // Where the left column's first-row highlight (a retained selection) starts.
+  const first = (viewport) => { const row = selections(panel(viewport).paint())[0]; return [row.x, row.y]; };
+  assert.deepEqual(first(bordered(576, 260)), [8, 8], 'beside border lines, 8px in');
+  assert.deepEqual(first(unbordered(576, 260)), [0, 0], 'beside blank space, right at the edges');
+  // The right column ends at the right edge's padding.
+  for (const [viewport, right] of [[bordered(576, 260), 568], [unbordered(576, 260), 576]]) {
+    const p = panel(viewport);
+    await p.input('click');
+    const row = selections(p.paint())[1];
+    assert.equal(row.x + row.source.width, right);
+  }
+  // A long list scrolled to its middle is cut off at the window's own top
+  // and bottom edges, not at the padding: a row starts at y 0.
+  const p = panel(bordered(576, 260));
+  await p.input('scroll-down');
+  await p.input('click');
+  for (let i = 0; i < 10; i++) await p.input('scroll-down');
+  const image = p.paint().withDrawsBaked();
+  const lit = (y) => { for (let x = 180; x < 560; x++) if (image.getPixel(x, y) > 40) return true; return false; };
+  assert.ok([0, 1, 2, 3, 4, 5, 6, 7].some(lit), 'rows show in the top padding once scrolled');
+});
+
+test('a hidden section comes and goes while the panel stays open', async () => {
+  let hidden = true;
+  const selected = [];
+  const item = (label) => ({ label, onSelect: () => selected.push(label) });
+  const layer = new SettingsPanelLayer([
+    { label: 'Display', items: [item('Brightness')] },
+    { label: 'Keyboard', items: [item('Pair')], hidden: () => hidden },
+    { label: 'About', items: [item('License')] },
+  ]);
+  const ctx = { stack: { getBaseSize: () => bordered(576, 260), isFocused: () => true } };
+  const input = (type) => layer.handleInput({ type, timestampMs: 0 }, ctx);
+  const enter = async () => { await input('click'); await input('click'); await input('double-click'); };
+
+  // Hidden: the row below Display is About.
+  await input('scroll-down'); await enter();
+  assert.deepEqual(selected, ['License']);
+  layer.focusSection('Keyboard');
+  await enter();
+  assert.deepEqual(selected, ['License', 'License'], 'a hidden section is no deep-link target either');
+
+  // Shown, with no new panel: the highlight stays on About, and Keyboard is the row above it.
+  hidden = false;
+  layer.paint(ctx);
+  await enter();
+  assert.deepEqual(selected.slice(2), ['License']);
+  await input('scroll-up'); await enter();
+  assert.deepEqual(selected.slice(3), ['Pair']);
+
+  // Hidden again from inside it: focus comes back out to the top of the list.
+  await input('click');
+  hidden = true;
+  layer.paint(ctx);
+  await enter();
+  assert.deepEqual(selected.slice(4), ['Brightness']);
 });

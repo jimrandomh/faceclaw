@@ -18,7 +18,7 @@ const menuCore=load('app/ui/menu-core.ts',{
   '../graphics/image':graphics,'./menu-highlight-motion': require('../.test-build/app/ui/menu-highlight-motion.js'), '../graphics/menu-scroll-list': require('../.test-build/app/graphics/menu-scroll-list.js'), './menu-scroll-motion': require('../.test-build/app/ui/menu-scroll-motion.js'), '../graphics/draw-expression': require('../.test-build/app/graphics/draw-expression.js'),
 });
 const {MenuLayer,TextPageLayer}=load('app/ui/menu.ts',{
-  './menu-animation-pref': require('../.test-build/app/ui/menu-animation-pref.js'), './animation-speed': require('../.test-build/app/ui/animation-speed.js'), '../native/settings-store': { getStringSetting: (_key, fallback) => fallback },
+  './menu-animation-pref': require('../.test-build/app/ui/menu-animation-pref.js'), './animation-speed': require('../.test-build/app/ui/animation-speed.js'), '../native/settings-store': { getStringSetting: (_key, fallback) => fallback }, '../graphics/screen-size': { screenWidth: () => 640, screenHeight: () => 480 },
   '../graphics/image':graphics,'../graphics/textwrap':{wrapText:(_font,text)=>text.split('\n')},'../graphics/ui-fonts':{getDefaultSmallFont:()=>font},
   '../util/numeric-util':{clamp:(n,a,b)=>Math.max(a,Math.min(b,n))},'./gestures':{},
   './menu-highlight-motion': require('../.test-build/app/ui/menu-highlight-motion.js'), '../graphics/menu-scroll-list': require('../.test-build/app/graphics/menu-scroll-list.js'), './menu-scroll-motion': require('../.test-build/app/ui/menu-scroll-motion.js'), '../graphics/draw-expression': require('../.test-build/app/graphics/draw-expression.js'),
@@ -50,7 +50,8 @@ test('later opaque planes add an occlusion to a replayed selection',()=>{
 });
 
 const {LayerStack,noopLayerActions}=load('app/ui/layers.ts',{
-  '../graphics/image':graphics,'../graphics/plane':planes,'../native/frame-timings':{spanCurrent:(_name,fn)=>fn()},'./gestures':{},
+  './viewport':require('../.test-build/app/ui/viewport.js'),
+  '../graphics/image':graphics,'../graphics/plane':planes,'../native/frame-timings':{spanCurrent:(_name,fn)=>fn()},'../graphics/screen-size':{screenWidth:()=>640,screenHeight:()=>480},'./gestures':{},
 });
 test('context menu surface and selected row both use +4 without changing the app screen',()=>{
   const base=new graphics.GrayImage(100,90,96);
@@ -104,7 +105,7 @@ test('unselected sidebar icons retain -2 depth through shell cropping, including
     '../../native/notification-icons':{},'../../native/notification-types':require('../.test-build/app/native/notification-types.js'),'../../native/phone-battery':{},'../../util/render-freshness':{},
     '../../graphics/icons':{},'../dashboard-settings':{},'../clock-format':{},'../../graphics/bdffont':{},
     '../layers':{LayerStack},'../menu':{scrollToKeepSelectionVisible:()=>0},'../metrics':{},
-    './geometry':{MIN_WINDOW_HEIGHT:280,minWindowTop:()=>0,windowTop:()=>0,SHELL_OPAQUE_BLACK:1,SIDEBAR_WIDTH:64,TOP_BAR_HEIGHT:24,
+    './geometry':{MIN_WINDOW_HEIGHT:280,minWindowHeight:()=>280,screenWidth:()=>640,screenHeight:()=>480,minWindowTop:()=>0,windowTop:()=>0,SHELL_OPAQUE_BLACK:1,SIDEBAR_WIDTH:64,TOP_BAR_HEIGHT:24,
       SWITCHER_ROW_HEIGHT:36,switcherPosition:()=>'left',switcherRect:()=>({x:0,y:0,width:64,height:280})},
   });
   const state={selectedIndex:0,focus:'sidebar',windows:[0,1,2].map(n=>({attention:n===1,drawIcon:(image,x,y)=>image.fillRect(x,y,4,4,240)}))};
@@ -121,8 +122,10 @@ test('unselected sidebar icons retain -2 depth through shell cropping, including
 });
 test('shell modal carries its inner menu highlight animation instead of baking its first frame',async()=>{
   const {ShellModalLayer}=load('app/ui/shell/modal-layer.ts',{
+    '../viewport':require('../.test-build/app/ui/viewport.js'),
     '../../graphics/image':graphics,'../../graphics/plane':planes,'../gestures':{},'../layers':load('app/ui/layers.ts',{
-      '../graphics/image':graphics,'../graphics/plane':planes,'../native/frame-timings':{spanCurrent:(_name,fn)=>fn()},
+      './viewport':require('../.test-build/app/ui/viewport.js'),
+      '../graphics/image':graphics,'../graphics/plane':planes,'../native/frame-timings':{spanCurrent:(_name,fn)=>fn()},'../graphics/screen-size':{screenWidth:()=>640,screenHeight:()=>480},
       './gestures':{isDirectionalInput:()=>false},
     }),
     './geometry':{appViewportSize:()=>({width:120,height:110}),appViewportRect:()=>({x:10,y:20,width:120,height:110}),SHELL_OPAQUE_BLACK:1},
@@ -140,4 +143,35 @@ test('shell crop widens a fractional rect (TTF-measured status bar) to whole pix
   const crop=shellCrop(image,400.5,250,175.5,15,2);
   assert.deepEqual([crop.x,crop.y,crop.image.width,crop.image.height],[400,250,176,15]);
   assert.ok(crop.image.pixels.every(v=>v===7));
+});
+
+test('a stack without its own size follows the screen when the glasses type changes',()=>{
+  // The shell's stack is built once per process; re-pairing a G2 after a
+  // RayNeo iO must not leave its overlays painting on a 540x220 canvas.
+  const screen={width:540,height:220};
+  const {LayerStack}=load('app/ui/layers.ts',{
+    './viewport':require('../.test-build/app/ui/viewport.js'),
+    '../graphics/image':graphics,'../graphics/plane':planes,'../native/frame-timings':{spanCurrent:(_name,fn)=>fn()},
+    '../graphics/screen-size':{screenWidth:()=>screen.width,screenHeight:()=>screen.height},'./gestures':{},
+  });
+  const stack=new LayerStack({paint:()=>new graphics.GrayImage(screen.width,screen.height,0)},noopLayerActions);
+  stack.push({paint:(_ctx,below)=>below(),handleInput:async()=>{}});
+  // JSON: the stack's arrays and objects come from the vm's realm.
+  const sizes=()=>JSON.parse(JSON.stringify(stack.paint().map(p=>[p.image.width,p.image.height])));
+  assert.deepEqual(sizes(),[[540,220],[540,220]]);
+  screen.width=640;screen.height=480;
+  const plain=value=>JSON.parse(JSON.stringify(value));
+  const unbordered={edges:{top:'offscreen',right:'offscreen',bottom:'offscreen',left:'offscreen'},padding:{top:0,right:0,bottom:0,left:0}};
+  assert.deepEqual(plain(stack.getBaseSize()),{width:640,height:480,...unbordered});
+  assert.deepEqual(sizes(),[[640,480],[640,480]]);
+  // An explicit size (a window's viewport, the modal's interior) stays put;
+  // given bare, nothing borders it, so it suggests no padding.
+  const sized=new LayerStack({paint:()=>new graphics.GrayImage(100,90,0)},noopLayerActions,{width:100,height:90});
+  screen.width=540;screen.height=220;
+  assert.deepEqual(plain(sized.getBaseSize()),{width:100,height:90,...unbordered});
+  // A host that says what its edges touch hands layers the padding for them.
+  const viewport=require('../.test-build/app/ui/viewport.js');
+  const edges={top:'border',right:'offscreen',bottom:'offscreen',left:'border'};
+  sized.setBaseSize(viewport.viewportWith({width:100,height:90},edges));
+  assert.deepEqual(plain(sized.getBaseSize()),{width:100,height:90,edges,padding:{top:8,right:0,bottom:0,left:8}});
 });

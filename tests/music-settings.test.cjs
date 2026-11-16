@@ -1,5 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const { bordered } = require('./helpers/viewport.cjs');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -161,7 +162,7 @@ test('Music settings keeps toggles and selection when a new app arrives and supp
     '../util/numeric-util': { clamp: (n, lo, hi) => Math.max(lo, Math.min(hi, n)) },
     './menu-highlight-motion': require('../.test-build/app/ui/menu-highlight-motion.js'), '../graphics/menu-scroll-list': require('../.test-build/app/graphics/menu-scroll-list.js'), './menu-scroll-motion': require('../.test-build/app/ui/menu-scroll-motion.js'), '../graphics/draw-expression': require('../.test-build/app/graphics/draw-expression.js'),
     './metrics': load('app/ui/metrics.ts'), './gestures': {},
-    './menu-animation-pref': require('../.test-build/app/ui/menu-animation-pref.js'), './animation-speed': require('../.test-build/app/ui/animation-speed.js'), '../native/settings-store': { getStringSetting: (_key, fallback) => fallback },
+    './menu-animation-pref': require('../.test-build/app/ui/menu-animation-pref.js'), './animation-speed': require('../.test-build/app/ui/animation-speed.js'), '../native/settings-store': { getStringSetting: (_key, fallback) => fallback }, '../graphics/screen-size': { screenWidth: () => 640, screenHeight: () => 480 },
   };
   deps['./menu-core'] = load('app/ui/menu-core.ts', (name) => deps[name]);
   const menu = load('app/ui/menu.ts', (name) => deps[name]);
@@ -177,7 +178,7 @@ test('Music settings keeps toggles and selection when a new app arrives and supp
   };
   const { MusicSettingsLayer } = load('app/apps/music/music-settings.ts', (name) => uiDeps[name]);
   const layer = new MusicSettingsLayer();
-  const ctx = { stack: { getBaseSize: () => ({ width: 540, height: 224 }), isFocused: () => true, pop: () => closes++ } };
+  const ctx = { stack: { getBaseSize: () => bordered(540, 224), isFocused: () => true, pop: () => closes++ } };
   const paint = () => layer.paint(ctx, () => new RecordingImage(540, 224));
   const input = (type) => layer.handleInput({ type }, ctx);
   assert.equal(refreshes, 1);

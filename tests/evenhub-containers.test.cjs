@@ -130,9 +130,9 @@ test("a layout font is the default for text and list containers, which override 
     page.containers.map((c) => [c.name, c.font]),
     [
       ["l", { family: "Inter", size: 24, weight: 700 }],
-      ["i", undefined],
       ["t", { family: "Inter", size: 24 }],
       ["u", { family: "Terminus", size: 24 }],
+      ["i", undefined],
     ],
   );
 });

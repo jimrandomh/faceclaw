@@ -7,6 +7,7 @@ import { isMenuItemDisabled, MenuItem, MenuLayer, openModalMenu } from "../menu"
 import { Menu } from "../menu-core";
 import { LIST_ROW_TEXT_INSET, lineStep, listRowHeight } from "../metrics";
 import { shell } from "../shell/shell";
+import type { Viewport } from "../viewport";
 
 /**
  * One left-column entry. `items` are the right-column rows (reusing the shared
@@ -27,15 +28,28 @@ export type SettingsSection = {
     height: number;
     ctx: LayerContext;
   }) => number | void;
+  /**
+   * Leave the section out of the list while this returns true. Re-read on
+   * every paint and input, for a section that only applies with some other
+   * setting (the paired glasses' type): the Settings window outlives changes
+   * to those.
+   */
+  hidden?: () => boolean;
 };
 
-const PAD = 8;
 const LEFT_W = 150;
+/** Between the left column's rows and the divider, and between the divider and the right column's content. */
+const DIVIDER_GAP_LEFT = 8;
+const DIVIDER_GAP_RIGHT = 14;
+/** How far a right-column row's selection box overhangs the column's content on the left. */
+const RIGHT_ROW_OVERHANG = 2;
 /** Gap between a row's selection box and the next row. */
 const ROW_GAP = 2;
 /** Horizontal inset of row text (and custom row content) from its selection box. */
 const ROW_TEXT_X = 10;
 const MAX_DESCRIPTION_LINES = 3;
+/** Rows a section's list keeps beside its detail while focus is in it (see detailCrowdsList). */
+const MIN_LIST_ROWS = 3;
 // A throwaway menu to satisfy MenuItem.onSelect's second parameter; the
 // settings items never use it (they act via ctx only).
 const NO_MENU = new MenuLayer(null, []);
@@ -59,7 +73,7 @@ export class SettingsPanelLayer implements Layer {
 
   constructor(private readonly sections: SettingsSection[]) {
     this.leftMenu = new Menu<SettingsSection>({
-      items: sections,
+      items: sections.filter((section) => !section.hidden?.()),
       wrap: true,
       rowGap: ROW_GAP,
       highlight: { radius: 6 },
@@ -101,9 +115,28 @@ export class SettingsPanelLayer implements Layer {
     return this.leftMenu.selectedItem ?? this.sections[0]!;
   }
 
+  /**
+   * Bring the left column in line with which sections are hidden now. The
+   * highlight stays on its section; if that one just went away it moves to
+   * the list's start, with focus back in the left column.
+   */
+  private syncSections(): void {
+    const visible = this.sections.filter((section) => !section.hidden?.());
+    const shown = this.leftMenu.items;
+    if (visible.length === shown.length && visible.every((section, index) => section === shown[index])) return;
+    const selected = this.leftMenu.selectedItem;
+    const index = selected ? visible.indexOf(selected) : -1;
+    this.leftMenu.setItems(visible, Math.max(0, index));
+    if (index < 0) {
+      this.focus = "left";
+      this.resetRight();
+    }
+  }
+
   /** Select a left-column section by label (deep link, e.g. from an app's menu). */
   focusSection(label: string): void {
-    const index = this.sections.findIndex((section) => section.label === label);
+    this.syncSections();
+    const index = this.leftMenu.items.findIndex((section) => section.label === label);
     if (index < 0) return;
     this.leftMenu.select(index);
     this.focus = "left";
@@ -112,29 +145,30 @@ export class SettingsPanelLayer implements Layer {
 
   paint(ctx: LayerContext): GrayImage {
     const font = getDefaultSmallFont();
-    const { width, height } = ctx.stack.getBaseSize();
+    const viewport = ctx.stack.getBaseSize();
+    const { width, height, padding } = viewport;
     const image = new GrayImage(width, height, 0);
     const appFocused = ctx.stack.isFocused();
+    this.syncSections();
     const section = this.section();
     const rightItems = section.items;
     this.rightMenu.setItems(rightItems);
 
-    const top = PAD;
-    const listBottom = height - PAD;
+    // Fixed content keeps the padding suggested for the window's edges. The
+    // two lists scroll, so they run to the top and bottom edges themselves,
+    // with that padding inside them (before the first row, after the last).
+    const { top, bottom: listBottom, divX, rightX, rightW } = panelColumns(viewport);
 
     // Left column: section labels.
-    this.leftMenu.paint(image, { x: PAD - 2, y: top, width: LEFT_W, height: listBottom - top },
+    this.leftMenu.paint(image, { x: padding.left, y: 0, width: LEFT_W, height, padTop: padding.top, padBottom: padding.bottom },
       appFocused && this.focus === "left");
 
     // Column divider (a light rule, not a full border).
-    const divX = PAD + LEFT_W + 6;
     image.drawLine(divX, top, divX, listBottom, 40);
 
     // Right column: the highlighted section's contents.
-    const rightX = divX + 14;
-    const rightW = width - rightX - PAD;
     let rightTop = top;
-    if (section.renderDetail) {
+    if (section.renderDetail && !this.detailCrowdsList(section, ctx, font, { x: rightX, y: top, width: rightW, height: listBottom - top })) {
       const used = section.renderDetail({ image, x: rightX, y: top, width: rightW, height: listBottom - top, ctx });
       rightTop = typeof used === "number" ? Math.min(top + used, listBottom) : listBottom;
     }
@@ -142,12 +176,20 @@ export class SettingsPanelLayer implements Layer {
       // Once focus is in the right column, the selected item's extended
       // description (when it has one) is drawn over the bottom of the pane by
       // the companion SettingsDescriptionOverlayLayer. The list stops above
-      // that band, so the selected row always stays clear of it.
-      const listHeight = listBottom - this.descriptionHeight(font, rightW) - rightTop;
-      if (listHeight > 0) {
+      // that band, so the selected row always stays clear of it. Under a
+      // detail, and above that band, the list ends short of the window's
+      // edge, where it needs no padding of its own.
+      const description = this.descriptionHeight(font, rightW);
+      const fromEdge = rightTop === top;
+      const listTop = fromEdge ? 0 : rightTop;
+      const listEnd = description ? listBottom - description : height;
+      if (listEnd > rightTop) {
         this.paintCtx = ctx;
         try {
-          this.rightMenu.paint(image, { x: rightX - 2, y: rightTop, width: rightW + 2, height: listHeight }, appFocused);
+          this.rightMenu.paint(image, {
+            x: rightX - RIGHT_ROW_OVERHANG, y: listTop, width: rightW + RIGHT_ROW_OVERHANG, height: listEnd - listTop,
+            padTop: fromEdge ? padding.top : 0, padBottom: description ? 0 : padding.bottom,
+          }, appFocused);
         } finally {
           this.paintCtx = null;
         }
@@ -155,6 +197,28 @@ export class SettingsPanelLayer implements Layer {
     }
 
     return image;
+  }
+
+  /**
+   * Whether the section's detail (About's blurb, the watch status) would
+   * leave its rows less than MIN_LIST_ROWS while focus is in them, as on a
+   * short screen (the RayNeo iO's): the list then takes the whole pane, the
+   * detail staying in the preview. Measured by drawing the detail on a
+   * scratch image.
+   */
+  private detailCrowdsList(
+    section: SettingsSection,
+    ctx: LayerContext,
+    font: UiFont,
+    pane: { x: number; y: number; width: number; height: number },
+  ): boolean {
+    if (this.focus !== "right" || !section.items.length || !section.renderDetail) return false;
+    const scratch = new GrayImage(pane.x + pane.width, pane.y + pane.height, 0);
+    const used = section.renderDetail({ image: scratch, ...pane, ctx });
+    if (typeof used !== "number") return false;
+    const rows = Math.min(MIN_LIST_ROWS, section.items.length);
+    const room = pane.height - used - this.descriptionHeight(font, pane.width);
+    return room < rows * (listRowHeight(font) + ROW_GAP);
   }
 
   /** The selected item's wrapped help text, or [] when none applies. */
@@ -178,10 +242,7 @@ export class SettingsPanelLayer implements Layer {
    */
   paintDescriptionOverlay(image: GrayImage, ctx: LayerContext): void {
     const font = getDefaultSmallFont();
-    const { width, height } = ctx.stack.getBaseSize();
-    const listBottom = height - PAD;
-    const rightX = PAD + LEFT_W + 6 + 14;
-    const rightW = width - rightX - PAD;
+    const { bottom: listBottom, rightX, rightW } = panelColumns(ctx.stack.getBaseSize());
     const lines = this.descriptionLines(font, rightW);
     if (!lines.length) return;
     const top = listBottom - (lines.length * lineStep(font) + 10);
@@ -194,6 +255,7 @@ export class SettingsPanelLayer implements Layer {
   }
 
   async handleInput(event: InputEvent, ctx: LayerContext): Promise<void> {
+    this.syncSections();
     const scroll = scrollEventFor(event);
     if (this.focus === "left") {
       if (scroll) {
@@ -247,6 +309,19 @@ export class SettingsPanelLayer implements Layer {
     this.rightMenu.setItems(this.section().items, this.focus === "right" ? 0 : null);
     this.rightMenu.scrollTop = 0;
   }
+}
+
+/**
+ * The panel's fixed geometry in a viewport: the rows fixed content spans
+ * (inside the padding suggested for the top and bottom edges), the divider's
+ * x, and the right column's content span. The left column's rows start at
+ * the left edge's padding; the right column ends at the right edge's.
+ */
+function panelColumns(viewport: Viewport): { top: number; bottom: number; divX: number; rightX: number; rightW: number } {
+  const { width, height, padding } = viewport;
+  const divX = padding.left + LEFT_W + DIVIDER_GAP_LEFT;
+  const rightX = divX + DIVIDER_GAP_RIGHT;
+  return { top: padding.top, bottom: height - padding.bottom, divX, rightX, rightW: width - rightX - padding.right };
 }
 
 /** Scroll and watch swipe-up/down both move a column's selection. */

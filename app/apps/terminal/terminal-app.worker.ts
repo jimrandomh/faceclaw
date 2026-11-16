@@ -6,9 +6,15 @@
  *   connected host's heading launches a shell there), and hosts the Manage
  *   Connections section
  *   where g2mirror:// connections are added, removed, and toggled.
- * - "terminal:view:N": opened by selecting a session in the hub; each has
- *   its own websocket connection (the protocol allows one attached session
- *   per connection) and its own xterm emulator.
+ * - Selecting a session in the hub shows it in the hub's own window: a view
+ *   takes the hub's place in `windows` under the same window id, and
+ *   double-click puts the hub back. The window grows to the view's height
+ *   meanwhile. Sessions already open in a window of their own focus it instead.
+ * - "terminal:view:N": a session in a window of its own, opened with "Open in
+ *   new window" from the window menu (or by launching a session).
+ *
+ * Each view has its own websocket connection (the protocol allows one attached
+ * session per connection) and its own xterm emulator.
  *
  * Connections are g2mirror://<token>@<host>[:port] strings (g2mirrors:// for
  * TLS), stored as JSON in the settings store (see connections.ts). Each
@@ -39,7 +45,7 @@ import { GrayImage, type UiFont } from "../../graphics/image";
 import { flattenPlanesWithDraws, planesFingerprint, type Plane } from "../../graphics/plane";
 import { prepareFrameDraws } from "../../graphics/glyph-wire";
 import { getDefaultSmallFont, getTerminalFontConfig } from "../../graphics/ui-fonts";
-import { HUB_TITLE_X, layoutHubHeader } from "./hub-header";
+import { HUB_TITLE_INSET_X, layoutHubHeader } from "./hub-header";
 import { TERMINAL_ICON_GLYPHS, type IconActivity } from "../../graphics/icons";
 import {
   drawSessionRow,
@@ -49,6 +55,8 @@ import {
 import * as frameTimings from "../../native/frame-timings";
 import { getActiveDisplay } from "../../native/active-display";
 import { GESTURE_DOUBLE_CLICK, type InputEvent } from "../../ui/gestures";
+import type { KeyEvent } from "../../g2/keyboard/keys";
+import { encodeTerminalKey, terminalScrollbackKey } from "./terminal-keys";
 import { G2MirrorClient, type G2MirrorClientOptions, type G2MirrorSession, type G2MirrorState } from "../../native/g2mirror-client";
 import { onSettingsStoreChanged } from "../../native/settings-store";
 import { clamp } from "../../util/numeric-util";
@@ -69,7 +77,8 @@ import { drawSubmenuIndicator, submenuItem, type MenuItem } from "../../ui/menu"
 import { Menu, type MenuDrawArgs } from "../../ui/menu-core";
 import { centeredTextY, lineStep, listRowHeight, textInkHeight } from "../../ui/metrics";
 import { WindowMenu, WindowMenuLayer } from "../../ui/window-menu";
-import { appViewportSize } from "../../ui/shell/geometry";
+import { appViewportSize, type WindowHeightMode } from "../../ui/shell/geometry";
+import type { EdgeKind, Edges, Viewport } from "../../ui/viewport";
 import type { WorkerAppMessage, WorkerAppReply } from "../../ui/shell/worker-window";
 import type { ToolResult, ToolSpec } from "../../assistant/tool-registry";
 
@@ -109,11 +118,21 @@ const LAUNCH_PRESETS_KEY = "terminal.launchPresets";
 type BaseWindow = {
   windowId: string;
   surfaceId: string;
-  /** Shell-side window title, echoed back in the open-window message. */
+  /**
+   * Window menu title: the shell-side window title, echoed back in the
+   * open-window message, or the session's label for a view in the hub's window.
+   */
   title: string;
   /** Content viewport from the shell's open-window message; grid = viewport / cell. */
   viewportWidth: number;
   viewportHeight: number;
+  /**
+   * What the viewport's edges touch and the padding suggested for them
+   * (viewport.ts), as of the last open or resize message. The hub's pages lay
+   * out inside the padding; a session's grid fills the window regardless.
+   */
+  edges: Edges<EdgeKind>;
+  padding: Edges<number>;
   gridCols: number;
   gridRows: number;
   foreground: boolean;
@@ -155,6 +174,11 @@ type HubWindow = BaseWindow & {
 
 type ViewWindow = BaseWindow & {
   kind: "view";
+  /**
+   * Set when this view is showing in the hub's window rather than one of its
+   * own: the hub it replaced, which double-click restores.
+   */
+  hub: HubWindow | null;
   /** Grid font and integer cell pitch, captured at window creation. */
   font: UiFont;
   cellWidth: number;
@@ -204,6 +228,9 @@ type PendingView = {
 
 const windows = new Map<string, TerminalWindow>();
 const pendingViews = new Map<string, PendingView>();
+// Windows waiting on the shell's answer to a set-height-mode, by window id:
+// what to do with the viewport it comes back with (see changeWindowHeight).
+const pendingHeightChanges = new Map<string, (viewport: Viewport) => void>();
 // The view an assistant tool acts on when the terminal isn't foregrounded:
 // the last view to be foregrounded or receive input.
 let activeViewId: string | null = null;
@@ -338,12 +365,29 @@ global.onmessage = (event: { data: WorkerAppMessage }) => {
       openWindow(message.windowId, message.surfaceId, message.title, message.viewport);
       break;
     case "resize-window": {
+      const heightChange = pendingHeightChanges.get(message.windowId);
+      if (heightChange) {
+        pendingHeightChanges.delete(message.windowId);
+        heightChange(message.viewport);
+        break;
+      }
       const window = windows.get(message.windowId);
-      if (!window || (window.viewportWidth === message.viewport.width && window.viewportHeight === message.viewport.height)) break;
+      if (!window) break;
+      const resized = window.viewportWidth !== message.viewport.width || window.viewportHeight !== message.viewport.height;
       window.viewportWidth = message.viewport.width;
       window.viewportHeight = message.viewport.height;
+      window.edges = message.viewport.edges;
+      window.padding = message.viewport.padding;
       window.menu?.resize(message.viewport);
-      window.lastSubmittedFingerprint = "";
+      // A resize at the same size says what the window's edges touch has
+      // changed. The hub's pages move with their padding; a session's grid
+      // does not, so it keeps its connection, and only a menu page open over
+      // it (which lays out in the padding) has anything to repaint.
+      if (window.kind === "view" && !resized) {
+        if (window.menu?.isOpen()) scheduleRender(window);
+        break;
+      }
+      if (resized) window.lastSubmittedFingerprint = "";
       if (window.kind === "view") {
         window.gridCols = Math.floor(window.viewportWidth / window.cellWidth);
         window.gridRows = Math.floor(window.viewportHeight / window.cellHeight);
@@ -391,6 +435,13 @@ global.onmessage = (event: { data: WorkerAppMessage }) => {
         terminalNewConnectionSetting.set(message.text);
         scheduleRender(window);
       }
+      break;
+    }
+    case "key": {
+      const window = windows.get(message.windowId);
+      if (!window) break;
+      window.focused = message.focused;
+      handleKey(window, message.event as KeyEvent);
       break;
     }
     case "render": {
@@ -506,7 +557,7 @@ function cancelPendingReconnects(): void {
   }
 }
 
-function openWindow(windowId: string, surfaceId: string, title: string, viewport: { width: number; height: number }): void {
+function openWindow(windowId: string, surfaceId: string, title: string, viewport: Viewport): void {
   const pendingView = pendingViews.get(windowId);
   if (pendingView) {
     pendingViews.delete(windowId);
@@ -523,6 +574,8 @@ function openWindow(windowId: string, surfaceId: string, title: string, viewport
     title,
     viewportWidth: viewport.width,
     viewportHeight: viewport.height,
+    edges: viewport.edges,
+    padding: viewport.padding,
     gridCols: Math.floor(viewport.width / hubCell.cellWidth),
     gridRows: Math.floor(viewport.height / hubCell.cellHeight),
     foreground: false,
@@ -543,18 +596,24 @@ function openWindow(windowId: string, surfaceId: string, title: string, viewport
   updateHubAnimation();
 }
 
+/** Drop a view's connection for good: its window closed or the hub took its place. */
+function stopViewConnection(window: ViewWindow): void {
+  for (const unsubscribe of window.unsubscribers.splice(0)) {
+    unsubscribe();
+  }
+  if (window.reconnectTimer) {
+    clearTimeout(window.reconnectTimer);
+    window.reconnectTimer = null;
+  }
+  window.client.stop();
+}
+
 function closeWindow(windowId: string): void {
   const window = windows.get(windowId);
   if (!window) return;
+  pendingHeightChanges.delete(windowId);
   if (window.kind === "view") {
-    for (const unsubscribe of window.unsubscribers.splice(0)) {
-      unsubscribe();
-    }
-    if (window.reconnectTimer) {
-      clearTimeout(window.reconnectTimer);
-      window.reconnectTimer = null;
-    }
-    window.client.stop();
+    stopViewConnection(window);
   }
   if (window.kind === "hub" && window.mode === "add") {
     // Window closed mid-add: shut the phone editor down.
@@ -759,10 +818,11 @@ function routeBell(connectionId: string, socket: string, lastBellAtMs: number): 
     }
   }
   if (terminalWakeOnBellSetting.get()) {
-    // Wake to the belling session's view window, or the hub if it has none.
-    // The shell drops the message unless the glasses are actually asleep.
+    // Wake to the belling session's view window, or the hub's window (whatever
+    // it is showing) if it has none. The shell drops the message unless the
+    // glasses are actually asleep.
     const viewId = viewWindowIdForSocket(connectionId, socket);
-    const hubId = [...windows.values()].find((window) => window.kind === "hub")?.windowId ?? null;
+    const hubId = [...windows.values()].find((window) => window.kind === "hub" || window.hub)?.windowId ?? null;
     const target = viewId ?? hubId;
     if (target) post({ type: "wake-window", windowId: target });
   }
@@ -882,7 +942,7 @@ function createViewWindow(
   windowId: string,
   surfaceId: string,
   title: string,
-  viewport: { width: number; height: number },
+  viewport: Viewport,
   view: PendingView,
 ): ViewWindow {
   const { connectionId, socket, label, glyph } = view;
@@ -895,11 +955,14 @@ function createViewWindow(
   const client = new G2MirrorClient({ ...view.options, cols: gridCols, rows: gridRows });
   const window: ViewWindow = {
     kind: "view",
+    hub: null,
     windowId,
     surfaceId,
     title,
     viewportWidth: viewport.width,
     viewportHeight: viewport.height,
+    edges: viewport.edges,
+    padding: viewport.padding,
     gridCols,
     gridRows,
     font: cell.font,
@@ -1034,7 +1097,7 @@ function windowMenu(window: TerminalWindow): WindowMenu {
       post,
       title: () => window.title,
       items: () => windowMenuItems(window),
-      size: { width: window.viewportWidth, height: window.viewportHeight },
+      size: { width: window.viewportWidth, height: window.viewportHeight, edges: window.edges, padding: window.padding },
       paintBase: () => paintContent(window),
       isFocused: () => window.focused,
     });
@@ -1053,12 +1116,41 @@ function connectedControls(): ControlConnection[] {
   return [...controls.values()].filter(isControlConnected);
 }
 
+/**
+ * What the window menu's "Open in new window" does here, if it applies: to the
+ * session selected in the hub's list, or the session showing in the hub's
+ * window (which gives way to the list, as a session has one window at a time).
+ */
+function openInNewWindowAction(window: TerminalWindow): (() => void) | null {
+  if (window.kind === "hub") {
+    const row = hubMenu(window).selectedItem?.sessionRow;
+    if (!row) return null;
+    return () => {
+      if (!focusSessionWindow(row.control, row.session)) openViewWindowFor(row.control, row.session);
+    };
+  }
+  const control = window.hub && controls.get(window.connectionId);
+  if (!control) return null;
+  return () => returnToHub(window, () => openViewWindow(control, window.socket, window.label));
+}
+
 function windowMenuItems(window: TerminalWindow): MenuItem[] {
-  const items: MenuItem[] = [
+  const items: MenuItem[] = [];
+  const openInNewWindow = openInNewWindowAction(window);
+  if (openInNewWindow) {
+    items.push({
+      label: "Open in new window",
+      onSelect: (ctx) => {
+        ctx.stack.pop();
+        openInNewWindow();
+      },
+    });
+  }
+  items.push(
     submenuItem("Settings", (ctx) => {
       ctx.stack.push(new WindowMenuLayer("Terminal settings", settingsMenuItems()));
     }),
-  ];
+  );
   if (window.kind === "hub") {
     const connected = connectedControls();
     const multiHost = connected.length > 1;
@@ -1142,8 +1234,14 @@ function handleInput(window: TerminalWindow, event: InputEvent, frameId: number)
     return;
   }
   if (event.type === "double-click") {
-    // Inside the hub's sub-sections, double-click backs out one level; at the
-    // top level (and in views) it yields focus to the sidebar as everywhere.
+    // Inside the hub's sub-sections and a session shown in its window,
+    // double-click backs out one level; at the top level (and in views with
+    // windows of their own) it yields focus to the sidebar as everywhere.
+    if (window.kind === "view" && window.hub) {
+      frameTimings.finishFrame(frameId, "discarded: terminal returning to the session list");
+      returnToHub(window);
+      return;
+    }
     if (window.kind === "hub" && window.mode === "add") {
       cancelAddConnection(window);
       renderAndSubmit(window, frameId);
@@ -1169,6 +1267,35 @@ function handleInput(window: TerminalWindow, event: InputEvent, frameId: number)
     return;
   }
   frameTimings.finishFrame(frameId, "discarded: terminal view ignored input");
+}
+
+/**
+ * A key from a hardware keyboard (the glasses' keyboard bridge) that no
+ * keybinding claimed. A session with nothing over it gets the key as its
+ * terminal would: Escape and the arrows belong to the program, and the way
+ * out is Escape with Shift, Ctrl or Alt, which never arrives here (it is a
+ * built-in keybinding for "back"). Anywhere else (the hub's lists, an open
+ * menu) the key is handed back, to act as navigation.
+ */
+function handleKey(window: TerminalWindow, event: KeyEvent): void {
+  if (window.kind === "view" && !window.menu?.isOpen()) {
+    activeViewId = window.windowId;
+    const page = terminalScrollbackKey(event);
+    if (page !== null) {
+      handleViewScroll(window, page, 0);
+      return;
+    }
+    const bytes = encodeTerminalKey(event, window.emulator.applicationCursorKeys());
+    if (bytes === null) return;
+    // Typing follows the live screen, as in any terminal emulator.
+    if (window.scrollTop !== null) {
+      window.scrollTop = null;
+      scheduleRender(window);
+    }
+    window.client.sendInput(bytes);
+    return;
+  }
+  post({ type: "key-unhandled", windowId: window.windowId, event });
 }
 
 /** Top visible absolute line index when following the live bottom. */
@@ -1233,17 +1360,27 @@ type HubItem = {
   active?: boolean;
   /** Glyph of the view window showing this session (the number column). */
   openGlyph?: string | null;
+  /** The live session this row lists, for the window menu's "Open in new window". */
+  sessionRow?: { control: ControlConnection; session: G2MirrorSession };
   onSelect?: () => void;
 };
 
 /** Vertical offset of a row's text line from the top of its selection box. */
 const HUB_ROW_TEXT_INSET = 4;
-/** Left edge of the list's selection boxes. */
-const HUB_LIST_LEFT = 12;
-/** Right inset of the selection boxes, clear of the scrollbar. */
-const HUB_LIST_RIGHT = 20;
-/** Left padding of unindented (heading and top-level) row text inside its selection box. */
-const HUB_TOP_LEVEL_TEXT_X = 6;
+/** How far the first selection box starts above the list's first text line. */
+const HUB_LIST_LEAD = 2;
+/** The list's scrollbar (Menu.drawScrollbar's bar), and the gap the selection boxes keep from it. */
+const HUB_SCROLLBAR_WIDTH = 3;
+const HUB_SCROLLBAR_GAP = 10;
+/** How far the scrollbar's track stops short of the rows' span at each end. */
+const HUB_SCROLLBAR_INSET = 2;
+/**
+ * Left padding of unindented (heading and top-level) row text inside its
+ * selection box; the hub's title starts in the same column.
+ */
+const HUB_TOP_LEVEL_TEXT_X = HUB_TITLE_INSET_X;
+/** A page of text's body, indented under its title. */
+const PAGE_BODY_INDENT = 6;
 
 /** The hub window's list, created on first use so openWindow stays free of paint dependencies. */
 function hubMenu(window: HubWindow): Menu<HubItem> {
@@ -1371,13 +1508,9 @@ function hubSessionItems(window: HubWindow): HubItem[] {
         label: sessionLabel(session),
         active: isSessionActive(control.config.id, session.socket),
         openGlyph: viewGlyphForSocket(control.config.id, session.socket),
+        sessionRow: { control, session },
         onSelect: () => {
-          const windowId = viewWindowIdForSocket(control.config.id, session.socket);
-          if (windowId) {
-            post({ type: "focus-window", windowId });
-          } else {
-            openViewWindowFor(control, session);
-          }
+          if (!focusSessionWindow(control, session)) showSessionInHub(window, control, session);
         },
       });
     }
@@ -1587,8 +1720,89 @@ function viewWindowIdForSocket(connectionId: string, socket: string): string | n
   return null;
 }
 
+/** Focus the window already showing a session; false if it has none. */
+function focusSessionWindow(control: ControlConnection, session: G2MirrorSession): boolean {
+  const windowId = viewWindowIdForSocket(control.config.id, session.socket);
+  if (!windowId) return false;
+  post({ type: "focus-window", windowId });
+  return true;
+}
+
 function openViewWindowFor(control: ControlConnection, session: G2MirrorSession): void {
   openViewWindow(control, session.socket, sessionLabel(session));
+}
+
+/**
+ * Ask the shell to move a window to another height band, then run `apply` with
+ * the viewport it answers with: only the shell knows what a band comes to (the
+ * bottom switcher's height lives on the main thread), and a view's grid goes
+ * into its websocket handshake, so the size has to be right before it starts.
+ * Ignored if the window is already waiting on an answer (a repeated gesture).
+ */
+function changeWindowHeight(windowId: string, heightMode: WindowHeightMode, apply: (viewport: Viewport) => void): void {
+  if (pendingHeightChanges.has(windowId)) return;
+  pendingHeightChanges.set(windowId, apply);
+  post({ type: "set-height-mode", windowId, heightMode });
+}
+
+/** Make `incoming` what its window id shows, in place of `outgoing`. */
+function replaceWindowContent(outgoing: TerminalWindow, incoming: TerminalWindow): void {
+  incoming.foreground = outgoing.foreground;
+  incoming.focused = outgoing.focused;
+  incoming.lastSubmittedFingerprint = "";
+  // Its pending timers and emulator callbacks must not paint over the surface.
+  outgoing.foreground = false;
+  windows.set(incoming.windowId, incoming);
+  updateHubAnimation();
+  renderAndSubmit(incoming, 0);
+}
+
+/** A session was selected in the list: show it in the hub's own window. */
+function showSessionInHub(hub: HubWindow, control: ControlConnection, session: G2MirrorSession): void {
+  const options = clientOptionsFor(control.config);
+  if (!options) return;
+  const label = sessionLabel(session);
+  // Tall like a session in its own window (see openViewWindow).
+  changeWindowHeight(hub.windowId, "max", (viewport) => {
+    const view = createViewWindow(hub.windowId, hub.surfaceId, label, viewport, {
+      connectionId: control.config.id,
+      socket: session.socket,
+      label,
+      glyph: "",
+      options,
+    });
+    view.hub = hub;
+    if (hub.foreground) activeViewId = view.windowId;
+    replaceWindowContent(hub, view);
+  });
+}
+
+/**
+ * Back from a session in the hub's window to the list. The list keeps the order
+ * it had, with this session's row selected: viewing a session bumps its
+ * recency, and re-sorting on every return would shuffle the list while the user
+ * steps through it. `then` runs once the session's connection is gone.
+ */
+function returnToHub(view: ViewWindow, then?: () => void): void {
+  const hub = view.hub;
+  if (!hub) return;
+  changeWindowHeight(view.windowId, "min", (viewport) => {
+    stopViewConnection(view);
+    view.emulator.dispose();
+    if (activeViewId === view.windowId) activeViewId = null;
+    hub.viewportWidth = viewport.width;
+    hub.viewportHeight = viewport.height;
+    hub.edges = viewport.edges;
+    hub.padding = viewport.padding;
+    hub.menu?.resize(viewport);
+    const items = hubItems(hub);
+    const row = items.findIndex(
+      (item) => item.sessionRow?.control.config.id === view.connectionId && item.sessionRow.session.socket === view.socket,
+    );
+    hubMenu(hub).setItems(items, row >= 0 ? row : undefined);
+    replaceWindowContent(view, hub);
+    then?.();
+  });
 }
 
 /**
@@ -1624,6 +1838,7 @@ function openViewWindow(control: ControlConnection, socket: string, label: strin
     focus: true,
     // Default to tall sessions; the app display setting can override this.
     heightMode: "max",
+    acceptsKeys: true,
   });
 }
 
@@ -1688,54 +1903,71 @@ function paintHub(window: HubWindow): GrayImage {
   if (window.mode === "add") {
     return paintAddConnection(window);
   }
-  const image = new GrayImage(window.viewportWidth, window.viewportHeight, 0);
+  const { viewportWidth: width, viewportHeight: height, padding } = window;
+  const image = new GrayImage(width, height, 0);
   const font = chromeFont();
   const step = lineStep(font);
-  // No border box: the shell chrome (top bar + sidebar) already frames the app.
-  // Long statuses get a wrapped block and move the list below it.
+  // The header stays put inside the window's top padding, its title in line
+  // with the rows' text. Long statuses get a wrapped block and move the list
+  // below it.
   const title = window.mode === "connections" ? "Terminal - Connections" : "Terminal";
-  image.drawText(font, HUB_TITLE_X, 10, title, 220);
-  const header = layoutHubHeader(font, title, hubStatusLine(window), window.viewportWidth, step);
+  const header = layoutHubHeader(font, title, hubStatusLine(window), { width, padding }, step);
+  image.drawText(font, header.titleX, header.titleY, title, 220);
   header.lines.forEach((line, index) => image.drawText(font, header.x, header.y + index * step, line, 170));
 
   let listTop = header.listTop;
   if (window.mode === "sessions" && controls.size === 0) {
-    image.drawText(font, HUB_TITLE_X + 6, listTop, "Add a g2mirror:// connection to get started, see:", 150);
-    image.drawText(font, HUB_TITLE_X + 6, listTop + step, "https://github.com/jimrandomh/g2mirror", 190);
+    image.drawText(font, header.titleX, listTop, "Add a g2mirror:// connection to get started, see:", 150);
+    image.drawText(font, header.titleX, listTop + step, "https://github.com/jimrandomh/g2mirror", 190);
     listTop += 2 * step + 6;
   }
 
   const list = hubMenu(window);
   list.setItems(hubItems(window));
-  // Selection boxes start above the text line; the menu fills the selected
-  // box only while this window has focus (an outline alone means the sidebar
-  // owns input), matching the shell convention.
-  const listHeight = window.viewportHeight - 6 - listTop;
+  // Selection boxes start at the left padding, above the text line; the menu
+  // fills the selected box only while this window has focus (an outline alone
+  // means the sidebar owns input), matching the shell convention. The list
+  // scrolls, so under the header it runs to the window's bottom edge with
+  // that edge's padding inside it, after the last row: rows scrolled past the
+  // end are cut off at the edge itself. The scrollbar hugs the right padding.
+  const boxTop = listTop - HUB_LIST_LEAD;
+  const scrollbarX = width - padding.right - HUB_SCROLLBAR_WIDTH;
   list.paint(
     image,
-    { x: HUB_LIST_LEFT, y: listTop - 2, width: window.viewportWidth - HUB_LIST_LEFT - HUB_LIST_RIGHT, height: listHeight },
+    {
+      x: padding.left,
+      y: boxTop,
+      width: Math.max(0, scrollbarX - HUB_SCROLLBAR_GAP - padding.left),
+      height: Math.max(0, height - boxTop),
+      padBottom: padding.bottom,
+    },
     window.focused,
   );
-  list.drawScrollbar(image, window.viewportWidth - 10, listTop, listHeight - 4);
+  const trackTop = boxTop + HUB_SCROLLBAR_INSET;
+  list.drawScrollbar(image, scrollbarX, trackTop, Math.max(0, height - padding.bottom - HUB_SCROLLBAR_INSET - trackTop));
 
   return image;
 }
 
 function paintAddConnection(window: HubWindow): GrayImage {
-  const image = new GrayImage(window.viewportWidth, window.viewportHeight, 0);
+  const { viewportWidth: width, viewportHeight: height, padding } = window;
+  const image = new GrayImage(width, height, 0);
   const font = chromeFont();
   const step = lineStep(font);
-  image.drawText(font, 18, 10, "Add connection", 220);
-  const instructionsY = 20 + step;
-  image.drawText(font, 24, instructionsY, "Type the g2mirror://token@host string in the", 170);
-  image.drawText(font, 24, instructionsY + step, "phone app (or use voice input from the menu).", 170);
+  // A page of text: its title sits at the window's top and left padding, the
+  // body indented under it, and the hint line on the bottom padding.
+  image.drawText(font, padding.left, padding.top, "Add connection", 220);
+  const bodyX = padding.left + PAGE_BODY_INDENT;
+  const instructionsY = padding.top + 10 + step;
+  image.drawText(font, bodyX, instructionsY, "Type the g2mirror://token@host string in the", 170);
+  image.drawText(font, bodyX, instructionsY + step, "phone app (or use voice input from the menu).", 170);
   const draftY = instructionsY + 3 * step;
   const draft = terminalNewConnectionSetting.get();
-  image.drawText(font, 24, draftY, truncateLabel(draft || "(empty)", 52), 220);
+  image.drawText(font, bodyX, draftY, truncateLabel(draft || "(empty)", 52), 220);
   if (window.addError) {
-    image.drawText(font, 24, draftY + step + 6, window.addError, 150);
+    image.drawText(font, bodyX, draftY + step + 6, window.addError, 150);
   }
-  image.drawText(font, 24, window.viewportHeight - font.lineHeight - 12, `click save  ${GESTURE_DOUBLE_CLICK} cancel`, 110);
+  image.drawText(font, bodyX, height - padding.bottom - font.lineHeight, `click save  ${GESTURE_DOUBLE_CLICK} cancel`, 110);
   return image;
 }
 

@@ -34,6 +34,11 @@ interface IosMicStatusListener {
     fun onNsDataMicStatus(body: NSData, arm: String)
 }
 
+/** CFW keyboard-bridge records (the raw field-131 record) as NSData. Main queue. */
+interface IosKeyboardEventListener {
+    fun onNsDataKeyboardEvent(body: NSData)
+}
+
 /**
  * ObjC-facing facade over the shared [GlassesSessionCore] for the NativeScript app: the iOS
  * counterpart of Android's FaceclawBleCommunicator with the same method names. GATT goes
@@ -86,6 +91,9 @@ class IosGlassesSession internal constructor(
 
     fun setRequiredFirmwareRevision(revision: Int) = core.setRequiredFirmwareRevision(revision)
 
+    /** Drive an Even G1 on g1v0 (see GlassesSessionG1.kt). Before [start]. */
+    fun useG1() = core.useG1()
+
     fun start(): Boolean = core.start()
 
     fun disconnect() = core.disconnect()
@@ -104,6 +112,8 @@ class IosGlassesSession internal constructor(
     }
 
     fun isAncsAuthorized(): Boolean = central?.isAncsAuthorized(rightIdentifier) ?: false
+
+    fun ancsRelayAvailable(): Boolean = core.ancsRelayAvailable()
 
     fun setAncsListener(listener: IosAncsListener?) {
         if (listener == null) {
@@ -224,6 +234,20 @@ class IosGlassesSession internal constructor(
         core.addMicStatusListener(adapter)
         return adapter
     }
+
+    fun addKeyboardEventListenerNsData(listener: IosKeyboardEventListener): FaceclawKeyboardEventListener {
+        val adapter = object : FaceclawKeyboardEventListener {
+            override fun onKeyboardEvent(body: ByteArray?) =
+                listener.onNsDataKeyboardEvent((body ?: ByteArray(0)).data())
+        }
+        core.addKeyboardEventListener(adapter)
+        return adapter
+    }
+
+    fun removeKeyboardEventListener(listener: FaceclawKeyboardEventListener?) = core.removeKeyboardEventListener(listener)
+
+    fun sendFaceclawKeyboardControl(record: NSData?, label: String): Boolean =
+        core.sendFaceclawKeyboardControl(record?.byteArray(), label)
 
     /** Every audio-characteristic packet, whether or not a capture is active (passive; sends nothing). */
     fun addAudioMonitorListenerNsData(listener: IosAudioPacketListener): FaceclawAudioPacketListener {

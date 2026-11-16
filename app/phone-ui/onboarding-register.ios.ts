@@ -2,6 +2,8 @@ require('@nativescript/core/bundle-entry-points');
 // iOS reuses Android's NativeScript XML forms and view models.
 global.registerModule('phone-ui/onboarding-page', () => require('./onboarding-page'));
 global.registerModule('phone-ui/onboarding-page.xml', () => require('./onboarding-page.xml'));
+global.registerModule('phone-ui/onboarding-devices-page', () => require('./onboarding-devices-page'));
+global.registerModule('phone-ui/onboarding-devices-page.xml', () => require('./onboarding-devices-page.xml'));
 global.registerModule('phone-ui/onboarding-unpair-page', () => require('./onboarding-unpair-page'));
 global.registerModule('phone-ui/onboarding-unpair-page.xml', () => require('./onboarding-unpair-page.xml'));
 global.registerModule('phone-ui/pairing-page', () => require('./pairing-page'));
@@ -18,4 +20,6 @@ global.registerModule('phone-ui/document-page', () => require('./document-page')
 global.registerModule('phone-ui/document-page.xml', () => require('./document-page.xml'));
 global.registerModule('phone-ui/main-page', () => require('./main-page.ios'));
 global.registerModule('phone-ui/remote-controls.xml', () => require('./remote-controls.xml'));
+global.registerModule('phone-ui/settings-page', () => require('./settings-page'));
+global.registerModule('phone-ui/settings-page.xml', () => require('./settings-page.xml'));
 global.registerModule('phone-ui/keyboard-input-panel.xml', () => require('./keyboard-input-panel.xml'));

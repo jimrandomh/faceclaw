@@ -1,3 +1,4 @@
+import type { GlassesType } from "../ui/dashboard-settings";
 import type { RingInput } from "../g2/ring-input";
 import { File, knownFolders, path, type ImageSource } from "@nativescript/core";
 import { REQUIRED_FACECLAW_FIRMWARE_VERSION, type FirmwareInfo } from "../g2/firmware-compat";
@@ -18,6 +19,7 @@ declare const FaceclawKitFaceclawCompassListener: any;
 declare const FaceclawKitFaceclawImuListener: any;
 declare const FaceclawKitIosAmbientLightListener: any;
 declare const FaceclawKitIosMicStatusListener: any;
+declare const FaceclawKitIosKeyboardEventListener: any;
 
 
 export type CommunicatorPhase =
@@ -197,6 +199,13 @@ class MicStatusListener extends NSObject {
   onNsDataMicStatusBodyArm(body: NSData, arm: string): void { this.handler(fromData(body), String(arm ?? "")); }
 }
 
+@NativeClass()
+class KeyboardEventListener extends NSObject {
+  static ObjCProtocols = [FaceclawKitIosKeyboardEventListener];
+  handler!: (body: Uint8Array) => void;
+  onNsDataKeyboardEventBody(body: NSData): void { this.handler(fromData(body)); }
+}
+
 /**
  * The iOS twin of the Android communicator bridge: the same public API over
  * the shared Kotlin session (FaceclawKitIosGlassesSession, CoreBluetooth
@@ -248,7 +257,10 @@ export class FaceclawCommunicatorBridge {
     return FaceclawCommunicatorBridge.active;
   }
 
-  constructor(addresses: { right: string; left: string; ring?: string; ringRole?: string }) {
+  constructor(addresses: { right: string; left: string; ring?: string; ringRole?: string; glassesType?: GlassesType }) {
+    if (addresses.glassesType === "rayneo-io") {
+      throw new Error("RayNeo iO glasses are not supported on iOS yet.");
+    }
     this.communicator = FaceclawKitIosGlassesSession.alloc().initWithRightAddressLeftAddressRingAddress(
       String(addresses.right ?? "").toUpperCase(),
       String(addresses.left ?? "").toUpperCase(),
@@ -256,6 +268,7 @@ export class FaceclawCommunicatorBridge {
     );
     // The shared session halts on any other firmware ("incompatible-firmware").
     this.communicator.setRequiredFirmwareRevisionRevision(REQUIRED_FACECLAW_FIRMWARE_VERSION);
+    if (addresses.glassesType === "g1") this.communicator.useG1();
     // Guarded: an older framework build may not export it yet.
     if (addresses.ringRole && typeof this.communicator.setDirectRingRoleRole === "function") {
       this.communicator.setDirectRingRoleRole(addresses.ringRole);
@@ -696,6 +709,9 @@ export class FaceclawCommunicatorBridge {
     return this.enqueueNativeCall(() => Boolean(this.communicator.setFaceclawWakeLeaseEnabledEnabled(Boolean(enabled))));
   }
 
+  /** The RayNeo iO's wake word; iOS doesn't drive an iO, so nothing to do. */
+  async setVoiceWakeEnabled(_enabled: boolean): Promise<void> {}
+
   async awaitEvenHubSessionReady(timeoutMs: number): Promise<boolean> {
     return this.enqueueNativeCall(() => Boolean(this.communicator.awaitEvenHubSessionReadyTimeoutMs(Math.round(nonNegativeNumber(timeoutMs)))));
   }
@@ -795,6 +811,19 @@ export class FaceclawCommunicatorBridge {
       toData(new Uint8Array(record)), label, Boolean(rightTemple), Boolean(leftTemple)));
   }
 
+  /** Raw field-131 keyboard-bridge records, in arrival order, on the main queue. */
+  addKeyboardEventListener(listener: (body: Uint8Array) => void): () => void {
+    const proxy = KeyboardEventListener.new() as KeyboardEventListener;
+    proxy.handler = listener;
+    const handle = this.communicator.addKeyboardEventListenerNsDataListener(proxy);
+    return () => { this.communicator.removeKeyboardEventListenerListener(handle); };
+  }
+
+  /** Queue a CFW keyboard-bridge control for the right temple; false when nothing was queued. */
+  sendFaceclawKeyboardControl(record: Uint8Array, label: string): boolean {
+    return Boolean(this.communicator.sendFaceclawKeyboardControlRecordLabel(toData(new Uint8Array(record)), label));
+  }
+
   /**
    * Every audio-characteristic packet, whatever enabled the mics, on the
    * main queue. Passive: sends nothing and doesn't affect capture.
@@ -847,6 +876,11 @@ export class FaceclawCommunicatorBridge {
 
   isAncsAuthorized(): boolean {
     return Boolean(this.communicator.isAncsAuthorized());
+  }
+
+  /** False on a G1 whose firmware has no relay; a G2's depends on its firmware revision. */
+  ancsRelayAvailable(): boolean {
+    return Boolean(this.communicator.ancsRelayAvailable());
   }
 
   onAncsAuthorization(listener: (authorized: boolean) => void): () => void {

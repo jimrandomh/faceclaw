@@ -4,8 +4,14 @@ import type { MenuHighlightAnimation } from "../ui/menu-highlight-motion";
 import { Glyph } from "./bdffont";
 import { wrapText } from "./textwrap";
 
+// This file is also built by tests/tsconfig.json, which has no DOM or Node types.
+declare const console: { warn(message: string): void };
+
 export const G2_LENS_WIDTH = 640;
 export const G2_LENS_HEIGHT = 480;
+/** RayNeo iO screen (per eye) with the Faceclaw firmware: 540x220. */
+export const RAYNEO_IO_WIDTH = 540;
+export const RAYNEO_IO_HEIGHT = 220;
 const DEFAULT_CORNER_RADIUS = 8;
 
 /**
@@ -156,9 +162,15 @@ export class GrayImage {
   private memoizedSourceHash: number | null = null;
 
   constructor(width: number, height: number, fill = 0) {
-    this.width = width;
-    this.height = height;
-    this.pixels = new Uint8Array(width * height);
+    // A fractional width would put most rows' `y * width + x` between pixels,
+    // silently losing them. TTF text measures fractionally, so this is easy to
+    // hit; the stack is there because the size alone doesn't identify the caller.
+    if (!Number.isInteger(width) || !Number.isInteger(height)) {
+      console.warn(`GrayImage: rounding up non-integer size ${width}x${height}\n${new Error().stack}`);
+    }
+    this.width = Math.ceil(width);
+    this.height = Math.ceil(height);
+    this.pixels = new Uint8Array(this.width * this.height);
     if (fill !== 0) {
       this.clear(fill);
     }
@@ -585,6 +597,25 @@ export class GrayImage {
   }
 
   /**
+   * bakeDeferredDrawsInPlace, but only for the draws whose ink may fall inside
+   * `rect`; the rest stay deferred. For covering part of the image with later
+   * raster (the EvenHub compositor painting an image container over text)
+   * without giving up the deferred wire path for everything else.
+   */
+  bakeDeferredDrawsWithin(rect: { x: number; y: number; width: number; height: number }): void {
+    if (!this.drawList.length) return;
+    const covered = (b: { x: number; y: number; width: number; height: number } | null) =>
+      !b || (b.x < rect.x + rect.width && rect.x < b.x + b.width && b.y < rect.y + rect.height && rect.y < b.y + b.height);
+    const bake: DeferredDraw[] = [];
+    const keep: DeferredDraw[] = [];
+    for (const placed of this.drawList) (covered(placedDrawBounds(placed)) ? bake : keep).push(placed);
+    if (!bake.length) return;
+    this.drawList.splice(0, this.drawList.length, ...bake);
+    this.bakeDeferredDrawsInPlace();
+    this.drawList.push(...keep);
+  }
+
+  /**
    * A copy of this image with its brightness scaled by `factor` (0..1):
    * raster and glyph / firmware-text draws alike, keeping the draws deferred
    * so they stay on the cached-glyph wire path. Transparent (0) pixels stay
@@ -692,6 +723,35 @@ export function grayToNibble(value: number): number {
 
 /** Where rasterizeGlyph writes: an image, or a clipped buffer (paintReplayDraws). */
 type PixelSink = { setPixel(x: number, y: number, value: number): void };
+
+/** A deferred draw's ink rectangle, or null when it can't be bounded (treat as anywhere). */
+function placedDrawBounds(placed: DeferredDraw): { x: number; y: number; width: number; height: number } | null {
+  if (placed.kind === "glyph") {
+    const { glyph } = placed;
+    return {
+      x: placed.x + glyph.bbxX,
+      y: placed.y + placed.font.ascent - (glyph.bbxHeight + glyph.bbxY),
+      width: glyph.bbxWidth,
+      height: glyph.bbxHeight,
+    };
+  }
+  if (placed.kind === "image") {
+    return placed.presentation ? null : { x: placed.x, y: placed.y, width: placed.source.width, height: placed.source.height };
+  }
+  let left = Infinity, top = Infinity, right = -Infinity, bottom = -Infinity;
+  for (const member of placed.glyphs) {
+    if (!member.ink) continue;
+    const wire = placed.font.fwGlyphWireData(member.cp);
+    if (!wire) return null;
+    const x = placed.x + member.dx + wire.ofsX;
+    const y = placed.y + wire.inkTop;
+    left = Math.min(left, x);
+    top = Math.min(top, y);
+    right = Math.max(right, x + wire.boxW);
+    bottom = Math.max(bottom, y + wire.boxH);
+  }
+  return right < left ? { x: placed.x, y: placed.y, width: 0, height: 0 } : { x: left, y: top, width: right - left, height: bottom - top };
+}
 
 /** Bake one glyph into an image's pixel buffer (y is the top of the line). */
 function rasterizeGlyph(

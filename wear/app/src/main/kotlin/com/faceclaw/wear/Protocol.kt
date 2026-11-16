@@ -92,8 +92,10 @@ data class PhoneState(
     val locked: Boolean,
     val worn: Boolean?,
     val listening: Boolean,
-    /** Current or last-known G2 charge percentage. */
+    /** The glasses' current or last-known charge percentage. */
     val battery: Int?,
+    /** The paired glasses' model, as the charging line names it. */
+    val glassesModel: String,
     val charging: Boolean,
     /** Last-known charging-case percentage; live only while the glasses are docked. */
     val caseBattery: Int?,
@@ -126,6 +128,7 @@ data class PhoneState(
                     worn = if (o.isNull("worn")) null else o.optBoolean("worn"),
                     listening = o.optBoolean("listening", false),
                     battery = if (o.isNull("battery")) null else o.optInt("battery", -1).takeIf { it in 0..100 },
+                    glassesModel = o.optString("glassesModel", "G2"),
                     charging = o.optBoolean("charging", false),
                     caseBattery = if (o.isNull("caseBattery")) null else o.optInt("caseBattery", -1).takeIf { it in 0..100 },
                     caseCharging = if (o.isNull("caseCharging")) null else o.optBoolean("caseCharging"),

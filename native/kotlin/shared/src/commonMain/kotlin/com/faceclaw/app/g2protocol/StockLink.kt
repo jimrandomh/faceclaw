@@ -48,6 +48,21 @@ interface StockLink {
 
     fun bondState(address: String): BondState
 
+    /** The ATT MTU agreed on this link. */
+    fun negotiatedMtu(address: String): Int = 23
+
+    /** Ask the OS to pair with a connected device; a platform that pairs by itself on demand does nothing. */
+    fun requestBond(address: String) {}
+
+    /** Remove this phone's half of a pairing; false where the platform can't or refused. */
+    fun removeBond(address: String): Boolean = false
+
+    /** After discovery: whether the service table has this characteristic. Enabling notifications on one it lacks may throw. */
+    fun hasCharacteristic(address: String, characteristicUuid: String): Boolean = true
+
+    /** Read the service table again, past whatever the OS cached for this address. */
+    fun refreshServices(address: String, timeoutMs: Int): Boolean = discoverServices(address, timeoutMs)
+
     fun disconnect(address: String)
 
     fun close()

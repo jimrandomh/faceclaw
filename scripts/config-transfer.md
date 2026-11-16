@@ -102,6 +102,12 @@ Use `--device` / `-d` or set `IOS_DEVICE` when more than one device is connected
 Without either, the script selects the only device with an active Xcode tunnel.
 For the simulator, add `--simulator` (defaults to `booted`; `--device` selects one).
 
+`scripts/resetOnboardingIos.sh` is the iOS counterpart of `scripts/resetOnboarding.sh`.
+It pulls the config, then pushes every `onboarding.*` key that is set back to its empty
+value, which the app reads the same as a missing key. Pushes can't remove keys, and the
+plist can't be edited directly (see below). Its `--all` uninstalls the app, since iOS has
+no equivalent of `pm clear`.
+
 Transfers use `devicectl` app-container access. The app consumes a uniquely
 identified request at bootstrap, before loading settings getters and workers;
 it applies imports through NSUserDefaults rather than overwriting a plist that

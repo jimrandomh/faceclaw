@@ -44,6 +44,8 @@ internal fun GlassesSessionCore.driveSession(): Long {
                 benchmarkReadyAtMs = now() + 1_000
             }
         }
+        if (isIo) ioMaintain()
+        if (isG1) g1Maintain()
         var messageToWrite: OutboundMessage? = null
         var messageToPrewrite: OutboundMessage? = null
         var heartbeatToWrite: OutboundMessage? = null
@@ -74,7 +76,7 @@ internal fun GlassesSessionCore.driveSession(): Long {
                 clearPendingMessagesLocked("after CFW cleanup")
                 return 250
             }
-            if (sessionReady
+            if (sessionReady && isG2
                     && now - lastFaceclawFramebufferLeaseQueuedAtMs >= FACECLAW_WAKE_LEASE_RENEW_MS
                     && !hasPendingOrInflightKindLocked("framebuffer-lease-control")) {
                 enqueueFaceclawFramebufferControlLocked(
@@ -83,7 +85,7 @@ internal fun GlassesSessionCore.driveSession(): Long {
                 )
             }
             if (faceclawWakeLeaseEnabled
-                    && sessionReady
+                    && sessionReady && isG2
                     && now - lastFaceclawWakeLeaseQueuedAtMs >= FACECLAW_WAKE_LEASE_RENEW_MS
                     && !hasPendingOrInflightKindLocked("wake-lease-control")) {
                 enqueueFaceclawWakeControlLocked(
@@ -158,6 +160,7 @@ internal fun GlassesSessionCore.driveSession(): Long {
                 }
             } else {
                 if (messageToPrewrite == null
+                        && isG2 // the iO's page lease is ioMaintain's; a G1 has none
                         && !shutdownRequested
                         && !fixedLayoutCreated
                         && pendingMessages.isEmpty()
@@ -168,14 +171,14 @@ internal fun GlassesSessionCore.driveSession(): Long {
                     // Prewrite outside the lock; the logical message remains pending until
                     // its final BLE frame is sent after the current protocol ACK.
                 }
-                if (messageToPrewrite == null && !shutdownRequested && fixedLayoutCreated
+                if (messageToPrewrite == null && isG2 && !shutdownRequested && fixedLayoutCreated
                         && (if (firmwareDebugFlagsEnabled) 2 else 1) != firmwareDebugFlagsLastSent
                         && pendingMessages.isEmpty() && inFlightMessages.isEmpty()) {
                     logLine("enqueueing firmware debug flags " + (if (firmwareDebugFlagsEnabled) "show" else "hide"))
                     enqueueFirmwareDebugFlagsLocked()
                 }
 
-                if (messageToPrewrite == null && !shutdownRequested && fixedLayoutCreated
+                if (messageToPrewrite == null && isG2 && !shutdownRequested && fixedLayoutCreated
                         && caseInfoReadPending
                         && pendingMessages.isEmpty() && inFlightMessages.isEmpty()) {
                     caseInfoReadPending = false
@@ -183,7 +186,7 @@ internal fun GlassesSessionCore.driveSession(): Long {
                     pendingMessages.addLast(messageBuilder.caseInfoQuery())
                 }
 
-                if (messageToPrewrite == null && !shutdownRequested && fixedLayoutCreated
+                if (messageToPrewrite == null && isG2 && !shutdownRequested && fixedLayoutCreated
                         && (if (compassOwners.isEmpty()) 0 else 1) != compassControlLastSent
                         && pendingMessages.isEmpty() && inFlightMessages.isEmpty()) {
                     val wanted = compassOwners.isNotEmpty()
@@ -194,7 +197,9 @@ internal fun GlassesSessionCore.driveSession(): Long {
                 if (benchmarkActive) {
                     maintainBenchmarkLocked(now)
                 }
-                if (!benchmarkActive) maintainBrightnessLocked(now)
+                // A G1's brightness follows the policy's target; its light sensor isn't wired up yet.
+                if (!benchmarkActive && isG1) enqueueBrightnessLocked()
+                else if (!benchmarkActive && (!isIo || ioFirmwareOwnsBrightness)) maintainBrightnessLocked(now)
 
                 // Up to WINDOW_SIZE messages may be in flight at once (full
                 // pipelining); a slot frees when an ack arrives. An active
@@ -337,6 +342,7 @@ internal enum class HeartbeatStep {
 }
 
 internal fun GlassesSessionCore.heartbeatStepLocked(imageWaiting: Boolean): HeartbeatStep {
+    if (!isG2) return HeartbeatStep.NONE
     val now = now()
     val heartbeatEligible = !shutdownRequested && fixedLayoutCreated
     val heartbeatPending = heartbeatEligible && hasPendingOrInflightKindLocked("heartbeat")
@@ -387,6 +393,21 @@ internal fun GlassesSessionCore.createHeartbeatMessage(): OutboundMessage {
 }
 
 internal fun GlassesSessionCore.writeMessage(message: OutboundMessage): Boolean {
+    if (isG1 && !g1SupportsMessage(message)) {
+        // G2-only traffic a shared feature queued anyway: it would only wait for an ACK that never comes.
+        ioDropUnsupported(message)
+        return true
+    }
+    if (isG1 && g1ArmIsAway(message)) {
+        ioDropUnsupported(message)
+        return true
+    }
+    if (isIo && !ioSupportsMessage(message)) {
+        // G2-only traffic (EvenHub/settings frames, the G2 hardware CFW modes) that a feature
+        // queued anyway: the iO would NACK it into the replay limit, so it never goes out.
+        ioDropUnsupported(message)
+        return true
+    }
     val now = now()
     message.writeStartedAtMs = now
     message.sentAtMs = now
@@ -416,6 +437,10 @@ internal fun GlassesSessionCore.writeMessage(message: OutboundMessage): Boolean 
         frames = listOf(prewrittenFrames[prewrittenFrames.size - 1])
         prewrittenMessage = null
         prewrittenFrames = emptyList()
+    } else if (isIo) {
+        frames = ioCfwWrites(message, link.negotiatedMtu(writeAddress))
+    } else if (isG1) {
+        frames = g1CfwWrites(message, link.negotiatedMtu(writeAddress))
     } else if (message.sid == CfwTransport.SID) {
         if (message.cfwRetries > 0) cfwTransports[if (message.isLeftArmMessage) 0 else 1].reset()
         frames = cfwTransports[if (message.isLeftArmMessage) 0 else 1].encode(
@@ -431,9 +456,9 @@ internal fun GlassesSessionCore.writeMessage(message: OutboundMessage): Boolean 
     }
     val result = link.writeFrames(
         writeAddress,
-        BleProtocol.WRITE_CHAR_UUID,
+        if (isIo) RayNeoIoBle.WRITE_CHAR_UUID else if (isG1) G1Ble.FC_CHAR_UUID else BleProtocol.WRITE_CHAR_UUID,
         frames,
-        ConnectionOptions.WRITE_MODE,
+        if (isIo || isG1) GattWriteMode.WITHOUT_RESPONSE else ConnectionOptions.WRITE_MODE,
         ConnectionOptions.WRITE_TIMEOUT_MS
     )
 
@@ -836,6 +861,10 @@ internal fun GlassesSessionCore.enqueueDesiredImageLocked() {
     frameTimings.spanEnd(frameId, "pack-4bpp")
     // Visibility belongs to this immutable composite, not the latest UI request.
     enqueueBrightnessLocked(!fingerprint.startsWith("blanked:"))
+    if (isG1 && packedFrame.size > 0) {
+        g1EnqueueFrameLocked(packedFrame, width, height, scene, fingerprint, paintMs, frameId)
+        return
+    }
     if (customFirmwareDetected && packedFrame.size > 0) {
         val rendered = try {
             scenePlanner.plan(packedFrame, width, height, draws, scene, nextImageFrameId,
@@ -981,10 +1010,13 @@ internal fun GlassesSessionCore.enqueueCustomImageLocked(
     fingerprint: String,
     updateId: Int,
     messageNumber: Int,
-    messageCount: Int
+    messageCount: Int,
+    leftArm: Boolean = connectionOptions.sendImagesToLeft,
+    requiredLenses: Int = CfwTransport.BOTH,
 ) {
     val message = messageBuilder.customMessage("image", payload,
-            "image " + plan.tile.name + "#" + messageNumber, plan.tileIndex, connectionOptions.sendImagesToLeft)
+            "image " + plan.tile.name + "#" + messageNumber, plan.tileIndex, leftArm)
+    message.cfwRequiredLenses = requiredLenses
     message.setImageUpdatePosition(updateId, messageNumber, messageCount)
     message.onAck = MessageCallback {
         imageRetryAfterMs = 0
@@ -1037,7 +1069,8 @@ internal fun GlassesSessionCore.createAudioControlMessageLocked(enable: Boolean)
 }
 
 internal fun GlassesSessionCore.shouldPollBatteryLocked(now: Long): Boolean {
-    return !shutdownRequested
+    return isG2 // the others' status polls are their own maintain's
+            && !shutdownRequested
             && sessionReady
             && pendingMessages.isEmpty()
             && inFlightMessages.isEmpty()
@@ -1424,6 +1457,7 @@ internal fun GlassesSessionCore.clearMessagesOfKindLocked(kind: String) {
         // drop the pipelined delta base so the next image is a full keyframe.
         lastEnqueuedPacked = ByteArray(0)
         lastEnqueuedFingerprint = ""
+        g1ForgetFramesLocked()
     }
 }
 
@@ -1431,12 +1465,14 @@ internal fun GlassesSessionCore.clearAllMessagesLocked(reason: String) {
     brightnessSentVisible = null
     brightnessSentLevel = -1
     brightnessAlsStartedAt = -2000
+    io.alsIntervalSent = -1
     clearPendingMessagesLocked(reason)
     clearInFlightMessagesLocked(reason)
     // The image pipeline is gone: drop the pipelined delta base so the next
     // image is a full keyframe rather than a delta onto a stale base.
     lastEnqueuedPacked = ByteArray(0)
     lastEnqueuedFingerprint = ""
+    g1ForgetFramesLocked()
     // Queued resource commands (if any) were dropped with the rest, and the
     // session churn behind a full clear may have freed the on-glasses
     // cache; forget it phone-side so glyphs re-upload lazily.
@@ -1452,6 +1488,7 @@ internal fun GlassesSessionCore.clearAllMessagesPreservingWakeLeaseLocked(reason
     brightnessSentVisible = null
     brightnessSentLevel = -1
     brightnessAlsStartedAt = -2000
+    io.alsIntervalSent = -1
     val pendingIterator = pendingMessages.iterator()
     while (pendingIterator.hasNext()) {
         val message = pendingIterator.next()

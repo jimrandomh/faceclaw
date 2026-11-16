@@ -11,13 +11,24 @@ import {
 } from "../../native/media-browser";
 import { Layer, type LayerContext } from "../../ui/layers";
 
-/** Header: title line + path line (34px at the 12px bitmap default). */
+/** Header: title line + path line (26px at the 12px bitmap default), below the window's top padding. */
 function headerHeight(font: UiFont): number {
-  return 8 + lineStep(font) + font.lineHeight;
+  return lineStep(font) + font.lineHeight;
 }
-const LIST_X = 20;
-/** The selection box extends this far left and right of the row text. */
+/**
+ * The selection box extends this far left and right of the row text. The
+ * boxes start at the window's left padding, so the title, path and hint
+ * line, which line up with the row text, start this far in from it.
+ */
 const LIST_HIGHLIGHT_PAD = 6;
+/** Status messages (connecting, errors, empty) are indented this far from the title, and sit this far under the header. */
+const MESSAGE_INDENT = 4;
+const MESSAGE_GAP = 8;
+/** Clear rows between the list and the hint line under it. */
+const FOOTER_GAP = 7;
+/** Width of the bar Menu.drawScrollbar draws, and the room kept for it right of the rows. */
+const SCROLLBAR_WIDTH = 3;
+const SCROLLBAR_GUTTER = 6;
 
 export type MediaBrowseOptions = {
   app: MediaBrowserApp;
@@ -59,55 +70,68 @@ export class MediaBrowseLayer implements Layer {
       this.startConnect(ctx);
     }
     const font = getDefaultSmallFont();
-    const { width, height } = ctx.stack.getBaseSize();
+    const { width, height, padding } = ctx.stack.getBaseSize();
     const image = new GrayImage(width, height, 0);
+    // The list's selection boxes span the window's side padding, less the
+    // scrollbar's gutter. The header and the hint line are fixed, inside the
+    // top and bottom padding, with the list scrolling between them.
+    const listX = padding.left;
+    const textX = listX + LIST_HIGHLIGHT_PAD;
+    const textWidth = width - padding.left - padding.right - 2 * LIST_HIGHLIGHT_PAD;
+    const headerBottom = padding.top + headerHeight(font);
+    const messageX = textX + MESSAGE_INDENT;
+    const messageY = headerBottom + MESSAGE_GAP;
+    const footerY = height - padding.bottom - font.lineHeight;
 
-    image.drawText(font, 20, 8, `Library: ${this.options.app.appName}`, 220);
+    image.drawText(font, textX, padding.top, `Library: ${this.options.app.appName}`, 220);
 
     if (this.phase === "connecting" || this.phase === "idle") {
-      image.drawText(font, 24, headerHeight(font) + 8, `Starting ${this.options.app.appName}...`, 150);
-      image.drawText(font, 20, height - font.lineHeight - 4, `${GESTURE_DOUBLE_CLICK} back`, 110);
+      image.drawText(font, messageX, messageY, `Starting ${this.options.app.appName}...`, 150);
+      image.drawText(font, textX, footerY, `${GESTURE_DOUBLE_CLICK} back`, 110);
       return image;
     }
     if (this.phase === "failed") {
-      image.drawText(font, 24, headerHeight(font) + 8, "Could not connect:", 180);
-      image.drawText(font, 24, headerHeight(font) + 8 + lineStep(font), truncateRight(font, this.connectError, width - 48), 140);
-      image.drawText(font, 20, height - font.lineHeight - 4, `${GESTURE_CLICK} retry   ${GESTURE_DOUBLE_CLICK} back`, 110);
+      image.drawText(font, messageX, messageY, "Could not connect:", 180);
+      image.drawText(font, messageX, messageY + lineStep(font), truncateRight(font, this.connectError, textWidth - 2 * MESSAGE_INDENT), 140);
+      image.drawText(font, textX, footerY, `${GESTURE_CLICK} retry   ${GESTURE_DOUBLE_CLICK} back`, 110);
       return image;
     }
 
     const level = this.currentLevel();
     const path = this.levels.map((entry) => entry.title).join(" / ");
-    image.drawText(font, 20, 8 + lineStep(font), truncateLeft(font, path, width - 40), 130);
+    image.drawText(font, textX, padding.top + lineStep(font), truncateLeft(font, path, textWidth), 130);
 
     if (!level || level.items === null) {
-      image.drawText(font, 24, headerHeight(font) + 8, level?.error ? level.error : "Loading...", level?.error ? 140 : 150);
-      image.drawText(font, 20, height - font.lineHeight - 4, `${GESTURE_DOUBLE_CLICK} up / back`, 110);
+      image.drawText(font, messageX, messageY, level?.error ? level.error : "Loading...", level?.error ? 140 : 150);
+      image.drawText(font, textX, footerY, `${GESTURE_DOUBLE_CLICK} up / back`, 110);
       return image;
     }
 
     const items = level.items;
     if (!items.length) {
-      image.drawText(font, 24, headerHeight(font) + 8, "(empty)", 120);
-      image.drawText(font, 20, height - font.lineHeight - 4, `${GESTURE_DOUBLE_CLICK} up / back`, 110);
+      image.drawText(font, messageX, messageY, "(empty)", 120);
+      image.drawText(font, textX, footerY, `${GESTURE_DOUBLE_CLICK} up / back`, 110);
       return image;
     }
 
-    const listTop = headerHeight(font);
-    const listHeight = height - listTop - font.lineHeight - 10;
-    const visibleRows = Math.max(1, (listHeight / tightRowHeight(font)) | 0);
     // Row boxes start one pixel above the header's bottom edge.
-    level.menu.paint(
-      image,
-      { x: LIST_X - LIST_HIGHLIGHT_PAD, y: listTop - 1, width: width - 2 * LIST_X + 2 * LIST_HIGHLIGHT_PAD, height: listHeight },
-      ctx.stack.isFocused(),
-    );
-    level.menu.drawScrollbar(image, width - 12, listTop, visibleRows * tightRowHeight(font) - 4);
+    const listTop = headerBottom - 1;
+    const listBottom = footerY - FOOTER_GAP;
+    if (listBottom > listTop) {
+      level.menu.paint(
+        image,
+        { x: listX, y: listTop, width: width - padding.left - padding.right - SCROLLBAR_GUTTER, height: listBottom - listTop },
+        ctx.stack.isFocused(),
+      );
+      // The bar hugs the window's right padding, a little short of the list's ends.
+      const trackHeight = listBottom - listTop - 4;
+      if (trackHeight > 0) level.menu.drawScrollbar(image, width - padding.right - SCROLLBAR_WIDTH, headerBottom, trackHeight);
+    }
 
     image.drawText(
       font,
-      20,
-      height - 16,
+      textX,
+      footerY,
       `${GESTURE_SCROLL} select   ${GESTURE_CLICK} open/play   ${GESTURE_DOUBLE_CLICK} up / back`,
       110,
     );

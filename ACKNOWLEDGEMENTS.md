@@ -13,6 +13,22 @@ and others who contributed to documenting the G2's bluetooth protocol and firmwa
 
 G2 microphone LC3 decoding uses Google's liblc3: https://github.com/google/liblc3
 
+Even G1 support builds on ScouterKit (MIT License), by the ScouterKit authors:
+https://github.com/mafik/scouter_kit. The firmware Faceclaw installs on a G1 is a
+modified build of its g1v0, using the Zephyr RTOS and Nordic's nRF Connect SDK; the
+parts of it that are Even Realities' own are downloaded from Even, not shipped here.
+
+RayNeo iO support builds on the Glassly SDK and custom firmware by Tetramo, Inc.
+and Mentra Labs, Inc. (MIT License): https://github.com/tetramo-labs/glassly and
+https://github.com/tetramo-labs/glassly-rayneo-cfw. The iO wire codecs in
+native/kotlin/shared/.../rayneo/RayNeoIoProtocol.kt follow their protocol work.
+
+Bluetooth keyboard support on the G2 uses the keyboard bridge Tetramo, Inc. wrote
+for their Glassly custom firmware (https://github.com/tetramo-labs/g2flash).
+Faceclaw's client for it, in app/g2/keyboard/ and app/apps/terminal/terminal-keys.ts,
+follows the reference client in that repository and the keyboard handling in the
+Glassly app (MIT License): https://github.com/tetramo-labs/glassly.
+
 iPhone notification icons are Pebble's notification and timeline icons, from
 https://github.com/pebble-dev/iconography: the original Pebble Technology icons
 and Rebble community additions. They are licensed under the Apache License 2.0;

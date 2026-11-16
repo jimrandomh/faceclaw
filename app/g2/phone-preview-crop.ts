@@ -1,6 +1,5 @@
-import { G2_LENS_HEIGHT, G2_LENS_WIDTH } from "../graphics/image";
 import { previewScalingSetting } from "../ui/dashboard-settings";
-import { phonePreviewRect, usedScreenRect, type ScreenRect } from "../ui/shell/geometry";
+import { phonePreviewRect, screenHeight, screenWidth, usedScreenRect, type ScreenRect } from "../ui/shell/geometry";
 import { shell } from "../ui/shell/shell";
 
 /**
@@ -14,7 +13,7 @@ export function phonePreviewCrop(locked: boolean, glanceRect: ScreenRect | null)
   if (locked || previewScalingSetting.get() === "raw") return null;
   const window = shell.foregroundWindow();
   const crop = phonePreviewRect(glanceRect ?? usedScreenRect(window?.heightMode ?? "min", window?.appId));
-  const wholePanel = crop.x === 0 && crop.y === 0 && crop.width === G2_LENS_WIDTH && crop.height === G2_LENS_HEIGHT;
+  const wholePanel = crop.x === 0 && crop.y === 0 && crop.width === screenWidth() && crop.height === screenHeight();
   return wholePanel ? null : crop;
 }
 
@@ -27,7 +26,7 @@ export function phonePreviewCrop(locked: boolean, glanceRect: ScreenRect | null)
 export function mirrorToPanelFraction(crop: ScreenRect | null, nx: number, ny: number): { nx: number; ny: number } {
   if (!crop) return { nx, ny };
   return {
-    nx: (crop.x + nx * crop.width) / G2_LENS_WIDTH,
-    ny: (crop.y + ny * crop.height) / G2_LENS_HEIGHT,
+    nx: (crop.x + nx * crop.width) / screenWidth(),
+    ny: (crop.y + ny * crop.height) / screenHeight(),
   };
 }

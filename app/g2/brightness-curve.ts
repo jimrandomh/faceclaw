@@ -1,5 +1,18 @@
 export const DEFAULT_BRIGHTNESS_CURVE = "0:0,0.2:7,1.5:33,5:100";
 const PREVIOUS_DEFAULT_CURVE = "0:0,1:10,10:30,100:65,1000:100";
+/**
+ * The RayNeo iO's sensor reads real lux, far above the G2's behind-the-lens values, so the
+ * G2's curve would sit at maximum in any lit room. These knots put the default 20–100 range on
+ * the stock firmware's own scene levels: 29, 41, 41, 53, 65, 76, 94 and 100 percent at 3, 10,
+ * 200, 300, 600, 1000, 4000 and 5000 lux.
+ */
+export const RAYNEO_IO_BRIGHTNESS_CURVE = "0:0,3:11,10:26,200:26,300:41,600:56,1000:70,4000:93,5000:100";
+
+/**
+ * An Even G1's OPT3007 also reads lux (centilux on the wire). These knots are the stock firmware's table: levels 0, 10, 25,
+ * 41 and 42 of 42 at 0, 50, 200, 1000 and 2000 lux (g1_firmware/docs/VM.md §6.7).
+ */
+export const G1_BRIGHTNESS_CURVE = "0:0,50:24,200:60,1000:98,2000:100";
 
 /** Percent of the configured range; defaults (20–100) give 20/26/46/100. */
 export function brightnessCurveError(value: string): string | null {

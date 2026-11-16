@@ -86,13 +86,16 @@ internal fun GlassesSessionCore.enqueueBenchmarkMessageLocked() {
     kotlin.random.Random.nextBytes(payload)
     payload[0] = CFW_MSG_DIAGNOSTICS.toByte()             // CFW diagnostic-control mode...
     payload[1] = 0x7f.toByte()   // ...with an unused sub-op: acked, no effect
+    // A G1's arms are two links and every frame goes down both, so the run alternates between them.
+    val leftArm = if (isG1) benchmarkMessageCounter++ % 2 == 0 else connectionOptions.sendImagesToLeft
     val message = messageBuilder.imagePayload(
         "bandwidth",
         DASHBOARD_TILE,
         nextMapSessionId(),
         payload,
         "bandwidth no-op " + payload.size + "B",
-        connectionOptions.sendImagesToLeft)
+        leftArm)
+    if (isG1) message.cfwRequiredLenses = if (leftArm) G1Timings.LENS_LEFT else G1Timings.LENS_RIGHT
     val payloadBytes = payload.size
     // Logical custom-message bytes; excludes length tag and packet framing.
     val wireBytes = message.message.size
@@ -345,6 +348,8 @@ internal fun GlassesSessionCore.releaseFaceclawFramebufferLease(): Boolean {
 
 /** The address of a configured arm the OS no longer holds a bond for, or null. */
 internal fun GlassesSessionCore.firstUnpairedArm(): String? {
+    // The iO identifies the phone by its protocol id, not an OS bond.
+    if (isIo) return null
     if (!link.isBonded(rightAddress)) return rightAddress
     if (!link.isBonded(leftAddress)) return leftAddress
     return null
@@ -491,7 +496,7 @@ internal fun GlassesSessionCore.scheduleReconnectLocked(sessionWasReady: Boolean
     if (sessionWasReady && now - lastSessionReadyAtMs >= ConnectionOptions.STABLE_SESSION_MS) {
         consecutiveReconnects = 0
     }
-    val schedule = ConnectionOptions.RECONNECT_BACKOFF_MS
+    val schedule = if (isG1) G1Timings.RECONNECT_BACKOFF_MS else ConnectionOptions.RECONNECT_BACKOFF_MS
     val delayMs = schedule[minOf(consecutiveReconnects, schedule.size - 1)].toLong()
     consecutiveReconnects++
     reconnectAfterMs = now + delayMs
@@ -576,6 +581,22 @@ internal fun GlassesSessionCore.emitMicStatus(body: ByteArray, address: String) 
                 micListener.onMicStatus(copy, arm)
             } catch (t: Throwable) {
                 logWarn("mic status listener failed", t)
+            }
+        }
+    }
+}
+
+internal fun GlassesSessionCore.emitKeyboardEvent(body: ByteArray) {
+    if (keyboardEventListeners.isEmpty()) {
+        return
+    }
+    val copy = body.copyOf()
+    host.postToMain {
+        for (keyboardListener in keyboardEventListeners) {
+            try {
+                keyboardListener.onKeyboardEvent(copy)
+            } catch (t: Throwable) {
+                logWarn("keyboard event listener failed", t)
             }
         }
     }

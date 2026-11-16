@@ -9,6 +9,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { loader } = require('./helpers/load-typescript.cjs');
+const { bordered } = require('./helpers/viewport.cjs');
 
 const setting = (initial = '') => {
   let value = initial;
@@ -16,6 +17,8 @@ const setting = (initial = '') => {
 };
 
 class AuthError extends Error {}
+
+const gestures = loader({}, {})('app/ui/gestures.ts');
 
 /**
  * Load the store layer, by default with a signed-out account and no stored
@@ -34,7 +37,7 @@ const loadStoreLayer = ({ configured = false, api = {} } = {}) => {
     '../../graphics/image': { GrayImage: class { drawText(_f, _x, _y, text) { drawn.push(text); } fillRect() {} } },
     '../../graphics/textwrap': { truncateText: (_f, text) => text, wrapText: (_f, text) => [text] },
     '../../util/numeric-util': { clamp: (v, lo, hi) => Math.min(hi, Math.max(lo, v)) },
-    '../../ui/gestures': { GESTURE_CLICK: 'click' },
+    '../../ui/gestures': { ...gestures, GESTURE_CLICK: 'click' },
     '../../ui/menu': { drawSelectionHighlight() {} },
     '../../ui/menu-core': require('../.test-build/app/ui/menu-core.js'),
     '../../ui/shell/shell': { shell: { yieldFocusToSidebar() {} } },
@@ -60,6 +63,7 @@ const loadStoreLayer = ({ configured = false, api = {} } = {}) => {
     './store-detail-layer': { EvenHubStoreDetailLayer: class { constructor(_app, options) { detailOptions.push(options); } } },
     './store-install': { cleanError: (error) => String(error?.message ?? error), installStoreApp: async () => {} },
     './updates': { checkForEvenHubUpdates: async () => [], describeUpdate: () => '' },
+    './glasses-compat': { isEvenHubStoreAvailable: () => true },
   });
   const { EvenHubStoreLayer } = load('app/apps/evenhub/store-layer.ts');
   return { EvenHubStoreLayer, email, password, drawn, detailOptions };
@@ -71,7 +75,7 @@ const makeCtx = () => {
   const stack = {
     cleared: 0,
     pushed: [],
-    getBaseSize: () => ({ width: 576, height: 136 }),
+    getBaseSize: () => bordered(576, 136),
     isFocused: () => true,
     clearToBase() { stack.cleared++; stack.pushed.length = 0; },
     push(layer) { stack.pushed.push(layer); },

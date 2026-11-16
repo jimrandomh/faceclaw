@@ -4,6 +4,7 @@ import { GESTURE_LONG_PRESS, GESTURE_SHORT_THEN_LONG_PRESS, gestureHints, type I
 import { type Layer, type LayerActions, LayerStack, noopLayerActions } from "./layers";
 import { CONTEXT_MENU_DIM, MenuLayer, type MenuItem, type MenuLayout } from "./menu";
 import type { WorkerAppReply } from "./shell/worker-window";
+import type { Viewport, ViewportSize } from "./viewport";
 
 /**
  * The window context menu, opened by tap-then-hold: an app's own menu,
@@ -65,7 +66,8 @@ export type WindowMenuOptions = {
   claimsLongPress?: () => boolean;
   /** Paint the window content the menu draws over (a fresh, mutable image). */
   paintBase: () => GrayImage;
-  size: { width: number; height: number };
+  /** The window's viewport; a bare size will do, as the menu itself floats clear of the edges. */
+  size: ViewportSize | Viewport;
   isFocused: () => boolean;
 };
 
@@ -92,7 +94,7 @@ export class WindowMenu {
 
   constructor(private readonly options: WindowMenuOptions) {}
 
-  resize(size: { width: number; height: number }): void {
+  resize(size: ViewportSize | Viewport): void {
     this.options.size = size;
     this.stack?.setBaseSize(size);
   }

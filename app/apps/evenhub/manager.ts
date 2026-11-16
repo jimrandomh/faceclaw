@@ -6,8 +6,8 @@
  *
  * Glasses-first: launching does NOT take over the phone screen. The phone
  * stays on the Faceclaw dashboard; an app's phone UI is shown on demand
- * (window menu -> "Show phone UI", or the app-icon button in the phone's
- * action bar while the app is foreground on the glasses), overlaying the
+ * (window menu -> "Show phone UI", or the app-icon button in the bar under the
+ * phone's mirror while the app is foreground on the glasses), overlaying the
  * dashboard, and the Back button or the overlay's close button returns to it.
  * Apps are kept alive until explicitly closed (no memory eviction yet).
  */
@@ -40,14 +40,14 @@ type RunningApp = {
   packageId: string;
   session: EvenHubSession;
   webView: EvenHubWebView;
-  /** The app's icon for the phone action bar, rendered on first use. */
+  /** The app's icon for the phone's button bar, rendered on first use. */
   phoneIcon?: ImageSource | null;
 };
 
-/** The phone action bar's button for opening the foreground app's phone UI. */
+/** The button under the phone's mirror that opens the foreground app's phone UI. */
 export type PhoneUiButton = { windowId: string; title: string; icon: ImageSource | null };
 
-/** Pixel size the action-bar icon is rendered at (~21dp at xxhdpi). */
+/** Pixel size the button's icon is rendered at (~21dp at xxhdpi; shown at 20dp). */
 const PHONE_ICON_SIZE = 63;
 
 const running = new Map<string, RunningApp>();
@@ -244,7 +244,7 @@ export function hidePhone(): void {
 
 /**
  * The foreground glasses window, when it is an EvenHub app whose phone UI
- * isn't showing: the phone action bar then offers a button to show it.
+ * isn't showing: the bar under the phone's mirror then offers a button to show it.
  */
 export function phoneUiButton(): PhoneUiButton | null {
   const window = shell.foregroundWindow();
@@ -252,7 +252,7 @@ export function phoneUiButton(): PhoneUiButton | null {
   if (!window || !app || phoneShownWindowId === app.windowId) return null;
   if (app.phoneIcon === undefined) {
     // The same artwork as the glasses sidebar (installed icon, else the
-    // generic package icon), drawn white.
+    // generic package icon), drawn white; the button's stylesheet tints it.
     const image = new GrayImage(PHONE_ICON_SIZE, PHONE_ICON_SIZE, 0);
     window.drawIcon(image, 0, 0, PHONE_ICON_SIZE);
     app.phoneIcon = grayImageToWhiteIconSource(image);

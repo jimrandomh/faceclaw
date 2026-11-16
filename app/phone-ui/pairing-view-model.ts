@@ -10,13 +10,16 @@ import {
   DiscoveryAggregator,
   glassesRow,
   nearestCandidateId,
+  rayneoRow,
   ringRow,
   type GlassesPairCandidate,
   type PairingRowPresentation,
+  type RayNeoCandidate,
   type RingCandidate,
 } from "../g2/pairing-candidates";
+import { glassesTypeSetting, type GlassesType } from "../ui/dashboard-settings";
 import { DeviceDiscoveryBridge } from "../native/device-discovery";
-import { setPreviewOnlyMode } from "./onboarding-state";
+import { hasCompletedOnboarding, ownsRing, setPreviewOnlyMode } from "./onboarding-state";
 
 /** One Repeater row: the presentation plus the display-only fields the XML binds. */
 export type PairingRowItem = PairingRowPresentation & {
@@ -42,6 +45,12 @@ export type PairingRowItem = PairingRowPresentation & {
 const REFRESH_INTERVAL_MS = 500;
 const NO_RESULTS_HINT_AFTER_MS = 10_000;
 
+const SETUP_GLASSES_NAME: Record<GlassesType, string> = {
+  g1: "G1 glasses",
+  g2: "G2 glasses",
+  "rayneo-io": "RayNeo iO",
+};
+
 /**
  * Live pairing scan. Streams advertisements into a `DiscoveryAggregator`,
  * re-renders the pair/ring lists at a calm cadence, and saves the chosen
@@ -65,12 +74,25 @@ export class PairingViewModel extends Observable {
   private _ringRows: PairingRowItem[] = [];
   private selectedPair: GlassesPairCandidate | null = null;
   private selectedRing: RingCandidate | null = null;
+  /** A RayNeo iO instead of a G2 pair (the two are exclusive; either takes a ring). */
+  private selectedIo: RayNeoCandidate | null = null;
   private readonly previouslyPairedSerial: string | null;
   private readonly previouslyPairedRing: string;
+  /**
+   * The glasses chosen on the Your Devices page, during first-run setup. Null
+   * otherwise: the main menu's "Pair glasses" also comes here with onboarding
+   * set, to pair whatever you've got now, so it offers everything. Only the
+   * wording follows this; any glasses heard are still listed, so a wrong choice
+   * can't strand anyone.
+   */
+  private readonly setupGlasses: GlassesType | null;
+  private readonly showRings: boolean;
 
   constructor(options?: { onboarding?: boolean }) {
     super();
     this.onboarding = options?.onboarding ?? false;
+    this.setupGlasses = this.onboarding && !hasCompletedOnboarding() ? glassesTypeSetting.get() : null;
+    this.showRings = !this.setupGlasses || ownsRing();
     this.previouslyPairedSerial = loadPairedGlassesIdentity()?.serial ?? null;
     this.previouslyPairedRing = loadDeviceAddresses().ring;
     // A backgrounded phone (Home, screen lock, a call) must not keep the
@@ -180,10 +202,18 @@ export class PairingViewModel extends Observable {
   }
 
   get instructions(): string {
+    if (this.setupGlasses) {
+      const name = SETUP_GLASSES_NAME[this.setupGlasses];
+      const ready = this.setupGlasses === "g1"
+        ? "Put the glasses in their case with the lid open"
+        : "Wear the glasses or take them out of the case";
+      return `Select your ${name}${this.showRings ? " and your R1 ring" : ""} below. ${ready}, and keep them near your phone. ` +
+        "If they are not detected, make sure no other apps are connected.";
+    }
     return (
-      "Select your G2 glasses and R1 ring below. Wear the glasses or take them out of the case, " +
-      "and keep the glasses and phone nearby. If your glasses are not detected, make sure no other " +
-      "apps are connected."
+      "Select your G2 or G1 glasses or RayNeo iO, and your R1 ring if you have one, below. Wear the glasses or take them out of the case " +
+      "(a G1 pairs only in its case, with the lid open), and keep the glasses and phone nearby. If your glasses are not detected, " +
+      "make sure no other apps are connected."
     );
   }
 
@@ -235,9 +265,13 @@ export class PairingViewModel extends Observable {
     const elapsed = Date.now() - this.startedAtMs;
     if (elapsed < NO_RESULTS_HINT_AFTER_MS) return "Listening for glasses…";
     return (
-      "No glasses heard yet. Make sure they are out of the case and not connected to another app. " +
+      `No glasses heard yet. Make sure they are ${this.setupGlasses === "g1" ? "in their case with the lid open" : "out of the case"} and not connected to another app. ` +
       "On Android 11 and older, Location must also be switched on for Bluetooth scanning to return results."
     );
+  }
+
+  get ringSectionVisibility(): "visible" | "collapse" {
+    return this.showRings ? "visible" : "collapse";
   }
 
   get emptyRingVisibility(): "visible" | "collapse" {
@@ -249,14 +283,17 @@ export class PairingViewModel extends Observable {
   }
 
   get selectionVisibility(): "visible" | "collapse" {
-    return this.selectedPair || this.selectedRing ? "visible" : "collapse";
+    return this.selectedPair || this.selectedRing || this.selectedIo ? "visible" : "collapse";
   }
 
   get selectionSummary(): string {
     const parts: string[] = [];
+    if (this.selectedIo) {
+      parts.push(`RayNeo iO · ${this.selectedIo.advertisement.name} · ${this.selectedIo.advertisement.address}`);
+    }
     if (this.selectedPair) {
       const identity = this.selectedPair.identity;
-      const label = identity ? identity.displayName : "Even Realities G2";
+      const label = identity ? identity.displayName : this.selectedPair.g1Firmware ? "Even Realities G1" : "Even Realities G2";
       parts.push(
         `${label} · serial ${this.selectedPair.serial ?? "unknown"}\n` +
           `Left ${this.selectedPair.left?.address ?? "?"} · Right ${this.selectedPair.right?.address ?? "?"}`,
@@ -273,7 +310,7 @@ export class PairingViewModel extends Observable {
   }
 
   get primaryEnabled(): boolean {
-    return !!this.selectedPair || (!this.onboarding && !!this.selectedRing);
+    return !!this.selectedPair || !!this.selectedIo || (!this.onboarding && !!this.selectedRing);
   }
 
   get secondaryLabel(): string {
@@ -287,7 +324,11 @@ export class PairingViewModel extends Observable {
   readonly onRowTap = (args: EventData): void => {
     const row = (args.object as View).bindingContext as PairingRowItem | undefined;
     if (!row) return;
-    if (row.kind === "glasses") {
+    if (row.kind === "rayneo-io") {
+      const io = this.aggregator.rayneos().find((candidate) => candidate.id === row.id) ?? null;
+      this.selectedIo = this.selectedIo?.id === io?.id ? null : io;
+      if (this.selectedIo) this.selectedPair = null;
+    } else if (row.kind === "glasses") {
       const pair = this.aggregator.pairs().find((candidate) => candidate.id === row.id) ?? null;
       if (!pair) return;
       if (!row.canSelect) {
@@ -295,6 +336,7 @@ export class PairingViewModel extends Observable {
         return;
       }
       this.selectedPair = this.selectedPair?.id === pair.id ? null : pair;
+      if (this.selectedPair) this.selectedIo = null;
     } else {
       const ring = this.aggregator.rings().find((candidate) => candidate.id === row.id) ?? null;
       this.selectedRing = this.selectedRing?.id === ring?.id ? null : ring;
@@ -303,20 +345,49 @@ export class PairingViewModel extends Observable {
   };
 
   onPrimaryTap(): void {
+    const io = this.selectedIo;
     const pair = this.selectedPair;
     const ring = this.selectedRing;
+    const existing = loadDeviceAddresses();
+    // Glasses saved without a ring selected keep the ring paired before.
+    const ringAddress = ring?.advertisement.address ?? existing.ring;
+    const ringName = ring?.advertisement.name ??
+      (ringAddress === existing.ring ? (loadPairedGlassesIdentity()?.ringName ?? "") : "");
+    if (io) {
+      // One link: the same address stands for both arms. The iO can't relay a
+      // ring, so the session connects to it directly (Direct ring mode).
+      const address = io.advertisement.address;
+      saveDeviceAddresses({ right: address, left: address, ring: ringAddress });
+      glassesTypeSetting.set("rayneo-io");
+      savePairedGlassesIdentity({
+        serial: io.advertisement.embeddedMac ?? address,
+        leftName: io.advertisement.name,
+        rightName: io.advertisement.name,
+        leftAddress: address,
+        rightAddress: address,
+        ringName,
+        ringAddress,
+        pairedAtMs: Date.now(),
+      });
+      this.dispose();
+      if (this.onboarding) setPreviewOnlyMode(false);
+      // The G2 firmware check/flash pages don't apply; the session reports
+      // incompatible firmware if the iO lacks the Faceclaw build.
+      finishOnboardingNavigation();
+      return;
+    }
     if (!pair && !ring) return;
     // refresh() drops a selection whose pair regressed below complete, but the
     // tap can race a prune: never fall back to previously stored addresses for
     // a missing arm — that silently welds together arms of two different pairs.
     if (pair && (!pair.left || !pair.right)) return;
-    const existing = loadDeviceAddresses();
     const addresses = {
       right: pair ? pair.right!.address : existing.right,
       left: pair ? pair.left!.address : existing.left,
-      ring: ring?.advertisement.address ?? existing.ring,
+      ring: ringAddress,
     };
     saveDeviceAddresses(addresses);
+    if (pair) glassesTypeSetting.set(pair.g1Firmware ? "g1" : "g2");
     if (pair) {
       savePairedGlassesIdentity({
         serial: pair.serial ?? "",
@@ -324,8 +395,8 @@ export class PairingViewModel extends Observable {
         rightName: pair.right!.name,
         leftAddress: pair.left!.address,
         rightAddress: pair.right!.address,
-        ringName: ring?.advertisement.name ?? (addresses.ring === existing.ring ? (loadPairedGlassesIdentity()?.ringName ?? "") : ""),
-        ringAddress: addresses.ring,
+        ringName,
+        ringAddress,
         pairedAtMs: Date.now(),
       });
     } else if (ring) {
@@ -341,9 +412,10 @@ export class PairingViewModel extends Observable {
       }
     }
     this.dispose();
-    if (this.onboarding) {
-      setPreviewOnlyMode(false);
-      // Continue the onboarding chain: check the glasses' firmware next.
+    if (this.onboarding) setPreviewOnlyMode(false);
+    // Onboarding checks the glasses' firmware next. So does choosing a G1 from anywhere: it may run Even's firmware,
+    // and whether it does is known without connecting.
+    if (this.onboarding || pair?.g1Firmware) {
       Frame.topmost()?.navigate({ moduleName: "phone-ui/onboarding-firmware-check-page" });
       return;
     }
@@ -386,7 +458,11 @@ export class PairingViewModel extends Observable {
   private refresh(): void {
     this.aggregator.prune(Date.now(), DEFAULT_STALE_AFTER_MS);
     const pairs = this.aggregator.pairs();
-    const rings = this.aggregator.rings();
+    const rings = this.showRings ? this.aggregator.rings() : [];
+    const rayneos = this.aggregator.rayneos();
+    if (this.selectedIo) {
+      this.selectedIo = rayneos.find((candidate) => candidate.id === this.selectedIo!.id) ?? null;
+    }
 
     // Keep the selection pointing at live data (addresses can only change if a
     // side was replaced); drop it if the pair disappeared — or if it degraded
@@ -402,13 +478,24 @@ export class PairingViewModel extends Observable {
 
     const nearestPair = nearestCandidateId(pairs);
     const nearestRing = nearestCandidateId(rings);
-    this._glassesRows = pairs.map((pair) =>
-      toRowItem(
-        glassesRow(pair, { pairedSerial: this.previouslyPairedSerial, nearestId: nearestPair }),
-        this.selectedPair?.id === pair.id,
-        this.onRowTap,
+    const pairedAddress = glassesTypeSetting.get() === "rayneo-io" ? loadDeviceAddresses().right : "";
+    const nearestIo = nearestCandidateId(rayneos);
+    this._glassesRows = [
+      ...rayneos.map((candidate) =>
+        toRowItem(
+          rayneoRow(candidate, { pairedAddress, nearestId: nearestIo }),
+          this.selectedIo?.id === candidate.id,
+          this.onRowTap,
+        ),
       ),
-    );
+      ...pairs.map((pair) =>
+        toRowItem(
+          glassesRow(pair, { pairedSerial: this.previouslyPairedSerial, nearestId: nearestPair }),
+          this.selectedPair?.id === pair.id,
+          this.onRowTap,
+        ),
+      ),
+    ];
     this._ringRows = rings.map((ring) =>
       toRowItem(
         ringRow(ring, { pairedRingAddress: this.previouslyPairedRing, nearestId: nearestRing }),
@@ -417,21 +504,12 @@ export class PairingViewModel extends Observable {
       ),
     );
 
-    const complete = pairs.filter((pair) => pair.completeness === "complete").length;
-    const partial = pairs.length - complete;
     if (this.scanFailure) {
       this.status = `Scan failed: ${this.scanFailure}`;
     } else if (!this._scanning) {
       this.status = "Scan paused.";
-    } else if (!pairs.length && !rings.length) {
-      this.status = "Scanning…";
     } else {
-      const bits = [
-        complete ? `${complete} ${complete === 1 ? "pair" : "pairs"} ready` : null,
-        partial ? `${partial} with one arm heard` : null,
-        rings.length ? `${rings.length} ${rings.length === 1 ? "ring" : "rings"}` : null,
-      ].filter(Boolean);
-      this.status = `Scanning… ${bits.join(" · ")}. Tap a pair to select it.`;
+      this.status = "Scanning…";
     }
 
     for (const property of [
@@ -466,7 +544,7 @@ function toRowItem(row: PairingRowPresentation, selected: boolean, onRowTap: (ar
     colorwayLabel: colorwayLabel(row.colorway),
     badgeVisibility: row.badge ? "visible" : "collapse",
     variantVisibility: row.variantSummary ? "visible" : "collapse",
-    proximityLine: `${row.proximityGlyph}  ${row.proximitySummary}`,
+    proximityLine: row.proximityGlyph,
     proximityClass: row.zone === "immediate" ? "pairing-proximity pairing-proximity-immediate" : "pairing-proximity",
     armsVisibility: row.armsSummary ? "visible" : "collapse",
     warningVisibility: row.warning ? "visible" : "collapse",

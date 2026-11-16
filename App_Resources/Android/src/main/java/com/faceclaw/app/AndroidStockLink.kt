@@ -48,6 +48,17 @@ class AndroidStockLink(context: Context) : StockLink, FaceclawBleListener {
             else -> BondState.UNKNOWN
         }
 
+    override fun negotiatedMtu(address: String): Int = bleManager.getNegotiatedMtu(address)
+
+    override fun requestBond(address: String) = bleManager.requestBond(address)
+
+    override fun removeBond(address: String): Boolean = bleManager.removeBond(address)
+
+    override fun hasCharacteristic(address: String, characteristicUuid: String): Boolean =
+        bleManager.hasCharacteristic(address, characteristicUuid)
+
+    override fun refreshServices(address: String, timeoutMs: Int): Boolean = bleManager.refreshServices(address, timeoutMs)
+
     override fun disconnect(address: String) = bleManager.disconnect(address)
 
     override fun close() = bleManager.close()

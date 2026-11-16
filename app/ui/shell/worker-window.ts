@@ -3,7 +3,8 @@ import { GrayImage } from "../../graphics/image";
 import { windowIcon } from "./chrome-layer";
 import { type IconActivity, type IconName } from "../../graphics/icons";
 import { toolRegistry, type ToolResult, type ToolSpec } from "../../assistant/tool-registry";
-import { appViewportSize, type WindowHeightMode } from "./geometry";
+import { appViewport, type WindowHeightMode } from "./geometry";
+import { type Viewport } from "../viewport";
 import * as frameTimings from "../../native/frame-timings";
 import { shell, type ShellWindow } from "./shell";
 import { publishWorkerState } from "./worker-state";
@@ -20,11 +21,15 @@ export type WorkerAppMessage =
   /** Release app-wide resources, then acknowledge with worker-stopped. */
   | { type: "shutdown" }
   | { type: "navigation-sensors"; event: NavigationSensorEvent }
-  | { type: "open-window"; windowId: string; surfaceId: string; title: string; viewport: { width: number; height: number } }
-  | { type: "resize-window"; windowId: string; viewport: { width: number; height: number } }
+  /** `viewport` carries what the window's edges touch and the padding suggested for them (viewport.ts). */
+  | { type: "open-window"; windowId: string; surfaceId: string; title: string; viewport: Viewport }
+  /** The window's size changed, or what its edges touch did (so its padding). */
+  | { type: "resize-window"; windowId: string; viewport: Viewport }
   | { type: "close-window"; windowId: string }
   | { type: "input"; windowId: string; event: unknown; frameId: number; focused: boolean }
   | { type: "text-input"; windowId: string; text: string; submit?: boolean }
+  /** A hardware-keyboard key (a KeyEvent), for windows opened with acceptsKeys. */
+  | { type: "key"; windowId: string; event: unknown; focused: boolean }
   | { type: "render"; windowId: string; focused: boolean }
   | { type: "foreground"; windowId: string; foreground: boolean; focused: boolean }
   /**
@@ -54,6 +59,16 @@ export type WorkerAppReply =
     }
   | { type: "yield-focus"; windowId: string }
   | {
+      /**
+       * A "key" message the window had no use for as a key (a terminal
+       * showing its session list rather than a session). The host gives it
+       * the keyboard's navigation meaning instead.
+       */
+      type: "key-unhandled";
+      windowId: string;
+      event: unknown;
+    }
+  | {
       /** Foreground and focus one of the app's existing windows. */
       type: "focus-window";
       windowId: string;
@@ -78,6 +93,18 @@ export type WorkerAppReply =
       focus?: boolean;
       /** Window height: the standard 288px band ("min", default) or full screen ("max"). */
       heightMode?: WindowHeightMode;
+      /** Send the window hardware-keyboard keys (see WorkerWindowSpec). */
+      acceptsKeys?: boolean;
+    }
+  | {
+      /**
+       * Move a window to another height band at runtime. The host resizes its
+       * surface and then always answers with resize-window, even if the size
+       * came out the same, so the worker can wait for the new viewport.
+       */
+      type: "set-height-mode";
+      windowId: string;
+      heightMode: WindowHeightMode;
     }
   | { type: "set-title"; windowId: string; title: string }
   | { type: "set-attention"; windowId: string; attention: boolean }
@@ -183,6 +210,13 @@ export type WorkerWindowSpec = {
    * of all four directions in every window state (see ShellWindow).
    */
   acceptsDirectional?: boolean;
+  /**
+   * Deliver hardware-keyboard keys to the worker as "key" messages while the
+   * window has input focus (see ShellWindow.handleKeyEvent). The worker
+   * answers "key-unhandled" for a key it doesn't want as a key just then,
+   * which gets the keyboard's navigation meaning instead.
+   */
+  acceptsKeys?: boolean;
 };
 
 export type WorkerAppHostOptions = {
@@ -193,8 +227,12 @@ export type WorkerAppHostOptions = {
   navigationSensors?: { handle(request: NavigationSensorRequest): void; stop(): void };
   openUrl?: (url: string) => void;
   playBuzzerSequence?: (payload: Uint8Array) => Promise<void> | void;
-  /** Create/refresh a window surface on the compositor (no-op when disconnected). */
-  configureSurface: (surfaceId: string, visible: boolean, heightMode: WindowHeightMode) => Promise<void>;
+  /**
+   * Create/refresh a window surface on the compositor (no-op when disconnected).
+   * `visible` may be a function, read once the surface is configured, for a
+   * window that can lose the foreground in the meantime.
+   */
+  configureSurface: (surfaceId: string, visible: boolean | (() => boolean), heightMode: WindowHeightMode) => Promise<void>;
   setSurfaceVisible: (surfaceId: string, visible: boolean) => void;
   removeSurface: (surfaceId: string) => void;
   requestShellRender: () => void;
@@ -206,6 +244,8 @@ export type WorkerAppHostOptions = {
   startTextSettingEdit: (settingId: string) => void;
   /** Close the phone text editor opened by startTextSettingEdit. */
   endTextSettingEdit: () => void;
+  /** A key a window was sent and handed back (the "key-unhandled" reply); a KeyEvent. */
+  unhandledKey?: (event: unknown) => void;
 };
 
 /**
@@ -295,6 +335,10 @@ export class WorkerAppHost {
             shell.yieldFocusToSidebar();
           }
           break;
+        case "key-unhandled":
+          // Stale once focus has moved on: the key was meant for that window.
+          if (shell.isWindowFocused(message.windowId)) this.options.unhandledKey?.(message.event);
+          break;
         case "focus-window":
           if (this.openWindows.has(message.windowId)) {
             shell.focusWindow(message.windowId);
@@ -318,7 +362,11 @@ export class WorkerAppHost {
             iconGlyph: message.iconGlyph,
             focus: message.focus,
             heightMode: message.heightMode,
+            acceptsKeys: message.acceptsKeys,
           });
+          break;
+        case "set-height-mode":
+          this.setWindowHeightMode(message.windowId, message.heightMode);
           break;
         case "set-attention":
           shell.setWindowAttention(message.windowId, message.attention);
@@ -445,12 +493,13 @@ export class WorkerAppHost {
     const surfaceId = `window:${spec.windowId}`;
     const heightMode = spec.heightMode ?? "min";
     this.openWindows.add(spec.windowId);
+    let viewport = appViewport(heightMode, this.options.appId);
     this.post({
       type: "open-window",
       windowId: spec.windowId,
       surfaceId,
       title: spec.title,
-      viewport: appViewportSize(heightMode, this.options.appId),
+      viewport,
     });
     const window: ShellWindow = {
       appId: this.options.appId,
@@ -463,7 +512,11 @@ export class WorkerAppHost {
       // Every app worker resizes its live content in place, keeping its state
       // (a game in progress, a route): the bottom switcher's height changes
       // with what it holds, and full-height windows give way to it.
-      relayout: () => this.post({ type: "resize-window", windowId: spec.windowId, viewport: appViewportSize(heightMode, this.options.appId) }),
+      relayout: () => {
+        viewport = appViewport(window.heightMode, this.options.appId);
+        this.post({ type: "resize-window", windowId: spec.windowId, viewport });
+      },
+      layoutSize: () => viewport,
       hasAppMenu: () => this.windowGestures.get(spec.windowId)?.hasAppMenu ?? false,
       claimsLongPress: () => this.windowGestures.get(spec.windowId)?.claimsLongPress ?? false,
       close: () => {
@@ -497,6 +550,13 @@ export class WorkerAppHost {
       receiveTextInput: (text, options) => {
         this.post({ type: "text-input", windowId: spec.windowId, text, ...(options?.submit === undefined ? {} : { submit: options.submit }) });
       },
+      ...(spec.acceptsKeys
+        ? {
+            handleKeyEvent: (event) => {
+              this.post({ type: "key", windowId: spec.windowId, event, focused: shell.isWindowFocused(spec.windowId) });
+            },
+          }
+        : {}),
       setForeground: (foreground) => {
         this.options.setSurfaceVisible(surfaceId, foreground);
         if (foreground) {
@@ -534,6 +594,24 @@ export class WorkerAppHost {
         console.error(`surface setup for ${spec.windowId} failed: ${error}`);
       });
     return window;
+  }
+
+  /** The worker asked for another height band (see set-height-mode). */
+  private setWindowHeightMode(windowId: string, heightMode: WindowHeightMode): void {
+    const window = this.openWindows.has(windowId) ? shell.getWindows().find((w) => w.windowId === windowId) : undefined;
+    if (!window) return;
+    window.heightMode = heightMode;
+    // Resize the surface first, so the frame answering resize-window fits it.
+    void this.options
+      .configureSurface(window.surfaceId, () => shell.foregroundWindow()?.windowId === windowId, heightMode)
+      .catch((error) => {
+        console.error(`surface resize for ${windowId} failed: ${error}`);
+      })
+      .then(() => {
+        window.relayout?.();
+        // The chrome (top bar, bottom switcher) follows the foreground's band.
+        this.options.requestShellRender();
+      });
   }
 
   /**

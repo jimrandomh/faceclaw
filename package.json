@@ -13,6 +13,7 @@
     "run:ios": "scripts/ios.sh run ios",
     "prepare:ios": "scripts/ios.sh prepare ios",
     "doctor:ios": "scripts/ios.sh doctor ios",
+    "install:apple-watch": "./build_apple_watch.sh --install",
     "build": "./build.sh",
     "lint": "./lint.sh",
     "run": "./build_and_run.sh",

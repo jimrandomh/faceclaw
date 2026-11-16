@@ -30,7 +30,10 @@ export { bytesToHex, hexToBytes };
 /** Even Realities' manufacturer-data company identifier (`"ER"` read little-endian). */
 export const EVEN_COMPANY_IDENTIFIER = 0x5245;
 
-export type EvenDeviceRole = "left" | "right" | "ring";
+export type EvenDeviceRole = "left" | "right" | "ring" | "rayneo-io";
+
+/** The firmware an Even G1 arm advertises: Even's, or Faceclaw's g1v0 (in safe mode: only updates work). */
+export type G1Firmware = "stock" | "g1v0" | "g1v0-safe";
 
 /** True when the manufacturer data opens with Even's `"ER"` marker. */
 export function hasEvenManufacturerSignature(mfg: Uint8Array): boolean {
@@ -69,6 +72,61 @@ export function extractG2Mac(mfg: Uint8Array): string | null {
 export function extractG2AdvertisementFlag(mfg: Uint8Array): number | null {
   if (mfg.length < 23 || !hasEvenManufacturerSignature(mfg)) return null;
   return mfg[22]!;
+}
+
+/**
+ * ## Even G1 arm
+ *
+ * On Even's firmware the name is `Even G1_<token>_<L|R>_<hex6>` and the manufacturer data `[01 right | 02 left]` +
+ * the ASCII serial, zero-padded (the first two bytes read as a "company id" that differs per arm). On g1v0 the name
+ * is `G1CFW_<L|R>_<hex6>` with the same digits and address as stock's, and the scan response holds company 0xFFFF, a
+ * format byte (2), a flags byte (bit 3: safe mode), the firmware's version in three bytes, and the pair ID in ASCII:
+ * the frame serial, the same on both arms. Before 0.5.66: `G1v0_L` or `G1v0_R` (`G1v0S_…` in safe mode), format 1, no
+ * version.
+ */
+export function g1FromName(name: string | null | undefined): { side: "left" | "right"; firmware: G1Firmware } | null {
+  if (!name) return null;
+  const custom = /^G1CFW_([LR])_[0-9A-F]{6}$/i.exec(name.trim());
+  if (custom) return { side: custom[1]!.toUpperCase() === "L" ? "left" : "right", firmware: "g1v0" };
+  const g1v0 = /^G1V0(S?)_([LR])$/i.exec(name.trim());
+  if (g1v0) {
+    return {
+      side: g1v0[2]!.toUpperCase() === "L" ? "left" : "right",
+      firmware: g1v0[1] ? "g1v0-safe" : "g1v0",
+    };
+  }
+  if (!/^EVEN G1_/i.test(name.trim())) return null;
+  const side = g2SideFromName(name);
+  return side ? { side, firmware: "stock" } : null;
+}
+
+/** What g1v0's pair record says beyond the serial; null when there is no record of a format that says it. */
+export function parseG1Record(mfg: Uint8Array): { version: string; safeMode: boolean } | null {
+  if (mfg.length < 7 || mfg[0] !== 0xff || mfg[1] !== 0xff || mfg[2] !== 2) return null;
+  return { version: `${mfg[4]}.${mfg[5]}.${mfg[6]}`, safeMode: (mfg[3]! & 8) !== 0 };
+}
+
+/** The pair's serial from an arm's manufacturer data, on either firmware; null when absent. */
+export function extractG1Serial(mfg: Uint8Array, firmware: G1Firmware): string | null {
+  const record = mfg.length >= 4 && mfg[0] === 0xff && mfg[1] === 0xff;
+  const start = firmware === "stock" ? 1 : record && mfg[2] === 2 ? 7 : record && mfg[2] === 1 ? 4 : -1;
+  if (start < 0 || mfg.length <= start) return null;
+  let serial = "";
+  for (let i = start; i < mfg.length; i++) {
+    const byte = mfg[i]!;
+    if (byte === 0) break;
+    if (byte < 0x20 || byte > 0x7e) return null;
+    serial += String.fromCharCode(byte);
+  }
+  return serial.length ? serial : null;
+}
+
+/** RayNeo iO manufacturer data (company 0x5716, little-endian first): `[07][MAC x6]...`, outside pairing mode. */
+export const RAYNEO_COMPANY_IDENTIFIER = 0x5716;
+
+export function extractRayNeoMac(mfg: Uint8Array): string | null {
+  if (mfg.length < 9 || mfg[0] !== 0x16 || mfg[1] !== 0x57 || mfg[2] !== 0x07) return null;
+  return Array.from(mfg.subarray(3, 9), (byte) => byte.toString(16).padStart(2, "0").toUpperCase()).join(":");
 }
 
 /**
@@ -210,6 +268,10 @@ export type EvenAdvertisement = {
   manufacturerData: string;
   /** Why an otherwise Even-looking advertisement could not be fully parsed. */
   note: string | null;
+  /** Set on an Even G1 arm (role left or right): its firmware. */
+  g1Firmware?: G1Firmware;
+  /** The version g1v0 advertises (0.5.66+); absent when it doesn't say. */
+  g1Version?: string;
 };
 
 /**
@@ -230,8 +292,58 @@ export function classifyAdvertisement(raw: RawAdvertisement): EvenAdvertisement 
   const hasSignature = hasEvenManufacturerSignature(mfg);
   const looksLikeRing = /^EVEN R1([_ ]|$)/.test(upper);
   const looksLikeG2 = upper.includes("G2");
+  const rayneoMac = extractRayNeoMac(mfg);
+  const looksLikeRayNeo = upper.startsWith("RAYNEO") || rayneoMac !== null;
 
-  if (!looksLikeRing && !looksLikeG2 && !hasSignature) return null;
+  const g1 = g1FromName(name);
+  if (g1) {
+    const serial = extractG1Serial(mfg, g1.firmware);
+    const record = g1.firmware === "stock" ? null : parseG1Record(mfg);
+    return {
+      address: normalizeMacAddress(raw.address),
+      name,
+      role: g1.side,
+      serial,
+      embeddedMac: null,
+      embeddedMacMismatch: false,
+      flag: null,
+      ringSerialSuffix: null,
+      rssi: raw.rssi,
+      txPower: raw.txPower,
+      connectable: raw.connectable,
+      bonded: raw.bonded,
+      source: raw.source,
+      seenAtMs: raw.seenAtMs,
+      manufacturerData: raw.manufacturerData ?? "",
+      note: serial ? null : "no serial in the advertisement (it may still be arriving)",
+      g1Firmware: record?.safeMode ? "g1v0-safe" : g1.firmware,
+      ...(record ? { g1Version: record.version } : {}),
+    };
+  }
+
+  if (!looksLikeRing && !looksLikeG2 && !hasSignature && !looksLikeRayNeo) return null;
+
+  if (looksLikeRayNeo && !hasSignature) {
+    const address = normalizeMacAddress(raw.address);
+    return {
+      address,
+      name,
+      role: "rayneo-io",
+      serial: null,
+      embeddedMac: rayneoMac,
+      embeddedMacMismatch: !!rayneoMac && rayneoMac !== address,
+      flag: null,
+      ringSerialSuffix: null,
+      rssi: raw.rssi,
+      txPower: raw.txPower,
+      connectable: raw.connectable,
+      bonded: raw.bonded,
+      source: raw.source,
+      seenAtMs: raw.seenAtMs,
+      manufacturerData: raw.manufacturerData ?? "",
+      note: null,
+    };
+  }
 
   const base = {
     address: normalizeMacAddress(raw.address),

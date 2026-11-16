@@ -26,7 +26,7 @@ export type FirmwareInfo = {
 };
 
 /** The Faceclaw firmware revision this build of the app needs. */
-export const REQUIRED_FACECLAW_FIRMWARE_VERSION = 38;
+export const REQUIRED_FACECLAW_FIRMWARE_VERSION = 39;
 
 const FACECLAW_PREFIX = "Faceclaw/";
 const LEGACY_PREFIX = "EVENCFW";
@@ -116,6 +116,11 @@ export function firmwareIncompatibilityMessage(info: FirmwareInfo): string | nul
 
   const versionsText = `L=${info.leftVersion || "unknown"} R=${info.rightVersion || "unknown"}`;
   const required = `Faceclaw firmware revision ${REQUIRED_FACECLAW_FIRMWARE_VERSION}`;
+
+  // A G1's session names what the arms run instead of a revision (GlassesSessionG1.kt).
+  if (extension.kind === "none" && reportedVersions.some((version) => /^(g1v0|Even's firmware)/.test(version))) {
+    return `These G1 glasses run ${versionsText}. This version of Faceclaw needs the firmware it comes with: install it to continue.`;
+  }
 
   switch (extension.kind) {
     case "faceclaw":

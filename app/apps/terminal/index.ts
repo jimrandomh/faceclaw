@@ -14,6 +14,8 @@ const terminalApp: AppDefinition = {
       // Session windows stay independent: launching reopens the hub even
       // while terminal sessions are open.
       matchExistingBy: "windowId",
+      // The hub window can show a session too, so it takes keys like one.
+      acceptsKeys: true,
     }),
 };
 

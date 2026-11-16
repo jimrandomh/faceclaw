@@ -33,7 +33,7 @@ function harness(refused = new Set()) {
     FaceclawKitIosGlassesSession: { alloc: () => ({ initWithRightAddressLeftAddressRingAddress: () => session }) },
     FaceclawKitFaceclawBleCommunicatorListener: {}, FaceclawKitIosAncsListener: {}, FaceclawKitIosAudioPacketListener: {},
     FaceclawKitFaceclawCompassListener: {}, FaceclawKitFaceclawImuListener: {}, FaceclawKitIosAmbientLightListener: {},
-    FaceclawKitIosMicStatusListener: {}, console: { log() {}, warn() {} },
+    FaceclawKitIosMicStatusListener: {}, FaceclawKitIosKeyboardEventListener: {}, console: { log() {}, warn() {} },
   }, {
     '@nativescript/core': { File: {}, knownFolders: {}, path: {} },
     '../g2/firmware-compat': { REQUIRED_FACECLAW_FIRMWARE_VERSION: 37 },

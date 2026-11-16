@@ -34,14 +34,18 @@ fun interface CallbackDispatcher {
     fun post(action: () -> Unit)
 }
 
-/** Receives the session's decoded PCM once capture ends (Android saves a WAV file). */
-fun interface RecordingSink {
-    fun save(pcm16le: ByteArray, sampleRate: Int)
-}
-
-/** A G2 microphone packet decoder (the shared [Lc3PacketFramer] over a platform LC3 codec). */
+/**
+ * A glasses microphone packet decoder to 16 kHz mono PCM: the G2's LC3 (the shared
+ * [Lc3PacketFramer] over a platform LC3 codec) or the RayNeo iO's Opus.
+ */
 interface AudioPacketDecoder {
     fun decodePacket(packet: ByteArray?, pcmOut: ShortArray?): Int
+
+    /** The most samples one packet decodes to: the size [decodePacket]'s pcmOut needs. */
+    val maxSamplesPerPacket: Int get() = Lc3PacketFramer.SAMPLES_PER_PACKET
+
+    /** Whether packets carry the G2 firmware's DSP metadata ([lastAngleDegrees], [lastSsr]). */
+    val hasFrameMeta: Boolean get() = true
 
     val lastAngleDegrees: Int
     val lastSsr: Int
@@ -61,6 +65,24 @@ interface PacketAudioSource {
 
     /** Whether the glasses are still delivering packets for this capture. */
     fun isActive(): Boolean
+}
+
+/**
+ * The custom firmware's mic_control channel on a glasses session: each temple streams its own
+ * microphones as 'SM' frames (see [MicArrayProtocol]) on the characteristic the stock mixed
+ * stream uses, while it holds a configuration that the phone keeps renewing.
+ */
+interface MicArrayLink {
+    /** Deliver the audio characteristic's packets to [listener]; false when no session is up. */
+    fun startForwarding(listener: FaceclawAudioPacketListener): Boolean
+
+    fun stopForwarding()
+
+    /** Whether forwarding still holds: it lives in the glasses session, which can drop it. */
+    fun isForwarding(): Boolean
+
+    /** Queue a control record for the chosen temples; false when nothing was queued. */
+    fun sendControl(record: ByteArray, label: String, rightTemple: Boolean, leftTemple: Boolean): Boolean
 }
 
 /** The phone's own microphone delivering 16 kHz mono PCM16 in blocking reads. */

@@ -25,10 +25,6 @@ const INSTRUCTIONS_BY_FRAME: Record<NorthReference, string> = {
   magnetic: "magnetic compass heading (as read by another compass), then adjust the calibration offset below",
 };
 
-/** Margins around the instruction paragraph. */
-const TEXT_PADDING_X = 16;
-const TEXT_PADDING_TOP = 10;
-
 export class CompassCalibrationLayer implements Layer {
   constructor(
     /** Current uncorrected magnetometer heading, or null before the first reading. */
@@ -36,7 +32,7 @@ export class CompassCalibrationLayer implements Layer {
   ) {}
 
   paint(ctx: LayerContext): GrayImage {
-    const { width, height } = ctx.stack.getBaseSize();
+    const { width, height, padding } = ctx.stack.getBaseSize();
     const image = new GrayImage(width, height, 0);
     const small = getDefaultSmallFont();
     const medium = getDefaultMediumFont();
@@ -47,14 +43,17 @@ export class CompassCalibrationLayer implements Layer {
     // Before the first reading there is no frame to name yet; the true-mode
     // wording is the default and the readout will correct it once data arrives.
     const frame = resolved?.frame ?? "true";
-    const lines = wrapText(small, INSTRUCTIONS_PREAMBLE + INSTRUCTIONS_BY_FRAME[frame], width - TEXT_PADDING_X * 2);
+    // The instructions fill the width inside the padding suggested for the
+    // window's edges, from the top's down.
+    const lines = wrapText(small, INSTRUCTIONS_PREAMBLE + INSTRUCTIONS_BY_FRAME[frame], Math.max(0, width - padding.left - padding.right));
     for (let i = 0; i < lines.length; i++) {
-      image.drawText(small, TEXT_PADDING_X, TEXT_PADDING_TOP + i * smallStep, lines[i]!, 190);
+      image.drawText(small, padding.left, padding.top + i * smallStep, lines[i]!, 190);
     }
-    const textBottom = TEXT_PADDING_TOP + lines.length * smallStep;
+    const textBottom = padding.top + lines.length * smallStep;
 
-    // Readouts along the bottom: dim label over a bright value, in thirds.
-    const valueTop = height - medium.lineHeight;
+    // Readouts along the bottom, above its padding: dim label over a bright
+    // value, in equal columns.
+    const valueTop = height - padding.bottom - medium.lineHeight;
     const labelTop = valueTop - small.lineHeight;
     const columns: Array<[string, string]> = [
       ["Raw", raw === null ? "--°" : `${Math.round(raw)}°`],

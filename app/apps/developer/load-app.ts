@@ -9,8 +9,6 @@ import { lineStep } from "../../ui/metrics";
 import { developerAppUrlSetting } from "../../ui/dashboard-settings";
 import { cancelQrScan, isQrScannerAvailable, scanQrCode } from "../../native/qr-scan";
 
-const MARGIN = 20;
-
 /**
  * "Load app from URL": the glasses side of the phone text editor. Entering the
  * page opens the editor on developerAppUrlSetting, the typed URL echoes here
@@ -44,27 +42,30 @@ export class LoadAppFromUrlLayer implements Layer {
 
   paint(ctx: LayerContext): GrayImage {
     const font = getDefaultSmallFont();
-    const { width, height } = ctx.stack.getBaseSize();
+    // The page's text fills the window inside the padding suggested for its
+    // edges: the title at the top, the hint line at the bottom.
+    const { width, height, padding } = ctx.stack.getBaseSize();
     const image = new GrayImage(width, height, 0);
     const step = lineStep(font);
-    const textWidth = width - 2 * MARGIN;
+    const left = padding.left;
+    const textWidth = Math.max(0, width - padding.left - padding.right);
 
-    image.drawText(font, MARGIN, 8, "Load app from URL", 220);
-    let y = 8 + step + 6;
-    image.drawText(font, MARGIN, y, "Type the app's URL in the phone app", 150);
+    image.drawText(font, left, padding.top, "Load app from URL", 220);
+    let y = padding.top + step + 6;
+    image.drawText(font, left, y, "Type the app's URL in the phone app", 150);
     y += step;
-    image.drawText(font, MARGIN, y, "(or use voice input from the menu).", 150);
+    image.drawText(font, left, y, "(or use voice input from the menu).", 150);
     y += step + 8;
 
     const url = developerAppUrlSetting.get();
     for (const line of wrapText(font, url || "(empty)", textWidth).slice(0, 3)) {
-      image.drawText(font, MARGIN, y, line, url ? 230 : 110);
+      image.drawText(font, left, y, line, url ? 230 : 110);
       y += step;
     }
     if (this.error) {
       y += 4;
       for (const line of wrapText(font, this.error, textWidth).slice(0, 2)) {
-        image.drawText(font, MARGIN, y, line, 150);
+        image.drawText(font, left, y, line, 150);
         y += step;
       }
     }
@@ -72,7 +73,7 @@ export class LoadAppFromUrlLayer implements Layer {
     const footer = this.launching
       ? "Loading..."
       : `${GESTURE_CLICK} load   ${GESTURE_DOUBLE_CLICK} cancel`;
-    image.drawText(font, MARGIN, height - font.lineHeight - 12, footer, 110);
+    image.drawText(font, left, height - padding.bottom - font.lineHeight, footer, 110);
     return image;
   }
 
@@ -145,19 +146,22 @@ export class LoadAppFromQrLayer implements Layer {
 
   paint(ctx: LayerContext): GrayImage {
     const font = getDefaultSmallFont();
-    const { width, height } = ctx.stack.getBaseSize();
+    // Laid out like the URL page: text inside the padding suggested for the
+    // window's edges, the hint line at the bottom.
+    const { width, height, padding } = ctx.stack.getBaseSize();
     const image = new GrayImage(width, height, 0);
     const step = lineStep(font);
+    const left = padding.left;
 
-    image.drawText(font, MARGIN, 8, "Load app from QR code", 220);
-    let y = 8 + step + 6;
-    for (const line of wrapText(font, this.status, width - 2 * MARGIN).slice(0, 5)) {
-      image.drawText(font, MARGIN, y, line, 170);
+    image.drawText(font, left, padding.top, "Load app from QR code", 220);
+    let y = padding.top + step + 6;
+    for (const line of wrapText(font, this.status, Math.max(0, width - padding.left - padding.right)).slice(0, 5)) {
+      image.drawText(font, left, y, line, 170);
       y += step;
     }
 
     const footer = this.busy ? `${GESTURE_DOUBLE_CLICK} back` : `${GESTURE_CLICK} scan again   ${GESTURE_DOUBLE_CLICK} back`;
-    image.drawText(font, MARGIN, height - font.lineHeight - 12, footer, 110);
+    image.drawText(font, left, height - padding.bottom - font.lineHeight, footer, 110);
     return image;
   }
 

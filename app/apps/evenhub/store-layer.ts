@@ -1,7 +1,7 @@
 import { getDefaultSmallFont } from "../../graphics/ui-fonts";
 import { GrayImage, type UiFont } from "../../graphics/image";
 import { truncateText, wrapText } from "../../graphics/textwrap";
-import { GESTURE_CLICK, type InputEvent } from "../../ui/gestures";
+import { directionalFallback, GESTURE_CLICK, isDirectionalInput, type InputEvent } from "../../ui/gestures";
 import { type Layer, type LayerActions, type LayerContext, type LayerStack } from "../../ui/layers";
 import { drawSelectionHighlight, type MenuItem } from "../../ui/menu";
 import { Menu } from "../../ui/menu-core";
@@ -14,14 +14,37 @@ import { EvenHubStoreDetailLayer, type EvenHubStoreDetailOptions } from "./store
 import { cleanError, installStoreApp } from "./store-install";
 import { checkForEvenHubUpdates, describeUpdate, type EvenHubAppUpdate } from "./updates";
 import { lineStep } from "../../ui/metrics";
+import type { Viewport } from "../../ui/viewport";
+import { isEvenHubStoreAvailable } from "./glasses-compat";
 
-const LIST_X = 18;
+/** Horizontal inset of a row's text from its highlight box; the header's text lines up with it. */
+const ROW_TEXT_INSET = 6;
 /** Horizontal gap between tab labels. */
 const TAB_GAP = 18;
+/** How far a focused tab's highlight box reaches past its label, sideways and above/below. */
+const TAB_HIGHLIGHT_PAD_X = 6;
+const TAB_HIGHLIGHT_PAD_Y = 3;
+/** Room kept right of the rows for the scrollbar, and the bar's own width. */
+const SCROLLBAR_GUTTER = 6;
+const SCROLLBAR_WIDTH = 3;
 
-/** Header: title + tabs line, then the status/subtitle line, then a small gap. */
-function headerHeight(font: UiFont): number {
-  return 8 + lineStep(font) + font.lineHeight + 6;
+/**
+ * Where the header sits in a viewport. Its text shares a column with the
+ * rows' text, whose highlight boxes start at the left edge's padding. The
+ * outermost thing it draws toward the top is a focused tab's highlight box,
+ * so that box sits at the top edge's padding and the title line follows
+ * from it. `bottom` is where the header ends: title + tabs line, then the
+ * status/subtitle line, then a small gap.
+ */
+function headerLayout(viewport: Viewport, font: UiFont): { textX: number; textWidth: number; titleY: number; bottom: number } {
+  const { width, padding } = viewport;
+  const titleY = padding.top + TAB_HIGHLIGHT_PAD_Y;
+  return {
+    textX: padding.left + ROW_TEXT_INSET,
+    textWidth: Math.max(0, width - padding.left - padding.right - 2 * ROW_TEXT_INSET),
+    titleY,
+    bottom: titleY + lineStep(font) + font.lineHeight + 6,
+  };
 }
 
 /** Row pitch of the two-line app list (title + detail), including the 2px gap between highlights. */
@@ -55,7 +78,32 @@ type StoreRow =
   /** The Search tab's first row: shows the query and opens the phone editor. */
   | { kind: "search-query" }
   /** A registry entry whose package is gone and which the store no longer lists. */
-  | { kind: "orphan"; update: EvenHubAppUpdate };
+  | { kind: "orphan"; update: EvenHubAppUpdate }
+  /** The Updates tab's first row while any update is installable; `busy` while Update All runs. */
+  | { kind: "update-all"; count: number; busy: boolean };
+
+type AppRow = Extract<StoreRow, { kind: "app" }>;
+
+/** An Updates row that installing the store's version would satisfy. */
+function isUpdatableRow(row: StoreRow): row is AppRow {
+  return row.kind === "app" && row.update !== undefined;
+}
+
+/** An Updates row for one installed app (not the Update All row). */
+function isInstalledAppRow(row: StoreRow): boolean {
+  return row.kind === "app" || row.kind === "orphan";
+}
+
+function rowPackageId(row: StoreRow): string | undefined {
+  switch (row.kind) {
+    case "app":
+      return row.app.packageId;
+    case "orphan":
+      return row.update.installed.packageId;
+    default:
+      return undefined;
+  }
+}
 
 type TabState = {
   rows: StoreRow[];
@@ -93,8 +141,8 @@ function emptyTab(): TabState {
       draw: ({ image, item, x, y, width }) => {
         const font = getDefaultSmallFont();
         const { title, detail, titleValue } = rowText(item);
-        const textX = x + 6;
-        const textW = width - 12;
+        const textX = x + ROW_TEXT_INSET;
+        const textW = width - 2 * ROW_TEXT_INSET;
         image.drawText(font, textX, y + 2, truncateText(font, title, textW), titleValue);
         image.drawText(font, textX, y + 2 + lineStep(font), truncateText(font, detail, textW), 115);
       },
@@ -118,10 +166,18 @@ export type EvenHubStoreLayerOptions = {
  * The EvenHub storefront: Top (leaderboard), New (by first publication),
  * Search, and Updates (installed apps that are stale or whose package is
  * missing). The tab row is its own focus level above the list: double-click
- * in the list focuses the tabs, scrolling there switches tabs, and a click
- * returns to the list.
+ * in the list focuses the tabs, scrolling (or a watch swipe in any direction)
+ * there switches tabs, and a click returns to the list.
+ *
+ * With glasses that can't use the store (a RayNeo iO; see glasses-compat.ts)
+ * it shows only a notice saying so, and loads nothing. That is checked on
+ * every paint and input, so a window open across a re-pair follows the
+ * glasses either way.
  */
 export class EvenHubStoreLayer implements Layer {
+  /** Swipes left/right switch tabs on the tab strip; elsewhere they get the usual fallback. */
+  readonly acceptsDirectional = true;
+
   private readonly tabs: Record<StoreTab, TabState> = {
     top: emptyTab(),
     new: emptyTab(),
@@ -140,12 +196,15 @@ export class EvenHubStoreLayer implements Layer {
   private updatingAll = false;
   /** An app page requested while the login form was up; opened once signed in. */
   private pendingPackage: InstalledEvenHubApp | null = null;
+  /** An app page requested while the store was unavailable, named on its notice. */
+  private unavailablePackageName: string | null = null;
 
   constructor(private readonly options: EvenHubStoreLayerOptions) {
     if (this.showingLogin) resetEvenHubLoginForm();
   }
 
   paint(ctx: LayerContext): GrayImage {
+    if (!isEvenHubStoreAvailable()) return this.paintUnavailable(ctx);
     if (!this.started) {
       this.started = true;
       // Do NOT open the phone credential editor here. This runs on the first
@@ -161,66 +220,93 @@ export class EvenHubStoreLayer implements Layer {
     }
 
     const font = getDefaultSmallFont();
-    const { width, height } = ctx.stack.getBaseSize();
+    const viewport = ctx.stack.getBaseSize();
+    const { width, height, padding } = viewport;
     const image = new GrayImage(width, height, 0);
-    const headerH = headerHeight(font);
-    image.drawText(font, LIST_X, 8, "EvenHub", 220);
+    const { textX, textWidth, titleY, bottom: headerBottom } = headerLayout(viewport, font);
+    image.drawText(font, textX, titleY, "EvenHub", 220);
 
     if (this.showingLogin) {
-      image.drawText(font, LIST_X, 8 + lineStep(font), truncateText(font, this.loginStatus, width - LIST_X * 2), 125);
+      image.drawText(font, textX, titleY + lineStep(font), truncateText(font, this.loginStatus, textWidth), 125);
       const message = this.loginBusy
         ? "Signing in..."
         : "Enter your Even account email and password in the phone app.";
-      for (const [index, line] of wrapText(font, message, width - LIST_X * 2).entries()) {
-        image.drawText(font, LIST_X, headerH + 16 + index * lineStep(font), line, 190);
+      for (const [index, line] of wrapText(font, message, textWidth).entries()) {
+        image.drawText(font, textX, headerBottom + 16 + index * lineStep(font), line, 190);
       }
-      image.drawText(font, LIST_X, height - font.lineHeight - 4, `${GESTURE_CLICK} log in`, 105);
+      image.drawText(font, textX, height - padding.bottom - font.lineHeight, `${GESTURE_CLICK} log in`, 105);
       return image;
     }
 
-    this.paintTabs(image, font, ctx);
+    this.paintTabs(image, font, ctx, textX, titleY);
 
     const tab = this.tabs[this.activeTab];
     const subtitle = tab.status || this.subtitle(this.activeTab, tab);
-    image.drawText(font, LIST_X, 8 + lineStep(font), truncateText(font, subtitle, width - LIST_X * 2), 125);
+    image.drawText(font, textX, titleY + lineStep(font), truncateText(font, subtitle, textWidth), 125);
 
     if (tab.rows.length === 0) {
       const message = tab.loading ? "Loading..." : this.emptyMessage(this.activeTab, tab);
-      for (const [index, line] of wrapText(font, message, width - LIST_X * 2).slice(0, 3).entries()) {
-        image.drawText(font, LIST_X, headerH + 22 + index * lineStep(font), line, 190);
+      for (const [index, line] of wrapText(font, message, textWidth).slice(0, 3).entries()) {
+        image.drawText(font, textX, headerBottom + 22 + index * lineStep(font), line, 190);
       }
       return image;
     }
+    if (height <= headerBottom) return image;
 
-    const rowH = storeRowHeight(font);
-    const visibleRows = Math.max(1, Math.floor((height - headerH - 4) / rowH));
+    // The header stays put, so the list starts right under it with no
+    // padding of its own there. It scrolls, so it runs to the window's
+    // bottom edge, the padding suggested for that edge inside it: the last
+    // row keeps clear of a border there, and a row cut off for scrolling
+    // meets the edge rather than a blank strip. The scrollbar keeps inside
+    // the padding, in a gutter the rows leave free.
     const listFocused = ctx.stack.isFocused() && this.focus === "list";
     const menu = tabMenu(tab);
+    const rowsWidth = Math.max(0, width - padding.left - padding.right - SCROLLBAR_GUTTER);
     menu.paint(
       image,
-      { x: LIST_X - 6, y: headerH, width: width - LIST_X * 2 + 12, height: visibleRows * rowH - 2 },
+      { x: padding.left, y: headerBottom, width: rowsWidth, height: height - headerBottom, padTop: 0, padBottom: padding.bottom },
       listFocused,
     );
-    menu.drawScrollbar(image, width - 5, headerH, visibleRows * rowH - 3);
+    menu.drawScrollbar(image, width - padding.right - SCROLLBAR_WIDTH, headerBottom,
+      Math.max(0, height - padding.bottom - headerBottom));
     return image;
   }
 
-  /** Tab labels to the right of the title; the active one is bright and underlined. */
-  private paintTabs(image: GrayImage, font: UiFont, ctx: LayerContext): void {
+  /** The notice that replaces the store when the paired glasses can't use it. */
+  private paintUnavailable(ctx: LayerContext): GrayImage {
+    const font = getDefaultSmallFont();
+    const viewport = ctx.stack.getBaseSize();
+    const image = new GrayImage(viewport.width, viewport.height, 0);
+    const { textX, textWidth, titleY, bottom: headerBottom } = headerLayout(viewport, font);
+    image.drawText(font, textX, titleY, "EvenHub", 220);
+    if (this.unavailablePackageName) {
+      const status = `${this.unavailablePackageName}'s package is missing.`;
+      image.drawText(font, textX, titleY + lineStep(font), truncateText(font, status, textWidth), 125);
+    }
+    const message = "Using the Even Realities app store requires Even Realities glasses.";
+    for (const [index, line] of wrapText(font, message, textWidth).entries()) {
+      image.drawText(font, textX, headerBottom + 16 + index * lineStep(font), line, 190);
+    }
+    return image;
+  }
+
+  /** Tab labels to the right of the title (at titleX, titleY); the active one is bright and underlined. */
+  private paintTabs(image: GrayImage, font: UiFont, ctx: LayerContext, titleX: number, titleY: number): void {
     const tabsFocused = ctx.stack.isFocused() && this.focus === "tabs";
-    let x = LIST_X + font.measureText("EvenHub") + 28;
+    let x = titleX + font.measureText("EvenHub") + 28;
     for (const tab of TABS) {
       const label = this.tabLabel(tab.id);
       const w = font.measureText(label);
       const active = tab.id === this.activeTab;
       if (active) {
         if (tabsFocused) {
-          drawSelectionHighlight(image, x - 6, 5, w + 12, font.lineHeight + 6, true, 4);
+          drawSelectionHighlight(image, x - TAB_HIGHLIGHT_PAD_X, titleY - TAB_HIGHLIGHT_PAD_Y,
+            w + 2 * TAB_HIGHLIGHT_PAD_X, font.lineHeight + 2 * TAB_HIGHLIGHT_PAD_Y, true, 4);
         } else {
-          image.fillRect(x, 8 + font.lineHeight + 1, w, 1, 150);
+          image.fillRect(x, titleY + font.lineHeight + 1, w, 1, 150);
         }
       }
-      image.drawText(font, x, 8, label, active ? 235 : 120);
+      image.drawText(font, x, titleY, label, active ? 235 : 120);
       x += w + TAB_GAP;
     }
   }
@@ -229,7 +315,7 @@ export class EvenHubStoreLayer implements Layer {
     const label = TABS.find((entry) => entry.id === tab)!.label;
     if (tab !== "updates") return label;
     const updates = this.tabs.updates;
-    const count = updates.rows.filter((row) => row.kind !== "search-query").length;
+    const count = updates.rows.filter(isInstalledAppRow).length;
     return updates.loaded && count > 0 ? `${label} (${count})` : label;
   }
 
@@ -245,9 +331,11 @@ export class EvenHubStoreLayer implements Layer {
         if (!state.query) return "Search public apps";
         return results === 1 ? `1 result for "${state.query}"` : `${results} results for "${state.query}"`;
       }
-      case "updates":
+      case "updates": {
         if (!state.loaded) return "Installed apps with newer versions";
-        return count === 0 ? "All installed apps are up to date" : count === 1 ? "1 app needs attention" : `${count} apps need attention`;
+        const apps = state.rows.filter(isInstalledAppRow).length;
+        return apps === 0 ? "All installed apps are up to date" : apps === 1 ? "1 app needs attention" : `${apps} apps need attention`;
+      }
     }
   }
 
@@ -263,7 +351,14 @@ export class EvenHubStoreLayer implements Layer {
     }
   }
 
-  async handleInput(event: InputEvent, ctx: LayerContext): Promise<void> {
+  async handleInput(rawEvent: InputEvent, ctx: LayerContext): Promise<void> {
+    if (!isEvenHubStoreAvailable()) {
+      if (directionalFallback(rawEvent).type === "double-click") shell.yieldFocusToSidebar();
+      return;
+    }
+    const tabSwipe = !this.showingLogin && this.focus === "tabs"
+      && (rawEvent.type === "swipe-left" || rawEvent.type === "swipe-right");
+    const event = isDirectionalInput(rawEvent) && !tabSwipe ? directionalFallback(rawEvent) : rawEvent;
     if (this.showingLogin) {
       if (event.type === "click" && !this.loginBusy) {
         this.openCredentialEditor(ctx);
@@ -301,9 +396,11 @@ export class EvenHubStoreLayer implements Layer {
     const index = TABS.findIndex((tab) => tab.id === this.activeTab);
     switch (event.type) {
       case "scroll-up":
+      case "swipe-left":
         this.switchTab(ctx, TABS[Math.max(0, index - 1)]!.id);
         return;
       case "scroll-down":
+      case "swipe-right":
         this.switchTab(ctx, TABS[Math.min(TABS.length - 1, index + 1)]!.id);
         return;
       case "click":
@@ -333,6 +430,9 @@ export class EvenHubStoreLayer implements Layer {
       case "search-query":
         this.openSearchEditor(ctx);
         return;
+      case "update-all":
+        void this.updateAll(ctx);
+        return;
       case "orphan": {
         // Nothing can be reinstalled; the only useful action is to drop the
         // dead registry entry so the launcher stops offering it.
@@ -358,6 +458,12 @@ export class EvenHubStoreLayer implements Layer {
    * placeholder built from the registry entry stands in.
    */
   showInstalledPackage(stack: LayerStack, installed: InstalledEvenHubApp): void {
+    if (!isEvenHubStoreAvailable()) {
+      this.unavailablePackageName = installed.name;
+      stack.clearToBase();
+      return;
+    }
+    this.unavailablePackageName = null;
     if (this.showingLogin) {
       this.pendingPackage = installed;
       return;
@@ -369,7 +475,7 @@ export class EvenHubStoreLayer implements Layer {
 
   /** Dictated text becomes a search (the shell's "Type Into App" / voice input). */
   receiveTextInput(text: string, ctx: LayerContext): void {
-    if (this.showingLogin) return;
+    if (this.showingLogin || !isEvenHubStoreAvailable()) return;
     const query = evenHubSearchQuerySetting.set(text);
     if (!query) return;
     this.closePhoneEditor(ctx.actions, "search");
@@ -379,7 +485,7 @@ export class EvenHubStoreLayer implements Layer {
   }
 
   buildMenuItems(): MenuItem[] {
-    if (this.showingLogin) return [];
+    if (this.showingLogin || !isEvenHubStoreAvailable()) return [];
     const items: MenuItem[] = [];
     if (this.activeTab === "search") {
       items.push({
@@ -532,8 +638,7 @@ export class EvenHubStoreLayer implements Layer {
       const rows: StoreRow[] = updates.map((update) =>
         update.latest ? { kind: "app", app: update.latest, update } : { kind: "orphan", update },
       );
-      state.rows = rows;
-      state.menu.setItems(rows, 0);
+      this.setUpdateRows(state, rows, 0);
       state.menu.scrollTop = 0;
       state.status = "";
       state.exhausted = true;
@@ -548,10 +653,20 @@ export class EvenHubStoreLayer implements Layer {
     }
   }
 
-  private updatableRows(): Extract<StoreRow, { kind: "app" }>[] {
-    return this.tabs.updates.rows.filter(
-      (row): row is Extract<StoreRow, { kind: "app" }> => row.kind === "app" && row.update !== undefined,
-    );
+  private updatableRows(): AppRow[] {
+    return this.tabs.updates.rows.filter(isUpdatableRow);
+  }
+
+  /**
+   * Replace the Updates rows, putting an Update All row on top while any of
+   * them can be installed (and dropping it once none can).
+   */
+  private setUpdateRows(state: TabState, entries: readonly StoreRow[], selectedIndex?: number): void {
+    const rows = entries.filter(isInstalledAppRow);
+    const count = rows.filter(isUpdatableRow).length;
+    if (count > 0) rows.unshift({ kind: "update-all", count, busy: this.updatingAll });
+    state.rows = rows;
+    state.menu.setItems(rows, selectedIndex);
   }
 
   /** Install every pending update in turn; a declined permission dialog skips that app. */
@@ -559,6 +674,7 @@ export class EvenHubStoreLayer implements Layer {
     if (this.updatingAll) return;
     this.updatingAll = true;
     const state = this.tabs.updates;
+    this.setUpdateRows(state, state.rows);
     const pending = this.updatableRows();
     let installed = 0;
     const failures: string[] = [];
@@ -593,6 +709,7 @@ export class EvenHubStoreLayer implements Layer {
         : installed === 1 ? "Updated 1 app." : `Updated ${installed} apps.`;
     } finally {
       this.updatingAll = false;
+      this.setUpdateRows(this.tabs.updates, this.tabs.updates.rows);
       if (!this.closed) ctx.actions.requestRender();
     }
   }
@@ -609,10 +726,7 @@ export class EvenHubStoreLayer implements Layer {
 
   private removeUpdateRow(packageId: string): void {
     const state = this.tabs.updates;
-    state.rows = state.rows.filter((row) =>
-      row.kind === "search-query" ? true : row.kind === "app" ? row.app.packageId !== packageId : row.update.installed.packageId !== packageId,
-    );
-    state.menu.setItems(state.rows);
+    this.setUpdateRows(state, state.rows.filter((row) => rowPackageId(row) !== packageId));
   }
 
   // ---- login and phone editors --------------------------------------------
@@ -751,6 +865,14 @@ function rowText(row: StoreRow): { title: string; detail: string; titleValue: nu
         titleValue: 200,
       };
     }
+    case "update-all":
+      return {
+        title: row.busy ? "Updating..." : "Update All",
+        detail: row.busy
+          ? "Installing updates; progress is shown above."
+          : row.count === 1 ? "Install the 1 available update" : `Install all ${row.count} available updates`,
+        titleValue: row.busy ? 150 : 230,
+      };
     case "orphan":
       return {
         title: row.update.installed.name,

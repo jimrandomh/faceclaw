@@ -29,6 +29,8 @@ class VoiceCaptureSessionTest {
         override fun onFrameMeta(angleDegrees: Int, ssr: Int) { frameMeta.add(angleDegrees to ssr) }
         override fun onSpeechEnd() { speechEnds++ }
         override fun onSpeakerVerified(isWearer: Boolean, similarity: Float) { verified = isWearer to similarity }
+        val replay = mutableListOf<Pair<String?, Long>>()
+        override fun onReplay(event: String?, positionMs: Long, durationMs: Long) { replay.add(event to positionMs) }
     }
 
     /** Scripted phone mic: each entry is a chunk amplitude; after the script the read fails (-1). */
@@ -63,7 +65,6 @@ class VoiceCaptureSessionTest {
         override val dispatcher = CallbackDispatcher { it() }
         var packetListener: FaceclawAudioPacketListener? = null
         var g2Stops = 0
-        val recordings = mutableListOf<ByteArray>()
         override fun onSessionStarting() {}
         override fun isG2SessionReady(): Boolean = g2Ready
         override fun isG2AudioCaptureActive(): Boolean = packetListener != null
@@ -96,7 +97,6 @@ class VoiceCaptureSessionTest {
             override fun embed(pcm16le: ByteArray, sampleRate: Int): FloatArray? = embedding
             override fun release() {}
         }
-        override fun recordingSink(): RecordingSink = RecordingSink { bytes, _ -> recordings.add(bytes) }
     }
 
     private val logs = mutableListOf<String>()
@@ -196,7 +196,6 @@ class VoiceCaptureSessionTest {
         val session = session(host, platform, "voice-test-onboard")
         session.setListener(events)
         session.setUsePhoneMic(true)
-        session.setSaveRecordings(true)
         session.start("onboard", 1)
         assertTrue(events.stoppedLatch.await(10000))
         assertTrue(mic.closed)
@@ -211,8 +210,6 @@ class VoiceCaptureSessionTest {
         // Every segment handed to the model is at most 8 s and was peak-normalized.
         assertTrue(transcriber.calls.all { it in 1..VoiceCaptureSession.TRANSCRIPT_SEGMENT_MAX_SAMPLES })
         assertTrue(logs.any { it.startsWith("I Moonshine decode final=true") }, logs.toString())
-        assertEquals(1, host.recordings.size)
-        assertEquals(170 * 800 * 2, host.recordings[0].size)
         assertEquals(170, events.pcmChunks.size)
         assertEquals("x x", VoiceCaptureSession.joinTranscript("x", "x"))
         assertEquals("x, y", VoiceCaptureSession.joinTranscript("x", ", y"))

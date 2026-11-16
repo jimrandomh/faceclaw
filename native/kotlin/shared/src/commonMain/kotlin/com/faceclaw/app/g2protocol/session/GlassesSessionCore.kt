@@ -107,6 +107,13 @@ class GlassesSessionCore(
 
     @Volatile internal var listener: FaceclawBleCommunicatorListener? = null
 
+    /** G2 unless [useRayNeoIo] was called before [start]. */
+    @Volatile internal var glassesType = GlassesType.G2
+    /** RayNeo iO link state (GlassesSessionIo.kt); guarded by [monitor]. */
+    internal val io = IoSessionState()
+    /** Even G1 link state (GlassesSessionG1.kt); guarded by [monitor]. */
+    internal val g1 = G1SessionState()
+
     /**
      * Optional tap for relay frames the session does not interpret: notifications on the
      * right arm's data characteristic whose first two bytes are 'A','N' (the iOS ANCS
@@ -124,6 +131,7 @@ class GlassesSessionCore(
     internal val compassSubscriptions = CopyOnWriteList<CompassSubscription>(platform)
     internal val ambientLightListeners = CopyOnWriteList<FaceclawAmbientLightListener>(platform)
     internal val micStatusListeners = CopyOnWriteList<FaceclawMicStatusListener>(platform)
+    internal val keyboardEventListeners = CopyOnWriteList<FaceclawKeyboardEventListener>(platform)
     internal val audioMonitorListeners = CopyOnWriteList<FaceclawAudioPacketListener>(platform)
     @Volatile internal var running = false
     @Volatile internal var userDisconnectRequested = false
@@ -451,6 +459,7 @@ class GlassesSessionCore(
     internal var benchmarkLastAckAtMs = 0L
     internal var benchmarkEndAtMs = 0L       // 0 while running; set when the run drains
     internal var benchmarkMessagesSent = 0
+    internal var benchmarkMessageCounter = 0
     internal var benchmarkMessagesAcked = 0
     internal var benchmarkTimeouts = 0
     internal var benchmarkPayloadBytesAcked = 0L
@@ -538,7 +547,8 @@ class GlassesSessionCore(
     /**
      * Write one already-framed packet to an arm outside the message scheduler (the ANCS
      * relay client builds its own packets). Blocks like any link write; false when the
-     * arm is unknown, the link rejects the write, or the session is not running.
+     * arm is unknown, the link rejects the write, or the session is not running. A G1 has a
+     * characteristic for them, whose ATT errors say why a command was refused.
      */
     fun writeRawPacket(arm: String, packet: ByteArray): Boolean {
         val address = when (arm.uppercase()) {
@@ -549,8 +559,11 @@ class GlassesSessionCore(
         val active = monitor.withLock { running }
         if (!active) return false
         return try {
-            val result = link.writeFrames(address, BleProtocol.WRITE_CHAR_UUID, listOf(packet), ConnectionOptions.WRITE_MODE,
-                ConnectionOptions.WRITE_TIMEOUT_MS)
+            val result = if (isG1) {
+                link.writeFrames(address, G1Ble.ANCS_CHAR_UUID, listOf(packet), GattWriteMode.WITH_RESPONSE, ConnectionOptions.WRITE_TIMEOUT_MS)
+            } else {
+                link.writeFrames(address, BleProtocol.WRITE_CHAR_UUID, listOf(packet), ConnectionOptions.WRITE_MODE, ConnectionOptions.WRITE_TIMEOUT_MS)
+            }
             if (result) monitor.withLock { noteWriteCompletedLocked(address, now()) }
             result
         } catch (t: Throwable) {
@@ -573,6 +586,39 @@ class GlassesSessionCore(
     fun setRequiredFirmwareRevision(revision: Int) {
         requiredFirmwareRevision = revision
     }
+
+    /**
+     * Drive a RayNeo iO instead of a G2: one BLE link (pass its address as both arms; no
+     * ring), the iO handshake and page lease, and the Faceclaw display lists of the
+     * faceclaw-rayneo-cfw firmware. [phoneId] is this phone's stable 6-byte protocol identity:
+     * the glasses bind to the first one that authenticates and refuse others until they are
+     * put in pairing mode. Call before [start].
+     */
+    fun useRayNeoIo(phoneId: ByteArray, phoneName: String, manufacturer: String, model: String) {
+        require(phoneId.size == 6) { "RayNeo iO phone id must be 6 bytes" }
+        require(rightAddress.equals(leftAddress, ignoreCase = true)) { "RayNeo iO uses one address for both arms" }
+        monitor.withLock {
+            glassesType = GlassesType.RAYNEO_IO
+            io.phoneId = phoneId.copyOf()
+            io.phoneName = phoneName.ifEmpty { "Faceclaw" }
+            io.manufacturer = manufacturer.ifEmpty { "Android" }
+            io.model = model.ifEmpty { "Android" }
+        }
+    }
+
+    /** Drive an Even G1 on g1v0 instead of a G2 (see [G1SessionState]). Before [start]. */
+    fun useG1() {
+        monitor.withLock { glassesType = GlassesType.G1 }
+    }
+
+    /** True when this session drives an Even G1. */
+    fun isEvenG1(): Boolean = isG1
+
+    /** Whether the glasses can relay iPhone notifications, as far as the session knows: a G2's depends on its firmware revision, which TS checks. */
+    fun ancsRelayAvailable(): Boolean = !isG1 || monitor.withLock { g1.ancsRelay }
+
+    /** True when this session drives a RayNeo iO. */
+    fun isRayNeoIo(): Boolean = isIo
 
     /** Start the worker (through the host); false when it was already running. */
     fun start(): Boolean {
@@ -606,7 +652,7 @@ class GlassesSessionCore(
          * quiescing its producers. Also cover direct/early close callers here;
          * a successful cleanup must remain the final BLE message. Older CFWs
          * fall back to the standalone framebuffer-lease release. */
-        if (!cfwCleanupDelivered && !sendCfwCleanup()) {
+        if (!cfwCleanupDelivered && !sendCfwCleanup() && isG2) {
             releaseFaceclawFramebufferLease()
         }
         monitor.withLock {
@@ -625,6 +671,14 @@ class GlassesSessionCore(
         host.joinWorker(5_000)
         ringDone?.await(5_000)
         ringWorkerDone = null
+        if (isIo && link.isConnected(rightAddress)) {
+            // Otherwise the blank page stays up until the firmware's 120 s lease runs out.
+            try {
+                ioWriteControl(RayNeoIoProtocol.CTRL_PAGE_CLOSE)
+            } catch (t: Throwable) {
+                logLine("RayNeo iO page close failed: " + safeMessage(t))
+            }
+        }
         monitor.withLock {
             resetSessionStateLocked()
             clearAllMessagesLocked("disconnect")
@@ -666,6 +720,9 @@ class GlassesSessionCore(
         if (listener == null) {
             throw IllegalArgumentException("listener is required")
         }
+        // The iO's packets are Opus from its remote audio stream (see ioStartAudioCapture).
+        if (isIo) return ioStartAudioCapture(listener)
+        if (isG1) return g1StartAudioCapture(listener)
         var magic = 0
         monitor.withLock {
             if (!running || !sessionReady || shutdownRequested || !fixedLayoutCreated) {
@@ -683,6 +740,8 @@ class GlassesSessionCore(
     }
 
     fun stopG2AudioCapture() {
+        if (isIo) return ioStopAudioCapture()
+        if (isG1) return g1StopAudioCapture()
         var magic = 0
         monitor.withLock {
             audioPacketListener = null
@@ -790,6 +849,15 @@ class GlassesSessionCore(
      * that track a capture across those events must check this rather than
      * assume their earlier enable still holds.
      */
+    /**
+     * Whether the glasses' own wake word should reach Faceclaw (its configured wake action).
+     * RayNeo iO: the launcher's "Hey RayNeo" switch, and the stock session it opens is
+     * ended in favor of Faceclaw's. G2 glasses use the wake lease instead (no-op here).
+     */
+    fun setVoiceWakeEnabled(enabled: Boolean) {
+        if (isIo) ioSetVoiceWakeEnabled(enabled)
+    }
+
     fun isAudioCaptureActive(): Boolean {
         monitor.withLock {
             return running && sessionReady && !shutdownRequested && audioCaptureActive
@@ -806,6 +874,8 @@ class GlassesSessionCore(
         val generation: Int
         monitor.withLock {
             faceclawWakeLeaseEnabled = enabled
+            // A G2 firmware lease; the iO's wake word is setVoiceWakeEnabled.
+            if (!isG2) return true
             if (!running || !sessionReady) {
                 return !enabled
             }
@@ -874,6 +944,7 @@ class GlassesSessionCore(
      * (ignored on disable).
      */
     fun setImuReportEnabled(enable: Boolean, reportFrq: Int) {
+        if (isG1) return g1SetImuReport(enable)
         monitor.withLock {
             if (!running || !sessionReady) {
                 logLine("skip IMU " + (if (enable) "enable" else "disable") + "; session not ready")
@@ -1286,6 +1357,11 @@ class GlassesSessionCore(
     /** Request one CFW ambient-light report (image-handler mode 16 op 0). */
     fun queryAmbientLight() {
         monitor.withLock {
+            if (isG1) {
+                g1.lastLightAtMs = 0
+                interruptibleSleep.interrupt()
+                return
+            }
             enqueueAmbientLightControlLocked(byteArrayOf(CFW_MSG_AMBIENT_LIGHT.toByte(), 0.toByte()), "als query", false)
         }
         interruptibleSleep.interrupt()
@@ -1368,7 +1444,7 @@ class GlassesSessionCore(
      * queued (no session, or a malformed record).
      */
     fun sendFaceclawMicControl(record: ByteArray?, label: String, rightTemple: Boolean, leftTemple: Boolean): Boolean {
-        if (record == null || record.size < 4) {
+        if (!isG2 || record == null || record.size < 4) {
             return false
         }
         monitor.withLock {
@@ -1383,6 +1459,39 @@ class GlassesSessionCore(
                 pendingMessages.addLast(messageBuilder.faceclawMicControl(record, label, true))
             }
             logLine("queue mic control $label")
+        }
+        interruptibleSleep.interrupt()
+        return true
+    }
+
+    fun addKeyboardEventListener(listener: FaceclawKeyboardEventListener?) {
+        if (listener != null) {
+            keyboardEventListeners.add(listener)
+        }
+    }
+
+    fun removeKeyboardEventListener(listener: FaceclawKeyboardEventListener?) {
+        if (listener != null) {
+            keyboardEventListeners.remove(listener)
+        }
+    }
+
+    /**
+     * Queue a CFW keyboard-bridge control (['K','B',ver,op,request,epoch,...]) as a settings
+     * field-130 write to the right temple. Fire-and-forget: the firmware answers with field-131
+     * records, which arrive through addKeyboardEventListener. Returns false when nothing was
+     * queued (not a G2, no session, or a malformed record).
+     */
+    fun sendFaceclawKeyboardControl(record: ByteArray?, label: String): Boolean {
+        if (!isG2 || record == null || record.size < 8) {
+            return false
+        }
+        monitor.withLock {
+            if (!running || !sessionReady) {
+                logLine("skip keyboard control ($label); session not ready")
+                return false
+            }
+            pendingMessages.addLast(messageBuilder.faceclawKeyboardControl(record, label))
         }
         interruptibleSleep.interrupt()
         return true
@@ -1619,6 +1728,8 @@ class GlassesSessionCore(
     // EvenHub page lifecycle
 
     fun sendShutdown(exitMode: Int): Boolean {
+        if (isIo) return ioSuspend()
+        if (isG1) return g1Suspend()
         return sendShutdownInternal(exitMode, true)
     }
 
@@ -1629,6 +1740,17 @@ class GlassesSessionCore(
      * can use the legacy shutdown-and-lease-release path.
      */
     fun sendCfwCleanup(): Boolean {
+        if (isG1) {
+            // Fire and forget: the firmware keeps no session that could outlive the link.
+            monitor.withLock {
+                if (cfwCleanupDelivered) return true
+                shutdownRequested = true
+                cfwCleanupDelivered = true
+                clearPendingMessagesLocked("G1 cleanup")
+            }
+            g1HideBeforeDisconnect()
+            return true
+        }
         val magic: Int
         monitor.withLock {
             if (cfwCleanupDelivered) {
@@ -1710,6 +1832,8 @@ class GlassesSessionCore(
      * reconnecting Bluetooth here would defeat the power-saving mode.
      */
     fun suspendEvenHubSession(): Boolean {
+        if (isIo) return ioSuspend()
+        if (isG1) return g1Suspend()
         // Ending the plugin task releases the fb lease, which frees the
         // on-glasses resource cache; forget it phone-side either way (a lost
         // ack may still have taken effect).
@@ -1733,6 +1857,8 @@ class GlassesSessionCore(
      * the desired frame.
      */
     fun resumeEvenHubSession(): Boolean {
+        if (isIo) return ioResume()
+        if (isG1) return g1Resume()
         var claimGeneration = 0
         monitor.withLock {
             if (!running || !sessionReady || chargingMode) {
@@ -1813,13 +1939,13 @@ class GlassesSessionCore(
                         continue
                     }
                     logWarn("Attempting to connect")
-                    connectLoopOnce()
+                    if (isIo) ioConnectLoopOnce() else if (isG1) g1ConnectLoopOnce() else connectLoopOnce()
                     continue
                 }
 
                 val sleepMs = driveSession()
                 if (sleepMs > 0) {
-                    interruptibleSleep.sleep(sleepMs)
+                    interruptibleSleep.sleep(if (isG1) minOf(sleepMs, g1MaxSleepMs()) else sleepMs)
                 }
             } catch (t: Throwable) {
                 if (!running) {
@@ -1840,8 +1966,17 @@ class GlassesSessionCore(
             return
         }
         val uuid = characteristicUuid.lowercase()
+        // The phone's own R1 link, beside either glasses (the iO's ring is always direct).
         if (isDirectRingNotification(address, uuid)) {
             handleDirectRingNotification(uuid, data)
+            return
+        }
+        if (isIo) {
+            ioOnNotification(address, uuid, data)
+            return
+        }
+        if (isG1) {
+            g1OnNotification(address, uuid, data)
             return
         }
         if (BleProtocol.RENDER_NOTIFY_UUID == uuid) {
@@ -1854,28 +1989,7 @@ class GlassesSessionCore(
         if (data.size >= 7 && (data[6].toInt() and 255) == CfwTransport.SID) {
             val acks = CfwTransport.parseAcks(data) ?: return
             monitor.withLock {
-                lastIncomingAtMs = now()
-                val arm = armIndex(address)
-                if (arm >= 0) lastArmCfwAckAtMs[arm] = lastIncomingAtMs
-                for (ack in acks) {
-                    for (message in inFlightMessages) {
-                        val ingress = if (message.isLeftArmMessage) leftAddress else rightAddress
-                        if (message.sid == CfwTransport.SID && address.equals(ingress, ignoreCase = true) && message.magic == ack.streamId) {
-                            message.acceptCfwAck(ack)
-                            if (ack.nack) ConnectionCounters.increment("g2.cfw-nack")
-                            logLine("CFW " + (if (ack.nack) "NACK" else "ACK") + " id=" + ack.streamId
-                                    + " ordinal=" + ack.messageId + " lens=" + ack.lens + " txseq=" + (data[2].toInt() and 255)
-                                    + " redundant=" + (ack !== acks[0])
-                                    + " size=" + ack.size + " crc=" + ack.checksum
-                                    + " expected=" + message.message.size + "/" + message.cfwChecksum
-                                    + " ackedLenses=" + message.cfwAckLenses
-                                    + " ageMs=" + (lastIncomingAtMs - message.sentAtMs))
-                            message.ackPayload = data.copyOf()
-                            break
-                        }
-                    }
-                }
-                drainCfwAcknowledgementsLocked()
+                acceptCfwAcksLocked(address, acks, data[2].toInt() and 255, data)
             }
             interruptibleSleep.interrupt()
             return
@@ -1889,6 +2003,18 @@ class GlassesSessionCore(
         }
         logDebug("onNotification: address=" + address + " characteristicUuid=" + characteristicUuid + " data.length=" + data.size)
         val frame = BleProtocol.parseFrame(data)
+        if (frame.ok && frame.sid == BleProtocol.SID_UI_SETTING) {
+            // CFW keyboard-bridge records (field 131) come from whichever temple hosts the
+            // keyboard. They are their own stream: neither an ACK nor glasses input, and the
+            // once-a-second status record among them must not count as user activity (which
+            // would hold off battery polling).
+            val keyboardEvent = BleProtocol.parseFaceclawKeyboardEvent(frame.pb)
+            if (keyboardEvent != null) {
+                monitor.withLock { lastIncomingAtMs = now() }
+                emitKeyboardEvent(keyboardEvent)
+                return
+            }
+        }
         val decodedWearState = BleProtocol.parseWearState(frame)
         val compassEvent = if (address.equals(rightAddress, ignoreCase = true))
             BleProtocol.parseCompassEvent(frame)
@@ -2169,6 +2295,7 @@ class GlassesSessionCore(
             lastConnectionOrInputAtMs = arrivalMs
             lastDirectRingInputAtMs = arrivalMs
             lastDirectRingInputLabel = decoded.label + " " + decoded.detail
+            if (isIo) ioReclaimPageOnInputLocked()
         }
         logLine("direct ring " + decoded.label + " " + decoded.detail + " raw=" + hex(data))
         val frameId = frameTimings.startFrame("input:ring:" + decoded.label)
@@ -2194,6 +2321,35 @@ class GlassesSessionCore(
         } catch (t: Throwable) {
             logLine("G2 mic packet listener failed: " + safeMessage(t))
         }
+    }
+
+    /**
+     * Apply CFW ACKs/NACKs from [address] (the G2's `aa 12` frames, or the iO's 9-byte bodies)
+     * to the in-flight messages they name, then complete what they finished.
+     */
+    internal fun acceptCfwAcksLocked(address: String, acks: Array<CfwTransport.Ack>, txSeq: Int, payload: ByteArray) {
+        lastIncomingAtMs = now()
+        val arm = armIndex(address)
+        if (arm >= 0) lastArmCfwAckAtMs[arm] = lastIncomingAtMs
+        for (ack in acks) {
+            for (message in inFlightMessages) {
+                val ingress = if (message.isLeftArmMessage) leftAddress else rightAddress
+                if (message.sid == CfwTransport.SID && address.equals(ingress, ignoreCase = true) && message.magic == ack.streamId) {
+                    message.acceptCfwAck(ack)
+                    if (ack.nack) ConnectionCounters.increment("g2.cfw-nack")
+                    logLine("CFW " + (if (ack.nack) "NACK" else "ACK") + " id=" + ack.streamId
+                            + " ordinal=" + ack.messageId + " lens=" + ack.lens + " txseq=" + txSeq
+                            + " redundant=" + (ack !== acks[0])
+                            + " size=" + ack.size + " crc=" + ack.checksum
+                            + " expected=" + message.message.size + "/" + message.cfwChecksum
+                            + " ackedLenses=" + message.cfwAckLenses
+                            + " ageMs=" + (lastIncomingAtMs - message.sentAtMs))
+                    message.ackPayload = payload.copyOf()
+                    break
+                }
+            }
+        }
+        drainCfwAcknowledgementsLocked()
     }
 
     override fun onConnectionStateChange(address: String?, connected: Boolean) {
@@ -2231,12 +2387,17 @@ class GlassesSessionCore(
         monitor.withLock {
             if (address.equals(rightAddress, ignoreCase = true)) {
                 rightConnected = connected
+                // The iO's one link stands for both arms.
+                if (isIo) leftConnected = connected
             } else if (address.equals(leftAddress, ignoreCase = true)) {
                 leftConnected = connected
             } else {
                 return
             }
-            if (!connected) {
+            if (!connected && isIo) io.reassembler.reset()
+            if (!connected && isG1 && g1CarryOnWithoutArmLocked(address)) {
+                // The session goes on; the worker brings this arm back.
+            } else if (!connected) {
                 // Before the session is ready, this is an attempt failing (or an arm
                 // dropping mid-setup): the connect sequence notices on its own and
                 // schedules the retry, so leave the backoff alone.

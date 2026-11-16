@@ -162,3 +162,116 @@ test("a bare R1 substring is not a ring — only the stock EVEN R1 prefix is", (
   const ad = classifyAdvertisement(raw({ address: "DA:7F:D2:B5:6E:E2", name: "EVEN R1_B56EE2", manufacturerData: "" }));
   assert.equal(ad.role, "ring");
 });
+
+// RayNeo iO-2229 as captured 2026-11-01: company 0x5716 + [07][MAC]; pairing mode omits the data.
+test("RayNeo iO advertisements classify as one device with its MAC", () => {
+  const io = classifyAdvertisement(raw({
+    address: "00:6A:5E:5F:33:C2",
+    name: "RayNeo iO-2229",
+    manufacturerData: "1657" + "07006a5e5f33c2130000000000000001",
+  }));
+  assert.equal(io.role, "rayneo-io");
+  assert.equal(io.embeddedMac, "00:6A:5E:5F:33:C2");
+  assert.equal(io.embeddedMacMismatch, false);
+  assert.equal(io.serial, null);
+  const pairing = classifyAdvertisement(raw({ address: "00:6A:5E:5F:33:C2", name: "RayNeo iO-2229", manufacturerData: "" }));
+  assert.equal(pairing.role, "rayneo-io");
+  assert.equal(pairing.embeddedMac, null);
+  // G2 advertisements are untouched
+  assert.equal(classifyAdvertisement(raw({})).role, "left");
+});
+
+// ---------------------------------------------------------------------------
+// Even G1
+// ---------------------------------------------------------------------------
+
+const g1Ascii = (text) => Array.from(text).map((c) => c.charCodeAt(0).toString(16).padStart(2, "0")).join("");
+const g1Raw = (name, manufacturerData, address = "F4:27:E9:CA:E8:3F") => ({
+  address,
+  name,
+  manufacturerData,
+  rssi: -50,
+  txPower: null,
+  connectable: true,
+  bonded: false,
+  source: "scan",
+  seenAtMs: 1000,
+});
+
+test("a G1 arm on Even's firmware: side from the name, serial after the side byte", () => {
+  const ad = classifyAdvertisement(g1Raw("Even G1_70_L_EF50E5", "02" + g1Ascii("S110LABC030139") + "0000000000"));
+  assert.equal(ad.role, "left");
+  assert.equal(ad.g1Firmware, "stock");
+  assert.equal(ad.serial, "S110LABC030139");
+  assert.equal(ad.embeddedMac, null);
+});
+
+test("a G1 arm on g1v0: the name says all, the serial is in the 0xFFFF record", () => {
+  const ad = classifyAdvertisement(g1Raw("G1v0_R", "ffff" + "01" + "04" + g1Ascii("S110LABC030139")));
+  assert.equal(ad.role, "right");
+  assert.equal(ad.g1Firmware, "g1v0");
+  assert.equal(ad.serial, "S110LABC030139");
+  assert.equal(classifyAdvertisement(g1Raw("G1v0S_L", "")).g1Firmware, "g1v0-safe");
+  assert.equal(classifyAdvertisement(g1Raw("G1v0S_L", "")).serial, null);
+});
+
+const g1Record = (flags, version, serial = "S110LABC030139") => "ffff" + "02" + flags + version + g1Ascii(serial);
+
+test("a G1 arm on g1v0 0.5.66+: its name tells pairs apart, its record says what it runs", () => {
+  const ad = classifyAdvertisement(g1Raw("G1CFW_L_EF50E5", g1Record("05", "000542")));
+  assert.equal(ad.role, "left");
+  assert.equal(ad.g1Firmware, "g1v0");
+  assert.equal(ad.g1Version, "0.5.66");
+  assert.equal(ad.serial, "S110LABC030139");
+  assert.equal(classifyAdvertisement(g1Raw("G1CFW_R_CBE689", g1Record("04", "000542"))).role, "right");
+});
+
+test("a G1 arm in safe mode says so in its record, not its name", () => {
+  const ad = classifyAdvertisement(g1Raw("G1CFW_L_EF50E5", g1Record("0d", "000542")));
+  assert.equal(ad.g1Firmware, "g1v0-safe");
+  assert.equal(ad.g1Version, "0.5.66");
+});
+
+test("a G1 arm whose record hasn't arrived yet still shows, without a version or serial", () => {
+  const ad = classifyAdvertisement(g1Raw("G1CFW_L_EF50E5", ""));
+  assert.equal(ad.g1Firmware, "g1v0");
+  assert.equal(ad.g1Version, undefined);
+  assert.equal(ad.serial, null);
+});
+
+test("g1v0 before 0.5.66 and Even's firmware advertise no version", () => {
+  assert.equal(classifyAdvertisement(g1Raw("G1v0_R", "ffff" + "01" + "04" + g1Ascii("S110LABC030139"))).g1Version, undefined);
+  assert.equal(classifyAdvertisement(g1Raw("Even G1_70_L_EF50E5", "02" + g1Ascii("S110LABC030139"))).g1Version, undefined);
+});
+
+test("a G1 pair joins on its serial across firmware, so an install in progress stays one pair", () => {
+  const stock = classifyAdvertisement(g1Raw("Even G1_70_L_EF50E5", "02" + g1Ascii("S110LABC030139") + "0000000000"));
+  const custom = classifyAdvertisement(g1Raw("G1CFW_R_CBE689", g1Record("04", "000542")));
+  assert.equal(stock.serial, custom.serial);
+});
+
+test("on iOS a G1 arm gets an address from its peripheral identifier, and is found at all", () => {
+  const { identifyIosPeripheral, g1IosAddress } = require("../.test-build/app/g2/ios-peripheral-identity.js");
+  const identifier = "14b99254-0798-d1a8-3eec-b141bdabfae8";
+  assert.equal(g1IosAddress(identifier), "14:B9:92:54:07:98");
+  for (const [name, manufacturerData, firmware] of [
+    ["G1CFW_L_EF50E5", g1Record("05", "000542"), "g1v0"],
+    ["Even G1_70_L_EF50E5", "02" + g1Ascii("S110LABC030139"), "stock"],
+    ["G1v0_L", "ffff" + "01" + "05" + g1Ascii("S110LABC030139"), "g1v0"],
+  ]) {
+    const device = identifyIosPeripheral({ identifier, name, manufacturerData, rssi: -50, connectable: true });
+    assert.ok(device, name);
+    assert.equal(device.address, "14:B9:92:54:07:98", name);
+    assert.equal(device.identifier, identifier.toUpperCase(), name);
+    assert.equal(device.role, "left", name);
+    assert.equal(device.g1Firmware, firmware, name);
+    assert.equal(device.serial, "S110LABC030139", name);
+  }
+  assert.equal(identifyIosPeripheral({ identifier: "not-a-uuid", name: "G1CFW_L_EF50E5", manufacturerData: "", rssi: 0, connectable: true }), null);
+});
+
+test("names that only look like a G1 are not admitted", () => {
+  for (const name of ["G1v0_X", "G1v0", "G1 Tracker", "Even G1", "Pixel G1v0_L", "G1CFW_L", "G1CFW_X_EF50E5", "G1CFW_L_EF50E", "Pixel G1CFW_L_EF50E5"]) {
+    assert.equal(classifyAdvertisement(g1Raw(name, "")), null, name);
+  }
+});

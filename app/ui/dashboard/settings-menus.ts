@@ -23,7 +23,6 @@ import {
   type AsrModelId,
 } from "../../native/asr-model";
 import { TextViewerLayer } from "../../apps/files/text-viewer";
-import { IOS_PRIVACY_NOTICE } from "../../analytics/privacy-disclosure";
 import type { LayerContext } from "../layers";
 import { drawRightValueMenuItem, openModalMenu, submenuItem, type MenuItem } from "../menu";
 import { shell } from "../shell/shell";
@@ -55,6 +54,7 @@ import {
   dataCollectionSetting,
   distanceUnitSetting,
   glassesBatteryVisibilitySetting,
+  glassesModelName,
   phoneBatteryVisibilitySetting,
   ringBatteryVisibilitySetting,
   watchBatteryVisibilitySetting,
@@ -65,10 +65,11 @@ import {
   openAiApiKeySetting,
   previewColorSetting,
   previewScalingSetting,
+  phoneInputStyleSetting,
   phoneRotationSetting,
   ringConnectionModeSetting,
+  glassesTypeSetting,
   sonioxApiKeySetting,
-  saveTranscribeAudioSetting,
   whisperServerApiKeySetting,
   whisperServerLanguageSetting,
   whisperServerModelSetting,
@@ -78,7 +79,7 @@ import {
   firmwareDebugFlagsSetting,
   lockScreenEnabledSetting,
   menuAnimationSetting,
-  saveVoiceRecordingsSetting,
+  newNotificationDisplaySetting,
   showBleBandwidthSetting,
   suspendEvenHubWhenScreenOffSetting,
   temperatureUnitSetting,
@@ -94,12 +95,20 @@ import {
   watchCrownClockwiseNextSetting,
   watchMirrorAssistantSetting,
   watchRemoteEnabledSetting,
+  watchSoundEffectsSetting,
+  watchVibrateOnInputSetting,
 } from "../dashboard-settings";
 import { wearBridge } from "../../native/wear-bridge";
 import { openSettingsSubMenu, SettingsPanelLayer, type SettingsSection } from "./settings-panel";
 import { uiFontPickerMenuItem } from "../font-picker";
+import { NotificationFilterLayer } from "../notification-filter";
 import { compatibleModelDiscoveryMenuItem } from "../openai-compatible-model-picker";
+import { keyboardSettingsMenuItem } from "../keyboard-settings";
+import { keybindingsMenuItem } from "../keybinding-settings";
 import { isVeniceApiBaseUrl } from "../../native/openai-chat";
+
+/** The Settings section the Notifications app's "Settings" menu item opens. */
+export const NOTIFICATIONS_SETTINGS_SECTION = "Notifications";
 
 /** The Settings app's master-detail panel (sections on the left, contents on the right). */
 export function createSettingsPanelLayer(): SettingsPanelLayer {
@@ -130,11 +139,20 @@ function settingsSections(): SettingsSection[] {
     },
     {
       label: "Customization",
-      // Depth only applies (and only shows) with the app switcher at the
-      // bottom; the panel re-reads the rows each paint.
+      // Depth, the status bar's place and the border only apply (and only
+      // show) with the app switcher at the bottom or a popup; the panel
+      // re-reads the rows each paint.
       get items() {
         return customizationItems();
       },
+    },
+    {
+      // Also opened from the Notifications app's menu (deep link by label).
+      label: NOTIFICATIONS_SETTINGS_SECTION,
+      items: [
+        enumSettingMenuItem(newNotificationDisplaySetting),
+        notificationFilterMenuItem(),
+      ],
     },
     {
       label: "Voice",
@@ -205,27 +223,41 @@ function settingsSections(): SettingsSection[] {
         enumSettingMenuItem(previewColorSetting),
         enumSettingMenuItem(previewScalingSetting),
         toggleSettingMenuItem(mirrorTouchSetting),
+        // Watch or Ring: which touchpad the main page shows under the mirror.
+        enumSettingMenuItem(phoneInputStyleSetting),
       ],
     },
     {
       label: "Watch",
-      // Wear OS remote (wear/); the status line above the items says whether
-      // a watch running the companion app is currently reachable.
+      // Watch remote (wear/, apple-watch/); the status line above the items says
+      // whether a watch running the companion app is currently reachable.
       items: [
         toggleSettingMenuItem(watchRemoteEnabledSetting),
-        toggleSettingMenuItem(watchCrownClockwiseNextSetting),
+        ...(global.isIOS ? [
+          toggleSettingMenuItem(watchVibrateOnInputSetting),
+          toggleSettingMenuItem(watchSoundEffectsSetting),
+        ] : [
+          toggleSettingMenuItem(watchCrownClockwiseNextSetting),
+        ]),
         toggleSettingMenuItem(watchCanUnlockSetting),
         toggleSettingMenuItem(watchMirrorAssistantSetting),
       ],
       renderDetail: renderWatchStatus,
+    },
+    // A Bluetooth keyboard paired with the glasses themselves (the G2's
+    // custom firmware hosts it; app/g2/keyboard/). Hidden rather than left
+    // out: the Settings window can be open across a change of glasses.
+    {
+      label: "Keyboard",
+      items: [keyboardSettingsMenuItem(), keybindingsMenuItem()],
+      hidden: () => glassesTypeSetting.get() !== "g2",
     },
     {
       label: "Developer",
       items: [
         // Whether and how the phone opens its own BLE link to the R1 ring.
         // Applied at connect time.
-        enumSettingMenuItem(ringConnectionModeSetting),
-        toggleSettingMenuItem(saveVoiceRecordingsSetting),
+        ringConnectionMenuItem(),
         toggleSettingMenuItem(firmwareDebugFlagsSetting),
         toggleSettingMenuItem(suspendEvenHubWhenScreenOffSetting),
         toggleSettingMenuItem(useMicControlSetting),
@@ -237,11 +269,6 @@ function settingsSections(): SettingsSection[] {
       items: [
         // First chosen in the on-glasses onboarding (app/apps/onboarding/).
         enumSettingMenuItem(dataCollectionSetting),
-        ...(global.isIOS ? [{
-          label: "iOS / TestFlight privacy",
-          description: "Apple's beta reports are separate from Faceclaw statistics. Tap to read.",
-          onSelect: (ctx: LayerContext) => ctx.stack.push(new TextViewerLayer(IOS_PRIVACY_NOTICE, "iOS / TestFlight privacy")),
-        }] : []),
         bundledDocMenuItem("PRIVACY", "Privacy policy"),
       ],
     },
@@ -272,17 +299,12 @@ function settingsSections(): SettingsSection[] {
     },
   ];
   if (!global.isIOS) return sections;
-  const deferred = new Set(["Watch"]);
   return sections.map(section => {
     if (section.label === "Developer") return { ...section, items: [enumSettingMenuItem(ringConnectionModeSetting),
       toggleSettingMenuItem(showBleBandwidthSetting)] };
     // No downloadable on-device models: iOS's on-device option is Apple's recognizer.
     if (section.label === "Voice") return { label: "Voice", items: [enumSettingMenuItem(wakeWordActionSetting),
-      enumSettingMenuItem(voiceProviderSetting), toggleSettingMenuItem(saveTranscribeAudioSetting), ...whisperServerMenuItems()] };
-    if (deferred.has(section.label)) return { label: section.label, items: [{
-      label: "Not available on iOS yet", disabled: true, onSelect: () => {},
-      description: `${section.label} integration has not been ported to iOS.`,
-    }] };
+      enumSettingMenuItem(voiceProviderSetting), ...whisperServerMenuItems()] };
     if (section.label === "Display") return { ...section, items: section.items.filter(item =>
       item.label !== screenTimeoutSetting.label) };
     return section;
@@ -307,9 +329,12 @@ function customizationRows(): () => MenuItem[] {
   // resizes or moves windows on change.
   const statusBar = enumSettingMenuItem(statusBarPositionSetting);
   // Popup switcher only: whether the status bar shows only in the switcher
-  // (windows then grow into its rows), and the foreground window's border.
+  // (windows then grow into its rows).
   const statusBarVisibility = enumSettingMenuItem(statusBarVisibilitySetting);
-  const windowBorder = toggleSettingMenuItem(windowBorderSetting);
+  // The lines round the foreground window: a rounded border all around, only
+  // the line between it and the status bar, or none; the dashboard
+  // controller resizes windows when the border's rows come or go.
+  const windowBorder = enumSettingMenuItem(windowBorderSetting);
   const rest = [
     // Submenu: top-bar battery indicator style plus per-device visibility.
     batteryIndicatorsMenuItem(),
@@ -322,7 +347,7 @@ function customizationRows(): () => MenuItem[] {
     // Miles or kilometers: Weather's wind speed and Navigate's distances.
     enumSettingMenuItem(distanceUnitSetting),
   ];
-  const bottomRows = [font, position, depth, statusBar, ...rest];
+  const bottomRows = [font, position, depth, statusBar, windowBorder, ...rest];
   const popupRows = [font, position, depth, statusBar, statusBarVisibility, windowBorder, ...rest];
   const sideRows = [font, position, ...rest];
   return () => {
@@ -335,6 +360,17 @@ function customizationRows(): () => MenuItem[] {
         return sideRows;
     }
   };
+}
+
+/** Notifications > Notification filter: per-app toggles for which notifications pop up. */
+function notificationFilterMenuItem(): MenuItem {
+  return submenuItem(
+    "Notification filter",
+    (ctx) => {
+      ctx.stack.push(new NotificationFilterLayer());
+    },
+    { description: "Choose which apps' new notifications pop up on the glasses. All of them still appear in the Notifications app." },
+  );
 }
 
 function autoBrightnessMenuItem(): MenuItem {
@@ -360,13 +396,14 @@ function batteryIndicatorsMenuItem(): MenuItem {
   return {
     label: "Battery indicators",
     description:
-      "Top-bar battery indicators for the phone, Wear OS watch, glasses, and ring: their style, and whether each shows always, only when low, or never.",
+      "Top-bar battery indicators for the phone, watch, glasses, and ring: their style, and whether each shows always, only when low, or never.",
     onSelect: (ctx) => {
       openSettingsSubMenu(ctx, "Battery indicators", [
         enumSettingMenuItem(batteryDisplayModeSetting),
         enumSettingMenuItem(phoneBatteryVisibilitySetting),
         enumSettingMenuItem(watchBatteryVisibilitySetting),
-        enumSettingMenuItem(glassesBatteryVisibilitySetting),
+        // Named as the top bar names this indicator.
+        enumSettingMenuItem(glassesBatteryVisibilitySetting, { label: glassesModelName() }),
         enumSettingMenuItem(ringBatteryVisibilitySetting),
       ]);
     },
@@ -598,17 +635,44 @@ function readBundledDoc(fileName: string): string {
   }
 }
 
+/**
+ * Developer > Ring connection: the setting, except with a RayNeo iO, which
+ * always takes the ring directly (effectiveRingConnectionMode): then a fixed,
+ * disabled "Direct" row, the stored choice kept for G2 glasses.
+ */
+function ringConnectionMenuItem(): MenuItem {
+  const item = enumSettingMenuItem(ringConnectionModeSetting);
+  const io = () => glassesTypeSetting.get() !== "g2";
+  return {
+    ...item,
+    disabled: io,
+    render: (args) => {
+      if (!io()) return item.render?.(args);
+      drawRightValueMenuItem(args.image, getDefaultSmallFont(), args.x, args.y, args.width, item.label, glassesTypeSetting.get() === "g1" ? "Direct (Even G1)" : "Direct (RayNeo iO)");
+    },
+  };
+}
+
 function renderWatchStatus(args: { image: GrayImage; x: number; y: number; width: number }): number {
   const { image, x, y, width } = args;
   const font = getDefaultSmallFont();
   let status: string;
   if (!wearBridge.isAvailable()) {
-    status = "Google Play services is unavailable on this phone, so no watch can connect.";
+    status = global.isIOS
+      ? "This device can't pair with an Apple Watch."
+      : "Google Play services is unavailable on this phone, so no watch can connect.";
   } else {
     const connection = wearBridge.getWatchConnection();
-    status = connection.reachable
-      ? `Connected to ${connection.watchName || "a watch"}.`
-      : "No watch connected. Install the Faceclaw watch app (wear/ in the source tree) on a Wear OS watch paired with this phone.";
+    if (global.isIOS) {
+      // iOS only says whether the app is installed; it may not be running.
+      status = connection.reachable
+        ? "The Faceclaw app is installed on your Apple Watch."
+        : "No watch connected. Install the Faceclaw watch app (apple-watch/ in the source tree) on an Apple Watch paired with this iPhone.";
+    } else {
+      status = connection.reachable
+        ? `Connected to ${connection.watchName || "a watch"}.`
+        : "No watch connected. Install the Faceclaw watch app (wear/ in the source tree) on a Wear OS watch paired with this phone.";
+    }
   }
   const lines = wrapText(font, status, width);
   for (let i = 0; i < lines.length; i++) {

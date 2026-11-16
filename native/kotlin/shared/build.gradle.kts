@@ -16,7 +16,7 @@ kotlin {
     }
     android {
         namespace = "com.faceclaw.shared"
-        compileSdk = 35
+        compileSdk = 36
         minSdk = 24
         compilerOptions { jvmTarget.set(JvmTarget.JVM_17) }
         withHostTestBuilder {}.configure {}

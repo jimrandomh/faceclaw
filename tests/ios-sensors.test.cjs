@@ -37,7 +37,7 @@ function harness() {
     FaceclawKitIosGlassesSession: { alloc: () => ({ initWithRightAddressLeftAddressRingAddress: () => session }) },
     FaceclawKitFaceclawBleCommunicatorListener: {}, FaceclawKitIosAncsListener: {}, FaceclawKitIosAudioPacketListener: {},
     FaceclawKitFaceclawCompassListener: {}, FaceclawKitFaceclawImuListener: {}, FaceclawKitIosAmbientLightListener: {},
-    FaceclawKitIosMicStatusListener: {}, console: { log() {}, warn() {} },
+    FaceclawKitIosMicStatusListener: {}, FaceclawKitIosKeyboardEventListener: {}, console: { log() {}, warn() {} },
   }, {
     '@nativescript/core': { File: {}, knownFolders: {}, path: {} },
     '../g2/firmware-compat': { REQUIRED_FACECLAW_FIRMWARE_VERSION: 37 },
@@ -56,6 +56,16 @@ function alsRecord(alsValue) {
   body[6] = alsValue & 0xff; body[7] = alsValue >> 8;
   return body;
 }
+
+test('only a G1 session runs the G1 connect path', () => {
+  for (const [glassesType, expected] of [['g1', 1], ['g2', 0], [undefined, 0]]) {
+    const { session, FaceclawCommunicatorBridge } = harness();
+    let used = 0;
+    session.useG1 = () => { used++; };
+    new FaceclawCommunicatorBridge({ right: 'r', left: 'l', glassesType });
+    assert.equal(used, expected, String(glassesType));
+  }
+});
 
 test('the bridge is the active session from start() until close()', async () => {
   const h = harness();

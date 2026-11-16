@@ -3,6 +3,7 @@ import { flattenPlanes } from "../../graphics/plane";
 import { InputEvent } from "../gestures";
 import { Layer, LayerActions, LayerContext, LayerStack, PaintBelow } from "../layers";
 import { appViewportRect, appViewportSize, SHELL_OPAQUE_BLACK } from "./geometry";
+import { uniformEdges, type Viewport, viewportWith } from "../viewport";
 
 // The modal covers most of the min-height app viewport, leaving a little of
 // the foreground app visible around the edges. Both its size and position are
@@ -11,13 +12,16 @@ import { appViewportRect, appViewportSize, SHELL_OPAQUE_BLACK } from "./geometry
 const MODAL_MARGIN = 14;
 const MODAL_PADDING = 4;
 
-/** Content (inner layer stack) size of the modal box. */
-function modalInterior(): { width: number; height: number } {
+/**
+ * The modal box's content (inner layer stack) viewport: every edge is just
+ * inside the box's border.
+ */
+function modalInterior(): Viewport {
   const viewport = appViewportSize("min");
-  return {
+  return viewportWith({
     width: viewport.width - 2 * MODAL_MARGIN - 2 * MODAL_PADDING,
     height: Math.min(viewport.height - 2 * MODAL_MARGIN, Math.floor(65530 / Math.ceil((viewport.width - 2 * MODAL_MARGIN) / 2))) - 2 * MODAL_PADDING,
-  };
+  }, uniformEdges("border"));
 }
 
 /** Screen rect of the modal box, aligned to the min-height window band. */
@@ -40,12 +44,21 @@ export function modalRect(): { x: number; y: number; width: number; height: numb
 export class ShellModalLayer implements Layer {
   private readonly stack: LayerStack;
 
-  constructor(baseLayer: Layer, actions: LayerActions, private readonly removed?: () => void) {
+  constructor(
+    baseLayer: Layer,
+    actions: LayerActions,
+    private readonly hooks: {
+      /** The modal left the shell stack, however it went. */
+      removed?: () => void;
+      /** Input reached the modal (before its inner stack handles it). */
+      input?: (event: InputEvent) => void;
+    } = {},
+  ) {
     this.stack = new LayerStack(baseLayer, actions, modalInterior());
   }
 
   onRemoved(): void {
-    this.removed?.();
+    this.hooks.removed?.();
   }
 
   paint(_ctx: LayerContext, paintBelow: PaintBelow): GrayImage {
@@ -73,6 +86,7 @@ export class ShellModalLayer implements Layer {
   }
 
   async handleInput(event: InputEvent, _ctx: LayerContext): Promise<void> {
+    this.hooks.input?.(event);
     await this.stack.handleInput(event);
   }
 }

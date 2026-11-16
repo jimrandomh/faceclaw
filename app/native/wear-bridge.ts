@@ -9,46 +9,11 @@
  * Data Layer is part of it), so the rest of the app never has to care.
  */
 import { Utils } from "@nativescript/core";
+import { WEAR_PATHS, parseWearPayload, type WearMessage, type WearWatchConnection } from "./wear-bridge-types";
+
+export { WEAR_PATHS, type WearMessage, type WearWatchConnection };
 
 declare const com: any;
-
-/** Message paths shared with the watch app (wear/app/.../Protocol.kt). */
-export const WEAR_PATHS = {
-  /** Watch -> phone: a ring-style gesture. */
-  input: "/faceclaw/input",
-  /** Watch -> phone: a finger landed on the pad (the ring-press ahead of a gesture); never acked. */
-  press: "/faceclaw/press",
-  /** Watch -> phone: a shell command (launch app, wake, lock, ...). */
-  command: "/faceclaw/command",
-  /** Watch -> phone: a text query for the assistant. */
-  assistant: "/faceclaw/assistant",
-  /** Watch -> phone: text to type into the foreground app. */
-  text: "/faceclaw/text",
-  /** Watch -> phone: please re-publish the state item. */
-  stateRequest: "/faceclaw/state/request",
-  /** Watch -> phone: the watch's own battery ({battery, charging}); never acked. */
-  battery: "/faceclaw/battery",
-  /** Phone -> watch: please report the watch battery (answered even while the watch app is closed). */
-  batteryRequest: "/faceclaw/battery/request",
-  /** Phone -> watch: reply to any of the above. */
-  ack: "/faceclaw/ack",
-  /** Phone -> watch: assistant activity, alerts, voice-dialog transcripts. */
-  event: "/faceclaw/event",
-  /** Phone -> watch Data Layer item: the mirrored dashboard state. */
-  state: "/faceclaw/state",
-} as const;
-
-export type WearMessage = {
-  path: string;
-  /** Parsed JSON payload ({} when the watch sent none or it was malformed). */
-  payload: Record<string, unknown>;
-  nodeId: string;
-};
-
-export type WearWatchConnection = {
-  reachable: boolean;
-  watchName: string;
-};
 
 type MessageListener = (message: WearMessage) => void;
 type ConnectionListener = (connection: WearWatchConnection) => void;
@@ -91,7 +56,7 @@ class WearBridge {
       onMessage: (path: string, json: string, nodeId: string) => {
         const message: WearMessage = {
           path: String(path),
-          payload: parsePayload(String(json)),
+          payload: parseWearPayload(String(json)),
           nodeId: String(nodeId),
         };
         for (const listener of Array.from(this.messageListeners)) {
@@ -174,15 +139,6 @@ class WearBridge {
   /** Acknowledge a watch message; `seq` echoes the watch's sequence number. */
   sendAck(nodeId: string, seq: number, ok: boolean, message = ""): void {
     this.getJava()?.sendAck(nodeId, seq, ok, true, message);
-  }
-}
-
-function parsePayload(json: string): Record<string, unknown> {
-  try {
-    const parsed = JSON.parse(json);
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
-  } catch {
-    return {};
   }
 }
 

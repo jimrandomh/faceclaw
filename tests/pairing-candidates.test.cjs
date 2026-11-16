@@ -12,6 +12,7 @@ const {
   isPreviouslyPaired,
   glassesRow,
   ringRow,
+  rayneoRow,
   DEFAULT_STALE_AFTER_MS,
 } = require("../.test-build/app/g2/pairing-candidates.js");
 const { requiredArtworkFileNames, glassesImagePath, GENERIC_G2_IMAGE_PATH } = require("../.test-build/app/g2/glasses-artwork.js");
@@ -188,7 +189,7 @@ test("scan row carries the decoded variant, artwork, and proximity", () => {
   assert.equal(row.colorway, "brown");
   assert.equal(row.imagePath, "~/images/glasses/glasses_g2_b_brown.png");
   assert.equal(row.hasVariantImage, true);
-  assert.match(row.proximitySummary, /In your hand|Nearby/);
+  assert.match(row.proximityGlyph, /^●●●[●○]$/);
   assert.match(row.armsSummary, /serials match/);
   assert.equal(row.canSelect, true);
   assert.equal(row.isNearest, false);
@@ -288,4 +289,106 @@ test("every artwork file the resolver claims is bundled exists on disk", () => {
   for (const name of requiredArtworkFileNames()) {
     assert.ok(fs.existsSync(path.join(dir, name)), `missing app/images/glasses/${name}`);
   }
+});
+
+test("a RayNeo iO is its own candidate, never half of a G2 pair", () => {
+  const aggregator = new DiscoveryAggregator();
+  aggregator.ingest({
+    address: "00:6A:5E:5F:33:C2", name: "RayNeo iO-2229", manufacturerData: "1657" + "07006a5e5f33c2130000000000000001",
+    rssi: -50, txPower: null, connectable: true, bonded: false, source: "scan", seenAtMs: 1000,
+  });
+  assert.equal(aggregator.pairs().length, 0);
+  assert.equal(aggregator.rings().length, 0);
+  const found = aggregator.rayneos();
+  assert.equal(found.length, 1);
+  const row = rayneoRow(found[0], { pairedAddress: "00:6a:5e:5f:33:c2" });
+  assert.equal(row.kind, "rayneo-io");
+  assert.equal(row.canSelect, true);
+  assert.equal(row.isPreviouslyPaired, true);
+});
+
+// ---------------------------------------------------------------------------
+// Even G1
+// ---------------------------------------------------------------------------
+
+const G1_SERIAL = "S110LABC030139";
+const g1Arm = (name, address, manufacturerData) => ({
+  address, name, manufacturerData, rssi: -50, txPower: null, connectable: true, bonded: false, source: "scan", seenAtMs: 1000,
+});
+const g1v0Arm = (side, address) => g1Arm(`G1v0_${side}`, address, "ffff0104" + ascii(G1_SERIAL));
+
+test("G1 arms on g1v0 join on the frame serial and can be selected", () => {
+  const aggregator = new DiscoveryAggregator();
+  aggregator.ingest(g1v0Arm("L", "F4:27:E9:CA:E8:3F"));
+  aggregator.ingest(g1v0Arm("R", "CD:EB:89:BF:E9:EC"));
+  const [pair, ...rest] = aggregator.pairs();
+  assert.equal(rest.length, 0);
+  assert.equal(pair.completeness, "complete");
+  assert.equal(pair.g1Firmware, "g1v0");
+  assert.equal(pair.identity, null);
+  const row = glassesRow(pair);
+  assert.equal(row.modelTitle, "Even Realities G1");
+  assert.equal(row.canSelect, true);
+  assert.match(row.armsSummary, /case/);
+});
+
+test("G1 arms on current firmware join on the serial, with the arm's own name", () => {
+  const record = (flags) => "ffff" + "02" + flags + "000542" + ascii(G1_SERIAL);
+  const aggregator = new DiscoveryAggregator();
+  aggregator.ingest(g1Arm("G1CFW_L_EF50E5", "C0:66:16:EF:50:E5", record("05")));
+  aggregator.ingest(g1Arm("G1CFW_R_CBE689", "E4:46:BA:CB:E6:89", record("04")));
+  const [pair] = aggregator.pairs();
+  assert.equal(pair.g1Firmware, "g1v0");
+  assert.equal(pair.completeness, "complete");
+  assert.equal(pair.left.g1Version, "0.5.66");
+  assert.equal(glassesRow(pair).canSelect, true);
+});
+
+test("a G1 pair halfway through an install is one pair, shown as needing it", () => {
+  const aggregator = new DiscoveryAggregator();
+  aggregator.ingest(g1Arm("G1CFW_L_EF50E5", "C0:66:16:EF:50:E5", "ffff" + "02" + "05" + "000542" + ascii(G1_SERIAL)));
+  aggregator.ingest(g1Arm("Even G1_70_R_CBE689", "E4:46:BA:CB:E6:89", "01" + ascii(G1_SERIAL)));
+  const pairs = aggregator.pairs();
+  assert.equal(pairs.length, 1);
+  assert.equal(pairs[0].g1Firmware, "stock");
+  assert.equal(glassesRow(pairs[0]).canSelect, true);
+});
+
+test("G1 arms on Even's firmware can be selected, to install on", () => {
+  const aggregator = new DiscoveryAggregator();
+  aggregator.ingest(g1Arm("Even G1_70_L_EF50E5", "C0:66:16:EF:50:E5", "02" + ascii(G1_SERIAL)));
+  aggregator.ingest(g1Arm("Even G1_70_R_CBE689", "E4:46:BA:CB:E6:89", "01" + ascii(G1_SERIAL)));
+  const [pair] = aggregator.pairs();
+  assert.equal(pair.g1Firmware, "stock");
+  assert.equal(pair.completeness, "complete");
+  const row = glassesRow(pair);
+  assert.equal(row.canSelect, true);
+  assert.match(row.armsSummary, /install/);
+});
+
+test("a G1 pair with one arm in safe mode can be selected, to install again", () => {
+  const aggregator = new DiscoveryAggregator();
+  aggregator.ingest(g1v0Arm("L", "F4:27:E9:CA:E8:3F"));
+  aggregator.ingest(g1Arm("G1v0S_R", "CD:EB:89:BF:E9:EC", "ffff0104" + ascii(G1_SERIAL)));
+  const [pair] = aggregator.pairs();
+  assert.equal(pair.g1Firmware, "g1v0-safe");
+  assert.equal(glassesRow(pair).canSelect, true);
+});
+
+test("a G1 pair needs both arms heard, whatever it runs", () => {
+  const aggregator = new DiscoveryAggregator();
+  aggregator.ingest(g1Arm("Even G1_70_L_EF50E5", "C0:66:16:EF:50:E5", "02" + ascii(G1_SERIAL)));
+  const [pair] = aggregator.pairs();
+  assert.equal(pair.g1Firmware, "stock");
+  assert.equal(pair.completeness, "left-only");
+  assert.equal(glassesRow(pair).canSelect, false);
+});
+
+test("G2 pairs carry no G1 firmware", () => {
+  const aggregator = new DiscoveryAggregator();
+  aggregator.ingest(arm("left", "S110LABC030139", "EC:D7:82:69:3C:CB", -50));
+  aggregator.ingest(arm("right", "S110LABC030139", "D0:7A:47:82:09:67", -50));
+  const pairs = aggregator.pairs();
+  assert.equal(pairs.length, 1);
+  assert.equal(pairs[0].g1Firmware, undefined);
 });

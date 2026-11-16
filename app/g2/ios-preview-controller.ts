@@ -2,7 +2,6 @@ import { startRemoteInput } from "../remote/service"
 import type { KeyboardInputSession } from '../ui/shell/keyboard-input'
 import { acceptInput, resetRingInputFilter } from "../ui/input-monitor";
 import { bindIosNotifications, iosNotificationsChanged, onIosNotificationPopup, readActiveNotifications } from '../native/notification-icons.ios'
-import { shouldShowNotificationOnGlasses } from '../native/notification-sources'
 import { launcherEntries } from '../apps/launcher'
 import { discardZeroedEvenHubPackage, getInstalledEvenHubAppById, installedEvenHubPackageId, uninstallEvenHubPackage } from '../apps/evenhub/installed-apps'
 import { isInstalledPackagePresent } from '../apps/evenhub/updates'
@@ -23,13 +22,17 @@ import { weatherBridge } from '../native/weather'
 import { FaceclawCommunicatorBridge, resolveIosPeripherals, type CommunicatorState, type RawInputEvent } from '../native/faceclaw-communicator.ios'
 import { PreviewDisplayTarget, type DisplayTarget } from '../native/preview-display.ios'
 import { AncsClient, ANCS_FIRMWARE_VERSION } from './ancs-client'
+import { G1V0_IMAGE } from '../g1/firmware/g1v0-image'
 import { GlanceHost, type GlanceDisplay } from './glance-host'
 import { createLockScreenImage, LOCK_SCREEN_SURFACE_ID } from './lock-screen'
 import { OsEventTypeList } from './events'
 import { loadDeviceAddresses } from './device-addresses'
 import { updateGlassesPresence } from './glasses-presence'
 import { firmwareIncompatibilityMessage, hasCompatibleFirmware } from './firmware-compat'
-import { isHaltedSessionPhase, suppressAutoReconnect } from './reconnect-policy'
+import { keyboardService } from './keyboard/service'
+import type { KeyEvent } from './keyboard/keys'
+import { isHaltedSessionPhase, resumeAutoReconnect, suppressAutoReconnect } from './reconnect-policy'
+import { WearRemote, type WearRemoteInputKind } from './wear-remote'
 import { deviceAddressError } from './ios-peripheral-identity'
 import { createLauncherWindow, LAUNCHER_SURFACE_ID } from '../apps/launcher/launcher-app'
 import { createNotificationsAppWindow, NOTIFICATIONS_SURFACE_ID, NOTIFICATIONS_WINDOW_ID } from '../apps/notifications/notifications-app'
@@ -46,13 +49,13 @@ import { makeInputEvent, type InputEvent, type InputEventPayload } from '../ui/g
 import { noopLayerActions, type ContinuousCaptureOptions, type LayerActions } from '../ui/layers'
 import { TextViewerLayer } from '../apps/files/text-viewer'
 import { shell, rawInputEventToInputEvent, type ShellWindow } from '../ui/shell/shell'
-import { appViewportRect, isOnSwitcherEdge, sidebarStripVisible, type ScreenRect } from '../ui/shell/geometry'
+import { appViewportRect, isOnSwitcherEdge, sidebarStripVisible, windowEdges, type ScreenRect } from '../ui/shell/geometry'
 import { mirrorToPanelFraction, phonePreviewCrop } from './phone-preview-crop'
 import { onAnySettingChanged,
   previewColorSetting, lockScreenEnabledSetting, getBrightnessPreferences, getStringSettingById,
   nightscoutSiteUrlSetting, nightscoutApiTokenSetting, voiceProviderSetting, elevenLabsApiKeySetting,
   openAiApiKeySetting, sonioxApiKeySetting, whisperServerApiKeySetting, whisperServerLanguageSetting,
-  whisperServerModelSetting, whisperServerUrlSetting, ringConnectionModeSetting, saveTranscribeAudioSetting } from '../ui/dashboard-settings'
+  whisperServerModelSetting, whisperServerUrlSetting, ringConnectionModeSetting, saveRecordingSetting, glassesTypeSetting, shouldPopUpNewNotification } from '../ui/dashboard-settings'
 import { transcriptionKey, type VoiceProviderSelection } from '../native/cloud-stt-provider'
 import type { PhoneGesture } from '../phone-ui/phone-gestures'
 import { claimGlassesOnboardingAutoLaunch, ONBOARDING_APP_ID } from '../apps/onboarding/onboarding-progress'
@@ -167,6 +170,8 @@ export class IosPreviewController {
   private continuousPending = false
   private continuousCaptureToken = 0
   private sessionConnected = false
+  /** The Apple Watch remote; constructed last so it sees a fully wired shell. */
+  private wearRemote: WearRemote | null = null
   private readonly actions: LayerActions = {
     ...noopLayerActions,
     playBuzzerSequence: payload => this.communicator?.playBuzzerSequence(payload),
@@ -210,9 +215,10 @@ export class IosPreviewController {
       prepareVoiceCapture: () => this.prepareVoiceCapture(),
       getScreenTimeoutMs: () => null,
       requestShellRender: () => this.requestShellRender(),
-      onWindowsChanged: () => { this.requestShellRender(); this.syncEvenHubPhoneUi() },
+      onWindowsChanged: () => { this.requestShellRender(); this.syncEvenHubPhoneUi(); this.wearRemote?.schedulePublish() },
       openNotificationsWindow: () =>
-        this.openInProcessAppInBackground(NOTIFICATIONS_WINDOW_ID, NOTIFICATIONS_SURFACE_ID, createNotificationsAppWindow),
+        this.openInProcessAppInBackground(NOTIFICATIONS_WINDOW_ID, NOTIFICATIONS_SURFACE_ID,
+          options => createNotificationsAppWindow(options, section => { void this.launchApp('settings', { section }) })),
       onSwitcherBarHeightChanged: () => {
         this.relayout()
         shell.foregroundWindow()?.requestRender()
@@ -227,6 +233,8 @@ export class IosPreviewController {
         this.unblankAfterShellRender = on
         if (!on) void this.display?.setScreenBlanked(true).catch(error => this.fail(error))
         this.requestShellRender()
+        this.wearRemote?.schedulePublish()
+        if (on) keyboardService.retryNow()
       },
     })
     const launcher = createLauncherWindow({
@@ -243,7 +251,7 @@ export class IosPreviewController {
     shell.focusWindow(launcher.windowId)
     onIosNotificationPopup(key => {
       const notification = readActiveNotifications(128).find(n => n.key === key)
-      if (this.glassesLocked || !notification || !shouldShowNotificationOnGlasses(notification.packageName)) return
+      if (this.glassesLocked || !notification || !shouldPopUpNewNotification(notification.packageName)) return
       const woke = !shell.isScreenOn() && shell.wake('sidebar')
       shell.openNotificationModal(key, woke)
       this.requestShellRender()
@@ -265,16 +273,52 @@ export class IosPreviewController {
       assistantAvailable: () => shell.isAssistantAvailable(),
       assistant: text => shell.sendToAssistant(text),
     })
+    // A keyboard paired through the glasses (the CFW keyboard bridge). The service decides what
+    // each key means (app/g2/keyboard/key-router.ts); its gestures share the controller queue
+    // with physical input, like the watch's.
+    const queueKeyboardInput = (run: () => Promise<void>): Promise<void> => {
+      const task = this.inputQueue.then(() => { this.onActivity(); return run() })
+      this.inputQueue = task.catch(error => this.fail(error))
+      return task
+    }
+    keyboardService.setHost({
+      ready: () => this.state.phase === 'connected',
+      locked: () => this.glassesLocked,
+      wake: () => { void queueKeyboardInput(() => this.receiveInput(makeInputEvent({ type: 'display-wake' }))).catch(() => {}) },
+      gesture: (gesture, origin) => queueKeyboardInput(async () => {
+        await this.receiveInput(makeInputEvent({ type: gesture, source: origin } as InputEventPayload))
+        // A discrete hold includes its release.
+        if (gesture === 'long-press') await this.receiveInput(makeInputEvent({ type: 'long-press-release', source: origin }))
+      }),
+      log: line => this.logBluetooth(line),
+      // Only while the display is on: a keyboard that is switched off would otherwise keep the
+      // glasses' radio looking for it around the clock.
+      shouldReconnect: () => this.state.phase === 'connected' && shell.isScreenOn(),
+    })
     // The header's EvenHub phone-UI button hides while that UI is showing.
     onPhoneShownChanged(() => this.syncEvenHubPhoneUi())
     registerSystemTools()
-    registerWindowTools({ apps: ALL_APPS.filter(app => !iosAppUnavailableReason(app.appId)),
+    registerWindowTools({ apps: () => ALL_APPS.filter(app => app.isSupported?.() !== false && !iosAppUnavailableReason(app.appId)),
       launchApp: id => this.launchApp(id), requestShellRender: () => this.requestShellRender() })
     registerNavigateTools(id => this.launchApp(id))
     registerRoamTools(id => this.launchApp(id))
     // Every capture end (drained, failed, replaced) may leave continuous capture to restart.
     iosVoiceInput.onSpeechEnd(() => this.syncContinuousCapture())
     for (const app of ALL_APPS) if (app.appId !== 'launcher' && !iosAppUnavailableReason(app.appId)) app.boot?.(this.buildAppContext(app))
+    this.wearRemote = new WearRemote({
+      apps: () => ALL_APPS.filter(app => app.showInLauncher !== false && app.isSupported?.() !== false && !iosAppUnavailableReason(app.appId)),
+      injectInput: kind => this.injectWatchInput(kind),
+      launchApp: id => this.launchApp(id),
+      // The watch's Connect/Disconnect are explicit user choices, like the phone's own buttons.
+      connect: () => { resumeAutoReconnect(); return this.connect(true) },
+      disconnect: () => { suppressAutoReconnect(); return this.disconnect() },
+      setGlassesLocked: locked => this.setGlassesLocked(locked),
+      requestShellRender: () => this.requestShellRender(),
+      previewInputActive: () => !this.communicator && this.runtimeRunning,
+      getState: () => ({ phase: this.state.phase, status: this.state.status, glassesLocked: this.glassesLocked,
+        glassesWorn: this.glassesWorn, silentMode: false, lastHeadsetBattery: this.state.battery }),
+      appendLog: line => this.logBluetooth(line),
+    })
   }
 
   /** The compositor frames go to: the live session, else the headless preview. */
@@ -341,7 +385,7 @@ export class IosPreviewController {
     this.logBluetooth(`Phone background; glasses ${this.state.phase}`)
     this.flushBluetoothLog()
   }
-  /** Overlay an EvenHub app's phone UI (the header's app-icon button). */
+  /** Overlay an EvenHub app's phone UI (the app-icon button under the mirror). */
   showEvenHubPhoneUi(windowId: string): void {
     showOnPhone(windowId)
   }
@@ -399,6 +443,7 @@ export class IosPreviewController {
     this.logBluetooth(`Phone battery ${phone.battery ?? "unknown"}% charging=${phone.charging}`)
     this.offSettings = onAnySettingChanged(() => {
       this.syncLockSetting()
+      this.syncContinuousRecording()
       this.pushBrightness()
       this.relayout()
       shell.foregroundWindow()?.requestRender()
@@ -443,6 +488,7 @@ export class IosPreviewController {
     // a session's first snapshot) wakes the screen, to the lock notice if locked.
     const putOn = wearing && this.glassesWorn === false
     this.glassesWorn = wearing
+    this.wearRemote?.schedulePublish()
     this.syncPresence()
     this.logBluetooth(`Glasses wear state: ${wearing ? 'ON_HEAD' : 'OFF_HEAD'}`)
     if (!wearing && this.phoneLocked && this.lockEnabled) this.setGlassesLocked(true)
@@ -451,6 +497,7 @@ export class IosPreviewController {
   private setGlassesLocked(locked: boolean): void {
     if (locked === this.glassesLocked) return
     this.glassesLocked = locked
+    this.wearRemote?.schedulePublish()
     if (locked) {
       this.glance.dismiss()
       if (iosVoiceInput.continuousSource === 'glasses') this.continuousPending = true
@@ -483,7 +530,9 @@ export class IosPreviewController {
     await target.setSurfaceVisible(window.surfaceId, shell.foregroundWindow()?.windowId === window.windowId)
   }
   private relayout(): void {
-    const layout = shell.getWindows().map(window => JSON.stringify(appViewportRect(window.heightMode, window.appId))).join(";")
+    // Each window's rect, and what its edges touch (which sets its padding).
+    const layout = shell.getWindows().map(window =>
+      JSON.stringify([appViewportRect(window.heightMode, window.appId), windowEdges(window.appId)])).join(";")
     if (layout === this.lastLayout) return
     this.lastLayout = layout
     for (const window of shell.getWindows()) {
@@ -599,7 +648,25 @@ export class IosPreviewController {
       console.log(`[ios-preview] ${origin} ${gesture}: ${shell.describeInputTarget()}`)
     }).catch(error => this.fail(error))
   }
+  /** Input from the Apple Watch: shares the controller queue with physical input. */
+  private injectWatchInput(kind: WearRemoteInputKind): Promise<void> {
+    const task = this.inputQueue.then(async () => {
+      this.onActivity()
+      // As on Android, and because the watch may be acting on a stale state snapshot: a dark
+      // display takes a double-click (wake) or a tap/hold (Glanceboard), and scrolls mean nothing.
+      if (!shell.isScreenOn() && (kind === 'scroll-up' || kind === 'scroll-down' || kind === 'short-then-long-press')) return
+      // A real hold releases when the finger lifts; a discrete long-press releases at once.
+      const type = kind === 'long-press-start' ? 'long-press' : kind
+      await this.receiveInput(makeInputEvent({ type, source: 'watch' } as InputEventPayload))
+      if (kind === 'long-press') await this.receiveInput(makeInputEvent({ type: 'long-press-release', source: 'watch' }))
+      console.log(`[ios-preview] apple-watch ${kind}: ${shell.describeInputTarget()}`)
+    })
+    this.inputQueue = task.catch(error => this.fail(error))
+    return task
+  }
   private async receiveInput(event: InputEvent, headTilt = false): Promise<void> {
+    // Input can change the foreground app or the display state, and the shell doesn't announce those.
+    this.wearRemote?.schedulePublish()
     if (!acceptInput(event)) return
     if (this.glassesLocked) {
       // Preserve the locked display's sleep/wake controls without dispatching
@@ -763,10 +830,11 @@ export class IosPreviewController {
         const display = this.display
         if (!display) return
         await display.configureSurface(id, { ...appViewportRect(heightMode, appId), zOrder: 0, transparency: 'opaque' })
-        await display.setSurfaceVisible(id, visible)
+        await display.setSurfaceVisible(id, typeof visible === 'function' ? visible() : visible)
       },
       setSurfaceVisible: (id, visible) => this.setWindowSurfaceVisible(id, visible),
       removeSurface: id => this.removeWindowSurface(id),
+      unhandledKey: event => keyboardService.handleUnhandledKey(event as KeyEvent),
       submitPixels: (id, pixels, width, height, draws) => {
         void this.submitWorkerPixels(id, pixels, width, height, draws).catch(error => this.fail(error))
       },
@@ -788,6 +856,18 @@ export class IosPreviewController {
     this.state = { ...this.state, phase, status }
     this.logBluetooth(status)
     this.emitState()
+    this.syncKeyboardLink()
+  }
+  /**
+   * Tell the keyboard bridge whether the session can host a keyboard: a G2 on firmware with
+   * the bridge, connected. On a disconnect the user asked for, the link is still up when the
+   * phase turns, so the firmware is told to let the keyboard go first.
+   */
+  private syncKeyboardLink(): void {
+    const up = !!this.communicator && this.state.phase === 'connected' && this.firmwareCompatible
+      && glassesTypeSetting.get() === 'g2'
+    if (up) keyboardService.linkReady()
+    else keyboardService.linkLost(this.state.phase === 'disconnecting')
   }
   /** Mirror the session into glasses-presence (read by EvenHub's device status and Timers). */
   private syncPresence(): void {
@@ -807,6 +887,7 @@ export class IosPreviewController {
     this.syncRuntime()
     if (this.active) this.onConnectionState({ ...this.state })
     this.requestShellRender()
+    this.wearRemote?.schedulePublish()
   }
   /** The ring level arrives through the glasses, so like Android it is shown only while connected. */
   private pushBatteryLevels(): void {
@@ -814,11 +895,16 @@ export class IosPreviewController {
     shell.setBatteryLevels({ headset: this.state.battery, headsetCharging: this.state.charging,
       ring: connected ? this.state.ringBattery : null, ringCharging: connected ? this.state.ringCharging : null })
   }
-  async connect(): Promise<void> {
-    if (!this.active || this.connecting || this.stopping) return
+  /** `fromBackground`: the watch asked, and the phone may be in a pocket with the app suspended. */
+  async connect(fromBackground = false): Promise<void> {
+    if ((!this.active && !fromBackground) || this.connecting || this.stopping) return
     if (this.communicator && ['connecting', 'connected', 'retrying', 'disconnecting'].includes(this.state.phase)) return
     const addresses = loadDeviceAddresses(), error = deviceAddressError(addresses)
-    if (error) { this.onError(error); return }
+    if (error) {
+      if (this.active) this.onError(error)
+      else this.logBluetooth(error)
+      return
+    }
     this.connecting = true
     this.sessionCreated = true
     try {
@@ -836,7 +922,7 @@ export class IosPreviewController {
         return
       }
       if (this.communicator) await this.closeCommunicator()
-      const communicator = new FaceclawCommunicatorBridge(identifiers)
+      const communicator = new FaceclawCommunicatorBridge({ ...identifiers, glassesType: glassesTypeSetting.get() })
       this.teardownPreviewDisplay()
       this.communicator = communicator
       this.wearDetectionRequested = false
@@ -882,6 +968,7 @@ export class IosPreviewController {
         this.pushBatteryLevels()
         if (this.active) this.onConnectionState({ ...this.state })
         this.requestShellRender()
+        this.wearRemote?.schedulePublish()
       }),
       communicator.onCaseState(state => {
         if (this.communicator !== communicator) return
@@ -889,6 +976,7 @@ export class IosPreviewController {
         // the case's own charging is only known while the glasses are docked.
         shell.setBatteryLevels({ ...(state.battery !== null ? { case: state.battery } : {}),
           caseCharging: state.docked ? state.charging : null })
+        this.wearRemote?.schedulePublish()
       }),
       communicator.onFirmwareInfo(info => {
         if (this.communicator !== communicator) return
@@ -899,6 +987,7 @@ export class IosPreviewController {
         const firmwareWarning = firmwareIncompatibilityMessage(info) ?? ''
         if (firmwareWarning && firmwareWarning !== this.state.firmwareWarning) this.logBluetooth(`Firmware compatibility warning: ${firmwareWarning}`)
         this.firmwareCompatible = !firmwareWarning && hasCompatibleFirmware(info)
+        this.syncKeyboardLink()
         this.state = { ...this.state, leftVersion: info.leftVersion || this.state.leftVersion,
           rightVersion: info.rightVersion || this.state.rightVersion, capabilities: info.extension || this.state.capabilities,
           firmwareWarning }
@@ -938,6 +1027,8 @@ export class IosPreviewController {
     // (or re-pairs / installs the custom firmware, which lift the suppression).
     if (isHaltedSessionPhase(state.phase)) suppressAutoReconnect()
     const phase: SessionPhase = state.phase === 'charging' ? 'connected' : isHaltedSessionPhase(state.phase) ? 'error' : state.phase
+    // The relay ends with the link, so a reconnected session has to ask for it again (syncNotifications).
+    if (phase !== 'connected' && this.notifications && this.notifications.state !== 'disconnected') this.notifications.stop()
     // Wear state is a per-transport snapshot: ask again on every new session.
     if (phase !== 'connected') this.wearDetectionRequested = false
     this.update(phase, state.status)
@@ -986,6 +1077,11 @@ export class IosPreviewController {
     if (!notifications || this.state.phase !== 'connected') return
     if (!ancsCapable(this.state.capabilities)) {
       if (this.state.capabilities) notifications.stop(`Update glasses to Faceclaw firmware ${ANCS_FIRMWARE_VERSION} or newer for iPhone notifications.`)
+      return
+    }
+    // A G1 reports no revision that says so: its session knows from what the right arm answered.
+    if (!communicator.ancsRelayAvailable()) {
+      notifications.stop(`Update the glasses to Faceclaw's firmware ${G1V0_IMAGE.version} for iPhone notifications, then reconnect.`)
       return
     }
     if (notifications.state !== 'disconnected') return
@@ -1061,8 +1157,8 @@ export class IosPreviewController {
   /**
    * Continuous capture on behalf of `client` (one id per window: Transcribe,
    * Translate, Teleprompter, Calculator); it runs while any client wants it, as
-   * on Android. `recordAs` names a WAV of the audio in Downloads when Save
-   * Transcribe audio is on.
+   * on Android. `recordAs` names a recording (.mka) of the audio in Downloads
+   * when Save Recording is on.
    */
   private startContinuousVoiceCapture(client: string, options: ContinuousCaptureOptions = {}): void {
     this.continuousClients.set(client, options)
@@ -1151,9 +1247,12 @@ export class IosPreviewController {
   private syncContinuousClaim(): void {
     voiceActivity.setActive(this.continuousClients.size > 0 && iosVoiceInput.continuousActive, CONTINUOUS_CAPTURE_HOLDER)
   }
-  /** Record to the first client's requested name while Save Transcribe audio is on. */
+  /**
+   * Record to the first client's requested name while Save Recording is on (it is
+   * toggled from those windows' menus, so this also runs when a setting changes).
+   */
   private syncContinuousRecording(): void {
-    const name = saveTranscribeAudioSetting.get() ? [...this.continuousClients.values()].map(options => options.recordAs).find(Boolean) ?? '' : ''
+    const name = saveRecordingSetting.get() ? [...this.continuousClients.values()].map(options => options.recordAs).find(Boolean) ?? '' : ''
     iosVoiceInput.recordTo(name)
   }
   /**

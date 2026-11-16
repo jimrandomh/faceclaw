@@ -1,7 +1,7 @@
 import { shellCrop } from "../../graphics/shell-scene";
 import type { Plane } from "../../graphics/plane";
 import { DrawOp, type ListCall, type ListClip } from "../../graphics/display-list";
-import { G2_LENS_HEIGHT, G2_LENS_WIDTH, GrayImage, grayToNibble } from "../../graphics/image";
+import { GrayImage, grayToNibble } from "../../graphics/image";
 import { getDefaultMediumFont, getDefaultSmallFont } from "../../graphics/ui-fonts";
 import { truncateText } from "../../graphics/textwrap";
 import { activeAmbientCards } from "./ambient-cards";
@@ -15,6 +15,7 @@ import {
   batteryDisplayModeSetting,
   batteryIndicatorVisible,
   glassesBatteryVisibilitySetting,
+  glassesModelName,
   phoneBatteryVisibilitySetting,
   ringBatteryVisibilitySetting,
   watchBatteryVisibilitySetting,
@@ -29,12 +30,15 @@ import { lineStep } from "../metrics";
 import {
   appViewportRect,
   isImmersive,
-  MIN_WINDOW_HEIGHT,
+  minWindowHeight,
+  screenHeight,
+  screenWidth,
   minWindowTop,
   setSwitcherBarHeight,
   SHELL_OPAQUE_BLACK,
   SIDEBAR_WIDTH,
   sidebarStripVisible,
+  statusBarDivider,
   statusBarEdge,
   statusBarOverlays,
   statusBarTop,
@@ -42,7 +46,9 @@ import {
   SWITCHER_ROW_HEIGHT,
   switcherPosition,
   switcherRect,
+  switcherRowDivider,
   TOP_BAR_HEIGHT,
+  windowBorder,
   windowFooterHeight,
   windowFramed,
   windowHeaderHeight,
@@ -68,7 +74,10 @@ const TWO_COLUMN: SidebarVariant = { columns: 2, columnWidth: 32, iconSize: 28 }
 const ICON_SPACING = 8;
 /** Icon list top/bottom margins within the sidebar band, below the top bar (and a bottom row's end margins). */
 const LIST_MARGIN = 10;
-const LIST_HEIGHT = MIN_WINDOW_HEIGHT - TOP_BAR_HEIGHT - 2 * LIST_MARGIN;
+/** Height of the sidebar's icon list: the min-height band less its top bar and margins. */
+function listHeight(appId?: string): number {
+  return minWindowHeight(appId) - TOP_BAR_HEIGHT - 2 * LIST_MARGIN;
+}
 
 /** Bottom-row icons: one tall tab's worth of row, the icon inset 2px all round. */
 const ROW_ICON_SIZE = SWITCHER_ROW_HEIGHT - 4;
@@ -123,7 +132,7 @@ const POPUP_DIM = 0.5;
 
 /** Icon rows that fit in one sidebar column. */
 function rowsPerColumn(variant: SidebarVariant): number {
-  return Math.max(1, ((LIST_HEIGHT + ICON_SPACING) / (variant.iconSize + ICON_SPACING)) | 0);
+  return Math.max(1, ((listHeight() + ICON_SPACING) / (variant.iconSize + ICON_SPACING)) | 0);
 }
 
 function sidebarVariant(windowCount: number): SidebarVariant {
@@ -136,7 +145,7 @@ function sidebarVariant(windowCount: number): SidebarVariant {
  */
 function columnLeft(variant: SidebarVariant, column: number, position: AppSwitcherPosition): number {
   return position === "right"
-    ? G2_LENS_WIDTH - SIDEBAR_WIDTH + column * variant.columnWidth
+    ? screenWidth() - SIDEBAR_WIDTH + column * variant.columnWidth
     : SIDEBAR_WIDTH - (column + 1) * variant.columnWidth;
 }
 
@@ -180,10 +189,19 @@ function switcherLayout(windowCount: number, heightMode: WindowHeightMode, appId
     // Under a framed window the first window's cell (the launcher's) starts
     // at the frame's left side, one pixel outside the window, so a selection
     // tab there carries the side straight down (drawWindowFrame squares that
-    // corner for it). Scrolled past it, the cells keep the margin the left
-    // chevron needs. The count of slots stays the same either way. Only the
-    // first row's cells touch the separator; a second row's lines up under it.
-    const first = windowFramed(appId) && scrollRow === 0 ? row.x - 1 : row.x + LIST_MARGIN - 2;
+    // corner for it). With a border that isn't all around (geometry.ts
+    // windowBorder) it starts at the row's own end, in line with the
+    // window's edge. Scrolled past it, and under an unframed window whose
+    // border is all around (Full Screen, immersive), the cells keep the
+    // margin the left chevron needs. The count of slots stays the same
+    // either way. Only the first row's cells touch the separator; a second
+    // row's lines up under it. Where the row has no separator line
+    // (geometry.ts switcherRowDivider) none do, and every selection is a box.
+    const first = scrollRow > 0 ? row.x + LIST_MARGIN - 2
+      : windowFramed(appId) ? row.x - 1
+      : windowBorder() !== "all" ? row.x
+      : row.x + LIST_MARGIN - 2;
+    const divided = switcherRowDivider(appId);
     return {
       position,
       iconSize: ROW_ICON_SIZE,
@@ -192,7 +210,7 @@ function switcherLayout(windowCount: number, heightMode: WindowHeightMode, appId
         const line = (slot / columns) | 0;
         return {
           x: first + (slot % columns) * ROW_STEP, y: row.y + line * SWITCHER_ROW_HEIGHT,
-          width: ROW_ICON_SIZE + 4, height: SWITCHER_ROW_HEIGHT, atSeparator: line === 0,
+          width: ROW_ICON_SIZE + 4, height: SWITCHER_ROW_HEIGHT, atSeparator: divided && line === 0,
         };
       },
     };
@@ -382,7 +400,7 @@ export function sidebarContentSpan(windowCount: number): { left: number; right: 
   const variant = sidebarVariant(windowCount);
   const width = variant.columns * variant.columnWidth;
   return switcherPosition() === "right"
-    ? { left: G2_LENS_WIDTH - SIDEBAR_WIDTH, right: G2_LENS_WIDTH - SIDEBAR_WIDTH + width }
+    ? { left: screenWidth() - SIDEBAR_WIDTH, right: screenWidth() - SIDEBAR_WIDTH + width }
     : { left: SIDEBAR_WIDTH - width, right: SIDEBAR_WIDTH };
 }
 
@@ -396,7 +414,7 @@ function topBarSpan(state: ShellChromeState): { left: number; right: number } {
   if (sidebarStripVisible(state.focus, state.foregroundAppId)) {
     const position = switcherPosition();
     if (position === "left") left = Math.max(left, SIDEBAR_WIDTH);
-    if (position === "right") right = Math.min(right, G2_LENS_WIDTH - SIDEBAR_WIDTH);
+    if (position === "right") right = Math.min(right, screenWidth() - SIDEBAR_WIDTH);
   }
   return { left, right };
 }
@@ -407,7 +425,8 @@ function topBarSpan(state: ShellChromeState): { left: number; right: number } {
  * bar's layout starts in them: a row lower at the window's bottom, where
  * the bar's first row is the one next to the window. `divider` is the row
  * of the line between bar and window, or null where the window frame's side
- * runs along it instead.
+ * runs along it instead, or the Border setting leaves the line out
+ * (geometry.ts statusBarDivider).
  */
 type StatusBarPlacement = { left: number; right: number; top: number; contentTop: number; divider: number | null };
 
@@ -427,7 +446,8 @@ function statusBarPlacement(state: ShellChromeState): StatusBarPlacement | null 
   const { left, right } = topBarSpan(state);
   const top = statusBarTop(state.foregroundHeightMode, appId);
   const atBottom = statusBarEdge() === "bottom";
-  const divider = windowFramed(appId) && !overlays ? null : atBottom ? top : top + TOP_BAR_HEIGHT - 1;
+  const framedSide = windowFramed(appId) && !overlays;
+  const divider = framedSide || !statusBarDivider() ? null : atBottom ? top : top + TOP_BAR_HEIGHT - 1;
   return { left, right, top, contentTop: atBottom ? top + 1 : top, divider };
 }
 
@@ -632,7 +652,7 @@ export class ShellChromeLayer implements Layer {
   ) {}
 
   paint(): GrayImage {
-    const image = new GrayImage(G2_LENS_WIDTH, G2_LENS_HEIGHT, 0);
+    const image = new GrayImage(screenWidth(), screenHeight(), 0);
     const state = this.getState();
     this.statusEntries = [];
     this.bottomBar = this.layoutBottomBar(state);
@@ -659,7 +679,7 @@ export class ShellChromeLayer implements Layer {
     this.statusEntries = [];
     this.bottomBar = this.layoutBottomBar(state);
     const statusInRow = statusInSwitcherRow(state.foregroundAppId);
-    const canvas = new GrayImage(G2_LENS_WIDTH, G2_LENS_HEIGHT, 0);
+    const canvas = new GrayImage(screenWidth(), screenHeight(), 0);
     const span = topBarSpan(state);
     const bar = statusBarPlacement(state);
     if (bar) {
@@ -672,7 +692,7 @@ export class ShellChromeLayer implements Layer {
       return parts;
     }
     if (switcherShown) {
-      const stripCanvas = new GrayImage(G2_LENS_WIDTH, G2_LENS_HEIGHT, 0);
+      const stripCanvas = new GrayImage(screenWidth(), screenHeight(), 0);
       const statusLeft = this.drawSidebar(stripCanvas, state, statusInRow ? canvas : undefined);
       // The window frame rides on the switcher row, whose top edge is its
       // bottom side, and so replays after any top bar, whose bottom row is
@@ -712,14 +732,14 @@ export class ShellChromeLayer implements Layer {
       // to be sent at all, so the frame rides on one at its top-left corner,
       // outside its curve, which it paints black anyway. As in the bottom
       // row's case, it plays at the screen's own depth.
-      const frameCanvas = new GrayImage(G2_LENS_WIDTH, G2_LENS_HEIGHT, 0);
+      const frameCanvas = new GrayImage(screenWidth(), screenHeight(), 0);
       frameCanvas.fillRect(frame.x, frame.y, 1, 1, SHELL_OPAQUE_BLACK);
       drawWindowFrame(frameCanvas, frame, false, true);
       parts.push(shellCrop(frameCanvas, frame.x, frame.y, 1, 1, 1));
     }
     drawAmbientCards(canvas, topBarSpan(state).right, parts);
     if (!switcherShown) return;
-    const popupCanvas = new GrayImage(G2_LENS_WIDTH, G2_LENS_HEIGHT, 0);
+    const popupCanvas = new GrayImage(screenWidth(), screenHeight(), 0);
     const box = this.drawPopup(popupCanvas, state);
     this.popupKey ??= LayerStack.allocateShellKey();
     parts.push({ ...shellCrop(popupCanvas, box.x, box.y, box.width, box.height, this.popupKey), depth: POPUP_DEPTH });
@@ -900,8 +920,8 @@ export class ShellChromeLayer implements Layer {
     const batteries = batteryItems(state);
     if (batteries.length) {
       // Measured by drawing it: each battery style lays itself out as it draws.
-      const scratch = new GrayImage(G2_LENS_WIDTH, TOP_BAR_HEIGHT, 0);
-      const width = G2_LENS_WIDTH - BATTERY_BLOCK_RIGHT_MARGIN - drawBatteryBlock(scratch, batteries, 0, G2_LENS_WIDTH);
+      const scratch = new GrayImage(screenWidth(), TOP_BAR_HEIGHT, 0);
+      const width = screenWidth() - BATTERY_BLOCK_RIGHT_MARGIN - drawBatteryBlock(scratch, batteries, 0, screenWidth());
       // The block keeps its usual right margin inside the edge it's given.
       items.push({ kind: "batteries", width,
         draw: (image, x, top) => drawBatteryBlock(image, batteries, top, x + width + BATTERY_BLOCK_RIGHT_MARGIN) });
@@ -995,7 +1015,8 @@ export class ShellChromeLayer implements Layer {
     // stops at the strip.
     const { left: barLeft, right: barRight } = bar;
     image.fillRect(barLeft, bar.top, barRight - barLeft, TOP_BAR_HEIGHT, SHELL_OPAQUE_BLACK);
-    // A framed window's frame draws this line as its side (drawWindowFrame).
+    // A framed window's frame draws this line as its side (drawWindowFrame);
+    // without any border there is none.
     if (bar.divider !== null) {
       image.drawLine(barLeft, bar.divider, barRight - 1, bar.divider, BORDER_VALUE);
     }
@@ -1084,7 +1105,7 @@ function batteryItems(state: ShellChromeState): BatteryItem[] {
       Boolean(state.battery.watchCharging));
   }
   if (state.battery.headset !== null && Number.isFinite(state.battery.headset)) {
-    pushBatteryItem(items, glassesBatteryVisibilitySetting.get(), "G2", "glasses", state.battery.headset,
+    pushBatteryItem(items, glassesBatteryVisibilitySetting.get(), glassesModelName(), "glasses", state.battery.headset,
       Boolean(state.battery.headsetCharging));
   }
   if (state.battery.ring !== null && Number.isInteger(state.battery.ring)
@@ -1245,7 +1266,7 @@ function drawAmbientCards(image: GrayImage, right: number, parts?: Plane[]): voi
   if (!cards.length) return;
   const font = getDefaultSmallFont();
   const bandTop = minWindowTop();
-  const bandBottom = bandTop + MIN_WINDOW_HEIGHT - windowFooterHeight();
+  const bandBottom = bandTop + minWindowHeight() - windowFooterHeight();
   // Right-aligned with the top bar: clear of a right-hand sidebar.
   const x = right - AMBIENT_CARD_WIDTH - AMBIENT_CARD_MARGIN;
   const textWidth = AMBIENT_CARD_WIDTH - 2 * AMBIENT_CARD_PADDING_X;
@@ -1363,7 +1384,9 @@ const TAB_STROKE = 150;
 
 /**
  * Draw the switcher/main separator line along the strip's inner edge, with
- * a gap where the selection tab `gap` diverts it.
+ * a gap where the selection tab `gap` diverts it. A bottom row has the line
+ * only where the Border setting gives it one (geometry.ts
+ * switcherRowDivider).
  */
 function drawSeparator(
   image: GrayImage,
@@ -1372,6 +1395,7 @@ function drawSeparator(
   gap: SwitcherCell | null,
 ): void {
   if (switcherPosition() === "bottom") {
+    if (!switcherRowDivider(state.foregroundAppId)) return;
     // Along the row's top edge: the full width of the row, or between the
     // corners of the window frame, whose bottom side this is.
     // A selection tab at the frame's left side squares that corner (see

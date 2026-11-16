@@ -16,12 +16,11 @@ import {
   RING_CALIBRATION,
   sortedByProximity,
   zoneGlyph,
-  zoneLabel,
   type ProximityEstimate,
   type ProximityZone,
 } from "./ble-proximity";
-import { classifyAdvertisement, normalizeMacAddress, type EvenAdvertisement, type RawAdvertisement } from "./even-advertisement";
-import { glassesImagePath, R1_IMAGE_PATH } from "./glasses-artwork";
+import { classifyAdvertisement, normalizeMacAddress, type EvenAdvertisement, type G1Firmware, type RawAdvertisement } from "./even-advertisement";
+import { GENERIC_G2_IMAGE_PATH, glassesImagePath, R1_IMAGE_PATH } from "./glasses-artwork";
 import {
   colorwayDisplayName,
   colorwaySwatchHex,
@@ -48,12 +47,23 @@ export type GlassesPairCandidate = {
   rssi: number | null;
   proximity: ProximityEstimate | null;
   lastSeenMs: number;
+  /** An Even G1 pair: the arms' firmware, the "lower" of the two (stock, then safe mode). Absent on a G2. */
+  g1Firmware?: G1Firmware;
   /**
    * Set when this lone arm and a lone arm of the other side carry different
    * serials — the mixed-pair situation the serial check exists to name.
    * Grouping is by serial, so the mismatch can only show up across groups.
    */
   mismatchWarning: string | null;
+};
+
+/** A RayNeo iO: one device, one address (no arms to join). */
+export type RayNeoCandidate = {
+  id: string;
+  advertisement: EvenAdvertisement;
+  rssi: number | null;
+  proximity: ProximityEstimate | null;
+  lastSeenMs: number;
 };
 
 export type RingCandidate = {
@@ -176,9 +186,10 @@ export class DiscoveryAggregator {
   pairs(): GlassesPairCandidate[] {
     const groups = new Map<string, { left: (EvenAdvertisement & { smoothedRssi: number | null }) | null; right: (EvenAdvertisement & { smoothedRssi: number | null }) | null }>();
     for (const record of this.byAddress.values()) {
-      if (record.role === "ring") continue;
+      if (record.role === "ring" || record.role === "rayneo-io") continue;
       const canonical = serialKey(record.serial);
-      const key = canonical ? `serial:${canonical}` : `arm:${record.address}`;
+      const family = record.g1Firmware ? "g1:" : "";
+      const key = canonical ? `${family}serial:${canonical}` : `arm:${record.address}`;
       const group = groups.get(key) ?? { left: null, right: null };
       const slot = record.role === "left" ? "left" : "right";
       const incumbent = group[slot];
@@ -199,7 +210,9 @@ export class DiscoveryAggregator {
       pairs.push({
         id: serialKey(serial) ?? `arm:${any.address}`,
         serial,
-        identity: GlassesHardwareIdentity.decode(serial),
+        // Even's G2 serial scheme; a G1's says nothing to it.
+        identity: any.g1Firmware ? null : GlassesHardwareIdentity.decode(serial),
+        ...(any.g1Firmware ? { g1Firmware: g1PairFirmware(left, right) } : {}),
         left: left ? stripSmoothing(left) : null,
         right: right ? stripSmoothing(right) : null,
         completeness: left && right ? "complete" : left ? "left-only" : "right-only",
@@ -225,6 +238,22 @@ export class DiscoveryAggregator {
   }
 
   /** Every R1 ring seen, closest first. */
+  rayneos(): RayNeoCandidate[] {
+    const found: RayNeoCandidate[] = [];
+    for (const record of this.byAddress.values()) {
+      if (record.role !== "rayneo-io") continue;
+      const rssi = record.smoothedRssi != null ? Math.round(record.smoothedRssi) : null;
+      found.push({
+        id: `rayneo:${record.address}`,
+        advertisement: stripSmoothing(record),
+        rssi,
+        proximity: estimateProximity(rssi, GLASSES_CALIBRATION),
+        lastSeenMs: record.seenAtMs,
+      });
+    }
+    return sortedByProximity(found, (candidate) => candidate.proximity, (candidate) => candidate.id);
+  }
+
   rings(): RingCandidate[] {
     const rings: RingCandidate[] = [];
     for (const record of this.byAddress.values()) {
@@ -281,7 +310,7 @@ export function isPreviouslyPaired(name: string | null | undefined, pairedSerial
 
 export type PairingRowPresentation = {
   id: string;
-  kind: "glasses" | "ring";
+  kind: "glasses" | "ring" | "rayneo-io";
   /** "Even G2 B" / "Even R1" / fallback product name. */
   modelTitle: string;
   /** The serial (glasses) or local name (ring). */
@@ -299,7 +328,6 @@ export type PairingRowPresentation = {
   isPreviouslyPaired: boolean;
   /** "Yours" / "Closest" / "". */
   badge: string;
-  proximitySummary: string;
   proximityGlyph: string;
   zone: ProximityZone | null;
   /** "Left + right arms found", "Only the left arm has been seen", …; "" when there is nothing worth a line (an unbonded ring). */
@@ -325,12 +353,11 @@ function presentationBase(
   isNearest: boolean,
   isPaired: boolean,
   warnings: readonly string[],
-): Pick<PairingRowPresentation, "isNearest" | "isPreviouslyPaired" | "badge" | "proximitySummary" | "proximityGlyph" | "zone" | "warning"> {
+): Pick<PairingRowPresentation, "isNearest" | "isPreviouslyPaired" | "badge" | "proximityGlyph" | "zone" | "warning"> {
   return {
     isNearest,
     isPreviouslyPaired: isPaired,
     badge: isPaired ? "Yours" : isNearest ? "Closest" : "",
-    proximitySummary: proximity ? zoneLabel(proximity.zone) : "Signal unknown",
     proximityGlyph: proximity ? zoneGlyph(proximity.zone) : "○○○○",
     zone: proximity?.zone ?? null,
     warning: warnings.join(" "),
@@ -342,7 +369,52 @@ function embeddedMacMismatchWarning(subject: string, ad: EvenAdvertisement | nul
   return `${subject} advertised address ${ad.embeddedMac} differs from its radio address ${ad.address}.`;
 }
 
+/** The pair can only do what its less capable arm can. */
+function g1PairFirmware(left: EvenAdvertisement | null, right: EvenAdvertisement | null): G1Firmware {
+  const firmwares = [left?.g1Firmware, right?.g1Firmware];
+  if (firmwares.includes("stock")) return "stock";
+  return firmwares.includes("g1v0-safe") ? "g1v0-safe" : "g1v0";
+}
+
+export function g1Row(pair: GlassesPairCandidate, context: RowContext = {}): PairingRowPresentation {
+  const isPreviouslyPairedRow = isPreviouslyPaired(pair.serial, context.pairedSerial);
+  const isNearest = !!context.nearestId && context.nearestId === pair.id;
+  const warnings: string[] = [];
+  if (pair.mismatchWarning) warnings.push(pair.mismatchWarning);
+  let armsSummary: string;
+  let canSelect = false;
+  if (pair.completeness !== "complete") {
+    armsSummary = pair.completeness === "left-only"
+      ? "Only the left arm has been seen — waiting for the right"
+      : "Only the right arm has been seen — waiting for the left";
+  } else if (pair.g1Firmware === "stock") {
+    armsSummary = "Runs Even's firmware. Faceclaw will install its own, with the glasses in the case";
+    canSelect = true;
+  } else if (pair.g1Firmware === "g1v0-safe") {
+    armsSummary = "In safe mode: the firmware restarted repeatedly. Faceclaw can install it again, with the glasses in the case";
+    canSelect = true;
+  } else {
+    armsSummary = "Left + right arms found. To pair, keep them in the case with the lid open";
+    canSelect = true;
+  }
+  return {
+    id: pair.id,
+    kind: "glasses",
+    modelTitle: "Even Realities G1",
+    deviceName: pair.serial ?? (pair.left ?? pair.right)!.name,
+    variantSummary: null,
+    colorway: null,
+    swatchHex: null,
+    imagePath: GENERIC_G2_IMAGE_PATH,
+    hasVariantImage: false,
+    ...presentationBase(pair.proximity, isNearest, isPreviouslyPairedRow, warnings),
+    armsSummary,
+    canSelect,
+  };
+}
+
 export function glassesRow(pair: GlassesPairCandidate, context: RowContext = {}): PairingRowPresentation {
+  if (pair.g1Firmware) return g1Row(pair, context);
   const identity = pair.identity;
   const imagePath = glassesImagePath(identity);
   const isPreviouslyPairedRow = isPreviouslyPaired(pair.serial, context.pairedSerial);
@@ -412,6 +484,28 @@ export function ringRow(ring: RingCandidate, context: RowContext = {}): PairingR
     // "Advertising" told the wearer nothing (a listed ring is advertising by
     // definition); only the bonded state is worth a line.
     armsSummary: ad.bonded ? "Paired with this phone" : "",
+    canSelect: true,
+  };
+}
+
+export function rayneoRow(candidate: RayNeoCandidate, context: { pairedAddress?: string; nearestId?: string | null } = {}): PairingRowPresentation {
+  const ad = candidate.advertisement;
+  const isPaired = !!context.pairedAddress && normalizeMacAddress(context.pairedAddress) === ad.address;
+  const isNearest = !!context.nearestId && context.nearestId === candidate.id;
+  const warnings: string[] = [];
+  if (ad.embeddedMacMismatch) warnings.push(`It advertises ${ad.embeddedMac} but was heard as ${ad.address}.`);
+  return {
+    id: candidate.id,
+    kind: "rayneo-io",
+    modelTitle: "RayNeo iO",
+    deviceName: ad.name || ad.address,
+    variantSummary: null,
+    colorway: null,
+    swatchHex: null,
+    imagePath: GENERIC_G2_IMAGE_PATH,
+    hasVariantImage: false,
+    ...presentationBase(candidate.proximity, isNearest, isPaired, warnings),
+    armsSummary: "Needs the Faceclaw custom firmware. First time: put it in pairing mode (on the charger, hold the button ~5 s until the light blinks blue).",
     canSelect: true,
   };
 }

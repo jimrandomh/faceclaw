@@ -14,7 +14,12 @@ const notificationsApp: AppDefinition = {
     if (listenerState === "no-access" || listenerState === "stuck") {
       requestNotificationListenerAccess();
     }
-    return ctx.launchInProcessApp(NOTIFICATIONS_WINDOW_ID, NOTIFICATIONS_SURFACE_ID, createNotificationsAppWindow);
+    return ctx.launchInProcessApp(NOTIFICATIONS_WINDOW_ID, NOTIFICATIONS_SURFACE_ID, (options) =>
+      createNotificationsAppWindow(options, (section) => {
+        void ctx.launchApp("settings", { section }).catch((error) => {
+          ctx.appendLog(`settings launch failed: ${error}`);
+        });
+      }));
   },
 };
 

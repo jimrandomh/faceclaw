@@ -102,7 +102,10 @@ Two things must match the phone app or the Data Layer silently won't route:
    building both on the same computer just works. For release builds, sign the
    watch APK with the same keystore as the phone APK.
 
-There's no Play Store listing; sideload.
+Run `npm run release` from the repository root to build signed phone and Wear
+APKs for sideloading and AABs for Google Play. Both apps use the version in
+`app/version.ts`, with distinct version codes for the phone and Wear tracks;
+see [Android releases](../README.md#android-releases).
 
 ## Troubleshooting
 

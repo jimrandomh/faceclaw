@@ -152,8 +152,10 @@ export class AncsClient {
     if (flags & 2) {
       const data = new Uint8Array(this.fragments); this.fragments = []; this.packetKind = -1
       if (kind === 0) {
-        if (data.length !== 1 || data[0] > 2) { this.recover(); return true }
+        if (data.length !== 1 || data[0] > 3) { this.recover(); return true }
         if (data[0] === 2) { this.recover('Glasses reported a notification relay error. Retrying…'); return true }
+        // Only a G1's firmware looks for ANCS itself, so only it can say the phone isn't offering it.
+        if (data[0] === 3) { this.recover('iPhone is not sharing notifications with the glasses. Enable Share System Notifications in Settings → Bluetooth → right arm. Retrying…'); return true }
         if (data[0] === 0) { this.resetReceived = true; this.log('Glasses accepted notification relay START; awaiting subscription') }
         if (data[0] === 1) {
           if (this.timer !== null) clearTimeout(this.timer)

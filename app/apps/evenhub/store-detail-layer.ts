@@ -16,7 +16,11 @@ import { cleanError, installStoreApp } from "./store-install";
 import { describeUpdate } from "./updates";
 import { lineStep, listRowHeight } from "../../ui/metrics";
 
-const X = 18;
+/** How far an action row's highlight box overhangs the column of text it belongs to, on each side. */
+const ACTION_BOX_OVERHANG = 5;
+/** The side-by-side layout: the action menu's label column, and the gap between the details and its box. */
+const SIDE_MENU_WIDTH = 150;
+const SIDE_MENU_GAP = 9;
 
 type DetailAction = "about" | "whats-new" | "primary";
 const ACTIONS: readonly DetailAction[] = ["about", "whats-new", "primary"];
@@ -60,10 +64,15 @@ export class EvenHubStoreDetailLayer implements Layer {
   paint(ctx: LayerContext): GrayImage {
     if (!this.detailPromise) void this.ensureDetail(ctx);
     const font = getDefaultSmallFont();
-    const { width, height } = ctx.stack.getBaseSize();
+    const { width, height, padding } = ctx.stack.getBaseSize();
     const image = new GrayImage(width, height, 0);
     const step = lineStep(font);
     const actionRowH = listRowHeight(font) + 4;
+    // The action rows' highlight boxes are the outermost thing drawn toward
+    // the edges they reach, so they sit at the padding suggested for those
+    // edges; the details keep to the text column inside the boxes' overhang.
+    const textX = padding.left + ACTION_BOX_OVERHANG;
+    const fullTextWidth = Math.max(0, width - padding.left - padding.right - 2 * ACTION_BOX_OVERHANG);
 
     const installed = getInstalledEvenHubApp(this.app.packageId);
     this.primaryLabel = this.working ? "Installing..." : this.primaryActionLabel(installed);
@@ -109,26 +118,22 @@ export class EvenHubStoreDetailLayer implements Layer {
     // Stacked layout (details full-width, actions at the bottom) when it
     // fits; otherwise the actions become a narrow top-right menu and the
     // details flow down a left column beside it.
-    const stackedActionTop = height - 6 - ACTIONS.length * actionRowH;
-    const stacked = 8 + linesHeight(buildLines(width - X * 2)) + 6 <= stackedActionTop;
-    const menuW = 150;
-    const menuX = width - menuW - 12;
-    const textWidth = stacked ? width - X * 2 : menuX - X - 14;
+    const stackedActionTop = height - padding.bottom - ACTIONS.length * actionRowH;
+    const stacked = padding.top + linesHeight(buildLines(fullTextWidth)) + 6 <= stackedActionTop;
+    const sideBoxWidth = SIDE_MENU_WIDTH + 2 * ACTION_BOX_OVERHANG;
+    const sideBoxX = width - padding.right - sideBoxWidth;
+    const textWidth = stacked ? fullTextWidth : Math.max(0, sideBoxX - SIDE_MENU_GAP - textX);
 
-    let y = 8;
+    let y = padding.top;
     for (const line of buildLines(textWidth)) {
-      image.drawText(font, X, y, line.text, line.value);
+      image.drawText(font, textX, y, line.text, line.value);
       y += step + line.gapAfter;
     }
 
-    const actionX = stacked ? X : menuX;
-    const actionW = stacked ? textWidth : menuW;
-    const actionTop = stacked ? stackedActionTop : 8;
-    this.actions.paint(
-      image,
-      { x: actionX - 5, y: actionTop, width: actionW + 10, height: ACTIONS.length * actionRowH - 1 },
-      ctx.stack.isFocused(),
-    );
+    const actionBox = stacked
+      ? { x: padding.left, y: stackedActionTop, width: fullTextWidth + 2 * ACTION_BOX_OVERHANG }
+      : { x: sideBoxX, y: padding.top, width: sideBoxWidth };
+    this.actions.paint(image, { ...actionBox, height: ACTIONS.length * actionRowH - 1 }, ctx.stack.isFocused());
     return image;
   }
 

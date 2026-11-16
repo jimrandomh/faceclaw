@@ -16,6 +16,8 @@ import { isIgnoringBatteryOptimizations, requestIgnoreBatteryOptimizations } fro
 import { hasAllFilesAccess, requestAllFilesAccess } from "../native/file-access";
 import { isNotificationListenerEnabled, requestNotificationListenerAccess } from "../native/notification-access";
 import { mediaControllerBridge } from "../native/media-controller";
+import { finishOnboardingNavigation } from "./onboarding-navigation";
+import { isPreviewOnlyMode, setOnboardingCompleted } from "./onboarding-state";
 
 type PermissionDefinition = {
   id: string;
@@ -105,7 +107,7 @@ const ANDROID_PERMISSIONS: PermissionDefinition[] = [
 const PERMISSIONS: PermissionDefinition[] = global.isIOS ? [{
   id: "nearby-devices", title: "Nearby Devices",
   description: "Needed to communicate with your smart glasses over Bluetooth.", optional: false,
-  isGranted: () => iosBluetooth().state === 5,
+  isGranted: () => iosBluetooth().isAuthorized(),
   request: () => iosBluetooth().ensureReady(),
 }, {
   id: "calendar", title: "Calendar",
@@ -141,6 +143,7 @@ export class PermissionsViewModel extends Observable {
   private readonly onboarding: boolean;
   private _cards: PermissionCardItem[] = [];
   private requesting = false;
+  private stopWatchingBluetooth: (() => void) | null = null;
 
   constructor(options?: { onboarding?: boolean }) {
     super();
@@ -157,11 +160,20 @@ export class PermissionsViewModel extends Observable {
 
   onPageLoaded(): void {
     Application.on(Application.resumeEvent, this.onAppResume);
+    // The answer to the Bluetooth prompt can arrive after request() has stopped
+    // waiting for it, and with no resume to re-check on.
+    if (global.isIOS) {
+      this.stopWatchingBluetooth = iosBluetooth().onEvent((event) => {
+        if (event.kind === "state") this.refresh();
+      });
+    }
     this.refresh();
   }
 
   onPageUnloaded(): void {
     Application.off(Application.resumeEvent, this.onAppResume);
+    this.stopWatchingBluetooth?.();
+    this.stopWatchingBluetooth = null;
   }
 
   // --- observable properties -------------------------------------------------
@@ -175,7 +187,7 @@ export class PermissionsViewModel extends Observable {
   }
 
   get instructions(): string {
-    if (global.isIOS) return "Faceclaw uses Bluetooth to communicate with your smart glasses. Calendar and Apple Music access are optional. Tap a card to allow access; a checkmark means it is ready.";
+    if (global.isIOS) return "Faceclaw uses Bluetooth to communicate with your smart glasses. Calendar and Apple Music access are optional. Tap a card to allow access; a checkmark means access is allowed.";
     return this.onboarding
       ? `Faceclaw uses these ${global.isIOS ? "iOS" : "Android"} permissions. Tap a card to grant one; a checkmark means it is already granted. ` +
           "Optional permissions can also be granted later, from the Permissions item in the main-screen menu."
@@ -227,6 +239,13 @@ export class PermissionsViewModel extends Observable {
           cancelButtonText: "Go Back",
         });
         if (!proceed) return;
+      }
+      if (isPreviewOnlyMode()) {
+        // Preview Only was chosen on Your Devices: with no glasses to set up,
+        // this is the last page.
+        setOnboardingCompleted(true);
+        finishOnboardingNavigation();
+        return;
       }
       // Continue the onboarding chain at the Custom Firmware Required step.
       Frame.topmost()?.navigate({

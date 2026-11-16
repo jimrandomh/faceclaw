@@ -33,7 +33,7 @@ class CfwMessageWindow private constructor() {
         fun acknowledgedHead(messages: Iterable<OutboundMessage>): OutboundMessage? {
             for (message in messages) {
                 if (message.sid != CfwTransport.SID) continue
-                return if (!message.cfwRetryPending && message.cfwAckLenses == CfwTransport.BOTH)
+                return if (!message.cfwRetryPending && message.isCfwAcked)
                     message
                 else null
             }
@@ -49,7 +49,7 @@ class CfwMessageWindow private constructor() {
                 failed =
                     failed ||
                         message.cfwRetryPending ||
-                        (message.cfwAckLenses != CfwTransport.BOTH &&
+                        (!message.isCfwAcked &&
                             message.ackDeadlineAtMs > 0 &&
                             message.ackDeadlineAtMs <= nowMs)
                 replay.add(message)

@@ -1,5 +1,5 @@
 import { encodeShellScene } from "../../graphics/shell-scene";
-import { G2_LENS_HEIGHT, G2_LENS_WIDTH, GrayImage } from "../../graphics/image";
+import { GrayImage } from "../../graphics/image";
 import { singlePlane, type Plane } from "../../graphics/plane";
 import { getDefaultSmallFont } from "../../graphics/ui-fonts";
 import { EvenAIStatus, EventSourceType, OsEventTypeList, WatchGestureType } from "../../g2/events";
@@ -17,6 +17,7 @@ import {
   isWatchInput,
   makeInputEvent,
 } from "../gestures";
+import type { KeyEvent } from "../../g2/keyboard/keys";
 import { Layer, LayerActions, LayerContext, LayerStack, noopLayerActions } from "../layers";
 import { CONTEXT_MENU_DIM, MenuLayer, type MenuItem } from "../menu";
 import { VoiceInputLayer, type VoiceSendTarget } from "./voice-input";
@@ -45,8 +46,11 @@ import {
   veniceWebSearchSetting,
   batteryIndicatorSettingsKey,
   brightnessSetting,
+  newNotificationDisplaySetting,
+  newNotificationDisplayTimeoutMs,
   onAnySettingChanged,
   openAiApiKeySetting,
+  shouldPopUpNewNotification,
   statusBarPositionSetting,
   statusBarVisibilitySetting,
   timeFormatSetting,
@@ -65,8 +69,8 @@ import {
 } from "./chrome-layer";
 import { ShellModalLayer } from "./modal-layer";
 import { NotificationModalQueue } from "./notification-modal-queue";
+import { NotificationPopupTimeout } from "./notification-popup-timeout";
 import { ALL_NOTIFICATIONS, readActiveNotifications } from "../../native/notification-icons";
-import { shouldShowNotificationOnGlasses } from "../../native/notification-sources";
 import { ToolDebugMenuLayer } from "./tool-debug-layer";
 import type { InProcessWindow } from "./in-process-window";
 import { BrightnessPickerLayer } from "./brightness-picker-layer";
@@ -82,8 +86,11 @@ import {
   windowFramed,
   windowTop,
   type WindowHeightMode,
+  screenHeight,
+  screenWidth,
 } from "./geometry";
 import type { AppSwitcherPosition } from "../dashboard-settings";
+import type { Viewport } from "../viewport";
 
 /**
  * The shell: owns the window registry, focus, screen on/off, and the shell
@@ -145,6 +152,13 @@ export type ShellWindow = {
    * draws this window's top bar.
    */
   heightMode: WindowHeightMode;
+  /**
+   * False for a window that must not bring its app back when Faceclaw
+   * restarts (the controller's open-apps restore relaunches apps, not
+   * windows): one that shows something a plain launch of its app would not,
+   * where the relaunch would do something else in its place.
+   */
+  restoresApp?: boolean;
   /** App-side cleanup when the shell closes the window (worker notification, surface removal). */
   close?: () => void;
   drawIcon: ShellChromeWindow["drawIcon"];
@@ -164,6 +178,12 @@ export type ShellWindow = {
    */
   relayout?: () => void;
   /**
+   * The viewport the window is laid out at (it changes on relayout), so the
+   * controller can tell a window whose size, or whose edges, fell behind the
+   * geometry from one whose surface merely moved.
+   */
+  layoutSize?: () => Viewport;
+  /**
    * A touch from the phone's mirror at (x, y) in app-viewport coordinates.
    * True if the window acted on it; otherwise the controller sends a select.
    */
@@ -173,6 +193,15 @@ export type ShellWindow = {
    * only windows that consume typed text (the terminal) implement it.
    */
   receiveTextInput?: (text: string, options?: { submit?: boolean }) => void;
+  /**
+   * Take a key from a hardware keyboard (app/g2/keyboard) as a key. Optional:
+   * only windows that give keys a meaning of their own (the terminal)
+   * implement it. They get the keys no keybinding claimed while they have
+   * input focus, presses and releases alike; the rest of the time, and for
+   * every other window, the navigation keys act as gestures (see
+   * app/g2/keyboard/bindings.ts).
+   */
+  handleKeyEvent?: (event: KeyEvent) => void;
   /** Foreground state changed: this window's surface is (not) the visible one. */
   setForeground?: (foreground: boolean) => void;
   /**
@@ -354,7 +383,10 @@ class ShellOverlayMenuLayer extends MenuLayer {
 /** How long a show_alert popup stays before auto-dismissing. */
 const ALERT_DISMISS_MS = 6000;
 const ALERT_X = 40;
-const ALERT_W = G2_LENS_WIDTH - 80;
+/** Alert width: the screen less ALERT_X on each side. */
+function alertW(): number {
+  return screenWidth() - 2 * ALERT_X;
+}
 const ALERT_Y = 96;
 const ALERT_H = 96;
 
@@ -378,14 +410,14 @@ class ShellAlertLayer implements Layer {
     const font = getDefaultSmallFont();
     // Positioned within the min-height window band, like the other shell overlays.
     const alertY = minWindowTop() + ALERT_Y;
-    image.fillRect(ALERT_X, alertY, ALERT_W, ALERT_H, 1);
-    image.drawRect(ALERT_X, alertY, ALERT_W, ALERT_H, 90);
+    image.fillRect(ALERT_X, alertY, alertW(), ALERT_H, 1);
+    image.drawRect(ALERT_X, alertY, alertW(), ALERT_H, 90);
     image.drawText(font, ALERT_X + 16, alertY + 12, "Assistant", 200);
     image.drawTextWrapped({
       font,
       x: ALERT_X + 16,
       y: alertY + 18 + font.lineHeight + 4,
-      width: ALERT_W - 32,
+      width: alertW() - 32,
       text: this.text,
       value: 235,
     });
@@ -472,7 +504,7 @@ class Shell {
     isAvailable: (notificationKey) => {
       if (this.appNotifications.has(notificationKey)) return true;
       const notification = readActiveNotifications(ALL_NOTIFICATIONS).find((item) => item.key === notificationKey);
-      return !!notification && shouldShowNotificationOnGlasses(notification.packageName);
+      return !!notification && shouldPopUpNewNotification(notification.packageName);
     },
     sleep: () => this.sleep(),
   });
@@ -918,18 +950,36 @@ class Shell {
     const content = appNotification
       ? null
       : new SingleNotificationLayer(notificationKey, { origin: "new-notification-modal", onClose: close });
+    // A phone notification's popup closes once left untouched for the
+    // "Display new notifications" time, as if closed by hand: the notification
+    // stays on the phone and in the status bar. An app's own notification
+    // (e.g. a Nightscout alert) is nowhere else to be found, so it stays up.
+    const timeout = new NotificationPopupTimeout(
+      appNotification ? null : newNotificationDisplayTimeoutMs(newNotificationDisplaySetting.get()),
+      () => {
+        // Something over the popup (a voice dialog, the system menu) is in
+        // use; count that as interaction rather than closing underneath it.
+        if (this.stack.topMatches((layer) => layer === popup.modal)) close();
+        else timeout.restart();
+      },
+    );
     const popup: NotificationPopup = {
       content,
       modal: new ShellModalLayer(
         appNotification ? appNotification.createLayer(close) : content!,
         this.config.actions,
-        () => {
-          this.appNotifications.delete(notificationKey);
-          this.notificationModals.removed(popup, this.screenOn);
+        {
+          removed: () => {
+            timeout.stop();
+            this.appNotifications.delete(notificationKey);
+            this.notificationModals.removed(popup, this.screenOn);
+          },
+          input: () => timeout.restart(),
         },
       ),
     };
     this.stack.push(popup.modal);
+    timeout.restart();
     return popup;
   }
 
@@ -966,7 +1016,7 @@ class Shell {
 
   paintSurface(): Plane[] {
     if (!this.screenOn) {
-      return singlePlane(new GrayImage(G2_LENS_WIDTH, G2_LENS_HEIGHT, 0));
+      return singlePlane(new GrayImage(screenWidth(), screenHeight(), 0));
     }
     return this.stack.paint();
   }
@@ -1564,6 +1614,21 @@ class Shell {
   /** Deliver a text string to the foreground window (e.g. finalized voice input). */
   sendTextToForegroundWindow(text: string, options?: { submit?: boolean }): void {
     this.foregroundWindow()?.receiveTextInput?.(text, options);
+  }
+
+  /**
+   * Offer a hardware-keyboard key to the window that has input focus. True
+   * when that window takes keys (ShellWindow.handleKeyEvent) and got this
+   * one; false when the key is the caller's to interpret: the screen is off,
+   * the sidebar or a shell overlay has focus, or the window has no use for
+   * keys. Typing counts as activity for the screen timeout.
+   */
+  receiveKeyEvent(event: KeyEvent): boolean {
+    const window = this.inputTargetWindow();
+    if (!window?.handleKeyEvent) return false;
+    if (event.phase === "down") this.lastInputAtMs = Date.now();
+    window.handleKeyEvent(event);
+    return true;
   }
 
   /**

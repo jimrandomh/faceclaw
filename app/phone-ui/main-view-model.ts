@@ -15,7 +15,6 @@ import {
   type View,
 } from "@nativescript/core";
 import { dashboardController, type MirrorTouchKind } from "../g2/dashboard-controller";
-import { formatBatteryLine } from "../g2/glasses-display-state";
 import {
   mirrorTouchSetting,
   onAnySettingChanged,
@@ -26,10 +25,12 @@ import { isValidMacAddress, loadDeviceAddresses } from "../g2/device-addresses";
 import { isAutoReconnectSuppressed, resumeAutoReconnect } from "../g2/reconnect-policy";
 import { isPreviewOnlyMode } from "./onboarding-state";
 import { formatErrorMessage } from "../util/format-error";
-import { G2_LENS_HEIGHT, G2_LENS_WIDTH } from "../graphics/image";
-import { type PhoneUiButton } from "../apps/evenhub/manager";
+import { screenHeight, screenWidth } from "../ui/shell/geometry";
 
-const LENS_ASPECT_RATIO = G2_LENS_WIDTH / G2_LENS_HEIGHT;
+/** The paired glasses' screen aspect (4:3 on the G2, 27:11 on the RayNeo iO). */
+function lensAspectRatio(): number {
+  return screenWidth() / screenHeight();
+}
 
 type LayoutOrientation = "portrait" | "landscape";
 
@@ -64,7 +65,6 @@ export class MainViewModel extends RemoteControlsViewModel {
   private _alarmReliabilityMessage = "";
   private _warningsModalVisible = false;
   private _previewMode = false;
-  private _evenHubPhoneUi: PhoneUiButton | null = null;
   private _phase: "disconnected" | "connecting" | "connected" | "charging" | "disconnecting" = "disconnected";
 
   // A new view model is built on every navigation to the main page; these
@@ -74,6 +74,7 @@ export class MainViewModel extends RemoteControlsViewModel {
 
   constructor() {
     super();
+    this.showEvenHubPhoneUi = (windowId) => dashboardController.showEvenHubPhoneUi(windowId);
     this.attach();
   }
 
@@ -91,10 +92,6 @@ export class MainViewModel extends RemoteControlsViewModel {
       this.displayPreview = snapshot.displayPreview;
       this.displayPreviewMessage = snapshot.displayPreviewMessage;
       this.phase = snapshot.phase;
-      this.batteryLine = formatBatteryLine(
-        snapshot.batteries,
-        snapshot.phase === "connected" || snapshot.phase === "charging",
-      );
       this.activeTextSettingId = snapshot.activeTextSettingId;
       this.activeTextEditorTitle = snapshot.activeTextEditorTitle;
       this.activeTextSettingTitle = snapshot.activeTextSettingTitle;
@@ -121,9 +118,11 @@ export class MainViewModel extends RemoteControlsViewModel {
       this.evenHubPhoneUi = snapshot.evenHubPhoneUi;
       this.refreshPadFocusLine();
     }));
-    // Brightness / display mode can change from the glasses' Settings app too.
+    // The input style can change from the glasses' Settings app too, and the
+    // subscription delivers no snapshot of its own: catch up on a re-attach.
+    this.refreshInputStyle();
     this.unsubscribers.push(onAnySettingChanged(() => {
-      this.refreshDisplayControls();
+      this.refreshInputStyle();
       this.syncBleBandwidthPolling();
     }));
     this.syncBleBandwidthPolling();
@@ -233,7 +232,7 @@ export class MainViewModel extends RemoteControlsViewModel {
   }
 
   get displayPreviewHeight(): number {
-    return Screen.mainScreen.widthDIPs / LENS_ASPECT_RATIO;
+    return Screen.mainScreen.widthDIPs / lensAspectRatio();
   }
 
   get landscapeDisplayPreviewWidth(): number {
@@ -249,8 +248,8 @@ export class MainViewModel extends RemoteControlsViewModel {
     // and controls, and updates for rotation, split-screen, and the keyboard.
     const { width, height } = args.object.getActualSize();
     if (width <= 0 || height <= 0) return;
-    const previewHeight = Math.min(height, width / LENS_ASPECT_RATIO);
-    const previewWidth = previewHeight * LENS_ASPECT_RATIO;
+    const previewHeight = Math.min(height, width / lensAspectRatio());
+    const previewWidth = previewHeight * lensAspectRatio();
     if (previewWidth === this._landscapePreviewWidth && previewHeight === this._landscapePreviewHeight) return;
     this._landscapePreviewWidth = previewWidth;
     this._landscapePreviewHeight = previewHeight;
@@ -325,7 +324,7 @@ export class MainViewModel extends RemoteControlsViewModel {
       this.notifyPropertyChange("activeTextSettingId", value);
       this.notifyPropertyChange("textSettingEditorVisibility", this.textSettingEditorVisibility);
       this.notifyPropertyChange("isTextSettingEditorActive", this.isTextSettingEditorActive);
-      // Keyboard-input mode: the tabbed controls make way for the editor.
+      // Keyboard-input mode: the controls make way for the editor.
       this.notifyPropertyChange("controlsVisibility", this.controlsVisibility);
     }
   }
@@ -496,7 +495,7 @@ export class MainViewModel extends RemoteControlsViewModel {
     return this.isTextSettingEditorActive ? "visible" : "collapse";
   }
 
-  // ---- keyboard-input panel (the keyboard button beside the mic button) ----
+  // ---- keyboard-input panel (the keyboard button under the mirror) ----
   //
   // The dialog lives on the glasses (ui/shell/keyboard-input.ts); the panel
   // is the phone's end of it, bound to keyboardInputModel (shared with iOS).
@@ -659,6 +658,14 @@ export class MainViewModel extends RemoteControlsViewModel {
    * auto-reconnect suppression right away.
    */
   async onPrepareFontsTap(): Promise<void> {
+    await this.openFirmwareCheck();
+  }
+
+  async onCheckFirmwareTap(): Promise<void> {
+    await this.openFirmwareCheck();
+  }
+
+  private async openFirmwareCheck(): Promise<void> {
     this.setWarningsModalVisible(false);
     if (this.phase === "connected" || this.phase === "charging" || this.phase === "connecting") {
       try {
@@ -716,28 +723,6 @@ export class MainViewModel extends RemoteControlsViewModel {
 
   get warningsModalVisibility(): "visible" | "collapse" {
     return this._warningsModalVisible ? "visible" : "collapse";
-  }
-
-  set evenHubPhoneUi(value: PhoneUiButton | null) {
-    const current = this._evenHubPhoneUi;
-    if (current?.windowId === value?.windowId && current?.icon === value?.icon) return;
-    this._evenHubPhoneUi = value;
-    this.notifyPropertyChange("evenHubPhoneUiIcon", this.evenHubPhoneUiIcon);
-    this.notifyPropertyChange("evenHubPhoneUiVisibility", this.evenHubPhoneUiVisibility);
-  }
-
-  /** The foreground EvenHub app's icon, which opens its phone UI when tapped. */
-  get evenHubPhoneUiIcon(): ImageSource | null {
-    return this._evenHubPhoneUi?.icon ?? null;
-  }
-
-  get evenHubPhoneUiVisibility(): "visible" | "collapse" {
-    return this._evenHubPhoneUi?.icon ? "visible" : "collapse";
-  }
-
-  onEvenHubPhoneUiTap(): void {
-    const windowId = this._evenHubPhoneUi?.windowId;
-    if (windowId) dashboardController.showEvenHubPhoneUi(windowId);
   }
 
   onWarningIconTap(): void {
@@ -906,8 +891,9 @@ export class MainViewModel extends RemoteControlsViewModel {
   }
 
   private async openFlashPage(mode: "install" | "uninstall"): Promise<void> {
-    // The flasher needs the glasses to itself, so drop the main connection first.
-    if (this.phase === "connected" || this.phase === "charging") {
+    // The flasher needs the glasses to itself, so drop the main connection first. That includes a session
+    // still retrying: an install brings arms back at the addresses it is dialling.
+    if (this.phase === "connected" || this.phase === "charging" || this.phase === "connecting") {
       try {
         await dashboardController.disconnect();
       } catch {
@@ -1055,7 +1041,7 @@ export class MainViewModel extends RemoteControlsViewModel {
   // ---- the phone's own controller: touchpad, d-pad, mirror touch ----
   //
   // Everything here is the watch scheme (origin "watch"): spatial swipes,
-  // tap = select, double-tap / two fingers = back, hold = menu. The ring row
+  // tap = select, double-tap / two fingers = back, hold = menu. The ring pad
   // above stays on the ring's own scheme.
 
   private padTwoFingerDown = false;
@@ -1186,11 +1172,11 @@ export class MainViewModel extends RemoteControlsViewModel {
     return this.mirrorGesture(swipeKind(args.direction), args);
   }
 
-  // ---- the tabbed controls area below the mirror ----
+  // ---- the controls area below the mirror ----
   //
-  // Three tabs: Settings (screen size + brightness), Watch (the simulated
-  // watch face), Ring (simulated R1 inputs). The whole area collapses while a
-  // text setting is being edited so the editor gets the space instead.
+  // The button bar and the touchpad (remote-controls.xml). The whole area
+  // collapses while a text setting is being edited or the keyboard dialog is
+  // up, so the editor gets the space instead.
 
   get controlsVisibility(): "visible" | "collapse" {
     return this.isTextSettingEditorActive || this._keyboardInputActive ? "collapse" : "visible";
@@ -1199,7 +1185,7 @@ export class MainViewModel extends RemoteControlsViewModel {
   // ---- BLE bandwidth indicator (Settings > Developer > Show BLE bandwidth usage) ----
   //
   // A running total of outbound BLE messages/bytes, overlaid at the bottom of
-  // the page on every tab. Polled from the Java-side counters while enabled.
+  // the page. Polled from the Java-side counters while enabled.
 
   private _bleBandwidthLabel = "";
   private bleBandwidthTimer: ReturnType<typeof setInterval> | null = null;

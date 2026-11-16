@@ -1,4 +1,4 @@
-import { G2_LENS_HEIGHT, G2_LENS_WIDTH } from "../../graphics/image";
+import { screenHeight, screenWidth } from "../../graphics/screen-size";
 import {
   appSwitcherPositionSetting,
   type AppSwitcherPosition,
@@ -9,8 +9,13 @@ import {
   statusBarPositionSetting,
   statusBarVisibilitySetting,
   uiDepthSetting,
+  type WindowBorder,
   windowBorderSetting,
 } from "../dashboard-settings";
+import { type EdgeKind, type Edges, uniformEdges, type Viewport, viewportWith } from "../viewport";
+
+/** The paired glasses' screen, which the shell lays out in (graphics/screen-size.ts). */
+export { screenHeight, screenWidth };
 
 /** Top bar: 24px notification icons plus a little padding. */
 export const TOP_BAR_HEIGHT = 28;
@@ -174,38 +179,69 @@ export function switcherRect(heightMode: WindowHeightMode, appId?: string): { x:
       const height = reserved || switcherBarHeights.overlay;
       return {
         x: appViewportLeft(appId),
-        y: reserved > 0 ? windowTop(heightMode, appId) + windowBandHeight(heightMode, appId) : G2_LENS_HEIGHT - height,
+        y: reserved > 0 ? windowTop(heightMode, appId) + windowBandHeight(heightMode, appId) : screenHeight() - height,
         width: appViewportWidth(appId),
         height,
       };
     }
     case "right":
-      return { x: G2_LENS_WIDTH - SIDEBAR_WIDTH, y: minWindowTop(appId), width: SIDEBAR_WIDTH, height: MIN_WINDOW_HEIGHT };
+      return { x: screenWidth() - SIDEBAR_WIDTH, y: minWindowTop(appId), width: SIDEBAR_WIDTH, height: minWindowHeight(appId) };
     default:
-      return { x: 0, y: minWindowTop(appId), width: SIDEBAR_WIDTH, height: MIN_WINDOW_HEIGHT };
+      return { x: 0, y: minWindowTop(appId), width: SIDEBAR_WIDTH, height: minWindowHeight(appId) };
   }
 }
 
 /**
+ * Which lines the chrome draws round the foreground window (Settings >
+ * Customization > Border): all of them, only the one between the window and
+ * the status bar, or none. The choice is a bottom or popup switcher's; a
+ * side strip always has its lines.
+ */
+export function windowBorder(): WindowBorder {
+  return sideStrip() ? "all" : windowBorderSetting.get();
+}
+
+/**
  * Whether the foreground window's content gets a rounded frame (drawn by
- * the chrome layer). Its left and right sides take the pixel just outside
- * the 576-wide window; there's no room around a Full Screen or immersive
- * window, nor need beside a side strip. With a reserved bottom switcher row
- * it otherwise always has one: the row's top edge is the frame's bottom side, as the window
- * header's last row is its top. With a popup switcher it's the Window
- * border setting's choice, and its top and bottom take a header or footer
- * row of their own, except where the status bar's row next to the window
- * serves.
+ * the chrome layer): with every border line on (windowBorder), where
+ * there's room. Its left and right sides take the pixel just outside the
+ * 576-wide window; there's no room around a Full Screen or immersive
+ * window, nor need beside a side strip. With a reserved bottom switcher
+ * row, the row's top edge is the frame's bottom side, as the window
+ * header's last row is its top. With a popup switcher, its top and bottom
+ * take a header or footer row of their own, except where the status bar's
+ * row next to the window serves.
  */
 export function windowFramed(appId?: string): boolean {
+  if (fullWidth(appId) || windowBorder() !== "all") return false;
   switch (switcherPosition()) {
     case "bottom":
-      return switcherRowHeight(appId) > 0 && !fullWidth(appId);
+      return switcherRowHeight(appId) > 0;
     case "popup":
-      return !fullWidth(appId) && windowBorderSetting.get();
+      return true;
     default:
       return false;
   }
+}
+
+/**
+ * Whether a line divides a status bar with rows of its own (the top bar, or
+ * a popup switcher's at the bottom) from the window. A window frame's side
+ * is that line where there is one (chrome-layer.ts statusBarPlacement).
+ */
+export function statusBarDivider(): boolean {
+  return windowBorder() !== "none";
+}
+
+/**
+ * Whether a line runs along a bottom switcher's top edge, between it and
+ * the window: a window frame's bottom side, or straight across where the
+ * window has no room for a frame. As the status line alone, only where the
+ * status bar shares the row.
+ */
+export function switcherRowDivider(appId?: string): boolean {
+  const border = windowBorder();
+  return border === "all" || (border === "status" && statusInSwitcherRow(appId));
 }
 
 /**
@@ -293,15 +329,15 @@ export function isOnSwitcherEdge(x: number, y: number, heightMode: WindowHeightM
     case "bottom":
       return y >= switcherRect(heightMode, appId).y;
     case "right":
-      return x >= G2_LENS_WIDTH - SIDEBAR_WIDTH;
+      return x >= screenWidth() - SIDEBAR_WIDTH;
     default:
       return x < SIDEBAR_WIDTH;
   }
 }
 
-/** Width of app windows: the panel's when Full Screen or immersive, else 576 (see SIDEBAR_WIDTH). */
+/** Width of app windows: the screen's when Full Screen or immersive, else SIDEBAR_WIDTH less (576 on the G2). */
 function appViewportWidth(appId?: string): number {
-  return fullWidth(appId) ? G2_LENS_WIDTH : G2_LENS_WIDTH - SIDEBAR_WIDTH;
+  return fullWidth(appId) ? screenWidth() : screenWidth() - SIDEBAR_WIDTH;
 }
 
 /**
@@ -353,7 +389,7 @@ export function effectiveHeightMode(mode: WindowHeightMode, appId?: string): Win
  * rather than use the viewport's own centre.
  */
 export function screenCenterInViewportX(): number {
-  return Math.round(G2_LENS_WIDTH / 2) - appViewportLeft();
+  return Math.round(screenWidth() / 2) - appViewportLeft();
 }
 
 /**
@@ -374,15 +410,23 @@ export const SHELL_OPAQUE_BLACK = 1;
  */
 export type WindowHeightMode = "min" | "medium" | "max";
 
-/** Total height (header + content) of a min-height window. */
+/** Total height (header + content) of a min-height window on a screen with room for it: the G2's stock band. */
 export const MIN_WINDOW_HEIGHT = 288;
+
+/**
+ * Total height of a min-height window here: the stock 288px band, or the
+ * whole window area on a screen too short for it (the RayNeo iO's 220 rows).
+ */
+export function minWindowHeight(appId?: string): number {
+  return Math.min(MIN_WINDOW_HEIGHT, windowAreaHeight(appId));
+}
 
 /**
  * Height of the screen area windows are placed in: the whole screen, less
  * a bottom switcher's height.
  */
 function windowAreaHeight(appId?: string): number {
-  return G2_LENS_HEIGHT - switcherRowHeight(appId);
+  return screenHeight() - switcherRowHeight(appId);
 }
 
 /** Total height (header + content + footer) of a window's band in the given mode. */
@@ -391,9 +435,9 @@ export function windowBandHeight(mode: WindowHeightMode, appId?: string): number
     case "max":
       return windowAreaHeight(appId);
     case "medium":
-      return MIN_WINDOW_HEIGHT + windowHeaderHeight(appId) + windowFooterHeight(appId);
+      return Math.min(windowAreaHeight(appId), minWindowHeight(appId) + windowHeaderHeight(appId) + windowFooterHeight(appId));
     default:
-      return MIN_WINDOW_HEIGHT;
+      return minWindowHeight(appId);
   }
 }
 
@@ -425,7 +469,7 @@ export function minWindowTop(appId?: string): number {
  */
 export function windowTop(mode: WindowHeightMode, appId?: string): number {
   const band = windowBandHeight(mode, appId);
-  const oneRowArea = G2_LENS_HEIGHT - (switcherRowHeight(appId) > 0 ? SWITCHER_ROW_HEIGHT : 0);
+  const oneRowArea = screenHeight() - (switcherRowHeight(appId) > 0 ? SWITCHER_ROW_HEIGHT : 0);
   const top = Math.round((oneRowArea - band) * verticalPositionFraction(appId));
   return Math.min(top, windowAreaHeight(appId) - band);
 }
@@ -436,6 +480,37 @@ export function appViewportSize(mode: WindowHeightMode, appId?: string): { width
     width: appViewportWidth(appId),
     height: windowBandHeight(mode, appId) - windowHeaderHeight(appId) - windowFooterHeight(appId),
   };
+}
+
+/**
+ * What each edge of an app's windows touches (see viewport.ts EdgeKind): a
+ * line the chrome draws right outside it, or nothing. A framed window has a
+ * line on every side. Otherwise the top or bottom has one where a status bar
+ * with rows of its own, or a bottom switcher row, lies past it and the
+ * Border setting divides the two; a side has one only beside a side strip,
+ * whose separator it is. An immersive window has the whole panel, and so
+ * none.
+ */
+export function windowEdges(appId?: string): Edges<EdgeKind> {
+  if (isImmersive(appId)) return uniformEdges("offscreen");
+  if (windowFramed(appId)) return uniformEdges("border");
+  const position = switcherPosition();
+  const line = (drawn: boolean): EdgeKind => (drawn ? "border" : "offscreen");
+  const statusLine = (edge: "top" | "bottom") => windowEdgeHeight(edge, appId) === TOP_BAR_HEIGHT && statusBarDivider();
+  return {
+    top: line(statusLine("top")),
+    right: line(position === "right"),
+    bottom: line(position === "bottom" ? switcherRowHeight(appId) > 0 && switcherRowDivider(appId) : statusLine("bottom")),
+    left: line(position === "left"),
+  };
+}
+
+/**
+ * A window's viewport as its layouts get it: the app-content size for its
+ * height mode, what its edges touch, and the padding suggested for them.
+ */
+export function appViewport(mode: WindowHeightMode, appId?: string): Viewport {
+  return viewportWith(appViewportSize(mode, appId), windowEdges(appId));
 }
 
 /** Screen rect of a window's app-content viewport (between its header and footer). */
@@ -473,13 +548,13 @@ function unionRect(a: ScreenRect, b: ScreenRect): ScreenRect {
  * the whole panel. The phone mirror's Scaled preview zooms to this.
  */
 export function usedScreenRect(heightMode: WindowHeightMode, appId?: string): ScreenRect {
-  if (isImmersive(appId)) return { x: 0, y: 0, width: G2_LENS_WIDTH, height: G2_LENS_HEIGHT };
+  if (isImmersive(appId)) return { x: 0, y: 0, width: screenWidth(), height: screenHeight() };
   const frame = windowFramed(appId) ? 1 : 0;
   const x = appViewportLeft(appId) - frame;
   const width = appViewportWidth(appId) + 2 * frame;
   let used = unionRect(
     { x, y: windowTop(heightMode, appId), width, height: windowBandHeight(heightMode, appId) },
-    { x, y: minWindowTop(appId), width, height: MIN_WINDOW_HEIGHT },
+    { x, y: minWindowTop(appId), width, height: minWindowHeight(appId) },
   );
   if (switcherPosition() !== "popup") used = unionRect(used, switcherRect(heightMode, appId));
   return used;
@@ -487,15 +562,18 @@ export function usedScreenRect(heightMode: WindowHeightMode, appId?: string): Sc
 
 /**
  * The screen area the phone mirror shows to present `used` as large as it
- * fits, centred, at the panel's own 4:3 aspect (so the mirror keeps its
- * shape whatever the display mode): `used` grown along one axis, past the
- * panel's edges if need be (the mirror shows black there).
+ * fits, centred, at the screen's own aspect (4:3 on the G2, 27:11 on the iO),
+ * so the mirror keeps its shape whatever the display mode: `used` grown along
+ * one axis, past the screen's edges if need be (the mirror shows black there).
  */
 export function phonePreviewRect(used: ScreenRect): ScreenRect {
-  // Whole 4:3 units, so the aspect is exact.
-  const units = Math.ceil(Math.max(used.width / 4, used.height / 3));
-  const width = units * 4;
-  const height = units * 3;
+  // Whole aspect units, so the aspect is exact.
+  const gcd = (a: number, b: number): number => (b ? gcd(b, a % b) : a);
+  const unit = gcd(screenWidth(), screenHeight());
+  const aspectW = screenWidth() / unit, aspectH = screenHeight() / unit;
+  const units = Math.ceil(Math.max(used.width / aspectW, used.height / aspectH));
+  const width = units * aspectW;
+  const height = units * aspectH;
   return {
     x: Math.round(used.x + (used.width - width) / 2),
     y: Math.round(used.y + (used.height - height) / 2),

@@ -39,7 +39,7 @@ The instructions below build the Android app.
 If you want to customize faceclaw, the best way to do it is to download the
 source code and using a coding agent such as Codex or Claude Code.
 
-To compile, you will need an Android SDK environment with SDK version 35
+To compile, you will need an Android SDK environment with SDK version 36
 installed and licenses accepted, and the ANDROID_HOME pointing to the install.
 You will need Nativescript installed, and a JDK environment (v21), with the
 JAVA_HOME environment variable pointed at it. You will also need a reasonably
@@ -162,6 +162,9 @@ unchanged — watch input is tagged as a separate source. Faceclaw's Settings > 
 section has the phone-side switches. See [wear/README.md](wear/README.md) for
 building and installing it; it is a separate Gradle build, sideloaded over
 adb, and needs no Play Store. The phone side requires Google Play services.
+
+The iOS app has the same remote for Apple Watch, with the same pad and screens;
+see [apple-watch/README.md](apple-watch/README.md).
 
 ## Connecting an external agent (OpenClaw)
 

@@ -189,6 +189,28 @@ class FaceclawBleCommunicator(context: Context, rightAddress: String?, leftAddre
 
     fun setRequiredFirmwareRevision(revision: Int) = core.setRequiredFirmwareRevision(revision)
 
+    /**
+     * Drive a RayNeo iO (constructed with its address as both arms and no ring). The phone's
+     * protocol identity is derived from ANDROID_ID so it survives reinstalls: the glasses bind
+     * to the first identity that authenticates and refuse others until put in pairing mode.
+     */
+    fun useRayNeoIo() {
+        val androidId = try {
+            android.provider.Settings.Secure.getString(appContext.contentResolver, android.provider.Settings.Secure.ANDROID_ID)
+        } catch (_: Exception) {
+            null
+        }
+        val seed = "faceclaw-rayneo-phone-id:" + (androidId ?: android.os.Build.FINGERPRINT)
+        val phoneId = java.security.MessageDigest.getInstance("SHA-256").digest(seed.toByteArray(Charsets.UTF_8)).copyOf(6)
+        val model = android.os.Build.MODEL ?: "Android"
+        core.useRayNeoIo(phoneId, model, android.os.Build.MANUFACTURER ?: "Android", model)
+    }
+
+    fun isRayNeoIo(): Boolean = core.isRayNeoIo()
+
+    /** Drive an Even G1 on g1v0 (two arms, as a G2 pair's addresses). */
+    fun useG1() = core.useG1()
+
     fun start() {
         if (core.start()) {
             activeInstance = this
@@ -234,6 +256,9 @@ class FaceclawBleCommunicator(context: Context, rightAddress: String?, leftAddre
     fun isAudioCaptureActive(): Boolean = core.isAudioCaptureActive()
 
     fun setFaceclawWakeLeaseEnabled(enabled: Boolean): Boolean = core.setFaceclawWakeLeaseEnabled(enabled)
+
+    /** See [GlassesSessionCore.setVoiceWakeEnabled]. */
+    fun setVoiceWakeEnabled(enabled: Boolean) = core.setVoiceWakeEnabled(enabled)
 
     fun awaitEvenHubSessionReady(timeoutMs: Int): Boolean = core.awaitEvenHubSessionReady(timeoutMs)
 
@@ -303,6 +328,13 @@ class FaceclawBleCommunicator(context: Context, rightAddress: String?, leftAddre
 
     fun sendFaceclawMicControl(record: ByteArray?, label: String, rightTemple: Boolean, leftTemple: Boolean): Boolean =
         core.sendFaceclawMicControl(record, label, rightTemple, leftTemple)
+
+    fun addKeyboardEventListener(listener: FaceclawKeyboardEventListener?) = core.addKeyboardEventListener(listener)
+
+    fun removeKeyboardEventListener(listener: FaceclawKeyboardEventListener?) = core.removeKeyboardEventListener(listener)
+
+    fun sendFaceclawKeyboardControl(record: ByteArray?, label: String): Boolean =
+        core.sendFaceclawKeyboardControl(record, label)
 
     fun startG2AudioForwarding(listener: FaceclawAudioPacketListener?): Boolean = core.startG2AudioForwarding(listener)
 

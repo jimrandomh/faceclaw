@@ -8,6 +8,7 @@ const path = require('node:path');
 const root = path.resolve(__dirname, '..');
 const hooks = [
   { source: 'scripts/hooks/faceclaw-kotlin.before-prepare.js', target: 'hooks/before-prepare/faceclaw-kotlin.js' },
+  { source: 'scripts/hooks/faceclaw-watch.after-prepare.js', target: 'hooks/after-prepare/faceclaw-watch.js' },
 ];
 
 function installHooks() {

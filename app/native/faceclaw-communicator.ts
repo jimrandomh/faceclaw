@@ -1,3 +1,4 @@
+import type { GlassesType } from "../ui/dashboard-settings";
 import type { RingInput } from "../g2/ring-input";
 import { ImageSource, Utils } from "@nativescript/core";
 import * as frameTimings from "./frame-timings";
@@ -169,7 +170,7 @@ export class FaceclawCommunicatorBridge {
   private readonly firmwareInfoListeners = new Set<(info: FirmwareInfo) => void>();
   private readonly previewAnimationListeners = new Set<() => void>();
 
-  constructor(addresses: { right: string; left: string; ring?: string; ringRole?: string }) {
+  constructor(addresses: { right: string; left: string; ring?: string; ringRole?: string; glassesType?: GlassesType }) {
     const context = Utils.android.getApplicationContext();
     if (!context) throw new Error("Android application context unavailable");
 
@@ -181,6 +182,10 @@ export class FaceclawCommunicatorBridge {
     );
     // The shared session halts on any other firmware ("incompatible-firmware").
     this.communicator.setRequiredFirmwareRevision(REQUIRED_FACECLAW_FIRMWARE_VERSION);
+    // RayNeo iO: one link (its address in both arm slots), its own handshake and page lease.
+    if (addresses.glassesType === "rayneo-io") this.communicator.useRayNeoIo();
+    // Even G1 on g1v0: two links, like a G2's arms, but frames composed here and sent to each arm.
+    if (addresses.glassesType === "g1") this.communicator.useG1();
     // Which R1 role the direct ring link claims; only matters with a ring address.
     if (addresses.ringRole) this.communicator.setDirectRingRole(addresses.ringRole);
     this.listenerProxy = new com.faceclaw.app.FaceclawBleCommunicatorListener({
@@ -754,6 +759,14 @@ export class FaceclawCommunicatorBridge {
     return this.enqueueJavaCall(() =>
       Boolean(this.communicator.setFaceclawWakeLeaseEnabled(enabled)),
     );
+  }
+
+  /**
+   * Whether the glasses' own wake word reaches Faceclaw: on a RayNeo iO, its
+   * "Hey RayNeo" switch (G2 glasses use the wake lease above instead).
+   */
+  async setVoiceWakeEnabled(enabled: boolean): Promise<void> {
+    await this.enqueueJavaCall(() => this.communicator.setVoiceWakeEnabled(enabled));
   }
 
   /**

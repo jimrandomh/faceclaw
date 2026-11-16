@@ -27,10 +27,10 @@
   <div class="wrap prose">
     <!-- BEGIN GENERATED: privacy -->
     <h1>Faceclaw Privacy Policy</h1>
-    <p>Faceclaw's own usage statistics are off unless you opt in. Separately, Apple collects and shares information when you use an iOS TestFlight build, even when Faceclaw statistics are set to None. Information you voluntarily send us, such as feedback, may also identify you. This policy describes these separate channels and the third-party services you can choose to use.</p>
+    <p>Faceclaw's own usage statistics are off unless you opt in. Separately, Apple collects and shares information when you use an iOS TestFlight build, even when Faceclaw statistics are set to None. Information you voluntarily send us, such as feedback, may also identify you. This policy describes these separate channels and the third-party services you can choose to use. On Android, Google ML Kit also collects SDK diagnostics separately from Faceclaw statistics, as described below.</p>
     <h2>Usage Statistics</h2>
     <p>The first time you connect your glasses, Faceclaw asks whether to share usage statistics with its developers, to help them fix problems and improve the app. The choices are None, Minimal and Full, and you can change your choice at any time in Settings &gt; Privacy &gt; Faceclaw statistics. Until you choose, it is None. This setting controls only Faceclaw's own statistics.</p>
-    <p>With None, Faceclaw sends and stores none of its own usage statistics. This does not disable Apple's TestFlight reports or services you choose to use.</p>
+    <p>With None, Faceclaw sends and stores none of its own usage statistics. This does not disable Apple's TestFlight reports, Google ML Kit diagnostics, or services you choose to use.</p>
     <p>With Minimal, Faceclaw keeps counts on your phone and sends them about once a day to stats.faceclaw.org, a server run by Faceclaw's developers:</p>
     <ul class="links">
       <li>- the Faceclaw version, whether it runs on Android or iOS, and whether it is</li>
@@ -52,6 +52,14 @@
       <li>URLs and names, are never sent.</li>
     </ul>
     <p>Faceclaw's own statistics never include your name or contact details, your location, Bluetooth device addresses, anything you say or type, or what is shown on your glasses. Each report carries a random identifier, created when you turn statistics on, which links your reports to each other but not to you. Turning statistics off deletes that identifier and everything kept on the phone, and stops all reports; turning them back on starts a new identifier. The statistics server doesn't record the IP addresses reports come from.</p>
+    <h2>Android and Google ML Kit</h2>
+    <p>Android translation and language identification use Google ML Kit. The developer QR-code scanner uses Google's code scanner. Text and scanner images are processed on-device, but the SDKs send Google diagnostic and usage metrics over HTTPS: device/app details, installation identifiers, timings, errors, feature events, input/output sizes, and detected or configured languages. Translation also uses Firebase installation and remote-configuration services. This reporting is separate from the Faceclaw statistics setting; selecting None does not turn it off. Faceclaw does not provide a switch to disable these SDK diagnostics.</p>
+    <p>These metrics do not include the text being translated or scanned images. Cloud transcription and assistant providers are separate, as described below. For Google's handling of SDK metrics, see:</p>
+    <ul class="links">
+      <li><a href="https://developers.google.com/ml-kit/android-data-disclosure">https://developers.google.com/ml-kit/android-data-disclosure</a></li>
+      <li><a href="https://developers.google.com/ml-kit/terms">https://developers.google.com/ml-kit/terms</a></li>
+      <li><a href="https://policies.google.com/privacy">https://policies.google.com/privacy</a></li>
+    </ul>
     <h2>iOS and TestFlight</h2>
     <p>For TestFlight builds, Apple automatically collects crash reports and beta usage information and shares them with us. This includes installations, sessions, crashes, app/build and OS versions, device model and identifier, and language. It is separate from Faceclaw statistics, with no in-app opt-out.</p>
     <p>Joining only through a public TestFlight link hides your name and email from us, not from Apple. Email invitations can identify you to us. Apple also collects your device's name (not shared with us) and may use your IP address to estimate your region for beta availability.</p>

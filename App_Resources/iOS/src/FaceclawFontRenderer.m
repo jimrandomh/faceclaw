@@ -1,6 +1,7 @@
 #import "FaceclawFontRenderer.h"
 #import <CoreText/CoreText.h>
 #import <CoreGraphics/CoreGraphics.h>
+#import <FaceclawKit/FaceclawKit.h>
 #import <math.h>
 
 // Immutable font descriptors may be shared; layout objects never cross threads.
@@ -42,8 +43,9 @@ static BOOL HasColorRun(CTLineRef line) {
 }
 // iOS falls back to Apple Color Emoji for default-text symbols the face lacks
 // (▶ U+25B6 in Roboto), where Android's minikin picks a text font; the
-// alpha-only raster keeps just the emoji's silhouette (▶ becomes a solid
-// rounded square). Request text presentation (U+FE0E) for each lone codepoint
+// emoji is a tile (▶ becomes a rounded square: a silhouette in the alpha-only
+// line rasters, a shaded tile in glyph cells), which reads worse than the
+// text symbol. Request text presentation (U+FE0E) for each lone codepoint
 // that fell back to a color font, wherever a text font can supply it. Returns
 // `text` itself when nothing changes.
 static NSString *PreferTextPresentation(CTFontRef font, NSString *text, CTLineRef line, BOOL glyphLayout) {
@@ -78,15 +80,31 @@ static BOOL ValidText(NSString *text) { return text != nil && text.length <= 100
 static BOOL ValidRaster(NSInteger width, NSInteger height) {
     return width > 0 && height > 0 && width <= 65535 && height <= 65535 && width * height <= 4000000;
 }
+static void ConfigureTextContext(CGContextRef ctx) {
+    CGContextSetShouldAntialias(ctx, true);
+    CGContextSetShouldSmoothFonts(ctx, false); // Grayscale coverage, never LCD subpixel color.
+    CGContextSetShouldSubpixelPositionFonts(ctx, true);
+    CGContextSetShouldSubpixelQuantizeFonts(ctx, false);
+    CGContextSetTextMatrix(ctx, CGAffineTransformIdentity);
+}
 static CGContextRef CreateContext(NSMutableData *pixels, NSInteger width, NSInteger height) CF_RETURNS_RETAINED {
     CGContextRef ctx = CGBitmapContextCreate(pixels.mutableBytes, width, height, 8, width, NULL, (CGBitmapInfo)kCGImageAlphaOnly);
     if (ctx) {
-        CGContextSetShouldAntialias(ctx, true);
-        CGContextSetShouldSmoothFonts(ctx, false); // Grayscale coverage, never LCD subpixel color.
-        CGContextSetShouldSubpixelPositionFonts(ctx, true);
-        CGContextSetShouldSubpixelQuantizeFonts(ctx, false);
-        CGContextSetTextMatrix(ctx, CGAffineTransformIdentity);
+        ConfigureTextContext(ctx);
         CGContextSetGrayFillColor(ctx, 1, 1);
+    }
+    return ctx;
+}
+// Premultiplied RGBA bytes, for a line with a color (emoji) run: an alpha-only raster keeps
+// just the emoji's silhouette, so its colors go to ColorGlyphArt to be shaded instead.
+static CGContextRef CreateColorContext(NSMutableData *pixels, NSInteger width, NSInteger height) CF_RETURNS_RETAINED {
+    CGColorSpaceRef space = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+    CGContextRef ctx = CGBitmapContextCreate(pixels.mutableBytes, width, height, 8, width * 4, space,
+        (CGBitmapInfo)kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big);
+    CGColorSpaceRelease(space);
+    if (ctx) {
+        ConfigureTextContext(ctx);
+        CGContextSetRGBFillColor(ctx, 1, 1, 1, 1);
     }
     return ctx;
 }
@@ -150,10 +168,13 @@ static NSData *ImagePacket(NSData *pixels, NSInteger width, NSInteger height, do
         NSInteger bottom = floor(CGRectGetMinY(bounds)) - 2;
         NSInteger width = ceil(CGRectGetMaxX(bounds)) + 2 - left, height = top - bottom;
         if (!ValidRaster(width, height)) { CFRelease(line); CFRelease(font); return [NSData data]; }
-        NSMutableData *pixels = [NSMutableData dataWithLength:width * height];
-        CGContextRef ctx = CreateContext(pixels, width, height);
+        BOOL color = HasColorRun(line);
+        NSMutableData *raster = [NSMutableData dataWithLength:width * height * (color ? 4 : 1)];
+        CGContextRef ctx = color ? CreateColorContext(raster, width, height) : CreateContext(raster, width, height);
         if (!ctx) { CFRelease(line); CFRelease(font); return [NSData data]; }
         CGContextSetTextPosition(ctx, -left, -bottom); CTLineDraw(line, ctx); CGContextRelease(ctx);
+        NSData *pixels = color ? [[FaceclawKitIosColorGlyph shared] shadeRgba:raster] : raster;
+        if ((NSInteger)pixels.length != width * height) { CFRelease(line); CFRelease(font); return [NSData data]; }
         const uint8_t *src = pixels.bytes;
         NSInteger x0 = width, y0 = height, x1 = -1, y1 = -1;
         for (NSInteger y = 0; y < height; y++) for (NSInteger x = 0; x < width; x++) if (src[y * width + x]) {
