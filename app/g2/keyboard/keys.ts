@@ -24,12 +24,19 @@ export type KeyEvent = {
   modifiers: KeyModifiers;
   /** A synthesized auto-repeat of a held key. */
   repeat: boolean;
+  /**
+   * One of a stream that can arrive faster than it can be acted on (a wheel
+   * turning): whoever acts on it may drop some rather than fall behind.
+   */
+  burst?: boolean;
   /** Date.now() when the phone saw the transition. */
   timestampMs: number;
 };
 
 const HID_PAGE_KEYBOARD = 7;
 const HID_PAGE_CONSUMER = 12;
+/** A mouse's buttons, which arrive here as keys: usage 1 is the left button, 2 the right, 3 the middle. */
+export const HID_PAGE_BUTTON = 9;
 const USAGE_CAPS_LOCK = 57;
 
 /** [unshifted, shifted, code] for US-layout punctuation on the keyboard page. */
@@ -159,6 +166,7 @@ export function translateUsage(page: number, usage: number, shift: boolean, caps
     const name = CONSUMER[usage];
     return name ? { key: name, code: name } : { key: "Unidentified", code: `Consumer${usage.toString(16)}` };
   }
+  if (page === HID_PAGE_BUTTON) return { key: `MouseButton${usage}`, code: `MouseButton${usage}` };
   return { key: "Unidentified", code: `Page${page.toString(16)}Usage${usage.toString(16)}` };
 }
 
@@ -217,13 +225,26 @@ export class KeyTranslator {
       if (modifier) this.modifiers[modifier] = true;
       if (event.page === HID_PAGE_KEYBOARD && event.usage === USAGE_CAPS_LOCK) this.capsLock = !this.capsLock;
       this.emit("down", event.page, event.usage, false);
-      // The newest non-modifier key is the one that repeats, as on a PC.
-      if (!modifier) this.startRepeat(event.page, event.usage);
+      // The newest non-modifier key is the one that repeats, as on a PC. A
+      // mouse button neither repeats nor takes the repeat from a held key.
+      if (!modifier && event.page !== HID_PAGE_BUTTON) this.startRepeat(event.page, event.usage);
     } else {
       if (!this.held.delete(id)) return;
       if (modifier) this.modifiers[modifier] = this.otherHeld(event.usage, modifier);
       if (this.repeating?.page === event.page && this.repeating.usage === event.usage) this.stopRepeat();
       this.emit("up", event.page, event.usage, false);
+    }
+  }
+
+  /**
+   * A press and release in one, for input that has no "held" (a wheel's
+   * detent): `name` is both the key and the code, e.g. "WheelUp". Carries
+   * the modifiers held on the keyboard, like any key.
+   */
+  pulse(name: string): void {
+    const timestampMs = this.now();
+    for (const phase of ["down", "up"] as const) {
+      this.emitEvent({ phase, key: name, code: name, modifiers: { ...this.modifiers }, repeat: false, burst: true, timestampMs });
     }
   }
 

@@ -2001,13 +2001,13 @@ class GlassesSessionCore(
             tap(data.copyOf())
             return
         }
-        logDebug("onNotification: address=" + address + " characteristicUuid=" + characteristicUuid + " data.length=" + data.size)
         val frame = BleProtocol.parseFrame(data)
         if (frame.ok && frame.sid == BleProtocol.SID_UI_SETTING) {
             // CFW keyboard-bridge records (field 131) come from whichever temple hosts the
             // keyboard. They are their own stream: neither an ACK nor glasses input, and the
             // once-a-second status record among them must not count as user activity (which
-            // would hold off battery polling).
+            // would hold off battery polling). A touchpad sends a hundred of them a second
+            // while a finger is on it, so they are not logged one by one either.
             val keyboardEvent = BleProtocol.parseFaceclawKeyboardEvent(frame.pb)
             if (keyboardEvent != null) {
                 monitor.withLock { lastIncomingAtMs = now() }
@@ -2015,6 +2015,7 @@ class GlassesSessionCore(
                 return
             }
         }
+        logDebug("onNotification: address=" + address + " characteristicUuid=" + characteristicUuid + " data.length=" + data.size)
         val decodedWearState = BleProtocol.parseWearState(frame)
         val compassEvent = if (address.equals(rightAddress, ignoreCase = true))
             BleProtocol.parseCompassEvent(frame)

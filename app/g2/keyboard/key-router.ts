@@ -38,9 +38,10 @@ export type KeyRouterHost = {
 };
 
 /**
- * A held key repeats twenty times a second, faster than a list can repaint
- * over the glasses' link. Repeats are dropped while a gesture is still being
- * handled, and closer together than this.
+ * A held key repeats twenty times a second, and a wheel or a two-finger
+ * scroll reports faster still: more than a list can repaint over the
+ * glasses' link. Those are dropped while a gesture is still being handled,
+ * and closer together than this.
  */
 const REPEAT_MIN_INTERVAL_MS = 100;
 
@@ -73,13 +74,14 @@ export class KeyRouter {
       return;
     }
     const resolution = resolveKey(event, host.bindings());
+    const droppable = event.repeat || event.burst === true;
     if (resolution.consume) {
       this.consumed.add(event.code);
-      if (resolution.gesture) this.perform(resolution.gesture, event.repeat);
+      if (resolution.gesture) this.perform(resolution.gesture, droppable);
       return;
     }
     if (host.offerToWindow(event)) return;
-    if (resolution.gesture) this.perform(resolution.gesture, event.repeat);
+    if (resolution.gesture) this.perform(resolution.gesture, droppable);
   }
 
   /**
@@ -91,7 +93,7 @@ export class KeyRouter {
     const host = this.host;
     if (event.phase !== "down" || this.capture || !host.ready() || host.locked() || !host.screenOn()) return;
     const resolution = resolveKey(event, host.bindings());
-    if (!resolution.consume && resolution.gesture) this.perform(resolution.gesture, event.repeat);
+    if (!resolution.consume && resolution.gesture) this.perform(resolution.gesture, event.repeat || event.burst === true);
   }
 
   /**
@@ -124,9 +126,9 @@ export class KeyRouter {
     capture(chordOf(event));
   }
 
-  private perform(gesture: KeyGesture, repeat: boolean): void {
+  private perform(gesture: KeyGesture, droppable: boolean): void {
     const now = this.host.now ? this.host.now() : Date.now();
-    if (repeat && (this.gesturesInFlight > 0 || now - this.lastGestureAtMs < REPEAT_MIN_INTERVAL_MS)) return;
+    if (droppable && (this.gesturesInFlight > 0 || now - this.lastGestureAtMs < REPEAT_MIN_INTERVAL_MS)) return;
     this.lastGestureAtMs = now;
     void this.run(gesture, this.scheme.originFor(gesture));
   }

@@ -142,3 +142,24 @@ test('terminal: Shift+PageUp and Shift+PageDown page the scrollback instead', ()
   assert.equal(page('PageUp', {}), null); assert.equal(page('PageUp', { shift: true, ctrl: true }), null)
   assert.equal(page('PageUp', { shift: true }, 'up'), null); assert.equal(page('ArrowUp', { shift: true }), null)
 })
+
+test('mouse buttons are keys that neither repeat nor take the repeat from a held key; a wheel detent is a press and release', () => {
+  const { t, events, advance } = translator()
+  t.handle([down(A)])
+  t.handle([{ page: 9, usage: 1, down: true }])
+  assert.deepEqual([events.at(-1).key, events.at(-1).code, events.at(-1).text], ['MouseButton1', 'MouseButton1', undefined])
+  // The held key goes on repeating; the held button never does.
+  advance(500)
+  assert.ok(events.filter(e => e.repeat).every(e => e.key === 'a')); assert.ok(events.some(e => e.repeat))
+  t.handle([up(A), { page: 9, usage: 1, down: false }])
+  assert.deepEqual([events.at(-1).phase, events.at(-1).key], ['up', 'MouseButton1'])
+  assert.equal(translateUsage(9, 3, false, false).code, 'MouseButton3')
+
+  // The wheel: down and up at once, marked as droppable, with the keyboard's modifiers.
+  events.length = 0
+  t.handle([down(SHIFT)]); t.pulse('WheelUp')
+  assert.deepEqual(events.slice(1).map(e => [e.phase, e.key, e.code, e.burst, e.repeat, e.modifiers.shift]),
+    [['down', 'WheelUp', 'WheelUp', true, false, true], ['up', 'WheelUp', 'WheelUp', true, false, true]])
+  const count = events.length; advance(2000)
+  assert.equal(events.length, count)
+})

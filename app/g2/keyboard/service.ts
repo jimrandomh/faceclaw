@@ -23,8 +23,10 @@ import {
   type KeyGesture,
 } from "./bindings";
 import { KeyboardBridge, type KeyboardBridgeSnapshot, type SavedKeyboard } from "./bridge";
+import type { HidPointerSample } from "./hid";
 import { KeyRouter } from "./key-router";
 import { KeyTranslator, type KeyEvent } from "./keys";
+import { PointerInput } from "./pointer";
 
 declare const java: any;
 declare const arc4random_uniform: ((bound: number) => number) | undefined;
@@ -92,6 +94,11 @@ class KeyboardService {
     log: (line) => console.log(`[keyboard] ${line}`),
   });
   private readonly translator = new KeyTranslator({ emit: (event) => this.router.handleKey(event) });
+  /** The touchpad's buttons and wheel go in as keys; see pointer.ts. */
+  private readonly pointer = new PointerInput({
+    buttons: (events) => this.translator.handle(events),
+    wheel: (key) => this.translator.pulse(key),
+  });
 
   readonly bridge = new KeyboardBridge({
     send: (record) => {
@@ -106,8 +113,10 @@ class KeyboardService {
     loadSaved: loadSavedKeyboard,
     storeSaved: (saved) => setStringSetting(SAVED_KEYBOARD_KEY, saved ? JSON.stringify(saved) : ""),
     onKeys: (events) => this.translator.handle(events),
+    onPointer: (sample) => this.pointer.handle(sample),
     onKeyboardGone: () => {
       this.translator.reset();
+      this.pointer.reset();
       this.router.reset();
     },
     onChanged: () => {
@@ -204,6 +213,16 @@ class KeyboardService {
    */
   captureNextKey(onChord: (chord: KeyChord) => void): () => void {
     return this.router.captureNextKey(onChord);
+  }
+
+  /**
+   * Take the keyboard's touchpad or mouse: every report goes to `listener`,
+   * movement included, and its buttons and wheel stop acting as keys until
+   * the returned function is called. For the cursor test page; the main UI
+   * has no cursor.
+   */
+  takePointer(listener: (sample: HidPointerSample) => void): () => void {
+    return this.pointer.take(listener);
   }
 
   private storeBindings(bindings: KeyBinding[]): void {

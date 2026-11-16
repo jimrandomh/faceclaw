@@ -12,7 +12,7 @@
  * No platform imports: this runs under node in the tests.
  */
 import { KeyboardClient, KeyboardClientError, type KeyboardStatus } from "./client";
-import type { HidKeyEvent } from "./hid";
+import type { HidKeyEvent, HidPointerSample } from "./hid";
 import {
   KeyboardDm,
   KeyboardError,
@@ -56,6 +56,8 @@ export type KeyboardBridgeSnapshot = {
   busy: boolean;
   /** The remembered keyboard is away and the bridge keeps trying to bring it back. */
   waiting: boolean;
+  /** The connected keyboard has a touchpad or mouse buttons. */
+  pointer: boolean;
 };
 
 export type KeyboardBridgeHost = {
@@ -65,6 +67,8 @@ export type KeyboardBridgeHost = {
   storeSaved(saved: SavedKeyboard | null): void;
   /** Key transitions from the keyboard (including forced releases). */
   onKeys(events: HidKeyEvent[]): void;
+  /** A report from the keyboard's touchpad or mouse (including a forced release of its buttons). */
+  onPointer(sample: HidPointerSample): void;
   /** The keyboard stopped being usable; drop held-key state without releases. */
   onKeyboardGone(): void;
   /** Something in snapshot() changed. */
@@ -129,6 +133,7 @@ export class KeyboardBridge {
       scanResults: sortAdverts(this.scanResults),
       busy: this.busy,
       waiting: this.available && !!this.saved && !this.ready && !this.userDisconnected && !this.busy,
+      pointer: this.ready && this.client?.configuration?.pointer === true,
     };
   }
 
@@ -328,6 +333,7 @@ export class KeyboardBridge {
       (record) => live() && this.host.send(record),
       {
         keys: (events) => { if (live() && this.ready) this.host.onKeys(events); },
+        pointer: (sample) => { if (live() && this.ready) this.host.onPointer(sample); },
         advert: (advert) => { if (live()) this.addAdvert(advert); },
         status: (status) => { if (live()) this.onStatus(status); },
         dm: (event, status) => { if (live()) this.onDm(event, status); },
@@ -380,7 +386,8 @@ export class KeyboardBridge {
       }
       this.host.log(
         `keyboard ready: ${keyboard.name || keyboard.address}, ${config.watched.length} of ` +
-        `${config.reports.filter((r) => r.type === 1).length} input reports subscribed, epoch ${config.epoch}`);
+        `${config.reports.filter((r) => r.type === 1).length} input reports subscribed` +
+        `${config.pointer ? ", with a pointer" : ""}, epoch ${config.epoch}`);
       this.setState("connected");
     } catch (e) {
       if (!live()) return;

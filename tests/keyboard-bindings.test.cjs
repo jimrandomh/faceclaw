@@ -243,3 +243,60 @@ test('router: capturing a key for a new keybinding takes the chord and nothing e
   r.handleKey(key('x', { code: 'KeyX' }))
   assert.deepEqual(captured.at(-1), chord('KeyX'))
 })
+
+test('a mouse by default: left taps, right double taps, middle holds, the wheel is the ring\'s scroll', () => {
+  const action = (k, overrides) => defaultKeyAction(key(k, overrides))
+  // Nothing types a mouse button, so these hold in a terminal session too.
+  assert.deepEqual(action('MouseButton1'), { action: 'click', overridesTyping: true })
+  assert.deepEqual(action('MouseButton2'), { action: 'double-click', overridesTyping: true })
+  assert.deepEqual(action('MouseButton3'), { action: 'long-press', overridesTyping: true })
+  assert.deepEqual(action('WheelUp'), { action: 'scroll-up', overridesTyping: true })
+  assert.deepEqual(action('WheelDown'), { action: 'scroll-down', overridesTyping: true })
+  // Whatever is held on the keyboard.
+  assert.deepEqual(action('MouseButton1', { modifiers: { ctrl: true, shift: true } }), { action: 'click', overridesTyping: true })
+  // Extra buttons and the horizontal wheel mean nothing until bound.
+  for (const k of ['MouseButton4', 'MouseButton5', 'WheelLeft', 'WheelRight']) assert.equal(action(k), null)
+  const said = code => describeChord(chord(code))
+  assert.equal(said('MouseButton1'), 'Left button'); assert.equal(said('MouseButton2'), 'Right button')
+  assert.equal(said('MouseButton3'), 'Middle button'); assert.equal(said('MouseButton4'), 'Mouse button 4')
+  assert.equal(said('WheelUp'), 'Wheel up'); assert.equal(describeChord(chord('WheelDown', { ctrl: true })), 'Ctrl+Wheel down')
+  assert.deepEqual(parseChordId('Shift+MouseButton2'), chord('MouseButton2', { shift: true }))
+})
+
+test('router: the mouse works where keys are being typed, its wheel is paced, and its buttons can be rebound', async () => {
+  const { r, state } = router({ bindings: [{ chord: chord('MouseButton4'), action: 'short-then-long-press' }, { chord: chord('MouseButton2'), action: 'none' }] })
+  const wheel = k => { r.handleKey(key(k, { burst: true })); r.handleKey(up(k, { burst: true })) }
+  state.windowTakesKeys = true
+  r.handleKey(key('MouseButton1')); r.handleKey(up('MouseButton1'))
+  r.handleKey(key('MouseButton3')); r.handleKey(up('MouseButton3'))
+  await flush(); state.now += 500
+  wheel('WheelDown')
+  // The wheel is the ring's scroll, and what follows it is the ring's too.
+  await flush(); state.now += 500
+  r.handleKey(key('MouseButton1')); r.handleKey(up('MouseButton1'))
+  assert.deepEqual(state.gestures, ['click/watch', 'long-press/watch', 'scroll-down/ring', 'click/ring'])
+  assert.deepEqual(state.offered, [], 'never typed')
+  // A custom keybinding for an extra button; "Nothing" on the right button leaves it inert.
+  state.gestures.length = 0
+  r.handleKey(key('MouseButton4')); r.handleKey(up('MouseButton4')); r.handleKey(key('MouseButton2')); r.handleKey(up('MouseButton2'))
+  assert.deepEqual(state.gestures, ['short-then-long-press/ring'])
+  // A two-finger scroll reports far faster than the display can follow: every 100 ms at most.
+  state.gestures.length = 0; state.offered.length = 0
+  for (let i = 0; i < 40; i++) { await flush(); state.now += 25; wheel('WheelUp') }
+  assert.equal(state.gestures.length, 10); assert.ok(state.gestures.every(g => g === 'scroll-up/ring'))
+  // On a dark display a click wakes it and does nothing else.
+  state.screenOn = false; state.gestures.length = 0
+  r.handleKey(key('MouseButton1')); r.handleKey(up('MouseButton1'))
+  assert.equal(state.wakes, 1); assert.deepEqual(state.gestures, [])
+})
+
+test('router: a mouse button or a turn of the wheel can be captured for a keybinding', () => {
+  const { r, state } = router()
+  const captured = []
+  r.captureNextKey(c => captured.push(c))
+  r.handleKey(key('MouseButton2')); r.handleKey(up('MouseButton2'))
+  r.captureNextKey(c => captured.push(c))
+  r.handleKey(key('WheelUp', { burst: true, modifiers: { shift: true } })); r.handleKey(up('WheelUp', { burst: true }))
+  assert.deepEqual(captured, [chord('MouseButton2'), chord('WheelUp', { shift: true })])
+  assert.deepEqual(state.gestures, [])
+})

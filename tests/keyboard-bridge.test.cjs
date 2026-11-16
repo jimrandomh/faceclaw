@@ -1,6 +1,6 @@
 const test = require('node:test')
 const assert = require('node:assert/strict')
-const { HidKeys, parseReportMap, reportKeys } = require('../.test-build/app/g2/keyboard/hid.js')
+const { HidKeys, parseReportMap, reportHasKeys, reportHasPointer, reportKeys, reportPointer } = require('../.test-build/app/g2/keyboard/hid.js')
 const {
   KeyboardRecords, keyboardControl, le16, u16, parseKeyboardAdvert, mergeKeyboardAdverts,
   parseKeyboardAddress, formatKeyboardAddress,
@@ -67,6 +67,41 @@ test('descriptor resource bounds and malformed items', () => {
     const data = Uint8Array.from({length:i%128+1}, () => { seed=(Math.imul(seed,1664525)+1013904223)>>>0; return seed>>>24 })
     try { parseReportMap(data) } catch (e) { assert.ok(e instanceof Error) }
   }
+})
+
+// A wheel mouse as most are described: three buttons, 8-bit X/Y and wheel.
+const mouseMap = Uint8Array.from([0x05,1,0x09,2,0xa1,1,0x09,1,0xa1,0,0x05,9,0x19,1,0x29,3,0x15,0,0x25,1,0x75,1,0x95,3,0x81,2,
+  0x75,5,0x95,1,0x81,1,0x05,1,0x09,0x30,0x09,0x31,0x09,0x38,0x15,0x81,0x25,0x7f,0x75,8,0x95,3,0x81,6,0xc0,0xc0])
+test('a mouse report: buttons, movement and wheel; not keys', () => {
+  const r = parseReportMap(mouseMap).get(0)
+  assert.equal(reportHasPointer(r), true); assert.equal(reportHasKeys(r), false)
+  assert.deepEqual(reportPointer(r, Uint8Array.of(0, 0, 0, 0)), { buttons: 0, dx: 0, dy: 0, wheel: 0, pan: 0 })
+  assert.deepEqual(reportPointer(r, Uint8Array.of(0b101, 10, 0xf6, 1)), { buttons: 5, dx: 10, dy: -10, wheel: 1, pan: 0 })
+  assert.deepEqual(reportPointer(r, Uint8Array.of(0b010, 0, 0, 0xff)), { buttons: 2, dx: 0, dy: 0, wheel: -1, pan: 0 })
+  // Some devices leave trailing bytes off; what is missing is zero. Extra bytes are ignored.
+  assert.deepEqual(reportPointer(r, Uint8Array.of(1, 3)), { buttons: 1, dx: 3, dy: 0, wheel: 0, pan: 0 })
+  assert.deepEqual(reportPointer(r, Uint8Array.of(0, 1, 1, 1, 9, 9)), { buttons: 0, dx: 1, dy: 1, wheel: 1, pan: 0 })
+  // -128 is outside the declared range: no reading, rather than a jump.
+  assert.deepEqual(reportPointer(r, Uint8Array.of(0, 0x80, 0, 0)), { buttons: 0, dx: 0, dy: 0, wheel: 0, pan: 0 })
+  assert.deepEqual(reportKeys(r, Uint8Array.of(7, 1, 1, 1)), [])
+  // A keyboard's report is not a pointer's.
+  assert.equal(reportHasPointer(parseReportMap(boot).get(0)), false)
+})
+test('a touchpad with 12-bit axes and a horizontal wheel; an absolute digitizer is not a mouse', () => {
+  // Five buttons, 3 bits of padding, X/Y packed 12 bits each, wheel, then AC Pan from the consumer page.
+  const map = Uint8Array.from([0x05,1,0x09,2,0xa1,1,0x05,9,0x19,1,0x29,5,0x15,0,0x25,1,0x75,1,0x95,5,0x81,2,
+    0x75,3,0x95,1,0x81,1,0x05,1,0x09,0x30,0x09,0x31,0x16,0x01,0xf8,0x26,0xff,0x07,0x75,12,0x95,2,0x81,6,
+    0x09,0x38,0x15,0x81,0x25,0x7f,0x75,8,0x95,1,0x81,6,0x05,0x0c,0x0a,0x38,0x02,0x81,6,0xc0])
+  const r = parseReportMap(map).get(0)
+  assert.equal(reportHasPointer(r), true)
+  // X = 0x123 (291), Y = 0xfff (-1): packed little endian, 12 bits each.
+  assert.deepEqual(reportPointer(r, Uint8Array.of(0b10000, 0x23, 0xf1, 0xff, 2, 0xfe)), { buttons: 16, dx: 291, dy: -1, wheel: 2, pan: -2 })
+  // The pan field is on the consumer page, but it is a movement, not a key going down.
+  assert.equal(reportHasKeys(r), false); assert.deepEqual(reportKeys(r, Uint8Array.of(0, 0, 0, 0, 0, 5)), [])
+  // Absolute X/Y (a touchscreen, a pen) is something else, and is left alone.
+  const absolute = parseReportMap(Uint8Array.of(0x05,1,0x09,0x30,0x09,0x31,0x15,0,0x26,0xff,0x0f,0x75,16,0x95,2,0x81,2)).get(0)
+  assert.equal(reportHasPointer(absolute), false)
+  assert.deepEqual(reportPointer(absolute, Uint8Array.of(1, 2, 3, 4)), { buttons: 0, dx: 0, dy: 0, wheel: 0, pan: 0 })
 })
 
 test('control records, UUIDs and addresses', () => {
@@ -238,23 +273,39 @@ function makeCombo(g) {
   g.attrs.clear(); for (const [handle, attr] of sorted) g.attrs.set(handle, attr)
 }
 for (const declarations of ['short', 'refused']) {
-  test(`client: a keyboard with a trackpad whose stack answers declaration reads ${declarations} still types`, async () => {
-    const events = [], logs = []
+  test(`client: a keyboard with a trackpad whose stack answers declaration reads ${declarations} types and points`, async () => {
+    const events = [], pointer = [], logs = []
     let client
     const g = fakeGlasses(payload => client.accept(payload))
     makeCombo(g); g.declarations = declarations
-    client = new KeyboardClient(g.send, { keys: e => events.push(...e), log: line => logs.push(line) })
+    client = new KeyboardClient(g.send, { keys: e => events.push(...e), pointer: p => pointer.push(p), log: line => logs.push(line) })
     await client.enable(); await client.connect(1, new Uint8Array(6)); const config = await client.configure()
-    // Keys and media keys are subscribed; the pointer and the battery are not.
-    assert.deepEqual(config.watched, [27,31]); assert.deepEqual(g.watches, [27,31,3]); assert.deepEqual(g.writes, [25,4,28,32])
+    // Keys, media keys and the trackpad are subscribed; the battery level is not.
+    assert.deepEqual(config.watched, [27,31,35]); assert.equal(config.pointer, true)
+    assert.deepEqual(g.watches, [27,31,35,3]); assert.deepEqual(g.writes, [25,4,28,32,36])
     assert.deepEqual(config.reports.map(r => [r.handle, r.id]), [[27,1],[31,2],[35,4]])
     assert.deepEqual(config.reports.map(r => r.properties), declarations === 'short' ? [0x12,0x12,0x12] : [undefined,undefined,undefined])
     g.input(27, [0,0,4,0,0,0,0,0])
     assert.deepEqual(events.map(e => [e.usage,e.down]), [[4,true]])
+    // The trackpad: movement and buttons, and never a key.
+    g.input(35, [0, 5, 0xfd]); g.input(35, [1, 0, 0]); g.input(35, [5, 0x81, 0x7f])
+    assert.deepEqual(pointer, [
+      { buttons: 0, dx: 5, dy: -3, wheel: 0, pan: 0 },
+      { buttons: 1, dx: 0, dy: 0, wheel: 0, pan: 0 },
+      { buttons: 5, dx: -127, dy: 127, wheel: 0, pan: 0 },
+    ])
+    assert.equal(events.length, 1)
+    // A record lost on the way: the held buttons are let go along with the held keys.
+    g.seq++; g.status()
+    assert.deepEqual(pointer.at(-1), { buttons: 0, dx: 0, dy: 0, wheel: 0, pan: 0 })
+    assert.deepEqual([events.at(-1).usage, events.at(-1).down], [4, false])
+    // With nothing held, another gap has nothing to say.
+    const count = pointer.length; g.seq++; g.status()
+    assert.equal(pointer.length, count)
     // What was skipped, and why, is in the log; so is the table it came from.
     assert.ok(logs.some(line => /^gatt 1=2800 2=2803 /.test(line)), logs.join('\n'))
     assert.ok(logs.some(line => /report 42 skipped: no Report Reference/.test(line)), logs.join('\n'))
-    assert.ok(logs.some(line => /report 35 \(id 4\) carries no keys/.test(line)), logs.join('\n'))
+    assert.ok(logs.some(line => /report 35 \(id 4\) is a pointer's/.test(line)), logs.join('\n'))
     assert.ok(logs.some(line => line.startsWith('report map 22: 0501')))
     client.close()
   })
@@ -313,7 +364,7 @@ test('client: firmware errors carry their code, and a dead link rejects at once'
 })
 
 function bridgeSetup(saved = null) {
-  const host = { keys: [], gone: 0, changes: 0, logs: [], prompts: [], saved, reconnect: true }
+  const host = { keys: [], pointer: [], gone: 0, changes: 0, logs: [], prompts: [], saved, reconnect: true }
   let bridge
   const g = fakeGlasses(payload => bridge.accept(payload))
   bridge = new KeyboardBridge({
@@ -321,6 +372,7 @@ function bridgeSetup(saved = null) {
     loadSaved: () => host.saved,
     storeSaved: value => { host.saved = value },
     onKeys: events => host.keys.push(...events),
+    onPointer: sample => host.pointer.push(sample),
     onKeyboardGone: () => { host.gone++ },
     onChanged: () => {
       host.changes++
@@ -477,6 +529,28 @@ test('bridge: a scan started by hand takes over from an attempt in flight, and n
   g.ops.length = 0
   bridge.retryNow(); t.mock.timers.tick(0); await settle()
   assert.deepEqual(g.ops, [])
+  bridge.linkLost()
+})
+test('bridge: a keyboard\'s touchpad is passed on while it is in use, and the snapshot says it has one', async () => {
+  const plain = bridgeSetup()
+  plain.bridge.linkReady(); await plain.bridge.connect(K380)
+  assert.equal(plain.bridge.snapshot().pointer, false)
+  plain.bridge.linkLost()
+
+  const { bridge, g, host } = bridgeSetup()
+  makeCombo(g)
+  bridge.linkReady()
+  assert.equal(bridge.snapshot().pointer, false)
+  await bridge.connect(K380)
+  assert.equal(bridge.snapshot().pointer, true)
+  assert.ok(host.logs.some(line => /keyboard ready: K380, 3 of 3 input reports subscribed, with a pointer/.test(line)), host.logs.join('\n'))
+  g.input(35, [2, 1, 1])
+  assert.deepEqual(host.pointer, [{ buttons: 2, dx: 1, dy: 1, wheel: 0, pan: 0 }])
+  // The keyboard drops with a button down: the button is let go, as held keys
+  // are, before the host hears the keyboard is gone; and the snapshot follows.
+  g.close(); await settle()
+  assert.deepEqual(host.pointer.at(-1), { buttons: 0, dx: 0, dy: 0, wheel: 0, pan: 0 }); assert.equal(host.pointer.length, 2)
+  assert.equal(host.gone, 1); assert.equal(bridge.snapshot().pointer, false)
   bridge.linkLost()
 })
 test('bridge: leaving on purpose tells the glasses to let the keyboard go', async (t) => {

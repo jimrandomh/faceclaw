@@ -10,7 +10,16 @@
  * numbers found by configure() are only good for one connection epoch.
  * No platform imports: this runs under node in the tests.
  */
-import { HidKeys, parseReportMap, reportHasKeys, type HidKeyEvent, type HidReport } from "./hid";
+import {
+  HidKeys,
+  parseReportMap,
+  reportHasKeys,
+  reportHasPointer,
+  reportPointer,
+  type HidKeyEvent,
+  type HidPointerSample,
+  type HidReport,
+} from "./hid";
 import {
   KeyboardDm,
   KeyboardError,
@@ -42,6 +51,12 @@ export type KeyboardStatus = {
 export type KeyboardClientEvents = {
   /** Key transitions from one input report (or the releases a gap forces). */
   keys?(events: HidKeyEvent[]): void;
+  /**
+   * One report from the keyboard's touchpad or mouse: the buttons now held
+   * (across all its pointer reports) and the movement and wheel since the
+   * last one. Also sent with everything zero when a gap forces a release.
+   */
+  pointer?(sample: HidPointerSample): void;
   advert?(advert: KeyboardAdvert): void;
   status?(status: KeyboardStatus): void;
   /** The stream may have lost records; held keys were released. */
@@ -78,8 +93,10 @@ export type KeyboardConfiguration = {
   epoch: number;
   /** Every report found, input or not. */
   reports: KeyboardReport[];
-  /** Handles of the input reports subscribed for keys. */
+  /** Handles of the input reports subscribed: those that carry keys, or a pointer's buttons and movement. */
   watched: number[];
+  /** Whether any of them is a pointer's (a touchpad, mouse buttons, a wheel). */
+  pointer: boolean;
   serviceChanged?: number;
 };
 
@@ -109,7 +126,7 @@ type Pending = {
   timer: ReturnType<typeof setTimeout>;
 };
 type Waiter = { test: () => boolean; resolve: () => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> };
-type Input = { report: HidReport; id: number; service: number };
+type Input = { report: HidReport; id: number; service: number; keys: boolean; pointer: boolean };
 
 const COMMAND_TIMEOUT_MS = 32_000;
 const MAX_PENDING = 8;
@@ -159,6 +176,8 @@ export class KeyboardClient {
   private readonly pending = new Map<number, Pending>();
   private readonly waiters = new Set<Waiter>();
   private readonly keys = new HidKeys();
+  /** Pointer buttons held, by the report that says so (as HidKeys does for keys). */
+  private readonly pointerButtons = new Map<number, number>();
   private inputs = new Map<number, Input>();
   private readonly records = new KeyboardRecords(() => this.gap());
   private readonly randomPasskey: () => number;
@@ -248,18 +267,35 @@ export class KeyboardClient {
       this.gap();
       return;
     }
-    try {
-      const events = this.keys.update(r.handle, input.report, r.data);
-      if (events.length) this.events.keys?.(events);
-    } catch (e) {
-      this.release();
-      this.events.error?.(messageOf(e));
+    if (input.keys) {
+      try {
+        const events = this.keys.update(r.handle, input.report, r.data);
+        if (events.length) this.events.keys?.(events);
+      } catch (e) {
+        this.release();
+        this.events.error?.(messageOf(e));
+      }
+    }
+    if (input.pointer) {
+      const sample = reportPointer(input.report, r.data);
+      this.pointerButtons.set(r.handle, sample.buttons);
+      this.events.pointer?.({ ...sample, buttons: this.heldButtons() });
     }
   }
 
+  private heldButtons(): number {
+    let buttons = 0;
+    for (const held of this.pointerButtons.values()) buttons |= held;
+    return buttons;
+  }
+
+  /** Nothing is held any more, as far as anyone can tell: say so. */
   private release(): void {
     const events = this.keys.reset();
     if (events.length) this.events.keys?.(events);
+    const buttons = this.heldButtons();
+    this.pointerButtons.clear();
+    if (buttons) this.events.pointer?.({ buttons: 0, dx: 0, dy: 0, wheel: 0, pan: 0 });
   }
 
   private gap(): void {
@@ -524,13 +560,13 @@ export class KeyboardClient {
   /**
    * Discover every HID service, its Report Map and each report's Report
    * Reference; select Report Protocol and subscribe the input reports that
-   * can carry keys. Needs an encrypted link. No handle is assumed.
+   * carry keys or a pointer's buttons and movement. Needs an encrypted link.
+   * No handle is assumed.
    *
-   * Only what typing needs is required of the keyboard: a Report Map that
-   * parses, and at least one key-bearing input report with a Report
-   * Reference and a CCC. A report that can't be placed is skipped and
-   * logged, as is anything wrong with an external report (the battery
-   * level, usually).
+   * Only what input needs is required of the device: a Report Map that
+   * parses, and at least one such input report with a Report Reference and
+   * a CCC. A report that can't be placed is skipped and logged, as is
+   * anything wrong with an external report (the battery level, usually).
    */
   async configure(): Promise<KeyboardConfiguration> {
     const epoch = this.epoch;
@@ -543,6 +579,7 @@ export class KeyboardClient {
     log(`gatt ${attrs.map((a) => `${a.handle}=${typeof a.uuid === "number" ? a.uuid.toString(16) : a.uuid}`).join(" ")}`);
     const reports: KeyboardReport[] = [];
     const watched: KeyboardReport[] = [];
+    let pointerFound = false;
     const skipped: string[] = [];
     const descriptorsFor = (handle: number): Attribute[] => {
       const end = attrs.find((a) => a.handle > handle &&
@@ -576,8 +613,14 @@ export class KeyboardClient {
         const layout = parsed.get(id);
         if (!layout) return skip(a, `input report id ${id} is not in the Report Map`);
         if (ccc === undefined || (properties !== undefined && !(properties & 0x10))) return skip(a, "input report can't notify");
-        if (reportHasKeys(layout)) watched.push(report);
-        else log(`report ${a.handle} (id ${id}) carries no keys; not subscribed`);
+        const keys = reportHasKeys(layout);
+        const pointer = reportHasPointer(layout);
+        if (keys || pointer) watched.push(report);
+        else log(`report ${a.handle} (id ${id}) carries no keys or pointer; not subscribed`);
+        if (pointer) {
+          pointerFound = true;
+          log(`report ${a.handle} (id ${id}) is a pointer's${keys ? ", with keys" : ""}`);
+        }
       }
       reports.push(report);
       log(`report ${a.handle}: id ${id} type ${type} ccc ${ccc ?? "-"} properties ${properties ?? "?"}`);
@@ -625,7 +668,7 @@ export class KeyboardClient {
     if (this.closed || this.epoch !== epoch) throw new KeyboardClientError("The keyboard link changed during setup");
     if (!watched.length) {
       throw new KeyboardClientError(reports.length || skipped.length
-        ? `No usable keyboard input report (${skipped.join("; ") || "none carries keys"})`
+        ? `No usable keyboard input report (${skipped.join("; ") || "none carries keys or a pointer"})`
         : "This device has no HID service");
     }
     if (watched.length > MAX_WATCHES) throw new KeyboardClientError("Keyboard has more than 16 input reports");
@@ -634,7 +677,9 @@ export class KeyboardClient {
     const watches = watched.map((r) => r.handle);
     if (changed && changedCcc && watches.length < MAX_WATCHES) watches.push(changed.handle);
     const serviceChanged = changed && changedCcc && watches.includes(changed.handle) ? changed.handle : undefined;
-    const config: KeyboardConfiguration = { epoch: this.epoch, reports, watched: watched.map((r) => r.handle), serviceChanged };
+    const config: KeyboardConfiguration = {
+      epoch: this.epoch, reports, watched: watched.map((r) => r.handle), pointer: pointerFound, serviceChanged,
+    };
     this.restore(config);
     try {
       await this.command(KeyboardOp.watch, [watches.length, ...watches.flatMap(le16)]);
@@ -671,7 +716,7 @@ export class KeyboardClient {
       if (!r.map.length || r.map.length > MAX_VALUE) throw new KeyboardClientError("Invalid restored Report Map");
       const report = parseReportMap(r.map).get(r.id);
       if (!report) throw new KeyboardClientError("Restored Report ID missing");
-      inputs.set(r.handle, { report, id: r.id, service: r.service });
+      inputs.set(r.handle, { report, id: r.id, service: r.service, keys: reportHasKeys(report), pointer: reportHasPointer(report) });
     }
     if (!inputs.size || inputs.size > MAX_WATCHES) throw new KeyboardClientError("Invalid restored input count");
     this.release();

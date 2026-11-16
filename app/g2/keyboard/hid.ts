@@ -6,8 +6,9 @@
  *
  * HID over GATT carries the Report ID out of band (in each characteristic's
  * Report Reference descriptor), so byte zero of a report value is data: it is
- * never stripped as USB HID would. Only the keyboard/keypad page (7) and the
- * consumer page (12) produce keys; pointer axes and padding are ignored.
+ * never stripped as USB HID would. The keyboard/keypad page (7) and the
+ * consumer page (12) produce keys. A mouse's or touchpad's report (buttons,
+ * relative X/Y, wheel) is read by reportPointer.
  * No platform imports: this runs under node in the tests.
  */
 
@@ -20,6 +21,8 @@ type Field = {
   size: number;
   count: number;
   variable: boolean;
+  /** Reports a change since the last report (a mouse's axes and wheel), not a state. */
+  relative: boolean;
   min: number;
   max: number;
   usages: HidUsage[];
@@ -90,7 +93,8 @@ export function parseReportMap(bytes: Uint8Array): Map<number, HidReport> {
           reports.set(g.id, r);
         }
         const field: Field = {
-          bit: r.bits, size: g.size, count: g.count, variable: !!(v & 2), min: g.min, max: g.max, usages: [...usages],
+          bit: r.bits, size: g.size, count: g.count, variable: !!(v & 2), relative: !!(v & 4),
+          min: g.min, max: g.max, usages: [...usages],
         };
         if (lo || hi) {
           if (!lo || !hi || lo.page !== hi.page || hi.usage < lo.usage) fail("usage range");
@@ -98,8 +102,8 @@ export function parseReportMap(bytes: Uint8Array): Map<number, HidReport> {
         }
         r.bits += g.size * g.count;
         if (r.bits > 4096) fail("report exceeds 512 bytes");
-        // Constant padding and relative pointer axes are not keys.
-        if (!(v & 1) && !(v & 4)) r.fields.push(field);
+        // Constant fields are padding.
+        if (!(v & 1)) r.fields.push(field);
       } else if (tag !== 9 && tag !== 11) fail("unknown main item");
       usages = [];
       lo = hi = undefined;
@@ -130,7 +134,86 @@ function usageAt(f: Field, index: number): HidUsage | undefined {
  */
 export function reportHasKeys(report: HidReport): boolean {
   const isKeyPage = (u: HidUsage): boolean => u.page === HID_PAGE_KEYBOARD || u.page === HID_PAGE_CONSUMER;
-  return report.fields.some((f) => f.usages.some(isKeyPage) || (f.range !== undefined && isKeyPage(f.range[0])));
+  return report.fields.some((f) => !f.relative && (f.usages.some(isKeyPage) || (f.range !== undefined && isKeyPage(f.range[0]))));
+}
+
+/** One field's `index`th value, sign-extended when the field is signed. Bits past the data read as zero. */
+function fieldValue(f: Field, index: number, data: Uint8Array): number {
+  let value = 0;
+  for (let j = 0; j < f.size; j++) {
+    const bit = f.bit + index * f.size + j;
+    if ((data[bit >>> 3] ?? 0) & (1 << (bit & 7))) value += 2 ** j;
+  }
+  if (f.min < 0 && value >= 2 ** (f.size - 1)) value -= 2 ** f.size;
+  return value;
+}
+
+/** What one report from a mouse or touchpad says. */
+export type HidPointerSample = {
+  /** Buttons held, bit 0 for button 1 (left), bit 1 for button 2 (right), bit 2 for button 3 (middle). */
+  buttons: number;
+  /** Movement since the last report, in the device's counts; +x right, +y down. */
+  dx: number;
+  dy: number;
+  /** Wheel detents since the last report; positive is away from the user ("up"). */
+  wheel: number;
+  /** Horizontal wheel (AC Pan); positive is right. */
+  pan: number;
+};
+
+const HID_PAGE_GENERIC_DESKTOP = 1;
+const HID_PAGE_BUTTON = 9;
+const USAGE_X = 0x30;
+const USAGE_Y = 0x31;
+const USAGE_WHEEL = 0x38;
+const USAGE_AC_PAN = 0x238;
+/** Buttons past this are not tracked; a mouse with more is rare and has nothing to bind them to anyway. */
+const MAX_POINTER_BUTTONS = 8;
+
+/** Which part of a pointer sample a field's usage feeds, if any. */
+function pointerRole(f: Field, u: HidUsage | undefined): "button" | "dx" | "dy" | "wheel" | "pan" | null {
+  if (!u || !f.variable) return null;
+  if (u.page === HID_PAGE_BUTTON) return !f.relative && u.usage >= 1 && u.usage <= MAX_POINTER_BUTTONS ? "button" : null;
+  if (!f.relative) return null; // an absolute X/Y is a touchscreen or a digitizer, not a mouse
+  if (u.page === HID_PAGE_GENERIC_DESKTOP) {
+    if (u.usage === USAGE_X) return "dx";
+    if (u.usage === USAGE_Y) return "dy";
+    if (u.usage === USAGE_WHEEL) return "wheel";
+  }
+  if (u.page === HID_PAGE_CONSUMER && u.usage === USAGE_AC_PAN) return "pan";
+  return null;
+}
+
+/** Whether an input report carries a mouse's buttons, movement or wheel. */
+export function reportHasPointer(report: HidReport): boolean {
+  return report.fields.some((f) => {
+    for (let i = 0; i < f.count; i++) if (pointerRole(f, usageAt(f, i))) return true;
+    return false;
+  });
+}
+
+/**
+ * Read a mouse or touchpad report. Lenient about length, unlike reportKeys:
+ * some devices leave the wheel bytes off when there is nothing to say, and a
+ * missing byte is zero either way.
+ */
+export function reportPointer(report: HidReport, data: Uint8Array): HidPointerSample {
+  const sample: HidPointerSample = { buttons: 0, dx: 0, dy: 0, wheel: 0, pan: 0 };
+  for (const f of report.fields) {
+    for (let i = 0; i < f.count; i++) {
+      const u = usageAt(f, i);
+      const role = pointerRole(f, u);
+      if (!role) continue;
+      const value = fieldValue(f, i, data);
+      if (value < f.min || value > f.max) continue; // out of range: no reading
+      if (role === "button") {
+        if (value) sample.buttons |= 1 << (u!.usage - 1);
+      } else {
+        sample[role] += value;
+      }
+    }
+  }
+  return sample;
 }
 
 /** The keys one input report says are held. Throws on a length mismatch or a rollover report. */
@@ -138,13 +221,10 @@ export function reportKeys(report: HidReport, data: Uint8Array): HidUsage[] {
   if (data.length !== Math.ceil(report.bits / 8)) throw new Error("HID input length does not match Report Map");
   const keys = new Map<string, HidUsage>();
   for (const f of report.fields) {
+    // A relative field is a movement, not a key that is down.
+    if (f.relative) continue;
     for (let i = 0; i < f.count; i++) {
-      let value = 0;
-      for (let j = 0; j < f.size; j++) {
-        const bit = f.bit + i * f.size + j;
-        if (data[bit >>> 3]! & (1 << (bit & 7))) value += 2 ** j;
-      }
-      if (f.min < 0 && value >= 2 ** (f.size - 1)) value -= 2 ** f.size;
+      const value = fieldValue(f, i, data);
       if (value < f.min || value > f.max) continue; // null state
       const u = usageAt(f, f.variable ? i : value - f.min);
       if (!u || (f.variable && value === 0) || !u.usage) continue;

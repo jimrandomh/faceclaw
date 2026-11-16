@@ -23,6 +23,7 @@
     "../app/g2/keyboard/keys.ts",
     "../app/g2/keyboard/bindings.ts",
     "../app/g2/keyboard/key-router.ts",
+    "../app/g2/keyboard/pointer.ts",
     "../app/apps/terminal/terminal-keys.ts",
     "../app/phone-ui/ble-bandwidth-meter.ts",
     "../app/apps/terminal/hub-header.ts",

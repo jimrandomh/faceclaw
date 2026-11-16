@@ -10,9 +10,14 @@
  *     (a terminal session), since that is the point of binding a remote's
  *     few buttons.
  *  2. Built-in bindings that also apply there: Escape with Shift, Ctrl or
- *     Alt goes back, which is the way out of a terminal session.
+ *     Alt goes back, which is the way out of a terminal session; and a
+ *     mouse's buttons and wheel, which are never typed.
  *  3. Built-in navigation, only for keys no window took: the arrows are the
  *     watch's four swipes, Enter selects, Escape goes back.
+ *
+ * A keyboard's touchpad or mouse arrives here as keys too: "MouseButton1"
+ * (left), "MouseButton2" (right), "MouseButton3" (middle) and so on, and
+ * "WheelUp" / "WheelDown" / "WheelLeft" / "WheelRight" (see pointer.ts).
  *
  * No platform imports: this runs under node in the tests.
  */
@@ -113,6 +118,8 @@ const CODE_LABELS: Record<string, string> = {
   BrightnessUp: "Brightness Up", BrightnessDown: "Brightness Down",
   BrowserSearch: "Search", BrowserHome: "Browser Home", BrowserBack: "Browser Back", BrowserForward: "Browser Forward",
   LaunchMail: "Mail", LaunchApplication1: "App 1", LaunchApplication2: "App 2",
+  MouseButton1: "Left button", MouseButton2: "Right button", MouseButton3: "Middle button",
+  WheelUp: "Wheel up", WheelDown: "Wheel down", WheelLeft: "Wheel left", WheelRight: "Wheel right",
 };
 
 /** A key as a person would name it. Unknown keys keep their HID usage number, which is all there is. */
@@ -125,6 +132,8 @@ function codeLabel(code: string): string {
   if (match) return match[1]!;
   match = /^Numpad(.+)$/.exec(code);
   if (match) return `Numpad ${match[1]}`;
+  match = /^MouseButton([0-9]+)$/.exec(code);
+  if (match) return `Mouse button ${match[1]}`;
   match = /^Usage([0-9a-f]+)$/.exec(code);
   if (match) return `Key 0x${match[1]}`;
   match = /^Consumer([0-9a-f]+)$/.exec(code);
@@ -174,12 +183,26 @@ export function keyBindingMap(bindings: readonly KeyBinding[]): Map<string, KeyA
   return new Map(bindings.map((binding) => [chordId(binding.chord), binding.action]));
 }
 
+/** What a mouse does unless bound otherwise: the ring's tap, double tap, hold and scroll. */
+const MOUSE_DEFAULTS: Record<string, KeyGesture | undefined> = {
+  MouseButton1: "click",
+  MouseButton2: "double-click",
+  MouseButton3: "long-press",
+  WheelUp: "scroll-up",
+  WheelDown: "scroll-down",
+};
+
 /**
  * The built-in meaning of a key press, or null when it has none.
  * `overridesTyping`: it holds even where the focused window takes keys.
  * Built-ins go by the logical key, so both Enter keys select.
  */
 export function defaultKeyAction(event: KeyEvent): { action: KeyGesture; overridesTyping: boolean } | null {
+  // A mouse's buttons and wheel are the ring's gestures: tap, double tap,
+  // hold, and scroll. Nothing types them, so they hold everywhere, whatever
+  // is held on the keyboard.
+  const mouse = MOUSE_DEFAULTS[event.key];
+  if (mouse) return { action: mouse, overridesTyping: true };
   const { shift, ctrl, alt, meta } = event.modifiers;
   if (meta) return null;
   if (event.key === "Escape") {
@@ -208,6 +231,8 @@ export function defaultKeyAction(event: KeyEvent): { action: KeyGesture; overrid
 export const DEFAULT_KEYS_HELP =
   "Arrow keys: swipe up, down, left and right, as on the watch. Enter: select. Esc: back.\n\n" +
   "In a terminal session those keys are typed instead, and Shift+Esc (or Ctrl+Esc, Alt+Esc) goes back.\n\n" +
+  "Mouse or touchpad: the left button selects, the right button goes back, the middle button opens the system menu, " +
+  "and the wheel scrolls. These work in a terminal session too.\n\n" +
   "A custom keybinding replaces these for its key and works everywhere, terminals included. " +
   "\"Nothing\" turns a key's meaning here off without stopping it being typed.";
 

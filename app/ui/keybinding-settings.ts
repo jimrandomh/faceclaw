@@ -27,7 +27,7 @@ class KeyCaptureLayer extends TextPageLayer {
   constructor(private readonly onChord: (chord: KeyChord, ctx: LayerContext) => void) {
     super(
       "Add keybinding",
-      "Press the key to bind, on the keyboard. Hold Shift, Ctrl or Alt with it to bind the combination.",
+      "Press the key to bind, on the keyboard: a key, a mouse button, or a turn of the wheel. Hold Shift, Ctrl or Alt with it to bind the combination.",
     );
   }
 
@@ -137,7 +137,7 @@ export function keybindingsMenuItem(): MenuItem {
   return {
     label: "Keybindings",
     description:
-      "Choose what keys do: arrows, Enter and Esc navigate by default, and any key (or a remote's button) can be bound to select, back, a swipe, a scroll or a menu.",
+      "Choose what keys do: arrows, Enter, Esc and a mouse's buttons and wheel navigate by default, and any key (or a remote's button) can be bound to select, back, a swipe, a scroll or a menu.",
     onSelect: (ctx) => new KeybindingsLayer(ctx.stack.getBaseSize()).open(ctx),
     render: ({ image, x, y, width }) => {
       const count = keyboardService.keyBindings().length;
