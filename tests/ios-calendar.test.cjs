@@ -243,6 +243,7 @@ test('iOS assistant calendar tool awaits events, reports denied access and failu
     '../native/media-controller': { mediaControllerBridge: { start: async () => {} } },
     '../native/spotify': { spotifyService: () => null },
     '../native/notification-icons': {}, '../ui/shell/shell': {}, './tool-registry': {},
+    './date-format': load('app/assistant/date-format.ts'),
   }, { global: { isIOS: true } });
   registerSystemTools({ registerSystemTool: (definition, handler) => registered.set(definition.name, handler) });
   assert.deepEqual([...registered.keys()], ['glasses.get_state', 'glasses.show_alert', 'calendar.list_events',
