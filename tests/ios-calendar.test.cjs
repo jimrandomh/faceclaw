@@ -163,7 +163,7 @@ function screenFixture() {
     'util/numeric-util': { clamp: (n, min, max) => Math.max(min, Math.min(max, n)) },
   };
   const modules = depth => Object.fromEntries(Object.entries(common).map(([key, value]) => [depth + key, value]));
-  const calendar = load('app/apps/calendar/calendar.ts', modules('../../'));
+  const calendar = load('app/apps/calendar/calendar.ts', { ...modules('../../'), './event-days': load('app/apps/calendar/event-days.ts') });
   const widget = load('app/apps/glanceboard/widgets/calendar-widget.ts', {
     ...modules('../../../'), '../../calendar/calendar': calendar,
     '../glance-font': { glanceFont: { small: () => font, medium: () => font } },
