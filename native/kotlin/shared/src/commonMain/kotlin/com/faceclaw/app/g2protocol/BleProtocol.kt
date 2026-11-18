@@ -12,6 +12,12 @@ import kotlin.jvm.JvmStatic
  */
 class BleProtocol {
     companion object {
+        /** The service holding [WRITE_CHAR_UUID] and [NOTIFY_CHAR_UUID]. */
+        const val PROTOCOL_SERVICE_UUID: String = "00002760-08c2-11e1-9073-0e8ac72e5450"
+
+        /** The service holding [RENDER_NOTIFY_UUID]. */
+        const val RENDER_SERVICE_UUID: String = "00002760-08c2-11e1-9073-0e8ac72e6450"
+
         const val WRITE_CHAR_UUID: String = "00002760-08c2-11e1-9073-0e8ac72e5401"
 
         const val NOTIFY_CHAR_UUID: String = "00002760-08c2-11e1-9073-0e8ac72e5402"

@@ -275,3 +275,27 @@ test("names that only look like a G1 are not admitted", () => {
     assert.equal(classifyAdvertisement(g1Raw(name, "")), null, name);
   }
 });
+
+test("an iOS arm rebuilt from a saved pairing joins its advertising other arm", () => {
+  const { g2ManufacturerData } = require("../.test-build/app/g2/even-advertisement.js");
+  const { identifyIosPeripheral } = require("../.test-build/app/g2/ios-peripheral-identity.js");
+  const { DiscoveryAggregator } = require("../.test-build/app/g2/pairing-candidates.js");
+  const mfg = g2ManufacturerData("S211GBBC180304", "E0:12:14:B6:EC:E1");
+  assert.equal(extractG2Serial(hexToBytes(mfg)), "S211GBBC180304");
+  assert.equal(extractG2Mac(hexToBytes(mfg)), "E0:12:14:B6:EC:E1");
+  const right = identifyIosPeripheral({ identifier: "14b99254-0798-d1a8-3eec-b141bdabfae8", name: "Even G2_32_R_B6ECE1",
+    manufacturerData: mfg, rssi: 0, connectable: true });
+  assert.equal(right.address, "E0:12:14:B6:EC:E1");
+  assert.equal(right.role, "right");
+  assert.equal(right.note, null);
+  const aggregator = new DiscoveryAggregator();
+  aggregator.ingest(raw({}));
+  aggregator.ingest({ ...right, rssi: null, source: "paired" });
+  const [pair] = aggregator.pairs();
+  assert.equal(pair.completeness, "complete");
+  assert.equal(pair.rssi, -55);
+
+  assert.equal(g2ManufacturerData("S211GBBC180304XX", "E0:12:14:B6:EC:E1"), null);
+  assert.equal(g2ManufacturerData("", "E0:12:14:B6:EC:E1"), null);
+  assert.equal(g2ManufacturerData("S211GBBC180304", "not a mac"), null);
+});

@@ -29,6 +29,7 @@ import platform.CoreBluetooth.CBPeripheralDelegateProtocol
 import platform.CoreBluetooth.CBPeripheralStateConnected
 import platform.CoreBluetooth.CBPeripheralStateDisconnected
 import platform.CoreBluetooth.CBService
+import platform.CoreBluetooth.CBUUID
 import platform.Foundation.NSData
 import platform.Foundation.NSError
 import platform.Foundation.NSNumber
@@ -46,6 +47,9 @@ interface IosBleScanListener {
 
     fun onAdvertisement(identifier: String, name: String, manufacturerDataHex: String, rssi: Int, connectable: Boolean)
 }
+
+/** A peripheral the system holds a connection to; see [IosBleCentral.systemConnectedG2Arms]. */
+class IosConnectedPeripheral(val identifier: String, val name: String)
 
 /** ANCS authorization changes for a connected peripheral; delivered on the BLE queue. */
 fun interface IosAncsAuthorizationListener {
@@ -212,6 +216,25 @@ class IosBleCentral(private val platform: ProtocolPlatform = IosProtocolPlatform
 
     private fun beginScan(manager: CBCentralManager) {
         manager.scanForPeripheralsWithServices(null, mapOf(CBCentralManagerScanOptionAllowDuplicatesKey to true))
+    }
+
+    /**
+     * G2 arms the system is connected to, through this app, another app or iOS itself. A
+     * connected arm stops advertising, and iOS keeps the right arm's ANCS link open after a
+     * session ends, so a scan alone never hears it. Empty until Bluetooth is powered on.
+     */
+    fun systemConnectedG2Arms(): List<IosConnectedPeripheral> {
+        val found = ArrayList<IosConnectedPeripheral>()
+        dispatch_sync(queue) {
+            val manager = central ?: return@dispatch_sync
+            if (manager.state != CBManagerStatePoweredOn) return@dispatch_sync
+            val services = listOf(BleProtocol.PROTOCOL_SERVICE_UUID, BleProtocol.RENDER_SERVICE_UUID).map { CBUUID.UUIDWithString(it) }
+            for (item in manager.retrieveConnectedPeripheralsWithServices(services)) {
+                val peripheral = item as? CBPeripheral ?: continue
+                found.add(IosConnectedPeripheral(peripheral.identifier.UUIDString.uppercase(), peripheral.name ?: ""))
+            }
+        }
+        return found
     }
 
     /** Known peripheral identifiers from this process's scans/retrievals (uppercase). */
