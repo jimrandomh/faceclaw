@@ -359,9 +359,9 @@ test('a paired keyboard: the bridge follows the G2 link, and its keys\' gestures
   // Connected is not enough: the firmware has to be one with the bridge.
   f.bridge.emitState('connected');
   assert.ok(!f.keyboard.calls.includes('ready'));
-  f.bridge.listeners.firmware({ leftVersion: '2.3.0.24', rightVersion: '2.3.0.24', extension: 'Faceclaw/38' });
-  assert.ok(!f.keyboard.calls.includes('ready'));
   f.bridge.listeners.firmware({ leftVersion: '2.3.0.24', rightVersion: '2.3.0.24', extension: 'Faceclaw/39' });
+  assert.ok(!f.keyboard.calls.includes('ready'));
+  f.bridge.listeners.firmware({ leftVersion: '2.3.0.24', rightVersion: '2.3.0.24', extension: 'Faceclaw/40' });
   assert.equal(f.keyboard.calls.at(-1), 'ready');
   assert.equal(f.keyboard.host.ready(), true);
   // The link dropping on its own ends it without a word to the firmware; coming back restores it.
@@ -398,7 +398,7 @@ test('a keyboard needs a G2: other glasses never bring the bridge up', async () 
     const f = fixture();
     await f.connect();
     f.bridge.emitState('connected');
-    f.bridge.listeners.firmware({ leftVersion: 'g1v0 0.5.66', rightVersion: 'g1v0 0.5.66', extension: 'Faceclaw/39' });
+    f.bridge.listeners.firmware({ leftVersion: 'g1v0 0.5.66', rightVersion: 'g1v0 0.5.66', extension: 'Faceclaw/40' });
     assert.ok(!f.keyboard.calls.includes('ready'), f.keyboard.calls.join());
   } finally { glassesType = 'g2'; }
 });

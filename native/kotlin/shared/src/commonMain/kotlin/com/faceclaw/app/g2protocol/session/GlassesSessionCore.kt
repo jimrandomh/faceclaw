@@ -507,7 +507,7 @@ class GlassesSessionCore(
     // Preview/screenshot/recording callers render those explicitly on demand.
     internal val compositor = SurfaceCompositor(false)
 
-    // Phone-side model of the CFW's 192 KiB resource cache.
+    // Phone-side model of the CFW's resource cache (ResourceCacheState.CACHE_SIZE).
     // Reset whenever the image pipeline / EvenHub session is torn down: the
     // firmware frees the cache with the fb lease, and after any resync the
     // cheap safe assumption is an empty cache (glyphs re-upload lazily).

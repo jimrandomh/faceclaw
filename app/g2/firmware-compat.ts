@@ -26,7 +26,7 @@ export type FirmwareInfo = {
 };
 
 /** The Faceclaw firmware revision this build of the app needs. */
-export const REQUIRED_FACECLAW_FIRMWARE_VERSION = 39;
+export const REQUIRED_FACECLAW_FIRMWARE_VERSION = 40;
 
 const FACECLAW_PREFIX = "Faceclaw/";
 const LEGACY_PREFIX = "EVENCFW";

@@ -64,10 +64,12 @@ class ResourceCacheTest {
 
     @Test fun lruEvictsByBytesAndProtectsAllCurrentFrameHits() {
         val cache = ResourceCacheState()
+        // Five of these fill the 320 KiB arena; a sixth needs an eviction.
         val a = resource(60000, 1); val b = resource(60000, 2); val c = resource(60000, 3); val d = resource(60000, 4)
-        assertContentEquals(intArrayOf(0, 1, 2), cache.prepare(listOf(a, b, c)))
+        val e = resource(60000, 5); val f = resource(60000, 6)
+        assertContentEquals(intArrayOf(0, 1, 2, 3, 4), cache.prepare(listOf(a, b, c, e, f)))
         cache.drainCommands(3600)
-        cache.prepare(listOf(a)); cache.drainCommands(3600) // b is oldest now.
+        cache.prepare(listOf(a, e, f)); cache.drainCommands(3600) // b is oldest now.
         assertContentEquals(intArrayOf(1, 2), cache.prepare(listOf(d, c))) // protect later hit c before d.
         val commands = cache.drainCommands(3600)
         assertContentEquals(byteArrayOf(22, 1, 0, 1, 0), commands.first())
@@ -75,10 +77,10 @@ class ResourceCacheTest {
         assertEquals(0, cache.resourceId(a)); assertEquals(2, cache.resourceId(c))
         assertEquals(1, cache.resourceId(d))
         assertContentEquals(d.bytes, uploaded(commands).getValue(1))
-        val tooLarge = cache.prepare(listOf(a, c, d, b))
+        val tooLarge = cache.prepare(listOf(a, c, d, e, f, b))
         assertEquals(-1, tooLarge.last())
         assertTrue(cache.drainCommands(3600).isEmpty())
-        assertEquals(3, cache.residentCount())
+        assertEquals(5, cache.residentCount())
     }
 
     @Test fun idPressureUsesLruEvenWhenBytesAreAvailable() {
@@ -96,15 +98,15 @@ class ResourceCacheTest {
 
     @Test fun rejectedPlansRestoreResidencyAndLru() {
         val cache = ResourceCacheState()
-        val resources = (0..3).map { resource(65536, it) }
-        cache.prepare(resources.take(3)); cache.drainCommands(3600)
+        val resources = (0..5).map { resource(60000, it) } // five fit, the sixth evicts
+        assertContentEquals(intArrayOf(0, 1, 2, 3, 4), cache.prepare(resources.take(5))); cache.drainCommands(3600)
         val rollback = cache.checkpoint()
-        cache.prepare(listOf(resources[3]))
+        cache.prepare(listOf(resources[5]))
         assertEquals(-1, cache.resourceId(resources[0]))
         rollback()
-        assertEquals(0, cache.resourceId(resources[0])); assertEquals(-1, cache.resourceId(resources[3]))
+        assertEquals(0, cache.resourceId(resources[0])); assertEquals(-1, cache.resourceId(resources[5]))
         assertTrue(cache.drainCommands(3600).isEmpty())
-        cache.prepare(listOf(resources[3]))
+        cache.prepare(listOf(resources[5]))
         assertContentEquals(byteArrayOf(22, 1, 0, 0, 0), cache.drainCommands(3600).first())
     }
 
