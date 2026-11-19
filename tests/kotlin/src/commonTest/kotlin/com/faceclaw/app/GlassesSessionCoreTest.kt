@@ -855,4 +855,62 @@ class GlassesSessionCoreTest {
             s.core.close()
         }
     }
+
+    @Test
+    fun keyboardControlsGoToTheRightArmAndKeyboardRecordsReachTheirListenerOnly() {
+        val s = Session()
+        val records = ArrayList<ByteArray>()
+        val lock = s.platform.createLock()
+        val listener = object : FaceclawKeyboardEventListener {
+            override fun onKeyboardEvent(body: ByteArray?) { lock.withLock { records.add(body!!) } }
+        }
+        s.core.addKeyboardEventListener(listener)
+        // ['K','B',1,QUERY, request 7, epoch 0]
+        val control = byteArrayOf(75, 66, 1, 0, 7, 0, 0, 0)
+        try {
+            assertFalse(s.core.sendFaceclawKeyboardControl(control, "query"), "refused before the session is up")
+            s.startAndAwaitLayout()
+            assertFalse(s.core.sendFaceclawKeyboardControl(null, "none"))
+            assertFalse(s.core.sendFaceclawKeyboardControl(byteArrayOf(75, 66, 1), "short"))
+            assertTrue(s.core.sendFaceclawKeyboardControl(control, "query"))
+            fun controls() = s.link.writes.filter { it.sid == BleProtocol.SID_UI_SETTING && it.pb.containsSequence(control) }
+            assertTrue(waitUntil(5_000) { controls().isNotEmpty() })
+            // One copy, down the right arm: a second one would run the control twice.
+            assertEquals(listOf(RIGHT), controls().map { it.address })
+            assertContentEquals(
+                BleProtocol.encodeVarintField(1, 1) + BleProtocol.encodeVarintField(2, 0) +
+                    BleProtocol.encodeBytesField(BleProtocol.FACECLAW_KEYBOARD_CONTROL_FIELD, control),
+                controls().single().pb,
+            )
+
+            // A field-131 record: ['K','B',1,STATUS, seq 1, epoch 0, request 7, ...] with a 10-byte body.
+            val record = byteArrayOf(75, 66, 1, 1, 1, 0, 0, 0, 0, 0, 7, 0, 0, 0, 0, 0, 10, 0, 0, 0, 1, 2, 3, 4) + ByteArray(10)
+            fun push(address: String, body: ByteArray, flag: Int) = s.core.onNotification(address, BleProtocol.NOTIFY_CHAR_UUID,
+                BleProtocol.framePb(
+                    BleProtocol.encodeVarintField(1, 3) + BleProtocol.encodeVarintField(2, 0) +
+                        BleProtocol.encodeBytesField(BleProtocol.FACECLAW_KEYBOARD_EVENT_FIELD, body),
+                    BleProtocol.SID_UI_SETTING, flag, 33)[0])
+            val eventsBefore = s.listener.events.size
+            val activityBefore = s.core.monitor.withLock { s.core.lastConnectionOrInputAtMs }
+            s.platform.offsetMs += 5_000
+            push(RIGHT, record, BleProtocol.FLAG_NOTIFY)
+            // Whichever temple hosts the keyboard reports it, and the flag doesn't matter.
+            push(LEFT, record, BleProtocol.FLAG_REQUEST)
+            assertEquals(2, lock.withLock { records.size })
+            assertContentEquals(record, lock.withLock { records[0] })
+            // Not glasses input, not user activity, and not an ACK for anything.
+            assertEquals(eventsBefore, s.listener.events.size)
+            assertEquals(activityBefore, s.core.monitor.withLock { s.core.lastConnectionOrInputAtMs })
+            assertFalse(s.host.hasLog("unexpected ack"), s.host.logs().takeLast(5).toString())
+            // Too short to hold the fixed header, or not a keyboard record: left to the normal path.
+            push(RIGHT, record.copyOf(23), BleProtocol.FLAG_NOTIFY)
+            push(RIGHT, byteArrayOf(77, 67) + ByteArray(30), BleProtocol.FLAG_NOTIFY)
+            assertEquals(2, lock.withLock { records.size })
+            s.core.removeKeyboardEventListener(listener)
+            push(RIGHT, record, BleProtocol.FLAG_NOTIFY)
+            assertEquals(2, lock.withLock { records.size })
+        } finally {
+            s.core.close()
+        }
+    }
 }

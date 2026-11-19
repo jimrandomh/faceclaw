@@ -1130,7 +1130,8 @@ class G1FeaturesTest {
             }
             s.core.setImuReportEnabled(true, 200)
             assertTrue(awaitTrue(3_000) { lock.withLock { readings.size >= 5 } }, "samples: " + lock.withLock { readings.size } + "\n" + s.tail())
-            assertEquals(listOf(0.1, -1.0, 0.25, BleProtocol.EVENT_SOURCE_GLASSES_R.toDouble()), lock.withLock { readings.first() })
+            // The G1's (x, y, z) arrive in the G2's frame as (-z, -x, y) (ImuOrientation).
+            assertEquals(listOf(-0.25, -0.1, -1.0, BleProtocol.EVENT_SOURCE_GLASSES_R.toDouble()), lock.withLock { readings.first() })
             assertTrue(awaitTrue(1_000) { s.glasses.lock.withLock { s.glasses.rightArm.props[G1Protocol.PROP_IMU_RATE] == G1Protocol.IMU_RATE_STREAM } })
             s.core.setImuReportEnabled(false, 0)
             assertTrue(awaitTrue(1_000) { s.glasses.lock.withLock { s.glasses.rightArm.props[G1Protocol.PROP_IMU_RATE] == G1Protocol.IMU_RATE_IDLE } })

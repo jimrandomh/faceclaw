@@ -299,7 +299,8 @@ internal fun GlassesSessionCore.g1StopAudioCapture() {
 }
 
 /**
- * There is no magnetometer on a G1, only the accelerometer and gyroscope: x, y, z in g, head frame, from the right arm.
+ * There is no magnetometer on a G1, only the accelerometer and gyroscope: x, y, z in g from the right arm, in the
+ * G1's own axes, which [emitImuData] rotates into the G2's ([ImuOrientation]).
  * [enable] raises the sample rate and polls it; [g1MaxSleepMs] follows.
  */
 internal fun GlassesSessionCore.g1SetImuReport(enable: Boolean) {

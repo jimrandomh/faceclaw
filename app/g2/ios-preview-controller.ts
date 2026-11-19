@@ -29,6 +29,8 @@ import { OsEventTypeList } from './events'
 import { loadDeviceAddresses } from './device-addresses'
 import { updateGlassesPresence } from './glasses-presence'
 import { firmwareIncompatibilityMessage, hasCompatibleFirmware } from './firmware-compat'
+import { keyboardService } from './keyboard/service'
+import type { KeyEvent } from './keyboard/keys'
 import { isHaltedSessionPhase, resumeAutoReconnect, suppressAutoReconnect } from './reconnect-policy'
 import { WearRemote, type WearRemoteInputKind } from './wear-remote'
 import { deviceAddressError } from './ios-peripheral-identity'
@@ -232,6 +234,7 @@ export class IosPreviewController {
         if (!on) void this.display?.setScreenBlanked(true).catch(error => this.fail(error))
         this.requestShellRender()
         this.wearRemote?.schedulePublish()
+        if (on) keyboardService.retryNow()
       },
     })
     const launcher = createLauncherWindow({
@@ -269,6 +272,28 @@ export class IosPreviewController {
       text: (text, submit) => { if (!shell.isScreenOn()) shell.wake('window'); shell.sendTextToForegroundWindow(text, { submit }); this.requestShellRender() },
       assistantAvailable: () => shell.isAssistantAvailable(),
       assistant: text => shell.sendToAssistant(text),
+    })
+    // A keyboard paired through the glasses (the CFW keyboard bridge). The service decides what
+    // each key means (app/g2/keyboard/key-router.ts); its gestures share the controller queue
+    // with physical input, like the watch's.
+    const queueKeyboardInput = (run: () => Promise<void>): Promise<void> => {
+      const task = this.inputQueue.then(() => { this.onActivity(); return run() })
+      this.inputQueue = task.catch(error => this.fail(error))
+      return task
+    }
+    keyboardService.setHost({
+      ready: () => this.state.phase === 'connected',
+      locked: () => this.glassesLocked,
+      wake: () => { void queueKeyboardInput(() => this.receiveInput(makeInputEvent({ type: 'display-wake' }))).catch(() => {}) },
+      gesture: (gesture, origin) => queueKeyboardInput(async () => {
+        await this.receiveInput(makeInputEvent({ type: gesture, source: origin } as InputEventPayload))
+        // A discrete hold includes its release.
+        if (gesture === 'long-press') await this.receiveInput(makeInputEvent({ type: 'long-press-release', source: origin }))
+      }),
+      log: line => this.logBluetooth(line),
+      // Only while the display is on: a keyboard that is switched off would otherwise keep the
+      // glasses' radio looking for it around the clock.
+      shouldReconnect: () => this.state.phase === 'connected' && shell.isScreenOn(),
     })
     // The header's EvenHub phone-UI button hides while that UI is showing.
     onPhoneShownChanged(() => this.syncEvenHubPhoneUi())
@@ -809,6 +834,7 @@ export class IosPreviewController {
       },
       setSurfaceVisible: (id, visible) => this.setWindowSurfaceVisible(id, visible),
       removeSurface: id => this.removeWindowSurface(id),
+      unhandledKey: event => keyboardService.handleUnhandledKey(event as KeyEvent),
       submitPixels: (id, pixels, width, height, draws) => {
         void this.submitWorkerPixels(id, pixels, width, height, draws).catch(error => this.fail(error))
       },
@@ -830,6 +856,18 @@ export class IosPreviewController {
     this.state = { ...this.state, phase, status }
     this.logBluetooth(status)
     this.emitState()
+    this.syncKeyboardLink()
+  }
+  /**
+   * Tell the keyboard bridge whether the session can host a keyboard: a G2 on firmware with
+   * the bridge, connected. On a disconnect the user asked for, the link is still up when the
+   * phase turns, so the firmware is told to let the keyboard go first.
+   */
+  private syncKeyboardLink(): void {
+    const up = !!this.communicator && this.state.phase === 'connected' && this.firmwareCompatible
+      && glassesTypeSetting.get() === 'g2'
+    if (up) keyboardService.linkReady()
+    else keyboardService.linkLost(this.state.phase === 'disconnecting')
   }
   /** Mirror the session into glasses-presence (read by EvenHub's device status and Timers). */
   private syncPresence(): void {
@@ -949,6 +987,7 @@ export class IosPreviewController {
         const firmwareWarning = firmwareIncompatibilityMessage(info) ?? ''
         if (firmwareWarning && firmwareWarning !== this.state.firmwareWarning) this.logBluetooth(`Firmware compatibility warning: ${firmwareWarning}`)
         this.firmwareCompatible = !firmwareWarning && hasCompatibleFirmware(info)
+        this.syncKeyboardLink()
         this.state = { ...this.state, leftVersion: info.leftVersion || this.state.leftVersion,
           rightVersion: info.rightVersion || this.state.rightVersion, capabilities: info.extension || this.state.capabilities,
           firmwareWarning }
@@ -1013,6 +1052,13 @@ export class IosPreviewController {
   private handleRingEvent(input: RawInputEvent): void {
     this.inputQueue = this.inputQueue.then(async () => {
       if (this.state.phase !== 'connected') return
+      if (input.kind === 'sys-event' && input.eventType === OsEventTypeList.HEAD_DOWN_EVENT) {
+        // As on Android: only the Glanceboard uses it (it ends a head-tilt
+        // showing); it never reaches the shell or counts as activity.
+        const glanceEvent = this.glance.eventForGesture('head-down')
+        if (glanceEvent) await this.glance.handleEvent(glanceEvent, 0)
+        return
+      }
       this.onActivity()
       if (input.ringInput) this.state = { ...this.state, ring: true }
       await this.receiveInput(rawInputEventToInputEvent(input),

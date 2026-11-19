@@ -2,6 +2,7 @@ module FaceclawGraphics {
   header "FaceclawGraphics.h"
   header "FaceclawFontRenderer.h"
   header "FaceclawSocket.h"
+  header "FaceclawSsh.h"
   header "FaceclawLc3Decoder.h"
   header "FaceclawSpeech.h"
   header "FaceclawLocation.h"

@@ -9,6 +9,7 @@ import {
   glanceShowOnLongPressSetting,
   glanceShowOnTap,
   glanceTapTimeoutMs,
+  glanceTiltTimeoutMs,
 } from "./glanceboard-settings";
 
 const glanceboardApp: AppDefinition = {
@@ -24,6 +25,7 @@ const glanceboardApp: AppDefinition = {
     isEnabled: () => glanceboardEnabledSetting.get(),
     showOnTap: glanceShowOnTap,
     tapTimeoutMs: glanceTapTimeoutMs,
+    tiltTimeoutMs: glanceTiltTimeoutMs,
     showOnLongPress: () => glanceShowOnLongPressSetting.get(),
     showOnHeadTilt: () => glanceShowOnHeadTiltSetting.get(),
     depth: glanceDepth,

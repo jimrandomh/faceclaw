@@ -68,6 +68,23 @@ export function extractG2Mac(mfg: Uint8Array): string | null {
   return humanReadableAddressFromWireBytes(mfg.subarray(16, 22));
 }
 
+/**
+ * G2 manufacturer data (hex) carrying `serial` and `address`, for an arm known
+ * only from a saved pairing: what `extractG2Serial` and `extractG2Mac` read
+ * back, with the serial zero-padded and no flag byte. Null when the serial is
+ * not up to 14 printable ASCII characters or the address is not a MAC.
+ */
+export function g2ManufacturerData(serial: string, address: string): string | null {
+  const wire = wireBytesFromHumanReadableAddress(address);
+  if (!wire || !/^[\x20-\x7e]{1,14}$/.test(serial)) return null;
+  const bytes = new Uint8Array(22);
+  bytes[0] = 0x45;
+  bytes[1] = 0x52;
+  for (let i = 0; i < serial.length; i++) bytes[2 + i] = serial.charCodeAt(i);
+  bytes.set(wire, 16);
+  return bytesToHex(bytes);
+}
+
 /** Preserve the final G2 manufacturer-data byte without guessing its meaning. */
 export function extractG2AdvertisementFlag(mfg: Uint8Array): number | null {
   if (mfg.length < 23 || !hasEvenManufacturerSignature(mfg)) return null;

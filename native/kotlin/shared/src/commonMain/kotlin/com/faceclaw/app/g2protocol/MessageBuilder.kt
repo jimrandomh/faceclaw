@@ -188,6 +188,22 @@ class MessageBuilder {
         )
     }
 
+    /** One head-up setting field (see BleProtocol.buildSetHeadUp). */
+    fun setHeadUp(field: Int, value: Int): OutboundMessage {
+        var magic: Int = magicPool.allocate()
+        return OutboundMessage(
+            "head-up-control",
+            ("head-up field " + field + "=" + value),
+            BleProtocol.SID_UI_SETTING,
+            BleProtocol.FLAG_REQUEST,
+            magic,
+            BleProtocol.buildSetHeadUp(magic, field, value),
+            ACK_TIMEOUT_MS,
+            -1,
+            false,
+        )
+    }
+
     fun createLayout(): OutboundMessage {
         var magic: Int = magicPool.allocate()
         return OutboundMessage(
@@ -318,6 +334,24 @@ class MessageBuilder {
             ACK_TIMEOUT_MS,
             -1,
             leftArm,
+        )
+    }
+
+    /**
+     * CFW keyboard control (settings field 130). Always the right arm: only the master temple
+     * acts on it, and a copy sent down each arm would run the control twice.
+     */
+    fun faceclawKeyboardControl(record: ByteArray, label: String): OutboundMessage {
+        return OutboundMessage(
+            "keyboard-control",
+            "keyboard control $label",
+            BleProtocol.SID_UI_SETTING,
+            BleProtocol.FLAG_REQUEST,
+            0,
+            BleProtocol.buildFaceclawKeyboardControl(record),
+            ACK_TIMEOUT_MS,
+            -1,
+            false,
         )
     }
 

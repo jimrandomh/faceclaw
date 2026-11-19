@@ -16,11 +16,17 @@
  * Each view has its own websocket connection (the protocol allows one attached
  * session per connection) and its own xterm emulator.
  *
- * Connections are g2mirror://<token>@<host>[:port] strings (g2mirrors:// for
- * TLS), stored as JSON in the settings store (see connections.ts). Each
- * enabled connection gets a control websocket that backs the session list and
- * carries unsolicited bell/title notifications; control connections live as
- * long as the worker so bells keep flowing even if the hub window is closed.
+ * Connections are connection strings stored as JSON in the settings store
+ * (see connections.ts): g2mirror://<token>@<host>[:port] for a g2mirror
+ * server (g2mirrors:// for TLS), ssh://<user>@<host> for tmux over SSH
+ * (TmuxClient), or ssh://<user>@<host>?g2mirror=<token> for a g2mirror server
+ * tunnelled over SSH. Each enabled connection gets a control client that
+ * backs the session list and carries bell/title/activity notifications;
+ * control connections live as long as the worker so bells keep flowing even
+ * if the hub window is closed. SSH connections that need the user (an
+ * unverified or changed host key, a password, an unauthorized key) record
+ * the failure on the control (sshIssue) and offer a page that resolves it
+ * instead of retrying.
  * The host's server_name (from the init reply) is cached per connection and
  * used as its display name, falling back to the connection string's
  * host[:port] before the first successful handshake.
@@ -55,7 +61,24 @@ import {
 import * as frameTimings from "../../native/frame-timings";
 import { getActiveDisplay } from "../../native/active-display";
 import { GESTURE_DOUBLE_CLICK, type InputEvent } from "../../ui/gestures";
-import { G2MirrorClient, type G2MirrorClientOptions, type G2MirrorSession, type G2MirrorState } from "../../native/g2mirror-client";
+import type { KeyEvent } from "../../g2/keyboard/keys";
+import { encodeTerminalKey, terminalScrollbackKey } from "./terminal-keys";
+import { G2MirrorClient, type G2MirrorSession, type G2MirrorState } from "../../native/g2mirror-client";
+import type { TerminalClient } from "./terminal-client";
+import { TmuxClient, type OpenLineChannel } from "./tmux-client";
+import {
+  copyToPhoneClipboard,
+  describeSshFailure,
+  getSshSecret,
+  openSshChannel,
+  removeSshSecret,
+  setSshSecret,
+  sshClientKey,
+  type SshEndpoint,
+  type SshFailure,
+  type SshHostKey,
+} from "../../native/ssh";
+import { wrapText } from "../../graphics/textwrap";
 import { onSettingsStoreChanged } from "../../native/settings-store";
 import { clamp } from "../../util/numeric-util";
 import {
@@ -64,12 +87,22 @@ import {
   terminalDisplayLayoutSetting,
   terminalLaunchPresetsSetting,
   terminalNewConnectionSetting,
+  terminalSshPasswordSetting,
   terminalWakeOnBellSetting,
   textSettingMenuItem,
   toggleSettingMenuItem,
 } from "../../ui/dashboard-settings";
 import { terminalFontPickerMenuItem } from "../../ui/font-picker";
-import { connectionDisplayName, loadConnections, parseConnectionString, saveConnections, TERMINAL_CONNECTIONS_KEY, updateConnection, type TerminalConnection } from "./connections";
+import {
+  connectionDisplayName,
+  connectionStringHostLabel,
+  loadConnections,
+  parseAnyConnectionString,
+  saveConnections,
+  TERMINAL_CONNECTIONS_KEY,
+  updateConnection,
+  type TerminalConnection,
+} from "./connections";
 import { TerminalEmulator } from "./terminal-emulator";
 import { drawSubmenuIndicator, submenuItem, type MenuItem } from "../../ui/menu";
 import { Menu, type MenuDrawArgs } from "../../ui/menu-core";
@@ -112,6 +145,10 @@ const RECONNECT_MAX_DELAY_MS = 60_000;
 const NEW_CONNECTION_DRAFT_KEY = "terminal.newConnectionDraft";
 // Storage key of terminalLaunchPresetsSetting, edited from the window menu.
 const LAUNCH_PRESETS_KEY = "terminal.launchPresets";
+// Storage key of terminalSshPasswordSetting (the password page's draft).
+const SSH_PASSWORD_DRAFT_KEY = "terminal.sshPasswordDraft";
+// Comment on this device's SSH public key in authorized_keys.
+const SSH_KEY_COMMENT = "faceclaw";
 
 type BaseWindow = {
   windowId: string;
@@ -148,10 +185,24 @@ type BaseWindow = {
 
 /**
  * What the hub window is showing: the session list, the Manage Connections
- * section, or the Add-connection screen (type the g2mirror:// string on the
- * phone, click to save).
+ * section, the Add-connection screen (type the connection string on the
+ * phone, click to save), or a page of text with a click action (verify a
+ * host key, enter a password, show this device's SSH key).
  */
-type HubMode = "sessions" | "connections" | "add";
+type HubMode = "sessions" | "connections" | "add" | "page";
+
+type HubPage = {
+  title: string;
+  /** Body text, wrapped to the window; re-read on every paint. */
+  body: () => string;
+  /** Bottom hint line. */
+  hint: string;
+  onClick?: () => void;
+  /** Double-click. */
+  onBack: () => void;
+  /** Runs whenever the page goes away (back, click, window closed). */
+  onLeave?: () => void;
+};
 
 type HubWindow = BaseWindow & {
   kind: "hub";
@@ -168,6 +219,8 @@ type HubWindow = BaseWindow & {
   sessionOrder: string[];
   /** Parse-failure message shown on the Add-connection screen. */
   addError: string;
+  /** The page shown in mode "page". */
+  page: HubPage | null;
 };
 
 type ViewWindow = BaseWindow & {
@@ -186,7 +239,7 @@ type ViewWindow = BaseWindow & {
   label: string;
   /** Sidebar-icon character (">3"); "" if every glyph was taken at open time. */
   glyph: string;
-  client: G2MirrorClient;
+  client: TerminalClient;
   emulator: TerminalEmulator;
   receivedData: boolean;
   attachRequested: boolean;
@@ -220,8 +273,8 @@ type PendingView = {
   socket: string;
   label: string;
   glyph: string;
-  /** Client options captured when the view was requested from a live control. */
-  options: G2MirrorClientOptions;
+  /** How to make the view's client, captured when it was requested from a live control. */
+  options: ClientRecipe;
 };
 
 const windows = new Map<string, TerminalWindow>();
@@ -302,7 +355,13 @@ let screenOn = true;
  */
 type ControlConnection = {
   config: TerminalConnection;
-  client: G2MirrorClient | null;
+  client: TerminalClient | null;
+  /**
+   * An SSH failure only the user can fix (host key to verify, password or
+   * key needed). Shown on the host's heading with a row that opens the fix;
+   * reconnects wait for it. Cleared on a successful connection.
+   */
+  sshIssue: SshFailure | null;
   state: G2MirrorState | null;
   unsubscribers: Array<() => void>;
   reconnectTimer: ReturnType<typeof setTimeout> | null;
@@ -435,6 +494,13 @@ global.onmessage = (event: { data: WorkerAppMessage }) => {
       }
       break;
     }
+    case "key": {
+      const window = windows.get(message.windowId);
+      if (!window) break;
+      window.focused = message.focused;
+      handleKey(window, message.event as KeyEvent);
+      break;
+    }
     case "render": {
       const window = windows.get(message.windowId);
       if (!window) break;
@@ -504,7 +570,8 @@ onSettingsStoreChanged((key) => {
       reportIdle();
       return;
     case NEW_CONNECTION_DRAFT_KEY:
-      // Live keystrokes from the phone editor; repaint the add screen.
+    case SSH_PASSWORD_DRAFT_KEY:
+      // Live keystrokes from the phone editor; repaint the add/password screen.
       renderHubWindows();
       return;
     case "terminal.autoReconnect":
@@ -578,6 +645,7 @@ function openWindow(windowId: string, surfaceId: string, title: string, viewport
     list: null,
     sessionOrder: [],
     addError: "",
+    page: null,
   });
   // The hub carries the app's assistant tools; declare them once it exists.
   post({ type: "set-tools", windowId, tools: TERMINAL_TOOLS });
@@ -610,6 +678,10 @@ function closeWindow(windowId: string): void {
     // Window closed mid-add: shut the phone editor down.
     endAddConnection(window);
   }
+  if (window.kind === "hub" && window.mode === "page") {
+    // Likewise for a page's phone editor (the password draft).
+    closeHubPage(window, "sessions");
+  }
   // Likewise for a setting being edited from the window menu.
   window.menu?.close();
   windows.delete(windowId);
@@ -627,15 +699,118 @@ function closeWindow(windowId: string): void {
   }
 }
 
-/** Client options for a connection string; null if the string doesn't parse. */
-function clientOptionsFor(connection: TerminalConnection): G2MirrorClientOptions | null {
-  const parsed = parseConnectionString(connection.url);
+/**
+ * How to make clients for a connection: "g2mirror" dials a g2mirror server
+ * directly, "ssh-g2mirror" reaches one through an SSH tunnel, "tmux" runs
+ * tmux control mode over SSH.
+ */
+type ClientRecipe = {
+  kind: "g2mirror" | "ssh-g2mirror" | "tmux";
+  /**
+   * `role` "control" watches bells (tmux keeps the bell bookkeeping for that
+   * client only). `onSshFailure` hears why an SSH channel failed.
+   */
+  create(cols: number, rows: number, role: "control" | "view", onSshFailure?: (failure: SshFailure) => void): TerminalClient;
+};
+
+/** Client recipe for a connection string; null if the string doesn't parse. */
+function clientOptionsFor(connection: TerminalConnection): ClientRecipe | null {
+  const parsed = parseAnyConnectionString(connection.url);
   if (!parsed) return null;
+  if (parsed.kind === "g2mirror") {
+    const { secure, host, port, authToken } = parsed;
+    return {
+      kind: "g2mirror",
+      create: (cols, rows) => new G2MirrorClient({ secure, host, port, authToken, deviceName: DEVICE_NAME, cols, rows }),
+    };
+  }
+  const connectionId = connection.id;
+  const label = connectionStringHostLabel(connection.url);
+  // Read at every channel open, so a newly trusted key or saved password
+  // applies to the next (re)connect, views included.
+  const endpoint = (): SshEndpoint => ({
+    host: parsed.host,
+    port: parsed.port,
+    user: parsed.user,
+    hostKeys: loadConnections().find((candidate) => candidate.id === connectionId)?.hostKeys ?? [],
+    password: getSshSecret(sshPasswordSecretId(connectionId)),
+    useKey: true,
+  });
+  if (parsed.mode === "g2mirror") {
+    const { authToken, targetHost, targetPort } = parsed;
+    const urlHost = targetHost.includes(":") && !targetHost.startsWith("[") ? `[${targetHost}]` : targetHost;
+    const url = `ws://${urlHost}:${targetPort}/`;
+    return {
+      kind: "ssh-g2mirror",
+      create: (cols, rows, _role, onSshFailure) =>
+        new G2MirrorClient({
+          secure: false,
+          host: targetHost,
+          port: targetPort,
+          authToken,
+          deviceName: DEVICE_NAME,
+          cols,
+          rows,
+          transport: {
+            label: `${label} over SSH`,
+            open: (listener) => {
+              const channel = openSshChannel(endpoint(), { type: "websocket", url }, {
+                onOpen: () => listener.onOpen(),
+                onText: (text) => listener.onTextMessage(text),
+                onClosed: (info) => listener.onClosed(info.code ?? 1000, info.reason ?? ""),
+                onFailure: (failure) => {
+                  onSshFailure?.(failure);
+                  listener.onFailure(describeSshFailure(failure));
+                },
+              });
+              return { sendText: (text) => channel.send(text), sendBinary: () => false, close: () => channel.close() };
+            },
+          },
+        }),
+    };
+  }
   return {
-    ...parsed,
-    deviceName: DEVICE_NAME,
-    ...viewGrid(),
+    kind: "tmux",
+    create: (cols, rows, role, onSshFailure) => {
+      const openChannel: OpenLineChannel = (command, listener) =>
+        openSshChannel(endpoint(), { type: "exec", command }, {
+          onOpen: () => listener.onOpen(),
+          onText: (line) => listener.onLine(line),
+          onStderr: (line) => listener.onStderr(line),
+          onClosed: (info) => listener.onClosed(info.exitStatus ?? null),
+          onFailure: (failure) => {
+            onSshFailure?.(failure);
+            listener.onFailure(describeSshFailure(failure));
+          },
+        });
+      return new TmuxClient({ openChannel, label, cols, rows, stateKey: role === "control" ? connectionId : "" });
+    },
   };
+}
+
+function sshPasswordSecretId(connectionId: string): string {
+  return `terminal.password.${connectionId}`;
+}
+
+/** Failures that retrying can't fix: the user has to verify a key or supply credentials. */
+function sshFailureNeedsUser(failure: SshFailure): boolean {
+  return failure.kind === "hostkey-unknown" || failure.kind === "hostkey-mismatch" || failure.kind === "auth";
+}
+
+/**
+ * A control's SSH channel failed. If the user has to act, remember why, and
+ * if they're looking at the hub's lists, open the page that fixes it.
+ */
+function noteSshFailure(control: ControlConnection, failure: SshFailure): void {
+  if (!sshFailureNeedsUser(failure) || controls.get(control.config.id) !== control || !control.client) return;
+  control.sshIssue = failure;
+  renderHubWindows();
+  for (const window of windows.values()) {
+    if (window.kind === "hub" && window.foreground && (window.mode === "sessions" || window.mode === "connections")) {
+      openSshIssuePage(window, control);
+      break;
+    }
+  }
 }
 
 /**
@@ -663,6 +838,7 @@ function syncControlsFromSettings(): void {
       control = {
         config: connection,
         client: null,
+        sshIssue: null,
         state: null,
         unsubscribers: [],
         reconnectTimer: null,
@@ -684,12 +860,13 @@ function syncControlsFromSettings(): void {
 
 function startControl(control: ControlConnection): void {
   stopControl(control);
-  const options = clientOptionsFor(control.config);
-  if (!options) {
+  const recipe = clientOptionsFor(control.config);
+  if (!recipe) {
     control.state = null;
     return;
   }
-  const client = new G2MirrorClient(options);
+  const grid = viewGrid();
+  const client = recipe.create(grid.cols, grid.rows, "control", (failure) => noteSshFailure(control, failure));
   const connectionId = control.config.id;
   control.client = client;
   control.state = client.state();
@@ -703,6 +880,7 @@ function startControl(control: ControlConnection): void {
       control.state = state;
       if (state.phase === "connected") {
         control.reconnectDelayMs = RECONNECT_MIN_DELAY_MS;
+        control.sshIssue = null;
         maybeCacheServerName(control, state.serverName);
       }
       if (state.phase === "failed") scheduleControlReconnect(control);
@@ -777,6 +955,8 @@ function scheduleControlReconnect(control: ControlConnection): void {
   if (!terminalAutoReconnectSetting.get()) return;
   if (windows.size === 0 && !hasTerminalBackgroundWork()) return;
   if (!control.config.enabled) return;
+  // Waiting on the user (host key, password) or on the host (no usable tmux).
+  if (control.sshIssue || control.state?.retryable === false) return;
   const delayMs = control.reconnectDelayMs;
   control.reconnectDelayMs = Math.min(control.reconnectDelayMs * 2, RECONNECT_MAX_DELAY_MS);
   control.reconnectTimer = setTimeout(() => {
@@ -943,7 +1123,7 @@ function createViewWindow(
   const cell = getTerminalFontConfig();
   const gridCols = Math.floor(viewport.width / cell.cellWidth);
   const gridRows = Math.floor(viewport.height / cell.cellHeight);
-  const client = new G2MirrorClient({ ...view.options, cols: gridCols, rows: gridRows });
+  const client = view.options.create(gridCols, gridRows, "view");
   const window: ViewWindow = {
     kind: "view",
     hub: null,
@@ -1238,6 +1418,11 @@ function handleInput(window: TerminalWindow, event: InputEvent, frameId: number)
       renderAndSubmit(window, frameId);
       return;
     }
+    if (window.kind === "hub" && window.mode === "page") {
+      window.page?.onBack();
+      renderAndSubmit(window, frameId);
+      return;
+    }
     if (window.kind === "hub" && window.mode === "connections") {
       setHubMode(window, "sessions");
       renderAndSubmit(window, frameId);
@@ -1258,6 +1443,35 @@ function handleInput(window: TerminalWindow, event: InputEvent, frameId: number)
     return;
   }
   frameTimings.finishFrame(frameId, "discarded: terminal view ignored input");
+}
+
+/**
+ * A key from a hardware keyboard (the glasses' keyboard bridge) that no
+ * keybinding claimed. A session with nothing over it gets the key as its
+ * terminal would: Escape and the arrows belong to the program, and the way
+ * out is Escape with Shift, Ctrl or Alt, which never arrives here (it is a
+ * built-in keybinding for "back"). Anywhere else (the hub's lists, an open
+ * menu) the key is handed back, to act as navigation.
+ */
+function handleKey(window: TerminalWindow, event: KeyEvent): void {
+  if (window.kind === "view" && !window.menu?.isOpen()) {
+    activeViewId = window.windowId;
+    const page = terminalScrollbackKey(event);
+    if (page !== null) {
+      handleViewScroll(window, page, 0);
+      return;
+    }
+    const bytes = encodeTerminalKey(event, window.emulator.applicationCursorKeys());
+    if (bytes === null) return;
+    // Typing follows the live screen, as in any terminal emulator.
+    if (window.scrollTop !== null) {
+      window.scrollTop = null;
+      scheduleRender(window);
+    }
+    window.client.sendInput(bytes);
+    return;
+  }
+  post({ type: "key-unhandled", windowId: window.windowId, event });
 }
 
 /** Top visible absolute line index when following the live bottom. */
@@ -1386,6 +1600,154 @@ function setHubMode(window: HubWindow, mode: HubMode): void {
   window.addError = "";
 }
 
+function openHubPage(window: HubWindow, page: HubPage): void {
+  if (window.mode === "add") endAddConnection(window);
+  if (window.mode === "page") window.page?.onLeave?.();
+  window.page = page;
+  window.mode = "page";
+  scheduleRender(window);
+}
+
+/** Leave the current page (if any) for `mode`. */
+function closeHubPage(window: HubWindow, mode: HubMode): void {
+  const page = window.page;
+  window.page = null;
+  page?.onLeave?.();
+  setHubMode(window, mode);
+  scheduleRender(window);
+}
+
+/** The list a page returns to: the one it was opened from. */
+function hubListMode(window: HubWindow): HubMode {
+  return window.mode === "connections" ? "connections" : "sessions";
+}
+
+function openSshIssuePage(window: HubWindow, control: ControlConnection): void {
+  const issue = control.sshIssue;
+  if (!issue) return;
+  if (issue.kind === "hostkey-unknown" && issue.hostKey) {
+    openHostKeyPage(window, control, issue.hostKey);
+  } else if (issue.kind === "hostkey-mismatch" && issue.hostKey) {
+    openHostKeyChangedPage(window, control, issue.hostKey);
+  } else if (issue.kind === "auth" && issue.passwordAllowed) {
+    openPasswordPage(window, control, Boolean(issue.passwordTried));
+  } else if (issue.kind === "auth") {
+    openClientKeyPage(window, `${connectionDisplayName(control.config)} didn't accept this device's key (and doesn't take passwords).\n`);
+  }
+}
+
+function hostKeyTypeName(type: string): string {
+  if (type === "ssh-ed25519") return "ED25519";
+  if (type.startsWith("ecdsa-")) return "ECDSA";
+  if (type === "ssh-rsa") return "RSA";
+  return type;
+}
+
+function hostKeyFile(type: string): string {
+  if (type === "ssh-ed25519") return "/etc/ssh/ssh_host_ed25519_key.pub";
+  if (type.startsWith("ecdsa-")) return "/etc/ssh/ssh_host_ecdsa_key.pub";
+  return "/etc/ssh/ssh_host_rsa_key.pub";
+}
+
+/** First connection to an SSH host: show the key's fingerprint; click trusts it. */
+function openHostKeyPage(window: HubWindow, control: ControlConnection, hostKey: SshHostKey): void {
+  const returnMode = hubListMode(window);
+  openHubPage(window, {
+    title: "Verify host key",
+    body: () =>
+      `First connection to ${connectionStringHostLabel(control.config.url)}. Its ${hostKeyTypeName(hostKey.type)} host key fingerprint is:\n` +
+      `${hostKey.fingerprint}\n\n` +
+      `To check it, run this on the host and compare:\nssh-keygen -lf ${hostKeyFile(hostKey.type)}`,
+    hint: `click trust and connect  ${GESTURE_DOUBLE_CLICK} cancel`,
+    onClick: () => {
+      const hostKeys = [...control.config.hostKeys.filter((key) => key !== hostKey.key), hostKey.key];
+      control.config.hostKeys = hostKeys;
+      updateConnection(control.config.id, { hostKeys });
+      control.sshIssue = null;
+      closeHubPage(window, returnMode);
+      connectControl(control);
+    },
+    onBack: () => closeHubPage(window, returnMode),
+  });
+}
+
+function openHostKeyChangedPage(window: HubWindow, control: ControlConnection, hostKey: SshHostKey): void {
+  const returnMode = hubListMode(window);
+  openHubPage(window, {
+    title: "HOST KEY CHANGED",
+    body: () =>
+      `${connectionStringHostLabel(control.config.url)} presented a different host key than the one trusted before: ` +
+      `${hostKeyTypeName(hostKey.type)} ${hostKey.fingerprint}\n\n` +
+      "Someone may be intercepting the connection, so Faceclaw won't connect. If the host was reinstalled or its keys " +
+      'were regenerated, use "Forget host key" on this connection in Manage Connections, then verify the new fingerprint.',
+    hint: `${GESTURE_DOUBLE_CLICK} back`,
+    onBack: () => closeHubPage(window, returnMode),
+  });
+}
+
+/** Ask for the host's password on the phone (masked editor); click saves it and connects. */
+function openPasswordPage(window: HubWindow, control: ControlConnection, rejected: boolean): void {
+  const returnMode = hubListMode(window);
+  terminalSshPasswordSetting.set("");
+  post({ type: "start-text-setting-edit", settingId: terminalSshPasswordSetting.id });
+  openHubPage(window, {
+    title: "SSH password",
+    body: () => {
+      const typed = terminalSshPasswordSetting.get();
+      return (
+        (rejected ? "The host refused the saved password.\n" : "") +
+        `Type the password for ${connectionStringHostLabel(control.config.url)} in the phone app, then click to connect. ` +
+        "It is saved encrypted on this phone.\n\n" +
+        (typed ? "*".repeat(Math.min(typed.length, 32)) : "(nothing typed yet)")
+      );
+    },
+    hint: `click connect  ${GESTURE_DOUBLE_CLICK} cancel`,
+    onClick: () => {
+      const password = terminalSshPasswordSetting.get();
+      if (!password) return;
+      setSshSecret(sshPasswordSecretId(control.config.id), password);
+      control.sshIssue = null;
+      closeHubPage(window, returnMode);
+      connectControl(control);
+    },
+    onBack: () => closeHubPage(window, returnMode),
+    onLeave: () => {
+      terminalSshPasswordSetting.set("");
+      post({ type: "end-text-setting-edit" });
+    },
+  });
+}
+
+/** This device's SSH public key (the private half never leaves the keystore); click copies it. */
+function openClientKeyPage(window: HubWindow, intro = ""): void {
+  const returnMode = hubListMode(window);
+  let key: { authorizedKey: string; fingerprint: string } | null = null;
+  let error = "";
+  try {
+    key = sshClientKey(SSH_KEY_COMMENT);
+  } catch (caught) {
+    error = String((caught as Error)?.message ?? caught);
+  }
+  let copied = false;
+  openHubPage(window, {
+    title: "This device's SSH key",
+    body: () =>
+      key
+        ? `${intro}Add this line to ~/.ssh/authorized_keys on each host to log in with this phone's key:\n` +
+          `${key.authorizedKey}\n${key.fingerprint}` +
+          (copied ? "\n\nCopied to the phone's clipboard." : "")
+        : `Couldn't create this device's key: ${error}`,
+    hint: key ? `click copy to phone clipboard  ${GESTURE_DOUBLE_CLICK} back` : `${GESTURE_DOUBLE_CLICK} back`,
+    onClick: key
+      ? () => {
+          copyToPhoneClipboard("SSH public key", key!.authorizedKey);
+          copied = true;
+        }
+      : undefined,
+    onBack: () => closeHubPage(window, returnMode),
+  });
+}
+
 /**
  * One control connection's sessions in this hub window's display order:
  * most-recently-updated first as of when the window became visible, with
@@ -1441,6 +1803,7 @@ function hubSessionItems(window: HubWindow): HubItem[] {
   ];
   const multiHost = controls.size > 1;
   const canLaunch = launchPresetNames().length > 0;
+  const isTmux = (control: ControlConnection) => clientOptionsFor(control.config)?.kind === "tmux";
   // Every configured host is listed under its own heading, in stored order,
   // whatever its connection state: a connected host lists its sessions, any
   // other shows its state on the heading plus a Connect row (unless it is
@@ -1450,10 +1813,17 @@ function hubSessionItems(window: HubWindow): HubItem[] {
     const name = connectionDisplayName(control.config);
     if (!isControlConnected(control)) {
       items.push({ label: `${name}  (${controlStatusWord(control)})`, heading: true });
+      if (control.sshIssue && control.config.enabled) {
+        items.push({ label: sshIssueAction(control.sshIssue), onSelect: () => openSshIssuePage(window, control) });
+        continue;
+      }
       const connecting = control.config.enabled && control.state?.phase === "connecting";
       if (!connecting && clientOptionsFor(control.config)) {
+        // A failure retrying can't fix (tmux missing or too old) says why;
+        // selecting it retries once the host is fixed.
+        const unfixable = control.config.enabled && control.state?.retryable === false;
         items.push({
-          label: control.reconnectTimer ? "Connect now" : "Connect",
+          label: unfixable ? control.state!.status : control.reconnectTimer ? "Connect now" : "Connect",
           onSelect: () => connectControl(control),
         });
       }
@@ -1462,7 +1832,8 @@ function hubSessionItems(window: HubWindow): HubItem[] {
     items.push({
       label: name,
       heading: true,
-      onSelect: canLaunch ? () => launchOnHost(window, control) : undefined,
+      // tmux hosts can always start a shell, presets or not.
+      onSelect: canLaunch || isTmux(control) ? () => launchOnHost(window, control) : undefined,
     });
     const sessions = orderedSessions(window, control);
     for (const session of sessions) {
@@ -1478,7 +1849,11 @@ function hubSessionItems(window: HubWindow): HubItem[] {
     }
     if (!sessions.length) {
       items.push({
-        label: multiHost ? "(no live sessions)" : "(no live sessions; run g2mirror <command>)",
+        label: isTmux(control)
+          ? "(no tmux sessions; select the host to start one)"
+          : multiHost
+            ? "(no live sessions)"
+            : "(no live sessions; run g2mirror <command>)",
         onSelect: () => control.client?.listSessions(),
       });
     }
@@ -1500,6 +1875,10 @@ function hubConnectionItems(window: HubWindow): HubItem[] {
       onSelect: () => beginAddConnection(window),
     },
     {
+      label: "This device's SSH key",
+      onSelect: () => openClientKeyPage(window),
+    },
+    {
       label: "Done",
       onSelect: () => setHubMode(window, "sessions"),
     },
@@ -1509,6 +1888,13 @@ function hubConnectionItems(window: HubWindow): HubItem[] {
 
 function controlStatusWord(control: ControlConnection): string {
   if (!control.config.enabled) return "off";
+  const issue = control.sshIssue;
+  if (issue) {
+    if (issue.kind === "hostkey-unknown") return "verify host key";
+    if (issue.kind === "hostkey-mismatch") return "HOST KEY CHANGED";
+    if (issue.passwordTried) return "password rejected";
+    return issue.passwordAllowed ? "password needed" : "key not authorized";
+  }
   switch (control.state?.phase) {
     case "connected":
     case "attached":
@@ -1541,6 +1927,32 @@ function openConnectionActions(window: HubWindow, control: ControlConnection): v
             connectControl(control);
           },
         },
+    ...(control.config.hostKeys.length
+      ? [
+          {
+            label: "Forget host key",
+            onSelect: (ctx: { stack: { pop(): unknown } }) => {
+              ctx.stack.pop();
+              control.config.hostKeys = [];
+              updateConnection(control.config.id, { hostKeys: [] });
+              control.sshIssue = null;
+              if (control.config.enabled) startControl(control);
+              renderHubWindows();
+            },
+          },
+        ]
+      : []),
+    ...(isSshConnection(control) && getSshSecret(sshPasswordSecretId(control.config.id))
+      ? [
+          {
+            label: "Forget saved password",
+            onSelect: (ctx: { stack: { pop(): unknown } }) => {
+              ctx.stack.pop();
+              removeSshSecret(sshPasswordSecretId(control.config.id));
+            },
+          },
+        ]
+      : []),
     {
       label: `Remove ${name}`,
       onSelect: (ctx) => {
@@ -1556,6 +1968,11 @@ function openConnectionActions(window: HubWindow, control: ControlConnection): v
     },
   ];
   windowMenu(window).open(items);
+}
+
+function isSshConnection(control: ControlConnection): boolean {
+  const kind = clientOptionsFor(control.config)?.kind;
+  return kind === "tmux" || kind === "ssh-g2mirror";
 }
 
 /** Enable and (re)connect now; also the manual retry path, so reset backoff. */
@@ -1578,6 +1995,7 @@ function disconnectControl(control: ControlConnection): void {
 
 function removeControl(control: ControlConnection): void {
   stopControl(control);
+  removeSshSecret(sshPasswordSecretId(control.config.id));
   controls.delete(control.config.id);
   saveConnections(loadConnections().filter((connection) => connection.id !== control.config.id));
   renderHubWindows();
@@ -1586,7 +2004,7 @@ function removeControl(control: ControlConnection): void {
 /**
  * Enter the Add-connection screen: clear the draft and ask the shell to open
  * the phone text editor on it. The user types (or voice-inputs) the
- * g2mirror:// string, then clicks to save or double-clicks to cancel.
+ * connection string, then clicks to save or double-clicks to cancel.
  */
 function beginAddConnection(window: HubWindow): void {
   terminalNewConnectionSetting.set("");
@@ -1596,15 +2014,15 @@ function beginAddConnection(window: HubWindow): void {
 
 function saveAddConnection(window: HubWindow): void {
   const url = terminalNewConnectionSetting.get();
-  if (!parseConnectionString(url)) {
+  if (!parseAnyConnectionString(url)) {
     window.addError = url
-      ? "Not a g2mirror://token@host connection string."
-      : "Enter a g2mirror:// connection string first.";
+      ? "Not an ssh://user@host or g2mirror://token@host string."
+      : "Enter a connection string first.";
     scheduleRender(window);
     return;
   }
   const connections = loadConnections();
-  connections.push({ id: `c${Date.now()}`, url, serverName: null, enabled: true });
+  connections.push({ id: `c${Date.now()}`, url, serverName: null, enabled: true, hostKeys: [] });
   saveConnections(connections);
   endAddConnection(window);
   setHubMode(window, "connections");
@@ -1632,6 +2050,15 @@ function handleHubInput(window: HubWindow, event: InputEvent, frameId: number): 
       return;
     }
     frameTimings.finishFrame(frameId, "discarded: terminal add-connection ignored input");
+    return;
+  }
+  if (window.mode === "page") {
+    if (event.type === "click" && window.page?.onClick) {
+      window.page.onClick();
+      renderAndSubmit(window, frameId);
+      return;
+    }
+    frameTimings.finishFrame(frameId, "discarded: terminal page ignored input");
     return;
   }
   const list = hubMenu(window);
@@ -1800,6 +2227,7 @@ function openViewWindow(control: ControlConnection, socket: string, label: strin
     focus: true,
     // Default to tall sessions; the app display setting can override this.
     heightMode: "max",
+    acceptsKeys: true,
   });
 }
 
@@ -1820,6 +2248,11 @@ function launchPresetNames(): string[] {
  */
 function launchOnHost(window: HubWindow, control: ControlConnection): void {
   const presets = launchPresetNames();
+  if (presets.length === 0) {
+    // A tmux host with no presets configured: a new session running the login shell.
+    launchFromUi(control, "shell");
+    return;
+  }
   if (presets.length === 1) {
     launchFromUi(control, presets[0]!);
     return;
@@ -1864,6 +2297,9 @@ function paintHub(window: HubWindow): GrayImage {
   if (window.mode === "add") {
     return paintAddConnection(window);
   }
+  if (window.mode === "page" && window.page) {
+    return paintHubPage(window, window.page);
+  }
   const { viewportWidth: width, viewportHeight: height, padding } = window;
   const image = new GrayImage(width, height, 0);
   const font = chromeFont();
@@ -1878,7 +2314,7 @@ function paintHub(window: HubWindow): GrayImage {
 
   let listTop = header.listTop;
   if (window.mode === "sessions" && controls.size === 0) {
-    image.drawText(font, header.titleX, listTop, "Add a g2mirror:// connection to get started, see:", 150);
+    image.drawText(font, header.titleX, listTop, "Add an ssh:// (tmux) or g2mirror:// connection to get started, see:", 150);
     image.drawText(font, header.titleX, listTop + step, "https://github.com/jimrandomh/g2mirror", 190);
     listTop += 2 * step + 6;
   }
@@ -1920,8 +2356,8 @@ function paintAddConnection(window: HubWindow): GrayImage {
   image.drawText(font, padding.left, padding.top, "Add connection", 220);
   const bodyX = padding.left + PAGE_BODY_INDENT;
   const instructionsY = padding.top + 10 + step;
-  image.drawText(font, bodyX, instructionsY, "Type the g2mirror://token@host string in the", 170);
-  image.drawText(font, bodyX, instructionsY + step, "phone app (or use voice input from the menu).", 170);
+  image.drawText(font, bodyX, instructionsY, "Type ssh://user@host (tmux) or g2mirror://token@host in", 170);
+  image.drawText(font, bodyX, instructionsY + step, "the phone app (or use voice input from the menu).", 170);
   const draftY = instructionsY + 3 * step;
   const draft = terminalNewConnectionSetting.get();
   image.drawText(font, bodyX, draftY, truncateLabel(draft || "(empty)", 52), 220);
@@ -1930,6 +2366,34 @@ function paintAddConnection(window: HubWindow): GrayImage {
   }
   image.drawText(font, bodyX, height - padding.bottom - font.lineHeight, `click save  ${GESTURE_DOUBLE_CLICK} cancel`, 110);
   return image;
+}
+
+/** A page of text: title at the top padding, wrapped body, hint on the bottom padding. */
+function paintHubPage(window: HubWindow, page: HubPage): GrayImage {
+  const { viewportWidth: width, viewportHeight: height, padding } = window;
+  const image = new GrayImage(width, height, 0);
+  const font = chromeFont();
+  const step = lineStep(font);
+  image.drawText(font, padding.left, padding.top, page.title, 220);
+  const bodyX = padding.left + PAGE_BODY_INDENT;
+  const hintY = height - padding.bottom - font.lineHeight;
+  const lines = wrapText(font, page.body(), Math.max(1, width - padding.right - bodyX), { breakLongWords: true });
+  let y = padding.top + 10 + step;
+  for (const line of lines) {
+    if (y + step > hintY) break;
+    image.drawText(font, bodyX, y, line, 190);
+    y += step;
+  }
+  image.drawText(font, bodyX, hintY, page.hint, 110);
+  return image;
+}
+
+/** The action row under a host whose SSH connection needs the user. */
+function sshIssueAction(issue: SshFailure): string {
+  if (issue.kind === "hostkey-unknown") return "Verify host key...";
+  if (issue.kind === "hostkey-mismatch") return "Host key changed!";
+  if (issue.passwordAllowed) return issue.passwordTried ? "Re-enter password..." : "Enter password...";
+  return "Show this device's SSH key...";
 }
 
 function truncateLabel(text: string, maxLength: number): string {

@@ -20,11 +20,18 @@ class CachedResource @JvmOverloads constructor(bytes: ByteArray, val owner: Stri
  */
 class ResourceCacheState {
     companion object {
-        /** Mirrors g2flash/patches/resource_cache.h. */
-        const val CACHE_SIZE = 196608
+        /**
+         * Mirrors g2flash/patches/resource_cache.h: the id table, then 320 KiB shared by the
+         * resources and their block headers. Firmware before Faceclaw/40 had 192 KiB in all,
+         * so this must not grow past what REQUIRED_FACECLAW_FIRMWARE_VERSION guarantees.
+         * RayNeo iO sessions use the same budget: that firmware's own copy of the header
+         * (faceclaw-rayneo-cfw patches/fc/resource_cache.h) needs at least this much before
+         * it reports the required revision.
+         */
         const val RESOURCE_COUNT = 512
         const val TABLE_BYTES = RESOURCE_COUNT * 4
-        const val ARENA_BYTES = CACHE_SIZE - TABLE_BYTES
+        const val ARENA_BYTES = 320 * 1024
+        const val CACHE_SIZE = TABLE_BYTES + ARENA_BYTES
         const val MAX_RESOURCE_SIZE = 65536
         const val BLOCK_HEADER_BYTES = 16
 

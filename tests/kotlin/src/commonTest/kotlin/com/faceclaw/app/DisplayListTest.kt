@@ -347,9 +347,9 @@ class DisplayListTest {
         val gray = ByteArray(640 * 480) { 48 }; val app = BmpUtil.pack4bppFromGray8(gray, 640, 480)
         fun layer(key: Int, y: Int, h: Int, nibble: Int, depth: Int = 0) =
             ShellScene.Layer(key, 14, y, 612, h, 256, ByteArray(306 * h) { (nibble * 17).toByte() }, depth = depth)
-        // Each 612x214 layer is just under the 64 KiB resource cap; three exceed the arena on their own.
+        // Each 612x200 layer takes 60 KiB of the 320 KiB arena: five fit and six exceed it on their own.
         fun chrome(depth: Int) = layer(1, 444, 36, 7, depth)
-        val modals = listOf(layer(2, 10, 214, 9), layer(3, 120, 214, 11), layer(4, 230, 214, 13, depth = 4))
+        val modals = (0..5).map { layer(2 + it, 10 + 50 * it, 200, 8 + it, depth = if (it == 5) 4 else 0) }
         val overflow = ShellScene(listOf(chrome(6)) + modals)
         val plan = planner.plan(app, 640, 480, null, overflow, 1)
         assertEquals(2, plan.bakedLayers); assertFalse(plan.bakedSelections)
@@ -363,7 +363,7 @@ class DisplayListTest {
             assertContentEquals(BmpUtil.pack4bppFromGray8(expected.preview(gray, 640, 480, glasses.right), 640, 480), glasses.composition)
         }
         // Once the shell fits again, the next frame is fully live and the screen is the app's again.
-        val fits = ShellScene(listOf(chrome(0), modals[2]))
+        val fits = ShellScene(listOf(chrome(0), modals.last()))
         val next = planner.plan(app, 640, 480, null, fits, plan.nextFid)
         assertEquals(0, next.bakedLayers)
         for (glasses in lenses) {
@@ -372,13 +372,13 @@ class DisplayListTest {
             assertContentEquals(BmpUtil.pack4bppFromGray8(fits.preview(gray, 640, 480, glasses.right), 640, 480), glasses.composition)
         }
     }
-    @Test fun noisyFramesRemainBoundedAndResourceBudgetIs192KiB() {
+    @Test fun noisyFramesRemainBoundedAndResourceBudgetIs322KiB() {
         val cache=ResourceCacheState();val planner=ScenePlanner(cache);val glasses=Glasses()
         val app=ByteArray(640*480/2){(it*37).toByte()}
         val plan=planner.plan(app,640,480,null,ShellScene.EMPTY,1)
         assertTrue(plan.commands.all { it.size<=65535 });glasses.apply(plan.commands)
         assertContentEquals(app,glasses.screen);assertContentEquals(app,glasses.composition)
-        assertEquals(196608,ResourceCacheState.CACHE_SIZE)
+        assertEquals(2048+320*1024,ResourceCacheState.CACHE_SIZE)
     }
     /** Revision 35. Same calls and expectations as ClipTest in g2flash/tests/test_display_list.py. */
     @Test fun clipRectsNarrowEveryOpNestThroughListsAndMoveWithDepth() {

@@ -55,8 +55,10 @@ export type GlanceboardProvider = {
   isEnabled: () => boolean;
   /** Whether a single tap shows the board (for tapTimeoutMs). */
   showOnTap: () => boolean;
-  /** How long a tap or head-tilt keeps the board up. */
+  /** How long a tap keeps the board up (and a head-tilt, when its head-down is unlikely to come). */
   tapTimeoutMs: () => number;
+  /** How long a head-tilt showing may last without a head-down (null = no limit). */
+  tiltTimeoutMs: () => number | null;
   /** Whether a long-press holds the board up until released. */
   showOnLongPress: () => boolean;
   /** Whether the head-tilt wake goes to the board rather than the regular UI. */
@@ -187,6 +189,8 @@ export async function launchWorkerAppWindow(
     matchExistingBy?: "appId" | "windowId";
     /** Deliver watch swipes raw instead of the fallback (see WorkerWindowSpec). */
     acceptsDirectional?: boolean;
+    /** Deliver hardware-keyboard keys as keys (see WorkerWindowSpec). */
+    acceptsKeys?: boolean;
   },
 ): Promise<void> {
   const existing = shell
@@ -207,6 +211,7 @@ export async function launchWorkerAppWindow(
     icon: options.icon,
     focus: true,
     acceptsDirectional: options.acceptsDirectional,
+    acceptsKeys: options.acceptsKeys,
   });
   ctx.appendLog(`launched ${options.windowId}`);
 }

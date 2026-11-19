@@ -12,6 +12,12 @@ import kotlin.jvm.JvmStatic
  */
 class BleProtocol {
     companion object {
+        /** The service holding [WRITE_CHAR_UUID] and [NOTIFY_CHAR_UUID]. */
+        const val PROTOCOL_SERVICE_UUID: String = "00002760-08c2-11e1-9073-0e8ac72e5450"
+
+        /** The service holding [RENDER_NOTIFY_UUID]. */
+        const val RENDER_SERVICE_UUID: String = "00002760-08c2-11e1-9073-0e8ac72e6450"
+
         const val WRITE_CHAR_UUID: String = "00002760-08c2-11e1-9073-0e8ac72e5401"
 
         const val NOTIFY_CHAR_UUID: String = "00002760-08c2-11e1-9073-0e8ac72e5402"
@@ -118,6 +124,19 @@ class BleProtocol {
          * app/native/ambient-light.ts).
          */
         const val FACECLAW_ALS_REPORT_FIELD: Int = 105
+
+        /**
+         * CFW keyboard bridge (Faceclaw/39): the master temple hosts one BLE HID keyboard. The
+         * host writes ['K','B',ver,op,request,epoch,...] controls as settings field 130; results,
+         * pairing prompts and the keyboard's raw input reports come back as commandId=3 pushes
+         * carrying field 131 (['K','B',ver,kind,...], decoded in app/g2/keyboard/protocol.ts).
+         */
+        const val FACECLAW_KEYBOARD_CONTROL_FIELD: Int = 130
+
+        const val FACECLAW_KEYBOARD_EVENT_FIELD: Int = 131
+
+        /** Fixed header of a field-131 record; fragments follow it. */
+        const val FACECLAW_KEYBOARD_EVENT_HEADER: Int = 24
 
         const val FACECLAW_WAKE_OP_ACQUIRE: Int = 1
 
@@ -497,6 +516,70 @@ class BleProtocol {
             )
         }
 
+        // Field numbers from g2_setting.proto (package g2.g2_setting; see g2-kit-unofficial
+        // ble/gen/g2_setting_pb.ts), named after the schema fields.
+
+        /** G2SettingPackage.commandId */
+        private const val G2_SETTING_PACKAGE_COMMAND_ID: Int = 1
+
+        /** G2SettingPackage.magicRandom */
+        private const val G2_SETTING_PACKAGE_MAGIC_RANDOM: Int = 2
+
+        /** G2SettingPackage.deviceReceiveInfoFromApp */
+        private const val G2_SETTING_PACKAGE_DEVICE_RECEIVE_INFO_FROM_APP: Int = 3
+
+        /** G2SettingPackage.deviceReceiveRequestFromApp (the settings-read reply) */
+        private const val G2_SETTING_PACKAGE_DEVICE_RECEIVE_REQUEST_FROM_APP: Int = 4
+
+        /** g2_settingCommandId.DeviceReceiveInfo */
+        private const val G2_SETTING_COMMAND_DEVICE_RECEIVE_INFO: Int = 1
+
+        /** DeviceReceiveInfoFromAPP.deviceReceiveHeadUpSetting */
+        private const val DEVICE_RECEIVE_INFO_HEAD_UP_SETTING: Int = 4
+
+        /** DeviceReceiveRequestFromAPP.headUpSwitchRestored */
+        private const val DEVICE_RECEIVE_REQUEST_HEAD_UP_SWITCH_RESTORED: Int = 7
+
+        /** DeviceReceiveRequestFromAPP.headUpAngleRestored */
+        private const val DEVICE_RECEIVE_REQUEST_HEAD_UP_ANGLE_RESTORED: Int = 8
+
+        /** DeviceReceiveRequestFromAPP.headUpAngleCalibrationRestored */
+        private const val DEVICE_RECEIVE_REQUEST_HEAD_UP_CALIBRATION_RESTORED: Int = 9
+
+        /**
+         * One head-up (look-up wake) setting: DeviceReceiveInfoFromAPP.deviceReceiveHeadUpSetting,
+         * a DeviceReceive_Head_UP_Setting carrying one of headUpSwitch, headUpAngle,
+         * headUpCalibrationSwitch or headUpCalibration ([field] is one of the HEAD_UP_FIELD_*).
+         * The firmware treats that submessage as a oneof: setting_handle_head_up_setting
+         * (2.3.0.24, 0x46c39a) receives a single {field, value} and applies it, so the switch and
+         * the angle go out as separate packages. headUpCalibration is not stored from the
+         * phone; it is the pitch the glasses measured on their own calibration screen. The
+         * effective trigger pitch is angle + calibration, clamped to -90..90 and accepted only in
+         * 1..90 (SVC_Settings_HeadUpConfig 0x470580, DRV_IMUHUDParameterConfig). The angle is a
+         * uint32 on the wire but used as a signed int, so a negative offset is sent as its
+         * 32-bit two's complement.
+         */
+        @JvmStatic
+        fun buildSetHeadUp(magic: Int, field: Int, value: Int): ByteArray {
+            var headUp: ByteArray = concat(CollectionUtils.listOf(encodeKey(field, 0), encodeUint32(value)))
+            return concat(
+                CollectionUtils.listOf(
+                    encodeVarintField(G2_SETTING_PACKAGE_COMMAND_ID, G2_SETTING_COMMAND_DEVICE_RECEIVE_INFO),
+                    encodeVarintField(G2_SETTING_PACKAGE_MAGIC_RANDOM, magic),
+                    encodeMessageField(
+                        G2_SETTING_PACKAGE_DEVICE_RECEIVE_INFO_FROM_APP,
+                        encodeMessageField(DEVICE_RECEIVE_INFO_HEAD_UP_SETTING, headUp),
+                    ),
+                )
+            )
+        }
+
+        /** DeviceReceive_Head_UP_Setting.headUpSwitch */
+        const val HEAD_UP_FIELD_SWITCH: Int = 1
+
+        /** DeviceReceive_Head_UP_Setting.headUpAngle */
+        const val HEAD_UP_FIELD_ANGLE: Int = 2
+
         /** Enable the firmware's wear detector (DeviceReceiveInfoFromAPP field 5). */
         @JvmStatic
         fun buildSetWearDetection(magic: Int, enabled: Boolean): ByteArray {
@@ -725,6 +808,42 @@ class BleProtocol {
         }
 
         /**
+         * Wrap an already-encoded ['K','B',ver,op,...] keyboard control as a settings write
+         * carrying CFW field 130. Magic zero, like the other private controls: the answer is a
+         * field-131 record naming the control's request id, not the settings ACK.
+         */
+        @JvmStatic
+        fun buildFaceclawKeyboardControl(record: ByteArray): ByteArray {
+            return concat(
+                CollectionUtils.listOf(
+                    encodeVarintField(1, 1),
+                    encodeVarintField(2, 0),
+                    encodeBytesField(FACECLAW_KEYBOARD_CONTROL_FIELD, record),
+                )
+            )
+        }
+
+        /**
+         * Extract a CFW keyboard record (field 131) from a settings frame, or null when the frame
+         * carries none. Only the ['K','B'] prelude and the fixed header's length are checked
+         * here; the TS side validates the version and decodes the rest.
+         */
+        @JvmStatic
+        fun parseFaceclawKeyboardEvent(pb: ByteArray?): ByteArray? {
+            if (pb == null) {
+                return null
+            }
+            val body = readFieldBytes(stripTrailingCrc(pb), FACECLAW_KEYBOARD_EVENT_FIELD)
+            if (
+                body == null || body.size < FACECLAW_KEYBOARD_EVENT_HEADER ||
+                    body[0].toInt() != 75 || body[1].toInt() != 66
+            ) {
+                return null
+            }
+            return body
+        }
+
+        /**
          * Return the raw CFW ambient-light report from a sid-0x09 frame, or null when this is an
          * ordinary settings frame. Only the 65.toByte(),76.toByte(),version prelude is validated
          * here; the fields are decoded on the TS side.
@@ -903,6 +1022,26 @@ class BleProtocol {
                 return null
             }
             return BatterySnapshot(battery, charging, silentMode)
+        }
+
+        /**
+         * The head-up settings in a settings READ ack: deviceReceiveRequestFromApp (field 4)
+         * headUpSwitchRestored=7, headUpAngleRestored=8, headUpAngleCalibrationRestored=9.
+         * Returns null when the ack has no request submessage. Absent fields (proto3 drops
+         * zeros) read as 0; angle and calibration are signed ints carried as uint32.
+         */
+        @JvmStatic
+        fun parseSettingsHeadUp(pb: ByteArray): IntArray? {
+            var root: ByteArray = stripTrailingCrc(pb)
+            var request: ByteArray? = readFieldBytes(root, G2_SETTING_PACKAGE_DEVICE_RECEIVE_REQUEST_FROM_APP)
+            if ((request == null)) {
+                return null
+            }
+            return intArrayOf(
+                readVarintFieldValue(request, DEVICE_RECEIVE_REQUEST_HEAD_UP_SWITCH_RESTORED, 0),
+                readVarintFieldValue(request, DEVICE_RECEIVE_REQUEST_HEAD_UP_ANGLE_RESTORED, 0),
+                readVarintFieldValue(request, DEVICE_RECEIVE_REQUEST_HEAD_UP_CALIBRATION_RESTORED, 0),
+            )
         }
 
         /** GlassesCaseDataPackage{commandId=CASE_INFO, magicRandom, caseInfo={}}, as the Even app sends it. */
@@ -1086,6 +1225,18 @@ class BleProtocol {
                 v = (v ushr 7)
             }
             out.write(v)
+            return out.toByteArray()
+        }
+
+        /** A varint of the value's 32-bit two's complement (encodeVarint stops short on negatives). */
+        private fun encodeUint32(value: Int): ByteArray {
+            var out: ByteSink = ByteSink()
+            var v: Long = (value.toLong() and 0xffffffffL)
+            while ((v >= 0x80L)) {
+                out.write((((v and 0x7fL).toInt()) or 0x80))
+                v = (v ushr 7)
+            }
+            out.write(v.toInt())
             return out.toByteArray()
         }
 

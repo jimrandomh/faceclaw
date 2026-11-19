@@ -17,7 +17,7 @@ const font={lineHeight:12,ascent:10,descent:2,measureText:text=>text.length*4,
 const menuCore=load('app/ui/menu-core.ts',{
   '../graphics/image':graphics,'./menu-highlight-motion': require('../.test-build/app/ui/menu-highlight-motion.js'), '../graphics/menu-scroll-list': require('../.test-build/app/graphics/menu-scroll-list.js'), './menu-scroll-motion': require('../.test-build/app/ui/menu-scroll-motion.js'), '../graphics/draw-expression': require('../.test-build/app/graphics/draw-expression.js'),
 });
-const {MenuLayer,TextPageLayer}=load('app/ui/menu.ts',{
+const {MenuLayer,TextPageLayer,menuHeadingItem}=load('app/ui/menu.ts',{
   './menu-animation-pref': require('../.test-build/app/ui/menu-animation-pref.js'), './animation-speed': require('../.test-build/app/ui/animation-speed.js'), '../native/settings-store': { getStringSetting: (_key, fallback) => fallback }, '../graphics/screen-size': { screenWidth: () => 640, screenHeight: () => 480 },
   '../graphics/image':graphics,'../graphics/textwrap':{wrapText:(_font,text)=>text.split('\n')},'../graphics/ui-fonts':{getDefaultSmallFont:()=>font},
   '../util/numeric-util':{clamp:(n,a,b)=>Math.max(a,Math.min(b,n))},'./gestures':{},
@@ -80,6 +80,31 @@ test('a submenu that replaces its parent menu skips the parent plane and dims th
   assert.equal(stack.baseDim(),0.5);
   stack.pop();stack.pop();
   assert.equal(stack.paint().length,2);
+});
+test('heading rows label a section and are never selected',async()=>{
+  const picked=[];
+  const row=label=>({label,onSelect(){picked.push(label);}});
+  const layer=new MenuLayer(null,[menuHeadingItem('First'),row('A'),row('B'),menuHeadingItem('Second'),row('C')],
+    {x:0,y:0,width:120,minHeight:150,maxHeight:150,squareCorners:true,showBorder:false});
+  const context={stack:{getBaseSize:()=>({width:120,height:150}),isFocused:()=>true}};
+  const paint=()=>layer.paint(context,()=>new graphics.GrayImage(120,150));
+  const move=async type=>{await layer.handleInput({type},context);paint();return layer.selectedIndex;};
+  // The highlight starts below the first heading and steps over the second, both ways and when wrapping.
+  paint();assert.equal(layer.selectedIndex,1);
+  assert.equal(await move('scroll-down'),2);
+  assert.equal(await move('scroll-down'),4);
+  assert.equal(await move('scroll-down'),1);
+  assert.equal(await move('scroll-up'),4);
+  assert.equal(await move('scroll-up'),2);
+  await layer.handleInput({type:'click'},context);assert.deepEqual(picked,['B']);
+  // A heading asked for by index lands on the row under it.
+  layer.selectItem(3);assert.equal(layer.selectedIndex,4);
+  // Headings draw dim, in capitals (4px per character in this font), in the rows' text column.
+  const image=paint().withDrawsBaked(false),inkAt=y=>{const xs=[];for(let x=0;x<120;x++) if(image.pixels[y*120+x]>=8) xs.push([x,image.pixels[y*120+x]]);return xs;};
+  const heading=inkAt(8+4+2),unselected=inkAt(8+20+4+2);
+  assert.equal(heading[0][0],unselected[0][0]);
+  assert.ok(heading.every(([,value])=>value===90));assert.ok(unselected.every(([,value])=>value===200));
+  assert.equal(heading.length,'FIRST'.length*2);
 });
 test('text page paints at the stack size, not the lens size',()=>{
   // An app window's stack is its viewport; a lens-sized plane is rejected by

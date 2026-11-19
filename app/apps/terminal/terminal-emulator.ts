@@ -82,4 +82,9 @@ export class TerminalEmulator {
   cursorCol(): number {
     return this.term.buffer.active.cursorX;
   }
+
+  /** DECCKM: the session asked for application cursor keys (ESC O A rather than ESC [ A). */
+  applicationCursorKeys(): boolean {
+    return this.term.modes.applicationCursorKeysMode;
+  }
 }

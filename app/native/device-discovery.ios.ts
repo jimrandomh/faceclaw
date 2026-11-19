@@ -3,11 +3,18 @@ import type { DiscoveryEvents } from './device-discovery'
 import type { RawAdvertisement } from '../g2/even-advertisement'
 export { buildAddressSet } from './device-discovery-common'
 
+/**
+ * How often a scan re-reads which arms the system is connected to. Each read refreshes
+ * their rows, which age out like advertisements once the link drops and they go quiet.
+ */
+const CONNECTED_ARMS_POLL_MS = 2000
+
 export class DeviceDiscoveryBridge {
   private ble = iosBluetooth()
   private off: (() => void) | null = null
   private generation = 0
   private cancelCollection: (() => void) | null = null
+  private connectedArmsTimer: ReturnType<typeof setInterval> | null = null
   get bluetoothEnabled(): boolean { return this.ble.state === 5 }
   get scanning(): boolean { return !!this.off && this.ble.scanning }
   startScan(events: DiscoveryEvents): boolean {
@@ -21,16 +28,27 @@ export class DeviceDiscoveryBridge {
     void this.ble.startScan(24 * 60 * 60 * 1000).catch(error => {
       if (generation === this.generation) events.onScanFailed?.(-1, String(error.message ?? error))
     })
+    // A connected arm doesn't advertise (iOS holds the right arm's ANCS link open after a
+    // session ends), so the scan alone would show those glasses one-armed.
+    const reportConnectedArms = () => { for (const device of this.ble.systemConnectedDevices()) events.onAdvertisement(device) }
+    reportConnectedArms()
+    this.connectedArmsTimer = setInterval(reportConnectedArms, CONNECTED_ARMS_POLL_MS)
     return true
   }
   stopScan(): void {
     ++this.generation; this.cancelCollection?.()
+    if (this.connectedArmsTimer) { clearInterval(this.connectedArmsTimer); this.connectedArmsTimer = null }
     if (this.off) { this.off(); this.off = null; this.ble.stopScan() }
   }
   // CoreBluetooth does not expose the phone's bond list. Fresh advertisements
-  // supply both identity and the UUID mapping that iOS needs for connections.
+  // supply both identity and the UUID mapping that iOS needs for connections;
+  // startScan() reports the arms the system is connected to.
   emitBondedDevices(): void {}
-  async getBondedCandidates(): Promise<RawAdvertisement[]> { return [...this.ble.devices.values()] }
+  async getBondedCandidates(): Promise<RawAdvertisement[]> {
+    const devices = new Map(this.ble.devices)
+    for (const device of this.ble.systemConnectedDevices()) if (!devices.has(device.address)) devices.set(device.address, device)
+    return [...devices.values()]
+  }
   async scanCandidates(timeoutMs = 6000): Promise<RawAdvertisement[]> {
     const generation = this.generation
     await this.ble.ensureReady()

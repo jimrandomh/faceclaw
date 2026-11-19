@@ -30,6 +30,9 @@ function fixture() {
   let now = 1000, nextTask = 0, screenOn = true, shellOptions;
   const battery = {};
   const tasks = new Map(), sent = [], previews = [], received = [], errors = [];
+  // The keyboard bridge's service, as the controller sees it: what it was told, and the host it was given.
+  const keyboard = { host: null, calls: [], setHost(host) { this.host = host; }, linkReady() { this.calls.push('ready'); },
+    linkLost(release) { this.calls.push(release ? 'lost+release' : 'lost'); }, retryNow() { this.calls.push('retry'); }, handleUnhandledKey() {} };
   const boardStats = { starts: 0, stops: 0, paints: 0 };
   const registered = [], inProcessApps = [];
   const settings = { lock: true, enabled: true, tap: true, hold: true, tilt: true, duration: 3000, depth: 0 };
@@ -165,6 +168,7 @@ function fixture() {
     './device-addresses': { loadDeviceAddresses: () => ({ right: 'AA', left: 'BB', ring: '' }) }, './ios-peripheral-identity': { deviceAddressError: () => null },
     './wear-remote': { WearRemote: class { schedulePublish() {} } },
     './firmware-compat': load('app/g2/firmware-compat.ts', {}), './reconnect-policy': load('app/g2/reconnect-policy.ts', {}),
+    './keyboard/service': { keyboardService: keyboard },
     '../apps/launcher': { launcherEntries: () => [] },
     '../apps/evenhub/installed-apps': {}, '../apps/evenhub/manager': { onPhoneShownChanged: () => () => {}, phoneUiButton: () => null },
     '../apps/evenhub/updates': {}, '../apps/evenhub': {},
@@ -223,7 +227,7 @@ function fixture() {
   }
   async function phone(type, origin = 'ring') { controller.gesture(type, origin); await render(); }
   async function connect() { await controller.connect(); await render(); }
-  return { relay, controller, shell, battery, remoteHost, keyboardChanged: session => shellOptions.onKeyboardInputChanged(session), settings, phoneState, observers,
+  return { relay, controller, shell, battery, remoteHost, keyboard, keyboardChanged: session => shellOptions.onKeyboardInputChanged(session), settings, phoneState, observers,
     get shellOptions() { return shellOptions; }, registered, inProcessApps,
     get bridge() { return bridge; }, connect, wear: wearing => bridge.emitWear(wearing), settingsChanged: () => settingsChanged(), sent, previews, received, boardStats, hardware, phone, advance, render };
 }
@@ -347,4 +351,54 @@ test('the switcher can open the Notifications window in the background, once, wi
   assert.equal(f.controller.display.surfaces.has('window:notifications'), false);
   assert.equal(f.shellOptions.openNotificationsWindow().opened, true);
   assert.equal(f.inProcessApps.length, 2);
+});
+
+test('a paired keyboard: the bridge follows the G2 link, and its keys\' gestures go in with physical input', async () => {
+  const f = fixture();
+  await f.connect();
+  // Connected is not enough: the firmware has to be one with the bridge.
+  f.bridge.emitState('connected');
+  assert.ok(!f.keyboard.calls.includes('ready'));
+  f.bridge.listeners.firmware({ leftVersion: '2.3.0.24', rightVersion: '2.3.0.24', extension: 'Faceclaw/39' });
+  assert.ok(!f.keyboard.calls.includes('ready'));
+  f.bridge.listeners.firmware({ leftVersion: '2.3.0.24', rightVersion: '2.3.0.24', extension: 'Faceclaw/40' });
+  assert.equal(f.keyboard.calls.at(-1), 'ready');
+  assert.equal(f.keyboard.host.ready(), true);
+  // The link dropping on its own ends it without a word to the firmware; coming back restores it.
+  f.bridge.emitState('retrying', 'Reconnecting');
+  assert.equal(f.keyboard.calls.at(-1), 'lost'); assert.equal(f.keyboard.host.ready(), false);
+  f.bridge.emitState('connected');
+  assert.equal(f.keyboard.calls.at(-1), 'ready');
+
+  // A key's gesture is ordinary input from there on, tagged with the device it stands in for.
+  f.received.length = 0;
+  await f.keyboard.host.gesture('swipe-left', 'watch'); await f.keyboard.host.gesture('click', 'ring');
+  await f.keyboard.host.gesture('long-press', 'watch');
+  assert.deepEqual(f.received.map(input => `${input.type}/${input.source}`),
+    ['swipe-left/watch', 'click/ring', 'long-press/watch', 'long-press-release/watch']);
+  // A dark display: the bridge stops looking for an absent keyboard, a key wakes it, and it looks again.
+  f.shell.sleep();
+  assert.equal(f.keyboard.host.shouldReconnect(), false);
+  f.keyboard.calls.length = 0; f.received.length = 0;
+  f.keyboard.host.wake(); await f.render();
+  assert.deepEqual(f.received.map(input => input.type), ['display-wake']);
+  assert.equal(f.shell.isScreenOn(), true); assert.ok(f.keyboard.calls.includes('retry'));
+  assert.equal(f.keyboard.host.shouldReconnect(), true);
+
+  // Disconnecting on purpose lets the keyboard go while the link is still up.
+  f.keyboard.calls.length = 0;
+  await f.controller.disconnect();
+  assert.equal(f.keyboard.calls[0], 'lost+release');
+  assert.equal(f.keyboard.host.ready(), false);
+});
+
+test('a keyboard needs a G2: other glasses never bring the bridge up', async () => {
+  glassesType = 'g1';
+  try {
+    const f = fixture();
+    await f.connect();
+    f.bridge.emitState('connected');
+    f.bridge.listeners.firmware({ leftVersion: 'g1v0 0.5.66', rightVersion: 'g1v0 0.5.66', extension: 'Faceclaw/40' });
+    assert.ok(!f.keyboard.calls.includes('ready'), f.keyboard.calls.join());
+  } finally { glassesType = 'g2'; }
 });

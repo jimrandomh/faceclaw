@@ -19,9 +19,14 @@ import { ALL_NOTIFICATIONS, onAndroidNotificationPosted, onAndroidNotificationRe
 import { watchNotificationListenerBinding } from "../native/notification-access";
 import { openEvenAppSettings, readEvenAppNotificationState } from "../native/even-app-conflict";
 import { defaultRingName, setGlassesRingLink } from "../native/ring-status";
+import { applyGlanceAngle, glassesHeadUpTrigger, syncGlanceAngleOriginal } from "./head-angle";
+import { glanceAngleTriggerDegrees, glanceTapTimeoutMs } from "../apps/glanceboard/glanceboard-settings";
+import { GLANCE_TILT_MAX_MS, glanceTiltMaxMs } from "./glance-state";
 import { getBooleanSetting, setBooleanSetting } from "../native/settings-store";
 import { grayImageToPreviewSource } from "../native/gray-image-preview";
 import { firmwareIncompatibilityMessage, hasCompatibleFirmware } from "./firmware-compat";
+import { keyboardService } from "./keyboard/service";
+import type { KeyEvent } from "./keyboard/keys";
 import { hasExtractedEvenHubFonts } from "./firmware-builder";
 import { isHaltedSessionPhase, resumeAutoReconnect, suppressAutoReconnect } from "./reconnect-policy";
 import { WearRemote, type WearRemoteInputKind } from "./wear-remote";
@@ -336,6 +341,7 @@ class DashboardController {
   private evenHubResumePromise: Promise<boolean> | null = null;
   /** Faceclaw's firmware at the required revision reported in; its extensions can be used. */
   private customFirmwareConfirmed = false;
+  private lastGlanceAngleDegrees = glanceAngleTriggerDegrees();
   private faceclawWakeLeaseState: boolean | null = null;
   /** Ring connection mode the current session was started with (it applies per connection). */
   private ringModeAtConnect: RingConnectionMode = "glasses";
@@ -465,6 +471,7 @@ class DashboardController {
         if (on) this.glance.dismiss();
         this.handleScreenStateChanged(on);
         if (on) this.requestShellRender();
+        if (on) keyboardService.retryNow();
         this.emit();
       },
     });
@@ -496,6 +503,7 @@ class DashboardController {
       if (!resized && !appsResized) this.applyWindowEdgesIfChanged();
       this.syncAssistantBridgeIfChanged();
       this.syncLockScreenSettingIfChanged();
+      this.applyGlanceAngleIfChanged();
       this.syncContinuousRecording();
       // A Preview color or scaling change should show on the mirror at once,
       // not at the next composited frame (cheap: floor-limited, dedup'd on
@@ -516,6 +524,29 @@ class DashboardController {
       text: (text, submit) => { if (!shell.isScreenOn()) shell.wake("window"); shell.sendTextToForegroundWindow(text, { submit }); this.requestShellRender(); },
       assistantAvailable: () => shell.isAssistantAvailable(),
       assistant: text => shell.sendToAssistant(text),
+    });
+    // A keyboard paired through the glasses (CFW keyboard bridge). The
+    // service decides what each key means (app/g2/keyboard/key-router.ts);
+    // this is how it reaches the display and the input pipeline.
+    keyboardService.setHost({
+      ready: () => this.phase === "connected",
+      locked: () => this.glassesLocked,
+      wake: () => {
+        void this.handleInputEvent({
+          kind: "display-wake",
+          containerName: "",
+          eventType: OsEventTypeList.DOUBLE_CLICK_EVENT,
+          eventSource: EventSourceType.TOUCH_EVENT_FORM_DUMMY_NULL,
+          systemExitReasonCode: 0,
+          frameId: 0,
+        }).catch((error) => this.appendLog(`keyboard wake failed: ${this.formatError(error)}`));
+      },
+      gesture: (gesture, origin) => this.injectSyntheticRingInput(gesture, origin),
+      log: (line) => this.appendLog(line),
+      // A keyboard that is switched off would otherwise keep the glasses'
+      // radio looking for it around the clock. One still connected when the
+      // display sleeps stays connected, and its next key wakes the display.
+      shouldReconnect: () => this.phase === "connected" && shell.isScreenOn(),
     });
     this.wearRemote = new WearRemote({
       apps: launchableApps,
@@ -1674,6 +1705,8 @@ class DashboardController {
         if (mappedPhase === "connected") {
           this.syncEvenHubScreenOffSetting();
           this.ensureWearStateTracking();
+          // The session reapplies it on reconnects; restate it for a new session.
+          applyGlanceAngle();
           this.maybeWakeAfterChargingReconnect();
         } else if (mappedPhase !== "charging") {
           this.cancelEvenHubSuspendTimer();
@@ -1782,6 +1815,7 @@ class DashboardController {
             this.appendLog(`wake takeover lease sync failed: ${this.formatError(error)}`);
           });
           this.ensureWearStateTracking();
+          this.syncKeyboardLink();
         }
         // The shared session halts on incompatible firmware by itself
         // ("incompatible-firmware" phase); this only explains why.
@@ -1835,6 +1869,7 @@ class DashboardController {
         this.requestShellRender();
         this.updateCompositePreview();
         this.updateConnectedForegroundNotification();
+        syncGlanceAngleOriginal();
       }, SHELL_REFRESH_INTERVAL_MS);
       this.previewTimer = setInterval(() => this.updateCompositePreview(), PREVIEW_INTERVAL_MS);
       this.screenTimeoutTimer = setInterval(() => {
@@ -2523,6 +2558,16 @@ class DashboardController {
     frameTimings.logFrame(frameId, `TS input handler start: ${event.kind} ${eventLabel(event.kind, event.eventType)}`);
     let frameOwned = false;
     try {
+      if (event.kind === "sys-event" && event.eventType === OsEventTypeList.HEAD_DOWN_EVENT) {
+        // Only the Glanceboard cares (it ends a head-tilt showing); never
+        // shell input, so it can't count as activity or wake anything.
+        const glanceEvent = this.glance.eventForGesture("head-down");
+        if (glanceEvent) {
+          await this.glance.handleEvent(glanceEvent, frameId);
+          frameOwned = true;
+        }
+        return;
+      }
       const inputEvent = rawInputEventToInputEvent(event);
       if (!acceptInput(inputEvent)) return;
       // The gesture, plus which app is on screen and whether input goes to it,
@@ -2641,15 +2686,49 @@ class DashboardController {
     }
   }
 
+  /** Re-send the head-tilt angle when it changed (the setting, from either settings UI, or the Glanceboard toggle). */
+  private applyGlanceAngleIfChanged(): void {
+    const degrees = glanceAngleTriggerDegrees();
+    if (degrees === this.lastGlanceAngleDegrees) return;
+    this.lastGlanceAngleDegrees = degrees;
+    applyGlanceAngle();
+  }
+
+  /**
+   * Tell the keyboard bridge whether the session can host a keyboard: a G2
+   * on firmware with the bridge, connected and in use. While the glasses
+   * charge in their case the link stays up but nobody is typing, so the
+   * firmware is told to let the keyboard go.
+   */
+  private syncKeyboardLink(): void {
+    const up =
+      this.phase === "connected" &&
+      this.customFirmwareConfirmed &&
+      glassesTypeSetting.get() === "g2";
+    // Charging, or a disconnect the user asked for: the link is still up, so
+    // the DISABLE gets out ahead of everything the teardown sends.
+    if (up) keyboardService.linkReady();
+    else keyboardService.linkLost(this.phase === "charging" || this.phase === "disconnecting");
+  }
+
   /**
    * The Glanceboard event a sleep-time input means, or null when the shell
    * should see the input as usual. A display-wake carries the head-tilt
-   * gesture (HEAD_UP_EVENT) as a press; the double-tap display-wake stays the
-   * regular UI's wake.
+   * gesture (HEAD_UP_EVENT) as a tilt, which lasts until the head-down; the
+   * double-tap display-wake stays the regular UI's wake.
    */
   private glanceEventFor(inputEvent: InputEvent, event: RawInputEvent): GlanceEvent | null {
     if (inputEvent.type === "display-wake") {
-      return event.eventType === OsEventTypeList.HEAD_UP_EVENT ? this.glance.eventForGesture("head-tilt") : null;
+      if (event.eventType !== OsEventTypeList.HEAD_UP_EVENT) return null;
+      const glanceEvent = this.glance.eventForGesture("head-tilt");
+      if (glanceEvent?.type !== "tilt") return glanceEvent;
+      const maxMs = glanceTiltMaxMs({
+        capMs: glanceEvent.maxMs === undefined ? GLANCE_TILT_MAX_MS : glanceEvent.maxMs,
+        resumedSession: this.evenHubSessionSuspended || this.evenHubResumePromise !== null,
+        triggerDegrees: glassesHeadUpTrigger() ?? (glanceAngleTriggerDegrees() || null),
+        tapTimeoutMs: glanceTapTimeoutMs(),
+      });
+      return { type: "tilt", maxMs };
     }
     return this.glance.eventForGesture(inputEvent.type);
   }
@@ -2748,6 +2827,7 @@ class DashboardController {
         }
       },
       endTextSettingEdit: () => this.endTextSettingEdit(),
+      unhandledKey: (event) => keyboardService.handleUnhandledKey(event as KeyEvent),
     });
     this.appHosts.set(appId, host);
     return host;
@@ -3113,6 +3193,7 @@ class DashboardController {
   private setPhase(phase: ConnectionPhase): void {
     if (this.phase === phase) return;
     this.phase = phase;
+    this.syncKeyboardLink();
     if (phase !== "connected" && phase !== "charging") {
       shell.setBatteryLevels({ ring: null, ringCharging: null });
     }

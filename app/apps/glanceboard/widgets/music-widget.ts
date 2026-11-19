@@ -50,16 +50,26 @@ export const musicShowAlbumArtSetting = new ConfigSettingBoolean({
     "Show the album art beside the track details. When off, the title, artist, album and progress bar use the full width of the card.",
 });
 
+export const musicShowIdleNoteSetting = new ConfigSettingBoolean({
+  id: "glanceboard-music-show-idle-note",
+  label: "Show note when idle",
+  storageKey: "glanceboard.music.showIdleNote",
+  defaultValue: true,
+  description: "Show a dim music note on the card while nothing is playing. When off, the card is left blank.",
+});
+
 /** The music card's submenu in Glanceboard > Settings. */
 export function musicSettingsMenuItems(): MenuItem[] {
-  return [toggleSettingMenuItem(musicShowAlbumArtSetting)];
+  return [toggleSettingMenuItem(musicShowAlbumArtSetting), toggleSettingMenuItem(musicShowIdleNoteSetting)];
 }
 
 /**
  * Now playing: album art (unless turned off), title/artist/album and a
  * progress bar for the active media session (Apple Music on iOS), the Music
- * app's header at card size. The media bridge runs for the whole session; the
- * widget subscribes and ticks once a second only while something is playing.
+ * app's header at card size. With nothing playing the card holds a dim note,
+ * or nothing with that turned off. The media bridge runs for the whole
+ * session; the widget subscribes and ticks once a second only while
+ * something is playing.
  */
 export class MusicWidget implements GlanceWidget {
   private media: MediaControllerState = mediaControllerBridge.snapshot();
@@ -108,8 +118,8 @@ export class MusicWidget implements GlanceWidget {
         image.drawText(small, PAD, PAD + small.lineHeight + 6, mediaControllerBridge.accessLabel, 140);
         return;
       }
-      // Nothing playing: a dim note, centred, and nothing else.
-      const note = idleNoteImage();
+      // Nothing playing: a dim note, centred, and nothing else; or a blank card.
+      const note = musicShowIdleNoteSetting.get() ? idleNoteImage() : null;
       if (note) image.drawImage(note, ((image.width - note.width) / 2) | 0, ((image.height - note.height) / 2) | 0);
       return;
     }

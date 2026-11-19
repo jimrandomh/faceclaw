@@ -1,7 +1,7 @@
 import { getDefaultMediumFont, getDefaultSmallFont } from "../../graphics/ui-fonts";
 import { GrayImage } from "../../graphics/image";
 import { clamp } from "../../util/numeric-util";
-import { addImuListener, imuSourceLabel, setImuReportEnabled, type ImuReading } from "../../native/imu";
+import { addImuListener, imuPitchDegrees, imuSourceLabel, setImuReportEnabled, type ImuReading } from "../../native/imu";
 import { type InputEvent } from "../../ui/gestures";
 import { Layer, type LayerContext } from "../../ui/layers";
 import { shell } from "../../ui/shell/shell";
@@ -23,7 +23,8 @@ const BAR_RIGHT_INSET = 4;
 /**
  * Accelerometer demo: turns the IMU stream on while this page is visible (the
  * Developer window is foregrounded and the screen is on), off otherwise, and
- * shows the latest x/y/z reading with a simple per-axis bar.
+ * shows the latest x/y/z reading (Faceclaw's frame, imu-types.ts) with a
+ * simple per-axis bar, and the head's pitch.
  *
  * The IMU stream is experimental — the firmware may never populate it — so the
  * page also reports how many samples have arrived.
@@ -92,7 +93,8 @@ export class AccelerometerDemoLayer implements Layer {
     const bodyX = padding.left + BODY_INDENT;
 
     image.drawText(small, padding.left, top, "Accelerometer", 220);
-    const status = this.enabled ? "IMU on" : "IMU off";
+    const pitch = this.reading ? `pitch ${Math.round(imuPitchDegrees(this.reading))}°    ` : "";
+    const status = pitch + (this.enabled ? "IMU on" : "IMU off");
     image.drawText(small, right - small.measureText(status), top, status, 150);
 
     if (this.reading) {

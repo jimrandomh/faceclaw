@@ -6,6 +6,7 @@ import { BuzzerDemoLayer } from "./buzzer-demo";
 import { AccelerometerDemoLayer } from "./accelerometer-demo";
 import { BandwidthBenchmarkLayer } from "./bandwidth-benchmark";
 import { LightSensorDemoLayer } from "./light-sensor-demo";
+import { MouseTestLayer } from "./mouse-test";
 import { MicrophonesMonitorLayer } from "./microphones-monitor";
 import { ResourceUsageLayer } from "./resource-usage";
 import { RingStatusLayer } from "./ring-status";
@@ -69,6 +70,13 @@ function debugTestsMenu(openInputEvents: OpenPage, openMicrophones: OpenPage): M
       {
         label: "Microphones",
         onSelect: openMicrophones,
+      },
+      {
+        // The touchpad or mouse of a keyboard paired through the glasses.
+        label: "Mouse cursor",
+        onSelect: (ctx) => {
+          ctx.stack.push(new MouseTestLayer(DEVELOPER_WINDOW_ID, ctx.actions.requestRender));
+        },
       },
       {
         label: "BLE bandwidth",

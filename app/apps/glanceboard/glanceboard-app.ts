@@ -5,7 +5,9 @@ import { enumSettingMenuItem, onAnySettingChanged, toggleSettingMenuItem } from 
 import { uiFontOverridePickerMenuItem } from "../../ui/font-picker";
 import { type InputEvent } from "../../ui/gestures";
 import { type Layer, type LayerContext } from "../../ui/layers";
-import { drawSelectionHighlight, isMenuItemDisabled, MenuLayer, openModalMenu, submenuItem, type MenuItem } from "../../ui/menu";
+import { drawSelectionHighlight, isMenuItemDisabled, menuHeadingItem, MenuLayer, openModalMenu, submenuItem, type MenuItem } from "../../ui/menu";
+import { liveHeadPitchFooter } from "../../g2/head-angle";
+import { headUpControlsAvailable } from "../../native/glasses-controls";
 import { Menu } from "../../ui/menu-core";
 import { LIST_ROW_TEXT_INSET, lineStep, listRowHeight } from "../../ui/metrics";
 import { createInProcessWindow, type InProcessAppOptions, type InProcessWindow } from "../../ui/shell/in-process-window";
@@ -20,7 +22,9 @@ import {
   glanceLayout,
   glanceLayoutSetting,
   glanceShowLinesSetting,
+  glanceAngleSetting,
   glanceShowOnHeadTiltSetting,
+  glanceTiltTimeoutSetting,
   glanceShowOnLongPressSetting,
   glanceSlotChoiceLabel,
   glanceSlotSettings,
@@ -319,25 +323,45 @@ function openSlotPicker(ctx: LayerContext, slotIndex: number): void {
 }
 
 /**
- * Settings: layout, sleep gestures, duration, slot lines, widget font, and
- * stereo depth, then a row per widget on the board for its own settings.
+ * Settings, in four sections: Layout (the slot grid), Trigger (the sleep
+ * gestures that show the board, and for how long), Display (slot lines,
+ * widget font, stereo depth) and Cards (a row per widget on the board, for
+ * its own settings; left out while the board is empty).
  */
 function openGlanceSettings(ctx: LayerContext): void {
-  const items = (): MenuItem[] => [
-    // The layout decides which slots (and so which widgets) are on the board.
-    enumSettingMenuItem(glanceLayoutSetting, { onChange: () => layer.setItems(items()) }),
-    enumSettingMenuItem(glanceTapDurationSetting),
-    toggleSettingMenuItem(glanceShowOnLongPressSetting),
-    toggleSettingMenuItem(glanceShowOnHeadTiltSetting),
-    toggleSettingMenuItem(glanceShowLinesSetting),
-    uiFontOverridePickerMenuItem(glanceFont, {
-      title: "Glanceboard font",
-      description:
-        "Typeface for the Glanceboard's widgets. Same as UI font follows the Font setting in Settings > Customization.",
-    }),
-    enumSettingMenuItem(glanceDepthSetting),
-    ...widgetSettingsMenuItems(),
-  ];
+  const items = (): MenuItem[] => {
+    const cards = widgetSettingsMenuItems();
+    return [
+      menuHeadingItem("Layout"),
+      // The layout decides which slots (and so which widgets) are on the board.
+      enumSettingMenuItem(glanceLayoutSetting, { onChange: () => layer.setItems(items()) }),
+
+      menuHeadingItem("Trigger"),
+      enumSettingMenuItem(glanceTapDurationSetting),
+      toggleSettingMenuItem(glanceShowOnLongPressSetting),
+      toggleSettingMenuItem(glanceShowOnHeadTiltSetting),
+      enumSettingMenuItem(glanceTiltTimeoutSetting),
+      // Only Android can change the glasses' head-up setting (glasses-controls.ts).
+      // The controller's settings listener sends a new angle to the glasses; the
+      // picker shows the head's current angle to choose by.
+      ...(headUpControlsAvailable()
+        ? [enumSettingMenuItem(glanceAngleSetting, {
+            pickerFooter: liveHeadPitchFooter(() => shell.isWindowVisible(GLANCEBOARD_WINDOW_ID)),
+          })]
+        : []),
+
+      menuHeadingItem("Display"),
+      toggleSettingMenuItem(glanceShowLinesSetting),
+      uiFontOverridePickerMenuItem(glanceFont, {
+        title: "Glanceboard font",
+        description:
+          "Typeface for the Glanceboard's widgets. Same as UI font follows the Font setting in Settings > Customization.",
+      }),
+      enumSettingMenuItem(glanceDepthSetting),
+
+      ...(cards.length ? [menuHeadingItem("Cards"), ...cards] : []),
+    ];
+  };
   const layer = new MenuLayer("Glanceboard settings", items(), PAGE_MENU_LAYOUT);
   ctx.stack.push(layer);
 }

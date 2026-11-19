@@ -506,6 +506,9 @@ internal fun GlassesSessionCore.scheduleReconnectLocked(sessionWasReady: Boolean
 internal fun GlassesSessionCore.resetSessionStateLocked() {
     ringBattery = -1
     ringCharging = -1
+    headUpSwitch = -1
+    headUpReadAtMs = 0L
+    headUpVerifyPending = false
     directRingBattery = -1
     directRingCharging = -1
     sessionReady = false
@@ -583,6 +586,22 @@ internal fun GlassesSessionCore.emitMicStatus(body: ByteArray, address: String) 
     }
 }
 
+internal fun GlassesSessionCore.emitKeyboardEvent(body: ByteArray) {
+    if (keyboardEventListeners.isEmpty()) {
+        return
+    }
+    val copy = body.copyOf()
+    host.postToMain {
+        for (keyboardListener in keyboardEventListeners) {
+            try {
+                keyboardListener.onKeyboardEvent(copy)
+            } catch (t: Throwable) {
+                logWarn("keyboard event listener failed", t)
+            }
+        }
+    }
+}
+
 internal fun GlassesSessionCore.emitAudioMonitorPacket(data: ByteArray, arm: String, arrivalMs: Long) {
     if (audioMonitorListeners.isEmpty()) {
         return
@@ -634,14 +653,16 @@ internal fun GlassesSessionCore.finishFrame(frameId: Int, outcome: String) {
     }
 }
 
+/** [x], [y], [z] as the hardware reports them; listeners get them in [ImuOrientation]'s frame. */
 internal fun GlassesSessionCore.emitImuData(x: Double, y: Double, z: Double, eventSource: Int) {
     if (imuListeners.isEmpty()) {
         return
     }
+    val (cx, cy, cz) = ImuOrientation.toCanonical(glassesType, x, y, z)
     host.postToMain {
         for (imuListener in imuListeners) {
             try {
-                imuListener.onImuData(x, y, z, eventSource)
+                imuListener.onImuData(cx, cy, cz, eventSource)
             } catch (t: Throwable) {
                 logWarn("listener onImuData failed", t)
             }
