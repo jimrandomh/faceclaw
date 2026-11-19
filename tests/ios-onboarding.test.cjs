@@ -184,6 +184,7 @@ test('iOS discovery stops pending scans on cancellation and ignores a late permi
   const ble = { state: 5, scanning: false, devices: new Map(),
     ensureReady: () => ready(), onEvent: fn => { listeners.add(fn); return () => listeners.delete(fn); },
     startScan: async () => { starts++; }, stopScan: () => { stops++; },
+    systemConnectedDevices: () => [],
   };
   const { DeviceDiscoveryBridge } = load('app/native/device-discovery.ios.ts', {
     './ios-bluetooth': { iosBluetooth: () => ble }, './device-discovery-common': {},
