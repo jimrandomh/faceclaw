@@ -287,7 +287,7 @@ function shellEnv({ wakeAction = 'voice-input', skipConfirmation = false } = {})
     './brightness-picker-layer': {}, './notification-modal-queue': load('app/ui/shell/notification-modal-queue.ts', {}),
     './notification-popup-timeout': {},
     '../../native/notification-icons': {}, '../../native/notification-sources': {},
-    '../../assistant/tool-registry': {}, './geometry': {
+    '../../assistant/tool-registry': {}, '../../assistant/date-format': {}, './geometry': {
       sidebarWidth: () => 64, minWindowTop: () => 96, switcherPosition: () => 'left', uiDepth: () => 0,
       screenWidth: () => 640, screenHeight: () => 480,
       appViewportRect: () => ({ x: 64, y: 124, width: 576, height: 260 }),

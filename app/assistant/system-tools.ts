@@ -3,6 +3,7 @@ import { hasCalendarPermission } from "../native/calendar-permissions";
 import { mediaControllerBridge } from "../native/media-controller";
 import { spotifyService } from "../native/spotify";
 import { dismissNotification, readActiveNotifications } from "../native/notification-icons";
+import { timeFormatSetting } from "../ui/dashboard-settings";
 import { shell } from "../ui/shell/shell";
 import { toolRegistry, type ToolRegistry, type ToolResult } from "./tool-registry";
 import { formatDateTime, formatEvent } from "./date-format";
@@ -58,7 +59,7 @@ export function registerSystemTools(registry: ToolRegistry = toolRegistry): void
     {
       name: "calendar.list_events",
       description:
-        "List the user's upcoming calendar events. Returns events from now forward, ordered by start time.",
+        "List the user's upcoming calendar events. Returns events that haven't ended yet (including ones in progress), ordered by start time.",
       inputSchema: {
         type: "object",
         properties: {
@@ -78,7 +79,8 @@ export function registerSystemTools(registry: ToolRegistry = toolRegistry): void
       try {
         const events = await readUpcomingEventsAsync(maxEvents, withinHours * 60 * 60 * 1000);
         if (!events.length) return ok("No upcoming events in that window.");
-        return ok(events.map(formatEvent).join("\n"));
+        const twelveHour = twelveHourClock();
+        return ok(events.map((event) => formatEvent(event, twelveHour)).join("\n"));
       } catch {
         return err("Calendar events could not be read. Check calendar access on your phone and try again.");
       }
@@ -225,7 +227,7 @@ function describeState(): string {
       : battery.caseCharging ? ", charging" : "";
     parts.push(`Charging case battery: ${battery.case}%${detail}.`);
   }
-  parts.push(`Local time: ${formatDateTime(new Date())}.`);
+  parts.push(`Local time: ${formatDateTime(new Date(), twelveHourClock())}.`);
   return parts.join(" ");
 }
 
@@ -240,6 +242,10 @@ function describeNowPlaying(): string {
     return `${verb}: ${title}${artist}${app}.`;
   }
   return "Nothing is currently playing.";
+}
+
+function twelveHourClock(): boolean {
+  return timeFormatSetting.get() === "12h";
 }
 
 function formatNotification(notification: { key: string; appName: string; title: string; text: string; customText?: string[] }): string {

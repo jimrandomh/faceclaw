@@ -22,7 +22,8 @@ function provider() {
   const reads = [];
   const bridge = { readUpcomingEventsWindowMsCompletion: (max, window, done) => reads.push({ max, window, done }) };
   const permissions = { hasCalendarPermission: () => granted };
-  const clock = { Date: class extends Date { static now() { return now; } } };
+  // `new Date()` reads the same fake clock as Date.now(), for code that asks for today's date.
+  const clock = { Date: class extends Date { constructor(...args) { super(...(args.length ? args : [now])); } static now() { return now; } } };
   const api = load('app/native/calendar.ios.ts', { './calendar-permissions': permissions }, {
     FaceclawCalendar: { shared: () => bridge }, ...clock,
   });
@@ -147,6 +148,8 @@ test('denied calendar access offers Settings; restricted access explains the res
   assert.equal(restricted.requests.length, 0); assert.equal(restricted.opened.length, 0);
 });
 
+const dateUtil = load('app/util/date-util.ts');
+
 function screenFixture() {
   const f = provider(), timers = new Map(); let nextTimer = 0;
   const font = { lineHeight: 12, measureText: text => text.length * 6 };
@@ -160,12 +163,13 @@ function screenFixture() {
     'graphics/textwrap': { truncateText: (_font, text) => text, wrapText: (_font, text) => [text] },
     'native/calendar': f.api, 'native/calendar-permissions': f.permissions, 'ui/metrics': { lineStep: () => 14 },
     'ui/dashboard-settings': { timeFormatSetting: { get: () => '24h' } }, 'ui/gestures': { GESTURE_CLICK: 'Tap' },
-    'util/numeric-util': { clamp: (n, min, max) => Math.max(min, Math.min(max, n)) },
+    'util/numeric-util': { clamp: (n, min, max) => Math.max(min, Math.min(max, n)) }, 'util/date-util': dateUtil,
   };
   const modules = depth => Object.fromEntries(Object.entries(common).map(([key, value]) => [depth + key, value]));
-  const calendar = load('app/apps/calendar/calendar.ts', { ...modules('../../'), './event-days': load('app/apps/calendar/event-days.ts') });
+  const eventDays = load('app/apps/calendar/event-days.ts', { '../../util/date-util': dateUtil });
+  const calendar = load('app/apps/calendar/calendar.ts', { ...modules('../../'), './event-days': eventDays }, f.clock);
   const widget = load('app/apps/glanceboard/widgets/calendar-widget.ts', {
-    ...modules('../../../'), '../../calendar/calendar': calendar,
+    ...modules('../../../'), '../../calendar/calendar': calendar, '../../calendar/event-days': eventDays,
     '../glance-font': { glanceFont: { small: () => font, medium: () => font } },
   }, { ...f.clock, setInterval: fn => { timers.set(++nextTimer, fn); return nextTimer; }, clearInterval: id => timers.delete(id) });
   return { ...f, ...calendar, ...widget, timers, Image };
@@ -201,6 +205,26 @@ test('Calendar and Glanceboard show permission, loading, error and event states 
   assert.deepEqual(bare.boxes[0], [0, 46, 300, 32]);
   widget.stop(); const before = renders; f.bridge.changeHandler();
   assert.equal(renders, before); assert.equal(f.timers.size, 0);
+});
+
+test('Calendar and Glanceboard list an event carried over from an earlier day under today, by its span or end', () => {
+  const f = screenFixture();
+  const local = (y, m, d, h = 0, min = 0) => new Date(y, m - 1, d, h, min).getTime();
+  f.advance(local(2026, 11, 18, 0, 30) - f.clock.Date.now());
+  const widget = new f.CalendarWidget(), layer = new f.CalendarLayer(() => {});
+  const ctx = { stack: { getBaseSize: () => bordered(300, 288) } };
+  layer.paint(ctx);
+  f.reads[0].done(JSON.stringify([
+    f.event('office', { title: 'Office', startMs: local(2026, 11, 16), endMs: local(2026, 11, 19), allDay: true, location: '' }),
+    f.event('shift', { title: 'Late shift', startMs: local(2026, 11, 17, 22), endMs: local(2026, 11, 18, 2), location: '' }),
+    f.event('meeting', { title: 'Meeting', startMs: local(2026, 11, 19, 9), endMs: local(2026, 11, 19, 10), location: '' }),
+  ]), null);
+  const app = layer.paint(ctx).text;
+  assert.deepEqual(app.slice(app.indexOf('Today  Wed 18 Nov')), ['Today  Wed 18 Nov', 'All day  Office', 'Mon 16 – Wed 18 Nov',
+    'Until 02:00  Late shift', 'Tue 17 – Wed 18 Nov', 'Tomorrow  Thu 19 Nov', '09:00  Meeting']);
+  const image = new f.Image(); widget.paint(image);
+  assert.deepEqual(image.text, ['Office', 'All day, Mon 16 – Wed 18 Nov', 'Until 02:00', 'Late shift',
+    'Tomorrow  Thu 19 Nov', '09:00', 'Meeting']);
 });
 
 test('Calendar window subscribes, refreshes periodically, and cleans up on close', async () => {
@@ -243,7 +267,8 @@ test('iOS assistant calendar tool awaits events, reports denied access and failu
     '../native/media-controller': { mediaControllerBridge: { start: async () => {} } },
     '../native/spotify': { spotifyService: () => null },
     '../native/notification-icons': {}, '../ui/shell/shell': {}, './tool-registry': {},
-    './date-format': load('app/assistant/date-format.ts'),
+    '../ui/dashboard-settings': { timeFormatSetting: { get: () => '12h' } },
+    './date-format': load('app/assistant/date-format.ts', { '../util/date-util': dateUtil }),
   }, { global: { isIOS: true } });
   registerSystemTools({ registerSystemTool: (definition, handler) => registered.set(definition.name, handler) });
   assert.deepEqual([...registered.keys()], ['glasses.get_state', 'glasses.show_alert', 'calendar.list_events',

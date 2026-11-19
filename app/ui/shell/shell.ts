@@ -75,6 +75,7 @@ import { ToolDebugMenuLayer } from "./tool-debug-layer";
 import type { InProcessWindow } from "./in-process-window";
 import { BrightnessPickerLayer } from "./brightness-picker-layer";
 import { toolRegistry } from "../../assistant/tool-registry";
+import { formatDateTime } from "../../assistant/date-format";
 import {
   appViewportRect,
   minWindowTop,
@@ -1814,7 +1815,7 @@ class Shell {
       foregroundApp: foreground?.appId ?? null,
       foregroundTitle: foreground?.title ?? null,
       screenOn: this.screenOn,
-      localTime: formatAssistantTime(new Date()),
+      localTime: formatDateTime(new Date(), timeFormatSetting.get() === "12h"),
       headsetBattery: this.battery.headset,
     };
   }
@@ -2098,20 +2099,6 @@ class Shell {
 }
 
 export const shell = new Shell();
-
-const ASSISTANT_WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-const ASSISTANT_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-
-/** Human-readable local time for the assistant's per-turn context. */
-function formatAssistantTime(date: Date): string {
-  let hours = date.getHours();
-  const minutes = date.getMinutes().toString().padStart(2, "0");
-  const meridiem = hours >= 12 ? "PM" : "AM";
-  hours = hours % 12;
-  if (hours === 0) hours = 12;
-  const day = `${ASSISTANT_WEEKDAYS[date.getDay()]} ${ASSISTANT_MONTHS[date.getMonth()]} ${date.getDate()}`;
-  return `${day}, ${hours}:${minutes} ${meridiem}`;
-}
 
 export function rawInputEventToInputEvent(event: RawInputEvent): InputEvent {
   return { ...makeInputEvent(rawInputEventToPayload(event)),

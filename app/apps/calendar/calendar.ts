@@ -9,7 +9,8 @@ import { hasCalendarPermission } from "../../native/calendar-permissions";
 import { type Layer, type LayerContext } from "../../ui/layers";
 import { lineStep } from "../../ui/metrics";
 import type { Viewport } from "../../ui/viewport";
-import { listingDayMs, spanLabel, spansDays } from "./event-days";
+import { formatHourMinute, MONTH_ABBREVIATIONS, WEEKDAY_ABBREVIATIONS } from "../../util/date-util";
+import { carriedOverLabel, listingDayMs, spanLabel, spansDays, type DayEvent } from "./event-days";
 
 /** How far a row's text sits inside its selection box; the title lines up with it. */
 const ROW_TEXT_INSET = 10;
@@ -33,9 +34,6 @@ const MESSAGE_OFFSET_Y = 64;
 function dayHeaderHeight(font: UiFont): number {
   return font.lineHeight + 4;
 }
-
-const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
 type EventRow = {
   event: CalendarEvent;
@@ -153,8 +151,7 @@ function buildEventRows(font: UiFont, events: CalendarEvent[]): EventRow[] {
     previousDayKey = dayKey;
 
     const lines: string[] = [];
-    const timeLabel = event.allDay ? "All day" : formatEventTime(event.startMs);
-    lines.push(`${timeLabel}  ${event.title || "(untitled)"}`);
+    lines.push(`${eventTimeLabel(event, nowMs)}  ${event.title || "(untitled)"}`);
     if (spansDays(event)) {
       lines.push(spanLabel(event));
     }
@@ -229,19 +226,21 @@ export function dayHeaderLabel(timestampMs: number): string {
   const now = new Date();
   const midnight = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
   const dayDelta = Math.round((midnight(date) - midnight(now)) / (24 * 60 * 60 * 1000));
-  const base = `${WEEKDAYS[date.getDay()]} ${date.getDate()} ${MONTHS[date.getMonth()]}`;
+  const base = `${WEEKDAY_ABBREVIATIONS[date.getDay()]} ${date.getDate()} ${MONTH_ABBREVIATIONS[date.getMonth()]}`;
   if (dayDelta === 0) return `Today  ${base}`;
   if (dayDelta === 1) return `Tomorrow  ${base}`;
   return base;
 }
 
 export function formatEventTime(timestampMs: number): string {
-  const date = new Date(timestampMs);
-  const minutes = String(date.getMinutes()).padStart(2, "0");
-  const hour24 = date.getHours();
-  if (timeFormatSetting.get() === "12h") {
-    const hour12 = ((hour24 + 11) % 12) + 1;
-    return `${hour12}:${minutes} ${hour24 < 12 ? "AM" : "PM"}`;
-  }
-  return `${String(hour24).padStart(2, "0")}:${minutes}`;
+  return formatHourMinute(new Date(timestampMs), timeFormatSetting.get() === "12h");
+}
+
+/**
+ * The label before an event's title in a list: "All day", its start time, or
+ * for a timed event carried over from an earlier day, when it ends ("Until 02:00").
+ */
+export function eventTimeLabel(event: DayEvent, nowMs: number): string {
+  if (event.allDay) return "All day";
+  return carriedOverLabel(event, nowMs, formatEventTime) ?? formatEventTime(event.startMs);
 }

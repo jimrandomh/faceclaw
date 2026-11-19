@@ -511,7 +511,8 @@ test('the assistant offers Spotify search-and-play once signed in and refreshes 
       snapshot: () => ({ accessEnabled: true, playbackState: 'playing', title: 'Song', artist: 'Band', appName: 'Spotify' }) } },
     '../native/spotify': { spotifyService: () => spotify },
     '../native/notification-icons': {}, '../ui/shell/shell': {}, './tool-registry': {},
-    './date-format': load('app/assistant/date-format.ts'),
+    '../ui/dashboard-settings': { timeFormatSetting: { get: () => '12h' } },
+    './date-format': load('app/assistant/date-format.ts', { '../util/date-util': load('app/util/date-util.ts') }),
   }, { global: { isIOS: true } });
   registerSystemTools({
     registerSystemTool: (definition, handler) => systemTools.set(definition.name, handler),

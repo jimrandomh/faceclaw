@@ -3,10 +3,8 @@
  * Card, so the two never disagree on the time-format setting or the date
  * spelling.
  */
+import { MONTH_ABBREVIATIONS, WEEKDAY_ABBREVIATIONS } from "../util/date-util";
 import { timeFormatSetting } from "./dashboard-settings";
-
-const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
 /** Format a clock time, honoring the 12/24-hour setting ("14:05" / "2:05 PM"). */
 export function formatClockTime(now: Date): string {
@@ -21,5 +19,5 @@ export function formatClockTime(now: Date): string {
 
 /** Short date as the top bar shows it: "Thu 11 Sep". */
 export function formatClockDate(now: Date): string {
-  return `${WEEKDAYS[now.getDay()]} ${now.getDate()} ${MONTHS[now.getMonth()]}`;
+  return `${WEEKDAY_ABBREVIATIONS[now.getDay()]} ${now.getDate()} ${MONTH_ABBREVIATIONS[now.getMonth()]}`;
 }

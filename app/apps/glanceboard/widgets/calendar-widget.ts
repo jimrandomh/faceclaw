@@ -3,7 +3,8 @@ import { truncateText } from "../../../graphics/textwrap";
 import { hasCalendarPermission } from "../../../native/calendar-permissions";
 import { getCalendarReadState, onCalendarChanged, readUpcomingEvents, type CalendarEvent } from "../../../native/calendar";
 import { lineStep } from "../../../ui/metrics";
-import { dayHeaderLabel, formatEventTime } from "../../calendar/calendar";
+import { dayHeaderLabel, eventTimeLabel, formatEventTime } from "../../calendar/calendar";
+import { endTimeLabel, listingDayMs, spanLabel, spansDays } from "../../calendar/event-days";
 import { glanceFont } from "../glance-font";
 import { type GlanceWidget } from "../widget";
 
@@ -71,35 +72,42 @@ export class CalendarWidget implements GlanceWidget {
     y += step + 6;
 
     // The rest, grouped by day. A day header only where the day changes from
-    // the previous listed event (the headline's day included).
-    let previousDayKey = dayKeyOf(next.startMs);
+    // the previous listed event (the headline's day included). An event still
+    // going since an earlier day counts as today's, as in the Calendar app.
+    let previousDayKey = dayKeyOf(listingDayMs(next, nowMs));
     for (let index = 1; index < events.length; index++) {
       const event = events[index]!;
-      const dayKey = dayKeyOf(event.startMs);
+      const listedMs = listingDayMs(event, nowMs);
+      const dayKey = dayKeyOf(listedMs);
       const needsHeader = dayKey !== previousDayKey;
       // The header and its row are placed a step apart; the row only needs
       // its line height to fit above the bottom margin.
       if (y + (needsHeader ? step : 0) + small.lineHeight > image.height - BOTTOM_MARGIN) break;
       if (needsHeader) {
-        image.drawText(small, PAD, y, truncateText(small, dayHeaderLabel(event.startMs), textWidth), 120);
+        image.drawText(small, PAD, y, truncateText(small, dayHeaderLabel(listedMs), textWidth), 120);
         y += step;
         previousDayKey = dayKey;
       }
-      drawEventLine(image, small, PAD, y, textWidth, event, 190);
+      drawEventLine(image, small, PAD, y, textWidth, event, nowMs, 190);
       y += step;
     }
   }
 }
 
-/** "Now, ends 14:30", "In 25 min", "Tomorrow 09:00", "All day"... for the headline. */
+/**
+ * "Now, ends 14:30", "In 25 min", "Tomorrow 09:00", "All day"... for the
+ * headline. An event covering several days names its span or the day it ends,
+ * so one that began days ago doesn't read as that day's.
+ */
 function headlineDetail(event: CalendarEvent, nowMs: number): string {
   const dayDelta = dayDeltaFromToday(event.startMs);
+  const multiDay = spansDays(event);
   const when = event.allDay
-    ? "All day"
-    : `${formatEventTime(event.startMs)} - ${formatEventTime(event.endMs)}`;
+    ? (multiDay ? spanLabel(event) : "All day")
+    : `${formatEventTime(event.startMs)} - ${endTimeLabel(event, event.startMs, formatEventTime)}`;
   if (event.startMs <= nowMs) {
-    if (event.allDay) return dayDelta === 0 ? "All day today" : `All day, ${dayHeaderLabel(event.startMs)}`;
-    return `Now, ends ${formatEventTime(event.endMs)}`;
+    if (event.allDay) return multiDay ? `All day, ${spanLabel(event)}` : "All day today";
+    return `Now, ends ${endTimeLabel(event, nowMs, formatEventTime)}`;
   }
   const untilMs = event.startMs - nowMs;
   if (dayDelta === 0 && untilMs < 12 * HOUR_MS) {
@@ -116,9 +124,10 @@ function drawEventLine(
   y: number,
   width: number,
   event: CalendarEvent,
+  nowMs: number,
   value: number,
 ): void {
-  const time = event.allDay ? "All day" : formatEventTime(event.startMs);
+  const time = eventTimeLabel(event, nowMs);
   const timeWidth = font.measureText(time);
   image.drawText(font, x, y, time, value - 50);
   const titleX = x + timeWidth + 8;

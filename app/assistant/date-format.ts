@@ -1,10 +1,9 @@
 /**
- * Date and calendar-event text for the assistant's tool results. Pure (no
- * native imports) so it can be unit-tested.
+ * Date and calendar-event text for the assistant's tool results and per-turn
+ * context. Pure (no native or settings imports) so it can be unit-tested; times
+ * follow the wearer's 12/24-hour setting, which callers pass as `twelveHour`.
  */
-
-const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+import { formatHourMinute, MONTH_ABBREVIATIONS, WEEKDAY_ABBREVIATIONS } from "../util/date-util";
 
 export type FormattableEvent = {
   title: string;
@@ -14,9 +13,9 @@ export type FormattableEvent = {
   location?: string;
 };
 
-export function formatEvent(event: FormattableEvent): string {
+export function formatEvent(event: FormattableEvent, twelveHour: boolean): string {
   const location = event.location ? ` @ ${event.location}` : "";
-  return `- ${event.title || "(untitled)"} — ${formatEventSpan(event)}${location}`;
+  return `- ${event.title || "(untitled)"} — ${formatEventSpan(event, twelveHour)}${location}`;
 }
 
 /**
@@ -25,7 +24,7 @@ export function formatEvent(event: FormattableEvent): string {
  * end time. Without the end, an event that started yesterday and runs through
  * tomorrow reads as yesterday's.
  */
-export function formatEventSpan(event: Pick<FormattableEvent, "startMs" | "endMs" | "allDay">): string {
+export function formatEventSpan(event: Pick<FormattableEvent, "startMs" | "endMs" | "allDay">, twelveHour: boolean): string {
   const start = new Date(event.startMs);
   if (event.allDay) {
     const lastDay = new Date(Math.max(event.startMs, event.endMs - 1));
@@ -33,28 +32,20 @@ export function formatEventSpan(event: Pick<FormattableEvent, "startMs" | "endMs
       ? `${formatDate(start)} (all day)`
       : `${formatDate(start)} – ${formatDate(lastDay)} (all day)`;
   }
-  if (!(event.endMs > event.startMs)) return formatDateTime(start);
+  if (!(event.endMs > event.startMs)) return formatDateTime(start, twelveHour);
   const end = new Date(event.endMs);
   return sameDay(start, end)
-    ? `${formatDateTime(start)} – ${formatTime(end)}`
-    : `${formatDateTime(start)} – ${formatDateTime(end)}`;
+    ? `${formatDateTime(start, twelveHour)} – ${formatHourMinute(end, twelveHour)}`
+    : `${formatDateTime(start, twelveHour)} – ${formatDateTime(end, twelveHour)}`;
 }
 
-export function formatDateTime(date: Date): string {
-  return `${formatDate(date)}, ${formatTime(date)}`;
+/** "Thu Nov 19, 9:00 AM", or "Thu Nov 19, 09:00" on a 24-hour clock. */
+export function formatDateTime(date: Date, twelveHour: boolean): string {
+  return `${formatDate(date)}, ${formatHourMinute(date, twelveHour)}`;
 }
 
 export function formatDate(date: Date): string {
-  return `${WEEKDAYS[date.getDay()]} ${MONTHS[date.getMonth()]} ${date.getDate()}`;
-}
-
-export function formatTime(date: Date): string {
-  let hours = date.getHours();
-  const minutes = date.getMinutes().toString().padStart(2, "0");
-  const meridiem = hours >= 12 ? "PM" : "AM";
-  hours = hours % 12;
-  if (hours === 0) hours = 12;
-  return `${hours}:${minutes} ${meridiem}`;
+  return `${WEEKDAY_ABBREVIATIONS[date.getDay()]} ${MONTH_ABBREVIATIONS[date.getMonth()]} ${date.getDate()}`;
 }
 
 function sameDay(a: Date, b: Date): boolean {
