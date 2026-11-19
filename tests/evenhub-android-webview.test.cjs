@@ -6,12 +6,12 @@ const { loader } = require('./helpers/load-typescript.cjs');
 // Loads webview.ts against recording doubles of the Android/Kotlin classes.
 function androidWebView({ remoteUrl = '', bridgeError = null } = {}) {
   const calls = [], evaluated = [];
-  let listener, attachedCheck;
+  let listener, attachedCheck, chromeClient, fileChooserListener;
   const ignore = new Proxy({}, { get: () => () => {} });
   class WebView {
     constructor() { calls.push('construct'); }
     getSettings() { calls.push('settings'); return ignore; }
-    setWebViewClient() {} setWebChromeClient() {}
+    setWebViewClient() {} setWebChromeClient(client) { chromeClient = client; }
     addJavascriptInterface() { calls.push('addJavascriptInterface'); }
     evaluateJavascript(js) { evaluated.push(js); }
     loadUrl(url) { calls.push(`load ${url}`); }
@@ -24,12 +24,22 @@ function androidWebView({ remoteUrl = '', bridgeError = null } = {}) {
       originRule: url => /^https?:\/\/[^/]+/.exec(url)[0],
       install: (_web, rule) => { calls.push(`bridge ${rule}`); return bridgeError; },
     },
-    FaceclawEvenHubWebViewClient: class {}, FaceclawEvenHubChromeClient: class {},
+    FaceclawEvenHubWebViewClient: class {},
+    FaceclawEvenHubChromeClient: class { constructor(listener) { chromeClient = this; fileChooserListener = listener; } },
+    FaceclawEvenHubFileChooserListener: class {
+      constructor(impl) { this.impl = impl; }
+      onShowFileChooser(...args) { return this.impl.onShowFileChooser(...args); }
+    },
     FaceclawEvenHubDocumentStart: { install: (_web, _script, rule) => { calls.push(`document-start ${rule}`); return true; } },
     FaceclawEvenHubWebViewHost: { getInstance: () => ({ attach(_activity, _web, check) { attachedCheck = check; }, detach() { calls.push('detach'); } }) },
   };
+  const chooserCalls = [];
   const load = loader({ com: { faceclaw: { app } }, android: { content: { MutableContextWrapper: class {} } }, java: {} }, {
     '@nativescript/core': { Application: { android: { foregroundActivity: {} } }, Utils: {} },
+    './file-chooser': { EvenHubFileChooser: class {
+      show(...args) { chooserCalls.push(['show', ...args]); return true; }
+      cancel(...args) { chooserCalls.push(['cancel', ...args]); }
+    } },
     './session': { EVENHUB_BRIDGE_INJECT_SCRIPT: '', buildFaceclawExtensionsScript: () => '' }, '../../version': { FACECLAW_VERSION: 'test' },
   });
   const failures = [];
@@ -37,7 +47,8 @@ function androidWebView({ remoteUrl = '', bridgeError = null } = {}) {
     webViewFailed: (message, fatal) => failures.push([message, fatal]), webViewLoaded() {}, handleBridgeCall() {} };
   const api = load('app/apps/evenhub/webview.ts');
   const handle = api.createEvenHubWebView(session);
-  return { api, calls, evaluated, failures, handle, listener: () => listener, attachedCheck: () => attachedCheck };
+  return { api, calls, evaluated, failures, handle, listener: () => listener, attachedCheck: () => attachedCheck,
+    fileChooserListener: () => fileChooserListener, chooserCalls, native: handle.native };
 }
 
 // Runs a host-evaluated script in a document at `href`, as WebView would.
@@ -75,6 +86,19 @@ test('Android EvenHub transport wraps the bridge port, and is inert without it',
   context.__faceclawEvenHub.wakeTimers();
   assert.deepEqual(posted, [['call', 'evenAppMessage', '["{}"]', 7], ['wake']]);
   assert.equal(runIn('https://elsewhere.example/', api.ANDROID_EVENHUB_TRANSPORT_SCRIPT).context.__faceclawEvenHub, undefined);
+});
+
+test('Android EvenHub file inputs use the host chooser and cancel with their WebView', () => {
+  const h = androidWebView();
+  const callback = {}, params = {};
+  assert.equal(h.fileChooserListener().onShowFileChooser(h.native, callback, params), true);
+  assert.deepEqual(h.chooserCalls[0], ['show', h.native, callback, params]);
+  h.handle.destroy();
+  assert.deepEqual(h.chooserCalls[1], ['cancel', h.native]);
+
+  const crashed = androidWebView();
+  crashed.listener().onRenderProcessGone(true);
+  assert.deepEqual(crashed.chooserCalls[0], ['cancel', crashed.native]);
 });
 
 test('Android EvenHub apps fail visibly without a bridge, and stop using a WebView whose renderer is gone', () => {
