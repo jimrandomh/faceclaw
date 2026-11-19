@@ -73,6 +73,14 @@ import {
 import { parseWindowIcon, WindowIconRenderer } from "./window-icon";
 import { availableFontFamilies, containerFace, measureContainerText } from "./fonts";
 import { parseFontSpec } from "./font-spec";
+import {
+  boundedNativeHttpInteger,
+  EvenHubNativeHttp,
+  NATIVE_HTTP_DEFAULT_CHUNK_BYTES,
+  NATIVE_HTTP_MAX_CHUNK_BYTES,
+  nativeHttpOptions,
+  nativeHttpRequestId,
+} from "./native-http";
 
 const UPNG = require("upng-js");
 
@@ -255,7 +263,7 @@ export function buildFaceclawExtensionsScript(versionString: string): string {
 (function () {
   if (window.getFaceclawExtensions) return;
   var VERSION = ${JSON.stringify(versionString)};
-  var API_VERSION = 1;
+  var API_VERSION = 2;
   var pending = {};
   var nextId = 1;
   window.__fcExtResolve = function (id, ok, value) {
@@ -366,7 +374,12 @@ export function buildFaceclawExtensionsScript(versionString: string): string {
     setAttention: function (attention) { send("setAttention", [!!attention]); },
     setKeepScreenOn: function (keepOn) { send("setKeepScreenOn", [!!keepOn]); },
     getFonts: function () { return call("getFonts"); },
-    measureText: function (text, font) { return call("measureText", [String(text), font || null]); }
+    measureText: function (text, font) { return call("measureText", [String(text), font || null]); },
+    nativeHttpRequest: function (options) { return call("nativeHttpRequest", [options]); },
+    nativeHttpRead: function (requestId, offset, maxBytes) {
+      return call("nativeHttpRead", [requestId, offset === undefined ? 0 : offset, maxBytes === undefined ? 262144 : maxBytes]);
+    },
+    nativeHttpCancel: function (requestId) { return call("nativeHttpCancel", [requestId]); }
   };
   window.getFaceclawExtensions = function () { return extensions; };
 })();
@@ -460,6 +473,8 @@ export class EvenHubSession implements EvenHubMicClient, EvenHubImuClient, EvenH
   private keepScreenOnRequested = false;
   /** The app's own switcher icon; null draws the package icon. */
   private windowIcon: WindowIconRenderer | null = null;
+  /** Android native transport, created only if this hosted app uses API level 2. */
+  private nativeHttp: EvenHubNativeHttp | null = null;
   /** The paired glasses' serial, read once so getGlassesInfo and every status push agree. */
   private glassesSerial: string | null | undefined = undefined;
   /** The last deviceStatusChanged sent, and the subscriptions that refresh it. */
@@ -1099,7 +1114,11 @@ export class EvenHubSession implements EvenHubMicClient, EvenHubImuClient, EvenH
       } catch (error) {
         ok = false;
         result = error instanceof Error ? error.message : String(error);
-        this.log(`evenhub: extension call failed: ${error}`);
+        // Native HTTP inputs may contain credentials. Never stringify the
+        // failing call, URL, headers, or response into the host log.
+        let method = "unknown";
+        try { method = String((JSON.parse(argsJson) as unknown[])[0]); } catch { /* malformed JSON */ }
+        this.log(`evenhub: extension call ${method} failed`);
       }
       // id 0 is a fire-and-forget send; nothing is awaiting it.
       if (callId !== 0) this.resolveExtCall(callId, ok, result);
@@ -1155,6 +1174,26 @@ export class EvenHubSession implements EvenHubMicClient, EvenHubImuClient, EvenH
       case "measureText":
         // No font measures in the stock font, as a container without one draws.
         return measureContainerText(String(params[0] ?? ""), parseFontSpec(params[1]));
+      case "nativeHttpRequest": {
+        const options = nativeHttpOptions(params[0]);
+        if (this.closed) throw new Error("The app session is closed.");
+        this.nativeHttp ??= new EvenHubNativeHttp();
+        return this.nativeHttp.request(options);
+      }
+      case "nativeHttpRead": {
+        const requestId = nativeHttpRequestId(params[0]);
+        const offset = boundedNativeHttpInteger(params[1], 0, Number.MAX_SAFE_INTEGER, "offset", true);
+        const maxBytes = boundedNativeHttpInteger(
+          params[2], NATIVE_HTTP_DEFAULT_CHUNK_BYTES, NATIVE_HTTP_MAX_CHUNK_BYTES, "maxBytes",
+        );
+        if (this.closed || !this.nativeHttp) throw new Error("Unknown or cancelled native HTTP request.");
+        return this.nativeHttp.read(requestId, offset, maxBytes);
+      }
+      case "nativeHttpCancel": {
+        const requestId = nativeHttpRequestId(params[0]);
+        if (!this.closed) this.nativeHttp?.cancel(requestId);
+        return null;
+      }
       default:
         this.log(`evenhub: unknown extension method ${method}`);
         return null;
@@ -1383,6 +1422,8 @@ export class EvenHubSession implements EvenHubMicClient, EvenHubImuClient, EvenH
   close(): void {
     if (this.closed) return;
     this.closed = true;
+    this.nativeHttp?.close();
+    this.nativeHttp = null;
     if (this.micRequested) {
       this.micRequested = false;
       evenHubMicRouter.releaseMic(this);

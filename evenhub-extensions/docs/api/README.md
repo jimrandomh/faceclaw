@@ -42,7 +42,7 @@ carry them out.
 
 | Property | Modifier | Type | Description |
 | ------ | ------ | ------ | ------ |
-| <a id="property-apiversion"></a> `apiVersion` | `readonly` | `number` | The extension API level the host implements. It is `1` for the API described here (Faceclaw 0.8.3 and later), and increases by one each time members are added. Members added later are documented with the level that introduced them, so an app can check for them before calling: `if (fc.apiVersion >= 2) fc.someNewerMethod();` |
+| <a id="property-apiversion"></a> `apiVersion` | `readonly` | `number` | The extension API level the host implements. Level 1 is the original API (Faceclaw 0.8.3 and later); level 2 adds native HTTP. Members are documented with the level that introduced them, so an app can check for them before calling: `if (fc.apiVersion >= 2) fc.someNewerMethod();` |
 
 #### Methods
 
@@ -427,6 +427,83 @@ size a text container or centre a label.
 ###### Returns
 
 `Promise`\<[`TextMeasurement`](#textmeasurement)\>
+
+##### nativeHttpRequest()
+
+```ts
+nativeHttpRequest(options): Promise<NativeHttpResponse>;
+```
+
+Perform a GET or HEAD through Android's native OkHttp transport, outside
+WebView CORS. The body is downloaded to app-private cache before this resolves;
+use [nativeHttpRead](#nativehttpread) for chunks and [nativeHttpCancel](#nativehttpcancel)
+to release the response when finished.
+
+Non-2xx responses resolve normally. Transport, timeout, body-size, and storage
+failures reject. Available on Android only. Closing the app cancels active
+requests and deletes all response files.
+
+Requests can reach any HTTP(S) host, including localhost/private-network
+services; only install hosted apps you trust with that access. Redirects are
+followed only within the exact same origin, preventing credentials from
+crossing origins or an HTTPS-to-HTTP downgrade.
+
+A session permits four concurrent downloads and retains at most eight
+responses. In-flight reservations plus completed bodies are limited to 64 MiB
+in aggregate. Cached responses expire after 24 hours without a read or request
+operation; later session activity reclaims them.
+
+###### Parameters
+
+| Parameter | Type | Description |
+| ------ | ------ | ------ |
+| `options` | [`NativeHttpRequestOptions`](#nativehttprequestoptions) | URL, method, headers, timeout and response-size limit. |
+
+###### Returns
+
+`Promise`\<[`NativeHttpResponse`](#nativehttpresponse)\>
+
+##### nativeHttpRead()
+
+```ts
+nativeHttpRead(requestId, offset?, maxBytes?): Promise<NativeHttpChunk>;
+```
+
+Read a response body directly at `offset`. `maxBytes` defaults to 262,144 and
+must be a positive safe integer no greater than 1,048,576 (1 MiB). Read until
+`done` is true, then cancel the request to release its file. Reading refreshes
+the response's 24-hour retention deadline.
+
+###### Parameters
+
+| Parameter | Type | Description |
+| ------ | ------ | ------ |
+| `requestId` | `string` | The session-owned ID returned by [nativeHttpRequest](#nativehttprequest). |
+| `offset?` | `number` | Zero-based byte offset; defaults to 0. |
+| `maxBytes?` | `number` | Maximum bytes in this read, up to 1 MiB. |
+
+###### Returns
+
+`Promise`\<[`NativeHttpChunk`](#nativehttpchunk)\>
+
+##### nativeHttpCancel()
+
+```ts
+nativeHttpCancel(requestId): Promise<void>;
+```
+
+Cancel an active request or release a completed response. Unknown IDs and
+repeated calls are harmless. Always call this after finishing a response.
+
+###### Parameters
+
+| Parameter | Type | Description |
+| ------ | ------ | ------ |
+| `requestId` | `string` | The session-owned ID to cancel. |
+
+###### Returns
+
+`Promise`\<`void`\>
 
 ***
 
@@ -892,3 +969,48 @@ The assistant sees the tool namespaced by the app's package name, as
 | <a id="property-parameters"></a> `parameters?` | [`JsonSchema`](#jsonschema) | `{ type: "object", properties: {} }` | JSON Schema for the arguments object the assistant will pass to `handler`. It must describe an object (`type: "object"`), with any `properties` an object and any `required` an array of names, and must not use `oneOf`, `anyOf` or `allOf` at the top level. These are the schemas the assistant's model providers accept. |
 | <a id="property-availability"></a> `availability?` | `"open"` \| `"foreground"` | `"foreground"` | When the tool can be called: `"foreground"` only while the app owns the visible window, or `"open"` any time the app is running, including in the background. |
 | <a id="property-handler"></a> `handler` | (`args`) => `unknown` | `undefined` | Called when the assistant invokes the tool. Return a string, or any JSON-serializable value, to report back to the assistant. Throw (or reject) to report an error. May be async, but must finish within 10 seconds, or the assistant is told the tool timed out. |
+
+## Native HTTP
+
+### NativeHttpRequestOptions
+
+Options for [FaceclawExtensions.nativeHttpRequest](#nativehttprequest).
+
+#### Properties
+
+| Property | Type | Default value | Description |
+| ------ | ------ | ------ | ------ |
+| `url` | `string` | `undefined` | Absolute HTTP(S) URL, without embedded credentials. HTTPS is recommended for credentials and private content. Only same-origin redirects (same scheme, host and port) are followed; HTTPS-to-HTTP is rejected. |
+| `method?` | `"GET"` \| `"HEAD"` | `"GET"` | Only bodyless GET and HEAD are supported. |
+| `headers?` | `Record`\<`string`, `string`\> | `undefined` | Request headers. Header names and values must both be strings. |
+| `timeoutMs?` | `number` | `30000` | Whole-call timeout in milliseconds, as a positive safe integer. |
+| `maxBytes?` | `number` | `16777216` | Maximum response-body bytes, from 1 through 67,108,864 (64 MiB). |
+
+***
+
+### NativeHttpResponse
+
+Metadata for a completed native response. Its body is read separately with
+[FaceclawExtensions.nativeHttpRead](#nativehttpread).
+
+#### Properties
+
+| Property | Type | Description |
+| ------ | ------ | ------ |
+| `requestId` | `string` | Opaque session-owned identifier accepted by nativeHttpRead/nativeHttpCancel. |
+| `status` | `number` | HTTP status. Non-2xx statuses resolve normally and have readable bodies. |
+| `url` | `string` | Final URL after same-origin native redirects. |
+| `headers` | [`string`, `string`][] | Response headers in wire order; repeated fields remain separate entries. |
+
+***
+
+### NativeHttpChunk
+
+One base64-encoded native response-body chunk.
+
+#### Properties
+
+| Property | Type | Description |
+| ------ | ------ | ------ |
+| `data` | `string` | Base64 without line wrapping. Empty at end of body (and for an empty body). |
+| `done` | `boolean` | True when this chunk reaches the end of the body. |
