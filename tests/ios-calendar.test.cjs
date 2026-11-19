@@ -163,7 +163,7 @@ function screenFixture() {
     'util/numeric-util': { clamp: (n, min, max) => Math.max(min, Math.min(max, n)) },
   };
   const modules = depth => Object.fromEntries(Object.entries(common).map(([key, value]) => [depth + key, value]));
-  const calendar = load('app/apps/calendar/calendar.ts', modules('../../'));
+  const calendar = load('app/apps/calendar/calendar.ts', { ...modules('../../'), './event-days': load('app/apps/calendar/event-days.ts') });
   const widget = load('app/apps/glanceboard/widgets/calendar-widget.ts', {
     ...modules('../../../'), '../../calendar/calendar': calendar,
     '../glance-font': { glanceFont: { small: () => font, medium: () => font } },
@@ -243,6 +243,7 @@ test('iOS assistant calendar tool awaits events, reports denied access and failu
     '../native/media-controller': { mediaControllerBridge: { start: async () => {} } },
     '../native/spotify': { spotifyService: () => null },
     '../native/notification-icons': {}, '../ui/shell/shell': {}, './tool-registry': {},
+    './date-format': load('app/assistant/date-format.ts'),
   }, { global: { isIOS: true } });
   registerSystemTools({ registerSystemTool: (definition, handler) => registered.set(definition.name, handler) });
   assert.deepEqual([...registered.keys()], ['glasses.get_state', 'glasses.show_alert', 'calendar.list_events',

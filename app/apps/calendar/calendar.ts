@@ -9,6 +9,7 @@ import { hasCalendarPermission } from "../../native/calendar-permissions";
 import { type Layer, type LayerContext } from "../../ui/layers";
 import { lineStep } from "../../ui/metrics";
 import type { Viewport } from "../../ui/viewport";
+import { listingDayMs, spanLabel, spansDays } from "./event-days";
 
 /** How far a row's text sits inside its selection box; the title lines up with it. */
 const ROW_TEXT_INSET = 10;
@@ -143,14 +144,20 @@ export class CalendarLayer implements Layer {
 function buildEventRows(font: UiFont, events: CalendarEvent[]): EventRow[] {
   const rows: EventRow[] = [];
   let previousDayKey = "";
+  const nowMs = Date.now();
   for (const event of events) {
-    const dayKey = dayKeyOf(event.startMs);
-    const dayHeader = dayKey === previousDayKey ? null : dayHeaderLabel(event.startMs);
+    // An event still going since an earlier day is listed under today, not its first day.
+    const listedMs = listingDayMs(event, nowMs);
+    const dayKey = dayKeyOf(listedMs);
+    const dayHeader = dayKey === previousDayKey ? null : dayHeaderLabel(listedMs);
     previousDayKey = dayKey;
 
     const lines: string[] = [];
     const timeLabel = event.allDay ? "All day" : formatEventTime(event.startMs);
     lines.push(`${timeLabel}  ${event.title || "(untitled)"}`);
+    if (spansDays(event)) {
+      lines.push(spanLabel(event));
+    }
     if (event.location) {
       lines.push(event.location);
     }

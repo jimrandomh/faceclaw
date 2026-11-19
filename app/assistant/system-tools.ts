@@ -1,19 +1,17 @@
-import { readUpcomingEventsAsync, type CalendarEvent } from "../native/calendar";
+import { readUpcomingEventsAsync } from "../native/calendar";
 import { hasCalendarPermission } from "../native/calendar-permissions";
 import { mediaControllerBridge } from "../native/media-controller";
 import { spotifyService } from "../native/spotify";
 import { dismissNotification, readActiveNotifications } from "../native/notification-icons";
 import { shell } from "../ui/shell/shell";
 import { toolRegistry, type ToolRegistry, type ToolResult } from "./tool-registry";
+import { formatDateTime, formatEvent } from "./date-format";
 
 /**
  * Registers the always-available system tools into the registry. Called once at
  * startup. These wrap shell state and the existing native bridges (calendar,
  * media, notifications); nothing here needs an app window to be open.
  */
-
-const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
 let registered = false;
 
@@ -244,33 +242,10 @@ function describeNowPlaying(): string {
   return "Nothing is currently playing.";
 }
 
-function formatEvent(event: CalendarEvent): string {
-  const when = event.allDay ? `${formatDate(new Date(event.startMs))} (all day)` : formatDateTime(new Date(event.startMs));
-  const location = event.location ? ` @ ${event.location}` : "";
-  return `- ${event.title || "(untitled)"} — ${when}${location}`;
-}
-
 function formatNotification(notification: { key: string; appName: string; title: string; text: string; customText?: string[] }): string {
   const title = notification.title || notification.customText?.join(" ") || "(no title)";
   const body = notification.text ? `: ${notification.text}` : "";
   return `- [${notification.appName}] ${title}${body} (key: ${notification.key})`;
-}
-
-function formatDateTime(date: Date): string {
-  return `${formatDate(date)}, ${formatTime(date)}`;
-}
-
-function formatDate(date: Date): string {
-  return `${WEEKDAYS[date.getDay()]} ${MONTHS[date.getMonth()]} ${date.getDate()}`;
-}
-
-function formatTime(date: Date): string {
-  let hours = date.getHours();
-  const minutes = date.getMinutes().toString().padStart(2, "0");
-  const meridiem = hours >= 12 ? "PM" : "AM";
-  hours = hours % 12;
-  if (hours === 0) hours = 12;
-  return `${hours}:${minutes} ${meridiem}`;
 }
 
 function clampNumber(value: unknown, min: number, max: number, fallback: number): number {
