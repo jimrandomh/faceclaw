@@ -39,6 +39,8 @@ const PAGE_TITLE_OFFSET_Y = 2;
 const PAGE_TITLE_GAP = 4;
 /** Room a page menu keeps right of its rows for the scrollbar. */
 const PAGE_SCROLLBAR_GUTTER = 6;
+/** A heading row's text: dimmer than a row's, brighter than a disabled row's. */
+const MENU_HEADING_VALUE = 90;
 
 export type MenuLayout = {
   /** Stereo depth of the menu surface, including the selected row. */
@@ -111,6 +113,12 @@ export type MenuItem = {
   description?: string;
   /** Disabled rows stay visible but render dimly and ignore clicks. */
   disabled?: boolean | (() => boolean);
+  /**
+   * A label for the group of rows after it (see menuHeadingItem). MenuLayer's
+   * highlight skips it; a list that doesn't know headings shows it as a
+   * disabled row.
+   */
+  heading?: boolean;
   onSelect: (ctx: LayerContext, menu: MenuLayer) => Promise<void> | void;
   render?: (args: MenuItemRenderArgs) => void;
 };
@@ -214,6 +222,22 @@ export function submenuItem(
   };
 }
 
+/**
+ * A heading for the rows that follow it, splitting a long menu into sections:
+ * dim capitals in the rows' text column, never selected.
+ */
+export function menuHeadingItem(label: string): MenuItem {
+  return {
+    label,
+    heading: true,
+    disabled: true,
+    onSelect: () => {},
+    render: ({ image, x, y, text }) => {
+      image.drawText(getDefaultSmallFont(), x, y + LIST_ROW_TEXT_INSET, text.toUpperCase(), MENU_HEADING_VALUE);
+    },
+  };
+}
+
 export function drawToggleMenuItem(
   image: GrayImage,
   font: UiFont,
@@ -281,6 +305,7 @@ export class MenuLayer implements Layer {
       wrap: true,
       rowGap: 1,
       getHeight: () => listRowHeight(getDefaultSmallFont()),
+      isSelectable: (item) => !item.heading,
       draw: ({ image, item, x, y, width, height, selected }) => {
         const font = getDefaultSmallFont();
         const disabled = isMenuItemDisabled(item);
