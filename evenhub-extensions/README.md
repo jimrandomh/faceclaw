@@ -82,12 +82,13 @@ if (fc && fc.apiVersion >= 2) {
 }
 ```
 
-Everything in this release is API level 1, which Faceclaw 0.8.3 and later
-implement. Faceclaw 0.8.0–0.8.2 injected an incomplete, unversioned preview of
-the API; `getFaceclawExtensions()` returns `null` there, so whenever it returns
-the API, every level-1 member is present. If you use
-`window.getFaceclawExtensions` directly, check that `apiVersion` is a number
-before relying on it.
+The original members are API level 1, which Faceclaw 0.8.3 and later implement.
+API level 2 adds native HTTP. Faceclaw 0.8.0–0.8.2 injected an incomplete,
+unversioned preview of the API; `getFaceclawExtensions()` returns `null` there.
+If you use `window.getFaceclawExtensions` directly, check that `apiVersion` is
+a number before relying on it. Native HTTP is available only on Android, even
+though the API-v2 members are declared on every platform; keep a fetch fallback
+for other hosts.
 
 ## TypeScript
 
@@ -127,6 +128,7 @@ The [API reference](https://github.com/jimrandomh/faceclaw/blob/main/evenhub-ext
 | `setKeepScreenOn(on)` | Stop the display from sleeping for inactivity while the app is in front. |
 | `getFonts()` | List the font families available to text and list containers. |
 | `measureText(text, font)` | Measure text in a font, to size or centre it. |
+| `nativeHttpRequest(options)` / `nativeHttpRead(id, offset, maxBytes)` / `nativeHttpCancel(id)` | Android native GET/HEAD outside WebView CORS, with bounded downloads and offset reads. |
 
 The package also exports `getInputSource(event)`, which tells you which device
 (`ring`, `left-touchpad`, `right-touchpad` or `watch`) produced a stock gesture
@@ -300,6 +302,62 @@ must be an object schema (`type: "object"`) without a top-level `oneOf`,
 `anyOf` or `allOf`, since that is what the assistant's model providers accept.
 Faceclaw skips a tool that breaks these rules and logs a warning to the app's
 console.
+
+### Native HTTP (Android)
+
+`nativeHttpRequest()` performs a bodyless GET or HEAD through Android's native
+OkHttp transport instead of WebView fetch, so browser CORS does not block an
+OPDS server or another self-hosted API. The request URL must be absolute and
+must not contain embedded credentials. Supply credentials explicitly in
+`headers` when the service needs them.
+
+**Network trust:** requests can reach any HTTP(S) host, including localhost and
+private-network services. Install hosted apps only from sources you trust with
+that access. HTTPS is recommended for credentials and private content; cleartext
+HTTP is supported for local/self-hosted services. Redirects are followed only
+when the scheme, host and port all remain identical. A cross-origin redirect or
+HTTPS-to-HTTP downgrade is rejected before the target receives the app's
+Authorization, Cookie, API-key, or other caller-supplied headers.
+
+The body is downloaded to a session-owned, app-private cache file before
+`nativeHttpRequest()` resolves. Read it in bounded chunks with
+`nativeHttpRead()`, then call `nativeHttpCancel()` to release it. Non-2xx
+responses resolve normally and have readable bodies. Transport, timeout,
+size-limit, capacity, and storage failures reject.
+
+Each hosted-app session permits four concurrent downloads and retains at most
+eight active/completed responses. In-flight reservations plus completed bodies
+are limited to 64 MiB in aggregate; an individual response defaults to 16 MiB
+and cannot exceed 64 MiB. Reads default to 256 KiB and are capped at 1 MiB.
+Responses remain available for offset rereads until cancelled or the app closes.
+Reading refreshes a response's 24-hour retention deadline; later session
+activity or transport initialization reclaims expired files.
+
+```ts
+const response = await fc.nativeHttpRequest({
+  url: "https://books.example/opds",
+  headers: { Accept: "application/atom+xml" },
+  maxBytes: 4 * 1024 * 1024,
+});
+try {
+  let offset = 0;
+  while (true) {
+    const chunk = await fc.nativeHttpRead(response.requestId, offset);
+    if (chunk.data) {
+      // Decode the base64 chunk and process the bytes.
+      const bytes = Uint8Array.from(atob(chunk.data), c => c.charCodeAt(0));
+      offset += bytes.byteLength;
+    }
+    if (chunk.done) break;
+  }
+} finally {
+  await fc.nativeHttpCancel(response.requestId);
+}
+```
+
+This is native networking, not the HTTP/2 protocol. It is available only on
+Android; on other platforms, calling the API rejects so the app can fall back
+to ordinary fetch.
 
 ### API keys
 
