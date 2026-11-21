@@ -1,8 +1,7 @@
+import { openSocket, type SocketConnection } from "../native/socket";
 import { AssistantMcpServer } from "./mcp-server";
 import { toolRegistry } from "./tool-registry";
 import type { AssistantContext, AssistantTurnCallbacks, AssistantTurnHandle } from "./types";
-
-declare const com: any;
 
 /**
  * Dial-out websocket client for the external assistant bridge (an OpenClaw
@@ -24,6 +23,13 @@ const RECONNECT_MIN_MS = 1_000;
 const RECONNECT_MAX_MS = 60_000;
 /** Backstop on a turn the bridge never finishes (server-side cap is 2 min). */
 const TURN_TIMEOUT_MS = 3 * 60 * 1000;
+/**
+ * iOS only: how often to ping an open connection. The bridge sends nothing
+ * between turns, and iOS's URLSession fails a websocket that has received
+ * nothing for its request timeout (20 s, FaceclawSocket.m); the bridge's pong
+ * is that traffic. Android's socket pings by itself (okhttp pingInterval).
+ */
+const IOS_KEEPALIVE_MS = 12_000;
 
 export type AssistantBridgePhase = "idle" | "connecting" | "connected" | "failed";
 
@@ -32,8 +38,20 @@ export type AssistantBridgeState = {
   status: string;
 };
 
+/**
+ * Where a Bridge host setting dials: a bare host or IP address means plain
+ * ws:// on the Bridge port; a full ws:// or wss:// address is used as written
+ * (wss for a bridge behind a TLS proxy, which iOS's App Transport Security
+ * requires for most addresses).
+ */
+export function assistantBridgeUrl(host: string, port: number): string {
+  return /^wss?:\/\//i.test(host) ? host : `ws://${host}:${port}`;
+}
+
 export type AssistantBridgeOptions = {
+  /** A host name or IP address, or a full ws:// or wss:// address (see assistantBridgeUrl). */
   host: string;
+  /** Used with a bare host only. */
   port: number;
   token: string;
   deviceName: string;
@@ -50,8 +68,10 @@ type ActiveTurn = {
 
 export class AssistantBridgeClient {
   private options: AssistantBridgeOptions | null = null;
-  private ws: any = null;
-  private listenerProxy: any = null;
+  private ws: SocketConnection | null = null;
+  /** Counts connections, so a superseded socket's late callbacks are ignored. */
+  private connectionSeq = 0;
+  private keepaliveTimer: ReturnType<typeof setInterval> | null = null;
   private phase: AssistantBridgePhase = "idle";
   private status = "Not configured.";
   private stopped = true;
@@ -105,6 +125,8 @@ export class AssistantBridgeClient {
       this.unsubscribeToolsChanged = null;
     }
     this.mcpServer = null;
+    ++this.connectionSeq;
+    this.clearKeepalive();
     if (this.ws) {
       try {
         this.ws.close(1000, "bye");
@@ -113,7 +135,6 @@ export class AssistantBridgeClient {
       }
       this.ws = null;
     }
-    this.listenerProxy = null;
     this.setState("idle", "Not connected.");
   }
 
@@ -155,38 +176,40 @@ export class AssistantBridgeClient {
   private connect(): void {
     if (this.stopped || this.ws || !this.options) return;
     const { host, port } = this.options;
-    const url = `ws://${host}:${port}`;
-    this.setState("connecting", `Connecting to ${host}:${port}...`);
-    this.listenerProxy = new com.faceclaw.app.FaceclawWebSocketListener({
-      onOpen: () => {
-        if (this.stopped) return;
-        this.setState("connecting", "Authenticating...");
-        this.send({
-          chan: "ctl",
-          type: "hello",
-          version: PROTOCOL_VERSION,
-          token: this.options!.token,
-          deviceName: this.options!.deviceName,
-          capabilities: ["chat", "mcp"],
-        });
-      },
-      onTextMessage: (message: string) => {
-        if (this.stopped) return;
-        this.handleMessage(String(message));
-      },
-      onClosed: (code: number, reason: string) => {
-        if (this.stopped) return;
-        this.handleConnectionLost(
-          `Connection closed (${Number(code)}${reason ? `: ${String(reason)}` : ""})`,
-        );
-      },
-      onFailure: (message: string) => {
-        if (this.stopped) return;
-        this.handleConnectionLost(`Connection failed: ${String(message)}`);
-      },
-    });
+    const url = assistantBridgeUrl(host, port);
+    this.setState("connecting", `Connecting to ${url === host ? url : `${host}:${port}`}...`);
+    const connection = ++this.connectionSeq;
+    const current = () => !this.stopped && connection === this.connectionSeq;
     try {
-      this.ws = new com.faceclaw.app.FaceclawWebSocket(url, this.listenerProxy, null, null);
+      this.ws = openSocket(url, {
+        onOpen: () => {
+          if (!current()) return;
+          this.setState("connecting", "Authenticating...");
+          this.send({
+            chan: "ctl",
+            type: "hello",
+            version: PROTOCOL_VERSION,
+            token: this.options!.token,
+            deviceName: this.options!.deviceName,
+            capabilities: ["chat", "mcp"],
+          });
+          this.startKeepalive();
+        },
+        onTextMessage: (message: string) => {
+          if (!current()) return;
+          this.handleMessage(String(message));
+        },
+        onClosed: (code: number, reason: string) => {
+          if (!current()) return;
+          this.handleConnectionLost(
+            `Connection closed (${Number(code)}${reason ? `: ${String(reason)}` : ""})`,
+          );
+        },
+        onFailure: (message: string) => {
+          if (!current()) return;
+          this.handleConnectionLost(`Connection failed: ${String(message)}`);
+        },
+      });
     } catch (error) {
       this.ws = null;
       this.handleConnectionLost(
@@ -267,8 +290,10 @@ export class AssistantBridgeClient {
   }
 
   private handleConnectionLost(status: string): void {
+    // A failure can be followed by a close for the same socket; count only one.
+    ++this.connectionSeq;
     this.ws = null;
-    this.listenerProxy = null;
+    this.clearKeepalive();
     // Keep a ctl-error status (e.g. "invalid token") in preference to the
     // generic close message that follows it.
     const detail = this.status.startsWith("Bridge error:") ? this.status : status;
@@ -285,6 +310,18 @@ export class AssistantBridgeClient {
       this.reconnectTimer = null;
       this.connect();
     }, delay);
+  }
+
+  private startKeepalive(): void {
+    this.clearKeepalive();
+    if (!global.isIOS) return;
+    this.keepaliveTimer = setInterval(() => this.send({ chan: "ctl", type: "ping", ts: Date.now() }), IOS_KEEPALIVE_MS);
+  }
+
+  private clearKeepalive(): void {
+    if (this.keepaliveTimer === null) return;
+    clearInterval(this.keepaliveTimer);
+    this.keepaliveTimer = null;
   }
 
   private clearReconnectTimer(): void {

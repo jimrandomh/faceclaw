@@ -117,6 +117,7 @@ export function createSettingsPanelLayer(): SettingsPanelLayer {
 
 function settingsSections(): SettingsSection[] {
   const customizationItems = customizationRows();
+  const voiceItems = voiceRows();
   const sections: SettingsSection[] = [
     {
       label: "Display",
@@ -156,13 +157,11 @@ function settingsSections(): SettingsSection[] {
     },
     {
       label: "Voice",
-      items: [
-        enumSettingMenuItem(wakeWordActionSetting),
-        enumSettingMenuItem(voiceProviderSetting),
-        ...whisperServerMenuItems(),
-        asrModelMenuItem("moonshine"),
-        asrModelMenuItem("whisper-base-en"),
-      ],
+      // The Whisper server's rows only show while it is the selected
+      // provider; the panel re-reads the rows each paint.
+      get items() {
+        return voiceItems();
+      },
     },
     {
       label: "Assistant",
@@ -171,7 +170,6 @@ function settingsSections(): SettingsSection[] {
       get items() {
         const selectedModel = assistantModelSetting.get();
         return [
-          // iOS's on-phone model is Apple Intelligence; Android downloads one. Only Android has the bridge.
           enumSettingMenuItem(assistantBackendSetting),
           enumSettingMenuItem(assistantModelSetting),
           ...(selectedModel === "hermes" ? [
@@ -191,15 +189,13 @@ function settingsSections(): SettingsSection[] {
             ...(isVeniceApiBaseUrl(assistantOpenAiCompatibleUrlSetting.get())
               ? [toggleSettingMenuItem(veniceWebSearchSetting)] : []),
           ] : []),
+          // iOS's on-phone model is Apple Intelligence; Android downloads one.
           global.isIOS ? systemModelMenuItem() : localModelMenuItem(),
           toggleSettingMenuItem(assistantSkipConfirmationSetting),
-          // iOS has no agent bridge yet.
-          ...(!global.isIOS ? [
-            textSettingMenuItem(assistantBridgeHostSetting),
-            textSettingMenuItem(assistantBridgePortSetting),
-            textSettingMenuItem(assistantBridgeTokenSetting),
-            toggleSettingMenuItem(assistantAllowProactiveSetting),
-          ] : []),
+          textSettingMenuItem(assistantBridgeHostSetting),
+          textSettingMenuItem(assistantBridgePortSetting),
+          textSettingMenuItem(assistantBridgeTokenSetting),
+          toggleSettingMenuItem(assistantAllowProactiveSetting),
         ];
       },
     },
@@ -302,13 +298,31 @@ function settingsSections(): SettingsSection[] {
   return sections.map(section => {
     if (section.label === "Developer") return { ...section, items: [enumSettingMenuItem(ringConnectionModeSetting),
       toggleSettingMenuItem(showBleBandwidthSetting)] };
-    // No downloadable on-device models: iOS's on-device option is Apple's recognizer.
-    if (section.label === "Voice") return { label: "Voice", items: [enumSettingMenuItem(wakeWordActionSetting),
-      enumSettingMenuItem(voiceProviderSetting), ...whisperServerMenuItems()] };
     if (section.label === "Display") return { ...section, items: section.items.filter(item =>
       item.label !== screenTimeoutSetting.label) };
     return section;
   });
+}
+
+/**
+ * The Voice rows, as a function of the current settings: the self-hosted
+ * Whisper server's rows follow the Transcription Provider row while that
+ * server is the selected provider. The same array while that holds, so the
+ * panel's menu sees a stable list between paints.
+ */
+function voiceRows(): () => MenuItem[] {
+  const top = [enumSettingMenuItem(wakeWordActionSetting), enumSettingMenuItem(voiceProviderSetting)];
+  const whisperServer = [
+    textSettingMenuItem(whisperServerUrlSetting),
+    textSettingMenuItem(whisperServerModelSetting),
+    textSettingMenuItem(whisperServerLanguageSetting),
+    textSettingMenuItem(whisperServerApiKeySetting),
+  ];
+  // No downloadable on-device models on iOS: its on-device option is Apple's recognizer.
+  const models = global.isIOS ? [] : [asrModelMenuItem("moonshine"), asrModelMenuItem("whisper-base-en")];
+  const plain = [...top, ...models];
+  const withWhisperServer = [...top, ...whisperServer, ...models];
+  return () => (voiceProviderSetting.get() === "whisper-server" ? withWhisperServer : plain);
 }
 
 /**
@@ -554,19 +568,6 @@ function asrModelStatusText(id: AsrModelId): string {
     return `${pct}% of ${asrModelMb(id)}`;
   }
   return "not downloaded";
-}
-
-/**
- * The self-hosted Whisper server's settings. Always listed: the provider
- * option stays disabled until the URL is set.
- */
-function whisperServerMenuItems(): MenuItem[] {
-  return [
-    textSettingMenuItem(whisperServerUrlSetting),
-    textSettingMenuItem(whisperServerModelSetting),
-    textSettingMenuItem(whisperServerLanguageSetting),
-    textSettingMenuItem(whisperServerApiKeySetting),
-  ];
 }
 
 /** Download/cancel/delete management for one on-device transcription model. */

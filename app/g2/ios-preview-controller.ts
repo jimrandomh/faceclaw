@@ -11,6 +11,7 @@ import { registerSystemTools } from '../assistant/system-tools'
 import { registerWindowTools } from '../assistant/window-tools'
 import { registerNavigateTools } from '../assistant/navigate-tools'
 import { registerRoamTools } from '../assistant/roam-tools'
+import { stopAssistantBridge, syncAssistantBridge } from '../assistant/bridge-sync'
 import { IosNavigationSensors } from '../native/ios-navigation-sensors'
 import { bindCompassSession, receiveCompassEvent } from '../native/compass.ios'
 import { bindBandwidthBenchmarkSession } from '../native/bandwidth-benchmark.ios'
@@ -412,6 +413,7 @@ export class IosPreviewController {
     if (!running) {
       void nightscoutBridge.stop().catch(error => this.fail(error))
       weatherBridge.setSessionActive(false)
+      stopAssistantBridge()
       this.glance.dismiss()
       void this.display?.setScreenBlanked(!shell.isScreenOn()).catch(error => this.fail(error))
       this.offSettings?.(); this.offSettings = null
@@ -436,12 +438,17 @@ export class IosPreviewController {
     this.syncLockSetting()
     void nightscoutBridge.start().catch(error => this.fail(error))
     weatherBridge.setSessionActive(true)
+    // The agent bridge, when it is the assistant backend: connected for as long as the runtime
+    // runs (iOS suspends the app, and its sockets, without one), so the agent's proactive tool
+    // calls work outside voice turns.
+    syncAssistantBridge()
     for (const name of [UIDeviceBatteryLevelDidChangeNotification, UIDeviceBatteryStateDidChangeNotification]) {
       this.batteryObservers.push(NSNotificationCenter.defaultCenter.addObserverForNameObjectQueueUsingBlock(name, null, NSOperationQueue.mainQueue, () => this.requestShellRender()))
     }
     const phone = readPhoneBatteryState()
     this.logBluetooth(`Phone battery ${phone.battery ?? "unknown"}% charging=${phone.charging}`)
     this.offSettings = onAnySettingChanged(() => {
+      syncAssistantBridge()
       this.syncLockSetting()
       this.syncContinuousRecording()
       this.pushBrightness()

@@ -187,6 +187,12 @@ OpenClaw agent with the phone plugged into its host can perform the whole
 setup itself. Note that a pulled settings file contains your API keys, so
 treat it as a secret (the default output path is gitignored here).
 
+On iOS, configure it in Settings > Assistant or with
+scripts/pull_config_ios.sh and scripts/push_config_ios.sh. iOS blocks
+connections without TLS to most addresses, so put the bridge behind a TLS
+proxy (for example `tailscale serve`) and enter its full `wss://` address as
+the Bridge host.
+
 ## EvenHub App Notes
 
 Faceclaw is mostly compatible with EvenHub apps. If you are developing an

@@ -2,10 +2,11 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { loader } = require('./helpers/load-typescript.cjs');
 
-function settingsEnv(initialUrl = '', initialModel = 'openai-compatible', glassesType = 'g2') {
+function settingsEnv(initialUrl = '', initialModel = 'openai-compatible', glassesType = 'g2', { ios = false } = {}) {
   let url = initialUrl;
   let model = initialModel;
   let webSearch = false;
+  let voiceProvider = 'onboard';
   const dummySetting = {
     id: 'setting', label: 'Setting', get: () => '', set() {}, displayValue: () => '',
   };
@@ -31,6 +32,16 @@ function settingsEnv(initialUrl = '', initialModel = 'openai-compatible', glasse
     assistantHermesUrlSetting: { ...dummySetting, id: 'assistant-hermes-url', label: 'Hermes URL' },
     assistantHermesKeySetting: { ...dummySetting, id: 'assistant-hermes-key', label: 'Hermes key' },
     veniceWebSearchSetting: searchSetting,
+    assistantBackendSetting: { ...dummySetting, id: 'assistant-backend', label: 'Assistant backend' },
+    assistantBridgeHostSetting: { ...dummySetting, id: 'assistant-bridge-host', label: 'Bridge host' },
+    assistantBridgePortSetting: { ...dummySetting, id: 'assistant-bridge-port', label: 'Bridge port' },
+    assistantBridgeTokenSetting: { ...dummySetting, id: 'assistant-bridge-token', label: 'Bridge token' },
+    assistantAllowProactiveSetting: { ...dummySetting, id: 'assistant-allow-proactive', label: 'Allow proactive agent actions' },
+    voiceProviderSetting: { ...dummySetting, id: 'voice-provider', label: 'Transcription Provider', get: () => voiceProvider },
+    whisperServerUrlSetting: { ...dummySetting, id: 'whisper-server-url', label: 'Whisper server URL' },
+    whisperServerModelSetting: { ...dummySetting, id: 'whisper-server-model', label: 'Whisper server model' },
+    whisperServerLanguageSetting: { ...dummySetting, id: 'whisper-server-language', label: 'Whisper language' },
+    whisperServerApiKeySetting: { ...dummySetting, id: 'whisper-server-api-key', label: 'Whisper server key' },
     glassesTypeSetting: { ...dummySetting, id: 'glasses-type', get: () => (typeof glassesType === 'function' ? glassesType() : glassesType) },
     enumSettingMenuItem: row,
     textSettingMenuItem: row,
@@ -40,7 +51,7 @@ function settingsEnv(initialUrl = '', initialModel = 'openai-compatible', glasse
       return property in target ? target[property] : dummySetting;
     },
   });
-  const load = loader({ global: { isIOS: false, isAndroid: true } }, {
+  const load = loader({ global: { isIOS: ios, isAndroid: !ios } }, {
     './remote-input-menu': { remoteInputMenuItem: () => ({ label: 'Remote input' }) },
     '@nativescript/core': { knownFolders: {} },
     '../../graphics/ui-fonts': { getDefaultSmallFont: () => ({}) },
@@ -88,6 +99,8 @@ function settingsEnv(initialUrl = '', initialModel = 'openai-compatible', glasse
     section,
     sections: panel.sections,
     labels: () => section.items.map(item => item.label),
+    voice: panel.sections.find(item => item.label === 'Voice'),
+    setVoiceProvider: value => { voiceProvider = value; },
     setUrl: value => { url = value; },
     setModel: value => { model = value; },
     searchSetting,
@@ -169,4 +182,35 @@ test('the Keyboard section, with its pairing row, follows the glasses type while
   assert.equal(keyboard.hidden(), false);
   // Nothing else is conditional this way.
   assert.equal(sections.filter(section => section.hidden).length, 1);
+});
+
+test('Whisper server rows appear only while Whisper server is the selected transcription provider', () => {
+  for (const ios of [false, true]) {
+    const env = settingsEnv('', 'auto', 'g2', { ios });
+    const labels = () => env.voice.items.map(item => item.label);
+    const whisperRows = () => JSON.stringify(labels().filter(label => label.startsWith('Whisper')));
+    assert.equal(whisperRows(), '[]');
+    const unselected = env.voice.items;
+    assert.equal(env.voice.items, unselected, 'the same list between paints while nothing changes');
+    for (const provider of ['elevenlabs', 'whisper', 'onboard-whisper']) {
+      env.setVoiceProvider(provider);
+      assert.equal(whisperRows(), '[]', provider);
+    }
+    env.setVoiceProvider('whisper-server');
+    assert.equal(whisperRows(), JSON.stringify(['Whisper server URL', 'Whisper server model', 'Whisper language', 'Whisper server key']));
+    assert.equal(labels().indexOf('Whisper server URL'), labels().indexOf('Transcription Provider') + 1, 'the rows follow the provider row');
+    // Android's downloadable on-device models stay listed either way; iOS has none.
+    assert.equal(labels().filter(label => label.startsWith('On-device model')).length, ios ? 0 : 2);
+    env.setVoiceProvider('soniox');
+    assert.equal(env.voice.items, unselected);
+  }
+});
+
+test('the agent bridge is offered on both platforms', () => {
+  const bridgeRows = ['Bridge host', 'Bridge port', 'Bridge token', 'Allow proactive agent actions'];
+  for (const ios of [false, true]) {
+    const labels = settingsEnv('', 'auto', 'g2', { ios }).labels();
+    assert.equal(labels[0], 'Assistant backend');
+    assert.equal(JSON.stringify(labels.filter(label => bridgeRows.includes(label))), JSON.stringify(bridgeRows), ios ? 'iOS' : 'Android');
+  }
 });

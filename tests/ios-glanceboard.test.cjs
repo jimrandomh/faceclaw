@@ -28,6 +28,7 @@ function fixture() {
   const observers = new Map(), phoneState = { protectedDataAvailable: true };
   let settingsChanged, remoteHost, controller, bridge = null;
   let now = 1000, nextTask = 0, screenOn = true, shellOptions;
+  const agentBridge = [];
   const battery = {};
   const tasks = new Map(), sent = [], previews = [], received = [], errors = [];
   // The keyboard bridge's service, as the controller sees it: what it was told, and the host it was given.
@@ -142,6 +143,7 @@ function fixture() {
     '../assistant/window-tools': { registerWindowTools() {} },
     '../assistant/navigate-tools': { registerNavigateTools() {} },
     '../assistant/roam-tools': { registerRoamTools() {} },
+    '../assistant/bridge-sync': { syncAssistantBridge: () => agentBridge.push('sync'), stopAssistantBridge: () => agentBridge.push('stop') },
     "../native/ios-navigation-sensors": {},
     '../native/notification-icons.ios': { bindIosNotifications() {}, iosNotificationsChanged() {}, onIosNotificationPopup: () => () => {}, readActiveNotifications: () => [] },
     '../native/notification-sources': { shouldShowNotificationOnGlasses: () => true },
@@ -149,7 +151,7 @@ function fixture() {
     '../native/bandwidth-benchmark.ios': { bindBandwidthBenchmarkSession() {} },
     '@nativescript/core': { File: { fromPath: () => ({ writeTextSync() {} }) },
       knownFolders: { documents: () => ({ path: '/tmp' }) }, path },
-    '../native/ios-voice-input': { iosVoiceInput: { handleSessionEnded() {}, stopPhoneCapture() {}, setRawSession() {}, onSpeechEnd: () => () => {} } },
+    '../native/ios-voice-input': { iosVoiceInput: { handleSessionEnded() {}, stopPhoneCapture() {}, setRawSession() {}, recordTo() {}, onSpeechEnd: () => () => {} } },
     '../native/cloud-stt-provider': { transcriptionKey: voice => voice.provider },
     '../ui/shell/voice-activity': { voiceActivity: { setActive() {}, isActive: () => false, subscribe: () => () => {} } },
     '../native/faceclaw-communicator.ios': { FaceclawCommunicatorBridge, resolveIosPeripherals: async addresses => addresses },
@@ -182,7 +184,7 @@ function fixture() {
     '../apps/all-apps': { ALL_APPS: [{ appId: 'glanceboard', glanceboard: provider }] },
     '../apps/onboarding/onboarding-progress': { claimGlassesOnboardingAutoLaunch: () => false },
     '../ui/shell/worker-window': {}, '../ui/shell/in-process-window': {},
-    '../ui/dashboard-settings': { glassesTypeSetting: { get: () => glassesType }, brightnessSetting: { get: () => 'auto' }, brightnessSettingToLevel: () => null, getBrightnessPreferences: () => ({ auto: true, level: 50, minimum: 2, maximum: 100, curve: '0:0,1000:100', fadeMs: 280 }), lockScreenEnabledSetting: { get: () => settings.lock }, ringConnectionModeSetting: { get: () => 'glasses' }, onAnySettingChanged: fn => { settingsChanged = fn; return () => {}; }, previewColorSetting: { get: () => 'white' } },
+    '../ui/dashboard-settings': { glassesTypeSetting: { get: () => glassesType }, brightnessSetting: { get: () => 'auto' }, brightnessSettingToLevel: () => null, getBrightnessPreferences: () => ({ auto: true, level: 50, minimum: 2, maximum: 100, curve: '0:0,1000:100', fadeMs: 280 }), lockScreenEnabledSetting: { get: () => settings.lock }, ringConnectionModeSetting: { get: () => 'glasses' }, onAnySettingChanged: fn => { settingsChanged = fn; return () => {}; }, previewColorSetting: { get: () => 'white' }, saveRecordingSetting: { get: () => false } },
     '../native/phone-battery': { readPhoneBatteryState: () => ({ battery: 80, charging: false }) },
     '../apps/ios-availability': { iosAppUnavailableReason: () => null },
     '../graphics/glyph-wire': { prepareFrameDraws: () => null },
@@ -228,7 +230,7 @@ function fixture() {
   async function phone(type, origin = 'ring') { controller.gesture(type, origin); await render(); }
   async function connect() { await controller.connect(); await render(); }
   return { relay, controller, shell, battery, remoteHost, keyboard, keyboardChanged: session => shellOptions.onKeyboardInputChanged(session), settings, phoneState, observers,
-    get shellOptions() { return shellOptions; }, registered, inProcessApps,
+    get shellOptions() { return shellOptions; }, registered, inProcessApps, agentBridge,
     get bridge() { return bridge; }, connect, wear: wearing => bridge.emitWear(wearing), settingsChanged: () => settingsChanged(), sent, previews, received, boardStats, hardware, phone, advance, render };
 }
 test('the session is told which glasses it drives, as a G2 session gets nowhere on a G1', async () => {
@@ -278,6 +280,20 @@ test('phone preview gestures use Glanceboard; losing runtime cleans up holds and
   f.controller.pause(); await f.render(); assert.equal(f.controller.glance.isVisible(), false);
   f.controller.resume(); await f.render(); assertBlank(f.previews.at(-1).pixels);
   assert.equal(f.boardStats.starts, f.boardStats.stops);
+});
+
+test('the agent bridge follows the runtime: synced as it starts and on each settings change, dropped when it stops', async () => {
+  const f = fixture(); await f.render();
+  assert.deepEqual(f.agentBridge, ['sync'], 'the runtime started with the page in the foreground');
+  f.settingsChanged();
+  assert.deepEqual(f.agentBridge, ['sync', 'sync'], 'bridge-sync itself ignores changes to unrelated settings');
+  f.controller.pause(); await f.render();
+  assert.deepEqual(f.agentBridge, ['sync', 'sync', 'stop'], 'no glasses and no page: iOS will suspend the app');
+  f.controller.resume(); await f.render();
+  assert.equal(f.agentBridge.at(-1), 'sync');
+  await f.connect(); f.agentBridge.length = 0;
+  f.controller.pause(); await f.render();
+  assert.deepEqual(f.agentBridge, [], 'a glasses session keeps the runtime, and the bridge, up in the background');
 });
 
 test('keyboard sessions cannot deliver text after the glasses lock or phone leaves the foreground', () => {

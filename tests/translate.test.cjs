@@ -23,9 +23,9 @@ function settingsHarness({ main = 'onboard', setUp = [] } = {}) {
     '../../ui/dashboard-settings': {
       ConfigSettingEnum: Setting,
       ConfigSettingBoolean: Setting,
+      isVoiceProviderSetUp: provider => available.has(provider),
       voiceProviderSetting: {
         get: () => main,
-        isDisabled: provider => !available.has(provider),
         displayValue: provider => labels[provider] ?? provider,
       },
     },
