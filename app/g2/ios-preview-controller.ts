@@ -29,6 +29,7 @@ import { createLockScreenImage, LOCK_SCREEN_SURFACE_ID } from './lock-screen'
 import { OsEventTypeList } from './events'
 import { loadDeviceAddresses } from './device-addresses'
 import { updateGlassesPresence } from './glasses-presence'
+import { glassesPadStatus, type GlassesPadStatus } from './glasses-display-state'
 import { firmwareIncompatibilityMessage, hasCompatibleFirmware } from './firmware-compat'
 import { keyboardService } from './keyboard/service'
 import type { KeyEvent } from './keyboard/keys'
@@ -56,7 +57,7 @@ import { onAnySettingChanged,
   previewColorSetting, lockScreenEnabledSetting, getBrightnessPreferences, getStringSettingById,
   nightscoutSiteUrlSetting, nightscoutApiTokenSetting, voiceProviderSetting, elevenLabsApiKeySetting,
   openAiApiKeySetting, sonioxApiKeySetting, whisperServerApiKeySetting, whisperServerLanguageSetting,
-  whisperServerModelSetting, whisperServerUrlSetting, ringConnectionModeSetting, saveRecordingSetting, glassesTypeSetting, shouldPopUpNewNotification } from '../ui/dashboard-settings'
+  whisperServerModelSetting, whisperServerUrlSetting, ringConnectionModeSetting, saveRecordingSetting, glassesTypeSetting, glassesModelName, shouldPopUpNewNotification } from '../ui/dashboard-settings'
 import { transcriptionKey, type VoiceProviderSelection } from '../native/cloud-stt-provider'
 import type { PhoneGesture } from '../phone-ui/phone-gestures'
 import { claimGlassesOnboardingAutoLaunch, ONBOARDING_APP_ID } from '../apps/onboarding/onboarding-progress'
@@ -194,7 +195,7 @@ export class IosPreviewController {
     },
   }
 
-  constructor(private readonly onFrame: (image: ImageSource, focus: string) => void,
+  constructor(private readonly onFrame: (image: ImageSource, pad: GlassesPadStatus) => void,
     private readonly onError: (message: string) => void,
     private readonly onConnectionState: (state: SessionState) => void = () => {},
     private readonly onKeyboardInputChanged: (session: KeyboardInputSession | null) => void = () => {},
@@ -625,10 +626,24 @@ export class IosPreviewController {
         const image = this.display?.getCompositePreview(previewColorSetting.get() === 'green', crop)
         if (!image) return
         this.previewCrop = crop
-        this.onFrame(image, this.glassesLocked ? 'Glasses locked' : this.glance.isVisible() ? 'Glanceboard'
-          : `${shell.foregroundWindow()?.title ?? 'Apps'} · ${shell.getFocus() === 'sidebar' ? 'App switcher' : 'App'}`)
+        this.onFrame(image, this.padStatus())
       } catch (error) { this.fail(error) }
     }, 33)
+  }
+  /**
+   * What the watch-style pad shows, worded as on Android ("Display off", the foreground
+   * window's title...). iOS has no charging phase or silent-mode report, so those never show.
+   */
+  private padStatus(): GlassesPadStatus {
+    const batteries = shell.getBatteryLevels()
+    return glassesPadStatus({
+      phase: this.state.phase, silentMode: false, screenOn: shell.isScreenOn(),
+      battery: this.state.battery, glassesModel: glassesModelName(),
+      caseBattery: batteries.case, caseCharging: batteries.caseCharging,
+      foregroundTitle: shell.getForegroundApp()?.title ?? null,
+      // The headless preview has a live (simulated) screen with no glasses connected.
+      previewMode: !this.communicator && this.previewTarget !== null,
+    })
   }
   private fail(error: unknown): void {
     const message = error instanceof Error ? error.stack ?? error.message : String(error)

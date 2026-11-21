@@ -8,6 +8,7 @@ const {
   glassesDisplayAsleep,
   glassesDisplayDetail,
   glassesDisplayLabel,
+  glassesPadStatus,
 } = require("../.test-build/app/g2/glasses-display-state.js");
 
 const connected = {
@@ -36,6 +37,16 @@ test("only the Display off state counts as asleep (the watch face's wake hint)",
   assert.equal(glassesDisplayAsleep({ ...connected, screenOn: false, silentMode: true }), false);
   assert.equal(glassesDisplayAsleep({ ...connected, phase: "charging", screenOn: false }), false);
   assert.equal(glassesDisplayAsleep({ ...connected, phase: "disconnected", screenOn: false }), false);
+});
+
+test("the watch pad's face is the label, its asleep flag and its detail line together", () => {
+  assert.deepEqual(glassesPadStatus(connected), { label: "Music", asleep: false, detail: "" });
+  // A dark display hides the foreground title on both platforms' pads.
+  assert.deepEqual(glassesPadStatus({ ...connected, screenOn: false }), { label: "Display off", asleep: true, detail: "" });
+  assert.deepEqual(
+    glassesPadStatus({ ...connected, phase: "charging", caseBattery: 64, caseCharging: true }),
+    { label: "Charging: G2 72%", asleep: false, detail: "Case 64% ⚡" },
+  );
 });
 
 test("charging takes precedence and includes the glasses' model and last-known battery", () => {

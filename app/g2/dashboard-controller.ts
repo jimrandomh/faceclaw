@@ -107,10 +107,9 @@ import { micArrayCaptureConfig, micControlSupported } from "../apps/microphones/
 import { encodeMicControl } from "../apps/microphones/mic-protocol";
 import {
   chargingPreviewMessage,
-  glassesDisplayAsleep,
-  glassesDisplayDetail,
-  glassesDisplayLabel,
+  glassesPadStatus,
   type GlassesDisplayState,
+  type GlassesPadStatus,
 } from "./glasses-display-state";
 import { PreviewDisplayTarget, type DisplayTarget } from "../native/preview-display";
 
@@ -1264,19 +1263,13 @@ class DashboardController {
     return "";
   }
 
-  /** What occupies the foreground-title line on the watch-style controls. */
-  glassesDisplayLabel(): string {
-    return glassesDisplayLabel(this.glassesDisplayState());
-  }
-
-  /** The smaller line the watch face shows under that one, or "" (the case level while charging). */
-  glassesDisplayDetail(): string {
-    return glassesDisplayDetail(this.glassesDisplayState());
-  }
-
-  /** Whether that line reads "Display off" (the watch face adds a wake hint under it). */
-  glassesDisplayAsleep(): boolean {
-    return glassesDisplayAsleep(this.glassesDisplayState());
+  /**
+   * The watch-style controls' face: what occupies the foreground-title line,
+   * whether it reads "Display off" (the face adds a wake hint under it), and
+   * the smaller line under it (the case level while charging).
+   */
+  glassesPadStatus(): GlassesPadStatus {
+    return glassesPadStatus(this.glassesDisplayState());
   }
 
   private glassesDisplayState(): GlassesDisplayState {

@@ -56,6 +56,8 @@ function fixture() {
     wake: () => { screenOn = true; shellOptions.onScreenStateChanged(true); },
     sleep: () => { screenOn = false; shellOptions.onScreenStateChanged(false); },
     isScreenOn: () => screenOn, getWindows: () => [window], foregroundWindow: () => window,
+    // Only the launcher is open, which counts as no app.
+    getForegroundApp: () => null, getBatteryLevels: () => battery,
     setBatteryLevels: levels => Object.assign(battery, levels), underlayDim: () => 1, getFocus: () => 'app', hasOverlay: () => false,
     describeInputTarget: () => 'test app',
     paintScene: () => new Uint8Array([0, 0]), paintSurface: () => [{ image: new images.GrayImage(640, 480, 0), x: 0, y: 0 }],
@@ -167,6 +169,7 @@ function fixture() {
     './phone-preview-crop': { phonePreviewCrop: () => null, mirrorToPanelFraction: (_crop, nx, ny) => ({ nx, ny }) },
     './lock-screen': { LOCK_SCREEN_SURFACE_ID: 'lock-screen', createLockScreenImage: () => new images.GrayImage(640, 480, 123) },
     './glasses-presence': load('app/g2/glasses-presence.ts', {}),
+    './glasses-display-state': require('../.test-build/app/g2/glasses-display-state.js'),
     './device-addresses': { loadDeviceAddresses: () => ({ right: 'AA', left: 'BB', ring: '' }) }, './ios-peripheral-identity': { deviceAddressError: () => null },
     './wear-remote': { WearRemote: class { schedulePublish() {} } },
     './firmware-compat': load('app/g2/firmware-compat.ts', {}), './reconnect-policy': load('app/g2/reconnect-policy.ts', {}),
@@ -184,7 +187,7 @@ function fixture() {
     '../apps/all-apps': { ALL_APPS: [{ appId: 'glanceboard', glanceboard: provider }] },
     '../apps/onboarding/onboarding-progress': { claimGlassesOnboardingAutoLaunch: () => false },
     '../ui/shell/worker-window': {}, '../ui/shell/in-process-window': {},
-    '../ui/dashboard-settings': { glassesTypeSetting: { get: () => glassesType }, brightnessSetting: { get: () => 'auto' }, brightnessSettingToLevel: () => null, getBrightnessPreferences: () => ({ auto: true, level: 50, minimum: 2, maximum: 100, curve: '0:0,1000:100', fadeMs: 280 }), lockScreenEnabledSetting: { get: () => settings.lock }, ringConnectionModeSetting: { get: () => 'glasses' }, onAnySettingChanged: fn => { settingsChanged = fn; return () => {}; }, previewColorSetting: { get: () => 'white' }, saveRecordingSetting: { get: () => false } },
+    '../ui/dashboard-settings': { glassesTypeSetting: { get: () => glassesType }, glassesModelName: () => glassesType.toUpperCase(), brightnessSetting: { get: () => 'auto' }, brightnessSettingToLevel: () => null, getBrightnessPreferences: () => ({ auto: true, level: 50, minimum: 2, maximum: 100, curve: '0:0,1000:100', fadeMs: 280 }), lockScreenEnabledSetting: { get: () => settings.lock }, ringConnectionModeSetting: { get: () => 'glasses' }, onAnySettingChanged: fn => { settingsChanged = fn; return () => {}; }, previewColorSetting: { get: () => 'white' }, saveRecordingSetting: { get: () => false } },
     '../native/phone-battery': { readPhoneBatteryState: () => ({ battery: 80, charging: false }) },
     '../apps/ios-availability': { iosAppUnavailableReason: () => null },
     '../graphics/glyph-wire': { prepareFrameDraws: () => null },
@@ -210,7 +213,7 @@ function fixture() {
     NSNotificationCenter: { defaultCenter: { addObserverForNameObjectQueueUsingBlock(name, _object, _queue, fn) { observers.set(name, fn); return name; }, removeObserver(name) { observers.delete(name); } } },
     NSOperationQueue: { mainQueue: {} },
   });
-  controller = new IosPreviewController((pixels, title) => previews.push({ pixels, title }), message => errors.push(message));
+  controller = new IosPreviewController((pixels, pad) => previews.push({ pixels, pad: { ...pad } }), message => errors.push(message));
   window.requestRender();
   controller.resume();
   async function drain() { await controller.inputQueue; await controller.glance.queue; }
@@ -280,6 +283,31 @@ test('phone preview gestures use Glanceboard; losing runtime cleans up holds and
   f.controller.pause(); await f.render(); assert.equal(f.controller.glance.isVisible(), false);
   f.controller.resume(); await f.render(); assertBlank(f.previews.at(-1).pixels);
   assert.equal(f.boardStats.starts, f.boardStats.stops);
+});
+
+test('the watch pad names what the next gesture lands on, and reads "Display off" while the display sleeps', async () => {
+  const f = fixture(), pad = () => f.previews.at(-1).pad;
+  // No glasses: the headless preview's screen stands in for them.
+  await f.render();
+  assert.deepEqual(pad(), { label: 'Launcher', asleep: false, detail: '' });
+  f.shell.getForegroundApp = () => ({ appId: 'music', title: 'Music' }); await f.phone('tap', 'watch');
+  assert.deepEqual(pad(), { label: 'Music', asleep: false, detail: '' });
+  // Asleep, the foreground window is not what a gesture reaches: the pad says so, with the wake hint.
+  f.shell.sleep(); await f.render();
+  assert.deepEqual(pad(), { label: 'Display off', asleep: true, detail: '' });
+  // The Glanceboard shows over a sleeping shell, as on Android.
+  await f.phone('tap', 'mirror'); assertBoard(f.previews.at(-1).pixels);
+  assert.equal(pad().label, 'Display off');
+  await f.phone('double-tap', 'watch');
+  assert.deepEqual(pad(), { label: 'Music', asleep: false, detail: '' });
+
+  await f.connect();
+  assert.equal(pad().label, 'Music');
+  f.shell.sleep(); await f.render();
+  assert.deepEqual(pad(), { label: 'Display off', asleep: true, detail: '' });
+  // A dropped link outranks the screen state: nothing reaches the glasses.
+  f.bridge.emitState('retrying', 'Reconnecting'); await f.render();
+  assert.deepEqual(pad(), { label: 'Glasses disconnected', asleep: false, detail: '' });
 });
 
 test('the agent bridge follows the runtime: synced as it starts and on each settings change, dropped when it stops', async () => {

@@ -58,6 +58,19 @@ class BleProtocol {
          */
         const val R1_WRITE_CHAR_UUID: String = "bae80012-4f05-4503-8e65-3af1f7329d1f"
 
+        /**
+         * First Faceclaw firmware revision whose ANCS relay takes op 3, RELEASE: the arm hangs
+         * up the link the command arrived on (g2flash docs/ancs-relay.md). Earlier revisions
+         * reject the op and stay connected.
+         */
+        const val LINK_RELEASE_FIRMWARE_REVISION: Int = 41
+
+        /**
+         * The RELEASE command, `'A' 'N' 1 3 token:u32`, written raw to [WRITE_CHAR_UUID] like the
+         * relay's other commands (no TPL envelope). The firmware ignores this op's token.
+         */
+        fun linkReleaseCommand(): ByteArray = byteArrayOf(0x41, 0x4e, 1, 3, 1, 0, 0, 0)
+
         const val PRELUDE_ACK_SID: Int = 0x01
 
         const val PRELUDE_ACK_MAGIC: Int = 156

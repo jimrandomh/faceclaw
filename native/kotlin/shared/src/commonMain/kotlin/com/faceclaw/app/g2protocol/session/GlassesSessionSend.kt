@@ -1182,6 +1182,7 @@ internal fun GlassesSessionCore.createBatteryQueryMessageLocked(): OutboundMessa
         val firmwareInfo = BleProtocol.parseSettingsFirmwareInfo(message.ackPayload)
         if (firmwareInfo != null) {
             customFirmwareDetected = firmwareInfo.isFaceclawFirmware()
+            faceclawFirmwareRevision = firmwareInfo.faceclawRevision()
             emitFirmwareInfo(firmwareInfo)
             if (sessionReady && !firmwareInfo.isCompatible(requiredFirmwareRevision)) {
                 // Halting tears down the link, which belongs on the worker thread

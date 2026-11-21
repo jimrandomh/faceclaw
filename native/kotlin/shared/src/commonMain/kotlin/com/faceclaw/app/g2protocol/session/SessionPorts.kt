@@ -63,6 +63,24 @@ interface SessionLink {
 
     fun disconnect(address: String)
 
+    /**
+     * Whether [disconnect] can leave the physical link up. CoreBluetooth ends only this app's
+     * use of a link, and iOS goes on holding the one a bonded accessory uses for ANCS: the arm
+     * stays connected to the phone, never advertises, and no other phone can reach it. Only
+     * the far end can close such a link, so the session asks it to ([releaseFromPeer]).
+     */
+    fun keepsLinkAfterDisconnect(): Boolean = false
+
+    /**
+     * Have the device hang up: write [request], a command its firmware answers by closing
+     * the link from its end, and wait up to [timeoutMs] for the link to go. Covers a link
+     * this app no longer uses but the OS still holds. True when the link is down, including
+     * when it already was. False when the request could not be written or the link outlived
+     * the wait; either way the caller still calls [disconnect]. Only meaningful where
+     * [keepsLinkAfterDisconnect].
+     */
+    fun releaseFromPeer(address: String, characteristicUuid: String, request: ByteArray, timeoutMs: Int): Boolean = false
+
     fun close()
 
     /** Whether the OS still holds a pairing bond for the address (iOS: always true). */

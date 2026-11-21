@@ -76,6 +76,11 @@ class IosBleCentral(private val platform: ProtocolPlatform = IosProtocolPlatform
         const val TAG = "FaceclawBle"
         const val ADVERTISEMENT_CACHE = 512
         private const val READY_TIMEOUT_MS = 30_000
+        /** Reattaching to a link the system holds completes at once; discovery reads the system's cached table. */
+        private const val RELEASE_ATTACH_TIMEOUT_MS = 2_000
+        private val G2_SERVICES = listOf(BleProtocol.PROTOCOL_SERVICE_UUID, BleProtocol.RENDER_SERVICE_UUID)
+        /** What the glasses [releaseFromPeer] serves have: a G2's services, or a G1's on g1v0. */
+        private val GLASSES_SERVICES = G2_SERVICES + G1Ble.SERVICE_UUID
         private const val DEFAULT_ATT_MTU = 23
         private const val MAX_ATT_MTU = 517
     }
@@ -95,6 +100,8 @@ class IosBleCentral(private val platform: ProtocolPlatform = IosProtocolPlatform
         var readyForWriteWithoutResponse = false
         var requiresAncs = false
         var reportedConnected = false
+        /** [releaseFromPeer] is asking the device to hang up: its connection events are not reported. */
+        var releasing = false
     }
 
     private class Advertisement(var name: String, var manufacturerDataHex: String)
@@ -221,14 +228,18 @@ class IosBleCentral(private val platform: ProtocolPlatform = IosProtocolPlatform
     /**
      * G2 arms the system is connected to, through this app, another app or iOS itself. A
      * connected arm stops advertising, and iOS keeps the right arm's ANCS link open after a
-     * session ends, so a scan alone never hears it. Empty until Bluetooth is powered on.
+     * session ends unless the arm hung up ([releaseFromPeer]), so a scan alone never hears it.
+     * Empty until Bluetooth is powered on.
      */
-    fun systemConnectedG2Arms(): List<IosConnectedPeripheral> {
+    fun systemConnectedG2Arms(): List<IosConnectedPeripheral> = systemConnected(G2_SERVICES)
+
+    /** Peripherals the system is connected to that have any of [serviceUuids], by whoever's doing. */
+    private fun systemConnected(serviceUuids: List<String>): List<IosConnectedPeripheral> {
         val found = ArrayList<IosConnectedPeripheral>()
         dispatch_sync(queue) {
             val manager = central ?: return@dispatch_sync
             if (manager.state != CBManagerStatePoweredOn) return@dispatch_sync
-            val services = listOf(BleProtocol.PROTOCOL_SERVICE_UUID, BleProtocol.RENDER_SERVICE_UUID).map { CBUUID.UUIDWithString(it) }
+            val services = serviceUuids.map { CBUUID.UUIDWithString(it) }
             for (item in manager.retrieveConnectedPeripheralsWithServices(services)) {
                 val peripheral = item as? CBPeripheral ?: continue
                 found.add(IosConnectedPeripheral(peripheral.identifier.UUIDString.uppercase(), peripheral.name ?: ""))
@@ -504,6 +515,46 @@ class IosBleCentral(private val platform: ProtocolPlatform = IosProtocolPlatform
         IosBleTraffic.recordDisplayFrame()
     }
 
+    override fun keepsLinkAfterDisconnect(): Boolean = true
+
+    /**
+     * cancelPeripheralConnection ends this app's use of a link, not the link: iOS keeps the one
+     * a bonded accessory uses for ANCS, and nothing an app can call closes it. The peripheral
+     * can, so [request] asks it to. An arm this app already cancelled but the system still
+     * holds is reattached first (connecting to it completes immediately).
+     */
+    override fun releaseFromPeer(address: String, characteristicUuid: String, request: ByteArray, timeoutMs: Int): Boolean {
+        if (closed) return false
+        val identifier = address.uppercase()
+        val key = characteristicUuid.lowercase()
+        // A peripheral this central never met has no session behind it to speak for its firmware.
+        val peer = cond.withLock { peers[identifier]?.also { it.releasing = true } } ?: return false
+        try {
+            val ready = cond.withLock { peer.connected && peer.characteristics.containsKey(key) }
+            if (!ready) {
+                if (systemConnected(GLASSES_SERVICES).none { it.identifier == identifier }) return true
+                log("release $identifier: reattaching to the link the system still holds")
+                if (!connect(identifier, RELEASE_ATTACH_TIMEOUT_MS)) return false
+                if (!discoverServices(identifier, RELEASE_ATTACH_TIMEOUT_MS)) return false
+            }
+            val deadline = platform.elapsedRealtimeMs() + timeoutMs
+            // Without response: the link can be gone before a write response would arrive.
+            val written = writeFrames(identifier, characteristicUuid, listOf(request), GattWriteMode.WITHOUT_RESPONSE, timeoutMs)
+            val down = cond.withLock {
+                while (written && peer.connected) {
+                    val left = deadline - platform.elapsedRealtimeMs()
+                    if (left <= 0) break
+                    cond.awaitMs(left)
+                }
+                !peer.connected
+            }
+            log("release $identifier: " + (if (down) "the device hung up" else if (written) "still connected after ${timeoutMs}ms" else "request not written"))
+            return down
+        } finally {
+            cond.withLock { peer.releasing = false }
+        }
+    }
+
     override fun disconnect(address: String) {
         val peer = cond.withLock { peers[address.uppercase()] } ?: return
         dispatch_sync(queue) {
@@ -609,20 +660,24 @@ class IosBleCentral(private val platform: ProtocolPlatform = IosProtocolPlatform
 
     private fun onConnected(peripheral: CBPeripheral) {
         val peer = remember(peripheral)
-        cond.withLock {
+        val report = cond.withLock {
             peer.connected = true
             peer.connectPending = false
             peer.failure = null
-            peer.reportedConnected = true
+            // A reattach made only to ask the device to hang up is not a connection the session has.
+            peer.reportedConnected = !peer.releasing
             cond.signalAll()
+            peer.reportedConnected
         }
-        emitConnectionState(peer.identifier, true)
+        if (report) emitConnectionState(peer.identifier, true)
     }
 
     private fun onDisconnected(peripheral: CBPeripheral, error: NSError?) {
         val peer = remember(peripheral)
-        if (error != null) ConnectionCounters.increment("ble.ios-disconnect-error." + error.code)
-        failPeer(peer, error?.localizedDescription ?: "Disconnected", notifyListeners = true)
+        // The hang-up releaseFromPeer asked for arrives as a remote disconnect: neither an error nor news.
+        val requested = cond.withLock { peer.releasing }
+        if (error != null && !requested) ConnectionCounters.increment("ble.ios-disconnect-error." + error.code)
+        failPeer(peer, error?.localizedDescription ?: "Disconnected", notifyListeners = !requested)
     }
 
     private fun onServicesDiscovered(peripheral: CBPeripheral, error: NSError?) {
