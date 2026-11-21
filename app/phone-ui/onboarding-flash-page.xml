@@ -6,7 +6,11 @@
                 <ActivityIndicator busy="{{ busy }}" visibility="{{ busyVisibility }}" class="m-t-16" />
                 <Progress value="{{ progress }}" maxValue="100" visibility="{{ progressVisibility }}" class="m-t-16" />
                 <Label text="{{ status }}" class="body-text m-t-16 text-center" textWrap="true" />
-                <Label text="{{ log }}" class="m-t-24" textWrap="true" fontSize="12" visibility="{{ logVisibility }}" />
+                <Button text="{{ detailsToggleLabel }}" tap="{{ onToggleDetailsTap }}" visibility="{{ detailsToggleVisibility }}" horizontalAlignment="center" class="pairing-link m-t-8" />
+                <StackLayout visibility="{{ detailsVisibility }}">
+                    <Label text="{{ progressDetail }}" class="m-t-8" textWrap="true" fontSize="12" visibility="{{ progressDetailVisibility }}" />
+                    <Label text="{{ log }}" class="m-t-8" textWrap="true" fontSize="12" visibility="{{ logVisibility }}" />
+                </StackLayout>
             </StackLayout>
         </ScrollView>
 

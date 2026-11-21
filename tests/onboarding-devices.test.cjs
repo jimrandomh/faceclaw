@@ -175,6 +175,24 @@ test('the disconnect page drops the Even app instructions only when setting up a
   }
 });
 
+test('the disconnect page also covers the R1 ring when one was chosen', () => {
+  const page = options => new (fixture(options).loadPage('onboarding-unpair-view-model').OnboardingUnpairViewModel)();
+
+  assert.doesNotMatch(page({ glasses: 'g2' }).evenAppInstructions, /ring/);
+
+  const android = page({ glasses: 'g2', ring: true });
+  assert.match(android.evenAppInstructions, /select your glasses.*press Disconnect\. Then go back to Home and disconnect your R1 ring the same way \(or disable the Even app's "nearby devices" permission\)\.$/);
+  assert.match(page({ glasses: 'g1', ring: true, ios: true }).evenAppInstructions, /disconnect your R1 ring the same way\.$/);
+
+  // An iO has nothing to do with the Even app, but a ring used with one does.
+  const io = page({ glasses: 'rayneo-io', ring: true });
+  assert.equal(io.evenAppVisibility, 'visible');
+  assert.equal(io.settingsButtonVisibility, 'visible');
+  assert.match(io.evenAppInstructions, /^If your R1 ring is connected to the Even Realities app, go to Home, select the ring,/);
+  assert.doesNotMatch(io.evenAppInstructions, /glasses/);
+  assert.doesNotMatch(io.otherAppsInstructions, /Even/);
+});
+
 test('pairing during setup follows the choices; from the menu it offers everything', () => {
   const page = (options, onboarding = true) => new (fixture(options).loadPage('pairing-view-model').PairingViewModel)({ onboarding });
 
