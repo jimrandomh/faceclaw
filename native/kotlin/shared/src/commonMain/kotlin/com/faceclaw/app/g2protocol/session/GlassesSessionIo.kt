@@ -161,9 +161,10 @@ private fun GlassesSessionCore.ioNextMessageNumberLocked(): Int {
 /** One AA55 frame on the iO write characteristic; worker thread, outside the monitor. */
 internal fun GlassesSessionCore.ioWriteFrame(business: Int, payload: ByteArray): Boolean {
     val frame = monitor.withLock { RayNeoIoProtocol.encodeFrame(ioNextMessageNumberLocked(), business, payload) }
+    val writes = RayNeoIoProtocol.writes(frame, link.negotiatedMtu(rightAddress))
+    screenRecorder?.rawWrite(now(), armIndex(rightAddress) == 0, "iO frame business=$business", writes)
     return link.writeFrames(
-        rightAddress, RayNeoIoBle.WRITE_CHAR_UUID,
-        RayNeoIoProtocol.writes(frame, link.negotiatedMtu(rightAddress)),
+        rightAddress, RayNeoIoBle.WRITE_CHAR_UUID, writes,
         GattWriteMode.WITHOUT_RESPONSE, ConnectionOptions.WRITE_TIMEOUT_MS,
     )
 }

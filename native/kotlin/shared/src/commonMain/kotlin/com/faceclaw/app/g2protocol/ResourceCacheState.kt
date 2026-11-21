@@ -66,6 +66,9 @@ class ResourceCacheState {
     fun residentCount(): Int = residents.size
     fun resourceId(resource: CachedResource): Int = residents[resource]?.id ?: -1
 
+    /** Every resource the glasses hold once the commands drained so far have run, by ID. */
+    fun residentResources(): Map<Int, CachedResource> = residents.values.associate { it.id to it.resource }
+
     /** Called once per frame after coalescing. -1 entries stay baked into the pixel fallback. */
     fun prepare(resources: List<CachedResource>): IntArray {
         check(uploads.isEmpty() && evictions.isEmpty()) { "Previous resource commands have not been drained" }

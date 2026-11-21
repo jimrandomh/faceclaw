@@ -6,7 +6,7 @@ import android.content.Context
  * Headless display target for preview-only mode (no glasses paired). Hosts
  * the same SurfaceCompositor the BLE communicator uses, so the TS side can
  * run its full surface/render pipeline unchanged; composited frames simply
- * have nowhere to go, and the phone-mirror preview, screenshots, and GIF
+ * have nowhere to go, and the phone-mirror preview, screenshots, and screen
  * recordings read the retained composite back exactly as they do on a live
  * connection.
  *
@@ -24,10 +24,10 @@ class FaceclawPreviewCompositor(context: Context) {
     // its safety-net poll.
     @Volatile private var frameListener: Runnable? = null
 
-    // Active animated-GIF screen recording, or null when idle. Frames are
-    // pushed by recordScreenFrame(), which the TS side calls at each
-    // phone-preview flush.
-    @Volatile private var screenRecorder: GifScreenRecorder? = null
+    // The screen recording in progress, or null. With no glasses there are no
+    // Bluetooth messages to log, so it holds frame timings plus the composites
+    // recordScreenFrame() captures at each phone-preview flush.
+    @Volatile private var screenRecorder: ScreenRecorder? = null
 
     companion object {
         // Worker-app isolates locate their frame target through a static, like
@@ -52,6 +52,13 @@ class FaceclawPreviewCompositor(context: Context) {
             activeInstance = null
         }
         setFrameListener(null)
+        // A recording its owner never stopped must not go on collecting frame timings.
+        val recorder = screenRecorder
+        if (recorder != null) {
+            screenRecorder = null
+            FrameTimings.getInstance().core.detachSink(recorder)
+            recorder.end()
+        }
     }
 
     /** Also notified after each step of an animation the preview is replaying (see SurfaceCompositor). */
@@ -183,32 +190,32 @@ class FaceclawPreviewCompositor(context: Context) {
         return ScreenshotUtil.savePngScreenshot(appContext, cropped, width, height)
     }
 
-    /** Begin collecting composite frames for an animated-GIF screen recording. */
+    /** Begin a screen recording ([ScreenRecorder]) of frame timings and composites. */
     fun startScreenRecording() {
-        screenRecorder = GifScreenRecorder()
+        if (screenRecorder != null) {
+            return
+        }
+        val recorder = ScreenRecorder(AndroidProtocolPlatform)
+        val composite = compositor.previewComposite()
+        recorder.begin("none", composite?.width ?: 0, composite?.height ?: 0)
+        screenRecorder = recorder
+        FrameTimings.getInstance().core.attachSink(recorder)
+        recorder.addComposite("phone", composite)
     }
 
     /** Capture the current composite into the active recording; no-op when idle. */
     fun recordScreenFrame() {
-        val recorder = screenRecorder
-        if (recorder == null) {
-            return
-        }
-        val composite = compositor.previewComposite()
-        if (composite == null) {
-            return
-        }
-        recorder.addFrame(composite.gray, composite.width, composite.height, System.currentTimeMillis())
+        screenRecorder?.addComposite("phone", compositor.previewComposite())
     }
 
-    /** Finish the recording and save it as an animated GIF; returns the path or "". */
+    /** Finish the recording and save it; returns the path, or "" if none was running. */
     @Throws(java.io.IOException::class)
     fun stopScreenRecording(): String {
-        val recorder = screenRecorder
+        val recorder = screenRecorder ?: return ""
         screenRecorder = null
-        if (recorder == null) {
-            return ""
-        }
-        return recorder.save(appContext)
+        FrameTimings.getInstance().core.detachSink(recorder)
+        recorder.addComposite("phone", compositor.previewComposite())
+        recorder.end()
+        return ScreenRecordingFile.save(appContext, recorder)
     }
 }

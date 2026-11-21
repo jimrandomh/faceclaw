@@ -454,6 +454,8 @@ internal fun GlassesSessionCore.writeMessage(message: OutboundMessage): Boolean 
             nextTransportSeq++
         )
     }
+    // Before the write: an ACK can arrive while it is still returning.
+    screenRecorder?.messageWriting(now(), message, frames)
     val result = link.writeFrames(
         writeAddress,
         if (isIo) RayNeoIoBle.WRITE_CHAR_UUID else if (isG1) G1Ble.FC_CHAR_UUID else BleProtocol.WRITE_CHAR_UUID,
@@ -461,6 +463,7 @@ internal fun GlassesSessionCore.writeMessage(message: OutboundMessage): Boolean 
         if (isIo || isG1) GattWriteMode.WITHOUT_RESPONSE else ConnectionOptions.WRITE_MODE,
         ConnectionOptions.WRITE_TIMEOUT_MS
     )
+    screenRecorder?.messageWritten(now(), message, result)
 
     monitor.withLock {
         val sentAtMs = now()
@@ -503,6 +506,7 @@ internal fun GlassesSessionCore.prewriteMessage(message: OutboundMessage): Boole
 
     val writeAddress = if (message.isLeftArmMessage) leftAddress else rightAddress
     val prefixFrames = frames.subList(0, frames.size - 1)
+    screenRecorder?.rawWrite(now(), message.isLeftArmMessage, "prewrite of " + message.label, prefixFrames)
     val result = link.writeFrames(
         writeAddress,
         BleProtocol.WRITE_CHAR_UUID,
@@ -537,6 +541,7 @@ internal fun GlassesSessionCore.spoilPrewrittenMessage(reason: String): Boolean 
 
     val writeAddress = if (message.isLeftArmMessage) leftAddress else rightAddress
     logLine("spoiling prewritten " + message.label + ": " + reason)
+    screenRecorder?.rawWrite(now(), message.isLeftArmMessage, "spoiled prewrite of " + message.label, listOf(finalFrame))
     val result = link.writeFrames(
         writeAddress,
         BleProtocol.WRITE_CHAR_UUID,
@@ -612,6 +617,7 @@ internal fun GlassesSessionCore.resolveAckLocked(sid: Int, magic: Int, pb: ByteA
 
 internal fun GlassesSessionCore.resolveAckLocked(message: OutboundMessage, pb: ByteArray?) {
     logLine("Got ACK for " + message.label + "(sid=" + message.sid + ", id=" + message.magic + ")")
+    screenRecorder?.messageAcked(now(), message)
     inFlightMessages.remove(message)
     message.ackPayload = pb?.copyOf() ?: ByteArray(0)
     magicPool.release(message.sid, message.magic, message.label, "ack")
@@ -866,6 +872,7 @@ internal fun GlassesSessionCore.enqueueDesiredImageLocked() {
         return
     }
     if (customFirmwareDetected && packedFrame.size > 0) {
+        screenRecorder?.observeStockText(draws)
         val rendered = try {
             scenePlanner.plan(packedFrame, width, height, draws, scene, nextImageFrameId,
                 connectionOptions.TEXTURE_CACHE_FRAMES, connectionOptions.INCREMENTAL_FRAMES,
@@ -887,7 +894,7 @@ internal fun GlassesSessionCore.enqueueDesiredImageLocked() {
         }
         nextImageFrameId = rendered.nextFid
         val commands = rendered.commands
-        for (i in 0 until commands.size - 1) enqueueResourceCommandLocked(commands[i])
+        for (i in 0 until commands.size - 1) enqueueResourceCommandLocked(commands[i], frameId)
         val plan = BleImageOptimizer.TileImagePlan(
             0, DASHBOARD_TILE, packedFrame, width, height, nextMapSessionId(), commands[commands.size - 1])
         finishEnqueueDesiredImageLocked(plan, fingerprint, paintMs, frameId)
@@ -988,7 +995,7 @@ internal fun GlassesSessionCore.finishEnqueueDesiredImageLocked(
  * unknown; forget everything phone-side (glyphs re-upload lazily) and let
  * the accompanying image update's own timeout drive the frame resync.
  */
-internal fun GlassesSessionCore.enqueueResourceCommandLocked(payload: ByteArray) {
+internal fun GlassesSessionCore.enqueueResourceCommandLocked(payload: ByteArray, frameId: Int = 0) {
     val message = messageBuilder.imagePayload(
         "resources",
         DASHBOARD_TILE,
@@ -996,6 +1003,7 @@ internal fun GlassesSessionCore.enqueueResourceCommandLocked(payload: ByteArray)
         payload,
         "resource command " + payload.size + "B",
         connectionOptions.sendImagesToLeft)
+    message.frameId = frameId
     message.onTimeout = MessageCallback {
         resourceCache.reset()
         logLine("resource command ack timeout; resource cache state reset")
@@ -1018,6 +1026,7 @@ internal fun GlassesSessionCore.enqueueCustomImageLocked(
             "image " + plan.tile.name + "#" + messageNumber, plan.tileIndex, leftArm)
     message.cfwRequiredLenses = requiredLenses
     message.setImageUpdatePosition(updateId, messageNumber, messageCount)
+    message.frameId = imageUpdateFrameIdLocked(updateId)
     message.onAck = MessageCallback {
         imageRetryAfterMs = 0
         // Firmware >= 2.2.4.34 resets its heartbeat timer when it receives
@@ -1415,6 +1424,7 @@ internal fun GlassesSessionCore.hasPendingMagicLocked(sid: Int, magic: Int): Boo
 }
 
 internal fun GlassesSessionCore.handleAckTimeoutLocked(message: OutboundMessage) {
+    screenRecorder?.messageTimedOut(now(), message)
     consecutiveAckTimeouts += 1
     ConnectionCounters.increment("g2.ack-timeout")
 

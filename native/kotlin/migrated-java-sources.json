@@ -385,7 +385,7 @@
   },
   {
     "java": "com/faceclaw/app/GifScreenRecorder.java",
-    "kotlin": "App_Resources/Android/src/main/java/com/faceclaw/app/GifScreenRecorder.kt"
+    "kotlin": "App_Resources/Android/src/main/java/com/faceclaw/app/ScreenRecordingFile.kt"
   },
   {
     "java": "com/faceclaw/app/IconRenderer.java",

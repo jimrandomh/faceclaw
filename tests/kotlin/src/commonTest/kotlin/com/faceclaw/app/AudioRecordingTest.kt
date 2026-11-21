@@ -25,20 +25,4 @@ class AudioRecordingTest {
             digest(output.toByteArray()),
         )
     }
-
-    @Test
-    fun javaGifGoldenIncludingDedupAndLzwCodeGrowth() {
-        val recorder = SharedGifScreenRecorder()
-        assertTrue(recorder.encode().isEmpty())
-        for (round in 0 until 7) {
-            val pixels = ByteArray(33 * 17) { ((it * 73 + round * 117) % 256).toByte() }
-            recorder.addFrame(pixels, 33, 17, round * 133L)
-            recorder.addFrame(pixels, 33, 17, round * 133L + 10)
-        }
-        assertFalse(recorder.isOverflowed())
-        assertEquals(
-            "8c5dcb98fa03653972f7f7d5ddaaacff323dd633578905bc252ebe21f9d82780",
-            digest(recorder.encode()),
-        )
-    }
 }

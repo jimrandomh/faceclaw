@@ -1,6 +1,7 @@
 package com.faceclaw.app
 
 import kotlin.jvm.JvmField
+import kotlin.jvm.JvmStatic
 
 /** Mutable attempt state, owned by the communicator and guarded by its lock. */
 class OutboundMessage(
@@ -14,7 +15,25 @@ class OutboundMessage(
     @JvmField val tileIndex: Int,
     @JvmField val isLeftArmMessage: Boolean,
 ) {
+    companion object {
+        private val traceLock = protocolPlatform().createLock()
+        private var traceIds = 0
+
+        /** The newest [traceId] handed out: messages created from here on get larger ones. */
+        @JvmStatic
+        fun lastTraceId(): Int = traceLock.withLock { traceIds }
+
+        private fun nextTraceId(): Int = traceLock.withLock { ++traceIds }
+    }
+
     @JvmField val message: ByteArray = message?.copyOf() ?: ByteArray(0)
+    /**
+     * Process-wide creation order; a replay keeps it. A screen recording names messages by it,
+     * and tells the ones planned before it started from the ones planned after.
+     */
+    @JvmField val traceId: Int = nextTraceId()
+    /** The frame-timings frame whose update this message carries, or 0. */
+    @JvmField var frameId = 0
     @JvmField
     val cfwChecksum: Int = if (sid == CfwTransport.SID) CfwTransport.crc(this.message) else 0
     @JvmField var cfwAckLenses = 0

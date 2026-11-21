@@ -18,6 +18,28 @@ class ScenePlanner(private val cache: ResourceCacheState) {
     private var root = -1
 
     /**
+     * What the glasses hold once every command planned so far has run, for the start of a screen
+     * recording. After a cache reset nothing is known until the next plan, which reseeds it all.
+     */
+    fun deviceState(): ScreenRecorder.DeviceState {
+        val current = epoch == cache.generation
+        val resources = cache.residentResources().entries.sortedBy { it.key }.map { (id, resource) ->
+            // A surface's resource is its zero-filled creation; the pixels drawn into it since are here.
+            val drawn = resource.owner?.let { pixels[it] }
+            val data = if (current && drawn != null && drawn.size < resource.bytes.size)
+                resource.bytes.copyOfRange(0, resource.bytes.size - drawn.size) + drawn
+                else resource.bytes
+            ScreenRecorder.DeviceState.Resource(id, data, resource.owner)
+        }
+        return ScreenRecorder.DeviceState(
+            ScreenRecorder.LENS_BOTH, screenWidth, screenHeight,
+            if (current) previous?.copyOf() else null,
+            if (current && root >= 0) root else DrawProtocol.SCREEN,
+            resources,
+        )
+    }
+
+    /**
      * When the shell's surfaces and retained drawings don't all fit the resource budget, the frame
      * bakes the bottom of the scene into its screen pixels until the rest fits: first the scene's
      * own retained drawings, then layers from the bottom (the chrome) up, so the top overlay stays

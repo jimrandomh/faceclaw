@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Screen recording visualizer</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="top">
+  <h1>Screen recording</h1>
+  <span class="file" id="file-name"></span>
+  <button class="button" id="open">Open recording…</button>
+  <input type="file" id="file" accept=".jsonl,.fcrec,.gz" hidden>
+</header>
+
+<section class="empty" id="empty">
+  <h2>Open a Faceclaw screen recording</h2>
+  <p>Drop a <code>recording-….fcrec.jsonl</code> file anywhere on this page, or use <em>Open recording…</em>.</p>
+  <ol>
+    <li>In the phone app, choose <em>Record screen</em> from the menu, use the glasses, then tap <em>Stop recording</em>.</li>
+    <li>Fetch the file with <code>scripts/pull-screen-recording.sh</code>.</li>
+    <li>Open it here. Nothing is uploaded: the page reads the file locally.</li>
+  </ol>
+  <p class="error" id="error" hidden></p>
+</section>
+
+<main id="app" hidden>
+  <section class="stats" id="stats"></section>
+
+  <section class="stage">
+    <div class="card screen-card">
+      <div class="screen-wrap">
+        <canvas id="screen"></canvas>
+        <canvas id="outlines" class="overlay"></canvas>
+      </div>
+      <div class="transport">
+        <button id="to-start" title="Start of the recording" aria-label="Start of the recording">⏮</button>
+        <button id="previous" title="Previous screen change (←)" aria-label="Previous screen change">◀</button>
+        <button id="play" title="Play or pause (space)" aria-label="Play">▶</button>
+        <button id="next" title="Next screen change (→)" aria-label="Next screen change">▶▏</button>
+        <button id="to-end" title="End of the recording" aria-label="End of the recording">⏭</button>
+        <span class="segmented" id="speed" role="group" aria-label="Playback speed"></span>
+        <span class="time" id="time"></span>
+      </div>
+      <div class="options">
+        <span><label>Show</label> <span class="segmented" id="source" role="group" aria-label="What to show"></span></span>
+        <span><label>Lens</label> <span class="segmented" id="lens" role="group" aria-label="Lens"></span></span>
+        <span><label>Color</label> <span class="segmented" id="color" role="group" aria-label="Color"></span></span>
+      </div>
+      <div class="legend" id="origin-legend" hidden></div>
+      <div class="screen-note" id="screen-note"></div>
+    </div>
+
+    <div class="card panel">
+      <div class="tabs" id="tabs" role="tablist"></div>
+      <div class="panel-body" id="panel" role="tabpanel"></div>
+    </div>
+  </section>
+
+  <section class="card timeline-card">
+    <div class="timeline-legends">
+      <div class="legend" id="frame-legend"></div>
+      <div class="legend" id="category-legend"></div>
+    </div>
+    <div class="timeline-wrap">
+      <canvas id="timeline" tabindex="0" aria-label="Timeline of frames, messages and bytes sent"></canvas>
+      <div class="tooltip" id="tooltip" hidden></div>
+    </div>
+    <div class="hint">Click or drag to move the playhead · scroll to zoom · shift-scroll to pan · double-click to fit the whole recording. The Frames, Messages and Bandwidth tabs list the same data as tables.</div>
+  </section>
+</main>
+
+<span id="probe"></span>
+<script src="emulator.js"></script>
+<script src="recording.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

@@ -6,6 +6,7 @@ import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 private const val RIGHT = "AA:00:00:00:00:01"
@@ -398,6 +399,81 @@ class GlassesSessionCoreTest {
         assertTrue(s.listener.finished.any { it == "3:discarded: no change from displayed image" }, s.listener.finished.toString())
         assertEquals(2, s.link.cfwMessages().size)
         s.core.disconnect()
+    }
+
+    /** One shell layer the size of a status bar, lit at [lit]; see ShellScene.decode for the layout. */
+    private fun shellScene(lit: Int, dim: Int = 256): ByteArray {
+        val width = 40
+        val height = 6
+        val gray = ByteArray(width * height) { if (it % width == lit) 0xf0.toByte() else 0x30 }
+        return DrawProtocol.word(1) + DrawProtocol.word(7) + DrawProtocol.word(8) + DrawProtocol.word(2) +
+            DrawProtocol.word(width) + DrawProtocol.word(height) + DrawProtocol.word(dim) + DrawProtocol.word(0) +
+            DrawProtocol.word(0) + gray + DrawProtocol.word(0)
+    }
+
+    @Test
+    fun screenRecordingStartedMidSessionReplaysToThePhonesComposite() {
+        val s = Session()
+        // A small screen keeps the fixture this test leaves for the visualizer's tests small.
+        s.core.configureCompositorScreen(160, 96)
+        s.core.configureSurface("s", 0, 0, 64, 32, 0, SurfaceCompositor.TRANSPARENCY_OPAQUE)
+        s.startAndAwaitLayout()
+        s.core.monitor.withLock { s.core.customFirmwareDetected = true }
+        try {
+            // Before the recording: an app frame and a shell layer, so the glasses already hold
+            // screen pixels, a surface resource and a root list when it starts.
+            s.submitFrame(100, 0x70, 0)
+            s.core.submitShellScene(ArrayByteReader(shellScene(3)), 0, 0)
+            assertTrue(waitUntil(5_000) { s.displayedMatchesDesired() }, s.host.logs().takeLast(20).toString())
+            assertNull(s.core.stopScreenRecording())
+
+            s.core.startScreenRecording()
+            s.core.startScreenRecording() // already running: ignored
+            val input = s.frameTimings.startFrame("input:test tap")
+            s.submitFrame(101, 0xf0.toByte(), input)
+            assertTrue(waitUntil(5_000) { s.displayedMatchesDesired() }, s.host.logs().takeLast(20).toString())
+            val shell = s.frameTimings.startFrame("render:shell", input)
+            s.core.submitShellScene(ArrayByteReader(shellScene(20, 128)), 0, shell)
+            assertTrue(waitUntil(5_000) { s.displayedMatchesDesired() }, s.host.logs().takeLast(20).toString())
+            s.core.recordScreenFrame() // messages say what is on the screen: no composite is taken
+            val recorder = assertNotNull(s.core.stopScreenRecording())
+            assertNull(s.core.stopScreenRecording())
+            assertFalse(recorder.isTruncated)
+
+            val text = recorder.encodeToString()
+            val replay = RecordingReplay(text).run()
+            assertEquals("g2", replay.header["glasses"])
+            assertEquals(160, replay.header["width"].asInt())
+            // The state dump alone reproduces the starting screen, and the messages the final one.
+            val state = replay.ofType("state").single()
+            assertEquals(ScreenRecorder.LENS_BOTH, state["lenses"].asInt())
+            assertTrue(state["resources"].asArray()!!.any { it.asObject()!!["owner"] == "shell:7:40x6" })
+            val screens = replay.ofType("screen")
+            assertEquals(listOf("phone", "phone"), screens.map { it["source"] })
+            val started = RecordingReplay(text.lines().takeWhile { !it.startsWith("{\"type\":\"msg\"") }.joinToString("\n")).run()
+            val first = replay.decodeScreen(screens.first())
+            assertContentEquals(first, started.lenses[0].composition)
+            assertContentEquals(replay.lastScreen(), replay.lenses[0].composition)
+            assertContentEquals(replay.lenses[0].composition, replay.lenses[1].composition)
+            assertFalse(first.contentEquals(replay.lastScreen()))
+
+            // Every display message carries the frame that produced it, and both frames are in the log.
+            val display = replay.ofType("msg").filter { it["kind"] == "image" || it["kind"] == "resources" }
+            assertTrue(display.size >= 4, display.toString())
+            assertEquals(setOf(input, shell), display.map { it["frame"].asInt() }.toSet())
+            assertTrue(display.none { it["baseline"] == true })
+            assertEquals(listOf(input, shell), replay.ofType("frame").map { it["id"].asInt() })
+            assertEquals(setOf(input, shell), replay.ofType("frame-end").filter { it["outcome"] == "sent" }.map { it["id"].asInt() }.toSet())
+            for (message in display) {
+                val id = message["id"]
+                assertEquals(1, replay.ofType("sent").count { it["id"] == id && it["ok"] == true })
+                assertEquals(listOf(1, 2), replay.ofType("lens-ack").filter { it["id"] == id }.map { it["lens"].asInt() })
+                assertEquals(1, replay.ofType("ack").count { it["id"] == id })
+            }
+            assertTrue(replay.ofType("log").any { (it["text"] as String).startsWith("queue image update#") })
+            assertEquals("end", replay.records.last()["type"])
+            writeRecordingFixture("session.fcrec.jsonl", text)
+        } finally { s.core.close() }
     }
 
     @Test

@@ -528,13 +528,37 @@ class GlassesSessionCore(
 
     internal fun now(): Long = platform.elapsedRealtimeMs()
 
-    internal fun logLine(line: String) = host.log(SessionLogLevel.INFO, TAG, line, null)
+    internal fun logLine(line: String) {
+        screenRecorder?.log(now(), "I", line)
+        host.log(SessionLogLevel.INFO, TAG, line, null)
+    }
 
     internal fun logDebug(line: String) = host.log(SessionLogLevel.DEBUG, TAG, line, null)
 
-    internal fun logWarn(line: String, error: Throwable? = null) = host.log(SessionLogLevel.WARN, TAG, line, error)
+    internal fun logWarn(line: String, error: Throwable? = null) {
+        screenRecorder?.log(now(), "W", line)
+        host.log(SessionLogLevel.WARN, TAG, line, error)
+    }
 
-    internal fun logError(line: String) = host.log(SessionLogLevel.ERROR, TAG, line, null)
+    internal fun logError(line: String) {
+        screenRecorder?.log(now(), "E", line)
+        host.log(SessionLogLevel.ERROR, TAG, line, null)
+    }
+
+    // ---------------------------------------------------------------------
+    // Screen recording (GlassesSessionRecording.kt)
+
+    /** The recording in progress, or null. Its hooks read this without the monitor. */
+    @Volatile internal var screenRecorder: ScreenRecorder? = null
+
+    /** See [beginScreenRecording]. */
+    fun startScreenRecording() = beginScreenRecording()
+
+    /** See [captureScreenRecordingFrame]. */
+    fun recordScreenFrame() = captureScreenRecordingFrame()
+
+    /** See [endScreenRecording]. */
+    fun stopScreenRecording(): ScreenRecorder? = endScreenRecording()
 
     // ---------------------------------------------------------------------
     // Lifecycle
@@ -558,6 +582,7 @@ class GlassesSessionCore(
         }
         val active = monitor.withLock { running }
         if (!active) return false
+        screenRecorder?.rawWrite(now(), armIndex(address) == 0, "raw packet", listOf(packet))
         return try {
             val result = if (isG1) {
                 link.writeFrames(address, G1Ble.ANCS_CHAR_UUID, listOf(packet), GattWriteMode.WITH_RESPONSE, ConnectionOptions.WRITE_TIMEOUT_MS)
@@ -698,6 +723,8 @@ class GlassesSessionCore(
     fun close() {
         disconnect()
         for (transport in cfwTransports) transport.close()
+        // A recording its owner never stopped must not go on collecting frame timings.
+        endScreenRecording()
     }
 
     /** The platform's screen-on/off/user-present signal: refresh the lock state and wake the worker. */
@@ -2336,7 +2363,11 @@ class GlassesSessionCore(
             for (message in inFlightMessages) {
                 val ingress = if (message.isLeftArmMessage) leftAddress else rightAddress
                 if (message.sid == CfwTransport.SID && address.equals(ingress, ignoreCase = true) && message.magic == ack.streamId) {
+                    val ackedBefore = message.cfwAckLenses
                     message.acceptCfwAck(ack)
+                    if (ack.nack || message.cfwAckLenses != ackedBefore) {
+                        screenRecorder?.lensAck(lastIncomingAtMs, message, ack.lens, ack.nack)
+                    }
                     if (ack.nack) ConnectionCounters.increment("g2.cfw-nack")
                     logLine("CFW " + (if (ack.nack) "NACK" else "ACK") + " id=" + ack.streamId
                             + " ordinal=" + ack.messageId + " lens=" + ack.lens + " txseq=" + txSeq

@@ -7,8 +7,8 @@ local `@faceclaw/kotlin` plugin. Generated binaries and Gradle caches are ignore
 
 - `commonMain/kotlin`: wire protocol, fragmentation/reassembly, event decoding,
   image/RLE/texture planning, retained surface composition, glyph/image atlases,
-  LVGL font parsing, spectral noise suppression, PNG/GIF/WAV encodings and
-  callback interfaces. Since 2026-09-22 also the platform-neutral cores behind
+  LVGL font parsing, spectral noise suppression, PNG/WAV encodings, screen
+  recording (`util/ScreenRecorder`) and callback interfaces. Since 2026-09-22 also the platform-neutral cores behind
   the Android adapters: `util/` (Json codec, FrameTimingsCore, concurrency
   primitives, sha256/clock/log/file expects), `g2protocol/FirmwareImage`,
   `audio/` (Lc3PacketFramer, AudioSegmentation, VoicePrint, WavPcmReader, the Matroska
@@ -60,8 +60,8 @@ NativeScript's own `kotlin-android` plugin rather than this KMP module; they kee
 their Java-era JVM API (`@JvmStatic`/`@JvmField`/`const val`) so TypeScript and
 the manifest are unchanged. `android-java-boundaries.json` inventories the Java
 that remains: the sherpa-onnx classes, which are the vendored Android JNI ABI.
-PNG/GIF adapters retain only Android storage responsibilities; their codecs are
-shared.
+The PNG and screen-recording adapters retain only Android storage responsibilities;
+their encoders are shared.
 
 On iOS (since 2026-09-22) `iosMain` also hosts the platform actuals for the shared
 cores: `ble/IosBleCentral` (CoreBluetooth, implements `SessionLink` and `StockLink`
@@ -106,8 +106,8 @@ npm run test:kotlin:ios
 
 `tests/kotlin` compiles production sources directly. Common tests run on JVM
 and iOS: wire vectors, framing/corruption/expiry, streaming compression, replay,
-composition, PNG pixels, font glyphs, and Java SHA-256 golden outputs for DSP
-and GIF. Android additionally runs the existing Java protocol fixtures and
+composition, PNG pixels, font glyphs, screen recordings, and Java SHA-256 golden
+outputs for DSP. Android additionally runs the existing Java protocol fixtures and
 concurrency checks; common texture tests cover reuse, overflow, reset and 32-bit
 offsets, and iOS exercises `NSData`, atlas, compositor and planner adapters. Debug app
 startup checks real NativeScript metadata and bidirectional callbacks, logging

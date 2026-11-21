@@ -55,7 +55,7 @@ test('phone preview skips hidden pages, background activity and screen off; resu
   assert.equal(h.previews(), 2);
 });
 
-test('explicit GIF recording continues without rendering a hidden phone bitmap', () => {
+test('explicit screen recording continues without rendering a hidden phone bitmap', () => {
   const h = harness();
   h.instance.screenRecordingActive = true;
   h.instance.attachPhonePreview(() => true);

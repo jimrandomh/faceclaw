@@ -33,6 +33,16 @@ test the app, use build_and_run.sh and then use `adb logcat` to view the
 results. `lint.sh` (`npm run lint`) runs oxlint over the TypeScript, including
 type-aware rules; rule selection is in .oxlintrc.json.
 
+"Record screen" in the phone app's menu records what was sent to the glasses: their
+display state when it started, then every Bluetooth message with frame timings and the
+session log (shared Kotlin `util/ScreenRecorder.kt`, hooked in from
+`GlassesSessionSend.kt` and `FrameTimingsCore`). `scripts/pull-screen-recording.sh`
+fetches the file; `tools/screen-recording-visualizer/` (a static page, no build step)
+replays it to show the display, timings and bandwidth, and its `FORMAT.md` describes
+the file. Its interpreter in `emulator.js` is a port of `DisplayListRenderer.kt`: after
+changing the draw protocol, change both and run
+`scripts/update-screen-recording-fixtures.sh`.
+
 If you are working on low-level communication bits, consider checking out
 https://github.com/Commute773/g2-kit-unofficial/ and referring to ble/docs/
 and ble/gen/ directories inside. That repository contains protobuf schemas, as

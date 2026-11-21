@@ -154,9 +154,11 @@ internal fun GlassesSessionCore.g1CfwWrites(message: OutboundMessage, mtu: Int):
     return G1Protocol.packets(transport.encodeRecord(message.message, g1Lens(arm)), message.magic, mtu)
 }
 
-private fun GlassesSessionCore.g1WriteControl(address: String, op: Int, tag: Int, body: ByteArray): Boolean =
-    link.writeFrames(address, G1Ble.CTRL_CHAR_UUID, listOf(G1Protocol.control(op, tag, body)),
-        GattWriteMode.WITHOUT_RESPONSE, ConnectionOptions.WRITE_TIMEOUT_MS)
+private fun GlassesSessionCore.g1WriteControl(address: String, op: Int, tag: Int, body: ByteArray): Boolean {
+    val packets = listOf(G1Protocol.control(op, tag, body))
+    screenRecorder?.rawWrite(now(), armIndex(address) == 0, "G1 control op=$op", packets)
+    return link.writeFrames(address, G1Ble.CTRL_CHAR_UUID, packets, GattWriteMode.WITHOUT_RESPONSE, ConnectionOptions.WRITE_TIMEOUT_MS)
+}
 
 /**
  * A control request and its reply; worker thread, outside the monitor. Writes on a link the arm doesn't yet obey
@@ -455,7 +457,9 @@ internal fun GlassesSessionCore.g1HideBeforeDisconnect() {
         val address = g1ArmAddress(arm)
         if (!link.isConnected(address)) continue
         try {
-            link.writeFrames(address, G1Ble.FC_CHAR_UUID, G1Protocol.packets(record, 0, link.negotiatedMtu(address)),
+            val packets = G1Protocol.packets(record, 0, link.negotiatedMtu(address))
+            screenRecorder?.rawWrite(now(), arm == 0, "G1 hide", packets)
+            link.writeFrames(address, G1Ble.FC_CHAR_UUID, packets,
                 GattWriteMode.WITHOUT_RESPONSE, ConnectionOptions.WRITE_TIMEOUT_MS)
         } catch (t: Throwable) {
             logLine("G1 hide failed: " + safeMessage(t))

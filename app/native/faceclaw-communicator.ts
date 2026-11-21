@@ -571,19 +571,26 @@ export class FaceclawCommunicatorBridge {
     );
   }
 
-  /** Begin collecting composite frames for an animated-GIF screen recording. */
+  /**
+   * Begin a screen recording: the glasses' display state now, then a log of
+   * the Bluetooth messages written to them with frame timings (see
+   * tools/screen-recording-visualizer).
+   */
   startScreenRecording(): void {
     if (!global.isAndroid) return;
     this.communicator.startScreenRecording();
   }
 
-  /** Capture the current composite into the active recording; no-op when idle. */
+  /**
+   * The recording's periodic capture point. Only a session whose messages
+   * can't be replayed records a composite here; no-op when idle.
+   */
   recordScreenFrame(): void {
     if (!global.isAndroid) return;
     this.communicator.recordScreenFrame();
   }
 
-  /** Finish the recording and save the animated GIF; returns the path (empty if no frames). */
+  /** Finish the recording and save it; returns the path (empty if none was running). */
   stopScreenRecording(): string {
     if (!global.isAndroid) return "";
     return String(this.communicator.stopScreenRecording());

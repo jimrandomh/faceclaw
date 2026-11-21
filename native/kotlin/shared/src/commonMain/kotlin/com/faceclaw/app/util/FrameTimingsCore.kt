@@ -6,6 +6,24 @@ import kotlin.math.max
 import kotlin.math.min
 
 /**
+ * Receives every frame event as it is recorded, for a screen recording ([ScreenRecorder]).
+ * Called with the core's lock held, from whichever thread recorded the event: implementations
+ * must be quick and must not call back into [FrameTimingsCore].
+ */
+interface FrameTimingsSink {
+    /** [parentId] is 0 for a root. Times are [ProtocolPlatform.elapsedRealtimeMs]. */
+    fun frameStarted(id: Int, parentId: Int, reason: String, atMs: Long, wallClockMs: Long)
+
+    /** [text] was appended to the frame's label. */
+    fun frameAnnotated(id: Int, atMs: Long, text: String)
+
+    /** A line of the frame's log, spans included ("span paint start", "span paint end (12ms)"). */
+    fun frameLine(id: Int, atMs: Long, thread: String, message: String)
+
+    fun frameFinished(id: Int, atMs: Long, outcome: String)
+}
+
+/**
  * Per-frame timing instrumentation, shared between the native BLE layer and the
  * Typescript UI layer. A "frame" starts when we receive an input event (or a
  * timer fires and we decide to redraw), and finishes when the resulting screen
@@ -140,6 +158,41 @@ class FrameTimingsCore(
     private var framesDiscarded: Long = 0
     private var framesTimedOut: Long = 0
     private var exportDirty = false
+    private var sink: FrameTimingsSink? = null
+
+    /**
+     * Send every frame event to [sink] from now on, replacing any earlier sink. Trees that are
+     * still open are replayed to it first, so that the frames its later events belong to are
+     * ones it has seen start.
+     */
+    fun attachSink(sink: FrameTimingsSink) {
+        lock.withLock {
+            val replayed = HashSet<Int>()
+            for (frame in framesById.values) {
+                val root = frame.root()
+                if (root.id !in replayed && root.subtreeHasOpenFrame()) {
+                    replayed.add(root.id)
+                    replayTreeLocked(root, sink)
+                }
+            }
+            this.sink = sink
+        }
+    }
+
+    /** Stop sending events to [sink]; does nothing if another sink has replaced it. */
+    fun detachSink(sink: FrameTimingsSink) {
+        lock.withLock {
+            if (this.sink === sink) this.sink = null
+        }
+    }
+
+    private fun replayTreeLocked(frame: Frame, sink: FrameTimingsSink) {
+        sink.frameStarted(frame.id, frame.parent?.id ?: 0, frame.reason, frame.startedAtMs, frame.startedWallClockMs)
+        for (line in frame.lines) sink.frameLine(frame.id, line.atMs, line.thread, line.message ?: "")
+        val outcome = frame.outcome
+        if (outcome != null) sink.frameFinished(frame.id, frame.finishedAtMs, outcome)
+        for (child in frame.children) replayTreeLocked(child, sink)
+    }
 
     /** Begin a root frame; reason is a short label like "input:sys-event type=0". */
     fun startFrame(reason: String?): Int = startFrame(reason, 0)
@@ -163,6 +216,7 @@ class FrameTimingsCore(
                 if (!eldest.value.isOpen()) framesById.remove(eldest.key)
             }
             framesStarted++
+            sink?.frameStarted(frame.id, parent?.id ?: 0, frame.reason, now, frame.startedWallClockMs)
             if (parent != null) {
                 parent.children.add(frame)
                 addLineLocked(parent, now, "spawned frame#" + frame.id + " (" + frame.reason + ")")
@@ -182,6 +236,7 @@ class FrameTimingsCore(
         lock.withLock {
             val frame = framesById[frameId] ?: return
             frame.reason = if (frame.reason.isEmpty()) text else frame.reason + " " + text
+            sink?.frameAnnotated(frameId, platform.elapsedRealtimeMs(), text)
         }
     }
 
@@ -290,25 +345,33 @@ class FrameTimingsCore(
     }
 
     private fun addLineLocked(frame: Frame, now: Long, message: String?) {
+        // A recording takes every line; only the export is capped.
+        val sink = this.sink
         if (frame.lines.size >= MAX_LINES_PER_FRAME) {
+            sink?.frameLine(frame.id, now, threadName(), message ?: "")
             if (frame.lines.size == MAX_LINES_PER_FRAME) {
                 frame.lines.add(Line(now, threadName(), "... line cap reached"))
             }
             return
         }
-        frame.lines.add(Line(now, threadName(), message))
+        val line = Line(now, threadName(), message)
+        frame.lines.add(line)
+        sink?.frameLine(frame.id, now, line.thread, message ?: "")
     }
 
     private fun finishFrameLocked(frame: Frame, now: Long, outcome: String) {
         frame.finishedAtMs = now
         frame.outcome = outcome
         for (open in frame.openSpans.entries) {
-            frame.lines.add(Line(now, threadName(),
+            val line = Line(now, threadName(),
                     "span " + open.key + " never ended (started at +" +
-                        (open.value - frame.startedAtMs) + "ms)"))
+                        (open.value - frame.startedAtMs) + "ms)")
+            frame.lines.add(line)
+            sink?.frameLine(frame.id, now, line.thread, line.message ?: "")
         }
         frame.openSpans.clear()
         addLineLocked(frame, now, "finished: $outcome")
+        sink?.frameFinished(frame.id, now, outcome)
 
         val root = frame.root()
         if (frame.wasSent()) {
