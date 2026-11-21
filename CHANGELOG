@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.9.1 - 2026-11-20
+
+### Major Features
+
+* Add Bluetooth keyboard support (G2 only): pair a keyboard with the glasses in Settings > Keyboard, then use it to type in the Terminal app and navigate the UI
+* Add an SSH client to the Terminal app: attach to tmux sessions over SSH with no server-side setup (needs tmux 3.2+), or tunnel g2mirror over SSH instead of using a VPN
+
+### Minor Features
+
+* Custom keybindings for Bluetooth keyboards (Settings > Keyboard > Keybindings), which map a key or key combination to a gesture
+* Mouse buttons and scroll wheels on a Bluetooth keyboard/touchpad combo (such as the Rii K28) work as inputs, and can be bound like keys
+* Glanceboard: when shown by a head tilt, it stays up until you look back down, with a configurable timeout
+* Glanceboard: Add a head tilt angle setting (Android only)
+* Glanceboard: Settings are grouped into sections, and the music card can be left blank when nothing is playing
+* Add a Border option to Settings > Customization (all around, status line only, or none) when the app switcher is at the bottom or a popup; builtin apps use the space that the border would have taken
+* Transcribe: Add an option to capture 2 or 4 of the glasses' microphones separately (G2 only)
+* Transcribe and Translate: Save Recording is a toggle in the app menu rather than a setting (off by default), with a prominent indicator while recording; recordings are saved as Matroska audio (.mka)
+* Transcribe: Replay a saved recording by picking it in the Files app (Android only)
+* Calendar: Multi-day events that are still going are listed under today, with their span; the voice assistant is told when events end
+* Phone screen: Settings are a page rather than a tab, watch vs ring style input is a setting rather than a tab, and the button to open an EvenHub app's phone UI is with the other buttons rather than in the top bar
+* Android: EvenHub apps can open the system file picker
+* Expand the glasses' resource cache from 192kb to 320kb
+* Includes a custom firmware update, which the app will prompt you to install
+* Privacy policy describes the diagnostics that Google ML Kit collects on Android (used for translation and QR code scanning)
+
+### Bug Fixes
+
+* iOS: Fix an issue where the app couldn't reconnect to a G2 arm that iOS already had a notifications (ANCS) connection open to
+* G1: Fix incorrectly rotated accelerometer readings, which broke EvenHub apps such as Level
+
 ## 0.9.0 - 2026-11-08
 
 ### Major Features
