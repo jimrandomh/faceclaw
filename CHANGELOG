@@ -22,14 +22,15 @@
 * Phone screen: Settings are a page rather than a tab, watch vs ring style input is a setting rather than a tab, and the button to open an EvenHub app's phone UI is with the other buttons rather than in the top bar
 * Android: EvenHub apps can open the system file picker
 * Expand the glasses' resource cache from 192kb to 320kb
-* Includes a custom firmware update, which the app will prompt you to install
 * Privacy policy describes the diagnostics that Google ML Kit collects on Android (used for translation and QR code scanning)
+* Mark 2.4.1.4 as a validated G2 target for flashing
 * iOS watch app: Fix bundling; add links to install to the settings page
 
 ### Bug Fixes
 
-* iOS: Fix an issue where the app couldn't reconnect to a G2 arm that iOS already had a notifications (ANCS) connection open to
+* iOS: Fix an issue where the app couldn't reconnect to a G2 arm that iOS already had a notifications (ANCS) connection open
 * G1: Fix incorrectly rotated accelerometer readings, which broke EvenHub apps such as Level
+* Fix inconsistent appearance of the submenu-triangle option between Android and iOS
 
 ## 0.9.0 - 2026-11-08
 
