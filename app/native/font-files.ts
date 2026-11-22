@@ -1,10 +1,10 @@
 /**
  * Font-file text rendering for the on-glasses font previewer, backed by the
  * native font renderer (Android Paint / iOS Core Text). Rendered text arrives as
- * antialiased 8bpp coverage, which the compositor quantizes to the display's
- * 16 shades.
+ * antialiased 8bpp coverage, quantized here to the display's 16 shades the same
+ * way TtfFont's glyphs are, so the previewer matches UI text.
  */
-import { GrayImage } from "../graphics/image";
+import { GrayImage, coverageToNibble, nibbleToGray } from "../graphics/image";
 import { grayImageFromPacket } from "./image-files";
 
 import { fontRenderer } from "./font-renderer";
@@ -28,9 +28,10 @@ export type FontFileMetrics = {
 
 /**
  * Gamma applied when mapping antialiased coverage to output shade
- * (out = coverage^gamma). The G2 display response looks roughly linear, so
- * 1.0 is the default; values below 1 brighten the AA fringe (as if the
- * display were sRGB-ish), values above darken it.
+ * (out = coverage^gamma). The native rasterizers emit linear area coverage
+ * and the G2 display response looks roughly linear, so 1.0 is the default;
+ * values below 1 brighten the AA fringe (as if the display were sRGB-ish),
+ * values above darken it.
  */
 export const DEFAULT_FONT_GAMMA = 1.0;
 
@@ -87,7 +88,7 @@ export function renderFontFileText(
 ): GrayImage | null {
   if (!global.isAndroid && !global.isIOS) return null;
   try {
-    return grayImageFromPacket(fontRenderer.renderText(path, text, sizePx, gamma));
+    return coverageImageFromPacket(fontRenderer.renderText(path, text, sizePx, gamma));
   } catch (error) {
     console.warn(`renderFontFileText failed for ${path}: ${error}`);
     return null;
@@ -108,7 +109,7 @@ export function renderFontFileWrapped(opts: {
 }): GrayImage | null {
   if (!global.isAndroid && !global.isIOS) return null;
   try {
-    return grayImageFromPacket(
+    return coverageImageFromPacket(
       fontRenderer.renderWrapped(
         opts.path,
         opts.text,
@@ -122,4 +123,15 @@ export function renderFontFileWrapped(opts: {
     console.warn(`renderFontFileWrapped failed for ${opts.path}: ${error}`);
     return null;
   }
+}
+
+/** A coverage packet as a GrayImage of exact display levels (see coverageToNibble). */
+function coverageImageFromPacket(raw: ArrayLike<number>): GrayImage | null {
+  const image = grayImageFromPacket(raw);
+  if (!image) return null;
+  const pixels = image.pixels;
+  for (let i = 0; i < pixels.length; i++) {
+    pixels[i] = nibbleToGray(coverageToNibble(pixels[i]!));
+  }
+  return image;
 }
