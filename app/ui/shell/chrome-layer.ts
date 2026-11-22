@@ -697,8 +697,9 @@ export class ShellChromeLayer implements Layer {
       // The window frame rides on the switcher row, whose top edge is its
       // bottom side, and so replays after any top bar, whose bottom row is
       // its top. It plays at the screen's own depth rather than the bar's
-      // -2, which on top of a -62 screen depth would shift a side off the
-      // screen. (A framed window always has the row on screen.)
+      // -2: its sides are a pixel outside the window, with that much less
+      // room to shift at the deepest screen depth (uiDepthSetting). (A
+      // framed window always has the row on screen.)
       const frame = windowFrameRect(state);
       if (frame) drawWindowFrame(stripCanvas, frame, this.frameCornerSquare);
       // Under a framed window the row's surface spans the frame, whose left

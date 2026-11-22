@@ -152,8 +152,10 @@ export class ConfigSettingBoolean<TId extends string = string> extends ConfigSet
 }
 
 type ConfigSettingEnumOptions<TValue extends string, TId extends string> = ConfigSettingOptions<TValue, TId> & {
-  values: readonly TValue[];
-  normalize?: (value: string | null | undefined) => TValue;
+  /** The choices, in picker order; a function where they depend on other settings. */
+  values: readonly TValue[] | (() => readonly TValue[]);
+  /** Maps what is stored to a choice; undefined reads as the default. */
+  normalize?: (value: string | null | undefined) => TValue | undefined;
   /** Dynamic availability check used by enum picker rows. */
   isDisabled?: (value: TValue) => boolean;
   /** The default while nothing is stored, when it depends on context (else `defaultValue`). */
@@ -161,7 +163,7 @@ type ConfigSettingEnumOptions<TValue extends string, TId extends string> = Confi
 };
 
 export class ConfigSettingEnum<TValue extends string, TId extends string = string> extends ConfigSetting<TValue, TId> {
-  readonly values: readonly TValue[];
+  private readonly choices: readonly TValue[] | (() => readonly TValue[]);
   private readonly normalizer: (value: string | null | undefined) => TValue;
   private readonly disabledPredicate: (value: TValue) => boolean;
   private readonly dynamicDefault: (() => TValue | undefined) | undefined;
@@ -170,17 +172,19 @@ export class ConfigSettingEnum<TValue extends string, TId extends string = strin
     super(options);
     this.dynamicDefault = options.dynamicDefault;
     if (options.reportInAnalytics !== false) fixedChoiceSettings.set(options.storageKey, this);
-    this.values = options.values;
+    this.choices = options.values;
     this.disabledPredicate = options.isDisabled ?? (() => false);
-    if (options.normalize) {
-      this.normalizer = (value: string | null | undefined) => {
-        const normalized = options.normalize(value) as TValue|undefined;
-        if (normalized === undefined) return this.currentDefault();
-        return normalized;
-      }
+    const normalize = options.normalize;
+    if (normalize) {
+      this.normalizer = (value: string | null | undefined) => normalize(value) ?? this.currentDefault();
     } else {
       this.normalizer = (value) => this.values.includes(value as TValue) ? value as TValue : this.currentDefault();
     }
+  }
+
+  /** The choices as they are now. */
+  get values(): readonly TValue[] {
+    return typeof this.choices === "function" ? this.choices() : this.choices;
   }
 
   /** What an unset (or invalid) value reads as now. */
@@ -512,25 +516,49 @@ export const displayLayoutSetting = new ConfigSettingEnumWithLegacy<DisplayLayou
     "Band: the stock 288px-tall window, at the height in your field of view you choose. Tall: full-height windows. Full Screen: full-height windows across the display's whole width; it needs the app switcher at the bottom or as a popup, and turns depth off, since windows reach the display's edges. Navigate and Terminal can override this. Open apps reopen in the new size.",
 }, legacyDisplayLayout);
 
-const UI_DEPTH_VALUES = ["-62", "-48", "-32", "-16", "0", "16", "32", "48", "62"] as const;
-export type UiDepth = (typeof UI_DEPTH_VALUES)[number];
+// The deepest setting either way depends on the Border setting; see uiDepthSetting.
+const UI_DEPTH_VALUES_UNFRAMED = ["-64", "-48", "-32", "-16", "0", "16", "32", "48", "64"] as const;
+const UI_DEPTH_VALUES_FRAMED = ["-60", "-48", "-32", "-16", "0", "16", "32", "48", "60"] as const;
+export type UiDepth = (typeof UI_DEPTH_VALUES_UNFRAMED)[number] | (typeof UI_DEPTH_VALUES_FRAMED)[number];
+
+function uiDepthValues(): readonly UiDepth[] {
+  return windowBorderSetting.get() === "all" ? UI_DEPTH_VALUES_FRAMED : UI_DEPTH_VALUES_UNFRAMED;
+}
+
+/**
+ * The choice nearest a stored depth. The deepest choice moves with the Border
+ * setting, and until 2026-11-22 it was ±62 whatever the border.
+ */
+function nearestUiDepth(stored: string | null | undefined): UiDepth | undefined {
+  const depth = stored ? Number(stored) : NaN;
+  if (!Number.isFinite(depth)) return undefined;
+  return uiDepthValues().reduce((nearest, value) =>
+    Math.abs(Number(value) - depth) < Math.abs(Number(nearest) - depth) ? value : nearest);
+}
 
 /**
  * Stereo depth of the whole display, in the firmware's depth units: the
  * lenses shift everything by half this many pixels each, in opposite
  * directions. Only applies with the app switcher at the bottom or a popup,
- * where the windows' 576px width leaves 32px at each side: one for the side
- * of the window's frame and 31 to shift into, hence ±62 (see geometry.ts
- * uiDepth and windowFramed); not to Full Screen windows, which have no such
- * margins. Values stay even so the per-lens halves of nested depths add
- * exactly.
+ * where the windows' 576px width leaves 32px at each side (see geometry.ts
+ * uiDepth); not to Full Screen windows, which have no such margins.
+ *
+ * Without a rounded border the whole margin is there to shift into, hence
+ * ±64. A border all around takes a pixel of it for the window frame's side
+ * (geometry.ts windowFramed), which leaves 31. The deepest choice is then
+ * ±60 rather than ±62: every choice is a multiple of four, so that each lens
+ * shifts by an even number of pixels and the firmware's copy of the screen,
+ * packed two pixels to a byte, moves whole bytes (g2flash display_list.c
+ * cfw_draw_copy_row; an odd shift costs it more than twice as much). Even
+ * values also make the per-lens halves of nested depths add exactly.
  */
 export const uiDepthSetting = new ConfigSettingEnum<UiDepth>({
   id: "ui-depth",
   label: "Depth",
   storageKey: "display.uiDepth",
   defaultValue: "48",
-  values: UI_DEPTH_VALUES,
+  values: uiDepthValues,
+  normalize: nearestUiDepth,
   formatValue: (value) => {
     const depth = Number(value);
     return depth === 0 ? "0" : depth > 0 ? `+${depth} (nearer)` : `${depth} (farther)`;

@@ -54,6 +54,41 @@ test('the border starts all around, or as the status line a popup switcher\'s ol
   assert.deepEqual(Array.from(api.windowBorderSetting.values, (value) => api.windowBorderSetting.displayValue(value)), ['All around', 'Status line', 'None']);
 });
 
+test('the deepest depth is 60 with a border all around and 64 without, and a stored depth reads as the nearest choice', () => {
+  const framed = ['-60', '-48', '-32', '-16', '0', '16', '32', '48', '60'];
+  const unframed = ['-64', '-48', '-32', '-16', '0', '16', '32', '48', '64'];
+  const store = new Map();
+  const { uiDepthSetting: depth, windowBorderSetting: border } = settingsFixture(store);
+  // The border starts all around.
+  assert.equal(depth.get(), '48');
+  assert.deepEqual([...depth.values], framed);
+  for (const value of ['status', 'none']) {
+    border.set(value);
+    assert.deepEqual([...depth.values], unframed, value);
+  }
+  // What was the deepest choice, 62 either way, goes to the one that replaced it.
+  for (const [stored, withBorder, without] of [['62', '60', '64'], ['-62', '-60', '-64'], ['64', '60', '64'],
+    ['60', '60', '64'], ['-64', '-60', '-64'], ['48', '48', '48'], ['0', '0', '0'], ['-16', '-16', '-16']]) {
+    store.set('display.uiDepth', stored);
+    border.set('all');
+    assert.equal(depth.get(), withBorder, `${stored} with a border`);
+    border.set('none');
+    assert.equal(depth.get(), without, `${stored} without`);
+    // Reading does not rewrite it, so the choice comes back with the border.
+    assert.equal(store.get('display.uiDepth'), stored);
+  }
+  // Every choice shifts each lens by an even number of pixels (see uiDepthSetting).
+  for (const value of [...framed, ...unframed]) assert.equal(Math.abs(Number(value)) % 4, 0, value);
+  // Anything that is not a depth reads as the default; a choice is stored as it is.
+  store.set('display.uiDepth', 'deep');
+  assert.equal(depth.get(), '48');
+  assert.equal(depth.set('64'), '64');
+  assert.equal(store.get('display.uiDepth'), '64');
+  border.set('all');
+  assert.equal(depth.set('-64'), '-60');
+  assert.equal(depth.displayValue(), '-60 (farther)');
+});
+
 test('the glasses model name follows the paired glasses type', () => {
   const model = (entries) => settingsFixture(new Map(entries)).glassesModelName();
   assert.equal(model([]), 'G2');

@@ -32,7 +32,10 @@ export class DepthPage implements OnboardingPage {
   }
 
   enter(): void {
-    this.menu.select(uiDepthSetting.values.indexOf(uiDepthSetting.get()));
+    // The deepest choices depend on the Border setting, which may have
+    // changed since this page was made.
+    const values = uiDepthSetting.values;
+    this.menu.setItems(values, values.indexOf(uiDepthSetting.get()));
   }
 
   paint(image: GrayImage, focused: boolean, padding: Edges<number>): void {

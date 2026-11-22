@@ -19,7 +19,7 @@ function harness(glasses = 'g2') {
     glassesTypeSetting: setting(glasses, ['g2', 'rayneo-io']),
     appSwitcherPositionSetting: setting('bottom', ['left', 'right', 'bottom', 'popup']),
     statusBarPositionSetting: setting('bottom', ['top', 'bottom']),
-    uiDepthSetting: setting('48', ['-62', '-48', '-32', '-16', '0', '16', '32', '48', '62']),
+    uiDepthSetting: setting('48', ['-60', '-48', '-32', '-16', '0', '16', '32', '48', '60']),
   };
   const load = loader({}, {
     './onboarding-fonts': { onboardingFont: font },
@@ -223,6 +223,7 @@ test('on a RayNeo iO the layout page recommends and starts on Left, and fits the
 test('the depth page follows layouts that have depth, sits in the layout, and applies depth as it scrolls', () => {
   const { load, settings } = harness();
   const menu = { selected: 0, items: [], select(index) { this.selected = index; },
+    setItems(items, index) { this.items = items; this.selected = index; },
     get selectedItem() { return this.items[this.selected] ?? null; }, paint() {},
     async handleInput(event) { this.selected = Math.max(0, Math.min(this.items.length - 1, this.selected + (event.type === 'scroll-down' ? 1 : -1))); } };
   const mocks = loader({}, {
@@ -245,7 +246,13 @@ test('the depth page follows layouts that have depth, sits in the layout, and ap
   page.handleInput({ type: 'scroll-down' }, { next: () => next++ });
   page.handleInput({ type: 'scroll-up' }, { next: () => next++ });
   page.handleInput({ type: 'scroll-up' }, { next: () => next++ });
-  assert.deepEqual(settings.uiDepthSetting.writes, ['62', '48', '32']);
+  assert.deepEqual(settings.uiDepthSetting.writes, ['60', '48', '32']);
+  // The choices are read on entry: they follow the Border setting, which can change in between.
+  settings.uiDepthSetting.values = ['-64', '-48', '-32', '-16', '0', '16', '32', '48', '64'];
+  settings.uiDepthSetting.value = '64';
+  page.enter();
+  assert.equal(menu.selectedItem, '64');
+  assert.deepEqual(menu.items, settings.uiDepthSetting.values);
   page.handleInput({ type: 'click' }, { next: () => next++ });
   assert.equal(next, 1);
 });
