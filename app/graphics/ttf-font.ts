@@ -23,16 +23,17 @@
  * given (path, size, gamma), all of which are baked into the atlasKey.
  */
 import { allocateFontFingerprintId, type Glyph } from "./bdffont";
-import { GrayImage, grayToNibble, type GlyphFont } from "./image";
+import { GrayImage, coverageToNibble, type GlyphFont } from "./image";
 import { toUint8Array } from "../util/array-util";
 import { fontRenderer } from "../native/font-renderer";
 
 declare const global: any;
 
 /**
- * Coverage-to-shade gamma (out = coverage^gamma). The G2 display response
- * looks roughly linear, so 1.0; part of the atlas identity, so changing it
- * per-font is safe but changing it per-draw is not possible.
+ * Coverage-to-shade gamma (out = coverage^gamma). The native rasterizers emit
+ * linear area coverage and the lenses are roughly linear in light, so 1.0;
+ * part of the atlas identity, so changing it per-font is safe but changing it
+ * per-draw is not possible.
  */
 const DEFAULT_TTF_GAMMA = 1.0;
 
@@ -232,12 +233,12 @@ export class TtfFont implements GlyphFont {
     if (width <= 0 || height <= 0 || bytes.length < 10 + width * height) {
       return base; // ink-free (space) or malformed: advance-only
     }
-    // Quantize 8-bit coverage to the 4bpp levels the composite packs to;
-    // faint fringe (< 8) quantizes to 0 = transparent.
+    // Quantize 8-bit coverage to 4bpp levels in proportion (the levels are
+    // linear in light); faint fringe (< 9) quantizes to 0 = transparent.
     const coverage = new Uint8Array(width * height);
     let hasInk = false;
     for (let i = 0; i < coverage.length; i++) {
-      const nibble = grayToNibble(bytes[10 + i]!);
+      const nibble = coverageToNibble(bytes[10 + i]!);
       coverage[i] = nibble;
       if (nibble !== 0) hasInk = true;
     }

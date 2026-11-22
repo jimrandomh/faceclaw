@@ -721,6 +721,27 @@ export function grayToNibble(value: number): number {
   return value <= 0 ? 0 : Math.min(15, (value + 8) >> 4);
 }
 
+/** The brightest 4bpp display level. */
+const MAX_NIBBLE = 15;
+
+/** Gray8 value per display level: grayToNibble(level * GRAY_PER_NIBBLE) === level. */
+const GRAY_PER_NIBBLE = 16;
+
+/**
+ * The 4bpp level for an antialiased coverage byte (0..255 = 0..100% of the
+ * pixel inked). The lenses' levels are roughly linear in emitted light, so the
+ * level is simply proportional to coverage. grayToNibble would treat 240 as
+ * full and put every partial level about 6% high.
+ */
+export function coverageToNibble(coverage: number): number {
+  return coverage <= 0 ? 0 : Math.min(MAX_NIBBLE, Math.round((coverage * MAX_NIBBLE) / 255));
+}
+
+/** The gray8 value that packs (grayToNibble) to exactly the given display level. */
+export function nibbleToGray(level: number): number {
+  return level * GRAY_PER_NIBBLE;
+}
+
 /** Where rasterizeGlyph writes: an image, or a clipped buffer (paintReplayDraws). */
 type PixelSink = { setPixel(x: number, y: number, value: number): void };
 
