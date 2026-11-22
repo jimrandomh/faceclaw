@@ -600,12 +600,64 @@ class GlassesSessionCoreTest {
             }
             // Nothing to evict, create, upload or draw again: the frame is presented as it stands.
             assertEquals(listOf(CFW_MSG_PRESENT), sleepAndWake())
+            // The page's exit event, which the glasses send after a suspend, ends the page only.
+            assertTrue(s.core.suspendEvenHubSession())
+            val exit = BleProtocol.encodeVarintField(1, 2) + BleProtocol.encodeBytesField(13,
+                BleProtocol.encodeBytesField(3, BleProtocol.encodeVarintField(1, BleProtocol.EVENT_SYSTEM_EXIT)))
+            s.core.onNotification(RIGHT, BleProtocol.NOTIFY_CHAR_UUID,
+                BleProtocol.framePb(exit, BleProtocol.SID_EVENHUB, BleProtocol.FLAG_NOTIFY, 11)[0])
+            assertTrue(s.core.monitor.withLock { s.core.lastShutdownExitAtMs > 0 }, "the exit event was handled")
+            assertEquals(listOf(CFW_MSG_PRESENT), sleepAndWake())
             // A lease the phone can't vouch for may have lapsed, freeing the glasses' resources.
             s.core.monitor.withLock {
                 s.core.faceclawFramebufferLeaseConfirmedAtMs = s.platform.elapsedRealtimeMs() - GlassesSessionCore.FACECLAW_FB_LEASE_MS
             }
             val rebuilt = sleepAndWake()
             assertTrue(CFW_MSG_EVICT_RESOURCE in rebuilt && CFW_MSG_CREATE_SURFACE in rebuilt, rebuilt.toString())
+        } finally { s.core.close() }
+    }
+
+    @Test
+    fun faceclaw44StartsASessionInOneMessageAndKeepsResourcesThroughALapsedLease() {
+        val s = Session()
+        s.core.setRequiredFirmwareRevision(40)
+        s.link.firmwareExtension = "Faceclaw/44"
+        s.core.configureCompositorScreen(160, 96)
+        s.core.configureSurface("s", 0, 0, 64, 32, 0, SurfaceCompositor.TRANSPARENCY_OPAQUE)
+        s.startAndAwaitLayout()
+        try {
+            fun type(write: Write) = write.message?.firstOrNull()?.toInt()?.and(CFW_MSG_TYPE_MASK)
+            fun sessionStarts() = s.link.writes.filter { it.sid == CfwTransport.SID && type(it) == CFW_MSG_SESSION_START }
+            fun displayCommands() = s.link.writes
+                .filter { it.sid == CfwTransport.SID && (it.kind == "resources" || it.kind == "image") }
+                .map { type(it) }
+            val start = sessionStarts().single().message!!
+            // [34][9][passive ALS][6][brightness], in place of mode 31 and the separate controls.
+            assertEquals(listOf(9, CFW_MSG_AMBIENT_LIGHT, 6, CFW_MSG_BRIGHTNESS),
+                listOf(start[1].toInt(), start[2].toInt(), start[11].toInt(), start[12].toInt()))
+            assertEquals(2 + 9 + 1 + 6, start.size)
+            assertEquals(0, s.link.writes.count { type(it) == CFW_MSG_ENTER_EVENHUB })
+            s.submitFrame(100, 0x70, 1)
+            s.core.submitShellScene(ArrayByteReader(shellScene(3)), 0, 0)
+            assertTrue(waitUntil(5_000) { s.displayedMatchesDesired() && CFW_MSG_CREATE_SURFACE in displayCommands() },
+                s.host.logs().takeLast(20).toString())
+            assertEquals(0, s.link.writes.count { it.kind == "brightness-output" }, "the session start set the brightness")
+
+            // A lease the phone can't vouch for: the glasses keep their resources anyway.
+            s.core.monitor.withLock {
+                s.core.faceclawFramebufferLeaseConfirmedAtMs = s.platform.elapsedRealtimeMs() - GlassesSessionCore.FACECLAW_FB_LEASE_MS
+            }
+            val preludes = s.link.writes.count { it.kind == "prelude" }
+            val before = displayCommands().size
+            assertTrue(s.core.suspendEvenHubSession())
+            assertTrue(s.core.resumeEvenHubSession())
+            assertTrue(waitUntil(5_000) {
+                s.layoutCreated() && s.displayedMatchesDesired() &&
+                    displayCommands().size > before && displayCommands().last() == CFW_MSG_PRESENT
+            }, s.host.logs().takeLast(20).toString())
+            assertEquals(listOf(CFW_MSG_PRESENT), displayCommands().drop(before))
+            assertEquals(preludes, s.link.writes.count { it.kind == "prelude" }, "the glasses run the prelude")
+            assertEquals(2, sessionStarts().size)
         } finally { s.core.close() }
     }
 

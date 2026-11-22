@@ -46,12 +46,34 @@ class CfwMessageWindow private constructor() {
             candidate.sid == CfwTransport.SID && candidate.message.size <= SMALL_MESSAGE_BYTES &&
                 inFlight.size < SMALL_MESSAGE_WINDOW && inFlight.all { it.sid == CfwTransport.SID }
 
-        /** ID reuse must not invalidate an earlier command still eligible for replay. */
+        /**
+         * ID reuse must not invalidate an earlier command still eligible for replay. Recovery
+         * replays the whole unresolved window, so a lens that already ran an eviction (and
+         * maybe a reuse of its IDs) runs the earlier commands again; one that names a resource
+         * could then fail, repeatedly, or touch the wrong one. So an eviction waits for those,
+         * but not for commands that name none: the root clear that precedes every eviction,
+         * presents and the non-drawing controls.
+         */
         @JvmStatic
         fun canSend(messages: Iterable<OutboundMessage>, candidate: OutboundMessage): Boolean =
             candidate.sid != CfwTransport.SID ||
                 candidate.message.firstOrNull()?.toInt() != ResourceCacheState.EVICT_MODE ||
-                messages.none { it.sid == CfwTransport.SID }
+                messages.all { replaysSafelyAfterEviction(it) }
+
+        /** Whether [message] names no resource ID, so replaying it after an eviction is harmless. */
+        private fun replaysSafelyAfterEviction(message: OutboundMessage): Boolean {
+            if (message.sid != CfwTransport.SID) return true
+            val payload = message.message
+            if (payload.isEmpty()) return false
+            return when (payload[0].toInt() and CFW_MSG_TYPE_MASK) {
+                CFW_MSG_SET_ROOT_DISPLAY_LIST -> payload.size == 3 && DrawProtocol.u16(payload, 1) == DrawProtocol.SCREEN
+                CFW_MSG_PRESENT, CFW_MSG_BRIGHTNESS, CFW_MSG_AMBIENT_LIGHT, CFW_MSG_DIAGNOSTICS,
+                CFW_MSG_ENTER_EVENHUB, CFW_MSG_SESSION_START, CFW_MSG_COMPASS, CFW_MSG_RING_BATTERY,
+                CFW_MSG_BUZZER -> true
+                // Uploads, evictions, surfaces, draws, retired cached draws, anything unknown.
+                else -> false
+            }
+        }
 
         @JvmStatic
         fun acknowledgedHead(messages: Iterable<OutboundMessage>): OutboundMessage? {

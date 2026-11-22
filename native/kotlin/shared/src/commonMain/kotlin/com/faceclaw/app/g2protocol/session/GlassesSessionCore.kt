@@ -1977,6 +1977,7 @@ class GlassesSessionCore(
         if (isIo) return ioResume()
         if (isG1) return g1Resume()
         var claimGeneration = 0
+        val sessionStart: Boolean
         monitor.withLock {
             if (!running || !sessionReady || chargingMode) {
                 logLine("skip EvenHub resume; transport not ready")
@@ -1989,24 +1990,29 @@ class GlassesSessionCore(
                     && hasPendingOrInflightKindLocked("wake-lease-control")) {
                 claimGeneration = faceclawWakeControlGeneration
             }
-            logLine("replaying session prelude for EvenHub resume")
+            // Faceclaw/44's session start runs the prelude on the glasses, queued behind CLAIM.
+            sessionStart = faceclawFirmwareRevision >= BleProtocol.SESSION_START_FIRMWARE_REVISION
+            logLine(if (sessionStart) "resuming EvenHub with a session start"
+                else "replaying session prelude for EvenHub resume")
         }
 
-        // A custom double-tap wake has only a short unclaimed fail-open
-        // deadline. Let the worker put CLAIM on both arms before the direct
-        // prelude write begins.
-        if (claimGeneration != 0) {
-            waitForFaceclawWakeControlDelivery(claimGeneration, 500)
-        }
+        if (!sessionStart) {
+            // A custom double-tap wake has only a short unclaimed fail-open
+            // deadline. Let the worker put CLAIM on both arms before the direct
+            // prelude write begins.
+            if (claimGeneration != 0) {
+                waitForFaceclawWakeControlDelivery(claimGeneration, 500)
+            }
 
-        try {
-            // Empty-name Cmd=9 tears down the whole plugin task, not just its
-            // image container. Re-run the launch prelude before Cmd=0 CREATE.
-            sendPrelude(true)
-        } catch (t: Throwable) {
-            logLine("EvenHub resume prelude failed: " + safeMessage(t))
-            handleTransportFailure("EvenHub resume prelude failed")
-            return false
+            try {
+                // Empty-name Cmd=9 tears down the whole plugin task, not just its
+                // image container. Re-run the launch prelude before Cmd=0 CREATE.
+                sendPrelude(true)
+            } catch (t: Throwable) {
+                logLine("EvenHub resume prelude failed: " + safeMessage(t))
+                handleTransportFailure("EvenHub resume prelude failed")
+                return false
+            }
         }
 
         monitor.withLock {
@@ -2337,7 +2343,9 @@ class GlassesSessionCore(
                             }
                             fixedLayoutCreated = false
                             displayedFingerprint = ""
-                            clearAllMessagesLocked("firmware exit event")
+                            // The page ended (our own suspend sends this too), not the CFW
+                            // session: resources, root list and screen buffer are intact.
+                            clearAllMessagesLocked("firmware exit event", keepResources = true)
                         } else if (decoded.eventType == BleProtocol.EVENT_FOREGROUND_ENTER) {
                             logLine("firmware overlay opened over the EvenHub page")
                         } else if (decoded.eventType == BleProtocol.EVENT_FOREGROUND_EXIT) {

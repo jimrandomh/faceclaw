@@ -337,13 +337,15 @@ internal fun GlassesSessionCore.waitForFaceclawFramebufferControlDelivery(genera
 /**
  * Whether the glasses may have let the framebuffer lease lapse, and so freed the resource cache
  * (g2flash settings_ext.c cfw_fb_lease_active): no ACQUIRE has reached both arms within a lease
- * period, with a margin. Renewals are due every FACECLAW_WAKE_LEASE_RENEW_MS, even while the
+ * period, with a margin. From Faceclaw/44 a lapse keeps the cache, so only a new connection
+ * (which resets the model anyway) can lose it. Renewals are due every FACECLAW_WAKE_LEASE_RENEW_MS, even while the
  * display is suspended, but the worker holds no wakelock: while the phone's CPU sleeps nothing
  * goes out, so after a long sleep of both the lease has usually lapsed.
  */
 internal fun GlassesSessionCore.framebufferLeaseMayHaveLapsedLocked(now: Long): Boolean =
-    faceclawFramebufferLeaseConfirmedAtMs == 0L ||
-        now - faceclawFramebufferLeaseConfirmedAtMs >= FACECLAW_FB_LEASE_MS - FACECLAW_FB_LEASE_MARGIN_MS
+    faceclawFirmwareRevision < BleProtocol.SESSION_START_FIRMWARE_REVISION && (
+        faceclawFramebufferLeaseConfirmedAtMs == 0L ||
+            now - faceclawFramebufferLeaseConfirmedAtMs >= FACECLAW_FB_LEASE_MS - FACECLAW_FB_LEASE_MARGIN_MS)
 
 internal fun GlassesSessionCore.releaseFaceclawFramebufferLease(): Boolean {
     val generation: Int

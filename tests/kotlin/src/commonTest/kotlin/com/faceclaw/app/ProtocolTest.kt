@@ -210,6 +210,14 @@ class ProtocolTest {
         assertTrue(CfwMessageWindow.canSend(listOf(message(sid = 1)), eviction))
         assertTrue(CfwMessageWindow.canSend(listOf(earlier), upload))
         assertTrue(CfwMessageWindow.canSend(listOf(eviction), upload))
+        // Commands naming no resource replay harmlessly after it: the root clear before every
+        // eviction, presents and controls. A root naming a list, draws and uploads still wait.
+        val screenRoot = message(input = DrawProtocol.root(DrawProtocol.SCREEN))
+        val present = message(input = byteArrayOf(CFW_MSG_PRESENT.toByte()))
+        val brightness = message(input = byteArrayOf(CFW_MSG_BRIGHTNESS.toByte(), 1, 50, 1, 0, 0))
+        assertTrue(CfwMessageWindow.canSend(listOf(screenRoot, present, brightness), eviction))
+        for (unsafe in listOf(DrawProtocol.root(7), byteArrayOf(CFW_MSG_DRAW_CALLS.toByte(), 0, 0), byteArrayOf(21, 1, 0), byteArrayOf()))
+            assertFalse(CfwMessageWindow.canSend(listOf(screenRoot, message(input = unsafe)), eviction), unsafe.toList().toString())
     }
 
     @Test

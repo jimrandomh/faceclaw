@@ -761,13 +761,41 @@ internal fun GlassesSessionCore.enqueueCreateLayoutLocked() {
  * queue on every session.
  */
 private fun GlassesSessionCore.enqueueEnterEvenHubLocked() {
-    val message = messageBuilder.enterEvenHub(connectionOptions.sendImagesToLeft)
+    val message = if (faceclawFirmwareRevision >= BleProtocol.SESSION_START_FIRMWARE_REVISION)
+        sessionStartMessageLocked() else messageBuilder.enterEvenHub(connectionOptions.sendImagesToLeft)
     message.onAck = MessageCallback {
         fixedLayoutCreated = true
         displayedFingerprint = ""
     }
     pendingMessages.addLast(message)
-    logLine("queue enter EvenHub")
+    logLine("queue " + message.label)
+}
+
+/**
+ * Faceclaw/44's session start (mode 34): one message for what took four round trips. The
+ * glasses run the stock Dashboard prelude and then enterEvenHub's page, in that order, and it
+ * carries the passive-ALS control and the brightness that maintainBrightnessLocked and the
+ * first frame would each have sent after it. The brightness follows the desired frame's
+ * visibility; the glasses start a wake's fade-in at the next PRESENT, so it waits for that frame.
+ */
+private fun GlassesSessionCore.sessionStartMessageLocked(): OutboundMessage {
+    val interval = alsPassiveIntervalLocked()
+    val als = alsPassivePayload(interval)
+    val visible = !isBlankedFingerprint(desiredFingerprintSnapshot())
+    val target = brightnessPolicy.target
+    val brightness = brightnessPayload(target, visible, brightnessPolicy.fadeMs)
+    val payload = byteArrayOf(CFW_MSG_SESSION_START.toByte(), als.size.toByte()) + als +
+        byteArrayOf(brightness.size.toByte()) + brightness
+    brightnessAlsStartedAt = now()
+    brightnessSentLevel = target
+    brightnessSentVisible = visible
+    val message = messageBuilder.customMessage("enter-evenhub", payload,
+        "session start brightness=$target visible=$visible", -1, connectionOptions.sendImagesToLeft)
+    message.onTimeout = MessageCallback {
+        brightnessSentLevel = -1
+        brightnessSentVisible = null
+    }
+    return message
 }
 
 internal fun GlassesSessionCore.enqueueStartupProbeLocked() {
@@ -896,7 +924,7 @@ internal fun GlassesSessionCore.enqueueDesiredImageLocked() {
         else BmpUtil.pack4bppFromGray8(graySnapshot, width, height)
     frameTimings.spanEnd(frameId, "pack-4bpp")
     // Visibility belongs to this immutable composite, not the latest UI request.
-    enqueueBrightnessLocked(!fingerprint.startsWith("blanked:"))
+    enqueueBrightnessLocked(!isBlankedFingerprint(fingerprint))
     if (isG1 && packedFrame.size > 0) {
         g1EnqueueFrameLocked(packedFrame, width, height, scene, fingerprint, paintMs, frameId)
         return
@@ -1504,7 +1532,12 @@ internal fun GlassesSessionCore.clearMessagesOfKindLocked(kind: String) {
     }
 }
 
-internal fun GlassesSessionCore.clearAllMessagesLocked(reason: String) {
+/**
+ * Drop every queued and unacknowledged message. [keepResources]: the glasses' resources are
+ * known to be intact (the clears themselves still forget them if they drop display commands);
+ * otherwise, as on a new connection, the model is reset.
+ */
+internal fun GlassesSessionCore.clearAllMessagesLocked(reason: String, keepResources: Boolean = false) {
     brightnessSentVisible = null
     brightnessSentLevel = -1
     brightnessAlsStartedAt = -2000
@@ -1519,7 +1552,7 @@ internal fun GlassesSessionCore.clearAllMessagesLocked(reason: String) {
     // Queued resource commands (if any) were dropped with the rest, and the
     // session churn behind a full clear may have freed the on-glasses
     // cache; forget it phone-side so glyphs re-upload lazily.
-    resourceCache.reset()
+    if (!keepResources) resourceCache.reset()
 }
 
 /**

@@ -17,8 +17,7 @@ internal fun GlassesSessionCore.enqueueBrightnessLocked(frameVisible: Boolean? =
     if (frameVisible == null && hasPendingOrInflightKindLocked("brightness-output")) return
     val duration = if (brightnessSentVisible != visible) brightnessPolicy.fadeMs
         else if (brightnessPolicy.automatic) 1200 else 120
-    val payload = byteArrayOf(CFW_MSG_BRIGHTNESS.toByte(), 1, target.toByte(),
-        (if (visible) 1 else 0).toByte(), duration.toByte(), (duration shr 8).toByte())
+    val payload = brightnessPayload(target, visible, duration)
     val label = "brightness target=$target visible=$visible fade=$duration"
     val retry = MessageCallback {
         brightnessSentLevel = -1
@@ -40,17 +39,32 @@ internal fun GlassesSessionCore.enqueueBrightnessLocked(frameVisible: Boolean? =
 
 internal fun GlassesSessionCore.maintainBrightnessLocked(now: Long) {
     if (!customFirmwareDetected || !sessionReady || !fixedLayoutCreated || shutdownRequested) return
-    // Passive polling owns stock ALS even in manual mode. Slower manual polling
-    // keeps stock from writing the panel without needlessly streaming samples.
-    val interval = if (brightnessDemoPolling) 250 else if (brightnessPolicy.automatic) 500 else 5000
+    val interval = alsPassiveIntervalLocked()
     // The G2's stock can close the sensor, so it hears this again; the iO's polling lasts as long as the page.
     val alsDue = if (isIo) interval != io.alsIntervalSent else now - brightnessAlsStartedAt >= 2000
     if (alsDue && !hasPendingOrInflightKindLocked("als-control")) {
-        val payload = byteArrayOf(CFW_MSG_AMBIENT_LIGHT.toByte(), 1, 1,
-            interval.toByte(), (interval shr 8).toByte(), 0, 0, 0xe8.toByte(), 3)
-        enqueueAmbientLightControlLocked(payload, "brightness passive ALS", false)
+        enqueueAmbientLightControlLocked(alsPassivePayload(interval), "brightness passive ALS", false)
         brightnessAlsStartedAt = now
         if (isIo) io.alsIntervalSent = interval
     }
     enqueueBrightnessLocked()
 }
+
+/**
+ * Passive polling owns stock ALS even in manual mode. Slower manual polling
+ * keeps stock from writing the panel without needlessly streaming samples.
+ */
+internal fun GlassesSessionCore.alsPassiveIntervalLocked(): Int =
+    if (brightnessDemoPolling) 250 else if (brightnessPolicy.automatic) 500 else 5000
+
+/** `[16][1 passive][flags 1][interval u16][min-delta u16][heartbeat u16 = 1000]`. */
+internal fun alsPassivePayload(interval: Int): ByteArray = byteArrayOf(CFW_MSG_AMBIENT_LIGHT.toByte(), 1, 1,
+    interval.toByte(), (interval shr 8).toByte(), 0, 0, 0xe8.toByte(), 3)
+
+/** `[30][version 1][level][visible][fade u16]`. */
+internal fun brightnessPayload(target: Int, visible: Boolean, durationMs: Int): ByteArray =
+    byteArrayOf(CFW_MSG_BRIGHTNESS.toByte(), 1, target.toByte(), (if (visible) 1 else 0).toByte(),
+        durationMs.toByte(), (durationMs shr 8).toByte())
+
+/** SurfaceCompositor's fingerprint for a frame with the display blanked, which the brightness follows. */
+internal fun isBlankedFingerprint(fingerprint: String): Boolean = fingerprint.startsWith("blanked:")
