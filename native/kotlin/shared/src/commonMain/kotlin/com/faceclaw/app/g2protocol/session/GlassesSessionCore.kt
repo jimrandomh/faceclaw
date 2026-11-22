@@ -713,11 +713,12 @@ class GlassesSessionCore(
      * Before a requested disconnect, ask each arm to hang up where the platform would otherwise
      * keep the link ([SessionLink.keepsLinkAfterDisconnect]): iOS holds the one a bonded
      * accessory reads ANCS over, which leaves the glasses unreachable from any other phone.
-     * Both arms are asked, since which links the system holds is not something the app can
-     * see, and an arm this session already let go of (a failed session cancels both) is asked
-     * too: the link reattaches to whatever the system still holds. This is the session's last
-     * write, after the cleanup message. An arm whose firmware is too old for the request, or
-     * was never identified by this session, is left alone: it would not act on it.
+     * Both arms are offered and the link asks only the one the system keeps (on iOS, the arm
+     * it shares notifications with); an arm this session already let go of (a failed session
+     * cancels both) is covered too, the link reattaching to what the system still holds. This
+     * is the session's last write, after the cleanup message. An arm whose firmware is too
+     * old for the request, or was never identified by this session, is left alone: it would
+     * not act on it.
      */
     private fun releaseArmLinks() {
         if (isIo || !link.keepsLinkAfterDisconnect()) return

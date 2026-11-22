@@ -79,7 +79,7 @@ class IosBleCentral(private val platform: ProtocolPlatform = IosProtocolPlatform
         /** Reattaching to a link the system holds completes at once; discovery reads the system's cached table. */
         private const val RELEASE_ATTACH_TIMEOUT_MS = 2_000
         private val G2_SERVICES = listOf(BleProtocol.PROTOCOL_SERVICE_UUID, BleProtocol.RENDER_SERVICE_UUID)
-        /** What the glasses [releaseFromPeer] serves have: a G2's services, or a G1's on g1v0. */
+        /** What Even glasses have: a G2's services, or a G1's on g1v0. */
         private val GLASSES_SERVICES = G2_SERVICES + G1Ble.SERVICE_UUID
         private const val DEFAULT_ATT_MTU = 23
         private const val MAX_ATT_MTU = 517
@@ -232,6 +232,9 @@ class IosBleCentral(private val platform: ProtocolPlatform = IosProtocolPlatform
      * Empty until Bluetooth is powered on.
      */
     fun systemConnectedG2Arms(): List<IosConnectedPeripheral> = systemConnected(G2_SERVICES)
+
+    /** The same for the arms of either model: a G2's, or a G1's on g1v0. */
+    fun systemConnectedArms(): List<IosConnectedPeripheral> = systemConnected(GLASSES_SERVICES)
 
     /** Peripherals the system is connected to that have any of [serviceUuids], by whoever's doing. */
     private fun systemConnected(serviceUuids: List<String>): List<IosConnectedPeripheral> {
@@ -521,7 +524,9 @@ class IosBleCentral(private val platform: ProtocolPlatform = IosProtocolPlatform
      * cancelPeripheralConnection ends this app's use of a link, not the link: iOS keeps the one
      * a bonded accessory uses for ANCS, and nothing an app can call closes it. The peripheral
      * can, so [request] asks it to. An arm this app already cancelled but the system still
-     * holds is reattached first (connecting to it completes immediately).
+     * holds is reattached first (connecting to it completes immediately). Only an arm the
+     * system shares notifications with is asked: any other link ends with the cancel that
+     * follows, as it always did, and is left to.
      */
     override fun releaseFromPeer(address: String, characteristicUuid: String, request: ByteArray, timeoutMs: Int): Boolean {
         if (closed) return false
@@ -532,11 +537,14 @@ class IosBleCentral(private val platform: ProtocolPlatform = IosProtocolPlatform
         try {
             val ready = cond.withLock { peer.connected && peer.characteristics.containsKey(key) }
             if (!ready) {
+                // Only the arm this app asks ANCS of is one the system would be holding for it.
+                if (!peer.requiresAncs) return true
                 if (systemConnected(GLASSES_SERVICES).none { it.identifier == identifier }) return true
                 log("release $identifier: reattaching to the link the system still holds")
                 if (!connect(identifier, RELEASE_ATTACH_TIMEOUT_MS)) return false
                 if (!discoverServices(identifier, RELEASE_ATTACH_TIMEOUT_MS)) return false
             }
+            if (!peer.peripheral.ancsAuthorized) return true
             val deadline = platform.elapsedRealtimeMs() + timeoutMs
             // Without response: the link can be gone before a write response would arrive.
             val written = writeFrames(identifier, characteristicUuid, listOf(request), GattWriteMode.WITHOUT_RESPONSE, timeoutMs)

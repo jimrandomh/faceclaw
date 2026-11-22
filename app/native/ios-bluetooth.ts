@@ -7,6 +7,7 @@ import { hexToBytes } from '../util/hex-util'
 import { kotlinListener } from './kotlin-listener.ios'
 
 declare const FaceclawKitIosBleCentral: any, FaceclawKitIosProtocolPlatform: any, FaceclawKitIosBleScanListener: any
+declare const UIApplication: any, UIApplicationState: any
 
 /** CBManagerState raw values reported by the Kotlin central. */
 export const BLE_STATE_UNSUPPORTED = 2, BLE_STATE_UNAUTHORIZED = 3, BLE_STATE_POWERED_OFF = 4, BLE_STATE_POWERED_ON = 5
@@ -18,6 +19,8 @@ const BLE_AUTHORIZATION_ALLOWED = 3
  * the advertisement itself, from which an arm that has stopped advertising is rebuilt.
  */
 const PERIPHERAL_KEY_PREFIX = 'ios.ble.peripheral.'
+/** How long a connect listens for an arm before it trusts the identifier remembered for it. */
+const IDENTIFIER_CHECK_MS = 2_500
 type RememberedPeripheral = { identifier: string; role: string; name?: string; manufacturerData?: string }
 
 export type BluetoothEvent =
@@ -184,7 +187,10 @@ export class IosBluetooth {
       } catch { /* A fresh scan can recover malformed settings. */ }
     }
     const missing = () => (['left', 'right'] as const).filter(role => !result[role])
-    if (!missing().length && (!addresses.ring || result.ring)) return result
+    if (!missing().length && (!addresses.ring || result.ring)) {
+      await this.refreshIdentifiers(addresses, result)
+      return result
+    }
     await this.startScan(15_000)
     await new Promise<void>((resolve, reject) => {
       const off = this.onEvent(event => {
@@ -202,6 +208,57 @@ export class IosBluetooth {
       })
     })
     return result
+  }
+  /**
+   * Replaces remembered arm identifiers the system has moved on from. iOS can know one arm under two identifiers
+   * (seen 2026-11-21 with a G2 left arm whose advertising address had become a resolvable private one: bluetoothd
+   * logs "successful outgoing connection ... with new device UUID mapped"), and it drops a connection asked for
+   * under the other one the moment it completes, so the arm looks unreachable for good. An arm the system is
+   * connected to under the remembered identifier is right as it is. Any other is listened for, and the identifier
+   * it advertises under now wins (the scan also remembers it). An arm that isn't heard keeps what it had.
+   */
+  private async refreshIdentifiers(addresses: { left: string; right: string }, result: Record<string, string>): Promise<void> {
+    // A scan for everything hears nothing in the background, and would only delay the connect.
+    if (UIApplication.sharedApplication.applicationState !== UIApplicationState.Active) return
+    let connected: Set<string>
+    try {
+      connected = this.systemConnectedIdentifiers()
+    } catch (error) {
+      console.log(`[IosBluetooth] systemConnectedArms failed: ${error}`)
+      return
+    }
+    const pending = new Set((['left', 'right'] as const).filter(role => result[role] && !connected.has(result[role].toUpperCase())))
+    if (!pending.size) return
+    // Someone else's scan (the pairing page) is left running; this only listens to it.
+    const ownScan = !this.scanning
+    if (ownScan) {
+      try { await this.startScan(IDENTIFIER_CHECK_MS) } catch { return }
+    }
+    await new Promise<void>(resolve => {
+      const finish = () => { clearTimeout(timer); off(); resolve() }
+      const off = this.onEvent(event => {
+        if (event.kind === 'scan-stopped') { finish(); return }
+        if (event.kind !== 'device') return
+        for (const role of [...pending]) {
+          if (addresses[role] !== event.device.address || event.device.role !== role) continue
+          if (result[role].toUpperCase() !== event.device.identifier.toUpperCase()) {
+            console.log(`[IosBluetooth] the ${role} arm now advertises as ${event.device.identifier}, not ${result[role]}`)
+          }
+          result[role] = event.device.identifier
+          pending.delete(role)
+        }
+        if (!pending.size) { finish(); if (ownScan) this.stopScan() }
+      })
+      const timer = setTimeout(finish, IDENTIFIER_CHECK_MS)
+    })
+  }
+  /** Identifiers (uppercase) of the Even arms the system holds a connection to. */
+  private systemConnectedIdentifiers(): Set<string> {
+    const identifiers = new Set<string>()
+    if (this.state !== BLE_STATE_POWERED_ON) return identifiers
+    const connected = this.native.systemConnectedArms()
+    for (let i = 0; i < (connected?.count ?? 0); i++) identifiers.add(String(connected.objectAtIndex(i).identifier).toUpperCase())
+    return identifiers
   }
   /** The peripheral last heard at this address, if it was on this side. */
   peripheralIdentifier(address: string, role: string): string | null {

@@ -20,7 +20,7 @@ import { iosVoiceInput } from '../native/ios-voice-input'
 import { voiceActivity } from '../ui/shell/voice-activity'
 import { nightscoutBridge } from '../native/nightscout-bridge'
 import { weatherBridge } from '../native/weather'
-import { FaceclawCommunicatorBridge, resolveIosPeripherals, type CommunicatorState, type RawInputEvent } from '../native/faceclaw-communicator.ios'
+import { FaceclawCommunicatorBridge, resolveIosPeripherals, type CommunicatorState, type PeripheralIdentifiers, type RawInputEvent } from '../native/faceclaw-communicator.ios'
 import { PreviewDisplayTarget, type DisplayTarget } from '../native/preview-display.ios'
 import { AncsClient, ANCS_FIRMWARE_VERSION } from './ancs-client'
 import { G1V0_IMAGE } from '../g1/firmware/g1v0-image'
@@ -89,6 +89,9 @@ function ancsCapable(capabilities: string): boolean {
 export class IosPreviewController {
   private previewTarget: PreviewDisplayTarget | null = null
   private communicator: FaceclawCommunicatorBridge | null = null
+  /** The peripherals [communicator] was made for: a session keeps the identifiers it started with. */
+  private communicatorIdentifiers: PeripheralIdentifiers | null = null
+  private findingArmsAgain = false
   private readonly startedCommunicators = new WeakSet<FaceclawCommunicatorBridge>()
   state: SessionState = { phase: 'disconnected', status: 'Preview only', battery: null, charging: null, ring: false,
     ringBattery: null, ringCharging: null, frames: 0, capabilities: '', leftVersion: '', rightVersion: '', firmwareWarning: '' }
@@ -947,6 +950,7 @@ export class IosPreviewController {
       const communicator = new FaceclawCommunicatorBridge({ ...identifiers, glassesType: glassesTypeSetting.get() })
       this.teardownPreviewDisplay()
       this.communicator = communicator
+      this.communicatorIdentifiers = identifiers
       this.wearDetectionRequested = false
       this.bindCommunicator(communicator)
       this.displayReady = this.registerSurfaces(communicator)
@@ -1054,12 +1058,39 @@ export class IosPreviewController {
     // Wear state is a per-transport snapshot: ask again on every new session.
     if (phase !== 'connected') this.wearDetectionRequested = false
     this.update(phase, state.status)
+    if (phase === 'retrying') void this.followMovedArms(communicator)
     if (phase === 'connected') {
       this.syncNotifications(communicator)
       this.ensureWearDetection(communicator)
     } else if ((phase === 'disconnected' || phase === 'error') && !this.stopping) {
       // The session ended on its own (an arm unpaired, incompatible firmware): release it and go headless.
       void this.disconnect(state.status)
+    }
+  }
+  /**
+   * After a failed attempt, look for the arms again. iOS can come to know an arm under a new identifier
+   * (IosBluetooth.refreshIdentifiers), and then no retry of this session reaches it: start a new one.
+   */
+  private async followMovedArms(communicator: FaceclawCommunicatorBridge): Promise<void> {
+    if (this.findingArmsAgain) return
+    this.findingArmsAgain = true
+    try {
+      const addresses = loadDeviceAddresses()
+      if (deviceAddressError(addresses)) return
+      const ring = ringConnectionModeSetting.get() === 'direct' ? addresses.ring : ''
+      const found = await resolveIosPeripherals({ ...addresses, ring })
+      const used = this.communicatorIdentifiers
+      if (this.communicator !== communicator || !used || this.stopping || this.connecting) return
+      if (this.state.phase !== 'retrying' && this.state.phase !== 'connecting') return
+      if (found.left === used.left && found.right === used.right) return
+      this.logBluetooth('An arm has a new Bluetooth identifier; connecting again with it')
+      await this.closeCommunicator()
+      this.ensurePreviewDisplay()
+      await this.connect(!this.active)
+    } catch (error) {
+      this.logBluetooth(`Finding the arms again: ${String(error)}`)
+    } finally {
+      this.findingArmsAgain = false
     }
   }
   /**
@@ -1140,6 +1171,7 @@ export class IosPreviewController {
     for (const off of this.sessionOffs.splice(0)) off()
     this.notifications = null
     this.communicator = null
+    this.communicatorIdentifiers = null
     bindBandwidthBenchmarkSession(null)
     // Releases an EvenHub app's mic before the session closes.
     this.syncRawMicSession()

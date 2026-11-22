@@ -72,12 +72,12 @@ interface SessionLink {
     fun keepsLinkAfterDisconnect(): Boolean = false
 
     /**
-     * Have the device hang up: write [request], a command its firmware answers by closing
-     * the link from its end, and wait up to [timeoutMs] for the link to go. Covers a link
-     * this app no longer uses but the OS still holds. True when the link is down, including
-     * when it already was. False when the request could not be written or the link outlived
-     * the wait; either way the caller still calls [disconnect]. Only meaningful where
-     * [keepsLinkAfterDisconnect].
+     * Have the device hang up, if [disconnect] would leave its link up: write [request], a
+     * command its firmware answers by closing the link from its end, and wait up to
+     * [timeoutMs] for the link to go. Covers a link this app no longer uses but the OS still
+     * holds. True when the link is down, already was, or is one [disconnect] ends by itself.
+     * False when the request could not be written or the link outlived the wait; either way
+     * the caller still calls [disconnect]. Only meaningful where [keepsLinkAfterDisconnect].
      */
     fun releaseFromPeer(address: String, characteristicUuid: String, request: ByteArray, timeoutMs: Int): Boolean = false
 
