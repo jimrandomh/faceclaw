@@ -28,6 +28,7 @@ import { GlanceHost, type GlanceDisplay } from './glance-host'
 import { createLockScreenImage, LOCK_SCREEN_SURFACE_ID } from './lock-screen'
 import { OsEventTypeList } from './events'
 import { loadDeviceAddresses } from './device-addresses'
+import { directRingRole, handRingBackToGlassesIfNeeded, noteRingSessionMode } from './ring-connection'
 import { updateGlassesPresence } from './glasses-presence'
 import { glassesPadStatus, type GlassesPadStatus } from './glasses-display-state'
 import { firmwareIncompatibilityMessage, hasCompatibleFirmware } from './firmware-compat'
@@ -57,7 +58,7 @@ import { onAnySettingChanged,
   previewColorSetting, lockScreenEnabledSetting, getBrightnessPreferences, getStringSettingById,
   nightscoutSiteUrlSetting, nightscoutApiTokenSetting, voiceProviderSetting, elevenLabsApiKeySetting,
   openAiApiKeySetting, sonioxApiKeySetting, whisperServerApiKeySetting, whisperServerLanguageSetting,
-  whisperServerModelSetting, whisperServerUrlSetting, ringConnectionModeSetting, saveRecordingSetting, glassesTypeSetting, glassesModelName, shouldPopUpNewNotification } from '../ui/dashboard-settings'
+  whisperServerModelSetting, whisperServerUrlSetting, effectiveRingConnectionMode, type RingConnectionMode, saveRecordingSetting, glassesTypeSetting, glassesModelName, shouldPopUpNewNotification } from '../ui/dashboard-settings'
 import { transcriptionKey, type VoiceProviderSelection } from '../native/cloud-stt-provider'
 import type { PhoneGesture } from '../phone-ui/phone-gestures'
 import { claimGlassesOnboardingAutoLaunch, ONBOARDING_APP_ID } from '../apps/onboarding/onboarding-progress'
@@ -91,6 +92,8 @@ export class IosPreviewController {
   private communicator: FaceclawCommunicatorBridge | null = null
   /** The peripherals [communicator] was made for: a session keeps the identifiers it started with. */
   private communicatorIdentifiers: PeripheralIdentifiers | null = null
+  /** Ring connection mode the current session was started with (it applies per connection). */
+  private ringModeAtConnect: RingConnectionMode = 'glasses'
   private findingArmsAgain = false
   private readonly startedCommunicators = new WeakSet<FaceclawCommunicatorBridge>()
   state: SessionState = { phase: 'disconnected', status: 'Preview only', battery: null, charging: null, ring: false,
@@ -938,16 +941,19 @@ export class IosPreviewController {
       this.firmwareCompatible = false
       this.update('connecting', 'Finding configured devices…')
       let identifiers
-      // As on Android, connect to the ring only in "Direct" mode; otherwise a phone-side connect
-      // fails and retries every few seconds, starving the glasses link.
-      const ring = ringConnectionModeSetting.get() === 'direct' ? addresses.ring : ''
+      // Connect to the ring only in "Direct" mode; otherwise a phone-side connect fails and
+      // retries every few seconds, starving the glasses link.
+      const ringMode = effectiveRingConnectionMode()
+      const ring = ringMode === 'direct' ? addresses.ring : ''
       try { identifiers = await resolveIosPeripherals({ ...addresses, ring }) }
       catch (failure) {
         this.update('error', failure instanceof Error ? failure.message : String(failure))
         return
       }
       if (this.communicator) await this.closeCommunicator()
-      const communicator = new FaceclawCommunicatorBridge({ ...identifiers, glassesType: glassesTypeSetting.get() })
+      const communicator = new FaceclawCommunicatorBridge({ ...identifiers, ringRole: directRingRole(ringMode), glassesType: glassesTypeSetting.get() })
+      this.ringModeAtConnect = ringMode
+      noteRingSessionMode(ringMode, ring)
       this.teardownPreviewDisplay()
       this.communicator = communicator
       this.communicatorIdentifiers = identifiers
@@ -1062,6 +1068,7 @@ export class IosPreviewController {
     if (phase === 'connected') {
       this.syncNotifications(communicator)
       this.ensureWearDetection(communicator)
+      this.handRingBackToGlassesIfNeeded(communicator)
     } else if ((phase === 'disconnected' || phase === 'error') && !this.stopping) {
       // The session ended on its own (an arm unpaired, incompatible firmware): release it and go headless.
       void this.disconnect(state.status)
@@ -1077,7 +1084,7 @@ export class IosPreviewController {
     try {
       const addresses = loadDeviceAddresses()
       if (deviceAddressError(addresses)) return
-      const ring = ringConnectionModeSetting.get() === 'direct' ? addresses.ring : ''
+      const ring = effectiveRingConnectionMode() === 'direct' ? addresses.ring : ''
       const found = await resolveIosPeripherals({ ...addresses, ring })
       const used = this.communicatorIdentifiers
       if (this.communicator !== communicator || !used || this.stopping || this.connecting) return
@@ -1092,6 +1099,12 @@ export class IosPreviewController {
     } finally {
       this.findingArmsAgain = false
     }
+  }
+  /** As on Android: after a Direct session took the ring from the glasses, a session in another mode gives it back. */
+  private handRingBackToGlassesIfNeeded(communicator: FaceclawCommunicatorBridge): void {
+    const ring = loadDeviceAddresses().ring
+    if (handRingBackToGlassesIfNeeded(this.ringModeAtConnect, ring, (address, name) => communicator.setGlassesRingLink('connect', address, name)))
+      this.logBluetooth(`Handing the R1 ring ${ring} back to the glasses`)
   }
   /**
    * Wear reports come from the custom firmware, so like Android only ask once the session

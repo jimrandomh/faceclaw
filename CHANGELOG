@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.9.1 - 2026-11-20
+## 0.9.1 - 2026-11-21
 
 ### Major Features
 
@@ -29,6 +29,7 @@
 ### Bug Fixes
 
 * iOS: Fix an issue where the app couldn't reconnect to a G2 arm that iOS already had a notifications (ANCS) connection open
+* iOS: Fix an issue that would prevent getting input events from the R1 ring
 * G1: Fix incorrectly rotated accelerometer readings, which broke EvenHub apps such as Level
 * Fix inconsistent appearance of the submenu-triangle option between Android and iOS
 

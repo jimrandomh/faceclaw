@@ -18,11 +18,11 @@ import { weatherBridge } from "../native/weather";
 import { ALL_NOTIFICATIONS, onAndroidNotificationPosted, onAndroidNotificationRemoved, readActiveNotifications } from "../native/notification-icons";
 import { watchNotificationListenerBinding } from "../native/notification-access";
 import { openEvenAppSettings, readEvenAppNotificationState } from "../native/even-app-conflict";
-import { defaultRingName, setGlassesRingLink } from "../native/ring-status";
+import { setGlassesRingLink } from "../native/ring-status";
+import { directRingRole, handRingBackToGlassesIfNeeded, noteRingSessionMode } from "./ring-connection";
 import { applyGlanceAngle, glassesHeadUpTrigger, syncGlanceAngleOriginal } from "./head-angle";
 import { glanceAngleTriggerDegrees, glanceTapTimeoutMs } from "../apps/glanceboard/glanceboard-settings";
 import { GLANCE_TILT_MAX_MS, glanceTiltMaxMs } from "./glance-state";
-import { getBooleanSetting, setBooleanSetting } from "../native/settings-store";
 import { grayImageToPreviewSource } from "../native/gray-image-preview";
 import { firmwareIncompatibilityMessage, hasCompatibleFirmware } from "./firmware-compat";
 import { keyboardService } from "./keyboard/service";
@@ -260,9 +260,6 @@ function eventLabel(kind: string, eventType: number): string {
 function sourceName(eventSource: number): string {
   return EventSourceTypeName[eventSource] ?? `SOURCE_${eventSource}`;
 }
-
-/** Set while a Direct ring session may have taken the R1 from the glasses; see handRingBackToGlassesIfNeeded. */
-const RING_TAKEN_FROM_GLASSES_KEY = "developer.ringTakenFromGlasses";
 
 class DashboardController {
   private phase: ConnectionPhase = "disconnected";
@@ -1101,14 +1098,8 @@ class DashboardController {
    * Called on connect.
    */
   private handRingBackToGlassesIfNeeded(): void {
-    if (this.ringModeAtConnect === "direct" || !getBooleanSetting(RING_TAKEN_FROM_GLASSES_KEY, false)) return;
     const ring = loadDeviceAddresses().ring;
-    if (!ring) {
-      setBooleanSetting(RING_TAKEN_FROM_GLASSES_KEY, false);
-      return;
-    }
-    if (setGlassesRingLink("connect", ring, defaultRingName(ring))) {
-      setBooleanSetting(RING_TAKEN_FROM_GLASSES_KEY, false);
+    if (handRingBackToGlassesIfNeeded(this.ringModeAtConnect, ring, (address, name) => setGlassesRingLink("connect", address, name))) {
       this.appendLog(`Handing the R1 ring ${ring} back to the glasses`);
     }
   }
@@ -1549,9 +1540,7 @@ class DashboardController {
     this.ringModeAtConnect = ringMode;
     const glassesType = glassesTypeSetting.get();
     const ringAddress = ringMode !== "glasses" ? addresses.ring : "";
-    // Direct mode may unpair the ring from the glasses; remember to hand it
-    // back once a later session runs in another mode.
-    if (ringMode === "direct" && ringAddress) setBooleanSetting(RING_TAKEN_FROM_GLASSES_KEY, true);
+    noteRingSessionMode(ringMode, ringAddress);
     this.appendLog((glassesType === "rayneo-io"
       ? `Using configured RayNeo iO: ${addresses.right}`
       : `Using configured arms: R=${addresses.right} L=${addresses.left}`) + (ringAddress ? ` ring=${ringAddress}` : ""),
@@ -1572,10 +1561,7 @@ class DashboardController {
         right: addresses.right,
         left: addresses.left,
         ring: ringAddress,
-        // Direct mode acts as the ring's glasses (gestures, battery). Health
-        // sync needs the phone role, which the session borrows briefly for
-        // each pull (GlassesSessionRing.beginRingHealthWindowLocked).
-        ringRole: ringMode === "direct" ? "glasses" : "phone",
+        ringRole: directRingRole(ringMode),
         glassesType,
       });
       this.communicator = communicator;
