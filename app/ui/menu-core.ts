@@ -30,9 +30,10 @@ export type MenuBox = { x: number; y: number; width: number; height: number; pad
 
 export type MenuDrawArgs<T> = {
   /**
-   * Draw into this image, inside the (x, y, width, height) rect. For the
-   * selected row this is a scratch image exactly the rect's size (so x and y
-   * are 0), replayed over the highlight. While a scroll animates, rows are
+   * Draw into this image, inside the (x, y, width, height) rect. A row cut
+   * by the box's edge is drawn into a scratch image exactly the rect's size
+   * (so x and y are 0). The selection box goes over the selected row, its
+   * fill max-blending with the row's pixels. While a scroll animates, rows are
    * also drawn into a strip image covering both viewports. Never draw
    * relative to image.width or image.height, and never outside the rect.
    */
@@ -51,8 +52,6 @@ export type MenuDrawArgs<T> = {
 export type MenuHighlightStyle = {
   /** Corner radius of the selection box. Default 8. */
   radius?: number;
-  /** Stereo depth of the selection box. Default 0. */
-  depth?: number;
 };
 
 export type MenuOptions<T> = {
@@ -267,29 +266,26 @@ export class Menu<T> {
     for (let index = 0; index < this.itemList.length; index++) {
       const top = layout.tops[index]! - this.scrollY;
       const height = layout.heights[index]! - gap;
-      const selected = index === this.selected;
       if (top + height <= 0 || top >= box.height) continue;
       const rowY = box.y + top;
-      const item = this.itemList[index]!;
-      if (selected && highlight !== false) {
-        const animation = this.motion.paint(index, this.scrollY, box.x, rowY, box.width, height, now, !!strip);
-        const background = focused ? MENU_HIGHLIGHT_FILL : 0;
-        if (strip && scroll) {
-          // The strip already holds this row's content; only the box is drawn over it.
-          let y = slidingHighlightY(top, animation, scroll.startedAt);
-          // A bounce carries the highlight with its row.
-          if (scroll.peak !== undefined) y = y.add(E.i32(scroll.to)).sub(scrollOffsetExpression(scroll));
-          scrollHighlight = { y, width: box.width, height, radius: highlight?.radius ?? 8,
-            background, border: MENU_HIGHLIGHT_STROKE };
-          continue;
-        }
-        // A selected row taller than the box is drawn whole, from its top.
-        const row = new GrayImage(box.width, height, 0);
-        this.options.draw({ image: row, item, index, x: 0, y: 0, width: box.width, height, selected, focused });
-        image.drawMenuSelection(row, box.x, rowY, background, MENU_HIGHLIGHT_STROKE,
-          highlight?.radius ?? 8, highlight?.depth ?? 0, animation);
+      const highlighted = index === this.selected && highlight !== false;
+      // A highlighted row taller than the box is drawn whole, from its top.
+      this.drawRow(image, index, box.x, rowY, box.width, height, focused,
+        highlighted ? rowY : box.y, highlighted ? rowY + height : box.y + box.height);
+      if (!highlighted) continue;
+      // The box goes over the row's pixels; its fill max-blends with them.
+      const animation = this.motion.paint(index, this.scrollY, box.x, rowY, box.width, height, now, !!strip);
+      const background = focused ? MENU_HIGHLIGHT_FILL : 0;
+      if (strip && scroll) {
+        // The strip holds this row too, and carries the box.
+        let y = slidingHighlightY(top, animation, scroll.startedAt);
+        // A bounce carries the highlight with its row.
+        if (scroll.peak !== undefined) y = y.add(E.i32(scroll.to)).sub(scrollOffsetExpression(scroll));
+        scrollHighlight = { y, width: box.width, height, radius: highlight?.radius ?? 8,
+          background, border: MENU_HIGHLIGHT_STROKE };
       } else {
-        this.drawRow(image, index, box.x, rowY, box.width, height, focused, box.y, box.y + box.height);
+        image.drawMenuHighlight(box.x, rowY, box.width, height, background, MENU_HIGHLIGHT_STROKE,
+          highlight?.radius ?? 8, animation);
       }
     }
     // The rows painted above stay underneath: once the animation ends, the
@@ -315,16 +311,14 @@ export class Menu<T> {
   }
 
   /**
-   * Draw one row at (x, y), clipped to target rows [clipTop, clipBottom).
-   * Selected rows with a highlight are drawn in a scratch image the row's
-   * size, like the static selection, which clips their ink to the row.
+   * Draw one row at (x, y), clipped to target rows [clipTop, clipBottom): a
+   * row the clip cuts is drawn in a scratch image the row's size.
    */
   private drawRow(target: GrayImage, index: number, x: number, y: number, width: number, height: number,
       focused: boolean, clipTop: number, clipBottom: number): void {
     const item = this.itemList[index]!;
     const selected = index === this.selected;
-    const scratch = selected && this.options.highlight !== false;
-    if (!scratch && y >= clipTop && y + height <= clipBottom) {
+    if (y >= clipTop && y + height <= clipBottom) {
       this.options.draw({ image: target, item, index, x, y, width, height, selected, focused });
       return;
     }
@@ -340,13 +334,10 @@ export class Menu<T> {
    * return null to snap. Its first and last frames must match the static
    * paints on either side, which clip rows at the viewport's edges the same
    * way. The strip copy is opaque, so this also requires a black background
-   * under the menu, a selected row that fits, and a highlight at the menu's
-   * own depth.
+   * under the menu and a selected row that fits.
    */
   private scrollStrip(image: GrayImage, layout: MenuLayout, box: MenuBox, focused: boolean,
       scroll: MenuScrollAnimation): { image: GrayImage; x: number; top: number } | null {
-    const highlight = this.options.highlight;
-    if (highlight !== false && (highlight?.depth ?? 0) !== 0) return null;
     const gap = this.options.rowGap ?? 0;
     const selected = this.selected;
     if (selected !== null && layout.tops[selected]! + layout.heights[selected]! - gap - scroll.to > box.height) return null;

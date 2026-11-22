@@ -40,9 +40,6 @@ class TexturePlanner {
         /** Cap on mode-15 builtin-font string sub-messages per update. */
         private const val MAX_FWTEXT_RUNS: Int = 80
 
-        /** Resource command payload size that fits one BLE image message comfortably. */
-        private const val UPLOAD_PAYLOAD_MAX: Int = 3600
-
         /** Max x-adjust control bytes between two glyphs before starting a new run. */
         private const val MAX_ADJUST_BYTES: Int = 4
 
@@ -247,7 +244,7 @@ class TexturePlanner {
                 rollback()
                 return null
             }
-            val resourceCommands = cache.drainCommands(UPLOAD_PAYLOAD_MAX)
+            val resourceCommands = cache.drainCommands()
             val uploadBytes = resourceCommands.sumOf { it.size }
             var result: Result =
                 Result(

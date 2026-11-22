@@ -74,6 +74,7 @@ class ConnectionOptions {
     // round-trip that otherwise serialized every update. Requires firmware that
     // accepts pipelined image messages (the CFW snapshot/deferred FIFO). At 1 the
     // communicator behaves exactly as before (serial sends + last-packet prewrite).
+    // Small private-stream messages may go past it: CfwMessageWindow.admitsSmallMessage.
     @JvmField val WINDOW_SIZE = 3
     // Send changed-region (mode 3 bounding box) updates instead of full frames
     // when the previous frame is known to be displayed. Requires firmware with

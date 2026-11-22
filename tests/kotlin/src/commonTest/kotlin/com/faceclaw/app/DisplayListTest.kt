@@ -181,10 +181,10 @@ class DisplayListTest {
         assertFails { DisplayListRenderer(emptyMap()).execute(DrawProtocol.sequence(listOf(byteArrayOf(8,2))),target) }
         assertContentEquals(before,pixels)
     }
-    @Test fun selectedMenuResourcesStayOutOfScreenAndReplayAtDepthTwo() {
+    @Test fun depthImagesStayOutOfScreenAndReplayAtDepthTwo() {
         val planner=ScenePlanner(ResourceCacheState()); val left=Glasses(); val right=Glasses(true)
         val app=ByteArray(640*480/2) { 0x11 }
-        fun row(x:Int) = MenuSelection(x,8,8,4,1,4,9,2,hex("00ff0000000000000000000000000000"))
+        fun row(x:Int) = DepthImage(x,8,8,4,2,hex("00ff0000000000000000000000000000"))
         val scene=ShellScene(emptyList(),listOf(row(10)))
         val first=planner.plan(app,640,480,null,scene,1);left.apply(first.commands);right.apply(first.commands)
         assertContentEquals(app,left.screen);assertContentEquals(app,right.screen)
@@ -197,13 +197,13 @@ class DisplayListTest {
         assertContentEquals(app,left.composition)
     }
     @Test fun contextMenusAndSidebarDepthReplayOnBothLensesWithoutBakedCopies() {
-        fun record(kind: Int, x: Int, y: Int, w: Int, h: Int, depth: Int, gray: ByteArray): MenuSelection {
+        fun record(kind: Int, x: Int, y: Int, w: Int, h: Int, depth: Int, gray: ByteArray): DepthImage {
             val bytes = DrawProtocol.word(x) + DrawProtocol.word(y) + DrawProtocol.word(w) + DrawProtocol.word(h) +
-                DrawProtocol.word(0) + byteArrayOf(16, 48, depth.toByte()) + DrawProtocol.word(0) + gray
-            return MenuSelection.read(ArrayByteReader(bytes), kind)
+                byteArrayOf(depth.toByte()) + DrawProtocol.word(0) + gray
+            return DepthImage.read(ArrayByteReader(bytes), kind)
         }
         val menu = record(5, 10, 10, 8, 8, 4, ByteArray(64) { if (it == 0) 0 else 1 })
-        val selected = record(3, 12, 12, 4, 2, 6, ByteArray(8) { -1 })
+        val selected = record(4, 12, 12, 4, 2, 6, ByteArray(8) { -1 })
         val icon = record(4, 30, 10, 2, 2, -2, ByteArray(4) { -1 })
         val app = ByteArray(640 * 480 / 2) { 0x66 }
         val planner = ScenePlanner(ResourceCacheState())

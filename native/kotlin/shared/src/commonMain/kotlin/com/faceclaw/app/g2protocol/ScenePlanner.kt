@@ -89,7 +89,7 @@ class ScenePlanner(private val cache: ResourceCacheState) {
         val ids = prepared.copyOfRange(0, surfaces.size)
         val selectedIds = prepared.copyOfRange(surfaces.size, prepared.size)
         val frame = baked?.invoke() ?: screen
-        commands.addAll(cache.drainCommands(3600))
+        commands.addAll(cache.drainCommands())
         val rootCalls = scene.calls(width, height, ids, selectedIds)
         for ((i, layer) in scene.layers.withIndex()) {
             val old = if (absent[i]) null else pixels[keys[i]]
@@ -104,7 +104,7 @@ class ScenePlanner(private val cache: ResourceCacheState) {
         val list = CachedResource(DrawProtocol.displayList(rootCalls))
         val rootId = cache.prepare(listOf(list))[0]
         if (rootId < 0) return null
-        commands.addAll(cache.drainCommands(3600))
+        commands.addAll(cache.drainCommands())
         cache.pin(surfaces + selectedResources + list)
         val evicted = commands.any { it[0].toInt() == ResourceCacheState.EVICT_MODE }
         if (evicted) commands.add(0, DrawProtocol.root(DrawProtocol.SCREEN))

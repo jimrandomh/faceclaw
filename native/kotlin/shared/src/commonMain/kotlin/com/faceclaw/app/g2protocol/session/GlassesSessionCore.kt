@@ -42,6 +42,18 @@ class GlassesSessionCore(
             BleProtocol.ImageTileOptions("img00", 10, 0, 0, 576, 288)
 
         internal const val FACECLAW_WAKE_LEASE_RENEW_MS = 45_000L
+        /**
+         * How long a framebuffer-lease ACQUIRE lasts on the glasses. Mirrors FACECLAW_LEASE_MS in
+         * g2flash patches/settings_ext.c, which frees the resource cache when the lease lapses.
+         */
+        internal const val FACECLAW_FB_LEASE_MS = 90_000L
+        /**
+         * Slack against [FACECLAW_FB_LEASE_MS]. The glasses count it in RTOS ticks of 32/32768 s
+         * (g2flash docs/cpu-usage.md), so it really lasts ~87.9 s; and a wake gesture checks the
+         * lease on the glasses (gesture_fwd.c) a moment before the phone resumes. The confirmed
+         * time is when the renewal was queued, before the glasses received it, which adds more.
+         */
+        internal const val FACECLAW_FB_LEASE_MARGIN_MS = 5_000L
         internal const val FACECLAW_WAKE_CONTROL_WAIT_MS = 1_500L
         internal const val CFW_CLEANUP_WAIT_MS = 4_000L
         /** How long an arm gets to hang up after a release request; it normally takes a few connection intervals. */
@@ -298,6 +310,13 @@ class GlassesSessionCore(
     internal var faceclawWakeControlGeneration = 0
     internal var faceclawWakeControlSentCount = 0
     internal var lastFaceclawFramebufferLeaseQueuedAtMs = 0L
+    /**
+     * When the latest framebuffer-lease ACQUIRE that reached both arms was queued (so the lease
+     * runs at least [FACECLAW_FB_LEASE_MS] from here), or 0 when none has since (re)connecting
+     * or a release. The glasses keep the resource cache, and the screen buffer, for as long as
+     * the lease holds; see framebufferLeaseMayHaveLapsedLocked.
+     */
+    internal var faceclawFramebufferLeaseConfirmedAtMs = 0L
     internal var faceclawFramebufferControlGeneration = 0
     internal var faceclawFramebufferControlSentCount = 0
     internal var faceclawWakePendingNonce = -1
@@ -1932,12 +1951,12 @@ class GlassesSessionCore(
     fun suspendEvenHubSession(): Boolean {
         if (isIo) return ioSuspend()
         if (isG1) return g1Suspend()
-        // Ending the plugin task releases the fb lease, which frees the
-        // on-glasses resource cache; forget it phone-side either way (a lost
-        // ack may still have taken effect).
-        monitor.withLock {
-            resourceCache.reset()
-        }
+        // The resource cache, root list and screen buffer outlive the plugin task: the glasses
+        // free them only when the framebuffer lease ends (released, lapsed or a CFW cleanup),
+        // and the lease is renewed through the suspend. So the phone keeps its model of them
+        // and the wake frame sends only what changed. Dropping queued display commands (the
+        // shutdown flushes the queue) does reset it; a lease that may have lapsed is caught
+        // on resume.
         if (sendShutdownInternal(0, false)) {
             return true
         }
@@ -2571,6 +2590,10 @@ class GlassesSessionCore(
                 fixedLayoutCreated = false
                 clearAllMessagesLocked("session ready")
                 displayedFingerprint = ""
+                // New connection: re-assert the firmware-debug-flags overlay once the layout is
+                // ready (the mode-7 send is gated on this having reset). The flag lives in the
+                // CFW context, which a suspended plugin task doesn't touch, so a wake keeps it.
+                firmwareDebugFlagsLastSent = -1
                 lastAckAtMs = now()
                 lastIncomingAtMs = lastAckAtMs
                 lastConnectionOrInputAtMs = lastAckAtMs
@@ -2589,6 +2612,7 @@ class GlassesSessionCore(
                 lastCfwCleanupAckMagic = 0
                 lastFaceclawWakeLeaseQueuedAtMs = 0
                 lastFaceclawFramebufferLeaseQueuedAtMs = 0
+                faceclawFramebufferLeaseConfirmedAtMs = 0
                 enqueueFaceclawFramebufferControlLocked(
                     BleProtocol.FACECLAW_FB_OP_ACQUIRE,
                     true
@@ -2921,21 +2945,17 @@ class GlassesSessionCore(
         prelude.sentAtMs = now
         writeMessage(prelude)
 
+        // The ACK signals the monitor (resolveAckLocked): waiting on it rather than polling
+        // saves up to a poll interval on every wake, which starts with this prelude.
         val deadline = now() + ConnectionOptions.PRELUDE_TIMEOUT_MS
-        while (running && !userDisconnectRequested && !inFlightMessages.isEmpty()) {
-            val done = monitor.withLock {
-                !running || userDisconnectRequested || inFlightMessages.isEmpty()
-            }
-            if (done) {
-                break
-            }
-            val remaining = deadline - now()
-            if (remaining <= 0) {
-                break
-            }
-            interruptibleSleep.sleep(minOf(remaining, 100L))
-        }
         monitor.withLock {
+            while (running && !userDisconnectRequested && !inFlightMessages.isEmpty()) {
+                val remaining = deadline - now()
+                if (remaining <= 0) {
+                    break
+                }
+                monitor.awaitMs(minOf(remaining, 100L))
+            }
             if (!inFlightMessages.isEmpty()) {
                 clearInFlightMessagesLocked("prelude timeout")
                 throw IllegalStateException("prelude ack timeout")

@@ -246,6 +246,23 @@ class ProtocolTest {
     }
 
     @Test
+    fun smallPrivateMessagesExtendTheWindow() {
+        val small = { message(input = ByteArray(3)) }
+        val full = List(3) { small() }
+        // Past the plain window, small private messages still fit, up to the extended count.
+        assertTrue(CfwMessageWindow.admitsSmallMessage(full, small()))
+        assertTrue(CfwMessageWindow.admitsSmallMessage(List(CfwMessageWindow.SMALL_MESSAGE_WINDOW - 1) { small() }, small()))
+        assertFalse(CfwMessageWindow.admitsSmallMessage(List(CfwMessageWindow.SMALL_MESSAGE_WINDOW) { small() }, small()))
+        // A larger message waits for the plain window; one already in flight doesn't hold back small ones.
+        val bulk = message(input = ByteArray(CfwMessageWindow.SMALL_MESSAGE_BYTES + 1))
+        assertFalse(CfwMessageWindow.admitsSmallMessage(full, bulk))
+        assertTrue(CfwMessageWindow.admitsSmallMessage(full.drop(1) + bulk, small()))
+        // Stock messages, in flight or next, keep the plain window.
+        assertFalse(CfwMessageWindow.admitsSmallMessage(full, message(sid = 1)))
+        assertFalse(CfwMessageWindow.admitsSmallMessage(full.drop(1) + message(sid = 1), small()))
+    }
+
+    @Test
     fun magicPoolExhaustionLruAndReleaseRecords() {
         var now = 123L
         val platform =

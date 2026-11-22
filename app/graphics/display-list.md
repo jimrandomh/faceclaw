@@ -85,8 +85,8 @@ need not share an epoch. Fingerprints include the token and expression code but
 exclude the changing elapsed duration. Without a timeline, raw `time()` expressions
 start at each PRESENT. Native compilation strips the bridge-only elapsed opcode.
 
-`menu-selection-list.ts` authors both the rounded highlight and the transparent row
-image using this API. `IconGrid` (app/ui/icon-grid.ts) animates a whole grid
+`menu-highlight-list.ts` authors the sliding rounded highlight with this API; the
+selected row itself is drawn in the pixels beneath, which its fill max-blends with. `IconGrid` (app/ui/icon-grid.ts) animates a whole grid
 this way: a clipped CLEAR of the grid box, the sliding highlight, then a DRAWS
 of every row visible during the scroll, offset by the scroll expression. `menu-scroll-list.ts` authors a menu scroll or bounce: a
 viewport-sized copy from a strip resource whose source y animates, then the

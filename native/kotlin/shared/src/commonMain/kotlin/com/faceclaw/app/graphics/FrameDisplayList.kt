@@ -9,7 +9,7 @@ interface RetainedDrawing {
 }
 
 internal fun readRetainedDrawing(reader: ByteReader, kind: Int): RetainedDrawing =
-    if (kind == DrawRecordKind.DISPLAY_LIST) FrameDisplayList.read(reader) else MenuSelection.read(reader, kind)
+    if (kind == DrawRecordKind.DISPLAY_LIST) FrameDisplayList.read(reader) else DepthImage.read(reader, kind)
 
 /**
  * Generic TS-authored calls. No menu or easing policy lives in this bridge.

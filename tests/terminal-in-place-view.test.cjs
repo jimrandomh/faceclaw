@@ -21,7 +21,13 @@ function fakeImageModule() {
       return new Proxy(this, { get: (target, key) => (key in target ? target[key] : () => {}) });
     }
     drawText(_font, x, y, text) { this.texts.push(text); this.positions.push([text, x, y]); }
-    drawMenuSelection(row) { this.texts.push(...row.texts.map((text) => `[${text}]`)); }
+    // The selected row is drawn in place, then the box over it: bracket the text it covers.
+    drawMenuHighlight(x, y, width, height) {
+      this.texts = this.texts.map((text, i) => {
+        const [, tx, ty] = this.positions[i];
+        return tx >= x && ty >= y && tx < x + width && ty < y + height ? `[${text}]` : text;
+      });
+    }
   }
   return { GrayImage };
 }

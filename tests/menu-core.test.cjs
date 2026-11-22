@@ -13,9 +13,8 @@ function stringMenu(overrides = {}) {
     getHeight: () => 20,
     draw: (args) => {
       // A scroll animation also draws rows into a strip taller than one row; only
-      // the frame's rows are recorded. A strip's selected row uses a row scratch
-      // like the static one, and an empty strip falls back to the static paint,
-      // so paint() keeps one draw per row.
+      // the frame's rows are recorded. An empty strip falls back to the static
+      // paint, so paint() keeps one draw per row.
       if (args.image !== drawn.image && args.image.height !== args.height) return;
       drawn.push({ item: args.item, index: args.index, x: args.x, y: args.y, width: args.width, height: args.height,
         selected: args.selected, focused: args.focused, scratch: args.image !== drawn.image });
@@ -41,9 +40,8 @@ test('defaults to the first selectable item and lays rows out from the box top',
   assert.equal(menu.selectedIndex, 0);
   const rows = paint();
   assert.deepEqual(rows.map((r) => r.item), ['a', 'b', 'c'], 'only rows that fully fit are drawn');
-  assert.deepEqual(rows.map((r) => r.y), [0, 25, 45], 'the selected row draws into a scratch image at y 0');
-  assert.equal(rows[0].scratch, true);
-  assert.equal(rows[1].scratch, false);
+  assert.deepEqual(rows.map((r) => r.y), [5, 25, 45], 'rows inside the box, the selected one too, draw in place');
+  assert.ok(rows.every((r) => !r.scratch));
   assert.equal(rows[0].width, 80);
   assert.equal(rows[0].height, 20);
   assert.ok(rows.every((r) => r.focused));
@@ -54,7 +52,7 @@ test('rowGap shrinks the drawable box without changing the pitch', () => {
   const { paint } = stringMenu({ rowGap: 1 });
   const rows = paint();
   assert.deepEqual(rows.map((r) => r.height), [19, 19, 19]);
-  assert.deepEqual(rows.map((r) => r.y), [0, 25, 45]);
+  assert.deepEqual(rows.map((r) => r.y), [5, 25, 45]);
 });
 
 test('scrolling keeps the selection and its neighbors visible and aligns the viewport to a row top', async () => {
@@ -207,12 +205,12 @@ test('variable heights: the layout follows getHeight and partial rows are clippe
   const { menu, paint } = stringMenu({ getHeight: (item) => heights[item] });
   let rows = paint();
   assert.deepEqual(rows.map((r) => [r.item, r.y, r.height, r.scratch]),
-    [['a', 0, 10, true], ['b', 15, 30, false], ['c', 45, 15, false], ['d', 0, 40, true]],
+    [['a', 5, 10, false], ['b', 15, 30, false], ['c', 45, 15, false], ['d', 0, 40, true]],
     'd is drawn in a scratch image and clipped to the viewport');
   menu.select(3);
   rows = paint();
   assert.equal(menu.scrollTop, 40, 'aligned to the top of row c');
-  assert.deepEqual(rows.map((r) => [r.item, r.y]), [['c', 5], ['d', 0], ['e', 60]], 'e fits under d exactly');
+  assert.deepEqual(rows.map((r) => [r.item, r.y]), [['c', 5], ['d', 20], ['e', 60]], 'e fits under d exactly');
   assert.equal(menu.overflows, true);
 });
 
@@ -247,19 +245,23 @@ test('the selection re-validates against items edited in place', async () => {
   assert.equal(menu.selectedIndex, 0);
 });
 
-test('the highlight is a replayed selection over the row scratch image', () => {
+test('the highlight is a replayed box over the selected row, drawn in place', () => {
   const { paint, image } = stringMenu();
-  paint();
+  const rows = paint();
+  assert.equal(rows[0].scratch, false);
   const selection = image.draws.find((d) => d.presentation);
   assert.ok(selection);
   assert.equal(selection.x, 10);
   assert.equal(selection.y, 5);
-  assert.equal(selection.presentation.radius, 8);
-  assert.equal(selection.presentation.background, 15);
-  assert.equal(selection.presentation.border, 45);
+  const box = (draw) => draw.presentation.displayList.calls;
+  assert.equal(box(selection).length, 1, 'the box alone: the row is in the pixels');
+  assert.equal(box(selection)[0].radius, 8);
+  assert.equal(box(selection)[0].background, 1, 'MENU_HIGHLIGHT_FILL as a level');
+  assert.equal(box(selection)[0].border, 3, 'MENU_HIGHLIGHT_STROKE as a level');
+  assert.deepEqual(selection.presentation.displayList.resources, []);
   const unfocused = new GrayImage(100, 100);
   stringMenu().menu.paint(unfocused, { x: 0, y: 0, width: 50, height: 50 }, false);
-  assert.equal(unfocused.draws.find((d) => d.presentation).presentation.background, 0);
+  assert.equal(box(unfocused.draws.find((d) => d.presentation))[0].background, 0);
   const plain = new GrayImage(100, 100);
   stringMenu({ highlight: false }).menu.paint(plain, { x: 0, y: 0, width: 50, height: 50 }, true);
   assert.equal(plain.draws.some((d) => d.presentation), false);

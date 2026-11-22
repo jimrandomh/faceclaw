@@ -30,10 +30,10 @@ function menu() {
   const context={stack:{getBaseSize:()=>({width:80,height:80}),isFocused:()=>true}};
   return {layer,paint:()=>layer.paint(context,()=>new graphics.GrayImage(80,80)),context};
 }
-test('menu retains the selected text and rounded highlight on the menu plane',async()=>{
+test('menu draws the selected text in place under a retained rounded highlight',async()=>{
   const m=menu(),image=m.paint(),row=image.draws.find(d=>d.presentation);
-  assert.equal(row.presentation.depth,0);assert.equal(row.presentation.radius,8);
-  assert.ok(row.source.pixels.some(v=>v===255));assert.ok(!image.withDrawsBaked(false).pixels.some(v=>v===255));
+  assert.equal(row.presentation.depth,0);assert.equal(row.presentation.displayList.calls[0].radius,8);
+  assert.deepEqual(row.presentation.displayList.resources,[]);assert.ok(image.withDrawsBaked(false).pixels.some(v=>v===255));
   const flat=planes.flattenPlanesWithDraws([{image,x:0,y:0}]);
   const records=wire.presentationRecords(prepareFrameDraws(flat.draws));assert.equal(records.length,1);
   await m.layer.handleInput({type:'scroll-down'},m.context);
@@ -161,7 +161,7 @@ test('shell modal carries its inner menu highlight animation instead of baking i
   await modal.handleInput({type:'scroll-down'},{});
   const image=paint(),row=image.draws.find(d=>d.presentation);
   assert.ok(row.y>before.y);assert.ok(row.presentation.displayList.timeline,'the slide stays a timed display list');
-  assert.ok(!image.withDrawsBaked(false).pixels.some(v=>v===255),'selected text is not baked into the modal surface');
+  assert.ok(image.withDrawsBaked(false).pixels.some(v=>v===255),'selected text is in the modal surface, under the box');
 });
 test('shell crop widens a fractional rect (TTF-measured status bar) to whole pixels',()=>{
   const {shellCrop}=require('../.test-build/app/graphics/shell-scene.js'),image=new graphics.GrayImage(576,288,7);

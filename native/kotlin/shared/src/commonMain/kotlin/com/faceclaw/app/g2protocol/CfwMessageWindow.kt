@@ -22,6 +22,30 @@ class CfwMessageWindow private constructor() {
         fun ackDeadline(sentAtMs: Long, lastArmWriteAtMs: Long, lastArmAckAtMs: Long): Long =
             maxOf(lastArmWriteAtMs + DATA_STALL_MS, maxOf(sentAtMs, lastArmAckAtMs) + ACK_STALL_MS)
 
+        /**
+         * Past ConnectionOptions.WINDOW_SIZE messages in flight, the window still takes small
+         * private-stream messages, up to this many in flight. A wake or a menu move is mostly
+         * one-packet controls (brightness, root, present, small uploads), each costing an ACK
+         * round trip of ~30 ms on the left lens and up to ~140 ms through the right; three at
+         * a time serialized them.
+         */
+        const val SMALL_MESSAGE_WINDOW = 8
+        /** The largest logical message the extended window takes: a packet or two on the wire. */
+        const val SMALL_MESSAGE_BYTES = 512
+
+        /**
+         * Whether [candidate] may join a window already holding ConnectionOptions.WINDOW_SIZE
+         * messages: it is a small private-stream message and so is everything in flight (stock
+         * messages keep their own pacing), under [SMALL_MESSAGE_WINDOW]. Larger messages still
+         * go out only with fewer than WINDOW_SIZE in flight, so no more of them are ever
+         * outstanding than before, and what this adds to the queue on the inter-lens bridge is
+         * at most a few small messages.
+         */
+        @JvmStatic
+        fun admitsSmallMessage(inFlight: Collection<OutboundMessage>, candidate: OutboundMessage): Boolean =
+            candidate.sid == CfwTransport.SID && candidate.message.size <= SMALL_MESSAGE_BYTES &&
+                inFlight.size < SMALL_MESSAGE_WINDOW && inFlight.all { it.sid == CfwTransport.SID }
+
         /** ID reuse must not invalidate an earlier command still eligible for replay. */
         @JvmStatic
         fun canSend(messages: Iterable<OutboundMessage>, candidate: OutboundMessage): Boolean =

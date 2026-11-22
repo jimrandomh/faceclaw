@@ -5,7 +5,7 @@ const { DrawOp, SCREEN, encodeDisplayList, readDisplayList, paintDisplayList } =
 const { GrayImage } = require('../.test-build/app/graphics/image.js');
 const { encodePresentation } = require('../.test-build/app/graphics/presentation-wire.js');
 // Also consumed by FrameDisplayListTest.kt: bridge bytes, not independently rebuilt native calls.
-const MENU = '077f0000000300020002000200022a00000096000000010002000200ffffffff0200080000ff24017e30020000000001812c8001812c1611010017328001812c16103001812c3023414031ff24017c30020000000001812c8001812c1611010017328001812c16103001812c30234140310200020001000103100400000000000000001f';
+const MENU = '076d0000000300020002000200002a0000009600000000000100080000ff24017e30020000000001812c8001812c1611010017328001812c16103001812c3023414031ff24017c30020000000001812c8001812c1611010017328001812c16103001812c3023414031020002000100010310';
 const MULTI = '0744000000030002000400010002000000000000000002000200010000ff010001006003000400000000000000001f0200000100000001000100020002feffffff7f00010001007f00';
 
 test('extended integers agree with firmware widths and sign extension', () => {
@@ -42,7 +42,7 @@ test('menu authors the golden generic list and stable timeline identity', () => 
   const original = Date.now; Date.now = () => 1150;
   try {
     const image = new GrayImage(8,4);
-    image.drawMenuSelection(new GrayImage(2,2,255),3,2,16,48,1,2,{dx:-2,dy:-4,startedAt:1000,token:42,durationMs:300});
+    image.drawMenuHighlight(3,2,2,2,16,48,1,{dx:-2,dy:-4,startedAt:1000,token:42,durationMs:300});
     assert.equal(Buffer.from(encodePresentation(image.draws[0])).toString('hex'), MENU);
     const before = image.fingerprint(); Date.now = () => 1250;
     assert.equal(image.fingerprint(), before, 'wall time does not change frame identity');

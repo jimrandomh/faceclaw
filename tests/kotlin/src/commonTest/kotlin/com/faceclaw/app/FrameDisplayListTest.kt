@@ -4,7 +4,7 @@ import kotlin.test.*
 
 class FrameDisplayListTest {
     // Golden records emitted by display-list-authoring.test.cjs.
-    private val menu = "077f0000000300020002000200022a00000096000000010002000200ffffffff0200080000ff24017e30020000000001812c8001812c1611010017328001812c16103001812c3023414031ff24017c30020000000001812c8001812c1611010017328001812c16103001812c30234140310200020001000103100400000000000000001f"
+    private val menu = "076d0000000300020002000200002a0000009600000000000100080000ff24017e30020000000001812c8001812c1611010017328001812c16103001812c3023414031ff24017c30020000000001812c8001812c1611010017328001812c16103001812c3023414031020002000100010310"
     private val multi = "0744000000030002000400010002000000000000000002000200010000ff010001006003000400000000000000001f0200000100000001000100020002feffffff7f00010001007f00"
     private val scroll = "078b000000030002000400020000070000009600000001000200040011223344556677880200020000000000ff250100300102300180f0800180f0161101001732800180f01610300180f0302341403101001102000200010008000000ff280101300100300180f0800180f0161101001732800180f01610300180f03023414031010017010016040002000000010310"
     // Clipped clear, clipped rounded rect, and replayed glyph + icon records with
@@ -21,12 +21,12 @@ class FrameDisplayListTest {
 
     @Test fun authoredExpressionsRebindOnPresentAndTranslateWithTheSurface() {
         val row = read(hex(menu)).translated(10, 10)
-        assertEquals(1, row.resources.size)
+        assertEquals(0, row.resources.size)
         fun coordinates(now: Long, elapsed: Long): Triple<Int, Int, Boolean> {
-            val call = DrawReader(row.calls(intArrayOf(7), now).first())
+            val call = DrawReader(row.calls(intArrayOf(), now).single())
             assertEquals(DRAW_OP_ROUNDED_RECT, call.readU8())
             assertEquals(DRAW_FLAG_DEPTH, call.readU8())
-            assertEquals(2, call.readS8())
+            assertEquals(0, call.readS8())
             val frame = DrawEvaluation(elapsed)
             val x = ExtendedVarint.evaluate(call, frame)
             val y = ExtendedVarint.evaluate(call, frame)

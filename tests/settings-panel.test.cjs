@@ -57,7 +57,7 @@ test('the right column previews the section without a selection until focus ente
   await p.input('click');
   const both = selections(p.paint());
   assert.equal(both.length, 2);
-  assert.equal(both[0].presentation.background, 0, 'left column shows an outline once focus moves right');
+  assert.equal(both[0].presentation.displayList.calls[0].background, 0, 'left column shows an outline once focus moves right');
   assert.ok(both[1].x > 150, 'the right highlight lands in the right column');
   await p.input('click');
   assert.deepEqual(p.selected, ['Brightness']);

@@ -95,7 +95,7 @@ export function flattenPlanesWithDraws(
         const crop = new GrayImage(right-left+1,bottom-top+1);
         for(let y=0;y<crop.height;y++) crop.pixels.set(raster.pixels.subarray((y+top)*raster.width+left,(y+top)*raster.width+right+1),y*crop.width);
         retained.push({ kind: "image", source: crop, x: left, y: top,
-          presentation: { mode: "masked-image", radius: 0, background: 0, border: 0, depth: plane.depth } });
+          presentation: { mode: "masked-image", depth: plane.depth } });
       }
     }
     const planeDraws = plane.depth ? [...retained, ...plane.image.draws.filter(d => d.kind === "image" && d.presentation).map(d => {

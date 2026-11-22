@@ -33,7 +33,7 @@ test('bridge and fallback preview use the supplied animation duration', () => {
   Date.now = () => 1050;
   try {
     const image = new GrayImage(8, 2);
-    image.drawMenuSelection(new GrayImage(2, 2), 5, 0, 0, 255, 0, 0,
+    image.drawMenuHighlight(5, 0, 2, 2, 0, 255, 0,
       { dx: -4, dy: 0, startedAt: 1000, token: 1, durationMs: 100 });
     const record = readPresentation(encodePresentation(image.draws[0]), 0);
     assert.ok(record.selection.displayList);
@@ -54,7 +54,7 @@ test('animated selection bridge carries relative start, elapsed time and stable 
   Date.now = () => 1200;
   try {
     const image = new GrayImage(8, 4);
-    image.drawMenuSelection(new GrayImage(2, 2, 255), 3, 2, 16, 48, 1, 2,
+    image.drawMenuHighlight(3, 2, 2, 2, 16, 48, 1,
       { dx: -2, dy: -4, startedAt: 1000, token: 42, durationMs: MENU_HIGHLIGHT_DURATION_MS });
     const bytes = encodePresentation(image.draws[0]);
     assert.equal(bytes[0], 7);

@@ -7,6 +7,11 @@ const val CFW_MSG_BUZZER = 5
 /** Retired wire ID; used internally by the phone optimizer. */
 const val CFW_MSG_FULL_FRAME = 6
 const val CFW_MSG_DIAGNOSTICS = 7
+/**
+ * A CFW_MSG_DIAGNOSTICS sub-op the firmware acknowledges and ignores (it acts on 0, 1 and 2 only):
+ * the keepalive and the bandwidth benchmark's payloads. Mirrors g2flash/patches/zlib_glue.c.
+ */
+const val CFW_DIAGNOSTICS_NOOP = 0x7f
 /** Retired wire ID; used internally by the phone optimizer. */
 const val CFW_MSG_MULTI_SEGMENT = 8
 /** Retired wire ID; used internally by the phone optimizer. */

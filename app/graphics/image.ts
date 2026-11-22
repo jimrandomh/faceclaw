@@ -1,4 +1,4 @@
-import { menuSelectionList } from "./menu-selection-list";
+import { menuHighlightList } from "./menu-highlight-list";
 import { encodeDisplayList, dimDisplayList, paintDisplayList, type DisplayList } from "./display-list";
 import type { MenuHighlightAnimation } from "../ui/menu-highlight-motion";
 import { Glyph } from "./bdffont";
@@ -89,7 +89,11 @@ export type PlacedGlyph = {
  * from the moment it is placed.
  */
 export type PlacedImage = {
-  presentation?: { displayList?: DisplayList; mode?: "image" | "masked-image"; radius: number; background: number; border: number; depth: number; occlusions?: readonly { x: number; y: number; width: number; height: number }[] };
+  /**
+   * Replayed by the glasses rather than baked into the pixels: a display list, or
+   * (mode) a depth image whose pixels are `source` (see presentation-wire.ts).
+   */
+  presentation?: { displayList?: DisplayList; mode?: "image" | "masked-image"; depth: number; occlusions?: readonly { x: number; y: number; width: number; height: number }[] };
   kind: "image";
   source: GrayImage;
   x: number;
@@ -295,33 +299,7 @@ export class GrayImage {
     const copyHeight = Math.max(0, (opts.height ?? (source.height - srcY)) | 0);
     const destX = dx | 0;
     const destY = dy | 0;
-
-    // Clip once, then copy row spans: flattening a frame blits every plane,
-    // and per-pixel bounds checks made that a sizeable share of a paint.
-    const colStart = Math.max(0, -destX);
-    const colEnd = Math.min(copyWidth, source.width - srcX, this.width - destX);
-    const rowStart = Math.max(0, -destY);
-    const rowEnd = Math.min(copyHeight, source.height - srcY, this.height - destY);
-    const span = colEnd - colStart;
-    const src = source.pixels;
-    const dst = this.pixels;
-    // A blit within one image copies pixel by pixel, forwards, as it always has.
-    const bulk = !opts.transparentZero && source !== this;
-    // No columns in range means no rows to copy.
-    const rowLimit = span > 0 ? rowEnd : rowStart;
-    for (let row = rowStart; row < rowLimit; row++) {
-      const from = (srcY + row) * source.width + srcX + colStart;
-      const to = (destY + row) * this.width + destX + colStart;
-      if (bulk) {
-        dst.set(src.subarray(from, from + span), to);
-        continue;
-      }
-      for (let i = 0; i < span; i++) {
-        const value = src[from + i]!;
-        if (opts.transparentZero && value === 0) continue;
-        dst[to + i] = value;
-      }
-    }
+    this.blitPixels(source, srcX, srcY, copyWidth, copyHeight, destX, destY, !!opts.transparentZero);
 
     // Carry the source's deferred draws along, translated into destination
     // space. Membership in the copied rect is judged by the draw's anchor
@@ -337,6 +315,37 @@ export class GrayImage {
         ) {
           this.drawList.push({ ...placed, x: placed.x + offsetX, y: placed.y + offsetY });
         }
+      }
+    }
+  }
+
+  /** bitBlt's raster copy alone: the source's deferred draws are the caller's to carry. */
+  private blitPixels(source: GrayImage, srcX: number, srcY: number, copyWidth: number, copyHeight: number,
+      destX: number, destY: number, transparentZero: boolean): void {
+    // Clip once, then copy row spans: flattening a frame blits every plane,
+    // and per-pixel bounds checks made that a sizeable share of a paint.
+    const colStart = Math.max(0, -destX);
+    const colEnd = Math.min(copyWidth, source.width - srcX, this.width - destX);
+    const rowStart = Math.max(0, -destY);
+    const rowEnd = Math.min(copyHeight, source.height - srcY, this.height - destY);
+    const span = colEnd - colStart;
+    const src = source.pixels;
+    const dst = this.pixels;
+    // A blit within one image copies pixel by pixel, forwards, as it always has.
+    const bulk = !transparentZero && source !== this;
+    // No columns in range means no rows to copy.
+    const rowLimit = span > 0 ? rowEnd : rowStart;
+    for (let row = rowStart; row < rowLimit; row++) {
+      const from = (srcY + row) * source.width + srcX + colStart;
+      const to = (destY + row) * this.width + destX + colStart;
+      if (bulk) {
+        dst.set(src.subarray(from, from + span), to);
+        continue;
+      }
+      for (let i = 0; i < span; i++) {
+        const value = src[from + i]!;
+        if (transparentZero && value === 0) continue;
+        dst[to + i] = value;
       }
     }
   }
@@ -429,7 +438,7 @@ export class GrayImage {
         hash = mixInt(hash, placed.source.width);
         hash = mixInt(hash, placed.source.height);
         hash = mixInt(hash, placed.source.sourceContentHash32());
-        if (placed.presentation) { const p = placed.presentation; for (const value of [p.radius, p.background, p.border, p.depth, p.mode === "image" ? 1 : p.mode === "masked-image" ? 2 : 0]) hash = mixInt(hash, value);
+        if (placed.presentation) { const p = placed.presentation; for (const value of [p.depth, p.mode === "image" ? 1 : p.mode === "masked-image" ? 2 : 0]) hash = mixInt(hash, value);
           if (p.displayList) hash = mixInt(hash, bytesHash32(encodeDisplayList({ displayList: p.displayList, x: 0, y: 0, width: placed.source.width, height: placed.source.height, depth: p.depth }, p.displayList.timeline?.startedAt ?? 0)));
         }
       } else {
@@ -523,11 +532,13 @@ export class GrayImage {
     this.drawList.push({ kind: "fwtext", font, x, y, value: clampByte(value), glyphs });
   }
 
-  /** Retain the selected row separately from the menu surface for glasses-side composition. */
-  drawMenuSelection(source: GrayImage, x: number, y: number, background: number, border: number, radius = 8, depth = 2, animation?: MenuHighlightAnimation): void {
-    const baked = source.withDrawsBaked();
-    this.drawList.push({ kind: "image", source: baked, x, y,
-      presentation: { radius, background, border, depth, displayList: menuSelectionList(baked, background, border, radius, animation) } });
+  /**
+   * A menu's selection box over the already-drawn row at (x, y), retained for
+   * glasses-side composition so moving the selection (and its slide from the
+   * previous row) changes only the root list, not the pixels or any resource.
+   */
+  drawMenuHighlight(x: number, y: number, width: number, height: number, background: number, border: number, radius = 8, animation?: MenuHighlightAnimation): void {
+    this.drawDisplayList(menuHighlightList(width, height, background, border, radius, animation), x, y, width, height);
   }
 
   /**
@@ -561,13 +572,13 @@ export class GrayImage {
   /** Submit a retained list alongside this frame; coordinates are relative to x/y. */
   drawDisplayList(displayList: DisplayList, x: number, y: number, width: number, height: number, depth = 0): void {
     this.drawList.push({ kind: "image", source: new GrayImage(width, height), x, y,
-      presentation: { radius: 0, background: 0, border: 0, depth, displayList } });
+      presentation: { depth, displayList } });
   }
 
   /** Replay an image at stereo depth. Masked images preserve intentional gray8 black (1). */
   drawDepthImage(source: GrayImage, x: number, y: number, depth: number, masked = false): void {
     this.drawList.push({ kind: "image", source: source.withDrawsBaked(), x, y,
-      presentation: { mode: masked ? "masked-image" : "image", radius: 0, background: 0, border: 0, depth } });
+      presentation: { mode: masked ? "masked-image" : "image", depth } });
   }
 
   copyPresentationsInto(target: GrayImage, dx: number, dy: number): void {
@@ -641,7 +652,7 @@ export class GrayImage {
     for (const placed of this.drawList) {
       if (placed.kind === "image" && placed.presentation) {
         const p = placed.presentation;
-        copy.drawList.push({ ...placed, source: placed.source.dimmed(factor), presentation: { ...p, background: dimValue(p.background, scale), border: dimValue(p.border, scale), displayList: p.displayList && dimDisplayList(p.displayList, factor) } });
+        copy.drawList.push({ ...placed, source: placed.source.dimmed(factor), presentation: { ...p, displayList: p.displayList && dimDisplayList(p.displayList, factor) } });
       } else if (placed.kind !== "image") {
         copy.drawList.push({ ...placed, value: dimValue(placed.value, scale) });
       }
@@ -667,10 +678,11 @@ export class GrayImage {
    * draws carried over as deferred draws (translated), so firmware-text runs
    * and cached glyphs stay on their cheap wire paths instead of being baked
    * to raster. The composed-in draws render above target's earlier raster,
-   * matching the usual draw-above-own-raster rule.
+   * matching the usual draw-above-own-raster rule. Unlike bitBlt, every draw
+   * is carried, including ones anchored outside this image.
    */
   composeInto(target: GrayImage, dx: number, dy: number): void {
-    target.bitBlt(this, dx, dy);
+    target.blitPixels(this, 0, 0, this.width, this.height, dx | 0, dy | 0, false);
     for (const placed of this.drawList) {
       target.drawList.push({ ...placed, x: placed.x + dx, y: placed.y + dy });
     }
@@ -689,20 +701,6 @@ export class GrayImage {
               { displayList: placed.presentation.displayList, x: placed.x + dx, y: placed.y + dy, width: placed.source.width, height: placed.source.height, depth: placed.presentation.depth });
             continue;
           }
-          if (placed.presentation.mode) {
-            target.bitBlt(placed.source, placed.x + dx, placed.y + dy, { transparentZero: true });
-            continue;
-          }
-          const { radius, background, border } = placed.presentation;
-          const fill = new GrayImage(placed.source.width, placed.source.height);
-          fill.fillRoundedRect(0, 0, fill.width, fill.height, background, radius);
-          for (let y = 0; y < fill.height; y++) for (let x = 0; x < fill.width; x++) {
-            const tx = placed.x + dx + x, ty = placed.y + dy + y;
-            if (tx >= 0 && ty >= 0 && tx < target.width && ty < target.height) {
-              const i = ty * target.width + tx; target.pixels[i] = Math.max(target.pixels[i], fill.pixels[y * fill.width + x]);
-            }
-          }
-          target.drawRoundedRect(placed.x + dx, placed.y + dy, fill.width, fill.height, border, radius);
         }
         target.bitBlt(placed.source, placed.x + dx, placed.y + dy, { transparentZero: true });
       } else {
@@ -726,6 +724,12 @@ const MAX_NIBBLE = 15;
 
 /** Gray8 value per display level: grayToNibble(level * GRAY_PER_NIBBLE) === level. */
 const GRAY_PER_NIBBLE = 16;
+
+/**
+ * The darkest opaque gray8 value: it packs to level 0 (black), but unlike 0
+ * it is not the color key that bitBlt's transparentZero and masked images skip.
+ */
+const COLOR_KEY_BLACK = 1;
 
 /**
  * The 4bpp level for an antialiased coverage byte (0..255 = 0..100% of the
@@ -774,6 +778,23 @@ function placedDrawBounds(placed: DeferredDraw): { x: number; y: number; width: 
   return right < left ? { x: placed.x, y: placed.y, width: 0, height: 0 } : { x: left, y: top, width: right - left, height: bottom - top };
 }
 
+/**
+ * The gray8 value an antialiased glyph pixel of coverage `nibble` (1..15)
+ * bakes to, drawn in `value` whose level is `top4`. Firmware-exact: the CFW
+ * draws cached glyphs through a LUT mapping source nibble n to n*top/15
+ * (integer), skipping only n == 0. Writing 16*level makes the composite
+ * quantize (grayToNibble) back to exactly that level, so the texture-cache
+ * planner's pixel checks, and the screen after an on-glasses draw, match the
+ * bake bit-for-bit. A faint pixel whose level rounds to 0 is still drawn, as
+ * the firmware does, in black: the color-key black, since gray 0 would make it
+ * a transparent hole (and split a masked image's opaque spans at each one).
+ * Ink of value 0 stays 0.
+ */
+export function glyphShade(nibble: number, top4: number, value: number): number {
+  const level = Math.floor((nibble * top4) / MAX_NIBBLE);
+  return level ? level * GRAY_PER_NIBBLE : value === 0 ? 0 : COLOR_KEY_BLACK;
+}
+
 /** Bake one glyph into an image's pixel buffer (y is the top of the line). */
 function rasterizeGlyph(
   target: PixelSink,
@@ -787,19 +808,13 @@ function rasterizeGlyph(
   const top = baselineY - (glyph.bbxHeight + glyph.bbxY);
   const left = x + glyph.bbxX;
   if (glyph.coverage) {
-    // Firmware-exact AA shading (see EvenHubFont.drawGlyph): the CFW draws
-    // cached glyphs through a LUT mapping source nibble n to n*top/15
-    // (integer), skipping only n == 0. Writing 16*level makes the composite
-    // quantize (grayToNibble) back to exactly that level, so the
-    // texture-cache planner's pixel checks — and the shadow after an
-    // on-glasses mode-14 draw — match this bake bit-for-bit.
     const top4 = grayToNibble(value);
     for (let row = 0; row < glyph.bbxHeight; row++) {
       const rowStart = row * glyph.bbxWidth;
       for (let col = 0; col < glyph.bbxWidth; col++) {
         const nibble = glyph.coverage[rowStart + col]!;
         if (nibble === 0) continue;
-        target.setPixel(left + col, top + row, Math.floor((nibble * top4) / 15) * 16);
+        target.setPixel(left + col, top + row, glyphShade(nibble, top4, value));
       }
     }
     return;
@@ -818,7 +833,7 @@ function rasterizeGlyph(
 
 /** Scale a visible (non-zero) brightness, never below 1 (the color-key black). */
 function dimValue(value: number, scale: number): number {
-  return Math.max(1, Math.round(value * scale));
+  return Math.max(COLOR_KEY_BLACK, Math.round(value * scale));
 }
 
 function clampByte(value: number): number {

@@ -547,6 +547,69 @@ class GlassesSessionCoreTest {
     }
 
     @Test
+    fun faceclawFirmwareKeepsTheSessionAliveWithPrivateNoOps() {
+        val s = Session()
+        s.core.setRequiredFirmwareRevision(40)
+        s.link.firmwareExtension = "Faceclaw/41"
+        s.startAndAwaitLayout()
+        try {
+            fun keepalives() = s.link.writes.filter { it.kind == "keepalive" }
+            // Entering EvenHub was a private message, and its ACK reset the stock keepalive:
+            // no heartbeat follows the layout.
+            sleepMs(300)
+            assertEquals(0, keepalives().size)
+            s.platform.offsetMs += ConnectionOptions.HEARTBEAT_READY_MS + 100L
+            s.core.interruptibleSleep.interrupt()
+            assertTrue(waitUntil(3_000) { keepalives().size == 1 }, s.host.logs().takeLast(10).toString())
+            val keepalive = keepalives().single()
+            assertEquals(CfwTransport.SID, keepalive.sid)
+            assertContentEquals(byteArrayOf(CFW_MSG_DIAGNOSTICS.toByte(), CFW_DIAGNOSTICS_NOOP.toByte()), keepalive.message)
+            assertTrue(waitUntil(3_000) { s.host.hasLog("Got ACK for keepalive") })
+            sleepMs(300)
+            assertEquals(1, keepalives().size, "its ACK restarts the clock")
+            assertEquals(0, s.link.writes.count { it.kind == "heartbeat" }, "the stock heartbeat is never sent")
+        } finally { s.core.close() }
+    }
+
+    @Test
+    fun theGlassesKeepTheirResourcesAcrossASuspendWhileTheLeaseHolds() {
+        val s = Session()
+        s.core.setRequiredFirmwareRevision(40)
+        s.link.firmwareExtension = "Faceclaw/41"
+        s.core.configureCompositorScreen(160, 96)
+        s.core.configureSurface("s", 0, 0, 64, 32, 0, SurfaceCompositor.TRANSPARENCY_OPAQUE)
+        s.startAndAwaitLayout()
+        try {
+            s.submitFrame(100, 0x70, 1)
+            s.core.submitShellScene(ArrayByteReader(shellScene(3)), 0, 0)
+            fun displayCommands() = s.link.writes
+                .filter { it.sid == CfwTransport.SID && (it.kind == "resources" || it.kind == "image") }
+                .map { it.message!![0].toInt() and CFW_MSG_TYPE_MASK }
+            assertTrue(waitUntil(5_000) { s.displayedMatchesDesired() && CFW_MSG_CREATE_SURFACE in displayCommands() },
+                s.host.logs().takeLast(20).toString())
+            /** Suspend, resume and return the display commands that put the same frame back. */
+            fun sleepAndWake(): List<Int> {
+                val before = displayCommands().size
+                assertTrue(s.core.suspendEvenHubSession())
+                assertTrue(s.core.resumeEvenHubSession())
+                assertTrue(waitUntil(5_000) {
+                    s.layoutCreated() && s.displayedMatchesDesired() &&
+                        displayCommands().size > before && displayCommands().last() == CFW_MSG_PRESENT
+                }, s.host.logs().takeLast(20).toString())
+                return displayCommands().drop(before)
+            }
+            // Nothing to evict, create, upload or draw again: the frame is presented as it stands.
+            assertEquals(listOf(CFW_MSG_PRESENT), sleepAndWake())
+            // A lease the phone can't vouch for may have lapsed, freeing the glasses' resources.
+            s.core.monitor.withLock {
+                s.core.faceclawFramebufferLeaseConfirmedAtMs = s.platform.elapsedRealtimeMs() - GlassesSessionCore.FACECLAW_FB_LEASE_MS
+            }
+            val rebuilt = sleepAndWake()
+            assertTrue(CFW_MSG_EVICT_RESOURCE in rebuilt && CFW_MSG_CREATE_SURFACE in rebuilt, rebuilt.toString())
+        } finally { s.core.close() }
+    }
+
+    @Test
     fun unexpectedAndDuplicateAcksAreLoggedNotApplied() {
         val s = Session()
         s.startAndAwaitLayout()

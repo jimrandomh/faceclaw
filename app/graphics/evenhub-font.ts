@@ -25,7 +25,7 @@ import { getTextWidth } from "@evenrealities/pretext";
 import { EVENHUB_RUNTIME_FONT_FILENAME, isEvenHubFontAsset } from "../g2/firmware-fonts";
 import { lvglMetrics, lvglGlyph } from "../native/lvgl-font";
 import { wrapLvglText } from "./lvgl-wrap";
-import { GrayImage, grayToNibble, type FwTextFont, type PlacedFwText, type PlacedFwTextGlyph } from "./image";
+import { GrayImage, glyphShade, grayToNibble, type FwTextFont, type PlacedFwText, type PlacedFwTextGlyph } from "./image";
 import { TtfFont } from "./ttf-font";
 import { decodeBase64 } from "../util/base64";
 
@@ -378,11 +378,8 @@ export class EvenHubFont implements FwTextFont {
     const stride = Math.floor(boxW / 2) + 1;
     const left = penX + ofsX;
     const top = baselineY - boxH - ofsY;
-    // Firmware-exact shading: the CFW draws through a LUT mapping source
-    // nibble n to n*top/15 (integer), skipping only n == 0. Writing 16*level
-    // makes the composite quantize (min(15, (v+8)>>4)) back to exactly that
-    // level, so the texture-cache planner's pixel checks — and the shadow
-    // after an on-glasses mode-15 draw — match this bake bit-for-bit.
+    // Firmware-exact shading (see glyphShade), matching an on-glasses
+    // stock-text draw bit-for-bit.
     const top4 = quantNibble(value);
     for (let row = 0; row < boxH; row++) {
       const rowStart = off + row * stride;
@@ -390,7 +387,7 @@ export class EvenHubFont implements FwTextFont {
         const byte = bitmap[rowStart + (col >> 1)] ?? 0;
         const nibble = col % 2 === 0 ? byte >> 4 : byte & 0x0f;
         if (nibble === 0) continue;
-        image.setPixel(left + col, top + row, Math.floor((nibble * top4) / 15) * 16);
+        image.setPixel(left + col, top + row, glyphShade(nibble, top4, value));
       }
     }
   }

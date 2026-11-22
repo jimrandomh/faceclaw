@@ -8,7 +8,7 @@ export type MenuScrollHighlight = {
   width: number;
   height: number;
   radius: number;
-  /** Gray8, like drawMenuSelection. */
+  /** Gray8, like drawMenuHighlight. */
   background: number;
   border: number;
 };

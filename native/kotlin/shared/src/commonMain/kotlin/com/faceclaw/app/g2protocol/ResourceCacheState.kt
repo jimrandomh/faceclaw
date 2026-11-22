@@ -35,6 +35,14 @@ class ResourceCacheState {
         const val MAX_RESOURCE_SIZE = 65536
         const val BLOCK_HEADER_BYTES = 16
 
+        /**
+         * Largest upload or eviction command. Each is one transport message, whose decoded size
+         * the firmware caps at 64 KiB (g2flash message_transport.h CFW_MESSAGE_MAX); the stream
+         * deflate shrinks image chunks to a few KiB on the wire. Fewer, larger messages mean
+         * fewer ACK round trips through the small in-flight window, and fewer packets.
+         */
+        const val MAX_COMMAND_BYTES = CfwTransport.MAX_MESSAGE
+
         /** Mirrors g2flash/patches/zlib_glue.c. */
         const val UPLOAD_MODE = CFW_MSG_UPLOAD_RESOURCE
         const val EVICT_MODE = CFW_MSG_EVICT_RESOURCE
@@ -125,7 +133,7 @@ class ResourceCacheState {
     }
 
     /** Batched evictions followed by bounded upload chunks, including exactly 64 KiB resources. */
-    fun drainCommands(maxPayloadBytes: Int): MutableList<ByteArray> {
+    fun drainCommands(maxPayloadBytes: Int = MAX_COMMAND_BYTES): MutableList<ByteArray> {
         require(maxPayloadBytes in 14..65535)
         val result = ArrayList<ByteArray>()
         val ids = if (resetRequired && uploads.isNotEmpty()) (0 until RESOURCE_COUNT).toList() else evictions.toList()

@@ -80,8 +80,11 @@ test('a selected compact row keeps every inked pixel of its text', () => {
     });
     const page = new GrayImage(420, 120);
     menu.paint(page, { x: 4, y: 4, width: 400, height: 100 }, true);
+    // The selection box covers the row; all of the text's ink must lie inside it.
     const selection = page.draws.find((draw) => draw.presentation);
     assert.ok(selection, `ter-u${size}n selection`);
-    assert.equal(inked(selection.source), inked(reference), `ter-u${size}n keeps all ink`);
+    const row = new GrayImage(selection.source.width, selection.source.height);
+    row.bitBlt(page.withDrawsBaked(false), 0, 0, { sx: selection.x, sy: selection.y });
+    assert.equal(inked(row), inked(reference), `ter-u${size}n keeps all ink`);
   }
 });
