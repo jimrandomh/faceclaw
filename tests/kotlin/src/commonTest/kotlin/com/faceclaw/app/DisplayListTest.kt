@@ -269,6 +269,69 @@ class DisplayListTest {
         assertTrue(reconnect.commands.any { it[0].toInt()==29 });glasses.apply(reconnect.commands)
         assertContentEquals(newer,glasses.screen)
     }
+    @Test fun aSurfaceTheSceneLeavesOutIsRememberedWhileItStaysCached() {
+        val cache=ResourceCacheState();val planner=ScenePlanner(cache);val glasses=Glasses()
+        val app=ByteArray(640*480/2){0x99.toByte()}
+        val bar=ShellScene.Layer(1,40,8,8,4,256,hex("f1f1f1f1"+"12345678"+"0f0f0f0f"+"ffffffff"))
+        val shown=ShellScene(listOf(bar))
+        fun draws(plan: ScenePlanner.Plan) = plan.commands.filter { it[0].toInt()==26 }
+        fun surfaceDraws(plan: ScenePlanner.Plan) = draws(plan).sumOf { message ->
+            // [26][count16]{[length16][op][flags]...}: calls whose flags name a resource target.
+            var p=3;var n=0
+            repeat(DrawProtocol.u16(message,1)) { val length=DrawProtocol.u16(message,p);if(message[p+3].toInt() and DRAW_FLAG_RESOURCE_TARGET!=0) n++;p+=2+length }
+            n
+        }
+        val first=planner.plan(app,640,480,null,shown,1);glasses.apply(first.commands)
+        assertEquals(1,surfaceDraws(first))
+        val composed=glasses.composition.copyOf()
+        // Blanked: the scene has no layers and the screen goes black.
+        val black=ByteArray(app.size)
+        glasses.apply(planner.plan(black,640,480,null,ShellScene.EMPTY,1).commands)
+        assertContentEquals(black,glasses.composition)
+        // Back as it was: the surface is in the root list again and nothing is drawn into it.
+        val back=planner.plan(app,640,480,null,shown,1)
+        assertEquals(0,surfaceDraws(back));assertFalse(back.commands.any { it[0].toInt()==29 })
+        glasses.apply(back.commands);assertContentEquals(composed,glasses.composition)
+        // Back changed after another absence: only the changed pixels' box, not the whole surface.
+        glasses.apply(planner.plan(black,640,480,null,ShellScene.EMPTY,1).commands)
+        val changed=ShellScene(listOf(ShellScene.Layer(1,40,8,8,4,256,hex("f1f1f1f1"+"12345678"+"0f0f0f0f"+"fffffff0"))))
+        val delta=planner.plan(app,640,480,null,changed,1)
+        assertEquals(1,surfaceDraws(delta))
+        assertTrue(delta.commands.sumOf { it.size } < first.commands.sumOf { it.size })
+        glasses.apply(delta.commands)
+        val expected=Glasses();expected.apply(ScenePlanner(ResourceCacheState()).plan(app,640,480,null,changed,1).commands)
+        assertContentEquals(expected.composition,glasses.composition)
+        // Once the glasses' cache is in doubt, what the surface held is forgotten with it.
+        glasses.apply(planner.plan(black,640,480,null,ShellScene.EMPTY,1).commands)
+        cache.reset()
+        val reconnect=planner.plan(app,640,480,null,changed,1)
+        assertTrue(reconnect.commands.any { it[0].toInt()==29 });assertEquals(1,surfaceDraws(reconnect))
+        val fresh=Glasses();fresh.apply(reconnect.commands);assertContentEquals(expected.composition,fresh.composition)
+    }
+    @Test fun aFrameDrawsItsSurfacesAndScreenInOneMessageAfterItsUploads() {
+        val cache=ResourceCacheState();val planner=ScenePlanner(cache);val glasses=Glasses()
+        val app=ByteArray(640*480/2){0x44};app[0]=0x12;app[app.size-1]=0x21
+        val scene=ShellScene(listOf(
+            ShellScene.Layer(1,0,0,8,2,256,hex("ffffffff11111111")),
+            ShellScene.Layer(2,100,40,4,2,256,hex("12345678"),depth=4)))
+        val plan=planner.plan(app,640,480,null,scene,1)
+        val kinds=plan.commands.map { it[0].toInt() }
+        assertEquals(1,kinds.count { it==26 },"$kinds")
+        // Creations and uploads the draws need come first; then the list, the root and the present.
+        assertTrue(kinds.indexOf(26) > kinds.indexOfLast { it==29 })
+        assertEquals(listOf(21,27,28),kinds.drop(kinds.indexOf(26)+1))
+        assertTrue(plan.timing.contains("surfaces=") && plan.timing.contains("screen=") && plan.timing.contains("commands=${plan.commands.size} "),plan.timing)
+        glasses.apply(plan.commands);assertContentEquals(app,glasses.screen)
+        val reference=Glasses();reference.screen.let { app.copyInto(it) }
+        val output=DisplayListRenderer.Target(glasses.composition,640,480)
+        assertEquals(15,output.get(0,0));assertEquals(1,output.get(0,1));assertEquals(1,output.get(102,40));assertEquals(2,output.get(103,40))
+        // A later frame that changes one surface and the screen still sends one draw message.
+        val next=app.copyOf();next[320*100]=0x77
+        val moved=ShellScene(listOf(scene.layers[0],ShellScene.Layer(2,100,40,4,2,256,hex("12345670"),depth=4)))
+        val second=planner.plan(next,640,480,null,moved,1)
+        assertEquals(1,second.commands.count { it[0].toInt()==26 })
+        glasses.apply(second.commands);assertContentEquals(next,glasses.screen)
+    }
     @Test fun fullScreenSurfaceDepthShiftsThePresentedScreenPerLens() {
         val c = SurfaceCompositor()
         c.configureScreen(640, 480)

@@ -530,6 +530,8 @@ class GlassesSessionCore(
     // lost a store race to a newer one are discarded (their content is already
     // included in the newer composite).
     internal var lastStoredCompositeSeq = 0L
+    /** Frames left to the next composite (see leaveToNextComposite); guarded by desiredTilesLock. */
+    private val mergedFrameIds = ArrayList<Int>()
 
     // Wire submissions need screenGray + the shell scene, never preview pixels.
     // Preview/screenshot/recording callers render those explicitly on demand.
@@ -540,7 +542,7 @@ class GlassesSessionCore(
     // firmware frees the cache with the fb lease, and after any resync the
     // cheap safe assumption is an empty cache (glyphs re-upload lazily).
     internal val resourceCache = ResourceCacheState()
-    internal val scenePlanner = ScenePlanner(resourceCache)
+    internal val scenePlanner = ScenePlanner(resourceCache, platform)
     internal var desiredShellScene: ShellScene = ShellScene.EMPTY
 
     internal val pendingMessages = ArrayDeque<OutboundMessage>()
@@ -1683,23 +1685,46 @@ class GlassesSessionCore(
     /** See SurfaceCompositor.setPreviewAnimationListener; runs on the redraw scheduler's thread. */
     fun setPreviewAnimationListener(listener: (() -> Unit)?) = compositor.setPreviewAnimationListener(listener)
 
+    /** Stereo depth for a full-screen surface; applies from its next frame. */
+    fun setSurfaceDepth(id: String, depth: Int) = compositor.setSurfaceDepth(id, depth)
+
     /**
      * Show or hide a compositor surface, immediately submitting the resulting
      * frame. Recompositing here (rather than waiting for the next surface
      * update) is what makes a just-foregrounded window's retained frame
      * actually appear — otherwise a static window (e.g. the terminal hub) whose
      * frame landed while briefly hidden would stay blank until its next repaint.
+     *
+     * merge leaves that submit to a compositor call the caller already has
+     * queued behind this one, here and in submitSurfaceFrame and
+     * submitShellScene. A window switch hides one surface, shows another, and
+     * submits the new window's frame and the shell's in one go; each as a
+     * frame of its own had the glasses draw the old window blanked out, at the
+     * cost of a full present, before the frame that mattered. The caller must
+     * follow a merged call with an unmerged one.
      */
-    /** Stereo depth for a full-screen surface; applies from its next frame. */
-    fun setSurfaceDepth(id: String, depth: Int) = compositor.setSurfaceDepth(id, depth)
-
-    fun setSurfaceVisible(id: String, visible: Boolean) {
+    fun setSurfaceVisible(id: String, visible: Boolean, merge: Boolean = false) {
+        if (merge) {
+            compositor.setSurfaceVisible(id, visible)
+            logLine("surface $id visible=$visible, left to the next composite")
+            return
+        }
         // Its own frame: this recomposite is a real screen update with real
         // latency, and without one it would show up in other frames' logs only
         // as an anonymous "superseded by frame#0".
         val frameId = frameTimings.startFrame(
                 "compositor:visible $id=$visible")
         compositor.setSurfaceVisible(id, visible)
+        storeDesiredComposite(compositor.composite(), 0, frameId)
+    }
+
+    /**
+     * Submit the compositor's current state as a frame: for a caller whose
+     * merged calls (see [setSurfaceVisible]) lost the call that was to
+     * composite for them.
+     */
+    fun submitComposite() {
+        val frameId = frameTimings.startFrame("compositor:flush")
         storeDesiredComposite(compositor.composite(), 0, frameId)
     }
 
@@ -1728,9 +1753,16 @@ class GlassesSessionCore(
         compositor.removeSurface(id)
     }
 
-    /** Stage an immutable shell snapshot alongside the retained app screen. */
-    fun submitShellScene(bytes: ByteReader, paintMs: Int, frameId: Int) {
+    /**
+     * Stage an immutable shell snapshot alongside the retained app screen.
+     * merge: see [setSurfaceVisible].
+     */
+    fun submitShellScene(bytes: ByteReader, paintMs: Int, frameId: Int, merge: Boolean = false) {
         compositor.setShellScene(bytes)
+        if (merge) {
+            leaveToNextComposite(frameId)
+            return
+        }
         val composite = compositor.composite()
         storeDesiredComposite(composite, paintMs, frameId)
     }
@@ -1747,7 +1779,7 @@ class GlassesSessionCore(
      * identifies the surface's full content after the update. glyphs carries
      * the frame's glyph draws (see SurfaceCompositor's glyph overload for the
      * buffer format), or null when the submitter has no glyph metadata; the
-     * pixels alone remain fully correct.
+     * pixels alone remain fully correct. merge: see [setSurfaceVisible].
      */
     fun submitSurfaceFrame(
             pixels8bpp: ByteReader,
@@ -1759,12 +1791,19 @@ class GlassesSessionCore(
             contentFingerprint: String?,
             paintMs: Int,
             frameId: Int,
-            glyphs: ByteReader?
+            glyphs: ByteReader?,
+            merge: Boolean = false
     ) {
         logLine("Received an updated frame for surface $surfaceId")
         frameTimings.log(frameId, "surface " + surfaceId + " updated rect="
                 + rectWidth + "x" + rectHeight + "+" + rectX + "+" + rectY
                 + (if (glyphs == null) " (no glyph draws)" else ""))
+        if (merge) {
+            compositor.submitSurface(
+                    surfaceId, pixels8bpp, rectX, rectY, rectWidth, rectHeight, contentFingerprint ?: "", glyphs)
+            leaveToNextComposite(frameId)
+            return
+        }
         frameTimings.spanStart(frameId, "composite")
         val composite = compositor.applyAndComposite(
                 surfaceId, pixels8bpp, rectX, rectY, rectWidth, rectHeight, contentFingerprint, glyphs)
@@ -1776,16 +1815,31 @@ class GlassesSessionCore(
     fun isSurfaceCurrent(surfaceId: String, fingerprint: String): Boolean =
         compositor.isSurfaceCurrent(surfaceId, fingerprint)
 
+    /**
+     * A frame whose change went into the compositor without a composite of its
+     * own (a merged call, see [setSurfaceVisible]): the next composite stored
+     * carries it, and says so in this frame's log.
+     */
+    private fun leaveToNextComposite(frameId: Int) {
+        frameTimings.log(frameId, "left to the next composite")
+        if (frameId != 0) {
+            desiredTilesLock.locked { mergedFrameIds.add(frameId) }
+        }
+    }
+
     /** Store a composite as the desired frame unless a newer one won the race. */
     internal fun storeDesiredComposite(composite: SurfaceCompositor.Composite, paintMs: Int, frameId: Int) {
         var supersededFrameId = 0
         var stale = false
+        var merged: List<Int> = emptyList()
         desiredTilesLock.locked {
             if (composite.seq <= lastStoredCompositeSeq) {
                 // A concurrent submission composited after us and stored first;
                 // its composite already includes this surface update.
                 stale = true
             } else {
+                merged = mergedFrameIds.toList()
+                mergedFrameIds.clear()
                 lastStoredCompositeSeq = composite.seq
                 supersededFrameId = desiredFrameId
                 desiredGray = composite.screenGray
@@ -1804,6 +1858,11 @@ class GlassesSessionCore(
         }
         if (supersededFrameId != 0 && supersededFrameId != frameId) {
             finishFrame(supersededFrameId, "discarded: superseded by frame#$frameId before send")
+        }
+        for (mergedFrameId in merged) {
+            if (mergedFrameId != frameId) {
+                finishFrame(mergedFrameId, "discarded: merged into frame#$frameId")
+            }
         }
         frameTimings.log(frameId, "image submitted as desired frame")
         interruptibleSleep.interrupt()

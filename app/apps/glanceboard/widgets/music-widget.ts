@@ -170,7 +170,11 @@ export class MusicWidget implements GlanceWidget {
     if (this.art) {
       const dx = ART_X + Math.max(0, ((ART_SIZE - this.art.width) / 2) | 0);
       const dy = artY + Math.max(0, ((ART_SIZE - this.art.height) / 2) | 0);
-      image.bitBlt(this.art, dx, dy);
+      // A deferred draw, so the glasses keep the art as a cached image: it is
+      // most of the card's bytes, and was sent again with every repaint that
+      // followed anything else on the screen (each wake to the glanceboard).
+      // `art` is replaced, never repainted, when the track's art changes.
+      image.drawImage(this.art, dx, dy);
       image.drawRect(dx - 1, dy - 1, this.art.width + 2, this.art.height + 2, 60);
     } else {
       image.drawRect(ART_X, artY, ART_SIZE, ART_SIZE, 60);

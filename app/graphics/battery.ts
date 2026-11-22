@@ -172,10 +172,10 @@ export function drawDenseBatteries(
       const item = column[row]!;
       const rowTop = firstRowTop + row * (ICON_HEIGHT + DENSE_ROW_GAP);
       const icon = DEVICE_ICONS[item.device];
-      image.bitBlt(icon, x + (((slotWidth - icon.width) / 2) | 0), rowTop, { transparentZero: true });
-      image.bitBlt(drawBattery(item.percent, item.charging), x + slotWidth + DENSE_ICON_GAP, rowTop, {
-        transparentZero: true,
-      });
+      // Deferred draws of long-lived images, so the glasses can keep them as
+      // cached images instead of being sent their pixels with every repaint.
+      image.drawImage(icon, x + (((slotWidth - icon.width) / 2) | 0), rowTop);
+      image.drawImage(drawBattery(item.percent, item.charging), x + slotWidth + DENSE_ICON_GAP, rowTop);
     }
     x -= DENSE_COLUMN_GAP;
   }
@@ -205,16 +205,29 @@ function buildEmptyBattery(): GrayImage {
   return icon;
 }
 
+/** Every gauge drawn so far, by lit width and bolt (none, light, or cut out of the bars). */
+const gauges = new Map<number, GrayImage>();
+
+/**
+ * The gauge for a charge level. One image per distinct picture, built once
+ * and never changed: callers draw it with drawImage, whose cached-image
+ * identity depends on the same object coming back for the same picture.
+ */
 export function drawBattery(percentCharge: number, isCharging: boolean): GrayImage {
-  const icon = new GrayImage(EMPTY_BATTERY_ICON.width, EMPTY_BATTERY_ICON.height, 0);
-  icon.bitBlt(EMPTY_BATTERY_ICON, 0, 0);
   const clamped = Math.max(0, Math.min(100, percentCharge));
   const litWidth = Math.round((FILL_WIDTH * clamped) / 100);
+  const bolt = !isCharging ? 0 : clamped > 50 ? 2 : 1;
+  const key = litWidth * 3 + bolt;
+  let icon = gauges.get(key);
+  if (icon) return icon;
+  icon = new GrayImage(EMPTY_BATTERY_ICON.width, EMPTY_BATTERY_ICON.height, 0);
+  icon.bitBlt(EMPTY_BATTERY_ICON, 0, 0);
   drawSegmentedFill(icon, litWidth);
-  if (isCharging) {
+  if (bolt) {
     const boltX = FILL_X + (((FILL_WIDTH - BATTERY_BOLT_ICON.width) / 2) | 0);
-    overlayImage(icon, BATTERY_BOLT_ICON, boltX, 1, clamped > 50 ? 0 : 255);
+    overlayImage(icon, BATTERY_BOLT_ICON, boltX, 1, bolt === 2 ? 0 : 255);
   }
+  gauges.set(key, icon);
   return icon;
 }
 

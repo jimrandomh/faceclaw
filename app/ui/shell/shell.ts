@@ -1,3 +1,4 @@
+import { runWithFrame, spanCurrent } from "../../native/frame-timings";
 import { encodeShellScene } from "../../graphics/shell-scene";
 import { GrayImage } from "../../graphics/image";
 import { singlePlane, type Plane } from "../../graphics/plane";
@@ -1010,9 +1011,9 @@ class Shell {
    * under a Full Screen or immersive window).
    */
   paintScene(): Uint8Array {
-    return this.screenOn
-      ? encodeShellScene(this.stack.paintUndimmed(), uiDepth(this.foregroundWindow()?.appId))
-      : encodeShellScene([]);
+    if (!this.screenOn) return encodeShellScene([]);
+    const planes = this.stack.paintUndimmed();
+    return spanCurrent("encode-scene", () => encodeShellScene(planes, uiDepth(this.foregroundWindow()?.appId)));
   }
 
   paintSurface(): Plane[] {
@@ -1196,7 +1197,8 @@ class Shell {
     }
 
     if (this.focus === "sidebar") {
-      return this.handleSidebarInput(event);
+      // Synchronous, so the frame can be current for the spans it records.
+      return runWithFrame(frameId, () => this.handleSidebarInput(event));
     }
 
     const window = this.foregroundWindow();
@@ -1505,10 +1507,12 @@ class Shell {
     this.selectedIndex = index;
     const next = this.windows[index];
     if (next) this.noteWindowVisible(next.windowId);
-    previous?.setForeground?.(false);
-    next?.setForeground?.(true);
-    next?.requestRender();
-    this.config.onWindowsChanged?.();
+    // Bringing a window forward has taken 50-110 ms of an input's handling at
+    // times; the spans say which of its steps did (no-ops without a frame).
+    spanCurrent("window-background", () => previous?.setForeground?.(false));
+    spanCurrent("window-foreground", () => next?.setForeground?.(true));
+    spanCurrent("window-request-render", () => next?.requestRender());
+    spanCurrent("windows-changed", () => this.config.onWindowsChanged?.());
   }
 
   // True while a voice-dialog open waits on prepareVoiceCapture (e.g. the

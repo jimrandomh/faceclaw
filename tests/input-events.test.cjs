@@ -26,7 +26,7 @@ function shellDeclarations() {
   assert.equal(declarations.length, names.size);
   const shell = source.statements.find((s) => ts.isClassDeclaration(s) && s.name?.text === 'Shell');
   const methods = shell.members.filter((s) => ['receiveInput', 'routeInput'].includes(s.name?.getText(source)));
-  const context = { exports: {}, acceptInput: monitor.acceptInput,
+  const context = { exports: {}, acceptInput: monitor.acceptInput, runWithFrame: (frameId, fn) => fn(),
     makeInputEvent: (payload) => ({ ...payload, timestampMs: 12345678 }),
     ...load('app/g2/events.ts') };
   vm.createContext(context);

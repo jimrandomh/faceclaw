@@ -2,6 +2,7 @@ import type { GlassesType } from "../ui/dashboard-settings";
 import type { RingInput } from "../g2/ring-input";
 import { ImageSource, Utils } from "@nativescript/core";
 import * as frameTimings from "./frame-timings";
+import { JavaCallQueue } from "./java-call-queue";
 import { JavaDirectBuffer } from "./java-direct-buffer";
 
 declare const com: any;
@@ -139,11 +140,7 @@ export function dimFactor256(factor: number): number {
 export class FaceclawCommunicatorBridge {
   private readonly communicator: any;
   private readonly listenerProxy: any;
-  private javaCallQueue: Promise<void> = Promise.resolve();
-  /** Calls waiting on javaCallQueue; 0 means enqueueJavaCall's fast path is safe. */
-  private queuedJavaCalls = 0;
-  /** Queued calls that may change what a surface holds; see isSurfaceCurrent. */
-  private queuedSurfaceChanges = 0;
+  private readonly javaCalls = new JavaCallQueue(() => this.communicator.submitComposite());
   // Reused Java-side buffers for byte payloads; passing a JS ArrayBuffer to
   // Java leaks it (see java-direct-buffer.ts). Loaded inside the queued call,
   // immediately before the synchronous Java call that consumes them.
@@ -294,50 +291,9 @@ export class FaceclawCommunicatorBridge {
     }, 0);
   }
 
-  /**
-   * Run a Java call, ordered against every other call made through here.
-   *
-   * inlineWhenIdle runs the call on the spot when nothing is queued ahead of
-   * it. Ordering still holds — the fast path only fires when no earlier call
-   * is waiting — and it skips a task-queue hop that measured ~18ms on device
-   * (the gap between "span submit start" and the Java side's own log line in
-   * the frame timings), which is pure latency on a call the caller is already
-   * awaiting. Off by default: a call that might block for a while should keep
-   * yielding to the main looper first.
-   *
-   * preservesSurfaces marks a call that neither changes a surface's retained
-   * content nor leaves a change waiting for a later composite (it composites
-   * itself), so having it queued does not make isSurfaceCurrent answer false.
-   */
+  /** Run a Java call, ordered against every other call made through here (see JavaCallQueue.enqueue). */
   private enqueueJavaCall<T>(operation: () => T, inlineWhenIdle = false, preservesSurfaces = false): Promise<T> {
-    if (inlineWhenIdle && this.queuedJavaCalls === 0) {
-      try {
-        return Promise.resolve(operation());
-      } catch (error) {
-        return Promise.reject(error);
-      }
-    }
-    this.queuedJavaCalls++;
-    if (!preservesSurfaces) this.queuedSurfaceChanges++;
-    const run = () =>
-      new Promise<T>((resolve, reject) => {
-        setTimeout(() => {
-          this.queuedJavaCalls--;
-          if (!preservesSurfaces) this.queuedSurfaceChanges--;
-          try {
-            resolve(operation());
-          } catch (error) {
-            reject(error);
-          }
-        }, 0);
-      });
-
-    const result = this.javaCallQueue.then(run, run);
-    this.javaCallQueue = result.then(
-      () => undefined,
-      () => undefined,
-    );
-    return result;
+    return this.javaCalls.enqueue(operation, inlineWhenIdle, preservesSurfaces);
   }
 
   onStateChange(listener: (state: CommunicatorState) => void): () => void {
@@ -629,8 +585,8 @@ export class FaceclawCommunicatorBridge {
    */
   async submitShellScene(bytes: Uint8Array, paintMs = 0, frameId = 0): Promise<void> {
     const snapshot = new Uint8Array(bytes);
-    await this.enqueueJavaCall(
-      () => this.communicator.submitShellScene(this.shellSceneBuffer.load(snapshot), paintMs, frameId),
+    await this.javaCalls.enqueueCompositorCall(
+      (merge) => this.communicator.submitShellScene(this.shellSceneBuffer.load(snapshot), paintMs, frameId, merge),
       true,
       true,
     );
@@ -644,8 +600,8 @@ export class FaceclawCommunicatorBridge {
 
   /** Show or hide a compositor surface; takes effect at the next composite. */
   async setSurfaceVisible(id: string, visible: boolean): Promise<void> {
-    await this.enqueueJavaCall(() => {
-      this.communicator.setSurfaceVisible(id, Boolean(visible));
+    await this.javaCalls.enqueueCompositorCall((merge) => {
+      this.communicator.setSurfaceVisible(id, Boolean(visible), merge);
     }, false, true);
   }
 
@@ -657,7 +613,7 @@ export class FaceclawCommunicatorBridge {
    * the foreground, say) skip flattening and submitting its frame.
    */
   isSurfaceCurrent(surfaceId: string, fingerprint: string): boolean {
-    if (this.queuedSurfaceChanges > 0) return false;
+    if (this.javaCalls.surfaceChangesQueued) return false;
     return Boolean(this.communicator.isSurfaceCurrent(surfaceId, fingerprint));
   }
 
@@ -709,7 +665,7 @@ export class FaceclawCommunicatorBridge {
     const snapshot = new Uint8Array(pixels8bpp);
     // inlineWhenIdle: this is the frame path, the Java side of it measures
     // ~5ms (composite + pack), and the caller awaits it either way.
-    await this.enqueueJavaCall(() => {
+    await this.javaCalls.enqueueCompositorCall((merge) => {
       this.communicator.submitSurfaceFrame(
         this.framePixelsBuffer.load(snapshot),
         surfaceId,
@@ -721,6 +677,7 @@ export class FaceclawCommunicatorBridge {
         Math.round(nonNegativeNumber(paintMs)),
         Math.round(nonNegativeNumber(frameId)),
         this.frameDrawsBuffer.loadOptional(glyphs),
+        merge,
       );
     }, true);
   }

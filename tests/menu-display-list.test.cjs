@@ -48,6 +48,23 @@ test('later opaque planes add an occlusion to a replayed selection',()=>{
   const flat=planes.flattenPlanesWithDraws([{image,x:0,y:0},{image:cover,x:row.x+10,y:row.y+2}]);
   const records=wire.presentationRecords(prepareFrameDraws(flat.draws));assert.ok(records[0].displayList.calls.some(c => c.op === 2 && c.resource === 65535));
 });
+test('a replayed image is occluded only by later planes drawn into the screen, as rows merged into rectangles',()=>{
+  const base=new graphics.GrayImage(40,20,0);
+  base.drawDepthImage(new graphics.GrayImage(10,6,200),4,4,0);
+  const replayed=(stack)=>planes.flattenPlanesWithDraws(stack).draws.find(d=>d.presentation&&d.presentation.mode==='image').presentation;
+  const cover=new graphics.GrayImage(4,3,1),clear=new graphics.GrayImage(4,3,0);
+  // Nothing above it: nothing to restore (and no pixel of the frame is scanned for it).
+  assert.deepEqual(replayed([{image:base,x:0,y:0}]).occlusions,[]);
+  // An opaque block above: its three rows merge into one rectangle, clipped to the image.
+  assert.deepEqual(replayed([{image:base,x:0,y:0},{image:cover,x:6,y:5}]).occlusions,[{x:6,y:5,width:4,height:3}]);
+  assert.deepEqual(replayed([{image:base,x:0,y:0},{image:cover,x:12,y:8}]).occlusions,[{x:12,y:8,width:2,height:2}]);
+  // A plane below, a transparent one above, and one replayed at a depth of its own cover nothing.
+  assert.deepEqual(replayed([{image:cover,x:6,y:5},{image:base,x:0,y:0}]).occlusions,[]);
+  assert.deepEqual(replayed([{image:base,x:0,y:0},{image:clear,x:6,y:5}]).occlusions,[]);
+  assert.deepEqual(replayed([{image:base,x:0,y:0},{image:cover,x:6,y:5,depth:4}]).occlusions,[]);
+  // Two blocks above, one of them outside the image.
+  assert.deepEqual(replayed([{image:base,x:0,y:0},{image:cover,x:4,y:4},{image:cover,x:30,y:12}]).occlusions,[{x:4,y:4,width:4,height:3}]);
+});
 
 const {LayerStack,noopLayerActions}=load('app/ui/layers.ts',{
   './viewport':require('../.test-build/app/ui/viewport.js'),

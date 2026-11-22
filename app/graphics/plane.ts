@@ -112,10 +112,15 @@ export function flattenPlanesWithDraws(
         const leftShift = Math.floor(depth / 2), rightShift = -Math.floor((depth + 1) / 2);
         const left = Math.max(0, translated.x + Math.min(leftShift, rightShift));
         const right = Math.min(image.width, translated.x + translated.source.width + Math.max(leftShift, rightShift));
-        for (let y = Math.max(0, translated.y); y < Math.min(image.height, translated.y + translated.source.height); y++) {
+        // Only a later plane that is drawn into the screen can cover this one. Usually there is
+        // none (a menu is the top plane), and then no pixel needs looking at: the scan below
+        // was most of a 30 ms flatten with a modal open.
+        const above = planes.map((p, i) => ({ p, raster: rasters[i]! })).filter((_, i) => i > index && !planes[i]!.depth);
+        const bottom = above.length ? Math.min(image.height, translated.y + translated.source.height) : 0;
+        for (let y = Math.max(0, translated.y); y < bottom; y++) {
           let start = -1;
           for (let x = left; x <= right; x++) {
-            const covered = x < right && planes.some((p, i) => i > index && !p.depth && x >= p.x && y >= p.y && x < p.x + p.image.width && y < p.y + p.image.height && rasters[i]!.pixels[(y-p.y)*p.image.width+x-p.x] !== 0);
+            const covered = x < right && above.some(({ p, raster }) => x >= p.x && y >= p.y && x < p.x + p.image.width && y < p.y + p.image.height && raster.pixels[(y-p.y)*p.image.width+x-p.x] !== 0);
             if (covered && start < 0) start = x;
             if (!covered && start >= 0) {
               const previous = occlusions.find(r => r.x === start && r.width === x - start && r.y + r.height === y);

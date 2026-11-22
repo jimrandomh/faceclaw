@@ -12,8 +12,9 @@ const RIGHT = 120;
 const TOP = 4;
 const LOWER_ROW = DENSE_BATTERY_BLOCK_HEIGHT - drawBattery(0, false).height;
 
-/** Every top-left position where exactly this gauge was drawn. */
-function findGauges(image, percent, charging) {
+/** Every top-left position where exactly this gauge was drawn. The block is deferred draws: bake them to look. */
+function findGauges(drawn, percent, charging) {
+  const image = drawn.withDrawsBaked();
   const gauge = drawBattery(percent, charging);
   const found = [];
   for (let y = 0; y + gauge.height <= image.height; y++) {
@@ -30,7 +31,8 @@ function findGauges(image, percent, charging) {
   return found;
 }
 
-function hasInk(image, x0, x1, y0, y1) {
+function hasInk(drawn, x0, x1, y0, y1) {
+  const image = drawn.withDrawsBaked();
   for (let y = y0; y < y1; y++) {
     for (let x = x0; x < x1; x++) {
       if (image.pixels[y * image.width + x] > 0) return true;
@@ -84,4 +86,36 @@ test('no indicators draws nothing', () => {
   const image = new GrayImage(RIGHT + 8, 32, 0);
   assert.equal(drawDenseBatteries(image, [], RIGHT, TOP), RIGHT);
   assert.ok(image.pixels.every((value) => value === 0));
+  assert.equal(image.draws.length, 0);
+});
+
+test('icons and gauges are deferred draws of the same images each time, so the glasses can cache them', () => {
+  const items = [
+    { device: 'phone', percent: 80, charging: false },
+    { device: 'glasses', percent: 80, charging: false },
+    { device: 'ring', percent: 35, charging: true },
+  ];
+  const first = new GrayImage(RIGHT + 8, 32, 0), second = new GrayImage(RIGHT + 8, 32, 0);
+  drawDenseBatteries(first, items, RIGHT, TOP);
+  drawDenseBatteries(second, items, RIGHT, TOP);
+  // Nothing goes into the pixels: an icon and a gauge per device, as images.
+  assert.ok(first.pixels.every((value) => value === 0));
+  assert.equal(first.draws.length, 6);
+  assert.ok(first.draws.every((draw) => draw.kind === 'image' && !draw.presentation));
+  assert.deepEqual(first.draws.map((draw) => [draw.x, draw.y]), second.draws.map((draw) => [draw.x, draw.y]));
+  first.draws.forEach((draw, index) => assert.equal(draw.source, second.draws[index].source));
+  // One picture per level and bolt: equal levels share it, and a gauge is never repainted.
+  assert.equal(drawBattery(80, false), drawBattery(80, false));
+  assert.equal(drawBattery(80, false), drawBattery(79.6, false));
+  assert.notEqual(drawBattery(80, false), drawBattery(80, true));
+  assert.notEqual(drawBattery(35, true), drawBattery(80, true));
+  const gauge = drawBattery(35, true), before = Array.from(gauge.pixels);
+  drawBattery(60, true);
+  assert.deepEqual(Array.from(gauge.pixels), before);
+  // Baked, a deferred gauge is the picture the old pixel copy made.
+  const blitted = new GrayImage(40, 16, 0);
+  blitted.bitBlt(gauge, 3, 2, { transparentZero: true });
+  const deferred = new GrayImage(40, 16, 0);
+  deferred.drawImage(gauge, 3, 2);
+  assert.deepEqual(Array.from(deferred.withDrawsBaked().pixels), Array.from(blitted.pixels));
 });

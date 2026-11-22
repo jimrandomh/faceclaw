@@ -6,9 +6,13 @@ import kotlin.jvm.JvmOverloads
  * The delta base contains only app pixels, except in frames that bake shell content (see [plan]).
  * Shell resources are composed at presentation.
  */
-class ScenePlanner(private val cache: ResourceCacheState) {
-    /** [bakedLayers] and [bakedSelections] say what a frame over the resource budget baked into its pixels. */
-    class Plan(val commands: List<ByteArray>, val nextFid: Int, val bakedLayers: Int = 0, val bakedSelections: Boolean = false)
+class ScenePlanner(private val cache: ResourceCacheState, private val platform: ProtocolPlatform = protocolPlatform()) {
+    /**
+     * [bakedLayers] and [bakedSelections] say what a frame over the resource budget baked into its
+     * pixels. [timing] says where the planning time went, for the frame log.
+     */
+    class Plan(val commands: List<ByteArray>, val nextFid: Int, val bakedLayers: Int = 0, val bakedSelections: Boolean = false,
+        val timing: String = "")
     private val owned = HashMap<String, CachedResource>()
     private val pixels = HashMap<String, ByteArray>()
     private var previous: ByteArray? = null
@@ -62,7 +66,7 @@ class ScenePlanner(private val cache: ResourceCacheState) {
                 val kept = ShellScene(scene.layers.drop(layerCount), screenDepth = scene.screenDepth)
                 planScene(screen, width, height, draws, kept, firstId, textures, incremental, multiRect, maxRects) {
                     scene.flatten(screen, width, height, layerCount)
-                }?.let { return Plan(it.commands, it.nextFid, layerCount, scene.selections.isNotEmpty()) }
+                }?.let { return Plan(it.commands, it.nextFid, layerCount, scene.selections.isNotEmpty(), it.timing) }
             }
             error("Shell scene exceeds the resource budget even fully flattened")
         } catch (t: Throwable) {
@@ -88,19 +92,28 @@ class ScenePlanner(private val cache: ResourceCacheState) {
         if (prepared.any { it < 0 }) return null
         val ids = prepared.copyOfRange(0, surfaces.size)
         val selectedIds = prepared.copyOfRange(surfaces.size, prepared.size)
+        val startedAt = platform.elapsedRealtimeMs()
         val frame = baked?.invoke() ?: screen
         commands.addAll(cache.drainCommands())
         val rootCalls = scene.calls(width, height, ids, selectedIds)
+        // Every draw of the frame, into the surfaces and then the screen, goes out as one message
+        // (one write and one ACK; more only past the message size limit): uploads the draws need
+        // are sent ahead of it.
+        val drawCalls = ArrayList<ByteArray>()
         for ((i, layer) in scene.layers.withIndex()) {
             val old = if (absent[i]) null else pixels[keys[i]]
-            commands.addAll(DrawProtocol.messages(pixelCalls(old, layer.packed, layer.width, layer.height, ids[i])))
+            drawCalls.addAll(pixelCalls(old, layer.packed, layer.width, layer.height, ids[i]))
         }
+        val surfaceCalls = drawCalls.size
+        val surfacesDoneAt = platform.elapsedRealtimeMs()
         val base = if (incremental) previous else null
-        val texture = if (textures) TexturePlanner.plan(base, frame, width, height, draws, cache, firstId, multiRect, maxRects) else null
+        val texture = if (textures) TexturePlanner.plan(base, frame, width, height, draws, cache, firstId, multiRect, maxRects, platform) else null
         if (texture != null) {
             commands.addAll(texture.resourceCommands)
-            commands.addAll(DrawProtocol.messages(DrawProtocol.fromOptimized(texture.payload, width, height)))
-        } else commands.addAll(DrawProtocol.messages(pixelCalls(base, frame, width, height, null)))
+            drawCalls.addAll(DrawProtocol.fromOptimized(texture.payload, width, height))
+        } else drawCalls.addAll(pixelCalls(base, frame, width, height, null))
+        commands.addAll(DrawProtocol.messages(drawCalls))
+        val screenDoneAt = platform.elapsedRealtimeMs()
         val list = CachedResource(DrawProtocol.displayList(rootCalls))
         val rootId = cache.prepare(listOf(list))[0]
         if (rootId < 0) return null
@@ -110,11 +123,26 @@ class ScenePlanner(private val cache: ResourceCacheState) {
         if (evicted) commands.add(0, DrawProtocol.root(DrawProtocol.SCREEN))
         if (root != rootId || evicted) commands.add(DrawProtocol.root(rootId))
         commands.add(byteArrayOf(DrawProtocol.PRESENT.toByte()))
-        owned.keys.retainAll(keys.toSet()); pixels.keys.retainAll(keys.toSet())
+        // A surface this scene leaves out (the chrome, while the display is blanked) keeps its
+        // pixels on the glasses for as long as it stays in the cache, so what was drawn into it
+        // is remembered for that long too: when it comes back, only what changed is redrawn.
         for ((i, key) in keys.withIndex()) { owned[key] = surfaces[i]; pixels[key] = scene.layers[i].packed }
+        owned.entries.retainAll { cache.resourceId(it.value) >= 0 }
+        pixels.keys.retainAll(owned.keys)
         root = rootId; previous = frame.copyOf()
-        return Plan(commands, texture?.nextFid ?: firstId)
+        val doneAt = platform.elapsedRealtimeMs()
+        val timing = "surfaces=" + (surfacesDoneAt - startedAt) + "ms (" + scene.layers.size + " layers, " + surfaceCalls + " boxes)" +
+            " screen=" + (screenDoneAt - surfacesDoneAt) + "ms" + (texture?.let { " (" + describe(it) + ")" } ?: " (pixels only)") +
+            " list=" + (doneAt - screenDoneAt) + "ms commands=" + commands.size + " (" + commands.sumOf { it.size } + "B)"
+        return Plan(commands, texture?.nextFid ?: firstId, timing = timing)
     }
+
+    /** What the texture planner did with the screen, and its own split of the time. */
+    private fun describe(result: TexturePlanner.Result): String =
+        "rects=" + result.rectsMs + " match=" + result.matchMs + " cache=" + result.cacheMs + " punch=" + result.punchMs +
+            " encode=" + result.encodeMs + "ms; " + (if (result.fullFrame) "full frame" else result.rectCount.toString() + " rects") +
+            ", " + result.drawnGlyphs + " glyphs in " + result.runCount + " runs, " + result.drawnImages + " images, " +
+            result.fwGlyphs + " stock glyphs, " + result.bakedCandidates + " baked, uploads " + result.uploadBytes + "B"
     private fun pixelCalls(old: ByteArray?, next: ByteArray, width: Int, height: Int, target: Int?): List<ByteArray> {
         val stride = (width + 1) / 2
         if (old != null && old.contentEquals(next)) return emptyList()

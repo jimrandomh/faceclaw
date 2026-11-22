@@ -418,6 +418,46 @@ class GlassesSessionCoreTest {
     }
 
     /** One shell layer the size of a status bar, lit at [lit]; see ShellScene.decode for the layout. */
+    @Test fun mergedCompositorCallsGoOutWithTheNextUnmergedOne() {
+        val s = Session()
+        s.core.configureCompositorScreen(160, 96)
+        s.core.configureSurface("old", 0, 0, 64, 32, 0, SurfaceCompositor.TRANSPARENCY_OPAQUE)
+        s.core.configureSurface("new", 0, 0, 64, 32, 0, SurfaceCompositor.TRANSPARENCY_OPAQUE)
+        s.core.setSurfaceVisible("new", false)
+        fun frame(surface: String, value: Int, frameId: Int, merge: Boolean) = s.core.submitSurfaceFrame(
+            ArrayByteReader(ByteArray(64 * 32) { value.toByte() }), surface, 0, 0, 64, 32, "$surface-$value", 0, frameId, null, merge)
+        fun desired() = s.core.desiredTilesLock.locked { s.core.desiredFrameId to s.core.desiredFingerprint }
+        fun topLeft() = s.core.desiredTilesLock.locked { s.core.desiredGray!![0].toInt() and 255 }
+        val before = s.frameTimings.startFrame("render:old")
+        frame("old", 0x70, before, false)
+        val shown = desired()
+        assertEquals(before, shown.first)
+        assertEquals(0x70, topLeft())
+
+        // A window switch. Unmerged, the first of these went to the glasses as a frame of its
+        // own: the old window blanked out, with a present to wait for before the new one.
+        val finishedBefore = s.listener.finished.size
+        val window = s.frameTimings.startFrame("render:new")
+        s.core.setSurfaceVisible("old", false, true)
+        s.core.setSurfaceVisible("new", true, true)
+        frame("new", 0xf0, window, true)
+        assertEquals(shown, desired())
+        assertFalse(s.core.isSurfaceCurrent("new", "new-240"), "its content has not reached a composite yet")
+        val shell = s.frameTimings.startFrame("render:shell")
+        s.core.submitShellScene(ArrayByteReader(shellScene(3)), 0, shell)
+        assertEquals(shell, desired().first)
+        assertEquals(0xf0, topLeft())
+        assertTrue(s.core.isSurfaceCurrent("new", "new-240"))
+        assertEquals(listOf("$before:discarded: superseded by frame#$shell before send", "$window:discarded: merged into frame#$shell"),
+            s.listener.finished.drop(finishedBefore))
+
+        // Left without a call to composite for it, a merged change goes out with a flush.
+        s.core.setSurfaceVisible("new", false, true)
+        assertEquals(0xf0, topLeft())
+        s.core.submitComposite()
+        assertEquals(0, topLeft())
+    }
+
     private fun shellScene(lit: Int, dim: Int = 256): ByteArray {
         val width = 40
         val height = 6

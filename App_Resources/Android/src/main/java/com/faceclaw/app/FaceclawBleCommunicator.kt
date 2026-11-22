@@ -427,6 +427,12 @@ class FaceclawBleCommunicator(context: Context, rightAddress: String?, leftAddre
 
     fun setSurfaceVisible(id: String, visible: Boolean) = core.setSurfaceVisible(id, visible)
 
+    /** As above; merge leaves the composite to the next compositor call (see [GlassesSessionCore.setSurfaceVisible]). */
+    fun setSurfaceVisible(id: String, visible: Boolean, merge: Boolean) = core.setSurfaceVisible(id, visible, merge)
+
+    /** See [GlassesSessionCore.submitComposite]. */
+    fun submitComposite() = core.submitComposite()
+
     fun setSurfaceDepth(id: String, depth: Int) = core.setSurfaceDepth(id, depth)
 
     fun setScreenBlanked(blanked: Boolean) = core.setScreenBlanked(blanked)
@@ -439,6 +445,10 @@ class FaceclawBleCommunicator(context: Context, rightAddress: String?, leftAddre
     /** Stage an immutable shell snapshot alongside the retained app screen. */
     fun submitShellScene(bytes: java.nio.ByteBuffer, paintMs: Int, frameId: Int) =
         core.submitShellScene(AndroidByteReader(bytes), paintMs, frameId)
+
+    /** As above; merge leaves the composite to the next compositor call (see [GlassesSessionCore.setSurfaceVisible]). */
+    fun submitShellScene(bytes: java.nio.ByteBuffer, paintMs: Int, frameId: Int, merge: Boolean) =
+        core.submitShellScene(AndroidByteReader(bytes), paintMs, frameId, merge)
 
     /** Legacy compositor dimming for callers without a shell scene. */
     fun setUnderlayDim(belowZOrder: Int, factor256: Int) = core.setUnderlayDim(belowZOrder, factor256)
@@ -479,8 +489,26 @@ class FaceclawBleCommunicator(context: Context, rightAddress: String?, leftAddre
             frameId: Int,
             glyphs: java.nio.ByteBuffer?
     ) {
+        submitSurfaceFrame(pixels8bpp, surfaceId, rectX, rectY, rectWidth, rectHeight,
+                contentFingerprint, paintMs, frameId, glyphs, false)
+    }
+
+    /** As above; merge leaves the composite to the next compositor call (see [GlassesSessionCore.setSurfaceVisible]). */
+    fun submitSurfaceFrame(
+            pixels8bpp: java.nio.ByteBuffer,
+            surfaceId: String,
+            rectX: Int,
+            rectY: Int,
+            rectWidth: Int,
+            rectHeight: Int,
+            contentFingerprint: String?,
+            paintMs: Int,
+            frameId: Int,
+            glyphs: java.nio.ByteBuffer?,
+            merge: Boolean
+    ) {
         core.submitSurfaceFrame(AndroidByteReader(pixels8bpp), surfaceId, rectX, rectY, rectWidth, rectHeight,
-                contentFingerprint, paintMs, frameId, if (glyphs == null) null else AndroidByteReader(glyphs))
+                contentFingerprint, paintMs, frameId, if (glyphs == null) null else AndroidByteReader(glyphs), merge)
     }
 
     /** Whether submitting this full-surface content would change nothing (see [GlassesSessionCore.isSurfaceCurrent]). */

@@ -931,6 +931,7 @@ internal fun GlassesSessionCore.enqueueDesiredImageLocked() {
     }
     if (customFirmwareDetected && packedFrame.size > 0) {
         screenRecorder?.observeStockText(draws)
+        frameTimings.spanStart(frameId, "plan")
         val rendered = try {
             scenePlanner.plan(packedFrame, width, height, draws, scene, nextImageFrameId,
                 connectionOptions.TEXTURE_CACHE_FRAMES, connectionOptions.INCREMENTAL_FRAMES,
@@ -939,11 +940,14 @@ internal fun GlassesSessionCore.enqueueDesiredImageLocked() {
             // Planning depends only on this frame, so reconnecting would fail
             // the same way (#42). Drop the frame (the planner and resource
             // cache are as they were) and wait for the scene to change.
+            frameTimings.spanEnd(frameId, "plan")
             lastEnqueuedFingerprint = fingerprint
             logLine("frame plan failed; frame dropped: " + safeMessage(e))
             finishFrame(frameId, "discarded: frame plan failed")
             return
         }
+        frameTimings.spanEnd(frameId, "plan")
+        frameTimings.log(frameId, "plan: " + rendered.timing)
         if (rendered.bakedLayers > 0 || rendered.bakedSelections) {
             val baked = "shell over resource budget: baked " + rendered.bakedLayers + "/" + scene.layers.size +
                 " layers" + (if (rendered.bakedSelections) " and retained drawings" else "") + " into the frame"

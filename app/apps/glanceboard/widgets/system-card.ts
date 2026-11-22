@@ -432,8 +432,8 @@ function drawBatteryValue(
     }
     return;
   }
-  const icon = drawBattery(item.percent, item.charging);
-  image.bitBlt(icon, x, lineTop + Math.max(0, ((font.lineHeight - gaugeHeight) / 2) | 0), { transparentZero: true });
+  // A deferred draw of a long-lived image: the glasses keep it as a cached image.
+  image.drawImage(drawBattery(item.percent, item.charging), x, lineTop + Math.max(0, ((font.lineHeight - gaugeHeight) / 2) | 0));
 }
 
 /**
