@@ -143,16 +143,26 @@ export class SettingsPanelLayer implements Layer {
     this.resetRight();
   }
 
+  /**
+   * Bring both columns in line with what the sections offer now: which are
+   * hidden, and the highlighted one's rows (re-read, since they may come and
+   * go with other state). Returns those rows.
+   */
+  private syncItems(): MenuItem[] {
+    this.syncSections();
+    const items = this.section().items;
+    this.rightMenu.setItems(items);
+    return items;
+  }
+
   paint(ctx: LayerContext): GrayImage {
     const font = getDefaultSmallFont();
     const viewport = ctx.stack.getBaseSize();
     const { width, height, padding } = viewport;
     const image = new GrayImage(width, height, 0);
     const appFocused = ctx.stack.isFocused();
-    this.syncSections();
+    const rightItems = this.syncItems();
     const section = this.section();
-    const rightItems = section.items;
-    this.rightMenu.setItems(rightItems);
 
     // Fixed content keeps the padding suggested for the window's edges. The
     // two lists scroll, so they run to the top and bottom edges themselves,
@@ -243,6 +253,10 @@ export class SettingsPanelLayer implements Layer {
   paintDescriptionOverlay(image: GrayImage, ctx: LayerContext): void {
     const font = getDefaultSmallFont();
     const { bottom: listBottom, rightX, rightW } = panelColumns(ctx.stack.getBaseSize());
+    // The overlay paints before the panel under it, so this is the frame's
+    // first look at the rows: without it, a row that came or went by itself
+    // (no input) would leave the previous selection's text here.
+    this.syncItems();
     const lines = this.descriptionLines(font, rightW);
     if (!lines.length) return;
     const top = listBottom - (lines.length * lineStep(font) + 10);

@@ -1,4 +1,4 @@
-<Page xmlns="http://schemas.nativescript.org/tns.xsd" navigatingTo="navigatingTo" actionBarHidden="true">
+<Page xmlns="http://schemas.nativescript.org/tns.xsd" navigatingTo="navigatingTo" loaded="loaded" unloaded="unloaded" actionBarHidden="true">
     <GridLayout rows="*,auto" class="p-20">
         <ScrollView row="0">
             <StackLayout>
@@ -28,10 +28,16 @@
                     <Label col="0" text="Even R1 ring" class="pairing-title" verticalAlignment="center" />
                     <Switch col="1" checked="{{ hasRing }}" verticalAlignment="center" margin="0" />
                 </GridLayout>
-                <GridLayout columns="*,auto" rows="auto" class="pairing-row">
-                    <Label col="0" text="{{ watchLabel }}" class="pairing-title" verticalAlignment="center" />
-                    <Switch col="1" checked="{{ hasWatch }}" verticalAlignment="center" margin="0" />
-                </GridLayout>
+                <StackLayout class="pairing-row">
+                    <GridLayout columns="*,auto" rows="auto">
+                        <Label col="0" text="{{ watchLabel }}" class="pairing-title" verticalAlignment="center" />
+                        <Switch col="1" checked="{{ hasWatch }}" verticalAlignment="center" margin="0" />
+                    </GridLayout>
+                    <!-- iOS, switch on, an Apple Watch paired: whether it has
+                         the watch app, and the way to install it. -->
+                    <Button text="Install on Apple Watch" tap="{{ onWatchAppInstallTap }}" class="-primary devices-watch-install" visibility="{{ watchAppInstallVisibility }}" />
+                    <Label text="{{ watchAppNote }}" class="permissions-description devices-watch-note" textWrap="true" visibility="{{ watchAppNoteVisibility }}" />
+                </StackLayout>
             </StackLayout>
         </ScrollView>
 

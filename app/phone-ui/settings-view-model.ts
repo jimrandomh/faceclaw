@@ -11,6 +11,8 @@ import {
 import { formatBatteryLine } from '../g2/glasses-display-state';
 import { getGlassesPresence, onGlassesPresenceChanged } from '../g2/glasses-presence';
 import { shell } from '../ui/shell/shell';
+import { watchAppInstall } from '../native/watch-app-install';
+import { openWatchAppInstall, watchAppPrompt, type WatchAppPrompt } from './watch-app-prompt';
 
 /** What each input style's touchpad does, under the Phone input style row. */
 const INPUT_STYLE_HINTS: Record<PhoneInputStyle, string> = {
@@ -20,15 +22,17 @@ const INPUT_STYLE_HINTS: Record<PhoneInputStyle, string> = {
 
 /**
  * The phone's settings page (settings-page.xml), opened by the gear button
- * under the mirror: display mode, brightness, the main page's input style and
- * battery levels. Shared by Android and iOS: everything it shows comes from
- * the settings store, the shell's battery levels and the glasses-presence
- * module, which both platforms' controllers feed, so it needs no host.
+ * under the mirror: display mode, brightness, the main page's input style, the
+ * Apple Watch app and battery levels. Shared by Android and iOS: everything it
+ * shows comes from the settings store, the shell's battery levels, the
+ * glasses-presence module (which both platforms' controllers feed) and the
+ * watch-app-install module, so it needs no host.
  */
 export class SettingsViewModel extends Observable {
   private readonly unsubscribers: Array<() => void> = [];
   private _batteryLine = "";
   private lastManualBrightness = 50;
+  private watchApp: WatchAppPrompt = watchAppPrompt();
 
   /**
    * Subscribe while the page is on screen (its `loaded`) and catch up on
@@ -41,9 +45,12 @@ export class SettingsViewModel extends Observable {
       onAnySettingChanged(() => this.refreshSettings()),
       shell.onBatteryLevelsChanged(() => this.refreshBatteryLine()),
       onGlassesPresenceChanged(() => this.refreshBatteryLine()),
+      watchAppInstall.onStateChanged(() => this.refreshWatchApp()),
     );
     this.refreshSettings();
     this.refreshBatteryLine();
+    // Coming back from installing the watch app re-runs this, like any return to the page.
+    this.refreshWatchApp();
   }
 
   /** The page's `unloaded`. */
@@ -158,6 +165,41 @@ export class SettingsViewModel extends Observable {
     this.notifyPropertyChange("watchStyleClass", this.watchStyleClass);
     this.notifyPropertyChange("ringStyleClass", this.ringStyleClass);
     this.notifyPropertyChange("phoneInputStyleHint", this.phoneInputStyleHint);
+  }
+
+  // ---- Apple Watch app (iOS; the row stays collapsed on Android) ----
+
+  get watchAppRowVisibility(): "visible" | "collapse" {
+    return this.watchApp.visible ? "visible" : "collapse";
+  }
+
+  get watchAppInstalledVisibility(): "visible" | "collapse" {
+    return this.watchApp.installed ? "visible" : "collapse";
+  }
+
+  get watchAppInstallVisibility(): "visible" | "collapse" {
+    return this.watchApp.canInstall ? "visible" : "collapse";
+  }
+
+  get watchAppHint(): string {
+    return this.watchApp.hint;
+  }
+
+  get watchAppHintVisibility(): "visible" | "collapse" {
+    return this.watchApp.hint ? "visible" : "collapse";
+  }
+
+  onWatchAppInstallTap(): void {
+    void openWatchAppInstall();
+  }
+
+  private refreshWatchApp(): void {
+    this.watchApp = watchAppPrompt();
+    this.notifyPropertyChange("watchAppRowVisibility", this.watchAppRowVisibility);
+    this.notifyPropertyChange("watchAppInstalledVisibility", this.watchAppInstalledVisibility);
+    this.notifyPropertyChange("watchAppInstallVisibility", this.watchAppInstallVisibility);
+    this.notifyPropertyChange("watchAppHint", this.watchAppHint);
+    this.notifyPropertyChange("watchAppHintVisibility", this.watchAppHintVisibility);
   }
 
   // ---- battery levels ----

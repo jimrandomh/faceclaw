@@ -193,3 +193,25 @@ test('a hidden section comes and goes while the panel stays open', async () => {
   await enter();
   assert.deepEqual(selected.slice(4), ['Brightness']);
 });
+
+test('the description band follows a row that goes away without any input', async () => {
+  let offered = true;
+  const row = (label, description) => ({ label, description, onSelect() {} });
+  const layer = new SettingsPanelLayer([
+    { label: 'Watch', get items() { return [...(offered ? [row('Install', 'Help text for this option.')] : []), row('Remote')]; } },
+  ]);
+  const ctx = { stack: { getBaseSize: () => bordered(576, 260), isFocused: () => true } };
+  await layer.handleInput({ type: 'click', timestampMs: 0 }, ctx);
+  // A frame as the layer stack paints it: the overlay first, then the panel under it.
+  const bandDrawn = () => {
+    const overlay = new graphics.GrayImage(576, 260);
+    layer.paintDescriptionOverlay(overlay, ctx);
+    layer.paint(ctx);
+    for (let y = 0; y < 260; y++) if (overlay.getPixel(300, y) !== 0) return true;
+    return false;
+  };
+  assert.equal(bandDrawn(), true);
+  // Something outside the panel took the row away (the watch app got installed) and asked for a repaint.
+  offered = false;
+  assert.equal(bandDrawn(), false, 'the row now selected has no help text, so none is left showing');
+});

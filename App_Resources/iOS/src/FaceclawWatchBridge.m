@@ -18,6 +18,15 @@ static NSString *const kPathPress = @"/faceclaw/press";
 static NSString *const kPathAck = @"/faceclaw/ack";
 static NSString *const kPathEvent = @"/faceclaw/event";
 
+// watchAppInstallState's values; app/native/watch-app-install.ts mirrors them as WatchAppInstallState.
+static NSString *const kInstallStateUnknown = @"unknown";
+static NSString *const kInstallStateNoWatch = @"no-watch";
+static NSString *const kInstallStateNotInstalled = @"not-installed";
+static NSString *const kInstallStateInstalled = @"installed";
+
+/** Where Xcode's "Embed Watch Content" phase puts the watch app, inside the phone app. */
+static NSString *const kEmbeddedWatchDirectory = @"Watch";
+
 /** State requests kept for a JS handler that isn't registered yet. */
 static const NSUInteger kPendingLimit = 16;
 static const NSTimeInterval kPendingMaxAge = 30;
@@ -44,6 +53,7 @@ static double ReadSeq(NSString *json) {
 @interface FaceclawWatchBridge () <WCSessionDelegate>
 @property(nonatomic, copy, nullable) void (^messageHandler)(NSString *, NSString *);
 @property(nonatomic, copy, nullable) void (^connectionHandler)(void);
+@property(nonatomic, copy, nullable) void (^installStateHandler)(void);
 @property(nonatomic, strong) NSMutableArray<FaceclawWatchPendingMessage *> *pending;
 @property(nonatomic, copy, nullable) NSString *lastState;
 @property(nonatomic) long long lastStateAt;
@@ -101,6 +111,32 @@ static double ReadSeq(NSString *json) {
     WCSession *session = WCSession.defaultSession;
     if (session.activationState != WCSessionActivationStateActivated) return NO;
     return session.isReachable || (session.isPaired && session.isWatchAppInstalled);
+}
+
+- (NSString *)watchAppInstallState {
+    if (!WCSession.isSupported) return kInstallStateUnknown;
+    WCSession *session = WCSession.defaultSession;
+    if (session.activationState != WCSessionActivationStateActivated) return kInstallStateUnknown;
+    if (!session.isPaired) return kInstallStateNoWatch;
+    return session.isWatchAppInstalled ? kInstallStateInstalled : kInstallStateNotInstalled;
+}
+
+- (BOOL)bundlesWatchApp {
+    NSURL *directory = [NSBundle.mainBundle.bundleURL URLByAppendingPathComponent:kEmbeddedWatchDirectory];
+    NSArray<NSURL *> *contents = [NSFileManager.defaultManager contentsOfDirectoryAtURL:directory
+                                                             includingPropertiesForKeys:nil
+                                                                                options:0
+                                                                                  error:nil];
+    for (NSURL *item in contents) {
+        if ([item.pathExtension isEqualToString:@"app"]) return YES;
+    }
+    return NO;
+}
+
+// This is the installStateHandler property's own setter, so it stores to the ivar.
+- (void)setInstallStateHandler:(void (^)(void))handler {
+    _installStateHandler = [handler copy];
+    [self activate];
 }
 
 - (void)setMessageHandler:(void (^)(NSString *, NSString *))messageHandler
@@ -231,6 +267,10 @@ static double ReadSeq(NSString *json) {
     if (self.connectionHandler) self.connectionHandler();
 }
 
+- (void)notifyInstallState {
+    if (self.installStateHandler) self.installStateHandler();
+}
+
 #pragma mark - WCSessionDelegate (any thread)
 
 - (void)session:(WCSession *)session activationDidCompleteWithState:(WCSessionActivationState)state error:(NSError *)error {
@@ -240,6 +280,7 @@ static double ReadSeq(NSString *json) {
         if (self.lastState || self.heldEvent) [self pushContext];
         [self deliverBatteryFrom:session.receivedApplicationContext];
         [self notifyConnection];
+        [self notifyInstallState];
     });
 }
 
@@ -251,7 +292,11 @@ static double ReadSeq(NSString *json) {
 }
 
 - (void)sessionWatchStateDidChange:(WCSession *)session {
-    dispatch_async(dispatch_get_main_queue(), ^{ [self notifyConnection]; });
+    // Pairing, and the watch app being installed or removed.
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [self notifyConnection];
+        [self notifyInstallState];
+    });
 }
 
 - (void)sessionReachabilityDidChange:(WCSession *)session {

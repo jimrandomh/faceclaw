@@ -24,6 +24,7 @@
 * Expand the glasses' resource cache from 192kb to 320kb
 * Includes a custom firmware update, which the app will prompt you to install
 * Privacy policy describes the diagnostics that Google ML Kit collects on Android (used for translation and QR code scanning)
+* iOS watch app: Fix bundling; add links to install to the settings page
 
 ### Bug Fixes
 

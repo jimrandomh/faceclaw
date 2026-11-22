@@ -144,6 +144,17 @@ Button.pairing-link {
   margin-left: 10;
 }
 
+/* Your Devices: the Install button inside the Apple Watch card. Two classes,
+ * to outrank the theme's per-platform Button margins. */
+.pairing-row .devices-watch-install {
+  margin: 8 0 0 0;
+}
+
+/* Under that button, or alone once the watch has the app. */
+.pairing-row .devices-watch-note {
+  margin-top: 8;
+}
+
 /* Continue with required permissions still missing: looks disabled but stays
  * tappable (the tap raises an are-you-sure prompt instead of being ignored). */
 Button.permissions-primary-dimmed {

@@ -1,6 +1,7 @@
 <!--
   The phone's settings page: the glasses' display mode and brightness, the
-  main page's input style (which touchpad it shows) and battery levels.
+  main page's input style (which touchpad it shows), installing the Apple Watch
+  app and battery levels.
   Opened by the gear button under the mirror; binds to a SettingsViewModel on
   both platforms. Styles are in settings-page.css.
 -->
@@ -38,6 +39,17 @@
                     <Button col="2" text="Ring" textWrap="false" tap="{{ onRingStyleTap }}" class="{{ ringStyleClass }}" />
                 </GridLayout>
                 <Label text="{{ phoneInputStyleHint }}" textWrap="true" class="settings-form-hint" />
+            </StackLayout>
+
+            <!-- iOS, with an Apple Watch paired: whether it has the watch app,
+                 and the way to install it. Collapsed otherwise. -->
+            <StackLayout class="settings-form-row" visibility="{{ watchAppRowVisibility }}">
+                <GridLayout rows="auto" columns="*,auto,auto">
+                    <Label col="0" text="Apple Watch app" class="settings-form-label" verticalAlignment="center" />
+                    <Label col="1" text="Installed" class="settings-form-value" verticalAlignment="center" visibility="{{ watchAppInstalledVisibility }}" />
+                    <Button col="2" text="Install" textWrap="false" tap="{{ onWatchAppInstallTap }}" class="settings-picker-button" visibility="{{ watchAppInstallVisibility }}" />
+                </GridLayout>
+                <Label text="{{ watchAppHint }}" textWrap="true" class="settings-form-hint" visibility="{{ watchAppHintVisibility }}" />
             </StackLayout>
 
             <!-- Last-known levels of the glasses, their charging case and the

@@ -107,6 +107,13 @@ function settingsEnv(initialUrl = '', initialModel = 'openai-compatible', glasse
   };
 }
 
+test('the Watch section lists its toggles, with no install row where the phone has none to offer', () => {
+  // Android's watch-app-install answers "unknown", so the row never shows there.
+  const watch = settingsEnv().sections.find(item => item.label === 'Watch');
+  assert.ok(watch.items.length >= 3);
+  assert.equal(watch.items.some(item => item.label === 'Install watch app'), false);
+});
+
 test('Venice web search row follows the current URL and never appears for other providers', () => {
   const env = settingsEnv();
   assert.equal(env.labels().includes('Venice web search'), false);

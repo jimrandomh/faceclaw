@@ -98,8 +98,10 @@ import {
   watchSoundEffectsSetting,
   watchVibrateOnInputSetting,
 } from "../dashboard-settings";
+import { watchAppInstall } from "../../native/watch-app-install";
 import { wearBridge } from "../../native/wear-bridge";
 import { openSettingsSubMenu, SettingsPanelLayer, type SettingsSection } from "./settings-panel";
+import { watchAppInstallMenuItems } from "./watch-app-install-menu";
 import { uiFontPickerMenuItem } from "../font-picker";
 import { NotificationFilterLayer } from "../notification-filter";
 import { compatibleModelDiscoveryMenuItem } from "../openai-compatible-model-picker";
@@ -227,17 +229,22 @@ function settingsSections(): SettingsSection[] {
       label: "Watch",
       // Watch remote (wear/, apple-watch/); the status line above the items says
       // whether a watch running the companion app is currently reachable.
-      items: [
-        toggleSettingMenuItem(watchRemoteEnabledSetting),
-        ...(global.isIOS ? [
-          toggleSettingMenuItem(watchVibrateOnInputSetting),
-          toggleSettingMenuItem(watchSoundEffectsSetting),
-        ] : [
-          toggleSettingMenuItem(watchCrownClockwiseNextSetting),
-        ]),
-        toggleSettingMenuItem(watchCanUnlockSetting),
-        toggleSettingMenuItem(watchMirrorAssistantSetting),
-      ],
+      // Re-read on every paint: the install row is only there while an Apple
+      // Watch lacks the app.
+      get items() {
+        return [
+          ...watchAppInstallMenuItems(),
+          toggleSettingMenuItem(watchRemoteEnabledSetting),
+          ...(global.isIOS ? [
+            toggleSettingMenuItem(watchVibrateOnInputSetting),
+            toggleSettingMenuItem(watchSoundEffectsSetting),
+          ] : [
+            toggleSettingMenuItem(watchCrownClockwiseNextSetting),
+          ]),
+          toggleSettingMenuItem(watchCanUnlockSetting),
+          toggleSettingMenuItem(watchMirrorAssistantSetting),
+        ];
+      },
       renderDetail: renderWatchStatus,
     },
     // A Bluetooth keyboard paired with the glasses themselves (the G2's
@@ -666,9 +673,10 @@ function renderWatchStatus(args: { image: GrayImage; x: number; y: number; width
     const connection = wearBridge.getWatchConnection();
     if (global.isIOS) {
       // iOS only says whether the app is installed; it may not be running.
-      status = connection.reachable
-        ? "The Faceclaw app is installed on your Apple Watch."
-        : "No watch connected. Install the Faceclaw watch app (apple-watch/ in the source tree) on an Apple Watch paired with this iPhone.";
+      if (connection.reachable) status = "The Faceclaw app is installed on your Apple Watch.";
+      // The row under this installs it (watch-app-install-menu.ts).
+      else if (watchAppInstall.getState() === "not-installed") status = "Your Apple Watch doesn't have the Faceclaw app.";
+      else status = "No Apple Watch is paired with this iPhone.";
     } else {
       status = connection.reachable
         ? `Connected to ${connection.watchName || "a watch"}.`
