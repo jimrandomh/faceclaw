@@ -1050,25 +1050,9 @@ export class MainViewModel extends RemoteControlsViewModel {
   private padDoubleTapPending = false;
   private padHeld = false;
 
-  /** What the next gesture lands on, as the watch pad shows it. */
-  get padFocusLine(): string {
-    return dashboardController.glassesDisplayLabel();
-  }
-
-  protected override get padDisplayAsleep(): boolean {
-    return dashboardController.glassesDisplayAsleep();
-  }
-
-  override get padDetailLine(): string {
-    return dashboardController.glassesDisplayDetail();
-  }
-
+  /** Re-read what the watch pad shows; the shell doesn't announce a gesture moving the foreground. */
   private refreshPadFocusLine(): void {
-    this.notifyPropertyChange("padFocusLine", this.padFocusLine);
-    this.notifyPropertyChange("padFocusClass", this.padFocusClass);
-    this.notifyPropertyChange("padWakeHintVisibility", this.padWakeHintVisibility);
-    this.notifyPropertyChange("padDetailLine", this.padDetailLine);
-    this.notifyPropertyChange("padDetailVisibility", this.padDetailVisibility);
+    this.setPadStatus(dashboardController.glassesPadStatus());
   }
 
   async onPadTap(): Promise<void> {

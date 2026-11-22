@@ -98,8 +98,10 @@ import {
   watchSoundEffectsSetting,
   watchVibrateOnInputSetting,
 } from "../dashboard-settings";
+import { watchAppInstall } from "../../native/watch-app-install";
 import { wearBridge } from "../../native/wear-bridge";
 import { openSettingsSubMenu, SettingsPanelLayer, type SettingsSection } from "./settings-panel";
+import { watchAppInstallMenuItems } from "./watch-app-install-menu";
 import { uiFontPickerMenuItem } from "../font-picker";
 import { NotificationFilterLayer } from "../notification-filter";
 import { compatibleModelDiscoveryMenuItem } from "../openai-compatible-model-picker";
@@ -117,6 +119,7 @@ export function createSettingsPanelLayer(): SettingsPanelLayer {
 
 function settingsSections(): SettingsSection[] {
   const customizationItems = customizationRows();
+  const voiceItems = voiceRows();
   const sections: SettingsSection[] = [
     {
       label: "Display",
@@ -156,13 +159,11 @@ function settingsSections(): SettingsSection[] {
     },
     {
       label: "Voice",
-      items: [
-        enumSettingMenuItem(wakeWordActionSetting),
-        enumSettingMenuItem(voiceProviderSetting),
-        ...whisperServerMenuItems(),
-        asrModelMenuItem("moonshine"),
-        asrModelMenuItem("whisper-base-en"),
-      ],
+      // The Whisper server's rows only show while it is the selected
+      // provider; the panel re-reads the rows each paint.
+      get items() {
+        return voiceItems();
+      },
     },
     {
       label: "Assistant",
@@ -171,7 +172,6 @@ function settingsSections(): SettingsSection[] {
       get items() {
         const selectedModel = assistantModelSetting.get();
         return [
-          // iOS's on-phone model is Apple Intelligence; Android downloads one. Only Android has the bridge.
           enumSettingMenuItem(assistantBackendSetting),
           enumSettingMenuItem(assistantModelSetting),
           ...(selectedModel === "hermes" ? [
@@ -191,15 +191,13 @@ function settingsSections(): SettingsSection[] {
             ...(isVeniceApiBaseUrl(assistantOpenAiCompatibleUrlSetting.get())
               ? [toggleSettingMenuItem(veniceWebSearchSetting)] : []),
           ] : []),
+          // iOS's on-phone model is Apple Intelligence; Android downloads one.
           global.isIOS ? systemModelMenuItem() : localModelMenuItem(),
           toggleSettingMenuItem(assistantSkipConfirmationSetting),
-          // iOS has no agent bridge yet.
-          ...(!global.isIOS ? [
-            textSettingMenuItem(assistantBridgeHostSetting),
-            textSettingMenuItem(assistantBridgePortSetting),
-            textSettingMenuItem(assistantBridgeTokenSetting),
-            toggleSettingMenuItem(assistantAllowProactiveSetting),
-          ] : []),
+          textSettingMenuItem(assistantBridgeHostSetting),
+          textSettingMenuItem(assistantBridgePortSetting),
+          textSettingMenuItem(assistantBridgeTokenSetting),
+          toggleSettingMenuItem(assistantAllowProactiveSetting),
         ];
       },
     },
@@ -231,17 +229,22 @@ function settingsSections(): SettingsSection[] {
       label: "Watch",
       // Watch remote (wear/, apple-watch/); the status line above the items says
       // whether a watch running the companion app is currently reachable.
-      items: [
-        toggleSettingMenuItem(watchRemoteEnabledSetting),
-        ...(global.isIOS ? [
-          toggleSettingMenuItem(watchVibrateOnInputSetting),
-          toggleSettingMenuItem(watchSoundEffectsSetting),
-        ] : [
-          toggleSettingMenuItem(watchCrownClockwiseNextSetting),
-        ]),
-        toggleSettingMenuItem(watchCanUnlockSetting),
-        toggleSettingMenuItem(watchMirrorAssistantSetting),
-      ],
+      // Re-read on every paint: the install row is only there while an Apple
+      // Watch lacks the app.
+      get items() {
+        return [
+          ...watchAppInstallMenuItems(),
+          toggleSettingMenuItem(watchRemoteEnabledSetting),
+          ...(global.isIOS ? [
+            toggleSettingMenuItem(watchVibrateOnInputSetting),
+            toggleSettingMenuItem(watchSoundEffectsSetting),
+          ] : [
+            toggleSettingMenuItem(watchCrownClockwiseNextSetting),
+          ]),
+          toggleSettingMenuItem(watchCanUnlockSetting),
+          toggleSettingMenuItem(watchMirrorAssistantSetting),
+        ];
+      },
       renderDetail: renderWatchStatus,
     },
     // A Bluetooth keyboard paired with the glasses themselves (the G2's
@@ -302,13 +305,31 @@ function settingsSections(): SettingsSection[] {
   return sections.map(section => {
     if (section.label === "Developer") return { ...section, items: [enumSettingMenuItem(ringConnectionModeSetting),
       toggleSettingMenuItem(showBleBandwidthSetting)] };
-    // No downloadable on-device models: iOS's on-device option is Apple's recognizer.
-    if (section.label === "Voice") return { label: "Voice", items: [enumSettingMenuItem(wakeWordActionSetting),
-      enumSettingMenuItem(voiceProviderSetting), ...whisperServerMenuItems()] };
     if (section.label === "Display") return { ...section, items: section.items.filter(item =>
       item.label !== screenTimeoutSetting.label) };
     return section;
   });
+}
+
+/**
+ * The Voice rows, as a function of the current settings: the self-hosted
+ * Whisper server's rows follow the Transcription Provider row while that
+ * server is the selected provider. The same array while that holds, so the
+ * panel's menu sees a stable list between paints.
+ */
+function voiceRows(): () => MenuItem[] {
+  const top = [enumSettingMenuItem(wakeWordActionSetting), enumSettingMenuItem(voiceProviderSetting)];
+  const whisperServer = [
+    textSettingMenuItem(whisperServerUrlSetting),
+    textSettingMenuItem(whisperServerModelSetting),
+    textSettingMenuItem(whisperServerLanguageSetting),
+    textSettingMenuItem(whisperServerApiKeySetting),
+  ];
+  // No downloadable on-device models on iOS: its on-device option is Apple's recognizer.
+  const models = global.isIOS ? [] : [asrModelMenuItem("moonshine"), asrModelMenuItem("whisper-base-en")];
+  const plain = [...top, ...models];
+  const withWhisperServer = [...top, ...whisperServer, ...models];
+  return () => (voiceProviderSetting.get() === "whisper-server" ? withWhisperServer : plain);
 }
 
 /**
@@ -556,19 +577,6 @@ function asrModelStatusText(id: AsrModelId): string {
   return "not downloaded";
 }
 
-/**
- * The self-hosted Whisper server's settings. Always listed: the provider
- * option stays disabled until the URL is set.
- */
-function whisperServerMenuItems(): MenuItem[] {
-  return [
-    textSettingMenuItem(whisperServerUrlSetting),
-    textSettingMenuItem(whisperServerModelSetting),
-    textSettingMenuItem(whisperServerLanguageSetting),
-    textSettingMenuItem(whisperServerApiKeySetting),
-  ];
-}
-
 /** Download/cancel/delete management for one on-device transcription model. */
 function asrModelMenuItem(id: AsrModelId): MenuItem {
   const def = ASR_MODELS[id];
@@ -665,9 +673,10 @@ function renderWatchStatus(args: { image: GrayImage; x: number; y: number; width
     const connection = wearBridge.getWatchConnection();
     if (global.isIOS) {
       // iOS only says whether the app is installed; it may not be running.
-      status = connection.reachable
-        ? "The Faceclaw app is installed on your Apple Watch."
-        : "No watch connected. Install the Faceclaw watch app (apple-watch/ in the source tree) on an Apple Watch paired with this iPhone.";
+      if (connection.reachable) status = "The Faceclaw app is installed on your Apple Watch.";
+      // The row under this installs it (watch-app-install-menu.ts).
+      else if (watchAppInstall.getState() === "not-installed") status = "Your Apple Watch doesn't have the Faceclaw app.";
+      else status = "No Apple Watch is paired with this iPhone.";
     } else {
       status = connection.reachable
         ? `Connected to ${connection.watchName || "a watch"}.`

@@ -1530,7 +1530,7 @@ type HubItem = {
    * indented session row.
    */
   topLevel?: boolean;
-  /** Opens a nested menu: a right-edge ">" marks the row. */
+  /** Opens a nested menu: a right-edge triangle marks the row. */
   submenu?: boolean;
   /** Session with recent output: an animated indicator marks the row. */
   active?: boolean;

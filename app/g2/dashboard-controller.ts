@@ -18,11 +18,11 @@ import { weatherBridge } from "../native/weather";
 import { ALL_NOTIFICATIONS, onAndroidNotificationPosted, onAndroidNotificationRemoved, readActiveNotifications } from "../native/notification-icons";
 import { watchNotificationListenerBinding } from "../native/notification-access";
 import { openEvenAppSettings, readEvenAppNotificationState } from "../native/even-app-conflict";
-import { defaultRingName, setGlassesRingLink } from "../native/ring-status";
+import { setGlassesRingLink } from "../native/ring-status";
+import { directRingRole, handRingBackToGlassesIfNeeded, noteRingSessionMode } from "./ring-connection";
 import { applyGlanceAngle, glassesHeadUpTrigger, syncGlanceAngleOriginal } from "./head-angle";
 import { glanceAngleTriggerDegrees, glanceTapTimeoutMs } from "../apps/glanceboard/glanceboard-settings";
 import { GLANCE_TILT_MAX_MS, glanceTiltMaxMs } from "./glance-state";
-import { getBooleanSetting, setBooleanSetting } from "../native/settings-store";
 import { grayImageToPreviewSource } from "../native/gray-image-preview";
 import { firmwareIncompatibilityMessage, hasCompatibleFirmware } from "./firmware-compat";
 import { keyboardService } from "./keyboard/service";
@@ -72,7 +72,7 @@ import { updateGlassesPresence } from "./glasses-presence";
 import { timerEngine } from "../apps/timer/timer-engine";
 import { registerNavigateTools } from "../assistant/navigate-tools";
 import { registerRoamTools } from "../assistant/roam-tools";
-import { assistantBridge } from "../assistant/bridge-client";
+import { syncAssistantBridge } from "../assistant/bridge-sync";
 import { registerWindowTools } from "../assistant/window-tools";
 import { WorkerAppHost } from "../ui/shell/worker-window";
 import { ALL_APPS } from "../apps/all-apps";
@@ -83,7 +83,7 @@ import { appViewportRect, isOnSwitcherEdge, screenHeight, screenWidth, sidebarSt
 import { sameEdges } from "../ui/viewport";
 import { type ContinuousCaptureOptions, type LayerActions, type MicCount, type TextSettingsEditToggle, type TranscriptionChoice } from "../ui/layers";
 import { type KeyboardInputSession } from "../ui/shell/keyboard-input";
-import { appSwitcherPositionSetting, glassesModelName, glassesTypeSetting, statusBarPositionSetting, statusBarVisibilitySetting, windowBorderSetting, assistantAllowProactiveSetting, assistantBackendSetting, assistantBridgeHostSetting, assistantBridgePortSetting, assistantBridgeTokenSetting, getBrightnessPreferences, displayLayoutSetting, navigateDisplayLayoutSetting, terminalDisplayLayoutSetting, elevenLabsApiKeySetting, getStringSettingById, openAiApiKeySetting, nightscoutApiTokenSetting, firmwareDebugFlagsSetting, whisperServerApiKeySetting, whisperServerLanguageSetting, whisperServerModelSetting, whisperServerUrlSetting, lockScreenEnabledSetting, nightscoutSiteUrlSetting, onAnySettingChanged, previewColorSetting, effectiveRingConnectionMode, type RingConnectionMode, saveRecordingSetting, sonioxApiKeySetting, screenTimeoutSetting, screenTimeoutSettingToMs, shouldPopUpNewNotification, suspendEvenHubWhenScreenOffSetting, voiceProviderSetting, wakeWordActionSetting, type ConfigSettingString } from "../ui/dashboard-settings";
+import { appSwitcherPositionSetting, glassesModelName, glassesTypeSetting, statusBarPositionSetting, statusBarVisibilitySetting, windowBorderSetting, getBrightnessPreferences, displayLayoutSetting, navigateDisplayLayoutSetting, terminalDisplayLayoutSetting, elevenLabsApiKeySetting, getStringSettingById, openAiApiKeySetting, nightscoutApiTokenSetting, firmwareDebugFlagsSetting, whisperServerApiKeySetting, whisperServerLanguageSetting, whisperServerModelSetting, whisperServerUrlSetting, lockScreenEnabledSetting, nightscoutSiteUrlSetting, onAnySettingChanged, previewColorSetting, effectiveRingConnectionMode, type RingConnectionMode, saveRecordingSetting, sonioxApiKeySetting, screenTimeoutSetting, screenTimeoutSettingToMs, shouldPopUpNewNotification, suspendEvenHubWhenScreenOffSetting, voiceProviderSetting, wakeWordActionSetting, type ConfigSettingString } from "../ui/dashboard-settings";
 import { isIgnoringBatteryOptimizations, requestIgnoreBatteryOptimizations } from "../native/battery-optimization";
 import {
   getInstalledEvenHubAppById,
@@ -107,10 +107,9 @@ import { micArrayCaptureConfig, micControlSupported } from "../apps/microphones/
 import { encodeMicControl } from "../apps/microphones/mic-protocol";
 import {
   chargingPreviewMessage,
-  glassesDisplayAsleep,
-  glassesDisplayDetail,
-  glassesDisplayLabel,
+  glassesPadStatus,
   type GlassesDisplayState,
+  type GlassesPadStatus,
 } from "./glasses-display-state";
 import { PreviewDisplayTarget, type DisplayTarget } from "../native/preview-display";
 
@@ -263,9 +262,6 @@ function eventLabel(kind: string, eventType: number): string {
 function sourceName(eventSource: number): string {
   return EventSourceTypeName[eventSource] ?? `SOURCE_${eventSource}`;
 }
-
-/** Set while a Direct ring session may have taken the R1 from the glasses; see handRingBackToGlassesIfNeeded. */
-const RING_TAKEN_FROM_GLASSES_KEY = "developer.ringTakenFromGlasses";
 
 class DashboardController {
   private phase: ConnectionPhase = "disconnected";
@@ -498,7 +494,7 @@ class DashboardController {
       const appsResized = this.applyAppLayoutsIfChanged();
       // Either reflow hands windows their new edges along with their size.
       if (!resized && !appsResized) this.applyWindowEdgesIfChanged();
-      this.syncAssistantBridgeIfChanged();
+      syncAssistantBridge();
       this.syncLockScreenSettingIfChanged();
       this.applyGlanceAngleIfChanged();
       this.syncContinuousRecording();
@@ -510,7 +506,7 @@ class DashboardController {
     // Connect to the external agent bridge at boot if configured; the
     // connection stays up (with re-dial) so proactive tool calls work
     // outside voice turns.
-    this.syncAssistantBridge();
+    syncAssistantBridge();
     // The watch drives the same synthetic-input path as the phone UI's test
     // buttons, plus app/window/lock commands; it mirrors the state below.
     startRemoteInput({
@@ -562,41 +558,6 @@ class DashboardController {
         lastHeadsetBattery: this.lastHeadsetBattery,
       }),
       appendLog: (line) => this.appendLog(line),
-    });
-  }
-
-  // Bridge settings changes re-dial the connection; unrelated setting changes
-  // must not, so the config it was last started with is tracked.
-  private lastBridgeConfigKey = "";
-
-  private bridgeConfigKey(): string {
-    return JSON.stringify([
-      assistantBackendSetting.get(),
-      assistantBridgeHostSetting.get().trim(),
-      assistantBridgePortSetting.get().trim(),
-      assistantBridgeTokenSetting.get(),
-    ]);
-  }
-
-  private syncAssistantBridgeIfChanged(): void {
-    if (this.bridgeConfigKey() === this.lastBridgeConfigKey) return;
-    this.syncAssistantBridge();
-  }
-
-  private syncAssistantBridge(): void {
-    this.lastBridgeConfigKey = this.bridgeConfigKey();
-    const host = assistantBridgeHostSetting.get().trim();
-    const token = assistantBridgeTokenSetting.get();
-    if (assistantBackendSetting.get() !== "external" || !host || !token) {
-      assistantBridge.stop();
-      return;
-    }
-    assistantBridge.configure({
-      host,
-      port: parseInt(assistantBridgePortSetting.get(), 10) || 8790,
-      token,
-      deviceName: "faceclaw",
-      allowProactive: () => assistantAllowProactiveSetting.get(),
     });
   }
 
@@ -1139,14 +1100,8 @@ class DashboardController {
    * Called on connect.
    */
   private handRingBackToGlassesIfNeeded(): void {
-    if (this.ringModeAtConnect === "direct" || !getBooleanSetting(RING_TAKEN_FROM_GLASSES_KEY, false)) return;
     const ring = loadDeviceAddresses().ring;
-    if (!ring) {
-      setBooleanSetting(RING_TAKEN_FROM_GLASSES_KEY, false);
-      return;
-    }
-    if (setGlassesRingLink("connect", ring, defaultRingName(ring))) {
-      setBooleanSetting(RING_TAKEN_FROM_GLASSES_KEY, false);
+    if (handRingBackToGlassesIfNeeded(this.ringModeAtConnect, ring, (address, name) => setGlassesRingLink("connect", address, name))) {
       this.appendLog(`Handing the R1 ring ${ring} back to the glasses`);
     }
   }
@@ -1300,19 +1255,13 @@ class DashboardController {
     return "";
   }
 
-  /** What occupies the foreground-title line on the watch-style controls. */
-  glassesDisplayLabel(): string {
-    return glassesDisplayLabel(this.glassesDisplayState());
-  }
-
-  /** The smaller line the watch face shows under that one, or "" (the case level while charging). */
-  glassesDisplayDetail(): string {
-    return glassesDisplayDetail(this.glassesDisplayState());
-  }
-
-  /** Whether that line reads "Display off" (the watch face adds a wake hint under it). */
-  glassesDisplayAsleep(): boolean {
-    return glassesDisplayAsleep(this.glassesDisplayState());
+  /**
+   * The watch-style controls' face: what occupies the foreground-title line,
+   * whether it reads "Display off" (the face adds a wake hint under it), and
+   * the smaller line under it (the case level while charging).
+   */
+  glassesPadStatus(): GlassesPadStatus {
+    return glassesPadStatus(this.glassesDisplayState());
   }
 
   private glassesDisplayState(): GlassesDisplayState {
@@ -1603,9 +1552,7 @@ class DashboardController {
     this.ringModeAtConnect = ringMode;
     const glassesType = glassesTypeSetting.get();
     const ringAddress = ringMode !== "glasses" ? addresses.ring : "";
-    // Direct mode may unpair the ring from the glasses; remember to hand it
-    // back once a later session runs in another mode.
-    if (ringMode === "direct" && ringAddress) setBooleanSetting(RING_TAKEN_FROM_GLASSES_KEY, true);
+    noteRingSessionMode(ringMode, ringAddress);
     this.appendLog((glassesType === "rayneo-io"
       ? `Using configured RayNeo iO: ${addresses.right}`
       : `Using configured arms: R=${addresses.right} L=${addresses.left}`) + (ringAddress ? ` ring=${ringAddress}` : ""),
@@ -1626,10 +1573,7 @@ class DashboardController {
         right: addresses.right,
         left: addresses.left,
         ring: ringAddress,
-        // Direct mode acts as the ring's glasses (gestures, battery). Health
-        // sync needs the phone role, which the session borrows briefly for
-        // each pull (GlassesSessionRing.beginRingHealthWindowLocked).
-        ringRole: ringMode === "direct" ? "glasses" : "phone",
+        ringRole: directRingRole(ringMode),
         glassesType,
       });
       this.communicator = communicator;

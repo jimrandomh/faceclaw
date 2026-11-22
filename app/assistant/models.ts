@@ -10,6 +10,7 @@ export const ASSISTANT_MODEL_VALUES = [
   "luna",
   "terra",
   "sol",
+  "astra",
   "qwen",
   "hermes",
   "openai-compatible",
@@ -62,16 +63,23 @@ type ModelDefinition = {
   effort?: "low" | "medium" | "high";
 };
 
+/**
+ * The picker names a model family, not a version: each entry points at the
+ * newest model in its family, and the IDs here are bumped as the providers
+ * release successors (last checked 2026-11-21). The families don't version in
+ * step, so the OpenAI entries legitimately sit at different numbers.
+ */
 const MODEL_DEFINITIONS: Record<Exclude<AssistantModel, "auto">, ModelDefinition> = {
   // Keep the user-facing spelling requested for the picker while using
   // Anthropic's canonical Haiku alias on the wire.
-  hauku: { label: "Haiku", provider: "anthropic", model: "claude-haiku-4-5" },
-  sonnet: { label: "Sonnet", provider: "anthropic", model: "claude-sonnet-5", effort: "low" },
-  opus: { label: "Opus", provider: "anthropic", model: "claude-opus-5", effort: "low" },
-  fable: { label: "Fable", provider: "anthropic", model: "claude-fable-5", effort: "low" },
-  luna: { label: "Luna", provider: "openai", model: "gpt-5.6-luna", effort: "low" },
-  terra: { label: "Terra", provider: "openai", model: "gpt-5.6-terra", effort: "low" },
-  sol: { label: "Sol", provider: "openai", model: "gpt-5.6-sol", effort: "low" },
+  hauku: { label: "Haiku", provider: "anthropic", model: "claude-haiku-5-5", effort: "low" },
+  sonnet: { label: "Sonnet", provider: "anthropic", model: "claude-sonnet-5-5", effort: "low" },
+  opus: { label: "Opus", provider: "anthropic", model: "claude-opus-5-5", effort: "low" },
+  fable: { label: "Fable", provider: "anthropic", model: "claude-fable-5-2", effort: "low" },
+  luna: { label: "Luna", provider: "openai", model: "gpt-6-luna", effort: "low" },
+  terra: { label: "Terra", provider: "openai", model: "gpt-6.1-terra", effort: "low" },
+  sol: { label: "Sol", provider: "openai", model: "gpt-6.2-sol", effort: "low" },
+  astra: { label: "Astra", provider: "openai", model: "gpt-6.2-astra", effort: "low" },
   // Runs on the phone itself (Android: llama.cpp with the downloaded model
   // file; iOS: Apple Intelligence), not an API key. The default for users who
   // haven't set any key.

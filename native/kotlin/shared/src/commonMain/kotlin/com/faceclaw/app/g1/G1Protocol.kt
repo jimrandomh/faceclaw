@@ -4,6 +4,7 @@ import kotlin.jvm.JvmField
 
 /** The GATT service of g1v0, the firmware of an Even G1 (scouter_kit g1_firmware/docs/VM.md §6.1). */
 object G1Ble {
+    const val SERVICE_UUID = "f3da4d59-277a-4fc9-a1ed-41c9c22d4400"
     const val CTRL_CHAR_UUID = "f3da4d59-277a-4fc9-a1ed-41c9c22d4402"
     const val EVT_CHAR_UUID = "f3da4d59-277a-4fc9-a1ed-41c9c22d4403"
     /** Readable and writable only on an encrypted link: a write with response makes the OS pair, then proves the link is encrypted. */
@@ -15,6 +16,11 @@ object G1Ble {
     const val REQUESTED_MTU = 247
     /** The oldest firmware this app works with: `PROP_SET` came in here. */
     const val REQUIRED_FIRMWARE = "0.5.63"
+    /**
+     * The first firmware with `HANGUP`: an arm ends the connection when asked. Older ones answer "unknown" and stay.
+     * The version scouter_kit g1_firmware/docs/VM.md §6.4 gives for the op.
+     */
+    const val LINK_RELEASE_FIRMWARE = "0.5.67"
 
     /** Dotted versions, component by component. */
     fun firmwareAtLeast(version: String, required: String = REQUIRED_FIRMWARE): Boolean {
@@ -44,6 +50,11 @@ object G1Protocol {
     const val OP_FLASH_CRC = 0x1C
     const val OP_FC_INFO = 0x1D
     const val OP_PROP_SET = 0x1E
+    /**
+     * 0.5.67+: the arm replies, then ends the connection itself (VM.md §6.4). Like the other OP_ values, keep in
+     * sync with the ctrl_op enum in scouter_kit g1_firmware/firmware/src/proto.c (C_HANGUP).
+     */
+    const val OP_HANGUP = 0x1F
 
     /** Control statuses (VM.md §1). */
     const val STATUS_SAFE_MODE = 7

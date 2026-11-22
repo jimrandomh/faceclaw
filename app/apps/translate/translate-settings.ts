@@ -1,4 +1,4 @@
-import { ConfigSettingBoolean, ConfigSettingEnum, voiceProviderSetting, type VoiceProvider } from "../../ui/dashboard-settings";
+import { ConfigSettingBoolean, ConfigSettingEnum, isVoiceProviderSetUp, voiceProviderSetting, type VoiceProvider } from "../../ui/dashboard-settings";
 
 /**
  * The transcription providers that recognize any spoken language, in picker
@@ -14,21 +14,16 @@ function isMultilingual(provider: VoiceProvider): provider is MultilingualProvid
   return (MULTILINGUAL_PROVIDERS as readonly VoiceProvider[]).includes(provider);
 }
 
-/** Whether the provider has its API key (or, for Whisper server, its URL). */
-function isSetUp(provider: MultilingualProvider): boolean {
-  return !voiceProviderSetting.isDisabled(provider);
-}
-
 /**
  * The provider Translate transcribes with, or null when none is set up. Auto
  * uses the main Transcription Provider when it is multilingual, else the
  * first multilingual provider that is set up.
  */
 export function resolveTranslateProvider(choice: TranslateProvider = translateProviderSetting.get()): MultilingualProvider | null {
-  if (choice !== "auto") return isSetUp(choice) ? choice : null;
+  if (choice !== "auto") return isVoiceProviderSetUp(choice) ? choice : null;
   const main = voiceProviderSetting.get();
-  if (isMultilingual(main) && isSetUp(main)) return main;
-  return MULTILINGUAL_PROVIDERS.find(isSetUp) ?? null;
+  if (isMultilingual(main) && isVoiceProviderSetUp(main)) return main;
+  return MULTILINGUAL_PROVIDERS.find(isVoiceProviderSetUp) ?? null;
 }
 
 export const translateProviderSetting = new ConfigSettingEnum<TranslateProvider>({
@@ -42,9 +37,9 @@ export const translateProviderSetting = new ConfigSettingEnum<TranslateProvider>
     const resolved = resolveTranslateProvider("auto");
     return `Auto (${resolved ? voiceProviderSetting.displayValue(resolved) : "none set up"})`;
   },
-  isDisabled: (value) => value !== "auto" && !isSetUp(value),
+  isDisabled: (value) => value !== "auto" && !isVoiceProviderSetUp(value),
   description:
-    "Speech-to-text for Translate. Only cloud providers recognize any language (the on-device engines don't), so each needs its API key in Settings > API Keys, or a Whisper server URL in Settings > Voice. Auto uses the main Transcription Provider when it is one of these.",
+    "Speech-to-text for Translate. Only cloud providers recognize any language (the on-device engines don't), so each needs its API key in Settings > API Keys, or for Whisper server its URL (choose Whisper server in Settings > Voice to set it). Auto uses the main Transcription Provider when it is one of these.",
 });
 
 /**

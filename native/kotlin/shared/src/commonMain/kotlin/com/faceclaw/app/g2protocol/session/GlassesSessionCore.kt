@@ -44,6 +44,8 @@ class GlassesSessionCore(
         internal const val FACECLAW_WAKE_LEASE_RENEW_MS = 45_000L
         internal const val FACECLAW_WAKE_CONTROL_WAIT_MS = 1_500L
         internal const val CFW_CLEANUP_WAIT_MS = 4_000L
+        /** How long an arm gets to hang up after a release request; it normally takes a few connection intervals. */
+        internal const val LINK_RELEASE_WAIT_MS = 1_500
         internal const val COMPASS_REPORT_INTERVAL_MS = 100
         internal const val COMPASS_MIN_CHANGE_DEGREES = 0
 
@@ -307,6 +309,13 @@ class GlassesSessionCore(
      * here.
      */
     internal var customFirmwareDetected = false
+    /**
+     * The revision that read reported ("Faceclaw/<n>"), or -1 for none yet or other firmware.
+     * Only for features newer than the required revision; see [releaseArmLinks].
+     */
+    internal var faceclawFirmwareRevision = -1
+    /** [releaseArmLinks] ran for this start(): close() repeats disconnect(), and one request is enough. */
+    private var armLinksReleased = false
     internal val brightnessPolicy = BrightnessPolicy()
     internal var brightnessSentVisible: Boolean? = null
     internal var brightnessSentLevel = -1
@@ -652,6 +661,7 @@ class GlassesSessionCore(
                 return false
             }
             running = true
+            armLinksReleased = false
             userDisconnectRequested = false
             reconnectHalted = false
             incompatibleFirmware = null
@@ -710,6 +720,10 @@ class GlassesSessionCore(
             // Unknown until the next connection's first push or settings poll.
             silentMode = -1
         }
+        if (!armLinksReleased) {
+            armLinksReleased = true
+            releaseArmLinks()
+        }
         link.disconnect(rightAddress)
         link.disconnect(leftAddress)
         if (hasRingAddress()) {
@@ -718,6 +732,63 @@ class GlassesSessionCore(
         link.close()
         host.setScreenWakeLock(false)
         setStateDisplay("disconnected", "Disconnected.")
+    }
+
+    /**
+     * Before a requested disconnect, ask each arm to hang up where the platform would otherwise
+     * keep the link ([SessionLink.keepsLinkAfterDisconnect]): iOS holds the one a bonded
+     * accessory reads ANCS over, which leaves the glasses unreachable from any other phone.
+     * Both arms are offered and the link asks only the one the system keeps (on iOS, the arm
+     * it shares notifications with); an arm this session already let go of (a failed session
+     * cancels both) is covered too, the link reattaching to what the system still holds. This
+     * is the session's last write, after the cleanup message. An arm whose firmware is too
+     * old for the request, or was never identified by this session, is left alone: it would
+     * not act on it.
+     */
+    private fun releaseArmLinks() {
+        if (isIo || !link.keepsLinkAfterDisconnect()) return
+        val characteristic = if (isG1) G1Ble.CTRL_CHAR_UUID else BleProtocol.WRITE_CHAR_UUID
+        val needed = if (isG1) "g1v0 " + G1Ble.LINK_RELEASE_FIRMWARE else "Faceclaw/" + BleProtocol.LINK_RELEASE_FIRMWARE_REVISION
+        for (arm in intArrayOf(1, 0)) {
+            val address = if (arm == 1) rightAddress else leftAddress
+            val side = if (arm == 1) "right" else "left"
+            val (firmware, request) = monitor.withLock { linkReleaseRequestLocked(arm) }
+            if (request == null) {
+                // Worth a line only when there is a link it could have applied to.
+                if (firmware.isNotEmpty() || link.isConnected(address)) {
+                    logLine("not asking the $side arm to hang up (needs $needed, it reports "
+                        + firmware.ifEmpty { "nothing" } + "); the system may keep its link open")
+                }
+                continue
+            }
+            val released = try {
+                link.releaseFromPeer(address, characteristic, request, LINK_RELEASE_WAIT_MS)
+            } catch (t: Throwable) {
+                logLine("$side arm link release failed: " + safeMessage(t))
+                false
+            }
+            if (!released) logLine("$side arm did not hang up; the system may keep its link open")
+        }
+    }
+
+    /**
+     * What an arm (0 left, 1 right) last said it runs, "" if it never did, and the request
+     * that makes that firmware hang up, or null when it has none: relay op 3 on a G2
+     * (Faceclaw/41), the `HANGUP` control request on a G1 (g1v0 0.5.67).
+     */
+    private fun linkReleaseRequestLocked(arm: Int): Pair<String, ByteArray?> {
+        if (isG1) {
+            val version = g1.armVersions[arm]
+            if (version.isEmpty()) return "" to null
+            val request = if (G1Ble.firmwareAtLeast(version, G1Ble.LINK_RELEASE_FIRMWARE)) {
+                G1Protocol.control(G1Protocol.OP_HANGUP, g1.nextTag())
+            } else null
+            return "g1v0 $version" to request
+        }
+        val revision = faceclawFirmwareRevision
+        if (revision < 0) return "" to null
+        return "Faceclaw/$revision" to
+            (if (revision >= BleProtocol.LINK_RELEASE_FIRMWARE_REVISION) BleProtocol.linkReleaseCommand() else null)
     }
 
     fun close() {

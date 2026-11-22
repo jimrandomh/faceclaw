@@ -58,6 +58,26 @@ class BleProtocol {
          */
         const val R1_WRITE_CHAR_UUID: String = "bae80012-4f05-4503-8e65-3af1f7329d1f"
 
+        /**
+         * First Faceclaw firmware revision whose ANCS relay takes [ANCS_RELAY_OP_RELEASE]; earlier ones reject
+         * the op and stay connected. Keep in sync with the caps string in g2flash patches/settings_ext.c.
+         */
+        const val LINK_RELEASE_FIRMWARE_REVISION: Int = 41
+
+        // The ANCS relay's command header: 'A' 'N', a version, an op, then a u32 token the phone chooses. Written
+        // raw to WRITE_CHAR_UUID, with no TPL envelope. Keep in sync with g2flash patches/ancs_relay.c (the
+        // ANCS_OP_* enum and cfw_ancs_write) and docs/ancs-relay.md. The relay's other ops are built in
+        // app/g2/ancs-client.ts.
+        private val ANCS_RELAY_MAGIC = byteArrayOf('A'.code.toByte(), 'N'.code.toByte())
+        private const val ANCS_RELAY_VERSION: Byte = 1
+        /** RELEASE: the arm hangs up the link the command arrived on. */
+        private const val ANCS_RELAY_OP_RELEASE: Byte = 3
+        /** RELEASE's token is ignored by the firmware; this one is as good as any. */
+        private val ANCS_RELAY_RELEASE_TOKEN = byteArrayOf(1, 0, 0, 0)
+
+        fun linkReleaseCommand(): ByteArray =
+            ANCS_RELAY_MAGIC + byteArrayOf(ANCS_RELAY_VERSION, ANCS_RELAY_OP_RELEASE) + ANCS_RELAY_RELEASE_TOKEN
+
         const val PRELUDE_ACK_SID: Int = 0x01
 
         const val PRELUDE_ACK_MAGIC: Int = 156

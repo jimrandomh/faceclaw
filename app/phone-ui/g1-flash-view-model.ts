@@ -1,4 +1,4 @@
-import { Frame, Observable } from "@nativescript/core";
+import { Frame } from "@nativescript/core";
 
 import { G1ArmScanner } from "../g1/arm-scanner";
 import { EVEN_G1_RESTORE } from "../g1/even-firmware";
@@ -29,6 +29,7 @@ import { resumeAutoReconnect, suppressAutoReconnect } from "../g2/reconnect-poli
 import { ensureBlePermissions } from "../native/ble-permissions";
 import { forgetG1Pairing, G1Flasher, type G1FlasherOptions } from "../native/g1-flasher";
 import { formatErrorMessage } from "../util/format-error";
+import { FlashDetailsViewModel } from "./flash-details-view-model";
 import { finishOnboardingNavigation } from "./onboarding-navigation";
 import { setOnboardingCompleted, setPreviewOnlyMode } from "./onboarding-state";
 
@@ -57,7 +58,7 @@ const FIRST_PAIRING_MS = 120_000;
  * Every run starts by listening for what each arm runs now, so a retry picks up wherever the last one stopped. An arm's
  * new address is saved as soon as it's known.
  */
-export class G1FlashViewModel extends Observable {
+export class G1FlashViewModel extends FlashDetailsViewModel {
   private phase: Phase = "intro";
   private readonly fromOnboarding: boolean;
   private readonly uninstalling: boolean;
@@ -75,7 +76,6 @@ export class G1FlashViewModel extends Observable {
 
   headline = "Install Faceclaw's Firmware";
   status = "";
-  log = "";
   busy = false;
   progress = 0;
 
@@ -94,10 +94,6 @@ export class G1FlashViewModel extends Observable {
   }
 
   // --- what the page binds --------------------------------------------------
-
-  get logVisibility(): "visible" | "collapse" {
-    return this.log ? "visible" : "collapse";
-  }
 
   get busyVisibility(): "visible" | "collapse" {
     return this.busy ? "visible" : "collapse";
@@ -455,12 +451,6 @@ export class G1FlashViewModel extends Observable {
     for (const property of ["primaryLabel", "primaryVisibility", "secondaryVisibility", "progressVisibility"] as const) {
       this.notifyPropertyChange(property, this[property]);
     }
-  }
-
-  private appendLog(line: string): void {
-    const stamp = new Date().toISOString().slice(11, 19);
-    this.set("log", this.log ? `${this.log}\n[${stamp}] ${line}` : `[${stamp}] ${line}`);
-    this.notifyPropertyChange("logVisibility", this.logVisibility);
   }
 }
 

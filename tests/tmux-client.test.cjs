@@ -121,15 +121,29 @@ function waitFor(predicate, what, timeoutMs = 10_000) {
   });
 }
 
+/**
+ * An environment like an SSH exec channel's: no locale (a tmux client outside
+ * a UTF-8 locale turns tabs and non-ASCII output into "_"), and a private
+ * tmux socket directory.
+ */
+function sshLikeEnv(dir) {
+  const env = { ...process.env, TMUX_TMPDIR: dir, SHELL: '/bin/sh', PS1: '$ ' };
+  for (const key of Object.keys(env)) {
+    if (key === 'LANG' || key.startsWith('LC_') || key === 'TMUX') delete env[key];
+  }
+  return env;
+}
+
 test('TmuxClient against a local tmux server', { skip: !haveTmux && 'tmux >= 3.2 not installed' }, async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fc-tmux-'));
-  const env = { ...process.env, TMUX_TMPDIR: dir, SHELL: '/bin/sh', PS1: '$ ' };
-  delete env.TMUX;
+  const env = sshLikeEnv(dir);
   const tm = (...args) => spawnSync('tmux', args, { env, encoding: 'utf8' });
   const openChannel = localChannel(env);
   const clients = [];
   try {
     tm('new-session', '-d', '-s', 'work', '-x', '120', '-y', '40', '/bin/sh');
+    tm('rename-window', '-t', 'work', 'héllo✓');
+    tm('select-pane', '-t', '%0', '-T', 'héllo✓');
     const control = new tmux.TmuxClient({ openChannel, label: 'test', cols: 80, rows: 20, stateKey: 'test-connection' });
     clients.push(control);
     const bells = [];
@@ -137,7 +151,8 @@ test('TmuxClient against a local tmux server', { skip: !haveTmux && 'tmux >= 3.2
     control.start();
     await waitFor(() => control.state().phase === 'connected' && control.state().sessions.length === 1, 'listing');
     assert.equal(control.state().sessions[0].socket, '%0');
-    assert.match(control.state().sessions[0].title, /^work:0 /);
+    // Non-ASCII survives the tmux client even without a UTF-8 locale (-u).
+    assert.equal(control.state().sessions[0].title, 'work:0 héllo✓');
 
     // A bell in the session's current window (tmux's own bell flag misses these).
     tm('send-keys', '-t', '%0', '-l', "printf '\\a'");
@@ -197,6 +212,63 @@ test('TmuxClient against a local tmux server', { skip: !haveTmux && 'tmux >= 3.2
   } finally {
     for (const client of clients) client.stop();
     tm('kill-server');
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('launching into a host with no tmux server, then viewing the new pane', { skip: !haveTmux && 'tmux >= 3.2 not installed' }, async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fc-tmux-'));
+  const env = sshLikeEnv(dir);
+  const tm = (...args) => spawnSync('tmux', args, { env, encoding: 'utf8' });
+  const openChannel = localChannel(env);
+  const clients = [];
+  try {
+    const control = new tmux.TmuxClient({ openChannel, label: 'test', cols: 80, rows: 20, stateKey: 'empty-host' });
+    clients.push(control);
+    control.start();
+    await waitFor(() => control.state().phase === 'connected', 'connected with no server');
+    assert.equal(control.state().sessions.length, 0);
+
+    const pane = await control.launchSession('shell');
+    await waitFor(() => control.state().sessions.some((s) => s.socket === pane), 'launched pane in listing');
+    // The server our launch started gives its panes a UTF-8 locale.
+    assert.match(tm('show-environment', '-g', 'LANG').stdout, /^LANG=.*utf-?8/i);
+
+    const view = new tmux.TmuxClient({ openChannel, label: 'test', cols: 80, rows: 20, stateKey: '' });
+    clients.push(view);
+    let snapshot = null;
+    view.onTerminalData((data, kind) => { if (kind === 'snapshot') snapshot = Buffer.from(data).toString(); });
+    view.onStateChange((state) => {
+      if (state.phase === 'connected' && !view.requested) { view.requested = true; view.connectSession(pane); }
+    });
+    view.onSessionAttached(() => view.view());
+    view.start();
+    await waitFor(() => snapshot !== null, 'snapshot of the launched pane');
+    assert.equal(view.state().phase, 'attached');
+  } finally {
+    for (const client of clients) client.stop();
+    tm('kill-server');
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('connecting to a pane that never shows up gives up', { skip: !haveTmux && 'tmux >= 3.2 not installed' }, async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fc-tmux-'));
+  const env = sshLikeEnv(dir);
+  const view = new tmux.TmuxClient({ openChannel: localChannel(env), label: 'test', cols: 80, rows: 20, stateKey: '', connectTimeoutMs: 500 });
+  let detached = null;
+  view.onSessionDetached((reason) => { detached = reason; });
+  view.onStateChange((state) => {
+    if (state.phase === 'connected' && !view.requested) { view.requested = true; view.connectSession('%42'); }
+  });
+  try {
+    view.start();
+    // No listing change will ever arrive (nothing is running), so only a timer can end the wait.
+    await waitFor(() => detached !== null, 'connect timeout');
+    assert.equal(detached, 'session not found');
+    assert.equal(view.state().status, 'That session no longer exists.');
+  } finally {
+    view.stop();
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });

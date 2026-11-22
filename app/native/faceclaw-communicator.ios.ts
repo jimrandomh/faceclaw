@@ -1,5 +1,6 @@
 import type { GlassesType } from "../ui/dashboard-settings";
 import type { RingInput } from "../g2/ring-input";
+import type { GlassesRingLinkAction } from "./ring-status";
 import { File, knownFolders, path, type ImageSource } from "@nativescript/core";
 import { REQUIRED_FACECLAW_FIRMWARE_VERSION, type FirmwareInfo } from "../g2/firmware-compat";
 import { type CompassEvent } from "./compass-types";
@@ -556,6 +557,14 @@ export class FaceclawCommunicatorBridge {
 
   isSessionReady(): boolean {
     return Boolean(this.communicator.isSessionReady());
+  }
+
+  /**
+   * EXPERIMENTAL glasses-side ring link control (GlassesSessionCore.setGlassesRingLink).
+   * False when the session is not ready or the command could not be queued.
+   */
+  setGlassesRingLink(action: GlassesRingLinkAction, fallbackAddress: string, fallbackName: string): boolean {
+    return Boolean(this.communicator.setGlassesRingLinkActionFallbackAddressFallbackName(action, fallbackAddress, fallbackName));
   }
 
   /** The platform's lock/screen signal (the iOS host also observes protected data itself). */

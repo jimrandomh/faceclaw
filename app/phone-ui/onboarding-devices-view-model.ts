@@ -1,7 +1,9 @@
 import { EventData, Frame, Observable, View } from "@nativescript/core";
 
 import { glassesTypeSetting, type GlassesType } from "../ui/dashboard-settings";
+import { watchAppInstall } from "../native/watch-app-install";
 import { ownsRing, ownsWatch, setOwnsRing, setOwnsWatch, setPreviewOnlyMode } from "./onboarding-state";
+import { openWatchAppInstall, watchAppPrompt, type WatchAppPrompt } from "./watch-app-prompt";
 
 /** A row in the glasses list: a kind of glasses, or no glasses at all. */
 type GlassesChoice = GlassesType | "preview";
@@ -44,10 +46,27 @@ export type GlassesOptionItem = {
  * for a choice. A tap stores it straight away: Preview Only sets the persisted
  * preview-only flag and leaves the glasses type alone, so the Permissions page
  * finishes onboarding instead of moving on to the firmware step.
+ *
+ * Saying you have an Apple Watch also offers to install the watch app, while
+ * the paired watch lacks it (watch-app-prompt.ts).
  */
 export class OnboardingDevicesViewModel extends Observable {
   /** This visit's choice; the page keeps this model when you come Back to it. */
   private selected: GlassesChoice | null = null;
+  private watchApp: WatchAppPrompt = watchAppPrompt();
+  private stopWatchingWatchApp: (() => void) | null = null;
+
+  /** The page's `loaded`, which also follows a return from installing the watch app. Idempotent. */
+  attach(): void {
+    this.stopWatchingWatchApp ??= watchAppInstall.onStateChanged(() => this.refreshWatchApp());
+    this.refreshWatchApp();
+  }
+
+  /** The page's `unloaded`. */
+  detach(): void {
+    this.stopWatchingWatchApp?.();
+    this.stopWatchingWatchApp = null;
+  }
 
   get glassesOptions(): GlassesOptionItem[] {
     const selected = this.selected;
@@ -99,10 +118,42 @@ export class OnboardingDevicesViewModel extends Observable {
 
   set hasWatch(value: boolean) {
     setOwnsWatch(value);
+    this.notifyWatchApp();
   }
 
   get watchLabel(): string {
     return global.isIOS ? "Apple Watch" : "Wear OS watch";
+  }
+
+  // ---- installing the watch app, under the watch switch while it's on ----
+
+  /** "Installed", or how to install; nothing while the switch is off or no watch is paired. */
+  get watchAppNote(): string {
+    if (!ownsWatch() || !this.watchApp.visible) return "";
+    return this.watchApp.installed ? "Faceclaw is installed on your watch." : this.watchApp.hint;
+  }
+
+  get watchAppNoteVisibility(): "visible" | "collapse" {
+    return this.watchAppNote ? "visible" : "collapse";
+  }
+
+  get watchAppInstallVisibility(): "visible" | "collapse" {
+    return ownsWatch() && this.watchApp.canInstall ? "visible" : "collapse";
+  }
+
+  onWatchAppInstallTap(): void {
+    void openWatchAppInstall();
+  }
+
+  private refreshWatchApp(): void {
+    this.watchApp = watchAppPrompt();
+    this.notifyWatchApp();
+  }
+
+  private notifyWatchApp(): void {
+    this.notifyPropertyChange("watchAppNote", this.watchAppNote);
+    this.notifyPropertyChange("watchAppNoteVisibility", this.watchAppNoteVisibility);
+    this.notifyPropertyChange("watchAppInstallVisibility", this.watchAppInstallVisibility);
   }
 
   onNextTap(): void {

@@ -1,6 +1,7 @@
 import { Frame, Observable, type ImageSource } from '@nativescript/core';
 import { phoneInputStyleSetting, type PhoneInputStyle } from '../ui/dashboard-settings';
 import type { PhoneUiButton } from '../apps/evenhub/manager';
+import type { GlassesPadStatus } from '../g2/glasses-display-state';
 
 /** Shared state and actions for remote-controls.xml; transport stays in the host. */
 export class RemoteControlsViewModel extends Observable {
@@ -8,6 +9,7 @@ export class RemoteControlsViewModel extends Observable {
   // host only cancels gestures in flight) when the style really changed.
   private _inputStyle: PhoneInputStyle = phoneInputStyleSetting.get();
   private _evenHubPhoneUi: PhoneUiButton | null = null;
+  private _padStatus: GlassesPadStatus = { label: "", asleep: false, detail: "" };
 
   // ---- which touchpad is showing (Settings > Phone input style) ----
 
@@ -28,30 +30,48 @@ export class RemoteControlsViewModel extends Observable {
     this.notifyPropertyChange("ringPadVisibility", this.ringPadVisibility);
   }
 
+  // ---- the watch face's status lines ----
+
   /**
-   * The watch face's status line reads "Display off": dim it and show the wake
-   * gesture under it. The host overrides this and notifies padFocusClass and
-   * padWakeHintVisibility when it changes.
+   * What the watch face shows, from glassesPadStatus (the same on both
+   * platforms). The host calls this whenever it may have changed: a session or
+   * display-state change, or a gesture that moved the foreground.
    */
-  protected get padDisplayAsleep(): boolean {
-    return false;
+  public setPadStatus(status: GlassesPadStatus): void {
+    const previous = this._padStatus;
+    this._padStatus = status;
+    if (status.label !== previous.label) this.notifyPropertyChange("padFocusLine", this.padFocusLine);
+    if (status.asleep !== previous.asleep) {
+      this.notifyPropertyChange("padFocusClass", this.padFocusClass);
+      this.notifyPropertyChange("padWakeHintVisibility", this.padWakeHintVisibility);
+    }
+    if (status.detail !== previous.detail) {
+      this.notifyPropertyChange("padDetailLine", this.padDetailLine);
+      this.notifyPropertyChange("padDetailVisibility", this.padDetailVisibility);
+    }
   }
 
+  /** What the next gesture lands on: the foreground window's title, or why there is none ("Display off"). */
+  get padFocusLine(): string {
+    return this._padStatus.label;
+  }
+
+  /** "Display off" is dimmed like the dark screen it describes. */
   get padFocusClass(): string {
-    return this.padDisplayAsleep ? "pad-focus pad-focus-asleep" : "pad-focus";
+    return this._padStatus.asleep ? "pad-focus pad-focus-asleep" : "pad-focus";
   }
 
+  /** The wake gesture, shown under "Display off". */
   get padWakeHintVisibility(): "visible" | "collapse" {
-    return this.padDisplayAsleep ? "visible" : "collapse";
+    return this._padStatus.asleep ? "visible" : "collapse";
   }
 
   /**
    * A smaller line under the watch face's status line, or "" to hide it: the
-   * charging case's level while the glasses charge in it. The host overrides
-   * this and notifies padDetailLine and padDetailVisibility when it changes.
+   * charging case's level while the glasses charge in it.
    */
   get padDetailLine(): string {
-    return "";
+    return this._padStatus.detail;
   }
 
   get padDetailVisibility(): "visible" | "collapse" {

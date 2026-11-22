@@ -11,6 +11,7 @@ import { registerSystemTools } from '../assistant/system-tools'
 import { registerWindowTools } from '../assistant/window-tools'
 import { registerNavigateTools } from '../assistant/navigate-tools'
 import { registerRoamTools } from '../assistant/roam-tools'
+import { stopAssistantBridge, syncAssistantBridge } from '../assistant/bridge-sync'
 import { IosNavigationSensors } from '../native/ios-navigation-sensors'
 import { bindCompassSession, receiveCompassEvent } from '../native/compass.ios'
 import { bindBandwidthBenchmarkSession } from '../native/bandwidth-benchmark.ios'
@@ -19,7 +20,7 @@ import { iosVoiceInput } from '../native/ios-voice-input'
 import { voiceActivity } from '../ui/shell/voice-activity'
 import { nightscoutBridge } from '../native/nightscout-bridge'
 import { weatherBridge } from '../native/weather'
-import { FaceclawCommunicatorBridge, resolveIosPeripherals, type CommunicatorState, type RawInputEvent } from '../native/faceclaw-communicator.ios'
+import { FaceclawCommunicatorBridge, resolveIosPeripherals, type CommunicatorState, type PeripheralIdentifiers, type RawInputEvent } from '../native/faceclaw-communicator.ios'
 import { PreviewDisplayTarget, type DisplayTarget } from '../native/preview-display.ios'
 import { AncsClient, ANCS_FIRMWARE_VERSION } from './ancs-client'
 import { G1V0_IMAGE } from '../g1/firmware/g1v0-image'
@@ -27,7 +28,9 @@ import { GlanceHost, type GlanceDisplay } from './glance-host'
 import { createLockScreenImage, LOCK_SCREEN_SURFACE_ID } from './lock-screen'
 import { OsEventTypeList } from './events'
 import { loadDeviceAddresses } from './device-addresses'
+import { directRingRole, handRingBackToGlassesIfNeeded, noteRingSessionMode } from './ring-connection'
 import { updateGlassesPresence } from './glasses-presence'
+import { glassesPadStatus, type GlassesPadStatus } from './glasses-display-state'
 import { firmwareIncompatibilityMessage, hasCompatibleFirmware } from './firmware-compat'
 import { keyboardService } from './keyboard/service'
 import type { KeyEvent } from './keyboard/keys'
@@ -55,7 +58,7 @@ import { onAnySettingChanged,
   previewColorSetting, lockScreenEnabledSetting, getBrightnessPreferences, getStringSettingById,
   nightscoutSiteUrlSetting, nightscoutApiTokenSetting, voiceProviderSetting, elevenLabsApiKeySetting,
   openAiApiKeySetting, sonioxApiKeySetting, whisperServerApiKeySetting, whisperServerLanguageSetting,
-  whisperServerModelSetting, whisperServerUrlSetting, ringConnectionModeSetting, saveRecordingSetting, glassesTypeSetting, shouldPopUpNewNotification } from '../ui/dashboard-settings'
+  whisperServerModelSetting, whisperServerUrlSetting, effectiveRingConnectionMode, type RingConnectionMode, saveRecordingSetting, glassesTypeSetting, glassesModelName, shouldPopUpNewNotification } from '../ui/dashboard-settings'
 import { transcriptionKey, type VoiceProviderSelection } from '../native/cloud-stt-provider'
 import type { PhoneGesture } from '../phone-ui/phone-gestures'
 import { claimGlassesOnboardingAutoLaunch, ONBOARDING_APP_ID } from '../apps/onboarding/onboarding-progress'
@@ -87,6 +90,11 @@ function ancsCapable(capabilities: string): boolean {
 export class IosPreviewController {
   private previewTarget: PreviewDisplayTarget | null = null
   private communicator: FaceclawCommunicatorBridge | null = null
+  /** The peripherals [communicator] was made for: a session keeps the identifiers it started with. */
+  private communicatorIdentifiers: PeripheralIdentifiers | null = null
+  /** Ring connection mode the current session was started with (it applies per connection). */
+  private ringModeAtConnect: RingConnectionMode = 'glasses'
+  private findingArmsAgain = false
   private readonly startedCommunicators = new WeakSet<FaceclawCommunicatorBridge>()
   state: SessionState = { phase: 'disconnected', status: 'Preview only', battery: null, charging: null, ring: false,
     ringBattery: null, ringCharging: null, frames: 0, capabilities: '', leftVersion: '', rightVersion: '', firmwareWarning: '' }
@@ -193,7 +201,7 @@ export class IosPreviewController {
     },
   }
 
-  constructor(private readonly onFrame: (image: ImageSource, focus: string) => void,
+  constructor(private readonly onFrame: (image: ImageSource, pad: GlassesPadStatus) => void,
     private readonly onError: (message: string) => void,
     private readonly onConnectionState: (state: SessionState) => void = () => {},
     private readonly onKeyboardInputChanged: (session: KeyboardInputSession | null) => void = () => {},
@@ -412,6 +420,7 @@ export class IosPreviewController {
     if (!running) {
       void nightscoutBridge.stop().catch(error => this.fail(error))
       weatherBridge.setSessionActive(false)
+      stopAssistantBridge()
       this.glance.dismiss()
       void this.display?.setScreenBlanked(!shell.isScreenOn()).catch(error => this.fail(error))
       this.offSettings?.(); this.offSettings = null
@@ -436,12 +445,17 @@ export class IosPreviewController {
     this.syncLockSetting()
     void nightscoutBridge.start().catch(error => this.fail(error))
     weatherBridge.setSessionActive(true)
+    // The agent bridge, when it is the assistant backend: connected for as long as the runtime
+    // runs (iOS suspends the app, and its sockets, without one), so the agent's proactive tool
+    // calls work outside voice turns.
+    syncAssistantBridge()
     for (const name of [UIDeviceBatteryLevelDidChangeNotification, UIDeviceBatteryStateDidChangeNotification]) {
       this.batteryObservers.push(NSNotificationCenter.defaultCenter.addObserverForNameObjectQueueUsingBlock(name, null, NSOperationQueue.mainQueue, () => this.requestShellRender()))
     }
     const phone = readPhoneBatteryState()
     this.logBluetooth(`Phone battery ${phone.battery ?? "unknown"}% charging=${phone.charging}`)
     this.offSettings = onAnySettingChanged(() => {
+      syncAssistantBridge()
       this.syncLockSetting()
       this.syncContinuousRecording()
       this.pushBrightness()
@@ -618,10 +632,24 @@ export class IosPreviewController {
         const image = this.display?.getCompositePreview(previewColorSetting.get() === 'green', crop)
         if (!image) return
         this.previewCrop = crop
-        this.onFrame(image, this.glassesLocked ? 'Glasses locked' : this.glance.isVisible() ? 'Glanceboard'
-          : `${shell.foregroundWindow()?.title ?? 'Apps'} · ${shell.getFocus() === 'sidebar' ? 'App switcher' : 'App'}`)
+        this.onFrame(image, this.padStatus())
       } catch (error) { this.fail(error) }
     }, 33)
+  }
+  /**
+   * What the watch-style pad shows, worded as on Android ("Display off", the foreground
+   * window's title...). iOS has no charging phase or silent-mode report, so those never show.
+   */
+  private padStatus(): GlassesPadStatus {
+    const batteries = shell.getBatteryLevels()
+    return glassesPadStatus({
+      phase: this.state.phase, silentMode: false, screenOn: shell.isScreenOn(),
+      battery: this.state.battery, glassesModel: glassesModelName(),
+      caseBattery: batteries.case, caseCharging: batteries.caseCharging,
+      foregroundTitle: shell.getForegroundApp()?.title ?? null,
+      // The headless preview has a live (simulated) screen with no glasses connected.
+      previewMode: !this.communicator && this.previewTarget !== null,
+    })
   }
   private fail(error: unknown): void {
     const message = error instanceof Error ? error.stack ?? error.message : String(error)
@@ -913,18 +941,22 @@ export class IosPreviewController {
       this.firmwareCompatible = false
       this.update('connecting', 'Finding configured devices…')
       let identifiers
-      // As on Android, connect to the ring only in "Direct" mode; otherwise a phone-side connect
-      // fails and retries every few seconds, starving the glasses link.
-      const ring = ringConnectionModeSetting.get() === 'direct' ? addresses.ring : ''
+      // Connect to the ring only in "Direct" mode; otherwise a phone-side connect fails and
+      // retries every few seconds, starving the glasses link.
+      const ringMode = effectiveRingConnectionMode()
+      const ring = ringMode === 'direct' ? addresses.ring : ''
       try { identifiers = await resolveIosPeripherals({ ...addresses, ring }) }
       catch (failure) {
         this.update('error', failure instanceof Error ? failure.message : String(failure))
         return
       }
       if (this.communicator) await this.closeCommunicator()
-      const communicator = new FaceclawCommunicatorBridge({ ...identifiers, glassesType: glassesTypeSetting.get() })
+      const communicator = new FaceclawCommunicatorBridge({ ...identifiers, ringRole: directRingRole(ringMode), glassesType: glassesTypeSetting.get() })
+      this.ringModeAtConnect = ringMode
+      noteRingSessionMode(ringMode, ring)
       this.teardownPreviewDisplay()
       this.communicator = communicator
+      this.communicatorIdentifiers = identifiers
       this.wearDetectionRequested = false
       this.bindCommunicator(communicator)
       this.displayReady = this.registerSurfaces(communicator)
@@ -1032,13 +1064,47 @@ export class IosPreviewController {
     // Wear state is a per-transport snapshot: ask again on every new session.
     if (phase !== 'connected') this.wearDetectionRequested = false
     this.update(phase, state.status)
+    if (phase === 'retrying') void this.followMovedArms(communicator)
     if (phase === 'connected') {
       this.syncNotifications(communicator)
       this.ensureWearDetection(communicator)
+      this.handRingBackToGlassesIfNeeded(communicator)
     } else if ((phase === 'disconnected' || phase === 'error') && !this.stopping) {
       // The session ended on its own (an arm unpaired, incompatible firmware): release it and go headless.
       void this.disconnect(state.status)
     }
+  }
+  /**
+   * After a failed attempt, look for the arms again. iOS can come to know an arm under a new identifier
+   * (IosBluetooth.refreshIdentifiers), and then no retry of this session reaches it: start a new one.
+   */
+  private async followMovedArms(communicator: FaceclawCommunicatorBridge): Promise<void> {
+    if (this.findingArmsAgain) return
+    this.findingArmsAgain = true
+    try {
+      const addresses = loadDeviceAddresses()
+      if (deviceAddressError(addresses)) return
+      const ring = effectiveRingConnectionMode() === 'direct' ? addresses.ring : ''
+      const found = await resolveIosPeripherals({ ...addresses, ring })
+      const used = this.communicatorIdentifiers
+      if (this.communicator !== communicator || !used || this.stopping || this.connecting) return
+      if (this.state.phase !== 'retrying' && this.state.phase !== 'connecting') return
+      if (found.left === used.left && found.right === used.right) return
+      this.logBluetooth('An arm has a new Bluetooth identifier; connecting again with it')
+      await this.closeCommunicator()
+      this.ensurePreviewDisplay()
+      await this.connect(!this.active)
+    } catch (error) {
+      this.logBluetooth(`Finding the arms again: ${String(error)}`)
+    } finally {
+      this.findingArmsAgain = false
+    }
+  }
+  /** As on Android: after a Direct session took the ring from the glasses, a session in another mode gives it back. */
+  private handRingBackToGlassesIfNeeded(communicator: FaceclawCommunicatorBridge): void {
+    const ring = loadDeviceAddresses().ring
+    if (handRingBackToGlassesIfNeeded(this.ringModeAtConnect, ring, (address, name) => communicator.setGlassesRingLink('connect', address, name)))
+      this.logBluetooth(`Handing the R1 ring ${ring} back to the glasses`)
   }
   /**
    * Wear reports come from the custom firmware, so like Android only ask once the session
@@ -1118,6 +1184,7 @@ export class IosPreviewController {
     for (const off of this.sessionOffs.splice(0)) off()
     this.notifications = null
     this.communicator = null
+    this.communicatorIdentifiers = null
     bindBandwidthBenchmarkSession(null)
     // Releases an EvenHub app's mic before the session closes.
     this.syncRawMicSession()

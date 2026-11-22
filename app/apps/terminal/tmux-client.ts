@@ -27,6 +27,10 @@
  *   wants it, stalling the program). Output from the session's other panes is
  *   paused as soon as it shows up.
  *
+ * Every tmux client runs with -u: an SSH exec channel usually has no LANG,
+ * and a tmux client outside a UTF-8 locale replaces tabs and non-ASCII
+ * characters in its output with "_" (listings, titles, captures).
+ *
  * Requires tmux 3.2+ (control-mode pause/continue and per-window sizes);
  * older versions get a message asking for an upgrade. 3.8's history_added /
  * history_collected make scrollback paging exact; before that it assumes
@@ -68,6 +72,8 @@ export type TmuxClientOptions = {
    * mustn't consume bells the watching client hasn't seen yet.
    */
   stateKey: string;
+  /** How long connectSession waits for a pane it can't see yet (just launched). */
+  connectTimeoutMs?: number;
 };
 
 const POLL_INTERVAL_S = 2;
@@ -76,8 +82,11 @@ const LAUNCH_TIMEOUT_MS = 15_000;
 const SUBMIT_DELAY_MS = 150;
 // send-keys -H takes one argument per byte; keep command lines modest.
 const SEND_KEYS_CHUNK_BYTES = 256;
-// How many listings connectSession waits for a just-launched pane to appear.
-const CONNECT_WAIT_POLLS = 4;
+const CONNECT_TIMEOUT_MS = 10_000;
+// With no listing changes, the poller still writes a line every this many
+// polls, so it dies (SIGPIPE) soon after its SSH channel goes away instead of
+// lingering on the host.
+const HEARTBEAT_POLLS = 5;
 
 // ---- host-side scripts ----
 
@@ -105,6 +114,18 @@ export function hostCommand(script: string): string {
     throw new Error("host script contains characters that can't be quoted portably");
   }
   return `exec /bin/sh -c '${script}'`;
+}
+
+/**
+ * Exports a UTF-8 LANG when the exec environment has no locale at all (the
+ * usual case over SSH), so a tmux server our launch starts hands its panes a
+ * UTF-8 locale rather than C. Linux spells the names "C.utf8".
+ */
+function utf8Locale(): string {
+  return (
+    '[ -n "$LC_ALL$LC_CTYPE$LANG" ] || for l in C.UTF-8 C.utf8 en_US.UTF-8 en_US.utf8; do ' +
+    'if locale -a 2>/dev/null | grep -qx "$l"; then LANG=$l; export LANG; break; fi; done'
+  );
 }
 
 /**
@@ -153,10 +174,12 @@ export function pollerCommand(): string {
       `F="${format}"`,
       `H="${hook}"`,
       "P=-",
-      // Print the listing only when it changed. No server running: the
-      // listing is empty.
-      `while :; do O=$("$T" set-hook -g "alert-bell[${BELL_HOOK_INDEX}]" "$H" \\; list-panes -a -F "$F" 2>/dev/null); ` +
-        `if [ "$O" != "$P" ]; then echo FACECLAW-BEGIN; printf "%s\\n" "$O"; echo FACECLAW-END; P=$O; fi; sleep ${POLL_INTERVAL_S}; done`,
+      "N=0",
+      // Print the listing only when it changed (no server running: the
+      // listing is empty), and a heartbeat line when it hasn't for a while.
+      `while :; do O=$("$T" -u set-hook -g "alert-bell[${BELL_HOOK_INDEX}]" "$H" \\; list-panes -a -F "$F" 2>/dev/null); ` +
+        `if [ "$O" != "$P" ]; then echo FACECLAW-BEGIN; printf "%s\\n" "$O"; echo FACECLAW-END; P=$O; N=0; ` +
+        `else N=$((N+1)); if [ $N -ge ${HEARTBEAT_POLLS} ]; then echo FACECLAW-ALIVE; N=0; fi; fi; sleep ${POLL_INTERVAL_S}; done`,
     ].join("; "),
   );
 }
@@ -164,7 +187,7 @@ export function pollerCommand(): string {
 export function viewerCommand(sessionId: string): string {
   if (!/^\$\d+$/.test(sessionId)) throw new Error(`bad tmux session id ${sessionId}`);
   // "\$" keeps /bin/sh from expanding the session id ($3) as a variable.
-  return hostCommand(`${locateTmux()}; exec "$T" -C attach-session -t "\\${sessionId}"`);
+  return hostCommand(`${locateTmux()}; exec "$T" -u -C attach-session -t "\\${sessionId}"`);
 }
 
 const SAFE_LAUNCH_COMMAND = /^[A-Za-z0-9 ._/+:=@%,-]+$/;
@@ -176,7 +199,7 @@ export function launchCommand(preset: string): string {
     throw new Error(`Launch preset "${preset}" has characters that can't be passed to tmux.`);
   }
   return hostCommand(
-    `${locateTmux()}; exec "$T" new-session -d -P -F "FACECLAW-LAUNCHED #{pane_id} #{session_id}"${command ? ` "${command}"` : ""}`,
+    `${locateTmux()}; ${utf8Locale()}; exec "$T" -u new-session -d -P -F "FACECLAW-LAUNCHED #{pane_id} #{session_id}"${command ? ` "${command}"` : ""}`,
   );
 }
 
@@ -421,7 +444,7 @@ export class TmuxClient {
   private rows = new Map<string, PaneRow>();
   private sessions: G2MirrorSession[] = [];
   private listings = 0;
-  private pendingConnect: { paneId: string; deadline: number } | null = null;
+  private pendingConnect: { paneId: string; timer: ReturnType<typeof setTimeout> } | null = null;
 
   private viewer: LineChannel | null = null;
   private attachedPane: PaneRow | null = null;
@@ -562,12 +585,22 @@ export class TmuxClient {
     if (this.phase !== "connected") return;
     const row = this.rows.get(paneId);
     if (!row) {
-      // Just launched, perhaps: wait a few listings for it to show up.
-      this.pendingConnect = { paneId, deadline: this.listings + CONNECT_WAIT_POLLS };
+      // Just launched, perhaps: wait for a listing that has it. (Listings
+      // only arrive when something changed, so the wait is timed, not
+      // counted in listings.)
+      this.clearPendingConnect();
+      const generation = this.generation;
+      const timer = setTimeout(() => {
+        if (generation !== this.generation || this.pendingConnect?.timer !== timer) return;
+        this.pendingConnect = null;
+        this.setState("connected", "That session no longer exists.");
+        for (const listener of this.detachedListeners) listener("session not found");
+      }, this.options.connectTimeoutMs ?? CONNECT_TIMEOUT_MS);
+      this.pendingConnect = { paneId, timer };
       this.setState(this.phase, "Waiting for the session...");
       return;
     }
-    this.pendingConnect = null;
+    this.clearPendingConnect();
     this.openViewer(row);
   }
 
@@ -739,18 +772,16 @@ export class TmuxClient {
         }
       }
     }
-    if (this.pendingConnect) {
-      const { paneId, deadline } = this.pendingConnect;
-      const row = rows.get(paneId);
-      if (row) {
-        this.pendingConnect = null;
-        this.openViewer(row);
-      } else if (this.listings >= deadline) {
-        this.pendingConnect = null;
-        this.setState("connected", "That session no longer exists.");
-        for (const listener of this.detachedListeners) listener("session not found");
-      }
+    const row = this.pendingConnect && rows.get(this.pendingConnect.paneId);
+    if (row) {
+      this.clearPendingConnect();
+      this.openViewer(row);
     }
+  }
+
+  private clearPendingConnect(): void {
+    if (this.pendingConnect) clearTimeout(this.pendingConnect.timer);
+    this.pendingConnect = null;
   }
 
   private labelFor(row: PaneRow): string {
@@ -1061,7 +1092,7 @@ export class TmuxClient {
     this.rows = new Map();
     this.sessions = [];
     this.listings = 0;
-    this.pendingConnect = null;
+    this.clearPendingConnect();
     this.attachedPane = null;
     this.viewing = false;
     this.sizeDirty = false;

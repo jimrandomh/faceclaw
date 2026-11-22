@@ -21,7 +21,7 @@ const ANTHROPIC_URL = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_VERSION = "2023-06-01";
 
 /** Default model for voice continuations (and a sensible general default). */
-export const DEFAULT_LLM_MODEL = "claude-sonnet-5";
+export const DEFAULT_LLM_MODEL = "claude-sonnet-5-5";
 
 /**
  * A content block in an Anthropic message. Text-only flows (dictation refine)

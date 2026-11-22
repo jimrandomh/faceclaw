@@ -149,6 +149,17 @@ test('compatible model resolves only with URL and model, and Auto remains unchan
   }), null, 'Auto never selects a custom provider');
 });
 
+test('Astra is offered and resolves to an OpenAI model with the OpenAI key', () => {
+  const { ASSISTANT_MODEL_CHOICES, assistantModelLabel, resolveAssistantModel } = assistant().load('app/assistant/models.ts');
+  assert.equal(ASSISTANT_MODEL_CHOICES.includes('astra'), true);
+  assert.equal(assistantModelLabel('astra'), 'Astra');
+  assert.equal(resolveAssistantModel('astra', { anthropic: 'unused', openai: '' }), null);
+  const resolved = resolveAssistantModel('astra', { anthropic: '', openai: ' key ' });
+  assert.equal(resolved.provider, 'openai');
+  assert.match(resolved.model, /astra/);
+  assert.equal(resolved.apiKey, 'key');
+});
+
 test('streamed tool calls execute through Faceclaw, results continue the turn, and history survives follow-up', async () => {
   const h = assistant();
   h.send('Set a one-minute timer');

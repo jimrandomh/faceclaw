@@ -77,6 +77,22 @@ private class FakeLink(private val platform: ProtocolPlatform) : SessionLink {
     @Volatile var headsetCharging = false
     @Volatile var connects = 0
     var seq = 0
+    /** Behave like CoreBluetooth: [disconnect] alone leaves the physical link up. */
+    @Volatile var keepsLink = false
+    /** Each [releaseFromPeer] call: the address, plus what the link had seen by then. */
+    val releases = ArrayList<Release>()
+
+    class Release(val address: String, val characteristicUuid: String, val request: ByteArray, val cleanupsWritten: Int, val disconnects: Int)
+
+    override fun keepsLinkAfterDisconnect(): Boolean = keepsLink
+
+    override fun releaseFromPeer(address: String, characteristicUuid: String, request: ByteArray, timeoutMs: Int): Boolean {
+        lock.withLock {
+            releases.add(Release(address, characteristicUuid, request.copyOf(), writesList.count { it.kind == "cfw-cleanup" }, disconnected.size))
+            connected.remove(address)
+        }
+        return true
+    }
 
     val writes: List<Write>
         get() = lock.withLock { writesList.toList() }
@@ -777,6 +793,67 @@ class GlassesSessionCoreTest {
         } finally {
             s.core.close()
         }
+    }
+
+    @Test
+    fun aLinkTheSystemWouldKeepIsHungUpByTheGlassesOnDisconnect() {
+        val s = Session()
+        s.core.setRequiredFirmwareRevision(40)
+        s.link.firmwareExtension = "Faceclaw/41"
+        s.link.keepsLink = true
+        s.startAndAwaitLayout()
+        s.core.disconnect()
+        // Both arms are asked, right first, after the cleanup message and before the local disconnect.
+        assertEquals(listOf(RIGHT, LEFT), s.link.releases.map { it.address })
+        for (release in s.link.releases) {
+            assertEquals(BleProtocol.WRITE_CHAR_UUID, release.characteristicUuid)
+            assertContentEquals(hex("414e010301000000"), release.request)
+            assertEquals(1, release.cleanupsWritten)
+            assertEquals(0, release.disconnects)
+        }
+        assertEquals(listOf(RIGHT, LEFT), s.link.disconnected)
+        // close() runs disconnect() again; the glasses are not asked twice.
+        s.core.close()
+        assertEquals(2, s.link.releases.size)
+    }
+
+    @Test
+    fun olderFirmwareIsNotAskedToHangUp() {
+        val s = Session()
+        s.core.setRequiredFirmwareRevision(40)
+        s.link.firmwareExtension = "Faceclaw/40"
+        s.link.keepsLink = true
+        s.startAndAwaitLayout()
+        s.core.close()
+        assertEquals(0, s.link.releases.size)
+        assertEquals(listOf(RIGHT, LEFT), s.link.disconnected.take(2))
+        assertTrue(s.host.hasLog("not asking the right arm to hang up (needs Faceclaw/41, it reports Faceclaw/40)"), s.host.logs().takeLast(10).toString())
+    }
+
+    @Test
+    fun aLinkThatDropsOnDisconnectIsNotAskedToHangUp() {
+        val s = Session()
+        s.core.setRequiredFirmwareRevision(40)
+        s.link.firmwareExtension = "Faceclaw/41"
+        s.startAndAwaitLayout()
+        s.core.close()
+        assertEquals(0, s.link.releases.size)
+        assertEquals(listOf(RIGHT, LEFT), s.link.disconnected.take(2))
+    }
+
+    @Test
+    fun anArmAFailedSessionAlreadyLetGoOfIsStillAskedToHangUp() {
+        val s = Session()
+        s.core.setRequiredFirmwareRevision(40)
+        s.link.firmwareExtension = "Faceclaw/41"
+        s.link.keepsLink = true
+        s.startAndAwaitLayout()
+        // The session fails and cancels both arms; the user disconnects before the redial.
+        s.core.handleTransportFailure("test drop")
+        assertTrue(waitUntil(5_000) { !s.layoutCreated() })
+        assertFalse(s.link.isConnected(RIGHT) || s.link.isConnected(LEFT))
+        s.core.close()
+        assertEquals(listOf(RIGHT, LEFT), s.link.releases.map { it.address })
     }
 
     @Test

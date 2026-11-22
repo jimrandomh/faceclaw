@@ -60,8 +60,8 @@ export function createMainPage(): Page {
   GridLayout.setRow(keyboardPanel, 1); root.addChild(keyboardPanel)
   let focusTimer: ReturnType<typeof setTimeout> | null = null
   const keyboardField = () => keyboardPanel.getViewById<TextView>('keyboardInputField')
-  const controller = new IosPreviewController((image, label) => {
-    mirror.imageSource = image; model.set('padFocusLine', label)
+  const controller = new IosPreviewController((image, pad) => {
+    mirror.imageSource = image; model.setPadStatus(pad)
   }, message => {
     void Dialogs.alert({ title: 'Faceclaw', message, okButtonText: 'OK' })
   }, connection => {

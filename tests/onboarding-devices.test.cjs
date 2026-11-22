@@ -13,12 +13,14 @@ function load(file, modules, globals) {
   return context.exports;
 }
 
-function fixture({ glasses = 'g2', ios = false, completed = false, ring = false, watch = false, previewOnly = false } = {}) {
-  const state = { glasses, ring, watch, navigations: [], backs: 0, previewOnly, completed };
+function fixture({ glasses = 'g2', ios = false, completed = false, ring = false, watch = false, previewOnly = false,
+  watchApp = 'unknown', watchAppSource = 'watch-app' } = {}) {
+  const state = { glasses, ring, watch, navigations: [], backs: 0, previewOnly, completed,
+    watchApp, watchAppSource, watchAppListeners: new Set(), watchAppOpened: 0, changes: [] };
   const frame = { navigate: entry => state.navigations.push(entry), goBack: () => { state.backs++; }, canGoBack: () => true, backStack: [] };
-  class Observable { notifyPropertyChange() {} }
+  class Observable { notifyPropertyChange(name) { state.changes.push(name); } }
   const core = {
-    Observable, Frame: { topmost: () => frame }, Screen: { mainScreen: { heightDIPs: 800, widthDIPs: 400 } },
+    Observable, Dialogs: { alert: async () => {} }, Frame: { topmost: () => frame }, Screen: { mainScreen: { heightDIPs: 800, widthDIPs: 400 } },
     Application: { on() {}, off() {}, suspendEvent: 'suspend', resumeEvent: 'resume' },
   };
   const onboardingState = {
@@ -30,7 +32,13 @@ function fixture({ glasses = 'g2', ios = false, completed = false, ring = false,
   };
   const settings = { glassesTypeSetting: { get: () => state.glasses, set: value => { state.glasses = value; } } };
   const globals = { global: { isIOS: ios, isAndroid: !ios } };
+  const watchAppInstall = {
+    getState: () => state.watchApp, getSource: () => state.watchAppSource,
+    onStateChanged: listener => { state.watchAppListeners.add(listener); return () => state.watchAppListeners.delete(listener); },
+    openSource: async () => { state.watchAppOpened++; return true; },
+  };
   const modules = {
+    '../native/watch-app-install': { watchAppInstall },
     '@nativescript/core': core, './onboarding-state': onboardingState, '../ui/dashboard-settings': settings,
     './onboarding-navigation': { finishOnboardingNavigation: () => state.navigations.push('finish') },
     '../g1/even-firmware': { EVEN_G1_RESTORE: { version: '1.6.6' } },
@@ -53,6 +61,9 @@ function fixture({ glasses = 'g2', ios = false, completed = false, ring = false,
     '../native/file-access', '../native/notification-access']) modules[name] = granted;
   modules['../native/media-controller'] = { mediaControllerBridge: { hasAccess: () => true } };
   const loadPage = file => load(`app/phone-ui/${file}.ts`, modules, globals);
+  // The real wording, over the fake install state.
+  modules['../g2/watch-app-install-guide'] = load('app/g2/watch-app-install-guide.ts', modules, globals);
+  modules['./watch-app-prompt'] = loadPage('watch-app-prompt');
   return { state, loadPage };
 }
 
@@ -119,6 +130,47 @@ test('the disclaimer and firmware steps name only the chosen glasses', () => {
   }
 });
 
+test('saying you have an Apple Watch offers to install the watch app while the watch lacks it', async () => {
+  const { state, loadPage } = fixture({ ios: true, watchApp: 'not-installed' });
+  const { OnboardingDevicesViewModel } = loadPage('onboarding-devices-view-model');
+  const devices = new OnboardingDevicesViewModel();
+  devices.attach(); devices.attach();
+  assert.equal(state.watchAppListeners.size, 1);
+  assert.equal(devices.watchAppInstallVisibility, 'collapse', 'nothing is offered until the switch is on');
+  assert.equal(devices.watchAppNoteVisibility, 'collapse');
+
+  state.changes.length = 0;
+  devices.hasWatch = true;
+  assert.equal(state.watch, true);
+  assert.deepEqual(state.changes, ['watchAppNote', 'watchAppNoteVisibility', 'watchAppInstallVisibility']);
+  assert.equal(devices.watchAppInstallVisibility, 'visible');
+  assert.match(devices.watchAppNote, /Available Apps/);
+  devices.onWatchAppInstallTap();
+  await null;
+  assert.equal(state.watchAppOpened, 1);
+
+  // Back from the Watch app with it installed.
+  state.watchApp = 'installed';
+  for (const listener of state.watchAppListeners) listener();
+  assert.equal(devices.watchAppInstallVisibility, 'collapse');
+  assert.equal(devices.watchAppNote, 'Faceclaw is installed on your watch.');
+
+  devices.hasWatch = false;
+  assert.equal(devices.watchAppNoteVisibility, 'collapse');
+  devices.detach();
+  assert.equal(state.watchAppListeners.size, 0);
+});
+
+test('the watch switch offers nothing with no paired Apple Watch, or on Android', () => {
+  for (const options of [{ ios: true, watchApp: 'no-watch' }, { ios: false, watchApp: 'unknown' }]) {
+    const { loadPage } = fixture({ ...options, watch: true });
+    const devices = new (loadPage('onboarding-devices-view-model').OnboardingDevicesViewModel)();
+    devices.attach();
+    assert.equal(devices.watchAppInstallVisibility, 'collapse');
+    assert.equal(devices.watchAppNoteVisibility, 'collapse');
+  }
+});
+
 test('Preview Only is a glasses choice that skips the firmware step', () => {
   const { state, loadPage } = fixture({ glasses: 'rayneo-io' });
   const { OnboardingDevicesViewModel } = loadPage('onboarding-devices-view-model');
@@ -173,6 +225,24 @@ test('the disconnect page drops the Even app instructions only when setting up a
     assert.equal(model.settingsButtonVisibility, 'visible');
     assert.match(model.otherAppsInstructions, /Even Realities/);
   }
+});
+
+test('the disconnect page also covers the R1 ring when one was chosen', () => {
+  const page = options => new (fixture(options).loadPage('onboarding-unpair-view-model').OnboardingUnpairViewModel)();
+
+  assert.doesNotMatch(page({ glasses: 'g2' }).evenAppInstructions, /ring/);
+
+  const android = page({ glasses: 'g2', ring: true });
+  assert.match(android.evenAppInstructions, /select your glasses.*press Disconnect\. Then go back to Home and disconnect your R1 ring the same way \(or disable the Even app's "nearby devices" permission\)\.$/);
+  assert.match(page({ glasses: 'g1', ring: true, ios: true }).evenAppInstructions, /disconnect your R1 ring the same way\.$/);
+
+  // An iO has nothing to do with the Even app, but a ring used with one does.
+  const io = page({ glasses: 'rayneo-io', ring: true });
+  assert.equal(io.evenAppVisibility, 'visible');
+  assert.equal(io.settingsButtonVisibility, 'visible');
+  assert.match(io.evenAppInstructions, /^If your R1 ring is connected to the Even Realities app, go to Home, select the ring,/);
+  assert.doesNotMatch(io.evenAppInstructions, /glasses/);
+  assert.doesNotMatch(io.otherAppsInstructions, /Even/);
 });
 
 test('pairing during setup follows the choices; from the menu it offers everything', () => {
