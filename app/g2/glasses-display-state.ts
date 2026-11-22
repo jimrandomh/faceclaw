@@ -65,6 +65,21 @@ export function glassesDisplayAsleep(state: GlassesDisplayState): boolean {
   );
 }
 
+/**
+ * The watch-style pad's face (remote-controls.xml): the status line, whether
+ * it reads "Display off" (dimmed, with the wake hint under it), and the
+ * smaller line under it ("" for none).
+ */
+export type GlassesPadStatus = { label: string; asleep: boolean; detail: string };
+
+export function glassesPadStatus(state: GlassesDisplayState): GlassesPadStatus {
+  return {
+    label: glassesDisplayLabel(state),
+    asleep: glassesDisplayAsleep(state),
+    detail: glassesDisplayDetail(state),
+  };
+}
+
 export function chargingDisplayLabel(battery: number | null, glassesModel: string): string {
   return validBatteryLevel(battery) ? `Charging: ${glassesModel} ${battery}%` : "Charging";
 }

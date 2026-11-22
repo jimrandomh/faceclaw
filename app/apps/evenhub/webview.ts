@@ -22,12 +22,17 @@
  * guarded by an origin check.
  */
 import { Application, Utils } from "@nativescript/core";
+import { EvenHubFileChooser } from "./file-chooser";
 import { EVENHUB_BRIDGE_INJECT_SCRIPT, buildFaceclawExtensionsScript, type EvenHubSession } from "./session";
 import { FACECLAW_VERSION } from "../../version";
 
 declare const android: any;
 declare const com: any;
 declare const java: any;
+
+// One Android activity can own one file-picker result. Keep this coordinator
+// independent of any activity or WebView so recreation cannot strand a callback.
+const fileChooser = new EvenHubFileChooser();
 
 export type EvenHubWebView = {
   evaluateJs: (js: string) => void;
@@ -108,6 +113,7 @@ export function createEvenHubWebView(session: EvenHubSession): EvenHubWebView {
     },
     onRenderProcessGone: (crashed: boolean) => {
       gone = true;
+      fileChooser.cancel(webView);
       session.webViewFailed(crashed
         ? "The app's web page crashed. Close and reopen the app."
         : "Android stopped the app's web page to free memory. Close and reopen the app.", true);
@@ -144,8 +150,14 @@ export function createEvenHubWebView(session: EvenHubSession): EvenHubWebView {
     ),
   );
 
-  // Surface the app's console in logcat (tag FaceclawEvenHubConsole).
-  webView.setWebChromeClient(new com.faceclaw.app.FaceclawEvenHubChromeClient());
+  // Standard HTML file inputs use Android's document picker. The listener is
+  // host-internal; no new JavaScript interface or origin privilege is exposed.
+  webView.setWebChromeClient(new com.faceclaw.app.FaceclawEvenHubChromeClient(
+    new com.faceclaw.app.FaceclawEvenHubFileChooserListener({
+      onShowFileChooser: (owner: unknown, callback: unknown, params: unknown) =>
+        fileChooser.show(owner, callback, params),
+    }),
+  ));
 
   const nativeHost = com.faceclaw.app.FaceclawEvenHubWebViewHost.getInstance();
   nativeHost.attach(activity, webView, appCheck);
@@ -165,6 +177,7 @@ export function createEvenHubWebView(session: EvenHubSession): EvenHubWebView {
     },
     destroy: () => {
       try {
+        fileChooser.cancel(webView);
         nativeHost.detach(webView);
       } catch (error) {
         console.warn(`evenhub webview destroy failed: ${error}`);

@@ -1,4 +1,20 @@
 
+/** Short weekday names, indexed by `Date#getDay()`. */
+export const WEEKDAY_ABBREVIATIONS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+/** Short month names, indexed by `Date#getMonth()`. */
+export const MONTH_ABBREVIATIONS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/** Local time of day in either clock format: "09:05" / "14:05", or "9:05 AM" / "2:05 PM". */
+export function formatHourMinute(date: Date, twelveHour: boolean): string {
+  const minutes = String(date.getMinutes()).padStart(2, "0");
+  const hour24 = date.getHours();
+  if (twelveHour) {
+    const hour12 = ((hour24 + 11) % 12) + 1;
+    return `${hour12}:${minutes} ${hour24 < 12 ? "AM" : "PM"}`;
+  }
+  return `${String(hour24).padStart(2, "0")}:${minutes}`;
+}
+
 export function formatTimestamp(timestampMs: number): string {
   const date = new Date(timestampMs);
   return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;

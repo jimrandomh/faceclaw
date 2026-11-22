@@ -31,6 +31,38 @@ test('the touchpad follows the Phone input style setting and only notifies when 
   assert.equal(h.create().ringPadVisibility, 'visible');
 });
 
+test('the watch face shows the pad status, dimming "Display off" with the wake hint under it', () => {
+  const h = fixture();
+  assert.equal(h.model.padFocusLine, '');
+  assert.equal(h.model.padWakeHintVisibility, 'collapse');
+  assert.equal(h.model.padDetailVisibility, 'collapse');
+
+  h.model.setPadStatus({ label: 'Music', asleep: false, detail: '' });
+  assert.equal(h.model.padFocusLine, 'Music');
+  assert.equal(h.model.padFocusClass, 'pad-focus');
+  assert.deepEqual(h.changes, [['padFocusLine', 'Music']]);
+
+  h.changes.length = 0;
+  h.model.setPadStatus({ label: 'Display off', asleep: true, detail: '' });
+  assert.equal(h.model.padFocusLine, 'Display off');
+  assert.equal(h.model.padFocusClass, 'pad-focus pad-focus-asleep');
+  assert.equal(h.model.padWakeHintVisibility, 'visible');
+  assert.deepEqual(h.changes, [['padFocusLine', 'Display off'], ['padFocusClass', 'pad-focus pad-focus-asleep'],
+    ['padWakeHintVisibility', 'visible']]);
+
+  // iOS pushes the status with every preview frame; an equal one is not a change.
+  h.changes.length = 0;
+  h.model.setPadStatus({ label: 'Display off', asleep: true, detail: '' });
+  assert.deepEqual(h.changes, []);
+
+  h.model.setPadStatus({ label: 'Charging: G2 72%', asleep: false, detail: 'Case 64%' });
+  assert.equal(h.model.padWakeHintVisibility, 'collapse');
+  assert.equal(h.model.padDetailLine, 'Case 64%');
+  assert.equal(h.model.padDetailVisibility, 'visible');
+  assert.deepEqual(h.changes.map(change => change[0]),
+    ['padFocusLine', 'padFocusClass', 'padWakeHintVisibility', 'padDetailLine', 'padDetailVisibility']);
+});
+
 test('the EvenHub phone-UI button shows only with an icon and opens that app through the host', () => {
   const h = fixture(), opened = [], icon = { id: 'icon' };
   h.model.showEvenHubPhoneUi = windowId => opened.push(windowId);

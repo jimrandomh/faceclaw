@@ -66,7 +66,35 @@ These come from what watchOS allows apps to do:
 There's no tip-tap detector like Wear OS's experimental one; Double Tap is the
 system's reliable version of the same idea.
 
-## Building and installing
+## Installing
+
+The watch app comes inside Faceclaw for iPhone, and the system installs it; no iPhone
+app can do that itself. With Automatic App Install on (Watch app > General) it follows
+the iPhone app on its own. Otherwise, start from Faceclaw on the iPhone: with a watch
+paired, Settings (the gear under the preview) has an **Apple Watch app** row. Its
+**Install** button opens the place the system installs it from, and the row changes to
+*Installed* once the watch has the app. First-run setup offers the same button when you
+say you have an Apple Watch, and so does **Install watch app** in Settings > Watch on
+the glasses, for as long as the watch lacks the app.
+
+iOS only lets the app on screen open another one. Chosen on the glasses with the iPhone
+in a pocket, Install watch app says to unlock the phone and open Faceclaw; the hand-over
+then happens by itself, if that's within two minutes.
+
+Where the button leads depends on where the iPhone app came from:
+
+- **The App Store, or built from source**: the iPhone's Watch app. Scroll down to
+  Available Apps and tap Install next to Faceclaw.
+- **TestFlight**: the TestFlight app. On Faceclaw's page, the button that installs the
+  Apple Watch app is under Information. (The Watch app lists a beta under Available
+  Apps too, but only says "Install from TestFlight app…" beside it.)
+
+A build from source that was made without the watch app (see below) says so instead of
+showing the button. The code is `app/native/watch-app-install.ios.ts`, and the wording
+of the steps is in `app/g2/watch-app-install-guide.ts`; the TestFlight route hasn't
+been run yet, since that needs a TestFlight build.
+
+## Building
 
 The watch app is its own Xcode project, so it can be opened and previewed alone:
 
@@ -97,6 +125,9 @@ Then, the first time:
    installs the app on it.
 3. `npm run run:ios -- --device <iphone-id> --no-hmr` builds and installs the iPhone
    app with the watch app inside.
+
+Once the watch is registered, step 2 is optional: the iPhone app from step 3 can put
+its embedded copy on the watch, as described under Installing.
 
 Xcode has to be new enough for the watch's OS: Xcode 26.4 can't prepare a watch on
 watchOS 27 for development ("Could not support development", "doesn't have a known
@@ -191,6 +222,9 @@ near an element's top-left corner, so tests that hold must use a coordinate.
 - *"No phone"* — the watch can't reach the iPhone right now.
 - *"Install Faceclaw on phone"* — the system doesn't see a linked phone app: it isn't
   installed, or it was built without `FACECLAW_EMBED_WATCH=1`, or the bundle IDs differ.
+  A watch app installed before 0.9.0 is in the last group for good: its bundle ID was
+  `<phone app's>.watchkitapp`, and it's now `.watchremote`. Delete it from the watch and
+  install the current one.
 - *"Open Faceclaw on phone"* — the phone app woke for our message but its dashboard
   isn't up (for instance, onboarding isn't finished). Open it once.
 - *"The glasses are not connected"* — tap Status > Connect.

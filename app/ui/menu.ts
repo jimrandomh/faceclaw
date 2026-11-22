@@ -1,4 +1,4 @@
-import { GrayImage, type UiFont } from "../graphics/image";
+import { GrayImage, imageFromAsciiArt, type UiFont } from "../graphics/image";
 import { screenHeight } from "../graphics/screen-size";
 import { wrapText } from "../graphics/textwrap";
 import { getDefaultSmallFont } from "../graphics/ui-fonts";
@@ -10,7 +10,7 @@ import { MENU_ANIMATION_KEY, setMenuAnimationReader } from "./menu-animation-pre
 import { Menu, MENU_HIGHLIGHT_FILL, MENU_HIGHLIGHT_STROKE } from "./menu-core";
 
 import { GESTURE_DOUBLE_CLICK, InputEvent } from "./gestures";
-import { LIST_ROW_TEXT_INSET, centeredTextY, lineStep, listRowHeight, menuTitleHeight } from "./metrics";
+import { LIST_ROW_TEXT_INSET, lineStep, listRowHeight, menuTitleHeight } from "./metrics";
 
 // Menu<T> and IconGrid consult this (through their motion classes) at each
 // paint; a SharedPreferences read, so changes apply to the next navigation.
@@ -184,9 +184,67 @@ export function drawListScrollbar(
 }
 
 /**
- * Draw a "▶>" submenu indicator inset at the right edge of a row's selection
- * highlight box, vertically centered within it. Pass the same rect as the
- * row's drawSelectionHighlight call (the row need not actually be selected).
+ * The submenu indicator: a solid right-pointing triangle, as a bitmap rather
+ * than a "▶" character. As text it came from a fallback face wherever the UI
+ * font lacks the glyph, and Android's and iOS's fallbacks draw different
+ * triangles. Antialiased by hand: the edges rise one row per two columns, so
+ * each row ends in a 3/4 pixel and then a 1/4 pixel.
+ */
+const SUBMENU_ARROW_PALETTE = { "#": 255, "+": 191, "-": 64 };
+const SUBMENU_ARROW = imageFromAsciiArt(
+  [
+    "+-........",
+    "##+-......",
+    "####+-....",
+    "######+-..",
+    "########+-",
+    "########+-",
+    "######+-..",
+    "####+-....",
+    "##+-......",
+    "+-........",
+  ],
+  SUBMENU_ARROW_PALETTE,
+);
+/** For small fonts; the glyph it replaces scaled with the text. */
+const SMALL_SUBMENU_ARROW = imageFromAsciiArt(
+  [
+    "+-....",
+    "##+-..",
+    "####+-",
+    "####+-",
+    "##+-..",
+    "+-....",
+  ],
+  SUBMENU_ARROW_PALETTE,
+);
+/** Fonts with a shorter line than this get SMALL_SUBMENU_ARROW (the 12px bitmap faces do). */
+const SUBMENU_ARROW_MIN_LINE_HEIGHT = 15;
+/** Gap between the triangle's tip and the right edge of the row's rect. */
+const SUBMENU_ARROW_INSET = 4;
+
+/**
+ * The triangles at each brightness they have been drawn at. drawImage sources
+ * must be long-lived (the glasses cache them by content), and rows only use a
+ * handful of text values.
+ */
+const tintedSubmenuArrows = new Map<GrayImage, Map<number, GrayImage>>();
+
+function submenuArrow(font: UiFont, value: number): GrayImage {
+  const base = font.lineHeight < SUBMENU_ARROW_MIN_LINE_HEIGHT ? SMALL_SUBMENU_ARROW : SUBMENU_ARROW;
+  const level = clamp(Math.round(value), 0, 255);
+  let tints = tintedSubmenuArrows.get(base);
+  if (!tints) tintedSubmenuArrows.set(base, tints = new Map());
+  let arrow = tints.get(level);
+  if (!arrow) tints.set(level, arrow = base.dimmed(level / 255));
+  return arrow;
+}
+
+/**
+ * Draw the submenu indicator (a "▶" triangle, sized for `font`) inset at the
+ * right edge of a row's selection highlight box, vertically centered within
+ * it. Pass the same rect as the row's drawSelectionHighlight call (the row
+ * need not actually be selected). `value` is the brightness of the row's text.
  */
 export function drawSubmenuIndicator(
   image: GrayImage,
@@ -197,13 +255,14 @@ export function drawSubmenuIndicator(
   highlightHeight: number,
   value: number,
 ): void {
-  const arrow = "▶";
-  const x = highlightX + highlightWidth - font.measureText(arrow) - 4;
-  const y = centeredTextY(font, highlightY, highlightHeight);
-  image.drawText(font, x, y, arrow, value);
+  const arrow = submenuArrow(font, value);
+  const x = Math.round(highlightX + highlightWidth) - arrow.width - SUBMENU_ARROW_INSET;
+  // A spare pixel goes above the triangle, which is where the glyph sat.
+  const y = Math.round(highlightY + (highlightHeight - arrow.height) / 2);
+  image.drawImage(arrow, x, y);
 }
 
-/** A row that opens a nested menu: the label plus a right-edge ">". */
+/** A row that opens a nested menu: the label plus a right-edge triangle. */
 export function submenuItem(
   label: string,
   onSelect: MenuItem["onSelect"],

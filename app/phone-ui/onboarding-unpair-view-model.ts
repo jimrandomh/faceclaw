@@ -2,7 +2,7 @@ import { Frame, Observable, Screen } from "@nativescript/core";
 
 import { openEvenAppSettings } from "../native/even-app-conflict";
 import { glassesTypeSetting } from "../ui/dashboard-settings";
-import { hasCompletedOnboarding } from "./onboarding-state";
+import { hasCompletedOnboarding, ownsRing } from "./onboarding-state";
 
 export class OnboardingUnpairViewModel extends Observable {
   /**
@@ -17,17 +17,30 @@ export class OnboardingUnpairViewModel extends Observable {
     return `Your glasses can only be connected to one app or phone at a time. If they're connected to ${apps} or another phone, disconnect them there before continuing. If nothing else is connected, you can continue.`;
   }
 
+  /**
+   * An R1 ring was chosen on the Your Devices page. The Even app holds a ring
+   * the way it holds glasses, and a connected ring doesn't advertise, so the
+   * pairing scan that follows wouldn't hear it.
+   */
+  private readonly hasRing = ownsRing();
+
+  /** A ring is an Even device whatever glasses it's used with. */
+  private readonly evenAppApplies = !this.settingUpIo || this.hasRing;
+
   get evenAppVisibility(): "visible" | "collapse" {
-    return this.settingUpIo ? "collapse" : "visible";
+    return this.evenAppApplies ? "visible" : "collapse";
   }
 
   get settingsButtonVisibility(): "visible" | "collapse" {
-    return global.isAndroid && !this.settingUpIo ? "visible" : "collapse";
+    return global.isAndroid && this.evenAppApplies ? "visible" : "collapse";
   }
 
   get evenAppInstructions(): string {
-    return "If you use the Even Realities app, go to Home, select your glasses, open the Connection submenu, and press Disconnect" +
-      (global.isIOS ? "." : " (or disable the Even app's \"nearby devices\" permission).");
+    const steps = this.settingUpIo
+      ? "If your R1 ring is connected to the Even Realities app, go to Home, select the ring, open the Connection submenu, and press Disconnect"
+      : "If you use the Even Realities app, go to Home, select your glasses, open the Connection submenu, and press Disconnect" +
+        (this.hasRing ? ". Then go back to Home and disconnect your R1 ring the same way" : "");
+    return steps + (global.isIOS ? "." : " (or disable the Even app's \"nearby devices\" permission).");
   }
 
   onOpenEvenAppSettingsTap(): void {

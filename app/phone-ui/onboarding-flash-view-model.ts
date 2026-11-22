@@ -1,5 +1,5 @@
 import { finishOnboardingNavigation } from "./onboarding-navigation";
-import { Frame, Observable } from "@nativescript/core";
+import { Frame } from "@nativescript/core";
 
 import { ensureBlePermissions } from "../native/ble-permissions";
 import {
@@ -21,6 +21,7 @@ import {
   FlashPromptState,
 } from "../native/flash-prompt-communicator";
 import { resumeAutoReconnect, suppressAutoReconnect } from "../g2/reconnect-policy";
+import { FlashDetailsViewModel } from "./flash-details-view-model";
 import { setOnboardingCompleted, setPreviewOnlyMode } from "./onboarding-state";
 import { formatErrorMessage } from "../util/format-error";
 
@@ -32,14 +33,13 @@ export type FlashMode = "install" | "uninstall";
 // start when either arm is below this so a flat battery can't interrupt it.
 const MIN_FLASH_BATTERY_PERCENT = 30;
 
-export class OnboardingFlashViewModel extends Observable {
+export class OnboardingFlashViewModel extends FlashDetailsViewModel {
   private readonly mode: FlashMode;
   private readonly fromOnboarding: boolean;
 
   private _phase: FlashPhase = "intro";
   private _headline = "Flash Custom Firmware";
   private _status = "";
-  private _log = "";
   private _busy = false;
   private _progress = 0;
 
@@ -117,22 +117,6 @@ export class OnboardingFlashViewModel extends Observable {
       this._status = value;
       this.notifyPropertyChange("status", value);
     }
-  }
-
-  get log(): string {
-    return this._log;
-  }
-
-  set log(value: string) {
-    if (this._log !== value) {
-      this._log = value;
-      this.notifyPropertyChange("log", value);
-      this.notifyPropertyChange("logVisibility", this.logVisibility);
-    }
-  }
-
-  get logVisibility(): "visible" | "collapse" {
-    return this._log ? "visible" : "collapse";
   }
 
   get busy(): boolean {
@@ -248,7 +232,8 @@ export class OnboardingFlashViewModel extends Observable {
     }
     this.setPhase("prompt");
     this.headline = skipPrompt ? "Checking Battery" : "Confirm On Your Glasses";
-    this.log = "";
+    this.clearLog();
+    this.setProgressDetail("");
     this.busy = true;
     this.promptBattery = null;
     this.status = "Preparing to connect. Make sure your glasses are on and the Even app is disconnected.";
@@ -452,6 +437,7 @@ export class OnboardingFlashViewModel extends Observable {
     this.headline = "Flashing Firmware";
     this.busy = true;
     this.progress = 0;
+    this.setProgressDetail("");
     this.status =
       "Starting. Keep both lenses powered on and nearby — each lens takes a few minutes, " +
       "and the glasses will reboot when each lens finishes. Do not close the app during flashing.";
@@ -495,9 +481,13 @@ export class OnboardingFlashViewModel extends Observable {
     // plus several small ones, so per-component steps move wildly unevenly.
     const withinLens = progress.bytesTotal > 0 ? Math.min(1, progress.bytesSent / progress.bytesTotal) : 0;
     this.progress = ((lensIndex + withinLens) / 2) * 100;
-    this.status =
-      `Flashing ${progress.lens} lens — part ${progress.componentIndex}/${progress.componentCount}, ` +
-      `block ${progress.blockIndex}/${progress.blockCount}. Keep the glasses on and nearby.`;
+    // The block counter changes several times a second, so it lives behind Show Details; the line everyone sees
+    // only changes with the lens.
+    this.status = `Flashing the ${progress.lens} lens. Keep the glasses on and nearby.`;
+    this.setProgressDetail(
+      `${progress.lens === "right" ? "Right" : "Left"} lens: part ${progress.componentIndex}/${progress.componentCount}, ` +
+      `block ${progress.blockIndex}/${progress.blockCount}`,
+    );
   }
 
   private handleFlashComplete(success: boolean, detail: string): void {
@@ -512,6 +502,7 @@ export class OnboardingFlashViewModel extends Observable {
         resumeAutoReconnect();
       }
       this.progress = 100;
+      this.setProgressDetail("");
       this.setPhase("flashed");
       this.headline = "All Done";
       this.status =
@@ -586,11 +577,6 @@ export class OnboardingFlashViewModel extends Observable {
     this.notifyPropertyChange("primaryVisibility", this.primaryVisibility);
     this.notifyPropertyChange("secondaryVisibility", this.secondaryVisibility);
     this.notifyPropertyChange("progressVisibility", this.progressVisibility);
-  }
-
-  private appendLog(line: string): void {
-    const stamp = new Date().toISOString().slice(11, 19);
-    this.log = this._log ? `${this._log}\n[${stamp}] ${line}` : `[${stamp}] ${line}`;
   }
 
   dispose(): void {

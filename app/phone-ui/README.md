@@ -15,7 +15,11 @@ shared page in `onboarding-register.ios.ts`.
 
 Android's `MainViewModel` extends that shared model and connects it to
 `dashboardController`. iOS loads the same XML with `Builder.load` and connects
-it to `IosPreviewController`. Keep platform-specific transport, page lifecycle,
+it to `IosPreviewController`. The watch face's status line ("Display off", the
+foreground window's title, ...) is worded once, in `g2/glasses-display-state`:
+each controller fills in a `GlassesDisplayState` and hands the resulting
+`glassesPadStatus` to the model's `setPadStatus`, so the two platforms can't
+drift apart. Keep platform-specific transport, page lifecycle,
 and navigation in those adapters. Android uses NativeScript gesture events;
 iOS feeds raw touches to `PhoneGestureRecognizer`, so the discrete pad gesture
 bindings in the XML are Android-only to avoid delivering each gesture twice.

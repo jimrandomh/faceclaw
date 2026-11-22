@@ -96,7 +96,7 @@ const ICONS = {
   reddit: 'brand-logos/Reddit_25px.svg',
   signal: 'brand-logos/Signal_25px.svg',
   simplex: 'brand-logos/SimpleX_25px.svg',
-  slack: 'pebbleos/Pebble_25x25_Slack.svg',
+  slack: 'brand-logos/Slack_25px.svg',
   snapchat: 'pebbleos/Pebble_25x25_Snapchat.svg',
   steam: 'brand-logos/Steam_25px.svg',
   substack: 'brand-logos/Substack_25px.svg',

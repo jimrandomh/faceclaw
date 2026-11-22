@@ -148,6 +148,14 @@ private class FakeG1Glasses(platform: ProtocolPlatform) : SessionLink {
     /** The OS says bonded and the arm has lost its half: PAIR fails with the link up. */
     @Volatile var staleBond = false
     @Volatile var helloInCase = false
+    /** The patch number of the 0.5.x both arms say they run. */
+    @Volatile var firmwarePatch = 63
+    /** The right arm's, when it differs. */
+    @Volatile var rightFirmwarePatch = -1
+    /** Behave like CoreBluetooth: [disconnect] alone leaves the physical link up. */
+    @Volatile var keepsLink = false
+    /** Each [releaseFromPeer] call: the address, the characteristic and the request. */
+    val releases = ArrayList<Triple<String, String, ByteArray>>()
     /** An arm that won't connect, whatever it's asked. */
     val away = HashSet<String>()
     /** Links up. Everything stays up unless a test takes it down. */
@@ -289,7 +297,7 @@ private class FakeG1Glasses(platform: ProtocolPlatform) : SessionLink {
                 body[0] = 5
                 body[1] = 0
                 body[2] = 5
-                body[3] = 63
+                body[3] = (if (!a.left && rightFirmwarePatch >= 0) rightFirmwarePatch else firmwarePatch).toByte()
                 body[4] = (if (a.left) 1 else 0).toByte()
                 body[5] = (2 or (if (staleBond) 0 else 64) or (if (helloInCase) 128 else 0)).toByte()
                 body[6] = ((if (a.left) 0 else 4) or (if (hasAncsRelay) 8 else 0)).toByte()
@@ -396,6 +404,16 @@ private class FakeG1Glasses(platform: ProtocolPlatform) : SessionLink {
     }
 
     override fun disconnect(address: String) {}
+
+    override fun keepsLinkAfterDisconnect(): Boolean = keepsLink
+
+    override fun releaseFromPeer(address: String, characteristicUuid: String, request: ByteArray, timeoutMs: Int): Boolean {
+        lock.withLock {
+            releases.add(Triple(address, characteristicUuid, request.copyOf()))
+            up.remove(address)
+        }
+        return true
+    }
 
     override fun close() {}
 
@@ -525,6 +543,16 @@ private class G1Session {
     }
 
     fun tail(): String = host.logs().takeLast(30).joinToString("\n")
+
+    fun logged(fragment: String): Boolean = host.logs().any { it.contains(fragment) }
+
+    /** Ready, with a first frame on both lenses. */
+    fun startAndShow(seed: Int = 1) {
+        assertTrue(core.start())
+        assertTrue(awaitTrue(5_000) { ready() }, "never ready:\n" + tail())
+        submit(seed, seed)
+        assertTrue(awaitTrue(5_000) { displayedMatchesDesired() }, "frame never displayed:\n" + tail())
+    }
 
     fun shownOnBoth(picture: ByteArray): Boolean = glasses.lock.withLock {
         glasses.leftArm.panel.contentEquals(picture) && glasses.rightArm.panel.contentEquals(picture)
@@ -751,6 +779,44 @@ class G1SessionTest {
         } finally {
             s.core.disconnect()
         }
+    }
+
+    @Test
+    fun armsWithHangupEndALinkTheSystemWouldKeep() {
+        val s = G1Session()
+        s.glasses.firmwarePatch = 67
+        s.glasses.keepsLink = true
+        s.startAndShow()
+        s.core.disconnect()
+        // Each arm gets the control request, the right one first, on the control characteristic.
+        assertEquals(listOf(RIGHT, LEFT), s.glasses.releases.map { it.first })
+        for (release in s.glasses.releases) {
+            assertEquals(G1Ble.CTRL_CHAR_UUID, release.second)
+            assertEquals(2, release.third.size)
+            assertEquals(G1Protocol.OP_HANGUP, release.third[0].toInt())
+        }
+        s.core.close()
+        assertEquals(2, s.glasses.releases.size, "close() repeats disconnect(); the arms are not asked again")
+    }
+
+    @Test
+    fun onlyAnArmWithHangupIsAskedForIt() {
+        val s = G1Session()
+        s.glasses.rightFirmwarePatch = 67
+        s.glasses.keepsLink = true
+        s.startAndShow()
+        s.core.disconnect()
+        assertEquals(listOf(RIGHT), s.glasses.releases.map { it.first })
+        assertTrue(s.logged("not asking the left arm to hang up (needs g1v0 0.5.67, it reports g1v0 0.5.63)"), s.tail())
+    }
+
+    @Test
+    fun aG1LinkThatDropsOnDisconnectIsNotAskedToHangUp() {
+        val s = G1Session()
+        s.glasses.firmwarePatch = 67
+        s.startAndShow()
+        s.core.disconnect()
+        assertEquals(0, s.glasses.releases.size)
     }
 
     @Test

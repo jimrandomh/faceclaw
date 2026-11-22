@@ -56,6 +56,11 @@ internal class G1SessionState {
     val mic = G1MicAssembler()
     /** The right arm's relay is there and this host listens to it. */
     var ancsRelay = false
+    /**
+     * The version each arm last said it runs (left, right; "" before its first HELLO). Unlike the rest, kept by
+     * [resetLink]: a disconnect reads it after the session is gone, to know whether the arm takes `HANGUP`.
+     */
+    val armVersions = arrayOf("", "")
 
     /** When an arm dropped while the session carried on with the other; 0: its link is up. */
     val armDownSinceMs = LongArray(2)
@@ -670,6 +675,7 @@ private fun GlassesSessionCore.g1RecoverArms() {
             g1StartArm(arm)
             monitor.withLock {
                 g1.arms[arm].hello = hello
+                g1.armVersions[arm] = hello.version
                 logLine("G1 " + g1Side(arm) + " arm back after " + (now() - downSince) + " ms")
                 ConnectionCounters.increment("g1.arm-recovered")
                 g1.armDownSinceMs[arm] = 0
@@ -727,7 +733,10 @@ internal fun GlassesSessionCore.g1ConnectLoopOnce() {
             val reply = g1Control(arm, G1Protocol.OP_HELLO)
             val hello = G1Protocol.parseHello(reply.body)
                 ?: throw G1ConnectException(g1Side(arm) + " arm bad hello", "The " + g1Side(arm) + " arm isn't answering.")
-            monitor.withLock { g1.arms[arm].hello = hello }
+            monitor.withLock {
+                g1.arms[arm].hello = hello
+                g1.armVersions[arm] = hello.version
+            }
             versions[arm] = "g1v0 " + hello.version + (if (hello.safeMode) " (safe mode)" else "")
             if (hello.leftArm != (arm == 0)) {
                 logWarn("G1: the arm paired as " + (if (arm == 0) "left" else "right") + " says it is the other one; its lens gets the other eye's frame")

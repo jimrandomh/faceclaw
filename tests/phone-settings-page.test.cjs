@@ -7,7 +7,9 @@ const NO_LEVELS = { headset: null, headsetCharging: null, case: null, caseChargi
 function fixture() {
   let brightness = '40', mode = 'small', style = 'watch', picked, levels = { ...NO_LEVELS };
   const changes = [], writes = [], back = [];
-  const settingListeners = new Set(), batteryListeners = new Set();
+  const settingListeners = new Set(), batteryListeners = new Set(), watchListeners = new Set();
+  // Android's answer, and an iPhone's with no watch session yet.
+  const watch = { state: 'unknown', source: null, opened: 0 };
   const subscribe = listeners => fn => { listeners.add(fn); return () => listeners.delete(fn); };
   class Observable {
     notifyPropertyChange(name, value) { changes.push([name, value]); }
@@ -25,10 +27,13 @@ function fixture() {
     '@nativescript/core': { Observable, Dialogs: { action: async () => picked }, Frame: { topmost: () => ({ goBack: () => back.push(true) }) } },
     '../ui/dashboard-settings': settings,
     '../ui/shell/shell': { shell: { getBatteryLevels: () => levels, onBatteryLevelsChanged: subscribe(batteryListeners) } },
+    '../native/watch-app-install': { watchAppInstall: { getState: () => watch.state, getSource: () => watch.source,
+      onStateChanged: subscribe(watchListeners), openSource: async () => { watch.opened++; return true; } } },
   });
   const { SettingsViewModel } = load('app/phone-ui/settings-view-model.ts');
   const presence = load('app/g2/glasses-presence.ts');
-  return { model: new SettingsViewModel(), changes, writes, back, presence, settingListeners, batteryListeners,
+  return { model: new SettingsViewModel(), changes, writes, back, presence, settingListeners, batteryListeners, watch, watchListeners,
+    setWatch: next => { Object.assign(watch, next); for (const fn of watchListeners) fn(); },
     brightness: () => brightness, mode: () => mode, style: () => style, pick: value => { picked = value; },
     setLevels: next => { levels = { ...NO_LEVELS, ...next }; for (const fn of batteryListeners) fn(); },
     changeElsewhere: fn => { fn({ setBrightness: value => { brightness = value; }, setStyle: value => { style = value; } });
@@ -120,6 +125,43 @@ test('the battery row hides until a level is known and marks charging only over 
   h.model.detach();
 });
 
+test('the Apple Watch row shows for a paired watch and follows the install', async () => {
+  const h = fixture();
+  h.model.attach();
+  assert.equal(h.model.watchAppRowVisibility, 'collapse', 'no paired watch (and Android): no row');
+
+  h.setWatch({ state: 'not-installed', source: 'watch-app' });
+  assert.equal(h.model.watchAppRowVisibility, 'visible');
+  assert.equal(h.model.watchAppInstallVisibility, 'visible');
+  assert.equal(h.model.watchAppInstalledVisibility, 'collapse');
+  assert.match(h.model.watchAppHint, /Available Apps/);
+  h.model.onWatchAppInstallTap();
+  await null;
+  assert.equal(h.watch.opened, 1);
+
+  // The system installed it while the Watch app was in front.
+  h.changes.length = 0;
+  h.setWatch({ state: 'installed' });
+  assert.equal(h.model.watchAppInstallVisibility, 'collapse');
+  assert.equal(h.model.watchAppInstalledVisibility, 'visible');
+  assert.equal(h.model.watchAppHintVisibility, 'collapse');
+  assert.ok(h.changes.some(change => change[0] === 'watchAppInstalledVisibility'));
+
+  // A build from source without the watch app says so, with no button.
+  h.setWatch({ state: 'not-installed', source: null });
+  assert.equal(h.model.watchAppInstallVisibility, 'collapse');
+  assert.equal(h.model.watchAppHintVisibility, 'visible');
+
+  // Off screen it isn't updated; coming back (as from the Watch app) catches up.
+  h.model.detach();
+  assert.equal(h.watchListeners.size, 0);
+  h.watch.state = 'installed';
+  assert.equal(h.model.watchAppInstalledVisibility, 'collapse');
+  h.model.attach();
+  assert.equal(h.model.watchAppInstalledVisibility, 'visible');
+  h.model.detach();
+});
+
 test('the back arrow pops the settings page', () => {
   const h = fixture();
   h.model.onBackTap();
@@ -132,7 +174,8 @@ test('the settings page binds every row the view model serves and is registered 
   const xml = read('app/phone-ui/settings-page.xml');
   for (const binding of ['displayModeLabel', 'onDisplayModeTap', 'brightnessAuto', 'onBrightnessAutoChange', 'brightnessPercent',
     'onBrightnessChange', 'brightnessSliderEnabled', 'watchStyleClass', 'ringStyleClass', 'onWatchStyleTap', 'onRingStyleTap',
-    'phoneInputStyleHint', 'batteryLine', 'batteryLineVisibility', 'onBackTap']) {
+    'phoneInputStyleHint', 'watchAppRowVisibility', 'watchAppInstalledVisibility', 'watchAppInstallVisibility', 'onWatchAppInstallTap',
+    'watchAppHint', 'watchAppHintVisibility', 'batteryLine', 'batteryLineVisibility', 'onBackTap']) {
     assert.ok(xml.includes(`{{ ${binding} }}`), `settings-page.xml binds ${binding}`);
   }
   // iOS skips webpack's automatic page discovery, and loads app.ios.css instead of app.css.

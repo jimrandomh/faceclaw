@@ -3,6 +3,7 @@ package com.faceclaw.app
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.ColorSpace
 import android.graphics.Paint
 import android.graphics.Typeface
 import android.os.Build
@@ -23,10 +24,11 @@ import java.util.LinkedHashMap
  * layouts, gamma mapping and ink cropping are shared with iOS in GlyphPacket;
  * only rasterization lives here.
  *
- * The gamma parameter maps antialiased coverage to output shade:
- * out = 255 * (coverage/255)^gamma. The G2 display response looks roughly
- * linear, so 1.0 is the expected default; the font previewer exposes it for
- * on-hardware comparison.
+ * Coverage is true linear area coverage (see coverageBitmap), so it maps
+ * straight to light on the lenses, whose levels are roughly linear in light.
+ * The gamma parameter maps it to output shade: out = 255 * (coverage/255)^gamma.
+ * 1.0 is the expected default; the font previewer exposes it for on-hardware
+ * comparison.
  */
 class FontFileRenderer private constructor() {
     companion object {
@@ -79,10 +81,10 @@ class FontFileRenderer private constructor() {
                     return ByteArray(0)
                 }
 
-                val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ALPHA_8)
+                val bitmap = coverageBitmap(width, height)
                 val canvas = Canvas(bitmap)
                 canvas.drawText(text, pad.toFloat(), ascent.toFloat(), paint)
-                val pixels = alpha8Pixels(bitmap, width, height)
+                val pixels = alphaPixels(bitmap)
                 bitmap.recycle()
 
                 // Trim the horizontal padding down to the painted extent, but
@@ -140,10 +142,10 @@ class FontFileRenderer private constructor() {
                     return ByteArray(0)
                 }
 
-                val bitmap = Bitmap.createBitmap(maxWidth, height, Bitmap.Config.ALPHA_8)
+                val bitmap = coverageBitmap(maxWidth, height)
                 val canvas = Canvas(bitmap)
                 layout.draw(canvas)
-                val pixels = alpha8Pixels(bitmap, maxWidth, height)
+                val pixels = alphaPixels(bitmap)
                 bitmap.recycle()
 
                 return GlyphPacket.packImage(pixels, maxWidth, height, gamma)
@@ -199,13 +201,14 @@ class FontFileRenderer private constructor() {
                 val baselineY = pad - bounds.top
                 // Drawn in color: an emoji the system fallback supplies from a color font
                 // would keep only its silhouette in an alpha-only bitmap. ColorGlyphArt shades
-                // color glyphs and passes white ones through as their alpha.
-                val bitmap = Bitmap.createBitmap(bw, bh, Bitmap.Config.ARGB_8888)
-                val canvas = Canvas(bitmap)
-                canvas.drawText(text, penX.toFloat(), baselineY.toFloat(), paint)
-                val argb = IntArray(bw * bh)
-                bitmap.getPixels(argb, 0, bw, 0, 0, bw, bh)
-                bitmap.recycle()
+                // color glyphs and passes white ones through as their alpha. A color glyph is
+                // redrawn in sRGB, the space its shading expects (and keeps the dark detail
+                // that 8-bit linear storage would crush); its alpha is not mask-gamma tuned.
+                var argb = drawGlyphArgb(paint, text, penX, baselineY, coverageBitmap(bw, bh))
+                if (ColorGlyphArt.isColor(argb)) {
+                    argb = drawGlyphArgb(paint, text, penX, baselineY,
+                            Bitmap.createBitmap(bw, bh, Bitmap.Config.ARGB_8888))
+                }
                 val pixels = ColorGlyphArt.coverage(argb)
 
                 // Trim to the tight ink box; bearing/inkTop become pen- and
@@ -235,6 +238,37 @@ class FontFileRenderer private constructor() {
             }
             return glyphPaint(typeface, sizePx).measureText(text).toDouble()
         }
+
+        /** Draw text into [bitmap] (recycled after) and return its unpremultiplied sRGB ARGB. */
+        @JvmStatic
+        private fun drawGlyphArgb(paint: Paint, text: String, penX: Int, baselineY: Int, bitmap: Bitmap): IntArray {
+            Canvas(bitmap).drawText(text, penX.toFloat(), baselineY.toFloat(), paint)
+            val argb = IntArray(bitmap.width * bitmap.height)
+            bitmap.getPixels(argb, 0, bitmap.width, 0, 0, bitmap.width, bitmap.height)
+            bitmap.recycle()
+            return argb
+        }
+
+        /**
+         * A bitmap whose alpha, after drawing white text, is true linear area coverage.
+         *
+         * Skia applies "fake gamma" text tuning to antialiased glyph masks drawn into a
+         * non-linear target (ALPHA_8, or ARGB_8888 in sRGB): it bends the mask by the paint's
+         * luminance as if for a display of gamma 1.4 (Android's SK_GAMMA_EXPONENT), which for
+         * white text comes out near coverage^(1/1.4). The lenses are roughly linear in light,
+         * so that over-lights every AA fringe: measured on a Pixel with Roboto Light at
+         * 16-24px, total ink came out 14-21% above true coverage. Skia turns the tuning off
+         * when the destination color space is linear, which this one is (measured within 2%).
+         * Before API 26 bitmaps carry no color space, so those keep Skia's tuning.
+         */
+        @JvmStatic
+        private fun coverageBitmap(width: Int, height: Int): Bitmap =
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888, true,
+                            ColorSpace.get(ColorSpace.Named.LINEAR_SRGB))
+                } else {
+                    Bitmap.createBitmap(width, height, Bitmap.Config.ALPHA_8)
+                }
 
         /** Paint used by both the glyph-cell renderer and its measurements. */
         @JvmStatic
@@ -358,6 +392,29 @@ class FontFileRenderer private constructor() {
                 typefaceCache[path] = typeface
             }
             return typeface
+        }
+
+        /**
+         * The alpha (coverage) bytes of a coverageBitmap as a tightly-packed
+         * width*height array.
+         */
+        @JvmStatic
+        private fun alphaPixels(bitmap: Bitmap): ByteArray {
+            val width = bitmap.width
+            val height = bitmap.height
+            if (bitmap.config == Bitmap.Config.ALPHA_8) {
+                return alpha8Pixels(bitmap, width, height)
+            }
+            // A row at a time: a wrapped paragraph can be millions of pixels.
+            val pixels = ByteArray(width * height)
+            val row = IntArray(width)
+            for (y in 0 until height) {
+                bitmap.getPixels(row, 0, width, 0, y, width, 1)
+                for (x in 0 until width) {
+                    pixels[y * width + x] = (row[x] ushr 24).toByte()
+                }
+            }
+            return pixels
         }
 
         /**
