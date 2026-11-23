@@ -29,8 +29,7 @@ export function toggleSwitchLook(on: boolean, selected: boolean): { fill: number
 /**
  * A switch flipping to `on`, over the same switch painted in its new state:
  * the knob slides across from the other end, and the lit track follows it
- * (or, switching off, recedes ahead of it) through an animated clip. Needs
- * firmware revision 45; without it the painted switch shows at once. The last
+ * (or, switching off, recedes ahead of it) through an animated clip. The last
  * frame is that painted switch exactly.
  */
 export function toggleSwitchList(on: boolean, selected: boolean, animation: ToggleSwitchAnimation): DisplayList {

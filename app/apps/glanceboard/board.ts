@@ -125,8 +125,8 @@ export class GlanceBoard {
  * The hairlines between regions. They are drawn into the board's pixels, and
  * again by a display list that follows the screen's fade: as the board fades
  * in, each line grows out from the middle of the board to its full length,
- * and as it fades out they shrink back. Glasses whose firmware can't run the
- * list (and the phone's mirror, which doesn't fade) show the lines whole.
+ * and as it fades out they shrink back. The phone's mirror, which doesn't
+ * fade, shows the lines whole.
  */
 function drawDividers(image: GrayImage, layout: GlanceLayout, regions: readonly GlanceRegion[]): void {
   const lines = dividerLines(layout, regions);

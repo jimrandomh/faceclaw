@@ -42,18 +42,6 @@ class GlassesSessionCore(
             BleProtocol.ImageTileOptions("img00", 10, 0, 0, 576, 288)
 
         internal const val FACECLAW_WAKE_LEASE_RENEW_MS = 45_000L
-        /**
-         * How long a framebuffer-lease ACQUIRE lasts on the glasses. Mirrors FACECLAW_LEASE_MS in
-         * g2flash patches/settings_ext.c, which frees the resource cache when the lease lapses.
-         */
-        internal const val FACECLAW_FB_LEASE_MS = 90_000L
-        /**
-         * Slack against [FACECLAW_FB_LEASE_MS]. The glasses count it in RTOS ticks of 32/32768 s
-         * (g2flash docs/cpu-usage.md), so it really lasts ~87.9 s; and a wake gesture checks the
-         * lease on the glasses (gesture_fwd.c) a moment before the phone resumes. The confirmed
-         * time is when the renewal was queued, before the glasses received it, which adds more.
-         */
-        internal const val FACECLAW_FB_LEASE_MARGIN_MS = 5_000L
         internal const val FACECLAW_WAKE_CONTROL_WAIT_MS = 1_500L
         internal const val CFW_CLEANUP_WAIT_MS = 4_000L
         /** How long an arm gets to hang up after a release request; it normally takes a few connection intervals. */
@@ -310,13 +298,6 @@ class GlassesSessionCore(
     internal var faceclawWakeControlGeneration = 0
     internal var faceclawWakeControlSentCount = 0
     internal var lastFaceclawFramebufferLeaseQueuedAtMs = 0L
-    /**
-     * When the latest framebuffer-lease ACQUIRE that reached both arms was queued (so the lease
-     * runs at least [FACECLAW_FB_LEASE_MS] from here), or 0 when none has since (re)connecting
-     * or a release. The glasses keep the resource cache, and the screen buffer, for as long as
-     * the lease holds; see framebufferLeaseMayHaveLapsedLocked.
-     */
-    internal var faceclawFramebufferLeaseConfirmedAtMs = 0L
     internal var faceclawFramebufferControlGeneration = 0
     internal var faceclawFramebufferControlSentCount = 0
     internal var faceclawWakePendingNonce = -1
@@ -328,11 +309,6 @@ class GlassesSessionCore(
      * here.
      */
     internal var customFirmwareDetected = false
-    /**
-     * The revision that read reported ("Faceclaw/<n>"), or -1 for none yet or other firmware.
-     * Only for features newer than the required revision; see [releaseArmLinks].
-     */
-    internal var faceclawFirmwareRevision = -1
     /** [releaseArmLinks] ran for this start(): close() repeats disconnect(), and one request is enough. */
     private var armLinksReleased = false
     internal val brightnessPolicy = BrightnessPolicy()
@@ -544,7 +520,7 @@ class GlassesSessionCore(
     // firmware frees the cache with the fb lease, and after any resync the
     // cheap safe assumption is an empty cache (glyphs re-upload lazily).
     internal val resourceCache = ResourceCacheState()
-    internal val scenePlanner = ScenePlanner(resourceCache, platform) { faceclawFirmwareRevision }
+    internal val scenePlanner = ScenePlanner(resourceCache, platform)
     internal var desiredShellScene: ShellScene = ShellScene.EMPTY
 
     internal val pendingMessages = ArrayDeque<OutboundMessage>()
@@ -708,8 +684,9 @@ class GlassesSessionCore(
     fun disconnect() {
         /* On the normal path DashboardController already sent mode 11 after
          * quiescing its producers. Also cover direct/early close callers here;
-         * a successful cleanup must remain the final BLE message. Older CFWs
-         * fall back to the standalone framebuffer-lease release. */
+         * a successful cleanup must remain the final BLE message. When it
+         * cannot be sent (no page is up), fall back to the standalone
+         * framebuffer-lease release. */
         if (!cfwCleanupDelivered && !sendCfwCleanup() && isG2) {
             releaseFaceclawFramebufferLease()
         }
@@ -764,14 +741,14 @@ class GlassesSessionCore(
      * Both arms are offered and the link asks only the one the system keeps (on iOS, the arm
      * it shares notifications with); an arm this session already let go of (a failed session
      * cancels both) is covered too, the link reattaching to what the system still holds. This
-     * is the session's last write, after the cleanup message. An arm whose firmware is too
-     * old for the request, or was never identified by this session, is left alone: it would
-     * not act on it.
+     * is the session's last write, after the cleanup message. An arm this session never
+     * identified, or a G1 arm whose firmware is too old for the request, is left alone: it
+     * would not act on it.
      */
     private fun releaseArmLinks() {
         if (isIo || !link.keepsLinkAfterDisconnect()) return
         val characteristic = if (isG1) G1Ble.CTRL_CHAR_UUID else BleProtocol.WRITE_CHAR_UUID
-        val needed = if (isG1) "g1v0 " + G1Ble.LINK_RELEASE_FIRMWARE else "Faceclaw/" + BleProtocol.LINK_RELEASE_FIRMWARE_REVISION
+        val needed = if (isG1) "g1v0 " + G1Ble.LINK_RELEASE_FIRMWARE else "Faceclaw's firmware"
         for (arm in intArrayOf(1, 0)) {
             val address = if (arm == 1) rightAddress else leftAddress
             val side = if (arm == 1) "right" else "left"
@@ -795,9 +772,9 @@ class GlassesSessionCore(
     }
 
     /**
-     * What an arm (0 left, 1 right) last said it runs, "" if it never did, and the request
-     * that makes that firmware hang up, or null when it has none: relay op 3 on a G2
-     * (Faceclaw/41), the `HANGUP` control request on a G1 (g1v0 0.5.67).
+     * What a G1 arm (0 left, 1 right) last said it runs ("" if it never did, and for a G2), and
+     * the request that makes the arm's firmware hang up, or null when it has none: relay op 3
+     * on a G2 running Faceclaw's firmware, the `HANGUP` control request on a G1 (g1v0 0.5.67).
      */
     private fun linkReleaseRequestLocked(arm: Int): Pair<String, ByteArray?> {
         if (isG1) {
@@ -808,10 +785,7 @@ class GlassesSessionCore(
             } else null
             return "g1v0 $version" to request
         }
-        val revision = faceclawFirmwareRevision
-        if (revision < 0) return "" to null
-        return "Faceclaw/$revision" to
-            (if (revision >= BleProtocol.LINK_RELEASE_FIRMWARE_REVISION) BleProtocol.linkReleaseCommand() else null)
+        return "" to (if (customFirmwareDetected) BleProtocol.linkReleaseCommand() else null)
     }
 
     fun close() {
@@ -1914,8 +1888,8 @@ class GlassesSessionCore(
     /**
      * Send CFW image-handler mode 11 after quiescing normal traffic. A successful
      * return means the cleanup was ACKed and no later Faceclaw message should be
-     * emitted before closing BLE. Unsupported/older CFWs return false so callers
-     * can use the legacy shutdown-and-lease-release path.
+     * emitted before closing BLE. False when it could not be sent (other firmware,
+     * or no page up), so callers can fall back to a shutdown and lease release.
      */
     fun sendCfwCleanup(): Boolean {
         if (isG1) {
@@ -2051,8 +2025,8 @@ class GlassesSessionCore(
                     && hasPendingOrInflightKindLocked("wake-lease-control")) {
                 claimGeneration = faceclawWakeControlGeneration
             }
-            // Faceclaw/44's session start runs the prelude on the glasses, queued behind CLAIM.
-            sessionStart = faceclawFirmwareRevision >= BleProtocol.SESSION_START_FIRMWARE_REVISION
+            // The custom firmware's session start runs the prelude on the glasses, queued behind CLAIM.
+            sessionStart = customFirmwareDetected
             logLine(if (sessionStart) "resuming EvenHub with a session start"
                 else "replaying session prelude for EvenHub resume")
         }
@@ -2681,7 +2655,6 @@ class GlassesSessionCore(
                 lastCfwCleanupAckMagic = 0
                 lastFaceclawWakeLeaseQueuedAtMs = 0
                 lastFaceclawFramebufferLeaseQueuedAtMs = 0
-                faceclawFramebufferLeaseConfirmedAtMs = 0
                 enqueueFaceclawFramebufferControlLocked(
                     BleProtocol.FACECLAW_FB_OP_ACQUIRE,
                     true

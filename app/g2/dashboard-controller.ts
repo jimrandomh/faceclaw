@@ -2007,14 +2007,14 @@ class DashboardController {
       if (cleanupAcked === true) {
         this.appendLog("CFW cleanup completed.");
       } else if (communicator && !skipFirmwareCleanup) {
-        // Older CFWs do not advertise cleanup11. Preserve their established
-        // teardown behavior; close() will also send the legacy FB lease release.
+        // The cleanup could not be sent (no page is up, say). Shut the page
+        // down instead; close() will also release the framebuffer lease.
         const shutdownAcked = await communicator.sendShutdown(0).catch((error) => {
           this.appendLog(`shutdown command failed: ${this.formatError(error)}`);
           return false;
         });
         if (shutdownAcked) {
-          this.appendLog("Shutdown command completed (legacy cleanup fallback).");
+          this.appendLog("Shutdown command completed (cleanup fallback).");
         } else {
           this.appendLog("Cleanup did not complete before disconnect.");
         }

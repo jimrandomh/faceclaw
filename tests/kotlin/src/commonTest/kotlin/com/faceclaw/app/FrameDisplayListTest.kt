@@ -176,7 +176,6 @@ class FrameDisplayListTest {
 
     @Test fun linesAndAnimatedClipsBridgeAndPaintLikeTheSoftwareRenderer() {
         val list = read(hex(animated), 1100)
-        assertEquals(DrawProtocol.ANIMATION_FIRMWARE_REVISION, list.minFirmwareRevision)
         fun pixels(now: Long, sincePresent: Long): String {
             val calls = list.calls(IntArray(0), now)
             assertEquals(listOf(DRAW_OP_LINE, DRAW_OP_LINE, DRAW_OP_CLEAR, DRAW_OP_LINE), calls.map { it[0].toInt() })
@@ -199,24 +198,13 @@ class FrameDisplayListTest {
         }
     }
 
-    @Test fun olderFirmwareIsSentTheSceneWithoutDrawingsItCannotRun() {
+    @Test fun aSceneSendsEveryDrawingItHoldsInOrder() {
         val lines = read(hex(animated), 1100)
         val highlight = read(hex(menu))
-        assertEquals(0, highlight.minFirmwareRevision)
         val scene = ShellScene(emptyList(), listOf(highlight, lines, highlight))
         val copy = DrawProtocol.screenCopy(640, 480).size
-        fun ops(revision: Int) = scene.calls(640, 480, IntArray(0), IntArray(0), revision).drop(copy).map { it[0].toInt() }
-        val every = listOf(DRAW_OP_ROUNDED_RECT, DRAW_OP_LINE, DRAW_OP_LINE, DRAW_OP_CLEAR, DRAW_OP_LINE, DRAW_OP_ROUNDED_RECT)
-        assertEquals(every, scene.calls(640, 480, IntArray(0), IntArray(0)).drop(copy).map { it[0].toInt() }, "the phone's own rendering")
-        assertEquals(every, ops(DrawProtocol.ANIMATION_FIRMWARE_REVISION))
-        assertEquals(listOf(DRAW_OP_ROUNDED_RECT, DRAW_OP_ROUNDED_RECT), ops(DrawProtocol.ANIMATION_FIRMWARE_REVISION - 1))
-        assertEquals(listOf(DRAW_OP_ROUNDED_RECT, DRAW_OP_ROUNDED_RECT), ops(-1), "stock or unknown firmware")
-        // A program that reads the screen fade needs the newer firmware too; one that only reads time does not.
-        val fade = hex(menu).also { bytes ->
-            val at = bytes.indices.first { bytes[it] == 0x30.toByte() && bytes[it + 1] == 0x02.toByte() }
-            bytes[at] = DrawExpression.FADE.toByte() // I2F -> FADE: the same length, a different program
-        }
-        assertEquals(DrawProtocol.ANIMATION_FIRMWARE_REVISION, read(fade).minFirmwareRevision)
+        assertEquals(listOf(DRAW_OP_ROUNDED_RECT, DRAW_OP_LINE, DRAW_OP_LINE, DRAW_OP_CLEAR, DRAW_OP_LINE, DRAW_OP_ROUNDED_RECT),
+            scene.calls(640, 480, IntArray(0), IntArray(0)).drop(copy).map { it[0].toInt() })
     }
 
     @Test fun aSurfaceAboveTheShellKeepsItsOwnDrawingsAndDropsThoseUnderIt() {

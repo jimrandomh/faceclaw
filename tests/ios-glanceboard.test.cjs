@@ -159,7 +159,7 @@ function fixture() {
     '../native/faceclaw-communicator.ios': { FaceclawCommunicatorBridge, resolveIosPeripherals: async addresses => addresses },
     '../native/preview-display.ios': { PreviewDisplayTarget },
     '../g1/firmware/g1v0-image': { G1V0_IMAGE: { version: '0.5.65' } },
-    './ancs-client': { ANCS_FIRMWARE_VERSION: 16, AncsClient: class { state = 'disconnected'; constructor() { relay.client = this; }
+    './ancs-client': { AncsClient: class { state = 'disconnected'; constructor() { relay.client = this; }
       start() { this.state = 'starting'; relay.starts++; } stop(message) { this.state = 'disconnected'; relay.message = message; }
       stopCommand() { return new Uint8Array(); } receive() { return false; } } },
     '../native/nightscout-bridge': { nightscoutBridge: { async start() {}, async stop() {} } },
@@ -173,6 +173,7 @@ function fixture() {
     './device-addresses': { loadDeviceAddresses: () => ({ right: 'AA', left: 'BB', ring: '' }) }, './ios-peripheral-identity': { deviceAddressError: () => null },
     './wear-remote': { WearRemote: class { schedulePublish() {} } },
     './firmware-compat': load('app/g2/firmware-compat.ts', {}), './reconnect-policy': load('app/g2/reconnect-policy.ts', {}),
+    './ring-connection': { directRingRole: () => 'phone', noteRingSessionMode() {}, handRingBackToGlassesIfNeeded: () => false },
     './keyboard/service': { keyboardService: keyboard },
     '../apps/launcher': { launcherEntries: () => [] },
     '../apps/evenhub/installed-apps': {}, '../apps/evenhub/manager': { onPhoneShownChanged: () => () => {}, phoneUiButton: () => null },
@@ -187,7 +188,7 @@ function fixture() {
     '../apps/all-apps': { ALL_APPS: [{ appId: 'glanceboard', glanceboard: provider }] },
     '../apps/onboarding/onboarding-progress': { claimGlassesOnboardingAutoLaunch: () => false },
     '../ui/shell/worker-window': {}, '../ui/shell/in-process-window': {},
-    '../ui/dashboard-settings': { glassesTypeSetting: { get: () => glassesType }, glassesModelName: () => glassesType.toUpperCase(), brightnessSetting: { get: () => 'auto' }, brightnessSettingToLevel: () => null, getBrightnessPreferences: () => ({ auto: true, level: 50, minimum: 2, maximum: 100, curve: '0:0,1000:100', fadeMs: 280 }), lockScreenEnabledSetting: { get: () => settings.lock }, ringConnectionModeSetting: { get: () => 'glasses' }, onAnySettingChanged: fn => { settingsChanged = fn; return () => {}; }, previewColorSetting: { get: () => 'white' }, saveRecordingSetting: { get: () => false } },
+    '../ui/dashboard-settings': { glassesTypeSetting: { get: () => glassesType }, glassesModelName: () => glassesType.toUpperCase(), brightnessSetting: { get: () => 'auto' }, brightnessSettingToLevel: () => null, getBrightnessPreferences: () => ({ auto: true, level: 50, minimum: 2, maximum: 100, curve: '0:0,1000:100', fadeMs: 280 }), lockScreenEnabledSetting: { get: () => settings.lock }, ringConnectionModeSetting: { get: () => 'glasses' }, effectiveRingConnectionMode: () => glassesType === 'g2' ? 'glasses' : 'direct', onAnySettingChanged: fn => { settingsChanged = fn; return () => {}; }, previewColorSetting: { get: () => 'white' }, saveRecordingSetting: { get: () => false } },
     '../native/phone-battery': { readPhoneBatteryState: () => ({ battery: 80, charging: false }) },
     '../apps/ios-availability': { iosAppUnavailableReason: () => null },
     '../graphics/glyph-wire': { prepareFrameDraws: () => null },
@@ -250,7 +251,7 @@ test('the session is told which glasses it drives, as a G2 session gets nowhere 
 test('a link that comes back asks for the notification relay again; a G1 without one is told to update', async () => {
   const f = fixture();
   await f.connect();
-  const firmware = { leftVersion: 'g1v0 0.5.65', rightVersion: 'g1v0 0.5.65', extension: 'Faceclaw/38' };
+  const firmware = { leftVersion: 'g1v0 0.5.65', rightVersion: 'g1v0 0.5.65', extension: 'Faceclaw/45' };
   f.bridge.listeners.firmware(firmware);
   assert.equal(f.relay.starts, 1);
   // Connected and running: nothing to do.
@@ -403,9 +404,9 @@ test('a paired keyboard: the bridge follows the G2 link, and its keys\' gestures
   // Connected is not enough: the firmware has to be one with the bridge.
   f.bridge.emitState('connected');
   assert.ok(!f.keyboard.calls.includes('ready'));
-  f.bridge.listeners.firmware({ leftVersion: '2.3.0.24', rightVersion: '2.3.0.24', extension: 'Faceclaw/39' });
+  f.bridge.listeners.firmware({ leftVersion: '2.3.0.24', rightVersion: '2.3.0.24', extension: 'Faceclaw/44' });
   assert.ok(!f.keyboard.calls.includes('ready'));
-  f.bridge.listeners.firmware({ leftVersion: '2.3.0.24', rightVersion: '2.3.0.24', extension: 'Faceclaw/40' });
+  f.bridge.listeners.firmware({ leftVersion: '2.3.0.24', rightVersion: '2.3.0.24', extension: 'Faceclaw/45' });
   assert.equal(f.keyboard.calls.at(-1), 'ready');
   assert.equal(f.keyboard.host.ready(), true);
   // The link dropping on its own ends it without a word to the firmware; coming back restores it.
@@ -442,7 +443,7 @@ test('a keyboard needs a G2: other glasses never bring the bridge up', async () 
     const f = fixture();
     await f.connect();
     f.bridge.emitState('connected');
-    f.bridge.listeners.firmware({ leftVersion: 'g1v0 0.5.66', rightVersion: 'g1v0 0.5.66', extension: 'Faceclaw/40' });
+    f.bridge.listeners.firmware({ leftVersion: 'g1v0 0.5.66', rightVersion: 'g1v0 0.5.66', extension: 'Faceclaw/45' });
     assert.ok(!f.keyboard.calls.includes('ready'), f.keyboard.calls.join());
   } finally { glassesType = 'g2'; }
 });

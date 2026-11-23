@@ -589,8 +589,8 @@ class GlassesSessionCoreTest {
     @Test
     fun faceclawFirmwareKeepsTheSessionAliveWithPrivateNoOps() {
         val s = Session()
-        s.core.setRequiredFirmwareRevision(40)
-        s.link.firmwareExtension = "Faceclaw/41"
+        s.core.setRequiredFirmwareRevision(45)
+        s.link.firmwareExtension = "Faceclaw/45"
         s.startAndAwaitLayout()
         try {
             fun keepalives() = s.link.writes.filter { it.kind == "keepalive" }
@@ -612,10 +612,10 @@ class GlassesSessionCoreTest {
     }
 
     @Test
-    fun theGlassesKeepTheirResourcesAcrossASuspendWhileTheLeaseHolds() {
+    fun theGlassesKeepTheirResourcesAcrossASuspend() {
         val s = Session()
-        s.core.setRequiredFirmwareRevision(40)
-        s.link.firmwareExtension = "Faceclaw/41"
+        s.core.setRequiredFirmwareRevision(45)
+        s.link.firmwareExtension = "Faceclaw/45"
         s.core.configureCompositorScreen(160, 96)
         s.core.configureSurface("s", 0, 0, 64, 32, 0, SurfaceCompositor.TRANSPARENCY_OPAQUE)
         s.startAndAwaitLayout()
@@ -648,40 +648,29 @@ class GlassesSessionCoreTest {
                 BleProtocol.framePb(exit, BleProtocol.SID_EVENHUB, BleProtocol.FLAG_NOTIFY, 11)[0])
             assertTrue(s.core.monitor.withLock { s.core.lastShutdownExitAtMs > 0 }, "the exit event was handled")
             assertEquals(listOf(CFW_MSG_PRESENT), sleepAndWake())
-            // A lease the phone can't vouch for may have lapsed, freeing the glasses' resources.
-            s.core.monitor.withLock {
-                s.core.faceclawFramebufferLeaseConfirmedAtMs = s.platform.elapsedRealtimeMs() - GlassesSessionCore.FACECLAW_FB_LEASE_MS
-            }
-            val rebuilt = sleepAndWake()
-            assertTrue(CFW_MSG_EVICT_RESOURCE in rebuilt && CFW_MSG_CREATE_SURFACE in rebuilt, rebuilt.toString())
         } finally { s.core.close() }
     }
 
     @Test
-    fun faceclaw45FadesOutAheadOfItsBlankFrameAndAWakeInBetweenNeverSendsIt() {
+    fun aScreenOffFadesOutAheadOfItsBlankFrameAndAWakeInBetweenNeverSendsIt() {
         val fadeMs = 1500
         // The fade, and the tick the glasses can take to start it.
         val holdMs = fadeMs + BRIGHTNESS_TICK_MS
-        fun run(extension: String, body: (Session, () -> List<Int?>, () -> List<Write>) -> Unit) {
-            val s = Session()
-            s.core.setRequiredFirmwareRevision(40)
-            s.link.firmwareExtension = extension
-            s.core.configureBrightness(false, 70, 2, 100, "0:0,1000:100", fadeMs)
-            s.core.configureCompositorScreen(160, 96)
-            s.core.configureSurface("s", 0, 0, 64, 32, 0, SurfaceCompositor.TRANSPARENCY_OPAQUE)
-            s.startAndAwaitLayout()
-            try {
-                fun type(write: Write) = write.message?.firstOrNull()?.toInt()?.and(CFW_MSG_TYPE_MASK)
-                fun display() = s.link.writes
-                    .filter { it.sid == CfwTransport.SID && it.address == LEFT && (it.kind == "resources" || it.kind == "image") }
-                    .map { type(it) }
-                fun outputs() = s.link.writes.filter { it.address == LEFT && it.kind == "brightness-output" }
-                s.submitFrame(1, 0x70, 1)
-                assertTrue(waitUntil(5_000) { s.displayedMatchesDesired() }, s.host.logs().takeLast(20).toString())
-                body(s, ::display, ::outputs)
-            } finally { s.core.close() }
-        }
-        run("Faceclaw/45") { s, display, outputs ->
+        val s = Session()
+        s.core.setRequiredFirmwareRevision(45)
+        s.link.firmwareExtension = "Faceclaw/45"
+        s.core.configureBrightness(false, 70, 2, 100, "0:0,1000:100", fadeMs)
+        s.core.configureCompositorScreen(160, 96)
+        s.core.configureSurface("s", 0, 0, 64, 32, 0, SurfaceCompositor.TRANSPARENCY_OPAQUE)
+        s.startAndAwaitLayout()
+        try {
+            fun type(write: Write) = write.message?.firstOrNull()?.toInt()?.and(CFW_MSG_TYPE_MASK)
+            fun display() = s.link.writes
+                .filter { it.sid == CfwTransport.SID && it.address == LEFT && (it.kind == "resources" || it.kind == "image") }
+                .map { type(it) }
+            fun outputs() = s.link.writes.filter { it.address == LEFT && it.kind == "brightness-output" }
+            s.submitFrame(1, 0x70, 1)
+            assertTrue(waitUntil(5_000) { s.displayedMatchesDesired() }, s.host.logs().takeLast(20).toString())
             val shown = display().size
             s.core.setScreenBlanked(true)
             // The glasses start fading at once, and keep the frame they have to animate.
@@ -711,22 +700,14 @@ class GlassesSessionCoreTest {
             assertTrue(CFW_MSG_DRAW_CALLS in display().drop(awake), "the blank frame's pixels")
             val visibility = outputs().map { it.message!![3].toInt() }
             assertEquals(listOf(0, 1, 0), visibility.filterIndexed { i, v -> i == 0 || visibility[i - 1] != v }.takeLast(3))
-        }
-        // Older firmware freezes the frame for the whole fade, so nothing is gained by waiting.
-        run("Faceclaw/44") { s, display, outputs ->
-            val shown = display().size
-            s.core.setScreenBlanked(true)
-            assertTrue(waitUntil(5_000) { s.displayedMatchesDesired() && display().size > shown && outputs().lastOrNull()?.message?.get(3) == 0.toByte() },
-                s.host.logs().takeLast(20).toString())
-            assertFalse(s.host.hasLog("holding the blank frame"))
-        }
+        } finally { s.core.close() }
     }
 
     @Test
-    fun faceclaw44StartsASessionInOneMessageAndKeepsResourcesThroughALapsedLease() {
+    fun aSessionStartsInOneMessageAndAResumeLeavesThePreludeToTheGlasses() {
         val s = Session()
-        s.core.setRequiredFirmwareRevision(40)
-        s.link.firmwareExtension = "Faceclaw/44"
+        s.core.setRequiredFirmwareRevision(45)
+        s.link.firmwareExtension = "Faceclaw/45"
         s.core.configureCompositorScreen(160, 96)
         s.core.configureSurface("s", 0, 0, 64, 32, 0, SurfaceCompositor.TRANSPARENCY_OPAQUE)
         s.startAndAwaitLayout()
@@ -737,21 +718,16 @@ class GlassesSessionCoreTest {
                 .filter { it.sid == CfwTransport.SID && (it.kind == "resources" || it.kind == "image") }
                 .map { type(it) }
             val start = sessionStarts().single().message!!
-            // [34][9][passive ALS][6][brightness], in place of mode 31 and the separate controls.
+            // [34][9][passive ALS][6][brightness], in place of the separate controls.
             assertEquals(listOf(9, CFW_MSG_AMBIENT_LIGHT, 6, CFW_MSG_BRIGHTNESS),
                 listOf(start[1].toInt(), start[2].toInt(), start[11].toInt(), start[12].toInt()))
             assertEquals(2 + 9 + 1 + 6, start.size)
-            assertEquals(0, s.link.writes.count { type(it) == CFW_MSG_ENTER_EVENHUB })
             s.submitFrame(100, 0x70, 1)
             s.core.submitShellScene(ArrayByteReader(shellScene(3)), 0, 0)
             assertTrue(waitUntil(5_000) { s.displayedMatchesDesired() && CFW_MSG_CREATE_SURFACE in displayCommands() },
                 s.host.logs().takeLast(20).toString())
             assertEquals(0, s.link.writes.count { it.kind == "brightness-output" }, "the session start set the brightness")
 
-            // A lease the phone can't vouch for: the glasses keep their resources anyway.
-            s.core.monitor.withLock {
-                s.core.faceclawFramebufferLeaseConfirmedAtMs = s.platform.elapsedRealtimeMs() - GlassesSessionCore.FACECLAW_FB_LEASE_MS
-            }
             val preludes = s.link.writes.count { it.kind == "prelude" }
             val before = displayCommands().size
             assertTrue(s.core.suspendEvenHubSession())
@@ -990,7 +966,7 @@ class GlassesSessionCoreTest {
     }
 
     @Test
-    fun customFirmwareEntersEvenHubOnEverySessionInsteadOfCreatingTheLayout() {
+    fun customFirmwareStartsItsSessionTheSameWayEveryTimeInsteadOfCreatingTheLayout() {
         val s = Session()
         s.core.setRequiredFirmwareRevision(37)
         s.link.firmwareExtension = "Faceclaw/37"
@@ -999,10 +975,10 @@ class GlassesSessionCoreTest {
             fun enters() = s.link.writes.filter { it.kind == "enter-evenhub" }
             assertEquals(1, enters().size)
             assertEquals(CfwTransport.SID, enters()[0].sid)
-            assertContentEquals(byteArrayOf(CFW_MSG_ENTER_EVENHUB.toByte()), enters()[0].message)
+            assertEquals(CFW_MSG_SESSION_START.toByte(), enters()[0].message!![0])
             // The settings reply that identifies the firmware comes first.
             assertTrue(s.link.writes.indexOfFirst { it.kind == "battery" } < s.link.writes.indexOf(enters()[0]))
-            // A reconnect may find the previous session's page still up. Mode 31
+            // A reconnect may find the previous session's page still up. The session start
             // ACKs in that state, so the session is entered the same way again.
             s.core.handleTransportFailure("test drop")
             assertTrue(waitUntil(5_000) { !s.layoutCreated() })
@@ -1018,8 +994,8 @@ class GlassesSessionCoreTest {
     @Test
     fun aLinkTheSystemWouldKeepIsHungUpByTheGlassesOnDisconnect() {
         val s = Session()
-        s.core.setRequiredFirmwareRevision(40)
-        s.link.firmwareExtension = "Faceclaw/41"
+        s.core.setRequiredFirmwareRevision(45)
+        s.link.firmwareExtension = "Faceclaw/45"
         s.link.keepsLink = true
         s.startAndAwaitLayout()
         s.core.disconnect()
@@ -1038,23 +1014,21 @@ class GlassesSessionCoreTest {
     }
 
     @Test
-    fun olderFirmwareIsNotAskedToHangUp() {
+    fun armsNeverIdentifiedAsRunningFaceclawsFirmwareAreNotAskedToHangUp() {
         val s = Session()
-        s.core.setRequiredFirmwareRevision(40)
-        s.link.firmwareExtension = "Faceclaw/40"
         s.link.keepsLink = true
         s.startAndAwaitLayout()
         s.core.close()
         assertEquals(0, s.link.releases.size)
         assertEquals(listOf(RIGHT, LEFT), s.link.disconnected.take(2))
-        assertTrue(s.host.hasLog("not asking the right arm to hang up (needs Faceclaw/41, it reports Faceclaw/40)"), s.host.logs().takeLast(10).toString())
+        assertTrue(s.host.hasLog("not asking the right arm to hang up (needs Faceclaw's firmware, it reports nothing)"), s.host.logs().takeLast(10).toString())
     }
 
     @Test
     fun aLinkThatDropsOnDisconnectIsNotAskedToHangUp() {
         val s = Session()
-        s.core.setRequiredFirmwareRevision(40)
-        s.link.firmwareExtension = "Faceclaw/41"
+        s.core.setRequiredFirmwareRevision(45)
+        s.link.firmwareExtension = "Faceclaw/45"
         s.startAndAwaitLayout()
         s.core.close()
         assertEquals(0, s.link.releases.size)
@@ -1064,8 +1038,8 @@ class GlassesSessionCoreTest {
     @Test
     fun anArmAFailedSessionAlreadyLetGoOfIsStillAskedToHangUp() {
         val s = Session()
-        s.core.setRequiredFirmwareRevision(40)
-        s.link.firmwareExtension = "Faceclaw/41"
+        s.core.setRequiredFirmwareRevision(45)
+        s.link.firmwareExtension = "Faceclaw/45"
         s.link.keepsLink = true
         s.startAndAwaitLayout()
         // The session fails and cancels both arms; the user disconnects before the redial.

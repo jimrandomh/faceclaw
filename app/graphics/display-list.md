@@ -87,11 +87,11 @@ fade-out. The glasses redraw for as long as it moves, so a list built on it
 needs no timeline and nothing sent during the fade. The phone's own renderings
 are of a shown screen: `evaluate` takes the fade as an argument, 1 by default.
 
-Lists that use `LINE`, an animated clip or `E.fade()` need firmware revision
-45. For older glasses Kotlin leaves the whole list out of the root, so its
-content must already be in the frame's pixels underneath, with the list only
-adding motion; `app/apps/glanceboard/divider-list.ts`, `toggle-switch-list.ts`
-and `app/apps/launcher/folder-transition.ts` are built that way.
+A list only adds motion: its content must already be in the frame's pixels
+underneath, which is what shows when the list is not replayed (Kotlin drops a
+list whose records it cannot resolve). `app/apps/glanceboard/divider-list.ts`,
+`toggle-switch-list.ts` and `app/apps/launcher/folder-transition.ts` are built
+that way.
 
 `maximum.time()` returns `min(milliseconds since PRESENT, maximum)`. The existing
 45 ms repaint timer remains active while this is below maximum. `E.elapsed()` is

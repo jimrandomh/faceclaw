@@ -49,15 +49,6 @@ object DrawProtocol {
     const val SCREEN = 65535
     const val CURRENT = 65534
 
-    /**
-     * The first Faceclaw firmware revision with the line call, animated clips, the screen-fade
-     * expression input, and replays of the frame on screen while it fades out. Older glasses
-     * reject a list that uses the first three, so a drawing that does is left out for them
-     * (see [RetainedDrawing.minFirmwareRevision]). Keep in sync with the caps string in g2flash
-     * patches/settings_ext.c.
-     */
-    const val ANIMATION_FIRMWARE_REVISION = 45
-
     /** Fixed-width resource/legacy fields, separate from the draw numeric codec. */
     fun u16(b: ByteArray, p: Int): Int = (b[p].toInt() and 255) or ((b[p + 1].toInt() and 255) shl 8)
     fun word(n: Int) = byteArrayOf(n.toByte(), (n ushr 8).toByte())

@@ -730,7 +730,7 @@ internal fun GlassesSessionCore.enqueueCreateLayoutLocked() {
     brightnessAlsStartedAt = -2000
     brightnessPolicy.resetSamples()
     if (customFirmwareDetected) {
-        enqueueEnterEvenHubLocked()
+        enqueueSessionStartLocked()
         return
     }
     val message = messageBuilder.createLayout()
@@ -755,7 +755,7 @@ internal fun GlassesSessionCore.enqueueCreateLayoutLocked() {
 }
 
 /**
- * The custom-firmware replacement for the stock create layout (CFW mode 31).
+ * The custom-firmware replacement for the stock create layout: a session start (CFW mode 34).
  * A reconnect can find the page from the previous session still up, and stock
  * firmware never ACKs a repeated create; the CFW ACKs whatever state the
  * glasses were in. A lost message goes through the CFW replay window like any
@@ -763,9 +763,8 @@ internal fun GlassesSessionCore.enqueueCreateLayoutLocked() {
  * settings query that sets customFirmwareDetected is ahead of this in the
  * queue on every session.
  */
-private fun GlassesSessionCore.enqueueEnterEvenHubLocked() {
-    val message = if (faceclawFirmwareRevision >= BleProtocol.SESSION_START_FIRMWARE_REVISION)
-        sessionStartMessageLocked() else messageBuilder.enterEvenHub(connectionOptions.sendImagesToLeft)
+private fun GlassesSessionCore.enqueueSessionStartLocked() {
+    val message = sessionStartMessageLocked()
     message.onAck = MessageCallback {
         fixedLayoutCreated = true
         displayedFingerprint = ""
@@ -775,10 +774,10 @@ private fun GlassesSessionCore.enqueueEnterEvenHubLocked() {
 }
 
 /**
- * Faceclaw/44's session start (mode 34): one message for what took four round trips. The
- * glasses run the stock Dashboard prelude and then enterEvenHub's page, in that order, and it
- * carries the passive-ALS control and the brightness that maintainBrightnessLocked and the
- * first frame would each have sent after it. The brightness follows the desired frame's
+ * The session start (mode 34, g2flash docs/session-start.md): the glasses run the stock
+ * Dashboard prelude and then put up the EvenHub page, in that order, and it carries the
+ * passive-ALS control and the brightness that maintainBrightnessLocked and the first frame
+ * would otherwise each send after it. The brightness follows the desired frame's
  * visibility; the glasses start a wake's fade-in at the next PRESENT, so it waits for that frame.
  */
 private fun GlassesSessionCore.sessionStartMessageLocked(): OutboundMessage {
@@ -1236,7 +1235,7 @@ internal fun GlassesSessionCore.createBatteryQueryMessageLocked(): OutboundMessa
     val message = messageBuilder.batteryQuery()
     message.onAck = MessageCallback {
         val ring = BleProtocol.parseRingBattery(message.ackPayload)
-        // Old firmware and missing/malformed extensions must clear any prior reading.
+        // A missing or malformed extension must clear any prior reading.
         ringBattery = if (ring == null) -1 else ring.battery
         ringCharging = if (ring == null) -1 else ring.charging
         if (ringBattery >= 0) releaseRingFromGlassesLocked("glasses report the ring connected")
@@ -1257,7 +1256,6 @@ internal fun GlassesSessionCore.createBatteryQueryMessageLocked(): OutboundMessa
         val firmwareInfo = BleProtocol.parseSettingsFirmwareInfo(message.ackPayload)
         if (firmwareInfo != null) {
             customFirmwareDetected = firmwareInfo.isFaceclawFirmware()
-            faceclawFirmwareRevision = firmwareInfo.faceclawRevision()
             emitFirmwareInfo(firmwareInfo)
             if (sessionReady && !firmwareInfo.isCompatible(requiredFirmwareRevision)) {
                 // Halting tears down the link, which belongs on the worker thread
@@ -1595,9 +1593,8 @@ internal fun GlassesSessionCore.clearAllMessagesPreservingWakeLeaseLocked(reason
     clearInFlightMessagesLocked(reason)
     lastEnqueuedPacked = ByteArray(0)
     lastEnqueuedFingerprint = ""
-    // The glasses keep their resources while the framebuffer lease holds, across the plugin
-    // task's restart; the clears above already reset the model if they dropped any commands.
-    if (framebufferLeaseMayHaveLapsedLocked(now())) forgetResourceCacheLocked("framebuffer lease may have lapsed")
+    // The glasses keep their resources across the plugin task's restart; the clears above
+    // already reset the model if they dropped any commands.
 }
 
 /** Any image update whose fragments are still queued (not yet sent). */

@@ -1,8 +1,6 @@
 package com.faceclaw.app
 
 import com.faceclaw.app.GlassesSessionCore.Companion.DASHBOARD_TILE
-import com.faceclaw.app.GlassesSessionCore.Companion.FACECLAW_FB_LEASE_MARGIN_MS
-import com.faceclaw.app.GlassesSessionCore.Companion.FACECLAW_FB_LEASE_MS
 import com.faceclaw.app.GlassesSessionCore.Companion.FACECLAW_WAKE_CONTROL_WAIT_MS
 import com.faceclaw.app.GlassesSessionCore.Companion.TAG
 
@@ -286,19 +284,12 @@ internal fun GlassesSessionCore.enqueueFaceclawFramebufferControlLocked(operatio
     clearMessagesOfKindLocked("framebuffer-lease-control")
     val generation = ++faceclawFramebufferControlGeneration
     faceclawFramebufferControlSentCount = 0
-    val queuedAtMs = now()
     if (operation == BleProtocol.FACECLAW_FB_OP_ACQUIRE) {
-        lastFaceclawFramebufferLeaseQueuedAtMs = queuedAtMs
-    } else {
-        // A release frees the glasses' resource cache at once.
-        faceclawFramebufferLeaseConfirmedAtMs = 0
+        lastFaceclawFramebufferLeaseQueuedAtMs = now()
     }
     val onSent = MessageCallback {
         if (faceclawFramebufferControlGeneration == generation) {
             faceclawFramebufferControlSentCount += 1
-            if (faceclawFramebufferControlSentCount == 2 && operation == BleProtocol.FACECLAW_FB_OP_ACQUIRE) {
-                faceclawFramebufferLeaseConfirmedAtMs = queuedAtMs
-            }
         }
     }
     val right = messageBuilder.faceclawFramebufferControl(operation, false)
@@ -333,19 +324,6 @@ internal fun GlassesSessionCore.waitForFaceclawFramebufferControlDelivery(genera
             && faceclawFramebufferControlSentCount >= 2
     }
 }
-
-/**
- * Whether the glasses may have let the framebuffer lease lapse, and so freed the resource cache
- * (g2flash settings_ext.c cfw_fb_lease_active): no ACQUIRE has reached both arms within a lease
- * period, with a margin. From Faceclaw/44 a lapse keeps the cache, so only a new connection
- * (which resets the model anyway) can lose it. Renewals are due every FACECLAW_WAKE_LEASE_RENEW_MS, even while the
- * display is suspended, but the worker holds no wakelock: while the phone's CPU sleeps nothing
- * goes out, so after a long sleep of both the lease has usually lapsed.
- */
-internal fun GlassesSessionCore.framebufferLeaseMayHaveLapsedLocked(now: Long): Boolean =
-    faceclawFirmwareRevision < BleProtocol.SESSION_START_FIRMWARE_REVISION && (
-        faceclawFramebufferLeaseConfirmedAtMs == 0L ||
-            now - faceclawFramebufferLeaseConfirmedAtMs >= FACECLAW_FB_LEASE_MS - FACECLAW_FB_LEASE_MARGIN_MS)
 
 internal fun GlassesSessionCore.releaseFaceclawFramebufferLease(): Boolean {
     val generation: Int

@@ -15,8 +15,7 @@ import { type GlanceDividerLine } from "./layout";
  *
  * The list goes over a board whose pixels already hold the lines whole, so it
  * first erases each one. With the screen shown that leaves the frame as it
- * was; glasses whose firmware can't run the list (it needs revision 45) just
- * show the lines in the pixels.
+ * was.
  */
 export function dividerFadeList(lines: readonly GlanceDividerLine[], level: number): DisplayList {
   const grown = E.fade().ease();

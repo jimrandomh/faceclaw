@@ -219,20 +219,6 @@ class MessageBuilder {
         )
     }
 
-    /**
-     * CFW mode 31: the firmware queues its own copy of [createLayout]'s page, and ACKs whether
-     * or not that page already existed. Stock firmware never ACKs a repeated create.
-     */
-    fun enterEvenHub(leftArm: Boolean): OutboundMessage {
-        return customMessage(
-            "enter-evenhub",
-            byteArrayOf(CFW_MSG_ENTER_EVENHUB.toByte()),
-            "enter EvenHub",
-            -1,
-            leftArm,
-        )
-    }
-
     fun startupTextProbe(): OutboundMessage {
         var magic: Int = magicPool.allocate()
         return OutboundMessage(

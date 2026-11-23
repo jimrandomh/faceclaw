@@ -42,7 +42,7 @@ const val CFW_MSG_CREATE_SURFACE = 29
 const val CFW_MSG_BRIGHTNESS = 30
 const val CFW_MSG_ENTER_EVENHUB = 31
 /**
- * Faceclaw/44: `[34]{len:u8, message}*` (embedded modes 16 and 30) plus prelude and page. 32 and 33
+ * `[34]{len:u8, message}*` (embedded modes 16 and 30) plus prelude and page. 32 and 33
  * are taken by the per-lens battery and the ANCS relay's phone-link release.
  */
 const val CFW_MSG_SESSION_START = 34

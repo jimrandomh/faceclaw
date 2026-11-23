@@ -22,8 +22,8 @@ class ResourceCacheState {
     companion object {
         /**
          * Mirrors g2flash/patches/resource_cache.h: the id table, then 320 KiB shared by the
-         * resources and their block headers. Firmware before Faceclaw/40 had 192 KiB in all,
-         * so this must not grow past what REQUIRED_FACECLAW_FIRMWARE_VERSION guarantees.
+         * resources and their block headers. This must not grow past what
+         * REQUIRED_FACECLAW_FIRMWARE_VERSION guarantees.
          * RayNeo iO sessions use the same budget: that firmware's own copy of the header
          * (faceclaw-rayneo-cfw patches/fc/resource_cache.h) needs at least this much before
          * it reports the required revision.

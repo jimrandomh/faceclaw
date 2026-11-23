@@ -1,6 +1,5 @@
 import type { AndroidNotification } from '../native/notification-types'
 
-export const ANCS_FIRMWARE_VERSION = 16
 export const ANCS_CONNECT_MESSAGE = 'Connect glasses to receive iPhone notifications.'
 const MAX_ACTIVE = 128
 const MAX_RESPONSE = 2048

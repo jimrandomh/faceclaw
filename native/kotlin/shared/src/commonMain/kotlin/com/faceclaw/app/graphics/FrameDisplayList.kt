@@ -4,12 +4,6 @@ package com.faceclaw.app
 interface RetainedDrawing {
     val resources: List<CachedResource>
     val fingerprint: String
-    /**
-     * The oldest Faceclaw firmware revision that accepts every call this drawing makes. Glasses
-     * older than that are sent a root list without it (see [ShellScene.calls]), so whatever it
-     * draws must already be in the pixels underneath, as an animation's final frame is.
-     */
-    val minFirmwareRevision: Int get() = 0
     fun translated(dx: Int, dy: Int): RetainedDrawing
     fun calls(ids: IntArray, nowMs: Long): List<ByteArray>
 }
@@ -32,11 +26,10 @@ class FrameDisplayList private constructor(
     private val x: Int, private val y: Int, private val depth: Int,
     override val resources: List<CachedResource>, private val commands: List<Command>,
     internal val startedAt: Long, private val identity: String,
-    override val minFirmwareRevision: Int = 0,
 ) : RetainedDrawing {
     override val fingerprint: String get() = "$x,$y,$depth,$identity"
     override fun translated(dx: Int, dy: Int) =
-        FrameDisplayList(x + dx, y + dy, depth, resources, commands, startedAt, identity, minFirmwareRevision)
+        FrameDisplayList(x + dx, y + dy, depth, resources, commands, startedAt, identity)
 
     /**
      * Image/text [values] are resource, x offset, y offset, options; the offsets add to [x]/[y].
@@ -186,8 +179,6 @@ class FrameDisplayList private constructor(
             val resources = ArrayList(local)
             val atlasIndices = HashMap<CachedResource, Int>()
             fun atlasResource(cached: CachedResource): Int = atlasIndices.getOrPut(cached) { resources.add(cached); resources.size - 1 }
-            // Whether the list makes a call older firmware rejects: see minFirmwareRevision.
-            var animation = false
             fun value(): DrawValue {
                 val first = r.readU8()
                 if (first != 255) return DrawValue.Integer(ExtendedVarint.read(r, true, first))
@@ -196,7 +187,6 @@ class FrameDisplayList private constructor(
                 return DrawValue.Expression(r.readBytes(size.toInt())).also {
                     // Validate framing and worst-case binding growth before retaining the frame.
                     bind(it, Int.MAX_VALUE, Int.MAX_VALUE)
-                    if (readsFade(it.program)) animation = true
                 }
             }
             fun resource(): Int = r.readU16().also { require(it == DrawProtocol.SCREEN || it in local.indices) }
@@ -208,7 +198,7 @@ class FrameDisplayList private constructor(
                 val d = r.readS16(); require(depth + d in -128..127)
                 require(header and CLIPPED == 0 || header and CLIP_ANIMATED == 0)
                 val clip = if (header and CLIPPED != 0) Clip(DrawClip(r.readS16(), r.readS16(), r.readU16(), r.readU16()))
-                    else if (header and CLIP_ANIMATED != 0) { animation = true; Clip(null, List(4) { value() }) }
+                    else if (header and CLIP_ANIMATED != 0) Clip(null, List(4) { value() })
                     else null
                 when (op) {
                     DRAW_OP_ROUNDED_RECT -> {
@@ -239,7 +229,6 @@ class FrameDisplayList private constructor(
                     DRAW_OP_LINE -> {
                         val x0 = value(); val y0 = value(); val x1 = value(); val y1 = value()
                         val color = r.readU8(); require(color in 0..15)
-                        animation = true
                         commands.add(Command(op, d, intArrayOf(color), x0, y0, x1, y1, clip = clip))
                     }
                     DRAWS -> {
@@ -270,21 +259,7 @@ class FrameDisplayList private constructor(
             if (!replayable || commands.size > 4096 || resources.size > 511) {
                 return FrameDisplayList(x, y, depth, emptyList(), emptyList(), nowMs - elapsed, identity)
             }
-            return FrameDisplayList(x, y, depth, resources, commands, nowMs - elapsed, identity,
-                if (animation) DrawProtocol.ANIMATION_FIRMWARE_REVISION else 0)
-        }
-
-        /** Whether a well-framed program has the screen-fade opcode among its instructions. */
-        private fun readsFade(program: ByteArray): Boolean {
-            val reader = DrawReader(program)
-            while (reader.remaining > 0) {
-                when (reader.readU8()) {
-                    DrawExpression.FADE -> return true
-                    DrawExpression.PUSH_I32 -> ExtendedVarint.read(reader, true)
-                    DrawExpression.PUSH_F32 -> reader.readBytes(4)
-                }
-            }
-            return false
+            return FrameDisplayList(x, y, depth, resources, commands, nowMs - elapsed, identity)
         }
     }
 }

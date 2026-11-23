@@ -22,7 +22,7 @@ import { nightscoutBridge } from '../native/nightscout-bridge'
 import { weatherBridge } from '../native/weather'
 import { FaceclawCommunicatorBridge, resolveIosPeripherals, type CommunicatorState, type PeripheralIdentifiers, type RawInputEvent } from '../native/faceclaw-communicator.ios'
 import { PreviewDisplayTarget, type DisplayTarget } from '../native/preview-display.ios'
-import { AncsClient, ANCS_FIRMWARE_VERSION } from './ancs-client'
+import { AncsClient } from './ancs-client'
 import { G1V0_IMAGE } from '../g1/firmware/g1v0-image'
 import { GlanceHost, type GlanceDisplay } from './glance-host'
 import { createLockScreenImage, LOCK_SCREEN_SURFACE_ID } from './lock-screen'
@@ -76,10 +76,6 @@ export type SessionState = { phase: SessionPhase; status: string; battery: numbe
   ring: boolean; ringBattery: number | null; ringCharging: boolean | null; frames: number; capabilities: string; leftVersion: string; rightVersion: string;
   /** Why the connected firmware can't run Faceclaw (firmware-compat.ts), or '' when it can or is unknown. */
   firmwareWarning: string }
-
-function ancsCapable(capabilities: string): boolean {
-  return /^Faceclaw\/(\d+)/.test(capabilities) && Number(capabilities.split('/')[1]) >= ANCS_FIRMWARE_VERSION
-}
 
 /**
  * iOS host for the shared app registry, shell and BLE session. The session,
@@ -1137,15 +1133,11 @@ export class IosPreviewController {
     if (!UIApplication.sharedApplication.protectedDataAvailable) this.handlePhoneLockState(true)
     this.refreshClock()
   }
-  /** Start iPhone notification relay once the firmware is known to support it and ANCS is authorized. */
+  /** Start iPhone notification relay once the firmware is known to be Faceclaw's and ANCS is authorized. */
   private syncNotifications(communicator: FaceclawCommunicatorBridge): void {
     const notifications = this.notifications
-    if (!notifications || this.state.phase !== 'connected') return
-    if (!ancsCapable(this.state.capabilities)) {
-      if (this.state.capabilities) notifications.stop(`Update glasses to Faceclaw firmware ${ANCS_FIRMWARE_VERSION} or newer for iPhone notifications.`)
-      return
-    }
-    // A G1 reports no revision that says so: its session knows from what the right arm answered.
+    if (!notifications || this.state.phase !== 'connected' || !this.firmwareCompatible) return
+    // A G1's revision does not say whether it has the relay: its session knows from what the right arm answered.
     if (!communicator.ancsRelayAvailable()) {
       notifications.stop(`Update the glasses to Faceclaw's firmware ${G1V0_IMAGE.version} for iPhone notifications, then reconnect.`)
       return

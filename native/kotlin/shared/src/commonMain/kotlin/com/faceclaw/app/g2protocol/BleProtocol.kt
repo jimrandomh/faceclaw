@@ -58,21 +58,6 @@ class BleProtocol {
          */
         const val R1_WRITE_CHAR_UUID: String = "bae80012-4f05-4503-8e65-3af1f7329d1f"
 
-        /**
-         * First Faceclaw firmware revision whose ANCS relay takes [ANCS_RELAY_OP_RELEASE]; earlier ones reject
-         * the op and stay connected. Keep in sync with the caps string in g2flash patches/settings_ext.c.
-         */
-        const val LINK_RELEASE_FIRMWARE_REVISION: Int = 41
-
-        /**
-         * Faceclaw/44: image mode 34 starts a session in one message (the Dashboard prelude, the
-         * EvenHub page, ambient light and brightness), and the glasses keep their resources when
-         * the framebuffer lease lapses or is freshly acquired (g2flash docs/session-start.md).
-         * 42 and 43 are ANCS relay builds without either; 43's message 33 hangs up a phone link.
-         * Keep in sync with the caps string in g2flash patches/settings_ext.c.
-         */
-        const val SESSION_START_FIRMWARE_REVISION: Int = 44
-
         // The ANCS relay's command header: 'A' 'N', a version, an op, then a u32 token the phone chooses. Written
         // raw to WRITE_CHAR_UUID, with no TPL envelope. Keep in sync with g2flash patches/ancs_relay.c (the
         // ANCS_OP_* enum and cfw_ancs_write) and docs/ancs-relay.md. The relay's other ops are built in

@@ -2137,8 +2137,7 @@ function rawInputEventToPayload(event: RawInputEvent): InputEventPayload {
       return scrollEvent("scroll-up", event.eventSource);
     } else if (event.eventType === OsEventTypeList.RING_LONG_PRESS_EVENT) {
       // CFW-forwarded long-press (replaces the firmware's force-quit dialog).
-      // Current CFW supplies the physical source for ring and temple presses;
-      // eventSourceToString's ring fallback keeps older CFW builds compatible.
+      // The CFW supplies the physical source for ring and temple presses.
       return { type: "long-press", source: eventSourceToString(event.eventSource) };
     } else if (event.eventType === OsEventTypeList.RING_LONG_PRESS_RELEASE_EVENT) {
       return { type: "long-press-release", source: eventSourceToString(event.eventSource) };

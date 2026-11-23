@@ -692,8 +692,8 @@ export class FaceclawCommunicatorBridge {
 
   /**
    * Ask CFW mode 11 to release all custom-session state. On success this must
-   * remain the final Faceclaw message before close(); false requests the legacy
-   * shutdown/release fallback for older firmware.
+   * remain the final Faceclaw message before close(); false means it could not
+   * be sent, and the caller falls back to a shutdown and lease release.
    */
   async sendCfwCleanup(): Promise<boolean> {
     return this.enqueueJavaCall(() => Boolean(this.communicator.sendCfwCleanup()));

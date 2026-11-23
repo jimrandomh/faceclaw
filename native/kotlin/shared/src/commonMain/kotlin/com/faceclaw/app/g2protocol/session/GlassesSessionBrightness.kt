@@ -76,9 +76,9 @@ internal const val BRIGHTNESS_TICK_MS = 40
 /**
  * How long the blank frame of a screen-off still has to wait, 0 when nothing is held.
  *
- * Faceclaw/45 keeps replaying the frame on screen while it fades out, so whatever that frame
+ * A G2 keeps replaying the frame on screen while it fades out, so whatever that frame
  * animates, and whatever it draws from the fade itself, keeps moving until the screen is dark.
- * Staging the blank frame's draws would stop that at once. So for those glasses a screen-off
+ * Staging the blank frame's draws would stop that at once. So on a G2 a screen-off
  * starts the fade here, ahead of its frame, and the frame waits the fade out: the fade's own
  * length, whatever the Screen fade speed makes it, and the tick it can take to start. A wake
  * that comes first never sends the frame at all.
@@ -96,8 +96,7 @@ internal fun GlassesSessionCore.blankFrameHoldMsLocked(now: Long): Long {
         return 0L
     }
     if (blankFrameHeldUntilMs == 0L) {
-        if (!isG2 || faceclawFirmwareRevision < DrawProtocol.ANIMATION_FIRMWARE_REVISION
-                || brightnessSentVisible != true || brightnessPolicy.fadeMs <= 0
+        if (!isG2 || brightnessSentVisible != true || brightnessPolicy.fadeMs <= 0
                 || desired == lastEnqueuedFingerprint) return 0L
         enqueueBrightnessLocked(false)
         // Not queued (the display path is not ready): the frame goes out as usual.
